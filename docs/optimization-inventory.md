@@ -47,8 +47,16 @@ has exact generated IDs/final heads and +2.47% native paid latency; all policies
 remain diagnostic and default off. Broader quality, performance and optimized
 batching remain open.
 
-Existing H16/32 owner attention excludes Gemma3's H8 shape. Device greedy
-publication and lookahead remain open. No optimization transfers automatically.
+The [device-greedy C1 screen](experiments/gemma3-execution/README.md#device-greedy-exact-choices-and-backend-sampler-comparison)
+transfers the kept device argmax to explicit `Work::token` publication, with a
+separate shape/cache key and funded output. All 32 choices, final heads and
+initialized state remain exact; two allocated slots prove alias/mixed-output
+refusal before mutation, while only one executes. A short RNNR against stock's
+original public backend greedy sampler retains exact histories/final heads
+and +2.46% native paid latency. Stock reports full 262208-element sampled rows;
+this is no zero-copy claim. Broader quality/performance and optimized batching
+remain open. Existing H16/32 owner attention excludes Gemma3's H8 shape;
+lookahead remains open. No optimization transfers automatically.
 The exact stock Gemma3 graph gathers final attention and residual rows before
 post-norm/FFN, matching this native frontier. Gemma26's distinct full-final-FFN
 requirement does not transfer to Gemma3.
@@ -232,7 +240,7 @@ they have no text-model equivalent.
 | Cluster a small reduction and prefetch the next weights | Qwen3.8's hyper-connection preparation, up to eight tokens | DeepSeek's hyper-connection pre-projection | Source-compatible principle, not the same formula or weight layout. A remaining DeepSeek lead is about 1% of a step; measure only after the larger product gap. sm_86 has no clusters. [TensorFold techniques](experiments/tensorfold-techniques/README.md#limits-and-what-remains) |
 | Reuse a cleared conversation's state backing | Gemma, DeepSeek V4 and Qwen3.8 `Clear` within a request (`LiveState::ZeroForReuse`, kept discarded backing revived by growth) | Idle clears, spilled or partly reclaimed slots, and Qwen-Image (no growing state) still discard | Gemma31 C1 paid cycle −200 ms, C4 −1.0 s; DeepSeek/Qwen3.8 8K swap table exact. [Gap closing](experiments/gemma-gap-closing/README.md) |
 | Capture a graph beside its shape's eager run | Every runner through `GraphRuns::Queue` | Plans with work between inputs and plan (Qwen3.8's n-gram gather) keep capture-first | Gemma31 C1 −180 ms and C4 −0.6 s per paid cycle with first-time prefill captures; replay benefit kept. [Gap closing](experiments/gemma-gap-closing/README.md) |
-| Choose a greedy plain step's token on the device | Gemma joined and scalar waves (`Gemma4ChunkShape::greedy`, `Llm::DeviceGreedy`): an argmax node after the head, 4 bytes copied back instead of a 1 MiB row | DeepSeek V4 and Qwen3.8 plain (non-speculative) steps still publish rows; Qwen3.8's verify already takes device argmaxes, DeepSeek's only its DSpark drafts | Exact tokens and KV bytes; Gemma31 C1/C4 and Gemma26 C1 decode −0.3%/−0.8%/−0.7% on their own. Scoring, sampling and speculation keep rows. [Decode hot path](experiments/decode-hot-path/README.md) |
+| Choose a greedy plain step's token on the device | Gemma joined and scalar waves (`Gemma4ChunkShape::greedy`, `Llm::DeviceGreedy`), plus explicit bounded Gemma3 `Work::token`: an argmax node after the head, 4 bytes copied back instead of a 1 MiB row | DeepSeek V4 and Qwen3.8 plain (non-speculative) steps still publish rows; Qwen3.8's verify already takes device argmaxes, DeepSeek's only its DSpark drafts | Exact tokens and KV bytes; Gemma31 C1/C4 and Gemma26 C1 decode −0.3%/−0.8%/−0.7% on their own. Scoring, sampling and speculation keep rows. [Decode hot path](experiments/decode-hot-path/README.md) |
 | Run a request's steps on its driver, with no scheduler call per step | Every model's held request (`PagedNode::DirectStep`, D-106); every LLM runner's place check skipped while the scheduler's placement count is unchanged; Gemma's host inputs no longer charged per wave | Qwen-Image steps also run directly, unmeasured | Decode round trip 85–188 → 6–11 µs; Gemma26 C1 decode −2.8% with the greedy tokens; DeepSeek V4 / Qwen3.8 speculative chat decode shows no regression (about +0.5% / +0.8%, two runs each, within noise) with identical text, and their swap table stays exact. Direct steps alone were slower until the per-step scheduler calls went: a sleeping scheduler costs a full wake each (RE-017). Look for any other per-step `Call` first. [Decode hot path](experiments/decode-hot-path/README.md) |
 | Join owners' operands by view instead of copy | Gemma owner attention: packed Q as a view of the roped Q rows, masks joined once per wave, output read as a reshape | DeepSeek/Qwen per-slot joins, if any use `ggml_concat` on a decode path | Gemma31 C4 decode −1.5 ms per wave, tokens unchanged. Batching the per-request K/V stores was rejected (see the method note). [Gap closing](experiments/gemma-gap-closing/README.md) |
 | Match the reference's prefill geometry and routing arithmetic | Bounded Gemma26: 1024-row prefill with MoE route/reduce and joined owner attention reproduces stock's greedy tokens and byte-identical corpus heads | Other MoE families against their references; Gemma beyond 8K/4 slots | The 128-row cap alone doubled 8K prefill; without route/reduce or owner attention, tokens diverge from stock's. [Gemma26 recipe](experiments/gemma26-production/README.md) |

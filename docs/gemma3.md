@@ -14,8 +14,9 @@ Clear reuse, malformed-input refusal and initialized-state spill/restore.
 There is no serving route or media adapter. This model remains outside the
 supported execution matrix. The primitive stock screen retains one positive-margin
 greedy difference; explicit checked norm chains then match all 33 stock heads
-byte for byte. The optimized C1 first screen is 2.47% slower than stock. Broader
-quality, performance, longer contexts and batching remain open.
+byte for byte. The full-host-head C1 screen is 2.47% slower than stock; explicit device
+greedy preserves exact choices/state and is 2.46% slower against stock backend
+greedy. Broader quality, performance, longer contexts and batching remain open.
 
 ## Actual checkpoint contract
 
@@ -186,5 +187,10 @@ qualified context or support limits. Multiple independent slots are designed
 into the runner but actual batching remains unqualified. The ordinary primitive
 policy is explicit; generic norm, quantized FFN, D256 norm/RoPE and width2560
 norm/residual switches are default-off diagnostics,
-with no automatic Gemma4 shape-policy inheritance. Device masks, device greedy
-publication, lookahead and serving integration remain later work.
+with no automatic Gemma4 shape-policy inheritance. Explicit `Work::token`
+publication uses the existing kept device argmax with a separate graph/cache
+key and funded output; full heads remain available. The bounded device-greedy
+control checks 32 choices, exact initialized state and final heads, plus
+two-slot alias/mixed-publication refusals before state mutation. Only one slot
+executes. Device masks, lookahead, optimized batching and serving integration
+remain later work.

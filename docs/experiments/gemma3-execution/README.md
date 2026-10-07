@@ -222,8 +222,79 @@ under Spark A's `~/.local/share/jitllm/gemma3-execution-20261007/`, in
 
 This clears the representative C1 quality screen, without establishing speed
 parity, corpus quality, 8K or maximum context, sustained performance, optimized
-batching or serving support. Device greedy publication and the H8 batching
-recipe remain later qualification work. No default recipe is selected here.
+batching or serving support. The later device-greedy screen below preserves
+these bounded quality results; H8 batching remains open. No default recipe is
+selected here.
+
+## Device greedy: exact choices and backend-sampler comparison
+
+The runner's explicit `Work::token` contract publishes a completed I32 device
+argmax instead of a full vocabulary row. The graph/cache key distinguishes
+this output, Setup funds its kept output and plan envelope, and every wave
+requires one publication kind. Alias, mixed row/token, all-output and state-only
+greedy requests refuse before state growth or staging. Completion is proven
+before publishing any host choice; an out-of-range choice quarantines state.
+The existing argmax implementation is unchanged. Full rows remain available for
+scoring, teacher comparisons and final verification.
+
+Two `greedy-own optimized` runs each compare 32 GPU choices against full-head
+argmaxes, then compare their final full head and all initialized K/V bytes.
+Both traversals retain 68 state extents through Clear and produce state SHA-256
+`087796779a4dc74509809ddf9854a5439aec0370469f92fa749e8c028367c87b`.
+The control allocates two slots to prove output-alias refusal preserves both
+prefixes and slot0's state bytes, but executes only slot0. It establishes no
+executed batching. Each run publishes 35 device tokens, captures three graphs
+and replays 66 times, including distinct output-shape eager/capture/replay.
+All 33 full heads, 32 choices and the final head match the frozen optimized
+teacher bytes above; the unchanged strict stock quality screen is exact again.
+
+The stock caller additionally selects the original d812 public backend greedy
+sampler chain for sequence0 through `cp.samplers`, without modifying stock's
+chain or detaching it for final verification. Full GPU offload, valid public
+sampled-token results and the exact repeated sampled rows establish this API
+selection, not observed kernel-launch counts. Two `greedy-teacher` arms each
+report 36 backend samples and reproduce all 33 frozen stock heads, choices and
+final head byte for byte. The public sampled-logits count is 262208 at every
+observed row: stock retains and copies full sampled rows internally. This is
+not a zero-copy stock comparison.
+
+After both own/reference controls pass, one RNNR compares native device
+publication against that stock backend sampler. The same 4096-context/C1/F16/
+128-row topology pays 256 prompt rows and 32 generated steps; three supplied
+scalar rows remain untimed. Every arm pays and checks the final full head.
+Native warms its token shape, then the final three warm steps publish full
+heads to exercise eager/capture/replay of the verification shape; stock keeps
+its backend sampler throughout. Warm-up consumes eight generated steps before
+Clear; paid histories match across all arms.
+Across warm and paid work, native publishes 44 GPU choices; stock reports 48
+backend samples, including unconsumed samples on full-head verification steps.
+Each native cycle captures four graphs and replays 42 times, without refusal or
+coverage violations. Counts describe actual publications/API samples, not
+kernel-launch totals.
+
+| Backend/device greedy RNNR arm | Prefill ms | Decode ms | Paid total ms |
+| --- | ---: | ---: | ---: |
+| Stock 1 | 55.4134 | 390.889 | 446.3024 |
+| Native 1 | 56.4489 | 400.490 | 456.9389 |
+| Native 2 | 56.7723 | 401.603 | 458.3753 |
+| Stock 2 | 56.2137 | 390.846 | 447.0597 |
+
+Mean paid latency is 457.6571 ms native versus 446.68105 ms stock, or
++2.4572455%. Generated tokens per paid second are 69.9213 versus 71.6395.
+All four histories and finite final heads preserve the preceding full-head
+cycle hashes. This short comparison retains a latency gap; it does not
+establish parity or isolate the speed effect relative to the earlier run.
+
+On Spark A, official `m35-gemma3-greedy` completes all 18 steps with exit0,
+including nine focused graph/plan tests and explicit native/container
+retirement. The actual native binary SHA-256 is
+`aaa95401e41cb30db27c29e54356d2e23d58356927ecdd37317b2b1ea1d0ce09`;
+receipt, artifact, source pin and locked environment remain as above.
+Source/binary binding, own controls, quality and cycle aggregates remain
+external under `gemma3-execution-20261007/device-greedy/`. All fusion switches
+remain default off, and token publication is explicitly requested per work.
+Optimized batching, wider context/quality, sustained performance and serving
+qualification remain open.
 
 TensorFold's per-task current source was checked on 2026-10-07 at
 [`ed78d6fc204d89d90b045bf033d6551e7714f3a1`](https://github.com/ashhart/TensorFold/blob/ed78d6fc204d89d90b045bf033d6551e7714f3a1/README.md)

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -96,11 +97,14 @@ int main(int argc, char** argv) {
   }
   if (argc != 7) return 2;
   const std::string_view mode = argv[4], policy = argv[5], graphs = argv[6];
-  if ((mode != "teacher" && mode != "cycle" && mode != "lifetime") ||
+  if ((mode != "teacher" && mode != "cycle" && mode != "lifetime" && mode != "greedy-own" &&
+       mode != "greedy-cycle") ||
       (policy != "primitive" && policy != "norm" && policy != "quantglu" && policy != "both" &&
        policy != "normrope" && policy != "normropeadd" && policy != "optimized") ||
       (graphs != "0" && graphs != "1"))
     return 2;
+  const bool greedy_own = mode == "greedy-own", greedy_cycle = mode == "greedy-cycle";
+  if ((greedy_own || greedy_cycle) && policy != "optimized") return 2;
   auto raw = Read(argv[2], kInput * sizeof(std::int32_t));
   if (!raw || raw->size() != kInput * sizeof(std::int32_t)) return 2;
   std::array<std::int32_t, kInput> ids{};
@@ -123,7 +127,8 @@ int main(int argc, char** argv) {
       en::Gemma3Options{
           .artifact = argv[1],
           .out = out,
-          .max_head_rows = 1,
+          .slots = greedy_own ? 2U : 1U,
+          .max_head_rows = greedy_own ? 2U : 1U,
           .graphs = graphs == "1",
           .fuse_norms = policy == "norm" || policy == "both" || policy == "optimized",
           .fuse_quant_glu = policy == "quantglu" || policy == "both" || policy == "optimized",
@@ -177,11 +182,27 @@ int main(int argc, char** argv) {
       if (auto r = chunk(std::span(ids).subspan(kPrompt + i, 1), true); !r) return r;
     return {};
   };
+  std::int32_t selected_token = -1;
+  const auto token_chunk = [&](std::span<const std::int32_t> tokens) -> en::Status {
+    const en::Gemma3Runner::Work work{0, past, tokens, nullptr, &selected_token};
+    if (auto r = runner.Wave(std::span(&work, 1)); !r) return r;
+    past += static_cast<std::uint32_t>(tokens.size());
+    return {};
+  };
+  const auto token_prompt = [&]() -> en::Status {
+    if (auto r = chunk(std::span(ids).first(128), false); !r) return r;
+    return token_chunk(std::span(ids).subspan(128, 128));
+  };
+  const auto token_warm = [&]() -> en::Status {
+    for (std::uint32_t i = 0; i < kWarm; ++i)
+      if (auto r = token_chunk(std::span(ids).subspan(kPrompt + i, 1)); !r) return r;
+    return {};
+  };
   const auto execute = [&]() -> en::Status {
     if (auto r = node.Open(); !r) return r;
     lifetime->entered.push_back(&runner);
     if (auto r = runner.Setup(); !r) return r;
-    if (mode == "lifetime") {
+    if (mode == "lifetime" || greedy_own) {
       std::vector<jitllm::catalog::ExtentId> staging;
       auto pinned = node.Pinned(kStateBuffer, 0, staging);
       if (!pinned) return Error(pinned.error());
@@ -202,21 +223,26 @@ int main(int argc, char** argv) {
               << " plan_floor=" << runner.plan_floor_bytes() << '\n';
     return node.WithRequest(0, runner.closure(), "Gemma3 first screen", [&]() -> en::Status {
       if (!node.InRequest(0)) return Error("probe must hold the direct-step request");
-      if (mode == "cycle") {
-        if (auto r = prompt(true); !r) return r;
-        if (auto r = warm(); !r) return r;
+      if (mode == "cycle" || greedy_cycle) {
+        if (auto r = greedy_cycle ? token_prompt() : prompt(true); !r) return r;
+        if (auto r = greedy_cycle ? token_warm() : warm(); !r) return r;
         for (std::uint32_t i = 0; i < 8; ++i) {
-          auto next = Greedy(logits);
+          auto next = greedy_cycle && i < 6
+                          ? std::expected<std::int32_t, std::string>(selected_token)
+                          : Greedy(logits);
           if (!next) return Error(next.error());
-          if (auto r = chunk(std::span(&*next, 1), true); !r) return r;
+          if (auto r = greedy_cycle && i < 5 ? token_chunk(std::span(&*next, 1))
+                                             : chunk(std::span(&*next, 1), true);
+              !r)
+            return r;
         }
         if (auto r = runner.Clear(); !r) return r;
         past = 0;
       }
       const auto prefill_start = std::chrono::steady_clock::now();
-      if (auto r = prompt(true); !r) return r;
+      if (auto r = greedy_cycle ? token_prompt() : prompt(true); !r) return r;
       const auto prefill = en::support::Seconds(std::chrono::steady_clock::now() - prefill_start);
-      if (auto r = warm(); !r) return r;
+      if (auto r = greedy_cycle ? token_warm() : warm(); !r) return r;
       if (mode == "lifetime") {
         const auto before = logits;
         const auto before_state = snapshot();
@@ -259,7 +285,7 @@ int main(int argc, char** argv) {
             << kept.size() << '\n';
       }
       std::ofstream heads;
-      if (mode == "teacher") {
+      if (mode == "teacher" || greedy_own) {
         heads.open(out / "heads.f32", std::ios::binary | std::ios::noreplace);
         if (!heads) return Error("exclusive teacher output refused");
         heads.write(reinterpret_cast<const char*>(logits.data()), kVocab * sizeof(float));
@@ -267,18 +293,95 @@ int main(int argc, char** argv) {
       std::array<std::int32_t, kSteps> chosen{};
       const auto decode_start = std::chrono::steady_clock::now();
       for (std::uint32_t i = 0; i < kSteps; ++i) {
-        auto next = Greedy(logits);
+        auto next = greedy_cycle ? std::expected<std::int32_t, std::string>(selected_token)
+                                 : Greedy(logits);
         if (!next) return Error(next.error());
         chosen[i] = *next;
-        const auto token = mode == "cycle" ? *next : ids[kPrompt + kWarm + i];
-        if (auto r = chunk(std::span(&token, 1), true); !r) return r;
-        if (mode == "teacher")
+        const auto token = mode == "cycle" || greedy_cycle ? *next : ids[kPrompt + kWarm + i];
+        if (auto r = greedy_cycle && i + 1 != kSteps ? token_chunk(std::span(&token, 1))
+                                                     : chunk(std::span(&token, 1), true);
+            !r)
+          return r;
+        if (mode == "teacher" || greedy_own)
           heads.write(reinterpret_cast<const char*>(logits.data()), kVocab * sizeof(float));
       }
       const auto decode = en::support::Seconds(std::chrono::steady_clock::now() - decode_start);
-      if (mode == "teacher") {
+      if (mode == "teacher" || greedy_own) {
         heads.flush();
         if (!heads) return Error("complete teacher output failed");
+      }
+      if (greedy_own) {
+        const auto full_choices = chosen;
+        const auto full_final = logits;
+        const auto full_state = snapshot();
+        if (!full_state) return Error(full_state.error());
+        const auto kept = runner.state();
+        if (auto r = runner.Clear(); !r) return r;
+        if (runner.kept_state() != kept) return Error("greedy Clear did not retain state backing");
+        past = 0;
+        const auto before_graphs = runner.graph_stats();
+        if (auto r = token_prompt(); !r) return r;
+        if (graphs == "1" && runner.graph_stats().eager <= before_graphs.eager)
+          return Error("greedy frontier reused the full-head shape key");
+        if (auto r = token_warm(); !r) return r;
+        if (graphs == "1" && (runner.graph_stats().captured <= before_graphs.captured ||
+                              runner.graph_stats().replayed <= before_graphs.replayed))
+          return Error("greedy shape did not capture and replay fresh scalar inputs");
+        const auto before_refusal = snapshot();
+        if (!before_refusal) return Error(before_refusal.error());
+        const auto slot0 = *runner.request_slot(0), slot1 = *runner.request_slot(1);
+        const auto positions0 = slot0->completed_positions(),
+                   positions1 = slot1->completed_positions();
+        const auto bytes0 = slot0->used_state_bytes(), bytes1 = slot1->used_state_bytes();
+        const auto untouched = selected_token;
+        const std::array<std::uint32_t, 2> both{0, 1};
+        if (auto r = runner.SelectSlots(both); !r) return r;
+        const en::Gemma3Runner::Work aliased0{0, past, std::span(ids).first(1), nullptr,
+                                              &selected_token};
+        const en::Gemma3Runner::Work aliased1{1, 0, std::span(ids).first(1), nullptr,
+                                              &selected_token};
+        const std::array aliased{aliased0, aliased1};
+        const en::Gemma3Runner::Work mixed{0, past, std::span(ids).first(1), &logits,
+                                           &selected_token};
+        if (runner.Wave(aliased) || runner.Wave(std::span(&mixed, 1)) ||
+            runner.Wave(std::span(&aliased0, 1), true) ||
+            runner.WavePrefill(std::span(&aliased0, 1), false) || selected_token != untouched ||
+            slot0->completed_positions() != positions0 ||
+            slot1->completed_positions() != positions1 || slot0->used_state_bytes() != bytes0 ||
+            slot1->used_state_bytes() != bytes1)
+          return Error("greedy alias/mixed/publication refusal changed state metadata or output");
+        const auto after_refusal = snapshot();
+        if (!after_refusal || *after_refusal != *before_refusal)
+          return Error("greedy publication refusal changed initialized state");
+        const std::array<std::uint32_t, 1> only{0};
+        if (auto r = runner.SelectSlots(only); !r) return r;
+        for (std::uint32_t i = 0; i < kSteps; ++i) {
+          chosen[i] = selected_token;
+          if (chosen[i] != full_choices[i])
+            return Error("device greedy choice differs from full-head argmax");
+          const auto token = ids[kPrompt + kWarm + i];
+          if (auto r = i + 1 == kSteps ? chunk(std::span(&token, 1), true)
+                                       : token_chunk(std::span(&token, 1));
+              !r)
+            return r;
+        }
+        const auto device_state = snapshot();
+        if (!device_state || *device_state != *full_state || logits.size() != full_final.size() ||
+            std::memcmp(logits.data(), full_final.data(), logits.size() * sizeof(float)) != 0)
+          return Error(
+              "device greedy final head or initialized state differs from full-head execution");
+        if (runner.greedy_tokens() != 35)
+          return Error("greedy own control did not publish 35 GPU tokens");
+        const auto state_record = std::format(
+            "{{\"reference\":\"{}\",\"device\":\"{}\",\"choices_checked\":32,"
+            "\"refusals_unchanged\":true,\"kept_extents\":{},\"allocated_slots\":2,\"executed_"
+            "slots\":1}}\n",
+            *full_state, *device_state, kept.size());
+        if (auto r = Write<char>(out / "state.json", std::span(state_record)); !r) return r;
+        std::cout
+            << "GEMMA3_GREEDY_OWN choices_equal=32 final_equal=1 state_equal=1 refusals_unchanged=1"
+               " kept_extents="
+            << kept.size() << " allocated_slots=2 executed_slots=1\n";
       }
       if (auto r = Write<std::int32_t>(out / "chosen.i32", chosen); !r) return r;
       if (auto r = Write<float>(out / "final.f32", logits); !r) return r;
@@ -304,6 +407,7 @@ int main(int argc, char** argv) {
                 << " selected_quant_geglu=" << selections.quant_geglu
                 << " selected_norm_rope=" << selections.norm_rope
                 << " selected_norm_add=" << selections.norm_add
+                << " gpu_tokens=" << runner.greedy_tokens()
                 << " coverage_violations=" << runner.coverage().violations << '\n';
       return {};
     });

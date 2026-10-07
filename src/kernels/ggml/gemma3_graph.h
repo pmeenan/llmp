@@ -31,6 +31,8 @@ struct Gemma3ChunkShape {
   std::vector<Gemma3SegmentShape> segments;
   std::uint32_t outputs = 0;
   Gemma3OutputMode output_mode = Gemma3OutputMode::kHead;
+  // Frontier head mode only: publish lowest-ID argmax tokens, not rows.
+  bool greedy = false;
   bool operator==(const Gemma3ChunkShape&) const = default;
 };
 struct Gemma3GraphOptions {
@@ -65,6 +67,7 @@ struct Gemma3Graph {
   ggml_tensor* out_ids = nullptr;
   ggml_tensor* hidden = nullptr;
   ggml_tensor* logits = nullptr;
+  ggml_tensor* greedy = nullptr;  // I32 [outputs], with a greedy shape
   std::vector<Gemma3WeightLeaf> weights;
   std::vector<Gemma3SegmentTensors> segments;
   std::vector<ggml_tensor*> inputs, nodes;

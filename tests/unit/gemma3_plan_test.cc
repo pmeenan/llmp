@@ -65,6 +65,27 @@ kg::DeviceChoices Choices() {
   return out;
 }
 
+TEST(Gemma3Plan, GreedyPlanRetainsArgmaxOutputAcrossPlacementAndRejectsDetachedOutput) {
+  Case c;
+  c.shape.greedy = true;
+  auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape);
+  ASSERT_TRUE(graph);
+  const auto model = Places(c, *graph);
+  const auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
+  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  const auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
+                                          (*measured)->placement.extent);
+  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  EXPECT_EQ((*placed)->plan.steps.back().implementation, kg::kArgmaxName);
+  EXPECT_EQ((*placed)->plan.steps.back().nodes[0], (*placed)->graph.greedy);
+  EXPECT_NE((*placed)->graph.greedy->data, nullptr);
+  EXPECT_TRUE(kg::CheckArgmax((*placed)->graph.greedy));
+  graph->greedy = ggml_new_tensor_1d(arena->context(), GGML_TYPE_I32, 2);
+  EXPECT_FALSE(en::BindGemma3Weights(model, *graph));
+}
+
 TEST(Gemma3Plan, BothPlacementPassesRetainPrimitiveAttentionAndChargeEverySource) {
   Case c;
   auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));

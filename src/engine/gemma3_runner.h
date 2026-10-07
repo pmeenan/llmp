@@ -56,6 +56,8 @@ class Gemma3Runner final : public PagedModel {
     std::uint32_t slot = 0, n_past = 0;
     std::span<const std::int32_t> tokens;
     std::vector<float>* logits = nullptr;
+    // Exactly one output: a full row, or one device-chosen frontier token.
+    std::int32_t* token = nullptr;
   };
   // Cumulative selections in successfully bound runtime plans, including
   // plans later reclaimed. Setup's envelope probes are not counted.
@@ -106,6 +108,7 @@ class Gemma3Runner final : public PagedModel {
   const GraphStats& graph_stats() const { return graph_stats_; }
   const PlanSelections& plan_selections() const { return plan_selections_; }
   const Coverage& coverage() const { return coverage_; }
+  std::uint64_t greedy_tokens() const { return greedy_tokens_; }
   void DropPlans();
   void ReclaimCandidates(std::uint32_t owner, bool running,
                          std::vector<memory::ReclaimCandidate>& out);
@@ -142,7 +145,7 @@ class Gemma3Runner final : public PagedModel {
   std::optional<std::uint64_t> places_clean_;
   void* logits_ = nullptr;
   std::uint64_t activation_bytes_ = 0, scratch_bytes_ = 0, host_input_bytes_ = 0;
-  std::uint64_t plan_floor_bytes_ = 0;
+  std::uint64_t plan_floor_bytes_ = 0, greedy_tokens_ = 0;
   bool setup_started_ = false, setup_ = false, registered_ = false, bound_ = false,
        released_ = false;
 };

@@ -19,6 +19,7 @@
 
 #include "artifact/representation.h"
 #include "kernels/ggml/fusion.h"
+#include "kernels/ggml/jitllm_ops.h"
 
 namespace jitllm::kernels::ggml {
 namespace {
@@ -48,6 +49,8 @@ std::expected<void, KernelFailure> CheckGemma3Graph(const md::Gemma3Profile& p,
       (state_only && (!o.head || o.hidden_input || o.first_layer != 0 ||
                       (o.layer_count != 0 && o.layer_count != p.layers) || shape.outputs != 0)))
     return Rejected("Gemma3 state-only requires all token-input layers and no head rows");
+  if (shape.greedy && (state_only || !o.head || shape.outputs != shape.segments.size()))
+    return Rejected("Gemma3 greedy chunks require one frontier head per segment");
   if (shape.segments.empty() || shape.segments.size() > md::kGemma3MaxSlots ||
       o.first_layer >= p.layers || (o.first_layer != 0 && !o.hidden_input) ||
       o.layer_count > p.layers - o.first_layer ||
@@ -248,6 +251,10 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
     if (!o.narrow_final) normalized = ggml_get_rows(c, normalized, g.out_ids);
     g.logits = named("logits", product(binding.output, normalized));
     expanded.push_back(g.logits);
+    if (shape.greedy) {
+      g.greedy = named("greedy", Argmax(c, g.logits));
+      expanded.push_back(g.greedy);
+    }
   } else if (g.hidden != nullptr)
     expanded.push_back(g.hidden);
   auto ordered = GraphOrder(expanded, arena);

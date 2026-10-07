@@ -13,6 +13,7 @@
 
 #include "expected_error.h"
 #include "gemma3_fixture.h"
+#include "kernels/ggml/jitllm_ops.h"
 
 namespace {
 namespace md = jitllm::model;
@@ -108,6 +109,30 @@ TEST(Gemma3Graph, StateOnlyRetainsAllWritesAndNarrowingKeepsFullFinalAttention) 
   EXPECT_EQ(graph->Named("blk.33.output")->ne[1], 2);
   EXPECT_EQ(graph->hidden->ne[1], 2);
   EXPECT_EQ(Count(*graph, GGML_OP_SET_ROWS), 136);
+}
+
+TEST(Gemma3Graph, GreedyFrontiersHaveDistinctShapeAndKeptArgmaxDescriptor) {
+  Case c;
+  const auto full_head = c.shape;
+  c.shape.greedy = true;
+  EXPECT_NE(c.shape, full_head);
+  auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape);
+  ASSERT_TRUE(graph);
+  ASSERT_NE(graph->greedy, nullptr);
+  EXPECT_EQ(graph->greedy->type, GGML_TYPE_I32);
+  EXPECT_EQ(graph->greedy->ne[0], 2);
+  EXPECT_EQ(graph->greedy->src[0], graph->logits);
+  EXPECT_EQ(kg::JitllmOpOf(graph->greedy), kg::JitllmOp::kArgmax);
+  EXPECT_EQ(graph->nodes.back(), graph->greedy);
+  auto malformed = c.shape;
+  malformed.outputs = 4;
+  EXPECT_FALSE(kg::CheckGemma3Graph(c.p, c.binding, c.state, malformed));
+  malformed.outputs = 0;
+  malformed.output_mode = kg::Gemma3OutputMode::kStateOnly;
+  EXPECT_FALSE(kg::CheckGemma3Graph(c.p, c.binding, c.state, malformed));
+  EXPECT_FALSE(kg::CheckGemma3Graph(c.p, c.binding, c.state, c.shape, {.head = false}));
 }
 
 TEST(Gemma3Graph, InvalidDescriptorsScopesAndCapacityRefuseBeforeGraphConstruction) {

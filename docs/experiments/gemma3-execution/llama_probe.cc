@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // External public-API caller for the original llama.cpp v0.6.0 image.
-// MODEL IDS_I32 PROMPT_TEXT NEW_OUT teacher|cycle; fixed bounded C1 screen.
+// MODEL IDS_I32 PROMPT_TEXT NEW_OUT teacher|cycle|greedy-teacher|greedy-cycle; fixed bounded C1
+// screen.
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -48,9 +49,12 @@ double Seconds(Clock::duration value) { return std::chrono::duration<double>(val
 }  // namespace
 int main(int argc, char** argv) {
   try {
-    Require(argc == 6, "MODEL IDS_I32 PROMPT_TEXT NEW_OUT teacher|cycle");
+    Require(argc == 6,
+            "MODEL IDS_I32 PROMPT_TEXT NEW_OUT teacher|cycle|greedy-teacher|greedy-cycle");
     const std::string mode = argv[5];
-    Require(mode == "teacher" || mode == "cycle", "unknown mode");
+    const bool backend_sampling = mode == "greedy-teacher" || mode == "greedy-cycle";
+    const bool teacher = mode == "teacher" || mode == "greedy-teacher";
+    Require(teacher || mode == "cycle" || mode == "greedy-cycle", "unknown mode");
     Require(!std::getenv("GGML_CUDA_DISABLE_FUSION") && !std::getenv("GGML_CUDA_DISABLE_GRAPHS"),
             "stock fusion/graph override present");
     const auto raw = Read(argv[2], kInput * sizeof(llama_token));
@@ -95,6 +99,18 @@ int main(int argc, char** argv) {
       cp.swa_full = false;
       cp.kv_unified = false;
       cp.no_perf = false;
+      std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> sampler(nullptr,
+                                                                            llama_sampler_free);
+      llama_sampler_seq_config config{};
+      if (backend_sampling) {
+        sampler.reset(llama_sampler_chain_init(llama_sampler_chain_default_params()));
+        Require(bool(sampler), "greedy sampler chain allocation failed");
+        llama_sampler_chain_add(sampler.get(), llama_sampler_init_greedy());
+        Require(llama_sampler_chain_n(sampler.get()) == 1, "exact greedy chain required");
+        config = {0, sampler.get()};
+        cp.samplers = &config;
+        cp.n_samplers = 1;
+      }
       std::unique_ptr<llama_context, decltype(&llama_free)> ctx(
           llama_init_from_model(model.get(), cp), llama_free);
       Require(ctx && llama_n_ctx_seq(ctx.get()) == 4096 && llama_n_seq_max(ctx.get()) == 1,
@@ -106,13 +122,18 @@ int main(int argc, char** argv) {
       std::vector<float> published;
       published.reserve(kVocab);
       int past = 0;
-      const auto best = [&]() -> llama_token {
+      llama_token sampled = LLAMA_TOKEN_NULL;
+      std::uint64_t backend_tokens = 0;
+      std::uint32_t sampled_logits_min = kVocab, sampled_logits_max = 0;
+      bool final_head = false;
+      const auto host_best = [&]() -> llama_token {
         Require(published.size() == kVocab &&
                     std::ranges::all_of(published, [](float x) { return std::isfinite(x); }),
                 "nonfinite or missing full head");
         return static_cast<llama_token>(std::max_element(published.begin(), published.end()) -
                                         published.begin());
       };
+      const auto best = [&]() -> llama_token { return backend_sampling ? sampled : host_best(); };
       const auto decode = [&](std::span<const llama_token> tokens, bool head) {
         batch.value.n_tokens = static_cast<int>(tokens.size());
         for (int i = 0; i < batch.value.n_tokens; ++i) {
@@ -122,12 +143,28 @@ int main(int argc, char** argv) {
           batch.value.seq_id[i][0] = 0;
           batch.value.logits[i] = head && i == batch.value.n_tokens - 1;
         }
+        if (backend_sampling)
+          for (auto token : tokens) llama_sampler_accept(sampler.get(), token);
         Require(llama_decode(ctx.get(), batch.value) == 0, "decode failed");
-        if (head) {
+        if (head && backend_sampling) {
+          sampled = llama_get_sampled_token_ith(ctx.get(), -1);
+          Require(sampled >= 0 && sampled < kVocab, "backend greedy token missing or invalid");
+          ++backend_tokens;
+          const auto count = llama_get_sampled_logits_count_ith(ctx.get(), -1);
+          sampled_logits_min = std::min(sampled_logits_min, count);
+          sampled_logits_max = std::max(sampled_logits_max, count);
+          if (teacher || final_head) {
+            Require(count == kVocab, "full sampled logits required for exact verification head");
+            const auto* row = llama_get_sampled_logits_ith(ctx.get(), -1);
+            Require(row != nullptr, "sampled full head missing");
+            published.assign(row, row + kVocab);
+            Require(host_best() == sampled, "backend greedy differs from finite full-head argmax");
+          }
+        } else if (head) {
           const auto* row = llama_get_logits_ith(ctx.get(), -1);
           Require(row != nullptr, "full head missing");
           published.assign(row, row + kVocab);
-          best();
+          host_best();
         } else {
           llama_synchronize(ctx.get());
           published.clear();
@@ -142,7 +179,7 @@ int main(int argc, char** argv) {
         for (int i = 0; i < kWarm; ++i) decode(std::span(ids).subspan(kPrompt + i, 1), true);
       };
       llama_memory_clear(llama_get_memory(ctx.get()), true);
-      if (mode == "cycle") {
+      if (!teacher) {
         prompt();
         warm();
         for (int i = 0; i < 8; ++i) {
@@ -157,7 +194,7 @@ int main(int argc, char** argv) {
       const double prefill = Seconds(Clock::now() - start);
       warm();
       std::ofstream heads;
-      if (mode == "teacher") {
+      if (teacher) {
         heads.open(out / "heads.f32", std::ios::binary | std::ios::noreplace);
         Require(bool(heads), "head output refused");
         heads.write(reinterpret_cast<const char*>(published.data()), kVocab * sizeof(float));
@@ -168,13 +205,14 @@ int main(int argc, char** argv) {
       for (int i = 0; i < kSteps; ++i) {
         const auto next = best();
         chosen[static_cast<std::size_t>(i)] = next;
-        const auto token = mode == "cycle" ? next : ids[kPrompt + kWarm + i];
+        const auto token = !teacher ? next : ids[kPrompt + kWarm + i];
+        final_head = !teacher && i + 1 == kSteps;
         decode(std::span(&token, 1), true);
-        if (mode == "teacher")
+        if (teacher)
           heads.write(reinterpret_cast<const char*>(published.data()), kVocab * sizeof(float));
       }
       const double elapsed = Seconds(Clock::now() - decode_start);
-      if (mode == "teacher") {
+      if (teacher) {
         heads.flush();
         Require(bool(heads), "complete head write failed");
       }
@@ -184,7 +222,10 @@ int main(int argc, char** argv) {
       std::cout << "GEMMA3_STOCK mode=" << mode << " context=4096 slots=1 chunk=128 prompt_rows=256"
                 << " untimed_rows=3 decode_rows=32 past=" << past << " prefill_seconds=" << prefill
                 << " decode_seconds=" << elapsed << " reused=" << after.n_reused - before.n_reused
-                << " tokenized_equal=1 fusion=stock graphs=allowed\n";
+                << " tokenized_equal=1 fusion=stock graphs=allowed backend_tokens="
+                << backend_tokens << " sampled_logits_min=" << sampled_logits_min
+                << " sampled_logits_max=" << sampled_logits_max << " final_head_paid=" << !teacher
+                << '\n';
     }
     llama_backend_free();
     std::cout << "GEMMA3_STOCK_RETIRED\n";

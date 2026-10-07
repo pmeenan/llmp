@@ -174,7 +174,7 @@ std::expected<void, std::string> BindGemma3Weights(const Gemma3Model& m, kg::Gem
   for (const auto& root : declared)
     if (root.required && !root.reached)
       return Error("Gemma3 required weight/cache/input leaf is detached from its consumers");
-  for (const auto* output : {g.hidden, g.logits}) {
+  for (const auto* output : {g.hidden, g.logits, g.greedy}) {
     if (output == nullptr) continue;
     const auto node = std::ranges::lower_bound(consumers, output, less, &Node::tensor);
     if (node == consumers.end() || node->tensor != output)
@@ -274,6 +274,7 @@ std::expected<std::unique_ptr<Gemma3Planned>, std::string> PlanGemma3Chunk(
   if (auto bound = BindGemma3Weights(m, g); !bound) return std::unexpected(bound.error());
   std::vector<ggml_tensor*> kept;
   if (g.logits != nullptr) kept.push_back(g.logits);
+  if (g.greedy != nullptr) kept.push_back(g.greedy);
   if (g.hidden != nullptr) kept.push_back(g.hidden);
   for (const auto& name : keep) {
     auto* t = g.Named(name);

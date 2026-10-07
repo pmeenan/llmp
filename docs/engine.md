@@ -253,7 +253,8 @@ What a new family writes, and nothing else:
   slots' `Spill` and `Restore`, with Setup, Register and Bind as above and
   the family's steps. Gemma3's bounded runner also composes this skeleton,
   with independent slot roots, paid host masks, separate head-row capacity,
-  state-only prefill and exact Clear/restore controls. The DeepSeek and Qwen3.8
+  state-only prefill, explicit kept device-argmax publication and exact
+  Clear/restore controls. The DeepSeek and Qwen3.8
   runners are the worked examples: DeepSeek with a host table, a chained draft-and-verify job and
   a snapshot of every written range; Qwen3.8 with rows read on demand and
   gathered between the inputs and the plan, a commit kernel, and two

@@ -73,8 +73,13 @@ descriptor graph/plan foundation passes 13 focused CPU/no-launch controls.
 The approved source has a [deep-verified prepared artifact](experiments/gemma3-execution/README.md)
 and seven focused import controls. Its shared native runner passes a bounded
 C1 own control with exact eager/graph heads, Clear and initialized-state restore.
-The first stock screen retains one positive-margin greedy difference; quality,
-performance, longer contexts, batching and serving qualification remain open. It is not an execution support entry.
+The primitive stock screen retains one positive-margin greedy difference as
+history; explicit checked norm chains then reproduce all 33 bounded stock
+heads exactly. The full-head C1 cycle is 2.47% slower than stock. Explicit
+device greedy preserves 32 choices, final heads and initialized state; a short
+matched cycle is 2.46% slower than stock backend greedy. Broader quality,
+performance, longer contexts, batching and serving qualification remain open.
+It is not an execution support entry.
 
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
 bounded independent-slot state and segmented host-input descriptions in

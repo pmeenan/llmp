@@ -103,14 +103,15 @@ Status Gemma3Runner::Setup() {
           auto input = md::Gemma3Chunk(profile_, layout_, segments, true);
           auto input_bytes = md::Gemma3HostInputBytes(profile_, layout_, segments, true);
           if (!input || !input_bytes) return Error("Gemma3 measuring input contract");
-          for (const auto output : {0U, 1U, 2U}) {
-            const bool all = output == 1, state_only = output == 2;
+          for (const auto output : {0U, 1U, 2U, 3U}) {
+            const bool all = output == 1, state_only = output == 2, greedy = output == 3;
             if (all ? budget != head_rows : budget != o_.max_rows) continue;
             kg::Gemma3ChunkShape shape;
             for (const auto& s : input->segments)
               shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
             shape.output_mode =
                 state_only ? kg::Gemma3OutputMode::kStateOnly : kg::Gemma3OutputMode::kHead;
+            shape.greedy = greedy;
             shape.outputs = state_only ? 0U
                             : all      ? static_cast<std::uint32_t>(input->tokens.size())
                                        : count;
@@ -453,14 +454,20 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
   std::array<md::Gemma3Segment, kMaxRequestSlots> segments{};
   std::array<bool, kMaxRequestSlots> seen{};
   std::uint32_t rows = 0;
+  const bool greedy = work.front().token != nullptr;
+  if (greedy && (mode != kg::Gemma3OutputMode::kHead || all_outputs))
+    return Error("Gemma3 greedy waves publish one frontier token per segment");
   for (std::size_t i = 0; i < work.size(); ++i) {
     const auto& w = work[i];
-    if (w.logits == nullptr || w.slot >= o_.slots || seen[w.slot] || w.tokens.empty() ||
+    if ((w.token != nullptr) != greedy || (w.logits == nullptr) == (w.token == nullptr))
+      return Error("Gemma3 wave outputs must be all rows or all greedy tokens");
+    if (w.slot >= o_.slots || seen[w.slot] || w.tokens.empty() ||
         w.tokens.size() > o_.max_rows - rows || w.n_past != slots_[w.slot]->positions)
       return Error("Gemma3 wave needs distinct slots, bounded rows and exact continuations");
     if (auto r = CheckActive(*slots_[w.slot]); !r) return r;
     for (std::size_t j = 0; j < i; ++j)
-      if (work[j].logits == w.logits) return Error("Gemma3 output vectors must be independent");
+      if (greedy ? work[j].token == w.token : work[j].logits == w.logits)
+        return Error("Gemma3 outputs must be independent");
     rows += static_cast<std::uint32_t>(w.tokens.size());
     seen[w.slot] = true;
     segments[i] = {w.slot, w.n_past, w.tokens};
@@ -482,6 +489,7 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
   kg::Gemma3ChunkShape shape;
   shape.output_mode = mode;
   shape.outputs = outputs;
+  shape.greedy = greedy;
   std::vector<std::int32_t> frontier;
   frontier.reserve(outputs);
   for (const auto& s : input->segments) {
@@ -505,7 +513,12 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
         p.graph.logits->ne[0] != profile_.vocab || p.graph.logits->ne[1] != outputs ||
         p.graph.logits->ne[2] != 1 || p.graph.logits->ne[3] != 1 ||
         !ggml_is_contiguous(p.graph.logits) || ggml_nbytes(p.graph.logits) != output_bytes)) ||
-      (mode == kg::Gemma3OutputMode::kStateOnly && p.graph.logits != nullptr))
+      (mode == kg::Gemma3OutputMode::kStateOnly && p.graph.logits != nullptr) ||
+      (greedy && (p.graph.greedy == nullptr || p.graph.greedy->type != GGML_TYPE_I32 ||
+                  p.graph.greedy->ne[0] != outputs || p.graph.greedy->ne[1] != 1 ||
+                  p.graph.greedy->ne[2] != 1 || p.graph.greedy->ne[3] != 1 ||
+                  !ggml_is_contiguous(p.graph.greedy) ||
+                  ggml_nbytes(p.graph.greedy) != std::uint64_t{outputs} * sizeof(std::int32_t))))
     return Error("Gemma3 planned head publication exceeds its envelope");
   auto source_bytes = Gemma3SourceBytes(p.graph);
   if (!source_bytes || *source_bytes > host_input_bytes_ - *bytes)
@@ -516,8 +529,12 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
   if (!copies) return Error(copies.error());
   bool capture = entry.runs[0].CaptureDue(runs_.graphs());
   if (capture && !plans_.ChargeGraph(entry)) capture = false;
-  const std::array<RunCopy, 1> output{
-      {{Address(logits_), Address(p.graph.logits ? p.graph.logits->data : nullptr), output_bytes}}};
+  std::array<RunCopy, 1> output{};
+  if (greedy)
+    output[0] = {Address(logits_), Address(p.graph.greedy->data),
+                 std::uint64_t{outputs} * sizeof(std::int32_t)};
+  else if (mode == kg::Gemma3OutputMode::kHead)
+    output[0] = {Address(logits_), Address(p.graph.logits->data), output_bytes};
   const auto output_copies = std::span(output).first(mode == kg::Gemma3OutputMode::kHead ? 1U : 0U);
   bool wrote = false, unknown = false;
   Status queued;
@@ -549,18 +566,32 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
     return !posted ? posted : Error("Gemma3 launch context faulted");
   }
   Count(graph_stats_, path);
+  if (greedy)
+    for (std::size_t i = 0; i < work.size(); ++i) {
+      const auto token = static_cast<const std::int32_t*>(logits_)[i];
+      if (token < 0 || std::cmp_greater_equal(token, profile_.vocab)) {
+        for (const auto& w : work) slots_[w.slot]->live.Quarantine();
+        return Error("Gemma3 device choice is outside its vocabulary; state quarantined");
+      }
+    }
   std::size_t at = 0;
-  for (const auto& w : work) {
-    const auto count = mode == kg::Gemma3OutputMode::kStateOnly ? 0U
-                       : all_outputs                            ? w.tokens.size()
-                                                                : 1U;
-    const auto n = count * profile_.vocab;
-    const auto* values = static_cast<const float*>(logits_) + at;
-    if (mode == kg::Gemma3OutputMode::kStateOnly)
-      w.logits->clear();
-    else
-      w.logits->assign(values, values + n);
-    at += n;
+  for (std::size_t i = 0; i < work.size(); ++i) {
+    const auto& w = work[i];
+    if (greedy) {
+      *w.token = static_cast<const std::int32_t*>(logits_)[i];
+      ++greedy_tokens_;
+    } else {
+      const auto count = mode == kg::Gemma3OutputMode::kStateOnly ? 0U
+                         : all_outputs                            ? w.tokens.size()
+                                                                  : 1U;
+      const auto n = count * profile_.vocab;
+      const auto* values = static_cast<const float*>(logits_) + at;
+      if (mode == kg::Gemma3OutputMode::kStateOnly)
+        w.logits->clear();
+      else
+        w.logits->assign(values, values + n);
+      at += n;
+    }
     slots_[w.slot]->positions += static_cast<std::uint32_t>(w.tokens.size());
   }
   return {};
