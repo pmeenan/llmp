@@ -485,8 +485,10 @@ Actual source/binary/receipt bindings, inputs and own/quality/cycle aggregates
 remain external under `gemma3-execution-20261007/c2-build/` and `c2/`.
 At this snapshot, joint prefill, wider/partial/ragged cohorts, context/ring-state
 and serving qualification remained open. The following bounded serving unit
-adds actual unequal-width/ring/departure and product lifecycle controls;
-joint prefill, wider cohorts and sustained qualification remain open.
+adds actual unequal-width/ring/departure and product lifecycle controls. At
+that serving snapshot, joint prefill remained open; the later transfer below
+qualifies bounded compatible chunks. Wider cohorts and sustained gates remain
+open.
 
 ## Bounded serving, unequal widths and wrapped rings
 
@@ -623,5 +625,126 @@ actual source/binary/receipt bindings, official logs and own/quality/cycle
 aggregates remain outside Git under `gemma3-execution-20261007/serving-build/`,
 `serving-model2/`, `serving-http/` and `fair-c1/`. The frozen final source merges
 concurrent Gemma2 changes without altering this unit's executed C++ bytes.
-Remaining gates include compatible joint prefill, wider cohorts, broader
-context/memory/reclaim/swap and sustained quality/performance qualification.
+At that serving snapshot, compatible joint prefill remained open. The later
+screen below qualifies the bounded transfer; wider cohorts, broader
+context/memory/reclaim/swap and sustained quality/performance remain open.
+
+## Compatible joint prefill and common attention reads
+
+The bounded two-slot route now joins compatible plain prefill chunks through
+one shared prepare/dispatch/retire/apply seam. Each owner retains its 128-row
+chunk, independent history, cursor, cache roots and checkpoint layout; the
+explicit total wave limit is 256 rows. Equal chunks of 2–128 rows with the same
+head mode and padded local/global read widths may join. One-row boundaries,
+different final row counts, scoring, checkpoint/reuse units and other families
+keep their scalar paths. The scheduler retains its original prompt/decode
+choice, then settles at most one eligible peer's readiness unit so two cold
+prompts can actually join. Cancellation is checked before that owner's funding;
+a cancellation arriving during peer preparation can leave a safely completed
+prefix. Preparation time is included in the wave duration and apportioned by
+admitted rows for per-session calibration.
+
+Two attention geometry differences explained the first strict failure.
+Combined dense products alone left prefill attention split into two one-stream
+MMA calls, while stock uses one two-stream call. Common-operand controls found
+both plans launch 96 blocks but use 16 versus 32 destination tiles and disable
+versus enable the mask prepass. Their outputs differ despite passing FP64
+controls. Packing real K/V activations and masks for the existing two-stream
+MMA restores both initial model heads exactly.
+
+The remaining differences began at joined decode with actual 512/1024-cell
+cache reads. Stock exposes the maximum padded read width to both streams;
+the previous native equality gate selected independent attention. The repair
+keeps each cache descriptor, initialized footprint and cursor unchanged. Only
+temporary activations pad the shorter K/V prefix with real F16 zero storage,
+and all 32 mask rows receive an invisible tail. The original independent-root
+owner kernel then sees a common read width. Source-free graph-owned fill nodes
+retain the strict undeclared-root check. Mixed-endpoint Setup probes fund these
+additional activations, scratch and source envelopes.
+
+| Unequal-prefix candidate | Exact stock heads | Positive-margin differences / 72 targets | Relative target-loss delta |
+| --- | --- | --- | --- |
+| Combined products, split prefill attention | 0/74 | 3 | −2.6386611% |
+| Packed prefill, split unequal-width decode | 2/74 | 2 | −0.5152126% |
+| Packed prefill and funded common-width decode | 73/74 | 0 | +0.0000000888% |
+
+The first two failed strict gates and their raw evidence remain preserved.
+The final common-operand decode control uses actual 512/1024-cell roots and a
+1024-cell temporary read: columns4, 48 blocks, mask prepass enabled and 399616
+scratch bytes. Packed attention and independent padded owners match byte for
+byte, including eager/captured replay, separate short/long input perturbations,
+poisoned fill destinations and preservation of all original source bytes.
+
+| Prefix positions | Exact stock heads / 74 | Strict greedy differences / 72 | Relative target-loss delta | Mean TV | Max raw logit delta |
+| --- | --- | --- | --- | --- | --- |
+| 256 / 768 | 73 | 0 | +0.0000000888% | 1.03532e−9 | 0.0211544 |
+| 1280 / 1536 | 70 | 0 | −0.0000006274% | 7.66411e−9 | 0.0834565 |
+| 256 / 256 | 74 | 0 | 0 | 0 | 0 |
+
+Each shape retains exact own repeats, device/full-head choices, both initialized
+states, refusal before mutation, Clear, spill/restore, checkpoint advance and
+restore, and partial-departure controls. All 216 scored transitions pass the
+unchanged strict choice/loss screen. The unmatched raw heads above remain
+reported; this is not a claim of complete bitwise equality at every geometry.
+Actual bound-plan selections include 33 packed-prefill and 68 owner-attention
+steps in the unequal own control, excluding Setup and replay. Successful
+prefill groups/rows are counted separately after runner completion.
+
+One short same-geometry RNNR screen pays two 128-row chunks per owner, three
+supplied off-clock scalar warm rows, 32 joined decode steps and final full
+heads. Native mean paid time is 0.51563615 s versus stock 0.5080885 s
+(+1.4854991%, n=2). Prefill means are 0.08887415/0.085028 s and decode means
+0.426762/0.4230605 s. All 64 generated IDs and final heads match exactly across
+arms. These are short runner costs, with stock's normal state-only overlap and
+unmodified full sampled-logit host transfers; they establish no sustained or
+endpoint parity.
+
+The installed Spark A `m35-gemma3-common-owner2` job completes all 28 steps:
+42 focused host cases, the new operand control, four serving GPU cases and
+three shared retirement controls, followed by own/reference gates and the
+single short timing comparison. The prior split/packed strict failures and
+compile-only harness failures remain external. Model data, input records,
+actual binary/source receipts and aggregates live under
+`gemma3-execution-20261007/joint-prefill-model/`, `joint-prefill-packed/` and
+`joint-prefill-common-owner2/`; the common synthetic proof is under
+`joint-prefill-common2/`. The source/artifact, SDK and stock-image pins above are
+unchanged. Final current-parent composition then rebuilds the actual runtime,
+probe and operator binary, passes the new padding/common-prefill controls and
+both legacy cap0/Gemma2 cap50 controls, and repeats the unequal initialized
+own control byte for byte before any HTTP request.
+
+All five HTTP cases pass: actual compatible ring prefill, literal likelihoods
+and bounds, chat/cache/SSE/stops, a queued third request with partial departure,
+and two-slot checkpoint adoption with exact matched cached restart replay.
+The first cleanly drained epoch records 15 successful joined-prefill groups
+and 2410 processed rows, plus 182 joined decode groups/364 units. It selects
+265 packed-prefill attention steps; bound-plan counts remain distinct from
+completed wave counts. Both restart epochs retire normally.
+
+| Cold endpoint | Old seconds | New seconds | New/old latency delta |
+| --- | --- | --- | --- |
+| C1, 1280 prompt tokens + 32 generated | 0.689161111 | 0.687750228 | −0.2047248% |
+| C2, 1280/1536 prompt tokens + 32 generated per owner | 1.233151416 | 1.060144664 | −14.0296439% |
+
+This native old/new/new/old bookend has two paid observations per policy for
+each workload, with exact generated IDs/usage within and across arms. Every warm/paid request
+recomputes the cold literal prompt (zero cached tokens) and publishes full
+score-bearing rows (zero GPU-greedy tokens), with exact likelihood lengths
+and finite values. Both new arms complete 27 joined-prefill groups/6912 rows.
+The boundary is complete cold endpoint latency, not isolated prefill gain or
+stock HTTP parity; the separate runner RNNR above measures the matched
+prefill/decode boundary. All four endpoint processes retire normally.
+
+The final Spark A `m35-gemma3-joint-final` job completes all nine steps with
+no skips. Its runtime SHA-256 is
+`8683588f6c16046b947df565609d5f3f54942e19f7641ed52deec22ccb783daf`;
+actual source/binary/receipt and HTTP aggregates remain external under
+`joint-prefill-composed/` and `joint-prefill-http/`. No full suite was run.
+Wider cohorts, broader context/memory/reclaim/swap and sustained qualification
+remain open.
+
+At this optimization's entry, TensorFold HEAD was rechecked as
+[`041d14a94e951834470fd514ed33e65b8be1059a`](https://github.com/ashhart/TensorFold/blob/041d14a94e951834470fd514ed33e65b8be1059a/README.md).
+Its native Zig recipes document no matching Gemma3 CUDA/GGUF target, so it is
+ineligible for this comparator screen. Earlier pinned observations above
+remain historical.

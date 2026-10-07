@@ -36,6 +36,14 @@ ggml_tensor* Norm(ggml_context* c, const md::Gemma3Profile& p, ggml_tensor* x,
                   ggml_tensor* weight) {
   return ggml_mul(c, ggml_rms_norm(c, x, p.rms_eps), weight);
 }
+ggml_tensor* Filled(ggml_context* c, std::array<std::int64_t, 4> dimensions, float value) {
+  auto* filled = ggml_fill(c, ggml_new_tensor(c, GGML_TYPE_F16, 4, dimensions.data()), value);
+  // Upstream fill clones its shape and writes every output element without
+  // reading src[0]. Keep this graph-owned constant source-free, so no dummy
+  // shape leaf weakens the strict weight/cache/input root contract.
+  filled->src[0] = nullptr;
+  return filled;
+}
 }  // namespace
 
 std::expected<void, KernelFailure> CheckGemma3Graph(const md::Gemma3Profile& p,
@@ -46,6 +54,10 @@ std::expected<void, KernelFailure> CheckGemma3Graph(const md::Gemma3Profile& p,
   if (auto checked = md::CheckGemma3Binding(p, binding); !checked) return Rejected(checked.error());
   if (!state.Representations(p)) return Rejected("invalid Gemma3 state layout");
   const bool state_only = shape.output_mode == Gemma3OutputMode::kStateOnly;
+  const auto limit = o.max_total_rows == 0 ? state.max_rows : o.max_total_rows;
+  if (limit < state.max_rows || limit > md::kGemma3MaxRows ||
+      limit > std::uint64_t{state.max_rows} * md::kGemma3MaxSlots)
+    return Rejected("invalid Gemma3 total wave row bound");
   if (o.owner_decode && (o.first_layer != 0 || o.layer_count != 0 || o.hidden_input || !o.head))
     return Rejected("Gemma3 owner decode requires the complete token-input model");
   if ((shape.output_mode != Gemma3OutputMode::kHead && !state_only) ||
@@ -64,8 +76,8 @@ std::expected<void, KernelFailure> CheckGemma3Graph(const md::Gemma3Profile& p,
   std::uint32_t rows = 0;
   for (const auto& segment : shape.segments) {
     if (segment.slot >= seen.size() || seen[segment.slot] || segment.rows == 0 ||
-        segment.rows > state.max_rows - rows || segment.n_past > state.context ||
-        segment.rows > state.context - segment.n_past)
+        segment.rows > state.max_rows || segment.rows > limit - rows ||
+        segment.n_past > state.context || segment.rows > state.context - segment.n_past)
       return Rejected("empty, repeated or out-of-bounds Gemma3 segment");
     seen[segment.slot] = true;
     rows += segment.rows;
@@ -167,15 +179,29 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
   const bool owner_decode =
       o.owner_decode && shape.output_mode == Gemma3OutputMode::kHead && shape.outputs == 2 &&
       g.segments.size() == 2 && g.segments[0].shape.rows == 1 && g.segments[1].shape.rows == 1 &&
-      g.segments[0].shape.global_n_kv == g.segments[1].shape.global_n_kv &&
-      g.segments[0].shape.local_n_kv == g.segments[1].shape.local_n_kv &&
-      g.segments[0].shape.global_n_kv <= 16384 && g.segments[0].shape.local_n_kv <= 16384;
+      g.segments[0].shape.global_n_kv <= 16384 && g.segments[0].shape.local_n_kv <= 16384 &&
+      g.segments[1].shape.global_n_kv <= 16384 && g.segments[1].shape.local_n_kv <= 16384;
+  const bool packed_prefill = o.packed_prefill && g.segments.size() == 2 &&
+                              g.segments[0].shape.rows > 1 &&
+                              g.segments[0].shape.rows == g.segments[1].shape.rows &&
+                              g.segments[0].shape.global_n_kv == g.segments[1].shape.global_n_kv &&
+                              g.segments[0].shape.local_n_kv == g.segments[1].shape.local_n_kv;
   ggml_tensor* owner_global_mask = nullptr;
   ggml_tensor* owner_local_mask = nullptr;
-  if (owner_decode) {
+  if (owner_decode || packed_prefill) {
     const auto join_mask = [&](ggml_tensor* a, ggml_tensor* b) {
-      return ggml_concat(c, ggml_reshape_4d(c, a, a->ne[0], 32, 1, 1),
-                         ggml_reshape_4d(c, b, b->ne[0], 32, 1, 1), 3);
+      const auto width = std::max(a->ne[0], b->ne[0]);
+      const auto pad = [&](ggml_tensor* mask) {
+        if (mask->ne[0] == width) return mask;
+        // Every padded query row stays -Inf, including the mask pre-pass's
+        // extra rows. The host source retains its actual owner row stride.
+        auto* tail = Filled(c, {width - mask->ne[0], mask->ne[1], 1, 1}, -INFINITY);
+        return ggml_concat(c, mask, tail, 0);
+      };
+      a = pad(a);
+      b = pad(b);
+      return ggml_concat(c, ggml_reshape_4d(c, a, a->ne[0], a->ne[1], 1, 1),
+                         ggml_reshape_4d(c, b, b->ne[0], b->ne[1], 1, 1), 3);
     };
     owner_global_mask =
         named("owner_global_mask", join_mask(g.segments[0].global_mask, g.segments[1].global_mask));
@@ -183,6 +209,24 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
         named("owner_local_mask", join_mask(g.segments[0].local_mask, g.segments[1].local_mask));
     expanded.push_back(owner_global_mask);
     expanded.push_back(owner_local_mask);
+  }
+
+  std::array<std::array<ggml_tensor*, 2>, 2> owner_zero_tails{};
+  if (owner_decode) {
+    for (std::size_t owner = 0; owner < 2; ++owner) {
+      for (std::size_t local = 0; local < 2; ++local) {
+        const auto read = [&](std::size_t index) {
+          return local != 0 ? g.segments[index].shape.local_n_kv
+                            : g.segments[index].shape.global_n_kv;
+        };
+        const auto tail = std::max(read(0), read(1)) - read(owner);
+        if (tail != 0) {
+          auto* zeros = Filled(c, {p.key_dim, p.kv_heads, tail, 1}, 0.0F);
+          owner_zero_tails[owner][local] = zeros;
+          expanded.push_back(zeros);
+        }
+      }
+    }
   }
 
   auto* input = o.hidden_input
@@ -237,12 +281,15 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
       expanded.push_back(ggml_set_rows(c, cache_v, slice(v_rows), indices));
       if (!tail) continue;
       const auto cache_view = [&](ggml_tensor* tensor) {
-        return ggml_permute(c,
-                            ggml_view_3d(c, tensor, d, p.kv_heads, read, std::size_t{d} * 2,
-                                         std::size_t{kv_width} * 2, 0),
-                            0, 2, 1, 3);
+        auto* source = ggml_view_3d(c, tensor, d, p.kv_heads, read, std::size_t{d} * 2,
+                                    std::size_t{kv_width} * 2, 0);
+        if (owner_decode) {
+          auto* zeros = owner_zero_tails[owner][p.local(il) ? 1U : 0U];
+          if (zeros != nullptr) source = ggml_concat(c, source, zeros, 2);
+        }
+        return ggml_permute(c, source, 0, 2, 1, 3);
       };
-      if (owner_decode) {
+      if (owner_decode || packed_prefill) {
         owner_keys[owner] = cache_view(cache_k);
         owner_values[owner] = cache_view(cache_v);
         ++owner;
@@ -258,6 +305,25 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
       named(prefix + std::format("slot.{}.attention", s.slot), attention);
       expanded.push_back(attention);
       joined = joined == nullptr ? attention : ggml_concat(c, joined, attention, 1);
+    }
+    if (packed_prefill && tail) {
+      const auto chunk_rows = g.segments.front().shape.rows;
+      auto* packed_q =
+          ggml_permute(c, ggml_reshape_4d(c, q, d, p.heads, chunk_rows, 2), 0, 2, 1, 3);
+      const auto pack_cache = [&](const std::array<ggml_tensor*, 4>& tensors) {
+        // Copies into a funded contiguous activation, never a fabricated
+        // stride across independent VMM roots. Keep the stock cell-major layout.
+        auto* a = ggml_permute(c, tensors[0], 0, 2, 1, 3);
+        auto* b = ggml_permute(c, tensors[1], 0, 2, 1, 3);
+        return ggml_permute(c, ggml_concat(c, a, b, 3), 0, 2, 1, 3);
+      };
+      auto* mask = p.local(il) ? owner_local_mask : owner_global_mask;
+      auto* attention = ggml_flash_attn_ext(c, packed_q, pack_cache(owner_keys),
+                                            pack_cache(owner_values), mask, 1.0F, 0.0F, 0.0F);
+      ggml_prec_set_acc(attention, GGML_PREC_F32);
+      named(prefix + "packed_prefill_attention", attention);
+      joined = ggml_reshape_2d(c, attention, std::int64_t{d} * p.heads, rows);
+      expanded.push_back(joined);
     }
     if (owner_decode) {
       // Q already contains contiguous scaled/roped rows for both owners.

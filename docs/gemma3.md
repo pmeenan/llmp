@@ -7,20 +7,21 @@
 binding for the approved Gemma 3 4B QAT Q4_0 text checkpoint. Its state/input
 and descriptor graph/plan foundation passes 13 focused CPU/no-launch controls.
 The generic importer supplies the authenticated
-[prepared artifact](experiments/gemma3-execution/README.md), and
-`engine/gemma3_runner.*` now executes it through the shared native skeleton.
-A bounded C1 screen checks finite, byte-identical eager/captured/replayed heads,
-Clear reuse, malformed-input refusal and initialized-state spill/restore.
-There is no serving route or media adapter. This model remains outside the
-supported execution matrix. The primitive stock screen retains one positive-margin
-greedy difference; explicit checked norm chains then match all 33 stock heads
-byte for byte. Explicit device greedy preserves exact choices/state. Allocation-free public
-binding validation narrows the latest short C1 screen to 0.56% slower than
-stock backend greedy. Broader quality, performance, longer contexts and
-batching remain open. An explicit [C2 decode screen](experiments/gemma3-execution/README.md#independent-prefill-c2-decode-screen)
-now checks two independently-prefilled slots: zero strict greedy differences,
-64/66 byte-identical heads and +2.08% paid latency versus stock. Joint prefill,
-wider/ragged cohorts, longer context and serving remain unqualified.
+[prepared artifact](experiments/gemma3-execution/README.md), and the shared
+native runner executes it through a [bounded ordinary serving route](#bounded-ordinary-serving):
+context<=4096, per-owner rows<=128 and at most two slots, with a separately
+funded 256-row compatible-prefill wave. Chat/literal completions, likelihoods,
+device greedy, initialized-state checkpoint/restore and matched cached restart
+replay pass focused controls. There is no media adapter.
+
+The [compatible-prefill screen](experiments/gemma3-execution/README.md#compatible-joint-prefill-and-common-attention-reads)
+passes all 216 strict target transitions over short, unequal-prefix and wrapped
+ring inputs. Heads are 74/74, 73/74 and 70/74 byte-identical respectively;
+remaining raw differences are reported. A short matched C2 cycle remains
+1.49% above stock, while a separate cold native endpoint bookend improves C2
+latency 14.03% with exact generated IDs/usage. These bounded results establish
+no universal parity. Wider cohorts, broader context/memory/swap and sustained
+qualification remain open.
 
 ## Actual checkpoint contract
 
@@ -194,8 +195,9 @@ prompt rows, three supplied scalar warm rows and 32 teacher-forced rows.
 It emits 33 full vocabulary heads and 32 pre-step greedy choices; the final
 head has no target. These are representative screen dimensions, not newly
 qualified context or support limits. The later explicit C2 probe executes
-two independently-prefilled slots with joined decode; joint prefill and broader
-batching remain unqualified. The ordinary primitive
+two independently-prefilled slots with joined decode at that snapshot. The
+later compatible-prefill screen below qualifies a separate two-owner geometry;
+broader batching remains open. The ordinary primitive
 policy is explicit; generic norm, quantized FFN, D256 norm/RoPE and width2560
 norm/residual switches are default-off diagnostics,
 with no automatic Gemma4 shape-policy inheritance. Explicit `Work::token`
@@ -220,8 +222,19 @@ Actual two-slot unequal padded widths, wrapped local rings, partial departure,
 Clear/spill/checkpoint restore and kept-conversation adoption pass focused
 state/reference/HTTP controls. Cached scalar and cached joined responses
 repeat exactly across restart; cold/cached and scalar/joined token trajectories
-can differ. The current short runner screens are +0.96% C1 and +2.36% C2
-paid latency versus ordinary stock backend greedy, not parity qualifications.
-Joint prefill, wider cohorts, broader memory/swap and sustained gates remain
-open. The serving GPU fixture currently requires provisioning on Spark B
-before its full models tier can run there.
+can differ. The independently-prefilled short runner screens are +0.96% C1
+and +2.36% C2 paid latency versus ordinary stock backend greedy, not parity qualifications.
+The [compatible-prefill screen](experiments/gemma3-execution/README.md#compatible-joint-prefill-and-common-attention-reads)
+adds equal 2–128-row plain chunks, with a separately funded 256-row wave and
+unchanged 128-row per-owner/checkpoint layout. Real K/V activation packing
+matches stock multirow attention; shorter decode reads receive funded zero
+K/V and invisible mask tails before common-width owner attention. Actual cache
+widths, initialized footprints and cursors remain independent. Unequal, wrapped
+ring and short screens have zero strict differences over 216 targets, with
+73/74, 70/74 and 74/74 exact heads. One matched short C2 cycle is 1.49% above
+stock. Actual joined-prefill HTTP counters and matched cached restart controls
+pass; the cold native C2 endpoint bookend improves 14.03% with exact generated
+IDs/usage. That endpoint boundary is distinct from the runner comparison.
+Wider cohorts, broader memory/swap and sustained gates remain open. The serving
+GPU fixture currently requires provisioning on Spark B before its full models
+tier can run there.

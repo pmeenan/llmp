@@ -99,9 +99,17 @@ now admits context<=4096, rows<=128 and at most two owners. Actual unequal
 widths, wrapped rings, partial departure, HTTP/template/cache/stop/SSE and
 two-slot checkpoint/restart adoption controls pass. Matching cached scalar
 and joined replays remain exact; cold/cached or scalar/joined trajectories
-may differ. Current fair short runner screens are +0.96% C1/+2.36% C2 paid
-latency versus stock, without universal parity. Joint prefill, wider cohorts,
-broader memory/context/swap and sustained qualification remain open.
+may differ. The independently-prefilled short runner screens are +0.96%
+C1/+2.36% C2 paid latency versus stock. The later
+[compatible-prefill screen](experiments/gemma3-execution/README.md#compatible-joint-prefill-and-common-attention-reads)
+qualifies equal 2–128-row plain chunks with a 256-row total wave, real packed
+K/V activations and funded common-width decode padding. Unequal/ring/short
+controls pass all 216 strict target transitions with 73/74, 70/74 and 74/74
+exact heads; one same-geometry short C2 cycle remains 1.49% above stock.
+Actual HTTP joined-prefill/restart controls pass; cold native C2 endpoint
+latency improves 14.03% with exact IDs/usage at a separate measured boundary.
+Wider cohorts, broader memory/context/swap and sustained qualification remain
+open, without universal parity.
 
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
 bounded independent-slot state and segmented host-input descriptions in

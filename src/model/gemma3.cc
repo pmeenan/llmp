@@ -81,9 +81,12 @@ bool LayoutValid(const Gemma3Profile& p, const Gemma3StateLayout& s) {
 std::expected<std::uint64_t, std::string> InputBytes(const Gemma3Profile& p,
                                                      const Gemma3StateLayout& s,
                                                      std::span<const Gemma3Segment> segments,
-                                                     bool masks, std::uint32_t align) {
+                                                     bool masks, std::uint32_t align,
+                                                     std::uint32_t max_total_rows) {
+  const auto limit = max_total_rows == 0 ? s.max_rows : max_total_rows;
   if (!LayoutValid(p, s) || !AlignValid(align) || segments.empty() ||
-      segments.size() > kGemma3MaxSlots) {
+      segments.size() > kGemma3MaxSlots || limit < s.max_rows || limit > kGemma3MaxRows ||
+      limit > std::uint64_t{s.max_rows} * kGemma3MaxSlots) {
     return Refused("invalid Gemma3 layout, alignment or segment count");
   }
   std::array<bool, kGemma3MaxSlots> seen{};
@@ -91,7 +94,7 @@ std::expected<std::uint64_t, std::string> InputBytes(const Gemma3Profile& p,
   for (const auto& seg : segments) {
     if (seg.slot >= kGemma3MaxSlots || seen[seg.slot] || seg.tokens.empty() ||
         seg.n_past > s.context || seg.tokens.size() > s.context - seg.n_past ||
-        seg.tokens.size() > s.max_rows - rows) {
+        seg.tokens.size() > s.max_rows || seg.tokens.size() > limit - rows) {
       return Refused("empty, repeated or out-of-bounds Gemma3 segment");
     }
     seen[seg.slot] = true;
@@ -358,14 +361,15 @@ std::expected<std::vector<StateRange>, std::string> Gemma3UsedState(const Gemma3
 }
 std::expected<std::uint64_t, std::string> Gemma3HostInputBytes(
     const Gemma3Profile& p, const Gemma3StateLayout& s, std::span<const Gemma3Segment> segments,
-    bool masks, std::uint32_t align) {
-  return InputBytes(p, s, segments, masks, align);
+    bool masks, std::uint32_t align, std::uint32_t max_total_rows) {
+  return InputBytes(p, s, segments, masks, align, max_total_rows);
 }
 std::expected<Gemma3ChunkInputs, std::string> Gemma3Chunk(const Gemma3Profile& p,
                                                           const Gemma3StateLayout& s,
                                                           std::span<const Gemma3Segment> segments,
-                                                          bool masks, std::uint32_t align) {
-  const auto bytes = InputBytes(p, s, segments, masks, align);
+                                                          bool masks, std::uint32_t align,
+                                                          std::uint32_t max_total_rows) {
+  const auto bytes = InputBytes(p, s, segments, masks, align, max_total_rows);
   if (!bytes) {
     return std::unexpected(bytes.error());
   }

@@ -279,8 +279,13 @@ What a new family writes, and nothing else:
   state-only prefill, explicit kept device-argmax publication and exact
   Clear/restore controls. Its bounded serving adapter adds completion-aware
   checkpoint coverage, kept-conversation adoption and unchanged held-cohort
-  reuse, with pending-restore refusal and peer protection. The DeepSeek and Qwen3.8
-  runners are the worked examples: DeepSeek with a host table, a chained draft-and-verify job and
+  reuse, with pending-restore refusal and peer protection. Compatible
+  Gemma3 prefill uses the shared prepare/dispatch/retire/apply prompt seam:
+  all participants stay borrowed until completion publication, clean capacity
+  refusals omit only that owner, and failed shared work invalidates unpublished
+  histories. Per-owner rows/checkpoint layouts stay 128 while total wave
+  funding is 256. Other families retain the default scalar seam. The DeepSeek
+  and Qwen3.8 runners are the worked examples: DeepSeek with a host table, a chained draft-and-verify job and
   a snapshot of every written range; Qwen3.8 with rows read on demand and
   gathered between the inputs and the plan, a commit kernel, and two
   variants of a verify's plan.

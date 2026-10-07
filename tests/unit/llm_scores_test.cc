@@ -20,6 +20,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -29,6 +30,7 @@
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "memory/reclaim.h"
+#include "runtime/cohort_schedule.h"
 #include "runtime/serving.h"
 #include "tokenizer/tokenizer.h"
 #include "tokenizer/unicode.h"
@@ -297,6 +299,11 @@ class NativeBranchesFake final : public FakeLlm {
   bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
   bool supports_generation_waves() const override { return true; }
   std::size_t generation_wave_capacity() const override { return wave_capacity_; }
+  std::size_t prefill_wave_capacity() const override { return prefill_waves ? wave_capacity_ : 1; }
+  bool prefill_waves = false;
+  std::function<void()> prefill_funding_hook;
+  std::array<std::uint32_t, kMaxBranches> prefill_funded{};
+  std::vector<std::vector<std::uint32_t>> prefill_dispatches;
   std::optional<std::uint32_t> nonfinite_wave_row;
   std::optional<std::uint32_t> failed_wave_judgement;
   std::optional<std::uint32_t> failed_scalar_judgement;
@@ -341,6 +348,38 @@ class NativeBranchesFake final : public FakeLlm {
   }
 
  protected:
+  bool GenerationCohortUsable() const override {
+    if (!prefill_waves) return true;
+    if (!usable) return false;
+    return std::ranges::all_of(leaves_, [](const auto& leaf) { return leaf->usable; });
+  }
+  rt::Status PreparePrefillStateFor(Branch& branch, std::uint32_t past,
+                                    std::uint32_t rows) override {
+    const auto id = BranchIndex(branch);
+    auto& native = Native(branch);
+    native.capacity_refused = false;
+    std::size_t paid = 0;
+    for (std::size_t i = 0; i < kMaxBranches; ++i)
+      paid += std::max<std::size_t>(prefill_funded[i], native_state(i).target.size());
+    paid -= std::max<std::size_t>(prefill_funded[id], native.target.size());
+    if (paid + past + rows > budget.value_or(SIZE_MAX)) {
+      native.capacity_refused = true;
+      return std::unexpected("fake prefill funding would exceed capacity");
+    }
+    prefill_funded[id] = past + rows;  // backing grew; no KV row was dispatched
+    if (prefill_funding_hook) prefill_funding_hook();
+    return {};
+  }
+  rt::Status RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) override {
+    std::vector<std::uint32_t> owners;
+    for (const auto& unit : prepared) {
+      owners.push_back(BranchIndex(*unit.branch));
+      EXPECT_FALSE(unit.session->NextUnit().has_value());  // still borrowed
+      EXPECT_EQ(unit.branch->history().size(), unit.past);
+    }
+    prefill_dispatches.push_back(std::move(owners));
+    return Llm::RunPreparedPrefillWave(prepared);
+  }
   rt::Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) override {
     if (scalar_units) {
       if (refuse_scalar_dispatch) native_state(*refuse_scalar_dispatch).refuse_capacity = true;
@@ -1832,6 +1871,256 @@ TEST(LlmScores, ResumablePromptCancelsAtACompletePrefixAndCanResume) {
   EXPECT_EQ(model.target, prompt);
   EXPECT_EQ(model.history(), prompt);
   EXPECT_EQ(finished.chunks, 2U);
+}
+
+TEST(LlmScores, PromptWaveReadinessSettlesColdPeerWithoutReplacingDueDecode) {
+  NativeBranchesFake model;
+  model.prefill_waves = true;
+  auto first = model.branch(0), second = model.branch(1);
+  ASSERT_TRUE(first && second);
+  const std::vector<std::int32_t> a(19, 2), b(27, 3);
+  auto x = (*first)->BeginPrompt(a), y = (*second)->BeginPrompt(b);
+  ASSERT_TRUE(x && y);
+  std::array<rt::Llm::PromptSession*, 3> sessions{x->get(), y->get(), nullptr};
+  std::array<rt::ScheduledMember, 3> members{
+      rt::ScheduledMember{.admitted = 1, .remaining = 19},
+      rt::ScheduledMember{.admitted = 2, .remaining = 27},
+      rt::ScheduledMember{
+          .stage = rt::ScheduledMember::Stage::kGeneration, .admitted = 3, .waited = 1}};
+  const auto choose = [&] {
+    const auto choice = rt::NextCohortUnit(members);
+    return rt::Llm::PromptSession::SelectForWave(choice.decode, choice.prompt, sessions);
+  };
+  EXPECT_FALSE(choose());  // a due decoder keeps its original priority
+  members[2].waited = 0;
+  ASSERT_EQ(choose(), 0U);  // the original shortest prompt settles its reuse
+  ASSERT_TRUE((*x)->Advance());
+  ASSERT_EQ((*x)->NextUnit()->phase, rt::Llm::PromptSession::Phase::kChunk);
+  model.prefill_waves = false;
+  EXPECT_EQ(choose(), 0U);  // nonparticipating families retain scalar scheduling
+  model.prefill_waves = true;
+  ASSERT_EQ(choose(), 1U);  // its longer peer is readied before any prompt rows run
+  EXPECT_EQ((*x)->run().end, 0U);
+  ASSERT_TRUE((*y)->Advance());
+  EXPECT_TRUE((*x)->CanJoin(**y));
+  ASSERT_EQ(choose(), 0U);  // the original shortest chunk remains the anchor
+  const std::array<rt::PrefillGoOn, 2> callbacks{};
+  ASSERT_TRUE(model.RunPromptWave(std::span(sessions).first(2), callbacks, true));
+  EXPECT_EQ((*x)->run().end, 8U);
+  EXPECT_EQ((*y)->run().end, 8U);
+  EXPECT_THAT(model.prefill_dispatches.back(), ElementsAre(0, 1));
+  (*x)->Cancel();
+  (*y)->Cancel();
+  ASSERT_TRUE((*x)->Finish());
+  ASSERT_TRUE((*y)->Finish());
+}
+
+TEST(LlmScores, PromptWaveReadinessDoesNotBorrowAScorerOrForeignPeer) {
+  NativeBranchesFake model, foreign;
+  model.prefill_waves = true;
+  auto a = model.branch(0), b = model.branch(1), c = foreign.branch(0);
+  ASSERT_TRUE(a && b && c);
+  const std::vector<std::int32_t> prompt(19, 2);
+  auto x = (*a)->BeginPrompt(prompt);
+  auto y = (*b)->BeginScoringPrompt(prompt, {});
+  auto z = (*c)->BeginPrompt(prompt);
+  ASSERT_TRUE(x && y && z);
+  ASSERT_TRUE((*x)->Advance());
+  std::array<rt::Llm::PromptSession*, 2> sessions{x->get(), y->get()};
+  EXPECT_EQ(rt::Llm::PromptSession::SelectForWave(false, 0, sessions), 0U);
+  sessions[1] = z->get();
+  EXPECT_EQ(rt::Llm::PromptSession::SelectForWave(false, 0, sessions), 0U);
+  (*x)->Cancel();
+  (*y)->Cancel();
+  (*z)->Cancel();
+  ASSERT_TRUE((*x)->Finish());
+  ASSERT_TRUE((*y)->Finish());
+  ASSERT_TRUE((*z)->Finish());
+}
+
+TEST(LlmScores, PromptWaveExcludesDifferentFinalRowCounts) {
+  NativeBranchesFake model;
+  model.prefill_waves = true;
+  auto a = model.branch(0), b = model.branch(1);
+  ASSERT_TRUE(a && b);
+  const std::vector<std::int32_t> short_prompt(3, 2), long_prompt(5, 3);
+  auto x = (*a)->BeginPrompt(short_prompt);
+  auto y = (*b)->BeginPrompt(long_prompt);
+  ASSERT_TRUE(x && y);
+  ASSERT_TRUE((*x)->Advance());
+  std::array<rt::Llm::PromptSession*, 2> sessions{x->get(), y->get()};
+  EXPECT_EQ(rt::Llm::PromptSession::SelectForWave(false, 0, sessions), 0U);
+  ASSERT_TRUE((*y)->Advance());
+  ASSERT_TRUE((*x)->NextUnit()->want_head);
+  ASSERT_TRUE((*y)->NextUnit()->want_head);
+  EXPECT_FALSE((*x)->CanJoin(**y));
+  const std::array<rt::PrefillGoOn, 2> callbacks{};
+  EXPECT_FALSE(model.RunPromptWave(sessions, callbacks, true));
+  EXPECT_TRUE(model.prefill_dispatches.empty());
+  EXPECT_EQ((*x)->run().end, 0U);
+  EXPECT_EQ((*y)->run().end, 0U);
+  (*x)->Cancel();
+  (*y)->Cancel();
+  ASSERT_TRUE((*x)->Finish());
+  ASSERT_TRUE((*y)->Finish());
+}
+
+TEST(LlmScores, OneRowCheckpointPrefillStaysScalarAndSingletonRemainsUsable) {
+  NativeBranchesFake model;
+  model.prefill_waves = true;
+  auto a = model.branch(0), b = model.branch(1);
+  ASSERT_TRUE(a && b);
+  const std::vector<std::int32_t> prompt(19, 2);
+  auto x = (*a)->BeginPrompt(prompt, 1), y = (*b)->BeginPrompt(prompt, 1);
+  ASSERT_TRUE(x && y);
+  ASSERT_TRUE((*x)->Advance());
+  ASSERT_TRUE((*y)->Advance());
+  EXPECT_EQ((*x)->NextUnit()->rows, 1U);
+  EXPECT_FALSE((*x)->NextUnit()->want_head);
+  EXPECT_FALSE((*x)->CanJoin(**y));
+  std::array<rt::Llm::PromptSession*, 1> singleton{x->get()};
+  const std::array<rt::PrefillGoOn, 1> callbacks{};
+  ASSERT_TRUE(model.RunPromptWave(singleton, callbacks, true));
+  EXPECT_EQ((*x)->run().end, 1U);
+  EXPECT_EQ((*x)->NextUnit()->phase, rt::Llm::PromptSession::Phase::kCheckpoint);
+  EXPECT_EQ((*y)->run().end, 0U);
+  (*x)->Cancel();
+  (*y)->Cancel();
+  ASSERT_TRUE((*x)->Finish());
+  ASSERT_TRUE((*y)->Finish());
+}
+
+TEST(LlmScores, CompatiblePromptWavePublishesPeersOnlyAfterSharedCompletion) {
+  NativeBranchesFake model;
+  model.prefill_waves = true;
+  model.prefill_funding_hook = [] { std::this_thread::sleep_for(std::chrono::milliseconds(5)); };
+  auto first = model.branch(0), second = model.branch(1);
+  ASSERT_TRUE(first && second);
+  const std::vector<std::int32_t> a(19, 2), b(19, 3);
+  auto x = (*first)->BeginPrompt(a), y = (*second)->BeginPrompt(b);
+  ASSERT_TRUE(x && y);
+  ASSERT_TRUE((*x)->Advance());
+  ASSERT_TRUE((*y)->Advance());
+  ASSERT_TRUE((*x)->CanJoin(**y));
+  std::array<rt::Llm::PromptSession*, 2> sessions{x->get(), y->get()};
+  const std::array<rt::PrefillGoOn, 2> callbacks{};
+  for (std::uint32_t at : {8U, 16U, 19U}) {
+    ASSERT_TRUE(model.RunPromptWave(sessions, callbacks, true));
+    EXPECT_GE((*x)->run().longest, 0.009);
+    EXPECT_GE((*y)->run().longest, 0.009);
+    EXPECT_EQ((*x)->run().end, at);
+    EXPECT_EQ((*y)->run().end, at);
+    EXPECT_EQ((*first)->history(), model.native_state(0).target);
+    EXPECT_EQ((*second)->history(), model.native_state(1).target);
+    EXPECT_TRUE((*x)->last_unit_result());
+    EXPECT_TRUE((*y)->last_unit_result());
+  }
+  ASSERT_TRUE((*x)->Finish());
+  ASSERT_TRUE((*y)->Finish());
+  EXPECT_EQ((*first)->history(), a);
+  EXPECT_EQ((*second)->history(), b);
+  EXPECT_EQ(model.prefill_dispatches.size(), 3U);
+  for (const auto& owners : model.prefill_dispatches) EXPECT_THAT(owners, ElementsAre(0, 1));
+}
+
+TEST(LlmScores, PromptWaveOmitsCancelledAndCapacityRefusedPeersBeforeDispatch) {
+  for (bool cancelled : {false, true}) {
+    NativeBranchesFake model;
+    model.prefill_waves = true;
+    if (!cancelled) model.budget = 12;
+    auto first = model.branch(0), second = model.branch(1);
+    ASSERT_TRUE(first && second);
+    const std::vector<std::int32_t> prompt(19, 2);
+    auto x = (*first)->BeginPrompt(prompt), y = (*second)->BeginPrompt(prompt);
+    ASSERT_TRUE(x && y);
+    ASSERT_TRUE((*x)->Advance());
+    ASSERT_TRUE((*y)->Advance());
+    std::array<rt::Llm::PromptSession*, 2> sessions{x->get(), y->get()};
+    const std::array<rt::PrefillGoOn, 2> callbacks = {
+        rt::PrefillGoOn{}, [cancelled](std::uint32_t) { return !cancelled; }};
+    ASSERT_TRUE(model.RunPromptWave(sessions, callbacks, true));
+    EXPECT_THAT(model.prefill_dispatches.back(), ElementsAre(0));
+    EXPECT_EQ(model.prefill_funded[0], 8U);
+    EXPECT_EQ((*first)->history(), std::vector<std::int32_t>(8, 2));
+    EXPECT_TRUE((*second)->history().empty());
+    EXPECT_TRUE(model.native_state(1).target.empty());
+    EXPECT_EQ((*y)->refused(), !cancelled);
+    EXPECT_EQ((*y)->done(), cancelled);
+    EXPECT_EQ((*y)->last_unit_result().has_value(), cancelled);
+    if (!cancelled) {
+      model.budget.reset();
+      ASSERT_TRUE((*y)->Advance());  // its unchanged first chunk is retryable
+      EXPECT_EQ((*second)->history(), (*first)->history());
+    }
+    (*x)->Cancel();
+    (*y)->Cancel();
+    ASSERT_TRUE((*x)->Finish());
+    ASSERT_TRUE((*y)->Finish());
+  }
+}
+
+TEST(LlmScores, SharedPromptFailurePublishesNoPeerHistoryAndRequiresFreshClear) {
+  NativeBranchesFake model;
+  model.prefill_waves = true;
+  auto first = model.branch(0), second = model.branch(1);
+  ASSERT_TRUE(first && second);
+  const std::vector<std::int32_t> prompt(19, 2);
+  auto x = (*first)->BeginPrompt(prompt), y = (*second)->BeginPrompt(prompt);
+  ASSERT_TRUE(x && y);
+  ASSERT_TRUE((*x)->Advance());
+  ASSERT_TRUE((*y)->Advance());
+  model.native_state(1).fail_chunk = 1;
+  std::array<rt::Llm::PromptSession*, 2> sessions{x->get(), y->get()};
+  const std::array<rt::PrefillGoOn, 2> callbacks{};
+  EXPECT_FALSE(model.RunPromptWave(sessions, callbacks, true));
+  EXPECT_TRUE((*first)->history().empty());
+  EXPECT_TRUE((*second)->history().empty());
+  EXPECT_EQ(model.native_state(0).target.size(), 8U);  // dispatch completed before peer failed
+  EXPECT_FALSE((*x)->Finish());
+  EXPECT_FALSE((*y)->Finish());
+  model.native_state(1).fail_chunk.reset();
+  auto fresh = (*first)->BeginPrompt(prompt);
+  ASSERT_TRUE(fresh);
+  ASSERT_TRUE((*fresh)->Advance());
+  EXPECT_TRUE(model.native_state(0).target.empty());  // uncommitted native rows cleared
+  (*fresh)->Cancel();
+  ASSERT_TRUE((*fresh)->Finish());
+}
+
+TEST(LlmScores, PromptWaveRefusesMixedModesForeignDuplicatesAndCheckpointUnits) {
+  NativeBranchesFake model, foreign;
+  model.prefill_waves = true;
+  auto a = model.branch(0), b = model.branch(1);
+  ASSERT_TRUE(a && b);
+  auto x = (*a)->BeginPrompt(std::vector<std::int32_t>(7, 2));
+  auto y = (*b)->BeginPrompt(std::vector<std::int32_t>(19, 3), 9);
+  ASSERT_TRUE(x && y);
+  ASSERT_TRUE((*x)->Advance());
+  std::array<rt::Llm::PromptSession*, 2> sessions{x->get(), y->get()};
+  EXPECT_EQ(rt::Llm::PromptSession::SelectForWave(false, 0, sessions), 0U);
+  ASSERT_TRUE((*y)->Advance());
+  const std::array<rt::PrefillGoOn, 2> callbacks{};
+  EXPECT_FALSE((*x)->CanJoin(**y));
+  EXPECT_FALSE(model.RunPromptWave(sessions, callbacks, true));
+  sessions[1] = x->get();
+  EXPECT_FALSE(model.RunPromptWave(sessions, callbacks, true));
+  sessions[1] = nullptr;
+  EXPECT_FALSE(model.RunPromptWave(sessions, callbacks, true));
+  sessions[1] = y->get();
+  EXPECT_FALSE(foreign.RunPromptWave(sessions, callbacks, true));
+  EXPECT_TRUE((*a)->history().empty());
+  EXPECT_TRUE((*b)->history().empty());
+  ASSERT_TRUE((*y)->Advance());
+  ASSERT_TRUE((*y)->Advance());
+  ASSERT_EQ((*y)->NextUnit()->phase, rt::Llm::PromptSession::Phase::kCheckpoint);
+  EXPECT_EQ(rt::Llm::PromptSession::SelectForWave(false, 0, sessions), 0U);
+  EXPECT_EQ(rt::Llm::PromptSession::SelectForWave(false, 1, sessions), 1U);
+  EXPECT_FALSE(model.RunPromptWave(sessions, callbacks, true));
+  EXPECT_TRUE(model.prefill_dispatches.empty());
+  (*x)->Cancel();
+  (*y)->Cancel();
+  ASSERT_TRUE((*x)->Finish());
+  ASSERT_TRUE((*y)->Finish());
 }
 
 TEST(LlmScores, APausedPartialPromptKeepsItsExactSpillPastIdleRetention) {

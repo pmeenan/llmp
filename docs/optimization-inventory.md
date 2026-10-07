@@ -83,16 +83,35 @@ The one-column quantized GeGLU fusion applies to independent prefill/frontiers,
 not the joined two-column decode. The option defaults off internally; the
 [bounded serving recipe](experiments/gemma3-execution/README.md#bounded-serving-unequal-widths-and-wrapped-rings)
 selects it explicitly at context<=4096/rows<=128/two owners, with actual
-unequal-width/ring/departure and checkpoint/adoption/HTTP controls. Unequal
-padded widths retain ordinary segmented attention and pass strict greedy/loss
-screens, without full-head equality. Serving now reuses an unchanged held
+unequal-width/ring/departure and checkpoint/adoption/HTTP controls. At that
+snapshot unequal padded widths retained ordinary segmented attention and
+passed strict greedy/loss screens, without full-head equality. Serving now reuses an unchanged held
 cohort after validation, as DeepSeek/Qwen do; a native HTTP old/new bookend
 improves cached C1/C2 latency 3.62%/3.18% with exact responses/usage (n2).
-Current ordinary state-only-overlap runner screens retain +0.96% C1/+2.36% C2
+Independent-prefill state-only-overlap runner screens retain +0.96% C1/+2.36% C2
 paid latency versus stock; stock's unchanged sampler copies full sampled-logit
-rows. These are distinct boundaries, not universal parity. Joint compatible
-prefill is the next applicable batching transfer; wider cohorts, device masks,
-lookahead, memory/swap and sustained qualification remain open.
+rows. These are distinct boundaries, not universal parity.
+The [compatible-prefill transfer](experiments/gemma3-execution/README.md#compatible-joint-prefill-and-common-attention-reads)
+now joins equal 2–128-row plain chunks through the shared prompt seam, with
+explicit total-wave256/per-owner128 funding and scalar checkpoint/scoring
+fallback. Packed real K/V activations restore stock multirow MMA geometry;
+funded zero K/V and invisible mask tails give unequal decode owners the common
+stock read width while preserving their actual state/source descriptors. All
+216 strict transitions pass; unequal/ring/short heads are 73/74, 70/74 and
+74/74 exact. The short matched C2 cycle remains 1.49% above stock. Actual
+HTTP joined-prefill/restart controls pass; a native cold C2 endpoint bookend
+improves 14.03% with exact IDs/usage. The endpoint and runner comparisons
+measure different boundaries.
+
+Applicable follow-ons are explicit: both Gemma4 profiles currently reject
+unequal reads in `QuadShape` and fall back to independent attention. A transfer
+must validate every original owner width, fund real activation/mask padding
+and retain the equal-width no-copy path; merely widening views is invalid.
+Gemma4 multirow prefill also needs a new transform because the current
+attention transform admits one query and its packed mode requires at least
+four owners. Gemma2 can reuse the shared prompt seam, but its cap50 multirow
+attention needs separate operand/model qualification. Wider cohorts, device
+masks, lookahead, memory/swap and sustained qualification remain open.
 The exact stock Gemma3 graph gathers final attention and residual rows before
 post-norm/FFN, matching this native frontier. Both ordinary bounded Gemma4
 profiles instead retain the full final FFN before frontier publication, matching

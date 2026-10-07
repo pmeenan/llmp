@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "base/sha256.h"
 #include "engine/gemma3_runner.h"
 #include "engine/support.h"
 
@@ -34,8 +35,10 @@ class Gemma3ServingGpu : public ::testing::Test {
                               "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb",
                           .out = "/tmp/jitllm-gemma3-serving-control",
                           .slots = 2,
+                          .max_wave_rows = 256,
                           .max_head_rows = 2,
                           .owner_decode = true,
+                          .packed_prefill = true,
                           .fuse_norms = true,
                           .fuse_quant_glu = true,
                           .fuse_norm_rope = true,
@@ -234,4 +237,124 @@ TEST_F(Gemma3ServingGpu, HeldSelectionPreservesAdmissionAndRefreshesChangedOwner
   });
   ASSERT_TRUE(status) << (status ? "" : status.error());
   ASSERT_TRUE(runner->SelectSlots(both));
+}
+
+TEST_F(Gemma3ServingGpu, JointPrefillFundsTwoFullChunksAndReplaysFreshIndependentInputs) {
+  EXPECT_EQ(runner->CheckpointLayoutId(), "gemma3-4b-f16-kv-device-v1:4096:128:4096:1280");
+  std::array<std::vector<float>, 2> saved_heads[2];
+  std::array<jitllm::base::Sha256Digest, 2> saved_states[2];
+  const auto status = Held([&]() -> en::Status {
+    const auto state_hash =
+        [&](std::uint32_t id) -> std::expected<jitllm::base::Sha256Digest, std::string> {
+      const auto slot = runner->request_slot(id);
+      if (!slot) return en::support::Error(slot.error());
+      std::vector<jitllm::catalog::ExtentId> staging;
+      auto buffer = node.Pinned(1U << 20U, 0, staging);
+      if (!buffer) return en::support::Error(buffer.error());
+      jitllm::base::Sha256 hash;
+      for (const auto& range : (*slot)->state().used_ranges()) {
+        for (std::uint64_t at = 0; at < range.bytes; at += 1U << 20U) {
+          const en::LiveState::Range part{range.region, range.offset + at,
+                                          std::min<std::uint64_t>(1U << 20U, range.bytes - at)};
+          en::LiveState::CopyRetirement retirement = en::LiveState::CopyRetirement::kUnproven;
+          const auto copied = runner->CopyState(id, *buffer, std::span(&part, 1), &retirement);
+          if (retirement == en::LiveState::CopyRetirement::kUnproven) node.KeepPinned(*buffer);
+          if (!copied) {
+            if (retirement == en::LiveState::CopyRetirement::kProven)
+              (void)node.FreePinned(*buffer);
+            return en::support::Error(copied.error());
+          }
+          hash.Update(std::span(static_cast<const std::byte*>(*buffer), part.bytes));
+        }
+      }
+      if (auto released = node.FreePinned(*buffer); !released)
+        return en::support::Error(released.error());
+      return hash.Finish();
+    };
+    for (std::uint32_t pass = 0; pass < 4; ++pass) {
+      for (std::uint32_t id = 0; id < 2; ++id)
+        if (auto cleared = runner->Clear(id); !cleared) return cleared;
+      if (auto selected = runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}); !selected)
+        return selected;
+      std::array<std::vector<std::int32_t>, 2> tokens;
+      for (std::uint32_t id = 0; id < 2; ++id) {
+        tokens[id].resize(128);
+        for (std::size_t row = 0; row < 128; ++row)
+          tokens[id][row] = prompt[(row + id + pass % 2) % prompt.size()];
+      }
+      std::array<std::vector<float>, 2> heads;
+      std::array<en::Gemma3Runner::Work, 2> work{
+          {{0, 0, tokens[0], &heads[0]}, {1, 0, tokens[1], &heads[1]}}};
+      if (auto ran = runner->WavePrefill(work, false); !ran) return ran;
+      EXPECT_TRUE(heads[0].empty());
+      EXPECT_TRUE(heads[1].empty());
+      for (auto& owner : work) owner.n_past = 128;
+      if (auto ran = runner->WavePrefill(work, true); !ran) return ran;
+      for (std::uint32_t past = 256; past < 259; ++past) {
+        for (std::uint32_t id = 0; id < 2; ++id)
+          work[id] = {id, past, std::span(tokens[id]).last(1), &heads[id]};
+        if (auto ran = runner->Wave(work); !ran) return ran;
+      }
+      std::array<jitllm::base::Sha256Digest, 2> states;
+      for (std::uint32_t id = 0; id < 2; ++id) {
+        EXPECT_EQ((*runner->request_slot(id))->completed_positions(), 259U);
+        auto hash = state_hash(id);
+        if (!hash) return en::support::Error(hash.error());
+        states[id] = *hash;
+      }
+      if (pass < 2) {
+        saved_heads[pass] = heads;
+        saved_states[pass] = states;
+      } else {
+        for (std::uint32_t id = 0; id < 2; ++id) Exact(heads[id], saved_heads[pass % 2][id]);
+        EXPECT_EQ(states, saved_states[pass % 2]);
+      }
+      work[0].n_past = work[1].n_past = 259;
+      work[1].logits = &heads[0];
+      EXPECT_FALSE(runner->WavePrefill(work, true));
+      work[1].logits = &heads[1];
+      EXPECT_FALSE(runner->WavePrefill(work, false));  // one-row checkpoint chunks stay scalar
+      work[0].tokens = tokens[0];
+      work[1].tokens = std::span(tokens[1]).first(64);
+      EXPECT_FALSE(runner->WavePrefill(work, true));  // different final row counts
+      const std::vector<std::int32_t> oversized(129, 2);
+      work[0].tokens = oversized;
+      EXPECT_FALSE(runner->WavePrefill(work, true));
+      for (std::uint32_t id = 0; id < 2; ++id) {
+        EXPECT_EQ((*runner->request_slot(id))->completed_positions(), 259U);
+        auto hash = state_hash(id);
+        if (!hash) return en::support::Error(hash.error());
+        EXPECT_EQ(*hash, states[id]);
+      }
+    }
+    EXPECT_NE(saved_states[0], saved_states[1]);
+    // Real initialized prefixes now straddle different padded read buckets.
+    // A failed joint admission must preserve both slots and output rows.
+    const std::vector<std::int32_t> continuation(128, 2);
+    std::array<std::vector<float>, 2> heads;
+    if (auto ran = Single(1, 259, continuation, heads[1]); !ran) return ran;
+    if (auto ran = Single(1, 387, continuation, heads[1]); !ran) return ran;
+    std::array<jitllm::base::Sha256Digest, 2> before;
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      auto hash = state_hash(id);
+      if (!hash) return en::support::Error(hash.error());
+      before[id] = *hash;
+    }
+    const auto head_before = heads;
+    const std::array<en::Gemma3Runner::Work, 2> unequal{
+        {{0, 259, continuation, &heads[0]}, {1, 515, continuation, &heads[1]}}};
+    EXPECT_FALSE(runner->WavePrefill(unequal, true));
+    EXPECT_EQ(heads, head_before);
+    EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 259U);
+    EXPECT_EQ((*runner->request_slot(1))->completed_positions(), 515U);
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      auto hash = state_hash(id);
+      if (!hash) return en::support::Error(hash.error());
+      EXPECT_EQ(*hash, before[id]);
+    }
+    EXPECT_GT(runner->plan_selections().packed_prefill_attention, 0U);
+    EXPECT_GT(runner->graph_stats().replayed, 0U);
+    return {};
+  });
+  ASSERT_TRUE(status) << (status ? "" : status.error());
 }

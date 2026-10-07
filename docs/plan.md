@@ -855,10 +855,17 @@ family" guide, and its long-context scaling work.
       stock. The [bounded serving unit](experiments/gemma3-execution/README.md#bounded-serving-unequal-widths-and-wrapped-rings)
       now admits context 4096/rows 128/C1-C2 with unequal-width/ring/departure,
       exact initialized checkpoint/restore, HTTP and restart adoption controls.
-      Current fair runner screens are +0.96% C1/+2.36% C2; a native HTTP
+      Independent-prefill runner screens are +0.96% C1/+2.36% C2; a native HTTP
       old/new bookend improves C1/C2 by 3.62%/3.18% with exact cached responses.
-      Joint prefill, wider cohorts, broader memory/swap/context and sustained
-      quality/performance remain open. The deferred and dropped
+      The [compatible-prefill unit](experiments/gemma3-execution/README.md#compatible-joint-prefill-and-common-attention-reads)
+      adds plain equal 2–128-row chunks under a separate 256-row wave bound.
+      Real K/V packing and funded common-width decode padding preserve actual
+      per-owner state bounds; unequal/ring/short screens pass all 216 strict
+      transitions, with 73/74, 70/74 and 74/74 exact heads. One matched short
+      C2 cycle is 1.49% above stock. Actual joined-prefill HTTP/restart gates
+      pass; a cold native C2 endpoint bookend improves 14.03% with exact
+      generated IDs/usage at that separate boundary. Wider cohorts, broader
+      memory/swap/context and sustained quality/performance remain open. The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:
       - Bonsai-27B Q1_0 (with its Q4_1 drafter);

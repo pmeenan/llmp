@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Join compatible Gemma3 plain prefill chunks across two owners, with a funded
+  256-row wave and unchanged 128-row per-owner state. Packed prefill attention
+  and real temporary padding for unequal decode reads preserve bounded stock
+  quality, initialized-state restore and independent cache cursors.
+
 - Extend the experimental Gemma2 Q8_0 runner to opt-in two-slot softcap50
   owner decode, with funded attention, wrapped-ring restore/replay and bounded
   stock quality controls. Ordinary attention remains the default; serving and

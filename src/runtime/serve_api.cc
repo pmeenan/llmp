@@ -826,6 +826,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return std::unexpected(valid.error());
     }
     selected_prompt_ = nullptr;
+    selected_prefill_count_ = 0;
     selected_decode_.clear();
     selected_swap_ = server_.resident() != cohort_model_;
     if (selected_swap_) {
@@ -902,12 +903,35 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     if (prompt == nullptr) {
       return std::unexpected("an active chat cohort has no next completed unit");
     }
+    std::array<Llm::PromptSession*, Llm::kMaxBranches> prompt_sessions{};
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+      if (frames[i]->stage == ChatWork::Stage::kPrompt)
+        prompt_sessions[i] = frames[i]->prompt_session.get();
+    }
+    const auto ready = Llm::PromptSession::SelectForWave(
+        choice.decode, choice.prompt, std::span(prompt_sessions).first(frames.size()));
+    base::Check(ready.has_value(), "a selected prompt has no readiness unit");
+    prompt = frames[*ready];
     auto unit = prompt->prompt_session->NextUnit();
     if (!unit) {
       return std::unexpected(unit.error());
     }
     selected_prompt_ = prompt;
+    selected_prefill_[0] = prompt;
+    selected_prefill_count_ = 1;
     double expected = ExpectedSeconds(Phase::kPrefill, unit->rows, prompt->floors);
+    // Keep the scheduler's shortest/aged choice first. Only an already
+    // runnable compatible chunk may share this same completed prompt unit.
+    for (ChatWork* peer : frames) {
+      if (selected_prefill_count_ >= cohort_model_->prefill_wave_capacity()) break;
+      if (peer == prompt || peer->stage != ChatWork::Stage::kPrompt ||
+          !prompt->prompt_session->CanJoin(*peer->prompt_session))
+        continue;
+      const auto other = peer->prompt_session->NextUnit();
+      base::Check(other.has_value(), "a compatible prompt has no declared unit");
+      selected_prefill_[selected_prefill_count_++] = peer;
+      expected += ExpectedSeconds(Phase::kPrefill, other->rows, peer->floors);
+    }
     if (unit->phase != Llm::PromptSession::Phase::kChunk) {
       expected +=
           static_cast<double>(prompt->branch.state_snapshot_bytes()) / kSwapFloorBytesPerSecond;
@@ -983,7 +1007,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       Fail("selecting the native chat cohort: " + selected.error());
       return selected;
     }
+    if (selected_prompt_ != nullptr && selected_prefill_count_ > 1) return AdvancePrefillWave();
     if (selected_prompt_ != nullptr) {
+      selected_prefill_count_ = 0;
       ChatWork& frame = *std::exchange(selected_prompt_, nullptr);
       frame.native_touched = true;
       // The schedule's counters (cohort_schedule.h), as this unit runs; a
@@ -1196,6 +1222,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       cohort_model_ = nullptr;
       cohort_native_touched_ = false;
       selected_prompt_ = nullptr;
+      selected_prefill_count_ = 0;
       selected_decode_.clear();
       if (Llm* hung = std::exchange(hang_reset_, nullptr); hung != nullptr) {
         // The last member of a cohort whose work hung: the model is reset.
@@ -1705,6 +1732,73 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   std::string failure() const override { return failure_; }
 
  private:
+  Status AdvancePrefillWave() {
+    const auto selected = std::span(selected_prefill_).first(selected_prefill_count_);
+    selected_prompt_ = nullptr;
+    selected_prefill_count_ = 0;
+    std::array<Llm::PromptSession*, Llm::kMaxBranches> sessions{};
+    std::array<PrefillGoOn, Llm::kMaxBranches> callbacks{};
+    std::array<std::uint32_t, Llm::kMaxBranches> before{};
+    for (std::size_t i = 0; i < selected.size(); ++i) {
+      ChatWork* frame = selected[i];
+      frame->native_touched = true;
+      sessions[i] = frame->prompt_session.get();
+      before[i] = sessions[i]->run().end;
+      callbacks[i] = [frame](std::uint32_t rows) {
+        return !frame->cancelled && frame->exchange.Next(Phase::kPrefill, rows);
+      };
+    }
+    const auto count = selected.size();
+    if (auto advanced = cohort_model_->RunPromptWave(std::span(sessions).first(count),
+                                                     std::span(callbacks).first(count), true);
+        !advanced) {
+      if (server_.node().TakeHangCancelled()) return HangCohort("a prompt wave");
+      Fail("the native chat prompt wave failed: " + advanced.error());
+      return advanced;
+    }
+    if (server_.node().TakeHangCancelled()) return HangCohort("a prompt wave");
+    // No session is prepared now: native completion and all peer history
+    // publication precede cancellation, retirement or BeginChatGeneration.
+    bool ages = false;
+    std::array<bool, Llm::kMaxBranches> processed{};
+    for (std::size_t i = 0; i < count; ++i) {
+      if (sessions[i]->run().end > before[i]) {
+        selected[i]->passed = 0;
+        processed[selected[i]->slot] = true;
+        ages = true;
+      }
+    }
+    if (ages) {
+      for (ChatWork* other : cohort_) {
+        if (!other || processed[other->slot]) continue;
+        if (other->stage == ChatWork::Stage::kGeneration)
+          ++other->waited;
+        else if (other->stage == ChatWork::Stage::kPrompt)
+          ++other->passed;
+      }
+    }
+    std::array<ChatWork*, Llm::kMaxBranches> refused{};
+    std::size_t refusals = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+      ChatWork& frame = *selected[i];
+      const auto& result = sessions[i]->last_unit_result();
+      if (!result) {
+        const auto error = "the prompt could not be processed: " + result.error();
+        if (sessions[i]->refused()) {
+          frame.refusal = error;
+          refused[refusals++] = &frame;
+        } else {
+          frame.error = Failure(500, error);
+        }
+      } else if (sessions[i]->done()) {
+        if (auto begun = BeginChatGeneration(frame); !begun) return begun;
+      }
+    }
+    if (refusals != 0) WaitForCapacity(std::span(refused).first(refusals));
+    Rebalance();
+    return {};
+  }
+
   std::uint64_t SwapBytes(Llm& model) const {
     if (server_.resident() == &model) {
       return 0;
@@ -2082,6 +2176,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       }
     }
     selected_prompt_ = nullptr;
+    selected_prefill_count_ = 0;
     selected_decode_.clear();
     Say(log_, std::format("hang recovery, rung 2 (reset the model in place): {} failed after its "
                           "hung work was cancelled; its {} requests fail, and {} is reset once "
@@ -2103,6 +2198,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   std::array<ChatWork*, Llm::kMaxBranches> cohort_{};
   Llm* cohort_model_ = nullptr;
   ChatWork* selected_prompt_ = nullptr;
+  std::array<ChatWork*, Llm::kMaxBranches> selected_prefill_{};
+  std::size_t selected_prefill_count_ = 0;
   std::vector<ChatWork*> selected_decode_;
   std::uint64_t admissions_ = 0;
   bool selected_swap_ = false;

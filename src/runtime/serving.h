@@ -729,6 +729,7 @@ class Llm : public Served {
     struct Unit {
       Phase phase = Phase::kReuse;
       std::uint32_t rows = 0;
+      bool want_head = false;
     };
     PromptSession(const PromptSession&) = delete;
     PromptSession& operator=(const PromptSession&) = delete;
@@ -744,6 +745,9 @@ class Llm : public Served {
     // (and by default) every failure ends the session.
     Status Advance(const PrefillGoOn& go_on = {}, bool defer_capacity = false);
     bool refused() const { return refused_; }
+    // Per-owner result of the last shared prompt unit; inspect only after
+    // RunPromptWave returns, before Finish or a new unit.
+    const Status& last_unit_result() const { return unit_result_; }
     // Only between completed units; keeps exactly the processed prefix.
     void Cancel();
     Status Finish();
@@ -754,6 +758,13 @@ class Llm : public Served {
     std::uint32_t remaining_rows() const;
     // Its reuse settled: its first unit ran.
     bool started() const;
+    // Plain chunks only, with the same publication mode. Reuse, checkpoints
+    // and scoring retain their scalar completed-unit path.
+    bool CanJoin(const PromptSession& peer) const;
+    // Keep the schedule's chunk anchor, but first settle one compatible
+    // peer's scalar reuse/checkpoint unit. A due decode is never replaced.
+    static std::optional<std::size_t> SelectForWave(bool decode, std::optional<std::size_t> chosen,
+                                                    std::span<PromptSession* const> sessions);
     const PrefillRun& run() const { return run_; }
     const std::vector<float>& last() const { return last_; }
 
@@ -763,6 +774,9 @@ class Llm : public Served {
                   bool resume, bool scoring,
                   std::function<bool(std::int32_t, std::span<const float>)> on_row);
     void NextPhase();
+    Status PrepareChunk(std::uint32_t rows, bool defer_capacity);
+    Status CompleteChunk(std::uint32_t rows, double wall_seconds, double accounted_seconds,
+                         Status result, bool defer_capacity);
     void Stop();
     Status Fail(std::string error);
     Llm& model_;
@@ -783,12 +797,22 @@ class Llm : public Served {
     bool from_zero_ = false;
     Phase phase_ = Phase::kReuse;
     Status ran_;
+    Status unit_result_;
     bool checkpoint_pending_ = false;
     bool complete_ = false;
     bool finished_ = false;
     bool advancing_ = false;
     bool refused_ = false;
   };
+  // Each callback is checked before funding/dispatch; cancelled or cleanly
+  // capacity-refused owners are omitted without preventing completed peers.
+  Status RunPromptWave(std::span<PromptSession* const> sessions, std::span<const PrefillGoOn> go_on,
+                       bool defer_capacity = false);
+  virtual std::size_t prefill_wave_capacity() const { return 1; }
+  virtual bool CompatiblePrefill(std::uint32_t, std::uint32_t rows, std::uint32_t,
+                                 std::uint32_t peer_rows) const {
+    return rows >= 2 && rows == peer_rows;
+  }
   std::size_t turn_checkpoints() const { return default_branch_.turn_checkpoints(); }
   std::uint64_t turn_checkpoint_bytes() const;
   // One resumable generation on the default conversation. The model,
@@ -1013,6 +1037,19 @@ class Llm : public Served {
   virtual Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
                                     std::uint32_t n_past, bool inject, bool want_head,
                                     std::vector<float>& logits, PrefillHint next = {});
+  struct PreparedPrefill {
+    PromptSession* session = nullptr;
+    Branch* branch = nullptr;
+    std::span<const std::int32_t> all;
+    std::uint32_t past = 0, rows = 0;
+    bool want_head = false;
+    std::vector<float>* logits = nullptr;
+    Status result;
+  };
+  // Fund state before shared dispatch; a clean refusal leaves its completed
+  // prefix usable and does not publish another owner's prepared history.
+  virtual Status PreparePrefillStateFor(Branch&, std::uint32_t, std::uint32_t) { return {}; }
+  virtual Status RunPreparedPrefillWave(std::span<PreparedPrefill> prepared);
   // `prefix_kept`, when given, is set on a failure whose verify was undone
   // (a host judgement failing after the native verify completed): the
   // step's starting prefix still holds, as a wave's failed_prefix_valid.

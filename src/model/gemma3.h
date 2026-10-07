@@ -114,22 +114,26 @@ struct Gemma3ChunkInputs {
   std::vector<std::int32_t> tokens, positions, out_ids;
   std::vector<Gemma3SegmentInputs> segments;
 };
-// Total rows <= max_rows, unique slot IDs <16. Positions/cache cells restart
+// Per-slot rows <= max_rows, unique slot IDs <16. Positions/cache cells restart
 // independently at each segment's n_past; flat output IDs identify its rows.
+// Zero max_total_rows retains the original max_rows total bound. An explicit
+// larger wave bound never enlarges a slot's query/ring/checkpoint layout.
 // Default inputs are O(rows+slots), retaining causal/window descriptors for
 // a future device mask. Reference masks are opt-in and bounded before growth.
 std::expected<Gemma3ChunkInputs, std::string> Gemma3Chunk(const Gemma3Profile& profile,
                                                           const Gemma3StateLayout& state,
                                                           std::span<const Gemma3Segment> segments,
                                                           bool masks = false,
-                                                          std::uint32_t read_align = 256);
+                                                          std::uint32_t read_align = 256,
+                                                          std::uint32_t max_total_rows = 0);
 // Heap buffer bytes, including the segment descriptor array, before growth.
 // This is an envelope, not admission: the future caller must fund it first.
 // Empty-vector reserve/resize allocates exactly on the pinned libstdc++; the
 // builder checks actual capacities against this envelope before returning.
 std::expected<std::uint64_t, std::string> Gemma3HostInputBytes(
     const Gemma3Profile& profile, const Gemma3StateLayout& state,
-    std::span<const Gemma3Segment> segments, bool masks = false, std::uint32_t read_align = 256);
+    std::span<const Gemma3Segment> segments, bool masks = false, std::uint32_t read_align = 256,
+    std::uint32_t max_total_rows = 0);
 // The exact physical rows a completed chunk writes, relative to its slot.
 // This differs from the initialized read footprint and splits wraparound.
 std::expected<std::vector<StateRange>, std::string> Gemma3ChunkWrites(

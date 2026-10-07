@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -300,4 +301,38 @@ TEST(Gemma3StateTest, PublicBindingIdentityIsRecheckedBeforeGraphUse) {
   changed.layers.pop_back();
   EXPECT_FALSE(md::CheckGemma3Binding(p, changed));
 }
+TEST(Gemma3StateTest, ExplicitWaveRowsPreserveEachOwnersRingAndChunkBound) {
+  const auto& p = md::Gemma3_4BQat();
+  auto state = md::Gemma3State(p, 4096, 128);
+  ASSERT_TRUE(state);
+  const auto bytes = state->bytes;
+  const std::vector<std::int32_t> a(128, 2), b(128, 3), oversized(129, 4);
+  std::array<md::Gemma3Segment, 2> segments{{{0, 1279, a}, {1, 1536, b}}};
+  EXPECT_FALSE(md::Gemma3Chunk(p, *state, segments, true));  // legacy total128
+  auto input = md::Gemma3Chunk(p, *state, segments, true, 256, 256);
+  auto funded = md::Gemma3HostInputBytes(p, *state, segments, true, 256, 256);
+  ASSERT_TRUE(input && funded);
+  EXPECT_EQ(input->tokens.size(), 256U);
+  EXPECT_EQ(input->segments[1].first_row, 128U);
+  EXPECT_EQ(input->positions[128], 1536);
+  EXPECT_EQ(state->max_rows, 128U);
+  EXPECT_EQ(state->local_cells, 1280U);
+  EXPECT_EQ(state->bytes, bytes);
+  for (const auto& segment : input->segments) {
+    EXPECT_EQ(segment.rows, 128U);
+    EXPECT_EQ(segment.local_n_kv, 1280U);
+    EXPECT_EQ(segment.local_mask.size(), 128U * 1280U);
+  }
+  for (auto bad : {127U, 129U, 2049U, 4097U}) {
+    EXPECT_FALSE(md::Gemma3Chunk(p, *state, segments, true, 256, bad));
+    EXPECT_FALSE(md::Gemma3HostInputBytes(p, *state, segments, true, 256, bad));
+  }
+  segments[0].tokens = oversized;
+  EXPECT_FALSE(md::Gemma3Chunk(p, *state, segments, true, 256, 256));
+  EXPECT_FALSE(md::Gemma3ChunkWrites(p, *state, 1279, 129));
+  segments[0].tokens = a;
+  segments[1].slot = 0;
+  EXPECT_FALSE(md::Gemma3Chunk(p, *state, segments, true, 256, 256));
+}
+
 }  // namespace

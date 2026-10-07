@@ -46,7 +46,11 @@ Status Gemma3Runner::Setup() {
   if (o_.slots == 0 || o_.slots > kMaxRequestSlots || o_.slots > o_.max_rows ||
       o_.max_rows >= o_.context)
     return Error("Gemma3 runner needs bounded slots/chunks");
+  const auto wave_rows = o_.max_wave_rows == 0 ? o_.max_rows : o_.max_wave_rows;
   const auto head_rows = o_.max_head_rows == 0 ? o_.max_rows : o_.max_head_rows;
+  if (wave_rows < o_.max_rows || wave_rows > md::kGemma3MaxRows ||
+      wave_rows > std::uint64_t{o_.max_rows} * o_.slots)
+    return Error("Gemma3 total wave rows exceed their bounded per-slot envelope");
   if (head_rows < o_.slots || head_rows > o_.max_rows)
     return Error("Gemma3 head capacity must cover slots within max_rows");
   auto layout = md::Gemma3State(profile_, o_.context, o_.max_rows);
@@ -72,6 +76,8 @@ Status Gemma3Runner::Setup() {
   model_.state = &layout_;
   model_.options.narrow_final = o_.frontier_head;
   model_.options.owner_decode = o_.owner_decode;
+  model_.options.packed_prefill = o_.packed_prefill;
+  model_.options.max_total_rows = wave_rows;
   std::vector<GroupPlace> places(weights_.artifact().groups().size(), GroupPlace::kDevice);
   if (auto r = weights_.Reserve(node_, places, {}); !r) return r;
   model_.resources.resize(weights_.artifact().resources().size());
@@ -88,46 +94,53 @@ Status Gemma3Runner::Setup() {
   std::vector<std::int32_t> tokens(o_.max_rows, 1);
   // Scalar chunks and equal/ragged waves at both context endpoints. Head
   // publication has its own immutable capacity; products still share columns.
-  for (const auto budget : {o_.max_rows, head_rows}) {
+  for (const auto budget : {wave_rows, head_rows}) {
     for (std::uint32_t count = 1; count <= o_.slots; ++count) {
-      for (const auto rows : {1U, budget / count, budget - count + 1}) {
+      for (const auto rows :
+           {1U, std::min(o_.max_rows, budget / count), std::min(o_.max_rows, budget - count + 1)}) {
         for (const auto past : {0U, o_.context - rows}) {
-          std::vector<md::Gemma3Segment> segments;
-          for (std::uint32_t i = 0; i < count; ++i) {
-            const auto n = rows == budget - count + 1 && i != 0 ? 1U : rows;
-            segments.push_back({i, past == 0 ? 0U : o_.context - n, std::span(tokens).first(n)});
-          }
-          auto input = md::Gemma3Chunk(profile_, layout_, segments, true);
-          auto input_bytes = md::Gemma3HostInputBytes(profile_, layout_, segments, true);
-          if (!input || !input_bytes) return Error("Gemma3 measuring input contract");
-          for (const auto output : {0U, 1U, 2U, 3U}) {
-            const bool all = output == 1, state_only = output == 2, greedy = output == 3;
-            if (all ? budget != head_rows : budget != o_.max_rows) continue;
-            kg::Gemma3ChunkShape shape;
-            for (const auto& s : input->segments)
-              shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
-            shape.output_mode =
-                state_only ? kg::Gemma3OutputMode::kStateOnly : kg::Gemma3OutputMode::kHead;
-            shape.greedy = greedy;
-            shape.outputs = state_only ? 0U
-                            : all      ? static_cast<std::uint32_t>(input->tokens.size())
-                                       : count;
-            auto p = PlanGemma3Chunk(model_, shape, Choices(**measuring), 0, 0);
-            if (!p) return Error(std::format("measuring Gemma3: {}", p.error()));
-            auto needed = kg::PlanScratch(**measuring, (*p)->plan);
-            if (!needed) return Error(needed.error().detail);
-            activation = std::max(activation, (*p)->placement.extent);
-            scratch = std::max(scratch, *needed);
-            staging = std::max(staging, (*p)->inputs_bytes);
-            auto source_bytes = Gemma3SourceBytes((*p)->graph);
-            if (!source_bytes) return Error(source_bytes.error());
-            host = std::max(host, *input_bytes + *source_bytes);
-            plan_floor_bytes_ = std::max(plan_floor_bytes_, PlannedHostBytes(**p));
+          for (const bool mixed : {false, true}) {
+            if (mixed && (count != 2 || past != 0 || !o_.owner_decode)) continue;
+            std::vector<md::Gemma3Segment> segments;
+            for (std::uint32_t i = 0; i < count; ++i) {
+              const auto n = rows == budget - count + 1 && i != 0 ? 1U : rows;
+              segments.push_back({i, (past == 0 && (!mixed || i == 0)) ? 0U : o_.context - n,
+                                  std::span(tokens).first(n)});
+            }
+            if (rows * count > budget && rows != budget - count + 1) continue;
+            auto input = md::Gemma3Chunk(profile_, layout_, segments, true, 256, wave_rows);
+            auto input_bytes =
+                md::Gemma3HostInputBytes(profile_, layout_, segments, true, 256, wave_rows);
+            if (!input || !input_bytes) return Error("Gemma3 measuring input contract");
+            for (const auto output : {0U, 1U, 2U, 3U}) {
+              const bool all = output == 1, state_only = output == 2, greedy = output == 3;
+              if (all ? budget != head_rows : budget != wave_rows) continue;
+              kg::Gemma3ChunkShape shape;
+              for (const auto& s : input->segments)
+                shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
+              shape.output_mode =
+                  state_only ? kg::Gemma3OutputMode::kStateOnly : kg::Gemma3OutputMode::kHead;
+              shape.greedy = greedy;
+              shape.outputs = state_only ? 0U
+                              : all      ? static_cast<std::uint32_t>(input->tokens.size())
+                                         : count;
+              auto p = PlanGemma3Chunk(model_, shape, Choices(**measuring), 0, 0);
+              if (!p) return Error(std::format("measuring Gemma3: {}", p.error()));
+              auto needed = kg::PlanScratch(**measuring, (*p)->plan);
+              if (!needed) return Error(needed.error().detail);
+              activation = std::max(activation, (*p)->placement.extent);
+              scratch = std::max(scratch, *needed);
+              staging = std::max(staging, (*p)->inputs_bytes);
+              auto source_bytes = Gemma3SourceBytes((*p)->graph);
+              if (!source_bytes) return Error(source_bytes.error());
+              host = std::max(host, *input_bytes + *source_bytes);
+              plan_floor_bytes_ = std::max(plan_floor_bytes_, PlannedHostBytes(**p));
+            }
           }
         }
       }
     }
-    if (head_rows == o_.max_rows) break;
+    if (head_rows == wave_rows) break;
   }
   activation_bytes_ = Round(activation + activation / 4, kPagedExtent);
   scratch_bytes_ = Round(scratch + scratch / 4 + (1U << 20U), kPagedExtent);
@@ -587,6 +600,10 @@ std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::Planned(
     plan_selections_.norm_rope += selected.implementation == kg::kGemmaNormRopeName;
     plan_selections_.norm_add += selected.implementation == kg::kGemmaNormAddName;
     plan_selections_.owner_attention += selected.implementation == kg::kFlashAttnOwnersName;
+    for (const auto* node : selected.nodes)
+      plan_selections_.packed_prefill_attention +=
+          selected.implementation == kg::kFlashAttnMmaGqa2Name &&
+          std::string_view(ggml_get_name(node)).ends_with("packed_prefill_attention");
   }
   const auto bytes = PlannedHostBytes(**p), nodes = PlannedNodes(**p);
   return &plans_.Add(shape, std::move(*p), bytes, nodes,
@@ -601,6 +618,20 @@ Status Gemma3Runner::Wave(std::span<const Work> work, bool all_outputs) {
   return WaveWithMode(work, all_outputs, kg::Gemma3OutputMode::kHead);
 }
 Status Gemma3Runner::WavePrefill(std::span<const Work> work, bool want_head) {
+  if (o_.packed_prefill && work.size() > 1) {
+    if (work.size() != 2 || work[0].tokens.size() < 2 ||
+        work[0].tokens.size() != work[1].tokens.size())
+      return Error("Gemma3 packed prefill needs two equal multirow chunks");
+    const auto read = [&](const Work& unit, std::uint32_t capacity) {
+      if (unit.n_past > layout_.context || unit.tokens.size() > layout_.context - unit.n_past)
+        return std::uint64_t{0};
+      return std::min<std::uint64_t>(
+          capacity, (std::uint64_t{unit.n_past} + unit.tokens.size() + 255U) / 256U * 256U);
+    };
+    for (const auto capacity : {layout_.global_cells, layout_.local_cells})
+      if (read(work[0], capacity) == 0 || read(work[0], capacity) != read(work[1], capacity))
+        return Error("Gemma3 packed prefill needs equal initialized read widths");
+  }
   return WaveWithMode(work, false,
                       want_head ? kg::Gemma3OutputMode::kHead : kg::Gemma3OutputMode::kStateOnly);
 }
@@ -612,6 +643,7 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
   std::array<md::Gemma3Segment, kMaxRequestSlots> segments{};
   std::array<bool, kMaxRequestSlots> seen{};
   std::uint32_t rows = 0;
+  const auto wave_rows = o_.max_wave_rows == 0 ? o_.max_rows : o_.max_wave_rows;
   const bool greedy = work.front().token != nullptr;
   if (greedy && (mode != kg::Gemma3OutputMode::kHead || all_outputs))
     return Error("Gemma3 greedy waves publish one frontier token per segment");
@@ -619,8 +651,8 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
     const auto& w = work[i];
     if ((w.token != nullptr) != greedy || (w.logits == nullptr) == (w.token == nullptr))
       return Error("Gemma3 wave outputs must be all rows or all greedy tokens");
-    if (w.slot >= o_.slots || seen[w.slot] || w.tokens.empty() ||
-        w.tokens.size() > o_.max_rows - rows || w.n_past != slots_[w.slot]->positions)
+    if (w.slot >= o_.slots || seen[w.slot] || w.tokens.empty() || w.tokens.size() > o_.max_rows ||
+        w.tokens.size() > wave_rows - rows || w.n_past != slots_[w.slot]->positions)
       return Error("Gemma3 wave needs distinct slots, bounded rows and exact continuations");
     if (slots_[w.slot]->restoring) return Error("Gemma3 restore must complete before execution");
     if (auto r = CheckActive(*slots_[w.slot]); !r) return r;
@@ -637,13 +669,13 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
                                      : static_cast<std::uint32_t>(work.size());
   if (outputs > head_rows) return Error("Gemma3 wave exceeds head publication capacity");
   const auto selected = std::span(segments).first(work.size());
-  auto bytes = md::Gemma3HostInputBytes(profile_, layout_, selected, true);
+  auto bytes = md::Gemma3HostInputBytes(profile_, layout_, selected, true, 256, wave_rows);
   if (!bytes) return Error(bytes.error());
   if (*bytes > host_input_bytes_) return Error("Gemma3 host descriptor envelope exceeded");
   if (auto r = CheckPlaces(); !r) return r;
   // The caller funds host_input_bytes()+plan_floor_bytes() in the node's
   // startup host floor, as for the shared runners. One driver stages a wave.
-  auto input = md::Gemma3Chunk(profile_, layout_, selected, true);
+  auto input = md::Gemma3Chunk(profile_, layout_, selected, true, 256, wave_rows);
   if (!input) return Error(input.error());
   kg::Gemma3ChunkShape shape;
   shape.output_mode = mode;

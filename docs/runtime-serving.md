@@ -84,8 +84,17 @@ context<=4096, prefill chunks<=128 and one or two request slots. Defaults are
 own checked optimized recipe, classic SentencePiece tokenizer and recognized
 Gemma3 template. Chat/literal completions, scoring, device greedy, initialized
 checkpoint/restore and two kept conversations across restart pass focused
-controls. Two-owner decode can join; prefill remains per branch. Broader
-cohorts, joint prefill, memory/swap and sustained qualification remain open.
+controls. Two-owner decode can join.
+[Compatible plain prefill](experiments/gemma3-execution/README.md#compatible-joint-prefill-and-common-attention-reads)
+now joins equal 2–128-row chunks under a separately funded 256-row wave;
+per-owner state/checkpoint rows remain 128. Scoring, one-row or incompatible
+chunks and checkpoint/reuse units remain scalar. Funded temporary K/V and
+mask padding handles unequal decode reads without widening actual cache
+roots or cursors. Actual successful joined groups, ring likelihoods, queued
+third requests and exact matched cached restart replay pass HTTP controls.
+A short cold C2 endpoint bookend improves native latency 14.03% with exact
+generated IDs/usage; this is distinct from the +1.49% matched runner gap to
+stock. Broader cohorts, memory/swap and sustained qualification remain open.
 
 A node names the models it serves in its configuration (D-073's document,
 `schema_version = 2`; the keys are new and compatible):

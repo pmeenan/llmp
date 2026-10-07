@@ -1403,8 +1403,9 @@ class Gemma3 final : public Llm {
   std::string extra() const override {
     const auto& selected = runner_.plan_selections();
     return std::format(
-        R"({{"architecture":"gemma3","recipe":"bounded-4096-two-owner","max_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{}}})",
-        options_.max_rows, joined_groups_, joined_units_, selected.owner_attention,
+        R"({{"architecture":"gemma3","recipe":"bounded-4096-two-owner","max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{}}})",
+        options_.max_rows, options_.max_wave_rows, joined_prefill_groups_, joined_prefill_rows_,
+        joined_groups_, joined_units_, selected.owner_attention, selected.packed_prefill_attention,
         selected.norm_rope, selected.norm_add, runner_.greedy_tokens());
   }
   std::string slots_report() const override { return SlotsReport(settings_); }
@@ -1431,6 +1432,19 @@ class Gemma3 final : public Llm {
   std::span<const std::int32_t> ChatStops() const override { return chat_stops_; }
   bool supports_generation_waves() const override { return true; }
   std::size_t generation_wave_capacity() const override { return options_.slots; }
+  std::size_t prefill_wave_capacity() const override { return options_.slots; }
+  bool CompatiblePrefill(std::uint32_t past, std::uint32_t rows, std::uint32_t peer_past,
+                         std::uint32_t peer_rows) const override {
+    if (rows != peer_rows || rows < 2 || past > context_ || rows > context_ - past ||
+        peer_past > context_ || rows > context_ - peer_past)
+      return false;
+    const auto read = [](std::uint32_t end, std::uint32_t capacity) {
+      return std::min(capacity, (end + 255U) / 256U * 256U);
+    };
+    const auto& layout = runner_.layout();
+    return read(past + rows, layout.global_cells) == read(peer_past + rows, layout.global_cells) &&
+           read(past + rows, layout.local_cells) == read(peer_past + rows, layout.local_cells);
+  }
   std::uint64_t StateBytesThrough(std::uint32_t positions) const override {
     const auto ranges = runner_.CheckpointRanges(positions);
     if (!ranges || !slots_[0]) return 0;
@@ -1525,6 +1539,37 @@ class Gemma3 final : public Llm {
     const engine::Gemma3Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
     (void)next;
     return runner_.WavePrefill(std::span(&work, 1), want_head);
+  }
+  Status PreparePrefillStateFor(Branch& branch, std::uint32_t past, std::uint32_t rows) override {
+    if (past != NativeSlot(branch).completed_positions() || rows == 0 || rows > options_.max_rows ||
+        past > context_ || rows > context_ - past)
+      return Error("Gemma prefill funding needs an owned bounded continuation");
+    return runner_.ReserveStateThrough(BranchIndex(branch), past + rows);
+  }
+  Status RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) override {
+    if (prepared.empty() || prepared.size() > options_.slots)
+      return Error("Gemma prefill exceeds its funded owner envelope");
+    if (prepared.size() == 1) return Llm::RunPreparedPrefillWave(prepared);
+    const bool want_head = prepared.front().want_head;
+    std::array<engine::Gemma3Runner::Work, engine::kMaxRequestSlots> work{};
+    for (std::size_t i = 0; i < prepared.size(); ++i) {
+      const auto& unit = prepared[i];
+      if (!unit.branch || &unit.branch->model() != this || unit.want_head != want_head ||
+          unit.all.size() != std::size_t{unit.past} + unit.rows ||
+          !CompatiblePrefill(prepared.front().past, prepared.front().rows, unit.past, unit.rows))
+        return Error("Gemma prefill needs compatible owned chunks");
+      work[i] = {BranchIndex(*unit.branch), unit.past, unit.all.last(unit.rows), unit.logits};
+    }
+    auto ran = runner_.WavePrefill(std::span(work).first(prepared.size()), want_head);
+    if (ran && prepared.size() > 1) {
+      ++joined_prefill_groups_;
+      for (const auto& unit : prepared) joined_prefill_rows_ += unit.rows;
+    }
+    if (!ran) {
+      for (auto& unit : prepared) unit.result = Error(ran.error());
+      if (!GenerationCohortUsable()) return ran;
+    }
+    return {};
   }
   Status SettleFor(Branch& branch) override {
     return NativeSlot(branch).state_usable() ? Status{} : Error("Gemma state is quarantined");
@@ -1690,8 +1735,10 @@ class Gemma3 final : public Llm {
             .context = settings.context.value,
             .max_rows = settings.prefill_chunk.value,
             .slots = settings.max_slots.value,
+            .max_wave_rows = settings.prefill_chunk.value * settings.max_slots.value,
             .max_head_rows = settings.max_slots.value,
             .owner_decode = true,
+            .packed_prefill = true,
             .fuse_norms = true,
             .fuse_quant_glu = true,
             .fuse_norm_rope = true,
@@ -1706,6 +1753,7 @@ class Gemma3 final : public Llm {
   fs::path store_;
   const model::Gemma3Profile& profile_;
   engine::Gemma3Options options_;
+  std::uint64_t joined_prefill_groups_ = 0, joined_prefill_rows_ = 0;
   std::uint64_t joined_groups_ = 0;
   std::uint64_t joined_units_ = 0;
   engine::Gemma3Runner runner_;
@@ -3887,6 +3935,7 @@ std::expected<Llm::PromptSession::Unit, std::string> Llm::PromptSession::NextUni
         checkpoint_pending_ ? stable_boundary_ : static_cast<std::uint32_t>(tokens_.size());
     base::Check(at < end, "a prompt chunk has no rows");
     unit.rows = scoring_ ? 1 : PrefillRows(end - at, model_.max_rows_);
+    unit.want_head = scoring_ || at + unit.rows == tokens_.size();
   }
   return unit;
 }
@@ -3924,6 +3973,200 @@ Status Llm::PromptSession::Fail(std::string error) {
   complete_ = true;
   ran_ = std::unexpected(std::move(error));
   return ran_;
+}
+
+bool Llm::PromptSession::CanJoin(const PromptSession& peer) const {
+  if (&model_ != &peer.model_ || this == &peer || scoring_ || peer.scoring_ || model_.speculate_)
+    return false;
+  const auto a = NextUnit(), b = peer.NextUnit();
+  return a && b && a->phase == Phase::kChunk && b->phase == Phase::kChunk &&
+         a->want_head == b->want_head &&
+         model_.CompatiblePrefill(static_cast<std::uint32_t>(branch_.history_.size()), a->rows,
+                                  static_cast<std::uint32_t>(peer.branch_.history_.size()),
+                                  b->rows);
+}
+
+std::optional<std::size_t> Llm::PromptSession::SelectForWave(
+    bool decode, std::optional<std::size_t> chosen, std::span<PromptSession* const> sessions) {
+  if (decode || !chosen || *chosen >= sessions.size() || sessions[*chosen] == nullptr)
+    return std::nullopt;
+  const auto& anchor = *sessions[*chosen];
+  const auto unit = anchor.NextUnit();
+  if (!unit || unit->phase != Phase::kChunk || anchor.scoring_ || anchor.model_.speculate_ ||
+      anchor.model_.prefill_wave_capacity() <= 1)
+    return chosen;
+  for (std::size_t i = 0; i < sessions.size(); ++i) {
+    const auto* peer = sessions[i];
+    if (peer == nullptr || peer == &anchor || &peer->model_ != &anchor.model_ || peer->scoring_)
+      continue;
+    const auto next = peer->NextUnit();
+    if (!next || (next->phase != Phase::kReuse && next->phase != Phase::kCheckpoint)) continue;
+    const auto remaining = peer->remaining_rows();
+    if (remaining == 0) continue;
+    const auto at = static_cast<std::uint32_t>(peer->tokens_.size()) - remaining;
+    // Reuse is a hint until its ordinary unit actually settles. A cache
+    // miss may change this geometry; CanJoin checks the resulting chunks.
+    const auto end = next->phase == Phase::kReuse && peer->stable_boundary_ > at
+                         ? peer->stable_boundary_
+                         : static_cast<std::uint32_t>(peer->tokens_.size());
+    const auto rows = PrefillRows(end - at, peer->model_.max_rows_);
+    const bool want_head = at + rows == peer->tokens_.size();
+    if (unit->want_head == want_head &&
+        anchor.model_.CompatiblePrefill(static_cast<std::uint32_t>(anchor.branch_.history_.size()),
+                                        unit->rows, at, rows))
+      return i;
+  }
+  return chosen;
+}
+
+Status Llm::PromptSession::PrepareChunk(std::uint32_t rows, bool defer_capacity) {
+  const auto end = branch_.history_.size() + rows;
+  if (!model_.ReserveTokens(branch_, branch_.history_, branch_.history_charge_, end)) {
+    refused_ = defer_capacity;
+    if (defer_capacity) return Error("native retained history exceeds the execution budget");
+    return Fail("native retained history exceeds the execution budget");
+  }
+  return {};
+}
+
+Status Llm::PromptSession::CompleteChunk(std::uint32_t rows, double wall_seconds,
+                                         double accounted_seconds, Status result,
+                                         bool defer_capacity) {
+  const auto at = static_cast<std::uint32_t>(branch_.history_.size());
+  const auto end = at + rows;
+  if (!result) {
+    std::string error =
+        std::format("{}'s prefill: the chunk at {}: {}", model_.name_, at, result.error());
+    if (defer_capacity && model_.StateRefusedFor(branch_) && model_.StateUsableFor(branch_)) {
+      refused_ = true;
+      return std::unexpected(std::move(error));
+    }
+    return Fail(std::move(error));
+  }
+  branch_.history_.insert(branch_.history_.end(), tokens_.begin() + at, tokens_.begin() + end);
+  branch_.history_used_ = Clock::now();
+  run_.end = end;
+  ++run_.chunks;
+  run_.longest = std::max(run_.longest, wall_seconds);
+  if (!scoring_) model_.calibration_samples_.PrefillChunk(at, rows, accounted_seconds);
+  from_zero_ = from_zero_ || at == 0;
+  chunk_seconds_ += accounted_seconds;
+  if (!scoring_ && from_zero_ && end == tokens_.size())
+    model_.calibration_samples_.Prefill(end, chunk_seconds_);
+  if (scoring_ && end < tokens_.size() && on_row_ && !on_row_(tokens_[end], last_)) Stop();
+  return {};
+}
+
+Status Llm::RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) {
+  for (auto& unit : prepared) {
+    unit.result = RunPrefillChunkFor(*unit.branch, unit.all, unit.past, speculate_, unit.want_head,
+                                     *unit.logits);
+    if (!unit.result && !GenerationCohortUsable()) return unit.result;
+  }
+  return {};
+}
+
+Status Llm::RunPromptWave(std::span<PromptSession* const> sessions,
+                          std::span<const PrefillGoOn> go_on, bool defer_capacity) {
+  if (sessions.empty() || sessions.size() > kMaxBranches ||
+      sessions.size() > prefill_wave_capacity() || go_on.size() != sessions.size())
+    return Error("the prompt cohort exceeds this model's capability");
+  std::array<bool, kMaxBranches> seen{};
+  std::array<PromptSession::Unit, kMaxBranches> units{};
+  for (std::size_t i = 0; i < sessions.size(); ++i) {
+    const auto* session = sessions[i];
+    if (!session || &session->model_ != this || session->done() || session->advancing_ ||
+        session->scoring_ || speculate_)
+      return Error("a prompt cohort contains an inactive, scoring or foreign session");
+    const auto next = session->NextUnit();
+    if (!next || next->phase != PromptSession::Phase::kChunk ||
+        (i != 0 && !sessions.front()->CanJoin(*session)))
+      return Error("a prompt cohort needs compatible plain chunks");
+    const auto id = BranchIndex(session->branch_);
+    if (id >= seen.size() || seen[id]) return Error("a prompt cohort repeats a native branch");
+    seen[id] = true;
+    units[i] = *next;
+  }
+  // Keep every session borrowed through dispatch and all peer publication.
+  // The HTTP driver may Finish/Cancel/BeginGeneration only after this returns.
+  struct CompletedWave {
+    std::span<PromptSession* const> sessions;
+    ~CompletedWave() {
+      for (auto* session : sessions) session->advancing_ = false;
+    }
+  } completed{sessions};
+  for (auto* session : sessions) {
+    session->refused_ = false;
+    session->unit_result_ = {};
+    session->advancing_ = true;
+  }
+  std::array<PreparedPrefill, kMaxBranches> storage{};
+  std::size_t count = 0;
+  const auto fail_cohort = [&](const std::string& error) {
+    for (auto* session : sessions) {
+      session->unit_result_ = Error(error);
+      session->branch_.needs_clear_ = true;
+      (void)session->Fail(error);
+    }
+  };
+  const auto started = Clock::now();
+  for (std::size_t i = 0; i < sessions.size(); ++i) {
+    auto& session = *sessions[i];
+    const auto& next = units[i];
+    CheckIdleGeneration(session.branch_, &session);
+    if (go_on[i] && !go_on[i](next.rows)) {
+      session.Stop();
+      continue;
+    }
+    if (auto funded = session.PrepareChunk(next.rows, defer_capacity); !funded) {
+      session.unit_result_ = std::move(funded);
+      continue;
+    }
+    const auto at = static_cast<std::uint32_t>(session.branch_.history_.size());
+    if (auto state = PreparePrefillStateFor(session.branch_, at, next.rows); !state) {
+      session.unit_result_ =
+          session.CompleteChunk(next.rows, 0, 0, std::move(state), defer_capacity);
+      if (!GenerationCohortUsable()) {
+        const std::string error = "the native prompt cohort became unusable during preparation";
+        fail_cohort(error);
+        return Error(error);
+      }
+      continue;
+    }
+    storage[count++] = {.session = &session,
+                        .branch = &session.branch_,
+                        .all = std::span(session.tokens_).first(at + next.rows),
+                        .past = at,
+                        .rows = next.rows,
+                        .want_head = next.want_head,
+                        .logits = &session.last_,
+                        .result = {}};
+  }
+  auto prepared = std::span(storage).first(count);
+  if (prepared.empty()) return {};
+  std::ranges::sort(prepared, {}, [this](const auto& unit) { return BranchIndex(*unit.branch); });
+  const StateKeeper::Quiet quiet(kept_.keeper);
+  if (auto ran = RunPreparedPrefillWave(prepared); !ran) {
+    fail_cohort(ran.error());
+    return ran;
+  }
+  if (!GenerationCohortUsable()) {
+    const std::string error = "the native prompt cohort became unusable after dispatch";
+    fail_cohort(error);
+    return Error(error);
+  }
+  const double seconds = Seconds(Clock::now() - started);
+  std::uint32_t total_rows = 0;
+  for (const auto& unit : prepared) total_rows += unit.rows;
+  for (auto& unit : prepared) {
+    // Wall latency belongs to every participant; calibration apportions the
+    // shared cost by actual rows rather than charging the same work twice.
+    const double attributed = seconds * unit.rows / total_rows;
+    unit.session->unit_result_ = unit.session->CompleteChunk(
+        unit.rows, seconds, attributed, std::move(unit.result), defer_capacity);
+    if (unit.session->unit_result_) unit.session->NextPhase();
+  }
+  return {};
 }
 
 Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity) {
@@ -3979,13 +4222,7 @@ Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity
   } else {
     const auto at = static_cast<std::uint32_t>(branch_.history_.size());
     const auto end = at + next->rows;
-    if (!model_.ReserveTokens(branch_, branch_.history_, branch_.history_charge_, end)) {
-      refused_ = defer_capacity;
-      if (defer_capacity) {
-        return Error("native retained history exceeds the execution budget");
-      }
-      return Fail("native retained history exceeds the execution budget");
-    }
+    if (auto prepared = PrepareChunk(next->rows, defer_capacity); !prepared) return prepared;
     PrefillHint hint;
     const auto boundary =
         checkpoint_pending_ ? stable_boundary_ : static_cast<std::uint32_t>(tokens_.size());
@@ -3998,36 +4235,11 @@ Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity
     auto chunk =
         model_.RunPrefillChunkFor(branch_, std::span(tokens_).first(end), at, model_.speculate_,
                                   scoring_ || end == tokens_.size(), last_, hint);
-    if (!chunk) {
-      std::string error =
-          std::format("{}'s prefill: the chunk at {}: {}", model_.name_, at, chunk.error());
-      if (defer_capacity && model_.StateRefusedFor(branch_) && model_.StateUsableFor(branch_)) {
-        // Refused before dispatch: the history, `last` and the state are as
-        // the previous unit left them, so the same unit can run again.
-        refused_ = true;
-        return std::unexpected(std::move(error));
-      }
-      return Fail(std::move(error));
-    }
-    branch_.history_.insert(branch_.history_.end(), tokens_.begin() + at, tokens_.begin() + end);
-    branch_.history_used_ = Clock::now();
-    run_.end = end;
-    ++run_.chunks;
     const double seconds = Seconds(Clock::now() - started);
-    run_.longest = std::max(run_.longest, seconds);
-    // Its speed, and a whole prefill's cost a token (calibration.h).
-    if (!scoring_) {
-      model_.calibration_samples_.PrefillChunk(at, next->rows, seconds);
-    }
-    from_zero_ = from_zero_ || at == 0;
-    chunk_seconds_ += seconds;
-    if (!scoring_ && from_zero_ && end == tokens_.size()) {
-      model_.calibration_samples_.Prefill(end, chunk_seconds_);
-    }
-    if (scoring_ && end < tokens_.size() && on_row_ && !on_row_(tokens_[end], last_)) {
-      Stop();
-      return {};
-    }
+    if (auto completed_chunk =
+            CompleteChunk(next->rows, seconds, seconds, std::move(chunk), defer_capacity);
+        !completed_chunk)
+      return completed_chunk;
   }
   NextPhase();
   return {};

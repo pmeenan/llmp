@@ -38,9 +38,14 @@ struct Gemma3ChunkShape {
 struct Gemma3GraphOptions {
   // Explicit diagnostics; ordinary complete chunks use these defaults.
   std::uint32_t first_layer = 0, layer_count = 0;
+  // Separate funded wave columns from each slot's immutable max_rows layout.
+  // Zero retains the original total-row bound.
+  std::uint32_t max_total_rows = 0;
   bool hidden_input = false, head = true, narrow_final = false;
   // Explicit checked H8/C2 one-row owner decode; other chunks stay ordinary.
   bool owner_decode = false;
+  // Explicit equal-row/equal-read C2 prefill with real packed K/V backing.
+  bool packed_prefill = false;
   bool operator==(const Gemma3GraphOptions&) const = default;
 };
 struct Gemma3WeightLeaf {
