@@ -298,6 +298,8 @@ bounded serving for both approved profiles. Both select their checked
 8K/four-slot joined recipes; larger envelopes retain the scalar route.
 Gemma3 4B QAT now has bounded 4K/two-slot ordinary serving with checked
 ring, checkpoint/restore and restart-adoption controls.
+[Gemma2 2B](docs/gemma2.md) has bounded 8K/two-slot serving with checked cap50
+compatible prefill, template refusal and restart replay.
 Broader reference, batching and sustained qualification remain open.
 Next are approved model checkpoints, legacy fixtures, Bonsai, formats with
 EXL3 in focus, the remaining batching/skeleton gaps, media file inputs,

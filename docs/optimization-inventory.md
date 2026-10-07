@@ -109,8 +109,8 @@ must validate every original owner width, fund real activation/mask padding
 and retain the equal-width no-copy path; merely widening views is invalid.
 Gemma4 multirow prefill also needs a new transform because the current
 attention transform admits one query and its packed mode requires at least
-four owners. Gemma2 can reuse the shared prompt seam, but its cap50 multirow
-attention needs separate operand/model qualification. Wider cohorts, device
+four owners. Gemma2 now reuses the shared prompt seam after its distinct cap50
+operand and representative model controls below. Wider cohorts, device
 masks, lookahead, memory/swap and sustained qualification remain open.
 The exact stock Gemma3 graph gathers final attention and residual rows before
 post-norm/FFN, matching this native frontier. Both ordinary bounded Gemma4
@@ -147,8 +147,15 @@ byte-identical; bounded small/ring quality has zero strict differences and
 65/66 plus 66/66 exact heads. Ring restore-next and eager/capture controls
 pass. Short n=2 native paid latency remains 1.49% above original stock, with
 exact natural histories/final heads. Independent prefill, equal-width one-row
-C2 decode only; joint prefill, unequal widths, serving and sustained performance
-remain open.
+C2 decode only in that earlier screen.
+The [Gemma2 serving transfer](experiments/gemma2-serving/README.md) now qualifies
+real F16 packed prefill and common-width decode padding with cap50 physical-
+stream/FP64/fresh capture controls. It preserves per-owner 128/local 4,352 and
+funds total wave 256. All 76 representative 256/768-prefix stock heads are exact;
+five ordinary HTTP cases include actual joined groups, system-role refusal and
+kept restart replay. The short C2 RNNR retains a 5.78% native latency gap (n=2)
+with exact natural histories/final heads. Broader ring/joint-prefill, context,
+cohorts, memory/swap and sustained qualification remain open.
 
 An available implementation is not necessarily selected by a model's plan.
 Transfer a technique only after checking its actual call sites, operand

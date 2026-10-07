@@ -7,8 +7,10 @@
 approved Gemma 2 2B Q8_0 checkpoint. The bounded execution source adds checked
 state/inputs, a native graph/plan and a bounded runner over the shared paged engine.
 The approved source is authenticated and deeply imported; a representative C1
-control reproduces all 33 stock full heads byte for byte. No serving route is
-added. Gemma 2 remains outside the supported execution matrix.
+control reproduces all 33 stock full heads byte for byte. The later
+[bounded serving slice](experiments/gemma2-serving/README.md) adds
+chat/literal routes and compatible two-owner prefill. Broader execution support
+remains unqualified.
 
 ## Actual checkpoint contract
 
@@ -101,10 +103,11 @@ history, eager/capture identity, refusal atomicity, Clear and restore-next
 replay. Stock comparison has zero strict choice differences, with 65/66 small
 and 66/66 ring full heads byte-identical. Its short n=2 paid C2 cycle is 1.49%
 slower than stock with exact natural histories/final heads; no parity claim.
-Owner selection defaults off and unequal widths retain ordinary attention.
+Those diagnostic owner defaults remain off. The later serving recipe explicitly
+selects checked common-width owner padding and packed prefill.
 The C1 control covers final logit softcap30 and width-2304 readable tails;
-compatible joint prefill, departures, broader context/quality, serving,
-sustained and switch qualification remain open.
+the later serving slice adds representative compatible prefill and departures.
+Broader context/quality, sustained and switch qualification remain open.
 The [checkpoint/adoption foundation](experiments/gemma2-checkpoint/README.md)
 adds an internal layout-bound kept-state path: ordered whole extents must fund
 all initialized logical ranges, pending writes block execution and growth, and
@@ -113,13 +116,13 @@ Selected peers remain held while the destination footprint changes. Adoption
 requires an empty idle healthy slot and an identical layout identifier. All
 19 focused checks pass, including actual wrapped-ring snapshot restoration and
 named-file adoption in a fresh node with an exact live-peer next head; actual
-serving and compatible joint prefill remain separate work.
+serving and compatible joint prefill were separate work, checked below.
 The pin's Gemma2 HF-to-GGUF converter already adds one to norm weights;
 approved GGUF import must preserve those norm payloads, with no second +1
 at import or runtime.
 The existing SentencePiece fixture covers tokenizer behavior. The serving
 admission foundation below separately checks the actual chat template and its
-refusals through the existing interpreter; runtime serving remains open.
+refusals through the existing interpreter; the later adapter reuses those assets.
 
 ## Serving admission foundation
 
@@ -127,8 +130,8 @@ The settings reader recognizes the approved Q8_0 artifact with its exact source
 name, length and SHA-256 and rechecks all fixed-profile tensor bindings. Its
 serving envelope is at most 8,192 tokens, 128 rows per owner and two owners;
 the uncalibrated default remains one owner. Speculation and drafters are
-refused. This settings admission does not install a runtime serving factory;
-the adapter, HTTP lifecycle and compatible prefill qualification remain open.
+refused. That foundation installed settings only; the bounded adapter below
+adds actual runtime serving without changing configuration or artifact schemas.
 
 The kept 591-byte template has SHA-256
 `ecd6ae513fe103f0eb62e8ab5bfa8d0fe45c1074fa398b089c93a7e70c15cfd6`.
@@ -145,3 +148,28 @@ controls pass. The final diagnostic-only test rebuild repeats all three template
 controls. No model inference or HTTP serving is claimed by this foundation.
 The new task's latest TensorFold check still resolves to
 `041d14a94e951834470fd514ed33e65b8be1059a`, with no documented Gemma2 CUDA/GGUF path.
+
+## Bounded ordinary serving and compatible prefill
+
+The [serving slice](experiments/gemma2-serving/README.md) installs the approved
+artifact's runtime factory with context<=8192, per-owner rows<=128 and at most
+two owners (default one). Norm/Mul, quantized GeGLU, norm/ADD and true-cap50
+owner attention are explicitly selected; no Q/K norm/RoPE fusion is requested.
+A separately funded 256-row wave joins compatible plain prefill. Real F16 K/V
+concatenation supplies original C2 MMA geometry; temporary F16 zero and invisible
+mask tails supply a common read width for unequal one-row owners. Actual state
+roots, source bounds, per-owner 128/checkpoint identities and ring 4,352 remain
+unchanged. Scoring, one-row/incompatible prefill and reuse/checkpoint units
+retain scalar fallback. Both cap50 operands pass byte-exact physical-stream,
+FP64 and fresh capture controls.
+
+The first 256/768-prefix model screen has all 76 full heads byte-identical to
+stock, with zero strict choices and target-NLL delta. All 45 focused checks and
+five HTTP lifecycle cases pass, including the actual system-role refusal,
+finite likelihoods, cached 16/4/16 replay, SSE/stops, queued peer progress after
+disconnect and two kept conversations adopted/replayed after restart. Actual
+joined counters are observed after drain; client reads may be buffered.
+The short matched C2 RNNR is 5.7824% slower than stock (n=2), with identical
+natural choices/final heads. No performance parity or broader/sustained support
+is claimed; mixed wrapped-ring/joint-prefill, context, memory/swap and wider
+batching gates remain separate.

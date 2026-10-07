@@ -74,9 +74,13 @@ Clear, initialized-state spill/restore and device-greedy own checks pass.
 The opt-in [two-owner decode control](experiments/gemma2-owner2/README.md)
 adds funded cap50 attention and wrapped-ring restore-next replay, with zero
 strict stock choice differences and 65/66 small plus 66/66 ring exact heads.
-Short n=2 paid C2 latency remains 1.49% above stock. Joint prefill, unequal
-widths/departures, broader quality/context, template qualification, serving,
-sustained and model switches remain open. This is not an execution support entry.
+The later [bounded ordinary serving slice](experiments/gemma2-serving/README.md)
+adds compatible prefill and unequal-width one-row decode with preserved cap50,
+per-owner 128/local 4,352 and a separate 256-row wave. Its representative 256/768
+prefixes produce 76/76 exact stock full heads; five HTTP/template/restart cases
+pass with actual joined groups. A short n=2 C2 cycle retains a 5.78% stock latency
+gap. Broader quality/context, mixed ring/joint-prefill, memory/swap, wider cohorts
+and sustained qualification remain open. This is not a full execution support entry.
 
 Gemma 3 4B QAT Q4_0 has a separate checked profile and strict
 GGML tensor binding in `model/gemma3.h`; the [foundation contract](gemma3.md)

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -313,4 +314,150 @@ TEST(Gemma2Plan, StateOnlyAndHiddenDiagnosticSourcesRetainTheirOwnContracts) {
   EXPECT_TRUE(en::Gemma2Sources(*graph, c.input, {}, hidden, *bytes));
   EXPECT_FALSE(en::Gemma2Sources(*graph, c.input, {}, {}, *bytes));
 }
+TEST(Gemma2Plan, PackedPrefillFundsRealCacheCopiesAndTwoSequenceMasks) {
+  Case c;
+  c.state = *md::Gemma2State(c.p, 8192, 128);
+  c.shape = {{{0, 128, 0, 256, 256}, {1, 128, 0, 256, 256}}, 2};
+  const kg::Gemma2GraphOptions options{
+      .max_total_rows = 256, .narrow_final = true, .packed_prefill = true};
+  auto arena = kg::TensorArena::Create(kg::Gemma2GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma2Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+  ASSERT_TRUE(graph);
+  const auto model = Places(c, *graph);
+  auto measured = en::PlanGemma2Chunk(model, c.shape, Choices(), 0, 0);
+  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  auto placed = en::PlanGemma2Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
+                                    (*measured)->placement.extent);
+  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  auto& g = (*placed)->graph;
+  auto* attention = g.Named("blk.0.packed_prefill_attention");
+  ASSERT_NE(attention, nullptr);
+  EXPECT_FLOAT_EQ(std::bit_cast<float>(attention->op_params[2]), 50.0F);
+  EXPECT_EQ(attention->src[0]->ne[1], 128);
+  EXPECT_EQ(attention->src[0]->ne[3], 2);
+  EXPECT_EQ(attention->src[3]->ne[1], 128);
+  EXPECT_EQ(attention->src[3]->ne[3], 2);
+  for (std::size_t i : {1U, 2U}) {
+    const auto* packed = attention->src[i]->view_src;
+    ASSERT_NE(packed, nullptr);
+    EXPECT_EQ(packed->op, GGML_OP_CONCAT);
+    EXPECT_EQ(packed->type, GGML_TYPE_F16);
+    EXPECT_TRUE(ggml_is_contiguous(packed));
+    EXPECT_EQ(ggml_nbytes(packed), 2U * 256U * 4U * 256U * sizeof(ggml_fp16_t));
+    EXPECT_NE(packed->data, g.segments[0].caches[0].first->data);
+    EXPECT_NE(packed->data, g.segments[1].caches[0].first->data);
+    EXPECT_TRUE(kg::CheckConcat(packed));
+  }
+  std::size_t packed_steps = 0;
+  for (const auto& step : (*placed)->plan.steps)
+    if (step.implementation == kg::kFlashAttnMmaGqa2Name) ++packed_steps;
+  EXPECT_EQ(packed_steps, 26U);
+  const std::vector<std::int32_t> tokens(128, 2);
+  const std::array<md::Gemma2Segment, 2> segments{{{0, 0, tokens}, {1, 0, tokens}}};
+  auto input = md::Gemma2Chunk(c.p, c.state, segments, true, 256, 256);
+  ASSERT_TRUE(input);
+  const auto bytes = en::Gemma2SourceBytes(g);
+  ASSERT_TRUE(bytes);
+  const std::array<std::int32_t, 2> frontier{127, 255};
+  EXPECT_TRUE(en::Gemma2Sources(g, *input, frontier, {}, *bytes));
+  EXPECT_FALSE(en::Gemma2Sources(g, *input, frontier, {}, *bytes - 1));
+}
+
+TEST(Gemma2Plan, UnequalDecodePadsActivationsWithoutWideningStateOrHostSources) {
+  Case c;
+  c.state = *md::Gemma2State(c.p, 8192, 128);
+  c.shape = {{{0, 1, 259, 512, 512}, {1, 1, 771, 1024, 1024}}, 2};
+  auto arena = kg::TensorArena::Create(kg::Gemma2GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma2Graph(*arena, c.p, c.binding, c.state, c.shape,
+                                    {.narrow_final = true, .owner_decode = true});
+  ASSERT_TRUE(graph);
+  const auto model = Places(c, *graph);
+  auto measured = en::PlanGemma2Chunk(model, c.shape, Choices(), 0, 0);
+  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  auto placed = en::PlanGemma2Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
+                                    (*measured)->placement.extent);
+  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  auto& g = (*placed)->graph;
+  EXPECT_EQ(g.segments[0].global_mask->ne[0], 512);
+  EXPECT_EQ(g.segments[1].global_mask->ne[0], 1024);
+  auto* attention = g.Named("blk.0.owner_attention");
+  ASSERT_NE(attention, nullptr);
+  auto owners = kg::FlashAttnOwnersFromNode(attention);
+  ASSERT_TRUE(owners);
+  EXPECT_EQ(owners->mask->ne[0], 1024);
+  EXPECT_EQ(owners->mask->ne[1], 32);
+  EXPECT_EQ(owners->k[0]->ne[1], 1024);
+  const auto* short_copy = owners->k[0]->src[0];
+  ASSERT_NE(short_copy, nullptr);
+  EXPECT_EQ(short_copy->op, GGML_OP_CONCAT);
+  EXPECT_EQ(short_copy->src[0]->ne[2], 512);  // actual cache prefix stays bounded
+  EXPECT_EQ(short_copy->src[0]->view_src, g.segments[0].caches[0].first);
+  auto* zero = short_copy->src[1];
+  ASSERT_NE(zero, nullptr);
+  EXPECT_EQ(zero->op, GGML_OP_FILL);
+  EXPECT_EQ(zero->type, GGML_TYPE_F16);
+  EXPECT_TRUE(kg::CheckFill(zero));
+  for (const auto* source : zero->src) EXPECT_EQ(source, nullptr);
+  zero->src[0] = ggml_new_tensor_1d(arena->context(), GGML_TYPE_F16, 1);
+  EXPECT_FALSE(en::BindGemma2Weights(model, g));  // undeclared roots still refused
+  zero->src[0] = nullptr;
+  EXPECT_TRUE(en::BindGemma2Weights(model, g));
+  std::size_t count = 0;
+  for (const auto& step : (*placed)->plan.steps)
+    count += step.implementation == kg::kFlashAttnOwnersName;
+  EXPECT_EQ(count, 26U);
+  const std::array<md::Gemma2Segment, 2> segments{{{0, 259, c.b}, {1, 771, c.b}}};
+  const auto input = md::Gemma2Chunk(c.p, c.state, segments, true);
+  ASSERT_TRUE(input);
+  EXPECT_EQ(input->segments[0].global_n_kv, 512U);
+  const auto bytes = en::Gemma2SourceBytes(g);
+  ASSERT_TRUE(bytes);
+  const std::array<std::int32_t, 2> frontier{0, 1};
+  EXPECT_TRUE(en::Gemma2Sources(g, *input, frontier, {}, *bytes));
+  EXPECT_FALSE(en::Gemma2Sources(g, *input, frontier, {}, *bytes - 1));
+}
+
+TEST(Gemma2Plan, JoinedPrefillFundsTotalRowsWithoutChangingSlotLayout) {
+  Case c;
+  c.state = *md::Gemma2State(c.p, 8192, 128);
+  const std::vector<std::int32_t> tokens(128, 2);
+  const std::array<md::Gemma2Segment, 2> segments{{{3, 4351, tokens}, {1, 4608, tokens}}};
+  auto input = md::Gemma2Chunk(c.p, c.state, segments, true, 256, 256);
+  ASSERT_TRUE(input);
+  c.shape.segments.clear();
+  for (const auto& segment : input->segments)
+    c.shape.segments.push_back(
+        {segment.slot, segment.rows, segment.n_past, segment.global_n_kv, segment.local_n_kv});
+  EXPECT_FALSE(kg::CheckGemma2Graph(c.p, c.binding, c.state, c.shape));
+  const kg::Gemma2GraphOptions options{.max_total_rows = 256, .narrow_final = true};
+  auto arena = kg::TensorArena::Create(kg::Gemma2GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma2Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+  ASSERT_TRUE(graph);
+  EXPECT_EQ(graph->max_rows, 128U);
+  EXPECT_EQ(graph->local_capacity, 4352U);
+  EXPECT_EQ(graph->options.max_total_rows, 256U);
+  const auto model = Places(c, *graph);
+  auto measured = en::PlanGemma2Chunk(model, c.shape, Choices(), 0, 0);
+  ASSERT_TRUE(measured);
+  auto placed = en::PlanGemma2Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
+                                    (*measured)->placement.extent);
+  ASSERT_TRUE(placed);
+  const auto bytes = en::Gemma2SourceBytes((*placed)->graph);
+  ASSERT_TRUE(bytes);
+  const std::array<std::int32_t, 2> frontier{127, 255};
+  EXPECT_FALSE(en::Gemma2Sources((*placed)->graph, *input, frontier, {}, *bytes - 1));
+  EXPECT_TRUE(en::Gemma2Sources((*placed)->graph, *input, frontier, {}, *bytes));
+  auto changed = (*placed)->graph.options.max_total_rows;
+  (*placed)->graph.options.max_total_rows = 128;
+  EXPECT_FALSE(en::Gemma2SourceBytes((*placed)->graph));
+  (*placed)->graph.options.max_total_rows = changed;
+  EXPECT_TRUE(en::Gemma2SourceBytes((*placed)->graph));
+  auto invalid = c.shape;
+  invalid.segments[0].rows = 129;
+  EXPECT_FALSE(kg::CheckGemma2Graph(c.p, c.binding, c.state, invalid, options));
+}
+
 }  // namespace

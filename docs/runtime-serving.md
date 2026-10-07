@@ -96,6 +96,20 @@ A short cold C2 endpoint bookend improves native latency 14.03% with exact
 generated IDs/usage; this is distinct from the +1.49% matched runner gap to
 stock. Broader cohorts, memory/swap and sustained qualification remain open.
 
+The approved Gemma2 2B Q8_0 artifact has a
+[bounded ordinary route](experiments/gemma2-serving/README.md): context<=8192,
+per-owner chunks<=128 and one or two slots (default 8192/128/1). It reuses the
+shared prompt-wave driver with a separately funded 256-row wave, real F16 cache
+packing and temporary unequal-width decode padding. The existing native Jinja
+fallback interprets its actual template, which refuses system messages;
+end-of-turn 107 and EOS 1 are distinct stops. Drafters, speculation, generated
+tools and thinking are refused. Five HTTP cases pass scoring/repeats,
+chat/SSE/stops, refusal recovery, queued departed-peer progress and two kept
+conversations replayed exactly after restart, with actual joined groups.
+Its first 256/768-prefix reference screen has 76/76 exact complete heads;
+short matched C2 latency remains 5.78% above stock (n=2). Broader context,
+mixed wrapped-ring/joint-prefill, memory/swap and sustained qualification remain open.
+
 A node names the models it serves in its configuration (D-073's document,
 `schema_version = 2`; the keys are new and compatible):
 

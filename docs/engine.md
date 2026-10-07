@@ -187,8 +187,14 @@ n=2 cycle retains a 1.49% stock latency gap. Its internal
 [checkpoint/adoption foundation](experiments/gemma2-checkpoint/README.md)
 checks complete initialized footprints, copy retirement and kept layout IDs,
 while protecting held peers and refusing incomplete-restore work. Its 19 focused
-controls include exact wrapped-ring fresh-node adoption and peer continuation. Serving,
-joint prefill and broader batching remain open.
+controls include exact wrapped-ring fresh-node adoption and peer continuation.
+The [bounded serving transfer](experiments/gemma2-serving/README.md) now adds
+compatible plain prefill under a separate 256-row wave and common-width decode
+padding. Real F16 copies preserve actual state/source bounds and cap50; per-owner
+rows 128 and local ring 4,352 remain unchanged. The representative 256/768-prefix
+comparison has all 76 stock heads exact, and five HTTP lifecycle/restart cases
+pass with actual joined groups. Its short native C2 cycle is 5.78% slower than
+stock; broader context/batching, memory/swap and sustained qualification remain open.
 
 The [Gemma 4 foundation](gemma4.md) supplies checked profiles, strict tensor
 bindings, bounded independent-slot KV layouts and segmented host inputs.

@@ -20,8 +20,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 - Extend the experimental Gemma2 Q8_0 runner to opt-in two-slot softcap50
   owner decode, with funded attention, wrapped-ring restore/replay and bounded
-  stock quality controls. Ordinary attention remains the default; serving and
-  compatible joint prefill remain open.
+  stock quality controls. Explicit diagnostic defaults retain ordinary attention.
 
 - Gemma4 serving reuses an unchanged cohort's execution closure within a held
   request, avoiding a redundant scheduler call between completed units. Changed
@@ -29,7 +28,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 - Add an experimental bounded Gemma2 2B Q8_0 native runner with authenticated
   import, checked state and graph replay. Its representative one-slot control
-  matches stock full heads exactly; serving and batching remain open.
+  matches stock full heads exactly; broader model qualification remains open.
 
 - Less host time between decode steps, for every model. A request's steps
   run on the driver thread, which waits on each step's fence itself, so no
@@ -63,6 +62,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   quality and performance qualification uses the new release separately.
 
 ### Added
+
+- Serve the approved Gemma2 2B Q8_0 artifact through bounded chat/literal
+  completions at context<=8192 and up to two owners. Compatible prefill and
+  common-width decode preserve cap50 and independent state; actual system-role
+  refusal, scoring, stops, peer progress and kept restart replay are checked.
 
 - Serve the approved Gemma3 4B QAT artifact through ordinary chat and literal
   completions at context<=4096 and up to two owners, with checked optimized

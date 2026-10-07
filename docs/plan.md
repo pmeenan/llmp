@@ -827,9 +827,15 @@ family" guide, and its long-context scaling work.
       true-softcap50 attention, own/eager/fallback and wrapped-ring restore-next
       controls. Small/ring stock gates pass with zero strict differences and
       65/66 plus 66/66 exact heads; short n=2 paid latency is 1.49% above stock
-      with exact natural histories/final heads. Compatible joint prefill,
-      unequal widths/departures, templates, serving, broader quality/context,
-      sustained and model-switch qualification remain separate work.
+      with exact natural histories/final heads in that independent-prefill screen.
+      The [bounded serving transfer](experiments/gemma2-serving/README.md) adds
+      true-cap50 compatible prefill/common-width decode under total wave 256 while
+      retaining per-owner 128/ring 4,352. All 76 representative stock heads are exact;
+      all 45 focused and five HTTP cases pass, including actual system refusal,
+      joined groups and exact kept restart. Short n=2 C2 latency is 5.78% above
+      stock with exact natural choices/final heads. Broader context/quality,
+      mixed ring/joint-prefill, memory/swap, wider cohorts and sustained
+      qualification remain open.
       The [checkpoint/adoption foundation](experiments/gemma2-checkpoint/README.md)
       passes 19 focused checks for initialized extent coverage, pending copy
       retirement/cancellation, protected peers and wrapped-ring named-file
