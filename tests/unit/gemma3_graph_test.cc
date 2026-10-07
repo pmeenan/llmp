@@ -94,7 +94,7 @@ TEST(Gemma3Graph, H8OwnerContractIsClosedToD256AndTwoThroughFourActualRoots) {
       EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
       bad = in;
       bad.bounded_roots = true;
-      EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
+      EXPECT_EQ(kg::CheckFlashAttnOwners(bad).has_value(), logical == 12);
       bad = in;
       bad.owner_offset = 1;
       EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
@@ -168,6 +168,7 @@ TEST(Gemma3Graph, BoundedOwnerRootsRejectMalformedActualViewsAndMetadata) {
   EXPECT_TRUE(check());
   Case g;
   EXPECT_FALSE(kg::CheckGemma3Graph(g.p, g.binding, g.state, g.shape, {.bounded_roots = true}));
+  EXPECT_FALSE(kg::CheckGemma3Graph(g.p, g.binding, g.state, g.shape, {.bounded_whole12 = true}));
 }
 
 TEST(Gemma3Graph, ExplicitC2OwnerDecodeViewsQAndJoinsMasksWithoutJoiningCacheRoots) {

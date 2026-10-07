@@ -79,6 +79,7 @@ Status Gemma3Runner::Setup() {
   model_.options.owner_decode = o_.owner_decode;
   model_.options.packed_prefill = o_.packed_prefill;
   model_.options.bounded_roots = o_.bounded_roots;
+  model_.options.bounded_whole12 = o_.bounded_whole12;
   model_.options.max_total_rows = wave_rows;
   std::vector<GroupPlace> places(weights_.artifact().groups().size(), GroupPlace::kDevice);
   if (auto r = weights_.Reserve(node_, places, {}); !r) return r;

@@ -226,6 +226,84 @@ TEST(Gemma3Plan, GroupedWideHeadsAndEveryPaddingMultiplicityUseTheFundedEnvelope
   }
 }
 
+TEST(Gemma3Plan, WholeTwelveBoundedFactorKeepsGlobalMasksAndActualCacheSources) {
+  Case c;
+  c.state = *md::Gemma3State(c.p, 4096, 128);
+  c.shape = {};
+  c.shape.outputs = 12;
+  std::array<md::Gemma3Segment, 12> segments;
+  for (std::uint32_t owner = 0; owner < 12; ++owner) {
+    const bool long_root = owner == 2 || owner == 3 || owner >= 8;
+    const auto past = long_root ? 771U : 259U;
+    c.shape.segments.push_back(
+        {owner, 1, past, long_root ? 1024U : 512U, long_root ? 1024U : 512U});
+    segments[owner] = {owner, past, c.b};
+  }
+  std::uint64_t baseline_bytes = 0;
+  for (const bool bounded : {false, true}) {
+    auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 12));
+    ASSERT_TRUE(arena);
+    auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape,
+                                      {.max_total_rows = 256,
+                                       .narrow_final = true,
+                                       .owner_decode = true,
+                                       .packed_prefill = true,
+                                       .bounded_roots = true,
+                                       .bounded_whole12 = bounded});
+    ASSERT_TRUE(graph);
+    auto model = Places(c, *graph);
+    auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
+    ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+    const auto bytes = (*measured)->placement.extent;
+    if (!bounded)
+      baseline_bytes = bytes;
+    else
+      EXPECT_LT(bytes, baseline_bytes);
+    const auto base = std::uint64_t{1} << 53U;
+    EXPECT_FALSE(en::PlanGemma3Chunk(model, c.shape, Choices(), base, bytes - 1));
+    auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), base, bytes);
+    ASSERT_TRUE(placed);
+    auto& g = (*placed)->graph;
+    std::size_t padded_sources = 0, bounded_groups = 0;
+    for (std::uint32_t layer = 0; layer < c.p.layers; ++layer) {
+      const auto prefix = "blk." + std::to_string(layer) + ".";
+      EXPECT_EQ(g.Named(prefix + "attn_projection")->ne[1], 12);
+      for (std::uint32_t group = 0; group < 3; ++group) {
+        const auto name = group == 0 ? prefix + "owner_attention"
+                                     : prefix + "owner_attention.group." + std::to_string(group);
+        auto in = kg::FlashAttnOwnersFromNode(g.Named(name));
+        ASSERT_TRUE(in);
+        EXPECT_EQ(in->logical_cohort, 12U);
+        EXPECT_EQ(in->owner_count, 4U);
+        EXPECT_EQ(in->owner_offset, 0U);
+        EXPECT_EQ(in->mask->ne[0], 1024);
+        EXPECT_EQ(in->bounded_roots, bounded && group < 2);
+        bounded_groups += in->bounded_roots;
+        for (std::uint32_t index = 0; index < 4; ++index) {
+          const auto owner = group * 4 + index;
+          const bool short_root = owner != 2 && owner != 3 && owner < 8;
+          for (const auto* source : {in->k[index], in->v[index]}) {
+            EXPECT_EQ(source->ne[1], bounded && short_root ? 512 : 1024);
+            padded_sources += source->src[0]->op == GGML_OP_CONCAT;
+            EXPECT_EQ(source->src[0]->op == GGML_OP_CONCAT, !bounded && short_root);
+          }
+        }
+      }
+    }
+    EXPECT_EQ(padded_sources, bounded ? 0U : 408U);
+    EXPECT_EQ(bounded_groups, bounded ? 68U : 0U);
+    auto input = md::Gemma3Chunk(c.p, c.state, segments, true, 256, 256);
+    ASSERT_TRUE(input);
+    auto source_bytes = en::Gemma3SourceBytes(g);
+    ASSERT_TRUE(source_bytes);
+    std::array<std::int32_t, 12> frontier{};
+    for (std::uint32_t owner = 0; owner < 12; ++owner)
+      frontier[owner] = static_cast<std::int32_t>(owner);
+    EXPECT_TRUE(en::Gemma3Sources(g, *input, frontier, {}, *source_bytes));
+    EXPECT_FALSE(en::Gemma3Sources(g, *input, frontier, {}, *source_bytes - 1));
+  }
+}
+
 TEST(Gemma3Plan, BoundedOwnerRootsKeepActualViewsAndRecipeIdentity) {
   Case c;
   c.state = *md::Gemma3State(c.p, 4096, 128);

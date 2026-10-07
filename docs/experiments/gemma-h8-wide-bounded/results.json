@@ -1,0 +1,227 @@
+{
+  "scope": "internal opt-in whole-C12 native factor; public two-slot admission unchanged",
+  "performance": {
+    "passed": true,
+    "scope": "one native same-binary C12 short n=2 factor screen; concurrency, public admission, peak memory, 8K batching and sustained performance remain open",
+    "order": [
+      "B1",
+      "N1",
+      "N2",
+      "B2"
+    ],
+    "paid_prefix_rows": 6144,
+    "paid_teacher_rows": 36,
+    "paid_generated_tokens": 384,
+    "final_heads_paid": 12,
+    "output_hashes": {
+      "B1": {
+        "chosen.i32": "2d606c0fd4cc15469bd3af0ce10c348931288a29e21bb4f5b724a2d1d629b8b3",
+        "past.u32": "a81d9f2ee71ac651407a2239dd7d7b85d5cf68f7bff14ce67a7fa9ef2ae73de6",
+        "final.f32": "b0b49b18725623e7fec3869f0dfeffd06485f4f9676c76747bc8f18eaa396d1d"
+      },
+      "N1": {
+        "chosen.i32": "2d606c0fd4cc15469bd3af0ce10c348931288a29e21bb4f5b724a2d1d629b8b3",
+        "past.u32": "a81d9f2ee71ac651407a2239dd7d7b85d5cf68f7bff14ce67a7fa9ef2ae73de6",
+        "final.f32": "b0b49b18725623e7fec3869f0dfeffd06485f4f9676c76747bc8f18eaa396d1d"
+      },
+      "N2": {
+        "chosen.i32": "2d606c0fd4cc15469bd3af0ce10c348931288a29e21bb4f5b724a2d1d629b8b3",
+        "past.u32": "a81d9f2ee71ac651407a2239dd7d7b85d5cf68f7bff14ce67a7fa9ef2ae73de6",
+        "final.f32": "b0b49b18725623e7fec3869f0dfeffd06485f4f9676c76747bc8f18eaa396d1d"
+      },
+      "B2": {
+        "chosen.i32": "2d606c0fd4cc15469bd3af0ce10c348931288a29e21bb4f5b724a2d1d629b8b3",
+        "past.u32": "a81d9f2ee71ac651407a2239dd7d7b85d5cf68f7bff14ce67a7fa9ef2ae73de6",
+        "final.f32": "b0b49b18725623e7fec3869f0dfeffd06485f4f9676c76747bc8f18eaa396d1d"
+      }
+    },
+    "arms": {
+      "B1": {
+        "slots": "12",
+        "input_identities": "2",
+        "context": "4096",
+        "per_owner_rows": "128",
+        "wave_rows": "256",
+        "paid_prefix_rows": "6144",
+        "paid_teacher_rows": "36",
+        "paid_generated_tokens": "384",
+        "decode_steps": "32",
+        "final_heads_paid": "12",
+        "prefill_seconds": "1.46613",
+        "decode_seconds": "0.948853",
+        "gpu_tokens": "528",
+        "prefill_captured": "12",
+        "prefill_replayed": "48",
+        "prefill_eager": "0",
+        "decode_captured": "0",
+        "decode_replayed": "32",
+        "decode_eager": "0",
+        "selected_owner": "204",
+        "bounded_whole12": "0",
+        "selected_bounded": "0",
+        "selected_packed": "600",
+        "actual_plans": "32",
+        "cache_event_bound": "160",
+        "plan_graph_bytes": "636493456",
+        "cache_budget": "24194227200",
+        "host_overcharges": "0"
+      },
+      "N1": {
+        "slots": "12",
+        "input_identities": "2",
+        "context": "4096",
+        "per_owner_rows": "128",
+        "wave_rows": "256",
+        "paid_prefix_rows": "6144",
+        "paid_teacher_rows": "36",
+        "paid_generated_tokens": "384",
+        "decode_steps": "32",
+        "final_heads_paid": "12",
+        "prefill_seconds": "1.46567",
+        "decode_seconds": "0.749269",
+        "gpu_tokens": "528",
+        "prefill_captured": "12",
+        "prefill_replayed": "48",
+        "prefill_eager": "0",
+        "decode_captured": "0",
+        "decode_replayed": "32",
+        "decode_eager": "0",
+        "selected_owner": "204",
+        "bounded_whole12": "1",
+        "selected_bounded": "136",
+        "selected_packed": "600",
+        "actual_plans": "32",
+        "cache_event_bound": "160",
+        "plan_graph_bytes": "621982864",
+        "cache_budget": "24194227200",
+        "host_overcharges": "0"
+      },
+      "N2": {
+        "slots": "12",
+        "input_identities": "2",
+        "context": "4096",
+        "per_owner_rows": "128",
+        "wave_rows": "256",
+        "paid_prefix_rows": "6144",
+        "paid_teacher_rows": "36",
+        "paid_generated_tokens": "384",
+        "decode_steps": "32",
+        "final_heads_paid": "12",
+        "prefill_seconds": "1.46931",
+        "decode_seconds": "0.749599",
+        "gpu_tokens": "528",
+        "prefill_captured": "12",
+        "prefill_replayed": "48",
+        "prefill_eager": "0",
+        "decode_captured": "0",
+        "decode_replayed": "32",
+        "decode_eager": "0",
+        "selected_owner": "204",
+        "bounded_whole12": "1",
+        "selected_bounded": "136",
+        "selected_packed": "600",
+        "actual_plans": "32",
+        "cache_event_bound": "160",
+        "plan_graph_bytes": "621982864",
+        "cache_budget": "24194227200",
+        "host_overcharges": "0"
+      },
+      "B2": {
+        "slots": "12",
+        "input_identities": "2",
+        "context": "4096",
+        "per_owner_rows": "128",
+        "wave_rows": "256",
+        "paid_prefix_rows": "6144",
+        "paid_teacher_rows": "36",
+        "paid_generated_tokens": "384",
+        "decode_steps": "32",
+        "final_heads_paid": "12",
+        "prefill_seconds": "1.46804",
+        "decode_seconds": "0.950051",
+        "gpu_tokens": "528",
+        "prefill_captured": "12",
+        "prefill_replayed": "48",
+        "prefill_eager": "0",
+        "decode_captured": "0",
+        "decode_replayed": "32",
+        "decode_eager": "0",
+        "selected_owner": "204",
+        "bounded_whole12": "0",
+        "selected_bounded": "0",
+        "selected_packed": "600",
+        "actual_plans": "32",
+        "cache_event_bound": "160",
+        "plan_graph_bytes": "636493456",
+        "cache_budget": "24194227200",
+        "host_overcharges": "0"
+      }
+    },
+    "means": {
+      "bounded": {
+        "prefill_seconds": 1.46749,
+        "decode_seconds": 0.7494339999999999,
+        "cycle_seconds": 2.2169239999999997,
+        "aggregate_decode_tokens_per_second": 512.3866811487069
+      },
+      "padded": {
+        "prefill_seconds": 1.467085,
+        "decode_seconds": 0.949452,
+        "cycle_seconds": 2.416537,
+        "aggregate_decode_tokens_per_second": 404.4438265441539
+      }
+    },
+    "bounded_cycle_relative_to_padded": -0.08260291483225801
+  },
+  "prerequisite": {
+    "passed": true,
+    "tests": {
+      "wide-operand": 1,
+      "plan": 1,
+      "host": 8,
+      "legacy": 4
+    }
+  },
+  "operand": {
+    "logical_cells": 1024,
+    "actual_cells": [
+      512,
+      1024
+    ],
+    "whole_blocks": 48,
+    "carrier_blocks": 16,
+    "original_blocks_per_sm": 1,
+    "bounded_blocks_per_sm": 1,
+    "scratch_per_carrier": 16,
+    "fp64_nmse": 3.60884e-07,
+    "fp64_max_group_nmse": 4.91039e-07,
+    "fp64_bound": 0.0005,
+    "kv_concat_nodes_before": 408,
+    "kv_concat_nodes_after": 0
+  },
+  "provenance": {
+    "measured_base": "14bc98ecdc153b1f28f568d9f44b8628d0658449",
+    "final_base": "cba9ec051403886be9cb883966d0de32ef12959f",
+    "source_inventory_sha256": "c0a6926b74e2eb8e27be07d0b88d9961b427553cba71549dfd6c2b2716152ab9",
+    "owned_sha256": "d3bd708f10f795cbbc94d8c0ca2e879b62b03d8a388b51d908c149a45bd76a65",
+    "build_sha256": "13a940e6a103e54898c6972476195bda89dc988c4537a4f49693f0db41cfc09f",
+    "native_cycle_sha256": "f4ab5d1fbf0ffe03ef55ec70ac76b86da0e49fe4f0626dc535e8ee10635934cf",
+    "receipt_sha256": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89",
+    "check_official_sha256": "3e5eea28cce7b5c22414285b2fc4e7f0ae11826b73b72f461e2c958d9afc7ea8",
+    "performance_official_sha256": "e14560608d04c5931e08a1996499ec68bcedfcb13d2c33509b083ef741b86b8e",
+    "method_sha256": "1334cfbc5da52da85b1882a929d846e2f60d759b56862a782b93e1b0b57a7764",
+    "analyzer_sha256": "ccfc3e687bb3abed8374cae8d529606a35035c4ec72be1cd0bf79cf252849f8b"
+  },
+  "tensorfold_task_entry": {
+    "head": "5a73b85289b58c0998d7754822145466687a551b",
+    "observed_utc": "2026-10-07T19:58:13.525377+00:00",
+    "readme_sha256": "17f326c0d3bd99166994220de16be1bc3178bc01b6a4158c773431ceff90f97e",
+    "version": "1.0.0",
+    "applicability": "README documents CUDA GB10 Nemotron. Gemma4 remains under qualification; no matching Gemma3 CUDA/GGUF baseline. Original pinned d812 reference retained; current factor is exact native-v-native only, historical TF pins unchanged."
+  },
+  "limitations": [
+    "No fresh stock comparison; original stock final-head-byte FAIL retained.",
+    "No concurrency allowance, public slot lift, continuous bounded rerun, peak memory or sustained claim.",
+    "Current first factor admits only canonical no-cap D256/H8 whole-C12 four-root carriers; partial and other wider bounded paths remain closed."
+  ]
+}

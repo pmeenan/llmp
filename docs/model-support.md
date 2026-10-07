@@ -162,6 +162,11 @@ native/stock heads are not byte-exact; all 384 natural choices/cursors and each
 engine's own final heads are exact. Maximum final delta is 1.90735e-6 with zero
 argmax differences. Descriptive wall is +11.3219% total / +23.5760% decode versus
 stock, without parity, concurrency, memory or ordinary wider-admission closure.
+The subsequent [whole-C12 bounded-root factor](experiments/gemma-h8-wide-bounded/README.md)
+removes representative K/V padding with exact native baseline/candidate choices,
+cursors and final heads. Short n=2 decode falls 21.0667% and total paid latency
+8.26029%. This internal option remains false by default; the original stock
+head-byte FAIL and all broader qualification gates remain open.
 
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
 bounded independent-slot state and segmented host-input descriptions in

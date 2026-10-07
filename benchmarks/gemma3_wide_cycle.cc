@@ -61,7 +61,10 @@ std::expected<std::int32_t, std::string> Best(const std::vector<float>& row) {
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma3-wide-cycle") || argc != 5) return 2;
+  if (!jitllm::platform::InstallCrashPolicy("gemma3-wide-cycle") || (argc != 5 && argc != 6))
+    return 2;
+  const bool bounded = argc == 6;
+  if (bounded && std::string_view(argv[5]) != "bounded-whole12") return 2;
   std::array<std::vector<std::int32_t>, kOwners> ids;
   std::array<std::uint32_t, kOwners> prefix{}, past{}, slots{};
   for (std::uint32_t s = 0; s < kOwners; ++s) {
@@ -95,6 +98,7 @@ int main(int argc, char** argv) {
                                                                       .owner_decode = true,
                                                                       .packed_prefill = true,
                                                                       .bounded_roots = true,
+                                                                      .bounded_whole12 = bounded,
                                                                       .fuse_norms = true,
                                                                       .fuse_quant_glu = true,
                                                                       .fuse_norm_rope = true,
@@ -215,7 +219,8 @@ int main(int argc, char** argv) {
       const auto& bound = runner.plan_selections();
       if (choices.size() != 384 || runner.greedy_tokens() != 528 || prefill_groups != 48 ||
           prefill_rows != 12288 || !bound.owner_attention || !bound.packed_prefill_attention ||
-          !bound.norm_rope || !bound.norm_add || bound.bounded_owner_attention ||
+          !bound.norm_rope || !bound.norm_add ||
+          (bounded ? bound.bounded_owner_attention == 0 : bound.bounded_owner_attention != 0) ||
           runner.coverage().violations || !after.captured || !after.replayed ||
           bound.plans > kEvents || runner.plans_bytes() > cache_budget ||
           node.host_counted() != runner.plans_bytes() || node.host_charged() > cache_budget ||
@@ -239,7 +244,8 @@ int main(int argc, char** argv) {
                 << " decode_captured=" << after.captured - middle.captured
                 << " decode_replayed=" << after.replayed - middle.replayed
                 << " decode_eager=" << after.eager - middle.eager
-                << " selected_owner=" << bound.owner_attention
+                << " selected_owner=" << bound.owner_attention << " bounded_whole12=" << bounded
+                << " selected_bounded=" << bound.bounded_owner_attention
                 << " selected_packed=" << bound.packed_prefill_attention
                 << " actual_plans=" << bound.plans << " cache_event_bound=" << kEvents
                 << " plan_graph_bytes=" << runner.plans_bytes() << " cache_budget=" << cache_budget

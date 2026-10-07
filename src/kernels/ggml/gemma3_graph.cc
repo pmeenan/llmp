@@ -53,7 +53,7 @@ std::expected<void, KernelFailure> CheckGemma3Graph(const md::Gemma3Profile& p,
                                                     const Gemma3GraphOptions& o) {
   if (auto checked = md::CheckGemma3Binding(p, binding); !checked) return Rejected(checked.error());
   if (!state.Representations(p)) return Rejected("invalid Gemma3 state layout");
-  if (o.bounded_roots && !o.owner_decode)
+  if ((o.bounded_roots || o.bounded_whole12) && !o.owner_decode)
     return Rejected("Gemma3 bounded roots require explicit owner decode");
   const bool state_only = shape.output_mode == Gemma3OutputMode::kStateOnly;
   const auto limit = o.max_total_rows == 0 ? state.max_rows : o.max_total_rows;
@@ -185,9 +185,11 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
         return segment.shape.rows == 1 && segment.shape.global_n_kv <= 16384 &&
                segment.shape.local_n_kv <= 16384;
       });
-  // Copy-free unequal roots retain their qualified two-owner contract. Wider
-  // groups share one cohort-wide read width using real funded padding.
-  const bool bounded_decode = owner_decode && o.bounded_roots && owners == 2;
+  // The wider factor is closed to canonical whole-C12 carriers. Every group
+  // retains this wave's common mask maximum, including an all-short group;
+  // join_mask makes absent lanes -Inf while cache views keep actual bounds.
+  const bool bounded_decode =
+      owner_decode && ((o.bounded_roots && owners == 2) || (o.bounded_whole12 && owners == 12));
   const bool packed_prefill = o.packed_prefill && g.segments.size() == 2 &&
                               g.segments[0].shape.rows > 1 &&
                               g.segments[0].shape.rows == g.segments[1].shape.rows &&
@@ -360,7 +362,9 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
         }
         auto* attention = FlashAttnOwnersNode(
             c, slice(packed_q), slice(mask), keys, values, owners, active, partial ? first : 0, 0,
-            bounded_decode && owner_keys[0]->ne[1] != owner_keys[1]->ne[1]);
+            bounded_decode && std::ranges::any_of(keys, [&](const auto* key) {
+              return key != nullptr && key->ne[1] != mask->ne[0];
+            }));
         named(group == 0 ? prefix + "owner_attention"
                          : prefix + std::format("owner_attention.group.{}", group),
               attention);

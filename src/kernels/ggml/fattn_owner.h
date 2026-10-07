@@ -32,6 +32,7 @@ struct FlashAttnOwners {
   // Closed Gemma2 H8/C2 specialization; zero preserves every earlier path.
   std::uint32_t logit_softcap = 0;
   // Opt-in Gemma2 cap50/H8 or no-cap Gemma3 H8/Gemma4 H16/H32 C2.
+  // Also opt-in no-cap D256/H8 whole-C12 four-root carriers.
   // Mask width is logical; each aligned K/V
   // view is actual. No partial cohorts, sinks, sparse gather or non-cell-major layouts.
   bool bounded_roots = false;
@@ -53,6 +54,11 @@ struct FlashAttnOwners {
 // all other contracts require zero. Bounded roots require actual/logical C2
 // at offset zero: cap50/H8/D256, no-cap/H8/D256 or no-cap/H16/H32 at D256/D512. Each
 // actual width is aligned to256 and the common mask equals their maximum.
+// The sole wider bounded case is no-cap D256/H8 whole-C12 four-root carriers
+// at offset zero. Their mask retains the WHOLE cohort maximum, which may exceed
+// every actual root in a carrier. The caller must make every absent lane -Inf,
+// including all padded query rows; Gemma3Sources and graph mask padding enforce
+// this for model execution. These lanes are skipped, never read from a root.
 // No sinks or sparse gather.
 std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& inputs);
 

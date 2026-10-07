@@ -122,14 +122,23 @@ with one common read maximum across groups and unsplit whole-wave products.
 Every padding multiplicity is funded. One unequal/continuous twelve-state
 schedule passes zero strict differences over 472 heads / 468 targets (276 exact),
 with exact own device/state/peer/restore controls. Public slots remain at two;
-cap50 wider cohorts, copy-free wider roots and concurrency/public adoption stay
-open. A separate C12 RNNR preserves exact 384 natural choices/cursors and own
+cap50 wider cohorts and concurrency/public adoption stay open. A separate C12 RNNR preserves exact 384 natural choices/cursors and own
 final-head repeats, but fails its original cross-engine final-head byte gate
 (maximum delta 1.90735e-6, zero argmax differences). Descriptive n2 wall is
 +11.3219% total / +23.5760% decode. All 32 paid decode paths replay; capture does
 not explain that gap. Derived short-root materialization is 408 K/V Concat
 outputs / 816 MiB writes per wave, a source-backed causal lead rather than
-measured copy latency. No new floating kernel or retrospective allowance.
+measured copy latency. The subsequent
+[whole-C12 bounded factor](experiments/gemma-h8-wide-bounded/README.md)
+selects the existing bounded D256/H8 kernel for canonical four-root/logical12
+carriers, with a deliberate all-short-group contract under the global mask
+maximum. It removes those 408 CONCAT nodes without changing logical partitions
+or floating kernels. Operand/FP64/fresh replay and a same-binary native bookend
+preserve all choices/cursors/final heads; n=2 decode falls 21.0667%, total paid
+latency 8.26029%. The option defaults false, all partial bounded shapes stay
+closed, and the earlier stock final-head-byte FAIL remains. Other store/grouping
+costs remain unmeasured leads; prior Gemma31 store grouping was end-to-end
+neutral. No retrospective allowance or fresh stock parity claim follows.
 
 Both Gemma4 profiles' [common-read repair](experiments/gemma4-common-width/README.md)
 recovers their unequal-prefix strict failure. The

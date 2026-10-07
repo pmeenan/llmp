@@ -308,6 +308,13 @@ all 384 choices/cursors match and each engine's final heads repeat exactly, but
 no cross-engine final head is byte-exact (maximum delta 1.90735e-6, zero argmax
 differences). Descriptive short n=2 paid latency is +11.3219% versus stock;
 decode is +23.5760%. Paid decode has 32 replays and no captures. No tolerance,
-concurrency allowance or parity claim follows; copy-free wide roots, cap50
-wider batching, sustained/memory/full-corpus and ordinary wider adoption remain
-open.
+concurrency allowance or parity claim follows. A subsequent
+[whole-C12 bounded-root factor](experiments/gemma-h8-wide-bounded/README.md)
+removes all 408 K/V CONCAT sources in the representative geometry while
+retaining global masks and original partitions. One same-binary n=2 native
+bookend preserves all 384 choices/cursors and twelve final heads byte for byte,
+reducing paid decode by 21.0667% and total latency by 8.26029%. The explicit
+`bounded_whole12` option remains false by default; it adds no public slots,
+stock gate waiver or continuous bounded qualification. Other wider/partial
+bounded carriers, cap50 wider batching, sustained/memory/full-corpus and ordinary
+wider adoption remain open.

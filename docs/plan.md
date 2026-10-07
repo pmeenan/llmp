@@ -885,9 +885,15 @@ family" guide, and its long-context scaling work.
       384 natural choices/cursors and own final heads, but its original final
       cross-engine byte gate remains FAIL (maximum delta 1.90735e-6, zero argmax
       differences). Descriptive n2 wall is +11.3219% total / +23.5760% decode.
-      Ordinary slots remain two; cap50 wider transfer, copy-free wide reads,
-      solo/batch concurrency, corpus/memory/sustained and public adoption remain
-      open. No threshold or prior twelve-flip allowance changes.
+      A subsequent [whole-C12 bounded-root factor](experiments/gemma-h8-wide-bounded/README.md)
+      removes the representative 408 K/V CONCAT sources while retaining the
+      global logical masks/partitions. The four native arms preserve all 384
+      natural choices, cursors and final heads exactly; short n=2 decode falls
+      21.0667%, total paid latency 8.26029%. The option defaults false, and the
+      earlier stock final-head-byte FAIL remains. Ordinary slots remain two;
+      other wider/partial bounded reads, cap50 wider transfer, solo/batch
+      concurrency, corpus/memory/sustained and public adoption remain open.
+      No threshold or prior twelve-flip allowance changes.
       Gemma 3 [profile and tensor foundation](gemma3.md) is checked:
       actual approved metadata and all 444 tensor descriptors, separate
       profile/binding and refusal controls; three focused CPU controls pass.

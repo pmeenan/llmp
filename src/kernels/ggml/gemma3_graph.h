@@ -48,6 +48,8 @@ struct Gemma3GraphOptions {
   bool packed_prefill = false;
   // Explicit C2 transfer: actual cache roots at the common logical width.
   bool bounded_roots = false;
+  // Internal whole-C12 factor; retain cohort-wide masks/grid with actual roots.
+  bool bounded_whole12 = false;
   bool operator==(const Gemma3GraphOptions&) const = default;
 };
 struct Gemma3WeightLeaf {

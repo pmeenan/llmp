@@ -39,6 +39,8 @@ struct Gemma3Options {
   bool owner_decode = false, packed_prefill = false;
   // Opt-in copy-free C2 attention; state layout and publication are unchanged.
   bool bounded_roots = false;
+  // Internal whole-C12 factor; retain cohort-wide masks/grid with actual roots.
+  bool bounded_whole12 = false;
   // Explicit numerical comparisons only; ordinary plans use primitives.
   bool fuse_norms = false, fuse_quant_glu = false, fuse_norm_rope = false, fuse_norm_add = false;
   std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};

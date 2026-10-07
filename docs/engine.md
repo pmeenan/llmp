@@ -306,14 +306,20 @@ What a new family writes, and nothing else:
   one-row owners, grouping only attention into existing four-root carriers and
   retaining whole-wave products and one common read maximum across groups.
   Setup measures every proper unequal-padding multiplicity and funds twelve
-  immutable heads. Cap50 and bounded actual roots remain C2-only.
+  immutable heads. Cap50 remains C2-only; bounded roots additionally have a
+  false-default whole-C12 H8/no-cap factor that retains the global mask maximum
+  even in an all-short four-root carrier. Partial bounded carriers remain closed.
   An [actual C3 pause/catch-up/rejoin control](experiments/gemma-h8-c3/README.md)
   preserves peers' initialized state/cursors and exact own GPU/checkpoint replay;
   its same-schedule stock gate passes. The [wide continuous control](experiments/gemma-h8-wide/README.md)
   adds unequal/partial/departure/refill peers and exact own restore, with zero
   stock strict differences over 472 heads. Its separate exact-final-head cost
   gate remains failed despite exact natural choices; ordinary slots remain two,
-  with no solo/batch allowance. Other families retain the default scalar seam. The DeepSeek
+  with no solo/batch allowance. The separate
+  [whole-C12 bounded factor](experiments/gemma-h8-wide-bounded/README.md)
+  preserves all native natural outputs exactly and lowers short n=2 decode by
+  21.0667%; it does not alter that stock gate or public admission.
+  Other families retain the default scalar seam. The DeepSeek
   and Qwen3.8 runners are the worked examples: DeepSeek with a host table, a chained draft-and-verify job and
   a snapshot of every written range; Qwen3.8 with rows read on demand and
   gathered between the inputs and the plan, a commit kernel, and two
