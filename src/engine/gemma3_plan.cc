@@ -401,12 +401,16 @@ std::expected<Gemma3HostInputs, std::string> Gemma3Sources(const kg::Gemma3Graph
         return Error("Gemma3 host position or cache index is invalid");
       }
       const auto end = host.n_past + s.rows;
-      for (std::uint32_t cell = 0; cell < s.global_n_kv; ++cell) {
-        const std::uint16_t expected = cell <= position ? 0 : 0xFC00;
-        if (host.global_mask[std::size_t{r} * s.global_n_kv + cell] != expected) {
-          return Error("Gemma3 global reference mask violates fresh causal visibility");
-        }
-      }
+      const auto* global = host.global_mask.data() + std::size_t{r} * s.global_n_kv;
+      const auto global_visible = std::min(position + 1, s.global_n_kv);
+      // Check every public mask value. Separate constant-value intervals let
+      // the compiler vectorize the reduction without an early-exit branch per cell.
+      std::uint32_t mismatch = 0;
+      for (std::uint32_t cell = 0; cell < global_visible; ++cell) mismatch |= global[cell];
+      for (std::uint32_t cell = global_visible; cell < s.global_n_kv; ++cell)
+        mismatch |= std::uint32_t{global[cell]} ^ 0xFC00U;
+      if (mismatch != 0)
+        return Error("Gemma3 global reference mask violates fresh causal visibility");
       for (std::uint32_t cell = 0; cell < s.local_n_kv; ++cell) {
         bool visible = false;
         if (cell < end) {

@@ -146,7 +146,10 @@ The [internal trained-maximum scalar screen](experiments/gemma3-execution/README
 also initializes 131,072 positions without a whole-state snapshot, matching all
 65 original-reference heads exactly on one 64-target corpus tail. This leaves
 public admission, maximum-depth swap/state retention and retrieval open;
-descriptive native prefill is about 48.7 seconds versus stock's 32.9 seconds.
+initial descriptive native prefill was about 48.7 seconds versus stock's
+32.9 seconds. The later [host-mask factor](experiments/gemma3-execution/README.md#global-host-mask-factor-2026-10-07)
+reduces a native bookend mean from 49.056 to 43.818 seconds with all 65 heads
+unchanged; a fresh reference parity comparison remains open.
 
 The [internal grouped H8 foundation](experiments/gemma-h8-wide/README.md) now
 checks actual unequal C4/C8/C12 and partial C5..7/C9..11, with twelve independent

@@ -405,11 +405,7 @@ std::expected<Gemma3ChunkInputs, std::string> Gemma3Chunk(const Gemma3Profile& p
       x.global_cells[i] = pos;
       x.local_cells[i] = pos % s.local_cells;
       if (masks) {
-        for (std::uint32_t cell = 0; cell < x.global_n_kv; ++cell) {
-          if (cell <= pos) {
-            x.global_mask[std::size_t{i} * x.global_n_kv + cell] = kZero;
-          }
-        }
+        std::fill_n(x.global_mask.data() + std::size_t{i} * x.global_n_kv, pos + 1, kZero);
         for (std::uint32_t cell = 0; cell < x.local_n_kv; ++cell) {
           if (cell >= end) {
             continue;

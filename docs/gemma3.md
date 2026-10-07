@@ -272,9 +272,13 @@ initializes all 131,072 positions with the normal Server reclaimer. Two native
 and two original-reference traversals match all 65 finite heads byte for byte
 at a frozen 64-target real-corpus tail. This establishes the tested arithmetic
 and funding boundary, without a KV-byte snapshot or retrieval claim. Native
-first-pass prefill takes about 48.7 seconds versus 32.9 seconds for stock;
-performance qualification and public maximum admission remain open. Ordinary
-default context 4096 and explicit scalar ceiling 8448 are unchanged.
+first-pass prefill initially took about 48.7 seconds versus 32.9 seconds for stock.
+A subsequent [global host-mask factor](experiments/gemma3-execution/README.md#global-host-mask-factor-2026-10-07)
+checks every supplied mask value while reducing the measured native first-traversal
+prefill mean from 49.056 to 43.818 seconds in one baseline/candidate/candidate/baseline
+bookend, with all 65 heads unchanged. Stock parity, sustained performance and
+public maximum admission remain open. Ordinary default context 4096 and explicit
+scalar ceiling 8448 are unchanged.
 
 The [internal four-root foundation](experiments/gemma-h8-c4/README.md) now
 qualifies H8/no-cap C4 operands and a representative equal-width model screen

@@ -1085,3 +1085,67 @@ receipts remain outside Git under Spark A `~/.local/share/jitllm/gemma3-trained-
 and local `/tmp/jitllm-m35-coordination/gemma3-trained-max*`.
 Public maximum admission, maximum-depth swap/state retention, retrieval and
 sustained quality/performance remain open.
+
+## Global host-mask factor (2026-10-07)
+
+Gemma3 now fills the visible global causal prefix directly and checks supplied
+mask values with separate reductions over the visible-zero and future-negative-
+infinity intervals. Every F16 mask value is still checked exactly. Position,
+cache-index, shape, source-origin, funding and local-ring checks are unchanged.
+Focused controls cover early/late visible and masked cells, malformed low bits,
+the final 131,072nd physical cell and the last 128-query shape.
+
+A host-only descriptor helper attributes the exact trained-maximum schedule to
+chunk construction and the SourceBytes→Sources pair, including its nested
+validation/allocation/copy. Descriptor graph construction is excluded and
+reported separately. Each prefill sweep constructs/checks 8,598,323,200 global
+mask cells and 167,034,880 local cells, with 17,530,863,636 padded source bytes.
+
+| Host-only prefill sweep | Baseline 1 | Baseline 2 | Candidate 1 | Candidate 2 |
+| --- | ---: | ---: | ---: | ---: |
+| Chunk construction seconds | 5.84670 | 3.15380 | 3.09997 | 0.849048 |
+| SourceBytes→Sources seconds | 7.95508 | 4.84227 | 4.20242 | 1.50162 |
+
+Both helpers show substantial sweep-order variation; these spans alone are not
+an end-to-end speedup measurement. The following native bookend uses fresh
+Servers in baseline/candidate/candidate/baseline order, with identical paid
+131,008-prefix/64-teacher-write work and unchanged capture policy.
+
+| Native first traversal | Baseline N1 | Candidate C1 | Candidate C2 | Baseline N2 |
+| --- | ---: | ---: | ---: | ---: |
+| Prefill seconds | 48.638859 | 43.453636 | 44.182168 | 49.473019 |
+| 64 teacher-write seconds | 1.629930 | 1.628792 | 1.669834 | 1.648343 |
+
+Mean prefill falls from 49.055939 to 43.817902 seconds (10.6777%); mean paid
+prefill plus teacher writes falls from 50.695076 to 45.467215 seconds (10.3124%).
+Teacher-write time changes by +0.6208%. There are two paid observations per
+policy, each a fresh first traversal. This establishes the measured host-mask
+factor at this shape; it is neither a sustained/warmed result nor a new stock
+performance-parity comparison.
+
+Every arm matches all 65 finite full heads, 64 choices and the final head byte
+for byte against the already authenticated native/original-stock oracle.
+Initialized positions/token history remain 131,072, with no natural emissions
+or KV-byte snapshot. Each arm retains exactly 514 eager executions, 512
+captures and 62 replays, with no capture refusal and 512 kept graphs. The
+ordinary reclaimer, source checks, fusion recipe and capture policy are unchanged.
+Eighteen focused state/plan cases pass with no failures or skips, including
+full maximum-shape mask construction and corruption refusals; no full suite ran.
+
+The retained actual baseline ELF is
+`e347987dac38da2ddbd43a36de9f9a964741da4f1fd1f9713421e73ff8d0376c`;
+the candidate is `7ad51bdd739bd65de8896d3a9cef731bb6665f5c6dbe7023472900f58c4c42c5`,
+with actual source/library binding
+`2803ad306c3df0fcd4278a7b0601f5eb0ae56dcc01232e69a46f05aaca1eab2a`.
+Both use the identical pinned CUDA 13.4 cuBLAS/Lt closure. The measured source
+is based on b9a35fc; final composition on 14bc98e preserves the independent
+wide-cohort additions and the exact two executed production changes. Official
+`m35-gemma3-mask-host-prereq1` (five steps, 18 actual cases) and
+`m35-gemma3-mask-model1` (six steps) finish DONE0. Raw logs, outputs and receipts
+remain outside Git under Spark A `~/.local/share/jitllm/gemma3-mask-{host1,model1}`
+and local `/tmp/jitllm-m35-coordination/gemma3-mask-{host,model}-result1`.
+TensorFold task-entry HEAD is 5a73b85289b58c0998d7754822145466687a551b;
+its current README documents no matching qualified Gemma3 GGUF CUDA recipe.
+Public default/admission, retrieval, maximum-depth swaps and sustained gates
+remain unchanged. The existing graph-owned device-mask producer is a separate
+applicable transfer; this factor still constructs, validates and stages host masks.

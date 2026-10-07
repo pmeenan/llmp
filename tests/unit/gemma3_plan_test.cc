@@ -283,6 +283,48 @@ TEST(Gemma3Plan, BoundedOwnerRootsKeepActualViewsAndRecipeIdentity) {
   EXPECT_EQ(source_bytes[0], source_bytes[1]);
 }
 
+TEST(Gemma3Plan, TrainedMaximumChecksEarlyLateAndFinalCausalMaskCells) {
+  Case c;
+  c.state = *md::Gemma3State(c.p, 131072, 128);
+  const std::array<std::int32_t, 128> tokens{};
+  for (const auto [past, rows] :
+       {std::pair{130944U, 128U}, std::pair{131008U, 1U}, std::pair{131071U, 1U}}) {
+    SCOPED_TRACE(past);
+    const std::array segments{md::Gemma3Segment{0, past, std::span(tokens).first(rows)}};
+    auto input = md::Gemma3Chunk(c.p, c.state, segments, true);
+    ASSERT_TRUE(input);
+    auto& host = input->segments.front();
+    const kg::Gemma3ChunkShape shape{{{0, rows, past, host.global_n_kv, host.local_n_kv}}, 1};
+    auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 1));
+    ASSERT_TRUE(arena);
+    auto graph =
+        kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, shape, {.narrow_final = true});
+    ASSERT_TRUE(graph);
+    const auto bytes = en::Gemma3SourceBytes(*graph);
+    ASSERT_TRUE(bytes);
+    const std::array<std::int32_t, 1> frontier{static_cast<std::int32_t>(rows - 1)};
+    EXPECT_TRUE(en::Gemma3Sources(*graph, *input, frontier, {}, *bytes));
+    EXPECT_FALSE(en::Gemma3Sources(*graph, *input, frontier, {}, *bytes - 1));
+    for (const std::uint32_t row : {0U, rows / 2, rows - 1}) {
+      SCOPED_TRACE(row);
+      const auto position = past + row;
+      for (const std::uint32_t cell : {0U, position, position + 1, host.global_n_kv - 1}) {
+        if (cell >= host.global_n_kv) continue;
+        SCOPED_TRACE(cell);
+        auto& value = host.global_mask[std::size_t{row} * host.global_n_kv + cell];
+        const auto saved = value;
+        value = saved == 0 ? std::uint16_t{0xFC00} : std::uint16_t{0};
+        EXPECT_FALSE(en::Gemma3Sources(*graph, *input, frontier, {}, *bytes));
+        // Exact F16 mask bits are required, including malformed NaN-like tails.
+        value = static_cast<std::uint16_t>(saved ^ 1U);
+        EXPECT_FALSE(en::Gemma3Sources(*graph, *input, frontier, {}, *bytes));
+        value = saved;
+      }
+    }
+    EXPECT_TRUE(en::Gemma3Sources(*graph, *input, frontier, {}, *bytes));
+  }
+}
+
 TEST(Gemma3Plan, JoinedPrefillFundsTotalRowsWithoutChangingSlotLayout) {
   Case c;
   c.state = *md::Gemma3State(c.p, 4096, 128);

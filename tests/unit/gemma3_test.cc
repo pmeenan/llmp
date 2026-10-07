@@ -278,6 +278,12 @@ TEST(Gemma3StateTest, TrainedMaximumFundsLastChunkAndRejectsOnePositionBeyond) {
   EXPECT_EQ(segment.global_mask[130944], 0);
   EXPECT_EQ(segment.global_mask[130945], 0xFC00);
   EXPECT_EQ(segment.global_mask.back(), 0);
+  bool causal = true;
+  for (std::uint32_t row = 0; row < 128; ++row)
+    for (std::uint32_t cell = 0; cell < segment.global_n_kv; ++cell)
+      causal &= segment.global_mask[std::size_t{row} * segment.global_n_kv + cell] ==
+                (cell <= 130944U + row ? 0U : 0xFC00U);
+  EXPECT_TRUE(causal);
   EXPECT_EQ(segment.global_cells.back(), 131071);
   EXPECT_EQ(segment.local_cells.back(), 131071 % 1280);
   EXPECT_GE(*bytes, segment.global_mask.size() * sizeof(std::uint16_t));

@@ -948,6 +948,13 @@ reference path remains available, and source checks still authenticate tokens,
 positions and cache indices. [Bounded mask controls](experiments/gemma-device-masks/README.md)
 compare complete paid layers and captured execution. This transfer closes a
 primitive/input staging gap, not whole-model serving or batching qualification.
+Gemma3 still uses host masks. Its [global host-mask factor](experiments/gemma3-execution/README.md#global-host-mask-factor-2026-10-07)
+fills the causal prefix directly and validates every supplied F16 value with
+constant-interval reductions, preserving positions, indices, funding and local
+visibility checks. One trained-maximum native bookend reduces prefill by 10.68%
+with all 65 heads unchanged. The same host loops remain eligible in Gemma2 and
+Gemma4's reference fallback; the existing graph-owned producer is the stronger
+remaining Gemma3 transfer, requiring per-segment ring and funding controls.
 
 Gemma's explicit default-off per-segment RoPE/cache-store policy transfers the
 existing checked factor-aware fused launcher without enabling generic fusion.

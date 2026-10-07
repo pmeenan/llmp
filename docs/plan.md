@@ -933,7 +933,11 @@ family" guide, and its long-context scaling work.
       initializes all 131,072 positions with normal reclamation and matches all
       65 stock heads exactly on one 64-target corpus tail. Public maximum
       admission, retrieval and performance qualification remain open, including
-      the descriptive 48.7-second native versus 32.9-second stock prefill gap.
+      the descriptive initial 48.7-second native versus 32.9-second stock gap.
+      The [global host-mask factor](experiments/gemma3-execution/README.md#global-host-mask-factor-2026-10-07)
+      retains all exact mask checks and 65 frozen heads, reducing one native
+      first-traversal prefill bookend mean from 49.056 to 43.818 seconds; this is
+      not a new stock-parity or sustained-performance result.
       The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:

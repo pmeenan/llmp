@@ -13,6 +13,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Reduce Gemma3 causal-mask construction and validation work on the host,
+  retaining exact checks of every supplied mask value.
+
 - Admit explicit Gemma3 context up to 8448 with one request slot, preserving
   the 4096 default and two-slot bound at 4K. Checked 8K literal continuation
   and model-switch state restore use the ordinary native runtime.
