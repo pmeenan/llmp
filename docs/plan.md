@@ -618,8 +618,13 @@ family" guide, and its long-context scaling work.
 - [ ] **Current TensorFold quality lead:** the pinned FP8-prompt p3
       Teacher32 comparison agrees 31/32; row 29 reference margin 1.5625
       exceeds the unchanged 1.0 bound. Native host/device-mask heads are
-      exact. Isolate upstream BF16 versus FP8 prompt policy on the same
-      history before attributing arithmetic; no parity or PPL pass.
+      exact. The completed same-history BF16-prompt isolation moves row29's
+      reference margin to 0.6875 without recovering native's argmax, and
+      introduces a strong posterior change at row5. Further frontier/arithmetic
+      qualification remains open; original FP8 quality finding unchanged,
+      no parity or PPL pass. [Controlled diagnostic](experiments/qwen-device-masks/README.md#controlled-bf16-prompt-follow-up).
+- [x] Isolate pinned TensorFold FP8/BF16 prompt policy with one untimed,
+      same-conditioned Teacher32 and actual-consumer/retirement proof.
 - [ ] **Current TensorFold MTP performance lead:** bounded ordinary
       lean generation remains 3.237% slower than public TensorFold, n=2.
       Investigate compatible same-ID selected-head affine Q4 group 32

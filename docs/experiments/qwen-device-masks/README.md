@@ -183,8 +183,8 @@ Natural trajectories agree only 29/32 and first diverge at index 29; the
 teacher result is a separate same-history check. Native full-head bytes are
 identical to both earlier host-mask and device-mask controls, so the transfer
 preserves native arithmetic; that does not pass the TensorFold quality gate.
-A narrow follow-up will isolate TensorFold's FP8 versus BF16 prompt policy
-under the same history before attributing the difference to a kernel.
+The controlled BF16-prompt follow-up below isolates prompt policy under the
+same history; it does not attribute the remaining difference to a kernel.
 
 The maximum absolute log-probability delta over the union of each engine's
 top five is 3.651273648 for TensorFold and 2.347130313 for GGUF; means of the
@@ -195,6 +195,74 @@ one reference2 observation; reference1 uses its own natural history and is
 not pooled into that NLL claim. Both stock natural runs match native on only
 13/32 choices, first diverging at index 13. Natural branching and
 same-conditioning agreement are different quantities.
+
+### Controlled BF16-prompt follow-up
+
+On 2026-10-08 at 06:55:10 UTC, task-entry TensorFold native/Python refs
+remained `f8fe17d24629aedabf90bbf78279dd776e6d62e7` /
+`ed78d6fc204d89d90b045bf033d6551e7714f3a1`. One fresh Python engine used the
+same checkpoint, literal 1536-ID prompt and retained 32-ID native history as
+the preceding reference. Only its upstream prompt-precision policy changed:
+`prompt_precision.set_fp8(False)` before engine construction. This is an
+untimed Teacher32 diagnostic, without natural generation, warmup or native
+execution. The original fast-FP8 competitive comparison remains unchanged.
+
+The [BF16 teacher harness](tensorfold_bf16_teacher.py) uses the public eager
+serial twin, logical context 2048/cache 2052, actual 512/512/512 cuts, BF16
+KV/convolution state and F32 GDN recurrence. Actual prompt consumers report
+576 folded BF16 calls, no lane fallback and no FP8 calls. All 32 full
+248,320-value heads are finite. Package, all eight actual loaded extensions,
+cuBLAS/Lt/cudart, immutable checkpoint authentication, conditioning and
+positive shutdown/container retirement were checked. Torch allocated bytes
+were 77,701,179,904 before / 77,701,200,384 after the teacher, with process peak
+78,757,937,152; these are allocator observations, not physical occupancy or a
+memory-saving result.
+
+| Comparison on the same history | Argmax agreement | Outside unchanged reference-margin 1.0 | Mean NLL first−second | exp(mean NLL delta) |
+| --- | ---: | ---: | ---: | ---: |
+| Native / TensorFold BF16 prompt | 30/32 | none | −0.153334639 | 0.857842606 |
+| TensorFold FP8 / BF16 prompt | 31/32 | none | −0.054086825 | 0.947349849 |
+
+At row 29, both TensorFold policies choose 47149, while native chooses 17723.
+TensorFold's top-two margin moves **1.5625 → 0.6875** and its logit loss for
+native's choice moves **2.6875 → 1.5**. Native's margin/loss remains
+0.828717232. Prompt policy therefore changes this row's classification under
+the existing reference-top-two near-tie bound; it does **not** recover the
+native argmax or establish which arithmetic is correct. The original fast-FP8
+quality finding remains open.
+
+BF16 also introduces a new disagreement at row 5: native/FP8 choose 364,
+BF16 chooses 835. Their top-two margins are 5.618597984 / 5.625 / 0.125;
+BF16's loss for native's choice is 0.125, while native's loss for BF16's
+choice is 8.158902168. The supplied target's NLL is 0.010121244 native,
+0.034020265 FP8 and 2.387459279 BF16. This substantial posterior movement
+precludes a universal closer/correct claim. Maximum union-top-five absolute
+log-probability deltas are 6.991114038 native/BF16 and 4.459060986 FP8/BF16;
+means of per-row union-average deltas are 0.465648910 / 0.403931900.
+These generated-native-history observations are descriptive, not held-out
+PPL or evidence of better quality. Further frontier/arithmetic qualification
+remains open; only the prompt-policy isolation step is complete.
+
+The first diagnostic failed after checkpoint loading, before any teacher
+forward or payload: the fresh public engine initializes its serial twin
+lazily. The corrected harness follows the pinned public `engine.e.twin()`
+sequence and records `serial_initialized_here=true`. The failed application
+retired positively and is not pooled. No native rebuild or inference was
+needed for the correction.
+
+Successful diagnostic source inventory SHA
+`21dab3fe688938133f1c8bbb6268256e1b249d7a0b0e1884ffcb8668c7dfee07`,
+harness SHA `c6aa1503cf8682cb86483d4f25d1dfd5c30a4204e16fee4519b02287984578b2`,
+passed receipt SHA
+`0d13948fa14b5011a7f5f5276c4d084d6d0828600d89c8e5b4999fc04e05e7e2`.
+Compared payload SHAs are native
+`aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74`,
+FP8 `b1aaccb17c4f862a0ed137c606fc06214feaf98fb86235ee9793b77dcbae48aa`,
+and BF16 `791ec7a68621444cce358a524b898fa9ed2945a8d673759cf69e27208ba2c53c`.
+Raw evidence remains outside Git at
+`/tmp/jitllm-m35-coordination/qwen-bf16-prompt-raw/diagnostic2` and
+Spark B `~/scratch/m35-qwen-bf16-prompt/diagnostic2`; it may be deleted when
+M3.5 closes. The standing inputs and replay recipe below recreate the heads.
 
 ### Reference provenance and retained failures
 
@@ -438,3 +506,75 @@ versus `spec-lean-heads.f32`) for each mode. For GGUF use native1's
 `plain-heads.f32`, reference2's `teacher-heads.f32` and a JSON array copied
 from native1's validated `tokens` field. Original aggregate quality is
 reproducible from these source/inputs; retaining old raw outputs is optional.
+
+### Replaying the BF16 policy isolation
+
+First recreate native/FP8 heads with the TensorFold `reference_cycle.py`
+recipe above, or authenticate retained complete finite payloads with the
+recorded conditioning. The BF16 teacher consumes the same standing
+`prompt.json` / `native-histories.json`; no raw result bundle is required.
+Use the same prepared Python source/package, eight extensions, dependency
+image and full checkpoint authentication. Verify the checkpoint receipt's
+exact file stats before/after, as `reference_cycle.py` does; a changed copy
+needs full authentication again. Freeze/hash the source inventory, harness,
+wrapper, input files and preparation receipts before/after acquisition.
+
+Create a short external shell runner with the following body, setting `TREE`
+and a fresh absolute `OUT` directory at its start. Run that file through
+`~/.local/bin/spark-job start --gpu --name qwen-bf16-replay --timeout 600
+--grace 30 --stop-on-fail -- bash RUNNER`, then wait for the installed
+supervisor. Preflight sufficient memory and absence of foreign GPU processes;
+do not overlap reference measurements. The owned container is independently
+removed by the shell trap even on application failure or timeout.
+
+```sh
+set -eu
+H="$HOME/.local/share/jitllm"
+F="$H/references/tensorfold/ed78d6fc"
+INPUT="$H/references/qwen-device-masks/inputs"
+MODEL="$H/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6"
+NAME=qwen-bf16-replay
+IMAGE=sha256:c8dc97d6dab8995704b6c151715f11f84419775a193c96a5ed3399407ad41c20
+mkdir "$OUT"
+test -z "$(docker ps -aq --filter "name=^/$NAME$")"
+retire() { docker rm -f "$NAME" > "$OUT/container-retirement.log" 2>&1 || :; }
+trap retire EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+timeout --kill-after=10s 180s docker run --name "$NAME" --network none \
+  --device nvidia.com/gpu=all --ipc host \
+  --mount "type=bind,src=$OUT,dst=/out" \
+  --mount "type=bind,src=$F,dst=/reference,readonly" \
+  --mount "type=bind,src=$INPUT,dst=/inputs,readonly" \
+  --mount "type=bind,src=$MODEL,dst=/model,readonly" \
+  --mount "type=bind,src=$H/tensorfold-0.6.2-nvfp4-home,dst=/tfhome" \
+  --mount "type=bind,src=$TREE/docs/experiments/qwen-device-masks/tensorfold_bf16_teacher.py,dst=/harness.py,readonly" \
+  --mount "type=bind,src=$TREE/docs/experiments/qwen-device-masks/tf_reference_wrapper.py,dst=/wrapper.py,readonly" \
+  --env HOME=/tfhome --env PYTHONPATH=/reference/package \
+  --env PYTHONDONTWRITEBYTECODE=1 --env TENSORFOLD_PREFILL_ROWS=512 \
+  --env MAX_JOBS=4 --env TORCH_CUDA_ARCH_LIST=12.1 \
+  --entrypoint python3 "$IMAGE" -B /wrapper.py /harness.py \
+  --model /model --inputs /inputs/prompt.json \
+  --histories /inputs/native-histories.json --out /out/teacher \
+  > "$OUT/application.log" 2>&1
+grep -q TENSORFOLD_BF16_DIAGNOSTIC_COMPLETE "$OUT/application.log"
+grep -q TENSORFOLD_REFERENCE_WRAPPER_COMPLETE "$OUT/application.log"
+retire
+test -z "$(docker ps -aq --filter "name=^/$NAME$")"
+test -z "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)"
+```
+
+Accept only return0 plus both completion markers, absent container, empty GPU
+process list, unchanged bindings and all 32 complete finite heads. Inspect
+`teacher/diagnostic.json`: actual BF16 calls must be positive, FP8 calls zero,
+cuts exactly 512/512/512, context/cache 2048/2052, fresh serial initialized and
+teacher history equal to the supplied plain history. The wrapper authenticates
+actual loaded preparation extensions and records runtime libraries. Capacity
+and allocation observations establish this diagnostic's admission, not speed.
+
+Analyze the persisted heads under the workstation shared lock using the same
+`quality.py` command above, once native/BF16 and once FP8/BF16, with the plain
+history key. In the second analysis, fields named `native_*` identify the first
+operand (FP8), not jitLLM. Keep the fixed 1.0 margin and both original reference
+and controlled-policy results; no new performance or PPL claim follows from
+this replay.
