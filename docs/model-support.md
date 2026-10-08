@@ -162,7 +162,7 @@ controls pass all 216 strict target transitions with 73/74, 70/74 and 74/74
 exact heads; one same-geometry short C2 cycle remains 1.49% above stock.
 Actual HTTP joined-prefill/restart controls pass; cold native C2 endpoint
 latency improves 14.03% with exact IDs/usage at a separate measured boundary.
-The subsequent [copy-free owner policy](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads-2026-10-07)
+The subsequent [copy-free owner policy](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads--2026-10-07)
 uses bounded actual roots at the same logical width. Small/wrapped native
 padded/bounded heads and state are exact; fresh stock screens retain 73/74 and
 70/74 exact heads with zero strict differences. One short same-binary n=2

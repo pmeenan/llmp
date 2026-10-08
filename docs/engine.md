@@ -12,6 +12,11 @@ family's own. `jitllm-runtime` serves through it
 same code under their old names (`benchmarks/engine_names.h`,
 `tests/support/paged_node.h`).
 
+**Being replaced (M3.6, D-107).** The per-family runners, plans and graph
+builders described below give way to one engine of shared components over
+jitLLM's own graph IR ([engine-components.md](engine-components.md)). This
+file describes the code as it is, and changes as each piece lands.
+
 ## The node
 
 `paged_node.h`: device 0 with its providers, a stream per model and the
@@ -226,15 +231,13 @@ operations alone ([report](experiments/deepseek-batching/README.md)).
 
 ## Adding a model family
 
-Start from the [optimization inventory's transfer table](optimization-inventory.md#transfers-and-gaps):
-a new runner adopts each technique there whose contract it meets, or the
-table records why it cannot (workflow.md's transfer rule), before the
-family's speed is compared with its reference. An existing kernel's narrow
-selector does not rule out a near-fit consumer: investigate a compatible
-extension with qualified arithmetic, bounds, funding and performance, or
-retain an explicit current-milestone open item. This applies to older
-families too; incompatible math or absent redundant work remains a concrete
-non-applicability reason. Shared mechanisms (graph
+*From M3.6 (D-107, D-109) a family is added as an architecture mapping for
+the importer, plus any component its shape still lacks
+([engine-components.md](engine-components.md)); no family gets a runner of
+its own, and the guidance below describes the M3/M3.5 runners until they
+move.* Start from the [optimization inventory's catalog](optimization-inventory.md#transfers-and-gaps):
+a new runner adopts each technique there whose contract it meets before the
+family's speed is compared with its reference. Shared mechanisms (graph
 capture policy, held direct steps, state reuse across Clear, the pager's
 lazy handoff and handle reserve) come with the skeleton; those still
 written per runner retain their family descriptors while shared source,

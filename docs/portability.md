@@ -3,8 +3,8 @@
 
 # Portability
 
-How jitLLM stays ready for other GPU platforms (AMD, Apple silicon later)
-and operating systems (macOS, Windows) without rewriting large parts of the
+How jitLLM stays ready for other GPU platforms (Apple silicon, then Intel,
+then AMD, D-110) and operating systems (macOS, Windows) without rewriting large parts of the
 tree, while costing nothing on the GB10 (D-026, D-082). The owner's goal
 (2026-09-29): every platform a compile target of the same tree, with shared
 code maximized. Nothing here is built for another platform yet; this is
@@ -97,8 +97,9 @@ provider seam, which the kernel layer could adopt later.
 HIP, a near copy of the CUDA module over `hip*` calls; for Metal, MTLHeap
 placement for backing, command queues for streams, MTLSharedEvent for
 fences, and MTLIndirectCommandBuffer or plain re-encoding for recorded
-work), kernel modules for its operations (GGML's HIP and Metal backends
-are kernel sources to adapt under jitLLM's dispatch, D-053), and a CMake
+work), kernel modules for its operations (GGML's HIP, SYCL and Metal
+backends are kernel sources to adapt under jitLLM's dispatch, D-053,
+D-110), a block decoder per weight and state encoding (D-108), and a CMake
 profile that builds them instead of CUDA's. The device-memory design
 assumes explicit virtual reservation and mapping (D-006); where a platform
 has no equivalent, the provider maps the rules D-033 needs onto what it has,
@@ -273,7 +274,9 @@ value the audit recommended:
 | The request's lease (D-093) | `PagedNode::WithRequest` | three copies of begin-body-end |
 
 What stays each family's own is its plan builder, state layout and steps
-(`*_plan.h`, `*_runner.h`). The image runner shares the weights, the
+(`*_plan.h`, `*_runner.h`); M3.6 removes that too, replacing the runners
+with one engine of shared components over jitLLM's own graph IR
+([engine-components.md](engine-components.md), D-107). The image runner shares the weights, the
 resources and the pinned places; it holds no conversation state or GGML
 plans and records its one step through the device runtime, which the
 skeleton does not force on it. The serving adapters in `runtime/serving.cc`

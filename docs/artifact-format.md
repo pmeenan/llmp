@@ -11,9 +11,17 @@ small MoE have passed import, execution, eviction and restoration. The
 executable reference is the M0 prototype in
 [experiments/artifact-layout](experiments/artifact-layout/README.md). It
 built, verified and page-checked real artifacts from the D-051/D-052 fixtures
-and Gemma 4, and planned three more MoE models. It is not the M5 C++
-importer or verifier; until then it writes M3's and M4's artifacts
-(D-087).
+and Gemma 4, and planned three more MoE models. It is not the native C++
+importer (M3.6, D-109) or the verifier (M5); until the importer lands it
+writes the artifacts (D-087).
+
+**Next version (M3.6, D-108, D-109).** The native C++ importer replaces the
+prototype and the per-checkpoint scripts. The next format version names
+each tensor's encoding independently of any kernel library, records its
+layout separately, and carries the model spec, the folds applied and the
+importer's identity in the manifest; target-specific layouts are prepared
+artifacts of their own. Every v0 artifact is re-imported; nothing migrates
+in place ([engine-components.md](engine-components.md#weight-and-state-formats)).
 
 ## Terms
 
@@ -681,8 +689,8 @@ coalescing limits. The oracle is exact because Python integers do not
 overflow; the C++ verifier must check every product and sum for overflow
 (for example, a shape of `[2^32, 2^32+1]` wraps in unchecked 64-bit
 arithmetic). The M5 C++ verifier (the standalone verification tool in
-features.md) must match these accept/reject decisions. The M5 importer must
-also apply D-009's input validation to the source. Page-in helpers reject
+features.md) must match these accept/reject decisions. The importer (native
+from M3.6, D-109) must also apply D-009's input validation to the source. Page-in helpers reject
 out-of-range groups, chunks, byte ranges and row IDs: token IDs are
 untrusted input.
 

@@ -28,8 +28,9 @@ the main agent to).
 2. **Review.** A separate agent with fresh context reviews the whole
    uncommitted diff against the handoff note. It hunts real defects — data
    loss or corruption, invariant violations, security, broken behaviour,
-   claims in docs the code doesn't back, an optimization without its
-   cross-family dispositions (below) — not style or ceremony. Findings are
+   claims in docs the code doesn't back, an optimization written into one
+   model's code instead of the shared piece it belongs to (below) — not
+   style or ceremony. Findings are
    file:line claims ranked by severity. The reviewer fixes what it finds (or
    hands back to the builder for anything larger), re-verifies with
    targeted tests and the Spark check set (not the full tiers), and
@@ -102,14 +103,12 @@ downgrade a heavy-path change to the light loop on their own.
   use focused correctness, lifetime and matched performance checks for reviewed
   optimization commits. Defer the full regression suite until the performance
   changes are settled; do not run it for each incremental optimization.
-  *Owner clarification, 2026-10-08:* batch related optimization transfers by
-  shared mechanism across applicable families. Implement the batch before one
-  combined focused check set and review, then commit the completed batch.
-  Reuse evidence for unchanged shared code; do not repeat builds, controls or
-  comparisons for each recipient when they cover the same behaviour. Keep
-  recipient-specific correctness and performance checks where execution paths
-  materially differ. Full regression checks remain deferred until the
-  optimization changes are settled.
+  *Owner direction, 2026-10-08 (D-107):* M3.6's migration judges each
+  family against its current implementation with the matched 1% gate
+  ([engine-components.md](engine-components.md#migration-and-its-gate)).
+  The 2026-10-05 deferral of the full regression suite carries over to
+  the migration's incremental steps; each family's move still passes its
+  focused correctness, state and swap controls.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name.
@@ -190,34 +189,21 @@ downgrade a heavy-path change to the light loop on their own.
 - **Notes stay out of the docs.** Handoff and review notes live in the final
   message and the commit, not in the documents they describe. Process detail
   in a design doc costs every future reader and goes stale on commit.
-- **Transfer every optimization across families** (owner, 2026-10-07).
-  A change that speeds up, or removes work from, one model family or
-  runner records in the same commit what it means for every other current
-  family: today DeepSeek V4, Qwen3.8 (native and GGUF), Qwen-Image, Gemma2,
-  Gemma3 and Gemma 4 26B and 31B (drafters with their targets; M2
-  fixtures excluded), plus each family added since. Each gets a
-  disposition in the [inventory's transfer table](optimization-inventory.md#transfers-and-gaps):
-  **adopted** (with its evidence), **not adopted** (measured, with its
-  numbers), **not applicable** (the layout, math, state or executor
-  contract that rules it out) or **open**. Every open one is an unchecked
-  [plan.md](plan.md) item under the current milestone, added in the same
-  commit, whether or not that family's own milestone has closed, and is
-  worked as it is found, not held for a later optimization pass: new
-  kernels and fusions are ported to existing models too, including those
-  whose speed gaps an earlier milestone accepted (owner, 2026-10-07).
-  A historical selector's shape, context, quant or layout bound alone is
-  not "not applicable": investigate a compatible extension, qualify its
-  bounds, arithmetic, funding and performance, and leave an explicit open
-  current-milestone item if unfinished. Apply this retroactively too.
-  Concrete incompatible math or absence of the work being removed can
-  still establish non-applicability (owner, 2026-10-07).
-  "Ignores the hint", "audit", "no speed claim" and "unmeasured" are not
-  dispositions. A mechanism that is not model-specific goes into the
-  shared engine ([engine.md](engine.md)) rather than one runner, so later
-  families inherit it, and a new family starts from the transfer table
-  (engine.md, "Adding a model family"). A transfer is screened like any
-  optimization, with focused correctness and a matched comparison; one
-  that measures no gain is recorded as not adopted and closes the item.
+- **Optimize once** (D-107, owner, 2026-10-08; replaces the 2026-10-07
+  per-family transfer rule). An optimization lands in the piece of the
+  engine it belongs to (a component, a fusion pattern, the format layer,
+  the state lifecycle, the wave composer, prefill or decoding-mode
+  orchestration, the planner or the pager), never in one model's code, so
+  every model that uses that piece gets it. A change that would need
+  model-specific execution code is a design question for
+  [engine-components.md](engine-components.md), not a shortcut. Its
+  evidence covers the models whose execution path it materially changes,
+  with focused correctness and a matched comparison; models whose paths are
+  unchanged reuse that evidence. The [optimization inventory](optimization-inventory.md)
+  keeps the catalog of techniques, measurements and rejected kernels.
+  Until a family has moved to the shared engine (M3.6), optimizations
+  touch its code only as kernel-level work behind the per-operation
+  contract; bug and security fixes are not restricted.
 - **Fix the docs the change makes wrong** (status paragraph, plan checkbox,
   affected doc, support matrix) in the same change. Docs that describe
   capability are release artifacts; overclaiming is a defect the reviewer

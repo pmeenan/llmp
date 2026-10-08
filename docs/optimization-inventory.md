@@ -225,7 +225,7 @@ not a promise to recover the earlier summed copy duration. Broader context,
 ring/chunk geometries, cohorts, memory/swap and sustained qualification remain
 open; no endpoint timing was made.
 
-The [Gemma3 copy-free transfer](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads-2026-10-07)
+The [Gemma3 copy-free transfer](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads--2026-10-07)
 admits no-softcap D256/H8/C2 under the same checked actual-root, mask, stride
 and common logical partition contract. Exact bounded occupancy is queried;
 legacy/equal-width paths and internal defaults remain unchanged. Four poisoned
@@ -395,15 +395,19 @@ they have no text-model equivalent.
 
 ## Transfers and gaps
 
-This table is the record [workflow.md](workflow.md)'s transfer rule asks for
-(owner, 2026-10-07): every technique names its consumers, and every other
-current family is adopted, not adopted (measured), not applicable (with the
-contract that rules it out) or open, with an open item in [plan.md](plan.md).
-The 2026-10-07 source audit below covers the full table and material later
-runtime mechanisms, including rejected kernels' reusable pieces. Recording an
-open port completes its inventory disposition, not its implementation or model
-qualification. Each open consumer has an unchecked item in plan.md; it is work
-for M3.5 even if an earlier milestone accepted that family's speed gap.
+**Frozen 2026-10-08 (D-107).** The per-family transfer rule this table
+served is withdrawn: each technique now lands once in the shared engine, and
+[engine-components.md](engine-components.md#retired-transfer-items) maps
+every cell that was open to where it lands. The table stays as the catalog
+of techniques, their measurements and their limits, which the components,
+patterns and implementations build on; its consumer columns describe the
+per-family code as it was at `cc70d69`.
+
+This table was the record the 2026-10-07 transfer rule asked for: every
+technique names its consumers, and every other family is adopted, not
+adopted (measured), not applicable (with the contract that rules it out) or
+open. The 2026-10-07 source audit below covers the full table and material
+later runtime mechanisms, including rejected kernels' reusable pieces.
 
 | Technique | Already used | Missing or conditional consumer | Action and evidence |
 | --- | --- | --- | --- |
@@ -456,6 +460,9 @@ for M3.5 even if an earlier milestone accepted that family's speed gap.
 | **T47** Portable text seeds and local draft-vocabulary adaptation | No implementation; deferred by the owner to later optimization passes | Models with a selectable draft head and full target verification | Tokenize curated prose/code/output-format strings with each model's tokenizer, including boundary variants and actual output/stop delimiters; do not share token IDs or match decoded labels alone. Combine seeds with representative answer frequencies, then separately test bounded local output/verifier counts and charged between-request updates. Keep frozen held-out data independent, a broad fallback and unchanged target/distribution gates. [Study and follow-up](experiments/qwen38-own-draft-vocab/protocol.md) |
 
 ### Complete cross-family dispositions — 2026-10-07
+
+Frozen 2026-10-08 with the table above; open cells are retired to the
+[component engine](engine-components.md#retired-transfer-items).
 
 This is the per-consumer record; the preceding table and later experiment
 paragraphs retain detailed measurements and historical choices. **A** means

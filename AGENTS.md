@@ -85,7 +85,12 @@ affected docs. Until then, these govern.
   Import repacks weights into contiguous, indexed dependency groups
   (4 KiB-aligned on disk, paged in 2 MiB chunks with direct reads, which
   may coalesce; off by default, BP-P1); v0 uses safetensors shards with a jitLLM manifest/index and no
-  page-in hashing. (D-009, D-018, D-035, D-056)
+  page-in hashing. From M3.6 a native importer (no Python) reads containers
+  and formats by capability and architectures through declarative mappings,
+  and the artifact carries the model spec. Weights stay resident in their
+  source encoding (or an opt-in lossy transcode) and decode on-chip;
+  resident weights never grow beyond it.
+  (D-009, D-018, D-035, D-056, D-108, D-109)
 - **C++23, Clang-first, native hot path.** No interpreter in the serving,
   paging, or scheduling path. NVCC is the CUDA compiler with Clang as host
   compiler where validated. Build-time tooling may use Python. (D-010)
@@ -99,15 +104,22 @@ affected docs. Until then, these govern.
   contract; several
   coexist, and the plan selects per operation, architecture and shape, by
   correctness and speed. No runtime plugin ABI. (D-028, D-052, D-053, D-080)
+- **One engine of shared components; optimize once.** Models are specs of
+  components (graph fragment, weights, state contract, batching,
+  partitioning, patterns) over jitLLM's own graph IR, not per-family code;
+  every pipeline uses the same blocks. An optimization lands in the
+  component, pattern or lifecycle piece it belongs to, never in one model.
+  Sharding is TP, PP and EP of any shape, chosen to minimize cross-device
+  traffic. M3.6 builds it. (D-107)
 - **NVIDIA first; portable boundaries when free.** The core holds no vendor
   types; device memory, paging, and transport go through narrow provider
   interfaces, with CUDA VMM the only implementation for now. Discrete
   NVIDIA GPUs are a secondary target: one device-memory domain plus the
   SSD, fast swaps with one model active; host RAM is not a tier (designed
-  for as a separate domain, not built). Apple silicon is in scope later and
-  AMD is plausible: do nothing for them, sacrifice nothing on the GB10, but
-  don't foreclose them. Intel is out. The CPU-only build and the fake
-  backend are the guardrail. (D-026, D-082)
+  for as a separate domain, not built). Later ports, in order: Apple
+  silicon, Intel Arc, then AMD; do nothing for them yet, sacrifice nothing
+  on the GB10, but don't foreclose them. The CPU-only build and the fake
+  backend are the guardrail. (D-026, D-082, D-110)
 - **Develop on x86-64 Linux, cross-build, test on Spark over SSH.** Native
   builds and CPU tests, including AArch64 CPU tests under qemu-user, run on
   the workstation; ARM concurrency, VMM, kernel, GPU, RDMA/NCCL, and
@@ -190,11 +202,12 @@ the commit gate.
 | [docs/upstream/](docs/upstream/README.md) | Per upstream project, what to send upstream: fixes, limitations and jitLLM's patches, each entry a standalone handoff |
 | [docs/async-model.md](docs/async-model.md) | The D-048 task/completion design: thread roles, submission/completion protocol, cancellation versus retirement, bounded queues; the internal contract M2 builds on |
 | [docs/runtime-serving.md](docs/runtime-serving.md) | How `jitllm-runtime` serves models (D-096): the engine module, `[models]` in the configuration, registration, the full swap, turns, the `chat` and `swap-table` commands, and the chat route with its listeners, intake bounds and connections (D-097) |
+| [docs/engine-components.md](docs/engine-components.md) | M3.6's design: components, the graph IR, the format layer and its ladder, the native importer, execution, partitioning, the migration gate and where each retired transfer lands |
 | [docs/engine.md](docs/engine.md) | The engine's runner skeleton and how a new model family plugs in: what a runner holds, its life, and where the long-context work goes |
 | [docs/artifact-format.md](docs/artifact-format.md) | The experimental v0 prepared-artifact format (D-056): container, manifest/index schema, layout and page-in rules, worked examples |
 | [docs/model-support.md](docs/model-support.md) | The model support matrix: each model and drafter jitLLM runs, its pin, artifact, template hash, tokenizer, decoding modes, evidence, divergences and status |
 | [docs/portability.md](docs/portability.md) | Other GPU platforms and OSes: where vendor and Linux code may live (the boundary check), the device runtime and platform seams, the registry's primitive-fallback rule and each model's minimum primitive set, the runners' shared skeleton, distribution |
-| [docs/optimization-inventory.md](docs/optimization-inventory.md) | Cross-family optimization transfers, current consumers and shape/format limits, including useful pieces of rejected kernels; read before proposing another kernel experiment |
+| [docs/optimization-inventory.md](docs/optimization-inventory.md) | The catalog of optimization techniques with their measurements, consumers as of `cc70d69` (the per-family transfer record, frozen by D-107) and shape/format limits, including useful pieces of rejected kernels; read before proposing another kernel experiment |
 | [docs/tokenizer.md](docs/tokenizer.md) | The native tokenizer, chat renderers, stop tokens and sampling: pre-tokenizers, bounds, Unicode tables, agreement with the references, template hashes |
 | [docs/client-api-baseline.md](docs/client-api-baseline.md) | The M5 inference API contract: routes, client profiles, front-door, status and keepalive rules; links the Ollama, vLLM and OpenRouter assessments |
 | [docs/ideation.md](docs/ideation.md) | The full original reasoning and source links behind a constraint. Long; read the section you need, not the whole file |
@@ -254,7 +267,14 @@ the commit gate.
 
 ## Current status
 
-**M0 through M3 are complete; M3.5 is in progress.**
+**M0 through M3 are complete; M3.6 is in progress; M3.5 is parked.**
+On 2026-10-08 the owner stopped per-family optimization transfers and
+inserted [M3.6](docs/plan.md): one engine of shared components over
+jitLLM's own graph IR, a format layer that keeps weights compressed, a
+native importer, and every current model migrated within 1% of its current
+speed ([design](docs/engine-components.md), D-107 to D-110). M3.5's
+remaining families, formats and pipelines resume on that engine; the
+status below is M3.5's at `cc70d69`.
 [Gemma31 gap closing](docs/experiments/gemma-gap-closing/README.md) narrowed the
 bounded serving gap to stock from 3.15%/3.51% (C1/C4) to 0.73%/1.36%. It did
 this with state reuse across Clear, graph capture beside eager execution and
@@ -283,8 +303,9 @@ profile. Long retrieval, turn reuse and continuing-context swaps pass in
 
 The owner accepts the remaining Qwen/DeepSeek speed gaps for M3 and defers
 further tuning to **M9's full-engine optimization pass** (2026-10-04);
-optimizations found on any family, new kernels and fusions included, are
-ported to Qwen/DeepSeek as they are found (2026-10-07).
+optimizations found on any family, new kernels and fusions included, were
+ported to Qwen/DeepSeek as they were found (2026-10-07) until D-107 made
+each land once in the shared engine (2026-10-08).
 The latest matched Qwen C4 rate is about 15% below fast Mia; the gap and
 long-context misses remain measurements, not parity passes. Quality,
 memory and exact-state requirements remain unchanged. The
@@ -295,7 +316,7 @@ four-slot numerical control, 1,567-test Spark suite, ARM cross/qemu suite
 and package install/purge fixture pass. Whole shipment tiers remain owed
 before publishing a package.
 
-M3.5 is in progress. A [lazy handoff](docs/experiments/vmm-batching/README.md)
+M3.5 (parked). A [lazy handoff](docs/experiments/vmm-batching/README.md)
 (D-033 amended) moves swap unmaps beside page-in reads: the same 32-swap table
 now peaks at 8.53 s LLM-to-LLM, 3.7 s into the image; a bounded handle
 reserve and device zero-fill cut cold state growth 38%. Native token histories now have explicit capacity
@@ -316,14 +337,15 @@ The later 64-row transfer improves native prefill 10.5%/2.8%; fresh stock
 bookends leave Gemma2 level and Gemma3 1.8% slower on the paid cycle.
 Larger rows, mixed-width roots/cohorts and broader sustained gates remain open.
 The retroactive optimization inventory audit is complete; its implementation
-backlog remains open in M3.5. The internal partial-weight foundation preserves
+backlog was retired to M3.6's shared engine (D-107). The internal partial-weight foundation preserves
 exact recovery
 and reduces prepared swap reads, but its cold-switch gate remains open and
 ordinary serving keeps full swaps. Qwen native/GGUF causal masks and headed
 native MTP masks now share the GPU producer, with exact heads/state and joined
 spill/restore controls. Then come approved model checkpoints, legacy fixtures,
 Bonsai, formats with
-EXL3 in focus, the remaining batching/skeleton gaps, media file inputs,
+EXL3 in focus, the remaining batching gaps (the skeleton gaps moved to
+M3.6), media file inputs,
 Clef/Clef-flash over the Jev API and media generation routes (D-101).
 That scope includes batching compatible decision and image requests/phases.
 [Plan](docs/plan.md), [family set](docs/m35-families.md). M4 follows on two

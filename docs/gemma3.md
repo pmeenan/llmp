@@ -253,7 +253,7 @@ ring and short screens have zero strict differences over 216 targets, with
 stock. Actual joined-prefill HTTP counters and matched cached restart controls
 pass; the cold native C2 endpoint bookend improves 14.03% with exact generated
 IDs/usage. That endpoint boundary is distinct from the runner comparison.
-The [copy-free transfer](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads-2026-10-07)
+The [copy-free transfer](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads--2026-10-07)
 now selects bounded actual-root reads for unequal D256/H8/C2 decode, preserving
 logical common partitions and unchanged tile arithmetic. Padded and bounded
 native heads/state are exact at representative small and wrapped-ring shapes;

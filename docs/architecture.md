@@ -26,6 +26,7 @@
 | Kernel dispatch and the M2 backend proof | [backend-proof.md](backend-proof.md), [exl3-bringup.md](exl3-bringup.md), [first-slice.md](first-slice.md) | D-051–D-053 |
 | Serving in the runtime: the engine, the configured models, the full swap and the serving commands (M3) | [runtime-serving.md](runtime-serving.md), [swap.md](experiments/fast-swap/swap.md) | D-086, D-090, D-093, D-096 |
 | The engine: the paged node, the runner skeleton (weights, live state and spill, planned shapes, graph runs, speculation's snapshot, resources) and how a model family plugs in | [engine.md](engine.md) | D-053, D-090, D-093, D-096 |
+| The component engine M3.6 builds: components, jitLLM's own graph IR, the format layer, the native importer, partitioning and the migration gate | [engine-components.md](engine-components.md) | D-107, D-108, D-109, D-110 |
 | Other GPU platforms and operating systems: boundaries, the registry's primitive fallbacks, the runners' shared skeleton, distribution | [portability.md](portability.md) | D-026, D-053, D-082, D-098 |
 | Cluster membership, transport and placement | [cluster-design.md](cluster-design.md) and [the conductor section](#conductor-ownership-and-admission) | D-037–D-039 |
 | Inference API contract | [client-api-baseline.md](client-api-baseline.md) and the assessments it links | D-040–D-047 |
@@ -173,8 +174,8 @@
 - **Portability posture.** NVIDIA first. The core holds no vendor types;
   device memory, paging, and transport sit behind narrow provider interfaces
   with CUDA VMM as the only implementation for now; platform properties are
-  probed capabilities. Apple silicon and AMD single machines are possible
-  later targets; nothing is done or sacrificed for them now (D-026).
+  probed capabilities. Apple silicon, Intel Arc and AMD are later ports, in
+  that order (D-110); nothing is done or sacrificed for them now (D-026).
 - **Distribution.** Users install from a signed apt repository, Spark first;
   the developer toolchain path is separate (D-027, D-012). The
   [installed layout](#installed-layout), service user and unit are settled

@@ -481,6 +481,20 @@ enabled `tailscaled`, and enabled HTTPS certificates for the tailnet
   reaches the Sparks by LAN name.
 
 
+## Port test hosts (2026-10-08)
+
+Hosts the owner made available for the later ports (D-110). Nothing is
+built or measured on them yet; each port records its inventory here when
+it starts.
+
+| Host | Hardware | Used for |
+| --- | --- | --- |
+| `mac` | Apple M5 Max, 128 GB unified memory | The Apple silicon port, the first after M3.6 and the families |
+| `plex` | Intel Arc Pro B50 | The Intel port, after Apple |
+| `Pat-Desktop` | NVIDIA GPU on Windows; the owner's desktop, not reachable over SSH today | The Windows operating-system port |
+
+No AMD hardware is available yet.
+
 ## Crash-dump handling (2026-09-23)
 
 Checked read-only on the workstation, `spark` and `spark-b` for the

@@ -39,6 +39,209 @@ one Spark and on two.
 
 ---
 
+## D-110: Apple, then Intel, then AMD: Intel GPUs are back in scope as a later platform  (2026-10-08, status: accepted by the owner, 2026-10-08; amends D-082's "Intel is out for now", meeting its reopen condition; sharpens D-026's order of ports; nothing is built for these platforms in M3.6)
+
+**Decision.** The owner, on 2026-10-08: "Intel is out" was "for now".
+After the initial work (M3.6's component engine and M3.5's resumed families), the
+ports come in this order:
+
+1. **Apple silicon**, on `mac` (Apple M5 Max, 128 GB unified memory);
+2. **Intel Arc**, on `plex` (Intel Arc Pro B50);
+3. **AMD**, eventually; no hardware is available yet.
+
+An NVIDIA host running Windows is available for the operating-system port.
+Each port gets its own decisions when it starts (D-026).
+
+**Context.** D-082 kept Intel out to keep the first discrete round small.
+D-107's component engine makes a backend a set of operation
+implementations and per-encoding decoders under a backend-neutral IR, and
+D-108's format ladder keeps every model running on hardware that lacks a
+format, so a later platform costs a backend rather than a redesign.
+
+**Consequences.** The core, the IR, the component catalog and the artifact
+name no vendor and no kernel library (D-107). Apple's unified memory has
+the Spark's shape (one budget, D-004); the B50 is discrete like the 3080 Ti
+and reuses D-082's design. GGML's Metal, SYCL and HIP backends are kernel
+sources to adapt under jitLLM's dispatch; jitLLM's own CUDA kernels are
+not portable, so each port starts from the primitive fallback and the
+decoders. features.md's platform rows and environment.md's hosts follow.
+
+**Reopen if** the owner reorders the ports, or a port proves to need
+something D-107's backend seam cannot express.
+
+## D-109: A native importer reads containers and formats by capability and architectures through declarative mappings; the model spec lives in the artifact  (2026-10-08, status: accepted by the owner, 2026-10-08; implements D-009's owned import pipeline in the distribution; amends D-056's manifest with the model spec, encodings, layouts and applied folds (a new artifact format version, re-import, no migration); replaces the per-checkpoint Python importers; changes how checkpoints are approved, not who approves them)
+
+**Decision.**
+
+- **Native, distributed, no Python.** The importer is C++ in the
+  distribution. Build-time tools may still use Python (D-010); nothing a
+  user runs to import a model does.
+- **Containers and formats by capability.** One reader per container:
+  GGUF; safetensors with `config.json` (Hugging Face, including AWQ, GPTQ,
+  ModelOpt NVFP4/MXFP8 and compressed tensors); diffusers pipelines, whose
+  components become a D-089 composition; MLX; EXL3. Each normalizes
+  every tensor to an encoding, a layout and a shape (D-108) and exposes the
+  source metadata. Nothing in a reader is family-specific.
+- **Architectures as data.** What cannot be generic is an architecture's
+  tensor names and the semantics no metadata states (Gemma's `(1 + w)`
+  norms, which GGUF conversion folds and Hugging Face checkpoints leave
+  implicit; Qwen3.8's `A = −exp(A_log)`). Each architecture is a declarative
+  mapping: tensor-name patterns to component roles, configuration keys to
+  component parameters, and folds chosen from a fixed catalog compiled into
+  the importer. A mapping cannot run code. Mappings and checkpoints are
+  untrusted input, bounds-checked and validated (D-009).
+- **The spec lives in the artifact.** The manifest records the model spec
+  (pipeline kind, residual stream, side inputs, per-layer components and
+  parameters, feature taps, heads), every tensor's encoding and layout, the
+  folds applied and the importer's identity. The runtime validates the spec
+  against its compiled component catalog and refuses what it cannot run.
+- **Admission is a standard gate.** A checkpoint of a known architecture is
+  supported once it passes logits and perplexity against a reference
+  engine on a fixed corpus plus the state, spill and swap controls; the
+  approved list is data, not a profile in code. The owner still approves
+  which checkpoints model-support.md claims (AGENTS.md).
+
+**Context.** M3 and M3.5 import through per-checkpoint Python scripts under
+`docs/experiments/` with family-specific folds, and each runner admits one
+checkpoint by profile equality, so a new size of a known architecture is a
+code change and the import path is not something users can run. llama.cpp
+meets the same limit with per-architecture tables in C++; jitLLM keeps the
+tables as validated data.
+
+**Consequences.** Adding a model of a known shape is a mapping entry; a new
+shape adds components (D-107). Today's v0 artifacts are re-imported once the
+new format version lands. The importer, a parser of external input and the
+writer of an on-disk format, takes the heavy path (workflow.md). M5's
+importer milestone item becomes the extension of this one rather than its
+start.
+
+**Reopen if** an architecture's mapping needs logic a fold catalog cannot
+express safely, or a container cannot be normalized without
+family-specific code.
+
+## D-108: Weights stay resident in their source encoding and decode on-chip; encoding and layout are separate; a fixed ladder handles formats the hardware lacks  (2026-10-08, status: accepted by the owner, 2026-10-08; amends D-056's representation descriptors (encodings named independently of kernel libraries, layouts separate); generalizes D-052's preserved-representation and bounded-reconstruction rules to every format; makes D-026's "vendor layouts as optional alternatives" per-target prepared artifacts)
+
+**Decision.**
+
+- **Encoding and layout.** A tensor's encoding is its numeric content:
+  codes, scales, their formats and block geometry (Q4_K, NVFP4, MXFP8,
+  EXL3 trellis K=4, BF16). Its layout is the byte arrangement: block
+  interleave, scale placement, tile swizzle, alignment. The artifact names
+  encodings independently of any kernel library and records layouts
+  separately; a model may mix encodings tensor by tensor.
+- **Resident weights never grow** beyond their source encoding. For a
+  format the hardware lacks:
+  1. a native kernel;
+  2. on-chip decode (registers, shared memory) to a supported
+     lower-precision path;
+  3. a lossless relayout at import, only if no larger than the source
+     (page alignment and declared over-read excepted);
+  4. a lossy transcode, only as an opt-in per-alias quality flag;
+  5. at worst, on-chip decode to BF16, accepting slower execution.
+- **Decode never expands into device memory.** A decode-shaped product
+  reads each weight once, compressed, and expands it on-chip. For prefill,
+  whatever measures fastest on the Spark: on-chip tile decode where it is
+  competitive, a transient expansion into funded workspace where it is
+  faster (D-052's bounded reconstruction). Neither is ever needed for
+  correctness or fit.
+- **Decoders compose.** Each backend has a block decoder per encoding under
+  shared tiling templates (vector, matrix, grouped), and fused kernels take
+  a decoder per input, so mixed per-tensor encodings are optimized, not
+  only supported.
+- **Transforms run at import**, never at page-in (D-081): a target layout is
+  a prepared artifact of its own. A relayout during the device copy is
+  adopted only if measured free.
+- **State has encodings too.** Quantized KV and other state are in scope
+  for every model; a lossy state encoding is a per-alias setting, offered
+  through presets or set by the owner, off by default.
+
+**Context.** The owner, 2026-10-08: compressed residency is "key to
+fitting some of the models in memory and keeping memory bandwidth in
+check"; expanding on-chip is fine, but "in VRAM is a problem because decode
+is memory bandwidth constrained"; a 4-bit packing must not grow to 16 bits
+and stop fitting, and "a slower execution is the tradeoff". For prefill,
+"the real decision is whatever is fastest given the memory bandwidth
+constraints of the Sparks". v0's representation families are named after
+kernel libraries (`ggml`, `exl3`, `plain`), and formats are hard-wired into
+family bindings (Gemma2's Q8_0 paths, Qwen3.8's `Qwen38Mxfp8`). GGML's
+cuBLAS path already expands one weight into pool scratch per prefill
+product and frees it.
+
+**Consequences.** A new encoding is a decoder per backend plus a layout
+descriptor and runs every product shape before any tuned kernel. The
+discrete `sm_86` target, which has no FP4 or FP8 tensor cores, is the first
+proof (Qwen3.8's native NVFP4/MXFP8 tensors, checked product by product
+against CPU references; the whole model does not fit the 3080 Ti). The
+registry's selection (D-053) learns each encoding's crossover between
+on-chip decode and transient expansion by measurement. The artifact format version changes
+with D-109's.
+
+**Reopen if** an encoding cannot be decoded on-chip at usable speed on a
+target, or a measured case shows per-target artifacts costing more than a
+relayout at page-in.
+
+## D-107: One engine of shared components over jitLLM's own graph IR replaces the per-family runners; optimizations land once  (2026-10-08, status: accepted by the owner, 2026-10-08; amends D-096's engine structure (one runner, one serving adapter per pipeline kind), D-028's and D-053's role of GGML (a kernel source, not the graph); implements D-068's rule that shapes extend build-time contracts; withdraws the owner's per-family transfer directive of 2026-10-07 and workflow.md's transfer rule; its migration gate is stricter than D-085's coarse speed check for M3.6)
+
+**Decision.** The owner, on 2026-10-08, stopped the per-family transfer
+work and directed the refactor now, before more families, formats or
+platforms: "take the architecture hit as early as possible to make adding
+new models, families and quants as easy as possible".
+
+- **Components.** A component declares its graph fragment, weight roles,
+  state contract (size, ranges, spill/restore, snapshot or truncation for
+  rollback, adoption), batching capability (joined across requests or per
+  owner), partitioning options with their traffic, the fusion patterns it
+  takes part in, and a CPU reference. A model is a spec of components
+  (D-109); families have no code of their own.
+- **jitLLM's own graph IR and planner**, modelled on GGML's graph and
+  taking the best of other engines. The IR names operations, tensors,
+  encodings and layouts, never a vendor or library type. Fusion is a
+  pattern rewrite over the generic graph, and component boundaries never
+  block it; implementation selection stays D-053's. GGML is one source of
+  kernels.
+- **One runner and execution layer**: slot and state lifecycle, wave
+  composition, prefill orchestration and decoding-mode orchestration (any
+  number of drafters, D-068) derived from the components' contracts; one
+  serving adapter per pipeline kind. Every pipeline (LLMs, encoders, image
+  diffusion and VAEs, embeddings, decision models, later speech) uses the
+  same building blocks.
+- **Partitioning**: tensor, pipeline and expert parallelism with any number
+  of splits and mixed (TP=2 × PP=2), over configured or discovered topology
+  (D-019); the planner chooses the assignment that minimizes cross-device
+  traffic, usually whole experts per device for MoE.
+- **Optimizations land once.** The per-family transfer rule and M3.5's
+  open transfer item are retired; each technique lands in its component,
+  pattern or lifecycle piece ([engine-components.md](engine-components.md#retired-transfer-items)).
+  Kernel-level work behind the per-operation contract continues meanwhile.
+- **Migration gate.** Each family moves with its current implementation as
+  the baseline: no more than 1% slower at worst, preferably at least as
+  fast, solo and at its qualified cohorts; quality equal or better against
+  its oracle; memory, state and swap controls unchanged. Bit-identity with
+  the old code is not required. New models afterwards target 1–2% of the
+  best competing engine, faster where possible.
+
+**Context.** On 2026-10-08, about 35.5k lines were family-specific against
+8.3k of shared skeleton; Gemma2's and Gemma3's runners differed by about 100 lines
+and had drifted apart; slot-lifecycle methods were 80–99% alike across
+families with no common interface; hyper-connections existed twice and MoE
+three ways; the open transfer item held 128 cells for 47 techniques. The
+2026-10-07 directive existed because duplicate implementations kept missing
+work already done; the owner: "The correct fix is … to not have duplicate
+implementations in the first place so we can optimize once and benefit
+everywhere."
+
+**Consequences.** M3.6 builds this, and M3.5 resumes its open families,
+formats and pipelines on it as its first test. The old runner, serving
+class and graph builder of each family are deleted when it passes the gate.
+Kept-state layout IDs are bumped and old kept state discarded (D-105);
+settings and calibration are re-keyed from family to spec (D-103). The 1%
+gate needs matched, bookended timing able to resolve 1%, fixed before the
+first run.
+
+**Reopen if** a family cannot meet the gate on the shared engine without
+family-specific execution code, or the IR cannot express a pipeline the
+plan requires.
+
 ## D-106: A request's steps run on its driver, under a lease that counts them  (2026-10-06, status: accepted under the owner's direction of 2026-10-06 to remove the hot path's thread handoffs; amends D-048's thread roles and D-094's step path for a held request's steps; the device-execution provider's calls are also made by the driver for its own stream)
 
 **Decision.** Within a request that holds its lease (M3's lease per
@@ -1032,7 +1235,7 @@ independent of token counts; they do not guarantee every possible 1M-token
 input fits. Existing request shapes remain valid; API version stays 1
 (D-062), and no physical model-fit claim follows from intake acceptance.
 
-## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057; its engine's CUDA use moved behind the device runtime on 2026-09-29, noted below)
+## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057; its engine's CUDA use moved behind the device runtime on 2026-09-29, noted below; engine structure amended by D-107 (one runner of shared components, one serving adapter per pipeline kind))
 
 **Decision.** M3's swap path leaves the harnesses for `jitllm-runtime`
 ([runtime-serving.md](runtime-serving.md)):
@@ -2343,7 +2546,7 @@ package may take them); a libstdc++ update replaces or redefines the
 macro (a hardened mode or C++26 contracts); or a third-party component
 cannot build with it.
 
-## D-082: Discrete NVIDIA GPUs are a secondary target: device memory and the SSD, one active model, fast whole-model swaps; system RAM as a tier is designed for, not built  (2026-09-27, status: accepted; amends D-004's single hardware target and D-072's GB10-only judgment; sharpens D-026's posture on Apple silicon; assumes D-081's device-VMM residency and host-VMM landing zone; its M4 and M5 are M6 and M7 under D-087, and fast-swap work there follows the two-Spark swap)
+## D-082: Discrete NVIDIA GPUs are a secondary target: device memory and the SSD, one active model, fast whole-model swaps; system RAM as a tier is designed for, not built  (2026-09-27, status: accepted; amends D-004's single hardware target and D-072's GB10-only judgment; sharpens D-026's posture on Apple silicon; assumes D-081's device-VMM residency and host-VMM landing zone; its M4 and M5 are M6 and M7 under D-087, and fast-swap work there follows the two-Spark swap; "Intel is out for now" amended by D-110 (Apple, then Intel, then AMD))
 
 **Decision.** The owner, on 2026-09-27, added discrete NVIDIA GPUs (first
 the workstation's RTX 3080 Ti) as a target "to keep the code flexible
@@ -5119,7 +5322,7 @@ or a measured need for shared binary packages makes maintaining this explicit
 closure more work than a package manager. Preserve pinned inputs, cross-build
 separation and D-017's profile exclusion under any replacement.
 
-## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054; coalescing off by default after BP-P1's A/B under D-085)
+## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054; coalescing off by default after BP-P1's A/B under D-085; representation descriptors and manifest amended by D-108 and D-109 (encodings and layouts, the model spec; a new format version))
 
 **Decision.** Prepared artifacts use the [v0 format](artifact-format.md),
 experimental under D-018:
@@ -5570,7 +5773,7 @@ direct import from the store; the single importing node becomes a
 bottleneck in larger clusters; or users need automatic space management,
 which requires its own decision.
 
-## D-053: jitLLM owns kernel dispatch; kernels are swappable build-time implementations selected per operation  (2026-09-22, status: accepted; amends D-028, specializes D-013 and D-052; primitive-fallback rule noted 2026-09-29)
+## D-053: jitLLM owns kernel dispatch; kernels are swappable build-time implementations selected per operation  (2026-09-22, status: accepted; amends D-028, specializes D-013 and D-052; primitive-fallback rule noted 2026-09-29; amended by D-107 (planning over jitLLM's own graph IR, fusion as pattern rewrite))
 
 **Decision.** jitLLM's runtime owns operation dispatch on every device. That
 covers:
@@ -5719,7 +5922,7 @@ fast plans' already are (D-085, D-092's exact mode). This constrains new
 operations from now on; where it does not yet hold is audited, with each
 model's minimum primitive set, in [portability.md](portability.md#the-registry-rule).
 
-## D-052: Require an EXL3 companion and upstream performance gates in the early backend proof  (2026-09-22, status: accepted; amended by D-085; amends D-028 and D-051; its M3 and M4 gates are M5's and M6's under D-087, and flagship EXL3 serving comes first in M4)
+## D-052: Require an EXL3 companion and upstream performance gates in the early backend proof  (2026-09-22, status: accepted; amended by D-085; amends D-028 and D-051; its M3 and M4 gates are M5's and M6's under D-087, and flagship EXL3 serving comes first in M4; its preserved-representation and reconstruction rules generalized to every format by D-108)
 
 **Decision.** Keep the first GGML/FP16 control, and require native EXL3
 execution alongside it in M2, before settling the operation contract and
@@ -7086,7 +7289,7 @@ first CI `.deb` build in M1.
 CLA), or a contributor base needs a maintainer structure that D-016 does not
 describe.
 
-## D-028: GGML is the first compute substrate; optional backends are build-time modules, not a runtime plugin ABI  (2026-09-21, status: accepted; amends D-010; EXL3 timing and artifact scope amended by D-052; dispatch ownership amended by D-053)
+## D-028: GGML is the first compute substrate; optional backends are build-time modules, not a runtime plugin ABI  (2026-09-21, status: accepted; amends D-010; EXL3 timing and artifact scope amended by D-052; dispatch ownership amended by D-053; its graph role amended by D-107 (GGML is a kernel source, not the graph))
 
 **Decision.** The first vertical slice (M3) executes on GGML/GGUF with jitLLM
 supplying the buffers behind tensors, so weights and state live in
@@ -7148,7 +7351,7 @@ signing keys are an M7 decision.
 **Reopen if.** The primary platform stops being Debian-based, or users need
 container-only distribution instead.
 
-## D-026: NVIDIA and DGX Spark first; keep the memory, paging, and transport boundaries portable when it costs nothing  (2026-09-20, status: accepted; discrete NVIDIA GPUs and Apple silicon's later scope in D-082)
+## D-026: NVIDIA and DGX Spark first; keep the memory, paging, and transport boundaries portable when it costs nothing  (2026-09-20, status: accepted; discrete NVIDIA GPUs and Apple silicon's later scope in D-082; order of ports (Apple, Intel, AMD) in D-110)
 
 **Decision.** The primary target is NVIDIA hardware, DGX Spark first. The
 base concepts apply to Apple silicon and AMD equivalents on single machines,

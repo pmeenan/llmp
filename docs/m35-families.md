@@ -4,8 +4,8 @@
 # M3.5 model families: capability coverage and checkpoint selection
 
 **Status: covering set approved by the owner (2026-09-29); implementation
-in progress.** This answers
-[plan.md](plan.md#m35--model-families--in-progress)'s family-selection item. It
+parked on 2026-10-08 until M3.6's component engine exits (D-107).** This answers
+[plan.md](plan.md#m35--model-families--parked)'s family-selection item. It
 began as a desk study. Revisions, parameter counts,
 sizes and download counts were read from the Hugging Face API and model
 files on 2026-09-29, and every fact links its source. Speeds from model

@@ -87,6 +87,8 @@ product at M6 (A→B→A with retention); configured placement at M6a;
 demand-paged MoE with the first daily-driver models at M7; sharding under
 pressure and failure at M8; performance and the remaining decoding modes at
 M9; and the remaining product scope with the first tagged release at M10.
+On 2026-10-08 the owner inserted M3.6, one engine of shared components,
+ahead of M3.5's remaining work, which is parked until M3.6 exits (D-107).
 Each milestone leaves a usable, testable result. None has a promised date.
 
 | Milestone | Result | Needs |
@@ -94,7 +96,8 @@ Each milestone leaves a usable, testable result. None has a promised date.
 | M1 Bootstrap | Pinned SDK, builds, local check gate, package skeleton, confined-job proof | M0 (done) |
 | M2 Resource core | Catalog, admission and leases on a fake backend and a Spark; the backend proof settles the operation contract | M1 (done) |
 | M3 Single-Spark fast swap | DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swap A→B→A on one Spark, aiming at ~10 s to first token, as correct, fast and lean as their references | M2 |
-| M3.5 Model families | The core engine runs the major open model families, MoE and dense (Gemma, Llama, MiMo and the other top-tier families), each correct, as fast as its reference and flat with context, before the system is built around it; image, video and audio file inputs on the models that take them, decision models over the Jev API, and image, video and speech generation routes (D-101) | M3 |
+| M3.5 Model families | The core engine runs the major open model families, MoE and dense (Gemma, Llama, MiMo and the other top-tier families), each correct, as fast as its reference and flat with context, before the system is built around it; image, video and audio file inputs on the models that take them, decision models over the Jev API, and image, video and speech generation routes (D-101) | M3; parked 2026-10-08, resumes on M3.6's exit |
+| M3.6 Engine components | One engine of shared components over jitLLM's own graph IR: the format layer, one runner and serving adapter, the native importer, every current model migrated within 1% of its current speed (D-107 to D-110) | M3; runs before M3.5 resumes |
 | M4 Two-Spark fast swap | GLM-5.3 Flash, then DeepSeek v4.1 Flash, sharded over both Sparks in the same cycle, with their image (and GLM's video) inputs | M3.5 |
 | M5 One resident model | Importer, verifier, the three client protocols plus the Gemini API and code completion, TLS and management on the small fixtures | M4 |
 | M6 First useful product | A→B→A with partial retention; switching policy chosen from measurement | M5 |
@@ -202,7 +205,15 @@ The [frozen M3 record](m3-record.md) retains all task history, evidence,
 exceptions and later work. Focused workstation, Spark and ARM package
 checks pass; whole shipment tiers remain owed before publishing a package.
 
-## M3.5 — Model families  `in progress`
+## M3.5 — Model families  `parked`
+
+**Parked 2026-10-08 for M3.6 (below)**
+(owner, D-107). M3.5's work resumes on M3.6's exit, on the component
+engine: there a family is an architecture mapping and any components its
+shape lacks, not a runner, so items below that name a runner, plan or graph
+builder are re-expressed against the shared engine when they resume. Their
+history and evidence stay valid as recorded. The transfer item is retired.
+Kernel-level work behind the per-operation contract may continue meanwhile.
 
 **Gemma31 gap closing, 2026-10-06:** [state reuse across Clear, capture beside
 eager execution and the fused decode FFN](experiments/gemma-gap-closing/README.md)
@@ -356,7 +367,8 @@ family" guide, and its long-context scaling work.
       This closes recording coverage, not the open transfers below. Every
       eligible port is M3.5 work, including families M3 closed out; none waits
       for M9. Screen one representative shape with focused correctness and
-      matched paid A/B before broader qualification.
+      matched paid A/B before broader qualification. *The ports were retired
+      on 2026-10-08 (D-107; the retired item below).*
 - [x] **DSpark noncausal block GPU-mask transfer screen** ([evidence](experiments/dspark-device-masks/README.md)):
       shared F16/F32 producer/source controls and actual C2 draft/verify
       heads, histories and states are exact. The short joined-call factor is
@@ -389,431 +401,15 @@ Focused checks are recorded; full regression/shipment tiers remain deferred.
 Keep milestone raw stores, warm source/build trees and standing replay inputs:
 M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#owner-stop-and-handoff).
 
-- [ ] **Complete open optimization transfers from the audit.** IDs refer to
-      the [inventory matrix](optimization-inventory.md#complete-cross-family-dispositions--2026-10-07).
-      Preserve each recipient's original math, artifact, state, memory and
-      completion contracts. No target A disposition closes a drafter item.
-      - **DeepSeek V4 / DSpark**
-        - [x] **T96** Shared startup placement threshold selected for target/DSpark
-          Setup with exact funding and descriptor work; latency pair is n=1.
-          [Controls and representative factor](experiments/startup-placement-transfer/README.md).
-        - [ ] **T95** Quantized draft head: qualify compatible independent/tied
-          head binding, state/closure funding, scalar/joined arithmetic and quality.
-        - [ ] **T19** Selective draft-head MMVF.
-        - [ ] **T21** Clustered small reduction/prefetch.
-        - [ ] **T22** Graph-owned GPU attention masks: target raw causal/ring
-          masks adopted with exact C2 heads/state and a modest native prefill
-          gain ([controls](experiments/deepseek-device-masks/README.md)); DSpark
-          noncausal block masks are checked but not adopted after a neutral short
-          screen; optional compressed masks remain open.
-        - [ ] **T23** Scalar CPU lookahead is adopted; prefill capture ahead remains
-          open ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
-        - [x] **T27** Plain greedy decode token on GPU: target scalar/joined and
-          adaptive-spec `PlainWave` publication adopted, preserving feature
-          injection, drafter-ring state and actual verify continuations. The
-          bounded injected C2 decode mean improves 0.37%; whole paid is neutral.
-          [Controls](experiments/plain-gpu-tokens/README.md).
-        - [ ] **T29** Operand joins by view.
-        - [ ] **T37** Shape-pinned library GEMM algorithms.
-        - [ ] **T39** Device greedy verify verdicts.
-        - [ ] **T41** Residual-add plus next normalization.
-        - [ ] **T45** Selected learned head/adaptive draft depth.
-        - [ ] **T54** Plain scalar state-only cut adopted with exact cache/state,
-          checkpoint/scoring and continuation; DSpark required-feature head-only
-          opt-in checked but unselected ([evidence](experiments/ds-qwen-state-only/README.md)).
-        - [ ] **T55** Production wide joined prefill admission/funding and hints:
-          DS decode waves are one-row. Current scalar per-slot hints do not
-          close this compatible extension.
-        - [ ] **T56** Gemma checked norm/ADD arithmetic.
-        - [ ] **T57** RoPE directly into KV cache stores.
-        - [x] **T63** Fast exact host causal-mask fill/check
-          ([shared exact controls](experiments/host-mask-intervals/README.md)).
-        - [ ] **T67** Bounded scalar fresh-zero preparation adopted with exact state;
-          broader context/cohort/output and kept-source qualification stays open
-          ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
-        - [ ] **T68** Evict only incoming closure deficit.
-        - [ ] **T69** Shared GPU-mask construction contract: target raw exact-row
-          adapter adopted; DSpark block adapter checked but not selected after its
-          neutral screen. Compressed visible-count adapters remain open; the
-          composite item therefore stays open.
-        - [x] **T70** Shared two-stage funded CPU plan lifecycle adopted through actual
-          scalar PromptSession hints, with complete heads/state, companion plans,
-          departure and checkpoint/spill controls. Capture policy remains T23.
-          [Controls](experiments/ds-qwen-prefill-prediction/README.md).
-        - [ ] **T78** BF16 multirow vector alternative.
-        - [ ] **T81** Paired-prefix/incremental adaptive stopping.
-        - [ ] **T86** Physical KV store grouping: actual raw/compressed graphs
-          retain producer/read barriers and select zero groups. Safe compatible
-          ordering remains open; no layout-based exclusion.
-          [Controls](experiments/grouped-kv-stores/README.md).
-        - [ ] **T88** Share compatible HC matrix products.
-        - [ ] **T92** Remove reference CSA/HCA raw/compressed bank packing
-          through actual roots; preserve sinks, selection and reduction math.
-      - **Qwen3.8 native / MTP**
-        - [x] **T96** Shared startup placement threshold selected for native/MTP
-          Setup with independent scalar/wave maxima. Representative MTP Setup
-          takes 2.441% less time at n=2; ordinary movement −0.692%.
-          [Controls](experiments/startup-placement-transfer/README.md).
-        - [ ] **T10** HC-normalized expert sum in post.
-        - [ ] **T20** Column-invariant grouped float products.
-        - [x] **T22** Graph-owned exact-row F16/F32 causal masks; native headed
-          MTP passes retain their own positions. Complete heads/state and
-          joined spill/restore controls pass; F32 fallback uses checked planned
-          graphs plus the executed F32 primitive, without a fallback-model
-          speed claim.
-        - [ ] **T23** Scalar CPU lookahead is adopted; prefill capture ahead remains
-          open ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
-        - [x] **T27** Plain greedy decode token on GPU: non-spec native target
-          scalar/joined publication adopted with exact initialized states/heads.
-          Speculative Draft/Verify already publishes lean IDs; there is no
-          separate plain-decode fallback. [Controls](experiments/plain-gpu-tokens/README.md).
-        - [ ] **T29** Operand joins by view.
-        - [ ] **T41** Residual-add plus next normalization.
-        - [ ] **T54** Plain scalar state-only cut adopted with exact recurrent/QSA
-          state, checkpoint/scoring and continuation; MTP required-export head-only
-          opt-in checked but unselected ([evidence](experiments/ds-qwen-state-only/README.md)).
-        - [ ] **T55** Production wide joined prefill admission/funding and hints:
-          Qwen target waves cap at four. Current scalar per-slot hints do not
-          close this compatible extension.
-        - [ ] **T56** Gemma checked norm/ADD arithmetic.
-        - [ ] **T57** RoPE directly into KV cache stores.
-        - [x] **T63** Fast exact host causal-mask fill/check
-          ([shared exact controls](experiments/host-mask-intervals/README.md)).
-        - [ ] **T67** Bounded scalar fresh-zero preparation adopted with exact state;
-          broader context/cohort/output and kept-source qualification stays open
-          ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
-        - [ ] **T68** Evict only incoming closure deficit.
-        - [x] **T69** Shared dtype-authenticated exact-row producer/source/funding
-          contract; selection metadata and RE-037 consumer limits preserved.
-        - [x] **T70** Shared two-stage funded CPU plan lifecycle adopted through actual
-          scalar PromptSession hints, with complete heads/state, companion plans,
-          departure and checkpoint/spill controls. Capture policy remains T23.
-          [Controls](experiments/ds-qwen-prefill-prediction/README.md).
-        - [ ] **T72** Expert worklist sharing across vector products.
-        - [ ] **T86** Target-only grouping is checked but neutral and stays
-          off; actual MTP/drafter composition remains unqualified/open.
-          [Controls](experiments/grouped-kv-stores/README.md).
-      - **Qwen3.8 GGUF / target**
-        - [x] **T96** Shared startup placement threshold selected for GGUF target
-          Setup with exact funding and descriptor work; latency pair is n=1.
-          [Controls](experiments/startup-placement-transfer/README.md).
-        - [ ] **T03** Sparse query-union KV reuse.
-        - [ ] **T04** Share adjacent-product input preparation.
-        - [ ] **T07** Compact expert-major MMQ scheduling.
-        - [ ] **T10** HC-normalized expert sum in post.
-        - [ ] **T12** Share expert reads across verify rows.
-        - [ ] **T21** Clustered small reduction/prefetch.
-        - [x] **T22** Graph-owned exact-row F16/F32 causal masks. Target-only complete
-          heads/state remain exact; F32 fallback uses checked planned
-          graphs plus the executed F32 primitive, without a fallback-model
-          speed claim.
-        - [ ] **T23** Scalar CPU lookahead is adopted; prefill capture ahead remains
-          open ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
-        - [x] **T27** Plain greedy target tokens on the GPU, scalar/joined GGUF
-          with exact initialized states, histories and complete continuation heads.
-          Sampling/scoring retain rows; GGUF has no MTP/speculation contract.
-          [Controls](experiments/plain-gpu-tokens/README.md).
-        - [ ] **T29** Operand joins by view.
-        - [ ] **T37** Shape-pinned library GEMM algorithms.
-        - [ ] **T41** Residual-add plus next normalization.
-        - [x] **T54** Target-only scalar state-only cut adopted with exact full
-          heads/state/checkpoint/scoring; n=1 timing is diagnostic only
-          ([evidence](experiments/ds-qwen-state-only/README.md)).
-        - [ ] **T55** Production wide joined prefill admission/funding and hints:
-          Qwen target waves cap at four. Current scalar per-slot hints do not
-          close this compatible extension.
-        - [ ] **T56** Gemma checked norm/ADD arithmetic.
-        - [ ] **T57** RoPE directly into KV cache stores.
-        - [x] **T63** Fast exact host causal-mask fill/check
-          ([shared exact controls](experiments/host-mask-intervals/README.md)).
-        - [ ] **T67** Bounded scalar fresh-zero preparation adopted with exact state;
-          broader context/cohort/output and kept-source qualification stays open
-          ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
-        - [ ] **T68** Evict only incoming closure deficit.
-        - [x] **T69** Shared dtype-authenticated exact-row producer/source/funding
-          contract; selection metadata and RE-037 consumer limits preserved.
-        - [x] **T70** Shared two-stage funded CPU plan lifecycle adopted through actual
-          scalar PromptSession hints, with complete heads/state, companion plans,
-          departure and checkpoint/spill controls. Capture policy remains T23.
-          [Controls](experiments/ds-qwen-prefill-prediction/README.md).
-        - [ ] **T72** Expert worklist sharing across vector products.
-        - [ ] **T80** Qwen lower cache-read alignment.
-        - [ ] **T89** Independent-state recurrent cohort kernel.
-        - [x] **T86** Compatible physical cache pairs checked; short target-only
-          whole paid factor is neutral (+0.053%), so grouping stays off.
-          [Controls](experiments/grouped-kv-stores/README.md).
-      - **Qwen-Image T/D/V**
-        - [ ] **T15** Concurrent per-owner graph lanes.
-        - [ ] **T26** Capture beside eager execution.
-        - [ ] **T53** Measure direct-step gain on image phases.
-        - [ ] **T59** Whole-wave products and exact partial cohorts.
-        - [ ] **T64** Batch compatible image phases/requests.
-        - [ ] **T68** Evict only incoming closure deficit.
-        - [ ] **T78** BF16 multirow vector alternative.
-        - [ ] **T87** Alternative image encoder/VAE attention.
-      - **Gemma2 2B**
-        - [x] **T96** Checked disjoint-bound startup placement shortcut preserves
-          all exact funding maxima; actual-device composition oracle passes.
-        - [ ] **T04** Selected QKV/eligible unfused FFN preparations now share
-          original MMVQ inputs; extend compatible other quant formats and
-          larger-column/MMQ-adjacent chains with exact consumer/funding proof.
-        - [ ] **T11** Original-MMVQ Q8 sharing is adopted for nine formats/selected
-          columns 1–8 with exact primitive proof; approved Q8_0/Q4_0 models
-          preserve complete heads/state, C1 GeGLU and ordinary fallback. Compatible remaining formats/columns keep this composite
-          port open. [Factors and startup costs](experiments/gemma-shared-q8/README.md).
-        - [ ] **T15** Concurrent per-owner graph lanes.
-        - [x] **T22** Graph-owned GPU attention masks: same-native wrapped C2
-          prefill −6.616%, exact heads/state and ordinary restart controls;
-          native paid cycle remains 4.586% above fresh stock (n=2).
-        - [x] **T23** Shared funded lookahead/capture; first-traversal C2
-          prefill −5.252%, corrected warm +0.604% (n=2, no warm gain).
-          [Focused controls](experiments/prefill-transfer/README.md#gemma2-capture-and-joined-gemma-hints-2026-10-07).
-        - [ ] **T41** Residual-add plus next normalization.
-        - [x] **T55** Checkpoint/scoring-aware joined prompt hints; actual
-          adapter construction/capture, exact full heads and state checked.
-        - [ ] **T57** RoPE directly into KV cache stores.
-        - [ ] **T59** Whole-wave products and exact partial cohorts.
-        - [ ] **T61** Wider/partial bounded owner-root variants.
-        - [x] **T63** Fast exact host causal-mask fill/check
-          ([shared exact controls](experiments/host-mask-intervals/README.md)).
-        - [ ] **T67** Prepare next chunk state beside current work.
-          Eligible fresh zero backing now uses the shared owned no-victim
-          ticket/scoped drain by default. Exact actual PromptSession and real
-          joined-wrap checkpoint/peer/spill/kept-restart controls pass. The
-          ordinary 128-row C2/context-8192 own screen improves prefill 4.126%
-          and combined paid 2.905% at n=2; no decode/parity claim. Kept restart,
-          fresh sparse-file initialization and broader profile/context
-          qualification remain open.
-          [Evidence and limits](experiments/gemma-state-prepare-ahead/README.md).
-        - [ ] **T68** Evict only incoming closure deficit.
-        - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
-          producer validation and padded host staging shared across Gemma plans;
-          [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
-        - [x] **T70** Shared funded CPU-only next-plan lifecycle; two independent
-          future slots now protect/deduplicate complete keys before optional
-          capture charges. Refusal preserves the completed prefix/other slot.
-        - [x] **T86** Shared grouping checked; whole paid is neutral (−0.024%),
-          so the ordinary default stays off.
-          [Controls](experiments/grouped-kv-stores/README.md).
-        - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
-          exact heads/state and actual serving/restart controls pass.
-        - [ ] **T93** Equal-width C2 rows 2–512 are qualified in configured
-          runners;
-          ordinary chunks stay 128. Extend compatible >512 rows, public
-          larger-chunk admission, mixed-width roots and other cohorts
-          with explicit bounds/funding, original geometry and recipient checks.
-          Cold changing-key capture now uses two shared funded futures;
-          exact three-wave 256-row state/checkpoint/restart and warm 128-row controls pass.
-          Wrapped 512-row checkpoint/peer/spill/restart and maximum operand
-          controls pass. Native prefill improves 2.706%; fresh matched stock
-          retains +0.786% prefill / +0.284% paid at n=2, with exact outputs.
-      - **Gemma3 4B QAT**
-        - [x] **T96** Checked disjoint-bound startup placement shortcut preserves
-          all exact funding maxima; actual-device composition oracle passes.
-        - [ ] **T04** Selected QKV/eligible unfused FFN preparations now share
-          original MMVQ inputs; extend compatible other quant formats and
-          larger-column/MMQ-adjacent chains with exact consumer/funding proof.
-        - [ ] **T11** Original-MMVQ Q8 sharing is adopted for nine formats/selected
-          columns 1–8 with exact primitive proof; approved Q8_0/Q4_0 models
-          preserve complete heads/state, C1 GeGLU and ordinary fallback. Compatible remaining formats/columns keep this composite
-          port open. [Factors and startup costs](experiments/gemma-shared-q8/README.md).
-        - [ ] **T15** Concurrent per-owner graph lanes.
-        - [ ] **T41** Residual-add plus next normalization.
-        - [x] **T55** Checkpoint/scoring-aware joined prompt hints; actual
-          adapter construction/capture, exact full heads and state checked.
-        - [ ] **T57** RoPE directly into KV cache stores.
-        - [ ] **T59** Whole-wave products and exact partial cohorts.
-        - [ ] **T61** Wider/partial bounded owner-root variants.
-        - [ ] **T67** Prepare next chunk state beside current work.
-          Eligible fresh zero backing is adopted through the shared owned
-          no-victim ticket/scoped drain: exact default PromptSession and
-          wrapped checkpoint/peer/restart, cancellation/reclaim and failstop
-          ownership controls pass. Bounded 4K/128-row C2 prefill improves
-          2.617% / combined paid 1.941% at n=2. The already admitted
-          8448-context scalar route also matches full prompt/continuation
-          heads, history and state at 8192/8193 with positive default
-          preparation; this adds no speed or admission claim. Kept restart,
-          fresh sparse-file initialization and broader context/performance
-          qualification remain open.
-          [Evidence and limits](experiments/gemma-state-prepare-ahead/README.md).
-        - [ ] **T68** Evict only incoming closure deficit.
-        - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
-          producer validation and padded host staging shared across Gemma plans;
-          [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
-        - [x] **T70** Shared funded host-only next-plan lifecycle; two independently
-          funded next/after shapes now enable cold changing-width capture.
-          [Focused controls](experiments/prefill-transfer/README.md).
-        - [x] **T86** Shared checked grouping adopted: bounded C2 prefill/decode
-          −0.517%/−0.313%, combined paid −0.454%, n=2; exact heads/state.
-          [Controls and bounds](experiments/grouped-kv-stores/README.md).
-        - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
-          exact heads/state and actual serving/restart controls pass.
-        - [ ] **T93** Equal-width C2 rows 2–512 are qualified in configured
-          runners;
-          ordinary chunks stay 128. Extend compatible >512 rows, public
-          larger-chunk admission, mixed-width roots and other cohorts
-          with explicit bounds/funding, original geometry and recipient checks.
-          Cold changing-key capture now uses two shared funded futures;
-          exact three-wave 256-row state/checkpoint/restart and warm 128-row controls pass.
-          Wrapped 512-row checkpoint/peer/spill/restart and maximum operand
-          controls pass. Native prefill improves 1.180%; fresh matched stock
-          retains +1.102% prefill / +0.728% paid at n=2, with exact outputs.
-          The 64-row diagnostic host-mask/no-hint recipe remains +2.290%
-          prefill / +1.813% paid. One matched timeline finds little active-work
-          excess and distributed replay/capture gaps; no cause is established.
-          Aligned GPU-mask/hinted bounded runner-policy comparison is now
-          +0.188% prefill (within stock 1.136% drift), +0.992% decode and
-          +0.548% paid at n=2, exact. Full HTTP reference remains open;
-          the same 25-wave schedule rules out an extra native wave.
-      - **Gemma4 26B-A4B / assistant**
-        - [ ] **T96** Threshold shortcut is qualified for optional dense-sharing
-          Setup; ordinary selection and remaining construction/sizing latency
-          remain open. The current26 startup observation is n=1, not a factor.
-        - [ ] **T95** Quantized draft head: qualify compatible independent/tied
-          head binding, state/closure funding, scalar/joined arithmetic and quality.
-        - [ ] **T04** Share adjacent-product input preparation.
-        - [ ] **T07** Compact expert-major MMQ scheduling.
-        - [ ] **T09** Write activation in routed gate/up consumer.
-        - [ ] **T11** Optional original-MMVQ Q8 sharing passes approved target full-head/state
-          controls. Short C2 decode −0.310% with material startup cost keeps
-          default false; actual wider-serving/assistant adoption and compatible
-          additional consumers remain open. [Factor](experiments/gemma4-original-q8/README.md).
-        - [ ] **T12** Share expert reads across verify rows.
-        - [ ] **T14** Warp-ballot routed pair lookup.
-        - [ ] **T15** Concurrent per-owner graph lanes.
-        - [ ] **T16** Join draft blocks across requests.
-        - [ ] **T19** Selective draft-head MMVF.
-        - [ ] **T20** Column-invariant grouped float products.
-        - [ ] **T23** Retained-feature policy adoption and broader capture
-          contracts remain open. The [explicit frontier opt-in](experiments/gemma26-feature-capture/README.md)
-          gives −0.484% prefill (short n=2), exact heads/features/state and three
-          endogenous assistant proposals after captured target execution.
-          Global defaults and SetupAssistant stay off/one-future; joined target
-          and broader contexts/output contracts remain unqualified. The separate
-          [plain diagnostic screen](experiments/gemma26-capture-ahead/README.md)
-          remains neutral/not adopted (−0.0922%, inside −0.5348% bookend drift).
-        - [ ] **T31** One-column fused quantized gate/up GLU.
-        - [ ] **T37** Shape-pinned library GEMM algorithms.
-        - [ ] **T39** Device greedy verify verdicts.
-        - [ ] **T41** Residual-add plus next normalization.
-        - [ ] **T45** Selected learned head/adaptive draft depth.
-        - [ ] **T55** Joined prefill lookahead/capture hints.
-        - [ ] **T58** Shared Q8 GeGLU assistant/target preparation.
-        - [ ] **T59** Whole-wave products and exact partial cohorts.
-        - [ ] **T61** Wider/partial bounded owner-root variants.
-        - [x] **T63** Fast exact host causal-mask fill/check
-          ([shared exact controls](experiments/host-mask-intervals/README.md)).
-        - [ ] **T67** Eligible fresh-zero preparation is adopted through the
-          shared owned ticket/scoped drain. Ordinary 8K/C1 prefill improves
-          1.162% / combined paid 0.902% at n=2, without a decode claim.
-          Actual default 8K/C4 scalar-prefill, wrapped features/checkpoint/peer/
-          kept-restart and failure-quarantine controls pass. Preparation from
-          kept/sparse sources and broader context/output/cohort performance
-          remain open. [Evidence](experiments/gemma4-state-prepare/README.md).
-        - [ ] **T68** Evict only incoming closure deficit.
-        - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
-          producer validation and padded host staging shared across Gemma plans;
-          [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
-        - [x] **T70** Shared fixed two-slot lifecycle with complete-key
-          protection before optional charges; ordinary single-future policy
-          remains selected after the neutral plain capture screen.
-          [Focused controls](experiments/gemma26-capture-ahead/README.md).
-        - [ ] **T71** Assistant-specific optimized execution.
-        - [ ] **T72** Expert worklist sharing across vector products.
-        - [ ] **T81** Paired-prefix/incremental adaptive stopping.
-        - [x] **T86** Shared grouping checked; ordinary 8K whole paid +0.228%
-          overlaps off movement, so grouping stays off.
-          [Controls](experiments/grouped-kv-stores/README.md).
-      - **Gemma4 31B / assistant**
-        - [ ] **T96** Threshold shortcut is qualified for optional dense-sharing
-          Setup; ordinary selection and remaining construction/sizing latency
-          remain open, without inferring a per-recipient startup speed gain.
-        - [ ] **T95** Quantized draft head: qualify compatible independent/tied
-          head binding, state/closure funding, scalar/joined arithmetic and quality.
-        - [ ] **T04** Share adjacent-product input preparation.
-        - [ ] **T11** Optional original-MMVQ Q8 sharing passes approved target full-head/state
-          controls. Short C2 decode −0.087%, whole paid neutral and startup
-          +1.286s keep default false; broader serving/assistant adoption and
-          compatible additional consumers remain open. [Factor](experiments/gemma4-original-q8/README.md).
-        - [ ] **T15** Concurrent per-owner graph lanes.
-        - [ ] **T16** Join draft blocks across requests.
-        - [ ] **T19** Selective draft-head MMVF.
-        - [ ] **T23** Compatible retained-frontier/assistant capture policy
-          and its full feature/state/performance qualification. Prior plain
-          capture remains measured neutral, not adopted; that result does not
-          reject the newly eligible feature contract.
-        - [ ] **T39** Device greedy verify verdicts.
-        - [ ] **T41** Residual-add plus next normalization.
-        - [ ] **T45** Selected learned head/adaptive draft depth.
-        - [ ] **T55** Joined prefill lookahead/capture hints.
-        - [ ] **T57** RoPE directly into KV cache stores.
-        - [ ] **T58** Shared Q8 GeGLU assistant/target preparation.
-        - [ ] **T59** Whole-wave products and exact partial cohorts.
-        - [ ] **T61** Wider/partial bounded owner-root variants.
-        - [x] **T63** Fast exact host causal-mask fill/check
-          ([shared exact controls](experiments/host-mask-intervals/README.md)).
-        - [ ] **T67** Eligible fresh-zero preparation is adopted through the
-          shared owned ticket/scoped drain. Ordinary 8K/C1 prefill improves
-          1.050% / combined paid 0.847% at n=2, without a decode claim.
-          Actual default 8K/C4 scalar-prefill, wrapped features/checkpoint/peer/
-          kept-restart and failure-quarantine controls pass. Preparation from
-          kept/sparse sources and broader context/output/cohort performance
-          remain open. [Evidence](experiments/gemma4-state-prepare/README.md).
-        - [ ] **T68** Evict only incoming closure deficit.
-        - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
-          producer validation and padded host staging shared across Gemma plans;
-          [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
-        - [x] **T70** Shared funded host-only next-plan lifecycle; family
-          prediction/capture policy unchanged. [Focused controls](experiments/prefill-transfer/README.md).
-        - [ ] **T71** Assistant-specific optimized execution.
-        - [ ] **T81** Paired-prefix/incremental adaptive stopping.
-      Shared T69/T70 ports own the funded host-only next-plan/mask lifecycle;
-      family adapters retain shape prediction, causal/selection semantics and
-      eligibility. T55 now uses one checkpoint/scoring-aware PromptSession hint
-      calculator and PreparedPrefill forwarding for Gemma2/Gemma3, plus generic
-      scalar fallback. Gemma26/31 still need funded joined-prefill admission:
-      per-owner chunk sizing, total-row envelope, and capture/state/failure
-      controls. DeepSeek/Qwen scalar adapters now use the shared CPU lifecycle;
-      their production wide joined prefill and capture policy remain open.
-      Hints publish no speculative future logical state; T67 separately
-      prepares eligible fresh backing before current publication.
-      [Multirow actual-root prefill](experiments/gemma-prefill-copies/README.md)
-      removes Gemma2/Gemma3 joined K/V copies: same-native wrapped prefill
-      improves 8.662%/2.932%, and fresh final Gemma2 llama.cpp bookends are
-      level within n=2 movement with exact choices/full heads. Its cap0
-      primitive/graph is qualified through trained 131072 without increasing
-      public context. The initial 67 focused controls, wrapped own-state checks and
-      actual adapters/restart pass; full regression remains deferred.
-      The flexible 2–128-row transfer passes 52 focused controls, including
-      actual five-row joined tails/restart; 64-row prefill improves
-      10.474%/2.789% against native packed controls. Fresh 64-row stock
-      bookends leave Gemma2 level and Gemma3 +2.290% prefill / +1.813%
-      paid cycle for its host-mask/no-hint diagnostic recipe, explicitly open.
-      One matched timeline attributes most positive prefill difference to
-      distributed intra-wave inactivity, without establishing a fix. The aligned
-      GPU-mask/hinted bounded runner-policy comparison is level in prefill
-      within n=2 bookend movement (+0.188%); decode/paid remain +0.992%/+0.548%.
-      Full HTTP reference remains open. The configured 256-row extension
-      passes 20 focused controls, including maximum 256×131072 operands and
-      same-owner checkpoint/restart. Native prefill improves 5.096%/0.838%.
-      Matched-ring fresh reference outputs are exact; prefill/paid gaps remain
-      +1.242%/+0.797% (Gemma2), +3.552%/+2.195% (Gemma3), n=2.
-      Identical-input cross-owner differences also occur in packed controls;
-      their baseline cause is unresolved, while each packed/root owner is exact.
-      The configured 512-row extension passes ten focused bounds and wrapped
-      recovery controls, with native prefill gains 2.706%/1.180%. Fresh exact
-      matched-ring stock outputs leave +0.786%/+0.284% prefill/paid for Gemma2
-      and +1.102%/+0.728% for Gemma3 at n=2; no parity claim.
-      Public chunks stay 128. T93 tracks compatible >512 rows, mixed widths,
-      larger admission; the cold two-future capture pipeline is now qualified
-      for G2/G3 with exact three-wave 256-row/restart and ordinary 128-row warm
-      controls. T92 tracks DeepSeek reference bank joins.
-      Selector bounds do not close ports.
-      Confirm every open matrix consumer has its own checked result before
-      closing this parent. T68 now has the internal shared foundation and
-      D-055/D-096 amendments, but its ordinary adoption remains open on the
-      cold-switch floor. T94's shared wake/harvest removals are adopted without
-      implying an intermittent-tail repair or an unmeasured family speedup.
+- [x] **Open optimization transfers from the audit: retired** (D-107,
+      owner, 2026-10-08). At retirement the item held 128 open recipient
+      cells across 47 techniques, matching the frozen
+      [inventory matrix](optimization-inventory.md#complete-cross-family-dispositions--2026-10-07)
+      cell for cell. Each technique now lands once in M3.6's shared engine;
+      [engine-components.md](engine-components.md#retired-transfer-items)
+      maps every open technique to where it lands, and lists the kernel-level
+      ones that may continue meanwhile. The per-recipient history stays in
+      Git (the item as of `cc70d69`).
 - [ ] **Current TensorFold quality lead:** the pinned FP8-prompt p3
       Teacher32 comparison agrees 31/32; row 29 reference margin 1.5625
       exceeds the unchanged 1.0 bound. Native host/device-mask heads are
@@ -1266,6 +862,10 @@ M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#
         implemented models, particularly Gemma 26B, and apply eligible
         improvements with matched correctness and performance checks
         (owner, 2026-10-05). Record transfer limits in the inventory.
+        *Since 2026-10-08 (D-107), a family resumed on the component
+        engine inherits its pieces' optimizations; workflow.md's "optimize
+        once" replaces the per-family adoption and review above. Its
+        batching evidence stays required.*
 - [ ] **Concurrent requests with continuous batching** (the owner,
       2026-09-29). The primary workload includes an agent plus
       subagents, which is several concurrent requests on the same
@@ -1295,7 +895,9 @@ M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#
       advance the necessary implementation into the optimization run
       where those comparisons require it (owner, 2026-10-01).
 - [ ] **Skeleton gaps the M3 cleanup's review named**
-      ([engine.md](engine.md)):
+      ([engine.md](engine.md)), *moved to M3.6* (its IR, which names no
+      kernel library, and its decoding-mode orchestration with any number
+      of drafters):
       - planning, capture and launch binding are GGML-only, so a family
         run on EXL3 (or another non-GGML backend) needs a step family of
         its own that plugs into the same skeleton;
@@ -1442,7 +1044,7 @@ M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#
       C2 cycle is 1.49% above stock. Actual joined-prefill HTTP/restart gates
       pass; a cold native C2 endpoint bookend improves 14.03% with exact
       generated IDs/usage at that separate boundary. The subsequent
-      [copy-free bounded-read transfer](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads-2026-10-07)
+      [copy-free bounded-read transfer](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads--2026-10-07)
       preserves exact padded/bounded native heads/state; fresh small/ring stock
       screens have 73/74 and 70/74 exact heads and zero strict differences.
       A same-binary short n=2 screen lowers native paid latency 5.77372%, to
@@ -1723,6 +1325,112 @@ TensorFold comparisons report speed, memory and separate quality controls.
   in a chat turn.
 - The support matrix lists every approved family with its evidence.
 
+## M3.6 — Engine components  `in progress`
+
+Goal (the owner, 2026-10-08; D-107 to D-110): replace the per-family
+runners, plans, graph builders, bindings, serving classes and Python
+importers with one engine of shared components over jitLLM's own graph IR,
+so every optimization, format and platform is written once and every model
+benefits. Take the architecture hit now, before more families, formats or
+platforms. The design is [engine-components.md](engine-components.md).
+
+**Entry:** owner direction of 2026-10-08. M3.5 is parked at `cc70d69`; its
+open families, formats and pipelines resume on this engine after M3.6, and
+each is checked against the design as M3.6 proceeds.
+
+**Scope:**
+
+- [x] **Design and decisions:** [engine-components.md](engine-components.md),
+      D-107 (components, IR, execution, partitioning, migration gate),
+      D-108 (formats), D-109 (importer), D-110 (platform order); M3.5's
+      transfer item retired with its [mapping](engine-components.md#retired-transfer-items).
+- [ ] **Baselines and the 1% protocol.** Before any family moves, fix the
+      matched, bookended timing protocol that resolves 1% for each family's
+      prefill and decode, solo and at its qualified cohorts, and record the
+      current implementation's speed, quality controls, peak memory and
+      swap rows as each family's baseline.
+- [ ] **Format layer** (D-108): encodings named independently of kernel
+      libraries and layouts recorded separately; a block decoder per
+      encoding on CUDA under shared vector, matrix and grouped templates;
+      the fallback ladder; decoders composable inside fused kernels for
+      mixed per-tensor encodings; state encodings, lossy ones as per-alias
+      settings. First proof: Qwen3.8's native NVFP4/MXFP8 tensors on the
+      discrete `sm_86` target, product by product against CPU references
+      (D-082; the whole model does not fit the 3080 Ti). The Qwen2
+      EXL3 fixture proves the trellis encoding through the same layer.
+- [ ] **Shared slot lifecycle, one runner interface, one serving adapter
+      per pipeline kind**, derived from state contracts; reconcile today's
+      divergent copies (Gemma2's restore guards against Gemma3's).
+      Decoding-mode orchestration takes any number of drafters and the
+      planning and capture path is backend-neutral (M3.5's moved skeleton
+      gaps), tested on the fake backend with two drafters.
+- [ ] **IR and planner** (D-107): the op set and tensor descriptors,
+      construction from a spec, fusion patterns covering today's selected
+      fused paths, implementation selection, activation placement, lowering
+      to recorded work, plan keys; a CPU reference and fake-backend tests
+      for every component.
+- [ ] **Partitioning in the planner:** tensor, pipeline and expert
+      parallelism with any split count and mixed, chosen by modelled
+      traffic for a described topology; equivalence tests over four or more
+      fake devices. Two-Spark execution is M4's.
+- [ ] **Migrate Gemma2 and Gemma3**, then delete their runners, plans,
+      graph builders, bindings and serving classes.
+- [ ] **Migrate Gemma4** 26B-A4B and 31B with their assistants.
+- [ ] **Migrate Qwen3.8**: native NVFP4/MXFP8 with MTP, and GGUF.
+- [ ] **Migrate DeepSeek V4 Flash** with DSpark.
+- [ ] **Native importer** (D-109): container readers for GGUF,
+      safetensors with `config.json`, diffusers pipelines (Qwen-Image's
+      components, composed under D-089), MLX and EXL3; architecture mappings
+      and the fold catalog for every migrated family; the new artifact
+      format version, with every current artifact re-imported; the standard
+      admission gate. The Python importers leave the production path.
+- [ ] **Qwen-Image-2.1 onto the shared blocks**, with its rounding policy.
+- [ ] **Structural techniques land once**: each retired transfer technique
+      in its component, pattern or lifecycle piece, adopted where its
+      matched comparison gains.
+- [ ] **Persisted state and settings:** kept-state layout IDs bumped and
+      old kept state discarded (D-105); settings and calibration re-keyed
+      from family to spec (D-103).
+
+**Exit criteria:**
+
+- **One engine:** every current model (Gemma2, Gemma3, Gemma4 26B-A4B and
+  31B with assistants, Qwen3.8 native with MTP and GGUF, DeepSeek V4 Flash
+  with DSpark, Qwen-Image-2.1, and the Qwen2 FP16/EXL3 fixtures) runs from
+  a spec on the shared components. No family-specific runner, plan, graph
+  builder, binding or serving class remains, and serving dispatches by
+  pipeline kind, not architecture name. Every catalog component has a CPU
+  reference, and fake-backend tests compare its fragment with it.
+- **Speed:** against its recorded baseline, each LLM's prefill and
+  decode, solo and at its qualified cohorts, and Qwen-Image's generation
+  latency, are no more than 1% slower at worst under the fixed protocol,
+  and preferably at least as fast.
+- **Quality and state:** each model's quality controls against its
+  same-format oracle are equal or better; exact state, continuation, spill,
+  restore and kept-state controls pass; the M3 swap table and the Gemma
+  near-8K switch controls pass within their bounds; peak memory is no
+  higher than the baseline's.
+- **Formats:** Qwen3.8's NVFP4 and MXFP8 tensors, read from its
+  artifacts, run every product shape on `sm_86` through on-chip decode
+  within tolerance of the CPU references; no resident weight
+  is larger than its source encoding. DeepSeek V4's mixed-type GGUF runs
+  its fused patterns across differently encoded operands where they gain,
+  checked against the CPU references.
+- **State encodings:** a lossy KV encoding runs as an opt-in per-alias mode
+  on every migrated LLM, off by default, with its long-context quality
+  against F16 measured and reported (an opt-in mode carries no parity
+  claim).
+- **Import:** the native importer imports every migrated model from its
+  source checkpoint into the new format version, and each passes the
+  admission gate and the gates above; an MLX checkpoint of a migrated
+  architecture, chosen with the owner, imports and passes the admission
+  gate; the
+  importer and the new artifact format pass their adversarial challenge
+  (workflow.md's heavy path).
+- **Partitioning:** the planner's split choices and their equivalence pass
+  on the fake backend for TP, PP, EP and a mixed TP×PP layout.
+- The Spark check set passes; skipped tiers are named.
+
 ## M4 — Two-Spark fast full swap  `pending`
 
 Goal: the same cycle for models too big for one Spark, sharded across both.
@@ -1860,9 +1568,9 @@ M3.
 
 **Scope:**
 
-- [ ] **Importer and verifier** (D-009, D-056): the C++ importer and the
-      standalone verifier, with M0's Python prototype as the exact
-      accept/reject oracle, running on the workstation and on a Spark.
+- [ ] **Importer and verifier** (D-009, D-056, D-109): M3.6 builds the
+      native C++ importer; here it becomes a product, with the standalone
+      verifier, running on the workstation and on a Spark.
       Confined import jobs take sources only from the configured stores
       (the `checkpoints` role or the long-term store; D-054, D-063) or the
       Hugging Face Hub (resumable and verified; the token comes from a
@@ -2276,11 +1984,10 @@ partial-retention benefit workload are pinned before acceptance runs
       the measured whole-engine benefit warrants them (owner, 2026-10-04).
       Re-pin profiles and comparators at entry; qualify correctness and
       paid end-to-end benefit before selecting a change. Frozen unmeasured
-      prototypes carry no adoption or speed claim. Optimizations found on
-      any family, new kernels and fusions included, are ported to these
-      models as they are found, not held for this pass (owner, 2026-10-07;
-      [workflow.md](workflow.md)'s transfer rule, M3.5's transfer audit);
-      this pass takes what remains of the accepted M3 gaps.
+      prototypes carry no adoption or speed claim. Optimizations land once
+      in the shared engine and reach these models as they are found, not
+      held for this pass (D-107, [workflow.md](workflow.md)'s "optimize
+      once"); this pass takes what remains of the accepted M3 gaps.
 - [ ] **Larger-than-memory library:** DeepSeek V4 Flash with Qwen3.8 Flash
       Next on one node is the canonical pair (D-036). M3 runs both, with
       their compressed attention and indexers, Qwen3.8's sparse n-gram rows

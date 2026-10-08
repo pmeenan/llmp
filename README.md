@@ -51,7 +51,7 @@ to commit reviewed, checked tasks; agents never push.
 
 ## Status
 
-**Pre-release. M0 through M3 are complete; M3.5 is next.** The native runtime serves Chat Completions and literal
+**Pre-release. M0 through M3 are complete; M3.6 is in progress and M3.5 is parked.** The native runtime serves Chat Completions and literal
 Completions with target likelihoods, batches compatible requests, and
 preserves conversation state across model switches. Its final swap table
 covers DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1, with a worst
@@ -64,8 +64,11 @@ owns later work. The arm64 package includes the runtime, systemd service
 and native diagnostic command. Planned distribution is a signed apt
 repository for DGX Spark; changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
-M3.5 adds the approved model families, formats, decision models and media
-routes on this engine skeleton. M4 follows with two Sparks; M5 completes the
+M3.6 replaces the per-family runners with one engine of shared components
+over jitLLM's own graph IR, with a format layer that keeps weights
+compressed and a native importer ([design](docs/engine-components.md)).
+M3.5 then adds the approved model families, formats, decision models and
+media routes on that engine. M4 follows with two Sparks; M5 completes the
 standard front door. M6 adds partial retention under memory pressure,
 M6a configured placement across nodes, and later milestones add demand-paged
 MoE, sharding and full-engine optimization. See [the plan](docs/plan.md).
