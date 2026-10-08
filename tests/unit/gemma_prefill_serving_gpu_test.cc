@@ -75,7 +75,9 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     entry.overrides["max_slots"] = std::int64_t{2};
     life->config.models.push_back(entry);
   }
-  rt::Status Start(bool ahead, bool owner_prefill = true) {
+  rt::Status Start(bool ahead, bool owner_prefill = true, std::size_t branch_count = 2) {
+    if (branch_count == 0 || branch_count > 2)
+      return std::unexpected("invalid fixture branch count");
     life->options.gemma2_owner_prefill = owner_prefill;
     life->options.gemma3_owner_prefill = owner_prefill;
     life->options.gemma2_flexible_owner_prefill = owner_prefill;
@@ -90,8 +92,13 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     if (!model) return std::unexpected("configured Gemma adapter missing");
     first_activation = {};
     if (auto r = life->server->Activate(*model, first_activation); !r) return r;
-    std::array<rt::Llm::Branch*, 2> branches{*model->branch(0), *model->branch(1)};
-    return life->server->SelectRequestBranches(*model, branches);
+    std::array<rt::Llm::Branch*, 2> branches{};
+    for (std::size_t id = 0; id < branch_count; ++id) {
+      auto branch = model->branch(id);
+      if (!branch) return std::unexpected(branch.error());
+      branches[id] = *branch;
+    }
+    return life->server->SelectRequestBranches(*model, std::span(branches).first(branch_count));
   }
   rt::Status Retire() {
     if (retirement_failed) return std::unexpected("prior server retirement unproven");
@@ -297,6 +304,128 @@ TEST_P(GemmaPrefillServingGpu, DefaultPreparationPublishesOnlyActualPromptProgre
     else
       exercise(dynamic_cast<en::Gemma3Runner&>(model->paged()));
     if (HasFatalFailure()) return;
+    ASSERT_TRUE(Retire());
+  }
+}
+
+TEST_P(GemmaPrefillServingGpu, Admitted8448ScalarPreparationPreservesPromptAndContinuation) {
+  if (GetParam() != 3) GTEST_SKIP() << "Gemma3 admitted scalar context";
+  EXPECT_TRUE(en::Gemma3Options{}.prepare_state);
+  EXPECT_TRUE(rt::ServingOptions{}.gemma3_prepare_state);
+  const auto input =
+      std::filesystem::path("/home/pmeenan/.local/share/jitllm/references/gemma3-depth/ids.i32");
+  ASSERT_EQ(std::filesystem::file_size(input), 33024U);
+  std::vector<std::int32_t> ids(8256);
+  std::ifstream stream(input, std::ios::binary);
+  ASSERT_TRUE(stream.read(reinterpret_cast<char*>(ids.data()),
+                          static_cast<std::streamsize>(ids.size() * sizeof(ids[0]))));
+  jitllm::base::Sha256 hash;
+  ASSERT_EQ(jitllm::base::ToHex(hash.Update(std::as_bytes(std::span(ids))).Finish()),
+            "44196b939c8b53b535a59e1c139f6dc4a7959f7880cd8c8a9d91688818f5ad67");
+  ASSERT_TRUE(std::ranges::all_of(ids, [](std::int32_t id) { return id >= 0 && id < 262208; }));
+  ASSERT_EQ(ids.front(), 2);
+  ASSERT_EQ(ids[8192], 496);
+  const std::vector<std::int32_t> prompt(ids.begin(), ids.begin() + 8192);
+  std::vector<float> expected_head, expected_next;
+  jitllm::base::Sha256Digest expected_state{}, expected_next_state{};
+  life->config.models.front().overrides["context"] = std::int64_t{8448};
+  life->config.models.front().overrides["max_slots"] = std::int64_t{1};
+  for (const bool ordinary : {false, true}) {
+    life->options = rt::ServingOptions{};
+    if (!ordinary) life->options.gemma3_prepare_state = false;
+    ASSERT_TRUE(Start(true, true, 1));
+    auto& runner = dynamic_cast<en::Gemma3Runner&>(model->paged());
+    ASSERT_EQ(runner.layout().context, 8448U);
+    ASSERT_EQ(runner.layout().max_rows, 128U);
+    ASSERT_EQ(runner.layout().local_cells, 1280U);
+    ASSERT_FALSE(model->branch(1));
+    auto branch = model->branch(0);
+    ASSERT_TRUE(branch);
+    std::vector<float> warm;
+    ASSERT_TRUE((*branch)->Prefill(std::span(prompt).first(3), warm));
+    ASSERT_TRUE((*branch)->Clear());
+    runner.DropPlans();
+    const auto before = runner.state_preparation_stats();
+    auto begun = (*branch)->BeginPrompt(prompt);
+    ASSERT_TRUE(begun);
+    rt::Status run;
+    std::uint32_t chunks = 0;
+    while (!(*begun)->done()) {
+      const auto prior = (*runner.request_slot(0))->completed_positions();
+      run = (*begun)->Advance();
+      if (!run) break;
+      const auto current = (*runner.request_slot(0))->completed_positions();
+      EXPECT_EQ(current, (*branch)->history().size());
+      EXPECT_LE(current, 8192U);
+      EXPECT_LE(current - prior, 128U);
+      chunks += current > prior;
+    }
+    if (!run) (*begun)->Cancel();
+    const auto finished = (*begun)->Finish();
+    ASSERT_TRUE(run) << (run ? "" : run.error());
+    ASSERT_TRUE(finished) << (finished ? "" : finished.error());
+    EXPECT_EQ(chunks, 64U);
+    const auto head = (*begun)->last();
+    begun->reset();
+    ASSERT_EQ(head.size(), 262208U);
+    ASSERT_TRUE(std::ranges::all_of(head, [](float v) { return std::isfinite(v); }));
+    EXPECT_EQ((*branch)->history(), prompt);
+    EXPECT_EQ((*runner.request_slot(0))->completed_positions(), 8192U);
+    auto state = StateHash(runner, 0);
+    ASSERT_TRUE(state);
+    const auto prepared = runner.state_preparation_stats();
+    if (ordinary) {
+      EXPECT_GT(prepared.submitted, before.submitted);
+      EXPECT_GT(prepared.completed_extents, before.completed_extents);
+      EXPECT_GT(prepared.adopted_extents, before.adopted_extents);
+    } else {
+      EXPECT_EQ(prepared.attempted, before.attempted);
+      EXPECT_EQ(prepared.submitted, before.submitted);
+      EXPECT_EQ(prepared.completed_extents, before.completed_extents);
+      EXPECT_EQ(prepared.adopted_extents, before.adopted_extents);
+    }
+    EXPECT_EQ(prepared.refused, before.refused);
+    EXPECT_EQ(prepared.failed, before.failed);
+    EXPECT_TRUE(runner.cohort_usable());
+    EXPECT_TRUE((*runner.request_slot(0))->state_usable());
+    EXPECT_FALSE(life->server->node().has_pending_state_preparation());
+    std::vector<float> next;
+    ASSERT_TRUE((*branch)->Prefill(std::span(ids).subspan(8192, 1), next));
+    ASSERT_EQ(next.size(), 262208U);
+    ASSERT_TRUE(std::ranges::all_of(next, [](float v) { return std::isfinite(v); }));
+    auto continued = prompt;
+    continued.push_back(496);
+    EXPECT_EQ((*branch)->history(), continued);
+    EXPECT_EQ((*runner.request_slot(0))->completed_positions(), 8193U);
+    auto next_state = StateHash(runner, 0);
+    ASSERT_TRUE(next_state);
+    EXPECT_TRUE(runner.cohort_usable());
+    EXPECT_TRUE((*runner.request_slot(0))->state_usable());
+    EXPECT_FALSE(life->server->node().has_pending_state_preparation());
+    const auto extra = jitllm::base::json::Parse(model->extra());
+    ASSERT_TRUE(extra);
+    const auto joined = extra->root().find("joined_prefill_groups");
+    ASSERT_TRUE(joined);
+    EXPECT_EQ(joined->int64().value_or(-1), 0);
+    EXPECT_EQ(runner.state_preparation_stats().failed, before.failed);
+    EXPECT_EQ(runner.state_preparation_stats().refused, before.refused);
+    if (!ordinary) {
+      expected_head = head;
+      expected_state = *state;
+      expected_next = next;
+      expected_next_state = *next_state;
+    } else {
+      EXPECT_EQ(std::memcmp(head.data(), expected_head.data(), head.size() * sizeof(float)), 0);
+      EXPECT_EQ(*state, expected_state);
+      EXPECT_EQ(std::memcmp(next.data(), expected_next.data(), next.size() * sizeof(float)), 0);
+      EXPECT_EQ(*next_state, expected_next_state);
+      std::println(
+          "GEMMA3_ADMITTED_STATE_PREPARATION context=8448 owners=1 prompt=8192 continuation=8193 "
+          "completed={} adopted={} chunks={} state_exact=1 head_exact=1 history_exact=1 "
+          "continuation_exact=1 registry_drained=1",
+          prepared.completed_extents - before.completed_extents,
+          prepared.adopted_extents - before.adopted_extents, chunks);
+    }
     ASSERT_TRUE(Retire());
   }
 }

@@ -838,6 +838,17 @@
           "DefaultPreparationPublishesOnlyActualPromptProgress/0"
         ]
       ]
+    },
+    {
+      "checked_sha256": "1f1eaebdb05de0cbc785d28a90765afe5fb1f1f6439061fa2cbe44c00e5d6fb9",
+      "source_manifest_sha256": "91133ea481fd712d12bc47bfe3425ee1ef688f27de672fdadc40345b7c0abce4",
+      "method_sha256": "5e5c4b4c3a47aa1742431ce29804e214132814d525588d6b7c72b94e4b47b464",
+      "cases": [
+        [
+          "ApprovedFamilies/GemmaPrefillServingGpu",
+          "Admitted8448ScalarPreparationPreservesPromptAndContinuation/1"
+        ]
+      ]
     }
   ],
   "gemma2_task_entry": {
@@ -895,5 +906,79 @@
     "joined_prefill_groups_rows": "Actual processed logical prompt groups and rows.",
     "capture_replay": "Actual recorded execution/capture path counters as reported by the runner.",
     "q8_preparations_prepared_mmvq_products_and_selected_fields": "Bound-plan selection counts; do not interpret them as executed kernel counts."
+  },
+  "gemma3_admitted_scalar8448_qualification": {
+    "base": "60d0c3076a793b444ed3ec25b50f58960182a0c2",
+    "source_manifest_sha256": "91133ea481fd712d12bc47bfe3425ee1ef688f27de672fdadc40345b7c0abce4",
+    "method_sha256": "5e5c4b4c3a47aa1742431ce29804e214132814d525588d6b7c72b94e4b47b464",
+    "checked_sha256": "1f1eaebdb05de0cbc785d28a90765afe5fb1f1f6439061fa2cbe44c00e5d6fb9",
+    "sdk_receipt_sha256": "0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd",
+    "test_ELF_sha256": "d28842022ae4f1556efdfacdb6280ef990c1ffc56d122616b23b2577d4be5d7b",
+    "case": [
+      "ApprovedFamilies/GemmaPrefillServingGpu",
+      "Admitted8448ScalarPreparationPreservesPromptAndContinuation/1"
+    ],
+    "inputs": {
+      "retained_relative_path": ".local/share/jitllm/references/gemma3-depth/ids.i32",
+      "bytes": 33024,
+      "count": 8256,
+      "sha256": "44196b939c8b53b535a59e1c139f6dc4a7959f7880cd8c8a9d91688818f5ad67",
+      "prefix8192_sha256": "ae6c58cc2269b72b4ab3d98feb83dc318d805fb60b507a0200bcee139805e83d",
+      "anchor8192": 496,
+      "bos": 2,
+      "original_source": ".local/share/jitllm/gemma-context-depth3/input/ids.i32",
+      "input_manifest_sha256": "1a4aec9ad5c3a55f1d4ba6a81ce6b206888887834a4fbbcabe1573518c707754",
+      "quality_manifest_sha256": "945a57798269af14dc6c074e21d3fdd49274c2f4392ac95d7f184fd0c8d09312",
+      "source_prompt_sha256": "3016ddb3960e77f9a9dc649bca88dad0a7578d8afb07dd8ecf00b98144dc3756",
+      "text_sha256": "4e41c6aac01454db43f44522999d2dff87098891cd87f7737ab7a0a58d636a01",
+      "repeat": 32,
+      "copy": "Authenticated source; exclusive create of standing retained copy if absent; existing identical copy accepted; original preserved."
+    },
+    "context": 8448,
+    "slots": 1,
+    "chunk_rows": 128,
+    "local_cache_cells": 1280,
+    "prompt_rows": 8192,
+    "continuation_rows": 8193,
+    "continuation_input": 496,
+    "actual_scalar_chunks": 64,
+    "default_completed_extents": 128,
+    "default_adopted_extents": 128,
+    "off_preparation_counters_zero": true,
+    "preparation_errors_refusals": 0,
+    "finite_complete_prompt_and_continuation_heads": 262208,
+    "prompt_and_continuation_initialized_state_history_exact": true,
+    "healthy_drained_owners_explicit_teardown": true,
+    "joined_prefill_groups": 0,
+    "positive_executions": 1,
+    "unique_cases": 1,
+    "performance_measurement": false,
+    "production_or_admission_change": false,
+    "kernel_errors": 0,
+    "installed_supervisor_returncode": 0,
+    "tensorfold_task_entry": {
+      "utc": "2026-10-08T14:17:48.248728+00:00",
+      "refs": {
+        "main": {
+          "pin": "f8fe17d24629aedabf90bbf78279dd776e6d62e7",
+          "readme_sha256": "678c80141062556cb8db26a3e839a2b588ffcb7acdf729c3319899bf1519f2f4",
+          "bytes": 15807
+        },
+        "python-0.6": {
+          "pin": "ed78d6fc204d89d90b045bf033d6551e7714f3a1",
+          "readme_sha256": "ec9da14a5a0a9f98a0a14d11b5c265850194d06ed0dc05b85e3c26f5e19b27a4",
+          "bytes": 29475
+        }
+      },
+      "applicability": "Native Gemma4/DeepSeek and retained Python CUDA reference support remain relevant source references. Neither lists this approved Gemma3 4B QAT GGUF serving recipe; this task qualifies already admitted 8448-context scalar state preparation without new speed or competitive-reference claim."
+    },
+    "remaining": "Kept/sparse source preparation, trained131K/external-context admission, other growing adapters, broader quality/performance and shipment checks.",
+    "final_base": "ec3759afe7f522765a4812c9fee79f1071c17ec6",
+    "qualified_test_bytes_unchanged_after_base_update": true,
+    "standing_input_hosts": [
+      "spark",
+      "spark-b"
+    ],
+    "separate_B_startup_integration_checked_sha256": "3802fa91af74f090e47349af5399f0a4e789b31e3a798a2423e9ea3ecb1df0ed"
   }
 }

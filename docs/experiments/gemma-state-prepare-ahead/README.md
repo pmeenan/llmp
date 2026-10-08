@@ -16,7 +16,7 @@ same-native measurements, not a reference-parity or larger-context speed claim.
 
 The shared mechanism and ordinary Gemma2/Gemma3 fresh-zero policies are adopted.
 T67 remains composite OPEN: preparation from kept restart files or fresh sparse
-file reads, larger-context qualification and other growing LLM adapters remain
+file reads, broader context/performance qualification and other growing LLM adapters remain
 compatible work. Public chunk/context/cohort defaults are unchanged. There is
 no new public setting.
 
@@ -153,6 +153,64 @@ historical G3 19 executions/18 unique cases; unchanged shared controls were not
 rerun. Default/wiring changes preserve the explicit measured OFF/ON semantics;
 the final probe ELF is still c8f2d85e… . No further timing/reference ladder was run.
 
+## Gemma3 admitted 8448-context scalar qualification
+
+The existing public scalar route now has a focused fresh-zero preparation
+control at configured context 8448 / one slot / ordinary 128-row chunks. No
+production code, context admission or default changes in this qualification.
+The shared fixture's branch-selection helper still defaults to two; this
+separately named G3 case selects the actual single configured branch.
+
+Two fresh actual Servers compare explicit preparation off with unset/default
+on, using the same authenticated depth input and three-token warmup followed
+by Clear/DropPlans. PromptSession::Advance processes 8192 tokens in 64 actual
+scalar chunks, checking each completed current cursor/history and the 128-row
+publication bound. The local ring is 1280; no joined prompt group executes.
+At cursor 8192, complete finite 262208-element heads, full histories and
+initialized-state hashes match exactly. One fixed input token 496 then advances
+the ordinary scalar full-head path to 8193, with exact complete finite heads,
+history and initialized state again. Default preparation completes and adopts
+128 extents; explicit off has zero attempts/submissions/completions/adoptions.
+There are no preparation refusals/errors; owner/cohort health, drained registry
+and explicit teardown of both Servers pass.
+
+This is one positive completed case, checked receipt 1f1eaebd… / source
+91133ea4… / actual test ELF d2884202… . Build and test processes and installed
+supervisor return zero; official receipt and first-resolved pinned libraries
+match before/after, boot is stable, kernel messages are empty and GPU is empty
+after retirement. It adds no performance, parity or broader-corpus claim and
+reruns no historical control or timing factor. The earlier G3 4K and G2 8K
+performance factors retain their own measured source identities.
+Final source carries the exact tested fixture onto base ec3759a, whose additive
+shared startup-placement changes were separately qualified with the existing
+Gemma2/Gemma3 default preparation cases. That integration does not change this
+slice's production protocol or relabel its actual 60d0c30-based execution.
+[Separate integration evidence](../gemma4-original-q8/README.md).
+
+The retained input is `references/gemma3-depth/ids.i32` under the node's
+jitllm data directory: 33024 bytes / 8256 little-endian I32 IDs, SHA
+44196b939c8b53b535a59e1c139f6dc4a7959f7880cd8c8a9d91688818f5ad67.
+Its first 8192 IDs have SHA
+ae6c58cc2269b72b4ab3d98feb83dc318d805fb60b507a0200bcee139805e83d;
+BOS is 2 and input index 8192 is 496. It was copied by authenticated exclusive
+creation into standing references, preserving the original. This small
+workload input is retained independently of disposable experiment logs/heads
+on both Spark A and Spark B; the B copy was created exclusively and verified
+byte-identical so later Spark B model checks have the same supplied input.
+The [existing scalar depth recipe](../gemma3-execution/README.md#internal-8k-scalar-depth-screen-2026-10-07)
+records the frozen 2276-byte source repeated 32 times and native-tokenizer
+lineage; results.json retains source/text/input/quality manifest identities.
+Authenticate the full and prefix hashes before/after, select only
+`ApprovedFamilies/GemmaPrefillServingGpu.Admitted8448ScalarPreparationPreservesPromptAndContinuation/1`
+in the existing supervised Spark GPU protocol, and enforce the assertions
+above. No reference rerun or historical large payload is needed.
+
+Task-entry TensorFold refs were freshly checked at 2026-10-08T14:17:48Z and
+remain native main f8fe17d2 / retained python-0.6 ed78d6fc. Neither lists this
+approved Gemma3 recipe; the check adds no competitive-reference claim. Kept
+restart, fresh sparse-file provenance, trained 131K or external-context
+admission and other adapters remain compatible open extensions.
+
 ## Ownership and retirement
 
 A bounded LiveState-owned ticket authenticates all requested fresh ranges,
@@ -224,8 +282,9 @@ family/context profiles and new reference measurements are deferred.
 DeepSeek, native/GGUF Qwen and both Gemma4 profiles can reuse the arbitrary
 range/source protocol but have no adapter or measured T67 gain in these slices.
 Image has fixed generation buffers rather than increasing token-bound state.
-Gemma3 larger admitted contexts are not artificially blocked by a 4096 selector;
-performance/context controls remain open. Fresh sparse-file initialization can
+Gemma3 is not artificially blocked by a 4096 preparation selector; its already
+admitted 8448-context scalar path now passes the exact control above. Broader
+context/performance controls remain open. Fresh sparse-file initialization can
 be extended with explicit provenance/authentication; source.zero=false alone is
 not incompatibility. Kept restart requires preserving its authoritative bytes.
 

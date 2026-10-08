@@ -100,6 +100,10 @@ known next prompt chunk is now prepared beside current execution, with exact
 default PromptSession histories/heads/state and drained ownership checked.
 The bounded 4K/128-row C2 screen reduces prefill by 2.617% and combined paid
 work by 1.941% at n=2; it makes no decode or broader-context speed claim.
+A separate admitted 8448-context/one-slot control matches complete finite
+heads, histories and initialized state at 8192 prompt tokens and the next
+8193-position continuation, with 128 extents completed/adopted by default and
+healthy drained ownership. It is correctness qualification, not a speed result.
 Kept restart and fresh sparse-file initialization retain their current path.
 [Preparation and retirement](experiments/gemma-state-prepare-ahead/README.md).
 [Compatible plain prefill](experiments/gemma3-execution/README.md#compatible-joint-prefill-and-common-attention-reads)

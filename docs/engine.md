@@ -357,7 +357,10 @@ source changes and teardown drain first; unknown completion retains the complete
 owner, and the Runtime Server fails stop before member destruction if teardown
 cannot retire it. The Gemma2/Gemma3 defaults select eligible fresh zero sources; kept
 restart sources and fresh sparse-file reads retain their current path. Other
-growing adapters and larger-context qualification remain open.
+growing adapters and broader context/performance qualification remain open.
+The already admitted Gemma3 8448-context scalar route matches exact full
+prompt/continuation heads, histories and initialized state at 8192/8193 with
+positive default preparation; no new speed or admission claim follows.
 
 Gemma's [assistant component](gemma4-assistant.md#native-component-and-protected-target-operands)
 adds explicit post-finalnorm feature retention and scoped readonly cache

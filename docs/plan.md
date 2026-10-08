@@ -566,8 +566,12 @@ family" guide, and its long-context scaling work.
           no-victim ticket/scoped drain: exact default PromptSession and
           wrapped checkpoint/peer/restart, cancellation/reclaim and failstop
           ownership controls pass. Bounded 4K/128-row C2 prefill improves
-          2.617% / combined paid 1.941% at n=2. Kept restart, fresh sparse-file
-          initialization and larger-context qualification remain open.
+          2.617% / combined paid 1.941% at n=2. The already admitted
+          8448-context scalar route also matches full prompt/continuation
+          heads, history and state at 8192/8193 with positive default
+          preparation; this adds no speed or admission claim. Kept restart,
+          fresh sparse-file initialization and broader context/performance
+          qualification remain open.
           [Evidence and limits](experiments/gemma-state-prepare-ahead/README.md).
         - [ ] **T68** Evict only incoming closure deficit.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
