@@ -28,7 +28,8 @@ the main agent to).
 2. **Review.** A separate agent with fresh context reviews the whole
    uncommitted diff against the handoff note. It hunts real defects — data
    loss or corruption, invariant violations, security, broken behaviour,
-   claims in docs the code doesn't back — not style or ceremony. Findings are
+   claims in docs the code doesn't back, an optimization without its
+   cross-family dispositions (below) — not style or ceremony. Findings are
    file:line claims ranked by severity. The reviewer fixes what it finds (or
    hands back to the builder for anything larger), re-verifies with
    targeted tests and the Spark check set (not the full tiers), and
@@ -181,6 +182,27 @@ downgrade a heavy-path change to the light loop on their own.
 - **Notes stay out of the docs.** Handoff and review notes live in the final
   message and the commit, not in the documents they describe. Process detail
   in a design doc costs every future reader and goes stale on commit.
+- **Transfer every optimization across families** (owner, 2026-10-07).
+  A change that speeds up, or removes work from, one model family or
+  runner records in the same commit what it means for every other current
+  family: today DeepSeek V4, Qwen3.8 (native and GGUF), Qwen-Image, Gemma2,
+  Gemma3 and Gemma 4 26B and 31B (drafters with their targets; M2
+  fixtures excluded), plus each family added since. Each gets a
+  disposition in the [inventory's transfer table](optimization-inventory.md#transfers-and-gaps):
+  **adopted** (with its evidence), **not adopted** (measured, with its
+  numbers), **not applicable** (the layout, math, state or executor
+  contract that rules it out) or **open**. Every open one is an unchecked
+  [plan.md](plan.md) item added in the same commit, whether or not that
+  family's own milestone has closed: under the current milestone, or
+  under the later item the owner has deferred that work to (new kernels
+  for the M3 models go to M9's full-engine pass), never unlisted.
+  "Ignores the hint", "audit", "no speed claim" and "unmeasured" are not
+  dispositions. A mechanism that is not model-specific goes into the
+  shared engine ([engine.md](engine.md)) rather than one runner, so later
+  families inherit it, and a new family starts from the transfer table
+  (engine.md, "Adding a model family"). A transfer is screened like any
+  optimization, with focused correctness and a matched comparison; one
+  that measures no gain is recorded as not adopted and closes the item.
 - **Fix the docs the change makes wrong** (status paragraph, plan checkbox,
   affected doc, support matrix) in the same change. Docs that describe
   capability are release artifacts; overclaiming is a defect the reviewer

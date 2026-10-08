@@ -343,6 +343,33 @@ family" guide, and its long-context scaling work.
         idle, charged as one pinned extent, and new state zeroed on the
         GPU; Gemma3's 131K cold state growth falls 38% (0.47 to 0.29 s),
         exact, now at or slightly ahead of stock; swaps unchanged.
+- [ ] **Retroactive optimization transfer audit** (owner, 2026-10-07;
+      [workflow.md](workflow.md)'s transfer rule): the first task when the
+      main agent picks M3.5 back up. For every technique in the
+      [inventory](optimization-inventory.md#transfers-and-gaps) and in the
+      streams since (Gemma gap closing, the decode hot path, Gemma3
+      execution, the pager), record each current family's disposition:
+      DeepSeek V4, Qwen3.8 (native and GGUF), Qwen-Image, Gemma2, Gemma3
+      and Gemma 4 26B/31B, including the families M3 closed out. Each open
+      one becomes its own checkbox here, screened with focused correctness
+      and a matched comparison. Ports of mechanisms already proven on
+      another family are in scope now for every family; an item that needs
+      a new kernel for an M3 model is listed under M9's full-engine pass
+      instead. Known open items to start from:
+      - [ ] Gemma2: GPU-built masks, prefill lookahead (it ignores the
+        hint) and capture ahead (a 2B model, so plausibly worth more than
+        on Gemma31).
+      - [ ] Gemma26: capture ahead, measured only on Gemma31.
+      - [ ] DeepSeek V4 and Qwen3.8: prefill lookahead and prefill
+        capture (they ignore the hint and capture only decode/verify
+        shapes), and their host-built F16 masks.
+      - [ ] Joined two-request prefill waves pass no prefill hints in any
+        family.
+      - [ ] DeepSeek V4 and Qwen3.8 plain (non-speculative) steps still
+        choose their token on the host; Gemma's choose on the GPU.
+      - [ ] Qwen-Image's direct steps: adopted, never measured.
+      - [ ] Mask building and the prefill lookahead hook: move into the
+        shared engine where the families' contracts allow.
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:
@@ -1776,7 +1803,9 @@ partial-retention benefit workload are pinned before acceptance runs
       the measured whole-engine benefit warrants them (owner, 2026-10-04).
       Re-pin profiles and comparators at entry; qualify correctness and
       paid end-to-end benefit before selecting a change. Frozen unmeasured
-      prototypes carry no adoption or speed claim.
+      prototypes carry no adoption or speed claim. Ports of mechanisms
+      already proven on another family do not wait for this pass
+      ([workflow.md](workflow.md)'s transfer rule, M3.5's transfer audit).
 - [ ] **Larger-than-memory library:** DeepSeek V4 Flash with Qwen3.8 Flash
       Next on one node is the canonical pair (D-036). M3 runs both, with
       their compressed attention and indexers, Qwen3.8's sparse n-gram rows

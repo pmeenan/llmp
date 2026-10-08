@@ -281,7 +281,8 @@ profile. Long retrieval, turn reuse and continuing-context swaps pass in
 [final context](docs/experiments/m3-final-context/README.md).
 
 The owner accepts the remaining Qwen/DeepSeek speed gaps for M3 and defers
-further tuning to **M9's full-engine optimization pass** (2026-10-04).
+further tuning to **M9's full-engine optimization pass** (2026-10-04);
+ports of mechanisms proven on another family don't wait for it.
 The latest matched Qwen C4 rate is about 15% below fast Mia; the gap and
 long-context misses remain measurements, not parity passes. Quality,
 memory and exact-state requirements remain unchanged. The
@@ -306,7 +307,9 @@ complement its ring, checkpoint/restore and restart-adoption controls.
 [Gemma2 2B](docs/gemma2.md) has bounded 8K/two-slot serving with checked cap50
 compatible prefill, template refusal and restart replay.
 Broader reference, batching and sustained qualification remain open.
-Next are approved model checkpoints, legacy fixtures, Bonsai, formats with
+First comes a retroactive optimization transfer audit across every family,
+including those M3 closed out (plan.md; workflow.md's transfer rule). Then
+come approved model checkpoints, legacy fixtures, Bonsai, formats with
 EXL3 in focus, the remaining batching/skeleton gaps, media file inputs,
 Clef/Clef-flash over the Jev API and media generation routes (D-101).
 That scope includes batching compatible decision and image requests/phases.

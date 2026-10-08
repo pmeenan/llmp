@@ -173,6 +173,15 @@ operations alone ([report](experiments/deepseek-batching/README.md)).
 
 ## Adding a model family
 
+Start from the [optimization inventory's transfer table](optimization-inventory.md#transfers-and-gaps):
+a new runner adopts each technique there whose contract it meets, or the
+table records why it cannot (workflow.md's transfer rule), before the
+family's speed is compared with its reference. Shared mechanisms (graph
+capture policy, held direct steps, state reuse across Clear, the pager's
+lazy handoff and handle reserve) come with the skeleton; those still
+written per runner (GPU-built masks, the prefill lookahead hook, the
+device greedy token) are ported until they move into the engine.
+
 The [Gemma2 runner](gemma2.md) reuses held requests, charged outputs and
 capture ownership, retained Clear and initialized-state spill/restore. It
 admits only the approved 2B Q8_0 artifact with one or two slots, separate F16 KV and
