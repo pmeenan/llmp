@@ -355,7 +355,7 @@ The Gemma3 joint probe retains host masks and supplies no prefill hints;
 ordinary serving already selects device masks and checkpoint-aware hints.
 Its remaining reference gap therefore describes this diagnostic recipe,
 not the complete ordinary-serving defaults. The matched owner-root/flexible
-factors remain valid; a fresh complete-recipe reference comparison is open.
+factors remain valid. The [bounded runner-policy alignment below](#bounded-gemma3-runner-policy-alignment) subsequently enables both established policies; full HTTP reference performance remains open.
 
 | Family / arm, acquisition order | Prefill | Decode | Paid sum |
 | --- | ---: | ---: | ---: |
@@ -518,3 +518,71 @@ native/stock SQLite SHA-256 identities are
 `529b4f6baf0a3f733e34be35375e10a39a16ecc53318dc9f8fe20ef50317eb2e`.
 TensorFold's two task-entry refs remain the exact native/Python pins above,
 with no applicable Gemma3 CUDA/GGUF recipe.
+
+
+## Bounded Gemma3 runner-policy alignment
+
+The joint probe now accepts explicit `device-masks` and `prefill-ahead`
+controls, retaining the flag-absent host-mask/no-hint diagnostic route. It
+passes the same two-stage hint descriptors as the checked Gemma2 probe to the
+shared runner lifecycle, with ended-owner filtering, independent next/after
+head modes and actual selection/cache/capture counters. Future GPU-token
+frontier stages remain suppressed: the existing hint contract describes
+full-head or state-only work. This compares bounded runner policies; ordinary
+HTTP serving publishes full prompt-frontier heads and is a separate gate.
+No model/kernel/runner implementation or public default changes.
+
+One acquisition on Spark B runs reference/old/aligned/aligned/old/reference
+with the same 64-row/C2 inputs, warm-retained backing/plans/graphs and paid
+work described above. Aligned adds both new words, exercising optimizations
+already selected by serving. Every arm matches all 64 valid choices and
+both complete finite final heads byte for byte, including the retained
+oracle. Each application completes teardown and returns zero; stock
+container absence is independently checked and all final guards are clean.
+
+| Arm, acquisition order | Prefill | Decode | Paid sum |
+| --- | ---: | ---: | ---: |
+| llama.cpp 1 | 0.579273 s | 0.467327 s | 1.046600 s |
+| Old diagnostic 1 | 0.584664 s | 0.473546 s | 1.058210 s |
+| Aligned 1 | 0.578964 s | 0.473448 s | 1.052412 s |
+| Aligned 2 | 0.575162 s | 0.471310 s | 1.046472 s |
+| Old diagnostic 2 | 0.584530 s | 0.473188 s | 1.057718 s |
+| llama.cpp 2 | 0.572693 s | 0.468148 s | 1.040841 s |
+| llama.cpp mean | 0.575983 s | 0.4677375 s | 1.0437205 s |
+| Old diagnostic mean | 0.584597 s | 0.473367 s | 1.057964 s |
+| Aligned mean | 0.577063 s | 0.472379 s | 1.049442 s |
+
+Aligned prefill is 1.289% faster than the same-binary diagnostic control and
+0.188% above fresh stock, within stock's 1.136% bookend movement (aligned
+movement 0.657%, old 0.023%). Aligned decode is 0.992% above stock; paid sum
+is 0.548% above stock, comparable to stock/aligned paid movement
+0.550%/0.564%. At n=2, these are descriptive results: bounded prefill is
+level within the observed movement, with no full HTTP or universal parity
+claim. The combined policy factor improves paid sum by 0.806%; its small
+0.209% decode movement is not a demonstrated benefit. It does not isolate
+the contribution of masks from hints.
+
+Aligned selects 40 GPU-mask plans, caches five lookahead plans and captures
+five graphs ahead; old selects none. Both have 25 paid prefill waves, three
+captures beside eager execution and 22 replays, with zero paid optional
+planning/cache/capture-ahead or eager-path counts. The three one-off
+token-frontier/state-only shapes discussed above still capture on second
+use. The earlier diagnostic comparison does not establish a
+production-default kernel gap; the larger-row factor starts from the
+explicitly aligned policy.
+
+Only the probe target was rebuilt; no regression suite or additional trace
+ran. Compiled source base is `c382965`, manifest
+`ce19d9ca6b20d9756ea0c048769edca54f573f73d4a3281c8fdd1dec615e8b9e`;
+probe source SHA-256 is
+`fea690c51d5d3d69436e354ac7987a7c778060ff25ace383dbb15227eeeb514c`,
+ELF `ca82b6739de3f031eec6aa2d7fad651111724c3293840476cc275a7f14c4fb8d`.
+SDK receipt, artifact/GGUF, input, immutable helper/image and actual cuBLAS
+identities remain those above and are checked before/after acquisition.
+TensorFold's task-entry native/Python refs remain unchanged without an
+applicable recipe. To replay, add `device-masks prefill-ahead` to the native
+64-row cycle invocation above; omit both for the diagnostic control and
+retain reference `cycle chunk=64`. Raw build, six-arm payload/retirement
+records and aggregate calculation remain external under Spark B
+`~/scratch/m35-gemma-prefill-wide/alignment-build1` and `alignment1`, plus
+coordination scratch. Replay inputs stay in the standing reference store.

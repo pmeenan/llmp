@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <tuple>
@@ -88,7 +89,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }  // namespace
 int main(int argc, char** argv) {
   if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") ||
-      (argc < 6 || argc > 10))
+      (argc < 6 || argc > 12))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -104,6 +105,7 @@ int main(int argc, char** argv) {
   }
   bool bounded = false, owner_prefill = false;
   bool flexible = false, have_chunk = false;
+  bool device_masks = false, prefill_ahead = false;
   std::uint32_t chunk = 128;
   for (int i = 6; i < argc; ++i) {
     const std::string_view flag = argv[i];
@@ -113,6 +115,10 @@ int main(int argc, char** argv) {
       owner_prefill = true;
     else if (flag == "flexible-owner-prefill" && !flexible)
       flexible = true;
+    else if (flag == "device-masks" && !device_masks)
+      device_masks = true;
+    else if (flag == "prefill-ahead" && !prefill_ahead)
+      prefill_ahead = true;
     else if (flag.starts_with("chunk=") && !have_chunk) {
       const auto number = flag.substr(6);
       const auto parsed = std::from_chars(number.data(), number.data() + number.size(), chunk);
@@ -165,10 +171,13 @@ int main(int argc, char** argv) {
                                                            .owner_prefill = owner_prefill,
                                                            .flexible_owner_prefill = flexible,
                                                            .bounded_roots = bounded,
+                                                           .device_masks = device_masks,
                                                            .fuse_norms = true,
                                                            .fuse_quant_glu = true,
                                                            .fuse_norm_rope = true,
-                                                           .fuse_norm_add = true},
+                                                           .fuse_norm_add = true,
+                                                           .prefill_lookahead = prefill_ahead,
+                                                           .capture_ahead = prefill_ahead},
                                          0, 0);
   auto& runner = *life->runner;
   std::array<std::vector<float>, 2> heads;
@@ -229,7 +238,44 @@ int main(int argc, char** argv) {
                          token && head ? &selected[s] : nullptr};
         rows += n;
       }
-      if (auto r = runner.WavePrefill(std::span(work).first(count), head); !r) return r;
+      std::array<en::Gemma3Runner::PrefillNext, 2> hints{};
+      std::optional<bool> next_head, after_head;
+      bool mixed_next = false, mixed_after = false;
+      bool token_next = false, token_after = false;
+      const auto mode = [](std::optional<bool>& out, bool& mixed, bool value) {
+        if (out.has_value() && *out != value)
+          mixed = true;
+        else if (!out.has_value())
+          out = value;
+      };
+      if (prefill_ahead)
+        for (std::size_t i = 0; i < count; ++i) {
+          const auto& unit = work[i];
+          const auto end = unit.n_past + static_cast<std::uint32_t>(unit.tokens.size());
+          auto& hint = hints[i];
+          hint.slot = unit.slot;
+          hint.rows = std::min(chunk, prefix[unit.slot] - end);
+          if (hint.rows != 0) {
+            const bool next_final = end + hint.rows == prefix[unit.slot];
+            mode(next_head, mixed_next, next_final);
+            token_next |= token && next_final;
+            hint.after = std::min(chunk, prefix[unit.slot] - end - hint.rows);
+            if (hint.after != 0) {
+              const bool after_final = end + hint.rows + hint.after == prefix[unit.slot];
+              mode(after_head, mixed_after, after_final);
+              token_after |= token && after_final;
+            }
+          }
+        }
+      // PrefillNext describes full heads or state-only work, not GPU-token heads.
+      // Keep row descriptors for later positions while suppressing unsupported stages.
+      if (mixed_next || token_next) next_head.reset();
+      if (mixed_after || token_after) after_head.reset();
+      if (auto r = runner.WavePrefill(std::span(work).first(count), head,
+                                      std::span(hints).first(prefill_ahead ? count : 0U), next_head,
+                                      after_head);
+          !r)
+        return r;
       for (const auto& unit : std::span(work).first(count)) {
         past[unit.slot] += static_cast<std::uint32_t>(unit.tokens.size());
         if (head && !token && !Best(heads[unit.slot])) return Error("bad joined prefill head");
@@ -480,8 +526,12 @@ int main(int argc, char** argv) {
       const auto& bound = runner.plan_selections();
       if (!prefill_groups ||
           (owner_prefill ? !bound.owner_prefill_attention : !bound.packed_prefill_attention) ||
-          !bound.owner_attention || !stats.captured || !stats.replayed || !bound.norm_rope ||
-          !bound.norm_add || runner.coverage().violations)
+          !bound.owner_attention ||
+          (device_masks ? !bound.device_masks : bound.device_masks != 0) ||
+          (prefill_ahead &&
+           (!runner.lookahead_stats().cached || !runner.lookahead_stats().captured_ahead)) ||
+          !stats.captured || !stats.replayed || !bound.norm_rope || !bound.norm_add ||
+          runner.coverage().violations)
         return Error("C2 did not select/replay checked implementation families");
       if (bounded && prefix[0] != prefix[1] && !bound.bounded_owner_attention)
         return Error("bounded roots did not select actual unequal owner attention");
@@ -505,6 +555,11 @@ int main(int argc, char** argv) {
           << " selected_packed_prefill=" << bound.packed_prefill_attention
           << " owner_prefill=" << owner_prefill << " flexible_owner_prefill=" << flexible
           << " selected_owner_prefill=" << bound.owner_prefill_attention
+          << " device_masks=" << device_masks << " selected_device_masks=" << bound.device_masks
+          << " prefill_ahead=" << prefill_ahead
+          << " lookahead_built=" << runner.lookahead_stats().built
+          << " lookahead_cached=" << runner.lookahead_stats().cached
+          << " lookahead_captured_ahead=" << runner.lookahead_stats().captured_ahead
           << " bounded_roots=" << bounded
           << " selected_bounded_owner=" << bound.bounded_owner_attention
           << " selected_norm_mul=" << bound.norm_mul

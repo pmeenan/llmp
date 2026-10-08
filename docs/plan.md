@@ -494,7 +494,9 @@ family" guide, and its long-context scaling work.
           The 64-row diagnostic host-mask/no-hint recipe remains +2.290%
           prefill / +1.813% paid. One matched timeline finds little active-work
           excess and distributed replay/capture gaps; no cause is established.
-          Compare the complete ordinary GPU-mask/hinted recipe to stock next;
+          Aligned GPU-mask/hinted bounded runner-policy comparison is now
+          +0.188% prefill (within stock 1.136% drift), +0.992% decode and
+          +0.548% paid at n=2, exact. Full HTTP reference remains open;
           the same 25-wave schedule rules out an extra native wave.
       - **Gemma4 26B-A4B / assistant**
         - [ ] **T04** Share adjacent-product input preparation.
@@ -574,8 +576,10 @@ family" guide, and its long-context scaling work.
       bookends leave Gemma2 level and Gemma3 +2.290% prefill / +1.813%
       paid cycle for its host-mask/no-hint diagnostic recipe, explicitly open.
       One matched timeline attributes most positive prefill difference to
-      distributed intra-wave inactivity, without establishing a fix. Complete
-      ordinary GPU-mask/hinted reference comparison remains open. T93 tracks compatible >128 rows,
+      distributed intra-wave inactivity, without establishing a fix. The aligned
+      GPU-mask/hinted bounded runner-policy comparison is level in prefill
+      within n=2 bookend movement (+0.188%); decode/paid remain +0.992%/+0.548%.
+      Full HTTP reference remains open. T93 tracks compatible >128 rows,
       mixed-width roots/cohorts and their bounded admission; T92 tracks
       DeepSeek reference bank joins. Selector bounds do not close ports.
       Confirm every open matrix consumer has its own checked result before
