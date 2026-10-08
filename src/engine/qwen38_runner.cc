@@ -369,6 +369,7 @@ std::vector<ExtentId> Qwen38Runner::managed_extents() const {
 }
 
 Status Qwen38Runner::Setup() {
+  const auto setup_started = std::chrono::steady_clock::now();
   if (o_.wave_slots == 0 || o_.request_slots < o_.wave_slots || o_.request_slots > kRequestSlots) {
     return Error(std::format(
         "Qwen3.8 provisioning needs one to {} request slots, at least its wave's {} (not {})",
@@ -620,6 +621,15 @@ Status Qwen38Runner::Setup() {
         }
       }
     }
+    if (o_.state_only_prefill && !model_.exact) {
+      const auto count = probes.size();
+      for (std::size_t i = 0; i < count; ++i) {
+        if (probes[i].kind.verify || probes[i].kind.capture_routed != 0) continue;
+        auto state = probes[i];
+        state.kind.state_only = true;
+        probes.push_back(state);
+      }
+    }
     const auto account = [&](const PlannedBase& planned, PlanKind& kind) -> Status {
       scalar_startup_placement_.Account(planned);
       kind.host = std::max(kind.host, PlannedHostBytes(planned));
@@ -650,7 +660,7 @@ Status Qwen38Runner::Setup() {
       if (auto r = account(**planned, chunk_kind); !r) {
         return r;
       }
-      if (probe.rows == 1 && !speculative() && !model_.exact) {
+      if (!probe.kind.state_only && probe.rows == 1 && !speculative() && !model_.exact) {
         auto token_shape = kg::Qwen38ShapeOf(layout_, *in, 1);
         token_shape.token = true;
         auto token_plan = PlanQwen38Chunk(model_, token_shape, choices, 0, 0, {}, {},
@@ -992,6 +1002,7 @@ Status Qwen38Runner::Setup() {
   setup_budget_.drafter_per_branch = speculative() ? mtp_layout_.bytes : 0;
   setup_budget_.virtual_per_branch =
       Round(layout_.bytes, kExtent) + (speculative() ? Round(mtp_layout_.bytes, kExtent) : 0);
+  setup_seconds_ = Seconds(std::chrono::steady_clock::now() - setup_started);
   return {};
 }
 
@@ -2757,7 +2768,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
 
 Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> history,
                            std::uint32_t n_past, std::vector<float>& logits, bool inject,
-                           std::int32_t* token, PrefillHint next) {
+                           std::int32_t* token, PrefillHint next, bool want_head) {
   const PlanStep step;  // the plans this step borrows stay until its job ends
   if (token != nullptr &&
       (inject || speculative() || model_.exact || history.size() != std::size_t{n_past} + 1))
@@ -2795,7 +2806,8 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
   if (!in) {
     return std::unexpected(in.error());
   }
-  const Qwen38ChunkKind kind{.verify = false, .export_streams = inject};
+  const bool state_only = o_.state_only_prefill && !want_head && token == nullptr && !model_.exact;
+  const Qwen38ChunkKind kind{.verify = false, .export_streams = inject, .state_only = state_only};
   auto shape = kg::Qwen38ShapeOf(layout_, *in, 1);
   shape.token = token != nullptr;
   const ChunkKey key{.shape = shape, .kind = kind};
@@ -2821,6 +2833,7 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
         md::Qwen38RowGeometry(profile_, layout_.cells, ahead[i].first, ahead[i].rows, read);
     if (!geometry) break;
     keys[i] = {.shape = kg::Qwen38ShapeOf(layout_, *geometry, 1), .kind = kind};
+    keys[i].kind.state_only = o_.state_only_prefill && !ahead[i].want_head && !model_.exact;
     const bool duplicate = keys[i] == key || (i != 0 && ahead[0].rows != 0 && keys[i] == keys[0]);
     if (!duplicate) build[i] = request.plans.Find(keys[i]) == nullptr;
     if (inject) {
@@ -2935,9 +2948,11 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
     if (!bytes) return Error(bytes.error());
     output_bytes = *bytes;
   }
-  const Copies outputs = {{Address(logits_),
-                           token != nullptr ? Address(g.argmax->data) : Address(g.logits->data),
-                           output_bytes}};
+  Copies outputs;
+  if (!state_only)
+    outputs.push_back({Address(logits_),
+                       token != nullptr ? Address(g.argmax->data) : Address(g.logits->data),
+                       output_bytes});
   kg::LaunchContext& launch = resources_.launch();
   RunPath path = RunPath::kEager;
   Status ran;
@@ -3093,10 +3108,13 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
     }
     *token = value;
     ++device_token_outputs_;
+  } else if (state_only) {
+    logits.clear();
   } else {
     const auto* values = static_cast<const float*>(logits_);
     logits.assign(values, values + profile_.vocab);
   }
+  prefill_output_stats_.Completed(state_only, g.state_only_tail_cut, rows, g.nodes.size());
   return {};
 }
 

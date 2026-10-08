@@ -223,6 +223,8 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
     Qwen38ChunkKind kind, std::optional<ActivationMeasurement> measurement) {
   if (measurement && activations != 0)
     return Error("measurement-only planning cannot use activation storage");
+  if (kind.state_only && (shape.token || kind.verify || kind.capture_routed != 0 || !keep.empty()))
+    return Error("state-only prefill cannot publish tokens, verify or retain diagnostics");
   if (shape.token && (shape.rows != 1 || shape.outputs != 1 || kind.verify || kind.export_streams ||
                       kind.capture_routed != 0 || m.exact || !keep.empty()))
     return Error("a device token needs one plain Qwen target row without diagnostic captures");
@@ -247,7 +249,8 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
       .export_streams = kind.export_streams,
       .stream_rows = m.mtp_state != nullptr ? m.mtp_state->hidden_rows : 0,
       .capture_routed = kind.capture_routed,
-      .device_masks = m.device_masks};
+      .device_masks = m.device_masks,
+      .state_only = kind.state_only};
   auto arena = SizedArena(kg::Qwen38GraphTensors(*m.profile), [&](kg::TensorArena& a) {
     return kg::BuildQwen38Graph(a, *m.profile, *m.binding, shape, options).has_value();
   });

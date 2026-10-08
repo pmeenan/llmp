@@ -615,3 +615,15 @@ Independent GGML cache stores can use the shared checked physical grouping
 implementation, preserving primitive conversion, dependency order, lane tags
 and completion ownership. Gemma3 selects it; other measured recipients stay
 off after neutral results. [T86 controls and scope](experiments/grouped-kv-stores/README.md).
+
+### Scalar nonfinal output intent
+
+DS and native/GGUF Qwen now carry actual PromptSession `want_head` through current
+and predicted complete cache keys. Ordinary non-speculative serving selects
+state-only nonfinal chunks; low-level plans stay explicitly headed. Plain final
+blocks stop after required cache/compressor or convolution/recurrent/QSA writers.
+DSpark final features and MTP exported streams require the full trunk, so their
+checked head-only variants remain explicit opt-ins. Scoring and checkpoint
+settlement preserve required heads, pending rows and carry. Both intent kinds
+are measured for Setup funding; pruning does not assume a smaller placement.
+[Focused cuts, actual Setup cost and replay](experiments/ds-qwen-state-only/README.md).

@@ -48,7 +48,8 @@ class Builder {
  public:
   Builder(ggml_context* c, const model::Qwen38Profile& p, const model::Qwen38Binding& b,
           const Qwen38ChunkShape& s, Qwen38Graph& g, bool fused, bool exact, bool cutlass,
-          bool verify = false, bool export_streams = false, std::uint64_t capture_routed = 0)
+          bool verify = false, bool export_streams = false, std::uint64_t capture_routed = 0,
+          bool state_only = false)
       : c_(c),
         p_(p),
         b_(b),
@@ -60,6 +61,7 @@ class Builder {
         cutlass_(cutlass),
         verify_(verify),
         export_(export_streams),
+        state_only_(state_only),
         capture_routed_(capture_routed) {}
 
   std::expected<void, KernelFailure> Leaves(const Qwen38GraphOptions& options);
@@ -318,10 +320,10 @@ class Builder {
   ggml_tensor* Ple(const Qwen38LayerTensors& l, ggml_tensor* emb, ggml_tensor* hidden, int il);
   // The blocks read `cur`, or with `pre` its conversions made already.
   ggml_tensor* LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
-                               const Input* pre = nullptr);
-  ggml_tensor* QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il);
+                               const Input* pre = nullptr, bool state_only = false);
+  ggml_tensor* QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il, bool state_only = false);
   ggml_tensor* Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
-                         const Input* pre = nullptr);
+                         const Input* pre = nullptr, bool state_only = false);
   ggml_tensor* Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
                    const Input* pre = nullptr);
 
@@ -338,6 +340,7 @@ class Builder {
   bool cutlass_;
   bool verify_;
   bool export_;
+  bool state_only_;
   std::uint64_t capture_routed_;
   ggml_tensor* capture_attention_input_ = nullptr;
   ggml_tensor* capture_attention_projection_ = nullptr;
@@ -901,8 +904,11 @@ void Builder::BuildFast(ggml_tensor* res, ggml_tensor* ple) {
     Input cur = HcFast(res, out, logits, l.hc_attn_norm, l.hc_attn_down, l.hc_attn_up,
                        l.hc_attn_inject, &inject, false, il);
     Expand(cur.x);
-    out = b_.layers[il_u].linear ? LinearAttention(l, cur.x, il, &cur)
-                                 : Attention(l, cur.x, il, &cur);
+    const bool cut = state_only_ && !export_ && il_u + 1 == p_.layers;
+    if (cut) g_.state_only_tail_cut = true;
+    out = b_.layers[il_u].linear ? LinearAttention(l, cur.x, il, &cur, cut)
+                                 : Attention(l, cur.x, il, &cur, cut);
+    if (cut) return;
     logits = inject;
     cur = HcFast(res, out, logits, l.hc_ffn_norm, l.hc_ffn_down, l.hc_ffn_up, l.hc_ffn_inject,
                  &inject, true, il);
@@ -918,6 +924,7 @@ void Builder::BuildFast(ggml_tensor* res, ggml_tensor* ple) {
     // pre-final-mixer multi stream).
     Expand(ggml_set_rows(c_, g_.streams, flat, g_.stream_rows));
   }
+  if (state_only_) return;
   flat = ggml_get_rows(c_, flat, g_.out_ids);
   res = ggml_reshape_3d(c_, flat, p_.width, hc, s_.outputs);
   ggml_tensor* cur = HcFast(res, nullptr, nullptr, g_.output_hc_norm, g_.output_hc_down,
@@ -1013,7 +1020,7 @@ ggml_tensor* Builder::Ple(const Qwen38LayerTensors& l, ggml_tensor* emb, ggml_te
 // build_layer_attn_linear (qwen4exp.cpp:847-972) with the fused gated delta
 // rule (delta-net-base.cpp build_delta_net_fused, K = 1).
 ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
-                                      const Input* pre) {
+                                      const Input* pre, bool state_only) {
   capture_attention_input_ = nullptr;
   capture_attention_projection_ = nullptr;
   const std::int64_t nt = cur->ne[1];
@@ -1133,6 +1140,7 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
       Expand(StoreState(l.recurrent, new_state));
     }
   }
+  if (state_only) return nullptr;
   ggml_tensor* out = nullptr;
   if (fast_ && d == 128) {
     // build_norm_gated as jitllm.gdn.norm_gate, quantized to MXFP8 for the
@@ -1161,7 +1169,7 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
 }
 
 // build_qsa_top_k (qwen4exp.cpp:525-674), one stream, the per-block bias.
-ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il) {
+ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il, bool state_only) {
   const std::int64_t idx_dim = p_.indexer_head_dim;
   const std::int64_t n_idx_h = p_.indexer_heads;
   const std::int64_t r = p_.indexer_ratio;
@@ -1191,7 +1199,7 @@ ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il) {
     pool = QsaPool(c_, raw, l.cache_pool, l.idx_k_norm, g_.positions, r, p_.rms_eps, theta_scale);
     Expand(pool);
   }
-  if (!s_.qsa_select) {
+  if (state_only || !s_.qsa_select) {
     return nullptr;
   }
   if (DeviceSelect()) {
@@ -1246,7 +1254,7 @@ ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il) {
 
 // build_layer_attn with build_attn_qsa (qwen4exp.cpp:676-845).
 ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
-                                const Input* pre) {
+                                const Input* pre, bool state_only) {
   capture_attention_input_ = nullptr;
   capture_attention_projection_ = nullptr;
   const std::int64_t d = p_.head_dim;
@@ -1255,14 +1263,14 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   const std::int64_t nt = cur->ne[1];
   const std::int64_t n_kv = s_.n_kv;
   Input in = pre != nullptr ? *pre : In(cur);
-  ggml_tensor* top_k = QsaTopK(l, in, il);
+  ggml_tensor* top_k = QsaTopK(l, in, il, state_only);
   // [(d · 2) · heads, nt]: per head, q then its gate
-  ggml_tensor* q_full = Linear(l.q, in);
-  if (il < 64 && (capture_routed_ & (std::uint64_t{1} << il)) != 0) {
+  ggml_tensor* q_full = state_only ? nullptr : Linear(l.q, in);
+  if (!state_only && il < 64 && (capture_routed_ & (std::uint64_t{1} << il)) != 0) {
     capture_attention_input_ = in.x;
     capture_attention_projection_ = q_full;
   }
-  const std::size_t f = ggml_element_size(q_full);
+  const std::size_t f = state_only ? sizeof(float) : ggml_element_size(q_full);
   const std::size_t per_head = f * U(d) * 2;  // q then its gate
   ggml_tensor* k = Linear(l.k, in);
   ggml_tensor* v = Linear(l.v, in);
@@ -1271,18 +1279,21 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   // (jitllm.qsa.prep), where the rotation is 64 dimensions.
   if (FastSelect()) {
     const float theta_scale = std::pow(p_.rope_base, -2.0f / static_cast<float>(p_.rope_dims));
-    q = QsaPrep(c_, q_full, l.q_norm, g_.positions, d, heads, 2 * d, p_.rms_eps, theta_scale);
+    if (!state_only)
+      q = QsaPrep(c_, q_full, l.q_norm, g_.positions, d, heads, 2 * d, p_.rms_eps, theta_scale);
     k = QsaPrep(c_, k, l.k_norm, g_.positions, d, kvh, d, p_.rms_eps, theta_scale);
   } else {
-    q = ggml_view_3d(c_, q_full, d, heads, nt, per_head, per_head * U(heads), 0);
-    q = Norm(q, l.q_norm);
+    if (!state_only) {
+      q = ggml_view_3d(c_, q_full, d, heads, nt, per_head, per_head * U(heads), 0);
+      q = Norm(q, l.q_norm);
+    }
     k = ggml_reshape_3d(c_, k, d, kvh, nt);
     k = Norm(k, l.k_norm);
-    q = Rope(q, g_.positions);
+    if (!state_only) q = Rope(q, g_.positions);
     k = Rope(k, g_.positions);
   }
   v = ggml_reshape_3d(c_, v, d, kvh, nt);
-  Expand(q);
+  if (!state_only) Expand(q);
   Expand(v);
   Expand(k);
   // llama_kv_cache::cpy_k and cpy_v: merge the heads, store at the cells.
@@ -1292,6 +1303,7 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
       ggml_set_rows(c_, l.cache_v, ggml_reshape_2d(c_, v, d * kvh, nt), g_.cells);
   Expand(stored_k);
   Expand(stored_v);
+  if (state_only) return nullptr;
   const float scale = 1.0f / std::sqrt(static_cast<float>(d));
   ggml_tensor* attn = nullptr;
   ggml_tensor* kq_mask = g_.mask;
@@ -1544,7 +1556,11 @@ void Builder::Build() {
     ggml_tensor* cur =
         HcMix(res, l.hc_attn_norm, l.hc_attn_down, l.hc_attn_up, l.hc_attn_inject, &inject, il);
     Expand(cur);
-    cur = b_.layers[il_u].linear ? LinearAttention(l, cur, il) : Attention(l, cur, il);
+    const bool cut = state_only_ && !export_ && il_u + 1 == p_.layers;
+    if (cut) g_.state_only_tail_cut = true;
+    cur = b_.layers[il_u].linear ? LinearAttention(l, cur, il, nullptr, cut)
+                                 : Attention(l, cur, il, nullptr, cut);
+    if (cut) return;
     res = HcCombine(res, cur, inject);
     cur = HcMix(res, l.hc_ffn_norm, l.hc_ffn_down, l.hc_ffn_up, l.hc_ffn_inject, &inject, il);
     cur = Moe(l, cur, il);
@@ -1552,6 +1568,7 @@ void Builder::Build() {
     res = HcCombine(res, cur, inject);
     Name(res, "l_last", il);
   }
+  if (state_only_) return;
   // The rows the head computes.
   ggml_tensor* flat = ggml_reshape_2d(c_, res, p_.hc_width(), nt);
   flat = ggml_get_rows(c_, flat, g_.out_ids);
@@ -1838,6 +1855,8 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
                                                            const Qwen38ChunkShape& shape,
                                                            const Qwen38GraphOptions& options) {
   const Qwen38ChunkShape& s = shape;
+  if (options.state_only && (options.verify || s.token || options.capture_routed != 0))
+    return Rejected("state-only prefill cannot publish tokens or verify/capture routed rows");
   if (s.token && (s.rows != 1 || s.outputs != 1 || options.verify || options.export_streams ||
                   options.capture_routed != 0 || options.exact))
     return Rejected("token publication needs a plain one-row Qwen target");
@@ -1887,7 +1906,8 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
         "routed capture takes at most three layers of a CUTLASS fast verify of 1..4 rows");
   }
   Builder builder(arena.context(), profile, binding, shape, g, options.fused, options.exact,
-                  cutlass, options.verify, options.export_streams, options.capture_routed);
+                  cutlass, options.verify, options.export_streams, options.capture_routed,
+                  options.state_only);
   // A selection over the host's masks builds F32 [n_kv, rows] tensors, whose
   // plane GGML strides in 32 bits (RE-037; model/qwen38.h Qwen38State).
   if (s.qsa_select && !builder.SelectsOnDevice() &&

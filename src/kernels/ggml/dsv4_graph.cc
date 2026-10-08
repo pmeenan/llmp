@@ -221,7 +221,7 @@ class Builder {
   void Inject(const DsparkInjectTensors& t, const Dsv4Injection& inject);
   ggml_tensor* CpyK(ggml_tensor* cache, ggml_tensor* k_cur, ggml_tensor* idxs);
   ggml_tensor* GetK(ggml_tensor* cache, std::int64_t n_kv);
-  ggml_tensor* Attention(std::uint32_t il, ggml_tensor* cur);
+  ggml_tensor* Attention(std::uint32_t il, ggml_tensor* cur, bool state_only = false);
   // A wave's attention: the row-local projections over every slot's rows,
   // each slot's compressors, indexer and attention over its own state.
   ggml_tensor* AttentionWave(std::uint32_t il, ggml_tensor* cur);
@@ -997,7 +997,7 @@ ggml_tensor* Builder::TopKMask(ggml_tensor* kq_mask, ggml_tensor* top_k) {
 }
 
 // build_attention_impl (deepseek4.cpp:879-1221) for one layer.
-ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
+ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur, bool state_only) {
   const int il = static_cast<int>(il_u);
   const Dsv4LayerTensors& l = g_.layers[il_u];
   const std::uint32_t ratio = p_.compress_ratios[il_u];
@@ -1007,6 +1007,17 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
   const std::int64_t groups = p_.o_groups;
   const std::int64_t nt = cur->ne[1];
   const Rope rl = LayerRope(p_, ratio);
+  const Dsv4OutAParams outa_params = {.original_context = rl.n_ctx_orig,
+                                      .base = rl.base,
+                                      .scale = rl.scale,
+                                      .extension = rl.ext,
+                                      .attention = rl.attn,
+                                      .beta_fast = rl.beta_fast,
+                                      .beta_slow = rl.beta_slow};
+  const auto outa_fits = [&](const ggml_tensor* heads_tensor) {
+    return o_.fused && o_.outa_prefill && p_.rope_dims == 64 && nope == 448 &&
+           Dsv4OutAFits(l.out_a, heads_tensor, g_.positions, outa_params);
+  };
 
   ggml_tensor* qr = Mm(l.q_a, cur);
   qr = Norm(qr, l.q_a_norm);
@@ -1122,6 +1133,27 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
     Expand(ggml_set_rows(c_, l.hca_state_score, persist_score, g_.hca.persist_dst));
   }
 
+  if (state_only) {
+    // Preserve the headed graph's all-layer output-A/HCA eligibility. This
+    // descriptor is only inspected synchronously by Fits, never retained.
+    // The omitted attention result has the same packed F32 [head, heads, rows]
+    // layout as the reshape below; weights, positions and YaRN stay actual.
+    ggml_tensor potential{};
+    potential.type = GGML_TYPE_F32;
+    potential.ne[0] = head;
+    potential.ne[1] = heads;
+    potential.ne[2] = nt;
+    potential.ne[3] = 1;
+    potential.nb[0] = sizeof(float);
+    for (std::size_t i = 1; i < GGML_MAX_DIMS; ++i) {
+      potential.nb[i] = potential.nb[i - 1] * static_cast<std::size_t>(potential.ne[i - 1]);
+    }
+    g_.headed_outa_layers += static_cast<std::uint32_t>(outa_fits(&potential));
+    // Compression/index state above is authoritative for subsequent chunks;
+    // neither query/selection nor the attention result is read by this chunk.
+    Expand(CpyK(l.raw_k, kv, g_.raw_k_idxs));
+    return nullptr;
+  }
   ggml_tensor* out = nullptr;
   if (sparse_) {
     out = AttentionSparse(il_u, q, kv, qr, cur);
@@ -1161,15 +1193,8 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
   }
 
   out = ggml_reshape_3d(c_, out, head, heads, nt);
-  const Dsv4OutAParams outa_params = {.original_context = rl.n_ctx_orig,
-                                      .base = rl.base,
-                                      .scale = rl.scale,
-                                      .extension = rl.ext,
-                                      .attention = rl.attn,
-                                      .beta_fast = rl.beta_fast,
-                                      .beta_slow = rl.beta_slow};
-  if (o_.fused && o_.outa_prefill && p_.rope_dims == 64 && nope == 448 &&
-      Dsv4OutAFits(l.out_a, out, g_.positions, outa_params)) {
+  if (outa_fits(out)) {
+    ++g_.headed_outa_layers;
     // The direct dependency retains unrotated heads through the disjoint
     // canonical output write. No inverse-RoPE tensor or output layout copy.
     // Its output's rows are the chunk's rounded up to 16 (Dsv4OutARows):
@@ -1637,9 +1662,12 @@ void Builder::Build() {
       }
     }
   };
+  const bool final_streams = std::ranges::find(o_.features, p_.layers) != o_.features.end();
   for (std::uint32_t il_u = 0; il_u < p_.layers; ++il_u) {
     const int il = static_cast<int>(il_u);
     const Dsv4LayerTensors& l = g_.layers[il_u];
+    const bool cut = o_.state_only && !final_streams && il_u + 1 == p_.layers;
+    if (cut) g_.state_only_tail_cut = true;
     capture(il_u, inpl);
     ggml_tensor* residual = inpl;
     ggml_tensor* post = nullptr;
@@ -1648,7 +1676,8 @@ void Builder::Build() {
       ggml_tensor* cur = PreNorm(il_u, inpl, l.hc_attn_fn, l.hc_attn_scale, l.hc_attn_base,
                                  l.attn_norm, &post, &comb);
       Name(cur, "attn_norm", il);
-      cur = segs_.empty() ? Attention(il_u, cur) : AttentionWave(il_u, cur);
+      cur = segs_.empty() ? Attention(il_u, cur, cut) : AttentionWave(il_u, cur);
+      if (cut) break;
       inpl = ggml_dsv4_hc_post(c_, cur, residual, post, comb);
       Name(inpl, "hc_attn_post", il);
       residual = inpl;
@@ -1665,7 +1694,8 @@ void Builder::Build() {
     Name(cur, "hc_attn_pre", il);
     cur = Norm(cur, l.attn_norm);
     Name(cur, "attn_norm", il);
-    cur = Attention(il_u, cur);
+    cur = Attention(il_u, cur, cut);
+    if (cut) break;
     inpl = ggml_dsv4_hc_post(c_, cur, residual, post, comb);
     Name(inpl, "hc_attn_post", il);
     residual = inpl;
@@ -1681,23 +1711,25 @@ void Builder::Build() {
     Name(inpl, "l_last", il);
   }
   capture(p_.layers, inpl);
-  // Capture above retains every feature row. Only the requested trailing
-  // rows enter the final mix, norm and vocabulary head (a wave's: all).
-  if (segs_.empty()) {
-    ggml_tensor* flat = ggml_reshape_2d(c_, inpl, p_.hc_width(), nt);
-    ggml_tensor* flat_out = ggml_get_rows(c_, flat, g_.out_ids);
-    inpl = ggml_reshape_3d(c_, flat_out, p_.width, hc, g_.out_ids->ne[0]);
-  }
-  ggml_tensor* cur = HcHead(inpl);
-  Name(cur, "hc_head", -1);
-  cur = Norm(cur, g_.output_norm);
-  Name(cur, "result_norm", -1);
-  g_.logits = Mm(g_.output, cur);
-  Name(g_.logits, "result_output", -1);
-  Expand(g_.logits);
-  if (s_.token) {
-    g_.token = Argmax(c_, g_.logits, false, ArgmaxFlavor::kHostGreedy);
-    Expand(g_.token);
+  if (!o_.state_only) {
+    // Capture above retains every feature row. Only the requested trailing
+    // rows enter the final mix, norm and vocabulary head (a wave's: all).
+    if (segs_.empty()) {
+      ggml_tensor* flat = ggml_reshape_2d(c_, inpl, p_.hc_width(), nt);
+      ggml_tensor* flat_out = ggml_get_rows(c_, flat, g_.out_ids);
+      inpl = ggml_reshape_3d(c_, flat_out, p_.width, hc, g_.out_ids->ne[0]);
+    }
+    ggml_tensor* cur = HcHead(inpl);
+    Name(cur, "hc_head", -1);
+    cur = Norm(cur, g_.output_norm);
+    Name(cur, "result_norm", -1);
+    g_.logits = Mm(g_.output, cur);
+    Name(g_.logits, "result_output", -1);
+    Expand(g_.logits);
+    if (s_.token) {
+      g_.token = Argmax(c_, g_.logits, false, ArgmaxFlavor::kHostGreedy);
+      Expand(g_.token);
+    }
   }
   // The drafter's part after the target's own, so the target's nodes keep
   // their order: the features (the streams' means, llama.cpp's layer_inp
@@ -2032,8 +2064,8 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
        (profile.window > INT32_MAX || shape.raw_cells > INT32_MAX || shape.rows > INT32_MAX - 31)))
     return Rejected("raw causal/ring mask parameters exceed int32");
   const Dsv4ChunkShape& s = shape;
-  if (s.token &&
-      (s.rows != 1 || options.inject || !options.features.empty() || options.row_invariant))
+  if (s.token && (s.rows != 1 || options.inject || !options.features.empty() ||
+                  options.row_invariant || options.state_only))
     return Rejected("token publication needs a plain one-row target");
   if (s.rows <= 0 || s.outputs < 0 || s.outputs > s.rows || s.raw_cells <= 0 || s.raw_n_kv < 256 ||
       s.raw_n_kv > s.raw_cells || s.raw_n_kv % 256 != 0 || s.csa_n_kv < 256 ||
@@ -2129,7 +2161,7 @@ std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& aren
     return Rejected(std::format("a DeepSeek V4 wave takes one to {} slots, each injected or none",
                                 kDsv4WaveSlots));
   }
-  if (!options.fused || options.row_invariant || options.outa_prefill) {
+  if (!options.fused || options.row_invariant || options.outa_prefill || options.state_only) {
     return Rejected("a DeepSeek V4 wave runs the fast plan's fused form alone");
   }
   const Dsv4ChunkShape& lead = shape.slots.front();
@@ -2221,7 +2253,7 @@ std::expected<DsparkGraph, KernelFailure> BuildDsparkGraph(TensorArena& arena,
   if (rows <= 0 || std::cmp_greater(rows, profile.block_size) ||
       std::cmp_not_equal(ring, profile.ring) || ring % 256 != 0 ||
       binding.blocks.layers.size() != p.layers || p.hc != 4 || p.heads % p.o_groups != 0 ||
-      !options.features.empty() || options.inject || options.row_invariant ||
+      !options.features.empty() || options.inject || options.row_invariant || options.state_only ||
       options.raw_mask_context != 0 || ring > INT32_MAX || p.window == 0 ||
       std::uint64_t{p.window} + static_cast<std::uint64_t>(rows) >
           static_cast<std::uint64_t>(ring) ||
@@ -2255,7 +2287,7 @@ std::expected<DsparkWaveGraph, KernelFailure> BuildDsparkWaveGraph(
   if (rows <= 0 || std::cmp_greater(rows, profile.block_size) ||
       std::cmp_not_equal(ring, profile.ring) || ring % 256 != 0 ||
       binding.blocks.layers.size() != p.layers || p.hc != 4 || p.heads % p.o_groups != 0 ||
-      !options.features.empty() || options.inject || options.row_invariant ||
+      !options.features.empty() || options.inject || options.row_invariant || options.state_only ||
       options.raw_mask_context != 0 || ring > INT32_MAX || p.window == 0 ||
       std::uint64_t{p.window} + static_cast<std::uint64_t>(rows) >
           static_cast<std::uint64_t>(ring) ||

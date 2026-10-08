@@ -231,6 +231,8 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     std::optional<std::uint32_t> first_position, std::optional<ActivationMeasurement> measurement) {
   if (measurement && activations != 0)
     return Error("measurement-only planning cannot use activation storage");
+  if (speculation.state_only && (shape.token || speculation.verify || !keep_names.empty()))
+    return Error("state-only prefill cannot publish tokens, verify or retain diagnostics");
   if (shape.token && (shape.rows != 1 || m.exact || speculation.verify ||
                       speculation.drafter != nullptr || !keep_names.empty() || first_position))
     return Error("plain device token plans require one non-speculative target row");
@@ -253,7 +255,8 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
                                .row_invariant = speculation.verify && m.exact,
                                .fused = !m.exact,
                                .outa_prefill = outa_prefill,
-                               .raw_mask_context = m.device_raw_masks ? m.state->context : 0};
+                               .raw_mask_context = m.device_raw_masks ? m.state->context : 0,
+                               .state_only = speculation.state_only};
   // The ds4 prefill stage mechanisms (docs/experiments/ds4-prefill-stages):
   // the fast plan's defaults, each under its own shape guard. A named
   // diagnostic keeps the tensors they leave unwritten (or write as F16), so
@@ -287,7 +290,8 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     BindDsparkInjection(*speculation.drafter, g);
   }
   // The logits are read after the run whatever node comes last.
-  std::vector<ggml_tensor*> keep = {g.logits};
+  std::vector<ggml_tensor*> keep;
+  if (g.logits != nullptr) keep.push_back(g.logits);
   if (g.token != nullptr) keep.push_back(g.token);
   for (const std::string& name : keep_names) {
     if (name == "*") {
@@ -310,11 +314,19 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
   kg::SetDsv4PrefillStages(device, stages);
   // HCA alone has not passed the registered quality gate. Require every
   // layer's actual output-A insertion, including weight/YaRN eligibility.
-  const bool all_outa = std::cmp_equal(
-      std::ranges::count_if(
-          g.nodes,
-          [](const auto* node) { return kg::JitllmOpOf(node) == kg::JitllmOp::kDsv4OutA; }),
-      m.profile->layers);
+  // A pruned final result must also satisfy the headed eligibility gate;
+  // otherwise pruning could enable different persistent HCA arithmetic.
+  const bool cut_last =
+      options.state_only &&
+      std::ranges::find(options.features, m.profile->layers) == options.features.end();
+  const auto attention_layers = m.profile->layers - static_cast<std::uint32_t>(cut_last);
+  const bool all_outa =
+      g.headed_outa_layers == m.profile->layers &&
+      std::cmp_equal(std::ranges::count_if(g.nodes,
+                                           [](const auto* node) {
+                                             return kg::JitllmOpOf(node) == kg::JitllmOp::kDsv4OutA;
+                                           }),
+                     attention_layers);
   device.ds4_hca = outa_prefill && all_outa && Dsv4PrefillHca(m, shape);
   if (device.ds4_hca) {
     if (!first_position) {

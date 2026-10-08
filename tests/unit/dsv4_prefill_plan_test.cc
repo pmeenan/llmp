@@ -152,6 +152,8 @@ TEST(Dsv4PrefillPlan, HarnessesDefaultOffServingTakesEveryChunk) {
   EXPECT_TRUE(Dsv4Options{}.device_raw_masks);
   EXPECT_FALSE(Dsv4Model{}.device_raw_masks);  // Low-level plan reference is explicit.
   EXPECT_TRUE(Dsv4Options{}.device_tokens);
+  EXPECT_FALSE(Dsv4Options{}.state_only_prefill);
+  EXPECT_FALSE(Dsv4Speculation{}.state_only);
   EXPECT_FALSE(kg::Dsv4ChunkShape{}.token);  // Low-level plans retain explicit output policy.
   Dsv4Options served;
   SetDsv4ServedPrefill(served);
@@ -161,6 +163,9 @@ TEST(Dsv4PrefillPlan, HarnessesDefaultOffServingTakesEveryChunk) {
 
 TEST(Dsv4PrefillPlan, TokenPolicyRefusesNonPlainShapesBeforeModelAccess) {
   Dsv4Model model;
+  const std::array<std::string, 1> keep = {"result_output"};
+  EXPECT_FALSE(PlanDsv4Chunk(model, {}, {}, keep, 0, 0, {.state_only = true}));
+  EXPECT_FALSE(PlanDsv4Chunk(model, {}, {}, {}, 0, 0, {.verify = true, .state_only = true}));
   auto refused = PlanDsv4Chunk(model, {.rows = 2, .token = true}, {}, {}, 0, 0);
   ASSERT_FALSE(refused);
   EXPECT_EQ(refused.error(), "plain device token plans require one non-speculative target row");

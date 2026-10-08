@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Omit unused nonfinal prompt dependencies for ordinary plain DeepSeek and
+  native/GGUF Qwen while preserving exact initialized state and scoring. Bounded
+  repeated prefill takes 1.928%/2.282% less time for DS/native Qwen; speculative
+  required-stream consumers remain explicit opt-ins.
+
 - Group independent Gemma3 KV stores under one checked launch, preserving
   exact rounding, heads and initialized state. A bounded C2 screen reduces
   combined paid prefill/decode time 0.45%; other measured recipients remain off.

@@ -248,6 +248,9 @@ struct Dsv4GraphOptions {
   std::uint32_t raw_mask_context = 0;
   // DSpark-only exact-row noncausal block mask, independent of target context.
   bool device_draft_masks = false;
+  // A nonfinal prompt needs state and requested features, without a head.
+  // If no feature reads final streams, stop after the last layer's stores.
+  bool state_only = false;
 };
 
 // The fast plan's graph-side prefill stage mechanisms (above), all on or off.
@@ -276,6 +279,9 @@ struct Dsv4Graph {
   // the indexer's; HCA's), from which it masks them on the device.
   ggml_tensor* csa_visible = nullptr;
   ggml_tensor* hca_visible = nullptr;
+  // Actual output-A eligibility, including the potential packed attention
+  // result of a pruned final layer. Pruning cannot broaden combined HCA.
+  std::uint32_t headed_outa_layers = 0;
   std::vector<Dsv4LayerTensors> layers;
   ggml_tensor* output_norm = nullptr;
   ggml_tensor* output = nullptr;
@@ -289,7 +295,8 @@ struct Dsv4Graph {
   ggml_tensor* features = nullptr;
   // With options.inject.
   std::optional<DsparkInjectTensors> inject;
-  std::vector<ggml_tensor*> nodes;  // GGML's order, views included
+  bool state_only_tail_cut = false;  // final trunk omitted; required exports retain it
+  std::vector<ggml_tensor*> nodes;   // GGML's order, views included
   // Intermediate tensors under llama.cpp's callback names ("l_last-7",
   // "attn_out-7", "ffn_moe_out-7", "hc_head-1", ...) and a few of jitLLM's
   // ("kq_mask-7", "lid_topk-7", the fast plan's "ffn_moe_route-7"), for

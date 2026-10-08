@@ -292,7 +292,9 @@ class Dsv4 final : public Llm {
     if (plain_device_tokens) options_.device_tokens = *plain_device_tokens;
     options_.prefill_lookahead = serving.dsv4_prefill_lookahead;
     options_.prepare_state = serving.dsv4_prepare_state;
+    options_.state_only_prefill = serving.dsv4_state_only_prefill.value_or(!speculate_);
     prefill_hints_ = serving.predicted_prefill_hints;
+    prefill_output_intent_ = serving.prefill_output_intent;
     // Request slots share the weights and workspace, each with its own
     // conversation state: concurrent chat requests decode in waves
     // (engine/dsv4_runner.h), whose row-local products read each weight
@@ -497,10 +499,12 @@ class Dsv4 final : public Llm {
   Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
                             bool inject, bool want_head, std::vector<float>& logits,
                             PrefillHint next) override {
-    // State-only output and capture policy are a later transfer. Preserve the
-    // current actual frontier head/features even when intent says no head.
-    (void)want_head;
     if (!prefill_hints_) next = {};
+    if (!prefill_output_intent_) {
+      want_head = true;
+      next.want_head = true;
+      next.after_want_head = true;
+    }
     if (past >= all.size()) return Error("an empty DeepSeek prefill chunk");
     return NativeSlot(branch).PrefillChunk(
         past, all.subspan(past), logits,
@@ -508,7 +512,7 @@ class Dsv4 final : public Llm {
          .want_head = next.want_head,
          .after_rows = next.after_rows,
          .after_want_head = next.after_want_head},
-        inject ? engine::Dsv4ChunkKind::kInject : engine::Dsv4ChunkKind::kPlain);
+        inject ? engine::Dsv4ChunkKind::kInject : engine::Dsv4ChunkKind::kPlain, want_head);
   }
   std::optional<Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
                                           std::uint32_t pos, std::int32_t& token) override {
@@ -951,6 +955,7 @@ class Dsv4 final : public Llm {
   fs::path store_;
   std::string slots_report_;
   bool prefill_hints_ = true;
+  bool prefill_output_intent_ = true;
   engine::Dsv4Options options_;  // before the runner, which keeps a reference
   engine::Dsv4Runner runner_;
   std::array<engine::Dsv4Runner::Slot*, engine::Dsv4Runner::kRequestSlots> native_slots_{};
@@ -2339,7 +2344,9 @@ class Qwen38 final : public Llm {
     if (plain_device_tokens) options_.device_tokens = *plain_device_tokens;
     options_.prefill_lookahead = serving.qwen38_prefill_lookahead;
     options_.prepare_state = serving.qwen38_prepare_state;
+    options_.state_only_prefill = serving.qwen38_state_only_prefill.value_or(!speculate_);
     prefill_hints_ = serving.predicted_prefill_hints;
+    prefill_output_intent_ = serving.prefill_output_intent;
     // Request slots share weights and workspace while each branch retains
     // its own native state: the requests decode in one wave
     // (engine/qwen38_wave_plan.h), whose row-local products read each weight
@@ -2577,13 +2584,18 @@ class Qwen38 final : public Llm {
   Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
                             bool inject, bool want_head, std::vector<float>& logits,
                             PrefillHint next) override {
-    (void)want_head;  // Frontier/export semantics stay unchanged in this batch.
     if (!prefill_hints_) next = {};
+    if (!prefill_output_intent_) {
+      want_head = true;
+      next.want_head = true;
+      next.after_want_head = true;
+    }
     return NativeSlot(branch).PrefillChunk(all, past, logits, inject,
                                            {.rows = next.rows,
                                             .want_head = next.want_head,
                                             .after_rows = next.after_rows,
-                                            .after_want_head = next.after_want_head});
+                                            .after_want_head = next.after_want_head},
+                                           want_head);
   }
   std::optional<Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
                                           std::uint32_t pos, std::int32_t& token) override {
@@ -3011,6 +3023,7 @@ class Qwen38 final : public Llm {
   std::uint32_t shared_wave_depth_ = kQwen38SharedWaveDepth;
   std::uint32_t draft_wave_max_ = kQwen38DraftWaveMax;
   bool prefill_hints_ = true;
+  bool prefill_output_intent_ = true;
   engine::Qwen38Options options_;  // before the runner, which keeps a reference
   engine::Qwen38Runner runner_;
   std::array<engine::Qwen38Runner::Slot*, engine::Qwen38Runner::kRequestSlots> native_slots_{};

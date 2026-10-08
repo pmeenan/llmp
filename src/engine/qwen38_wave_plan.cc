@@ -992,6 +992,8 @@ struct Qwen38WaveBuilder {
   static std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> Target(
       std::span<const Qwen38TargetWaveInput> requests, const kg::DeviceChoices& choices,
       Qwen38WavePlacement placement, std::optional<ActivationMeasurement> measurement) {
+    if (std::ranges::any_of(requests, [](const auto& r) { return r.kind.state_only; }))
+      return Error("state-only prefill is scalar; target waves require headed requests");
     auto mutable_places = MutablePlaces(requests);
     if (!mutable_places) {
       return std::unexpected(mutable_places.error());

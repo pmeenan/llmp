@@ -3,6 +3,8 @@
 
 // Actual scalar production prefill, through PromptSession's hint delivery.
 // Both arms provision the same optional plans/backing; off withholds hints.
+// Optional headed|state-only argument instead compares output-intent delivery
+// under identical headed+state-only Setup provisioning; hints stay independent.
 #include <sys/stat.h>
 
 #include <algorithm>
@@ -131,10 +133,23 @@ std::string Json(const en::LiveState::PreparationStats& s) {
       s.cancel_requested);
 }
 
+std::string Json(const en::PrefillOutputStats& s) {
+  return std::format(
+      R"({{"headed":{},"state_only":{},"tail_cut":{},"rows":{},"selected_nodes":{}}})", s.headed,
+      s.state_only, s.tail_cut, s.rows, s.selected_nodes);
+}
+std::string Json(const en::StartupPlacementStats& s) {
+  return std::format(
+      R"({{"plans":{},"nodes":{},"bounded":{},"exact":{},"max_activations":{},"max_inputs":{},"max_host":{},"max_nodes":{}}})",
+      s.plans, s.nodes, s.bounded, s.exact, s.max_activations, s.max_inputs, s.max_host,
+      s.max_nodes);
+}
+
 template <typename Runner>
 Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
                 const std::array<std::vector<std::int32_t>, 2>& tokens,
-                const std::filesystem::path& out, std::string_view recipe, bool hints) {
+                const std::filesystem::path& out, std::string_view recipe, bool hints,
+                std::optional<bool> output_cut) {
   auto& server = *life.server;
   const bool ds = recipe == "ds" || recipe == "dspark";
   const bool spec = recipe == "dspark" || recipe == "qmtp";
@@ -174,6 +189,7 @@ Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
   const auto graph_before = model.graphs();
   const auto plans_before = runner.prefill_stats();
   const auto prep_before = runner.state_preparation_stats();
+  const auto output_before = runner.prefill_output_stats();
   std::array<std::vector<float>, 2> heads;
   std::array<Snapshot, 2> initial, generated, continued;
   std::array<rt::PrefillRun, 2> runs;
@@ -208,6 +224,18 @@ Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
   const auto graph_after = model.graphs();
   const auto plans = runner.prefill_stats();
   const auto prep = runner.state_preparation_stats();
+  const auto output_after = runner.prefill_output_stats();
+  if (output_cut) {
+    const std::uint64_t chunks = ds ? 4 : 6;
+    const std::uint64_t no_head = *output_cut ? chunks - 2 : 0;
+    const std::uint64_t cut = spec ? 0 : no_head;
+    if (output_after.headed - output_before.headed != chunks - no_head ||
+        output_after.state_only - output_before.state_only != no_head ||
+        output_after.tail_cut - output_before.tail_cut != cut ||
+        output_after.rows - output_before.rows != tokens[0].size() + tokens[1].size() ||
+        output_after.selected_nodes <= output_before.selected_nodes)
+      return std::unexpected("actual scalar output intent/dependency cut was not exercised");
+  }
   if (server.node().has_pending_state_preparation())
     return std::unexpected("undrained prefill ticket");
   if (!std::isfinite(seconds) || seconds <= 0 || plans.refused != plans_before.refused ||
@@ -362,6 +390,79 @@ Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
     if (!state) return std::unexpected(state.error());
     continued[id] = std::move(*state);
   }
+  std::string output_proof = "null";
+  if (output_cut) {
+    // A future stable boundary cuts one nonfinal chunk, then actually settles
+    // MTP/DSpark before checkpointing and runs the final headed continuation.
+    auto history = branches[0]->history();
+    const auto old_end = static_cast<std::uint32_t>(history.size());
+    history.insert(history.end(), tokens[0].begin(), tokens[0].begin() + 32);
+    const auto stable = old_end + 16;
+    const auto checkpoints = branches[0]->turn_checkpoints();
+    auto opened = branches[0]->BeginPrompt(history, stable);
+    if (!opened) return std::unexpected(opened.error());
+    prompts.owned[0] = std::move(*opened);
+    bool nonfinal_seen = false;
+    while (!prompts.owned[0]->done()) {
+      if (auto r = prompts.owned[0]->Advance(); !r) return r;
+      if (prompts.owned[0]->run().end == stable) {
+        nonfinal_seen = true;
+        if (*output_cut ? !prompts.owned[0]->last().empty() : !finite(prompts.owned[0]->last()))
+          return std::unexpected("nonfinal checkpoint boundary output intent differs");
+      }
+    }
+    if (!nonfinal_seen || !finite(prompts.owned[0]->last()) || branches[0]->history() != history ||
+        branches[0]->turn_checkpoints() <= checkpoints)
+      return std::unexpected("actual nonfinal checkpoint/continuation publication differs");
+    if (auto r = Write(out / "checkpointed0.f32", std::span<const float>(prompts.owned[0]->last()));
+        !r)
+      return r;
+    if (auto r = Write(out / "checkpointed-history0.i32", std::span<const std::int32_t>(history));
+        !r)
+      return r;
+    if (auto r = prompts.owned[0]->Finish(); !r) return r;
+    prompts.owned[0].reset();
+    auto checkpointed = State(server, runner, 0);
+    if (!checkpointed) return std::unexpected(checkpointed.error());
+    const auto score_before = runner.prefill_output_stats();
+    std::uint32_t score_rows = 0;
+    auto scoring = branches[1]->BeginScoringPrompt(
+        std::span(tokens[1]).first(5), [&](std::int32_t token, std::span<const float> row) {
+          if (score_rows >= 4 || row.size() != vocab ||
+              !std::ranges::all_of(row, [](float x) { return std::isfinite(x); }) ||
+              token != tokens[1][score_rows + 1])
+            return false;
+          const auto wrote = Write(out / std::format("scoring1-{}.f32", score_rows), row);
+          if (!wrote) return false;
+          ++score_rows;
+          return true;
+        });
+    if (!scoring) return std::unexpected(scoring.error());
+    prompts.owned[1] = std::move(*scoring);
+    while (!prompts.owned[1]->done())
+      if (auto r = prompts.owned[1]->Advance(); !r) return r;
+    const auto score_after = runner.prefill_output_stats();
+    if (score_rows != 4 || !finite(prompts.owned[1]->last()) ||
+        branches[1]->history() != std::vector(tokens[1].begin(), tokens[1].begin() + 5) ||
+        score_after.state_only != score_before.state_only ||
+        score_after.tail_cut != score_before.tail_cut ||
+        score_after.headed - score_before.headed != 5)
+      return std::unexpected("actual scoring did not retain every head");
+    if (auto r = Write(out / "scoring1.f32", std::span<const float>(prompts.owned[1]->last())); !r)
+      return r;
+    if (auto r = prompts.owned[1]->Finish(); !r) return r;
+    prompts.owned[1].reset();
+    auto scored_state = State(server, runner, 1);
+    if (!scored_state) return std::unexpected(scored_state.error());
+    auto protected_peer = State(server, runner, 0);
+    if (!protected_peer) return std::unexpected(protected_peer.error());
+    if (protected_peer->sha != checkpointed->sha || protected_peer->bytes != checkpointed->bytes ||
+        protected_peer->ranges != checkpointed->ranges)
+      return std::unexpected("scoring changed its checkpointed peer");
+    output_proof = std::format(
+        R"({{"stable_boundary":{},"nonfinal_seen":true,"checkpointed":{},"scoring_rows":{},"scored":{}}})",
+        stable, Json(*checkpointed), score_rows, Json(*scored_state));
+  }
   std::string owners = "[";
   for (std::uint32_t id = 0; id < 2; ++id) {
     owners += std::format(
@@ -377,11 +478,20 @@ Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
   auto allocation = model.allocation_report();
   if (allocation.empty()) allocation = "null";
   if (!model.violations().empty()) return std::unexpected(model.violations());
+  std::string startup;
+  if constexpr (std::is_same_v<Runner, en::Dsv4Runner>) {
+    startup = Json(runner.startup_placement_stats());
+  } else {
+    startup =
+        std::format(R"({{"scalar":{},"wave":{}}})", Json(runner.scalar_startup_placement_stats()),
+                    Json(runner.wave_startup_placement_stats()));
+  }
   const auto result = std::format(
-      R"({{"recipe":"{}","hints":{},"context":{},"chunk":{},"slots":2,"speculative":{},"prefill_capacity":1,"prefill_seconds":{:.9f},"paid_units":{},"vocab":{},"plan_floor":{},"temporary_plan_floor":{},"derived_ordinary_plan_floor":{},"activations":{},"scratch":{},"host_inputs":{},"graphs":[{},{},{}],"plans_before":{},"plans":{},"preparation_before":{},"preparation":{},"owners":{},"allocation":{},"plan_report":{},"joined_generation_calls":{},"paired_slots":{},"model_extra":{},"departed":true,"spilled":true,"checkpointed":true}})",
-      recipe, hints, context, chunk, spec, seconds, units, vocab, floor, temporary,
-      floor - temporary, runner.activations_needed(), runner.pool_needed(),
-      runner.host_input_bytes(), graph_after.eager - graph_before.eager,
+      R"({{"recipe":"{}","hints":{},"state_only_provisioned":{},"output_intent":{},"setup_seconds":{:.9f},"startup":{},"output_before":{},"output_after":{},"output_proof":{},"context":{},"chunk":{},"slots":2,"speculative":{},"prefill_capacity":1,"prefill_seconds":{:.9f},"paid_units":{},"vocab":{},"plan_floor":{},"temporary_plan_floor":{},"derived_ordinary_plan_floor":{},"activations":{},"scratch":{},"host_inputs":{},"graphs":[{},{},{}],"plans_before":{},"plans":{},"preparation_before":{},"preparation":{},"owners":{},"allocation":{},"plan_report":{},"joined_generation_calls":{},"paired_slots":{},"model_extra":{},"departed":true,"spilled":true,"checkpointed":true}})",
+      recipe, hints, output_cut.has_value(), output_cut.value_or(false), runner.setup_seconds(),
+      startup, Json(output_before), Json(output_after), output_proof, context, chunk, spec, seconds,
+      units, vocab, floor, temporary, floor - temporary, runner.activations_needed(),
+      runner.pool_needed(), runner.host_input_bytes(), graph_after.eager - graph_before.eager,
       graph_after.captured - graph_before.captured, graph_after.replayed - graph_before.replayed,
       Json(plans_before), Json(plans), Json(prep_before), Json(prep), owners, allocation,
       plan_report, joined_calls, paired_slots, model.extra());
@@ -394,10 +504,10 @@ Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 10) {
+  if (argc != 10 && argc != 11) {
     std::println(stderr,
                  "usage: prefill_prediction_probe ds|dspark|qn|qmtp|qg STORE TARGET DRAFTER|- "
-                 "TOKENIZER_DIR|- IDS0 IDS1 NEW_OUT off|on");
+                 "TOKENIZER_DIR|- IDS0 IDS1 NEW_OUT off|on [headed|state-only]");
     return 2;
   }
   const std::string_view recipe = argv[1], policy = argv[9];
@@ -406,6 +516,12 @@ int main(int argc, char** argv) {
   if ((!ds && recipe != "qn" && recipe != "qmtp" && recipe != "qg") ||
       (policy != "off" && policy != "on") || spec == (std::string_view(argv[4]) == "-"))
     return 2;
+  std::optional<bool> output_cut;
+  if (argc == 11) {
+    const std::string_view intent = argv[10];
+    if (intent != "headed" && intent != "state-only") return 2;
+    output_cut = intent == "state-only";
+  }
   const std::filesystem::path out = argv[8];
   std::error_code ec;
   if (!std::filesystem::create_directory(out, ec) || ec || chmod(out.c_str(), 0700) != 0) return 2;
@@ -448,6 +564,9 @@ int main(int argc, char** argv) {
   life->options.qwen38_prefill_lookahead = true;
   life->options.qwen38_prepare_state = true;
   life->options.predicted_prefill_hints = policy == "on";
+  life->options.dsv4_state_only_prefill = output_cut.has_value();
+  life->options.qwen38_state_only_prefill = output_cut.has_value();
+  life->options.prefill_output_intent = output_cut.value_or(true);
   life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, stderr);
   Status ran = life->server->Start(true);
   rt::Llm* model = nullptr;
@@ -461,9 +580,9 @@ int main(int argc, char** argv) {
   }
   if (ran) {
     ran = ds ? Exercise(*life, *model, dynamic_cast<en::Dsv4Runner&>(model->paged()), tokens, out,
-                        recipe, policy == "on")
+                        recipe, policy == "on", output_cut)
              : Exercise(*life, *model, dynamic_cast<en::Qwen38Runner&>(model->paged()), tokens, out,
-                        recipe, policy == "on");
+                        recipe, policy == "on", output_cut);
   }
   if (!ran) std::println(stderr, "probe failed: {}", ran.error());
   const auto retired = life->server->TearDown();

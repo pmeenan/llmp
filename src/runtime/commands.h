@@ -130,9 +130,15 @@ struct ServingOptions {
   // change. Both mechanisms have independent internal matched controls.
   bool dsv4_prefill_lookahead = true, qwen38_prefill_lookahead = true;
   bool dsv4_prepare_state = true, qwen38_prepare_state = true;
+  // Unset selects ordinary non-speculative prefill only; required-stream
+  // drafter consumers remain explicit opt-ins.
+  std::optional<bool> dsv4_state_only_prefill, qwen38_state_only_prefill;
   // Hint-delivery control for matched DS/Qwen tests with identical provisioning.
   // It changes neither required work nor the existing Gemma policy.
   bool predicted_prefill_hints = true;
+  // Internal same-provisioning T54 control: false forces current/future heads.
+  // Scoring remains headed and public settings never expose this override.
+  bool prefill_output_intent = true;
 };
 
 struct ChatOptions {

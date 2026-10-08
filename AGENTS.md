@@ -315,8 +315,9 @@ prefill 8.7%/2.9%, with fresh Gemma2 stock bookends level and exact outputs.
 The later 64-row transfer improves native prefill 10.5%/2.8%; fresh stock
 bookends leave Gemma2 level and Gemma3 1.8% slower on the paid cycle.
 Larger rows, mixed-width roots/cohorts and broader sustained gates remain open.
-The retroactive optimization transfer audit is complete; explicit open ports
-remain in M3.5. The internal partial-weight foundation preserves exact recovery
+The retroactive optimization inventory audit is complete; its implementation
+backlog remains open in M3.5. The internal partial-weight foundation preserves
+exact recovery
 and reduces prepared swap reads, but its cold-switch gate remains open and
 ordinary serving keeps full swaps. Qwen native/GGUF causal masks and headed
 native MTP masks now share the GPU producer, with exact heads/state and joined

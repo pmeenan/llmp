@@ -174,6 +174,7 @@ struct Dsv4Options {
   // Selected for checked scalar consumers; private controls retain ordinary work.
   bool prefill_lookahead = true;
   bool prepare_state = true;
+  bool state_only_prefill = false;
   // Where each slot's spill file lives (LiveState::SpillPlace), asked once
   // at Register; unset, an unnamed file in `out`. The runtime names them
   // to keep conversations across a restart (D-105).
@@ -216,6 +217,7 @@ class Dsv4Runner final : public PagedModel {
     // not part of the key: each run sets it (SetDsv4HcaFirstPosition), so
     // chunks of one shape at other positions share the plan.
     bool hca = false;
+    bool state_only = false;
     bool operator==(const ChunkKey&) const = default;
   };
   using ChunkPlans = PlanCache<ChunkKey, Dsv4Planned>;
@@ -347,12 +349,17 @@ class Dsv4Runner final : public PagedModel {
     return Chunk(default_request_, n_past, tokens, logits, meanwhile, kind);
   }
 
-  // Hints affect optional CPU planning/backing only. This batch preserves the
-  // ordinary frontier head and feature injection, including want_head=false.
+  // Existing overload preserves frontier heads. Explicit output intent may
+  // select the optional nonfinal state/required-feature graph.
   Status PrefillChunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                       std::vector<float>& logits, PrefillHint next = {},
                       Dsv4ChunkKind kind = Dsv4ChunkKind::kPlain) {
-    return Chunk(default_request_, n_past, tokens, logits, {}, kind, nullptr, next);
+    return PrefillChunk(n_past, tokens, logits, next, kind, true);
+  }
+  Status PrefillChunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
+                      std::vector<float>& logits, PrefillHint next, Dsv4ChunkKind kind,
+                      bool want_head) {
+    return Chunk(default_request_, n_past, tokens, logits, {}, kind, nullptr, next, want_head);
   }
 
   // Speculation (Dsv4Options::drafter).
@@ -495,6 +502,8 @@ class Dsv4Runner final : public PagedModel {
   // Of the kept plans' arenas, the bytes their tensors use (or hold).
   std::uint64_t cached_arena_used(bool capacity = false) const;
   const PrefillLookaheadStats& prefill_stats() const { return prefill_stats_; }
+  const PrefillOutputStats& prefill_output_stats() const { return prefill_output_stats_; }
+  double setup_seconds() const { return setup_seconds_; }
   LiveState::PreparationStats state_preparation_stats() const;
   double plan_seconds() const { return plan_seconds_; }  // spent planning, in all
   // Decode graphs on or off for the next chunks; captured graphs are kept.
@@ -632,7 +641,12 @@ class Dsv4Runner final : public PagedModel {
     Status PrefillChunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                         std::vector<float>& logits, PrefillHint next = {},
                         Dsv4ChunkKind kind = Dsv4ChunkKind::kPlain) {
-      return owner_.Chunk(request_, n_past, tokens, logits, {}, kind, nullptr, next);
+      return PrefillChunk(n_past, tokens, logits, next, kind, true);
+    }
+    Status PrefillChunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
+                        std::vector<float>& logits, PrefillHint next, Dsv4ChunkKind kind,
+                        bool want_head) {
+      return owner_.Chunk(request_, n_past, tokens, logits, {}, kind, nullptr, next, want_head);
     }
     Status GreedyChunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                        std::int32_t& token) {
@@ -878,7 +892,8 @@ class Dsv4Runner final : public PagedModel {
   Status EnsureState(RequestState& request, std::uint32_t positions);
   Status Chunk(RequestState& request, std::uint32_t n_past, std::span<const std::int32_t> tokens,
                std::vector<float>& logits, const std::function<Status()>& meanwhile,
-               Dsv4ChunkKind kind, std::int32_t* token = nullptr, PrefillHint next = {});
+               Dsv4ChunkKind kind, std::int32_t* token = nullptr, PrefillHint next = {},
+               bool want_head = true);
   Status Accept(RequestState& request, std::uint32_t keep);
   Status DiscardVerify(RequestState& request);
   Status Rollback(RequestState& request);
@@ -942,6 +957,8 @@ class Dsv4Runner final : public PagedModel {
   std::uint64_t snapshot_bytes_ = 0;  // a slot's verify snapshot
   std::uint64_t draft_staging_ = 0;   // a slot's draft inputs' staging stride
   PrefillLookaheadStats prefill_stats_;
+  PrefillOutputStats prefill_output_stats_;
+  double setup_seconds_ = 0;
   std::uint64_t prefill_plan_allowance_ = 0;
   std::uint64_t plan_floor_bytes_ = 0;  // plan_floor_bytes()
   std::string plan_report_;

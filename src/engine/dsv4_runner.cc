@@ -374,6 +374,7 @@ std::span<const std::byte> Dsv4Runner::table() const {
 }
 
 Status Dsv4Runner::Setup() {
+  const auto setup_started = std::chrono::steady_clock::now();
   if (o_.context > md::kDsv4FlashContext) {
     return Error(std::format("context {} exceeds DeepSeek V4 Flash's trained ceiling {}",
                              o_.context, md::kDsv4FlashContext));
@@ -567,6 +568,7 @@ Status Dsv4Runner::Setup() {
       std::uint32_t n_past;
       std::uint32_t rows;
       Dsv4ChunkKind kind;
+      bool state_only = false;
     };
     std::vector<Probe> probes = {{0, o_.max_rows, Dsv4ChunkKind::kPlain},
                                  {o_.context - o_.max_rows, o_.max_rows, Dsv4ChunkKind::kPlain},
@@ -584,6 +586,15 @@ Status Dsv4Runner::Setup() {
       probes.push_back({0, o_.max_verify, Dsv4ChunkKind::kVerify});
       probes.push_back({o_.context - o_.max_verify, o_.max_verify, Dsv4ChunkKind::kVerify});
     }
+    if (o_.state_only_prefill && !model_.exact && dump_.empty()) {
+      const auto count = probes.size();
+      for (std::size_t i = 0; i < count; ++i) {
+        if (probes[i].kind == Dsv4ChunkKind::kVerify) continue;
+        auto state = probes[i];
+        state.state_only = true;
+        probes.push_back(state);
+      }
+    }
     for (const Probe& probe : probes) {
       auto in = md::Dsv4Chunk(profile_, layout_, probe.n_past, probe.rows, o_.exact,
                               !o_.device_raw_masks);
@@ -597,6 +608,7 @@ Status Dsv4Runner::Setup() {
                        .inject_rows = static_cast<std::int64_t>(
                            md::DsparkInject(dlayout_, probe.n_past, probe.rows).cells.size())};
       }
+      speculation.state_only = probe.state_only;
       const std::int64_t requested_outputs = o_.frontier_head && !model_.exact && !o_.full_window &&
                                                      probe.rows > 1 && !speculation.verify &&
                                                      dump_.empty()
@@ -612,8 +624,8 @@ Status Dsv4Runner::Setup() {
       if (auto r = account(**planned, chunk_host); !r) {
         return r;
       }
-      if (probe.rows == 1 && probe.kind == Dsv4ChunkKind::kPlain && !speculative() &&
-          !model_.exact && dump_.empty()) {
+      if (!probe.state_only && probe.rows == 1 && probe.kind == Dsv4ChunkKind::kPlain &&
+          !speculative() && !model_.exact && dump_.empty()) {
         auto token_shape = shape;
         token_shape.token = true;
         auto token_plan =
@@ -783,6 +795,7 @@ Status Dsv4Runner::Setup() {
     }
     wave_logits_ = static_cast<float*>(*logits);
   }
+  setup_seconds_ = Seconds(std::chrono::steady_clock::now() - setup_started);
   return {};
 }
 
@@ -1466,6 +1479,7 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> Dsv4Runner::BuildPrefil
     speculation = {.verify = key.kind == Dsv4ChunkKind::kVerify,
                    .drafter = &request.dmodel,
                    .inject_rows = key.inject_rows};
+  speculation.state_only = key.state_only;
   return PlanDsv4Chunk(request.model, key.shape, choices, dump_, node_.activations().base,
                        node_.activations().bytes, speculation,
                        key.hca ? std::optional<std::uint32_t>(first) : std::nullopt);
@@ -1712,7 +1726,7 @@ Status Dsv4Runner::Rollback(RequestState& request) {
 Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
                          std::span<const std::int32_t> tokens, std::vector<float>& logits,
                          const std::function<Status()>& meanwhile, Dsv4ChunkKind kind,
-                         std::int32_t* token, PrefillHint next) {
+                         std::int32_t* token, PrefillHint next, bool want_head) {
   const PlanStep step;  // the plan this step borrows stays until its job ends
   if (token != nullptr && (tokens.size() != 1 || kind != Dsv4ChunkKind::kPlain || speculative() ||
                            model_.exact || !dump_.empty()))
@@ -1735,6 +1749,8 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
     return std::unexpected(in.error());
   }
   const bool verify = kind == Dsv4ChunkKind::kVerify;
+  const bool state_only = o_.state_only_prefill && !want_head && !verify && token == nullptr &&
+                          !model.exact && dump_.empty();
   md::DsparkInjection inject;
   if (kind != Dsv4ChunkKind::kPlain) {
     inject = md::DsparkInject(dlayout_, n_past, rows);
@@ -1753,7 +1769,8 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
   const ChunkKey key{.shape = shape,
                      .kind = kind,
                      .inject_rows = static_cast<std::int64_t>(inject.cells.size()),
-                     .hca = hca};
+                     .hca = hca,
+                     .state_only = state_only};
   // External RE-029 callbacks may page weights in and retain their legacy
   // Submit/Await semantics. Only the ordinary Job path overlaps pure CPU plans.
   const bool predict = !meanwhile && token == nullptr && !verify && dump_.empty() &&
@@ -1773,7 +1790,8 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
                .inject_rows = kind == Dsv4ChunkKind::kPlain
                                   ? 0
                                   : std::min<std::int64_t>(ahead[i].rows, dlayout_.ring),
-               .hca = Dsv4PrefillHca(model, *predicted)};
+               .hca = Dsv4PrefillHca(model, *predicted),
+               .state_only = o_.state_only_prefill && !ahead[i].want_head && !model.exact};
     // Find only: Planned would repatch HCA first-position parameters while the
     // current graph is in flight. Protect every cached near/far plan BEFORE
     // any current allocation or optional charge can invoke cache reclaim.
@@ -1818,13 +1836,16 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
     capture = false;  // no room for its graph even after a reclaim: launch by launch
   }
   // The last row's logits (the next token's), or a verify's every row's.
-  const std::array<RunCopy, 1> outputs = {
-      RunCopy{Address(request.logits),
-              token != nullptr
-                  ? Address(g.token->data)
-                  : Address(static_cast<const std::byte*>(g.logits->data) +
-                            (static_cast<std::uint64_t>(g.logits->ne[1] - out_rows) * row_bytes)),
-              token != nullptr ? token_bytes : out_rows * row_bytes}};
+  Copies outputs;
+  if (!state_only) {
+    outputs.push_back(
+        {Address(request.logits),
+         token != nullptr
+             ? Address(g.token->data)
+             : Address(static_cast<const std::byte*>(g.logits->data) +
+                       (static_cast<std::uint64_t>(g.logits->ne[1] - out_rows) * row_bytes)),
+         token != nullptr ? token_bytes : out_rows * row_bytes});
+  }
   kg::LaunchContext& launch = resources_.launch();
   RunPath path = RunPath::kEager;
   Status ran;
@@ -1963,10 +1984,13 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
     }
     *token = value;
     ++device_token_outputs_;
+  } else if (state_only) {
+    logits.clear();
   } else {
     const auto* values = static_cast<const float*>(request.logits);
     logits.assign(values, values + (std::size_t{out_rows} * profile_.vocab));
   }
+  prefill_output_stats_.Completed(state_only, g.state_only_tail_cut, rows, g.nodes.size());
   return {};
 }
 

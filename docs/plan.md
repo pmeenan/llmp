@@ -373,6 +373,22 @@ family" guide, and its long-context scaling work.
       Preserve exact configured funding and shape/selector distinctions; the
       selected T96 placement shortcut does not remove graph sizing/building.
       Qualify equivalent descriptor/template reuse before dropping any probes.
+- [x] **Scalar DS/Qwen nonfinal state-only dependency cuts**
+      ([evidence](experiments/ds-qwen-state-only/README.md)): ordinary plain DS and
+      native/GGUF Qwen select checked cuts; DSpark/MTP head-only opt-ins remain
+      unselected. Exact initialized state, full heads, checkpoints/scoring and
+      continuations pass. Explicit both-intent Setup funding has unchanged maxima
+      and added construction work; only DS/native Qwen have n=2 speed factors.
+
+**Owner stop/handoff (2026-10-08):** complete only grouped physical KV stores
+(7520f12) and the T54 batch above, then STOP. The inventory is recorded, but
+128 family cells across 96 techniques remain OPEN. This transfer run stops here
+and starts no further batch, phase, general refactoring or duplication cleanup.
+A separate agent may refactor under its own assignment.
+Focused checks are recorded; full regression/shipment tiers remain deferred.
+Keep milestone raw stores, warm source/build trees and standing replay inputs:
+M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#owner-stop-and-handoff).
+
 - [ ] **Complete open optimization transfers from the audit.** IDs refer to
       the [inventory matrix](optimization-inventory.md#complete-cross-family-dispositions--2026-10-07).
       Preserve each recipient's original math, artifact, state, memory and
@@ -402,7 +418,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T39** Device greedy verify verdicts.
         - [ ] **T41** Residual-add plus next normalization.
         - [ ] **T45** Selected learned head/adaptive draft depth.
-        - [ ] **T54** State-only nonfinal prompt dependency cut.
+        - [ ] **T54** Plain scalar state-only cut adopted with exact cache/state,
+          checkpoint/scoring and continuation; DSpark required-feature head-only
+          opt-in checked but unselected ([evidence](experiments/ds-qwen-state-only/README.md)).
         - [ ] **T55** Production wide joined prefill admission/funding and hints:
           DS decode waves are one-row. Current scalar per-slot hints do not
           close this compatible extension.
@@ -451,7 +469,9 @@ family" guide, and its long-context scaling work.
           separate plain-decode fallback. [Controls](experiments/plain-gpu-tokens/README.md).
         - [ ] **T29** Operand joins by view.
         - [ ] **T41** Residual-add plus next normalization.
-        - [ ] **T54** State-only nonfinal prompt dependency cut.
+        - [ ] **T54** Plain scalar state-only cut adopted with exact recurrent/QSA
+          state, checkpoint/scoring and continuation; MTP required-export head-only
+          opt-in checked but unselected ([evidence](experiments/ds-qwen-state-only/README.md)).
         - [ ] **T55** Production wide joined prefill admission/funding and hints:
           Qwen target waves cap at four. Current scalar per-slot hints do not
           close this compatible extension.
@@ -496,7 +516,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T29** Operand joins by view.
         - [ ] **T37** Shape-pinned library GEMM algorithms.
         - [ ] **T41** Residual-add plus next normalization.
-        - [ ] **T54** State-only nonfinal prompt dependency cut.
+        - [x] **T54** Target-only scalar state-only cut adopted with exact full
+          heads/state/checkpoint/scoring; n=1 timing is diagnostic only
+          ([evidence](experiments/ds-qwen-state-only/README.md)).
         - [ ] **T55** Production wide joined prefill admission/funding and hints:
           Qwen target waves cap at four. Current scalar per-slot hints do not
           close this compatible extension.

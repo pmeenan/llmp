@@ -169,6 +169,7 @@ struct Qwen38Options {
   // Selected for checked scalar consumers; private controls retain ordinary work.
   bool prefill_lookahead = true;
   bool prepare_state = true;
+  bool state_only_prefill = false;
 };
 
 // Completed graph executions only, including replay. Host bytes count the
@@ -302,10 +303,15 @@ class Qwen38Runner final : public PagedModel {
   // from position 0); the last row's logits in `logits`. With `inject`
   // (speculating), the drafter's streams and its pass over the chunk too,
   // after catching up the rows still pending (pending_rows()).
-  // Optional prediction preserves this batch's existing frontier/export policy.
+  // Existing overload preserves frontier/export output; explicit intent may
+  // select the optional nonfinal state/required-stream graph.
   Status PrefillChunk(std::span<const std::int32_t> history, std::uint32_t n_past,
                       std::vector<float>& logits, bool inject = false, PrefillHint next = {}) {
-    return Chunk(default_request_, history, n_past, logits, inject, nullptr, next);
+    return PrefillChunk(history, n_past, logits, inject, next, true);
+  }
+  Status PrefillChunk(std::span<const std::int32_t> history, std::uint32_t n_past,
+                      std::vector<float>& logits, bool inject, PrefillHint next, bool want_head) {
+    return Chunk(default_request_, history, n_past, logits, inject, nullptr, next, want_head);
   }
   Status Chunk(std::span<const std::int32_t> history, std::uint32_t n_past,
                std::vector<float>& logits, bool inject = false);
@@ -376,6 +382,8 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t reclaimed_plans() const;
   std::uint64_t reclaimed_graphs() const;
   const PrefillLookaheadStats& prefill_stats() const { return prefill_stats_; }
+  const PrefillOutputStats& prefill_output_stats() const { return prefill_output_stats_; }
+  double setup_seconds() const { return setup_seconds_; }
   LiveState::PreparationStats state_preparation_stats() const;
   double plan_seconds() const { return plan_seconds_; }
   const PleStats& ple() const { return ple_; }
@@ -561,7 +569,12 @@ class Qwen38Runner final : public PagedModel {
     Status PrefillChunk(std::span<const std::int32_t> history, std::uint32_t n_past,
                         std::vector<float>& logits, bool inject = false, PrefillHint next = {}) {
       request_.state_refused = false;
-      return owner_.Chunk(request_, history, n_past, logits, inject, nullptr, next);
+      return PrefillChunk(history, n_past, logits, inject, next, true);
+    }
+    Status PrefillChunk(std::span<const std::int32_t> history, std::uint32_t n_past,
+                        std::vector<float>& logits, bool inject, PrefillHint next, bool want_head) {
+      request_.state_refused = false;
+      return owner_.Chunk(request_, history, n_past, logits, inject, nullptr, next, want_head);
     }
     Status GreedyChunk(std::span<const std::int32_t> history, std::uint32_t n_past,
                        std::int32_t& token) {
@@ -797,7 +810,7 @@ class Qwen38Runner final : public PagedModel {
       std::uint32_t positions, std::uint32_t read_align) const;
   Status Chunk(RequestState& request, std::span<const std::int32_t> history, std::uint32_t n_past,
                std::vector<float>& logits, bool inject, std::int32_t* token = nullptr,
-               PrefillHint next = {});
+               PrefillHint next = {}, bool want_head = true);
   // An injected chunk's catch-up (model/qwen38.h Qwen38Injection): the
   // drafter's pass over `rows` pending rows from `first` (streams from
   // H[1], each with the token after it), its own job before the chunk's.
@@ -935,6 +948,8 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t lane_scratch_ = 0;  // each wave lane's pool (ConfigureLanes)
   std::uint64_t host_input_bytes_ = 0;
   PrefillLookaheadStats prefill_stats_;
+  PrefillOutputStats prefill_output_stats_;
+  double setup_seconds_ = 0;
   std::uint64_t prefill_plan_allowance_ = 0;
   std::uint64_t prefill_mtp_allowance_ = 0;
   std::uint64_t plan_floor_bytes_ = 0;  // plan_floor_bytes()

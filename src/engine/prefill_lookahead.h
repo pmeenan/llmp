@@ -51,6 +51,20 @@ inline std::array<PrefillStage, 2> PredictPrefill(std::uint32_t first, std::uint
   return out;
 }
 
+// Successful scalar target calls only (not wave launches or GPU kernel
+// counts). selected_nodes counts the completed calls' planned graph nodes.
+struct PrefillOutputStats {
+  std::uint64_t headed = 0, state_only = 0, tail_cut = 0;
+  std::uint64_t rows = 0, selected_nodes = 0;
+  void Completed(bool no_head, bool cut, std::uint64_t count, std::uint64_t nodes) {
+    headed += !no_head;
+    state_only += no_head;
+    tail_cut += cut;
+    rows += count;
+    selected_nodes += nodes;
+  }
+};
+
 struct PrefillLookaheadStats {
   std::uint64_t attempted = 0, built = 0, cached = 0, refused = 0;
   std::uint64_t mtp_built = 0, mtp_cached = 0;

@@ -238,6 +238,9 @@ struct Qwen38GraphOptions {
   std::uint64_t capture_routed = 0;
   // Exact causal masks from current positions, instead of host matrices.
   bool device_masks = false;
+  // Nonfinal prompt: preserve all state/required MTP streams, omit the head;
+  // without exported streams, stop after the final layer's state writers.
+  bool state_only = false;
 };
 
 inline bool Qwen38RoutedCaptureFits(std::uint64_t mask, std::uint32_t layers) {
@@ -300,6 +303,7 @@ struct Qwen38Graph {
   // A verify's native argmaxes, or a plain token shape's host-compatible
   // argmax (I32 [outputs]), the last node; logits stay live beside it.
   ggml_tensor* argmax = nullptr;
+  bool state_only_tail_cut = false;  // final trunk omitted; required exports retain it
   std::vector<ggml_tensor*> nodes;
   std::vector<Qwen38RoutedTensors> routed;
   // Intermediates under llama.cpp's callback names ("l_last-7", ...).

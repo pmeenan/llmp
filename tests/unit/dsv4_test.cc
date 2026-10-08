@@ -28,6 +28,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -696,6 +697,143 @@ TEST(Dsv4Test, PlainDeviceTokensRetainTheCompleteHeadAndSeparateShapeIdentity) {
   auto verify = options;
   verify.row_invariant = true;
   EXPECT_FALSE(kg::BuildDsv4Graph(*arena, p, *binding, token_shape, verify));
+}
+
+// Compare every persistent SET_ROWS destination and its source geometry,
+// excluding temporary attention masks. Aliased compressed rows retain their
+// offsets within the raw-cache parent as well as their shapes.
+auto StateWrites(const kg::Dsv4Graph& graph) {
+  using Shape = std::array<std::int64_t, 4>;
+  using Write = std::tuple<std::size_t, std::size_t, std::size_t, ggml_type, Shape, ggml_op, Shape>;
+  std::vector<Write> writes;
+  const auto root = [](const ggml_tensor* t) {
+    while (t->view_src != nullptr) t = t->view_src;
+    return t;
+  };
+  for (const auto* node : graph.nodes) {
+    if (node->op != GGML_OP_SET_ROWS) continue;
+    const auto* into = node->src[2];
+    for (std::size_t il = 0; il < graph.layers.size(); ++il) {
+      const auto& l = graph.layers[il];
+      const std::array states = {
+          l.raw_k,        l.csa_k,           l.csa_state_kv, l.csa_state_score, l.lid_k,
+          l.lid_state_kv, l.lid_state_score, l.hca_k,        l.hca_state_kv,    l.hca_state_score};
+      const auto where = std::ranges::find_if(
+          states, [&](const auto* state) { return state != nullptr && state == root(into); });
+      if (where == states.end()) continue;
+      const auto* from = node->src[0];
+      writes.emplace_back(il, static_cast<std::size_t>(where - states.begin()), into->view_offs,
+                          into->type, Shape{into->ne[0], into->ne[1], into->ne[2], into->ne[3]},
+                          from->op, Shape{from->ne[0], from->ne[1], from->ne[2], from->ne[3]});
+      break;
+    }
+  }
+  return writes;
+}
+
+TEST(Dsv4Test, StateOnlyRetainsEveryCacheAndCompressorWriteAndRequiredFinalFeatures) {
+  for (const auto ratio : {0U, md::kDsv4CsaRatio, md::kDsv4HcaRatio}) {
+    auto p = md::Dsv4Flash();
+    p.compress_ratios.back() = ratio;
+    auto binding = md::BindDsv4(p, "deepseek4", GgufLike(p));
+    ASSERT_TRUE(binding) << Why(binding);
+    auto state = md::Dsv4State(p, 8192, 512, md::Dsv4Window::kRing);
+    ASSERT_TRUE(state);
+    auto chunk = md::Dsv4Chunk(p, *state, 3000, 128, false);
+    ASSERT_TRUE(chunk) << Why(chunk);
+    const auto shape = kg::Dsv4ShapeOf(*state, *chunk, 1);
+    const auto uses = [](const kg::Dsv4Graph& g, const ggml_tensor* weight) {
+      return weight != nullptr && std::ranges::any_of(g.nodes, [&](const auto* n) {
+               return std::ranges::find(n->src, weight) != std::end(n->src);
+             });
+    };
+    for (const bool fused : {false, true}) {
+      auto a = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+      auto b = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+      auto c = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+      ASSERT_TRUE(a);
+      ASSERT_TRUE(b);
+      ASSERT_TRUE(c);
+      auto headed =
+          kg::BuildDsv4Graph(*a, p, *binding, shape, {.fused = fused, .outa_prefill = true});
+      auto cut = kg::BuildDsv4Graph(*b, p, *binding, shape,
+                                    {.fused = fused, .outa_prefill = true, .state_only = true});
+      const std::vector<std::uint32_t> features = {p.layers};
+      auto required = kg::BuildDsv4Graph(
+          *c, p, *binding, shape,
+          {.features = features, .fused = fused, .outa_prefill = true, .state_only = true});
+      ASSERT_TRUE(headed) << Why(headed);
+      ASSERT_TRUE(cut) << Why(cut);
+      ASSERT_TRUE(required) << Why(required);
+      EXPECT_EQ(cut->logits, nullptr);
+      EXPECT_EQ(cut->token, nullptr);
+      EXPECT_EQ(cut->features, nullptr);
+      EXPECT_EQ(required->logits, nullptr);
+      ASSERT_NE(required->features, nullptr);
+      EXPECT_EQ(required->features->ne[0], p.width);
+      EXPECT_EQ(required->features->ne[1], shape.rows);
+      const auto writes = StateWrites(*headed);
+      ASSERT_FALSE(writes.empty());
+      EXPECT_EQ(StateWrites(*cut), writes);
+      EXPECT_EQ(StateWrites(*required), writes);
+      EXPECT_LT(cut->nodes.size(), required->nodes.size());
+      EXPECT_LT(required->nodes.size(), headed->nodes.size());
+      for (const auto* weight :
+           {cut->layers.back().q_a, cut->layers.back().q_b, cut->layers.back().idx_q_b,
+            cut->layers.back().out_a, cut->layers.back().out_b, cut->layers.back().router}) {
+        EXPECT_FALSE(uses(*cut, weight));
+      }
+      EXPECT_TRUE(uses(*headed, headed->layers.back().q_a));
+      EXPECT_TRUE(uses(*required, required->layers.back().q_a));
+      EXPECT_TRUE(uses(*required, required->layers.back().router));
+      EXPECT_FALSE(uses(*required, required->output));
+      EXPECT_EQ(cut->headed_outa_layers, headed->headed_outa_layers);
+      EXPECT_EQ(required->headed_outa_layers, headed->headed_outa_layers);
+      EXPECT_EQ(headed->headed_outa_layers, fused ? p.layers : 0U);
+    }
+    auto a = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, 1));
+    ASSERT_TRUE(a);
+    kg::Dsv4WaveShape wave;
+    auto step = md::Dsv4Chunk(p, *state, 3000, 3, false);
+    ASSERT_TRUE(step);
+    wave.slots.push_back(kg::Dsv4ShapeOf(*state, *step));
+    ASSERT_TRUE(kg::BuildDsv4WaveGraph(*a, p, *binding, wave, {.fused = true}));
+    EXPECT_FALSE(
+        kg::BuildDsv4WaveGraph(*a, p, *binding, wave, {.fused = true, .state_only = true}));
+    auto token = shape;
+    token.rows = 1;
+    token.token = true;
+    EXPECT_FALSE(kg::BuildDsv4Graph(*a, p, *binding, token, {.fused = true, .state_only = true}));
+  }
+}
+
+TEST(Dsv4Test, StateOnlyCannotBroadenHeadedOutputAEligibilityAtTheRemovedFinalLayer) {
+  const auto& p = md::Dsv4Flash();
+  auto binding = md::BindDsv4(p, "deepseek4", GgufLike(p));
+  ASSERT_TRUE(binding) << Why(binding);
+  auto state = md::Dsv4State(p, 8192, 512, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state);
+  auto chunk = md::Dsv4Chunk(p, *state, 0, 128, false);
+  ASSERT_TRUE(chunk);
+  const auto shape = kg::Dsv4ShapeOf(*state, *chunk, 1);
+  for (const bool eligible : {true, false}) {
+    auto weights = *binding;
+    if (!eligible) weights.layers.back().out_a.type = "Q4_0";
+    for (const bool state_only : {false, true}) {
+      auto a = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+      ASSERT_TRUE(a);
+      auto graph = kg::BuildDsv4Graph(
+          *a, p, weights, shape, {.fused = true, .outa_prefill = true, .state_only = state_only});
+      ASSERT_TRUE(graph) << Why(graph);
+      EXPECT_EQ(graph->headed_outa_layers, eligible ? p.layers : p.layers - 1);
+      // These two state-only graphs have the same surviving node count.
+      // It cannot authorize HCA without the all-layer metadata above.
+      const auto count = std::ranges::count_if(
+          graph->nodes, [](const auto* t) { return kg::JitllmOpOf(t) == kg::JitllmOp::kDsv4OutA; });
+      EXPECT_EQ(count, static_cast<std::ptrdiff_t>(
+                           p.layers - static_cast<std::uint32_t>(state_only || !eligible)));
+    }
+  }
 }
 
 TEST(Dsv4Test, RequestedHeadRowsLeaveTheFullChunkBeforeTheGather) {

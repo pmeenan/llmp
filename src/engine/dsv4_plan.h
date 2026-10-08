@@ -111,6 +111,7 @@ struct Dsv4Speculation {
   // KV injection into the drafter's ring (dsv4_graph.h Dsv4Injection).
   const DsparkModel* drafter = nullptr;
   std::int64_t inject_rows = 0;
+  bool state_only = false;  // nonfinal prefill: required stores/features, no head
 };
 
 // One chunk shape's graph, plan, placement and bound implementations.

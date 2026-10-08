@@ -91,6 +91,7 @@ struct Qwen38ChunkKind {
   bool verify = false;               // a speculative verify (Qwen38GraphOptions::verify)
   bool export_streams = false;       // its streams for the drafter
   std::uint64_t capture_routed = 0;  // benchmark-only retained down operands
+  bool state_only = false;           // required state/export, without a head
   bool operator==(const Qwen38ChunkKind&) const = default;
 };
 

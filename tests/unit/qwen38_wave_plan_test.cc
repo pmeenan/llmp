@@ -173,6 +173,8 @@ void SameStartupPlan(const engine::PlannedBase& ordinary, const engine::PlannedB
 
 TEST(Qwen38PlainTokens, DefaultPublicationKeepsLowLevelRowPlansExplicit) {
   EXPECT_TRUE(engine::Qwen38Options{}.device_tokens);
+  EXPECT_FALSE(engine::Qwen38Options{}.state_only_prefill);
+  EXPECT_FALSE(engine::Qwen38ChunkKind{}.state_only);
   EXPECT_FALSE(kg::Qwen38ChunkShape{}.token);
 }
 
@@ -507,6 +509,38 @@ std::size_t Count(const std::vector<std::int64_t>& v, std::int64_t value) {
   return static_cast<std::size_t>(std::ranges::count(v, value));
 }
 
+// Exact destination/kind/shape witnesses for persistent writes. QSA pool
+// and GdnStep write through explicit operands; ordinary state rewrites use
+// SET_ROWS. Every state tensor is identified independently of arena addresses.
+auto StateWrites(const kg::Qwen38Graph& g) {
+  using Shape = std::array<std::int64_t, 4>;
+  using Write = std::tuple<std::size_t, std::size_t, ggml_op, kg::JitllmOp, Shape>;
+  std::vector<Write> out;
+  const auto root = [](const ggml_tensor* t) {
+    while (t != nullptr && t->view_src != nullptr) t = t->view_src;
+    return t;
+  };
+  for (const auto* n : g.nodes) {
+    const auto op = kg::JitllmOpOf(n);
+    const ggml_tensor* into = nullptr;
+    if (n->op == GGML_OP_SET_ROWS) into = n->src[2];
+    if (op == kg::JitllmOp::kQsaPool) into = n->src[1];
+    if (op == kg::JitllmOp::kGdnStep && kg::JitllmOpInt(n, 0) == 0) into = n->src[5];
+    if (into == nullptr) continue;
+    for (std::size_t il = 0; il < g.layers.size(); ++il) {
+      const auto& l = g.layers[il];
+      const std::array states = {l.cache_k,    l.cache_v,   l.cache_idx, l.cache_pool,
+                                 l.conv_state, l.recurrent, l.ple_state};
+      const auto where = std::ranges::find(states, root(into));
+      if (where == states.end()) continue;
+      out.emplace_back(il, static_cast<std::size_t>(where - states.begin()), n->op, op,
+                       Shape{into->ne[0], into->ne[1], into->ne[2], into->ne[3]});
+      break;
+    }
+  }
+  return out;
+}
+
 class Qwen38WavePlanTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -679,6 +713,117 @@ class Qwen38WavePlanTest : public ::testing::Test {
     EXPECT_FALSE(Plan(bad));
   }
 
+  void CheckStateOnly() {
+    const std::array<Request, 2> wave_rows = {Request{.slot = 0, .n_past = 100, .rows = 1},
+                                              Request{.slot = 2, .n_past = 3000, .rows = 1}};
+    auto bad_wave = wave_rows;
+    bad_wave[0].kind.state_only = true;
+    EXPECT_FALSE(Plan(bad_wave));  // Scalar intent never enters headed wave outputs.
+    const bool gguf = binding_->gguf();
+    const auto uses = [](const kg::Qwen38Graph& g, const ggml_tensor* weight) {
+      return weight != nullptr && std::ranges::any_of(g.nodes, [&](const auto* n) {
+               return std::ranges::find(n->src, weight) != std::end(n->src);
+             });
+    };
+    const auto uses_linear = [&](const kg::Qwen38Graph& g, const kg::Qwen38Mxfp8Tensors& w) {
+      return uses(g, w.codes) || uses(g, w.scales) || uses(g, w.bf16) || uses(g, w.matrix);
+    };
+    // Actual QSA final layer and a synthetic recurrent final layer using
+    // the preceding layer's already authenticated binding. This does not
+    // admit an unsupported non-multiple-of-four model profile.
+    for (const bool linear_tail : {false, true}) {
+      const auto& p = p_;
+      auto binding = *binding_;
+      if (linear_tail) binding.layers.back() = binding.layers[p.layers - 2];
+      auto state = md::Qwen38State(p, 4096, 512, false);
+      ASSERT_TRUE(state) << state.error();
+      for (const auto rows : {1U, 3U, 512U}) {
+        std::vector<std::int32_t> history(std::size_t{3000} + rows, 1000);
+        auto chunk = md::Qwen38Chunk(p, *state, hash_, history, 3000, rows, false);
+        ASSERT_TRUE(chunk) << chunk.error();
+        ASSERT_TRUE(chunk->qsa_select);  // Keep index/pool writes, omit final selection only.
+        auto a = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+        auto b = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+        ASSERT_TRUE(a);
+        ASSERT_TRUE(b);
+        kg::Qwen38GraphOptions options{
+            .expert_stride = std::vector<std::uint64_t>(p.layers, gguf ? 1977840 : kExpertStride),
+            .fused = true,
+            .experts = gguf ? kg::Qwen38GraphOptions::Experts::kGgml
+                            : kg::Qwen38GraphOptions::Experts::kCutlass,
+            .device_masks = true};
+        const auto shape = kg::Qwen38ShapeOf(*state, *chunk, 1);
+        auto headed = kg::BuildQwen38Graph(*a, p, binding, shape, options);
+        options.state_only = true;
+        auto cut = kg::BuildQwen38Graph(*b, p, binding, shape, options);
+        ASSERT_TRUE(headed) << headed.error().detail;
+        ASSERT_TRUE(cut) << cut.error().detail;
+        EXPECT_EQ(cut->logits, nullptr);
+        EXPECT_EQ(cut->argmax, nullptr);
+        EXPECT_LT(cut->nodes.size(), headed->nodes.size());
+        const auto writes = StateWrites(*headed);
+        ASSERT_FALSE(writes.empty());
+        EXPECT_EQ(StateWrites(*cut), writes);
+        const auto& last = cut->layers.back();
+        EXPECT_FALSE(uses(*cut, last.router));
+        EXPECT_FALSE(uses(*cut, cut->output));
+        if (linear_tail) {
+          EXPECT_FALSE(uses_linear(*cut, last.z));
+          EXPECT_FALSE(uses_linear(*cut, last.ssm_out));
+          EXPECT_TRUE(uses_linear(*cut, last.qkv));
+          EXPECT_TRUE(uses(*cut, last.conv_state));
+          EXPECT_TRUE(uses(*cut, last.recurrent));
+        } else {
+          EXPECT_FALSE(uses_linear(*cut, last.q));
+          EXPECT_FALSE(uses_linear(*cut, last.o));
+          EXPECT_FALSE(uses_linear(*cut, last.idx_q));  // GGUF's split query.
+          EXPECT_TRUE(uses_linear(*cut, last.k));
+          EXPECT_TRUE(uses_linear(*cut, last.v));
+          EXPECT_TRUE(uses(*cut, last.cache_idx));
+          EXPECT_TRUE(uses(*cut, last.cache_pool));
+        }
+        // State-only is not an alternate token/verify/diagnostic route.
+        for (const auto invalid : {0U, 1U, 2U}) {
+          auto bad = options;
+          auto bad_shape = shape;
+          if (invalid == 0) bad_shape.token = true;
+          if (invalid == 1) bad.verify = true;
+          if (invalid == 2) bad.capture_routed = 1;
+          EXPECT_FALSE(kg::BuildQwen38Graph(*b, p, binding, bad_shape, bad));
+        }
+      }
+    }
+    auto kind = engine::Qwen38ChunkKind{};
+    EXPECT_NE(kind, (engine::Qwen38ChunkKind{.state_only = true}));
+    const std::array<std::string, 1> keep = {"l_last-0"};
+    EXPECT_FALSE(
+        engine::PlanQwen38Chunk(models_[0], {}, ModelDevice(), 0, 0, keep, {.state_only = true}));
+    if (!gguf) {
+      // An MTP stream export still requires the entire final trunk. The
+      // early state-only return must occur after this authoritative write.
+      std::vector<std::int32_t> history(3003, 1000);
+      auto chunk = md::Qwen38Chunk(p_, *state_, hash_, history, 3000, 3, false);
+      ASSERT_TRUE(chunk);
+      const auto shape = kg::Qwen38ShapeOf(*state_, *chunk, 1);
+      auto headed = engine::PlanQwen38Chunk(models_[0], shape, ModelDevice(), 0, 0, {},
+                                            {.export_streams = true});
+      auto cut = engine::PlanQwen38Chunk(models_[0], shape, ModelDevice(), 0, 0, {},
+                                         {.export_streams = true, .state_only = true});
+      ASSERT_TRUE(headed) << headed.error();
+      ASSERT_TRUE(cut) << cut.error();
+      const auto& g = (*cut)->graph;
+      EXPECT_EQ(g.logits, nullptr);
+      EXPECT_TRUE(uses(g, g.layers.back().router));
+      EXPECT_EQ(StateWrites(g), StateWrites((*headed)->graph));
+      EXPECT_EQ(std::ranges::count_if(g.nodes,
+                                      [&](const auto* n) {
+                                        return n->op == GGML_OP_SET_ROWS && n->src[2] == g.streams;
+                                      }),
+                1);
+      EXPECT_FALSE(uses(g, g.output));
+    }
+  }
+
   Products Lone(engine::Qwen38ChunkKind kind = {}) {
     const std::array<Request, 1> one = {Request{.slot = 0, .n_past = 100, .rows = 4, .kind = kind}};
     auto planned = Plan(one);
@@ -717,6 +862,14 @@ class Qwen38GgufWavePlanTest : public Qwen38WavePlanTest {
     }
   }
 };
+
+TEST_F(Qwen38WavePlanTest, StateOnlyPreservesAllWritesAndMtpExportsWhileCuttingUnusedTail) {
+  CheckStateOnly();
+}
+
+TEST_F(Qwen38GgufWavePlanTest, StateOnlyPreservesAllWritesWhileCuttingUnusedTail) {
+  CheckStateOnly();
+}
 
 TEST_F(Qwen38WavePlanTest, StartupMeasurementPreservesTargetSelectorsLanesAndHostOwnership) {
   CheckStartupMeasurement();
