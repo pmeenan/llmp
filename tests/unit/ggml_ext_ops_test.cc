@@ -63,6 +63,7 @@
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/shared_q8.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
@@ -1028,6 +1029,130 @@ TEST_F(GgmlExtOpsTest, QuantizedProductsMatchTheReferenceAsUpstreamRoutesThem) {
 // Upstream's fused one-column gate/up/GLU MMVQ (stock's decode FFN) writes
 // what the two products and the split GLU write, bit for bit, for Gemma's
 // GeGLU and SwiGLU; it is refused where upstream does not fuse.
+TEST_F(GgmlExtOpsTest, SharedPreparationKeepsOrdinaryScalarThroughEightMmvqAndChangedReplayExact) {
+  // A non-512-aligned width requires authentic readable weight padding; the
+  // original launch and the shared producer must agree on every padded byte.
+  constexpr std::int64_t kWidth = 2304;
+  constexpr std::array<std::int64_t, 3> kOutputs{128, 64, 64};
+  for (const auto type :
+       {GGML_TYPE_Q4_0, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_Q8_0,
+        GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_IQ4_NL}) {
+    for (const std::int64_t columns : {1, 2, 3, 4, 5, 6, 7, 8}) {
+      SCOPED_TRACE(std::format("{} C{}", ggml_type_name(type), columns));
+      auto metadata = TensorArena::Create(32);
+      ASSERT_TRUE(metadata);
+      auto* context = metadata->context();
+      auto first = Normal(194, static_cast<std::size_t>(kWidth * columns));
+      auto changed = first;
+      for (std::int64_t i = 0; i < kWidth; ++i)
+        changed[static_cast<std::size_t>(i)] = -first[static_cast<std::size_t>(i)] + 0.25F;
+      auto* x = Place(ggml_new_tensor_2d(context, GGML_TYPE_F32, kWidth, columns), first);
+      kg::SharedQ8Inputs shared(context);
+      const auto guarded = [&](ggml_tensor* tensor) {
+        const auto bytes = ggml_nbytes(tensor);
+        const auto address = Allocate(bytes + 256);
+        TensorArena::Bind(tensor, address);
+        EXPECT_EQ(cudaMemset(reinterpret_cast<void*>(address + bytes), 0xA5, 256), cudaSuccess);
+        return tensor;
+      };
+      auto* q8 = guarded(shared.Get(x));
+      ASSERT_EQ(shared.Get(x), q8);
+      std::array<ggml_tensor*, 3> ordinary{}, candidate{}, weights{};
+      std::array<std::vector<std::uint8_t>, 3> weight_bytes;
+      for (std::size_t i = 0; i < kOutputs.size(); ++i) {
+        const auto quant =
+            Quantize(type, kWidth, kOutputs[i], 195U + static_cast<std::uint64_t>(i));
+        auto* w = Place(ggml_new_tensor_2d(context, type, kWidth, kOutputs[i]), quant.bytes);
+        kg::MarkRowPaddingReadable(w);
+        weights[i] = w;
+        weight_bytes[i] = quant.bytes;
+        ordinary[i] = Place(ggml_mul_mat(context, w, x));
+        candidate[i] =
+            guarded(shared.Product(w, x, true, kg::DeviceChoicesOf(launch()).dense_mmvq_shape));
+        ASSERT_EQ(kg::JitllmOpOf(candidate[i]), kg::JitllmOp::kMmvqPrepared);
+        ASSERT_EQ(candidate[i]->src[1], q8);
+        ASSERT_EQ(candidate[i]->src[2], x);
+        const auto original_plan = kg::PlanMulMatVecQ(launch(), ordinary[i]);
+        ASSERT_TRUE(original_plan);
+        EXPECT_EQ(*original_plan, static_cast<std::uint64_t>(kg::Q8Bytes(kWidth, columns)));
+        const auto plan = kg::PlanMmvqPrepared(launch(), candidate[i]);
+        ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+        EXPECT_EQ(*plan, 0U);
+      }
+      const auto run = [&](auto& context) -> std::expected<void, KernelFailure> {
+        if (auto r = kg::RunQuantizeQ8(context, q8); !r) return r;
+        for (auto* product : candidate)
+          if (auto r = kg::RunMmvqPrepared(context, product); !r) return r;
+        return {};
+      };
+      std::array<std::vector<float>, 3> baseline;
+      for (std::size_t i = 0; i < ordinary.size(); ++i) {
+        ASSERT_TRUE(kg::MulMatVecQ(launch(), ordinary[i]));
+        baseline[i] = Download(ordinary[i]);
+      }
+      ASSERT_TRUE(run(launch()));
+      for (std::size_t i = 0; i < candidate.size(); ++i) {
+        const auto got = Download(candidate[i]);
+        ASSERT_EQ(got.size(), static_cast<std::size_t>(kOutputs[i] * columns));
+        ASSERT_TRUE(std::ranges::all_of(got, [](float v) { return std::isfinite(v); }));
+        EXPECT_EQ(got, baseline[i]);
+        EXPECT_EQ(std::memcmp(got.data(), baseline[i].data(), got.size() * sizeof(float)), 0);
+      }
+      auto graph = launch().Capture(run);
+      ASSERT_TRUE(graph);
+      ASSERT_EQ(cudaMemcpy(x->data, changed.data(), ggml_nbytes(x), cudaMemcpyHostToDevice),
+                cudaSuccess);
+      ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+      std::array<std::vector<float>, 3> expected;
+      for (std::size_t i = 0; i < ordinary.size(); ++i) {
+        ASSERT_TRUE(kg::MulMatVecQ(launch(), ordinary[i]));
+        expected[i] = Download(ordinary[i]);
+        ASSERT_NE(expected[i], baseline[i]);
+        if (columns > 1)
+          EXPECT_TRUE(std::equal(expected[i].begin() + kOutputs[i], expected[i].end(),
+                                 baseline[i].begin() + kOutputs[i]));
+      }
+      ASSERT_EQ(cudaMemset(q8->data, 0xFF, ggml_nbytes(q8)), cudaSuccess);
+      for (auto* output : candidate)
+        ASSERT_EQ(cudaMemset(output->data, 0xFF, ggml_nbytes(output)), cudaSuccess);
+      ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+      ASSERT_TRUE(launch().Launch(*graph));
+      for (std::size_t i = 0; i < candidate.size(); ++i) {
+        const auto got = Download(candidate[i]);
+        EXPECT_EQ(got, expected[i]);
+        EXPECT_EQ(std::memcmp(got.data(), expected[i].data(), got.size() * sizeof(float)), 0);
+      }
+      EXPECT_EQ(Download(x), changed);
+      for (std::size_t i = 0; i < weights.size(); ++i)
+        EXPECT_EQ(Download<std::uint8_t>(weights[i]), weight_bytes[i]);
+      for (const auto* tensor : {q8, candidate[0], candidate[1], candidate[2]}) {
+        std::array<std::uint8_t, 256> guard{};
+        ASSERT_EQ(cudaMemcpy(guard.data(),
+                             static_cast<const std::byte*>(tensor->data) + ggml_nbytes(tensor),
+                             guard.size(), cudaMemcpyDeviceToHost),
+                  cudaSuccess);
+        EXPECT_TRUE(std::ranges::all_of(guard, [](auto v) { return v == 0xA5; }));
+      }
+      const auto output_before = Download(candidate[0]);
+      const auto saved_q8 = *q8;
+      q8->nb[0] = 0;
+      EXPECT_FALSE(kg::RunQuantizeQ8(launch(), q8));
+      EXPECT_FALSE(kg::RunMmvqPrepared(launch(), candidate[0]));
+      *q8 = saved_q8;
+      auto refused = *candidate[0];
+      refused.src[2] = candidate[1];
+      EXPECT_FALSE(kg::RunMmvqPrepared(launch(), &refused));
+      refused = *candidate[0];
+      refused.data = q8->data;
+      EXPECT_FALSE(kg::RunMmvqPrepared(launch(), &refused));
+      refused = *candidate[0];
+      refused.src[7] = x;
+      EXPECT_FALSE(kg::RunMmvqPrepared(launch(), &refused));
+      EXPECT_EQ(Download(candidate[0]), output_before);
+    }
+  }
+}
+
 TEST_F(GgmlExtOpsTest, FusedQuantizedGluEqualsItsProductsAndGlu) {
   constexpr std::int64_t kK = 5376;
   constexpr std::int64_t kOut = 512;

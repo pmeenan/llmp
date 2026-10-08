@@ -63,6 +63,9 @@ struct DeviceChoices {
   // ops_ext.h SelectMulMatQ: the family upstream routes a quantized
   // mul_mat or mul_mat_id to. Without it, quantized products are refused.
   std::function<std::expected<QuantMulMatPath, KernelFailure>(const ggml_tensor*)> quant;
+  // Shape/type-only original dense MMVQ selection, used transiently while
+  // constructing graph descriptors. Empty means preserve ordinary products.
+  std::function<bool(ggml_type, std::int64_t)> dense_mmvq_shape;
   // Measured device/shape eligibility for the default-off raw Q2_K D2R
   // product. A CPU planner may supply a model of this predicate.
   std::function<bool(const ggml_tensor*)> q2_d2r_fits = nullptr;
@@ -356,6 +359,7 @@ inline constexpr std::string_view kQsaTopKName = "jitllm.qsa.topk";
 inline constexpr std::string_view kQsaAttnName = "jitllm.qsa.attn";
 // DeepSeek V4's fast plan (jitllm_ops.h).
 inline constexpr std::string_view kQuantizeQ8Name = "jitllm.q8_1";
+inline constexpr std::string_view kMmvqPreparedName = "jitllm.mmvq.prepared";
 inline constexpr std::string_view kVecQName = "jitllm.vecq";
 inline constexpr std::string_view kDsv4RouteName = "jitllm.dsv4.route";
 inline constexpr std::string_view kDsv4CombineName = "jitllm.dsv4.combine";

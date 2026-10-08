@@ -89,7 +89,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }  // namespace
 int main(int argc, char** argv) {
   if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") ||
-      (argc < 6 || argc > 15))
+      (argc < 6 || argc > 16))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -104,6 +104,7 @@ int main(int argc, char** argv) {
     return status ? 0 : 1;
   }
   bool bounded = false, device_masks = false, prefill_ahead = false, owner_prefill = false;
+  bool shared_q8 = false;
   bool flexible = false, have_chunk = false, stock_ring = false, have_capacity = false;
   std::uint32_t lookahead_capacity = 1;
   std::optional<std::uint64_t> budget_override;
@@ -112,6 +113,8 @@ int main(int argc, char** argv) {
     const std::string_view flag = argv[arg];
     if (flag == "bounded-roots" && !bounded)
       bounded = true;
+    else if (flag == "shared-q8" && !shared_q8)
+      shared_q8 = true;
     else if (flag == "device-masks" && !device_masks)
       device_masks = true;
     else if (flag == "prefill-ahead" && !prefill_ahead)
@@ -197,6 +200,7 @@ int main(int argc, char** argv) {
                         .prefill_lookahead_capacity = lookahead_capacity,
                         .owner_decode = true,
                         .packed_prefill = true,
+                        .shared_q8 = shared_q8,
                         .owner_prefill = owner_prefill,
                         .flexible_owner_prefill = flexible,
                         .device_masks = device_masks,
@@ -343,7 +347,10 @@ int main(int argc, char** argv) {
   const auto execute = [&]() -> en::Status {
     if (auto r = node.Open(); !r) return r;
     life->entered.push_back(&runner);
+    const auto setup_begin = std::chrono::steady_clock::now();
     if (auto r = runner.Setup(); !r) return r;
+    const auto setup_seconds = en::support::Seconds(std::chrono::steady_clock::now() - setup_begin);
+    std::cout << "GEMMA_PREFILL_SETUP seconds=" << setup_seconds << '\n';
     const auto stock_cells = ((4096U + state_rows + 255U) / 256U) * 256U;
     if (stock_ring && runner.layout().local_cells != stock_cells)
       return Error("matched stock ring capacity differs");
@@ -634,6 +641,8 @@ int main(int argc, char** argv) {
           << " device_masks=" << device_masks << " selected_device_masks=" << bound.device_masks
           << " bounded_roots=" << bounded
           << " selected_bounded_owner=" << bound.bounded_owner_attention
+          << " shared_q8=" << shared_q8 << " q8_preparations=" << bound.q8_preparations
+          << " prepared_mmvq_products=" << bound.prepared_mmvq_products
           << " selected_norm_mul=" << bound.norm_mul
           << " selected_quant_geglu=" << bound.quant_geglu
           << " selected_norm_rope=" << bound.norm_rope << " selected_norm_add=" << bound.norm_add

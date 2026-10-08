@@ -78,6 +78,7 @@ Status Gemma2Runner::Setup() {
   model_.state = &layout_;
   model_.options.narrow_final = o_.frontier_head;
   model_.options.owner_decode = o_.owner_decode;
+  model_.options.shared_q8 = o_.shared_q8;
   model_.options.packed_prefill = o_.packed_prefill;
   model_.options.owner_prefill = o_.owner_prefill;
   model_.options.flexible_owner_prefill = o_.flexible_owner_prefill;
@@ -102,18 +103,19 @@ Status Gemma2Runner::Setup() {
   // publication has its own immutable capacity; products still share columns.
   for (const auto budget : {wave_rows, head_rows}) {
     for (std::uint32_t count = 1; count <= o_.slots; ++count) {
-      for (const auto rows :
-           {1U, std::min(o_.max_rows, budget / count), std::min(o_.max_rows, budget - count + 1)}) {
+      for (const auto& row_counts :
+           support::ChunkMeasurementRows(o_.max_rows, budget, count, o_.shared_q8)) {
+        const auto rows = *std::ranges::max_element(row_counts);
         for (const auto past : {0U, o_.context - rows}) {
           for (const bool mixed : {false, true}) {
             if (mixed && (count != 2 || past != 0 || !o_.owner_decode)) continue;
             std::vector<md::Gemma2Segment> segments;
             for (std::uint32_t i = 0; i < count; ++i) {
-              const auto n = rows == budget - count + 1 && i != 0 ? 1U : rows;
+              const auto n = row_counts[i];
               segments.push_back({i, (past == 0 && (!mixed || i == 0)) ? 0U : o_.context - n,
                                   std::span(tokens).first(n)});
             }
-            if (rows * count > budget && rows != budget - count + 1) continue;
+
             auto input =
                 md::Gemma2Chunk(profile_, layout_, segments, !o_.device_masks, 256, wave_rows);
             auto input_bytes = md::Gemma2HostInputBytes(profile_, layout_, segments,
@@ -615,6 +617,8 @@ std::expected<Gemma2Runner::Plans::Entry*, std::string> Gemma2Runner::CachePlann
   plan_selections_.steps += p->plan.steps.size();
   for (const auto& selected : p->plan.steps) {
     plan_selections_.device_masks += selected.implementation == kg::kGemma4MaskName;
+    plan_selections_.q8_preparations += selected.implementation == kg::kQuantizeQ8Name;
+    plan_selections_.prepared_mmvq_products += selected.implementation == kg::kMmvqPreparedName;
     plan_selections_.norm_mul += selected.implementation == kg::kRmsNormMulFused;
     plan_selections_.quant_geglu += selected.implementation == kg::kMulMatGeGluQFused;
     plan_selections_.norm_rope += selected.implementation == kg::kGemmaNormRopeName;

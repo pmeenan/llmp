@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Share eligible Gemma2/Gemma3 Q8 input preparation while preserving original
+  MMVQ arithmetic, exact outputs/state and fused one-column FFN behavior.
+  Device-specific selection and startup funding cover nine formats through
+  eight columns; other product routes retain ordinary execution.
+
 - Choose plain target greedy decode tokens on the GPU for DeepSeek and native/GGUF
   Qwen, preserving complete states and continuation heads. Share scalar
   dispatch/output validation and match host NaN/tie behavior across Gemma too;

@@ -94,6 +94,7 @@ constinit std::array kTagQsaGateQuantize = std::to_array("jitllm.qsa.gate_quanti
 constinit std::array kTagQsaPool = std::to_array("jitllm.qsa.pool");
 constinit std::array kTagQsaTopK = std::to_array("jitllm.qsa.topk");
 constinit std::array kTagQsaAttn = std::to_array("jitllm.qsa.attn");
+constinit std::array kTagMmvqPrepared = std::to_array("jitllm.mmvq.prepared");
 constinit std::array kTagQuantizeQ8 = std::to_array("jitllm.q8_1");
 constinit std::array kTagVecQ = std::to_array("jitllm.vecq");
 constinit std::array kTagDsv4Route = std::to_array("jitllm.dsv4.route");
@@ -201,7 +202,7 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 46> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 47> fused = {{
       {kTagDsv4F16Copy.data(), JitllmOp::kDsv4F16Copy},
       {kTagDsv4HcNormF16.data(), JitllmOp::kDsv4HcNormF16},
       {kTagDsv4WeightedReduce.data(), JitllmOp::kDsv4WeightedReduce},
@@ -228,6 +229,7 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
       {kTagMxfp8Gemm.data(), JitllmOp::kMxfp8Gemm},
       {kTagDsv4Compress.data(), JitllmOp::kDsv4Compress},
       {kTagQuantizeQ8.data(), JitllmOp::kQuantizeQ8},
+      {kTagMmvqPrepared.data(), JitllmOp::kMmvqPrepared},
       {kTagVecQ.data(), JitllmOp::kVecQ},
       {kTagDsv4Route.data(), JitllmOp::kDsv4Route},
       {kTagDsv4Combine.data(), JitllmOp::kDsv4Combine},
@@ -2007,6 +2009,12 @@ ggml_tensor* QuantizeQ8(ggml_context* context, ggml_tensor* x) {
       {x->ne[0], rows});
 }
 
+ggml_tensor* MmvqPrepared(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8,
+                          ggml_tensor* input) {
+  return Custom(context, GGML_TYPE_F32, {weights->ne[1], input->ne[1], 1, 1}, {weights, q8, input},
+                kTagMmvqPrepared.data());
+}
+
 ggml_tensor* VecQ(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8, ggml_tensor* ids,
                   std::int64_t tokens, bool per_slot, ggml_tensor* gate, VecQGlu glu, float limit) {
   const std::int64_t n = weights->ne[1];
@@ -2167,6 +2175,9 @@ std::expected<void, KernelFailure> CheckQuantizeQ8(const ggml_tensor* node) {
       rows != x->ne[1] * x->ne[2] || k % kQ8Block != 0 || !Shaped(node, Q8Bytes(k, rows), 1, 1)) {
     return Rejected("F32 rows of a multiple of 32 values into their Q8_1 blocks");
   }
+  const auto bytes = detail::Extent(node);
+  if (!Packed(node) || !bytes || *bytes != static_cast<std::uint64_t>(Q8Bytes(k, rows)))
+    return Rejected("the Q8_1 producer writes its complete packed padded byte span");
   if (x->nb[0] != sizeof(float) || x->nb[1] % sizeof(float) != 0 || x->nb[2] % sizeof(float) != 0 ||
       !Aligned(x, 4) || !Aligned(node, 4) || x->ne[1] > 65535 || x->ne[2] > 65535 ||
       std::cmp_greater(k, kInt32Max)) {
@@ -2175,6 +2186,69 @@ std::expected<void, KernelFailure> CheckQuantizeQ8(const ggml_tensor* node) {
   if (AnyEmpty({x}) || !AllSane({x}) || !AllCurrent({x, node}) || !Disjoint(node, x, false)) {
     return Rejected("a current, measurable input disjoint from the output");
   }
+  return {};
+}
+
+std::expected<ggml_tensor, KernelFailure> MmvqPreparedOriginal(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kMmvqPrepared, 3); !checked)
+    return std::unexpected(checked.error());
+  const auto* w = node->src[0];
+  const auto* q8 = node->src[1];
+  const auto* x = node->src[2];
+  // Bound the exact producer input before any size multiplication in the
+  // shared quantizer's checks. Descriptor refusal must not overflow first.
+  if (q8->src[0] != x || x->type != GGML_TYPE_F32 || x->ne[0] < 1 || x->ne[0] > INT32_MAX - 511 ||
+      x->ne[0] % 32 != 0 || x->ne[1] < 1 || x->ne[1] > 8 || x->ne[2] != 1 || x->ne[3] != 1)
+    return Rejected(
+        "ordinary prepared MMVQ requires its bounded exact one-to-eight-column producer input");
+  for (int i = 3; i < GGML_MAX_SRC; ++i)
+    if (node->src[i] != nullptr) return Rejected("ordinary prepared MMVQ has extra sources");
+  for (int i = 1; i < GGML_MAX_SRC; ++i)
+    if (q8->src[i] != nullptr) return Rejected("shared preparation has extra sources");
+  if (auto checked = CheckQuantizeQ8(q8); !checked) return std::unexpected(checked.error());
+  for (int i = 0; i < 8; ++i)
+    if (JitllmOpInt(node, i) != 0 || (i >= 2 && JitllmOpInt(q8, i) != 0))
+      return Rejected("ordinary prepared MMVQ rejects reserved parameters");
+  const bool type =
+      w->type == GGML_TYPE_Q4_0 || w->type == GGML_TYPE_Q4_K || w->type == GGML_TYPE_Q5_K ||
+      w->type == GGML_TYPE_Q6_K || w->type == GGML_TYPE_Q8_0 || w->type == GGML_TYPE_Q4_1 ||
+      w->type == GGML_TYPE_Q5_0 || w->type == GGML_TYPE_Q5_1 || w->type == GGML_TYPE_IQ4_NL;
+  if (!type || w->op != GGML_OP_NONE || w->view_src != nullptr || w->ne[2] != 1 || w->ne[3] != 1 ||
+      !Packed(w) || w->ne[0] != x->ne[0] || q8->src[0] != x || !Packed(x) || x->ne[1] < 1 ||
+      x->ne[1] > 8 || x->ne[2] != 1 || x->ne[3] != 1 || !Disjoint(node, q8, false) ||
+      !Disjoint(q8, w, false))
+    return Rejected(
+        "ordinary prepared MMVQ requires immutable dense weights and exact one-to-eight-column "
+        "input");
+  for (const auto* source : w->src)
+    if (source != nullptr) return Rejected("ordinary prepared MMVQ weight has producer sources");
+  // Include the original launcher's readable final-row padding in the q8
+  // alias proof. CheckMulMatQ separately authenticates its binder marker.
+  const auto extent = detail::Extent(w);
+  const auto padded = Q8Padded(w->ne[0]);
+  const auto tail = static_cast<std::uint64_t>(ggml_row_size(w->type, padded - w->ne[0]));
+  const auto wa = reinterpret_cast<std::uintptr_t>(w->data);
+  if (!extent || *extent > UINT64_MAX - tail || wa > UINT64_MAX - (*extent + tail))
+    return Rejected("ordinary prepared MMVQ weight tail is not measurable");
+  for (const auto* writable : {q8, node}) {
+    const auto bytes = detail::Extent(writable);
+    const auto address = reinterpret_cast<std::uintptr_t>(writable->data);
+    if (!bytes || !(wa + *extent + tail <= address || address + *bytes <= wa))
+      return Rejected("ordinary prepared MMVQ writable bytes alias readable weight padding");
+  }
+  auto original = *node;
+  original.op = GGML_OP_MUL_MAT;
+  std::memset(original.op_params, 0, sizeof(original.op_params));
+  std::ranges::fill(original.src, nullptr);
+  original.src[0] = node->src[0];
+  original.src[1] = node->src[2];
+  if (auto checked = CheckMulMatQ(&original); !checked) return std::unexpected(checked.error());
+  return original;
+}
+
+std::expected<void, KernelFailure> CheckMmvqPrepared(const ggml_tensor* node) {
+  auto original = MmvqPreparedOriginal(node);
+  if (!original) return std::unexpected(original.error());
   return {};
 }
 

@@ -80,6 +80,7 @@ Status Gemma3Runner::Setup() {
   model_.state = &layout_;
   model_.options.narrow_final = o_.frontier_head;
   model_.options.owner_decode = o_.owner_decode;
+  model_.options.shared_q8 = o_.shared_q8;
   model_.options.packed_prefill = o_.packed_prefill;
   model_.options.owner_prefill = o_.owner_prefill;
   model_.options.flexible_owner_prefill = o_.flexible_owner_prefill;
@@ -105,8 +106,9 @@ Status Gemma3Runner::Setup() {
   // publication has its own immutable capacity; products still share columns.
   for (const auto budget : {wave_rows, head_rows}) {
     for (std::uint32_t count = 1; count <= o_.slots; ++count) {
-      for (const auto rows :
-           {1U, std::min(o_.max_rows, budget / count), std::min(o_.max_rows, budget - count + 1)}) {
+      for (const auto& row_counts :
+           support::ChunkMeasurementRows(o_.max_rows, budget, count, o_.shared_q8)) {
+        const auto rows = *std::ranges::max_element(row_counts);
         for (const auto past : {0U, o_.context - rows}) {
           // Every nonempty proper long-owner count is measured. Padding N-1 short
           // roots needs N-1 K/V outputs, not the one-short envelope.
@@ -115,13 +117,13 @@ Status Gemma3Runner::Setup() {
               continue;
             std::vector<md::Gemma3Segment> segments;
             for (std::uint32_t i = 0; i < count; ++i) {
-              const auto n = rows == budget - count + 1 && i != 0 ? 1U : rows;
+              const auto n = row_counts[i];
               segments.push_back(
                   {i,
                    (past == 0 && (long_count == 0 || i < count - long_count)) ? 0U : o_.context - n,
                    std::span(tokens).first(n)});
             }
-            if (rows * count > budget && rows != budget - count + 1) continue;
+
             auto input =
                 md::Gemma3Chunk(profile_, layout_, segments, !o_.device_masks, 256, wave_rows);
             auto input_bytes = md::Gemma3HostInputBytes(profile_, layout_, segments,
@@ -616,6 +618,8 @@ std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::CachePlann
   ++plan_selections_.plans;
   plan_selections_.steps += p->plan.steps.size();
   for (const auto& selected : p->plan.steps) {
+    plan_selections_.q8_preparations += selected.implementation == kg::kQuantizeQ8Name;
+    plan_selections_.prepared_mmvq_products += selected.implementation == kg::kMmvqPreparedName;
     plan_selections_.norm_mul += selected.implementation == kg::kRmsNormMulFused;
     plan_selections_.quant_geglu += selected.implementation == kg::kMulMatGeGluQFused;
     plan_selections_.norm_rope += selected.implementation == kg::kGemmaNormRopeName;

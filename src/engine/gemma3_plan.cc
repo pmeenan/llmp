@@ -260,15 +260,16 @@ std::expected<std::unique_ptr<Gemma3Planned>, std::string> PlanGemma3Chunk(
     }
   }
   auto out = std::make_unique<Gemma3Planned>();
-  auto arena = SizedArena(
-      kg::Gemma3GraphTensors(*m.profile, shape.segments.size()), [&](kg::TensorArena& a) {
-        return kg::BuildGemma3Graph(a, *m.profile, *m.binding, *m.state, shape, m.options)
-            .has_value();
-      });
+  auto arena = SizedArena(kg::Gemma3GraphTensors(*m.profile, shape.segments.size()),
+                          [&](kg::TensorArena& a) {
+                            return kg::BuildGemma3Graph(a, *m.profile, *m.binding, *m.state, shape,
+                                                        m.options, choices.dense_mmvq_shape)
+                                .has_value();
+                          });
   if (!arena) return std::unexpected(arena.error());
   out->arena.emplace(std::move(*arena));
-  auto graph =
-      kg::BuildGemma3Graph(*out->arena, *m.profile, *m.binding, *m.state, shape, m.options);
+  auto graph = kg::BuildGemma3Graph(*out->arena, *m.profile, *m.binding, *m.state, shape, m.options,
+                                    choices.dense_mmvq_shape);
   out->arena->Seal();
   if (!graph) return Error(graph.error().detail);
   out->graph = std::move(*graph);

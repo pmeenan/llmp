@@ -11,6 +11,9 @@
 #include <limits>
 #include <vector>
 
+#include "engine/gemma3_runner.h"
+#include "engine/support.h"
+
 namespace en = jitllm::engine;
 TEST(Gemma2Runner, UninitializedLifecycleRefusesWithoutPublishingOrOwningCopies) {
   EXPECT_TRUE(en::Gemma2Options{}.device_masks);
@@ -69,4 +72,45 @@ TEST(Gemma2Runner, CheckpointFootprintRequiresOrderedWholeExtentsAtRingAndContex
     EXPECT_FALSE(en::Gemma2CheckpointFootprint(profile, *layout, 8193, footprint));
   }
   EXPECT_TRUE(en::Gemma2CheckpointFootprint(profile, *layout, 0, {}));
+}
+
+TEST(Gemma2Runner, SharedPreparationMeasuresEverySmallOwnerCompositionAndKeepsBudgets) {
+  EXPECT_TRUE(en::Gemma2Options{}.shared_q8);
+  EXPECT_TRUE(en::Gemma3Options{}.shared_q8);
+  for (const std::uint32_t max_rows : {1U, 3U, 128U}) {
+    for (const std::uint32_t budget : {2U, 8U, 256U}) {
+      for (const std::uint32_t owners : {1U, 2U, 3U, 4U, 8U, 12U}) {
+        const auto ordinary = en::support::ChunkMeasurementRows(max_rows, budget, owners, false);
+        const auto prepared = en::support::ChunkMeasurementRows(max_rows, budget, owners, true);
+        for (const auto& row : ordinary)
+          EXPECT_NE(std::ranges::find(prepared, row), prepared.end());
+        for (const auto& row : prepared) {
+          EXPECT_EQ(row.size(), owners);
+          std::uint32_t total = 0;
+          for (const auto n : row) {
+            EXPECT_GE(n, 1U);
+            EXPECT_LE(n, max_rows);
+            total += n;
+          }
+          EXPECT_LE(total, budget);
+        }
+        // Independently enumerate every bounded ordered row composition.
+        if (owners > budget || owners > 8) continue;
+        std::vector<std::uint32_t> row(owners, 1);
+        const auto check = [&](auto&& self, std::uint32_t owner, std::uint32_t total) -> void {
+          if (owner == owners) {
+            EXPECT_NE(std::ranges::find(prepared, row), prepared.end());
+            return;
+          }
+          const auto left = std::min(8U, budget) - total;
+          for (std::uint32_t n = 1; n <= std::min(max_rows, left); ++n) {
+            if (total + n + owners - owner - 1 > std::min(8U, budget)) break;
+            row[owner] = n;
+            self(self, owner + 1, total + n);
+          }
+        };
+        check(check, 0, 0);
+      }
+    }
+  }
 }

@@ -75,6 +75,16 @@ Columns4/8/16/32 geometry and padded-query tail semantics cover partial chunks.
 Larger compatible rows, mixed-width roots and cohorts retain checked fallback
 and explicit extension tasks. [Attribution and qualification](experiments/gemma-prefill-copies/README.md).
 
+Gemma2/Gemma3 default to a shared per-graph exact-input Q8 cache for selected
+original MMVQ products. Transient kernel-owned device choices gate the graph
+before creating preparations; empty/false choices and MMQ routes remain ordinary.
+The original quantizer, consumer reduction and one-column fused GeGLU are
+preserved. Setup measures all ordered owner-row compositions through total eight
+inside configured budgets, as well as its existing endpoint envelopes, so
+intermediate MMVQ storage is funded independently of maximum-row MMQ plans.
+The shared helper also preserves Gemma4's distinct diagnostic VecQOneToken
+policy. [Bounds, native factors and startup cost](experiments/gemma-shared-q8/README.md).
+
 ## A runner's life
 
 1. **Setup** (before the scheduler): open the artifacts

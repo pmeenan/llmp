@@ -23,6 +23,7 @@
 #include "base/bytes.h"
 #include "common.cuh"
 #include "kernels/ggml/cublas.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/mul_mat_q_glu.cuh"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_ext.h"
@@ -244,6 +245,11 @@ std::expected<std::uint64_t, KernelFailure> TileFixup(const LaunchContext& launc
 
 }  // namespace
 
+bool DenseMmvqShapeSelected(const LaunchContext& launch, ggml_type type, std::int64_t columns) {
+  return columns > 0 && columns <= MMVQ_MAX_BATCH_SIZE &&
+         ggml_cuda_should_use_mmvq(type, Device(launch).cc, columns);
+}
+
 std::expected<QuantMulMatPath, KernelFailure> SelectMulMatQ(const LaunchContext& launch,
                                                             const ggml_tensor* node) {
   if (auto checked = CheckNode(node); !checked) {
@@ -406,6 +412,38 @@ std::expected<void, KernelFailure> MulMatVecQ(LaunchContext& launch, ggml_tensor
   return launch.Run(base::Bytes(*scratch), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* ids = node->op == GGML_OP_MUL_MAT_ID ? node->src[2] : nullptr;
     ggml_cuda_mul_mat_vec_q(context, node->src[0], node->src[1], ids, node);
+  });
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanMmvqPrepared(const LaunchContext& launch,
+                                                             const ggml_tensor* node) {
+  auto original = MmvqPreparedOriginal(node);
+  if (!original) return std::unexpected(original.error());
+  auto planned = PlanMulMatVecQ(launch, &*original);
+  if (!planned) return std::unexpected(planned.error());
+  const auto* input = original->src[1];
+  const auto bytes = static_cast<std::uint64_t>(Q8Bytes(input->ne[0], input->ne[1]));
+  if (*planned != bytes)
+    return Rejected("ordinary MMVQ preparation differs from its original padded draw");
+  return 0;
+}
+
+std::expected<void, KernelFailure> RunMmvqPrepared(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = PlanMmvqPrepared(launch, node); !checked)
+    return std::unexpected(checked.error());
+  auto original = MmvqPreparedOriginal(node);
+  if (!original) return std::unexpected(original.error());
+  const auto padded = GGML_PAD(original->src[1]->ne[0], MATRIX_ROW_PADDING);
+  // The descriptor is copied into this synchronous host callback. No cached
+  // plan or deferred submission retains a pointer to a stack descriptor.
+  return launch.Run(base::Bytes(0), [original = *original, q8 = node->src[1],
+                                     padded](ggml_backend_cuda_context& context) mutable {
+    ggml_cuda_op_mul_mat_vec_q(context, original.src[0], original.src[1], &original,
+                               static_cast<const char*>(original.src[0]->data),
+                               static_cast<const float*>(original.src[1]->data),
+                               static_cast<const char*>(q8->data),
+                               static_cast<float*>(original.data), 0, original.ne[0],
+                               original.ne[1], padded, context.stream());
   });
 }
 

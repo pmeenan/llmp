@@ -127,6 +127,7 @@ enum class JitllmOp : std::uint8_t {
   kQsaTopK,
   kQsaAttn,
   kQuantizeQ8,
+  kMmvqPrepared,
   kVecQ,
   kDsv4Route,
   kDsv4Combine,
@@ -920,6 +921,15 @@ inline constexpr std::int64_t kDsv4HcTail = 32;  // hc_pre's floats after the no
 ggml_tensor* Dsv4Compress(ggml_context* context, ggml_tensor* state_kv, ggml_tensor* state_score,
                           ggml_tensor* kv, ggml_tensor* score, ggml_tensor* read_idxs,
                           std::int64_t ratio, bool overlap);
+
+// Ordinary GGML dense MMVQ over a separately funded shared Q8_1 producer.
+// The original F32 input remains an explicit dependency and retains its
+// metadata/lifetime. Consumer selection and row-footprint checks stay original.
+ggml_tensor* MmvqPrepared(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8,
+                          ggml_tensor* input);
+std::expected<ggml_tensor, KernelFailure> MmvqPreparedOriginal(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckMmvqPrepared(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunMmvqPrepared(LaunchContext& launch, ggml_tensor* node);
 
 std::expected<void, KernelFailure> CheckQuantizeQ8(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckVecQ(const ggml_tensor* node);

@@ -63,6 +63,10 @@ DeviceChoices DeviceChoicesOf(const LaunchContext& launch) {
       .vector_fusible =
           [&launch](const ggml_tensor* node) { return MulMatVecFusible(launch, node); },
       .quant = [&launch](const ggml_tensor* node) { return SelectMulMatQ(launch, node); },
+      .dense_mmvq_shape =
+          [&launch](ggml_type type, std::int64_t columns) {
+            return DenseMmvqShapeSelected(launch, type, columns);
+          },
       .q2_d2r_fits = [&launch](const ggml_tensor* node) { return MulMatIdQ2D2rFits(launch, node); },
       .ds4_hca_fits =
           [&launch](const ggml_tensor* node) { return Dsv4HcaTokentileFits(launch, node); },
@@ -100,6 +104,8 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
         return std::unexpected(cublas.error());
       }
       planned = cublas->scratch;
+    } else if (step.implementation == kMmvqPreparedName) {
+      planned = PlanMmvqPrepared(launch, step.nodes.front());
     } else if (step.implementation == kMulMatVecQ || step.implementation == kMulMatIdVecQ) {
       planned = PlanMulMatVecQ(launch, step.nodes.front());
     } else if (step.implementation == kMulMatGluQFused ||

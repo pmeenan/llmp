@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -44,6 +45,8 @@ struct Gemma3GraphOptions {
   bool hidden_input = false, head = true, narrow_final = false;
   // Explicit checked H8/C2 through C12 grouped one-row decode; other chunks stay ordinary.
   bool owner_decode = false;
+  // Experimental exact ordinary-MMVQ input sharing for selected one-to-eight-column products.
+  bool shared_q8 = false;
   // Explicit equal-row/equal-read C2 prefill with real packed K/V backing.
   bool packed_prefill = false;
   // Closed equal 128-row C2 prefill with original MMA geometry and actual K/V roots.
@@ -97,11 +100,10 @@ std::expected<void, KernelFailure> CheckGemma3Graph(const model::Gemma3Profile& 
                                                     const model::Gemma3StateLayout& state,
                                                     const Gemma3ChunkShape& shape,
                                                     const Gemma3GraphOptions& options = {});
-std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
-                                                           const model::Gemma3Profile& profile,
-                                                           const model::Gemma3Binding& binding,
-                                                           const model::Gemma3StateLayout& state,
-                                                           const Gemma3ChunkShape& shape,
-                                                           const Gemma3GraphOptions& options = {});
+std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(
+    TensorArena& arena, const model::Gemma3Profile& profile, const model::Gemma3Binding& binding,
+    const model::Gemma3StateLayout& state, const Gemma3ChunkShape& shape,
+    const Gemma3GraphOptions& options = {},
+    const std::function<bool(ggml_type, std::int64_t)>& dense_mmvq_shape = {});
 }  // namespace jitllm::kernels::ggml
 #endif  // JITLLM_KERNELS_GGML_GEMMA3_GRAPH_H_

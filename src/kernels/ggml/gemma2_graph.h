@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -44,6 +45,8 @@ struct Gemma2GraphOptions {
   bool hidden_input = false, head = true, narrow_final = false;
   // Explicit D256/H8/C2 softcap50 owner decode; other chunks remain ordinary.
   bool owner_decode = false;
+  // Experimental exact ordinary-MMVQ input sharing for selected one-to-eight-column products.
+  bool shared_q8 = false;
   // Explicit equal-row/equal-read C2 prefill with real packed F16 K/V.
   // Original attention keeps the approved softcap50 specialization.
   bool packed_prefill = false;
@@ -95,11 +98,10 @@ std::expected<void, KernelFailure> CheckGemma2Graph(const model::Gemma2Profile& 
                                                     const model::Gemma2StateLayout& state,
                                                     const Gemma2ChunkShape& shape,
                                                     const Gemma2GraphOptions& options = {});
-std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(TensorArena& arena,
-                                                           const model::Gemma2Profile& profile,
-                                                           const model::Gemma2Binding& binding,
-                                                           const model::Gemma2StateLayout& state,
-                                                           const Gemma2ChunkShape& shape,
-                                                           const Gemma2GraphOptions& options = {});
+std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(
+    TensorArena& arena, const model::Gemma2Profile& profile, const model::Gemma2Binding& binding,
+    const model::Gemma2StateLayout& state, const Gemma2ChunkShape& shape,
+    const Gemma2GraphOptions& options = {},
+    const std::function<bool(ggml_type, std::int64_t)>& dense_mmvq_shape = {});
 }  // namespace jitllm::kernels::ggml
 #endif  // JITLLM_KERNELS_GGML_GEMMA2_GRAPH_H_

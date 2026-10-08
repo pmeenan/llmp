@@ -15,13 +15,13 @@
 #include <numeric>
 #include <span>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "artifact/representation.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/shared_q8.h"
 #include "kernels/ggml/validate_ext.h"
 
 namespace jitllm::kernels::ggml {
@@ -251,13 +251,8 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     g.named.emplace_back(std::move(name), t);
     return t;
   };
-  std::unordered_map<ggml_tensor*, ggml_tensor*> preparations;
-  const auto q8 = [&](ggml_tensor* x) {
-    if (const auto at = preparations.find(x); at != preparations.end()) return at->second;
-    auto* prepared = QuantizeQ8(c, x);
-    preparations.emplace(x, prepared);
-    return prepared;
-  };
+  SharedQ8Inputs preparations(c);
+  const auto q8 = [&](ggml_tensor* x) { return preparations.Get(x); };
   const auto mm = [&](ggml_tensor* w, ggml_tensor* x) {
     if (!o.shared_q8 || !VecQType(w->type) || !ggml_is_contiguous(x) || x->ne[1] > kVecQMaxTokens ||
         x->ne[2] != 1 || x->ne[3] != 1) {

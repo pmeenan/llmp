@@ -482,8 +482,13 @@ family" guide, and its long-context scaling work.
         - [ ] **T78** BF16 multirow vector alternative.
         - [ ] **T87** Alternative image encoder/VAE attention.
       - **Gemma2 2B**
-        - [ ] **T04** Share adjacent-product input preparation.
-        - [ ] **T11** Reuse decode Q8 quantization.
+        - [ ] **T04** Selected QKV/eligible unfused FFN preparations now share
+          original MMVQ inputs; extend compatible other quant formats and
+          larger-column/MMQ-adjacent chains with exact consumer/funding proof.
+        - [ ] **T11** Original-MMVQ Q8 sharing is adopted for nine formats/selected
+          columns 1–8 with exact primitive proof; approved Q8_0/Q4_0 models
+          preserve complete heads/state, C1 GeGLU and ordinary fallback. Compatible remaining formats/columns keep this composite
+          port open. [Factors and startup costs](experiments/gemma-shared-q8/README.md).
         - [ ] **T15** Concurrent per-owner graph lanes.
         - [x] **T22** Graph-owned GPU attention masks: same-native wrapped C2
           prefill −6.616%, exact heads/state and ordinary restart controls;
@@ -520,8 +525,13 @@ family" guide, and its long-context scaling work.
           controls pass. Native prefill improves 2.706%; fresh matched stock
           retains +0.786% prefill / +0.284% paid at n=2, with exact outputs.
       - **Gemma3 4B QAT**
-        - [ ] **T04** Share adjacent-product input preparation.
-        - [ ] **T11** Reuse decode Q8 quantization.
+        - [ ] **T04** Selected QKV/eligible unfused FFN preparations now share
+          original MMVQ inputs; extend compatible other quant formats and
+          larger-column/MMQ-adjacent chains with exact consumer/funding proof.
+        - [ ] **T11** Original-MMVQ Q8 sharing is adopted for nine formats/selected
+          columns 1–8 with exact primitive proof; approved Q8_0/Q4_0 models
+          preserve complete heads/state, C1 GeGLU and ordinary fallback. Compatible remaining formats/columns keep this composite
+          port open. [Factors and startup costs](experiments/gemma-shared-q8/README.md).
         - [ ] **T15** Concurrent per-owner graph lanes.
         - [ ] **T41** Residual-add plus next normalization.
         - [x] **T55** Checkpoint/scoring-aware joined prompt hints; actual
@@ -563,7 +573,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T07** Compact expert-major MMQ scheduling.
         - [ ] **T09** Write activation in routed gate/up consumer.
-        - [ ] **T11** Reuse decode Q8 quantization.
+        - [ ] **T11** Transfer original-MMVQ Q8 sharing with actual target/assistant
+          and funding controls; the rejected VecQOneToken diagnostic used
+          different consumer arithmetic and does not reject this port.
         - [ ] **T12** Share expert reads across verify rows.
         - [ ] **T14** Warp-ballot routed pair lookup.
         - [ ] **T15** Concurrent per-owner graph lanes.
@@ -605,7 +617,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T95** Quantized draft head: qualify compatible independent/tied
           head binding, state/closure funding, scalar/joined arithmetic and quality.
         - [ ] **T04** Share adjacent-product input preparation.
-        - [ ] **T11** Reuse decode Q8 quantization.
+        - [ ] **T11** Transfer original-MMVQ Q8 sharing with actual target/assistant
+          and funding controls; preserve the separate VecQOneToken policy.
         - [ ] **T15** Concurrent per-owner graph lanes.
         - [ ] **T16** Join draft blocks across requests.
         - [ ] **T19** Selective draft-head MMVF.

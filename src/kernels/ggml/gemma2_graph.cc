@@ -21,6 +21,7 @@
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/shared_q8.h"
 #include "kernels/ggml/validate_ext.h"
 
 namespace jitllm::kernels::ggml {
@@ -108,12 +109,10 @@ std::size_t Gemma2GraphTensors(const md::Gemma2Profile& p, std::size_t segments)
   return 128 + std::size_t{p.layers} * (96 + segments * 48);
 }
 
-std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(TensorArena& arena,
-                                                           const md::Gemma2Profile& p,
-                                                           const md::Gemma2Binding& binding,
-                                                           const md::Gemma2StateLayout& state,
-                                                           const Gemma2ChunkShape& shape,
-                                                           const Gemma2GraphOptions& o) {
+std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(
+    TensorArena& arena, const md::Gemma2Profile& p, const md::Gemma2Binding& binding,
+    const md::Gemma2StateLayout& state, const Gemma2ChunkShape& shape, const Gemma2GraphOptions& o,
+    const std::function<bool(ggml_type, std::int64_t)>& dense_mmvq_shape) {
   if (auto checked = CheckGemma2Graph(p, binding, state, shape, o); !checked)
     return std::unexpected(checked.error());
   if (auto room = arena.Reserve(Gemma2GraphTensors(p, shape.segments.size())); !room)
@@ -192,8 +191,10 @@ std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(TensorArena& arena,
     g.named.emplace_back(std::move(name), tensor);
     return tensor;
   };
-  const auto product = [&](const md::Gemma2Tensor& resource, ggml_tensor* input) {
-    return ggml_mul_mat(c, weight(resource), input);
+  SharedQ8Inputs preparations(c);
+  const auto product = [&](const md::Gemma2Tensor& resource, ggml_tensor* input,
+                           bool share = false) {
+    return preparations.Product(weight(resource), input, o.shared_q8 && share, dense_mmvq_shape);
   };
   std::vector<ggml_tensor*> expanded;
   if (o.device_masks)
@@ -263,10 +264,11 @@ std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(TensorArena& arena,
     const auto d = p.key_dim, kv_width = d * p.kv_heads;
     auto* normalized = named(prefix + "attn_input", Norm(c, p, input, weight(layer.attn_norm)));
     const bool tail = shape.output_mode != Gemma2OutputMode::kStateOnly || il + 1 != p.layers;
-    auto* q = tail ? ggml_reshape_3d(c, product(layer.q, normalized), d, p.heads, rows) : nullptr;
-    auto* k = ggml_reshape_3d(c, product(layer.k, normalized), d, p.kv_heads, rows);
+    auto* q =
+        tail ? ggml_reshape_3d(c, product(layer.q, normalized, true), d, p.heads, rows) : nullptr;
+    auto* k = ggml_reshape_3d(c, product(layer.k, normalized, true), d, p.kv_heads, rows);
     // Gemma2 V remains raw: no RMS normalization or K/V identity sharing.
-    auto* v = ggml_reshape_3d(c, product(layer.v, normalized), d, p.kv_heads, rows);
+    auto* v = ggml_reshape_3d(c, product(layer.v, normalized, true), d, p.kv_heads, rows);
     const auto rope = [&](ggml_tensor* tensor) {
       return ggml_rope_ext(c, tensor, g.positions, nullptr, static_cast<int>(d),
                            GGML_ROPE_TYPE_NEOX, static_cast<int>(p.context), p.rope_base,
@@ -379,8 +381,8 @@ std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(TensorArena& arena,
         named(prefix + "attn_residual",
               ggml_add(c, Norm(c, p, projected, weight(layer.attn_post_norm)), residual));
     auto* ffn_input = Norm(c, p, attention_residual, weight(layer.ffn_norm));
-    auto* up = product(layer.up, ffn_input);
-    auto* gate = product(layer.gate, ffn_input);
+    auto* up = product(layer.up, ffn_input, rows > 1);
+    auto* gate = product(layer.gate, ffn_input, rows > 1);
     auto* down = product(layer.down, ggml_geglu_split(c, gate, up));
     input = named(prefix + "output",
                   ggml_add(c, Norm(c, p, down, weight(layer.ffn_post_norm)), attention_residual));

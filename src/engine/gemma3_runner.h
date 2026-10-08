@@ -37,6 +37,8 @@ struct Gemma3Options {
   std::uint32_t max_head_rows = 0;
   bool graphs = true, frontier_head = true;
   bool owner_decode = false, packed_prefill = false;
+  // Exact ordinary-MMVQ preparation sharing; false retains the matched control.
+  bool shared_q8 = true;
   // Copy-free C2 prefill; false retains the packed control.
   bool owner_prefill = true;
   // Explicit 2..512-row tiles and tails in funded configured envelopes.
@@ -103,7 +105,8 @@ class Gemma3Runner final : public PagedModel {
     std::uint64_t plans = 0, steps = 0, norm_mul = 0, quant_geglu = 0, norm_rope = 0, norm_add = 0,
                   owner_attention = 0, packed_prefill_attention = 0, owner_prefill_attention = 0,
                   flexible_owner_prefill_attention = 0, largest_owner_prefill_rows = 0,
-                  largest_owner_prefill_kv_cells = 0, bounded_owner_attention = 0, device_masks = 0;
+                  largest_owner_prefill_kv_cells = 0, bounded_owner_attention = 0, device_masks = 0,
+                  q8_preparations = 0, prepared_mmvq_products = 0;
   };
   Gemma3Runner(PagedNode& node, Gemma3Options options, int owner, std::uint32_t stream);
   ~Gemma3Runner() override;

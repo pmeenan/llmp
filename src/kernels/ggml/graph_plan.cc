@@ -699,6 +699,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case JitllmOp::kQuantizeQ8:
             add(Operation::kQuantize, kQuantizeQ8Name, i, {node}, 1);
             break;
+          case JitllmOp::kMmvqPrepared:
+            add(Operation::kMatMul, kMmvqPreparedName, i, {node}, 1);
+            break;
           case JitllmOp::kVecQ:
             add(Operation::kMatMul, kVecQName, i, {node}, 1);
             break;

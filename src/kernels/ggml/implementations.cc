@@ -103,7 +103,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
   return std::unexpected(
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
-constexpr std::array<Kernel::Entry, 124> kKernels = {{
+constexpr std::array<Kernel::Entry, 125> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -951,6 +951,13 @@ constexpr std::array<Kernel::Entry, 124> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckQuantizeQ8(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunQuantizeQ8(launch, n[0]); }},
+    {.name = "jitllm.mmvq.prepared",
+     .operation = execution::Operation::kMatMul,
+     .variant = "original ggml_cuda_op_mul_mat_vec_q over a shared padded Q8_1 input; "
+                "original MMVQ selection, geometry and reduction, dense one-to-eight columns",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMmvqPrepared(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunMmvqPrepared(launch, n[0]); }},
     {.name = "jitllm.vecq",
      .operation = execution::Operation::kMatMul,
      .variant = "VecQKernel<type, rows, warps, glu>: GGML's vec_dot_*_q8_1 over up to 8 tokens a "

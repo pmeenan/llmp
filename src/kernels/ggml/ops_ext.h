@@ -44,6 +44,9 @@ namespace jitllm::kernels::ggml {
 // where it would take neither family.
 std::expected<QuantMulMatPath, KernelFailure> SelectMulMatQ(const LaunchContext& launch,
                                                             const ggml_tensor* node);
+// Original dense device/type/column selector without requiring bound operands.
+// Final planning still authenticates operands and the original MMVQ footprint.
+bool DenseMmvqShapeSelected(const LaunchContext& launch, ggml_type type, std::int64_t columns);
 // The pool scratch each family's launcher draws for a node it takes, each
 // block from a 256-byte boundary in the launcher's allocation order: MMVQ's
 // Q8_1 activations (mmvq.cu:1484-1486); MMQ's expert maps for mul_mat_id,
@@ -56,6 +59,10 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& lau
 // Launches the family on a node upstream routes to it: ggml_cuda_mul_mat_vec_q
 // or ggml_cuda_mul_mat_q, with the node's ids for mul_mat_id.
 std::expected<void, KernelFailure> MulMatVecQ(LaunchContext& launch, ggml_tensor* node);
+// Same ordinary MMVQ consumer, with its original padded Q8_1 draw supplied
+// as a graph activation. Validates the original device route; no pool draw.
+std::expected<std::uint64_t, KernelFailure> PlanMmvqPrepared(const LaunchContext& launch,
+                                                             const ggml_tensor* node);
 std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* node);
 
 // Upstream's fused quantized gate/up product (ggml-cuda.cu:3950-3975,

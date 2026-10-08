@@ -31,6 +31,69 @@ std::size_t Count(const kg::Gemma3Graph& graph, ggml_op op) {
       std::ranges::count_if(graph.nodes, [op](const auto* t) { return t->op == op; }));
 }
 
+TEST(Gemma3Graph, SharedQ8UsesOriginalDeviceSelectorThroughEightAndPreservesFallback) {
+  for (const std::uint32_t columns : {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U}) {
+    for (const bool enabled : {false, true}) {
+      for (const int selector_mode : {0, 1, 2}) {
+        SCOPED_TRACE(std::to_string(columns) + "/" + std::to_string(enabled) + "/" +
+                     std::to_string(selector_mode));
+        Case c;
+        c.shape = {{{0, 1, 1, 256, 256}}, 1};
+        if (columns == 2) {
+          c.shape.segments.push_back({1, 1, 7, 256, 256});
+          c.shape.outputs = 2;
+        } else {
+          c.shape.segments[0].rows = columns;
+        }
+        auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, c.shape.segments.size()));
+        ASSERT_TRUE(arena);
+        kg::Gemma3GraphOptions options;
+        options.owner_decode = columns == 2;
+        options.shared_q8 = enabled;
+        std::function<bool(ggml_type, std::int64_t)> selector;
+        if (selector_mode != 0)
+          selector = [selector_mode](ggml_type, std::int64_t n) {
+            return selector_mode == 2 && n <= 8;
+          };
+        auto graph =
+            kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape, options, selector);
+        ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+        std::size_t products = 0, prepared = 0, owners = 0, glus = 0;
+        for (const auto* t : graph->nodes) {
+          const auto op = kg::JitllmOpOf(t);
+          if (op == kg::JitllmOp::kMmvqPrepared) {
+            ++products;
+            ASSERT_EQ(t->src[2], t->src[1]->src[0]);
+            EXPECT_EQ(t->ne[1], columns);
+            EXPECT_EQ(t->src[2]->ne[1], columns);
+          }
+          prepared += op == kg::JitllmOp::kQuantizeQ8;
+          owners += op == kg::JitllmOp::kFlashAttnOwners;
+          if (t->op == GGML_OP_GLU) {
+            ++glus;
+            for (const auto* source : {t->src[0], t->src[1]})
+              EXPECT_EQ(kg::JitllmOpOf(source),
+                        enabled && selector_mode == 2 && columns > 1 && columns <= 8
+                            ? kg::JitllmOp::kMmvqPrepared
+                            : kg::JitllmOp::kNone);
+          }
+        }
+        const bool selected = enabled && selector_mode == 2 && columns <= 8;
+        EXPECT_EQ(prepared, selected ? c.p.layers * (columns > 1 ? 2U : 1U) : 0U);
+        EXPECT_EQ(products, selected ? c.p.layers * (columns > 1 ? 5U : 3U) : 0U);
+        EXPECT_EQ(glus, c.p.layers);
+        EXPECT_EQ(owners, columns == 2 ? c.p.layers : 0U);
+        // Head and both single-consumer projections keep their ordinary route.
+        for (std::uint32_t layer = 0; layer < c.p.layers; ++layer) {
+          auto* projection = graph->Named("blk." + std::to_string(layer) + ".attn_projection");
+          ASSERT_NE(projection, nullptr);
+          EXPECT_EQ(projection->op, GGML_OP_MUL_MAT);
+        }
+      }
+    }
+  }
+}
+
 TEST(Gemma3Graph, H8OwnerContractIsClosedToD256AndTwoThroughFourActualRoots) {
   const auto make = [](kg::TensorArena& arena, std::int64_t d, std::int64_t heads,
                        std::uint32_t owners) {

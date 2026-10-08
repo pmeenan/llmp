@@ -291,3 +291,16 @@ Matching stock's 5120-cell SWA ring gives exact complete heads and choices;
 fresh stock bookends retain +0.786% prefill / +0.284% paid. The paid gap is
 within observed movement, while prefill ranges remain disjoint; no prefill
 parity claim follows. [512-row method and remaining work](experiments/gemma-prefill-copies/README.md#configured-257512-row-equal-owner-extension).
+
+## Shared original-MMVQ preparation
+
+The runner and serving recipe now reuse exact Q8_1 inputs across selected QKV
+and eligible unfused FFN products, with original GGML consumers and C1 GeGLU
+preserved. Device-specific MMVQ selection gates nine compatible quant formats
+through eight columns; other routes retain ordinary products. Exact full
+heads, token histories, state/refusals, partial departure and checkpoint/spill
+replay pass focused controls. The short C2 decode interval improves descriptively;
+whole paid movement remains inside bookend drift. Startup measures every
+configured small owner-row composition, with its observed cost and host-plan
+floor recorded in the [qualification report](experiments/gemma-shared-q8/README.md).
+Public contexts/slots/chunks are unchanged; broader compatible routes remain open.
