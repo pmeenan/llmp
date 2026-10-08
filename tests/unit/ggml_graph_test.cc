@@ -135,7 +135,8 @@ kg::DeviceChoices ModelDevice() {
             return columns <= 16 ? MulMatPath::kTensorCore : MulMatPath::kCublas;
           },
           .vector_fusible = [](const ggml_tensor* node) { return node->src[1]->ne[1] == 1; },
-          .quant = nullptr};
+          .quant = nullptr,
+          .dense_mmvq_shape = {}};
 }
 
 struct Chunk {
@@ -429,6 +430,82 @@ std::map<const ggml_tensor*, std::pair<std::uint64_t, std::uint64_t>> Ranges(
     ranges[tensor] = {offset, offset + ggml_nbytes(tensor)};
   }
   return ranges;
+}
+
+TEST(ActivationMeasurement, ThresholdUsesValidatedUniqueRootsAndPreservesExactFallback) {
+  auto arena = kg::TensorArena::Create(8);
+  ASSERT_TRUE(arena);
+  auto* x = ggml_new_tensor_1d(arena->context(), GGML_TYPE_F32, 1024);
+  auto* a = ggml_add(arena->context(), x, x);
+  auto* b = ggml_mul(arena->context(), a, a);
+  auto* view = ggml_view_1d(arena->context(), b, 512, 0);
+  const std::array<ggml_tensor*, 3> nodes{a, b, view};
+  const std::array<ggml_tensor*, 2> inputs{x, x};
+  const std::array<ggml_tensor*, 1> kept{a};
+  auto plan = kg::PlanGraph(nodes, false, ModelDevice());
+  ASSERT_TRUE(plan);
+  for (const bool lanes : {false, true}) {
+    if (lanes) plan->regions = {{0, 1}};
+    const auto exact = kg::PlaceActivations(nodes, *plan, inputs, 256, kept);
+    ASSERT_TRUE(exact);
+    constexpr std::uint64_t bound = 3 * 4096;
+    auto measured = kg::MeasureActivations(nodes, *plan, inputs, 256, kept, bound);
+    ASSERT_TRUE(measured);
+    EXPECT_TRUE(measured->measurement_bound);
+    EXPECT_TRUE(measured->offsets.empty());
+    EXPECT_EQ(measured->extent, bound);
+    EXPECT_LE(exact->extent, measured->extent);
+    measured = kg::MeasureActivations(nodes, *plan, inputs, 256, kept, bound - 1);
+    ASSERT_TRUE(measured);
+    EXPECT_FALSE(measured->measurement_bound);
+    EXPECT_EQ(measured->extent, exact->extent);
+    EXPECT_EQ(measured->offsets, exact->offsets);
+    EXPECT_FALSE(exact->measurement_bound);
+  }
+  EXPECT_FALSE(kg::MeasureActivations(nodes, {}, inputs, 256, kept, UINT64_MAX));
+  EXPECT_FALSE(kg::MeasureActivations(nodes, *plan, inputs, 3, kept, UINT64_MAX));
+  const std::array<ggml_tensor*, 1> computed_input{a};
+  EXPECT_FALSE(kg::MeasureActivations(nodes, *plan, computed_input, 256, kept, UINT64_MAX));
+}
+
+TEST(ActivationMeasurement, RefusesRoundingAndSummedStorageOverflowInBothPolicies) {
+  auto arena = kg::TensorArena::Create(2);
+  ASSERT_TRUE(arena);
+  auto* a = ggml_new_tensor_1d(arena->context(), GGML_TYPE_F32, 1);
+  auto* b = ggml_new_tensor_1d(arena->context(), GGML_TYPE_F32, 1);
+  a->ne[1] = 3;
+  a->nb[1] = (std::uint64_t{1} << 63U);  // raw ggml_nbytes wraps to four
+  const std::array<ggml_tensor*, 1> one{a};
+  EXPECT_FALSE(kg::MeasureActivations({}, {}, one, 256, {}, 256));
+  EXPECT_FALSE(kg::PlaceActivations({}, {}, one, 256));
+  a->nb[1] = (UINT64_MAX - 4) / 2;  // valid span UINT64_MAX-1; rounding overflows
+  EXPECT_FALSE(kg::MeasureActivations({}, {}, one, 256, {}, UINT64_MAX));
+  EXPECT_FALSE(kg::PlaceActivations({}, {}, one, 256));
+  a->ne[1] = b->ne[1] = 2;
+  a->nb[1] = b->nb[1] = (std::uint64_t{1} << 63U) - 4;
+  const std::array<ggml_tensor*, 2> two{a, b};
+  EXPECT_FALSE(kg::MeasureActivations({}, {}, two, 256, {}, UINT64_MAX));
+  EXPECT_FALSE(kg::PlaceActivations({}, {}, two, 256));
+}
+
+TEST(ActivationMeasurement, BoundsActualNoncanonicalBlockedStorage) {
+  auto arena = kg::TensorArena::Create(1);
+  ASSERT_TRUE(arena);
+  auto* input = ggml_new_tensor_1d(arena->context(), GGML_TYPE_Q4_1, 64);
+  input->nb[0] = 40;  // two blocks, twice the canonical 20-byte block storage
+  const std::array<ggml_tensor*, 1> inputs{input};
+  ASSERT_EQ(ggml_nbytes(input), 80U);
+  auto exact = kg::PlaceActivations({}, {}, inputs, 16);
+  ASSERT_TRUE(exact);
+  EXPECT_EQ(exact->extent, 80U);
+  auto measured = kg::MeasureActivations({}, {}, inputs, 16, {}, 80);
+  ASSERT_TRUE(measured);
+  EXPECT_TRUE(measured->measurement_bound);
+  EXPECT_EQ(measured->extent, exact->extent);
+  measured = kg::MeasureActivations({}, {}, inputs, 16, {}, 79);
+  ASSERT_TRUE(measured);
+  EXPECT_FALSE(measured->measurement_bound);
+  EXPECT_EQ(measured->extent, exact->extent);
 }
 
 TEST(Qwen2GraphTest, PlacesActivationsInTheLimitA) {

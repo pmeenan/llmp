@@ -1,0 +1,1847 @@
+{
+  "source5_sha256": "c53707beea479d6bb59b2ea8369194980a36669744bb7471faf3ed1b3c9ae8c7",
+  "task_entry": {
+    "base": "bf24f83",
+    "checked_at": "2026-10-08T12:28:56Z",
+    "upstream": "https://github.com/ashhart/TensorFold.git",
+    "main": "f8fe17d24629aedabf90bbf78279dd776e6d62e7",
+    "python-0.6": "ed78d6fc204d89d90b045bf033d6551e7714f3a1",
+    "result": "git ls-remote rc0; unchanged"
+  },
+  "inputs": {
+    "source_path_on_B": "/home/pmeenan/.local/share/jitllm/gemma-release-c2-26/inputs.i32",
+    "source_bytes": 49152,
+    "source_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
+    "source_layout": "12 owner-major1024-token authenticated literal histories",
+    "inputs": [
+      {
+        "file": "input0.i32",
+        "sha256": "622251ed82cd99c4bdd6add8642309986c646da7f2b7c10472c0b8feb2ee59de",
+        "count": 291,
+        "prefix": 256,
+        "seed_rows": 3,
+        "steps": 32,
+        "source_history": 0,
+        "source_byte_offset": 0,
+        "source_bytes": 1164
+      },
+      {
+        "file": "input1.i32",
+        "sha256": "0e9eefbac4c2199196dc8934a5fcd7ae304bfda13d4f353591193edca43998dc",
+        "count": 803,
+        "prefix": 768,
+        "seed_rows": 3,
+        "steps": 32,
+        "source_history": 1,
+        "source_byte_offset": 4096,
+        "source_bytes": 3212
+      }
+    ]
+  },
+  "factors": {
+    "26": {
+      "runs_sha256": "0cac7f83927ccbc7abcf8389ba3a71e24de2a342f91f0614b90a9081f4cc4966",
+      "verification": {
+        "runs_sha256": "0cac7f83927ccbc7abcf8389ba3a71e24de2a342f91f0614b90a9081f4cc4966",
+        "finite_complete_head_payloads": 10,
+        "processes_returned0": 6,
+        "means": {
+          "prefill_seconds": {
+            "off": 0.342561,
+            "on": 0.3411695,
+            "change_percent": -0.4062050262580996,
+            "off_movement_percent": -0.5467248908297084,
+            "off_range": [
+              0.3435,
+              0.341622
+            ],
+            "on_range": [
+              0.340699,
+              0.34164
+            ]
+          },
+          "decode_seconds": {
+            "off": 0.7528790000000001,
+            "on": 0.7505425,
+            "change_percent": -0.3103420337132623,
+            "off_movement_percent": 0.0188627113420603,
+            "off_range": [
+              0.752808,
+              0.75295
+            ],
+            "on_range": [
+              0.750847,
+              0.750238
+            ]
+          },
+          "paid_seconds": {
+            "off": 1.09544,
+            "on": 1.091712,
+            "change_percent": -0.34031987146716514,
+            "off_movement_percent": -0.15834966086174518,
+            "off_range": [
+              1.096308,
+              1.0945719999999999
+            ],
+            "on_range": [
+              1.0915460000000001,
+              1.091878
+            ]
+          }
+        },
+        "setup": {
+          "own-off": 0.332088,
+          "own-on": 1.39678,
+          "off1": 0.312433,
+          "on1": 1.41366,
+          "on2": 1.39729,
+          "off2": 0.312
+        },
+        "budget_on_minus_off": {
+          "fixed": 0,
+          "weights": 0,
+          "state_capacity": 0,
+          "activations": 0,
+          "scratch": 0,
+          "host_input": 0,
+          "plan_floor": 52800,
+          "total": 0
+        }
+      },
+      "installed_final": {
+        "state": "done",
+        "rc": 0,
+        "signal": null,
+        "end": 1791464153.604,
+        "supervisor_pid": 3178920
+      },
+      "arms": {
+        "own-off": {
+          "mode": "own",
+          "dense_shared_q8": false,
+          "returncode": 0,
+          "values": {
+            "mode": "own",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "26",
+            "policy": "bounded",
+            "actual_chunk": "1024",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "1.11382",
+            "decode_seconds": "0.783372",
+            "eager": "12",
+            "captured": "8",
+            "replayed": "64",
+            "paid_eager": "3",
+            "paid_captured": "1",
+            "paid_replayed": "30",
+            "selected_owner": "30",
+            "selected_bounded_owner": "30",
+            "dense_shared_q8": "0",
+            "prepared_mmvq_products": "0",
+            "q8_preparations": "0",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "60",
+            "selected_norm_add": "90",
+            "gpu_tokens": "70",
+            "paid_seconds": "1.897192"
+          },
+          "budget": {
+            "fixed": "580912128",
+            "weights": "17047748608",
+            "state_capacity": "1006632960",
+            "activations": "478150656",
+            "scratch": "37748736",
+            "host_input": "2097152",
+            "plan_floor": "2993648",
+            "total": "21655192576"
+          },
+          "setup_seconds": 0.332088,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "93656628c12ea0b3dea82d30bd904a6bc0501899169c869f84f080fe7f398404",
+              "final.f32": "1849e3dda910ae58750955db041b4eb2685f2b8965e33348f1f451f8cd3d5a8d",
+              "predecode.f32": "80506050fbe33ec4c417ab470466b1286a6e49fc7d74ca922a8439a9bf4330e4",
+              "heads.f32": "4fe36d925b911fb29a5edbf6a44b9a4eb15e760776909c2de919277e604d5ac4",
+              "history0.i32": "622251ed82cd99c4bdd6add8642309986c646da7f2b7c10472c0b8feb2ee59de",
+              "history1.i32": "0e9eefbac4c2199196dc8934a5fcd7ae304bfda13d4f353591193edca43998dc",
+              "state.json": "601eb88f234190bdd11dd0bd52b16341c2a3494318758ab6f5e8150d595f1d6e",
+              "predecode-state.json": "0ac7c1fd4670395664b0f955312691c8cd80be7af086f8c9536f4c860cabc353"
+            },
+            "states": [
+              "final_state0=504d06d518e0bb338fac475682a3a9cc7423570e14f3876d8bc368660df3334f",
+              "final_state1=924cb047328cbdfa7dc5c445745bbcc8e046e526b3b7bd41d212402c5d8a4531"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        },
+        "own-on": {
+          "mode": "own",
+          "dense_shared_q8": true,
+          "returncode": 0,
+          "values": {
+            "mode": "own",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "26",
+            "policy": "bounded",
+            "actual_chunk": "1024",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "1.11732",
+            "decode_seconds": "0.784042",
+            "eager": "12",
+            "captured": "8",
+            "replayed": "64",
+            "paid_eager": "3",
+            "paid_captured": "1",
+            "paid_replayed": "30",
+            "selected_owner": "30",
+            "selected_bounded_owner": "30",
+            "dense_shared_q8": "1",
+            "prepared_mmvq_products": "145",
+            "q8_preparations": "60",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "60",
+            "selected_norm_add": "90",
+            "gpu_tokens": "70",
+            "paid_seconds": "1.9013620000000002"
+          },
+          "budget": {
+            "fixed": "580912128",
+            "weights": "17047748608",
+            "state_capacity": "1006632960",
+            "activations": "478150656",
+            "scratch": "37748736",
+            "host_input": "2097152",
+            "plan_floor": "3046448",
+            "total": "21655192576"
+          },
+          "setup_seconds": 1.39678,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "93656628c12ea0b3dea82d30bd904a6bc0501899169c869f84f080fe7f398404",
+              "final.f32": "1849e3dda910ae58750955db041b4eb2685f2b8965e33348f1f451f8cd3d5a8d",
+              "predecode.f32": "80506050fbe33ec4c417ab470466b1286a6e49fc7d74ca922a8439a9bf4330e4",
+              "heads.f32": "4fe36d925b911fb29a5edbf6a44b9a4eb15e760776909c2de919277e604d5ac4",
+              "history0.i32": "622251ed82cd99c4bdd6add8642309986c646da7f2b7c10472c0b8feb2ee59de",
+              "history1.i32": "0e9eefbac4c2199196dc8934a5fcd7ae304bfda13d4f353591193edca43998dc",
+              "state.json": "601eb88f234190bdd11dd0bd52b16341c2a3494318758ab6f5e8150d595f1d6e",
+              "predecode-state.json": "0ac7c1fd4670395664b0f955312691c8cd80be7af086f8c9536f4c860cabc353"
+            },
+            "states": [
+              "final_state0=504d06d518e0bb338fac475682a3a9cc7423570e14f3876d8bc368660df3334f",
+              "final_state1=924cb047328cbdfa7dc5c445745bbcc8e046e526b3b7bd41d212402c5d8a4531"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        },
+        "off1": {
+          "mode": "cycle",
+          "dense_shared_q8": false,
+          "returncode": 0,
+          "values": {
+            "mode": "cycle",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "26",
+            "policy": "bounded",
+            "actual_chunk": "1024",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "0.3435",
+            "decode_seconds": "0.752808",
+            "eager": "6",
+            "captured": "6",
+            "replayed": "44",
+            "paid_eager": "0",
+            "paid_captured": "2",
+            "paid_replayed": "32",
+            "selected_owner": "30",
+            "selected_bounded_owner": "30",
+            "dense_shared_q8": "0",
+            "prepared_mmvq_products": "0",
+            "q8_preparations": "0",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "60",
+            "selected_norm_add": "90",
+            "gpu_tokens": "88",
+            "paid_seconds": "1.096308"
+          },
+          "budget": {
+            "fixed": "580912128",
+            "weights": "17047748608",
+            "state_capacity": "1006632960",
+            "activations": "478150656",
+            "scratch": "37748736",
+            "host_input": "2097152",
+            "plan_floor": "2993648",
+            "total": "21655192576"
+          },
+          "setup_seconds": 0.312433,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "b722d5861d3fc0646bb79749a0e1d98cc4ddff0a97dd134591a864d9ed8b9b7e",
+              "final.f32": "a61cb0b35567d70d0ad5892d0f06f83d0e9a409b5d044004ab01ef34f519c24b",
+              "history0.i32": "0ec1a622c0ab8c11782f20955b612d14a5eb2ac0930eda25c686b81c985cae66",
+              "history1.i32": "79f63c963940f3c0d0b7e059a1bad5c4e575c65240d73fde7fb4c00033cce5be"
+            },
+            "states": [
+              "final_state0=7fa976b1a814ffc21a03cfd031988018e421a76f110243e4952c899e195b0118",
+              "final_state1=1d5b48b2e311a6684919d4f14d6b55c346f1abf03026b594e198f164639ac8cf"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        },
+        "on1": {
+          "mode": "cycle",
+          "dense_shared_q8": true,
+          "returncode": 0,
+          "values": {
+            "mode": "cycle",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "26",
+            "policy": "bounded",
+            "actual_chunk": "1024",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "0.340699",
+            "decode_seconds": "0.750847",
+            "eager": "6",
+            "captured": "6",
+            "replayed": "44",
+            "paid_eager": "0",
+            "paid_captured": "2",
+            "paid_replayed": "32",
+            "selected_owner": "30",
+            "selected_bounded_owner": "30",
+            "dense_shared_q8": "1",
+            "prepared_mmvq_products": "145",
+            "q8_preparations": "60",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "60",
+            "selected_norm_add": "90",
+            "gpu_tokens": "88",
+            "paid_seconds": "1.0915460000000001"
+          },
+          "budget": {
+            "fixed": "580912128",
+            "weights": "17047748608",
+            "state_capacity": "1006632960",
+            "activations": "478150656",
+            "scratch": "37748736",
+            "host_input": "2097152",
+            "plan_floor": "3046448",
+            "total": "21655192576"
+          },
+          "setup_seconds": 1.41366,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "b722d5861d3fc0646bb79749a0e1d98cc4ddff0a97dd134591a864d9ed8b9b7e",
+              "final.f32": "a61cb0b35567d70d0ad5892d0f06f83d0e9a409b5d044004ab01ef34f519c24b",
+              "history0.i32": "0ec1a622c0ab8c11782f20955b612d14a5eb2ac0930eda25c686b81c985cae66",
+              "history1.i32": "79f63c963940f3c0d0b7e059a1bad5c4e575c65240d73fde7fb4c00033cce5be"
+            },
+            "states": [
+              "final_state0=7fa976b1a814ffc21a03cfd031988018e421a76f110243e4952c899e195b0118",
+              "final_state1=1d5b48b2e311a6684919d4f14d6b55c346f1abf03026b594e198f164639ac8cf"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        },
+        "on2": {
+          "mode": "cycle",
+          "dense_shared_q8": true,
+          "returncode": 0,
+          "values": {
+            "mode": "cycle",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "26",
+            "policy": "bounded",
+            "actual_chunk": "1024",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "0.34164",
+            "decode_seconds": "0.750238",
+            "eager": "6",
+            "captured": "6",
+            "replayed": "44",
+            "paid_eager": "0",
+            "paid_captured": "2",
+            "paid_replayed": "32",
+            "selected_owner": "30",
+            "selected_bounded_owner": "30",
+            "dense_shared_q8": "1",
+            "prepared_mmvq_products": "145",
+            "q8_preparations": "60",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "60",
+            "selected_norm_add": "90",
+            "gpu_tokens": "88",
+            "paid_seconds": "1.091878"
+          },
+          "budget": {
+            "fixed": "580912128",
+            "weights": "17047748608",
+            "state_capacity": "1006632960",
+            "activations": "478150656",
+            "scratch": "37748736",
+            "host_input": "2097152",
+            "plan_floor": "3046448",
+            "total": "21655192576"
+          },
+          "setup_seconds": 1.39729,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "b722d5861d3fc0646bb79749a0e1d98cc4ddff0a97dd134591a864d9ed8b9b7e",
+              "final.f32": "a61cb0b35567d70d0ad5892d0f06f83d0e9a409b5d044004ab01ef34f519c24b",
+              "history0.i32": "0ec1a622c0ab8c11782f20955b612d14a5eb2ac0930eda25c686b81c985cae66",
+              "history1.i32": "79f63c963940f3c0d0b7e059a1bad5c4e575c65240d73fde7fb4c00033cce5be"
+            },
+            "states": [
+              "final_state0=7fa976b1a814ffc21a03cfd031988018e421a76f110243e4952c899e195b0118",
+              "final_state1=1d5b48b2e311a6684919d4f14d6b55c346f1abf03026b594e198f164639ac8cf"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        },
+        "off2": {
+          "mode": "cycle",
+          "dense_shared_q8": false,
+          "returncode": 0,
+          "values": {
+            "mode": "cycle",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "26",
+            "policy": "bounded",
+            "actual_chunk": "1024",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "0.341622",
+            "decode_seconds": "0.75295",
+            "eager": "6",
+            "captured": "6",
+            "replayed": "44",
+            "paid_eager": "0",
+            "paid_captured": "2",
+            "paid_replayed": "32",
+            "selected_owner": "30",
+            "selected_bounded_owner": "30",
+            "dense_shared_q8": "0",
+            "prepared_mmvq_products": "0",
+            "q8_preparations": "0",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "60",
+            "selected_norm_add": "90",
+            "gpu_tokens": "88",
+            "paid_seconds": "1.0945719999999999"
+          },
+          "budget": {
+            "fixed": "580912128",
+            "weights": "17047748608",
+            "state_capacity": "1006632960",
+            "activations": "478150656",
+            "scratch": "37748736",
+            "host_input": "2097152",
+            "plan_floor": "2993648",
+            "total": "21655192576"
+          },
+          "setup_seconds": 0.312,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "b722d5861d3fc0646bb79749a0e1d98cc4ddff0a97dd134591a864d9ed8b9b7e",
+              "final.f32": "a61cb0b35567d70d0ad5892d0f06f83d0e9a409b5d044004ab01ef34f519c24b",
+              "history0.i32": "0ec1a622c0ab8c11782f20955b612d14a5eb2ac0930eda25c686b81c985cae66",
+              "history1.i32": "79f63c963940f3c0d0b7e059a1bad5c4e575c65240d73fde7fb4c00033cce5be"
+            },
+            "states": [
+              "final_state0=7fa976b1a814ffc21a03cfd031988018e421a76f110243e4952c899e195b0118",
+              "final_state1=1d5b48b2e311a6684919d4f14d6b55c346f1abf03026b594e198f164639ac8cf"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        }
+      },
+      "binding": {
+        "source_manifest_sha256": "8f8ec1d63b5dbac2d5e899f103bf7b88f4c409dd586add215d5867830e3e2399",
+        "qualification_sha256": "9819cd90487328a0ab91cfbb562d5af2edfbecf63eb3bb4823b4546c3b3b585a",
+        "launcher_sha256": "4fc4c39b11ea97e5f27e42efe1994ce1f46f6089f0b849f1002f5f6b9ab2a0d5",
+        "files": {
+          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "f2815363ccc7236a327c5e0ae4d93212c457956973db3416bd6b09f08171dac1",
+          "build/spark-native/tests/unit/gemma4_graph_test": "499768b32efb9f2e2d990e52fa9a0fa53e624381f2d7d5553248d6b97dc3c452",
+          "build/spark-native/tests/unit/gemma4_plan_test": "4fa20d1542bfc6c300d83070258fd12f3c6ada4fd90c96486748d1a29ad07b0c",
+          "build/spark-native/src/runtime/jitllm-runtime": "9faaa32df8b91ebc61e5c82250b12c30b72cb15b7b63583a533cfbbfc6aa3585",
+          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+        },
+        "ldd": "\tlinux-vdso.so.1 (0x0000ffd166e19000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000ffd15db70000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000ffd15dac0000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000ffd159600000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000ffd12c200000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ffd159440000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000ffd166dd0000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000ffd12c1d0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000ffd12c1a0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ffd12c170000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffd12c130000)\n",
+        "cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        },
+        "artifact": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+        "inputs": {
+          "input0.i32": "622251ed82cd99c4bdd6add8642309986c646da7f2b7c10472c0b8feb2ee59de",
+          "input1.i32": "0e9eefbac4c2199196dc8934a5fcd7ae304bfda13d4f353591193edca43998dc"
+        }
+      }
+    },
+    "31": {
+      "runs_sha256": "859955fbd93cabe2830fa9ab2b326cdb7deda372027b83f8172fe67ffb916293",
+      "verification": {
+        "runs_sha256": "859955fbd93cabe2830fa9ab2b326cdb7deda372027b83f8172fe67ffb916293",
+        "finite_complete_head_payloads": 10,
+        "processes_returned0": 6,
+        "means": {
+          "prefill_seconds": {
+            "off": 1.3014100000000002,
+            "on": 1.30202,
+            "change_percent": 0.046872238571982194,
+            "off_movement_percent": -0.133611819270818,
+            "off_range": [
+              1.30228,
+              1.30054
+            ],
+            "on_range": [
+              1.30483,
+              1.29921
+            ]
+          },
+          "decode_seconds": {
+            "off": 3.32993,
+            "on": 3.3270299999999997,
+            "change_percent": -0.087088917785072,
+            "off_movement_percent": -0.048637840239706964,
+            "off_range": [
+              3.33074,
+              3.32912
+            ],
+            "on_range": [
+              3.32515,
+              3.32891
+            ]
+          },
+          "paid_seconds": {
+            "off": 4.63134,
+            "on": 4.629049999999999,
+            "change_percent": -0.049445732768493844,
+            "off_movement_percent": -0.07252289003716328,
+            "off_range": [
+              4.63302,
+              4.62966
+            ],
+            "on_range": [
+              4.62998,
+              4.62812
+            ]
+          }
+        },
+        "setup": {
+          "own-off": 0.385836,
+          "own-on": 1.65675,
+          "off1": 0.370212,
+          "on1": 1.65565,
+          "on2": 1.6567,
+          "off2": 0.369269
+        },
+        "budget_on_minus_off": {
+          "fixed": 0,
+          "weights": 0,
+          "state_capacity": 0,
+          "activations": 0,
+          "scratch": 0,
+          "host_input": 0,
+          "plan_floor": 105600,
+          "total": 0
+        }
+      },
+      "installed_final": {
+        "state": "done",
+        "rc": 0,
+        "signal": null,
+        "end": 1791467952.009,
+        "supervisor_pid": 3217568
+      },
+      "arms": {
+        "own-off": {
+          "mode": "own",
+          "dense_shared_q8": false,
+          "returncode": 0,
+          "values": {
+            "mode": "own",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "31",
+            "policy": "bounded",
+            "actual_chunk": "256",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "4.05084",
+            "decode_seconds": "3.37594",
+            "eager": "14",
+            "captured": "10",
+            "replayed": "64",
+            "paid_eager": "5",
+            "paid_captured": "1",
+            "paid_replayed": "30",
+            "selected_owner": "60",
+            "selected_bounded_owner": "60",
+            "dense_shared_q8": "0",
+            "prepared_mmvq_products": "0",
+            "q8_preparations": "0",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "120",
+            "selected_norm_add": "120",
+            "gpu_tokens": "70",
+            "paid_seconds": "7.42678"
+          },
+          "budget": {
+            "fixed": "182453248",
+            "weights": "18895339520",
+            "state_capacity": "2768240640",
+            "activations": "102760448",
+            "scratch": "14680064",
+            "host_input": "2097152",
+            "plan_floor": "3429552",
+            "total": "30150755328"
+          },
+          "setup_seconds": 0.385836,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "74d10a9fc5173970d9c73bb284f3ca40a7057ae954b2551af7f4797f0d18cefd",
+              "final.f32": "75e163963915e7849e06d9992628c6a1c8ddf6b677b8f6c0df574d222301d6c9",
+              "predecode.f32": "92e4c444aa76dc9d4b492c73327a1bf3b8cb462595bd59390d919c4dea231bb9",
+              "heads.f32": "c62a0b95cf4f6105d66705a7d27e109bdca819cffca39bcdc9d76c6273097002",
+              "history0.i32": "622251ed82cd99c4bdd6add8642309986c646da7f2b7c10472c0b8feb2ee59de",
+              "history1.i32": "0e9eefbac4c2199196dc8934a5fcd7ae304bfda13d4f353591193edca43998dc",
+              "state.json": "7652e280d37c05af0491b1f496506ef9eaeec56ea7864e94e0a74d2763c043b3",
+              "predecode-state.json": "90964439481508bf8205de1db5c7df47b9fd96e941a4c57f7652087d6cc8a51a"
+            },
+            "states": [
+              "final_state0=def49a1d91591efbe5faaa62d22ec78ffed9e5588d66928c66dfaba3c8fd6e4e",
+              "final_state1=92ab46e7d7e970498a7739d5f29a6f7763cd798c9c027368c38bd0e12f32ee46"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        },
+        "own-on": {
+          "mode": "own",
+          "dense_shared_q8": true,
+          "returncode": 0,
+          "values": {
+            "mode": "own",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "31",
+            "policy": "bounded",
+            "actual_chunk": "256",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "4.04204",
+            "decode_seconds": "3.41933",
+            "eager": "14",
+            "captured": "10",
+            "replayed": "64",
+            "paid_eager": "5",
+            "paid_captured": "1",
+            "paid_replayed": "30",
+            "selected_owner": "60",
+            "selected_bounded_owner": "60",
+            "dense_shared_q8": "1",
+            "prepared_mmvq_products": "290",
+            "q8_preparations": "120",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "120",
+            "selected_norm_add": "120",
+            "gpu_tokens": "70",
+            "paid_seconds": "7.4613700000000005"
+          },
+          "budget": {
+            "fixed": "182453248",
+            "weights": "18895339520",
+            "state_capacity": "2768240640",
+            "activations": "102760448",
+            "scratch": "14680064",
+            "host_input": "2097152",
+            "plan_floor": "3535152",
+            "total": "30150755328"
+          },
+          "setup_seconds": 1.65675,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "74d10a9fc5173970d9c73bb284f3ca40a7057ae954b2551af7f4797f0d18cefd",
+              "final.f32": "75e163963915e7849e06d9992628c6a1c8ddf6b677b8f6c0df574d222301d6c9",
+              "predecode.f32": "92e4c444aa76dc9d4b492c73327a1bf3b8cb462595bd59390d919c4dea231bb9",
+              "heads.f32": "c62a0b95cf4f6105d66705a7d27e109bdca819cffca39bcdc9d76c6273097002",
+              "history0.i32": "622251ed82cd99c4bdd6add8642309986c646da7f2b7c10472c0b8feb2ee59de",
+              "history1.i32": "0e9eefbac4c2199196dc8934a5fcd7ae304bfda13d4f353591193edca43998dc",
+              "state.json": "7652e280d37c05af0491b1f496506ef9eaeec56ea7864e94e0a74d2763c043b3",
+              "predecode-state.json": "90964439481508bf8205de1db5c7df47b9fd96e941a4c57f7652087d6cc8a51a"
+            },
+            "states": [
+              "final_state0=def49a1d91591efbe5faaa62d22ec78ffed9e5588d66928c66dfaba3c8fd6e4e",
+              "final_state1=92ab46e7d7e970498a7739d5f29a6f7763cd798c9c027368c38bd0e12f32ee46"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        },
+        "off1": {
+          "mode": "cycle",
+          "dense_shared_q8": false,
+          "returncode": 0,
+          "values": {
+            "mode": "cycle",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "31",
+            "policy": "bounded",
+            "actual_chunk": "256",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "1.30228",
+            "decode_seconds": "3.33074",
+            "eager": "8",
+            "captured": "8",
+            "replayed": "44",
+            "paid_eager": "0",
+            "paid_captured": "4",
+            "paid_replayed": "32",
+            "selected_owner": "60",
+            "selected_bounded_owner": "60",
+            "dense_shared_q8": "0",
+            "prepared_mmvq_products": "0",
+            "q8_preparations": "0",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "120",
+            "selected_norm_add": "120",
+            "gpu_tokens": "88",
+            "paid_seconds": "4.63302"
+          },
+          "budget": {
+            "fixed": "182453248",
+            "weights": "18895339520",
+            "state_capacity": "2768240640",
+            "activations": "102760448",
+            "scratch": "14680064",
+            "host_input": "2097152",
+            "plan_floor": "3429552",
+            "total": "30150755328"
+          },
+          "setup_seconds": 0.370212,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "b4bf39c1e4543c02ce7019e8428af31341646e1d366bb111711e4ed817554239",
+              "final.f32": "1af510b193ace83ce55b0cc9863af1b0a988fe5504c107f14d27b961595f90d7",
+              "history0.i32": "f8deed9d8f46c0590625e1b7e5493e466dd584daab3ed962c4a37d47a79fc407",
+              "history1.i32": "41a2f5593b33cbe6956bfbc3dde89e9c40a18758dc42806cd90ad4e77d52e68e"
+            },
+            "states": [
+              "final_state0=b2247092702f5e8d58346ba6e113ff3c65669f057029e4703178387346b18b71",
+              "final_state1=38383c6d256c203779444df99f53d78cb7b719617efd59f8a7acc5ad794c8e32"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        },
+        "on1": {
+          "mode": "cycle",
+          "dense_shared_q8": true,
+          "returncode": 0,
+          "values": {
+            "mode": "cycle",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "31",
+            "policy": "bounded",
+            "actual_chunk": "256",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "1.30483",
+            "decode_seconds": "3.32515",
+            "eager": "8",
+            "captured": "8",
+            "replayed": "44",
+            "paid_eager": "0",
+            "paid_captured": "4",
+            "paid_replayed": "32",
+            "selected_owner": "60",
+            "selected_bounded_owner": "60",
+            "dense_shared_q8": "1",
+            "prepared_mmvq_products": "290",
+            "q8_preparations": "120",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "120",
+            "selected_norm_add": "120",
+            "gpu_tokens": "88",
+            "paid_seconds": "4.62998"
+          },
+          "budget": {
+            "fixed": "182453248",
+            "weights": "18895339520",
+            "state_capacity": "2768240640",
+            "activations": "102760448",
+            "scratch": "14680064",
+            "host_input": "2097152",
+            "plan_floor": "3535152",
+            "total": "30150755328"
+          },
+          "setup_seconds": 1.65565,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "b4bf39c1e4543c02ce7019e8428af31341646e1d366bb111711e4ed817554239",
+              "final.f32": "1af510b193ace83ce55b0cc9863af1b0a988fe5504c107f14d27b961595f90d7",
+              "history0.i32": "f8deed9d8f46c0590625e1b7e5493e466dd584daab3ed962c4a37d47a79fc407",
+              "history1.i32": "41a2f5593b33cbe6956bfbc3dde89e9c40a18758dc42806cd90ad4e77d52e68e"
+            },
+            "states": [
+              "final_state0=b2247092702f5e8d58346ba6e113ff3c65669f057029e4703178387346b18b71",
+              "final_state1=38383c6d256c203779444df99f53d78cb7b719617efd59f8a7acc5ad794c8e32"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        },
+        "on2": {
+          "mode": "cycle",
+          "dense_shared_q8": true,
+          "returncode": 0,
+          "values": {
+            "mode": "cycle",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "31",
+            "policy": "bounded",
+            "actual_chunk": "256",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "1.29921",
+            "decode_seconds": "3.32891",
+            "eager": "8",
+            "captured": "8",
+            "replayed": "44",
+            "paid_eager": "0",
+            "paid_captured": "4",
+            "paid_replayed": "32",
+            "selected_owner": "60",
+            "selected_bounded_owner": "60",
+            "dense_shared_q8": "1",
+            "prepared_mmvq_products": "290",
+            "q8_preparations": "120",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "120",
+            "selected_norm_add": "120",
+            "gpu_tokens": "88",
+            "paid_seconds": "4.62812"
+          },
+          "budget": {
+            "fixed": "182453248",
+            "weights": "18895339520",
+            "state_capacity": "2768240640",
+            "activations": "102760448",
+            "scratch": "14680064",
+            "host_input": "2097152",
+            "plan_floor": "3535152",
+            "total": "30150755328"
+          },
+          "setup_seconds": 1.6567,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "b4bf39c1e4543c02ce7019e8428af31341646e1d366bb111711e4ed817554239",
+              "final.f32": "1af510b193ace83ce55b0cc9863af1b0a988fe5504c107f14d27b961595f90d7",
+              "history0.i32": "f8deed9d8f46c0590625e1b7e5493e466dd584daab3ed962c4a37d47a79fc407",
+              "history1.i32": "41a2f5593b33cbe6956bfbc3dde89e9c40a18758dc42806cd90ad4e77d52e68e"
+            },
+            "states": [
+              "final_state0=b2247092702f5e8d58346ba6e113ff3c65669f057029e4703178387346b18b71",
+              "final_state1=38383c6d256c203779444df99f53d78cb7b719617efd59f8a7acc5ad794c8e32"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        },
+        "off2": {
+          "mode": "cycle",
+          "dense_shared_q8": false,
+          "returncode": 0,
+          "values": {
+            "mode": "cycle",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "31",
+            "policy": "bounded",
+            "actual_chunk": "256",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "1.30054",
+            "decode_seconds": "3.32912",
+            "eager": "8",
+            "captured": "8",
+            "replayed": "44",
+            "paid_eager": "0",
+            "paid_captured": "4",
+            "paid_replayed": "32",
+            "selected_owner": "60",
+            "selected_bounded_owner": "60",
+            "dense_shared_q8": "0",
+            "prepared_mmvq_products": "0",
+            "q8_preparations": "0",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "120",
+            "selected_norm_add": "120",
+            "gpu_tokens": "88",
+            "paid_seconds": "4.62966"
+          },
+          "budget": {
+            "fixed": "182453248",
+            "weights": "18895339520",
+            "state_capacity": "2768240640",
+            "activations": "102760448",
+            "scratch": "14680064",
+            "host_input": "2097152",
+            "plan_floor": "3429552",
+            "total": "30150755328"
+          },
+          "setup_seconds": 0.369269,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "b4bf39c1e4543c02ce7019e8428af31341646e1d366bb111711e4ed817554239",
+              "final.f32": "1af510b193ace83ce55b0cc9863af1b0a988fe5504c107f14d27b961595f90d7",
+              "history0.i32": "f8deed9d8f46c0590625e1b7e5493e466dd584daab3ed962c4a37d47a79fc407",
+              "history1.i32": "41a2f5593b33cbe6956bfbc3dde89e9c40a18758dc42806cd90ad4e77d52e68e"
+            },
+            "states": [
+              "final_state0=b2247092702f5e8d58346ba6e113ff3c65669f057029e4703178387346b18b71",
+              "final_state1=38383c6d256c203779444df99f53d78cb7b719617efd59f8a7acc5ad794c8e32"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          }
+        }
+      },
+      "binding": {
+        "source_manifest_sha256": "c53707beea479d6bb59b2ea8369194980a36669744bb7471faf3ed1b3c9ae8c7",
+        "qualification_sha256": "3dfcf132b00526411417dfe80c0861260af941e4435d71320c5540276f973ab0",
+        "launcher_sha256": "9fde313cfebed7d13e429b7ce4514e7ab01840fb7fadb7414e71130b7d395d34",
+        "files": {
+          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
+          "build/spark-native/src/runtime/jitllm-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
+          "build/spark-native/tests/unit/ggml_graph_test": "e5d95f7808262dad568dccdcfff0a6e172d2ba29867451eee333792168735683",
+          "build/spark-native/tests/unit/gemma2_plan_test": "d52c187139a701bf55b4c52db109ea87acff0c555bdf824b2243b9ff65151010",
+          "build/spark-native/tests/unit/gemma3_plan_test": "03a7dc00b39c8fc00569cda9ee8a6db906d091e46224386e32bc6c60d001b481",
+          "build/spark-native/tests/unit/gemma4_plan_test": "57a95722f9b95c4a80370dd1d62af8814d688201c3bbe45cb67bfa8272332395",
+          "build/spark-native/tests/unit/gemma_measurement_gpu_test": "ef23bd4a254bc8360259c3a32b3e8f020612e20d587ade0d32c48df8d5820b7d",
+          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+        },
+        "ldd": "\tlinux-vdso.so.1 (0x0000e6983cc9c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000e698339f0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e69833940000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000e6982f400000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000e69802000000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e6982f240000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e6983cc60000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e69833910000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e698338e0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e698338b0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e69801fc0000)\n",
+        "cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        },
+        "artifact": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+        "inputs": {
+          "input0.i32": "622251ed82cd99c4bdd6add8642309986c646da7f2b7c10472c0b8feb2ee59de",
+          "input1.i32": "0e9eefbac4c2199196dc8934a5fcd7ae304bfda13d4f353591193edca43998dc"
+        },
+        "positive_funding_gates": {
+          "funding-oracle2/passed.json": "f93e1773b4956a0b4d82ba4e0a0b608c8f1a96d2609cd9e03aaf6b7f93ab6a2b",
+          "funding-own1/runs.json": "e83631385510c5cb9e4a7680f89aa542e6e4f275406b8ebf310926e7f2d0b122"
+        }
+      }
+    }
+  },
+  "funding": {
+    "oracle": {
+      "sha256": "f93e1773b4956a0b4d82ba4e0a0b608c8f1a96d2609cd9e03aaf6b7f93ab6a2b",
+      "xml_sha256": "5e1e42edbaddb8cf74448141c41a80925c3ed41bc78d99fc60074d36f620e9f2",
+      "summaries": [
+        {
+          "family": 2,
+          "size": 2,
+          "supplemental": 285,
+          "shortcuts": 193,
+          "fallbacks": 92,
+          "activation_max": 59854336
+        },
+        {
+          "family": 3,
+          "size": 3,
+          "supplemental": 285,
+          "shortcuts": 18,
+          "fallbacks": 267,
+          "activation_max": 36836608
+        },
+        {
+          "family": 4,
+          "size": 26,
+          "supplemental": 1264,
+          "shortcuts": 1264,
+          "fallbacks": 0,
+          "activation_max": 382953216
+        },
+        {
+          "family": 4,
+          "size": 31,
+          "supplemental": 1264,
+          "shortcuts": 288,
+          "fallbacks": 976,
+          "activation_max": 326264576
+        }
+      ]
+    },
+    "current26_own": {
+      "sha256": "e83631385510c5cb9e4a7680f89aa542e6e4f275406b8ebf310926e7f2d0b122",
+      "runs": {
+        "own-on": {
+          "command": [
+            "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/benchmarks/jitllm_gemma4_common_width_probe",
+            "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+            "/home/pmeenan/.local/share/jitllm/references/gemma4-original-q8/input0.i32",
+            "/home/pmeenan/.local/share/jitllm/references/gemma4-original-q8/input1.i32",
+            "/home/pmeenan/.local/share/jitllm/gemma4-original-q8-20261008/funding-own1/own-on",
+            "26",
+            "bounded",
+            "own",
+            "dense-shared-q8"
+          ],
+          "mode": "own",
+          "dense_shared_q8": true,
+          "returncode": 0,
+          "elapsed_seconds": 15.306231261929497,
+          "values": {
+            "mode": "own",
+            "slots": "2",
+            "context_per_slot": "4096",
+            "profile": "26",
+            "policy": "bounded",
+            "actual_chunk": "1024",
+            "independent_prefill": "1",
+            "prompt_rows0": "256",
+            "prompt_rows1": "768",
+            "untimed_rows_per_slot": "3",
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "prefill_seconds": "1.12868",
+            "decode_seconds": "0.783174",
+            "eager": "12",
+            "captured": "8",
+            "replayed": "64",
+            "paid_eager": "3",
+            "paid_captured": "1",
+            "paid_replayed": "30",
+            "selected_owner": "30",
+            "selected_bounded_owner": "30",
+            "dense_shared_q8": "1",
+            "prepared_mmvq_products": "145",
+            "q8_preparations": "60",
+            "selected_vecq": "0",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "60",
+            "selected_norm_add": "90",
+            "gpu_tokens": "70",
+            "paid_seconds": "1.911854"
+          },
+          "budget": {
+            "fixed": "580912128",
+            "weights": "17047748608",
+            "state_capacity": "1006632960",
+            "activations": "478150656",
+            "scratch": "37748736",
+            "host_input": "2097152",
+            "plan_floor": "3046448",
+            "total": "21655192576"
+          },
+          "setup_seconds": 1.0455,
+          "proof": {
+            "outputs": {
+              "chosen.i32": "93656628c12ea0b3dea82d30bd904a6bc0501899169c869f84f080fe7f398404",
+              "final.f32": "1849e3dda910ae58750955db041b4eb2685f2b8965e33348f1f451f8cd3d5a8d",
+              "predecode.f32": "80506050fbe33ec4c417ab470466b1286a6e49fc7d74ca922a8439a9bf4330e4",
+              "heads.f32": "4fe36d925b911fb29a5edbf6a44b9a4eb15e760776909c2de919277e604d5ac4",
+              "history0.i32": "622251ed82cd99c4bdd6add8642309986c646da7f2b7c10472c0b8feb2ee59de",
+              "history1.i32": "0e9eefbac4c2199196dc8934a5fcd7ae304bfda13d4f353591193edca43998dc",
+              "state.json": "601eb88f234190bdd11dd0bd52b16341c2a3494318758ab6f5e8150d595f1d6e",
+              "predecode-state.json": "0ac7c1fd4670395664b0f955312691c8cd80be7af086f8c9536f4c860cabc353"
+            },
+            "states": [
+              "final_state0=504d06d518e0bb338fac475682a3a9cc7423570e14f3876d8bc368660df3334f",
+              "final_state1=924cb047328cbdfa7dc5c445745bbcc8e046e526b3b7bd41d212402c5d8a4531"
+            ],
+            "past": [
+              "291",
+              "803"
+            ]
+          },
+          "work": {
+            "decode_steps": "32",
+            "departure_steps": "0",
+            "paid_generated_tokens": "64",
+            "past0": "291",
+            "past1": "803",
+            "paid_eager": "3",
+            "paid_captured": "1",
+            "paid_replayed": "30",
+            "gpu_tokens": "70",
+            "selected_owner": "30",
+            "selected_bounded_owner": "30",
+            "selected_norm_mul": "121",
+            "selected_norm_rope": "60",
+            "selected_norm_add": "90"
+          }
+        }
+      }
+    }
+  },
+  "qualification": {
+    "build1": {
+      "passed_sha256": "9819cd90487328a0ab91cfbb562d5af2edfbecf63eb3bb4823b4546c3b3b585a",
+      "receipt": {
+        "source_manifest_sha256": "8f8ec1d63b5dbac2d5e899f103bf7b88f4c409dd586add215d5867830e3e2399",
+        "launcher_sha256": "6b19c6c115260fba39ee9ed9ac8e64387cde0af7be114a75cfd065bf27c32b4b",
+        "files": {
+          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "f2815363ccc7236a327c5e0ae4d93212c457956973db3416bd6b09f08171dac1",
+          "build/spark-native/tests/unit/gemma4_graph_test": "499768b32efb9f2e2d990e52fa9a0fa53e624381f2d7d5553248d6b97dc3c452",
+          "build/spark-native/tests/unit/gemma4_plan_test": "4fa20d1542bfc6c300d83070258fd12f3c6ada4fd90c96486748d1a29ad07b0c",
+          "build/spark-native/src/runtime/jitllm-runtime": "9faaa32df8b91ebc61e5c82250b12c30b72cb15b7b63583a533cfbbfc6aa3585",
+          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+        },
+        "native_ldd": "\tlinux-vdso.so.1 (0x0000fd493b837000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000fd4932590000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000fd49324e0000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000fd492e000000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000fd4900c00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000fd492de40000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fd493b7f0000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000fd49324b0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000fd4900bd0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000fd4900ba0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000fd4900b60000)\n",
+        "native_cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        },
+        "tests": [
+          "Gemma4Graph.DecodePreparationSharesInputsAndKeepsQuantOneTokenArithmetic",
+          "Gemma4Graph.OriginalDenseSharingUsesTransientChoicesAndPreservesOtherConsumers",
+          "Gemma4Graph.OriginalDenseSharingKeepsHistoricalOverloadAndDiagnosticPrecedence",
+          "Gemma4Graph.OriginalDenseSharingKeepsStateOnlyTiedKvSingletonOrdinary",
+          "Gemma4Plan.PostNormFeatureRowsAreIndependentOfTheHeadFrontier",
+          "Gemma4Plan.OriginalDenseSharingFundsPreparedInputsAndRetainedFeatureRows"
+        ],
+        "xml": {
+          "graph": "7d69d8260d352c06dbdc7d89b18e0d3c07ff7902e1468b536766c4218d9acfd0",
+          "placement": "381d0e92323fae15d4062c63009ea7a2ade7bdd2e61b2c3a6bb5ab6643961e38"
+        }
+      },
+      "installed_final": {
+        "state": "done",
+        "rc": 0,
+        "signal": null,
+        "end": 1791463723.657,
+        "supervisor_pid": 3175352
+      }
+    },
+    "funding-build2": {
+      "passed_sha256": "a489671ef1796d2015a9911d80077ca4815c30cea8d6288e40d1d5a92a933fdb",
+      "receipt": {
+        "source_manifest_sha256": "b4d7268d7238aedb7f1f9c4396f3cede727acfc6209de3321b5e1ece1ee25bf1",
+        "launcher_sha256": "a4ef014bc00cf119882580dd51113100a6bb90f5c69b2c98c475bcb3fbaee313",
+        "files": {
+          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
+          "build/spark-native/src/runtime/jitllm-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
+          "build/spark-native/tests/unit/ggml_graph_test": "e5d95f7808262dad568dccdcfff0a6e172d2ba29867451eee333792168735683",
+          "build/spark-native/tests/unit/gemma2_plan_test": "d52c187139a701bf55b4c52db109ea87acff0c555bdf824b2243b9ff65151010",
+          "build/spark-native/tests/unit/gemma3_plan_test": "03a7dc00b39c8fc00569cda9ee8a6db906d091e46224386e32bc6c60d001b481",
+          "build/spark-native/tests/unit/gemma4_plan_test": "57a95722f9b95c4a80370dd1d62af8814d688201c3bbe45cb67bfa8272332395",
+          "build/spark-native/tests/unit/gemma_measurement_gpu_test": "20574af5314596184520222f1e1ca9da6d95583f06b6b7710fec6144a1bb61bd",
+          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+        },
+        "native_ldd": "\tlinux-vdso.so.1 (0x0000f32607e1c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000f325feb70000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f325feac0000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000f325fa600000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000f325cd200000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f325fa440000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f32607de0000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f325cd1d0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f325cd1a0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f325cd170000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f325cd130000)\n",
+        "native_cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        },
+        "tests": [
+          "Qwen2GraphTest.PlacesActivationsInTheLimitA",
+          "Qwen2GraphTest.AFinalViewKeepsItsSourceAlive",
+          "ActivationMeasurement.ThresholdUsesValidatedUniqueRootsAndPreservesExactFallback",
+          "ActivationMeasurement.RefusesRoundingAndSummedStorageOverflowInBothPolicies",
+          "ActivationMeasurement.BoundsActualNoncanonicalBlockedStorage",
+          "Gemma2Plan.SharedPreparationPreservesRowInvariantConsumers",
+          "Gemma3Plan.SharedPreparationPreservesRowInvariantConsumers",
+          "Gemma4Plan.PostNormFeatureRowsAreIndependentOfTheHeadFrontier",
+          "Gemma4Plan.OriginalDenseSharingFundsPreparedInputsAndRetainedFeatureRows",
+          "Gemma4Plan.OriginalDenseSharingPreservesRowInvariantConsumers"
+        ],
+        "xml": {
+          "storage": "f2591df7435e0a6f9bdc21d7c40208011ac88ccc4215dc5636e1cee0031851ee",
+          "g2": "6a4e948d338dfda7d4c4e81461a0457c09aa0956ab9976a348f7aa1658787598",
+          "g3": "04254b7bd2d7f41e33725cffdef2604e7274602d6f31ac0b0b8fd9b36ae219f2",
+          "g4": "453954482478a2a4f8777bebd1301b19518861db3d703b4c4c30225a27887200"
+        }
+      },
+      "installed_final": {
+        "state": "done",
+        "rc": 0,
+        "signal": null,
+        "end": 1791466740.025,
+        "supervisor_pid": 3210042
+      }
+    },
+    "funding-build4": {
+      "passed_sha256": "3dfcf132b00526411417dfe80c0861260af941e4435d71320c5540276f973ab0",
+      "receipt": {
+        "source_manifest_sha256": "c53707beea479d6bb59b2ea8369194980a36669744bb7471faf3ed1b3c9ae8c7",
+        "launcher_sha256": "b65277310baf5a2c2bf24dfeec12b98cf4500e17b788ce6e0381fcf15775fda5",
+        "files": {
+          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
+          "build/spark-native/src/runtime/jitllm-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
+          "build/spark-native/tests/unit/ggml_graph_test": "e5d95f7808262dad568dccdcfff0a6e172d2ba29867451eee333792168735683",
+          "build/spark-native/tests/unit/gemma2_plan_test": "d52c187139a701bf55b4c52db109ea87acff0c555bdf824b2243b9ff65151010",
+          "build/spark-native/tests/unit/gemma3_plan_test": "03a7dc00b39c8fc00569cda9ee8a6db906d091e46224386e32bc6c60d001b481",
+          "build/spark-native/tests/unit/gemma4_plan_test": "57a95722f9b95c4a80370dd1d62af8814d688201c3bbe45cb67bfa8272332395",
+          "build/spark-native/tests/unit/gemma_measurement_gpu_test": "ef23bd4a254bc8360259c3a32b3e8f020612e20d587ade0d32c48df8d5820b7d",
+          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+        },
+        "native_ldd": "\tlinux-vdso.so.1 (0x0000f937d5b89000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000f937cc8e0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f937cc830000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000f937c8200000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000f9379ae00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f937c8040000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f937d5b40000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f937cc800000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f937cc7d0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f937cc7a0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f937cc760000)\n",
+        "native_cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        },
+        "retained_qualification_sha256": "a489671ef1796d2015a9911d80077ca4815c30cea8d6288e40d1d5a92a933fdb",
+        "retained_xml": {
+          "storage": "f2591df7435e0a6f9bdc21d7c40208011ac88ccc4215dc5636e1cee0031851ee",
+          "g2": "6a4e948d338dfda7d4c4e81461a0457c09aa0956ab9976a348f7aa1658787598",
+          "g3": "04254b7bd2d7f41e33725cffdef2604e7274602d6f31ac0b0b8fd9b36ae219f2",
+          "g4": "453954482478a2a4f8777bebd1301b19518861db3d703b4c4c30225a27887200"
+        },
+        "retained_xml_directory": "/home/pmeenan/.local/share/jitllm/gemma4-original-q8-20261008/funding-build2",
+        "tests": [
+          "Qwen2GraphTest.PlacesActivationsInTheLimitA",
+          "Qwen2GraphTest.AFinalViewKeepsItsSourceAlive",
+          "ActivationMeasurement.ThresholdUsesValidatedUniqueRootsAndPreservesExactFallback",
+          "ActivationMeasurement.RefusesRoundingAndSummedStorageOverflowInBothPolicies",
+          "ActivationMeasurement.BoundsActualNoncanonicalBlockedStorage",
+          "Gemma2Plan.SharedPreparationPreservesRowInvariantConsumers",
+          "Gemma3Plan.SharedPreparationPreservesRowInvariantConsumers",
+          "Gemma4Plan.PostNormFeatureRowsAreIndependentOfTheHeadFrontier",
+          "Gemma4Plan.OriginalDenseSharingFundsPreparedInputsAndRetainedFeatureRows",
+          "Gemma4Plan.OriginalDenseSharingPreservesRowInvariantConsumers"
+        ]
+      },
+      "installed_final": {
+        "state": "done",
+        "rc": 0,
+        "signal": null,
+        "end": 1791467198.606,
+        "supervisor_pid": 3214579
+      }
+    },
+    "funding-oracle2": {
+      "passed_sha256": "f93e1773b4956a0b4d82ba4e0a0b608c8f1a96d2609cd9e03aaf6b7f93ab6a2b",
+      "receipt": {
+        "binding": {
+          "source_manifest_sha256": "c53707beea479d6bb59b2ea8369194980a36669744bb7471faf3ed1b3c9ae8c7",
+          "qualification_sha256": "3dfcf132b00526411417dfe80c0861260af941e4435d71320c5540276f973ab0",
+          "launcher_sha256": "1d67fcc97eecb97979cc1b885d937aac9de0eef40a0ef08d2946738b37ff1903",
+          "files": {
+            "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
+            "build/spark-native/src/runtime/jitllm-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
+            "build/spark-native/tests/unit/ggml_graph_test": "e5d95f7808262dad568dccdcfff0a6e172d2ba29867451eee333792168735683",
+            "build/spark-native/tests/unit/gemma2_plan_test": "d52c187139a701bf55b4c52db109ea87acff0c555bdf824b2243b9ff65151010",
+            "build/spark-native/tests/unit/gemma3_plan_test": "03a7dc00b39c8fc00569cda9ee8a6db906d091e46224386e32bc6c60d001b481",
+            "build/spark-native/tests/unit/gemma4_plan_test": "57a95722f9b95c4a80370dd1d62af8814d688201c3bbe45cb67bfa8272332395",
+            "build/spark-native/tests/unit/gemma_measurement_gpu_test": "ef23bd4a254bc8360259c3a32b3e8f020612e20d587ade0d32c48df8d5820b7d",
+            "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+          },
+          "native_cuBLAS": {
+            "libcublas.so.13": {
+              "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+              "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+              "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+            },
+            "libcublasLt.so.13": {
+              "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+              "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+              "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+            }
+          },
+          "ldd": "\tlinux-vdso.so.1 (0x0000fd653439c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000fd652b0f0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000fd652b040000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000fd6526a00000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000fd64f9600000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000fd6526840000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fd6534360000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000fd652b010000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000fd652afe0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000fd652afb0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000fd652af70000)\n"
+        },
+        "tests": [
+          "GemmaMeasurementGpu.AllConfiguredCompositionsPreserveExactFunding"
+        ],
+        "xml_sha256": "5e1e42edbaddb8cf74448141c41a80925c3ed41bc78d99fc60074d36f620e9f2",
+        "summaries": [
+          {
+            "family": 2,
+            "size": 2,
+            "supplemental": 285,
+            "shortcuts": 193,
+            "fallbacks": 92,
+            "activation_max": 59854336
+          },
+          {
+            "family": 3,
+            "size": 3,
+            "supplemental": 285,
+            "shortcuts": 18,
+            "fallbacks": 267,
+            "activation_max": 36836608
+          },
+          {
+            "family": 4,
+            "size": 26,
+            "supplemental": 1264,
+            "shortcuts": 1264,
+            "fallbacks": 0,
+            "activation_max": 382953216
+          },
+          {
+            "family": 4,
+            "size": 31,
+            "supplemental": 1264,
+            "shortcuts": 288,
+            "fallbacks": 976,
+            "activation_max": 326264576
+          }
+        ]
+      },
+      "installed_final": {
+        "state": "done",
+        "rc": 0,
+        "signal": null,
+        "end": 1791467312.089,
+        "supervisor_pid": 3215295
+      }
+    }
+  },
+  "failed_attempts": {
+    "funding-build1": {
+      "installed_final": {
+        "state": "failed",
+        "rc": 1,
+        "signal": null,
+        "end": 1791466602.213,
+        "supervisor_pid": 3207963
+      },
+      "installed_final_sha256": "2d1405a4b9a288d506b33ba772b0703d67c9bdc1a8c533efe294320ae08f0a2b",
+      "build-process.json": {
+        "sha256": "f36caf7735b67d220121c666e65a8630b7996ccb7c3021c9294fe3cfac9fe76d",
+        "record": {
+          "args": [
+            "/home/pmeenan/.local/share/jitllm/sdk/aarch64-c09daba6ac31edee/bin/cmake",
+            "--build",
+            "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native",
+            "--target",
+            "jitllm_gemma4_common_width_probe",
+            "jitllm-runtime",
+            "ggml_graph_test",
+            "gemma2_plan_test",
+            "gemma3_plan_test",
+            "gemma4_plan_test",
+            "gemma_measurement_gpu_test",
+            "--parallel",
+            "4"
+          ],
+          "returncode": 1,
+          "elapsed_seconds": 6.406757718883455,
+          "timeout_seconds": 420
+        }
+      }
+    },
+    "funding-build3": {
+      "installed_final": {
+        "state": "failed",
+        "rc": 1,
+        "signal": null,
+        "end": 1791467097.211,
+        "supervisor_pid": 3212871
+      },
+      "installed_final_sha256": "a2a00f8b9c16a9f496e3ddf6297b3fc700969fc09a5b820edad182686e70c973",
+      "build-process.json": {
+        "sha256": "b636465df85febcec0268a77fb40e8155bb076b14ee89ee597518096eee8f85b",
+        "record": {
+          "args": [
+            "/home/pmeenan/.local/share/jitllm/sdk/aarch64-c09daba6ac31edee/bin/cmake",
+            "--build",
+            "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native",
+            "--target",
+            "gemma_measurement_gpu_test",
+            "--parallel",
+            "4"
+          ],
+          "returncode": 1,
+          "elapsed_seconds": 5.111224193125963,
+          "timeout_seconds": 420
+        }
+      }
+    },
+    "funding-oracle1": {
+      "installed_final": {
+        "state": "failed",
+        "rc": 1,
+        "signal": null,
+        "end": 1791466837.373,
+        "supervisor_pid": 3210849
+      },
+      "installed_final_sha256": "8832396c648800fb7417e76bced1d8eea24e3d722e016c0760dd9c8b708d1272",
+      "oracle-process.json": {
+        "sha256": "f1544c7e859e849dd12bbe496a27b3bbeb6b31af6558d2d9fcf8a6371a72c5a3",
+        "record": {
+          "args": [
+            "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/tests/unit/gemma_measurement_gpu_test",
+            "--gtest_filter=GemmaMeasurementGpu.AllConfiguredCompositionsPreserveExactFunding",
+            "--gtest_output=xml:/home/pmeenan/.local/share/jitllm/gemma4-original-q8-20261008/funding-oracle1/oracle.xml"
+          ],
+          "returncode": 1,
+          "elapsed_seconds": 31.149038492003456,
+          "timeout_seconds": 240
+        }
+      }
+    }
+  },
+  "focused_positive_test_union": [
+    "ActivationMeasurement.BoundsActualNoncanonicalBlockedStorage",
+    "ActivationMeasurement.RefusesRoundingAndSummedStorageOverflowInBothPolicies",
+    "ActivationMeasurement.ThresholdUsesValidatedUniqueRootsAndPreservesExactFallback",
+    "ApprovedFamilies/GemmaPrefillServingGpu.DefaultPreparationPublishesOnlyActualPromptProgress/0",
+    "ApprovedFamilies/GemmaPrefillServingGpu.DefaultPreparationPublishesOnlyActualPromptProgress/1",
+    "Gemma2Plan.SharedPreparationPreservesRowInvariantConsumers",
+    "Gemma3Plan.SharedPreparationPreservesRowInvariantConsumers",
+    "Gemma4Graph.DecodePreparationSharesInputsAndKeepsQuantOneTokenArithmetic",
+    "Gemma4Graph.OriginalDenseSharingKeepsHistoricalOverloadAndDiagnosticPrecedence",
+    "Gemma4Graph.OriginalDenseSharingKeepsStateOnlyTiedKvSingletonOrdinary",
+    "Gemma4Graph.OriginalDenseSharingUsesTransientChoicesAndPreservesOtherConsumers",
+    "Gemma4Plan.OriginalDenseSharingFundsPreparedInputsAndRetainedFeatureRows",
+    "Gemma4Plan.OriginalDenseSharingPreservesRowInvariantConsumers",
+    "Gemma4Plan.PostNormFeatureRowsAreIndependentOfTheHeadFrontier",
+    "GemmaMeasurementGpu.AllConfiguredCompositionsPreserveExactFunding",
+    "Qwen2GraphTest.AFinalViewKeepsItsSourceAlive",
+    "Qwen2GraphTest.PlacesActivationsInTheLimitA"
+  ],
+  "integration": {
+    "passed_sha256": "3802fa91af74f090e47349af5399f0a4e789b31e3a798a2423e9ea3ecb1df0ed",
+    "receipt": {
+      "binding": {
+        "source_manifest_sha256": "f316bed407900d9951c1f514593e66c8e592f9ab0d81f783fc0e1acfdc29a863",
+        "launcher_sha256": "528383104abc7300b0e8089fbc7283e32dd6db02af5cfff00c1e548f763792f3",
+        "files": {
+          "build/spark-native/src/runtime/jitllm-runtime": "6398ddb920c220fe3d4753df1ff246a62442d07bed6056139d56ba19e55ae4d2",
+          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "0f4d527d4bb32f963772eb7980e0c42d997696d5ccfebfdde7860c166a2663cc",
+          "build/spark-native/tests/unit/gemma_prefill_serving_gpu_test": "fd779f50097339b29923ad223a1811f4d4fed9caa6d9d0fa3ecbec7403ae1901",
+          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+        },
+        "native_libraries": {
+          "ldd": "\tlinux-vdso.so.1 (0x0000f9f20047c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000f9f1f6d60000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f9f1f6cb0000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000f9f1f2800000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000f9f1c5400000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f9f1f2640000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f9f200430000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f9f1c53d0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f9f1c53a0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f9f1c5370000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f9f1c5330000)\n",
+          "cuBLAS": {
+            "libcublas.so.13": {
+              "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+              "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+              "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+            },
+            "libcublasLt.so.13": {
+              "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+              "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+              "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+            }
+          }
+        },
+        "retained_proofs": {
+          "funding-build4/passed.json": "3dfcf132b00526411417dfe80c0861260af941e4435d71320c5540276f973ab0",
+          "funding-oracle2/passed.json": "f93e1773b4956a0b4d82ba4e0a0b608c8f1a96d2609cd9e03aaf6b7f93ab6a2b",
+          "screen31-1/runs.json": "859955fbd93cabe2830fa9ab2b326cdb7deda372027b83f8172fe67ffb916293"
+        },
+        "artifact_manifests": {
+          "gemma2-import-20261007/artifacts/eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870": "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870",
+          "gemma3-import-20261007/artifacts/8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb": "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
+        },
+        "artifact_indexes": {
+          "gemma2-import-20261007/artifacts/eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870": "f1773c66b42084e0f497ed406716639800aaaccef0db49bd5992962f137add62",
+          "gemma3-import-20261007/artifacts/8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb": "4422d9c5a115e9a5091a471eba1db5a232f825956c5e8e77be2c77c815c093e6"
+        }
+      },
+      "tests": [
+        "ApprovedFamilies/GemmaPrefillServingGpu.DefaultPreparationPublishesOnlyActualPromptProgress/0",
+        "ApprovedFamilies/GemmaPrefillServingGpu.DefaultPreparationPublishesOnlyActualPromptProgress/1"
+      ],
+      "xml": {
+        "family0": "9e14f1d9fe9577ac7893cfa6de0f12dbdbcbd7b514aaabd42ceaad9dee6b6db9",
+        "family1": "d051968b8d8d8b5ff9588b3d042aa731a153b676454722f8a5f843f645812b2a"
+      }
+    },
+    "installed_final": {
+      "state": "done",
+      "rc": 0,
+      "signal": null,
+      "end": 1791469259.03,
+      "supervisor_pid": 3247240
+    },
+    "source_bridge": {
+      "base": "60d0c3076a793b444ed3ec25b50f58960182a0c2",
+      "qualified_source_sha256": "c53707beea479d6bb59b2ea8369194980a36669744bb7471faf3ed1b3c9ae8c7",
+      "qualified_paths": [
+        {
+          "path": "benchmarks/gemma4_common_width_probe.cc",
+          "qualified_sha256": "5b0d88f41571dc435b8ecb1f265de4e7b62e99a8c4a8ae371f9c6d2d18545c20",
+          "current_sha256": "5b0d88f41571dc435b8ecb1f265de4e7b62e99a8c4a8ae371f9c6d2d18545c20",
+          "unchanged": true
+        },
+        {
+          "path": "src/engine/gemma2_plan.cc",
+          "qualified_sha256": "957479d05a0cdcdff0440035058ae6ffe6437dd49ad4c3ee57bcf341be260054",
+          "current_sha256": "957479d05a0cdcdff0440035058ae6ffe6437dd49ad4c3ee57bcf341be260054",
+          "unchanged": true
+        },
+        {
+          "path": "src/engine/gemma2_plan.h",
+          "qualified_sha256": "bba7b9440cf73c4ebf9fc90600fe993c484edefcbb3f5416b23531d6a31f2851",
+          "current_sha256": "bba7b9440cf73c4ebf9fc90600fe993c484edefcbb3f5416b23531d6a31f2851",
+          "unchanged": true
+        },
+        {
+          "path": "src/engine/gemma2_runner.cc",
+          "qualified_sha256": "a75552ccf20b804e7ddc38ade3b106b23205cd4956e2ad63f6e7e3feb1cbdabf",
+          "current_sha256": "6cd805b0c597262f13a12ee9238c5418ca61898f7f8b80d4c73e47c93a2d8c27",
+          "unchanged": false
+        },
+        {
+          "path": "src/engine/gemma3_plan.cc",
+          "qualified_sha256": "3a0550109248a40ae5807735e548cff358304f0a5be18aa26891873579dbe561",
+          "current_sha256": "3a0550109248a40ae5807735e548cff358304f0a5be18aa26891873579dbe561",
+          "unchanged": true
+        },
+        {
+          "path": "src/engine/gemma3_plan.h",
+          "qualified_sha256": "8795cfe1e512a806eba4e73bb8d94c152d10729bfbe29fd37caa63abee234c8f",
+          "current_sha256": "8795cfe1e512a806eba4e73bb8d94c152d10729bfbe29fd37caa63abee234c8f",
+          "unchanged": true
+        },
+        {
+          "path": "src/engine/gemma3_runner.cc",
+          "qualified_sha256": "89eac9516dc52a96c92da382f2a4f07d2ca95ff4c917817733619a2216c868fb",
+          "current_sha256": "863219b92289c305e0c6cb2c4ff7dbf271b18313195e4586ba52e763bb8416e5",
+          "unchanged": false
+        },
+        {
+          "path": "src/engine/gemma4_plan.cc",
+          "qualified_sha256": "4b7ad5f72c6b51b0090fb923b15f10bde2225e1d16f316e911ade5cc4f7b5469",
+          "current_sha256": "4b7ad5f72c6b51b0090fb923b15f10bde2225e1d16f316e911ade5cc4f7b5469",
+          "unchanged": true
+        },
+        {
+          "path": "src/engine/gemma4_plan.h",
+          "qualified_sha256": "f75f814dfa724e6a4fc30b983da5cd818ba7fbb205116a99161b16f651e4c81f",
+          "current_sha256": "f75f814dfa724e6a4fc30b983da5cd818ba7fbb205116a99161b16f651e4c81f",
+          "unchanged": true
+        },
+        {
+          "path": "src/engine/gemma4_runner.cc",
+          "qualified_sha256": "7c42645fb74ab7e133a6318188f5eae5c1a69281cab658b0717a9969c2159d44",
+          "current_sha256": "7c42645fb74ab7e133a6318188f5eae5c1a69281cab658b0717a9969c2159d44",
+          "unchanged": true
+        },
+        {
+          "path": "src/engine/gemma4_runner.h",
+          "qualified_sha256": "2d2b1a4be7b57ab01745c572211f00128a9ed329cd4b4d85d36b65512c7a6909",
+          "current_sha256": "2d2b1a4be7b57ab01745c572211f00128a9ed329cd4b4d85d36b65512c7a6909",
+          "unchanged": true
+        },
+        {
+          "path": "src/engine/planned.cc",
+          "qualified_sha256": "40827b9358fc639a4d8f5d4fe5fe2d8f2249f5d547d9b0e14d2123a1b4fd7c81",
+          "current_sha256": "40827b9358fc639a4d8f5d4fe5fe2d8f2249f5d547d9b0e14d2123a1b4fd7c81",
+          "unchanged": true
+        },
+        {
+          "path": "src/engine/planned.h",
+          "qualified_sha256": "1776768a4da0fb1b3d84cf0277fedddc1f1eda9e30513fa28aa47264726fb5ac",
+          "current_sha256": "1776768a4da0fb1b3d84cf0277fedddc1f1eda9e30513fa28aa47264726fb5ac",
+          "unchanged": true
+        },
+        {
+          "path": "src/kernels/ggml/gemma4_graph.cc",
+          "qualified_sha256": "461c7e5cc6145b805b6f825f508af87e9ea1012c4e2772628db810fd90bd6b10",
+          "current_sha256": "461c7e5cc6145b805b6f825f508af87e9ea1012c4e2772628db810fd90bd6b10",
+          "unchanged": true
+        },
+        {
+          "path": "src/kernels/ggml/gemma4_graph.h",
+          "qualified_sha256": "9b5aa030556659a55f09532143b60bcbf40bf118e392ca3b0ea690329e6f86e0",
+          "current_sha256": "9b5aa030556659a55f09532143b60bcbf40bf118e392ca3b0ea690329e6f86e0",
+          "unchanged": true
+        },
+        {
+          "path": "src/kernels/ggml/graph_plan.cc",
+          "qualified_sha256": "4607d4f865575eb44725a3886891a6ef065e1845aec7da489a8a323e988ecd20",
+          "current_sha256": "4607d4f865575eb44725a3886891a6ef065e1845aec7da489a8a323e988ecd20",
+          "unchanged": true
+        },
+        {
+          "path": "src/kernels/ggml/graph_plan.h",
+          "qualified_sha256": "cd78429d9bc45586841d76fb8494a6a21224b0777130705a57d83aaddd612239",
+          "current_sha256": "cd78429d9bc45586841d76fb8494a6a21224b0777130705a57d83aaddd612239",
+          "unchanged": true
+        },
+        {
+          "path": "tests/unit/CMakeLists.txt",
+          "qualified_sha256": "f73ec7d0579bcd2e303127e0d53a05ceb42a9852e3e64c93bb792bffde52ebe5",
+          "current_sha256": "f73ec7d0579bcd2e303127e0d53a05ceb42a9852e3e64c93bb792bffde52ebe5",
+          "unchanged": true
+        },
+        {
+          "path": "tests/unit/gemma2_plan_test.cc",
+          "qualified_sha256": "9c7d3d70c2b9899f9ef9f528e6f52b3056d33e98daa2d9865050a29a0b9ffd85",
+          "current_sha256": "9c7d3d70c2b9899f9ef9f528e6f52b3056d33e98daa2d9865050a29a0b9ffd85",
+          "unchanged": true
+        },
+        {
+          "path": "tests/unit/gemma3_plan_test.cc",
+          "qualified_sha256": "1d3ee17c96d87dab7d68ef8b6e38b62af392abe840a616fac6c0b471ee1cd49b",
+          "current_sha256": "1d3ee17c96d87dab7d68ef8b6e38b62af392abe840a616fac6c0b471ee1cd49b",
+          "unchanged": true
+        },
+        {
+          "path": "tests/unit/gemma4_graph_test.cc",
+          "qualified_sha256": "495196ff047281e3a98c846612f8481a9096612ca884bc37fb765bde95ecb517",
+          "current_sha256": "495196ff047281e3a98c846612f8481a9096612ca884bc37fb765bde95ecb517",
+          "unchanged": true
+        },
+        {
+          "path": "tests/unit/gemma4_plan_test.cc",
+          "qualified_sha256": "d677cd7507794ccff78ac911f392dce8c8ec5236b0b37eb9b8b2311c5895cf26",
+          "current_sha256": "d677cd7507794ccff78ac911f392dce8c8ec5236b0b37eb9b8b2311c5895cf26",
+          "unchanged": true
+        },
+        {
+          "path": "tests/unit/gemma_measurement_gpu_test.cc",
+          "qualified_sha256": "3a1e9172c10684ce5d0796d95eccc70c04e15be748f4bb37f4b658714868fa95",
+          "current_sha256": "3a1e9172c10684ce5d0796d95eccc70c04e15be748f4bb37f4b658714868fa95",
+          "unchanged": true
+        },
+        {
+          "path": "tests/unit/ggml_graph_test.cc",
+          "qualified_sha256": "beac141fb892ae75caa97419a1c0da5b906c9e50735a05ce730012b08fd3a297",
+          "current_sha256": "beac141fb892ae75caa97419a1c0da5b906c9e50735a05ce730012b08fd3a297",
+          "unchanged": true
+        }
+      ],
+      "latest_A_code_paths": [
+        {
+          "path": "benchmarks/gemma2_joint_prefill_probe.cc",
+          "base_sha256": "5484a0b6bdfca8ac31e2d124c1ccd12f6ce9f5db4893278e7c3781acf2685cd3",
+          "current_sha256": "5484a0b6bdfca8ac31e2d124c1ccd12f6ce9f5db4893278e7c3781acf2685cd3",
+          "unchanged": true
+        },
+        {
+          "path": "src/engine/gemma2_runner.cc",
+          "base_sha256": "6bdf9d77a30182891dbc8ecf04bb2c555215a6a8d31f92f67b13087d655d34c5",
+          "current_sha256": "6cd805b0c597262f13a12ee9238c5418ca61898f7f8b80d4c73e47c93a2d8c27",
+          "unchanged": false
+        },
+        {
+          "path": "src/engine/gemma2_runner.h",
+          "base_sha256": "ad5fdb0c5d137d7e89e9824f2b066eb74d1e6c9c335e658fcc0709927285ff7a",
+          "current_sha256": "ad5fdb0c5d137d7e89e9824f2b066eb74d1e6c9c335e658fcc0709927285ff7a",
+          "unchanged": true
+        },
+        {
+          "path": "src/model/gemma2.cc",
+          "base_sha256": "6c0c57f220a8a9de3f2bde5749b441ebbfd8a21829693f49c0e30aa2f2d995e2",
+          "current_sha256": "6c0c57f220a8a9de3f2bde5749b441ebbfd8a21829693f49c0e30aa2f2d995e2",
+          "unchanged": true
+        },
+        {
+          "path": "src/runtime/commands.h",
+          "base_sha256": "97d160d1ff042999d40a1852db4b301f3866c15c5aa05b793f720439deda64e2",
+          "current_sha256": "97d160d1ff042999d40a1852db4b301f3866c15c5aa05b793f720439deda64e2",
+          "unchanged": true
+        },
+        {
+          "path": "src/runtime/serving.cc",
+          "base_sha256": "6cb68ea1afd940f29461228efa5a5f753d00dd043176b3df8d4319ab3b3269c8",
+          "current_sha256": "6cb68ea1afd940f29461228efa5a5f753d00dd043176b3df8d4319ab3b3269c8",
+          "unchanged": true
+        },
+        {
+          "path": "tests/unit/gemma_prefill_serving_gpu_test.cc",
+          "base_sha256": "2342d742ca9c3dc66db316c7ae6dbf6a7ce379b9f646980280a33f0cfb3dbe17",
+          "current_sha256": "2342d742ca9c3dc66db316c7ae6dbf6a7ce379b9f646980280a33f0cfb3dbe17",
+          "unchanged": true
+        }
+      ]
+    },
+    "runtime_witnesses": {
+      "family0": [
+        "GEMMA_DEFAULT_PREPARATION_RUNTIME completed=416 adopted=416 state_exact=1 head_exact=1 history_exact=1 joined_groups=33 joined_rows=8448"
+      ],
+      "family1": [
+        "GEMMA_DEFAULT_PREPARATION_RUNTIME completed=136 adopted=136 state_exact=1 head_exact=1 history_exact=1 joined_groups=9 joined_rows=2304"
+      ]
+    }
+  }
+}

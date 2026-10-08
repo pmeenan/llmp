@@ -399,7 +399,8 @@ bool SamePlan(const GraphPlan& a, const GraphPlan& b);
 // Where each computed tensor of a plan lives in one region.
 struct Placement {
   std::vector<std::pair<ggml_tensor*, std::uint64_t>> offsets;  // tensor, offset
-  std::uint64_t extent = 0;  // the region's bytes the placement uses
+  std::uint64_t extent = 0;        // the region's bytes the placement uses
+  bool measurement_bound = false;  // disjoint upper bound; never an executable layout
 };
 
 // Places every computed node of `graph` that is no view, and each of
@@ -416,6 +417,15 @@ std::expected<Placement, KernelFailure> PlaceActivations(GraphNodes graph, const
                                                          std::span<ggml_tensor* const> inputs,
                                                          std::uint64_t alignment,
                                                          std::span<ggml_tensor* const> keep = {});
+
+// Startup-only shortcut: use disjoint storage only if it fits an activation
+// maximum already established by exact measurement; otherwise place exactly.
+// The same root validation and selected plan apply to both branches.
+std::expected<Placement, KernelFailure> MeasureActivations(GraphNodes graph, const GraphPlan& plan,
+                                                           std::span<ggml_tensor* const> inputs,
+                                                           std::uint64_t alignment,
+                                                           std::span<ggml_tensor* const> keep,
+                                                           std::uint64_t exact_ceiling);
 
 // Points every view among `nodes` into its source's memory (the source's
 // address plus the view's offset), once the sources are bound.

@@ -72,6 +72,12 @@ struct PlannedBase {
   std::optional<kernels::ggml::BoundGraph> bound;
   std::uint64_t scratch = 0;
   std::uint64_t inputs_bytes = 0;  // as GraphRuns::Stage stages them
+  bool measurement_only = false;   // cannot bind, including an exact shortcut fallback
+};
+
+// A maximum established by earlier exact startup measurements, never a grant.
+struct ActivationMeasurement {
+  std::uint64_t exact_ceiling = 0;
 };
 
 // A planned shape of a model's graph type (kernels/ggml/*_graph.h).
@@ -109,6 +115,17 @@ std::expected<void, std::string> PlaceAndPlan(PlannedBase& out, std::span<ggml_t
                                               const kernels::ggml::DeviceChoices& choices,
                                               std::uint64_t activations,
                                               std::uint64_t activation_bytes,
+                                              const kernels::ggml::LaneTags* lanes = nullptr);
+
+// Explicit startup-only overload. Nonzero activation addresses are refused;
+// the returned plan cannot be bound. Every other measurement remains exact.
+std::expected<void, std::string> PlaceAndPlan(PlannedBase& out, std::span<ggml_tensor* const> nodes,
+                                              std::span<ggml_tensor* const> inputs,
+                                              std::span<ggml_tensor* const> keep,
+                                              const kernels::ggml::DeviceChoices& choices,
+                                              std::uint64_t activations,
+                                              std::uint64_t activation_bytes,
+                                              std::optional<ActivationMeasurement> measurement,
                                               const kernels::ggml::LaneTags* lanes = nullptr);
 
 // The scratch `planned`'s plan needs, checked against the launch context's

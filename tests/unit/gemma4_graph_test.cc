@@ -1479,3 +1479,137 @@ TEST(Gemma4Graph, PartialPhysicalStreamPartitionRetainsWholeGridWithoutDivision)
         }
       }
 }
+
+TEST(Gemma4Graph, OriginalDenseSharingUsesTransientChoicesAndPreservesOtherConsumers) {
+  for (const auto size : {26U, 31U}) {
+    for (std::uint32_t columns = 1; columns <= 9; ++columns) {
+      Case c(size);
+      std::vector<std::int32_t> tokens(columns, 2);
+      std::vector<md::Gemma4Segment> segments;
+      segments.push_back({0, 0, std::span(tokens).first(1)});
+      if (columns > 1) segments.push_back({1, 1100, std::span(tokens).subspan(1)});
+      auto in = md::Gemma4Chunk(c.p, c.state, segments);
+      ASSERT_TRUE(in);
+      c.shape.segments.clear();
+      for (const auto& s : in->segments)
+        c.shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
+      c.shape.outputs = static_cast<std::uint32_t>(segments.size());
+      for (const auto choice : {0U, 1U, 2U}) {
+        kg::Gemma4GraphOptions options{.expert_stride = {}, .dense_shared_q8 = true};
+        std::function<bool(ggml_type, std::int64_t)> selected;
+        if (choice != 0)
+          selected = [choice](ggml_type, std::int64_t n) { return choice == 2 && n <= 8; };
+        auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, segments.size(), options));
+        ASSERT_TRUE(arena);
+        auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options, selected);
+        ASSERT_TRUE(g);
+        BindLeaves(*g);
+        std::size_t preparations = 0, products = 0, old_vecq = 0;
+        for (const auto* node : g->nodes) {
+          const auto op = kg::JitllmOpOf(node);
+          preparations += op == kg::JitllmOp::kQuantizeQ8;
+          old_vecq += op == kg::JitllmOp::kVecQ;
+          if (op != kg::JitllmOp::kMmvqPrepared) continue;
+          const auto valid = kg::CheckMmvqPrepared(node);
+          EXPECT_TRUE(valid) << (valid ? "" : valid.error().detail);
+          EXPECT_EQ(node->src[2]->ne[1], columns);
+          ++products;
+        }
+        EXPECT_EQ(old_vecq, 0U);
+        if (choice != 2 || columns > 8) {
+          EXPECT_EQ(preparations, 0U);
+          EXPECT_EQ(products, 0U);
+        } else {
+          EXPECT_GT(preparations, 0U);
+          EXPECT_GT(products, preparations);
+          auto* attn_input = g->Named("blk.0.attn_input");
+          ASSERT_NE(attn_input, nullptr);
+          std::size_t q8 = 0;
+          for (const auto* node : g->nodes)
+            q8 += kg::JitllmOpOf(node) == kg::JitllmOp::kQuantizeQ8 && node->src[0] == attn_input;
+          EXPECT_EQ(q8, 1U);
+        }
+        // Whole immutable resources for routed experts and single-consumer
+        // attention/down/head products never enter the new preparation path.
+        for (const auto* node : g->nodes) {
+          if (kg::JitllmOpOf(node) != kg::JitllmOp::kMmvqPrepared) continue;
+          const auto leaf = std::ranges::find_if(
+              g->weights, [&](const auto& w) { return w.tensor == node->src[0]; });
+          ASSERT_NE(leaf, g->weights.end());
+          EXPECT_FALSE(leaf->resource.expert_array);
+          EXPECT_NE(leaf->resource.index, c.binding.output.index);
+          for (const auto& layer : c.binding.layers) {
+            EXPECT_NE(leaf->resource.index, layer.out.index);
+            EXPECT_NE(leaf->resource.index, layer.down.index);
+            if (layer.router) EXPECT_NE(leaf->resource.index, layer.router->index);
+          }
+        }
+        if (columns == 1) {
+          // The ordinary separate gate/up still forms the original GeGLU pattern.
+          EXPECT_GT(Count(*g, GGML_OP_GLU), 0U);
+          std::size_t ordinary = 0;
+          for (const auto* node : g->nodes)
+            ordinary += node->op == GGML_OP_MUL_MAT && node->src[0]->type != GGML_TYPE_F32;
+          EXPECT_GE(ordinary, c.p.layers * 3U);
+        }
+      }
+    }
+  }
+}
+
+TEST(Gemma4Graph, OriginalDenseSharingKeepsHistoricalOverloadAndDiagnosticPrecedence) {
+  Case c(26, 2);
+  for (const auto old : {false, true}) {
+    kg::Gemma4GraphOptions options{.expert_stride = {}, .shared_q8 = old, .dense_shared_q8 = true};
+    auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2, options));
+    ASSERT_TRUE(arena);
+    // Old overload deliberately provides no transient device selector.
+    auto historical = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+    ASSERT_TRUE(historical);
+    std::size_t prepared = 0, vecq = 0;
+    for (const auto* node : historical->nodes) {
+      prepared += kg::JitllmOpOf(node) == kg::JitllmOp::kMmvqPrepared;
+      vecq += kg::JitllmOpOf(node) == kg::JitllmOp::kVecQ;
+    }
+    EXPECT_EQ(prepared, 0U);
+    EXPECT_EQ(vecq > 0, old);
+    if (old) {
+      auto next = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2, options));
+      ASSERT_TRUE(next);
+      auto graph = kg::BuildGemma4Graph(*next, c.p, c.binding, c.state, c.shape, options,
+                                        [](ggml_type, std::int64_t) { return true; });
+      ASSERT_TRUE(graph);
+      std::size_t new_prepared = 0, new_vecq = 0;
+      for (const auto* node : graph->nodes) {
+        new_prepared += kg::JitllmOpOf(node) == kg::JitllmOp::kMmvqPrepared;
+        new_vecq += kg::JitllmOpOf(node) == kg::JitllmOp::kVecQ;
+      }
+      EXPECT_EQ(new_prepared, 0U);
+      EXPECT_EQ(new_vecq, vecq);
+    }
+  }
+}
+
+TEST(Gemma4Graph, OriginalDenseSharingKeepsStateOnlyTiedKvSingletonOrdinary) {
+  for (const auto size : {26U, 31U}) {
+    Case c(size, 2);
+    ASSERT_TRUE(c.binding.layers.back().tied_kv);
+    c.shape.output_mode = kg::Gemma4OutputMode::kStateOnly;
+    c.shape.outputs = 0;
+    kg::Gemma4GraphOptions options{.expert_stride = {}, .dense_shared_q8 = true};
+    auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2, options));
+    ASSERT_TRUE(arena);
+    auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options,
+                                      [](ggml_type, std::int64_t) { return true; });
+    ASSERT_TRUE(graph);
+    auto* input = graph->Named("blk." + std::to_string(c.p.layers - 1) + ".attn_input");
+    ASSERT_NE(input, nullptr);
+    std::size_t preparations = 0, products = 0;
+    for (const auto* node : graph->nodes) {
+      preparations += kg::JitllmOpOf(node) == kg::JitllmOp::kQuantizeQ8 && node->src[0] == input;
+      products += node->op == GGML_OP_MUL_MAT && node->src[1] == input;
+    }
+    EXPECT_EQ(preparations, 0U);
+    EXPECT_EQ(products, 1U);
+  }
+}

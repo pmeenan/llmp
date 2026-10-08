@@ -230,6 +230,14 @@ implementations retain output/operand alias, stride, span and generation
 checks. Frequency factors do not enable backward, non-NEOX or offset variants.
 The existing unfactored extended RoPE contracts remain separate.
 
+Original-MMVQ input sharing is a distinct `dense_shared_q8` opt-in, default
+false. Approved 26/31 target C1/C2 heads and initialized states remain exact;
+short decode changes are −0.310%/−0.087%, while startup remains material and
+31B whole paid is neutral. It preserves C1 GeGLU, routed arithmetic, down/head
+products and row-invariant fallback. The shared checked startup placement
+threshold preserves exact funding; assistant and wider-serving adoption remain
+open. [Controls, startup observations and replay](experiments/gemma4-original-q8/README.md).
+
 Shared Q8_1 preparation and row-preserving VecQ products are an explicit
 experimental graph option, default off. The option shares preparation among
 eligible consumers but does not select a GeGLU quantization writer. Generic

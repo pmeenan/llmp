@@ -53,6 +53,9 @@ struct Gemma4Options {
   // Checked plain RMSNorm/Mul preserves the primitive arithmetic in both
   // approved profiles. Other unqualified experiments remain explicit opt-ins.
   bool shared_q8 = false, fuse_norms = true, row_invariant = false, rope_store = false;
+  // Experimental original-consumer dense input sharing; old shared_q8 wins
+  // if both are set. This never enables routed VecQ or vector-float policies.
+  bool dense_shared_q8 = false;
   bool fuse_norm_rope = false, fuse_norm_add = false;
   bool fuse_gemma_route = false, fuse_gemma_reduce = false;
   // Upstream's quantized one-column gate/up/GeGLU MMVQ fusion (stock's
@@ -297,6 +300,7 @@ class Gemma4Runner final : public PagedModel {
   struct PolicyCounts {
     std::uint32_t rows = 0, segments = 0, norm_fused = 0, rope_store = 0;
     std::uint32_t shared_vecq = 0, row_products = 0, lane_steps = 0;
+    std::uint32_t q8_preparations = 0, prepared_mmvq_products = 0;
     std::uint32_t norm_rope = 0, norm_add = 0;
     std::uint32_t gemma_route = 0, gemma_reduce = 0;
     // Selected plan implementations, not executions or per-replay launches.

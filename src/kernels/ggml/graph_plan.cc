@@ -33,6 +33,7 @@
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
+#include "kernels/ggml/validate_util.h"
 
 namespace jitllm::kernels::ggml {
 namespace {
@@ -86,6 +87,29 @@ std::string_view MulMatName(MulMatPath path) {
 
 std::uint64_t Rounded(std::uint64_t bytes, std::uint64_t alignment) {
   return (bytes + alignment - 1) / alignment * alignment;
+}
+
+// Place raw descriptor storage, including a noncanonical blocked nb[0]. Kernel
+// operand checks use Extent's canonical block size; GGML allocation uses nb[0].
+std::optional<std::uint64_t> PlacementExtent(const ggml_tensor* tensor) {
+  const auto block = static_cast<std::int64_t>(ggml_blck_size(tensor->type));
+  if (block == 1) return detail::Extent(tensor);
+  if (block <= 0 || tensor->ne[0] <= 0 || tensor->ne[0] % block != 0) return std::nullopt;
+  // Reuse the checked higher-dimension span without charging a fictitious
+  // canonical first dimension or checking its address before the real span.
+  auto row = *tensor;
+  row.ne[0] = block;
+  row.data = nullptr;
+  const auto tail = detail::Extent(&row);
+  std::uint64_t bytes = 0, end = 0;
+  if (!tail ||
+      __builtin_mul_overflow(static_cast<std::uint64_t>(tensor->ne[0] / block), tensor->nb[0],
+                             &bytes) ||
+      __builtin_add_overflow(bytes, *tail - ggml_type_size(tensor->type), &bytes) ||
+      __builtin_add_overflow(
+          static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(tensor->data)), bytes, &end))
+    return std::nullopt;
+  return bytes;
 }
 
 // ggml_mul_mat_set_hint's hint (op_params[1]).
@@ -907,6 +931,14 @@ std::expected<Placement, KernelFailure> PlaceActivations(GraphNodes graph, const
                                                          std::span<ggml_tensor* const> inputs,
                                                          std::uint64_t alignment,
                                                          std::span<ggml_tensor* const> keep) {
+  return MeasureActivations(graph, plan, inputs, alignment, keep, 0);
+}
+
+std::expected<Placement, KernelFailure> MeasureActivations(GraphNodes graph, const GraphPlan& plan,
+                                                           std::span<ggml_tensor* const> inputs,
+                                                           std::uint64_t alignment,
+                                                           std::span<ggml_tensor* const> keep,
+                                                           std::uint64_t exact_ceiling) {
   if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
     return Rejected("the alignment is not a power of two");
   }
@@ -920,31 +952,51 @@ std::expected<Placement, KernelFailure> PlaceActivations(GraphNodes graph, const
   };
   std::vector<Life> lives;
   std::unordered_map<const ggml_tensor*, std::size_t> index;
+  std::uint64_t disjoint = 0;
+  bool overflow = false;
   const auto track = [&](ggml_tensor* t, std::int64_t first) {
     if (index.contains(t)) {
       return;
     }
+    const auto extent = PlacementExtent(t);
+    if (!extent || *extent > std::numeric_limits<std::uint64_t>::max() - (alignment - 1)) {
+      overflow = true;
+      return;
+    }
+    const auto rounded = Rounded(*extent, alignment);
+    if (rounded > std::numeric_limits<std::uint64_t>::max() - disjoint) {
+      overflow = true;
+      return;
+    }
+    disjoint += rounded;
     index.emplace(t, lives.size());
-    lives.push_back(
-        {.tensor = t, .first = first, .last = first, .bytes = Rounded(ggml_nbytes(t), alignment)});
+    lives.push_back({.tensor = t, .first = first, .last = first, .bytes = rounded});
   };
   for (ggml_tensor* input : inputs) {
-    if (input->op != GGML_OP_NONE || input->view_src != nullptr) {
+    if (input == nullptr || input->op != GGML_OP_NONE || input->view_src != nullptr) {
       return Rejected("an input to place is not a leaf");
     }
     track(input, -1);
   }
   for (std::size_t s = 0; s < plan.steps.size(); ++s) {
     for (ggml_tensor* node : plan.steps[s].nodes) {
+      if (node == nullptr) return Rejected("a plan contains a null activation node");
       if (Computed(node)) {
         track(node, static_cast<std::int64_t>(s));
       }
     }
   }
   for (const ggml_tensor* node : graph) {
+    if (node == nullptr) return Rejected("a graph contains a null activation node");
     if (Computed(node) && !index.contains(node)) {
       return Rejected(std::format("{} is computed by no step", node->name));
     }
+  }
+  if (overflow) return Rejected("activation storage span, rounding or sum is invalid");
+  if (exact_ceiling != 0 && disjoint <= exact_ceiling) {
+    // An exact first-fit placement can always append at its previous maximum
+    // end, so its extent cannot exceed this sum. No lifetime symmetry is needed.
+    return Placement{.offsets = {}, .extent = disjoint, .measurement_bound = true};
   }
   for (std::size_t s = 0; s < plan.steps.size(); ++s) {
     for (const ggml_tensor* node : plan.steps[s].nodes) {

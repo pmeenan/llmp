@@ -103,8 +103,10 @@ Status Gemma2Runner::Setup() {
   // publication has its own immutable capacity; products still share columns.
   for (const auto budget : {wave_rows, head_rows}) {
     for (std::uint32_t count = 1; count <= o_.slots; ++count) {
+      const auto endpoints = support::ChunkMeasurementRows(o_.max_rows, budget, count, false);
       for (const auto& row_counts :
            support::ChunkMeasurementRows(o_.max_rows, budget, count, o_.shared_q8)) {
+        const bool supplemental = std::ranges::find(endpoints, row_counts) == endpoints.end();
         const auto rows = *std::ranges::max_element(row_counts);
         for (const auto past : {0U, o_.context - rows}) {
           for (const bool mixed : {false, true}) {
@@ -133,7 +135,9 @@ Status Gemma2Runner::Setup() {
               shape.outputs = state_only ? 0U
                               : all      ? static_cast<std::uint32_t>(input->tokens.size())
                                          : count;
-              auto p = PlanGemma2Chunk(model_, shape, Choices(**measuring), 0, 0);
+              auto p = PlanGemma2Chunk(
+                  model_, shape, Choices(**measuring), 0, 0, {},
+                  supplemental ? std::optional{ActivationMeasurement{activation}} : std::nullopt);
               if (!p) return Error(std::format("measuring Gemma2: {}", p.error()));
               auto needed = kg::PlanScratch(**measuring, (*p)->plan);
               if (!needed) return Error(needed.error().detail);

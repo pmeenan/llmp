@@ -97,6 +97,15 @@ std::expected<void, std::string> BindGemma4Weights(const Gemma4Model& m, kg::Gem
 std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
     const Gemma4Model& m, const kg::Gemma4ChunkShape& shape, const kg::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes, std::span<const std::string> keep) {
+  return PlanGemma4Chunk(m, shape, choices, activations, activation_bytes, keep, std::nullopt);
+}
+
+std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
+    const Gemma4Model& m, const kg::Gemma4ChunkShape& shape, const kg::DeviceChoices& choices,
+    std::uint64_t activations, std::uint64_t activation_bytes, std::span<const std::string> keep,
+    std::optional<ActivationMeasurement> measurement) {
+  if (measurement && activations != 0)
+    return Error("measurement-only Gemma4 planning cannot use activation storage");
   if (m.profile == nullptr || m.binding == nullptr || m.state == nullptr) {
     return Error("incomplete Gemma4 model");
   }
@@ -125,15 +134,19 @@ std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
   // derivatives. The native opt-in adds only its explicit extra descriptors.
   const auto extra = kg::Gemma4GraphTensors(*m.profile, shape.segments.size(), m.options) -
                      kg::Gemma4GraphTensors(*m.profile, shape.segments.size(), {});
-  auto arena = SizedArena(
-      kg::Gemma4GraphTensors(*m.profile, shape.segments.size()) + extra, [&](kg::TensorArena& a) {
-        return kg::BuildGemma4Graph(a, *m.profile, *m.binding, *m.state, shape, m.options)
-            .has_value();
-      });
+  const auto build = [&](kg::TensorArena& arena) {
+    // Prepared original MMVQ keeps the ordinary column-dependent reduction.
+    // A row-invariant request must retain its existing mmvq_rows consumer.
+    if (m.options.dense_shared_q8 && !m.options.shared_q8 && !choices.row_invariant)
+      return kg::BuildGemma4Graph(arena, *m.profile, *m.binding, *m.state, shape, m.options,
+                                  choices.dense_mmvq_shape);
+    return kg::BuildGemma4Graph(arena, *m.profile, *m.binding, *m.state, shape, m.options);
+  };
+  auto arena = SizedArena(kg::Gemma4GraphTensors(*m.profile, shape.segments.size()) + extra,
+                          [&](kg::TensorArena& a) { return build(a).has_value(); });
   if (!arena) return std::unexpected(arena.error());
   out->arena.emplace(std::move(*arena));
-  auto graph =
-      kg::BuildGemma4Graph(*out->arena, *m.profile, *m.binding, *m.state, shape, m.options);
+  auto graph = build(*out->arena);
   out->arena->Seal();
   if (!graph) return Error(graph.error().detail);
   out->graph = std::move(*graph);
@@ -156,8 +169,8 @@ std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
   if (m.options.shared_q8 && g.positions->ne[0] <= kg::kRowInvariantColumns) {
     device.vector_floats = true;
   }
-  if (auto placed =
-          PlaceAndPlan(*out, g.nodes, g.inputs, kept, device, activations, activation_bytes);
+  if (auto placed = PlaceAndPlan(*out, g.nodes, g.inputs, kept, device, activations,
+                                 activation_bytes, measurement);
       !placed)
     return std::unexpected(placed.error());
   return out;

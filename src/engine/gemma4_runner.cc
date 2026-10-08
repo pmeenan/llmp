@@ -375,6 +375,7 @@ Status Gemma4Runner::Setup() {
   model_.binding = &binding_;
   model_.state = &layout_;
   model_.options.shared_q8 = o_.shared_q8;
+  model_.options.dense_shared_q8 = o_.dense_shared_q8;
   model_.options.rope_store = o_.rope_store;
   model_.options.narrow_final = o_.frontier_head && !o_.retain_features;
   model_.options.device_masks = !o_.reference_masks;
@@ -416,15 +417,20 @@ Status Gemma4Runner::Setup() {
   // ragged endpoints at every slot count and both context endpoints.
   for (const auto row_budget : {o_.max_rows, head_rows}) {
     for (std::uint32_t count = 1; count <= o_.slots; ++count) {
-      for (const auto rows : {1U, row_budget / count, row_budget - count + 1}) {
+      const auto endpoints = support::ChunkMeasurementRows(row_budget, row_budget, count, false);
+      const auto cases = support::ChunkMeasurementRows(
+          row_budget, row_budget, count, o_.dense_shared_q8 && !o_.shared_q8 && !o_.row_invariant);
+      for (const auto& owner_rows : cases) {
+        const bool supplemental = std::ranges::find(endpoints, owner_rows) == endpoints.end();
         // Mixed endpoints fund real short-root padding without changing the
         // per-slot state layout or the equal-width no-copy path.
-        const bool mixed = o_.common_owner_reads && count == 2 && rows == 1;
+        const bool mixed = o_.common_owner_reads && count == 2 &&
+                           std::ranges::all_of(owner_rows, [](auto n) { return n == 1; });
         for (const auto endpoint : {0U, 1U, 2U, 3U}) {
           if (endpoint >= 2 && !mixed) continue;
           std::vector<md::Gemma4Segment> segments;
           for (std::uint32_t i = 0; i < count; ++i) {
-            const auto segment_rows = rows == row_budget - count + 1 && i != 0 ? 1U : rows;
+            const auto segment_rows = owner_rows[i];
             const bool high =
                 endpoint == 1 || (endpoint == 2 && i == 1) || (endpoint == 3 && i == 0);
             auto segment_past = high ? o_.context - segment_rows : 0U;
@@ -466,7 +472,8 @@ Status Gemma4Runner::Setup() {
                 o_.retain_features ? static_cast<std::uint32_t>(in->tokens.size()) : 0;
             auto p = PlanGemma4Chunk(
                 model_, shape, Choices(**measuring, static_cast<std::uint32_t>(in->tokens.size())),
-                0, 0);
+                0, 0, {},
+                supplemental ? std::optional{ActivationMeasurement{activation}} : std::nullopt);
             if (!p) return Error(std::format("measuring Gemma4: {}", p.error()));
             auto needed = kg::PlanScratch(**measuring, (*p)->plan);
             if (!needed) return Error(needed.error().detail);
@@ -1104,6 +1111,8 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::CachePlann
     policy_.gemma_reduce += step.implementation == "ggml.gemma.scaled_reduce.fused";
     policy_.rope_store += step.implementation == "ggml.rope_set_rows.fused";
     policy_.shared_vecq += step.implementation == "jitllm.vecq";
+    policy_.q8_preparations += step.implementation == kg::kQuantizeQ8Name;
+    policy_.prepared_mmvq_products += step.implementation == kg::kMmvqPreparedName;
     policy_.row_products +=
         step.implementation.ends_with("mmvq_rows") || step.implementation.ends_with("mmvf_rows");
     policy_.lane_steps += step.lane != 0;

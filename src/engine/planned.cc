@@ -95,6 +95,18 @@ std::expected<void, std::string> PlaceAndPlan(
     PlannedBase& out, std::span<ggml_tensor* const> nodes, std::span<ggml_tensor* const> inputs,
     std::span<ggml_tensor* const> keep, const kg::DeviceChoices& choices, std::uint64_t activations,
     std::uint64_t activation_bytes, const kg::LaneTags* lanes) {
+  return PlaceAndPlan(out, nodes, inputs, keep, choices, activations, activation_bytes,
+                      std::nullopt, lanes);
+}
+
+std::expected<void, std::string> PlaceAndPlan(
+    PlannedBase& out, std::span<ggml_tensor* const> nodes, std::span<ggml_tensor* const> inputs,
+    std::span<ggml_tensor* const> keep, const kg::DeviceChoices& choices, std::uint64_t activations,
+    std::uint64_t activation_bytes, std::optional<ActivationMeasurement> measurement,
+    const kg::LaneTags* lanes) {
+  if (measurement && activations != 0)
+    return Error("measurement-only placement cannot use activation storage");
+  out.measurement_only = measurement.has_value();
   // Measurement precedes the node startup budget. Admit one bounded index
   // envelope for all measured shapes; runtime plans cannot grow it. Both
   // planning passes are sequential and their indices are destroyed on return.
@@ -127,7 +139,9 @@ std::expected<void, std::string> PlaceAndPlan(
   if (lanes != nullptr) {
     kg::AssignLanes(*first, *lanes, kg::UsesCublas);
   }
-  auto placement = kg::PlaceActivations(nodes, *first, inputs, 256, keep);
+  auto placement = measurement ? kg::MeasureActivations(nodes, *first, inputs, 256, keep,
+                                                        measurement->exact_ceiling)
+                               : kg::PlaceActivations(nodes, *first, inputs, 256, keep);
   if (!placement) {
     return Error(placement.error().detail);
   }
@@ -164,6 +178,8 @@ std::expected<void, std::string> PlaceAndPlan(
 std::expected<void, std::string> BindPlanned(PlannedBase& planned, kg::LaunchContext& launch,
                                              const execution::Registry& registry,
                                              std::string_view what) {
+  if (planned.measurement_only || planned.placement.measurement_bound)
+    return Error("a measurement-only activation layout cannot bind");
   if (launch.lanes() < kg::kMaxLanes && !planned.plan.regions.empty()) {
     // A context without lanes runs everything on its stream. The placement
     // stays as made for lanes, which only lives longer.

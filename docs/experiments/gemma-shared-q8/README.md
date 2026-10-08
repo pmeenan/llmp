@@ -134,8 +134,10 @@ correctness; all four reported G3 factor cycles are fresh.
 Gemma2/Gemma3 adopt original-consumer sharing only for authenticated selected
 chains. Compatible additional quant formats and broader adjacent-product
 routes beyond the original eight-column MMVQ selector remain explicit work,
-not mathematical exclusions. G26/G31 ordinary-consumer sharing remains OPEN:
-the prior G4 VecQOneToken diagnostic rejection does not reject this consumer.
+not mathematical exclusions. G26/G31 now have [qualified optional original-consumer sharing](../gemma4-original-q8/README.md):
+exact target heads/state and short native factors, with material startup cost
+and defaults still false. Assistant/wider-serving adoption remains OPEN;
+the prior G4 VecQOneToken diagnostic rejection did not reject this consumer.
 Dsv4/DSpark and Qwen GGUF already cache compatible Q8_1 inputs; their distinct
 routed/shared pairing policies are retained. Native Qwen per-16 NVFP4 Q8 and
 MXFP8, EXL3 Hadamard/trellis and image BF16 input representations cannot consume

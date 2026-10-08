@@ -369,11 +369,17 @@ family" guide, and its long-context scaling work.
       rows; preserve requested-score/sampling fallbacks and exact state/head
       controls. This is a compatible extension of decode publication, not
       completed T27 decode work or a new public capability.
+- [ ] **Reduce remaining repeated Setup graph construction/selection cost.**
+      Preserve exact configured funding and shape/selector distinctions; the
+      selected T96 placement shortcut does not remove graph sizing/building.
+      Qualify equivalent descriptor/template reuse before dropping any probes.
 - [ ] **Complete open optimization transfers from the audit.** IDs refer to
       the [inventory matrix](optimization-inventory.md#complete-cross-family-dispositions--2026-10-07).
       Preserve each recipient's original math, artifact, state, memory and
       completion contracts. No target A disposition closes a drafter item.
       - **DeepSeek V4 / DSpark**
+        - [ ] **T96** Transfer checked startup placement-threshold measurement to
+          repeated target/draft Setup accounting; qualify exact maxima and latency.
         - [ ] **T95** Quantized draft head: qualify compatible independent/tied
           head binding, state/closure funding, scalar/joined arithmetic and quality.
         - [ ] **T19** Selective draft-head MMVF.
@@ -413,6 +419,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T92** Remove reference CSA/HCA raw/compressed bank packing
           through actual roots; preserve sinks, selection and reduction math.
       - **Qwen3.8 native / MTP**
+        - [ ] **T96** Transfer the checked startup placement threshold to repeated
+          native target/MTP Setup accounting with exact funding and latency controls.
         - [ ] **T10** HC-normalized expert sum in post.
         - [ ] **T20** Column-invariant grouped float products.
         - [x] **T22** Graph-owned exact-row F16/F32 causal masks; native headed
@@ -440,6 +448,8 @@ family" guide, and its long-context scaling work.
           fixed-capacity future groups under family descriptors.
         - [ ] **T72** Expert worklist sharing across vector products.
       - **Qwen3.8 GGUF / target**
+        - [ ] **T96** Transfer the checked startup placement threshold to repeated
+          GGUF target Setup accounting with exact maxima and actual latency controls.
         - [ ] **T03** Sparse query-union KV reuse.
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T07** Compact expert-major MMQ scheduling.
@@ -482,6 +492,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T78** BF16 multirow vector alternative.
         - [ ] **T87** Alternative image encoder/VAE attention.
       - **Gemma2 2B**
+        - [x] **T96** Checked disjoint-bound startup placement shortcut preserves
+          all exact funding maxima; actual-device composition oracle passes.
         - [ ] **T04** Selected QKV/eligible unfused FFN preparations now share
           original MMVQ inputs; extend compatible other quant formats and
           larger-column/MMQ-adjacent chains with exact consumer/funding proof.
@@ -533,6 +545,8 @@ family" guide, and its long-context scaling work.
           controls pass. Native prefill improves 2.706%; fresh matched stock
           retains +0.786% prefill / +0.284% paid at n=2, with exact outputs.
       - **Gemma3 4B QAT**
+        - [x] **T96** Checked disjoint-bound startup placement shortcut preserves
+          all exact funding maxima; actual-device composition oracle passes.
         - [ ] **T04** Selected QKV/eligible unfused FFN preparations now share
           original MMVQ inputs; extend compatible other quant formats and
           larger-column/MMQ-adjacent chains with exact consumer/funding proof.
@@ -583,14 +597,18 @@ family" guide, and its long-context scaling work.
           +0.548% paid at n=2, exact. Full HTTP reference remains open;
           the same 25-wave schedule rules out an extra native wave.
       - **Gemma4 26B-A4B / assistant**
+        - [ ] **T96** Threshold shortcut is qualified for optional dense-sharing
+          Setup; ordinary selection and remaining construction/sizing latency
+          remain open. The current26 startup observation is n=1, not a factor.
         - [ ] **T95** Quantized draft head: qualify compatible independent/tied
           head binding, state/closure funding, scalar/joined arithmetic and quality.
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T07** Compact expert-major MMQ scheduling.
         - [ ] **T09** Write activation in routed gate/up consumer.
-        - [ ] **T11** Transfer original-MMVQ Q8 sharing with actual target/assistant
-          and funding controls; the rejected VecQOneToken diagnostic used
-          different consumer arithmetic and does not reject this port.
+        - [ ] **T11** Optional original-MMVQ Q8 sharing passes approved target full-head/state
+          controls. Short C2 decode −0.310% with material startup cost keeps
+          default false; actual wider-serving/assistant adoption and compatible
+          additional consumers remain open. [Factor](experiments/gemma4-original-q8/README.md).
         - [ ] **T12** Share expert reads across verify rows.
         - [ ] **T14** Warp-ballot routed pair lookup.
         - [ ] **T15** Concurrent per-owner graph lanes.
@@ -629,11 +647,16 @@ family" guide, and its long-context scaling work.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.
         - [ ] **T86** Grouped physical KV stores.
       - **Gemma4 31B / assistant**
+        - [ ] **T96** Threshold shortcut is qualified for optional dense-sharing
+          Setup; ordinary selection and remaining construction/sizing latency
+          remain open, without inferring a per-recipient startup speed gain.
         - [ ] **T95** Quantized draft head: qualify compatible independent/tied
           head binding, state/closure funding, scalar/joined arithmetic and quality.
         - [ ] **T04** Share adjacent-product input preparation.
-        - [ ] **T11** Transfer original-MMVQ Q8 sharing with actual target/assistant
-          and funding controls; preserve the separate VecQOneToken policy.
+        - [ ] **T11** Optional original-MMVQ Q8 sharing passes approved target full-head/state
+          controls. Short C2 decode −0.087%, whole paid neutral and startup
+          +1.286s keep default false; broader serving/assistant adoption and
+          compatible additional consumers remain open. [Factor](experiments/gemma4-original-q8/README.md).
         - [ ] **T15** Concurrent per-owner graph lanes.
         - [ ] **T16** Join draft blocks across requests.
         - [ ] **T19** Selective draft-head MMVF.

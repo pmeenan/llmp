@@ -236,6 +236,15 @@ std::expected<void, std::string> BindGemma3Weights(const Gemma3Model& m, kg::Gem
 std::expected<std::unique_ptr<Gemma3Planned>, std::string> PlanGemma3Chunk(
     const Gemma3Model& m, const kg::Gemma3ChunkShape& shape, const kg::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes, std::span<const std::string> keep) {
+  return PlanGemma3Chunk(m, shape, choices, activations, activation_bytes, keep, std::nullopt);
+}
+
+std::expected<std::unique_ptr<Gemma3Planned>, std::string> PlanGemma3Chunk(
+    const Gemma3Model& m, const kg::Gemma3ChunkShape& shape, const kg::DeviceChoices& choices,
+    std::uint64_t activations, std::uint64_t activation_bytes, std::span<const std::string> keep,
+    std::optional<ActivationMeasurement> measurement) {
+  if (measurement && activations != 0)
+    return Error("measurement-only Gemma3 planning cannot use activation storage");
   if (m.profile == nullptr || m.binding == nullptr || m.state == nullptr) {
     return Error("incomplete Gemma3 model");
   }
@@ -260,16 +269,20 @@ std::expected<std::unique_ptr<Gemma3Planned>, std::string> PlanGemma3Chunk(
     }
   }
   auto out = std::make_unique<Gemma3Planned>();
+  // Original MMVQ preparation cannot replace the requested one-column sums.
+  const decltype(choices.dense_mmvq_shape) no_dense_sharing;
+  const auto& selected_dense_mmvq_shape =
+      choices.row_invariant ? no_dense_sharing : choices.dense_mmvq_shape;
   auto arena = SizedArena(kg::Gemma3GraphTensors(*m.profile, shape.segments.size()),
                           [&](kg::TensorArena& a) {
                             return kg::BuildGemma3Graph(a, *m.profile, *m.binding, *m.state, shape,
-                                                        m.options, choices.dense_mmvq_shape)
+                                                        m.options, selected_dense_mmvq_shape)
                                 .has_value();
                           });
   if (!arena) return std::unexpected(arena.error());
   out->arena.emplace(std::move(*arena));
   auto graph = kg::BuildGemma3Graph(*out->arena, *m.profile, *m.binding, *m.state, shape, m.options,
-                                    choices.dense_mmvq_shape);
+                                    selected_dense_mmvq_shape);
   out->arena->Seal();
   if (!graph) return Error(graph.error().detail);
   out->graph = std::move(*graph);
@@ -287,8 +300,8 @@ std::expected<std::unique_ptr<Gemma3Planned>, std::string> PlanGemma3Chunk(
   // No Gemma4 owner, norm, routing, quant writer or RoPE-store policy is
   // enabled here. Callers supply device family selectors; the ordinary
   // foundation's default DeviceChoices retains primitive operations.
-  if (auto placed =
-          PlaceAndPlan(*out, g.nodes, g.inputs, kept, choices, activations, activation_bytes);
+  if (auto placed = PlaceAndPlan(*out, g.nodes, g.inputs, kept, choices, activations,
+                                 activation_bytes, measurement);
       !placed)
     return std::unexpected(placed.error());
   return out;

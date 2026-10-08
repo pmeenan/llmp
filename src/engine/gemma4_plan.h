@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -42,6 +43,13 @@ std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
     const Gemma4Model& model, const kernels::ggml::Gemma4ChunkShape& shape,
     const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
     std::uint64_t activation_bytes, std::span<const std::string> keep = {});
+
+// Supplemental startup measurement; ordinary endpoints use the overload above.
+std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
+    const Gemma4Model& model, const kernels::ggml::Gemma4ChunkShape& shape,
+    const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
+    std::uint64_t activation_bytes, std::span<const std::string> keep,
+    std::optional<ActivationMeasurement> measurement);
 
 // Device-mask graphs stage only fresh row/segment sources. Diagnostic graphs
 // also own/stage padded host reference masks; their O(rows*n_kv) host cost is

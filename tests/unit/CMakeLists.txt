@@ -433,6 +433,10 @@ if(JITLLM_CUDA)
   target_link_libraries(gemma4_assistant_plan_test PRIVATE jitllm_engine jitllm_json)
   jitllm_gtest(gemma4_assistant_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit
                ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+  add_executable(gemma_measurement_gpu_test gemma_measurement_gpu_test.cc)
+  target_link_libraries(gemma_measurement_gpu_test PRIVATE jitllm_engine jitllm_json)
+  jitllm_gpu_gtest(gemma_measurement_gpu_test
+                   ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
   add_executable(gemma4_plan_test gemma4_plan_test.cc)
   target_link_libraries(gemma4_plan_test PRIVATE jitllm_engine jitllm_json)
   jitllm_gtest(gemma4_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit

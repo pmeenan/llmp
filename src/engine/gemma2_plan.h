@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -43,6 +44,13 @@ std::expected<std::unique_ptr<Gemma2Planned>, std::string> PlanGemma2Chunk(
     const Gemma2Model& model, const kernels::ggml::Gemma2ChunkShape& shape,
     const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
     std::uint64_t activation_bytes, std::span<const std::string> keep = {});
+
+// Supplemental startup measurement; ordinary endpoints use the overload above.
+std::expected<std::unique_ptr<Gemma2Planned>, std::string> PlanGemma2Chunk(
+    const Gemma2Model& model, const kernels::ggml::Gemma2ChunkShape& shape,
+    const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
+    std::uint64_t activation_bytes, std::span<const std::string> keep,
+    std::optional<ActivationMeasurement> measurement);
 
 // Host-reference graphs stage funded padded masks; device-mask graphs keep
 // those matrices in activation storage and stage only checked positions/indices.

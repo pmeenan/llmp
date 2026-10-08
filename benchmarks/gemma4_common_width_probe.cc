@@ -16,6 +16,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
@@ -46,7 +47,11 @@ std::expected<std::int32_t, std::string> Best(const std::vector<float>& row) {
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma4-common-width-probe") || argc != 8) return 2;
+  if (!jitllm::platform::InstallCrashPolicy("gemma4-common-width-probe") ||
+      (argc != 8 && argc != 9))
+    return 2;
+  const bool dense_shared_q8 = argc == 9 && std::string_view(argv[8]) == "dense-shared-q8";
+  if (argc == 9 && !dense_shared_q8) return 2;
   const std::string profile = argv[5], policy = argv[6];
   if ((profile != "26" && profile != "31") ||
       (policy != "baseline" && policy != "candidate" && policy != "bounded"))
@@ -92,6 +97,7 @@ int main(int argc, char** argv) {
                         .max_head_rows = 2,
                         .frontier_head = false,
                         .fuse_norms = true,
+                        .dense_shared_q8 = dense_shared_q8,
                         .fuse_norm_rope = true,
                         .fuse_norm_add = true,
                         .fuse_gemma_route = !dense,
@@ -159,6 +165,7 @@ int main(int argc, char** argv) {
     return {};
   };
   std::uint32_t owner_steps = 0, bounded_steps = 0;
+  std::uint32_t prepared_steps = 0, q8_steps = 0, vecq_steps = 0;
   const auto joined = [&](const std::array<std::int32_t, 2>& tokens, bool token) -> en::Status {
     std::array<en::Gemma4Runner::Work, 2> work;
     for (std::uint32_t s = 0; s < 2; ++s)
@@ -167,6 +174,9 @@ int main(int argc, char** argv) {
     if (auto r = runner.Wave(work); !r) return r;
     owner_steps = std::max(owner_steps, runner.last_built_policy().owner_attention_steps);
     bounded_steps = std::max(bounded_steps, runner.last_built_policy().bounded_owner_steps);
+    prepared_steps = std::max(prepared_steps, runner.last_built_policy().prepared_mmvq_products);
+    q8_steps = std::max(q8_steps, runner.last_built_policy().q8_preparations);
+    vecq_steps = std::max(vecq_steps, runner.last_built_policy().shared_vecq);
     for (std::uint32_t s = 0; s < 2; ++s) {
       ++past[s];
       if (!token && !Best(heads[s])) return Error("bad joined head");
@@ -182,20 +192,28 @@ int main(int argc, char** argv) {
   const auto execute = [&]() -> en::Status {
     if (auto r = node.Open(); !r) return r;
     life->entered.push_back(&runner);
+    const auto setup_begin = std::chrono::steady_clock::now();
     if (auto r = runner.Setup(); !r) return r;
-    if (own) {
-      std::vector<jitllm::catalog::ExtentId> extents;
-      auto allocation = node.Pinned(kCopy, 0, extents);
-      if (!allocation) return Error(allocation.error());
-      pinned = *allocation;
-    }
+    std::cout << "GEMMA4_PREPARATION_SETUP seconds="
+              << en::support::Seconds(std::chrono::steady_clock::now() - setup_begin) << '\n';
+    // Both modes observe initialized state after the paid endpoint. Fund
+    // the same bounded copy buffer before deriving the physical budget.
+    std::vector<jitllm::catalog::ExtentId> extents;
+    auto allocation = node.Pinned(kCopy, 0, extents);
+    if (!allocation) return Error(allocation.error());
+    pinned = *allocation;
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     node.SetHostFloor(runner.host_input_bytes() + runner.plan_floor_bytes() + (16ULL << 20U));
-    if (auto r = node.Start(jitllm::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
-                                                4 * node.StateCapacity()));
-        !r)
-      return r;
+    const auto budget =
+        fixed + runner.weights().size() * en::kPagedExtent + 4 * node.StateCapacity();
+    std::cout << "GEMMA4_PREPARATION_BUDGET fixed=" << fixed
+              << " weights=" << runner.weights().size() * en::kPagedExtent
+              << " state_capacity=" << node.StateCapacity()
+              << " activations=" << runner.activations_needed()
+              << " scratch=" << runner.pool_needed() << " host_input=" << runner.host_input_bytes()
+              << " plan_floor=" << runner.plan_floor_bytes() << " total=" << budget << '\n';
+    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();
@@ -237,8 +255,17 @@ int main(int argc, char** argv) {
           for (std::uint32_t s = 0; s < 2; ++s) next[s] = i < 6 ? selected[s] : *Best(heads[s]);
           if (auto r = joined(next, i < 5); !r) return r;
         }
+        const auto kept = runner.state();
+        const auto plans = runner.plan_count();
+        const auto graphs = runner.graph_count();
         if (auto r = clear(); !r) return r;
+        if (runner.kept_state() != kept || runner.plan_count() != plans ||
+            runner.graph_count() != graphs || plans == 0 || graphs == 0)
+          return Error("warm Clear changed retained state/plans/graphs");
+        std::cout << "GEMMA4_PREPARATION_WARM plans=" << plans << " graphs=" << graphs
+                  << " retained_state=1\n";
       }
+      const auto paid_graphs = runner.graph_stats();
       const auto begin = std::chrono::steady_clock::now();
       if (auto r = prompt(cycle); !r) return r;
       if (own) {
@@ -252,6 +279,7 @@ int main(int argc, char** argv) {
         if (auto r = Save<char>(out / "predecode-state.json", record); !r) return r;
       }
       const auto prefill = en::support::Seconds(std::chrono::steady_clock::now() - begin);
+      const auto prefill_graphs = runner.graph_stats();
       if (auto r = warm(cycle); !r) return r;
       std::ofstream rows;
       const auto write_rows = [&]() {
@@ -264,6 +292,7 @@ int main(int argc, char** argv) {
         write_rows();
       }
       std::vector<std::int32_t> choices(kSteps * 2);
+      const auto decode_graphs_begin = runner.graph_stats();
       const auto decode_begin = std::chrono::steady_clock::now();
       for (std::uint32_t i = 0; i < kSteps; ++i) {
         std::array<std::int32_t, 2> tokens;
@@ -275,6 +304,7 @@ int main(int argc, char** argv) {
         if (own) write_rows();
       }
       const auto decode = en::support::Seconds(std::chrono::steady_clock::now() - decode_begin);
+      const auto decode_graphs_end = runner.graph_stats();
       if (own) {
         rows.flush();
         if (!rows) return Error("complete teacher rows failed");
@@ -395,11 +425,18 @@ int main(int argc, char** argv) {
       final.reserve(kVocab * 2);
       for (const auto& head : heads) final.insert(final.end(), head.begin(), head.end());
       if (auto r = Save<float>(out / "final.f32", final); !r) return r;
+      const auto final_state = snapshot();
+      if (!final_state) return Error(final_state.error());
+      for (std::size_t slot = 0; slot < final_state->size(); ++slot)
+        std::cout << "final_state" << slot << "=" << (*final_state)[slot] << '\n';
       const auto& stats = runner.graph_stats();
       const auto& bound = runner.last_built_policy();
       if (!stats.captured || !stats.replayed || runner.coverage().violations ||
           owner_steps != expected_owners || bounded_steps != expected_bounded)
         return Error("C2 did not select/replay checked implementation families");
+      if (vecq_steps || (dense_shared_q8 ? q8_steps == 0 || prepared_steps <= q8_steps
+                                         : q8_steps != 0 || prepared_steps != 0))
+        return Error("actual dense preparation policy differs");
       std::cout << "GEMMA4_CONTEXT mode=" << mode << " slots=2 context_per_slot=4096"
                 << " profile=" << profile << " policy=" << policy << " actual_chunk=" << chunk
                 << " independent_prefill=1 prompt_rows0=" << prefix[0]
@@ -408,9 +445,19 @@ int main(int argc, char** argv) {
                 << " paid_generated_tokens=64 past0=" << past[0] << " past1=" << past[1]
                 << " prefill_seconds=" << prefill << " decode_seconds=" << decode
                 << " eager=" << stats.eager << " captured=" << stats.captured
-                << " replayed=" << stats.replayed << " selected_owner=" << owner_steps
-                << " selected_bounded_owner=" << bounded_steps
-                << " selected_norm_mul=" << bound.norm_fused
+                << " replayed=" << stats.replayed << " paid_eager="
+                << prefill_graphs.eager - paid_graphs.eager + decode_graphs_end.eager -
+                       decode_graphs_begin.eager
+                << " paid_captured="
+                << prefill_graphs.captured - paid_graphs.captured + decode_graphs_end.captured -
+                       decode_graphs_begin.captured
+                << " paid_replayed="
+                << prefill_graphs.replayed - paid_graphs.replayed + decode_graphs_end.replayed -
+                       decode_graphs_begin.replayed
+                << " selected_owner=" << owner_steps << " selected_bounded_owner=" << bounded_steps
+                << " dense_shared_q8=" << dense_shared_q8
+                << " prepared_mmvq_products=" << prepared_steps << " q8_preparations=" << q8_steps
+                << " selected_vecq=" << vecq_steps << " selected_norm_mul=" << bound.norm_fused
                 << " selected_norm_rope=" << bound.norm_rope
                 << " selected_norm_add=" << bound.norm_add
                 << " gpu_tokens=" << runner.greedy_tokens() << '\n';

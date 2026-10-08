@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -61,6 +62,10 @@ struct Gemma4GraphOptions {
   // Q8_1 preparation per logical input and preserve one-token sums. A false
   // reference build retains ordinary GGML primitives. No GeGLU writer.
   bool shared_q8 = false;
+  // Share only selected dense original-MMVQ preparations. The diagnostic
+  // shared_q8 policy takes precedence if both flags are set; routed products
+  // and one-column fused gate/up keep their existing arithmetic.
+  bool dense_shared_q8 = false;
   // Graph-owned causal/ring mask producers from fresh positions. false
   // retains the fully funded diagnostic host-mask source path.
   bool device_masks = false;
@@ -143,6 +148,13 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
                                                            const model::Gemma4StateLayout& state,
                                                            const Gemma4ChunkShape& shape,
                                                            const Gemma4GraphOptions& options = {});
+// Transient device selector for original-consumer dense sharing. The historical
+// overload above remains the no-device-choice/manual-wrapper contract.
+std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(
+    TensorArena& arena, const model::Gemma4Profile& profile, const model::Gemma4Binding& binding,
+    const model::Gemma4StateLayout& state, const Gemma4ChunkShape& shape,
+    const Gemma4GraphOptions& options,
+    const std::function<bool(ggml_type, std::int64_t)>& dense_mmvq_shape);
 
 }  // namespace jitllm::kernels::ggml
 #endif  // JITLLM_KERNELS_GGML_GEMMA4_GRAPH_H_

@@ -13,6 +13,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Add optional Gemma4 original-MMVQ input sharing, preserving exact target
+  heads/state and existing fused/routed arithmetic. It stays off by default
+  after short native factors and startup-cost observations. Skip redundant
+  Gemma startup activation placement only under a checked existing maximum;
+  exact funding and row-invariant consumer policies remain unchanged.
+
 - Prepare eligible fresh Gemma2 and Gemma3 state backing beside current prefill work,
   with completion-aware ownership, scoped page-in retirement and exact
   continuation state. Kept restart sources retain their original read path.

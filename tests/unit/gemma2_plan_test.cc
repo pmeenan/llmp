@@ -674,4 +674,43 @@ TEST(Gemma2Plan, DeviceMasksBindFreshSegmentPositionsAndExcludeHostMatrices) {
   }
 }
 
+TEST(Gemma2Plan, SharedPreparationPreservesRowInvariantConsumers) {
+  Case c;
+  auto arena = kg::TensorArena::Create(kg::Gemma2GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma2Graph(*arena, c.p, c.binding, c.state, c.shape);
+  ASSERT_TRUE(graph);
+  auto model = Places(c, *graph);
+  auto choices = Choices();
+  choices.row_invariant = true;
+  std::size_t selector_calls = 0;
+  choices.dense_mmvq_shape = [&](ggml_type, std::int64_t) {
+    ++selector_calls;
+    return true;
+  };
+  auto ordinary = en::PlanGemma2Chunk(model, c.shape, choices, 0, 0);
+  ASSERT_TRUE(ordinary) << *jitllm::test_support::Failed(ordinary);
+  model.options.shared_q8 = true;
+  auto candidate = en::PlanGemma2Chunk(model, c.shape, choices, 0, 0);
+  ASSERT_TRUE(candidate) << *jitllm::test_support::Failed(candidate);
+  EXPECT_EQ(selector_calls, 0U);
+  EXPECT_EQ((*candidate)->placement.extent, (*ordinary)->placement.extent);
+  EXPECT_EQ((*candidate)->graph.logits->ne[1], (*ordinary)->graph.logits->ne[1]);
+  const auto& before = (*ordinary)->plan.steps;
+  const auto& after = (*candidate)->plan.steps;
+  ASSERT_EQ(before.size(), after.size());
+  for (std::size_t i = 0; i < before.size(); ++i) {
+    EXPECT_EQ(before[i].operation, after[i].operation);
+    EXPECT_EQ(before[i].implementation, after[i].implementation);
+    EXPECT_EQ(before[i].nodes.size(), after[i].nodes.size());
+  }
+  EXPECT_GT(std::ranges::count_if(
+                after, [](const auto& step) { return step.implementation == kg::kMulMatVecQRows; }),
+            0);
+  for (const auto* node : (*candidate)->graph.nodes) {
+    EXPECT_NE(kg::JitllmOpOf(node), kg::JitllmOp::kQuantizeQ8);
+    EXPECT_NE(kg::JitllmOpOf(node), kg::JitllmOp::kMmvqPrepared);
+  }
+}
+
 }  // namespace

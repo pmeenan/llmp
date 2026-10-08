@@ -157,6 +157,12 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
                                                            const md::Gemma4StateLayout& state,
                                                            const Gemma4ChunkShape& shape,
                                                            const Gemma4GraphOptions& o) {
+  return BuildGemma4Graph(arena, p, b, state, shape, o, {});
+}
+std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(
+    TensorArena& arena, const md::Gemma4Profile& p, const md::Gemma4Binding& b,
+    const md::Gemma4StateLayout& state, const Gemma4ChunkShape& shape, const Gemma4GraphOptions& o,
+    const std::function<bool(ggml_type, std::int64_t)>& dense_mmvq_shape) {
   if (auto checked = Check(p, b, state, shape, o); !checked)
     return std::unexpected(checked.error());
   if (auto room = arena.Reserve(Gemma4GraphTensors(p, shape.segments.size(), o)); !room) {
@@ -253,7 +259,10 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
   };
   SharedQ8Inputs preparations(c);
   const auto q8 = [&](ggml_tensor* x) { return preparations.Get(x); };
-  const auto mm = [&](ggml_tensor* w, ggml_tensor* x) {
+  const auto mm = [&](ggml_tensor* w, ggml_tensor* x, bool share = false) {
+    if (!o.shared_q8) {
+      return preparations.Product(w, x, o.dense_shared_q8 && share, dense_mmvq_shape);
+    }
     if (!o.shared_q8 || !VecQType(w->type) || !ggml_is_contiguous(x) || x->ne[1] > kVecQMaxTokens ||
         x->ne[2] != 1 || x->ne[3] != 1) {
       return ggml_mul_mat(c, w, x);
@@ -282,9 +291,11 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     const auto d = p.head_dim(il), kvh = p.kv_heads(il), kvw = d * kvh;
     auto* attn_input = named(prefix + "attn_input", Norm(c, p, input, weight(l.attn_norm)));
     const bool tail = shape.output_mode != Gemma4OutputMode::kStateOnly || il + 1 != p.layers;
-    auto* q = tail ? ggml_reshape_3d(c, mm(weight(l.q), attn_input), d, p.heads, rows) : nullptr;
-    auto* k_raw = mm(weight(l.k), attn_input);
-    auto* v_raw = l.tied_kv ? k_raw : mm(weight(l.v), attn_input);
+    const bool share_attn = tail || !l.tied_kv;
+    auto* q = tail ? ggml_reshape_3d(c, mm(weight(l.q), attn_input, share_attn), d, p.heads, rows)
+                   : nullptr;
+    auto* k_raw = mm(weight(l.k), attn_input, share_attn);
+    auto* v_raw = l.tied_kv ? k_raw : mm(weight(l.v), attn_input, share_attn);
     auto* k = ggml_reshape_3d(c, k_raw, d, kvh, rows);
     auto* v = ggml_reshape_3d(c, v_raw, d, kvh, rows);
     if (tail) q = Norm(c, p, q, weight(l.q_norm));
@@ -365,8 +376,8 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     auto* attn_out = named(prefix + "attn_residual",
                            ggml_add(c, Norm(c, p, projected, weight(l.attn_post_norm)), residual));
     auto* shared_in = Norm(c, p, attn_out, weight(l.ffn_norm));
-    auto* up = mm(weight(l.up), shared_in);
-    auto* gate = mm(weight(l.gate), shared_in);
+    auto* up = mm(weight(l.up), shared_in, shared_in->ne[1] > 1);
+    auto* gate = mm(weight(l.gate), shared_in, shared_in->ne[1] > 1);
     auto* shared = mm(weight(l.down), ggml_geglu_split(c, gate, up));
     ggml_tensor* ffn = shared;
     if (p.experts != 0) {
