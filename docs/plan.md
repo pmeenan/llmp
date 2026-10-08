@@ -491,8 +491,11 @@ family" guide, and its long-context scaling work.
         - [ ] **T93** Equal-width C2 rows 2–128 and partial tails are adopted;
           extend compatible >128 rows, mixed-width roots and other cohorts
           with explicit bounds/funding, original geometry and recipient checks.
-          Attribute/close the remaining 64-row stock gap (+2.290% prefill,
-          +1.813% paid); the same 25-wave schedule rules out an extra native wave.
+          The 64-row diagnostic host-mask/no-hint recipe remains +2.290%
+          prefill / +1.813% paid. One matched timeline finds little active-work
+          excess and distributed replay/capture gaps; no cause is established.
+          Compare the complete ordinary GPU-mask/hinted recipe to stock next;
+          the same 25-wave schedule rules out an extra native wave.
       - **Gemma4 26B-A4B / assistant**
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T07** Compact expert-major MMQ scheduling.
@@ -569,7 +572,10 @@ family" guide, and its long-context scaling work.
       actual five-row joined tails/restart; 64-row prefill improves
       10.474%/2.789% against native packed controls. Fresh 64-row stock
       bookends leave Gemma2 level and Gemma3 +2.290% prefill / +1.813%
-      paid cycle, explicitly open. T93 still tracks compatible >128 rows,
+      paid cycle for its host-mask/no-hint diagnostic recipe, explicitly open.
+      One matched timeline attributes most positive prefill difference to
+      distributed intra-wave inactivity, without establishing a fix. Complete
+      ordinary GPU-mask/hinted reference comparison remains open. T93 tracks compatible >128 rows,
       mixed-width roots/cohorts and their bounded admission; T92 tracks
       DeepSeek reference bank joins. Selector bounds do not close ports.
       Confirm every open matrix consumer has its own checked result before

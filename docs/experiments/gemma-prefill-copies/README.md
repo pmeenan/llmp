@@ -351,6 +351,11 @@ positively retires; stock container absence is independently checked in a
 finally path. All four arms per family match 64 valid natural choices and
 both complete finite final vocabulary heads byte for byte. The 64-row runs
 supply their own reference oracle, without inheriting a 128-row allowance.
+The Gemma3 joint probe retains host masks and supplies no prefill hints;
+ordinary serving already selects device masks and checkpoint-aware hints.
+Its remaining reference gap therefore describes this diagnostic recipe,
+not the complete ordinary-serving defaults. The matched owner-root/flexible
+factors remain valid; a fresh complete-recipe reference comparison is open.
 
 | Family / arm, acquisition order | Prefill | Decode | Paid sum |
 | --- | ---: | ---: | ---: |
@@ -420,3 +425,96 @@ the checked-in [Gemma2 stock helper](../gemma2-serving/llama_joint_prefill_probe
 or [Gemma3 stock helper](../gemma3-execution/llama_joint_prefill_probe.cc)
 against the pinned original-image headers/libraries and append `chunk=64`
 to `MODEL IDS0 TEXT0 IDS1 TEXT1 NEW_OUT cycle` inside that immutable image.
+
+
+## One matched Gemma3 warm timeline
+
+At source `698a077`, one CUDA-only Nsight 2025.3.2 pair on Spark B checks the
+64-row diagnostic recipe above. It reuses the four completed unprofiled
+controls and their unchanged qualified binaries, inputs, artifact, reference
+helper/image and resolved cuBLAS payloads; the intervening source changes
+are Markdown only. GPU: GB10, driver 580.178.04, SDK c09/CUDA 13.4. Both
+profiled applications complete explicit teardown, return zero, publish the
+same 64 valid choices and two complete finite vocabulary heads as all four
+controls, and leave no GPU process; stock container absence is independently
+checked. No new competitive speed claim comes from profiling.
+
+Actual trace counts authenticate both paid phase boundaries: 40 two-row
+vocabulary projections (eight warm, 32 paid decode), with two scalar prompt
+frontier heads followed by six supplied scalar steps between them. Paid
+prefill has 25 waves: 19 joined and six scalar. Native executes 827 attention
+kernels (627 actual-root, 200 scalar); stock executes 850, retaining the
+otherwise unused final-layer work in 23 state-only waves. Both use original
+quantized product templates and query-tile geometries. Native has 22 prefill
+replays and three captures beside eager execution; stock has 16 replays and
+nine eager waves. Paid decode has 32 native replays versus stock's 31 replays
+and one eager wave.
+
+| Paid prefill GPU interval, milliseconds | Native | llama.cpp | Native minus stock |
+| --- | ---: | ---: | ---: |
+| First-to-last kernel span | 612.128896 | 603.528960 | +8.599936 |
+| Kernel duration sum | 569.855352 | 569.078528 | +0.776824 |
+| Kernel activity union | 563.321336 | 560.654592 | +2.666744 |
+| Copy activity union within those bounds | 0.556352 | 1.862304 | −1.305952 |
+| Combined activity union | 563.877688 | 562.516896 | +1.360792 |
+| No kernel/copy activity | 48.251208 | 41.012064 | +7.239144 |
+
+The native first input/mask copies and mask concatenations precede its first
+kernel. Extending each interval from its first paid input copy through its
+final prompt-frontier publication gives a +9.041088 ms native span difference:
++1.285816 ms combined GPU activity and +7.755272 ms inactivity. Previous warm
+full-head publication and the following supplied scalar step's inputs are
+explicitly excluded. No memset occurs within either paid phase. Kernel
+duration sums can overlap under programmatic dependent launch; unions are
+used for inactive time. Recorded replay-copy bytes are retained as raw
+metadata, not presented as verified traffic.
+
+| Native capture wave, zero-based | Owner / past / rows | Output | Global / local read cells |
+| --- | --- | --- | --- |
+| 19 | slot 0 / 1216 / 64 | Greedy frontier | 1280 / 1280 |
+| 20 | slot 1 / 1216 / 64 | State only | 1280 / 1280 |
+| 24 | slot 1 / 1472 / 64 | Greedy frontier | 1536 / 1280 |
+
+These three shapes each occur only once during warm prefill. The second-use
+`PlanRuns::CaptureDue` policy therefore captures them during the paid pass;
+there is no evidence of graph loss. Slot 1's following recurring 1536-cell
+state-only shape captures during warm wave 22 and replays in the paid pass.
+The three paid captures contribute 5.161 ms of native intra-wave inactivity
+versus 0.927 ms in their stock counterparts. Across all 25 waves, intra-wave
+inactivity is 17.411/4.529 ms (native/stock), while inter-wave inactivity is
+31.619/36.744 ms. Thus native already saves inter-wave time; the data do not
+support a generic scheduler-wake explanation.
+
+The remaining replay gaps are distributed: quantize-to-MMQ and MMQ-to-fixup
+transitions contribute about 3.78 and 2.98 ms more kernel-to-kernel gap than
+stock, mostly submicrosecond gaps; the largest individual intra-wave gap is
+16.6 microseconds. These transition sums can include copy activity and are
+not independent critical-path savings. No cause or safe optimization is
+established. The profiled decode copy-inclusive difference is +28.303 ms,
+substantially above the unprofiled difference of about 5.8 ms, so it is
+instrument-sensitive evidence, not a revised performance result. CPU CUDA
+API interval sums overlap work and do not measure critical-path overhead.
+
+This one pair closes the attribution experiment without closing the
+diagnostic residual. Complete ordinary-recipe comparison, compatible larger
+query tiles and mixed-width roots remain explicit work. In particular, the
+probe's host masks and absent future hints must not be mistaken for ordinary
+serving's already-adopted GPU masks and shared lookahead. No extra inference,
+full regression or trace ladder ran.
+
+Replay uses the authenticated Gemma3 standing inputs, probes and immutable
+reference image identified above, with `cycle bounded-roots owner-prefill
+flexible-owner-prefill chunk=64` for native and `cycle chunk=64` for stock.
+Profile each whole process with `--trace=cuda --cuda-graph-trace=node
+--sample=none --cpuctxsw=none --duration=90 --stop-on-exit=true --wait=all
+--kill=sigterm --export=sqlite`. Verify full application retirement and payload
+equality before interpreting traces; use the projection counts and actual
+post-head tails above to isolate the paid prompt and decode. Raw captures
+and the one-off analyzer remain outside Git under Spark B
+`~/scratch/m35-gemma3-warm-timeline/run1` and coordination scratch. The source
+manifest is `c97f53510381286a7b514fce75a20df666b9322dc3e1ff2ff6b489e386f53356`;
+native/stock SQLite SHA-256 identities are
+`10a2ac94092737383abed1df492dd4f8305b3bf2a8723967e443f722f5f7a96d` /
+`529b4f6baf0a3f733e34be35375e10a39a16ecc53318dc9f8fe20ef50317eb2e`.
+TensorFold's two task-entry refs remain the exact native/Python pins above,
+with no applicable Gemma3 CUDA/GGUF recipe.

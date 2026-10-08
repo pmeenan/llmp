@@ -719,7 +719,10 @@ architecture exclusions:
   controls include exact eager/changed replay, actual five-row serving tails,
   initialized state, kept restart and scalar continuation. Fresh 64-row
   stock comparisons are level for Gemma2 (+0.059% prefill / −0.038% paid),
-  while Gemma3 retains +2.290% prefill / +1.813% paid; no universal parity.
+  while Gemma3's host-mask/no-hint diagnostic recipe retains +2.290%
+  prefill / +1.813% paid; no universal parity. One matched timeline finds
+  distributed intra-wave gaps with nearly equal active work; it establishes
+  no fix. Complete ordinary GPU-mask/hinted reference comparison remains open.
   Compatible >128 rows, mixed-width roots and other cohorts/layouts remain
   OPEN, with checked fallback. The 8192-total-row foundation has a plausible
   larger equal-C2 recipient, requiring explicit expanded mask/parent bounds,
