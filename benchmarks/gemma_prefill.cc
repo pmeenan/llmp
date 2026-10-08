@@ -5,12 +5,13 @@
 // ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31] [ordinary|both|all] [MAX_ROWS]
 // [normmul-off|normmul-on] [full|state-only] [lookahead-on|lookahead-off]
 // [phases-off|phases-on] [state-chunked|state-upfront]
-// [capture-ahead-off|capture-ahead-on].
+// [capture-ahead-off|capture-ahead-on] [features-off|features-frontier].
 // Row-cap experiments do not change production defaults.
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -28,7 +29,7 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc < 4 || argc > 13) return 2;
+  if (argc < 4 || argc > 14) return 2;
   const std::string_view variant = argc >= 5 ? argv[4] : "26";
   const std::string_view policy = argc >= 6 ? argv[5] : "ordinary";
   if (variant != "26" && variant != "31") return 2;
@@ -47,6 +48,9 @@ int main(int argc, char** argv) {
   const std::string_view capture_ahead = argc >= 13 ? argv[12] : "capture-ahead-off";
   if (capture_ahead != "capture-ahead-off" && capture_ahead != "capture-ahead-on") return 2;
   const bool ahead = capture_ahead == "capture-ahead-on";
+  const std::string_view features = argc >= 14 ? argv[13] : "features-off";
+  if (features != "features-off" && features != "features-frontier") return 2;
+  const bool retain_features = features == "features-frontier";
   std::uint32_t max_rows = 128;
   if (argc >= 7) {
     const std::string_view number(argv[6]);
@@ -84,6 +88,7 @@ int main(int argc, char** argv) {
           .variant = variant == "31" ? en::Gemma4Variant::k31B : en::Gemma4Variant::k26BA4B,
           .context = 16384,
           .max_rows = max_rows,
+          .retain_features = retain_features,
           .fuse_norms = normmul == "normmul-on",
           .fuse_norm_rope = policy == "both" || policy == "all",
           .fuse_norm_add = policy == "both" || policy == "all",
@@ -101,6 +106,8 @@ int main(int argc, char** argv) {
     if (auto r = runner.Setup(); !r) return r;
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
     constexpr std::uint64_t kOutputBytes = kVocab * 4;
+    const std::uint64_t feature_bytes =
+        retain_features ? std::uint64_t{runner.profile().width} * sizeof(float) : 0;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     // These exact hints name only later actual calls: even two future plans
     // cannot increase the unique retained key count beyond this call bound.
@@ -119,7 +126,7 @@ int main(int argc, char** argv) {
     // plans; retained plans/graphs above cover all actual hinted future calls.
     const auto temporary = 2 * floor;
     const auto base = fixed + runner.weights().size() * en::kPagedExtent +
-                      2 * node.StateCapacity() + kOutputBytes;
+                      2 * node.StateCapacity() + kOutputBytes + feature_bytes;
     const auto planning_scratch = en::ScratchArenaBytes();
     if (planning_scratch > std::numeric_limits<std::uint64_t>::max() - base ||
         retention > std::numeric_limits<std::uint64_t>::max() - base - planning_scratch ||
@@ -129,6 +136,7 @@ int main(int argc, char** argv) {
     std::cout << "PREFILL_BUDGET fixed=" << fixed
               << " weights=" << runner.weights().size() * en::kPagedExtent
               << " state_capacity=" << node.StateCapacity() << " publication=" << kOutputBytes
+              << " feature_snapshot=" << feature_bytes
               << " pinned_head_envelope=" << std::uint64_t{max_rows} * kVocab * 4
               << " max_rows=" << max_rows << " call_bound=" << calls << " plan_floor=" << floor
               << " planning_scratch=" << planning_scratch << " plan_graph_capacity=" << retention
@@ -210,7 +218,44 @@ int main(int argc, char** argv) {
         output.flush();
         return output ? en::Status{} : en::Status(Error("writing completed head failed"));
       };
+      // Completed frontier diagnostics stay outside paid prefill/decode. The
+      // pinned copy is catalog-funded before allocation, and CheckBorrow proves
+      // the exact cursor/feature epoch and held physical generations stay valid.
+      std::uint64_t prefill_feature_epoch = 0;
+      const auto save_feature =
+          [&](const char* name,
+              std::uint32_t position) -> std::expected<std::uint64_t, std::string> {
+        if (!retain_features) return 0;
+        auto borrowed = runner.BorrowFrozen(0, ids[position - 1]);
+        if (!borrowed) return Error(borrowed.error());
+        if (borrowed->prefix() != position) return Error("feature cursor mismatch");
+        std::vector<jitllm::catalog::ExtentId> feature_staging;
+        auto pinned = node.Pinned(feature_bytes, 0, feature_staging);
+        if (!pinned) return Error(pinned.error());
+        if (auto copied = runner.CopyFeatures(0, position - 1, 1, *pinned); !copied)
+          return Error(copied.error());
+        if (auto checked = runner.CheckBorrow(*borrowed); !checked) return Error(checked.error());
+        const auto* values = static_cast<const float*>(*pinned);
+        if (!std::all_of(values, values + runner.profile().width,
+                         [](float value) { return std::isfinite(value); }))
+          return Error("nonfinite completed frontier feature");
+        std::ofstream output(out / name, std::ios::binary);
+        output.write(static_cast<const char*>(*pinned),
+                     static_cast<std::streamsize>(feature_bytes));
+        output.flush();
+        const bool written = bool(output);
+        if (auto freed = node.FreePinned(*pinned); !freed) return Error(freed.error());
+        if (!written) return Error("writing completed frontier feature failed");
+        std::cout << "PREFILL_FEATURE file=" << name << " position=" << position
+                  << " bytes=" << feature_bytes << " rows=1 epoch=" << borrowed->feature_epoch()
+                  << " borrowed=1 checked=1\n";
+        return borrowed->feature_epoch();
+      };
       if (auto r = save("prefill.f32"); !r) return r;
+      if (auto epoch = save_feature("prefill-feature.f32", kPrefill); !epoch)
+        return Error(epoch.error());
+      else
+        prefill_feature_epoch = *epoch;
       for (std::uint32_t i = 0; i < kWarm; ++i) {
         const auto past = kPrefill + i;
         if (auto r = runner.Chunk(past, std::span(ids).subspan(past, 1), logits); !r) return r;
@@ -226,6 +271,10 @@ int main(int argc, char** argv) {
       }
       const auto decode = en::support::Seconds(std::chrono::steady_clock::now() - decode_started);
       if (auto r = save("final.f32"); !r) return r;
+      if (auto epoch = save_feature("final-feature.f32", kInput); !epoch)
+        return Error(epoch.error());
+      else if (retain_features && *epoch - prefill_feature_epoch != kWarm + kSteps)
+        return Error("retained feature epoch differs from actual completed units");
       // Retain the exact completed initialized footprint outside both timers.
       // The transfer lives in separately charged pinned storage; no full host
       // payload vector is allocated. A failed copy remains node-owned until
@@ -257,10 +306,10 @@ int main(int argc, char** argv) {
       const auto& policy = runner.last_built_policy();
       std::cout << "PREFILL_NATIVE prefill_seconds=" << prefill << " prefill_rows=" << kPrefill
                 << " prefill_chunks=" << kPrefill / max_rows << " intermediate_heads="
-                << (prefill_output == "full" ? kPrefill / max_rows - 1 : 0)
-                << " prefill_output=" << prefill_output << " state_prepare=" << state_prepare
-                << " lookahead=" << lookahead << " capture_ahead=" << ahead
-                << " lookahead_capacity=" << (ahead ? 2 : 1)
+                << ((prefill_output == "full" || retain_features) ? kPrefill / max_rows - 1 : 0)
+                << " prefill_output=" << prefill_output << " retained_features=" << retain_features
+                << " state_prepare=" << state_prepare << " lookahead=" << lookahead
+                << " capture_ahead=" << ahead << " lookahead_capacity=" << (ahead ? 2 : 1)
                 << " prefill_captures=" << graph_prefill.captured - graph_before.captured
                 << " prefill_replays=" << graph_prefill.replayed - graph_before.replayed
                 << " prefill_built_pairs="

@@ -149,10 +149,13 @@ bookend movement `100*(O2/O1-1)`. Do not pool different methods or add reruns.
 Aggregate results/provenance remain in Git; raw logs, heads and 592 MB states
 remain external under `scratch/m35-gemma26-capture-ahead` until M3.5 closes.
 
-## Compatible next extension remains open
+## Compatible feature extension and remaining gates
 
 The retained-feature/assistant consumer is not covered by this negative
-plain result and keeps G26's composite T23 cell open. Source inspection shows
+plain result. The subsequent [retained-frontier control](../gemma26-feature-capture/README.md)
+qualifies an explicit one-feature-per-owner option with modest target gain and
+exact assistant consumption; default adoption and broader contracts keep
+G26's composite T23 cell open. Source inspection shows
 a concrete compatible route: the plan already writes normalized features,
 and ordinary second-run graph replay leaves the caller's feature D2D copy
 after `Queue`. Capturing a future graph does not execute it or its feature
@@ -160,10 +163,11 @@ writer, so the actual future unit can keep that same ordered D2D copy and its
 existing completion/quarantine checks. Its complete key already records
 `feature_outputs`, and `Layout` includes the fresh feature-ID input.
 
-A follow-up can restrict this extension to one frontier feature row per owner,
+The bounded extension uses one frontier feature row per owner,
 with the current head/feature publication envelopes, independently funded
-plans/graphs and current/near/far key protection. It must continue excluding
-all-output/all-feature, verification and greedy execution, and qualify full
-feature bytes alongside heads, initialized KV, borrowed-peer identity and
-feature-copy failure recovery. No code or measurements for that extension
-are included here; T23 remains open for it and broader compatible envelopes.
+plans/graphs and current/near/far key protection. It continues excluding
+all-output/all-feature, verification and greedy execution. Full feature bytes,
+heads, initialized KV, borrowed-peer identity and feature-copy failure ownership
+are covered by the subsequent focused controls. Their evidence is separate from
+this plain negative screen; T23 remains open for policy adoption and broader
+compatible envelopes.

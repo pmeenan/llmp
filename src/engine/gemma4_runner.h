@@ -59,8 +59,8 @@ struct Gemma4Options {
   // decode arithmetic); never in row-invariant plans.
   bool fuse_quant_glu = false;
   bool prefill_lookahead = true;
-  // Explicit plain-prefill capture policy; feature/assistant and verify paths
-  // retain their existing execution. Both profiles remain off until qualified.
+  // Explicit frontier-prefill capture policy, including one retained feature
+  // per owner. Verification/all-row paths stay excluded; both profiles default off.
   bool capture_ahead = false;
   std::uint32_t prefill_lookahead_capacity = 1;
   // Explicit independent-root attention policy, immutable for this runner.
@@ -124,6 +124,7 @@ class Gemma4Runner final : public PagedModel {
     std::uint32_t slot() const { return slot_; }
     std::uint32_t prefix() const { return prefix_; }
     std::int32_t anchor() const { return anchor_; }
+    std::uint64_t feature_epoch() const { return epoch_; }
 
    private:
     friend class Gemma4Runner;

@@ -76,6 +76,8 @@ class Gemma4AssistantGpu : public ::testing::Test {
     return digest.Finish();
   }
   virtual bool FailedSetup() const { return false; }
+  virtual std::uint32_t MaxRows() const { return 128; }
+  virtual bool CaptureAhead() const { return false; }
   void SetUp() override {
     const auto store = std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts");
     const auto target = store / "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
@@ -85,8 +87,11 @@ class Gemma4AssistantGpu : public ::testing::Test {
         node,
         en::Gemma4Options{.artifact = target,
                           .out = "/tmp/jitllm-gemma-assistant-control",
+                          .max_rows = MaxRows(),
                           .slots = 2,
-                          .retain_features = true},
+                          .retain_features = true,
+                          .capture_ahead = CaptureAhead(),
+                          .prefill_lookahead_capacity = CaptureAhead() ? 2U : 1U},
         0, 0);
     lifetime->entered.push_back(runner.get());
     ASSERT_TRUE(runner->Setup());
@@ -117,7 +122,8 @@ class Gemma4AssistantGpu : public ::testing::Test {
     assistant = *created;
     ASSERT_TRUE(node.MapWorkspace(runner->activations_needed(), runner->pool_needed()));
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-    node.SetHostFloor(runner->host_input_bytes() + runner->plan_floor_bytes());
+    node.SetHostFloor(runner->host_input_bytes() +
+                      (CaptureAhead() ? 2U : 1U) * runner->plan_floor_bytes());
     ASSERT_TRUE(node.Start(jitllm::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
                                                2 * node.StateCapacity())));
     ASSERT_TRUE(runner->Register());
@@ -224,6 +230,122 @@ TEST_F(Gemma4AssistantGpu, EndogenousThreeStepRepeatsAndIndependentFrozenOwners)
         return {};
       });
   ASSERT_TRUE(r) << (r ? "" : r.error());
+}
+class Gemma4AssistantCapturedGpu : public Gemma4AssistantGpu {
+ protected:
+  std::uint32_t MaxRows() const override { return 256; }
+  bool CaptureAhead() const override { return true; }
+};
+TEST_F(Gemma4AssistantCapturedGpu, ThreeEndogenousStepsMatchAfterCapturedTargetFrontier) {
+  const auto bytes = std::uint64_t{16} * (262144U + 2816U) * sizeof(float);
+  ASSERT_TRUE(node.ChargeHost(bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, bytes};
+  const std::array<std::int32_t, 6> seed{2, 818, 5279, 529, 7001, 563};
+  std::array<std::int32_t, 768> prompt{};
+  for (std::size_t i = 0; i < prompt.size(); ++i) prompt[i] = seed[i % seed.size()];
+  const std::array<std::int32_t, 5> peer{2, 818, 5279, 529, 818};
+  std::array<std::array<std::vector<float>, 2>, 3> expected_heads, expected_features;
+  std::array<jitllm::base::Sha256Digest, 2> expected_target;
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
+  auto ran = node.WithRequest(
+      0, runner->closure(), "assistant consumes captured target frontier", [&]() -> en::Status {
+        for (const bool hinted : {false, true}) {
+          for (const auto slot : {0U, 1U})
+            if (auto r = runner->Clear(slot); !r) return r;
+          // Clears both target and assistant graph/plan caches. first=true
+          // below resets assistant recurrent input to the newly borrowed target.
+          runner->DropPlans();
+          const auto before = runner->lookahead_stats();
+          const auto graphs = runner->graph_stats();
+          std::array<std::vector<float>, 2> target_heads;
+          for (std::uint32_t chunk = 0; chunk < 3; ++chunk) {
+            const auto past = chunk * 256;
+            if (auto r = runner->ChunkPrefill(
+                    past, std::span(prompt).subspan(past, 256), target_heads[0], true,
+                    hinted && chunk < 2 ? 256U : 0U, true, hinted && chunk == 0 ? 256U : 0U, true);
+                !r)
+              return r;
+          }
+          const auto after = runner->lookahead_stats();
+          EXPECT_EQ(after.refused, before.refused);
+          EXPECT_EQ(after.dropped_ahead, before.dropped_ahead);
+          if (hinted) {
+            EXPECT_GT(after.built_pairs, before.built_pairs);
+            EXPECT_GT(after.cached_pairs, before.cached_pairs);
+            EXPECT_GT(after.captured_ahead, before.captured_ahead);
+            EXPECT_GT(runner->graph_stats().replayed, graphs.replayed);
+          } else {
+            EXPECT_EQ(after.captured_ahead, before.captured_ahead);
+            EXPECT_EQ(runner->graph_stats().replayed, graphs.replayed);
+          }
+          const en::Gemma4Runner::Work work{1, 0, peer, &target_heads[1]};
+          if (auto r = runner->Wave(std::span(&work, 1)); !r) return r;
+          std::array<en::Gemma4Runner::FrozenBorrow, 2> borrows;
+          for (const auto slot : {0U, 1U}) {
+            EXPECT_EQ(target_heads[slot].size(), 262144U);
+            auto witness = Witness(slot, slot == 0 ? 768U : 5U);
+            if (!witness) return en::support::Error(witness.error());
+            if (!hinted)
+              expected_target[slot] = *witness;
+            else
+              EXPECT_EQ(*witness, expected_target[slot]);
+            const auto anchor = static_cast<std::int32_t>(
+                std::max_element(target_heads[slot].begin(), target_heads[slot].end()) -
+                target_heads[slot].begin());
+            auto borrowed = runner->BorrowFrozen(slot, anchor);
+            if (!borrowed) return en::support::Error(borrowed.error());
+            borrows[slot] = std::move(*borrowed);
+          }
+          const std::array<const en::Gemma4Runner::FrozenBorrow*, 2> owners{&borrows[0],
+                                                                            &borrows[1]};
+          std::array<std::int32_t, 2> anchors{borrows[0].anchor(), borrows[1].anchor()};
+          std::array<std::vector<float>, 2> heads, features;
+          const std::array<std::vector<float>*, 2> head_out{&heads[0], &heads[1]},
+              feature_out{&features[0], &features[1]};
+          for (std::uint32_t step = 0; step < 3; ++step) {
+            if (auto r = assistant->Step(owners, anchors, step == 0, head_out, feature_out); !r)
+              return r;
+            for (const auto slot : {0U, 1U}) {
+              if (auto r = runner->CheckBorrow(borrows[slot]); !r) return r;
+              EXPECT_EQ((*runner->request_slot(slot))->completed_positions(),
+                        slot == 0 ? 768U : 5U);
+              EXPECT_EQ(heads[slot].size(), 262144U);
+              EXPECT_EQ(features[slot].size(), 2816U);
+              EXPECT_TRUE(
+                  std::ranges::all_of(heads[slot], [](float v) { return std::isfinite(v); }));
+              EXPECT_TRUE(
+                  std::ranges::all_of(features[slot], [](float v) { return std::isfinite(v); }));
+              if (!hinted) {
+                expected_heads[step][slot] = heads[slot];
+                expected_features[step][slot] = features[slot];
+              } else {
+                if (heads[slot].size() != expected_heads[step][slot].size() ||
+                    features[slot].size() != expected_features[step][slot].size())
+                  return en::support::Error("assistant full output shapes differ");
+                EXPECT_EQ(std::memcmp(heads[slot].data(), expected_heads[step][slot].data(),
+                                      heads[slot].size() * sizeof(float)),
+                          0);
+                EXPECT_EQ(std::memcmp(features[slot].data(), expected_features[step][slot].data(),
+                                      features[slot].size() * sizeof(float)),
+                          0);
+              }
+              anchors[slot] = static_cast<std::int32_t>(
+                  std::max_element(heads[slot].begin(), heads[slot].end()) - heads[slot].begin());
+            }
+          }
+          for (const auto slot : {0U, 1U}) {
+            auto witness = Witness(slot, slot == 0 ? 768U : 5U);
+            if (!witness) return en::support::Error(witness.error());
+            EXPECT_EQ(*witness, expected_target[slot]);
+          }
+        }
+        return {};
+      });
+  ASSERT_TRUE(ran) << (ran ? "" : ran.error());
 }
 class Gemma4AssistantFailedSetupGpu : public Gemma4AssistantGpu {
  protected:

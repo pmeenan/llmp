@@ -23,6 +23,8 @@ namespace en = jitllm::engine;
 class Gemma4RunnerGpu : public ::testing::Test {
  protected:
   virtual std::uint32_t Slots() const { return 4; }
+  virtual std::uint32_t MaxRows() const { return 128; }
+  virtual bool CaptureAhead() const { return false; }
   virtual std::uint32_t HeadRows() const { return 0; }
   virtual bool Invariant() const { return false; }
   virtual bool DefaultNorms() const { return false; }
@@ -41,6 +43,7 @@ class Gemma4RunnerGpu : public ::testing::Test {
     en::Gemma4Options options{.artifact = artifact,
                               .out = "/tmp/jitllm-gemma4-runner-control",
                               .variant = Variant(),
+                              .max_rows = MaxRows(),
                               .slots = Slots(),
                               .max_head_rows = HeadRows(),
                               .retain_features = RetainFeatures(),
@@ -49,7 +52,9 @@ class Gemma4RunnerGpu : public ::testing::Test {
                               .fuse_norm_rope = NormChains(),
                               .fuse_norm_add = NormChains(),
                               .fuse_gemma_route = MoeChains(),
-                              .fuse_gemma_reduce = MoeChains()};
+                              .fuse_gemma_reduce = MoeChains(),
+                              .capture_ahead = CaptureAhead(),
+                              .prefill_lookahead_capacity = CaptureAhead() ? 2U : 1U};
     // Historical ordinary fixtures stay explicitly off; default fixtures use
     // the production default without overriding the option.
     if (!DefaultNorms()) options.fuse_norms = Invariant();
@@ -60,7 +65,8 @@ class Gemma4RunnerGpu : public ::testing::Test {
     ASSERT_TRUE(setup) << (setup ? "" : setup.error());
     ASSERT_TRUE(node.MapWorkspace(runner->activations_needed(), runner->pool_needed()));
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-    node.SetHostFloor(runner->host_input_bytes() + runner->plan_floor_bytes());
+    node.SetHostFloor(runner->host_input_bytes() +
+                      (CaptureAhead() ? 2U : 1U) * runner->plan_floor_bytes());
     ASSERT_TRUE(node.Start(jitllm::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
                                                2 * node.StateCapacity())));
     ASSERT_TRUE(runner->Register());
@@ -1243,6 +1249,131 @@ class Gemma4FeatureGpu : public Gemma4RunnerGpu {
  protected:
   bool RetainFeatures() const override { return true; }
 };
+class Gemma4FeatureCaptureGpu : public Gemma4FeatureGpu {
+ protected:
+  std::uint32_t Slots() const override { return 2; }
+  std::uint32_t MaxRows() const override { return 256; }
+  bool CaptureAhead() const override { return true; }
+  bool NormChains() const override { return true; }
+  bool MoeChains() const override { return true; }
+};
+TEST_F(Gemma4FeatureCaptureGpu, CapturedFrontierMatchesOrdinaryAndFreshRestoreContinuation) {
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
+  auto ranges = runner->CheckpointRanges(769);
+  ASSERT_TRUE(ranges);
+  std::uint64_t state_bytes = 0;
+  for (const auto& range : *ranges) state_bytes += range.bytes;
+  const auto feature_bytes = std::uint64_t{runner->profile().width} * sizeof(float);
+  const auto host_bytes =
+      4 * state_bytes + 10ULL * runner->profile().vocab * sizeof(float) + 8 * feature_bytes;
+  ASSERT_TRUE(node.ChargeHost(host_bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, host_bytes};
+  std::array<std::int32_t, 769> tokens{};
+  for (std::size_t i = 0; i < tokens.size(); ++i) tokens[i] = prompt[i % prompt.size()];
+  std::array<std::vector<float>, 3> expected_heads, expected_features;
+  std::vector<float> next_head, next_feature;
+  std::vector<std::byte> expected_state, next_state;
+  auto ran = Held([&]() -> en::Status {
+    const auto feature = [&](std::uint32_t first, std::vector<float>& values) -> en::Status {
+      std::vector<jitllm::catalog::ExtentId> staging;
+      auto pinned = node.Pinned(feature_bytes, 0, staging);
+      if (!pinned) return en::support::Error(pinned.error());
+      if (auto copied = runner->CopyFeatures(0, first, 1, *pinned); !copied) return copied;
+      const auto* data = static_cast<const float*>(*pinned);
+      values.assign(data, data + runner->profile().width);
+      EXPECT_TRUE(std::ranges::all_of(values, [](float v) { return std::isfinite(v); }));
+      return node.FreePinned(*pinned);
+    };
+    for (const bool hinted : {false, true}) {
+      for (const auto slot : {0U, 1U})
+        if (auto r = runner->Clear(slot); !r) return r;
+      runner->DropPlans();
+      const auto before = runner->lookahead_stats();
+      const auto graphs = runner->graph_stats();
+      std::vector<float> head, features;
+      for (std::uint32_t chunk = 0; chunk < 3; ++chunk) {
+        const auto past = chunk * 256;
+        if (auto r = runner->ChunkPrefill(past, std::span(tokens).subspan(past, 256), head, true,
+                                          hinted && chunk < 2 ? 256U : 0U, true,
+                                          hinted && chunk == 0 ? 256U : 0U, true);
+            !r)
+          return r;
+        if (auto r = feature(past + 255, features); !r) return r;
+        EXPECT_EQ(head.size(), runner->profile().vocab);
+        EXPECT_TRUE(std::ranges::all_of(head, [](float v) { return std::isfinite(v); }));
+        if (!hinted) {
+          expected_heads[chunk] = head;
+          expected_features[chunk] = features;
+        } else {
+          Exact(expected_heads[chunk], head);
+          Exact(expected_features[chunk], features);
+        }
+      }
+      const auto after = runner->lookahead_stats();
+      EXPECT_EQ(after.refused, before.refused);
+      EXPECT_EQ(after.dropped_ahead, before.dropped_ahead);
+      if (hinted) {
+        EXPECT_GT(after.built_pairs, before.built_pairs);
+        EXPECT_GT(after.cached_pairs, before.cached_pairs);
+        EXPECT_GT(after.captured_ahead, before.captured_ahead);
+        EXPECT_GT(runner->graph_stats().replayed, graphs.replayed);
+      } else {
+        EXPECT_EQ(after.captured_ahead, before.captured_ahead);
+        EXPECT_EQ(runner->graph_stats().replayed, graphs.replayed);
+      }
+      std::vector<std::byte> state;
+      if (auto r = StateBytes(0, 768, state); !r) return r;
+      if (!hinted)
+        expected_state = state;
+      else
+        EXPECT_EQ(state, expected_state);
+      if (hinted) {
+        auto borrow = runner->BorrowFrozen(0, tokens[767]);
+        if (!borrow) return en::support::Error(borrow.error());
+        EXPECT_EQ(borrow->prefix(), 768U);
+        EXPECT_FALSE(runner->Clear(0));
+        EXPECT_FALSE(runner->Spill(0));
+        std::vector<float> sentinel{123}, peer;
+        EXPECT_FALSE(runner->Chunk(768, std::span(tokens).last(1), sentinel));
+        EXPECT_EQ(sentinel, (std::vector<float>{123}));
+        if (auto r = Single(1, 0, prompt, peer); !r) return r;
+        if (auto r = runner->CheckBorrow(*borrow); !r) return r;
+        if (auto r = feature(767, features); !r) return r;
+        Exact(features, expected_features[2]);
+        if (auto r = StateBytes(0, 768, state); !r) return r;
+        EXPECT_EQ(state, expected_state);
+        *borrow = en::Gemma4Runner::FrozenBorrow{};
+        if (auto r = runner->Spill(0); !r) return r;
+        if (auto r = runner->Restore(0); !r) return r;
+        EXPECT_FALSE(runner->BorrowFrozen(0, tokens[767]));
+        if (auto r = StateBytes(0, 768, state); !r) return r;
+        EXPECT_EQ(state, expected_state);
+      }
+      if (auto r = runner->Chunk(768, std::span(tokens).last(1), head); !r) return r;
+      if (auto r = feature(768, features); !r) return r;
+      if (auto r = StateBytes(0, 769, state); !r) return r;
+      if (!hinted) {
+        next_head = head;
+        next_feature = features;
+        next_state = state;
+      } else {
+        Exact(head, next_head);
+        Exact(features, next_feature);
+        EXPECT_EQ(state, next_state);
+        auto fresh = runner->BorrowFrozen(0, tokens.back());
+        if (!fresh) return en::support::Error(fresh.error());
+        EXPECT_EQ(fresh->prefix(), 769U);
+        EXPECT_EQ((*runner->request_slot(1))->completed_positions(), prompt.size());
+      }
+    }
+    return {};
+  });
+  ASSERT_TRUE(ran) << (ran ? "" : ran.error());
+}
 class Gemma4FeatureHeadCapGpu : public Gemma4FeatureGpu {
  protected:
   std::uint32_t HeadRows() const override { return 4; }

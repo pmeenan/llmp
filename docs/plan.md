@@ -536,13 +536,14 @@ family" guide, and its long-context scaling work.
         - [ ] **T16** Join draft blocks across requests.
         - [ ] **T19** Selective draft-head MMVF.
         - [ ] **T20** Column-invariant grouped float products.
-        - [ ] **T23** Retained-feature/assistant capture-ahead extension
-          remains open. Plain diagnostic capture (context 16384, prefill 8192, chunk 1024)
-          was measured and not adopted: [six actual replays](experiments/gemma26-capture-ahead/README.md),
-          −0.0922% prefill inside −0.5348% bookend drift, exact heads/choices/state.
-          Ordinary capture stays off/one-future. Other context/cohort and
-          feature/assistant capture remain open; the plain result does not
-          qualify or reject those compatible contracts.
+        - [ ] **T23** Retained-feature policy adoption and broader capture
+          contracts remain open. The [explicit frontier opt-in](experiments/gemma26-feature-capture/README.md)
+          gives −0.484% prefill (short n=2), exact heads/features/state and three
+          endogenous assistant proposals after captured target execution.
+          Global defaults and SetupAssistant stay off/one-future; joined target
+          and broader contexts/output contracts remain unqualified. The separate
+          [plain diagnostic screen](experiments/gemma26-capture-ahead/README.md)
+          remains neutral/not adopted (−0.0922%, inside −0.5348% bookend drift).
         - [ ] **T31** One-column fused quantized gate/up GLU.
         - [ ] **T37** Shape-pinned library GEMM algorithms.
         - [ ] **T39** Device greedy verify verdicts.
@@ -572,6 +573,10 @@ family" guide, and its long-context scaling work.
         - [ ] **T15** Concurrent per-owner graph lanes.
         - [ ] **T16** Join draft blocks across requests.
         - [ ] **T19** Selective draft-head MMVF.
+        - [ ] **T23** Compatible retained-frontier/assistant capture policy
+          and its full feature/state/performance qualification. Prior plain
+          capture remains measured neutral, not adopted; that result does not
+          reject the newly eligible feature contract.
         - [ ] **T39** Device greedy verify verdicts.
         - [ ] **T41** Residual-add plus next normalization.
         - [ ] **T45** Selected learned head/adaptive draft depth.

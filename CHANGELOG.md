@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Allow explicit experimental Gemma26 prefill capture with retained frontier
+  features, preserving exact feature/state and checked assistant proposals.
+  Ordinary and assistant-setup capture defaults remain off.
+
 - Build two distinct future prefill shapes with independent shared funding
   for Gemma2/Gemma3, enabling cold changing-width graph capture without
   advancing future state. Configured 256-row and ordinary 128-row controls remain exact.

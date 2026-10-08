@@ -156,6 +156,13 @@ in plan identity and maximum envelopes. Default target graphs remain unchanged.
 This enabled-feature target policy requires its own arithmetic evidence rather
 than inheriting the old narrowed-head target proof.
 
+The [frontier capture control](experiments/gemma26-feature-capture/README.md)
+now records a future target plan with one feature per owner, then keeps the
+fresh D2D copy after actual replay. Full retained features/state and three
+endogenous joined C2 component proposals match ordinary target execution.
+This is an explicit engine option, not assistant serving or speed qualification;
+`SetupAssistant` and global capture defaults remain off/one.
+
 A move-only `FrozenBorrow` requires a completed nonzero prefix, initialized
 latest feature P−1, usable nonrestoring state and an existing held request.
 It authenticates logical epoch/address and catalog extent content/backing

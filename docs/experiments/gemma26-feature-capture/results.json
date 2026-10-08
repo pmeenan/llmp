@@ -1,0 +1,1976 @@
+{
+  "scope": "Explicit retained-frontier Gemma26 target capture policy, diagnostic context16384/prefill8192/chunk1024 plus3 anchors/32forced; n2 each; ordinary defaultoff1; no public admission/reference or assistant speed claim",
+  "ordinary_policy": {
+    "capture_ahead": false,
+    "prefill_lookahead_capacity": 1,
+    "SetupAssistant_policy_changed": false
+  },
+  "measured_source": {
+    "base": "5de4e243021c172b957866bdcc578bc90a243d1c",
+    "files": {
+      "benchmarks/gemma_prefill.cc": "8a978093ebe0b2e4d0abf051d4637aba199f0d7a461b8cffd82b78c451d74efd",
+      "src/engine/gemma4_runner.cc": "dee08fdff674c1a0e0f1db0e70720533344b75b10def659194413f749f631aa1",
+      "src/engine/gemma4_runner.h": "dcf66da8f45cc9b3c55a3dbb74f06417cb2aa313cf68afddbd0f7f58ec085acd",
+      "src/runtime/serving.cc": "fefb11801242205bd556fe295ea99e9693e4bf8373e192170ded9622fd6a2fcc",
+      "tests/unit/gemma4_runner_test.cc": "aede3135ce29b921e07fa9a503a15b020138e4f2c7b870e8c88645cdf5cf0c0c",
+      "tests/unit/gemma4_runner_gpu_test.cc": "bdf839a924dd663ac9e6cf4fd45ba94ff9f439682de5ce39040495da8967fcbb",
+      "src/engine/prefill_lookahead.h": "dcd733e1d9ecac7942c5782b587b7affd8d14481676ff78e2abbb6188e908a73",
+      "src/engine/planned.h": "01fa8e59b5500eebb92acce952e6b610500ba4b886a38815b9a9c7d1a7ba5dc8",
+      "src/engine/planned.cc": "d251604d7829c0c15192e69c65a2612c91a902c5e9dc4d3969a8932b94f76bca",
+      "src/engine/graph_runs.h": "426c5ada351d458ff6a7894fff733b5d70961681dcea84485c8ad9c7baf550ce",
+      "src/engine/graph_runs.cc": "b46e0b8bc8989c2b5654043a3b67b62b387d583d1bdfa9135ef72d7c60758669",
+      "src/engine/gemma4_plan.h": "756364ad86c61773016cc926b0f09a8a1319c95529a8b4e22cd1ab982a7faca6",
+      "src/engine/gemma4_plan.cc": "7f39fd433e1cc04ffa98759ff02138a3cba5c86c0e217eaffd0e57f1dfcdc2a5",
+      "src/engine/gemma4_wave.h": "e2a20ca178523602cd06107eec03c7992adea7b545a4e03a721d79d61aa75f5e",
+      "src/kernels/ggml/gemma4_graph.h": "dd6ff076516f8993e0d8ce47e9418cbeb88f65064c75e43a6b1a8c5398273ae2",
+      "src/kernels/ggml/gemma4_graph.cc": "da87488cd5f815ccca16686e1a553a681269e38c49321a1cd0811389d50a70da",
+      "src/runtime/prefill.h": "f141ff34f9e3c8166a9e31cddb4cbe2378248329de3dda9f121d9c5b93eff957",
+      "tests/unit/plan_cache_test.cc": "1a6cc30484695ce79332eb6646ad7ce635b0628915204bc652f3822755bd7ecf",
+      "tests/unit/CMakeLists.txt": "87bf1106ebc09da173311183abc4061d24e8568cd90f1ea66320f719a0154d62",
+      "benchmarks/CMakeLists.txt": "4e555182442913b98e0631b9db982739e8b4e67e694481565191a460e9904bba",
+      "third_party/sources.lock.json": "e3b25577278a1eda41882f3bebe81f2b023755dcc9c78fd037cb20174ba2dbdd"
+    }
+  },
+  "qualification_source": {
+    "base": "5de4e243021c172b957866bdcc578bc90a243d1c",
+    "files": {
+      "benchmarks/gemma_prefill.cc": "8a978093ebe0b2e4d0abf051d4637aba199f0d7a461b8cffd82b78c451d74efd",
+      "src/engine/gemma4_runner.cc": "dee08fdff674c1a0e0f1db0e70720533344b75b10def659194413f749f631aa1",
+      "src/engine/gemma4_runner.h": "dcf66da8f45cc9b3c55a3dbb74f06417cb2aa313cf68afddbd0f7f58ec085acd",
+      "src/runtime/serving.cc": "fefb11801242205bd556fe295ea99e9693e4bf8373e192170ded9622fd6a2fcc",
+      "tests/unit/gemma4_runner_test.cc": "aede3135ce29b921e07fa9a503a15b020138e4f2c7b870e8c88645cdf5cf0c0c",
+      "tests/unit/gemma4_runner_gpu_test.cc": "1fea594d9803e409ca528de5be6c2e2d6c7add54999c01db17fdf466a3f88be9",
+      "src/engine/prefill_lookahead.h": "dcd733e1d9ecac7942c5782b587b7affd8d14481676ff78e2abbb6188e908a73",
+      "src/engine/planned.h": "01fa8e59b5500eebb92acce952e6b610500ba4b886a38815b9a9c7d1a7ba5dc8",
+      "src/engine/planned.cc": "d251604d7829c0c15192e69c65a2612c91a902c5e9dc4d3969a8932b94f76bca",
+      "src/engine/graph_runs.h": "426c5ada351d458ff6a7894fff733b5d70961681dcea84485c8ad9c7baf550ce",
+      "src/engine/graph_runs.cc": "b46e0b8bc8989c2b5654043a3b67b62b387d583d1bdfa9135ef72d7c60758669",
+      "src/engine/gemma4_plan.h": "756364ad86c61773016cc926b0f09a8a1319c95529a8b4e22cd1ab982a7faca6",
+      "src/engine/gemma4_plan.cc": "7f39fd433e1cc04ffa98759ff02138a3cba5c86c0e217eaffd0e57f1dfcdc2a5",
+      "src/engine/gemma4_wave.h": "e2a20ca178523602cd06107eec03c7992adea7b545a4e03a721d79d61aa75f5e",
+      "src/kernels/ggml/gemma4_graph.h": "dd6ff076516f8993e0d8ce47e9418cbeb88f65064c75e43a6b1a8c5398273ae2",
+      "src/kernels/ggml/gemma4_graph.cc": "da87488cd5f815ccca16686e1a553a681269e38c49321a1cd0811389d50a70da",
+      "src/runtime/prefill.h": "f141ff34f9e3c8166a9e31cddb4cbe2378248329de3dda9f121d9c5b93eff957",
+      "tests/unit/plan_cache_test.cc": "1a6cc30484695ce79332eb6646ad7ce635b0628915204bc652f3822755bd7ecf",
+      "tests/unit/CMakeLists.txt": "87bf1106ebc09da173311183abc4061d24e8568cd90f1ea66320f719a0154d62",
+      "benchmarks/CMakeLists.txt": "4e555182442913b98e0631b9db982739e8b4e67e694481565191a460e9904bba",
+      "third_party/sources.lock.json": "e3b25577278a1eda41882f3bebe81f2b023755dcc9c78fd037cb20174ba2dbdd",
+      "tests/unit/gemma4_assistant_gpu_test.cc": "b0f4c78e507511110359771cd1fac2ef387e91cb0ff639fac0b93de79ae0e078",
+      "src/engine/gemma4_assistant.h": "8552c47d0b52267c4ea3837a9a49a58b9473ffd8a16c29b4d6123b7dd8eb1dd0",
+      "src/engine/gemma4_assistant.cc": "18ff32cb35e34b99e0803409c7b96339bd51529e5adf158f65e0b3589d51c499",
+      "src/kernels/ggml/gemma4_assistant_graph.h": "ee03ef673ddaa489b8a48e65015228c26624b833c3e478d46ba66bf3dab61caa",
+      "src/kernels/ggml/gemma4_assistant_graph.cc": "725d4f0e5bf49f38577b11ab555ce4b65cae36f2608f3dd29e77c9be1a46d703"
+    }
+  },
+  "production_bridge": {
+    "firstfactor_source": "be328fc83fe0b91071d1bd202cdb204d24ae0898f5b74f98a3435eea98ef0f12",
+    "firstfactor_checked": "34a45f09ca4fb7c5449fc5bb6f89c892e95f107299a8e7aa716b0b49663b075a",
+    "unchanged_files": {
+      "benchmarks/gemma_prefill.cc": "8a978093ebe0b2e4d0abf051d4637aba199f0d7a461b8cffd82b78c451d74efd",
+      "src/engine/gemma4_runner.cc": "dee08fdff674c1a0e0f1db0e70720533344b75b10def659194413f749f631aa1",
+      "src/engine/gemma4_runner.h": "dcf66da8f45cc9b3c55a3dbb74f06417cb2aa313cf68afddbd0f7f58ec085acd",
+      "src/runtime/serving.cc": "fefb11801242205bd556fe295ea99e9693e4bf8373e192170ded9622fd6a2fcc",
+      "tests/unit/gemma4_runner_test.cc": "aede3135ce29b921e07fa9a503a15b020138e4f2c7b870e8c88645cdf5cf0c0c",
+      "src/engine/prefill_lookahead.h": "dcd733e1d9ecac7942c5782b587b7affd8d14481676ff78e2abbb6188e908a73",
+      "src/engine/planned.h": "01fa8e59b5500eebb92acce952e6b610500ba4b886a38815b9a9c7d1a7ba5dc8",
+      "src/engine/planned.cc": "d251604d7829c0c15192e69c65a2612c91a902c5e9dc4d3969a8932b94f76bca",
+      "src/engine/graph_runs.h": "426c5ada351d458ff6a7894fff733b5d70961681dcea84485c8ad9c7baf550ce",
+      "src/engine/graph_runs.cc": "b46e0b8bc8989c2b5654043a3b67b62b387d583d1bdfa9135ef72d7c60758669",
+      "src/engine/gemma4_plan.h": "756364ad86c61773016cc926b0f09a8a1319c95529a8b4e22cd1ab982a7faca6",
+      "src/engine/gemma4_plan.cc": "7f39fd433e1cc04ffa98759ff02138a3cba5c86c0e217eaffd0e57f1dfcdc2a5",
+      "src/engine/gemma4_wave.h": "e2a20ca178523602cd06107eec03c7992adea7b545a4e03a721d79d61aa75f5e",
+      "src/kernels/ggml/gemma4_graph.h": "dd6ff076516f8993e0d8ce47e9418cbeb88f65064c75e43a6b1a8c5398273ae2",
+      "src/kernels/ggml/gemma4_graph.cc": "da87488cd5f815ccca16686e1a553a681269e38c49321a1cd0811389d50a70da",
+      "src/runtime/prefill.h": "f141ff34f9e3c8166a9e31cddb4cbe2378248329de3dda9f121d9c5b93eff957",
+      "tests/unit/plan_cache_test.cc": "1a6cc30484695ce79332eb6646ad7ce635b0628915204bc652f3822755bd7ecf",
+      "tests/unit/CMakeLists.txt": "87bf1106ebc09da173311183abc4061d24e8568cd90f1ea66320f719a0154d62",
+      "benchmarks/CMakeLists.txt": "4e555182442913b98e0631b9db982739e8b4e67e694481565191a460e9904bba",
+      "third_party/sources.lock.json": "e3b25577278a1eda41882f3bebe81f2b023755dcc9c78fd037cb20174ba2dbdd"
+    },
+    "changed_paths": [
+      "tests/unit/gemma4_runner_gpu_test.cc",
+      "tests/unit/gemma4_assistant_gpu_test.cc"
+    ]
+  },
+  "prerequisite": {
+    "source_sha256": "be328fc83fe0b91071d1bd202cdb204d24ae0898f5b74f98a3435eea98ef0f12",
+    "method_sha256": "5dadd8e8bcecd935634c8bc71a1edc7525446ba2647570adbacbc1d992af9b0d",
+    "receipt_sha256": "0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd",
+    "cases": [
+      [
+        "Gemma4Runner",
+        "LookaheadCapacityRefusesBeforeArtifactsProvidersAndReservations"
+      ],
+      [
+        "Gemma4RunnerDefaults",
+        "CheckedPlainNormsDoNotEnableOtherExperiments"
+      ],
+      [
+        "Gemma4FeatureHeadCapGpu",
+        "FullFeatureRowsRemainFundedAndNoHeadHintUsesFrontierCapacity"
+      ],
+      [
+        "Gemma4FeatureGpu",
+        "PrefillWithoutAHeadRequestStillPublishesRequiredFeatures"
+      ]
+    ],
+    "bindings": {
+      "tests/unit/gemma4_runner_test": {
+        "sha256": "2ad908dca8245eb9c2bb3d8726fca893d8e0b17b0d0902906cfd5a7eb268a4c9",
+        "ldd": "\tlinux-vdso.so.1 (0x0000f4c46f6d7000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000f4c4663d0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f4c466320000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000f4c461e00000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000f4c434a00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f4c461c40000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f4c46f690000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f4c4662f0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f4c4662c0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f4c4349d0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f4c434990000)\n",
+        "cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        }
+      },
+      "tests/unit/gemma4_runner_gpu_test": {
+        "sha256": "2e6c47618f1874bd326efc1ab9e1cb36e290195342d0ff17de177059710db818",
+        "ldd": "\tlinux-vdso.so.1 (0x0000eabccc6b7000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000eabcc3390000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000eabcc32e0000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000eabcbee00000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000eabc91a00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000eabcbec40000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000eabccc670000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000eabcc32b0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000eabc919d0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000eabc919a0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000eabc91960000)\n",
+        "cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        }
+      },
+      "benchmarks/jitllm_gemma_prefill": {
+        "sha256": "97bfac7f069513c4a1d5b044f2289c191796137bffdda3d5a9c358f11c0624ea",
+        "ldd": "\tlinux-vdso.so.1 (0x0000f108fc7cd000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000f108f3530000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f108f3480000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000f108eee00000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000f108c1a00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f108f32c0000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f108fc780000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f108eedd0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f108eeda0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f108eed70000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f108eed30000)\n",
+        "cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        }
+      },
+      "src/runtime/jitllm-runtime": {
+        "sha256": "0e026f98dbf7be183d7f7a704229d6db2237664b1c6abf9ea51c046725ed9550",
+        "ldd": "\tlinux-vdso.so.1 (0x0000f8b70ff3c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000f8b706830000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f8b706780000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000f8b702200000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000f8b6d4e00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f8b702040000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f8b70ff00000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f8b706750000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f8b706720000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f8b7066f0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f8b7066b0000)\n",
+        "cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        }
+      }
+    },
+    "xml_sha256": {
+      "capacity": "2cac71d2d720ed2283962732b2c8abc8e370afed1c87d0cc8008627743836aaf",
+      "legacy": "ad951164c716b1c5a8f8e44a45fbe7590119cedf170b49655f2808c9848639ee"
+    }
+  },
+  "qualification": {
+    "source_sha256": "d45542f85d04ca6db3ae9e7096aa81e150519207910d4a6f839e4f56089b94ee",
+    "method_sha256": "e9ef52818a25843f00ed0830e1579395cbb2cfed0e5a1233cb5f0b093e635f9b",
+    "receipt_sha256": "0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd",
+    "cases": [
+      [
+        "Gemma4RunnerDefaults",
+        "CheckedPlainNormsDoNotEnableOtherExperiments"
+      ],
+      [
+        "Gemma4FeatureCaptureGpu",
+        "CapturedFrontierMatchesOrdinaryAndFreshRestoreContinuation"
+      ],
+      [
+        "Gemma4FeatureGpu",
+        "FrozenFeatureSurvivesPeerProgressPlansAndRejectsSameSlotMutation"
+      ],
+      [
+        "Gemma4FeatureGpu",
+        "FailedFeatureCopyRetainsItsNodeOwnedPinnedDestination"
+      ],
+      [
+        "Gemma4AssistantCapturedGpu",
+        "ThreeEndogenousStepsMatchAfterCapturedTargetFrontier"
+      ]
+    ],
+    "bindings": {
+      "tests/unit/gemma4_runner_gpu_test": {
+        "sha256": "5e032f61ff3f51c28c5d55f372627ded6e9efa8cab48c7d1c138c2df8212e610",
+        "ldd": "\tlinux-vdso.so.1 (0x0000ec6c4e24b000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000ec6c44f10000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000ec6c44e60000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000ec6c40800000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000ec6c13400000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ec6c40640000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000ec6c4e200000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000ec6c44e30000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000ec6c44e00000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ec6c44dd0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ec6c44d90000)\n",
+        "cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        }
+      },
+      "tests/unit/gemma4_assistant_gpu_test": {
+        "sha256": "b0af63b1e6e034177041aa799469f29fdd9479ca3c88b4357ad9e7a7a0ac6b61",
+        "ldd": "\tlinux-vdso.so.1 (0x0000e1dba774f000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000e1db9e440000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e1db9e390000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000e1db99e00000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000e1db6ca00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e1db99c40000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e1dba7700000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e1db9e360000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e1db9e330000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e1db9e300000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e1db9e2c0000)\n",
+        "cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        }
+      },
+      "benchmarks/jitllm_gemma_prefill": {
+        "sha256": "97bfac7f069513c4a1d5b044f2289c191796137bffdda3d5a9c358f11c0624ea",
+        "ldd": "\tlinux-vdso.so.1 (0x0000e396439dc000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000e3963a740000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e3963a690000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000e39636000000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000e39608c00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e3963a4d0000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e396439a0000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e39635fd0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e39635fa0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e39635f70000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e39635f30000)\n",
+        "cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        }
+      },
+      "src/runtime/jitllm-runtime": {
+        "sha256": "0e026f98dbf7be183d7f7a704229d6db2237664b1c6abf9ea51c046725ed9550",
+        "ldd": "\tlinux-vdso.so.1 (0x0000e463d06fb000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000e463c6ff0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e463c6f40000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000e463c2a00000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000e46395600000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e463c2840000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e463d06b0000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e463c6f10000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e463c6ee0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e463c6eb0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e463955c0000)\n",
+        "cuBLAS": {
+          "libcublas.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+          },
+          "libcublasLt.so.13": {
+            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+          }
+        }
+      }
+    },
+    "xml_sha256": {
+      "feature": "be12e9f06aa26ae59027a04aecac6bd03e42d46f201cbe8483cf5102f80cde3f",
+      "assistant": "b55d6aba6c42143831e4a2f7139baf4e274d42a70c9698a5167b68712df39be5"
+    }
+  },
+  "factor": {
+    "performance_eligible": true,
+    "reference_parity_claim": false,
+    "source_sha256": "be328fc83fe0b91071d1bd202cdb204d24ae0898f5b74f98a3435eea98ef0f12",
+    "method_sha256": "f6fd02977b72a1c35ead88a21bf15ec12bea88f275cee3570660953f48aed8bc",
+    "records": [
+      {
+        "name": "O1",
+        "capacity": 1,
+        "command": [
+          "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
+          "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+          "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+          "/home/pmeenan/scratch/m35-gemma26-feature-capture/screen1/O1/out",
+          "26",
+          "all",
+          "1024",
+          "normmul-off",
+          "state-only",
+          "lookahead-on",
+          "phases-off",
+          "state-chunked",
+          "capture-ahead-off",
+          "features-frontier"
+        ],
+        "timeout_seconds": 145,
+        "returncode": 0,
+        "observed_exit_code": 0,
+        "elapsed_seconds": 7.168065005913377,
+        "summary": {
+          "prefill_seconds": "2.63607",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "7",
+          "prefill_output": "state-only",
+          "retained_features": "1",
+          "state_prepare": "state-chunked",
+          "lookahead": "lookahead-on",
+          "capture_ahead": "0",
+          "lookahead_capacity": "1",
+          "prefill_captures": "0",
+          "prefill_replays": "0",
+          "prefill_built_pairs": "0",
+          "prefill_cached_pairs": "0",
+          "prefill_captured_ahead": "0",
+          "prefill_captured_first": "0",
+          "prefill_dropped_ahead": "0",
+          "lookahead_attempted": "7",
+          "lookahead_built": "7",
+          "lookahead_cached": "7",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.0570511",
+          "decode_seconds": "0.663829",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "33"
+        },
+        "budget": {
+          "fixed": "3892315136",
+          "weights": "17047748608",
+          "state_capacity": "767557632",
+          "publication": "1048576",
+          "feature_snapshot": "11264",
+          "pinned_head_envelope": "1073741824",
+          "max_rows": "1024",
+          "call_bound": "44",
+          "plan_floor": "2503552",
+          "planning_scratch": "9541120",
+          "plan_graph_capacity": "3635157504",
+          "temporary_plans": "5007104",
+          "total": "26125944576"
+        }
+      },
+      {
+        "name": "A1",
+        "capacity": 2,
+        "command": [
+          "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
+          "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+          "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+          "/home/pmeenan/scratch/m35-gemma26-feature-capture/screen1/A1/out",
+          "26",
+          "all",
+          "1024",
+          "normmul-off",
+          "state-only",
+          "lookahead-on",
+          "phases-off",
+          "state-chunked",
+          "capture-ahead-on",
+          "features-frontier"
+        ],
+        "timeout_seconds": 145,
+        "returncode": 0,
+        "observed_exit_code": 0,
+        "elapsed_seconds": 7.100352475885302,
+        "summary": {
+          "prefill_seconds": "2.63028",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "7",
+          "prefill_output": "state-only",
+          "retained_features": "1",
+          "state_prepare": "state-chunked",
+          "lookahead": "lookahead-on",
+          "capture_ahead": "1",
+          "lookahead_capacity": "2",
+          "prefill_captures": "0",
+          "prefill_replays": "6",
+          "prefill_built_pairs": "1",
+          "prefill_cached_pairs": "1",
+          "prefill_captured_ahead": "6",
+          "prefill_captured_first": "0",
+          "prefill_dropped_ahead": "0",
+          "lookahead_attempted": "7",
+          "lookahead_built": "7",
+          "lookahead_cached": "7",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.0559897",
+          "decode_seconds": "0.66567",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "39"
+        },
+        "budget": {
+          "fixed": "3892315136",
+          "weights": "17047748608",
+          "state_capacity": "767557632",
+          "publication": "1048576",
+          "feature_snapshot": "11264",
+          "pinned_head_envelope": "1073741824",
+          "max_rows": "1024",
+          "call_bound": "44",
+          "plan_floor": "2503552",
+          "planning_scratch": "9541120",
+          "plan_graph_capacity": "3635157504",
+          "temporary_plans": "5007104",
+          "total": "26125944576"
+        }
+      },
+      {
+        "name": "A2",
+        "capacity": 2,
+        "command": [
+          "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
+          "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+          "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+          "/home/pmeenan/scratch/m35-gemma26-feature-capture/screen1/A2/out",
+          "26",
+          "all",
+          "1024",
+          "normmul-off",
+          "state-only",
+          "lookahead-on",
+          "phases-off",
+          "state-chunked",
+          "capture-ahead-on",
+          "features-frontier"
+        ],
+        "timeout_seconds": 145,
+        "returncode": 0,
+        "observed_exit_code": 0,
+        "elapsed_seconds": 7.165063794935122,
+        "summary": {
+          "prefill_seconds": "2.61861",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "7",
+          "prefill_output": "state-only",
+          "retained_features": "1",
+          "state_prepare": "state-chunked",
+          "lookahead": "lookahead-on",
+          "capture_ahead": "1",
+          "lookahead_capacity": "2",
+          "prefill_captures": "0",
+          "prefill_replays": "6",
+          "prefill_built_pairs": "1",
+          "prefill_cached_pairs": "1",
+          "prefill_captured_ahead": "6",
+          "prefill_captured_first": "0",
+          "prefill_dropped_ahead": "0",
+          "lookahead_attempted": "7",
+          "lookahead_built": "7",
+          "lookahead_cached": "7",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.0575953",
+          "decode_seconds": "0.661614",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "39"
+        },
+        "budget": {
+          "fixed": "3892315136",
+          "weights": "17047748608",
+          "state_capacity": "767557632",
+          "publication": "1048576",
+          "feature_snapshot": "11264",
+          "pinned_head_envelope": "1073741824",
+          "max_rows": "1024",
+          "call_bound": "44",
+          "plan_floor": "2503552",
+          "planning_scratch": "9541120",
+          "plan_graph_capacity": "3635157504",
+          "temporary_plans": "5007104",
+          "total": "26125944576"
+        }
+      },
+      {
+        "name": "O2",
+        "capacity": 1,
+        "command": [
+          "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
+          "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+          "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+          "/home/pmeenan/scratch/m35-gemma26-feature-capture/screen1/O2/out",
+          "26",
+          "all",
+          "1024",
+          "normmul-off",
+          "state-only",
+          "lookahead-on",
+          "phases-off",
+          "state-chunked",
+          "capture-ahead-off",
+          "features-frontier"
+        ],
+        "timeout_seconds": 145,
+        "returncode": 0,
+        "observed_exit_code": 0,
+        "elapsed_seconds": 7.145614383043721,
+        "summary": {
+          "prefill_seconds": "2.63834",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "7",
+          "prefill_output": "state-only",
+          "retained_features": "1",
+          "state_prepare": "state-chunked",
+          "lookahead": "lookahead-on",
+          "capture_ahead": "0",
+          "lookahead_capacity": "1",
+          "prefill_captures": "0",
+          "prefill_replays": "0",
+          "prefill_built_pairs": "0",
+          "prefill_cached_pairs": "0",
+          "prefill_captured_ahead": "0",
+          "prefill_captured_first": "0",
+          "prefill_dropped_ahead": "0",
+          "lookahead_attempted": "7",
+          "lookahead_built": "7",
+          "lookahead_cached": "7",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.0547512",
+          "decode_seconds": "0.662936",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "33"
+        },
+        "budget": {
+          "fixed": "3892315136",
+          "weights": "17047748608",
+          "state_capacity": "767557632",
+          "publication": "1048576",
+          "feature_snapshot": "11264",
+          "pinned_head_envelope": "1073741824",
+          "max_rows": "1024",
+          "call_bound": "44",
+          "plan_floor": "2503552",
+          "planning_scratch": "9541120",
+          "plan_graph_capacity": "3635157504",
+          "temporary_plans": "5007104",
+          "total": "26125944576"
+        }
+      }
+    ],
+    "exact_crossarm": [
+      {
+        "prefill.f32": {
+          "bytes": 1048576,
+          "sha256": "9bc078ccceaf09a7904191c41caa9c2e0cedb7ce2d39746095c5dd3c09b1c1c1"
+        },
+        "final.f32": {
+          "bytes": 1048576,
+          "sha256": "bc339d65f3e69c7038c17a29b8f0ee60487ce0124daa5c4a423824f88677035d"
+        },
+        "prefill-feature.f32": {
+          "bytes": 11264,
+          "sha256": "81e1bf7bee8c5713176913f83b75e287dee22ffa0e1eeedad6a0684f47f46d86",
+          "position": 8192,
+          "rows": 1,
+          "epoch": 11,
+          "borrowed": true,
+          "checked": true
+        },
+        "final-feature.f32": {
+          "bytes": 11264,
+          "sha256": "f95e331425ac029d5c15c9a58a3f5bd43055412ebd1ce7771a8a4bbc6b3d903e",
+          "position": 8227,
+          "rows": 1,
+          "epoch": 46,
+          "borrowed": true,
+          "checked": true
+        },
+        "initialized_state": {
+          "bytes": 592445440,
+          "sha256": "83a2bb16922d212723ba9354d4707e4f39fd823282e74d2203f023e14c6ed787",
+          "layout": "gemma26-f16-kv-scalar-device-v1:16384:1024:16384:2048",
+          "ranges": 60,
+          "positions": 8227
+        },
+        "incoming_choices": [
+          [
+            "0",
+            "1882",
+            "818"
+          ],
+          [
+            "1",
+            "7002",
+            "2820"
+          ],
+          [
+            "2",
+            "529",
+            "659"
+          ],
+          [
+            "3",
+            "2820",
+            "3729"
+          ],
+          [
+            "4",
+            "1082",
+            "506"
+          ],
+          [
+            "5",
+            "2820",
+            "7002"
+          ],
+          [
+            "6",
+            "529",
+            "529"
+          ],
+          [
+            "7",
+            "2066",
+            "2066"
+          ],
+          [
+            "8",
+            "236764",
+            "528"
+          ],
+          [
+            "9",
+            "506",
+            "3879"
+          ],
+          [
+            "10",
+            "528",
+            "532"
+          ],
+          [
+            "11",
+            "236924",
+            "506"
+          ],
+          [
+            "12",
+            "1346",
+            "5726"
+          ],
+          [
+            "13",
+            "529",
+            "529"
+          ],
+          [
+            "14",
+            "506",
+            "107"
+          ],
+          [
+            "15",
+            "45518",
+            "1437"
+          ],
+          [
+            "16",
+            "569",
+            "1331"
+          ],
+          [
+            "17",
+            "569",
+            "2130"
+          ],
+          [
+            "18",
+            "5726",
+            "506"
+          ],
+          [
+            "19",
+            "2820",
+            "22142"
+          ],
+          [
+            "20",
+            "236859",
+            "236859"
+          ],
+          [
+            "21",
+            "1581",
+            "691"
+          ],
+          [
+            "22",
+            "26804",
+            "6420"
+          ],
+          [
+            "23",
+            "236764",
+            "236761"
+          ],
+          [
+            "24",
+            "2820",
+            "999"
+          ],
+          [
+            "25",
+            "818",
+            "1509"
+          ],
+          [
+            "26",
+            "563",
+            "563"
+          ],
+          [
+            "27",
+            "496",
+            "1186"
+          ],
+          [
+            "28",
+            "496",
+            "4127"
+          ],
+          [
+            "29",
+            "531",
+            "573"
+          ],
+          [
+            "30",
+            "506",
+            "886"
+          ],
+          [
+            "31",
+            "7097",
+            "107"
+          ]
+        ],
+        "anchors": [
+          [
+            "236761",
+            "8193"
+          ],
+          [
+            "108",
+            "8194"
+          ],
+          [
+            "236913",
+            "8195"
+          ]
+        ]
+      },
+      {
+        "prefill.f32": {
+          "bytes": 1048576,
+          "sha256": "9bc078ccceaf09a7904191c41caa9c2e0cedb7ce2d39746095c5dd3c09b1c1c1"
+        },
+        "final.f32": {
+          "bytes": 1048576,
+          "sha256": "bc339d65f3e69c7038c17a29b8f0ee60487ce0124daa5c4a423824f88677035d"
+        },
+        "prefill-feature.f32": {
+          "bytes": 11264,
+          "sha256": "81e1bf7bee8c5713176913f83b75e287dee22ffa0e1eeedad6a0684f47f46d86",
+          "position": 8192,
+          "rows": 1,
+          "epoch": 11,
+          "borrowed": true,
+          "checked": true
+        },
+        "final-feature.f32": {
+          "bytes": 11264,
+          "sha256": "f95e331425ac029d5c15c9a58a3f5bd43055412ebd1ce7771a8a4bbc6b3d903e",
+          "position": 8227,
+          "rows": 1,
+          "epoch": 46,
+          "borrowed": true,
+          "checked": true
+        },
+        "initialized_state": {
+          "bytes": 592445440,
+          "sha256": "83a2bb16922d212723ba9354d4707e4f39fd823282e74d2203f023e14c6ed787",
+          "layout": "gemma26-f16-kv-scalar-device-v1:16384:1024:16384:2048",
+          "ranges": 60,
+          "positions": 8227
+        },
+        "incoming_choices": [
+          [
+            "0",
+            "1882",
+            "818"
+          ],
+          [
+            "1",
+            "7002",
+            "2820"
+          ],
+          [
+            "2",
+            "529",
+            "659"
+          ],
+          [
+            "3",
+            "2820",
+            "3729"
+          ],
+          [
+            "4",
+            "1082",
+            "506"
+          ],
+          [
+            "5",
+            "2820",
+            "7002"
+          ],
+          [
+            "6",
+            "529",
+            "529"
+          ],
+          [
+            "7",
+            "2066",
+            "2066"
+          ],
+          [
+            "8",
+            "236764",
+            "528"
+          ],
+          [
+            "9",
+            "506",
+            "3879"
+          ],
+          [
+            "10",
+            "528",
+            "532"
+          ],
+          [
+            "11",
+            "236924",
+            "506"
+          ],
+          [
+            "12",
+            "1346",
+            "5726"
+          ],
+          [
+            "13",
+            "529",
+            "529"
+          ],
+          [
+            "14",
+            "506",
+            "107"
+          ],
+          [
+            "15",
+            "45518",
+            "1437"
+          ],
+          [
+            "16",
+            "569",
+            "1331"
+          ],
+          [
+            "17",
+            "569",
+            "2130"
+          ],
+          [
+            "18",
+            "5726",
+            "506"
+          ],
+          [
+            "19",
+            "2820",
+            "22142"
+          ],
+          [
+            "20",
+            "236859",
+            "236859"
+          ],
+          [
+            "21",
+            "1581",
+            "691"
+          ],
+          [
+            "22",
+            "26804",
+            "6420"
+          ],
+          [
+            "23",
+            "236764",
+            "236761"
+          ],
+          [
+            "24",
+            "2820",
+            "999"
+          ],
+          [
+            "25",
+            "818",
+            "1509"
+          ],
+          [
+            "26",
+            "563",
+            "563"
+          ],
+          [
+            "27",
+            "496",
+            "1186"
+          ],
+          [
+            "28",
+            "496",
+            "4127"
+          ],
+          [
+            "29",
+            "531",
+            "573"
+          ],
+          [
+            "30",
+            "506",
+            "886"
+          ],
+          [
+            "31",
+            "7097",
+            "107"
+          ]
+        ],
+        "anchors": [
+          [
+            "236761",
+            "8193"
+          ],
+          [
+            "108",
+            "8194"
+          ],
+          [
+            "236913",
+            "8195"
+          ]
+        ]
+      },
+      {
+        "prefill.f32": {
+          "bytes": 1048576,
+          "sha256": "9bc078ccceaf09a7904191c41caa9c2e0cedb7ce2d39746095c5dd3c09b1c1c1"
+        },
+        "final.f32": {
+          "bytes": 1048576,
+          "sha256": "bc339d65f3e69c7038c17a29b8f0ee60487ce0124daa5c4a423824f88677035d"
+        },
+        "prefill-feature.f32": {
+          "bytes": 11264,
+          "sha256": "81e1bf7bee8c5713176913f83b75e287dee22ffa0e1eeedad6a0684f47f46d86",
+          "position": 8192,
+          "rows": 1,
+          "epoch": 11,
+          "borrowed": true,
+          "checked": true
+        },
+        "final-feature.f32": {
+          "bytes": 11264,
+          "sha256": "f95e331425ac029d5c15c9a58a3f5bd43055412ebd1ce7771a8a4bbc6b3d903e",
+          "position": 8227,
+          "rows": 1,
+          "epoch": 46,
+          "borrowed": true,
+          "checked": true
+        },
+        "initialized_state": {
+          "bytes": 592445440,
+          "sha256": "83a2bb16922d212723ba9354d4707e4f39fd823282e74d2203f023e14c6ed787",
+          "layout": "gemma26-f16-kv-scalar-device-v1:16384:1024:16384:2048",
+          "ranges": 60,
+          "positions": 8227
+        },
+        "incoming_choices": [
+          [
+            "0",
+            "1882",
+            "818"
+          ],
+          [
+            "1",
+            "7002",
+            "2820"
+          ],
+          [
+            "2",
+            "529",
+            "659"
+          ],
+          [
+            "3",
+            "2820",
+            "3729"
+          ],
+          [
+            "4",
+            "1082",
+            "506"
+          ],
+          [
+            "5",
+            "2820",
+            "7002"
+          ],
+          [
+            "6",
+            "529",
+            "529"
+          ],
+          [
+            "7",
+            "2066",
+            "2066"
+          ],
+          [
+            "8",
+            "236764",
+            "528"
+          ],
+          [
+            "9",
+            "506",
+            "3879"
+          ],
+          [
+            "10",
+            "528",
+            "532"
+          ],
+          [
+            "11",
+            "236924",
+            "506"
+          ],
+          [
+            "12",
+            "1346",
+            "5726"
+          ],
+          [
+            "13",
+            "529",
+            "529"
+          ],
+          [
+            "14",
+            "506",
+            "107"
+          ],
+          [
+            "15",
+            "45518",
+            "1437"
+          ],
+          [
+            "16",
+            "569",
+            "1331"
+          ],
+          [
+            "17",
+            "569",
+            "2130"
+          ],
+          [
+            "18",
+            "5726",
+            "506"
+          ],
+          [
+            "19",
+            "2820",
+            "22142"
+          ],
+          [
+            "20",
+            "236859",
+            "236859"
+          ],
+          [
+            "21",
+            "1581",
+            "691"
+          ],
+          [
+            "22",
+            "26804",
+            "6420"
+          ],
+          [
+            "23",
+            "236764",
+            "236761"
+          ],
+          [
+            "24",
+            "2820",
+            "999"
+          ],
+          [
+            "25",
+            "818",
+            "1509"
+          ],
+          [
+            "26",
+            "563",
+            "563"
+          ],
+          [
+            "27",
+            "496",
+            "1186"
+          ],
+          [
+            "28",
+            "496",
+            "4127"
+          ],
+          [
+            "29",
+            "531",
+            "573"
+          ],
+          [
+            "30",
+            "506",
+            "886"
+          ],
+          [
+            "31",
+            "7097",
+            "107"
+          ]
+        ],
+        "anchors": [
+          [
+            "236761",
+            "8193"
+          ],
+          [
+            "108",
+            "8194"
+          ],
+          [
+            "236913",
+            "8195"
+          ]
+        ]
+      },
+      {
+        "prefill.f32": {
+          "bytes": 1048576,
+          "sha256": "9bc078ccceaf09a7904191c41caa9c2e0cedb7ce2d39746095c5dd3c09b1c1c1"
+        },
+        "final.f32": {
+          "bytes": 1048576,
+          "sha256": "bc339d65f3e69c7038c17a29b8f0ee60487ce0124daa5c4a423824f88677035d"
+        },
+        "prefill-feature.f32": {
+          "bytes": 11264,
+          "sha256": "81e1bf7bee8c5713176913f83b75e287dee22ffa0e1eeedad6a0684f47f46d86",
+          "position": 8192,
+          "rows": 1,
+          "epoch": 11,
+          "borrowed": true,
+          "checked": true
+        },
+        "final-feature.f32": {
+          "bytes": 11264,
+          "sha256": "f95e331425ac029d5c15c9a58a3f5bd43055412ebd1ce7771a8a4bbc6b3d903e",
+          "position": 8227,
+          "rows": 1,
+          "epoch": 46,
+          "borrowed": true,
+          "checked": true
+        },
+        "initialized_state": {
+          "bytes": 592445440,
+          "sha256": "83a2bb16922d212723ba9354d4707e4f39fd823282e74d2203f023e14c6ed787",
+          "layout": "gemma26-f16-kv-scalar-device-v1:16384:1024:16384:2048",
+          "ranges": 60,
+          "positions": 8227
+        },
+        "incoming_choices": [
+          [
+            "0",
+            "1882",
+            "818"
+          ],
+          [
+            "1",
+            "7002",
+            "2820"
+          ],
+          [
+            "2",
+            "529",
+            "659"
+          ],
+          [
+            "3",
+            "2820",
+            "3729"
+          ],
+          [
+            "4",
+            "1082",
+            "506"
+          ],
+          [
+            "5",
+            "2820",
+            "7002"
+          ],
+          [
+            "6",
+            "529",
+            "529"
+          ],
+          [
+            "7",
+            "2066",
+            "2066"
+          ],
+          [
+            "8",
+            "236764",
+            "528"
+          ],
+          [
+            "9",
+            "506",
+            "3879"
+          ],
+          [
+            "10",
+            "528",
+            "532"
+          ],
+          [
+            "11",
+            "236924",
+            "506"
+          ],
+          [
+            "12",
+            "1346",
+            "5726"
+          ],
+          [
+            "13",
+            "529",
+            "529"
+          ],
+          [
+            "14",
+            "506",
+            "107"
+          ],
+          [
+            "15",
+            "45518",
+            "1437"
+          ],
+          [
+            "16",
+            "569",
+            "1331"
+          ],
+          [
+            "17",
+            "569",
+            "2130"
+          ],
+          [
+            "18",
+            "5726",
+            "506"
+          ],
+          [
+            "19",
+            "2820",
+            "22142"
+          ],
+          [
+            "20",
+            "236859",
+            "236859"
+          ],
+          [
+            "21",
+            "1581",
+            "691"
+          ],
+          [
+            "22",
+            "26804",
+            "6420"
+          ],
+          [
+            "23",
+            "236764",
+            "236761"
+          ],
+          [
+            "24",
+            "2820",
+            "999"
+          ],
+          [
+            "25",
+            "818",
+            "1509"
+          ],
+          [
+            "26",
+            "563",
+            "563"
+          ],
+          [
+            "27",
+            "496",
+            "1186"
+          ],
+          [
+            "28",
+            "496",
+            "4127"
+          ],
+          [
+            "29",
+            "531",
+            "573"
+          ],
+          [
+            "30",
+            "506",
+            "886"
+          ],
+          [
+            "31",
+            "7097",
+            "107"
+          ]
+        ],
+        "anchors": [
+          [
+            "236761",
+            "8193"
+          ],
+          [
+            "108",
+            "8194"
+          ],
+          [
+            "236913",
+            "8195"
+          ]
+        ]
+      }
+    ],
+    "metrics": {
+      "prefill_seconds": {
+        "one_future": [
+          2.63607,
+          2.63834
+        ],
+        "two_futures": [
+          2.63028,
+          2.61861
+        ],
+        "one_mean": 2.637205,
+        "two_mean": 2.6244449999999997,
+        "delta_percent": -0.4838455865205815,
+        "old_bookend_percent": 0.08611303948680149,
+        "old_range": [
+          2.63607,
+          2.63834
+        ],
+        "new_range": [
+          2.61861,
+          2.63028
+        ]
+      },
+      "decode_seconds": {
+        "one_future": [
+          0.663829,
+          0.662936
+        ],
+        "two_futures": [
+          0.66567,
+          0.661614
+        ],
+        "one_mean": 0.6633825,
+        "two_mean": 0.6636420000000001,
+        "delta_percent": 0.03911770358731026,
+        "old_bookend_percent": -0.13452259542744427,
+        "old_range": [
+          0.662936,
+          0.663829
+        ],
+        "new_range": [
+          0.661614,
+          0.66567
+        ]
+      },
+      "paid_prefill_decode_seconds": {
+        "one_future": [
+          3.299899,
+          3.3012759999999997
+        ],
+        "two_futures": [
+          3.29595,
+          3.280224
+        ],
+        "delta_percent": -0.3787356038886913
+      }
+    }
+  },
+  "artifact": {
+    "manifest.json": {
+      "bytes": 6035,
+      "sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
+    },
+    "index.json": {
+      "bytes": 1253283,
+      "sha256": "e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171"
+    }
+  },
+  "input": {
+    "path": "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+    "sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+    "rows": 8227,
+    "bytes": 32908
+  },
+  "task_entry_tensorfold": {
+    "native": "f8fe17d24629aedabf90bbf78279dd776e6d62e7",
+    "python_0_6": "ed78d6fc204d89d90b045bf033d6551e7714f3a1",
+    "matching_CUDA_GGUF": false
+  },
+  "evidence": {
+    "gemma26-feature-capture-prereq1/check.py": {
+      "bytes": 5076,
+      "sha256": "1c5a06bf4b95a5b9734795c2fab1249cdbbfe8e2f25c808478958b26136c13c9"
+    },
+    "gemma26-feature-capture-prereq1/diff.patch": {
+      "bytes": 11096,
+      "sha256": "01d02f97a32a070a13f9a4d94fc36f803b808d8bd41eeb2d3f9780d816aba050"
+    },
+    "gemma26-feature-capture-prereq1/method.md": {
+      "bytes": 2747,
+      "sha256": "5dadd8e8bcecd935634c8bc71a1edc7525446ba2647570adbacbc1d992af9b0d"
+    },
+    "gemma26-feature-capture-prereq1/packet.json": {
+      "bytes": 428,
+      "sha256": "d73809b636688bf9df988aa3b1c60ef795a807a6d60479d41a68cf12cbea1fb8"
+    },
+    "gemma26-feature-capture-prereq1/source.json": {
+      "bytes": 2223,
+      "sha256": "be328fc83fe0b91071d1bd202cdb204d24ae0898f5b74f98a3435eea98ef0f12"
+    },
+    "gemma26-feature-capture-qualification1/check.py": {
+      "bytes": 5147,
+      "sha256": "55d43a0685536c175ecaf0a8f5620cfc351e23eafa96938b940d686009c2bcb5"
+    },
+    "gemma26-feature-capture-qualification1/diff.patch": {
+      "bytes": 28711,
+      "sha256": "4064f81b89a86618cfe24f108c2ed42a36b2b0373d2813edb31e481ba736dca9"
+    },
+    "gemma26-feature-capture-qualification1/method.md": {
+      "bytes": 2638,
+      "sha256": "e9ef52818a25843f00ed0830e1579395cbb2cfed0e5a1233cb5f0b093e635f9b"
+    },
+    "gemma26-feature-capture-qualification1/packet.json": {
+      "bytes": 526,
+      "sha256": "f19e58f881fe765ab811146343489a2b9370a9386878c8a262297ccee3a2336b"
+    },
+    "gemma26-feature-capture-qualification1/production-bridge.json": {
+      "bytes": 2368,
+      "sha256": "c2f66a4c67e91445def2744e276a89aa9d24a4823006140dccdfb702082a4bc1"
+    },
+    "gemma26-feature-capture-qualification1/source.json": {
+      "bytes": 2784,
+      "sha256": "d45542f85d04ca6db3ae9e7096aa81e150519207910d4a6f839e4f56089b94ee"
+    },
+    "gemma26-feature-capture-screen1/binding.json": {
+      "bytes": 8978,
+      "sha256": "9da4a17ebb67ab5928f8d7e6d0eae3d7fcb83d80138542895092d33b3c4ef226"
+    },
+    "gemma26-feature-capture-screen1/method.md": {
+      "bytes": 1799,
+      "sha256": "f6fd02977b72a1c35ead88a21bf15ec12bea88f275cee3570660953f48aed8bc"
+    },
+    "gemma26-feature-capture-screen1/packet.json": {
+      "bytes": 428,
+      "sha256": "671db70ce8349129ae8fdef3b150d475d89089f1da5679437ac4adedb7ffaa63"
+    },
+    "gemma26-feature-capture-screen1/run.py": {
+      "bytes": 12181,
+      "sha256": "b5618b10e99ebe56d52cb1e5ff2e481aa94a84307f0d9417efb0ff04331cf89b"
+    },
+    "gemma26-feature-capture-screen1/source.json": {
+      "bytes": 2223,
+      "sha256": "be328fc83fe0b91071d1bd202cdb204d24ae0898f5b74f98a3435eea98ef0f12"
+    },
+    "gemma26-feature-capture-prereq-evidence1/after-guard.json": {
+      "bytes": 54,
+      "sha256": "af5825676af4696c6923f8605abae84f5d33414bdaaf61531a27edc0da0e00a0"
+    },
+    "gemma26-feature-capture-prereq-evidence1/before-guard.json": {
+      "bytes": 54,
+      "sha256": "9801f6d3e80df6e5833197a8f63e3bf7c99f4785fd2cb90ff124118ceed7cb84"
+    },
+    "gemma26-feature-capture-prereq-evidence1/build-process.json": {
+      "bytes": 491,
+      "sha256": "d0293618885302f426b5b2fffb75c9e236fc5ddd6963832bbac20d557888b412"
+    },
+    "gemma26-feature-capture-prereq-evidence1/build.log": {
+      "bytes": 1338,
+      "sha256": "32735bc0347a86af2691cacfb19fbe927559769f2d1305d5bf4397f0b56cb065"
+    },
+    "gemma26-feature-capture-prereq-evidence1/capacity-process.json": {
+      "bytes": 446,
+      "sha256": "83d03e8feb1ea45e366b298c29ead42d5f7ea5930a7bfe588f957d4ca61393be"
+    },
+    "gemma26-feature-capture-prereq-evidence1/capacity.log": {
+      "bytes": 631,
+      "sha256": "77ef5b3c13015b0d10da557a80de2a34d8f39b8cffc2e2da35a1a6ea7324dff4"
+    },
+    "gemma26-feature-capture-prereq-evidence1/capacity.xml": {
+      "bytes": 628,
+      "sha256": "2cac71d2d720ed2283962732b2c8abc8e370afed1c87d0cc8008627743836aaf"
+    },
+    "gemma26-feature-capture-prereq-evidence1/checked.json": {
+      "bytes": 8391,
+      "sha256": "3970e3f5ab72c262818422385e22a55f7f57a008d9ec63a314a568461428df94"
+    },
+    "gemma26-feature-capture-prereq-evidence1/legacy-process.json": {
+      "bytes": 594,
+      "sha256": "4eee224bf2ee2762bdb8be859b4a53fc85fd09397e62bbc2f15fa9385046e42e"
+    },
+    "gemma26-feature-capture-prereq-evidence1/legacy.log": {
+      "bytes": 1387,
+      "sha256": "ccbcdd174c181293a578f9b7fdcb6f8f256fb532f8a86d25428e42f323e0cbb7"
+    },
+    "gemma26-feature-capture-prereq-evidence1/legacy.xml": {
+      "bytes": 1583,
+      "sha256": "ad951164c716b1c5a8f8e44a45fbe7590119cedf170b49655f2808c9848639ee"
+    },
+    "gemma26-feature-capture-qualification-evidence1/after-guard.json": {
+      "bytes": 54,
+      "sha256": "7ab27f5bb8bc5f3dcc413172f4fd7a3e8ebe002eec8850c9386825646d7a3ff3"
+    },
+    "gemma26-feature-capture-qualification-evidence1/assistant-process.json": {
+      "bytes": 462,
+      "sha256": "d463512794fd2bdffd629ec4630ffa368d9f2671499d8a453e65dc27f8883952"
+    },
+    "gemma26-feature-capture-qualification-evidence1/assistant.log": {
+      "bytes": 677,
+      "sha256": "4c37278698a43072efd637dc6647a01d7393270cce4e9792d0c87be96d8e2c5b"
+    },
+    "gemma26-feature-capture-qualification-evidence1/assistant.xml": {
+      "bytes": 660,
+      "sha256": "b55d6aba6c42143831e4a2f7139baf4e274d42a70c9698a5167b68712df39be5"
+    },
+    "gemma26-feature-capture-qualification-evidence1/before-guard.json": {
+      "bytes": 54,
+      "sha256": "cd17a198dfcfe572ab595cf83b6a9f059b8aed9f609d24deb4729d2afe99e9a4"
+    },
+    "gemma26-feature-capture-qualification-evidence1/build-process.json": {
+      "bytes": 448,
+      "sha256": "739e24b3df62e7eb4aca201b66ac590cbc3309f8b6ca76edfd13655f87f30a84"
+    },
+    "gemma26-feature-capture-qualification-evidence1/build.log": {
+      "bytes": 1158,
+      "sha256": "dc3759729d847570f79b3adb296181e90a739d27d7c4e957c3212853e7b4fef4"
+    },
+    "gemma26-feature-capture-qualification-evidence1/checked.json": {
+      "bytes": 8510,
+      "sha256": "5358701f2fda36e549f7a942da20b28ceea1e46a9bb7b8a23b813836a57d654d"
+    },
+    "gemma26-feature-capture-qualification-evidence1/feature-process.json": {
+      "bytes": 679,
+      "sha256": "727b569ba98b4b7b88dbf4d475aa225c90c371f97a7906efe261783e50a44452"
+    },
+    "gemma26-feature-capture-qualification-evidence1/feature.log": {
+      "bytes": 1656,
+      "sha256": "4b68256da9bcbda370a1b08ebd0771aadd8b6570afc0de38d9cc3e96bd10c33c"
+    },
+    "gemma26-feature-capture-qualification-evidence1/feature.xml": {
+      "bytes": 1889,
+      "sha256": "be12e9f06aa26ae59027a04aecac6bd03e42d46f201cbe8483cf5102f80cde3f"
+    },
+    "gemma26-feature-capture-screen-evidence1/A1/after.json": {
+      "bytes": 197,
+      "sha256": "46699b8935fbd45df5e5f608940a99271dd1968e744e6986d0f41eb85de0f281"
+    },
+    "gemma26-feature-capture-screen-evidence1/A1/before.json": {
+      "bytes": 1096,
+      "sha256": "1deff8230038dc45518e189e7825db70cabad4a5213cf021bb0673ab2577094f"
+    },
+    "gemma26-feature-capture-screen-evidence1/A1/kernel.json": {
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "gemma26-feature-capture-screen-evidence1/A1/native.log": {
+      "bytes": 3102,
+      "sha256": "730fea122cc8f5d102482b930c7f8538536b0e3d744bd343997d82d83832f691"
+    },
+    "gemma26-feature-capture-screen-evidence1/A1/out/final-feature.f32": {
+      "bytes": 11264,
+      "sha256": "f95e331425ac029d5c15c9a58a3f5bd43055412ebd1ce7771a8a4bbc6b3d903e"
+    },
+    "gemma26-feature-capture-screen-evidence1/A1/out/final.f32": {
+      "bytes": 1048576,
+      "sha256": "bc339d65f3e69c7038c17a29b8f0ee60487ce0124daa5c4a423824f88677035d"
+    },
+    "gemma26-feature-capture-screen-evidence1/A1/out/prefill-feature.f32": {
+      "bytes": 11264,
+      "sha256": "81e1bf7bee8c5713176913f83b75e287dee22ffa0e1eeedad6a0684f47f46d86"
+    },
+    "gemma26-feature-capture-screen-evidence1/A1/out/prefill.f32": {
+      "bytes": 1048576,
+      "sha256": "9bc078ccceaf09a7904191c41caa9c2e0cedb7ce2d39746095c5dd3c09b1c1c1"
+    },
+    "gemma26-feature-capture-screen-evidence1/A1/out/state-layout.txt": {
+      "bytes": 54,
+      "sha256": "1cac4a10adf304065e8e0ae2b19bfd131f82428cf1a53019fba216ad2ca359fe"
+    },
+    "gemma26-feature-capture-screen-evidence1/A1/process.json": {
+      "bytes": 722,
+      "sha256": "f5c95aef4b1e2924bb02c06f8a4d210c1438e2a4b19767f115bde2823f172710"
+    },
+    "gemma26-feature-capture-screen-evidence1/A1/validated.json": {
+      "bytes": 5863,
+      "sha256": "2519048491c4507262802d1cb8189ea49439e3daa2e43ecb6097c6e1687945b2"
+    },
+    "gemma26-feature-capture-screen-evidence1/A2/after.json": {
+      "bytes": 197,
+      "sha256": "b937f0a3de2e0a2e04551db66633c503625f8c0ec64404bc579535edf0b98c36"
+    },
+    "gemma26-feature-capture-screen-evidence1/A2/before.json": {
+      "bytes": 1096,
+      "sha256": "86bf96e8e62bfa78808a4998bc4048fc21605efbdf3f7067da5d1d7aa61e4b20"
+    },
+    "gemma26-feature-capture-screen-evidence1/A2/kernel.json": {
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "gemma26-feature-capture-screen-evidence1/A2/native.log": {
+      "bytes": 3103,
+      "sha256": "bebccf46ef3b1d04661a4cac853b6628ededa6a759252f500e080d5f9fa78e8f"
+    },
+    "gemma26-feature-capture-screen-evidence1/A2/out/final-feature.f32": {
+      "bytes": 11264,
+      "sha256": "f95e331425ac029d5c15c9a58a3f5bd43055412ebd1ce7771a8a4bbc6b3d903e"
+    },
+    "gemma26-feature-capture-screen-evidence1/A2/out/final.f32": {
+      "bytes": 1048576,
+      "sha256": "bc339d65f3e69c7038c17a29b8f0ee60487ce0124daa5c4a423824f88677035d"
+    },
+    "gemma26-feature-capture-screen-evidence1/A2/out/prefill-feature.f32": {
+      "bytes": 11264,
+      "sha256": "81e1bf7bee8c5713176913f83b75e287dee22ffa0e1eeedad6a0684f47f46d86"
+    },
+    "gemma26-feature-capture-screen-evidence1/A2/out/prefill.f32": {
+      "bytes": 1048576,
+      "sha256": "9bc078ccceaf09a7904191c41caa9c2e0cedb7ce2d39746095c5dd3c09b1c1c1"
+    },
+    "gemma26-feature-capture-screen-evidence1/A2/out/state-layout.txt": {
+      "bytes": 54,
+      "sha256": "1cac4a10adf304065e8e0ae2b19bfd131f82428cf1a53019fba216ad2ca359fe"
+    },
+    "gemma26-feature-capture-screen-evidence1/A2/process.json": {
+      "bytes": 722,
+      "sha256": "cdf333017851d596c0dc5723800abc28a8bd789b50b2283e6aa80b47c53d3123"
+    },
+    "gemma26-feature-capture-screen-evidence1/A2/validated.json": {
+      "bytes": 5864,
+      "sha256": "e7fe874812ac1840d4a7006f44adf22aab295bc48f6be31df3ab800028107d9b"
+    },
+    "gemma26-feature-capture-screen-evidence1/O1/after.json": {
+      "bytes": 197,
+      "sha256": "7befa69d6bb76f01781b4950679b2a86aed2e1f309e32a5d80ba130cd5f8c998"
+    },
+    "gemma26-feature-capture-screen-evidence1/O1/before.json": {
+      "bytes": 1094,
+      "sha256": "b6dabf97ee73433ac4fc2108005858916c985ce8d403fd0ec63e9779623bf644"
+    },
+    "gemma26-feature-capture-screen-evidence1/O1/kernel.json": {
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "gemma26-feature-capture-screen-evidence1/O1/native.log": {
+      "bytes": 3103,
+      "sha256": "7020c36219dcd63f528ee9f5fb1db2a21be04d4f02a9375b79b1f5669ec08885"
+    },
+    "gemma26-feature-capture-screen-evidence1/O1/out/final-feature.f32": {
+      "bytes": 11264,
+      "sha256": "f95e331425ac029d5c15c9a58a3f5bd43055412ebd1ce7771a8a4bbc6b3d903e"
+    },
+    "gemma26-feature-capture-screen-evidence1/O1/out/final.f32": {
+      "bytes": 1048576,
+      "sha256": "bc339d65f3e69c7038c17a29b8f0ee60487ce0124daa5c4a423824f88677035d"
+    },
+    "gemma26-feature-capture-screen-evidence1/O1/out/prefill-feature.f32": {
+      "bytes": 11264,
+      "sha256": "81e1bf7bee8c5713176913f83b75e287dee22ffa0e1eeedad6a0684f47f46d86"
+    },
+    "gemma26-feature-capture-screen-evidence1/O1/out/prefill.f32": {
+      "bytes": 1048576,
+      "sha256": "9bc078ccceaf09a7904191c41caa9c2e0cedb7ce2d39746095c5dd3c09b1c1c1"
+    },
+    "gemma26-feature-capture-screen-evidence1/O1/out/state-layout.txt": {
+      "bytes": 54,
+      "sha256": "1cac4a10adf304065e8e0ae2b19bfd131f82428cf1a53019fba216ad2ca359fe"
+    },
+    "gemma26-feature-capture-screen-evidence1/O1/process.json": {
+      "bytes": 723,
+      "sha256": "fee66a532ebb71e401b394a80752e66a9146e814799208610a41b9114cde2024"
+    },
+    "gemma26-feature-capture-screen-evidence1/O1/validated.json": {
+      "bytes": 5865,
+      "sha256": "086d0c52a82ab3618e9dc7f48ee1f6a8d91d72bf09e34952dd540d10c57a05a7"
+    },
+    "gemma26-feature-capture-screen-evidence1/O2/after.json": {
+      "bytes": 197,
+      "sha256": "f32e111d0b447e446d6eeb7e20c0e6eb2b72725c7e25fa1840bde7db23fc19ab"
+    },
+    "gemma26-feature-capture-screen-evidence1/O2/before.json": {
+      "bytes": 1096,
+      "sha256": "ce1630492663c1cd765beb43afa92b0c06cd2754003219544141b78f5bdb3d01"
+    },
+    "gemma26-feature-capture-screen-evidence1/O2/kernel.json": {
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "gemma26-feature-capture-screen-evidence1/O2/native.log": {
+      "bytes": 3103,
+      "sha256": "9e096e0bbdd876f5d9c02de51656827e7033f63c531157c7305f8f8cf9afb0d6"
+    },
+    "gemma26-feature-capture-screen-evidence1/O2/out/final-feature.f32": {
+      "bytes": 11264,
+      "sha256": "f95e331425ac029d5c15c9a58a3f5bd43055412ebd1ce7771a8a4bbc6b3d903e"
+    },
+    "gemma26-feature-capture-screen-evidence1/O2/out/final.f32": {
+      "bytes": 1048576,
+      "sha256": "bc339d65f3e69c7038c17a29b8f0ee60487ce0124daa5c4a423824f88677035d"
+    },
+    "gemma26-feature-capture-screen-evidence1/O2/out/prefill-feature.f32": {
+      "bytes": 11264,
+      "sha256": "81e1bf7bee8c5713176913f83b75e287dee22ffa0e1eeedad6a0684f47f46d86"
+    },
+    "gemma26-feature-capture-screen-evidence1/O2/out/prefill.f32": {
+      "bytes": 1048576,
+      "sha256": "9bc078ccceaf09a7904191c41caa9c2e0cedb7ce2d39746095c5dd3c09b1c1c1"
+    },
+    "gemma26-feature-capture-screen-evidence1/O2/out/state-layout.txt": {
+      "bytes": 54,
+      "sha256": "1cac4a10adf304065e8e0ae2b19bfd131f82428cf1a53019fba216ad2ca359fe"
+    },
+    "gemma26-feature-capture-screen-evidence1/O2/process.json": {
+      "bytes": 723,
+      "sha256": "b1091fe7dc6bb554f92d99c3e103e99c62e6ec067f0d324f313fec6f1601d6f4"
+    },
+    "gemma26-feature-capture-screen-evidence1/O2/validated.json": {
+      "bytes": 5865,
+      "sha256": "8d0fd6a61cb721b588e79a4bb314508561cdab7ac9df77baeda12e04beb0cbeb"
+    },
+    "gemma26-feature-capture-screen-evidence1/binding.json": {
+      "bytes": 1863,
+      "sha256": "c86487ceb7471b09aa2a648937d0705a3505b65120d3972899708fe6ae2151ff"
+    },
+    "gemma26-feature-capture-screen-evidence1/checked.json": {
+      "bytes": 27181,
+      "sha256": "34a45f09ca4fb7c5449fc5bb6f89c892e95f107299a8e7aa716b0b49663b075a"
+    },
+    "gemma26-feature-capture-screen-evidence1/inputs.json": {
+      "bytes": 193,
+      "sha256": "608f72c822bec6e3a5f4e8cd50d8725a24f79a10ad061e8bfac5dcba734048a1"
+    }
+  },
+  "distinct_focused_cases": 8,
+  "focused_executions": 9,
+  "remaining_dispositions": {
+    "G26_T23": "OPEN: bounded retained-feature optin qualified; global/assistant policy defaults off1, joined target and broader contracts unqualified",
+    "G31_T23": "OPEN retained-feature/assistant compatible recipient; prior plain neutral not adopted",
+    "other_families": "G2/G3 adopted plain unchanged; DS/nativeQwen/GGUFQwen future ports OPEN; Image no token-prefill N"
+  },
+  "telemetry_summary": {
+    "O1": {
+      "before": {
+        "processes": "",
+        "MemAvailable": 125097357312,
+        "gpu": "2026/10/08 04:27:59.546, 208 MHz, [N/A], 38, 4.69 W"
+      },
+      "after": {
+        "processes": "",
+        "MemAvailable": 124643008512,
+        "gpu": "2026/10/08 04:28:06.779, 2411 MHz, [N/A], 42, 12.90 W"
+      },
+      "same_boot": true,
+      "new_kernel_messages": 0,
+      "native_returncode": 0,
+      "observed_exit_code": 0
+    },
+    "A1": {
+      "before": {
+        "processes": "",
+        "MemAvailable": 124635521024,
+        "gpu": "2026/10/08 04:28:07.596, 2411 MHz, [N/A], 42, 11.87 W"
+      },
+      "after": {
+        "processes": "",
+        "MemAvailable": 124674387968,
+        "gpu": "2026/10/08 04:28:14.751, 2411 MHz, [N/A], 44, 13.19 W"
+      },
+      "same_boot": true,
+      "new_kernel_messages": 0,
+      "native_returncode": 0,
+      "observed_exit_code": 0
+    },
+    "A2": {
+      "before": {
+        "processes": "",
+        "MemAvailable": 124656701440,
+        "gpu": "2026/10/08 04:28:15.564, 2411 MHz, [N/A], 44, 12.17 W"
+      },
+      "after": {
+        "processes": "",
+        "MemAvailable": 125065838592,
+        "gpu": "2026/10/08 04:28:22.778, 2411 MHz, [N/A], 46, 13.35 W"
+      },
+      "same_boot": true,
+      "new_kernel_messages": 0,
+      "native_returncode": 0,
+      "observed_exit_code": 0
+    },
+    "O2": {
+      "before": {
+        "processes": "",
+        "MemAvailable": 125066248192,
+        "gpu": "2026/10/08 04:28:23.574, 2411 MHz, [N/A], 45, 12.34 W"
+      },
+      "after": {
+        "processes": "",
+        "MemAvailable": 125090222080,
+        "gpu": "2026/10/08 04:28:30.771, 2411 MHz, [N/A], 47, 13.43 W"
+      },
+      "same_boot": true,
+      "new_kernel_messages": 0,
+      "native_returncode": 0,
+      "observed_exit_code": 0
+    }
+  }
+}

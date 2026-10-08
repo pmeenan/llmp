@@ -283,8 +283,14 @@ six-chunk replay for an 8192-row diagnostic prefill with 1024-row chunks and
 context 16384, with exact heads,
 choices and initialized state. The −0.0922% prefill change is inside bookend
 drift, so ordinary Gemma26/Gemma31 retain capture off and one future. Explicit
-capture excludes retained features, verification, greedy and all-output paths;
-other contexts/cohorts and assistant capture remain separate qualification.
+capture in that screen excludes retained features. The subsequent
+[retained-frontier extension](experiments/gemma26-feature-capture/README.md)
+permits one feature per owner under explicit capture policy: prefill changes
+−0.484% in a short matched screen, with exact full heads/features/KV and
+three actual endogenous assistant proposals. Actual D2D feature publication
+stays after replay; verification, greedy and all-output/all-feature capture
+stay excluded. Ordinary and successful assistant setup still select off/one;
+joined target, broader contexts/cohorts and policy adoption remain open.
 This screen does not qualify public 8K admission or reference parity.
 
 An engine-only typed variant selects one of the two approved fixed profiles;

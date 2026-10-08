@@ -1345,9 +1345,11 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   if (!host) return Error(host.error());
   auto copies = runs_.Stage(host->sources, 0);
   if (!copies) return Error(copies.error());
-  // Only plain frontier/state-only prefill may capture a predicted graph.
-  // Feature/assistant, verification and greedy publication retain their path.
-  const bool plain = !verify && !all_outputs && !all_features && !greedy && !o_.retain_features;
+  // Only frontier/state-only prefill may capture a predicted graph. Retained
+  // features contribute exactly one row per owner; their fresh D2D publication
+  // stays after actual Queue/replay, outside the captured target plan.
+  const bool plain = !verify && !all_outputs && !all_features && !greedy &&
+                     (!o_.retain_features || shape.feature_outputs == work.size());
   // Two bounded <=kMaxRequestSlots descriptor vectors fit the existing
   // startup-funded 1MiB host descriptor slack, independently of plan grants.
   const bool far = plain && (o_.prefill_lookahead_capacity == 2 || o_.capture_ahead);

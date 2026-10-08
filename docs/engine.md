@@ -52,7 +52,10 @@ Their family adapters still choose future shapes, outputs and capture eligibilit
 Gemma2/Gemma3 select two distinct missing futures. Both Gemma4 profiles now
 compose the same fixed group, but ordinary policy retains one future and no
 capture ahead: the [plain Gemma26 8192-row diagnostic screen](experiments/gemma26-capture-ahead/README.md)
-replays six chunks without a meaningful paid gain. Cached current/next/after
+replays six chunks without a meaningful paid gain. The separate
+[retained-frontier opt-in](experiments/gemma26-feature-capture/README.md)
+measures −0.484% prefill and exact assistant consumption; ordinary and
+`SetupAssistant` capture policies still remain off/one. Cached current/next/after
 keys are protected before optional capture funding in eligible adapters. Each
 future has independent refusal and cleanup; no future
 state or cursor is prepared. DeepSeek and Qwen
@@ -316,9 +319,10 @@ planned shape beside current execution. The [two-future transfer](experiments/pr
 checks cold changing-width replay and exact state; no speculative KV is prepared.
 Gemma4's explicit plain capture-ahead comparison uses the same group and
 next/after descriptors; the scalar adapter forwards both stages. Ordinary
-Gemma26/Gemma31 remain off/one-future. Feature/assistant, verification and
-all-output execution retain their path; other context/cohort capture policies
-remain separate qualification gates.
+Gemma26/Gemma31 remain off/one-future. Explicit capture may now retain one
+frontier feature per owner: the actual post-replay D2D copy remains outside
+the recorded plan. Verification, greedy and all-output/all-feature capture
+stay excluded; joined target and broader context/policy gates remain open.
 
 Gemma's [assistant component](gemma4-assistant.md#native-component-and-protected-target-operands)
 adds explicit post-finalnorm feature retention and scoped readonly cache
