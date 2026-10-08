@@ -157,9 +157,19 @@ std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> PlanQwen38TargetW
     std::span<const Qwen38TargetWaveInput> requests, const kernels::ggml::DeviceChoices& choices,
     Qwen38WavePlacement placement = {});
 
+// Startup-only measurement; every owned scalar subplan is measurement-only too.
+std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> PlanQwen38TargetWave(
+    std::span<const Qwen38TargetWaveInput> requests, const kernels::ggml::DeviceChoices& choices,
+    Qwen38WavePlacement placement, std::optional<ActivationMeasurement> measurement);
+
 std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> PlanQwen38DraftWave(
     std::span<const Qwen38DraftWaveInput> requests, const kernels::ggml::DeviceChoices& choices,
     Qwen38WavePlacement placement = {});
+
+// Startup-only measurement; every owned scalar subplan is measurement-only too.
+std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> PlanQwen38DraftWave(
+    std::span<const Qwen38DraftWaveInput> requests, const kernels::ggml::DeviceChoices& choices,
+    Qwen38WavePlacement placement, std::optional<ActivationMeasurement> measurement);
 
 }  // namespace jitllm::engine
 

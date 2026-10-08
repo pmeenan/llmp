@@ -138,6 +138,13 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     const Dsv4Speculation& speculation = {},
     std::optional<std::uint32_t> first_position = std::nullopt);
 
+// Startup-only measurement; the returned plan cannot be bound.
+std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
+    const Dsv4Model& m, const kernels::ggml::Dsv4ChunkShape& shape,
+    const kernels::ggml::DeviceChoices& choices, std::span<const std::string> keep,
+    std::uint64_t activations, std::uint64_t activation_bytes, const Dsv4Speculation& speculation,
+    std::optional<std::uint32_t> first_position, std::optional<ActivationMeasurement> measurement);
+
 // Sets an HCA prefill plan's chunk position: its HCA nodes' host scalar and
 // the position its inputs are authenticated against (BuildDsv4Inputs), so a
 // chunk of the same shape at another position runs the same plan. HCA
@@ -167,6 +174,13 @@ std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
     std::uint64_t activations, std::uint64_t activation_bytes, const DsparkModel* drafter = nullptr,
     std::span<const std::uint64_t> rings = {});
 
+// Startup-only measurement; the returned plan cannot be bound.
+std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
+    const Dsv4Model& m, std::span<const std::uint64_t> states,
+    const kernels::ggml::Dsv4WaveShape& shape, const kernels::ggml::DeviceChoices& choices,
+    std::uint64_t activations, std::uint64_t activation_bytes, const DsparkModel* drafter,
+    std::span<const std::uint64_t> rings, std::optional<ActivationMeasurement> measurement);
+
 // A draft block's graph, plan, placement and bound implementations.
 using DsparkPlanned = PlannedGraph<kernels::ggml::DsparkGraph>;
 
@@ -175,6 +189,12 @@ using DsparkPlanned = PlannedGraph<kernels::ggml::DsparkGraph>;
 std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
     const DsparkModel& d, std::int64_t rows, const kernels::ggml::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes);
+
+// Startup-only measurement; the returned plan cannot be bound.
+std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
+    const DsparkModel& d, std::int64_t rows, const kernels::ggml::DeviceChoices& choices,
+    std::uint64_t activations, std::uint64_t activation_bytes,
+    std::optional<ActivationMeasurement> measurement);
 
 // Several requests' draft blocks as one graph (dsv4_graph.h
 // BuildDsparkWaveGraph): `d`'s weights, each slot's ring at `rings` (in
@@ -186,6 +206,12 @@ std::expected<std::unique_ptr<DsparkWavePlanned>, std::string> PlanDsparkWave(
     const DsparkModel& d, std::span<const std::uint64_t> rings, std::int64_t rows,
     const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
     std::uint64_t activation_bytes, bool lanes);
+
+// Startup-only measurement; the returned plan cannot be bound.
+std::expected<std::unique_ptr<DsparkWavePlanned>, std::string> PlanDsparkWave(
+    const DsparkModel& d, std::span<const std::uint64_t> rings, std::int64_t rows,
+    const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
+    std::uint64_t activation_bytes, bool lanes, std::optional<ActivationMeasurement> measurement);
 
 // A chunk's host-built inputs, in the graph's copy order: each input
 // tensor and the bytes it takes (owned here, so they live as long as this).

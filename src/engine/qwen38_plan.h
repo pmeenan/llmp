@@ -111,6 +111,13 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
     std::uint64_t activation_bytes, std::span<const std::string> keep = {},
     Qwen38ChunkKind kind = {});
 
+// Startup-only measurement; the returned plan cannot be bound.
+std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
+    const Qwen38Model& m, const kernels::ggml::Qwen38ChunkShape& shape,
+    const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
+    std::uint64_t activation_bytes, std::span<const std::string> keep, Qwen38ChunkKind kind,
+    std::optional<ActivationMeasurement> measurement);
+
 // A chunk's host-built inputs in the graph's copy order (the resident
 // harness's): each input tensor and its bytes, which `in`, `out_ids` and
 // `zeros` own. `ple_rows` replaces in.ple_rows when not empty (the row
@@ -134,6 +141,12 @@ std::expected<std::unique_ptr<Qwen38MtpPlanned>, std::string> PlanQwen38Mtp(
     const Qwen38Model& m, const kernels::ggml::Qwen38MtpShape& shape,
     const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
     std::uint64_t activation_bytes);
+
+// Startup-only measurement; the returned plan cannot be bound.
+std::expected<std::unique_ptr<Qwen38MtpPlanned>, std::string> PlanQwen38Mtp(
+    const Qwen38Model& m, const kernels::ggml::Qwen38MtpShape& shape,
+    const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
+    std::uint64_t activation_bytes, std::optional<ActivationMeasurement> measurement);
 
 // A drafter pass's host-built inputs: `in` the pass's positions (tokens
 // only for pass 0), in the graph's copy order.

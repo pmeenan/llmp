@@ -221,6 +221,20 @@ std::uint64_t PlannedNodes(const PlannedBase& planned) {
   return nodes;
 }
 
+void StartupPlacementStats::Account(const PlannedBase& planned) {
+  ++plans;
+  const auto count = PlannedNodes(planned);
+  nodes += count;
+  if (planned.placement.measurement_bound)
+    ++bounded;
+  else
+    ++exact;
+  max_activations = std::max(max_activations, planned.placement.extent);
+  max_inputs = std::max(max_inputs, planned.inputs_bytes);
+  max_host = std::max(max_host, PlannedHostBytes(planned));
+  max_nodes = std::max(max_nodes, count);
+}
+
 std::uint64_t PlannedHostBytes(const PlannedBase& planned) {
   const std::uint64_t arena = planned.arena ? planned.arena->bytes() : 0;
   return arena + (PlannedNodes(planned) * kPlanNodeHostBytes);

@@ -213,6 +213,16 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
     const Qwen38Model& m, const kg::Qwen38ChunkShape& shape, const kg::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes, std::span<const std::string> keep,
     Qwen38ChunkKind kind) {
+  return PlanQwen38Chunk(m, shape, choices, activations, activation_bytes, keep, kind,
+                         std::nullopt);
+}
+
+std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
+    const Qwen38Model& m, const kg::Qwen38ChunkShape& shape, const kg::DeviceChoices& choices,
+    std::uint64_t activations, std::uint64_t activation_bytes, std::span<const std::string> keep,
+    Qwen38ChunkKind kind, std::optional<ActivationMeasurement> measurement) {
+  if (measurement && activations != 0)
+    return Error("measurement-only planning cannot use activation storage");
   if (shape.token && (shape.rows != 1 || shape.outputs != 1 || kind.verify || kind.export_streams ||
                       kind.capture_routed != 0 || m.exact || !keep.empty()))
     return Error("a device token needs one plain Qwen target row without diagnostic captures");
@@ -285,8 +295,8 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
       }
     }
   }
-  if (auto r =
-          PlaceAndPlan(*out, g.nodes, g.inputs(), kept, choices, activations, activation_bytes);
+  if (auto r = PlaceAndPlan(*out, g.nodes, g.inputs(), kept, choices, activations, activation_bytes,
+                            measurement);
       !r) {
     return std::unexpected(r.error());
   }
@@ -296,6 +306,15 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
 std::expected<std::unique_ptr<Qwen38MtpPlanned>, std::string> PlanQwen38Mtp(
     const Qwen38Model& m, const kg::Qwen38MtpShape& shape, const kg::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes) {
+  return PlanQwen38Mtp(m, shape, choices, activations, activation_bytes, std::nullopt);
+}
+
+std::expected<std::unique_ptr<Qwen38MtpPlanned>, std::string> PlanQwen38Mtp(
+    const Qwen38Model& m, const kg::Qwen38MtpShape& shape, const kg::DeviceChoices& choices,
+    std::uint64_t activations, std::uint64_t activation_bytes,
+    std::optional<ActivationMeasurement> measurement) {
+  if (measurement && activations != 0)
+    return Error("measurement-only planning cannot use activation storage");
   if (m.drafter == nullptr || m.mtp_state == nullptr) {
     return Error("no MTP drafter");
   }
@@ -336,7 +355,7 @@ std::expected<std::unique_ptr<Qwen38MtpPlanned>, std::string> PlanQwen38Mtp(
   kept.insert(kept.end(), out->graph.head_inputs.begin(), out->graph.head_inputs.end());
   kept.insert(kept.end(), out->graph.head_logits.begin(), out->graph.head_logits.end());
   if (auto r = PlaceAndPlan(*out, out->graph.nodes, out->graph.inputs(), kept, choices, activations,
-                            activation_bytes);
+                            activation_bytes, measurement);
       !r) {
     return std::unexpected(r.error());
   }

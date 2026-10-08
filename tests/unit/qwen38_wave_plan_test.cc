@@ -53,6 +53,47 @@ namespace kg = jitllm::kernels::ggml;
 constexpr std::uint64_t kTableRows = 320001536;
 constexpr std::uint64_t kExpertStride = 2768976;
 
+TEST(Qwen38StartupMeasurement, RejectsRuntimeStorageBeforeModelOrWaveAccess) {
+  engine::Qwen38Model model;
+  const engine::ActivationMeasurement measurement{256};
+  const auto rejected = [](const auto& result) {
+    EXPECT_FALSE(result);
+    if (!result) EXPECT_NE(result.error().find("measurement-only"), std::string::npos);
+  };
+  rejected(engine::PlanQwen38Chunk(model, {}, {}, 256, 256, {}, {}, measurement));
+  rejected(engine::PlanQwen38Mtp(model, {}, {}, 256, 256, measurement));
+  rejected(engine::PlanQwen38TargetWave({}, {}, {.activations = 256, .bytes = 256}, measurement));
+  rejected(engine::PlanQwen38DraftWave({}, {}, {.activations = 256, .bytes = 256}, measurement));
+  EXPECT_TRUE(engine::Qwen38Options{}.startup_activation_threshold);
+}
+
+void SameStartupPlan(const engine::PlannedBase& ordinary, const engine::PlannedBase& measured) {
+  ASSERT_EQ(ordinary.plan.steps.size(), measured.plan.steps.size());
+  ASSERT_EQ(ordinary.plan.regions.size(), measured.plan.regions.size());
+  for (std::size_t i = 0; i < ordinary.plan.regions.size(); ++i) {
+    EXPECT_EQ(ordinary.plan.regions[i].first, measured.plan.regions[i].first);
+    EXPECT_EQ(ordinary.plan.regions[i].last, measured.plan.regions[i].last);
+  }
+  for (std::size_t i = 0; i < ordinary.plan.steps.size(); ++i) {
+    const auto& x = ordinary.plan.steps[i];
+    const auto& y = measured.plan.steps[i];
+    EXPECT_EQ(x.operation, y.operation);
+    EXPECT_EQ(x.implementation, y.implementation);
+    EXPECT_EQ(x.lane, y.lane);
+    ASSERT_EQ(x.nodes.size(), y.nodes.size());
+    for (std::size_t j = 0; j < x.nodes.size(); ++j) {
+      EXPECT_STREQ(x.nodes[j]->name, y.nodes[j]->name);
+      EXPECT_EQ(x.nodes[j]->op, y.nodes[j]->op);
+      EXPECT_EQ(x.nodes[j]->type, y.nodes[j]->type);
+      EXPECT_TRUE(std::ranges::equal(x.nodes[j]->ne, y.nodes[j]->ne));
+    }
+  }
+  EXPECT_EQ(ordinary.inputs_bytes, measured.inputs_bytes);
+  EXPECT_EQ(engine::PlannedHostBytes(ordinary), engine::PlannedHostBytes(measured));
+  EXPECT_FALSE(ordinary.measurement_only);
+  EXPECT_TRUE(measured.measurement_only);
+}
+
 TEST(Qwen38PlainTokens, DefaultPublicationKeepsLowLevelRowPlansExplicit) {
   EXPECT_TRUE(engine::Qwen38Options{}.device_tokens);
   EXPECT_FALSE(kg::Qwen38ChunkShape{}.token);
@@ -336,7 +377,8 @@ kg::DeviceChoices ModelDevice() {
         const std::int64_t columns =
             node->op == GGML_OP_MUL_MAT_ID ? node->src[2]->ne[1] : node->src[1]->ne[1];
         return columns <= 8 ? kg::QuantMulMatPath::kVector : kg::QuantMulMatPath::kTile;
-      }};
+      },
+      .dense_mmvq_shape = {}};
 }
 
 // Weights at distinct placeless addresses below the planner's own ranges:
@@ -429,7 +471,8 @@ class Qwen38WavePlanTest : public ::testing::Test {
   }
 
   std::expected<std::unique_ptr<engine::Qwen38WavePlanned>, std::string> Plan(
-      std::span<const Request> requests, bool paired = true, bool lanes = false) {
+      std::span<const Request> requests, bool paired = true, bool lanes = false,
+      std::optional<engine::ActivationMeasurement> measurement = std::nullopt) {
     if (!state_.has_value()) {
       return std::unexpected(std::string("the fixture has no state layout"));
     }
@@ -449,7 +492,33 @@ class Qwen38WavePlanTest : public ::testing::Test {
       inputs.back().shape.token = r.token;
     }
     return engine::PlanQwen38TargetWave(
-        inputs, ModelDevice(), {.paired = paired, .share_target_head = true, .lanes = lanes});
+        inputs, ModelDevice(), {.paired = paired, .share_target_head = true, .lanes = lanes},
+        measurement);
+  }
+
+  void CheckStartupMeasurement() {
+    for (const auto rows : {1U, 3U}) {
+      const std::array<Request, 4> requests = {Request{.slot = 0, .n_past = 100, .rows = rows},
+                                               Request{.slot = 1, .n_past = 200, .rows = rows},
+                                               Request{.slot = 2, .n_past = 3000, .rows = rows},
+                                               Request{.slot = 3, .n_past = 4000, .rows = rows}};
+      auto ordinary = Plan(requests, true, true);
+      ASSERT_TRUE(ordinary) << ordinary.error();
+      for (const auto ceiling : {std::uint64_t{0}, std::numeric_limits<std::uint64_t>::max()}) {
+        auto measured = Plan(requests, true, true, engine::ActivationMeasurement{ceiling});
+        ASSERT_TRUE(measured) << measured.error();
+        SameStartupPlan(**ordinary, **measured);
+        EXPECT_EQ((*ordinary)->host_bytes(), (*measured)->host_bytes());
+        EXPECT_EQ((*measured)->placement.measurement_bound, ceiling != 0);
+        if (ceiling == 0) EXPECT_EQ((*ordinary)->placement.extent, (*measured)->placement.extent);
+        engine::StartupPlacementStats stats;
+        stats.Account(**measured);
+        EXPECT_EQ(stats.plans, 1U);
+        EXPECT_EQ(stats.nodes, engine::PlannedNodes(**ordinary));
+        EXPECT_EQ(stats.bounded + stats.exact, 1U);
+        EXPECT_EQ(stats.max_inputs, (*ordinary)->inputs_bytes);
+      }
+    }
   }
 
   // A lone slot's products (the composition keeps them as they are).
@@ -535,6 +604,14 @@ class Qwen38GgufWavePlanTest : public Qwen38WavePlanTest {
     }
   }
 };
+
+TEST_F(Qwen38WavePlanTest, StartupMeasurementPreservesTargetSelectorsLanesAndHostOwnership) {
+  CheckStartupMeasurement();
+}
+
+TEST_F(Qwen38GgufWavePlanTest, StartupMeasurementPreservesTargetSelectorsLanesAndHostOwnership) {
+  CheckStartupMeasurement();
+}
 
 // Plain GGUF waves retain one-token reductions for dense, shared GLU,
 // routed GLU and per-expert down products. Ten experts per token cap a
@@ -853,7 +930,8 @@ class Qwen38DraftWavePlanTest : public Qwen38WavePlanTest {
   }
 
   auto DraftPlan(bool paired = true, bool capture = false, std::int64_t head_rows = 65536,
-                 bool confidence = false) {
+                 bool confidence = false,
+                 std::optional<engine::ActivationMeasurement> measurement = std::nullopt) {
     const kg::Qwen38MtpShape shape{.rows = 4,
                                    .passes = 3,
                                    .n_kv = 256,
@@ -866,11 +944,42 @@ class Qwen38DraftWavePlanTest : public Qwen38WavePlanTest {
     const std::array<engine::Qwen38DraftWaveInput, 2> inputs = {
         engine::Qwen38DraftWaveInput{0, models_.data(), shape},
         engine::Qwen38DraftWaveInput{2, &models_[2], shape}};
-    return engine::PlanQwen38DraftWave(inputs, ModelDevice(), {.paired = paired});
+    return engine::PlanQwen38DraftWave(inputs, ModelDevice(), {.paired = paired}, measurement);
   }
 
   std::optional<md::Qwen38MtpBinding> drafter_;
 };
+
+TEST_F(Qwen38DraftWavePlanTest, StartupMeasurementPreservesScalarAndJoinedSelectedHeads) {
+  for (const auto type : {"BF16", "Q4_1"}) {
+    BindDraft(true, type);
+    auto ordinary = DraftPlan(true, true, 47171, true);
+    ASSERT_TRUE(ordinary) << ordinary.error();
+    for (const auto ceiling : {std::uint64_t{0}, std::numeric_limits<std::uint64_t>::max()}) {
+      auto measured = DraftPlan(true, true, 47171, true, engine::ActivationMeasurement{ceiling});
+      ASSERT_TRUE(measured) << measured.error();
+      SameStartupPlan(**ordinary, **measured);
+      EXPECT_EQ((*ordinary)->host_bytes(), (*measured)->host_bytes());
+      EXPECT_EQ((*measured)->placement.measurement_bound, ceiling != 0);
+    }
+    const kg::Qwen38MtpShape shape{.rows = 4,
+                                   .passes = 3,
+                                   .n_kv = 256,
+                                   .cells = 4096,
+                                   .head = true,
+                                   .head_rows = 47171,
+                                   .confidence = true,
+                                   .capture_head = true,
+                                   .hidden_rows = 513};
+    auto scalar = engine::PlanQwen38Mtp(models_[0], shape, ModelDevice(), 0, 0);
+    auto measured = engine::PlanQwen38Mtp(models_[0], shape, ModelDevice(), 0, 0,
+                                          engine::ActivationMeasurement{0});
+    ASSERT_TRUE(scalar) << scalar.error();
+    ASSERT_TRUE(measured) << measured.error();
+    SameStartupPlan(**scalar, **measured);
+    EXPECT_EQ((*scalar)->placement.extent, (*measured)->placement.extent);
+  }
+}
 
 TEST_F(Qwen38DraftWavePlanTest, PrefixAndSelectedHeadsShareEveryPassWithVectorArithmetic) {
   for (const bool selected : {false, true}) {

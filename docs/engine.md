@@ -43,6 +43,13 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | Resources | `runner_resources.h` | The runner's own device memory (pinned), pinned staging, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry, and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
 
+Startup measurement can skip greedy activation placement when a checked
+disjoint root-storage bound fits the current exact maximum. Gemma2/3,
+DeepSeek/DSpark and native/GGUF Qwen select it; Gemma4 keeps its optional
+dense-sharing policy. Qwen scalar and wave ceilings are independent.
+Measurement-only plans cannot bind, and ordinary runtime plans retain exact
+placement. [Startup controls and scope](experiments/startup-placement-transfer/README.md).
+
 `support.h` holds the small helpers (errors, addresses, rounding, seconds,
 joined problems).
 

@@ -145,6 +145,21 @@ inline constexpr std::uint64_t kPlanNodeHostBytes = 512;
 std::uint64_t PlannedHostBytes(const PlannedBase& planned);
 // The nodes a planned shape's plan launches (its steps' nodes).
 std::uint64_t PlannedNodes(const PlannedBase& planned);
+// Startup descriptor work only; these count planned selections, not GPU launches.
+// A bounded placement may replace an individual extent, but the runner's final
+// maximum must equal the exact-only sequence's maximum.
+struct StartupPlacementStats {
+  std::uint64_t plans = 0;
+  std::uint64_t nodes = 0;
+  std::uint64_t bounded = 0;
+  std::uint64_t exact = 0;
+  std::uint64_t max_activations = 0;
+  std::uint64_t max_inputs = 0;
+  std::uint64_t max_host = 0;
+  std::uint64_t max_nodes = 0;
+  void Account(const PlannedBase& planned);
+};
+
 // What a captured graph holds outside the catalog (the driver's host and
 // device memory) for each node its plan launches: an allowance over the
 // largest measured on GB10, a 4-slot DeepSeek decode wave graph's

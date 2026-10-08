@@ -133,10 +133,10 @@ through exact source/ELF bridges.
 ## Remaining recipients and scope
 
 T96 is selected for G2/G3 supplemental measurement and qualified for the
-optional G4 dense-sharing measurement path. DeepSeek and Qwen native/GGUF
-Setup also repeatedly account exact placement maxima and are compatible OPEN
-recipients, even without Gemma supplemental compositions. Their latency and
-actual maxima need qualification. Image Setup instead takes maxima of three
+optional G4 dense-sharing measurement path. The later
+[DeepSeek/Qwen startup transfer](../startup-placement-transfer/README.md)
+selects it for target/DSpark and native/MTP/GGUF Setup after exact maxima and
+descriptor checks plus a representative native+MTP startup factor. Image Setup instead takes maxima of three
 fixed text/DiT/VAE layout sizes and has no analogous GGML greedy placement to
 skip. Larger-column/MMQ-adjacent and prepared row-invariant consumers remain
 open separately from T96. Assistant adoption needs its feature/state math

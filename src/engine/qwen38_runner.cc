@@ -573,6 +573,12 @@ Status Qwen38Runner::Setup() {
       return std::unexpected(measure.error());
     }
     const kg::DeviceChoices choices = kg::DeviceChoicesOf(**measure);
+    // Scalar and wave envelopes remain independent, including their first exact seed.
+    const auto measurement =
+        [&](std::uint64_t exact_maximum) -> std::optional<ActivationMeasurement> {
+      if (!o_.startup_activation_threshold) return std::nullopt;
+      return ActivationMeasurement{exact_maximum};
+    };
     struct Probe {
       std::uint32_t n_past;
       std::uint32_t rows;
@@ -609,6 +615,7 @@ Status Qwen38Runner::Setup() {
       }
     }
     const auto account = [&](const PlannedBase& planned, PlanKind& kind) -> Status {
+      scalar_startup_placement_.Account(planned);
       kind.host = std::max(kind.host, PlannedHostBytes(planned));
       kind.nodes = std::max(kind.nodes, PlannedNodes(planned));
       most_activations = std::max(most_activations, planned.placement.extent);
@@ -629,7 +636,7 @@ Status Qwen38Runner::Setup() {
       }
       auto planned = PlanQwen38Chunk(
           model_, kg::Qwen38ShapeOf(layout_, *in, probe.kind.verify ? probe.rows : 1), choices, 0,
-          0, {}, probe.kind);
+          0, {}, probe.kind, measurement(most_activations));
       if (!planned) {
         return Error(std::format("measuring a chunk of {} at {}: {}", probe.rows, probe.n_past,
                                  planned.error()));
@@ -640,7 +647,8 @@ Status Qwen38Runner::Setup() {
       if (probe.rows == 1 && !speculative() && !model_.exact) {
         auto token_shape = kg::Qwen38ShapeOf(layout_, *in, 1);
         token_shape.token = true;
-        auto token_plan = PlanQwen38Chunk(model_, token_shape, choices, 0, 0);
+        auto token_plan = PlanQwen38Chunk(model_, token_shape, choices, 0, 0, {}, {},
+                                          measurement(most_activations));
         if (!token_plan) return Error(token_plan.error());
         if (auto r = account(**token_plan, chunk_kind); !r) return r;
       }
@@ -657,7 +665,8 @@ Status Qwen38Runner::Setup() {
         if (!shaped) {
           return std::unexpected(shaped.error());
         }
-        auto planned = PlanQwen38Mtp(model_, shaped->first, choices, 0, 0);
+        auto planned =
+            PlanQwen38Mtp(model_, shaped->first, choices, 0, 0, measurement(most_activations));
         if (!planned) {
           return Error(std::format("measuring the drafter: {}", planned.error()));
         }
@@ -666,7 +675,8 @@ Status Qwen38Runner::Setup() {
         }
         if (shaped->first.capture_head) {
           shaped->first.capture_head = false;
-          auto ordinary = PlanQwen38Mtp(model_, shaped->first, choices, 0, 0);
+          auto ordinary =
+              PlanQwen38Mtp(model_, shaped->first, choices, 0, 0, measurement(most_activations));
           if (!ordinary) {
             return Error(std::format("measuring the uncaptured drafter: {}", ordinary.error()));
           }
@@ -698,6 +708,7 @@ Status Qwen38Runner::Setup() {
       }
       const auto wave_account = [&](const Qwen38WavePlanned& planned,
                                     std::uint64_t& host) -> Status {
+        wave_startup_placement_.Account(planned);
         wave_activations = std::max(wave_activations, planned.placement.extent);
         auto scratch = kg::PlanScratch(**measure, planned.plan);
         if (!scratch) {
@@ -729,7 +740,8 @@ Status Qwen38Runner::Setup() {
             {s, &models[s], kg::Qwen38ShapeOf(layout_, *in, speculative() ? rows : 1), kind});
       }
       auto target = PlanQwen38TargetWave(targets, choices,
-                                         {.share_target_head = true, .lanes = o_.wave_lanes});
+                                         {.share_target_head = true, .lanes = o_.wave_lanes},
+                                         measurement(wave_activations));
       if (!target) {
         return Error(
             std::format("measuring a wave of {} slots: {}", o_.wave_slots, target.error()));
@@ -740,7 +752,8 @@ Status Qwen38Runner::Setup() {
       if (!speculative() && !model_.exact) {
         for (auto& input : targets) input.shape.token = true;
         auto token_plan = PlanQwen38TargetWave(targets, choices,
-                                               {.share_target_head = true, .lanes = o_.wave_lanes});
+                                               {.share_target_head = true, .lanes = o_.wave_lanes},
+                                               measurement(wave_activations));
         if (!token_plan) return Error(token_plan.error());
         if (auto r = wave_account(**token_plan, target_wave_host); !r) return r;
       }
@@ -756,7 +769,8 @@ Status Qwen38Runner::Setup() {
         for (std::uint32_t s = 0; s < o_.wave_slots; ++s) {
           drafts.push_back({s, &models[s], shaped->first});
         }
-        auto draft = PlanQwen38DraftWave(drafts, choices, {.lanes = o_.wave_lanes});
+        auto draft = PlanQwen38DraftWave(drafts, choices, {.lanes = o_.wave_lanes},
+                                         measurement(wave_activations));
         if (!draft) {
           return Error(
               std::format("measuring a draft wave of {} slots: {}", o_.wave_slots, draft.error()));

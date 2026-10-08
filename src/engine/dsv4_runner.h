@@ -167,6 +167,8 @@ struct Dsv4Options {
   // with feature injection. Scoring/sampling and draft/verify keep their
   // existing contracts. False is the internal row reference.
   bool device_tokens = true;
+  // Startup-only same-binary control. Runtime plans always retain exact placement.
+  bool startup_activation_threshold = true;
   // Where each slot's spill file lives (LiveState::SpillPlace), asked once
   // at Register; unset, an unnamed file in `out`. The runtime names them
   // to keep conversations across a restart (D-105).
@@ -273,6 +275,8 @@ class Dsv4Runner final : public PagedModel {
   // (state, cuBLAS workspace, staging) and its weights' places reserved
   // and cataloged.
   Status Setup();
+  const StartupPlacementStats& startup_placement_stats() const { return startup_placement_; }
+  std::uint64_t lane_pool_needed() const { return lane_scratch_; }
   std::uint64_t activations_needed() const { return activation_bytes_; }
   std::uint64_t pool_needed() const { return scratch_bytes_; }
   // The largest chunk's host-built inputs (model/dsv4.h Dsv4ChunkInputs, the
@@ -898,6 +902,7 @@ class Dsv4Runner final : public PagedModel {
   // Pinned: a wave's every row's logits (kDsv4WaveRows × vocab) and its
   // slots' drafts.
   float* wave_logits_ = nullptr;
+  StartupPlacementStats startup_placement_;
   std::uint64_t activation_bytes_ = 0;
   std::uint64_t scratch_bytes_ = 0;
   std::uint64_t lane_scratch_ = 0;  // each wave lane's pool (ConfigureLanes)

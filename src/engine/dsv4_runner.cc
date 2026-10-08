@@ -540,7 +540,12 @@ Status Dsv4Runner::Setup() {
     model_.prefill_outa_hca =
         model_.prefill_outa_hca && kg::Dsv4OutASupported(**measure) && OutAWeights(binding_);
     const kg::DeviceChoices choices = kg::DeviceChoicesOf(**measure);
+    const auto measurement = [&]() -> std::optional<ActivationMeasurement> {
+      if (!o_.startup_activation_threshold) return std::nullopt;
+      return ActivationMeasurement{most_activations};
+    };
     const auto account = [&](const PlannedBase& planned, std::uint64_t& host) -> Status {
+      startup_placement_.Account(planned);
       host = std::max(host, PlannedHostBytes(planned));
       most_nodes = std::max(most_nodes, PlannedNodes(planned));
       most_activations = std::max(most_activations, planned.placement.extent);
@@ -598,7 +603,7 @@ Status Dsv4Runner::Setup() {
                                                  : 0;
       const auto shape = kg::Dsv4ShapeOf(layout_, *in, requested_outputs);
       auto planned = PlanDsv4Chunk(model_, shape, choices, dump_, 0, 0, speculation,
-                                   HcaFirstPosition(model_, shape, probe.n_past));
+                                   HcaFirstPosition(model_, shape, probe.n_past), measurement());
       if (!planned) {
         return Error(std::format("measuring a chunk of {} at {}: {}", probe.rows, probe.n_past,
                                  planned.error()));
@@ -610,13 +615,14 @@ Status Dsv4Runner::Setup() {
           !model_.exact && dump_.empty()) {
         auto token_shape = shape;
         token_shape.token = true;
-        auto token_plan = PlanDsv4Chunk(model_, token_shape, choices, {}, 0, 0);
+        auto token_plan =
+            PlanDsv4Chunk(model_, token_shape, choices, {}, 0, 0, {}, std::nullopt, measurement());
         if (!token_plan) return Error(token_plan.error());
         if (auto r = account(**token_plan, chunk_host); !r) return r;
       }
     }
     if (speculative()) {
-      auto planned = PlanDsparkDraft(dmodel_, o_.draft_rows, choices, 0, 0);
+      auto planned = PlanDsparkDraft(dmodel_, o_.draft_rows, choices, 0, 0, measurement());
       if (!planned) {
         return Error(std::format("measuring the draft block: {}", planned.error()));
       }
@@ -645,7 +651,7 @@ Status Dsv4Runner::Setup() {
           }
         }
         auto planned = PlanDsv4Wave(model_, states, shape, choices, 0, 0,
-                                    speculative() ? &dmodel_ : nullptr, states);
+                                    speculative() ? &dmodel_ : nullptr, states, measurement());
         if (!planned) {
           return Error(
               std::format("measuring a wave of {} slots: {}", wave_slots_, planned.error()));
@@ -654,7 +660,7 @@ Status Dsv4Runner::Setup() {
         if (rows == 1 && !model_.exact) {
           shape.token = true;
           auto token_plan = PlanDsv4Wave(model_, states, shape, choices, 0, 0,
-                                         speculative() ? &dmodel_ : nullptr, states);
+                                         speculative() ? &dmodel_ : nullptr, states, measurement());
           if (!token_plan) return Error(token_plan.error());
           if (auto r = account(**token_plan, wave_host); !r) return r;
         }
@@ -680,8 +686,8 @@ Status Dsv4Runner::Setup() {
           speculative() && o_.joined_drafts && !model_.exact && joined >= 2 && o_.draft_rows >= 2;
       if (joined_drafts_) {
         const std::vector<std::uint64_t> rings(joined, std::uint64_t{1} << 45U);
-        auto planned =
-            PlanDsparkWave(dmodel_, rings, o_.draft_rows, choices, 0, 0, model_.wave_lanes);
+        auto planned = PlanDsparkWave(dmodel_, rings, o_.draft_rows, choices, 0, 0,
+                                      model_.wave_lanes, measurement());
         if (!planned) {
           return Error(
               std::format("measuring a joined draft of {} slots: {}", joined, planned.error()));

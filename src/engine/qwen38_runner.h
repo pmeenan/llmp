@@ -160,6 +160,8 @@ struct Qwen38Options {
   // Plain target greedy decode publication; scoring, sampling and speculation
   // keep their existing output contracts. False is the internal matched reference.
   bool device_tokens = true;
+  // Startup-only same-binary control. Runtime plans always retain exact placement.
+  bool startup_activation_threshold = true;
 };
 
 // Completed graph executions only, including replay. Host bytes count the
@@ -661,6 +663,13 @@ class Qwen38Runner final : public PagedModel {
   // catalog access; initialized range accounting is separate from the unused
   // virtual ceilings.
   Qwen38SetupBudget setup_budget() const;
+  const StartupPlacementStats& scalar_startup_placement_stats() const {
+    return scalar_startup_placement_;
+  }
+  const StartupPlacementStats& wave_startup_placement_stats() const {
+    return wave_startup_placement_;
+  }
+
   // One to four rows each (Draft: <=4 pending rows, <=3 passes), up to
   // wave_capacity() slots. Groups of consecutive compatible slots share
   // products of at most sixteen rows (qwen38_wave_plan.h); incompatible
@@ -891,6 +900,8 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t host_input_bytes_ = 0;
   std::uint64_t plan_floor_bytes_ = 0;  // plan_floor_bytes()
   std::string plan_report_;
+  StartupPlacementStats scalar_startup_placement_;
+  StartupPlacementStats wave_startup_placement_;
   Qwen38SetupBudget setup_budget_;
   Qwen38MaskStats mask_stats_;
   // Additional fixed pinned output slices, indexed by sealed slot rather

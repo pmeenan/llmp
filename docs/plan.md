@@ -378,8 +378,9 @@ family" guide, and its long-context scaling work.
       Preserve each recipient's original math, artifact, state, memory and
       completion contracts. No target A disposition closes a drafter item.
       - **DeepSeek V4 / DSpark**
-        - [ ] **T96** Transfer checked startup placement-threshold measurement to
-          repeated target/draft Setup accounting; qualify exact maxima and latency.
+        - [x] **T96** Shared startup placement threshold selected for target/DSpark
+          Setup with exact funding and descriptor work; latency pair is n=1.
+          [Controls and representative factor](experiments/startup-placement-transfer/README.md).
         - [ ] **T95** Quantized draft head: qualify compatible independent/tied
           head binding, state/closure funding, scalar/joined arithmetic and quality.
         - [ ] **T19** Selective draft-head MMVF.
@@ -419,8 +420,10 @@ family" guide, and its long-context scaling work.
         - [ ] **T92** Remove reference CSA/HCA raw/compressed bank packing
           through actual roots; preserve sinks, selection and reduction math.
       - **Qwen3.8 native / MTP**
-        - [ ] **T96** Transfer the checked startup placement threshold to repeated
-          native target/MTP Setup accounting with exact funding and latency controls.
+        - [x] **T96** Shared startup placement threshold selected for native/MTP
+          Setup with independent scalar/wave maxima. Representative MTP Setup
+          takes 2.441% less time at n=2; ordinary movement −0.692%.
+          [Controls](experiments/startup-placement-transfer/README.md).
         - [ ] **T10** HC-normalized expert sum in post.
         - [ ] **T20** Column-invariant grouped float products.
         - [x] **T22** Graph-owned exact-row F16/F32 causal masks; native headed
@@ -448,8 +451,9 @@ family" guide, and its long-context scaling work.
           fixed-capacity future groups under family descriptors.
         - [ ] **T72** Expert worklist sharing across vector products.
       - **Qwen3.8 GGUF / target**
-        - [ ] **T96** Transfer the checked startup placement threshold to repeated
-          GGUF target Setup accounting with exact maxima and actual latency controls.
+        - [x] **T96** Shared startup placement threshold selected for GGUF target
+          Setup with exact funding and descriptor work; latency pair is n=1.
+          [Controls](experiments/startup-placement-transfer/README.md).
         - [ ] **T03** Sparse query-union KV reuse.
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T07** Compact expert-major MMQ scheduling.

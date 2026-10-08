@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Skip redundant DeepSeek/DSpark and native/GGUF Qwen startup activation
+  placement under a checked exact maximum, preserving funding and runtime
+  plans. Native Qwen with MTP takes 2.441% less Setup time in the short screen.
+
 - Add optional Gemma4 original-MMVQ input sharing, preserving exact target
   heads/state and existing fused/routed arithmetic. It stays off by default
   after short native factors and startup-cost observations. Skip redundant

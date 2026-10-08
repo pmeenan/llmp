@@ -186,6 +186,17 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     std::span<const std::string> keep_names, std::uint64_t activations,
     std::uint64_t activation_bytes, const Dsv4Speculation& speculation,
     std::optional<std::uint32_t> first_position) {
+  return PlanDsv4Chunk(m, shape, choices, keep_names, activations, activation_bytes, speculation,
+                       first_position, std::nullopt);
+}
+
+std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
+    const Dsv4Model& m, const kg::Dsv4ChunkShape& shape, const kg::DeviceChoices& choices,
+    std::span<const std::string> keep_names, std::uint64_t activations,
+    std::uint64_t activation_bytes, const Dsv4Speculation& speculation,
+    std::optional<std::uint32_t> first_position, std::optional<ActivationMeasurement> measurement) {
+  if (measurement && activations != 0)
+    return Error("measurement-only planning cannot use activation storage");
   if (shape.token && (shape.rows != 1 || m.exact || speculation.verify ||
                       speculation.drafter != nullptr || !keep_names.empty() || first_position))
     return Error("plain device token plans require one non-speculative target row");
@@ -284,8 +295,8 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     }
   }
   const auto inputs = g.inputs();
-  if (auto placed =
-          PlaceAndPlan(*out, g.nodes, inputs, keep, device, activations, activation_bytes);
+  if (auto placed = PlaceAndPlan(*out, g.nodes, inputs, keep, device, activations, activation_bytes,
+                                 measurement);
       !placed) {
     return std::unexpected(placed.error());
   }
@@ -334,6 +345,17 @@ std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
     const Dsv4Model& m, std::span<const std::uint64_t> states, const kg::Dsv4WaveShape& shape,
     const kg::DeviceChoices& choices, std::uint64_t activations, std::uint64_t activation_bytes,
     const DsparkModel* drafter, std::span<const std::uint64_t> rings) {
+  return PlanDsv4Wave(m, states, shape, choices, activations, activation_bytes, drafter, rings,
+                      std::nullopt);
+}
+
+std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
+    const Dsv4Model& m, std::span<const std::uint64_t> states, const kg::Dsv4WaveShape& shape,
+    const kg::DeviceChoices& choices, std::uint64_t activations, std::uint64_t activation_bytes,
+    const DsparkModel* drafter, std::span<const std::uint64_t> rings,
+    std::optional<ActivationMeasurement> measurement) {
+  if (measurement && activations != 0)
+    return Error("measurement-only planning cannot use activation storage");
   if (m.exact || states.size() != shape.slots.size() ||
       (drafter != nullptr && rings.size() != shape.slots.size())) {
     return Error("a wave runs the fast plan over one state place a slot");
@@ -407,7 +429,7 @@ std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
   const auto inputs = g.inputs();
   // Each slot's attention and state operations on a lane of its own.
   if (auto placed = PlaceAndPlan(*out, g.joined.nodes, inputs, keep, device, activations,
-                                 activation_bytes, m.wave_lanes ? &g.lanes : nullptr);
+                                 activation_bytes, measurement, m.wave_lanes ? &g.lanes : nullptr);
       !placed) {
     return std::unexpected(placed.error());
   }
@@ -515,6 +537,15 @@ kg::DeviceChoices DraftChoices(const DsparkModel& d, const kg::DeviceChoices& ch
 std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
     const DsparkModel& d, std::int64_t rows, const kg::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes) {
+  return PlanDsparkDraft(d, rows, choices, activations, activation_bytes, std::nullopt);
+}
+
+std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
+    const DsparkModel& d, std::int64_t rows, const kg::DeviceChoices& choices,
+    std::uint64_t activations, std::uint64_t activation_bytes,
+    std::optional<ActivationMeasurement> measurement) {
+  if (measurement && activations != 0)
+    return Error("measurement-only planning cannot use activation storage");
   auto out = std::make_unique<DsparkPlanned>();
   const kg::Dsv4GraphOptions options{
       .expert_stride = d.places.stride, .fused = !d.exact, .device_draft_masks = d.device_masks};
@@ -541,7 +572,7 @@ std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
   const std::vector<ggml_tensor*> keep = {g.logits, g.drafts};
   const auto inputs = g.inputs();
   if (auto placed = PlaceAndPlan(*out, g.core.nodes, inputs, keep, DraftChoices(d, choices),
-                                 activations, activation_bytes);
+                                 activations, activation_bytes, measurement);
       !placed) {
     return std::unexpected(placed.error());
   }
@@ -552,6 +583,16 @@ std::expected<std::unique_ptr<DsparkWavePlanned>, std::string> PlanDsparkWave(
     const DsparkModel& d, std::span<const std::uint64_t> rings, std::int64_t rows,
     const kg::DeviceChoices& choices, std::uint64_t activations, std::uint64_t activation_bytes,
     bool lanes) {
+  return PlanDsparkWave(d, rings, rows, choices, activations, activation_bytes, lanes,
+                        std::nullopt);
+}
+
+std::expected<std::unique_ptr<DsparkWavePlanned>, std::string> PlanDsparkWave(
+    const DsparkModel& d, std::span<const std::uint64_t> rings, std::int64_t rows,
+    const kg::DeviceChoices& choices, std::uint64_t activations, std::uint64_t activation_bytes,
+    bool lanes, std::optional<ActivationMeasurement> measurement) {
+  if (measurement && activations != 0)
+    return Error("measurement-only planning cannot use activation storage");
   if (d.exact || rings.size() < 2) {
     return Error("a joined draft runs the fast plan over two rings or more");
   }
@@ -585,8 +626,9 @@ std::expected<std::unique_ptr<DsparkWavePlanned>, std::string> PlanDsparkWave(
   }
   const std::vector<ggml_tensor*> keep(g.drafts.begin(), g.drafts.end());
   const auto inputs = g.inputs();
-  if (auto placed = PlaceAndPlan(*out, g.joined.nodes, inputs, keep, DraftChoices(d, choices),
-                                 activations, activation_bytes, lanes ? &g.lanes : nullptr);
+  if (auto placed =
+          PlaceAndPlan(*out, g.joined.nodes, inputs, keep, DraftChoices(d, choices), activations,
+                       activation_bytes, measurement, lanes ? &g.lanes : nullptr);
       !placed) {
     return std::unexpected(placed.error());
   }

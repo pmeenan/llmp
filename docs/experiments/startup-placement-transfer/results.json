@@ -1,0 +1,497 @@
+{
+  "schema": 1,
+  "date": "2026-10-08",
+  "host": "spark-b",
+  "task_entry": {
+    "utc": "2026-10-08 14:30:24 UTC",
+    "base": "ec3759afe7f522765a4812c9fee79f1071c17ec6",
+    "TensorFold": {
+      "main": "f8fe17d24629aedabf90bbf78279dd776e6d62e7",
+      "python-0.6": "ed78d6fc204d89d90b045bf033d6551e7714f3a1"
+    },
+    "pin_method": "git ls-remote https://github.com/ashhart/TensorFold.git refs/heads/main refs/heads/python-0.6; return0"
+  },
+  "source_manifest_sha256": "d631fed23b645820b11235ffcfdcad10f9d00680c55b27dfc40b71041d48f8e6",
+  "acquisition_sha256": "e21f7d24b751d443a42c6862c17c4773d099c96552855a2439b77eaf665a5fd0",
+  "runs_sha256": "e6bb1bfba14c28b9de2e88b1d10f0b749b763616c3dff1ea0468a1358fe0be14",
+  "artifacts": {
+    "ds": {
+      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+      "files": {
+        "manifest.json": "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+        "index.json": "68ddac15cff7cfcac5162beab7559884632244651797aed1b000cc7325ea24fc"
+      }
+    },
+    "dspark": {
+      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5",
+      "files": {
+        "manifest.json": "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5",
+        "index.json": "437561ad6dd1e8d5fd3758be2a8eac52b8a1c81f6a1fb54b27e0b3badfeaa11c"
+      }
+    },
+    "qn": {
+      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
+      "files": {
+        "manifest.json": "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
+        "index.json": "5b65dcce8169374e638264d7ebdcb5cca517234b3dec26f1272a5f4f9c0e4c89"
+      }
+    },
+    "qmtp": {
+      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
+      "files": {
+        "manifest.json": "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
+        "index.json": "5cd45fc5354ab224d281c2416027f224c61e32e2ae0acf8e7580d063fc274d99"
+      }
+    },
+    "qg": {
+      "path": "/home/pmeenan/.local/share/jitllm/qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
+      "files": {
+        "manifest.json": "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
+        "index.json": "d6c69d701ead0cbadc3a64f1f3c354a70ecac7179f61dbac1e1163fca0cd3550"
+      }
+    }
+  },
+  "native_libraries": {
+    "libcublas.so.13": {
+      "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+      "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+      "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+    },
+    "libcublasLt.so.13": {
+      "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+      "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+      "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+    }
+  },
+  "focused_tests": [
+    "Dsv4PrefillPlan.StartupMeasurementRejectsRuntimeStorageBeforeModelAccess",
+    "Qwen38StartupMeasurement.RejectsRuntimeStorageBeforeModelOrWaveAccess",
+    "Qwen38WavePlanTest.StartupMeasurementPreservesTargetSelectorsLanesAndHostOwnership",
+    "Qwen38GgufWavePlanTest.StartupMeasurementPreservesTargetSelectorsLanesAndHostOwnership",
+    "Qwen38DraftWavePlanTest.StartupMeasurementPreservesScalarAndJoinedSelectedHeads"
+  ],
+  "recipes": {
+    "ds": {
+      "budget": {
+        "activations": 222298112,
+        "scratch": 56623104,
+        "lane_scratch": 1916928,
+        "host_inputs": 10485760,
+        "plan_floor": 5515136,
+        "scratch_arena": 31548928,
+        "initialized_logical": 0
+      },
+      "plan_report": "5.3 MiB a step at most: chunk plans of 4.7 MiB, wave plans of 5.3 MiB, draft plans of 0.0 MiB (the most nodes a plan launches: 3720, a graph of it 58 MiB)",
+      "scalar_common": {
+        "plans": 8,
+        "nodes": 24097,
+        "max_activations": 177100544,
+        "max_inputs": 8488704,
+        "max_host": 5515136,
+        "max_nodes": 3720
+      },
+      "wave_common": null,
+      "arms": [
+        {
+          "name": "off",
+          "threshold": false,
+          "setup_seconds": 0.167082931,
+          "scalar_bounded": 0,
+          "scalar_exact": 8,
+          "wave_bounded": null,
+          "wave_exact": null,
+          "result_sha256": "ff934b6234f572edd21a0f54517d994a52b0077725f7490d319dfeba209e857d"
+        },
+        {
+          "name": "on",
+          "threshold": true,
+          "setup_seconds": 0.138903579,
+          "scalar_bounded": 6,
+          "scalar_exact": 2,
+          "wave_bounded": null,
+          "wave_exact": null,
+          "result_sha256": "d7fcaace366f49e9e2b073a2e5a04c43076f5577e243ee754f97f34fcd340975"
+        }
+      ]
+    },
+    "dspark": {
+      "budget": {
+        "activations": 264241152,
+        "scratch": 67108864,
+        "lane_scratch": 4225024,
+        "host_inputs": 10485760,
+        "plan_floor": 5999008,
+        "scratch_arena": 31754752,
+        "initialized_logical": 0
+      },
+      "plan_report": "5.7 MiB a step at most: chunk plans of 4.8 MiB, wave plans of 5.3 MiB, draft plans of 0.2 MiB (the most nodes a plan launches: 3752, a graph of it 59 MiB)",
+      "scalar_common": {
+        "plans": 13,
+        "nodes": 35399,
+        "max_activations": 210647296,
+        "max_inputs": 8490752,
+        "max_host": 5575328,
+        "max_nodes": 3752
+      },
+      "wave_common": null,
+      "arms": [
+        {
+          "name": "off",
+          "threshold": false,
+          "setup_seconds": 0.204383273,
+          "scalar_bounded": 0,
+          "scalar_exact": 13,
+          "wave_bounded": null,
+          "wave_exact": null,
+          "result_sha256": "7dea9d4b88b390e43b1e3e7eae02d27e7dd8519e9b2f3d76e8a3f541a57bd591"
+        },
+        {
+          "name": "on",
+          "threshold": true,
+          "setup_seconds": 0.186820779,
+          "scalar_bounded": 6,
+          "scalar_exact": 7,
+          "wave_bounded": null,
+          "wave_exact": null,
+          "result_sha256": "075d80eb3db39dfa78d8d5a6e21856b98292c8865d2f0be7cede283c88d7bae3"
+        }
+      ]
+    },
+    "qn": {
+      "budget": {
+        "scalar_activations": 178257920,
+        "scalar_scratch": 10485760,
+        "scalar_staging_inputs": 2097152,
+        "scalar_host_inputs": 2097152,
+        "scalar_ple_mapped": 2097152,
+        "scalar_pinned": 70233628,
+        "scalar_snapshot_per_branch": 0,
+        "activations": 178257920,
+        "scratch": 44040192,
+        "staging_inputs": 2097152,
+        "host_inputs": 2097152,
+        "ple_mapped": 2097152,
+        "pinned": 86126620,
+        "wave_output_pinned": 15892992,
+        "snapshot_per_branch": 0,
+        "runner_mapped": 35651584,
+        "target_per_branch": 375988224,
+        "drafter_per_branch": 0,
+        "virtual_per_branch": 377487360,
+        "initialized_logical": 0,
+        "initialized_extent_bytes": 0,
+        "scratch_arena": 7495680,
+        "plan_floor": 23874680
+      },
+      "plan_report": "22.8 MiB a step at most: chunk plans of 3.6 MiB (2274 nodes), drafter plans of 0.0 MiB (0 nodes), target waves of 22.8 MiB, draft waves of 0.0 MiB",
+      "scalar_common": {
+        "plans": 7,
+        "nodes": 13476,
+        "max_activations": 141578752,
+        "max_inputs": 47872,
+        "max_host": 3747536,
+        "max_nodes": 2274
+      },
+      "wave_common": {
+        "plans": 2,
+        "nodes": 14068,
+        "max_activations": 8829952,
+        "max_inputs": 7168,
+        "max_host": 6559744,
+        "max_nodes": 7036
+      },
+      "arms": [
+        {
+          "name": "off",
+          "threshold": false,
+          "setup_seconds": 0.473553742,
+          "scalar_bounded": 0,
+          "scalar_exact": 7,
+          "wave_bounded": 0,
+          "wave_exact": 2,
+          "result_sha256": "46a20bd6dd55f808a332646374116130d26f65f815af57ea7643a999b3244189"
+        },
+        {
+          "name": "on",
+          "threshold": true,
+          "setup_seconds": 0.447151826,
+          "scalar_bounded": 4,
+          "scalar_exact": 3,
+          "wave_bounded": 0,
+          "wave_exact": 2,
+          "result_sha256": "ce57ae3e0024e023f33448111c8483e5625632aba23963a7edf4095de0e2dc80"
+        }
+      ]
+    },
+    "qg": {
+      "budget": {
+        "scalar_activations": 195035136,
+        "scalar_scratch": 20971520,
+        "scalar_staging_inputs": 2097152,
+        "scalar_host_inputs": 2097152,
+        "scalar_ple_mapped": 2097152,
+        "scalar_pinned": 70627180,
+        "scalar_snapshot_per_branch": 0,
+        "activations": 195035136,
+        "scratch": 96468992,
+        "staging_inputs": 2097152,
+        "host_inputs": 2097152,
+        "ple_mapped": 2097152,
+        "pinned": 86520172,
+        "wave_output_pinned": 15892992,
+        "snapshot_per_branch": 0,
+        "runner_mapped": 35651584,
+        "target_per_branch": 375988224,
+        "drafter_per_branch": 0,
+        "virtual_per_branch": 377487360,
+        "initialized_logical": 0,
+        "initialized_extent_bytes": 0,
+        "scratch_arena": 7495680,
+        "plan_floor": 27747370
+      },
+      "plan_report": "26.5 MiB a step at most: chunk plans of 3.2 MiB (2314 nodes), drafter plans of 0.0 MiB (0 nodes), target waves of 26.5 MiB, draft waves of 0.0 MiB",
+      "scalar_common": {
+        "plans": 7,
+        "nodes": 15474,
+        "max_activations": 154720768,
+        "max_inputs": 47872,
+        "max_host": 3359536,
+        "max_nodes": 2314
+      },
+      "wave_common": {
+        "plans": 2,
+        "nodes": 20174,
+        "max_activations": 8907776,
+        "max_inputs": 7168,
+        "max_host": 8636672,
+        "max_nodes": 10089
+      },
+      "arms": [
+        {
+          "name": "off",
+          "threshold": false,
+          "setup_seconds": 0.567510897,
+          "scalar_bounded": 0,
+          "scalar_exact": 7,
+          "wave_bounded": 0,
+          "wave_exact": 2,
+          "result_sha256": "fee1fcc3c9b97db1622cfd315ebf1c8ba42a17e6391b16bf07c900662fc95cf3"
+        },
+        {
+          "name": "on",
+          "threshold": true,
+          "setup_seconds": 0.560711134,
+          "scalar_bounded": 4,
+          "scalar_exact": 3,
+          "wave_bounded": 0,
+          "wave_exact": 2,
+          "result_sha256": "0f3fcaa60b9e6b7a14de567e03a1411fda4054a3cc65def60dbe332f163c5f8e"
+        }
+      ]
+    },
+    "qmtp": {
+      "budget": {
+        "scalar_activations": 178257920,
+        "scalar_scratch": 10485760,
+        "scalar_staging_inputs": 2097152,
+        "scalar_host_inputs": 2097152,
+        "scalar_ple_mapped": 2097152,
+        "scalar_pinned": 72508716,
+        "scalar_snapshot_per_branch": 10485760,
+        "activations": 178257920,
+        "scratch": 44040192,
+        "staging_inputs": 2097152,
+        "host_inputs": 2097152,
+        "ple_mapped": 2097152,
+        "pinned": 88401708,
+        "wave_output_pinned": 15892992,
+        "snapshot_per_branch": 10485760,
+        "runner_mapped": 77594624,
+        "target_per_branch": 375988224,
+        "drafter_per_branch": 42508288,
+        "virtual_per_branch": 421527552,
+        "initialized_logical": 0,
+        "initialized_extent_bytes": 0,
+        "scratch_arena": 7495680,
+        "plan_floor": 26829200
+      },
+      "plan_report": "25.6 MiB a step at most: chunk plans of 3.6 MiB (2275 nodes), drafter plans of 0.2 MiB (108 nodes), target waves of 24.5 MiB, draft waves of 1.1 MiB",
+      "scalar_common": {
+        "plans": 13,
+        "nodes": 20345,
+        "max_activations": 141582848,
+        "max_inputs": 51968,
+        "max_host": 3749152,
+        "max_nodes": 2275
+      },
+      "wave_common": {
+        "plans": 2,
+        "nodes": 7336,
+        "max_activations": 17383424,
+        "max_inputs": 9216,
+        "max_host": 7759360,
+        "max_nodes": 6892
+      },
+      "arms": [
+        {
+          "name": "off1",
+          "threshold": false,
+          "setup_seconds": 0.372779766,
+          "scalar_bounded": 0,
+          "scalar_exact": 13,
+          "wave_bounded": 0,
+          "wave_exact": 2,
+          "result_sha256": "9be1192ab2dd5623eef046186c1182598c10950d7c25cfa8636dfa8e7a1f5fb7"
+        },
+        {
+          "name": "on1",
+          "threshold": true,
+          "setup_seconds": 0.357234837,
+          "scalar_bounded": 5,
+          "scalar_exact": 8,
+          "wave_bounded": 1,
+          "wave_exact": 1,
+          "result_sha256": "cb0345ba428ce1906b87ceadd5594d5bd760c4039c8ccb477fa640c160282397"
+        },
+        {
+          "name": "on2",
+          "threshold": true,
+          "setup_seconds": 0.367607535,
+          "scalar_bounded": 5,
+          "scalar_exact": 8,
+          "wave_bounded": 1,
+          "wave_exact": 1,
+          "result_sha256": "f6541c10a619ccfe2a600b7927b89895be9dfad13b3ac4eb0291219f2ddd9b33"
+        },
+        {
+          "name": "off2",
+          "threshold": false,
+          "setup_seconds": 0.370200362,
+          "scalar_bounded": 0,
+          "scalar_exact": 13,
+          "wave_bounded": 0,
+          "wave_exact": 2,
+          "result_sha256": "e7949b5ba8153aab400ada1d6b60968894b8a07ebb6cc9205e5bf1409b7b72fa"
+        }
+      ],
+      "summary": {
+        "means_seconds": {
+          "off": 0.371490064,
+          "on": 0.362421186
+        },
+        "time_change_percent": -2.441216839651461,
+        "off_bookend_change_percent": -0.6919377700344453,
+        "ranges_seconds": {
+          "off": [
+            0.370200362,
+            0.372779766
+          ],
+          "on": [
+            0.357234837,
+            0.367607535
+          ]
+        }
+      }
+    }
+  },
+  "retirement": {
+    "build_supervisor": 3253508,
+    "acquisition_supervisor": 3254423,
+    "positive_applications": 12,
+    "child_returncodes": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "kernel_messages": [],
+    "post_gpu_processes": "",
+    "MemAvailable_bytes": 125274136576
+  },
+  "failed_prerequisite": {
+    "name": "m35-startup-threshold-build1",
+    "supervisor": 3251075,
+    "returncode": 1,
+    "compile_seconds": 32.08604477602057,
+    "cause": "Missing explicit empty dense_mmvq_shape initializer in existing ModelDevice fixture; no tests ran."
+  },
+  "final_default_build": {
+    "source_manifest_sha256": "601023aff25b008e89650a93e148b7edbc7c674815c4607aa0e7864448e52cec",
+    "passed_sha256": "2c245d1931e69cbb61768da9f7daf6cbc30a502962977c21ec4dcd5d23e640ca",
+    "files": {
+      "build/spark-native/src/runtime/jitllm-runtime": "bebe87c9a6f2f78932d9b9351bcde29c88d18abe22091da8a1186a8f6883b6f2",
+      "build/spark-native/benchmarks/jitllm_startup_measurement_probe": "8e5d9521871de02db102192071fee257595617359411e6c34302bd97c3c9a482",
+      "build/spark-native/tests/unit/dsv4_prefill_plan_test": "9e09236378a4fcdd484eb67a86b2d4dad32e570d98f7e406106ee27fc43240be",
+      "build/spark-native/tests/unit/qwen38_wave_plan_test": "5b0616f49f51b05f5ed4d310906f688855abca5f0cd6842ceb17d20986afc083",
+      "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+    },
+    "tests": [
+      "Dsv4PrefillPlan.StartupMeasurementRejectsRuntimeStorageBeforeModelAccess",
+      "Qwen38StartupMeasurement.RejectsRuntimeStorageBeforeModelOrWaveAccess"
+    ],
+    "xml": {
+      "ds": "1b601066df6dff93e85edb52908b5233b317dfeee863a30797fffa42fbc20520",
+      "qwen": "3cb80f00095f2bb6b795a1910fafae7fba32353b57b98cac31d5ebff2c522432"
+    },
+    "supervisor": 3256077,
+    "returncode": 0,
+    "compile_seconds": 16.551072963979095,
+    "kernel_messages": [
+      "audit: type=1400 audit(1791471422.512:1093): apparmor=\"DENIED\" operation=\"capable\" class=\"cap\" profile=\"ubuntu_pro_esm_cache_systemd_detect_virt\" pid=3256361 comm=\"systemd-detect-\" capability=38  capname=\"perfmon\"",
+      "audit: type=1400 audit(1791471422.514:1094): apparmor=\"DENIED\" operation=\"capable\" class=\"cap\" profile=\"ubuntu_pro_esm_cache//cloud_id\" pid=3256316 comm=\"cloud-id\" capability=38  capname=\"perfmon\""
+    ],
+    "after": {
+      "gpu_processes": "",
+      "MemAvailable_bytes": 123603570688
+    }
+  },
+  "qualified_build_record_sha256": "8a0614a48b1633fe22f08f1b7e97894a03d36fc0a54be262074da5ce60344d0a",
+  "official_build_receipt_sha256": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89",
+  "device": {
+    "name": "NVIDIA GB10",
+    "driver_version": "580.178.04",
+    "uuid": "GPU-2993ca8d-f3bc-e9ff-f70f-69396a520ddc",
+    "boot_id": "f3d81509-6c14-4a8e-bf9a-448deeae5ea6",
+    "observation": "Read after all jobs retired, same boot as every acquired process."
+  },
+  "sdk": "aarch64-c09daba6ac31edee",
+  "configured_recipes": {
+    "ds": {
+      "context": 8704,
+      "max_rows": 512,
+      "wave_slots": 2,
+      "frontier_head": true,
+      "prefill_outa_hca": true,
+      "prefill_outa_hca_partial": true
+    },
+    "dspark": {
+      "same_target_as": "ds",
+      "draft_rows": 3,
+      "verify_rows": 4
+    },
+    "qn": {
+      "context": 8192,
+      "max_rows": 512,
+      "wave_slots": 4,
+      "request_slots": 4
+    },
+    "qg": {
+      "same_envelope_as": "qn",
+      "drafter": false
+    },
+    "qmtp": {
+      "same_target_as": "qn",
+      "draft_rows": 2,
+      "selected_head": "BF16",
+      "draft_vocab_capacity": 65536
+    }
+  }
+}

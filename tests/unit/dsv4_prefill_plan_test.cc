@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <numeric>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -25,6 +26,21 @@ namespace jitllm::engine {
 namespace {
 namespace kg = kernels::ggml;
 namespace md = model;
+
+TEST(Dsv4PrefillPlan, StartupMeasurementRejectsRuntimeStorageBeforeModelAccess) {
+  Dsv4Model target;
+  DsparkModel draft;
+  const ActivationMeasurement measurement{256};
+  const auto rejected = [](const auto& result) {
+    EXPECT_FALSE(result);
+    if (!result) EXPECT_NE(result.error().find("measurement-only"), std::string::npos);
+  };
+  rejected(PlanDsv4Chunk(target, {}, {}, {}, 256, 256, {}, std::nullopt, measurement));
+  rejected(PlanDsv4Wave(target, {}, {}, {}, 256, 256, nullptr, {}, measurement));
+  rejected(PlanDsparkDraft(draft, 3, {}, 256, 256, measurement));
+  rejected(PlanDsparkWave(draft, {}, 3, {}, 256, 256, true, measurement));
+  EXPECT_TRUE(Dsv4Options{}.startup_activation_threshold);
+}
 
 TEST(Dsv4PrefillPlan, CompletedTokenBatchRefusesAnyInvalidOwnerBeforePublication) {
   const std::array<std::int32_t, 3> valid{0, 8, 16};

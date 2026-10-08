@@ -915,13 +915,11 @@ struct Qwen38WaveBuilder {
     return {};
   }
 
-  static std::expected<void, std::string> Finish(Qwen38WavePlanned& out, const Lists& lists,
-                                                 const Originals& originals,
-                                                 std::span<const std::uint32_t> order,
-                                                 const Slots<bool>& compatible,
-                                                 std::span<const Range> mutable_places,
-                                                 const kg::DeviceChoices& choices,
-                                                 Qwen38WavePlacement placement) {
+  static std::expected<void, std::string> Finish(
+      Qwen38WavePlanned& out, const Lists& lists, const Originals& originals,
+      std::span<const std::uint32_t> order, const Slots<bool>& compatible,
+      std::span<const Range> mutable_places, const kg::DeviceChoices& choices,
+      Qwen38WavePlacement placement, std::optional<ActivationMeasurement> measurement) {
     if (placement.activations != 0 &&
         placement.bytes > std::numeric_limits<std::uint64_t>::max() - placement.activations) {
       return Error("Qwen3.8 wave activation range overflows");
@@ -937,7 +935,7 @@ struct Qwen38WaveBuilder {
     }
     if (auto made =
             PlaceAndPlan(out, out.nodes_, out.inputs_, out.keep_, choices, placement.activations,
-                         placement.bytes, out.lanes_.empty() ? nullptr : &out.lanes_);
+                         placement.bytes, measurement, out.lanes_.empty() ? nullptr : &out.lanes_);
         !made) {
       return made;
     }
@@ -946,7 +944,7 @@ struct Qwen38WaveBuilder {
 
   static std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> Target(
       std::span<const Qwen38TargetWaveInput> requests, const kg::DeviceChoices& choices,
-      Qwen38WavePlacement placement) {
+      Qwen38WavePlacement placement, std::optional<ActivationMeasurement> measurement) {
     auto mutable_places = MutablePlaces(requests);
     if (!mutable_places) {
       return std::unexpected(mutable_places.error());
@@ -963,7 +961,7 @@ struct Qwen38WaveBuilder {
       }
       if (r.shape.token != requests.front().shape.token)
         return Error("Qwen3.8 target publication mode must be homogeneous across the wave");
-      auto p = PlanQwen38Chunk(*r.model, r.shape, choices, 0, 0, {}, r.kind);
+      auto p = PlanQwen38Chunk(*r.model, r.shape, choices, 0, 0, {}, r.kind, measurement);
       if (!p) {
         return std::unexpected(p.error());
       }
@@ -995,8 +993,8 @@ struct Qwen38WaveBuilder {
                         requests[i - 1].kind.capture_routed == 0;
       }
     }
-    if (auto made =
-            Finish(*out, lists, originals, order, compatible, *mutable_places, choices, placement);
+    if (auto made = Finish(*out, lists, originals, order, compatible, *mutable_places, choices,
+                           placement, measurement);
         !made) {
       return std::unexpected(made.error());
     }
@@ -1005,7 +1003,7 @@ struct Qwen38WaveBuilder {
 
   static std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> Draft(
       std::span<const Qwen38DraftWaveInput> requests, const kg::DeviceChoices& choices,
-      Qwen38WavePlacement placement) {
+      Qwen38WavePlacement placement, std::optional<ActivationMeasurement> measurement) {
     kg::DeviceChoices draft_choices = choices;
     draft_choices.vector_float_node = [prior = choices.vector_float_node](const ggml_tensor* t) {
       return DraftHead(t) || (prior && prior(t));
@@ -1024,7 +1022,7 @@ struct Qwen38WaveBuilder {
       if (r.shape.rows < 1 || r.shape.rows > 4 || r.shape.passes < 1 || r.shape.passes > 8) {
         return Error("Qwen3.8 draft wave requires one to four rows and one to eight passes");
       }
-      auto p = PlanQwen38Mtp(*r.model, r.shape, draft_choices, 0, 0);
+      auto p = PlanQwen38Mtp(*r.model, r.shape, draft_choices, 0, 0, measurement);
       if (!p) {
         return std::unexpected(p.error());
       }
@@ -1046,7 +1044,7 @@ struct Qwen38WaveBuilder {
       }
     }
     if (auto made = Finish(*out, lists, originals, order, compatible, *mutable_places,
-                           draft_choices, placement);
+                           draft_choices, placement, measurement);
         !made) {
       return std::unexpected(made.error());
     }
@@ -1083,13 +1081,29 @@ const kg::Qwen38MtpGraph* Qwen38WavePlanned::draft(std::size_t slot) const {
 std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> PlanQwen38TargetWave(
     std::span<const Qwen38TargetWaveInput> requests, const kg::DeviceChoices& choices,
     Qwen38WavePlacement placement) {
-  return Qwen38WaveBuilder::Target(requests, choices, placement);
+  return PlanQwen38TargetWave(requests, choices, placement, std::nullopt);
+}
+
+std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> PlanQwen38TargetWave(
+    std::span<const Qwen38TargetWaveInput> requests, const kg::DeviceChoices& choices,
+    Qwen38WavePlacement placement, std::optional<ActivationMeasurement> measurement) {
+  if (measurement && placement.activations != 0)
+    return Error("measurement-only wave planning cannot use activation storage");
+  return Qwen38WaveBuilder::Target(requests, choices, placement, measurement);
 }
 
 std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> PlanQwen38DraftWave(
     std::span<const Qwen38DraftWaveInput> requests, const kg::DeviceChoices& choices,
     Qwen38WavePlacement placement) {
-  return Qwen38WaveBuilder::Draft(requests, choices, placement);
+  return PlanQwen38DraftWave(requests, choices, placement, std::nullopt);
+}
+
+std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> PlanQwen38DraftWave(
+    std::span<const Qwen38DraftWaveInput> requests, const kg::DeviceChoices& choices,
+    Qwen38WavePlacement placement, std::optional<ActivationMeasurement> measurement) {
+  if (measurement && placement.activations != 0)
+    return Error("measurement-only wave planning cannot use activation storage");
+  return Qwen38WaveBuilder::Draft(requests, choices, placement, measurement);
 }
 
 }  // namespace jitllm::engine
