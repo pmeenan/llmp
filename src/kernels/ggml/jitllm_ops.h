@@ -165,7 +165,14 @@ ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_ten
 // means global causal, otherwise capacity must retain window+whole chunk
 // (or the entire context). Padded query/cell rows and invalid positions are
 // always -inf. No host-built matrix or scratch is needed.
+// The dispatch tag is retained for existing Gemma plans. Exact rows also
+// serve raw causal/ring masks whose consumers derive query count from ne[1].
+enum class CausalMaskRows : std::int32_t { kPad32 = 0, kExact = 1 };
 inline constexpr const char* kGemma4MaskName = "jitllm.gemma4.mask";
+ggml_tensor* CausalRingMask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
+                            std::int32_t first_row, std::int32_t rows, std::int32_t capacity,
+                            std::int32_t window, std::int32_t context_limit,
+                            CausalMaskRows row_layout);
 ggml_tensor* Gemma4Mask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
                         std::int32_t first_row, std::int32_t rows, std::int32_t capacity,
                         std::int32_t window, std::int32_t context_limit);

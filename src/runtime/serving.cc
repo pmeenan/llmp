@@ -387,10 +387,13 @@ class Dsv4 final : public Llm {
   std::string extra() const override {
     return std::format(
         R"({{"turn_checkpoints":{},"turn_checkpoint_bytes":{},"used_state_bytes":{},"architecture":"deepseek4","speculation":{},"coverage_tensors":{},)"
-        R"("slab_padding":{},"state_bytes":{},"drafter_state_bytes":{},"graphs":{}}})",
+        R"("slab_padding":{},"state_bytes":{},"drafter_state_bytes":{},"device_raw_mask_plans":{},"draft_graph_steps":{},"graphs":{}}})",
         turn_checkpoints(), turn_checkpoint_bytes(), runner_.used_state_bytes(),
         speculate_ ? "\"dspark\"" : "null", runner_.coverage_tensors(), runner_.slab_padding(),
-        runner_.state_bytes(), runner_.drafter_state_bytes(), GraphJson(graphs()));
+        runner_.state_bytes(), runner_.drafter_state_bytes(), runner_.bound_raw_masks(),
+        runner_.draft_stats().eager + runner_.draft_stats().captured +
+            runner_.draft_stats().replayed,
+        GraphJson(graphs()));
   }
   void Defaults(chat::Conversation& c) const override {
     // As llama-server's /apply-template rendered the references' prompts:

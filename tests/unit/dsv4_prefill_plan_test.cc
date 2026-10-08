@@ -4,7 +4,9 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <numeric>
 #include <optional>
 #include <string_view>
@@ -14,6 +16,7 @@
 #include "engine/dsv4_plan.h"
 #include "engine/dsv4_runner.h"
 #include "ggml.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
 
@@ -30,6 +33,8 @@ TEST(Dsv4PrefillPlan, HarnessesDefaultOffServingTakesEveryChunk) {
   EXPECT_FALSE(Dsv4Model{}.prefill_outa_hca);
   EXPECT_FALSE(Dsv4Options{}.prefill_outa_hca_partial);
   EXPECT_FALSE(Dsv4Model{}.prefill_outa_hca_partial);
+  EXPECT_TRUE(Dsv4Options{}.device_raw_masks);
+  EXPECT_FALSE(Dsv4Model{}.device_raw_masks);  // Low-level plan reference is explicit.
   Dsv4Options served;
   SetDsv4ServedPrefill(served);
   EXPECT_TRUE(served.prefill_outa_hca);
@@ -155,11 +160,21 @@ TEST(Dsv4PrefillPlan, AuthenticatesActualPositionsBeforeEmbeddingOrSubmission) {
   Dsv4Model m;
   m.profile = &md::Dsv4Flash();
   m.binding = &binding;
+  auto state = md::Dsv4State(md::Dsv4Flash(), 8192, 4096, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state);
+  m.state = &*state;
+  auto arena = kg::TensorArena::Create(256);
+  ASSERT_TRUE(arena);
   kg::Dsv4Graph graph;
   graph.prefill_first_position = 4096;
   md::Dsv4ChunkInputs input;
-  input.positions.resize(4096);
-  std::ranges::iota(input.positions, 4096);
+  const auto set_rows = [&](std::uint32_t rows) {
+    input = *md::Dsv4Chunk(md::Dsv4Flash(), *state, 4096, rows, false);
+    graph.positions = ggml_new_tensor_1d(arena->context(), GGML_TYPE_I32, rows);
+    graph.raw_k_idxs = ggml_new_tensor_1d(arena->context(), GGML_TYPE_I64, rows);
+    graph.raw_mask = ggml_new_tensor_2d(arena->context(), GGML_TYPE_F16, state->raw_cells, rows);
+  };
+  set_rows(4096);
   std::vector<std::int32_t> tokens(4096, 0);
   Dsv4HostInputs host;
   auto valid = BuildDsv4Inputs(m, graph, input, tokens, {}, host);
@@ -187,13 +202,203 @@ TEST(Dsv4PrefillPlan, AuthenticatesActualPositionsBeforeEmbeddingOrSubmission) {
   input.positions.pop_back();
   refused();
   // A shorter chunk (a prompt's last) at the cached position authenticates.
-  input.positions.resize(2048);
+  set_rows(2048);
   tokens.resize(2048);
   auto partial = BuildDsv4Inputs(m, graph, input, tokens, {}, host);
   ASSERT_FALSE(partial.has_value());
   EXPECT_EQ(partial.error(), type.error().detail);
   input.positions[5] += 1;
   refused();
+}
+
+TEST(Dsv4RawMaskPlan, JoinedDeviceAndHostSourcesStageCompletelyWithIdenticalRowData) {
+  // The existing tiny artifact supplies a real resource offset for a small
+  // F16 embedding fixture; the rest of this test is graph/input-only.
+  const char* configured =
+      std::getenv("JITLLM_TEST_ARTIFACT_CORPUS");  // NOLINT(concurrency-mt-unsafe)
+  const std::filesystem::path corpus = configured ? configured : "artifact-corpus";
+  const auto directory = corpus / "golden" / "tiny";
+  ASSERT_TRUE(std::filesystem::is_directory(directory));
+  auto artifact = artifact::Artifact::Open(std::filesystem::directory_iterator(directory)->path());
+  ASSERT_TRUE(artifact);
+  ASSERT_FALSE(artifact->resources().empty());
+  auto profile = md::Dsv4Flash();
+  profile.width = 8;
+  profile.vocab = 4;
+  md::Dsv4Binding binding;
+  binding.token_embd = {.index = 0, .type = "F16", .ne = {8, 4}};
+  auto state = md::Dsv4State(md::Dsv4Flash(), 8704, 4096, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state);
+  std::vector<std::byte> table(artifact->resources()[0].offset.value() + 4 * 8 * 2);
+  std::vector<float> reference_embd;
+  for (const bool device : {false, true}) {
+    auto arena = kg::TensorArena::Create(256);
+    ASSERT_TRUE(arena);
+    auto* c = arena->context();
+    kg::Dsv4WaveGraph graph;
+    graph.slots.resize(2);
+    graph.first = {0, 3};
+    graph.joined.embd = ggml_new_tensor_2d(c, GGML_TYPE_F32, 8, 4);
+    graph.joined.tokens = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4);
+    graph.joined.positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4);
+    for (auto* comp : {&graph.joined.csa, &graph.joined.hca, &graph.joined.lid})
+      comp->state_pos = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4);
+    graph.joined.lid_rot = ggml_new_tensor_2d(c, GGML_TYPE_F32, 128, 128);
+    std::array<md::Dsv4ChunkInputs, 2> chunks;
+    std::array<Dsv4WaveSlotInputs, 2> slots;
+    const std::array<std::vector<std::int32_t>, 2> tokens{{{0, 1, 2}, {3}}};
+    for (std::size_t slot = 0; slot < 2; ++slot) {
+      chunks[slot] =
+          *md::Dsv4Chunk(md::Dsv4Flash(), *state, slot ? 4608 : 4351, slot ? 1 : 3, false, !device);
+      const auto rows = chunks[slot].rows;
+      auto& g = graph.slots[slot];
+      g.raw_k_idxs = ggml_new_tensor_1d(c, GGML_TYPE_I64, rows);
+      g.device_raw_mask = device;
+      g.raw_mask = device ? kg::CausalRingMask(c, graph.joined.positions, state->raw_cells,
+                                               static_cast<std::int32_t>(graph.first[slot]),
+                                               static_cast<std::int32_t>(rows),
+                                               static_cast<std::int32_t>(state->raw_cells), 128,
+                                               static_cast<std::int32_t>(state->context),
+                                               kg::CausalMaskRows::kExact)
+                          : ggml_new_tensor_2d(c, GGML_TYPE_F16, state->raw_cells, rows);
+      if (device) graph.joined.nodes.push_back(g.raw_mask);
+      const std::array<const md::Dsv4CompPlan*, 3> plans{&chunks[slot].csa, &chunks[slot].hca,
+                                                         &chunks[slot].lid};
+      const std::array<kg::Dsv4CompInputs*, 3> comps{&g.csa, &g.hca, &g.lid};
+      for (std::size_t k = 0; k < 3; ++k) {
+        comps[k]->persist_src = ggml_new_tensor_1d(
+            c, GGML_TYPE_I32, static_cast<std::int64_t>(plans[k]->persist_src.size()));
+        comps[k]->persist_dst = ggml_new_tensor_1d(
+            c, GGML_TYPE_I32, static_cast<std::int64_t>(plans[k]->persist_dst.size()));
+        comps[k]->read_idxs = ggml_new_tensor_1d(
+            c, GGML_TYPE_I32, static_cast<std::int64_t>(plans[k]->read_idxs.size()));
+        comps[k]->write_idxs = ggml_new_tensor_1d(
+            c, GGML_TYPE_I64, static_cast<std::int64_t>(plans[k]->write_idxs.size()));
+        comps[k]->write_pos = ggml_new_tensor_1d(
+            c, GGML_TYPE_I32, static_cast<std::int64_t>(plans[k]->write_pos.size()));
+      }
+      g.csa_visible = ggml_new_tensor_1d(c, GGML_TYPE_I32, rows);
+      g.hca_visible = ggml_new_tensor_1d(c, GGML_TYPE_I32, rows);
+      slots[slot] = {.chunk = &chunks[slot], .tokens = tokens[slot], .inject_cells = {}};
+    }
+    Dsv4Model model{.artifact = &*artifact,
+                    .profile = &profile,
+                    .binding = &binding,
+                    .state = &*state,
+                    .places = {},
+                    .rot = kg::HadamardMatrix(profile.indexer_head_dim),
+                    .device_raw_masks = device};
+    Dsv4WaveHostInputs host;
+    auto staged = BuildDsv4WaveInputs(model, graph, slots, table, host);
+    ASSERT_TRUE(staged) << (staged ? "" : staged.error());
+    EXPECT_EQ(host.tokens, (std::vector<std::int32_t>{0, 1, 2, 3}));
+    EXPECT_EQ(host.positions, (std::vector<std::int32_t>{4351, 4352, 4353, 4608}));
+    if (device)
+      EXPECT_EQ(host.embd, reference_embd);
+    else
+      reference_embd = host.embd;
+    const auto inputs = graph.inputs();
+    ASSERT_EQ(host.sources.size(), inputs.size());
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+      EXPECT_EQ(host.sources[i].first, inputs[i]);
+      if (ggml_nbytes(inputs[i]) != 0) EXPECT_NE(host.sources[i].second, nullptr) << i;
+    }
+    for (const auto& slot : graph.slots)
+      EXPECT_EQ(std::ranges::count(inputs, slot.raw_mask), device ? 0 : 1);
+    graph.first[1] += 1;
+    Dsv4WaveHostInputs untouched;
+    EXPECT_FALSE(BuildDsv4WaveInputs(model, graph, slots, table, untouched));
+    EXPECT_TRUE(untouched.embd.empty());
+    EXPECT_TRUE(untouched.tokens.empty());
+  }
+}
+
+TEST(Dsv4RawMaskPlan, AuthenticatesExactRowsOffsetsAndEveryProducerParentBeforeAllocation) {
+  auto state = md::Dsv4State(md::Dsv4Flash(), 8704, 4096, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state);
+  md::Dsv4Binding binding;
+  binding.token_embd.type = "unsupported-test-type";
+  Dsv4Model model{.profile = &md::Dsv4Flash(),
+                  .binding = &binding,
+                  .state = &*state,
+                  .places = {},
+                  .rot = {},
+                  .device_raw_masks = true};
+  auto arena = kg::TensorArena::Create(256);
+  ASSERT_TRUE(arena);
+  auto* c = arena->context();
+  auto input = md::Dsv4Chunk(md::Dsv4Flash(), *state, 4351, 3, false, false);
+  ASSERT_TRUE(input);
+  EXPECT_TRUE(input->raw_mask.empty());
+  kg::Dsv4Graph graph;
+  graph.positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, 3);
+  graph.raw_k_idxs = ggml_new_tensor_1d(c, GGML_TYPE_I64, 3);
+  graph.raw_mask = kg::CausalRingMask(
+      c, graph.positions, state->raw_cells, 0, 3, static_cast<std::int32_t>(state->raw_cells), 128,
+      static_cast<std::int32_t>(state->context), kg::CausalMaskRows::kExact);
+  graph.device_raw_mask = true;
+  graph.nodes = {graph.positions, graph.raw_mask};
+  const std::vector<std::int32_t> tokens(3, 0);
+  const auto call = [&] {
+    Dsv4HostInputs host;
+    auto result = BuildDsv4Inputs(model, graph, *input, tokens, {}, host);
+    EXPECT_TRUE(host.embd.empty());
+    EXPECT_TRUE(host.sources.empty());
+    return result;
+  };
+  const auto type = kg::GgmlTypeOf(binding.token_embd.type);
+  ASSERT_FALSE(type);
+  auto valid = call();
+  ASSERT_FALSE(valid);
+  EXPECT_EQ(valid.error(), type.error().detail);
+  const auto refused = [&] {
+    auto result = call();
+    ASSERT_FALSE(result);
+    EXPECT_NE(result.error(), type.error().detail);
+  };
+  for (std::size_t parent = 1; parent < GGML_MAX_SRC; ++parent) {
+    graph.raw_mask->src[parent] = graph.positions;
+    refused();
+    graph.raw_mask->src[parent] = nullptr;
+  }
+  auto* source = graph.raw_mask->src[0];
+  // A larger packed scalar source would otherwise pass the segment bounds
+  // and stage beyond the actual host position vector.
+  graph.positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4);
+  graph.raw_mask->src[0] = graph.positions;
+  refused();
+  graph.positions = source;
+  graph.raw_mask->src[0] = graph.raw_k_idxs;
+  refused();
+  graph.raw_mask->src[0] = source;
+  for (const std::size_t param : {0U, 1U, 2U, 3U, 4U, 5U}) {
+    auto* bytes = reinterpret_cast<std::byte*>(graph.raw_mask->op_params) + 32 + 4 * param;
+    std::int32_t value = 0;
+    std::memcpy(&value, bytes, 4);
+    const auto bad = value + 1;
+    std::memcpy(bytes, &bad, 4);
+    refused();
+    std::memcpy(bytes, &value, 4);
+  }
+  graph.nodes.push_back(graph.raw_mask);
+  refused();
+  graph.nodes.pop_back();
+  graph.raw_mask->view_src = graph.positions;
+  refused();
+  graph.raw_mask->view_src = nullptr;
+  graph.device_raw_mask = false;
+  refused();
+  graph.device_raw_mask = true;
+  input->positions[1] += 1;
+  refused();
+  input->positions[1] -= 1;
+  input->raw_cells[2] += 1;
+  refused();
+  input->raw_cells[2] -= 1;
+  input->raw_mask.push_back(0);
+  refused();
+  input->raw_mask.clear();
+  EXPECT_EQ(call().error(), type.error().detail);
 }
 
 }  // namespace

@@ -240,6 +240,10 @@ struct Dsv4GraphOptions {
   // The Q-head writes F16 Q rows (the RN values attention rounds F32 Q to)
   // for chunks of at least 64 rows.
   bool f16_q = false;
+  // Nonzero: graph-owned exact-row raw causal/ring masks, bounded by this
+  // actual state context. Compressed masks and DSpark's non-causal masks
+  // keep their separate contracts.
+  std::uint32_t raw_mask_context = 0;
 };
 
 // The fast plan's graph-side prefill stage mechanisms (above), all on or off.
@@ -258,6 +262,7 @@ struct Dsv4Graph {
   std::optional<std::uint32_t> prefill_first_position = std::nullopt;
   ggml_tensor* raw_k_idxs = nullptr;  // I64 [rows]: each token's ring cell
   ggml_tensor* raw_mask = nullptr;    // F16 [raw_n_kv, rows, 1, 1]
+  bool device_raw_mask = false;       // graph activation rather than host input
   ggml_tensor* out_ids = nullptr;     // I32 [outputs]: the head's requested trailing rows
   Dsv4CompInputs csa, hca, lid;
   ggml_tensor* lid_rot = nullptr;  // F32 [indexer head, indexer head]: never read

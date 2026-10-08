@@ -66,6 +66,7 @@
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
+#include "model/dsv4.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
@@ -442,6 +443,74 @@ TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBou
         EXPECT_FALSE(kg::RunGemma4Mask(launch(), mask));
         positions->type = saved;
         EXPECT_FALSE(launch().faulted());
+      }
+    }
+  }
+}
+
+TEST_F(GgmlExtOpsTest, DeepSeekRawDeviceMasksKeepExactRowsAndRefreshCapturedRingPositions) {
+  namespace md = jitllm::model;
+  const auto stream = reinterpret_cast<cudaStream_t>(execution_->Submission(stream_)->handle);
+  for (const auto window : {md::Dsv4Window::kRing, md::Dsv4Window::kFull}) {
+    auto state = md::Dsv4State(md::Dsv4Flash(), 8704, 4096, window);
+    ASSERT_TRUE(state);
+    for (const std::uint32_t rows : {1U, 3U, 16U, 257U}) {
+      for (const std::uint32_t past :
+           {0U, std::min(state->raw_cells - 1, 8704U - rows - 2), 8704U - rows - 2}) {
+        auto chunk = md::Dsv4Chunk(md::Dsv4Flash(), *state, past, rows, false);
+        ASSERT_TRUE(chunk);
+        // Offset three exercises an actual segment into joined position input.
+        std::vector<std::int32_t> positions(rows + 3, 17);
+        std::ranges::copy(chunk->positions, positions.begin() + 3);
+        auto* input = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, rows + 3), positions);
+        auto* mask = kg::CausalRingMask(
+            c(), input, chunk->raw_n_kv, 3, static_cast<std::int32_t>(rows),
+            static_cast<std::int32_t>(state->raw_cells), 128, 8704, kg::CausalMaskRows::kExact);
+        ASSERT_EQ(mask->ne[1], rows);
+        ASSERT_EQ(ggml_nbytes(mask), chunk->raw_mask.size() * 2);
+        const auto bytes = ggml_nbytes(mask);
+        const auto address = Allocate(bytes + 512);
+        TensorArena::Bind(mask, address + 256);
+        ASSERT_EQ(cudaMemsetAsync(reinterpret_cast<void*>(address), 0xa5, bytes + 512, stream),
+                  cudaSuccess);
+        ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+        EXPECT_EQ(Download<std::uint16_t>(mask), chunk->raw_mask);
+        auto graph =
+            launch().Capture([&](auto& context) { return kg::RunGemma4Mask(context, mask); });
+        ASSERT_TRUE(graph);
+        // In full-window mode choose positions that keep the same padded cell
+        // width; ring shapes retain their width at every position.
+        auto fresh = md::Dsv4Chunk(md::Dsv4Flash(), *state, past + 1, rows, false);
+        ASSERT_TRUE(fresh);
+        if (fresh->raw_n_kv == chunk->raw_n_kv) {
+          std::ranges::copy(fresh->positions, positions.begin() + 3);
+          ASSERT_EQ(cudaMemcpyAsync(input->data, positions.data(), ggml_nbytes(input),
+                                    cudaMemcpyHostToDevice, stream),
+                    cudaSuccess);
+          ASSERT_TRUE(launch().Launch(*graph));
+          EXPECT_EQ(Download<std::uint16_t>(mask), fresh->raw_mask);
+        }
+        auto* unexpected = ggml_new_tensor_1d(c(), GGML_TYPE_I32, 1);
+        for (std::size_t parent = 1; parent < GGML_MAX_SRC; ++parent) {
+          mask->src[parent] = unexpected;
+          EXPECT_FALSE(kg::Gemma4MaskFits(mask));
+          mask->src[parent] = nullptr;
+        }
+        std::int32_t unknown_layout = 2;
+        std::memcpy(reinterpret_cast<std::byte*>(mask->op_params) + 32 + 5 * 4, &unknown_layout, 4);
+        const auto before = Download<std::uint16_t>(mask);
+        EXPECT_FALSE(kg::RunGemma4Mask(launch(), mask));
+        EXPECT_EQ(Download<std::uint16_t>(mask), before);
+        std::array<std::uint8_t, 256> prefix{}, suffix{};
+        Finish();
+        ASSERT_EQ(cudaMemcpy(prefix.data(), reinterpret_cast<void*>(address), 256,
+                             cudaMemcpyDeviceToHost),
+                  cudaSuccess);
+        ASSERT_EQ(cudaMemcpy(suffix.data(), reinterpret_cast<void*>(address + 256 + bytes), 256,
+                             cudaMemcpyDeviceToHost),
+                  cudaSuccess);
+        EXPECT_TRUE(std::ranges::all_of(prefix, [](auto byte) { return byte == 0xa5; }));
+        EXPECT_TRUE(std::ranges::all_of(suffix, [](auto byte) { return byte == 0xa5; }));
       }
     }
   }

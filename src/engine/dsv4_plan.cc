@@ -14,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "engine/graph_mask_inputs.h"
 #include "engine/support.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/ops_ext.h"
@@ -26,6 +27,61 @@ namespace {
 namespace kg = jitllm::kernels::ggml;
 namespace md = jitllm::model;
 using support::Error;
+
+// Validate before constructing embeddings or joined payloads. In device mode
+// no host matrix exists; its complete producer is the authenticated source.
+std::expected<void, std::string> RawMaskInputs(const Dsv4Model& m, const kg::Dsv4Graph& g,
+                                               const md::Dsv4ChunkInputs& in,
+                                               const ggml_tensor* positions,
+                                               std::span<ggml_tensor* const> nodes,
+                                               std::span<ggml_tensor* const> inputs,
+                                               std::uint32_t first) {
+  if (m.profile == nullptr || m.state == nullptr || in.rows == 0 || in.rows > m.state->max_rows ||
+      in.n_past > m.state->context || in.rows > m.state->context - in.n_past ||
+      in.positions.size() != in.rows || in.raw_cells.size() != in.rows ||
+      g.device_raw_mask != m.device_raw_masks || positions == nullptr ||
+      positions->type != GGML_TYPE_I32 || positions->op != GGML_OP_NONE ||
+      positions->view_src != nullptr ||
+      std::ranges::any_of(positions->src, [](const auto* parent) { return parent != nullptr; }) ||
+      positions->ne[0] < std::int64_t{first} + in.rows || positions->ne[1] != 1 ||
+      positions->ne[2] != 1 || positions->ne[3] != 1 || positions->nb[0] != 4 ||
+      positions->nb[1] != static_cast<std::uint64_t>(positions->ne[0]) * 4 ||
+      positions->nb[2] != positions->nb[1] || positions->nb[3] != positions->nb[2] ||
+      std::ranges::count(inputs, positions) != 1 || g.raw_k_idxs == nullptr ||
+      g.raw_k_idxs->type != GGML_TYPE_I64 || g.raw_k_idxs->op != GGML_OP_NONE ||
+      g.raw_k_idxs->view_src != nullptr ||
+      std::ranges::any_of(
+          g.raw_k_idxs->src, [](const auto* parent) { return parent != nullptr; }) ||
+      g.raw_k_idxs->ne[0] != in.rows || g.raw_k_idxs->ne[1] != 1 || g.raw_k_idxs->ne[2] != 1 ||
+      g.raw_k_idxs->ne[3] != 1 || g.raw_k_idxs->nb[0] != 8 ||
+      g.raw_k_idxs->nb[1] != std::uint64_t{in.rows} * 8 ||
+      g.raw_k_idxs->nb[2] != g.raw_k_idxs->nb[1] || g.raw_k_idxs->nb[3] != g.raw_k_idxs->nb[2] ||
+      std::ranges::count(inputs, g.raw_k_idxs) != 1 || m.state->raw_cells == 0)
+    return Error("raw mask inputs differ from their state and packed graph inputs");
+  const auto total = std::uint64_t{in.n_past} + in.rows;
+  const auto cells = m.state->raw_cells;
+  const auto n_kv =
+      m.state->window == md::Dsv4Window::kRing
+          ? cells
+          : std::min<std::uint64_t>(
+                cells, std::max<std::uint64_t>(
+                           256, (std::min(total, std::uint64_t{cells}) + 255) / 256 * 256));
+  if (in.raw_n_kv != n_kv ||
+      (g.device_raw_mask ? !in.raw_mask.empty()
+                         : in.raw_mask.size() != std::uint64_t{in.rows} * n_kv))
+    return Error("raw mask matrix differs from its graph-owned or host source policy");
+  for (std::uint32_t row = 0; row < in.rows; ++row) {
+    const auto position = std::uint64_t{in.n_past} + row;
+    if (std::cmp_not_equal(in.positions[row], position) ||
+        std::cmp_not_equal(in.raw_cells[row], position % cells))
+      return Error("raw mask positions or ring cells differ from the actual chunk");
+  }
+  auto bytes = GraphMaskSourceBytes(g.raw_mask, positions, nodes, inputs, g.device_raw_mask, first,
+                                    in.rows, in.raw_n_kv, cells, m.profile->window,
+                                    m.state->context, kg::CausalMaskRows::kExact);
+  if (!bytes) return std::unexpected(bytes.error());
+  return {};
+}
 
 }  // namespace
 
@@ -148,7 +204,8 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
   kg::Dsv4GraphOptions options{.expert_stride = m.places.stride,
                                .row_invariant = speculation.verify && m.exact,
                                .fused = !m.exact,
-                               .outa_prefill = outa_prefill};
+                               .outa_prefill = outa_prefill,
+                               .raw_mask_context = m.device_raw_masks ? m.state->context : 0};
   // The ds4 prefill stage mechanisms (docs/experiments/ds4-prefill-stages):
   // the fast plan's defaults, each under its own shape guard. A named
   // diagnostic keeps the tensors they leave unwritten (or write as F16), so
@@ -278,7 +335,9 @@ std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
     return Error("a wave runs the fast plan over one state place a slot");
   }
   auto out = std::make_unique<Dsv4WavePlanned>();
-  kg::Dsv4GraphOptions options{.expert_stride = m.places.stride, .fused = true};
+  kg::Dsv4GraphOptions options{.expert_stride = m.places.stride,
+                               .fused = true,
+                               .raw_mask_context = m.device_raw_masks ? m.state->context : 0};
   kg::SetDsv4PrefillStages(options, true);
   if (drafter != nullptr) {
     options.features = drafter->profile->target_layers;
@@ -357,6 +416,22 @@ std::expected<void, std::string> BuildDsv4WaveInputs(const Dsv4Model& m, const k
   if (slots.size() != g.slots.size()) {
     return Error("the wave's inputs are not its slots'");
   }
+  if (g.first.size() != slots.size()) return Error("the wave has no exact row offsets");
+  const auto graph_inputs = g.inputs();
+  std::uint32_t first = 0;
+  for (std::size_t slot = 0; slot < slots.size(); ++slot) {
+    const auto* chunk = slots[slot].chunk;
+    if (chunk == nullptr || std::cmp_not_equal(g.first[slot], first) ||
+        slots[slot].tokens.size() != chunk->rows)
+      return Error("raw mask wave offsets or rows differ from the actual slots");
+    if (auto mask = RawMaskInputs(m, g.slots[slot], *chunk, g.joined.positions, g.joined.nodes,
+                                  graph_inputs, first);
+        !mask)
+      return mask;
+    first += chunk->rows;
+  }
+  if (std::cmp_not_equal(g.joined.positions->ne[0], first))
+    return Error("raw mask joined positions differ from the actual total rows");
   out.tokens.clear();
   out.positions.clear();
   for (auto& pos : out.state_pos) {
@@ -402,7 +477,7 @@ std::expected<void, std::string> BuildDsv4WaveInputs(const Dsv4Model& m, const k
     const md::Dsv4ChunkInputs& in = *slots[i].chunk;
     const kg::Dsv4Graph& sg = g.slots[i];
     out.sources.emplace_back(sg.raw_k_idxs, in.raw_cells.data());
-    out.sources.emplace_back(sg.raw_mask, in.raw_mask.data());
+    if (!sg.device_raw_mask) out.sources.emplace_back(sg.raw_mask, in.raw_mask.data());
     const std::array<std::pair<const kg::Dsv4CompInputs*, const md::Dsv4CompPlan*>, 3> comps = {
         {{&sg.csa, &in.csa}, {&sg.hca, &in.hca}, {&sg.lid, &in.lid}}};
     for (const auto& [t, plan] : comps) {
@@ -416,9 +491,6 @@ std::expected<void, std::string> BuildDsv4WaveInputs(const Dsv4Model& m, const k
                                              {t->read_idxs, plan->read_idxs.data()},
                                              {t->write_idxs, plan->write_idxs.data()},
                                              {t->write_pos, plan->write_pos.data()}});
-    }
-    if (std::cmp_not_equal(in.raw_mask.size(), ggml_nelements(sg.raw_mask))) {
-      return Error("a wave slot's window mask is not its graph's");
     }
     out.sources.emplace_back(sg.csa_visible, in.csa.n_visible.data());
     out.sources.emplace_back(sg.hca_visible, in.hca.n_visible.data());
@@ -674,6 +746,11 @@ std::expected<void, std::string> BuildDsv4Inputs(const Dsv4Model& m, const kg::D
       return Error("the cached HCA first position differs from the actual chunk");
     }
   }
+  const auto graph_inputs = g.inputs();
+  if (tokens.size() != in.rows || g.positions == nullptr || g.positions->ne[0] != in.rows)
+    return Error("raw mask scalar position rows differ from the actual chunk");
+  if (auto mask = RawMaskInputs(m, g, in, g.positions, g.nodes, graph_inputs, 0); !mask)
+    return mask;
   if (auto embedded = Dsv4EmbeddingRows(m, tokens, table, out.embd); !embedded) {
     return embedded;
   }
@@ -709,9 +786,12 @@ std::expected<void, std::string> BuildDsv4Inputs(const Dsv4Model& m, const kg::D
     }
     return {};
   };
-  out.sources = {{g.embd, out.embd.data()},          {g.tokens, out.tokens.data()},
-                 {g.positions, in.positions.data()}, {g.raw_k_idxs, in.raw_cells.data()},
-                 {g.raw_mask, in.raw_mask.data()},   {g.out_ids, out.out_ids.data()}};
+  out.sources = {{g.embd, out.embd.data()},
+                 {g.tokens, out.tokens.data()},
+                 {g.positions, in.positions.data()},
+                 {g.raw_k_idxs, in.raw_cells.data()}};
+  if (!g.device_raw_mask) out.sources.emplace_back(g.raw_mask, in.raw_mask.data());
+  out.sources.emplace_back(g.out_ids, out.out_ids.data());
   if (auto added = comp(g.csa, in.csa, in.csa_mask); !added) {
     return added;
   }

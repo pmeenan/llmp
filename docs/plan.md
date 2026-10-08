@@ -359,7 +359,10 @@ family" guide, and its long-context scaling work.
       - **DeepSeek V4 / DSpark**
         - [ ] **T19** Selective draft-head MMVF.
         - [ ] **T21** Clustered small reduction/prefetch.
-        - [ ] **T22** Graph-owned GPU attention masks.
+        - [ ] **T22** Graph-owned GPU attention masks: target raw causal/ring
+          masks adopted with exact C2 heads/state and a modest native prefill
+          gain ([controls](experiments/deepseek-device-masks/README.md)); DSpark
+          noncausal block masks and optional compressed masks remain open.
         - [ ] **T23** Single-request prefill lookahead/capture ahead.
         - [ ] **T27** Plain greedy token on GPU.
         - [ ] **T29** Operand joins by view.
@@ -374,7 +377,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T63** Fast exact host causal-mask fill/check.
         - [ ] **T67** Prepare next chunk state beside current work.
         - [ ] **T68** Evict only incoming closure deficit.
-        - [ ] **T69** Shared GPU-mask construction contract.
+        - [ ] **T69** Shared GPU-mask construction contract: target raw exact-row
+          adapter adopted; DSpark block and compressed visible-count adapters
+          remain open. Target-only work does not close this composite item.
         - [ ] **T70** Shared lookahead/capture hook.
         - [ ] **T78** BF16 multirow vector alternative.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.

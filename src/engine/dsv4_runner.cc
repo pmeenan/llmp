@@ -504,7 +504,8 @@ Status Dsv4Runner::Setup() {
                      .exact = o_.exact,
                      .prefill_outa_hca = o_.prefill_outa_hca && !o_.exact && !o_.full_window,
                      .prefill_outa_hca_partial = o_.prefill_outa_hca_partial,
-                     .wave_lanes = o_.wave_lanes};
+                     .wave_lanes = o_.wave_lanes,
+                     .device_raw_masks = o_.device_raw_masks};
   if (speculative()) {
     dmodel_ = DsparkModel{.artifact = &dweights_.artifact(),
                           .profile = &dprofile_,
@@ -577,7 +578,8 @@ Status Dsv4Runner::Setup() {
       probes.push_back({o_.context - o_.max_verify, o_.max_verify, Dsv4ChunkKind::kVerify});
     }
     for (const Probe& probe : probes) {
-      auto in = md::Dsv4Chunk(profile_, layout_, probe.n_past, probe.rows, o_.exact);
+      auto in = md::Dsv4Chunk(profile_, layout_, probe.n_past, probe.rows, o_.exact,
+                              !o_.device_raw_masks);
       if (!in) {
         return std::unexpected(in.error());
       }
@@ -622,7 +624,8 @@ Status Dsv4Runner::Setup() {
         kg::Dsv4WaveShape shape;
         std::vector<std::uint64_t> states(wave_slots_, std::uint64_t{1} << 45U);
         for (std::uint32_t s = 0; s < wave_slots_; ++s) {
-          auto in = md::Dsv4Chunk(profile_, layout_, o_.context - rows, rows, false);
+          auto in = md::Dsv4Chunk(profile_, layout_, o_.context - rows, rows, false,
+                                  !o_.device_raw_masks);
           if (!in) {
             return std::unexpected(in.error());
           }
@@ -1426,6 +1429,9 @@ std::expected<Dsv4Runner::ChunkPlans::Entry*, std::string> Dsv4Runner::Planned(
   if (auto r = BindPlanned(**planned, launch, resources_.registry(), "the plan"); !r) {
     return std::unexpected(r.error());
   }
+  bound_raw_masks_ += static_cast<std::uint64_t>(std::ranges::count_if(
+      (*planned)->plan.steps,
+      [](const auto& step) { return step.implementation == kg::kGemma4MaskName; }));
   Check((*planned)->graph);
   const double seconds = Seconds(std::chrono::steady_clock::now() - start);
   plan_seconds_ += seconds;
@@ -1480,6 +1486,9 @@ std::expected<Dsv4Runner::WavePlans::Entry*, std::string> Dsv4Runner::PlannedWav
   if (auto r = BindPlanned(**planned, launch, resources_.registry(), "the wave"); !r) {
     return std::unexpected(r.error());
   }
+  bound_raw_masks_ += static_cast<std::uint64_t>(std::ranges::count_if(
+      (*planned)->plan.steps,
+      [](const auto& step) { return step.implementation == kg::kGemma4MaskName; }));
   CheckWave((*planned)->graph);
   const double seconds = Seconds(std::chrono::steady_clock::now() - start);
   plan_seconds_ += seconds;
@@ -1662,7 +1671,7 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
     return waiting;
   }
   const Dsv4Model& model = request.model;
-  auto in = md::Dsv4Chunk(profile_, layout_, n_past, rows, model.exact);
+  auto in = md::Dsv4Chunk(profile_, layout_, n_past, rows, model.exact, !model.device_raw_masks);
   if (!in) {
     return std::unexpected(in.error());
   }
@@ -1989,7 +1998,7 @@ Status Dsv4Runner::DraftVerify(RequestState& request, std::uint32_t pos, std::in
   bool dcapture = druns.CaptureDue(runs_.graphs());
   // The verify: its tokens the anchor and placeholders the drafts replace
   // on the device.
-  auto in = md::Dsv4Chunk(profile_, layout_, pos, rows, model.exact);
+  auto in = md::Dsv4Chunk(profile_, layout_, pos, rows, model.exact, !model.device_raw_masks);
   if (!in) {
     return std::unexpected(in.error());
   }
@@ -2214,7 +2223,7 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
     if (w.anchor < 0 || std::cmp_greater_equal(w.anchor, profile_.vocab)) {
       return Error("a DeepSeek wave anchor is outside the vocabulary");
     }
-    auto in = md::Dsv4Chunk(profile_, layout_, w.pos, f.rows, false);
+    auto in = md::Dsv4Chunk(profile_, layout_, w.pos, f.rows, false, !model_.device_raw_masks);
     if (!in) {
       return std::unexpected(in.error());
     }
@@ -2769,7 +2778,7 @@ std::expected<double, std::string> Dsv4Runner::TimeReplays(std::uint32_t n_past,
   if (auto settled = Rollback(default_request_); !settled) {  // a restore owed runs first
     return std::unexpected(settled.error());
   }
-  auto in = md::Dsv4Chunk(profile_, layout_, n_past, 1, model_.exact);
+  auto in = md::Dsv4Chunk(profile_, layout_, n_past, 1, model_.exact, !model_.device_raw_masks);
   if (!in) {
     return std::unexpected(in.error());
   }

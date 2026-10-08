@@ -671,7 +671,7 @@ std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio,
 std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile,
                                                       const Dsv4StateLayout& state,
                                                       std::uint32_t n_past, std::uint32_t rows,
-                                                      bool masks) {
+                                                      bool masks, bool raw_mask) {
   if (rows == 0 || rows > state.max_rows || n_past > state.context ||
       rows > state.context - n_past) {
     return Refused(std::format("{} rows after {} do not fit a {}-position state of {}-row chunks",
@@ -688,12 +688,12 @@ std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile
                            cells, std::max<std::uint64_t>(256, Pad(std::min(total, cells), 256))));
   in.positions.resize(rows);
   in.raw_cells.resize(rows);
-  in.raw_mask.assign(std::size_t{rows} * in.raw_n_kv, kHalfNegInf);
+  if (raw_mask) in.raw_mask.assign(std::size_t{rows} * in.raw_n_kv, kHalfNegInf);
   for (std::uint32_t i = 0; i < rows; ++i) {
     const std::uint64_t pos = n_past + i;
     in.positions[i] = static_cast<std::int32_t>(pos);
     in.raw_cells[i] = static_cast<std::int64_t>(pos % cells);
-    for (std::uint64_t c = 0; c < in.raw_n_kv; ++c) {
+    for (std::uint64_t c = 0; raw_mask && c < in.raw_n_kv; ++c) {
       // The position cell c holds once the chunk is written: the latest
       // one below `total` congruent to it.
       if (c >= total) {

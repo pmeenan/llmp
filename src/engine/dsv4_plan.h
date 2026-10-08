@@ -75,6 +75,9 @@ struct Dsv4Model {
   // (Dsv4WaveGraph::lanes; on a context with lanes): the same kernels, each
   // slot's rows bit for bit as on one stream.
   bool wave_lanes = true;
+  // Internal same-binary reference override; compressed and draft masks
+  // retain their independent contracts.
+  bool device_raw_masks = false;
 };
 
 // DeepSeek's DSpark drafter beside its target (model/dspark.h): its places
@@ -211,8 +214,9 @@ struct Dsv4WaveHostInputs {
   std::vector<std::pair<ggml_tensor*, const void*>> sources;
 };
 
-// One wave slot's host inputs: its chunk's (model/dsv4.h Dsv4Chunk, without
-// masks), its tokens and its injection's cells (empty without one).
+// One wave slot's inputs: its chunk (model/dsv4.h Dsv4Chunk, compressed masks
+// omitted and raw host masks only for the reference), its tokens and its
+// injection's cells (empty without one).
 struct Dsv4WaveSlotInputs {
   const model::Dsv4ChunkInputs* chunk = nullptr;
   std::span<const std::int32_t> tokens;

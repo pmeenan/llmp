@@ -558,7 +558,7 @@ if(JITLLM_CUDA)
   target_link_libraries(dsv4_prefill_plan_test PRIVATE jitllm_engine)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
   target_link_options(dsv4_prefill_plan_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
-  jitllm_gtest(dsv4_prefill_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+  jitllm_gtest(dsv4_prefill_plan_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" PROPERTIES LABELS unit)
 
   # A Qwen3.8 wave's composition (engine/qwen38_wave_plan.h), planned on
   # the host over a synthetic binding: no device, no model files.
@@ -790,6 +790,9 @@ add_custom_command(
   COMMENT "Building the artifact reader's corpus with the M0 prototype"
   VERBATIM)
 add_custom_target(artifact_corpus ALL DEPENDS "${artifact_corpus}/stamp")
+if(TARGET dsv4_prefill_plan_test)
+  add_dependencies(dsv4_prefill_plan_test artifact_corpus)
+endif()
 add_executable(artifact_test artifact_test.cc)
 target_link_libraries(artifact_test PRIVATE jitllm_artifact)
 add_dependencies(artifact_test artifact_corpus)

@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Build DeepSeek target causal/ring masks on the GPU through shared source
+  checks, preserving exact sparse-query dimensions and unchanged outputs/state.
+  A bounded two-owner prefill screen improves about 0.7%; DSpark block masks
+  retain their separate visibility contract.
+
 - Plan and capture upcoming Gemma2 prefill shapes during current work, and
   forward checkpoint-aware joined prompt hints for Gemma2 and Gemma3. A short
   Gemma2 first-traversal screen improves 5.3%; the short warm comparison is

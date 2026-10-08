@@ -716,6 +716,77 @@ TEST(Dsv4Test, TheFastPlanFusesDecodeAndVerifyChunks) {
 // context, which leaves the compressed caches' 6,880 bytes a position; each
 // compressed cache follows its layer's window cache, so the graph reads the
 // two as one tensor.
+TEST(Dsv4Test, DeviceRawMasksPlanAsExactRowActivationsForScalarAndJoinedTargets) {
+  const auto& profile = md::Dsv4Flash();
+  auto binding = md::BindDsv4(profile, "deepseek4", GgufLike(profile));
+  ASSERT_TRUE(binding);
+  auto state = md::Dsv4State(profile, 8704, 4096, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state);
+  std::array<md::Dsv4ChunkInputs, 2> chunks;
+  chunks[0] = *md::Dsv4Chunk(profile, *state, 4351, 3, false, false);
+  chunks[1] = *md::Dsv4Chunk(profile, *state, 4608, 1, false, false);
+  for (const bool joined : {false, true}) {
+    auto arena = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(profile, 2));
+    ASSERT_TRUE(arena);
+    const kg::Dsv4GraphOptions options{.fused = true, .raw_mask_context = 8704};
+    kg::Dsv4WaveGraph wave;
+    kg::Dsv4Graph scalar;
+    if (joined) {
+      kg::Dsv4WaveShape shape;
+      for (const auto& chunk : chunks) shape.slots.push_back(kg::Dsv4ShapeOf(*state, chunk));
+      auto made = kg::BuildDsv4WaveGraph(*arena, profile, *binding, shape, options);
+      ASSERT_TRUE(made) << Why(made);
+      wave = std::move(*made);
+    } else {
+      auto made = kg::BuildDsv4Graph(*arena, profile, *binding,
+                                     kg::Dsv4ShapeOf(*state, chunks[0], 1), options);
+      ASSERT_TRUE(made) << Why(made);
+      scalar = std::move(*made);
+    }
+    auto inputs = joined ? wave.inputs() : scalar.inputs();
+    auto& nodes = joined ? wave.joined.nodes : scalar.nodes;
+    auto* positions = joined ? wave.joined.positions : scalar.positions;
+    const auto slots = joined ? std::span(wave.slots) : std::span(&scalar, 1);
+    for (std::size_t slot = 0; slot < slots.size(); ++slot) {
+      const auto* mask = slots[slot].raw_mask;
+      EXPECT_TRUE(slots[slot].device_raw_mask);
+      EXPECT_TRUE(kg::Gemma4MaskFits(mask));
+      EXPECT_EQ(mask->ne[0], 4352);
+      EXPECT_EQ(mask->ne[1], chunks[slot].rows);
+      EXPECT_EQ(mask->src[0], positions);
+      EXPECT_EQ(kg::JitllmOpInt(mask, 0), joined ? wave.first[slot] : 0);
+      EXPECT_EQ(kg::JitllmOpInt(mask, 5), 1);
+      EXPECT_EQ(std::ranges::count(inputs, mask), 0);
+      for (const auto* node : nodes) {
+        if (kg::JitllmOpOf(node) == kg::JitllmOp::kDsv4SparseMask && node->src[0] == mask)
+          EXPECT_EQ(node->ne[1], chunks[slot].rows);
+      }
+    }
+    std::uint64_t next = std::uint64_t{1} << 40U;
+    for (auto* node : nodes) {
+      for (auto* parent : node->src) {
+        if (parent && parent->op == GGML_OP_NONE && parent->data == nullptr) {
+          kg::TensorArena::Bind(parent, next);
+          next += ((ggml_nbytes(parent) + 255) / 256 * 256) + 256;
+        }
+      }
+    }
+    kg::BindDistinct(nodes, std::uint64_t{1} << 46U);
+    auto choices = ModelDevice();
+    choices.fuse_norms = true;
+    choices.vector_floats = true;
+    auto plan = kg::PlanGraph(nodes, false, choices);
+    ASSERT_TRUE(plan) << Why(plan);
+    EXPECT_EQ(std::ranges::count_if(
+                  plan->steps,
+                  [](const auto& step) { return step.implementation == kg::kGemma4MaskName; }),
+              joined ? 2 : 1);
+    auto placement = kg::PlaceActivations(nodes, *plan, inputs, 256);
+    ASSERT_TRUE(placement) << Why(placement);
+    EXPECT_GT(placement->extent, 0U);
+  }
+}
+
 TEST(Dsv4Test, TheRingHoldsTheWindowAndAChunk) {
   const md::Dsv4Profile& p = md::Dsv4Flash();
   auto a = md::Dsv4State(p, 65536, 2048, md::Dsv4Window::kRing);

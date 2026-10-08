@@ -325,11 +325,12 @@ struct Dsv4ChunkInputs {
 // longer than its chunk bound. A ring's chunk reads all of the ring's cells
 // (raw_n_kv = raw_cells), so every chunk of a width has one shape until
 // its compressed rows cross a multiple of 256. Without `masks`, the
-// compressed caches' masks are left empty.
+// compressed caches' masks are left empty. Without `raw_mask`, only the
+// raw causal/ring mask is left empty for the graph-owned producer.
 std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile,
                                                       const Dsv4StateLayout& state,
                                                       std::uint32_t n_past, std::uint32_t rows,
-                                                      bool masks = true);
+                                                      bool masks = true, bool raw_mask = true);
 
 // One compressor's plan (exposed for tests).
 std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio, bool overlap,

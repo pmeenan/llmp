@@ -416,6 +416,13 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
   against the 32K/128K oracle histories under the tie-aware greedy rule
   (D-085, 2026-10-03), 128K perplexity and the 127K answer task
   ([default-on acceptance](experiments/ds4-output-prefix/README.md#default-on-acceptance)).
+- **Target raw masks:** ordinary runners use graph-owned GPU causal/ring masks
+  with exact query-row dimensions. A bounded UD-Q2_K_XL C2 ring transfer has
+  identical complete heads, choices and initialized states; repeated native
+  prefill improves 0.69% (two samples per policy). DSpark's noncausal block
+  masks and optional compressed visible-count masks retain their separate
+  contracts. This is an existing-model transfer, not a new competitive
+  qualification ([controls](experiments/deepseek-device-masks/README.md)).
 - **Context:** exercised at 4,096 (against the oracle) and at 8,704, the
   runtime's original default (8,192 tokens of conversation in the swap
   table); since

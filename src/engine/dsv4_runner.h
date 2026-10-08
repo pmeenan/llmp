@@ -157,6 +157,10 @@ struct Dsv4Options {
   // A DSpark wave's draft blocks as one graph (PlanDsparkWave), each slot's
   // drafts its own block's bit for bit; off, a block a slot.
   bool joined_drafts = true;
+  // Target causal/ring masks default on; false retains the matched host
+  // reference. Compressed masks and DSpark drafts keep their own contracts.
+  // No public setting.
+  bool device_raw_masks = true;
   // Where each slot's spill file lives (LiveState::SpillPlace), asked once
   // at Register; unset, an unnamed file in `out`. The runtime names them
   // to keep conversations across a restart (D-105).
@@ -466,6 +470,7 @@ class Dsv4Runner final : public PagedModel {
   // Decode graphs on or off for the next chunks; captured graphs are kept.
   void set_graphs(bool on) { runs_.set_graphs(on); }
   const GraphStats& graph_stats() const { return graph_stats_; }
+  std::uint64_t bound_raw_masks() const { return bound_raw_masks_; }
   // Runs of the waves (their graphs are counted in graph_stats too).
   const GraphStats& wave_stats() const { return wave_stats_; }
   // The last chunk: how it ran, and the job's host time (the inputs built
@@ -907,6 +912,7 @@ class Dsv4Runner final : public PagedModel {
   std::vector<std::string> dump_;              // set_dump
   const Dsv4Planned* last_planned_ = nullptr;  // the last chunk's plan (DumpLast)
   GraphStats graph_stats_;
+  std::uint64_t bound_raw_masks_ = 0;
   GraphStats draft_stats_;
   GraphStats wave_stats_;
   RunPath last_path_ = RunPath::kEager;
