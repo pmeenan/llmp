@@ -68,7 +68,8 @@ kg::DeviceChoices Choices() {
 
 TEST(Gemma3Plan, MultirowOwnersRetainActualRootsAndNarrowShapeFallback) {
   for (const bool flexible : {false, true}) {
-    for (const std::uint32_t rows : {2U, 5U, 9U, 17U, 33U, 64U, 127U, 128U, 129U, 256U, 512U}) {
+    for (const std::uint32_t rows :
+         {2U, 5U, 9U, 17U, 33U, 64U, 127U, 128U, 129U, 256U, 257U, 511U, 512U, 513U}) {
       Case c;
       c.state = *md::Gemma3State(c.p, 4096, std::max(128U, rows));
       const auto width = (rows + 255U) / 256U * 256U;
@@ -89,7 +90,7 @@ TEST(Gemma3Plan, MultirowOwnersRetainActualRootsAndNarrowShapeFallback) {
                                         (*measured)->placement.extent);
       ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
       auto& g = (*placed)->graph;
-      if (rows != 128 && (!flexible || rows > 256)) {
+      if (rows != 128 && (!flexible || rows > 512)) {
         EXPECT_EQ(g.Named("blk.0.owner_prefill_attention"), nullptr);
         EXPECT_NE(g.Named("blk.0.packed_prefill_attention"), nullptr);
         continue;

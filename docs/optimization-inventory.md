@@ -716,7 +716,7 @@ architecture exclusions:
   These no-copy dispositions concern this eliminated work, not a permanent
   exclusion from other shared attention kernels.
 - **T93** Gemma2/Gemma3 now select equal-width C2 query tiles/tails through
-  256 rows in explicitly funded configured runners; ordinary chunks remain
+  512 rows in explicitly funded configured runners; ordinary chunks remain
   128. Original Columns4/8/16/32 selection and padded masks are retained.
   Same-native 64-row prefill improves 10.474%/2.789% (n=2); 52 focused
   controls include exact eager/changed replay, actual five-row serving tails,
@@ -735,7 +735,14 @@ architecture exclusions:
   Matching stock's legitimate SWA capacities (4608/1536) gives exact full
   logits/choices, with fresh n=2 prefill/paid gaps +1.242%/+0.797% and
   +3.552%/+2.195%; no parity or public 256-row admission claim.
-  Compatible >256 rows, mixed-width roots and other cohorts/layouts remain
+  The configured 512-row extension improves native prefill 2.706%/1.180%
+  (n=2), with exact heads/choices/state. Ten focused controls include partial
+  511/full 512 and maximum cap0 operands, wrapped model replay, checkpoint,
+  protected peer and kept restart. Fresh matched-ring 512-row stock comparisons
+  retain +0.786%/+0.284% prefill/paid for Gemma2 and +1.102%/+0.728% for
+  Gemma3, with exact complete outputs; these are measured gaps, not parity.
+  [512-row bounds and evidence](experiments/gemma-prefill-copies/README.md#configured-257512-row-equal-owner-extension).
+  Compatible >512 rows, mixed-width roots and other cohorts/layouts remain
   OPEN, with checked fallback. Cold changing-key capture now uses the shared two-future funded pipeline
   for G2/G3, with one actual paired build/cache and later capture/replay.
   Short n=2 gains are modest; T93 remains open for the other recipients above.

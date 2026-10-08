@@ -347,7 +347,7 @@ changed replay and actual five-row serving/restart controls. Fresh matched
 64-row stock bookends retain +2.290% prefill / +1.813% paid cycle, explicitly
 open for that host-mask/no-hint diagnostic recipe. Subsequent aligned
 GPU-mask/hinted runner-policy prefill is +0.188% to stock, within n=2
-bookend movement; full HTTP reference remains separate. Compatible >256
+bookend movement; full HTTP reference remains separate. Compatible >512
 rows, mixed-width roots and other cohorts remain extension tasks with
 checked fallback.
 
@@ -363,3 +363,12 @@ Fresh matched-ring stock bookends retain +3.552% prefill / +1.025% decode /
 also occur in packed attention, while each packed/root owner is exact; the
 baseline cause remains unresolved. Public chunks/context/slots stay
 unchanged. [Method and remaining transfers](experiments/gemma-prefill-copies/README.md#configured-129256-row-equal-owner-extension).
+
+The later configured equal-C2 extension reaches 512 rows with unchanged
+CUDA arithmetic and public 128-row chunks. Native prefill improves 1.180%
+(n=2). Partial/full/maximal operands and actual wrapped 512-row replay,
+checkpoint, protected-peer state, spill and kept restart remain exact.
+Matching stock's 2048-cell SWA ring gives exact complete heads and choices;
+fresh stock bookends retain +1.102% prefill / +0.728% paid, with disjoint
+ranges. These remain measured gaps, not parity passes. [512-row method and
+remaining work](experiments/gemma-prefill-copies/README.md#configured-257512-row-equal-owner-extension).

@@ -45,7 +45,7 @@ struct Gemma2Options {
   bool owner_decode = false, packed_prefill = false;
   // Copy-free C2 prefill; false retains the packed control.
   bool owner_prefill = true;
-  // Qualified 2..256-row tiles and tails in funded configured envelopes.
+  // Explicit 2..512-row tiles and tails in funded configured envelopes.
   // False retains the 128-row selector; ordinary max_rows remains 128.
   bool flexible_owner_prefill = true;
   bool device_masks = true;    // explicit false retains the host-reference comparison
@@ -96,8 +96,8 @@ class Gemma2Runner final : public PagedModel {
   struct PlanSelections {
     std::uint64_t plans = 0, steps = 0, norm_mul = 0, quant_geglu = 0, norm_rope = 0, norm_add = 0,
                   owner_attention = 0, packed_prefill_attention = 0, owner_prefill_attention = 0,
-                  flexible_owner_prefill_attention = 0, bounded_owner_attention = 0,
-                  device_masks = 0;
+                  flexible_owner_prefill_attention = 0, largest_owner_prefill_rows = 0,
+                  largest_owner_prefill_kv_cells = 0, bounded_owner_attention = 0, device_masks = 0;
   };
   Gemma2Runner(PagedNode& node, Gemma2Options options, int owner, std::uint32_t stream);
   ~Gemma2Runner() override;

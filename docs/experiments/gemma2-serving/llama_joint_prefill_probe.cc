@@ -85,8 +85,8 @@ int main(int argc, char** argv) {
       const auto value = option.substr(6);
       const auto parsed = std::from_chars(value.data(), value.data() + value.size(), chunk);
       Require(parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() && chunk >= 2 &&
-                  chunk <= 256,
-              "chunk must be in 2..256");
+                  chunk <= 512,
+              "chunk must be in 2..512");
     }
     const std::string mode = argv[7];
     const bool teacher = mode == "teacher";

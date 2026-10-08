@@ -2936,11 +2936,18 @@ TEST(FlashAttnOwnersPartitionTest, LargerQueryTilesDoNotWidenTheKvOrDecodeBounds
   EXPECT_TRUE(kg::detail::PlanOwnerPartition(96, 4096, 32, 2, true, true, 8));
   EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 4097, 32, 2, true, true, 8));
   EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 32, 2, true));
-  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 36, 2, true, false, 9));
+  EXPECT_TRUE(kg::detail::PlanOwnerPartition(96, 512, 64, 2, true, false, 16));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 513, 64, 2, true, false, 16));
+  EXPECT_TRUE(kg::detail::PlanOwnerPartition(96, 4096, 64, 2, true, true, 16));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 4097, 64, 2, true, true, 16));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 64, 2, true));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 68, 2, true, false, 17));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 64, 2, true, false, 15));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 64, 3, true, false, 16));
   EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 32, 2, true, false, 7));
   EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 32, 3, true, false, 8));
   EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 4, 2, true, false, -1));
-  for (const int query_tiles : {1, 2, 3, 4, 5, 6, 7, 8})
+  for (const int query_tiles : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
     EXPECT_TRUE(
         kg::detail::PlanOwnerPartition(96, 512, 4 * query_tiles, 2, true, false, query_tiles));
 }
@@ -4246,6 +4253,8 @@ void GgmlExtOpsTest::MultirowOwnerControl(
         for (std::int64_t owner = 0; owner < owners; ++owner)
           for (std::int64_t row = 0; row < rows; ++row) {
             const auto visible = cells - rows - owner * 32 - shift + row + 1;
+            ASSERT_GE(visible, 0);
+            ASSERT_LE(visible, cells);
             std::fill_n(
                 masks.begin() + static_cast<std::ptrdiff_t>((owner * padded_rows + row) * cells),
                 visible, ggml_fp16_t{0});
@@ -4339,12 +4348,12 @@ void GgmlExtOpsTest::MultirowOwnerControl(
       // Keep all row-dependent dimensions/strides coherent: the explicit
       // range gate, not a layout inconsistency, must refuse the next row.
       ggml_tensor too_many_q = *q, too_many_mask = *mask, too_many_output = *node;
-      too_many_q.ne[1] = 257;
-      too_many_q.nb[3] = n(d * heads * 257) * sizeof(float);
-      too_many_mask.ne[1] = 288;
-      too_many_mask.nb[2] = too_many_mask.nb[3] = n(cells * 288) * sizeof(ggml_fp16_t);
-      too_many_output.ne[2] = 257;
-      too_many_output.nb[3] = n(d * heads * 257) * sizeof(float);
+      too_many_q.ne[1] = 513;
+      too_many_q.nb[3] = n(d * heads * 513) * sizeof(float);
+      too_many_mask.ne[1] = 544;
+      too_many_mask.nb[2] = too_many_mask.nb[3] = n(cells * 544) * sizeof(ggml_fp16_t);
+      too_many_output.ne[2] = 513;
+      too_many_output.nb[3] = n(d * heads * 513) * sizeof(float);
       bad = *inputs;
       bad.q = &too_many_q;
       bad.mask = &too_many_mask;
@@ -4352,7 +4361,7 @@ void GgmlExtOpsTest::MultirowOwnerControl(
       const auto range_refused = kg::CheckFlashAttnOwners(bad);
       ASSERT_FALSE(range_refused);
       EXPECT_EQ(range_refused.error().error, KernelError::kRejected);
-      EXPECT_NE(range_refused.error().detail.find("2-to-256-row"), std::string::npos);
+      EXPECT_NE(range_refused.error().detail.find("2-to-512-row"), std::string::npos);
       malformed = *mask;
       malformed.ne[1] = 127;
       bad = *inputs;
@@ -4407,6 +4416,17 @@ TEST_F(GgmlExtOpsTest, GemmaLargerMultirowOwnersMatchPackedMmaEagerAndChangedRep
 
 TEST_F(GgmlExtOpsTest, GemmaLargestMultirowMaskMatchesPackedMmaEagerAndChangedReplay) {
   const std::array shapes{std::pair<std::int64_t, std::int64_t>{256, 131072}};
+  MultirowOwnerControl(shapes);
+}
+
+TEST_F(GgmlExtOpsTest, Gemma512QueryTilesMatchPackedMmaEagerAndChangedReplay) {
+  const std::array shapes{std::pair<std::int64_t, std::int64_t>{511, 4608},
+                          std::pair<std::int64_t, std::int64_t>{512, 4608}};
+  MultirowOwnerControl(shapes);
+}
+
+TEST_F(GgmlExtOpsTest, Gemma512LargestMaskMatchesPackedMmaEagerAndChangedReplay) {
+  const std::array shapes{std::pair<std::int64_t, std::int64_t>{512, 131072}};
   MultirowOwnerControl(shapes);
 }
 

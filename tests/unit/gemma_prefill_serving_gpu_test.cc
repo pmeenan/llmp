@@ -197,6 +197,7 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     }
     return {};
   }
+  void CheckConfiguredRoots(std::uint32_t rows, std::uint32_t chunks);
 };
 
 TEST_P(GemmaPrefillServingGpu, ActualJoinedHintsPreserveHeadsAndState) {
@@ -361,8 +362,8 @@ TEST_P(GemmaPrefillServingGpu, ActualOwnerPrefillPreservesHeadsStateAndRestart) 
 
 // Public Gemma chunk admission remains 128. Qualify the explicitly configured
 // larger runner and its kept-file layout without bypassing that API clamp.
-TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartContinuation) {
-  constexpr std::uint32_t kRows = 256, kChunks = 3, kPositions = kRows * kChunks;
+void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint32_t kChunks) {
+  const std::uint32_t kPositions = kRows * kChunks;
   const auto exercise = [&]<class Runner, class Options>() -> en::Status {
     EXPECT_EQ(Options{}.prefill_lookahead_capacity, 2U);
     struct DirectLife {
@@ -391,9 +392,9 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
       options.artifact = life->roles.installed / *life->config.models[0].artifact;
       options.out = directory;
       options.context = GetParam() == 2 ? 8192 : 4096;
-      options.max_rows = 256;
+      options.max_rows = kRows;
       options.slots = 2;
-      options.max_wave_rows = 512;
+      options.max_wave_rows = 2 * kRows;
       options.max_head_rows = 2;
       options.owner_decode = true;
       options.packed_prefill = true;
@@ -453,6 +454,10 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
       for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = seed[i % seed.size()];
       const auto before = runner.lookahead_stats();
       const auto replayed = runner.graph_stats().replayed;
+      if (kRows == 512 && (runner.layout().local_cells != (GetParam() == 2 ? 4608U : 1536U) ||
+                           kPositions <= runner.layout().local_cells))
+        return std::unexpected("configured 512-row ring wrap not exercised");
+      std::uint32_t wrapped_root_waves = 0, wrapped_replays = 0;
       for (std::uint32_t chunk = 0; chunk < kChunks; ++chunk) {
         const auto tokens = std::span(ids).subspan(chunk * kRows, kRows);
         std::array<typename Runner::Work, 2> work{
@@ -461,10 +466,19 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
         const std::array<typename Runner::PrefillNext, 2> next{
             {{0, last ? 0U : kRows, chunk + 2 < kChunks ? kRows : 0U},
              {1, last ? 0U : kRows, chunk + 2 < kChunks ? kRows : 0U}}};
+        const auto replayed_before = runner.graph_stats().replayed;
         if (auto r = runner.WavePrefill(work, last, std::span(next).first(hinted ? 2U : 0U),
                                         chunk + 2 == kChunks, chunk + 3 == kChunks);
             !r)
           return r;
+        if (hinted && kRows == 512 && (chunk + 1) * kRows > runner.layout().local_cells) {
+          const auto& selected = runner.plan_selections();
+          if (selected.owner_prefill_attention == 0 || selected.packed_prefill_attention != 0 ||
+              selected.largest_owner_prefill_rows != 512)
+            return std::unexpected("wrapped 512-row root-only plans not selected");
+          ++wrapped_root_waves;
+          wrapped_replays += runner.graph_stats().replayed > replayed_before;
+        }
         for (std::uint32_t owner = 0; owner < 2; ++owner)
           if ((*runner.request_slot(owner))->completed_positions() != (chunk + 1) * kRows)
             return std::unexpected("lookahead advanced a future state cursor");
@@ -475,12 +489,22 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
         return std::unexpected("larger independent owner heads incomplete");
       const auto& after = runner.lookahead_stats();
       if (hinted) {
-        if (after.built_pairs - before.built_pairs != 1 ||
-            after.cached_pairs - before.cached_pairs != 1 || after.built - before.built != 2 ||
-            after.cached - before.cached != 2 ||
-            after.captured_ahead - before.captured_ahead != 1 ||
-            runner.graph_stats().replayed - replayed != 1)
-          return std::unexpected("larger two-future construction/capture/replay not executed");
+        if (kRows == 256) {
+          if (after.built_pairs - before.built_pairs != 1 ||
+              after.cached_pairs - before.cached_pairs != 1 || after.built - before.built != 2 ||
+              after.cached - before.cached != 2 ||
+              after.captured_ahead - before.captured_ahead != 1 ||
+              runner.graph_stats().replayed - replayed != 1)
+            return std::unexpected("larger two-future construction/capture/replay not executed");
+        } else if (after.built_pairs <= before.built_pairs ||
+                   after.cached_pairs <= before.cached_pairs || after.built - before.built < 2 ||
+                   after.cached - before.cached != after.built - before.built ||
+                   after.captured_ahead <= before.captured_ahead ||
+                   runner.graph_stats().replayed <= replayed || after.refused != before.refused ||
+                   after.dropped_ahead != before.dropped_ahead || wrapped_root_waves == 0 ||
+                   wrapped_replays == 0) {
+          return std::unexpected("wrapped 512-row capture/replay/lifetime path not executed");
+        }
       } else if (after.built != before.built || after.cached != before.cached) {
         return std::unexpected("unhinted packed control built a future");
       }
@@ -528,11 +552,11 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
               return std::distance(head.begin(), std::max_element(head.begin(), head.end()));
             };
             std::println(
-                "GEMMA_LARGER_IDENTICAL_INPUT family={} rows=256 chunks=3 initialized_rows=768 "
+                "GEMMA_LARGER_IDENTICAL_INPUT family={} rows={} chunks={} initialized_rows={} "
                 "packed_root_exact=1 "
                 "cross_owner_differing={} max_abs={} mean_abs={} argmax0={} argmax1={}",
-                GetParam(), differing, max_difference, total_difference / vocab, best(heads[0]),
-                best(heads[1]));
+                GetParam(), kRows, kChunks, kPositions, differing, max_difference,
+                total_difference / vocab, best(heads[0]), best(heads[1]));
             selected_owner_steps = runner.plan_selections().owner_prefill_attention;
             if (selected_owner_steps == 0 || runner.coverage().violations != 0)
               return std::unexpected("larger actual-root path not selected");
@@ -629,15 +653,25 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
     if (!second_retired) return second_retired;
     if (!checked) return checked;
     std::println(
-        "GEMMA_LARGER_OWNER_RESTART family={} rows=256 selected_owner_steps={} "
+        "GEMMA_LARGER_OWNER_RESTART family={} rows={} initialized_rows={} selected_owner_steps={} "
         "state_exact=1 continuation_exact=1",
-        GetParam(), selected_owner_steps);
+        GetParam(), kRows, kPositions, selected_owner_steps);
     return {};
   };
   const auto result = GetParam() == 2
                           ? exercise.template operator()<en::Gemma2Runner, en::Gemma2Options>()
                           : exercise.template operator()<en::Gemma3Runner, en::Gemma3Options>();
   ASSERT_TRUE(result) << (result ? "" : result.error());
+}
+
+TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartContinuation) {
+  CheckConfiguredRoots(256, 3);
+}
+
+TEST_P(GemmaPrefillServingGpu, Wrapped512RootsPreserveStateAndRestartContinuation) {
+  // Both owners cross the actual local ring before a full-state checkpoint,
+  // protected-peer restore and kept restart continuation.
+  CheckConfiguredRoots(512, GetParam() == 2 ? 10 : 5);
 }
 
 TEST_P(GemmaPrefillServingGpu, DiagnosticBudgetCapLeavesDefaultsAndChecksActualAdmission) {

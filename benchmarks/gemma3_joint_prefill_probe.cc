@@ -89,7 +89,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }  // namespace
 int main(int argc, char** argv) {
   if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") ||
-      (argc < 6 || argc > 14))
+      (argc < 6 || argc > 15))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -106,6 +106,7 @@ int main(int argc, char** argv) {
   bool bounded = false, owner_prefill = false;
   bool flexible = false, have_chunk = false, stock_ring = false, have_capacity = false;
   std::uint32_t lookahead_capacity = 1;
+  std::optional<std::uint64_t> budget_override;
   bool device_masks = false, prefill_ahead = false;
   std::uint32_t chunk = 128;
   for (int i = 6; i < argc; ++i) {
@@ -122,7 +123,15 @@ int main(int argc, char** argv) {
       device_masks = true;
     else if (flag == "prefill-ahead" && !prefill_ahead)
       prefill_ahead = true;
-    else if (flag.starts_with("lookahead-capacity=") && !have_capacity) {
+    else if (flag.starts_with("budget-bytes=") && !budget_override) {
+      const auto number = flag.substr(13);
+      std::uint64_t bytes = 0;
+      const auto parsed = std::from_chars(number.data(), number.data() + number.size(), bytes);
+      if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || bytes == 0 ||
+          bytes % en::kPagedExtent != 0)
+        return 2;
+      budget_override = bytes;
+    } else if (flag.starts_with("lookahead-capacity=") && !have_capacity) {
       const auto number = flag.substr(19);
       const auto parsed =
           std::from_chars(number.data(), number.data() + number.size(), lookahead_capacity);
@@ -134,7 +143,7 @@ int main(int argc, char** argv) {
       const auto number = flag.substr(6);
       const auto parsed = std::from_chars(number.data(), number.data() + number.size(), chunk);
       if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || chunk < 2 ||
-          chunk > 256)
+          chunk > 512)
         return 2;
       have_chunk = true;
     } else
@@ -142,7 +151,7 @@ int main(int argc, char** argv) {
   }
   if (flexible && !owner_prefill) return 2;
   if (have_capacity && !prefill_ahead) return 2;
-  if (stock_ring && chunk != 256) return 2;
+  if (stock_ring && chunk != 256 && chunk != 512) return 2;
   // Match stock's joined ubatch allowance for this explicit comparison only.
   const auto state_rows = stock_ring ? 2 * chunk : chunk;
   const std::string mode = argv[5];
@@ -334,8 +343,9 @@ int main(int argc, char** argv) {
     if (auto r = node.Open(); !r) return r;
     life->entered.push_back(&runner);
     if (auto r = runner.Setup(); !r) return r;
-    if (stock_ring && runner.layout().local_cells != 1536)
-      return Error("stock ring diagnostic requires 1536 local cells");
+    const auto stock_cells = ((1024U + state_rows + 255U) / 256U) * 256U;
+    if (stock_ring && runner.layout().local_cells != stock_cells)
+      return Error("matched stock ring capacity differs");
     // Final initialized-state hashes are outside paid spans in every mode.
     // Register their bounded copy buffer before computing the startup budget.
     std::vector<jitllm::catalog::ExtentId> snapshot_extents;
@@ -345,10 +355,24 @@ int main(int argc, char** argv) {
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     node.SetHostFloor(runner.host_input_bytes() + runner.plan_floor_bytes() + (16ULL << 20U));
-    if (auto r = node.Start(jitllm::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
-                                                4 * node.StateCapacity()));
-        !r)
-      return r;
+    std::uint64_t weights_bytes = 0, state_bytes = 0, required_budget = 0;
+    if (__builtin_mul_overflow(std::uint64_t{runner.weights().size()}, en::kPagedExtent,
+                               &weights_bytes) ||
+        __builtin_mul_overflow(std::uint64_t{4}, node.StateCapacity(), &state_bytes) ||
+        __builtin_add_overflow(fixed, weights_bytes, &required_budget) ||
+        __builtin_add_overflow(required_budget, state_bytes, &required_budget))
+      return Error("benchmark budget overflow");
+    if (budget_override && *budget_override < required_budget)
+      return Error("benchmark budget is below the actual derived minimum");
+    const auto budget = budget_override.value_or(required_budget);
+    std::cout << "GEMMA_PREFILL_BUDGET fixed=" << fixed << " weights=" << weights_bytes
+              << " state_capacity=" << node.StateCapacity()
+              << " activations=" << runner.activations_needed()
+              << " scratch=" << runner.pool_needed() << " host_input=" << runner.host_input_bytes()
+              << " plan_floor=" << runner.plan_floor_bytes() << " joined_global_mask_bytes="
+              << std::uint64_t{2} * runner.layout().global_cells * ((chunk + 31U) / 32U * 32U) * 2
+              << " derived_minimum=" << required_budget << " total=" << budget << '\n';
+    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();
@@ -570,6 +594,8 @@ int main(int argc, char** argv) {
         return Error("C2 did not select/replay checked implementation families");
       if (bounded && prefix[0] != prefix[1] && !bound.bounded_owner_attention)
         return Error("bounded roots did not select actual unequal owner attention");
+      if (chunk > 256 && owner_prefill && bound.largest_owner_prefill_rows != chunk)
+        return Error("larger actual root prefill was not selected");
       std::cout
           << "GEMMA3_JOINT_PREFILL mode=" << mode
           << " slots=2 context_per_slot=4096 chunk=" << chunk
@@ -594,6 +620,8 @@ int main(int argc, char** argv) {
           << " selected_packed_prefill=" << bound.packed_prefill_attention
           << " owner_prefill=" << owner_prefill << " flexible_owner_prefill=" << flexible
           << " selected_owner_prefill=" << bound.owner_prefill_attention
+          << " largest_owner_prefill_rows=" << bound.largest_owner_prefill_rows
+          << " largest_owner_prefill_kv_cells=" << bound.largest_owner_prefill_kv_cells
           << " device_masks=" << device_masks << " selected_device_masks=" << bound.device_masks
           << " prefill_ahead=" << prefill_ahead << " lookahead_capacity=" << lookahead_capacity
           << " lookahead_refused=" << runner.lookahead_stats().refused

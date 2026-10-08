@@ -483,13 +483,16 @@ family" guide, and its long-context scaling work.
         - [ ] **T86** Grouped physical KV stores.
         - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
           exact heads/state and actual serving/restart controls pass.
-        - [ ] **T93** Equal-width C2 rows 2–256 are qualified in configured
+        - [ ] **T93** Equal-width C2 rows 2–512 are qualified in configured
           runners;
-          ordinary chunks stay 128. Extend compatible >256 rows, public
+          ordinary chunks stay 128. Extend compatible >512 rows, public
           larger-chunk admission, mixed-width roots and other cohorts
           with explicit bounds/funding, original geometry and recipient checks.
           Cold changing-key capture now uses two shared funded futures;
           exact three-wave 256-row state/checkpoint/restart and warm 128-row controls pass.
+          Wrapped 512-row checkpoint/peer/spill/restart and maximum operand
+          controls pass. Native prefill improves 2.706%; fresh matched stock
+          retains +0.786% prefill / +0.284% paid at n=2, with exact outputs.
       - **Gemma3 4B QAT**
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T11** Reuse decode Q8 quantization.
@@ -511,13 +514,16 @@ family" guide, and its long-context scaling work.
         - [ ] **T86** Grouped physical KV stores.
         - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
           exact heads/state and actual serving/restart controls pass.
-        - [ ] **T93** Equal-width C2 rows 2–256 are qualified in configured
+        - [ ] **T93** Equal-width C2 rows 2–512 are qualified in configured
           runners;
-          ordinary chunks stay 128. Extend compatible >256 rows, public
+          ordinary chunks stay 128. Extend compatible >512 rows, public
           larger-chunk admission, mixed-width roots and other cohorts
           with explicit bounds/funding, original geometry and recipient checks.
           Cold changing-key capture now uses two shared funded futures;
           exact three-wave 256-row state/checkpoint/restart and warm 128-row controls pass.
+          Wrapped 512-row checkpoint/peer/spill/restart and maximum operand
+          controls pass. Native prefill improves 1.180%; fresh matched stock
+          retains +1.102% prefill / +0.728% paid at n=2, with exact outputs.
           The 64-row diagnostic host-mask/no-hint recipe remains +2.290%
           prefill / +1.813% paid. One matched timeline finds little active-work
           excess and distributed replay/capture gaps; no cause is established.
@@ -626,7 +632,11 @@ family" guide, and its long-context scaling work.
       +1.242%/+0.797% (Gemma2), +3.552%/+2.195% (Gemma3), n=2.
       Identical-input cross-owner differences also occur in packed controls;
       their baseline cause is unresolved, while each packed/root owner is exact.
-      Public chunks stay 128. T93 tracks compatible >256 rows, mixed widths,
+      The configured 512-row extension passes ten focused bounds and wrapped
+      recovery controls, with native prefill gains 2.706%/1.180%. Fresh exact
+      matched-ring stock outputs leave +0.786%/+0.284% prefill/paid for Gemma2
+      and +1.102%/+0.728% for Gemma3 at n=2; no parity claim.
+      Public chunks stay 128. T93 tracks compatible >512 rows, mixed widths,
       larger admission; the cold two-future capture pipeline is now qualified
       for G2/G3 with exact three-wave 256-row/restart and ordinary 128-row warm
       controls. T92 tracks DeepSeek reference bank joins.

@@ -342,7 +342,7 @@ std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(TensorArena& arena,
       auto* mask = p.local(il) ? owner_local_mask : owner_global_mask;
       ggml_tensor* attention = nullptr;
       if (o.owner_prefill &&
-          (chunk_rows == 128 || (o.flexible_owner_prefill && chunk_rows <= 256))) {
+          (chunk_rows == 128 || (o.flexible_owner_prefill && chunk_rows <= 512))) {
         attention = FlashAttnOwnersNode(c, packed_q, mask, owner_keys, owner_values, 2, 2, 0, 50);
         named(prefix + "owner_prefill_attention", attention);
       } else {

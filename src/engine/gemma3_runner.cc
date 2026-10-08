@@ -629,6 +629,14 @@ std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::CachePlann
           kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners &&
           std::string_view(ggml_get_name(node)).ends_with("owner_prefill_attention");
       plan_selections_.owner_prefill_attention += owner_prefill;
+      if (owner_prefill) {
+        plan_selections_.largest_owner_prefill_rows =
+            std::max(plan_selections_.largest_owner_prefill_rows,
+                     static_cast<std::uint64_t>(node->src[0]->ne[1]));
+        plan_selections_.largest_owner_prefill_kv_cells =
+            std::max(plan_selections_.largest_owner_prefill_kv_cells,
+                     static_cast<std::uint64_t>(node->src[1]->ne[0]));
+      }
       plan_selections_.flexible_owner_prefill_attention +=
           owner_prefill && node->src[0]->ne[1] > 1 && node->src[0]->ne[1] < 128;
       plan_selections_.packed_prefill_attention +=

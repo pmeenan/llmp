@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Extend explicitly configured Gemma2/Gemma3 two-owner prefill through 512
+  rows, preserving exact wrapped state, restart continuations and llama.cpp
+  outputs. Public chunks remain 128; measured reference gaps remain recorded.
+
 - Allow explicit experimental Gemma26 prefill capture with retained frontier
   features, preserving exact feature/state and checked assistant proposals.
   Ordinary and assistant-setup capture defaults remain off.

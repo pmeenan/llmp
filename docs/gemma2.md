@@ -260,7 +260,7 @@ original Columns4/8/16/32 selection. A later 64-row native factor improves
 prefill 10.474% (n=2); fresh matched stock bookends are level (+0.059%
 prefill / −0.038% paid) with exact choices and full heads. Actual five-row
 joined tails, initialized state and kept restart/continuation pass.
-Compatible >256 rows, mixed-width roots and cohorts remain explicit ports;
+Compatible >512 rows, mixed-width roots and cohorts remain explicit ports;
 ordinary chunks remain 128. The [matched timeline and transfer](experiments/gemma-prefill-copies/README.md)
 found 3432 baseline D2D copies and lower native arithmetic active time.
 Removing K/V packing improves same-native wrapped prefill 8.662% (n=2).
@@ -282,3 +282,12 @@ with decode level; these remain residuals, not parity passes. The identical
 seed's cross-owner head difference is already present in packed attention,
 while each owner's packed/root head is exact; its baseline cause remains
 unresolved. [Bounds, controls and reference evidence](experiments/gemma-prefill-copies/README.md#configured-129256-row-equal-owner-extension).
+
+The later configured equal-C2 extension reaches 512 rows with unchanged
+CUDA arithmetic and public 128-row chunks. Native prefill improves 2.706%
+(n=2). Partial/full/maximal operands and actual wrapped 512-row replay,
+checkpoint, protected-peer state, spill and kept restart remain exact.
+Matching stock's 5120-cell SWA ring gives exact complete heads and choices;
+fresh stock bookends retain +0.786% prefill / +0.284% paid. The paid gap is
+within observed movement, while prefill ranges remain disjoint; no prefill
+parity claim follows. [512-row method and remaining work](experiments/gemma-prefill-copies/README.md#configured-257512-row-equal-owner-extension).

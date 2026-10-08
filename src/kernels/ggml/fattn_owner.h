@@ -61,7 +61,7 @@ struct FlashAttnOwners {
 // this for model execution. These lanes are skipped, never read from a root.
 // No sinks or sparse gather.
 // Additional closed prefill case: Gemma2/Gemma3 D256/H8/GQA2 cap50/0, two equal-width
-// roots, 2..256 query rows. Q [D,rows,heads,2], mask [cells,padded_rows,1,2], output
+// roots, 2..512 query rows. Q [D,rows,heads,2], mask [cells,padded_rows,1,2], output
 // [D,heads,rows,2], with padded_rows=ceil(rows/32)*32 and absent rows -Inf.
 // Original packed MMA Columns4/8/16/32 selection follows the real row count;
 // bounded_roots and partial/wider cohorts are refused for multirow inputs.
@@ -96,7 +96,7 @@ struct OwnerPartition {
 // actual SMs. tiles_per_owner is KVheads for decode, or query tiles * KVheads
 // for the closed prefill case. wide_kv admits up to 4096 KV tiles only for C2;
 // decode and cap50 stay at 512. A nonzero query_tiles admits the closed C2
-// one-to-eight GQA2 query-tile grid independently of the KV bound. Zero retains
+// one-to-sixteen GQA2 query-tile grid independently of the KV bound. Zero retains
 // the old at-most 16 tiles-per-owner contracts. Indivisible whole-cohort
 // grids preserve the four-root path.
 std::expected<OwnerPartition, KernelFailure> PlanOwnerPartition(
