@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "qwen38_reference.h"
@@ -17,7 +17,7 @@
 #include "base/sha256.h"
 #include "platform/direct_io.h"
 
-namespace jitllm::benchmarks::draft_vocab {
+namespace llmp::benchmarks::draft_vocab {
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr std::uint64_t kAlignment = platform::kDirectIoAlignment;
@@ -203,4 +203,4 @@ std::expected<void, ReferenceFailure> ReferencePages::Compare(
   return {};
 }
 
-}  // namespace jitllm::benchmarks::draft_vocab
+}  // namespace llmp::benchmarks::draft_vocab

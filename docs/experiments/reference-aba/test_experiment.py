@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Measurement and failure-path regressions; no Docker, sudo, or GPU required."""
 
@@ -92,7 +92,7 @@ class StateTests(unittest.TestCase):
         self.assertEqual(experiment.a_reusable_prefix(trace, 2), 2)
 
     def test_save_syncs_the_state_file_and_directory(self):
-        with tempfile.TemporaryDirectory(prefix="jitllm-aba-test-") as temp:
+        with tempfile.TemporaryDirectory(prefix="llmp-aba-test-") as temp:
             router = experiment.Router.__new__(experiment.Router)
             router.states = Path(temp)
             def save_response(*unused):
@@ -108,7 +108,7 @@ class StateTests(unittest.TestCase):
             self.assertGreaterEqual(result["durable_elapsed_s"], result["api_elapsed_s"])
 
     def test_restore_rejects_token_byte_and_file_size_mismatches(self):
-        with tempfile.TemporaryDirectory(prefix="jitllm-aba-test-") as temp:
+        with tempfile.TemporaryDirectory(prefix="llmp-aba-test-") as temp:
             router = experiment.Router.__new__(experiment.Router)
             router.states = Path(temp)
             (router.states / "A.bin").write_bytes(b"state")
@@ -143,7 +143,7 @@ class TemplateTests(unittest.TestCase):
     def test_prepare_forwards_history_and_accepts_short_template_tail_rewrites(self):
         class StopAfterTwoTurns(RuntimeError):
             pass
-        with tempfile.TemporaryDirectory(prefix="jitllm-aba-test-") as temp:
+        with tempfile.TemporaryDirectory(prefix="llmp-aba-test-") as temp:
             router = mock.Mock()
             histories = []
             def apply_template(model, messages):
@@ -166,7 +166,7 @@ class TemplateTests(unittest.TestCase):
             router.stop.assert_called_once_with()
 
     def test_prepare_rejects_early_history_rewrites_before_freezing_trace(self):
-        with tempfile.TemporaryDirectory(prefix="jitllm-aba-test-") as temp:
+        with tempfile.TemporaryDirectory(prefix="llmp-aba-test-") as temp:
             output = Path(temp) / "prepare"
             router = mock.Mock()
             router.template_messages.side_effect = [list(range(100)), list(range(20)) + [301, 302]]
@@ -183,7 +183,7 @@ class TemplateTests(unittest.TestCase):
 
 class PressureTests(unittest.TestCase):
     def test_unpinned_helper_is_rejected_before_execution(self):
-        with tempfile.TemporaryDirectory(prefix="jitllm-aba-test-") as temp:
+        with tempfile.TemporaryDirectory(prefix="llmp-aba-test-") as temp:
             root = Path(temp)
             program = root / "helper"
             program.write_bytes(b"wrong executable")
@@ -247,7 +247,7 @@ class SwapTests(unittest.TestCase):
 
 class CleanupTests(unittest.TestCase):
     def test_cleanup_failures_still_stop_router_monitor_and_write_receipt(self):
-        with tempfile.TemporaryDirectory(prefix="jitllm-aba-test-") as temp:
+        with tempfile.TemporaryDirectory(prefix="llmp-aba-test-") as temp:
             root = Path(temp)
             trace = root / "trace.json"
             trace.write_text("{}")
@@ -275,7 +275,7 @@ class CleanupTests(unittest.TestCase):
             self.assertFalse(json.loads((root / "trial" / "result.json").read_text())["passed"])
 
     def test_completed_trial_is_not_marked_passed_when_cleanup_fails(self):
-        with tempfile.TemporaryDirectory(prefix="jitllm-aba-test-") as temp:
+        with tempfile.TemporaryDirectory(prefix="llmp-aba-test-") as temp:
             root = Path(temp)
             trace_path = root / "trace.json"
             trace_path.write_text("{}")

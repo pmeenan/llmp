@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Read-only gate logging over the exact committed stock controller.
 
@@ -15,7 +15,7 @@ s = source.decode()
 needle = '''                if (ggml_can_fuse_subgraph(cgraph, i, ops.size(), ops.data(), out_nodes, 2) &&
                         ggml_cuda_should_use_topk_moe(node, logits, weights, ids) &&'''
 assert s.count(needle) == 1
-s = s.replace(needle, '''                fprintf(stderr, "JITLLM_ROUTE_GATE node=%s rows=%lld structural=%d shape=%d memory=%d\\n",
+s = s.replace(needle, '''                fprintf(stderr, "LLMP_ROUTE_GATE node=%s rows=%lld structural=%d shape=%d memory=%d\\n",
                     node->name, (long long) ggml_nrows(node),
                     (int) ggml_can_fuse_subgraph(cgraph, i, ops.size(), ops.data(), out_nodes, 2),
                     (int) ggml_cuda_should_use_topk_moe(node, logits, weights, ids),
@@ -26,7 +26,7 @@ needle = '''                    if (!found) {
 assert s.count(needle) == 1
 s = s.replace(needle, '''                    if (!found) {
                         if (is_topk_moe) fprintf(stderr,
-                            "JITLLM_ROUTE_OVERLAP node=%s dst=%s src=%s dst_bytes=%llu src_bytes=%llu\\n",
+                            "LLMP_ROUTE_OVERLAP node=%s dst=%s src=%s dst_bytes=%llu src_bytes=%llu\\n",
                             cgraph->nodes[node_idx]->name, dst->name, src->name,
                             (unsigned long long) ggml_backend_buft_get_alloc_size(dst->buffer->buft, dst),
                             (unsigned long long) ggml_backend_buft_get_alloc_size(src->buffer->buft, src));

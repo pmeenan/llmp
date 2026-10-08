@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/intake_limits.h"
@@ -15,7 +15,7 @@
 #include "base/check.h"
 #include "config/node_config.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
@@ -377,4 +377,4 @@ void ReleaseTokenStorage(std::vector<std::int32_t>& tokens, MemoryCharge& charge
   charge.Reset();
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

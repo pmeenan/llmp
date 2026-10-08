@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen HC BF16 sharing: short adaptive C2 screen

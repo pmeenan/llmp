@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Typed, generation-checked identities (D-006, D-048): an index into a
@@ -7,8 +7,8 @@
 // never names the slot's new occupant. Generation 0 is never issued: a
 // default identity names nothing.
 
-#ifndef JITLLM_BASE_IDS_H_
-#define JITLLM_BASE_IDS_H_
+#ifndef LLMP_BASE_IDS_H_
+#define LLMP_BASE_IDS_H_
 
 #include <compare>
 #include <cstddef>
@@ -21,7 +21,7 @@
 
 #include "base/check.h"
 
-namespace jitllm::base {
+namespace llmp::base {
 
 template <typename Tag>
 class Id {
@@ -167,6 +167,6 @@ class SlotTable {
   std::size_t retired_ = 0;
 };
 
-}  // namespace jitllm::base
+}  // namespace llmp::base
 
-#endif  // JITLLM_BASE_IDS_H_
+#endif  // LLMP_BASE_IDS_H_

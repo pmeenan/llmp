@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "base/sha256.h"
@@ -15,7 +15,7 @@
 
 #include "base/check.h"
 
-namespace jitllm::base {
+namespace llmp::base {
 namespace {
 
 constexpr std::array<std::uint32_t, 64> kRound = {
@@ -145,4 +145,4 @@ std::string ToHex(const Sha256Digest& digest) {
   return hex;
 }
 
-}  // namespace jitllm::base
+}  // namespace llmp::base

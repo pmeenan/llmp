@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma cold versus retained prefill plans
@@ -45,8 +45,8 @@ output, FFN and head work. Its gain and exact state/continuation behavior still
 require a separate implementation and matched screen; toggling `head=false`
 does not provide this contract.
 
-Build only `jitllm_gemma_retained_prefill` on the Spark-native preset. Invoke
-`jitllm_gemma_retained_prefill ARTIFACT IDS_I32 NEW_DIRECTORY 26` (or `31`)
+Build only `llmp_gemma_retained_prefill` on the Spark-native preset. Invoke
+`llmp_gemma_retained_prefill ARTIFACT IDS_I32 NEW_DIRECTORY 26` (or `31`)
 under the installed supervisor with `umask 077`. Supply the approved prepared
 artifact and the canonical 8227-token IDs listed in [results](results.json),
 then compare both arm directories' two heads and streamed initialized-state

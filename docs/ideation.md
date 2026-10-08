@@ -1,7 +1,7 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# jitLLM — Project Ideation and Bootstrap Design
+# Llmpalooza — Project Ideation and Bootstrap Design
 
 **Working tagline:** Just-in-time memory for LLMs.  
 **Design snapshot:** September 20, 2026.  
@@ -10,7 +10,7 @@
 **Primary development host:** x86-64 Ubuntu Linux.  
 **Implementation direction:** C++23, Clang-first, native runtime with replaceable compute backends.
 
-> **Model implementations describe computation and dependencies. jitLLM owns storage, residency, scheduling, and execution lifetime.**
+> **Model implementations describe computation and dependencies. Llmpalooza owns storage, residency, scheduling, and execution lifetime.**
 
 This document consolidates the latest project direction. It is not a claim that the runtime, example interfaces, build commands, model support, or performance results already exist. **Decided direction** means a project choice from the discussion; **proposed design** means an implementation approach to validate. Exact dependency revisions, hardware measurements, and the final license for original code remain open.
 
@@ -65,7 +65,7 @@ The user is comfortable with admission delays and cold paging costs. Prioritize 
 | Implementation | C++23 host runtime, Clang-first, CUDA/native computation without an interpreted serving loop. |
 | Development | Work on x86-64 Linux; cross-compile and deploy/test on Sparks over SSH. |
 | Setup | Declarative toolchain setup, locked versions, project provisioning, and a reference development container. |
-| Licensing | All jitLLM-authored code open source; optional copyleft implementations must be identifiable and removable. |
+| Licensing | All llmpalooza-authored code open source; optional copyleft implementations must be identifiable and removable. |
 
 ### Non-goals for the first implementation
 
@@ -101,7 +101,7 @@ Use these as starting points for checkpoint selection, architecture details, num
 | DeepSeek-v4.1-Flash | [MiaAI-Lab DeepSeek Spark deployment][mia-deepseek] |
 | Qwen3.8-Flash-Next | [MiaAI-Lab Qwen Spark deployment][mia-qwen] |
 
-These repositories report working Spark configurations. This document does **not** independently validate their benchmarks or promise equivalent jitLLM support. Preserve a known-working pinned reference before porting. A model family's name is insufficient: record checkpoint revision, quantization, tokenizer, attention/state format, sharding, kernels, and any speculative-decoding configuration.
+These repositories report working Spark configurations. This document does **not** independently validate their benchmarks or promise equivalent llmpalooza support. Preserve a known-working pinned reference before porting. A model family's name is insufficient: record checkpoint revision, quantization, tokenizer, attention/state format, sharding, kernels, and any speculative-decoding configuration.
 
 Do not reintroduce the earlier assumption that default full-precision checkpoint sizes decide feasibility when the actual target is a prepared quantized representation. Measure the intended checkpoint's loaded and peak working-set costs.
 
@@ -119,7 +119,7 @@ x86-64 development workstation
                          |
         +----------------+----------------+
         |                                 |
-Spark A: jitLLM runtime              Spark B: jitLLM runtime
+Spark A: llmpalooza runtime              Spark B: llmpalooza runtime
   model/execution registry           model/execution registry
   node-wide resource catalog         node-wide resource catalog
   reservations + task scheduler <--> reservations + task scheduler
@@ -292,7 +292,7 @@ Prepare input and router dependencies
     -> release leases after all consumers complete
 ```
 
-vLLM's modular MoE interface is a useful reference for separating selected expert IDs, expert computation, workspace, and implementation capabilities. It is not the required jitLLM API. [MoE implementation reference][vllm-moe]
+vLLM's modular MoE interface is a useful reference for separating selected expert IDs, expert computation, workspace, and implementation capabilities. It is not the required llmpalooza API. [MoE implementation reference][vllm-moe]
 
 Never substitute a resident expert for the expert the model selected. Never drop a selected contribution to avoid a miss. Prefetching is speculative; actual routing remains authoritative.
 
@@ -333,7 +333,7 @@ Graph identity, workspace layout, pointer tables, and registrations need lifetim
 
 ### Explicit control is the selected approach
 
-Use the Driver API to reserve addresses, create physical backing, map it, and set access permissions. jitLLM supplies backing-store policy and transfer operations. Explicit CUDA VMM is not an automatic SSD pager; accessing absent backing is a bug, not a request to our storage service. [VMM guide][cuda-vmm-guide] · [VMM API][cuda-vmm-api]
+Use the Driver API to reserve addresses, create physical backing, map it, and set access permissions. Llmpalooza supplies backing-store policy and transfer operations. Explicit CUDA VMM is not an automatic SSD pager; accessing absent backing is a bug, not a request to our storage service. [VMM guide][cuda-vmm-guide] · [VMM API][cuda-vmm-api]
 
 Maintain stable virtual addresses for a model's loaded lifetime where practical. Distinguish independently reclaimable allocation extents from tensor ranges and I/O chunks. The API's granularity, whole-mapping unmap rules, and handle lifetime requirements constrain implementation. An unmapped extent still held in a physical pool consumes RAM; report it as reusable pool capacity, not memory returned to the OS. [VMM API][cuda-vmm-api]
 
@@ -425,7 +425,7 @@ Use existing projects as sources of algorithms, kernels, model semantics, and te
 | ExLlamaV3 and EXL3 integrations | Packed expert representations, kernels, and architecture-specific launch details. |
 | FlashInfer | Attention and related native computation/planning implementations. |
 | CUTLASS / CuTe | Matrix kernels, layouts, fusion, and hardware-specific implementation building blocks. |
-| Other engines and research | Candidate optimizations evaluated against jitLLM's contracts and workload. |
+| Other engines and research | Candidate optimizations evaluated against llmpalooza's contracts and workload. |
 
 FlashInfer and CUTLASS expose useful kernel infrastructure; vLLM's MoE interface illustrates why activation layout, quantization, workspace, and dispatch compatibility matter. Reuse compatible implementation units, not isolated benchmark winners assembled without their assumptions. [FlashInfer][flashinfer] · [CUTLASS][cutlass] · [MoE reference][vllm-moe]
 
@@ -664,9 +664,9 @@ Never execute an ARM build-time generator on x86 by accident. Produce host tools
 
 ### Project intent
 
-All jitLLM-authored code is intended to be open source. The preferred proposal is a permissively licensed independently useful core, with optional copyleft components and accurately licensed combined builds. **The final original-code license is not selected by this document.** Apache-2.0 is a candidate, not an already-applied license.
+All llmpalooza-authored code is intended to be open source. The preferred proposal is a permissively licensed independently useful core, with optional copyleft components and accurately licensed combined builds. **The final original-code license is not selected by this document.** Apache-2.0 is a candidate, not an already-applied license.
 
-The initial acceleration stack may require vendor-provided CUDA components. “Open-source jitLLM” does not claim every driver, SDK, model weight, or tool in the deployment is open source. Track their separate terms and redistribution conditions.
+The initial acceleration stack may require vendor-provided CUDA components. “Open-source llmpalooza” does not claim every driver, SDK, model weight, or tool in the deployment is open source. Track their separate terms and redistribution conditions.
 
 ### Optional copyleft is acceptable, but removability must be real
 
@@ -750,7 +750,7 @@ Target model support is earned per checkpoint/configuration. Keep a matrix of un
 ### Repository sketch
 
 ```text
-jitllm/
+llmp/
   ideation.md
   README.md
   LICENSE                         # chosen original-code license
@@ -767,7 +767,7 @@ jitllm/
     manifest.toml
     artifacts.lock.json
   cmake/toolchains/
-  include/jitllm/
+  include/llmp/
     resource.h
     residency.h
     execution.h
@@ -876,7 +876,7 @@ Treat declared decisions as the baseline and proposals as hypotheses to test. Do
 
 ## 22. Sources and verification notes
 
-Sources below support external API/platform/license facts, not claims that jitLLM has been implemented. Project requirements and proposed interfaces come from the design discussion. No supplied Spark or development host was accessed to compile, benchmark, or probe capabilities while preparing this document.
+Sources below support external API/platform/license facts, not claims that llmpalooza has been implemented. Project requirements and proposed interfaces come from the design discussion. No supplied Spark or development host was accessed to compile, benchmark, or probe capabilities while preparing this document.
 
 ### Hardware, memory, and execution
 

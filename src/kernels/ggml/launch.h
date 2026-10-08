@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The K-C launch context (D-053; docs/backend-proof.md#dispatch-and-implementations-d-053):
 // GGML's CUDA operation launchers run with a ggml_backend_cuda_context that
-// jitLLM fills with the stream to launch on and a scratch pool over
+// llmpalooza fills with the stream to launch on and a scratch pool over
 // workspace the caller declared and charged. GGML creates nothing of its
 // own: no stream, pool, cuBLAS handle, workspace or process-wide setting
 // (ggml_support.cu), except that soft_max, the quantized tile products
@@ -14,7 +14,7 @@
 // queries the kernel's occupancy). It keeps only unlocked host-side caches:
 // which kernels may use programmatic dependent launch, and which of those
 // limits it has raised. A context may also lend GGML a cuBLAS
-// handle jitLLM created for the same stream (cublas.h); without one, an
+// handle llmpalooza created for the same stream (cublas.h); without one, an
 // operation that needs cuBLAS is refused. Run checks an operation's scratch bound against the
 // workspace, calls its launchers, and reports the first CUDA error they
 // recorded instead of aborting.
@@ -47,8 +47,8 @@
 // replays only on the context that captured it, and must be destroyed before
 // the workspace or any memory it names is unmapped.
 
-#ifndef JITLLM_KERNELS_GGML_LAUNCH_H_
-#define JITLLM_KERNELS_GGML_LAUNCH_H_
+#ifndef LLMP_KERNELS_GGML_LAUNCH_H_
+#define LLMP_KERNELS_GGML_LAUNCH_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -64,7 +64,7 @@
 struct ggml_backend_cuda_context;
 struct CUgraphExec_st;  // cudaGraphExec_t's
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 class CublasHandle;
 class WorkspacePool;
@@ -243,6 +243,6 @@ class LaunchContext {
   std::int64_t capture_started_ = 0;  // steady_clock ticks, while capturing
 };
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_LAUNCH_H_
+#endif  // LLMP_KERNELS_GGML_LAUNCH_H_

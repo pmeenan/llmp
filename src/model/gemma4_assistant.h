@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Approved Q8_0 Gemma4 assistants: semantic weights/target/vocabulary only.
 // No execution, assistant KV, process addresses or speculation policy.
-#ifndef JITLLM_MODEL_GEMMA4_ASSISTANT_H_
-#define JITLLM_MODEL_GEMMA4_ASSISTANT_H_
+#ifndef LLMP_MODEL_GEMMA4_ASSISTANT_H_
+#define LLMP_MODEL_GEMMA4_ASSISTANT_H_
 
 #include <array>
 #include <cstddef>
@@ -17,7 +17,7 @@
 
 #include "model/gemma4.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 struct Gemma4AssistantProfile {
   std::string_view name;
   std::uint32_t target_width = 0, heads = 0, local_kv_heads = 0, global_kv_heads = 0;
@@ -85,5 +85,5 @@ struct Gemma4AssistantVocabulary {
 };
 std::expected<void, std::string> CheckGemma4AssistantVocabulary(
     const Gemma4AssistantVocabulary& target, const Gemma4AssistantVocabulary& assistant);
-}  // namespace jitllm::model
-#endif  // JITLLM_MODEL_GEMMA4_ASSISTANT_H_
+}  // namespace llmp::model
+#endif  // LLMP_MODEL_GEMMA4_ASSISTANT_H_

@@ -1,7 +1,7 @@
 {
   "recorded_on": "2026-09-22",
-  "scope": "External llama.cpp reference instrumentation only; no jitLLM runtime, paging or performance claim. Raw events, predictions, logit-hash files and logs stay outside Git; receipts identify them.",
-  "raw_root": "spark:/home/pmeenan/.local/share/jitllm/fused-routes-20260922",
+  "scope": "External llama.cpp reference instrumentation only; no llmpalooza runtime, paging or performance claim. Raw events, predictions, logit-hash files and logs stay outside Git; receipts identify them.",
+  "raw_root": "spark:/home/pmeenan/.local/share/llmp/fused-routes-20260922",
   "host": "spark-c4e2",
   "gpu": "NVIDIA GB10, 580.178.04",
   "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
@@ -17,9 +17,9 @@
   "final_design": {
     "method": "mode 4: eval callback requests data only at each layer's GLU that consumes a MUL_MAT_ID using that layer's ffn_moe_topk IDs, then reads those IDs; upstream image and libraries unmodified",
     "run": "run-2",
-    "harness_sha256": "ff9a1c7e130bca9f719839e80075af67ba0af351eba88106a0f771262eaa6431",
+    "harness_sha256": "c878047a4276f687e16889fca3c75e4f597de11d2a434db2ea6bd6e2a8c7168a",
     "runner_sha256": "7a09313816d18cda7f54bbddb8f7cdc6b06886e626d65c135904f32fc339e621",
-    "compare_sha256": "d8174d74236a3050f6ac404102e2aa4e6792109355c2067f90c8940b12f3272d",
+    "compare_sha256": "46abbc017514429f89760f07be0c26ab4a8f40ac5edcbdb605974e1409cb365f",
     "executable_sha256": "7a6c0826ab6ec710bb54f0f998ab951090dfd2c7ad8c618165ad1f600710c69c",
     "arms": [
       {

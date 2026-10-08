@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Admission and the execution slot for one memory domain (D-050, D-069;
@@ -42,8 +42,8 @@
 // it events and carries out its decisions. It maps, loads and evicts
 // nothing: a grant commits lazily (D-007).
 
-#ifndef JITLLM_SCHEDULER_ADMISSION_H_
-#define JITLLM_SCHEDULER_ADMISSION_H_
+#ifndef LLMP_SCHEDULER_ADMISSION_H_
+#define LLMP_SCHEDULER_ADMISSION_H_
 
 #include <cstdint>
 #include <deque>
@@ -57,7 +57,7 @@
 #include "base/ids.h"
 #include "memory/commitment.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 
 using base::Bytes;
 
@@ -224,6 +224,6 @@ class Admission {
   std::uint64_t next_sequence_ = 0;
 };
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler
 
-#endif  // JITLLM_SCHEDULER_ADMISSION_H_
+#endif  // LLMP_SCHEDULER_ADMISSION_H_

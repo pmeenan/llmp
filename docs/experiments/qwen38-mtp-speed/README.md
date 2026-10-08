@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 MTP at the final runtime's 128K prompt (M3)
@@ -29,11 +29,11 @@ are:
 | Prefix, 65,536 rows | `056a750e3a90be3ae6a4b12bb963ce45290aaa6f52b5ba9799e777d491f80aea` |
 | Optional selected, 47,172 rows | `8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40` |
 
-The selected head was imported in jitLLM from Mia's externally supplied
+The selected head was imported in llmpalooza from Mia's externally supplied
 47,172-ID curated list, SHA-256
 `ee819d2560b52ba1351acdd1c4a0244b77bb60694a7660c6363097a482b0afb5`,
 from recipe `b8439110eec0230facbe4ddf0dffe01b8f769be0`.
-The generic selected-head importer is jitLLM's Apache-2.0 code; the external
+The generic selected-head importer is llmpalooza's Apache-2.0 code; the external
 list and Mia's AGPL code are not shipped in this repository. See the
 [draft-head study](../qwen38-draft-head/README.md) and
 [license record](../../licensing.md#miaai-single-spark-recipe).
@@ -41,13 +41,13 @@ The tokenizer is from
 `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6`.
 
 The canonical input is
-`~/.local/share/jitllm/m3lc/prompts/qwen3.8/128k.json` on either Spark;
+`~/.local/share/llmp/m3lc/prompts/qwen3.8/128k.json` on either Spark;
 its user-content SHA-256 is
 `b7154f4bdfea17ea92e20ddaa95b2ece37ea306972af7039894fd0e81854da1d`.
 It renders to 128,799 tokens, with the runtime's stable boundary at
 128,794, immediately before the assistant opening.
 
-`jitllm_qwen38_spec --runtime-prefill on` now follows serving's split at
+`llmp_qwen38_spec --runtime-prefill on` now follows serving's split at
 that boundary and its `RunPrefillChunks` policy: 4,096-row chunks, tiled
 tails down to eight rows, then the assistant opening. This matters because
 a multi-row prefill and repeated short rows can differ in arithmetic.
@@ -385,7 +385,7 @@ helper `../mia-cache-quality.py` SHA-256 is
 completed `run.json` SHA-256 is
 `b0f57e3c06b2b3d7e13206b45cfb1d05f7c67d799a94422a40c11674c823b67a`.
 The input pins come from the original canonical ladder records at
-`~/.local/share/jitllm/m3lc/raw/qw-mia-mtp3/`; the controller verifies
+`~/.local/share/llmp/m3lc/raw/qw-mia-mtp3/`; the controller verifies
 their counts, values and hashes before loading. Repeat with the pinned
 launch settings and both complete passes, retaining all observations.
 
@@ -416,14 +416,14 @@ prepared prototype:
 `b2bf474a0648a25feb5b900a5448b1b9e796644f07f912e279f2f01120404cc6`.
 Sharing patch archive SHA-256:
 `e3796ca4e6600579884161728a58f5fffab8c4c87fa39d44abc207ce0f5eff7f`;
-prepared `jitllm_moe.cu`:
+prepared `llmp_moe.cu`:
 `dd86ba7d9e60beba281e4baafd1725fabd5c41ac933281cb4205def7239e91f4`.
 
 To repeat a fixed-depth case, wrap the canonical JSON prompt in the
 harness's `decode` array without changing its messages, and use:
 
 ```sh
-jitllm_qwen38_spec --qwen38-artifact "$target" --drafter "$drafter" \
+llmp_qwen38_spec --qwen38-artifact "$target" --drafter "$drafter" \
   --tokenizer "$tokenizer" --prompts "$wrapped_prompt" --only qwen3.8-128k \
   --context 262144 --prefill-chunk 4096 --check timing --tokens 512 \
   --repeats 1 --draft 3 --adaptive-depth off --runtime-prefill on --out "$out"
@@ -431,4 +431,4 @@ jitllm_qwen38_spec --qwen38-artifact "$target" --drafter "$drafter" \
 
 Change only `--draft` for the depth sweep. Add `--window 0.3` at depth 4
 for the cutoff experiment. The target and head paths above are under the
-Spark's `~/.local/share/jitllm/m3-artifacts/`.
+Spark's `~/.local/share/llmp/m3-artifacts/`.

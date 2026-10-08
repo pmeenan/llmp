@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for tools/check, the local check gate's driver (no SDK, builds or docker needed)."""
 
@@ -19,7 +19,7 @@ sys.dont_write_bytecode = True
 TOOLS = pathlib.Path(__file__).resolve().parent.parent
 REPO = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
-import jitllm_sources as srclib  # noqa: E402
+import llmp_sources as srclib  # noqa: E402
 
 
 def load_script(name: str):
@@ -177,9 +177,9 @@ class Environment(unittest.TestCase):
             "CXXFLAGS", "LDFLAGS", "CUDAFLAGS", "CPLUS_INCLUDE_PATH", "CCC_OVERRIDE_OPTIONS", "NVCC_APPEND_FLAGS",
             "LD_PRELOAD", "ASAN_OPTIONS", "LSAN_OPTIONS", "TSAN_OPTIONS", "UBSAN_OPTIONS",
             "CMAKE_BUILD_TYPE", "CMAKE_CXX_COMPILER_LAUNCHER", "CTEST_PARALLEL_LEVEL", "GTEST_FILTER",
-            "JITLLM_TEST_X", "QEMU_SET_ENV")}
+            "LLMP_TEST_X", "QEMU_SET_ENV")}
         kept = {name: "y" for name in (
-            "PATH", "HOME", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "JITLLM_SDK_HOME", "JITLLM_CACHE_HOME",
+            "PATH", "HOME", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "LLMP_SDK_HOME", "LLMP_CACHE_HOME",
             "DOCKER_HOST", "LANG")}
         environ |= kept
         removed = check.isolate_environment(environ)

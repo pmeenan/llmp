@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // External host-only wrapper around the unchanged original C API client source.
 #include <dlfcn.h>
@@ -18,8 +18,8 @@ int main(int argc, char** argv) {
     return 2;
   using Prepare = int (*)(const char*);
   using Finish = int (*)();
-  auto prepare = reinterpret_cast<Prepare>(dlsym(RTLD_DEFAULT, "jitllm_late_prepare"));
-  auto finish = reinterpret_cast<Finish>(dlsym(RTLD_DEFAULT, "jitllm_late_finish"));
+  auto prepare = reinterpret_cast<Prepare>(dlsym(RTLD_DEFAULT, "llmp_late_prepare"));
+  auto finish = reinterpret_cast<Finish>(dlsym(RTLD_DEFAULT, "llmp_late_finish"));
   if (!prepare || !finish) return 2;
   const std::string captures = std::string(argv[2]) + "-operators";
   if (prepare(captures.c_str()) != 0) std::_Exit(1);

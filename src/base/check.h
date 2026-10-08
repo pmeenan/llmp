@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Internal invariants (D-066): an expected failure is an error value; a
@@ -7,13 +7,13 @@
 // and aborts, which the runtime's crash policy turns into an exit
 // (platform/crash_policy.h).
 
-#ifndef JITLLM_BASE_CHECK_H_
-#define JITLLM_BASE_CHECK_H_
+#ifndef LLMP_BASE_CHECK_H_
+#define LLMP_BASE_CHECK_H_
 
 #include <source_location>
 #include <string_view>
 
-namespace jitllm::base {
+namespace llmp::base {
 
 [[noreturn]] void Fatal(std::string_view what,
                         std::source_location where = std::source_location::current());
@@ -26,6 +26,6 @@ inline void Check(bool condition, std::string_view what,
   }
 }
 
-}  // namespace jitllm::base
+}  // namespace llmp::base
 
-#endif  // JITLLM_BASE_CHECK_H_
+#endif  // LLMP_BASE_CHECK_H_

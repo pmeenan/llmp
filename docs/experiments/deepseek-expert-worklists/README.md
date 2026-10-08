@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek routed expert-list preparation screen
@@ -58,7 +58,7 @@ No bandwidth, registers, hardware occupancy or general calibration is measured.
 ## Reproduce and evidence
 
 Compile the current production control `86b378f` and the private four-file
-patch in separate source snapshots. Build only `jitllm_spec_runner`; source
+patch in separate source snapshots. Build only `llmp_spec_runner`; source
 sync uses `rsync -rlpc --exclude=.git --exclude=/build`. Every build and
 model run uses installed `~/.local/bin/spark-job start --gpu --name NAME
 --timeout 600`, then `wait NAME`.
@@ -83,8 +83,8 @@ implementation/build files.
 
 Raw controls, source patch/inventories, binaries and logs remain in
 `spark-b:~/scratch/dsv4-expert-worklists/`, final run `screen2/`; the warm
-private tree is `~/src/jitLLM-wt/dswl0001/`. Local evidence is retained in
-`~/scratch/jitllm-m3-dsv4-expert-worklists-2026-10-04/`. The baseline build,
+private tree is `~/src/llmp-wt/dswl0001/`. Local evidence is retained in
+`~/scratch/llmp-m3-dsv4-expert-worklists-2026-10-04/`. The baseline build,
 corrected candidate build and `dsv4-worklists-screen2` finish zero and are
 waited on. An initial candidate build lacked an explicit unsigned grid
 cast; an initial screen copied binaries without execute permission and

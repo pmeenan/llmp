@@ -12,35 +12,35 @@
   "qualified_source": {
     "base": "05974c8a806acdaac977cc2f9f982416d5dd285d",
     "files": {
-      "benchmarks/gemma2_joint_prefill_probe.cc": "2b7ce43f67e1c048c0e2128f98548af0413cd613d0941219f3e22e1102b9937c",
-      "benchmarks/gemma3_joint_prefill_probe.cc": "278467e22b6cf6ad0a15b3668e571ba5e7a058509bc47df80bc982ca5e45dbaf",
-      "benchmarks/gemma_prefill.cc": "d682bc0b6b8fafe1c2a80706f56a3314b1459516f10973430fcf0314aeffc8ef",
-      "benchmarks/plain_token_probe.cc": "77f85e8cb2aff6cc4b385af7cc3c95d8294def3b34feab653a1ef58a6d683389",
-      "src/engine/gemma2_runner.cc": "591a1a4279b9e5cfa33a6d3b0f5a629c3851babec6db9d32cfe6279594ac749c",
-      "src/engine/gemma2_runner.h": "11e852628b3da289a1c1aca291db6545435fa1af15edca7aac38e4e69ee08e7c",
-      "src/engine/gemma3_runner.cc": "7ad62ee0483a7fde9bb8bcd3b8a1aa2b42fd28c00bed8f7ce9d507fa7286ac82",
+      "benchmarks/gemma2_joint_prefill_probe.cc": "984bb7a35e409deb6e7912e58fc39e393c1cb7a94a323d49b4744d9036629bbb",
+      "benchmarks/gemma3_joint_prefill_probe.cc": "e7e3dfffaf8c37abb2897e660d8e011da249b381aad762d1d9213c2f3ff244e5",
+      "benchmarks/gemma_prefill.cc": "b61535b02dfe58713d3d3dabe44961998f485919ea8af4958d45e2a2778cd1fa",
+      "benchmarks/plain_token_probe.cc": "83a34ffa7da03066a2010bc4d16fb519dd9073b8424290995e56f67a3e75abd7",
+      "src/engine/gemma2_runner.cc": "c37acb0d18d46eac7061e5979f660b83e21385303fb5578f24d9c73a6faee925",
+      "src/engine/gemma2_runner.h": "b26a610da414c0196abc804adc7d6585f9189af4c46fc190f53a96b39db3a030",
+      "src/engine/gemma3_runner.cc": "82d8eac582a53b6f7d21e6b49da4b221b92add3ba17b55dc82f0534b3b636bb9",
       "src/engine/gemma3_runner.h": "be0dc936d6bf3a6304cc91e9e79979fc7ad14bc1bf561dccefbfb29b49daf274",
       "src/engine/gemma4_runner.cc": "091f287fe371bc877fcb03dad0f7d3f0953b41e1f7f581ddaa1144ae1e7521bd",
       "src/engine/gemma4_runner.h": "ea202cfb3e15801169d2fa6e447e94ae63d5243e5590a2414b881e8b07116bc4",
-      "src/engine/planned.cc": "2c2f74a1df9d9f1aac8f0603a3e411d1e8e69db08e5947d00a324120e83de988",
+      "src/engine/planned.cc": "ac10e153ae83725aac0f36aad63af426734694f8df718a57ff7e673d72042120",
       "src/engine/qwen38_runner.cc": "e1373462879e1e71c713a56d5a93c9f6a4eac88bc7e68691cfc072679616f36f",
       "src/engine/qwen38_runner.h": "32aa70607ca2d2206ebefdbc0e0fcb25bdeb7b64b1a89668a6d775cdaf8e0bc3",
       "src/engine/qwen38_wave_plan.cc": "da5777322c1abf5a4b70e17ec98a63e8b76384270e0e025f2bc5350c69f593b3",
-      "src/engine/qwen38_wave_plan.h": "79e930b1bc0407a7bc8ff9947a9d738cb811093366d53aba5688fb90ac26452c",
-      "src/kernels/ggml/CMakeLists.txt": "50e6649a262f683e2f61034a4411dab63c9de2414cd2fb196201bc052b7cb737",
-      "src/kernels/ggml/graph_plan.cc": "a82336742ce5da92567a7856c2ee46bf6661d97dcb3035918e7639ec5a64d5ed",
+      "src/engine/qwen38_wave_plan.h": "c7d71f8eefb619aa3efc862d11dd16be6798830b2d00847f88d2300078e4590a",
+      "src/kernels/ggml/CMakeLists.txt": "8f40b28c77e58cdf73b60dc7678773d22c76d03993e2bef43ca240056b619093",
+      "src/kernels/ggml/graph_plan.cc": "0b2caa659e3e315c8d376a3b62458cad69779866d819978f0ff20bc06b48c0df",
       "src/kernels/ggml/graph_plan.h": "1f7c75c1837dd9d276707d855185e16c50f7dc435723ad96873193b08e2f3dc6",
-      "src/kernels/ggml/implementations.cc": "477811bf6955816d3cd37ffef27b47d63657f1fe0358aa958285cd304ea1d853",
-      "src/kernels/ggml/implementations.h": "52638979ae48d6aad67ccc273677f15f3d471a82ec73162338f9b6627c31db69",
-      "src/kernels/ggml/set_rows_group.cc": "22325eb63003ca3a80048921c0b7391c6f66f7b399b65ae61ed3093727ce4a66",
-      "src/kernels/ggml/set_rows_group.cu": "3f4e55e6d0c5f7199e7497aed22a8c2603f4b6e1b717ec489647c0213cff62d5",
-      "src/kernels/ggml/set_rows_group.h": "e78b68c3171adfee5f3848bc3214f9aaf8bbbe3e4ebcecafea3ff5f8e149a981",
+      "src/kernels/ggml/implementations.cc": "ce69fede381701dd8090890cf9ab4eb82110bab62bc904e07a4284964dff1f95",
+      "src/kernels/ggml/implementations.h": "58c9f19e72f8ab27357854c293be91ce3a3400744e5d4a9e091e7d0dbccbb0f7",
+      "src/kernels/ggml/set_rows_group.cc": "1111f3c7599798943805c30512d9e8245b2c1428a2975e7a164344e884ba08c3",
+      "src/kernels/ggml/set_rows_group.cu": "9017800b8fb772c98e004a4bc48bd3d7458ba47b4dfbc33de097dcc6d66f580d",
+      "src/kernels/ggml/set_rows_group.h": "157830468cfdb01773a12c899082c28e338ed8938988a6f1cf6f7b8b241081b2",
       "tests/unit/dsv4_test.cc": "dd5034d4fec08571febf1a00cc8404b56a9b7be32e3abf6429e39fd58ec23aeb",
-      "tests/unit/gemma2_plan_test.cc": "7452d08f98115251afc185db6d42ac6f65e413ebe14705049f5453ef80ef78f2",
-      "tests/unit/gemma3_plan_test.cc": "81714e9f13603f06209f1abe0cd72f6c47823545dd92216655cfe6abf2586780",
-      "tests/unit/gemma4_plan_test.cc": "627df95ad4e93401a4ddf764feedafaa50c954822d10f432990c5caf23541a3f",
-      "tests/unit/ggml_ops_test.cc": "ff0a26b93c8a0e83970a758663614571f8d2c0ccf15a7a21540cde75a6062197",
-      "tests/unit/ggml_validate_test.cc": "bd13d1dd2141c019ba8ce500d47a44f37e476d42ef69844429334a0731f149ff",
+      "tests/unit/gemma2_plan_test.cc": "0a980f4d7b412b22a8253ffb7a4b64e326575e53b3507e462d2e8d814a834107",
+      "tests/unit/gemma3_plan_test.cc": "f4107ab23bd4b8092e1eaebe0c34affebaad5b065206442b7f8c019992b674b0",
+      "tests/unit/gemma4_plan_test.cc": "c291913e2248c74bf1799003709b98f2cda693f066e5d0fe28f7a55a334c1683",
+      "tests/unit/ggml_ops_test.cc": "fc9e6348cca3bf25220dabfdf2711438e42ca24c7fe67f1807334d0dd2faf693",
+      "tests/unit/ggml_validate_test.cc": "6620408bacf01b93a24075c9020ffecfd6ab5ad8c3be9a2605dd9cb73b76aaef",
       "tests/unit/qwen38_wave_plan_test.cc": "3efcca1c3f3b2ba916b0038999590a6be791d17643ae431bf5d1953e5866033e"
     }
   },
@@ -108,13 +108,13 @@
         "sha256": "20c3749408eb82c398b69266f0a50640cfb739b97babff7813245a1782ab6c4d",
         "libraries": {
           "libcublas.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         }
@@ -123,13 +123,13 @@
         "sha256": "2a39f3375fca0e0a2aff298915c610214586d131a53b908ca2d9b99d80a144f3",
         "libraries": {
           "libcublas.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         }
@@ -138,13 +138,13 @@
         "sha256": "5940cacf1ce5c2586df1d2c5eb79a749f08d3f0b052463b96ea5eff71e3dfc76",
         "libraries": {
           "libcublas.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         }
@@ -153,13 +153,13 @@
         "sha256": "8d5fa003f91124193781437f811a5c8b15a0d33b2c8529f0e54cea9bbe9af0c4",
         "libraries": {
           "libcublas.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         }
@@ -168,13 +168,13 @@
         "sha256": "85eac1bb0866e46aeeae7855ad56962f20d7b74a37986ed12e40567bc35daaf6",
         "libraries": {
           "libcublas.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         }
@@ -183,62 +183,62 @@
         "sha256": "303300ba6f9c5782e858e6d71629d9a89acd1c733bf0c7695112a6ac81e341d5",
         "libraries": {}
       },
-      "jitllm_gemma2_joint_prefill_probe": {
+      "llmp_gemma2_joint_prefill_probe": {
         "sha256": "2adac09a306435d581735a8e30eb9adf1ff291910375d2e5f618c0c2005d4d33",
         "libraries": {
           "libcublas.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         }
       },
-      "jitllm_gemma3_joint_prefill_probe": {
+      "llmp_gemma3_joint_prefill_probe": {
         "sha256": "c9ff310bcfdb00dc4ba171a26d77eebac3f669c4b63a82687376714434d31187",
         "libraries": {
           "libcublas.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         }
       },
-      "jitllm_gemma_prefill": {
+      "llmp_gemma_prefill": {
         "sha256": "5ff1af7af675d1ba2b2884a91f9eedb5af0a261faf89c2009fb32d19615a3469",
         "libraries": {
           "libcublas.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         }
       },
-      "jitllm_plain_token_probe": {
+      "llmp_plain_token_probe": {
         "sha256": "8630cd890616d5b99616651f85321bdc8327a12e98c0e0b7e638afb61abab9f5",
         "libraries": {
           "libcublas.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         }
@@ -1456,43 +1456,43 @@
       "applicability": "Shared exact physical cache-store grouping; native GGML primitive remains the arithmetic oracle. No TensorFold runtime or reference parity claim. Dense31 prior whole-decode neutral result is carried without a repeat. Current refs rechecked at task entry."
     },
     "artifacts": {
-      ".local/share/jitllm/gemma2-import-20261007/artifacts/eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870/index.json": {
+      ".local/share/llmp/gemma2-import-20261007/artifacts/eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870/index.json": {
         "bytes": 148984,
         "sha256": "f1773c66b42084e0f497ed406716639800aaaccef0db49bd5992962f137add62"
       },
-      ".local/share/jitllm/gemma2-import-20261007/artifacts/eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870/manifest.json": {
+      ".local/share/llmp/gemma2-import-20261007/artifacts/eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870/manifest.json": {
         "bytes": 1009,
         "sha256": "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870"
       },
-      ".local/share/jitllm/gemma3-import-20261007/artifacts/8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb/manifest.json": {
+      ".local/share/llmp/gemma3-import-20261007/artifacts/8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb/manifest.json": {
         "bytes": 1017,
         "sha256": "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
       },
-      ".local/share/jitllm/gemma3-import-20261007/artifacts/8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb/index.json": {
+      ".local/share/llmp/gemma3-import-20261007/artifacts/8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb/index.json": {
         "bytes": 172358,
         "sha256": "4422d9c5a115e9a5091a471eba1db5a232f825956c5e8e77be2c77c815c093e6"
       },
-      ".local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3/manifest.json": {
+      ".local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3/manifest.json": {
         "bytes": 6035,
         "sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
       },
-      ".local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3/index.json": {
+      ".local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3/index.json": {
         "bytes": 1253283,
         "sha256": "e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171"
       },
-      ".local/share/jitllm/m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93/manifest.json": {
+      ".local/share/llmp/m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93/manifest.json": {
         "bytes": 23037,
         "sha256": "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93"
       },
-      ".local/share/jitllm/m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93/index.json": {
+      ".local/share/llmp/m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93/index.json": {
         "bytes": 8152364,
         "sha256": "5b65dcce8169374e638264d7ebdcb5cca517234b3dec26f1272a5f4f9c0e4c89"
       },
-      ".local/share/jitllm/qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78/manifest.json": {
+      ".local/share/llmp/qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78/manifest.json": {
         "bytes": 14289,
         "sha256": "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78"
       },
-      ".local/share/jitllm/qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78/index.json": {
+      ".local/share/llmp/qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78/index.json": {
         "bytes": 6330819,
         "sha256": "d6c69d701ead0cbadc3a64f1f3c354a70ecac7179f61dbac1e1163fca0cd3550"
       }
@@ -1500,13 +1500,13 @@
     "inputs": {
       "g2": [
         {
-          "path": "/home/pmeenan/.local/share/jitllm/references/gemma-prefill-copies/gemma2/input0/ids.i32",
+          "path": "/home/pmeenan/.local/share/llmp/references/gemma-prefill-copies/gemma2/input0/ids.i32",
           "sha256": "102c7b555b1caed5aed3d9880a173aae153f8f8dc1534e6a4c58685c243b6c0c",
           "rows": 4391,
           "bytes": 17564
         },
         {
-          "path": "/home/pmeenan/.local/share/jitllm/references/gemma-prefill-copies/gemma2/input1/ids.i32",
+          "path": "/home/pmeenan/.local/share/llmp/references/gemma-prefill-copies/gemma2/input1/ids.i32",
           "sha256": "a930726bd964ae88ef0448f50a51d2e376ce2487313f26063ab84c1b0b41d77f",
           "rows": 4903,
           "bytes": 19612
@@ -1514,20 +1514,20 @@
       ],
       "g3": [
         {
-          "path": "/home/pmeenan/.local/share/jitllm/references/prefill-lookahead-group/gemma3-long1/input0/ids.i32",
+          "path": "/home/pmeenan/.local/share/llmp/references/prefill-lookahead-group/gemma3-long1/input0/ids.i32",
           "sha256": "e550a181088bc3d4924de3d45091067a38cd75c7c9ee676947e8880334a83c7c",
           "rows": 3111,
           "bytes": 12444
         },
         {
-          "path": "/home/pmeenan/.local/share/jitllm/references/prefill-lookahead-group/gemma3-long1/input1/ids.i32",
+          "path": "/home/pmeenan/.local/share/llmp/references/prefill-lookahead-group/gemma3-long1/input1/ids.i32",
           "sha256": "c8e853512376e0148c7c5798974bd91e42849c918f8f23017fb3e22eef23cfee",
           "rows": 3623,
           "bytes": 14492
         }
       ],
       "g26": {
-        "path": "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+        "path": "/home/pmeenan/.local/share/llmp/gemma-prefill/input1/ids.i32",
         "sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
         "rows": 8227,
         "bytes": 32908

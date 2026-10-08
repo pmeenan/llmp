@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # Checks that a sanitizer build's sanitizers are active (D-061): the control

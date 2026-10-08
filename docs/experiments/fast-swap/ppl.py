@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Perplexity reference from a vLLM server: prompt log-probabilities of a fixed text.
 

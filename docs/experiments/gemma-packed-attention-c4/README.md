@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Dense31 packed C4 attention first screen
@@ -30,7 +30,7 @@ The candidate's benchmark link wrapper accepts only the complete approved
 one query row each, equal local/global read widths 256, four head outputs and
 no feature export. Other shapes call the original builder; the first eight
 fallback samples are logged. Thus every 64..67-row C1 prefill is unchanged.
-The environment flag `JITLLM_GEMMA_PACKED_C4=0|1` is fixed for the whole process,
+The environment flag `LLMP_GEMMA_PACKED_C4=0|1` is fixed for the whole process,
 so a cached plan never changes mode.
 
 Each of the 60 layers authenticates four original attention descriptors and
@@ -133,10 +133,10 @@ options remain intact; no C12, depth or ubatch ladder was run.
 ## Reproduction and checks
 
 Build with `mise run build -- spark-native --locked`. The manual
-`jitllm_gemma_attention_packed_metadata` target uses `JITLLM_TEST_DATA` and
+`llmp_gemma_attention_packed_metadata` target uses `LLMP_TEST_DATA` and
 runs descriptor controls under each fixed environment mode. The model helper
 accepts only `ARTIFACT NEW_OUTPUT_DIR 31 4 joined norm IDS_I32`; select control
-or candidate with `JITLLM_GEMMA_PACKED_C4=0|1`. [reference.sh](reference.sh)
+or candidate with `LLMP_GEMMA_PACKED_C4=0|1`. [reference.sh](reference.sh)
 builds/runs the unchanged original client against the pinned image. Retain
 raw heads/states/logs externally; [own_freeze.py](own_freeze.py) creates an
 exclusive own receipt before fresh reference acquisition, and

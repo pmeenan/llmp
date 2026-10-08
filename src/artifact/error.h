@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Why an artifact was refused (D-066): the violated rule, named as
@@ -8,19 +8,19 @@
 // an error, so creating one never allocates and never carries untrusted
 // strings.
 
-#ifndef JITLLM_ARTIFACT_ERROR_H_
-#define JITLLM_ARTIFACT_ERROR_H_
+#ifndef LLMP_ARTIFACT_ERROR_H_
+#define LLMP_ARTIFACT_ERROR_H_
 
 #include <cstdint>
 #include <limits>
 #include <string>
 #include <string_view>
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 
 enum class Rule : std::uint8_t {
   kIo,                  // a system call failed
-  kFormat,              // not a jitLLM artifact at all
+  kFormat,              // not a llmpalooza artifact at all
   kUnsupportedVersion,  // re-import
   kUnsupportedProfile,  // re-import
   kJson,                // not strict JSON, or over a parser cap
@@ -57,6 +57,6 @@ struct Error {
   std::string ToString() const;
 };
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact
 
-#endif  // JITLLM_ARTIFACT_ERROR_H_
+#endif  // LLMP_ARTIFACT_ERROR_H_

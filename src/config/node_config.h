@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The node's configuration (D-063, D-073): one logical document of strict
@@ -13,8 +13,8 @@
 // reported, not just the first: a file that does not parse contributes its
 // syntax error, and the rest are still checked.
 
-#ifndef JITLLM_CONFIG_NODE_CONFIG_H_
-#define JITLLM_CONFIG_NODE_CONFIG_H_
+#ifndef LLMP_CONFIG_NODE_CONFIG_H_
+#define LLMP_CONFIG_NODE_CONFIG_H_
 
 #include <sys/types.h>
 
@@ -33,15 +33,15 @@
 
 #include "base/surface_versions.h"
 
-namespace jitllm::config {
+namespace llmp::config {
 
 inline constexpr std::int64_t kSchemaVersion = surface::kConfigSchemaVersion;
 // The merged document's size limit (cluster-design.md).
 inline constexpr std::size_t kDocumentLimit = std::size_t{1} << 20;
-inline constexpr std::string_view kDefaultConfigFile = "/etc/jitllm/jitllm.toml";
+inline constexpr std::string_view kDefaultConfigFile = "/etc/llmp/llmp.toml";
 // The enrollment anchor's fixed path when packaged (D-063).
-inline constexpr std::string_view kDefaultAnchor = "/var/lib/jitllm/enrollment";
-inline constexpr std::string_view kDefaultDataDir = "/var/lib/jitllm";
+inline constexpr std::string_view kDefaultAnchor = "/var/lib/llmp/enrollment";
+inline constexpr std::string_view kDefaultDataDir = "/var/lib/llmp";
 inline constexpr std::string_view kLimitsProfile = "initial-v2";
 // At most this many fragments form the document.
 inline constexpr std::size_t kDropInLimit = 256;
@@ -395,6 +395,6 @@ struct LoadOptions {
 // then parses them as ParseNodeConfig does.
 std::expected<NodeConfig, std::vector<Diagnostic>> LoadNodeConfig(const LoadOptions& options);
 
-}  // namespace jitllm::config
+}  // namespace llmp::config
 
-#endif  // JITLLM_CONFIG_NODE_CONFIG_H_
+#endif  // LLMP_CONFIG_NODE_CONFIG_H_

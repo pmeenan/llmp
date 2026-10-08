@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // No device/provider initialization: refusal must precede native allocation.
@@ -10,7 +10,7 @@
 #include <tuple>
 #include <vector>
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 TEST(Gemma4Runner, InvalidEnvelopesRefuseBeforeOpeningProvidersOrArtifacts) {
   for (const auto [context, rows, slots, masks] :
        {std::tuple{4096U, 128U, 0U, true}, std::tuple{4096U, 128U, 17U, true},
@@ -151,10 +151,10 @@ TEST(Gemma4Runner, ActualLayerFourteenShardCutPreservesEveryReadableMember) {
   EXPECT_FALSE(en::Gemma4ExpertPitch(stored, std::array<std::string_view, 1>{"unknown"}));
 }
 TEST(Gemma4Runner, CheckpointLedgerRequiresEveryFundedExtentWithoutInferringPosition) {
-  for (const auto& profile : {jitllm::model::Gemma4_26BA4B(), jitllm::model::Gemma4_31B()}) {
-    auto layout = jitllm::model::Gemma4State(profile, 4096, 16);
+  for (const auto& profile : {llmp::model::Gemma4_26BA4B(), llmp::model::Gemma4_31B()}) {
+    auto layout = llmp::model::Gemma4State(profile, 4096, 16);
     ASSERT_TRUE(layout);
-    auto needed = jitllm::model::Gemma4UsedState(profile, *layout, 6);
+    auto needed = llmp::model::Gemma4UsedState(profile, *layout, 6);
     ASSERT_TRUE(needed);
     std::vector<en::LiveState::Range> footprint;
     for (const auto& r : *needed)

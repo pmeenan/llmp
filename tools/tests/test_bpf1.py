@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """BP-F1's case derivation, calibration gate and session checks, without a GPU."""
 
@@ -53,7 +53,7 @@ class CalibrationGate(unittest.TestCase):
         self.calibration = self.dir / "calibration.json"
         self.calibration.write_text("{}\n")
         self.digest = hashlib.sha256(b"{}\n").hexdigest()
-        self.harness = self.dir / "jitllm_ggml_vmm_bench"
+        self.harness = self.dir / "llmp_ggml_vmm_bench"
         self.harness.write_bytes(b"harness")
         self.cases = self.dir / "bpf1-cases.txt"
         self.cases.write_text("set s\n")

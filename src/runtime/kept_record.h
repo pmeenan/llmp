@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A kept conversation's record (D-105; docs/runtime-serving.md#state-kept-
@@ -15,7 +15,7 @@
 // file renamed over it), and ends with the SHA-256 of everything before
 // it, so a record cut short or edited is refused:
 //
-//   {"format":"jitllm-kept-conversation","version":1,
+//   {"format":"llmp-kept-conversation","version":1,
 //    "build":B,"artifact":A,"drafter":D,"layout":L,"slot":N,
 //    "file":F,"device":N,"inode":N,"generation":N|null,"file_bytes":N,
 //    "regions":[N,...],"extents":[[region,index,"sha256"],...],
@@ -45,8 +45,8 @@
 // Vendor-free and host-only: encoding, decoding and the checks against the
 // adopting process are pure functions the CPU tests drive.
 
-#ifndef JITLLM_RUNTIME_KEPT_RECORD_H_
-#define JITLLM_RUNTIME_KEPT_RECORD_H_
+#ifndef LLMP_RUNTIME_KEPT_RECORD_H_
+#define LLMP_RUNTIME_KEPT_RECORD_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -59,14 +59,14 @@
 
 #include "base/sha256.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 class RequestMemory;
 class MemoryCharge;
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-namespace jitllm::runtime::kept {
+namespace llmp::runtime::kept {
 
-inline constexpr std::string_view kFormat = "jitllm-kept-conversation";
+inline constexpr std::string_view kFormat = "llmp-kept-conversation";
 inline constexpr std::uint32_t kVersion = 1;
 // Beneath the spill role.
 inline constexpr std::string_view kDirectory = "conversations";
@@ -202,6 +202,6 @@ struct Expected {
 std::expected<void, std::string> Check(Record& record, const Expected& expected,
                                        std::vector<std::string>* dropped = nullptr);
 
-}  // namespace jitllm::runtime::kept
+}  // namespace llmp::runtime::kept
 
-#endif  // JITLLM_RUNTIME_KEPT_RECORD_H_
+#endif  // LLMP_RUNTIME_KEPT_RECORD_H_

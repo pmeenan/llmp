@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/image/implementations.h"
@@ -16,13 +16,13 @@
 #include "execution/registry.h"
 
 // The build's part of each identity, from CMakeLists.txt.
-#if !defined(JITLLM_IMAGE_SDK) || !defined(JITLLM_IMAGE_TARGET) ||                    \
-    !defined(JITLLM_IMAGE_CUDA_ARCHITECTURES) || !defined(JITLLM_IMAGE_BUILD_TYPE) || \
-    !defined(JITLLM_IMAGE_SANITIZE)
+#if !defined(LLMP_IMAGE_SDK) || !defined(LLMP_IMAGE_TARGET) ||                    \
+    !defined(LLMP_IMAGE_CUDA_ARCHITECTURES) || !defined(LLMP_IMAGE_BUILD_TYPE) || \
+    !defined(LLMP_IMAGE_SANITIZE)
 #error "implementations.cc needs the SDK, target, architectures and build type"
 #endif
 
-namespace jitllm::kernels::image {
+namespace llmp::kernels::image {
 namespace {
 
 using execution::Operation;
@@ -128,15 +128,14 @@ execution::Implementation Declaration(const Entry& entry) {
   std::string build = std::format(
       "sdk {}; target {}; cuda architectures {}; build type {} ({}, {}); sanitize {}; module "
       "sources {}",
-      JITLLM_IMAGE_SDK, JITLLM_IMAGE_TARGET, JITLLM_IMAGE_CUDA_ARCHITECTURES,
-      JITLLM_IMAGE_BUILD_TYPE, kAsserts, kLibraryAsserts, JITLLM_IMAGE_SANITIZE,
-      ModuleSourcesDigest());
+      LLMP_IMAGE_SDK, LLMP_IMAGE_TARGET, LLMP_IMAGE_CUDA_ARCHITECTURES, LLMP_IMAGE_BUILD_TYPE,
+      kAsserts, kLibraryAsserts, LLMP_IMAGE_SANITIZE, ModuleSourcesDigest());
   if (entry.cublas) {
     build += std::format("; cuBLAS {}", CUBLAS_VERSION);
   }
   return execution::Implementation{.name = std::string(entry.name),
                                    .operation = entry.operation,
-                                   .source = "jitllm",
+                                   .source = "llmp",
                                    .revision = std::string(ModuleSourcesDigest()),
                                    .build = std::move(build),
                                    .variant = std::string(entry.variant)};
@@ -173,4 +172,4 @@ std::string_view ImplName(Impl impl) {
   return i < kEntries.size() ? kEntries.at(i).name : std::string_view("unknown");
 }
 
-}  // namespace jitllm::kernels::image
+}  // namespace llmp::kernels::image

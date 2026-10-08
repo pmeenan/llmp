@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // What the backend proof's FP16 harnesses share (docs/backend-proof.md, P2):
@@ -8,8 +8,8 @@
 // (fp16_paged.cc) plans over device VMM exactly as rung 3 plans over
 // cudaMalloc. CUDA builds only.
 
-#ifndef JITLLM_BENCHMARKS_FP16_COMMON_H_
-#define JITLLM_BENCHMARKS_FP16_COMMON_H_
+#ifndef LLMP_BENCHMARKS_FP16_COMMON_H_
+#define LLMP_BENCHMARKS_FP16_COMMON_H_
 
 #include <cstdint>
 #include <expected>
@@ -25,7 +25,7 @@
 #include "kernels/ggml/tensors.h"
 #include "model/qwen2.h"
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 
 struct Trajectory {
   std::string name;
@@ -77,6 +77,6 @@ inline std::uint64_t RoundUp(std::uint64_t bytes, std::uint64_t to) {
   return (bytes + to - 1) / to * to;
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks
 
-#endif  // JITLLM_BENCHMARKS_FP16_COMMON_H_
+#endif  // LLMP_BENCHMARKS_FP16_COMMON_H_

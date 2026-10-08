@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Spark direct-link baseline — 2026-09-21
@@ -21,7 +21,7 @@ separate PCIe paths to that port, not two independent 200 Gb/s cables. This
 matches [NVIDIA's Spark port mapping](https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html).
 Both nodes expose PCIe Gen5 **32 GT/s ×4** for each path, measured from sysfs.
 The unused `f0` interfaces remained down. These names and addresses are the
-measured deployment, not application topology embedded in jitLLM.
+measured deployment, not application topology embedded in llmpalooza.
 
 | Label | RDMA device | Network interface | `spark` | `spark-b` |
 | --- | --- | --- | --- | --- |
@@ -217,7 +217,7 @@ updating the preflight pins; the harness will not silently accept a substitute.
 | GCC / GNU libraries | Installed g++ 13.3.0, glibc 2.39 | Compiler/system dependencies under D-017; not incorporated project implementation |
 
 CPU target is `armv8.2-a`, GPU target is native `sm_121` only. External NCCL
-and its tests use their C++17 build dialect; the jitLLM-authored capability
+and its tests use their C++17 build dialect; the llmpalooza-authored capability
 probe uses C++23. The NVIDIA Spark [playbook](https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/nccl)
 provided the NCCL version/build reference; no downloaded setup script was
 executed. Open MPI's C++ compatibility library is explicitly linked for these
@@ -228,13 +228,13 @@ pilot were excluded. The two small native nccl-tests support objects were
 rebuilt with the explicit CPU target before any main NCCL run.
 
 These are experiment tools, not a choice to incorporate NCCL/MPI/perftest into
-jitLLM's core or a new runtime dependency policy. This work changes no
+llmpalooza's core or a new runtime dependency policy. This work changes no
 load-bearing constraint and requires no new architectural decision.
 
 ## Reproduction and evidence
 
 Run the native recipe on `spark`, with this directory's files copied outside
-the repository to `/home/pmeenan/.local/share/jitllm/interconnect/recipe/`.
+the repository to `/home/pmeenan/.local/share/llmp/interconnect/recipe/`.
 `env.sh` documents the measured absolute experiment root. Transfer `mpi-root`,
 `nccl-runtime`, `nccl-tests-runtime`, the probe, `env.sh`, `snapshot.py`, and
 `orted-wrapper.sh`, `audit.py` and `pins.json` to the same root on `spark-b`; place the support
@@ -242,7 +242,7 @@ scripts at the root on both hosts. SSH host verification stays enabled.
 Source checkouts, packages and build objects can remain on the build node.
 
 ```bash
-bash /home/pmeenan/.local/share/jitllm/interconnect/recipe/build.sh
+bash /home/pmeenan/.local/share/llmp/interconnect/recipe/build.sh
 ```
 
 From the workstation, in the repository, choose a fresh external output root;
@@ -250,20 +250,20 @@ each phase refuses to reuse an existing output directory. The harness accepts
 host, IP and HCA overrides for another configured deployment.
 
 ```bash
-python3 docs/experiments/interconnect/run-host.py --phase sweep --out /tmp/jitllm-interconnect/host-sweep-main
-python3 docs/experiments/interconnect/run-host.py --phase large --out /tmp/jitllm-interconnect/host-large
-python3 docs/experiments/interconnect/run-host.py --phase combined --out /tmp/jitllm-interconnect/host-combined
-python3 docs/experiments/interconnect/run-nccl.py --mode main --out /tmp/jitllm-interconnect/nccl-main
-python3 docs/experiments/interconnect/analyze.py /tmp/jitllm-interconnect --out /tmp/jitllm-interconnect/aggregate.json
+python3 docs/experiments/interconnect/run-host.py --phase sweep --out /tmp/llmp-interconnect/host-sweep-main
+python3 docs/experiments/interconnect/run-host.py --phase large --out /tmp/llmp-interconnect/host-large
+python3 docs/experiments/interconnect/run-host.py --phase combined --out /tmp/llmp-interconnect/host-combined
+python3 docs/experiments/interconnect/run-nccl.py --mode main --out /tmp/llmp-interconnect/nccl-main
+python3 docs/experiments/interconnect/analyze.py /tmp/llmp-interconnect --out /tmp/llmp-interconnect/aggregate.json
 ```
 
 Raw receipts, samples, diagnostic attempts, node snapshots and copied NCCL
 logs are frozen on the workstation at
-`/home/pmeenan/.local/share/jitllm/interconnect-results/2026-09-21/`.
+`/home/pmeenan/.local/share/llmp/interconnect-results/2026-09-21/`.
 Its `raw-manifest.json` indexes 499 files (28,464,513 bytes), SHA-256
 `61bec87ab002402bbd9d948176225d3829d2b9bda607771f482df3f6ae8f233b`.
-The working copy remains at `/tmp/jitllm-interconnect/`. Native builds and
-original NCCL logs remain at `/home/pmeenan/.local/share/jitllm/interconnect/`
+The working copy remains at `/tmp/llmp-interconnect/`. Native builds and
+original NCCL logs remain at `/home/pmeenan/.local/share/llmp/interconnect/`
 on each Spark.
 No models, prompts, keys or conversation data are part of this experiment.
 Only reusable recipes, provenance and aggregate results belong in Git.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """The two original Gemma launchers remain pinned and compiled with GGML flags."""
 import hashlib
@@ -9,7 +9,7 @@ import shlex
 import sys
 
 build = pathlib.Path(sys.argv[1])
-receipt = json.loads((build / 'jitllm-receipt.json').read_text())
+receipt = json.loads((build / 'llmp-receipt.json').read_text())
 ggml = next(c for c in receipt['components'] if c['id'] == 'ggml')
 root = pathlib.Path(ggml['source']) / 'ggml/src/ggml-cuda'
 expected = {
@@ -28,5 +28,5 @@ for name in ('topk-moe.cu', 'moe-weighted-reduction.cu'):
     for command in actual:
         flags = shlex.split(command['command'])
         assert '-use_fast_math' in flags and '-extended-lambda' in flags, name
-        assert 'GGML_JITLLM' in command['command'], name
+        assert 'GGML_LLMP' in command['command'], name
 print('Gemma MoE pinned original source and compile inventory: PASS')

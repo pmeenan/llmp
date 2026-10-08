@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Backend proof P3: native EXL3 — 2026-09-27
@@ -11,7 +11,7 @@ native operation plan.
 ## Part 1: the linears
 
 This is the first part of P3:
-jitLLM's own launchers of ExLlamaV3's kernels, judged per linear by the
+llmpalooza's own launchers of ExLlamaV3's kernels, judged per linear by the
 approved Tier E items for EXL3 packed linears (up to 144 rows) and
 reconstruction-path linears (145 rows and more). It is BP-N5, the
 per-linear sweep: every real projection of both EXL3 fixtures at rows 1,
@@ -58,7 +58,7 @@ kernels together with their ATen wrappers
   `add.cu` to their kernels, removing the ATen, c10 and PyTorch-API
   includes, the host wrappers and `reconstruct.cu`'s instance tables (and
   two no-op `register` specifiers). The kernels are unchanged;
-- patch 0002 adds `jitllm/jitllm_exl3_kernels.cu`, jitLLM's instance unit,
+- patch 0002 adds `llmp/llmp_exl3_kernels.cu`, llmpalooza's instance unit,
   built with upstream's flags beside the GEMM units: it includes those
   sources and the GEMV header and instantiates only what the linear
   launches (the eight K = 4 mcg GEMV instances of upstream's
@@ -66,7 +66,7 @@ kernels together with their ATen wrappers
   `reconstruct_had_kernel` at K = 4, 5, 6 and 8, three Hadamard variants,
   `add_kernel_hhh`, which `add.cu` defines with its other adds and two MoE
   bias adds, compiled but never launched), with host lookups of every
-  kernel (`jitllm_exl3_kernels.h`, no CUDA types).
+  kernel (`llmp_exl3_kernels.h`, no CUDA types).
 
 **Launchers** (`src/kernels/exl3/`, K-L under D-053). They replace
 upstream's host wrappers:
@@ -131,7 +131,7 @@ repeat ran on the result unchanged (cache SHA-256 before and after equal).
 [`native_plan.py`](native_plan.py) decodes each case's record from the
 final cache and checks it against the launches the reference profiled
 (kernel, grid, block): no case disagrees. Where EXL3-O launched the GEMV,
-the plan is the configuration and grid it launched, and jitLLM's copy of
+the plan is the configuration and grid it launched, and llmpalooza's copy of
 upstream's choice (`upstream_gemv.h`, on the device's own occupancy) picks
 exactly those, and the GEMM wherever upstream kept the GEMM. The
 reconstruction paths take each slice's pinned algorithm; every
@@ -293,7 +293,7 @@ E's operation recording) gave the uninstrumented run's logits bit for bit
   the registry (GGML's norms, casts, RoPE, attention, adds, SwiGLU and
   embedding; ExLlamaV3's linears, multi-GEMM and the new `exl3.bias_add`),
   runs every host check before anything is queued, checks in EXL3-O that
-  jitLLM's copy of upstream's GEMV choice picks exactly the table's plan,
+  llmpalooza's copy of upstream's GEMV choice picks exactly the table's plan,
   and runs the phase on one stream. The plan identity is the registry
   plan's identity (every implementation's) with the launch digest.
 - **New GGML implementations** (`src/kernels/ggml/`): `ggml.convert`
@@ -304,11 +304,11 @@ E's operation recording) gave the uninstrumented run's logits bit for bit
   `launch_fattn`'s arithmetic, so its parallel blocks and pool scratch are
   known before launch). The SASS of all eleven GGML kernels of the plan,
   the four flash-attention ones included, equals the record's.
-- **The harnesses** (`benchmarks/`): `jitllm_exl3_exec` runs the
+- **The harnesses** (`benchmarks/`): `llmp_exl3_exec` runs the
   trajectories from the artifact on `cudaMalloc` memory (rung 3), with
-  `--record`, `--capture` or `--record-ops`; `jitllm_exl3_paged` runs them
+  `--record`, `--capture` or `--record-ops`; `llmp_exl3_paged` runs them
   paged into device VMM through the landing zone by the scheduler and its
-  lanes (rungs 4 and 5), as `jitllm_fp16_paged` does for FP16. The launch
+  lanes (rungs 4 and 5), as `llmp_fp16_paged` does for FP16. The launch
   recorder (`tests/support/`) now wraps `cudaLaunchKernel`,
   `cudaLaunchCooperativeKernel` and `cublasLtMatmul`, and the recording
   marks each operation (`OpLine`).
@@ -366,7 +366,7 @@ takes it from the checkpoint's SHA-256.
 
 ### Rungs 4 and 5
 
-`jitllm_exl3_paged --restores 2 --relocate`: every weight chunk (292
+`llmp_exl3_paged --restores 2 --relocate`: every weight chunk (292
 extents at 4.0 bpw, 302 at 4.5 bpw) paged into device VMM through the
 zone. Evaluation 1 has rung 3's logits bit for bit; the repeat, and two
 evaluations that evict every weight after each prefill (releasing its
@@ -529,13 +529,13 @@ reference image copied from `spark`:
    requires; the recorded runs used the earlier format, and a re-run of
    all four arms with the new plans, in `malloc` and `flush-end`
    placement, was again exact in every case (`spark-b`, 2026-09-27).
-4. `jitllm_exl3_linear_sweep --artifact ART --fixture F --plan plan-F-A.txt
+4. `llmp_exl3_linear_sweep --artifact ART --fixture F --plan plan-F-A.txt
    --out native.jsonl --placement P` for each placement, then
    `compare.py ref-F-A.json native.jsonl --repeat repeat-F-A.json`.
 5. `nsys profile -t cuda` of one sweep per arm, `nsys export --type
    sqlite`, then `launches_compare.py ref-F-A.json trace.sqlite`.
 6. `sass_compare.py --reference exllamav3_ext.so --port
-   jitllm_exl3_linear_sweep --launches ref-*.json`, and `record.py DIR
+   llmp_exl3_linear_sweep --launches ref-*.json`, and `record.py DIR
    --out results.json`.
 
 [`results.json`](results.json) holds per fixture every linear's weight and
@@ -543,7 +543,7 @@ reconstructed-weight SHA-256s; per arm its environment, libraries, final
 tuning cache (bytes and SHA-256), every case's plan and final-output
 SHA-256, the comparisons and the launch verdict; and the SASS comparison. Raw runs (every
 stage's hash, the launch profiles) stay on `spark-b` under
-`~/.local/share/jitllm/p3a-20260927`.
+`~/.local/share/llmp/p3a-20260927`.
 
 Part 2's reference side, on `spark-b` (each script's help has the
 details; `run_container.sh` runs a script in the reference container,
@@ -565,7 +565,7 @@ with `GPUS=""` for the CPU-only ones):
    (malformed).
 5. `model_plan.py --record exl3-op-plan-g.json|-o.json` per fixture and arm.
 
-Raw outputs stay on `spark-b` under `~/.local/share/jitllm/p3b-20260927`.
+Raw outputs stay on `spark-b` under `~/.local/share/llmp/p3b-20260927`.
 
 Part 2's native side, on `spark-b` with the `spark-native` build and the
 model plans: [`run_model.sh`](run_model.sh) `40|45 G|O` runs, for one

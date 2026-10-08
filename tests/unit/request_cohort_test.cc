@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The request cohort (engine/request_cohort.h), host-only: the active set's
@@ -20,14 +20,14 @@
 
 namespace {
 
-using jitllm::base::operator""_MiB;
-using jitllm::catalog::Catalog;
-using jitllm::catalog::ExtentDescriptor;
-using jitllm::catalog::ExtentId;
-using jitllm::catalog::MemoryClass;
-using jitllm::catalog::Recovery;
-using jitllm::engine::LiveState;
-using jitllm::engine::RequestCohort;
+using llmp::base::operator""_MiB;
+using llmp::catalog::Catalog;
+using llmp::catalog::ExtentDescriptor;
+using llmp::catalog::ExtentId;
+using llmp::catalog::MemoryClass;
+using llmp::catalog::Recovery;
+using llmp::engine::LiveState;
+using llmp::engine::RequestCohort;
 
 TEST(RequestCohortTest, TheDefaultRequestIsSlotZeroAndMasksAreDistinctSlots) {
   RequestCohort cohort("DeepSeek", 4);
@@ -56,8 +56,8 @@ TEST(RequestCohortTest, ARunnerSetUpWithMoreSlotsMasksUpToTheMaximum) {
   RequestCohort cohort("Qwen3.8");
   // Before its runner's setup only the default request exists.
   EXPECT_FALSE(cohort.MaskOf(std::array<std::uint32_t, 1>{1}).has_value());
-  cohort.set_slots(jitllm::engine::kMaxRequestSlots);
-  std::array<std::uint32_t, jitllm::engine::kMaxRequestSlots> all{};
+  cohort.set_slots(llmp::engine::kMaxRequestSlots);
+  std::array<std::uint32_t, llmp::engine::kMaxRequestSlots> all{};
   for (std::uint32_t i = 0; i < all.size(); ++i) {
     all[i] = i;
   }

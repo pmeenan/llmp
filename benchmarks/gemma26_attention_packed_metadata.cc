@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Manual descriptor-only controls; no model payloads or GPU launches.
@@ -12,14 +12,14 @@
 #include "gemma4_fixture.h"
 #include "kernels/ggml/gemma4_graph.h"
 
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
 int main() {
-  const bool packed = std::getenv("JITLLM_GEMMA26_PACKED_C4") != nullptr &&
-                      std::string_view(std::getenv("JITLLM_GEMMA26_PACKED_C4")) == "1";
+  const bool packed = std::getenv("LLMP_GEMMA26_PACKED_C4") != nullptr &&
+                      std::string_view(std::getenv("LLMP_GEMMA26_PACKED_C4")) == "1";
   for (const auto variant : {26U, 31U}) {
     const auto& p = variant == 31 ? md::Gemma4_31B() : md::Gemma4_26BA4B();
-    auto binding = md::BindGemma4(p, "gemma4", jitllm::test_support::gemma4::Resources(variant));
+    auto binding = md::BindGemma4(p, "gemma4", llmp::test_support::gemma4::Resources(variant));
     if (!binding) return 1;
     for (const auto owners : {1U, 2U, 4U})
       for (const auto rows : {1U, 2U}) {
@@ -33,7 +33,7 @@ int main() {
         options.device_masks = true;
         options.narrow_final = true;
         const auto estimate = kg::Gemma4GraphTensors(p, owners);
-        auto arena = jitllm::engine::SizedArena(estimate, [&](kg::TensorArena& a) {
+        auto arena = llmp::engine::SizedArena(estimate, [&](kg::TensorArena& a) {
           return kg::BuildGemma4Graph(a, p, *binding, *state, shape, options).has_value();
         });
         if (!arena) {

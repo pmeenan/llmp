@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A chat cohort's state-capacity policy (runtime/cohort_capacity.h): who
@@ -21,7 +21,7 @@
 
 namespace {
 
-namespace rt = jitllm::runtime;
+namespace rt = llmp::runtime;
 using rt::CapacityWait;
 using ::testing::ElementsAre;
 using ::testing::IsEmpty;

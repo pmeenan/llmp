@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/exl3/implementations.h"
@@ -22,14 +22,14 @@
 #include "kernels/exl3/validate.h"
 
 // The build's part of each identity, from CMakeLists.txt.
-#if !defined(JITLLM_EXL3_SOURCE_TREE) || !defined(JITLLM_EXL3_SDK) ||           \
-    !defined(JITLLM_EXL3_TARGET) || !defined(JITLLM_EXL3_CUDA_ARCHITECTURES) || \
-    !defined(JITLLM_EXL3_BUILD_TYPE) || !defined(JITLLM_EXL3_SANITIZE)
+#if !defined(LLMP_EXL3_SOURCE_TREE) || !defined(LLMP_EXL3_SDK) || !defined(LLMP_EXL3_TARGET) || \
+    !defined(LLMP_EXL3_CUDA_ARCHITECTURES) || !defined(LLMP_EXL3_BUILD_TYPE) ||                 \
+    !defined(LLMP_EXL3_SANITIZE)
 #error \
     "implementations.cc needs the ExLlamaV3 source tree, SDK, target, architectures and build type"
 #endif
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 namespace {
 
 enum class Path : std::uint8_t { kGemm, kGemv, kReconstruct, kReconstructFused, kMultiGemm, kBias };
@@ -107,17 +107,17 @@ bool Reconstructs(Path path) {
 
 execution::Implementation Declaration(const Kernel::Entry& entry) {
   std::string build = std::format(
-      "sdk {}; target {}; cuda architectures {} (upstream's units, jitllm_exl3_cuda); build type "
+      "sdk {}; target {}; cuda architectures {} (upstream's units, llmp_exl3_cuda); build type "
       "{} ({}, {}); sanitize {}; module sources {}",
-      JITLLM_EXL3_SDK, JITLLM_EXL3_TARGET, JITLLM_EXL3_CUDA_ARCHITECTURES, JITLLM_EXL3_BUILD_TYPE,
-      kAsserts, kLibraryAsserts, JITLLM_EXL3_SANITIZE, ModuleSourcesDigest());
+      LLMP_EXL3_SDK, LLMP_EXL3_TARGET, LLMP_EXL3_CUDA_ARCHITECTURES, LLMP_EXL3_BUILD_TYPE, kAsserts,
+      kLibraryAsserts, LLMP_EXL3_SANITIZE, ModuleSourcesDigest());
   if (Reconstructs(entry.path)) {
     build += std::format("; cuBLASLt {}", CUBLAS_VERSION);
   }
   return execution::Implementation{.name = std::string(entry.name),
                                    .operation = entry.operation,
                                    .source = "exllamav3",
-                                   .revision = JITLLM_EXL3_SOURCE_TREE,
+                                   .revision = LLMP_EXL3_SOURCE_TREE,
                                    .build = std::move(build),
                                    .variant = std::string(entry.variant)};
 }
@@ -204,4 +204,4 @@ std::string_view Kernel::name() const { return entry_->name; }
 
 execution::Operation Kernel::operation() const { return entry_->operation; }
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3

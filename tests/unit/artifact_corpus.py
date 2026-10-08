@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Builds the artifact reader's test corpus with the M0 prototype, the v0 format's oracle (D-056).
 
@@ -272,7 +272,7 @@ CASES = [
      lambda c: c.relist(lambda m: m["layout"].update(profile_version=False))),
     ("profile-float", "tiny", "json",
      lambda c: c.relist(raw=replace_once(b'"file_alignment":4096', b'"file_alignment":4096.0'))),
-    ("format-other", "tiny", "format", lambda c: c.relist(lambda m: m.update(format="jitllm-other"))),
+    ("format-other", "tiny", "format", lambda c: c.relist(lambda m: m.update(format="llmp-other"))),
     ("format-not-object", "tiny", "format", lambda c: c.relist(raw=lambda m: L.dumps([m]))),
     ("manifest-indented", "tiny", "canonical",
      lambda c: c.relist(raw=lambda m: json.dumps(m, sort_keys=True, indent=1).encode())),

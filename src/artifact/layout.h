@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Where a v0 artifact's groups and chunks live, and how missing chunks are
@@ -20,8 +20,8 @@
 // numbers are untrusted: token IDs choose rows) and reject any out of
 // range; they never clamp.
 
-#ifndef JITLLM_ARTIFACT_LAYOUT_H_
-#define JITLLM_ARTIFACT_LAYOUT_H_
+#ifndef LLMP_ARTIFACT_LAYOUT_H_
+#define LLMP_ARTIFACT_LAYOUT_H_
 
 #include <compare>
 #include <cstddef>
@@ -36,7 +36,7 @@
 #include "base/bytes.h"
 #include "base/sha256.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 
 using base::Bytes;
 using Digest = base::Sha256Digest;
@@ -127,6 +127,6 @@ std::expected<std::vector<ReadRun>, Error> PlanReads(const Layout& layout,
                                                      std::span<const ChunkKey> resident,
                                                      ReadLimits limits = {});
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact
 
-#endif  // JITLLM_ARTIFACT_LAYOUT_H_
+#endif  // LLMP_ARTIFACT_LAYOUT_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The chat route (D-097 as amended 2026-09-28; runtime/api.h, http.h,
@@ -61,8 +61,8 @@
 
 namespace {
 
-namespace api = jitllm::runtime::api;
-namespace json = jitllm::base::json;
+namespace api = llmp::runtime::api;
+namespace json = llmp::base::json;
 using ::testing::AllOf;
 using ::testing::ElementsAre;
 using ::testing::HasSubstr;
@@ -384,15 +384,15 @@ TEST(HttpRequest, ChecksTheCodingBodyCeilingFromTheHead) {
   // context, or [client] max_body_bytes), here DeepSeek V4's at 300,000
   // tokens beside ~15 GiB of state room on a Spark.
   const std::size_t most =
-      jitllm::runtime::DeriveIntakeLimits(std::uint64_t{256} << 20U, std::uint64_t{15} << 30U,
-                                          jitllm::runtime::ContextBodyBytes(300'000, 128), {})
+      llmp::runtime::DeriveIntakeLimits(std::uint64_t{256} << 20U, std::uint64_t{15} << 30U,
+                                        llmp::runtime::ContextBodyBytes(300'000, 128), {})
           .max_body;
   EXPECT_EQ(most, (std::size_t{300'000} * 768) + (std::size_t{1} << 20U));  // was 16 MiB
-  auto request = jitllm::runtime::http::ParseHead(head(most), {.max_body_bytes = most});
+  auto request = llmp::runtime::http::ParseHead(head(most), {.max_body_bytes = most});
   ASSERT_TRUE(request.has_value()) << request.error().message;
   EXPECT_EQ(request->body_bytes, most);
   EXPECT_TRUE(request->body.empty());
-  request = jitllm::runtime::http::ParseHead(head(most + 1), {.max_body_bytes = most});
+  request = llmp::runtime::http::ParseHead(head(most + 1), {.max_body_bytes = most});
   ASSERT_FALSE(request.has_value());
   EXPECT_EQ(request.error().status, 413);
   EXPECT_THAT(request.error().message, HasSubstr("max_body_bytes"));
@@ -615,15 +615,15 @@ TEST(StopMatcher, BuildsWithinItsChargeAndIsShared) {
 // pool, 503 while others hold it.
 TEST(ChatRequest, ChargesItsParseToTheRequestMemory) {
   const std::string body = WithField(R"("stop":["x","y"])");
-  jitllm::runtime::RequestMemory roomy(std::uint64_t{64} << 20U);
+  llmp::runtime::RequestMemory roomy(std::uint64_t{64} << 20U);
   ASSERT_TRUE(api::ParseChatRequest(body, &roomy).has_value());
   EXPECT_EQ(roomy.used(), 0U);  // released once parsed
-  jitllm::runtime::RequestMemory tiny(64);
+  llmp::runtime::RequestMemory tiny(64);
   auto refused = api::ParseChatRequest(body, &tiny);
   ASSERT_FALSE(refused.has_value());
   EXPECT_EQ(refused.error().status, 413);
   EXPECT_THAT(refused.error().message, HasSubstr("request_memory_bytes"));
-  jitllm::runtime::RequestMemory busy(std::uint64_t{1} << 20U);
+  llmp::runtime::RequestMemory busy(std::uint64_t{1} << 20U);
   ASSERT_TRUE(busy.TryCharge(busy.capacity() - 16));
   auto later = api::ParseChatRequest(body, &busy);
   ASSERT_FALSE(later.has_value());
@@ -808,23 +808,23 @@ TEST(LiteralJson, RefusesOversizedOrNonfiniteScoresBeforeSerialization) {
           .has_value());
 }
 
-jitllm::tokenizer::TokenizerSpec LiteralVocabulary(bool add_bos) {
-  jitllm::tokenizer::TokenizerSpec spec;
+llmp::tokenizer::TokenizerSpec LiteralVocabulary(bool add_bos) {
+  llmp::tokenizer::TokenizerSpec spec;
   char32_t next = 256;
   for (unsigned byte = 0; byte < 256; ++byte) {
     const bool printable =
         (byte >= 0x21 && byte <= 0x7E) || (byte >= 0xA1 && byte <= 0xAC) || byte >= 0xAE;
     std::string text;
-    jitllm::tokenizer::unicode::AppendUtf8(printable ? static_cast<char32_t>(byte) : next++, text);
+    llmp::tokenizer::unicode::AppendUtf8(printable ? static_cast<char32_t>(byte) : next++, text);
     spec.tokens.push_back(std::move(text));
-    spec.kinds.push_back(jitllm::tokenizer::TokenKind::kNormal);
+    spec.kinds.push_back(llmp::tokenizer::TokenKind::kNormal);
   }
   spec.tokens.emplace_back("<bos>");
   spec.tokens.emplace_back("<eos>");
   spec.tokens.emplace_back("unused");
-  spec.kinds.push_back(jitllm::tokenizer::TokenKind::kControl);
-  spec.kinds.push_back(jitllm::tokenizer::TokenKind::kControl);
-  spec.kinds.push_back(jitllm::tokenizer::TokenKind::kUnused);
+  spec.kinds.push_back(llmp::tokenizer::TokenKind::kControl);
+  spec.kinds.push_back(llmp::tokenizer::TokenKind::kControl);
+  spec.kinds.push_back(llmp::tokenizer::TokenKind::kUnused);
   spec.bos = 256;
   spec.eos = 257;
   spec.add_bos = add_bos;
@@ -832,8 +832,8 @@ jitllm::tokenizer::TokenizerSpec LiteralVocabulary(bool add_bos) {
 }
 
 TEST(LiteralTokens, TextHonorsAddBosPolicyButIdsRemainExact) {
-  auto with = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(true));
-  auto without = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
+  auto with = llmp::tokenizer::Tokenizer::Create(LiteralVocabulary(true));
+  auto without = llmp::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
   ASSERT_TRUE(with.has_value());
   ASSERT_TRUE(without.has_value());
   auto request = api::ParseCompletionRequest(
@@ -869,10 +869,10 @@ TEST(LiteralTokens, TextHonorsAddBosPolicyButIdsRemainExact) {
 }
 
 TEST(LiteralTokens, EmptyTextRequiresEnabledBosAndNormalizationIsExplicit) {
-  auto with = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(true));
+  auto with = llmp::tokenizer::Tokenizer::Create(LiteralVocabulary(true));
   auto spec = LiteralVocabulary(false);
-  spec.normalization = jitllm::tokenizer::Normalization::kNfc;
-  auto normalized = jitllm::tokenizer::Tokenizer::Create(std::move(spec));
+  spec.normalization = llmp::tokenizer::Normalization::kNfc;
+  auto normalized = llmp::tokenizer::Tokenizer::Create(std::move(spec));
   ASSERT_TRUE(with.has_value());
   ASSERT_TRUE(normalized.has_value());
   auto request = api::ParseCompletionRequest(
@@ -891,7 +891,7 @@ TEST(LiteralTokens, EmptyTextRequiresEnabledBosAndNormalizationIsExplicit) {
 }
 
 TEST(LiteralTokens, ByteTokensShareOffsetsAndFlushAtThePromptBoundary) {
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
   ASSERT_TRUE(tokenizer.has_value());
   std::size_t budget = 1024;
   api::LiteralRows rows(*tokenizer, false, true, 0, budget, kResponse);
@@ -933,9 +933,9 @@ TEST(LiteralTokens, ByteTokensShareOffsetsAndFlushAtThePromptBoundary) {
 TEST(LiteralTokens, RefusesScoreCountBeforeDecodingAndPreservesBpeIds) {
   auto spec = LiteralVocabulary(false);
   spec.tokens.emplace_back("ab");
-  spec.kinds.push_back(jitllm::tokenizer::TokenKind::kNormal);
+  spec.kinds.push_back(llmp::tokenizer::TokenKind::kNormal);
   spec.merges.emplace_back("a", "b");
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(spec));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(spec));
   ASSERT_TRUE(tokenizer.has_value());
   auto request = api::ParseCompletionRequest(
       R"({"model":"m","prompt":"ab","max_tokens":0,"prompt_logprobs":1})");
@@ -971,7 +971,7 @@ TEST(LiteralTokens, RefusesScoreCountBeforeDecodingAndPreservesBpeIds) {
 }
 
 TEST(LiteralTokens, ContinuedOutputKeepsByteOffsetsRowsAndTheirMemoryCharge) {
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
   ASSERT_TRUE(tokenizer.has_value());
   auto request = api::ParseCompletionRequest(
       R"({"model":"alpha","prompt":[195,169,226],"max_tokens":3,"echo":true,
@@ -979,7 +979,7 @@ TEST(LiteralTokens, ContinuedOutputKeepsByteOffsetsRowsAndTheirMemoryCharge) {
   ASSERT_TRUE(request.has_value());
   auto prompt = api::PrepareLiteralPrompt(*request, *tokenizer, 16, kResponse);
   ASSERT_TRUE(prompt.has_value());
-  jitllm::runtime::RequestMemory memory(kResponse);
+  llmp::runtime::RequestMemory memory(kResponse);
   auto output = api::LiteralOutput::Create(*request, *prompt, *tokenizer, memory);
   ASSERT_TRUE(output.has_value());
   const auto charged = memory.used();
@@ -1019,21 +1019,21 @@ TEST(LiteralTokens, ContinuedOutputKeepsByteOffsetsRowsAndTheirMemoryCharge) {
 }
 
 TEST(LiteralTokens, OutputRefusesUnfundedOrMissingRowsWithoutLeakingItsCharge) {
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
   ASSERT_TRUE(tokenizer.has_value());
   auto request = api::ParseCompletionRequest(
       R"({"model":"alpha","prompt":[65,66,67],"max_tokens":0,"prompt_logprobs":0})");
   ASSERT_TRUE(request.has_value());
   auto prompt = api::PrepareLiteralPrompt(*request, *tokenizer, 16, kResponse);
   ASSERT_TRUE(prompt.has_value());
-  jitllm::runtime::RequestMemory small(1024, kResponse);
+  llmp::runtime::RequestMemory small(1024, kResponse);
   auto refused = api::LiteralOutput::Create(*request, *prompt, *tokenizer, small);
   ASSERT_FALSE(refused.has_value());
   EXPECT_EQ(refused.error().status, 503U);
   EXPECT_EQ(small.used(), 0U);
   prompt = api::PrepareLiteralPrompt(*request, *tokenizer, 16, kResponse);
   ASSERT_TRUE(prompt.has_value());
-  jitllm::runtime::RequestMemory memory(kResponse);
+  llmp::runtime::RequestMemory memory(kResponse);
   auto output = api::LiteralOutput::Create(*request, *prompt, *tokenizer, memory);
   ASSERT_TRUE(output.has_value());
   std::vector<float> row(tokenizer->size(), 0);
@@ -1108,9 +1108,9 @@ TEST(ApiHost, OnlyLoopbackNames) {
 
 // ---------------------------------------------------------------- binding
 
-jitllm::platform::InterfaceAddress Address(std::string_view interface, std::string_view text,
-                                           bool loopback = false) {
-  jitllm::platform::InterfaceAddress a;
+llmp::platform::InterfaceAddress Address(std::string_view interface, std::string_view text,
+                                         bool loopback = false) {
+  llmp::platform::InterfaceAddress a;
   a.interface = std::string(interface);
   a.ipv6 = text.contains(':');
   const std::string owned(text);
@@ -1121,8 +1121,8 @@ jitllm::platform::InterfaceAddress Address(std::string_view interface, std::stri
 }
 
 // spark-b's interfaces as `ip addr` showed them on 2026-09-28, shortened.
-std::vector<jitllm::platform::InterfaceAddress> SparkAddresses(bool tailscale = true) {
-  std::vector<jitllm::platform::InterfaceAddress> list = {
+std::vector<llmp::platform::InterfaceAddress> SparkAddresses(bool tailscale = true) {
+  std::vector<llmp::platform::InterfaceAddress> list = {
       Address("lo", "127.0.0.1", true),
       Address("lo", "::1", true),
       Address("enP7s7", "192.168.0.101"),
@@ -1138,7 +1138,7 @@ std::vector<jitllm::platform::InterfaceAddress> SparkAddresses(bool tailscale = 
 }
 
 // A resolver that knows the tailnet's names, as MagicDNS answers them.
-std::optional<std::string> SparkReverse(const jitllm::platform::InterfaceAddress& a) {
+std::optional<std::string> SparkReverse(const llmp::platform::InterfaceAddress& a) {
   const std::string text = a.Text();
   if (text == "100.114.118.63" || text == "fd7a:115c:a1e0::2e31:7640") {
     return "spark-b.coati-puffin.ts.net";
@@ -1159,19 +1159,19 @@ std::vector<std::string> Endpoints(const api::Listening& l) {
   return out;
 }
 
-jitllm::config::ClientConfig Bind(const std::vector<std::string_view>& entries) {
-  jitllm::config::ClientConfig client;
+llmp::config::ClientConfig Bind(const std::vector<std::string_view>& entries) {
+  llmp::config::ClientConfig client;
   client.bind.clear();
   for (const std::string_view e : entries) {
-    auto entry = jitllm::config::ParseBindEntry(e);
+    auto entry = llmp::config::ParseBindEntry(e);
     EXPECT_TRUE(entry.has_value()) << e;
-    client.bind.push_back(entry.value_or(jitllm::config::BindEntry{}));
+    client.bind.push_back(entry.value_or(llmp::config::BindEntry{}));
   }
   return client;
 }
 
 TEST(Binding, TheDefaultServesLoopbackAndTheTailnet) {
-  const api::Listening l = api::ResolveListening(jitllm::config::ClientConfig{}, SparkAddresses(),
+  const api::Listening l = api::ResolveListening(llmp::config::ClientConfig{}, SparkAddresses(),
                                                  "spark-56f5", SparkReverse);
   EXPECT_THAT(Endpoints(l), ElementsAre("127.0.0.1:8114", "[::1]:8114", "100.114.118.63:8114",
                                         "[fd7a:115c:a1e0::2e31:7640]:8114"));
@@ -1195,7 +1195,7 @@ TEST(Binding, WithoutTailscaleItServesLoopbackOnly) {
   // No ::1 either: an IPv6-less host.
   std::erase_if(addresses, [](const auto& a) { return a.ipv6; });
   const api::Listening l =
-      api::ResolveListening(jitllm::config::ClientConfig{}, addresses, "spark-56f5", SparkReverse);
+      api::ResolveListening(llmp::config::ClientConfig{}, addresses, "spark-56f5", SparkReverse);
   EXPECT_THAT(Endpoints(l), ElementsAre("127.0.0.1:8114"));
   EXPECT_THAT(l.notes, ElementsAre(HasSubstr("no tailnet interface found")));
   EXPECT_THAT(l.unauthenticated, IsEmpty());
@@ -1204,8 +1204,8 @@ TEST(Binding, WithoutTailscaleItServesLoopbackOnly) {
 // 100.64.0.0/10 is also carriers' shared address space: only Tailscale's
 // interface makes it the tailnet.
 TEST(Binding, ACarriersSharedAddressIsNotTheTailnet) {
-  std::vector<jitllm::platform::InterfaceAddress> addresses = {Address("lo", "127.0.0.1", true),
-                                                               Address("wwan0", "100.72.1.2")};
+  std::vector<llmp::platform::InterfaceAddress> addresses = {Address("lo", "127.0.0.1", true),
+                                                             Address("wwan0", "100.72.1.2")};
   api::Listening l = api::ResolveListening(Bind({"tailscale"}), addresses, "h", nullptr);
   EXPECT_THAT(Endpoints(l), IsEmpty());
   // Tailscale's IPv6 range marks a renamed tunnel as the tailnet.
@@ -1234,7 +1234,7 @@ TEST(Binding, ExplicitAddressesAreUnauthenticatedUnlessLoopbackOrTailnet) {
   // A LAN address is said to be unauthenticated; a tailnet or loopback
   // address is not; a port of its own is kept, and [client] port fills in
   // the rest.
-  jitllm::config::ClientConfig client =
+  llmp::config::ClientConfig client =
       Bind({"192.168.0.101:9000", "100.114.118.63", "127.0.0.2:9001", "[::]:9002"});
   client.port = 9100;
   l = api::ResolveListening(client, SparkAddresses(), "spark-56f5", SparkReverse);
@@ -1250,7 +1250,7 @@ TEST(Binding, ExplicitAddressesAreUnauthenticatedUnlessLoopbackOrTailnet) {
   EXPECT_TRUE(l.hosts.AllowsHost("spark-b.coati-puffin.ts.net"));   // the tailnet address's
   // A tailnet address is named only under ts.net, bound by "tailscale" or
   // by its address: a resolver's other name for it is not trusted.
-  const auto spoofed = [](const jitllm::platform::InterfaceAddress& a) {
+  const auto spoofed = [](const llmp::platform::InterfaceAddress& a) {
     return api::InTailnetRange(a) ? std::optional<std::string>("evil.example") : SparkReverse(a);
   };
   for (const std::string_view entry : {"100.114.118.63", "tailscale"}) {
@@ -1261,12 +1261,12 @@ TEST(Binding, ExplicitAddressesAreUnauthenticatedUnlessLoopbackOrTailnet) {
   }
   // Reverse lookups are bounded.
   std::size_t lookups = 0;
-  std::vector<jitllm::platform::InterfaceAddress> many = {Address("lo", "127.0.0.1", true)};
+  std::vector<llmp::platform::InterfaceAddress> many = {Address("lo", "127.0.0.1", true)};
   for (int i = 1; i <= 40; ++i) {
     many.push_back(Address("eth0", std::format("10.0.0.{}", i)));
   }
   (void)api::ResolveListening(Bind({"0.0.0.0"}), many, "h",
-                              [&](const jitllm::platform::InterfaceAddress&) {
+                              [&](const llmp::platform::InterfaceAddress&) {
                                 ++lookups;
                                 return std::optional<std::string>();
                               });
@@ -1345,7 +1345,7 @@ class FakeBackend final : public api::Backend {
       // drains (the node's count moves); the request fails alone.
       started.store(true);
       ladder->BeginWait();
-      while (ladder->rung() != jitllm::runtime::HangLadder::Rung::kCancel) {
+      while (ladder->rung() != llmp::runtime::HangLadder::Rung::kCancel) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
       }
       ++*activity;
@@ -1369,14 +1369,14 @@ class FakeBackend final : public api::Backend {
     if (text == "slow") {
       for (int i = 0; i < 30; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        if (!exchange.Next(jitllm::runtime::Phase::kPrefill, 1)) {
+        if (!exchange.Next(llmp::runtime::Phase::kPrefill, 1)) {
           cancelled.store(true);
           return api::Completion{};
         }
       }
     }
     if (text == "wide") {
-      if (!exchange.Next(jitllm::runtime::Phase::kPrefill, 100)) {
+      if (!exchange.Next(llmp::runtime::Phase::kPrefill, 100)) {
         cancelled.store(true);
         return api::Completion{};
       }
@@ -1456,7 +1456,7 @@ class FakeBackend final : public api::Backend {
     if (request.prompt == "block") {
       started.store(true);
       while (!release.load()) {
-        if (!exchange.Next(jitllm::runtime::Phase::kPrefill, 1)) {
+        if (!exchange.Next(llmp::runtime::Phase::kPrefill, 1)) {
           cancelled.store(true);
           return api::Completion{};
         }
@@ -1512,13 +1512,13 @@ class FakeBackend final : public api::Backend {
   std::atomic<unsigned> yields{0};
   std::atomic<unsigned> resumes{0};
   // "hangwait"'s ladder and the node's progress count it moves.
-  jitllm::runtime::HangLadder* ladder = nullptr;
+  llmp::runtime::HangLadder* ladder = nullptr;
   std::atomic<std::uint64_t>* activity = nullptr;
   api::CooperativeBackend* cooperative() override { return cooperative_backend; }
 
   // A request memory this backend grows, as the node's does (Maintain on
   // the driver: Settle through a grower that grants while `grants`).
-  std::shared_ptr<jitllm::runtime::RequestMemory> memory;
+  std::shared_ptr<llmp::runtime::RequestMemory> memory;
   std::atomic<bool> grants{true};
   std::atomic<std::uint64_t> granted{0};
   void Maintain() override {
@@ -1669,9 +1669,9 @@ class FakeCooperative final : public api::CooperativeBackend {
     if (std::ranges::all_of(
             work, [](Work* item) { return static_cast<Job&>(*item).exchange.Paused(); })) {
       ++paused_units;
-      return Unit{.phase = jitllm::runtime::Phase::kPaused, .expected_seconds = 0};
+      return Unit{.phase = llmp::runtime::Phase::kPaused, .expected_seconds = 0};
     }
-    return Unit{.phase = jitllm::runtime::Phase::kDecode, .expected_seconds = 0};
+    return Unit{.phase = llmp::runtime::Phase::kDecode, .expected_seconds = 0};
   }
   std::expected<void, std::string> Advance(std::span<Work* const> work) override {
     const unsigned now = rejections.load();
@@ -1952,7 +1952,7 @@ class ServerTest : public ::testing::Test {
   // A connection that has sent `bytes`.
   int Connect(std::string_view bytes) const {
     const int fd = Open();
-    EXPECT_TRUE(jitllm::runtime::http::WriteAll(fd, bytes));
+    EXPECT_TRUE(llmp::runtime::http::WriteAll(fd, bytes));
     return fd;
   }
 
@@ -1991,7 +1991,7 @@ class ServerTest : public ::testing::Test {
   }
 
   // The backend's health as the server sees it (a failure without a server).
-  jitllm::runtime::Health BackendHealth() const {
+  llmp::runtime::Health BackendHealth() const {
     if (!server_.has_value()) {
       ADD_FAILURE() << "no server";
       return {};
@@ -2045,7 +2045,7 @@ TEST_F(ServerTest, ServesLegacyEchoAndVllmPureScoringOnTheLiteralRoute) {
   auto response = Exchange(
       Literal(R"({"model":"alpha","prompt":[1,2],"max_tokens":1,"echo":true,"logprobs":1})"));
   EXPECT_THAT(response, StartsWith("HTTP/1.1 200 OK\r\n"));
-  EXPECT_THAT(response, HasSubstr("jitllm-inference-version: 1\r\n"));
+  EXPECT_THAT(response, HasSubstr("llmp-inference-version: 1\r\n"));
   auto doc = json::Parse(BodyOf(response));
   ASSERT_TRUE(doc.has_value());
   EXPECT_THAT(std::string(In(doc->root(), {"id"}).string()), StartsWith("cmpl-"));
@@ -2111,7 +2111,7 @@ TEST_F(ServerTest, LiteralResponseBudgetFollowsSlowBuffersThroughSendAndDrop) {
   // figured six bytes a byte).
   api::ServerOptions options;
   options.intake.request_capacity = kResponse;
-  options.memory = std::make_shared<jitllm::runtime::RequestMemory>(kResponse);
+  options.memory = std::make_shared<llmp::runtime::RequestMemory>(kResponse);
   const std::uint64_t others = kResponse - (serialized->capacity() + (serialized->capacity() / 2));
   ASSERT_TRUE(options.memory->TryCharge(others));
   Stop();
@@ -2121,8 +2121,8 @@ TEST_F(ServerTest, LiteralResponseBudgetFollowsSlowBuffersThroughSendAndDrop) {
     return;
   }
   auto& server = *server_;
-  jitllm::runtime::http::Fd slow(Open(4096));
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(slow.get(), Literal(body)));
+  llmp::runtime::http::Fd slow(Open(4096));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(slow.get(), Literal(body)));
   const auto wait_for_charge = [&](bool charged) {
     const auto held = [&] { return server.response_bytes() >= others + serialized->capacity(); };
     for (int i = 0; i < 1000 && held() != charged; ++i) {
@@ -2132,8 +2132,8 @@ TEST_F(ServerTest, LiteralResponseBudgetFollowsSlowBuffersThroughSendAndDrop) {
   };
   ASSERT_TRUE(wait_for_charge(true));
   EXPECT_LE(server.response_bytes(), kResponse);
-  jitllm::runtime::http::Fd second(Open(4096));
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(second.get(), Literal(body)));
+  llmp::runtime::http::Fd second(Open(4096));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(second.get(), Literal(body)));
   std::string pending;
   EXPECT_THAT(ReadResponse(second.get(), pending),
               AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("request_memory_busy")));
@@ -2142,7 +2142,7 @@ TEST_F(ServerTest, LiteralResponseBudgetFollowsSlowBuffersThroughSendAndDrop) {
   // response; draining that response releases its charge as well.
   linger reset{.l_onoff = 1, .l_linger = 0};
   (void)::setsockopt(slow.get(), SOL_SOCKET, SO_LINGER, &reset, sizeof reset);
-  slow = jitllm::runtime::http::Fd();
+  slow = llmp::runtime::http::Fd();
   ASSERT_TRUE(wait_for_charge(false));
   EXPECT_THAT(Exchange(Literal(body)), StartsWith("HTTP/1.1 200 "));
   ASSERT_TRUE(WaitFor([&] { return server.response_bytes() == others; }));
@@ -2298,7 +2298,7 @@ TEST_F(ServerTest, BoundsTheHttpRequest) {
   ASSERT_GT(got, 0);
   EXPECT_EQ(std::string_view(interim.data(), static_cast<std::size_t>(got)),
             "HTTP/1.1 100 Continue\r\n\r\n");
-  EXPECT_TRUE(jitllm::runtime::http::WriteAll(fd, body));
+  EXPECT_TRUE(llmp::runtime::http::WriteAll(fd, body));
   std::string pending;
   EXPECT_THAT(ReadResponse(fd, pending), StartsWith("HTTP/1.1 200 OK"));
   (void)::close(fd);
@@ -2345,7 +2345,7 @@ TEST_F(ServerTest, BodiesFollowMemoryAndAreChargedAsTheyArrive) {
   // Most of them sent: they hold 3 MiB of the pool's 3.5, and a 600 KiB
   // body cannot arrive beside them.
   for (const int fd : arriving) {
-    ASSERT_TRUE(jitllm::runtime::http::WriteAll(fd, std::string(900 * kKiB, ' ')));
+    ASSERT_TRUE(llmp::runtime::http::WriteAll(fd, std::string(900 * kKiB, ' ')));
   }
   ASSERT_TRUE(WaitFor([&] { return server.response_bytes() >= std::size_t{3} * 1024 * kKiB; }));
   const std::string large(600 * kKiB, 'z');
@@ -2368,7 +2368,7 @@ TEST_F(ServerTest, BodiesFollowMemoryAndAreChargedAsTheyArrive) {
 TEST_F(ServerTest, ABodyWaitsForTheDriverToGrowTheRequestMemory) {
   Stop();
   constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
-  backend_.memory = std::make_shared<jitllm::runtime::RequestMemory>(kMiB, 64 * kMiB);
+  backend_.memory = std::make_shared<llmp::runtime::RequestMemory>(kMiB, 64 * kMiB);
   backend_.granted.store(kMiB);
   api::ServerOptions options;
   options.intake.request_floor = kMiB;
@@ -2386,7 +2386,7 @@ TEST_F(ServerTest, ABodyWaitsForTheDriverToGrowTheRequestMemory) {
   backend_.grants.store(false);
   // Refused mid-body: the rest of the body may not be taken.
   const int refused = Open();
-  (void)jitllm::runtime::http::WriteAll(refused, Post(Chat(text)));
+  (void)llmp::runtime::http::WriteAll(refused, Post(Chat(text)));
   std::string pending;
   EXPECT_THAT(ReadResponse(refused, pending),
               AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("request_memory_bytes")));
@@ -2405,7 +2405,7 @@ class GrowingServerTest : public ServerTest {
   void StartGrowing(std::uint64_t floor, const std::function<void(api::ServerOptions&)>& more) {
     Stop();
     backend_.release.store(false);  // Stop released the first server's backend
-    backend_.memory = std::make_shared<jitllm::runtime::RequestMemory>(floor, 256 * kMiB);
+    backend_.memory = std::make_shared<llmp::runtime::RequestMemory>(floor, 256 * kMiB);
     backend_.granted.store(floor);
     api::ServerOptions options;
     options.intake.request_floor = floor;
@@ -2443,9 +2443,9 @@ TEST_F(GrowingServerTest, ABodyIsGrantedWhileTheDriverWaitsForAReader) {
     o.yield_after = std::chrono::milliseconds(200);
   });
   const int pour = Open(4096);
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(pour, Post(Chat("pour", R"(,"stream":true)"))));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(pour, Post(Chat("pour", R"(,"stream":true)"))));
   WaitStarted();
-  ASSERT_TRUE(WaitFor([&] { return BackendHealth().phase == jitllm::runtime::Phase::kPaused; }));
+  ASSERT_TRUE(WaitFor([&] { return BackendHealth().phase == llmp::runtime::Phase::kPaused; }));
   // The reader never reads; the driver waits for it, and grants the body
   // meanwhile; queued, the body has the stream yield its place.
   const std::string text(std::size_t{6} << 20U, 'w');
@@ -2491,7 +2491,7 @@ TEST_F(GrowingServerTest, AContinueIsAnsweredOnceThoughTheBodyWaits) {
   ReadUntil(fd, pending, "\r\n\r\n");
   EXPECT_EQ(pending, "HTTP/1.1 100 Continue\r\n\r\n");
   pending.clear();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(fd, body));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(fd, body));
   ReadUntil(fd, pending, "\r\n\r\n");
   EXPECT_THAT(pending, StartsWith("HTTP/1.1 200 OK"));
   EXPECT_GT(backend_.granted.load(), 6 * kMiB);  // the body waited for growth
@@ -2588,7 +2588,7 @@ TEST_F(ServerTest, KeepsAConnectionAlive) {
   const int fd = Open();
   std::string pending;
   const auto send = [&](const std::string& bytes) {
-    EXPECT_TRUE(jitllm::runtime::http::WriteAll(fd, bytes));
+    EXPECT_TRUE(llmp::runtime::http::WriteAll(fd, bytes));
     return ReadResponse(fd, pending);
   };
   EXPECT_THAT(send(Post(Chat("One"))), AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr("One")));
@@ -2606,12 +2606,12 @@ TEST_F(ServerTest, KeepsAConnectionAlive) {
   EXPECT_TRUE(Closed(fd));
   (void)::close(fd);
   const int old = Open();
-  EXPECT_TRUE(jitllm::runtime::http::WriteAll(
+  EXPECT_TRUE(llmp::runtime::http::WriteAll(
       old, "GET /v1/models HTTP/1.0\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n"));
   std::string old_pending;
   EXPECT_THAT(ReadResponse(old, old_pending), HasSubstr("Connection: keep-alive\r\n"));
   EXPECT_TRUE(
-      jitllm::runtime::http::WriteAll(old, "GET /v1/models HTTP/1.0\r\nHost: localhost\r\n\r\n"));
+      llmp::runtime::http::WriteAll(old, "GET /v1/models HTTP/1.0\r\nHost: localhost\r\n\r\n"));
   EXPECT_THAT(ReadResponse(old, old_pending), HasSubstr("Connection: close\r\n"));
   EXPECT_TRUE(Closed(old));
   (void)::close(old);
@@ -2633,7 +2633,7 @@ TEST_F(ServerTest, RefusesPipelinedRequests) {
   Start({});
   const int later = Connect(Post(Chat("block")));
   WaitStarted();
-  EXPECT_TRUE(jitllm::runtime::http::WriteAll(later, Post(Chat("Two"))));
+  EXPECT_TRUE(llmp::runtime::http::WriteAll(later, Post(Chat("Two"))));
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   backend_.release.store(true);
   std::string rest;
@@ -2668,7 +2668,7 @@ TEST_F(ServerTest, TimesOutAnInactiveRequestNotASlowOne) {
   const auto started = std::chrono::steady_clock::now();
   const std::size_t piece = (whole.size() / 15) + 1;
   for (std::size_t at = 0; at < whole.size(); at += piece) {
-    EXPECT_TRUE(jitllm::runtime::http::WriteAll(slow, std::string_view(whole).substr(at, piece)));
+    EXPECT_TRUE(llmp::runtime::http::WriteAll(slow, std::string_view(whole).substr(at, piece)));
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
   std::string trickled;
@@ -2697,8 +2697,8 @@ TEST_F(ServerTest, HoldsManyIdleConnections) {
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   EXPECT_THAT(Exchange(Post(Chat("still here"))), HasSubstr("still here"));
   // Each idle one still works.
-  EXPECT_TRUE(jitllm::runtime::http::WriteAll(
-      idle[150], "GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+  EXPECT_TRUE(llmp::runtime::http::WriteAll(idle[150],
+                                            "GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"));
   std::string pending;
   EXPECT_THAT(ReadResponse(idle[150], pending), StartsWith("HTTP/1.1 200 "));
   for (const int fd : idle) {
@@ -2859,9 +2859,9 @@ TEST_F(ServerTest, SlowReadersGetBackpressureNotACutOff) {
   EXPECT_LT(std::chrono::steady_clock::now() - t0, std::chrono::seconds(2));
   // A stream nobody reads for a while: its steps wait for the reader.
   const int pour = Open(4096);
-  EXPECT_TRUE(jitllm::runtime::http::WriteAll(pour, Post(Chat("pour", R"(,"stream":true)"))));
+  EXPECT_TRUE(llmp::runtime::http::WriteAll(pour, Post(Chat("pour", R"(,"stream":true)"))));
   WaitStarted();
-  ASSERT_TRUE(WaitFor([&] { return BackendHealth().phase == jitllm::runtime::Phase::kPaused; }));
+  ASSERT_TRUE(WaitFor([&] { return BackendHealth().phase == llmp::runtime::Phase::kPaused; }));
   EXPECT_THAT(Exchange("GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"),
               StartsWith("HTTP/1.1 200 "));
   std::this_thread::sleep_for(std::chrono::milliseconds(800));  // four stall times
@@ -2880,7 +2880,7 @@ TEST_F(ServerTest, SlowReadersGetBackpressureNotACutOff) {
   // A whole response nobody reads: held for its client (no write cut-off
   // by default) while others are served, and whole when it reads.
   const int big = Open(4096);
-  EXPECT_TRUE(jitllm::runtime::http::WriteAll(big, Post(Chat("big"))));
+  EXPECT_TRUE(llmp::runtime::http::WriteAll(big, Post(Chat("big"))));
   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   EXPECT_THAT(Exchange(Post(Chat("still"))), HasSubstr("still"));
   std::string pending;
@@ -2901,13 +2901,13 @@ TEST_F(ServerTest, AConfiguredWriteInactivityDropsAReaderThatStops) {
   options.write_inactivity = std::chrono::milliseconds(300);
   Start(options);
   const int pour = Open(4096);
-  EXPECT_TRUE(jitllm::runtime::http::WriteAll(pour, Post(Chat("pour", R"(,"stream":true)"))));
+  EXPECT_TRUE(llmp::runtime::http::WriteAll(pour, Post(Chat("pour", R"(,"stream":true)"))));
   WaitStarted();
   ASSERT_TRUE(WaitFor([&] { return backend_.cancelled.load(); }));
   EXPECT_FALSE(backend_.poured.load());
   EXPECT_THAT(Exchange(Post(Chat("after"))), HasSubstr("after"));
   const int big = Open(4096);
-  EXPECT_TRUE(jitllm::runtime::http::WriteAll(big, Post(Chat("big"))));
+  EXPECT_TRUE(llmp::runtime::http::WriteAll(big, Post(Chat("big"))));
   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   std::string got;
   while (Recv(big, got)) {
@@ -2934,7 +2934,7 @@ TEST_F(ServerTest, IgnoresUnknownFieldsAndCountsThem) {
   EXPECT_THAT(Exchange(Post(Chat("two", R"(,"frobnicate":{"a":"secret-value-2"})"))),
               StartsWith("HTTP/1.1 200 "));
   const std::string table =
-      BodyOf(Exchange("GET /jitllm/v1/ignored-fields HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+      BodyOf(Exchange("GET /llmp/v1/ignored-fields HTTP/1.1\r\nHost: localhost\r\n\r\n"));
   // No early return from here until the log is closed.
   auto doc = json::Parse(table);
   EXPECT_TRUE(doc.has_value()) << table;
@@ -2946,7 +2946,7 @@ TEST_F(ServerTest, IgnoresUnknownFieldsAndCountsThem) {
       EXPECT_EQ(In(data.at(0), {"count"}).int64(), 2);
     }
   }
-  EXPECT_THAT(Exchange("POST /jitllm/v1/ignored-fields HTTP/1.1\r\nHost: localhost\r\n"
+  EXPECT_THAT(Exchange("POST /llmp/v1/ignored-fields HTTP/1.1\r\nHost: localhost\r\n"
                        "Content-Length: 0\r\n\r\n"),
               StartsWith("HTTP/1.1 405 "));
   Stop();
@@ -3051,7 +3051,7 @@ TEST_F(ServerTest, IdleConnectionsKeepNoLargeBuffers) {
   })) << server.held_bytes();
   EXPECT_LE(server.response_bytes(), whole.size());
   EXPECT_TRUE(
-      jitllm::runtime::http::WriteAll(first, std::string_view(whole).substr(whole.size() / 2)));
+      llmp::runtime::http::WriteAll(first, std::string_view(whole).substr(whole.size() / 2)));
   std::vector<int> kept{first};
   for (int i = 0; i < 8; ++i) {
     if (i > 0) {
@@ -3068,8 +3068,8 @@ TEST_F(ServerTest, IdleConnectionsKeepNoLargeBuffers) {
   const std::size_t bound = kept.size() * 2 * api::kKeptBufferBytes;
   EXPECT_TRUE(wait_for([&] { return server.held_bytes() <= bound; })) << server.held_bytes();
   // Each still serves.
-  EXPECT_TRUE(jitllm::runtime::http::WriteAll(
-      kept[3], "GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+  EXPECT_TRUE(
+      llmp::runtime::http::WriteAll(kept[3], "GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n"));
   std::string pending;
   EXPECT_THAT(ReadResponse(kept[3], pending), StartsWith("HTTP/1.1 200 "));
   for (const int fd : kept) {
@@ -3234,7 +3234,7 @@ TEST_F(ServerTest, AProgressingRequestOutlivesTheStallTime) {
   EXPECT_THAT(streamed, AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("data: [DONE]")));
   EXPECT_THAT(Exchange(Post(Chat("wide"))),
               AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr(R"("content":"wide")")));
-  const jitllm::runtime::Health health = BackendHealth();
+  const llmp::runtime::Health health = BackendHealth();
   EXPECT_TRUE(health.healthy);
   EXPECT_EQ(health.stalls, 0U);
   EXPECT_FALSE(backend_.cancelled.load());
@@ -3254,7 +3254,7 @@ TEST_F(ServerTest, AStallIsReportedWithoutFailingRequests) {
     std::atomic<int> healthy{0};
   };
   const auto reports = std::make_shared<Reports>();
-  options.on_health = [reports](const jitllm::runtime::Health& health) {
+  options.on_health = [reports](const llmp::runtime::Health& health) {
     (health.healthy ? reports->healthy : reports->unhealthy).fetch_add(1);
   };
   Start(options);
@@ -3298,7 +3298,7 @@ TEST_F(ServerTest, AStalledBackendTripsTheWatchdog) {
     std::atomic<int> healthy{0};
   };
   const auto reports = std::make_shared<Reports>();
-  options.on_health = [reports](const jitllm::runtime::Health& health) {
+  options.on_health = [reports](const llmp::runtime::Health& health) {
     (health.healthy ? reports->healthy : reports->unhealthy).fetch_add(1);
   };
   Start(options);
@@ -3314,10 +3314,10 @@ TEST_F(ServerTest, AStalledBackendTripsTheWatchdog) {
   EXPECT_THAT(ReadResponse(queued, b),
               AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("Retry-After: 10\r\n"),
                     HasSubstr("backend_unresponsive")));
-  const jitllm::runtime::Health health = BackendHealth();
+  const llmp::runtime::Health health = BackendHealth();
   EXPECT_FALSE(health.healthy);
   EXPECT_EQ(health.stalls, 1U);
-  EXPECT_EQ(health.phase, jitllm::runtime::Phase::kStarting);  // where it hung
+  EXPECT_EQ(health.phase, llmp::runtime::Phase::kStarting);  // where it hung
   EXPECT_EQ(reports->unhealthy.load(), 1);
   EXPECT_THAT(Exchange(Post(Chat("refused"))),
               AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("backend_unresponsive")));
@@ -3567,7 +3567,7 @@ TEST_F(ServerTest, CooperativeCapacityDefersThenRefillsWithoutSerialFallback) {
   // Authenticate both pending requests before completing the blocked unit.
   ASSERT_TRUE(WaitFor([&] {
     const auto ignored =
-        Exchange("GET /jitllm/v1/ignored-fields HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        Exchange("GET /llmp/v1/ignored-fields HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
     return ignored.contains("capacity_second") && ignored.contains("capacity_third");
   }));
   cooperative_->release.store(true);
@@ -3620,9 +3620,9 @@ TEST_F(ServerTest, APausedStreamYieldsItsPlaceOnTheSerialPath) {
   options.yield_after = std::chrono::milliseconds(200);
   Start(options);
   const int pour = Open(4096);
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(pour, Post(Chat("pour", R"(,"stream":true)"))));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(pour, Post(Chat("pour", R"(,"stream":true)"))));
   WaitStarted();
-  ASSERT_TRUE(WaitFor([&] { return BackendHealth().phase == jitllm::runtime::Phase::kPaused; }));
+  ASSERT_TRUE(WaitFor([&] { return BackendHealth().phase == llmp::runtime::Phase::kPaused; }));
   const auto t0 = std::chrono::steady_clock::now();
   EXPECT_THAT(Exchange(Post(Chat("queued"))),
               AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr("queued")));
@@ -3652,7 +3652,7 @@ TEST_F(ServerTest, ACohortsPausedReaderYieldsToAPendingSwitch) {
   options.yield_after = std::chrono::milliseconds(200);
   StartCooperative(options);
   const int slow = Open(4096);
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(
       slow, Post(Chat("pour", R"(,"stream":true,"max_tokens":2000)"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->paused_units.load() != 0; }));
   // "serial" is not the cohort's (Supports): the cohort drains for it.
@@ -3682,7 +3682,7 @@ TEST_F(ServerTest, AFullCohortsPausedReaderYieldsItsPlace) {
   StartCooperative(options);
   cooperative_->capacity.store(1);
   const int slow = Open(4096);
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(
       slow, Post(Chat("pour", R"(,"stream":true,"max_tokens":2000)"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->paused_units.load() != 0; }));
   const std::string fast = Exchange(Post(Chat("short", R"(,"max_tokens":20)")));
@@ -3706,7 +3706,7 @@ TEST_F(ServerTest, APendingModelPausesAFullCohortAndResumesEveryMember) {
   cooperative_->capacity.store(2);
   std::array<int, 2> clients{Open(), Open()};
   for (const int client : clients) {
-    ASSERT_TRUE(jitllm::runtime::http::WriteAll(client, Post(Chat("long", R"(,"max_tokens":80)"))));
+    ASSERT_TRUE(llmp::runtime::http::WriteAll(client, Post(Chat("long", R"(,"max_tokens":80)"))));
   }
   ASSERT_TRUE(WaitFor([&] { return cooperative_->started.load() == 2; }));
   EXPECT_THAT(Exchange(Post(Chat("substitute", "", "tiny"))),
@@ -3729,13 +3729,13 @@ TEST_F(ServerTest, APausedCohortResumesAheadOfLaterModelArrivals) {
   options.model_turn = std::chrono::milliseconds(50);
   StartCooperative(options);
   const int original = Open();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
   const int substitute = Open();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(substitute, Post(Chat("slow", "", "tiny"))));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(substitute, Post(Chat("slow", "", "tiny"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->yielded.load() == 1; }));
   const int later = Open();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(later, Post(Chat("later", "", "tiny"))));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(later, Post(Chat("later", "", "tiny"))));
   std::string pending;
   EXPECT_THAT(ReadResponse(substitute, pending), StartsWith("HTTP/1.1 200 "));
   EXPECT_TRUE(WaitFor([&] { return cooperative_->resumed.load() != 0; }));
@@ -3757,7 +3757,7 @@ TEST_F(ServerTest, AnAdmittedModelPausedRequestDoesNotExpireInTheInitialQueue) {
   options.queue_wait = std::chrono::milliseconds(100);
   StartCooperative(options);
   const int original = Open();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
   // Wait until the running turn is eligible so this substitute itself is
   // taken up within the initial queue-wait cap.
@@ -3776,7 +3776,7 @@ TEST_F(ServerTest, ASubstituteRefusalStillResumesThePausedRequest) {
   options.model_turn = std::chrono::milliseconds(50);
   StartCooperative(options);
   const int original = Open();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
   EXPECT_THAT(Exchange(Post(Chat("fail", "", "tiny"))), StartsWith("HTTP/1.1 400 "));
   std::string pending;
@@ -3826,7 +3826,7 @@ TEST_F(ServerTest, AFilledSameModelSlotDoesNotPauseTheRunningResponse) {
   StartCooperative(options);
   cooperative_->capacity.store(1);
   const int original = Open();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":30)"))));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":30)"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
   EXPECT_THAT(Exchange(Post(Chat("same", R"(,"max_tokens":2)"))),
               AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("content":"xx")")));
@@ -3842,11 +3842,11 @@ TEST_F(ServerTest, AClientLeavingDuringASubstituteDropsItsContinuation) {
   options.model_turn = std::chrono::milliseconds(50);
   StartCooperative(options);
   const int original = Open();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(
       original, Post(Chat("long", R"(,"stream":true,"max_tokens":80)"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
   const int substitute = Open();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(substitute, Post(Chat("slow", "", "tiny"))));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(substitute, Post(Chat("slow", "", "tiny"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->yielded.load() == 1; }));
   linger reset{.l_onoff = 1, .l_linger = 0};
   ASSERT_EQ(::setsockopt(original, SOL_SOCKET, SO_LINGER, &reset, sizeof reset), 0);
@@ -3869,12 +3869,12 @@ TEST_F(ServerTest, ASubstituteCohortBatchesReadyPeersWithoutNestedPauseOrLaterRe
   cooperative_->pause_units.store(true);
   cooperative_->pause_substitute.store(true);
   const int original = Open();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->polls.load() != 0; }));
   std::array<int, 2> substitutes{Open(), Open()};
   std::array<std::string, 2> received;
   for (std::size_t i = 0; i < substitutes.size(); ++i) {
-    ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+    ASSERT_TRUE(llmp::runtime::http::WriteAll(
         substitutes[i], Post(Chat("substitute", R"(,"stream":true,"max_tokens":20)", "tiny"))));
     // A queued keepalive proves each peer is ready before admission.
     ReadUntil(substitutes[i], received[i], ": keepalive");
@@ -3884,7 +3884,7 @@ TEST_F(ServerTest, ASubstituteCohortBatchesReadyPeersWithoutNestedPauseOrLaterRe
   ASSERT_TRUE(WaitFor([&] { return cooperative_->substitute_entered.load(); }));
   ASSERT_EQ(cooperative_->tiny_peak.load(), 2U);
   const int later = Open();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(
       later, Post(Chat("later", R"(,"stream":true,"max_tokens":20)", "tiny"))));
   std::string later_received;
   ReadUntil(later, later_received, ": keepalive");
@@ -3917,10 +3917,10 @@ TEST_F(ServerTest, ASubstituteReaderYieldsToSuspendedMembersWhenThePublicQueueIs
   StartCooperative(options);
   cooperative_->second_model.store(true);
   const int original = Open();
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
   const int slow = Open(4096);
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(
       slow, Post(Chat("pour", R"(,"stream":true,"max_tokens":2000)", "tiny"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->paused_units.load() != 0; }));
   std::string pending;
@@ -3986,8 +3986,8 @@ TEST_F(ServerTest, AHungNodeWaitIsCancelledAndTheRouteGoesOn) {
   Stop();
   std::atomic<std::uint64_t> activity{0};
   std::atomic<int> restarts{0};
-  jitllm::runtime::HangLadder ladder(std::chrono::milliseconds(400),
-                                     std::chrono::steady_clock::now());
+  llmp::runtime::HangLadder ladder(std::chrono::milliseconds(400),
+                                   std::chrono::steady_clock::now());
   ladder.set_last_resort([&restarts](const std::string& /*why*/) { ++restarts; });
   api::ServerOptions options;
   options.ladder = &ladder;
@@ -4001,7 +4001,7 @@ TEST_F(ServerTest, AHungNodeWaitIsCancelledAndTheRouteGoesOn) {
   EXPECT_THAT(failed, AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("backend_hung")));
   EXPECT_EQ(ladder.cancels(), 1U);
   EXPECT_TRUE(WaitFor([&] { return ladder.drained() == 1; }));
-  EXPECT_EQ(ladder.rung(), jitllm::runtime::HangLadder::Rung::kWatching);
+  EXPECT_EQ(ladder.rung(), llmp::runtime::HangLadder::Rung::kWatching);
   EXPECT_THAT(Exchange(Post(Chat("hello"))), StartsWith("HTTP/1.1 200 "));
   EXPECT_EQ(restarts.load(), 0);
   Stop();  // before what the options borrow goes
@@ -4019,10 +4019,10 @@ TEST_F(ServerTest, CooperativeBackpressurePausesOnlyTheSlowReader) {
   options.stall = std::chrono::milliseconds(200);
   StartCooperative(options);
   const int slow = Open(4096);
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(
       slow, Post(Chat("pour", R"(,"stream":true,"max_tokens":2000)"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->paused_units.load() != 0; }));
-  EXPECT_TRUE(WaitFor([&] { return BackendHealth().phase == jitllm::runtime::Phase::kPaused; }));
+  EXPECT_TRUE(WaitFor([&] { return BackendHealth().phase == llmp::runtime::Phase::kPaused; }));
   // Another request joins and finishes while the slow one waits.
   const std::string fast = Exchange(Post(Chat("short", R"(,"max_tokens":20)")));
   EXPECT_THAT(fast, AllOf(StartsWith("HTTP/1.1 200 "),
@@ -4042,7 +4042,7 @@ TEST_F(ServerTest, CooperativeBackpressurePausesOnlyTheSlowReader) {
 }
 
 TEST(PromptTokens, ChargeFollowsTheLastSharedOwner) {
-  jitllm::runtime::RequestMemory memory(4096);
+  llmp::runtime::RequestMemory memory(4096);
   std::vector<std::int32_t> tokens(100, 42);
   tokens.reserve(200);
   const auto bytes = sizeof(api::PromptTokens) + tokens.capacity() * sizeof(std::int32_t);
@@ -4067,9 +4067,9 @@ TEST_F(ServerTest, KeepalivesDoNotGrowAPausedReadersOutput) {
   options.keepalive = std::chrono::milliseconds(1);
   StartCooperative(options);
   const int slow = Open(4096);
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(
       slow, Post(Chat("pour", R"(,"stream":true,"max_tokens":2000)"))));
-  ASSERT_TRUE(WaitFor([&] { return BackendHealth().phase == jitllm::runtime::Phase::kPaused; }));
+  ASSERT_TRUE(WaitFor([&] { return BackendHealth().phase == llmp::runtime::Phase::kPaused; }));
   // Let the socket's final writes settle, then observe several keepalive
   // intervals with no reader. Comments must not grow the pending buffer.
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -4114,7 +4114,7 @@ TEST_F(ServerTest, CooperativeCohortDrainsBeforeSerialFallbackAndLaterRefill) {
   // The diagnostic route authenticates that this whole request was parsed
   // before a later eligible one is sent; the driver is still blocked.
   ASSERT_TRUE(WaitFor([&] {
-    return Exchange("GET /jitllm/v1/ignored-fields HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+    return Exchange("GET /llmp/v1/ignored-fields HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
         .contains("cooperative_fifo_marker");
   }));
   const int later = Connect(Post(Chat("later", R"(,"max_tokens":4)")));
@@ -4198,7 +4198,7 @@ TEST_F(ServerTest, CooperativeLiteralResponsesShareTheSocketBufferBudget) {
                                  api::Finish::kStop, {.prompt_tokens = 4}, kResponse);
   ASSERT_TRUE(serialized.has_value());
   options.intake.request_capacity = kResponse;
-  options.memory = std::make_shared<jitllm::runtime::RequestMemory>(kResponse);
+  options.memory = std::make_shared<llmp::runtime::RequestMemory>(kResponse);
   const std::uint64_t others = kResponse - (serialized->capacity() + (serialized->capacity() / 2));
   ASSERT_TRUE(options.memory->TryCharge(others));
   StartCooperative(options);
@@ -4207,8 +4207,8 @@ TEST_F(ServerTest, CooperativeLiteralResponsesShareTheSocketBufferBudget) {
     return;
   }
   auto& server = *server_;
-  jitllm::runtime::http::Fd slow(Open(4096));
-  ASSERT_TRUE(jitllm::runtime::http::WriteAll(slow.get(), Literal(body)));
+  llmp::runtime::http::Fd slow(Open(4096));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(slow.get(), Literal(body)));
   ASSERT_TRUE(WaitFor([&] { return server.response_bytes() >= others + serialized->capacity(); }));
   EXPECT_LE(server.response_bytes(), kResponse);
   EXPECT_THAT(Exchange(Literal(body)),
@@ -4216,7 +4216,7 @@ TEST_F(ServerTest, CooperativeLiteralResponsesShareTheSocketBufferBudget) {
   EXPECT_LE(server.response_bytes(), kResponse);
   linger reset{.l_onoff = 1, .l_linger = 0};
   (void)::setsockopt(slow.get(), SOL_SOCKET, SO_LINGER, &reset, sizeof reset);
-  slow = jitllm::runtime::http::Fd();
+  slow = llmp::runtime::http::Fd();
   ASSERT_TRUE(WaitFor([&] { return server.response_bytes() == others; }));
   EXPECT_THAT(Exchange(Literal(body)), StartsWith("HTTP/1.1 200 "));
   ASSERT_TRUE(WaitFor([&] { return server.response_bytes() == others; }));

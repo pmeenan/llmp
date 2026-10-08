@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 import argparse, hashlib, json, os, signal, subprocess, time
 from pathlib import Path
@@ -7,7 +7,7 @@ parser.add_argument('--out', type=Path, required=True)
 args = parser.parse_args()
 P = Path(__file__).parent
 R = args.out.resolve()
-H = Path.home() / '.local/share/jitllm'
+H = Path.home() / '.local/share/llmp'
 REF = H / 'llama-reference-v060'
 SDK = H / 'sdk/aarch64-c09daba6ac31edee'
 os.umask(63)

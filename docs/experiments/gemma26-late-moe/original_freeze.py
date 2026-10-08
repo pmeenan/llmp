@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Authenticate counterpart acquisition only after the native blind boundary."""
 import json
@@ -29,8 +29,8 @@ def main():
             own['pre_sha256'] != identity(pre_path)['sha256'] or \
             own['capture_receipt_sha256'] != identity(capture_path)['sha256']:
         raise ValueError('unmatched native pre-exposure calibration')
-    root = pathlib.Path.home() / '.local/share/jitllm/gemma26-late-moe'
-    source = pathlib.Path.home() / 'src/jitLLM-wt/m3fixb'
+    root = pathlib.Path.home() / '.local/share/llmp/gemma26-late-moe'
+    source = pathlib.Path.home() / 'src/llmp-wt/m3fixb'
     if identity(root / 'oracle') != pre['original_operator_client']:
         raise ValueError('original client binary changed')
     for name, expected in pre['source_files'].items():
@@ -45,7 +45,7 @@ def main():
         if len(command) != 5 or not command[0].endswith('/gemma26-late-moe/reference.sh') or \
                 command[1:] != ['oracle', kind, policy, manifest['sha256']]:
             raise ValueError('actual original operator command/input/policy differs')
-    log_path = pathlib.Path.home() / '.local/share/jitllm/jobs' / job / 'log'
+    log_path = pathlib.Path.home() / '.local/share/llmp/jobs' / job / 'log'
     if log_path.read_text().splitlines().count('LATE_ORIGINAL_RETIRED complete=1') != 2:
         raise ValueError('missing original context/device retirement')
     containers = {}
@@ -57,7 +57,7 @@ def main():
         cid = (root / (name + '.cid')).read_text().strip()
         container = json.loads((root / (name + '-container-retired.json')).read_text())
         if len(cid) != 64 or any(c not in '0123456789abcdef' for c in cid) or container != {
-                'cid': cid, 'name': 'jitllm-gemma26-late-moe-' + name,
+                'cid': cid, 'name': 'llmp-gemma26-late-moe-' + name,
                 'owner_label': 'gemma26-late-moe', 'container_absent_after_checked_docker_query': True}:
             raise ValueError('missing owned original container absence proof')
         containers[policy] = container

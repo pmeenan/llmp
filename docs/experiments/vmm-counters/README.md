@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Which OS counters include VMM backing on the Spark — 2026-09-25
@@ -6,7 +6,7 @@
 The [memory breakdown](../../architecture.md#memory-breakdown) puts OS
 counters beside the catalog's occupancy. M2 owed a measurement of which of
 those counters include CUDA VMM backing on the Spark's driver, so the two
-can reconcile. This experiment creates backing through jitLLM's CUDA
+can reconcile. This experiment creates backing through llmpalooza's CUDA
 provider and records how far each counter moves at each step.
 
 The harness is
@@ -48,9 +48,9 @@ across three consecutive processes.
   `x86_64-f469d317c88c3044`.
 - **Sources (SHA-256):**
   - `benchmarks/vmm_counters.cc`:
-    `cec5bb3d9930f551cc4024f79a34619256ae7a83a0b0d68dfc265b11fc51c92c`;
+    `7682cb4da1bdb710b8eb2d18d23bf65d1a1212f353fa95113e3ca219e47fd2fe`;
   - `src/providers/cuda/cuda_device_memory.cc`:
-    `a70aba0af02e9222e127e3de680dc199a47b99afa2eee32b46c869231c9acfd6`;
+    `8c09b9526c2f9c7e3411b47b64afc8ee5794fd19eacfb5542e02cbbe802196c9`;
   - `src/providers/device_memory.cc`:
     `78c2a441694a570706190aafc39abd6f1b64f7d126c5d8d7b35e5ac36a121fdd`.
 
@@ -145,7 +145,7 @@ this:
 - **Attribution:** the slab growth is attributed to the driver by its
   timing (it follows create, map and release). The slab caches responsible
   were not identified.
-- **Process type:** a user-session scope, not the `jitllm.service` unit.
+- **Process type:** a user-session scope, not the `llmp.service` unit.
   The cgroup conclusion should hold there too, but it was not measured
   there.
 
@@ -156,5 +156,5 @@ tools/build deploy --host spark cross
 ```
 
 ```bash
-ssh spark '~/.cache/jitllm/deploy/cross-<id>/benchmarks/jitllm_vmm_counters 8'
+ssh spark '~/.cache/llmp/deploy/cross-<id>/benchmarks/llmp_vmm_counters 8'
 ```

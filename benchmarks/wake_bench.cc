@@ -1,14 +1,14 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The runtime wake (docs/experiments/runtime-wake/): how quickly the chain
 // from a step's fence to the next step's launch wakes on the GB10, and at
 // what CPU cost, for each candidate way of waiting. Two modes:
 //
-//   jitllm_wake_bench chain [--steps N] [--step-us US] [--host-us US]
+//   llmp_wake_bench chain [--steps N] [--step-us US] [--host-us US]
 //                           [--repeats N] [--mix] [--only NAME,...]
 //                           [--spin-ahead-us US]
-//   jitllm_wake_bench node [--steps N] [--step-us US] [--host-us US]
+//   llmp_wake_bench node [--steps N] [--step-us US] [--host-us US]
 //                          [--repeats N] [--poll-us US] [--spin-ahead-us US]
 //
 // chain: four threads in the roles of the runtime's, over raw CUDA: a
@@ -17,7 +17,7 @@
 // hands the fence to a completion lane (C); C waits for the fence in the
 // configuration's way and publishes it to a scheduler (K), which tells a
 // client (D); D does --host-us of host work (sampling) and asks K for the
-// next step, which K posts to S. K and S wait on jitLLM's WakeFlag, as the
+// next step, which K posts to S. K and S wait on llmpalooza's WakeFlag, as the
 // scheduler and the lanes do. Each configuration (Configs below) sets how C
 // detects the completion and how K, S and D wait:
 //   (a) a blocking-sync event, (b) a host function signalling a futex,
@@ -82,7 +82,7 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
-using jitllm::base::WakeFlag;
+using llmp::base::WakeFlag;
 using std::chrono::microseconds;
 using std::chrono::milliseconds;
 
@@ -210,7 +210,7 @@ constexpr auto kSlack = microseconds(1000);     // and until this long after it
 constexpr auto kBackstop = microseconds(1000);  // sleeping, query at least this often
 constexpr auto kBackoffMax =
     microseconds(1000);  // past the slack, sleep up to this between queries
-using jitllm::base::Expectation;
+using llmp::base::Expectation;
 
 struct StepRecord {
   std::int64_t request = 0;    // D asked for the step
@@ -237,7 +237,7 @@ struct ChainOptions {
 // the smallest seen (a write seen later only makes the difference larger).
 std::int64_t Calibrate(cudaStream_t stream, std::uint64_t* tick_host, std::uint64_t* tick_dev) {
   *reinterpret_cast<volatile std::uint64_t*>(tick_host) = 0;
-  if (jitllm::wake::Tick(stream, 20000000, tick_dev) != cudaSuccess) {
+  if (llmp::wake::Tick(stream, 20000000, tick_dev) != cudaSuccess) {
     return 0;
   }
   std::int64_t best = std::numeric_limits<std::int64_t>::max();
@@ -402,7 +402,7 @@ bool RunChain(const Config& config, const ChainOptions& o) {
       seen = command;
       const auto i = static_cast<std::size_t>(command);
       records[i].s_command = Ns(now);
-      bool ok = jitllm::wake::Step(cuda_stream, step_ns[i], stamps_dev + (2 * i)) == cudaSuccess;
+      bool ok = llmp::wake::Step(cuda_stream, step_ns[i], stamps_dev + (2 * i)) == cudaSuccess;
       ok = ok && cuEventRecord(config.detect == Detect::kEvent ? blocking : plain, stream) ==
                      CUDA_SUCCESS;
       if (hostfn) {
@@ -620,8 +620,8 @@ struct NodeOptions {
   std::int64_t spin_ahead = -1;  // the runtime's default (DeviceSettings::spin_ahead)
 };
 
-namespace ts = jitllm::test_support;
-namespace sc = jitllm::scheduler;
+namespace ts = llmp::test_support;
+namespace sc = llmp::scheduler;
 
 bool RunNode(const NodeOptions& o) {
   ts::NodeSettings settings;
@@ -643,7 +643,7 @@ bool RunNode(const NodeOptions& o) {
   if (auto r = node.MapWorkspace(ts::kPagedExtent, ts::kPagedExtent); !r) {
     return fail("workspace", r.error());
   }
-  if (auto r = node.Start(jitllm::base::Bytes(std::uint64_t{1} << 30)); !r) {
+  if (auto r = node.Start(llmp::base::Bytes(std::uint64_t{1} << 30)); !r) {
     return fail("start", r.error());
   }
   node.Run();
@@ -683,9 +683,9 @@ bool RunNode(const NodeOptions& o) {
     const double cpu_start = ProcessCpu();
     const auto wall_start = Clock::now();
     for (std::size_t i = 0; i < steps && ok; ++i) {
-      auto job = [&o, stamps_dev](jitllm::providers::NativeStream native) {
-        return jitllm::wake::Step(static_cast<cudaStream_t>(native.handle), o.step_us * 1000,
-                                  stamps_dev) == cudaSuccess
+      auto job = [&o, stamps_dev](llmp::providers::NativeStream native) {
+        return llmp::wake::Step(static_cast<cudaStream_t>(native.handle), o.step_us * 1000,
+                                stamps_dev) == cudaSuccess
                    ? sc::JobResult::kQueued
                    : sc::JobResult::kUnknown;
       };
@@ -751,7 +751,7 @@ bool Number(std::string_view text, T& out) {
 int main(int argc, char** argv) {
   const std::span<char*> args(argv, static_cast<std::size_t>(argc));
   if (args.size() < 2) {
-    std::println(stderr, "usage: jitllm_wake_bench chain|node [options] (see the header)");
+    std::println(stderr, "usage: llmp_wake_bench chain|node [options] (see the header)");
     return 2;
   }
   const std::string_view mode = args[1];

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // What the storage roles that the runtime pages from and spills to must
@@ -17,11 +17,11 @@
 // FILE_FLAG_NO_BUFFERING (sector-aligned like O_DIRECT) and
 // FILE_FLAG_DELETE_ON_CLOSE for the spill file. Where direct I/O is only
 // preferred, OpenForDirectRead's `buffered_fallback` reopens a refused
-// file through the cache and says so (as TensorFold's reader does); jitLLM
+// file through the cache and says so (as TensorFold's reader does); llmpalooza
 // never asks for that on Linux.
 
-#ifndef JITLLM_PLATFORM_DIRECT_IO_H_
-#define JITLLM_PLATFORM_DIRECT_IO_H_
+#ifndef LLMP_PLATFORM_DIRECT_IO_H_
+#define LLMP_PLATFORM_DIRECT_IO_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -30,7 +30,7 @@
 #include <span>
 #include <string>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 // The largest direct-I/O alignment the storage roles may require: D-056
 // aligns artifact data to 4 KiB.
@@ -94,6 +94,6 @@ std::expected<void, int> TransferDirectFile(int fd, std::uint64_t offset,
 // the range may still be in flight. errno on failure.
 std::expected<void, int> DiscardFileRange(int fd, std::uint64_t offset, std::uint64_t bytes);
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_DIRECT_IO_H_
+#endif  // LLMP_PLATFORM_DIRECT_IO_H_

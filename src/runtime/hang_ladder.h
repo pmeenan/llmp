@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // D-102's recovery of a genuine hang (docs/runtime-serving.md#hang-recovery):
@@ -45,8 +45,8 @@
 //    on the thread that saw it: what can be kept is kept, and the process
 //    exits for its supervisor to restart it.
 
-#ifndef JITLLM_RUNTIME_HANG_LADDER_H_
-#define JITLLM_RUNTIME_HANG_LADDER_H_
+#ifndef LLMP_RUNTIME_HANG_LADDER_H_
+#define LLMP_RUNTIME_HANG_LADDER_H_
 
 #include <atomic>
 #include <chrono>
@@ -61,7 +61,7 @@
 
 #include "base/work_pulse.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 // A cancellation that can drain does so at once (a read still queued, a
 // lease never granted, a command no lane took, CPU work at its next
@@ -174,6 +174,6 @@ class HangLadder {
 
 std::string_view RungName(HangLadder::Rung rung);
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_HANG_LADDER_H_
+#endif  // LLMP_RUNTIME_HANG_LADDER_H_

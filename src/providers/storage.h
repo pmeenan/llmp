@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The storage provider (D-034, D-048; docs/architecture.md#providers):
@@ -25,8 +25,8 @@
 // a storage role (config/storage_roles.h), and memory that the caller
 // keeps leased until the completion arrives.
 
-#ifndef JITLLM_PROVIDERS_STORAGE_H_
-#define JITLLM_PROVIDERS_STORAGE_H_
+#ifndef LLMP_PROVIDERS_STORAGE_H_
+#define LLMP_PROVIDERS_STORAGE_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -35,7 +35,7 @@
 #include <span>
 #include <system_error>
 
-namespace jitllm::providers {
+namespace llmp::providers {
 
 enum class IoKind : std::uint8_t { kRead, kWrite };
 
@@ -115,6 +115,6 @@ class Storage {
 // std::errc::function_not_supported where the system has none.
 std::expected<std::unique_ptr<Storage>, std::error_code> OpenStorage(std::size_t depth);
 
-}  // namespace jitllm::providers
+}  // namespace llmp::providers
 
-#endif  // JITLLM_PROVIDERS_STORAGE_H_
+#endif  // LLMP_PROVIDERS_STORAGE_H_

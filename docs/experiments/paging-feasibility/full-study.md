@@ -1,10 +1,10 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M0 paging feasibility — full study
 
 The bounded M0 feasibility study is complete. This report extends the historical [first cut](README.md); it does not describe an
-implemented jitLLM pager.
+implemented llmpalooza pager.
 
 ## Evidence and comparison contract
 
@@ -461,7 +461,7 @@ against each other. Current-source hashes and per-run source/binary/log hashes
 distinguish revised harnesses from historical evidence. Aggregate generation
 checks original event, prediction, model, input, and resource-log identities.
 
-Actual jitLLM paging, prepared-layout execution, distributed placement, sustained
+Actual llmpalooza paging, prepared-layout execution, distributed placement, sustained
 state-write performance, and end-to-end stall acceptance were not implemented
 or benchmarked by this experiment. They remain their named later milestone
 checks. All repository changes remain in the working tree for human review
@@ -490,5 +490,5 @@ the external evidence; large-model shard identities match the pinned manifest.
 GPU execution and native compilation were performed by the builder and reviewed
 from its evidence, not independently repeated by this reviewer. Qwen numerical
 drift, unvalidated restored continuations, hypothetical layouts, and the absence
-of actual jitLLM paging remain explicit experiment limitations, not passing
+of actual llmpalooza paging remain explicit experiment limitations, not passing
 runtime correctness or performance claims.

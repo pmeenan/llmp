@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/http.h"
@@ -23,7 +23,7 @@
 
 #include "platform/sockets.h"
 
-namespace jitllm::runtime::http {
+namespace llmp::runtime::http {
 namespace {
 
 std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurrency-mt-unsafe)
@@ -379,4 +379,4 @@ std::expected<Listener, std::string> Listen(const config::ClientEndpoint& endpoi
   return Listener{.fd = std::move(fd), .port = port};
 }
 
-}  // namespace jitllm::runtime::http
+}  // namespace llmp::runtime::http

@@ -12,23 +12,23 @@
       },
       {
         "path": "docs/experiments/gemma-joined-norm/PROTOCOL.md",
-        "sha256": "26e9e640d71623fcf32675488c1c3d4cd346171534bbb7fa0806dce62e75171d"
+        "sha256": "3ae6d194cf4299fc4687483dc388e7a69596fea46dbc0d38ac6d50a7a73028dd"
       },
       {
         "path": "docs/experiments/gemma-joined-norm/own_freeze.py",
-        "sha256": "0de867b0851c29ca83570796b52ed72d98f652d2f7c5fc7f0730624a04dcfab9"
+        "sha256": "ef089ba64fa8d35507f8a8f565cb1b90e8d02ae9882f7fd6fbd06aed04e0c3ae"
       },
       {
         "path": "docs/experiments/gemma-joined-norm/reference.sh",
-        "sha256": "a0d9a6737985e7b17a092e5ce27b33a1fa42afd6f4ca0d894ca7687b24b14ad5"
+        "sha256": "ec260111687acd6a8225e6a3b5cea1cf60523dd6e236f10cb5f1b0a963b09471"
       },
       {
         "path": "docs/experiments/gemma-joined-serving/PROTOCOL.md",
-        "sha256": "f56fbdde28481605d70ebc5f85f0496c42ed48dcd6b27760bfc51251b3cf1912"
+        "sha256": "8cf3e7eed9cf6e9dd4f74ee0379128fd6b95c1b0e45fe72ed4629c862e0b3db9"
       },
       {
         "path": "docs/experiments/gemma-joined-serving/analyze.py",
-        "sha256": "d9c4efae191cedc2797617264bfe3ddaf71dbe04c4c8132914c38367e2011ce1"
+        "sha256": "af2458e13546b100e71dd1321752d58f4dd98256642d5c82857a8ae02d40d6eb"
       },
       {
         "path": "docs/experiments/gemma-joined-serving/llama_joined.cc",
@@ -36,7 +36,7 @@
       },
       {
         "path": "docs/experiments/gemma-joined-serving/reference.sh",
-        "sha256": "d193b98b43364f481a941d9de0972dfe59bed1dde6c398c82f1da014eaa444e3"
+        "sha256": "476e8feff9af740e8bf6b135a861d5c5229e0e58e01c22817c2eb848cd173d51"
       },
       {
         "path": "src/engine/gemma4_plan.cc",
@@ -52,11 +52,11 @@
       },
       {
         "path": "src/execution/registry.cc",
-        "sha256": "118d334fb3b72b358a21d02bac98eac806047ae1620a9ab689bfa91c77818505"
+        "sha256": "089329421a2ecbc9b605c6afcef6b6b48293e7b10118584c65e03101fbec9076"
       },
       {
         "path": "src/execution/registry.h",
-        "sha256": "292cddfc1720be55e0f4463345951e0153514deb802f5a2ef83276e3d6bb5da3"
+        "sha256": "27371d97f0f889ad3b20416b508d2dec02ce2689c37ef41b5a77146660aec065"
       },
       {
         "path": "src/kernels/ggml/fusion.cc",
@@ -72,7 +72,7 @@
       },
       {
         "path": "src/kernels/ggml/gemma_norm.cu",
-        "sha256": "47856fa84c5403a90506576ef01f977a448c646c80c5eddaa47eaa7bd7d6cb3d"
+        "sha256": "c9774bd3ec5542362b4c898dc3df26d7354a63ff198b102ace174a88d1856fae"
       },
       {
         "path": "src/kernels/ggml/gemma_norm.h",
@@ -100,7 +100,7 @@
       },
       {
         "path": "src/runtime/gemma_wave.h",
-        "sha256": "cc34ce7d44ced90afa7594f8a3e8f621b8d24a79b6b126b7100108f000110ce7"
+        "sha256": "97cc331c567e2fe66edcdd7c3d43d290004a0e1c5a95aa56501c8cafafb993c8"
       },
       {
         "path": "src/runtime/serving.cc",
@@ -157,8 +157,8 @@
   "retained_recipe_compatibility": {
     "source_hashes": {
       "docs/experiments/gemma-joined-serving/llama_joined.cc": "c80b73c85453ece170eda57bc0725cdef5b4e0af3d7cacf3d1a8bee0d1cfa19e",
-      "docs/experiments/gemma-joined-serving/reference.sh": "d193b98b43364f481a941d9de0972dfe59bed1dde6c398c82f1da014eaa444e3",
-      "docs/experiments/gemma-joined-serving/analyze.py": "d9c4efae191cedc2797617264bfe3ddaf71dbe04c4c8132914c38367e2011ce1"
+      "docs/experiments/gemma-joined-serving/reference.sh": "476e8feff9af740e8bf6b135a861d5c5229e0e58e01c22817c2eb848cd173d51",
+      "docs/experiments/gemma-joined-serving/analyze.py": "af2458e13546b100e71dd1321752d58f4dd98256642d5c82857a8ae02d40d6eb"
     },
     "reference_binary_sha256": "01889d8c4a281110f611cedcab43235a9ac80bcc21abf094d982f14dd2112f61",
     "exact_input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",

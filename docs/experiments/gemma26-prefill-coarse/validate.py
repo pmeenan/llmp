@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Authenticate an isolated three-unit overlay and native Task40 fidelity."""
 import datetime
@@ -70,7 +70,7 @@ def environment(root, scratch):
     assert sources == frame['sources']
     assert sources['benchmarks/gemma_prefill.cc']['sha256'] == '8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2'
     assert ring.identity(scratch/'ids.i32') == {'bytes':8227*4, 'sha256':ring.IDS}
-    artifact = pathlib.Path.home()/'.local/share/jitllm/m3-artifacts'/ring.ARTIFACT
+    artifact = pathlib.Path.home()/'.local/share/llmp/m3-artifacts'/ring.ARTIFACT
     assert ring.identity(artifact/'manifest.json')['sha256'] == ring.ARTIFACT
     assert ring.identity(artifact/'index.json')['sha256'] == ring.INDEX
     interface_path = scratch/'nvtx-interface.json'
@@ -79,10 +79,10 @@ def environment(root, scratch):
     observer = pathlib.Path(interface['observer_root'])
     assert all(ring.identity(observer/p) == value for p,value in interface['headers'].items())
     assert all(ring.identity(pathlib.Path(p)) == value for p,value in interface['tools'].items())
-    baseline = pathlib.Path.home()/'.local/share/jitllm/gemma26-swa-ring-transfer'
+    baseline = pathlib.Path.home()/'.local/share/llmp/gemma26-swa-ring-transfer'
     assert ring.identity(baseline/'native-frozen.json')['sha256'] == profile.TASK40_OWN
     assert ring.identity(baseline/'source-identities.json')['sha256'] == profile.TASK40_SOURCE
-    baseline_log = pathlib.Path.home()/'.local/share/jitllm/jobs/m35-gemma26-swa-ring-bookend1/log'
+    baseline_log = pathlib.Path.home()/'.local/share/llmp/jobs/m35-gemma26-swa-ring-bookend1/log'
     assert ring.identity(baseline_log)['sha256'] == profile.TASK40_LOG
     probe = scratch/'probe-validated.json'
     probe_record = json.loads(probe.read_text())
@@ -91,15 +91,15 @@ def environment(root, scratch):
     assert probe_record['sources'] == sources
     binaries = {p:ring.identity(scratch/p) for p in ['profile_child']}
     binaries.update({p:ring.identity(root/'build/spark-native/benchmarks'/p) for p in
-                     ['jitllm_gemma26_clock_probe', 'jitllm_gemma26_prefill_coarse']})
-    assert probe_record['probe_binary'] == binaries['jitllm_gemma26_clock_probe']
+                     ['llmp_gemma26_clock_probe', 'llmp_gemma26_prefill_coarse']})
+    assert probe_record['probe_binary'] == binaries['llmp_gemma26_clock_probe']
     assert probe_record['child_binary'] == binaries['profile_child']
     return {'base':BASE, 'source_frame':ring.identity(frame_path), 'sources':sources,
             'overlay':overlay, 'measured_source_count':len(frame['measured']),
             'binaries':binaries, 'probe':ring.identity(probe), 'interface':ring.identity(interface_path),
             'ids':ring.identity(scratch/'ids.i32'), 'manifest':ring.identity(artifact/'manifest.json'),
             'index':ring.identity(artifact/'index.json'),
-            'build_receipt':ring.identity(root/'build/spark-native/jitllm-receipt.json'),
+            'build_receipt':ring.identity(root/'build/spark-native/llmp-receipt.json'),
             'task40_own':ring.identity(baseline/'native-frozen.json'),
             'task40_source':ring.identity(baseline/'source-identities.json'),
             'task40_log':ring.identity(baseline_log)}

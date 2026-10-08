@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cuda_runtime.h>
@@ -26,9 +26,9 @@
 #include "providers/cuda/cuda_device_execution.h"
 
 namespace {
-namespace kg = jitllm::kernels::ggml;
-namespace pr = jitllm::providers;
-using jitllm::base::Bytes;
+namespace kg = llmp::kernels::ggml;
+namespace pr = llmp::providers;
+using llmp::base::Bytes;
 class GemmaMoeGpu : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -107,7 +107,7 @@ class GemmaMoeGpu : public ::testing::Test {
   }
   template <class T>
   void Export(const std::string& stem, const std::vector<T>& v) {
-    const auto* root = std::getenv("JITLLM_GEMMA_MOE_ORACLE_ROOT");
+    const auto* root = std::getenv("LLMP_GEMMA_MOE_ORACLE_ROOT");
     if (!root) return;
     const auto path = std::filesystem::path(root) / (stem + ".bin");
     ASSERT_FALSE(std::filesystem::exists(path));
@@ -125,7 +125,7 @@ class GemmaMoeGpu : public ::testing::Test {
   bool retirement_failed = false;
 };
 TEST_F(GemmaMoeGpu, RegisteredBothOutputPlanPreservesTailAndFreshCapturedOperands) {
-  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  auto registry = llmp::execution::Registry::Create(kg::Implementations());
   ASSERT_TRUE(registry);
   for (const auto rows : {1, 2, 4, 8, 128}) {
     auto* logits = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 128, rows));

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The initial victim-selection baseline
@@ -18,8 +18,8 @@
 // never chosen. Retained entries and their M_state cap (D-055) join the
 // order with the retention cache.
 
-#ifndef JITLLM_MEMORY_VICTIMS_H_
-#define JITLLM_MEMORY_VICTIMS_H_
+#ifndef LLMP_MEMORY_VICTIMS_H_
+#define LLMP_MEMORY_VICTIMS_H_
 
 #include <cstddef>
 #include <span>
@@ -28,7 +28,7 @@
 #include "base/bytes.h"
 #include "catalog/catalog.h"
 
-namespace jitllm::memory {
+namespace llmp::memory {
 
 using base::Bytes;
 
@@ -55,6 +55,6 @@ struct VictimPlan {
 VictimPlan SelectVictims(const catalog::Catalog& catalog, catalog::DomainId domain, Bytes needed,
                          std::span<const catalog::ExtentId> protect = {});
 
-}  // namespace jitllm::memory
+}  // namespace llmp::memory
 
-#endif  // JITLLM_MEMORY_VICTIMS_H_
+#endif  // LLMP_MEMORY_VICTIMS_H_

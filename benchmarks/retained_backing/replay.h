@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The deterministic replay of the retained-backing comparison
@@ -15,8 +15,8 @@
 // follow the same recency order. The design's resident set stays within
 // the reference's. A replay stops at its first refusal.
 
-#ifndef JITLLM_BENCHMARKS_RETAINED_BACKING_REPLAY_H_
-#define JITLLM_BENCHMARKS_RETAINED_BACKING_REPLAY_H_
+#ifndef LLMP_BENCHMARKS_RETAINED_BACKING_REPLAY_H_
+#define LLMP_BENCHMARKS_RETAINED_BACKING_REPLAY_H_
 
 #include <cstdint>
 #include <string>
@@ -24,7 +24,7 @@
 #include "retained_backing/designs.h"
 #include "retained_backing/trace.h"
 
-namespace jitllm::rb {
+namespace llmp::rb {
 
 struct Metrics {
   std::string design;
@@ -75,6 +75,6 @@ Metrics Replay(const Trace& trace, const DesignSpec& spec, const ReplayOptions& 
 // One JSON object on one line.
 std::string ToJson(const Metrics& metrics);
 
-}  // namespace jitllm::rb
+}  // namespace llmp::rb
 
-#endif  // JITLLM_BENCHMARKS_RETAINED_BACKING_REPLAY_H_
+#endif  // LLMP_BENCHMARKS_RETAINED_BACKING_REPLAY_H_

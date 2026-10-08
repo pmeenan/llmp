@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen C4 wave read-alignment screen — 2026-10-04
@@ -198,4 +198,4 @@ before attributing its phase timing. Full artifact IDs, metadata pins,
 request/config bodies, private benchmark patch/compile commands, source/archive
 inventory, raw logs and installed-supervisor receipts remain outside Git at
 `spark:~/scratch/qwen-read-align/` and
-`/home/pmeenan/scratch/jitllm-m3-qwen-wave-read-align-2026-10-04/` locally.
+`/home/pmeenan/scratch/llmp-m3-qwen-wave-read-align-2026-10-04/` locally.

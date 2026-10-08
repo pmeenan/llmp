@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M3 standard-client gate — 2026-10-04
@@ -87,7 +87,7 @@ those harness failures. Neither supplies a gate-pass claim.
 
 Raw receipts, complete responses/chunks, command prompt/generated IDs,
 logs and reproduction sources are external at `~/scratch/m3-client-gate/`
-on Spark A and `/home/pmeenan/scratch/jitllm-m3-client-gate-2026-10-04/`
+on Spark A and `/home/pmeenan/scratch/llmp-m3-client-gate-2026-10-04/`
 locally. `screen3` is the qualified run. For reproduction, use its pinned
 `run.py`, `client.py` and native `channels` helper with a fresh output path,
 under the installed GPU supervisor, then wait. Saved runtime data/spill files

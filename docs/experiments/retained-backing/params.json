@@ -1,5 +1,5 @@
 {
- "format": "jitllm-swap-trace-params",
+ "format": "llmp-swap-trace-params",
  "version": 1,
  "seeds": {"primary": 20260926, "confirmation": 926202601},
  "ratios": [[5, 4], [3, 2], [2, 1]],

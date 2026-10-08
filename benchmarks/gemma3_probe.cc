@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded internal probe, not a serving interface. See docs/gemma3.md.
@@ -31,7 +31,7 @@
 #include "tokenizer/tokenizer.h"
 
 namespace {
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 namespace fs = std::filesystem;
 using en::support::Error;
 constexpr std::uint32_t kVocab = 262208, kPrompt = 256, kWarm = 3, kSteps = 32;
@@ -66,14 +66,14 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
   auto metadata = Read(metadata_path, 32ULL << 20U);
   auto text = Read(text_path, depth ? 131072 : 65536);
   if (!metadata || !text) return Error("preparation input refused");
-  auto parsed = jitllm::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*metadata)));
+  auto parsed = llmp::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*metadata)));
   if (!parsed) return Error(parsed.error().ToString());
   if (parsed->spec.tokens.size() != kVocab || parsed->spec.bos != 2 || !parsed->spec.add_bos ||
       parsed->spec.add_eos)
     return Error("Gemma3 vocabulary/BOS contract differs");
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(parsed->spec));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(parsed->spec));
   if (!tokenizer) return Error(tokenizer.error().ToString());
-  std::vector<jitllm::tokenizer::TokenId> ids;
+  std::vector<llmp::tokenizer::TokenId> ids;
   if (auto r = tokenizer->Encode(*text, {.add_bos_eos = true, .max_tokens = depth ? 32768U : 8192U},
                                  ids);
       !r)
@@ -87,14 +87,14 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
   const auto kept = std::span(ids).first(input_rows);
   if (auto r = Write<std::int32_t>(fs::path(output_path) / "ids.i32", kept); !r) return r;
   std::cout << "GEMMA3_INPUT rows=" << input_rows << " sha256="
-            << jitllm::base::ToHex(jitllm::base::Sha256{}.Update(std::as_bytes(kept)).Finish())
-            << " text_sha256=" << jitllm::base::ToHex(jitllm::base::Sha256{}.Update(*text).Finish())
+            << llmp::base::ToHex(llmp::base::Sha256{}.Update(std::as_bytes(kept)).Finish())
+            << " text_sha256=" << llmp::base::ToHex(llmp::base::Sha256{}.Update(*text).Finish())
             << '\n';
   return {};
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (auto r = jitllm::platform::InstallCrashPolicy("gemma3-probe"); !r) return 2;
+  if (auto r = llmp::platform::InstallCrashPolicy("gemma3-probe"); !r) return 2;
   if ((argc == 5 || (argc == 6 && std::string_view(argv[5]) == "depth")) &&
       std::string_view(argv[1]) == "prepare") {
     const auto r = Prepare(argv[2], argv[3], argv[4], argc == 6);
@@ -108,8 +108,8 @@ int main(int argc, char** argv) {
                       steps = depth ? 64U : kSteps;
   const auto input_rows = prompt_rows + warm_rows + steps;
   if (depth) {
-    const auto& profile = jitllm::model::Gemma3_4BQat();
-    const auto layout = jitllm::model::Gemma3State(profile, context, 128);
+    const auto& profile = llmp::model::Gemma3_4BQat();
+    const auto layout = llmp::model::Gemma3State(profile, context, 128);
     if (!layout || layout->local_cells != 1280 || layout->global_cells != context) return 2;
     std::cout << "GEMMA3_DEPTH context=" << context << " prefix=" << prompt_rows
               << " local_capacity=" << layout->local_cells
@@ -167,7 +167,7 @@ int main(int argc, char** argv) {
   const auto snapshot = [&]() -> std::expected<std::string, std::string> {
     auto ranges = runner.CheckpointRanges(past);
     if (!ranges) return Error(ranges.error());
-    jitllm::base::Sha256 hash;
+    llmp::base::Sha256 hash;
     for (const auto& range : *ranges) {
       for (std::uint64_t at = 0; at < range.bytes;) {
         auto part = range;
@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
         at += part.bytes;
       }
     }
-    return jitllm::base::ToHex(hash.Finish());
+    return llmp::base::ToHex(hash.Finish());
   };
   const auto chunk = [&](std::span<const std::int32_t> tokens, bool head) -> en::Status {
     const en::Gemma3Runner::Work work{0, past, tokens, &logits};
@@ -229,7 +229,7 @@ int main(int argc, char** argv) {
     lifetime->entered.push_back(&runner);
     if (auto r = runner.Setup(); !r) return r;
     if (mode == "lifetime" || greedy_own) {
-      std::vector<jitllm::catalog::ExtentId> staging;
+      std::vector<llmp::catalog::ExtentId> staging;
       auto pinned = node.Pinned(kStateBuffer, 0, staging);
       if (!pinned) return Error(pinned.error());
       state_buffer = *pinned;
@@ -254,7 +254,7 @@ int main(int argc, char** argv) {
         fixed + runner.weights().size() * en::kPagedExtent +
         (depth ? node.StateCapacity() + retention_bound + host_floor + en::kPagedExtent
                : 2 * node.StateCapacity());
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();

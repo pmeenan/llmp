@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/qwen2_graph.h"
@@ -17,7 +17,7 @@
 #include "kernels/ggml/tensors.h"
 #include "model/qwen2.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -191,4 +191,4 @@ std::expected<Qwen2Graph, KernelFailure> BuildQwen2Graph(TensorArena& arena,
   return g;
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

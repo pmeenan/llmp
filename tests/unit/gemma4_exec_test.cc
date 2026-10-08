@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Actual 26B geometry/types, structured synthetic weights, complete local and
@@ -43,16 +43,16 @@
 #include "providers/cuda/cuda_device_execution.h"
 
 namespace {
-namespace kg = jitllm::kernels::ggml;
-namespace en = jitllm::engine;
-namespace md = jitllm::model;
-namespace scalar = jitllm::test_support::gemma4_scalar;
-namespace fixture = jitllm::test_support::gemma4;
-using jitllm::base::Bytes;
+namespace kg = llmp::kernels::ggml;
+namespace en = llmp::engine;
+namespace md = llmp::model;
+namespace scalar = llmp::test_support::gemma4_scalar;
+namespace fixture = llmp::test_support::gemma4;
+using llmp::base::Bytes;
 class Gemma4ExecTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(*jitllm::providers::cuda::OpenDeviceExecution(0));
+    execution_ = std::move(*llmp::providers::cuda::OpenDeviceExecution(0));
     stream_ = execution_->CreateStream().value();
     int major = 0, minor = 0;
     ASSERT_EQ(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0), cudaSuccess);
@@ -67,8 +67,8 @@ class Gemma4ExecTest : public ::testing::Test {
         cublas_.get());
     ASSERT_TRUE(launch);
     launch_ = std::move(*launch);
-    registry_ = std::make_unique<jitllm::execution::Registry>(
-        std::move(*jitllm::execution::Registry::Create(kg::Implementations())));
+    registry_ = std::make_unique<llmp::execution::Registry>(
+        std::move(*llmp::execution::Registry::Create(kg::Implementations())));
     resources_ = fixture::Resources(26);
     binding_ = std::move(*md::BindGemma4(p_, "gemma4", resources_));
     state_ = std::move(*md::Gemma4State(p_, 4096, 4));
@@ -82,12 +82,12 @@ class Gemma4ExecTest : public ::testing::Test {
     const auto fence = execution_->Record(stream_);
     ASSERT_TRUE(fence);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
-    auto state = jitllm::providers::FenceState::kPending;
-    while ((state = execution_->Query(*fence).value()) == jitllm::providers::FenceState::kPending &&
+    auto state = llmp::providers::FenceState::kPending;
+    while ((state = execution_->Query(*fence).value()) == llmp::providers::FenceState::kPending &&
            std::chrono::steady_clock::now() < deadline) {
       std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
-    ASSERT_EQ(state, jitllm::providers::FenceState::kComplete);
+    ASSERT_EQ(state, llmp::providers::FenceState::kComplete);
     ASSERT_TRUE(execution_->Release(*fence));
     launch_.reset();
     cublas_.reset();
@@ -255,7 +255,7 @@ class Gemma4ExecTest : public ::testing::Test {
     for (const auto& step : run.planned->plan.steps) {
       fused += step.implementation == "ggml.rms_norm_mul.fused";
       unfused += step.implementation == "ggml.rms_norm_mul.unfused";
-      rope_stores += step.operation == jitllm::execution::Operation::kRopeSetRows;
+      rope_stores += step.operation == llmp::execution::Operation::kRopeSetRows;
     }
     std::cout << "GEMMA_BOUND_POLICY layer=" << layer << " rows=" << rows
               << " slots=" << slots.size() << " shared_q8=" << shared
@@ -435,11 +435,11 @@ class Gemma4ExecTest : public ::testing::Test {
   bool positive_values_ = true;
   std::unordered_map<std::string, std::vector<double>> decoded_;
   const md::Gemma4Profile& p_ = md::Gemma4_26BA4B();
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  llmp::providers::StreamId stream_;
   std::unique_ptr<kg::CublasHandle> cublas_;
   std::unique_ptr<kg::LaunchContext> launch_;
-  std::unique_ptr<jitllm::execution::Registry> registry_;
+  std::unique_ptr<llmp::execution::Registry> registry_;
   std::vector<void*> allocations_;
   std::vector<md::Gemma4Resource> resources_;
   md::Gemma4Binding binding_;
@@ -864,7 +864,7 @@ TEST_F(Gemma4ExecTest, ExplicitRopeStoreKeepsCompleteLayersAndCapturedCachesExac
       EXPECT_EQ(primitive.values, fused.values);
       Reference(fused, layer);
       Repeat(fused);
-      if (std::getenv("JITLLM_GEMMA_STORE_SCREEN") != nullptr) {  // NOLINT(concurrency-mt-unsafe)
+      if (std::getenv("LLMP_GEMMA_STORE_SCREEN") != nullptr) {  // NOLINT(concurrency-mt-unsafe)
         const auto a = Time(primitive), b = Time(fused), after = Time(primitive);
         std::uint64_t ap = 0, bp = 0;
         const auto ca = Time(primitive, true, &ap), cb = Time(fused, true, &bp),
@@ -897,7 +897,7 @@ TEST_F(Gemma4ExecTest, DeviceMasksKeepTheCompleteLayerAndCapturedStateExact) {
       EXPECT_TRUE(device.sources.masks.empty());
       Reference(device, layer);
       Repeat(device);
-      if (std::getenv("JITLLM_GEMMA_MASK_SCREEN") != nullptr) {  // NOLINT(concurrency-mt-unsafe)
+      if (std::getenv("LLMP_GEMMA_MASK_SCREEN") != nullptr) {  // NOLINT(concurrency-mt-unsafe)
         const auto a = Time(host), b = Time(device), after = Time(host);
         std::uint64_t host_peak = 0, device_peak = 0;
         const auto ca = Time(host, true, &host_peak), cb = Time(device, true, &device_peak),
@@ -934,7 +934,7 @@ TEST_F(Gemma4ExecTest, DeviceMasksKeepThirtyThreeQueryChunksAndCapturedStateExac
         0);
     Reference(device, layer);
     Repeat(device);
-    if (std::getenv("JITLLM_GEMMA_MASK_SCREEN") != nullptr) {  // NOLINT(concurrency-mt-unsafe)
+    if (std::getenv("LLMP_GEMMA_MASK_SCREEN") != nullptr) {  // NOLINT(concurrency-mt-unsafe)
       const auto a = Time(host), b = Time(device), after = Time(host);
       std::uint64_t host_peak = 0, device_peak = 0;
       const auto ca = Time(host, true, &host_peak), cb = Time(device, true, &device_peak),
@@ -959,7 +959,7 @@ TEST_F(Gemma4ExecTest, DeviceMasksKeepThirtyThreeQueryChunksAndCapturedStateExac
 TEST_F(Gemma4ExecTest, OptionalPaidWholeLayerScreen) {
   // Ordinary test gate pays correctness, not timing. This bounded experiment
   // measures EVERY primitive/preparation/attention/store in the complete plan.
-  if (std::getenv("JITLLM_GEMMA_LAYER_SCREEN") == nullptr) return;  // NOLINT(concurrency-mt-unsafe)
+  if (std::getenv("LLMP_GEMMA_LAYER_SCREEN") == nullptr) return;  // NOLINT(concurrency-mt-unsafe)
   const std::array<std::uint32_t, 4> slots{0, 1, 2, 3};
   for (const auto layer : {0U, 5U})
     for (const auto count : {1U, 4U}) {

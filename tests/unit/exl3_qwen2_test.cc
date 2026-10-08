@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// One phase of the native EXL3 plan under jitLLM's dispatch
+// One phase of the native EXL3 plan under llmpalooza's dispatch
 // (kernels/exl3/qwen2.h) on a GB10 (label `gpu`; all but the GEMV-choice
 // test also on a discrete GPU the build targets, `gpu-discrete`, D-082),
 // over synthetic weights of the model's shapes (all zero, which every
@@ -49,10 +49,10 @@
 
 namespace {
 
-namespace exl3 = jitllm::kernels::exl3;
-namespace kg = jitllm::kernels::ggml;
-namespace model = jitllm::model;
-using jitllm::test_support::Failed;
+namespace exl3 = llmp::kernels::exl3;
+namespace kg = llmp::kernels::ggml;
+namespace model = llmp::model;
+using llmp::test_support::Failed;
 
 const model::Qwen2Profile& Profile() { return model::Qwen25Instruct05BExl3(); }
 
@@ -102,7 +102,7 @@ model::Exl3LinearPlan Packed(model::Exl3Path path, int shape, int blocks, int co
 class Exl3Qwen2Test : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     // Zeroed weights shared by every linear (read only): the largest
     // trellis (the head's, K = 8), side vectors and biases, the embedding,
@@ -121,7 +121,7 @@ class Exl3Qwen2Test : public ::testing::Test {
     auto planning = kg::LaunchContext::Create(0, *execution_, stream_, {.base = 0, .size = {}});
     ASSERT_TRUE(planning.has_value());
     planning_ = std::move(*planning);
-    std::vector<jitllm::execution::Implementation> all = kg::Implementations();
+    std::vector<llmp::execution::Implementation> all = kg::Implementations();
     for (auto& i : exl3::Implementations()) {
       all.push_back(std::move(i));
     }
@@ -141,12 +141,12 @@ class Exl3Qwen2Test : public ::testing::Test {
   void Finish() {
     const auto fence = execution_->Record(stream_).value();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-    auto state = jitllm::providers::FenceState::kPending;
-    while ((state = execution_->Query(fence).value()) == jitllm::providers::FenceState::kPending &&
+    auto state = llmp::providers::FenceState::kPending;
+    while ((state = execution_->Query(fence).value()) == llmp::providers::FenceState::kPending &&
            std::chrono::steady_clock::now() < deadline) {
       std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
-    ASSERT_EQ(state, jitllm::providers::FenceState::kComplete);
+    ASSERT_EQ(state, llmp::providers::FenceState::kComplete);
     ASSERT_TRUE(execution_->Release(fence).has_value());
   }
 
@@ -245,18 +245,18 @@ class Exl3Qwen2Test : public ::testing::Test {
     return table;
   }
 
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  llmp::providers::StreamId stream_;
   std::vector<void*> device_;
   std::uint64_t trellis_ = 0, vectors_ = 0, embed_ = 0, norms_ = 0, kv_ = 0, tables_ = 0,
                 locks_ = 0;
   std::unique_ptr<exl3::LaunchContext> launch_;
   std::unique_ptr<kg::LaunchContext> planning_;
-  std::vector<jitllm::execution::Implementation> declared_;
+  std::vector<llmp::execution::Implementation> declared_;
 };
 
 TEST_F(Exl3Qwen2Test, APrefillAndAStepBindAndRunOnOneStream) {
-  const auto registry = jitllm::execution::Registry::Create(declared_).value();
+  const auto registry = llmp::execution::Registry::Create(declared_).value();
   const auto binding = Binding(4);
   auto gemm = exl3::ReconGemm::Create();
   ASSERT_TRUE(gemm.has_value()) << gemm.error().detail;
@@ -365,10 +365,9 @@ TEST_F(Exl3Qwen2Test, APrefillAndAStepBindAndRunOnOneStream) {
     void* pool = nullptr;
     ASSERT_EQ(cudaMalloc(&pool, (*program)->ggml_scratch()), cudaSuccess);
     device_.push_back(pool);
-    auto ggml =
-        kg::LaunchContext::Create(0, *execution_, stream_,
-                                  {.base = reinterpret_cast<std::uintptr_t>(pool),
-                                   .size = jitllm::base::Bytes((*program)->ggml_scratch())});
+    auto ggml = kg::LaunchContext::Create(0, *execution_, stream_,
+                                          {.base = reinterpret_cast<std::uintptr_t>(pool),
+                                           .size = llmp::base::Bytes((*program)->ggml_scratch())});
     ASSERT_TRUE(ggml.has_value());
     void* host = nullptr;
     const exl3::HostInputs layout = exl3::HostInputsLayout(*plan);
@@ -416,7 +415,7 @@ TEST_F(Exl3Qwen2Test, BindRefusesAMissingOrStaleImplementationAndShortMemory) {
     // A build without ExLlamaV3's bias add: the plan is unsupported.
     auto without = declared_;
     std::erase_if(without, [](const auto& i) { return i.name == "exl3.bias_add"; });
-    const auto registry = jitllm::execution::Registry::Create(without).value();
+    const auto registry = llmp::execution::Registry::Create(without).value();
     const auto refused =
         Failed(exl3::Qwen2Program::Bind(registry, Profile(), plan, memory, *planning_, *launch_),
                &exl3::KernelFailure::detail);
@@ -432,13 +431,13 @@ TEST_F(Exl3Qwen2Test, BindRefusesAMissingOrStaleImplementationAndShortMemory) {
         i.variant += " (another build)";
       }
     }
-    const auto registry = jitllm::execution::Registry::Create(stale).value();
+    const auto registry = llmp::execution::Registry::Create(stale).value();
     EXPECT_TRUE(
         Failed(exl3::Qwen2Program::Bind(registry, Profile(), plan, memory, *planning_, *launch_))
             .has_value());
   }
   {
-    const auto registry = jitllm::execution::Registry::Create(declared_).value();
+    const auto registry = llmp::execution::Registry::Create(declared_).value();
     auto short_memory = memory;
     short_memory.region_bytes = plan.region - 256;
     EXPECT_TRUE(Failed(exl3::Qwen2Program::Bind(registry, Profile(), plan, short_memory, *planning_,
@@ -448,7 +447,7 @@ TEST_F(Exl3Qwen2Test, BindRefusesAMissingOrStaleImplementationAndShortMemory) {
 }
 
 TEST_F(Exl3Qwen2Test, InExl3OTheTablesPackedPlanMustBeUpstreamsGemvChoice) {
-  const auto registry = jitllm::execution::Registry::Create(declared_).value();
+  const auto registry = llmp::execution::Registry::Create(declared_).value();
   const model::Exl3Phase step{.rows = 1, .past = 32};
   // At K = 4 upstream takes the GEMV at one row (on GB10, where the
   // per-linear sweep saw it); the table's GEMV plan binds.
@@ -473,48 +472,47 @@ TEST_F(Exl3Qwen2Test, InExl3OTheTablesPackedPlanMustBeUpstreamsGemvChoice) {
 }
 
 // The CUDA provider, but the `fail_at`th copy (from 0) fails.
-class FailingCopies final : public jitllm::providers::DeviceExecution {
+class FailingCopies final : public llmp::providers::DeviceExecution {
  public:
   FailingCopies(DeviceExecution& inner, int fail_at) : inner_(inner), fail_at_(fail_at) {}
-  std::expected<jitllm::providers::StreamId, jitllm::providers::Failure> CreateStream() override {
+  std::expected<llmp::providers::StreamId, llmp::providers::Failure> CreateStream() override {
     return inner_.CreateStream();
   }
-  std::expected<void, jitllm::providers::Failure> DestroyStream(
-      jitllm::providers::StreamId stream) override {
+  std::expected<void, llmp::providers::Failure> DestroyStream(
+      llmp::providers::StreamId stream) override {
     return inner_.DestroyStream(stream);
   }
-  std::expected<void, jitllm::providers::Failure> Copy(jitllm::providers::StreamId stream,
-                                                       std::uint64_t destination,
-                                                       std::uint64_t source,
-                                                       jitllm::base::Bytes size) override {
+  std::expected<void, llmp::providers::Failure> Copy(llmp::providers::StreamId stream,
+                                                     std::uint64_t destination,
+                                                     std::uint64_t source,
+                                                     llmp::base::Bytes size) override {
     if (copies_++ == fail_at_) {
-      return std::unexpected(jitllm::providers::Failure{.detail = "an injected copy failure"});
+      return std::unexpected(llmp::providers::Failure{.detail = "an injected copy failure"});
     }
     return inner_.Copy(stream, destination, source, size);
   }
-  std::expected<void, jitllm::providers::Failure> Zero(jitllm::providers::StreamId stream,
-                                                       std::uint64_t destination,
-                                                       jitllm::base::Bytes size) override {
+  std::expected<void, llmp::providers::Failure> Zero(llmp::providers::StreamId stream,
+                                                     std::uint64_t destination,
+                                                     llmp::base::Bytes size) override {
     return inner_.Zero(stream, destination, size);
   }
-  std::expected<jitllm::providers::NativeStream, jitllm::providers::Failure> Submission(
-      jitllm::providers::StreamId stream) override {
+  std::expected<llmp::providers::NativeStream, llmp::providers::Failure> Submission(
+      llmp::providers::StreamId stream) override {
     return inner_.Submission(stream);
   }
-  std::expected<void, jitllm::providers::Failure> Wait(jitllm::providers::StreamId stream,
-                                                       jitllm::providers::FenceId fence) override {
+  std::expected<void, llmp::providers::Failure> Wait(llmp::providers::StreamId stream,
+                                                     llmp::providers::FenceId fence) override {
     return inner_.Wait(stream, fence);
   }
-  std::expected<jitllm::providers::FenceId, jitllm::providers::Failure> Record(
-      jitllm::providers::StreamId stream) override {
+  std::expected<llmp::providers::FenceId, llmp::providers::Failure> Record(
+      llmp::providers::StreamId stream) override {
     return inner_.Record(stream);
   }
-  std::expected<jitllm::providers::FenceState, jitllm::providers::Failure> Query(
-      jitllm::providers::FenceId fence) override {
+  std::expected<llmp::providers::FenceState, llmp::providers::Failure> Query(
+      llmp::providers::FenceId fence) override {
     return inner_.Query(fence);
   }
-  std::expected<void, jitllm::providers::Failure> Release(
-      jitllm::providers::FenceId fence) override {
+  std::expected<void, llmp::providers::Failure> Release(llmp::providers::FenceId fence) override {
     return inner_.Release(fence);
   }
 
@@ -530,7 +528,7 @@ class FailingCopies final : public jitllm::providers::DeviceExecution {
 // Bind until the tables are written again; nothing launches with tables
 // that may still hold the old addresses or half of the new ones.
 TEST_F(Exl3Qwen2Test, TablesWhoseRewriteFailedPartwayRefuseTheMultiGemm) {
-  const auto registry = jitllm::execution::Registry::Create(declared_).value();
+  const auto registry = llmp::execution::Registry::Create(declared_).value();
   const auto binding = Binding(4);
   const auto table = Table(binding, 32, model::Exl3Arm::kG);
   const auto plan =

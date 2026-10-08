@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/hang_ladder.h"
@@ -12,7 +12,7 @@
 #include <string_view>
 #include <utility>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 double Seconds(HangLadder::Clock::duration d) { return std::chrono::duration<double>(d).count(); }
@@ -214,4 +214,4 @@ void HangLadder::Served(std::string_view model) {
   }
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

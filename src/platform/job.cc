@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/job.h"
@@ -26,7 +26,7 @@
 
 #include "platform/files.h"
 
-namespace jitllm::platform {
+namespace llmp::platform {
 namespace {
 
 namespace fs = std::filesystem;
@@ -68,7 +68,7 @@ std::expected<fs::path, std::string> JobsCgroupRoot() {
   if (!own) {
     return own;
   }
-  // Only where jitllm.service put the runtime (DelegateSubgroup=runtime):
+  // Only where llmp.service put the runtime (DelegateSubgroup=runtime):
   // anywhere else, the parent is a cgroup systemd manages, not ours.
   if (own->filename() != "runtime") {
     return std::unexpected(
@@ -293,4 +293,4 @@ int ReapExited() {
   return reaped;
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

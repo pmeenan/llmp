@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "exl3_runner.h"
@@ -36,14 +36,14 @@
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 
 namespace {
 
-namespace exl3 = jitllm::kernels::exl3;
-namespace kg = jitllm::kernels::ggml;
-namespace sc = jitllm::scheduler;
-namespace ts = jitllm::test_support;
+namespace exl3 = llmp::kernels::exl3;
+namespace kg = llmp::kernels::ggml;
+namespace sc = llmp::scheduler;
+namespace ts = llmp::test_support;
 using base::Bytes;
 using catalog::ExtentId;
 using catalog::MemoryClass;
@@ -1104,7 +1104,7 @@ Status Exl3Runner::Write(const std::vector<std::map<int, std::vector<float>>>& r
   }
   std::ofstream summary(o_.out / "summary.json");
   summary << std::format(
-      "{{\"harness\": \"jitllm_exl3_paged\", \"fixture\": \"{}\", \"arm\": \"{}\", \"artifact\": "
+      "{{\"harness\": \"llmp_exl3_paged\", \"fixture\": \"{}\", \"arm\": \"{}\", \"artifact\": "
       "\"{}\", \"plan_file_sha256\": \"{}\", \"memory\": \"device VMM through the landing zone\", "
       "\"lanes\": \"{}\", \"evaluations\": {}, \"restores\": {}, \"relocate\": {}, "
       "\"coalesce\": {},\n "
@@ -1121,7 +1121,7 @@ Status Exl3Runner::Write(const std::vector<std::map<int, std::vector<float>>>& r
   if (!record_.empty()) {
     std::ofstream file(o_.out / "record.jsonl");
     file << test_support::HeaderLine(
-                std::format("jitllm_exl3_paged {} {}", o_.fixture,
+                std::format("llmp_exl3_paged {} {}", o_.fixture,
                             o_.arm == model::Exl3Arm::kG ? "EXL3-G" : "EXL3-O"),
                 test_support::LoadedCublas())
          << record_;
@@ -1204,4 +1204,4 @@ Status Exl3Runner::Release() {
   return Error(all);
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/gemma4_runner.h"
@@ -20,11 +20,11 @@
 #include "engine/prefill_lookahead.h"
 #include "engine/support.h"
 #include "kernels/ggml/executor.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "providers/device_runtime.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 namespace kg = kernels::ggml;
 static_assert(kGemma4InvariantWaveRows == kg::kRowInvariantColumns);
 namespace md = model;
@@ -1101,10 +1101,10 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::CachePlann
   for (const auto& step : p->plan.steps) {
     if (step.implementation == kg::kFlashAttnOwnersName) {
       ++policy_.owner_attention_steps;
-      policy_.bounded_owner_steps += kg::JitllmOpInt(step.nodes.front(), 4) == 1;
-      policy_.requested_cohort8_steps += kg::JitllmOpInt(step.nodes.front(), 0) == 8;
-      policy_.requested_cohort12_steps += kg::JitllmOpInt(step.nodes.front(), 0) == 12;
-      const auto cohort = kg::JitllmOpInt(step.nodes.front(), 0);
+      policy_.bounded_owner_steps += kg::LlmpOpInt(step.nodes.front(), 4) == 1;
+      policy_.requested_cohort8_steps += kg::LlmpOpInt(step.nodes.front(), 0) == 8;
+      policy_.requested_cohort12_steps += kg::LlmpOpInt(step.nodes.front(), 0) == 12;
+      const auto cohort = kg::LlmpOpInt(step.nodes.front(), 0);
       policy_.requested_partial_cohort_steps +=
           cohort == 5 || cohort == 6 || cohort == 7 || cohort == 9 || cohort == 10 || cohort == 11;
     }
@@ -1119,7 +1119,7 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::CachePlann
                                   ? static_cast<std::uint32_t>(step.nodes.size())
                                   : 0;
     policy_.primitive_store_steps += step.implementation == kg::kSetRowsName;
-    policy_.shared_vecq += step.implementation == "jitllm.vecq";
+    policy_.shared_vecq += step.implementation == "llmp.vecq";
     policy_.q8_preparations += step.implementation == kg::kQuantizeQ8Name;
     policy_.prepared_mmvq_products += step.implementation == kg::kMmvqPreparedName;
     policy_.row_products +=
@@ -1762,4 +1762,4 @@ Status Gemma4Runner::Release() {
   }
   return support::Joined(problems);
 }
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

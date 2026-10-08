@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Architecture
@@ -26,7 +26,7 @@
 | Kernel dispatch and the M2 backend proof | [backend-proof.md](backend-proof.md), [exl3-bringup.md](exl3-bringup.md), [first-slice.md](first-slice.md) | D-051–D-053 |
 | Serving in the runtime: the engine, the configured models, the full swap and the serving commands (M3) | [runtime-serving.md](runtime-serving.md), [swap.md](experiments/fast-swap/swap.md) | D-086, D-090, D-093, D-096 |
 | The engine: the paged node, the runner skeleton (weights, live state and spill, planned shapes, graph runs, speculation's snapshot, resources) and how a model family plugs in | [engine.md](engine.md) | D-053, D-090, D-093, D-096 |
-| The component engine M3.6 builds: components, jitLLM's own graph IR, the format layer, the native importer, partitioning and the migration gate | [engine-components.md](engine-components.md) | D-107, D-108, D-109, D-110 |
+| The component engine M3.6 builds: components, llmpalooza's own graph IR, the format layer, the native importer, partitioning and the migration gate | [engine-components.md](engine-components.md) | D-107, D-108, D-109, D-110 |
 | Other GPU platforms and operating systems: boundaries, the registry's primitive fallbacks, the runners' shared skeleton, distribution | [portability.md](portability.md) | D-026, D-053, D-082, D-098 |
 | Cluster membership, transport and placement | [cluster-design.md](cluster-design.md) and [the conductor section](#conductor-ownership-and-admission) | D-037–D-039 |
 | Inference API contract | [client-api-baseline.md](client-api-baseline.md) and the assessments it links | D-040–D-047 |
@@ -36,7 +36,7 @@
 ## Fixed points (from decisions)
 
 - **Ownership split.** Model implementations describe computation and
-  dependencies; jitLLM owns storage, residency, scheduling, and execution
+  dependencies; llmpalooza owns storage, residency, scheduling, and execution
   lifetime. One native process per node (D-005).
 - **Primary workload.** One user switching among a library of models larger
   than memory; an agent plus subagents on different models; conversations
@@ -141,7 +141,7 @@
   D-058 and D-059 pin CMake, Ninja, GoogleTest and the LLVM developer tools;
   D-061 replaces hosted CI with local `check`, `check:full` and
   `check:spark` tiers (`tools/check`, the `mise run check` tasks).
-- **Errors.** jitLLM code builds with `-fno-exceptions`. Fallible operations
+- **Errors.** Llmpalooza code builds with `-fno-exceptions`. Fallible operations
   return `std::expected` values, and only a violated invariant or failed heap
   allocation is fatal (D-066; [errors and faults](#errors-faults-startup-and-shutdown)).
 - **Source dependencies.** D-057 selects [locked CMake FetchContent acquisition
@@ -153,7 +153,7 @@
 - **First model/reference.** D-051 selects the official Qwen2.5-0.5B-Instruct
   FP16 GGUF and pinned llama.cpp CUDA reference on Spark, with CPU diagnostics;
   [identities and numerical contract](first-slice.md). GGML supplies operations,
-  while jitLLM owns execution/backing and, under D-053, dispatch: kernels are
+  while llmpalooza owns execution/backing and, under D-053, dispatch: kernels are
   swappable build-time implementations selected per operation and plan, from
   several sources at once. D-052 adds a required
   [small EXL3 companion and upstream performance gates](exl3-bringup.md)
@@ -238,24 +238,24 @@ standard clients (Cursor, OpenCode, Codex, Claude Code, Ollama-native, ...)
 front door on the conductor node (loopback by default; TLS when exposed)
         |
         v
-jitllm runtime: conductor role + node role (one process)
+llmp runtime: conductor role + node role (one process)
         | routed attempts over mTLS sessions (M6a)   | collectives (M4)
         v                                             v
-jitllm runtime: node role, one process on each other enrolled node
+llmp runtime: node role, one process on each other enrolled node
 
-jitllm CLI, later dashboard -> management listener (conductor or standalone)
+llmp CLI, later dashboard -> management listener (conductor or standalone)
 import / install / archive jobs <- started and supervised by their runtime
 topology: detected paths, enrolled membership; no fixed names or counts (D-038)
 ```
 
 | Process | Runs as | Does | Never |
 | --- | --- | --- | --- |
-| Runtime (`/usr/libexec/jitllm/`, `jitllm.service`) | `jitllm` | All local execution, scheduling, memory policy, VMM, storage and completion tracking (D-005); the front door, management listener and conductor role on the designated node | Opens the long-term store (D-054) or runs checkpoint code |
-| Import, install and archive jobs | `jitllm` | Download, stage and import sources; verify and publish artifacts; archive; replicate to peers (D-054) | Touches scheduler state or the hot path; runs beside a conflicting job for the same model or artifact |
-| `jitllm` CLI | The invoking user | A management client over loopback HTTP (D-064) | Reads runtime state files or links runtime code |
+| Runtime (`/usr/libexec/llmp/`, `llmp.service`) | `llmp` | All local execution, scheduling, memory policy, VMM, storage and completion tracking (D-005); the front door, management listener and conductor role on the designated node | Opens the long-term store (D-054) or runs checkpoint code |
+| Import, install and archive jobs | `llmp` | Download, stage and import sources; verify and publish artifacts; archive; replicate to peers (D-054) | Touches scheduler state or the hot path; runs beside a conflicting job for the same model or artifact |
+| `llmp` CLI | The invoking user | A management client over loopback HTTP (D-064) | Reads runtime state files or links runtime code |
 | Setup tooling | An administrator | Enrollment, cluster documents, credentials, node identity (D-038, D-063) | Changes membership or trust while nodes serve ([cluster-design.md](cluster-design.md)) |
 | Dashboard (M10) | Its own service | Browser UI that calls the management API from its server side (D-064) | Takes runtime locks or exposes the management API to the browser |
-| Certificate helpers | root | Keep front-door certificate files current: the certbot deploy hook and the Tailscale timer (D-065) | Hold any jitLLM authority |
+| Certificate helpers | root | Keep front-door certificate files current: the certbot deploy hook and the Tailscale timer (D-065) | Hold any llmpalooza authority |
 
 ### Runtime components
 
@@ -294,7 +294,7 @@ substitute a fake at any provider boundary.
 | Providers | `providers`, `providers/fake`, `providers/cuda` | The [provider interfaces](#providers) and their implementations; with kernel units, the only place vendor headers appear (D-026) |
 | Resource core | `catalog`, `memory`, `retention`, `scheduler` | Resources, ledgers, victim selection, retention, tasks and admission |
 | Model | `tokenizer`, `chat`, `artifact`, `model`, `execution` | The tokenizer; the chat renderers and, later, output parsers; the artifact reader and verifier; architecture and state adapters; the operation contract, planner and dispatcher, and sampling |
-| Kernels | `kernels/<source>` | Build-time implementations of operations: `ggml` and `exl3` first (D-053); jitLLM's own `image` kernels, and `paging`, the engine's fill and row-gather kernels |
+| Kernels | `kernels/<source>` | Build-time implementations of operations: `ggml` and `exl3` first (D-053); llmpalooza's own `image` kernels, and `paging`, the engine's fill and row-gather kernels |
 | Engine | `engine` | The paged node, which composes the providers, the resource core and its lanes on one GPU; the runner skeleton every model is built from: weights as extents, live state with its spill and a verify's snapshot, planned shapes and their cache, runs and decode graphs, the runner's own device resources; and each model family's runner, which adds its plans, state layout and steps (D-096, [engine.md](engine.md), [runtime-serving.md](runtime-serving.md)). It reaches the device only through the providers, the device runtime among them, and the kernels, and is built without CUDA's headers; CUDA builds only, because it links the kernel modules |
 | Services | `config`, `api`, `cluster`, `management`, `jobs` | The node's configuration, storage roles and served models (D-073, D-096); protocol adapters, conductor and sessions, the management API, job processes |
 | Programs | `runtime`, job executables, `cli`, `tools` | Process wiring, startup and shutdown; the import, install and archive processes; the CLI; build and diagnostic tools |
@@ -308,7 +308,7 @@ substitute a fake at any provider boundary.
 - Vendor and OS code keeps to its modules: CUDA only in `providers/cuda`
   and the kernel modules, Linux-specific headers and calls only in
   `platform` and the Linux providers (`providers/uring_storage.*`). The
-  light check tier's boundary check (`tools/jitllm_boundaries.py`) fails
+  light check tier's boundary check (`tools/llmp_boundaries.py`) fails
   on anything else, and allows a named exception only with its reason
   ([portability.md](portability.md)).
 - A build-generated table registers the compiled implementations, and the
@@ -316,7 +316,7 @@ substitute a fake at any provider boundary.
   module, and nothing is loaded at run time (D-028).
 - An implementation under a license the core does not admit (copyleft;
   the core admits any permissive license, D-091) lives in its own optional
-  module with its own license and CMake option. jitLLM's own
+  module with its own license and CMake option. Llmpalooza's own
   builds and packages include it by default (D-080); the copyleft-disabled
   profile excludes it before any source is fetched (D-057), and the
   registry then never sees it.
@@ -688,7 +688,7 @@ conservative semantics.
 
 ### Budgets and ledgers
 
-Each memory domain has one execution budget `B`: the physical memory jitLLM
+Each memory domain has one execution budget `B`: the physical memory llmpalooza
 may use after OS and external headroom. A Spark is one domain shared by CPU
 allocations, GPU backing and page cache (D-004). The ledgers are keyed by
 domain from the start, so for the ledgers a discrete-GPU platform is a data
@@ -697,7 +697,7 @@ the device's memory, with a configured `B` (not all of it: the GPU may
 drive a desktop) and the SSD as the only second tier. Host memory holds the
 runtime and the landing zone for direct reads, a bounded pool declared
 outside the device ledger and reported on its own, and is not a tier (host
-RAM as one would be a second domain, designed for but not built). jitLLM
+RAM as one would be a second domain, designed for but not built). Llmpalooza
 uses one GPU, device 0. Two ledgers stay separate
 ([reservation-policy.md](reservation-policy.md#admission-rule-and-separate-ledgers)):
 
@@ -987,7 +987,7 @@ with metadata describing architecture, tokenizer, execution representation,
 and the index from logical resources to stored groups and chunks (D-009,
 D-035, D-056). Publication follows complete validation; interrupted
 preparation is not an available model. The artifact is a content-addressed
-logical unit with safetensors file shards and a jitLLM manifest/index,
+logical unit with safetensors file shards and a llmpalooza manifest/index,
 specified in [artifact-format.md](artifact-format.md). Runtime paging does
 not inherit the source checkpoint's tensor ordering.
 
@@ -1065,13 +1065,13 @@ runtime's back:
   that its manifest references or that references it, waits, and reports
   that it is waiting.
 - **Containment.** Each job runs in its own cgroup, which
-  `jitllm.service` delegates to the runtime (`<unit>/jobs/<id>`, beside the
+  `llmp.service` delegates to the runtime (`<unit>/jobs/<id>`, beside the
   runtime's own), and the runtime is also the subreaper that reaps its
   jobs' orphans (D-074); a process group alone does not contain it. A job has ended only when every process it started has exited
   and been reaped, and its record lock is free. Cancellation, a timeout or a
   missing report does not end it.
 - **Locks.** Each job record has its own lock file under `state`, never
-  under `/run/jitllm`, which systemd removes when the unit stops. Every
+  under `/run/llmp`, which systemd removes when the unit stops. Every
   process of the job inherits a hold on it at spawn, across exec. Every
   process that can write a staging directory also holds that directory's
   lock (artifact-format.md).
@@ -1131,7 +1131,7 @@ choices, as is the peer-transfer mechanism in M6a.
 
 ### Operations, implementations and plans
 
-jitLLM owns dispatch (D-053). The **operation contract** defines each
+Llmpalooza owns dispatch (D-053). The **operation contract** defines each
 operation's operands (views over catalog resources, state blocks or plan
 workspace), attributes and shape class. An **implementation** is a
 build-time unit for one operation or a fused segment. It declares what D-053
@@ -1259,7 +1259,7 @@ the [support matrix](model-support.md) (vision.md).
 
 ### Model shapes
 
-D-068 requires the design to accommodate shapes before jitLLM executes
+D-068 requires the design to accommodate shapes before llmpalooza executes
 them. The resource core (catalog, ledgers, admission, leases, retention,
 scheduler) never names an architecture. A new shape adds adapters, phase
 kinds, state capabilities, decoding modes and operations with declared
@@ -1362,7 +1362,7 @@ and its admission bound covers every position in the phase.
 Run D-051's Qwen2.5-0.5B-Instruct FP16 control and D-052's real EXL3 quants
 from prepared experimental artifacts alongside M2's resource-core work,
 before treating the internal backend contract or executable layout as settled.
-jitLLM supplies the weight and state backing, controls the stream, accounts
+Llmpalooza supplies the weight and state backing, controls the stream, accounts
 for workspace and backend-owned allocations, and tracks completion before
 reuse. Unknown allocations remain non-evictable and budgeted. Check
 teacher-forced logits against a pinned reference, then evict and restore
@@ -1376,7 +1376,7 @@ in M5 and EXL3 switch/restore evidence in M6.
 This proof informs M5 and the interfaces; it does not claim support for
 flagship architectures, and there is no runtime plugin ABI to freeze (D-028).
 The [proof scope](backend-proof.md) records the stages, oracle ladder and
-cases. D-053 puts dispatch in jitLLM. GGML's backend runtime keeps a hidden
+cases. D-053 puts dispatch in llmpalooza. GGML's backend runtime keeps a hidden
 scratch pool, cuBLAS workspace and its own streams, so it does not execute
 model work. Instead, GGML- and ExLlamaV3-derived kernels, and later others or
 our own, are build-time implementations of operations. Several coexist, and
@@ -1399,7 +1399,7 @@ signatures follow the M2 proof.
 | Device runtime | Open the device with its two providers; within a device job, copies and fills on the job's stream, timing marks, recorded work (captured and replayed graphs), the thread's error state; pinned host memory; the device's architecture and free memory | Plain functions the build's one device backend defines (`providers/device_runtime.h`; CUDA's in `providers/cuda`), one direct call around the backend's own: what the engine uses of the device besides the kernels ([portability.md](portability.md)) |
 | Storage I/O | Open beneath a role directory; vectored direct reads into, and writes from, protected backing ranges (the landing zone, D-081); reserve file space; cancel; harvest completions; probe direct-I/O support | io_uring (D-034), opened through `OpenStorage`; every request ends not started, accepted or unknown. Other systems' implementations: [portability.md](portability.md#storage-and-direct-io) |
 | Transport | Authenticated sessions with bounded messages and streams; register and deregister communication buffers; report send, receive and deregistration completions as observations; in M4, collectives over those stable buffers | TLS 1.3 mutual authentication (D-038); the M0 baseline ran NCCL over mapped host buffers ([environment.md](environment.md#direct-dac-cluster-follow-up-2026-09-21)) |
-| Platform probe | Driver and toolkit versions, device capability, VMM granularity, direct-I/O results, RDMA devices, memory totals | Feeds `jitllm doctor` (M1, D-072) and node capability reports. The M1 cut is split: the host half in `platform`, the device half behind `providers/device_probe.h`, which the CUDA provider implements through the linked driver; direct-I/O results come with node configuration |
+| Platform probe | Driver and toolkit versions, device capability, VMM granularity, direct-I/O results, RDMA devices, memory totals | Feeds `llmp doctor` (M1, D-072) and node capability reports. The M1 cut is split: the host half in `platform`, the device half behind `providers/device_probe.h`, which the CUDA provider implements through the linked driver; direct-I/O results come with node configuration |
 
 The fakes keep backing in host memory filled with poison patterns, so a touch
 of absent backing shows up in tests. They script completion order, delays,
@@ -1407,12 +1407,12 @@ short reads, errors and unknown outcomes, which is what the deterministic
 simulation needs (§18; [async-model
 experiment](experiments/async-model/README.md)). An address-only device-memory
 fake keeps the same rules and capacity with no bytes behind its backing, so a
-replay can count provider calls at real scale. A fake proves jitLLM's logic,
+replay can count provider calls at real scale. A fake proves llmpalooza's logic,
 not GPU synchronization or performance.
 
 ## Errors, faults, startup and shutdown
 
-jitLLM code builds without exceptions, and every expected failure is an
+Llmpalooza code builds without exceptions, and every expected failure is an
 `std::expected` error value (D-066). The error's category decides what
 happens next:
 
@@ -1456,8 +1456,8 @@ exit 75 (the host not ready yet), never giving up, but not after exit
    document if enrolled, before opening any listener (D-063,
    [cluster-design.md](cluster-design.md#configuration-v2)).
 3. Take the per-node process lock: the runtime holds an exclusive lock on
-   `<anchor>.lock`, `/var/lib/jitllm/enrollment.lock` when packaged, which
-   no configuration moves and `/run/jitllm`'s removal at stop does not
+   `<anchor>.lock`, `/var/lib/llmp/enrollment.lock` when packaged, which
+   no configuration moves and `/run/llmp`'s removal at stop does not
    touch (D-074).
 4. Resolve and check the runtime's own roles (`installed`, `spill`,
    `state`: ownership, modes, nesting), comparing the job-only paths by
@@ -1522,7 +1522,7 @@ with `count_tokens`, model listing, and later the Ollama subset (D-040,
 D-041). Each one parses its wire format into the protocol-neutral request,
 and turns the neutral event stream back into its own format, including
 keepalives, in-stream errors and alias echo (D-045–D-047). Extensions use
-the `jitllm-` header prefix and one `jitllm` body object (D-062). Discovery
+the `llmp-` header prefix and one `llmp` body object (D-062). Discovery
 answers from catalog snapshots with no I/O. Inference credentials never
 carry management authority.
 
@@ -1534,7 +1534,7 @@ install, remove, archive), jobs (progress, cancel), residency policy and
 priorities, request cancellation, node status with the memory breakdown, the
 admission what-if query and trace capture (features.md). Changes reach the
 scheduler as commands, never as direct writes to runtime state. The
-`jitllm` CLI is a client of this API.
+`llmp` CLI is a client of this API.
 
 ## Cluster
 
@@ -1698,8 +1698,8 @@ not bandwidth, is the first transport question for M4.
 
 ## Configuration
 
-Each node reads one strict TOML 1.0 document, `/etc/jitllm/jitllm.toml` plus
-its `jitllm.d/` fragments, and the shared cluster document when enrolled
+Each node reads one strict TOML 1.0 document, `/etc/llmp/llmp.toml` plus
+its `llmp.d/` fragments, and the shared cluster document when enrolled
 (D-063, [cluster-design.md](cluster-design.md#configuration-v2)). Unknown
 keys, duplicates, and type or range errors are fatal before any listener
 opens. Credentials are referenced by path, never inline. Configuration is
@@ -1735,19 +1735,19 @@ front door's and TLS keys and M6 the switching policy's.
 | Input | Trust | Handling |
 | --- | --- | --- |
 | Client requests | Untrusted, even when authenticated | Bounded before any work; D-045's guards; strict parsing |
-| Checkpoints, the long-term store, archives, peer transfers | Untrusted | Read only by job processes, in a confined parse stage; lengths, paths, hashes and metadata validated; no checkpoint code runs in a jitLLM process, and a chat template runs only in the runtime's bounded, sandboxed interpreter (D-009, D-054, D-067) |
+| Checkpoints, the long-term store, archives, peer transfers | Untrusted | Read only by job processes, in a confined parse stage; lengths, paths, hashes and metadata validated; no checkpoint code runs in a llmpalooza process, and a chat template runs only in the runtime's bounded, sandboxed interpreter (D-009, D-054, D-067) |
 | Installed artifacts | Verified at install, then protected by the store's permissions | The runtime still parses manifests and indexes strictly and bounds-checks every range before use |
 | Cluster messages | Authenticated peers | Mutual TLS with pinned identities, bounded framing, validated records; no raw addresses or unvalidated paths cross (D-038) |
 | Management requests | Local processes | Loopback plus browser guards; credentials and TLS when bound elsewhere (D-064) |
 | Configuration, credentials, certificates | Files only root or the runtime's user can replace | Strict parsing; path, owner and mode checks (D-063, D-065) |
 | Spill files | Written by this process | Restores are checked against catalog digests; spill is deleted at startup (D-055) |
 
-The runtime and the jobs run as `jitllm`, never as root. The security model
+The runtime and the jobs run as `llmp`, never as root. The security model
 is a single-owner node; multi-tenant isolation is a non-goal (vision.md).
 
 ## Performance evidence
 
-The M0 paging-feasibility study used a reference engine because jitLLM's
+The M0 paging-feasibility study used a reference engine because llmpalooza's
 execution path did not exist yet, and the protocol below still governs such
 studies. Record checkpoint revisions, quantization/layout,
 expert sizes, request ordering and timing, prefill chunks, decode batches,
@@ -1774,8 +1774,8 @@ Every backend/paging performance comparison has two views:
 
 - **Matched configuration:** align checkpoint, numerical policy, request
   workload, context lengths, prefix-cache conditions, and decoding features.
-  Disable speculative decoding in both paths if jitLLM lacks it. Compare
-  jitLLM's resident and paged paths separately to expose paging overhead.
+  Disable speculative decoding in both paths if llmpalooza lacks it. Compare
+  llmpalooza's resident and paged paths separately to expose paging overhead.
 - **Normal reference configuration:** also run the pinned reference's normal
   documented configuration, including its enabled optimizations. Report its
   actual settings and feature differences. This measures the user-visible
@@ -1788,7 +1788,7 @@ owner-accepted targets for named supported workloads: M6's median/p95 floor
 against the fastest correct full-swap reference arm in both directions; M7's
 at most 10% added generation time, continuation time to first token included,
 and 20 ms p95 / 100 ms p99 added token gaps; and M9's at least 25% median
-return-switch benefit over jitLLM's own whole-model control on an agreed
+return-switch benefit over llmpalooza's own whole-model control on an agreed
 partial-retention workload, with at least one named library exceeding
 physical memory. Pin workloads, trial counts, and measurement methods before
 acceptance runs, repeat the correct reference and the whole-model control
@@ -1873,7 +1873,7 @@ it dynamically, and the package will then ship its two pinned libraries
 (D-076). Once RDMA is linked, rdma-core joins them. Sources come through
 D-057's locked acquisition, and tools through the mise-managed SDK (D-049).
 Build profiles select optional modules; the copyleft-disabled profile
-excludes them before any source is fetched. `jitllm --version` and the build
+excludes them before any source is fetched. `llmp --version` and the build
 receipt carry the product version, commit, license profile and SDK identity
 (D-062).
 
@@ -1924,26 +1924,26 @@ and D-062 versions the configuration schema; M10 adds the repository.
 
 | Path | Owner / mode | Holds |
 | --- | --- | --- |
-| `/usr/bin/jitllm` | root | User-facing CLI |
-| `/usr/libexec/jitllm/` | root | Node runtime process (`jitllm-runtime`, D-074), the import/install/archive job processes (D-005, D-054), and the certbot deploy hook and Tailscale certificate script (D-065) |
-| `/usr/lib/systemd/system/jitllm.service` | root | The runtime's one unit; runs it as `jitllm`. An optional, disabled-by-default Tailscale certificate timer and service ship alongside it (D-065) |
-| `/usr/lib/sysusers.d/jitllm.conf` | root | `jitllm` system user and group, no login shell |
-| `/usr/lib/tmpfiles.d/jitllm.conf` | root | `d` lines for `/var/lib/jitllm` (`jitllm` 0755) and the default `checkpoints` (`jitllm` 1777, applied only on creation); no age, so never cleaned |
-| `/etc/jitllm/jitllm.toml` | root, not shipped | Optional main file of the node document (`schema_version`, strict); with no main file or fragments, standalone loopback defaults, refused while `state` holds enrollment or epoch records |
-| `/etc/jitllm/jitllm.d/*.toml` | root, not shipped | Fragments of the node document, read in lexical order; a key other than `schema_version` set in two files is fatal. Setup tooling owns its own fragment |
-| `/etc/jitllm/cluster.toml` | root, not shipped | Shared membership document for cluster members (D-038/D-039) |
-| `/usr/share/doc/jitllm/examples/` | root | Annotated example node document |
-| `/etc/jitllm/credentials/` | `root:jitllm` 0750 | Credential files referenced by path, never inline in TOML |
-| `/etc/jitllm/tls/` | `root:jitllm` 0750, files 0640 | Front-door certificate files (combined PEM or cert/key pairs), written atomically by the certbot deploy hook, the Tailscale timer or the owner (D-065) |
-| `/var/lib/jitllm/` | `jitllm` 0755 | `storage.data_dir` (absolute), the base for relative role paths |
-| `/var/lib/jitllm/enrollment` | `jitllm` | Enrollment anchor (node and cluster IDs, `state` path, enrollment ID) at a fixed path independent of configuration; while present, startup refuses a configuration or `state` that does not match it. Moving `state` or leaving the cluster is a setup step that rewrites or removes it (D-063) |
-| `…/models/` | `jitllm` 0755 | `storage.installed`, including D-056's `.staging/` (0700); artifact directories 0755, files 0644; readable by all, written only by the runtime's user |
-| `…/checkpoints/` | `jitllm` 1777 | `storage.checkpoints` (node-local default, created by the package's tmpfiles entry); anyone may add sources, which jobs treat as untrusted |
-| `…/spill/` | `jitllm` 0700 + marker | `storage.spill` (D-055) |
-| `…/state/` | `jitllm` 0700 | `storage.state`: durable runtime records (conductor epochs and floors, job records and their locks, install generations) and the disposable compact-index cache, plus the local CA's key and leaves (D-065) |
-| `/var/lib/jitllm/enrollment.lock` | `jitllm` 0600 | The per-node process lock, held by the runtime (D-074) |
-| `/run/jitllm/` | `jitllm` | Runtime sockets |
-| `/usr/share/doc/jitllm/` | root | `copyright`, `NOTICE`, changelog, SBOM (D-029) |
+| `/usr/bin/llmp` | root | User-facing CLI |
+| `/usr/libexec/llmp/` | root | Node runtime process (`llmp-runtime`, D-074), the import/install/archive job processes (D-005, D-054), and the certbot deploy hook and Tailscale certificate script (D-065) |
+| `/usr/lib/systemd/system/llmp.service` | root | The runtime's one unit; runs it as `llmp`. An optional, disabled-by-default Tailscale certificate timer and service ship alongside it (D-065) |
+| `/usr/lib/sysusers.d/llmp.conf` | root | `llmp` system user and group, no login shell |
+| `/usr/lib/tmpfiles.d/llmp.conf` | root | `d` lines for `/var/lib/llmp` (`llmp` 0755) and the default `checkpoints` (`llmp` 1777, applied only on creation); no age, so never cleaned |
+| `/etc/llmp/llmp.toml` | root, not shipped | Optional main file of the node document (`schema_version`, strict); with no main file or fragments, standalone loopback defaults, refused while `state` holds enrollment or epoch records |
+| `/etc/llmp/llmp.d/*.toml` | root, not shipped | Fragments of the node document, read in lexical order; a key other than `schema_version` set in two files is fatal. Setup tooling owns its own fragment |
+| `/etc/llmp/cluster.toml` | root, not shipped | Shared membership document for cluster members (D-038/D-039) |
+| `/usr/share/doc/llmp/examples/` | root | Annotated example node document |
+| `/etc/llmp/credentials/` | `root:llmp` 0750 | Credential files referenced by path, never inline in TOML |
+| `/etc/llmp/tls/` | `root:llmp` 0750, files 0640 | Front-door certificate files (combined PEM or cert/key pairs), written atomically by the certbot deploy hook, the Tailscale timer or the owner (D-065) |
+| `/var/lib/llmp/` | `llmp` 0755 | `storage.data_dir` (absolute), the base for relative role paths |
+| `/var/lib/llmp/enrollment` | `llmp` | Enrollment anchor (node and cluster IDs, `state` path, enrollment ID) at a fixed path independent of configuration; while present, startup refuses a configuration or `state` that does not match it. Moving `state` or leaving the cluster is a setup step that rewrites or removes it (D-063) |
+| `…/models/` | `llmp` 0755 | `storage.installed`, including D-056's `.staging/` (0700); artifact directories 0755, files 0644; readable by all, written only by the runtime's user |
+| `…/checkpoints/` | `llmp` 1777 | `storage.checkpoints` (node-local default, created by the package's tmpfiles entry); anyone may add sources, which jobs treat as untrusted |
+| `…/spill/` | `llmp` 0700 + marker | `storage.spill` (D-055) |
+| `…/state/` | `llmp` 0700 | `storage.state`: durable runtime records (conductor epochs and floors, job records and their locks, install generations) and the disposable compact-index cache, plus the local CA's key and leaves (D-065) |
+| `/var/lib/llmp/enrollment.lock` | `llmp` 0600 | The per-node process lock, held by the runtime (D-074) |
+| `/run/llmp/` | `llmp` | Runtime sockets |
+| `/usr/share/doc/llmp/` | root | `copyright`, `NOTICE`, changelog, SBOM (D-029) |
 
 The optional `storage.long_term` (unset by default) holds `archive`
 (default `<long_term>/archive`; an archive requires it) and, only if the
@@ -1954,11 +1954,11 @@ followed, device and inode compared) no two role paths may be equal or
 nested; the runtime checks the job-only paths' text against its resolved
 roles, so a hung mount cannot stall it, and jobs repeat the full check. The
 runtime refuses its roles if users other than root and its own user
-(`jitllm` when packaged) could write or replace them, and probes
+(`llmp` when packaged) could write or replace them, and probes
 `installed` and `spill` with D-034's direct-I/O check at startup; those
 checks, not the text comparison, reject a network mount aliased into its
 roles.
-`jitllm.toml` and its fragments form cluster-design.md's node-local document
+`llmp.toml` and its fragments form cluster-design.md's node-local document
 extended with `[storage]`; a standalone node omits its cluster keys, including
 `[credentials]`. Logs go to the journal. The package depends on glibc and
 the versioned `libcuda.so.1` virtual package; the C++ and CUDA runtimes are
@@ -1986,7 +1986,7 @@ evidence or a later choice:
 | Which OS counters include VMM backing on the Spark driver, so the memory breakdown can reconcile | Settled in M2 ([vmm-counters](experiments/vmm-counters/README.md)) |
 | Storage queue depths, run sizes and polling with real model traces; mixed read/write scheduling and the spill write budget | M2, M3 (the swap path), M6 |
 | State block sizes and KV layouts per state adapter | M2/M3 |
-| HTTP, TLS and JSON libraries (TOML: toml++, D-073; general JSON so far jitLLM's own `base/json.h`, M3) | M3 (HTTP, JSON); M5 (TLS), under D-017, D-057 and D-066 |
+| HTTP, TLS and JSON libraries (TOML: toml++, D-073; general JSON so far llmpalooza's own `base/json.h`, M3) | M3 (HTTP, JSON); M5 (TLS), under D-017, D-057 and D-066 |
 | How jobs are launched and report back (their containment and confinement are D-074's); the peer-replication transfer mechanism | M5; M6a |
 | Switching-policy default and tuning (minimum run, pause cap, deadline handling) | M6 comparison of the D-069 policies |
 | Whether a worker node serves its own loopback management listener for node-local operations | M6a |

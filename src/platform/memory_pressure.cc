@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/memory_pressure.h"
@@ -14,7 +14,7 @@
 #include "platform/files.h"
 #include "platform/host_probe.h"
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 namespace {
 
@@ -69,4 +69,4 @@ MemoryPressure ReadMemoryPressure() {
 
 void ReleaseFreeHeap() { (void)::malloc_trim(0); }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

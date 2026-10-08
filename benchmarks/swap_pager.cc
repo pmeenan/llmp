@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The production runtime's swap-table with the pager's options chosen:
-// `jitllm_swap_pager ARM [--budget-bytes N] RUNTIME-ARGUMENTS...`, the rest exactly as
-// jitllm-runtime takes them (`--config ... swap-table ...`). ARM `on` is
+// `llmp_swap_pager ARM [--budget-bytes N] RUNTIME-ARGUMENTS...`, the rest exactly as
+// llmp-runtime takes them (`--config ... swap-table ...`). ARM `on` is
 // the default; `off` turns lazy handoff off (ServingOptions::lazy_handoff);
 // `plain` keeps it but turns off state zero-filling and the handle reserve
 // (zero_state, handle_reserve). Matched controls for options configuration
@@ -29,8 +29,8 @@ namespace {
 std::string_view g_arm;
 std::optional<std::uint64_t> g_budget;
 
-int Serve(const jitllm::config::NodeConfig& config, const jitllm::config::RuntimeRoles& roles,
-          const jitllm::runtime::CommandOptions& command, std::FILE* out, std::FILE* log) {
+int Serve(const llmp::config::NodeConfig& config, const llmp::config::RuntimeRoles& roles,
+          const llmp::runtime::CommandOptions& command, std::FILE* out, std::FILE* log) {
   auto chosen = command;
   chosen.serving.diagnostic_budget_cap_bytes = g_budget;
   chosen.serving.lazy_handoff = g_arm != "off";
@@ -41,12 +41,11 @@ int Serve(const jitllm::config::NodeConfig& config, const jitllm::config::Runtim
     chosen.serving.handle_reserve = 0;
   }
   (void)std::fprintf(
-      log,
-      "jitllm_swap_pager: lazy_handoff=%s zero_state=%s handle_reserve=%s partial_weights=%s\n",
+      log, "llmp_swap_pager: lazy_handoff=%s zero_state=%s handle_reserve=%s partial_weights=%s\n",
       chosen.serving.lazy_handoff ? "on" : "off", chosen.serving.zero_state ? "on" : "off",
       chosen.serving.handle_reserve.has_value() ? "none" : "default",
       chosen.serving.partial_weight_eviction ? "on" : "off");
-  return jitllm::runtime::RunServing(config, roles, chosen, out, log);
+  return llmp::runtime::RunServing(config, roles, chosen, out, log);
 }
 }  // namespace
 
@@ -55,7 +54,7 @@ int main(int argc, char** argv) {
   if (g_arm != "on" && g_arm != "off" && g_arm != "plain" && g_arm != "full" &&
       g_arm != "partial") {
     (void)std::fprintf(stderr,
-                       "usage: jitllm_swap_pager on|off|plain|full|partial [--budget-bytes N] "
+                       "usage: llmp_swap_pager on|off|plain|full|partial [--budget-bytes N] "
                        "RUNTIME-ARGUMENTS...\n");
     return 2;
   }
@@ -81,5 +80,5 @@ int main(int argc, char** argv) {
   }
   const std::vector<std::string_view> args(all.begin() + static_cast<std::ptrdiff_t>(first),
                                            all.end());
-  return jitllm::runtime::Run(args, stderr, &Serve);
+  return llmp::runtime::Run(args, stderr, &Serve);
 }

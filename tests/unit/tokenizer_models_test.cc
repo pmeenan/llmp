@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The native tokenizer and renderers against the reference outputs stored
 // in tests/unit/data, on the real vocabularies. Label `models`: the model
-// files live on the Sparks (under JITLLM_TEST_MODELS, by default
-// ~/.local/share/jitllm, as docs/tokenizer.md lists), and a test whose files
+// files live on the Sparks (under LLMP_TEST_MODELS, by default
+// ~/.local/share/llmp, as docs/tokenizer.md lists), and a test whose files
 // are absent skips. A file that is present but differs from the one the
 // fixture was generated from fails.
 
@@ -36,23 +36,23 @@
 
 namespace {
 
-namespace chat = jitllm::chat;
-namespace json = jitllm::base::json;
-namespace tok = jitllm::tokenizer;
-namespace uni = jitllm::tokenizer::unicode;
-using jitllm::test_support::ConversationFrom;
-using jitllm::test_support::Get;
-using jitllm::test_support::Ids;
-using jitllm::test_support::Int;
-using jitllm::test_support::LoadJson;
-using jitllm::test_support::ModelsDir;
-using jitllm::test_support::ReadFile;
+namespace chat = llmp::chat;
+namespace json = llmp::base::json;
+namespace tok = llmp::tokenizer;
+namespace uni = llmp::tokenizer::unicode;
+using llmp::test_support::ConversationFrom;
+using llmp::test_support::Get;
+using llmp::test_support::Ids;
+using llmp::test_support::Int;
+using llmp::test_support::LoadJson;
+using llmp::test_support::ModelsDir;
+using llmp::test_support::ReadFile;
 using tok::TokenId;
 
 std::string Sha256(std::string_view bytes) {
-  jitllm::base::Sha256 h;
+  llmp::base::Sha256 h;
   h.Update(bytes);
-  return jitllm::base::ToHex(h.Finish());
+  return llmp::base::ToHex(h.Finish());
 }
 
 std::string FromHex(std::string_view hex) {

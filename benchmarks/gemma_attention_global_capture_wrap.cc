@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include <algorithm>
 #include <cstring>
@@ -11,7 +11,7 @@
 #include "kernels/ggml/validate_ext.h"
 #include "providers/device_runtime.h"
 
-namespace jitllm::benchmark {
+namespace llmp::benchmark {
 namespace kg = kernels::ggml;
 GemmaAttentionGlobalCapture* GemmaAttentionGlobalCapture::active = nullptr;
 engine::Status GemmaAttentionGlobalCapture::Setup(engine::PagedNode& node, bool enabled) {
@@ -174,16 +174,16 @@ engine::Status GemmaAttentionGlobalCapture::Save(const std::filesystem::path& ou
   if (!metadata) return engine::support::Error("capture metadata write failed");
   return {};
 }
-}  // namespace jitllm::benchmark
+}  // namespace llmp::benchmark
 
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 std::expected<void, kg::KernelFailure> RealMma(kg::LaunchContext&, ggml_tensor*, bool) asm(
-    "__real__ZN6jitllm7kernels4ggml12FlashAttnMmaERNS1_13LaunchContextEP11ggml_tensorb");
+    "__real__ZN4llmp7kernels4ggml12FlashAttnMmaERNS1_13LaunchContextEP11ggml_tensorb");
 std::expected<void, kg::KernelFailure> WrappedMma(kg::LaunchContext&, ggml_tensor*, bool) asm(
-    "__wrap__ZN6jitllm7kernels4ggml12FlashAttnMmaERNS1_13LaunchContextEP11ggml_tensorb");
+    "__wrap__ZN4llmp7kernels4ggml12FlashAttnMmaERNS1_13LaunchContextEP11ggml_tensorb");
 std::expected<void, kg::KernelFailure> WrappedMma(kg::LaunchContext& launch, ggml_tensor* node,
                                                   bool wide_sparse) {
-  if (auto* capture = jitllm::benchmark::GemmaAttentionGlobalCapture::active)
+  if (auto* capture = llmp::benchmark::GemmaAttentionGlobalCapture::active)
     if (auto copied = capture->Before(launch, node); !copied) return copied;
   return RealMma(launch, node, wide_sparse);
 }

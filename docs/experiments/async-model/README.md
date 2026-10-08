@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M0 async/task ownership experiment
@@ -59,23 +59,23 @@ Build products stay outside the repository. With the D-032 SDK extractions
 and pinned Spark sysroot still present, run from the repository root:
 
 ```sh
-mkdir -p /tmp/jitllm-async-model
-export LD_LIBRARY_PATH=/tmp/jitllm-clang22/sdk-amd64/usr/lib/x86_64-linux-gnu
-/tmp/jitllm-clang22/sdk-amd64/usr/bin/clang++-22 \
+mkdir -p /tmp/llmp-async-model
+export LD_LIBRARY_PATH=/tmp/llmp-clang22/sdk-amd64/usr/lib/x86_64-linux-gnu
+/tmp/llmp-clang22/sdk-amd64/usr/bin/clang++-22 \
   --target=x86_64-linux-gnu -march=x86-64 -std=c++23 \
   -Wall -Wextra -Wpedantic -Werror -O2 \
-  docs/experiments/async-model/main.cc -o /tmp/jitllm-async-model/native
-/tmp/jitllm-async-model/native
+  docs/experiments/async-model/main.cc -o /tmp/llmp-async-model/native
+/tmp/llmp-async-model/native
 
-/tmp/jitllm-clang22/sdk-amd64/usr/bin/clang++-22 \
-  --target=aarch64-linux-gnu --sysroot=/tmp/jitllm-toolchain-smoke/sysroot \
-  --gcc-toolchain=/tmp/jitllm-toolchain-smoke/sysroot/usr \
-  --ld-path=/tmp/jitllm-clang22/sdk-amd64/usr/bin/ld.lld-22 \
+/tmp/llmp-clang22/sdk-amd64/usr/bin/clang++-22 \
+  --target=aarch64-linux-gnu --sysroot=/tmp/llmp-toolchain-smoke/sysroot \
+  --gcc-toolchain=/tmp/llmp-toolchain-smoke/sysroot/usr \
+  --ld-path=/tmp/llmp-clang22/sdk-amd64/usr/bin/ld.lld-22 \
   -march=armv8-a -std=c++23 -Wall -Wextra -Wpedantic -Werror -O2 \
-  docs/experiments/async-model/main.cc -o /tmp/jitllm-async-model/aarch64
-scp /tmp/jitllm-async-model/aarch64 spark:/tmp/jitllm-async-model-20260922
-ssh spark /tmp/jitllm-async-model-20260922
-ssh spark rm /tmp/jitllm-async-model-20260922
+  docs/experiments/async-model/main.cc -o /tmp/llmp-async-model/aarch64
+scp /tmp/llmp-async-model/aarch64 spark:/tmp/llmp-async-model-20260922
+ssh spark /tmp/llmp-async-model-20260922
+ssh spark rm /tmp/llmp-async-model-20260922
 ```
 
 Expected final line: `PASS: deterministic CPU-only async ownership experiment`.
@@ -85,27 +85,27 @@ Supplementary sanitizer commands (the AArch64 build takes the arm64
 package's resource directory for its runtime archives):
 
 ```sh
-/tmp/jitllm-clang22/sdk-amd64/usr/bin/clang++-22 \
+/tmp/llmp-clang22/sdk-amd64/usr/bin/clang++-22 \
   --target=x86_64-linux-gnu -march=x86-64 -std=c++23 \
   -Wall -Wextra -Wpedantic -Werror -O1 -g \
   -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-  docs/experiments/async-model/main.cc -o /tmp/jitllm-async-model/clang-sanitized
-/tmp/jitllm-async-model/clang-sanitized
+  docs/experiments/async-model/main.cc -o /tmp/llmp-async-model/clang-sanitized
+/tmp/llmp-async-model/clang-sanitized
 
-/tmp/jitllm-clang22/sdk-amd64/usr/bin/clang++-22 \
-  --target=aarch64-linux-gnu --sysroot=/tmp/jitllm-toolchain-smoke/sysroot \
-  --gcc-toolchain=/tmp/jitllm-toolchain-smoke/sysroot/usr \
-  --ld-path=/tmp/jitllm-clang22/sdk-amd64/usr/bin/ld.lld-22 \
-  -resource-dir=/tmp/jitllm-clang22/sdk-arm64/usr/lib/llvm-22/lib/clang/22 \
+/tmp/llmp-clang22/sdk-amd64/usr/bin/clang++-22 \
+  --target=aarch64-linux-gnu --sysroot=/tmp/llmp-toolchain-smoke/sysroot \
+  --gcc-toolchain=/tmp/llmp-toolchain-smoke/sysroot/usr \
+  --ld-path=/tmp/llmp-clang22/sdk-amd64/usr/bin/ld.lld-22 \
+  -resource-dir=/tmp/llmp-clang22/sdk-arm64/usr/lib/llvm-22/lib/clang/22 \
   -march=armv8-a -std=c++23 -Wall -Wextra -Wpedantic -Werror -O1 -g \
   -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-  docs/experiments/async-model/main.cc -o /tmp/jitllm-async-model/aarch64-sanitized
-scp /tmp/jitllm-async-model/aarch64-sanitized spark:/tmp/jitllm-async-model-san-20260922
-ssh spark /tmp/jitllm-async-model-san-20260922
-ssh spark rm /tmp/jitllm-async-model-san-20260922
+  docs/experiments/async-model/main.cc -o /tmp/llmp-async-model/aarch64-sanitized
+scp /tmp/llmp-async-model/aarch64-sanitized spark:/tmp/llmp-async-model-san-20260922
+ssh spark /tmp/llmp-async-model-san-20260922
+ssh spark rm /tmp/llmp-async-model-san-20260922
 
 g++ -march=x86-64 -std=c++23 -Wall -Wextra -Wpedantic -Werror -O1 -g \
   -fsanitize=address,undefined -fno-omit-frame-pointer \
-  docs/experiments/async-model/main.cc -o /tmp/jitllm-async-model/gcc-sanitized
-/tmp/jitllm-async-model/gcc-sanitized
+  docs/experiments/async-model/main.cc -o /tmp/llmp-async-model/gcc-sanitized
+/tmp/llmp-async-model/gcc-sanitized
 ```

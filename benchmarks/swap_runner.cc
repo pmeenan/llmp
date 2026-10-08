@@ -1,14 +1,14 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // M3's swap runner (docs/plan.md, "The swap path" and "Swap runner";
 // docs/experiments/fast-swap/swap.md): DeepSeek V4 Flash (A,
 // dsv4_runner.h) and the Qwen2.5-0.5B FP16 fixture (B, fp16_runner.h) on
 // one paged node, full swaps A→B→A in one process, each part of each swap
-// timed. A harness binary, not jitllm-runtime: it runs on the test
+// timed. A harness binary, not llmp-runtime: it runs on the test
 // harness's paged node (tests/support/paged_node.h).
 //
-//   jitllm_swap_runner --dsv4-artifact DIR --fp16-artifact DIR --tokens FILE
+//   llmp_swap_runner --dsv4-artifact DIR --fp16-artifact DIR --tokens FILE
 //                      --out DIR [--text FILE] [--context-tokens N]
 //                      [--continue N] [--cycles N] [--handoff on|off]
 //                      [--copy-lane on|off] [--fp16-expect SHA256]
@@ -106,11 +106,11 @@
 
 namespace {
 
-namespace ts = jitllm::test_support;
-namespace sc = jitllm::scheduler;
-namespace catalog = jitllm::catalog;
-namespace jb = jitllm::benchmarks;
-using jitllm::base::Bytes;
+namespace ts = llmp::test_support;
+namespace sc = llmp::scheduler;
+namespace catalog = llmp::catalog;
+namespace jb = llmp::benchmarks;
+using llmp::base::Bytes;
 using Clock = std::chrono::steady_clock;
 using Status = ts::Status;
 
@@ -123,9 +123,9 @@ std::unexpected<std::string> Error(std::string what) { return std::unexpected(st
 double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
 
 std::string Sha256(std::span<const std::byte> bytes) {
-  jitllm::base::Sha256 hash;
+  llmp::base::Sha256 hash;
   hash.Update(bytes);
-  return jitllm::base::ToHex(hash.Finish());
+  return llmp::base::ToHex(hash.Finish());
 }
 
 // /proc/meminfo's MemAvailable, in bytes.
@@ -310,7 +310,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ((o.cycles > 0 || o.reload > 0 || o.overlap || o.bench > 0) && o.text.empty()) ||
       (o.prompts.empty() != o.expect.empty())) {
     return Error(
-        "usage: jitllm_swap_runner --dsv4-artifact DIR --fp16-artifact DIR --tokens FILE --out DIR "
+        "usage: llmp_swap_runner --dsv4-artifact DIR --fp16-artifact DIR --tokens FILE --out DIR "
         "[--text FILE] [--context-tokens N] [--continue N] [--cycles N] [--handoff on|off] "
         "[--copy-lane on|off] [--fp16-expect SHA256] [--context N] [--reload N] [--overlap] "
         "[--prompts FILE --expect DIR --generate N] [--graphs on|off] [--bench N]");
@@ -377,7 +377,7 @@ class Swapper {
   jb::Dsv4Runner dsv4_;
   jb::Fp16Runner fp16_;
   std::vector<ts::PagedModel*> entered_models_;
-  std::unique_ptr<jitllm::tokenizer::Tokenizer> tokenizer_;
+  std::unique_ptr<llmp::tokenizer::Tokenizer> tokenizer_;
 
   std::vector<std::int32_t> context_;  // A's context tokens, BOS first
   std::string text_sha256_;
@@ -429,18 +429,18 @@ Status Swapper::Tokenize() {
   std::ifstream gguf(meta, std::ios::binary);
   const std::vector<char> header{std::istreambuf_iterator<char>(gguf),
                                  std::istreambuf_iterator<char>()};
-  auto read = jitllm::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(header)));
+  auto read = llmp::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(header)));
   if (!read) {
     return Error(std::format("{}: {}", meta.string(), read.error().ToString()));
   }
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(read->spec));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(read->spec));
   if (!tokenizer) {
     return Error(tokenizer.error().ToString());
   }
   std::ifstream file(o_.text, std::ios::binary);
   const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
   text_sha256_ = Sha256(std::as_bytes(std::span(text)));
-  std::vector<jitllm::tokenizer::TokenId> ids;
+  std::vector<llmp::tokenizer::TokenId> ids;
   if (auto r = tokenizer->Encode(text, {.add_bos_eos = true}, ids); !r) {
     return Error(r.error().ToString());
   }
@@ -453,7 +453,7 @@ Status Swapper::Tokenize() {
   }
   context_.assign(ids.begin(), ids.begin() + o_.context_tokens);
   context_sha256_ = Sha256(std::as_bytes(std::span(context_)));
-  tokenizer_ = std::make_unique<jitllm::tokenizer::Tokenizer>(std::move(*tokenizer));
+  tokenizer_ = std::make_unique<llmp::tokenizer::Tokenizer>(std::move(*tokenizer));
   return {};
 }
 

@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // How ExLlamaV3's kernels must be launched (docs/backend-proof.md, P1 and
-// P3). Every jitLLM launcher of a kept ExLlamaV3 kernel includes this
+// P3). Every llmpalooza launcher of a kept ExLlamaV3 kernel includes this
 // header (launch.h), as the kernel tables do (tests/unit/exl3_tables.h),
 // and a tooling test (tools/tests/test_sources.py) requires it to name
 // every __global__ kernel the locked subset keeps. Line numbers below are
@@ -12,7 +12,7 @@
 // quant/exl3_gemm_kernel.cuh, in all 64 instances of the tables
 // tfp_exl3_gemm_kernel_* and tfp_exl3_mgemm_kernel_*; and exl3_gemv_kernel
 // (quant/exl3_gemv_kernel.cuh), in the eight K = 4 mcg instances of
-// jitllm/jitllm_exl3_kernels.cu.
+// llmp/llmp_exl3_kernels.cu.
 //
 // 1. Launch cooperatively, with every block co-resident:
 //    cudaLaunchCooperativeKernel (or cudaLaunchKernelEx with
@@ -62,9 +62,9 @@
 // Ordinary kernels, launched on a normal grid and waiting on no other
 // block: reconstruct_kernel and reconstruct_had_kernel (quant/
 // reconstruct.cu), had_hf_r_128_kernel and had_ff_r_128_kernel
-// (quant/hadamard.cu) and add_kernel_hhh (add.cu), the ones jitLLM's
+// (quant/hadamard.cu) and add_kernel_hhh (add.cu), the ones llmpalooza's
 // linear launches (launch.h), with upstream's grids and block sizes. The
-// kept files also define kernels jitLLM never launches, and instantiates
+// kept files also define kernels llmpalooza never launches, and instantiates
 // only where a kept file does so itself: reconstruct_batch_kernel,
 // reconstruct_had_batch_kernel, had_hf_r_128_dual_kernel,
 // had_ff_r_128_dual_kernel, had_hf_r_128_batch_kernel,
@@ -73,7 +73,7 @@
 // (add_kernel_hhf, add_kernel_hfh, add_kernel_hff, add_kernel_fhh,
 // add_kernel_fhf, add_kernel_ffh, add_kernel_fff).
 
-#ifndef JITLLM_KERNELS_EXL3_LAUNCH_CONTRACT_H_
-#define JITLLM_KERNELS_EXL3_LAUNCH_CONTRACT_H_
+#ifndef LLMP_KERNELS_EXL3_LAUNCH_CONTRACT_H_
+#define LLMP_KERNELS_EXL3_LAUNCH_CONTRACT_H_
 
-#endif  // JITLLM_KERNELS_EXL3_LAUNCH_CONTRACT_H_
+#endif  // LLMP_KERNELS_EXL3_LAUNCH_CONTRACT_H_

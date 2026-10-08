@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // BF16 matrix products for the Qwen-Image-2.1 pipeline (M3): BF16 operands,
@@ -7,7 +7,7 @@
 // - The cuBLAS calls (Linear, ConvProduct and the VAE attention's two
 //   products): cublasGemmEx with CUBLAS_GEMM_DEFAULT_TENSOR_OP, the call
 //   PyTorch makes for a BF16 nn.Linear (at::cuda::blas::gemm<at::BFloat16>).
-//   The handle is jitLLM's (kernels/ggml/cublas.h): created on the stream the
+//   The handle is llmpalooza's (kernels/ggml/cublas.h): created on the stream the
 //   products queue on, with its declared workspace.
 // - LtGemm: the same product through cuBLASLt with the algorithm chosen per
 //   shape, deterministically: pinned by its nine CUBLASLT_ALGO_CONFIG
@@ -20,8 +20,8 @@
 //   beyond the timing's noise (benchmarks/qwen_image_gemm_tune.cc;
 //   docs/experiments/qwen-image-native).
 
-#ifndef JITLLM_KERNELS_IMAGE_GEMM_H_
-#define JITLLM_KERNELS_IMAGE_GEMM_H_
+#ifndef LLMP_KERNELS_IMAGE_GEMM_H_
+#define LLMP_KERNELS_IMAGE_GEMM_H_
 
 #include <array>
 #include <cstdint>
@@ -36,7 +36,7 @@
 struct cublasContext;
 struct cublasLtContext;
 
-namespace jitllm::kernels::image {
+namespace llmp::kernels::image {
 
 // A linear layer over row-major matrices: out[m, n] = x[m, k] . w[n, k]^T
 // (+ out when accumulate), x rows `ldx` apart, w rows `ldw` apart, out rows
@@ -137,6 +137,6 @@ class LtGemm {
   std::vector<std::unique_ptr<Prepared>> prepared_;
 };
 
-}  // namespace jitllm::kernels::image
+}  // namespace llmp::kernels::image
 
-#endif  // JITLLM_KERNELS_IMAGE_GEMM_H_
+#endif  // LLMP_KERNELS_IMAGE_GEMM_H_

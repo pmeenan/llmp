@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # Checks a build receipt against the source lock it names (D-057): the lock's
@@ -7,7 +7,7 @@
 # against the lock, and that the receipt is official exactly when no
 # component comes from a local override.
 #
-#   cmake -DRECEIPT=<jitllm-receipt.json> -DLOCK=<sources.lock.json>
+#   cmake -DRECEIPT=<llmp-receipt.json> -DLOCK=<sources.lock.json>
 #         -DSDK_IDENTITY=<identity> -P check_receipt.cmake
 cmake_minimum_required(VERSION 4.4.3)
 
@@ -17,7 +17,7 @@ foreach(var IN ITEMS RECEIPT LOCK SDK_IDENTITY)
   endif()
 endforeach()
 if(NOT EXISTS "${RECEIPT}")
-  message(FATAL_ERROR "${RECEIPT} is missing; configure writes it (jitllm_sources_finalize)")
+  message(FATAL_ERROR "${RECEIPT} is missing; configure writes it (llmp_sources_finalize)")
 endif()
 file(READ "${RECEIPT}" receipt)
 file(READ "${LOCK}" lock)

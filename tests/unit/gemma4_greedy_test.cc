@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include "engine/gemma4_greedy.h"
 
@@ -7,7 +7,7 @@
 #include <array>
 #include <limits>
 #include <vector>
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 TEST(Gemma4Greedy, EveryAcceptedLengthCarriesOnlyThePendingNextAnchor) {
   const std::array<std::int32_t, 3> drafts{1, 2, 3};
   for (std::uint32_t keep = 1; keep <= 4; ++keep) {

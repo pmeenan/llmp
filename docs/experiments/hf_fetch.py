@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Fetch a pinned Hugging Face snapshot; verify every byte, never run its code."""
 
@@ -55,7 +55,7 @@ def fetch(url, target, row):
     fd, name = tempfile.mkstemp(prefix=target.name + ".", suffix=".partial", dir=target.parent)
     partial = Path(name)
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": "jitllm-reference-fetch"})
+        request = urllib.request.Request(url, headers={"User-Agent": "llmp-reference-fetch"})
         with os.fdopen(fd, "wb") as out, urllib.request.urlopen(request, timeout=120) as response:
             if response.status != 200:
                 raise ValueError(f"unexpected HTTP status {response.status}")

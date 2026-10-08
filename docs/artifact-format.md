@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Experimental prepared-artifact format v0
@@ -144,7 +144,7 @@ rules:
 - Types that safetensors expresses natively (F32, F16, BF16, I8, I16, I32,
   I64, F64) keep their dtype and shape; GGML shapes are reversed into
   row-major order. GGML block-quantized payloads are `U8[bytes]`. **The
-  jitLLM index, not the container dtype, is the authority** for
+  llmpalooza index, not the container dtype, is the authority** for
   representation (D-052).
 
 Why safetensors over GGUF (D-056): both are reusable, and both require
@@ -152,7 +152,7 @@ contiguous entries. The pinned GGML reader (`gguf.cpp:780`) checks that each
 tensor starts at the running, alignment-padded sum. safetensors wins on four
 counts:
 
-- Its header is the smallest parser surface: a length plus JSON, and jitLLM
+- Its header is the smallest parser surface: a length plus JSON, and llmpalooza
   needs a JSON parser for its APIs anyway.
 - Its reference validation is linear. The pinned GGUF reader checks for
   duplicate names in O(n²) (`gguf.cpp:655`), and Qwen3.8 would have 124,227
@@ -352,7 +352,7 @@ being a GGML representation:
 | Routed experts | `ffn_{gate,up,down}_exps` expert arrays (IQ2_S gate/up, IQ3_S on one layer, IQ4_NL down) | GGML's layout at the slab's uniform stride, no global scales |
 | Norms, convolutions, recurrence | `*_norm`, `ssm_conv1d`, `ple_conv1d`, `ssm_dt.bias`, `ssm_a` (F32, (1 + w) folded, A = −exp(A_log), value heads tiled) | F32, exactly as the ModelOpt importer writes them (it follows the same converter) |
 | Token table, head | `token_embd`, `output` (Q6_K) | Any type |
-| n-gram table | `per_layer_token_embd` (IQ4_NL) | Q4_0, Q4_1, Q5_0, Q5_1, Q8_0 or IQ4_NL (`jitllm.qrows.get_rows`), F32, F16 or BF16, or a 256-value block type GGML's `get_rows` takes |
+| n-gram table | `per_layer_token_embd` (IQ4_NL) | Q4_0, Q4_1, Q5_0, Q5_1, Q8_0 or IQ4_NL (`llmp.qrows.get_rows`), F32, F16 or BF16, or a 256-value block type GGML's `get_rows` takes |
 | n-gram hash | **metadata**, not tensors: `qwen4exp.ple.layer_multipliers`, `.head_offsets`, `.head_vocab_sizes` | Read from the kept `.kv.gguf` (`artifact/gguf_metadata.h`, the prototype verifier's `_check_kv_gguf` rules), with every hyperparameter the shapes do not fix checked against the compiled profile |
 
 The kept metadata is the first native reader of a `.kv.gguf`'s values
@@ -421,7 +421,7 @@ Addresses are rebuilt at load and never serialized.
   computes expert *i*'s address as `base + i·nb[2]`, with `nb[2]/block_bytes`
   as an integer stride (`mmq.cu:124`, `mmvq.cu:1496`, `mmf.cu:39`,
   `mmvf.cu:689` at the pin). There are two options:
-  - **Pointer table (recommended).** jitLLM passes a per-expert base-pointer
+  - **Pointer table (recommended).** Llmpalooza passes a per-expert base-pointer
     table through a build-time kernel patch (D-053). Each expert group can
     then live in any slot or handle. VA equals the backing actually used.
   - **Uniform stride, stock kernels.** Each expert group is remapped at
@@ -471,7 +471,7 @@ Addresses are rebuilt at load and never serialized.
   conversion of the GGML-layout artifact byte for byte (unit-tested on
   synthetic experts; every logit of the six prompts' 32 steps equal
   between the two, [qwen38-native](experiments/qwen38-native/README.md)).
-  The slab serves CUTLASS's grouped GEMM (prefill) and jitLLM's vector
+  The slab serves CUTLASS's grouped GEMM (prefill) and llmpalooza's vector
   products over the same layout (decode), not GGML's `mul_mat_id`. The
   arrays are GGML `I8` bytes, so the container and both readers are
   unchanged; the binder checks their shapes and that they are packed

@@ -13,7 +13,7 @@
   "source_sha256": {
     "src/engine/gemma4_runner.cc": "79c4f3bf4e320432f59547c0a98bf20e0347eb26dc59462d173cfdfd497161ae",
     "src/engine/gemma4_runner.h": "76c15b196aa9a5b8d05d0d29b18ca38e22db427074b4c5eb408421c6c716e417",
-    "benchmarks/gemma_retained_prefill.cc": "f4b8589d703b79db5670ce7628c44eac875f676af6952a079d90db54730581ef",
+    "benchmarks/gemma_retained_prefill.cc": "5ca06f26b3332ec7f02917126de785f2ad0dfd9624df0391a14bbba5026b25c4",
     "benchmarks/CMakeLists.txt": "6b3ace84eddcce31c6fc8ce239b06be2d50bce78357d01efc58e50acf9059d26"
   },
   "profiles": {

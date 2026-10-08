@@ -1,7 +1,7 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# The digest of jitLLM's own code in this module, for its implementations'
+# The digest of llmpalooza's own code in this module, for its implementations'
 # identities (D-053; implementations.h). Run at build time by the custom
 # command in CMakeLists.txt, which depends on every file it hashes, so an
 # edit to any of them regenerates only the identity source.
@@ -10,7 +10,7 @@
 #
 # The digest is SHA-256 over one line per file, sorted by name:
 # "<name> <SHA-256 of its bytes>\n". OUTPUT defines
-# jitllm::kernels::exl3::ModuleSourcesDigest(). Without OUTPUT, the script
+# llmp::kernels::exl3::ModuleSourcesDigest(). Without OUTPUT, the script
 # prints the digest instead (tests/unit/ggml_module_digest_test.cmake, which
 # checks this module's too).
 
@@ -40,9 +40,9 @@ file(WRITE "${OUTPUT}.tmp"
   "\n"
   "#include \"kernels/exl3/implementations.h\"\n"
   "\n"
-  "namespace jitllm::kernels::exl3 {\n"
+  "namespace llmp::kernels::exl3 {\n"
   "\n"
   "std::string_view ModuleSourcesDigest() { return \"${digest}\"; }\n"
   "\n"
-  "}  // namespace jitllm::kernels::exl3\n")
+  "}  // namespace llmp::kernels::exl3\n")
 file(RENAME "${OUTPUT}.tmp" "${OUTPUT}")

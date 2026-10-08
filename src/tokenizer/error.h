@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Why the tokenizer refused its data or an input (D-066): the violated
@@ -6,15 +6,15 @@
 // merge rank or other index). Nothing from the untrusted text is copied into
 // an error.
 
-#ifndef JITLLM_TOKENIZER_ERROR_H_
-#define JITLLM_TOKENIZER_ERROR_H_
+#ifndef LLMP_TOKENIZER_ERROR_H_
+#define LLMP_TOKENIZER_ERROR_H_
 
 #include <cstdint>
 #include <limits>
 #include <string>
 #include <string_view>
 
-namespace jitllm::tokenizer {
+namespace llmp::tokenizer {
 
 enum class Rule : std::uint8_t {
   // Inputs.
@@ -25,7 +25,7 @@ enum class Rule : std::uint8_t {
   kSpecialToken,    // a marked special span is not a special token's text; item: span index
   // Tokenizer data.
   kFormat,       // not a well-formed file of its kind (GGUF, tokenizer.json)
-  kUnsupported,  // well formed, but a feature or variant jitLLM does not implement
+  kUnsupported,  // well formed, but a feature or variant llmpalooza does not implement
   kVocabulary,   // inconsistent: duplicate texts, merges of unknown tokens, missing bytes
   kBounds,       // over a cap on counts or sizes
   // Work.
@@ -46,6 +46,6 @@ struct Error {
   std::string ToString() const;
 };
 
-}  // namespace jitllm::tokenizer
+}  // namespace llmp::tokenizer
 
-#endif  // JITLLM_TOKENIZER_ERROR_H_
+#endif  // LLMP_TOKENIZER_ERROR_H_

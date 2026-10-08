@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Native Gemma engine runner. Serving and model qualification are separate.
-#ifndef JITLLM_ENGINE_GEMMA4_RUNNER_H_
-#define JITLLM_ENGINE_GEMMA4_RUNNER_H_
+#ifndef LLMP_ENGINE_GEMMA4_RUNNER_H_
+#define LLMP_ENGINE_GEMMA4_RUNNER_H_
 
 #include <array>
 #include <cstdint>
@@ -25,7 +25,7 @@
 #include "engine/runner_resources.h"
 #include "model/gemma4_assistant.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 class Gemma4Assistant;
 // Slab pitch preserves both 256-byte region alignment and GGML blocks.
 std::expected<std::uint64_t, std::string> Gemma4ExpertPitch(
@@ -380,5 +380,5 @@ class Gemma4Runner final : public PagedModel {
   bool setup_started_ = false, registered_ = false, setup_ = false, bound_ = false,
        factors_checked_ = false, released_ = false;
 };
-}  // namespace jitllm::engine
-#endif  // JITLLM_ENGINE_GEMMA4_RUNNER_H_
+}  // namespace llmp::engine
+#endif  // LLMP_ENGINE_GEMMA4_RUNNER_H_

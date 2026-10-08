@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// jitLLM's Qwen-Image kernels (kernels/image/ops.h, gemm.h) on a GB10
+// Llmpalooza's Qwen-Image kernels (kernels/image/ops.h, gemm.h) on a GB10
 // (label `gpu`): each against a host reference. The BF16 elementwise and row
 // kernels against a host copy of the PyTorch expression they reproduce,
 // rounding where it rounds: equal, or one BF16 step apart where the device's
@@ -44,7 +44,7 @@
 
 namespace {
 
-namespace ki = jitllm::kernels::image;
+namespace ki = llmp::kernels::image;
 using Bf16 = std::uint16_t;
 
 std::uint16_t ToBf16(float value) {
@@ -932,10 +932,10 @@ TEST_F(ImageKernelsTest, APinCublasLtRefusesFallsBackToItsHeuristic) {
 }
 
 TEST(ImagePlanTest, BothPlansBindAndAWrongOrMissingImplementationIsRefused) {
-  namespace ex = jitllm::execution;
+  namespace ex = llmp::execution;
   auto registry = ex::Registry::Create(ki::Implementations());
   ASSERT_TRUE(registry.has_value()) << registry.error().detail;
-  const auto& profile = jitllm::model::QwenImage21();
+  const auto& profile = llmp::model::QwenImage21();
   std::vector<std::string> identities;
   for (const ki::PlanKind kind : {ki::PlanKind::kLegacy, ki::PlanKind::kFast}) {
     auto choices = ki::QwenImageChoices(kind);

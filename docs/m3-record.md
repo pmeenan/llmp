@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M3 record — Single-Spark fast full swap
@@ -78,7 +78,7 @@ perplexity text, or image prompts and seeds, are fixed with the bounds
 below. The provenance of llama.cpp's generated Unicode tables is cleared
 under D-017 before the native tokenizer is adopted
 ([first-slice.md](first-slice.md)): traced to UCD 15.1.0 on 2026-09-28;
-jitLLM generates its own tables, and the owner accepted D-088 on
+llmpalooza generates its own tables, and the owner accepted D-088 on
 2026-09-28.
 
 **Models, in this order.** Each runs its reference's quantization.
@@ -138,7 +138,7 @@ it appears.
       the speed and format reference (the fastest measured), and
       stable-diffusion.cpp's GGUFs as an additional quality and format
       comparison. Each reference's load or swap, prefill, decode
-      and peak memory are measured on the same prompts as jitLLM's. Mia's
+      and peak memory are measured on the same prompts as llmpalooza's. Mia's
       Qwen3.8 cold start (creator-reported 10 min 51 s to `/health`) runs
       once, stated as needed under D-085, and is recorded as a measurement;
       its prefill and decode are then measured on the same warm server.
@@ -162,7 +162,7 @@ it appears.
       [stable-diffusion.cpp GGUF comparison](experiments/image-gguf/README.md)
       is measured on `spark`: Q4_K_M, Q8_0 and BF16 controls, including
       1024²/40-step time, sampled memory and visual agreement. It is a
-      format comparison, not native jitLLM GGUF image support.
+      format comparison, not native llmpalooza GGUF image support.
 - [x] **Import:** M0's Python prototype importer writes the D-056 artifacts
       for the three models, including NVFP4 and MXFP8 tensors and the image
       pipeline's BF16 components. The C++ importer and verifier stay in M5.
@@ -211,28 +211,28 @@ it appears.
       *Qwen3.8's formats, by a quick A/B*
       ([qwen38-native](experiments/qwen38-native/README.md#kernel-ab-d-085)):
       NVFP4 experts on GGML's MMVQ and MMQ (the NVFP4 MMQ instance unit added
-      to the lock); MXFP8 products on jitLLM's own vector product up to 8
+      to the lock); MXFP8 products on llmpalooza's own vector product up to 8
       rows and otherwise dequantized to BF16 for cuBLAS (since the second
       prefill pass, the reference form's; the default takes CUTLASS's
       MXFP8 GEMM, 1.9–2.5× cuBLAS's at 4,096 rows); the n-gram table's
-      NVFP4 rows on jitLLM's own lookup (`kernels/ggml/jitllm_ops.h`). Each
+      NVFP4 rows on llmpalooza's own lookup (`kernels/ggml/llmp_ops.h`). Each
       matches an FP64 reference built from the format's dequantization on a
       GB10. For prefill, CUTLASS 4.7.1's NVFP4 grouped GEMM (BSD-3, a new
       lock component, headers only) now takes the routed experts over a
-      CUTLASS layout the importer writes, with jitLLM's own vector products
+      CUTLASS layout the importer writes, with llmpalooza's own vector products
       over it for decode; 1.16–2.84× GGML's MoE block at 512 to 8,192
       tokens
       ([qwen38-native](experiments/qwen38-native/README.md#prefill-d-085)).
       *The image pipeline's* (Qwen-Image-2.1, BF16, chosen per operation by
-      speed): cuBLAS BF16 products, jitLLM's own FlashAttention-2 kernel
+      speed): cuBLAS BF16 products, llmpalooza's own FlashAttention-2 kernel
       (3.37 ms per denoiser block, as PyTorch's flash kernel; GGML's
       tensor-core kernel, built for D = 128 without head grouping, took
-      19.9 ms) and jitLLM's fused BF16 kernels for the norms, modulation,
+      19.9 ms) and llmpalooza's fused BF16 kernels for the norms, modulation,
       rotary embeddings, residuals and the VAE, each rounding where
       diffusers rounds (`kernels/image`,
       [qwen-image-native](experiments/qwen-image-native/README.md)); the
       VAE's convolutions (its causal 3D convolutions are 2-D at one frame)
-      were im2col and cuBLAS and are, since the speed slice, jitLLM's own
+      were im2col and cuBLAS and are, since the speed slice, llmpalooza's own
       implicit GEMM, so GGML's were not needed; the products are pinned
       cuBLASLt algorithms. The image's operations are declared in the
       registry and run through a bound plan. No source-lock change.
@@ -252,7 +252,7 @@ it appears.
       state has a state adapter with spill and restore coverage (RE-004,
       RE-007).
       *DeepSeek V4 Flash, native and resident* (`model/dsv4.h`,
-      `kernels/ggml/dsv4_graph.h`, `jitllm_dsv4_exec`): llama.cpp's
+      `kernels/ggml/dsv4_graph.h`, `llmp_dsv4_exec`): llama.cpp's
       `deepseek4.cpp` graph (CSA with the lightning indexer and top-k, HCA,
       the window, sinks, q/o LoRA and output groups, mHC with its Sinkhorn
       comb, 256 experts top-6 plus the shared one with sqrtsoftplus and
@@ -272,14 +272,14 @@ it appears.
       Open: the executed-plan record against llama.cpp's, and the other
       models.
       *Qwen3.8 Flash Next, native and resident* (`model/qwen38.h`,
-      `kernels/ggml/qwen38_graph.h`, `jitllm_qwen38_exec`): llama.cpp's
+      `kernels/ggml/qwen38_graph.h`, `llmp_qwen38_exec`): llama.cpp's
       `qwen4exp.cpp` operation plan (hyper-connections, the n-gram
       embedding layer, Gated DeltaNet, QSA with its indexer and budget, 512
       experts top-10 plus the gated shared one, the head) over the artifact
       on `spark-b`. Against Mia's vLLM (deterministic, MTP off) on the same
       checkpoint: 180 of 192 teacher-forced greedy steps agree, the other 12
       at oracle margins of at most 1.0 nats, within the 95th percentile of
-      jitLLM's own kernel-to-kernel margin noise (a bound set after the
+      llmpalooza's own kernel-to-kernel margin noise (a bound set after the
       first comparison, so not pre-registered; it fails at the 90th);
       perplexity 14.43 against 14.66 (−1.5%), top-1 accuracy equal. The
       KV, indexer, recurrent and convolution state is explicit and bounded
@@ -300,7 +300,7 @@ it appears.
       selection making its mask on the device. Prefill 1.41× the oracle's
       at 8,192 tokens in 8,192-row chunks, 1.38× in 4,096-row chunks, 2.02×
       at 2,048, 1.56× at 512; decode unchanged; perplexity −0.8% to −1.2%; one of
-      the 192 greedy steps now misses the near-tie bound (jitLLM's own
+      the 192 greedy steps now misses the near-tie bound (llmpalooza's own
       margin there is 0.18 nats in the reference form; accepted by the owner,
       2026-09-28, as a known divergence)
       ([qwen38-native](experiments/qwen38-native/README.md#prefill-second-pass-speed-before-bit-exactness)).
@@ -318,7 +318,7 @@ it appears.
       (RE-031: GGML's radix select picks among ties by timing).
       Open: a deterministic top-k.
       *Qwen-Image-2.1, native* (`model/qwen_image.h`,
-      `jitllm_qwen_image_exec`): the text encoder (Qwen3-VL's text path, the
+      `llmp_qwen_image_exec`): the text encoder (Qwen3-VL's text path, the
       system turn dropped), the block-causal DiT with its text K/V prefix
       cache and the flow-matching Euler scheduler, and the VAE decoder, from
       the composition on `spark`, each phase bounded and, with
@@ -365,7 +365,7 @@ it appears.
       grouped-GEMM path brings its own view: the harness rewrites each slot
       in place into CUTLASS's layout (the same bytes, permuted; every layer
       converts back to the loaded bytes exactly), which the grouped GEMM
-      and jitLLM's decode products read
+      and llmpalooza's decode products read
       ([artifact-format.md](artifact-format.md#executable-views)).
 - [x] **Tokenizer and chat templates** (pulled from M5; D-067): the native
       tokenizer, renderers for each model's pinned template (DeepSeek's
@@ -480,7 +480,7 @@ it appears.
       regenerated pixel for pixel. Open: overlapping eviction with page-in,
       Qwen3.8's and the image's graphs, and a deterministic top-k for
       Qwen3.8 (RE-031).
-      *Through `jitllm-runtime`* (D-096, [swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096)):
+      *Through `llmp-runtime`* (D-096, [swap](experiments/fast-swap/swap.md#through-llmp-runtime-d-096)):
       all three models registered in one process, every fast path on
       (speculation, so the drafters page in with their targets: DeepSeek
       108.4 GB, Qwen3.8 77.0), every ordered pair A→B→A, 8K and 0 context,
@@ -547,7 +547,7 @@ it appears.
       and every step's logits are identical between the two. That is
       1.01–1.03× Mia's vLLM with speculation off (25.12 / 25.33). A step is
       37.4 ms on the device, and its host time is 0.07 ms. Across a swap
-      (`jitllm_swap_pairs --a qwen38 --b image`), a prepared return
+      (`llmp_swap_pairs --a qwen38 --b image`), a prepared return
       replays the graph captured before it for every continued step,
       bit-identical to the unswapped continuation.
 - [x] **RE-029's lead:** read `CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_MEM_OPS`
@@ -587,7 +587,7 @@ it appears.
       before bit exactness, D-085's and D-092's notes;
       [dsv4-decode](experiments/dsv4-decode/README.md)): DeepSeek's fast
       plan is the default for decode, verify and draft chunks. One
-      quantized vector kernel (`jitllm.vecq`) serves every product and
+      quantized vector kernel (`llmp.vecq`) serves every product and
       reads each routed expert once for all the rows that select it (the
       batched verify), with fused routing, combine, hyper-connection
       pre-mix and compressor kernels, and PDL. A decode step drops from
@@ -603,7 +603,7 @@ it appears.
       bit-identical. The exact plan and D-092's verify remain as
       `--exact on`. The recorded near-tie bound (6.11, twice the largest
       fast-against-reference move) is too loose to be a test; later
-      slices take the 99th percentile of noise between two of jitLLM's
+      slices take the 99th percentile of noise between two of llmpalooza's
       own paths ([dsv4-decode](experiments/dsv4-decode/README.md#the-bound-going-forward)),
       under which one forced-run speculative token (a 3.62-nat
       disagreement) is flagged. It is diagnosed as kernel noise amplified
@@ -616,7 +616,7 @@ it appears.
       7.3–7.6 GB in Mia's NVFP4, MXFP8 and BF16 against 4.5 GB in MLX
       4-bit. This estimate does not isolate format versus engine costs or
       measure hardware traffic. Adopted within the format: the Gated DeltaNet state
-      updated in place (`jitllm.gdn.step`; TensorFold double-buffers it),
+      updated in place (`llmp.gdn.step`; TensorFold double-buffers it),
       the hyper-connection prep across a cluster of blocks, a BF16 vector
       kernel for the mixes' one-row products, the one-row convolution
       fused, and PDL with L2 prefetch for the vector products. Plain decode
@@ -631,18 +631,18 @@ it appears.
       causal attribution of the remaining gap, including MXFP8 products and
       the BF16 head; TensorFold's kernel-level profile (its container's CUPTI
       recorded nothing in this study).
-- [x] **Swap runner:** a native CLI harness in `jitllm-runtime` that drives
+- [x] **Swap runner:** a native CLI harness in `llmp-runtime` that drives
       A→B→A in a running process (tokenize, prefill, decode, detokenize) and
       reports each part of the swap time.
-      *First as harness binaries* (`jitllm_swap_runner`, `jitllm_swap_pairs`).
+      *First as harness binaries* (`llmp_swap_runner`, `llmp_swap_pairs`).
       *Done 2026-09-28 in the runtime* (D-096,
       [runtime-serving.md](runtime-serving.md)): the paged node and the three
       models' runners moved into an `engine` module and the task programs
       into the scheduler; the configuration names the models
       (`[models.<name>]`: artifact or composition, drafter, context,
-      tokenizer and template); `jitllm-runtime chat --turn MODEL TEXT...`
+      tokenizer and template); `llmp-runtime chat --turn MODEL TEXT...`
       serves turns with the native tokenizer and renderers, speculative by
-      default (DSpark, MTP), swapping as needed, and `jitllm-runtime
+      default (DSpark, MTP), swapping as needed, and `llmp-runtime
       swap-table` runs every ordered pair in one process. Through the
       runtime, on `spark-b`: greedy tokens equal the speculation
       harnesses' on the fixed prompts, speculative and plain, for both LLMs
@@ -660,7 +660,7 @@ it appears.
       runner fixes both at setup).
 - [x] Start the model support matrix (moved from M5), recording template
       hashes. *Done 2026-09-28* ([model-support.md](model-support.md)):
-      each model and drafter jitLLM runs, the M2 fixtures among them, with
+      each model and drafter llmpalooza runs, the M2 fixtures among them, with
       its checkpoint pin, artifact, template hash as `src/chat` keys it,
       tokenizer, decoding modes, context exercised, evidence, known
       divergences, status and level.
@@ -684,7 +684,7 @@ it appears.
       disconnect and stop). On `spark-b` with DeepSeek and Qwen3.8
       configured, through curl: DeepSeek, a swap to Qwen3.8 streamed and
       a swap back (10.0, 9.1 and 11.0 s from request to response, the
-      swaps 8.1, 7.8 and 9.5 s); each greedy reply equals `jitllm-runtime
+      swaps 8.1, 7.8 and 9.5 s); each greedy reply equals `llmp-runtime
       chat`'s on the same prompt (text, 52 and 37 tokens, prompt counts,
       finish), the stream ends in `[DONE]`, a seeded sampled request
       repeats exactly, a stop string ends the answer, and a request over
@@ -700,7 +700,7 @@ it appears.
       default and on any configured address, authentication optional on
       each (unauthenticated listeners named at startup),
       ignores unknown fields by name with a table at
-      `/jitllm/v1/ignored-fields`, honors `top_k` and `min_p`, and serves
+      `/llmp/v1/ignored-fields`, honors `top_k` and `min_p`, and serves
       persistent connections from an epoll I/O thread (1,024 connections,
       64 queued, pipelining refused, slow clients isolated) with SSE
       keepalives through the queue, swaps and prefill. Unit tests cover
@@ -718,7 +718,7 @@ it appears.
       ended in `[DONE]` in 17.1 s (one swap); 6 streams alternating the
       two models (a swap each) started at 15.0 s in the queue, heard
       keepalive comments and all finished (the last in 52.8 s); greedy
-      replies still equal `jitllm-runtime chat`'s (DeepSeek 52 tokens,
+      replies still equal `llmp-runtime chat`'s (DeepSeek 52 tokens,
       Qwen3.8 37, streamed).
       *Fixed after an outside review, 2026-09-29* (D-096 and D-097
       amended, [runtime-serving.md](runtime-serving.md#prefill-chunks-and-cancellation)):
@@ -765,7 +765,7 @@ it appears.
       after the swap; `swap-table --pairs deepseek:qwen3.8` exact in every
       row, totals 7.89–9.77 s against main's 7.91–9.67 s over two
       alternating passes; Qwen-Image's pixels `3b7770ca…` and its pair
-      exact; through `jitllm-runtime chat` the same replies, prefill at 8K
+      exact; through `llmp-runtime chat` the same replies, prefill at 8K
       451–456 tok/s (DeepSeek) and 2,179–2,186 (Qwen3.8) on both, plain
       decode at 8K 19.06–19.17 and 25.54–25.58 tok/s on both. Main is
       clang-tidy clean over all of `src/`, `tests/` and `benchmarks/`
@@ -787,7 +787,7 @@ it appears.
       ([forum](https://forums.developer.nvidia.com/t/1x-spark-deepseek-v4-flash-0731-1-000-tok-s-prefill-59-tok-s-multi-agent-serving/378855)).
       The study:
       - pin ds4 and its GGUF and measure it on a Spark;
-      - import the same GGUF into jitLLM (adding IQ2_XXS products if
+      - import the same GGUF into llmpalooza (adding IQ2_XXS products if
         needed) so the comparison is same-format;
       - profile a prefill chunk in both engines;
       - adopt and generalize the techniques that transfer, across
@@ -855,7 +855,7 @@ it appears.
       [final context checks](experiments/m3-final-context/README.md).
 - [ ] **Complete ds4 performance reference and native restoration**
       (the owner, 2026-09-30). First reproduce the complete original
-      pipeline inside jitLLM on the same community GGUF, precisions,
+      pipeline inside llmpalooza on the same community GGUF, precisions,
       context, chunks and output cadence; measure it independently of
       adoption's quality gates. Then restore native stages one at a time
       to bisect the speed difference, including charged preparation,
@@ -1187,7 +1187,7 @@ it appears.
       which all touch the same `[models]` keys.
       *Landed:* the table-driven schema with every setting a key, the
       resolved record with sources, derived defaults (context, sampling,
-      draft rows, reasoning markers), the start's log and `jitllm-runtime
+      draft rows, reasoning markers), the start's log and `llmp-runtime
       settings` ([model settings](runtime-serving.md#model-settings)); the
       calibration record and passive first-use calibrations of the floors,
       recompute cost, DeepSeek's wave costs and Qwen3.8's depth cost
@@ -1252,9 +1252,9 @@ it appears.
         The gaps found set the optimization work.
         *Baseline measured 2026-09-29*
         ([long-context](experiments/long-context/README.md); llama.cpp
-        b11254 built by us, Mia's vLLM, jitLLM through the runtime; a
+        b11254 built by us, Mia's vLLM, llmpalooza through the runtime; a
         per-kernel profile at 8K, 32K and 64K). The comparators stay
-        nearly flat with depth; jitLLM's per-token cost grows with the
+        nearly flat with depth; llmpalooza's per-token cost grows with the
         whole context: DeepSeek prefill 333 / 230 tok/s at 32K / 64K
         (1.16× / 0.84× llama.cpp's), decode 14.7 / 10.8 (0.78× / 0.60×),
         with DSpark 31.3 / 21.4 (1.02× / 0.74×);
@@ -1277,7 +1277,7 @@ it appears.
         speed* (not only inside D-085's 10%). *DeepSeek done 2026-09-29*
         ([phase 2](experiments/long-context/README.md#phase-2-deepseek-flat-with-depth-2026-09-29)):
         its window cache a ring, attention gathering only the window and
-        the selected or visible compressed rows, jitLLM's deterministic
+        the selected or visible compressed rows, llmpalooza's deterministic
         indexer (RE-031 closed for it) and the guard at 6 GiB with host
         inputs counted. Through the runtime, prefill 471 / 466 / 445 tok/s
         and plain decode 21.6 / 21.2 / 20.5 at 32K / 64K / 128K (1.65–1.72×

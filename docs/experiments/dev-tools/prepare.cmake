@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 # Script-mode source preparation (D-057/D-058). Usage:
 #   cmake -DARCHIVE=/abs/googletest-1.18.0.tar.gz -DSOURCE_DIR=/abs/new-dir -P prepare.cmake

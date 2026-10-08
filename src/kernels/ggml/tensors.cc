@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/tensors.h"
@@ -16,7 +16,7 @@
 #include "base/check.h"
 #include "ggml.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 void TensorArena::Free::operator()(ggml_context* context) const { ggml_free(context); }
 
@@ -118,4 +118,4 @@ void TensorArena::Bind(ggml_tensor* tensor, std::uint64_t address) {
   tensor->data = reinterpret_cast<void*>(address);  // NOLINT(performance-no-int-to-ptr)
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

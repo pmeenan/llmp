@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The general JSON parser (base/json.h), as untrusted input.
@@ -19,9 +19,9 @@
 
 namespace {
 
-namespace json = jitllm::base::json;
-using jitllm::test_support::Failed;
-using jitllm::test_support::Get;
+namespace json = llmp::base::json;
+using llmp::test_support::Failed;
+using llmp::test_support::Get;
 
 std::optional<std::uint64_t> FailOffset(std::string_view text, const json::Limits& limits = {}) {
   return Failed(json::Parse(text, limits), &json::Error::offset);

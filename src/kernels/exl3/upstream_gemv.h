@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2025 Turboderp
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
-// Upstream's choice of the GEMV kernel, as a jitLLM function (D-053, D-080;
+// Upstream's choice of the GEMV kernel, as a llmpalooza function (D-053, D-080;
 // docs/backend-proof.md, "EXL3-G vs EXL3-O"): a recorded copy of
 // exl3_gemv_cfg and the eligibility and grid rules of exl3_gemv_try_launch
-// in ExLlamaV3's quant/exl3_gemv.cu at 6b84a21b, which jitLLM does not
+// in ExLlamaV3's quant/exl3_gemv.cu at 6b84a21b, which llmpalooza does not
 // compile (its ATen entry point and device context are upstream's). A plan
 // asks it where upstream's EXL3-O profile would launch the GEMV, and with
 // which configuration and grid; the launcher itself takes any valid plan
@@ -18,14 +18,14 @@
 // - The co-resident block counts come from the caller (the device's
 //   occupancy times its SMs), as upstream computes and caches them.
 
-#ifndef JITLLM_KERNELS_EXL3_UPSTREAM_GEMV_H_
-#define JITLLM_KERNELS_EXL3_UPSTREAM_GEMV_H_
+#ifndef LLMP_KERNELS_EXL3_UPSTREAM_GEMV_H_
+#define LLMP_KERNELS_EXL3_UPSTREAM_GEMV_H_
 
 #include <optional>
 
 #include "kernels/exl3/validate.h"
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 
 // Upstream's compute-capability classes (quant/exl3_devctx.cuh) and how
 // DevCtx::get_cc assigns them from a device's major and minor version.
@@ -48,6 +48,6 @@ int UpstreamGemvConfig(CcClass cc, int m, int k, int n, int bits, int codebook,
 std::optional<GemvPlan> UpstreamGemvPlan(CcClass cc, int m, int k, int n, int bits, int codebook,
                                          int narrow_coresident, int wide_coresident);
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3
 
-#endif  // JITLLM_KERNELS_EXL3_UPSTREAM_GEMV_H_
+#endif  // LLMP_KERNELS_EXL3_UPSTREAM_GEMV_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/event_loop.h"
@@ -21,7 +21,7 @@
 #include <system_error>
 #include <utility>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 namespace {
 
 constexpr std::size_t kMostEvents = 256;
@@ -150,4 +150,4 @@ int SignalWatch::Take() const {
   return static_cast<int>(info.ssi_signo);
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

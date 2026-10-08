@@ -1,8 +1,0 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
-# SPDX-License-Identifier: Apache-2.0
-#
-# The data directory and the default checkpoint store (D-063). Installed as
-# /usr/lib/tmpfiles.d/jitllm.conf. No age, so nothing here is ever cleaned.
-# The checkpoint store's mode and owner apply only when it is created (":").
-d /var/lib/jitllm 0755 jitllm jitllm -
-d /var/lib/jitllm/checkpoints :1777 :jitllm :jitllm -

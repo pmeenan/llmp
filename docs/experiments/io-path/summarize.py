@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Validate retained measurements and print grouped ranges; never trim outliers."""
 import argparse
@@ -94,7 +94,7 @@ def main():
     if trace_path.exists():
         trace = json.loads(trace_path.read_text())
         assert trace["event_enabled"] == trace["tracing_on"] == "1"
-        assert "jitllm IO comparison trace begin" in trace["trace"] and "jitllm IO comparison trace end" in trace["trace"]
+        assert "llmp IO comparison trace begin" in trace["trace"] and "llmp IO comparison trace end" in trace["trace"]
         assert trace["bounce_events"] == sum("swiotlb_bounced:" in line for line in trace["trace"].splitlines())
         for stats in trace["cpu_stats"].values():
             for line in stats.splitlines():

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # First dense checkpoint and numerical reference
@@ -8,7 +8,7 @@ GGML backend proof and M5's end-to-end fixture parity. D-052 adds a required
 [EXL3 companion](exl3-bringup.md) in M2, including upstream performance gates.
 Use the already pinned
 llama.cpp reference on Spark. This resolves M0 question 4; it does not
-establish native jitLLM support or close the separate backend-proof scope,
+establish native llmpalooza support or close the separate backend-proof scope,
 artifact schema, source-dependency or toolchain tasks.
 
 ## Exact input and rationale
@@ -91,7 +91,7 @@ thread and environment values are in the [experiment](experiments/first-slice/RE
 [RE-008](rough-edges.md#re-008-extended-reference-runs-do-not-always-preserve-exact-top-1-predictions--2026-09-21-status-open)
 records non-repeatable predictions for larger MoE models at this llama.cpp
 pin; this bounded dense run repeats exactly, which does not generalize. The external
-reference retains its pinned upstream build; jitLLM retains the D-032
+reference retains its pinned upstream build; llmpalooza retains the D-032
 Clang/CUDA toolchain. A rebuild or changed numerical plan needs a new
 reference record.
 
@@ -111,7 +111,7 @@ M2/M5 comparisons must cover:
   agreement and top-1/top-2 margins on fixed inputs. Compare intermediate
   normalization, Q/K/V, attention and FFN outputs where a discrepancy first
   appears; any tracing callback needs its own uninstrumented control (RE-006).
-- A resident jitLLM control and the same implementation after weight/state
+- A resident llmpalooza control and the same implementation after weight/state
   eviction and restoration, using the same computation order and backend.
   Exact storage recovery is mandatory. Expect bit-identical logits when
   the numerical path is unchanged; any nondeterminism needs separately
@@ -130,18 +130,18 @@ after 32 tokens with exact continuation logits. CPU versus CUDA had all
 76 top-1 IDs equal but maximum absolute logit difference 0.2375702858 and
 RMS difference 0.0152053890. This illustrates why backend-specific controls
 matter. It is one short synthetic trajectory, not acceptance evidence for
-jitLLM, long contexts, a spill format or pending-work cancellation.
+llmpalooza, long contexts, a spill format or pending-work cancellation.
 
 ## Selected reuse and outstanding gates
 
 The [source inventory](experiments/first-slice/source-audit.json) records
 paths, roles, notices and verified hashes at the pinned llama.cpp revision.
 The [licensing index](licensing.md#first-dense-slice-d-051) records the
-disposition. Nothing from upstream is copied or linked into jitLLM by this
+disposition. Nothing from upstream is copied or linked into llmpalooza by this
 planning change; the experiment links an external reference tool only.
 
 For the native proof, use GGML core and its CPU/CUDA operations behind
-jitLLM's operation contract. Adapt the selected Qwen2 graph/tensor semantics;
+llmpalooza's operation contract. Adapt the selected Qwen2 graph/tensor semantics;
 do not adopt libllama's scheduler, weight loader, KV allocator or residency
 ownership. Backend workspace, hidden allocations, registration and captured
 pointers remain the M2 proof's responsibility. Sources follow D-057's
@@ -155,7 +155,7 @@ tables are generated from inputs whose exact revisions are not recorded in
 the generated file. The generator reads a moving Unicode URL and Python's
 Unicode data; root MIT alone does not resolve the derived-data terms.
 The provenance is now established (2026-09-28): the tables are UCD 15.1.0
-data ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)). jitLLM's
+data ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)). Llmpalooza's
 tokenizer does not copy them; it generates its own from the pinned UCD
 15.1.0 files, and D-088 admits Unicode-licensed data to the core. The
 owner accepted D-088 on 2026-09-28, closing the gate: the native tokenizer
@@ -164,7 +164,7 @@ renderers pass exact fixtures without the upstream Jinja/parser/vendor
 closure; this fixture's Qwen2.5 template (`d5495a1e…`) has none yet (M5).
 
 The early integration proof covers this control and the D-052 EXL3 companion:
-prepared artifacts, jitLLM-owned weight/state/workspace backing, chunk-closure
+prepared artifacts, llmpalooza-owned weight/state/workspace backing, chunk-closure
 direct reads, completion-safe cancellation/reclaim and correctness after
 restoration. The immutable artifact is D-056's experimental
 [v0 format](artifact-format.md); the mutable spill format remains its own

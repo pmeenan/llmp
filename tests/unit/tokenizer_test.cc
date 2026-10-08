@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The native tokenizer on synthetic vocabularies: Unicode tables and UTF-8,
@@ -38,9 +38,9 @@
 
 namespace {
 
-namespace tok = jitllm::tokenizer;
-namespace uni = jitllm::tokenizer::unicode;
-using jitllm::test_support::Failed;
+namespace tok = llmp::tokenizer;
+namespace uni = llmp::tokenizer::unicode;
+using llmp::test_support::Failed;
 using tok::PreTokenizer;
 using tok::Rule;
 using tok::TokenId;
@@ -897,10 +897,10 @@ TEST(RawBpe, BoundsAndAccountingIncludeTheWholeInput) {
   }
   EXPECT_EQ(t->WorkingBytes(text), text.size() * tok::kEncodeBytesPerWindowByte);
   EXPECT_GT(t->WorkingBytes(text), tok::Tokenizer::EncodeWorkingBytes(text));
-  jitllm::base::WorkPulse pulse;
-  jitllm::base::SetThreadPulse(&pulse);
+  llmp::base::WorkPulse pulse;
+  llmp::base::SetThreadPulse(&pulse);
   const auto ids = Encode(*t, text);
-  jitllm::base::SetThreadPulse(nullptr);
+  llmp::base::SetThreadPulse(nullptr);
   EXPECT_GT(pulse.beats(), 2U);
   ASSERT_EQ(ids.size(), tok::kEncodeWindowBytes);
   for (std::size_t i = 0; i < ids.size(); i += 2) {
@@ -909,9 +909,9 @@ TEST(RawBpe, BoundsAndAccountingIncludeTheWholeInput) {
   }
   std::vector<TokenId> out;
   pulse.Cancel();
-  jitllm::base::SetThreadPulse(&pulse);
+  llmp::base::SetThreadPulse(&pulse);
   auto cancelled = t->Encode("a a", {}, out);
-  jitllm::base::SetThreadPulse(nullptr);
+  llmp::base::SetThreadPulse(nullptr);
   ASSERT_FALSE(cancelled.has_value());
   EXPECT_EQ(cancelled.error().rule, Rule::kCancelled);
   auto r = t->Encode("a a", {.max_bytes = 2}, out);
@@ -948,14 +948,14 @@ TEST(RawBpe, SpecialOnlyTextHonorsCancellationAndReportsProgress) {
   spec.kinds.push_back(TokenKind::kUserDefined);
   auto t = tok::Tokenizer::Create(std::move(spec));
   ASSERT_TRUE(t.has_value());
-  jitllm::base::WorkPulse pulse;
+  llmp::base::WorkPulse pulse;
   pulse.Cancel();
   std::vector<TokenId> out;
-  jitllm::base::SetThreadPulse(&pulse);
+  llmp::base::SetThreadPulse(&pulse);
   const auto parsed = t->Encode("<bos><user>", {.special = tok::SpecialTokens::kParse}, out);
   const std::array spans = {tok::SpecialSpan{0, 5}};
   const auto marked = t->EncodeMarked("<bos>", spans, {}, out);
-  jitllm::base::SetThreadPulse(nullptr);
+  llmp::base::SetThreadPulse(nullptr);
   EXPECT_EQ(Failed(parsed, &tok::Error::rule), Rule::kCancelled);
   EXPECT_EQ(Failed(marked, &tok::Error::rule), Rule::kCancelled);
   EXPECT_TRUE(out.empty());
@@ -967,9 +967,9 @@ TEST(RawBpe, SpecialOnlyTextHonorsCancellationAndReportsProgress) {
   }
   const auto before = pulse.beats();
   out.clear();
-  jitllm::base::SetThreadPulse(&pulse);
+  llmp::base::SetThreadPulse(&pulse);
   const auto progress = t->Encode(text, {.special = tok::SpecialTokens::kParse}, out);
-  jitllm::base::SetThreadPulse(nullptr);
+  llmp::base::SetThreadPulse(nullptr);
   ASSERT_TRUE(progress.has_value());
   EXPECT_EQ(out.size(), 131072U);
   EXPECT_GT(pulse.beats() - before, 2U);
@@ -1319,18 +1319,18 @@ TEST(SentencePiece, LongWholeFragmentUsesFundedBoundAndReportsProgress) {
   }
   EXPECT_EQ(t->WorkingBytes(text), (text.size() + 1) * tok::kEncodeBytesPerWindowByte);
   EXPECT_GT(t->WorkingBytes(text), tok::Tokenizer::EncodeWorkingBytes(text));
-  jitllm::base::WorkPulse pulse;
-  jitllm::base::SetThreadPulse(&pulse);
+  llmp::base::WorkPulse pulse;
+  llmp::base::SetThreadPulse(&pulse);
   std::vector<TokenId> ids;
   const auto encoded = t->Encode(text, {}, ids);
-  jitllm::base::SetThreadPulse(nullptr);
+  llmp::base::SetThreadPulse(nullptr);
   ASSERT_TRUE(encoded);
   EXPECT_GT(pulse.beats(), 40U);
   EXPECT_EQ(ids.size(), text.size());
   pulse.Cancel();
-  jitllm::base::SetThreadPulse(&pulse);
+  llmp::base::SetThreadPulse(&pulse);
   const auto refused = t->Encode("a", {}, ids);
-  jitllm::base::SetThreadPulse(nullptr);
+  llmp::base::SetThreadPulse(nullptr);
   EXPECT_EQ(Failed(refused, &tok::Error::rule), Rule::kCancelled);
 }
 

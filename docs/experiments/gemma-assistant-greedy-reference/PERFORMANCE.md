@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # First bounded all-cost assistant screen
@@ -78,7 +78,7 @@ draft rows per trajectory; five trajectories plus five query64 prefills fit a
 prior short controls is an estimate; actual official elapsed remains authoritative.
 No full suite, depth/context ladder,26 transfer or sustained/serving/default claim.
 
-Use the existing `jitllm_gemma_greedy_reference` target and the separate
+Use the existing `llmp_gemma_greedy_reference` target and the separate
 `performance_reference.sh` wrapper under the unchanged837fc732/b29c606e original
 pin. Source/build, native acquisition/own and original acquisition/own/comparison
 pipeline templates are reviewed once; later successful producer/own identities

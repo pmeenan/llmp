@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The EXL3 Qwen2 adapter and its native operation plan (model/qwen2_exl3.h),
@@ -31,17 +31,17 @@
 
 namespace {
 
-using jitllm::model::Exl3Arm;
-using jitllm::model::Exl3LaunchTable;
-using jitllm::model::Exl3LinearPlan;
-using jitllm::model::Exl3Path;
-using jitllm::model::Exl3Phase;
-using jitllm::model::Exl3PhasePlan;
-using jitllm::model::Exl3Pin;
-using jitllm::model::Exl3Resource;
-using jitllm::test_support::Failed;
+using llmp::model::Exl3Arm;
+using llmp::model::Exl3LaunchTable;
+using llmp::model::Exl3LinearPlan;
+using llmp::model::Exl3Path;
+using llmp::model::Exl3Phase;
+using llmp::model::Exl3PhasePlan;
+using llmp::model::Exl3Pin;
+using llmp::model::Exl3Resource;
+using llmp::test_support::Failed;
 
-const jitllm::model::Qwen2Profile& Profile() { return jitllm::model::Qwen25Instruct05BExl3(); }
+const llmp::model::Qwen2Profile& Profile() { return llmp::model::Qwen25Instruct05BExl3(); }
 
 Exl3Resource Resource(std::string name, std::string family, std::string dtype,
                       std::vector<std::uint64_t> shape, std::string role = "") {
@@ -120,17 +120,17 @@ std::vector<Exl3Resource> Resources() {
   return out;
 }
 
-jitllm::model::Exl3Binding Binding() {
+llmp::model::Exl3Binding Binding() {
   const std::vector<Exl3Resource> resources = Resources();
-  return jitllm::model::BindQwen2Exl3(Profile(), "qwen2", resources).value();
+  return llmp::model::BindQwen2Exl3(Profile(), "qwen2", resources).value();
 }
 
 // A table with every case the trajectories need, each on upstream's path
 // (tile shapes and grids arbitrary but valid in form).
 Exl3LaunchTable Table(Exl3Arm arm, std::string source = "test") {
-  const jitllm::model::Exl3Binding b = Binding();
+  const llmp::model::Exl3Binding b = Binding();
   Exl3LaunchTable table(std::move(source));
-  const auto add = [&](const jitllm::model::Exl3LinearBinding& l, int rows, bool f32) {
+  const auto add = [&](const llmp::model::Exl3LinearBinding& l, int rows, bool f32) {
     Exl3LinearPlan plan;
     if (rows <= 144) {
       plan =
@@ -138,7 +138,7 @@ Exl3LaunchTable Table(Exl3Arm arm, std::string source = "test") {
                  1, 16);
     } else {
       std::vector<Exl3Pin> pins;
-      for (const int n : jitllm::model::Exl3Slices(l.n)) {
+      for (const int n : llmp::model::Exl3Slices(l.n)) {
         pins.push_back(Pin(rows, l.k, n, l.n, f32));
       }
       plan = Reconstructed(rows >= 1024 ? Exl3Path::kReconstructFused : Exl3Path::kReconstruct,
@@ -178,7 +178,7 @@ TEST(Qwen2Exl3Test, BindsEveryTensorAndRefusesAnythingElse) {
 
   const auto refused = [](std::vector<Exl3Resource> resources,
                           std::string_view architecture = "qwen2") {
-    return Failed(jitllm::model::BindQwen2Exl3(Profile(), architecture, resources));
+    return Failed(llmp::model::BindQwen2Exl3(Profile(), architecture, resources));
   };
   EXPECT_TRUE(refused(Resources(), "llama").has_value());
   {
@@ -211,25 +211,25 @@ TEST(Qwen2Exl3Test, BindsEveryTensorAndRefusesAnythingElse) {
 // A profile with a zero count is refused with an error, never divided by.
 TEST(Qwen2Exl3Test, RefusesAProfileWithAZeroCount) {
   const std::vector<Exl3Resource> resources = Resources();
-  using Field = std::uint32_t jitllm::model::Qwen2Profile::*;
+  using Field = std::uint32_t llmp::model::Qwen2Profile::*;
   for (const auto& [name, field] : std::vector<std::pair<std::string, Field>>{
-           {"kv_heads", &jitllm::model::Qwen2Profile::kv_heads},
-           {"heads", &jitllm::model::Qwen2Profile::heads},
-           {"head_dim", &jitllm::model::Qwen2Profile::head_dim},
-           {"width", &jitllm::model::Qwen2Profile::width},
-           {"ffn", &jitllm::model::Qwen2Profile::ffn},
-           {"vocab", &jitllm::model::Qwen2Profile::vocab},
-           {"layers", &jitllm::model::Qwen2Profile::layers}}) {
-    jitllm::model::Qwen2Profile p = Profile();
+           {"kv_heads", &llmp::model::Qwen2Profile::kv_heads},
+           {"heads", &llmp::model::Qwen2Profile::heads},
+           {"head_dim", &llmp::model::Qwen2Profile::head_dim},
+           {"width", &llmp::model::Qwen2Profile::width},
+           {"ffn", &llmp::model::Qwen2Profile::ffn},
+           {"vocab", &llmp::model::Qwen2Profile::vocab},
+           {"layers", &llmp::model::Qwen2Profile::layers}}) {
+    llmp::model::Qwen2Profile p = Profile();
     p.*field = 0;
-    EXPECT_EQ(Failed(jitllm::model::BindQwen2Exl3(p, "qwen2", resources)),
+    EXPECT_EQ(Failed(llmp::model::BindQwen2Exl3(p, "qwen2", resources)),
               "a profile the EXL3 plan cannot run")
         << name;
   }
 }
 
 TEST(Qwen2Exl3Test, OnlyRecordedPhaseKindsArePlanned) {
-  using jitllm::model::RecordedPhase;
+  using llmp::model::RecordedPhase;
   for (const int rows : {32, 144, 145, 1023, 1024}) {
     EXPECT_TRUE(RecordedPhase({.rows = rows, .past = 0}));
     EXPECT_FALSE(RecordedPhase({.rows = rows, .past = 1}));
@@ -247,7 +247,7 @@ TEST(Qwen2Exl3Test, OnlyRecordedPhaseKindsArePlanned) {
   const auto binding = Binding();
   const auto table = Table(Exl3Arm::kG);
   const auto refused = Failed(
-      jitllm::model::PlanPhase(Profile(), binding, table, Exl3Arm::kG, {.rows = 64, .past = 0}));
+      llmp::model::PlanPhase(Profile(), binding, table, Exl3Arm::kG, {.rows = 64, .past = 0}));
   EXPECT_NE(refused.value_or("").find("record it first"), std::string::npos);
 }
 
@@ -263,7 +263,7 @@ TEST(Qwen2Exl3Test, OperationsFollowTheRecord) {
       "mlp_residual_add"};
   for (const int rows : {32, 145}) {
     const auto plan =
-        jitllm::model::PlanPhase(Profile(), binding, table, Exl3Arm::kG, {.rows = rows, .past = 0});
+        llmp::model::PlanPhase(Profile(), binding, table, Exl3Arm::kG, {.rows = rows, .past = 0});
     ASSERT_TRUE(plan.has_value()) << Failed(plan).value_or("");
     std::vector<std::string> expected = {"inputs", "embed"};
     for (int l = 0; l < 24; ++l) {
@@ -285,15 +285,15 @@ TEST(Qwen2Exl3Test, OperationsFollowTheRecord) {
     }
     EXPECT_EQ(got, expected);
     const auto& q =
-        *std::ranges::find(plan->ops, std::string("q_proj"), &jitllm::model::Exl3Op::name);
+        *std::ranges::find(plan->ops, std::string("q_proj"), &llmp::model::Exl3Op::name);
     EXPECT_EQ(q.implementation, rows == 32 ? "exl3.linear.gemm" : "exl3.linear.reconstruct");
-    EXPECT_EQ(plan->tensors.at("gate").dtype, jitllm::model::Exl3Dtype::kF32);
-    EXPECT_EQ(plan->tensors.at("attn.out").dtype, jitllm::model::Exl3Dtype::kF16);
+    EXPECT_EQ(plan->tensors.at("gate").dtype, llmp::model::Exl3Dtype::kF32);
+    EXPECT_EQ(plan->tensors.at("attn.out").dtype, llmp::model::Exl3Dtype::kF16);
   }
   const auto fused =
-      jitllm::model::PlanPhase(Profile(), binding, table, Exl3Arm::kG, {.rows = 1024, .past = 0});
+      llmp::model::PlanPhase(Profile(), binding, table, Exl3Arm::kG, {.rows = 1024, .past = 0});
   ASSERT_TRUE(fused.has_value());
-  EXPECT_EQ(std::ranges::find(fused->ops, std::string("lm_head"), &jitllm::model::Exl3Op::name)
+  EXPECT_EQ(std::ranges::find(fused->ops, std::string("lm_head"), &llmp::model::Exl3Op::name)
                 ->implementation,
             "exl3.linear.reconstruct_fused");
   EXPECT_EQ(fused->slots.count("lm_head.xh"), 0U);  // the fused path transforms no input
@@ -306,7 +306,7 @@ TEST(Qwen2Exl3Test, RefusesACaseTheTableLacksOrThatIsNotUpstreamsPath) {
   {
     Exl3LaunchTable table("partial");
     const auto refused = Failed(
-        jitllm::model::PlanPhase(Profile(), binding, table, Exl3Arm::kG, {.rows = 32, .past = 0}));
+        llmp::model::PlanPhase(Profile(), binding, table, Exl3Arm::kG, {.rows = 32, .past = 0}));
     EXPECT_NE(refused.value_or("").find("no plan"), std::string::npos);
   }
   // The full table with one entry replaced.
@@ -315,7 +315,7 @@ TEST(Qwen2Exl3Test, RefusesACaseTheTableLacksOrThatIsNotUpstreamsPath) {
     const auto b = Binding();
     Exl3LaunchTable out("changed");
     for (const int r : {1, 32, 144, 145, 1023, 1024}) {
-      const auto copy = [&](const jitllm::model::Exl3LinearBinding& l) {
+      const auto copy = [&](const llmp::model::Exl3LinearBinding& l) {
         const Exl3LinearPlan* found = table.Find(l.name, r);
         if (found != nullptr) {
           Exl3LinearPlan p = l.name == linear && r == rows ? plan : *found;
@@ -330,7 +330,7 @@ TEST(Qwen2Exl3Test, RefusesACaseTheTableLacksOrThatIsNotUpstreamsPath) {
         }
       }
     }
-    return Failed(jitllm::model::PlanPhase(
+    return Failed(llmp::model::PlanPhase(
         Profile(), binding, out, arm,
         rows == 1 ? Exl3Phase{.rows = 1, .past = 32} : Exl3Phase{.rows = rows, .past = 0}));
   };
@@ -369,7 +369,7 @@ TEST(Qwen2Exl3Test, PlacementNeverOverlapsLiveTensors) {
           Exl3Phase{.rows = 145, .past = 0}, Exl3Phase{.rows = 1023, .past = 0},
           Exl3Phase{.rows = 1024, .past = 0}, Exl3Phase{.rows = 1, .past = 32},
           Exl3Phase{.rows = 1, .past = 1023}, Exl3Phase{.rows = 1, .past = 1030}}) {
-      const auto plan = jitllm::model::PlanPhase(Profile(), binding, table, arm, phase);
+      const auto plan = llmp::model::PlanPhase(Profile(), binding, table, arm, phase);
       ASSERT_TRUE(plan.has_value()) << Failed(plan).value_or("");
       // Lifetimes over the embedding, layer 0 and the output, read from
       // the operations: from a tensor's first use to its last, and through
@@ -441,15 +441,15 @@ TEST(Qwen2Exl3Test, TheLaunchDigestCoversTheLaunchData) {
   const auto binding = Binding();
   const Exl3Phase phase{.rows = 32, .past = 0};
   const auto digest = [&](const Exl3LaunchTable& table, Exl3Arm arm) {
-    return jitllm::model::PlanPhase(Profile(), binding, table, arm, phase).value().launch_digest;
+    return llmp::model::PlanPhase(Profile(), binding, table, arm, phase).value().launch_digest;
   };
   const auto base = digest(Table(Exl3Arm::kG), Exl3Arm::kG);
   EXPECT_EQ(base, digest(Table(Exl3Arm::kG), Exl3Arm::kG));
   EXPECT_NE(base, digest(Table(Exl3Arm::kG, "another tuning cache"), Exl3Arm::kG));
   EXPECT_NE(base, digest(Table(Exl3Arm::kG), Exl3Arm::kO));
   const auto step = [&](int past) {
-    return jitllm::model::PlanPhase(Profile(), binding, Table(Exl3Arm::kG), Exl3Arm::kG,
-                                    {.rows = 1, .past = past})
+    return llmp::model::PlanPhase(Profile(), binding, Table(Exl3Arm::kG), Exl3Arm::kG,
+                                  {.rows = 1, .past = past})
         .value()
         .launch_digest;
   };
@@ -481,7 +481,7 @@ std::string Shape(const Exl3PhasePlan& plan) {
     out += "]\n";
   }
   for (const auto& [name, t] : plan.tensors) {
-    out += std::format("{} {}", name, jitllm::model::Exl3DtypeName(t.dtype));
+    out += std::format("{} {}", name, llmp::model::Exl3DtypeName(t.dtype));
     for (const auto d : t.shape) {
       out += std::format(",{}", d);
     }
@@ -508,12 +508,12 @@ TEST(Qwen2Exl3Test, EveryPositionOfAStepKindPlansTheSameBuffers) {
     for (const auto& [first, last] :
          {std::pair{1, 255}, std::pair{768, 1023}, std::pair{1024, 1279}}) {
       const auto base =
-          jitllm::model::PlanPhase(Profile(), binding, table, arm, {.rows = 1, .past = first});
+          llmp::model::PlanPhase(Profile(), binding, table, arm, {.rows = 1, .past = first});
       ASSERT_TRUE(base.has_value()) << base.error();
       const std::string want = Shape(*base);
       for (int past = first + 1; past <= last; ++past) {
         const auto plan =
-            jitllm::model::PlanPhase(Profile(), binding, table, arm, {.rows = 1, .past = past});
+            llmp::model::PlanPhase(Profile(), binding, table, arm, {.rows = 1, .past = past});
         ASSERT_TRUE(plan.has_value()) << plan.error();
         ASSERT_EQ(Shape(*plan), want) << "step at " << past << " against " << first;
       }
@@ -535,8 +535,8 @@ TEST(Qwen2Exl3Test, RegionsAreThePreRegisteredBufferPlan) {
   };
   for (const Exl3Arm arm : {Exl3Arm::kG, Exl3Arm::kO}) {
     for (const auto& [key, bytes] : expected) {
-      const auto plan = jitllm::model::PlanPhase(Profile(), binding, Table(arm), arm,
-                                                 {.rows = key.first, .past = key.second});
+      const auto plan = llmp::model::PlanPhase(Profile(), binding, Table(arm), arm,
+                                               {.rows = key.first, .past = key.second});
       ASSERT_TRUE(plan.has_value());
       EXPECT_EQ(plan->region, bytes) << key.first << " rows at " << key.second;
     }

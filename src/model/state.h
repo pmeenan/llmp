@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // State representations and their capabilities, as a state adapter
@@ -25,8 +25,8 @@
 //
 // Nothing here names a model architecture.
 
-#ifndef JITLLM_MODEL_STATE_H_
-#define JITLLM_MODEL_STATE_H_
+#ifndef LLMP_MODEL_STATE_H_
+#define LLMP_MODEL_STATE_H_
 
 #include <cstdint>
 #include <expected>
@@ -38,7 +38,7 @@
 
 #include "base/bytes.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 
 using base::Bytes;
 
@@ -150,6 +150,6 @@ class StateCursor {
   std::vector<std::uint64_t> snapshots_;  // ascending, each in [committed, written]
 };
 
-}  // namespace jitllm::model
+}  // namespace llmp::model
 
-#endif  // JITLLM_MODEL_STATE_H_
+#endif  // LLMP_MODEL_STATE_H_

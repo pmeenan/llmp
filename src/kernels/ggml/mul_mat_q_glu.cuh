@@ -1,16 +1,16 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Experimental (docs/experiments/ds4-prefill-stages): the IQ2 compact pair's up
 // product with the routed SwiGLU-clamp in its write-back. CUDA only;
 // included after GGML's mmq.cuh.
 
-#ifndef JITLLM_KERNELS_GGML_MUL_MAT_Q_GLU_CUH_
-#define JITLLM_KERNELS_GGML_MUL_MAT_Q_GLU_CUH_
+#ifndef LLMP_KERNELS_GGML_MUL_MAT_Q_GLU_CUH_
+#define LLMP_KERNELS_GGML_MUL_MAT_Q_GLU_CUH_
 
 #include "mmq.cuh"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // The occupancy-two J64 compact IQ2 product of `args` (ggml mmq.cu's
 // measured GB10 pair geometry only), whose write-back stores
@@ -21,6 +21,6 @@ namespace jitllm::kernels::ggml {
 cudaError_t LaunchIq2PairGluUp(ggml_backend_cuda_context& ctx, const mmq_args& args,
                                const float* gate, float limit, void* q8, cudaStream_t stream);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_MUL_MAT_Q_GLU_CUH_
+#endif  // LLMP_KERNELS_GGML_MUL_MAT_Q_GLU_CUH_

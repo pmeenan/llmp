@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The service with models configured (D-097; docs/runtime-serving.md#the-chat-route):
@@ -57,7 +57,7 @@
 #include "runtime/watchdog.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 // The least a capacity refusal has the reclaim order free: one 2 MiB
@@ -73,7 +73,7 @@ constexpr std::uint64_t kExtentBytes = std::uint64_t{2} << 20U;
 constexpr auto kLastResortKeep = std::chrono::seconds(10);
 constexpr auto kPersistLongest = std::chrono::hours(1);
 constexpr std::chrono::microseconds kStopExtension = std::chrono::seconds(15);
-// A start step's extension of the start timeout: jitllm.service's
+// A start step's extension of the start timeout: llmp.service's
 // TimeoutStartSec.
 constexpr std::chrono::microseconds kStartExtension = std::chrono::minutes(5);
 // How often the driver asks the hang ladder whether a cancellation drained
@@ -81,7 +81,7 @@ constexpr std::chrono::microseconds kStartExtension = std::chrono::minutes(5);
 constexpr auto kDrainPoll = std::chrono::milliseconds(20);
 
 void Say(std::FILE* log, std::string_view text) {
-  const std::string line = std::format("jitllm-runtime: {}\n", base::Printable(text));
+  const std::string line = std::format("llmp-runtime: {}\n", base::Printable(text));
   (void)std::fwrite(line.data(), 1, line.size(), log);
   (void)std::fflush(log);
 }
@@ -2293,12 +2293,12 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
   // This thread is the driver: its long CPU work beats the ladder's pulse
   // and stops when rung 1 asks it to (base/work_pulse.h).
   base::SetThreadPulse(&ladder.pulse());
-  // The test hook below (JITLLM_TEST_HOLD_READS): with
-  // JITLLM_TEST_HOLD_READS_CANCELLABLE=1 a held read completes as cancelled
+  // The test hook below (LLMP_TEST_HOLD_READS): with
+  // LLMP_TEST_HOLD_READS_CANCELLABLE=1 a held read completes as cancelled
   // when the lane cancels it (as a read still queued would); otherwise, as
   // a read a drive holds, it does not.
   // NOLINTNEXTLINE(concurrency-mt-unsafe): read before any thread starts
-  if (const char* cancellable = std::getenv("JITLLM_TEST_HOLD_READS_CANCELLABLE");
+  if (const char* cancellable = std::getenv("LLMP_TEST_HOLD_READS_CANCELLABLE");
       cancellable != nullptr && std::string_view(cancellable) == "1") {
     serving.hold_cancellable = true;
   }
@@ -2306,18 +2306,18 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
     Server server(config, roles, serving, log);
     server.SetPatience(&patience);
     // Each step of the start that made progress extends the service
-    // manager's start timeout (jitllm.service's TimeoutStartSec).
+    // manager's start timeout (llmp.service's TimeoutStartSec).
     server.set_start_progress([] {
       std::ignore = platform::NotifyServiceManager(
           std::format("EXTEND_TIMEOUT_USEC={}", kStartExtension.count()));
     });
     running.store(&server);
     // A test hook (D-102's hang recovery, tested end to end): with
-    // JITLLM_TEST_HOLD_READS naming a file, the node's reads are held while
+    // LLMP_TEST_HOLD_READS naming a file, the node's reads are held while
     // that file exists, as a stuck drive's would be. Unset in service.
     std::jthread hold_watch;
     // NOLINTNEXTLINE(concurrency-mt-unsafe): read before any thread starts
-    if (const char* path = std::getenv("JITLLM_TEST_HOLD_READS"); path != nullptr && *path != 0) {
+    if (const char* path = std::getenv("LLMP_TEST_HOLD_READS"); path != nullptr && *path != 0) {
       Say(log, std::format("test hook: the node's reads are held while {} exists ({})", path,
                            serving.hold_cancellable ? "cancellable, as queued reads"
                                                     : "not cancellable, as a drive's"));
@@ -2529,4 +2529,4 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
   return status;
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

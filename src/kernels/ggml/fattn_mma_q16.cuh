@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
-// Experimental (docs/experiments/ds4-prefill-stages): a jitLLM-owned copy of
+// Experimental (docs/experiments/ds4-prefill-stages): a llmpalooza-owned copy of
 // GGML's MMA flash attention (fattn-mma-f16.cuh, and launch_fattn_q16 from
 // fattn-common.cuh, at the locked tree) that reads F16 Q rows. GGML's kernel
 // rounds each F32 Q pair to F16 before scaling; here the Q-head has already
 // stored those F16 values, so tile_Q receives the same bytes. Everything
-// else is GGML's text, in namespace jitllm_fattn_q16. Generated from the
+// else is GGML's text, in namespace llmp_fattn_q16. Generated from the
 // d81235049384534c167caea52b85a694f6103d14 sources (plus the locked
 // D512 sparse eligibility patch) by replacing only Q pointer type/load/strides and its
 // launch_fattn_q16 Q type assertion.
@@ -21,12 +21,12 @@
 #include "fattn-common.cuh"
 #include "mma.cuh"
 
-// Defined in jitLLM's fattn_mma.cu.
+// Defined in llmpalooza's fattn_mma.cu.
 bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_tensor* dst,
                                                        const int ncols1, const int ncols2);
 
 // clang-format off
-namespace jitllm_fattn_q16 {
+namespace llmp_fattn_q16 {
 
 template <int DV, int ncols1, int ncols2>
 void launch_fattn_q16(
@@ -2534,5 +2534,5 @@ extern DECL_FATTN_MMA_F16_CASE(576, 512, 16,  4);
 extern DECL_FATTN_MMA_F16_CASE(576, 512,  1, 32);
 extern DECL_FATTN_MMA_F16_CASE(576, 512,  2, 32);
 
-}  // namespace jitllm_fattn_q16
+}  // namespace llmp_fattn_q16
 // clang-format on

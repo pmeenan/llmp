@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The device-memory provider (D-006, D-026, D-033, D-034;
@@ -49,8 +49,8 @@
 // read or write access the same address is a CPU pointer too: direct file
 // I/O lands there (D-034), and the GPU copies it into device backing (D-081).
 
-#ifndef JITLLM_PROVIDERS_DEVICE_MEMORY_H_
-#define JITLLM_PROVIDERS_DEVICE_MEMORY_H_
+#ifndef LLMP_PROVIDERS_DEVICE_MEMORY_H_
+#define LLMP_PROVIDERS_DEVICE_MEMORY_H_
 
 #include <atomic>
 #include <cstddef>
@@ -65,7 +65,7 @@
 #include "base/bytes.h"
 #include "base/ids.h"
 
-namespace jitllm::providers {
+namespace llmp::providers {
 
 using base::Bytes;
 
@@ -246,6 +246,6 @@ class VmmProvider : public DeviceMemory {
   base::SlotTable<BackingTag, Backing> backings_;
 };
 
-}  // namespace jitllm::providers
+}  // namespace llmp::providers
 
-#endif  // JITLLM_PROVIDERS_DEVICE_MEMORY_H_
+#endif  // LLMP_PROVIDERS_DEVICE_MEMORY_H_

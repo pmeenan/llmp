@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Bounded quantized Gemma GeGLU writer
@@ -54,7 +54,7 @@ remain the separate quant-product evidence.
 
 ## Paid expert-chain comparison
 
-`jitllm_gemma_geglu_quant_bench ROWS OVERLAP REPEATS` constructs the actual
+`llmp_gemma_geglu_quant_bench ROWS OVERLAP REPEATS` constructs the actual
 expert geometry with eight seeded random matrix patterns repeated across
 128 physically distinct expert addresses. Inputs and route IDs are synthetic;
 this is neither model weight execution nor observed model routing. Later rows
@@ -127,7 +127,7 @@ GeGLU GPU control, 24 CPU controls and all seven chain screens passed again
 (`gemma-geglu-final3`). Independent weighted-sum NMSE is at most
 `3.9906744e-15`; every final observed scratch peak equals its plan.
 Measured benchmark source SHA-256 is
-`6b52a597e3fc7eff02af9c7b5b96693f8414dac4546b73ba51222025c4fc78ab`;
+`5d682ba06c3f1a714ba07389d1adc4c186155978997102e22e68724f2a6753cc`;
 measured spark-native executable SHA-256 is
 `2ae65b1f08658fb46efa4fb7be7c8cba6ddc1b7f297ed5ed49cd44f2fccbd9a8`.
 

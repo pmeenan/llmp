@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "base/check.h"
@@ -11,13 +11,13 @@
 #include <string>
 #include <string_view>
 
-namespace jitllm::base {
+namespace llmp::base {
 
 void Fatal(std::string_view what, std::source_location where) {
-  const std::string line = std::format("jitllm: internal invariant violated: {} ({}:{})\n",
+  const std::string line = std::format("llmp: internal invariant violated: {} ({}:{})\n",
                                        what.substr(0, 200), where.file_name(), where.line());
   (void)::write(STDERR_FILENO, line.data(), line.size());
   std::abort();
 }
 
-}  // namespace jitllm::base
+}  // namespace llmp::base

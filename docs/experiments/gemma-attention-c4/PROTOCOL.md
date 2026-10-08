@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Dense31 first-local natural C4 operand replay
@@ -29,7 +29,7 @@ files; the measured build separately records its prepared tree.
 - fattn-vec.cuh SHA deb732ee1f1007814d95943ce48f3eec228087bac986c2bfcf8191a65706cfe7
 - fattn-mma-f16.cuh SHA a211fc573b9c560688a944bfab491d6c3e4597bc385c4820fd9e8117329deb3f
 - fattn-common.cuh SHA 411e3017439046288815a08a47d301dff046a909eb0ab505ac7f22f87257aabc
-common.cuh differs only in jitLLM error/PDL environment handling, not the macro.
+common.cuh differs only in llmpalooza error/PDL environment handling, not the macro.
 Final native compiled prepared-tree identity must come from its actual receipt,
 not a historical directory name.
 

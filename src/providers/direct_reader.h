@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Whole reads over the storage provider (D-034, D-048;
@@ -52,8 +52,8 @@
 // A read that fails or is cancelled has no usable contents: the caller
 // publishes nothing from it.
 
-#ifndef JITLLM_PROVIDERS_DIRECT_READER_H_
-#define JITLLM_PROVIDERS_DIRECT_READER_H_
+#ifndef LLMP_PROVIDERS_DIRECT_READER_H_
+#define LLMP_PROVIDERS_DIRECT_READER_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -65,7 +65,7 @@
 
 #include "providers/storage.h"
 
-namespace jitllm::providers {
+namespace llmp::providers {
 
 // The most one coalesced request moves when coalescing is on: the artifact
 // prototype's run size, a tuning value (docs/artifact-format.md#page-in-contract).
@@ -215,6 +215,6 @@ class DirectReader {
   std::vector<IoSegment> segments_;
 };
 
-}  // namespace jitllm::providers
+}  // namespace llmp::providers
 
-#endif  // JITLLM_PROVIDERS_DIRECT_READER_H_
+#endif  // LLMP_PROVIDERS_DIRECT_READER_H_

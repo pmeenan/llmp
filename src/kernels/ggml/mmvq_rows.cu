@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // Row-invariant quantized vector products (ops_ext.h MulMatVecQRows,
@@ -44,7 +44,7 @@
 #include "quantize.cuh"
 #include "vecdotq.cuh"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 // ---- From GGML's mmvq.cu (MIT) ----
@@ -77,7 +77,7 @@ __device__ __forceinline__ void RowsPrefetchL2(const void* p) {
 using VecDot = float (*)(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
                          const int& kbx, const int& iqs);
 
-// The weight types jitLLM's models bring to vector products.
+// The weight types llmpalooza's models bring to vector products.
 constexpr __device__ VecDot RowsVecDot(ggml_type type) {
   switch (type) {
     case GGML_TYPE_Q4_0:
@@ -441,7 +441,7 @@ __launch_bounds__(RowsWarps(type, RowsDeviceTable(), small_k, halve_iters) *
   }
 }
 
-// ---- jitLLM ----
+// ---- llmpalooza ----
 
 constexpr std::uint64_t kBlock = 256;  // the pool's block boundary (launch.h)
 
@@ -902,4 +902,4 @@ std::expected<void, KernelFailure> MulMatVecFRows(LaunchContext& launch, ggml_te
   });
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

@@ -95,7 +95,7 @@
     },
     {
       "path": "src/kernels/ggml/gemma_norm.cu",
-      "sha256": "47856fa84c5403a90506576ef01f977a448c646c80c5eddaa47eaa7bd7d6cb3d"
+      "sha256": "c9774bd3ec5542362b4c898dc3df26d7354a63ff198b102ace174a88d1856fae"
     },
     {
       "path": "src/kernels/ggml/gemma_norm.h",
@@ -136,8 +136,8 @@
   ],
   "measured_source_manifest_sha256": "d31bc5c4bdd00621f28a02b65de59d972ea571094430198226909c5b793b3972",
   "native_binary_sha256": {
-    "jitllm_gemma_prefill": "09e76048cac87d86a59ff57db47f6198f8d0f1eb506d0ebfd8c4f2bf4eb5f66b",
-    "jitllm_gemma_quality": "320fa902b5db555e675bfad28ffd801e796246e1025d3177a795392520f77ab6"
+    "llmp_gemma_prefill": "09e76048cac87d86a59ff57db47f6198f8d0f1eb506d0ebfd8c4f2bf4eb5f66b",
+    "llmp_gemma_quality": "320fa902b5db555e675bfad28ffd801e796246e1025d3177a795392520f77ab6"
   },
   "native_sdk": "aarch64-c09daba6ac31edee",
   "original_math_source_sha256": {

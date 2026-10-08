@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 current corpus dispatch
@@ -40,8 +40,8 @@ whole-model causal conclusion follow from this observation.
 
 Base `5e9ed59`; Task57's exact supplied IDs, approved raw26 GGUF, current
 thin scorer 225c40af… and frozen reference are retained. Stage the existing A
-`~/.local/share/jitllm/gemma-reference-fusions/controller-both.so` privately as
-B `~/.local/share/jitllm/gemma-current-quality26/controller-all.so`, verifying
+`~/.local/share/llmp/gemma-reference-fusions/controller-both.so` privately as
+B `~/.local/share/llmp/gemma-current-quality26/controller-all.so`, verifying
 library SHA `aef05aaf…`. The existing controller source is `d74c89fe…`, compiled
 with NVCC 13.4.92; all floating operators remain in the original b29 CUDA 13.3
 image library `5a13585e…`. This is a reused rebuilt controller, not an

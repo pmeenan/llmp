@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 coarse prefill CPU diagnosis
@@ -104,7 +104,7 @@ also has three positive and 20 omission/thread/parent negative controls.
 The [protocol](PROTOCOL.md) is the unchanged preregistration snapshot, including
 its before-build status. The 16 acquisition files remain byte-exact, bundle
 58e41ba4; their measured environment is source receipt f7c8846d. The later
-analysis17 source is 7a0df7aa. Original analyze.py, failed records and the earlier
+analysis17 source is 3643ddd4. Original analyze.py, failed records and the earlier
 derivative receipt remain archived. No model/probe rerun repaired those records.
 
 In a separate tree at the recorded base, first supply only the 16 acquisition
@@ -112,9 +112,9 @@ files listed in provenance.json. Run validate.py prepare before adding the
 analysis derivative or report files; its closed dirty-path guard creates the
 source-input frame. Then use apply_overlay.py to authenticate and apply the
 three changes. Copy the frame into the measurement scratch directory. Configure the locked SDK with
-JITLLM_BENCHMARK_COARSE_PREFILL=ON and JITLLM_BENCHMARK_NVTX_INCLUDE_DIR pointing
-to the authenticated public headers. Build only jitllm_gemma26_prefill_coarse
-and jitllm_gemma26_clock_probe; compile profile_child.cc with the exact probe
+LLMP_BENCHMARK_COARSE_PREFILL=ON and LLMP_BENCHMARK_NVTX_INCLUDE_DIR pointing
+to the authenticated public headers. Build only llmp_gemma26_prefill_coarse
+and llmp_gemma26_clock_probe; compile profile_child.cc with the exact probe
 compiler/link arguments. Preserve the resulting command/dependency inventory.
 Prepare the canonical IDs, Task40 receipts and public-interface record in the
 external scratch directory. Supplied raw inputs and dependency pins are

@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The locked ExLlamaV3 kernels link into jitLLM's build (every CUDA
+// The locked ExLlamaV3 kernels link into llmpalooza's build (every CUDA
 // profile, no GPU; docs/backend-proof.md, P1 and P3): upstream's
 // compilation units for the mcg codebook at K = 4, 5, 6 and 8 each define
 // their GEMM and multi-GEMM tables, for FP16 and FP32 outputs, with a
-// kernel for each of tile shapes 1 to 4; jitLLM's instance unit
-// (jitllm_exl3_kernels.h) finds them and defines the GEMV, reconstruction,
+// kernel for each of tile shapes 1 to 4; llmpalooza's instance unit
+// (llmp_exl3_kernels.h) finds them and defines the GEMV, reconstruction,
 // Hadamard and bias-add instances the native linear launches, and nothing
 // else; and the host checks' constants (validate.h) are the headers'.
 // exl3_kernels_test.cc loads them on a GB10.
@@ -20,16 +20,16 @@
 #include <set>
 #include <string>
 
-#include "jitllm_exl3_kernels.h"
 #include "kernels/exl3/validate.h"
+#include "llmp_exl3_kernels.h"
 #include "quant/exl3_devctx.cuh"
 
 namespace {
 
-using jitllm::tests::exl3::AllKernels;
-using jitllm::tests::exl3::kRates;
-using jitllm::tests::exl3::kShapes;
-using jitllm::tests::exl3::RateTables;
+using llmp::tests::exl3::AllKernels;
+using llmp::tests::exl3::kRates;
+using llmp::tests::exl3::kShapes;
+using llmp::tests::exl3::RateTables;
 
 TEST(Exl3KernelTablesTest, EveryRateHasAKernelPerShape) {
   static_assert(kShapes == 4);
@@ -52,7 +52,7 @@ TEST(Exl3KernelTablesTest, EveryRateHasAKernelPerShape) {
 }
 
 TEST(Exl3KernelTablesTest, TheLookupsFindTheTablesAndTheInstances) {
-  namespace k = jitllm_exl3;
+  namespace k = llmp_exl3;
   for (const RateTables& rate : kRates) {
     for (int shape = 1; shape <= kShapes; ++shape) {
       EXPECT_EQ(k::GemmKernel(rate.bits, shape, false),
@@ -99,7 +99,7 @@ TEST(Exl3KernelTablesTest, TheLookupsFindTheTablesAndTheInstances) {
 }
 
 TEST(Exl3KernelTablesTest, TheHostChecksUseTheHeadersConstants) {
-  namespace e = jitllm::kernels::exl3;
+  namespace e = llmp::kernels::exl3;
   EXPECT_EQ(e::kShapes, EXL3_GEMM_NUM_SHAPES);
   constexpr std::array<int, 5> kTileK{EXL3_GEMM_TILESIZE_K};
   constexpr std::array<int, 5> kTileN{EXL3_GEMM_TILESIZE_N};
@@ -107,8 +107,8 @@ TEST(Exl3KernelTablesTest, TheHostChecksUseTheHeadersConstants) {
   EXPECT_EQ(e::kTileK, kTileK);
   EXPECT_EQ(e::kTileN, kTileN);
   EXPECT_EQ(e::kBlockDim, kBlockDim);
-  EXPECT_EQ(e::kGemmSharedMemory, jitllm_exl3::GemmSharedMemory());
-  EXPECT_EQ(e::kGemvMaxRows, jitllm_exl3::GemvMaxRows());
+  EXPECT_EQ(e::kGemmSharedMemory, llmp_exl3::GemmSharedMemory());
+  EXPECT_EQ(e::kGemvMaxRows, llmp_exl3::GemvMaxRows());
   EXPECT_EQ(e::kLockBytes, (MAX_TILES_C + (MAX_BARRIERS * 2) + MOE_SCHED_INTS) * sizeof(int));
 }
 

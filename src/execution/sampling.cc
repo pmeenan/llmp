@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "execution/sampling.h"
@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::execution {
+namespace llmp::execution {
 
 std::string_view SamplingErrorName(SamplingError e) {
   switch (e) {
@@ -428,4 +428,4 @@ std::expected<DraftVerdict, SamplingError> VerifyDraft(std::span<const float> lo
   return DraftVerdict{.accepted = false, .token = Draw(scratch, rest, UniformAt(key), draft)};
 }
 
-}  // namespace jitllm::execution
+}  // namespace llmp::execution

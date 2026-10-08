@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "providers/cuda/cuda_device_execution.h"
@@ -19,7 +19,7 @@
 #include "providers/cuda/cuda_errors.h"
 #include "providers/device_execution.h"
 
-namespace jitllm::providers::cuda {
+namespace llmp::providers::cuda {
 namespace {
 
 std::unexpected<Failure> Invalid(const char* detail) {
@@ -395,4 +395,4 @@ std::expected<std::unique_ptr<DeviceExecution>, Failure> OpenDeviceExecution(
   return execution;
 }
 
-}  // namespace jitllm::providers::cuda
+}  // namespace llmp::providers::cuda

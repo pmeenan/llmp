@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Fusion-preserving MoE route capture, 2026-09-22
@@ -11,7 +11,7 @@ reference. **Reading each layer's selected-expert IDs at the end of its
 gated-activation fusion group leaves logits bit-identical to an untraced run
 with upstream fusion and CUDA graphs**, on Gemma 4 26B A4B and Ornith 1.5 35B.
 It uses the unmodified, digest-pinned llama.cpp image. This concerns only
-external route observation; it is not jitLLM runtime code or paging evidence.
+external route observation; it is not llmpalooza runtime code or paging evidence.
 
 ## Method
 
@@ -112,7 +112,7 @@ re-recorded.
 hashes and workload identity; [`results.json`](results.json) holds all
 comparisons and SHA-256 receipts for every raw events, predictions,
 logit-hash and log file, which stay under
-`/home/pmeenan/.local/share/jitllm/fused-routes-20260922` on `spark`
+`/home/pmeenan/.local/share/llmp/fused-routes-20260922` on `spark`
 (`run-2` final, `run-1` and `diag-1` for the rejected design). The runner
 builds the harness with the image's GCC 13.3.0 exactly as `pins.json` lists.
 The runner hash in `results.json` identifies the original capture version.
@@ -123,9 +123,9 @@ and CPU regression tests; no new GPU measurement is implied.
 With the paging study's external inputs:
 
 ```bash
-P=/home/pmeenan/.local/share/jitllm/paging
+P=/home/pmeenan/.local/share/llmp/paging
 DOCKER="sudo -n docker" python3 run_routes.py "$P/normal-spec.json" \
-  /home/pmeenan/.local/share/jitllm/reference-models \
+  /home/pmeenan/.local/share/llmp/reference-models \
   "$P/llama.cpp-b29c606e28a01b1bc8c1351026a0fa6e616bf6c4" "$P/sessions-1" \
   "$P/normal-capture-2" /path/to/new-output
 ```

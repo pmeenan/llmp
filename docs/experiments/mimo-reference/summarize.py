@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Reduce one copied run directory to an aggregate; raw logs stay external.
 
@@ -54,7 +54,7 @@ def main():
             g = json.loads(guard.read_text())
             g.pop("per_second_min_available", None)
             entry["guard"] = g
-        for log in node.glob("jitllm-mimo-rank*.log"):
+        for log in node.glob("llmp-mimo-rank*.log"):
             entry[log.stem] = engine_lines(log)
         workload = node / "workload.json"
         if workload.is_file():

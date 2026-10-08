@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The cross-model swap trace (docs/experiments/retained-backing/README.md),
@@ -10,8 +10,8 @@
 // file's the manifest's. The confirmation seed is refused unless asked for
 // by name: the criteria reserve it for the winner (D-079).
 
-#ifndef JITLLM_BENCHMARKS_RETAINED_BACKING_TRACE_H_
-#define JITLLM_BENCHMARKS_RETAINED_BACKING_TRACE_H_
+#ifndef LLMP_BENCHMARKS_RETAINED_BACKING_TRACE_H_
+#define LLMP_BENCHMARKS_RETAINED_BACKING_TRACE_H_
 
 #include <array>
 #include <cstdint>
@@ -24,7 +24,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::rb {
+namespace llmp::rb {
 
 using GroupId = std::uint32_t;
 
@@ -130,6 +130,6 @@ class Reference {
   std::map<std::uint32_t, std::vector<GroupId>> leases_;
 };
 
-}  // namespace jitllm::rb
+}  // namespace llmp::rb
 
-#endif  // JITLLM_BENCHMARKS_RETAINED_BACKING_TRACE_H_
+#endif  // LLMP_BENCHMARKS_RETAINED_BACKING_TRACE_H_

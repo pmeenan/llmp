@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/image/pipeline.h"
@@ -27,10 +27,10 @@
 #include "kernels/image/ops.h"
 #include "model/qwen_image.h"
 
-namespace jitllm::kernels::image {
+namespace llmp::kernels::image {
 namespace {
 
-namespace md = jitllm::model;
+namespace md = llmp::model;
 using execution::Operation;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
@@ -796,4 +796,4 @@ Status QwenImagePipeline::Decode(const VaeMemory& m, const Handles& h, Stream s)
   return r;
 }
 
-}  // namespace jitllm::kernels::image
+}  // namespace llmp::kernels::image

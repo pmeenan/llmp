@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Checked standalone Gemma MoE primitives
@@ -67,7 +67,7 @@ The external [client](oracle.cu) uses the exact reference headers and exported
 `ggml_cuda_op_topk_moe` and `ggml_cuda_op_moe_weighted_reduction` symbols from
 the pinned image. Only this thin API client is compiled; no reference floating
 kernel source is rebuilt. The foreign GGML backend context exists solely in
-this external diagnostic, never in native jitLLM. Literal native operands are
+this external diagnostic, never in native llmpalooza. Literal native operands are
 copied into independent client storage, both original operations complete,
 and entire routing-weight, full-root ID and reduction-output files are
 compared with `cmp` after retirement.
@@ -102,10 +102,10 @@ their original implementation/header bytes and the actual compiled inventory.
 | Measured source lock | `7889fe441722fd9c95d39dd05bf268c86ef0d09abaf5de7efe72e83046a3fd9b` |
 | Native GPU test binary | `2a43d5fc38e4edc50bff5107b27e7d809d67936baa6ca059272185e70723c3b5` |
 | Build receipt | `af910cb38aeeddf819af640e8ea6dcc1b97f594ec0100bd98a073c291ad135ea` |
-| Native validator `gemma_moe.cc` | `0a218c3b1f42b1eca56bfd342f74e37b87928efaed951e4a181928e1e5f1c267` |
-| Native launcher `gemma_moe.cu` | `60957b0cbd458ba970fc1d121529cb64468fe6c9767e251749dbb4a2c06fd30e` |
+| Native validator `gemma_moe.cc` | `dd4aaed3b305b5b027d2a47781a01642e89ef2da5c6f18e61b87db578f24f349` |
+| Native launcher `gemma_moe.cu` | `b8b5c3d6efe9af9f404f9bce76795dbaebd90b909a615c9085e278b5c7afc85c` |
 | GPU fixture source | `f9a6826af66ed5e0bed980ffa23320238082a9e05f0fe82c9875c5e815d179cb` |
-| Thin client source | `d3b33f5d16c1ec2ff5d6d3ae0530aef672920dabc6acf0eca69ff7b111e917d3` |
+| Thin client source | `4c168b88b94a40b4b10d9ec9045c769c122f4eeadf99b9e054e8e815f23a505d` |
 | Thin client binary | `3e710b3819c5dc7c30f7521b7e8601a877725c3686c2396ff63952cbe9a6df15` |
 | Original image CUDA library | `5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e` |
 | 20 literal input-file hash manifest | `decf4e69c7b2aec0114014fb17edaf08544a922c4aa1cbc461428dcdcd2f36d0` |
@@ -115,8 +115,8 @@ The last two manifests hash sorted UTF-8 `basename TAB file_SHA256 LF` lines.
 Inputs are `rowsN-{logits,experts,scales,weights}.bin`; outputs are
 `rowsN-{route,ids,values}.bin`, for the five row counts above. Raw vectors and
 logs remain outside Git under Spark's
-`~/.local/share/jitllm/gemma-moe-oracle-final/` and workstation
-`/tmp/jitllm-m35-coordination/gemma-routing-raw/`.
+`~/.local/share/llmp/gemma-moe-oracle-final/` and workstation
+`/tmp/llmp-m35-coordination/gemma-routing-raw/`.
 
 The reference image is
 `ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7`.
@@ -130,12 +130,12 @@ All four original source/header hashes are permanent assertions in
 
 To repeat, prepare/build through the declared `mise run prepare` and
 `mise run build -- spark-native --locked` workflow. Set
-`JITLLM_GEMMA_MOE_ORACLE_ROOT` to a fresh `native` directory when running the
+`LLMP_GEMMA_MOE_ORACLE_ROOT` to a fresh `native` directory when running the
 focused native tests. Supply the original header tree at
-`~/.local/share/jitllm/gemma-reference-stock/ggml`; then use
+`~/.local/share/llmp/gemma-reference-stock/ggml`; then use
 [reference.sh](reference.sh) `build` and `run NEW_OUTPUT`, setting its
-`JITLLM_GEMMA_MOE_ORACLE_ROOT` to the parent export directory and
-`JITLLM_GEMMA_MOE_SOURCE_ROOT` to the source checkout. Compare every full
+`LLMP_GEMMA_MOE_ORACLE_ROOT` to the parent export directory and
+`LLMP_GEMMA_MOE_SOURCE_ROOT` to the source checkout. Compare every full
 output with `cmp`. All builds/tests/container execution use the installed
 Spark GPU supervisor.
 

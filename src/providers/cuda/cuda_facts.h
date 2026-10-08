@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // What the CUDA device probe found, in plain types, and the judgment of it
@@ -6,8 +6,8 @@
 // fills CudaFacts from the driver; DescribeCuda() needs no driver, so tests
 // give it any facts.
 
-#ifndef JITLLM_PROVIDERS_CUDA_CUDA_FACTS_H_
-#define JITLLM_PROVIDERS_CUDA_CUDA_FACTS_H_
+#ifndef LLMP_PROVIDERS_CUDA_CUDA_FACTS_H_
+#define LLMP_PROVIDERS_CUDA_CUDA_FACTS_H_
 
 #include <cstdint>
 #include <optional>
@@ -18,7 +18,7 @@
 #include "base/report.h"
 #include "platform/host_probe.h"
 
-namespace jitllm::providers::cuda {
+namespace llmp::providers::cuda {
 
 // The allocation granularity of one backing class. `error` says why it
 // could not be queried; it is empty when the sizes are valid.
@@ -79,7 +79,7 @@ struct CudaFacts {
 
 inline constexpr int kMaxProbedDevices = 64;
 
-// The one GPU jitLLM uses: the driver's device 0, after CUDA_VISIBLE_DEVICES
+// The one GPU llmpalooza uses: the driver's device 0, after CUDA_VISIBLE_DEVICES
 // (D-082). Multi-GPU hosts are out of scope; other GPUs are reported only.
 inline constexpr int kUsedDevice = 0;
 
@@ -107,6 +107,6 @@ CudaDeviceClass TargetClass(int architecture);
 // problems and warnings they show. Only GPU 0 (kUsedDevice) is judged.
 void DescribeCuda(const CudaFacts& facts, base::Report& report);
 
-}  // namespace jitllm::providers::cuda
+}  // namespace llmp::providers::cuda
 
-#endif  // JITLLM_PROVIDERS_CUDA_CUDA_FACTS_H_
+#endif  // LLMP_PROVIDERS_CUDA_CUDA_FACTS_H_

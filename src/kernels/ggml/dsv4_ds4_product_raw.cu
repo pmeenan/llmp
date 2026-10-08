@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
 // SPDX-FileCopyrightText: 2026 The ds4.c authors
 // SPDX-FileCopyrightText: 2026 Entrpi <entrpi@proton.me> (batched-serving fork modifications)
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // The original ds4 fused own output-A core (dsv4_ds4_product_original.cuh)
-// behind a narrow CUDA ABI for jitLLM's output-A adapter (dsv4_outa.cu).
+// behind a narrow CUDA ABI for llmpalooza's output-A adapter (dsv4_outa.cu).
 // Only its device kernels are used; no original context, registry, pool,
 // allocator or host dispatcher is instantiated. The adapter supplies the
 // operands and scratch.
@@ -18,12 +18,12 @@
 
 #include "kernels/ggml/dsv4_ds4_product_raw.h"
 
-namespace jitllm::kernels::ggml::ds4_product::original {
+namespace llmp::kernels::ggml::ds4_product::original {
 // Pre-included standard/vendor dependencies stay outside this namespace.
 #include "kernels/ggml/dsv4_ds4_product_original.cuh"
-}  // namespace jitllm::kernels::ggml::ds4_product::original
+}  // namespace llmp::kernels::ggml::ds4_product::original
 
-namespace jitllm::kernels::ggml::ds4_product {
+namespace llmp::kernels::ggml::ds4_product {
 
 using namespace original;
 
@@ -46,4 +46,4 @@ cudaError_t OutA(const void* scales, const void* codes, const float* heads, floa
       static_cast<const std::int8_t*>(codes), static_cast<char*>(quantized), rows);
   return cudaGetLastError();
 }
-}  // namespace jitllm::kernels::ggml::ds4_product
+}  // namespace llmp::kernels::ggml::ds4_product

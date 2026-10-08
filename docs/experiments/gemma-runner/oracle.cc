@@ -1,6 +1,6 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-// External pinned llama.cpp reference only; not linked into jitLLM.
+// External pinned llama.cpp reference only; not linked into llmpalooza.
 // Gemma26 same-format smoke control: explicit BOS, 32 raw greedy steps,
 // two cleared-memory repeats and 26 teacher-forced targets. See README.md.
 

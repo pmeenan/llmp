@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Other projects
@@ -10,13 +10,13 @@ their current versions was checked.
 
 - **Status:** open (SDK/parser compatibility to track).
 - **Project:** [llvm/llvm-project](https://github.com/llvm/llvm-project),
-  Clang22.1.8 in jitLLM SDK `aarch64-e0a0c85c42806fb1`, Spark A, 2026-10-02.
+  Clang22.1.8 in llmpalooza SDK `aarch64-e0a0c85c42806fb1`, Spark A, 2026-10-02.
 - **Problem:** `clang/lib/Headers/__clang_cuda_runtime_wrapper.h:505`
   unconditionally includes `curand_mtgp32_kernel.h`. A CUDA host parsing
   check fails against the trimmed CUDA13.4.92 SDK because that header is
   absent, even for a kernel with no cuRAND calls. The earlier NVCC-only
   compile-entry driver flags must also be adapted before Clang can parse.
-- **jitLLM's workaround:** retain the actual compile entry's definitions
+- **Llmpalooza's workaround:** retain the actual compile entry's definitions
   and SDK headers, adapt only parser driver flags, and add the installed
   `/usr/local/cuda-13.0/include` after SDK paths for lint only. The successful
   check records both original and adapted entries. Production NVCC flags,
@@ -42,7 +42,7 @@ their current versions was checked.
   fails, so builds silently run emulated. Repro: pull the arm64 variant by
   index digest with `--platform linux/arm64`, then `docker run` the same
   digest without `--platform` on an amd64 host with binfmt registered.
-- **jitLLM's workaround:** every `FROM`, `docker run` and `docker build` of
+- **Llmpalooza's workaround:** every `FROM`, `docker run` and `docker build` of
   the reference container names `--platform linux/amd64`, and `doctor`
   reports the architecture inside the container. No cost.
 - **Proposed action:** check a current Docker; if it still happens, an issue
@@ -61,7 +61,7 @@ their current versions was checked.
   cause was that `multimodal/processors/mimo_v2.py` imports `torchcodec`,
   which the image lacks; processor discovery logs and skips modules that
   fail to import, so the root cause is lost.
-- **jitLLM's workaround:** a derived image that adds hash-pinned `torchcodec`
+- **Llmpalooza's workaround:** a derived image that adds hash-pinned `torchcodec`
   0.16.0 ([mimo-reference](../experiments/mimo-reference/README.md)).
 - **Proposed action:** an issue or small PR: carry the import error into the
   "not registered" message, or add `torchcodec` to the image. Small.
@@ -79,7 +79,7 @@ their current versions was checked.
 - **Problem:** every test passes, then at exit LeakSanitizer reports "has
   encountered a fatal error" and the process exits 1.
   `ASAN_OPTIONS=detect_leaks=0` makes it exit 0, and ASan still works.
-- **jitLLM's workaround:** leak detection is off for emulated AArch64 runs
+- **Llmpalooza's workaround:** leak detection is off for emulated AArch64 runs
   (D-061); LSan runs natively on x86-64 and on the Sparks.
 - **Proposed action:** none unless it starts to matter; then search both
   trackers for an existing report before filing one.
@@ -94,7 +94,7 @@ their current versions was checked.
   HTTP 401, so arm64 packages cannot be pinned by date; with
   `APT::Snapshot` set, `apt-get update` in an arm64 container still fetches
   the live ports indexes.
-- **jitLLM's workaround:** the arm64 install-test image takes systemd from
+- **Llmpalooza's workaround:** the arm64 install-test image takes systemd from
   the live ports archive and prints the version. The SDK pins its arm64
   `.deb`s by URL and SHA-256 (D-070), so it is unaffected.
 - **Proposed action:** check whether ports snapshots exist now; if not,

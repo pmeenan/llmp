@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "config/node_config.h"
@@ -41,7 +41,7 @@
 #include "base/report.h"
 #include "platform/path_trust.h"
 
-namespace jitllm::config {
+namespace llmp::config {
 namespace {
 
 namespace fs = std::filesystem;
@@ -1841,4 +1841,4 @@ std::expected<NodeConfig, std::vector<Diagnostic>> LoadNodeConfig(const LoadOpti
   return ParseNodeConfig(files, options.anchor);
 }
 
-}  // namespace jitllm::config
+}  // namespace llmp::config

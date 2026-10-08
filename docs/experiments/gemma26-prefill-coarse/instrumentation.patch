@@ -15,9 +15,9 @@
 @@ -21,6 +23,8 @@
  #include "providers/device_runtime.h"
  
- namespace jitllm::engine {
-+namespace coarse = jitllm::benchmark::coarse;
-+// jitllm.prefill.coarse.patch.v1
+ namespace llmp::engine {
++namespace coarse = llmp::benchmark::coarse;
++// llmp.prefill.coarse.patch.v1
  namespace kg = kernels::ggml;
  static_assert(kGemma4InvariantWaveRows == kg::kRowInvariantColumns);
  namespace md = model;
@@ -206,9 +206,9 @@
  #include "engine/support.h"
  #include "kernels/ggml/implementations.h"
  
- namespace jitllm::engine {
-+namespace coarse = jitllm::benchmark::coarse;
-+// jitllm.prefill.coarse.patch.v1
+ namespace llmp::engine {
++namespace coarse = llmp::benchmark::coarse;
++// llmp.prefill.coarse.patch.v1
  
  namespace {
  
@@ -264,9 +264,9 @@
 @@ -18,6 +20,8 @@
  #include "scheduler/commands.h"
  
- namespace jitllm::engine {
-+namespace coarse = jitllm::benchmark::coarse;
-+// jitllm.prefill.coarse.patch.v1
+ namespace llmp::engine {
++namespace coarse = llmp::benchmark::coarse;
++// llmp.prefill.coarse.patch.v1
  
  namespace {
  

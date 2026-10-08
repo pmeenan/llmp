@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Qwen-Image-2.1 BF16 reference tensors and bound calibration, from diffusers.
 
@@ -11,7 +11,7 @@ and a new private output directory:
 
 The pipeline's denoising loop is re-run by hand (the same calls, in the same
 order and dtypes as QwenImage21Pipeline.__call__ at diffusers 8b3c707e) so
-every tensor jitLLM is compared with can be kept; its image must be pixel for
+every tensor llmpalooza is compared with can be kept; its image must be pixel for
 pixel the baseline's (fast-swap/baselines.md), or the run is refused. It then
 writes, as raw little-endian files with a JSON index (shape, dtype, SHA-256):
 

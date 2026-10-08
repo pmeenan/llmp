@@ -9,7 +9,7 @@
     "result": "git ls-remote rc0; unchanged"
   },
   "inputs": {
-    "source_path_on_B": "/home/pmeenan/.local/share/jitllm/gemma-release-c2-26/inputs.i32",
+    "source_path_on_B": "/home/pmeenan/.local/share/llmp/gemma-release-c2-26/inputs.i32",
     "source_bytes": 49152,
     "source_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
     "source_layout": "12 owner-major1024-token authenticated literal histories",
@@ -538,19 +538,19 @@
         "qualification_sha256": "9819cd90487328a0ab91cfbb562d5af2edfbecf63eb3bb4823b4546c3b3b585a",
         "launcher_sha256": "4fc4c39b11ea97e5f27e42efe1994ce1f46f6089f0b849f1002f5f6b9ab2a0d5",
         "files": {
-          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "f2815363ccc7236a327c5e0ae4d93212c457956973db3416bd6b09f08171dac1",
+          "build/spark-native/benchmarks/llmp_gemma4_common_width_probe": "f2815363ccc7236a327c5e0ae4d93212c457956973db3416bd6b09f08171dac1",
           "build/spark-native/tests/unit/gemma4_graph_test": "499768b32efb9f2e2d990e52fa9a0fa53e624381f2d7d5553248d6b97dc3c452",
           "build/spark-native/tests/unit/gemma4_plan_test": "4fa20d1542bfc6c300d83070258fd12f3c6ada4fd90c96486748d1a29ad07b0c",
-          "build/spark-native/src/runtime/jitllm-runtime": "9faaa32df8b91ebc61e5c82250b12c30b72cb15b7b63583a533cfbbfc6aa3585",
-          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+          "build/spark-native/src/runtime/llmp-runtime": "9faaa32df8b91ebc61e5c82250b12c30b72cb15b7b63583a533cfbbfc6aa3585",
+          "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
         "ldd": {
           "resolved": {
             "linux-vdso.so.1": "vdso",
             "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
             "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
-            "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-            "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "libcublas.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+            "libcublasLt.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
             "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
             "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
             "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
@@ -563,13 +563,13 @@
         },
         "cuBLAS": {
           "libcublas.so.13": {
-            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+            "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         },
@@ -1079,22 +1079,22 @@
         "qualification_sha256": "3dfcf132b00526411417dfe80c0861260af941e4435d71320c5540276f973ab0",
         "launcher_sha256": "9fde313cfebed7d13e429b7ce4514e7ab01840fb7fadb7414e71130b7d395d34",
         "files": {
-          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
-          "build/spark-native/src/runtime/jitllm-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
+          "build/spark-native/benchmarks/llmp_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
+          "build/spark-native/src/runtime/llmp-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
           "build/spark-native/tests/unit/ggml_graph_test": "e5d95f7808262dad568dccdcfff0a6e172d2ba29867451eee333792168735683",
           "build/spark-native/tests/unit/gemma2_plan_test": "d52c187139a701bf55b4c52db109ea87acff0c555bdf824b2243b9ff65151010",
           "build/spark-native/tests/unit/gemma3_plan_test": "03a7dc00b39c8fc00569cda9ee8a6db906d091e46224386e32bc6c60d001b481",
           "build/spark-native/tests/unit/gemma4_plan_test": "57a95722f9b95c4a80370dd1d62af8814d688201c3bbe45cb67bfa8272332395",
           "build/spark-native/tests/unit/gemma_measurement_gpu_test": "ef23bd4a254bc8360259c3a32b3e8f020612e20d587ade0d32c48df8d5820b7d",
-          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+          "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
         "ldd": {
           "resolved": {
             "linux-vdso.so.1": "vdso",
             "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
             "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
-            "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-            "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "libcublas.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+            "libcublasLt.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
             "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
             "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
             "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
@@ -1107,13 +1107,13 @@
         },
         "cuBLAS": {
           "libcublas.so.13": {
-            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+            "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         },
@@ -1173,11 +1173,11 @@
       "runs": {
         "own-on": {
           "command": [
-            "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/benchmarks/jitllm_gemma4_common_width_probe",
-            "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-            "/home/pmeenan/.local/share/jitllm/references/gemma4-original-q8/input0.i32",
-            "/home/pmeenan/.local/share/jitllm/references/gemma4-original-q8/input1.i32",
-            "/home/pmeenan/.local/share/jitllm/gemma4-original-q8-20261008/funding-own1/own-on",
+            "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/benchmarks/llmp_gemma4_common_width_probe",
+            "/home/pmeenan/.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+            "/home/pmeenan/.local/share/llmp/references/gemma4-original-q8/input0.i32",
+            "/home/pmeenan/.local/share/llmp/references/gemma4-original-q8/input1.i32",
+            "/home/pmeenan/.local/share/llmp/gemma4-original-q8-20261008/funding-own1/own-on",
             "26",
             "bounded",
             "own",
@@ -1281,19 +1281,19 @@
         "source_manifest_sha256": "8f8ec1d63b5dbac2d5e899f103bf7b88f4c409dd586add215d5867830e3e2399",
         "launcher_sha256": "6b19c6c115260fba39ee9ed9ac8e64387cde0af7be114a75cfd065bf27c32b4b",
         "files": {
-          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "f2815363ccc7236a327c5e0ae4d93212c457956973db3416bd6b09f08171dac1",
+          "build/spark-native/benchmarks/llmp_gemma4_common_width_probe": "f2815363ccc7236a327c5e0ae4d93212c457956973db3416bd6b09f08171dac1",
           "build/spark-native/tests/unit/gemma4_graph_test": "499768b32efb9f2e2d990e52fa9a0fa53e624381f2d7d5553248d6b97dc3c452",
           "build/spark-native/tests/unit/gemma4_plan_test": "4fa20d1542bfc6c300d83070258fd12f3c6ada4fd90c96486748d1a29ad07b0c",
-          "build/spark-native/src/runtime/jitllm-runtime": "9faaa32df8b91ebc61e5c82250b12c30b72cb15b7b63583a533cfbbfc6aa3585",
-          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+          "build/spark-native/src/runtime/llmp-runtime": "9faaa32df8b91ebc61e5c82250b12c30b72cb15b7b63583a533cfbbfc6aa3585",
+          "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
         "native_ldd": {
           "resolved": {
             "linux-vdso.so.1": "vdso",
             "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
             "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
-            "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-            "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "libcublas.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+            "libcublasLt.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
             "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
             "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
             "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
@@ -1306,13 +1306,13 @@
         },
         "native_cuBLAS": {
           "libcublas.so.13": {
-            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+            "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         },
@@ -1343,22 +1343,22 @@
         "source_manifest_sha256": "b4d7268d7238aedb7f1f9c4396f3cede727acfc6209de3321b5e1ece1ee25bf1",
         "launcher_sha256": "a4ef014bc00cf119882580dd51113100a6bb90f5c69b2c98c475bcb3fbaee313",
         "files": {
-          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
-          "build/spark-native/src/runtime/jitllm-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
+          "build/spark-native/benchmarks/llmp_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
+          "build/spark-native/src/runtime/llmp-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
           "build/spark-native/tests/unit/ggml_graph_test": "e5d95f7808262dad568dccdcfff0a6e172d2ba29867451eee333792168735683",
           "build/spark-native/tests/unit/gemma2_plan_test": "d52c187139a701bf55b4c52db109ea87acff0c555bdf824b2243b9ff65151010",
           "build/spark-native/tests/unit/gemma3_plan_test": "03a7dc00b39c8fc00569cda9ee8a6db906d091e46224386e32bc6c60d001b481",
           "build/spark-native/tests/unit/gemma4_plan_test": "57a95722f9b95c4a80370dd1d62af8814d688201c3bbe45cb67bfa8272332395",
           "build/spark-native/tests/unit/gemma_measurement_gpu_test": "20574af5314596184520222f1e1ca9da6d95583f06b6b7710fec6144a1bb61bd",
-          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+          "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
         "native_ldd": {
           "resolved": {
             "linux-vdso.so.1": "vdso",
             "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
             "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
-            "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-            "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "libcublas.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+            "libcublasLt.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
             "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
             "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
             "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
@@ -1371,13 +1371,13 @@
         },
         "native_cuBLAS": {
           "libcublas.so.13": {
-            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+            "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         },
@@ -1414,22 +1414,22 @@
         "source_manifest_sha256": "c53707beea479d6bb59b2ea8369194980a36669744bb7471faf3ed1b3c9ae8c7",
         "launcher_sha256": "b65277310baf5a2c2bf24dfeec12b98cf4500e17b788ce6e0381fcf15775fda5",
         "files": {
-          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
-          "build/spark-native/src/runtime/jitllm-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
+          "build/spark-native/benchmarks/llmp_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
+          "build/spark-native/src/runtime/llmp-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
           "build/spark-native/tests/unit/ggml_graph_test": "e5d95f7808262dad568dccdcfff0a6e172d2ba29867451eee333792168735683",
           "build/spark-native/tests/unit/gemma2_plan_test": "d52c187139a701bf55b4c52db109ea87acff0c555bdf824b2243b9ff65151010",
           "build/spark-native/tests/unit/gemma3_plan_test": "03a7dc00b39c8fc00569cda9ee8a6db906d091e46224386e32bc6c60d001b481",
           "build/spark-native/tests/unit/gemma4_plan_test": "57a95722f9b95c4a80370dd1d62af8814d688201c3bbe45cb67bfa8272332395",
           "build/spark-native/tests/unit/gemma_measurement_gpu_test": "ef23bd4a254bc8360259c3a32b3e8f020612e20d587ade0d32c48df8d5820b7d",
-          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+          "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
         "native_ldd": {
           "resolved": {
             "linux-vdso.so.1": "vdso",
             "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
             "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
-            "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-            "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "libcublas.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+            "libcublasLt.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
             "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
             "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
             "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
@@ -1442,13 +1442,13 @@
         },
         "native_cuBLAS": {
           "libcublas.so.13": {
-            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+            "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
             "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
           },
           "libcublasLt.so.13": {
-            "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
-            "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
+            "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
             "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
           }
         },
@@ -1459,7 +1459,7 @@
           "g3": "04254b7bd2d7f41e33725cffdef2604e7274602d6f31ac0b0b8fd9b36ae219f2",
           "g4": "453954482478a2a4f8777bebd1301b19518861db3d703b4c4c30225a27887200"
         },
-        "retained_xml_directory": "/home/pmeenan/.local/share/jitllm/gemma4-original-q8-20261008/funding-build2",
+        "retained_xml_directory": "/home/pmeenan/.local/share/llmp/gemma4-original-q8-20261008/funding-build2",
         "tests": [
           "Qwen2GraphTest.PlacesActivationsInTheLimitA",
           "Qwen2GraphTest.AFinalViewKeepsItsSourceAlive",
@@ -1489,24 +1489,24 @@
           "qualification_sha256": "3dfcf132b00526411417dfe80c0861260af941e4435d71320c5540276f973ab0",
           "launcher_sha256": "1d67fcc97eecb97979cc1b885d937aac9de0eef40a0ef08d2946738b37ff1903",
           "files": {
-            "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
-            "build/spark-native/src/runtime/jitllm-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
+            "build/spark-native/benchmarks/llmp_gemma4_common_width_probe": "68babcf5f16fd36cfe4ba5aad27993b7deecdbcd82722c319fc20bbb96d041c5",
+            "build/spark-native/src/runtime/llmp-runtime": "fde7303c5c3a040a3fced332ca311b3f86ed79ff84ec68793f3d54c64e0b54f9",
             "build/spark-native/tests/unit/ggml_graph_test": "e5d95f7808262dad568dccdcfff0a6e172d2ba29867451eee333792168735683",
             "build/spark-native/tests/unit/gemma2_plan_test": "d52c187139a701bf55b4c52db109ea87acff0c555bdf824b2243b9ff65151010",
             "build/spark-native/tests/unit/gemma3_plan_test": "03a7dc00b39c8fc00569cda9ee8a6db906d091e46224386e32bc6c60d001b481",
             "build/spark-native/tests/unit/gemma4_plan_test": "57a95722f9b95c4a80370dd1d62af8814d688201c3bbe45cb67bfa8272332395",
             "build/spark-native/tests/unit/gemma_measurement_gpu_test": "ef23bd4a254bc8360259c3a32b3e8f020612e20d587ade0d32c48df8d5820b7d",
-            "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+            "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
           },
           "native_cuBLAS": {
             "libcublas.so.13": {
-              "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-              "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+              "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+              "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
               "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
             },
             "libcublasLt.so.13": {
-              "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
-              "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+              "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
+              "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
               "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
             }
           },
@@ -1515,8 +1515,8 @@
               "linux-vdso.so.1": "vdso",
               "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
               "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
-              "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-              "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+              "libcublas.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+              "libcublasLt.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
               "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
               "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
               "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
@@ -1590,12 +1590,12 @@
         "sha256": "f36caf7735b67d220121c666e65a8630b7996ccb7c3021c9294fe3cfac9fe76d",
         "record": {
           "args": [
-            "/home/pmeenan/.local/share/jitllm/sdk/aarch64-c09daba6ac31edee/bin/cmake",
+            "/home/pmeenan/.local/share/llmp/sdk/aarch64-c09daba6ac31edee/bin/cmake",
             "--build",
-            "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native",
+            "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native",
             "--target",
-            "jitllm_gemma4_common_width_probe",
-            "jitllm-runtime",
+            "llmp_gemma4_common_width_probe",
+            "llmp-runtime",
             "ggml_graph_test",
             "gemma2_plan_test",
             "gemma3_plan_test",
@@ -1623,9 +1623,9 @@
         "sha256": "b636465df85febcec0268a77fb40e8155bb076b14ee89ee597518096eee8f85b",
         "record": {
           "args": [
-            "/home/pmeenan/.local/share/jitllm/sdk/aarch64-c09daba6ac31edee/bin/cmake",
+            "/home/pmeenan/.local/share/llmp/sdk/aarch64-c09daba6ac31edee/bin/cmake",
             "--build",
-            "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native",
+            "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native",
             "--target",
             "gemma_measurement_gpu_test",
             "--parallel",
@@ -1650,9 +1650,9 @@
         "sha256": "f1544c7e859e849dd12bbe496a27b3bbeb6b31af6558d2d9fcf8a6371a72c5a3",
         "record": {
           "args": [
-            "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/tests/unit/gemma_measurement_gpu_test",
+            "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/tests/unit/gemma_measurement_gpu_test",
             "--gtest_filter=GemmaMeasurementGpu.AllConfiguredCompositionsPreserveExactFunding",
-            "--gtest_output=xml:/home/pmeenan/.local/share/jitllm/gemma4-original-q8-20261008/funding-oracle1/oracle.xml"
+            "--gtest_output=xml:/home/pmeenan/.local/share/llmp/gemma4-original-q8-20261008/funding-oracle1/oracle.xml"
           ],
           "returncode": 1,
           "elapsed_seconds": 31.149038492003456,
@@ -1687,10 +1687,10 @@
         "source_manifest_sha256": "f316bed407900d9951c1f514593e66c8e592f9ab0d81f783fc0e1acfdc29a863",
         "launcher_sha256": "528383104abc7300b0e8089fbc7283e32dd6db02af5cfff00c1e548f763792f3",
         "files": {
-          "build/spark-native/src/runtime/jitllm-runtime": "6398ddb920c220fe3d4753df1ff246a62442d07bed6056139d56ba19e55ae4d2",
-          "build/spark-native/benchmarks/jitllm_gemma4_common_width_probe": "0f4d527d4bb32f963772eb7980e0c42d997696d5ccfebfdde7860c166a2663cc",
+          "build/spark-native/src/runtime/llmp-runtime": "6398ddb920c220fe3d4753df1ff246a62442d07bed6056139d56ba19e55ae4d2",
+          "build/spark-native/benchmarks/llmp_gemma4_common_width_probe": "0f4d527d4bb32f963772eb7980e0c42d997696d5ccfebfdde7860c166a2663cc",
           "build/spark-native/tests/unit/gemma_prefill_serving_gpu_test": "fd779f50097339b29923ad223a1811f4d4fed9caa6d9d0fa3ecbec7403ae1901",
-          "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+          "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
         "native_libraries": {
           "ldd": {
@@ -1698,8 +1698,8 @@
               "linux-vdso.so.1": "vdso",
               "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
               "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
-              "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-              "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+              "libcublas.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+              "libcublasLt.so.13": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
               "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
               "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
               "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
@@ -1712,13 +1712,13 @@
           },
           "cuBLAS": {
             "libcublas.so.13": {
-              "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-              "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+              "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+              "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
               "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
             },
             "libcublasLt.so.13": {
-              "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
-              "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+              "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
+              "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
               "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
             }
           }
@@ -1759,8 +1759,8 @@
       "qualified_paths": [
         {
           "path": "benchmarks/gemma4_common_width_probe.cc",
-          "qualified_sha256": "5b0d88f41571dc435b8ecb1f265de4e7b62e99a8c4a8ae371f9c6d2d18545c20",
-          "current_sha256": "5b0d88f41571dc435b8ecb1f265de4e7b62e99a8c4a8ae371f9c6d2d18545c20",
+          "qualified_sha256": "5ddee51dd0f99dedd05b23b2a7525c7483aa2651d9a353446a962e9351e00da5",
+          "current_sha256": "5ddee51dd0f99dedd05b23b2a7525c7483aa2651d9a353446a962e9351e00da5",
           "unchanged": true
         },
         {
@@ -1771,8 +1771,8 @@
         },
         {
           "path": "src/engine/gemma2_plan.h",
-          "qualified_sha256": "bba7b9440cf73c4ebf9fc90600fe993c484edefcbb3f5416b23531d6a31f2851",
-          "current_sha256": "bba7b9440cf73c4ebf9fc90600fe993c484edefcbb3f5416b23531d6a31f2851",
+          "qualified_sha256": "8fa7846e43c97ff710203a568aeb3243d45bfcbbda0794ac7ce01dcdf3c50c4f",
+          "current_sha256": "8fa7846e43c97ff710203a568aeb3243d45bfcbbda0794ac7ce01dcdf3c50c4f",
           "unchanged": true
         },
         {
@@ -1789,8 +1789,8 @@
         },
         {
           "path": "src/engine/gemma3_plan.h",
-          "qualified_sha256": "8795cfe1e512a806eba4e73bb8d94c152d10729bfbe29fd37caa63abee234c8f",
-          "current_sha256": "8795cfe1e512a806eba4e73bb8d94c152d10729bfbe29fd37caa63abee234c8f",
+          "qualified_sha256": "346f57281f804adaa6302cd4d122b89bf66f4368b7607a2c631f72f09b5dba34",
+          "current_sha256": "346f57281f804adaa6302cd4d122b89bf66f4368b7607a2c631f72f09b5dba34",
           "unchanged": true
         },
         {
@@ -1807,8 +1807,8 @@
         },
         {
           "path": "src/engine/gemma4_plan.h",
-          "qualified_sha256": "f75f814dfa724e6a4fc30b983da5cd818ba7fbb205116a99161b16f651e4c81f",
-          "current_sha256": "f75f814dfa724e6a4fc30b983da5cd818ba7fbb205116a99161b16f651e4c81f",
+          "qualified_sha256": "33ad23fb66c687c2b7c9e1f4aff511f7a4ea3adfed7bcb65a3d22f0d43cb0033",
+          "current_sha256": "33ad23fb66c687c2b7c9e1f4aff511f7a4ea3adfed7bcb65a3d22f0d43cb0033",
           "unchanged": true
         },
         {
@@ -1837,14 +1837,14 @@
         },
         {
           "path": "src/kernels/ggml/gemma4_graph.cc",
-          "qualified_sha256": "461c7e5cc6145b805b6f825f508af87e9ea1012c4e2772628db810fd90bd6b10",
-          "current_sha256": "461c7e5cc6145b805b6f825f508af87e9ea1012c4e2772628db810fd90bd6b10",
+          "qualified_sha256": "486ebd6f5630f6c12fbab680dbf39eca2a5fb7b7ff1d39a44382269fff32cb60",
+          "current_sha256": "486ebd6f5630f6c12fbab680dbf39eca2a5fb7b7ff1d39a44382269fff32cb60",
           "unchanged": true
         },
         {
           "path": "src/kernels/ggml/gemma4_graph.h",
-          "qualified_sha256": "9b5aa030556659a55f09532143b60bcbf40bf118e392ca3b0ea690329e6f86e0",
-          "current_sha256": "9b5aa030556659a55f09532143b60bcbf40bf118e392ca3b0ea690329e6f86e0",
+          "qualified_sha256": "cf32c35346a8c5ede49e6ab9dd0f6aa02dcb03dbc8a8954f2261245ace278525",
+          "current_sha256": "cf32c35346a8c5ede49e6ab9dd0f6aa02dcb03dbc8a8954f2261245ace278525",
           "unchanged": true
         },
         {
@@ -1879,8 +1879,8 @@
         },
         {
           "path": "tests/unit/gemma4_graph_test.cc",
-          "qualified_sha256": "495196ff047281e3a98c846612f8481a9096612ca884bc37fb765bde95ecb517",
-          "current_sha256": "495196ff047281e3a98c846612f8481a9096612ca884bc37fb765bde95ecb517",
+          "qualified_sha256": "b291c342216fa04ec0dd9482db496896cef995d9cc14a07a1e8559e234d1279f",
+          "current_sha256": "b291c342216fa04ec0dd9482db496896cef995d9cc14a07a1e8559e234d1279f",
           "unchanged": true
         },
         {
@@ -1891,14 +1891,14 @@
         },
         {
           "path": "tests/unit/gemma_measurement_gpu_test.cc",
-          "qualified_sha256": "3a1e9172c10684ce5d0796d95eccc70c04e15be748f4bb37f4b658714868fa95",
-          "current_sha256": "3a1e9172c10684ce5d0796d95eccc70c04e15be748f4bb37f4b658714868fa95",
+          "qualified_sha256": "13b42ad5cfc799b3fcab7f8d6406717b98c8f7f491dab1f95530dc6f2a39a4be",
+          "current_sha256": "13b42ad5cfc799b3fcab7f8d6406717b98c8f7f491dab1f95530dc6f2a39a4be",
           "unchanged": true
         },
         {
           "path": "tests/unit/ggml_graph_test.cc",
-          "qualified_sha256": "beac141fb892ae75caa97419a1c0da5b906c9e50735a05ce730012b08fd3a297",
-          "current_sha256": "beac141fb892ae75caa97419a1c0da5b906c9e50735a05ce730012b08fd3a297",
+          "qualified_sha256": "ff08ee872fb2eac750b5df4be7183201cfcf258d82485415f8afaaf3db949349",
+          "current_sha256": "ff08ee872fb2eac750b5df4be7183201cfcf258d82485415f8afaaf3db949349",
           "unchanged": true
         }
       ],

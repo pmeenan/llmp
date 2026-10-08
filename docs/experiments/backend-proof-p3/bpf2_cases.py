@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """BP-F2's case set, as pre-registered at P3 entry (docs/backend-proof.md, "Performance protocol").
 
 Reference-only experiment tooling: it reads the M0 reference's protocol and writes the case list;
-it implements nothing of jitLLM.
+it implements nothing of llmpalooza.
 
   bpf2_cases.py [--protocol ../exl3-reference/protocol.json] --out bpf2-cases.txt
 

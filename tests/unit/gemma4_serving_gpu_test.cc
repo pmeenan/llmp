@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The production adapter and driver over the approved native artifact.
@@ -27,15 +27,14 @@
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
 
-namespace rt = jitllm::runtime;
-namespace en = jitllm::engine;
-namespace cfg = jitllm::config;
+namespace rt = llmp::runtime;
+namespace en = llmp::engine;
+namespace cfg = llmp::config;
 class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
  protected:
   virtual bool PreparationControl() const { return false; }
   void SetUp() override {
-    const auto installed =
-        std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts";
+    const auto installed = std::filesystem::path(llmp::test_support::ModelsDir()) / "m3-artifacts";
     const char* artifact = GetParam() == 26
                                ? "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
                                : "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08";
@@ -43,7 +42,7 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
       GTEST_SKIP() << "no Gemma 4 artifact in " << installed;
     }
     // Spill files need direct I/O: scratch in the build tree.
-    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path root = base != nullptr ? base : ::testing::TempDir();
     std::error_code error;
     std::filesystem::create_directories(root, error);
@@ -153,17 +152,17 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
 class Gemma4PreparationServingGpu : public Gemma4ServingGpu {
  protected:
   bool PreparationControl() const override { return true; }
-  std::expected<jitllm::base::Sha256Digest, std::string> StateHash(en::Gemma4Runner& runner,
-                                                                   std::uint32_t id) {
+  std::expected<llmp::base::Sha256Digest, std::string> StateHash(en::Gemma4Runner& runner,
+                                                                 std::uint32_t id) {
     auto slot = runner.request_slot(id);
     if (!slot) return std::unexpected(slot.error());
     auto ranges = runner.CheckpointRanges((*slot)->completed_positions());
     if (!ranges) return std::unexpected(ranges.error());
     auto& node = server->node();
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto buffer = node.Pinned(1U << 20U, 0, staging);
     if (!buffer) return std::unexpected(buffer.error());
-    jitllm::base::Sha256 hash;
+    llmp::base::Sha256 hash;
     for (const auto& range : *ranges)
       for (std::uint64_t at = 0; at < range.bytes; at += 1U << 20U) {
         const en::LiveState::Range part{range.region, range.offset + at,
@@ -187,7 +186,7 @@ TEST_P(Gemma4PreparationServingGpu, DefaultPreparationPreservesFourOwnerPromptPr
   EXPECT_TRUE(rt::ServingOptions{}.gemma4_prepare_state);
   constexpr std::array<std::uint32_t, 4> lengths{4352, 4480, 4608, 4736};
   std::array<std::vector<float>, 4> expected_heads;
-  std::array<jitllm::base::Sha256Digest, 4> expected_states{};
+  std::array<llmp::base::Sha256Digest, 4> expected_states{};
   std::array<std::uint64_t, 4> expected_units{}, expected_rows{};
   for (const bool ordinary : {false, true}) {
     options = rt::ServingOptions{};
@@ -232,7 +231,7 @@ TEST_P(Gemma4PreparationServingGpu, DefaultPreparationPreservesFourOwnerPromptPr
         ASSERT_TRUE(settled) << (settled ? "" : settled.error());
       }
       std::array<std::vector<float>, 4> heads;
-      std::array<jitllm::base::Sha256Digest, 4> states{};
+      std::array<llmp::base::Sha256Digest, 4> states{};
       std::array<std::uint64_t, 4> units{}, rows{};
       std::uint32_t remaining = 4;
       bool continued_after_departure = false;
@@ -338,9 +337,9 @@ TEST_P(Gemma4ServingGpu, PinnedPublicationCapacityMatchesServingSlotsNotInputChu
     (void)generation;
     auto view = server->node().catalog().Describe(extent);
     ASSERT_TRUE(view);
-    if (view->descriptor.memory_class != jitllm::catalog::MemoryClass::kStaging) continue;
-    EXPECT_EQ(view->state, jitllm::catalog::ExtentState::kResident);
-    EXPECT_EQ(view->descriptor.recovery, jitllm::catalog::Recovery::kPinned);
+    if (view->descriptor.memory_class != llmp::catalog::MemoryClass::kStaging) continue;
+    EXPECT_EQ(view->state, llmp::catalog::ExtentState::kResident);
+    EXPECT_EQ(view->descriptor.recovery, llmp::catalog::Recovery::kPinned);
     staging += view->descriptor.size.value();
     output |= view->descriptor.size.value() == 12 * row_bytes;
   }
@@ -353,16 +352,15 @@ TEST_P(Gemma4ServingGpu, PinnedPublicationCapacityMatchesServingSlotsNotInputChu
 TEST_P(Gemma4ServingGpu, IndependentScalarCohortsOneTwoFourEightTwelveReplaySeededTokens) {
   EXPECT_EQ(model->generation_wave_capacity(), 12U);
   EXPECT_EQ(model->branches(), 12U);
-  EXPECT_GE(
-      server->host_input_bytes(),
-      12ULL * 262144 * (2 * sizeof(float) + 2 * sizeof(jitllm::execution::SamplingCandidate)));
+  EXPECT_GE(server->host_input_bytes(),
+            12ULL * 262144 * (2 * sizeof(float) + 2 * sizeof(llmp::execution::SamplingCandidate)));
   HostCopies copies(server->node(), 13ULL * 262144 * sizeof(float));
   ASSERT_TRUE(copies.funded);
   std::array<rt::GenerateOptions, 12> generate;
   for (std::uint32_t i = 0; i < 12; ++i) {
     generate[i].max_tokens = 4;
     generate[i].stop = false;
-    generate[i].sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+    generate[i].sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
     generate[i].seed = 2718 + i;
   }
   std::array<std::vector<std::int32_t>, 12> expected;
@@ -524,8 +522,8 @@ TEST_P(Gemma4ServingGpu, LiteralTeacherForcingAndChatRefusalsUseTheTargetRoute) 
       });
   ASSERT_TRUE(scored) << (scored ? "" : scored.error());
   EXPECT_EQ(at, literal->size());
-  jitllm::chat::Conversation c;
-  c.messages.push_back({.role = jitllm::chat::Role::kUser,
+  llmp::chat::Conversation c;
+  c.messages.push_back({.role = llmp::chat::Role::kUser,
                         .content = "Hello",
                         .reasoning_content = {},
                         .tool_calls = {}});
@@ -534,7 +532,7 @@ TEST_P(Gemma4ServingGpu, LiteralTeacherForcingAndChatRefusalsUseTheTargetRoute) 
   c.enable_thinking = true;
   EXPECT_FALSE(model->RenderChat(c));
   c.enable_thinking = false;
-  auto tool = jitllm::base::json::Parse(R"({"type":"function","function":{"name":"test"}})");
+  auto tool = llmp::base::json::Parse(R"({"type":"function","function":{"name":"test"}})");
   ASSERT_TRUE(tool);
   c.tools.push_back(tool->root());
   EXPECT_FALSE(model->RenderChat(c));
@@ -542,42 +540,42 @@ TEST_P(Gemma4ServingGpu, LiteralTeacherForcingAndChatRefusalsUseTheTargetRoute) 
 }
 
 TEST_P(Gemma4ServingGpu, ActualPinnedTemplateNativeInterpreterAndRendererAgree) {
-  auto artifact = jitllm::artifact::Artifact::Open(roles.installed / *config.models[0].artifact);
+  auto artifact = llmp::artifact::Artifact::Open(roles.installed / *config.models[0].artifact);
   ASSERT_TRUE(artifact);
   auto assets = rt::ReadChatAssets(*artifact, config.models[0], geteuid());
   ASSERT_TRUE(assets);
   ASSERT_TRUE(assets->chat_template);
   const auto& text = *assets->chat_template;
-  auto fixture = jitllm::test_support::LoadJson("chat/gemma-26-serving.json");
+  auto fixture = llmp::test_support::LoadJson("chat/gemma-26-serving.json");
   const auto root = fixture.root();
-  EXPECT_EQ(jitllm::base::ToHex(jitllm::base::Sha256{}.Update(text).Finish()),
-            jitllm::test_support::Get(root, "template_sha256").string());
-  const auto facts = jitllm::chat::TokenFacts::From(model->tokenizer());
-  auto native = jitllm::chat::ChatTemplate::ForText(text, facts);
+  EXPECT_EQ(llmp::base::ToHex(llmp::base::Sha256{}.Update(text).Finish()),
+            llmp::test_support::Get(root, "template_sha256").string());
+  const auto facts = llmp::chat::TokenFacts::From(model->tokenizer());
+  auto native = llmp::chat::ChatTemplate::ForText(text, facts);
   ASSERT_TRUE(native);
   EXPECT_EQ(native->name(), "gemma-4-unsloth");
-  EXPECT_EQ(native->how(), jitllm::chat::ChatTemplate::How::kNativeByProbe);
-  auto program = jitllm::chat::jinja::Template::Parse(text);
+  EXPECT_EQ(native->how(), llmp::chat::ChatTemplate::How::kNativeByProbe);
+  auto program = llmp::chat::jinja::Template::Parse(text);
   ASSERT_TRUE(program);
-  const auto cases = jitllm::test_support::Get(root, "cases");
+  const auto cases = llmp::test_support::Get(root, "cases");
   for (std::size_t i = 0; i < cases.size(); ++i) {
     const auto c = cases.at(i);
-    SCOPED_TRACE(jitllm::test_support::Get(c, "name").string());
-    std::deque<jitllm::base::json::Document> arguments;
-    const auto conversation = jitllm::test_support::ConversationFrom(c, &arguments);
+    SCOPED_TRACE(llmp::test_support::Get(c, "name").string());
+    std::deque<llmp::base::json::Document> arguments;
+    const auto conversation = llmp::test_support::ConversationFrom(c, &arguments);
     const auto a = native->Render(conversation);
-    const auto b = jitllm::chat::RenderInterpreted(*program, conversation, facts, std::nullopt);
+    const auto b = llmp::chat::RenderInterpreted(*program, conversation, facts, std::nullopt);
     if (const auto expected = c.find("sha256")) {
       ASSERT_TRUE(a) << (a ? "" : a.error().ToString());
       ASSERT_TRUE(b) << (b ? "" : b.error().ToString());
       EXPECT_EQ(a->text, b->text);
-      std::vector<jitllm::tokenizer::TokenId> native_ids, interpreted_ids;
+      std::vector<llmp::tokenizer::TokenId> native_ids, interpreted_ids;
       EXPECT_TRUE(model->tokenizer().EncodeMarked(a->text, a->specials, {}, native_ids));
       EXPECT_TRUE(model->tokenizer().EncodeMarked(b->text, b->specials, {}, interpreted_ids));
       EXPECT_EQ(native_ids, interpreted_ids);
       EXPECT_FALSE(native_ids.empty());
       if (!native_ids.empty()) EXPECT_EQ(native_ids.front(), 2);
-      EXPECT_EQ(jitllm::base::ToHex(jitllm::base::Sha256{}.Update(a->text).Finish()),
+      EXPECT_EQ(llmp::base::ToHex(llmp::base::Sha256{}.Update(a->text).Finish()),
                 expected->string());
     } else {
       EXPECT_FALSE(a);
@@ -592,7 +590,7 @@ TEST_P(Gemma4ServingGpu, MaximumLiteralScoringRowsInterleaveAndResumeWithoutRepe
   gen.max_tokens = 4;
   gen.stop = false;
   gen.seed = 991;
-  gen.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+  gen.sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
   std::vector<float> last;
   ASSERT_TRUE(Branch(1).Prefill(prompt, last));
   rt::Generation expected;
@@ -608,7 +606,7 @@ TEST_P(Gemma4ServingGpu, MaximumLiteralScoringRowsInterleaveAndResumeWithoutRepe
   const auto score = [&](std::int32_t id, std::span<const float> row) {
     EXPECT_EQ(id, tokens[at++]);
     EXPECT_EQ(row.size(), 262144U);
-    EXPECT_TRUE(jitllm::execution::ScoreToken(row, id, 16));
+    EXPECT_TRUE(llmp::execution::ScoreToken(row, id, 16));
     return true;
   };
   auto scorer = Branch(0).BeginScoringPrompt(tokens, score);
@@ -650,7 +648,7 @@ TEST_P(Gemma4ServingGpu, SeededStreamResumesAfterStateSpillWhilePeerContinues) {
   options.max_tokens = 6;
   options.stop = false;
   options.seed = 881;
-  options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+  options.sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
   std::vector<float> last;
   ASSERT_TRUE(Branch(0).Prefill(prompt, last));
   rt::Generation expected;
@@ -727,12 +725,12 @@ TEST_P(Gemma4ServingGpu, LargeTopKSamplingCapacityIsFundedAndRetiresOnEveryClose
     rt::GenerateOptions options;
     options.max_tokens = 2;
     options.stop = false;
-    options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = top_k};
+    options.sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = top_k};
     options.seed = 456;
     rt::Generation out;
     auto opened = Branch(0).BeginGeneration(last, options, out);
     ASSERT_TRUE(opened);
-    const auto bytes = 2ULL * 262144 * sizeof(jitllm::execution::SamplingCandidate);
+    const auto bytes = 2ULL * 262144 * sizeof(llmp::execution::SamplingCandidate);
     EXPECT_EQ(Branch(0).sampling_scratch_bytes(), bytes);
     const std::array<rt::Llm::GenerationSession*, 1> one{opened->get()};
     const auto ran = model->RunGenerationWave(one);
@@ -760,9 +758,8 @@ TEST_P(Gemma4ServingGpu, LargeTopKSamplingCapacityIsFundedAndRetiresOnEveryClose
     EXPECT_EQ(Branch(0).sampling_scratch_bytes(), 0U);
     EXPECT_EQ(Branch(0).history(), history);
   }
-  EXPECT_GE(
-      server->host_input_bytes(),
-      12ULL * 262144 * (2 * sizeof(float) + 2 * sizeof(jitllm::execution::SamplingCandidate)));
+  EXPECT_GE(server->host_input_bytes(),
+            12ULL * 262144 * (2 * sizeof(float) + 2 * sizeof(llmp::execution::SamplingCandidate)));
   EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
 }
 
@@ -783,8 +780,8 @@ TEST_P(Gemma4ServingGpu, CompleteLikelihoodRowsMatchOwnedOneTokenFrontiersAndSto
       [&](std::int32_t id, std::span<const float> row) {
         EXPECT_EQ(id, prompt[at]);
         EXPECT_TRUE(std::ranges::equal(row, rows[at - 1]));
-        const auto actual = jitllm::execution::ScoreToken(row, id, 16);
-        const auto expected = jitllm::execution::ScoreToken(rows[at - 1], prompt[at], 16);
+        const auto actual = llmp::execution::ScoreToken(row, id, 16);
+        const auto expected = llmp::execution::ScoreToken(rows[at - 1], prompt[at], 16);
         EXPECT_TRUE(actual);
         EXPECT_TRUE(expected);
         if (actual && expected) EXPECT_EQ(actual->logprob, expected->logprob);
@@ -808,7 +805,7 @@ TEST_P(Gemma4ServingGpu, CallbackStopPublishesCompletedPeerAndReleasesEachSample
   options.max_tokens = 4;
   options.stop = false;
   options.seed = 883;
-  options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+  options.sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
   std::vector<float> baseline;
   ASSERT_TRUE(Branch(1).Prefill(prompt, baseline));
   rt::Generation expected;
@@ -928,7 +925,7 @@ TEST_P(Gemma4ServingGpu, CapacityRefusalPreservesCompletedPrefixAndPeerProgress)
   options.max_tokens = 3;
   options.stop = false;
   options.seed = 909;
-  options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+  options.sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
   rt::Generation peer_expected;
   ASSERT_TRUE(Branch(1).Generate(last[1], options, peer_expected));
   ASSERT_TRUE(Branch(1).Clear());
@@ -1002,7 +999,7 @@ TEST_P(Gemma4ServingGpu, PausedGenerationSurvivesOppositeProfileSwitchAndOwnedOu
   options.max_tokens = 6;
   options.stop = false;
   options.seed = 1909;
-  options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+  options.sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
   std::vector<float> last;
   ASSERT_TRUE(Branch(0).Prefill(prompt, last));
   rt::Generation expected;

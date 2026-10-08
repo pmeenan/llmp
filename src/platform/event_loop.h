@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Readiness events for the runtime's network I/O (docs/portability.md): the
@@ -22,8 +22,8 @@
 // the signals. Descriptors are ints here, as on both POSIX systems; a
 // Windows port gives them a type of their own.
 
-#ifndef JITLLM_PLATFORM_EVENT_LOOP_H_
-#define JITLLM_PLATFORM_EVENT_LOOP_H_
+#ifndef LLMP_PLATFORM_EVENT_LOOP_H_
+#define LLMP_PLATFORM_EVENT_LOOP_H_
 
 #include <chrono>
 #include <cstddef>
@@ -33,7 +33,7 @@
 #include <system_error>
 #include <utility>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 // What a registration waits for (kReadable, kWritable, kPeerClosed) and
 // what a wait reports (any of them, and kHangUp and kError).
@@ -123,6 +123,6 @@ class SignalWatch {
   OwnedDescriptor fd_;
 };
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_EVENT_LOOP_H_
+#endif  // LLMP_PLATFORM_EVENT_LOOP_H_

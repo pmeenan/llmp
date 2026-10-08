@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/gemma4.h"
@@ -25,7 +25,7 @@
 #include "base/check.h"
 #include "model/host_mask.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 namespace {
 constexpr std::uint64_t kExtent = 2U << 20U;
 constexpr std::uint16_t kZero = 0, kNegInf = 0xFC00;
@@ -629,4 +629,4 @@ std::expected<std::vector<StateRange>, std::string> Gemma4ChunkWrites(const Gemm
   }
   return out;
 }
-}  // namespace jitllm::model
+}  // namespace llmp::model

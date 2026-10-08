@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <algorithm>
@@ -16,7 +16,7 @@
 #include "base/report.h"
 #include "providers/cuda/cuda_facts.h"
 
-namespace jitllm::providers::cuda {
+namespace llmp::providers::cuda {
 namespace {
 
 std::string YesNo(const std::optional<bool>& value, std::string_view yes, std::string_view no) {
@@ -117,7 +117,7 @@ void DescribeDriver(const CudaFacts& facts, base::Report& report) {
   driver.Add("CUDA driver API", api);
   driver.Add("CUDA toolkit (this build)", CudaVersionText(facts.built_version));
   driver.Add("GPU code (this build)", ArchitecturesText(facts.built_architectures));
-  // jitLLM reads files into host VMM itself and does not assume native GDS
+  // llmpalooza reads files into host VMM itself and does not assume native GDS
   // (D-004, D-034); the module's presence is reported for comparison.
   driver.Add("GPUDirect Storage",
              facts.nvidia_fs.loaded ? "nvidia_fs loaded" : "nvidia_fs not loaded (no native GDS)");
@@ -152,10 +152,10 @@ void DescribeDevice(const CudaFacts& facts, const CudaDeviceFacts& device, base:
                                    : std::string("host NUMA backing");
   section.Add(host_key, host);
   section.Add("GPUDirect RDMA", YesNo(device.gpu_direct_rdma, "supported", "not supported"));
-  // Multi-GPU hosts are out of scope (D-082): jitLLM uses GPU 0 alone, so
+  // Multi-GPU hosts are out of scope (D-082): llmpalooza uses GPU 0 alone, so
   // only it is judged.
   if (device.ordinal != kUsedDevice) {
-    section.Add("use", "none: jitLLM uses GPU 0 only (D-082)");
+    section.Add("use", "none: llmpalooza uses GPU 0 only (D-082)");
     return;
   }
   if (!targeted) {
@@ -186,7 +186,7 @@ void DescribeDevice(const CudaFacts& facts, const CudaDeviceFacts& device, base:
   // D-006: every managed allocation is explicit VMM backing.
   if (device.vmm != true) {
     report.problems.push_back(std::format(
-        "GPU {} does not report CUDA virtual memory management, which jitLLM requires (D-006)",
+        "GPU {} does not report CUDA virtual memory management, which llmpalooza requires (D-006)",
         device.ordinal));
   } else if (!device.device_local) {
     report.problems.push_back(
@@ -284,7 +284,7 @@ void DescribeCuda(const CudaFacts& facts, base::Report& report) {
   }
   if (facts.device_count > 1) {
     report.warnings.push_back(
-        std::format("the CUDA driver reports {} GPUs; jitLLM uses only GPU 0, which "
+        std::format("the CUDA driver reports {} GPUs; llmpalooza uses only GPU 0, which "
                     "CUDA_VISIBLE_DEVICES selects (D-082)",
                     facts.device_count));
   }
@@ -297,11 +297,12 @@ void DescribeCuda(const CudaFacts& facts, base::Report& report) {
                                           ArchitecturesText(facts.built_architectures)));
   } else if (facts.devices.front().ordinal != kUsedDevice ||
              !Targeted(facts, facts.devices.front())) {
-    report.problems.push_back(std::format(
-        "GPU 0 is not one this build has code for ({}), and jitLLM uses only GPU 0: select one it "
-        "has code for with CUDA_VISIBLE_DEVICES (D-082)",
-        ArchitecturesText(facts.built_architectures)));
+    report.problems.push_back(
+        std::format("GPU 0 is not one this build has code for ({}), and llmpalooza uses only GPU "
+                    "0: select one it "
+                    "has code for with CUDA_VISIBLE_DEVICES (D-082)",
+                    ArchitecturesText(facts.built_architectures)));
   }
 }
 
-}  // namespace jitllm::providers::cuda
+}  // namespace llmp::providers::cuda

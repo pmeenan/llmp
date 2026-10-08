@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Generates the tokenizer's Unicode tables from pinned Unicode Character Database files (D-088).
 
@@ -241,7 +241,7 @@ def generate(ucd: pathlib.Path) -> str:
     # The tags are spelled in parts, so that REUSE and the header check do
     # not read them as this tool's own.
     copyright_tag, license_tag = "SPDX-" + "FileCopyrightText", "SPDX-" + "License-Identifier"
-    w(f"// {copyright_tag}: 2026 jitLLM contributors")
+    w(f"// {copyright_tag}: 2026 llmpalooza contributors")
     w(f"// {copyright_tag}: 1991-2023 Unicode, Inc.")
     w(f"// {license_tag}: Apache-2.0 AND Unicode-3.0")
     w("")
@@ -252,7 +252,7 @@ def generate(ucd: pathlib.Path) -> str:
     w("")
     w('#include "tokenizer/unicode_data.h"')
     w("")
-    w("namespace jitllm::tokenizer::unicode_data {")
+    w("namespace llmp::tokenizer::unicode_data {")
     w("namespace {")
     w("")
 
@@ -305,7 +305,7 @@ def generate(ucd: pathlib.Path) -> str:
     for symbol in ("kLowercase", "kUppercase", "kCased", "kCaseIgnorable"):
         w(f"const std::span<const CodePointRange> {symbol}({symbol}Data);")
     w("")
-    w("}  // namespace jitllm::tokenizer::unicode_data")
+    w("}  // namespace llmp::tokenizer::unicode_data")
     w("// clang-format on")
     return "\n".join(out) + "\n"
 

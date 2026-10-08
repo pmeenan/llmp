@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Writes the Gemma chat fixtures (README.md, docs/tokenizer.md).
 
@@ -8,7 +8,7 @@
 Renders the cases below with transformers' render_jinja_template (as
 collect.py render does: Jinja2's sandbox, trim_blocks, lstrip_blocks,
 transformers' tojson and raise_exception; BOS `<bos>` and EOS `<eos>`;
-messages as jitLLM passes them, a tool call's string arguments parsed as
+messages as llmpalooza passes them, a tool call's string arguments parsed as
 the client's JSON) on Gemma 4's template (google/gemma-4-31B-it), the
 E2B/E4B checkpoints', Google's of 2026-04-28 (NVIDIA's NVFP4 checkpoints')
 and Gemma 3's, and writes DIR/gemma-4.json, DIR/gemma-4-e.json,
@@ -315,8 +315,8 @@ GEMMA3_CASES += REVIEW_CASES
 
 
 def template_messages(case):
-    """The messages as jitLLM hands a template (chat/template.cc); string
-    arguments are the client's JSON, which jitLLM parses."""
+    """The messages as llmpalooza hands a template (chat/template.cc); string
+    arguments are the client's JSON, which llmpalooza parses."""
     out = []
     for m in case["messages"]:
         msg = {"role": m["role"], "content": m.get("content")}
@@ -348,7 +348,7 @@ def write_json(path: pathlib.Path, value) -> None:
     lines.append("}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     path.with_name(path.name + ".license").write_text(
-        "SPDX-FileCopyrightText: 2026 jitLLM contributors\nSPDX-License-Identifier: Apache-2.0\n")
+        "SPDX-FileCopyrightText: 2026 llmpalooza contributors\nSPDX-License-Identifier: Apache-2.0\n")
 
 
 def fixture(label: str, template_path: pathlib.Path, cases, out: pathlib.Path) -> None:
@@ -362,7 +362,7 @@ def fixture(label: str, template_path: pathlib.Path, cases, out: pathlib.Path) -
         entry = {k: case[k] for k in ("name", "messages", "tools", "options", "add_generation_prompt") if k in case}
         kwargs = dict(case.get("options", {}))
         if "enable_thinking" in kwargs:
-            kwargs["thinking"] = kwargs["enable_thinking"]  # as jitLLM passes it
+            kwargs["thinking"] = kwargs["enable_thinking"]  # as llmpalooza passes it
         try:
             rendered, _ = chat_template_utils.render_jinja_template(
                 conversations=[template_messages(case)], tools=case.get("tools"), chat_template=template,

@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_BENCHMARKS_QWEN38_BATCH_H_
-#define JITLLM_BENCHMARKS_QWEN38_BATCH_H_
+#ifndef LLMP_BENCHMARKS_QWEN38_BATCH_H_
+#define LLMP_BENCHMARKS_QWEN38_BATCH_H_
 
 #include <array>
 #include <cstddef>
@@ -18,7 +18,7 @@
 #include "qwen38_batch_graph.h"
 #include "qwen38_reference.h"
 
-namespace jitllm::benchmarks::qwen_batch {
+namespace llmp::benchmarks::qwen_batch {
 
 // Private C2/C4 mechanism proof, no HTTP/default change. One existing
 // runner owns weights/PLE/launch; each request owns distinct target+MTP
@@ -173,5 +173,5 @@ class Proof final : public engine::PagedModel {
   // same fixed shapes, comparing every output and initialized state page.
 };
 
-}  // namespace jitllm::benchmarks::qwen_batch
-#endif  // JITLLM_BENCHMARKS_QWEN38_BATCH_H_
+}  // namespace llmp::benchmarks::qwen_batch
+#endif  // LLMP_BENCHMARKS_QWEN38_BATCH_H_

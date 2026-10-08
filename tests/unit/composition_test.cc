@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The v0 composition reader (artifact/composition.h, D-089): a valid
@@ -32,11 +32,11 @@
 namespace {
 
 namespace fs = std::filesystem;
-using jitllm::artifact::OpenComposition;
-using jitllm::artifact::RuleName;
+using llmp::artifact::OpenComposition;
+using llmp::artifact::RuleName;
 
 std::string Hex(std::string_view bytes) {
-  return jitllm::base::ToHex(jitllm::base::Sha256().Update(bytes).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256().Update(bytes).Finish());
 }
 
 void Write(const fs::path& path, std::string_view bytes) {
@@ -84,7 +84,7 @@ struct Spec {
 class CompositionTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     base_ = fs::path(scratch != nullptr ? scratch : fs::temp_directory_path().string()) /
             std::format("composition-{}", ::getpid());
     fs::remove_all(base_);
@@ -239,8 +239,7 @@ TEST_F(CompositionTest, RefusesEachBrokenRuleByName) {
 // the M3 store is (docs/experiments/qwen-image-native).
 TEST(InstalledComposition, QwenImage) {
   const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
-  const fs::path store =
-      fs::path(home != nullptr ? home : "/") / ".local/share/jitllm/m3-artifacts";
+  const fs::path store = fs::path(home != nullptr ? home : "/") / ".local/share/llmp/m3-artifacts";
   std::error_code error;
   std::optional<fs::path> found;
   for (const auto& entry : fs::directory_iterator(store, error)) {
@@ -257,7 +256,7 @@ TEST(InstalledComposition, QwenImage) {
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->architecture(), "QwenImage21Pipeline");
   for (const auto& component : c->components()) {
-    auto a = jitllm::artifact::Artifact::Open(store / component.artifact);
+    auto a = llmp::artifact::Artifact::Open(store / component.artifact);
     ASSERT_TRUE(a.has_value()) << component.role << ": " << a.error().ToString();
     EXPECT_EQ(a->model().architecture, component.architecture);
   }

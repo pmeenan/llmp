@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A service lane (D-048, docs/async-model.md#execution-and-thread-ownership):
@@ -19,8 +19,8 @@
 // "not started" during shutdown) and then exit. Destruction closes and
 // joins: it never detaches a worker or drops a queued command.
 
-#ifndef JITLLM_SCHEDULER_LANE_H_
-#define JITLLM_SCHEDULER_LANE_H_
+#ifndef LLMP_SCHEDULER_LANE_H_
+#define LLMP_SCHEDULER_LANE_H_
 
 #include <cstddef>
 #include <functional>
@@ -34,7 +34,7 @@
 #include "base/bounded_queue.h"
 #include "base/check.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 
 struct LaneSettings {
   std::string name;
@@ -108,6 +108,6 @@ class Lane {
   std::vector<std::jthread> workers_;  // last: joined before the rest go
 };
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler
 
-#endif  // JITLLM_SCHEDULER_LANE_H_
+#endif  // LLMP_SCHEDULER_LANE_H_

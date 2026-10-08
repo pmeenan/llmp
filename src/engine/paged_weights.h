@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A v0 artifact's weights as extents on a paged node (paged_node.h), for
@@ -33,8 +33,8 @@
 //
 // CUDA builds only.
 
-#ifndef JITLLM_ENGINE_PAGED_WEIGHTS_H_
-#define JITLLM_ENGINE_PAGED_WEIGHTS_H_
+#ifndef LLMP_ENGINE_PAGED_WEIGHTS_H_
+#define LLMP_ENGINE_PAGED_WEIGHTS_H_
 
 #include <array>
 #include <cstddef>
@@ -56,7 +56,7 @@
 #include "providers/device_memory.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 // ------------------------------------------------------------------ slabs
 
@@ -204,6 +204,6 @@ class PagedWeights {
 // The artifact's identity as the catalog's content key takes it.
 std::array<std::uint8_t, 32> ArtifactKey(const artifact::Artifact& artifact);
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_PAGED_WEIGHTS_H_
+#endif  // LLMP_ENGINE_PAGED_WEIGHTS_H_

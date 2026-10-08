@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Successful immutable-weight placement checks
@@ -41,11 +41,11 @@ The shared weight optimization applies to runner callers; measured speed here
 is limited to the explicit Gemma31 C4 owner-root/plain-norm-on recipe.
 
 Reproduce with the locked Spark SDK on base `017c25e`, preserving an unchanged
-before helper and SDK receipt, then build `jitllm_gemma_owner_c4` with the six
+before helper and SDK receipt, then build `llmp_gemma_owner_c4` with the six
 candidate paths recorded in [results.json](results.json). Use the same
 [prior C4 inputs and baseline](../gemma-owner-root-c4/README.md), with
-`JITLLM_GEMMA_OWNER_C4=owners`, `JITLLM_GEMMA_C4_NORMMUL=1` and
-`JITLLM_GEMMA_C4_PHASES=1`. The helper arguments are
+`LLMP_GEMMA_OWNER_C4=owners`, `LLMP_GEMMA_C4_NORMMUL=1` and
+`LLMP_GEMMA_C4_PHASES=1`. The helper arguments are
 `ARTIFACT NEW_OUTPUT_DIR 31 4 joined norm IDS`; the closed recipe uses F16
 context 256, max rows 128, owner prefixes 64–67, eight warm waves, three reset
 waves and 32 paid waves. Every full head, argmax and archive copy is paid;

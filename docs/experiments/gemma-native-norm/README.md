@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Checked native Gemma norm chains
@@ -164,7 +164,7 @@ most 600 seconds and an official successful wait. Local heavy checks use
 `hostlock shared`. Raw vectors and logs stay outside the tree.
 
 `run.sh quality NAME` selects both policies; `ordinary NAME` retains defaults.
-Choose a fresh external `JITLLM_GEMMA_NORM_ROOT`; outputs refuse existing paths.
+Choose a fresh external `LLMP_GEMMA_NORM_ROOT`; outputs refuse existing paths.
 Retain actual source/build/binary identities before acquisition. Acquire
 `both-first`, `both-repeat`, then run `analyze.py freeze ROOT IDS IDENTITIES`.
 Authenticate that immutable candidate-only freeze SHA before running

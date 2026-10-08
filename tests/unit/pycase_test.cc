@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Python's str case operations (chat/pycase.h) against Python 3.12.3 itself
@@ -27,11 +27,11 @@
 
 namespace {
 
-namespace chat = jitllm::chat;
-namespace json = jitllm::base::json;
-namespace unicode = jitllm::tokenizer::unicode;
-using jitllm::test_support::Get;
-using jitllm::test_support::LoadJson;
+namespace chat = llmp::chat;
+namespace json = llmp::base::json;
+namespace unicode = llmp::tokenizer::unicode;
+using llmp::test_support::Get;
+using llmp::test_support::LoadJson;
 
 std::string Utf8(char32_t cp) {
   std::string s;

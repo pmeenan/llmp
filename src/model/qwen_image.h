@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen-Image-2.1 pipeline adapter (M3; docs/plan.md, "Model graphs and
@@ -15,8 +15,8 @@
 // kernels/image's and GGML's, and the phases run in the harness
 // (benchmarks/qwen_image_exec.cc).
 
-#ifndef JITLLM_MODEL_QWEN_IMAGE_H_
-#define JITLLM_MODEL_QWEN_IMAGE_H_
+#ifndef LLMP_MODEL_QWEN_IMAGE_H_
+#define LLMP_MODEL_QWEN_IMAGE_H_
 
 #include <array>
 #include <cstddef>
@@ -27,11 +27,11 @@
 #include <string_view>
 #include <vector>
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 class Artifact;
 }
 
-namespace jitllm::model {
+namespace llmp::model {
 
 // ---------------------------------------------------------------- profiles
 
@@ -280,6 +280,6 @@ std::vector<std::uint8_t> QwenImagePixels(std::span<const std::uint16_t> decoded
                                           std::uint32_t channels, std::uint32_t height,
                                           std::uint32_t width);
 
-}  // namespace jitllm::model
+}  // namespace llmp::model
 
-#endif  // JITLLM_MODEL_QWEN_IMAGE_H_
+#endif  // LLMP_MODEL_QWEN_IMAGE_H_

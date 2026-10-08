@@ -1,9 +1,9 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Model support matrix
 
-Which models jitLLM runs, from which prepared artifacts, with what, and on
+Which models llmpalooza runs, from which prepared artifacts, with what, and on
 what evidence. Support is earned per checkpoint and configuration
 ([vision](vision.md#success-criteria), [features](features.md)): a model
 not listed here is unsupported, and a row claims no more than its evidence
@@ -26,7 +26,7 @@ time. Shared prompt-completion first-token publication remains open.
 
 **Status** is how a user can run the model today:
 
-- **Served (M3):** registered by `jitllm-runtime` from `[models.<name>]`
+- **Served (M3):** registered by `llmp-runtime` from `[models.<name>]`
   and run by its `chat` and `swap-table` commands
   ([runtime-serving](runtime-serving.md)). The LLMs also serve native Chat
   Completions and literal Completions on loopback and the tailnet. M3 acceptance is
@@ -82,7 +82,7 @@ Nothing is distributed-correct: two-node execution is M4's.
 **EmbeddingGemma 2** (`google/embeddinggemma-2`) was added to the
 [model-family research list](m35-families.md#owner-requested-research-addition-embeddinggemma-2)
 at the owner's request on 2026-10-06. Google's release describes multimodal
-embeddings; no jitLLM checkpoint/format, importer, execution, media, batching,
+embeddings; no llmpalooza checkpoint/format, importer, execution, media, batching,
 quality/performance or embedding API is qualified for this candidate. This
 listing is separate from the supported summary above.
 
@@ -464,8 +464,8 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
   | Mode | Where |
   | --- | --- |
   | Greedy, plain | runtime (`--plain`) and harnesses |
-  | Greedy, speculative with DSpark | runtime (the default with a drafter) and `jitllm_spec_runner` |
-  | Seeded sampling, plain and speculative | `jitllm_spec_runner` and the runtime's chat/literal routes; harness histograms qualify the shared sampler, with serving branch/key/resume mapping reviewed ([mapping](experiments/qwen38-concurrent-oracle/README.md#sampling-evidence-applicability)); no new HTTP histogram measurement |
+  | Greedy, speculative with DSpark | runtime (the default with a drafter) and `llmp_spec_runner` |
+  | Seeded sampling, plain and speculative | `llmp_spec_runner` and the runtime's chat/literal routes; harness histograms qualify the shared sampler, with serving branch/key/resume mapping reviewed ([mapping](experiments/qwen38-concurrent-oracle/README.md#sampling-evidence-applicability)); no new HTTP histogram measurement |
   | Exact (reference) mode, `--exact on` | harness only: llama.cpp's graph node for node, unfused, and D-092's row-invariant verify |
 
 - **Prefill arithmetic:** the runtime serves the output-A/HCA prefill on
@@ -518,9 +518,9 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
   - Native tokenizer and renderer: token for token with llama.cpp on the
     corpus and the chat fixtures ([tokenizer.md](tokenizer.md#agreement-with-the-references)).
   - Through the runtime: greedy tokens equal the harnesses', speculative
-    and plain ([swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096)).
+    and plain ([swap](experiments/fast-swap/swap.md#through-llmp-runtime-d-096)).
   - Through the loopback chat route, first and after a swap back: the
-    greedy reply equals `jitllm-runtime chat`'s on the same prompt, and a
+    greedy reply equals `llmp-runtime chat`'s on the same prompt, and a
     seeded sampled request repeats exactly (D-097,
     [runtime-serving.md](runtime-serving.md#the-chat-route)).
   - Speed headline: plain decode 1.07–1.09× llama.cpp's
@@ -536,7 +536,7 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
     ([step 93](experiments/dsv4-decode/README.md#step-93-diagnosed)).
   - Step 249 of the 32K long-context prompt: phase 1's fast plan chose
     another token where the oracle prefers its own by 2.62 nats; every
-    jitLLM path has the two within 0.9 nats there, and the phase 2 fast
+    llmpalooza path has the two within 0.9 nats there, and the phase 2 fast
     plan agrees with the oracle ([step 249](experiments/long-context/README.md#step-249)).
     The [frontier follow-up](experiments/dsv4-frontier-head/README.md#head-arithmetic-and-quality)
     reproduces the disagreement in a current wide-path control matching
@@ -556,7 +556,7 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
   - The reference mode (`--exact on`) keeps GGML's top-k and does not
     repeat past 4,096 positions (RE-031).
   - DeepSeek's own `tokenizer.json` differs from the GGUF's tokenizer on
-    2 of 184 corpus items (Unicode 16.0 emoji); jitLLM follows llama.cpp
+    2 of 184 corpus items (Unicode 16.0 emoji); llmpalooza follows llama.cpp
     and serves the GGUF's.
 
 ## DeepSeek V4 community IQ2_XXS
@@ -591,7 +591,7 @@ seeded-sampling evidence in this study.
   prompt tokens.
   One turn only: no quality, continuation or swap claim.
 - **Waves and the fused decode form:** its F16 HC mixing weights now take
-  the fast plan's fused form (`jitllm.dsv4.hc_mix` widens them to F32
+  the fast plan's fused form (`llmp.dsv4.hc_mix` widens them to F32
   exactly), so it starts with its request slots (four by default) and decodes in waves
   (between `64faee6` and this fix the runtime refused to start it). Wave
   controls (`--check wave`, 2 and 4 slots, plain): 142/142 and 332/332
@@ -682,9 +682,9 @@ controls, not a held-out PPL, all-context or HTTP parity qualification.
   | Mode | Where |
   | --- | --- |
   | Greedy, plain | runtime (`--plain`) and harnesses |
-  | Greedy, speculative with MTP (adaptive depth 2–3; fallback cap 65,536, selected artifacts capped at their physical rows) | runtime (the default with a drafter) and `jitllm_qwen38_spec --draft 3 --adaptive-depth on` |
-  | Seeded sampling, plain and speculative | `jitllm_qwen38_spec` and the runtime's chat/literal routes; shared sampler and branch/key/resume mapping reviewed ([mapping](experiments/qwen38-concurrent-oracle/README.md#sampling-evidence-applicability)); no new HTTP histogram measurement |
-  | Exact (reference) form, `--exact` | harness only (`jitllm_qwen38_exec`); speculation has no exact mode |
+  | Greedy, speculative with MTP (adaptive depth 2–3; fallback cap 65,536, selected artifacts capped at their physical rows) | runtime (the default with a drafter) and `llmp_qwen38_spec --draft 3 --adaptive-depth on` |
+  | Seeded sampling, plain and speculative | `llmp_qwen38_spec` and the runtime's chat/literal routes; shared sampler and branch/key/resume mapping reviewed ([mapping](experiments/qwen38-concurrent-oracle/README.md#sampling-evidence-applicability)); no new HTTP histogram measurement |
+  | Exact (reference) form, `--exact` | harness only (`llmp_qwen38_exec`); speculation has no exact mode |
 
 - **Context:** exercised to 8,704 (8,192-token prefill and the swap
   table's 8K conversation); since the long-context baseline, through the
@@ -725,13 +725,13 @@ controls, not a held-out PPL, all-context or HTTP parity qualification.
   - Native tokenizer and renderer: token for token with Hugging Face
     tokenizers ([tokenizer.md](tokenizer.md#agreement-with-the-references)).
   - Through the runtime: greedy tokens equal the harnesses', speculative
-    and plain ([swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096)).
+    and plain ([swap](experiments/fast-swap/swap.md#through-llmp-runtime-d-096)).
   - Through the loopback chat route, streamed after a swap: the greedy
-    reply equals `jitllm-runtime chat`'s on the same prompt (D-097,
+    reply equals `llmp-runtime chat`'s on the same prompt (D-097,
     [runtime-serving.md](runtime-serving.md#the-chat-route)).
   - Speed headline: prefill 1.38–1.41× Mia's vLLM at 8K; plain decode
     1.01–1.03× with speculation off on both sides, then 5.4–8.1% faster
-    with TensorFold's techniques (against jitLLM's previous build, same
+    with TensorFold's techniques (against llmpalooza's previous build, same
     session; [tensorfold-techniques](experiments/tensorfold-techniques/README.md#adopted)).
 - **Known divergences:**
   - `french` step 3: one greedy step of 192 outside the near-tie bound
@@ -745,7 +745,7 @@ controls, not a held-out PPL, all-context or HTTP parity qualification.
     RE-037; the default fast form breaks ties by cell and repeats at any
     depth.
   - The NVFP4 `tokenizer.json` normalizes to NFC, llama.cpp's Qwen3.8 GGUF
-    does not (6 corpus items differ); jitLLM follows the NVFP4 file, as
+    does not (6 corpus items differ); llmpalooza follows the NVFP4 file, as
     vLLM does.
   - The CUTLASS grouped GEMM and MXFP8 GEMM are built for `sm_121a` only:
     elsewhere this artifact's prefill is refused.
@@ -786,7 +786,7 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   [qwen38-gguf](experiments/qwen38-gguf/README.md)): against llama.cpp
   b11254 on the same GGUF, teacher-forced greedy 188 of 192 steps equal
   and the rest near-ties, perplexity −0.23% from the unfused arm's, the
-  resident expert layout bit for bit; served through `jitllm-runtime`
+  resident expert layout bit for bit; served through `llmp-runtime`
   (n-gram rows from the SSD).
 - **Speed headline** (C1, through the runtime and `llama-server`, the same
   requests): 8K prefill 1,118 tok/s against 676 (1.65×; `llama-bench`
@@ -803,7 +803,7 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   table and head at load. An optional imported selected head stores BF16 or
   separately prepared Q4_1 `draft_output.weight` and strictly ascending original token IDs in
   `draft_output.ids`; neither changes the target artifact. No vocabulary
-  list ships with jitLLM. See the [draft-head study](experiments/qwen38-draft-head/README.md).
+  list ships with llmpalooza. See the [draft-head study](experiments/qwen38-draft-head/README.md).
 - **Depth:** greedy chooses between two and three passes from observed
   acceptance and a calibrated step-cost ratio, with bounded exploration.
   The policy is conversation state: restore preserves its schedule, and
@@ -860,7 +860,7 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   Speed headline: full generation 0.64× diffusers' time, weights
   resident. Other sizes, step counts, prompts and seeds: not verified; the
   products' pinned algorithms are the GB10's at this prompt's shapes.
-- **Known divergences:** jitLLM rounds differently from diffusers'
+- **Known divergences:** Llmpalooza rounds differently from diffusers'
   BF16 (bounded, above). The operations run through a plan bound against
   the implementation registry (D-053, `kernels/image/pipeline.h`).
 
@@ -966,8 +966,8 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 ## M2 fixtures
 
 Small dense models from the backend proof, kept as fixtures. They run
-only in the backend-proof harnesses (`jitllm_fp16_exec`,
-`jitllm_fp16_paged`, `jitllm_exl3_paged` and others), on recorded token
+only in the backend-proof harnesses (`llmp_fp16_exec`,
+`llmp_fp16_paged`, `llmp_exl3_paged` and others), on recorded token
 IDs, and are never served. M5 serves them end to end and completes their
 rows ([plan](plan.md)).
 
@@ -980,13 +980,13 @@ rows ([plan](plan.md)).
 | Tokenizer | the GGUF's Qwen2 BPE; the native tokenizer not verified on it | `tokenizer.json`; the native tokenizer not verified on it |
 | Decoding | teacher-forced trajectories only | teacher-forced trajectories only |
 | Context | short trajectories; the GGUF declares 8,192 | short trajectories; the config declares 32,768 |
-| Verified | bit-identical to the FP16 bridge (llama.cpp's GGML rebuilt with jitLLM's SDK) on all four arms, resident and paged, evicted, restored and relocated ([P2](experiments/backend-proof-p2/README.md), [aggregate](experiments/backend-proof/README.md)) | every linear byte-equal to ExLlamaV3 `6b84a21b` at a forced plan; end to end within Tier C's bounds; paged and restored bit-identical ([P3](experiments/backend-proof-p3/README.md)) |
+| Verified | bit-identical to the FP16 bridge (llama.cpp's GGML rebuilt with llmpalooza's SDK) on all four arms, resident and paged, evicted, restored and relocated ([P2](experiments/backend-proof-p2/README.md), [aggregate](experiments/backend-proof/README.md)) | every linear byte-equal to ExLlamaV3 `6b84a21b` at a forced plan; end to end within Tier C's bounds; paged and restored bit-identical ([P3](experiments/backend-proof-p3/README.md)) |
 | Known divergences | the GGUF's template differs from the base checkpoint's, and its context from the base's 32,768 | ExLlamaV3's autotuner is part of its numerical plan; the oracle runs a frozen tuning cache ([P0](experiments/backend-proof-p0/README.md)) |
 
 Resident speed against each fixture's reference (BP-F3) is M5's, under
 D-085; not measured.
 
-## Pinned, not run by jitLLM
+## Pinned, not run by llmpalooza
 
 Comparators only, for speed and swap time
 ([baselines](experiments/fast-swap/baselines.md)): TensorFold's

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen paired shared-expert MXFP8 screen — 2026-10-04
@@ -27,7 +27,7 @@ grouping too. The original products already share input across four rows;
 net input-traffic reduction, occupancy and sole-cause attribution are unproven.
 
 The original GGML CUDA unary translation unit uses `-use_fast_math`, while
-jitLLM's MXFP8 product translation unit does not. Initially reusing the same
+llmpalooza's MXFP8 product translation unit does not. Initially reusing the same
 SiLU C++ expression in the precise product TU differs in **126,322 of
 614,400** output values, with zero own-repeat differences or nonfinite values.
 That first model-free screen stops before any timing; its failed receipt is
@@ -178,7 +178,7 @@ separately from the later nine-file private wave prototype.
 | Wave private patch | `ff7411d819a3a06a20fb6a9005e9e50bf6ce69fbdf7481a3293bbb30596e91ba` |
 | Wave controller | `269b11d2d1e4d60c42ed7c88dd192e7170bcdbafaf1c9c4dca37ea0bad800fd6` |
 | Wave aggregate | `36304d99c8ae796e6c70848083823abd88af993e259bba228597c8519077f686` |
-| Frozen short prompt JSON | `d212009dadf1ddbf945c8dc7ad0214ba444236baf57c8ed9019c3ebe6b0805b4` |
+| Frozen short prompt JSON | `c697236c56a09b0a3f2550f7514b3e4d826e1d14a96b4d1c79e3bd33a3a6f859` |
 | Original benchmark source | `e7c95af532772e89c24d5315b36751e8ff8fab82bc10c2156a184aad3c700e72` |
 
 Target and drafter artifacts are respectively
@@ -213,6 +213,6 @@ probe is supervised/waited but has no separate strong model-admission receipt.
 Raw controllers, source snapshots, patches, commands, linked-archive pins,
 frozen binaries, failed/successful logs, per-arm specs and retirement receipts
 remain outside Git at `spark:~/scratch/qwen-shared-mxfp8/` and locally
-`/home/pmeenan/scratch/jitllm-m3-qwen-shared-mxfp8-2026-10-04/`.
+`/home/pmeenan/scratch/llmp-m3-qwen-shared-mxfp8-2026-10-04/`.
 The owned `mxg01` candidate and earlier `rdal1`/operator controls remain
 immutable. Only this aggregate and an optimization-inventory row land.

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M0 record — Plan the plan
@@ -159,7 +159,7 @@ needs evidence from the real hardware.
       Full recomputation takes 4.155 s in a separate diagnostic and matches
       its fresh-context control, **but differs from resident text**; the
       original failed comparison is preserved (RE-008). These are single
-      observations, not latency distributions or measured jitLLM speedups.
+      observations, not latency distributions or measured llmpalooza speedups.
       Image loading is slow and variable; outward harness timings include
       checksum verification. No cold-cache, forced-pressure or
       larger-than-memory image result is claimed. Native GGML image execution,
@@ -239,7 +239,7 @@ needs evidence from the real hardware.
       bounded spill, restore/recompute, and isolated/packed 2 MiB layouts.
       Per-layer reuse, held-out prediction, switch-back dependencies, measured
       reference waits, and explicit storage/overlap sensitivities are recorded.
-      Results are offline byte/service estimates, **not measured jitLLM speedups**.
+      Results are offline byte/service estimates, **not measured llmpalooza speedups**.
       Qwen comparisons remain conditional on captured trajectories because
       exact prediction equivalence failed; no numerical tolerance is invented.
       Gemma rollback can require state recomputation despite byte-identical
@@ -254,7 +254,7 @@ needs evidence from the real hardware.
       added generation time, continuation time to first token included, and
       20 ms p95 / 100 ms p99 added token gaps against a resident control
       with matched state provenance; M7 requires at least 25% lower median
-      return-switch latency than jitLLM's own whole-model control on an
+      return-switch latency than llmpalooza's own whole-model control on an
       agreed partial-retention workload, with at least one named library
       that exceeds physical memory. Targets apply to named supported
       configurations; correctness is mandatory and inconclusive comparisons
@@ -396,10 +396,10 @@ needs evidence from the real hardware.
       a never-shrinking, aborting scratch pool, cuBLAS workspaces, its own
       streams and a GB10 device-flag side effect, chooses kernels/fusions
       internally and has no custom operation. The owner therefore set
-      **D-053**: jitLLM owns dispatch, and GGML, ExLlamaV3, later or
-      jitLLM-authored kernels are swappable build-time implementations
+      **D-053**: llmpalooza owns dispatch, and GGML, ExLlamaV3, later or
+      llmpalooza-authored kernels are swappable build-time implementations
       selected per operation and plan, several at once. GGML's operation
-      launchers take a context whose pool, stream and handle jitLLM can supply,
+      launchers take a context whose pool, stream and handle llmpalooza can supply,
       with build-time patches for context ownership, device initialization,
       abort paths and the `static` matrix-multiply routing.
       ExLlamaV3 device kernels separate from their ATen wrappers; autotuned
@@ -431,7 +431,7 @@ needs evidence from the real hardware.
       at startup, and fallback/reporting. The owner named M4's workload:
       Qwen2.5-0.5B FP16 GGUF and EXL3 4.0 bpw in both orientations on a
       frozen synthetic transcript under policy-forced budgets. It has six
-      jitLLM arms, including whole-model controls, fresh interleaved
+      llmpalooza arms, including whole-model controls, fresh interleaved
       llama.cpp/ExLlamaV3 references, at least 72 repetitions per arm and
       distribution-free 97.5% bounds, plus exact outputs and logits against
       provenance-matched controls. The functional matrix covers shared
@@ -509,15 +509,15 @@ needs evidence from the real hardware.
       performance and ARM concurrency work, and are never runners for the
       public repository. D-062 sets SemVer 0.x product versions (signed
       owner tags, `~dev` Debian builds), independent surface versions, the
-      `jitllm-` extension prefix and a Keep a Changelog `CHANGELOG.md` from
+      `llmp-` extension prefix and a Keep a Changelog `CHANGELOG.md` from
       M1. D-063 sets the [installed layout](architecture.md#installed-layout):
-      a `jitllm` service user, one unit, a strict TOML 1.0 node document
-      at `/etc/jitllm/jitllm.toml` plus `jitllm.d/` fragments
+      a `llmp` service user, one unit, a strict TOML 1.0 node document
+      at `/etc/llmp/llmp.toml` plus `llmp.d/` fragments
       (cluster-design's node-local schema, extended) and D-054's roles
-      under `/var/lib/jitllm` with their `[storage]` keys. Implementation,
+      under `/var/lib/llmp` with their `[storage]` keys. Implementation,
       application build validation and the remaining key spellings are
       M1 work. On the owner's follow-up the same day: includes via
-      `jitllm.d/` fragments, loopback defaults of 8114 (front door) and
+      `llmp.d/` fragments, loopback defaults of 8114 (front door) and
       8115 (management), and directory modes split by role.
 - [x] Evaluate static runtime linking with GCC 16.2 (owner follow-up
       2026-09-23, D-060): GCC 16.2 built from GPG-verified source on both
@@ -543,7 +543,7 @@ needs evidence from the real hardware.
       breakdown, and lists the remaining questions with the milestone that
       settles each. The owner answered two drafting questions: D-066 (no
       exceptions; `std::expected` errors) and D-067 (native per-template
-      chat renderers; checkpoint template code never runs in jitLLM). Environment
+      chat renderers; checkpoint template code never runs in llmpalooza). Environment
       inventories moved to [environment.md](environment.md). Follow-up owner
       decisions added D-068 (speculative and block-diffusion shapes designed
       now, executed in M7) and D-069 (configurable switching at completed

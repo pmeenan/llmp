@@ -1,7 +1,7 @@
 {
   "base": "622dfe52b40092e3b77e20586f841672f46b87e3",
   "binaries": {
-    "build/spark-native/src/runtime/jitllm-runtime": "6c28538f3cefac030b380aaeaca52b3b2a7569117f656028aafd360ca316802e",
+    "build/spark-native/src/runtime/llmp-runtime": "6c28538f3cefac030b380aaeaca52b3b2a7569117f656028aafd360ca316802e",
     "build/spark-native/tests/unit/gemma4_serving_gpu_test": "95e6cac6c2c4b6d2045116558dcffebf8a4910e5cf7353525a250398d84d19f9"
   },
   "checks": [
@@ -53,7 +53,7 @@
       "skipped": 0
     }
   ],
-  "format": "jitllm-gemma31-scalar-serving-aggregate-v1",
+  "format": "llmp-gemma31-scalar-serving-aggregate-v1",
   "historical_integrated_full1": {
     "job": "m35-gemma31-serving-root-final1",
     "qualified_as_pass": false,
@@ -191,14 +191,14 @@
   "prior_controls5_source_manifest_sha256": "2a40e682c62e40fdcdac7a1f15d0f86a30bf8e88a3c35a5560a1cf400469e89f",
   "sdk": "aarch64-c09daba6ac31edee",
   "source_files": {
-    "src/runtime/CMakeLists.txt": "0e868fa5433b649b49a02614bc1b41e3de48ef41e799273c8a7bd8a0f996c7f3",
-    "src/runtime/gemma_profile.cc": "bef4084bed670c44ff9af398539eb2c5ce0e116d13a946ad8133a16d33c4e7b2",
-    "src/runtime/gemma_profile.h": "cf543b0f76b0611d98c8c17b89c534cdcec5f16d7c35d1f46337a8ecf0724a66",
+    "src/runtime/CMakeLists.txt": "50d1ddae8e6bfe19eea052e8bab70cb541051848337665d3a443531789eb580b",
+    "src/runtime/gemma_profile.cc": "9dd68fdc81d946da5dfed6b507bf2754671217f058e8cf93a3ebda1118a00aac",
+    "src/runtime/gemma_profile.h": "3420ecad42c20681ae0518c92412ca620cf326d64785aacbffe62ccf58f11f69",
     "src/runtime/model_settings.cc": "2697cd43f3c3b7416984a378e18c5cc9f4fbc448ec22619a1f2a8c61897f8139",
     "src/runtime/serving.cc": "9b29bd99b6d0eb94f70480891e5ccd5d0abfecdeb063d717cdfe825c86a94283",
     "tests/unit/CMakeLists.txt": "4cab1f9f6b7da3ae6f152cf6ae31a702d97a35b7d45ea4af20db50480ce35a41",
     "tests/unit/gemma4_serving_gpu_test.cc": "8fbb6cb64ac017eeb57931a6400816ccc73e22b0e3c10ea9e780ef535221cf01",
-    "tests/unit/gemma_profile_test.cc": "48a2e0d288b81f94b7b2d064b357cac3a0ce9e7ce44d43ea3748d983d9b35b1a"
+    "tests/unit/gemma_profile_test.cc": "9de0013aa657ce531d5561586a0c0f154ef883d92547eab9a626909f7d792788"
   },
   "source_manifest_sha256": "ce7157130db5191a9b1724bddaa01dde1abd43ab2860afc2acfd9cad353d8b7b"
 }

@@ -34,64 +34,64 @@
         "sha256": "0deee96a5c818b052e2029cae2bf2da38ba305baf5d336b8d39ea10b05676efd"
       },
       "benchmarks/gemma26_prefill_clock_probe.cc": {
-        "bytes": 228,
-        "sha256": "5d6152c05cca6d230e80f764b915957cc0ddc4b4fe7078d847ae9f15b26b1c45"
+        "bytes": 230,
+        "sha256": "0234d8a227e4a9acf552f28b44f6d99a8728d5604010439a49df4699a0aa1d4d"
       },
       "benchmarks/gemma26_prefill_coarse.cc": {
-        "bytes": 12795,
-        "sha256": "79198cae93b37dc63cf56183ef67522e7a1dbe68f71f268e5e558c6055925ecd"
+        "bytes": 12781,
+        "sha256": "dafd0d3bb64fa8661246e742fffda82ef6f06a8282e4373886d1a44942df2b76"
       },
       "benchmarks/gemma26_prefill_coarse.h": {
         "bytes": 1397,
-        "sha256": "f00080fc0edfaa2ec9050abc8a9307ea1f51ed63b0ddcdc0c3315604b636ce0d"
+        "sha256": "e0c944ecc41e668910b32a2e79d2d00ef54b58169270bbcec5bfefa0404efc06"
       },
       "benchmarks/gemma26_prefill_coarse_scopes.cc": {
         "bytes": 8507,
-        "sha256": "ee8df86c9559de56279cc94ff00245e0211d738e46e062ab04abd6d891bf6c22"
+        "sha256": "1d9446e1b378c868d45680c16f4980ccb68449174d05275817fc7ec2af794d68"
       },
       "docs/experiments/gemma26-prefill-coarse/PROTOCOL.md": {
-        "bytes": 20128,
-        "sha256": "f66e434d86a0716ed52bc76fabff534a2603749b068c3a9109b1f8749f7750f6"
+        "bytes": 20132,
+        "sha256": "7d322497f91879c3aca36329385ae2993a74bee784625bab2d59cfc6bdcf96f7"
       },
       "docs/experiments/gemma26-prefill-coarse/analyze.py": {
-        "bytes": 19012,
-        "sha256": "22dd9cdc1d826aab02d2030583c437f5bbec8ac24fa4df72579a064ba8d66a7d"
+        "bytes": 19010,
+        "sha256": "f40ab5a6dda9ddc2bd0dbf6a6172723df1609c443d7919c7ed05ca6210789de3"
       },
       "docs/experiments/gemma26-prefill-coarse/apply_overlay.py": {
-        "bytes": 1317,
-        "sha256": "cd950868dc64956e1f9fac8db20848f2c08141f9593858530b42a56b913632ff"
+        "bytes": 1321,
+        "sha256": "e270b2b5a0962dc486086e0b26238c234124df5d73723ae4d2fa78e8b4a2eb9f"
       },
       "docs/experiments/gemma26-prefill-coarse/instrumentation.patch": {
-        "bytes": 12475,
-        "sha256": "55a72694f9cc2237371dd08a2819e46329300f476501004b0520f544081e110c"
+        "bytes": 12457,
+        "sha256": "79641798cf4a054102f63374f11cb79405f858b1b659af9e53f47201184e7b5a"
       },
       "docs/experiments/gemma26-prefill-coarse/instrumentation.patch.license": {
-        "bytes": 85,
-        "sha256": "d8aa65e2c327bd6fbdc0b5330e3594fd0ebcd33033848ade6e9132967cb0c568"
+        "bytes": 89,
+        "sha256": "0da79db8b0b6e65fbb69e52327a3bf32af91bb70bcbfee29170b2aebd1261e21"
       },
       "docs/experiments/gemma26-prefill-coarse/native.sh": {
-        "bytes": 1146,
-        "sha256": "fd88923c0896791b46c8a06e1d26aa4d2e8b44244f247027862a7886ee891b5f"
+        "bytes": 1142,
+        "sha256": "5fb45efa24537603842e9ed0c07c1f5a161aca36880326cc522aab4322802098"
       },
       "docs/experiments/gemma26-prefill-coarse/overlay-identities.json": {
         "bytes": 1094,
-        "sha256": "2ecc42861ef25f22056812f16da63fdc1b8c03a117867cc1f92de93b9d2cf70f"
+        "sha256": "54cf58fd64819afd9f44d7379a74e495cd3f4691cf8bc9c6708f1712966eb573"
       },
       "docs/experiments/gemma26-prefill-coarse/overlay-identities.json.license": {
-        "bytes": 85,
-        "sha256": "d8aa65e2c327bd6fbdc0b5330e3594fd0ebcd33033848ade6e9132967cb0c568"
+        "bytes": 89,
+        "sha256": "0da79db8b0b6e65fbb69e52327a3bf32af91bb70bcbfee29170b2aebd1261e21"
       },
       "docs/experiments/gemma26-prefill-coarse/probe.sh": {
-        "bytes": 785,
-        "sha256": "568501f3e1a9863ff637a104b093609ffb07bcf7187ddc90ca6b3ba2706a4209"
+        "bytes": 783,
+        "sha256": "872ee2998aa9a8408dcee8ac7cc0cf71a542dc99490a907f0568fbf8402e9eb0"
       },
       "docs/experiments/gemma26-prefill-coarse/profile_child.cc": {
-        "bytes": 2123,
-        "sha256": "7888fdba751201c1712f316b502ae42325943a08cc33caab394896eac0af4e73"
+        "bytes": 2127,
+        "sha256": "6c461e2103d7f9f7fb85fe13acfd28e0edb8847388e3f7855fd37157bcc30774"
       },
       "docs/experiments/gemma26-prefill-coarse/validate.py": {
-        "bytes": 7839,
-        "sha256": "76936215d8dca2e153ae4e3173a3e0c59a60a9f2d7ef610b1fad18bc7391912d"
+        "bytes": 7829,
+        "sha256": "8fe60ec06429439abefddeb65fa0e57504e736d749367561109dd170cff69245"
       }
     },
     "overlay": {
@@ -125,16 +125,16 @@
         }
       },
       "patch": {
-        "bytes": 12475,
-        "sha256": "55a72694f9cc2237371dd08a2819e46329300f476501004b0520f544081e110c"
+        "bytes": 12457,
+        "sha256": "79641798cf4a054102f63374f11cb79405f858b1b659af9e53f47201184e7b5a"
       }
     },
     "binaries": {
-      "jitllm_gemma26_clock_probe": {
+      "llmp_gemma26_clock_probe": {
         "bytes": 1868528,
         "sha256": "2b5cb0318d6daa1eaa4faaba035515ec961ee4d1b319d3e3c467f8f0463615d1"
       },
-      "jitllm_gemma26_prefill_coarse": {
+      "llmp_gemma26_prefill_coarse": {
         "bytes": 143787304,
         "sha256": "1e8f0991a36dce718c127cbeec9d328aa6ca20dd184f0f98198e8d20a2817bf1"
       },
@@ -154,8 +154,8 @@
     "acquisition_sources_unchanged": true,
     "additional_file": "analyze_v2.py",
     "source": {
-      "bytes": 23319,
-      "sha256": "7a0df7aa23741fee49a72c4d7af0d2b60e59267184c649d1748bfa15beddd8fc"
+      "bytes": 23317,
+      "sha256": "3643ddd4e0fe2f66d763d7a2780c8e29621cde1baf4185aee68af73084c2915a"
     },
     "pre_reanalysis_freeze": {
       "bytes": 616,
@@ -350,7 +350,7 @@
     "source1": "Source metadata freeze stopped on absent scratch IDs. Exclusive verified32,908-byte Task40 ID copy and unchanged source2 freeze passed; no model had run.",
     "sampling_stage0": "Prior CPU sampling capability gate unavailable; no security/permission changes or model sampling."
   },
-  "raw_records_external": "/tmp/jitllm-m35-coordination/gemma-prefill-coarse-design-raw",
+  "raw_records_external": "/tmp/llmp-m35-coordination/gemma-prefill-coarse-design-raw",
   "raw_payloads_external": "No tokens, KV, per-ordinal event rows, process/thread IDs, raw logs, SQLite, public header texts or raw clock samples are in this Git aggregate.",
   "sampling_stage0_receipt": {
     "bytes": 2569,

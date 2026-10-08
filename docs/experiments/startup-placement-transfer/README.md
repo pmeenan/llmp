@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek and Qwen startup placement transfer
@@ -95,7 +95,7 @@ inferred or repeated.
 
 ## Durable replay
 
-Build `jitllm_startup_measurement_probe`, `jitllm-runtime`,
+Build `llmp_startup_measurement_probe`, `llmp-runtime`,
 `dsv4_prefill_plan_test` and `qwen38_wave_plan_test` with the official Spark-native
 SDK. The five focused case names are in `results.json`. The ordinary/threshold probe
 is the same executable; each output directory must be new. Run heavy work with
@@ -103,7 +103,7 @@ the installed supervisor and GPU lock, for example:
 
 ```sh
 spark-job start --name startup-replay --gpu --timeout 600 --grace 30 --stop-on-fail -- \
-  /ABS/BUILD/benchmarks/jitllm_startup_measurement_probe \
+  /ABS/BUILD/benchmarks/llmp_startup_measurement_probe \
   qmtp /ABS/NATIVE_TARGET /ABS/BF16_MTP /ABS/NEW_OUTPUT on
 spark-job wait startup-replay
 ```
@@ -112,8 +112,8 @@ Use `ds`, `dspark`, `qn`, `qmtp` or `qg`; target-only recipes require `-` as the
 drafter argument. Supply the artifacts from the standing approved stores named
 in `results.json`, verifying their full manifest/index hashes before and after.
 These are existing prepared artifacts, not raw checkpoints. The native target,
-DS and DSpark/MTP companions live under `~/.local/share/jitllm/m3-artifacts/`;
-the checked GGUF target lives under `~/.local/share/jitllm/qgguf-artifacts/`.
+DS and DSpark/MTP companions live under `~/.local/share/llmp/m3-artifacts/`;
+the checked GGUF target lives under `~/.local/share/llmp/qgguf-artifacts/`.
 Their complete immutable directory identities and paths are in the aggregate.
 No prompt inputs, checkpoint copy or model-weight load is required.
 

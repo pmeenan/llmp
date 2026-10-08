@@ -238,7 +238,7 @@
     "native_state_bytes": 1740636160,
     "original_client_sha256": "0b401e613e9295de62846646ba40c3a9a12de8af80c34ec75fb46e9283ac47b9",
     "reference_wrapper_sha256": "5f223ebe2f701d158e3ca130867818dbcd31e8db4ca0d8d7d305f848463fa912",
-    "retirement_helper_sha256": "1fd85804983ecdf720b5c0a69353fede0e294a0da0dd70a91bd8cd8b539e75e0",
+    "retirement_helper_sha256": "d93c10c58c792d9cad39efa816a3d94c11ccd24918a0de27c2ddc0c2643bb994",
     "reference_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
     "reference_pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
     "tensorfold": {

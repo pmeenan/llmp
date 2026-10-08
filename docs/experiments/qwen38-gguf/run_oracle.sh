@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
 # Builds oracle.cc against llama.cpp b11254 (the source tree's headers, the
@@ -19,7 +19,7 @@ inputs=$3
 out=$4
 mode=${5:-fused}
 here=$(cd "$(dirname "$0")" && pwd)
-image=jitllm-llamacpp:b11254-cuda13
+image=llmp-llamacpp:b11254-cuda13
 shard=$(cd "$model_dir" && ls ./*-00001-of-*.gguf | head -1)
 mkdir -p "$out"
 docker=(sudo -n docker)

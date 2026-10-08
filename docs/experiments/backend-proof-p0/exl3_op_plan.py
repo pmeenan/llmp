@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """The native EXL3 operation plan record (reference only): exl3-op-plan.json.
 
 External reference tooling for the backend proof's P0; it does not implement
-jitLLM inference. It has three steps.
+llmpalooza inference. It has three steps.
 
 probe (in the reference container, with the GPU): runs the declared plan
 inside upstream ExLlamaV3 and records what executed. It starts from
@@ -872,7 +872,7 @@ def build(args):
             "A change to any entry (kernel, launch, dtype, owner, order) needs a new record and approval."],
         "pins": {
             "ggml": "llama.cpp b29c606e28a01b1bc8c1351026a0fa6e616bf6c4, ggml/ subtree unmodified",
-            "exllamav3": "6b84a21b (M0 reference image jitllm-exl3-reference:20260922)",
+            "exllamav3": "6b84a21b (M0 reference image llmp-exl3-reference:20260922)",
             "device": f"{first['device']}, {first['sm_count']} SMs",
             "profile": "EXL3-G: EXL3_GEMV=0, EXL3_HGEMM_F16ACC=0, EXL3_BC_ATTN=0, frozen tune-40-gemvoff / tune-45-gemvoff (copies, unchanged)",
             "cublas": "13.8.0.4, bind-mounted over PyTorch's (cuBLASLt 130800, the only one mapped)",

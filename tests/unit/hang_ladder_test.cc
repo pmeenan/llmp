@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // D-102's hang ladder (runtime/hang_ladder.h) on a clock of the test's own:
@@ -25,7 +25,7 @@
 
 namespace {
 
-namespace rt = jitllm::runtime;
+namespace rt = llmp::runtime;
 using Clock = rt::HangLadder::Clock;
 using Rung = rt::HangLadder::Rung;
 using std::chrono::milliseconds;
@@ -151,9 +151,9 @@ TEST(HangLadder, CpuWorkThatBeatsIsNotAHangAndOneThatStopsIsCancelled) {
   ASSERT_FALSE(r.lines.empty());
   EXPECT_NE(r.lines.back().find("CPU work is asked to stop"), std::string::npos);
   // The work reaches a checkpoint: its thread's pulse says stop.
-  jitllm::base::SetThreadPulse(&r.ladder.pulse());
-  EXPECT_FALSE(jitllm::base::Pulse());
-  jitllm::base::SetThreadPulse(nullptr);
+  llmp::base::SetThreadPulse(&r.ladder.pulse());
+  EXPECT_FALSE(llmp::base::Pulse());
+  llmp::base::SetThreadPulse(nullptr);
   EXPECT_EQ(r.ladder.Check(quiet + seconds(61)), Rung::kWatching);
   EXPECT_FALSE(r.ladder.pulse().cancelled());
   EXPECT_TRUE(r.restarts.empty());

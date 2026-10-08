@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A runner's plans and graphs (engine/planned.h), host-only: a cache keeps
@@ -31,9 +31,9 @@
 
 namespace {
 
-namespace en = jitllm::engine;
-using jitllm::memory::ReclaimCandidate;
-using jitllm::memory::ReclaimKind;
+namespace en = llmp::engine;
+using llmp::memory::ReclaimCandidate;
+using llmp::memory::ReclaimKind;
 
 using Cache = en::PlanCache<int, int>;
 
@@ -546,7 +546,7 @@ TEST(PlanCacheTest, APlansHostBytesAreItsArenaAndItsLaunchedNodes) {
   en::PlannedBase empty;
   EXPECT_EQ(en::PlannedHostBytes(empty), 0U);
   EXPECT_EQ(en::PlannedNodes(empty), 0U);
-  auto arena = jitllm::kernels::ggml::TensorArena::Create(16);
+  auto arena = llmp::kernels::ggml::TensorArena::Create(16);
   ASSERT_TRUE(arena.has_value());
   const std::uint64_t arena_bytes = arena->bytes();
   EXPECT_GE(arena_bytes, 16U * sizeof(ggml_tensor));
@@ -562,7 +562,7 @@ TEST(PlanCacheTest, APlansHostBytesAreItsArenaAndItsLaunchedNodes) {
 }
 
 // A graph of `tensors` leaf tensors built on an arena (false: no room).
-bool Build(jitllm::kernels::ggml::TensorArena& arena, int tensors) {
+bool Build(llmp::kernels::ggml::TensorArena& arena, int tensors) {
   for (int i = 0; i < tensors; ++i) {
     if (!arena.Reserve(1)) {
       return false;
@@ -574,7 +574,7 @@ bool Build(jitllm::kernels::ggml::TensorArena& arena, int tensors) {
 
 TEST(PlanCacheTest, APlansArenaHoldsWhatItsGraphUsesNotTheEstimate) {
   auto sized =
-      en::SizedArena(1000, [](jitllm::kernels::ggml::TensorArena& a) { return Build(a, 10); });
+      en::SizedArena(1000, [](llmp::kernels::ggml::TensorArena& a) { return Build(a, 10); });
   ASSERT_TRUE(sized.has_value());
   // Metadata keeps ten tensors and one slack slot. Traversal storage
   // retains its separate 1,000-descriptor bound and total host charge.
@@ -595,8 +595,7 @@ TEST(PlanCacheTest, APlansArenaHoldsWhatItsGraphUsesNotTheEstimate) {
   EXPECT_TRUE(sized->Reserve(1).has_value());
   EXPECT_FALSE(sized->Reserve(2).has_value());
   // A build that fails keeps the estimate, for the caller's own error.
-  auto failed =
-      en::SizedArena(8, [](jitllm::kernels::ggml::TensorArena& a) { return Build(a, 10); });
+  auto failed = en::SizedArena(8, [](llmp::kernels::ggml::TensorArena& a) { return Build(a, 10); });
   ASSERT_TRUE(failed.has_value());
   EXPECT_EQ(failed->graph_capacity(), 8U);
   EXPECT_EQ(failed->graph_visited().size(), 16U);
@@ -606,7 +605,7 @@ TEST(PlanCacheTest, APlansArenaHoldsWhatItsGraphUsesNotTheEstimate) {
 }  // namespace
 
 TEST(PlanCacheTest, ReaderScratchIsMeasuredOnceAndRuntimeCannotGrowIt) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   auto arena = kg::TensorArena::Create(8);
   ASSERT_TRUE(arena);
   auto* input = ggml_new_tensor_1d(arena->context(), GGML_TYPE_F32, 4);

@@ -1,9 +1,9 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Serving in the runtime (M3)
 
-How `jitllm-runtime` serves M3's models, since M3's swap path moved out of
+How `llmp-runtime` serves M3's models, since M3's swap path moved out of
 the benchmark harnesses (D-096). The swap path itself, its measurements and
 its checks are in [swap.md](experiments/fast-swap/swap.md); the decisions it
 builds on are D-048 (tasks and lanes), D-081 (the landing zone), D-086 and
@@ -245,7 +245,7 @@ refused before the device node opens, naming the model and the bound.
 
 The start logs every effective value with its source once the model is
 set up (`model NAME: settings context=262144 (fallback) speculation=true
-(derived) ...`), and `jitllm-runtime settings [--json]` lists each with
+(derived) ...`), and `llmp-runtime settings [--json]` lists each with
 what it came from, reading only the configuration and the installed
 artifacts (no process lock, no device), so it runs beside the service.
 
@@ -337,7 +337,7 @@ Once a value is measured it is written, between units and at teardown, to
 directory, written to a new file, synced and renamed over the old):
 
 ```json
-{"format":"jitllm-model-calibration-v1","artifact":"8a355bfb…","drafter":"dd2d3f9c…",
+{"format":"llmp-model-calibration-v1","artifact":"8a355bfb…","drafter":"dd2d3f9c…",
  "device":"NVIDIA GB10 sm_121, driver 580.95.05, CUDA 13.0","build":"0.3.0-dev.12+g…",
  "settings":"speculation=true draft_rows=3 prefill_chunk=4096 max_slots=4 prefill_outa_hca=true/true wave_form=auto prefill_chunk_override=false max_slots_override=false context=262144 wave_costs=[2.08,2.52,2.81,2.4,2.12,2.21,2.23] wave_costs_override=false wave_costs_override_count=0",
  "values":{"prefill_floor_tok_s":333,"decode_floor_tok_s":7,
@@ -534,7 +534,7 @@ times a second. Each reclaim, deletion and pressure event is one log line
 of counts, bytes and the measured costs (D-014).
 
 Ordinary activation below remains a full eviction. The internal
-`jitllm_swap_pager full|partial` benchmark also qualifies a shared partial
+`llmp_swap_pager full|partial` benchmark also qualifies a shared partial
 transaction: whole outgoing state spill, global GreedyDual selection of only
 the missing incoming capacity deficit, and missing-only reload with retained
 clean weights. It ends the completed outgoing request even for an entirely
@@ -707,7 +707,7 @@ is still the file written, the directory synced) and ending with the SHA-256 of 
 
 | Field | What it holds | Refused when |
 | --- | --- | --- |
-| `format`, `version` | `jitllm-kept-conversation`, 1 | another format or version |
+| `format`, `version` | `llmp-kept-conversation`, 1 | another format or version |
 | `build` | the version, commit, SDK, target and the executable file's device, inode, inode generation, size and modification time | not this build's (another build, or this one rebuilt or reinstalled) |
 | `artifact`, `drafter`, `layout` | the model's artifact and drafter IDs; the runner's state format version, context, drafter and each region's name and bytes | not this model's or layout's (a changed context is another layout) |
 | `slot`, `file`, `device`, `inode`, `generation`, `file_bytes`, `regions` | the slot, its spill file's name, identity and size, each region's bytes in it | another slot's, or not the file it names, or another size |
@@ -830,7 +830,7 @@ own, since GGML's attention reads the mask in whole 8-row tiles from
 1,024 rows on (RE-036). Registration logs each model's chunk.
 
 **The defaults** were first sized from the runtime's own prefill
-(`jitllm-runtime chat`, speculative, so each chunk also feeds the
+(`llmp-runtime chat`, speculative, so each chunk also feeds the
 drafter; one model configured, context 8,704; `spark`, GB10, 2026-09-29;
 the best of two turns each, from a cleared state; bold, that sizing's
 choice, before the DeepSeek stage mechanisms):
@@ -872,7 +872,7 @@ prompt was 21.5–22.9 across the sizes). Its top token agreed in every
 run, and greedy tokens agreed except at near-ties. The one seen early,
 DeepSeek's third token after the 8K prompt, is a near-tie at every size
 and in the oracle: llama.cpp (the pinned image, fusion off, 512-row
-micro-batches) prefers token 3287 to 304 by 0.31; jitLLM's margins run
+micro-batches) prefers token 3287 to 304 by 0.31; llmpalooza's margins run
 from 3287 by 0.38 to 304 by 1.16 across 512, 2,048 and 4,096 rows,
 speculative or plain. The largest move from the oracle's margin is 1.47,
 inside the fast plan's near-tie bound of about 2.5
@@ -923,20 +923,20 @@ model and restored by the swap back) and were continued by a different
 request that shares their prefix (the prompt with a question after it):
 its reply equalled that request's from an empty state for both models.
 Shutdown, teardown
-included, stays far inside `jitllm.service`'s 90 s stop allowance (the
+included, stays far inside `llmp.service`'s 90 s stop allowance (the
 longest chunk, 4.7 s, plus a swap of about 10 s and the teardown). With
 these chunks, the swap table's DeepSeek ↔ Qwen3.8 pair (`swap-table
 --pairs deepseek:qwen3.8`, both models configured: 4.23 GiB fixed, the
 workspace 1.87) was exact in all six swaps, every one under ~10 s (7.87–8.92
 s; peak 109.3 GiB, against 108.0–108.4 with 512-row chunks in
-[swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096), on
+[swap](experiments/fast-swap/swap.md#through-llmp-runtime-d-096), on
 `spark-b`).
 
 ## The commands
 
-    jitllm-runtime [--config FILE] [--anchor PATH] chat [--max-tokens N]
+    llmp-runtime [--config FILE] [--anchor PATH] chat [--max-tokens N]
         [--ignore-stop] [--fresh] [SERVING] --turn MODEL TEXT...
-    jitllm-runtime [--config FILE] [--anchor PATH] swap-table [--pairs A:B,...]
+    llmp-runtime [--config FILE] [--anchor PATH] swap-table [--pairs A:B,...]
         [--context-text FILE] [--context-tokens N] [--continue N] [--cycles N]
         [--zero-context on|off] [--handoff on|off] [--short-prompt TEXT]
         [--image-expect SHA256] [SERVING]
@@ -968,7 +968,7 @@ the start reserved, as the route's requests are (below). Run by hand, a
 command stops on
 SIGINT or SIGTERM at once; the kernel frees its memory and spill files.
 
-    jitllm-runtime [--config FILE] settings [--json]
+    llmp-runtime [--config FILE] settings [--json]
 
 `settings` lists every configured model's settings (above), each with its
 value, source and what it came from, as a table or one JSON object
@@ -1036,7 +1036,7 @@ without authentication. An optional API key is M5's.
     POST /v1/completions           literal prompt, JSON; echo and token likelihoods
     GET  /v1/models                the configured models (the image among them)
     GET  /v1/models/{id}
-    GET  /jitllm/v1/ignored-fields the unknown fields seen (loopback peers only)
+    GET  /llmp/v1/ignored-fields the unknown fields seen (loopback peers only)
 
 It is a strict subset of client-api-baseline.md's Chat Completions profile,
 not M5's front door. A request is stateless, as OpenAI's are: the whole
@@ -1046,7 +1046,7 @@ does). The model named is made resident first (a full
 swap when another is), and the turn is one request under one lease
 (D-093), greedy or sampled, speculative where the model has a drafter.
 
-The inference responses advertise `jitllm-inference-version: 1` (D-100).
+The inference responses advertise `llmp-inference-version: 1` (D-100).
 The following fields/output describe the chat route; literal completions
 have their own contract below.
 
@@ -1076,7 +1076,7 @@ name, never its value, is counted (`x`, `messages[].x`,
 `messages[].content[].x`, `stream_options.x`; at most 64 names a request,
 cut to 64 bytes) in a table of at most 256 names with each one's count
 and first and last time seen, and logged once, when first seen. `GET
-/jitllm/v1/ignored-fields` returns the table
+/llmp/v1/ignored-fields` returns the table
 (`{"object":"list","data":[{"name","count","first_seen","last_seen"}],"unrecorded":N}`,
 Unix seconds; `unrecorded` counts names past the 256th) to loopback peers
 only (a 404 to others); M5's management listener takes it over.
@@ -1372,7 +1372,7 @@ with independent preparation and nonlinear mixing. Unsupported shapes keep
 their original products.
 
 GGUF Qwen's plain, one-row waves also join compatible dense and routed
-`jitllm.vecq` products, including the quantized full head. Paid F32 input
+`llmp.vecq` products, including the quantized full head. Paid F32 input
 packing and Q8 preparation feed the existing one-token reduction path;
 joined routed groups fit the 128-pair kernel bound (twelve requests with
 ten experts each; wider waves form multiple groups). Multirow products
@@ -1424,7 +1424,7 @@ DSpark on the matched 7K protocol).
 A wave needs every layer in the fast plan's fused form, which takes HC
 mixing weights in F32, F16 or BF16 (through its own mix kernel) or
 quantized (through GGML's product, a request at a time), but needs each
-layer's expert products to be `jitllm.vecq` types with gate and up alike in
+layer's expert products to be `llmp.vecq` types with gate and up alike in
 type and shape. An artifact whose experts are not is still served, one
 request at a time, and the start logs `model NAME: serves one request at a
 time (no waves of N requests: layer N: ...)`. A model is never refused
@@ -1766,7 +1766,7 @@ job (a wide prefill chunk) is allowed its expected time at the floors.
    again would loop), or when rung 2 cannot reset the model, the ladder's
    last resort runs on the thread that saw it: the conversation
    records already queued get at most 10 s, and the process exits with
-   status 1 for `jitllm.service` to restart it. Nothing is torn down (the
+   status 1 for `llmp.service` to restart it. Nothing is torn down (the
    driver may be the thread that hangs); requests under way and queued
    end with their connections. Conversations whose whole state was on
    disk survive the restart ([kept](#conversations-kept-across-a-restart));
@@ -1778,7 +1778,7 @@ after ten minutes without progress and aborts after ten more.
 **Measured** (`spark-b`, GB10, 2026-10-03; [hang
 recovery](experiments/hang-recovery/README.md)). Through the service
 (Qwen3.8 and DeepSeek V4 Flash registered, `hang_seconds = 60`): with the
-node's reads held by a test hook (`JITLLM_TEST_HOLD_READS`) in its
+node's reads held by a test hook (`LLMP_TEST_HOLD_READS`) in its
 cancellable form (reads still queued), a new conversation's state growth
 made no progress; rung 1 cancelled it at 60 s and it drained at once;
 rung 2 failed its request (503 after 62.6 s) and reset and evicted
@@ -1803,7 +1803,7 @@ then the gate opened and the node went on).
 phase (idle, starting, swapping, prefilling, decoding, finishing, waiting
 for a client to read), the last progress, the stalls counted and when the
 last began. The log has a line at each stall and each recovery, the
-service manager's status line (`systemctl status jitllm`) says it, and
+service manager's status line (`systemctl status llmp`) says it, and
 `api::Server::health()` holds it for M5's management listener.
 
 **Deadlines.** None by default (D-102): a stream runs until it is done or
@@ -1991,7 +1991,7 @@ short DeepSeek and Qwen prompts, with speculation on and off.
   families run one at a time. The front door is
   M5's.
 - The tailnet is found at startup; a node whose Tailscale comes up later
-  serves it after a restart. `jitllm.service` is ordered after
+  serves it after a restart. `llmp.service` is ordered after
   `tailscaled.service` (ordering only, no dependency) for that reason.
 - A name the Host check does not derive (a LAN DNS name without a reverse
   record) cannot reach the route; a `[client] host_names` key could name

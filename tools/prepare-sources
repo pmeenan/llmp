@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Fetches, verifies and unpacks the locked third-party sources (D-017, D-057).
 
@@ -16,7 +16,7 @@ unpacked by one parser, Python's tarfile (D-078), keeping only the lock's
 against the lock's tree digest before it appears in build/sources/.
 Existing prepared trees are checked, not rebuilt; a modified one is an error.
 `--check` only validates the lock. Configure and build never fetch; they
-consume what this prepared (cmake/JitllmSources.cmake).
+consume what this prepared (cmake/LlmpSources.cmake).
 """
 
 import sys
@@ -32,10 +32,10 @@ import shutil
 import signal
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import jitllm_sdk as sdklib  # noqa: E402
-import jitllm_sources as srclib  # noqa: E402
-from jitllm_sdk import SdkError  # noqa: E402
-from jitllm_sources import SourceError  # noqa: E402
+import llmp_sdk as sdklib  # noqa: E402
+import llmp_sources as srclib  # noqa: E402
+from llmp_sdk import SdkError  # noqa: E402
+from llmp_sources import SourceError  # noqa: E402
 
 STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
@@ -58,7 +58,7 @@ def check_prepared(path: pathlib.Path, cid: str, comp: dict) -> bool:
     if digest != comp["tree_sha256"]:
         raise SourceError(f"the prepared {cid} source at {path} was modified (tree {digest}, locked "
                           f"{comp['tree_sha256']}); remove it and run this again. For deliberate local edits, "
-                          "build a copy with JITLLM_SOURCE_OVERRIDE_<ID> instead (D-057)")
+                          "build a copy with LLMP_SOURCE_OVERRIDE_<ID> instead (D-057)")
     return True
 
 

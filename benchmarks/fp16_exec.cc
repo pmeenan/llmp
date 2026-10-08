@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Backend-proof P2, oracle rung 3 (docs/backend-proof.md): native
@@ -6,7 +6,7 @@
 // on cudaMalloc memory, for the FP16 Tier E gate and the allocation census
 // (docs/experiments/backend-proof-p2/README.md).
 //
-//   jitllm_fp16_exec --artifact DIR --trajectory control|heldout --tokens FILE
+//   llmp_fp16_exec --artifact DIR --trajectory control|heldout --tokens FILE
 //                    --fusion on|off --out DIR [--evaluations N]
 //                    [--record | --census]
 //
@@ -96,8 +96,8 @@
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
-using jitllm::base::Bytes;
+namespace kg = llmp::kernels::ggml;
+using llmp::base::Bytes;
 using Status = std::expected<void, std::string>;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
@@ -278,7 +278,7 @@ class Device {
     if (auto context = Cuda(cudaFree(nullptr), "the CUDA context"); !context) {
       return std::unexpected(context.error());
     }
-    auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
     if (!execution) {
       return Error("OpenDeviceExecution failed");
     }
@@ -299,8 +299,8 @@ class Device {
     }
   }
 
-  jitllm::providers::DeviceExecution& execution() { return *execution_; }
-  jitllm::providers::StreamId stream() const { return stream_; }
+  llmp::providers::DeviceExecution& execution() { return *execution_; }
+  llmp::providers::StreamId stream() const { return stream_; }
 
   // The stream's handle, noting that work is about to be queued on it.
   std::expected<cudaStream_t, std::string> Stream() {
@@ -323,7 +323,7 @@ class Device {
       if (!state) {
         return Error("Query failed");
       }
-      if (*state == jitllm::providers::FenceState::kComplete) {
+      if (*state == llmp::providers::FenceState::kComplete) {
         break;
       }
       if (std::chrono::steady_clock::now() > deadline) {
@@ -338,12 +338,12 @@ class Device {
   }
 
  private:
-  Device(std::unique_ptr<jitllm::providers::DeviceExecution> execution,
-         jitllm::providers::StreamId stream)
+  Device(std::unique_ptr<llmp::providers::DeviceExecution> execution,
+         llmp::providers::StreamId stream)
       : execution_(std::move(execution)), stream_(stream) {}
 
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  llmp::providers::StreamId stream_;
 };
 
 // The census rule's controls (fp16_census.cc's, with the device clear on
@@ -470,9 +470,9 @@ std::expected<Trajectory, std::string> LoadTrajectory(std::string_view name,
     t.chunks.insert(t.chunks.end(), 44, 1);
     t.cells = 512;
   } else if (name == "heldout") {
-    jitllm::base::Sha256 hash;
+    llmp::base::Sha256 hash;
     hash.Update(std::as_bytes(std::span(bytes)));
-    const std::string digest = jitllm::base::ToHex(hash.Finish());
+    const std::string digest = llmp::base::ToHex(hash.Finish());
     if (bytes.size() != std::size_t{1040} * 8 ||
         digest != "6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c") {
       return Error("not the declared held-out IDs");
@@ -512,14 +512,14 @@ struct Weights {
   void* staging = nullptr;           // pinned, for the loads
 };
 
-std::uint64_t ResourceAddress(const jitllm::artifact::Artifact& artifact, const Weights& weights,
+std::uint64_t ResourceAddress(const llmp::artifact::Artifact& artifact, const Weights& weights,
                               std::uint32_t resource) {
   const auto& r = artifact.resources()[resource];
   return weights.base + weights.group_base[r.group] + r.offset.value();
 }
 
-Status LoadWeights(const jitllm::artifact::Artifact& artifact,
-                   const jitllm::model::Qwen2Binding& binding, Device& device, Census& census,
+Status LoadWeights(const llmp::artifact::Artifact& artifact,
+                   const llmp::model::Qwen2Binding& binding, Device& device, Census& census,
                    Weights& weights) {
   const auto groups = artifact.groups();
   weights.group_base.resize(groups.size());
@@ -541,13 +541,13 @@ Status LoadWeights(const jitllm::artifact::Artifact& artifact,
   weights.token_table.assign(table.bytes.value() / 2, 0);
   census.Declare("host:token-table", table.bytes.value());
 
-  std::vector<jitllm::artifact::ChunkKey> all;
+  std::vector<llmp::artifact::ChunkKey> all;
   for (std::uint32_t g = 0; g < groups.size(); ++g) {
     for (std::uint32_t c = 0; c < groups[g].chunks; ++c) {
       all.push_back({.group = g, .chunk = c});
     }
   }
-  const jitllm::artifact::ReadLimits limits{};
+  const llmp::artifact::ReadLimits limits{};
   const auto runs = artifact.PlanReads(all, {}, limits);
   if (!runs) {
     return Error("the artifact's read plan was refused");
@@ -558,7 +558,7 @@ Status LoadWeights(const jitllm::artifact::Artifact& artifact,
     return r;
   }
   census.Declare("pinned:staging", staging_bytes);
-  std::vector<jitllm::artifact::FileDescriptor> shards;
+  std::vector<llmp::artifact::FileDescriptor> shards;
   for (std::uint32_t s = 0; s < artifact.shards().size(); ++s) {
     auto fd = artifact.OpenShardForDirectRead(s);
     if (!fd) {
@@ -591,7 +591,7 @@ Status LoadWeights(const jitllm::artifact::Artifact& artifact,
     for (const auto& segment : run.segments) {
       const auto& group = groups[segment.chunk.group];
       const std::span<const std::byte> piece(bytes + at, segment.length.value());
-      jitllm::base::Sha256 hash;
+      llmp::base::Sha256 hash;
       hash.Update(piece);
       if (hash.Finish() != artifact.chunk_sha256()[group.first_chunk + segment.chunk.chunk]) {
         return Error(std::format("group {} chunk {} does not match its digest", segment.chunk.group,
@@ -646,8 +646,8 @@ struct ChunkGraph {
 // Builds, binds, plans and places one chunk's graph; `activations` is the
 // region its computed tensors and device inputs live in (0 to measure).
 std::expected<ChunkGraph, std::string> PlanChunk(
-    const jitllm::model::Qwen2Profile& profile, const jitllm::artifact::Artifact& artifact,
-    const jitllm::model::Qwen2Binding& binding, const Weights& weights, std::uint64_t kv_base,
+    const llmp::model::Qwen2Profile& profile, const llmp::artifact::Artifact& artifact,
+    const llmp::model::Qwen2Binding& binding, const Weights& weights, std::uint64_t kv_base,
     std::uint32_t cells, std::uint32_t rows, std::uint32_t n_kv, bool fusion,
     const kg::DeviceChoices& choices, std::uint64_t activations, std::uint64_t activation_bytes) {
   ChunkGraph out;
@@ -794,13 +794,13 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   if (o.artifact.empty() || o.trajectory.empty() || o.tokens.empty() || o.out.empty() ||
       !fusion_set || o.evaluations < 1 || (o.record && o.census)) {
     return Error(
-        "usage: jitllm_fp16_exec --artifact DIR --trajectory control|heldout --tokens FILE "
+        "usage: llmp_fp16_exec --artifact DIR --trajectory control|heldout --tokens FILE "
         "--fusion on|off --out DIR [--evaluations N] [--record | --census]");
   }
   return o;
 }
 
-Status Run(const Options& o, jitllm::test_support::Recording* recording, std::string& record) {
+Status Run(const Options& o, llmp::test_support::Recording* recording, std::string& record) {
   Census census(o.census);
   census.Read("start");
   auto device = Device::Open();
@@ -821,12 +821,12 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
     return std::unexpected(trajectory.error());
   }
   const Trajectory& t = *trajectory;
-  auto artifact = jitllm::artifact::Artifact::Open(o.artifact);
+  auto artifact = llmp::artifact::Artifact::Open(o.artifact);
   if (!artifact) {
     return Error(std::format("the artifact was refused: {}", artifact.error().reason));
   }
-  const jitllm::model::Qwen2Profile& profile = jitllm::model::Qwen25Instruct05B();
-  auto binding = jitllm::model::BindQwen2(profile, *artifact);
+  const llmp::model::Qwen2Profile& profile = llmp::model::Qwen25Instruct05B();
+  auto binding = llmp::model::BindQwen2(profile, *artifact);
   if (!binding) {
     return std::unexpected(binding.error());
   }
@@ -859,7 +859,7 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
     const kg::DeviceChoices choices = kg::DeviceChoicesOf(**measure);
     std::uint32_t n_past = 0;
     for (const std::uint32_t rows : t.chunks) {
-      const std::uint32_t n_kv = jitllm::model::PaddedKv(n_past + rows, t.cells);
+      const std::uint32_t n_kv = llmp::model::PaddedKv(n_past + rows, t.cells);
       auto planned = PlanChunk(profile, *artifact, *binding, weights, Address(kv), t.cells, rows,
                                n_kv, o.fusion, choices, 0, 0);
       if (!planned) {
@@ -909,7 +909,7 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
   if (!launch) {
     return Error(launch.error().detail);
   }
-  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  auto registry = llmp::execution::Registry::Create(kg::Implementations());
   if (!registry) {
     return Error(registry.error().detail);
   }
@@ -942,13 +942,13 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
     for (std::size_t k = 0; k < t.chunks.size(); ++k) {
       const std::uint32_t rows = t.chunks[k];
       const int chunk = static_cast<int>(k);
-      auto inputs = jitllm::model::Qwen2ChunkInputs(profile, t.cells, n_past, rows);
+      auto inputs = llmp::model::Qwen2ChunkInputs(profile, t.cells, n_past, rows);
       if (!inputs) {
         return std::unexpected(inputs.error());
       }
       std::vector<float> embd(std::size_t{rows} * profile.width);
-      if (auto r = jitllm::model::EmbedRows(weights.token_table, profile.width, profile.vocab,
-                                            std::span(t.tokens).subspan(n_past, rows), embd);
+      if (auto r = llmp::model::EmbedRows(weights.token_table, profile.width, profile.vocab,
+                                          std::span(t.tokens).subspan(n_past, rows), embd);
           !r) {
         return r;
       }
@@ -1009,9 +1009,9 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
 
       if (recording != nullptr) {
         for (const auto& event : recording->Take()) {
-          record += jitllm::test_support::EventLine(event);
+          record += llmp::test_support::EventLine(event);
         }
-        record += jitllm::test_support::ChunkLine(
+        record += llmp::test_support::ChunkLine(
             {.evaluation = e, .chunk = chunk, .rows = rows, .n_past = n_past});
       }
       // The inputs, staged and copied in the bridge's order.
@@ -1059,9 +1059,9 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
       }
       if (recording != nullptr) {
         for (const auto& event : recording->Take()) {
-          record += jitllm::test_support::EventLine(event);
+          record += llmp::test_support::EventLine(event);
         }
-        record += jitllm::test_support::EndChunkLine();
+        record += llmp::test_support::EndChunkLine();
       }
       std::memcpy(result.data() + (std::size_t{n_past} * profile.vocab), logits, chunk_logits);
       census.Read("chunk", e, chunk);
@@ -1091,9 +1091,9 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
           std::bit_cast<std::uint32_t>(first[i]) != std::bit_cast<std::uint32_t>(results[e][i]);
     }
   }
-  jitllm::base::Sha256 hash;
+  llmp::base::Sha256 hash;
   hash.Update(std::as_bytes(std::span(first)));
-  const std::string digest = jitllm::base::ToHex(hash.Finish());
+  const std::string digest = llmp::base::ToHex(hash.Finish());
   std::filesystem::create_directories(o.out);
   {
     std::ofstream raw(o.out / "logits.f32le", std::ios::binary);
@@ -1125,7 +1125,7 @@ Status Run(const Options& o, jitllm::test_support::Recording* recording, std::st
   if (census.on()) {
     std::ofstream file(o.out / "census.json");
     file << std::format(
-        R"j({{"format":"jitllm-census/2","source":"jitllm_fp16_exec (native, rung 3)","trajectory":"{}","fusion":{},"settle_ms":{},"evaluations":{},"repeat_bit_differences":{},"logits_sha256":"{}","chunks":[{}],"readings":[)j",
+        R"j({{"format":"llmp-census/2","source":"llmp_fp16_exec (native, rung 3)","trajectory":"{}","fusion":{},"settle_ms":{},"evaluations":{},"repeat_bit_differences":{},"logits_sha256":"{}","chunks":[{}],"readings":[)j",
         t.name, o.fusion ? "true" : "false", census.settle_ms(), o.evaluations, differing, digest,
         chunks);
     for (std::size_t i = 0; i < census.readings().size(); ++i) {
@@ -1167,9 +1167,9 @@ int main(int argc, char** argv) {
   // The recording starts before anything touches CUDA (--record).
   const bool record =
       std::ranges::any_of(args, [](const char* a) { return std::string_view(a) == "--record"; });
-  std::unique_ptr<jitllm::test_support::Recording> recording;
+  std::unique_ptr<llmp::test_support::Recording> recording;
   if (record) {
-    recording = std::make_unique<jitllm::test_support::Recording>();
+    recording = std::make_unique<llmp::test_support::Recording>();
   }
   const auto options = Parse(args);
   if (!options) {
@@ -1180,14 +1180,14 @@ int main(int argc, char** argv) {
   const Status ran = Run(*options, recording.get(), lines);
   if (recording) {
     for (const auto& event : recording->Take()) {
-      lines += jitllm::test_support::EventLine(event);
+      lines += llmp::test_support::EventLine(event);
     }
     std::filesystem::create_directories(options->out);
     std::ofstream file(options->out / "recording.jsonl");
-    file << jitllm::test_support::HeaderLine(
-                std::format("jitllm_fp16_exec {} fusion {}", options->trajectory,
+    file << llmp::test_support::HeaderLine(
+                std::format("llmp_fp16_exec {} fusion {}", options->trajectory,
                             options->fusion ? "on" : "off"),
-                jitllm::test_support::LoadedCublas())
+                llmp::test_support::LoadedCublas())
          << lines;
   }
   if (!ran) {

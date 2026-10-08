@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Existing-model plain-token factor. Full initialized states and an actual
@@ -29,7 +29,7 @@
 #include "platform/crash_policy.h"
 
 namespace {
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 namespace fs = std::filesystem;
 using en::support::Error;
 using Clock = std::chrono::steady_clock;
@@ -45,7 +45,7 @@ en::Status Save(const fs::path& path, std::span<const T> data) {
   return file ? en::Status{} : Error("exclusive complete output refused");
 }
 std::string Hash(std::span<const std::byte> bytes) {
-  return jitllm::base::ToHex(jitllm::base::Sha256{}.Update(bytes).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256{}.Update(bytes).Finish());
 }
 std::int32_t Choose(std::span<const float> row) {
   return static_cast<std::int32_t>(std::ranges::max_element(row) - row.begin());
@@ -53,7 +53,7 @@ std::int32_t Choose(std::span<const float> row) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 6 || argc > 10 || !jitllm::platform::InstallCrashPolicy("plain-token-probe")) return 2;
+  if (argc < 6 || argc > 10 || !llmp::platform::InstallCrashPolicy("plain-token-probe")) return 2;
   bool scalar = false, gguf = false, group_stores = false;
   std::uint64_t budget_override = 0;
   for (int i = 6; i < argc; ++i) {
@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
   const auto snapshot = [&]() -> en::Status {
     std::ofstream file(out / "state-ranges.txt", std::ios::noreplace);
     for (std::size_t i = 0; i < owners; ++i) {
-      jitllm::base::Sha256 hash;
+      llmp::base::Sha256 hash;
       for (const auto& range : slots[i]->used_state_ranges()) {
         if (range.bytes == 0) return Error("empty initialized state range");
         file << i << ' ' << range.region << ' ' << range.offset << ' ' << range.bytes << '\n';
@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
         }
       }
       if (state_bytes[i] == 0) return Error("initialized target state required");
-      states[i] = jitllm::base::ToHex(hash.Finish());
+      states[i] = llmp::base::ToHex(hash.Finish());
     }
     file.flush();
     return file ? en::Status{} : Error("state range persistence failed");
@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
               input[i], [&](auto id) { return id >= 0 && std::cmp_less(id, runner.vocab()); }))
         return Error("input IDs exceed the vocabulary");
     }
-    std::vector<jitllm::catalog::ExtentId> extents;
+    std::vector<llmp::catalog::ExtentId> extents;
     auto allocation = node.Pinned(kCopy, 0, extents);
     if (!allocation) return Error(allocation.error());
     pinned = *allocation;
@@ -228,7 +228,7 @@ int main(int argc, char** argv) {
     if (budget_override != 0 && budget_override < derived_minimum)
       return Error("common factor budget is below the derived minimum");
     const auto budget = budget_override != 0 ? budget_override : derived_minimum;
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();

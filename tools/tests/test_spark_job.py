@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """End-to-end tests of tools/spark-job: real supervisors and process groups, with short sleeps."""
 
@@ -30,7 +30,7 @@ class SparkJobTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = pathlib.Path(self._tmp.name)
-        self.env = dict(os.environ, JITLLM_JOBS_DIR=str(self.tmp / "jobs"))
+        self.env = dict(os.environ, LLMP_JOBS_DIR=str(self.tmp / "jobs"))
         self.started = []
 
     def tearDown(self):
@@ -71,7 +71,7 @@ class SparkJobTest(unittest.TestCase):
 
     def test_steps_run_with_umask_at_least_022(self):
         # A caller's group-writable umask (ssh sessions on the Sparks use 0002) must not reach the
-        # steps: jitllm-runtime refuses a process lock under a group- or world-writable directory.
+        # steps: llmp-runtime refuses a process lock under a group- or world-writable directory.
         previous = os.umask(0o002)
         try:
             self.start("mask", "--", "bash", "-c", "umask; mkdir made")

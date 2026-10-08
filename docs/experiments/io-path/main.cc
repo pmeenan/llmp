@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // Standalone, bounded M0 probe. Fatal errors exit; process teardown owns cleanup.
 #include <cuda.h>

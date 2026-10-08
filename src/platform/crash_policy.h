@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // What a crash may leave behind (D-014; docs/architecture.md#errors-faults-startup-and-shutdown):
@@ -15,17 +15,17 @@
 // memory contents, only registers and file names. The handler cannot run
 // for a fault before it is installed, for a fault inside itself, for a
 // hardware fault a thread has blocked, or for a stack overflow on a thread
-// without an alternate signal stack: every thread jitLLM starts calls
+// without an alternate signal stack: every thread llmpalooza starts calls
 // InstallThreadSignalStack first.
 
-#ifndef JITLLM_PLATFORM_CRASH_POLICY_H_
-#define JITLLM_PLATFORM_CRASH_POLICY_H_
+#ifndef LLMP_PLATFORM_CRASH_POLICY_H_
+#define LLMP_PLATFORM_CRASH_POLICY_H_
 
 #include <expected>
 #include <string>
 #include <string_view>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 // Exits with this status plus the signal number after a fatal signal, as a
 // shell reports a death by signal.
@@ -36,7 +36,7 @@ inline constexpr int kFatalSignalExitBase = 128;
 std::expected<void, std::string> MarkNonDumpable();
 
 // Gives the calling thread its own alternate signal stack, so the handler
-// runs after a stack overflow there. Every thread jitLLM starts calls it
+// runs after a stack overflow there. Every thread llmpalooza starts calls it
 // before anything else; the stack lives as long as the thread.
 std::expected<void, std::string> InstallThreadSignalStack();
 
@@ -47,6 +47,6 @@ std::expected<void, std::string> InstallThreadSignalStack();
 // threads started later need their own.
 std::expected<void, std::string> InstallCrashPolicy(std::string_view name);
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_CRASH_POLICY_H_
+#endif  // LLMP_PLATFORM_CRASH_POLICY_H_

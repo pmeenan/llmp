@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The v0 artifact reader (src/artifact): its strict JSON and hex digests, read
@@ -51,19 +51,19 @@
 namespace {
 
 namespace fs = std::filesystem;
-using jitllm::artifact::Artifact;
-using jitllm::artifact::ChunkKey;
-using jitllm::artifact::Error;
-using jitllm::artifact::Rule;
-using jitllm::artifact::RuleName;
-using jitllm::base::Bytes;
-namespace artifact = jitllm::artifact;
-namespace json = jitllm::artifact::json;
+using llmp::artifact::Artifact;
+using llmp::artifact::ChunkKey;
+using llmp::artifact::Error;
+using llmp::artifact::Rule;
+using llmp::artifact::RuleName;
+using llmp::base::Bytes;
+namespace artifact = llmp::artifact;
+namespace json = llmp::artifact::json;
 
 // ---------------------------------------------------------------- helpers
 
 std::string Sha256Hex(std::string_view bytes) {
-  return jitllm::base::ToHex(jitllm::base::Sha256().Update(bytes).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256().Update(bytes).Finish());
 }
 
 std::string Env(const char* name) {
@@ -72,14 +72,14 @@ std::string Env(const char* name) {
 }
 
 // The corpus is built beside the test, where CTest runs it; a manual run
-// elsewhere names it in JITLLM_TEST_ARTIFACT_CORPUS.
+// elsewhere names it in LLMP_TEST_ARTIFACT_CORPUS.
 fs::path Corpus() {
-  const std::string configured = Env("JITLLM_TEST_ARTIFACT_CORPUS");
+  const std::string configured = Env("LLMP_TEST_ARTIFACT_CORPUS");
   return configured.empty() ? fs::path("artifact-corpus") : fs::path(configured);
 }
 
 fs::path Scratch(std::string_view name) {
-  const std::string base = Env("JITLLM_TEST_SCRATCH");
+  const std::string base = Env("LLMP_TEST_SCRATCH");
   const fs::path root = base.empty() ? fs::path(::testing::TempDir()) : fs::path(base);
   const fs::path dir = root / "artifact" / name;
   std::error_code error;
@@ -364,17 +364,17 @@ std::string View(const Artifact& a) {
   out << "model " << a.model().architecture << " " << a.model().expert_count << " " << families
       << "\n";
   for (const auto& s : a.sources()) {
-    out << "source " << s.name << " " << s.bytes.value() << " " << jitllm::base::ToHex(s.sha256)
+    out << "source " << s.name << " " << s.bytes.value() << " " << llmp::base::ToHex(s.sha256)
         << "\n";
   }
   for (const auto& f : a.files()) {
     out << "file " << f.path << " " << RoleName(f.role) << " " << f.bytes.value() << " "
-        << jitllm::base::ToHex(f.sha256) << "\n";
+        << llmp::base::ToHex(f.sha256) << "\n";
   }
   for (std::size_t i = 0; i < a.shards().size(); ++i) {
     const auto& s = a.shards()[i];
     out << "shard " << i << " " << s.path << " " << s.data_offset.value() << " "
-        << s.data_bytes.value() << " " << jitllm::base::ToHex(s.header_sha256) << "\n";
+        << s.data_bytes.value() << " " << llmp::base::ToHex(s.header_sha256) << "\n";
   }
   std::vector<ChunkKey> everything;
   for (std::uint32_t gid = 0; gid < a.groups().size(); ++gid) {
@@ -387,7 +387,7 @@ std::string View(const Artifact& a) {
       EXPECT_TRUE(range.has_value());
       out << "chunk " << gid << " " << k << " " << a.shards()[range->shard].path << " "
           << range->file_offset.value() << " " << range->length.value() << " "
-          << jitllm::base::ToHex(a.chunk_sha256()[g.first_chunk + k]) << "\n";
+          << llmp::base::ToHex(a.chunk_sha256()[g.first_chunk + k]) << "\n";
       everything.push_back({.group = gid, .chunk = k});
     }
   }
@@ -469,9 +469,9 @@ std::string View(const Artifact& a) {
 
 TEST(ArtifactSchemaTest, DigestsFromHex) {
   const std::string hex = Sha256Hex("abc");
-  EXPECT_EQ(jitllm::base::ToHex(
-                artifact::schema::DigestFromHex(hex).value_or(jitllm::base::Sha256Digest{})),
-            hex);
+  EXPECT_EQ(
+      llmp::base::ToHex(artifact::schema::DigestFromHex(hex).value_or(llmp::base::Sha256Digest{})),
+      hex);
   EXPECT_FALSE(artifact::schema::DigestFromHex(std::string(63, 'a')).has_value());
   EXPECT_FALSE(artifact::schema::DigestFromHex(std::string(65, 'a')).has_value());
   EXPECT_FALSE(artifact::schema::DigestFromHex(std::string(64, 'A')).has_value());
@@ -1222,7 +1222,7 @@ constexpr std::array kFixtures = {
 
 TEST(ArtifactFixtureTest, RealArtifactsMatchThePrototype) {
   const std::string home = Env("HOME");
-  const fs::path store = fs::path(home) / ".local/share/jitllm/artifact-layout-20260922/installed";
+  const fs::path store = fs::path(home) / ".local/share/llmp/artifact-layout-20260922/installed";
   std::size_t found = 0;
   for (const Fixture& f : kFixtures) {
     const fs::path root = store / f.id;

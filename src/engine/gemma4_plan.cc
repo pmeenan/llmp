@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/gemma4_plan.h"
@@ -16,10 +16,10 @@
 
 #include "engine/graph_mask_inputs.h"
 #include "engine/support.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "model/host_mask.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 namespace {
 namespace kg = kernels::ggml;
 using support::Error;
@@ -317,4 +317,4 @@ std::expected<Gemma4HostInputs, std::string> Gemma4Sources(
   if (actual > funded_bytes) return Error("Gemma4 reference-input allocation exceeds its grant");
   return out;
 }
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

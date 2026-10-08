@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Memory use and reclaim under pressure (2026-10-02)
@@ -55,7 +55,7 @@ round's checks).
 
 ### Plans and graphs (DeepSeek)
 
-`jitllm_spec_runner --check plan-memory --slots 4 --context 32768
+`llmp_spec_runner --check plan-memory --slots 4 --context 32768
 --max-rows 4096 --tokens 16`, DSpark and plain. Each new shape is measured
 alone: process heap (`mallinfo2`), the plan's arena, planning time,
 capture and instantiation time, and what the runner counts. A kind's first
@@ -219,7 +219,7 @@ open.
 
 ### State capacity, spill and restore (GPU)
 
-`jitllm_spec_runner --check capacity --slots 2 --state-budget-mib 1024
+`llmp_spec_runner --check capacity --slots 2 --state-budget-mib 1024
 --context 131072 --max-rows 4096`, DSpark and plain. A slot fills the
 room, the other's growth is refused with typed `state_refused` and no
 state used, the idle slot is spilled (about 710 MiB written), the refused

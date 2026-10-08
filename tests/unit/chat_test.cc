@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The chat renderers (D-067): every fixture case's text byte for byte with
@@ -29,12 +29,12 @@
 
 namespace {
 
-namespace chat = jitllm::chat;
-namespace json = jitllm::base::json;
-using jitllm::test_support::ConversationFrom;
-using jitllm::test_support::Failed;
-using jitllm::test_support::Get;
-using jitllm::test_support::LoadJson;
+namespace chat = llmp::chat;
+namespace json = llmp::base::json;
+using llmp::test_support::ConversationFrom;
+using llmp::test_support::Failed;
+using llmp::test_support::Get;
+using llmp::test_support::LoadJson;
 
 std::string Float(double x) {
   std::string out;
@@ -109,7 +109,7 @@ TEST(Templates, FoundByHash) {
 // accepts renders through it.
 TEST(Templates, UnknownTextIsNamedByItsHash) {
   constexpr std::string_view kText = "{% include 'x' %}";
-  const std::string sha256 = jitllm::base::ToHex(jitllm::base::Sha256().Update(kText).Finish());
+  const std::string sha256 = llmp::base::ToHex(llmp::base::Sha256().Update(kText).Finish());
   auto found = chat::ChatTemplate::ForText(kText, {});
   ASSERT_FALSE(found.has_value());
   EXPECT_NE(found.error().find(sha256), std::string::npos) << found.error();

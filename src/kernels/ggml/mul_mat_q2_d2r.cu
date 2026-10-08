@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 // The native preparation/scatter layout used by mul_mat_q.cu feeds one
 // existing ds4 D2R product. Cache, weights and route weighting are unchanged.
@@ -18,7 +18,7 @@
 #include "mmq.cuh"
 #include "quantize.cuh"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 auto Rejected(std::string detail) {
   return std::unexpected(
@@ -102,7 +102,7 @@ std::expected<void, KernelFailure> MulMatIdQ2D2r(LaunchContext& launch, ggml_ten
     if (internal::CudaErrorPending()) return;
     const auto work_bytes = ds4_mmq_q2_K_moe_d2r_scratch_bytes(rows, static_cast<int>(w->ne[2]));
     ggml_cuda_pool_alloc<char> work(c.pool(), work_bytes);
-    const int result = jitllm_q2_K_raw_d2r_launch(
+    const int result = llmp_q2_K_raw_d2r_launch(
         w->data, ggml_nbytes(w), w->nb[1], w->nb[2], quant.get(), dst.get(), bounds.get(),
         static_cast<float*>(node->data), static_cast<int>(w->ne[1]), static_cast<int>(w->ne[0]),
         rows, static_cast<int>(w->ne[2]), work.get(), work_bytes, stream);
@@ -115,4 +115,4 @@ std::expected<void, KernelFailure> MulMatIdQ2D2r(LaunchContext& launch, ggml_ten
                       "D2R launcher failed after preparation");
   });
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

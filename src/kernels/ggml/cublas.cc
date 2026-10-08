@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/cublas.h"
@@ -21,7 +21,7 @@
 #include "base/bytes.h"
 #include "base/check.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -164,4 +164,4 @@ CublasHandle::~CublasHandle() {
   (void)cuCtxPopCurrent(&popped);
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

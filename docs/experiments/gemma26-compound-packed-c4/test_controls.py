@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Check closed CLI refusal before provider work and reviewed comparison controls."""
 import os
@@ -18,20 +18,20 @@ with tempfile.TemporaryDirectory(prefix='gemma26-compound-cli-') as directory:
     ids = root / 'ids.i32'
     ids.write_bytes((2).to_bytes(4, 'little') * 1024)
     base = ['nonexistent-artifact', str(root / 'out'), '26', '4', 'joined', 'norm', str(ids)]
-    cases = [([], {'JITLLM_GEMMA26_PACKED_C4': '1'})]
+    cases = [([], {'LLMP_GEMMA26_PACKED_C4': '1'})]
     for index, bad in [(2, '31'), (3, '2'), (4, 'scalar'), (5, 'ordinary'), (5, 'rows-norm')]:
         args = base.copy()
         args[index] = bad
-        cases.append((args, {'JITLLM_GEMMA26_PACKED_C4': '1'}))
+        cases.append((args, {'LLMP_GEMMA26_PACKED_C4': '1'}))
     for flag in ('0', 'bad'):
-        cases.append((base, {'JITLLM_GEMMA26_PACKED_C4': flag}))
+        cases.append((base, {'LLMP_GEMMA26_PACKED_C4': flag}))
     cases.append((base, {}))
     truncated = root / 'truncated.i32'
     truncated.write_bytes(ids.read_bytes()[:-1])
-    cases.append((base[:-1] + [str(truncated)], {'JITLLM_GEMMA26_PACKED_C4': '1'}))
+    cases.append((base[:-1] + [str(truncated)], {'LLMP_GEMMA26_PACKED_C4': '1'}))
     for args, override in cases:
         env = os.environ.copy()
-        env.pop('JITLLM_GEMMA26_PACKED_C4', None)
+        env.pop('LLMP_GEMMA26_PACKED_C4', None)
         env.update(override)
         result = subprocess.run([str(binary), *args], env=env, capture_output=True, timeout=10)
         if result.returncode != 2 or result.stdout or result.stderr or (root / 'out').exists():

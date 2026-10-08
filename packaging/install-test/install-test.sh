@@ -1,16 +1,16 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
 # The arm64 install test (D-074), run as root in the install-test image with
-# no network and /in holding jitllm_<version>_arm64.deb, the version it must
+# no network and /in holding llmp_<version>_arm64.deb, the version it must
 # report and the CUDA driver stub (libcuda.so.1), and a volume at
-# /var/lib/jitllm, since the container's own overlay filesystem is one the
+# /var/lib/llmp, since the container's own overlay filesystem is one the
 # storage roles refuse. It installs the package
 # over a stand-in for the driver's libcuda.so.1, checks the installed layout
 # (D-063), runs both executables, reinstalls it as an upgrade, then removes
 # and purges it and checks what stays. The unit is not started: there is no
-# service manager here and no GPU; the runtime is run directly as `jitllm`
+# service manager here and no GPU; the runtime is run directly as `llmp`
 # instead, and refuses this host at its platform step (exit 75).
 set -eu
 
@@ -20,9 +20,9 @@ stat_is() { [ "$(stat -c '%a %U:%G' "$1")" = "$2" ] || { echo "$1 is $(stat -c '
 
 check "this is arm64" [ "$(uname -m)" = aarch64 ]
 check "there is no network" [ "$(ls /sys/class/net)" = lo ]
-check "/var/lib/jitllm is a volume, not the overlay" sh -c '! stat -f -c %T /var/lib/jitllm | grep -q overlay'
+check "/var/lib/llmp is a volume, not the overlay" sh -c '! stat -f -c %T /var/lib/llmp | grep -q overlay'
 echo "install-test: systemd $(dpkg-query -W -f '${Version}' systemd)"
-deb=$(ls /in/jitllm_*_arm64.deb)
+deb=$(ls /in/llmp_*_arm64.deb)
 version=$(cat /in/version)
 
 # A stand-in for the NVIDIA driver's package: it provides libcuda.so.1 with
@@ -30,32 +30,32 @@ version=$(cat /in/version)
 mkdir -p /tmp/driver/DEBIAN /tmp/driver/usr/lib/aarch64-linux-gnu
 cp /in/libcuda.so.1 /tmp/driver/usr/lib/aarch64-linux-gnu/libcuda.so.1
 cat > /tmp/driver/DEBIAN/control <<CONTROL
-Package: jitllm-test-driver
+Package: llmp-test-driver
 Version: 580.0-1
 Architecture: arm64
 Provides: libcuda.so.1 (= 580.0-1)
-Maintainer: jitLLM install test <test@jitllm.invalid>
-Description: stand-in for libcuda.so.1 in the jitLLM install test
+Maintainer: llmpalooza install test <test@llmp.invalid>
+Description: stand-in for libcuda.so.1 in the llmpalooza install test
 CONTROL
 dpkg-deb --root-owner-group --build /tmp/driver /tmp/driver.deb >/dev/null
 check "the stand-in driver package installs" dpkg -i /tmp/driver.deb
 ldconfig
 
 check "the package installs" dpkg -i "$deb"
-check "jitllm is a system user without a login shell, at home in /var/lib/jitllm" \
-  sh -c 'getent passwd jitllm | grep -Eq "^jitllm:x:[0-9]+:[0-9]+:[^:]*:/var/lib/jitllm:/usr/sbin/nologin$"'
-check "the jitllm group exists" getent group jitllm
-check "/var/lib/jitllm is jitllm's, 0755" stat_is /var/lib/jitllm "755 jitllm:jitllm"
-check "the checkpoint store is jitllm's, 1777" stat_is /var/lib/jitllm/checkpoints "1777 jitllm:jitllm"
+check "llmp is a system user without a login shell, at home in /var/lib/llmp" \
+  sh -c 'getent passwd llmp | grep -Eq "^llmp:x:[0-9]+:[0-9]+:[^:]*:/var/lib/llmp:/usr/sbin/nologin$"'
+check "the llmp group exists" getent group llmp
+check "/var/lib/llmp is llmp's, 0755" stat_is /var/lib/llmp "755 llmp:llmp"
+check "the checkpoint store is llmp's, 1777" stat_is /var/lib/llmp/checkpoints "1777 llmp:llmp"
 check "the executables are root's, 0755" sh -c 'stat_is() { [ "$(stat -c "%a %U:%G" "$1")" = "$2" ]; };
-  stat_is /usr/bin/jitllm "755 root:root" && stat_is /usr/libexec/jitllm/jitllm-runtime "755 root:root"'
-check "no configuration file is shipped" sh -c '! ls /etc/jitllm/jitllm.toml /etc/jitllm/jitllm.d 2>/dev/null'
-check "the unit is enabled" test -L /etc/systemd/system/multi-user.target.wants/jitllm.service
-check "systemd accepts the unit" systemd-analyze verify --man=no /usr/lib/systemd/system/jitllm.service
-check "jitllm --version reports $version" sh -c "jitllm --version | head -1 | grep -qxF 'jitllm $version'"
+  stat_is /usr/bin/llmp "755 root:root" && stat_is /usr/libexec/llmp/llmp-runtime "755 root:root"'
+check "no configuration file is shipped" sh -c '! ls /etc/llmp/llmp.toml /etc/llmp/llmp.d 2>/dev/null'
+check "the unit is enabled" test -L /etc/systemd/system/multi-user.target.wants/llmp.service
+check "systemd accepts the unit" systemd-analyze verify --man=no /usr/lib/systemd/system/llmp.service
+check "llmp --version reports $version" sh -c "llmp --version | head -1 | grep -qxF 'llmp $version'"
 
 set +e
-jitllm doctor > /tmp/doctor.txt 2>&1
+llmp doctor > /tmp/doctor.txt 2>&1
 doctor=$?
 set -e
 cat /tmp/doctor.txt
@@ -63,25 +63,25 @@ check "doctor fails without a GPU (exit 1), having reported the configuration" \
   sh -c "[ $doctor -eq 1 ] && grep -q '^  node: standalone$' /tmp/doctor.txt && grep -q '^storage$' /tmp/doctor.txt"
 
 set +e
-setpriv --reuid=jitllm --regid=jitllm --init-groups /usr/libexec/jitllm/jitllm-runtime > /tmp/runtime.txt 2>&1
+setpriv --reuid=llmp --regid=llmp --init-groups /usr/libexec/llmp/llmp-runtime > /tmp/runtime.txt 2>&1
 runtime=$?
 set -e
 cat /tmp/runtime.txt
 check "the runtime refuses this host at its platform step (exit 75)" \
   sh -c "[ $runtime -eq 75 ] && grep -q 'refusing to start: this host cannot run this build now' /tmp/runtime.txt"
 check "the runtime made its roles" sh -c 'stat_is() { [ "$(stat -c "%a %U:%G" "$1")" = "$2" ]; };
-  stat_is /var/lib/jitllm/models "755 jitllm:jitllm" && stat_is /var/lib/jitllm/spill "700 jitllm:jitllm" &&
-  stat_is /var/lib/jitllm/state "700 jitllm:jitllm" && stat_is /var/lib/jitllm/enrollment.lock "600 jitllm:jitllm"'
-check "doctor now finds the roles" sh -c 'jitllm doctor 2>&1 | grep -q "^  installed: /var/lib/jitllm/models, owner uid"'
+  stat_is /var/lib/llmp/models "755 llmp:llmp" && stat_is /var/lib/llmp/spill "700 llmp:llmp" &&
+  stat_is /var/lib/llmp/state "700 llmp:llmp" && stat_is /var/lib/llmp/enrollment.lock "600 llmp:llmp"'
+check "doctor now finds the roles" sh -c 'llmp doctor 2>&1 | grep -q "^  installed: /var/lib/llmp/models, owner uid"'
 
 check "the package reinstalls as an upgrade" dpkg -i "$deb"
-check "the package removes" dpkg -r jitllm
-check "its files are gone" sh -c '! test -e /usr/bin/jitllm && ! test -e /usr/libexec/jitllm/jitllm-runtime'
-check "the data directory and user stay" sh -c 'test -d /var/lib/jitllm/models && getent passwd jitllm >/dev/null'
-check "a kept conversation stands in" setpriv --reuid=jitllm --regid=jitllm --init-groups \
-  sh -c 'umask 077 && mkdir -p /var/lib/jitllm/spill/conversations/a && : > /var/lib/jitllm/spill/conversations/a/slot-0.record'
-check "the package purges" dpkg -P jitllm
-check "the data directory and user still stay" sh -c 'test -d /var/lib/jitllm/models && getent passwd jitllm >/dev/null'
-check "the kept conversations are gone (D-105)" sh -c '! test -e /var/lib/jitllm/spill/conversations && test -d /var/lib/jitllm/spill'
-check "the unit is no longer enabled" sh -c '! test -e /etc/systemd/system/multi-user.target.wants/jitllm.service'
+check "the package removes" dpkg -r llmp
+check "its files are gone" sh -c '! test -e /usr/bin/llmp && ! test -e /usr/libexec/llmp/llmp-runtime'
+check "the data directory and user stay" sh -c 'test -d /var/lib/llmp/models && getent passwd llmp >/dev/null'
+check "a kept conversation stands in" setpriv --reuid=llmp --regid=llmp --init-groups \
+  sh -c 'umask 077 && mkdir -p /var/lib/llmp/spill/conversations/a && : > /var/lib/llmp/spill/conversations/a/slot-0.record'
+check "the package purges" dpkg -P llmp
+check "the data directory and user still stay" sh -c 'test -d /var/lib/llmp/models && getent passwd llmp >/dev/null'
+check "the kept conversations are gone (D-105)" sh -c '! test -e /var/lib/llmp/spill/conversations && test -d /var/lib/llmp/spill'
+check "the unit is no longer enabled" sh -c '! test -e /etc/systemd/system/multi-user.target.wants/llmp.service'
 echo "install-test: passed"

@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Qwen3.8 Flash Next's formats on a GB10 (label `gpu`), each result against
 // an FP64 reference built from the format's own dequantization:
-// - jitLLM's MXFP8 vector product (jitllm_ops.h) at the model's input widths
+// - Llmpalooza's MXFP8 vector product (llmp_ops.h) at the model's input widths
 //   (2560, 6144, 640) and 1 to 8 columns, within upstream's default bound
 //   for float products (NMSE 1e-7: its F32 block sums differ only in order);
 //   a wave's 9 to 16 columns equal to the lone columns bit for bit; and its
@@ -48,8 +48,8 @@
 #include "base/bytes.h"
 #include "expected_error.h"
 #include "ggml.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
@@ -58,17 +58,17 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::KernelError;
-using jitllm::kernels::ggml::KernelFailure;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::QuantMulMatPath;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-using jitllm::test_support::FailedCode;
-namespace kg = jitllm::kernels::ggml;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::KernelError;
+using llmp::kernels::ggml::KernelFailure;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::QuantMulMatPath;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+using llmp::test_support::FailedCode;
+namespace kg = llmp::kernels::ggml;
 
 constexpr double kDefaultNmse = 1e-7;
 constexpr double kMulMatNmse = 5e-4;
@@ -128,7 +128,7 @@ std::vector<std::uint8_t> E4m3Codes(std::uint64_t seed, std::size_t count) {
 class Qwen38OpsTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     const std::uint64_t workspace = Allocate(kWorkspace);
     auto launch = LaunchContext::Create(0, *execution_, stream_,

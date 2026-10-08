@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A GGUF file's tokenizer, read from the start of the file (its header and
@@ -17,8 +17,8 @@
 // prefix and the pinned named-Phi special whitespace stripping override.
 // Whitespace collapse and anything else are refused as unsupported.
 
-#ifndef JITLLM_TOKENIZER_GGUF_H_
-#define JITLLM_TOKENIZER_GGUF_H_
+#ifndef LLMP_TOKENIZER_GGUF_H_
+#define LLMP_TOKENIZER_GGUF_H_
 
 #include <cstddef>
 #include <expected>
@@ -28,7 +28,7 @@
 #include "tokenizer/error.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::tokenizer {
+namespace llmp::tokenizer {
 
 inline constexpr std::size_t kMaxGgufKeys = std::size_t{1} << 16U;
 inline constexpr std::size_t kMaxGgufString = std::size_t{16} << 20U;
@@ -46,6 +46,6 @@ struct GgufTokenizer {
 // hold its metadata (kFormat "truncated" otherwise).
 std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte> bytes);
 
-}  // namespace jitllm::tokenizer
+}  // namespace llmp::tokenizer
 
-#endif  // JITLLM_TOKENIZER_GGUF_H_
+#endif  // LLMP_TOKENIZER_GGUF_H_

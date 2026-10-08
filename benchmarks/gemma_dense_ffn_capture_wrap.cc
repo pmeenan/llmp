@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include <algorithm>
 #include <cstring>
@@ -9,7 +9,7 @@
 #include "kernels/ggml/validate.h"
 #include "model/gemma4.h"
 #include "providers/device_runtime.h"
-namespace jitllm::benchmark {
+namespace llmp::benchmark {
 namespace kg = kernels::ggml;
 namespace fr = ffn_replay;
 DenseFfnCapture* DenseFfnCapture::active = nullptr;
@@ -203,14 +203,14 @@ engine::Status DenseFfnCapture::Save(const std::filesystem::path& out) const {
   if (!metadata) return engine::support::Error("capture metadata write");
   return {};
 }
-}  // namespace jitllm::benchmark
-namespace kg = jitllm::kernels::ggml;
+}  // namespace llmp::benchmark
+namespace kg = llmp::kernels::ggml;
 std::expected<void, kg::KernelFailure> RealProduct(kg::LaunchContext&, ggml_tensor*) asm(
-    "__real__ZN6jitllm7kernels4ggml10MulMatVecQERNS1_13LaunchContextEP11ggml_tensor");
+    "__real__ZN4llmp7kernels4ggml10MulMatVecQERNS1_13LaunchContextEP11ggml_tensor");
 std::expected<void, kg::KernelFailure> WrappedProduct(kg::LaunchContext&, ggml_tensor*) asm(
-    "__wrap__ZN6jitllm7kernels4ggml10MulMatVecQERNS1_13LaunchContextEP11ggml_tensor");
+    "__wrap__ZN4llmp7kernels4ggml10MulMatVecQERNS1_13LaunchContextEP11ggml_tensor");
 std::expected<void, kg::KernelFailure> WrappedProduct(kg::LaunchContext& launch, ggml_tensor* t) {
-  auto* capture = jitllm::benchmark::DenseFfnCapture::active;
+  auto* capture = llmp::benchmark::DenseFfnCapture::active;
   if (capture)
     if (auto r = capture->Before(launch, t); !r) return r;
   if (auto r = RealProduct(launch, t); !r) return r;
@@ -219,13 +219,13 @@ std::expected<void, kg::KernelFailure> WrappedProduct(kg::LaunchContext& launch,
   return {};
 }
 
-std::uint64_t RealAddress(const jitllm::engine::PagedWeights*, std::uint32_t) asm(
-    "__real__ZNK6jitllm6engine12PagedWeights16resource_addressEj");
-std::uint64_t WrappedAddress(const jitllm::engine::PagedWeights*, std::uint32_t) asm(
-    "__wrap__ZNK6jitllm6engine12PagedWeights16resource_addressEj");
-std::uint64_t WrappedAddress(const jitllm::engine::PagedWeights* weights, std::uint32_t resource) {
+std::uint64_t RealAddress(const llmp::engine::PagedWeights*, std::uint32_t) asm(
+    "__real__ZNK4llmp6engine12PagedWeights16resource_addressEj");
+std::uint64_t WrappedAddress(const llmp::engine::PagedWeights*, std::uint32_t) asm(
+    "__wrap__ZNK4llmp6engine12PagedWeights16resource_addressEj");
+std::uint64_t WrappedAddress(const llmp::engine::PagedWeights* weights, std::uint32_t resource) {
   auto address = RealAddress(weights, resource);
-  if (auto* capture = jitllm::benchmark::DenseFfnCapture::active)
+  if (auto* capture = llmp::benchmark::DenseFfnCapture::active)
     capture->Observe(*weights, resource, address);
   return address;
 }

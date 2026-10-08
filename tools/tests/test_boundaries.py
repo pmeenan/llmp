@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for tools/jitllm_boundaries.py, the portability boundary check, and the check over this tree."""
+"""Unit tests for tools/llmp_boundaries.py, the portability boundary check, and the check over this tree."""
 
 import pathlib
 import sys
@@ -12,7 +12,7 @@ sys.dont_write_bytecode = True
 TOOLS = pathlib.Path(__file__).resolve().parent.parent
 REPO = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
-import jitllm_boundaries as boundaries  # noqa: E402
+import llmp_boundaries as boundaries  # noqa: E402
 
 
 class Split(unittest.TestCase):

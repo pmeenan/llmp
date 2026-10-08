@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 #include <cuda_fp16.h>
@@ -15,7 +15,7 @@
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/launch.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 // The locked GGML norm.cu's 256-thread reduction and normal-offset
@@ -104,4 +104,4 @@ std::expected<void, KernelFailure> RunDsv4QHead(LaunchContext& launch, ggml_tens
   });
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Chat templates (D-067 as amended 2026-10-02): a protocol-neutral
@@ -54,8 +54,8 @@
 // the interpreter's output is (Conversation::max_render_bytes, which
 // serving sets for each request within the model's bound).
 
-#ifndef JITLLM_CHAT_CHAT_H_
-#define JITLLM_CHAT_CHAT_H_
+#ifndef LLMP_CHAT_CHAT_H_
+#define LLMP_CHAT_CHAT_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -73,7 +73,7 @@
 #include "chat/jinja.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::chat {
+namespace llmp::chat {
 
 enum class Rule : std::uint8_t {
   kUnknownTemplate,  // no renderer for this template
@@ -309,6 +309,6 @@ std::expected<std::vector<tokenizer::TokenId>, Error> StopTokens(
 std::expected<std::vector<tokenizer::TokenId>, Error> StopTokens(
     const std::vector<std::string>& texts, const tokenizer::Tokenizer& tokenizer);
 
-}  // namespace jitllm::chat
+}  // namespace llmp::chat
 
-#endif  // JITLLM_CHAT_CHAT_H_
+#endif  // LLMP_CHAT_CHAT_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/files.h"
@@ -21,7 +21,7 @@
 #include <system_error>
 #include <vector>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 namespace {
 
 std::error_code LastError() { return {errno, std::generic_category()}; }
@@ -128,4 +128,4 @@ std::optional<ExecutableStamp> RunningExecutableStamp() {
       .generation = generation};
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

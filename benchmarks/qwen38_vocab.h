@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_BENCHMARKS_QWEN38_VOCAB_H_
-#define JITLLM_BENCHMARKS_QWEN38_VOCAB_H_
+#ifndef LLMP_BENCHMARKS_QWEN38_VOCAB_H_
+#define LLMP_BENCHMARKS_QWEN38_VOCAB_H_
 
 #include <cstdint>
 #include <expected>
@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-namespace jitllm::benchmarks::draft_vocab {
+namespace llmp::benchmarks::draft_vocab {
 
 inline constexpr std::uint32_t kContext = 33792;
 inline constexpr std::uint32_t kDepth = 3;
@@ -48,6 +48,6 @@ struct Preparation {
 // constructed. Both split manifests freeze before any model output.
 std::expected<void, std::string> Prepare(const Preparation& paths);
 
-}  // namespace jitllm::benchmarks::draft_vocab
+}  // namespace llmp::benchmarks::draft_vocab
 
-#endif  // JITLLM_BENCHMARKS_QWEN38_VOCAB_H_
+#endif  // LLMP_BENCHMARKS_QWEN38_VOCAB_H_

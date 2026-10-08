@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "providers/device_memory.h"
@@ -16,7 +16,7 @@
 #include "base/bytes.h"
 #include "base/check.h"
 
-namespace jitllm::providers {
+namespace llmp::providers {
 namespace {
 
 std::unexpected<Failure> Invalid(std::string detail) {
@@ -354,4 +354,4 @@ std::expected<void, Failure> VmmProvider::Unmap(ReservationId reservation, Bytes
   return {};
 }
 
-}  // namespace jitllm::providers
+}  // namespace llmp::providers

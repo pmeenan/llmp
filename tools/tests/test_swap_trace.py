@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """The retained-backing swap trace: determinism, schema and reference checks on synthetic captures."""
 
@@ -37,12 +37,12 @@ def library():
                  dense=[dict(kind="layer", layer=0, used=4 * MIB, stored=4 * MIB),
                         dict(kind="head", layer=None, used=MIB, stored=MIB)],
                  expert_layers=[])
-    return dict(format="jitllm-retained-backing-library", version=1, chunk_bytes=2 * MIB, file_align=4096,
+    return dict(format="llmp-retained-backing-library", version=1, chunk_bytes=2 * MIB, file_align=4096,
                 profiles=[moe, dense])
 
 
 def params():
-    return {"format": "jitllm-swap-trace-params", "version": 1,
+    return {"format": "llmp-swap-trace-params", "version": 1,
             "seeds": {"primary": 11, "confirmation": 12},
             "ratios": [[5, 4], [2, 1]], "budget_granule": 2 * MIB, "shrink_bytes": 2 * MIB, "rounds": 2,
             "episode": {"roles": ["A", "A", "B", "A"], "arrival_s": [0, 10, 20, 30], "span_s": 40},

@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Judges DeepSeek V4 Flash's fast plan coarsely (README.md, "Correctness").
 
   judge.py noise EXACT FAST
-      The near-tie bound from jitLLM's own kernel-to-kernel noise: two
-      jitllm_dsv4_exec runs forced on the same tokens, the reference mode
+      The near-tie bound from llmpalooza's own kernel-to-kernel noise: two
+      llmp_dsv4_exec runs forced on the same tokens, the reference mode
       (--exact on) and the fast plan. At each step, the change in the
       reference's top-two margin (the fast run's logit difference between
       the reference's two best tokens against the reference's); the bound is
       twice the largest change over every step.
-  judge.py greedy ORACLE JITLLM --bound B
-      jitLLM (the fast plan) forced on an oracle arm's generated tokens: its
+  judge.py greedy ORACLE LLMP --bound B
+      llmpalooza (the fast plan) forced on an oracle arm's generated tokens: its
       argmax equals the oracle's token at every step, except where the
-      oracle's margin between its token and jitLLM's argmax is below B (a
+      oracle's margin between its token and llmpalooza's argmax is below B (a
       near-tie). Every exception is listed.
-  judge.py ppl ORACLE JITLLM [--within F]
+  judge.py ppl ORACLE LLMP [--within F]
       Perplexity within F (relative, default 0.03, D-085's note) of the
       oracle arm's.
 
-ORACLE is oracle.cc's output directory (dsv4-native), EXACT, FAST and JITLLM
-jitllm_dsv4_exec's (--prompts ... --generate N --force TOKENS, or --ppl).
+ORACLE is oracle.cc's output directory (dsv4-native), EXACT, FAST and LLMP
+llmp_dsv4_exec's (--prompts ... --generate N --force TOKENS, or --ppl).
 Prints one JSON document; exits 1 if a bound fails. Runs in the pinned
 llama.cpp image, whose Python has NumPy.
 """
@@ -76,7 +76,7 @@ def noise(exact, fast):
     deltas = np.array(deltas)
     # "bound" is the rule this slice recorded (twice the largest change);
     # README.md's "The bound, going forward" explains why later slices take
-    # a percentile of noise between two of jitLLM's own paths instead.
+    # a percentile of noise between two of llmpalooza's own paths instead.
     report = {"steps": int(deltas.size), "margin_change_max": float(deltas.max()),
               "margin_change_p99": float(np.percentile(deltas, 99)),
               "margin_change_p95": float(np.percentile(deltas, 95)),
@@ -102,7 +102,7 @@ def greedy(oracle, jit, bound):
                 report["equal"] += 1
                 continue
             margin = float(o[k, want[k]] - o[k, got[k]])
-            item = {"prompt": name, "step": k, "oracle": want[k], "jitllm": got[k],
+            item = {"prompt": name, "step": k, "oracle": want[k], "llmp": got[k],
                     "oracle_margin": margin}
             if margin < bound:
                 report["near_ties"].append(item)
@@ -119,7 +119,7 @@ def ppl(oracle, jit, within):
     ref = json.loads(text[start:text.index("}", start) + 1])["ppl"]
     got = summary(jit)["ppl"]["ppl"]
     rel = abs(got - ref) / ref
-    report = {"oracle": ref, "jitllm": got, "relative": rel, "within": within, "ok": rel <= within}
+    report = {"oracle": ref, "llmp": got, "relative": rel, "within": within, "ok": rel <= within}
     a = np.fromfile(Path(jit) / "ppl.nll.f64", dtype=np.float64)
     b = np.fromfile(Path(oracle) / "ppl.nll.f64", dtype=np.float64)
     if a.size == b.size:

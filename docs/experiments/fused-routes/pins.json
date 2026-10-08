@@ -1,6 +1,6 @@
 {
   "recorded_on": "2026-09-22",
-  "purpose": "Fusion-preserving MoE route observation for the external llama.cpp reference (RE-006), using the unmodified pinned image; not a jitLLM runtime dependency",
+  "purpose": "Fusion-preserving MoE route observation for the external llama.cpp reference (RE-006), using the unmodified pinned image; not a llmpalooza runtime dependency",
   "reference": {
     "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
     "source_revision": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
@@ -80,7 +80,7 @@
       "-DLLAMA_BUILD",
       "-DLLAMA_SHARED"
     ],
-    "scope": "Rebuilt only libllama from patched sources with the image's default g++ (GCC 13.3.0) and the flags above; the image's GGML/CUDA libraries were unchanged. The patched library with JITLLM_ROUTE_OUTPUTS unset matched the official library bit-for-bit; with it set, the appended output copies changed logits.",
+    "scope": "Rebuilt only libllama from patched sources with the image's default g++ (GCC 13.3.0) and the flags above; the image's GGML/CUDA libraries were unchanged. The patched library with LLMP_ROUTE_OUTPUTS unset matched the official library bit-for-bit; with it set, the appended output copies changed logits.",
     "status": "Rejected design, retained to reproduce its negative result; not used by run_routes.py"
   }
 }

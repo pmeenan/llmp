@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // SHA-256 (FIPS 180-4), for identities such as implementation and plan
@@ -6,8 +6,8 @@
 // whose bytes may be untrusted. Incremental: Update any number of times,
 // then Finish once.
 
-#ifndef JITLLM_BASE_SHA256_H_
-#define JITLLM_BASE_SHA256_H_
+#ifndef LLMP_BASE_SHA256_H_
+#define LLMP_BASE_SHA256_H_
 
 #include <array>
 #include <cstddef>
@@ -16,7 +16,7 @@
 #include <string>
 #include <string_view>
 
-namespace jitllm::base {
+namespace llmp::base {
 
 using Sha256Digest = std::array<std::uint8_t, 32>;
 
@@ -41,6 +41,6 @@ class Sha256 {
 // Lower-case hexadecimal.
 std::string ToHex(const Sha256Digest& digest);
 
-}  // namespace jitllm::base
+}  // namespace llmp::base
 
-#endif  // JITLLM_BASE_SHA256_H_
+#endif  // LLMP_BASE_SHA256_H_

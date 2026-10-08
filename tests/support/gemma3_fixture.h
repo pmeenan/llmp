@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Actual approved tensor table; generation/source provenance is in the JSON.
-#ifndef JITLLM_TESTS_SUPPORT_GEMMA3_FIXTURE_H_
-#define JITLLM_TESTS_SUPPORT_GEMMA3_FIXTURE_H_
+#ifndef LLMP_TESTS_SUPPORT_GEMMA3_FIXTURE_H_
+#define LLMP_TESTS_SUPPORT_GEMMA3_FIXTURE_H_
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -19,22 +19,22 @@
 #include "base/check.h"
 #include "base/json.h"
 #include "model/gemma3.h"
-namespace jitllm::test_support::gemma3 {
-namespace md = jitllm::model;
-namespace json = jitllm::base::json;
+namespace llmp::test_support::gemma3 {
+namespace md = llmp::model;
+namespace json = llmp::base::json;
 inline json::Value Get(json::Value value, std::string_view key) {
   const auto found = value.find(key);
-  jitllm::base::Check(found.has_value(), "Gemma3 fixture key is missing");
+  llmp::base::Check(found.has_value(), "Gemma3 fixture key is missing");
   return *found;
 }
 inline json::Document Fixture() {
-  const auto* dir = std::getenv("JITLLM_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
-  jitllm::base::Check(dir != nullptr, "Gemma3 test data directory is missing");
+  const auto* dir = std::getenv("LLMP_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
+  llmp::base::Check(dir != nullptr, "Gemma3 test data directory is missing");
   std::ifstream file(std::string(dir) + "/gemma3/gemma3_4b_qat.json");
-  jitllm::base::Check(file.good(), "Gemma3 fixture is missing");
+  llmp::base::Check(file.good(), "Gemma3 fixture is missing");
   const std::string text(std::istreambuf_iterator<char>{file}, {});
   auto doc = json::Parse(text);
-  jitllm::base::Check(doc.has_value(), "Gemma3 fixture is invalid JSON");
+  llmp::base::Check(doc.has_value(), "Gemma3 fixture is invalid JSON");
   return std::move(*doc);
 }
 inline std::vector<md::Gemma3Resource> Resources() {
@@ -58,18 +58,18 @@ inline std::vector<md::Gemma3Resource> Resources() {
       representation += std::to_string(dim);
     }
     representation += "]}";
-    const auto doc = jitllm::artifact::json::Parse(representation);
-    jitllm::base::Check(doc.has_value(), "Gemma3 representation is invalid JSON");
-    const auto parsed = jitllm::artifact::ParseRepresentation(doc->root());
-    jitllm::base::Check(parsed.has_value(), "Gemma3 representation is invalid");
-    jitllm::base::Check(parsed->bytes == static_cast<std::uint64_t>(*Get(tensor, "bytes").int64()),
-                        "Gemma3 recorded bytes differ from native type helpers");
-    jitllm::base::Check(parsed->bytes == parsed->readable,
-                        "approved Gemma3 rows unexpectedly require padding");
-    const auto* traits = jitllm::artifact::FindGgmlType(resource.type);
-    jitllm::base::Check(traits != nullptr && static_cast<std::int64_t>(traits->id) ==
-                                                 *Get(tensor, "ggml_type").int64(),
-                        "Gemma3 recorded type ID differs from native helpers");
+    const auto doc = llmp::artifact::json::Parse(representation);
+    llmp::base::Check(doc.has_value(), "Gemma3 representation is invalid JSON");
+    const auto parsed = llmp::artifact::ParseRepresentation(doc->root());
+    llmp::base::Check(parsed.has_value(), "Gemma3 representation is invalid");
+    llmp::base::Check(parsed->bytes == static_cast<std::uint64_t>(*Get(tensor, "bytes").int64()),
+                      "Gemma3 recorded bytes differ from native type helpers");
+    llmp::base::Check(parsed->bytes == parsed->readable,
+                      "approved Gemma3 rows unexpectedly require padding");
+    const auto* traits = llmp::artifact::FindGgmlType(resource.type);
+    llmp::base::Check(traits != nullptr && static_cast<std::int64_t>(traits->id) ==
+                                               *Get(tensor, "ggml_type").int64(),
+                      "Gemma3 recorded type ID differs from native helpers");
     resource.readable = parsed->readable;
     resources.push_back(std::move(resource));
   }
@@ -79,9 +79,9 @@ inline md::Gemma3Resource& Role(std::vector<md::Gemma3Resource>& resources, std:
   const auto found = std::ranges::find_if(resources, [role](const auto& resource) {
     return std::ranges::contains(resource.roles, role);
   });
-  jitllm::base::Check(found != resources.end(), "Gemma3 role is missing");
+  llmp::base::Check(found != resources.end(), "Gemma3 role is missing");
   return *found;
 }
 
-}  // namespace jitllm::test_support::gemma3
-#endif  // JITLLM_TESTS_SUPPORT_GEMMA3_FIXTURE_H_
+}  // namespace llmp::test_support::gemma3
+#endif  // LLMP_TESTS_SUPPORT_GEMMA3_FIXTURE_H_

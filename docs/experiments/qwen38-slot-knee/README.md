@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Controlled Qwen request-slot cap (2026-10-04)
@@ -133,7 +133,7 @@ the layering proof. The separate owned proof state uses 0700 directories
 and a 0600 file, written with a private temporary file, fsync, atomic rename
 and directory fsync. Nothing is written to production state.
 
-Five actual `jitllm-runtime settings --json` calls return:
+Five actual `llmp-runtime settings --json` calls return:
 
 | Owned proof configuration | Slot value/source | Record |
 | --- | --- | --- |
@@ -155,7 +155,7 @@ measurement/key. DeepSeek's controlled slot calibration remains owed.
 ## Provenance and reproduction
 
 The measured binary is the checked `995cced` implementation in Spark B's
-read-only `~/src/jitLLM-wt/calkey01`; no build is performed for this
+read-only `~/src/llmp-wt/calkey01`; no build is performed for this
 settings-only experiment. Device identity is NVIDIA GB10 sm_121, driver
 580.178.04 and the runtime-reported CUDA 13.0 driver/device API; the checked
 toolkit compiler is 13.4.92. The 487-file compiled source inventory, binary,
@@ -188,7 +188,7 @@ usage, passive keys and owned cleanup receipts are retained.
 
 Raw evidence and pinned controllers are outside Git at Spark B
 `~/scratch/qwen-slot-knee/{screen1,calibration-proof1}` and the workstation
-`~/scratch/jitllm-m3-qwen-slot-knee-2026-10-04/` (state payloads are not
+`~/scratch/llmp-m3-qwen-slot-knee-2026-10-04/` (state payloads are not
 copied to the workstation). Run the preserved `screen.py` under the installed
 GPU supervisor with a fresh output directory and a 600-second bound, then
 wait; it refuses reused arm directories. Run `calibration_proof.py` with a

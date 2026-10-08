@@ -7,11 +7,11 @@
     "candidate15_manifest_sha256": "c40ce2bff58085a6ed542f94fb35736d108ed2c88d7123af1182a968ef268a3a",
     "source23_bundle_sha256": "1fb510fa713e282d07bd810d199d13fb5d774ae6e525729a0cc6d88c8386f967",
     "checkout_sha256": "32f3c0aadbdbcb6f7527bd0ab19579bb54bf39eb3171817a38f25f812972a0b5",
-    "helper_source_sha256": "1f16f4f40daba82f08b8c4f6bf522462c18f4e3c2c9db7df85e556ae17d54a5d",
+    "helper_source_sha256": "d4d6db3fe1754224d32a3117635b59bdf5228c9769b3c5018b76dc58899b03b9",
     "native_binary_sha256": "059484b8039775ab272fa09d1406a7f273e40d3617ff084c6d94b25bd6817e5d",
     "sdk_receipt_sha256": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09",
     "public_client_sha256": "0a7cfdbcd01fb733ebefc2b81934b0e212e2c08f26909767d876dea3a1175cdf",
-    "public_client_source_sha256": "78a0d497820e323e370225687c735ceecaa90d1680f98ac628c73e40bd46fe3f",
+    "public_client_source_sha256": "a1af9896d5057c34859611d7e296a5a9d52b4373c0563b74087054c9cc103c53",
     "public_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
     "artifact_manifest_sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
     "artifact_index_sha256": "e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171",
@@ -22,7 +22,7 @@
       "qualification": "inherited approved immutable raw SHA; current A filename/regular-file length checked, no full payload rescan"
     },
     "native_environment": {
-      "LD_LIBRARY_PATH": "/home/pmeenan/src/jitLLM-wt/m3fixb/build/spark-native/cublas",
+      "LD_LIBRARY_PATH": "/home/pmeenan/src/llmp-wt/m3fixb/build/spark-native/cublas",
       "expected_cublas_api": 130800,
       "expected_cublaslt_api": 130800,
       "sdk_identity": "aarch64-c09daba6ac31edee",

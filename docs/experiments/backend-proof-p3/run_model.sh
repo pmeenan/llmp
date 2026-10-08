@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
 # P3 part 2 on a Spark: the native EXL3 model runs and their judgements, for
@@ -8,39 +8,39 @@
 #   run_model.sh 40|45 G|O
 #
 # In order, each step's exit status printed:
-#   plan    jitllm_exl3_exec --record under nsys, one evaluation; the trace
+#   plan    llmp_exl3_exec --record under nsys, one evaluation; the trace
 #           exported; cuobjdump's SASS hashed; op_plan_compare.py against
 #           exl3-op-plan-ARM.json (the plan gate: exit 0 before anything is
 #           judged);
-#   rung3   jitllm_exl3_exec, two evaluations (the repeat must equal);
-#   capture jitllm_exl3_exec --capture (Tier C's captures; its logits must
+#   rung3   llmp_exl3_exec, two evaluations (the repeat must equal);
+#   capture llmp_exl3_exec --capture (Tier C's captures; its logits must
 #           equal rung3's, RE-010: pack_run.py records the comparison and
 #           tierc_check.py fails the run on it), packed and scored;
-#   ops     EXL3-G only: jitllm_exl3_exec --record-ops, then op_tier_e.py
+#   ops     EXL3-G only: llmp_exl3_exec --record-ops, then op_tier_e.py
 #           with rung3's logits as the uninstrumented control (Tier E,
 #           operation level);
-#   paged   jitllm_exl3_paged, two restores, relocated (rungs 4 and 5):
+#   paged   llmp_exl3_paged, two restores, relocated (rungs 4 and 5):
 #           every evaluation equal, and rung 4's logits equal rung3's.
 #
 # BUILD is the spark-native build (default this worktree's), W the raw
-# outputs (default ~/.local/share/jitllm/p3b-20260927, with plans/ from
+# outputs (default ~/.local/share/llmp/p3b-20260927, with plans/ from
 # model_plan.py and P0's held-out IDs). The reference steps run in the
 # reference container through run_container.sh.
 set -u
 short=$1 arm=$2
 here=$(cd "$(dirname "$0")" && pwd)
 : "${BUILD:=$here/../../../build/spark-native}"
-: "${W:=$HOME/.local/share/jitllm/p3b-20260927}"
-: "${STORE:=$HOME/.local/share/jitllm/artifact-layout-20260922/installed}"
-: "${IDS:=$HOME/.local/share/jitllm/p0-20260925/heldout-ids.i64le}"
+: "${W:=$HOME/.local/share/llmp/p3b-20260927}"
+: "${STORE:=$HOME/.local/share/llmp/artifact-layout-20260922/installed}"
+: "${IDS:=$HOME/.local/share/llmp/p0-20260925/heldout-ids.i64le}"
 case $short in
   40) fixture=4.0bpw art=6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4 ;;
   45) fixture=4.5bpw art=00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a ;;
   *) echo "fixture 40 or 45" >&2; exit 2 ;;
 esac
 record=$here/exl3-op-plan-$(echo "$arm" | tr GO go).json
-exec_bin=$BUILD/benchmarks/jitllm_exl3_exec
-paged_bin=$BUILD/benchmarks/jitllm_exl3_paged
+exec_bin=$BUILD/benchmarks/llmp_exl3_exec
+paged_bin=$BUILD/benchmarks/llmp_exl3_paged
 plan=$W/plans/plan-$short-$arm.txt
 out=$W/native
 mkdir -p "$out"

@@ -15,22 +15,22 @@
       {
         "path": "src/engine/gemma4_assistant.cc",
         "bytes": 20357,
-        "sha256": "18ff32cb35e34b99e0803409c7b96339bd51529e5adf158f65e0b3589d51c499"
+        "sha256": "9a3f83a49e8ee8334b9e96920f57b3bb9ef43bd6dab05c76b95ed49ded41bfce"
       },
       {
         "path": "src/engine/gemma4_assistant.h",
-        "bytes": 4046,
-        "sha256": "8552c47d0b52267c4ea3837a9a49a58b9473ffd8a16c29b4d6123b7dd8eb1dd0"
+        "bytes": 4040,
+        "sha256": "ef52d0d7cfd90786db490c1b8696f2d276235870ebe66f06b32d91bc51ae7c98"
       },
       {
         "path": "src/engine/gemma4_greedy.cc",
         "bytes": 1373,
-        "sha256": "a98963574785583066d52dd28f24a7827e36724480e42c3d130f6e169b19487d"
+        "sha256": "e449ebb6124ce93a95020a4af7fb474f01d97e15a5398316ff2c0d326e170280"
       },
       {
         "path": "src/engine/gemma4_greedy.h",
-        "bytes": 1332,
-        "sha256": "8eb6e4e4900b083f4713ccec24d491e18a6d43b76ceea70ff73d71ac3b5616eb"
+        "bytes": 1326,
+        "sha256": "d0817b2bb1a43f68c8493b511315498abefec469b1716a7a9e6fb43957cf0789"
       },
       {
         "path": "tests/unit/CMakeLists.txt",
@@ -44,8 +44,8 @@
       },
       {
         "path": "tests/unit/gemma4_greedy_test.cc",
-        "bytes": 2339,
-        "sha256": "347939ef0b11cda7d107bcefea18dd3523a7d300291c1d141404e3ad59d72d5b"
+        "bytes": 2341,
+        "sha256": "e6441e250167ed9a8586a615a38391c5e5ce083077ce8c22cb2fe6711488f2ed"
       }
     ],
     "preparation_ready_sha256": "16239a06c991125cee47748d5485c31d6454e6ed85fe6e4f57762dbb28288b22",
@@ -106,7 +106,7 @@
   "private_artifact_sha256": {
     "greedy-cpu1": "4412b4f305a05882d5409d5f07dd6f6347e335ec65abd41ef1bcbd29651a748e",
     "greedy-gpu1": "9240088e7668f81333f3654679d4bb134de1f7677f05b5010c5041b39430bcba",
-    "jitllm-receipt1.json": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09"
+    "llmp-receipt1.json": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09"
   },
   "official_jobs": [
     {
@@ -152,5 +152,5 @@
     "entry_sha256": "2072eb6a86fdea6084109eadbd5263f587560f230970b5d53dbb1e28eeec6f9f",
     "comparable_cuda_assistant": false
   },
-  "raw_evidence": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-unit-raw"
+  "raw_evidence": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-unit-raw"
 }

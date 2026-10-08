@@ -1,32 +1,32 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# The jitllm package's postinst (D-063, D-074): the service user, the data
+# The llmp package's postinst (D-063, D-074): the service user, the data
 # directory, then the unit, which is enabled and started on first install
 # and restarted on upgrade, as debhelper's snippets do.
 set -e
 
 case "$1" in
   configure|abort-upgrade|abort-deconfigure|abort-remove)
-    systemd-sysusers ${DPKG_ROOT:+--root="$DPKG_ROOT"} jitllm.conf
-    systemd-tmpfiles ${DPKG_ROOT:+--root="$DPKG_ROOT"} --create jitllm.conf || true
+    systemd-sysusers ${DPKG_ROOT:+--root="$DPKG_ROOT"} llmp.conf
+    systemd-tmpfiles ${DPKG_ROOT:+--root="$DPKG_ROOT"} --create llmp.conf || true
     if [ -z "$DPKG_ROOT" ]; then
-      if deb-systemd-helper debian-installed jitllm.service; then
-        if deb-systemd-helper --quiet was-enabled jitllm.service; then
-          deb-systemd-helper enable jitllm.service >/dev/null || true
+      if deb-systemd-helper debian-installed llmp.service; then
+        if deb-systemd-helper --quiet was-enabled llmp.service; then
+          deb-systemd-helper enable llmp.service >/dev/null || true
         else
-          deb-systemd-helper update-state jitllm.service >/dev/null || true
+          deb-systemd-helper update-state llmp.service >/dev/null || true
         fi
       else
-        deb-systemd-helper enable jitllm.service >/dev/null || true
+        deb-systemd-helper enable llmp.service >/dev/null || true
       fi
       if [ -d /run/systemd/system ]; then
         systemctl --system daemon-reload >/dev/null || true
         if [ -n "$2" ]; then
-          deb-systemd-invoke restart jitllm.service >/dev/null || true
+          deb-systemd-invoke restart llmp.service >/dev/null || true
         else
-          deb-systemd-invoke start jitllm.service >/dev/null || true
+          deb-systemd-invoke start llmp.service >/dev/null || true
         fi
       fi
     fi

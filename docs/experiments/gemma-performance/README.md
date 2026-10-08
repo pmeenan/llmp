@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma 26 matched scalar screen
@@ -157,7 +157,7 @@ of a wrong SwiGLU enum, dropped Q5_1 scale or forced MMQ-to-MMVQ switch.
 
 [llama_performance.cc](llama_performance.cc), [llama_trace.cc](llama_trace.cc)
 and [llama_routed.cc](llama_routed.cc) are external pinned-reference C API
-harnesses, not linked into jitLLM. Compile them in the pinned image using
+harnesses, not linked into llmpalooza. Compile them in the pinned image using
 headers from the exact commit, `g++ -std=c++23 -O2 -march=armv8-a
 -Wall -Wextra -Werror -I<headers>`, `/app` library/rpath, and
 `-lllama -lggml -lggml-base` for full-model harnesses. The isolated harness
@@ -168,7 +168,7 @@ mount and `CUDA_DISABLE_PTX_JIT=1`.
 
 Run `llama_performance MODEL OUTDIR warm|quality|quality-all|quality-unfused`;
 only `quality-unfused` sets `GGML_CUDA_DISABLE_FUSION=1`. Native syntax is
-`jitllm_gemma_runner ARTIFACT OUTDIR 2,818,5279,529,7001,563 32 1
+`llmp_gemma_runner ARTIFACT OUTDIR 2,818,5279,529,7001,563 32 1
 ordinary|norm|q8 warm|control device`. For restored-prefix isolation, use
 31 steps and append the ordinary control's `initialized-prefix.bin`; the
 first saved head then aligns with ordinary row 1. Checkpoint buffers are
@@ -206,7 +206,7 @@ The checked-in reference harnesses received formatting after these runs.
 A supervised rebuild produces the same three reference binary hashes byte
 for byte; formatting therefore changes no measured executable. The table
 still identifies the measured source hashes explicitly. Raw vectors, state bytes, samples and logs remain external
-under `~/.local/share/jitllm/gemma-performance/` on Spark. Supervised
+under `~/.local/share/llmp/gemma-performance/` on Spark. Supervised
 `m35-gemma-performance-{quality1,warm1,native-axes1,native-prefix1,
 reference-diag1,reference-layers1,reference-isolate1,reference-routed1,
 reference-identical2}` completed successfully; each had a 600-second limit.

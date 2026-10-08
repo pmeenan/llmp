@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // Equal-width partial cohorts keep the original whole-stream grid and global
@@ -9,7 +9,7 @@
 // only the sequence filter and destination origin differ.
 #pragma once
 #pragma clang system_header
-namespace jitllm_fattn_owner {
+namespace llmp_fattn_owner {
 // clang-format off
 template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap, bool V_is_K_view, bool use_sparse>
 __launch_bounds__(ggml_cuda_fattn_mma_get_nthreads(DKQ, DV, ncols1*ncols2), ggml_cuda_fattn_mma_get_occupancy(DKQ, DV, ncols1*ncols2))
@@ -421,4 +421,4 @@ static __global__ void flash_attn_owner_fixup_general(
     *dst = dst_val / rowsum;
 }
 // clang-format on
-}  // namespace jitllm_fattn_owner
+}  // namespace llmp_fattn_owner

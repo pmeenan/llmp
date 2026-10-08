@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 selected Q4_1 draft head
@@ -144,7 +144,7 @@ identical supplied history throughout instead of comparing divergent rows.
 
 Ten unique focused tests, exact model controls and eight direct quantizer
 refusal controls are covered across source-qualified stages. The full suite
-is deferred by the owner. GPU operand tests require `JITLLM_Q4_HEAD_FIXTURE`;
+is deferred by the owner. GPU operand tests require `LLMP_Q4_HEAD_FIXTURE`;
 an ordinary suite without it skips them. The focused controller sets it and
 requires exact named positive XML, without skips/errors/disabled cases.
 
@@ -164,7 +164,7 @@ bridge and the final documentation/replay-only additions.
 
 Required replay inputs live in the standing store and survive milestone raw
 cleanup. The eight authenticated actual-model operand files under
-`~/.local/share/jitllm/references/qwen-q4-head/operand-fixture-v1` are **KEEP**;
+`~/.local/share/llmp/references/qwen-q4-head/operand-fixture-v1` are **KEEP**;
 aggregate results list all SHA-256 values. Raw logs and head samples may be
 deleted without removing these inputs. The target is prepared artifact
 `c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93`,
@@ -173,7 +173,7 @@ TensorFold authentication/package/JIT inputs are documented in the
 [shared reference recipe](../qwen-device-masks/README.md#durable-reference-replay).
 
 Recreate the BF16 parent through its existing selected-head import recipe.
-Build `jitllm_qwen38_quantize_head` with the pinned SDK, then run `prepare.py`
+Build `llmp_qwen38_quantize_head` with the pinned SDK, then run `prepare.py`
 with explicit source ID, helper SHA, a new output store and receipt. Select the
 result as the native runner's drafter; keep the BF16 source for its control.
 Input identities, source/receipt/library bindings, XML identities and
@@ -192,28 +192,28 @@ configuration, and the original TensorFold target-quality lead stays open.
 ### Repeating the bounded checks
 
 Use the pinned SDK and prepared sources (`mise run build -- spark-native`),
-then build `jitllm_qwen38_spec`, `jitllm_qwen38_quantize_head`,
+then build `llmp_qwen38_spec`, `llmp_qwen38_quantize_head`,
 `qwen38_wave_plan_test` and `qwen38_quant_head_test`. Heavy work runs through
 the installed Spark supervisor with `--gpu --timeout 600 --stop-on-fail`.
 Record the new source inventory, SDK receipt, actual binary/loaded library
 hashes, artifact identities and successful retirement; historical raw job
 paths are not replay prerequisites.
 
-With `store` naming the standing `~/.local/share/jitllm/m3-artifacts` store and
+With `store` naming the standing `~/.local/share/llmp/m3-artifacts` store and
 `quantizer_sha` the freshly built helper's SHA-256, prepare a separate artifact:
 
 ```sh
 python3 docs/experiments/qwen38-quantized-draft-head/prepare.py \
   --source "$store/8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40" \
   --source-id 8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40 \
-  --quantizer build/spark-native/benchmarks/jitllm_qwen38_quantize_head \
+  --quantizer build/spark-native/benchmarks/llmp_qwen38_quantize_head \
   --quantizer-sha256 "$quantizer_sha" --out-store "$new_store" --receipt "$new_receipt"
 ```
 
 The approved parent and child are in that standing store. Authenticate their
 manifest/index and full import identity before use; the importer refuses to
 replace an existing child/receipt. Obtain approved literal inputs from
-`~/.local/share/jitllm/references/qwen-device-masks/inputs/`; aggregate results
+`~/.local/share/llmp/references/qwen-device-masks/inputs/`; aggregate results
 record the hashes for `prompt.json` (1536 IDs), `wave-prompts.json`
 (1536/1280 IDs) and `native-histories.json`. If absent, supply the authenticated
 files externally or reproduce the original literal selection using the
@@ -224,7 +224,7 @@ The following invocation demonstrates C1 with observation outside timing.
 Set `target`, `tokenizer`, `drafter`, `inputs` and a fresh `out` explicitly:
 
 ```sh
-build/spark-native/benchmarks/jitllm_qwen38_spec \
+build/spark-native/benchmarks/llmp_qwen38_spec \
   --qwen38-artifact "$target" --drafter "$drafter" --tokenizer "$tokenizer" \
   --prompts "$inputs/prompt.json" --only mask-short-1536 --prompt-token-ids on \
   --context 2048 --prefill-chunk 512 --draft 3 --draft-vocab 47172 \
@@ -242,7 +242,7 @@ For actual 47171-prefix lifetime proof use `--check masks-wave --tokens 16
 --draft-head-proof on --draft-vocab 47171`, keeping the same other settings,
 paired and unpaired lifetimes. This path also checks spill/restore and peers.
 
-Run the two GPU operand tests with `JITLLM_Q4_HEAD_FIXTURE` set to the standing
+Run the two GPU operand tests with `LLMP_Q4_HEAD_FIXTURE` set to the standing
 `operand-fixture-v1` directory. Its eight file hashes are in results.json;
 refuse missing/mismatched files before launch. To recreate that fixture,
 run the same artifact with `--check draft-head --tokens 2` and capture its

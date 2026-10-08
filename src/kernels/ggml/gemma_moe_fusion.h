@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_KERNELS_GGML_GEMMA_MOE_FUSION_H_
-#define JITLLM_KERNELS_GGML_GEMMA_MOE_FUSION_H_
+#ifndef LLMP_KERNELS_GGML_GEMMA_MOE_FUSION_H_
+#define LLMP_KERNELS_GGML_GEMMA_MOE_FUSION_H_
 
 #include <array>
 #include <cstddef>
@@ -13,7 +13,7 @@
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/gemma_moe.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace detail {
 class GraphReadIndex;
 }
@@ -42,5 +42,5 @@ std::optional<GemmaRoutingFusionNodes> GemmaRoutingFusionAt(
 std::optional<GemmaReductionFusionNodes> GemmaReductionFusionAt(
     GraphNodes graph, std::size_t index, std::span<ggml_tensor* const> keep = {},
     const detail::GraphReadIndex* reads = nullptr);
-}  // namespace jitllm::kernels::ggml
-#endif  // JITLLM_KERNELS_GGML_GEMMA_MOE_FUSION_H_
+}  // namespace llmp::kernels::ggml
+#endif  // LLMP_KERNELS_GGML_GEMMA_MOE_FUSION_H_

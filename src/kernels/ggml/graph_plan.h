@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Planning a GGML graph's execution as upstream's CUDA backend would run
@@ -10,7 +10,7 @@
 // does (ggml-cuda.cu:4185-4360). Views and no-ops launch nothing. With
 // fusion on (FP16-F), each node is first offered to upstream's fusion
 // patterns in ggml_cuda_try_fuse's order, through fusion.h's gates; a graph
-// where a pattern jitLLM does not implement might apply is refused, never
+// where a pattern llmpalooza does not implement might apply is refused, never
 // run differently. With fusion off (FP16-U, GGML_CUDA_DISABLE_FUSION),
 // upstream consults no pattern: an RMSNorm whose mul follows it runs as the
 // unfused RMSNorm-mul implementation (rms_norm's launcher, then mul's), and
@@ -26,8 +26,8 @@
 // during it), bind them, plan again with the real addresses and require the
 // same plan (SamePlan). Every profile builds this; nothing here launches.
 
-#ifndef JITLLM_KERNELS_GGML_GRAPH_PLAN_H_
-#define JITLLM_KERNELS_GGML_GRAPH_PLAN_H_
+#ifndef LLMP_KERNELS_GGML_GRAPH_PLAN_H_
+#define LLMP_KERNELS_GGML_GRAPH_PLAN_H_
 
 #include <array>
 #include <cstddef>
@@ -48,7 +48,7 @@
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // The device's part of upstream's choices.
 struct DeviceChoices {
@@ -75,14 +75,14 @@ struct DeviceChoices {
   std::function<bool(const ggml_tensor*, const ggml_tensor*)> pair_glu_fits = nullptr;
   // A speculative verify's plan (D-092): every matrix product of up to
   // kRowsMaxColumns columns (tokens) runs a row-invariant implementation
-  // (the quantized ones jitllm.mul_mat*.mmvq_rows, the float ones MMVF),
+  // (the quantized ones llmp.mul_mat*.mmvq_rows, the float ones MMVF),
   // whatever upstream would route it to, so that each row equals the
   // one-row plan's; a wider product is refused. Everything else as
   // upstream.
   bool row_invariant = false;
   // Planned without upstream's fusion, an RMSNorm and the mul that scales
   // it (RmsNormMulFusionAt's structural conditions) still run as the fused
-  // RMSNorm-mul: jitLLM's fast plans (DeepSeek V4's, the owner's policy of
+  // RMSNorm-mul: llmpalooza's fast plans (DeepSeek V4's, the owner's policy of
   // 2026-09-28), which do not reproduce upstream's unfused arithmetic.
   bool fuse_norms = false;
   // Checked three-node norm fusions, separately requested and default off.
@@ -218,7 +218,7 @@ struct GraphPlan {
 // regions whose spans overlap are joined. A step whose implementation
 // `on_stream` names keeps lane 0: one that borrows cuBLAS, whose handle and
 // workspace are the context stream's (implementations.h UsesCublas; without
-// `on_stream`, GGML's cuBLAS product and jitllm.gemm.bf16).
+// `on_stream`, GGML's cuBLAS product and llmp.gemm.bf16).
 void AssignLanes(GraphPlan& plan, const LaneTags& tags,
                  const std::function<bool(std::string_view)>& on_stream = {});
 
@@ -283,18 +283,18 @@ inline constexpr std::string_view kMulMatVecQ = "ggml.mul_mat.mmvq";
 inline constexpr std::string_view kMulMatGluQFused = "ggml.mul_mat_glu.mmvq_fused";
 inline constexpr std::string_view kMulMatGeGluQFused = "ggml.mul_mat_geglu.mmvq_fused";
 inline constexpr std::string_view kMulMatQ = "ggml.mul_mat.mmq";
-inline constexpr std::string_view kMulMatQPairDense = "jitllm.mul_mat.mmq_pair_dense";
+inline constexpr std::string_view kMulMatQPairDense = "llmp.mul_mat.mmq_pair_dense";
 inline constexpr std::string_view kMulMatHadamard = "ggml.mul_mat.fwht";
 inline constexpr std::string_view kMulMatIdVecQ = "ggml.mul_mat_id.mmvq";
 inline constexpr std::string_view kMulMatIdQ = "ggml.mul_mat_id.mmq";
-inline constexpr std::string_view kMulMatIdQPair = "jitllm.mul_mat_id.mmq_pair";
-inline constexpr std::string_view kMulMatIdQCompact = "jitllm.mul_mat_id.mmq_compact";
-inline constexpr std::string_view kMulMatIdQPairCompact = "jitllm.mul_mat_id.mmq_pair_compact";
-inline constexpr std::string_view kMulMatIdQPairGlu = "jitllm.mul_mat_id.mmq_pair_glu";
-inline constexpr std::string_view kMulMatIdQPairGluQ8 = "jitllm.mul_mat_id.mmq_pair_glu_q8";
+inline constexpr std::string_view kMulMatIdQPair = "llmp.mul_mat_id.mmq_pair";
+inline constexpr std::string_view kMulMatIdQCompact = "llmp.mul_mat_id.mmq_compact";
+inline constexpr std::string_view kMulMatIdQPairCompact = "llmp.mul_mat_id.mmq_pair_compact";
+inline constexpr std::string_view kMulMatIdQPairGlu = "llmp.mul_mat_id.mmq_pair_glu";
+inline constexpr std::string_view kMulMatIdQPairGluQ8 = "llmp.mul_mat_id.mmq_pair_glu_q8";
 inline constexpr std::string_view kMulMatIdQCompactPrequant =
-    "jitllm.mul_mat_id.mmq_compact_prequant";
-inline constexpr std::string_view kMulMatIdQ2D2r = "jitllm.mul_mat_id.q2_d2r";
+    "llmp.mul_mat_id.mmq_compact_prequant";
+inline constexpr std::string_view kMulMatIdQ2D2r = "llmp.mul_mat_id.q2_d2r";
 inline constexpr std::string_view kSubName = "ggml.sub";
 inline constexpr std::string_view kDivName = "ggml.div";
 inline constexpr std::string_view kScaleName = "ggml.scale";
@@ -317,63 +317,63 @@ inline constexpr std::string_view kHcPostName = "ggml.dsv4_hc_post";
 inline constexpr std::string_view kFlashAttnVec256Name = "ggml.flash_attn_ext.vec_d256";
 inline constexpr std::string_view kFlashAttnMmaGqa2Name = "ggml.flash_attn_ext.mma_gqa2";
 inline constexpr std::string_view kFlashAttnMmaName = "ggml.flash_attn_ext.mma";
-inline constexpr std::string_view kFlashAttnMmaWideName = "jitllm.flash_attn_ext.mma_wide";
-inline constexpr std::string_view kDsv4HcaTokentileName = "jitllm.dsv4.hca_tokentile";
+inline constexpr std::string_view kFlashAttnMmaWideName = "llmp.flash_attn_ext.mma_wide";
+inline constexpr std::string_view kDsv4HcaTokentileName = "llmp.dsv4.hca_tokentile";
 inline constexpr std::string_view kSsmConvName = "ggml.ssm_conv";
 inline constexpr std::string_view kGatedDeltaNetName = "ggml.gated_delta_net";
-// jitLLM's own operations on GGML tensors (jitllm_ops.h).
-inline constexpr std::string_view kMxfp8MulMatVecName = "jitllm.mxfp8.mul_mat_vec";
-inline constexpr std::string_view kMxfp8DequantName = "jitllm.mxfp8.dequant";
-inline constexpr std::string_view kNvfp4RowsName = "jitllm.nvfp4.get_rows";
-inline constexpr std::string_view kQRowsName = "jitllm.qrows.get_rows";
-inline constexpr std::string_view kHcCombineName = "jitllm.hc.combine";
-inline constexpr std::string_view kHcNormName = "jitllm.hc.norm";
-inline constexpr std::string_view kHcMixName = "jitllm.hc.mix";
-inline constexpr std::string_view kMoeGluName = "jitllm.moe.glu";
-inline constexpr std::string_view kMoeCombineName = "jitllm.moe.combine";
-inline constexpr std::string_view kBf16Name = "jitllm.bf16";
-inline constexpr std::string_view kGemmBf16Name = "jitllm.gemm.bf16";
-inline constexpr std::string_view kGatedDeltaNetColumnsName = "jitllm.gated_delta_net.columns";
-inline constexpr std::string_view kGatedDeltaNetLanesName = "jitllm.gated_delta_net.lanes";
-inline constexpr std::string_view kMoeRouteName = "jitllm.moe.route";
-inline constexpr std::string_view kMoeQuantizeName = "jitllm.moe.quantize";
-inline constexpr std::string_view kMoeGemmName = "jitllm.moe.gemm.cutlass";
-inline constexpr std::string_view kMoeGluQuantizeName = "jitllm.moe.glu_quantize";
-inline constexpr std::string_view kMoeCombineSortedName = "jitllm.moe.combine_sorted";
-inline constexpr std::string_view kMoeGemvName = "jitllm.moe.gemv";
-inline constexpr std::string_view kGdnConvName = "jitllm.gdn.conv";
-inline constexpr std::string_view kGdnNormGateName = "jitllm.gdn.norm_gate";
-inline constexpr std::string_view kArgmaxName = "jitllm.argmax";
-inline constexpr std::string_view kMxfp8QuantizeName = "jitllm.mxfp8.quantize";
-inline constexpr std::string_view kMxfp8SwizzleName = "jitllm.mxfp8.swizzle";
-inline constexpr std::string_view kMxfp8GemmName = "jitllm.mxfp8.gemm.cutlass";
-inline constexpr std::string_view kHcPrepName = "jitllm.hc.prep";
-inline constexpr std::string_view kHcLoName = "jitllm.hc.lo";
-inline constexpr std::string_view kHcMixBf16Name = "jitllm.hc.mix_bf16";
-inline constexpr std::string_view kMoeRouterName = "jitllm.moe.router";
-inline constexpr std::string_view kGdnHistoryName = "jitllm.gdn.history";
-inline constexpr std::string_view kGdnStepName = "jitllm.gdn.step";
-inline constexpr std::string_view kGdnGatesName = "jitllm.gdn.gates";
-inline constexpr std::string_view kQsaPrepName = "jitllm.qsa.prep";
-inline constexpr std::string_view kQsaGateQuantizeName = "jitllm.qsa.gate_quantize";
-inline constexpr std::string_view kQsaPoolName = "jitllm.qsa.pool";
-inline constexpr std::string_view kQsaTopKName = "jitllm.qsa.topk";
-inline constexpr std::string_view kQsaAttnName = "jitllm.qsa.attn";
-// DeepSeek V4's fast plan (jitllm_ops.h).
-inline constexpr std::string_view kQuantizeQ8Name = "jitllm.q8_1";
-inline constexpr std::string_view kMmvqPreparedName = "jitllm.mmvq.prepared";
-inline constexpr std::string_view kVecQName = "jitllm.vecq";
-inline constexpr std::string_view kDsv4RouteName = "jitllm.dsv4.route";
-inline constexpr std::string_view kDsv4CombineName = "jitllm.dsv4.combine";
-inline constexpr std::string_view kDsv4HcMixName = "jitllm.dsv4.hc_mix";
-inline constexpr std::string_view kDsv4HcPreName = "jitllm.dsv4.hc_pre";
-inline constexpr std::string_view kDsv4CompressName = "jitllm.dsv4.compress";
-inline constexpr std::string_view kDsv4LidTopKName = "jitllm.dsv4.lid_topk";
-inline constexpr std::string_view kDsv4SparseMaskName = "jitllm.dsv4.sparse_mask";
+// llmpalooza's own operations on GGML tensors (llmp_ops.h).
+inline constexpr std::string_view kMxfp8MulMatVecName = "llmp.mxfp8.mul_mat_vec";
+inline constexpr std::string_view kMxfp8DequantName = "llmp.mxfp8.dequant";
+inline constexpr std::string_view kNvfp4RowsName = "llmp.nvfp4.get_rows";
+inline constexpr std::string_view kQRowsName = "llmp.qrows.get_rows";
+inline constexpr std::string_view kHcCombineName = "llmp.hc.combine";
+inline constexpr std::string_view kHcNormName = "llmp.hc.norm";
+inline constexpr std::string_view kHcMixName = "llmp.hc.mix";
+inline constexpr std::string_view kMoeGluName = "llmp.moe.glu";
+inline constexpr std::string_view kMoeCombineName = "llmp.moe.combine";
+inline constexpr std::string_view kBf16Name = "llmp.bf16";
+inline constexpr std::string_view kGemmBf16Name = "llmp.gemm.bf16";
+inline constexpr std::string_view kGatedDeltaNetColumnsName = "llmp.gated_delta_net.columns";
+inline constexpr std::string_view kGatedDeltaNetLanesName = "llmp.gated_delta_net.lanes";
+inline constexpr std::string_view kMoeRouteName = "llmp.moe.route";
+inline constexpr std::string_view kMoeQuantizeName = "llmp.moe.quantize";
+inline constexpr std::string_view kMoeGemmName = "llmp.moe.gemm.cutlass";
+inline constexpr std::string_view kMoeGluQuantizeName = "llmp.moe.glu_quantize";
+inline constexpr std::string_view kMoeCombineSortedName = "llmp.moe.combine_sorted";
+inline constexpr std::string_view kMoeGemvName = "llmp.moe.gemv";
+inline constexpr std::string_view kGdnConvName = "llmp.gdn.conv";
+inline constexpr std::string_view kGdnNormGateName = "llmp.gdn.norm_gate";
+inline constexpr std::string_view kArgmaxName = "llmp.argmax";
+inline constexpr std::string_view kMxfp8QuantizeName = "llmp.mxfp8.quantize";
+inline constexpr std::string_view kMxfp8SwizzleName = "llmp.mxfp8.swizzle";
+inline constexpr std::string_view kMxfp8GemmName = "llmp.mxfp8.gemm.cutlass";
+inline constexpr std::string_view kHcPrepName = "llmp.hc.prep";
+inline constexpr std::string_view kHcLoName = "llmp.hc.lo";
+inline constexpr std::string_view kHcMixBf16Name = "llmp.hc.mix_bf16";
+inline constexpr std::string_view kMoeRouterName = "llmp.moe.router";
+inline constexpr std::string_view kGdnHistoryName = "llmp.gdn.history";
+inline constexpr std::string_view kGdnStepName = "llmp.gdn.step";
+inline constexpr std::string_view kGdnGatesName = "llmp.gdn.gates";
+inline constexpr std::string_view kQsaPrepName = "llmp.qsa.prep";
+inline constexpr std::string_view kQsaGateQuantizeName = "llmp.qsa.gate_quantize";
+inline constexpr std::string_view kQsaPoolName = "llmp.qsa.pool";
+inline constexpr std::string_view kQsaTopKName = "llmp.qsa.topk";
+inline constexpr std::string_view kQsaAttnName = "llmp.qsa.attn";
+// DeepSeek V4's fast plan (llmp_ops.h).
+inline constexpr std::string_view kQuantizeQ8Name = "llmp.q8_1";
+inline constexpr std::string_view kMmvqPreparedName = "llmp.mmvq.prepared";
+inline constexpr std::string_view kVecQName = "llmp.vecq";
+inline constexpr std::string_view kDsv4RouteName = "llmp.dsv4.route";
+inline constexpr std::string_view kDsv4CombineName = "llmp.dsv4.combine";
+inline constexpr std::string_view kDsv4HcMixName = "llmp.dsv4.hc_mix";
+inline constexpr std::string_view kDsv4HcPreName = "llmp.dsv4.hc_pre";
+inline constexpr std::string_view kDsv4CompressName = "llmp.dsv4.compress";
+inline constexpr std::string_view kDsv4LidTopKName = "llmp.dsv4.lid_topk";
+inline constexpr std::string_view kDsv4SparseMaskName = "llmp.dsv4.sparse_mask";
 // A speculative verify's row-invariant products (D-092; ops_ext.h).
-inline constexpr std::string_view kMulMatVecQRows = "jitllm.mul_mat.mmvq_rows";
-inline constexpr std::string_view kMulMatIdVecQRows = "jitllm.mul_mat_id.mmvq_rows";
-inline constexpr std::string_view kMulMatVecFRows = "jitllm.mul_mat.mmvf_rows";
+inline constexpr std::string_view kMulMatVecQRows = "llmp.mul_mat.mmvq_rows";
+inline constexpr std::string_view kMulMatIdVecQRows = "llmp.mul_mat_id.mmvq_rows";
+inline constexpr std::string_view kMulMatVecFRows = "llmp.mul_mat.mmvf_rows";
 // The most columns (tokens) a row-invariant product takes (ops_ext.h
 // kRowsMaxColumns).
 inline constexpr std::int64_t kRowInvariantColumns = 8;
@@ -437,6 +437,6 @@ void BindViews(std::span<ggml_tensor* const> nodes);
 // `base` on (PlaceActivations's first pass), then binds the views.
 void BindDistinct(GraphNodes graph, std::uint64_t base);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_GRAPH_PLAN_H_
+#endif  // LLMP_KERNELS_GGML_GRAPH_PLAN_H_

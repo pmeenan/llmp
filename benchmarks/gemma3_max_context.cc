@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // One internal trained-maximum teacher pass through the ordinary server's
@@ -27,7 +27,7 @@
 #include "tokenizer/tokenizer.h"
 
 namespace {
-namespace rt = jitllm::runtime;
+namespace rt = llmp::runtime;
 namespace fs = std::filesystem;
 constexpr std::uint32_t kContext = 131072, kPrefix = 131008, kSteps = 64, kVocab = 262208;
 std::unexpected<std::string> Error(std::string text) { return std::unexpected(std::move(text)); }
@@ -44,7 +44,7 @@ std::expected<std::string, std::string> Read(const fs::path& path, std::uint64_t
 }
 template <class T>
 std::string Hash(std::span<const T> values) {
-  return jitllm::base::ToHex(jitllm::base::Sha256{}.Update(std::as_bytes(values)).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256{}.Update(std::as_bytes(values)).Finish());
 }
 template <class T>
 rt::Status Write(const fs::path& path, std::span<const T> values) {
@@ -63,12 +63,12 @@ rt::Status Prepare(std::span<const std::string_view> args) {
   auto metadata = Read(fs::path(args[0]), 32ULL << 20U);
   auto text = Read(fs::path(args[1]), 8ULL << 20U);
   if (!metadata || !text) return Error("preparation inputs unavailable");
-  auto parsed = jitllm::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*metadata)));
+  auto parsed = llmp::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*metadata)));
   if (!parsed) return Error(parsed.error().ToString());
   if (parsed->spec.tokens.size() != kVocab || parsed->spec.bos != 2 || !parsed->spec.add_bos ||
       parsed->spec.add_eos)
     return Error("Gemma3 vocabulary/BOS contract differs");
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(parsed->spec));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(parsed->spec));
   if (!tokenizer) return Error(tokenizer.error().ToString());
   std::vector<std::int32_t> ids;
   if (auto encoded = tokenizer->Encode(*text, {.add_bos_eos = true, .max_tokens = 2000000}, ids);
@@ -94,13 +94,13 @@ rt::Status Run(std::span<const std::string_view> args) {
         return id < 0 || id >= static_cast<std::int32_t>(kVocab);
       }))
     return Error("invalid corpus IDs");
-  auto config = jitllm::config::LoadNodeConfig({.main_file = fs::path(args[0]),
-                                                .main_file_optional = false,
-                                                .anchor = fs::path(args[1]),
-                                                .trusted_uid = getuid()});
+  auto config = llmp::config::LoadNodeConfig({.main_file = fs::path(args[0]),
+                                              .main_file_optional = false,
+                                              .anchor = fs::path(args[1]),
+                                              .trusted_uid = getuid()});
   if (!config) return Error("invalid private node configuration");
   if (config->models.size() != 1) return Error("one configured model required");
-  auto roles = jitllm::config::PrepareRuntimeRoles(config->storage, getuid(), fs::path(args[1]));
+  auto roles = llmp::config::PrepareRuntimeRoles(config->storage, getuid(), fs::path(args[1]));
   if (!roles) return Error(roles.error().front());
   rt::ServingOptions options;
   options.plain = true;

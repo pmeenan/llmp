@@ -1,13 +1,13 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 umask 077
 ulimit -c 0
 [[ $# == 2 && "$2" =~ ^llama-refresh-[A-Za-z0-9_-]+$ ]] || exit 2
-scratch="$HOME/.local/share/jitllm/llama-reference-v060"
+scratch="$HOME/.local/share/llmp/llama-reference-v060"
 image=ghcr.io/ggml-org/llama.cpp@sha256:c604ea4f1c2e8d5c8b27d89fef727384d59e23c5b07e369cde5393820e0607db
-sdk="$HOME/.local/share/jitllm/sdk/aarch64-c09daba6ac31edee"
+sdk="$HOME/.local/share/llmp/sdk/aarch64-c09daba6ac31edee"
 mode="$1" name="$2"
 sha256sum --check "$scratch/stage1.sha256"
 if [[ "$mode" == pull ]]; then
@@ -66,8 +66,8 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 common=(run --rm --network none --read-only --user "$(id -u):$(id -g)"
-  --cidfile "$scratch/$name.cid" --name "jitllm-gemma26-late-moe-$name"
-  --label jitllm.observer=gemma26-late-moe --tmpfs /tmp:rw,size=64m
+  --cidfile "$scratch/$name.cid" --name "llmp-gemma26-late-moe-$name"
+  --label llmp.observer=gemma26-late-moe --tmpfs /tmp:rw,size=64m
   --ulimit core=0 --mount "type=bind,src=$scratch,dst=/scratch"
   --device nvidia.com/gpu=all --env CUDA_DISABLE_PTX_JIT=1)
 # CUDA device/runtime capability is checked; no model/checkpoint directories are mounted.

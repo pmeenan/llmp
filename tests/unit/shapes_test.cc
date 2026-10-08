@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // D-068's shapes expressed, not executed, in every build profile: request
@@ -65,46 +65,46 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::base::Sha256Digest;
-using jitllm::catalog::Catalog;
-using jitllm::catalog::Closure;
-using jitllm::catalog::DomainId;
-using jitllm::catalog::ExtentId;
-using jitllm::catalog::LeaseId;
-using jitllm::catalog::MemoryClass;
-using jitllm::catalog::Recovery;
-using jitllm::catalog::ResourceId;
-using jitllm::execution::DecodingMode;
-using jitllm::execution::OutputBuffer;
-using jitllm::execution::OutputUnit;
-using jitllm::execution::PhaseKind;
-using jitllm::execution::PhaseWidth;
-using jitllm::execution::PlanProgram;
-using jitllm::execution::ProgramContract;
-using jitllm::execution::ProgramCursor;
-using jitllm::execution::ProgramError;
-using jitllm::execution::ProgramPlan;
-using jitllm::execution::ProgramRejection;
-using jitllm::execution::ProgramRequest;
-using jitllm::execution::Repeat;
-using jitllm::execution::WidthRule;
-using jitllm::model::ComponentRole;
-using jitllm::model::ModelContext;
-using jitllm::model::StateCapability;
-using jitllm::model::StateCursor;
-using jitllm::model::StateError;
-using jitllm::model::StateRepresentation;
-using jitllm::scheduler::Admission;
-using jitllm::scheduler::Decision;
-using jitllm::scheduler::PolicySettings;
-using jitllm::scheduler::RequestClass;
-using jitllm::scheduler::RequestId;
-using jitllm::scheduler::RequestSpec;
-using jitllm::scheduler::RequestState;
-using jitllm::scheduler::Tick;
-using jitllm::test_support::Failed;
-using jitllm::test_support::FailedCode;
+using llmp::base::Bytes;
+using llmp::base::Sha256Digest;
+using llmp::catalog::Catalog;
+using llmp::catalog::Closure;
+using llmp::catalog::DomainId;
+using llmp::catalog::ExtentId;
+using llmp::catalog::LeaseId;
+using llmp::catalog::MemoryClass;
+using llmp::catalog::Recovery;
+using llmp::catalog::ResourceId;
+using llmp::execution::DecodingMode;
+using llmp::execution::OutputBuffer;
+using llmp::execution::OutputUnit;
+using llmp::execution::PhaseKind;
+using llmp::execution::PhaseWidth;
+using llmp::execution::PlanProgram;
+using llmp::execution::ProgramContract;
+using llmp::execution::ProgramCursor;
+using llmp::execution::ProgramError;
+using llmp::execution::ProgramPlan;
+using llmp::execution::ProgramRejection;
+using llmp::execution::ProgramRequest;
+using llmp::execution::Repeat;
+using llmp::execution::WidthRule;
+using llmp::model::ComponentRole;
+using llmp::model::ModelContext;
+using llmp::model::StateCapability;
+using llmp::model::StateCursor;
+using llmp::model::StateError;
+using llmp::model::StateRepresentation;
+using llmp::scheduler::Admission;
+using llmp::scheduler::Decision;
+using llmp::scheduler::PolicySettings;
+using llmp::scheduler::RequestClass;
+using llmp::scheduler::RequestId;
+using llmp::scheduler::RequestSpec;
+using llmp::scheduler::RequestState;
+using llmp::scheduler::Tick;
+using llmp::test_support::Failed;
+using llmp::test_support::FailedCode;
 using ::testing::ElementsAre;
 using ::testing::IsEmpty;
 
@@ -128,7 +128,7 @@ Bytes RoundUp(Bytes bytes) { return U((bytes.value() + kUnit - 1) / kUnit); }
 // The error a refused plan names, or nothing if it was admitted (an admitted
 // plan's first bytes would read as ProgramError::kInvalid through .error()).
 std::optional<ProgramError> Refused(
-    const std::expected<ProgramPlan, jitllm::execution::ProgramRejection>& plan) {
+    const std::expected<ProgramPlan, llmp::execution::ProgramRejection>& plan) {
   return FailedCode(plan);
 }
 
@@ -177,7 +177,7 @@ class Node {
 
   // An artifact's weights, one resource in an extent of its own.
   ResourceId Weights(std::uint8_t artifact, std::uint32_t group, std::uint64_t units) {
-    jitllm::catalog::ContentKey content;
+    llmp::catalog::ContentKey content;
     content.artifact[0] = artifact;
     content.group = group;
     const ExtentId extent = catalog_
@@ -188,21 +188,21 @@ class Node {
                                             .content = content})
                                 .value();
     const std::array ranges = {
-        jitllm::catalog::Range{.extent = extent, .offset = Bytes(), .length = U(units)}};
+        llmp::catalog::Range{.extent = extent, .offset = Bytes(), .length = U(units)}};
     return catalog_.AddResource(ranges).value();
   }
 
   // Brings a closure's missing extents in, evicting reclaimable cache the
   // closure does not hold; false if even that cannot make room.
   bool Materialize(const Closure& closure) {
-    const jitllm::memory::MaterializationPlan plan =
-        jitllm::memory::PlanMaterialization(catalog_, domain_, budget_, closure);
+    const llmp::memory::MaterializationPlan plan =
+        llmp::memory::PlanMaterialization(catalog_, domain_, budget_, closure);
     EXPECT_THAT(plan.stale, IsEmpty());
     EXPECT_THAT(plan.quarantined, IsEmpty());
     if (!plan.feasible) {
       return false;
     }
-    for (const jitllm::memory::Victim& victim : plan.victims.victims) {
+    for (const llmp::memory::Victim& victim : plan.victims.victims) {
       EXPECT_EQ(victim.memory_class, MemoryClass::kWeights);  // only idle cache gives way
       Evict(victim.extent);
       ++evictions_;
@@ -254,7 +254,7 @@ class Node {
 
   void Evict(ExtentId extent) {
     const auto ticket = catalog_.BeginEvict(extent);
-    ASSERT_TRUE(ticket.has_value()) << jitllm::catalog::ToString(ticket.error());
+    ASSERT_TRUE(ticket.has_value()) << llmp::catalog::ToString(ticket.error());
     EXPECT_TRUE(memory_.Release(backing_.at(extent)).has_value());
     backing_.erase(extent);
     EXPECT_TRUE(catalog_.CompleteEvict(*ticket).has_value());
@@ -279,18 +279,18 @@ class Node {
   // What may be protected at a completed boundary, with no phase running:
   // F + R(G) + J.
   Bytes AtBoundary() const {
-    const jitllm::memory::CommitmentTotals totals = admission_.Totals();
+    const llmp::memory::CommitmentTotals totals = admission_.Totals();
     return Add(Add(totals.fixed, totals.background), totals.retained);
   }
 
   // Everything the requests held is gone: only fixed overhead and idle
   // weight cache remain, with no commitment beyond F.
   void ExpectDrained() const {
-    const jitllm::memory::CommitmentTotals totals = admission_.Totals();
+    const llmp::memory::CommitmentTotals totals = admission_.Totals();
     EXPECT_EQ(totals.retained, Bytes());
     EXPECT_EQ(totals.max_phase, Bytes());
     EXPECT_EQ(totals.required, fixed_);
-    const jitllm::catalog::Occupancy occupancy = catalog_.OccupancyOf(domain_);
+    const llmp::catalog::Occupancy occupancy = catalog_.OccupancyOf(domain_);
     EXPECT_EQ(occupancy.held, Bytes());
     EXPECT_EQ(occupancy.pinned, fixed_);
     EXPECT_EQ(occupancy.loading, Bytes());
@@ -303,29 +303,29 @@ class Node {
   }
 
  private:
-  static jitllm::memory::CommitmentLedger LedgerFor(DomainId domain, Bytes budget) {
-    jitllm::memory::CommitmentLedger ledger;
+  static llmp::memory::CommitmentLedger LedgerFor(DomainId domain, Bytes budget) {
+    llmp::memory::CommitmentLedger ledger;
     EXPECT_TRUE(ledger.AddDomain(domain, budget).has_value());
     return ledger;
   }
 
   void Load(ExtentId extent) {
     const auto ticket = catalog_.BeginLoad(extent, budget_);
-    ASSERT_TRUE(ticket.has_value()) << jitllm::catalog::ToString(ticket.error());
+    ASSERT_TRUE(ticket.has_value()) << llmp::catalog::ToString(ticket.error());
     const Bytes size = catalog_.Describe(extent).value().descriptor.size;
     // The catalog checked occupancy against B, so the fake has room.
     backing_[extent] = memory_.Create(0, size).value();
     EXPECT_TRUE(catalog_.CompleteLoad(*ticket).has_value());
   }
 
-  jitllm::providers::fake::FakeDeviceMemory memory_;
+  llmp::providers::fake::FakeDeviceMemory memory_;
   Bytes budget_;
   Bytes fixed_;
   Catalog catalog_;
   DomainId domain_;
-  jitllm::memory::CommitmentLedger ledger_;
+  llmp::memory::CommitmentLedger ledger_;
   Admission admission_;
-  std::map<ExtentId, jitllm::providers::BackingId> backing_;
+  std::map<ExtentId, llmp::providers::BackingId> backing_;
   std::vector<const Driver*> runs_;
   Tick now_ = 0;
   std::size_t evictions_ = 0;
@@ -387,7 +387,7 @@ class Driver {
   bool Begin(std::string_view kind, std::uint64_t width, std::span<const ExtentId> also = {}) {
     EXPECT_EQ(node_.admission().StateOf(id_), RequestState::kRunning);
     if (auto begun = cursor_.Begin(kind, width); !begun) {
-      ADD_FAILURE() << kind << ": " << jitllm::execution::ToString(begun.error());
+      ADD_FAILURE() << kind << ": " << llmp::execution::ToString(begun.error());
       return false;
     }
     const PhaseKind& phase = *std::ranges::find(contract_.phases, kind, &PhaseKind::name);
@@ -514,7 +514,7 @@ class Driver {
       const StateRepresentation& representation = contract_.states[i];
       if (states_[i].committed() > 0) {
         EXPECT_GE(blocks_[i].size(),
-                  jitllm::model::BlocksFor(representation, states_[i].committed()).value_or(0))
+                  llmp::model::BlocksFor(representation, states_[i].committed()).value_or(0))
             << representation.name;
       }
       retained = Add(retained, bytes);
@@ -602,9 +602,9 @@ class Driver {
 };
 
 void Node::Check() const {
-  const jitllm::memory::CommitmentTotals totals = admission_.Totals();
+  const llmp::memory::CommitmentTotals totals = admission_.Totals();
   EXPECT_LE(totals.required, totals.budget);
-  const jitllm::catalog::Occupancy occupancy = catalog_.OccupancyOf(domain_);
+  const llmp::catalog::Occupancy occupancy = catalog_.OccupancyOf(domain_);
   EXPECT_EQ(occupancy.Total(), memory_.in_use());
   EXPECT_LE(occupancy.Total(), budget_);
   // Everything but reclaimable cache fits within fixed overhead, every
@@ -791,7 +791,7 @@ ProgramPlan Plan(Node& node, const ProgramContract& contract, const ModelContext
                  const ProgramRequest& request) {
   auto plan = PlanProgram(contract, context, node.catalog(), node.domain(), request,
                           node.available(), U(1));
-  EXPECT_TRUE(plan.has_value()) << (plan ? "" : jitllm::execution::ToString(plan.error()));
+  EXPECT_TRUE(plan.has_value()) << (plan ? "" : llmp::execution::ToString(plan.error()));
   return plan.value_or(ProgramPlan{});
 }
 
@@ -963,7 +963,7 @@ TEST(ProgramPlanTest, ExplainsItsEnvelopeItemByItem) {
   EXPECT_EQ(refused.width, 16U);
   EXPECT_EQ(refused.required, U(38));
   EXPECT_EQ(refused.shortfall, U(1));
-  EXPECT_EQ(jitllm::execution::ToString(refused),
+  EXPECT_EQ(llmp::execution::ToString(refused),
             "a phase envelope does not fit above the retained state: phase prefill at width 16 "
             "needs 2490368 bytes, 65536 more than available");
 }
@@ -983,11 +983,11 @@ TEST(ShapeScenarioTest, AGrantOverAFullUsefulCacheEvictsNothing) {
   const ProgramPlan plan = Plan(node, AutoregressiveContract(1), Single(2, fresh),
                                 {.prompt = 32, .max_output = 8, .draft_depth = 0, .steps = 0});
   const auto admitted = node.admission().Submit(
-      jitllm::scheduler::RequestSpec{.request_class = RequestClass::kInteractive,
-                                     .envelope = plan.envelope,
-                                     .work = 10,
-                                     .switch_cost = 1,
-                                     .deadline = std::nullopt},
+      llmp::scheduler::RequestSpec{.request_class = RequestClass::kInteractive,
+                                   .envelope = plan.envelope,
+                                   .work = 10,
+                                   .switch_cost = 1,
+                                   .deadline = std::nullopt},
       node.Tock());
   ASSERT_TRUE(admitted.has_value());
   EXPECT_EQ(node.admission().StateOf(admitted->id), RequestState::kRunning);
@@ -1005,7 +1005,7 @@ TEST(ShapeScenarioTest, AGrantOverAFullUsefulCacheEvictsNothing) {
     const std::array one = {resource};
     const auto extents = node.catalog().ClosureOf(one).value().extents;
     cached_resident += node.catalog().Describe(extents.front().first).value().state ==
-                               jitllm::catalog::ExtentState::kResident
+                               llmp::catalog::ExtentState::kResident
                            ? 1
                            : 0;
   }
@@ -1015,8 +1015,7 @@ TEST(ShapeScenarioTest, AGrantOverAFullUsefulCacheEvictsNothing) {
   ASSERT_TRUE(node.catalog().ReleaseLease(lease).has_value());
   EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total(), held);
   for (const auto& [extent, generation] : closure.extents) {
-    EXPECT_EQ(node.catalog().Describe(extent).value().state,
-              jitllm::catalog::ExtentState::kResident);
+    EXPECT_EQ(node.catalog().Describe(extent).value().state, llmp::catalog::ExtentState::kResident);
   }
 }
 
@@ -1043,7 +1042,7 @@ TEST(ProgramPlanTest, ATightBudgetAdmitsTheLargestReconstructionPhaseOrRefusesTh
                                           .content = {}})
                               .value();
   const std::array ranges = {
-      jitllm::catalog::Range{.extent = extent, .offset = Bytes(), .length = Bytes(292 * kGranule)}};
+      llmp::catalog::Range{.extent = extent, .offset = Bytes(), .length = Bytes(292 * kGranule)}};
   const ResourceId weights = catalog.AddResource(ranges).value();
   const ModelContext context =
       ModelContext::Create(
@@ -1084,7 +1083,7 @@ TEST(ProgramPlanTest, ATightBudgetAdmitsTheLargestReconstructionPhaseOrRefusesTh
     return PlanProgram(contract, context, catalog, domain, request, available, Bytes(kGranule));
   };
   const auto roomy = plan_at(Bytes(std::uint64_t{64} << 30U));
-  ASSERT_TRUE(roomy.has_value()) << jitllm::execution::ToString(roomy.error());
+  ASSERT_TRUE(roomy.has_value()) << llmp::execution::ToString(roomy.error());
   const Bytes closure(292 * kGranule);
   const Bytes widest((w1023.value() + kGranule - 1) / kGranule * kGranule);
   EXPECT_EQ(roomy->Phase("prefill")->width, 1024U);
@@ -1097,11 +1096,11 @@ TEST(ProgramPlanTest, ATightBudgetAdmitsTheLargestReconstructionPhaseOrRefusesTh
   // Exactly R_i plus the largest reconstruction phase's envelope: admitted.
   const Bytes exact = Add(retained, Add(closure, widest));
   const auto tight = plan_at(exact);
-  ASSERT_TRUE(tight.has_value()) << jitllm::execution::ToString(tight.error());
+  ASSERT_TRUE(tight.has_value()) << llmp::execution::ToString(tight.error());
   EXPECT_EQ(tight->Phase("prefill")->width, 1024U);
   // A byte less: the prefill narrows to the widest width whose chunks fit.
   const auto narrower = plan_at(Bytes(exact.value() - 1));
-  ASSERT_TRUE(narrower.has_value()) << jitllm::execution::ToString(narrower.error());
+  ASSERT_TRUE(narrower.has_value()) << llmp::execution::ToString(narrower.error());
   EXPECT_EQ(narrower->Phase("prefill")->width, 145U);
   // Less than even the narrowest prefill needs: refused, explained.
   const Bytes narrowest = Add(retained, Add(closure, Bytes(5 * kGranule)));  // 32 rows: 10.2 MB
@@ -1307,7 +1306,7 @@ TEST(ProgramPlanTest, RefusesContractsThatCouldOnlyFailOnceRunning) {
                                           .content = {}})
                               .value();
   const std::array ranges = {
-      jitllm::catalog::Range{.extent = remote, .offset = Bytes(), .length = U(4)}};
+      llmp::catalog::Range{.extent = remote, .offset = Bytes(), .length = U(4)}};
   const ResourceId head = node.catalog().AddResource(ranges).value();
   const ModelContext split =
       ModelContext::Create({{.role = ComponentRole::kMain,
@@ -1670,7 +1669,7 @@ TEST(ShapeScenarioTest, MixedStateSpeculationAtEveryAcceptanceCount) {
   Prefill(b);
   Decode(b);
   const auto held = node.catalog().Describe(a.working("draft.handoff")).value();
-  EXPECT_EQ(held.state, jitllm::catalog::ExtentState::kResident);
+  EXPECT_EQ(held.state, llmp::catalog::ExtentState::kResident);
   EXPECT_EQ(held.content_generation, handoff.content_generation);
   EXPECT_EQ(a.state(kKv).committed(), committed);
   EXPECT_EQ(b.Retire().run, a.id());
@@ -1772,7 +1771,7 @@ TEST(ShapeScenarioTest, CompanionDrafterSharesOneClosure) {
   const auto layers = node.catalog().ClosureOf(std::array{drafter_layers}).value();
   node.Evict(layers.extents.front().first);
   EXPECT_EQ(Failed(node.catalog().AcquireLease(closure)),
-            jitllm::catalog::CatalogError::kNotResident);
+            llmp::catalog::CatalogError::kNotResident);
   EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).held, Bytes());
 
   // Inside the phase the union is held once: 32 units of weights and its
@@ -1859,7 +1858,7 @@ TEST(ShapeScenarioTest, CanvasHeldAcrossAPause) {
   Decode(b);
   EXPECT_GT(node.evictions(), evictions);  // A's idle weights made room
   const auto after = node.catalog().Describe(canvas).value();
-  EXPECT_EQ(after.state, jitllm::catalog::ExtentState::kResident);
+  EXPECT_EQ(after.state, llmp::catalog::ExtentState::kResident);
   EXPECT_EQ(after.content_generation, held.content_generation);
   EXPECT_EQ(after.backing_generation, held.backing_generation);
   EXPECT_EQ(a.state(0).committed(), 64U);  // the paused canvas committed nothing
@@ -1937,7 +1936,7 @@ TEST(ShapeScenarioTest, CanvasChargedToThePhaseWouldDeadlockAPause) {
     const ExtentId b_output = node.Allocate(MemoryClass::kRuntime, Recovery::kPinned, U(1));
     const Closure closure = large.ClosureOf(node.catalog(), kMain).value();
     const auto materialization =
-        jitllm::memory::PlanMaterialization(node.catalog(), node.domain(), node.budget(), closure);
+        llmp::memory::PlanMaterialization(node.catalog(), node.domain(), node.budget(), closure);
     EXPECT_FALSE(materialization.feasible);  // even with all of A's weights evicted
     EXPECT_FALSE(materialization.victims.sufficient);
 

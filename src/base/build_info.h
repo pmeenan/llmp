@@ -1,18 +1,18 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // What this build is (D-062): the product version and commit it was built
 // from, and the configuration that built it. The build generates the
 // definition from Git and the build configuration every time it runs
 // (cmake/version/stamp.cmake) and records the same values in the build
-// receipt, jitllm-receipt.json.
+// receipt, llmp-receipt.json.
 
-#ifndef JITLLM_BASE_BUILD_INFO_H_
-#define JITLLM_BASE_BUILD_INFO_H_
+#ifndef LLMP_BASE_BUILD_INFO_H_
+#define LLMP_BASE_BUILD_INFO_H_
 
 #include <string_view>
 
-namespace jitllm::base {
+namespace llmp::base {
 
 struct BuildInfo {
   // SemVer 2.0.0: X.Y.Z for a clean checkout of the release tag vX.Y.Z,
@@ -33,6 +33,6 @@ struct BuildInfo {
 
 const BuildInfo& GetBuildInfo();
 
-}  // namespace jitllm::base
+}  // namespace llmp::base
 
-#endif  // JITLLM_BASE_BUILD_INFO_H_
+#endif  // LLMP_BASE_BUILD_INFO_H_

@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_BENCHMARKS_QWEN38_BATCH_GRAPH_H_
-#define JITLLM_BENCHMARKS_QWEN38_BATCH_GRAPH_H_
+#ifndef LLMP_BENCHMARKS_QWEN38_BATCH_GRAPH_H_
+#define LLMP_BENCHMARKS_QWEN38_BATCH_GRAPH_H_
 
 #include <array>
 #include <cstdint>
@@ -13,7 +13,7 @@
 
 #include "engine/qwen38_plan.h"
 
-namespace jitllm::benchmarks::qwen_batch {
+namespace llmp::benchmarks::qwen_batch {
 
 inline constexpr std::size_t kMaxRequests = 4;
 template <typename T>
@@ -48,6 +48,6 @@ std::expected<std::unique_ptr<Plan>, std::string> DraftPlan(
     const kernels::ggml::DeviceChoices& choices, bool batch, std::uint64_t activations = 0,
     std::uint64_t activation_bytes = 0, std::uint32_t active = 3);
 
-}  // namespace jitllm::benchmarks::qwen_batch
+}  // namespace llmp::benchmarks::qwen_batch
 
-#endif  // JITLLM_BENCHMARKS_QWEN38_BATCH_GRAPH_H_
+#endif  // LLMP_BENCHMARKS_QWEN38_BATCH_GRAPH_H_

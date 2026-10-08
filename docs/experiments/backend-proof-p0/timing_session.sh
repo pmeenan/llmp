@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
 # One timing session of the EXL3 kernel cases (the 176 cases of the M0
@@ -69,7 +69,7 @@ measure() {  # ARM BLOCK SET CACHE
     -e CXX=/experiment/cxx-target -e CUDAHOSTCXX=/experiment/cxx-target \
     -e CUDA_DISABLE_PTX_JIT=1 -e OMP_NUM_THREADS=4 -e HOME=/tmp \
     -e "EXLLAMAV3_TUNE_CACHE=/p0/timing/$session/$cache" -e "BPF2_SET=$set" \
-    --entrypoint python3 jitllm-exl3-reference:20260922 "${MEASURE:-/experiment/experiment/measure.py}" \
+    --entrypoint python3 llmp-exl3-reference:20260922 "${MEASURE:-/experiment/experiment/measure.py}" \
     --model "/experiment/models/$model" --mode "$mode" --protocol "/p0/timing/$session/protocol-$arm.json" \
     --pins /experiment/experiment/pins.json --output "/p0/timing/$session/$arm-$block-$set" \
     > "$out/$arm-$block-$set.log" 2>&1

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // A port of llama.cpp b29c606e2's src/models/deepseek4.cpp graph (and the
@@ -29,12 +29,12 @@
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/fusion.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "model/dspark.h"
 #include "model/dsv4.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -93,7 +93,7 @@ constexpr int kRopeMode = 0;
 
 // The fast plan's fused form's conditions (Builder::Fused, Dsv4WaveSupport):
 // the profile's, which the hyper-connection kernels and routed products
-// take, and a layer's expert weights', each a jitllm.vecq type with gate and
+// take, and a layer's expert weights', each a llmp.vecq type with gate and
 // up alike.
 bool FusedProfile(const model::Dsv4Profile& p) {
   return p.hc == 4 && (std::int64_t{p.width} * p.hc) % (kDsv4HcChunks * kDsv4HcChunkThreads) == 0 &&
@@ -245,7 +245,7 @@ class Builder {
   ggml_tensor* HcPreFused(ggml_tensor* x, ggml_tensor* fn, ggml_tensor* scale, ggml_tensor* base,
                           ggml_tensor* norm, ggml_tensor** post, ggml_tensor** comb);
   ggml_tensor* MoeFused(std::uint32_t il, ggml_tensor* cur);
-  // HcPre and Norm: in a fused layer whose mixing weights jitllm.dsv4.hc_mix
+  // HcPre and Norm: in a fused layer whose mixing weights llmp.dsv4.hc_mix
   // reads, HcPreFused; otherwise (a quantized mix, or an unfused layer)
   // GGML's product, a wave's per slot as FloatMm runs it.
   ggml_tensor* PreNorm(std::uint32_t il, ggml_tensor* x, ggml_tensor* fn, ggml_tensor* scale,
@@ -306,7 +306,7 @@ class Builder {
     q8_.emplace(x, q);
     return q;
   }
-  // The most rows jitllm.vecq takes here: a chunk's kVecQTokens, a wave's
+  // The most rows llmp.vecq takes here: a chunk's kVecQTokens, a wave's
   // kDsv4WaveRows (each token's sums the same at any count of two or more).
   std::int64_t VecQRows() const { return segs_.empty() ? kVecQTokens : kDsv4WaveRows; }
   // GGML's float vector kernel keeps each column's sums independent of the
@@ -349,7 +349,7 @@ class Builder {
     return joined;
   }
   // A product: in the fast plan, a quantized 2D weight over at most
-  // VecQRows() rows of F32 activations is jitllm.vecq over the input's one
+  // VecQRows() rows of F32 activations is llmp.vecq over the input's one
   // quantization; anything else GGML's mul_mat (a wide wave's float
   // products a slot at a time, FloatMm).
   bool VecQInput(const ggml_tensor* x) const {
@@ -497,15 +497,15 @@ std::expected<void, KernelFailure> Builder::Weights() {
     into = *made;
     return {};
   };
-#define JITLLM_LEAF(into, tensor)                       \
+#define LLMP_LEAF(into, tensor)                         \
   if (auto made = leaf(into, tensor, #tensor); !made) { \
     return made;                                        \
   }
-  JITLLM_LEAF(g_.output_norm, b_.output_norm)
-  JITLLM_LEAF(g_.output, b_.output)
-  JITLLM_LEAF(g_.hc_head_fn, b_.hc_head_fn)
-  JITLLM_LEAF(g_.hc_head_base, b_.hc_head_base)
-  JITLLM_LEAF(g_.hc_head_scale, b_.hc_head_scale)
+  LLMP_LEAF(g_.output_norm, b_.output_norm)
+  LLMP_LEAF(g_.output, b_.output)
+  LLMP_LEAF(g_.hc_head_fn, b_.hc_head_fn)
+  LLMP_LEAF(g_.hc_head_base, b_.hc_head_base)
+  LLMP_LEAF(g_.hc_head_scale, b_.hc_head_scale)
   g_.layers.resize(p_.layers);
   for (Segment& seg : segs_) {
     seg.g->layers.resize(p_.layers);
@@ -516,13 +516,13 @@ std::expected<void, KernelFailure> Builder::Weights() {
   for (std::uint32_t il = 0; il < p_.layers; ++il) {
     const model::Dsv4Layer& w = b_.layers[il];
     Dsv4LayerTensors& l = g_.layers[il];
-    JITLLM_LEAF(l.attn_norm, w.attn_norm)
-    JITLLM_LEAF(l.attn_sinks, w.attn_sinks)
-    JITLLM_LEAF(l.q_a, w.q_a)
-    JITLLM_LEAF(l.q_a_norm, w.q_a_norm)
-    JITLLM_LEAF(l.q_b, w.q_b)
-    JITLLM_LEAF(l.kv, w.kv)
-    JITLLM_LEAF(l.kv_norm, w.kv_norm) {
+    LLMP_LEAF(l.attn_norm, w.attn_norm)
+    LLMP_LEAF(l.attn_sinks, w.attn_sinks)
+    LLMP_LEAF(l.q_a, w.q_a)
+    LLMP_LEAF(l.q_a_norm, w.q_a_norm)
+    LLMP_LEAF(l.q_b, w.q_b)
+    LLMP_LEAF(l.kv, w.kv)
+    LLMP_LEAF(l.kv_norm, w.kv_norm) {
       // llama.cpp loads wo_a as [heads·head / groups, o_lora, groups].
       auto type = GgmlTypeOf(w.out_a.type);
       if (!type) {
@@ -531,37 +531,37 @@ std::expected<void, KernelFailure> Builder::Weights() {
       l.out_a = ggml_new_tensor_3d(c_, *type, static_cast<std::int64_t>(w.out_a.ne[0]), p_.o_lora,
                                    p_.o_groups);
     }
-    JITLLM_LEAF(l.out_b, w.out_b)
-    JITLLM_LEAF(l.hc_attn_fn, w.hc_attn_fn)
-    JITLLM_LEAF(l.hc_attn_base, w.hc_attn_base)
-    JITLLM_LEAF(l.hc_attn_scale, w.hc_attn_scale)
-    JITLLM_LEAF(l.hc_ffn_fn, w.hc_ffn_fn)
-    JITLLM_LEAF(l.hc_ffn_base, w.hc_ffn_base)
-    JITLLM_LEAF(l.hc_ffn_scale, w.hc_ffn_scale)
+    LLMP_LEAF(l.out_b, w.out_b)
+    LLMP_LEAF(l.hc_attn_fn, w.hc_attn_fn)
+    LLMP_LEAF(l.hc_attn_base, w.hc_attn_base)
+    LLMP_LEAF(l.hc_attn_scale, w.hc_attn_scale)
+    LLMP_LEAF(l.hc_ffn_fn, w.hc_ffn_fn)
+    LLMP_LEAF(l.hc_ffn_base, w.hc_ffn_base)
+    LLMP_LEAF(l.hc_ffn_scale, w.hc_ffn_scale)
     if (w.ratio != 0) {
-      JITLLM_LEAF(l.comp_kv, w.comp_kv)
-      JITLLM_LEAF(l.comp_gate, w.comp_gate)
-      JITLLM_LEAF(l.comp_ape, w.comp_ape)
-      JITLLM_LEAF(l.comp_norm, w.comp_norm)
+      LLMP_LEAF(l.comp_kv, w.comp_kv)
+      LLMP_LEAF(l.comp_gate, w.comp_gate)
+      LLMP_LEAF(l.comp_ape, w.comp_ape)
+      LLMP_LEAF(l.comp_norm, w.comp_norm)
     }
     if (w.ratio == model::kDsv4CsaRatio) {
-      JITLLM_LEAF(l.idx_q_b, w.idx_q_b)
-      JITLLM_LEAF(l.idx_proj, w.idx_proj)
-      JITLLM_LEAF(l.idx_comp_kv, w.idx_comp_kv)
-      JITLLM_LEAF(l.idx_comp_gate, w.idx_comp_gate)
-      JITLLM_LEAF(l.idx_comp_ape, w.idx_comp_ape)
-      JITLLM_LEAF(l.idx_comp_norm, w.idx_comp_norm)
+      LLMP_LEAF(l.idx_q_b, w.idx_q_b)
+      LLMP_LEAF(l.idx_proj, w.idx_proj)
+      LLMP_LEAF(l.idx_comp_kv, w.idx_comp_kv)
+      LLMP_LEAF(l.idx_comp_gate, w.idx_comp_gate)
+      LLMP_LEAF(l.idx_comp_ape, w.idx_comp_ape)
+      LLMP_LEAF(l.idx_comp_norm, w.idx_comp_norm)
     }
-    JITLLM_LEAF(l.ffn_norm, w.ffn_norm)
-    JITLLM_LEAF(l.router, w.router)
+    LLMP_LEAF(l.ffn_norm, w.ffn_norm)
+    LLMP_LEAF(l.router, w.router)
     if (w.hash) {
-      JITLLM_LEAF(l.tid2eid, w.tid2eid)
+      LLMP_LEAF(l.tid2eid, w.tid2eid)
     } else {
-      JITLLM_LEAF(l.router_bias, w.router_bias)
+      LLMP_LEAF(l.router_bias, w.router_bias)
     }
-    JITLLM_LEAF(l.up_shexp, w.up_shexp)
-    JITLLM_LEAF(l.gate_shexp, w.gate_shexp)
-    JITLLM_LEAF(l.down_shexp, w.down_shexp)
+    LLMP_LEAF(l.up_shexp, w.up_shexp)
+    LLMP_LEAF(l.gate_shexp, w.gate_shexp)
+    LLMP_LEAF(l.down_shexp, w.down_shexp)
     // Routed experts: 3D at the layer's stride.
     const std::uint64_t stride = options.expert_stride.empty() ? 0 : options.expert_stride[il];
     const auto experts = [&](ggml_tensor*& into,
@@ -603,7 +603,7 @@ std::expected<void, KernelFailure> Builder::Weights() {
       }
     }
   }
-#undef JITLLM_LEAF
+#undef LLMP_LEAF
   return {};
 }
 
@@ -794,7 +794,7 @@ ggml_tensor* Builder::OverlapCompress(ggml_tensor* kv_state, ggml_tensor* score_
   return ggml_rope_set_offset(comp, static_cast<int>(head - p_.rope_dims));
 }
 
-// The fast plan's compressor (jitllm.dsv4.compress over the state and the
+// The fast plan's compressor (llmp.dsv4.compress over the state and the
 // chunk's rows, no source copy), then the norm and RoPE as above.
 ggml_tensor* Builder::CompressFused(ggml_tensor* state_kv, ggml_tensor* state_score,
                                     ggml_tensor* kv, ggml_tensor* score, ggml_tensor* read_idxs,
@@ -915,7 +915,7 @@ ggml_tensor* Builder::LidTopK(const Dsv4LayerTensors& l, ggml_tensor* qr, ggml_t
 // The fast plan's attention: each layer's window cells and, in a
 // compressed layer, its compressed rows read in place as one K (the state
 // lays them out together; no concatenation), under one mask built on the
-// device (jitllm.dsv4.sparse_mask: the window's cells, then the indexer's
+// device (llmp.dsv4.sparse_mask: the window's cells, then the indexer's
 // selection for CSA or the visible rows for HCA), through the MMA kernel's
 // sparse gather of the unmasked cells. So a row's work is its window's 128
 // cells and its compressed layer's selected (CSA: the indexer's top 512)
@@ -959,7 +959,7 @@ ggml_tensor* Builder::AttentionSparse(std::uint32_t il_u, ggml_tensor* q, ggml_t
 }
 
 // The fast plan's lightning indexer: build_lid_top_k's query, rotation and
-// weights, then jitllm.dsv4.lid_topk's scores and selection over the rows
+// weights, then llmp.dsv4.lid_topk's scores and selection over the rows
 // each row sees.
 ggml_tensor* Builder::LidTopKSparse(const Dsv4LayerTensors& l, ggml_tensor* qr, ggml_tensor* cur,
                                     int il) {
@@ -1396,7 +1396,7 @@ ggml_tensor* Builder::AttentionWave(std::uint32_t il_u, ggml_tensor* cur) {
     oa = VecQ(c_, l.out_a, Q8Of(out), nullptr, nt, true);
     oa = ggml_reshape_2d(c_, oa, std::int64_t{p_.o_lora} * groups, nt);
   } else {
-    // A weight jitllm.vecq has no kernel for: GGML's grouped product, whose
+    // A weight llmp.vecq has no kernel for: GGML's grouped product, whose
     // launch follows the column count, a slot at a time over its own rows,
     // as each slot's own chunk runs it (Attention), joined.
     for (const Segment& seg : segs_) {
@@ -1540,7 +1540,7 @@ bool Builder::Fused(std::uint32_t il) const {
     return false;
   }
   // The mixing weights' type is not a condition: PreNorm takes GGML's
-  // product for a type jitllm.dsv4.hc_mix does not read.
+  // product for a type llmp.dsv4.hc_mix does not read.
   const Dsv4LayerTensors& l = g_.layers[il];
   return FusedTypes(l.up_exps->type, l.gate_exps->type, l.down_exps->type, l.up_shexp->type,
                     l.gate_shexp->type, l.down_shexp->type) &&
@@ -2133,7 +2133,7 @@ std::expected<void, KernelFailure> Dsv4WaveSupport(const model::Dsv4Profile& pro
         w.up_exps.ne != w.gate_exps.ne || w.up_shexp.ne != w.gate_shexp.ne) {
       return Rejected(std::format(
           "layer {}: the routed experts' up/gate/down ({}/{}/{}) and the shared expert's "
-          "({}/{}/{}) are not jitllm.vecq types with gate and up alike in type and shape",
+          "({}/{}/{}) are not llmp.vecq types with gate and up alike in type and shape",
           il, w.up_exps.type, w.gate_exps.type, w.down_exps.type, w.up_shexp.type,
           w.gate_shexp.type, w.down_shexp.type));
     }
@@ -2236,7 +2236,7 @@ std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& aren
   // multi-token launch their verifies take alone.
   if (std::ranges::all_of(shape.slots, [](const Dsv4ChunkShape& s) { return s.rows == 1; })) {
     for (ggml_tensor* node : wave.joined.nodes) {
-      if (JitllmOpOf(node) == JitllmOp::kVecQ) {
+      if (LlmpOpOf(node) == LlmpOp::kVecQ) {
         SetVecQOneToken(node);
       }
     }
@@ -2332,4 +2332,4 @@ std::expected<DsparkWaveGraph, KernelFailure> BuildDsparkWaveGraph(
   return d;
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

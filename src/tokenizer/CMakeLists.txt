@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # The native tokenizer (M3; D-067, D-088): byte-level BPE with the
@@ -7,6 +7,6 @@
 # tokenizer in GGUF metadata and in tokenizer.json, all untrusted input.
 # The model layer (docs/architecture.md#layers-and-dependency-rules): it
 # needs only base, and no vendor SDK.
-add_library(jitllm_tokenizer STATIC gguf.cc hf.cc pretokenize.cc tokenizer.cc unicode.cc unicode_data.cc)
-target_include_directories(jitllm_tokenizer PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(jitllm_tokenizer PUBLIC jitllm_base PRIVATE jitllm_json jitllm_warnings)
+add_library(llmp_tokenizer STATIC gguf.cc hf.cc pretokenize.cc tokenizer.cc unicode.cc unicode_data.cc)
+target_include_directories(llmp_tokenizer PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(llmp_tokenizer PUBLIC llmp_base PRIVATE llmp_json llmp_warnings)

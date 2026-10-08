@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Shared funded prefill lookahead
@@ -166,7 +166,7 @@ the linked runtime SHA-256 is
 `bb530ad86919598507b6eed32e85ce7c7f2e8b604b5c61800edf21a2457d46c6`.
 SDK/CUDA/cuBLAS pins remain those of the lifecycle extraction above. Raw logs,
 XML, binary/source bindings and comparison records stay outside Git under
-`~/.local/share/jitllm/` on B and the session coordination scratchpad. The full
+`~/.local/share/llmp/` on B and the session coordination scratchpad. The full
 regression suite and workstation tiers remain deferred under the owner's
 override. This first-traversal transfer left the earlier 6.721% warm prefill
 gap unresolved. The subsequent [matched timeline and actual-root transfer](../gemma-prefill-copies/README.md)
@@ -324,7 +324,7 @@ Reproduction uses the retained native benchmark rather than disposable
 controllers. Approved short IDs and their source-text/native-tokenizer
 preparation are described in [the configured-prefill report](../gemma-prefill-copies/README.md).
 For each family, use fresh output directories and invoke
-`jitllm_gemma{2,3}_joint_prefill_probe ARTIFACT IDS0 IDS1 OUT first-cycle
+`llmp_gemma{2,3}_joint_prefill_probe ARTIFACT IDS0 IDS1 OUT first-cycle
 bounded-roots device-masks prefill-ahead owner-prefill flexible-owner-prefill
 chunk=256 stock-ring lookahead-capacity=N`, in the fixed N=1/2/2/1 order.
 Check the actual summary, full output bytes, initialized-state hashes and

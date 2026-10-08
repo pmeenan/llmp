@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """End-to-end test of D-057's source mechanism on a synthetic lock.
 
@@ -6,7 +6,7 @@
                               --sdk SDK --toolchain FILE
 
 Builds fixture components into archives, writes a lock for them, and drives
-the real tools/prepare-sources and cmake/JitllmSources.cmake through the gates
+the real tools/prepare-sources and cmake/LlmpSources.cmake through the gates
 in docs/source-dependencies.md: clean preparation from empty caches;
 exclusion of an optional module (with generated output) that is never
 fetched in the core profile; missing, changed or modified inputs rejected
@@ -15,13 +15,13 @@ switching a build from the optional profile back to core without reusing
 its payloads; an archive cut down to its `archive.keep` paths, whose
 discarded names could not be prepared; and undeclared downloads, package lookups, system libraries,
 source overrides and dependency providers failing the build or its checks.
-Every fixture is jitLLM-authored; the optional module's "copyleft" license
+Every fixture is llmpalooza-authored; the optional module's "copyleft" license
 is a label in the fixture lock, not a real dependency.
 """
 
 import sys
 
-sys.dont_write_bytecode = True  # it imports tools/jitllm_sources.py from the checkout
+sys.dont_write_bytecode = True  # it imports tools/llmp_sources.py from the checkout
 
 import argparse
 import hashlib
@@ -214,9 +214,9 @@ PROJECT = {
     "CMakeLists.txt": """
         cmake_minimum_required(VERSION 4.4.3)
         project(fixture LANGUAGES CXX)
-        add_compile_options(-fno-exceptions)  # as jitLLM's root CMakeLists.txt (D-066)
-        include("${JITLLM_ROOT}/cmake/JitllmSources.cmake")
-        jitllm_sources_add(LOCK "${FIXTURE_LOCK}")
+        add_compile_options(-fno-exceptions)  # as llmpalooza's root CMakeLists.txt (D-066)
+        include("${LLMP_ROOT}/cmake/LlmpSources.cmake")
+        llmp_sources_add(LOCK "${FIXTURE_LOCK}")
         add_executable(fixture_app app.cc)
         # Like a generated config header's directory: whatever the build tree
         # holds is visible to the app.
@@ -230,20 +230,20 @@ PROJECT = {
           target_include_directories(fixture_app PRIVATE "${FIXTURE_CUDA_HEADER}")
           target_compile_definitions(fixture_app PRIVATE FIXTURE_IMPORT_CUDA_HEADER)
         endif()
-        if("fixture-optional" IN_LIST JITLLM_MODULES)
+        if("fixture-optional" IN_LIST LLMP_MODULES)
           target_link_libraries(fixture_app PRIVATE fixture_opt)
           target_compile_definitions(fixture_app PRIVATE FIXTURE_WITH_OPTIONAL)
         endif()
-        if("bad-link" IN_LIST JITLLM_MODULES)
+        if("bad-link" IN_LIST LLMP_MODULES)
           target_link_libraries(fixture_app PRIVATE fixture_bad_link)
         endif()
-        if("bad-exceptions" IN_LIST JITLLM_MODULES)
+        if("bad-exceptions" IN_LIST LLMP_MODULES)
           target_link_libraries(fixture_app PRIVATE fixture_bad_exceptions)
         endif()
-        if("keep-subset" IN_LIST JITLLM_MODULES)
+        if("keep-subset" IN_LIST LLMP_MODULES)
           target_link_libraries(fixture_app PRIVATE fixture_keep)
         endif()
-        jitllm_sources_finalize()
+        llmp_sources_finalize()
         """,
     "app.cc": """
         #include <cstdio>
@@ -423,9 +423,9 @@ def prepare(fx: Fixture, dest: pathlib.Path, cache: pathlib.Path, *, modules: st
 def configure(fx: Fixture, build: pathlib.Path, sources: pathlib.Path, *, modules: str = "", extra=(),
               lock=None, ok=True, expect=None) -> str:
     cmd = [ARGS.cmake, "-S", fx.project, "-B", build, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ARGS.ninja}",
-           f"-DCMAKE_TOOLCHAIN_FILE={ARGS.toolchain}", f"-DJITLLM_SDK={ARGS.sdk}", "-DJITLLM_CUDA=OFF",
-           "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", f"-DJITLLM_ROOT={ARGS.repo}", f"-DFIXTURE_LOCK={lock or fx.lock}",
-           f"-DFIXTURE_MARKERS={fx.markers}", f"-DJITLLM_SOURCES_DIR={sources}", f"-DJITLLM_MODULES={modules}",
+           f"-DCMAKE_TOOLCHAIN_FILE={ARGS.toolchain}", f"-DLLMP_SDK={ARGS.sdk}", "-DLLMP_CUDA=OFF",
+           "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", f"-DLLMP_ROOT={ARGS.repo}", f"-DFIXTURE_LOCK={lock or fx.lock}",
+           f"-DFIXTURE_MARKERS={fx.markers}", f"-DLLMP_SOURCES_DIR={sources}", f"-DLLMP_MODULES={modules}",
            *extra]
     return run(cmd, ok=ok, expect=expect)
 
@@ -444,7 +444,7 @@ def reset_markers(fx: Fixture) -> None:
 
 
 def receipt(build_dir: pathlib.Path) -> dict:
-    return json.loads((build_dir / "jitllm-receipt.json").read_text())
+    return json.loads((build_dir / "llmp-receipt.json").read_text())
 
 
 def check(condition: bool, text: str) -> None:
@@ -467,7 +467,7 @@ def check_closure(fx: Fixture, build_dir: pathlib.Path, *, ok=True, expect=None,
 
 
 def check_receipt(fx: Fixture, build_dir: pathlib.Path, *, ok=True, expect=None) -> str:
-    return run([ARGS.cmake, f"-DRECEIPT={build_dir / 'jitllm-receipt.json'}", f"-DLOCK={fx.lock}",
+    return run([ARGS.cmake, f"-DRECEIPT={build_dir / 'llmp-receipt.json'}", f"-DLOCK={fx.lock}",
                 f"-DSDK_IDENTITY={receipt(build_dir)['sdk']}", "-P",
                 pathlib.Path(__file__).with_name("check_receipt.cmake")], ok=ok, expect=expect)
 
@@ -497,7 +497,7 @@ def check_cuda_selection(work: pathlib.Path) -> None:
     # exercised without a CUDA compiler; real CUDA inventory is checked by
     # sources.closure in each CUDA-enabled production build.
     cuda = work / "build-cuda"
-    configure(fx, cuda, sources, extra=["-DJITLLM_CUDA=ON"])
+    configure(fx, cuda, sources, extra=["-DLLMP_CUDA=ON"])
     build(cuda)
     check(run([cuda / "fixture_app"], ok=True).split() == ["2", "7"], "CUDA-only component was not consumed")
     check_receipt(fx, cuda)
@@ -506,7 +506,7 @@ def check_cuda_selection(work: pathlib.Path) -> None:
     check(cuda_receipt["cuda"] is True and {c["id"] for c in cuda_receipt["components"]} == {"core-lib", "cuda-lib"},
           f"CUDA receipt {cuda_receipt}")
 
-    path = cpu / "jitllm-receipt.json"
+    path = cpu / "llmp-receipt.json"
     saved = path.read_text()
     forged = json.loads(saved)
     forged["components"] = cuda_receipt["components"]
@@ -514,7 +514,7 @@ def check_cuda_selection(work: pathlib.Path) -> None:
     check_receipt(fx, cpu, ok=False, expect="the receipt's closure")
     check_closure(fx, cpu, ok=False, expect="which nothing compiles or links")
     path.write_text(saved)
-    path = cuda / "jitllm-receipt.json"
+    path = cuda / "llmp-receipt.json"
     saved = path.read_text()
     forged = json.loads(saved)
     forged["components"] = cpu_receipt["components"]
@@ -525,7 +525,7 @@ def check_cuda_selection(work: pathlib.Path) -> None:
 
     # Selecting a component never exempts it from the strict usage check.
     unused = work / "build-unused"
-    configure(fx, unused, sources, extra=["-DJITLLM_CUDA=ON", "-DFIXTURE_SKIP_CUDA_LINK=ON"])
+    configure(fx, unused, sources, extra=["-DLLMP_CUDA=ON", "-DFIXTURE_SKIP_CUDA_LINK=ON"])
     build(unused)
     check_closure(fx, unused, ok=False, expect="which nothing compiles or links")
     imported = work / "build-imported"
@@ -567,8 +567,8 @@ def main() -> int:
     ARGS = parser.parse_args()
     TOOLS = ARGS.repo / "tools"
     sys.path.insert(0, str(TOOLS))
-    import jitllm_sources  # noqa: PLC0415
-    srclib = jitllm_sources
+    import llmp_sources  # noqa: PLC0415
+    srclib = llmp_sources
 
     work = ARGS.work
     shutil.rmtree(work, ignore_errors=True)
@@ -597,7 +597,7 @@ def main() -> int:
     check("opt-lib" not in markers(fx), "the optional subproject ran in the core profile")
     for name in ("opt_generated.h", "libfixture_opt.a", "*opt-lib*"):
         check(not files_named(b, name), f"the core build has {name}")
-    for name in ("build.ninja", "compile_commands.json", "CMakeCache.txt", "jitllm-receipt.json"):
+    for name in ("build.ninja", "compile_commands.json", "CMakeCache.txt", "llmp-receipt.json"):
         text = (b / name).read_text()
         check("opt-lib" not in text and "fixture_opt" not in text, f"{name} mentions the optional module")
     check_receipt(fx, b)
@@ -614,7 +614,7 @@ def main() -> int:
     configure(fx, work / "build-missing-opt", sources, modules="fixture-optional", ok=False,
               expect="mise run prepare -- --modules fixture-optional")
     check(not markers(fx), f"third-party CMake code ran: {markers(fx)}")
-    check(not (work / "build-missing" / "jitllm-receipt.json").exists(), "a failed configure left a receipt")
+    check(not (work / "build-missing" / "llmp-receipt.json").exists(), "a failed configure left a receipt")
 
     step("a changed archive is rejected; a damaged cached copy is fetched again")
     origin = fx.archives / "core-lib-1.tar.gz"
@@ -725,7 +725,7 @@ def main() -> int:
     configure(fx, b, sources, modules="", ok=False, expect="has built optional module(s) fixture-optional")
     configure(fx, b, sources, modules="", extra=["--fresh"], ok=False,
               expect="has built optional module(s) fixture-optional")
-    record = b / "jitllm-modules-built.txt"
+    record = b / "llmp-modules-built.txt"
     forged = record.read_text().replace("fixture-optional", "")
     record.unlink()
     configure(fx, b, sources, modules="", ok=False, expect="the optional modules it has built are unknown")
@@ -809,16 +809,16 @@ def main() -> int:
     shutil.copytree(core_dir, copy)
     (copy / "include" / "core.h").write_text((copy / "include" / "core.h").read_text().replace("VALUE 2", "VALUE 9"))
     bo = work / "build-override"
-    configure(fx, bo, sources, extra=[f"-DJITLLM_SOURCE_OVERRIDE_CORE_LIB={copy}"], expect="local override")
+    configure(fx, bo, sources, extra=[f"-DLLMP_SOURCE_OVERRIDE_CORE_LIB={copy}"], expect="local override")
     build(bo)
     check(run([bo / "fixture_app"], ok=True).split() == ["9"], "the override was not built")
     c = receipt(bo)["components"][0]
     check(receipt(bo)["official"] is False and c["override"] is True and c["modified"] is True,
           f"receipt {receipt(bo)}")
     check_receipt(fx, bo)
-    configure(fx, bo, sources, extra=["-DJITLLM_REQUIRE_LOCKED_SOURCES=ON"], ok=False,
-              expect="which JITLLM_REQUIRE_LOCKED_SOURCES forbids")
-    configure(fx, bo, sources, extra=["-DJITLLM_REQUIRE_LOCKED_SOURCES=OFF", "-DJITLLM_SOURCE_OVERRIDE_CORE_LIB="])
+    configure(fx, bo, sources, extra=["-DLLMP_REQUIRE_LOCKED_SOURCES=ON"], ok=False,
+              expect="which LLMP_REQUIRE_LOCKED_SOURCES forbids")
+    configure(fx, bo, sources, extra=["-DLLMP_REQUIRE_LOCKED_SOURCES=OFF", "-DLLMP_SOURCE_OVERRIDE_CORE_LIB="])
     check(receipt(bo)["official"] is True, "clearing the override did not restore an official receipt")
 
     step("the lock is checked before anything is fetched")
@@ -831,7 +831,7 @@ def main() -> int:
             ("cmake-hook", lambda d: d["components"]["core-lib"]["cmake"]["options"].update(
                 CMAKE_PROJECT_INCLUDE="evil"), "may not set CMAKE_*"),
             ("private-name", lambda d: d["components"]["core-lib"]["cmake"]["options"].update(
-                _JITLLM_SOURCES_SCRIPTS="hooks"), "cmake.options must map"),
+                _LLMP_SOURCES_SCRIPTS="hooks"), "cmake.options must map"),
             ("path-value", lambda d: d["components"]["core-lib"]["cmake"]["options"].update(
                 FIXTURE_CORE_OPTION="/tmp/evil.cmake"), "plain string values")):
         data = json.loads(json.dumps(fx.data))

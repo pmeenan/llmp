@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The completion board (D-048,
@@ -41,8 +41,8 @@
 // comes after about capacity x 2^32 operations, not one mailbox at a time
 // from the first 2^32 (docs/async-model.md).
 
-#ifndef JITLLM_SCHEDULER_COMPLETIONS_H_
-#define JITLLM_SCHEDULER_COMPLETIONS_H_
+#ifndef LLMP_SCHEDULER_COMPLETIONS_H_
+#define LLMP_SCHEDULER_COMPLETIONS_H_
 
 #include <atomic>
 #include <cstddef>
@@ -54,7 +54,7 @@
 #include "base/ids.h"
 #include "base/wake.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 
 struct OperationTag {
   static constexpr const char* kName = "operation";
@@ -231,6 +231,6 @@ class CompletionBoard {
   std::size_t news_count_ = 0;
 };
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler
 
-#endif  // JITLLM_SCHEDULER_COMPLETIONS_H_
+#endif  // LLMP_SCHEDULER_COMPLETIONS_H_

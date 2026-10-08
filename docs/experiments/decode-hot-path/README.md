@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Decode hot path: device greedy tokens, direct steps, no per-wave scheduler calls
@@ -59,7 +59,7 @@ so only approximate):
 
 ### DeepSeek V4 and Qwen3.8
 
-These are `jitllm-runtime chat` runs of one prompt (37 tokens on DeepSeek V4,
+These are `llmp-runtime chat` runs of one prompt (37 tokens on DeepSeek V4,
 85 on Qwen3.8), with 384 greedy tokens, stop ignored and speculation on (the
 swap table's configuration). Each process ran fresh, in the order
 before/after/after/before, with `ba67d9e` as the before build. Every run of a
@@ -91,7 +91,7 @@ smaller saving is expected; that was not measured separately.
 A Gemma generation takes its token from the device when it is greedy and
 nothing needs its logit rows:
 
-- The chunk graph appends `jitllm.argmax` over the frontier logits
+- The chunk graph appends `llmp.argmax` over the frontier logits
   (`Gemma4ChunkShape::greedy`). It returns the lowest ID among equal maxima,
   as the host's greedy choice does.
 - Only the I32 tokens are copied back.
@@ -189,7 +189,7 @@ These ran on `spark-b`:
 - **DeepSeek V4 ↔ Qwen3.8:** the swap table at 8,192 context tokens with
   64-token continuations gives exact states and continuations in all four
   rows.
-- **Chat:** a natural two-turn Gemma26 `jitllm-runtime chat` stops normally
+- **Chat:** a natural two-turn Gemma26 `llmp-runtime chat` stops normally
   with the expected answers.
 - **Full spark-native suite:** 1,806 of 1,808 tests pass. The two failures
   exercise nothing this change touches, and both follow from the GGML

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 C4 attention over independent cache roots
@@ -75,11 +75,11 @@ occupy 20 MiB and 25 local layers 200 MiB. Full pins, outputs, geometry,
 selected rows and official record identities are in [results.json](results.json).
 Fresh TensorFold entry resolves `609ca419…` / 0.6.5, with only an MLX26 recipe.
 
-Reproduce with the existing `jitllm_gemma_owner_c4` target and
+Reproduce with the existing `llmp_gemma_owner_c4` target and
 [closed protocol](../gemma-owner-root-c4/PROTOCOL.md):
 `ARTIFACT NEW_DIR 26 4 joined compound IDS_I32`, setting
-`JITLLM_GEMMA_OWNER_C4=packed|owners`, `JITLLM_GEMMA_C4_NORMMUL=1` and
-`JITLLM_GEMMA_C4_PHASES=0`. Supply canonical 4,096-byte `b2d7aaf6…` IDs, use
+`LLMP_GEMMA_OWNER_C4=packed|owners`, `LLMP_GEMMA_C4_NORMMUL=1` and
+`LLMP_GEMMA_C4_PHASES=0`. Supply canonical 4,096-byte `b2d7aaf6…` IDs, use
 new owner-only output directories, and require complete historical packed
 identity before the owner factor and fresh stock comparison. Wider reads,
 window crossings and production batching remain unqualified.

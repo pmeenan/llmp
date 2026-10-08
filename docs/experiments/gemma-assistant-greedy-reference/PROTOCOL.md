@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # One C1/P64 Gemma assistant greedy transaction
@@ -67,7 +67,7 @@ before cross-engine output reads. Output directories/files and own-proof files
 must be new. Authenticate current source/frame, binaries/SDK, prepared artifacts,
 retained raw checkpoint sizes/identities, headers/libraries and canonical IDs
 before dispatch and after retirement. Public container ownership/retirement uses
-the existing `1fd85804...` helper and checked absence of its unique CID.
+the existing `d93c10c5...` helper and checked absence of its unique CID.
 
 The initial anchor and all three proposal tokens must agree before full-transaction
 comparison. Report the first differing proposal index and preserve that failed

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cuda_runtime.h>
@@ -11,7 +11,7 @@
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/launch.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 constexpr std::uint32_t kThreads = 256;
@@ -68,4 +68,4 @@ std::expected<void, KernelFailure> RunDsv4OrderedReduce(LaunchContext& launch, g
                                 .values = {node, base::Bytes(ggml_nbytes(node))}});
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

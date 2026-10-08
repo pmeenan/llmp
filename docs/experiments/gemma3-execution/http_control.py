@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Bounded Gemma3 ordinary HTTP, two-slot progress and restart adoption controls."""
 import argparse
@@ -39,11 +39,11 @@ def main():
                         help='Require fresh unequal/ring copy-free gates and actual bounded plans')
     args = parser.parse_args()
     binding = json.loads(args.binding.read_text())
-    runtime_sha = binding['paths']['build/spark-native/src/runtime/jitllm-runtime']['sha256']
+    runtime_sha = binding['paths']['build/spark-native/src/runtime/llmp-runtime']['sha256']
     assert sha(args.runtime) == runtime_sha
     assert binding['receipt']['official'] and binding['receipt']['cuda']
     for name in ('libcublas.so.13', 'libcublasLt.so.13'):
-        assert sha(args.library_path / name) == binding['paths']['build/spark-native/lib/jitllm/' + name]['sha256']
+        assert sha(args.library_path / name) == binding['paths']['build/spark-native/lib/llmp/' + name]['sha256']
     environment = {**os.environ, 'LD_LIBRARY_PATH': str(args.library_path.resolve())}
     # The original screen keeps all three gates; adoption requires its two fresh
     # same-policy own/reference gates and an actual unequal-root selection below.

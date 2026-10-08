@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # Writes OUTPUT, a C++ source whose PlanRecordSample() returns INPUT's
@@ -14,9 +14,9 @@ file(CONFIGURE OUTPUT "${OUTPUT}" CONTENT [=[
 
 #include "plan_record.h"
 
-namespace jitllm::test_support {
+namespace llmp::test_support {
 std::string_view PlanRecordSample() {
   return R"sample(@sample@)sample";
 }
-}  // namespace jitllm::test_support
+}  // namespace llmp::test_support
 ]=] @ONLY)

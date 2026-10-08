@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Tests D-062's version rules on synthetic Git repositories.
 
@@ -38,8 +38,8 @@ GIT_ENV = {
 DRIVER = """\
 cmake_minimum_required(VERSION 4.4.3)
 include("${REPO}/cmake/version/derive.cmake")
-jitllm_version_derive(v SOURCE_DIR "${SOURCE_DIR}" PROJECT_VERSION "${PROJECT_VERSION}")
-jitllm_version_json(json v)
+llmp_version_derive(v SOURCE_DIR "${SOURCE_DIR}" PROJECT_VERSION "${PROJECT_VERSION}")
+llmp_version_json(json v)
 file(WRITE "${OUT}" "${json}")
 """
 
@@ -165,9 +165,9 @@ class Derive(Case):
 
     def test_next_version_can_be_checked_before_commit(self):
         repo = self.repo()
-        repo.commit("CMakeLists.txt", "project(jitllm VERSION 0.1.0)\n")
+        repo.commit("CMakeLists.txt", "project(llmp VERSION 0.1.0)\n")
         repo.tag("v0.1.0")
-        (repo.path / "CMakeLists.txt").write_text("project(jitllm VERSION 0.1.1)\n")
+        (repo.path / "CMakeLists.txt").write_text("project(llmp VERSION 0.1.1)\n")
         self.assertEqual(self.derive(repo.path, "0.1.1"), self.dev(repo, "0.1.1", 0, dirty=True))
         repo.git("add", "CMakeLists.txt")
         self.assertEqual(self.derive(repo.path, "0.1.1"), self.dev(repo, "0.1.1", 0, dirty=True))
@@ -288,7 +288,7 @@ class Stamp(Case):
     def setUp(self):
         super().setUp()
         self.output = self.work / "build_info.cc"
-        self.receipt = self.work / "jitllm-receipt.json"
+        self.receipt = self.work / "llmp-receipt.json"
         self.receipt.write_text(json.dumps({"schema": 1, "version": {"product": "stale"}, "sdk": "kept"}))
 
     def test_outputs_follow_the_checkout(self):

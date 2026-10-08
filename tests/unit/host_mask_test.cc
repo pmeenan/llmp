@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/host_mask.h"
@@ -20,7 +20,7 @@
 #include "model/qwen38.h"
 
 namespace {
-namespace md = jitllm::model;
+namespace md = llmp::model;
 
 std::uint16_t OldRing(std::uint64_t cell, std::uint64_t position, std::uint64_t end,
                       std::uint64_t capacity, std::uint64_t window) {

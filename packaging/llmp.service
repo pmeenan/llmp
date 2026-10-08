@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# The llmpalooza node runtime (D-005, D-063, D-074). Override settings with a
+# drop-in (`systemctl edit llmp`), for example ReadWritePaths= for a
+# storage role outside /var/lib/llmp, rather than editing this file.
+
+[Unit]
+Description=llmpalooza node runtime
+Documentation=https://github.com/pmeenan/llmp
+After=local-fs.target network.target nvidia-persistenced.service
+# Ordering only: the chat route finds the tailnet's addresses at startup
+# (D-097), so it starts after Tailscale where Tailscale is installed.
+After=tailscaled.service
+# A start that fails (a host not yet ready, exit 75; a crash; a confirmed
+# hang's restart) is retried, never given up on (D-102): no start limit,
+# and the restarts back off (RestartSteps below).
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/libexec/llmp/llmp-runtime
+User=llmp
+Group=llmp
+
+# Restarted after a crash, after a confirmed hang the runtime could not
+# recover in place (exit 1, D-102), after a start or stop that stopped
+# making progress, and after exit 75 (the driver or its devices not ready,
+# as at boot), but not after exit 78 (the configuration, the storage roles
+# or the process lock), which a restart would only repeat; `llmp doctor`
+# says why. Retries wait 5 s, growing to 30 s between them. The growth is
+# kept short because systemd never takes it back while the unit runs
+# (systemd 255 counts every automatic restart since the unit was last
+# started by hand): after a few restarts, every later recovery waits the
+# most, so the most is what one recovery may cost.
+Restart=on-failure
+RestartSec=5s
+RestartSteps=4
+RestartMaxDelaySec=30s
+RestartPreventExitStatus=78
+# The start (registering the models, and checking and adopting the
+# conversations the last process kept, D-105) and the stop (drain, then
+# spill and record the conversations for the next start) each extend these
+# while they make progress (EXTEND_TIMEOUT_USEC), so healthy slow work is
+# never cut off; one that makes no progress this long is.
+TimeoutStartSec=5min
+# Stop means drain (D-027); SIGTERM starts it.
+KillMode=control-group
+TimeoutStopSec=90s
+
+# /etc/llmp (root-owned), /var/lib/llmp and /run/llmp (the runtime's).
+ConfigurationDirectory=llmp
+StateDirectory=llmp
+StateDirectoryMode=0755
+RuntimeDirectory=llmp
+UMask=0077
+
+# Job processes (import, install, archive) run in cgroups the runtime makes
+# beside its own (D-074): it runs in .../llmp.service/runtime.
+Delegate=memory pids cpu io
+DelegateSubgroup=runtime
+
+# Crashes leave no core image (D-014); the runtime also refuses to dump.
+LimitCORE=0
+# RDMA memory registration (D-063).
+LimitMEMLOCK=infinity
+
+# Sandboxing. Everything but /var/lib/llmp and /run/llmp is read-only.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+# Only the GPU and RDMA device nodes, besides the standard pseudo-devices.
+DevicePolicy=closed
+# char-nvidia is major 195: /dev/nvidia0 and /dev/nvidiactl.
+DeviceAllow=char-nvidia rw
+DeviceAllow=char-nvidia-uvm rw
+DeviceAllow=char-nvidia-caps r
+DeviceAllow=char-infiniband_verbs rw
+DeviceAllow=/dev/infiniband/rdma_cm rw
+
+[Install]
+WantedBy=multi-user.target

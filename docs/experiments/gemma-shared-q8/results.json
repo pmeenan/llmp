@@ -650,16 +650,16 @@
     "Dsv4FastTest.DenseAndGroupedProductsMatchGgmlsVectorKernel"
   ],
   "current_binary_files": {
-    "build/spark-native/benchmarks/jitllm_gemma2_joint_prefill_probe": "88b2449266f0713afe67c71a57df6691db10230fa0857300e5c239d6ef6b529c",
+    "build/spark-native/benchmarks/llmp_gemma2_joint_prefill_probe": "88b2449266f0713afe67c71a57df6691db10230fa0857300e5c239d6ef6b529c",
     "build/spark-native/tests/unit/gemma2_graph_test": "c211e9277dd1d484abb6d16ed888a72f8ba1c40e07647320e196f04fed115547",
     "build/spark-native/tests/unit/gemma3_graph_test": "4a4caf52c9e0c2daf9eed8ec548c3a1967c852cdc50ce69c02c345e8415ab7df",
     "build/spark-native/tests/unit/gemma4_graph_test": "40818eceba468bdf5592bf50afb2cdc3256d6f45eff2cd9c4538cacf2a511c3a",
     "build/spark-native/tests/unit/ggml_ext_ops_test": "515dbfc851121dfb88b2d6967a5e6e03a3baf59275681b81753dd00b50a9fcb3",
-    "build/spark-native/benchmarks/jitllm_gemma3_joint_prefill_probe": "d03d0357e51e5aa9992110dea55c24eb6f921008725ec1f4d9637e31d6905649",
+    "build/spark-native/benchmarks/llmp_gemma3_joint_prefill_probe": "d03d0357e51e5aa9992110dea55c24eb6f921008725ec1f4d9637e31d6905649",
     "build/spark-native/tests/unit/dsv4_fast_test": "3027c8e8179d4d54091148abea2f259980f13076b0c8efceef2aa9e2280057e8",
-    "build/spark-native/src/runtime/jitllm-runtime": "fa35ad4916c8880c779a8d1226afa13eba15926896a0831dd3e90f1ef34e3d93",
+    "build/spark-native/src/runtime/llmp-runtime": "fa35ad4916c8880c779a8d1226afa13eba15926896a0831dd3e90f1ef34e3d93",
     "build/spark-native/tests/unit/gemma2_runner_test": "81072567d223b5295f3a5a423059d1587c54734c9a6a97cdb492d2228306508a",
-    "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+    "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
   },
   "limits": "Native bounded runner comparison only; whole paid changes within drift; no stock/HTTP parity/fullsuite. Other quant/column/recipient routes OPEN.",
   "current_positive_xml_sha256": {
@@ -671,14 +671,14 @@
     "vecq": "fe46c98f953d4aae7bd8968ed6ae5a7fef732afd3742c6716f3bd30cd94624ea"
   },
   "source6_factor_binary_files": {
-    "build/spark-native/benchmarks/jitllm_gemma2_joint_prefill_probe": "811a70f26c7a2967dfc4c4fe74cc4305e930afe867e2fda53e1dfb8f66d227e8",
+    "build/spark-native/benchmarks/llmp_gemma2_joint_prefill_probe": "811a70f26c7a2967dfc4c4fe74cc4305e930afe867e2fda53e1dfb8f66d227e8",
     "build/spark-native/tests/unit/gemma2_graph_test": "7aa0c119e466f0e4b36849615a54fb07dcdd359f7818ec1848b24b5332f50f46",
     "build/spark-native/tests/unit/gemma3_graph_test": "715b78fd23f9372294bf62b18c9757ea6a70246b35fe92591953d60228315b3e",
     "build/spark-native/tests/unit/gemma4_graph_test": "e751f57690604126992f7597f1933813cf0cb2b4bae97547d6332a80d00a6458",
     "build/spark-native/tests/unit/ggml_ext_ops_test": "8b03e754bfa3267dbb0c580d6828ef6ec1d0ac3eac7d16b695a1f749666d4d53",
-    "build/spark-native/benchmarks/jitllm_gemma3_joint_prefill_probe": "9796154b69e19df1bd5b772372395f9d83ae9e6a539032e8b80bb8f04baa125a",
+    "build/spark-native/benchmarks/llmp_gemma3_joint_prefill_probe": "9796154b69e19df1bd5b772372395f9d83ae9e6a539032e8b80bb8f04baa125a",
     "build/spark-native/tests/unit/dsv4_fast_test": "7953a04bb2eeb9fcb171c52cae8b6c2cb8ea535ab7a22c49388d98729a9b4471",
-    "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+    "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
   },
   "installed_jobs": {
     "job1": {

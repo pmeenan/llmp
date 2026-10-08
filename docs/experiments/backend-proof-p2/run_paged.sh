@@ -1,8 +1,8 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Runs one FP16 arm of jitllm_fp16_paged (benchmarks/fp16_paged.cc) on a
+# Runs one FP16 arm of llmp_fp16_paged (benchmarks/fp16_paged.cc) on a
 # Spark for oracle rungs 4 and 5 (backend-proof.md): the fixture paged into
 # device VMM through the landing zone (D-081), with RESTORES restored
 # evaluations (weights evicted, their backing released and paged back in at
@@ -55,7 +55,7 @@ if [ "$STAGE" = loads ]; then
       idle
       others=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l)
       OUT=$WORK/loads/$1-$2-$round
-      "$BUILD/benchmarks/jitllm_fp16_paged" --artifact "$ARTIFACT" --trajectory control \
+      "$BUILD/benchmarks/llmp_fp16_paged" --artifact "$ARTIFACT" --trajectory control \
         --tokens "$WORK/control-tokens.txt" --fusion on --out "$OUT" --load-only 5 \
         --weights "$1" --backing "$2" > "$OUT.log" 2>&1 || { echo "the run failed" >&2; exit 1; }
       python3 -B -c "
@@ -76,7 +76,7 @@ case $TRAJECTORY in
   heldout) TOKENS=$WORK/heldout-ids.i64le ;;
   *) echo "unknown arm $ARM" >&2; exit 2 ;;
 esac
-BIN=$BUILD/benchmarks/jitllm_fp16_paged
+BIN=$BUILD/benchmarks/llmp_fp16_paged
 CUOBJDUMP=${CUOBJDUMP:-/usr/local/cuda/bin/cuobjdump}
 P0=$HARNESS/backend-proof-p0
 P2=$HARNESS/backend-proof-p2

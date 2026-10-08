@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "scheduler/admission.h"
@@ -16,7 +16,7 @@
 #include "base/check.h"
 #include "memory/commitment.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 namespace {
 
 // A wait beyond the tick range cannot meet a representable deadline.
@@ -575,4 +575,4 @@ std::optional<RequestState> Admission::StateOf(RequestId id) const {
   return request != nullptr ? std::optional<RequestState>(request->state) : std::nullopt;
 }
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The kept GGUF metadata reader (artifact/gguf_metadata.h) on GGUF headers
@@ -24,7 +24,7 @@
 
 namespace {
 
-namespace ja = jitllm::artifact;
+namespace ja = llmp::artifact;
 
 // A GGUF v3 header and key/value section, built value by value.
 class Gguf {

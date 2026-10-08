@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Tier E, operation level: native EXL3-G's GGML-derived operations recomputed by the bridge.
 
 Reference-only experiment tooling for the backend proof's P3 (docs/backend-proof.md, Tier E, "GGML-
-derived operations inside the EXL3 plan"); it does not implement jitLLM inference and shares no code
+derived operations inside the EXL3 plan"); it does not implement llmpalooza inference and shares no code
 with native's planner. Native records, with --record-ops DIR, every operation of its EXL3-G run of
 the held-out trajectories (prefixes 32, 144, 145, 1,023 and 1,024, each prefilled at P = 0, then 16
 single-token steps):
 
-  DIR/manifest.json  {"format": "jitllm-exl3-ops/1", "fixture", "arm": "G", "artifact": <artifact id>,
+  DIR/manifest.json  {"format": "llmp-exl3-ops/1", "fixture", "arm": "G", "artifact": <artifact id>,
                       "prefixes": [...], "suffix": 16}
   DIR/<prefix>/<phase>.json, .bin
                      phase 0 is the prefill, phases 1..16 the steps at P = prefix + phase - 1. The JSON
@@ -49,7 +49,7 @@ Checks, phase by phase (streamed):
   tensor's weights, or a stale table, fails;
 - RE-010: each phase's recorded logits hash equals native's uninstrumented logits (--uninstrumented
   NATIVE_OUT, required: logits-<p>.prefill.npy / .suffix.npy, F32 widened from F16) narrowed to F16.
-  NATIVE_OUT's manifest.json must be jitllm_exl3_exec's for this fixture, arm G and artifact, with
+  NATIVE_OUT's manifest.json must be llmp_exl3_exec's for this fixture, arm G and artifact, with
   neither capture nor record_ops, and no mismatched evaluation.
 
 Every library mapped into the process whose name starts with libggml must hash to the record's pins,
@@ -308,7 +308,7 @@ class Check:
 
     def run(self):
         manifest = json.loads((self.dir / "manifest.json").read_text())
-        need(manifest.get("format") == "jitllm-exl3-ops/1" and manifest.get("arm") == "G",
+        need(manifest.get("format") == "llmp-exl3-ops/1" and manifest.get("arm") == "G",
              f"not an EXL3-G operation recording: {manifest}")
         need(manifest.get("fixture") == self.ref.fixture, f"fixture {manifest.get('fixture')} is not the artifact's")
         need(manifest.get("suffix") == SUFFIX, "suffix must be 16")
@@ -478,11 +478,11 @@ class Check:
 
 
 def uninstrumented_control(native, ref, artifact_id):
-    """native (the uninstrumented run's --out) is jitllm_exl3_exec's plain EXL3-G run of this artifact."""
+    """native (the uninstrumented run's --out) is llmp_exl3_exec's plain EXL3-G run of this artifact."""
     path = Path(native) / "manifest.json"
     need(path.exists(), f"the uninstrumented control has no {path}")
     m = json.loads(path.read_text())
-    want = {"harness": "jitllm_exl3_exec", "fixture": ref.fixture, "arm": "G", "artifact": artifact_id,
+    want = {"harness": "llmp_exl3_exec", "fixture": ref.fixture, "arm": "G", "artifact": artifact_id,
             "capture": False, "record_ops": False, "mismatches": 0}
     got = {k: m.get(k) for k in want}
     need(got == want, f"{path} is not an uninstrumented EXL3-G run of this artifact: {got}, want {want}")

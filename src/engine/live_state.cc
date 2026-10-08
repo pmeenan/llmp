@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/live_state.h"
@@ -17,12 +17,12 @@
 #include "providers/device_runtime.h"
 #include "scheduler/commands.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
-namespace sc = jitllm::scheduler;
+namespace kg = llmp::kernels::ggml;
+namespace sc = llmp::scheduler;
 using base::Bytes;
 using catalog::ExtentId;
 using support::Error;
@@ -1328,4 +1328,4 @@ void LiveState::Release(providers::VmmProvider& memory, std::vector<std::string>
   }
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

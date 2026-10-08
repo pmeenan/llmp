@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/qwen_image_runner.h"
@@ -33,14 +33,14 @@
 #include "tokenizer/hf.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 namespace {
 
-namespace ja = jitllm::artifact;
-namespace ki = jitllm::kernels::image;
-namespace md = jitllm::model;
-namespace sc = jitllm::scheduler;
+namespace ja = llmp::artifact;
+namespace ki = llmp::kernels::image;
+namespace md = llmp::model;
+namespace sc = llmp::scheduler;
 using catalog::ExtentId;
 using catalog::MemoryClass;
 using support::Error;
@@ -109,7 +109,7 @@ struct QwenImageRunner::State {
   std::vector<std::uint64_t> vae_f32_bytes;
 
   // The plan, bound (D-053).
-  std::optional<jitllm::execution::Registry> registry;
+  std::optional<llmp::execution::Registry> registry;
   std::unique_ptr<ki::QwenImagePipeline> pipeline;
 
   // Its own memory, the cuBLAS workspace and handle, the staging.
@@ -188,7 +188,7 @@ Status QwenImageRunner::Setup() {
   const md::QwenImageProfile& profile = s.profile;
 
   // The plan, bound against this build's registry.
-  auto registry = jitllm::execution::Registry::Create(ki::Implementations());
+  auto registry = llmp::execution::Registry::Create(ki::Implementations());
   if (!registry) {
     return Error("the image's registry: " + registry.error().detail);
   }
@@ -197,7 +197,7 @@ Status QwenImageRunner::Setup() {
   if (!choices) {
     return Error("the image's plan: " + choices.error());
   }
-  auto plan = jitllm::execution::Plan::Build(*s.registry, *choices);
+  auto plan = llmp::execution::Plan::Build(*s.registry, *choices);
   if (!plan) {
     return Error("the image's plan: " + plan.error().detail);
   }
@@ -249,19 +249,19 @@ Status QwenImageRunner::Setup() {
   if (!tokenizer_json) {
     return Error("the composition keeps no tokenizer.json");
   }
-  auto spec = jitllm::tokenizer::ReadHfTokenizer(*tokenizer_json);
+  auto spec = llmp::tokenizer::ReadHfTokenizer(*tokenizer_json);
   if (!spec) {
     return Error("tokenizer: " + spec.error().ToString());
   }
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(*spec));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(*spec));
   if (!tokenizer) {
     return Error("tokenizer: " + tokenizer.error().ToString());
   }
-  auto rendered = jitllm::chat::RenderQwenImagePrompt(o_.prompt, *tokenizer);
+  auto rendered = llmp::chat::RenderQwenImagePrompt(o_.prompt, *tokenizer);
   if (!rendered) {
     return Error("prompt: " + rendered.error().ToString());
   }
-  std::vector<jitllm::tokenizer::TokenId> ids;
+  std::vector<llmp::tokenizer::TokenId> ids;
   if (auto e =
           tokenizer->EncodeMarked(rendered->rendered.text, rendered->rendered.specials, {}, ids);
       !e) {
@@ -625,9 +625,9 @@ Status QwenImageRunner::Step(std::uint32_t index, bool hash, std::string* sha) {
   }
   s.steps.push_back(Seconds(Clock::now() - started));
   if (hash && sha != nullptr) {
-    jitllm::base::Sha256 h;
+    llmp::base::Sha256 h;
     h.Update(std::span(s.out, static_cast<std::size_t>(s.image * p.out_channels * 2)));
-    *sha = jitllm::base::ToHex(h.Finish());
+    *sha = llmp::base::ToHex(h.Finish());
   }
   return {};
 }
@@ -678,8 +678,7 @@ Status QwenImageRunner::Decode(std::string& sha) {
   }
   const std::span<const Bf16> decoded(reinterpret_cast<const Bf16*>(s.out), count);
   const auto pixels = md::QwenImagePixels(decoded, p.out_channels, o_.size, o_.size);
-  sha =
-      jitllm::base::ToHex(jitllm::base::Sha256().Update(std::as_bytes(std::span(pixels))).Finish());
+  sha = llmp::base::ToHex(llmp::base::Sha256().Update(std::as_bytes(std::span(pixels))).Finish());
   s.decode = Seconds(Clock::now() - started);
   return {};
 }
@@ -732,7 +731,7 @@ std::string QwenImageRunner::Report() const {
       R"({{"components":{{{}}},"plan":"{}","own_bytes":{},"work_bytes":{},"text_rows":{},"generations":{},)"
       R"("graph_measured_bytes":{},"graph_floor_bytes":{},)"
       R"("last":{{"encode":{:.6f},"first_step":{:.6f},"step_median":{:.6f},"decode":{:.6f}}}}})",
-      components, s.pipeline ? jitllm::base::ToHex(s.pipeline->identity()) : std::string(),
+      components, s.pipeline ? llmp::base::ToHex(s.pipeline->identity()) : std::string(),
       s.own_bytes, work_bytes_, s.text, s.generations, s.graph_measured, kGraphFloorBytes, s.encode,
       s.steps.empty() ? 0.0 : s.steps.front(), later.empty() ? 0.0 : later[later.size() / 2],
       s.decode);
@@ -755,4 +754,4 @@ Status QwenImageRunner::Release() {
   return support::Joined(problems);
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

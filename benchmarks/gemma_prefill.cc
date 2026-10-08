@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Configurable paid prefill and fixed-prefix decode screen. No quality claim.
@@ -29,7 +29,7 @@
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
   if (argc < 4 || argc > 19 || argc == 16) return 2;
@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
     if (!parse(argv[15], context) || !parse(argv[16], kPrefill)) return 2;
   }
   if (kPrefill == 0 || kPrefill > kInputCapacity - kWarm - kSteps || context < kWarm + kSteps ||
-      kPrefill > context - kWarm - kSteps || context > jitllm::model::kGemma4Context ||
+      kPrefill > context - kWarm - kSteps || context > llmp::model::kGemma4Context ||
       max_rows > context)
     return 2;
   if (serving &&
@@ -188,7 +188,7 @@ int main(int argc, char** argv) {
               << " temporary_plans=" << temporary << " derived_minimum=" << derived_budget
               << " total=" << budget << '\n';
     node.SetHostFloor(temporary + runner.host_input_bytes() + planning_scratch);
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();
@@ -290,7 +290,7 @@ int main(int argc, char** argv) {
         auto borrowed = runner.BorrowFrozen(0, ids[position - 1]);
         if (!borrowed) return Error(borrowed.error());
         if (borrowed->prefix() != position) return Error("feature cursor mismatch");
-        std::vector<jitllm::catalog::ExtentId> feature_staging;
+        std::vector<llmp::catalog::ExtentId> feature_staging;
         auto pinned = node.Pinned(feature_bytes, 0, feature_staging);
         if (!pinned) return Error(pinned.error());
         if (auto copied = runner.CopyFeatures(0, position - 1, 1, *pinned); !copied)
@@ -344,7 +344,7 @@ int main(int argc, char** argv) {
       if (!ranges) return Error(ranges.error());
       std::uint64_t state_bytes = 0;
       for (const auto& range : *ranges) state_bytes += range.bytes;
-      std::vector<jitllm::catalog::ExtentId> staging;
+      std::vector<llmp::catalog::ExtentId> staging;
       auto state = node.Pinned(state_bytes, 0, staging);
       if (!state) return Error(state.error());
       if (auto copied = runner.CopyState(0, *state, *ranges, true); !copied) return copied;

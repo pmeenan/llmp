@@ -1,5 +1,5 @@
 {
-  "format": "jitllm-ds-qwen-state-only-prefill-v1",
+  "format": "llmp-ds-qwen-state-only-prefill-v1",
   "qualified_build_record_sha256": "77e270dc2d0686552215eccef1b8266a5b1fff2331dbf030c2824263e8c1214d",
   "official_build_receipt_sha256": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89",
   "executed_source_manifest_sha256": "c812354fd2bf62c04b7eafb8d91bf7c297db669cf8196e474039327de9044753",
@@ -7,35 +7,35 @@
   "runs_sha256": "5871b07c9cb2d330dbb97a751cf2da585371a164bb3bbf62780f1c79046e73ac",
   "artifacts": {
     "ds": {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
       "files": {
         "manifest.json": "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
         "index.json": "68ddac15cff7cfcac5162beab7559884632244651797aed1b000cc7325ea24fc"
       }
     },
     "dspark": {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5",
       "files": {
         "manifest.json": "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5",
         "index.json": "437561ad6dd1e8d5fd3758be2a8eac52b8a1c81f6a1fb54b27e0b3badfeaa11c"
       }
     },
     "qn": {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
       "files": {
         "manifest.json": "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
         "index.json": "5b65dcce8169374e638264d7ebdcb5cca517234b3dec26f1272a5f4f9c0e4c89"
       }
     },
     "qmtp": {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
       "files": {
         "manifest.json": "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
         "index.json": "5cd45fc5354ab224d281c2416027f224c61e32e2ae0acf8e7580d063fc274d99"
       }
     },
     "qg": {
-      "path": "/home/pmeenan/.local/share/jitllm/qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
+      "path": "/home/pmeenan/.local/share/llmp/qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
       "files": {
         "manifest.json": "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
         "index.json": "d6c69d701ead0cbadc3a64f1f3c354a70ecac7179f61dbac1e1163fca0cd3550"
@@ -45,33 +45,33 @@
   "inputs": {
     "ds": [
       {
-        "path": "/home/pmeenan/.local/share/jitllm/references/prefill-ds-qwen/ids0.i32",
+        "path": "/home/pmeenan/.local/share/llmp/references/prefill-ds-qwen/ids0.i32",
         "rows": 4352,
         "sha256": "d74255dd4e8ae5d806824e2378007d1599f8115e8ac80d886b60a865350ecadd"
       },
       {
-        "path": "/home/pmeenan/.local/share/jitllm/references/prefill-ds-qwen/ids1.i32",
+        "path": "/home/pmeenan/.local/share/llmp/references/prefill-ds-qwen/ids1.i32",
         "rows": 4608,
         "sha256": "b59367a57eeba410e0ce051780164d1ef8b414a64f2d195e1b855759f04e145d"
       }
     ],
     "qwen": [
       {
-        "path": "/home/pmeenan/.local/share/jitllm/references/prefill-ds-qwen/qwen0.i32",
+        "path": "/home/pmeenan/.local/share/llmp/references/prefill-ds-qwen/qwen0.i32",
         "rows": 1536,
         "sha256": "35ece15522faff9e2895774eb9146b83a7ad623de08b484ac7e6a8feeb29c35d"
       },
       {
-        "path": "/home/pmeenan/.local/share/jitllm/references/prefill-ds-qwen/qwen1.i32",
+        "path": "/home/pmeenan/.local/share/llmp/references/prefill-ds-qwen/qwen1.i32",
         "rows": 1280,
         "sha256": "e3288c43e2a1fc9c6377aa46f194b289e0085304e43af09f2a05a94c5f88c7d7"
       }
     ],
     "qwen_parent": {
-      "path": "/home/pmeenan/.local/share/jitllm/references/qwen-device-masks/inputs/wave-prompts.json",
+      "path": "/home/pmeenan/.local/share/llmp/references/qwen-device-masks/inputs/wave-prompts.json",
       "sha256": "52dd48eb2b96be3ebc6de1a9c8e3f5155016599a20c85c1dc1dd3778d2123952"
     },
-    "ds_origin": "Spark A ~/.local/share/jitllm/ds4-mask4/ids{0,1}.i32; durable reconstruction docs/experiments/deepseek-device-masks/README.md"
+    "ds_origin": "Spark A ~/.local/share/llmp/ds4-mask4/ids{0,1}.i32; durable reconstruction docs/experiments/deepseek-device-masks/README.md"
   },
   "task_entry": {
     "checked_utc": "2026-10-08T16:22:05.394035+00:00",
@@ -406,7 +406,7 @@
         "scratch": 10485760,
         "host_inputs": 2097152,
         "allocation": {
-          "format": "jitllm-qwen-wave-setup-budget-v1",
+          "format": "llmp-qwen-wave-setup-budget-v1",
           "context": 2048,
           "prefill_rows": 512,
           "wave_capacity": 2,
@@ -706,7 +706,7 @@
         "scratch": 20971520,
         "host_inputs": 2097152,
         "allocation": {
-          "format": "jitllm-qwen-wave-setup-budget-v1",
+          "format": "llmp-qwen-wave-setup-budget-v1",
           "context": 2048,
           "prefill_rows": 512,
           "wave_capacity": 2,
@@ -1375,7 +1375,7 @@
         "scratch": 10485760,
         "host_inputs": 2097152,
         "allocation": {
-          "format": "jitllm-qwen-wave-setup-budget-v1",
+          "format": "llmp-qwen-wave-setup-budget-v1",
           "context": 2048,
           "prefill_rows": 512,
           "wave_capacity": 2,
@@ -1617,22 +1617,22 @@
     }
   },
   "qualified_files": {
-    "build/spark-native/src/runtime/jitllm-runtime": "e9ce77e263886f757579ab1292445bd19d784d808baaeaf650b1f9012302a92b",
-    "build/spark-native/benchmarks/jitllm_prefill_prediction_probe": "1958e4e08d8a382126e5c1afe989cdce2d1d1a2ce8370387e472638f5b7bf341",
+    "build/spark-native/src/runtime/llmp-runtime": "e9ce77e263886f757579ab1292445bd19d784d808baaeaf650b1f9012302a92b",
+    "build/spark-native/benchmarks/llmp_prefill_prediction_probe": "1958e4e08d8a382126e5c1afe989cdce2d1d1a2ce8370387e472638f5b7bf341",
     "build/spark-native/tests/unit/dsv4_test": "7638fa83d16bbb2a80fd957189558a7c1a0ecb301c8176e42b183641a924a38d",
     "build/spark-native/tests/unit/dsv4_prefill_plan_test": "1ba8d2c4f9b741655f12375477094b9f3b75040d9c99c4b6ece69ec9bbc1c8ac",
     "build/spark-native/tests/unit/qwen38_wave_plan_test": "f326b43f3ebd2ff999c08f19c7262ff0c20b1132366e7553c7ab0fdf13a218f9",
-    "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+    "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
   },
   "actual_cuBLAS": {
     "libcublas.so.13": {
-      "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-      "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+      "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+      "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
       "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
     },
     "libcublasLt.so.13": {
-      "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
-      "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+      "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
+      "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
       "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
     }
   },
@@ -1687,9 +1687,9 @@
   },
   "final_policy_build_record_sha256": "e9e77f1159616849f9dbdc115f4fa1af2e2cc4852d53d94645cdc2f13f84c22d",
   "final_policy_files": {
-    "build/spark-native/src/runtime/jitllm-runtime": "c1c503ee91c6483f680898638af74bca88e1a9b959de8770747a5c2b73d0052f",
-    "build/spark-native/benchmarks/jitllm_prefill_prediction_probe": "ac5cfceedef758044c2b0d92773fcea5178606dc4905afef12f4d80be72df747",
-    "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+    "build/spark-native/src/runtime/llmp-runtime": "c1c503ee91c6483f680898638af74bca88e1a9b959de8770747a5c2b73d0052f",
+    "build/spark-native/benchmarks/llmp_prefill_prediction_probe": "ac5cfceedef758044c2b0d92773fcea5178606dc4905afef12f4d80be72df747",
+    "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
   },
   "final_policy_installed_supervisor": {
     "state": "done",

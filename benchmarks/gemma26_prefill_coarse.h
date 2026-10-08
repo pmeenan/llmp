@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
@@ -7,7 +7,7 @@
 
 // Diagnostic-only interface linked by the manual helper. The reversible
 // measurement overlay uses it; canonical engine source/objects do not.
-namespace jitllm::benchmark::coarse {
+namespace llmp::benchmark::coarse {
 enum class Phase : std::uint8_t {
   kWave,
   kPlacesCall,
@@ -64,4 +64,4 @@ class Scope {
   std::int64_t wall_ = 0;
   std::int64_t cpu_ = 0;
 };
-}  // namespace jitllm::benchmark::coarse
+}  // namespace llmp::benchmark::coarse

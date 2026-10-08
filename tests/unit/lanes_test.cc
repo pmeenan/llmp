@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // D-048's lanes and completion ownership
@@ -32,25 +32,25 @@
 
 namespace {
 
-using jitllm::base::BoundedQueue;
-using jitllm::base::PushKind;
-using jitllm::base::PushResult;
-using jitllm::base::WakeFlag;
-using jitllm::scheduler::Acceptance;
-using jitllm::scheduler::CompletionBoard;
-using jitllm::scheduler::Lane;
-using jitllm::scheduler::LaneSettings;
-using jitllm::scheduler::Observation;
-using jitllm::scheduler::OperationId;
-using jitllm::scheduler::Outcome;
-using jitllm::scheduler::Published;
-using jitllm::scheduler::ReadyQueue;
-using jitllm::scheduler::TaskError;
-using jitllm::scheduler::TaskId;
-using jitllm::scheduler::TaskOutcome;
-using jitllm::scheduler::TaskTable;
-using jitllm::scheduler::Terminal;
-using jitllm::test_support::Failed;
+using llmp::base::BoundedQueue;
+using llmp::base::PushKind;
+using llmp::base::PushResult;
+using llmp::base::WakeFlag;
+using llmp::scheduler::Acceptance;
+using llmp::scheduler::CompletionBoard;
+using llmp::scheduler::Lane;
+using llmp::scheduler::LaneSettings;
+using llmp::scheduler::Observation;
+using llmp::scheduler::OperationId;
+using llmp::scheduler::Outcome;
+using llmp::scheduler::Published;
+using llmp::scheduler::ReadyQueue;
+using llmp::scheduler::TaskError;
+using llmp::scheduler::TaskId;
+using llmp::scheduler::TaskOutcome;
+using llmp::scheduler::TaskTable;
+using llmp::scheduler::Terminal;
+using llmp::test_support::Failed;
 using ::testing::ElementsAre;
 using ::testing::Pair;
 
@@ -61,10 +61,10 @@ int Take(std::optional<std::unique_ptr<int>> popped) {
   return popped.has_value() && *popped != nullptr ? **popped : -1;
 }
 
-jitllm::scheduler::TaskView View(const TaskTable& tasks, TaskId task) {
+llmp::scheduler::TaskView View(const TaskTable& tasks, TaskId task) {
   const auto view = tasks.Describe(task);
   EXPECT_TRUE(view.has_value());
-  return view.value_or(jitllm::scheduler::TaskView{});
+  return view.value_or(llmp::scheduler::TaskView{});
 }
 
 TaskId Pop(ReadyQueue& ready) {
@@ -255,7 +255,7 @@ TEST(WakeFlag, AnticipationsAmongManyPublishersLoseNoWakeup) {
 
 // The expectation is the shortest of the last eight samples.
 TEST(Expectation, IsTheShortestOfTheLastEight) {
-  jitllm::base::Expectation expected;
+  llmp::base::Expectation expected;
   EXPECT_FALSE(expected.known());
   expected.Add(std::chrono::milliseconds(50));
   EXPECT_TRUE(expected.known());
@@ -277,7 +277,7 @@ TEST(Expectation, IsTheShortestOfTheLastEight) {
 // than `past` behind the elapsed time, and none once all are.
 TEST(Expectation, NextIsTheNearestLikelyEndNotYetOutlasted) {
   using std::chrono::milliseconds;
-  jitllm::base::Expectation expected;
+  llmp::base::Expectation expected;
   EXPECT_FALSE(expected.Next(milliseconds(0), milliseconds(1)).has_value());
   for (const int length : {45, 5, 45, 20}) {
     expected.Add(milliseconds(length));

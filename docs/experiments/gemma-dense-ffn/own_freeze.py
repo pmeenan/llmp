@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Exclusive bounded source/capture/native freeze, before original outputs."""
 import argparse
@@ -48,7 +48,7 @@ def finite_file(path, size):
 
 
 def retired(job):
-    folder = pathlib.Path.home() / ".local/share/jitllm/jobs" / job
+    folder = pathlib.Path.home() / ".local/share/llmp/jobs" / job
     final = json.loads((folder / "final.json").read_text())
     assert final["state"] == "done" and final["rc"] == 0, final
     return {name: identity(folder / name) for name in ("final.json", "log", "job.json")}
@@ -101,14 +101,14 @@ def main():
     args = p.parse_args()
     root, base = args.root.resolve(), args.scratch.resolve()
     binary_paths = {
-        "capture": root / "build/spark-native/benchmarks/jitllm_gemma_dense_ffn_capture",
-        "native": root / "build/spark-native/benchmarks/jitllm_gemma_dense_ffn_replay",
+        "capture": root / "build/spark-native/benchmarks/llmp_gemma_dense_ffn_capture",
+        "native": root / "build/spark-native/benchmarks/llmp_gemma_dense_ffn_replay",
         "original": base / "llama_ffn",
     }
     source = {name: identity(root / name) for name in SOURCE_FILES}
     binaries = {name: identity(path) for name, path in binary_paths.items()}
     assert identity(base / "inputs.i32") == {"bytes": 4096, "sha256": IDS_SHA}
-    artifact = pathlib.Path.home() / ".local/share/jitllm/m3-artifacts" / ARTIFACT
+    artifact = pathlib.Path.home() / ".local/share/llmp/m3-artifacts" / ARTIFACT
     assert identity(artifact / "manifest.json")["sha256"] == ARTIFACT
     assert identity(artifact / "index.json")["sha256"] == INDEX_SHA
     ancestry = json.loads((base / "source-ancestry.json").read_text())
@@ -125,7 +125,7 @@ def main():
         "inputs": identity(base / "inputs.i32"),
         "artifact_manifest": identity(artifact / "manifest.json"),
         "artifact_index": identity(artifact / "index.json"),
-        "build_receipt": identity(root / "build/spark-native/jitllm-receipt.json"),
+        "build_receipt": identity(root / "build/spark-native/llmp-receipt.json"),
         "headers": {x.name: identity(x) for x in sorted((base / "headers").iterdir()) if x.is_file()},
         "original_library_witness": identity(base / "libraries.sha256"),
         "source_ancestry": identity(base / "source-ancestry.json"),

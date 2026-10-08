@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Request slots sized by memory (2026-10-03)
@@ -68,7 +68,7 @@ in the same session; the wave-form section ran the change rebased on main
 
 ### DeepSeek V4 Flash, pure decode (harness)
 
-`jitllm_spec_runner --check wave --slots N --tokens 96`, original artifact
+`llmp_spec_runner --check wave --slots N --tokens 96`, original artifact
 (`8a355bfb…`), the fast-swap prompts (two decode, six chat). Plain decode
 waves (one row a request) and DSpark waves (each request a share of the
 wave's sixteen rows: four up to four requests, two at six and eight).
@@ -344,14 +344,14 @@ the cohort's capacity policy governs it.
 ## Provenance
 
 - **Host**: `spark-b` (`spark-56f5`), GB10, driver 580.178.04; the
-  admission gate (`jitllm-spark-preflight.py 105`) passed before every
+  admission gate (`llmp-spark-preflight.py 105`) passed before every
   cell.
 - **Builds**: `spark-native` of this change and of main `340e368` (the
   source of `fcf78c8` but for two documents), same session. The served
   cells ran this change before admission counted its peers' prompts (the
   first estimate, which never acted in them; the final rule needs no
   wait there either, with 7–37 GiB of state room).
-- **Harnesses**: `jitllm_spec_runner --check wave --slots N` (in the
+- **Harnesses**: `llmp_spec_runner --check wave --slots N` (in the
   tree); the HTTP cells' controller (scratch, `cells.py`, a fresh service
   a cell, streamed greedy requests, a one-token prime excluded).
 - **Raw records**: `spark-b:~/scratch/slots/` (`m1/` waves, `h1/` cells,

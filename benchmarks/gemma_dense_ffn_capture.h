@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-#ifndef JITLLM_BENCHMARK_DENSE_FFN_CAPTURE_H_
-#define JITLLM_BENCHMARK_DENSE_FFN_CAPTURE_H_
+#ifndef LLMP_BENCHMARK_DENSE_FFN_CAPTURE_H_
+#define LLMP_BENCHMARK_DENSE_FFN_CAPTURE_H_
 #include <array>
 #include <filesystem>
 
@@ -9,7 +9,7 @@
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
 #include "kernels/ggml/launch.h"
-namespace jitllm::benchmark {
+namespace llmp::benchmark {
 class DenseFfnCapture {
  public:
   static constexpr std::uint64_t kHostBytes = 64ULL << 20;
@@ -46,5 +46,5 @@ class DenseFfnCapture {
   engine::PagedNode* node_ = nullptr;
   bool enabled_ = false, armed_ = false;
 };
-}  // namespace jitllm::benchmark
+}  // namespace llmp::benchmark
 #endif

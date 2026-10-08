@@ -1,6 +1,6 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-// External llama.cpp reference only; this does not implement jitLLM inference.
+// External llama.cpp reference only; this does not implement llmpalooza inference.
 #include "llama.h"
 #include "ggml-backend.h"
 

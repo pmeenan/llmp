@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Prepare the known prompt state inside paid prefill
@@ -45,7 +45,7 @@ model job counters exclude backing-service acquisition work. Nested binding
 remains part of planning/publication, and CUDA event spans include CPU submission
 gaps. Full phase data and exact-output identities are in [results](results.json).
 
-Reproduce using `jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 31 both 256
+Reproduce using `llmp_gemma_prefill ARTIFACT IDS NEW_OUT 31 both 256
 normmul-on state-only lookahead-on phases-on STATE_MODE`, in order chunked,
 upfront, upfront, chunked. The [lookahead recipe](../gemma-prefill-lookahead/README.md)
 uses six discarded warm rows, Clear, 8,192 paid rows, three untimed anchors and

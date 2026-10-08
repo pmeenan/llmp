@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Manual, stage-zero-only original-input replay through the production
@@ -27,25 +27,25 @@
 #include "providers/device_runtime.h"
 
 namespace {
-namespace en = jitllm::engine;
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
-namespace sc = jitllm::scheduler;
-namespace js = jitllm::base::json;
+namespace en = llmp::engine;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
+namespace sc = llmp::scheduler;
+namespace js = llmp::base::json;
 using en::support::Address;
 using en::support::Error;
 using en::support::Pointer;
 using en::support::Round;
 constexpr auto kHostBytes = std::uint64_t{256} << 20U;
-// The prepared store: $JITLLM_TEST_MODELS/m3-artifacts, else under
-// ~/.local/share/jitllm, as the model tests find it.
+// The prepared store: $LLMP_TEST_MODELS/m3-artifacts, else under
+// ~/.local/share/llmp, as the model tests find it.
 std::filesystem::path Store() {
   // NOLINTNEXTLINE(concurrency-mt-unsafe): the benchmark reads, never sets, the environment
-  const char* dir = std::getenv("JITLLM_TEST_MODELS");
+  const char* dir = std::getenv("LLMP_TEST_MODELS");
   const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
   const std::filesystem::path models =
       dir != nullptr ? std::filesystem::path(dir)
-                     : std::filesystem::path(home != nullptr ? home : "") / ".local/share/jitllm";
+                     : std::filesystem::path(home != nullptr ? home : "") / ".local/share/llmp";
   return models / "m3-artifacts";
 }
 constexpr std::array<std::string_view, 11> kFiles{
@@ -65,7 +65,7 @@ std::expected<std::vector<std::byte>, std::string> Read(const std::filesystem::p
   return data;
 }
 std::string Hash(std::span<const std::byte> bytes) {
-  return jitllm::base::ToHex(jitllm::base::Sha256().Update(bytes).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256().Update(bytes).Finish());
 }
 bool Integer(js::Value object, std::string_view key, std::int64_t n) {
   const auto field = object.find(key);
@@ -227,7 +227,7 @@ class Replay final : public en::PagedModel {
     if (auto r = assistant_.Reserve(node_, ap, {}); !r) return r;
     if (auto r = resources_.OpenCublas("assistant fixture cuBLAS"); !r) return r;
     if (auto r = resources_.Map(cache_, "immutable assistant fixture KV", state_.bytes * 2,
-                                jitllm::catalog::MemoryClass::kLiveState);
+                                llmp::catalog::MemoryClass::kLiveState);
         !r)
       return r;
     target_model_.profile = &profile_;
@@ -274,7 +274,7 @@ class Replay final : public en::PagedModel {
     witness_ = *witness;
     node_.SetHostFloor(kHostBytes);
     auto fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
-    if (auto s = node_.Start(jitllm::base::Bytes(
+    if (auto s = node_.Start(llmp::base::Bytes(
             fixed + (target_.extents().size() + assistant_.extents().size()) * en::kPagedExtent +
             kHostBytes));
         !s)
@@ -288,7 +288,7 @@ class Replay final : public en::PagedModel {
     for (auto* workspace : {&node_.activations(), &node_.pool()})
       extents.insert(extents.end(), workspace->extents.begin(), workspace->extents.end());
     auto closure = node_.catalog().ClosureOfExtents(extents);
-    if (!closure) return Error(jitllm::catalog::ToString(closure.error()));
+    if (!closure) return Error(llmp::catalog::ToString(closure.error()));
     closure_ = std::move(*closure);
     if (auto s = resources_.BindLaunch(scratch_); !s) return s;
     runs_.SetLaunch(&resources_.launch());
@@ -353,19 +353,19 @@ class Replay final : public en::PagedModel {
           for (std::uint64_t offset = 0; offset < tensor.bytes; offset += 1048576) {
             const auto bytes = std::min<std::uint64_t>(1048576, tensor.bytes - offset);
             if (auto r = Copy(cache_.base + owner * state_.bytes + tensor.offset + offset, witness_,
-                              bytes, jitllm::providers::CopyKind::kHostToDevice);
+                              bytes, llmp::providers::CopyKind::kHostToDevice);
                 !r)
               return r;
           }
           const auto& data = owners_[owner].data[array + 3];
           std::memcpy(witness_, data.data(), data.size());
           if (auto r = Copy(cache_.base + owner * state_.bytes + tensor.offset, witness_,
-                            data.size(), jitllm::providers::CopyKind::kHostToDevice);
+                            data.size(), llmp::providers::CopyKind::kHostToDevice);
               !r)
             return r;
         }
       if (auto r = Copy(assistant_.resource_address(assistant_binding_.rope_freqs.index), witness_,
-                        256 * sizeof(float), jitllm::providers::CopyKind::kDeviceToHost);
+                        256 * sizeof(float), llmp::providers::CopyKind::kDeviceToHost);
           !r)
         return r;
       if (auto r = md::CheckGemma4RopeFactors(profile_,
@@ -475,8 +475,8 @@ class Replay final : public en::PagedModel {
     });
   }
   std::uint32_t stream() const override { return 0; }
-  const jitllm::catalog::Closure& fence_closure() const override { return closure_; }
-  std::vector<jitllm::catalog::ExtentId> managed_extents() const override {
+  const llmp::catalog::Closure& fence_closure() const override { return closure_; }
+  std::vector<llmp::catalog::ExtentId> managed_extents() const override {
     auto ids = target_.extents();
     auto other = assistant_.extents();
     ids.insert(ids.end(), other.begin(), other.end());
@@ -499,13 +499,13 @@ class Replay final : public en::PagedModel {
 
  private:
   en::Status Copy(std::uint64_t device, void* host, std::uint64_t bytes,
-                  jitllm::providers::CopyKind kind) {
+                  llmp::providers::CopyKind kind) {
     return node_.Job(
         closure_,
-        [&](jitllm::providers::NativeStream stream) {
-          const bool upload = kind == jitllm::providers::CopyKind::kHostToDevice;
-          return jitllm::providers::CopyAsync(stream, upload ? Pointer(device) : host,
-                                              upload ? host : Pointer(device), bytes, kind)
+        [&](llmp::providers::NativeStream stream) {
+          const bool upload = kind == llmp::providers::CopyKind::kHostToDevice;
+          return llmp::providers::CopyAsync(stream, upload ? Pointer(device) : host,
+                                            upload ? host : Pointer(device), bytes, kind)
                          .ok()
                      ? sc::JobResult::kQueued
                      : sc::JobResult::kUnknown;
@@ -535,7 +535,7 @@ class Replay final : public en::PagedModel {
       auto& run = plan_runs_[index];
       auto posted = node_.Job(
           closure_,
-          [&](jitllm::providers::NativeStream stream) {
+          [&](llmp::providers::NativeStream stream) {
             auto queued = runs_.Queue(run, *staged, {}, *plan.bound, outputs, run.CaptureDue(true),
                                       stats_, stream);
             if (!queued.result) return sc::JobResult::kUnknown;
@@ -558,7 +558,7 @@ class Replay final : public en::PagedModel {
     return {};
   }
   std::expected<std::string, std::string> Witness() {
-    jitllm::base::Sha256 hash;
+    llmp::base::Sha256 hash;
     for (unsigned owner = 0; owner < 2; ++owner)
       for (unsigned array = 0; array < 4; ++array) {
         const auto& tensor = state_.tensors[(array < 2 ? 28U : 29U) * 2 + array % 2];
@@ -566,7 +566,7 @@ class Replay final : public en::PagedModel {
         for (std::uint64_t offset = 0; offset < tensor.bytes; offset += 1048576) {
           const auto bytes = std::min<std::uint64_t>(1048576, tensor.bytes - offset);
           if (auto r = Copy(cache_.base + owner * state_.bytes + tensor.offset + offset, witness_,
-                            bytes, jitllm::providers::CopyKind::kDeviceToHost);
+                            bytes, llmp::providers::CopyKind::kDeviceToHost);
               !r)
             return Error(r.error());
           const auto data = std::span(static_cast<const std::byte*>(witness_), bytes);
@@ -577,7 +577,7 @@ class Replay final : public en::PagedModel {
           hash.Update(data);
         }
       }
-    return jitllm::base::ToHex(hash.Finish());
+    return llmp::base::ToHex(hash.Finish());
   }
   en::PagedNode& node_;
   en::RunnerResources resources_;
@@ -595,7 +595,7 @@ class Replay final : public en::PagedModel {
   en::GraphRuns runs_;
   std::array<en::PlanRuns, 3> plan_runs_;
   en::GraphStats stats_;
-  jitllm::catalog::Closure closure_;
+  llmp::catalog::Closure closure_;
   std::array<OwnerInputs, 2> owners_;
   std::vector<float> heads_, features_;
   std::uint64_t scratch_ = 0;
@@ -612,7 +612,7 @@ int main(int argc, char** argv) {
   umask(0077);
   if (argc < 3 || argc > 5 || (argc == 5 && std::string_view(argv[4]) != "time")) {
     std::cerr
-        << "usage: jitllm_gemma_assistant_wave_fixture INPUT_ROOT NEW_OUTPUT [INCOMING [time]]\n";
+        << "usage: llmp_gemma_assistant_wave_fixture INPUT_ROOT NEW_OUTPUT [INCOMING [time]]\n";
     return 2;
   }
   auto owner = std::make_unique<Lifetime>();

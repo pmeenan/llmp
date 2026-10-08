@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // BP-P2's partial evictions (docs/backend-proof.md, case matrix), shared
@@ -7,8 +7,8 @@
 // artifact's own placements, so the harness evicts exactly those extents
 // and the next phase's materialization must bring back only them.
 
-#ifndef JITLLM_BENCHMARKS_PAGING_CASES_H_
-#define JITLLM_BENCHMARKS_PAGING_CASES_H_
+#ifndef LLMP_BENCHMARKS_PAGING_CASES_H_
+#define LLMP_BENCHMARKS_PAGING_CASES_H_
 
 #include <cstdint>
 #include <map>
@@ -20,7 +20,7 @@
 
 #include "artifact/artifact.h"
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 
 struct PartialCase {
   std::string name;
@@ -106,6 +106,6 @@ inline std::vector<PartialCase> PartialCases(const artifact::Artifact& a,
   return cases;
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks
 
-#endif  // JITLLM_BENCHMARKS_PAGING_CASES_H_
+#endif  // LLMP_BENCHMARKS_PAGING_CASES_H_

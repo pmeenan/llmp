@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Internal C2 decode screen: independently-prefilled real slots, not joint prefill.
@@ -27,7 +27,7 @@
 #include "tokenizer/tokenizer.h"
 
 namespace {
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 namespace fs = std::filesystem;
 using en::support::Error;
 constexpr std::uint32_t kVocab = 256000, kInput = 4387, kSteps = 32;
@@ -60,14 +60,14 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
   auto metadata = Read(metadata_path, 32ULL << 20U);
   auto text = Read(text_path, 65536);
   if (!metadata || !text) return Error("preparation input refused");
-  auto parsed = jitllm::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*metadata)));
+  auto parsed = llmp::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*metadata)));
   if (!parsed) return Error(parsed.error().ToString());
   if (parsed->spec.tokens.size() != kVocab || parsed->spec.bos != 2 || !parsed->spec.add_bos ||
       parsed->spec.add_eos)
     return Error("Gemma2 vocabulary/BOS contract differs");
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(parsed->spec));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(parsed->spec));
   if (!tokenizer) return Error(tokenizer.error().ToString());
-  std::vector<jitllm::tokenizer::TokenId> ids;
+  std::vector<llmp::tokenizer::TokenId> ids;
   if (auto r = tokenizer->Encode(*text, {.add_bos_eos = true, .max_tokens = 8192}, ids); !r)
     return Error(r.error().ToString());
   if (ids.size() < kInput || ids.front() != 2 || std::ranges::any_of(ids, [](auto id) {
@@ -78,14 +78,14 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
   const auto kept = std::span(ids).first(kInput);
   if (auto r = Save<std::int32_t>(fs::path(output_path) / "ids.i32", kept); !r) return r;
   std::cout << "GEMMA2_INPUT rows=" << kInput << " sha256="
-            << jitllm::base::ToHex(jitllm::base::Sha256{}.Update(std::as_bytes(kept)).Finish())
-            << " text_sha256=" << jitllm::base::ToHex(jitllm::base::Sha256{}.Update(*text).Finish())
+            << llmp::base::ToHex(llmp::base::Sha256{}.Update(std::as_bytes(kept)).Finish())
+            << " text_sha256=" << llmp::base::ToHex(llmp::base::Sha256{}.Update(*text).Finish())
             << '\n';
   return {};
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma2-c2-probe")) return 2;
+  if (!llmp::platform::InstallCrashPolicy("gemma2-c2-probe")) return 2;
   if (argc == 5 && std::string_view(argv[1]) == "prepare") {
     auto r = Prepare(argv[2], argv[3], argv[4]);
     if (!r) std::cerr << r.error() << '\n';
@@ -143,7 +143,7 @@ int main(int argc, char** argv) {
     for (std::uint32_t slot = 0; slot < 2; ++slot) {
       auto ranges = runner.CheckpointRanges(past[slot]);
       if (!ranges) return Error(ranges.error());
-      jitllm::base::Sha256 hash;
+      llmp::base::Sha256 hash;
       for (const auto& range : *ranges)
         for (std::uint64_t at = 0; at < range.bytes;) {
           auto part = range;
@@ -156,7 +156,7 @@ int main(int argc, char** argv) {
           hash.Update(std::span(static_cast<const std::byte*>(pinned), std::size_t(part.bytes)));
           at += part.bytes;
         }
-      result[slot] = jitllm::base::ToHex(hash.Finish());
+      result[slot] = llmp::base::ToHex(hash.Finish());
     }
     return result;
   };
@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
     life->entered.push_back(&runner);
     if (auto r = runner.Setup(); !r) return r;
     if (own) {
-      std::vector<jitllm::catalog::ExtentId> extents;
+      std::vector<llmp::catalog::ExtentId> extents;
       auto allocation = node.Pinned(kCopy, 0, extents);
       if (!allocation) return Error(allocation.error());
       pinned = *allocation;
@@ -217,8 +217,8 @@ int main(int argc, char** argv) {
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     node.SetHostFloor(runner.host_input_bytes() + runner.plan_floor_bytes() + (16ULL << 20U));
-    if (auto r = node.Start(jitllm::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
-                                                4 * node.StateCapacity()));
+    if (auto r = node.Start(llmp::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
+                                              4 * node.StateCapacity()));
         !r)
       return r;
     if (auto r = runner.Register(); !r) return r;

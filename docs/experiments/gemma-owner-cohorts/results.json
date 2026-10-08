@@ -44,11 +44,11 @@
         "sha256": "87a02d43ce9196092f91038b90f55d1f24bd5fa7eef059e8510bbb335e984267",
         "bytes": 62494
       },
-      "src/kernels/ggml/jitllm_ops.cc": {
+      "src/kernels/ggml/llmp_ops.cc": {
         "sha256": "a6e66bff724c68c052e5cf40f16559e2775d3a5c0e52e61ceaae8dfab72817e2",
         "bytes": 116688
       },
-      "src/kernels/ggml/jitllm_ops.h": {
+      "src/kernels/ggml/llmp_ops.h": {
         "sha256": "24c7ba49ec4340a981a78fc7cc4c8e937568f568384863d54cd7cc29bf7054fb",
         "bytes": 60108
       },
@@ -65,8 +65,8 @@
         "bytes": 168897
       },
       "docs/experiments/gemma-joined-serving/llama_joined.cc": {
-        "sha256": "4786817b72be01ecd268234666c871d09dc01f6fcced621baf4cd2323cf732db",
-        "bytes": 13433
+        "sha256": "96c4772fd0a91887bae1f846e79380aa7042e823aecff25fb015b8677e33b00e",
+        "bytes": 13437
       },
       "src/kernels/ggml/gemma4_graph.cc": {
         "sha256": "878cb233bfd8de54bab34c3f0af1f363b978e1efb954d5058960aa73365786ce",
@@ -95,7 +95,7 @@
     "native_sdk_receipt_sha256": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09"
   },
   "built_binary_sha256": {
-    "jitllm_gemma_joined": "5506a3bca450d6dda473d52d2577bac2ee394e151133ccba0d6ae10b121d3553",
+    "llmp_gemma_joined": "5506a3bca450d6dda473d52d2577bac2ee394e151133ccba0d6ae10b121d3553",
     "gemma4_graph_test": "9ae25b72ddf2031da256ae46ed89986cdf1298cab3e597851027a7bca7bafdae",
     "gemma4_plan_test": "af085d4945187206d9b9d97a3c14b52be43c0c4c2edb8dd268ef9119b3b7e242",
     "ggml_ext_ops_test": "d5738a9a161a6f1cd908e0d9cae4a319a41da8f0fae1a3440e918db8856f30dd"
@@ -116,7 +116,7 @@
     "symbolic_262k_parent_eligibility": true,
     "full_context_model_run": false,
     "full_regression": "Deferred by owner until optimization work settles",
-    "initial_failure": "Missing JITLLM_TEST_DATA launcher environment; compiled target and first2 operand tests succeeded, graph fixture aborted; source unchanged for corrected retry"
+    "initial_failure": "Missing LLMP_TEST_DATA launcher environment; compiled target and first2 operand tests succeeded, graph fixture aborted; source unchanged for corrected retry"
   },
   "official_jobs": {
     "official-build1": {

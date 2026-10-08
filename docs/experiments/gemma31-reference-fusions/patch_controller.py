@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2023-2026 The ggml authors
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: MIT AND Apache-2.0
 """Bounded external-reference controller diagnostic at the exact b29 pin.
 
@@ -14,11 +14,11 @@ import sys
 PINNED_SHA = '523470d6604755b82d0208414ce40f1378941b10bc1349763bbdf02edaab9634'
 
 HELPER = r'''
-// External jitLLM diagnosis only; no changes to model graph tensors.
+// External llmpalooza diagnosis only; no changes to model graph tensors.
 // 0 preserves all original selections, 1/2 select one norm family, 3 none, 4 both.
-static int jitllm_reference_policy() {
+static int llmp_reference_policy() {
     static const int policy = [] {
-        const char * p = getenv("JITLLM_REFERENCE_FUSION_POLICY");
+        const char * p = getenv("LLMP_REFERENCE_FUSION_POLICY");
         if (p == nullptr || strcmp(p, "all") == 0) return 0;
         if (strcmp(p, "norm_rope") == 0) return 1;
         if (strcmp(p, "norm_add") == 0) return 2;
@@ -32,11 +32,11 @@ static int jitllm_reference_policy() {
 
 ALLOW = r'''
     static const bool announced = [] {
-        fprintf(stderr, "JITLLM_REF_CONTROLLER policy=%d\n", jitllm_reference_policy());
+        fprintf(stderr, "LLMP_REF_CONTROLLER policy=%d\n", llmp_reference_policy());
         return true;
     }();
     (void) announced;
-    const int diagnostic_policy = jitllm_reference_policy();
+    const int diagnostic_policy = llmp_reference_policy();
     if (diagnostic_policy == 1 || diagnostic_policy == 4) {
         if (ggml_cuda_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ROPE, GGML_OP_VIEW, GGML_OP_SET_ROWS }, {})) {
             ggml_cuda_op_rms_norm_mul_rope_fused(*cuda_ctx, cgraph->nodes[i], cgraph->nodes[i+1], cgraph->nodes[i+2], cgraph->nodes[i+4]);
@@ -59,9 +59,9 @@ ALLOW = r'''
 '''
 
 TRACE = r'''
-                static const bool trace = getenv("JITLLM_REFERENCE_TRACE") != nullptr;
+                static const bool trace = getenv("LLMP_REFERENCE_TRACE") != nullptr;
                 if (trace && nodes_to_skip > 0) {
-                    fprintf(stderr, "JITLLM_REF_FUSION count=%d", nodes_to_skip + 1);
+                    fprintf(stderr, "LLMP_REF_FUSION count=%d", nodes_to_skip + 1);
                     for (int f = i; f <= i + nodes_to_skip; ++f) {
                         const auto * t = cgraph->nodes[f];
                         fprintf(stderr, " | %s:%s:%s:[%lld,%lld,%lld,%lld]",
@@ -100,7 +100,7 @@ def main():
     anchor = '    if (!disable_fusion) {'
     offset = text.index(anchor, start)
     text = text[:offset] + text[offset:].replace(
-        anchor, '    if (!disable_fusion && jitllm_reference_policy() == 0) {', 1)
+        anchor, '    if (!disable_fusion && llmp_reference_policy() == 0) {', 1)
     destination.write_text(text)
     print('original_sha256=' + PINNED_SHA)
     print('diagnostic_sha256=' + hashlib.sha256(destination.read_bytes()).hexdigest())

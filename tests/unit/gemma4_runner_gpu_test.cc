@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <fcntl.h>
@@ -27,35 +27,35 @@
 #include "scheduler/scheduler.h"
 #include "tokenizer_fixtures.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 namespace {
 // The prepared Gemma 4 artifacts, and where spill files go: the build tree
-// (JITLLM_TEST_SCRATCH), on a filesystem with direct I/O.
+// (LLMP_TEST_SCRATCH), on a filesystem with direct I/O.
 std::filesystem::path Gemma4Artifact(en::Gemma4Variant variant) {
-  return std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts" /
+  return std::filesystem::path(llmp::test_support::ModelsDir()) / "m3-artifacts" /
          (variant == en::Gemma4Variant::k31B
               ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
               : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
 }
 std::filesystem::path Scratch() {
-  const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   return scratch != nullptr ? std::filesystem::path(scratch)
                             : std::filesystem::path(::testing::TempDir());
 }
 }  // namespace
 class Gemma4RunnerGpu : public ::testing::Test {
  protected:
-  struct PreparationObserver final : jitllm::scheduler::PageInObserver {
-    jitllm::catalog::Catalog* catalog = nullptr;
-    jitllm::catalog::ExtentId target;
+  struct PreparationObserver final : llmp::scheduler::PageInObserver {
+    llmp::catalog::Catalog* catalog = nullptr;
+    llmp::catalog::ExtentId target;
     std::uint64_t generation = 0;
-    jitllm::catalog::RegistrationId registration;
+    llmp::catalog::RegistrationId registration;
     bool held = false;
-    void Staged(jitllm::catalog::ExtentId extent, jitllm::scheduler::PageInEvent event) override {
-      if (held || extent != target || event != jitllm::scheduler::PageInEvent::kResident) return;
+    void Staged(llmp::catalog::ExtentId extent, llmp::scheduler::PageInEvent event) override {
+      if (held || extent != target || event != llmp::scheduler::PageInEvent::kResident) return;
       const auto view = catalog->Describe(extent);
       if (view && view->content_generation == generation && !view->discarded &&
-          view->descriptor.memory_class == jitllm::catalog::MemoryClass::kLiveState) {
+          view->descriptor.memory_class == llmp::catalog::MemoryClass::kLiveState) {
         if (auto acquired = catalog->AddRegistration(extent); acquired) {
           registration = *acquired;
           held = true;
@@ -129,8 +129,8 @@ class Gemma4RunnerGpu : public ::testing::Test {
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     node.SetHostFloor(runner->host_input_bytes() +
                       (CaptureAhead() ? 2U : 1U) * runner->plan_floor_bytes());
-    ASSERT_TRUE(node.Start(jitllm::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
-                                               2 * node.StateCapacity())));
+    ASSERT_TRUE(node.Start(llmp::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
+                                             2 * node.StateCapacity())));
     ASSERT_TRUE(runner->Register());
     ASSERT_TRUE(runner->Bind());
     node.Run();
@@ -198,7 +198,7 @@ class Gemma4RunnerGpu : public ::testing::Test {
     if (!ranges) return en::support::Error(ranges.error());
     std::uint64_t count = 0;
     for (const auto& r : *ranges) count += r.bytes;
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto pinned = node.Pinned(count, 0, staging);
     if (!pinned) return en::support::Error(pinned.error());
     auto copied = runner->CopyState(slot, *pinned, *ranges, true);
@@ -291,7 +291,7 @@ TEST_F(Gemma26MoeRunnerGpu, IndependentJoinedReplayCheckpointAndSpillKeepComplet
       if (!ranges) return en::support::Error(ranges.error());
       std::uint64_t bytes = 0;
       for (const auto& range : *ranges) bytes += range.bytes;
-      std::vector<jitllm::catalog::ExtentId> staging;
+      std::vector<llmp::catalog::ExtentId> staging;
       auto saved = node.Pinned(bytes, 0, staging);
       if (!saved) return en::support::Error(saved.error());
       if (auto r = runner->CopyState(0, *saved, *ranges, true); !r) return r;
@@ -610,7 +610,7 @@ void Gemma31RunnerGpu::ReplayOwnState() {
       if (!ranges) return en::support::Error(ranges.error());
       std::uint64_t bytes = 0;
       for (const auto& r : *ranges) bytes += r.bytes;
-      std::vector<jitllm::catalog::ExtentId> staging;
+      std::vector<llmp::catalog::ExtentId> staging;
       auto saved = node.Pinned(bytes, 0, staging);
       if (!saved) return en::support::Error(saved.error());
       struct Pinned {
@@ -834,7 +834,7 @@ TEST_F(Gemma4RunnerGpu, SpillCheckpointRestoreReplayAndPeerClearPreserveExactCon
     if (!ranges) return en::support::Error(ranges.error());
     std::uint64_t bytes = 0;
     for (const auto& r : *ranges) bytes += r.bytes;
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto saved = node.Pinned(bytes, 0, staging);
     if (!saved) return en::support::Error(saved.error());
     if (auto r = runner->CopyState(0, *saved, *ranges, true); !r) return r;
@@ -879,7 +879,7 @@ TEST_F(Gemma4RunnerGpu, PagedOutWeightsAdmissionRefusesWithoutLosingCompletedPre
   ASSERT_TRUE(ranges);
   std::uint64_t bytes = 0;
   for (const auto& range : *ranges) bytes += range.bytes;
-  std::vector<jitllm::catalog::ExtentId> staging;
+  std::vector<llmp::catalog::ExtentId> staging;
   auto checkpoint = node.Pinned(bytes, 0, staging);
   ASSERT_TRUE(checkpoint);
   ASSERT_TRUE(runner->CopyState(0, *checkpoint, *ranges, true));
@@ -993,7 +993,7 @@ TEST_F(Gemma4RunnerGpu, ServingRestoreNeedsProvenCompleteCopiesAndProtectsThePee
     if (!slot) return en::support::Error(slot.error());
     const auto footprint = (*slot)->state().used_ranges();
     const auto saved_bytes = (*slot)->used_state_bytes();
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto pinned = node.Pinned(saved_bytes, 0, staging);
     if (!pinned) return en::support::Error(pinned.error());
     auto exercised = [&]() -> en::Status {
@@ -1193,7 +1193,7 @@ void Gemma4RunnerGpu::HeadCapacityControl() {
       if (auto r = runner->Clear(slot); !r) return r;
       auto ranges = runner->CheckpointRanges(slot == 0 ? 3U : 1U);
       if (!ranges) return en::support::Error(ranges.error());
-      std::vector<jitllm::catalog::ExtentId> staging;
+      std::vector<llmp::catalog::ExtentId> staging;
       auto pinned = node.Pinned(saved[slot].size(), 0, staging);
       if (!pinned) return en::support::Error(pinned.error());
       std::memcpy(*pinned, saved[slot].data(), saved[slot].size());
@@ -1255,7 +1255,7 @@ TEST(Gemma4HeadCapacityGpu, CatalogCountsBothLegacyAndCappedPinnedOutputAllocati
   auto& node = owner->node;
   ASSERT_TRUE(node.Open());
   std::array<std::uint64_t, 2> charged{};
-  const auto staging_class = static_cast<std::size_t>(jitllm::catalog::MemoryClass::kStaging);
+  const auto staging_class = static_cast<std::size_t>(llmp::catalog::MemoryClass::kStaging);
   bool ready = true;
   for (std::size_t i = 0; i < owner->runners.size(); ++i) {
     auto& runner = owner->runners[i];
@@ -1354,7 +1354,7 @@ TEST_F(Gemma4FeatureCaptureGpu, CapturedFrontierMatchesOrdinaryAndFreshRestoreCo
   std::vector<std::byte> expected_state, next_state;
   auto ran = Held([&]() -> en::Status {
     const auto feature = [&](std::uint32_t first, std::vector<float>& values) -> en::Status {
-      std::vector<jitllm::catalog::ExtentId> staging;
+      std::vector<llmp::catalog::ExtentId> staging;
       auto pinned = node.Pinned(feature_bytes, 0, staging);
       if (!pinned) return en::support::Error(pinned.error());
       if (auto copied = runner->CopyFeatures(0, first, 1, *pinned); !copied) return copied;
@@ -1492,21 +1492,21 @@ void Gemma4RunnerGpu::PreparedStateControl() {
   for (std::size_t slot = 0; slot < tokens.size(); ++slot)
     for (std::size_t i = 0; i < kRows; ++i) tokens[slot][i] = prompt[(i + slot) % prompt.size()];
   std::array<std::vector<float>, 2> expected_heads, expected_features, next_heads, next_features;
-  std::array<jitllm::base::Sha256Digest, 2> expected_state, next_state;
+  std::array<llmp::base::Sha256Digest, 2> expected_state, next_state;
   const auto finite = [&](const auto& head) {
     return head.size() == runner->profile().vocab &&
            std::ranges::all_of(head, [](float v) { return std::isfinite(v); });
   };
   const auto hash = [&](std::uint32_t slot, std::uint32_t positions,
-                        jitllm::base::Sha256Digest& digest) -> en::Status {
+                        llmp::base::Sha256Digest& digest) -> en::Status {
     std::vector<std::byte> bytes;
     if (auto r = StateBytes(slot, positions, bytes); !r) return r;
-    digest = jitllm::base::Sha256{}.Update(bytes).Finish();
+    digest = llmp::base::Sha256{}.Update(bytes).Finish();
     return {};
   };
   const auto feature = [&](std::uint32_t slot, std::uint32_t first,
                            std::vector<float>& values) -> en::Status {
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto pinned = node.Pinned(feature_bytes, 0, staging);
     if (!pinned) return en::support::Error(pinned.error());
     if (auto copied = runner->CopyFeatures(slot, first, 1, *pinned); !copied) return copied;
@@ -1548,7 +1548,7 @@ void Gemma4RunnerGpu::PreparedStateControl() {
         const auto after = (*runner->request_slot(slot))->state().preparation_stats();
         EXPECT_EQ(after.failed, before[slot].failed);
         EXPECT_EQ(after.refused, before[slot].refused);
-        jitllm::base::Sha256Digest state;
+        llmp::base::Sha256Digest state;
         if (auto r = hash(slot, kPositions, state); !r) return r;
         if (auto r = feature(slot, kPositions - 1, features[slot]); !r) return r;
         if (!hinted) {
@@ -1573,11 +1573,11 @@ void Gemma4RunnerGpu::PreparedStateControl() {
         EXPECT_FALSE(runner->Spill(0));
         if (auto r = Single(1, kPositions, std::span(tokens[1]).first(1), heads[1]); !r) return r;
         if (auto r = runner->CheckBorrow(*borrow); !r) return r;
-        jitllm::base::Sha256Digest peer_state;
+        llmp::base::Sha256Digest peer_state;
         if (auto r = hash(0, kPositions, peer_state); !r) return r;
         EXPECT_EQ(peer_state, expected_state[0]);
         *borrow = en::Gemma4Runner::FrozenBorrow{};
-        std::vector<jitllm::catalog::ExtentId> staging;
+        std::vector<llmp::catalog::ExtentId> staging;
         auto checkpoint = node.Pinned(state_bytes, 0, staging);
         if (!checkpoint) return en::support::Error(checkpoint.error());
         if (auto r = runner->CopyState(0, *checkpoint, *footprint, true); !r) return r;
@@ -1592,7 +1592,7 @@ void Gemma4RunnerGpu::PreparedStateControl() {
         EXPECT_FALSE(runner->BorrowFrozen(0, tokens[0].back()));
         if (auto r = runner->Spill(0); !r) return r;
         if (auto r = runner->Restore(0); !r) return r;
-        jitllm::base::Sha256Digest restored;
+        llmp::base::Sha256Digest restored;
         if (auto r = hash(0, kPositions, restored); !r) return r;
         EXPECT_EQ(restored, expected_state[0]);
         EXPECT_FALSE(runner->BorrowFrozen(0, tokens[0].back()));
@@ -1648,7 +1648,7 @@ void Gemma4RunnerGpu::PreparedStateControl() {
       return r;
     const auto fixed = fresh_node.catalog().OccupancyOf(fresh_node.domain()).Total().value();
     fresh_node.SetHostFloor(fresh.host_input_bytes() + fresh.plan_floor_bytes());
-    if (auto r = fresh_node.Start(jitllm::base::Bytes(
+    if (auto r = fresh_node.Start(llmp::base::Bytes(
             fixed + fresh.weights().size() * en::kPagedExtent + 2 * fresh_node.StateCapacity()));
         !r)
       return r;
@@ -1677,11 +1677,11 @@ void Gemma4RunnerGpu::PreparedStateControl() {
       if (!ranges) return en::Status(en::support::Error(ranges.error()));
       std::uint64_t count = 0;
       for (const auto& range : *ranges) count += range.bytes;
-      std::vector<jitllm::catalog::ExtentId> staging;
+      std::vector<llmp::catalog::ExtentId> staging;
       auto pinned = fresh_node.Pinned(count, 0, staging);
       if (!pinned) return en::Status(en::support::Error(pinned.error()));
       if (auto r = fresh.CopyState(0, *pinned, *ranges, true); !r) return r;
-      EXPECT_EQ(jitllm::base::Sha256{}
+      EXPECT_EQ(llmp::base::Sha256{}
                     .Update(std::span(static_cast<const std::byte*>(*pinned), count))
                     .Finish(),
                 next_state[0]);
@@ -1752,7 +1752,7 @@ TEST_F(Gemma4PreparedGpu, SuccessfulWrappedWaveWithHeldFutureQuarantinesEveryOwn
     if (auto armed = node.Call(
             [&]() -> en::Status {
               const auto view = node.catalog().Describe(future);
-              if (!view || view->state != jitllm::catalog::ExtentState::kNonresident)
+              if (!view || view->state != llmp::catalog::ExtentState::kNonresident)
                 return en::support::Error("test future must be unpublished");
               observer.target = future;
               observer.generation = view->content_generation;
@@ -1761,7 +1761,7 @@ TEST_F(Gemma4PreparedGpu, SuccessfulWrappedWaveWithHeldFutureQuarantinesEveryOwn
             "hold one completed Gemma4 future");
         !armed)
       return armed;
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto pinned = node.Pinned(feature_bytes, 0, staging);
     if (!pinned) return en::support::Error(pinned.error());
     (void)node.TakeTimes(0);
@@ -1782,7 +1782,7 @@ TEST_F(Gemma4PreparedGpu, SuccessfulWrappedWaveWithHeldFutureQuarantinesEveryOwn
               EXPECT_TRUE(observer.held);
               const auto view = node.catalog().Describe(future);
               if (!view) return en::support::Error("held future missing");
-              EXPECT_EQ(view->state, jitllm::catalog::ExtentState::kResident);
+              EXPECT_EQ(view->state, llmp::catalog::ExtentState::kResident);
               EXPECT_FALSE(view->discarded);
               EXPECT_EQ(view->content_generation, observer.generation);
               EXPECT_EQ(view->registrations, 1U);
@@ -1818,7 +1818,7 @@ TEST_F(Gemma4FeatureHeadCapGpu, FullFeatureRowsRemainFundedAndNoHeadHintUsesFron
     std::uint64_t bytes;
     ~Grant() { node.UnchargeHost(bytes); }
   } grant{node, host_bytes};
-  std::vector<jitllm::catalog::ExtentId> staging;
+  std::vector<llmp::catalog::ExtentId> staging;
   auto pinned = node.Pinned(feature_bytes, 0, staging);
   ASSERT_TRUE(pinned);
   auto result = Held([&]() -> en::Status {
@@ -1882,7 +1882,7 @@ TEST_F(Gemma4FeatureGpu, FrozenFeatureSurvivesPeerProgressPlansAndRejectsSameSlo
     std::uint64_t bytes;
     ~Grant() { node.UnchargeHost(bytes); }
   } grant{node, host_bytes};
-  std::vector<jitllm::catalog::ExtentId> staging;
+  std::vector<llmp::catalog::ExtentId> staging;
   auto saved = node.Pinned(feature_bytes, 0, staging);
   ASSERT_TRUE(saved);
   auto status = Held([&]() -> en::Status {
@@ -1952,7 +1952,7 @@ TEST_F(Gemma4FeatureGpu, FailedFeatureCopyRetainsItsNodeOwnedPinnedDestination) 
   ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 1>{0}));
   std::vector<float> head;
   ASSERT_TRUE(Single(0, 0, prompt, head));
-  std::vector<jitllm::catalog::ExtentId> staging;
+  std::vector<llmp::catalog::ExtentId> staging;
   auto pinned = node.Pinned(2816 * sizeof(float), 0, staging);
   ASSERT_TRUE(pinned);
   std::memset(*pinned, 0x5a, 2816 * sizeof(float));

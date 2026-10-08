@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Common-prompt Qwen concurrent serving screen
@@ -13,16 +13,16 @@ generation and queueing; these are not pure-decode rates or TTFT measurements.
 
 | Engine | C1 completed tok/s | C2 completed tok/s | C4 completed tok/s |
 | --- | ---: | ---: | ---: |
-| jitLLM selected normal runtime | 25.58882 | 26.92553 | 27.23548 |
+| Llmpalooza selected normal runtime | 25.58882 | 26.92553 | 27.23548 |
 | TensorFold affine 4-bit | 28.43261 | 34.81075 | 41.58761 |
 | Mia original unpatched recipe (legacy) | 20.31579 | 30.04613 | 39.50226 |
 | Current TensorFold 0.6.2 NVFP4 | 21.46301 | 24.78645 | 31.87218 |
 
 | Engine/cell | First completion, s | All completed, s | Per-request latency, s, input order |
 | --- | ---: | ---: | --- |
-| jitLLM C1 | 10.00437 | 10.00437 | 10.00437 |
-| jitLLM C2 | 18.56155 | 19.01541 | 19.01513 / 18.56155 |
-| jitLLM C4 | 18.12259 | 37.59801 | 18.12197 / 37.36712 / 22.64620 / 37.59801 |
+| Llmpalooza C1 | 10.00437 | 10.00437 | 10.00437 |
+| Llmpalooza C2 | 18.56155 | 19.01541 | 19.01513 / 18.56155 |
+| Llmpalooza C4 | 18.12259 | 37.59801 | 18.12197 / 37.36712 / 22.64620 / 37.59801 |
 | TensorFold C1 | 9.00375 | 9.00375 | 9.00375 |
 | TensorFold C2 | 14.47641 | 14.70810 | 14.70810 / 14.47626 |
 | TensorFold C4 | 24.35684 | 24.62272 | 24.47179 / 24.41873 / 24.62251 / 24.35684 |

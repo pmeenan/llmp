@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // What the DeepSeek V4 harnesses share beyond the engine's planning
 // (engine/dsv4_plan.h, under the harnesses' names in engine_names.h): the
 // token lines and logits helpers.
 
-#ifndef JITLLM_BENCHMARKS_DSV4_COMMON_H_
-#define JITLLM_BENCHMARKS_DSV4_COMMON_H_
+#ifndef LLMP_BENCHMARKS_DSV4_COMMON_H_
+#define LLMP_BENCHMARKS_DSV4_COMMON_H_
 
 #include <cstdint>
 #include <expected>
@@ -17,7 +17,7 @@
 
 #include "engine_names.h"
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 
 // A file of token lines: `name<TAB>ids...`, or ids alone.
 struct TokenLine {
@@ -31,6 +31,6 @@ double Nll(std::span<const float> row, std::int32_t target);
 std::expected<void, std::string> WriteFloats(const std::filesystem::path& p,
                                              std::span<const float> v);
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks
 
-#endif  // JITLLM_BENCHMARKS_DSV4_COMMON_H_
+#endif  // LLMP_BENCHMARKS_DSV4_COMMON_H_

@@ -1,5 +1,5 @@
 {
-  "schema": "jitllm-private-numerical-extraction-v1",
+  "schema": "llmp-private-numerical-extraction-v1",
   "status": "the fused own output-A core behind the DeepSeek V4 output-A adapter (dsv4_outa.cu); the complete-plan benchmark's other original products were removed on 2026-10-04 (commit ec8af04 holds them)",
   "upstream": {
     "project": "Entrpi/ds4",
@@ -16,7 +16,7 @@
       "compute_121a/sm_121a"
     ],
     "explicit_includes": [],
-    "closure_namespace": "named implementation namespace jitllm::kernels::ggml::ds4_product::original; standard and CUDA dependencies included outside",
+    "closure_namespace": "named implementation namespace llmp::kernels::ggml::ds4_product::original; standard and CUDA dependencies included outside",
     "foreign_runtime": "no original context, allocator, pool, registry, host dispatcher or stubs implementation is linked; no original header closure is needed"
   },
   "verbatim_definitions": [

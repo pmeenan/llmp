@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Decision log
@@ -39,6 +39,55 @@ one Spark and on two.
 
 ---
 
+## D-111: The project is llmpalooza (`llmp`), formerly jitLLM  (2026-10-08, status: accepted by the owner, 2026-10-08; renames every name D-062, D-063 and D-074 fixed; keeps D-056's v0 format identifiers until D-109's format replaces them)
+
+**Decision.** The project is renamed from jitLLM to llmpalooza, a nod to
+Lollapalooza for "all models, all containers, all the time". Prose says
+llmpalooza (Llmpalooza at a sentence start); code, commands, paths,
+packages and identifiers say `llmp`. The rename covers the C++ namespace
+and macros, the `llmp` and `llmp-runtime` commands, the package, the
+`llmp.service` unit and its user and group, `/etc/llmp/llmp.toml`,
+`/var/lib/llmp`, the `LLMP_*` environment variables, D-062's extension
+naming (an `llmp-` header prefix, an `llmp` body object), the `/llmp/v1/`
+routes, the durable records' `format` strings, the spill marker, the
+reference containers' image tags, and the owner's working paths
+(`~/.local/share/llmp`, `~/.cache/llmp`, `~/src/llmp`). The repository is
+`github.com/pmeenan/llmp`, and the package maintainer is
+`pmeenan@llmpalooza.com` (the owner holds `llmpalooza.com`).
+
+Two things keep the old name:
+
+- **v0 artifacts.** `jitllm-artifact`, `jitllm-index`, `jitllm-shard`
+  and `jitllm-composition` stay, as do the v0 writer's files under
+  `docs/experiments/artifact-layout/` byte for byte: an artifact's ID is
+  the hash of its manifest and its converter version carries `layout.py`'s
+  hash, so renaming them would change every artifact's identity and force a
+  re-import. D-109's format, which M3.6 introduces with a new format version
+  and a re-import anyway, uses `llmp-` identifiers, and the v0 names leave
+  with v0's reader.
+- **History.** Commit messages keep the old name. Experiment records were
+  renamed with the tree, so their paths, symbols and pinned SHA-256s
+  (with the byte counts beside them) name the renamed files rather than
+  the bytes measured then; Git history holds the originals. BP-F1's
+  pre-registered inputs (`fp16-plan.json` and `bpf1-cases.txt`) keep
+  their bytes, so their registered hashes still hold.
+
+No public-surface version is bumped: nothing has been released or packaged
+for anyone but the owner, so no client or installation depends on the old
+names. Durable records written under the old names are not migrated; a
+runtime refuses them as unknown formats and rebuilds them (kept
+conversations expire, calibration is measured again). A non-empty spill
+directory with the old `.jitllm-spill` marker is refused until it is
+emptied; the owner's hosts had theirs rewritten.
+
+**Context.** The owner chose the name before M3.6 so the new engine starts
+under it. Files that pin another file's SHA-256 (the source lock's patches,
+the experiment harnesses' copies, test fixtures) carry the renamed files'
+new hashes.
+
+**Reopen if** the name collides with an existing project or mark in a way
+that matters for distribution.
+
 ## D-110: Apple, then Intel, then AMD: Intel GPUs are back in scope as a later platform  (2026-10-08, status: accepted by the owner, 2026-10-08; amends D-082's "Intel is out for now", meeting its reopen condition; sharpens D-026's order of ports; nothing is built for these platforms in M3.6)
 
 **Decision.** The owner, on 2026-10-08: "Intel is out" was "for now".
@@ -62,7 +111,7 @@ format, so a later platform costs a backend rather than a redesign.
 name no vendor and no kernel library (D-107). Apple's unified memory has
 the Spark's shape (one budget, D-004); the B50 is discrete like the 3080 Ti
 and reuses D-082's design. GGML's Metal, SYCL and HIP backends are kernel
-sources to adapt under jitLLM's dispatch; jitLLM's own CUDA kernels are
+sources to adapt under llmpalooza's dispatch; llmpalooza's own CUDA kernels are
 not portable, so each port starts from the primitive fallback and the
 decoders. features.md's platform rows and environment.md's hosts follow.
 
@@ -105,7 +154,7 @@ something D-107's backend seam cannot express.
 `docs/experiments/` with family-specific folds, and each runner admits one
 checkpoint by profile equality, so a new size of a known architecture is a
 code change and the import path is not something users can run. llama.cpp
-meets the same limit with per-architecture tables in C++; jitLLM keeps the
+meets the same limit with per-architecture tables in C++; llmpalooza keeps the
 tables as validated data.
 
 **Consequences.** Adding a model of a known shape is a mapping entry; a new
@@ -180,7 +229,7 @@ with D-109's.
 target, or a measured case shows per-target artifacts costing more than a
 relayout at page-in.
 
-## D-107: One engine of shared components over jitLLM's own graph IR replaces the per-family runners; optimizations land once  (2026-10-08, status: accepted by the owner, 2026-10-08; amends D-096's engine structure (one runner, one serving adapter per pipeline kind), D-028's and D-053's role of GGML (a kernel source, not the graph); implements D-068's rule that shapes extend build-time contracts; withdraws the owner's per-family transfer directive of 2026-10-07 and workflow.md's transfer rule; its migration gate is stricter than D-085's coarse speed check for M3.6)
+## D-107: One engine of shared components over llmpalooza's own graph IR replaces the per-family runners; optimizations land once  (2026-10-08, status: accepted by the owner, 2026-10-08; amends D-096's engine structure (one runner, one serving adapter per pipeline kind), D-028's and D-053's role of GGML (a kernel source, not the graph); implements D-068's rule that shapes extend build-time contracts; withdraws the owner's per-family transfer directive of 2026-10-07 and workflow.md's transfer rule; its migration gate is stricter than D-085's coarse speed check for M3.6)
 
 **Decision.** The owner, on 2026-10-08, stopped the per-family transfer
 work and directed the refactor now, before more families, formats or
@@ -193,7 +242,7 @@ new models, families and quants as easy as possible".
   owner), partitioning options with their traffic, the fusion patterns it
   takes part in, and a CPU reference. A model is a spec of components
   (D-109); families have no code of their own.
-- **jitLLM's own graph IR and planner**, modelled on GGML's graph and
+- **Llmpalooza's own graph IR and planner**, modelled on GGML's graph and
   taking the best of other engines. The IR names operations, tensors,
   encodings and layouts, never a vendor or library type. Fusion is a
   pattern rewrite over the generic graph, and component boundaries never
@@ -550,13 +599,13 @@ keep the checkpoint's top_k 20 and top_p 0.95 (the UD-IQ3_XXS), which
 now apply to requests that send neither: the checkpoint's intent, as
 vLLM's `--generation-config auto` reads it. Every request that was valid
 stays valid and no field or encoding changes, so
-`jitllm-inference-version` stays 1 (D-062). The floors are
+`llmp-inference-version` stays 1 (D-062). The floors are
 resolved once onto the model rather than looked up per request. The start
-logs every value with its source; `jitllm-runtime settings [--json]`
+logs every value with its source; `llmp-runtime settings [--json]`
 lists them without the process lock or a device. New keys only, every
 earlier configuration still valid, so `schema_version` stays 2 (D-062).
 The calibration record is a new on-disk format,
-`jitllm-model-calibration-v1` under `roles.state/calibration/<artifact>.json`,
+`llmp-model-calibration-v1` under `roles.state/calibration/<artifact>.json`,
 keyed by the artifact, drafter, device and driver
 (`providers::DeviceIdentity`), build (its version, and for an
 uncommitted or untracked tree the executable's size and time) and the
@@ -583,7 +632,7 @@ settings; their calibration is a later milestone.
 
 ## D-102: Limits come from real resources, not time or abuse caps  (2026-10-03, status: accepted at the owner's direction of 2026-10-03; applies across the runtime; amends how D-067's interpreter bounds, D-097's intake bounds and deadlines, and D-101's starting bounds are chosen; each affected limit is changed in its own reviewed task)
 
-**Decision.** jitLLM is run locally by the hardware's owner, not offered
+**Decision.** Llmpalooza is run locally by the hardware's owner, not offered
 as a service, so maximum flexibility and capability come before
 protection against abuse (owner, 2026-10-03: "Where possible, we
 shouldn't impose time-based hard limits. Just RAM or other actual hard
@@ -685,7 +734,7 @@ after an audit of about 70 limits):
   lands, a confirmed hang (nothing moving for `hang_seconds`) exits for
   the supervisor to restart the process. Every earlier configuration
   still parses, so `schema_version` stays 2; requests that were valid
-  stay valid, so `jitllm-inference-version` stays 1 (D-062). The values
+  stay valid, so `llmp-inference-version` stays 1 (D-062). The values
   and what each protects are in
   [runtime-serving.md](runtime-serving.md#the-chat-route).
 - **Landed (hang recovery, 2026-10-03):** the engine's fixed patience
@@ -717,7 +766,7 @@ after an audit of about 70 limits):
   model hangs again before serving a request since its last reset, or when
   rung 2 fails: the records already queued get 10 s, then the process
   exits (status 1) for its supervisor. Conversations survive the restart
-  under D-105. `jitllm.service` no longer gives up on a failing start (no
+  under D-105. `llmp.service` no longer gives up on a failing start (no
   start limit; restarts back off from 5 s to 30 s, short because systemd
   255 never takes the back-off back while the unit runs), and its start (5 minutes) and
   stop (90 s) timeouts are extended while the start registers and adopts
@@ -890,7 +939,7 @@ The facts and sources are in [m35-families.md](m35-families.md#media-inputs-deci
   guidance, step count, edit inputs and cancellation state. Different
   lengths and sizes form compatible groups; admission follows memory.
 - **Versioning:** new routes are additive under D-062 and D-100: they
-  keep `jitllm-inference-version: 1` unless one breaks an existing
+  keep `llmp-inference-version: 1` unless one breaks an existing
   profile, and each adds its CHANGELOG line.
 
 **Reopen if.**
@@ -949,7 +998,7 @@ Partial UTF-8 tokens share decoded-character offsets and are flushed at
 the prompt/output boundary. Token-ID labels are available to distinguish
 byte tokens whose individual decoding produces the same replacement text.
 
-`jitllm-inference-version: 1` advertises the bounded inference subset.
+`llmp-inference-version: 1` advertises the bounded inference subset.
 This establishes the previously unnumbered inference surface, and adds
 compatible fields/routes to the unreleased 0.1 product; it does not break
 the existing chat request/response profile or require a product bump.
@@ -968,7 +1017,7 @@ or a sampled/filtered distribution.
 
 **Decision.**
 - **Primary: the `.deb`** of D-074, from the signed apt repository M10
-  publishes (D-027). It is the configuration jitLLM is built and measured
+  publishes (D-027). It is the configuration llmpalooza is built and measured
   for: the systemd unit with its sandbox, `LimitMEMLOCK=infinity` and
   `Delegate=` for confined jobs in delegated cgroups (D-074); direct
   io_uring submission and `O_DIRECT` reads on the storage roles (D-034),
@@ -985,7 +1034,7 @@ or a sampled/filtered distribution.
     profile blocks them since 25.0 ([moby#46762](https://github.com/moby/moby/pull/46762),
     merged 2023-11-02; [moby#47532](https://github.com/moby/moby/issues/47532),
     closed as not planned, 2024), and without io_uring the storage
-    provider refuses to start. jitLLM publishes that profile (Docker's
+    provider refuses to start. Llmpalooza publishes that profile (Docker's
     default plus these three calls) beside the image; `seccomp=unconfined`
     is not the documented flag.
   - **memlock:** `--ulimit memlock=-1:-1`, as the unit's
@@ -994,10 +1043,10 @@ or a sampled/filtered distribution.
     `--device nvidia.com/gpu=all`), through NVIDIA's container toolkit;
     the driver stays the host's (D-072's probe judges it).
   - **Storage:** the data roles bind-mounted from the host's own
-    filesystem (`-v /var/lib/jitllm:/var/lib/jitllm`, and every other
+    filesystem (`-v /var/lib/llmp:/var/lib/llmp`, and every other
     role path the configuration names), since direct I/O and the role
     checks refuse overlayfs (D-073, D-074); the configuration mounted
-    read-only at `/etc/jitllm`.
+    read-only at `/etc/llmp`.
   - **Network:** `[client] bind` names the container's addresses
     (`"loopback"` is the container's own loopback), or the container uses
     the host's network (`--network host`), which keeps the default
@@ -1013,7 +1062,7 @@ or a sampled/filtered distribution.
   is built or designed until its port is undertaken.
 
 **Why.** D-027 chose native package managers, and the `.deb` is where
-jitLLM controls what the performance depends on: io_uring and direct I/O,
+llmpalooza controls what the performance depends on: io_uring and direct I/O,
 unlimited locked memory, the unit's sandbox and job containment. A
 container image is the other common way to run inference servers, and on
 DGX OS it costs a user nothing to try; building it from the `.deb` keeps
@@ -1080,7 +1129,7 @@ amended it to what follows.
   headers are sent.
 - **Surface.** `POST /v1/chat/completions` (non-streaming and SSE),
   `GET /v1/models`, `GET /v1/models/{id}`, in OpenAI's shapes, and for
-  loopback peers only `GET /jitllm/v1/ignored-fields` (below). Honored:
+  loopback peers only `GET /llmp/v1/ignored-fields` (below). Honored:
   `model`, text `messages` (system, developer as system, user, assistant
   with its `reasoning` or `reasoning_content` sent back),
   `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `top_k`,
@@ -1237,7 +1286,7 @@ input fits. Existing request shapes remain valid; API version stays 1
 
 ## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057; its engine's CUDA use moved behind the device runtime on 2026-09-29, noted below; engine structure amended by D-107 (one runner of shared components, one serving adapter per pipeline kind))
 
-**Decision.** M3's swap path leaves the harnesses for `jitllm-runtime`
+**Decision.** M3's swap path leaves the harnesses for `llmp-runtime`
 ([runtime-serving.md](runtime-serving.md)):
 - **Layers.** The task programs a driver posts (run, call, evict, a full
   swap, a request's lease, an acquisition) are the scheduler's
@@ -1265,34 +1314,34 @@ input fits. Existing request shapes remain valid; API version stays 1
   holds one, its weights evicted with their backing handed off, the
   incoming closure paged in. Each turn is one request (D-093), greedy and
   speculative where the model has a drafter.
-- **Commands.** `jitllm-runtime [--config FILE] [--anchor PATH] chat
+- **Commands.** `llmp-runtime [--config FILE] [--anchor PATH] chat
   --turn MODEL TEXT...` and `... swap-table` (options in
   runtime-serving.md) run after the startup steps, in the runtime's own
   process and under its process lock, open no listener (D-014), and exit;
   without a command the runtime is the service as before. They are
-  commands of the runtime, not of `jitllm`, which never links runtime code
+  commands of the runtime, not of `llmp`, which never links runtime code
   and reaches the runtime only over the management listener (D-064),
   which does not exist yet.
 - **Shipping.** The runtime now links GGML's and CUTLASS's kernels and
   cuBLAS: both components become `use: product` (their MIT and
   BSD-3-Clause notices ship), and the package ships `libcublas.so.13` and
-  `libcublasLt.so.13` unmodified in `/usr/lib/jitllm`, which the runtime's
-  RUNPATH (`$ORIGIN/../../lib/jitllm`, the only run path a packaged
+  `libcublasLt.so.13` unmodified in `/usr/lib/llmp`, which the runtime's
+  RUNPATH (`$ORIGIN/../../lib/llmp`, the only run path a packaged
   executable may have) names, with a `libgcc-s1` dependency (D-076's
   consequences, now due).
 
 **Why.** plan.md's M3 swap runner must drive A→B→A in a running
-`jitllm-runtime`, with the native tokenizer and renderers (D-088), before
+`llmp-runtime`, with the native tokenizer and renderers (D-088), before
 the loopback chat route. The harnesses' node and runners were already the
 runtime's design (D-086, D-090, D-093, D-094); moving them keeps one
 engine for the harnesses' checks and the runtime's serving. A runtime
-command rather than a `jitllm` subcommand, because a CLI subcommand would
+command rather than a `llmp` subcommand, because a CLI subcommand would
 need the management listener first; a new layer for the engine, because
 the runners call the CUDA runtime, which the resource core and model layer
 must not.
 
-**Evidence** (`spark-b`, 2026-09-28; [swap](experiments/fast-swap/swap.md#through-jitllm-runtime-d-096)).
-Through `jitllm-runtime chat`, greedy tokens equal the speculation
+**Evidence** (`spark-b`, 2026-09-28; [swap](experiments/fast-swap/swap.md#through-llmp-runtime-d-096)).
+Through `llmp-runtime chat`, greedy tokens equal the speculation
 harnesses' (same engine) for DeepSeek and Qwen3.8 on the fixed prompt set,
 speculative and plain, with equal prompt IDs; the image's pixels are the
 reference's. `swap-table` ran all 32 swaps of M3's table in one process,
@@ -1347,7 +1396,7 @@ through the device runtime (`providers/device_runtime.h`, defined by
 `providers/cuda/`), its two small kernels moved to `kernels/paging/`, and
 it is built without CUDA's headers. It stays a CUDA-builds-only layer
 above the kernels because it links them ([portability.md](portability.md)).
-Plain decode through `jitllm-runtime chat --plain` was unchanged within
+Plain decode through `llmp-runtime chat --plain` was unchanged within
 noise (DeepSeek 22.10–22.16 against 22.13–22.21 tok/s, Qwen3.8
 27.64–27.72 against 27.60–27.67; `spark`, two alternating rounds).
 
@@ -1519,8 +1568,8 @@ extents mid-way without reaching a step boundary.
 - **How.** Where a kernel's arithmetic follows the chunk's row count, the
   verify's plan takes an implementation whose rows do not
   (`DeviceChoices::row_invariant`, `Dsv4GraphOptions::row_invariant`):
-  - quantized products take `jitllm.mul_mat.mmvq_rows` and
-    `jitllm.mul_mat_id.mmvq_rows` (`mmvq_rows.cu`): GGML's MMVQ body with
+  - quantized products take `llmp.mul_mat.mmvq_rows` and
+    `llmp.mul_mat_id.mmvq_rows` (`mmvq_rows.cu`): GGML's MMVQ body with
     the one-column launch's warps, rows per block, small-K and halved-K
     choices for every column (a dense block still reads its weight rows
     once for all columns; an expert product runs each token's one-token
@@ -1528,7 +1577,7 @@ extents mid-way without reaching a step boundary.
     column count (on the GB10, 8 warps for one Q8_0/Q4_K/Q5_K/Q6_K column,
     4 for two to four), so its multi-column sums differ in their last bits;
   - float products take GGML's MMVF for up to 8 columns
-    (`jitllm.mul_mat.mmvf_rows`), where upstream would take MMF or cuBLAS;
+    (`llmp.mul_mat.mmvf_rows`), where upstream would take MMF or cuBLAS;
   - attention runs per query row, over views of its q and mask rows, and
     the rows are concatenated (the MMA kernel's column tiles and stream-k
     split follow the query rows);
@@ -1553,7 +1602,7 @@ issue #25618). The owner's exit asks for bit-identity, which a batched
 verify only gives when its kernels are row-invariant. Running the k + 1
 rows as k + 1 decode steps would be exact but would read the dense weights
 (two thirds of DeepSeek's bytes a token) k + 1 times, losing the speed-up;
-patching GGML's MMVQ would change the source lock. A jitLLM-owned copy of
+patching GGML's MMVQ would change the source lock. A llmpalooza-owned copy of
 MMVQ with the one-column launch's configuration reads the weights once and
 is exact by construction.
 
@@ -1575,7 +1624,7 @@ than bit exactness (D-085's note): the row-invariant verify is now the
 optional exact (reference) mode (`Dsv4Options::exact`, `--exact on`), and
 the default is a batched verify on DeepSeek's fast plan: attention over the
 verify's rows together, and each routed expert read once for every row
-that selects it (`jitllm.vecq`,
+that selects it (`llmp.vecq`,
 [dsv4-decode](experiments/dsv4-decode/README.md)). Speculative greedy
 output then equals plain greedy output except near-ties, from a bound set
 by the engine's own kernel noise (the 99th percentile of the verify's rows
@@ -1626,7 +1675,7 @@ D-088, and CUB's two Thrust headers (BSL-1.0) kept GGML's argsort and
 top-k on a patched path without it (licensing.md).
 
 **Consequences.**
-- `CORE_LICENSES` in `tools/jitllm_sources.py` lists the permissive SPDX
+- `CORE_LICENSES` in `tools/llmp_sources.py` lists the permissive SPDX
   identifiers recognized so far. Adding one, or a `LicenseRef-` for custom
   terms read and found permissive, needs no decision, only the heavy-path
   review of the change. The source lock refuses a core component outside
@@ -1915,7 +1964,7 @@ than artifact granularity in a way roles cannot express; the installer's
 dependency tracking proves cleaner with components embedded; D-018's gate
 fixes a different compatibility policy.
 
-## D-088: Unicode data under the Unicode License V3 may enter the core; the tokenizer's tables are generated by jitLLM from pinned UCD 15.1.0 files  (2026-09-28, status: accepted by the owner on 2026-09-28, "Unicode license accepted"; proposed by the M3 tokenizer slice while the owner was away; amends D-017's core allowlist, for data only; closes first-slice.md's Unicode-table gate; the explicit Unicode-3.0 admission subsumed by D-091, which admits every permissive license)
+## D-088: Unicode data under the Unicode License V3 may enter the core; the tokenizer's tables are generated by llmpalooza from pinned UCD 15.1.0 files  (2026-09-28, status: accepted by the owner on 2026-09-28, "Unicode license accepted"; proposed by the M3 tokenizer slice while the owner was away; amends D-017's core allowlist, for data only; closes first-slice.md's Unicode-table gate; the explicit Unicode-3.0 admission subsumed by D-091, which admits every permissive license)
 
 **Decision.** The owner accepted it on 2026-09-28: "Unicode license
 accepted".
@@ -1936,7 +1985,7 @@ accepted".
   (licensing.md, decision 4 of 2026-09-24). The alternatives were an
   optional module for the core tokenizer's tables, which would make the
   tokenizer optional, or no Unicode data at all.
-- **Own tables.** jitLLM does not copy llama.cpp's file.
+- **Own tables.** Llmpalooza does not copy llama.cpp's file.
   `tools/gen-unicode-tables` generates `src/tokenizer/unicode_data.cc` from UnicodeData.txt,
   PropList.txt and DerivedNormalizationProps.txt of UCD 15.1.0 (and, since
   2026-10-02, SpecialCasing.txt and DerivedCoreProperties.txt, for Python's
@@ -1945,7 +1994,7 @@ accepted".
   Unicode's copyright. UCD 15.1.0 keeps the pre-tokenizers' classification
   identical to llama.cpp's, the oracle for DeepSeek V4.
 - **Until accepted,** the tokenizer linked into tests only, under a
-  configure check that failed if `jitllm` or `jitllm-runtime` linked it or
+  configure check that failed if `llmp` or `llmp-runtime` linked it or
   the chat renderers. Acceptance removed the check: shipped binaries may
   link both, and a package whose executables are built from the tables
   lists Unicode-3.0 in its copyright file and SBOM and carries the notice
@@ -1995,7 +2044,7 @@ whole large models. The owner decided, in an interview on 2026-09-27:
   (`Mia-AiLab/Qwen3.8-Flash-Next-NVFP4`, to be pinned); and Qwen-Image-2.1
   in BF16, like diffusers (below).
   Qwen3.8's kernels are the fastest correct from any source under
-  jitLLM's dispatch (D-053), chosen per operation by a quick A/B: GGML's
+  llmpalooza's dispatch (D-053), chosen per operation by a quick A/B: GGML's
   NVFP4 matmul, vLLM, FlashInfer or CUTLASS kernels, or our own, with
   licenses per D-080.
 - **M4's models:** GLM-5.3 Flash first
@@ -2003,7 +2052,7 @@ whole large models. The owner decided, in an interview on 2026-09-27:
   DeepSeek v4.1 Flash, sharded across both Sparks, each node holding its
   shard on disk and the conductor loading both at once.
 - **The cycle:** A→B→A, driven by a native CLI harness in
-  `jitllm-runtime` (tokenize, prefill, decode, detokenize).
+  `llmp-runtime` (tokenize, prefill, decode, detokenize).
 - **The swap time:** the goal is about 10 s from the swap request to the
   first token of a short prompt, in a running process, including page-in,
   setup and graph and tuning restore. The owner: "10s is aspirational and
@@ -2055,15 +2104,15 @@ whole large models. The owner decided, in an interview on 2026-09-27:
 The owner added three decisions on 2026-09-28:
 
 - **Qwen-Image-2.1 runs BF16 weights, like diffusers.** Diffusers is both
-  the speed and the format reference for jitLLM's image run.
+  the speed and the format reference for llmpalooza's image run.
   stable-diffusion.cpp's GGUFs stay an additional quality and format
   comparison. GGUF quantizations may come later if memory matters.
-- **Model weight licenses do not gate jitLLM.** The owner: "Allow DFlash2.
+- **Model weight licenses do not gate llmpalooza.** The owner: "Allow DFlash2.
   We never ship weights for anything ourselves so the model licenses don't
-  matter." jitLLM never distributes model weights: users supply
+  matter." Llmpalooza never distributes model weights: users supply
   checkpoints, and artifacts are made locally from them. So a model's
   weight license does not block import, execution, baselines or support in
-  jitLLM; it is recorded for information only, and the support matrix may
+  llmpalooza; it is recorded for information only, and the support matrix may
   note it for users. This makes D-002's 2026-09-20 scope note an explicit
   rule. GLM-5.3's DFlash2 drafter (CC BY-NC-ND 4.0) is allowed: M4's
   speculation may use DFlash2 or MTP, whichever is faster and correct, as
@@ -2120,7 +2169,7 @@ that drive work, with their provenance.
   the remaining 2–3 s. Creating and mapping backing costs about 5 s of
   serial work per such model (computed from measured per-extent medians),
   which reusing the evicted model's backing (D-033, D-081) avoids.
-- Every model in scope has attention and mixing layers that jitLLM's
+- Every model in scope has attention and mixing layers that llmpalooza's
   build does not compile, and every reference decode number uses
   speculation, so matching the references needs both in M3.
 
@@ -2149,7 +2198,7 @@ that drive work, with their provenance.
   and M4, D-085's speed and memory bounds are gated only against each
   model's same-format comparator. TensorFold (MLX affine 4-bit) and other
   cross-quantization comparators are reported, not gated. TensorFold's
-  format is an M9 item. Once jitLLM runs it, TensorFold becomes a
+  format is an M9 item. Once llmpalooza runs it, TensorFold becomes a
   same-format oracle and a gated comparator for those models.
 
 **Reopen if.** The 20 s bound proves structurally out of reach (the read
@@ -2167,7 +2216,7 @@ internal contract M3 builds on
   or more compiled implementations. An implementation:
   - refuses on the host, before anything is queued, whatever its launcher
     would assert on or read or write out of bounds (`kRejected`);
-  - queues only on the provider stream it is given, with jitLLM's
+  - queues only on the provider stream it is given, with llmpalooza's
     handles (GGML's K-C context, the lent cuBLAS handle, ExLlamaV3's
     launch context and lock area);
   - draws scratch only from declared workspace, its bound checked before
@@ -2191,25 +2240,25 @@ internal contract M3 builds on
   A plan names one implementation per operation, and its identity is a
   SHA-256 of them in order. Resolution binds every operation or rejects
   the plan as unsupported or stale; nothing is substituted. As built:
-  - GGML-derived, K-C (GGML's launchers under jitLLM's context):
+  - GGML-derived, K-C (GGML's launchers under llmpalooza's context):
     `rms_norm`, `rms_norm_mul.fused` and `.unfused` (the core pair of one
     operation), `add`, `mul`, `mul_mat.mmvf`, `mul_mat.mmf`, `get_rows`,
     `set_rows`, `rope.neox`, `rope_set_rows.fused`, `soft_max`, `cont`,
     `swiglu`, `convert`, `flash_attn_ext.vec` (forced),
     `mul_mat_add.mmvf_fused` and `mul_mat_glu.mmvf_fused`;
-  - GGML-derived, K-L: `mul_mat.cublas`, a recorded jitLLM copy of GGML's
+  - GGML-derived, K-L: `mul_mat.cublas`, a recorded llmpalooza copy of GGML's
     `static` cuBLAS launcher with one host plan, and its copied
     `k_compute_batched_ptrs`;
-  - EXL3, K-L (jitLLM launchers replacing ExLlamaV3's ATen wrappers):
+  - EXL3, K-L (llmpalooza launchers replacing ExLlamaV3's ATen wrappers):
     `exl3.linear.gemm`, `exl3.linear.gemv` (the pair of one operation at
     up to eight rows), `exl3.linear.reconstruct`,
     `exl3.linear.reconstruct_fused`, `exl3.multi_linear.mgemm` and
     `exl3.bias_add`.
 - **The patch set** (D-077). GGML: 0001 makes `ggml_cuda_error` return
   instead of abort, turns off `ggml_abort`'s backtrace, and has the build
-  decide PDL rather than the environment; 0002 adds jitLLM's build.
+  decide PDL rather than the environment; 0002 adds llmpalooza's build.
   ExLlamaV3: 0001 removes `util.cuh`'s exiting checks and NVCC-rejected
-  `register` specifiers; 0002 adds jitLLM's build and instance unit; 0003
+  `register` specifiers; 0002 adds llmpalooza's build and instance unit; 0003
   reduces the reconstruction, Hadamard and bias-add sources to their
   kernels. A new patch or kernel changes this record and
   [licensing.md](licensing.md).
@@ -2227,7 +2276,7 @@ internal contract M3 builds on
   into D-050 envelopes and explain refusals (BP-V3); they express D-068's
   shapes without executing them (`unit.ShapeScenarioTest.*`).
 - **The memory account.** Following the owner on 2026-09-27, the catalog
-  accounts exactly for jitLLM's own bytes, and the whole process is judged
+  accounts exactly for llmpalooza's own bytes, and the whole process is judged
   loosely:
   - *Catalog-exact, per profile:* weights (the artifact's bytes, padding
     reported), KV in its declared layout, `E` per phase kind, and the
@@ -2251,7 +2300,7 @@ internal contract M3 builds on
     exact against upstream and within Tier C, resident, paged, evicted,
     written back and restored. Its kernel-time gate is replaced by
     end-to-end parity once serving works.
-  - *D-053* holds as built: jitLLM owns streams, workspace, handles,
+  - *D-053* holds as built: llmpalooza owns streams, workspace, handles,
     fusion and completion; plans select between implementations
     (fused/unfused RMSNorm, EXL3 GEMM/GEMV); nothing is substituted. BP-S3
     shows FP16 and EXL3 alternating in one process, each on its own
@@ -2293,7 +2342,7 @@ and its lease, scratch (each lane's pool is carved from the declared
 workspace) and failure handling are unchanged. cuBLAS steps stay on the
 given stream, whose handle and workspace they borrow.
 - The loose process-level memory comparison fails and the excess is
-  jitLLM's own.
+  llmpalooza's own.
 
 ## D-085: Anything that runs longer than 10 minutes runs only when its result is needed  (2026-09-27, status: accepted; the owner added speed before bit exactness on 2026-09-28 and the tie-aware greedy rule on 2026-10-03; amends D-084's milestone-gate tiers, D-061's tiers, and how D-079's protocols are sized)
 
@@ -2371,7 +2420,7 @@ The machinery around development was holding it back.
   [qwen38-native](experiments/qwen38-native/README.md) bounds do: greedy
   teacher-forced agreement within the near-tie bound and perplexity
   within 3%. A bit-exact kernel may stay as an optional reference mode
-  where that is cheap, never at the default's expense. jitLLM's own
+  where that is cheap, never at the default's expense. Llmpalooza's own
   determinism still holds: a swap, spill or restore leaves every later
   result bit-identical to the uninterrupted run's. Owner, 2026-09-29:
   performance over bit-exactness at the same quality. Defaults may change
@@ -2394,15 +2443,15 @@ The machinery around development was holding it back.
   quality) or accepting one configuration past the bounds (owner,
   2026-10-03). A new model or format sets its own reference from its
   first accepted run. Over the forced steps,
-  with the oracle's token *o*, jitLLM's
+  with the oracle's token *o*, llmpalooza's
   argmax *c*, and the near-tie bound *B* recorded for that history (0.947
   nats for DeepSeek's 32K/128K histories, 1.765 for Qwen3.8's):
   - *c* = *o*, or the oracle's margin of *o* over *c* below *B*: as before.
   - Otherwise the step is outside. Each outside step must meet a per-step
-    tolerance: jitLLM's own logit margin of *c* over *o* below *B*, and its
+    tolerance: llmpalooza's own logit margin of *c* over *o* below *B*, and its
     NLL of *o* less than *B* above the oracle's own NLL of *o*. This is an
     owner-accepted tolerance, not a calibrated test of a tie. At DeepSeek's
-    step 249, the one step it has decided, jitLLM's paths spread from
+    step 249, the one step it has decided, llmpalooza's paths spread from
     0.65 to 1.13 nats of NLL excess (two runs of the phase-1 fast plan on
     one build, RE-031, gave 0.99 and 1.13), so it sits inside the engine's
     own variation there. From the oracle's side that step is no tie
@@ -2479,8 +2528,8 @@ workstation stops hosting measurements.
 challenge:
 
 - **Where.** The `native`, `cpu`, `spark-native`, `cpu-asan`,
-  `cross-asan` and `cross-tsan` presets set `JITLLM_LIBSTDCXX_ASSERTIONS`, which defines
-  `_GLIBCXX_ASSERTIONS` for every compile in the build: jitLLM's libraries
+  `cross-asan` and `cross-tsan` presets set `LLMP_LIBSTDCXX_ASSERTIONS`, which defines
+  `_GLIBCXX_ASSERTIONS` for every compile in the build: llmpalooza's libraries
   and executables, tests, benchmarks and third-party code, C++ and both of
   NVCC's passes. Never for test targets alone: an inline function or
   template instantiation compiled both with and without the checks is one
@@ -2557,7 +2606,7 @@ both models don't use all of the RAM). That keeps the design clean as
 well. We can architect for later supporting separate system RAM but I
 wouldn't tackle that at this point."
 
-- **What a discrete GPU is to jitLLM.** One memory domain, the GPU's own
+- **What a discrete GPU is to llmpalooza.** One memory domain, the GPU's own
   memory, with its own budget `B`, and the SSD behind it as the only
   second tier. The workload there is a fast swap of whole models with one
   model active at a time; partial eviction and paging within device memory
@@ -2576,14 +2625,14 @@ wouldn't tackle that at this point."
   8–16 MiB, D-081), and accounted and reported on its own, not in `B`.
 - **The device budget `B` is configured** in the node configuration, never
   "all of the GPU's memory", since the GPU may also drive a desktop. The
-  runtime and `jitllm doctor` are to report the device's free memory at
+  runtime and `llmp doctor` are to report the device's free memory at
   start once `B` is configured for a device (neither is built yet: today
   doctor reports total memory, and the runtime opens no device). Memory
   that other processes take from under `B` is a fault, reported, not
-  something jitLLM pages around.
-- **One GPU per host.** Multi-GPU hosts are out of scope: jitLLM uses the
+  something llmpalooza pages around.
+- **One GPU per host.** Multi-GPU hosts are out of scope: llmpalooza uses the
   driver's device 0 (`CUDA_VISIBLE_DEVICES` selects which GPU that is;
-  CUDA's default order is fastest first, not `nvidia-smi`'s). `jitllm
+  CUDA's default order is fastest first, not `nvidia-smi`'s). `llmp
   doctor` and the runtime judge GPU 0 only: a host whose GPU 0 the build
   has no code for fails even when another GPU would pass, other GPUs are
   reported with `use: none` and not judged, and more than one GPU is a
@@ -2596,9 +2645,9 @@ wouldn't tackle that at this point."
 - **Build.** The x86-64 `native` profile compiles its CUDA code for
   `sm_121` and `sm_86` (a GB10-only diagnostic benchmark excepted), as
   SASS only, from an explicit list
-  (`JITLLM_CUDA_DISCRETE_ARCHITECTURES` in its toolchain file, overridable
+  (`LLMP_CUDA_DISCRETE_ARCHITECTURES` in its toolchain file, overridable
   with `-D`; never detected, D-011). GGML keeps `sm_121a` and ExLlamaV3
-  (upstream's GEMM units and jitLLM's instance unit alike) `sm_121` for
+  (upstream's GEMM units and llmpalooza's instance unit alike) `sm_121` for
   the GB10, each with `sm_86` beside it. The GB10's code is
   compiled as before, and GGML's dispatch, which picks the highest compiled
   architecture at or below the device's, chooses the same code on a GB10;
@@ -2607,7 +2656,7 @@ wouldn't tackle that at this point."
   `spark-native`) stay GB10-only, and configure refuses a discrete
   architecture for an AArch64 target. `CMAKE_CUDA_ARCHITECTURES` is not a
   second knob: configure refuses a value other than the profile's list, so
-  jitLLM's code, the kernel modules, what doctor reports and the test
+  llmpalooza's code, the kernel modules, what doctor reports and the test
   labels always agree. The added architecture goes into `native` rather than a
   preset of its own: the workstation tiers, which build `native` for each host-only change
   and before a package ships (D-084, D-085), then compile every
@@ -2615,7 +2664,7 @@ wouldn't tackle that at this point."
   and the GPU tests need no second build tree. The Spark check set of a
   slice (D-084) does not build `sm_86`, so a kernel that stops compiling
   for it is caught at the next workstation build, not in the slice.
-- **`jitllm doctor`.** Each GPU section reports its class: *unified*
+- **`llmp doctor`.** Each GPU section reports its class: *unified*
   (integrated, one budget with the host, the GB10) or *discrete* (its own
   device memory), from the driver's integrated attribute. A GPU the build
   has code for is judged by what it needs. Both classes need a compute mode
@@ -2637,12 +2686,12 @@ wouldn't tackle that at this point."
   host-VMM landing zone, copied into device VMM, evicted and reloaded), a
   GGML kernel smoke (identical results across `cudaMalloc`, device VMM and
   host VMM, and the launch context's rules), EXL3's GEMM kernels loading
-  from the device's own SASS, jitLLM's EXL3 launchers (the registry, the
+  from the device's own SASS, llmpalooza's EXL3 launchers (the registry, the
   co-resident and lock-slot limits, faults, the over-read probe at the
   fixtures' shapes, two contexts at the co-resident limit), a phase of the
   native EXL3 plan binding and running, the EXL3 plan's GGML operations'
   over-read probe and host checks, the CUDA toolchain contract and
-  `jitllm doctor` (`smoke.doctor.discrete`). The test preset `native-gpu`
+  `llmp doctor` (`smoke.doctor.discrete`). The test preset `native-gpu`
   runs only those, one at a time, with the host's driver: `mise run test
   -- native --gpu`. No other preset and no check tier runs them; on the
   shared workstation they run under its lock for GPU work. Tests that
@@ -2666,7 +2715,7 @@ wouldn't tackle that at this point."
   for it yet. AMD keeps D-026's posture.
 
 **Context.** Until now the Spark was the only target (D-004), and D-072
-made `jitllm doctor` fail on anything but a GB10; on the workstation it
+made `llmp doctor` fail on anything but a GB10; on the workstation it
 reported that the build had no code for `sm_86`. D-081 moves weights and
 state into device VMM on the GB10 and lands direct reads in a small
 host-VMM zone. That is also the natural shape for a discrete GPU, which is
@@ -2674,13 +2723,13 @@ what makes this target cheap now.
 
 **Evidence** (workstation: RTX 3080 Ti, driver 595.91.07, CUDA driver API
 13.2, SDK toolkit 13.4).
-- The GB10-only `jitllm doctor` reported, for the 3080 Ti: not integrated,
+- The GB10-only `llmp doctor` reported, for the 3080 Ti: not integrated,
   11.6 GiB, compute mode default, VMM supported, device-local and host
   NUMA node 0 backing both 2 MiB minimum and recommended. So the landing
   zone is available on this discrete GPU as on the GB10, although the
   device's PCI NUMA node reads -1.
-- Every GGML and ExLlamaV3 unit jitLLM builds compiles for `sm_86`
-  unchanged, jitLLM's EXL3 instance unit (P3) included. Before P2, rebuilding
+- Every GGML and ExLlamaV3 unit llmpalooza builds compiles for `sm_86`
+  unchanged, llmpalooza's EXL3 instance unit (P3) included. Before P2, rebuilding
   the `native` build's 38 CUDA objects took 1,092–1,126
   s of user CPU time with `sm_86` against 751–753 s without it (two rounds
   each, 16 threads, workstation shared with other builds, so wall times are
@@ -2688,7 +2737,7 @@ what makes this target cheap now.
   a full `native` build, so the whole build costs roughly a fifth more CPU
   time; the `cpu` and `cross` builds are unchanged. Not re-measured since
   P3 added the EXL3 instance unit.
-- The `native` build's `jitllm doctor` on the workstation: `sm_86`
+- The `native` build's `llmp doctor` on the workstation: `sm_86`
   targeted, class discrete, no problems. Its 29 `gpu-discrete` tests
   passed there (2026-09-27, after P3 and D-081's page-in path), among them
   GGML's RMSNorm, MMF and MMVF bit-identical across `cudaMalloc`, device
@@ -2817,13 +2866,13 @@ and not degrade loading), a driver exports device memory with page-backed
 mappings that direct I/O can pin, the kernel gains a dma-buf file-read
 path, or the copy measurably slows concurrent decode.
 
-## D-080: jitLLM ships its optional copyleft modules by default, with a build-time opt-out; ExLlamaV3's GEMV is core-eligible, and its GEMM kernels and the direct CCCL include are cleared  (2026-09-27, status: accepted; amends D-079's distributed-build rule and GEMV's optional-module placement, how D-017's optional tier is applied, D-057's default-off optional modules, D-027's core-only default install and D-002's rule for ambiguous provenance)
+## D-080: llmpalooza ships its optional copyleft modules by default, with a build-time opt-out; ExLlamaV3's GEMV is core-eligible, and its GEMM kernels and the direct CCCL include are cleared  (2026-09-27, status: accepted; amends D-079's distributed-build rule and GEMV's optional-module placement, how D-017's optional tier is applied, D-057's default-off optional modules, D-027's core-only default install and D-002's rule for ambiguous provenance)
 
 **Decision.** The owner, on 2026-09-27:
 
 - **Shipping.** "We always ship ourselves even with optional viral
   licenses. We just need a compile-time flag that lets others choose to
-  exclude viral code." jitLLM's own builds and packages include its
+  exclude viral code." Llmpalooza's own builds and packages include its
   optional copyleft modules by default; the copyleft-disabled profile
   (D-002, D-017) is the build-time opt-out. That applies "only after
   [virality] is confirmed": a component is classified by its declared
@@ -2924,10 +2973,10 @@ The owner also allowed the ExLlamaV3 dense GEMV kernel
 and derivatives on licensing.md's gate list stay gated. The port enters
 as an optional module, never a core one: the copyleft-disabled profile and
 any build that has not enabled it exclude it, and its dependency record
-carries the open provenance question. Every jitLLM file that includes
+carries the open provenance question. Every llmpalooza file that includes
 one of them, directly or through another header, belongs to the module
 too and builds only with it; a core build reports a GEMV plan unsupported
-(BP-S4). Whether jitLLM ships the module is the
+(BP-S4). Whether llmpalooza ships the module is the
 owner's open question; it stays in licensing.md until the structural
 comparison is recorded and the owner resolves its D-017 disposition.
 EXL3-G, GEMV off, remains the gated native plan. In a native GEMV-on
@@ -2945,7 +2994,7 @@ bound frozen before its result, and that is kept.
 
 **Consequences.** backend-proof.md's P0 declarations list the delegated
 items, each with the pre-registered values once they are derived. The GEMV
-module is its own lock module (`--modules`, `JITLLM_MODULES`) with its own
+module is its own lock module (`--modules`, `LLMP_MODULES`) with its own
 dependency record; the proof reports EXL3-G and GEMV-on results side by
 side. No distributed build includes the GEMV module until the owner
 decides (D-002's rule for unresolved provenance); `mise run package`
@@ -3006,7 +3055,7 @@ produces the recorded tree digests unchanged.
 **Reopen if.** A needed component ships only in a format `tarfile` cannot
 read safely, or a Python release changes what the `data` filter admits.
 
-## D-077: GGML enters as the locked llama.cpp archive, narrowed and patched; jitLLM supplies what its launchers need from ggml-cuda.cu  (2026-09-26, status: accepted; amends D-057's curated vendoring for GGML; implements D-053's context adapter)
+## D-077: GGML enters as the locked llama.cpp archive, narrowed and patched; llmpalooza supplies what its launchers need from ggml-cuda.cu  (2026-09-26, status: accepted; amends D-057's curated vendoring for GGML; implements D-053's context adapter)
 
 **Decision.** GGML's source reaches the build as the source lock's `ggml`
 component: GitHub's archive of llama.cpp commit `b29c606e2` (tag
@@ -3015,19 +3064,19 @@ optional `archive.keep` list keeps only the paths the build uses (GGML's
 headers, its base sources and `ggml/src/ggml-cuda/`, plus `LICENSE`),
 before patching and hashing. Two reviewed patches in
 `third_party/patches/ggml/` carry every local change:
-- `0001` adapts three upstream behaviours, only when `GGML_JITLLM` is
+- `0001` adapts three upstream behaviours, only when `GGML_LLMP` is
   defined: `ggml_abort` never forks or executes a debugger;
   `ggml_cuda_error` is no longer `[[noreturn]]`; the `GGML_CUDA_PDL`
   environment switch is no longer read. M3 added three more under the same
   rule: MMQ's type switch names only the compiled instance units, weights
   without a backend buffer skip the padding clear, and the build takes no
   CUB (top-k uses GGML's radix select; licensing.md).
-- `0002` adds `jitllm/CMakeLists.txt`, jitLLM's own build of the selected
+- `0002` adds `llmp/CMakeLists.txt`, llmpalooza's own build of the selected
   files with the bridge's flags. GGML's CMake never runs.
 
-jitLLM never compiles `ggml-cuda.cu`, GGML's CUDA backend runtime. The
+Llmpalooza never compiles `ggml-cuda.cu`, GGML's CUDA backend runtime. The
 selected launchers need only five of its symbols; with the context
-destructor that jitLLM's own launch context needs, those are six
+destructor that llmpalooza's own launch context needs, those are six
 functions that `src/kernels/ggml/ggml_support.cu` (MIT AND Apache-2.0,
 adapted from it) defines:
 - the error hook, which records the failure and returns;
@@ -3035,7 +3084,7 @@ adapted from it) defines:
 - the device table, without upstream's process-wide
   `cudaDeviceScheduleSpin`, peer access, environment or logging;
 - a context destructor that destroys nothing;
-- a pool factory that is fatal, since jitLLM always lends a pool.
+- a pool factory that is fatal, since llmpalooza always lends a pool.
 
 GGML is D-017 core implementation (MIT).
 
@@ -3064,7 +3113,7 @@ launchers need only five `ggml-cuda.cu` symbols.
   of GGML's routing.
 - Upgrading GGML means a new archive pin, the patches rebased, the keep
   list and file list reviewed, and the support file re-derived.
-- Adding a GGML operation adds its files to `jitllm/CMakeLists.txt`.
+- Adding a GGML operation adds its files to `llmp/CMakeLists.txt`.
 - cuBLAS and every quantized kernel family stay outside the build until an
   operation needs them. M3 brought in MMQ (for DeepSeek V4 Flash's GGUF
   types only) and MMVQ, and, for the tensor-core flash-attention cases it
@@ -3078,7 +3127,7 @@ starts to carry code outside D-017's core allowlist in the kept paths.
 
 ## D-076: Link cuBLAS dynamically and ship its pinned shared libraries  (2026-09-25, status: accepted; amends D-060's "cuBLAS linked statically subject to its license and size review")
 
-**Decision.** jitLLM binaries that use cuBLAS link `libcublas.so.13` and
+**Decision.** Llmpalooza binaries that use cuBLAS link `libcublas.so.13` and
 `libcublasLt.so.13` dynamically. The SDK pins cuBLAS 13.8.0.4 (the newest
 for CUDA 13.4 in NVIDIA's repository on 2026-09-25): `libcublas-13-4` and
 `libcublas-dev-13-4` for both host architectures, of which setup extracts
@@ -3100,11 +3149,11 @@ executable that needs a GEMM would carry that. The arm64 shared libraries are
 648,206,104 (`libcublasLt.so.13`) and 71,959,256 bytes, paid once per
 package. NVIDIA's EULA (Attachment A) lists `libcublas.so` and
 `libcublasLt.so` as redistributable on Linux; section 2.3 allows
-redistributing Linux object code only unmodified, so jitLLM does not prune
+redistributing Linux object code only unmodified, so llmpalooza does not prune
 them (`nvprune`) without a license review. `libcublas.so.13` needs only
 glibc (`librt`, `libpthread`, `libdl`, `libm`, `libc`) and `libgcc_s.so.1`,
 not libstdc++, so it respects D-060's rule that no loaded library brings its
-own C++ runtime; jitLLM's own code still links libgcc statically.
+own C++ runtime; llmpalooza's own code still links libgcc statically.
 
 **Consequences.** The SDK identity changes, and every host runs `mise run
 setup` again. Until a binary links cuBLAS, the provenance unit does not ship
@@ -3118,7 +3167,7 @@ or first-use cost the runtime measures.
 
 **Reopen if.** NVIDIA permits pruned redistribution or ships smaller
 per-architecture libraries; a cuBLAS release drops the shared libraries or
-adds a libstdc++ dependency; or jitLLM stops needing cuBLAS.
+adds a libstdc++ dependency; or llmpalooza stops needing cuBLAS.
 
 ## D-075: The main agent may commit when the user directly asks  (2026-09-24, status: accepted; amends D-016's sole-committer rule)
 
@@ -3160,23 +3209,23 @@ change) still needs a direct request. Every other condition of the
 **Reopen if.** Agents commit something the user did not ask for, or other
 contributors join and need a merge policy.
 
-## D-074: The arm64 package from CPack, a runtime that refuses rather than restarts, crashes that exit instead of dumping, and jobs in delegated cgroups  (2026-09-24, status: accepted; implements D-027's and D-063's package, unit and process lock (moving the lock out of D-063's /run/jitllm), the architecture's crash-dump rule (D-014) and the job-containment choice; settles licensing.md's seven package decisions with the owner; a failing start is retried, never given up on, since D-102's hang recovery, 2026-10-03)
+## D-074: The arm64 package from CPack, a runtime that refuses rather than restarts, crashes that exit instead of dumping, and jobs in delegated cgroups  (2026-09-24, status: accepted; implements D-027's and D-063's package, unit and process lock (moving the lock out of D-063's /run/llmp), the architecture's crash-dump rule (D-014) and the job-containment choice; settles licensing.md's seven package decisions with the owner; a failing start is retried, never given up on, since D-102's hang recovery, 2026-10-03)
 
 **Decision.** How M1's Package and Confined job proof items build the
 installed product (`packaging/`, `src/runtime/`, `src/platform/job.*`,
-`tools/jitllm_package.py`, `tools/job-proof`):
+`tools/llmp_package.py`, `tools/job-proof`):
 
 - **The package.** `mise run package` (`tools/build package`) builds the
   `cross` preset `--locked` and CPack (the SDK's, 4.4.3) writes
-  `build/cross/package/jitllm_<Debian version>_arm64.deb`. CPack over
+  `build/cross/package/llmp_<Debian version>_arm64.deb`. CPack over
   debhelper: it needs no new host prerequisites and runs inside the SDK
   with the cross build, while debhelper would drive the build itself. The
   maintainer scripts are hand-written after debhelper's snippets
-  (`packaging/debian/`). Contents: `/usr/bin/jitllm`,
-  `/usr/libexec/jitllm/jitllm-runtime`, `jitllm.service`, the sysusers and
-  tmpfiles files, and `/usr/share/doc/jitllm/` (`LICENSE`, `NOTICE`,
-  `CHANGELOG.md`, `copyright`, `THIRD-PARTY-NOTICES`, `jitllm.spdx.json`,
-  `examples/jitllm.toml`); no configuration file.
+  (`packaging/debian/`). Contents: `/usr/bin/llmp`,
+  `/usr/libexec/llmp/llmp-runtime`, `llmp.service`, the sysusers and
+  tmpfiles files, and `/usr/share/doc/llmp/` (`LICENSE`, `NOTICE`,
+  `CHANGELOG.md`, `copyright`, `THIRD-PARTY-NOTICES`, `llmp.spdx.json`,
+  `examples/llmp.toml`); no configuration file.
 - **Dependencies** come from the binaries: `libc6 (>=` the highest
   `GLIBC_` version they import`)`, 2.38 today; `libcuda.so.1 (>= 580)`,
   NVIDIA's minimum driver for CUDA 13.x minor-version compatibility (CUDA
@@ -3188,8 +3237,8 @@ installed product (`packaging/`, `src/runtime/`, `src/platform/job.*`,
 - **Install, upgrade, removal.** postinst creates the user and the data
   directory, then enables and starts the service on first install and
   restarts it on upgrade (drain-before-restart upgrades stay M8's).
-  Removing stops it. Removing or purging keeps `/var/lib/jitllm`,
-  `/etc/jitllm` and the `jitllm` user: models, records and configuration
+  Removing stops it. Removing or purging keeps `/var/lib/llmp`,
+  `/etc/llmp` and the `llmp` user: models, records and configuration
   are the owner's to delete.
 - **The package's documents** are generated from the build receipt, the
   source lock, `toolchains/provenance.toml` and the SDK:
@@ -3204,16 +3253,16 @@ installed product (`packaging/`, `src/runtime/`, `src/platform/job.*`,
   control fields, the binaries' needed libraries and symbol versions
   against the dependencies, and every component and notice.
 - **The install test** runs in an arm64 Ubuntu 24.04 container (qemu-user,
-  no network, `/var/lib/jitllm` on a volume, since the runtime refuses
+  no network, `/var/lib/llmp` on a volume, since the runtime refuses
   overlayfs) over a stand-in package that provides `libcuda.so.1` with
   NVIDIA's stub. It checks the user, directories, modes and enablement,
-  `systemd-analyze verify`, `jitllm --version`, `jitllm doctor`, the
-  runtime run as `jitllm` (it makes its roles, then refuses the host at
+  `systemd-analyze verify`, `llmp --version`, `llmp doctor`, the
+  runtime run as `llmp` (it makes its roles, then refuses the host at
   its platform step), a reinstall, removal and purge. It does not start the
   unit: the container has no service manager and no GPU. The unit itself
   is validated on a Spark. `check:full` runs the package, its inventory
   and the install test.
-- **The runtime process**, `jitllm-runtime [--config FILE] [--anchor
+- **The runtime process**, `llmp-runtime [--config FILE] [--anchor
   PATH]`, runs the architecture's startup order as far as M1 has steps:
   the anchor (refused while it exists: no cluster support), the
   configuration (a member's is refused), the process lock, the storage
@@ -3228,8 +3277,8 @@ installed product (`packaging/`, `src/runtime/`, `src/platform/job.*`,
   subreaper or has no delegated cgroup (qemu-user, a development run), it
   warns that jobs cannot run and carries on.
 - **The per-node process lock** is `<anchor>.lock`,
-  `/var/lib/jitllm/enrollment.lock` when packaged: a fixed path that
-  neither configuration nor `/run/jitllm`'s removal at stop affects, and
+  `/var/lib/llmp/enrollment.lock` when packaged: a fixed path that
+  neither configuration nor `/run/llmp`'s removal at stop affects, and
   that development runs name through their anchor. The runtime holds an
   exclusive `flock` on it, close-on-exec; the path must pass the trust
   walk, and the file must be the runtime user's, mode 0600, so no other
@@ -3243,7 +3292,7 @@ installed product (`packaging/`, `src/runtime/`, `src/platform/job.*`,
   filter and marks it non-dumpable, and the unit sets `LimitCORE=0`. The
   handler cannot cover a fault before `main`, a fault inside itself, a
   hardware fault a thread has blocked, or a stack overflow on a thread
-  without its own alternate stack, so every thread jitLLM starts installs
+  without its own alternate stack, so every thread llmpalooza starts installs
   one first (`InstallThreadSignalStack`); in those cases the process is
   already non-dumpable, which the workstation's kernel honors even with
   `fs.suid_dumpable=2` (this change's challenge pass), and a dump would
@@ -3252,10 +3301,10 @@ installed product (`packaging/`, `src/runtime/`, `src/platform/job.*`,
 - **The unit.** `Type=notify`, ordered after `nvidia-persistenced.service`
   (which DGX OS runs); `Restart=on-failure` after 5 s, exit 75 included,
   but not after exit 78 (`RestartPreventExitStatus=`), since that refusal
-  would only repeat; `KillMode=control-group`; the three `*Directory=jitllm`
+  would only repeat; `KillMode=control-group`; the three `*Directory=llmp`
   settings; `UMask=0077`; `LimitMEMLOCK=infinity`; `Delegate=memory pids
   cpu io` with `DelegateSubgroup=runtime`; and sandboxing:
-  `ProtectSystem=strict` (only `/var/lib/jitllm` and `/run/jitllm` are
+  `ProtectSystem=strict` (only `/var/lib/llmp` and `/run/llmp` are
   writable; a role elsewhere needs `ReadWritePaths=`, which doctor
   reports), `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, no
   capabilities, the kernel, clock, hostname and `/proc` protections,
@@ -3273,7 +3322,7 @@ installed product (`packaging/`, `src/runtime/`, `src/platform/job.*`,
   own, locks the job record's file, and forks the job, which joins its
   cgroup, restores the default signal mask and SIGPIPE disposition (the
   runtime blocks its stop signals and ignores SIGPIPE), clears
-  close-on-exec on its lock descriptor only (`JITLLM_JOB_LOCK_FD` names
+  close-on-exec on its lock descriptor only (`LLMP_JOB_LOCK_FD` names
   it) and execs. A close-on-exec pipe returns
   from `StartJob` only once the job has exec'd inside its cgroup (or
   failed), so a kill right after cannot miss it; the runtime keeps no
@@ -3286,7 +3335,7 @@ installed product (`packaging/`, `src/runtime/`, `src/platform/job.*`,
   jobs to its successor, which finds their locks held, kills their cgroups
   and settles them (their orphans re-parent to whichever ancestor
   subreaper or init reaps them). This contains ordinary process trees: an
-  unconfined hostile process running as `jitllm` could move itself to
+  unconfined hostile process running as `llmp` could move itself to
   another cgroup of the delegated tree, which is one reason stages that
   parse untrusted input also confine themselves.
 - **Stages that parse untrusted input confine themselves** with what an
@@ -3332,21 +3381,21 @@ installed through apt over `libnvidia-compute-580`, created the user and
 directories, and started the service, which reached readiness under the
 full sandbox, with the GPU probe passing, all four RDMA verbs nodes and
 `rdma_cm` opened read-write, and its jobs cgroup created. The process had
-no capabilities, `NoNewPrivs` and a zeroed core-dump filter, and `jitllm
+no capabilities, `NoNewPrivs` and a zeroed core-dump filter, and `llmp
 doctor` reported no problems. `systemctl kill -s ABRT` ended it with exit
 134 and a restart, and left no core file and no apport report. A reinstall
 restarted it, and a stop exited 0. `tools/job-proof --host spark` passed as
-`jitllm` with the service's sandbox settings, and `check:spark` passed.
+`llmp` with the service's sandbox settings, and `check:spark` passed.
 There, a non-dumpable process that segfaults starts no dump (`WCOREDUMP`
 false) while a dumpable one does, so being non-dumpable already keeps
 apport out; the handler adds the log line and the exit status. The first
-start left a CUDA JIT cache in `/var/lib/jitllm/.nv` (the service user's
+start left a CUDA JIT cache in `/var/lib/llmp/.nv` (the service user's
 home); the runtime now sets `CUDA_CACHE_DISABLE`, as doctor does, and the
 reinstalled runtime wrote none.
 
 **Consequences.**
 - Owner's answers on 2026-09-24: enable and start the service on
-  install; the maintainer is `Patrick Meenan <pmeenan@jitllm.dev>`; and
+  install; the maintainer is `Patrick Meenan <pmeenan@llmpalooza.com>`; and
   the seven licensing decisions of
   [licensing.md](licensing.md#what-a-packaged-binary-carries): the CUDA
   header notice in documentation only, the EULA's full text, the Unicode
@@ -3370,7 +3419,7 @@ apport or the kernel dumps a process that exits from a signal handler; a
 job must survive the runtime's unit restart; or DGX OS moves off cgroup v2
 or loses `DelegateSubgroup=` (systemd 254+).
 
-## D-073: Node configuration: toml++ admitted at a post-release commit, the v2 node-local keys fixed, one owning file per key, and fail-closed checks of the files and storage roles  (2026-09-24, status: accepted; implements D-063's configuration and storage-role rules and cluster-design.md's node-local schema; admits toml++ under D-017 and D-057; configuration and `jitllm doctor`'s arguments are D-016 public surfaces; `[client]` fixed by D-097)
+## D-073: Node configuration: toml++ admitted at a post-release commit, the v2 node-local keys fixed, one owning file per key, and fail-closed checks of the files and storage roles  (2026-09-24, status: accepted; implements D-063's configuration and storage-role rules and cluster-design.md's node-local schema; admits toml++ under D-017 and D-057; configuration and `llmp doctor`'s arguments are D-016 public surfaces; `[client]` fixed by D-097)
 
 **Decision.** How M1's Node configuration item reads and checks the node's
 configuration (`src/config/`, `src/platform/path_trust.*`,
@@ -3457,19 +3506,19 @@ configuration (`src/config/`, `src/platform/path_trust.*`,
   D-034's probe: an unnamed `O_TMPFILE|O_DIRECT` file, `statx`'s direct-I/O
   alignment at most 4 KiB (D-056's alignment), and a 4 KiB direct write and
   read that must round-trip. An empty `spill` gets the marker
-  `.jitllm-spill` (text `jitllm spill directory, version 1`); a non-empty
+  `.llmp-spill` (text `llmp spill directory, version 1`); a non-empty
   one without it, or with a marker holding anything else, is refused and
   left alone, as is one that cannot be listed to the end.
-- **`jitllm doctor [--config FILE]`.** doctor gains an optional
+- **`llmp doctor [--config FILE]`.** doctor gains an optional
   `--config`; without it, it reads the packaged default and judges
-  ownership against the `jitllm` account if one exists. It adds
+  ownership against the `llmp` account if one exists. It adds
   `configuration` (the files, standalone or member, the enrollment anchor)
   and `storage` (each role's path, owner, mode and filesystem) sections.
   Problems: an invalid configuration, a member configuration or a present
   anchor (this build has no cluster support, so the runtime refuses both),
   and an existing runtime role on a refused or read-only filesystem.
   Warnings: a role not created yet whose parent is on such a filesystem,
-  and, when packaged, a role outside `/var/lib/jitllm`, the only place the
+  and, when packaged, a role outside `/var/lib/llmp`, the only place the
   unit's sandbox lets the runtime write, which then needs `ReadWritePaths=`
   in a drop-in (the read-only data-role report D-072 deferred). doctor does
   not run the direct-I/O probe, since it writes (D-072); the runtime runs
@@ -3514,12 +3563,12 @@ measurements), the workstation's on Btrfs.
 TOML 1.1 or a toml++ release is adopted; or a user needs to share a
 configuration directory with a group.
 
-## D-072: `jitllm doctor` is the capability probe; CUDA builds link the NVIDIA driver and require a GB10 with host-backed VMM  (2026-09-24, status: accepted; implements D-026's probed capabilities and the features.md capability probe; applies D-060's dynamic driver libraries; its GB10-only judgment amended by D-082)
+## D-072: `llmp doctor` is the capability probe; CUDA builds link the NVIDIA driver and require a GB10 with host-backed VMM  (2026-09-24, status: accepted; implements D-026's probed capabilities and the features.md capability probe; applies D-060's dynamic driver libraries; its GB10-only judgment amended by D-082)
 
 **Decision.** Owner's answers on 2026-09-24 settled the driver binding, what
 fails, and what is stable. How M1's Smoke binary item probes a host:
 
-- **The command.** `jitllm doctor` takes no arguments, and it only reads
+- **The command.** `llmp doctor` takes no arguments, and it only reads
   and queries. It prints titled sections of facts: `build` (version, commit,
   license profile, SDK, target, compiler, C++ runtime), `host` (kernel,
   glibc, page size, memory totals, `fs.protected_hardlinks`), `RDMA` (each
@@ -3583,7 +3632,7 @@ fails, and what is stable. How M1's Smoke binary item probes a host:
   still load the driver's kernel modules, as it does for any CUDA
   program.
 
-**Context.** The plan's M1 item asks for a `jitllm` binary, from the cross
+**Context.** The plan's M1 item asks for a `llmp` binary, from the cross
 build and the native Spark fallback, that runs on `spark` over SSH, with a
 first-cut `doctor`. D-026 makes platform properties probed capabilities, not
 constants, and D-049 and D-063 name facts the probe reports. The first cut
@@ -3593,7 +3642,7 @@ instead, since Sparks always have the driver, and hard failures for a GPU
 other than a GB10 and for missing host-backed VMM.
 
 **Evidence.** On `spark` (GB10, driver 580.178.04, 2026-09-24), the cross
-build's `jitllm doctor` reported no problems and no warnings. It reported
+build's `llmp doctor` reported no problems and no warnings. It reported
 the CUDA driver API as 13.0 against the toolkit's 13.4, VMM supported, and a
 2 MiB minimum and recommended granularity for both device-local and host
 NUMA node 0 backing, which agrees with D-033's and D-034's measurements. It
@@ -3616,7 +3665,7 @@ build has no code for.
 - The SDK gains `cuda-driver-dev-13-4` for both architectures, so its
   identity changes and every host runs `mise run setup` once. Among the
   binaries the link check (`tests/toolchain/check_binary.cmake`) inspects,
-  it requires `libcuda.so.1` in CUDA builds' `jitllm` and allows it nowhere
+  it requires `libcuda.so.1` in CUDA builds' `llmp` and allows it nowhere
   else; `sources.closure` allows the stub as the only shared library a link
   takes from the SDK.
 - Driver symbols bind lazily, so a function added after the Sparks' driver
@@ -3631,9 +3680,9 @@ build has no code for.
   `cuInit` fails with `CUDA_ERROR_OUT_OF_MEMORY` (found in this change's
   challenge pass). No preset builds that combination today.
 
-**Reopen if.** jitLLM targets anything but a Spark (another NVIDIA GPU,
+**Reopen if.** Llmpalooza targets anything but a Spark (another NVIDIA GPU,
 AMD or Apple silicon); binaries must start without the driver; a driver
-function jitLLM needs is reachable only through `cuGetProcAddress`; or
+function llmpalooza needs is reachable only through `cuGetProcAddress`; or
 automation needs capabilities before a typed report exists.
 
 ## D-071: REUSE lint from a pinned SDK tool, embedded headers enforced, sidecars instead of REUSE.toml, and provenance records for the toolchain  (2026-09-24, status: accepted; implements D-029's M1 checks and NOTICE and D-017's records for tools and platform dependencies; corrects D-060's list of embedded runtime code; the classification it proposed and the seven licensing decisions were settled on 2026-09-24, see D-074 and licensing.md)
@@ -3660,7 +3709,7 @@ automation needs capabilities before a typed report exists.
   which mise rewrites) has a `.license` sidecar. There is no `REUSE.toml`
   or `.reuse/dep5`: either can override a file's own header, which is what
   D-029's separate header check exists to prevent. The check
-  (`tools/jitllm_headers.py`) reads the report of `reuse lint --json` and
+  (`tools/llmp_headers.py`) reads the report of `reuse lint --json` and
   requires that REUSE takes each file's license from the file's own header
   or sidecar and nothing else, with a commentable file's REUSE license equal
   to its header's. Any license or copyright tag anywhere in a file or its
@@ -3677,7 +3726,7 @@ automation needs capabilities before a typed report exists.
   REUSE snippet tags with other licenses are not supported yet.
 - **License texts and NOTICE.** `LICENSES/` holds every license a file
   declares: Apache-2.0, identical to the root `LICENSE`, and MIT from SPDX
-  License List 3.29.0. The root `NOTICE` carries jitLLM's attribution and
+  License List 3.29.0. The root `NOTICE` carries llmpalooza's attribution and
   names the third-party material in the repository. A package adds the
   notices of what its build incorporates.
 - **Provenance records.** `toolchains/provenance.toml` records by unit
@@ -3736,7 +3785,7 @@ the full inventory and the notice list.
 **Consequences.**
 - `check` gains the `reuse` and `headers` steps. A new file copies its
   neighbours' header, and a new file type is classified in
-  `tools/jitllm_headers.py`.
+  `tools/llmp_headers.py`.
 - The SDK identity changes, so every host runs `mise run setup` once.
 - A packaged binary always carries the HP and SGI STL notices and, in a
   CUDA build, the NVIDIA EULA statement and the CUDA headers' notice, plus
@@ -3791,9 +3840,9 @@ what a binary must carry.
   `tools/`; `mise.lock` holds its checksums for linux-x64 and linux-arm64.
   CMake and Ninja stay in the SDK, as M1's scope lists them.
 - **Layout.** Each build host's SDK is assembled at
-  `~/.local/share/jitllm/sdk/<arch>-<digest>`, where the digest covers the
+  `~/.local/share/llmp/sdk/<arch>-<digest>`, where the digest covers the
   manifest, the artifact lock and the setup program, so SDKs from different
-  inputs never mix. Downloads are cached under `~/.cache/jitllm` by
+  inputs never mix. Downloads are cached under `~/.cache/llmp` by
   SHA-256 and re-verified on every use; GCC runtime builds are cached there
   by their build inputs, with their recorded inputs and content digest checked
   before reuse. Setup checks the declared prerequisites and never installs them.
@@ -4114,7 +4163,7 @@ Each of those would have ruled these shapes out.
   path its D-052 or D-036 performance gates.
 - M7 finds that a shape needs a special case in the resource core.
 
-## D-067: Chat templates are rendered by native family renderers first, and otherwise by a bounded, sandboxed Jinja-subset interpreter of the checkpoint's own template  (2026-09-23, status: accepted; amended by the owner on 2026-10-02 (below), which replaces "template code from a checkpoint never runs in a jitLLM process" and "no generic fallback"; specializes D-009's untrusted-checkpoint rule and D-043's rendering contract; its step and work bounds became cancellation points and its output, string and live bounds follow the model's context and memory under D-102, 2026-10-03, tokenizer.md; the probe pool keeps its fixed basis)
+## D-067: Chat templates are rendered by native family renderers first, and otherwise by a bounded, sandboxed Jinja-subset interpreter of the checkpoint's own template  (2026-09-23, status: accepted; amended by the owner on 2026-10-02 (below), which replaces "template code from a checkpoint never runs in a llmpalooza process" and "no generic fallback"; specializes D-009's untrusted-checkpoint rule and D-043's rendering contract; its step and work bounds became cancellation points and its output, string and live bounds follow the model's context and memory under D-102, 2026-10-03, tokenizer.md; the probe pool keeps its fixed basis)
 
 **Amendment (owner, 2026-10-02).** Any model, quantization or repack a
 user brings gets chat routes when its template can be rendered exactly:
@@ -4203,7 +4252,7 @@ user brings gets chat routes when its template can be rendered exactly:
 The chat request and response formats are unchanged; models whose
 templates were refused at registration now register and serve. That is
 an addition within the unreleased 0.x product, so neither the product
-version nor `jitllm-inference-version` changes (D-062); the CHANGELOG
+version nor `llmp-inference-version` changes (D-062); the CHANGELOG
 records it. Evidence: the interpreter equals transformers 5.12.1 (Jinja2
 3.1.6) byte for byte on 133 snippets and on 29 real templates × 19
 conversations (and, in the review, × 200 random ones), and reproduces
@@ -4216,9 +4265,9 @@ every fixture case of the three pinned templates
 - **One native renderer per supported template.** Each supported chat
   template has a native C++ renderer. The runtime selects it by the SHA-256
   of the template's exact UTF-8 bytes as recorded in the prepared artifact's
-  metadata. The template text is only identification data. No jitLLM
+  metadata. The template text is only identification data. No llmpalooza
   runtime, job or shipped tool parses or evaluates it as a program, and
-  jitLLM ships no Jinja or other template interpreter. The only evaluation
+  llmpalooza ships no Jinja or other template interpreter. The only evaluation
   is the offline fixture generation below, in developer-run build/test
   tooling on the pinned template.
 - **Request-supplied templates** (vLLM's `chat_template`, Ollama's
@@ -4282,12 +4331,12 @@ directly.
 - A vetted, bounded template engine would cost less to review than the
   renderers it replaces.
 
-## D-066: jitLLM code builds without exceptions; errors are explicit values  (2026-09-23, status: accepted; settles D-010's deferred exception policy; applied with D-059's warning set in M1)
+## D-066: llmpalooza code builds without exceptions; errors are explicit values  (2026-09-23, status: accepted; settles D-010's deferred exception policy; applied with D-059's warning set in M1)
 
 **Decision.** Owner's answer on 2026-09-23, asked while drafting
 architecture.md:
 
-- **No exceptions in jitLLM code.** Every profile builds jitLLM-owned C++,
+- **No exceptions in llmpalooza code.** Every profile builds llmpalooza-owned C++,
   and the host side of its CUDA translation units, with `-fno-exceptions`.
   That includes the tests of that code. Owned code contains no `throw` or
   `try`.
@@ -4308,7 +4357,7 @@ architecture.md:
   that reports errors only by throwing may be called only from an adapter
   translation unit compiled with exceptions. The adapter catches everything
   at its boundary and returns an `Error`, so no exception ever reaches a
-  jitLLM frame. The linker keeps one copy of each inline function or
+  llmpalooza frame. The linker keeps one copy of each inline function or
   template instantiation, and a copy compiled without exceptions has no
   cleanups for one: unwinding through it skips destructors, and under
   Clang it is undefined. So no inline function or template instantiation that
@@ -4356,14 +4405,14 @@ service loop starts. The reasons for the first:
 - A required dependency cannot be adapted at acceptable cost.
 - Measured hot-path cost of explicit results exceeds what exceptions would
   cost.
-- A later decision requires unwinding across jitLLM frames.
+- A later decision requires unwinding across llmpalooza frames.
 
 ## D-065: Front-door TLS from certificate files that external tools keep current (certbot with Cloudflare DNS, Tailscale), with a built-in CA as fallback  (2026-09-23, status: accepted; implements D-014's and D-045's "transport protection"; separate from D-038's cluster mTLS)
 
 **Decision.** The owner asked on 2026-09-23 for Let's Encrypt with DNS-based
 validation through a Cloudflare zone token, user-supplied certificates,
 Tailscale, and a built-in CA as a last-resort fallback. The owner then asked
-to use certbot on the Sparks rather than building ACME into jitLLM. jitLLM
+to use certbot on the Sparks rather than building ACME into llmpalooza. Llmpalooza
 therefore contains no ACME, Cloudflare or Tailscale client. The runtime
 serves TLS from certificate files that the owner's tools keep current, and
 falls back to its own CA. This applies to any non-loopback front-door or
@@ -4378,7 +4427,7 @@ management binding.
 - **Certificate files.** The runtime reads them under D-063's credential
   rules. A file must be a regular file, not a link, that only root or the
   runtime's user could replace, and a key must not be readable by other
-  users. Files live by default under `/etc/jitllm/tls/` (`root:jitllm`,
+  users. Files live by default under `/etc/llmp/tls/` (`root:llmp`,
   0750; files 0640), so only root writes there. The runtime re-reads them
   on change, including replacement by rename. It swaps in a new pair for
   new connections only after checking that the key matches the
@@ -4397,26 +4446,26 @@ management binding.
     `snap.certbot.renew.timer`). Renewal uses ARI (RFC 9773), which
     exempts it from rate limits, falling back to a third of the lifetime
     remaining.
-  - jitLLM ships `/usr/libexec/jitllm/certbot-deploy-hook`, given to
+  - Llmpalooza ships `/usr/libexec/llmp/certbot-deploy-hook`, given to
     certbot as that lineage's `--deploy-hook` (at issuance or through
     `certbot reconfigure`; certbot stores it in the lineage's renewal
     configuration). After each issue or renewal, the hook writes
     `$RENEWED_LINEAGE`'s key and full chain as one combined PEM,
-    `certbot-<lineage>.pem`, into `/etc/jitllm/tls/`, atomically, as
-    `root:jitllm` 0640. It accepts only a lineage directly under certbot's
+    `certbot-<lineage>.pem`, into `/etc/llmp/tls/`, atomically, as
+    `root:llmp` 0640. It accepts only a lineage directly under certbot's
     `live/` directory, and the prefix keeps it off the other sources'
     files.
   - The hook is needed because certbot's `live/` files are symlinks into
     root-only `archive/`, and the runtime refuses links.
   - The Cloudflare token stays in certbot's configuration and never
-    reaches jitLLM.
+    reaches llmpalooza.
   - DNS A/AAAA records for the names are the owner's to set, DNS-only
-    (`proxied: false`) for LAN or tailnet addresses. jitLLM manages no DNS
+    (`proxied: false`) for LAN or tailnet addresses. Llmpalooza manages no DNS
     records.
-- **Tailscale.** jitLLM ships a systemd timer and service. The timer runs
+- **Tailscale.** Llmpalooza ships a systemd timer and service. The timer runs
   `tailscale cert` as root for the node's `ts.net` name about twice a day,
   without `--min-validity`, and writes the result as a combined PEM,
-  `tailscale-<name>.pem`, into `/etc/jitllm/tls/`, the same way.
+  `tailscale-<name>.pem`, into `/etc/llmp/tls/`, the same way.
   `tailscaled` renews a fetched name only when asked: such a call starts a
   background renewal once ARI or two-thirds of the lifetime says so and
   returns the current certificate, so the next run picks up the new one.
@@ -4439,7 +4488,7 @@ management binding.
   - Changing the covered names or addresses re-issues the CA certificate,
     and clients must import it again.
   - Every leaf lists all its names in the SAN, never only in the CN.
-  - `jitllm` exports the CA certificate. Clients trust it through
+  - `llmp` exports the CA certificate. Clients trust it through
     `NODE_EXTRA_CA_CERTS` (Claude Code; or its OS-store mode),
     `SSL_CERT_FILE` or `CODEX_CA_CERTIFICATE` (Codex), `--cacert` (curl),
     or the system store.
@@ -4453,10 +4502,10 @@ management binding.
 **Context.** D-014 and D-045 required credentials and "transport protection"
 for any non-loopback binding without saying how. The owner's clients run on
 the workstation and reach a Spark over the network. A first draft built a
-minimal RFC 8555 client and Cloudflare/Tailscale API clients into a jitLLM
+minimal RFC 8555 client and Cloudflare/Tailscale API clients into a llmpalooza
 certificate job. The research had found no permissively licensed C++ ACME
 library with ES256, ARI and profiles (acme-lw, MIT, lacks all three), so
-that client would have been jitLLM's own heavy-path parser of external
+that client would have been llmpalooza's own heavy-path parser of external
 input. certbot (Apache-2.0) already provides it. Facts checked on
 2026-09-23:
 
@@ -4497,12 +4546,12 @@ input. certbot (Apache-2.0) already provides it. Facts checked on
 - **Dependencies.** The only new library is the TLS library for serving and
   for the local CA (OpenSSL 3.5 LTS is the candidate), a D-017/D-057 choice
   audited with the M3 endpoint work. No HTTP client or ACME code enters
-  jitLLM. certbot and Tailscale are optional host tools the owner installs,
-  under their own licenses (D-017's tool category). jitLLM ships only the
+  llmpalooza. certbot and Tailscale are optional host tools the owner installs,
+  under their own licenses (D-017's tool category). Llmpalooza ships only the
   hook, the timer and documentation. The deploy hook and timer script run
-  as root, so they are small, touch only `/etc/jitllm/tls/`, and are
+  as root, so they are small, touch only `/etc/llmp/tls/`, and are
   reviewed on the heavy path. Their units are sandboxed so they can write
-  only to `/etc/jitllm/tls/`.
+  only to `/etc/llmp/tls/`.
 - **Delivery.** M3's endpoint ships certificate files, the local CA, reload
   and the certbot hook. The ladder rewrite places the Tailscale timer. Until
   then, an SSH tunnel to the loopback front door works.
@@ -4533,16 +4582,16 @@ input. certbot (Apache-2.0) already provides it. Facts checked on
   deferred choice.
 - **Hardening.** From 2027-03-15 CAs must process CAA `accounturi` (ballot
   SC-098v2), so a CAA record may pin issuance to certbot's account. The docs
-  recommend it; jitLLM does not require it.
+  recommend it; llmpalooza does not require it.
 - **Scope.** D-038's cluster mTLS keeps its own CA and is unchanged.
 
-**Reopen if.** The owner wants jitLLM to manage DNS records or certificates
+**Reopen if.** The owner wants llmpalooza to manage DNS records or certificates
 itself (for example, dynamic addresses); certbot's snap stops being
 maintained for arm64; DNS-PERSIST-01 ships and certbot supports it
 (removing the standing DNS Write token); or Tailscale starts renewing
 fetched certificates on its own.
 
-## D-064: Local management is anonymous on loopback behind browser guards; jitLLM is a service, not a library  (2026-09-23, status: accepted; specializes D-014 and D-045; public surfaces as listed in D-062)
+## D-064: Local management is anonymous on loopback behind browser guards; llmpalooza is a service, not a library  (2026-09-23, status: accepted; specializes D-014 and D-045; public surfaces as listed in D-062)
 
 **Decision.** Owner's answers on 2026-09-23, before the architecture draft:
 
@@ -4571,7 +4620,7 @@ fetched certificates on its own.
   browser-facing routes. A non-loopback management binding still requires
   credentials and transport protection (D-014), and inference credentials
   never carry management authority (D-045).
-- **Service, not library.** jitLLM's public surfaces are those D-062
+- **Service, not library.** Llmpalooza's public surfaces are those D-062
   versions: the HTTP APIs, CLI, configuration, artifact format and cluster
   protocol. The native C++ API
   ([architecture.md](architecture.md#conceptual-native-api-20-confirmed-2026-09-21-as-the-starting-shape-a-sketch-not-compilable))
@@ -4583,7 +4632,7 @@ fetched certificates on its own.
 not say who may call it locally. The second review round (2026-09-23)
 flagged how the CLI reaches the runtime and with whose authority as open.
 Offered: anonymous access with browser guards (recommended), or a token file
-readable by the `jitllm` group. The owner chose the first. On the library
+readable by the `llmp` group. The owner chose the first. On the library
 question, the owner chose service-only over also shipping public headers.
 
 **Consequences.** The CLI talks to the loopback management listener over
@@ -4606,32 +4655,32 @@ file or a Unix socket with group permissions), a browser-hosted dashboard
 must call the API directly, or an embedding customer needs a supported
 library.
 
-## D-063: Installed layout: a TOML node document with drop-ins in `/etc/jitllm`, `/var/lib/jitllm` data roles, a `jitllm` system user and one systemd unit  (2026-09-23, status: accepted; implements D-027's layout consequences and D-054's role paths; configuration is a D-016 public surface; M7 packaging items moved to M8 in the 2026-09-23 milestone ladder, plan.md, and M8 is M10 under D-087)
+## D-063: Installed layout: a TOML node document with drop-ins in `/etc/llmp`, `/var/lib/llmp` data roles, a `llmp` system user and one systemd unit  (2026-09-23, status: accepted; implements D-027's layout consequences and D-054's role paths; configuration is a D-016 public surface; M7 packaging items moved to M8 in the 2026-09-23 milestone ladder, plan.md, and M8 is M10 under D-087)
 
 **Decision.** Owner's answers on 2026-09-23 chose TOML configuration and
-`/var/lib/jitllm` as the default data directory. The packaged layout is
+`/var/lib/llmp` as the default data directory. The packaged layout is
 recorded in [architecture.md](architecture.md#installed-layout) and consists of:
 
-- **Package and executables.** One core package, `jitllm`, arm64 first
-  (D-027). The user-facing CLI is `/usr/bin/jitllm`. The node runtime process
+- **Package and executables.** One core package, `llmp`, arm64 first
+  (D-027). The user-facing CLI is `/usr/bin/llmp`. The node runtime process
   (D-005) and the separate job processes (import, install, archive; D-054)
-  live under `/usr/libexec/jitllm/`. systemd starts the runtime; users do not
+  live under `/usr/libexec/llmp/`. systemd starts the runtime; users do not
   run it directly. Optional modules are separate packages (D-017, D-027).
-- **Service identity.** A `jitllm` system user and group, declared through
+- **Service identity.** A `llmp` system user and group, declared through
   `sysusers.d`, with no login shell and home at the data directory. Only this
   user writes the installed store, spill and state (D-054, D-055). On `spark`
   the GPU (`/dev/nvidia*`) and RDMA verbs/CM (`/dev/infiniband/uverbs*`,
   `rdma_cm`) device nodes are mode 0666, so the user needs no supplementary
   groups there; `umad*` stays root-only and is not needed.
-- **One unit.** `jitllm.service` runs the node runtime as `jitllm` with
+- **One unit.** `llmp.service` runs the node runtime as `llmp` with
   readiness notification. `ConfigurationDirectory`, `StateDirectory` (mode
-  0755) and `RuntimeDirectory` are all named `jitllm`, and the locked-memory
+  0755) and `RuntimeDirectory` are all named `llmp`, and the locked-memory
   limit is raised for RDMA registration. Logs go to the journal; there are no
   log files, and D-014's content rules apply to the journal. Stop means drain
   (D-027). M1 selects and validates the sandboxing directives together with
   GPU and RDMA device access.
 - **Configuration.** The node's configuration is one logical document:
-  `/etc/jitllm/jitllm.toml` plus the fragments in `/etc/jitllm/jitllm.d/`. The
+  `/etc/llmp/llmp.toml` plus the fragments in `/etc/llmp/llmp.d/`. The
   owner asked on 2026-09-23 for includes, to keep it clean. It is
   cluster-design.md's node-local document (D-038/D-039), extended with
   `[storage]` and the other node keys, in UTF-8 TOML 1.0.0 (1.1.0 is current,
@@ -4653,7 +4702,7 @@ recorded in [architecture.md](architecture.md#installed-layout) and consists of:
   file, or that users other than root and the runtime's user could replace,
   and a drop-in directory those users could add files to. A standalone node
   omits the cluster keys (`cluster_file`, `node_id`, `[credentials]`,
-  `[control]`); a member adds them. `/etc/jitllm/cluster.toml` stays a single,
+  `[control]`); a member adds them. `/etc/llmp/cluster.toml` stays a single,
   byte-identical shared membership document, since its digest is the
   membership identity. At the default path the main file is optional
   (owner confirmed 2026-09-23), since enrollment may write only its
@@ -4667,7 +4716,7 @@ recorded in [architecture.md](architecture.md#installed-layout) and consists of:
 
   The configuration can relocate `state`, so losing the configuration would
   also lose track of those records. Enrollment therefore also writes an
-  **enrollment anchor** at a fixed path, `/var/lib/jitllm/enrollment`. The
+  **enrollment anchor** at a fixed path, `/var/lib/llmp/enrollment`. The
   unit creates that directory whatever the configuration says. The anchor
   records the node ID, the cluster ID, the resolved `state` path and a
   random enrollment ID that enrollment also records in `state`. Device
@@ -4688,26 +4737,26 @@ recorded in [architecture.md](architecture.md#installed-layout) and consists of:
   `state` survives is a double failure this does not cover.
 
   An annotated example ships under
-  `/usr/share/doc/jitllm/examples/`. The package ships no configuration file
+  `/usr/share/doc/llmp/examples/`. The package ships no configuration file
   (main file, fragment or `cluster.toml`), so upgrades never raise conffile
   prompts. Setup tooling writes its files atomically (temporary file, flush,
   rename), so a reader never sees them half-written. Secrets are never
   inline. Configuration references credential files by path, by default under
-  `/etc/jitllm/credentials/` (mode 0750, `root:jitllm`). Here and below, the
-  runtime's user is `jitllm` when packaged and the invoking user in
+  `/etc/llmp/credentials/` (mode 0750, `root:llmp`). Here and below, the
+  runtime's user is `llmp` when packaged and the invoking user in
   development runs. The runtime refuses a credential path or `cluster_file`
   that is a link or not a regular file, or that users other than root and the
   runtime's user could replace, and a credential file those users could read.
   Neither may lie inside `long_term` (D-054). Executables take `--config
   FILE`, which must end in `.toml` and whose drop-in directory is `FILE` with
-  `.toml` replaced by `.d`; the default is `/etc/jitllm/jitllm.toml`. There is
+  `.toml` replaced by `.d`; the default is `/etc/llmp/llmp.toml`. There is
   no implicit per-user search path, so development runs (mise tasks) pass an
   explicit file and the same validation applies.
 - **Storage roles (D-054, D-055).** Keys in `[storage]`:
 
   | Key | Default | Rule |
   | --- | --- | --- |
-  | `data_dir` | `/var/lib/jitllm` | Absolute; base for relative role paths; not itself a role; mode 0755 |
+  | `data_dir` | `/var/lib/llmp` | Absolute; base for relative role paths; not itself a role; mode 0755 |
   | `installed` | `models` | Installed store, including D-056's `.staging/`; local block filesystem passing D-034's probe; mode 0755 |
   | `spill` | `spill` | Mode 0700 with marker (D-055); passes D-034's probe |
   | `state` | `state` | Durable runtime records (D-038 conductor epochs and epoch floors, job and install generations); mode 0700, local |
@@ -4742,9 +4791,9 @@ recorded in [architecture.md](architecture.md#installed-layout) and consists of:
   default `checkpoints` from `tmpfiles.d`, so users can use it before any job
   has run. It does so even when `checkpoints` or `data_dir` is relocated,
   leaving an empty, unused directory at the default path; the owner accepted
-  that on 2026-09-23. Its `d` lines declare `/var/lib/jitllm` (`jitllm`, 0755, as the
+  that on 2026-09-23. Its `d` lines declare `/var/lib/llmp` (`llmp`, 0755, as the
   unit does, so the unit's first start never re-owns the tree recursively) and
-  `checkpoints` (`jitllm`, 1777, with `:`-prefixed mode and owner, which apply
+  `checkpoints` (`llmp`, 1777, with `:`-prefixed mode and owner, which apply
   only on creation). Neither sets an age, so tmpfiles never cleans them
   ([tmpfiles.d(5)](https://www.freedesktop.org/software/systemd/man/255/tmpfiles.d.html),
   [systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html),
@@ -4777,11 +4826,11 @@ recorded in [architecture.md](architecture.md#installed-layout) and consists of:
   (fencing records; D-038) stay 0700. Modes on a long-term mount belong to
   that mount (D-054). An existing directory keeps its mode, subject to the
   runtime's write-or-replace check above and D-055's spill check, except that
-  the unit re-applies 0755 to `/var/lib/jitllm` at every start
+  the unit re-applies 0755 to `/var/lib/llmp` at every start
   (`StateDirectoryMode`).
-- **Other paths.** `/run/jitllm/` holds runtime sockets and locks. Package
+- **Other paths.** `/run/llmp/` holds runtime sockets and locks. Package
   documentation (`copyright`, `NOTICE`, changelog and SBOM; D-029) lives in
-  `/usr/share/doc/jitllm/`.
+  `/usr/share/doc/llmp/`.
 - **Package dependencies.** Static libstdc++/libgcc/cudart (D-060) leave
   glibc and the driver. The package depends on `libc6` at the version the
   binaries' symbols require (`GLIBC_2.38` for D-060's probe) and on the versioned
@@ -4794,7 +4843,7 @@ recorded in [architecture.md](architecture.md#installed-layout) and consists of:
 **Context.** D-027 and the confirmed features.md rows require an FHS layout,
 a non-root service user and a systemd unit settled before M3's endpoint.
 D-054 left the role paths, defaults and keys to this task, and D-055 added
-the spill directory's rules. `/var/lib/jitllm` is the systemd StateDirectory
+the spill directory's rules. `/var/lib/llmp` is the systemd StateDirectory
 convention. On `spark` it is on the single 3.7 TB ext4 NVMe root (2.9 TB
 free on 2026-09-23), the filesystem D-034's direct-I/O measurements used.
 Checked on `spark` on 2026-09-23: device-node modes, the `libcuda.so.1`
@@ -4814,13 +4863,13 @@ TOML 1.0.0; checked 2026-09-23), still needs D-017/D-057 admission in M1.
   listeners): the front door (on a conductor or standalone node; workers
   have none) binds `127.0.0.1:8114` and the management API
   `127.0.0.1:8115`, both overridable. The owner first chose 8000/8001, then
-  picked jitLLM's own ports so the defaults stay clear of other engines. No
+  picked llmpalooza's own ports so the defaults stay clear of other engines. No
   LLM API port standard exists, and the common defaults all belong to
   someone else:
   - 8000 is used by vLLM, TensorRT-LLM's `trtllm-serve`, NVIDIA NIM and
     NVIDIA's DGX Spark playbooks, and Triton takes 8000 and 8001.
   - 8080 is llama.cpp's `llama-server`, llamafile and LocalAI.
-  - 11434 is IANA-registered to Ollama, which D-045 keeps jitLLM off. It is
+  - 11434 is IANA-registered to Ollama, which D-045 keeps llmpalooza off. It is
     the only port clients find without configuration (Codex `--oss`,
     Continue, Open WebUI).
 
@@ -4866,7 +4915,7 @@ per-user (non-service) installs.
   release tag raises `project(VERSION)`; for N > 0, version derivation fails
   unless it is above the last tag, so a later dev build never sorts below a
   release. The Debian upstream version maps `-` to `~` so dev builds
-  sort before their release: `X.Y.Z~dev.N+g<sha>-1`. `jitllm --version` and
+  sort before their release: `X.Y.Z~dev.N+g<sha>-1`. `llmp --version` and
   the build receipt (D-057) carry the version, commit, license profile and
   SDK identity.
 - **Public surfaces carry their own integer versions**, independent of the
@@ -4877,7 +4926,7 @@ per-user (non-service) installs.
     D-063, cluster-design.md);
   - the management API (major version in its route prefix, set with the M3
     API);
-  - jitLLM's inference extensions (below);
+  - Llmpalooza's inference extensions (below);
   - the node-to-node cluster protocol (D-038), where a mismatched version
     is refused at the session handshake rather than negotiated.
 
@@ -4890,10 +4939,10 @@ per-user (non-service) installs.
   migration and names it in the CHANGELOG. Any breaking change to a
   public surface bumps its version and gets a CHANGELOG entry and a
   decisions.md entry (D-016).
-- **Extension naming (D-045).** jitLLM request and response headers use the
-  lowercase `jitllm-` prefix, following `anthropic-`/`openai-` practice and
+- **Extension naming (D-045).** Llmpalooza request and response headers use the
+  lowercase `llmp-` prefix, following `anthropic-`/`openai-` practice and
   [RFC 6648](https://www.rfc-editor.org/rfc/rfc6648) (no `x-`). Body
-  extensions sit under a single top-level `jitllm` object, only where the
+  extensions sit under a single top-level `llmp` object, only where the
   protocol tolerates unknown keys. Discovery reports the extension version;
   additions within a version are backward compatible. M3 fixes the
   individual header and field names.
@@ -4972,7 +5021,7 @@ repository and compromise the environment"
 ([secure use](https://docs.github.com/en/actions/reference/security/secure-use),
 checked 2026-09-23). GPU checks stay in `check:spark`.
 
-**Context.** The repository is public on GitHub (`pmeenan/jitLLM`, checked
+**Context.** The repository is public on GitHub (`pmeenan/llmp`, checked
 2026-09-23). Offered: GitHub-hosted CI plus a local Spark gate
 (recommended), a Spark runner on trusted refs, or no hosted CI. The owner
 chose the last: one developer, agents never push, and every change passes
@@ -5040,7 +5089,7 @@ compatible with the runtime.
 - **Cross builds.** The ARM runtime lives inside the target sysroot. Clang
   only searches a GCC install's library directory when it is under
   `--sysroot`.
-- **Linking.** jitLLM executables, tests included, link libstdc++ and libgcc
+- **Linking.** Llmpalooza executables, tests included, link libstdc++ and libgcc
   statically (`-static-libstdc++ -static-libgcc`) and link the CUDA runtime
   statically (`libcudart_static.a`). The following stay dynamic:
   - glibc (`libc`, `libm`, the dynamic loader);
@@ -5048,7 +5097,7 @@ compatible with the runtime.
     static CUDA runtime loads at run time;
   - rdma-core (`libibverbs` and its provider plugins).
 
-  None of these links the C++ runtime. No library loaded into a jitLLM
+  None of these links the C++ runtime. No library loaded into a llmpalooza
   process may bring its own dynamic libstdc++. NCCL must therefore be linked
   statically or built with `-static-libstdc++`, and cuBLAS linked statically
   subject to its license and size review (D-076 links it dynamically instead). Both keep their own pin decisions.
@@ -5104,7 +5153,7 @@ above is needed.
   GPL-3.0-or-later WITH GCC-exception-3.1, with embedded components under
   additional terms recorded in the report. Static linking under the GCC
   exception relies on all Target Code in the executable coming from an Eligible Compilation
-  Process. jitLLM's code qualifies because neither Clang nor NVCC is a work
+  Process. Llmpalooza's code qualifies because neither Clang nor NVCC is a work
   based on GCC; GPL compatibility is not the test, and NVCC's proprietary
   passes would not meet it. Statically linked third-party archives (cudart,
   and later NCCL or cuBLAS) need the same check. The owner confirmed on
@@ -5160,10 +5209,10 @@ Exact URLs, hashes and sizes are in the
   experiment directory:
   - `.clang-format`: Google style, 100 columns;
   - `.clang-tidy`: findings are errors;
-  - warnings for jitLLM targets only: `-Wall -Wextra -Wpedantic -Wshadow
+  - warnings for llmpalooza targets only: `-Wall -Wextra -Wpedantic -Wshadow
     -Wconversion -Wsign-conversion -Wnon-virtual-dtor -Wold-style-cast
     -Wimplicit-fallthrough -Werror`;
-  - `CMAKE_CXX_SCAN_FOR_MODULES OFF`, because jitLLM uses no C++ modules.
+  - `CMAKE_CXX_SCAN_FOR_MODULES OFF`, because llmpalooza uses no C++ modules.
 
   M1 moves these to the repository root. Tuning individual checks or
   warnings later is routine and needs no new entry.
@@ -5329,7 +5378,7 @@ experimental under D-018:
 
 - **Container.** Immutable payload lives in safetensors shards of at most
   4 GiB of data. Each stored resource is one entry; gaps are explicit zero
-  pad entries; the header is space-padded so data starts at 4 KiB. jitLLM
+  pad entries; the header is space-padded so data starts at 4 KiB. Llmpalooza
   owns a strict JSON `manifest.json` (versions, profile, source identities,
   lossless transformations, file hashes) and `index.json` (groups,
   resources, expert arrays, representation descriptors, chunk hashes).
@@ -5465,16 +5514,16 @@ compatibility policy.
   verified against catalog-held digests, unflushed and deleted at startup.
   Its encoding is internal, not a compatibility format.
 - **Numbers.** Capacity values (`M_state`, `S_spill`, entry caps, minimum
-  prefix length, maintenance interval) are pinned at M3 exit from jitLLM's
+  prefix length, maintenance interval) are pinned at M3 exit from llmpalooza's
   measured state bytes and headroom. The spill write budget is pinned at M4
   entry from the drive's rated endurance.
 - **M4 named workload.** Qwen2.5-0.5B-Instruct FP16 GGUF and its EXL3 4.0
   bpw quant, in both orientations, run a frozen synthetic A→B→A transcript
-  with fixed replies and policy-forced budgets. Six jitLLM arms, including
+  with fixed replies and policy-forced budgets. Six llmpalooza arms, including
   both whole-model controls, run against fresh interleaved llama.cpp and
   ExLlamaV3 reference arms. Every trial starts clean. The switching floor
   needs 72 pinned repetitions per arm, orientation and cache condition, and
-  jitLLM's one-sided 97.5% distribution-free upper bound must be at most
+  llmpalooza's one-sided 97.5% distribution-free upper bound must be at most
   every valid reference arm's lower bound, at the median and p95. Outputs
   and logits must exactly match controls with the same state provenance.
 
@@ -5664,7 +5713,7 @@ paths must not overlap:
   such as a network, FUSE or memory-backed filesystem, at startup rather
   than paging through a slower, buffered or memory-consuming path. It opens
   files only beneath that path, without following links or crossing mounts.
-  Integrity after publication rests on local permissions, so only jitLLM's
+  Integrity after publication rests on local permissions, so only llmpalooza's
   service user writes there. Paging, restore and spill use only this store
   and node-local spill storage (D-014), never the other roles.
 - **Checkpoint store.** Downloaded source checkpoints, kept available for
@@ -5677,8 +5726,8 @@ paths must not overlap:
   of a re-import. An archived artifact the target no longer accepts is
   ignored, and the model is re-imported from its source (D-018).
 
-jitLLM sees a long-term store only as a filesystem path. Mounting, protocol
-and credentials belong to the OS; jitLLM ships no NFS, SMB or rsync client.
+Llmpalooza sees a long-term store only as a filesystem path. Mounting, protocol
+and credentials belong to the OS; llmpalooza ships no NFS, SMB or rsync client.
 Only import/install job processes access it. The runtime process never does,
 so a hung or absent mount cannot stall scheduling or paging (D-005, D-048).
 An absent store fails the jobs that need it, explicitly and retryably
@@ -5692,7 +5741,7 @@ there and neither create nor follow symlinks, so several nodes can share
 one store without locking and a planted link cannot redirect a read or
 write. A long-term store is untrusted input like any checkpoint (D-009):
 content is verified against identities held outside the store (the origin's
-metadata recorded at download, or the identity recorded when jitLLM
+metadata recorded at download, or the identity recorded when llmpalooza
 published an artifact), never against hash files kept in the same store.
 Verification covers the bytes actually used, such as the staged local copy;
 a file verified on the store and then read again is unverified. The
@@ -5773,9 +5822,9 @@ direct import from the store; the single importing node becomes a
 bottleneck in larger clusters; or users need automatic space management,
 which requires its own decision.
 
-## D-053: jitLLM owns kernel dispatch; kernels are swappable build-time implementations selected per operation  (2026-09-22, status: accepted; amends D-028, specializes D-013 and D-052; primitive-fallback rule noted 2026-09-29; amended by D-107 (planning over jitLLM's own graph IR, fusion as pattern rewrite))
+## D-053: llmpalooza owns kernel dispatch; kernels are swappable build-time implementations selected per operation  (2026-09-22, status: accepted; amends D-028, specializes D-013 and D-052; primitive-fallback rule noted 2026-09-29; amended by D-107 (planning over llmpalooza's own graph IR, fusion as pattern rewrite))
 
-**Decision.** jitLLM's runtime owns operation dispatch on every device. That
+**Decision.** Llmpalooza's runtime owns operation dispatch on every device. That
 covers:
 
 - streams and launch order;
@@ -5788,7 +5837,7 @@ covers:
 No third-party backend runtime dispatches model work: not GGML's CUDA
 backend, scheduler or graph-compute loop, nor ExLlamaV3's PyTorch
 extension. Their launchers and kernels are reused with build-time
-adaptation; GGML's context struct survives only as a jitLLM-populated
+adaptation; GGML's context struct survives only as a llmpalooza-populated
 launcher argument.
 
 **Kernels are implementations of operations** under the operation contract.
@@ -5797,7 +5846,7 @@ They are compiled in as build-time modules from any compatible source:
 - GGML/llama.cpp first;
 - ExLlamaV3 (D-052);
 - later FlashInfer, CUTLASS or other reused units;
-- jitLLM-authored kernels where measurement or a missing capability
+- Llmpalooza-authored kernels where measurement or a missing capability
   justifies them (D-013 still forbids rewrite-to-own).
 
 **Several implementations coexist.** More than one implementation of an
@@ -5847,10 +5896,10 @@ includes the copyleft-disabled profile (D-017). There is never silent
 substitution. D-028's rejection of a runtime plugin ABI stands.
 
 **GGML specifics.** For GGML, first try to reuse its CUDA operation
-launchers under a jitLLM-supplied context:
+launchers under a llmpalooza-supplied context:
 
-- a jitLLM stream;
-- a jitLLM cuBLAS handle and workspace;
+- a llmpalooza stream;
+- a llmpalooza cuBLAS handle and workspace;
 - a `ggml_cuda_pool` implementation over charged workspace;
 - build-time patches for context ownership, the GB10 device-flag side
   effect and access to the `static` matrix-multiply routing;
@@ -5859,7 +5908,7 @@ launchers under a jitLLM-supplied context:
   pool alone is unsafe because upstream consumers do not check it.
 
 Lift a kernel behind an owned launcher when its launcher needs more change.
-The M2 proof chooses per operation. Fusion is a jitLLM plan choice:
+The M2 proof chooses per operation. Fusion is a llmpalooza plan choice:
 GGML's fused launchers are separate implementations.
 
 **Context.** Owner direction, 2026-09-22, after the
@@ -5868,7 +5917,7 @@ unmodified; build-time changes are acceptable. Never be stuck with one
 kernel. Use several at once, choose the best per model architecture, and
 write our own if needed.
 
-At the llama.cpp pin, GGML's CUDA backend owns things jitLLM must control:
+At the llama.cpp pin, GGML's CUDA backend owns things llmpalooza must control:
 
 - a never-shrinking scratch pool that aborts when it cannot grow;
 - cuBLAS workspaces;
@@ -5892,7 +5941,7 @@ ExLlamaV3's wrappers are PyTorch-bound, so the EXL3 plan already rewrote them.
 - **Exact matching gets harder.** Bit-exact comparison with the llama.cpp
   toolchain bridge requires reproducing its kernel, fusion and cuBLAS
   choices, or an unfused plan against a fusion-disabled bridge arm.
-- **Maintenance moves to jitLLM.** jitLLM maintains selection logic and
+- **Maintenance moves to llmpalooza.** Llmpalooza maintains selection logic and
   adapted launchers, and tracks upstream by explicit re-pinning. Upstream
   fixes stop being automatic.
 - **Portability.** GGML's other device backends become kernel sources for
@@ -5999,7 +6048,7 @@ acceptance; matching sampled text or inventing a tolerance from a discrepancy
 does not pass. Storage recovery remains exact.
 
 Use selected GGML operations and Qwen2 graph/tensor semantics behind
-jitLLM-owned backing, workspace and completion. The external reference's
+llmpalooza-owned backing, workspace and completion. The external reference's
 libllama scheduler/loader/KV ownership does not become the native runtime.
 The [source/provenance inventory](experiments/first-slice/source-audit.json)
 distinguishes MIT implementation candidates, model data, tools and platform
@@ -6188,8 +6237,8 @@ when changing the mechanism.
   reasoning text. `reasoning_content` is a legacy spelling, supported only
   when a pinned older client profile requires and tests it. OpenRouter's
   `reasoning_details` remains the structured round-trip extension.
-- jitLLM's signed reasoning blocks use the SDK-supported neutral
-  `format: "unknown"`; jitLLM identity and version belong inside the opaque
+- Llmpalooza's signed reasoning blocks use the SDK-supported neutral
+  `format: "unknown"`; llmpalooza identity and version belong inside the opaque
   signature, not a new `format` enum value or another provider's signature.
   The exact pinned client/provider package must preserve text, signatures,
   ordering and indices through streaming and tool-result pass-back before
@@ -6242,7 +6291,7 @@ or a required client needs stored Responses or different timeout semantics.
   authoritative superset.
 - **Reasoning and cache reporting (accepted).** Chat Completions accepts the
   `reasoning` request object (`effort`, `max_tokens`, `exclude`, `enabled`)
-  and emits `reasoning` text and `reasoning_details` blocks, signed by jitLLM
+  and emits `reasoning` text and `reasoning_details` blocks, signed by llmpalooza
   under its own `format` value, alongside or instead of vLLM's
   `reasoning_content` as the profile selects, all under D-043's reasoning
   contract. Usage reports `prompt_tokens_details.cached_tokens` and
@@ -6280,7 +6329,7 @@ OpenRouter-mode compatibility is claimed. `supported_parameters` lists only
 what the profile implements; `context_length`, modalities and quantization
 come from the artifact and validated support. Pass-back of
 `reasoning_details` follows D-043's ordering and immutability rules. M1
-versioning names any jitLLM `format` value. No implementation is claimed.
+versioning names any llmpalooza `format` value. No implementation is claimed.
 
 **Reopen if.** A named client requires an excluded field, OpenRouter changes
 the schema under a pinned client version, or fallback is accepted under
@@ -6294,7 +6343,7 @@ documents, the inference front door adopts these public-interface rules:
 - **Listeners.** One inference front door per conductor serves `/v1/*`, the
   Ollama `/api/*` profile and read-only discovery on one configurable port.
   The management API is a separate listener, local-only by default (D-014).
-  jitLLM does not claim port 11434 by default; Ollama-native clients are
+  Llmpalooza does not claim port 11434 by default; Ollama-native clients are
   pointed at the front door. `GET /` liveness text and `GET /api/version` are
   served only with the Ollama profile enabled, and `version` reports the
   Ollama release the profile was tested against alongside a field naming the
@@ -6357,7 +6406,7 @@ documents, the inference front door adopts these public-interface rules:
   shape when the request carries `anthropic-version` or `x-api-key`, else the
   OpenAI shape; `GET /v1/models/{id}` returns one entry. Entries name the
   actual model behind an alias. The response `model` field echoes the
-  requested alias; the resolved artifact identity travels in a jitLLM
+  requested alias; the resolved artifact identity travels in a llmpalooza
   response header and in discovery and diagnostics. Extensions use namespaced
   headers on every protocol and namespaced body fields only where the
   protocol tolerates unknown keys; exact names follow M1 versioning.
@@ -6406,7 +6455,7 @@ adopted (D-014), or a client requires the resolved identity in the standard
   and `/v2/rerank` contracts where supported, tested with unmodified retrieval
   clients and validated ranking models.
 - Prometheus `/metrics` and compatible health/load queries. Reuse metric names
-  only where their meanings match; expose jitLLM paging measurements separately.
+  only where their meanings match; expose llmpalooza paging measurements separately.
 - OpenAI-compatible `/v1/completions`, standard log-probability fields and
   bounded vLLM-compatible token diagnostics for evaluation/completion tools.
 - Defer LoRA until a concrete adapter workload needs it. Classification,
@@ -6437,7 +6486,7 @@ justifies one of the deferred specialized capabilities.
 **Decision.** The owner requires direct compatibility wherever practical:
 reuse established routes, request fields, response shapes, streaming and error
 behavior, verified with unmodified tooling against a pinned version/feature
-profile. jitLLM-specific features use separate extensions. Document unsupported
+profile. Llmpalooza-specific features use separate extensions. Document unsupported
 features explicitly; matching an endpoint name alone is not compatibility.
 
 The first vLLM follow-up triage group is approved:
@@ -6635,7 +6684,7 @@ or IP conventions. The measured two active PCI paths share one physical
 selectors remain available for unrecognized hardware. Detected addresses,
 carrier and neighbor entries do not establish peer identity, cabling topology
 or authority. Discovery changes no OS networking settings. Existing Sync
-configuration is optional evidence, not a prerequisite or a jitLLM trust store.
+configuration is optional evidence, not a prerequisite or a llmpalooza trust store.
 
 Use experimental **TOML cluster schema v1**: a shared membership document with
 cluster UUID, revision, designated conductor, enrolled node IDs/public-key pins
@@ -6690,7 +6739,7 @@ control protocol. Preserve explicit trust and node-local memory authority.
 network discovery and fenced control-session design are now recorded; their
 implementation validation remains ahead.*
 
-**Decision.** The configured conductor runs inside its node's native jitLLM
+**Decision.** The configured conductor runs inside its node's native llmpalooza
 runtime, including the single-node deployment. It owns the client inference
 and management front door, placement policy, bounded request routing, and a
 cluster view of node reports. Every node, including the conductor's own node,
@@ -6764,7 +6813,7 @@ the offline feasibility study.
 | Area | Acceptance criterion |
 | --- | --- |
 | Switching floor, M4 onward | Outward and return switches each take no longer than the fastest correct full-swap reference arm at both median and p95, under the same workload and memory pressure. Include state handling and time to the first returned token. |
-| Meaningful benefit, M7 | At least 25% lower median return-switch latency than jitLLM's own whole-model control with identical state handling at the same budget, on an agreed workload where partial retention is possible, while preserving the outward-switch floor. |
+| Meaningful benefit, M7 | At least 25% lower median return-switch latency than llmpalooza's own whole-model control with identical state handling at the same budget, on an agreed workload where partial retention is possible, while preserving the outward-switch floor. |
 | Generation, M5 onward | Paging adds at most 10% to total generation time over the pinned workload, counting added time to first token on continuation requests; added inter-token gaps are at most 20 ms at p95 and 100 ms at p99, relative to the same execution configuration fully resident. |
 | Correctness, every milestone | No skipped selected experts, invalid state reuse, or relaxed numerical checks to meet performance targets. Recompute when restoration is unsafe and include its cost. |
 
@@ -6777,8 +6826,8 @@ the workload; a fast but invalid restore cannot set the floor. Cold-storage
 and warm-page-cache arms are reported separately; where the pinned budget
 lets the reference keep the incoming model's files warm, the warm arm is also
 a required floor condition, because D-034's direct I/O gets no page-cache
-benefit and that is the condition jitLLM can lose. The **whole-model control**
-is jitLLM itself evicting complete inactive models under the same budget,
+benefit and that is the condition llmpalooza can lose. The **whole-model control**
+is llmpalooza itself evicting complete inactive models under the same budget,
 state policy, and workload; it isolates the benefit of extent-level retention
 (D-008) from the benefit of state retention.
 
@@ -7260,7 +7309,7 @@ format drops back to an M7 extension.
 **Decision.** External pull requests are accepted and must carry a Developer
 Certificate of Origin sign-off (`Signed-off-by`); there is no CLA. Every
 REUSE-covered file has copyright notices and an `SPDX-License-Identifier`
-(Apache-2.0 for jitLLM-authored code, the actual license for incorporated
+(Apache-2.0 for llmpalooza-authored code, the actual license for incorporated
 code), with the corresponding license texts under `LICENSES/`. Commentable
 source and documentation files embed this metadata in headers, using
 `SPDX-FileCopyrightText` for copyright notices. Uncommentable files may use
@@ -7291,9 +7340,9 @@ describe.
 
 ## D-028: GGML is the first compute substrate; optional backends are build-time modules, not a runtime plugin ABI  (2026-09-21, status: accepted; amends D-010; EXL3 timing and artifact scope amended by D-052; dispatch ownership amended by D-053; its graph role amended by D-107 (GGML is a kernel source, not the graph))
 
-**Decision.** The first vertical slice (M3) executes on GGML/GGUF with jitLLM
+**Decision.** The first vertical slice (M3) executes on GGML/GGUF with llmpalooza
 supplying the buffers behind tensors, so weights and state live in
-jitLLM-owned VMM backing and GGML computes over them. EXL3 kernels are ported
+llmpalooza-owned VMM backing and GGML computes over them. EXL3 kernels are ported
 later for the flagship recipes as further build-time backends behind the same
 operation contract. Optional implementation modules (D-017) are build-time
 modules selected by build profile; there is no versioned runtime C plugin ABI
@@ -7311,7 +7360,7 @@ freezing a plugin ABI before a real backend exposes its requirements was the
 risk the row itself named.
 
 **Consequences.** The M2 early backend integration proof runs GGML on
-jitLLM-owned memory with explicit workspace and completion tracking; if
+llmpalooza-owned memory with explicit workspace and completion tracking; if
 GGML's allocator or scheduler assumptions cannot be met that way, this entry
 is the first thing to reopen. The operation contract is finalized from that
 proof. The immutable artifact data follows GGML's tensor formats, re-packed
@@ -7584,7 +7633,7 @@ the scheduler confirms the relevant GPU, I/O, and network completions before
 releasing residency leases or reclaiming backing, preserving suspended live
 state under D-007. Request arrival alone changes no reclamation eligibility.*
 
-**Decision.** The workload jitLLM is optimized for first is a single user, or
+**Decision.** The workload llmpalooza is optimized for first is a single user, or
 a single user's agent plus subagents, switching automatically among a library
 of models that is larger than memory. A conversation spans minutes to hours,
 and the main model is expected to resume after a subagent on a different
@@ -7648,7 +7697,7 @@ narrower contract and its own evidence.
 
 ## D-017: Dependency policy distinguishes incorporated code, tools, and platform runtimes  (2026-09-20, status: accepted; supersedes D-015; optional modules shipped by default under D-080; 2026-09-28: D-088 amends the core allowlist, admitting Unicode-3.0 for data derived from Unicode's data files, not code; 2026-09-28: D-091 admits every permissive license to the core without a decision of its own, subsuming D-088's admission)
 
-**Decision.** jitLLM-authored code remains Apache-2.0. Classify dependencies
+**Decision.** Llmpalooza-authored code remains Apache-2.0. Classify dependencies
 by how they are used, and audit the full selected build, including its
 transitive dependencies:
 
@@ -7705,7 +7754,7 @@ allowlist or declared platform dependency families need to change.
 
 ## D-016: Externally consumed project — mandatory review pass and evidence-carrying handoffs  (2026-09-20, status: accepted; supersedes D-001; versioning and changelog in D-062; its sole-committer rule amended by D-075)
 
-**Decision.** jitLLM is a single-developer project intended for external
+**Decision.** Llmpalooza is a single-developer project intended for external
 consumption, so the process is heavier than the lean personal-project default.
 Unchanged from D-001: AI agents implement from the docs; the human directs,
 decides, and is the sole committer; the `docs/` set is long-term memory and
@@ -7790,7 +7839,7 @@ Any remote dashboard needs an authentication story before it ships.
 
 **Owner's note (2026-09-28, with D-097; confirmed by the owner that
 day).** Authentication is not required on any binding of the inference
-endpoint: jitLLM does what other engines do. Ollama, llama.cpp's
+endpoint: llmpalooza does what other engines do. Ollama, llama.cpp's
 llama-server, SGLang and LM Studio serve without authentication by
 default, and llama-server and vLLM offer an optional API key. The
 inference endpoint listens on loopback and the tailnet by default (the
@@ -7822,7 +7871,7 @@ ExLlamaV3/EXL3, FlashInfer, CUTLASS/CuTe; Ollama for product-facing lifecycle
 behaviour only) are sources of algorithms, kernels, model semantics, and
 numerical test references. Compatible implementation units are reused under
 their real licenses with provenance recorded. No single project's execution
-architecture, allocator, or scheduler is adopted as jitLLM's. Rewriting or
+architecture, allocator, or scheduler is adopted as llmpalooza's. Rewriting or
 translating copied code does not erase its provenance; "reference" is not a
 relicensing mechanism.
 
@@ -7917,7 +7966,7 @@ with C++23 in the cross configuration.
 
 ## D-009: Models run from prepared, versioned artifacts produced by an owned import pipeline  (2026-09-20, status: accepted; schema maturity schedule amended by D-018)
 
-**Decision.** jitLLM owns the conversion from source checkpoint, configuration,
+**Decision.** Llmpalooza owns the conversion from source checkpoint, configuration,
 and tokenizer into execution-ready, indexed, hashed, atomically published
 on-disk artifacts that allow bounded range reads without reprocessing.
 Runtime extents are populated from artifacts, never from raw checkpoints.
@@ -8001,7 +8050,7 @@ question 9) gets its own entry when decided.
 ## D-006: Explicit CUDA VMM backing management with a node-wide resource catalog  (2026-09-20, status: accepted)
 
 **Decision.** Use the CUDA driver VMM API to reserve addresses, create physical
-backing, map it, and set access. jitLLM supplies backing-store policy and
+backing, map it, and set access. Llmpalooza supplies backing-store policy and
 transfer operations; accessing absent backing is a bug, not a page-in request.
 Every managed allocation is registered at construction in a node-wide catalog
 with semantic metadata (identity, content kind, semantics, layout, recovery,
@@ -8027,7 +8076,7 @@ hybrid pooled-allocator design is measured to be better.
 
 ## D-005: An independent native runtime, one execution process per node  (2026-09-20, status: accepted)
 
-**Decision.** Build jitLLM's own runtime rather than a vLLM fork or plugin. One
+**Decision.** Build llmpalooza's own runtime rather than a vLLM fork or plugin. One
 modular native execution process per node contains all model execution,
 scheduling, memory policy, VMM control, and completion tracking for every
 local model. Dashboard, importer, test controller, and supervisor may be
@@ -8081,7 +8130,7 @@ hardware target is adopted.
 
 ## D-003: Apache-2.0 as the original-code license  (2026-09-20, status: accepted)
 
-**Decision.** All jitLLM-authored code is licensed under Apache-2.0, as in the
+**Decision.** All llmpalooza-authored code is licensed under Apache-2.0, as in the
 `LICENSE` file at the repository root.
 
 **Context.** The owner created the repository on GitHub with an Apache-2.0
@@ -8103,11 +8152,11 @@ incompatible with Apache-2.0 distribution.
 ## D-002: All original code is open source; optional copyleft must be identifiable and removable  (2026-09-20, status: accepted; the "CI" profile runs in D-061's local gate; optional copyleft shipped by default, with an opt-out, and suspected but unconfirmed provenance shipped under its declared license, under D-080; any permissive license admitted to the core without being named first, under D-091)
 
 *Scope note (owner, 2026-09-20): model weights are outside the project's
-licensing scope. Users download them directly; jitLLM supports loading them
+licensing scope. Users download them directly; llmpalooza supports loading them
 and uses a representative set for testing. The remark below about checkpoint
 review is superseded.*
 
-**Decision.** All jitLLM-authored code is open source under a permissive core
+**Decision.** All llmpalooza-authored code is open source under a permissive core
 license (D-003 for which one). Optional copyleft components, for example
 AGPL-derived kernels or importer support, are permitted only if the affected
 implementation code, adapters, generated code, importer support, and
@@ -8130,7 +8179,7 @@ time, and their model checkpoints need separate review.
 identifiers, modifications, notices, SBOM) for every imported unit. A
 directory, shared library, C ABI, or process boundary does not by itself avoid
 copyleft obligations; a build combining covered code complies with them.
-Vendor CUDA components have their own terms; "open-source jitLLM" does not
+Vendor CUDA components have their own terms; "open-source llmpalooza" does not
 claim every driver, SDK, tool, or model weight in a deployment is open source.
 Releases ship notices, build instructions, and source availability for the
 actual configuration.

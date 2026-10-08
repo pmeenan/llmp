@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // INPUT_DIRECTORY INPUT_MANIFEST_SHA NEW_OUTPUT route|reduce primitive|fused.
 // Common-input diagnostic only; no model, backend runtime or policy changes.
@@ -20,16 +20,16 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "providers/device_runtime.h"
-namespace en = jitllm::engine;
-namespace kg = jitllm::kernels::ggml;
+namespace en = llmp::engine;
+namespace kg = llmp::kernels::ggml;
 namespace lm = late_moe;
 using en::support::Error;
 class Replay final : public en::PagedModel {
  public:
   explicit Replay(en::PagedNode& node) : node_(node), resources_(node, 0, 0) {}
   std::uint32_t stream() const override { return 0; }
-  const jitllm::catalog::Closure& fence_closure() const override { return closure_; }
-  std::vector<jitllm::catalog::ExtentId> managed_extents() const override { return {}; }
+  const llmp::catalog::Closure& fence_closure() const override { return closure_; }
+  std::vector<llmp::catalog::ExtentId> managed_extents() const override { return {}; }
   en::Status Release() override {
     captured_.reset();
     bound_.reset();
@@ -57,7 +57,7 @@ class Replay final : public en::PagedModel {
     graph_ = route ? lm::Routing(arena_->context()) : lm::Reduction(arena_->context());
     constexpr std::uint64_t device_bytes = 32U << 20U;
     if (auto r = resources_.Map(storage_, "late MoE complete roots and immutable operands",
-                                device_bytes, jitllm::catalog::MemoryClass::kRuntime);
+                                device_bytes, llmp::catalog::MemoryClass::kRuntime);
         !r)
       return r;
     std::uint64_t offset = 0;
@@ -86,7 +86,7 @@ class Replay final : public en::PagedModel {
         if (step.implementation == kg::kGemmaRouteName ||
             step.implementation == kg::kGemmaReduceName)
           return Error("primitive policy unexpectedly fused");
-    auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+    auto registry = llmp::execution::Registry::Create(kg::Implementations());
     if (!registry) return Error("registry construction");
     registry_.emplace(std::move(*registry));
     auto bound = kg::BoundGraph::Bind(*registry_, plan_);
@@ -106,12 +106,12 @@ class Replay final : public en::PagedModel {
     output_bytes_ = route ? 4096U : 720896U;
     node_.SetHostFloor(lm::kHostAllowance);
     const auto fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
-    if (auto r = node_.Start(jitllm::base::Bytes(fixed + lm::kHostAllowance)); !r) return r;
+    if (auto r = node_.Start(llmp::base::Bytes(fixed + lm::kHostAllowance)); !r) return r;
     auto extents = resources_.extents();
     for (const auto* workspace : {&node_.activations(), &node_.pool()})
       extents.insert(extents.end(), workspace->extents.begin(), workspace->extents.end());
     auto closure = node_.catalog().ClosureOfExtents(extents);
-    if (!closure) return Error(jitllm::catalog::ToString(closure.error()));
+    if (!closure) return Error(llmp::catalog::ToString(closure.error()));
     closure_ = std::move(*closure);
     if (auto r = resources_.BindLaunch(16U << 20U); !r) return r;
     node_.Run();
@@ -124,12 +124,12 @@ class Replay final : public en::PagedModel {
   en::Status RunHeld(const std::filesystem::path& out) {
     auto r = node_.Job(
         closure_,
-        [&](jitllm::providers::NativeStream stream) {
-          return jitllm::providers::FillAsync(stream, reinterpret_cast<void*>(storage_.base), 0,
-                                              32U << 20U)
+        [&](llmp::providers::NativeStream stream) {
+          return llmp::providers::FillAsync(stream, reinterpret_cast<void*>(storage_.base), 0,
+                                            32U << 20U)
                          .ok()
-                     ? jitllm::scheduler::JobResult::kQueued
-                     : jitllm::scheduler::JobResult::kUnknown;
+                     ? llmp::scheduler::JobResult::kQueued
+                     : llmp::scheduler::JobResult::kUnknown;
         },
         "initialize complete mapped roots including unwritten sort tails", 0);
     if (!r) return r;
@@ -139,10 +139,10 @@ class Replay final : public en::PagedModel {
     const auto step = [&](bool capture) -> en::Status {
       auto result = node_.Job(
           closure_,
-          [&](jitllm::providers::NativeStream stream) {
+          [&](llmp::providers::NativeStream stream) {
             auto queued =
                 capture ? resources_.launch().Launch(*captured_) : kernels(resources_.launch());
-            if (!queued) return jitllm::scheduler::JobResult::kUnknown;
+            if (!queued) return llmp::scheduler::JobResult::kUnknown;
             std::size_t offset = 0;
             for (auto* tensor : graph_.outputs) {
               const bool ids = tensor->type == GGML_TYPE_I32;
@@ -151,16 +151,16 @@ class Replay final : public en::PagedModel {
               for (std::size_t row = 0; row < rows; ++row) {
                 auto* source =
                     static_cast<const std::byte*>(tensor->data) + (ids ? row * tensor->nb[1] : 0);
-                if (!jitllm::providers::CopyAsync(stream, static_cast<std::byte*>(output_) + offset,
-                                                  source, bytes,
-                                                  jitllm::providers::CopyKind::kDeviceToHost)
+                if (!llmp::providers::CopyAsync(stream, static_cast<std::byte*>(output_) + offset,
+                                                source, bytes,
+                                                llmp::providers::CopyKind::kDeviceToHost)
                          .ok())
-                  return jitllm::scheduler::JobResult::kUnknown;
+                  return llmp::scheduler::JobResult::kUnknown;
                 offset += bytes;
               }
             }
-            return offset == output_bytes_ ? jitllm::scheduler::JobResult::kQueued
-                                           : jitllm::scheduler::JobResult::kUnknown;
+            return offset == output_bytes_ ? llmp::scheduler::JobResult::kQueued
+                                           : llmp::scheduler::JobResult::kUnknown;
           },
           "complete operator execution and selected/full publication", 0);
       if (!result) return result;
@@ -181,13 +181,13 @@ class Replay final : public en::PagedModel {
         std::memcpy(upload_, inputs[i].data(), inputs[i].size());
         auto uploaded = node_.Job(
             closure_,
-            [&, i](jitllm::providers::NativeStream stream) {
-              return jitllm::providers::CopyAsync(stream, graph_.inputs[i]->data, upload_,
-                                                  inputs[i].size(),
-                                                  jitllm::providers::CopyKind::kHostToDevice)
+            [&, i](llmp::providers::NativeStream stream) {
+              return llmp::providers::CopyAsync(stream, graph_.inputs[i]->data, upload_,
+                                                inputs[i].size(),
+                                                llmp::providers::CopyKind::kHostToDevice)
                              .ok()
-                         ? jitllm::scheduler::JobResult::kQueued
-                         : jitllm::scheduler::JobResult::kUnknown;
+                         ? llmp::scheduler::JobResult::kQueued
+                         : llmp::scheduler::JobResult::kUnknown;
             },
             "retired pinned common-input upload", 0);
         if (!uploaded) return uploaded;
@@ -196,13 +196,13 @@ class Replay final : public en::PagedModel {
         for (std::size_t i = 0; i < graph_.inputs.size(); ++i) {
           auto copied = node_.Job(
               closure_,
-              [&, i](jitllm::providers::NativeStream stream) {
-                return jitllm::providers::CopyAsync(stream, upload_, graph_.inputs[i]->data,
-                                                    inputs[i].size(),
-                                                    jitllm::providers::CopyKind::kDeviceToHost)
+              [&, i](llmp::providers::NativeStream stream) {
+                return llmp::providers::CopyAsync(stream, upload_, graph_.inputs[i]->data,
+                                                  inputs[i].size(),
+                                                  llmp::providers::CopyKind::kDeviceToHost)
                                .ok()
-                           ? jitllm::scheduler::JobResult::kQueued
-                           : jitllm::scheduler::JobResult::kUnknown;
+                           ? llmp::scheduler::JobResult::kQueued
+                           : llmp::scheduler::JobResult::kUnknown;
               },
               "complete immutable operand byte witness", 0);
           if (!copied) return copied;
@@ -218,11 +218,11 @@ class Replay final : public en::PagedModel {
       if (!captured_) {
         auto captured = node_.Job(
             closure_,
-            [&](jitllm::providers::NativeStream) {
+            [&](llmp::providers::NativeStream) {
               auto graph = resources_.launch().Capture(kernels);
-              if (!graph) return jitllm::scheduler::JobResult::kUnknown;
+              if (!graph) return llmp::scheduler::JobResult::kUnknown;
               captured_.emplace(std::move(*graph));
-              return jitllm::scheduler::JobResult::kQueued;
+              return llmp::scheduler::JobResult::kQueued;
             },
             "complete stable-address operator graph capture", 0);
         if (!captured) return captured;
@@ -256,10 +256,10 @@ class Replay final : public en::PagedModel {
   lm::Graph graph_;
   kg::GraphPlan plan_;
   std::optional<kg::TensorArena> arena_;
-  std::optional<jitllm::execution::Registry> registry_;
+  std::optional<llmp::execution::Registry> registry_;
   std::optional<kg::BoundGraph> bound_;
   std::optional<kg::CapturedGraph> captured_;
-  jitllm::catalog::Closure closure_;
+  llmp::catalog::Closure closure_;
   void* upload_ = nullptr;
   void* output_ = nullptr;
   std::size_t output_bytes_ = 0;
@@ -291,7 +291,7 @@ int main(int argc, char** argv) {
                                       : route ? 6U
                                               : 9U))
           return 1;
-        auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+        auto registry = llmp::execution::Registry::Create(kg::Implementations());
         if (!registry || !kg::BoundGraph::Bind(*registry, *planned)) return 1;
         std::cout << "LATE_METADATA kind=" << (route ? "route" : "reduce")
                   << " policy=" << (fused ? "fused" : "primitive")

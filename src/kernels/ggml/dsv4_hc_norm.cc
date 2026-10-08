@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/dsv4_hc_norm.h"
@@ -11,11 +11,11 @@
 #include <optional>
 #include <utility>
 
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/validate_ext.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 constexpr std::int64_t kWidth = 4096;
@@ -48,12 +48,12 @@ bool Dsv4HcNormF16Fits(const ggml_tensor* flat, float eps) {
 }
 
 std::expected<void, KernelFailure> CheckDsv4HcNormF16(const ggml_tensor* norm) {
-  if (JitllmOpOf(norm) != JitllmOp::kDsv4HcNormF16 || !detail::Bound(norm) ||
+  if (LlmpOpOf(norm) != LlmpOp::kDsv4HcNormF16 || !detail::Bound(norm) ||
       !detail::Bound(norm->src[0]) || !OnlySources(norm, 1)) {
     return detail::Rejected("not a bound DeepSeek HC F16 norm node");
   }
   const ggml_tensor* flat = norm->src[0];
-  if (!Dsv4HcNormF16Fits(flat, JitllmOpEps(norm)) ||
+  if (!Dsv4HcNormF16Fits(flat, LlmpOpEps(norm)) ||
       (!Shaped(norm, GGML_TYPE_F16, kFlat, flat->ne[1], 1) &&
        !Shaped(norm, GGML_TYPE_F32, kFlat, flat->ne[1], 1)) ||
       !detail::AllSane({norm, flat}) || !detail::AllCurrent({norm, flat}) ||
@@ -76,8 +76,7 @@ std::optional<Dsv4HcPostNormF16Nodes> Dsv4HcPostNormF16At(std::span<ggml_tensor*
   ggml_tensor* norm = graph[index + 2];
   if (post->op != GGML_OP_DSV4_HC_POST || post->view_src != nullptr ||
       flat->op != GGML_OP_RESHAPE || flat->src[0] != post || flat->view_src != post ||
-      flat->view_offs != 0 || JitllmOpOf(norm) != JitllmOp::kDsv4HcNormF16 ||
-      norm->src[0] != flat) {
+      flat->view_offs != 0 || LlmpOpOf(norm) != LlmpOp::kDsv4HcNormF16 || norm->src[0] != flat) {
     return std::nullopt;
   }
   const std::int64_t rows = post->ne[2];
@@ -86,7 +85,7 @@ std::optional<Dsv4HcPostNormF16Nodes> Dsv4HcPostNormF16At(std::span<ggml_tensor*
       !Shaped(post->src[1], GGML_TYPE_F32, kWidth, kStreams, rows) ||
       !Shaped(post->src[2], GGML_TYPE_F32, kStreams, rows, 1) ||
       !Shaped(post->src[3], GGML_TYPE_F32, kStreams, kStreams, rows) || !OnlySources(post, 4) ||
-      !Dsv4HcNormF16Fits(flat, JitllmOpEps(norm))) {
+      !Dsv4HcNormF16Fits(flat, LlmpOpEps(norm))) {
     return std::nullopt;
   }
   return Dsv4HcPostNormF16Nodes{.post = post, .norm = norm};
@@ -160,7 +159,7 @@ std::optional<Dsv4HcPostExpertsNodes> Dsv4HcPostExpertsAt(std::span<ggml_tensor*
     return std::nullopt;
   }
   ggml_tensor* reduce = graph[index];
-  if (JitllmOpOf(reduce) != JitllmOp::kDsv4WeightedReduce || reduce->view_src != nullptr) {
+  if (LlmpOpOf(reduce) != LlmpOp::kDsv4WeightedReduce || reduce->view_src != nullptr) {
     return std::nullopt;
   }
   for (std::size_t a = index + 1; a < graph.size(); ++a) {
@@ -186,8 +185,7 @@ std::expected<void, KernelFailure> CheckDsv4HcPostExpertsNormF16(const ggml_tens
                                                                  const ggml_tensor* norm) {
   if (reduce == nullptr || add == nullptr || post == nullptr || post->src[0] != add ||
       (add->src[0] != reduce && add->src[1] != reduce) ||
-      JitllmOpOf(reduce) != JitllmOp::kDsv4WeightedReduce ||
-      !ExpertsShape(reduce, add, post->ne[2])) {
+      LlmpOpOf(reduce) != LlmpOp::kDsv4WeightedReduce || !ExpertsShape(reduce, add, post->ne[2])) {
     return detail::Rejected("not the ordered expert reduction and shared add of an HC post");
   }
   if (auto checked = CheckDsv4HcPostNormF16(post, norm); !checked) {
@@ -211,7 +209,7 @@ bool Dsv4F16CopyFits(const ggml_tensor* x) {
 }
 
 std::expected<void, KernelFailure> CheckDsv4F16Copy(const ggml_tensor* copy) {
-  if (JitllmOpOf(copy) != JitllmOp::kDsv4F16Copy || !detail::Bound(copy) ||
+  if (LlmpOpOf(copy) != LlmpOp::kDsv4F16Copy || !detail::Bound(copy) ||
       !detail::Bound(copy->src[0]) || !OnlySources(copy, 1)) {
     return detail::Rejected("not a bound DeepSeek F16 copy node");
   }
@@ -225,4 +223,4 @@ std::expected<void, KernelFailure> CheckDsv4F16Copy(const ggml_tensor* copy) {
   return {};
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

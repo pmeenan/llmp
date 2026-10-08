@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The provider lanes (D-048, docs/async-model.md#execution-and-thread-ownership):
@@ -18,8 +18,8 @@
 // new commands; the loops carry out what was queued, drain every operation
 // they accepted, and return.
 
-#ifndef JITLLM_SCHEDULER_SERVICES_H_
-#define JITLLM_SCHEDULER_SERVICES_H_
+#ifndef LLMP_SCHEDULER_SERVICES_H_
+#define LLMP_SCHEDULER_SERVICES_H_
 
 #include <atomic>
 #include <chrono>
@@ -44,7 +44,7 @@
 #include "scheduler/completions.h"
 #include "scheduler/lane.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 
 // Internal cap-only attribution, with no per-operation history or heap storage.
 // Intervals use steady_clock nanoseconds and identify one actual lane call.
@@ -534,6 +534,6 @@ class BackingService {
 // task its hold, and shutdown and the lane's destruction wait for it.
 Lane<CpuCommand>::Handler CpuHandler(CompletionBoard& board);
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler
 
-#endif  // JITLLM_SCHEDULER_SERVICES_H_
+#endif  // LLMP_SCHEDULER_SERVICES_H_

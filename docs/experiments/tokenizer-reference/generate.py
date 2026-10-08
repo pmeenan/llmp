@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Generates the tokenizer and chat-template reference fixtures (README.md).
 
@@ -212,7 +212,7 @@ def write_json(path: pathlib.Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     license = path.with_name(path.name + ".license")
-    license.write_text("SPDX-FileCopyrightText: 2026 jitLLM contributors\nSPDX-License-Identifier: Apache-2.0\n")
+    license.write_text("SPDX-FileCopyrightText: 2026 llmpalooza contributors\nSPDX-License-Identifier: Apache-2.0\n")
 
 
 def tokens(args):
@@ -619,7 +619,7 @@ def chat(args, results_unused=None):
                 out_cases.append(entry)
                 continue
             if case.get("error"):
-                # jitLLM refuses what the template renders anyway (an unknown
+                # Llmpalooza refuses what the template renders anyway (an unknown
                 # option value); record the template's text beside the error.
                 entry["error"] = case["error"]
                 entry["reference_text"] = text
@@ -682,7 +682,7 @@ def chat(args, results_unused=None):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--repo", required=True)
-    parser.add_argument("--models", required=True, help="~/.local/share/jitllm on a Spark")
+    parser.add_argument("--models", required=True, help="~/.local/share/llmp on a Spark")
     parser.add_argument("--work", required=True, help="scratch directory")
     parser.add_argument("--only", choices=("tokens", "chat"))
     parser.add_argument("--config", choices=[x[0] for x in CONFIGS],

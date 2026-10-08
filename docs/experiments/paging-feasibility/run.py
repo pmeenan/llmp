@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Run on a Spark. All inputs and outputs other than the harness are external."""
 import argparse
@@ -25,7 +25,7 @@ def sha(path):
 
 
 def container(docker, base, tail, **kwargs):
-    name = 'jitllm-routes-' + uuid.uuid4().hex[:12]
+    name = 'llmp-routes-' + uuid.uuid4().hex[:12]
     try:
         subprocess.run(base + ['--name', name] + tail, check=True, **kwargs)
     finally:

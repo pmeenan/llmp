@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M2 record — Resource core and backend proof
@@ -25,7 +25,7 @@ hash; every experiment report cited carries its hosts and provenance.
 Goal: the node-wide catalog, ledgers, reservation and lease state machine
 and D-048's task lanes, deterministic on a fake backend and real on a
 Spark; alongside them, a backend proof that runs real GGML FP16 and EXL3
-kernels on jitLLM-owned memory and settles the internal operation contract.
+kernels on llmpalooza-owned memory and settles the internal operation contract.
 M2 added no tokenizer, C++ importer, HTTP or new model shapes.
 
 **Entry:** M1 exited on 2026-09-24.
@@ -84,7 +84,7 @@ M2 added no tokenizer, C++ importer, HTTP or new model shapes.
     bounds on 2026-09-26, and delegated the rest under D-079 (`7a4b768`).
   - *P1* ([report](experiments/backend-proof-p1/README.md)): GGML enters as
     the locked, narrowed, patched llama.cpp archive (D-077, `db09a9b`); the
-    cuBLAS handle and workspace are jitLLM's, cuBLAS linked dynamically
+    cuBLAS handle and workspace are llmpalooza's, cuBLAS linked dynamically
     (D-076, `d95b000`); plan selection between implementations (D-053,
     `3a2d8f5`); every GGML kernel of the FP16 plan and upstream's fusion
     gates (`1982f4b`); ExLlamaV3's GEMM kernels enter the build (`d2601ad`;
@@ -188,7 +188,7 @@ M2 added no tokenizer, C++ importer, HTTP or new model shapes.
       the harnesses record each phase kind's bound against its peak
       ([P6](experiments/backend-proof/README.md#p6-bounds-against-peaks)).
 - [x] **Discrete NVIDIA target** (D-082, `cf552be`). The `native` build
-      also targets `sm_86`; `jitllm doctor` judges a discrete GPU; the
+      also targets `sm_86`; `llmp doctor` judges a discrete GPU; the
       `gpu-discrete` tests pass on the workstation's RTX 3080 Ti. No model
       runs there in M2; fast-swap validation is M4's.
 - [x] **The operation-contract decision.** D-086 (`ccd3c31`): registry-bound
@@ -225,10 +225,10 @@ in full.
 | Check | Host | Result | Wall time |
 | --- | --- | --- | ---: |
 | `mise run prepare && mise run test -- spark-native --locked` | `spark-b` (GB10, driver 580.178.04, kernel 7.0.0-1019-nvidia) | 611 of 611 passed, 59 on the GPU | 72 s |
-| D-048's lane, queue, wake, board, task-tree, scheduler, storage-lane and page-in tests, `spark-native` configured with `JITLLM_SANITIZE=thread` | `spark-b` | 174 of 174 passed (165, then 9 GPU page-in cases), no ThreadSanitizer report | 11 s build, 15 s tests |
+| D-048's lane, queue, wake, board, task-tree, scheduler, storage-lane and page-in tests, `spark-native` configured with `LLMP_SANITIZE=thread` | `spark-b` | 174 of 174 passed (165, then 9 GPU page-in cases), no ThreadSanitizer report | 11 s build, 15 s tests |
 | `mise run test -- cpu --locked`, no CUDA toolkit, under `hostlock` | workstation | 519 passed; `unit.ArtifactFixtureTest.RealArtifactsMatchThePrototype` skipped (the fixtures live on the Sparks) | 59 s |
 | clang-tidy on the three x86-only units (`confine.cc`, `toolchain_contract_test.cc`, `cpu_only_device_probe.cc`), `cpu` database | workstation | no findings | 10 s |
-| BP-S3's two alternations on the final build (`jitllm_alternate_paged` `6dba3a5e…`) | `spark-b` | both exit 0: FP16-F `control` with EXL3-G 4.0 bpw, FP16-U `heldout` with EXL3-O 4.5 bpw; every evaluation equal to rung 3 over three rounds; budgets reached exactly, never exceeded | 38 s, 40 s |
+| BP-S3's two alternations on the final build (`llmp_alternate_paged` `6dba3a5e…`) | `spark-b` | both exit 0: FP16-F `control` with EXL3-G 4.0 bpw, FP16-U `heldout` with EXL3-O 4.5 bpw; every evaluation equal to rung 3 over three rounds; budgets reached exactly, never exceeded | 38 s, 40 s |
 
 Not run at the gate (D-085): the x86-64 `native` build and tests, the cross
 build under qemu-user, formatting, REUSE, header and tooling checks, the
@@ -306,7 +306,7 @@ the GPU), and the FP16-F `control` with EXL3-G 4.0 bpw alternation, exit
   2026-09-27); the moved D-050 parts above; suballocation with state
   blocks; the importer, which replaces BP-V1's prototype corpus; and M1's
   two hand-offs (D-074, moved by the owner on 2026-09-27), a system-call
-  filter admitting io_uring for `jitllm.service` and a single reaper for
+  filter admitting io_uring for `llmp.service` and a single reaper for
   jobs started from other threads, which M2 did not need: it neither runs
   the storage lane in the service nor starts jobs.
 - To M4: victim selection on a miss and the D-033 handoff of a victim's

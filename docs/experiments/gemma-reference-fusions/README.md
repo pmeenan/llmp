@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma reference norm-fusion diagnosis
@@ -121,7 +121,7 @@ checks are required; this is not represented as an unmodified-image build.
 | Norm/RoPE first and repeat complete heads | `d53884358905393845f7a101a40210b4e2abd61694ba099e3017d72d5b87ae3b` |
 | Norm/residual first and repeat complete heads | `8522bb9a466ee93c7308c2dd94051f27f2d9e9df31a1988eefdce315c098518d` |
 | Both first and repeat complete heads | `879abf3088e5ff995fb97e39fc5aa1d86b3926779da099c531a07cf7807ec7cb` |
-| Combined measured full-row analysis source | `edb818486c37dc3517f942dd49c4402b5a87ff4f9b819cdace650c6c02a52b70` |
+| Combined measured full-row analysis source | `74634e931088cc949d1ef52769532c90e74f226caa81ddadc508259dfbd7b481` |
 | Initial measured full-row analysis source | `c1d553f5b608d7375675e7c36d0fb310ef94c429968c1e4ec4bf4b1cc5f9cc38` |
 
 The initial controller produced the two separate norm-family controls;
@@ -131,8 +131,8 @@ executables and acquisitions are retained, rather than retroactively
 assigning them the later controller identity.
 
 Use fresh external scratch for the source export and controller output.
-`JITLLM_REFERENCE_ROOT` overrides the scripts' default
-`~/.local/share/jitllm/gemma-reference-fusions` directory. Preserve the
+`LLMP_REFERENCE_ROOT` overrides the scripts' default
+`~/.local/share/llmp/gemma-reference-fusions` directory. Preserve the
 original measured controller when rebuilding the combined-capable version.
 Copy `patch_controller.py` there and run
 `build_controller.sh` through the installed supervisor. The source digest
@@ -142,7 +142,7 @@ compile that C API harness as described in the earlier representative
 report if reproducing from scratch. The policies are `all`, `none`,
 `norm_rope`, `norm_add` and `both`.
 The wrapper accepts only `controller.so` or `controller-both.so` through
-`JITLLM_REFERENCE_CONTROLLER`; a fresh final build uses `controller.so`.
+`LLMP_REFERENCE_CONTROLLER`; a fresh final build uses `controller.so`.
 Its Docker invocation preloads the selected controller
 and leaves both fusion/graph disable variables absent. Each model output
 must be new. Compare stock/none heads against the original acquisition

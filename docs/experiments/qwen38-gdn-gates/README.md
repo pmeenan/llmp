@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen verify alpha/beta fusion — 2026-10-04
@@ -146,7 +146,7 @@ the unchanged benchmark source is also checked explicitly.
 | Owed-restore aggregate | `b6616540ff667c8399ba86611068388fb979fc09b239cd133b13a4863c1f00c5` |
 | HTTP aggregate | `047601511119ef3751de19f2a939501ae758a888bf8fc795a2d51d2283b96a3e` |
 | HTTP input receipt | `d5a35e6341e53de0286cfd777e4fadd707c12cf9d18f95010a4a38ffac0ab59d` |
-| Short prompt JSON | `d212009dadf1ddbf945c8dc7ad0214ba444236baf57c8ed9019c3ebe6b0805b4` |
+| Short prompt JSON | `c697236c56a09b0a3f2550f7514b3e4d826e1d14a96b4d1c79e3bd33a3a6f859` |
 
 The fixed long-context fixture is supplied from the earlier wave-lane
 control, SHA-256
@@ -167,7 +167,7 @@ context, and no GGUF performance claim follows.
 
 Raw controllers, patches, inventories, logs and responses remain external
 under `~/scratch/gdn-gates/` on Spark B and
-`/home/pmeenan/scratch/jitllm-m3-qwen-gdn-gates-2026-10-04/` locally.
+`/home/pmeenan/scratch/llmp-m3-qwen-gdn-gates-2026-10-04/` locally.
 All model jobs use the installed GPU supervisor with a 600-second limit and
 are waited on. An initial HTTP controller failed before model admission
 because its scratch filename shadowed Python's standard library; it is

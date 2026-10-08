@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M3 final build and package checks
@@ -121,16 +121,16 @@ then `~/.local/bin/spark-job wait N`. The source and package repairs were indepe
 reviewed and challenged before integration.
 
 Raw evidence stays outside Git. The workstation bundle is
-`~/scratch/jitllm-m3-final-checks-2026-10-04/`: `source-checks.json`,
+`~/scratch/llmp-m3-final-checks-2026-10-04/`: `source-checks.json`,
 `cpu.log`, `cpu-fixed.log`, `native.log`, `native-source-fixed.log`,
 `spark-full.log`, their retained build receipts, and `combined-lint.json`.
 The builder bundle is
-`~/scratch/jitllm-m3-cpu-source-closure-2026-10-04/results/`:
+`~/scratch/llmp-m3-cpu-source-closure-2026-10-04/results/`:
 `tools-combined.log`, `tools-combined-receipt.json`, `overlay.json` and
 `combined-source-pins.json`. Remote supervised receipts and logs remain
 in their owned scratch/job directories.
 
-The earlier fixture produced `jitllm_0.1.0~dev.335+ge540ddd83070-1_arm64.deb`,
+The earlier fixture produced `llmp_0.1.0~dev.335+ge540ddd83070-1_arm64.deb`,
 577,285,132 bytes, SHA-256
 `c3376f9e6454f4fa55039ce2525180af883fbb6f446655c23393a4454769194a`.
 The actual Docker install-test image ID is
@@ -141,12 +141,12 @@ helper result. `cross.log` retains the separate failed discovery attempt.
 `cross-runtime-fixed.log` and `cross-runtime-fixed-result.json` retain the
 complete repaired-discovery run and its hostile-template failure.
 `cross-comparison-fixed.log`, `cross-comparison-fixed-result.json`,
-`cross-comparison-fixed-jitllm-receipt.json`,
+`cross-comparison-fixed-llmp-receipt.json`,
 `cross-comparison-fixed-LastTest.log` and
 `cross-comparison-fixed-LastTestsDisabled.log` retain the subsequent successful ARM CPU run,
 its authenticated build receipt and skip list.
 The final clean `7ed5c1e` package is
-`jitllm_0.1.0~dev.338+g7ed5c1e904d0-1_arm64.deb`, 577,284,354 bytes,
+`llmp_0.1.0~dev.338+g7ed5c1e904d0-1_arm64.deb`, 577,284,354 bytes,
 SHA-256 `99ece3950e74e9e9b6c24a99945a0fed0e2fc1924157d67857d03334e5e9ee34`.
 Its actual install-test image ID is
 `1febb907725e3f68081121fe5979617426b45638ac6754563b09f557a00ba9ab`.
@@ -155,9 +155,9 @@ Its actual install-test image ID is
 log, extracted documents and cross receipt preserve that final run.
 The rebuild replaces package outputs; the earlier package's receipt,
 documents and log remain evidence, not a claim that its deb still exists.
-The Jinja builder's `~/scratch/jitllm-m3-jinja-cancel-2026-10-04/results/`
+The Jinja builder's `~/scratch/llmp-m3-jinja-cancel-2026-10-04/results/`
 retains `full.log`, changed-C++ check receipts and `final-lint/result.json`.
-The SDK builder bundle is `~/scratch/jitllm-m3-sdk-libgcc-2026-10-04/`:
+The SDK builder bundle is `~/scratch/llmp-m3-sdk-libgcc-2026-10-04/`:
 `authenticated-pins.json`, `runtime-symbol-closure.json`,
 `gcc-inputs-equality.json`, `local-receipt.json`, `results/full-native-receipt.json`,
 `results/full.log`, `results/prepared-source-supplement.json` and

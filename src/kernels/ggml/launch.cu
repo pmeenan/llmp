@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cuda_runtime.h>
@@ -23,7 +23,7 @@
 #include "kernels/ggml/ggml_support.h"
 #include "kernels/ggml/launch.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // GGML's scratch pool over the caller's workspace: a stack of 256-byte
 // aligned blocks. GGML frees a block when the host launcher that took it
@@ -533,4 +533,4 @@ base::Bytes LaunchContext::scratch_peak() const { return base::Bytes(pool_->peak
 
 void LaunchContext::ResetScratchPeak() { pool_->ResetPeak(); }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

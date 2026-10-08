@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Capture EXL3-G's non-linear operations on the held-out trajectory.
 
 External reference harness for the backend proof's P0; it does not implement
-jitLLM inference. It runs the frozen EXL3-G profile (EXL3_GEMV=0,
+llmpalooza inference. It runs the frozen EXL3-G profile (EXL3_GEMV=0,
 EXL3_HGEMM_F16ACC=0, a copy of the frozen GEMM-only tuning cache) with
 EXL3_BC_ATTN=0, which takes attention, RoPE and the norms through the Python
 paths and is bit-identical to the optimized profile (README, third pass).

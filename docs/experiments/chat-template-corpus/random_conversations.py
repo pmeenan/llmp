@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Writes random conversations in corpus-conversations.json's form (README.md).
 
@@ -10,9 +10,9 @@ from a pool of tags, control-token texts, Jinja syntax, Unicode and
 whitespace, assistant reasoning and tool calls, tools on some and the
 thinking, reasoning-effort and preserve-thinking options on some. `collect.py
 render --conversations` renders the corpus on them; chat_corpus_test checks
-the interpreter against those renderings when JITLLM_TEST_DATA names a
+the interpreter against those renderings when LLMP_TEST_DATA names a
 directory whose chat/corpus-conversations.json is this file and
-JITLLM_TEST_MODELS one whose chat-templates/ holds the corpus and the new
+LLMP_TEST_MODELS one whose chat-templates/ holds the corpus and the new
 references.json.
 """
 

@@ -24,118 +24,118 @@
   },
   "measured_source": {
     "benchmarks/gemma26_attention_packed.cc": {
-      "bytes": 14681,
-      "sha256": "14e44cbcb9a1b58a215b5afc2b979e5b417c0e10dc69cf73efc51628ccdf5400"
+      "bytes": 14679,
+      "sha256": "6abaee8abc2e83a4a2b32ea264194b23a4d53047d42773c2c70c100a77108722"
     },
     "benchmarks/gemma26_attention_packed_wrap.cc": {
-      "bytes": 10702,
-      "sha256": "bbd5a704a50da007a5d63f9a3c782875355a00e2e9eb01bdbb2e7a8982e26436"
+      "bytes": 10690,
+      "sha256": "5b65be1d582c17481f3a20da91c21e4ffc8047d25abcd3a1ba5ba0557ea86116"
     },
     "benchmarks/gemma26_attention_packed_metadata.cc": {
-      "bytes": 3859,
-      "sha256": "7723ec006f889c8ba323182740a1a8e2c7a3c9d6ad1fdecd48c8ae71ca93db96"
+      "bytes": 3851,
+      "sha256": "90d1c90461d328fa3d4ca5f81cbc569314bd25487e0e3b73c7d644817f41ac20"
     },
     "benchmarks/CMakeLists.txt": {
       "bytes": 30008,
       "sha256": "71172190b998b3fd069dea332efb36373fbbaac092eefeec25c19fccd950dc8d"
     },
     "docs/experiments/gemma26-packed-attention-c4/PROTOCOL.md": {
-      "bytes": 7089,
-      "sha256": "92db84da28c47a60bad783b686335d1b79868b7501ee7783af6476c41cdc9e8d"
+      "bytes": 7093,
+      "sha256": "0295ea3d2f5864cb0de6b06dc7af956e7987aa91793e6e209c94797e572b4f9e"
     },
     "docs/experiments/gemma26-packed-attention-c4/own_freeze.py": {
-      "bytes": 2718,
-      "sha256": "af9f0c2f2dcc7839ab7ec277352224a7b48599aed1258ee355d8b03ac45de28c"
+      "bytes": 2722,
+      "sha256": "621792c5b63eff79e0460d999d86d9495bac0fc77c066db44347da557f88038c"
     },
     "docs/experiments/gemma26-packed-attention-c4/compare.py": {
-      "bytes": 7815,
-      "sha256": "eab8b3f6f8e8a17bc16ae376a46864f7bf47f6a97b45c8636059ae9719adad0f"
+      "bytes": 7819,
+      "sha256": "9e9a9902eb8af2c639a7678b993549b7ea96f845700a1fcea59b62e6843c368d"
     },
     "docs/experiments/gemma26-packed-attention-c4/reference.sh": {
-      "bytes": 1393,
-      "sha256": "6970b4f74c664cdaecfce0abf8a72ce24648e9dda3d60cf1b43e25eb8d8f3495"
+      "bytes": 1391,
+      "sha256": "84c092724edf61c89255bc10373958931705355148b47e4ec463a120626fa599"
     }
   },
   "historical31_source_identity": {
     "benchmarks/gemma_attention_packed.cc": {
-      "sha256": "4065d52215ac7d175fd9d10abfc68cd0c3fcedb8a12931c7e9301a6064f77d81",
-      "bytes": 14694,
+      "sha256": "174a191f3be91e372d6d6f6ee6e761ba287d06d5809b65dc81c4540e720e46af",
+      "bytes": 14692,
       "identical_to_base": true
     },
     "benchmarks/gemma_attention_packed_wrap.cc": {
-      "sha256": "3d769788063e91d4e61f86c192a8706cc8203e8f8959caa675b493ad00686320",
-      "bytes": 10692,
+      "sha256": "31fdf195346bc8521cea863470eda4e95f8a581d80cb7c09395e7dce723fae45",
+      "bytes": 10680,
       "identical_to_base": true
     },
     "benchmarks/gemma_attention_packed_metadata.cc": {
-      "sha256": "7a8f7babb05699297bbf671b1e61643f8a12a3337d48e3d5564ddf98203a4fa6",
-      "bytes": 3855,
+      "sha256": "55956845ee6a90dbbcbea6b29c30d118f38a543fbbec6046b9c89b4a0b5faf5e",
+      "bytes": 3847,
       "identical_to_base": true
     },
     "docs/experiments/gemma-packed-attention-c4/compare.py": {
-      "sha256": "eab8b3f6f8e8a17bc16ae376a46864f7bf47f6a97b45c8636059ae9719adad0f",
-      "bytes": 7815,
+      "sha256": "9e9a9902eb8af2c639a7678b993549b7ea96f845700a1fcea59b62e6843c368d",
+      "bytes": 7819,
       "identical_to_base": true
     }
   },
   "native_binary": {
-    "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/build/spark-native/benchmarks/jitllm_gemma26_attention_packed",
+    "path": "/home/pmeenan/src/llmp-wt/m3fixb/build/spark-native/benchmarks/llmp_gemma26_attention_packed",
     "bytes": 144407512,
     "sha256": "f280c766d793ccec736aea7a25af5a0a8c7d481620a7a0036987cf02c7224f27"
   },
   "metadata_binary": {
-    "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/build/spark-native/benchmarks/jitllm_gemma26_attention_packed_metadata",
+    "path": "/home/pmeenan/src/llmp-wt/m3fixb/build/spark-native/benchmarks/llmp_gemma26_attention_packed_metadata",
     "bytes": 129696840,
     "sha256": "eee0982ef76375c198001d5caebd611d06c914f6b96296e9695db5c8aec78151"
   },
   "original_client": {
-    "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/docs/experiments/gemma-joined-serving/llama_joined.cc",
+    "path": "/home/pmeenan/src/llmp-wt/m3fixb/docs/experiments/gemma-joined-serving/llama_joined.cc",
     "bytes": 7772,
     "sha256": "c80b73c85453ece170eda57bc0725cdef5b4e0af3d7cacf3d1a8bee0d1cfa19e"
   },
   "original_binary": {
-    "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/llama_joined",
+    "path": "/home/pmeenan/.local/share/llmp/gemma26-packed-attention-c4/llama_joined",
     "bytes": 76792,
     "sha256": "01889d8c4a281110f611cedcab43235a9ac80bcc21abf094d982f14dd2112f61"
   },
   "original_public_headers": [
     {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml-alloc.h",
+      "path": "/home/pmeenan/.local/share/llmp/gemma26-packed-attention-c4/headers/ggml/include/ggml-alloc.h",
       "bytes": 3753,
       "sha256": "94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23"
     },
     {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml-backend.h",
+      "path": "/home/pmeenan/.local/share/llmp/gemma26-packed-attention-c4/headers/ggml/include/ggml-backend.h",
       "bytes": 25374,
       "sha256": "46d84cb998105f871240864fd0f55446939a2fe86c5c281afa63a010fb1f65a2"
     },
     {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml-cpp.h",
+      "path": "/home/pmeenan/.local/share/llmp/gemma26-packed-attention-c4/headers/ggml/include/ggml-cpp.h",
       "bytes": 1652,
       "sha256": "bc15ba002c68685df23faae42df0d2b3d58032011f88b649021ab92485862c72"
     },
     {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml-cpu.h",
+      "path": "/home/pmeenan/.local/share/llmp/gemma26-packed-attention-c4/headers/ggml/include/ggml-cpu.h",
       "bytes": 7753,
       "sha256": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e"
     },
     {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml-opt.h",
+      "path": "/home/pmeenan/.local/share/llmp/gemma26-packed-attention-c4/headers/ggml/include/ggml-opt.h",
       "bytes": 14040,
       "sha256": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2"
     },
     {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml.h",
+      "path": "/home/pmeenan/.local/share/llmp/gemma26-packed-attention-c4/headers/ggml/include/ggml.h",
       "bytes": 115658,
       "sha256": "9ac7ee3d3a957e5f7b21b104d3e3dc50b1b106f808f9d6735ead950450bfeec6"
     },
     {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/gguf.h",
+      "path": "/home/pmeenan/.local/share/llmp/gemma26-packed-attention-c4/headers/ggml/include/gguf.h",
       "bytes": 11355,
       "sha256": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4"
     },
     {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/include/llama.h",
+      "path": "/home/pmeenan/.local/share/llmp/gemma26-packed-attention-c4/headers/include/llama.h",
       "bytes": 84829,
       "sha256": "fedb52ea9291c9900e637ed6ffec339919dd27c3dadc2c8cf216c552e0488dda"
     }
@@ -154,19 +154,19 @@
   "native_own_freeze_sha256": "a5fafe3cba47982c143310b6c5148a7874839f920a330a8c1296ef0bdc8c3dcb",
   "before_bookend_sha256": "3e9ca812625e406a48b102b746cef49218926319c40dd67e034357e03b65a710",
   "input": {
-    "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/ids.i32",
+    "path": "/home/pmeenan/.local/share/llmp/gemma26-packed-attention-c4/ids.i32",
     "bytes": 4096,
     "sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610"
   },
   "artifact": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
   "artifact_metadata": [
     {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3/manifest.json",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3/manifest.json",
       "bytes": 6035,
       "sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
     },
     {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3/index.json",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3/index.json",
       "bytes": 1253283,
       "sha256": "e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171"
     }
@@ -190,8 +190,8 @@
     "analysis1": "0bd1bae86bb642ffebab3bdd815400ad700b010d26f45396b372737bc3950f3c",
     "light": "cfc5e42c7db06b0f456fd02933c5606ded88dc9dc07bda82704749ec8de77c07"
   },
-  "official_job_prefix": "~/.local/share/jitllm/jobs/m35-gemma26-packed-",
-  "local_raw_directory": "/tmp/jitllm-m35-coordination/gemma26-packed-attention-c4-raw",
+  "official_job_prefix": "~/.local/share/llmp/jobs/m35-gemma26-packed-",
+  "local_raw_directory": "/tmp/llmp-m35-coordination/gemma26-packed-attention-c4-raw",
   "build1_normalized_UTC": [
     "2026-10-05T13:02:05+00:00",
     "2026-10-05T13:02:13+00:00"

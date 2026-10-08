@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 8K ring-cache reference screen
@@ -109,7 +109,7 @@ CUDA 13.3.0/CUDART13.3.29-1, not freshly queried here. Task-entry primary
 Follow [PROTOCOL](PROTOCOL.md) with approved artifact4ddb360c/indexe7481988 and
 the matched Q4_K_M GGUF. Supply canonical 8,227 LE I32 IDs SHA6b6567ca… and
 the exact external pinned headers. Checksum-sync sources using `rsync -rlpc`
-without timestamps and build only native `jitllm_gemma_prefill` through the
+without timestamps and build only native `llmp_gemma_prefill` through the
 locked SDK and `reference.sh build`. Record the actual source ancestry:
 base/head, empty tracked production diff, dirty source-path allowlist and all
 eight `SOURCES` byte/SHA records. Supply the authenticated complete production

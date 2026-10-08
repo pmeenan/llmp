@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "scheduler/completions.h"
@@ -16,7 +16,7 @@
 #include "base/check.h"
 #include "base/wake.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 namespace {
 
 constexpr std::uint8_t kStateMask = 0x3;
@@ -330,4 +330,4 @@ std::vector<Observation> CompletionBoard::Harvest(std::size_t limit) {
   return observations;
 }
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Jinja-subset evaluator (jinja.h): statements, expressions, and the
@@ -32,7 +32,7 @@
 #include "chat/jinja_internal.h"
 #include "chat/pycase.h"
 
-namespace jitllm::chat::jinja {
+namespace llmp::chat::jinja {
 namespace {
 
 constexpr auto kFilters = std::to_array<std::string_view>(
@@ -3990,4 +3990,4 @@ std::expected<Rendered, Error> Template::Render(
   return renderer.Run(variables);
 }
 
-}  // namespace jitllm::chat::jinja
+}  // namespace llmp::chat::jinja

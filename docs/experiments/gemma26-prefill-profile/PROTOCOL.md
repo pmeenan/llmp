@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 paid-prefill performance diagnosis — compact first trace
@@ -159,7 +159,7 @@ is a later separately approved trace, not an inferred result from26.
 The no-model probe compiled the public header in the original image, then used
 exactly the intended `--trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none
 --cuda-graph-trace=node --wait=all --stop-on-exit=true --kill=none --export=sqlite`
-flags. SQLite contains one positive `jitllm.gemma26.paid_prefill` range. The
+flags. SQLite contains one positive `llmp.gemma26.paid_prefill` range. The
 child-wait controls refuse a nonzero child and an existing completion file;
 child, profiler and installed supervisor all retired successfully. Header/license
 texts and SQLite stay external; final provenance keeps hashes and the actual
@@ -200,7 +200,7 @@ category summed durations are labelled as overlapping. No guessed kernel-role
 classification or planner CPU attribution is made by the extractor.
 
 The optional manual CMake target is excluded from the default build and requires
-JITLLM_BENCHMARK_NVTX_INCLUDE_DIR to name the recorded external public headers.
+LLMP_BENCHMARK_NVTX_INCLUDE_DIR to name the recorded external public headers.
 No production compile or runtime target depends on NVTX. The public observer
 probe and immutable model math are separate identities.
 

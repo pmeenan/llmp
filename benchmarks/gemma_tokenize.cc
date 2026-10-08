@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // CPU-only preparation: METADATA TEXT NEW_OUT literal|chat. No model execution.
@@ -25,15 +25,15 @@
 
 namespace {
 namespace fs = std::filesystem;
-namespace tok = jitllm::tokenizer;
+namespace tok = llmp::tokenizer;
 using Result = std::expected<void, std::string>;
 std::string Quoted(std::string_view text) {
   std::string out;
-  jitllm::base::json::AppendQuoted(text, out);
+  llmp::base::json::AppendQuoted(text, out);
   return out;
 }
 std::string Digest(std::string_view text) {
-  return jitllm::base::ToHex(jitllm::base::Sha256{}.Update(text).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256{}.Update(text).Finish());
 }
 std::expected<std::string, std::string> Read(const fs::path& path, std::uintmax_t cap) {
   std::error_code error;
@@ -81,28 +81,28 @@ Result Prepare(int argc, char** argv) {
         !encoded)
       return std::unexpected(encoded.error().ToString());
   } else {
-    jitllm::chat::jinja::Limits limits;
+    llmp::chat::jinja::Limits limits;
     limits.max_string_bytes = 4U << 20U;
     limits.max_output_bytes = 4U << 20U;
-    auto model_template = jitllm::chat::ChatTemplate::ForText(
-        parsed->chat_template, jitllm::chat::TokenFacts::From(*tokenizer), limits);
+    auto model_template = llmp::chat::ChatTemplate::ForText(
+        parsed->chat_template, llmp::chat::TokenFacts::From(*tokenizer), limits);
     if (!model_template) return std::unexpected(model_template.error());
-    jitllm::chat::Conversation conversation;
+    llmp::chat::Conversation conversation;
     conversation.enable_thinking = false;
     conversation.max_render_bytes = limits.max_output_bytes;
-    conversation.messages.push_back({.role = jitllm::chat::Role::kUser,
+    conversation.messages.push_back({.role = llmp::chat::Role::kUser,
                                      .content = *text,
                                      .reasoning_content = std::nullopt,
                                      .tool_calls = {}});
     renderer = model_template->name();
     switch (model_template->how()) {
-      case jitllm::chat::ChatTemplate::How::kNativeByHash:
+      case llmp::chat::ChatTemplate::How::kNativeByHash:
         rendering_how = "native-by-hash";
         break;
-      case jitllm::chat::ChatTemplate::How::kNativeByProbe:
+      case llmp::chat::ChatTemplate::How::kNativeByProbe:
         rendering_how = "native-by-probe";
         break;
-      case jitllm::chat::ChatTemplate::How::kInterpreted:
+      case llmp::chat::ChatTemplate::How::kInterpreted:
         rendering_how = "interpreted";
         break;
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 # The reported session, on the Spark: PROBE FILE OUTDIR. Runs as a user with
 # sudo (the udmabuf device is root:kvm). Before each process it waits until no

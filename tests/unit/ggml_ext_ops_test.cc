@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The GGML operations DeepSeek V4 Flash (GGUF) and Qwen3.8 Flash add
-// (kernels/ggml/ops_ext.h) under jitLLM's launch context on a GB10 (label
+// (kernels/ggml/ops_ext.h) under llmpalooza's launch context on a GB10 (label
 // `gpu`), at small cases of the models' shapes:
 // - each result against an FP64 reference on the host, judged by the
 //   normalized mean squared error, NMSE = sum((got - want)^2) / sum(want^2),
@@ -59,8 +59,8 @@
 #include "kernels/ggml/fattn_mma.h"
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/implementations.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/shared_q8.h"
@@ -78,17 +78,17 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::KernelError;
-using jitllm::kernels::ggml::KernelFailure;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::QuantMulMatPath;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-using jitllm::test_support::FailedCode;
-namespace kg = jitllm::kernels::ggml;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::KernelError;
+using llmp::kernels::ggml::KernelFailure;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::QuantMulMatPath;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+using llmp::test_support::FailedCode;
+namespace kg = llmp::kernels::ggml;
 
 // Upstream's bounds (test-backend-ops.cpp).
 constexpr double kDefaultNmse = 1e-7;
@@ -166,7 +166,7 @@ class GgmlExtOpsTest : public ::testing::Test {
   void BoundedOwnerControl(std::uint32_t cap);
   void MultirowOwnerControl(std::span<const std::pair<std::int64_t, std::int64_t>> shapes);
   void SetUp() override {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     const std::uint64_t workspace = Allocate(kWorkspace);
     auto launch = LaunchContext::Create(0, *execution_, stream_,
@@ -260,15 +260,14 @@ TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMa
   const auto submission = execution_->Submission(stream_);
   ASSERT_TRUE(submission);
   const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
-  const auto& profile = jitllm::model::Gemma3_4BQat();
-  const auto state = *jitllm::model::Gemma3State(profile, 131072, 128);
+  const auto& profile = llmp::model::Gemma3_4BQat();
+  const auto state = *llmp::model::Gemma3State(profile, 131072, 128);
   const std::array<std::int32_t, 128> tokens{};
   for (const auto [past, rows] :
        {std::pair{1279U, 1U}, std::pair{1152U, 128U}, std::pair{130816U, 128U}}) {
-    std::array segments{
-        jitllm::model::Gemma3Segment{0, past, std::span(tokens).first(rows)},
-        jitllm::model::Gemma3Segment{1, past + rows, std::span(tokens).first(rows)}};
-    auto host = jitllm::model::Gemma3Chunk(profile, state, segments, true, 256, 256);
+    std::array segments{llmp::model::Gemma3Segment{0, past, std::span(tokens).first(rows)},
+                        llmp::model::Gemma3Segment{1, past + rows, std::span(tokens).first(rows)}};
+    auto host = llmp::model::Gemma3Chunk(profile, state, segments, true, 256, 256);
     ASSERT_TRUE(host);
     auto* positions = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 2 * rows), host->positions);
     for (std::uint32_t segment = 0; segment < 2; ++segment) {
@@ -322,7 +321,7 @@ TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMa
         const std::int32_t delta = (segments[segment].n_past + rows) % 256 == 0 ? -1 : 1;
         segments[segment].n_past =
             static_cast<std::uint32_t>(static_cast<std::int64_t>(segments[segment].n_past) + delta);
-        auto fresh = jitllm::model::Gemma3Chunk(profile, state, segments, true, 256, 256);
+        auto fresh = llmp::model::Gemma3Chunk(profile, state, segments, true, 256, 256);
         ASSERT_TRUE(fresh);
         ASSERT_EQ(fresh->segments[segment].global_n_kv, input.global_n_kv);
         ASSERT_EQ(fresh->segments[segment].local_n_kv, input.local_n_kv);
@@ -357,15 +356,14 @@ TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBou
   const auto submission = execution_->Submission(stream_);
   ASSERT_TRUE(submission);
   const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
-  const auto& profile = jitllm::model::Gemma2_2B();
-  const auto state = *jitllm::model::Gemma2State(profile, 8192, 128);
+  const auto& profile = llmp::model::Gemma2_2B();
+  const auto state = *llmp::model::Gemma2State(profile, 8192, 128);
   const std::array<std::int32_t, 128> tokens{};
   for (const auto [past, rows] :
        {std::pair{4351U, 1U}, std::pair{4224U, 128U}, std::pair{7936U, 128U}}) {
-    std::array segments{
-        jitllm::model::Gemma2Segment{0, past, std::span(tokens).first(rows)},
-        jitllm::model::Gemma2Segment{1, past + rows, std::span(tokens).first(rows)}};
-    auto host = jitllm::model::Gemma2Chunk(profile, state, segments, true, 256, 256);
+    std::array segments{llmp::model::Gemma2Segment{0, past, std::span(tokens).first(rows)},
+                        llmp::model::Gemma2Segment{1, past + rows, std::span(tokens).first(rows)}};
+    auto host = llmp::model::Gemma2Chunk(profile, state, segments, true, 256, 256);
     ASSERT_TRUE(host);
     auto* positions = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 2 * rows), host->positions);
     for (std::uint32_t segment = 0; segment < 2; ++segment) {
@@ -419,7 +417,7 @@ TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBou
         const std::int32_t delta = (segments[segment].n_past + rows) % 256 == 0 ? -1 : 1;
         segments[segment].n_past =
             static_cast<std::uint32_t>(static_cast<std::int64_t>(segments[segment].n_past) + delta);
-        auto fresh = jitllm::model::Gemma2Chunk(profile, state, segments, true, 256, 256);
+        auto fresh = llmp::model::Gemma2Chunk(profile, state, segments, true, 256, 256);
         ASSERT_TRUE(fresh);
         ASSERT_EQ(fresh->segments[segment].global_n_kv, input.global_n_kv);
         ASSERT_EQ(fresh->segments[segment].local_n_kv, input.local_n_kv);
@@ -661,7 +659,7 @@ TEST_F(GgmlExtOpsTest, SharedBlockMasksMatchF16AndF32AndRefreshCapturedSegments)
 }
 
 TEST_F(GgmlExtOpsTest, DeepSeekRawDeviceMasksKeepExactRowsAndRefreshCapturedRingPositions) {
-  namespace md = jitllm::model;
+  namespace md = llmp::model;
   const auto stream = reinterpret_cast<cudaStream_t>(execution_->Submission(stream_)->handle);
   for (const auto window : {md::Dsv4Window::kRing, md::Dsv4Window::kFull}) {
     auto state = md::Dsv4State(md::Dsv4Flash(), 8704, 4096, window);
@@ -732,7 +730,7 @@ TEST_F(GgmlExtOpsTest, GemmaDeviceMasksFillEveryPaddedByteAndRefreshCapturedPosi
   const auto submission = execution_->Submission(stream_);
   ASSERT_TRUE(submission);
   const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
-  for (const auto* profile : {&jitllm::model::Gemma4_26BA4B(), &jitllm::model::Gemma4_31B()}) {
+  for (const auto* profile : {&llmp::model::Gemma4_26BA4B(), &llmp::model::Gemma4_31B()}) {
     for (const auto segments : {1, 2, 4, 16}) {
       const int rows = segments == 16 ? 16 : segments;
       const int first_past = segments == 1 ? 0 : segments == 16 ? 262144 - rows - 15 * 7 : 1279;
@@ -1069,7 +1067,7 @@ TEST_F(GgmlExtOpsTest, SharedPreparationKeepsOrdinaryScalarThroughEightMmvqAndCh
         ordinary[i] = Place(ggml_mul_mat(context, w, x));
         candidate[i] =
             guarded(shared.Product(w, x, true, kg::DeviceChoicesOf(launch()).dense_mmvq_shape));
-        ASSERT_EQ(kg::JitllmOpOf(candidate[i]), kg::JitllmOp::kMmvqPrepared);
+        ASSERT_EQ(kg::LlmpOpOf(candidate[i]), kg::LlmpOp::kMmvqPrepared);
         ASSERT_EQ(candidate[i]->src[1], q8);
         ASSERT_EQ(candidate[i]->src[2], x);
         const auto original_plan = kg::PlanMulMatVecQ(launch(), ordinary[i]);
@@ -1443,7 +1441,7 @@ TEST_F(GgmlExtOpsTest, RawQ2D2rPreservesItsOwnCapturedProductAndPlansAllScratch)
   auto* other = Place(ggml_mul_mat_id(c(), w, x, routes));
   const auto scratch = kg::PlanMulMatIdQ2D2r(launch(), product);
   ASSERT_TRUE(scratch.has_value()) << (scratch ? "" : scratch.error().detail);
-  const kg::GraphPlan plan{.steps = {{.operation = jitllm::execution::Operation::kMulMatId,
+  const kg::GraphPlan plan{.steps = {{.operation = llmp::execution::Operation::kMulMatId,
                                       .implementation = kg::kMulMatIdQ2D2r,
                                       .nodes = {product},
                                       .lane = 0}},
@@ -1746,7 +1744,7 @@ TEST_F(GgmlExtOpsTest, ExpertsAtAUniformStrideComputeWhatThePackedLayoutComputes
 }
 
 TEST_F(GgmlExtOpsTest, QuantizedChecksRefuseWhatTheLaunchersWouldNotTake) {
-  // A row that is not a whole 512-element step (GGML pads buffers, jitLLM
+  // A row that is not a whole 512-element step (GGML pads buffers, llmpalooza
   // does not), an uncompiled type, and F16 activations.
   const Quantized weights = Quantize(GGML_TYPE_Q8_0, 4096, 32, 31);
   ggml_tensor* w = Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q8_0, 4096, 32), weights.bytes);
@@ -2075,7 +2073,7 @@ TEST_F(GgmlExtOpsTest, ArgsortAndTopKFindTheLargestValues) {
       EXPECT_EQ(*values.rbegin(), static_cast<float>(cells - 1));
     }
   }
-  // Rows beyond the bitonic kernel take CUB's sort upstream, which jitLLM's
+  // Rows beyond the bitonic kernel take CUB's sort upstream, which llmpalooza's
   // build does not have: refused.
   ggml_tensor* long_rows = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 2048, 2));
   EXPECT_EQ(
@@ -2834,7 +2832,7 @@ TEST_F(GgmlExtOpsTest, GemmaLocalPrefillRefusesUnfundedQueryTilesBeforeSubmissio
       }
     }
   }
-  Launched(launch().Run(jitllm::base::Bytes(plan->scratch),
+  Launched(launch().Run(llmp::base::Bytes(plan->scratch),
                         [node](ggml_backend_cuda_context& context) {
                           kg::detail::FlashAttnMmaCaseGqa2(32)(context, node);
                         }),
@@ -2877,7 +2875,7 @@ TEST_F(GgmlExtOpsTest, EightStreamMmaMatchesTwoFourRootCohortPartitionsExactly) 
       ggml_prec_set_acc(whole, GGML_PREC_F32);
       const auto full_plan = d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), whole)
                                       : kg::PlanFlashAttnMma(launch(), whole);
-      ASSERT_TRUE(full_plan) << jitllm::test_support::Failed(full_plan)->detail;
+      ASSERT_TRUE(full_plan) << llmp::test_support::Failed(full_plan)->detail;
       ASSERT_EQ(full_plan->blocks % 2, 0);
       EXPECT_EQ(full_plan->columns, d == 256 ? 4 : 1);
       EXPECT_EQ(full_plan->group, d == 256 ? 2 : 8);
@@ -2918,7 +2916,7 @@ TEST_F(GgmlExtOpsTest, EightStreamMmaMatchesTwoFourRootCohortPartitionsExactly) 
                             reinterpret_cast<std::uintptr_t>(raw_v->data));
         }
         const auto plan = kg::PlanFlashAttnOwners(launch(), in);
-        ASSERT_TRUE(plan) << jitllm::test_support::Failed(plan)->detail;
+        ASSERT_TRUE(plan) << llmp::test_support::Failed(plan)->detail;
         EXPECT_EQ(plan->effective_cohort, 8U);
         EXPECT_EQ(plan->cohort_blocks, full_plan->blocks);
         EXPECT_EQ(plan->original.blocks * 2, full_plan->blocks);
@@ -3005,7 +3003,7 @@ TEST_F(GgmlExtOpsTest, TwelveStreamMmaMatchesThreeFourRootCohortPartitionsExactl
         ggml_prec_set_acc(whole, GGML_PREC_F32);
         const auto full_plan = d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), whole)
                                         : kg::PlanFlashAttnMma(launch(), whole);
-        ASSERT_TRUE(full_plan) << jitllm::test_support::Failed(full_plan)->detail;
+        ASSERT_TRUE(full_plan) << llmp::test_support::Failed(full_plan)->detail;
         ASSERT_EQ(full_plan->blocks % 3, 0);
         EXPECT_EQ(full_plan->columns, d == 256 ? 4 : 1);
         EXPECT_EQ(full_plan->group, d == 256 ? 2 : 8);
@@ -3051,7 +3049,7 @@ TEST_F(GgmlExtOpsTest, TwelveStreamMmaMatchesThreeFourRootCohortPartitionsExactl
                               reinterpret_cast<std::uintptr_t>(raw_v->data));
           }
           const auto plan = kg::PlanFlashAttnOwners(launch(), in);
-          ASSERT_TRUE(plan) << jitllm::test_support::Failed(plan)->detail;
+          ASSERT_TRUE(plan) << llmp::test_support::Failed(plan)->detail;
           EXPECT_EQ(plan->effective_cohort, 12U);
           EXPECT_EQ(plan->original.head, full_plan->head);
           EXPECT_EQ(plan->original.columns, full_plan->columns);
@@ -3086,7 +3084,7 @@ TEST_F(GgmlExtOpsTest, TwelveStreamMmaMatchesThreeFourRootCohortPartitionsExactl
         // the fixture's larger pool for this proof.
         auto context = LaunchContext::Create(launch().device(), *execution_, stream_,
                                              {.base = Allocate(scratch), .size = Bytes(scratch)});
-        ASSERT_TRUE(context) << jitllm::test_support::Failed(context)->detail;
+        ASSERT_TRUE(context) << llmp::test_support::Failed(context)->detail;
         auto& bounded = **context;
         EXPECT_EQ(bounded.workspace().size.value(), scratch);
         EXPECT_TRUE(bounded.UsesStream(*execution_, stream_));
@@ -3124,7 +3122,7 @@ TEST_F(GgmlExtOpsTest, TwelveStreamMmaMatchesThreeFourRootCohortPartitionsExactl
             if (auto r = kg::FlashAttnOwnerRoots(l, quad); !r) return r;
           return {};
         });
-        ASSERT_TRUE(graph) << jitllm::test_support::Failed(graph)->detail;
+        ASSERT_TRUE(graph) << llmp::test_support::Failed(graph)->detail;
         EXPECT_LE(bounded.scratch_peak().value(), scratch);
         for (int replay = 0; replay < 2; ++replay) {
           SCOPED_TRACE("capture replay " + std::to_string(replay));
@@ -3286,7 +3284,7 @@ TEST_F(GgmlExtOpsTest, GemmaLocalAttentionPreservesIndependentRingMasksAndPlansS
                      kMulMatNmse, "independent first sequence matches solo");
         }
         // Pinned original case, separately launched with the checked paid scratch.
-        Launched(launch().Run(jitllm::base::Bytes(mma->scratch),
+        Launched(launch().Run(llmp::base::Bytes(mma->scratch),
                               [node, columns](ggml_backend_cuda_context& context) {
                                 kg::detail::FlashAttnMmaCaseGqa2(static_cast<int>(columns))(context,
                                                                                             node);
@@ -3786,7 +3784,7 @@ TEST_F(GgmlExtOpsTest, Ds4HcaPlansItsWholeScratchRefusesCaptureAndPreservesOwnRe
     auto* control = make();
     const auto scratch = kg::PlanDsv4HcaTokentile(launch(), node);
     ASSERT_TRUE(scratch.has_value()) << (scratch ? "" : scratch.error().detail);
-    const kg::GraphPlan plan{.steps = {{.operation = jitllm::execution::Operation::kFlashAttn,
+    const kg::GraphPlan plan{.steps = {{.operation = llmp::execution::Operation::kFlashAttn,
                                         .implementation = kg::kDsv4HcaTokentileName,
                                         .nodes = {node},
                                         .lane = 0}},
@@ -3970,17 +3968,17 @@ TEST_F(GgmlExtOpsTest, FlashAttentionChecksRefuseWhatTheKernelsWouldNotTake) {
 // would end the process), and write what it writes in cudaMalloc memory.
 TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
   enum class Where : std::uint8_t { kMalloc, kEnd, kStart };
-  auto memory = std::move(jitllm::providers::cuda::OpenDeviceMemory(0).value());
+  auto memory = std::move(llmp::providers::cuda::OpenDeviceMemory(0).value());
   std::size_t device_class = 0;
   for (std::size_t i = 0; i < memory->Classes().size(); ++i) {
-    if (memory->Classes()[i].kind == jitllm::providers::BackingKind::kDevice) {
+    if (memory->Classes()[i].kind == llmp::providers::BackingKind::kDevice) {
       device_class = i;
     }
   }
   const std::uint64_t granule = memory->Granularity().value();
   struct Mapped {
-    jitllm::providers::ReservationId reservation;
-    jitllm::providers::BackingId backing;
+    llmp::providers::ReservationId reservation;
+    llmp::providers::BackingId backing;
     std::uint64_t offset;
     std::uint64_t size;
   };
@@ -3996,7 +3994,7 @@ TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
     EXPECT_TRUE(memory->Map(reservation, Bytes(offset), backing).has_value());
     EXPECT_TRUE(memory
                     ->SetAccess(reservation, Bytes(offset), Bytes(size),
-                                jitllm::providers::Access::kReadWrite)
+                                llmp::providers::Access::kReadWrite)
                     .has_value());
     mapped.push_back({reservation, backing, offset, size});
     const std::uint64_t base = memory->RangeOf(reservation).value().base + offset;
@@ -4363,19 +4361,19 @@ TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
 // ---- The registry ----
 
 TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
-  using jitllm::execution::Operation;
-  const std::vector<jitllm::execution::Implementation> declared = kg::Implementations();
-  const auto registry = jitllm::execution::Registry::Create(declared).value();
+  using llmp::execution::Operation;
+  const std::vector<llmp::execution::Implementation> declared = kg::Implementations();
+  const auto registry = llmp::execution::Registry::Create(declared).value();
   const std::array<std::pair<const char*, Operation>, 33> expected = {{
       {"ggml.mul_mat.mmvq", Operation::kMatMul},
       {"ggml.mul_mat.mmq", Operation::kMatMul},
       {"ggml.mul_mat.fwht", Operation::kMatMul},
       {"ggml.mul_mat_id.mmvq", Operation::kMulMatId},
       {"ggml.mul_mat_id.mmq", Operation::kMulMatId},
-      {"jitllm.mul_mat_id.mmq_pair", Operation::kMulMatId},
-      {"jitllm.mul_mat_id.mmq_compact", Operation::kMulMatId},
-      {"jitllm.mul_mat_id.mmq_pair_compact", Operation::kMulMatId},
-      {"jitllm.mul_mat_id.q2_d2r", Operation::kMulMatId},
+      {"llmp.mul_mat_id.mmq_pair", Operation::kMulMatId},
+      {"llmp.mul_mat_id.mmq_compact", Operation::kMulMatId},
+      {"llmp.mul_mat_id.mmq_pair_compact", Operation::kMulMatId},
+      {"llmp.mul_mat_id.q2_d2r", Operation::kMulMatId},
       {"ggml.sub", Operation::kSub},
       {"ggml.div", Operation::kDiv},
       {"ggml.scale", Operation::kScale},
@@ -4398,7 +4396,7 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
       {"ggml.dsv4_hc_pre", Operation::kHcPre},
       {"ggml.dsv4_hc_post", Operation::kHcPost},
       {"ggml.flash_attn_ext.mma", Operation::kFlashAttn},
-      {"jitllm.dsv4.hca_tokentile", Operation::kFlashAttn},
+      {"llmp.dsv4.hca_tokentile", Operation::kFlashAttn},
       {"ggml.flash_attn_ext.mma_d128", Operation::kFlashAttn},
   }};
   for (const auto& [name, operation] : expected) {
@@ -5597,7 +5595,7 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap, std::uint32_t small_ow
           ggml_prec_set_acc(whole, GGML_PREC_F32);
           const auto full_plan = d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), whole)
                                           : kg::PlanFlashAttnMma(launch(), whole);
-          ASSERT_TRUE(full_plan) << jitllm::test_support::Failed(full_plan)->detail;
+          ASSERT_TRUE(full_plan) << llmp::test_support::Failed(full_plan)->detail;
 
           EXPECT_EQ(full_plan->columns, d == 256 ? 4 : 1);
           EXPECT_EQ(full_plan->group, d == 256 ? 2 : 8);
@@ -5645,7 +5643,7 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap, std::uint32_t small_ow
                                 reinterpret_cast<std::uintptr_t>(raw_v->data));
             }
             const auto plan = kg::PlanFlashAttnOwners(launch(), in);
-            ASSERT_TRUE(plan) << jitllm::test_support::Failed(plan)->detail;
+            ASSERT_TRUE(plan) << llmp::test_support::Failed(plan)->detail;
             EXPECT_EQ(plan->effective_cohort, static_cast<std::uint32_t>(owners));
             EXPECT_EQ(plan->original.head, full_plan->head);
             EXPECT_EQ(plan->original.columns, full_plan->columns);
@@ -5717,7 +5715,7 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap, std::uint32_t small_ow
           // workspace; do not borrow the fixture's larger pool for this proof.
           auto context = LaunchContext::Create(launch().device(), *execution_, stream_,
                                                {.base = Allocate(scratch), .size = Bytes(scratch)});
-          ASSERT_TRUE(context) << jitllm::test_support::Failed(context)->detail;
+          ASSERT_TRUE(context) << llmp::test_support::Failed(context)->detail;
           auto& bounded = **context;
           if ((cap != 0 || small_owners != 0) && plans[0].original.scratch > 0) {
             const auto owner_scratch = plans[0].original.scratch;
@@ -5795,7 +5793,7 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap, std::uint32_t small_ow
               if (auto r = kg::FlashAttnOwnerRoots(l, quad); !r) return r;
             return {};
           });
-          ASSERT_TRUE(graph) << jitllm::test_support::Failed(graph)->detail;
+          ASSERT_TRUE(graph) << llmp::test_support::Failed(graph)->detail;
           EXPECT_LE(bounded.scratch_peak().value(), scratch);
           for (int replay = 0; replay < 2; ++replay) {
             SCOPED_TRACE("capture replay " + std::to_string(replay));
@@ -6573,7 +6571,7 @@ TEST_F(GgmlExtOpsTest, Gemma3GroupedWholeAndPartialRootsMatchThePhysicalCohortAn
         ggml_prec_set_acc(whole, GGML_PREC_F32);
         const auto full_plan = d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), whole)
                                         : kg::PlanFlashAttnMma(launch(), whole);
-        ASSERT_TRUE(full_plan) << jitllm::test_support::Failed(full_plan)->detail;
+        ASSERT_TRUE(full_plan) << llmp::test_support::Failed(full_plan)->detail;
 
         EXPECT_EQ(full_plan->columns, d == 256 ? 4 : 1);
         EXPECT_EQ(full_plan->group, d == 256 ? 2 : 8);
@@ -6624,7 +6622,7 @@ TEST_F(GgmlExtOpsTest, Gemma3GroupedWholeAndPartialRootsMatchThePhysicalCohortAn
                               reinterpret_cast<std::uintptr_t>(raw_v->data));
           }
           const auto plan = kg::PlanFlashAttnOwners(launch(), in);
-          ASSERT_TRUE(plan) << jitllm::test_support::Failed(plan)->detail;
+          ASSERT_TRUE(plan) << llmp::test_support::Failed(plan)->detail;
           EXPECT_EQ(plan->effective_cohort, static_cast<std::uint32_t>(owners));
           EXPECT_EQ(plan->original.head, full_plan->head);
           EXPECT_EQ(plan->original.columns, full_plan->columns);
@@ -6699,7 +6697,7 @@ TEST_F(GgmlExtOpsTest, Gemma3GroupedWholeAndPartialRootsMatchThePhysicalCohortAn
         const auto workspace = Allocate(scratch);
         auto context = LaunchContext::Create(launch().device(), *execution_, stream_,
                                              {.base = workspace, .size = Bytes(scratch)});
-        ASSERT_TRUE(context) << jitllm::test_support::Failed(context)->detail;
+        ASSERT_TRUE(context) << llmp::test_support::Failed(context)->detail;
         auto& bounded = **context;
         EXPECT_EQ(bounded.workspace().size.value(), scratch);
         EXPECT_TRUE(bounded.UsesStream(*execution_, stream_));
@@ -6787,7 +6785,7 @@ TEST_F(GgmlExtOpsTest, Gemma3GroupedWholeAndPartialRootsMatchThePhysicalCohortAn
           }
           return {};
         });
-        ASSERT_TRUE(graph) << jitllm::test_support::Failed(graph)->detail;
+        ASSERT_TRUE(graph) << llmp::test_support::Failed(graph)->detail;
         EXPECT_LE(bounded.scratch_peak().value(), scratch);
         for (int replay = 0; replay < 2; ++replay) {
           SCOPED_TRACE("capture replay " + std::to_string(replay));
@@ -6899,7 +6897,7 @@ TEST_F(GgmlExtOpsTest, Gemma3WholeTwelveBoundedRootsMatchPaddedCohortAndFp64) {
         ggml_prec_set_acc(whole, GGML_PREC_F32);
         const auto full_plan = d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), whole)
                                         : kg::PlanFlashAttnMma(launch(), whole);
-        ASSERT_TRUE(full_plan) << jitllm::test_support::Failed(full_plan)->detail;
+        ASSERT_TRUE(full_plan) << llmp::test_support::Failed(full_plan)->detail;
 
         EXPECT_EQ(full_plan->columns, d == 256 ? 4 : 1);
         EXPECT_EQ(full_plan->group, d == 256 ? 2 : 8);
@@ -6962,7 +6960,7 @@ TEST_F(GgmlExtOpsTest, Gemma3WholeTwelveBoundedRootsMatchPaddedCohortAndFp64) {
                               reinterpret_cast<std::uintptr_t>(raw_v->data));
           }
           const auto plan = kg::PlanFlashAttnOwners(launch(), in);
-          ASSERT_TRUE(plan) << jitllm::test_support::Failed(plan)->detail;
+          ASSERT_TRUE(plan) << llmp::test_support::Failed(plan)->detail;
           EXPECT_EQ(plan->effective_cohort, static_cast<std::uint32_t>(owners));
           EXPECT_EQ(plan->original.head, full_plan->head);
           EXPECT_EQ(plan->original.columns, full_plan->columns);
@@ -7044,7 +7042,7 @@ TEST_F(GgmlExtOpsTest, Gemma3WholeTwelveBoundedRootsMatchPaddedCohortAndFp64) {
         const auto workspace = Allocate(scratch);
         auto context = LaunchContext::Create(launch().device(), *execution_, stream_,
                                              {.base = workspace, .size = Bytes(scratch)});
-        ASSERT_TRUE(context) << jitllm::test_support::Failed(context)->detail;
+        ASSERT_TRUE(context) << llmp::test_support::Failed(context)->detail;
         auto& bounded = **context;
         EXPECT_EQ(bounded.workspace().size.value(), scratch);
         EXPECT_TRUE(bounded.UsesStream(*execution_, stream_));
@@ -7132,7 +7130,7 @@ TEST_F(GgmlExtOpsTest, Gemma3WholeTwelveBoundedRootsMatchPaddedCohortAndFp64) {
           }
           return {};
         });
-        ASSERT_TRUE(graph) << jitllm::test_support::Failed(graph)->detail;
+        ASSERT_TRUE(graph) << llmp::test_support::Failed(graph)->detail;
         EXPECT_LE(bounded.scratch_peak().value(), scratch);
         for (int replay = 0; replay < 2; ++replay) {
           SCOPED_TRACE("capture replay " + std::to_string(replay));
@@ -7239,7 +7237,7 @@ TEST_F(GgmlExtOpsTest, PartialPhysicalStreamsMatchOffsetFilteredRealRootGroupsEx
         ggml_prec_set_acc(whole, GGML_PREC_F32);
         const auto full_plan = d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), whole)
                                         : kg::PlanFlashAttnMma(launch(), whole);
-        ASSERT_TRUE(full_plan) << jitllm::test_support::Failed(full_plan)->detail;
+        ASSERT_TRUE(full_plan) << llmp::test_support::Failed(full_plan)->detail;
 
         EXPECT_EQ(full_plan->columns, d == 256 ? 4 : 1);
         EXPECT_EQ(full_plan->group, d == 256 ? 2 : 8);
@@ -7290,7 +7288,7 @@ TEST_F(GgmlExtOpsTest, PartialPhysicalStreamsMatchOffsetFilteredRealRootGroupsEx
                               reinterpret_cast<std::uintptr_t>(raw_v->data));
           }
           const auto plan = kg::PlanFlashAttnOwners(launch(), in);
-          ASSERT_TRUE(plan) << jitllm::test_support::Failed(plan)->detail;
+          ASSERT_TRUE(plan) << llmp::test_support::Failed(plan)->detail;
           EXPECT_EQ(plan->effective_cohort, static_cast<std::uint32_t>(owners));
           EXPECT_EQ(plan->original.head, full_plan->head);
           EXPECT_EQ(plan->original.columns, full_plan->columns);
@@ -7345,7 +7343,7 @@ TEST_F(GgmlExtOpsTest, PartialPhysicalStreamsMatchOffsetFilteredRealRootGroupsEx
         // workspace; do not borrow the fixture's larger pool for this proof.
         auto context = LaunchContext::Create(launch().device(), *execution_, stream_,
                                              {.base = Allocate(scratch), .size = Bytes(scratch)});
-        ASSERT_TRUE(context) << jitllm::test_support::Failed(context)->detail;
+        ASSERT_TRUE(context) << llmp::test_support::Failed(context)->detail;
         auto& bounded = **context;
         EXPECT_EQ(bounded.workspace().size.value(), scratch);
         EXPECT_TRUE(bounded.UsesStream(*execution_, stream_));
@@ -7383,7 +7381,7 @@ TEST_F(GgmlExtOpsTest, PartialPhysicalStreamsMatchOffsetFilteredRealRootGroupsEx
             if (auto r = kg::FlashAttnOwnerRoots(l, quad); !r) return r;
           return {};
         });
-        ASSERT_TRUE(graph) << jitllm::test_support::Failed(graph)->detail;
+        ASSERT_TRUE(graph) << llmp::test_support::Failed(graph)->detail;
         EXPECT_LE(bounded.scratch_peak().value(), scratch);
         for (int replay = 0; replay < 2; ++replay) {
           SCOPED_TRACE("capture replay " + std::to_string(replay));

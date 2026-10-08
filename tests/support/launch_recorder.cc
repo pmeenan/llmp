@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "launch_recorder.h"
@@ -21,7 +21,7 @@
 #include "base/check.h"
 #include "plan_record.h"
 
-namespace jitllm::test_support {
+namespace llmp::test_support {
 namespace {
 
 thread_local std::vector<Event>* recording = nullptr;
@@ -173,7 +173,7 @@ std::vector<std::pair<std::string, std::string>> LoadedCublas() {
   return found;
 }
 
-}  // namespace jitllm::test_support
+}  // namespace llmp::test_support
 
 // The wrapped entry points. The linker sends every call to the wrapper,
 // and __real_ to the library's own.
@@ -232,22 +232,22 @@ cublasStatus_t __real_cublasGemmStridedBatchedEx(
 
 cudaError_t __wrap___cudaLaunchKernel(cudaKernel_t kernel, dim3 grid, dim3 block, void** args,
                                       std::size_t shared, cudaStream_t stream) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
     const char* name = nullptr;
     auto* const handle = reinterpret_cast<CUkernel>(kernel);
     if (cuKernelGetName(&name, handle) != CUDA_SUCCESS) {
       name = "(unnamed)";
     }
-    jitllm::test_support::Kernel(name, "cudaLaunchKernel", grid, block, shared,
-                                 jitllm::test_support::OfKernel(handle), stream);
+    llmp::test_support::Kernel(name, "cudaLaunchKernel", grid, block, shared,
+                               llmp::test_support::OfKernel(handle), stream);
   }
   return __real___cudaLaunchKernel(kernel, grid, block, args, shared, stream);
 }
 
 cudaError_t __wrap_cudaLaunchKernelExC(const cudaLaunchConfig_t* config, const void* function,
                                        void** args) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
     const char* name = nullptr;
     if (cudaFuncGetName(&name, function) != cudaSuccess) {
@@ -263,27 +263,27 @@ cudaError_t __wrap_cudaLaunchKernelExC(const cudaLaunchConfig_t* config, const v
         api = "cudaLaunchKernelExC+attributes";
       }
     }
-    jitllm::test_support::Kernel(name, api, config->gridDim, config->blockDim,
-                                 config->dynamicSmemBytes,
-                                 jitllm::test_support::OfFunction(function), config->stream);
+    llmp::test_support::Kernel(name, api, config->gridDim, config->blockDim,
+                               config->dynamicSmemBytes, llmp::test_support::OfFunction(function),
+                               config->stream);
   }
   return __real_cudaLaunchKernelExC(config, function, args);
 }
 
-// The runtime's C entry points, which jitLLM's EXL3 launchers call
+// The runtime's C entry points, which llmpalooza's EXL3 launchers call
 // directly (kernels/exl3/launch.cc): cooperatively for the GEMM, the
 // multi-GEMM and the GEMV, plainly for the reconstruction, Hadamard and
 // bias-add kernels.
 cudaError_t __wrap_cudaLaunchKernel(const void* function, dim3 grid, dim3 block, void** args,
                                     std::size_t shared, cudaStream_t stream) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
     const char* name = nullptr;
     if (cudaFuncGetName(&name, function) != cudaSuccess) {
       name = "(unnamed)";
     }
-    jitllm::test_support::Kernel(name, "cudaLaunchKernel", grid, block, shared,
-                                 jitllm::test_support::OfFunction(function), stream);
+    llmp::test_support::Kernel(name, "cudaLaunchKernel", grid, block, shared,
+                               llmp::test_support::OfFunction(function), stream);
   }
   return __real_cudaLaunchKernel(function, grid, block, args, shared, stream);
 }
@@ -291,21 +291,21 @@ cudaError_t __wrap_cudaLaunchKernel(const void* function, dim3 grid, dim3 block,
 cudaError_t __wrap_cudaLaunchCooperativeKernel(const void* function, dim3 grid, dim3 block,
                                                void** args, std::size_t shared,
                                                cudaStream_t stream) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
     const char* name = nullptr;
     if (cudaFuncGetName(&name, function) != cudaSuccess) {
       name = "(unnamed)";
     }
-    jitllm::test_support::Kernel(name, "cudaLaunchCooperativeKernel", grid, block, shared,
-                                 jitllm::test_support::OfFunction(function), stream);
+    llmp::test_support::Kernel(name, "cudaLaunchCooperativeKernel", grid, block, shared,
+                               llmp::test_support::OfFunction(function), stream);
   }
   return __real_cudaLaunchCooperativeKernel(function, grid, block, args, shared, stream);
 }
 
 // cuBLASLt's matrix product (the EXL3 reconstruction GEMM, recon_gemm.h),
 // with m, n and k as its layouts give them: D is m × n, A m × k (no
-// transposes; jitLLM's calls set none). What it launches is in the nsys
+// transposes; llmpalooza's calls set none). What it launches is in the nsys
 // trace of the run.
 cublasStatus_t __wrap_cublasLtMatmul(cublasLtHandle_t handle, cublasLtMatmulDesc_t description,
                                      const void* alpha, const void* a,
@@ -315,7 +315,7 @@ cublasStatus_t __wrap_cublasLtMatmul(cublasLtHandle_t handle, cublasLtMatmulDesc
                                      cublasLtMatrixLayout_t d_layout,
                                      const cublasLtMatmulAlgo_t* algorithm, void* workspace,
                                      std::size_t workspace_size, cudaStream_t stream) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
     std::uint64_t m = 0;
     std::uint64_t n = 0;
@@ -328,9 +328,8 @@ cublasStatus_t __wrap_cublasLtMatmul(cublasLtHandle_t handle, cublasLtMatmulDesc
                                          &written) == CUBLAS_STATUS_SUCCESS &&
         cublasLtMatrixLayoutGetAttribute(a_layout, CUBLASLT_MATRIX_LAYOUT_COLS, &k, sizeof(k),
                                          &written) == CUBLAS_STATUS_SUCCESS;
-    jitllm::test_support::Cublas("cublasLtMatmul", read ? static_cast<int>(m) : -1,
-                                 read ? static_cast<int>(n) : -1, read ? static_cast<int>(k) : -1,
-                                 0);
+    llmp::test_support::Cublas("cublasLtMatmul", read ? static_cast<int>(m) : -1,
+                               read ? static_cast<int>(n) : -1, read ? static_cast<int>(k) : -1, 0);
   }
   return __real_cublasLtMatmul(handle, description, alpha, a, a_layout, b, b_layout, beta, c,
                                c_layout, d, d_layout, algorithm, workspace, workspace_size, stream);
@@ -338,9 +337,9 @@ cublasStatus_t __wrap_cublasLtMatmul(cublasLtHandle_t handle, cublasLtMatmulDesc
 
 cudaError_t __wrap_cudaMemcpyAsync(void* destination, const void* source, std::size_t count,
                                    cudaMemcpyKind kind, cudaStream_t stream) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
-    jitllm::test_support::Copy(jitllm::test_support::KindName(kind), count, stream);
+    llmp::test_support::Copy(llmp::test_support::KindName(kind), count, stream);
   }
   return __real_cudaMemcpyAsync(destination, source, count, kind, stream);
 }
@@ -349,9 +348,9 @@ cudaError_t __wrap_cudaMemcpy2DAsync(void* destination, std::size_t destination_
                                      const void* source, std::size_t source_pitch,
                                      std::size_t width, std::size_t height, cudaMemcpyKind kind,
                                      cudaStream_t stream) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
-    jitllm::test_support::Copy(jitllm::test_support::KindName(kind), width * height, stream);
+    llmp::test_support::Copy(llmp::test_support::KindName(kind), width * height, stream);
   }
   return __real_cudaMemcpy2DAsync(destination, destination_pitch, source, source_pitch, width,
                                   height, kind, stream);
@@ -359,23 +358,23 @@ cudaError_t __wrap_cudaMemcpy2DAsync(void* destination, std::size_t destination_
 
 cudaError_t __wrap_cudaMemsetAsync(void* destination, int value, std::size_t count,
                                    cudaStream_t stream) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
-    jitllm::test_support::Event event;
-    event.kind = jitllm::test_support::EventKind::kMemset;
+    llmp::test_support::Event event;
+    event.kind = llmp::test_support::EventKind::kMemset;
     event.bytes = count;
     event.value = value;
     event.stream = stream;
-    jitllm::test_support::recording->push_back(std::move(event));
+    llmp::test_support::recording->push_back(std::move(event));
   }
   return __real_cudaMemsetAsync(destination, value, count, stream);
 }
 
 CUresult __wrap_cuMemcpyAsync(CUdeviceptr destination, CUdeviceptr source, std::size_t count,
                               CUstream stream) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
-    jitllm::test_support::Copy("driver", count, stream);
+    llmp::test_support::Copy("driver", count, stream);
   }
   return __real_cuMemcpyAsync(destination, source, count, stream);
 }
@@ -384,9 +383,9 @@ cublasStatus_t __wrap_cublasSgemm_v2(cublasHandle_t handle, cublasOperation_t tr
                                      cublasOperation_t transb, int m, int n, int k,
                                      const float* alpha, const float* a, int lda, const float* b,
                                      int ldb, const float* beta, float* c, int ldc) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
-    jitllm::test_support::Cublas("cublasSgemm_v2", m, n, k, 0);
+    llmp::test_support::Cublas("cublasSgemm_v2", m, n, k, 0);
   }
   return __real_cublasSgemm_v2(handle, transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c,
                                ldc);
@@ -398,9 +397,9 @@ cublasStatus_t __wrap_cublasGemmEx(cublasHandle_t handle, cublasOperation_t tran
                                    cudaDataType b_type, int ldb, const void* beta, void* c,
                                    cudaDataType c_type, int ldc, cublasComputeType_t compute,
                                    cublasGemmAlgo_t algo) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
-    jitllm::test_support::Cublas("cublasGemmEx", m, n, k, 0);
+    llmp::test_support::Cublas("cublasGemmEx", m, n, k, 0);
   }
   return __real_cublasGemmEx(handle, transa, transb, m, n, k, alpha, a, a_type, lda, b, b_type, ldb,
                              beta, c, c_type, ldc, compute, algo);
@@ -413,9 +412,9 @@ cublasStatus_t __wrap_cublasGemmBatchedEx(cublasHandle_t handle, cublasOperation
                                           cudaDataType b_type, int ldb, const void* beta,
                                           void* const c[], cudaDataType c_type, int ldc, int batch,
                                           cublasComputeType_t compute, cublasGemmAlgo_t algo) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
-    jitllm::test_support::Cublas("cublasGemmBatchedEx", m, n, k, batch);
+    llmp::test_support::Cublas("cublasGemmBatchedEx", m, n, k, batch);
   }
   return __real_cublasGemmBatchedEx(handle, transa, transb, m, n, k, alpha, a, a_type, lda, b,
                                     b_type, ldb, beta, c, c_type, ldc, batch, compute, algo);
@@ -427,9 +426,9 @@ cublasStatus_t __wrap_cublasGemmStridedBatchedEx(
     const void* b, cudaDataType b_type, int ldb, long long stride_b, const void* beta, void* c,
     cudaDataType c_type, int ldc, long long stride_c, int batch, cublasComputeType_t compute,
     cublasGemmAlgo_t algo) {
-  const jitllm::test_support::Outer outer;
+  const llmp::test_support::Outer outer;
   if (outer.on()) {
-    jitllm::test_support::Cublas("cublasGemmStridedBatchedEx", m, n, k, batch);
+    llmp::test_support::Cublas("cublasGemmStridedBatchedEx", m, n, k, batch);
   }
   return __real_cublasGemmStridedBatchedEx(handle, transa, transb, m, n, k, alpha, a, a_type, lda,
                                            stride_a, b, b_type, ldb, stride_b, beta, c, c_type, ldc,

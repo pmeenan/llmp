@@ -1,12 +1,12 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# The jitllm package's prerm: stop the runtime (which drains) before its
+# The llmp package's prerm: stop the runtime (which drains) before its
 # files go away.
 set -e
 
 if [ -z "$DPKG_ROOT" ] && [ "$1" = remove ] && [ -d /run/systemd/system ]; then
-  deb-systemd-invoke stop jitllm.service >/dev/null || true
+  deb-systemd-invoke stop llmp.service >/dev/null || true
 fi
 exit 0

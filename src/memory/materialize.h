@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Planning a closure's materialization in one domain
@@ -15,8 +15,8 @@
 // completions arrive. It chooses nothing that the closure needs, and
 // nothing the caller protects.
 
-#ifndef JITLLM_MEMORY_MATERIALIZE_H_
-#define JITLLM_MEMORY_MATERIALIZE_H_
+#ifndef LLMP_MEMORY_MATERIALIZE_H_
+#define LLMP_MEMORY_MATERIALIZE_H_
 
 #include <span>
 #include <vector>
@@ -25,7 +25,7 @@
 #include "catalog/catalog.h"
 #include "memory/victims.h"
 
-namespace jitllm::memory {
+namespace llmp::memory {
 
 struct MaterializationPlan {
   // The closure's extents in this domain, by what they need.
@@ -54,6 +54,6 @@ MaterializationPlan PlanMaterialization(const catalog::Catalog& catalog, catalog
                                         std::span<const catalog::ExtentId> protect = {},
                                         bool select_victims = true);
 
-}  // namespace jitllm::memory
+}  // namespace llmp::memory
 
-#endif  // JITLLM_MEMORY_MATERIALIZE_H_
+#endif  // LLMP_MEMORY_MATERIALIZE_H_

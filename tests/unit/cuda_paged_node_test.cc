@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // BP-S3's node on a real device (tests/support/paged_node.h), and M3's
@@ -55,19 +55,19 @@
 
 namespace {
 
-namespace sc = jitllm::scheduler;
-namespace ts = jitllm::test_support;
-using jitllm::base::Bytes;
-using jitllm::catalog::ExtentId;
-using jitllm::catalog::ExtentState;
+namespace sc = llmp::scheduler;
+namespace ts = llmp::test_support;
+using llmp::base::Bytes;
+using llmp::catalog::ExtentId;
+using llmp::catalog::ExtentState;
 
 constexpr std::uint64_t kExtent = ts::kPagedExtent;
 constexpr std::array<std::size_t, 2> kExtents = {4, 3};  // model 0 is the larger
 
 TEST(CountingStorageTest, CompletedReadBytesExcludeWritesFailuresAndUnstartedRequests) {
-  namespace pr = jitllm::providers;
+  namespace pr = llmp::providers;
   pr::fake::FakeStorage inner(8, 1);
-  jitllm::engine::CountingStorage storage(inner);
+  llmp::engine::CountingStorage storage(inner);
   std::array<std::byte, 16> memory{};
   const int fd = inner.AddFile(std::vector<std::byte>(memory.size(), std::byte{7}));
   const auto submit = [&](std::uint64_t token, pr::IoKind kind) {
@@ -104,10 +104,10 @@ TEST(CountingStorageTest, CompletedReadBytesExcludeWritesFailuresAndUnstartedReq
 }
 
 TEST(CountingStorageTest, HeldReadsCountOnlyOncePassedAndCancelledHeldReadsCountNothing) {
-  namespace pr = jitllm::providers;
+  namespace pr = llmp::providers;
   pr::fake::FakeStorage inner(8, 1);
   std::atomic<bool> hold{true};
-  jitllm::engine::CountingStorage storage(inner, &hold, true);
+  llmp::engine::CountingStorage storage(inner, &hold, true);
   std::array<std::byte, 16> memory{};
   const int fd = inner.AddFile(std::vector<std::byte>(memory.size(), std::byte{7}));
   const auto submit = [&](std::uint64_t token) {
@@ -165,8 +165,8 @@ class Model final : public ts::PagedModel {
     for (std::uint32_t i = 0; i < extents; ++i) {
       weights_.push_back(node_.catalog()
                              .AddExtent({.domain = node_.domain(),
-                                         .memory_class = jitllm::catalog::MemoryClass::kWeights,
-                                         .recovery = jitllm::catalog::Recovery::kFromArtifact,
+                                         .memory_class = llmp::catalog::MemoryClass::kWeights,
+                                         .recovery = llmp::catalog::Recovery::kFromArtifact,
                                          .size = Bytes(kExtent),
                                          .content = {.artifact = artifact, .group = 0, .chunk = i}})
                              .value());
@@ -213,7 +213,7 @@ class Model final : public ts::PagedModel {
     const std::size_t extents = weights_.size();
     return node_.Job(
         closure_,
-        [=](jitllm::providers::NativeStream native) {
+        [=](llmp::providers::NativeStream native) {
           auto* stream = static_cast<cudaStream_t>(native.handle);
           for (std::size_t i = 0; i < extents; ++i) {
             // NOLINTBEGIN(performance-no-int-to-ptr)
@@ -239,11 +239,11 @@ class Model final : public ts::PagedModel {
     }
     return resident;
   }
-  const jitllm::catalog::Closure& closure() const { return closure_; }
+  const llmp::catalog::Closure& closure() const { return closure_; }
   const std::vector<ExtentId>& weights() const { return weights_; }
 
   std::uint32_t stream() const override { return index_; }
-  const jitllm::catalog::Closure& fence_closure() const override { return fence_; }
+  const llmp::catalog::Closure& fence_closure() const override { return fence_; }
   std::vector<ExtentId> managed_extents() const override { return weights_; }
   // Called first in Release, once the node's teardown has fenced the stream.
   std::function<void()> on_release;
@@ -269,17 +269,17 @@ class Model final : public ts::PagedModel {
   bool host_first_ = false;
   std::vector<std::byte> file_;
   int fd_ = -1;
-  jitllm::providers::ReservationId place_;
+  llmp::providers::ReservationId place_;
   std::uint64_t base_ = 0;
   std::vector<ExtentId> weights_;
   std::vector<ExtentId> staging_;
   std::byte* staging_bytes_ = nullptr;
-  jitllm::catalog::Closure closure_;
-  jitllm::catalog::Closure fence_;  // the staging, always resident, unless fence_weights_
+  llmp::catalog::Closure closure_;
+  llmp::catalog::Closure fence_;  // the staging, always resident, unless fence_weights_
 };
 
 TEST(CudaPagedNodeTest, TwoModelsAlternateAndEachEvictsOnlyTheOthersWeights) {
-  const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   const std::filesystem::path directory = scratch != nullptr
                                               ? std::filesystem::path(scratch)
                                               : std::filesystem::path(::testing::TempDir());
@@ -349,7 +349,7 @@ TEST(CudaPagedNodeTest, TwoModelsAlternateAndEachEvictsOnlyTheOthersWeights) {
 }
 
 std::filesystem::path Scratch() {
-  const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   std::filesystem::path directory = scratch != nullptr
                                         ? std::filesystem::path(scratch)
                                         : std::filesystem::path(::testing::TempDir());
@@ -375,10 +375,10 @@ TEST(CudaPagedNodeTest, ManagedAcquireValidatesProtectsAndNeverFallsBackToCatalo
   ASSERT_TRUE(first.Intact());
   std::uint64_t calls = 0;
   bool take = false;
-  node.SetReclaimer([&](std::uint64_t needed, jitllm::engine::PagedNode::ReclaimFor what,
+  node.SetReclaimer([&](std::uint64_t needed, llmp::engine::PagedNode::ReclaimFor what,
                         std::span<const ExtentId> protect) -> std::uint64_t {
     ++calls;
-    EXPECT_EQ(what, jitllm::engine::PagedNode::ReclaimFor::kMaterialize);
+    EXPECT_EQ(what, llmp::engine::PagedNode::ReclaimFor::kMaterialize);
     EXPECT_EQ(needed, kExtents[1] * kExtent);
     for (const auto& [extent, generation] : second.closure().extents) {
       (void)generation;
@@ -408,13 +408,12 @@ TEST(CudaPagedNodeTest, ManagedAcquireValidatesProtectsAndNeverFallsBackToCatalo
   ASSERT_TRUE(node.Call(
       [&]() -> ts::Status {
         const auto domain = node.catalog().AddDomain("foreign acquisition control");
-        auto added =
-            node.catalog().AddExtent({.domain = domain,
-                                      .memory_class = jitllm::catalog::MemoryClass::kRuntime,
-                                      .recovery = jitllm::catalog::Recovery::kPinned,
-                                      .size = Bytes(kExtent),
-                                      .content = {}},
-                                     true);
+        auto added = node.catalog().AddExtent({.domain = domain,
+                                               .memory_class = llmp::catalog::MemoryClass::kRuntime,
+                                               .recovery = llmp::catalog::Recovery::kPinned,
+                                               .size = Bytes(kExtent),
+                                               .content = {}},
+                                              true);
         if (!added) return std::unexpected("adding a foreign acquisition extent");
         foreign = *added;
         return {};
@@ -446,7 +445,7 @@ TEST(CudaPagedNodeTest, ManagedAcquireValidatesProtectsAndNeverFallsBackToCatalo
   EXPECT_TRUE(second.Intact());
   bool meanwhile_ran = false;
   ASSERT_TRUE(node.Job(
-      second.closure(), [](jitllm::providers::NativeStream) { return sc::JobResult::kQueued; },
+      second.closure(), [](llmp::providers::NativeStream) { return sc::JobResult::kQueued; },
       "in-flight acquisition guard", 1,
       [&]() {
         meanwhile_ran = true;
@@ -486,7 +485,7 @@ TEST(CudaPagedNodeTest, PartialSwapReleasesIncompatibleDonorBeforeHostFirstLoad)
   ASSERT_TRUE(first.ReadBack());
   ASSERT_TRUE(first.Intact());
   std::vector<ExtentId> victims(first.weights().begin(), first.weights().begin() + 3);
-  jitllm::catalog::Closure strict;
+  llmp::catalog::Closure strict;
   ASSERT_TRUE(node.Call(
       [&]() -> ts::Status {
         strict = node.catalog().ClosureOfExtents(victims).value();
@@ -594,7 +593,7 @@ TEST(CudaPagedNodeTest, SwapsHandBackingOverAndEveryByteReadsBack) {
 // memory. Each model's fence closure here is its weights, nonresident once
 // the first is swapped out (like a runner's spilled state). Without `room`
 // for them beside the second model's, a fence that paged them in again
-// was refused (as jitllm-runtime's stop once was with two models); with
+// was refused (as llmp-runtime's stop once was with two models); with
 // room, it read them back for nothing. Work queued on the first stream
 // outside any job (a host function that ends late, as a launch context's
 // own work may) has completed before that model's Release.
@@ -737,7 +736,7 @@ TEST_P(CudaPagedNodeRequest, ARequestLeasesOnceAndItsStepsRunUnderIt) {
   std::atomic<bool> outside_ran{false};
   const ts::Status outside = node.Job(
       second.closure(),
-      [&outside_ran](jitllm::providers::NativeStream /*native*/) {
+      [&outside_ran](llmp::providers::NativeStream /*native*/) {
         outside_ran.store(true);
         return sc::JobResult::kQueued;
       },
@@ -785,7 +784,7 @@ TEST(CudaPagedNodeTest, HostLookaheadCompletesInsideHeldAndStandaloneJobsAndSkip
     ASSERT_TRUE(node.Start(Bytes(fixed + kExtent)));
     node.Run();
     for (const bool held : {false, true}) {
-      const jitllm::catalog::Closure closure;
+      const llmp::catalog::Closure closure;
       if (held) ASSERT_TRUE(node.BeginRequest(0, closure, "host-only lookahead control"));
       // A direct step (a held request's, by default) runs the job's host
       // part on the driver first: the lookahead then overlaps its device
@@ -796,7 +795,7 @@ TEST(CudaPagedNodeTest, HostLookaheadCompletesInsideHeldAndStandaloneJobsAndSkip
         bool called = false;
         const auto ran = node.Job(
             closure,
-            [&](jitllm::providers::NativeStream) {
+            [&](llmp::providers::NativeStream) {
               entered.store(true);
               const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
               while (!release.load() && std::chrono::steady_clock::now() < deadline)
@@ -861,7 +860,7 @@ TEST(CudaPagedNodeTest, ACopyLaneLandsPageInsWhileAJobFillsItsStream) {
   ts::Done done;
   const std::uint64_t request = node.Submit(std::make_unique<ts::RunProgram>(
       done, first.closure(),
-      [&queued, device_flag, workspace](jitllm::providers::NativeStream native) {
+      [&queued, device_flag, workspace](llmp::providers::NativeStream native) {
         if (cuStreamWaitValue32(static_cast<CUstream>(native.handle),
                                 reinterpret_cast<CUdeviceptr>(device_flag), 1,
                                 CU_STREAM_WAIT_VALUE_GEQ) != CUDA_SUCCESS) {
@@ -1014,7 +1013,7 @@ TEST_P(CudaPagedNodeSleep, RequestStepsSleepBetweenAndLoseNoCompletion) {
   for (std::uint32_t s = 0; s < kDelays.size(); ++s) {
     ran = node.Job(
         first.closure(),
-        [&launched, device_flag, workspace, s](jitllm::providers::NativeStream native) {
+        [&launched, device_flag, workspace, s](llmp::providers::NativeStream native) {
           if (cuStreamWaitValue32(static_cast<CUstream>(native.handle),
                                   reinterpret_cast<CUdeviceptr>(device_flag), s + 1,
                                   CU_STREAM_WAIT_VALUE_GEQ) != CUDA_SUCCESS ||
@@ -1080,31 +1079,30 @@ TEST(CudaPagedNodeTest, AStalledReadKeepsItsLandingPastTeardown) {
   auto* const landing = static_cast<std::byte*>(*pinned);
   std::memset(landing, 0, kBytes);
 
-  auto storage = std::make_unique<jitllm::providers::fake::FakeStorage>(4, kBytes);
-  jitllm::providers::fake::FakeStorage* const ring = storage.get();
+  auto storage = std::make_unique<llmp::providers::fake::FakeStorage>(4, kBytes);
+  llmp::providers::fake::FakeStorage* const ring = storage.get();
   const int fd = ring->AddFile(std::vector<std::byte>(kBytes, std::byte{0x5a}));
-  ring->ScriptNext({.submission = jitllm::providers::Submission::kAccepted,
-                    .result = std::nullopt,
-                    .hold = true});
+  ring->ScriptNext(
+      {.submission = llmp::providers::Submission::kAccepted, .result = std::nullopt, .hold = true});
   ASSERT_EQ(ring->Submit({.token = 7,
-                          .kind = jitllm::providers::IoKind::kRead,
+                          .kind = llmp::providers::IoKind::kRead,
                           .fd = fd,
                           .offset = 0,
                           .memory = landing,
                           .length = kBytes,
                           .segments = {}}),
-            jitllm::providers::Submission::kAccepted);
+            llmp::providers::Submission::kAccepted);
   const std::array<void*, 1> landings = {landing};
   EXPECT_TRUE(node.RetireRing(std::move(storage), landings));
   EXPECT_EQ(node.kept_pinned(), 1U);
   EXPECT_FALSE(
-      node.RetireRing(std::make_unique<jitllm::providers::fake::FakeStorage>(4, kBytes), landings));
+      node.RetireRing(std::make_unique<llmp::providers::fake::FakeStorage>(4, kBytes), landings));
   const std::array<ts::PagedModel*, 0> none{};
   const ts::Status finished = node.TearDown(none);
   EXPECT_TRUE(finished.has_value()) << finished.error();
   // The read lands after the teardown, into memory still allocated.
   ASSERT_TRUE(ring->Release(7));
-  std::array<jitllm::providers::IoCompletion, 1> done{};
+  std::array<llmp::providers::IoCompletion, 1> done{};
   ASSERT_EQ(ring->Harvest(done, false), 1U);
   EXPECT_EQ(done[0].result, kBytes);
   EXPECT_EQ(landing[kBytes - 1], std::byte{0x5a});
@@ -1131,25 +1129,25 @@ ts::NodeSettings HangSettings(std::chrono::milliseconds quiet,
 // cancellation has not drained `quiet` after it with nothing moving is
 // where the ladder would restart the process (rung 3): recorded, and the
 // wait goes on (the test then frees it).
-class RecordingPatience final : public jitllm::engine::Patience {
+class RecordingPatience final : public llmp::engine::Patience {
  public:
   explicit RecordingPatience(std::chrono::milliseconds quiet) : quiet_(quiet) {}
   void Begin() override { ++begun; }
   void End() override { ++ended; }
-  jitllm::engine::WaitVerdict Check(const jitllm::engine::WaitState& wait,
-                                    std::uint64_t /*progress*/) override {
+  llmp::engine::WaitVerdict Check(const llmp::engine::WaitState& wait,
+                                  std::uint64_t /*progress*/) override {
     const auto now = std::chrono::steady_clock::now();
     if (!wait.cancelled) {
       if (now - wait.progressed < quiet_) {
-        return jitllm::engine::WaitVerdict::kWait;
+        return llmp::engine::WaitVerdict::kWait;
       }
       ++cancels;
-      return jitllm::engine::WaitVerdict::kCancel;
+      return llmp::engine::WaitVerdict::kCancel;
     }
     if (now - std::max(wait.progressed, *wait.cancelled) >= quiet_) {
       gave_up.store(true);
     }
-    return jitllm::engine::WaitVerdict::kWait;
+    return llmp::engine::WaitVerdict::kWait;
   }
   std::atomic<int> begun{0};
   std::atomic<int> ended{0};
@@ -1364,7 +1362,7 @@ TEST(CudaPagedNodeTest, AHungStreamCannotBeCancelledSoItsPatienceGivesUp) {
     timed_out = !patience.gave_up.load();
     std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(flag)).store(1);
   });
-  const auto gated = [device_flag](jitllm::providers::NativeStream native) {
+  const auto gated = [device_flag](llmp::providers::NativeStream native) {
     if (cuStreamWaitValue32(static_cast<CUstream>(native.handle),
                             reinterpret_cast<CUdeviceptr>(device_flag), 1,
                             CU_STREAM_WAIT_VALUE_GEQ) != CUDA_SUCCESS) {

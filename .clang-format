@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-# jitLLM's C++ and CUDA style (D-059): Google style, 100 columns.
+# Llmpalooza's C++ and CUDA style (D-059): Google style, 100 columns.
 ---
 Language: Cpp
 BasedOnStyle: Google

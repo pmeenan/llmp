@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Conversations kept across a restart (D-105), host-side: the owner-only
@@ -8,7 +8,7 @@
 // hashes and writes records in the background (runtime/state_keeper.h: a
 // record describes its files exactly or does not exist; one invalidated
 // while it is made is never written). Scratch trees go in the build tree
-// (JITLLM_TEST_SCRATCH), on a filesystem with direct I/O.
+// (LLMP_TEST_SCRATCH), on a filesystem with direct I/O.
 
 #include <fcntl.h>
 #include <gtest/gtest.h>
@@ -42,15 +42,15 @@
 namespace {
 
 namespace fs = std::filesystem;
-namespace kept = jitllm::runtime::kept;
-namespace pf = jitllm::platform;
-using jitllm::runtime::HashPlaces;
-using jitllm::runtime::StateKeeper;
+namespace kept = llmp::runtime::kept;
+namespace pf = llmp::platform;
+using llmp::runtime::HashPlaces;
+using llmp::runtime::StateKeeper;
 
 constexpr std::uint64_t kExtent = kept::kExtentBytes;
 
 fs::path Scratch(std::string_view name) {
-  const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   const fs::path root = base != nullptr ? fs::path(base) : fs::path(::testing::TempDir());
   const fs::path path = root / std::format("kept-{}-{}", name, ::getpid());
   fs::remove_all(path);
@@ -285,7 +285,7 @@ TEST(KeptRecord, ATamperedOrCutRecordIsRefused) {
   EXPECT_FALSE(kept::Decode(digest_edited).has_value());
   // A field added, with a digest made to match: refused as not the format.
   std::string body = text.substr(0, text.size() - 77) + R"(,"extra":1})";
-  const std::string digest = jitllm::base::ToHex(jitllm::base::Sha256().Update(body).Finish());
+  const std::string digest = llmp::base::ToHex(llmp::base::Sha256().Update(body).Finish());
   body.pop_back();
   body += R"(,"digest":")" + digest + R"("})";
   auto extra = kept::Decode(body);
@@ -558,12 +558,12 @@ TEST(StateKeeper, AdoptionEmptiesWhatTheRecordDoesNotList) {
   // Not the file the record names: refused, nothing emptied.
   kept::Record other = r;
   other.id.inode += 1;
-  EXPECT_FALSE(jitllm::runtime::EmptyUnlisted(model.fd, other).empty());
+  EXPECT_FALSE(llmp::runtime::EmptyUnlisted(model.fd, other).empty());
   EXPECT_EQ(hash(all), before);
-  ASSERT_EQ(jitllm::runtime::EmptyUnlisted(model.fd, r), "");
+  ASSERT_EQ(llmp::runtime::EmptyUnlisted(model.fd, r), "");
   const auto after = hash(all);
   const std::vector<std::byte> zeros(kExtent);
-  const auto zero = jitllm::base::Sha256().Update(std::span<const std::byte>(zeros)).Finish();
+  const auto zero = llmp::base::Sha256().Update(std::span<const std::byte>(zeros)).Finish();
   EXPECT_EQ(after[0], before[0]);
   EXPECT_EQ(after[1], std::optional(zero));
   EXPECT_EQ(after[2], before[2]);
@@ -580,7 +580,7 @@ TEST(StateKeeper, AdoptionEmptiesWhatTheRecordDoesNotList) {
 }  // namespace
 
 TEST(StateKeeper, PendingTokenCopyKeepsItsChargeThroughInvalidationAndRetirement) {
-  namespace rt = jitllm::runtime;
+  namespace rt = llmp::runtime;
   const fs::path root = Scratch("charged-keeper");
   fs::create_directories(root);
   Dir model(root / "model");
@@ -615,7 +615,7 @@ TEST(StateKeeper, PendingTokenCopyKeepsItsChargeThroughInvalidationAndRetirement
 }
 
 TEST(KeptRecord, DecodingFundsIndependentTokenCapacityBeforeAllocation) {
-  namespace rt = jitllm::runtime;
+  namespace rt = llmp::runtime;
   const auto text = kept::Encode(Sample());
   rt::RequestMemory tiny(1);
   rt::MemoryCharge refusal;

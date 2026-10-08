@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Manual C1/P64/depth3 target+assistant transaction, never CTest or serving.
@@ -26,10 +26,10 @@
 #include "tokenizer/gguf.h"
 
 namespace {
-namespace en = jitllm::engine;
-namespace ar = jitllm::artifact;
-namespace md = jitllm::model;
-namespace tk = jitllm::tokenizer;
+namespace en = llmp::engine;
+namespace ar = llmp::artifact;
+namespace md = llmp::model;
+namespace tk = llmp::tokenizer;
 using en::support::Error;
 constexpr std::uint64_t kHost = 64ULL << 20U, kAdmission = 512ULL << 20U;
 constexpr std::uint32_t kVocab = 262144, kPast = 64;
@@ -103,8 +103,8 @@ class Screen {
   std::expected<std::string, std::string> Hash(std::span<const en::LiveState::Range> ranges) {
     std::uint64_t bytes = 0;
     for (const auto& r : ranges) bytes += r.bytes;
-    if (bytes == 0) return jitllm::base::ToHex(jitllm::base::Sha256{}.Finish());
-    std::vector<jitllm::catalog::ExtentId> extents;
+    if (bytes == 0) return llmp::base::ToHex(llmp::base::Sha256{}.Finish());
+    std::vector<llmp::catalog::ExtentId> extents;
     auto pinned = node_.Pinned(bytes, 0, extents);
     if (!pinned) return Error(pinned.error());
     if (auto r = runner_.CopyState(0, *pinned, ranges, true); !r) {
@@ -112,15 +112,15 @@ class Screen {
       return Error(r.error());
     }
     const auto result =
-        jitllm::base::ToHex(jitllm::base::Sha256{}
-                                .Update(std::span(static_cast<const std::byte*>(*pinned), bytes))
-                                .Finish());
+        llmp::base::ToHex(llmp::base::Sha256{}
+                              .Update(std::span(static_cast<const std::byte*>(*pinned), bytes))
+                              .Finish());
     if (auto r = node_.FreePinned(*pinned); !r) return Error(r.error());
     return result;
   }
   en::Status Feature(std::uint32_t first, std::uint32_t rows, std::vector<float>& out) {
     const auto count = std::uint64_t{rows} * runner_.profile().width;
-    std::vector<jitllm::catalog::ExtentId> extents;
+    std::vector<llmp::catalog::ExtentId> extents;
     auto pinned = node_.Pinned(count * sizeof(float), 0, extents);
     if (!pinned) return Error(pinned.error());
     if (auto r = runner_.CopyFeatures(0, first, rows, *pinned); !r) {
@@ -189,7 +189,7 @@ class Screen {
       auto protected_before = Hash(*initialized);
       if (!protected_before) return Error(protected_before.error());
       std::array<std::int32_t, 4> proposal{};
-      auto anchor = jitllm::execution::Greedy(initial);
+      auto anchor = llmp::execution::Greedy(initial);
       if (!anchor) return Error("initial anchor refused");
       proposal[0] = *anchor;
       if (mode == "unit") {
@@ -206,7 +206,7 @@ class Screen {
               return Error("draft output differs");
             draft_heads.insert(draft_heads.end(), draft_head.begin(), draft_head.end());
             draft_features.insert(draft_features.end(), draft_feature.begin(), draft_feature.end());
-            auto next = jitllm::execution::Greedy(draft_head);
+            auto next = llmp::execution::Greedy(draft_head);
             if (!next) return Error("draft anchor refused");
             proposal[step + 1] = *next;
             if (borrow->prefix() != kPast) return Error("draft query moved");
@@ -239,7 +239,7 @@ class Screen {
       const auto keep = mode == "unit" ? decision->keep : 4U;
       auto next_anchor = decision->next_anchor;
       if (mode == "teacher") {
-        auto next = jitllm::execution::Greedy(std::span(control).last(kVocab));
+        auto next = llmp::execution::Greedy(std::span(control).last(kVocab));
         if (!next) return Error("selected pending target anchor refused");
         next_anchor = *next;
       }
@@ -377,7 +377,7 @@ class Screen {
       return Error("bounded32 actual vector capacities exceed caller funding");
     auto ranges = Writes(0, kPast + emitted);
     if (!ranges) return Error(ranges.error());
-    std::vector<jitllm::catalog::ExtentId> tail_extents;
+    std::vector<llmp::catalog::ExtentId> tail_extents;
     void* tail_pinned = nullptr;
     if (speculate) {
       auto pinned =
@@ -443,7 +443,7 @@ class Screen {
           for (std::uint32_t row = 0; row < keep; ++row)
             record.tokens[record.count + row] = result.committed[row];
         } else {
-          const auto anchor = jitllm::execution::Greedy(head);
+          const auto anchor = llmp::execution::Greedy(head);
           if (!anchor) return Error("bounded32 target frontier refused");
           const std::array<std::int32_t, 1> input{*anchor};
           const en::Gemma4Runner::Work work{0, past, input, &head};
@@ -560,7 +560,7 @@ int main(int argc, char** argv) {
   if (!input.read(reinterpret_cast<char*>(ids.data()), sizeof(ids)) ||
       input.peek() != std::char_traits<char>::eof() || ids[0] != 2 ||
       !std::ranges::all_of(ids, [](auto id) { return id >= 0 && id < static_cast<int>(kVocab); }) ||
-      jitllm::base::ToHex(jitllm::base::Sha256{}.Update(std::as_bytes(std::span(ids))).Finish()) !=
+      llmp::base::ToHex(llmp::base::Sha256{}.Update(std::as_bytes(std::span(ids))).Finish()) !=
           "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610")
     return 2;
   const std::filesystem::path out = argv[3];
@@ -616,8 +616,8 @@ int main(int argc, char** argv) {
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     node.SetHostFloor(runner.host_input_bytes() + runner.plan_floor_bytes() + host);
-    if (auto r = node.Start(jitllm::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
-                                                2 * node.StateCapacity() + host));
+    if (auto r = node.Start(llmp::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
+                                              2 * node.StateCapacity() + host));
         !r)
       return r;
     if (auto r = runner.Register(); !r) return r;

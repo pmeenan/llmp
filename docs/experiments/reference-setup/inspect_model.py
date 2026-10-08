@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Summarize the pinned Gemma GGUF using the reference image's GGUF reader.
 
 Run inside the pinned image, after verifying the artifact hash. This is an
-experiment inspector, not jitLLM's future untrusted-checkpoint validator.
+experiment inspector, not llmpalooza's future untrusted-checkpoint validator.
 """
 
 import json

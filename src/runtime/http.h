@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A small, bounded HTTP/1.1 server's pieces for M3's chat route (D-097;
@@ -12,8 +12,8 @@
 // control characters; a body only by Content-Length (a Transfer-Encoding
 // is refused), which `Expect: 100-continue` is answered for.
 
-#ifndef JITLLM_RUNTIME_HTTP_H_
-#define JITLLM_RUNTIME_HTTP_H_
+#ifndef LLMP_RUNTIME_HTTP_H_
+#define LLMP_RUNTIME_HTTP_H_
 
 #include <chrono>
 #include <cstddef>
@@ -27,7 +27,7 @@
 
 #include "config/node_config.h"
 
-namespace jitllm::runtime::http {
+namespace llmp::runtime::http {
 
 using Clock = std::chrono::steady_clock;
 
@@ -127,6 +127,6 @@ struct Listener {
 };
 std::expected<Listener, std::string> Listen(const config::ClientEndpoint& endpoint);
 
-}  // namespace jitllm::runtime::http
+}  // namespace llmp::runtime::http
 
-#endif  // JITLLM_RUNTIME_HTTP_H_
+#endif  // LLMP_RUNTIME_HTTP_H_

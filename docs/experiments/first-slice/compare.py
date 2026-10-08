@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Compare finite, identically tokenized reference logits; no tolerance is inferred."""
 
@@ -49,7 +49,7 @@ def compare(left, right):
         "root_mean_square_logit_difference": float(np.sqrt(np.mean(delta * delta))),
         "top1_equal_rows": int(np.count_nonzero(np.argmax(la, axis=1) == np.argmax(lb, axis=1))),
         "rows": len(ta),
-        "interpretation": "Observed backend difference; not a jitLLM acceptance tolerance",
+        "interpretation": "Observed backend difference; not a llmpalooza acceptance tolerance",
     }
 
 

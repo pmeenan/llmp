@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen2 architecture adapter (model/qwen2.h), in every profile
@@ -23,14 +23,14 @@
 
 namespace {
 
-using jitllm::model::BindQwen2;
-using jitllm::model::EmbedRows;
-using jitllm::model::HalfToFloat;
-using jitllm::model::PaddedKv;
-using jitllm::model::Qwen25Instruct05B;
-using jitllm::model::Qwen2ChunkInputs;
-using jitllm::model::Qwen2Profile;
-using jitllm::model::ResourceShape;
+using llmp::model::BindQwen2;
+using llmp::model::EmbedRows;
+using llmp::model::HalfToFloat;
+using llmp::model::PaddedKv;
+using llmp::model::Qwen25Instruct05B;
+using llmp::model::Qwen2ChunkInputs;
+using llmp::model::Qwen2Profile;
+using llmp::model::ResourceShape;
 
 // The FP16 fixture's index, as the artifact reader reports it: every
 // tensor once, the output head as a tied alias of the token table.

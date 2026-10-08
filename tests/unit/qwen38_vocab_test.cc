@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "qwen38_vocab.h"
@@ -12,7 +12,7 @@
 #include <vector>
 
 namespace {
-namespace dv = jitllm::benchmarks::draft_vocab;
+namespace dv = llmp::benchmarks::draft_vocab;
 
 std::vector<dv::Example> Examples() {
   std::vector<dv::Example> out;
@@ -90,7 +90,7 @@ std::string Prepared() {
         example.stable_boundary, ids, continuation);
   }
   return std::format(
-      R"({{"format":"jitllm-qwen-own-vocab-prepared-v1","split":"calibration","context_capacity":33792,"prefill_chunk":8192,"draft_depth":3,"examples":[{}],"target_signal":"native_control_natural_argmax"}})",
+      R"({{"format":"llmp-qwen-own-vocab-prepared-v1","split":"calibration","context_capacity":33792,"prefill_chunk":8192,"draft_depth":3,"examples":[{}],"target_signal":"native_control_natural_argmax"}})",
       records);
 }
 
@@ -115,7 +115,7 @@ TEST(Qwen38Vocab, ParsesCompleteFrozenIdsAndRefusesFractionalOrUnlabelledIdsBefo
   EXPECT_FALSE(dv::ReadExamples(changed, dv::kContext, 248320));
   EXPECT_FALSE(dv::ReadExamples("{}", dv::kContext, 248320));
   EXPECT_FALSE(dv::ReadExamples(
-      R"({"format":"jitllm-qwen-own-vocab-prepared-v1","split":"calibration","examples":[],"target_signal":"authored_answer"})",
+      R"({"format":"llmp-qwen-own-vocab-prepared-v1","split":"calibration","examples":[],"target_signal":"authored_answer"})",
       dv::kContext, 248320));
 }
 

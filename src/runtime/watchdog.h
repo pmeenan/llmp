@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The chat route's progress watchdog, its health record and the scaled
@@ -28,8 +28,8 @@
 //   kSwapFloorBytesPerSecond + prompt tokens / prefill floor + max_tokens /
 //   decode floor)).
 
-#ifndef JITLLM_RUNTIME_WATCHDOG_H_
-#define JITLLM_RUNTIME_WATCHDOG_H_
+#ifndef LLMP_RUNTIME_WATCHDOG_H_
+#define LLMP_RUNTIME_WATCHDOG_H_
 
 #include <chrono>
 #include <cstdint>
@@ -38,7 +38,7 @@
 
 #include "config/node_config.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 using WatchClock = std::chrono::steady_clock;
 
@@ -119,6 +119,6 @@ class Watchdog {
   WatchClock::time_point due_;
 };
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_WATCHDOG_H_
+#endif  // LLMP_RUNTIME_WATCHDOG_H_

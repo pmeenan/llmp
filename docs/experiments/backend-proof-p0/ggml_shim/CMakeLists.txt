@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # Reference-only GGML operation harness (../README.md, ggml-ops.json): the
@@ -6,9 +6,9 @@
 # libraries with its own CMake, plus ggml_shim.cu, a C API that runs one GGML
 # CUDA operation on device buffers owned by PyTorch. build.sh configures it
 # inside the EXL3 reference container. It is an external measurement tool,
-# not part of jitLLM.
+# not part of llmpalooza.
 cmake_minimum_required(VERSION 3.28)
-project(jitllm_ggml_shim C CXX CUDA)
+project(llmp_ggml_shim C CXX CUDA)
 set(GGML_SOURCE "" CACHE PATH "The pinned llama.cpp source tree's ggml/ directory")
 set(GGML_SHIM_SOURCE_ID "" CACHE STRING "Identity of the GGML source, recorded in the library")
 add_subdirectory("${GGML_SOURCE}" ggml)

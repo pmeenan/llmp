@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Original-image Gemma assistant reference protocol
@@ -89,7 +89,7 @@ receipt authenticates all source, header, library, input and output hashes.
 
 The client bounds known retained host vectors to a small fixed shape (at
 most two owners and three steps); original image model/backend allocations
-remain reference-owned and are not a jitLLM memory qualification. Extraction
+remain reference-owned and are not a llmpalooza memory qualification. Extraction
 and state checks are untimed. No performance claim comes from this client.
 On refusal it fails the process without unwinding borrowed contexts; successful
 cleanup synchronizes both contexts, then destroys the assistant before target.

@@ -8,28 +8,28 @@
       "sha256": "71ec7f4f8860cac1af28b0bb7aec2fc4cd61a36840686254c3faabafd8cc18b3"
     },
     "benchmarks/gemma_dense_ffn_capture.cc": {
-      "bytes": 6391,
-      "sha256": "25f9c27909e7441c6093e4f98baddb04504141d7d5fed9c24f5e3de623298849"
+      "bytes": 6381,
+      "sha256": "73d1ef40ded56d8701bbeb3299481d4af54eb9136839b20174a9a2fe7dbf9cfc"
     },
     "benchmarks/gemma_dense_ffn_capture.h": {
-      "bytes": 2024,
-      "sha256": "2160e674e33c1c86872a02cb8144560f4ad9f008e618e3745024c9e7755694a1"
+      "bytes": 2020,
+      "sha256": "3be423bd3dc16d441863b5a8f3e2f3ae3d90647ab6ce439853a41a960a7f7202"
     },
     "benchmarks/gemma_dense_ffn_capture_wrap.cc": {
-      "bytes": 11404,
-      "sha256": "d1112b52826ca853aa25e96656a5cc22c1ee58ba8b2bf63a9a10f00c81442e94"
+      "bytes": 11384,
+      "sha256": "99f1967204e093721bd6a3aa36270b6cd8404358500a57002633fa86cb2d62eb"
     },
     "benchmarks/gemma_dense_ffn_replay.cc": {
       "bytes": 14914,
       "sha256": "4001fdbebce6495bd8d7ffeb43d95b65f1d05e7b4ed673c4dd91ede671e3b631"
     },
     "docs/experiments/gemma-dense-ffn/PROTOCOL.md": {
-      "bytes": 10797,
-      "sha256": "9e4cee8aff904bc5597c8d76563434c18e108b403d89187f861f2359e4bb5fc8"
+      "bytes": 10801,
+      "sha256": "82b0de77617f9aa2ae3eb7ce7299def8239c030322133a8b16d5252e758cb139"
     },
     "docs/experiments/gemma-dense-ffn/llama_ffn.cc": {
-      "bytes": 11171,
-      "sha256": "8c91ed61836857df821fbf7790454613e24ec88a78e2926fba5d31ca6be75275"
+      "bytes": 11175,
+      "sha256": "1aab4d474f034622c1e9e0ab9010f5b1aa4e40578822d7941653d59b1d0b2072"
     },
     "docs/experiments/gemma-dense-ffn/own_freeze.py": {
       "bytes": 8578,
@@ -37,11 +37,11 @@
     },
     "docs/experiments/gemma-dense-ffn/reference.sh": {
       "bytes": 2103,
-      "sha256": "cf5002597274e2f4bcfecd08d0582f1c6a75e21dc7b2e5fd39683e88dc81e756"
+      "sha256": "5f76c1cdea102a1ee4c7f20f7a468dc88fe244d037e555181892e74d6e27d52d"
     },
     "docs/experiments/gemma-dense-ffn/replay_inputs.h": {
       "bytes": 3499,
-      "sha256": "40a1107cfd40dde29d1783f719a321e36cd62c5298844c37d3ff49cd203e5d3a"
+      "sha256": "c57ac29d43720b8adcd918fd37d6e77b63e35da160878fc9c2979bb14f4dc659"
     }
   },
   "capture_operand_identities": {
@@ -136,12 +136,12 @@
   },
   "final_analysis_sources": {
     "analyze.py": {
-      "bytes": 6857,
-      "sha256": "1218a77ba2243a34ac69f862b094dd6a81cfe2c183ac54c11b889696c2ff3a17"
+      "bytes": 6861,
+      "sha256": "1180f9de4f3361bf21a3cacc75b8c1a5362a21c85fc8f55e64819522d56f6d9e"
     },
     "observe.py": {
-      "bytes": 4221,
-      "sha256": "3f023441e2c5c55747a72a218d911fdd37d59558551eb576a5bee3121937a344"
+      "bytes": 4225,
+      "sha256": "daa234068f9116e1f95757c78aef1248103c3f41194887003a029b14a922205e"
     }
   },
   "historical_failures": {
@@ -618,40 +618,40 @@
       "sha256": "71ec7f4f8860cac1af28b0bb7aec2fc4cd61a36840686254c3faabafd8cc18b3"
     },
     "benchmarks/gemma_dense_ffn_capture.cc": {
-      "bytes": 6391,
-      "sha256": "25f9c27909e7441c6093e4f98baddb04504141d7d5fed9c24f5e3de623298849"
+      "bytes": 6381,
+      "sha256": "73d1ef40ded56d8701bbeb3299481d4af54eb9136839b20174a9a2fe7dbf9cfc"
     },
     "benchmarks/gemma_dense_ffn_capture.h": {
-      "bytes": 2024,
-      "sha256": "2160e674e33c1c86872a02cb8144560f4ad9f008e618e3745024c9e7755694a1"
+      "bytes": 2020,
+      "sha256": "3be423bd3dc16d441863b5a8f3e2f3ae3d90647ab6ce439853a41a960a7f7202"
     },
     "benchmarks/gemma_dense_ffn_capture_wrap.cc": {
-      "bytes": 11404,
-      "sha256": "d1112b52826ca853aa25e96656a5cc22c1ee58ba8b2bf63a9a10f00c81442e94"
+      "bytes": 11384,
+      "sha256": "99f1967204e093721bd6a3aa36270b6cd8404358500a57002633fa86cb2d62eb"
     },
     "benchmarks/gemma_dense_ffn_replay.cc": {
-      "bytes": 15299,
-      "sha256": "74fc54798a365e9adc9ec470539edb1d977980321ad83d2812fe4a3039e3e66c"
+      "bytes": 15219,
+      "sha256": "93b22c6f66027f0e89ea053b0e6f7094017816a915d4894df9d2c7a150e43381"
     },
     "docs/experiments/gemma-dense-ffn/PROTOCOL.md": {
-      "bytes": 10797,
-      "sha256": "9e4cee8aff904bc5597c8d76563434c18e108b403d89187f861f2359e4bb5fc8"
+      "bytes": 10801,
+      "sha256": "82b0de77617f9aa2ae3eb7ce7299def8239c030322133a8b16d5252e758cb139"
     },
     "docs/experiments/gemma-dense-ffn/llama_ffn.cc": {
-      "bytes": 11171,
-      "sha256": "8c91ed61836857df821fbf7790454613e24ec88a78e2926fba5d31ca6be75275"
+      "bytes": 11175,
+      "sha256": "1aab4d474f034622c1e9e0ab9010f5b1aa4e40578822d7941653d59b1d0b2072"
     },
     "docs/experiments/gemma-dense-ffn/own_freeze.py": {
-      "bytes": 10086,
-      "sha256": "15473b0b2e48f4e6f9d7307aa231c486ef2c9c00572701d576543e9bd27fb0f1"
+      "bytes": 10080,
+      "sha256": "4009e46c516a685d2125e19f65d4e038442d1ee5f61b15e53b35f91ef56e63be"
     },
     "docs/experiments/gemma-dense-ffn/reference.sh": {
       "bytes": 2103,
-      "sha256": "cf5002597274e2f4bcfecd08d0582f1c6a75e21dc7b2e5fd39683e88dc81e756"
+      "sha256": "5f76c1cdea102a1ee4c7f20f7a468dc88fe244d037e555181892e74d6e27d52d"
     },
     "docs/experiments/gemma-dense-ffn/replay_inputs.h": {
       "bytes": 3499,
-      "sha256": "40a1107cfd40dde29d1783f719a321e36cd62c5298844c37d3ff49cd203e5d3a"
+      "sha256": "c57ac29d43720b8adcd918fd37d6e77b63e35da160878fc9c2979bb14f4dc659"
     }
   },
   "replay_native_exact_actual_capture": true,

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 #include <algorithm>
@@ -12,7 +12,7 @@
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/set_rows_group.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 // Index decomposition and conversion follow locked GGML set-rows.cu
 // k_set_rows<float, int64_t, half>; only independent store dispatch is grouped.
@@ -89,4 +89,4 @@ std::expected<void, KernelFailure> RunSetRowsGroup(LaunchContext& launch,
     GroupedStores<<<dim3(blocks, groups), kThreads, 0, context.stream()>>>(stores);
   });
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

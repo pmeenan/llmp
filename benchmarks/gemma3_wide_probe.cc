@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Internal grouped H8 first screen; no timing or public admission.
@@ -30,10 +30,10 @@
 #include "tokenizer/tokenizer.h"
 
 namespace {
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 namespace fs = std::filesystem;
 using en::support::Error;
-namespace wide = jitllm::benchmarks::gemma3_wide;
+namespace wide = llmp::benchmarks::gemma3_wide;
 constexpr auto kVocab = wide::kVocab, kOwners = wide::kOwners;
 constexpr std::uint64_t kCopy = 8ULL << 20U;
 std::expected<std::string, std::string> Read(const fs::path& path, std::uint64_t cap) {
@@ -62,7 +62,7 @@ std::expected<std::int32_t, std::string> Best(const std::vector<float>& row) {
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma3-wide-probe") || argc != 5) return 2;
+  if (!llmp::platform::InstallCrashPolicy("gemma3-wide-probe") || argc != 5) return 2;
   std::array<std::vector<std::int32_t>, kOwners> ids;
   std::array<std::uint32_t, kOwners> prefix{};
   for (std::uint32_t s = 0; s < kOwners; ++s) {
@@ -126,7 +126,7 @@ int main(int argc, char** argv) {
         return Error("state cursor differs");
       auto ranges = runner.CheckpointRanges(past[s]);
       if (!ranges) return Error(ranges.error());
-      jitllm::base::Sha256 hash;
+      llmp::base::Sha256 hash;
       for (const auto& range : *ranges) {
         for (std::uint64_t at = 0; at < range.bytes;) {
           auto part = range;
@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
           at += part.bytes;
         }
       }
-      result.push_back(jitllm::base::ToHex(hash.Finish()));
+      result.push_back(llmp::base::ToHex(hash.Finish()));
     }
     return result;
   };
@@ -148,7 +148,7 @@ int main(int argc, char** argv) {
     if (auto r = node.Open(); !r) return r;
     life->entered.push_back(&runner);
     if (auto r = runner.Setup(); !r) return r;
-    std::vector<jitllm::catalog::ExtentId> extents;
+    std::vector<llmp::catalog::ExtentId> extents;
     auto allocation = node.Pinned(kCopy, 0, extents);
     if (!allocation) return Error(allocation.error());
     pinned = *allocation;
@@ -159,29 +159,29 @@ int main(int argc, char** argv) {
     // checked chunk builder and cache equality as the runner. No reclaimer is
     // installed in this standalone harness, so its complete finite key set is
     // funded before execution, including every slot-specific prefill/scalar key.
-    std::vector<jitllm::kernels::ggml::Gemma3ChunkShape> cache_keys;
+    std::vector<llmp::kernels::ggml::Gemma3ChunkShape> cache_keys;
     for (unsigned pass = 0; pass < 2; ++pass)
       for (const auto& event : events) {
         if (event.kind != wide::Kind::kPrefill && event.kind != wide::Kind::kScalar &&
             event.kind != wide::Kind::kWave)
           continue;
-        std::array<jitllm::model::Gemma3Segment, kOwners> segments;
+        std::array<llmp::model::Gemma3Segment, kOwners> segments;
         for (std::uint32_t i = 0; i < event.count; ++i) {
           const auto slot = event.first + i;
           segments[i] = {slot, event.before[slot],
                          std::span(ids[slot]).subspan(event.before[slot], event.rows)};
         }
         auto input =
-            jitllm::model::Gemma3Chunk(runner.profile(), runner.layout(),
-                                       std::span(segments).first(event.count), true, 256, 256);
+            llmp::model::Gemma3Chunk(runner.profile(), runner.layout(),
+                                     std::span(segments).first(event.count), true, 256, 256);
         if (!input) return Error(input.error());
-        jitllm::kernels::ggml::Gemma3ChunkShape key;
+        llmp::kernels::ggml::Gemma3ChunkShape key;
         for (const auto& segment : input->segments)
           key.segments.push_back({segment.slot, segment.rows, segment.n_past, segment.global_n_kv,
                                   segment.local_n_kv});
         key.outputs = event.head ? event.count : 0;
-        key.output_mode = event.head ? jitllm::kernels::ggml::Gemma3OutputMode::kHead
-                                     : jitllm::kernels::ggml::Gemma3OutputMode::kStateOnly;
+        key.output_mode = event.head ? llmp::kernels::ggml::Gemma3OutputMode::kHead
+                                     : llmp::kernels::ggml::Gemma3OutputMode::kStateOnly;
         key.greedy = event.head && !copy_head(pass, event, event.first);
         if (std::ranges::find(cache_keys, key) == cache_keys.end())
           cache_keys.push_back(std::move(key));
@@ -199,7 +199,7 @@ int main(int argc, char** argv) {
               << " state_capacity_all_owners=" << node.StateCapacity()
               << " cache_keys=" << cache_keys.size() << " cache_budget=" << cache_budget
               << " total_bytes=" << budget << '\n';
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The v0 prepared-artifact reader (docs/artifact-format.md; D-009, D-018,
@@ -41,8 +41,8 @@
 // roles per resource, 100,000,000-byte shard headers, 2^16 directory
 // entries.
 
-#ifndef JITLLM_ARTIFACT_ARTIFACT_H_
-#define JITLLM_ARTIFACT_ARTIFACT_H_
+#ifndef LLMP_ARTIFACT_ARTIFACT_H_
+#define LLMP_ARTIFACT_ARTIFACT_H_
 
 #include <sys/types.h>
 
@@ -61,7 +61,7 @@
 #include "artifact/representation.h"
 #include "base/bytes.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 
 inline constexpr std::uint64_t kMaxManifestBytes = std::uint64_t{1} << 20U;
 inline constexpr std::uint64_t kMaxIndexBytes = std::uint64_t{64} << 20U;
@@ -267,6 +267,6 @@ class Artifact {
   std::vector<std::pair<std::string, std::uint32_t>> array_names_;
 };
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact
 
-#endif  // JITLLM_ARTIFACT_ARTIFACT_H_
+#endif  // LLMP_ARTIFACT_ARTIFACT_H_

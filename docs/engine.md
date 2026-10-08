@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # The engine
@@ -7,14 +7,14 @@
 node (D-096; [architecture.md](architecture.md#layers-and-dependency-rules)).
 It holds the node, one skeleton of shared mechanics every model runner is
 built from, and each model family's runner, which adds only what is that
-family's own. `jitllm-runtime` serves through it
+family's own. `llmp-runtime` serves through it
 ([runtime-serving.md](runtime-serving.md)) and the paged harnesses drive the
 same code under their old names (`benchmarks/engine_names.h`,
 `tests/support/paged_node.h`).
 
 **Being replaced (M3.6, D-107).** The per-family runners, plans and graph
 builders described below give way to one engine of shared components over
-jitLLM's own graph IR ([engine-components.md](engine-components.md)). This
+llmpalooza's own graph IR ([engine-components.md](engine-components.md)). This
 file describes the code as it is, and changes as each piece lands.
 
 ## The node
@@ -211,15 +211,15 @@ routed experts read once per distinct expert, HC mixes, routing, norms, the
 head) run once over every slot's rows, while each slot's compressors, indexer,
 attention, cache writes and DSpark injection run on its own state. A wave holds
 at most 16 rows and keeps each request's rows bit-identical to its steps alone:
-`jitllm.vecq` is count-invariant from 2 to 16 tokens, float products past GGML's
+`llmp.vecq` is count-invariant from 2 to 16 tokens, float products past GGML's
 8-column vector kernel run over groups of whole slots that fit its eight
 columns, GGML's products of quantized
-weights `jitllm.vecq` has no kernel for (the dense products, quantized HC
+weights `llmp.vecq` has no kernel for (the dense products, quantized HC
 mixes and the attention output's grouped product) run per slot, a wave of one-row steps takes the vector
 product's one-token configuration (`SetVecQOneToken`: each token's sums its
 step's; dense products four tokens a pass), and the drafter's injection
 (GGML MMVQ) runs per slot. A wave needs every layer in the fused form
-(`Dsv4WaveSupport`: each layer's expert products `jitllm.vecq` types; the HC
+(`Dsv4WaveSupport`: each layer's expert products `llmp.vecq` types; the HC
 mixing weights may be any type). Setup checks it before provisioning slots;
 an artifact that fails it gets one slot and a `serial_reason()` for the
 start's log, so it is served one request at a time rather than refused.
@@ -585,9 +585,9 @@ rather than works around:
   kernels (`kernels/ggml/`), selected per shape by the plan; the skeleton's
   plan cache and graphs take them unchanged, and a prefill shape's capture
   rule is the runner's. DeepSeek's fast plan has them (its window cache a
-  ring, `model/dsv4.h` `Dsv4Window`; `jitllm.dsv4.lid_topk` and
+  ring, `model/dsv4.h` `Dsv4Window`; `llmp.dsv4.lid_topk` and
   `sparse_mask`, [long-context](experiments/long-context/README.md)), and
-  so does Qwen3.8's fast graph (`jitllm.qsa.pool`, `.topk`, `.attn`; its
+  so does Qwen3.8's fast graph (`llmp.qsa.pool`, `.topk`, `.attn`; its
   block keys a state tensor of the model's layout, their verify saves the
   runner's).
 

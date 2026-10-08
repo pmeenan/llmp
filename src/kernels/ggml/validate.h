@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The operand checks of the GGML-derived implementations (ops.h), on the
@@ -12,8 +12,8 @@
 // (strides of a dense tensor of their shape). Upstream's kernel-family
 // selection, which needs the device, stays in ops.cu.
 
-#ifndef JITLLM_KERNELS_GGML_VALIDATE_H_
-#define JITLLM_KERNELS_GGML_VALIDATE_H_
+#ifndef LLMP_KERNELS_GGML_VALIDATE_H_
+#define LLMP_KERNELS_GGML_VALIDATE_H_
 
 #include <cstdint>
 #include <expected>
@@ -21,7 +21,7 @@
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // A ggml_rms_norm node over packed F32 rows, writing its own output.
 std::expected<void, KernelFailure> CheckRmsNorm(const ggml_tensor* norm);
@@ -216,6 +216,6 @@ std::expected<void, KernelFailure> CheckClearOf(const ggml_tensor* node, std::ui
 std::expected<CublasMulMat, KernelFailure> CheckMulMatCublas(const ggml_tensor* node,
                                                              ggml_type compute, bool f32_output);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_VALIDATE_H_
+#endif  // LLMP_KERNELS_GGML_VALIDATE_H_

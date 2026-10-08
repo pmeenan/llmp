@@ -1,0 +1,400 @@
+Llmpalooza adaptations of the v0.6.0 GGML sources, active under GGML_LLMP.
+Preserve the no-CUB closure, recorded error returns, build-fixed PDL, selected
+MMQ instances, native null-buffer guards and no debugger process. Latest MMQ
+precision environment overrides are disabled only for native dispatch.
+
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -111,7 +111,9 @@
+ #define GGML_CUDA_CC_IS_QY2(cc)      (cc >= GGML_CUDA_CC_QY2 && cc < GGML_CUDA_CC_PH1)
+ #define GGML_CUDA_CC_IS_PH1(cc)      (cc >= GGML_CUDA_CC_PH1)
+ 
+-#if !defined(GGML_USE_HIP) && (defined(GGML_USE_MUSA) || CUDART_VERSION >= 11070)
++// llmpalooza keeps CUB outside its selected build closure: use bitonic argsort
++// and the original radix top-k selection instead.
++#if !defined(GGML_USE_HIP) && (defined(GGML_USE_MUSA) || CUDART_VERSION >= 11070) && !defined(GGML_LLMP)
+ #    define GGML_CUDA_USE_CUB
+ #endif  // !defined(GGML_USE_HIP) && (defined(GGML_USE_MUSA) || CUDART_VERSION >= 11070)
+ 
+@@ -187,7 +189,11 @@
+ 
+ #define GGML_CUDA_MAX_STREAMS 8
+ 
++// Llmpalooza defines ggml_cuda_error to record the error and return, so that
++// the launcher returns and its caller reports the failure (D-053, D-066).
++#if !defined(GGML_LLMP)
+ [[noreturn]]
++#endif
+ void ggml_cuda_error(const char * stmt, const char * func, const char * file, int line, const char * msg);
+ 
+ #define CUDA_CHECK_GEN(err, success, error_fn)                                      \
+@@ -1698,8 +1704,13 @@
+ #if defined(GGML_CUDA_USE_PDL)
+ 
+     static const bool env_pdl_enabled = []() {
++#if defined(GGML_LLMP)
++        // llmpalooza: launch attributes are fixed by the build, not the environment.
++        return true;
++#else
+         const char * env = getenv("GGML_CUDA_PDL");
+         return env == nullptr || std::atoi(env) != 0;
++#endif
+     }();
+ 
+     if (env_pdl_enabled && ggml_cuda_kernel_can_use_pdl(reinterpret_cast<const void *>(kernel))) {
+diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
+--- a/ggml/src/ggml-cuda/mmq.cu
++++ b/ggml/src/ggml-cuda/mmq.cu
+@@ -5,71 +5,138 @@
+ 
+ #include <cstdint>
+ 
++// Llmpalooza compiles only the MMQ instance types named by its locked build.
++#if !defined(GGML_LLMP)
++#define GGML_LLMP_MMQ_Q1_0
++#define GGML_LLMP_MMQ_Q2_0
++#define GGML_LLMP_MMQ_Q4_0
++#define GGML_LLMP_MMQ_Q4_1
++#define GGML_LLMP_MMQ_Q5_0
++#define GGML_LLMP_MMQ_Q5_1
++#define GGML_LLMP_MMQ_Q8_0
++#define GGML_LLMP_MMQ_Q2_K
++#define GGML_LLMP_MMQ_Q3_K
++#define GGML_LLMP_MMQ_Q4_K
++#define GGML_LLMP_MMQ_Q5_K
++#define GGML_LLMP_MMQ_Q6_K
++#define GGML_LLMP_MMQ_IQ1_S
++#define GGML_LLMP_MMQ_IQ2_XXS
++#define GGML_LLMP_MMQ_IQ2_XS
++#define GGML_LLMP_MMQ_IQ2_S
++#define GGML_LLMP_MMQ_IQ3_XXS
++#define GGML_LLMP_MMQ_IQ3_S
++#define GGML_LLMP_MMQ_IQ4_XS
++#define GGML_LLMP_MMQ_IQ4_NL
++#define GGML_LLMP_MMQ_MXFP4
++#define GGML_LLMP_MMQ_NVFP4
++#endif
++
+ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream, const ggml_prec prec_src1) {
+     switch (args.type_x) {
++#if defined(GGML_LLMP_MMQ_Q1_0)
+         case GGML_TYPE_Q1_0:
+             mul_mat_q_case<GGML_TYPE_Q1_0>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_Q2_0)
+         case GGML_TYPE_Q2_0:
+             mul_mat_q_case<GGML_TYPE_Q2_0>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_Q4_0)
+         case GGML_TYPE_Q4_0:
+             mul_mat_q_case<GGML_TYPE_Q4_0>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_Q4_1)
+         case GGML_TYPE_Q4_1:
+             mul_mat_q_case<GGML_TYPE_Q4_1>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_Q5_0)
+         case GGML_TYPE_Q5_0:
+             mul_mat_q_case<GGML_TYPE_Q5_0>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_Q5_1)
+         case GGML_TYPE_Q5_1:
+             mul_mat_q_case<GGML_TYPE_Q5_1>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_Q8_0)
+         case GGML_TYPE_Q8_0:
+             mul_mat_q_case<GGML_TYPE_Q8_0>(ctx, args, stream);
+             break;
+ // -----------------------------------------------------------------------
++#endif
++#if defined(GGML_LLMP_MMQ_Q2_K)
+         case GGML_TYPE_Q2_K:
+             mul_mat_q_case<GGML_TYPE_Q2_K>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_Q3_K)
+         case GGML_TYPE_Q3_K:
+             mul_mat_q_case<GGML_TYPE_Q3_K>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_Q4_K)
+         case GGML_TYPE_Q4_K:
+             mul_mat_q_case<GGML_TYPE_Q4_K>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_Q5_K)
+         case GGML_TYPE_Q5_K:
+             mul_mat_q_case<GGML_TYPE_Q5_K>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_Q6_K)
+         case GGML_TYPE_Q6_K:
+             mul_mat_q_case<GGML_TYPE_Q6_K>(ctx, args, stream);
+             break;
+ // -----------------------------------------------------------------------
++#endif
++#if defined(GGML_LLMP_MMQ_IQ1_S)
+         case GGML_TYPE_IQ1_S:
+             mul_mat_q_case<GGML_TYPE_IQ1_S>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_IQ2_XXS)
+         case GGML_TYPE_IQ2_XXS:
+             mul_mat_q_case<GGML_TYPE_IQ2_XXS>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_IQ2_XS)
+         case GGML_TYPE_IQ2_XS:
+             mul_mat_q_case<GGML_TYPE_IQ2_XS>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_IQ2_S)
+         case GGML_TYPE_IQ2_S:
+             mul_mat_q_case<GGML_TYPE_IQ2_S>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_IQ3_XXS)
+         case GGML_TYPE_IQ3_XXS:
+             mul_mat_q_case<GGML_TYPE_IQ3_XXS>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_IQ3_S)
+         case GGML_TYPE_IQ3_S:
+             mul_mat_q_case<GGML_TYPE_IQ3_S>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_IQ4_XS)
+         case GGML_TYPE_IQ4_XS:
+             mul_mat_q_case<GGML_TYPE_IQ4_XS>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_IQ4_NL)
+         case GGML_TYPE_IQ4_NL:
+             mul_mat_q_case<GGML_TYPE_IQ4_NL>(ctx, args, stream);
+             break;
+ // -----------------------------------------------------------------------
++#endif
++#if defined(GGML_LLMP_MMQ_MXFP4)
+         case GGML_TYPE_MXFP4:
+             // src1 at Q4 uses the native FP4 instructions, which are Blackwell-only
+             if (prec_src1 == GGML_PREC_Q4) {
+@@ -78,6 +145,8 @@
+             }
+             mul_mat_q_case<GGML_TYPE_MXFP4>(ctx, args, stream);
+             break;
++#endif
++#if defined(GGML_LLMP_MMQ_NVFP4)
+         case GGML_TYPE_NVFP4:
+             if (prec_src1 == GGML_PREC_Q4) {
+                 mul_mat_q_case<GGML_TYPE_NVFP4, GGML_PREC_Q4>(ctx, args, stream);
+@@ -85,6 +154,7 @@
+             }
+             mul_mat_q_case<GGML_TYPE_NVFP4>(ctx, args, stream);
+             break;
++#endif
+         default:
+             GGML_ABORT("fatal error");
+             break;
+@@ -93,6 +163,10 @@
+ 
+ // overrides the src1 precision requested by the graph, "auto" keeps the requested one
+ static ggml_prec ggml_cuda_mmq_get_prec_env() {
++#if defined(GGML_LLMP)
++    // Native dispatch owns precision; upstream environment overrides do not.
++    return GGML_PREC_UNDEFINED;
++#else
+     const char * env_c = getenv("GGML_CUDA_MMQ_PREC");
+     if (env_c == nullptr) {
+         return GGML_PREC_UNDEFINED;
+@@ -111,6 +185,7 @@
+         GGML_LOG_WARN("%s: Unknown value for GGML_CUDA_MMQ_PREC: '%s'. Available: 'q4', 'q8', 'auto'.\n", __func__, env_cpp.c_str());
+     }
+     return GGML_PREC_UNDEFINED;
++#endif
+ }
+ 
+ // src1 is quantized to Q8_1 unless the FP4 types can use 4-bit activations, in which case they
+@@ -157,7 +232,13 @@
+     float       *  dst_d = (float       *)  dst->data;
+ 
+     // If src0 is a temporary compute buffer, clear any potential padding.
++#if defined(GGML_LLMP)
++    // llmpalooza's tensors carry no backend buffer and never lie in a compute
++    // buffer; its launchers take only rows that need no padding.
++    if (src0->buffer != nullptr && ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
++#else
+     if (ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
++#endif
+         const size_t size_data  = ggml_nbytes(src0);
+         const size_t size_alloc = ggml_backend_buffer_get_alloc_size(src0->buffer, src0);
+         if (size_alloc > size_data) {
+@@ -323,33 +404,77 @@
+     bool mmq_supported;
+ 
+     switch (type) {
++#if defined(GGML_LLMP_MMQ_Q1_0)
+         case GGML_TYPE_Q1_0:
++#endif
++#if defined(GGML_LLMP_MMQ_Q2_0)
+         case GGML_TYPE_Q2_0:
++#endif
++#if defined(GGML_LLMP_MMQ_Q4_0)
+         case GGML_TYPE_Q4_0:
++#endif
++#if defined(GGML_LLMP_MMQ_Q4_1)
+         case GGML_TYPE_Q4_1:
++#endif
++#if defined(GGML_LLMP_MMQ_Q5_0)
+         case GGML_TYPE_Q5_0:
++#endif
++#if defined(GGML_LLMP_MMQ_Q5_1)
+         case GGML_TYPE_Q5_1:
++#endif
++#if defined(GGML_LLMP_MMQ_Q8_0)
+         case GGML_TYPE_Q8_0:
+ // -------------------------------------------------
++#endif
++#if defined(GGML_LLMP_MMQ_Q2_K)
+         case GGML_TYPE_Q2_K:
++#endif
++#if defined(GGML_LLMP_MMQ_Q3_K)
+         case GGML_TYPE_Q3_K:
++#endif
++#if defined(GGML_LLMP_MMQ_Q4_K)
+         case GGML_TYPE_Q4_K:
++#endif
++#if defined(GGML_LLMP_MMQ_Q5_K)
+         case GGML_TYPE_Q5_K:
++#endif
++#if defined(GGML_LLMP_MMQ_Q6_K)
+         case GGML_TYPE_Q6_K:
+ // -------------------------------------------------
++#endif
++#if defined(GGML_LLMP_MMQ_IQ1_S)
+         case GGML_TYPE_IQ1_S:
++#endif
++#if defined(GGML_LLMP_MMQ_IQ2_XXS)
+         case GGML_TYPE_IQ2_XXS:
++#endif
++#if defined(GGML_LLMP_MMQ_IQ2_XS)
+         case GGML_TYPE_IQ2_XS:
++#endif
++#if defined(GGML_LLMP_MMQ_IQ2_S)
+         case GGML_TYPE_IQ2_S:
++#endif
++#if defined(GGML_LLMP_MMQ_IQ3_XXS)
+         case GGML_TYPE_IQ3_XXS:
++#endif
++#if defined(GGML_LLMP_MMQ_IQ3_S)
+         case GGML_TYPE_IQ3_S:
++#endif
++#if defined(GGML_LLMP_MMQ_IQ4_XS)
+         case GGML_TYPE_IQ4_XS:
++#endif
++#if defined(GGML_LLMP_MMQ_IQ4_NL)
+         case GGML_TYPE_IQ4_NL:
+ // -------------------------------------------------
++#endif
++#if defined(GGML_LLMP_MMQ_MXFP4)
+         case GGML_TYPE_MXFP4:
++#endif
++#if defined(GGML_LLMP_MMQ_NVFP4)
+         case GGML_TYPE_NVFP4:
+             mmq_supported = true;
+             break;
++#endif
+         default:
+             mmq_supported = false;
+             break;
+diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
+--- a/ggml/src/ggml-cuda/mmvq.cu
++++ b/ggml/src/ggml-cuda/mmvq.cu
+@@ -1517,7 +1517,13 @@
+     }
+ 
+     // If src0 is a temporary compute buffer, clear any potential padding.
++#if defined(GGML_LLMP)
++    // llmpalooza's tensors carry no backend buffer and never lie in a compute
++    // buffer; its launchers take only rows that need no padding.
++    if (src0->buffer != nullptr && ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
++#else
+     if (ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
++#endif
+         const size_t size_data  = ggml_nbytes(src0);
+         const size_t size_alloc = ggml_backend_buffer_get_alloc_size(src0->buffer, src0);
+         if (size_alloc > size_data) {
+diff --git a/ggml/src/ggml-cuda/top-k.cu b/ggml/src/ggml-cuda/top-k.cu
+--- a/ggml/src/ggml-cuda/top-k.cu
++++ b/ggml/src/ggml-cuda/top-k.cu
+@@ -52,7 +52,8 @@
+ 
+ #endif                            // CUB_TOP_K_AVAILABLE
+ 
+-#if !defined(GGML_CUDA_USE_CUB) && defined(GGML_USE_HIP)
++// llmpalooza, built without CUB, takes the radix select for long rows as HIP does.
++#if !defined(GGML_CUDA_USE_CUB) && (defined(GGML_USE_HIP) || defined(GGML_LLMP))
+ 
+ static __device__ __forceinline__ uint32_t top_k_float_to_ordered(float value) {
+     const uint32_t bits = __float_as_uint(value);
+@@ -212,7 +213,7 @@
+             src, dst, states, ncols, k, blocks_per_row);
+ }
+ 
+-#endif // !defined(GGML_CUDA_USE_CUB) && defined(GGML_USE_HIP)
++#endif // !defined(GGML_CUDA_USE_CUB) && (defined(GGML_USE_HIP) || defined(GGML_LLMP))
+ 
+ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+     const ggml_tensor * src0   = dst->src[0];
+@@ -262,18 +263,18 @@
+         dst_d  += k     * iter_nrows;
+     }
+ #else                             // GGML_CUDA_USE_CUB
+-#if defined(GGML_USE_HIP)
++#if defined(GGML_USE_HIP) || defined(GGML_LLMP)
+     if (ncols > 1024) {
+         top_k_radix_cuda(pool, src0_d, dst_d, ncols, nrows, k, stream);
+     } else {
+-#endif // defined(GGML_USE_HIP)
++#endif // defined(GGML_USE_HIP) || defined(GGML_LLMP)
+         ggml_cuda_pool_alloc<int> temp_dst_alloc(pool, ncols * nrows);
+         int *                     tmp_dst = temp_dst_alloc.get();
+         argsort_f32_i32_cuda_bitonic(src0_d, tmp_dst, ncols, nrows, GGML_SORT_ORDER_DESC, stream);
+         CUDA_CHECK(cudaMemcpy2DAsync(dst_d, k * sizeof(int), tmp_dst, ncols * sizeof(int), k * sizeof(int), nrows,
+                                      cudaMemcpyDeviceToDevice, stream));
+-#if defined(GGML_USE_HIP)
+-    }
+-#endif // defined(GGML_USE_HIP)
++#if defined(GGML_USE_HIP) || defined(GGML_LLMP)
++    }
++#endif // defined(GGML_USE_HIP) || defined(GGML_LLMP)
+ #endif
+ }
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -156,6 +156,10 @@
+ #endif
+ 
+ void ggml_print_backtrace(void) {
++#if defined(GGML_LLMP)
++    // llmpalooza: a served process never forks or execs a debugger. ggml_abort
++    // still prints its message and aborts.
++#else
+     const char * GGML_NO_BACKTRACE = getenv("GGML_NO_BACKTRACE");
+     if (GGML_NO_BACKTRACE) {
+         return;
+@@ -234,6 +238,7 @@
+ #endif
+         waitpid(child_pid, NULL, 0);
+     }
++#endif // !defined(GGML_LLMP)
+ }
+ #else
+ void ggml_print_backtrace(void) {

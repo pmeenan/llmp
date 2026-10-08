@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Read-only source validation shared by preparation, configure and build."""
 
@@ -10,7 +10,7 @@ sys.dont_write_bytecode = True
 import argparse
 import pathlib
 
-from jitllm_sources import SourceError, load_lock, select, tree_digest
+from llmp_sources import SourceError, load_lock, select, tree_digest
 
 
 def main() -> int:

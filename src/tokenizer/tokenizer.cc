@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "tokenizer/tokenizer.h"
@@ -26,7 +26,7 @@
 #include "tokenizer/pretokenize.h"
 #include "tokenizer/unicode.h"
 
-namespace jitllm::tokenizer {
+namespace llmp::tokenizer {
 namespace {
 
 // Special tokens longer than this are refused, which bounds the matcher's
@@ -990,4 +990,4 @@ void StreamDecoder::Finish(std::string& out) {
   pending_.clear();
 }
 
-}  // namespace jitllm::tokenizer
+}  // namespace llmp::tokenizer

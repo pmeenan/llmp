@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // How a runner's bound plans run (docs/engine.md; D-090): each run's inputs
@@ -21,8 +21,8 @@
 // launch, and a backend without recorded work runs every plan that way.
 // Per step, not per kernel: nothing here is on a kernel's hot path.
 
-#ifndef JITLLM_ENGINE_GRAPH_RUNS_H_
-#define JITLLM_ENGINE_GRAPH_RUNS_H_
+#ifndef LLMP_ENGINE_GRAPH_RUNS_H_
+#define LLMP_ENGINE_GRAPH_RUNS_H_
 
 #include <array>
 #include <cstddef>
@@ -40,7 +40,7 @@
 #include "kernels/ggml/launch.h"
 #include "providers/device_execution.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 // How a run went (D-090).
 enum class RunPath : std::uint8_t {
@@ -176,6 +176,6 @@ class GraphRuns {
   kernels::ggml::LaunchContext* launch_ = nullptr;
 };
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_GRAPH_RUNS_H_
+#endif  // LLMP_ENGINE_GRAPH_RUNS_H_

@@ -27,7 +27,7 @@
       "status": "inspected selection; no source adopted; exact compiled dependency closure remains to audit",
       "restrictions": [
         "Preserve root license and per-file notices.",
-        "jitLLM owns scheduler, catalog, VMM and completion; no libllama runtime adoption."
+        "llmpalooza owns scheduler, catalog, VMM and completion; no libllama runtime adoption."
       ]
     },
     {
@@ -90,7 +90,7 @@
       "role": "future incorporated parser candidate",
       "status": "inspected source; no source adopted",
       "restrictions": [
-        "Not an already-proven jitLLM artifact verifier; own overflow/range/type/layout bounds, limits and negative/fuzz tests remain required."
+        "Not an already-proven llmpalooza artifact verifier; own overflow/range/type/layout bounds, limits and negative/fuzz tests remain required."
       ]
     },
     {
@@ -179,7 +179,7 @@
     "No ggml/LICENSE exists at this pin; root LICENSE applies with local notices.",
     "Root MIT is not a blanket license for vendor/ tree or data-derived tables.",
     "GGML_NATIVE=OFF, GGML_BACKEND_DL=OFF, explicitly selected CPU/GPU targets; disable unused dependencies.",
-    "External numerical reference is a tool, not an incorporated jitLLM runtime.",
+    "External numerical reference is a tool, not an incorporated llmpalooza runtime.",
     "No complete compiled closure, converter run, native runtime, GPU or Spark test was performed for this source audit."
   ],
   "unicode_license_source": "https://www.unicode.org/license.txt"

@@ -1,14 +1,14 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-#ifndef JITLLM_ENGINE_GEMMA4_GREEDY_H_
-#define JITLLM_ENGINE_GEMMA4_GREEDY_H_
+#ifndef LLMP_ENGINE_GEMMA4_GREEDY_H_
+#define LLMP_ENGINE_GEMMA4_GREEDY_H_
 #include <array>
 #include <cstdint>
 #include <expected>
 #include <span>
 #include <string>
 #include <vector>
-namespace jitllm::engine {
+namespace llmp::engine {
 struct Gemma4GreedyDecision {
   std::uint32_t keep = 0;
   std::int32_t next_anchor = 0;
@@ -29,5 +29,5 @@ struct Gemma4GreedyResult {
   std::int32_t next_anchor = 0;  // Predicted, not committed to target state.
   std::vector<float> head, feature;
 };
-}  // namespace jitllm::engine
-#endif  // JITLLM_ENGINE_GEMMA4_GREEDY_H_
+}  // namespace llmp::engine
+#endif  // LLMP_ENGINE_GEMMA4_GREEDY_H_

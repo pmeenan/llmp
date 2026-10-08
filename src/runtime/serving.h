@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Serving on the node (D-096; docs/runtime-serving.md): the configured
@@ -37,8 +37,8 @@
 // - The image pipeline generates the prompt and latents it registered with
 //   (this slice's runner fixes them at setup).
 
-#ifndef JITLLM_RUNTIME_SERVING_H_
-#define JITLLM_RUNTIME_SERVING_H_
+#ifndef LLMP_RUNTIME_SERVING_H_
+#define LLMP_RUNTIME_SERVING_H_
 
 #include <algorithm>
 #include <array>
@@ -84,7 +84,7 @@
 #include "scheduler/scheduler.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 using Status = std::expected<void, std::string>;
 using Clock = std::chrono::steady_clock;
@@ -1738,6 +1738,6 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
                bool gemma_joined = false, bool gemma_row_invariant = false,
                bool gemma31_production = false);
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_SERVING_H_
+#endif  // LLMP_RUNTIME_SERVING_H_

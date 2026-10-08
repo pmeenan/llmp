@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Calibration on this machine (D-103's second layer;
@@ -8,7 +8,7 @@
 //
 // The record: `<state>/calibration/<artifact ID>.json`, one JSON object,
 //
-//   {"format":"jitllm-model-calibration-v1",
+//   {"format":"llmp-model-calibration-v1",
 //    "artifact":"<64 hex>", "drafter":"<64 hex>" or null,
 //    "device":"NVIDIA GB10 sm_121, driver 580.95.05, CUDA 13.0",
 //    "build":"0.3.0-dev.12+g1234567",
@@ -34,8 +34,8 @@
 // Prefill chunk rows and the request-slot knee need controlled runs and
 // keep their fallbacks; kernel schedules are later work.
 
-#ifndef JITLLM_RUNTIME_CALIBRATION_H_
-#define JITLLM_RUNTIME_CALIBRATION_H_
+#ifndef LLMP_RUNTIME_CALIBRATION_H_
+#define LLMP_RUNTIME_CALIBRATION_H_
 
 #include <sys/types.h>
 
@@ -53,9 +53,9 @@
 #include "execution/adaptive_wave_mode.h"
 #include "runtime/model_settings.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
-inline constexpr std::string_view kCalibrationFormat = "jitllm-model-calibration-v1";
+inline constexpr std::string_view kCalibrationFormat = "llmp-model-calibration-v1";
 inline constexpr std::size_t kMaxCalibrationBytes = std::size_t{64} << 10U;
 // The settings a calibration may hold.
 inline constexpr std::array<std::string_view, 7> kCalibrationKeys = {
@@ -186,6 +186,6 @@ class WaveCostExploration {
   std::array<std::size_t, execution::AdaptiveWaveMode::kMaxWidth + 1> explored_{};
 };
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_CALIBRATION_H_
+#endif  // LLMP_RUNTIME_CALIBRATION_H_

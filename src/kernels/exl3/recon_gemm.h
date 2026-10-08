@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The reconstruction path's GEMM (docs/backend-proof.md, "EXL3
@@ -23,8 +23,8 @@
 // kernels/ggml/cublas.h does. One instance per device, used on the device
 // submission lane only; the GEMM queues on the launch context's stream.
 
-#ifndef JITLLM_KERNELS_EXL3_RECON_GEMM_H_
-#define JITLLM_KERNELS_EXL3_RECON_GEMM_H_
+#ifndef LLMP_KERNELS_EXL3_RECON_GEMM_H_
+#define LLMP_KERNELS_EXL3_RECON_GEMM_H_
 
 #include <cstdint>
 #include <expected>
@@ -35,7 +35,7 @@
 
 struct cublasLtContext;
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 
 class ReconGemm {
  public:
@@ -77,6 +77,6 @@ class ReconGemm {
   cublasLtContext* handle_;
 };
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3
 
-#endif  // JITLLM_KERNELS_EXL3_RECON_GEMM_H_
+#endif  // LLMP_KERNELS_EXL3_RECON_GEMM_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A fixed-capacity FIFO shared by threads (D-048,
@@ -12,8 +12,8 @@
 // Guarded by a mutex: one short critical section per push or pop. Whether
 // a lock-free ring is worth it is a measurement, not an assumption.
 
-#ifndef JITLLM_BASE_BOUNDED_QUEUE_H_
-#define JITLLM_BASE_BOUNDED_QUEUE_H_
+#ifndef LLMP_BASE_BOUNDED_QUEUE_H_
+#define LLMP_BASE_BOUNDED_QUEUE_H_
 
 #include <condition_variable>
 #include <cstddef>
@@ -26,7 +26,7 @@
 
 #include "base/check.h"
 
-namespace jitllm::base {
+namespace llmp::base {
 
 enum class PushResult : std::uint8_t {
   kAccepted,
@@ -130,6 +130,6 @@ class BoundedQueue {
   bool closed_ = false;
 };
 
-}  // namespace jitllm::base
+}  // namespace llmp::base
 
-#endif  // JITLLM_BASE_BOUNDED_QUEUE_H_
+#endif  // LLMP_BASE_BOUNDED_QUEUE_H_

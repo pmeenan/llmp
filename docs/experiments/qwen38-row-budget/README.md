@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen four-slot depth-one C4 screen
@@ -55,8 +55,8 @@ scripts run.
 Provenance:
 
 - Source SHA256 `a7ac608005768b7f0bef506fd1f297228b1e746253dbbabdd10744783f9ac3dc`;
-  private macros `JITLLM_QWEN_ROW_BUDGET_SCREEN` in both arms and
-  `JITLLM_QWEN_ROW_BUDGET_FIXED_ONE` in the candidate.
+  private macros `LLMP_QWEN_ROW_BUDGET_SCREEN` in both arms and
+  `LLMP_QWEN_ROW_BUDGET_FIXED_ONE` in the candidate.
 - Builder SHA256 `39d430f69a5fb2e9a4a841cc313249b6c57f8e13d4dd5100cdbfea0835da6b01`;
   build receipt `5d86181ad598d95d98f40ff6d2998a336cb7249843d917c02aa8b1e6a6d708cb`.
 - Controller SHA256 `9053bc2b6359ee81759eaf710aab4a9af50f2e687088b2fdbb89b8a8135ef488`;

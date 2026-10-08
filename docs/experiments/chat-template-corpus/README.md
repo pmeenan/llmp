@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Chat-template corpus and interpreter references (M3), 2026-10-02
@@ -9,7 +9,7 @@ interpreter (`src/chat/jinja*`) and the choice of renderer
 templates ([tokenizer.md](../../tokenizer.md#the-template-interpreter)).
 
 - `snippets.py` writes `tests/unit/data/chat/jinja-snippets.json`: 133
-  small templates written for jitLLM, each rendered by transformers'
+  small templates written for llmpalooza, each rendered by transformers'
   compiled chat-template environment with fixed JSON variables, text or
   exception recorded (`jinja_test`).
 - `collect.py fetch` downloads the corpus's templates read-only at pinned
@@ -17,7 +17,7 @@ templates ([tokenizer.md](../../tokenizer.md#the-template-interpreter)).
   writes `manifest.json`; `collect.py render` renders each on
   `tests/unit/data/chat/corpus-conversations.json` with transformers'
   `render_jinja_template` and the manifest's BOS and EOS texts, passing
-  messages as jitLLM does, and writes `references.json`
+  messages as llmpalooza does, and writes `references.json`
   (`chat_corpus_test`).
 - `random_conversations.py SEED COUNT` writes random conversations in the
   same form, for `collect.py render` and `chat_corpus_test` pointed at
@@ -36,7 +36,7 @@ templates ([tokenizer.md](../../tokenizer.md#the-template-interpreter)).
   through each operation and Jinja2 3.1.6's `title` filter.
 
 Template texts and their renderings stay outside the repository, in
-`~/.local/share/jitllm/chat-templates/` on `spark` and `spark-b`.
+`~/.local/share/llmp/chat-templates/` on `spark` and `spark-b`.
 
 ## What ran where
 
@@ -45,8 +45,8 @@ On `spark-b` (spark-56f5), in the tokenizer reference's environment
 transformers 5.12.1, Jinja2 3.1.6), on 2026-10-02:
 
 ```sh
-venv/bin/python collect.py fetch --out ~/.local/share/jitllm/chat-templates --models ~/.local/share/jitllm
-venv/bin/python collect.py render --out ~/.local/share/jitllm/chat-templates \
+venv/bin/python collect.py fetch --out ~/.local/share/llmp/chat-templates --models ~/.local/share/llmp
+venv/bin/python collect.py render --out ~/.local/share/llmp/chat-templates \
     --conversations tests/unit/data/chat/corpus-conversations.json
 venv/bin/python snippets.py --out tests/unit/data/chat/jinja-snippets.json
 # the review's random conversations, in a copy of the corpus directory
@@ -59,14 +59,14 @@ The Gemma entries (all but the three first Gemma rows below) were added
 the same evening, merged into the manifest without refetching the rest:
 
 ```sh
-venv/bin/python collect.py fetch --out ~/.local/share/jitllm/chat-templates --only gemma-4-e4b-it \
+venv/bin/python collect.py fetch --out ~/.local/share/llmp/chat-templates --only gemma-4-e4b-it \
     gemma-4-26b-a4b-it-fp8 gemma-4-31b-it-nvfp4 gemma-4-31b-it-unsloth-gguf gemma-4-e4b-it-unsloth-gguf \
     gemma-4-e4b-it-lmstudio-gguf gemma-3-1b-it-gguf gemma-3n-e4b-it gemma-3-270m-it
 venv/bin/python collect.py render ...   # both conversation sets, as above
 venv/bin/python gemma_fixtures.py --gemma4 tests/unit/data/chat/templates/gemma-4.jinja \
     --gemma4-e tests/unit/data/chat/templates/gemma-4-e.jinja \
     --gemma4-2604 tests/unit/data/chat/templates/gemma-4-20260428.jinja \
-    --gemma3 ~/.local/share/jitllm/chat-templates/templates/gemma-3-4b-it.jinja --out tests/unit/data/chat
+    --gemma3 ~/.local/share/llmp/chat-templates/templates/gemma-3-4b-it.jinja --out tests/unit/data/chat
 ```
 
 Google's own Gemma 3 repositories are gated (no anonymous download); the
@@ -75,8 +75,8 @@ GGUFs converted from them (`ggml-org`, `bartowski`, `lmstudio-community`,
 
 The tests ran on `spark` (spark-c4e2), `spark-native` RelWithDebInfo, SDK
 `aarch64-e0a0c85c42806fb1`; the review's sanitizer runs in a build of the
-same configure with `JITLLM_SANITIZE="address;undefined"` and
-`JITLLM_CUDA=OFF`. The Gemma additions' tests ran on `spark-b`, the same
+same configure with `LLMP_SANITIZE="address;undefined"` and
+`LLMP_CUDA=OFF`. The Gemma additions' tests ran on `spark-b`, the same
 build configuration.
 
 ## Corpus
@@ -177,7 +177,7 @@ Gemma 4 repositories its two variants. Google's earlier Gemma 4 templates
 - **Pinned fixtures:** the interpreter, given each of the five pinned
   templates in the tree (DeepSeek's two, Qwen3.8's, Gemma 4's two), and
   Google's 2026-04-28 Gemma 4 template, reproduces every case of its chat
-  fixture, the jitLLM-refused cases' `reference_text` included.
+  fixture, the llmpalooza-refused cases' `reference_text` included.
 - **Review (2026-10-02):** the independent review's 28 conversations on
   the twelve Gemma corpus templates and Google's 31B templates of
   2026-04-02, 2026-04-10 and 2026-05-18, rendered by transformers: all
@@ -226,7 +226,7 @@ Gemma 4 repositories its two variants. Google's earlier Gemma 4 templates
 The corpus is 38 templates, chosen from the M3 and M3.5 families and
 popular repacks; any template outside it is checked only by the snippet
 and fixture tests. Probe equivalence is evidence on the probe corpus, not a
-proof for every conversation. Renderings use jitLLM's message shape (no
+proof for every conversation. Renderings use llmpalooza's message shape (no
 tool-call IDs, names or content parts), so templates that require those
 refuse such requests, as transformers does.
 

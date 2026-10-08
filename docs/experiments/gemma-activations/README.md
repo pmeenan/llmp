@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma activation primitives and floating fusion screen
@@ -45,14 +45,14 @@ Measured 2026-10-04 on `spark-b` (hostname `spark-56f5`), NVIDIA GB10,
 driver 580.178.04; official locked `spark-native`, aarch64-linux-gnu,
 RelWithDebInfo SDK `aarch64-c09daba6ac31edee`. The prepared GGML tree is
 `e86191a0c9e9655d153d1895a630780c67bb472961f6527c1c9d1d60fdcac991`.
-The implementation starts from jitLLM `fc48ca5`; the final policy remains
+The implementation starts from llmpalooza `fc48ca5`; the final policy remains
 default off and does not change the measured arithmetic.
 
 Weights are deterministic synthetic resident **F16**, inputs F32, both
 products explicitly request F32 accumulation. K=2816; the candidate
 computes both products and GELU-tanh GLU, while fallback pays both products
 and the primitive. Each timing uses eight warmups and 64 complete chains,
-CUDA events on jitLLM's stream and uncaptured native launches. No product
+CUDA events on llmpalooza's stream and uncaptured native launches. No product
 or input preparation is borrowed from another arm. F16 needs no runtime
 input quantization; upload and checkpoint loading are outside the screen.
 
@@ -71,8 +71,8 @@ The first N704 screen's A1 was 20.9% above A2, prompting these two narrow
 repeats instead of using that initial number to select a path.
 
 Reproduce the correctness test and screen with `ggml_ops_test` filter
-`GgmlOpsTest.Gemma*`; set `JITLLM_GEMMA_ACTIVATION_TIMING=1` to time the
-floating chains. Set `JITLLM_GEMMA_ACTIVATION_TIMING_N704_ONLY=1` and
+`GgmlOpsTest.Gemma*`; set `LLMP_GEMMA_ACTIVATION_TIMING=1` to time the
+floating chains. Set `LLMP_GEMMA_ACTIVATION_TIMING_N704_ONLY=1` and
 `--gtest_repeat=2` for the N704 repeats. Spark work uses the installed
 `spark-job start --gpu` supervisor, followed by its `wait` command.
 

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek prefill chunk screen — 2026-10-04
@@ -64,7 +64,7 @@ aggregate report:
 `fe13e5f1a379121969d3b45d7deb19de70d650ee06541285974b6fdb178b8184`.
 Raw script, inputs, pins, configs, full responses, gates, logs and retirement
 receipts remain at `spark-b:~/scratch/dsv4-prefill-chunks/` and
-`~/scratch/jitllm-m3-dsv4-prefill-chunks-2026-10-04/`. Installed supervisor job
+`~/scratch/llmp-m3-dsv4-prefill-chunks-2026-10-04/`. Installed supervisor job
 `dsv4-prefill-chunk8192` completes zero and is waited on. Reproduce the
 recorded controller with `--workload prefill --cells 1 --engines
 current-before-lit,current-wide-lit,current-after-lit` and fresh output,

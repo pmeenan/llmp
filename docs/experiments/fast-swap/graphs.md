@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Decode graphs: DeepSeek V4 Flash's decode steps as CUDA graphs (M3)
@@ -73,7 +73,7 @@ layout is the captured one.
 GB10, driver 580.178.04, `spark-native`, `CUDA_DISABLE_PTX_JIT=1`,
 artifact `8a355bfb…`. Each run started once `spark-b` had no GPU process
 and more than 110 GB `MemAvailable` (`gate.sh`); the Qwen3.8 slice used
-the GPU between runs. Raw outputs in `~/.local/share/jitllm/m3graph-20260928/`
+the GPU between runs. Raw outputs in `~/.local/share/llmp/m3graph-20260928/`
 (`pb-1`, `bench-2`, `swap-g1`, `llb-*`).
 
 **Bit-identity.**
@@ -87,26 +87,26 @@ the GPU between runs. Raw outputs in `~/.local/share/jitllm/m3graph-20260928/`
 
 After review's changes (the graph cap, the owner's identity), the 8
 prompts were run once more with graphs on: again 0 logits differ, 246
-decode steps replayed (`~/.local/share/jitllm/m3graph-review/prompts-1`).
+decode steps replayed (`~/.local/share/llmp/m3graph-review/prompts-1`).
 
 **Decode speed** (tok/s; 64 one-token steps from an empty context; means
 of three passes per run, three runs):
 
 | | tok/s | per token |
 | --- | ---: | ---: |
-| jitLLM, launch by launch (paged node) | 18.13–18.82 | 53.1–55.2 ms |
-| jitLLM, graphs (paged node) | 19.05–19.53 (1.04–1.05×) | 51.2–52.5 ms |
-| jitLLM, one graph replayed back to back (device time; two runs) | 20.58–20.70 | 48.3–48.6 ms |
-| jitLLM resident harness, launch by launch ([dsv4-native](../dsv4-native/README.md)) | 19.41 | 51.5 ms |
+| Llmpalooza, launch by launch (paged node) | 18.13–18.82 | 53.1–55.2 ms |
+| Llmpalooza, graphs (paged node) | 19.05–19.53 (1.04–1.05×) | 51.2–52.5 ms |
+| Llmpalooza, one graph replayed back to back (device time; two runs) | 20.58–20.70 | 48.3–48.6 ms |
+| Llmpalooza resident harness, launch by launch ([dsv4-native](../dsv4-native/README.md)) | 19.41 | 51.5 ms |
 | llama.cpp, fusion and CUDA graphs on (llama-bench's defaults) | 20.62 ± 0.09 | 48.5 ms |
 | llama.cpp, fusion off, CUDA graphs on | 20.04 ± 0.06 | 49.9 ms |
 | llama.cpp, fusion off, CUDA graphs off | 19.86 ± 0.01 | 50.4 ms |
 
 llama.cpp is `llama-bench -ngl 99 -fa on -p 512 -n 64 -r 3` in the pinned
 image (`run_oracle.sh` `bench`, `bench-unfused`, `bench-unfused-nographs`),
-its tg64. jitLLM's plan is unfused, so llama.cpp's like-for-like arm is
-fusion off, graphs on: jitLLM with graphs is at 0.95–0.97× of it;
-launch by launch, jitLLM was at 0.91–0.95× of llama.cpp launch by launch.
+its tg64. Llmpalooza's plan is unfused, so llama.cpp's like-for-like arm is
+fusion off, graphs on: llmpalooza with graphs is at 0.95–0.97× of it;
+launch by launch, llmpalooza was at 0.91–0.95× of llama.cpp launch by launch.
 Graphs also help llama.cpp little (0.9%).
 
 **Where the rest goes.** The job's host time per step falls from 41.5–41.9
@@ -153,7 +153,7 @@ swap.md's, not a replacement for them.
 
 The owner asked (D-090's note) for graphs to be re-measured once a
 request leases its closure once instead of every step
-([swap](swap.md#a-lease-per-request)). `jitllm_swap_pairs --a dsv4 --b
+([swap](swap.md#a-lease-per-request)). `llmp_swap_pairs --a dsv4 --b
 qwen38 --cycles 0 --bench 64 [--poll-us 200]`: 64 one-token greedy steps
 from BOS, four arms (lease per step or per
 request, launch by launch or replayed), a warm-up of each and then three

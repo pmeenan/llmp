@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/qwen38_wave_plan.h"
@@ -21,10 +21,10 @@
 
 #include "engine/support.h"
 #include "ggml.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/set_rows_group.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 bool Qwen38SelectedQ4HeadPrefix(const ggml_tensor* weight, const ggml_tensor* parent) {
   constexpr std::uint64_t kRowBytes = 1600;
@@ -188,12 +188,12 @@ bool DraftHead(const ggml_tensor* t) {
 }
 
 bool Eligible(const ggml_tensor* t) {
-  const auto op = kg::JitllmOpOf(t);
+  const auto op = kg::LlmpOpOf(t);
   // Only one-row GGUF steps: the shared launch retains their reduction.
   // Multirow products and grouped products keep their original operations.
-  return (DraftHead(t) && t->ne[1] == 1) || op == kg::JitllmOp::kMxfp8MulMatVec ||
-         op == kg::JitllmOp::kMoeGemv ||
-         (op == kg::JitllmOp::kVecQ && kg::JitllmOpInt(t, 0) == 1 &&
+  return (DraftHead(t) && t->ne[1] == 1) || op == kg::LlmpOp::kMxfp8MulMatVec ||
+         op == kg::LlmpOp::kMoeGemv ||
+         (op == kg::LlmpOp::kVecQ && kg::LlmpOpInt(t, 0) == 1 &&
           (VecQRouted(t) || t->src[0]->ne[2] == 1));
 }
 
@@ -278,31 +278,31 @@ bool Match(const ggml_tensor* a, const ggml_tensor* b, std::span<const Range> mu
            std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) == 0 &&
            SameHeadWeight(a->src[0], b->src[0], mutable_places);
   }
-  if (!Eligible(a) || !Eligible(b) || kg::JitllmOpOf(a) != kg::JitllmOpOf(b) ||
+  if (!Eligible(a) || !Eligible(b) || kg::LlmpOpOf(a) != kg::LlmpOpOf(b) ||
       std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) != 0 ||
       !(SameImmutableLeaf(a->src[0], b->src[0], mutable_places) ||
-        (kg::JitllmOpOf(a) == kg::JitllmOp::kVecQ && !VecQRouted(a) && !VecQRouted(b) &&
+        (kg::LlmpOpOf(a) == kg::LlmpOp::kVecQ && !VecQRouted(a) && !VecQRouted(b) &&
          SameSelectedQ4Prefix(a->src[0], b->src[0], mutable_places))) ||
       a->type != GGML_TYPE_F32 || b->type != GGML_TYPE_F32 || a->ne[0] != b->ne[0]) {
     return false;
   }
-  if (kg::JitllmOpOf(a) == kg::JitllmOp::kVecQ) {
+  if (kg::LlmpOpOf(a) == kg::LlmpOp::kVecQ) {
     const bool routed = VecQRouted(a);
     if (routed != VecQRouted(b) || a->ne[2] != b->ne[2] || a->ne[3] != b->ne[3] ||
         a->ne[1] != b->ne[1] || a->src[1] == nullptr || b->src[1] == nullptr ||
-        kg::JitllmOpOf(a->src[1]) != kg::JitllmOp::kQuantizeQ8 ||
-        kg::JitllmOpOf(b->src[1]) != kg::JitllmOp::kQuantizeQ8) {
+        kg::LlmpOpOf(a->src[1]) != kg::LlmpOp::kQuantizeQ8 ||
+        kg::LlmpOpOf(b->src[1]) != kg::LlmpOp::kQuantizeQ8) {
       return false;
     }
     const auto* gate_a = a->src[routed ? 3 : 2];
     const auto* gate_b = b->src[routed ? 3 : 2];
-    const bool per_slot = kg::JitllmOpInt(a, 1) != 0;
+    const bool per_slot = kg::LlmpOpInt(a, 1) != 0;
     return ((gate_a == nullptr && gate_b == nullptr) ||
             SameImmutableLeaf(gate_a, gate_b, mutable_places)) &&
            Concatenable(a->src[1]->src[0], b->src[1]->src[0], per_slot ? 2 : 1, GGML_TYPE_F32) &&
            (!routed || Concatenable(a->src[2], b->src[2], 1, GGML_TYPE_I32));
   }
-  if (kg::JitllmOpOf(a) == kg::JitllmOp::kMxfp8MulMatVec) {
+  if (kg::LlmpOpOf(a) == kg::LlmpOp::kMxfp8MulMatVec) {
     return SameImmutableLeaf(a->src[1], b->src[1], mutable_places) &&
            Concatenable(a->src[2], b->src[2], 1, GGML_TYPE_F32) && a->ne[1] >= 1 && a->ne[1] <= 4 &&
            b->ne[1] >= 1 && b->ne[1] <= 4 && a->ne[2] == 1 && b->ne[2] == 1 && a->ne[3] == 1 &&
@@ -324,22 +324,22 @@ bool Match(const ggml_tensor* a, const ggml_tensor* b, std::span<const Range> mu
 // The rows a product joins (columns; a routed product's tokens) and the
 // most its shared kernel takes.
 std::int64_t JoinedRows(const ggml_tensor* t) {
-  if (kg::JitllmOpOf(t) == kg::JitllmOp::kVecQ) {
-    return kg::JitllmOpInt(t, 0);
+  if (kg::LlmpOpOf(t) == kg::LlmpOp::kVecQ) {
+    return kg::LlmpOpInt(t, 0);
   }
-  return kg::JitllmOpOf(t) == kg::JitllmOp::kMoeGemv ? t->ne[2] : t->ne[1];
+  return kg::LlmpOpOf(t) == kg::LlmpOp::kMoeGemv ? t->ne[2] : t->ne[1];
 }
 
 std::int64_t JoinedLimit(const ggml_tensor* t) {
   if (DraftHead(t)) {
     return 8;
   }
-  switch (kg::JitllmOpOf(t)) {
-    case kg::JitllmOp::kVecQ:
+  switch (kg::LlmpOpOf(t)) {
+    case kg::LlmpOp::kVecQ:
       return VecQRouted(t) ? std::min(kg::kVecQMaxTokens, 128 / t->ne[1]) : kg::kVecQMaxTokens;
-    case kg::JitllmOp::kMoeGemv:
+    case kg::LlmpOp::kMoeGemv:
       return kg::kMoeGemvWaveTokens;
-    case kg::JitllmOp::kMxfp8MulMatVec:
+    case kg::LlmpOp::kMxfp8MulMatVec:
       return kg::kMxfp8VecWaveColumns;
     default:
       return 16;  // HC's cuBLAS product
@@ -734,9 +734,9 @@ struct Qwen38WaveBuilder {
           }
           out.stats_.packed_bytes += ggml_nbytes(x);
           ++out.stats_.draft_head_pairs;
-        } else if (kg::JitllmOpOf(a) == kg::JitllmOp::kVecQ) {
+        } else if (kg::LlmpOpOf(a) == kg::LlmpOp::kVecQ) {
           const bool routed = VecQRouted(a);
-          const bool per_slot = kg::JitllmOpInt(a, 1) != 0;
+          const bool per_slot = kg::LlmpOpInt(a, 1) != 0;
           std::vector<ggml_tensor*> ids;
           for (ggml_tensor* m : members) {
             xs.push_back(m->src[1]->src[0]);
@@ -753,7 +753,7 @@ struct Qwen38WaveBuilder {
           ggml_tensor* joined_ids = routed ? ConcatAll(c, ids, 1, made) : nullptr;
           both = kg::VecQ(c, a->src[0], q8, joined_ids, static_cast<std::int64_t>(members.size()),
                           per_slot, a->src[routed ? 3 : 2],
-                          static_cast<kg::VecQGlu>(kg::JitllmOpInt(a, 2)), kg::JitllmOpFloat(a, 3));
+                          static_cast<kg::VecQGlu>(kg::LlmpOpInt(a, 2)), kg::LlmpOpFloat(a, 3));
           kg::SetVecQOneToken(both);
           for (std::size_t k = 0; k < members.size(); ++k) {
             const ggml_tensor* m = members[k];
@@ -775,7 +775,7 @@ struct Qwen38WaveBuilder {
                             members[k]->ne[0] == members[k]->src[0]->ne[1];
           }
           if (selected_head) ++out.stats_.quantized_draft_head_pairs;
-        } else if (kg::JitllmOpOf(a) == kg::JitllmOp::kMxfp8MulMatVec) {
+        } else if (kg::LlmpOpOf(a) == kg::LlmpOp::kMxfp8MulMatVec) {
           for (ggml_tensor* m : members) {
             xs.push_back(m->src[2]);
           }
@@ -798,13 +798,12 @@ struct Qwen38WaveBuilder {
           ggml_tensor* joined = ConcatAll(c, ids, 1, made);
           if (kg::IsMoeGemvSwiglu(a)) {
             both = kg::MoeGemvSwiglu(c, a->src[0], x, joined, a->ne[0], a->src[3], a->src[4],
-                                     static_cast<std::uint64_t>(kg::JitllmOpInt(a, 2)),
-                                     static_cast<std::uint64_t>(kg::JitllmOpInt(a, 3)));
+                                     static_cast<std::uint64_t>(kg::LlmpOpInt(a, 2)),
+                                     static_cast<std::uint64_t>(kg::LlmpOpInt(a, 3)));
           } else {
-            both = kg::MoeGemv(c, a->src[0], x, joined, a->ne[0], kg::JitllmOpInt(a, 0),
-                               kg::JitllmOpInt(a, 1),
-                               static_cast<std::uint64_t>(kg::JitllmOpInt(a, 2)),
-                               static_cast<std::uint64_t>(kg::JitllmOpInt(a, 3)));
+            both = kg::MoeGemv(c, a->src[0], x, joined, a->ne[0], kg::LlmpOpInt(a, 0),
+                               kg::LlmpOpInt(a, 1), static_cast<std::uint64_t>(kg::LlmpOpInt(a, 2)),
+                               static_cast<std::uint64_t>(kg::LlmpOpInt(a, 3)));
           }
           std::size_t offset = 0;
           for (ggml_tensor* m : members) {
@@ -1155,4 +1154,4 @@ std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> PlanQwen38DraftWa
   return Qwen38WaveBuilder::Draft(requests, choices, placement, measurement);
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Download hashed MPI/build dependencies and extract them without installation."""
 import argparse
@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 
 ap = argparse.ArgumentParser(description=__doc__)
-ap.add_argument('--root', type=Path, default=Path('/home/pmeenan/.local/share/jitllm/interconnect'))
+ap.add_argument('--root', type=Path, default=Path('/home/pmeenan/.local/share/llmp/interconnect'))
 a = ap.parse_args()
 packages = a.root / 'packages'
 packages.mkdir(parents=True, exist_ok=True)

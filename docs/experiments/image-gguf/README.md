@@ -1,11 +1,11 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen-Image-2.1 GGUF comparison on a GGML runner
 
 External reference on `spark` (2026-09-22), extending the
 [BF16 diffusers study](../image-reference/README.md) to the owner-supplied
-[GGUF candidate](../model-candidates.md). It is not native jitLLM image
+[GGUF candidate](../model-candidates.md). It is not native llmpalooza image
 support. Raw images, logs and per-case results stay outside Git;
 [`aggregates.json`](aggregates.json) holds the reduced evidence.
 
@@ -119,11 +119,11 @@ available, so these runs do not show behavior when the cache itself is under
 pressure. With a 2 GiB budget even the tiled decode (3.36 GiB) did not fit and
 the request failed explicitly after sampling; nothing was substituted.
 
-For jitLLM this is a working external instance of phase-bounded parameter
+For llmpalooza this is a working external instance of phase-bounded parameter
 release and budgeted segment re-staging on GGML: the phase boundary is cheap
 and exact, while paging the hot denoiser inside its step loop multiplies
 step time and depends on page cache. Workspace, not weights, bounds image
-decode at high resolution. None of this is jitLLM's pager, admission or
+decode at high resolution. None of this is llmpalooza's pager, admission or
 completion tracking; the runner's budget excludes driver contexts and is not a
 physical cap.
 
@@ -224,7 +224,7 @@ study; conversion or repackaging does not remove that boundary. This work is
 local evaluation; no weights are redistributed. The GGUF card also states the
 repository has no content filter; the fixed benign prompt is the only input.
 stable-diffusion.cpp and its GGML fork are MIT external reference tools under
-D-017; this is not adoption into jitLLM's core, and the fork's extra commits
+D-017; this is not adoption into llmpalooza's core, and the fork's extra commits
 are not evaluated for incorporation. CUDA images are platform dependencies
 under their own terms.
 
@@ -235,13 +235,13 @@ python3 docs/experiments/hf_fetch.py --pins docs/experiments/image-gguf/pins.jso
   --output MODELS/gguf
 python3 docs/experiments/hf_fetch.py --pins docs/experiments/image-gguf/pins.json --section bf16_control \
   --output MODELS/bf16-control
-sudo -n docker build --platform linux/arm64 -t jitllm-image-gguf:20260922 docs/experiments/image-gguf
+sudo -n docker build --platform linux/arm64 -t llmp-image-gguf:20260922 docs/experiments/image-gguf
 python3 docs/experiments/image-gguf/suite.py --models MODELS --output NEW_PRIVATE_DIR
 ```
 
 The resident VAE-tiling control is `suite.py --only q4-1024-4-vae-tiled`. The
 cross-node arm builds both Dockerfiles on the second node (the upstream one
-tagged `jitllm-image-gguf-upstream:20260922`) and runs `run.py` with
+tagged `llmp-image-gguf-upstream:20260922`) and runs `run.py` with
 `--image` for the Q4_K_M cases. `identity.py` and `inspect_weights.py` run in
 the image-reference container against hash-verified inputs (the baseline via
 `../image-reference/fetch.py`'s `verify_directory`). Summaries and

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Owner-only files kept across a restart (D-014, D-105): a private
@@ -10,8 +10,8 @@
 // generation); another system plugs in below the same calls as
 // direct_io.h's opens do (docs/portability.md).
 
-#ifndef JITLLM_PLATFORM_KEPT_FILES_H_
-#define JITLLM_PLATFORM_KEPT_FILES_H_
+#ifndef LLMP_PLATFORM_KEPT_FILES_H_
+#define LLMP_PLATFORM_KEPT_FILES_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -21,7 +21,7 @@
 #include <string_view>
 #include <vector>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 // Which file this is: its device and inode, and the inode's generation
 // where the filesystem reports one (files.h FileGeneration), so a file is
@@ -108,6 +108,6 @@ std::expected<void, int> SyncFileData(int fd);
 // Best effort; false if either could not be set.
 bool LowerThreadPriority();
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_KEPT_FILES_H_
+#endif  // LLMP_PLATFORM_KEPT_FILES_H_

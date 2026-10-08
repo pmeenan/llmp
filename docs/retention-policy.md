@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Conversation-state retention and the M6 acceptance trace
@@ -322,7 +322,7 @@ candidate for later measurement, not the default.
 **Spill storage.** Spill lives in a configured node-local directory owned by
 the service user with mode 0700, on a filesystem that passes the D-034
 direct-I/O probe. It never overlaps D-054's storage roles or uses a long-term
-store. jitLLM creates that directory with a marker file. Startup refuses a
+store. Llmpalooza creates that directory with a marker file. Startup refuses a
 spill directory that is a link, has the wrong owner or mode, or is non-empty
 without the marker, then deletes only runtime-named spill files in it, so a
 misconfigured path cannot wipe unrelated data. Files get runtime-generated
@@ -361,7 +361,7 @@ destination for admitted demand inherits that demand's priority (D-050).
 ## Bounds and defaults
 
 Only the idle caps are fixed now. The capacity values are pinned at M5 exit,
-before M6 implementation, from jitLLM's measured state bytes for its
+before M6 implementation, from llmpalooza's measured state bytes for its
 supported models and the node's measured headroom, and recorded here with
 their provenance.
 
@@ -424,7 +424,7 @@ scope, is not part of this workload.
 At these sizes, a physical pressure holder cannot safely force displacement,
 so pressure is policy-forced on both sides, as in the reference cycle's
 zero-pressure arms. The reference keeps one model loaded at a time, plus
-whatever page cache the OS keeps; jitLLM gets a configured execution budget,
+whatever page cache the OS keeps; llmpalooza gets a configured execution budget,
 less memory than the reference can use. Budgets use M6-entry measurements
 of `F`, `J`, `R_m` and `E_m` for the pinned plans and trace, with `W_m` the
 weight part of `E_m` and `S_m` the retained-entry bytes at the switch points,
@@ -464,7 +464,7 @@ of the two models.
 
 Decoding is greedy with a pinned seed. Every response is capped at 128
 tokens on A and 64 on B, and the prompts ask for more than the cap, so every
-response ends at it. Pinning checks this for jitLLM's plan and each reference
+response ends at it. Pinning checks this for llmpalooza's plan and each reference
 engine; a response that stops early needs a new transcript identity, not a
 rejected trial. The fixed replies give every arm and engine identical token
 arrays whatever it generated, and credit no engine for reusing its own
@@ -500,45 +500,45 @@ engine's live-state continuation, and a recompute arm its own fresh-context
 run; a path that fails is recorded as unsupported and cannot set the floor.
 The harness adds no durability flush beyond what conditioning a saved state
 file cold requires, and that write-back counts inside the reference's timer,
-as jitLLM's spill write counts inside its own.
+as llmpalooza's spill write counts inside its own.
 
 ### Timing protocol
 
 - Interleave every arm in each repetition in a seeded random order recorded
   before the run.
-- Every trial starts clean: a freshly started jitLLM runtime, with its spill
+- Every trial starts clean: a freshly started llmpalooza runtime, with its spill
   deleted and no entries, or fresh reference processes with no model state
   or prompt cache from earlier trials; pinned compile and tuning caches are
   not state. After a verified fresh start, a nonzero reused-token count on
-  the outward request is a jitLLM correctness failure.
+  the outward request is a llmpalooza correctness failure.
 - Cold means no page of the incoming model file resident by `mincore`; warm
   means at least 99.9%. Reference arms also condition their saved state files
-  on return, as the reference cycle did. For jitLLM, condition both model
+  on return, as the reference cycle did. For llmpalooza, condition both model
   files before the cycle and recheck at each timer start. Direct I/O should
-  leave cold files cold, so a jitLLM file that gains cached pages is a
+  leave cold files cold, so a llmpalooza file that gains cached pages is a
   defect, not a rejected trial.
 - Issue requests back to back: each timed request is sent when the previous
-  response's terminal event arrives. The trial trace must show jitLLM
+  response's terminal event arrives. The trial trace must show llmpalooza
   emitting that event before the outgoing handoff completes and before any
-  write of its entries starts, and jitLLM's timer starts at the earlier of
+  write of its entries starts, and llmpalooza's timer starts at the earlier of
   that emission and the timed request's send; otherwise the trial fails.
   Outgoing retirement work thus always falls inside the timed switch.
   Reference arms follow the reference cycle's protocol, with their state
   save inside the timer.
-- jitLLM's timer runs from that start to the first nonempty token event at
+- Llmpalooza's timer runs from that start to the first nonempty token event at
   the client; the reference's runs from the switch decision to the
   same event.
 - Record per trial: first-token time, decode inter-token gaps, bytes read and
   written by class (weights, spill) and whole-node block traffic, peak
-  occupancy from jitLLM's ledger and sampled node memory, spill occupancy,
+  occupancy from llmpalooza's ledger and sampled node memory, spill occupancy,
   reused, recomputed and new tokens, OOM and swap counters, and output
   token IDs.
 - Fix rejection criteria before the run: a cache condition not met for
-  reasons outside jitLLM, concurrent external load, or a harness failure.
+  reasons outside llmpalooza, concurrent external load, or a harness failure.
   Decide them from timing-blind signals recorded the same way for every
   arm, reject the whole repetition, rerun it and report rejection counts per
   arm. A correctness failure is never a rejection.
-- Gate the pressure itself, not just the ledger: jitLLM's attributable
+- Gate the pressure itself, not just the ledger: llmpalooza's attributable
   sampled node memory stays within the arm's budget plus its measured
   baseline outside it, and whole-node reads are at least the ledger's weight
   and spill reads. J-spill and J-whole-spill returns hold no resident copy of
@@ -557,7 +557,7 @@ after looking at results. At n = 72, the sample maximum is a one-sided
 
 The floor is checked for each orientation, direction, cache condition and
 floor arm (J-partial, J-spill), separately at the median and at p95. A
-comparison passes only if jitLLM's one-sided 97.5% upper bound for the
+comparison passes only if llmpalooza's one-sided 97.5% upper bound for the
 statistic is at most the smallest one-sided 97.5% lower bound among all
 valid reference arms: restore and recompute, matched and normal views. Both
 bounds come from binomial order statistics with no distribution assumed.
@@ -637,7 +637,7 @@ write budget; the transcript, per-model token-array hashes, output caps,
 decoding mode and seed, the expected reuse and required spill-read bytes per
 model and plan; `F`, `J`,
 `R_m`, `E_m`, `S_m` and the resulting budgets with the per-arm displacement
-record; jitLLM's measured memory baseline outside its budget; each arm's
+record; llmpalooza's measured memory baseline outside its budget; each arm's
 `M_state` and spill enablement (J-partial needs
 `S_A + S_B ≤ M_state` and no spill); the reference engine pins,
 configurations, validated state paths, kernel caches and cache conditioning;

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "tokenizer/unicode.h"
@@ -16,7 +16,7 @@
 #include "tokenizer/error.h"
 #include "tokenizer/unicode_data.h"
 
-namespace jitllm::tokenizer::unicode {
+namespace llmp::tokenizer::unicode {
 namespace {
 
 namespace data = unicode_data;
@@ -367,4 +367,4 @@ void ToNfc(std::vector<char32_t>& text) {
   }
 }
 
-}  // namespace jitllm::tokenizer::unicode
+}  // namespace llmp::tokenizer::unicode

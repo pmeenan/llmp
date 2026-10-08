@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The cooperative chat cohort's schedule (runtime/cohort_schedule.h): the
@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 using Stage = ScheduledMember::Stage;
@@ -177,4 +177,4 @@ TEST(CohortSchedule, AStartedPromptAboutToFinishGoesBeforeAnAgedOne) {
 }
 
 }  // namespace
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

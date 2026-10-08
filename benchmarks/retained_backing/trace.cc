@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "retained_backing/trace.h"
@@ -19,7 +19,7 @@
 #include "base/sha256.h"
 #include "retained_backing/json.h"
 
-namespace jitllm::rb {
+namespace llmp::rb {
 namespace {
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
@@ -96,7 +96,7 @@ std::expected<Trace, std::string> ParseTrace(std::string_view bytes) {
   }
   const auto format = Text(*header, "format");
   const auto version = Unsigned(*header, "version");
-  if (!format || *format != "jitllm-swap-trace" || !version || *version != 1) {
+  if (!format || *format != "llmp-swap-trace" || !version || *version != 1) {
     return Error("not a version 1 swap trace");
   }
   const auto role = Text(*header, "role");
@@ -405,4 +405,4 @@ std::expected<Reference::Step, std::string> Reference::Apply(const Event& event,
   return Error("the reference's own records are not applied");
 }
 
-}  // namespace jitllm::rb
+}  // namespace llmp::rb

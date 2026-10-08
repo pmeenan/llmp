@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/crash_policy.h"
@@ -17,7 +17,7 @@
 #include <string>
 #include <string_view>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 namespace {
 
 // Every signal whose default action dumps core (signal(7)).
@@ -120,4 +120,4 @@ std::expected<void, std::string> InstallCrashPolicy(std::string_view name) {
   return {};
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

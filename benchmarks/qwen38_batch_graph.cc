@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "qwen38_batch_graph.h"
@@ -16,17 +16,17 @@
 #include <vector>
 
 #include "ggml.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 
-namespace jitllm::benchmarks::qwen_batch {
+namespace llmp::benchmarks::qwen_batch {
 namespace {
 namespace kg = kernels::ggml;
 
 std::unexpected<std::string> Error(std::string s) { return std::unexpected(std::move(s)); }
 
 bool Eligible(const ggml_tensor* t) {
-  const auto op = kg::JitllmOpOf(t);
-  return op == kg::JitllmOp::kMxfp8MulMatVec || op == kg::JitllmOp::kMoeGemv;
+  const auto op = kg::LlmpOpOf(t);
+  return op == kg::LlmpOp::kMxfp8MulMatVec || op == kg::LlmpOp::kMoeGemv;
 }
 
 bool SameLeaf(const ggml_tensor* a, const ggml_tensor* b) {
@@ -36,12 +36,12 @@ bool SameLeaf(const ggml_tensor* a, const ggml_tensor* b) {
 }
 
 std::expected<void, std::string> Match(const ggml_tensor* a, const ggml_tensor* b) {
-  if (!Eligible(a) || kg::JitllmOpOf(a) != kg::JitllmOpOf(b) ||
+  if (!Eligible(a) || kg::LlmpOpOf(a) != kg::LlmpOpOf(b) ||
       std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) != 0 ||
       !SameLeaf(a->src[0], b->src[0]) || a->type != GGML_TYPE_F32 || b->type != GGML_TYPE_F32) {
     return Error("C2 product phase/order, immutable weights or parameters differ");
   }
-  if (kg::JitllmOpOf(a) == kg::JitllmOp::kMxfp8MulMatVec) {
+  if (kg::LlmpOpOf(a) == kg::LlmpOp::kMxfp8MulMatVec) {
     if (!SameLeaf(a->src[1], b->src[1]) || a->ne[0] != b->ne[0] || a->ne[1] <= 0 || b->ne[1] <= 0 ||
         a->ne[1] > 4 || b->ne[1] > 4 || a->src[2]->type != GGML_TYPE_F32 ||
         b->src[2]->type != GGML_TYPE_F32 || a->src[2]->ne[0] != b->src[2]->ne[0]) {
@@ -131,7 +131,7 @@ std::expected<void, std::string> Coalesce(Plan& out,
       }
       ggml_tensor* both = nullptr;
       std::array<ggml_tensor*, 2> split{};
-      if (kg::JitllmOpOf(a) == kg::JitllmOp::kMxfp8MulMatVec) {
+      if (kg::LlmpOpOf(a) == kg::LlmpOp::kMxfp8MulMatVec) {
         ggml_tensor* x = ggml_concat(c, a->src[2], b->src[2], 1);
         out.nodes.push_back(x);
         both = kg::Mxfp8MulMatVec(c, a->src[0], a->src[1], x);
@@ -147,13 +147,12 @@ std::expected<void, std::string> Coalesce(Plan& out,
         out.nodes.push_back(ids);
         if (kg::IsMoeGemvSwiglu(a)) {
           both = kg::MoeGemvSwiglu(c, a->src[0], x, ids, a->ne[0], a->src[3], a->src[4],
-                                   static_cast<std::uint64_t>(kg::JitllmOpInt(a, 2)),
-                                   static_cast<std::uint64_t>(kg::JitllmOpInt(a, 3)));
+                                   static_cast<std::uint64_t>(kg::LlmpOpInt(a, 2)),
+                                   static_cast<std::uint64_t>(kg::LlmpOpInt(a, 3)));
         } else {
-          both =
-              kg::MoeGemv(c, a->src[0], x, ids, a->ne[0], kg::JitllmOpInt(a, 0),
-                          kg::JitllmOpInt(a, 1), static_cast<std::uint64_t>(kg::JitllmOpInt(a, 2)),
-                          static_cast<std::uint64_t>(kg::JitllmOpInt(a, 3)));
+          both = kg::MoeGemv(c, a->src[0], x, ids, a->ne[0], kg::LlmpOpInt(a, 0),
+                             kg::LlmpOpInt(a, 1), static_cast<std::uint64_t>(kg::LlmpOpInt(a, 2)),
+                             static_cast<std::uint64_t>(kg::LlmpOpInt(a, 3)));
         }
         split[0] = ggml_view_3d(c, both, a->ne[0], a->ne[1], a->ne[2], both->nb[1], both->nb[2], 0);
         split[1] = ggml_view_3d(c, both, b->ne[0], b->ne[1], b->ne[2], both->nb[1], both->nb[2],
@@ -350,4 +349,4 @@ std::expected<std::unique_ptr<Plan>, std::string> DraftPlan(
   }
   return out;
 }
-}  // namespace jitllm::benchmarks::qwen_batch
+}  // namespace llmp::benchmarks::qwen_batch

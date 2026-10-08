@@ -1,21 +1,21 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// MXFP8 quantization in device code (jitllm_ops.h jitllm.mxfp8.quantize and
+// MXFP8 quantization in device code (llmp_ops.h llmp.mxfp8.quantize and
 // the fusions that end in it): a 32-value block's E8M0 scale is
 // 2^ceil(log2(amax / 448)), so that no value exceeds E4M3's 448, and each
 // value divided by it is rounded to the nearest E4M3 (saturating). The
 // codes and scales are laid out for CUTLASS's product (mxfp8_cutlass.h,
 // moe_cutlass.h SfOffset). CUDA only.
 
-#ifndef JITLLM_KERNELS_GGML_MXFP8_QUANT_CUH_
-#define JITLLM_KERNELS_GGML_MXFP8_QUANT_CUH_
+#ifndef LLMP_KERNELS_GGML_MXFP8_QUANT_CUH_
+#define LLMP_KERNELS_GGML_MXFP8_QUANT_CUH_
 
 #include <cuda_fp8.h>
 
 #include <cstdint>
 
-namespace jitllm::kernels::ggml::mxfp8 {
+namespace llmp::kernels::ggml::mxfp8 {
 
 // The E8M0 code of a block whose largest magnitude is `amax` (finite, not
 // negative): the exponent of amax / 448 rounded up; 0 (2^-127) for zeros.
@@ -44,6 +44,6 @@ __device__ __forceinline__ std::uint32_t Pack4(float a, float b, float c, float 
   return static_cast<std::uint32_t>(lo) | (static_cast<std::uint32_t>(hi) << 16U);
 }
 
-}  // namespace jitllm::kernels::ggml::mxfp8
+}  // namespace llmp::kernels::ggml::mxfp8
 
-#endif  // JITLLM_KERNELS_GGML_MXFP8_QUANT_CUH_
+#endif  // LLMP_KERNELS_GGML_MXFP8_QUANT_CUH_

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Closed Gemma31 C4 owner-root consumer
@@ -23,7 +23,7 @@ kernel's occupancy. No default graph emits this operation.
 
 Separate manual targets derive the previously measured packed builder/helper;
 historical capture, replay and packed files remain unchanged. The process fixes
-`JITLLM_GEMMA_OWNER_C4=packed|owners` before any plan construction. Both arms
+`LLMP_GEMMA_OWNER_C4=packed|owners` before any plan construction. Both arms
 pack Q and padded masks identically. Only the owner arm omits balanced K/V
 CONCAT trees and reads eight actual independent writer-backed views. Supported
 graphs are dense31, context 256, max rows 128, four independent one-query rows,
@@ -37,7 +37,7 @@ bounded arena-funded order. Check all eight writes precede each new attention,
 60 attention operations remain, and the owner slots retain their order. Runtime
 plans must keep 120 normRoPE / 120 normADD and all other optional policies zero.
 Ordinary products and normBOTH match the prior C4 recipe. The immutable optional
-process flag `JITLLM_GEMMA_C4_NORMMUL=0|1` defaults to zero and selects only the
+process flag `LLMP_GEMMA_C4_NORMMUL=0|1` defaults to zero and selects only the
 existing plain RMSnorm/MUL fusion. The first copy-removal factor uses zero;
 its exact recipe remains unchanged. A separately reviewed transfer screen may
 use one, requiring 121 selected plain-norm fusions instead of zero while
@@ -71,7 +71,7 @@ production default or assistant inference claim. Actual Gemma26 backward
 transfer follows a useful Gemma31 result and requires its own controls.
 
 The subsequent [phase diagnostic](../gemma-owner-c4-phases/README.md) adds
-`JITLLM_GEMMA_C4_PHASES=0|1`, default off, to the same helper. It resets counters
+`LLMP_GEMMA_C4_PHASES=0|1`, default off, to the same helper. It resets counters
 before paid waves and reads them after the timer; it changes no graph policy.
 
 ## Closed Gemma26 backward transfer (Task68)
@@ -99,7 +99,7 @@ owner arms enable the existing routing and reduction fusions throughout scalar
 prefill 64–67 and C4 decode, with actual first-built counters required at every
 shape: 60 normRoPE, 90 normADD, 30 routing, 30 reduction and 121 plain norms.
 All other optional policies stay zero. Plain norm defaults on for 26; explicit
-`JITLLM_GEMMA_C4_NORMMUL=0|1` remains available for diagnosis. The 31 CLI and its
+`LLMP_GEMMA_C4_NORMMUL=0|1` remains available for diagnosis. The 31 CLI and its
 plain-norm-off default remain unchanged. Phases remain default off.
 
 A benchmark-only link wrapper forwards the exact existing

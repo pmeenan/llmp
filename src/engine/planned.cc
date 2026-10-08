@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/planned.h"
@@ -23,9 +23,9 @@
 #include "engine/support.h"
 #include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/implementations.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 std::expected<void, std::string> CheckGreedyTokens(std::span<const std::int32_t> tokens,
                                                    std::uint32_t vocab) {
@@ -52,8 +52,8 @@ std::expected<std::uint64_t, std::string> GreedyOutputBytes(const ggml_tensor* n
       address - activations > activation_bytes - bytes) {
     return support::Error("the greedy output is outside current activation backing");
   }
-  if (kernels::ggml::JitllmOpInt(node, 0) != 0 ||
-      kernels::ggml::JitllmOpInt(node, 1) !=
+  if (kernels::ggml::LlmpOpInt(node, 0) != 0 ||
+      kernels::ggml::LlmpOpInt(node, 1) !=
           static_cast<std::int32_t>(kernels::ggml::ArgmaxFlavor::kHostGreedy)) {
     return support::Error("plain token publication needs the host-greedy argmax flavor");
   }
@@ -65,7 +65,7 @@ std::expected<std::uint64_t, std::string> GreedyOutputBytes(const ggml_tensor* n
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 using catalog::MemoryClass;
 using support::Address;
 using support::Error;
@@ -368,4 +368,4 @@ void CheckCoverage(const PagedNode& node, int owner, std::span<ggml_tensor* cons
   }
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

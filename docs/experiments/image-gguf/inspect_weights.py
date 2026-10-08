@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Inventory the pinned denoiser representations by tensor type and block.
 
 Run inside the pinned image-reference container (GGUF reader from
 /app/gguf-py) after hash verification. Reads headers and tensor metadata only;
-this is an experiment inspector, not jitLLM's untrusted-checkpoint validator.
+this is an experiment inspector, not llmpalooza's untrusted-checkpoint validator.
 """
 
 import collections

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include <algorithm>
 #include <cstring>
@@ -10,7 +10,7 @@
 #include "kernels/ggml/validate.h"
 #include "providers/device_runtime.h"
 
-namespace jitllm::benchmark {
+namespace llmp::benchmark {
 namespace kg = kernels::ggml;
 GemmaAttentionCapture* GemmaAttentionCapture::active = nullptr;
 engine::Status GemmaAttentionCapture::Setup(engine::PagedNode& node, bool enabled) {
@@ -155,15 +155,15 @@ engine::Status GemmaAttentionCapture::Save(const std::filesystem::path& out) con
   if (!metadata) return engine::support::Error("capture metadata write failed");
   return {};
 }
-}  // namespace jitllm::benchmark
+}  // namespace llmp::benchmark
 
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 std::expected<void, kg::KernelFailure> RealVec(kg::LaunchContext&, ggml_tensor*) asm(
-    "__real__ZN6jitllm7kernels4ggml15FlashAttnVec256ERNS1_13LaunchContextEP11ggml_tensor");
+    "__real__ZN4llmp7kernels4ggml15FlashAttnVec256ERNS1_13LaunchContextEP11ggml_tensor");
 std::expected<void, kg::KernelFailure> WrappedVec(kg::LaunchContext&, ggml_tensor*) asm(
-    "__wrap__ZN6jitllm7kernels4ggml15FlashAttnVec256ERNS1_13LaunchContextEP11ggml_tensor");
+    "__wrap__ZN4llmp7kernels4ggml15FlashAttnVec256ERNS1_13LaunchContextEP11ggml_tensor");
 std::expected<void, kg::KernelFailure> WrappedVec(kg::LaunchContext& launch, ggml_tensor* node) {
-  if (auto* capture = jitllm::benchmark::GemmaAttentionCapture::active)
+  if (auto* capture = llmp::benchmark::GemmaAttentionCapture::active)
     if (auto copied = capture->Before(launch, node); !copied) return copied;
   return RealVec(launch, node);
 }

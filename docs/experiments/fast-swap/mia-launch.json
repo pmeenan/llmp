@@ -1,5 +1,5 @@
 {
-  "format": "jitllm-mia-launch-v1",
+  "format": "llmp-mia-launch-v1",
   "checked": "2026-10-03",
   "recipe_revision": "b8439110eec0230facbe4ddf0dffe01b8f769be0",
   "image": "sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8",

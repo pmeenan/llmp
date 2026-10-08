@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Backend-proof P3, the native EXL3 model (docs/backend-proof.md, Tier E
@@ -9,7 +9,7 @@
 // (kernels/exl3/qwen2.h), on the declared trajectories: for each prefix of
 // the held-out IDs, the prefill of every row, then 16 single-token steps.
 //
-//   jitllm_exl3_exec --artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O
+//   llmp_exl3_exec --artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O
 //                    --plan PLAN.txt --ids FILE --out DIR
 //                    [--prefixes 32,144,145,1023,1024] [--evaluations N]
 //                    [--record] [--capture] [--record-ops DIR]
@@ -112,19 +112,19 @@
 
 namespace {
 
-namespace exl3 = jitllm::kernels::exl3;
-namespace kg = jitllm::kernels::ggml;
-namespace model = jitllm::model;
+namespace exl3 = llmp::kernels::exl3;
+namespace kg = llmp::kernels::ggml;
+namespace model = llmp::model;
 using Status = std::expected<void, std::string>;
 
-using jitllm::benchmarks::Bf16ToFloat;
-using jitllm::benchmarks::Hex;
-using jitllm::benchmarks::HexFile;
-using jitllm::benchmarks::kCells;
-using jitllm::benchmarks::kSuffix;
-using jitllm::benchmarks::LoadIds;
-using jitllm::benchmarks::LoadTable;
-using jitllm::benchmarks::WriteNpy;
+using llmp::benchmarks::Bf16ToFloat;
+using llmp::benchmarks::Hex;
+using llmp::benchmarks::HexFile;
+using llmp::benchmarks::kCells;
+using llmp::benchmarks::kSuffix;
+using llmp::benchmarks::LoadIds;
+using llmp::benchmarks::LoadTable;
+using llmp::benchmarks::WriteNpy;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
@@ -154,7 +154,7 @@ class Device {
     if (auto context = Cuda(cudaFree(nullptr), "the CUDA context"); !context) {
       return std::unexpected(context.error());
     }
-    auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
     if (!execution) {
       return Error("OpenDeviceExecution failed");
     }
@@ -180,8 +180,8 @@ class Device {
     }
   }
 
-  jitllm::providers::DeviceExecution& execution() { return *execution_; }
-  jitllm::providers::StreamId stream() const { return stream_; }
+  llmp::providers::DeviceExecution& execution() { return *execution_; }
+  llmp::providers::StreamId stream() const { return stream_; }
 
   std::expected<cudaStream_t, std::string> Stream() {
     const auto native = execution_->Submission(stream_);
@@ -202,7 +202,7 @@ class Device {
       if (!state) {
         return Error("Query failed");
       }
-      if (*state == jitllm::providers::FenceState::kComplete) {
+      if (*state == llmp::providers::FenceState::kComplete) {
         break;
       }
       if (std::chrono::steady_clock::now() > deadline) {
@@ -242,12 +242,12 @@ class Device {
   }
 
  private:
-  Device(std::unique_ptr<jitllm::providers::DeviceExecution> execution,
-         jitllm::providers::StreamId stream)
+  Device(std::unique_ptr<llmp::providers::DeviceExecution> execution,
+         llmp::providers::StreamId stream)
       : execution_(std::move(execution)), stream_(stream) {}
 
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  llmp::providers::StreamId stream_;
   std::vector<void*> device_;
   std::vector<void*> pinned_;
 };
@@ -325,7 +325,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.plan.empty() || o.ids.empty() || o.out.empty() || o.prefixes.empty() || o.evaluations < 1 ||
       o.evaluations > 8) {
     return Error(
-        "usage: jitllm_exl3_exec --artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O "
+        "usage: llmp_exl3_exec --artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O "
         "--plan PLAN.txt --ids FILE --out DIR [--prefixes LIST] [--evaluations N] "
         "[--record] [--capture] [--record-ops DIR]");
   }
@@ -341,7 +341,7 @@ struct Weights {
   std::uint64_t chunks_verified = 0;
 };
 
-Status LoadWeights(const jitllm::artifact::Artifact& artifact, Device& device, Weights& weights) {
+Status LoadWeights(const llmp::artifact::Artifact& artifact, Device& device, Weights& weights) {
   const auto groups = artifact.groups();
   weights.group_base.resize(groups.size());
   for (std::size_t g = 0; g < groups.size(); ++g) {
@@ -353,13 +353,13 @@ Status LoadWeights(const jitllm::artifact::Artifact& artifact, Device& device, W
     return std::unexpected(region.error());
   }
   weights.base = *region;
-  std::vector<jitllm::artifact::ChunkKey> all;
+  std::vector<llmp::artifact::ChunkKey> all;
   for (std::uint32_t g = 0; g < groups.size(); ++g) {
     for (std::uint32_t c = 0; c < groups[g].chunks; ++c) {
       all.push_back({.group = g, .chunk = c});
     }
   }
-  const jitllm::artifact::ReadLimits limits{};
+  const llmp::artifact::ReadLimits limits{};
   const auto runs = artifact.PlanReads(all, {}, limits);
   if (!runs) {
     return Error("the artifact's read plan was refused");
@@ -368,7 +368,7 @@ Status LoadWeights(const jitllm::artifact::Artifact& artifact, Device& device, W
   if (!staging) {
     return std::unexpected(staging.error());
   }
-  std::vector<jitllm::artifact::FileDescriptor> shards;
+  std::vector<llmp::artifact::FileDescriptor> shards;
   for (std::uint32_t s = 0; s < artifact.shards().size(); ++s) {
     auto fd = artifact.OpenShardForDirectRead(s);
     if (!fd) {
@@ -394,7 +394,7 @@ Status LoadWeights(const jitllm::artifact::Artifact& artifact, Device& device, W
     for (const auto& segment : run.segments) {
       const auto& group = groups[segment.chunk.group];
       const std::span<const std::byte> piece(*staging + at, segment.length.value());
-      jitllm::base::Sha256 hash;
+      llmp::base::Sha256 hash;
       hash.Update(piece);
       if (hash.Finish() != artifact.chunk_sha256()[group.first_chunk + segment.chunk.chunk]) {
         return Error(std::format("group {} chunk {} does not match its digest", segment.chunk.group,
@@ -464,13 +464,13 @@ class Run {
   const Options& o_;
   const model::Qwen2Profile& profile_ = model::Qwen25Instruct05BExl3();
   std::unique_ptr<Device> device_;
-  std::unique_ptr<jitllm::artifact::Artifact> artifact_;
+  std::unique_ptr<llmp::artifact::Artifact> artifact_;
   model::Exl3Binding binding_;
   std::optional<model::Exl3LaunchTable> table_;
   Weights weights_;
   exl3::Qwen2Memory memory_;
   std::vector<std::int32_t> ids_;
-  std::unique_ptr<jitllm::execution::Registry> registry_;
+  std::unique_ptr<llmp::execution::Registry> registry_;
   std::unique_ptr<kg::LaunchContext> ggml_;
   std::unique_ptr<exl3::LaunchContext> launch_;
   std::unique_ptr<exl3::ReconGemm> gemm_;
@@ -485,7 +485,7 @@ class Run {
   int mismatches_ = 0;
   std::string evaluations_;
   // Recording.
-  std::unique_ptr<jitllm::test_support::Recording> recording_;
+  std::unique_ptr<llmp::test_support::Recording> recording_;
   std::string record_;
   // Capture.
   std::map<int, std::vector<std::byte>> blocks_, final_norm_, kv_prefill_, kv_suffix_;
@@ -518,11 +518,11 @@ Status Run::Setup() {
     return std::unexpected(ids.error());
   }
   ids_ = std::move(*ids);
-  auto artifact = jitllm::artifact::Artifact::Open(o_.artifact);
+  auto artifact = llmp::artifact::Artifact::Open(o_.artifact);
   if (!artifact) {
     return Error(std::format("the artifact was refused: {}", artifact.error().reason));
   }
-  artifact_ = std::make_unique<jitllm::artifact::Artifact>(std::move(*artifact));
+  artifact_ = std::make_unique<llmp::artifact::Artifact>(std::move(*artifact));
   auto binding = model::BindQwen2Exl3(profile_, *artifact_);
   if (!binding) {
     return Error("the artifact does not bind: " + binding.error());
@@ -614,15 +614,15 @@ Status Run::Setup() {
     return r;
   }
 
-  std::vector<jitllm::execution::Implementation> implementations = kg::Implementations();
+  std::vector<llmp::execution::Implementation> implementations = kg::Implementations();
   for (auto& implementation : exl3::Implementations()) {
     implementations.push_back(std::move(implementation));
   }
-  auto registry = jitllm::execution::Registry::Create(std::move(implementations));
+  auto registry = llmp::execution::Registry::Create(std::move(implementations));
   if (!registry) {
     return Error("the registry was refused: " + registry.error().detail);
   }
-  registry_ = std::make_unique<jitllm::execution::Registry>(std::move(*registry));
+  registry_ = std::make_unique<llmp::execution::Registry>(std::move(*registry));
   auto locks = device_->Allocate(exl3::kLockBytes, "the lock area");
   if (!locks) {
     return std::unexpected(locks.error());
@@ -678,7 +678,7 @@ Status Run::PlanAll() {
   // Bind every phase with a planning context (no workspace), for the pool
   // scratch the largest attention draws; then the real context.
   auto planning = kg::LaunchContext::Create(0, device_->execution(), device_->stream(),
-                                            {.base = 0, .size = jitllm::base::Bytes(0)});
+                                            {.base = 0, .size = llmp::base::Bytes(0)});
   if (!planning) {
     return Error("the GGML planning context was refused: " + planning.error().detail);
   }
@@ -699,7 +699,7 @@ Status Run::PlanAll() {
     return std::unexpected(pool.error());
   }
   auto ggml = kg::LaunchContext::Create(0, device_->execution(), device_->stream(),
-                                        {.base = *pool, .size = jitllm::base::Bytes(scratch)});
+                                        {.base = *pool, .size = llmp::base::Bytes(scratch)});
   if (!ggml) {
     return Error("the GGML launch context was refused: " + ggml.error().detail);
   }
@@ -712,7 +712,7 @@ Status Run::PlanAll() {
 void Run::Flush() {
   if (recording_) {
     for (const auto& event : recording_->Take()) {
-      record_ += jitllm::test_support::EventLine(event);
+      record_ += llmp::test_support::EventLine(event);
     }
   }
 }
@@ -721,7 +721,7 @@ std::expected<void, exl3::KernelFailure> Run::Before(const PhaseRun& phase, std:
   const model::Exl3Op& o = phase.plan.ops[op];
   if (recording_) {
     Flush();
-    record_ += jitllm::test_support::OpLine(o.name, o.layer);
+    record_ += llmp::test_support::OpLine(o.name, o.layer);
   }
   if (!o_.record_ops.empty() && ops_bin_.is_open()) {
     op_inputs_.clear();
@@ -906,7 +906,7 @@ Status Run::RunPhase(PhaseRun& phase, int evaluation) {
   const bool first = evaluation == 1;
   if (recording_ && first) {
     Flush();
-    record_ += jitllm::test_support::ChunkLine(
+    record_ += llmp::test_support::ChunkLine(
         {.evaluation = evaluation, .chunk = phase.index, .rows = rows, .n_past = plan.phase.past});
   }
   const bool ops = first && !o_.record_ops.empty();
@@ -930,7 +930,7 @@ Status Run::RunPhase(PhaseRun& phase, int evaluation) {
   }
   if (recording_ && first) {
     Flush();
-    record_ += jitllm::test_support::OpLine("outputs", -1);
+    record_ += llmp::test_support::OpLine("outputs", -1);
   }
   // The logits, F16, widened exactly.
   const std::uint64_t logits_bytes = plan.tensors.at("logits").bytes();
@@ -951,7 +951,7 @@ Status Run::RunPhase(PhaseRun& phase, int evaluation) {
   }
   if (recording_ && first) {
     Flush();
-    record_ += jitllm::test_support::EndChunkLine();
+    record_ += llmp::test_support::EndChunkLine();
   }
   std::vector<float>& out = current_[phase.prefix];
   if (phase.index == 0) {
@@ -1074,8 +1074,8 @@ Status Run::Write() {
     identities += std::format(
         R"({}{{"prefix": {}, "phase": {}, "rows": {}, "past": {}, "npad": {}, "plan": "{}", "launch": "{}", "region": {}, "ggml_scratch": {}}})",
         identities.empty() ? "" : ",\n  ", phase.prefix, phase.index, phase.plan.phase.rows,
-        phase.plan.phase.past, phase.plan.padded, jitllm::base::ToHex(phase.program->identity()),
-        jitllm::base::ToHex(phase.plan.launch_digest), phase.plan.region,
+        phase.plan.phase.past, phase.plan.padded, llmp::base::ToHex(phase.program->identity()),
+        llmp::base::ToHex(phase.plan.launch_digest), phase.plan.region,
         phase.program->ggml_scratch());
   }
   if (!table_) {
@@ -1083,7 +1083,7 @@ Status Run::Write() {
   }
   std::ofstream manifest(o_.out / "manifest.json");
   manifest << std::format(
-      "{{\"harness\": \"jitllm_exl3_exec\", \"fixture\": \"{}\", \"arm\": \"{}\", \"artifact\": "
+      "{{\"harness\": \"llmp_exl3_exec\", \"fixture\": \"{}\", \"arm\": \"{}\", \"artifact\": "
       "\"{}\", \"plan_file_sha256\": \"{}\", \"launch_table\": \"{}\", \"memory\": \"cudaMalloc\", "
       "\"capture\": {}, \"record_ops\": {}, \"evaluations\": {}, \"mismatches\": {},\n "
       "\"comparisons\": [{}],\n \"logits\": {{{}}},\n \"phases\": [\n  {}]}}\n",
@@ -1093,10 +1093,10 @@ Status Run::Write() {
   if (o_.record) {
     Flush();
     std::ofstream file(o_.out / "record.jsonl");
-    file << jitllm::test_support::HeaderLine(
-                std::format("jitllm_exl3_exec {} {}", o_.fixture,
+    file << llmp::test_support::HeaderLine(
+                std::format("llmp_exl3_exec {} {}", o_.fixture,
                             o_.arm == model::Exl3Arm::kG ? "EXL3-G" : "EXL3-O"),
-                jitllm::test_support::LoadedCublas())
+                llmp::test_support::LoadedCublas())
          << record_;
   }
   if (!o_.record_ops.empty()) {
@@ -1106,7 +1106,7 @@ Status Run::Write() {
     }
     std::ofstream file(o_.record_ops / "manifest.json");
     file << std::format(
-        "{{\"format\": \"jitllm-exl3-ops/1\", \"fixture\": \"{}\", \"arm\": \"{}\", \"artifact\": "
+        "{{\"format\": \"llmp-exl3-ops/1\", \"fixture\": \"{}\", \"arm\": \"{}\", \"artifact\": "
         "\"{}\", \"prefixes\": [{}], \"suffix\": {}}}\n",
         o_.fixture, o_.arm == model::Exl3Arm::kG ? "G" : "O", artifact_->id(), prefixes, kSuffix);
   }
@@ -1166,7 +1166,7 @@ Status Run::Execute() {
     }
   }
   if (o_.record) {
-    recording_ = std::make_unique<jitllm::test_support::Recording>();
+    recording_ = std::make_unique<llmp::test_support::Recording>();
   }
   for (int evaluation = 1; evaluation <= o_.evaluations; ++evaluation) {
     if (auto r = Evaluate(evaluation); !r) {

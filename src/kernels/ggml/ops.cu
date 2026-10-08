@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
@@ -22,7 +22,7 @@
 #include "softmax.cuh"
 #include "unary.cuh"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -319,4 +319,4 @@ std::expected<void, KernelFailure> MulMatVecGeGlu(LaunchContext& launch, ggml_te
   });
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

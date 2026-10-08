@@ -1,19 +1,19 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # GGML-derived implementations (D-053; docs/backend-proof.md), over the
 # locked GGML subset (third_party/sources.lock.json, component `ggml`).
 #
-#   jitllm_ggml_tensors  GGML tensor descriptors over jitLLM memory
+#   llmp_ggml_tensors  GGML tensor descriptors over llmpalooza memory
 #                        (tensors.h), the implementations' operand checks
 #                        (validate.h), upstream's fusion gates (fusion.h),
 #                        graph planning and activation placement
 #                        (graph_plan.h), the Qwen2 chunk graph
 #                        (qwen2_graph.h) and the DeepSeek V4 chunk graph
 #                        (dsv4_graph.h). Every profile.
-#   jitllm_ggml_kernels  the K-C launch context (launch.h), jitLLM's cuBLAS
+#   llmp_ggml_kernels  the K-C launch context (launch.h), llmpalooza's cuBLAS
 #                        handle (cublas.h), the operation implementations
-#                        (ops.h, mul_mat_cublas.cu, fattn.cu) and jitLLM's definitions
+#                        (ops.h, mul_mat_cublas.cu, fattn.cu) and llmpalooza's definitions
 #                        of the ggml-cuda.cu symbols GGML's launchers use
 #                        (ggml_support.cu), and the module's declarations
 #                        in the implementation registry
@@ -23,40 +23,40 @@
 #                        (validate_ext.h) here and their implementations
 #                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, mmvq_rows.cu,
 #                        fattn_mma*.cu)
-#                        to jitllm_ggml_kernels.
-add_library(jitllm_ggml_tensors STATIC dsv4_graph.cc gemma2_graph.cc gemma3_graph.cc gemma4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
+#                        to llmp_ggml_kernels.
+add_library(llmp_ggml_tensors STATIC dsv4_graph.cc gemma2_graph.cc gemma3_graph.cc gemma4_graph.cc fusion.cc graph_plan.cc llmp_ops.cc
                                        qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
                                        validate_ext.cc)
-target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_sources(jitllm_ggml_tensors PRIVATE dsv4_weighted_reduce.cc gemma_moe.cc)
-target_sources(jitllm_ggml_tensors PRIVATE gemma_moe_fusion.cc graph_read_index.cc)
-target_sources(jitllm_ggml_tensors PRIVATE dsv4_qhead.cc)
-target_sources(jitllm_ggml_tensors PRIVATE dsv4_hc_norm.cc)
-target_sources(jitllm_ggml_tensors PRIVATE dsv4_outa.cc)
-target_sources(jitllm_ggml_tensors PRIVATE gemma_norm.cc set_rows_group.cc)
-target_sources(jitllm_ggml_tensors PRIVATE gemma4_assistant_graph.cc gemma4_attention.cc fattn_owner.cc)
-target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base jitllm_execution
-                                                 jitllm_model
-                                          # cutlass/version.h only (jitllm_ops.cc pins the
+target_include_directories(llmp_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_sources(llmp_ggml_tensors PRIVATE dsv4_weighted_reduce.cc gemma_moe.cc)
+target_sources(llmp_ggml_tensors PRIVATE gemma_moe_fusion.cc graph_read_index.cc)
+target_sources(llmp_ggml_tensors PRIVATE dsv4_qhead.cc)
+target_sources(llmp_ggml_tensors PRIVATE dsv4_hc_norm.cc)
+target_sources(llmp_ggml_tensors PRIVATE dsv4_outa.cc)
+target_sources(llmp_ggml_tensors PRIVATE gemma_norm.cc set_rows_group.cc)
+target_sources(llmp_ggml_tensors PRIVATE gemma4_assistant_graph.cc gemma4_attention.cc fattn_owner.cc)
+target_link_libraries(llmp_ggml_tensors PUBLIC llmp_base llmp_ggml_base llmp_execution
+                                                 llmp_model
+                                          # cutlass/version.h only (llmp_ops.cc pins the
                                           # version the CUTLASS expert layout was written
                                           # against), in every profile
-                                          PRIVATE jitllm_cutlass_headers jitllm_warnings)
+                                          PRIVATE llmp_cutlass_headers llmp_warnings)
 
-if(JITLLM_CUDA)
+if(LLMP_CUDA)
   # cuBLAS, the SDK's pinned shared library, linked dynamically (D-076):
   # binaries record libcublas.so.13 and libcublasLt.so.13, which
   # libcublas.so.13 finds beside itself (GNU ld on the Spark looks for it
   # when linking). The package ships
   # neither until a packaged binary links them; tests find them in
-  # build/<preset>/cublas (jitllm_gpu_gtest), hard links to the SDK's.
-  set(cublas_dir "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/lib")
-  add_library(jitllm_cublas SHARED IMPORTED GLOBAL)
-  set_target_properties(jitllm_cublas PROPERTIES IMPORTED_LOCATION "${cublas_dir}/libcublas.so"
+  # build/<preset>/cublas (llmp_gpu_gtest), hard links to the SDK's.
+  set(cublas_dir "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/lib")
+  add_library(llmp_cublas SHARED IMPORTED GLOBAL)
+  set_target_properties(llmp_cublas PROPERTIES IMPORTED_LOCATION "${cublas_dir}/libcublas.so"
                                                  IMPORTED_SONAME libcublas.so.13)
-  target_link_options(jitllm_cublas INTERFACE "LINKER:-rpath-link,${cublas_dir}")
+  target_link_options(llmp_cublas INTERFACE "LINKER:-rpath-link,${cublas_dir}")
   # cuBLASLt too, whose version the handle checks (cublas.h).
-  add_library(jitllm_cublaslt SHARED IMPORTED GLOBAL)
-  set_target_properties(jitllm_cublaslt PROPERTIES IMPORTED_LOCATION "${cublas_dir}/libcublasLt.so"
+  add_library(llmp_cublaslt SHARED IMPORTED GLOBAL)
+  set_target_properties(llmp_cublaslt PROPERTIES IMPORTED_LOCATION "${cublas_dir}/libcublasLt.so"
                                                    IMPORTED_SONAME libcublasLt.so.13)
   file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/cublas")
   foreach(library IN ITEMS libcublas.so.13 libcublasLt.so.13)
@@ -64,44 +64,44 @@ if(JITLLM_CUDA)
     file(CREATE_LINK "${resolved}" "${PROJECT_BINARY_DIR}/cublas/${library}" COPY_ON_ERROR)
   endforeach()
 
-  add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
+  add_library(llmp_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
                                          fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
-                                         jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu dsv4_fast.cu dsv4_sparse.cu
+                                         llmp_ops.cu llmp_fused.cu llmp_moe.cu dsv4_fast.cu dsv4_sparse.cu
                                          qsa_sparse.cu
                                          cublas.cc executor.cc implementations.cc)
-  target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
-  target_sources(jitllm_ggml_kernels PRIVATE dsv4_ds4_product_raw.cu dsv4_ds4_attention.cu)
-  target_sources(jitllm_ggml_kernels PRIVATE dsv4_weighted_reduce.cu gemma_moe.cu)
-  target_sources(jitllm_ggml_kernels PRIVATE dsv4_qhead.cu)
-  target_sources(jitllm_ggml_kernels PRIVATE dsv4_hc_norm.cu)
-  target_sources(jitllm_ggml_kernels PRIVATE mul_mat_q_glu.cu)
-  target_sources(jitllm_ggml_kernels PRIVATE dsv4_outa.cu)
-  target_sources(jitllm_ggml_kernels PRIVATE gemma_norm.cu fattn_owner.cu set_rows_group.cu)
-  target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_include_directories(llmp_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
+  target_sources(llmp_ggml_kernels PRIVATE dsv4_ds4_product_raw.cu dsv4_ds4_attention.cu)
+  target_sources(llmp_ggml_kernels PRIVATE dsv4_weighted_reduce.cu gemma_moe.cu)
+  target_sources(llmp_ggml_kernels PRIVATE dsv4_qhead.cu)
+  target_sources(llmp_ggml_kernels PRIVATE dsv4_hc_norm.cu)
+  target_sources(llmp_ggml_kernels PRIVATE mul_mat_q_glu.cu)
+  target_sources(llmp_ggml_kernels PRIVATE dsv4_outa.cu)
+  target_sources(llmp_ggml_kernels PRIVATE gemma_norm.cu fattn_owner.cu set_rows_group.cu)
+  target_include_directories(llmp_ggml_kernels SYSTEM PRIVATE
+                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   # CUTLASS's NVFP4 grouped GEMM for the routed experts (moe_cutlass.h) and
   # its MXFP8 GEMM for Qwen3.8's dense products (mxfp8_cutlass.h): units of
   # their own, device code for sm_121a only (the SM120 block-scaled kernels
   # build for no other target; a plan names them only on that device), with
   # the flags CUTLASS's examples build with.
-  add_library(jitllm_ggml_cutlass STATIC moe_cutlass.cu mxfp8_cutlass.cu)
-  target_include_directories(jitllm_ggml_cutlass PUBLIC "${PROJECT_SOURCE_DIR}/src")
-  target_link_libraries(jitllm_ggml_cutlass PRIVATE jitllm_cutlass_headers)
-  set_target_properties(jitllm_ggml_cutlass PROPERTIES CUDA_ARCHITECTURES 121a-real)
+  add_library(llmp_ggml_cutlass STATIC moe_cutlass.cu mxfp8_cutlass.cu)
+  target_include_directories(llmp_ggml_cutlass PUBLIC "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(llmp_ggml_cutlass PRIVATE llmp_cutlass_headers)
+  set_target_properties(llmp_ggml_cutlass PROPERTIES CUDA_ARCHITECTURES 121a-real)
   # 20012: __host__ __device__ on a defaulted constructor, which CUTLASS's
   # SM100 tile scheduler declares.
-  target_compile_options(jitllm_ggml_cutlass PRIVATE --expt-relaxed-constexpr
+  target_compile_options(llmp_ggml_cutlass PRIVATE --expt-relaxed-constexpr
                                                      --diag-suppress=20012)
-  target_link_libraries(jitllm_ggml_kernels
-                        PUBLIC jitllm_ggml_tensors jitllm_ggml_cuda jitllm_device_memory
-                               jitllm_cublas jitllm_cublaslt jitllm_execution jitllm_ds4_d2r jitllm_ds4_hca
+  target_link_libraries(llmp_ggml_kernels
+                        PUBLIC llmp_ggml_tensors llmp_ggml_cuda llmp_device_memory
+                               llmp_cublas llmp_cublaslt llmp_execution llmp_ds4_d2r llmp_ds4_hca
                         # the NVIDIA driver, for ggml_support.cu's device queries
-                        PRIVATE jitllm_cuda_device_memory jitllm_warnings jitllm_ggml_cutlass)
+                        PRIVATE llmp_cuda_device_memory llmp_warnings llmp_ggml_cutlass)
   # sm_121a as GGML's own units build (third_party/patches/ggml/0002), and
   # the profile's discrete GPUs (D-082).
-  set(architectures 121a-real ${JITLLM_CUDA_DISCRETE_SASS})
-  set_target_properties(jitllm_ggml_kernels PROPERTIES CUDA_ARCHITECTURES "${architectures}")
+  set(architectures 121a-real ${LLMP_CUDA_DISCRETE_SASS})
+  set_target_properties(llmp_ggml_kernels PROPERTIES CUDA_ARCHITECTURES "${architectures}")
   # What each implementation's identity records of the build (D-053): the
   # prepared GGML tree the build used, as the source receipt records it
   # (D-057), the SDK, the target, the device architectures, the build type
@@ -109,7 +109,7 @@ if(JITLLM_CUDA)
   # A missing receipt, entry or digest fails configure: never an identity
   # without the tree.
   # The CUTLASS tree likewise, for the grouped GEMM's identity.
-  get_property(sources GLOBAL PROPERTY JITLLM_SOURCES_ENTRIES)
+  get_property(sources GLOBAL PROPERTY LLMP_SOURCES_ENTRIES)
   set(ggml_tree "")
   set(cutlass_tree "")
   set(ds4_tree "")
@@ -134,12 +134,12 @@ if(JITLLM_CUDA)
       message(FATAL_ERROR "The source receipt has no ${tree} digest for the registry's identities")
     endif()
   endforeach()
-  string(REPLACE ";" "+" sanitize "${JITLLM_SANITIZE}")
+  string(REPLACE ";" "+" sanitize "${LLMP_SANITIZE}")
   list(JOIN architectures "," architecture_text)
   set_source_files_properties(implementations.cc PROPERTIES COMPILE_DEFINITIONS
-    "JITLLM_GGML_SOURCE_TREE=\"${ggml_tree}\";JITLLM_CUTLASS_SOURCE_TREE=\"${cutlass_tree}\";JITLLM_DS4_SOURCE_TREE=\"${ds4_tree}\";JITLLM_GGML_SDK=\"${JITLLM_SDK_IDENTITY}\";JITLLM_GGML_TARGET=\"${JITLLM_TARGET_TRIPLE}\";JITLLM_GGML_CUDA_ARCHITECTURES=\"${architecture_text}\";JITLLM_GGML_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";JITLLM_GGML_SANITIZE=\"${sanitize}\"")
+    "LLMP_GGML_SOURCE_TREE=\"${ggml_tree}\";LLMP_CUTLASS_SOURCE_TREE=\"${cutlass_tree}\";LLMP_DS4_SOURCE_TREE=\"${ds4_tree}\";LLMP_GGML_SDK=\"${LLMP_SDK_IDENTITY}\";LLMP_GGML_TARGET=\"${LLMP_TARGET_TRIPLE}\";LLMP_GGML_CUDA_ARCHITECTURES=\"${architecture_text}\";LLMP_GGML_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";LLMP_GGML_SANITIZE=\"${sanitize}\"")
 
-  # And jitLLM's own code in the module: every file in this directory, whose
+  # And llmpalooza's own code in the module: every file in this directory, whose
   # digest a build-time command writes into a generated source
   # (module_digest.cmake). Editing any of them regenerates and recompiles
   # only that source. A file added here without being listed fails the next
@@ -169,8 +169,8 @@ if(JITLLM_CUDA)
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
                    fattn_mma_shape.cuh fattn_owner.h fattn_owner.cc fattn_owner.cu fattn_owner_kernel.cuh fattn_owner_partial_kernel.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
-                   implementations.h jitllm_fused.cu jitllm_moe.cu jitllm_ops.cc jitllm_ops.cu
-                   jitllm_ops.h launch.cu launch.h
+                   implementations.h llmp_fused.cu llmp_moe.cu llmp_ops.cc llmp_ops.cu
+                   llmp_ops.h launch.cu launch.h
                    mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
                    mxfp8_cutlass.cu mxfp8_cutlass.h mxfp8_quant.cuh
                    mul_mat_cublas.cu mul_mat_q.cu mul_mat_q2_d2r.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
@@ -186,7 +186,7 @@ if(JITLLM_CUDA)
     endif()
   endforeach()
   string(JOIN ":" module_names ${module_files})
-  set_property(GLOBAL PROPERTY JITLLM_GGML_MODULE_NAMES "${module_names}")
+  set_property(GLOBAL PROPERTY LLMP_GGML_MODULE_NAMES "${module_names}")
   list(TRANSFORM module_files PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/" OUTPUT_VARIABLE module_paths)
   set(module_digest "${CMAKE_CURRENT_BINARY_DIR}/module_digest.cc")
   add_custom_command(
@@ -196,7 +196,7 @@ if(JITLLM_CUDA)
     DEPENDS ${module_paths}
     COMMENT "Hashing the GGML module's sources for its implementation identities (D-053)"
     VERBATIM)
-  target_sources(jitllm_ggml_kernels PRIVATE "${module_digest}")
+  target_sources(llmp_ggml_kernels PRIVATE "${module_digest}")
   # The copy of upstream's cuBLAS path builds with the FP16 bridge's device
   # flag, as GGML's own files do (third_party/patches/ggml/0002), so that its
   # kernel's SASS compares with the bridge's. (NVCC's -O sets only the host
@@ -218,11 +218,11 @@ if(JITLLM_CUDA)
   # flags too, as GGML's own files and instance units build
   # (third_party/patches/ggml/0002): the tensor-core flash-attention
   # instances and the sparse gather, the quantized products' host code, and
-  # the other launchers' wrappers. jitLLM's fusions of GGML nodes
-  # (jitllm_fused.cu) build with the same flags, so that their arithmetic
+  # the other launchers' wrappers. Llmpalooza's fusions of GGML nodes
+  # (llmp_fused.cu) build with the same flags, so that their arithmetic
   # compiles as the nodes' does.
   set_source_files_properties(fattn_owner.cu fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
-                              mul_mat_q.cu mul_mat_q_glu.cu mul_mat_q2_d2r.cu mmvq_rows.cu ops_ext.cu jitllm_fused.cu jitllm_moe.cu
+                              mul_mat_q.cu mul_mat_q_glu.cu mul_mat_q2_d2r.cu mmvq_rows.cu ops_ext.cu llmp_fused.cu llmp_moe.cu
                               dsv4_fast.cu dsv4_sparse.cu dsv4_weighted_reduce.cu gemma_moe.cu dsv4_qhead.cu dsv4_outa.cu dsv4_hc_norm.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
 endif()

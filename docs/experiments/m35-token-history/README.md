@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Native token-history correctness control — 2026-10-04
@@ -62,7 +62,7 @@ Run through the installed GPU supervisor, from the prepared checkout:
 
 ```sh
 ~/.local/bin/spark-job start --gpu --name m35-history-exact2 --timeout 600 -- \
-  build/spark-native/src/runtime/jitllm-runtime \
+  build/spark-native/src/runtime/llmp-runtime \
   --anchor ~/scratch/m35-history-control/enrollment \
   --config ~/scratch/m35-history-control/models.toml \
   swap-table --pairs deepseek:qwen3.8,qwen3.8:deepseek \
@@ -73,7 +73,7 @@ Run through the installed GPU supervisor, from the prepared checkout:
 ```
 
 Raw logs and JSON remain outside Git on Spark B under
-`~/.local/share/jitllm/jobs/m35-history-exact2/` and
+`~/.local/share/llmp/jobs/m35-history-exact2/` and
 `~/scratch/m35-history-control/`. The run completed with exit status zero;
 its report has an empty `problems` array, and runtime retirement reports
 zero reclaim attempts that took nothing or ended short.

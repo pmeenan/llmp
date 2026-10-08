@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Native Qwen shared-row C2/C4 controls
@@ -9,14 +9,14 @@ request outputs, acceptance, initialized state and cursors. Both results
 come from private resident generation loops. HTTP continuous batching and
 the concurrent Mia/TensorFold gate remain open.
 
-The benchmark target is `jitllm_qwen38_batch`. It takes prepared target and
+The benchmark target is `llmp_qwen38_batch`. It takes prepared target and
 selected-drafter directories, exact little-endian I32 prompt files and a
 fresh output directory. Both prompts have 8192 IDs in `--mode natural`; four
 such prompts use `--mode natural4`. Argument order is fixed:
 
 ```text
-jitllm_qwen38_batch --artifact TARGET --drafter SELECTED --input0 U0.i32 --input1 U1.i32 --out NEWDIR --mode natural
-jitllm_qwen38_batch --artifact TARGET --drafter SELECTED --input0 U0.i32 --input1 U1.i32 --input2 U2.i32 --input3 U3.i32 --out NEWDIR --mode natural4
+llmp_qwen38_batch --artifact TARGET --drafter SELECTED --input0 U0.i32 --input1 U1.i32 --out NEWDIR --mode natural
+llmp_qwen38_batch --artifact TARGET --drafter SELECTED --input0 U0.i32 --input1 U1.i32 --input2 U2.i32 --input3 U3.i32 --out NEWDIR --mode natural4
 ```
 
 The prepared target is c4fb47a9 and selected drafter 8600a998, with 47172

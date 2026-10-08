@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen MTP head sharing — 2026-10-04
@@ -29,7 +29,7 @@ the same immutable weight leaf. Different weights, diagnostic head capture
 or disabled pairing retain separate products. Original arenas remain alive.
 
 Per-product vector selection makes original and joined heads use
-`jitllm.mul_mat.mmvf_rows`; the wave authenticates both plans against the
+`llmp.mul_mat.mmvf_rows`; the wave authenticates both plans against the
 same implementation. This invokes GGML's existing MMVF arithmetic, also
 used by the ordinary single-column head. Other float products keep their
 device selector, including the full 248,320-entry target head. Existing
@@ -127,7 +127,7 @@ The frozen HTTP input receipt SHA-256 is
 `d5a35e6341e53de0286cfd777e4fadd707c12cf9d18f95010a4a38ffac0ab59d`.
 
 Raw results/controllers stay external under `~/scratch/qwen-head-wave/`
-on Spark A and `/home/pmeenan/scratch/jitllm-m3-qwen-head-wave-2026-10-04/`
+on Spark A and `/home/pmeenan/scratch/llmp-m3-qwen-head-wave-2026-10-04/`
 locally. The local copy excludes serving spill/state. All GPU model runs
 use the installed supervisor with a 600-second limit and are waited on.
 These screens qualify this sharing mechanism; the broader M3 concurrency,

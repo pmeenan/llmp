@@ -540,13 +540,13 @@
    "name": "filter-unknown",
    "template": "{{ 'x'|wordcount }}",
    "text": "1",
-   "jitllm": "unsupported"
+   "llmp": "unsupported"
   },
   {
    "name": "test-unknown",
    "template": "{{ 'x' is truthy }}",
    "error": "TemplateAssertionError: No test named 'truthy'.",
-   "jitllm": "unsupported"
+   "llmp": "unsupported"
   },
   {
    "name": "tests-types",
@@ -637,13 +637,13 @@
    "name": "unsupported-include",
    "template": "{% include 'x' %}",
    "error": "TypeError: no loader for this environment specified",
-   "jitllm": "unsupported"
+   "llmp": "unsupported"
   },
   {
    "name": "unsupported-call-block",
    "template": "{% call foo() %}x{% endcall %}",
    "error": "UndefinedError: 'foo' is undefined",
-   "jitllm": "unsupported"
+   "llmp": "unsupported"
   },
   {
    "name": "syntax-unclosed",

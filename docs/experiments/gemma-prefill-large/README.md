@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Larger native Gemma prefill screen
@@ -155,7 +155,7 @@ unchanged (CUDA 13.3 versus native pinned SDK 13.4).
 | --- | --- | --- |
 | Initial26 ordinary benchmark | `c2664f9166998851227996e0baccf52b4534d2f318443d120edec464e4a77c09` | `6835e3343ff14f5a81e9868b83f43c9044bc6cdbf15886c69bd54cb3783ae94f` |
 | Final26 all /31 benchmark | `8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2` | `c3d089a1f6db28fc8db75d113764a0f0c716e1291196d3aef3219aca02fb90f8` |
-| [Reference client](../gemma-prefill/llama_prefill.cc) | `0e7092d7163d98f109cd7a5fb99b922cedfefe28f3da9632bb95f8cef13403ba` | `bd2dd3aca6e1eeac227f18a3af6099c7a3a8631be7aae27206eb0bac50b28e56` |
+| [Reference client](../gemma-prefill/llama_prefill.cc) | `ae4a5ee25e9a77a9305e7c2c127d984622e372e31f09adcfdc1ebbaf4095b3de` | `bd2dd3aca6e1eeac227f18a3af6099c7a3a8631be7aae27206eb0bac50b28e56` |
 
 The final benchmark only adds the compound policy and explicit prefill MoE
 counts to the initial measured source. Both native builds retain receipt SHA
@@ -169,7 +169,7 @@ Own freeze SHA-256 values are:
 - Ordinary31: `7187e1a52057c778182b5e6395572e9449f32557d20cc7e7786ba092261b31ac`.
 - Norm-both31: `bf7f95063dfad774871404bd97d6f3fce65c9ea868a077c8fe9817f006a5cf7e`.
 
-Use the existing `jitllm_gemma_prefill` target with:
+Use the existing `llmp_gemma_prefill` target with:
 `ARTIFACT IDS_I32 NEW_OUTPUT_DIR VARIANT POLICY MAX_ROWS`.
 The cap allowlist is 128/256/512/1024/2048; measured pairs are 26 ordinary/all
 1024 and 31 ordinary/both256. Each first/repeat uses a fresh process/output
@@ -187,7 +187,7 @@ and parser warm/count/policy refusal.
 
 All acquisitions used installed `spark-job --gpu`, timeout 600, with official
 retirement. Raw logs/heads/state remain external under Spark
-`~/.local/share/jitllm/{gemma-prefill-large,gemma-prefill-large31,gemma31-prefill}`;
+`~/.local/share/llmp/{gemma-prefill-large,gemma-prefill-large31,gemma31-prefill}`;
 job names begin `m35-gemma-prefill-large-`. Aggregate identities authenticate
 `native1`, `freeze3`, `bookend1`, `memory1`, `all1`, `allfreeze1`, `allbookend1`,
 `stage31`, `native31`, `freeze31`, `bookend31` logs in `results.json`.

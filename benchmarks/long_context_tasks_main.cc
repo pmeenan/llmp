@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <algorithm>
@@ -24,17 +24,17 @@
 #include "tokenizer/tokenizer.h"
 
 namespace {
-namespace lc = jitllm::benchmarks::long_context;
-namespace js = jitllm::base::json;
+namespace lc = llmp::benchmarks::long_context;
+namespace js = llmp::base::json;
 namespace fs = std::filesystem;
-namespace tok = jitllm::tokenizer;
+namespace tok = llmp::tokenizer;
 using Result = std::expected<void, std::string>;
 
 std::string Digest(std::string_view bytes) {
-  return jitllm::base::ToHex(jitllm::base::Sha256{}.Update(bytes).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256{}.Update(bytes).Finish());
 }
 std::string IdDigest(std::span<const std::int32_t> ids) {
-  jitllm::base::Sha256 sha;
+  llmp::base::Sha256 sha;
   for (auto id : ids) {
     const auto bits = static_cast<std::uint32_t>(id);
     const std::array<std::byte, 4> bytes{
@@ -42,7 +42,7 @@ std::string IdDigest(std::span<const std::int32_t> ids) {
         static_cast<std::byte>((bits >> 16U) & 255U), static_cast<std::byte>(bits >> 24U)};
     sha.Update(bytes);
   }
-  return jitllm::base::ToHex(sha.Finish());
+  return llmp::base::ToHex(sha.Finish());
 }
 std::string Quoted(std::string_view text) {
   std::string out;
@@ -78,16 +78,16 @@ Result Fresh(const fs::path& out) {
 
 class NativeCodec final : public lc::Codec {
  public:
-  NativeCodec(tok::Tokenizer tokenizer, const jitllm::chat::Template* model_template,
+  NativeCodec(tok::Tokenizer tokenizer, const llmp::chat::Template* model_template,
               std::string metadata_sha, std::vector<std::int32_t> stops)
       : tokenizer_(std::move(tokenizer)),
         template_(model_template),
         metadata_sha_(std::move(metadata_sha)),
         stops_(std::move(stops)) {}
   std::expected<lc::Encoding, std::string> Encode(std::string_view user) const override {
-    jitllm::chat::Conversation conversation;
+    llmp::chat::Conversation conversation;
     conversation.enable_thinking = false;
-    conversation.messages.push_back({.role = jitllm::chat::Role::kUser,
+    conversation.messages.push_back({.role = llmp::chat::Role::kUser,
                                      .content = std::string(user),
                                      .reasoning_content = std::nullopt,
                                      .tool_calls = {}});
@@ -123,19 +123,19 @@ class NativeCodec final : public lc::Codec {
 
  private:
   tok::Tokenizer tokenizer_;
-  const jitllm::chat::Template* template_;
+  const llmp::chat::Template* template_;
   std::string metadata_sha_;
   std::vector<std::int32_t> stops_;
 };
 std::expected<NativeCodec, std::string> OpenCodec(const fs::path& path) {
-  auto artifact = jitllm::artifact::Artifact::Open(path);
+  auto artifact = llmp::artifact::Artifact::Open(path);
   if (!artifact) return std::unexpected(artifact.error().ToString());
   if (artifact->id() != lc::kArtifact || artifact->model().architecture != "deepseek4")
     return std::unexpected("fixed HCA-quality artifact required");
   std::optional<std::string> metadata;
   for (const auto& file : artifact->files()) {
-    if (file.role == jitllm::artifact::FileRole::kSourceMetadata &&
-        file.path.ends_with(".kv.gguf") && file.path.contains("-00001-of-")) {
+    if (file.role == llmp::artifact::FileRole::kSourceMetadata && file.path.ends_with(".kv.gguf") &&
+        file.path.contains("-00001-of-")) {
       if (metadata) return std::unexpected("ambiguous first-shard tokenizer metadata");
       metadata = file.path.substr(5);
     }
@@ -148,11 +148,11 @@ std::expected<NativeCodec, std::string> OpenCodec(const fs::path& path) {
   if (!read->has_chat_template || read->spec.tokens.size() != 129280 ||
       read->spec.pre_tokenizer != tok::PreTokenizer::kDeepSeekV3)
     return std::unexpected("fixed native tokenizer/template shape differs");
-  auto model_template = jitllm::chat::FindTemplateForText(read->chat_template);
+  auto model_template = llmp::chat::FindTemplateForText(read->chat_template);
   if (!model_template) return std::unexpected(model_template.error());
   auto tokenizer = tok::Tokenizer::Create(std::move(read->spec));
   if (!tokenizer) return std::unexpected(tokenizer.error().ToString());
-  auto stops = jitllm::chat::StopTokens((*model_template)->stop, *tokenizer);
+  auto stops = llmp::chat::StopTokens((*model_template)->stop, *tokenizer);
   if (!stops) return std::unexpected(stops.error().ToString());
   const auto eos = tokenizer->eos();
   if (eos && !lc::IsStop(*stops, *eos)) stops->push_back(*eos);
@@ -357,8 +357,8 @@ int main(int argc, char** argv) {
   const bool scoring = argc == 8 && std::string_view(argv[1]) == "score";
   if (!preparing && !scoring) {
     std::println(stderr,
-                 "usage: jitllm_long_context_task_prepare prepare ARTIFACT FRESH_OUT\n"
-                 "       jitllm_long_context_task_prepare score ARTIFACT PREPARED RECEIPT_SHA "
+                 "usage: llmp_long_context_task_prepare prepare ARTIFACT FRESH_OUT\n"
+                 "       llmp_long_context_task_prepare score ARTIFACT PREPARED RECEIPT_SHA "
                  "CASE NATIVE_SUMMARY FRESH_OUT");
     return 2;
   }

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma segmented graph/plan controls
@@ -145,14 +145,14 @@ The installed supervised jobs are `m35-gemma-graph-check16` (locked build,
 all focused tests, rc0), `m35-gemma-graph-screen1` (screen, rc0),
 `m35-gemma-graph-check17` (post-rebase 23 controls, rc0), and
 `m35-gemma-graph-check18` (final descriptor admission 16 controls, rc0). Raw logs
-remain under the host's private `~/.local/share/jitllm/jobs/` and the session
+remain under the host's private `~/.local/share/llmp/jobs/` and the session
 scratchpad, outside Git. Full source sync used checksum `rsync -rlpc`, excluding
 `.git` and `/build`. Reproduction, after locked source preparation/build:
 
 ```sh
-JITLLM_TEST_DATA=build/spark-native/tests/unit/data \
+LLMP_TEST_DATA=build/spark-native/tests/unit/data \
   build/spark-native/tests/unit/gemma4_exec_test
-JITLLM_GEMMA_LAYER_SCREEN=1 JITLLM_TEST_DATA=build/spark-native/tests/unit/data \
+LLMP_GEMMA_LAYER_SCREEN=1 LLMP_TEST_DATA=build/spark-native/tests/unit/data \
   build/spark-native/tests/unit/gemma4_exec_test \
   --gtest_filter=Gemma4ExecTest.OptionalPaidWholeLayerScreen
 ```

@@ -1,10 +1,10 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Native draft-vocabulary study
 
 The owner requested a causal comparison of the prefix and externally
-curated Qwen3.8 draft vocabularies, followed by a jitLLM-curated candidate.
+curated Qwen3.8 draft vocabularies, followed by a llmpalooza-curated candidate.
 The existing context ladder changes prompt content as well as depth, and
 its free-running continuations differ. It cannot establish that context
 length itself determines which vocabulary wins. No new measurement or
@@ -181,7 +181,7 @@ a proposed later baseline, not a change to the fixed candidate above.
 Frequency-ranked compression has a published precedent in
 [FR-Spec](https://aclanthology.org/2025.acl-long.198/); per-step vocabulary
 selection is studied in [SpecVocab](https://arxiv.org/abs/2602.13836).
-Neither paper's speedup is a measurement of jitLLM or proof that this proposed
+Neither paper's speedup is a measurement of llmpalooza or proof that this proposed
 between-request policy is faster on the GB10.
 
 ## Execution budget

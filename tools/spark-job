@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Runs long work detached on a Spark, under a supervisor that always records how it ended.
 
@@ -24,8 +24,8 @@ and `wait` detect from its pid. `wait` never looks for a marker in the log.
 With --steps, FILE holds one shell command per line (blank lines and `#`
 comments skipped), run in order by bash; each step's status is recorded and
 a failed step does not stop the rest unless --stop-on-fail. Job state lives
-in $JITLLM_JOBS_DIR, else $XDG_DATA_HOME/jitllm/jobs, else
-~/.local/share/jitllm/jobs, one directory per name: job.json (what was
+in $LLMP_JOBS_DIR, else $XDG_DATA_HOME/llmp/jobs, else
+~/.local/share/llmp/jobs, one directory per name: job.json (what was
 started, where, by which supervisor), child.json (the running step's process
 group), steps.json (queue progress), final.json (how it ended) and log.
 
@@ -72,10 +72,10 @@ GPU_NOTE = 60.0  # how often a waiting supervisor logs whom it waits for, second
 # ---------------------------------------------------------------- state files
 
 def jobs_root() -> pathlib.Path:
-    if os.environ.get("JITLLM_JOBS_DIR"):
-        return pathlib.Path(os.environ["JITLLM_JOBS_DIR"])
+    if os.environ.get("LLMP_JOBS_DIR"):
+        return pathlib.Path(os.environ["LLMP_JOBS_DIR"])
     data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    return pathlib.Path(data) / "jitllm" / "jobs"
+    return pathlib.Path(data) / "llmp" / "jobs"
 
 
 def gpu_lock_path(root: pathlib.Path) -> pathlib.Path:
@@ -337,7 +337,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         job_dir.mkdir()
         log = job_dir / "log"
         # Steps run with the caller's umask, never looser than 022: files a step creates must
-        # pass jitLLM's path-trust checks (no group- or world-writable directories).
+        # pass llmpalooza's path-trust checks (no group- or world-writable directories).
         caller_umask = os.umask(0o022)
         os.umask(caller_umask)
         job = {"name": args.name, "host": socket.gethostname(), "cwd": cwd, "log": str(log),

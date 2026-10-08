@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/image/gemm.h"
@@ -19,7 +19,7 @@
 #include <string_view>
 #include <utility>
 
-namespace jitllm::kernels::image {
+namespace llmp::kernels::image {
 namespace {
 
 constexpr std::int64_t kIntMax = std::numeric_limits<int>::max();
@@ -104,7 +104,7 @@ Status ValuesTimesProbs(cublasContext* handle, const Bf16* v, const Bf16* probs,
 namespace {
 
 // The pinned algorithms, tuned on `spark` (GB10, 48 SMs, driver 580.178.04)
-// with cuBLASLt 13.8.0.4 by jitllm_qwen_image_gemm_tune (sustained timing:
+// with cuBLASLt 13.8.0.4 by llmp_qwen_image_gemm_tune (sustained timing:
 // each candidate's median over five batches of back-to-back launches after
 // half a second of warm-up) at the pipeline's 1,024² shapes: for each, the
 // fastest of cuBLASLt's heuristic candidates (32 MiB workspace) whose
@@ -426,4 +426,4 @@ std::string LtGemm::Describe() const {
   return out + "]";
 }
 
-}  // namespace jitllm::kernels::image
+}  // namespace llmp::kernels::image

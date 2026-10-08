@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/gemma3.h"
@@ -25,12 +25,12 @@
 #include "gemma3_fixture.h"
 
 namespace {
-namespace md = jitllm::model;
-namespace json = jitllm::base::json;
-using jitllm::test_support::gemma3::Fixture;
-using jitllm::test_support::gemma3::Get;
-using jitllm::test_support::gemma3::Resources;
-using jitllm::test_support::gemma3::Role;
+namespace md = llmp::model;
+namespace json = llmp::base::json;
+using llmp::test_support::gemma3::Fixture;
+using llmp::test_support::gemma3::Get;
+using llmp::test_support::gemma3::Resources;
+using llmp::test_support::gemma3::Role;
 
 TEST(Gemma3FoundationTest, ApprovedProfileMatchesActualMetadataAndAllTensorStorage) {
   const auto& p = md::Gemma3_4BQat();
@@ -55,7 +55,7 @@ TEST(Gemma3FoundationTest, ApprovedProfileMatchesActualMetadataAndAllTensorStora
   const auto resources = Resources();
   ASSERT_EQ(resources.size(), 444);
   const auto bound = md::BindGemma3(p, "gemma3", resources);
-  ASSERT_TRUE(bound) << *jitllm::test_support::Failed(bound);
+  ASSERT_TRUE(bound) << *llmp::test_support::Failed(bound);
   EXPECT_EQ(bound->token_embd.type, "Q8_0");
   EXPECT_EQ(bound->token_embd.readable, 713205760);
   EXPECT_EQ(bound->output, bound->token_embd);
@@ -89,7 +89,7 @@ TEST(Gemma3FoundationTest, RejectsIncompleteDuplicateAndUnusedRolesAndIndependen
   resources = Resources();
   Role(resources, "token_embd.weight").roles.push_back("output.weight");
   const auto alias = md::BindGemma3(p, "gemma3", resources);
-  ASSERT_TRUE(alias) << *jitllm::test_support::Failed(alias);
+  ASSERT_TRUE(alias) << *llmp::test_support::Failed(alias);
   EXPECT_EQ(alias->output, alias->token_embd);
 }
 
@@ -126,7 +126,7 @@ TEST(Gemma3StateTest, ScheduleRepresentationsAndInitializedFootprintsAreChecked)
   const auto& p = md::Gemma3_4BQat();
   const std::vector<std::uint32_t> globals{5, 11, 17, 23, 29};
   auto state = md::Gemma3State(p, 4096, 16);
-  ASSERT_TRUE(state) << *jitllm::test_support::Failed(state);
+  ASSERT_TRUE(state) << *llmp::test_support::Failed(state);
   EXPECT_EQ(state->global_cells, 4096);
   EXPECT_EQ(state->local_cells, 1280);
   ASSERT_EQ(state->tensors.size(), 68);
@@ -183,7 +183,7 @@ TEST(Gemma3StateTest, RaggedInputsKeepIndependentCausalityAndSplitRingWrites) {
   auto envelope = md::Gemma3HostInputBytes(p, *state, segments, true);
   auto input = md::Gemma3Chunk(p, *state, segments, true);
   ASSERT_TRUE(envelope);
-  ASSERT_TRUE(input) << *jitllm::test_support::Failed(input);
+  ASSERT_TRUE(input) << *llmp::test_support::Failed(input);
   EXPECT_EQ(input->positions, (std::vector<std::int32_t>{1279, 1280, 1281, 7}));
   EXPECT_EQ(input->out_ids, (std::vector<std::int32_t>{0, 1, 2, 3}));
   ASSERT_EQ(input->segments.size(), 2);

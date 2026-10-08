@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <gtest/gtest.h>
@@ -19,11 +19,11 @@
 #include "engine/dsv4_plan.h"
 #include "engine/dsv4_runner.h"
 #include "ggml.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 namespace {
 namespace kg = kernels::ggml;
 namespace md = model;
@@ -348,7 +348,7 @@ TEST(Dsv4PrefillPlan, AuthenticatesActualPositionsBeforeEmbeddingOrSubmission) {
 
 TEST(DsparkMaskPlan, JoinedHostAndDeviceSourcesStageTheSameActualBlockRows) {
   const char* configured =
-      std::getenv("JITLLM_TEST_ARTIFACT_CORPUS");  // NOLINT(concurrency-mt-unsafe)
+      std::getenv("LLMP_TEST_ARTIFACT_CORPUS");  // NOLINT(concurrency-mt-unsafe)
   const std::filesystem::path corpus = configured ? configured : "artifact-corpus";
   const auto directory = corpus / "golden" / "tiny";
   ASSERT_TRUE(std::filesystem::is_directory(directory));
@@ -528,7 +528,7 @@ TEST(DsparkMaskPlan, AuthenticatesScalarAndJoinedBlockSourcesBeforeAllocation) {
       for (std::size_t param = 0; param < 8; ++param) {
         std::array<std::byte, sizeof(mask->op_params)> saved{};
         std::memcpy(saved.data(), mask->op_params, saved.size());
-        const std::int32_t value = kg::JitllmOpInt(mask, static_cast<int>(param)) ^ 1;
+        const std::int32_t value = kg::LlmpOpInt(mask, static_cast<int>(param)) ^ 1;
         std::memcpy(reinterpret_cast<std::byte*>(mask->op_params) + 32 + param * 4, &value,
                     sizeof(value));
         checked(false);
@@ -586,7 +586,7 @@ TEST(Dsv4RawMaskPlan, JoinedDeviceAndHostSourcesStageCompletelyWithIdenticalRowD
   // The existing tiny artifact supplies a real resource offset for a small
   // F16 embedding fixture; the rest of this test is graph/input-only.
   const char* configured =
-      std::getenv("JITLLM_TEST_ARTIFACT_CORPUS");  // NOLINT(concurrency-mt-unsafe)
+      std::getenv("LLMP_TEST_ARTIFACT_CORPUS");  // NOLINT(concurrency-mt-unsafe)
   const std::filesystem::path corpus = configured ? configured : "artifact-corpus";
   const auto directory = corpus / "golden" / "tiny";
   ASSERT_TRUE(std::filesystem::is_directory(directory));
@@ -773,4 +773,4 @@ TEST(Dsv4RawMaskPlan, AuthenticatesExactRowsOffsetsAndEveryProducerParentBeforeA
 }
 
 }  // namespace
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

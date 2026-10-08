@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/implementations.h"
@@ -23,8 +23,8 @@
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/set_rows_group.h"
@@ -33,14 +33,14 @@
 #include "kernels/ggml/validate_ext.h"
 
 // The build's part of each identity, from CMakeLists.txt.
-#if !defined(JITLLM_GGML_SOURCE_TREE) || !defined(JITLLM_DS4_SOURCE_TREE) ||        \
-    !defined(JITLLM_GGML_SDK) || !defined(JITLLM_GGML_TARGET) ||                    \
-    !defined(JITLLM_GGML_CUDA_ARCHITECTURES) || !defined(JITLLM_GGML_BUILD_TYPE) || \
-    !defined(JITLLM_GGML_SANITIZE)
+#if !defined(LLMP_GGML_SOURCE_TREE) || !defined(LLMP_DS4_SOURCE_TREE) ||        \
+    !defined(LLMP_GGML_SDK) || !defined(LLMP_GGML_TARGET) ||                    \
+    !defined(LLMP_GGML_CUDA_ARCHITECTURES) || !defined(LLMP_GGML_BUILD_TYPE) || \
+    !defined(LLMP_GGML_SANITIZE)
 #error "implementations.cc needs the GGML source tree, SDK, target, architectures and build type"
 #endif
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 struct RmsNormMulKernel::Entry {
   std::string_view name;
@@ -418,41 +418,41 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMulMatIdQ(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatQ(launch, n[0]); }},
-    {.name = "jitllm.mul_mat_id.mmq_pair",
+    {.name = "llmp.mul_mat_id.mmq_pair",
      .operation = execution::Operation::kMulMatId,
      .variant = "two ordinary MMQ expert products sharing one routing map and type-specific "
                 "Q8 preparation, preserving each weight/output stride and sequential fixup",
      .arity = 2,
      .check = [](ConstNodes n) { return CheckMulMatIdQPair(n[0], n[1]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQPair(launch, n[0], n[1]); }},
-    {.name = "jitllm.mul_mat_id.mmq_compact",
+    {.name = "llmp.mul_mat_id.mmq_compact",
      .operation = execution::Operation::kMulMatId,
      .variant = "ordinary non-FP4 MMQ preparation and inner product with a device-built "
                 "expert-major tile list; original weight/output strides and Q8 arithmetic",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMulMatIdQCompact(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQCompact(launch, n[0]); }},
-    {.name = "jitllm.mul_mat_id.q2_d2r",
+    {.name = "llmp.mul_mat_id.q2_d2r",
      .operation = execution::Operation::kMulMatId,
      .variant = "ds4 down_q2k_d2r_kernel<64,64,raw>: 128x64 tiles; native maps/Q8 D2S6; raw Q2_K",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMulMatIdQ2D2r(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQ2D2r(launch, n[0]); }},
-    {.name = "jitllm.mul_mat_id.mmq_pair_compact",
+    {.name = "llmp.mul_mat_id.mmq_pair_compact",
      .operation = execution::Operation::kMulMatId,
      .variant = "two ordinary non-FP4 MMQ inner products sharing routing and Q8 preparation, "
                 "each launched with a device-built expert-major tile list",
      .arity = 2,
      .check = [](ConstNodes n) { return CheckMulMatIdQPair(n[0], n[1]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQPair(launch, n[0], n[1], true); }},
-    {.name = "jitllm.mul_mat.mmq_pair_dense",
+    {.name = "llmp.mul_mat.mmq_pair_dense",
      .operation = execution::Operation::kMatMul,
      .variant = "two dense MMQ products of one block-quantized non-FP4 type sharing one Q8_1 "
                 "quantization of their activation (experimental)",
      .arity = 2,
      .check = [](ConstNodes n) { return CheckMulMatQPairDense(n[0], n[1]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatQPairDense(launch, n[0], n[1]); }},
-    {.name = "jitllm.mul_mat_id.mmq_pair_glu",
+    {.name = "llmp.mul_mat_id.mmq_pair_glu",
      .operation = execution::Operation::kMulMatId,
      .variant = "GB10 IQ2 occupancy-two compact pair, gate first, up write-back storing "
                 "swiglu_clamp(gate, up) (experimental)",
@@ -460,7 +460,7 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .check = [](ConstNodes n) { return CheckMulMatIdQPairGlu(n[0], n[1], n[2]); },
      .run = [](LaunchContext& launch,
                Nodes n) { return MulMatIdQPairGlu(launch, n[0], n[1], n[2]); }},
-    {.name = "jitllm.mul_mat_id.mmq_pair_glu_q8",
+    {.name = "llmp.mul_mat_id.mmq_pair_glu_q8",
      .operation = execution::Operation::kMulMatId,
      .variant = "the activation write-back pair, its activation stored as the down product's "
                 "D2S6 Q8_1 MMQ input at sorted columns (experimental)",
@@ -468,7 +468,7 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .check = [](ConstNodes n) { return CheckMulMatIdQPairGlu(n[0], n[1], n[2]); },
      .run = [](LaunchContext& launch,
                Nodes n) { return MulMatIdQPairGluQ8(launch, n[0], n[1], n[2]); }},
-    {.name = "jitllm.mul_mat_id.mmq_compact_prequant",
+    {.name = "llmp.mul_mat_id.mmq_compact_prequant",
      .operation = execution::Operation::kMulMatId,
      .variant = "compact Q2_K MMQ over the pair write-back's D2S6 input, unquantized here "
                 "(experimental)",
@@ -642,7 +642,7 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckFlashAttnMma(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return FlashAttnMma(launch, n[0]); }},
-    {.name = "jitllm.dsv4.hca_tokentile",
+    {.name = "llmp.dsv4.hca_tokentile",
      .operation = execution::Operation::kFlashAttn,
      .variant = "ds4 attention_tokentile_hmma_kernel: four tokens/G8, M32/R32, 16 warps; "
                 "F32 Q rounded to F16, original F32 QK/softmax/PV accumulation and F16 "
@@ -650,7 +650,7 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4HcaTokentile(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return Dsv4HcaTokentile(launch, n[0]); }},
-    {.name = "jitllm.flash_attn_ext.mma_wide",
+    {.name = "llmp.flash_attn_ext.mma_wide",
      .operation = execution::Operation::kFlashAttn,
      .variant = "explicit sparse query-union choice at D256/512, one or eight query columns; "
                 "original per-query masks and F16 KV, stream-k with fixup",
@@ -665,73 +665,73 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckFlashAttnMma128(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return FlashAttnMma128(launch, n[0]); }},
-    // jitLLM's own (jitllm_ops.h), for Qwen3.8's MXFP8 and NVFP4 tensors.
-    {.name = "jitllm.mxfp8.mul_mat_vec",
+    // llmpalooza's own (llmp_ops.h), for Qwen3.8's MXFP8 and NVFP4 tensors.
+    {.name = "llmp.mxfp8.mul_mat_vec",
      .operation = execution::Operation::kMatMul,
      .variant = "Mxfp8Gemv<columns 1-8, rows 1/4/2 a warp>: each row's sums as one warp a row's, "
                 "16-code vectors, F32 block sums; PDL, the first weights prefetched into L2",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMxfp8MulMatVec(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8MulMatVec(launch, n[0]); }},
-    {.name = "jitllm.mxfp8.dequant",
+    {.name = "llmp.mxfp8.dequant",
      .operation = execution::Operation::kConvert,
      .variant = "Mxfp8ToBf16: sixteen codes a thread",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMxfp8Dequant(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8Dequant(launch, n[0]); }},
-    {.name = "jitllm.nvfp4.get_rows",
+    {.name = "llmp.nvfp4.get_rows",
      .operation = execution::Operation::kGetRows,
      .variant = "Nvfp4RowsKernel: a block an id, a thread a value",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckNvfp4Rows(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunNvfp4Rows(launch, n[0]); }},
-    {.name = "jitllm.qrows.get_rows",
+    {.name = "llmp.qrows.get_rows",
      .operation = execution::Operation::kGetRows,
      .variant = "QRowsKernel<type>: a block an id, a thread a value, GGML's dequantize.cuh",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckQRows(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunQRows(launch, n[0]); }},
-    // jitLLM's fusions of Qwen3.8's GGML nodes (jitllm_ops.h), GGML's
+    // llmpalooza's fusions of Qwen3.8's GGML nodes (llmp_ops.h), GGML's
     // arithmetic in its order.
-    {.name = "jitllm.hc.combine",
+    {.name = "llmp.hc.combine",
      .operation = execution::Operation::kHcCombine,
      .variant = "HcCombineKernel: four columns a thread",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckHcCombine(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunHcCombine(launch, n[0]); }},
-    {.name = "jitllm.hc.norm",
+    {.name = "llmp.hc.norm",
      .operation = execution::Operation::kHcNorm,
      .variant = "HcNormKernel<F32 or BF16>: a stream of a token a 1,024-thread block, "
                 "rms_norm_f32<1024>'s reduction",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckHcNorm(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunHcNorm(launch, n[0]); }},
-    {.name = "jitllm.hc.mix",
+    {.name = "llmp.hc.mix",
      .operation = execution::Operation::kHcMix,
      .variant = "HcMixKernel: a token a 1,024-thread block, rms_norm_f32<1024>'s reduction per "
                 "stream",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckHcMix(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunHcMix(launch, n[0]); }},
-    {.name = "jitllm.moe.glu",
+    {.name = "llmp.moe.glu",
      .operation = execution::Operation::kMoeGlu,
      .variant = "MoeGluKernel: four columns a thread",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMoeGlu(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeGlu(launch, n[0]); }},
-    {.name = "jitllm.moe.combine",
+    {.name = "llmp.moe.combine",
      .operation = execution::Operation::kMoeCombine,
      .variant = "MoeCombineKernel: four columns a thread, experts in order",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMoeCombine(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeCombine(launch, n[0]); }},
-    {.name = "jitllm.bf16",
+    {.name = "llmp.bf16",
      .operation = execution::Operation::kConvert,
      .variant = "Bf16Kernel: __float2bfloat16, an element a thread",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckBf16(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunBf16(launch, n[0]); }},
-    {.name = "jitllm.gemm.bf16",
+    {.name = "llmp.gemm.bf16",
      .operation = execution::Operation::kMatMul,
      .variant =
          "cublasGemmEx BF16 x BF16 into F32, CUBLAS_COMPUTE_32F, default tensor-op algorithm; "
@@ -739,48 +739,48 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGemmBf16(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGemmBf16(launch, n[0]); }},
-    {.name = "jitllm.gated_delta_net.columns",
+    {.name = "llmp.gated_delta_net.columns",
      .operation = execution::Operation::kGatedDeltaNet,
      .variant = "GdnColumnsKernel<4>: gated_delta_net_cuda<128>'s per-column arithmetic, four "
                 "value columns a warp, four warps a block",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGatedDeltaNetColumns(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGatedDeltaNetColumns(launch, n[0]); }},
-    {.name = "jitllm.gated_delta_net.lanes",
+    {.name = "llmp.gated_delta_net.lanes",
      .operation = execution::Operation::kGatedDeltaNet,
      .variant = "GdnLanesKernel: a value column over 8 lanes of 16 rows, 64 columns a block, "
                 "16-token chunks staged in shared memory by asynchronous copies",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGatedDeltaNetLanes(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGatedDeltaNetLanes(launch, n[0]); }},
-    {.name = "jitllm.gdn.conv",
+    {.name = "llmp.gdn.conv",
      .operation = execution::Operation::kSsmConv,
      .variant = "GdnConvKernel<F32 or BF16 rows>: a head of a token a 128-thread block; "
                 "ssm_conv, silu, and rms_norm_f32<256>'s reduction for the query and key heads",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGdnConv(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGdnConv(launch, n[0]); }},
-    {.name = "jitllm.gdn.norm_gate",
+    {.name = "llmp.gdn.norm_gate",
      .operation = execution::Operation::kNormGate,
      .variant = "GdnNormGateKernel<F32 or BF16 out, F32 or BF16 z>: a head a warp, "
                 "rms_norm_f32<256>'s reduction; GdnNormGateMxfp8Kernel<z> into MXFP8 rows",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGdnNormGate(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGdnNormGate(launch, n[0]); }},
-    // The routed experts over the CUTLASS layout (jitllm_ops.h, moe_layout.h).
-    {.name = "jitllm.moe.route",
+    // The routed experts over the CUTLASS layout (llmp_ops.h, moe_layout.h).
+    {.name = "llmp.moe.route",
      .operation = execution::Operation::kMoeRoute,
      .variant = "RouteCount, RouteScan, RouteAssign: 64-token chunks, slots in token order",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMoeRoute(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeRoute(launch, n[0]); }},
-    {.name = "jitllm.moe.quantize",
+    {.name = "llmp.moe.quantize",
      .operation = execution::Operation::kQuantize,
      .variant = "QuantizeRows: quantize_mmq_nvfp4's row and block scales, a token a block",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMoeQuantize(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeQuantize(launch, n[0]); }},
-    {.name = "jitllm.moe.gemm.cutlass",
+    {.name = "llmp.moe.gemm.cutlass",
      .operation = execution::Operation::kMulMatId,
      .variant = "CUTLASS 4.7.1 Sm120 block-scaled NVFP4 grouped GEMM, KernelPtrArrayTmaWarp"
                 "SpecializedPingpong, tile 128x128x256, cluster 1x1x1, BF16 LinearCombination "
@@ -788,19 +788,19 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMoeGemm(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeGemm(launch, n[0]); }},
-    {.name = "jitllm.moe.glu_quantize",
+    {.name = "llmp.moe.glu_quantize",
      .operation = execution::Operation::kMoeGlu,
      .variant = "GluQuantizeRows: SwiGLU then quantize_mmq_nvfp4's scales, a row a block",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMoeGluQuantize(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeGluQuantize(launch, n[0]); }},
-    {.name = "jitllm.moe.combine_sorted",
+    {.name = "llmp.moe.combine_sorted",
      .operation = execution::Operation::kMoeCombine,
      .variant = "CombineSorted: four columns a thread, experts in order",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMoeCombineSorted(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeCombineSorted(launch, n[0]); }},
-    {.name = "jitllm.moe.gemv",
+    {.name = "llmp.moe.gemv",
      .operation = execution::Operation::kMulMatId,
      .variant = "Gemv: a warp an output row of a slot, 16-value blocks a lane, F32 activations; "
                 "PDL",
@@ -809,7 +809,7 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeGemv(launch, n[0]); }},
     // A speculative verify's row-invariant products (D-092) and DeepSeek's
     // DSpark drafter's argmax.
-    {.name = "jitllm.mul_mat.mmvq_rows",
+    {.name = "llmp.mul_mat.mmvq_rows",
      .operation = execution::Operation::kMatMul,
      .variant = "MulMatVecQRowsKernel<type, columns 1-8>: quantize_row_q8_1_cuda, then GGML's "
                 "mul_mat_vec_q body with the one-column launch's warps, rows per block, small-K "
@@ -817,21 +817,21 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMulMatQ(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatVecQRows(launch, n[0]); }},
-    {.name = "jitllm.mul_mat_id.mmvq_rows",
+    {.name = "llmp.mul_mat_id.mmvq_rows",
      .operation = execution::Operation::kMulMatId,
      .variant = "MulMatVecQRowsKernel<type, 1, per token>: quantize_row_q8_1_cuda, then GGML's "
                 "one-token mul_mat_vec_q launch with ids for every token, over grid z",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMulMatIdQ(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatVecQRows(launch, n[0]); }},
-    {.name = "jitllm.mul_mat.mmvf_rows",
+    {.name = "llmp.mul_mat.mmvf_rows",
      .operation = execution::Operation::kMatMul,
      .variant = "ggml_cuda_mul_mat_vec_f: mul_mat_vec_f<T, type_acc, columns 1-8, block, false, "
                 "false> whatever upstream would route; upstream launch configuration",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMulMat(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatVecFRows(launch, n[0]); }},
-    {.name = "jitllm.argmax",
+    {.name = "llmp.argmax",
      .operation = execution::Operation::kTopK,
      .variant = "ArgmaxKernel<probability>: a block a row, the highest value, the lowest index "
                 "among equals; optionally its softmax probability, a second pass in a fixed "
@@ -839,21 +839,21 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckArgmax(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunArgmax(launch, n[0]); }},
-    // Qwen3.8's fast path (jitllm_ops.h): the MXFP8 products on tensor cores.
-    {.name = "jitllm.mxfp8.quantize",
+    // Qwen3.8's fast path (llmp_ops.h): the MXFP8 products on tensor cores.
+    {.name = "llmp.mxfp8.quantize",
      .operation = execution::Operation::kQuantize,
      .variant = "Mxfp8QuantizeKernel<F32 or BF16>: a 32-value block a thread, E8M0 scale "
                 "2^ceil(log2(amax / 448)), E4M3 codes rounded to nearest, swizzled scales",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMxfp8Quantize(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8Quantize(launch, n[0]); }},
-    {.name = "jitllm.mxfp8.swizzle",
+    {.name = "llmp.mxfp8.swizzle",
      .operation = execution::Operation::kConvert,
      .variant = "Mxfp8SwizzleKernel: a scale a thread, rows padded to 128",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMxfp8Swizzle(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8Swizzle(launch, n[0]); }},
-    {.name = "jitllm.mxfp8.gemm.cutlass",
+    {.name = "llmp.mxfp8.gemm.cutlass",
      .operation = execution::Operation::kMatMul,
      .variant = "CUTLASS 4.7.1 Sm120 block-scaled MXFP8 GEMM, KernelTmaWarpSpecializedPingpong, "
                 "tile 128x128x128, cluster 1x1x1, F32 or BF16 LinearCombination epilogue, tiles "
@@ -861,7 +861,7 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMxfp8Gemm(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8Gemm(launch, n[0]); }},
-    {.name = "jitllm.hc.prep",
+    {.name = "llmp.hc.prep",
      .operation = execution::Operation::kHcNorm,
      .variant = "HcPrepKernel<combine, inject>: a token a block, a float4 column of every stream "
                 "a thread; the combine, the streams' RMS norms into BF16, the inject logits. Up to "
@@ -870,61 +870,61 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckHcPrep(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunHcPrep(launch, n[0]); }},
-    {.name = "jitllm.hc.lo",
+    {.name = "llmp.hc.lo",
      .operation = execution::Operation::kUnary,
      .variant = "HcLoKernel: silu(lo / hc) into BF16, an element a thread",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckHcLo(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunHcLo(launch, n[0]); }},
-    {.name = "jitllm.hc.mix_bf16",
+    {.name = "llmp.hc.mix_bf16",
      .operation = execution::Operation::kHcMix,
      .variant = "HcMixBf16Kernel: eight columns of a token a thread, BF16 streams and logits",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckHcMixBf16(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunHcMixBf16(launch, n[0]); }},
-    {.name = "jitllm.moe.router",
+    {.name = "llmp.moe.router",
      .operation = execution::Operation::kArgsort,
      .variant = "MoeRouterKernel: a token a warp; softmax, top experts by warp argmax, their "
                 "weights renormalized, the shared expert's gate logit",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMoeRouter(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMoeRouter(launch, n[0]); }},
-    {.name = "jitllm.gdn.history",
+    {.name = "llmp.gdn.history",
      .operation = execution::Operation::kCont,
      .variant = "GdnHistoryKernel<F32 or BF16>: a channel a thread, the last rows transposed, "
                 "after the old history's last taps where the rows are fewer",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGdnHistory(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGdnHistory(launch, n[0]); }},
-    {.name = "jitllm.gdn.gates",
+    {.name = "llmp.gdn.gates",
      .operation = execution::Operation::kUnary,
      .variant = "GdnGatesKernel: paired sigmoid(beta) and softplus(alpha + dt_bias) * ssm_a, "
                 "the original GGML F32 rounding points",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGdnGates(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGdnGates(launch, n[0]); }},
-    {.name = "jitllm.gdn.step",
+    {.name = "llmp.gdn.step",
      .operation = execution::Operation::kGatedDeltaNet,
      .variant = "GdnColumnsKernel<4> over the state in place: the columns kernel's arithmetic, "
                 "the new state written over the old, the attention output alone",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGdnStep(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGdnStep(launch, n[0]); }},
-    {.name = "jitllm.qsa.prep",
+    {.name = "llmp.qsa.prep",
      .operation = execution::Operation::kRope,
      .variant = "QsaPrepKernel: a head of a token a warp; rms_norm times the weight, then "
                 "rope_multi's NEOX pairs at the token's position over 64 dimensions",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckQsaPrep(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunQsaPrep(launch, n[0]); }},
-    {.name = "jitllm.qsa.gate_quantize",
+    {.name = "llmp.qsa.gate_quantize",
      .operation = execution::Operation::kQuantize,
      .variant = "QsaGateQuantizeKernel: a 32-value block a thread, attention times "
                 "sigmoid(gate), MXFP8",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckQsaGateQuantize(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunQsaGateQuantize(launch, n[0]); }},
-    {.name = "jitllm.qsa.pool",
+    {.name = "llmp.qsa.pool",
      .operation = execution::Operation::kRope,
      .variant = "QsaPoolKernel: a block the chunk completes a warp; its raw keys summed in cell "
                 "order over the ratio, then qsa.prep's norm and rotation at its first position, "
@@ -932,7 +932,7 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckQsaPool(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunQsaPool(launch, n[0]); }},
-    {.name = "jitllm.qsa.topk",
+    {.name = "llmp.qsa.topk",
      .operation = execution::Operation::kTopK,
      .variant = "QsaQueryBf16Kernel, then QsaScoreVecKernel (a block a thread, up to 16 tokens) "
                 "or QsaScoreMmaKernel (BF16 m16n8k16, 128 block keys in registers, 16-token "
@@ -943,7 +943,7 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckQsaTopK(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunQsaTopK(launch, n[0]); }},
-    {.name = "jitllm.qsa.attn",
+    {.name = "llmp.qsa.attn",
      .operation = execution::Operation::kFlashAttn,
      .variant = "QsaAttnKernel: a warp a token's KV head and share of its cells, 16-cell "
                 "cp.async gathers of K and V double-buffered, F16 m16n8k16 with F32 sums and "
@@ -952,34 +952,34 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckQsaAttn(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunQsaAttn(launch, n[0]); }},
-    // DeepSeek V4's fast plan (jitllm_ops.h; dsv4_fast.cu).
-    {.name = "jitllm.q8_1",
+    // DeepSeek V4's fast plan (llmp_ops.h; dsv4_fast.cu).
+    {.name = "llmp.q8_1",
      .operation = execution::Operation::kQuantize,
      .variant = "quantize_row_q8_1_cuda: rows padded to 512 values, once for every product",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckQuantizeQ8(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunQuantizeQ8(launch, n[0]); }},
-    {.name = "jitllm.mmvq.prepared",
+    {.name = "llmp.mmvq.prepared",
      .operation = execution::Operation::kMatMul,
      .variant = "original ggml_cuda_op_mul_mat_vec_q over a shared padded Q8_1 input; "
                 "original MMVQ selection, geometry and reduction, dense one-to-eight columns",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMmvqPrepared(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMmvqPrepared(launch, n[0]); }},
-    {.name = "jitllm.vecq",
+    {.name = "llmp.vecq",
      .operation = execution::Operation::kMatMul,
      .variant = "VecQKernel<type, rows, warps, glu>: GGML's vec_dot_*_q8_1 over up to 8 tokens a "
                 "weight read, one block per distinct expert and row block; SwiGLU in the kernel",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckVecQ(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunVecQ(launch, n[0]); }},
-    {.name = "jitllm.dsv4.route",
+    {.name = "llmp.dsv4.route",
      .operation = execution::Operation::kMoeRoute,
      .variant = "RouteKernel: a warp a token, sqrt(softplus), top-k by argmax rounds, normalized",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4Route(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4Route(launch, n[0]); }},
-    {.name = "jitllm.dsv4.combine",
+    {.name = "llmp.dsv4.combine",
      .operation = execution::Operation::kMoeCombine,
      .variant = "CombineKernel: four columns a thread, experts in order, then the shared expert",
      .arity = 1,
@@ -992,27 +992,27 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4OrderedReduce(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4OrderedReduce(launch, n[0]); }},
-    {.name = "jitllm.dsv4.hc_mix",
+    {.name = "llmp.dsv4.hc_mix",
      .operation = execution::Operation::kHcMix,
      .variant = "HcMixKernel: 64 chunks of a token, 24 dot products and the sum of squares",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4HcMix(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4HcMix(launch, n[0]); }},
-    {.name = "jitllm.dsv4.hc_pre",
+    {.name = "llmp.dsv4.hc_pre",
      .operation = execution::Operation::kHcPre,
      .variant = "HcPreKernel: a 1,024-thread block a token; mixes, Sinkhorn, weighted sum, "
                 "RMSNorm times the weight",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4HcPre(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4HcPre(launch, n[0]); }},
-    {.name = "jitllm.dsv4.compress",
+    {.name = "llmp.dsv4.compress",
      .operation = execution::Operation::kSoftMax,
      .variant = "CompressKernel: a block a compressed block, a thread a channel; the rows' "
                 "online softmax and weighted sum",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4Compress(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4Compress(launch, n[0]); }},
-    {.name = "jitllm.dsv4.lid_topk",
+    {.name = "llmp.dsv4.lid_topk",
      .operation = execution::Operation::kLightningIndexer,
      .variant = "LidScoreKernel<R>: R rows' 64 heads a block on mma.sync F16 (F32 sums), 64 keys "
                 "a step; TopKKernel: a block a row, a radix select, ties to the lower row",
@@ -1037,7 +1037,7 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGemma4Mask(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGemma4Mask(launch, n[0]); }},
-    {.name = "jitllm.dsv4.sparse_mask",
+    {.name = "llmp.dsv4.sparse_mask",
      .operation = execution::Operation::kFill,
      .variant = "SparseMaskKernel: a block a row, the window's mask copied, -inf, then the "
                 "selected rows 0",
@@ -1055,26 +1055,24 @@ execution::Implementation Declare(std::string_view name, execution::Operation op
                    name == kDsv4OutAName || name == kDsv4OutAFastPackName;
   std::string source = "ggml";
   std::string revision =
-      std::format("ggml tree {}; jitllm module {}", JITLLM_GGML_SOURCE_TREE, ModuleSourcesDigest());
+      std::format("ggml tree {}; llmp module {}", LLMP_GGML_SOURCE_TREE, ModuleSourcesDigest());
   if (ds4) {
     source = "ds4";
-    revision = std::format("ds4 tree {}; ggml tree {}; jitllm module {}", JITLLM_DS4_SOURCE_TREE,
-                           JITLLM_GGML_SOURCE_TREE, ModuleSourcesDigest());
+    revision = std::format("ds4 tree {}; ggml tree {}; llmp module {}", LLMP_DS4_SOURCE_TREE,
+                           LLMP_GGML_SOURCE_TREE, ModuleSourcesDigest());
   } else if (cutlass) {
     source = "cutlass";
-    revision =
-        std::format("cutlass tree {}; ggml tree {}; jitllm module {}", JITLLM_CUTLASS_SOURCE_TREE,
-                    JITLLM_GGML_SOURCE_TREE, ModuleSourcesDigest());
+    revision = std::format("cutlass tree {}; ggml tree {}; llmp module {}",
+                           LLMP_CUTLASS_SOURCE_TREE, LLMP_GGML_SOURCE_TREE, ModuleSourcesDigest());
   }
-  return {
-      .name = std::string(name),
-      .operation = operation,
-      .source = std::move(source),
-      .revision = std::move(revision),
-      .build = std::format("sdk {}; target {}; cuda {}; build type {}; {}; {}; sanitizers {}",
-                           JITLLM_GGML_SDK, JITLLM_GGML_TARGET, JITLLM_GGML_CUDA_ARCHITECTURES,
-                           JITLLM_GGML_BUILD_TYPE, kAsserts, kLibraryAsserts, JITLLM_GGML_SANITIZE),
-      .variant = std::string(variant)};
+  return {.name = std::string(name),
+          .operation = operation,
+          .source = std::move(source),
+          .revision = std::move(revision),
+          .build = std::format("sdk {}; target {}; cuda {}; build type {}; {}; {}; sanitizers {}",
+                               LLMP_GGML_SDK, LLMP_GGML_TARGET, LLMP_GGML_CUDA_ARCHITECTURES,
+                               LLMP_GGML_BUILD_TYPE, kAsserts, kLibraryAsserts, LLMP_GGML_SANITIZE),
+          .variant = std::string(variant)};
 }
 
 execution::Implementation Declare(const RmsNormMulKernel::Entry& entry) {
@@ -1131,7 +1129,7 @@ std::string_view RmsNormMulKernel::name() const { return entry_->name; }
 bool UsesCublas(std::string_view implementation) {
   // The declarations above whose launchers take the lent cuBLAS handle
   // (MulMatCublas, RunGemmBf16); a new one belongs here.
-  return implementation == "ggml.mul_mat.cublas" || implementation == "jitllm.gemm.bf16";
+  return implementation == "ggml.mul_mat.cublas" || implementation == "llmp.gemm.bf16";
 }
 
 std::expected<Kernel, KernelFailure> Kernel::Bind(const execution::Implementation& implementation) {
@@ -1176,4 +1174,4 @@ execution::Operation Kernel::operation() const { return entry_->operation; }
 
 std::size_t Kernel::arity() const { return entry_->arity; }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// `jitllm doctor`: the capability probe (D-026, D-063, D-072, D-073). It
+// `llmp doctor`: the capability probe (D-026, D-063, D-072, D-073). It
 // reports what this binary is, the host, the node's configuration and
 // storage roles, the device driver and devices, and RDMA, and fails if
 // this host cannot run this build as designed. It only reads and queries:
@@ -9,8 +9,8 @@
 // initialization may load its kernel modules; cuda_probe.h). So it does not
 // run the direct-I/O probe, which writes; the runtime does, at every start.
 
-#ifndef JITLLM_CLI_DOCTOR_H_
-#define JITLLM_CLI_DOCTOR_H_
+#ifndef LLMP_CLI_DOCTOR_H_
+#define LLMP_CLI_DOCTOR_H_
 
 #include <cstddef>
 #include <filesystem>
@@ -22,7 +22,7 @@
 #include "base/build_info.h"
 #include "base/report.h"
 
-namespace jitllm::cli {
+namespace llmp::cli {
 
 // Adds the `build` section: the version, commit, license profile, SDK and
 // target, and the compiler and C++ runtime that built this binary.
@@ -32,7 +32,7 @@ struct DoctorOptions {
   // The configuration's main file, as `--config` names it: a development
   // run's, whose files and roles its invoking user owns. Without it,
   // doctor reads the packaged default and judges ownership against the
-  // `jitllm` account (or the invoking user, if there is none).
+  // `llmp` account (or the invoking user, if there is none).
   std::optional<std::filesystem::path> config;
 };
 
@@ -49,7 +49,7 @@ void DescribeConfiguration(const DoctorOptions& options, base::Report& report);
 bool Doctor(const std::filesystem::path& root, const DoctorOptions& options, base::Report& report,
             const std::function<bool(std::string_view)>& write);
 
-// The report as `jitllm doctor` prints it: each section's facts, then the
+// The report as `llmp doctor` prints it: each section's facts, then the
 // problems and warnings, then a summary line. Control characters in the
 // report's text are escaped (\xNN), so a value cannot forge a line.
 std::string DoctorText(const base::Report& report);
@@ -61,6 +61,6 @@ std::string SummaryText(const base::Report& report);
 // text with each control character written as \xNN.
 std::string Printable(std::string_view text);
 
-}  // namespace jitllm::cli
+}  // namespace llmp::cli
 
-#endif  // JITLLM_CLI_DOCTOR_H_
+#endif  // LLMP_CLI_DOCTOR_H_

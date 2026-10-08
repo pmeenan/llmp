@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The backing designs the retained-backing comparison replays
@@ -24,8 +24,8 @@
 // its hole policy, or else the least recently used evictable group in the
 // reference's recency order (Env::LruVictim).
 
-#ifndef JITLLM_BENCHMARKS_RETAINED_BACKING_DESIGNS_H_
-#define JITLLM_BENCHMARKS_RETAINED_BACKING_DESIGNS_H_
+#ifndef LLMP_BENCHMARKS_RETAINED_BACKING_DESIGNS_H_
+#define LLMP_BENCHMARKS_RETAINED_BACKING_DESIGNS_H_
 
 #include <array>
 #include <cstddef>
@@ -45,7 +45,7 @@
 #include "providers/device_memory.h"
 #include "retained_backing/trace.h"
 
-namespace jitllm::rb {
+namespace llmp::rb {
 
 // What the replay offers a design while it places an access's restores or
 // meets a shrink.
@@ -194,6 +194,6 @@ std::unique_ptr<Design> MakeDesign(const DesignSpec& spec, std::span<const Group
                                    std::span<const Model> models, std::uint64_t budget,
                                    CountingMemory& memory);
 
-}  // namespace jitllm::rb
+}  // namespace llmp::rb
 
-#endif  // JITLLM_BENCHMARKS_RETAINED_BACKING_DESIGNS_H_
+#endif  // LLMP_BENCHMARKS_RETAINED_BACKING_DESIGNS_H_

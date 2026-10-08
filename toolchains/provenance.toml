@@ -1,7 +1,7 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# Provenance records for what builds jitLLM (D-017, D-071): the SDK's
+# Provenance records for what builds llmpalooza (D-017, D-071): the SDK's
 # components and the declared host prerequisites. Third-party source code is
 # recorded in third_party/sources.lock.json instead. docs/licensing.md
 # summarizes the audit behind these records (checked 2026-09-24); the Package
@@ -21,8 +21,8 @@
 #             declared platform family: the C library, the C++ and compiler
 #             support runtime, the CUDA SDK's runtime and interface headers)
 #   license   SPDX expression of the unit's terms
-#   ships     whether any of it can enter a packaged jitLLM binary
-#   enters    what of it reaches a jitLLM binary, and when
+#   ships     whether any of it can enter a packaged llmpalooza binary
+#   enters    what of it reaches a llmpalooza binary, and when
 #   notices   [notices] a packaged binary carries when this unit contributes
 #
 # Each [notices.<id>] says what the notice is (`text`), where it comes from
@@ -30,7 +30,7 @@
 # third-party notices take its exact text: a `file` in the SDK ("sdk:") or
 # the repository ("repo:"), whole or from the first line containing `from`
 # through the next line containing `to` and `plus` more lines
-# (tools/jitllm_package.py).
+# (tools/llmp_package.py).
 
 schema = 1
 
@@ -59,7 +59,7 @@ artifacts = ["deb/clang-22", "deb/clang-format-22", "deb/clang-tidy-22", "deb/cl
 category = "tool"
 license = "Apache-2.0 WITH LLVM-exception AND MIT"
 ships = false
-enters = "Generated code only: Clang compiles and LLD links every jitLLM binary. libz3 (MIT) serves the static analyzer."
+enters = "Generated code only: Clang compiles and LLD links every llmpalooza binary. libz3 (MIT) serves the static analyzer."
 notices = []
 
 [units.clang-resource-headers]
@@ -102,7 +102,7 @@ artifacts = ["deb/libcublas-13-4", "deb/libcublas-dev-13-4"]
 category = "platform"
 license = "LicenseRef-NVIDIA-CUDA-EULA"
 ships = true
-enters = "CUDA builds: the runtime (jitllm-runtime, which serves models through the engine since D-096) links libcublas.so.13 and libcublasLt.so.13 dynamically (D-076), and the package ships those two libraries, unmodified and unstripped, in /usr/lib/jitllm, a private directory off the system linker's path that the runtime's run path names; both are redistributable under the EULA's Attachment A. libcublas.so.13 needs libgcc_s.so.1, a dependency of the package (libgcc-s1). The headers only declare the API. The static archives are not extracted."
+enters = "CUDA builds: the runtime (llmp-runtime, which serves models through the engine since D-096) links libcublas.so.13 and libcublasLt.so.13 dynamically (D-076), and the package ships those two libraries, unmodified and unstripped, in /usr/lib/llmp, a private directory off the system linker's path that the runtime's run path names; both are redistributable under the EULA's Attachment A. libcublas.so.13 needs libgcc_s.so.1, a dependency of the package (libgcc-s1). The headers only declare the API. The static archives are not extracted."
 notices = ["nvidia-cuda-eula"]
 
 [units.cuda-driver-stub]
@@ -135,7 +135,7 @@ artifacts = ["deb/gcc-14-base", "deb/libgcc-s1"]
 category = "platform"
 license = "GPL-3.0-or-later WITH GCC-exception-3.1"
 ships = false
-enters = "Nothing shipped: Ubuntu noble arm64 libgcc_s.so.1 satisfies cuBLAS's dynamic dependency in the cross sysroot under qemu-user. jitLLM still links the source-built GCC 16.2 support libraries statically; the installed package still depends on the target's libgcc-s1 rather than bundling this library. gcc-14-base carries the matching copyright and GCC Runtime Library Exception, reached by the libgcc-s1 documentation symlink."
+enters = "Nothing shipped: Ubuntu noble arm64 libgcc_s.so.1 satisfies cuBLAS's dynamic dependency in the cross sysroot under qemu-user. Llmpalooza still links the source-built GCC 16.2 support libraries statically; the installed package still depends on the target's libgcc-s1 rather than bundling this library. gcc-14-base carries the matching copyright and GCC Runtime Library Exception, reached by the libgcc-s1 documentation symlink."
 notices = []
 
 [units.gcc-build-inputs]

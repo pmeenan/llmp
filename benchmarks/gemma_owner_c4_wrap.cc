@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Fixed-process manual comparison using the shared checked C4 graph transform.
@@ -11,32 +11,32 @@
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/gemma4_graph.h"
 
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
 using Result = std::expected<kg::Gemma4Graph, kg::KernelFailure>;
 Result
 RealBuild(kg::TensorArena&, const md::Gemma4Profile&, const md::Gemma4Binding&, const md::Gemma4StateLayout&, const kg::Gemma4ChunkShape&, const kg::Gemma4GraphOptions&) asm(
-    "__real__ZN6jitllm7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_"
+    "__real__ZN4llmp7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_"
     "5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_"
     "16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE");
 std::size_t RealTensors(const md::Gemma4Profile&, std::size_t) asm(
-    "__real__ZN6jitllm7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm");
+    "__real__ZN4llmp7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm");
 namespace {
 constexpr std::size_t kExtraPerLayer = 64;
 // Fixed once for the whole process: never toggle a policy behind PlanCache.
 bool Transform() {
   static const bool enabled = [] {
-    const char* flag = std::getenv("JITLLM_GEMMA_OWNER_C4");
+    const char* flag = std::getenv("LLMP_GEMMA_OWNER_C4");
     if (flag == nullptr || std::string_view(flag) == "0") return false;
     if (std::string_view(flag) == "packed" || std::string_view(flag) == "owners") return true;
-    std::cerr << "invalid JITLLM_GEMMA_OWNER_C4 (expected 0, packed or owners)\n";
+    std::cerr << "invalid LLMP_GEMMA_OWNER_C4 (expected 0, packed or owners)\n";
     std::abort();
   }();
   return enabled;
 }
 bool Owners() {
   static const bool owners = [] {
-    const char* flag = std::getenv("JITLLM_GEMMA_OWNER_C4");
+    const char* flag = std::getenv("LLMP_GEMMA_OWNER_C4");
     return flag && std::string_view(flag) == "owners";
   }();
   return owners;
@@ -44,7 +44,7 @@ bool Owners() {
 }  // namespace
 
 std::size_t WrappedTensors(const md::Gemma4Profile&, std::size_t) asm(
-    "__wrap__ZN6jitllm7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm");
+    "__wrap__ZN4llmp7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm");
 std::size_t WrappedTensors(const md::Gemma4Profile& p, std::size_t segments) {
   const auto original = RealTensors(p, segments);
   return original +
@@ -54,7 +54,7 @@ std::size_t WrappedTensors(const md::Gemma4Profile& p, std::size_t segments) {
 }
 Result
 WrappedBuild(kg::TensorArena&, const md::Gemma4Profile&, const md::Gemma4Binding&, const md::Gemma4StateLayout&, const kg::Gemma4ChunkShape&, const kg::Gemma4GraphOptions&) asm(
-    "__wrap__ZN6jitllm7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_"
+    "__wrap__ZN4llmp7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_"
     "5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_"
     "16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE");
 Result WrappedBuild(kg::TensorArena& arena, const md::Gemma4Profile& p,
@@ -97,10 +97,10 @@ Result WrappedBuild(kg::TensorArena& arena, const md::Gemma4Profile& p,
 // The kernel's same-TU internal calls need not interpose: planning is enough.
 using OwnerPlan = std::expected<kg::FlashAttnOwnersPlan, kg::KernelFailure>;
 OwnerPlan RealOwnerPlan(const kg::LaunchContext&, const kg::FlashAttnOwners&) asm(
-    "__real__ZN6jitllm7kernels4ggml19PlanFlashAttnOwnersERKNS1_13LaunchContextERKNS1_"
+    "__real__ZN4llmp7kernels4ggml19PlanFlashAttnOwnersERKNS1_13LaunchContextERKNS1_"
     "15FlashAttnOwnersE");
 OwnerPlan WrappedOwnerPlan(const kg::LaunchContext&, const kg::FlashAttnOwners&) asm(
-    "__wrap__ZN6jitllm7kernels4ggml19PlanFlashAttnOwnersERKNS1_13LaunchContextERKNS1_"
+    "__wrap__ZN4llmp7kernels4ggml19PlanFlashAttnOwnersERKNS1_13LaunchContextERKNS1_"
     "15FlashAttnOwnersE");
 OwnerPlan WrappedOwnerPlan(const kg::LaunchContext& launch, const kg::FlashAttnOwners& inputs) {
   auto plan = RealOwnerPlan(launch, inputs);

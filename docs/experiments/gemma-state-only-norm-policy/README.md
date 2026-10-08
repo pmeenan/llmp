@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Checked plain RMSNorm/Mul serving default
@@ -70,7 +70,7 @@ rows at both256, three untimed anchors and 32 forced units. Context is 16,384,
 F16 KV, local/global cells 1,280/16,384, SWA/unified false. Finite scans,
 snapshots and hashes stay outside paid timers.
 
-Reproduce with `jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 31 both 256
+Reproduce with `llmp_gemma_prefill ARTIFACT IDS NEW_OUT 31 both 256
 normmul-off|normmul-on state-only lookahead-on`; for the 26B transfer use
 `26 all 1024` with the same trailing modes. The task-entry primary
 TensorFold git query at 2026-10-05 23:01:41 UTC remained

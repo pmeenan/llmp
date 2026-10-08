@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen-Image-2.1 pipeline's BF16 products on cuBLASLt, for choosing the
@@ -15,7 +15,7 @@
 // CUBLASLT_ALGO_CONFIG attributes (recon_gemm.h's), and one per shape with
 // cublasGemmEx's time.
 //
-//   jitllm_qwen_image_gemm_tune [--rows N] [--candidates N] [--reps N]
+//   llmp_qwen_image_gemm_tune [--rows N] [--candidates N] [--reps N]
 //                               [--workspace MiB] [--shape m,n,k[,batch]]...
 //
 // Operands are filled with a fixed pseudo-random BF16 pattern (|x| < 1).

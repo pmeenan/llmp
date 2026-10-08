@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Four fixed fresh natural turns via the existing runtime/server callers."""
 import hashlib
@@ -16,8 +16,8 @@ import urllib.error
 import urllib.request
 import uuid
 
-ROOT = Path.home() / '.local/share/jitllm/gemma-production-natural'
-INPUT = Path.home() / '.local/share/jitllm/gemma-input-preparation'
+ROOT = Path.home() / '.local/share/llmp/gemma-production-natural'
+INPUT = Path.home() / '.local/share/llmp/gemma-input-preparation'
 IMAGE = 'ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7'
 STOPS = ['<turn|>', '<|tool_response>', '<|channel>', '<|tool_call>']
 STOP_IDS = [106, 50, 100, 48]
@@ -54,12 +54,12 @@ def native(profile):
     config.write_bytes((ROOT / f'native-{profile}.toml').read_bytes())
     config.chmod(0o600)
     assert not (out / 'enrollment').exists() and not (out / 'enrollment.lock').exists()
-    argv = [str(ROOT / 'jitllm-runtime-candidate'), '--config', str(config),
+    argv = [str(ROOT / 'llmp-runtime-candidate'), '--config', str(config),
             '--anchor', str(out / 'enrollment'), 'chat', '--fresh', '--plain',
             '--max-tokens', '128', '--report', str(out / 'native-report.json')]
     for p in prompts:
         argv += ['--turn', f'gemma{profile}', p['user']]
-    env = dict(os.environ, LD_LIBRARY_PATH='/home/pmeenan/src/jitLLM-wt/m3fixb/build/spark-native/cublas')
+    env = dict(os.environ, LD_LIBRARY_PATH='/home/pmeenan/src/llmp-wt/m3fixb/build/spark-native/cublas')
     with (out / 'native.log').open('x') as log:
         subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT, env=env, check=True)
     # Runtime return0 includes Server.TearDown success; a report alone is insufficient.
@@ -80,13 +80,13 @@ def native(profile):
 
 def public(profile):
     facts, prompts, ids = guard(profile)
-    model = Path.home() / '.local/share/jitllm/reference-models' / facts['raw_gguf']['name']
+    model = Path.home() / '.local/share/llmp/reference-models' / facts['raw_gguf']['name']
     assert model.is_file() and model.stat().st_size == facts['raw_gguf']['bytes']
     out = ROOT / f'public-{profile}'
     out.mkdir(mode=0o700)
     name = f'task71-natural-reference{profile}-1'
     cid = out / f'{name}.cid'
-    container = 'jitllm-gemma26-late-moe-' + name
+    container = 'llmp-gemma26-late-moe-' + name
     key = uuid.uuid4().hex
     port = 18171
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -103,7 +103,7 @@ def public(profile):
 
     try:
         docker('create', '--name', container, '--cidfile', str(cid), '--pull', 'never',
-               '--label', 'jitllm.observer=gemma26-late-moe', '--device', 'nvidia.com/gpu=all',
+               '--label', 'llmp.observer=gemma26-late-moe', '--device', 'nvidia.com/gpu=all',
                '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                '--user', f'{os.getuid()}:{os.getgid()}', '--pids-limit', '512',
                '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m', '--publish', f'127.0.0.1:{port}:8080',

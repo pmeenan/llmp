@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""jitLLM's fixed inputs from the vLLM oracle's references (stdlib only).
+"""llmpalooza's fixed inputs from the vLLM oracle's references (stdlib only).
 
   python3 reference_inputs.py FAST_SWAP_DIR OUT_DIR
 
 Reads reference-qwen3.8-nvfp4-vllm.json and reference-qwen3.8-nvfp4-vllm-ppl.json
-and writes, for jitllm_qwen38_exec:
+and writes, for llmp_qwen38_exec:
   prompts.tsv  name<TAB>the chat prompt's rendered token IDs (the oracle's)
   forced.tsv   name<TAB>the oracle's 32 greedy tokens (teacher forcing)
   ppl.tsv      the perplexity text's token IDs (the oracle's tokenization)

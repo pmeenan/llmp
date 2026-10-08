@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "tokenizer/hf.h"
@@ -18,7 +18,7 @@
 #include "tokenizer/pretokenize.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::tokenizer {
+namespace llmp::tokenizer {
 namespace {
 
 namespace json = base::json;
@@ -259,4 +259,4 @@ std::expected<TokenizerSpec, Error> ReadHfTokenizer(std::string_view text) {
   return spec;
 }
 
-}  // namespace jitllm::tokenizer
+}  // namespace llmp::tokenizer

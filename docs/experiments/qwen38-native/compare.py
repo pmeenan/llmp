@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""jitLLM's Qwen3.8 runs against Mia's vLLM (the oracle), stdlib only.
+"""llmpalooza's Qwen3.8 runs against Mia's vLLM (the oracle), stdlib only.
 
   python3 compare.py prompts FAST_SWAP_DIR RUN_DIR STEPWISE_DIR [FREE_RUN_DIR]
   python3 compare.py ppl FAST_SWAP_DIR RUN_DIR
 
-prompts: RUN_DIR is a teacher-forced run (jitllm_qwen38_exec --prompts
+prompts: RUN_DIR is a teacher-forced run (llmp_qwen38_exec --prompts
 prompts.tsv --force forced.tsv --generate 32), whose logits files hold each
 step's row; STEPWISE_DIR the same run with --stepwise (every product on
-decode's kernels). The near-tie bound is jitLLM's own noise: the 95th
+decode's kernels). The near-tie bound is llmpalooza's own noise: the 95th
 percentile, over the 192 steps, of how much its top-1 to top-2 logit
 margin moves between the two runs (activations quantized to FP4 or to
 8 bits, MXFP8 through BF16 or not), rounded up to the oracle's logprob
-resolution of 0.125. At every step, jitLLM's log-softmax is compared with
+resolution of 0.125. At every step, llmpalooza's log-softmax is compared with
 the oracle's top-5 logprobs:
-  - greedy: jitLLM's argmax must be the oracle's token, except at a near-tie:
+  - greedy: llmpalooza's argmax must be the oracle's token, except at a near-tie:
     a step whose oracle top-1 to top-2 margin is at most the bound;
-  - dlogprob: |jitLLM's logprob - the oracle's| over the oracle's top-5
+  - dlogprob: |llmpalooza's logprob - the oracle's| over the oracle's top-5
     tokens, reported per prompt (max and RMS), and between the two runs;
   - margin: the oracle's top-1 to top-2 logprob gap at each disagreement.
 FREE_RUN_DIR (optional) is a free-running greedy run; its argmax tokens are
@@ -100,9 +100,9 @@ def prompts(ref_dir, run_dir, stepwise_dir, free_dir=None):
             ok = margin <= bound
             exceptions_ok += ok
             failures += not ok
-            disagreements.append({"step": k, "oracle": want, "jitllm": got, "oracle_margin": round(margin, 5),
-                                  "jitllm_logprob_of_oracle": round(lp[want], 5),
-                                  "jitllm_logprob_of_own": round(lp[got], 5), "near_tie": ok})
+            disagreements.append({"step": k, "oracle": want, "llmp": got, "oracle_margin": round(margin, 5),
+                                  "llmp_logprob_of_oracle": round(lp[want], 5),
+                                  "llmp_logprob_of_own": round(lp[got], 5), "near_tie": ok})
         entry = {"name": name, "steps": len(tokens), "agree": len(tokens) - len(disagreements),
                  "dlogprob_max": round(max(diffs), 5),
                  "dlogprob_rms": round(math.sqrt(math.fsum(d * d for d in diffs) / len(diffs)), 5),
@@ -135,13 +135,13 @@ def ppl(ref_dir, run_dir):
     d = [abs(a - b) for a, b in zip(nll, want)]
     top1_actual = sum(1 for i, t in enumerate(top) if t == ids[i + 1]) / len(top)
     oracle_top1 = ref.get("top1_token_ids")
-    out = {"positions": len(nll), "jitllm_mean_nll": round(mean, 6), "jitllm_ppl": round(math.exp(mean), 4),
+    out = {"positions": len(nll), "llmp_mean_nll": round(mean, 6), "llmp_ppl": round(math.exp(mean), 4),
            "oracle_mean_nll": round(ref_mean, 6), "oracle_ppl": round(math.exp(ref_mean), 4),
            "ppl_relative_difference": round(math.exp(mean) / math.exp(ref_mean) - 1, 5),
            "dnll_max": round(max(d), 5), "dnll_rms": round(math.sqrt(math.fsum(x * x for x in d) / len(d)), 5),
            "dnll_mean_first_2048": round(math.fsum(d[:2047]) / 2047, 5),
            "dnll_mean_after_2048": round(math.fsum(d[2047:]) / max(1, len(d) - 2047), 5),
-           "jitllm_top1_is_next_token": round(top1_actual, 4)}
+           "llmp_top1_is_next_token": round(top1_actual, 4)}
     if oracle_top1 is not None:
         out["top1_agreement_with_oracle"] = round(sum(1 for a, b in zip(top, oracle_top1) if a == b) / len(top), 4)
     print(json.dumps(out, indent=1))

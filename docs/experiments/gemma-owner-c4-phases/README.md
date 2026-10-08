@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Current Gemma31 C4 phase accounting
@@ -46,9 +46,9 @@ are exact. No original/native state serialization comparison is made.
 
 Accounting and Node step counters reset immediately before the paid 32 waves;
 snapshots follow the paid clock. Reproduce with the inherited
-`jitllm_gemma_owner_c4 ARTIFACT NEW_DIR 31 4 joined norm IDS_I32`, setting
-`JITLLM_GEMMA_OWNER_C4=owners`, `JITLLM_GEMMA_C4_NORMMUL=1` and
-`JITLLM_GEMMA_C4_PHASES=1` before construction. Phases default off. Canonical
+`llmp_gemma_owner_c4 ARTIFACT NEW_DIR 31 4 joined norm IDS_I32`, setting
+`LLMP_GEMMA_OWNER_C4=owners`, `LLMP_GEMMA_C4_NORMMUL=1` and
+`LLMP_GEMMA_C4_PHASES=1` before construction. Phases default off. Canonical
 IDs are 4096 bytes with SHA `b2d7aaf6…`. Use installed Spark supervision,
 private output paths and the matching SDK cuBLAS library path.
 

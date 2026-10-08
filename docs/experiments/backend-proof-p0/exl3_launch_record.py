@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Record upstream's kernel launches for each BP-F2 kernel case.
 
 External reference tooling for the backend proof's P0; it does not implement
-jitLLM inference. Runs in the reference container with a frozen tuning cache
+llmpalooza inference. Runs in the reference container with a frozen tuning cache
 (EXLLAMAV3_TUNE_CACHE) and the arm's EXL3_* settings. It builds the cases as
 ../exl3-reference/measure.py does (the protocol's real projections, or its
 seeded synthetic trellises), warms each case, then profiles one invocation

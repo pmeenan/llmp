@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// jitllm.vecq's launch configurations on DeepSeek V4 Flash's product
+// llmp.vecq's launch configurations on DeepSeek V4 Flash's product
 // shapes (kernels/ggml/dsv4_fast.h), for choosing its defaults: each
 // configuration's time per launch and the weight bytes it streams per
 // second. Weights and activations are random bytes (the time does not
@@ -9,7 +9,7 @@
 // another copy of the matrix (dense), so the L2 cache holds none of it.
 // Needs a CUDA device and about 6 GB.
 //
-//   jitllm_vecq_bench [--launches N] [--overlap F] [--vmm on|off] [--only TEXT]
+//   llmp_vecq_bench [--launches N] [--overlap F] [--vmm on|off] [--only TEXT]
 //
 // --overlap: in a multi-token routed case, the fraction of each later
 // token's experts taken from the token before it (a verify's neighbouring
@@ -40,7 +40,7 @@
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 
 bool Ok(cudaError_t e, const char* what) {
   if (e != cudaSuccess) {

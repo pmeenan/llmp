@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Reproduce the bounded-root ring adoption gates using private authenticated inputs."""
 import hashlib,importlib.util,json,shutil,struct,subprocess,sys

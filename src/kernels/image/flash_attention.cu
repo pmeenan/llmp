@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// FlashAttention-2's forward pass (Dao, 2023), written for jitLLM (ops.h
+// FlashAttention-2's forward pass (Dao, 2023), written for llmpalooza (ops.h
 // FlashAttention): BF16, head dimension 128, no mask. Each block takes 128
 // query rows of one head, eight warps of 16 rows each; the block streams
 // the head's keys and values in tiles of 64 through shared memory, two
@@ -21,7 +21,7 @@
 
 #include "kernels/image/ops.h"
 
-namespace jitllm::kernels::image {
+namespace llmp::kernels::image {
 namespace {
 
 constexpr int kD = 128;
@@ -480,4 +480,4 @@ Status FlashAttentionPrefixed(const Bf16* q, std::int64_t q_stride, const Bf16* 
       q_norm != nullptr ? q_norm->freqs : nullptr, q_norm != nullptr ? q_norm->eps : 0.0f, stream);
 }
 
-}  // namespace jitllm::kernels::image
+}  // namespace llmp::kernels::image

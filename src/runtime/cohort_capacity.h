@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // How a cooperative chat cohort shares conversation-state capacity
@@ -34,8 +34,8 @@
 //   oldest first, only once no other member can run or is blocked; no new
 //   member is admitted while any member waits.
 
-#ifndef JITLLM_RUNTIME_COHORT_CAPACITY_H_
-#define JITLLM_RUNTIME_COHORT_CAPACITY_H_
+#ifndef LLMP_RUNTIME_COHORT_CAPACITY_H_
+#define LLMP_RUNTIME_COHORT_CAPACITY_H_
 
 #include <array>
 #include <cstddef>
@@ -44,7 +44,7 @@
 #include <span>
 #include <vector>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 // A cohort's most members: a model's most request slots
 // (engine/request_cohort.h kMaxRequestSlots).
@@ -117,6 +117,6 @@ inline bool Runnable(const CohortMember& member) {
   return member.present && !member.terminal && member.wait == CapacityWait::kNone;
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_COHORT_CAPACITY_H_
+#endif  // LLMP_RUNTIME_COHORT_CAPACITY_H_

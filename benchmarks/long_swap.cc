@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Replay the same long prefill, then compare uninterrupted and swapped
@@ -24,8 +24,8 @@
 #include "runtime/serving.h"
 
 namespace {
-namespace rt = jitllm::runtime;
-namespace cf = jitllm::config;
+namespace rt = llmp::runtime;
+namespace cf = llmp::config;
 using rt::Status;
 
 double Seconds(rt::Clock::duration elapsed) {
@@ -49,7 +49,7 @@ bool SameGeneration(const rt::Generation& a, const rt::Generation& b) {
 }
 
 std::string Hash(std::span<const float> row) {
-  return jitllm::base::ToHex(jitllm::base::Sha256().Update(std::as_bytes(row)).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256().Update(std::as_bytes(row)).Finish());
 }
 
 std::string Parts(const rt::SwapParts& p) {

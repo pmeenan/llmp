@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""The package's documents and inventory (tools/jitllm_package.py, D-074)."""
+"""The package's documents and inventory (tools/llmp_package.py, D-074)."""
 
 import io
 import os
@@ -14,9 +14,9 @@ import unittest
 
 TOOLS = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
-import jitllm_package as package  # noqa: E402
-import jitllm_sdk as sdklib  # noqa: E402
-import jitllm_sources as srclib  # noqa: E402
+import llmp_package as package  # noqa: E402
+import llmp_sdk as sdklib  # noqa: E402
+import llmp_sources as srclib  # noqa: E402
 
 
 class Extract(unittest.TestCase):
@@ -93,36 +93,36 @@ class ReadDeb(unittest.TestCase):
 class Binaries(unittest.TestCase):
     """What a packaged executable may need and where it may look (D-060, D-076)."""
 
-    RUNTIME = "usr/libexec/jitllm/jitllm-runtime"
+    RUNTIME = "usr/libexec/llmp/llmp-runtime"
 
     def facts(self, needed, runpath=()):
         return {"needed": list(needed), "glibc": (2, 38), "runpath": list(runpath)}
 
     def test_plain_executables_need_no_run_path(self):
-        self.assertIsNone(package.binary_problem("usr/bin/jitllm", self.facts(["libc.so.6", "libcuda.so.1"])))
+        self.assertIsNone(package.binary_problem("usr/bin/llmp", self.facts(["libc.so.6", "libcuda.so.1"])))
         self.assertIn("run path", package.binary_problem(
-            "usr/bin/jitllm", self.facts(["libc.so.6"], ["$ORIGIN/../../lib/jitllm"])))
+            "usr/bin/llmp", self.facts(["libc.so.6"], ["$ORIGIN/../../lib/llmp"])))
         self.assertIn("no dependency provides", package.binary_problem(
-            "usr/bin/jitllm", self.facts(["libstdc++.so.6"])))
+            "usr/bin/llmp", self.facts(["libstdc++.so.6"])))
 
     def test_only_the_runtime_finds_cublas_and_only_privately(self):
         cublas = ["libc.so.6", "libcuda.so.1", "libcublas.so.13", "libcublasLt.so.13"]
-        self.assertIsNone(package.binary_problem(self.RUNTIME, self.facts(cublas, ["$ORIGIN/../../lib/jitllm"])))
+        self.assertIsNone(package.binary_problem(self.RUNTIME, self.facts(cublas, ["$ORIGIN/../../lib/llmp"])))
         self.assertIn("no run path", package.binary_problem(self.RUNTIME, self.facts(cublas)))
         self.assertIn("other than", package.binary_problem(self.RUNTIME, self.facts(cublas, ["/usr/local/cuda/lib64"])))
         self.assertIn("other than", package.binary_problem(
-            self.RUNTIME, self.facts(cublas, ["$ORIGIN/../../lib/jitllm", "/tmp"])))
+            self.RUNTIME, self.facts(cublas, ["$ORIGIN/../../lib/llmp", "/tmp"])))
         self.assertIn("only the runtime", package.binary_problem(
-            "usr/bin/jitllm", self.facts(cublas, ["$ORIGIN/../../lib/jitllm"])))
+            "usr/bin/llmp", self.facts(cublas, ["$ORIGIN/../../lib/llmp"])))
         # A run path with nothing private to find is refused too.
         self.assertIn("run path", package.binary_problem(
-            self.RUNTIME, self.facts(["libc.so.6"], ["$ORIGIN/../../lib/jitllm"])))
+            self.RUNTIME, self.facts(["libc.so.6"], ["$ORIGIN/../../lib/llmp"])))
 
     def test_cuda_packages_list_cublas(self):
-        self.assertNotIn("usr/lib/jitllm/libcublas.so.13", package.expected_files(False))
+        self.assertNotIn("usr/lib/llmp/libcublas.so.13", package.expected_files(False))
         cuda = package.expected_files(True)
-        self.assertEqual(cuda["usr/lib/jitllm/libcublas.so.13"], 0o644)
-        self.assertEqual(cuda["usr/lib/jitllm/libcublasLt.so.13"], 0o644)
+        self.assertEqual(cuda["usr/lib/llmp/libcublas.so.13"], 0o644)
+        self.assertEqual(cuda["usr/lib/llmp/libcublasLt.so.13"], 0o644)
         self.assertIn("cublas", package.CUDA_UNITS)
         units = dict(package.shipped_units(tomllib.loads(package.PROVENANCE.read_text()), True))
         self.assertIn("nvidia-cuda-eula", units["cublas"]["notices"])
@@ -130,7 +130,7 @@ class Binaries(unittest.TestCase):
 
 
 class InTreeUnits(unittest.TestCase):
-    """jitLLM's files with third-party data are listed exactly when an executable is built from them (D-088)."""
+    """llmpalooza's files with third-party data are listed exactly when an executable is built from them (D-088)."""
 
     def test_listed_only_when_built_from(self):
         tables = (package.REPO / "src/tokenizer/unicode_data.cc").resolve()
@@ -199,7 +199,7 @@ class InTreeUnits(unittest.TestCase):
         sidecar = pathlib.Path(str(data) + ".license")
         tag = "SPDX-" + "License-Identifier:"
         copyright_tag = "SPDX-" + "FileCopyrightText:"
-        sidecar.write_text(f"{copyright_tag} 2026 jitLLM contributors\n{tag} {expression}\n")
+        sidecar.write_text(f"{copyright_tag} 2026 llmpalooza contributors\n{tag} {expression}\n")
         return root, data, sidecar
 
     def test_json_uses_its_sidecar_and_remains_in_the_inventory(self):
@@ -301,8 +301,8 @@ class Purge(unittest.TestCase):
         runuser = self.bin / "runuser"
         runuser.write_text(f"#!{sys.executable}\n"
                            "import os, pathlib, subprocess, sys\n"
-                           "assert sys.argv[1:5] == ['-u', 'jitllm', '--', 'rm']\n"
-                           "pathlib.Path(os.environ['PURGE_CREDENTIALS']).write_text('jitllm')\n"
+                           "assert sys.argv[1:5] == ['-u', 'llmp', '--', 'rm']\n"
+                           "pathlib.Path(os.environ['PURGE_CREDENTIALS']).write_text('llmp')\n"
                            "env = dict(os.environ, PURGE_DROPPED='1')\n"
                            "sys.exit(subprocess.run(sys.argv[4:], env=env).returncode)\n")
         runuser.chmod(0o755)
@@ -318,7 +318,7 @@ class Purge(unittest.TestCase):
                       "sys.exit(subprocess.run(['/bin/rm', *sys.argv[1:]]).returncode)\n")
         rm.chmod(0o755)
         source = (TOOLS.parent / "packaging" / "debian" / "postrm").read_text()
-        source = source.replace("/var/lib/jitllm", str(self.data))
+        source = source.replace("/var/lib/llmp", str(self.data))
         source = source.replace("/usr/sbin/runuser", str(runuser))
         source = source.replace("/run/systemd/system", str(self.root / "no-systemd"))
         source = source.replace("/usr/bin/deb-systemd-helper", str(self.root / "no-helper"))
@@ -336,7 +336,7 @@ class Purge(unittest.TestCase):
     def test_default_conversations_deleted_as_service_user_only(self):
         result = self.purge()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.marker.read_text(), "jitllm")
+        self.assertEqual(self.marker.read_text(), "llmp")
         self.assertFalse((self.spill / "conversations").exists())
         self.assertTrue((self.data / "models" / "keep").exists())
         self.assertTrue((self.victim / "conversations" / "keep").exists())
@@ -346,7 +346,7 @@ class Purge(unittest.TestCase):
         # A privileged rm deletes the victim; the credential shim refuses it.
         result = self.purge(race=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.marker.read_text(), "jitllm")
+        self.assertEqual(self.marker.read_text(), "llmp")
         self.assertTrue((self.victim / "conversations" / "keep").exists())
 
 

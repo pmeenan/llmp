@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-// External llama.cpp reference only; this does not implement jitLLM inference.
+// External llama.cpp reference only; this does not implement llmpalooza inference.
 //
-// The same-format oracle of jitLLM's Qwen3.8 Flash Next GGUF slice
+// The same-format oracle of llmpalooza's Qwen3.8 Flash Next GGUF slice
 // (README.md): llama.cpp b11254 on the same GGUF, with flash attention on,
 // F16 caches, one sequence, an 8,192-position context and 512-token
 // ubatches, every layer on the GPU, no speculation. It takes token IDs (the

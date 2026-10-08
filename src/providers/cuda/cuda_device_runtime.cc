@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The device runtime (providers/device_runtime.h) over the CUDA runtime
@@ -19,7 +19,7 @@
 #include "providers/device_memory.h"
 #include "providers/device_runtime.h"
 
-namespace jitllm::providers {
+namespace llmp::providers {
 namespace {
 
 static_assert(cudaSuccess == 0, "DeviceStatus takes 0 as success");
@@ -182,4 +182,4 @@ void FreePinned(void* pointer) {
   }
 }
 
-}  // namespace jitllm::providers
+}  // namespace llmp::providers

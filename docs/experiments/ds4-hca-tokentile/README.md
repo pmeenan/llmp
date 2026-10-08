@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Literal ds4 HCA attention over native F16 state
@@ -30,7 +30,7 @@ routing changes.
 Source is Entrpi/ds4
 `76d51ef82a81b70b78e51a3a6ea11946286de976`, `ds4_cuda.cu` numerical
 sections 12,313–12,577 and 12,844–13,476. They are copied verbatim into
-the locked `jitllm_ds4_hca` target, including helper names and attributes.
+the locked `llmp_ds4_hca` target, including helper names and attributes.
 The four-token/G8 core keeps its RN F32-Q to F16 conversion, F32 QK and
 PV tensor-core accumulation, F32 online softmax and F16 probabilities.
 It differs from native ordinary attention's weighted-accumulator
@@ -114,8 +114,8 @@ two approximations to be bit-identical.
 
 ## Native integration
 
-`jitllm_dsv4_exec --ds4-hca` is the only option that selects
-`jitllm.dsv4.hca_tokentile`. It refuses exact plans and chunks other
+`llmp_dsv4_exec --ds4-hca` is the only option that selects
+`llmp.dsv4.hca_tokentile`. It refuses exact plans and chunks other
 than 2,048 or 4,096. The device predicate is restricted to measured GB10,
 D512/G64, T2048/raw2304 with 256/1,024 compressed cells or
 T4096/raw4352 with 256 compressed cells. Serving, decode,
@@ -411,7 +411,7 @@ Analysis SHA-256 is
 | Original `ds4_cuda.cu` | `8d5de76a7aaaf9131ba8f9cf35412863fef88299b39676ea4bcfb07aef7386e3` |
 | Original helpers, 8,675 bytes | `41eeb9ec3aeb0fd77e40212efbcea4e8cbede859226849c5333e49c9cec1b26c` |
 | Original core, 25,074 bytes | `d953dd3ccc968f1bbe605851366ab78af9f5ba1bb0cdaa6cb7e1fe4bb15f2719` |
-| Patch 0002 | `b8f73b3f2aa5a0f01f1cb417361c48e94788332b2e7104ed062490e72604c425` |
+| Patch 0002 | `7653ca378e1458dbe5099a4a140fd303bdd1690d2f4b0b3f8b5ee8c9975b924e` |
 | Prepared source tree | `829a29fcc0b9e10560d8da819c6a71d8af8c5456cd56204cbd99a9671913f5ac` |
 | Prepared HCA CUDA | `48c1999315695ffdfd72b741f914deb568d0ab914a5c2faebcb7a81d00c30f79` |
 | Replay binary | `9c88c430f7aac1ef68fabb3d1f1f3a305df1d9d0e609f7351a0c4de6ff0a427d` |

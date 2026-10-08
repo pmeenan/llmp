@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Qwen3.8's dense MXFP8 products on tensor cores (mxfp8_cutlass.cu):
 // CUTLASS 4.7.1's SM120 block-scaled GEMM (BSD-3-Clause, the source lock's
 // `cutlass`), built for sm_121a only, as the routed experts' grouped GEMM
 // is (moe_cutlass.h). This header holds no CUDA or CUTLASS type: the
-// jitllm.mxfp8.gemm operation (jitllm_ops.h) calls it with device
+// llmp.mxfp8.gemm operation (llmp_ops.h) calls it with device
 // addresses.
 //
 //   D[m, n] = A[m, k] · B[n, k]^T, where
@@ -19,13 +19,13 @@
 //   - D is F32 or BF16, row r of D the products of row r of A, n values
 //     apart; accumulation in F32.
 
-#ifndef JITLLM_KERNELS_GGML_MXFP8_CUTLASS_H_
-#define JITLLM_KERNELS_GGML_MXFP8_CUTLASS_H_
+#ifndef LLMP_KERNELS_GGML_MXFP8_CUTLASS_H_
+#define LLMP_KERNELS_GGML_MXFP8_CUTLASS_H_
 
 #include <cstddef>
 #include <cstdint>
 
-namespace jitllm::kernels::ggml::mxfp8 {
+namespace llmp::kernels::ggml::mxfp8 {
 
 // The values an E8M0 scale covers.
 inline constexpr std::uint64_t kBlock = 32;
@@ -36,7 +36,7 @@ constexpr std::uint64_t PaddedRows(std::uint64_t rows) {
   return (rows + kAtomRows - 1) / kAtomRows * kAtomRows;
 }
 
-// Activations quantized to MXFP8 (jitllm.mxfp8.quantize's output), bytes:
+// Activations quantized to MXFP8 (llmp.mxfp8.quantize's output), bytes:
 // `rows` rows of k codes, then (256-byte aligned) their scales, swizzled,
 // for PaddedRows(rows) rows; the padding rows' scales are zero.
 struct RowsLayout {
@@ -47,7 +47,7 @@ struct RowsLayout {
   constexpr std::uint64_t bytes() const { return scales() + (PaddedRows(rows) * (k / kBlock)); }
 };
 
-// A weight's scales swizzled for the product (jitllm.mxfp8.swizzle's
+// A weight's scales swizzled for the product (llmp.mxfp8.swizzle's
 // output): PaddedRows(n) rows of k / 32 scales, the padding rows zero.
 constexpr std::uint64_t SwizzledScaleBytes(std::uint64_t n, std::uint64_t k) {
   return PaddedRows(n) * (k / kBlock);
@@ -76,6 +76,6 @@ std::size_t Scratch(const Gemm& gemm, int sms);
 // CUTLASS status if CUTLASS refuses the problem.
 int Run(const Gemm& gemm, int sms, void* stream);
 
-}  // namespace jitllm::kernels::ggml::mxfp8
+}  // namespace llmp::kernels::ggml::mxfp8
 
-#endif  // JITLLM_KERNELS_GGML_MXFP8_CUTLASS_H_
+#endif  // LLMP_KERNELS_GGML_MXFP8_CUTLASS_H_

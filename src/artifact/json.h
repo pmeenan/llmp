@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The strict JSON of the v0 manifest and index (docs/artifact-format.md,
@@ -21,8 +21,8 @@
 // most 20 characters. Strings are views into the caller's bytes, which must
 // outlive the document.
 
-#ifndef JITLLM_ARTIFACT_JSON_H_
-#define JITLLM_ARTIFACT_JSON_H_
+#ifndef LLMP_ARTIFACT_JSON_H_
+#define LLMP_ARTIFACT_JSON_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -34,7 +34,7 @@
 
 #include "artifact/error.h"
 
-namespace jitllm::artifact::json {
+namespace llmp::artifact::json {
 
 inline constexpr std::size_t kMaxDepth = 8;
 inline constexpr std::size_t kMaxContainers = std::size_t{1} << 19U;
@@ -115,6 +115,6 @@ std::expected<Document, Error> Parse(std::string_view text);
 // newline) to out.
 void Serialize(Value v, std::string& out);
 
-}  // namespace jitllm::artifact::json
+}  // namespace llmp::artifact::json
 
-#endif  // JITLLM_ARTIFACT_JSON_H_
+#endif  // LLMP_ARTIFACT_JSON_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/qwen38_plan.h"
@@ -13,12 +13,12 @@
 #include "engine/graph_mask_inputs.h"
 #include "engine/support.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
 using support::Error;
 
 }  // namespace
@@ -420,4 +420,4 @@ void Qwen38Sources(const kg::Qwen38Graph& g, const md::Qwen38ChunkInputs& in, st
   }
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

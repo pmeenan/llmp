@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A Hugging Face tokenizer.json, read into a TokenizerSpec. The file is
@@ -21,8 +21,8 @@
 //
 // IDs must run densely from 0.
 
-#ifndef JITLLM_TOKENIZER_HF_H_
-#define JITLLM_TOKENIZER_HF_H_
+#ifndef LLMP_TOKENIZER_HF_H_
+#define LLMP_TOKENIZER_HF_H_
 
 #include <expected>
 #include <string_view>
@@ -30,10 +30,10 @@
 #include "tokenizer/error.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::tokenizer {
+namespace llmp::tokenizer {
 
 std::expected<TokenizerSpec, Error> ReadHfTokenizer(std::string_view text);
 
-}  // namespace jitllm::tokenizer
+}  // namespace llmp::tokenizer
 
-#endif  // JITLLM_TOKENIZER_HF_H_
+#endif  // LLMP_TOKENIZER_HF_H_

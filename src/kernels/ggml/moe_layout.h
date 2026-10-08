@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The routed experts' CUTLASS layout (the grouped GEMM's executable view,
 // docs/artifact-format.md#executable-views), and the conversions between it
 // and GGML's block_nvfp4 layout the artifact stores. No CUDA types: the
-// conversions (jitllm_moe.cu) take device addresses and a cudaStream_t as
+// conversions (llmp_moe.cu) take device addresses and a cudaStream_t as
 // void*.
 //
 // An expert's slot in its layer's slab holds, from its start:
@@ -20,12 +20,12 @@
 // the layout fits the slot GGML's layout did. The conversion is a
 // permutation of those bytes, lossless both ways.
 
-#ifndef JITLLM_KERNELS_GGML_MOE_LAYOUT_H_
-#define JITLLM_KERNELS_GGML_MOE_LAYOUT_H_
+#ifndef LLMP_KERNELS_GGML_MOE_LAYOUT_H_
+#define LLMP_KERNELS_GGML_MOE_LAYOUT_H_
 
 #include <cstdint>
 
-namespace jitllm::kernels::ggml::moe {
+namespace llmp::kernels::ggml::moe {
 
 struct ExpertLayout {
   std::uint64_t ffn = 0;    // f: a multiple of 64
@@ -50,12 +50,12 @@ struct ExpertSlab {
   ExpertLayout layout;
 };
 
-// The tokens a block of jitllm.moe.route counts.
+// The tokens a block of llmp.moe.route counts.
 inline constexpr std::int64_t kRouteChunk = 64;
 // The rows a group's scales are padded to (the scale layout's atom).
 inline constexpr std::int64_t kScaleRows = 128;
 
-// jitllm.moe.route's output, I32: for `experts` experts, `slots` routed
+// llmp.moe.route's output, I32: for `experts` experts, `slots` routed
 // rows (tokens · experts used, slot t · used + j) and `chunks` counting
 // blocks, in this order:
 //   offsets     experts + 1: expert e's rows are rows offsets[e] ..
@@ -81,7 +81,7 @@ struct RouteLayout {
   constexpr std::int64_t ints() const { return counts() + (chunks * experts); }
 };
 
-// Quantized activations (jitllm.moe.quantize and jitllm.moe.glu_quantize),
+// Quantized activations (llmp.moe.quantize and llmp.moe.glu_quantize),
 // bytes: `slots` sorted rows of k values as E2M1 codes (k / 2 bytes a row),
 // their E4M3 scales in each expert's swizzled block (at its scale rows),
 // then each row's F32 global scale; the parts 256-byte aligned. The scale
@@ -113,6 +113,6 @@ bool ToCutlassLayout(const ExpertSlab& slab, void* temp, std::int64_t batch, voi
 // same offsets, other bytes untouched): the layout proof's check.
 bool ToGgmlLayout(const ExpertSlab& slab, void* out, void* stream);
 
-}  // namespace jitllm::kernels::ggml::moe
+}  // namespace llmp::kernels::ggml::moe
 
-#endif  // JITLLM_KERNELS_GGML_MOE_LAYOUT_H_
+#endif  // LLMP_KERNELS_GGML_MOE_LAYOUT_H_

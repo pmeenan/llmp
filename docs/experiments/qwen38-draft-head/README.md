@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 MTP draft-head selection (2026-09-29)
@@ -17,7 +17,7 @@ depth fixed. Captured real-input replay finds RN plus the original vector
 product neutral; library products with F32 or actual BF16 output are about
 41% slower. No draft-input or library-head default change follows.
 
-The selected list is now implemented and tested in jitLLM. Its 12.6% gain
+The selected list is now implemented and tested in llmpalooza. Its 12.6% gain
 was in Mia's engine; the native same-depth trial at 128K is tied at depth 2
 and 4.9% slower at depth 3. The prefix remains the default. Increasing
 native depth from 2 to 3 helps this prompt more than changing vocabulary;
@@ -26,7 +26,7 @@ Our native width control also rejects a full head: it was 12.7% slower.
 
 ## What the implementations actually do
 
-jitLLM's default draft head is a view of the first 65,536 BF16 rows of the
+Llmpalooza's default draft head is a view of the first 65,536 BF16 rows of the
 target's head, with no extra weight allocation. It returns the winning token;
 its probability is computed only when a caller requests confidence.
 The IDs are a prefix, not a ranking of model-output frequencies.
@@ -62,11 +62,11 @@ description of Mia's head as full vocabulary was wrong.
 | Head | BF16 rows | Weight bytes (width 2,560) |
 | --- | ---: | ---: |
 | Full target vocabulary | 248,320 | 1,271,398,400 |
-| jitLLM prefix | 65,536 | 335,544,320 |
+| Llmpalooza prefix | 65,536 | 335,544,320 |
 | Mia English/code selection | 47,172 | 241,520,640 |
 
 The selected weight matrix is 28% smaller than our prefix. That is a computed
-size difference, not measured traffic or a measured jitLLM speedup.
+size difference, not measured traffic or a measured llmpalooza speedup.
 The native optional head adds this weight allocation and a 188,688-byte
 I32 token map. The default prefix continues to share the target weights.
 
@@ -265,7 +265,7 @@ changing the default; no selected list is shipped here. Verify rows remain
 the larger direct timing target.
 
 Do not widen to the full head. Do not assume a 28% traffic reduction or
-the reference's 12.6% rate improvement transfers to jitLLM: the native
+the reference's 12.6% rate improvement transfers to llmpalooza: the native
 draft/verify balance, numeric path, and continuations differ. The measured
 native verify already accounts for 56.1 of a 66.3 ms step, so its row cost
 remains a larger direct timing target.
@@ -299,7 +299,7 @@ remains a larger direct timing target.
   `2c7d19b8021f2c439920ae7f7df6f7b008eb635256a8423ef03e168d3984911f`.
   Prefix file (IDs 0–65,535, one decimal ID per line with final newline):
   SHA-256 `bac6f4d80bf2772947c877447636c2cda523ec1ed9987ac455fa68a6b94306c5`.
-- Native replay input: `spark-b:~/.local/share/jitllm/m3lc2/rv-128k.json`,
+- Native replay input: `spark-b:~/.local/share/llmp/m3lc2/rv-128k.json`,
   SHA-256 `12fa66def6f5922b2155b48aecddd39ec3d162197a3096af61d31d1ef4d67df7`.
   Its chat entry was moved to the harness's decode group to request 128
   outputs; messages were unchanged. Scratch replay JSON SHA-256
@@ -308,7 +308,7 @@ remains a larger direct timing target.
   supervised job `qwen-draft-head`, 19:26:55–19:39:15 UTC. Before each load,
   free memory was gated at 105 GiB and existing compute processes excluded.
 - Reference inputs:
-  `spark:~/.local/share/jitllm/m3lc/prompts/qwen3.8/{8k,128k}.json`, SHA-256
+  `spark:~/.local/share/llmp/m3lc/prompts/qwen3.8/{8k,128k}.json`, SHA-256
   `3f889d5535fe1c31d5f1200f673c490c92e1671ea6ad1efbee734db85901649a` /
   `edc8ba23f091e1be9b0ec9fc6ba0d93b921e2a725a78c24a0ea49b9a4e8bde2a`.
 - Reference raw results:
@@ -336,19 +336,19 @@ remains a larger direct timing target.
   `7713ffcb26fbf674ebc67dd91a7230a603101990c00a0d82acd18bd5f63504ae`;
   `~/scratch/m3-curated/prompts-256k.json`, SHA-256
   `0089ad268538cb8783db3a71774a22ad3b9d6f73446e37190172f83d88fe0e43`;
-  `~/.local/share/jitllm/m3lc2/deep.json`, SHA-256
+  `~/.local/share/llmp/m3lc2/deep.json`, SHA-256
   `5cee70e802ebbe5fcd2bb21ac0aca48dec1dedaecc4ac0c05779b3c582cd4686`.
   The 8K source is the reference input above; 256K is the phase-1 retrieval
   input, SHA-256 `c0e707dc67deab215bf53d4573406da4851c28bab943a937ad2eb39976aff538`.
 - Swap fixture: artifact `b93cdc326ba4f4c1c71da613503ecd848cd2a0caf122214f26e04588a12a9073`,
-  `~/.local/share/jitllm/p2-fp16exec-20260927/control-tokens.txt`, expected
+  `~/.local/share/llmp/p2-fp16exec-20260927/control-tokens.txt`, expected
   logits SHA-256 `bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571`.
 
-Native command: `jitllm_qwen38_spec --check greedy --tokens 128 --repeats 1
+Native command: `llmp_qwen38_spec --check greedy --tokens 128 --repeats 1
 --only deep128k --context 131072 --draft 3 --draft-vocab N`, with the artifact,
 tokenizer, replay prompt, and output paths above; N is 65,536 or 0 (full).
 
-New native command: `jitllm_qwen38_spec --qwen38-artifact STORE/TARGET
+New native command: `llmp_qwen38_spec --qwen38-artifact STORE/TARGET
 --drafter STORE/HEAD --tokenizer CHECKPOINT/tokenizer.json --prompts REPLAY
 --only deepRUNG --context CONTEXT --prefill-chunk 4096 --check greedy
 --tokens 128 --repeats 2 --draft 3 --adaptive-depth on --out OUT`.
@@ -360,12 +360,12 @@ fixture, control tokens and expected digest recorded in the external steps.
 Reference command: `longctx.py vllm OUT PROMPT8K PROMPT128K --port 18150
 --tokens 128 --top 0 --ready-timeout 1800 --start START --stop STOP`.
 START runs the pinned `start.sh` with the baseline Docker wrapper in PATH,
-`HF_HOME=~/.local/share/jitllm/baselines-20260928/hf`, `PORT=18150`,
+`HF_HOME=~/.local/share/llmp/baselines-20260928/hf`, `PORT=18150`,
 `BIND=127.0.0.1`, `MTP_NUM_SPECULATIVE_TOKENS=3`, and one of the two
 `MTP_DRAFT_VOCAB` paths. STOP is the pinned `stop.sh`. The complete
 commands are in the external steps file and each run's `run.json`.
 
 The recipe and list remain external baseline inputs. Nothing from Mia's
-AGPL files is incorporated into jitLLM by this study. The existing
+AGPL files is incorporated into llmpalooza by this study. The existing
 [license disposition](../../licensing.md#miaai-single-spark-recipe) remains
 in force; any implementation must follow it and D-080.

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Descriptor-only funding oracle on actual device selectors; no model work is submitted.
@@ -33,9 +33,9 @@
 #include "providers/cuda/cuda_device_execution.h"
 
 namespace {
-namespace en = jitllm::engine;
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
+namespace en = llmp::engine;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
 
 template <int Family>
 struct Adapter;
@@ -52,7 +52,7 @@ struct Adapter<2> {
   static constexpr std::uint32_t kSlots = 2;
   static const auto& Profile([[maybe_unused]] std::uint32_t size) { return md::Gemma2_2B(); }
   static auto Binding(const auto& p, [[maybe_unused]] std::uint32_t size) {
-    return md::BindGemma2(p, "gemma2", jitllm::test_support::gemma2::Resources());
+    return md::BindGemma2(p, "gemma2", llmp::test_support::gemma2::Resources());
   }
   static auto State(const auto& p) { return md::Gemma2State(p, kContext, kRows); }
   static auto Chunk(const auto& p, const auto& state, const auto& segments) {
@@ -107,7 +107,7 @@ struct Adapter<3> {
   static constexpr std::uint32_t kSlots = 2;
   static const auto& Profile([[maybe_unused]] std::uint32_t size) { return md::Gemma3_4BQat(); }
   static auto Binding(const auto& p, [[maybe_unused]] std::uint32_t size) {
-    return md::BindGemma3(p, "gemma3", jitllm::test_support::gemma3::Resources());
+    return md::BindGemma3(p, "gemma3", llmp::test_support::gemma3::Resources());
   }
   static auto State(const auto& p) { return md::Gemma3State(p, kContext, kRows); }
   static auto Chunk(const auto& p, const auto& state, const auto& segments) {
@@ -164,7 +164,7 @@ struct Adapter<4> {
     return size == 26 ? md::Gemma4_26BA4B() : md::Gemma4_31B();
   }
   static auto Binding(const auto& p, [[maybe_unused]] std::uint32_t size) {
-    return md::BindGemma4(p, "gemma4", jitllm::test_support::gemma4::Resources(size));
+    return md::BindGemma4(p, "gemma4", llmp::test_support::gemma4::Resources(size));
   }
   static auto State(const auto& p) { return md::Gemma4State(p, kContext, kRows); }
   static auto Chunk(const auto& p, const auto& state, const auto& segments) {
@@ -270,7 +270,7 @@ void Oracle(kg::LaunchContext& launch, std::uint32_t size) {
     address += state->bytes + 256;
   }
   std::uint64_t exact_max = 0, shortcut_max = 0, measured = 0, shortcuts = 0, fallbacks = 0;
-  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  auto registry = llmp::execution::Registry::Create(kg::Implementations());
   ASSERT_TRUE(registry);
   for (const auto budget : {A::kBudget, 2U}) {
     for (std::uint32_t owners = 1; owners <= A::kSlots; ++owners) {
@@ -293,8 +293,8 @@ void Oracle(kg::LaunchContext& launch, std::uint32_t size) {
           }
           auto input = A::Chunk(profile, *state, segments);
           auto host = A::Host(profile, *state, segments);
-          ASSERT_TRUE(input) << *jitllm::test_support::Failed(input);
-          ASSERT_TRUE(host) << *jitllm::test_support::Failed(host);
+          ASSERT_TRUE(input) << *llmp::test_support::Failed(input);
+          ASSERT_TRUE(host) << *llmp::test_support::Failed(host);
           for (const bool features : {false, true}) {
             if (features && Family != 4) continue;
             for (unsigned mode = 0; mode < 4; ++mode) {
@@ -305,7 +305,7 @@ void Oracle(kg::LaunchContext& launch, std::uint32_t size) {
                 shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
               A::Output(shape, mode, owners, total, features);
               auto exact = A::Plan(model, shape, choices);
-              ASSERT_TRUE(exact) << *jitllm::test_support::Failed(exact);
+              ASSERT_TRUE(exact) << *llmp::test_support::Failed(exact);
               if (!supplemental) {
                 exact_max = std::max(exact_max, (*exact)->placement.extent);
                 shortcut_max = std::max(shortcut_max, (*exact)->placement.extent);
@@ -313,7 +313,7 @@ void Oracle(kg::LaunchContext& launch, std::uint32_t size) {
               }
               auto bounded =
                   A::Plan(model, shape, choices, en::ActivationMeasurement{shortcut_max});
-              ASSERT_TRUE(bounded) << *jitllm::test_support::Failed(bounded);
+              ASSERT_TRUE(bounded) << *llmp::test_support::Failed(bounded);
               ++measured;
               ASSERT_TRUE((*bounded)->measurement_only);
               EXPECT_FALSE(en::BindPlanned(**bounded, launch, *registry, "measurement oracle"));
@@ -356,12 +356,12 @@ void Oracle(kg::LaunchContext& launch, std::uint32_t size) {
 }
 
 TEST(GemmaMeasurementGpu, AllConfiguredCompositionsPreserveExactFunding) {
-  auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
   ASSERT_TRUE(execution);
   auto stream = (*execution)->CreateStream();
   ASSERT_TRUE(stream);
-  auto launch = kg::LaunchContext::Create(0, **execution, *stream,
-                                          {.base = 0, .size = jitllm::base::Bytes(0)});
+  auto launch =
+      kg::LaunchContext::Create(0, **execution, *stream, {.base = 0, .size = llmp::base::Bytes(0)});
   ASSERT_TRUE(launch);
   Oracle<2>(**launch, 2);
   Oracle<3>(**launch, 3);
@@ -380,7 +380,7 @@ TEST(GemmaMeasurementGpu, AllConfiguredCompositionsPreserveExactFunding) {
         ADD_FAILURE() << "completion query: " << state.error().detail;
         return false;
       }
-      if (*state == jitllm::providers::FenceState::kComplete) break;
+      if (*state == llmp::providers::FenceState::kComplete) break;
       if (std::chrono::steady_clock::now() >= deadline) {
         ADD_FAILURE() << "descriptor launch context retirement timed out";
         return false;
@@ -402,6 +402,6 @@ TEST(GemmaMeasurementGpu, AllConfiguredCompositionsPreserveExactFunding) {
   }
   launch->reset();
   const auto destroyed = (*execution)->DestroyStream(*stream);
-  EXPECT_TRUE(destroyed) << jitllm::test_support::Failed(destroyed)->detail;
+  EXPECT_TRUE(destroyed) << llmp::test_support::Failed(destroyed)->detail;
 }
 }  // namespace

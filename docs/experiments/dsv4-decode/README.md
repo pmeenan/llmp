@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek V4 Flash decode past llama.cpp (M3)
@@ -15,14 +15,14 @@ run-to-run spread, about 1.1×.
 
 - **Default paths optimize for speed:** fused operations, batched kernels,
   other reduction orders. The bit-exact paths stay as an optional
-  reference mode (`--exact on` in `jitllm_dsv4_exec` and
-  `jitllm_spec_runner`, `Dsv4Options::exact` in the runner): the graph node
+  reference mode (`--exact on` in `llmp_dsv4_exec` and
+  `llmp_spec_runner`, `Dsv4Options::exact` in the runner): the graph node
   for node as llama.cpp builds it, planned unfused, and D-092's
   row-invariant verify.
 - **Correctness is judged coarsely against llama.cpp** on the same GGUF
   (D-085's note of 2026-09-28): greedy agreement except near-ties, and
   perplexity within 3% (relative).
-  The near-tie bound comes from jitLLM's own kernel-to-kernel noise and is
+  The near-tie bound comes from llmpalooza's own kernel-to-kernel noise and is
   recorded below before any comparison with llama.cpp.
 - **The engine's own determinism stays exact:** the same engine and kernels
   repeat themselves bit for bit, across runs, swaps and restores; a
@@ -36,21 +36,21 @@ Inputs are dsv4-native's ([README](../dsv4-native/README.md)): the eight
 prompts of its `prompts.tsv`, 32 greedy tokens each, llama.cpp's oracle
 arms (fusion off and on) at `b29c606e`, and its perplexity text.
 
-1. **The noise bound.** `jitllm_dsv4_exec` forced on the unfused oracle's
+1. **The noise bound.** `llmp_dsv4_exec` forced on the unfused oracle's
    tokens twice, `--exact on` and the fast plan; `judge.py noise` takes,
    at each of the 256 steps, how far the fast plan moves the reference's
    top-two margin (its logit difference between the reference's two best
    tokens, against the reference's), and the bound B is twice the largest
    such move. B is recorded here before step 2 runs.
 2. **Greedy agreement.** The fast plan forced on each oracle arm's
-   generated tokens (`judge.py greedy ORACLE JITLLM --bound B`): its argmax
+   generated tokens (`judge.py greedy ORACLE LLMP --bound B`): its argmax
    equals the arm's token at every step, except where the arm's own margin
-   between its token and jitLLM's argmax is below B. Every exception is
+   between its token and llmpalooza's argmax is below B. Every exception is
    listed.
 3. **Perplexity.** The fast plan's perplexity on the text within 3% of each
    arm's, in chunks of 8 tokens (so that the fast plan's decode kernels, not
    only its prefill, score every token) and of 512.
-4. **Speculation** (`jitllm_spec_runner`): speculative greedy decoding's
+4. **Speculation** (`llmp_spec_runner`): speculative greedy decoding's
    every token is the plain engine's argmax on its own prefix (the plain
    engine teacher-forced on the speculative tokens), or within B of it; the
    three speculative runs of a prompt repeat each other bit for bit; the
@@ -84,13 +84,13 @@ B = 6.11 is too loose to be a test, for two reasons found in review:
   (a wrong expert, a stale state row) can hide.
 
 Later slices set the near-tie bound as **the 99th percentile of the
-top-two margin move between two of jitLLM's own paths on the same
+top-two margin move between two of llmpalooza's own paths on the same
 tokens, neither of them the oracle, for the path the verdict judges**,
 recorded before the comparison: for plain decode against the oracle,
-e.g. the fast decode against another jitLLM plan (as qwen38-native did,
+e.g. the fast decode against another llmpalooza plan (as qwen38-native did,
 its 95th percentile); for speculation, the batched verify's rows against
 plain one-row decode teacher-forced on the same tokens, which
-`jitllm_spec_runner` now reports per prompt (`verify_noise`). Not twice
+`llmp_spec_runner` now reports per prompt (`verify_noise`). Not twice
 the maximum, and not a noise measured against the arm being judged.
 
 On this slice's data (a review's re-run of the final build, `spark-b`,
@@ -108,7 +108,7 @@ a defect ("Step 93, diagnosed", below).
 
 ### Step 93, diagnosed
 
-`jitllm_spec_runner --check probe --probe-step 93` (`spark-b`,
+`llmp_spec_runner --check probe --probe-step 93` (`spark-b`,
 2026-09-28, 3 minutes) reruns the forced check, which repeats the
 review's numbers exactly (verify noise median 0.2505, p99 2.3536, max
 3.9398; step 93 at 3.6201 and 0.3197). Token 93 is row 0 (the anchor,
@@ -178,7 +178,7 @@ on that state alone. Not a defect; nothing changes in the engine.
 
 - Do not exempt steps with a near-tied discrete choice: at this token
   every path has 10 or more routed layers within 0.01, and any two of
-  jitLLM's paths whose arithmetic or state differ select other experts in
+  llmpalooza's paths whose arithmetic or state differ select other experts in
   5 to 15 layers, so the exemption would cover almost every token.
 - Keep the bound a percentile of the path noise, recorded first, and
   triage a step above it with the probe: it is a defect if, on the same
@@ -201,11 +201,11 @@ on that state alone. Not a defect; nothing changes in the engine.
 for decode, verify and draft chunks of up to 8 rows (`kVecQTokens`), and
 for the drafter; prefill chunks keep GGML's matrix kernels. The kernels
 are in `kernels/ggml/dsv4_fast.cu` (the vector product's body derives
-from GGML's MMVQ, MIT), declared as jitLLM operations
-(`jitllm_ops.h`, "DeepSeek V4's fast plan") and bound through the
+from GGML's MMVQ, MIT), declared as llmpalooza operations
+(`llmp_ops.h`, "DeepSeek V4's fast plan") and bound through the
 registry like every other implementation (D-053):
 
-- **`jitllm.vecq`**, one quantized vector-product kernel for every product
+- **`llmp.vecq`**, one quantized vector-product kernel for every product
   of a decode or verify chunk: dense (the attention projections, the
   shared expert, the head), grouped (the attention output's 8 groups in
   one launch) and routed (the experts). Routed, each distinct expert of a
@@ -215,21 +215,21 @@ registry like every other implementation (D-053):
   products share the launch with SwiGLU (and DeepSeek's clamp) applied on
   the way out. Weight types IQ2_XS, IQ3_XXS, MXFP4, Q8_0, Q4_K, Q5_K and
   Q6_K; launch shapes (rows per block, warps, passes, warp or block
-  reduction) chosen per type and shape from `jitllm_vecq_bench`'s
+  reduction) chosen per type and shape from `llmp_vecq_bench`'s
   measurements on the Spark; programmatic dependent launch (PDL) so each
   kernel's weight prefetch overlaps its predecessor's tail, and L2
   prefetch two iterations ahead for the byte-heavy types.
-- **`jitllm.q8_1`**: the activations quantized once per chunk and shared
+- **`llmp.q8_1`**: the activations quantized once per chunk and shared
   by every product that reads them (GGML quantizes per product).
-- **`jitllm.dsv4.route`**: router scores to experts and weights in one
+- **`llmp.dsv4.route`**: router scores to experts and weights in one
   kernel (sqrt-softplus, the bias, top-6, ties to the lower index, the
-  hash layers' table, normalization and scale); **`jitllm.dsv4.combine`**:
+  hash layers' table, normalization and scale); **`llmp.dsv4.combine`**:
   the weighted sum of the experts plus the shared expert.
-- **`jitllm.dsv4.hc_mix`** and **`jitllm.dsv4.hc_pre`**: the
+- **`llmp.dsv4.hc_mix`** and **`llmp.dsv4.hc_pre`**: the
   hyper-connection pre-mix (the 24 mixes, Sinkhorn on the 4×4
   combination, the weighted sum and the RMS norm) in two launches instead
   of about ten.
-- **`jitllm.dsv4.compress`**: a CSA or HCA compressor's scoring, softmax
+- **`llmp.dsv4.compress`**: a CSA or HCA compressor's scoring, softmax
   and weighted sum in one kernel.
 - Planning (`graph_plan.h` `DeviceChoices`): RMS norm × weight fused
   where GGML's gate allows it, and small float products on the
@@ -242,7 +242,7 @@ plan.
 ## Levers, in the order tried
 
 `spark-b`, one host, each run gated on an idle GPU and memory; plain
-decode is `jitllm_swap_pairs --bench 64`'s "request lease, graphs" mean of
+decode is `llmp_swap_pairs --bench 64`'s "request lease, graphs" mean of
 three (as the wake baselines), DSpark the median of the three `prose` /
 `code` speculative runs. Before the runtime wake merged, the harness
 polled (its 100 ms window).
@@ -251,9 +251,9 @@ polled (its 100 ms window).
 | --- | --- | --- | --- | --- |
 | Baseline (main, polled) | exact plan, row-invariant verify | 20.34–20.46 | 28.75 / 29.70 | – |
 | 1 | batched verify on GGML's own kernels | – | 29.85 / 34.05 | yes (superseded by 3) |
-| 2 | `jitllm.vecq`, first shape (2 rows, 4 warps, 8 passes) | – | 22.15 / 22.93 (verify 120–169 ms) | no: reworked |
-| 3 | `jitllm.vecq` with measured launch shapes, dense and routed; route, combine, fused SwiGLU, HC pre-mix | 20.99 | 32.06 / 32.64 | yes |
-| 4 | the grouped attention output on `jitllm.vecq`; norms fused in the plan, small float products on the vector kernel | – | 32.77 / 33.41 | yes |
+| 2 | `llmp.vecq`, first shape (2 rows, 4 warps, 8 passes) | – | 22.15 / 22.93 (verify 120–169 ms) | no: reworked |
+| 3 | `llmp.vecq` with measured launch shapes, dense and routed; route, combine, fused SwiGLU, HC pre-mix | 20.99 | 32.06 / 32.64 | yes |
+| 4 | the grouped attention output on `llmp.vecq`; norms fused in the plan, small float products on the vector kernel | – | 32.77 / 33.41 | yes |
 | 5 | the fused compressor | – | 32.30 / 33.89 | yes |
 | 6 | PDL and L2 prefetch in the vector kernel | 21.74 | 32.19 / 33.66 | yes |
 | – | several products in one launch (grouped multi-matrix) | – | no gain | no: removed |
@@ -269,7 +269,7 @@ on `prose`, 0.57–0.60 on `code`), so the DSpark column moves with both.
 no other GPU process; llama-bench in the same session, tg64, three
 repetitions):
 
-| | jitLLM | llama.cpp | Ratio |
+| | Llmpalooza | llama.cpp | Ratio |
 | --- | --- | --- | --- |
 | Plain decode (two runs) | 22.21, 21.90 tok/s | 20.41 (fusion on), 19.98 (off) | 1.07–1.09× on, 1.10–1.11× off |
 | DSpark `prose` (two runs, repeats) | 31.64, 31.71 (31.0–31.8) | 30.80 | 1.03× (1.01–1.03×) |
@@ -285,12 +285,12 @@ plain decode step's device time is 44.8–45.4 ms (llama.cpp's
 
 **Memory:** plain decode's peak by `MemAvailable` 94.9–95.0 GiB; DSpark's
 peak drop 106.6–106.7 GiB (106.5–106.8 on the exact plan after the
-lease and wake changes); `jitllm_dsv4_exec` 93.1–93.2 GiB against the
+lease and wake changes); `llmp_dsv4_exec` 93.1–93.2 GiB against the
 exact plan's 92.6 (the shared Q8_1 activations and the fused
 intermediates).
 
 **Profile** (`nsys`, graph nodes traced, which inflates each step;
-`jitllm_spec_runner --check greedy --only prose --tokens 64`, the same
+`llmp_spec_runner --check greedy --only prose --tokens 64`, the same
 command before and after):
 
 | Graph | Before (exact) | After (fast) |
@@ -303,7 +303,7 @@ command before and after):
 | Draft | 7.62 ms, 281 kernels | 7.23 ms, 133 |
 
 The products remain 88% of a decode step and 91% of a verify. Measured
-alone (`jitllm_vecq_bench`), the vector kernel streams the decode's
+alone (`llmp_vecq_bench`), the vector kernel streams the decode's
 shapes at 230–245 GB/s; inside the model it reaches about 200–210 GB/s.
 The gap is not explained and stays open: tracing, the VMM layout, CPU
 spinning and clock drift were each ruled out. A 4-row verify costs 1.59× a decode
@@ -380,19 +380,19 @@ step because it reads the ~19–20 distinct experts of 24 selections.
 On `spark-b` with the `spark-native` build, dsv4-native's artifact and
 oracle, DSpark's drafter and the FP16 fixture:
 
-    jitllm_dsv4_exec --artifact DSV4 --context 4096 --prompts P --generate 32 \
+    llmp_dsv4_exec --artifact DSV4 --context 4096 --prompts P --generate 32 \
       --force ORACLE/{unfused,fused}/generated.tokens --out DIR [--exact on] \
       [--ppl ORACLE/unfused/ppl.tokens [--max-rows 8]]
     judge.py noise EXACT FAST
     judge.py greedy ORACLE FAST --bound 6.11
     judge.py ppl ORACLE FAST
-    jitllm_spec_runner --dsv4-artifact DSV4 --drafter DRAFTER --prompts prompts.json \
+    llmp_spec_runner --dsv4-artifact DSV4 --drafter DRAFTER --prompts prompts.json \
       --out DIR --check greedy|forced|swap|sampled-plain|sampled-spec \
       --margin 6.11 [--exact on]
-    jitllm_spec_runner ... --out DIR --check probe --probe-step 93 --margin 6.11
+    llmp_spec_runner ... --out DIR --check probe --probe-step 93 --margin 6.11
     probe.py DIR/probe
-    jitllm_swap_pairs --a dsv4 --b qwen38 --cycles 0 --bench 64 ...
-    jitllm_vecq_bench [--only NAME] [--launches N] [--vmm on]
+    llmp_swap_pairs --a dsv4 --b qwen38 --cycles 0 --bench 64 ...
+    llmp_vecq_bench [--only NAME] [--launches N] [--vmm on]
 
 `judge.py` runs under the pinned llama.cpp image's Python (it needs
 NumPy); `probe.py` needs only the standard library.

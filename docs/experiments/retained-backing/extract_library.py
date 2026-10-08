@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Extract D-056's measured group sizes into library.json (headers only).
 
@@ -59,7 +59,7 @@ def main(argv):
         raise SystemExit(__doc__)
     layout = load_layout()
     results = json.loads((LAYOUT / "results.json").read_text())
-    out = dict(format="jitllm-retained-backing-library", version=1,
+    out = dict(format="llmp-retained-backing-library", version=1,
                planner=dict(path="docs/experiments/artifact-layout/layout.py", sha256=LAYOUT_SHA256),
                chunk_bytes=layout.CHUNK, file_align=layout.FILE_ALIGN, profiles=[])
     for arg in argv[2:]:

@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Native Q-only component over scoped frozen target operands, not serving
 // speculation. Owned by its target; shares the target stream and launch.
-#ifndef JITLLM_ENGINE_GEMMA4_ASSISTANT_H_
-#define JITLLM_ENGINE_GEMMA4_ASSISTANT_H_
+#ifndef LLMP_ENGINE_GEMMA4_ASSISTANT_H_
+#define LLMP_ENGINE_GEMMA4_ASSISTANT_H_
 #include <array>
 #include <expected>
 #include <filesystem>
@@ -16,7 +16,7 @@
 #include "engine/gemma4_greedy.h"
 #include "engine/gemma4_runner.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 // Validate complete, completed output batches before publishing any row.
 Status CheckGemma4AssistantOutputs(std::uint32_t owners, std::uint32_t target_width,
                                    std::span<const float> heads, std::span<const float> features);
@@ -82,5 +82,5 @@ class Gemma4Assistant {
   bool setup_success_ = false;
   bool registered_ = false, bound_ = false, released_ = false, factors_checked_ = false;
 };
-}  // namespace jitllm::engine
-#endif  // JITLLM_ENGINE_GEMMA4_ASSISTANT_H_
+}  // namespace llmp::engine
+#endif  // LLMP_ENGINE_GEMMA4_ASSISTANT_H_

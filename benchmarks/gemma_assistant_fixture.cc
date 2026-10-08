@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Manual, stage-zero-only original-input replay through the production
@@ -26,25 +26,25 @@
 #include "providers/device_runtime.h"
 
 namespace {
-namespace en = jitllm::engine;
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
-namespace sc = jitllm::scheduler;
-namespace js = jitllm::base::json;
+namespace en = llmp::engine;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
+namespace sc = llmp::scheduler;
+namespace js = llmp::base::json;
 using en::support::Address;
 using en::support::Error;
 using en::support::Pointer;
 using en::support::Round;
 constexpr auto kHostBytes = std::uint64_t{128} << 20U;
-// The prepared store: $JITLLM_TEST_MODELS/m3-artifacts, else under
-// ~/.local/share/jitllm, as the model tests find it.
+// The prepared store: $LLMP_TEST_MODELS/m3-artifacts, else under
+// ~/.local/share/llmp, as the model tests find it.
 std::filesystem::path Store() {
   // NOLINTNEXTLINE(concurrency-mt-unsafe): the benchmark reads, never sets, the environment
-  const char* dir = std::getenv("JITLLM_TEST_MODELS");
+  const char* dir = std::getenv("LLMP_TEST_MODELS");
   const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
   const std::filesystem::path models =
       dir != nullptr ? std::filesystem::path(dir)
-                     : std::filesystem::path(home != nullptr ? home : "") / ".local/share/jitllm";
+                     : std::filesystem::path(home != nullptr ? home : "") / ".local/share/llmp";
   return models / "m3-artifacts";
 }
 constexpr std::array<std::string_view, 11> kFiles{
@@ -64,7 +64,7 @@ std::expected<std::vector<std::byte>, std::string> Read(const std::filesystem::p
   return data;
 }
 std::string Hash(std::span<const std::byte> bytes) {
-  return jitllm::base::ToHex(jitllm::base::Sha256().Update(bytes).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256().Update(bytes).Finish());
 }
 bool Integer(js::Value object, std::string_view key, std::int64_t n) {
   const auto field = object.find(key);
@@ -232,7 +232,7 @@ class Replay final : public en::PagedModel {
     if (auto r = assistant_.Reserve(node_, ap, {}); !r) return r;
     if (auto r = resources_.OpenCublas("assistant fixture cuBLAS"); !r) return r;
     if (auto r = resources_.Map(cache_, "immutable assistant fixture KV", state_.bytes,
-                                jitllm::catalog::MemoryClass::kLiveState);
+                                llmp::catalog::MemoryClass::kLiveState);
         !r)
       return r;
     target_model_.profile = &profile_;
@@ -273,7 +273,7 @@ class Replay final : public en::PagedModel {
     witness_ = *witness;
     node_.SetHostFloor(kHostBytes);
     const auto fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
-    if (auto r = node_.Start(jitllm::base::Bytes(
+    if (auto r = node_.Start(llmp::base::Bytes(
             fixed + (target_.extents().size() + assistant_.extents().size()) * en::kPagedExtent +
             kHostBytes));
         !r)
@@ -287,7 +287,7 @@ class Replay final : public en::PagedModel {
     for (const auto* workspace : {&node_.activations(), &node_.pool()})
       extents.insert(extents.end(), workspace->extents.begin(), workspace->extents.end());
     auto closure = node_.catalog().ClosureOfExtents(extents);
-    if (!closure) return Error(jitllm::catalog::ToString(closure.error()));
+    if (!closure) return Error(llmp::catalog::ToString(closure.error()));
     closure_ = std::move(*closure);
     if (auto r = resources_.BindLaunch(scratch_); !r) return r;
     runs_.SetLaunch(&resources_.launch());
@@ -347,11 +347,11 @@ class Replay final : public en::PagedModel {
             std::memcpy(witness_, data_[i + 3].data(), data_[i + 3].size());
             auto uploaded = node_.Job(
                 closure_,
-                [&](jitllm::providers::NativeStream stream) {
-                  return jitllm::providers::CopyAsync(
+                [&](llmp::providers::NativeStream stream) {
+                  return llmp::providers::CopyAsync(
                              stream,
                              Pointer(cache_.base + state_.tensors[layer * 2 + i % 2].offset),
-                             witness_, bytes, jitllm::providers::CopyKind::kHostToDevice)
+                             witness_, bytes, llmp::providers::CopyKind::kHostToDevice)
                                  .ok()
                              ? sc::JobResult::kQueued
                              : sc::JobResult::kUnknown;
@@ -361,12 +361,12 @@ class Replay final : public en::PagedModel {
           }
           auto factors = node_.Job(
               closure_,
-              [&](jitllm::providers::NativeStream stream) {
-                return jitllm::providers::CopyAsync(
+              [&](llmp::providers::NativeStream stream) {
+                return llmp::providers::CopyAsync(
                            stream, witness_,
                            Pointer(
                                assistant_.resource_address(assistant_binding_.rope_freqs.index)),
-                           256 * sizeof(float), jitllm::providers::CopyKind::kDeviceToHost)
+                           256 * sizeof(float), llmp::providers::CopyKind::kDeviceToHost)
                                .ok()
                            ? sc::JobResult::kQueued
                            : sc::JobResult::kUnknown;
@@ -404,7 +404,7 @@ class Replay final : public en::PagedModel {
                       profile_.width * sizeof(float)}}};
                 auto posted = node_.Job(
                     closure_,
-                    [&](jitllm::providers::NativeStream stream) {
+                    [&](llmp::providers::NativeStream stream) {
                       auto queued = runs_.Queue(plan_runs_, *copies, {}, *planned_->bound, outputs,
                                                 plan_runs_.CaptureDue(true), stats_, stream);
                       if (!queued.result) return sc::JobResult::kUnknown;
@@ -463,8 +463,8 @@ class Replay final : public en::PagedModel {
         });
   }
   std::uint32_t stream() const override { return 0; }
-  const jitllm::catalog::Closure& fence_closure() const override { return closure_; }
-  std::vector<jitllm::catalog::ExtentId> managed_extents() const override {
+  const llmp::catalog::Closure& fence_closure() const override { return closure_; }
+  std::vector<llmp::catalog::ExtentId> managed_extents() const override {
     auto extents = target_.extents();
     const auto extra = assistant_.extents();
     extents.insert(extents.end(), extra.begin(), extra.end());
@@ -489,17 +489,17 @@ class Replay final : public en::PagedModel {
   std::uint32_t LocalLayer() const { return profile31_ ? 58U : 28U; }
   std::uint32_t GlobalLayer() const { return profile31_ ? 59U : 29U; }
   std::expected<std::string, std::string> Witness() {
-    jitllm::base::Sha256 hash;
+    llmp::base::Sha256 hash;
     for (std::size_t i = 0; i < 4; ++i) {
       const auto layer = i < 2 ? LocalLayer() : GlobalLayer();
       const auto bytes = profile31_ ? state_.tensors[layer * 2 + i % 2].bytes : data_[i + 3].size();
       auto copied = node_.Job(
           closure_,
-          [&](jitllm::providers::NativeStream stream) {
-            return jitllm::providers::CopyAsync(
+          [&](llmp::providers::NativeStream stream) {
+            return llmp::providers::CopyAsync(
                        stream, witness_,
                        Pointer(cache_.base + state_.tensors[layer * 2 + i % 2].offset), bytes,
-                       jitllm::providers::CopyKind::kDeviceToHost)
+                       llmp::providers::CopyKind::kDeviceToHost)
                            .ok()
                        ? sc::JobResult::kQueued
                        : sc::JobResult::kUnknown;
@@ -514,7 +514,7 @@ class Replay final : public en::PagedModel {
         return Error("fixture uploaded KV or physical padding differs");
       hash.Update(std::span(static_cast<const std::byte*>(witness_), bytes));
     }
-    return jitllm::base::ToHex(hash.Finish());
+    return llmp::base::ToHex(hash.Finish());
   }
   en::PagedNode& node_;
   en::RunnerResources resources_;
@@ -532,7 +532,7 @@ class Replay final : public en::PagedModel {
   en::GraphRuns runs_;
   en::PlanRuns plan_runs_;
   en::GraphStats stats_;
-  jitllm::catalog::Closure closure_;
+  llmp::catalog::Closure closure_;
   std::array<std::vector<std::byte>, 11> data_;
   std::vector<float> initial_;
   std::int32_t anchor_ = 0;
@@ -556,7 +556,7 @@ int main(int argc, char** argv) {
     ++argv;
   }
   if (argc != 4 && argc != 5) {
-    std::cerr << "usage: jitllm_gemma_assistant_fixture [--profile31] STAGE0 MANIFEST NEW_OUTPUT "
+    std::cerr << "usage: llmp_gemma_assistant_fixture [--profile31] STAGE0 MANIFEST NEW_OUTPUT "
                  "[POSTHOC_INCOMING_DIR]\n";
     return 2;
   }

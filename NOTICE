@@ -1,5 +1,5 @@
-jitLLM
-Copyright 2026 jitLLM contributors
+Llmpalooza
+Copyright 2026 llmpalooza contributors
 
 This product is licensed under the Apache License, Version 2.0 (LICENSE).
 
@@ -7,12 +7,12 @@ The source repository also holds third-party material under its own terms,
 recorded in each file's SPDX header or .license sidecar. These patches
 contain upstream context under the MIT License:
 
-- third_party/patches/ggml/0001-jitllm-adaptations.patch, from llama.cpp,
+- third_party/patches/ggml/0001-llmp-adaptations.patch, from llama.cpp,
   Copyright (c) 2023-2026 The ggml authors, and
-  third_party/patches/exllamav3/0001-jitllm-adaptations.patch, from
-  ExLlamaV3, Copyright (c) 2025 Turboderp: reviewed changes that jitLLM's
+  third_party/patches/exllamav3/0001-llmp-adaptations.patch, from
+  ExLlamaV3, Copyright (c) 2025 Turboderp: reviewed changes that llmpalooza's
   builds apply to those locked sources;
-- two experiment patches, which no jitLLM build uses:
+- two experiment patches, which no llmpalooza build uses:
   docs/experiments/exl3-reference/arm-reference.patch, from ExLlamaV3,
   Copyright (c) 2025 Turboderp, and
   docs/experiments/fused-routes/route-outputs.patch, from llama.cpp,

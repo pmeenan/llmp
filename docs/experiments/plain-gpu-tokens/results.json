@@ -710,13 +710,13 @@
           "name": "O1",
           "device_tokens": false,
           "command": [
-            "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_dsv4_mask_probe",
-            "/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
-            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids0.i32",
-            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids1.i32",
+            "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_dsv4_mask_probe",
+            "/home/pmeenan/.local/share/llmp/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+            "/home/pmeenan/.local/share/llmp/ds4-mask4/ids0.i32",
+            "/home/pmeenan/.local/share/llmp/ds4-mask4/ids1.i32",
             "/home/pmeenan/scratch/m35-dspark-plain-tokens/screen1/O1/out",
             "injected-host",
-            "/home/pmeenan/.local/share/jitllm/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
+            "/home/pmeenan/.local/share/llmp/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
           ],
           "timeout_seconds": 145,
           "returncode": 0,
@@ -757,13 +757,13 @@
           "name": "A1",
           "device_tokens": true,
           "command": [
-            "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_dsv4_mask_probe",
-            "/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
-            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids0.i32",
-            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids1.i32",
+            "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_dsv4_mask_probe",
+            "/home/pmeenan/.local/share/llmp/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+            "/home/pmeenan/.local/share/llmp/ds4-mask4/ids0.i32",
+            "/home/pmeenan/.local/share/llmp/ds4-mask4/ids1.i32",
             "/home/pmeenan/scratch/m35-dspark-plain-tokens/screen1/A1/out",
             "injected-device",
-            "/home/pmeenan/.local/share/jitllm/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
+            "/home/pmeenan/.local/share/llmp/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
           ],
           "timeout_seconds": 145,
           "returncode": 0,
@@ -804,13 +804,13 @@
           "name": "A2",
           "device_tokens": true,
           "command": [
-            "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_dsv4_mask_probe",
-            "/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
-            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids0.i32",
-            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids1.i32",
+            "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_dsv4_mask_probe",
+            "/home/pmeenan/.local/share/llmp/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+            "/home/pmeenan/.local/share/llmp/ds4-mask4/ids0.i32",
+            "/home/pmeenan/.local/share/llmp/ds4-mask4/ids1.i32",
             "/home/pmeenan/scratch/m35-dspark-plain-tokens/screen1/A2/out",
             "injected-device",
-            "/home/pmeenan/.local/share/jitllm/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
+            "/home/pmeenan/.local/share/llmp/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
           ],
           "timeout_seconds": 145,
           "returncode": 0,
@@ -851,13 +851,13 @@
           "name": "O2",
           "device_tokens": false,
           "command": [
-            "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_dsv4_mask_probe",
-            "/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
-            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids0.i32",
-            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids1.i32",
+            "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_dsv4_mask_probe",
+            "/home/pmeenan/.local/share/llmp/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+            "/home/pmeenan/.local/share/llmp/ds4-mask4/ids0.i32",
+            "/home/pmeenan/.local/share/llmp/ds4-mask4/ids1.i32",
             "/home/pmeenan/scratch/m35-dspark-plain-tokens/screen1/O2/out",
             "injected-host",
-            "/home/pmeenan/.local/share/jitllm/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
+            "/home/pmeenan/.local/share/llmp/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
           ],
           "timeout_seconds": 145,
           "returncode": 0,

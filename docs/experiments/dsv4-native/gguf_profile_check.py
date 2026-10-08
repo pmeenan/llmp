@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Checks the compiled-in DeepSeek V4 Flash profile (src/model/dsv4.cc,
 Dsv4Flash) against a GGUF's deepseek4.* key/values, read with the pinned M0

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Native turn rollback with identical prefill chunk boundaries as its fresh
@@ -30,9 +30,9 @@
 #include "runtime/serving.h"
 
 namespace {
-namespace rt = jitllm::runtime;
-namespace cf = jitllm::config;
-namespace ch = jitllm::chat;
+namespace rt = llmp::runtime;
+namespace cf = llmp::config;
+namespace ch = llmp::chat;
 using rt::Status;
 
 double Seconds(rt::Clock::duration elapsed) {
@@ -40,7 +40,7 @@ double Seconds(rt::Clock::duration elapsed) {
 }
 
 std::string Hash(std::span<const float> row) {
-  return jitllm::base::ToHex(jitllm::base::Sha256().Update(std::as_bytes(row)).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256().Update(std::as_bytes(row)).Finish());
 }
 
 bool Same(std::span<const float> a, std::span<const float> b) {

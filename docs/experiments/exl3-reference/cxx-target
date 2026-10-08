@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-# External ARM reference compiler; does not replace jitLLM's D-032 SDK pins.
+# External ARM reference compiler; does not replace llmpalooza's D-032 SDK pins.
 exec /usr/bin/g++ -march=armv8-a "$@"

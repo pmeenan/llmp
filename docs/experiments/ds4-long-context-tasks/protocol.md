@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Fixed long-context answer checks
@@ -12,7 +12,7 @@ HCA-quality artifact `8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1
 the community artifact used for the complete ds4 performance reference is a
 separate experiment.
 
-`jitllm_long_context_task_prepare` reads the artifact's authenticated GGUF
+`llmp_long_context_task_prepare` reads the artifact's authenticated GGUF
 metadata, native tokenizer and registered chat template without opening a
 device. It renders a nonthinking user turn. Fixed source constants use seed
 42, unique numeric target records and distractors, and chronological variable

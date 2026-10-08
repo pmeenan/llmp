@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Native preparation for the locked MIT ds4 token-tile HCA core. A Run
@@ -14,11 +14,11 @@
 #include "ds4_attn_tokentile.cuh"
 #include "kernels/ggml/dsv4_ds4_attention.h"
 #include "kernels/ggml/ggml_support.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 constexpr std::uint64_t Round(std::uint64_t bytes) { return (bytes + 255) & ~std::uint64_t{255}; }
@@ -39,7 +39,7 @@ std::expected<Layout, KernelFailure> LayoutOf(const ggml_tensor* node) {
   Layout out;
   std::memcpy(&out.first, &node->op_params[kDsv4HcaFirstParam], sizeof(out.first));
   out.tokens = static_cast<std::uint32_t>(node->src[0]->ne[1]);
-  out.raw_cells = static_cast<std::uint32_t>(JitllmOpInt(node->src[3], 0));
+  out.raw_cells = static_cast<std::uint32_t>(LlmpOpInt(node->src[3], 0));
   out.compressed = static_cast<std::uint32_t>(node->src[1]->ne[1]) - out.raw_cells;
   out.tiles = (out.tokens + 3) / 4;
   out.counts = Round(static_cast<std::uint64_t>(out.tiles) * out.compressed * 8);
@@ -101,7 +101,7 @@ bool Dsv4HcaTokentileFits(const LaunchContext& launch, const ggml_tensor* node) 
   // sit in the ring), at the compressed widths measured: 256 cells, and
   // 1,024 for chunks of up to 2,048 rows.
   const auto tokens = node->src[0]->ne[1];
-  const auto raw = JitllmOpInt(node->src[3], 0);
+  const auto raw = LlmpOpInt(node->src[3], 0);
   const auto compressed = node->src[1]->ne[1] - raw;
   return tokens >= kDsv4HcaMinRows && tokens <= kDsv4HcaMaxRows && raw >= tokens + 256 &&
          (compressed == 256 || (compressed == 1024 && tokens <= 2048));
@@ -114,7 +114,7 @@ std::expected<std::uint64_t, KernelFailure> PlanDsv4HcaTokentile(const LaunchCon
   if (!Supported(launch)) return detail::Rejected("ds4 HCA is measured only on GB10");
   // Attribute setup is deliberately outside Run and graph capture.
   const int result =
-      node->src[0]->type == GGML_TYPE_F16 ? Ds4HcaCoreQ16Prepare() : jitllm_ds4_hca_prepare();
+      node->src[0]->type == GGML_TYPE_F16 ? Ds4HcaCoreQ16Prepare() : llmp_ds4_hca_prepare();
   if (result != 0) {
     (void)cudaGetLastError();
     return detail::Rejected("the ds4 HCA shared-memory opt-in failed");
@@ -143,8 +143,8 @@ std::expected<void, KernelFailure> Dsv4HcaTokentile(LaunchContext& launch, ggml_
     RawMirror<<<layout.tokens + 127, 256, 0, stream>>>(raw, kv, layout.first, layout.raw_cells);
     CUDA_CHECK(cudaGetLastError());
     if (internal::CudaErrorPending()) return;
-    Recorded(jitllm_ds4_hca_records_launch(records, counts, layout.first, layout.tokens,
-                                           layout.compressed, layout.compressed, stream));
+    Recorded(llmp_ds4_hca_records_launch(records, counts, layout.first, layout.tokens,
+                                         layout.compressed, layout.compressed, stream));
     if (internal::CudaErrorPending()) return;
     const auto* compressed = kv + static_cast<std::uint64_t>(layout.raw_cells) * 512;
     if (node->src[0]->type == GGML_TYPE_F16) {
@@ -153,7 +153,7 @@ std::expected<void, KernelFailure> Dsv4HcaTokentile(LaunchContext& launch, ggml_
           node->src[0]->data, raw, compressed, records, counts, layout.compressed, layout.tokens,
           64, layout.first < 127 ? 127 - layout.first : 0, stream));
     } else {
-      Recorded(jitllm_ds4_hca_core_launch(
+      Recorded(llmp_ds4_hca_core_launch(
           static_cast<float*>(node->data), static_cast<const float*>(node->src[4]->data),
           static_cast<const float*>(node->src[0]->data), raw, compressed, records, counts,
           layout.compressed, layout.tokens, 64, layout.first < 127 ? 127 - layout.first : 0,
@@ -164,4 +164,4 @@ std::expected<void, KernelFailure> Dsv4HcaTokentile(LaunchContext& launch, ggml_
   });
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

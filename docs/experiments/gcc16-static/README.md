@@ -1,9 +1,9 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # GCC 16.2 runtime, statically linked
 
-D-060 replaces D-059's GCC 14.2 library headers. jitLLM now uses the **GCC
+D-060 replaces D-059's GCC 14.2 library headers. Llmpalooza now uses the **GCC
 16.2 C++ runtime**: libstdc++, libgcc and libatomic, built from signed source.
 Executables link it statically, and link the CUDA runtime statically too.
 Clang 22.1.8 still compiles all host code, including NVCC's host passes.
@@ -51,7 +51,7 @@ NCCL and cuBLAS are not pinned yet. See the linking policy below.
   target runtime libraries. `make install-strip` leaves the runtime archives
   without debug info, so debuggers do not step into libstdc++ source.
 
-jitLLM uses only these outputs:
+Llmpalooza uses only these outputs:
 
 - the `include/c++/16` headers;
 - `libstdc++.a` and `libsupc++.a` (`libstdc++exp.a` is built but not linked
@@ -146,7 +146,7 @@ statically.
 The [exception](https://www.gnu.org/licenses/gcc-exception-3.1.html)
 permits the static combination only if all Target Code in it was generated
 by Eligible Compilation Processes: ones using GCC alone or with
-GPL-compatible software, or ones using no work based on GCC. jitLLM's code
+GPL-compatible software, or ones using no work based on GCC. Llmpalooza's code
 takes the second route. Neither Clang nor NVCC is based on GCC; NVCC's
 proprietary passes are not GPL-compatible, so compatibility is not the
 argument. Statically linked third-party archives (`libcudart_static.a`, and
@@ -192,7 +192,7 @@ licenses. Whether a notice ships depends on what a binary incorporates:
 M1's notices and SBOM must record the static runtimes, these embedded
 components and the GCC source identity, and audit the exact used or shipped
 header set; these examples are not an exhaustive header-license inventory.
-*Corrected 2026-09-24 by M1's audit* ([licensing.md](../../licensing.md#what-builds-jitllm),
+*Corrected 2026-09-24 by M1's audit* ([licensing.md](../../licensing.md#what-builds-llmpalooza),
 D-071): Ryu links with any `<format>` or `<print>` use, not only floating
 point; `cp-demangle.o` (GPL-2.0-or-later WITH GCC-exception-2.0) is always
 linked; the AArch64 soft-fp objects that link are the TF comparisons;
@@ -201,6 +201,6 @@ the tz database, `<format>`'s Unicode-derived tables, `<barrier>` and the
 compiled HP/SGI objects (`tree.o`, `list.o`) belong on this list.
 GCC's compiler binaries and the
 in-tree GMP, MPFR, MPC, ISL and gettext are build tools only; nothing from
-them links into jitLLM.
+them links into llmpalooza.
 
 No archive, build tree or binary is committed.

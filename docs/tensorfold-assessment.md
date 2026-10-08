@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # TensorFold assessment
@@ -17,7 +17,7 @@ This is a source review of commit
 `/proc` observations in item 6 are ours. TensorFold has since been pinned
 and measured on our Sparks as an M3 baseline
 ([baselines](experiments/fast-swap/baselines.md#qwen38-flash-next-tensorfold-mlx-4-bit-cross-quantization)),
-its techniques measured against jitLLM's
+its techniques measured against llmpalooza's
 ([below](#measured-and-adopted-m3-2026-09-28)), and its later commits
 surveyed [at the end](#upstream-to-0362-2026-09-28).
 
@@ -66,11 +66,11 @@ surveyed [at the end](#upstream-to-0362-2026-09-28).
 - **Model weights.** It ships none. The Qwen3.8-27B DFlash2 drafter is
   Apache-2.0 per its model card. GLM-5.3-Flash's optional drafter is
   CC BY-NC-ND 4.0 (non-commercial, no derivatives), so it must not enter
-  any jitLLM artifact or default. As a benchmark-only component it needs
-  the owner's decision. *Owner, 2026-09-28 (D-087): allowed. jitLLM never
+  any llmpalooza artifact or default. As a benchmark-only component it needs
+  the owner's decision. *Owner, 2026-09-28 (D-087): allowed. Llmpalooza never
   distributes weights, so a model's weight license gates nothing; M4's GLM
   may use DFlash2 or MTP, whichever is faster and correct.*
-- **Architecture.** Its runtime is Python and PyTorch. jitLLM's hot path
+- **Architecture.** Its runtime is Python and PyTorch. Llmpalooza's hot path
   stays native (D-010), so reuse would mean porting ideas or individual
   kernels under their licenses (D-013), never adopting its runtime.
 
@@ -105,7 +105,7 @@ against vLLM's MTP.
 
 ## Ideas worth taking
 
-Mapped to where they would land in jitLLM:
+Mapped to where they would land in llmpalooza:
 
 1. **Exact speculative decoding by row-invariant kernels.**
    - By its design notes, every kernel on the verify path gives a row the
@@ -194,10 +194,10 @@ Mia's format:
 - **The decode gap is format, not engine.** A decode token reads 7.3–7.6 GB
   in Mia's NVFP4, MXFP8 and BF16 against 4.5 GB in TensorFold's MLX 4-bit
   (its dense layers, hyper-connection products and head are 4-bit where
-  Mia's are 8- and 16-bit; its experts read slightly more). jitLLM reads
+  Mia's are 8- and 16-bit; its experts read slightly more). Llmpalooza reads
   about 202 GB/s against TensorFold's 165–178, so its engine is already the
   faster reader; the 1.3–1.45× is bytes.
-- **Item 2 (layouts for the kernel):** jitLLM's MXFP8 vector product
+- **Item 2 (layouts for the kernel):** Llmpalooza's MXFP8 vector product
   already streams 221–229 GB/s alone at Qwen3.8's shapes in the artifact's
   row-major layout, and the experts' layout is fixed by the prefill's
   grouped GEMM; no new import layout was warranted. What cost bandwidth in
@@ -206,12 +206,12 @@ Mia's format:
   double-buffers it), half the state bytes.
 - **Items 2 and 3 (bytes in flight, host time):** decode already runs as
   CUDA graphs with a 0.04 ms round trip, so host time is not the lever.
-  Adopted: the hyper-connection products of a decode step on jitLLM's own
+  Adopted: the hyper-connection products of a decode step on llmpalooza's own
   BF16 vector kernel instead of cuBLAS's gemv, the hyper-connection prep
   across a cluster of blocks instead of one, the one-row convolution
   fused, and programmatic
   dependent launch with L2 prefetch of the next product's weights (as
-  DeepSeek's `jitllm.vecq`).
+  DeepSeek's `llmp.vecq`).
 - **Item 5 (adaptive window, partial vocabulary):** the MTP drafter now
   reports each draft's probability and the harness can cut a round's
   drafts below a threshold (TensorFold's 0.3); at depths 2–4 it gained
@@ -241,7 +241,7 @@ Mia's format:
     ask. They land where drafting does: M3 for resident decode and
     Qwen3.8's stored MTP, and M9 for other drafters.
 - **Format.** It reads only MLX 4-bit. A like-for-like comparison needs
-  either jitLLM support for that format, which is a new import format and
+  either llmpalooza support for that format, which is a new import format and
   so a feature question, or an explicit cross-quantization comparison
   reported as such.
 - **Before relying on its numbers.**
@@ -267,7 +267,7 @@ were. The owner is taking those upstream.
 on the reader and the repack; status in
 [upstream/tensorfold.md](upstream/tensorfold.md).
 
-What the commits offer jitLLM, read from the code. Every TensorFold number
+What the commits offer llmpalooza, read from the code. Every TensorFold number
 here is creator-reported, on one GB10 unless stated:
 
 1. **Grouped EXL3 routed experts, every codebook and mixed widths**
@@ -281,7 +281,7 @@ here is creator-reported, on one GB10 unless stated:
      `exl3_moe_mixedk`, for example 179.6 against 49.9 GB/s at one row.
      It is within 2% of `exl3_moe_coop` on uniform layers, which coop
      alone can dispatch.
-   - jitLLM has no EXL3 MoE yet (M4 kernels). The pointer-table read suits
+   - Llmpalooza has no EXL3 MoE yet (M4 kernels). The pointer-table read suits
      demand-paged experts (M7). **Lands in M4, then M7. Highest value.**
 2. **A latent MLA cache for GLM** (`fb985b8`, `279d8f7`;
    `glm5_next/cuda/latent.py`, `sparse.py`).
@@ -300,7 +300,7 @@ here is creator-reported, on one GB10 unless stated:
      draft. The commit calls 0.60 and 0.75 "the measured policies", with
      no numbers.
    - On our prompts this gives 2.21 / 2.35 tokens a round (measured).
-     jitLLM's Qwen3.8 drafts a fixed 2 inside one graph. A depth-3 verify
+     Llmpalooza's Qwen3.8 drafts a fixed 2 inside one graph. A depth-3 verify
      costs about 5.7 ms more there, and depth 3 measured slower overall. A
      device-side stop could recover depth without paying for rejected
      rows. **M3 speculation, or M9's draft-length tuning.**
@@ -323,7 +323,7 @@ here is creator-reported, on one GB10 unless stated:
      warp, shuffled out, with the next step in flight.
    - Gain (micro-benchmark, one row): 2-bit o_proj and down 76–79 → 186–193
      GB/s, level with ExLlamaV3's own linear (176–233).
-   - jitLLM already runs ExLlamaV3's kernels at their speed
+   - Llmpalooza already runs ExLlamaV3's kernels at their speed
      (`src/kernels/exl3/`), for mcg at integer widths only, and they are
      not row-invariant. This is an MIT reference for more codebooks and
      widths, and for exact speculative verify on EXL3 (D-092). **M4.**
@@ -351,10 +351,10 @@ here is creator-reported, on one GB10 unless stated:
    - This is D-008's routing-as-dependency-discovery on another stack,
      with a working in-stream wait. **M7.**
 8. **Smaller items.**
-   - The prefill head on the final chunk only (`96c0b0e`): jitLLM's chunk
+   - The prefill head on the final chunk only (`96c0b0e`): llmpalooza's chunk
      graphs already compute only the last rows' logits.
    - Prompt kernels at startup (`416106f`): 26.4 s of first-start compiles
-     moved ahead of `/health` (measured). jitLLM compiles ahead of time, so
+     moved ahead of `/health` (measured). Llmpalooza compiles ahead of time, so
      this does not apply.
    - Evicted-prefix spill to disk (`675d4c2`, Mac): 2.2–2.4 GiB written in
      0.18–0.19 s and read back in 0.24 s, answering in 2.3 s against
@@ -367,6 +367,6 @@ here is creator-reported, on one GB10 unless stated:
      are M5 and M6 test cases, for client disconnects and admission
      failure.
 
-Ranked by likely value to jitLLM: the grouped mixed-width EXL3 experts,
+Ranked by likely value to llmpalooza: the grouped mixed-width EXL3 experts,
 the latent MLA cache, confidence-gated drafts, the quantized KV caches, and
 the row-invariant EXL3 linear.

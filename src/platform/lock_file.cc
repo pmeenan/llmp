@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/lock_file.h"
@@ -18,7 +18,7 @@
 
 #include "platform/path_trust.h"
 
-namespace jitllm::platform {
+namespace llmp::platform {
 namespace {
 
 std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurrency-mt-unsafe)
@@ -77,4 +77,4 @@ std::expected<LockFile, std::string> LockFile::Acquire(const std::filesystem::pa
   return lock;
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

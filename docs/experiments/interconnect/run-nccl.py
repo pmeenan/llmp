@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Run pinned native nccl-tests on two configured Spark nodes over SSH."""
 import argparse
@@ -9,7 +9,7 @@ import shlex
 import subprocess
 import time
 
-ROOT = '/home/pmeenan/.local/share/jitllm/interconnect'
+ROOT = '/home/pmeenan/.local/share/llmp/interconnect'
 
 
 def ssh(host, script, **kwargs):

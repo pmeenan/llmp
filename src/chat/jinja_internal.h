@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Jinja-subset interpreter's values, syntax tree and accounting
@@ -11,8 +11,8 @@
 // template. Every heap object is charged to the rendering's Arena while it
 // lives.
 
-#ifndef JITLLM_CHAT_JINJA_INTERNAL_H_
-#define JITLLM_CHAT_JINJA_INTERNAL_H_
+#ifndef LLMP_CHAT_JINJA_INTERNAL_H_
+#define LLMP_CHAT_JINJA_INTERNAL_H_
 
 #include <algorithm>
 #include <cstddef>
@@ -30,7 +30,7 @@
 
 #include "chat/jinja.h"
 
-namespace jitllm::chat::jinja {
+namespace llmp::chat::jinja {
 
 // ---------------------------------------------------------------- accounting
 
@@ -715,6 +715,6 @@ bool Printable(char32_t cp);
 // Decodes the code point at s[at...] (valid UTF-8); `length` receives its size.
 char32_t DecodeAt(std::string_view s, std::size_t at, std::size_t& length);
 
-}  // namespace jitllm::chat::jinja
+}  // namespace llmp::chat::jinja
 
-#endif  // JITLLM_CHAT_JINJA_INTERNAL_H_
+#endif  // LLMP_CHAT_JINJA_INTERNAL_H_

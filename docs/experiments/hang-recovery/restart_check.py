@@ -1,12 +1,12 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Hang recovery (D-102) and conversations kept across a restart (D-105),
 checked end to end through the service on a Spark.
 
-    restart_check.py SCENARIO --binary JITLLM_RUNTIME --out DIR [--port P]
+    restart_check.py SCENARIO --binary LLMP_RUNTIME --out DIR [--port P]
 
 The service serves DeepSeek V4 Flash (DSpark) and Qwen3.8 Flash Next (MTP)
-from the artifacts installed under ~/.local/share/jitllm/m3-artifacts (their
+from the artifacts installed under ~/.local/share/llmp/m3-artifacts (their
 IDs below) on loopback; requests are greedy and non-streaming. R1 and R2 are
 two turns to Qwen3.8, R3 one to DeepSeek (its swap writes Qwen3.8's state
 back), R4 Qwen3.8's third turn, R5 DeepSeek's second.
@@ -20,8 +20,8 @@ back), R4 Qwen3.8's third turn, R5 DeepSeek's second.
     foreign  as kept, with B serving Qwen3.8 at another context (another
              layout: refused)
     hang     one service with hang_seconds 60 and the read-holding test hook
-             (JITLLM_TEST_HOLD_READS) in its cancellable form
-             (JITLLM_TEST_HOLD_READS_CANCELLABLE=1, as reads still queued):
+             (LLMP_TEST_HOLD_READS) in its cancellable form
+             (LLMP_TEST_HOLD_READS_CANCELLABLE=1, as reads still queued):
              a new conversation's state growth hangs, rung 1 cancels it,
              the cancellation drains, rung 2 resets the model, and the
              service goes on
@@ -56,8 +56,8 @@ import time
 from pathlib import Path
 
 HOME = Path.home()
-STORE = HOME / ".local/share/jitllm/m3-artifacts"
-QWEN_M = HOME / ".local/share/jitllm/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6"
+STORE = HOME / ".local/share/llmp/m3-artifacts"
+QWEN_M = HOME / ".local/share/llmp/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6"
 QWEN = "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93"
 QWEN_D = "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40"
 DS = "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234"
@@ -199,8 +199,8 @@ def hang(a, d, rec):
     and once reads flow the service serves on (the process never exits)."""
     hold = d / "hold"
     config(d, a.port, 33792, ["stall_seconds = 1", "hang_seconds = 60"])
-    s = Service(a.binary, d, a.port, "a", {"JITLLM_TEST_HOLD_READS": str(hold),
-                                           "JITLLM_TEST_HOLD_READS_CANCELLABLE": "1"})
+    s = Service(a.binary, d, a.port, "a", {"LLMP_TEST_HOLD_READS": str(hold),
+                                           "LLMP_TEST_HOLD_READS_CANCELLABLE": "1"})
     rec["a_ready"] = s.ready
     rec["r1"] = chat(a.port, "qwen3.8", [U1], 160)
     hold.touch()
@@ -244,12 +244,12 @@ def stuck(a, d, rec):
     hold = d / "hold"
     log = d / "a.log"
     config(d, a.port, 33792, ["stall_seconds = 1", "hang_seconds = 60"])
-    unit = f"jitllm-stuck-{os.getpid()}"
+    unit = f"llmp-stuck-{os.getpid()}"
     subprocess.run(["systemd-run", "--user", "--no-block", "--collect", f"--unit={unit}",
                     "-p", "Type=notify", "-p", "NotifyAccess=main", "-p", "Restart=on-failure",
                     "-p", "RestartSec=5s", "-p", "TimeoutStartSec=5min", "-p", "TimeoutStopSec=90s",
                     "-p", f"StandardOutput=append:{log}", "-p", f"StandardError=append:{log}",
-                    f"--setenv=JITLLM_TEST_HOLD_READS={hold}",
+                    f"--setenv=LLMP_TEST_HOLD_READS={hold}",
                     a.binary, "--config", str(d / "config.toml"), "--anchor", str(d / "anchor")],
                    check=True)
     try:

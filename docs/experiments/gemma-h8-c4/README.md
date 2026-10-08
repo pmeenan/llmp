@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma3 internal four-root batching foundation
@@ -132,10 +132,10 @@ heads, traces and logs outside Git, in a new private output directory `OUT`.
 The native invocation is:
 
 ```sh
-jitllm_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-own1 own joined
-jitllm_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-own2 own joined
-jitllm_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-eager own eager
-jitllm_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-solo own solo
+llmp_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-own1 own joined
+llmp_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-own2 own joined
+llmp_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-eager own eager
+llmp_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-solo own solo
 ```
 
 Run the stock caller as `MODEL IDS0 TEXT0 IDS1 TEXT1 NEW_OUT teacher|solo|cycle`

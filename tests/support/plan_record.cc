@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "plan_record.h"
@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::test_support {
+namespace llmp::test_support {
 namespace {
 
 // A JSON string: quotes, backslashes and control characters escaped.
@@ -71,7 +71,7 @@ std::string HeaderLine(std::string_view source,
     libraries += (libraries.empty() ? "" : ",") + Quoted(name) + ":" + Quoted(path);
   }
   return std::format(
-      R"({{"type":"header","format":"jitllm-plan-record/1","source":{},"loaded":{{{}}}}})"
+      R"({{"type":"header","format":"llmp-plan-record/1","source":{},"loaded":{{{}}}}})"
       "\n",
       Quoted(source), libraries);
 }
@@ -120,4 +120,4 @@ std::string EventLine(const Event& event) {
   return {};
 }
 
-}  // namespace jitllm::test_support
+}  // namespace llmp::test_support

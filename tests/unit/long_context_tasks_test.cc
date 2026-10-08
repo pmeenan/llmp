@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "long_context_tasks.h"
@@ -13,8 +13,8 @@
 #include "expected_error.h"
 
 namespace {
-namespace lc = jitllm::benchmarks::long_context;
-using jitllm::test_support::Failed;
+namespace lc = llmp::benchmarks::long_context;
+using llmp::test_support::Failed;
 
 // Independent byte-token codec makes the complete final positions
 // observable, including template bytes; it is no model-tokenizer claim.

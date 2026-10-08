@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 # The reference environment generate.py ran in (pip freeze on spark-b,
 # 2026-09-28, Python 3.12.3). transformers needs no PyTorch for tokenizers

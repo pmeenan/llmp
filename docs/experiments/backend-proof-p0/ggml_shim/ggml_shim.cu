@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Reference-only C API over the pinned GGML CUDA backend (../ggml-ops.json,
@@ -7,7 +7,7 @@
 // tensors of a GGML CUDA buffer, the operation runs on GGML's backend stream,
 // and the result is copied back. Every call synchronizes the device on entry
 // and on exit, so it needs no stream coordination with the caller. It is an
-// external measurement tool, not jitLLM's dispatch (D-053): operations run
+// external measurement tool, not llmpalooza's dispatch (D-053): operations run
 // either through ggml_backend_graph_compute on a one-operation graph, which
 // takes GGML's own launch selection, or, where a path is forced, by calling
 // the selected launcher directly with the backend's context.

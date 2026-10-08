@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/graph_plan.h"
@@ -29,14 +29,14 @@
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_read_index.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 using execution::Operation;
@@ -267,7 +267,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       }
     }
     if (fusion) {
-      // ggml_cuda_try_fuse's order: the patterns jitLLM lacks must not
+      // ggml_cuda_try_fuse's order: the patterns llmpalooza lacks must not
       // apply, then RoPE and its store, the gate/up products, the product
       // and its add, and the RMSNorm and its mul.
       if (const auto pattern = UnimplementedFusionAt(graph, i)) {
@@ -614,8 +614,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         add(Operation::kSsmConv, kSsmConvName, i, {node}, 1);
         break;
       case GGML_OP_GATED_DELTA_NET:
-        // jitLLM's column-blocked recurrence where it takes the shape (the
-        // same arithmetic, jitllm_ops.h), else upstream's.
+        // llmpalooza's column-blocked recurrence where it takes the shape (the
+        // same arithmetic, llmp_ops.h), else upstream's.
         if (GatedDeltaNetLanesFits(node)) {
           add(Operation::kGatedDeltaNet, kGatedDeltaNetLanesName, i, {node}, 1);
         } else if (GatedDeltaNetColumnsFits(node)) {
@@ -625,141 +625,141 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         }
         break;
       case GGML_OP_CUSTOM:
-        switch (JitllmOpOf(node)) {
-          case JitllmOp::kMxfp8MulMatVec:
+        switch (LlmpOpOf(node)) {
+          case LlmpOp::kMxfp8MulMatVec:
             add(Operation::kMatMul, kMxfp8MulMatVecName, i, {node}, 1);
             break;
-          case JitllmOp::kMxfp8Dequant:
+          case LlmpOp::kMxfp8Dequant:
             add(Operation::kConvert, kMxfp8DequantName, i, {node}, 1);
             break;
-          case JitllmOp::kNvfp4Rows:
+          case LlmpOp::kNvfp4Rows:
             add(Operation::kGetRows, kNvfp4RowsName, i, {node}, 1);
             break;
-          case JitllmOp::kQRows:
+          case LlmpOp::kQRows:
             add(Operation::kGetRows, kQRowsName, i, {node}, 1);
             break;
-          case JitllmOp::kHcCombine:
+          case LlmpOp::kHcCombine:
             add(Operation::kHcCombine, kHcCombineName, i, {node}, 1);
             break;
-          case JitllmOp::kHcNorm:
+          case LlmpOp::kHcNorm:
             add(Operation::kHcNorm, kHcNormName, i, {node}, 1);
             break;
-          case JitllmOp::kHcMix:
+          case LlmpOp::kHcMix:
             add(Operation::kHcMix, kHcMixName, i, {node}, 1);
             break;
-          case JitllmOp::kMoeGlu:
+          case LlmpOp::kMoeGlu:
             add(Operation::kMoeGlu, kMoeGluName, i, {node}, 1);
             break;
-          case JitllmOp::kMoeCombine:
+          case LlmpOp::kMoeCombine:
             add(Operation::kMoeCombine, kMoeCombineName, i, {node}, 1);
             break;
-          case JitllmOp::kBf16:
+          case LlmpOp::kBf16:
             add(Operation::kConvert, kBf16Name, i, {node}, 1);
             break;
-          case JitllmOp::kGemmBf16:
+          case LlmpOp::kGemmBf16:
             add(Operation::kMatMul, kGemmBf16Name, i, {node}, 1);
             break;
-          case JitllmOp::kMoeRoute:
+          case LlmpOp::kMoeRoute:
             add(Operation::kMoeRoute, kMoeRouteName, i, {node}, 1);
             break;
-          case JitllmOp::kMoeQuantize:
+          case LlmpOp::kMoeQuantize:
             add(Operation::kQuantize, kMoeQuantizeName, i, {node}, 1);
             break;
-          case JitllmOp::kMoeGemm:
+          case LlmpOp::kMoeGemm:
             add(Operation::kMulMatId, kMoeGemmName, i, {node}, 1);
             break;
-          case JitllmOp::kMoeGluQuantize:
+          case LlmpOp::kMoeGluQuantize:
             add(Operation::kMoeGlu, kMoeGluQuantizeName, i, {node}, 1);
             break;
-          case JitllmOp::kMoeCombineSorted:
+          case LlmpOp::kMoeCombineSorted:
             add(Operation::kMoeCombine, kMoeCombineSortedName, i, {node}, 1);
             break;
-          case JitllmOp::kMoeGemv:
+          case LlmpOp::kMoeGemv:
             add(Operation::kMulMatId, kMoeGemvName, i, {node}, 1);
             break;
-          case JitllmOp::kGdnConv:
+          case LlmpOp::kGdnConv:
             add(Operation::kSsmConv, kGdnConvName, i, {node}, 1);
             break;
-          case JitllmOp::kGdnNormGate:
+          case LlmpOp::kGdnNormGate:
             add(Operation::kNormGate, kGdnNormGateName, i, {node}, 1);
             break;
-          case JitllmOp::kArgmax:
+          case LlmpOp::kArgmax:
             add(Operation::kTopK, kArgmaxName, i, {node}, 1);
             break;
-          case JitllmOp::kMxfp8Quantize:
+          case LlmpOp::kMxfp8Quantize:
             add(Operation::kQuantize, kMxfp8QuantizeName, i, {node}, 1);
             break;
-          case JitllmOp::kMxfp8Swizzle:
+          case LlmpOp::kMxfp8Swizzle:
             add(Operation::kConvert, kMxfp8SwizzleName, i, {node}, 1);
             break;
-          case JitllmOp::kMxfp8Gemm:
+          case LlmpOp::kMxfp8Gemm:
             add(Operation::kMatMul, kMxfp8GemmName, i, {node}, 1);
             break;
-          case JitllmOp::kHcPrep:
+          case LlmpOp::kHcPrep:
             add(Operation::kHcNorm, kHcPrepName, i, {node}, 1);
             break;
-          case JitllmOp::kHcLo:
+          case LlmpOp::kHcLo:
             add(Operation::kUnary, kHcLoName, i, {node}, 1);
             break;
-          case JitllmOp::kHcMixBf16:
+          case LlmpOp::kHcMixBf16:
             add(Operation::kHcMix, kHcMixBf16Name, i, {node}, 1);
             break;
-          case JitllmOp::kMoeRouter:
+          case LlmpOp::kMoeRouter:
             add(Operation::kArgsort, kMoeRouterName, i, {node}, 1);
             break;
-          case JitllmOp::kGdnHistory:
+          case LlmpOp::kGdnHistory:
             add(Operation::kCont, kGdnHistoryName, i, {node}, 1);
             break;
-          case JitllmOp::kGdnGates:
+          case LlmpOp::kGdnGates:
             add(Operation::kUnary, kGdnGatesName, i, {node}, 1);
             break;
-          case JitllmOp::kGdnStep:
+          case LlmpOp::kGdnStep:
             add(Operation::kGatedDeltaNet, kGdnStepName, i, {node}, 1);
             break;
-          case JitllmOp::kQsaPrep:
+          case LlmpOp::kQsaPrep:
             add(Operation::kRope, kQsaPrepName, i, {node}, 1);
             break;
-          case JitllmOp::kDsv4QHead:
+          case LlmpOp::kDsv4QHead:
             add(Operation::kRope, kDsv4QHeadName, i, {node}, 1);
             break;
-          case JitllmOp::kDsv4OutA:
+          case LlmpOp::kDsv4OutA:
             add(Operation::kMatMul, device.outa_fast_pack ? kDsv4OutAFastPackName : kDsv4OutAName,
                 i, {node}, 1);
             break;
-          case JitllmOp::kDsv4HcNormF16:
+          case LlmpOp::kDsv4HcNormF16:
             add(Operation::kRmsNorm, kDsv4HcNormF16Name, i, {node}, 1);
             break;
-          case JitllmOp::kDsv4F16Copy:
+          case LlmpOp::kDsv4F16Copy:
             add(Operation::kConvert, kDsv4F16CopyName, i, {node}, 1);
             break;
-          case JitllmOp::kQsaGateQuantize:
+          case LlmpOp::kQsaGateQuantize:
             add(Operation::kQuantize, kQsaGateQuantizeName, i, {node}, 1);
             break;
-          case JitllmOp::kQsaPool:
+          case LlmpOp::kQsaPool:
             add(Operation::kRope, kQsaPoolName, i, {node}, 1);
             break;
-          case JitllmOp::kQsaTopK:
+          case LlmpOp::kQsaTopK:
             add(Operation::kTopK, kQsaTopKName, i, {node}, 1);
             break;
-          case JitllmOp::kQsaAttn:
+          case LlmpOp::kQsaAttn:
             add(Operation::kFlashAttn, kQsaAttnName, i, {node}, 1);
             break;
-          case JitllmOp::kQuantizeQ8:
+          case LlmpOp::kQuantizeQ8:
             add(Operation::kQuantize, kQuantizeQ8Name, i, {node}, 1);
             break;
-          case JitllmOp::kMmvqPrepared:
+          case LlmpOp::kMmvqPrepared:
             add(Operation::kMatMul, kMmvqPreparedName, i, {node}, 1);
             break;
-          case JitllmOp::kVecQ:
+          case LlmpOp::kVecQ:
             add(Operation::kMatMul, kVecQName, i, {node}, 1);
             break;
-          case JitllmOp::kDsv4Route:
+          case LlmpOp::kDsv4Route:
             add(Operation::kMoeRoute, kDsv4RouteName, i, {node}, 1);
             break;
-          case JitllmOp::kDsv4Combine:
+          case LlmpOp::kDsv4Combine:
             add(Operation::kMoeCombine, kDsv4CombineName, i, {node}, 1);
             break;
-          case JitllmOp::kDsv4WeightedReduce:
+          case LlmpOp::kDsv4WeightedReduce:
             if (device.hc_post_experts) {
               std::size_t at = 0;
               if (const auto f = Dsv4HcPostExpertsAt(graph, i, &at)) {
@@ -771,30 +771,30 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             }
             add(Operation::kMoeCombine, kDsv4WeightedReduceName, i, {node}, 1);
             break;
-          case JitllmOp::kDsv4HcMix:
+          case LlmpOp::kDsv4HcMix:
             add(Operation::kHcMix, kDsv4HcMixName, i, {node}, 1);
             break;
-          case JitllmOp::kDsv4HcPre:
+          case LlmpOp::kDsv4HcPre:
             add(Operation::kHcPre, kDsv4HcPreName, i, {node}, 1);
             break;
-          case JitllmOp::kDsv4Compress:
+          case LlmpOp::kDsv4Compress:
             add(Operation::kSoftMax, kDsv4CompressName, i, {node}, 1);
             break;
-          case JitllmOp::kDsv4LidTopK:
+          case LlmpOp::kDsv4LidTopK:
             add(Operation::kLightningIndexer, kDsv4LidTopKName, i, {node}, 1);
             break;
-          case JitllmOp::kFlashAttnOwners:
+          case LlmpOp::kFlashAttnOwners:
             add(Operation::kFlashAttn, kFlashAttnOwnersName, i, {node}, 1);
             break;
-          case JitllmOp::kGemma4Mask:
+          case LlmpOp::kGemma4Mask:
             add(Operation::kFill, kGemma4MaskName, i, {node}, 1);
             break;
-          case JitllmOp::kDsv4SparseMask:
+          case LlmpOp::kDsv4SparseMask:
             add(Operation::kFill, kDsv4SparseMaskName, i, {node}, 1);
             break;
-          case JitllmOp::kNone:
+          case LlmpOp::kNone:
             return Rejected(
-                std::format("{}: a custom operation jitLLM does not name", Where(graph, i)));
+                std::format("{}: a custom operation llmpalooza does not name", Where(graph, i)));
         }
         break;
       case GGML_OP_FLASH_ATTN_EXT:
@@ -817,9 +817,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           break;
         }
         add(Operation::kFlashAttn,
-            device.wide_sparse_attention &&
-                    (JitllmOpOf(node->src[3]) != JitllmOp::kDsv4SparseMask ||
-                     JitllmOpInt(node->src[3], 1) != 1)
+            device.wide_sparse_attention && (LlmpOpOf(node->src[3]) != LlmpOp::kDsv4SparseMask ||
+                                             LlmpOpInt(node->src[3], 1) != 1)
                 ? kFlashAttnMmaWideName
                 : kFlashAttnMmaName,
             i, {node}, 1);
@@ -1168,4 +1167,4 @@ void BindDistinct(GraphNodes graph, std::uint64_t base) {
   BindViews(graph);
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

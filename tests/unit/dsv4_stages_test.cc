@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // DeepSeek V4's ds4 prefill stage mechanisms, the fast plan's defaults
@@ -57,8 +57,8 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
@@ -70,15 +70,15 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::KernelFailure;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::KernelFailure;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
 
 constexpr std::uint64_t kWorkspace = 1ULL << 30;
 constexpr std::int64_t kWidth = 4096;
@@ -165,7 +165,7 @@ int ComputeCapability() {
 class Dsv4StagesTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     const Bytes cublas = kg::CublasHandle::UpstreamWorkspace(ComputeCapability());
     auto handle = kg::CublasHandle::Create(0, *execution_, stream_,
@@ -845,9 +845,9 @@ TEST_F(Dsv4StagesTest, TheIq2PairWritesItsActivationAndTheDownProductsInputExact
 }
 
 TEST_F(Dsv4StagesTest, TheRegistryDeclaresAndBindsTheStageImplementations) {
-  const std::vector<jitllm::execution::Implementation> declared = kg::Implementations();
-  const auto registry = jitllm::execution::Registry::Create(declared).value();
-  using jitllm::execution::Operation;
+  const std::vector<llmp::execution::Implementation> declared = kg::Implementations();
+  const auto registry = llmp::execution::Registry::Create(declared).value();
+  using llmp::execution::Operation;
   const std::array<std::tuple<std::string_view, Operation, std::size_t>, 9> expected = {{
       {kg::kDsv4F16CopyName, Operation::kConvert, 1},
       {kg::kDsv4HcNormF16Name, Operation::kRmsNorm, 1},

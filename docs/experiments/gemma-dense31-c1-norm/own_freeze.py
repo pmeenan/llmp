@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Exclusive source/own freeze for closed dense31 scalar C1, before stock."""
 import datetime
@@ -40,7 +40,7 @@ def identity(path):
 
 
 def retired(name):
-    d = pathlib.Path.home()/'.local/share/jitllm/jobs'/name
+    d = pathlib.Path.home()/'.local/share/llmp/jobs'/name
     final = json.loads((d/'final.json').read_text())
     assert final['state'] == 'done' and final['rc'] == 0
     return {n: identity(d/n) for n in ['final.json', 'job.json', 'log']}
@@ -56,7 +56,7 @@ def environment(root, scratch):
     analysis.read_inputs(scratch/'inputs.i32')
     headers = {n: identity(scratch/'headers'/n) for n in HEADERS}
     assert {n:x['sha256'] for n,x in headers.items()} == HEADERS
-    artifact = pathlib.Path.home()/'.local/share/jitllm/m3-artifacts'/ARTIFACT
+    artifact = pathlib.Path.home()/'.local/share/llmp/m3-artifacts'/ARTIFACT
     manifest, index = identity(artifact/'manifest.json'), identity(artifact/'index.json')
     assert manifest['sha256'] == ARTIFACT and index['sha256'] == INDEX
     libraries = dict(line.split()[::-1] for line in (scratch/'libraries.sha256').read_text().splitlines())
@@ -67,8 +67,8 @@ def environment(root, scratch):
     return {'base': BASE, 'sources': sources, 'ancestry': ancestry, 'headers': headers,
             'inputs': inputs, 'manifest': manifest, 'index': index, 'libraries': libraries,
             'library_witness': identity(scratch/'libraries.sha256'),
-            'build_receipt': identity(root/'build/spark-native/jitllm-receipt.json'),
-            'native_binary': identity(root/'build/spark-native/benchmarks/jitllm_gemma_dense31_c1_norm'),
+            'build_receipt': identity(root/'build/spark-native/llmp-receipt.json'),
+            'native_binary': identity(root/'build/spark-native/benchmarks/llmp_gemma_dense31_c1_norm'),
             'original_binary': identity(scratch/'llama_joined')}
 
 
@@ -90,7 +90,7 @@ def main(mode, root, scratch, job, expected=None):
             assert identity(scratch/name/'inputs.i32') == current['inputs']
             records[name] = analysis.record(scratch/name/'heads.f32', 1)
         assert records['candidate-first'] == records['candidate-repeat']
-        log = (pathlib.Path.home()/'.local/share/jitllm/jobs'/job/'log').read_text()
+        log = (pathlib.Path.home()/'.local/share/llmp/jobs'/job/'log').read_text()
         policies = re.findall(r'C1_NATIVE variant=31 owners=1 mode=scalar policy=(ordinary|norm) seconds=[0-9.]+ completed_waves=32 completed_units=32 paid_gpu_groups=32 first_past=67 input_mode=supplied unequal_past=0 context=256 max_rows=128', log)
         assert policies == ['ordinary', 'norm', 'norm']
         assert log.count('C1_SELECTED phase=prefill-first-build owner=0 rows=64 segments=1') == 3

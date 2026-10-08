@@ -1,9 +1,9 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Native GGML release refresh
 
-The native GGML closure now uses official llama.cpp **v0.6.0**, whose annotated tag peels to `d81235049384534c167caea52b85a694f6103d14` (GGML 0.26.0). The exact 37,887,730-byte archive has SHA-256 `6b58785f0a82898f4c3442417ff962e2d4b231b1bee5d033902ad90b27901e14`. The whole archive was inventoried for licenses, and the five local patches replayed through the shared exact parser without fuzz or offsets. The retained patched tree is `d50cb7f97867b4c5903a5b6c902474e9d716b7bf7afdb98dc360af82be4e0257`.
+The native GGML closure now uses official llama.cpp **v0.6.0**, whose annotated tag peels to `d81235049384534c167caea52b85a694f6103d14` (GGML 0.26.0). The exact 37,887,730-byte archive has SHA-256 `6b58785f0a82898f4c3442417ff962e2d4b231b1bee5d033902ad90b27901e14`. The whole archive was inventoried for licenses, and the five local patches replayed through the shared exact parser without fuzz or offsets. The retained patched tree is `37947dde9e23668f876ec6cda08300f20b47588083b2269606dce57303990c0a`.
 
 The migration preserves owned dispatch, compact routed worklists, padded scratch and the bounded IQ2 occupancy-two bridge. Upstream now supplies sparse query unions/live counts and D256 sparse eligibility; patch 0003 retains only D512 eight-query eligibility. MMQ planning, quantization and launch agree on Q4 activation packing for FP4 on Blackwell/GB10, and Q8 on other architectures and for other admitted formats. The bounded metadata validator admits undefined/Q4 minimum-source-precision requests for FP4 and undefined/Q4/Q8 for other quantized formats; explicit FP4 Q8 and higher minimum ranks are refused before planning. The owned build ignores the upstream precision environment override. Six float-vector selector calls now forward the actual physical warp size.
 

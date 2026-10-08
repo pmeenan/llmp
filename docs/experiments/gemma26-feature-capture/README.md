@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 retained-frontier capture ahead (2026-10-08)
@@ -117,15 +117,15 @@ The preceding report gives the reproducible corpus/tokenizer inputs:
 `llama_prefill RAW_GGUF CORPUS NEW_INPUT prepare 1024` must reproduce that SHA.
 Keep this standing fixture or its preparation sources when raw outputs are deleted.
 
-Build the existing `jitllm_gemma_prefill` under the pinned Spark SDK. Run four
+Build the existing `llmp_gemma_prefill` under the pinned Spark SDK. Run four
 fresh processes off/on/on/off with identical executable, receipt, actual
 first-resolved cuBLAS and budgets, using a different NEW_OUT for each arm:
 
 ```text
-jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-off features-frontier
-jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-on features-frontier
-jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-on features-frontier
-jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-off features-frontier
+llmp_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-off features-frontier
+llmp_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-on features-frontier
+llmp_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-on features-frontier
+llmp_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-off features-frontier
 ```
 
 Require actual seven intermediate heads, retained-feature selection, positive

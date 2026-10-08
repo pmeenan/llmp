@@ -147,7 +147,7 @@
       "row_invariant": true
     }
   },
-  "format": "jitllm-gemma-joined-http-control-v1",
+  "format": "llmp-gemma-joined-http-control-v1",
   "model_switch_pause_messages": 2,
   "model_turn_seconds": 1,
   "runtime_exit": 0,

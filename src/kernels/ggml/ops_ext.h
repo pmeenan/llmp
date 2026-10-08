@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The GGML-derived implementations of the operations DeepSeek V4 Flash
@@ -22,8 +22,8 @@
 // Row indices and expert ids read from device memory are the plan's to
 // bound (validate_ext.h).
 
-#ifndef JITLLM_KERNELS_GGML_OPS_EXT_H_
-#define JITLLM_KERNELS_GGML_OPS_EXT_H_
+#ifndef LLMP_KERNELS_GGML_OPS_EXT_H_
+#define LLMP_KERNELS_GGML_OPS_EXT_H_
 
 #include <cstdint>
 #include <expected>
@@ -34,7 +34,7 @@
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // Quantized matrix products: a ggml_mul_mat or ggml_mul_mat_id node with
 // weights of a compiled quantized type (validate_ext.h CheckMulMatQ,
@@ -144,7 +144,7 @@ std::expected<void, KernelFailure> MulMatQPairDense(LaunchContext& launch, ggml_
 // activation columns, or tokens of a mul_mat_id) is computed with the
 // arithmetic of GGML's one-column MMVQ launch, so a verify's row equals the
 // decode step it stands for bit for bit; a dense block still reads its
-// weight rows once for every column. Weights of the types jitLLM's models
+// weight rows once for every column. Weights of the types llmpalooza's models
 // bring (Q8_0, Q2_K, Q4_K, Q5_K, Q6_K, IQ2_XXS, IQ2_XS, IQ3_XXS, MXFP4,
 // Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL); partial row blocks guard every weight
 // read and output. The scratch is
@@ -182,7 +182,7 @@ std::expected<void, KernelFailure> RopeExt(LaunchContext& launch, ggml_tensor* n
 std::expected<void, KernelFailure> GetRowsExt(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> SetRowsExt(LaunchContext& launch, ggml_tensor* node);
 
-// MoE routing and the indexer's selection, in jitLLM's build without CUB
+// MoE routing and the indexer's selection, in llmpalooza's build without CUB
 // (third_party/patches/ggml/0001). Argsort takes the bitonic kernel only,
 // refused if a padded row does not fit the device's shared memory. Top-k
 // takes upstream's radix select for rows over 1,024 (its HIP path: the k
@@ -213,7 +213,7 @@ std::expected<void, KernelFailure> HcPost(LaunchContext& launch, ggml_tensor* no
 // cells per row (D 512 and one column only); stream-k splits the cells over
 // `blocks` blocks, and the fixup buffer and the mask pre-pass's or the
 // sparse indices' buffer come from the pool.
-// A node jitllm_ops.h's SetFlashAttnSparseAny marks takes the sparse gather
+// A node llmp_ops.h's SetFlashAttnSparseAny marks takes the sparse gather
 // whenever its n_kv_max cells are at most half of K's, not only past
 // upstream's 4,096.
 // An explicit wide_sparse choice permits D256 sparse and shares the
@@ -266,6 +266,6 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchC
                                                                    const ggml_tensor* node);
 std::expected<void, KernelFailure> FlashAttnMma128(LaunchContext& launch, ggml_tensor* node);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_OPS_EXT_H_
+#endif  // LLMP_KERNELS_GGML_OPS_EXT_H_

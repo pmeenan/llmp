@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <gtest/gtest.h>
@@ -24,7 +24,7 @@
 #include "platform/kept_files.h"
 #include "tokenizer_fixtures.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 class Gemma2CheckpointGpu : public ::testing::Test {
  protected:
   struct Lifetime {
@@ -41,7 +41,7 @@ class Gemma2CheckpointGpu : public ::testing::Test {
   bool retired_primary = false, retirement_failed = false;
   virtual bool JoinedLookahead() const { return false; }
   static std::filesystem::path Artifact() {
-    return jitllm::test_support::ModelsDir() +
+    return llmp::test_support::ModelsDir() +
            "/gemma2-import-20261007/artifacts/"
            "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
   }
@@ -80,8 +80,8 @@ class Gemma2CheckpointGpu : public ::testing::Test {
     if (auto x = n.MapWorkspace(r->activations_needed(), r->pool_needed()); !x) return x;
     const auto fixed = n.catalog().OccupancyOf(n.domain()).Total().value();
     n.SetHostFloor(HostFloor(*r));
-    if (auto x = n.Start(jitllm::base::Bytes(fixed + r->weights().size() * en::kPagedExtent +
-                                             4 * n.StateCapacity()));
+    if (auto x = n.Start(llmp::base::Bytes(fixed + r->weights().size() * en::kPagedExtent +
+                                           4 * n.StateCapacity()));
         !x)
       return x;
     if (auto x = r->Register(); !x) return x;
@@ -95,13 +95,13 @@ class Gemma2CheckpointGpu : public ::testing::Test {
       GTEST_SKIP() << "no Gemma2 artifact in " << Artifact();
     }
     // Spill files need direct I/O: scratch in the build tree.
-    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path root = base != nullptr ? base : ::testing::TempDir();
     std::filesystem::create_directories(root, error);
     std::string name = (root / "gemma2-checkpoint-XXXXXX").string();
     ASSERT_NE(mkdtemp(name.data()), nullptr);
     scratch = name;
-    auto opened = jitllm::platform::OpenPrivateDirectory(-1, scratch.c_str());
+    auto opened = llmp::platform::OpenPrivateDirectory(-1, scratch.c_str());
     ASSERT_TRUE(opened);
     spill_directory = *opened;
     const auto started = Start(*life, false);
@@ -136,13 +136,13 @@ class Gemma2CheckpointGpu : public ::testing::Test {
   en::Status Held(const std::function<en::Status()>& body) {
     return node.WithRequest(0, runner->closure(), "Gemma2 serving lifecycle", body);
   }
-  std::expected<jitllm::base::Sha256Digest, std::string> StateHash(std::uint32_t id) {
+  std::expected<llmp::base::Sha256Digest, std::string> StateHash(std::uint32_t id) {
     const auto slot = runner->request_slot(id);
     if (!slot) return en::support::Error(slot.error());
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto buffer = node.Pinned(1U << 20U, 0, staging);
     if (!buffer) return en::support::Error(buffer.error());
-    jitllm::base::Sha256 hash;
+    llmp::base::Sha256 hash;
     for (const auto& range : (*slot)->state().used_ranges()) {
       for (std::uint64_t at = 0; at < range.bytes; at += 1U << 20U) {
         const en::LiveState::Range part{range.region, range.offset + at,
@@ -182,7 +182,7 @@ TEST_F(Gemma2CheckpointGpu, ServingRestoreNeedsProvenCompleteCopiesAndProtectsTh
     if (!slot) return en::support::Error(slot.error());
     const auto footprint = (*slot)->state().used_ranges();
     const auto saved_bytes = (*slot)->used_state_bytes();
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto pinned = node.Pinned(saved_bytes, 0, staging);
     if (!pinned) return en::support::Error(pinned.error());
     auto exercised = [&]() -> en::Status {
@@ -356,7 +356,7 @@ TEST_F(Gemma2CheckpointGpu, WrappedRingCheckpointAndKeptAdoptionReplayTheExactPe
     auto* slot = *runner->request_slot(0);
     footprint = slot->state().used_ranges();
     const auto bytes = slot->used_state_bytes();
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto pinned = node.Pinned(bytes, 0, staging);
     if (!pinned) return en::support::Error(pinned.error());
     auto copied = [&]() -> en::Status {
@@ -440,7 +440,7 @@ TEST_F(Gemma2LookaheadGpu, SuppressedNextHeadsStillCaptureTheCorrectAfterOwnerPo
   }
   const auto status = Held([&]() -> en::Status {
     std::array<std::vector<float>, 2> expected;
-    std::array<jitllm::base::Sha256Digest, 2> expected_state{};
+    std::array<llmp::base::Sha256Digest, 2> expected_state{};
     for (const bool hinted : {false, true}) {
       for (std::uint32_t id = 0; id < 2; ++id)
         if (auto r = runner->Clear(id); !r) return r;

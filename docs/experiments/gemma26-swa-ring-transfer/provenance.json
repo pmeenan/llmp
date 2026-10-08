@@ -24,32 +24,32 @@
       "sha256": "8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2"
     },
     "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
-      "bytes": 6448,
-      "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+      "bytes": 6442,
+      "sha256": "6481dae39d4510eb26842535ac4cf3b9cc87e3941617e5fabfc6f478efc6d385"
     },
     "docs/experiments/gemma-prefill-large/compare.py": {
-      "bytes": 9154,
-      "sha256": "c159a10aa2e775ce052c948b8e9eadbc61ee805efa563721d450382469c829a3"
+      "bytes": 9158,
+      "sha256": "98edae08ee76ca541598774ae15810ab2d08b096f443453a386ac7ab248b36d6"
     },
     "docs/experiments/gemma26-swa-ring-transfer/PROTOCOL.md": {
-      "bytes": 6940,
-      "sha256": "345c261cbbb15266fd2df29069bcdd49b1af1624dcba79b4c9003fbb491095e9"
+      "bytes": 6944,
+      "sha256": "b299b9bd641d9b4470c1c1b3e92da2ae62213af05936b6405e7937a5bbaa508e"
     },
     "docs/experiments/gemma26-swa-ring-transfer/compare.py": {
-      "bytes": 4705,
-      "sha256": "f6dfdd97eeca1adcbc91ccb497649ee19f4339d59287f75733eb7ac5263df4fd"
+      "bytes": 4707,
+      "sha256": "9dd86736f60c84ab36d541f4b4048086c13ebbce3381bbe61adf8b239bccafde"
     },
     "docs/experiments/gemma26-swa-ring-transfer/llama_prefill_ring.cc": {
-      "bytes": 5698,
-      "sha256": "112bfa39733efada1723c1cef5689e7236a4aca218e009cab2dbb32441f16fb6"
+      "bytes": 5702,
+      "sha256": "62f5a3234a61e910c862063b3c26f95d967c00400acb6a346e04fd39e3339b68"
     },
     "docs/experiments/gemma26-swa-ring-transfer/own_freeze.py": {
-      "bytes": 6485,
-      "sha256": "cbb3254944ae6c15eed1d6c9193003a15fb84494b8bc9f7d84aea3942bd73d6e"
+      "bytes": 6479,
+      "sha256": "30ddbcab44cd6e3477e34857262800d290dc2f34ee5c239116758e87c7b97a9d"
     },
     "docs/experiments/gemma26-swa-ring-transfer/reference.sh": {
-      "bytes": 1543,
-      "sha256": "f72e5e00492a5ce2fcac9f5d9368723f9a4834af576b3c06f67c07107b14844d"
+      "bytes": 1541,
+      "sha256": "1bc3275bd667e5d24c66ef768c99abb63b927d19244aeba72fd7b538ca645d2d"
     }
   },
   "native_environment": {
@@ -69,32 +69,32 @@
           "sha256": "8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2"
         },
         "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
-          "bytes": 6448,
-          "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+          "bytes": 6442,
+          "sha256": "6481dae39d4510eb26842535ac4cf3b9cc87e3941617e5fabfc6f478efc6d385"
         },
         "docs/experiments/gemma-prefill-large/compare.py": {
-          "bytes": 9154,
-          "sha256": "c159a10aa2e775ce052c948b8e9eadbc61ee805efa563721d450382469c829a3"
+          "bytes": 9158,
+          "sha256": "98edae08ee76ca541598774ae15810ab2d08b096f443453a386ac7ab248b36d6"
         },
         "docs/experiments/gemma26-swa-ring-transfer/PROTOCOL.md": {
-          "bytes": 6940,
-          "sha256": "345c261cbbb15266fd2df29069bcdd49b1af1624dcba79b4c9003fbb491095e9"
+          "bytes": 6944,
+          "sha256": "b299b9bd641d9b4470c1c1b3e92da2ae62213af05936b6405e7937a5bbaa508e"
         },
         "docs/experiments/gemma26-swa-ring-transfer/compare.py": {
-          "bytes": 4705,
-          "sha256": "f6dfdd97eeca1adcbc91ccb497649ee19f4339d59287f75733eb7ac5263df4fd"
+          "bytes": 4707,
+          "sha256": "9dd86736f60c84ab36d541f4b4048086c13ebbce3381bbe61adf8b239bccafde"
         },
         "docs/experiments/gemma26-swa-ring-transfer/llama_prefill_ring.cc": {
-          "bytes": 5698,
-          "sha256": "112bfa39733efada1723c1cef5689e7236a4aca218e009cab2dbb32441f16fb6"
+          "bytes": 5702,
+          "sha256": "62f5a3234a61e910c862063b3c26f95d967c00400acb6a346e04fd39e3339b68"
         },
         "docs/experiments/gemma26-swa-ring-transfer/own_freeze.py": {
-          "bytes": 6485,
-          "sha256": "cbb3254944ae6c15eed1d6c9193003a15fb84494b8bc9f7d84aea3942bd73d6e"
+          "bytes": 6479,
+          "sha256": "30ddbcab44cd6e3477e34857262800d290dc2f34ee5c239116758e87c7b97a9d"
         },
         "docs/experiments/gemma26-swa-ring-transfer/reference.sh": {
-          "bytes": 1543,
-          "sha256": "f72e5e00492a5ce2fcac9f5d9368723f9a4834af576b3c06f67c07107b14844d"
+          "bytes": 1541,
+          "sha256": "1bc3275bd667e5d24c66ef768c99abb63b927d19244aeba72fd7b538ca645d2d"
         }
       },
       "tracked_production_diff": []
@@ -174,32 +174,32 @@
         "sha256": "8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2"
       },
       "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
-        "bytes": 6448,
-        "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+        "bytes": 6442,
+        "sha256": "6481dae39d4510eb26842535ac4cf3b9cc87e3941617e5fabfc6f478efc6d385"
       },
       "docs/experiments/gemma-prefill-large/compare.py": {
-        "bytes": 9154,
-        "sha256": "c159a10aa2e775ce052c948b8e9eadbc61ee805efa563721d450382469c829a3"
+        "bytes": 9158,
+        "sha256": "98edae08ee76ca541598774ae15810ab2d08b096f443453a386ac7ab248b36d6"
       },
       "docs/experiments/gemma26-swa-ring-transfer/PROTOCOL.md": {
-        "bytes": 6940,
-        "sha256": "345c261cbbb15266fd2df29069bcdd49b1af1624dcba79b4c9003fbb491095e9"
+        "bytes": 6944,
+        "sha256": "b299b9bd641d9b4470c1c1b3e92da2ae62213af05936b6405e7937a5bbaa508e"
       },
       "docs/experiments/gemma26-swa-ring-transfer/compare.py": {
-        "bytes": 4705,
-        "sha256": "f6dfdd97eeca1adcbc91ccb497649ee19f4339d59287f75733eb7ac5263df4fd"
+        "bytes": 4707,
+        "sha256": "9dd86736f60c84ab36d541f4b4048086c13ebbce3381bbe61adf8b239bccafde"
       },
       "docs/experiments/gemma26-swa-ring-transfer/llama_prefill_ring.cc": {
-        "bytes": 5698,
-        "sha256": "112bfa39733efada1723c1cef5689e7236a4aca218e009cab2dbb32441f16fb6"
+        "bytes": 5702,
+        "sha256": "62f5a3234a61e910c862063b3c26f95d967c00400acb6a346e04fd39e3339b68"
       },
       "docs/experiments/gemma26-swa-ring-transfer/own_freeze.py": {
-        "bytes": 6485,
-        "sha256": "cbb3254944ae6c15eed1d6c9193003a15fb84494b8bc9f7d84aea3942bd73d6e"
+        "bytes": 6479,
+        "sha256": "30ddbcab44cd6e3477e34857262800d290dc2f34ee5c239116758e87c7b97a9d"
       },
       "docs/experiments/gemma26-swa-ring-transfer/reference.sh": {
-        "bytes": 1543,
-        "sha256": "f72e5e00492a5ce2fcac9f5d9368723f9a4834af576b3c06f67c07107b14844d"
+        "bytes": 1541,
+        "sha256": "1bc3275bd667e5d24c66ef768c99abb63b927d19244aeba72fd7b538ca645d2d"
       }
     }
   },
@@ -331,7 +331,7 @@
     "src_files": 421,
     "total_files": 457
   },
-  "raw_location": "External ~/.local/share/jitllm/gemma26-swa-ring-transfer on Spark-b; official jobs and local scratch gemma26-swa-ring-transfer-raw",
+  "raw_location": "External ~/.local/share/llmp/gemma26-swa-ring-transfer on Spark-b; official jobs and local scratch gemma26-swa-ring-transfer-raw",
   "raw_target": {
     "bytes": 16947541728,
     "revision": "c099eb48e663fd284577b04978a94ffccb261841",

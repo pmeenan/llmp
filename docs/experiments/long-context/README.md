@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Long context: the baseline (2026-09-29)
@@ -6,12 +6,12 @@
 This is phase 1 of M3's **Long context** item
 ([plan.md](../../plan.md#m3--single-spark-fast-full-swap--in-progress)).
 It measures each LLM's one-Spark maximum context and runs the context
-ladder through `jitllm-runtime` and through the same-format comparators on
+ladder through `llmp-runtime` and through the same-format comparators on
 the same prompts. The gaps it finds set the optimization slices of
 phase 2; [phase 2's DeepSeek slice](#phase-2-deepseek-flat-with-depth-2026-09-29)
 fixed gap 1. Coarse by design (D-085): one run per depth. Every number here is
 **measured** on `spark` or `spark-b` (GB10, driver 580.178.04) unless
-marked **computed**. jitLLM was measured at `6c182c3` plus this change's
+marked **computed**. Llmpalooza was measured at `6c182c3` plus this change's
 working tree (the fixes below).
 
 **Phase 2's Qwen3.8 slice** ([Qwen3.8 Flash Next flat with
@@ -38,12 +38,12 @@ fast plan, in the order that gap proposes:
   concatenation.
 - **Attention gathers what a token attends:** its 128 window cells and
   its layer's compressed rows (CSA: the indexer's 512; HCA: the visible
-  ones), through the pinned MMA kernel's sparse gather, which jitLLM's
+  ones), through the pinned MMA kernel's sparse gather, which llmpalooza's
   graph now marks for every layer (`SetFlashAttnSparseAny`; upstream's
   takes it only past 4,096 cells). The masks are built on the device from
-  each row's visible counts (`jitllm.dsv4.sparse_mask`): no host-built
+  each row's visible counts (`llmp.dsv4.sparse_mask`): no host-built
   mask grows with the context.
-- **The indexer is jitLLM's** (`jitllm.dsv4.lid_topk`,
+- **The indexer is llmpalooza's** (`llmp.dsv4.lid_topk`,
   `kernels/ggml/dsv4_sparse.cu`): scores on tensor cores (a block scores
   four rows' 64 heads against each key tile, so prefill and a verify's
   rows share one pass), then a radix select that keeps the lower row
@@ -63,7 +63,7 @@ b10964 at 8K, M3's earlier runs); one run per depth.
 The runtime at `context = 262144`, plain and with DSpark, 512 greedy
 tokens (the retrieval prompts fewer); the 8K rung is the Qwen3.8 corpus's
 8K prompt (7,671 DeepSeek tokens: the builder cannot fill DeepSeek's own
-8K rung within 1%). Phase 1's jitLLM numbers are "before"; at 128K the
+8K rung within 1%). Phase 1's llmpalooza numbers are "before"; at 128K the
 route stopped phase 1's run, and the watchdog slice's run (plain, context
 131,072, 64 tokens, 2026-09-29) is the "before".
 
@@ -107,7 +107,7 @@ context; a decode step at 8,195 and 63,491):
 | ms | Prefill chunk 8K | 64K | Decode step 8K | 64K |
 | --- | ---: | ---: | ---: | ---: |
 | Flash attention (the sparse gather) | 903.4 | 745.9 | 0.87 | 0.90 |
-| The masks (jitllm.dsv4.sparse_mask) and the gather's compaction | 6.4 | 19.9 | 0.33 | 0.41 |
+| The masks (llmp.dsv4.sparse_mask) and the gather's compaction | 6.4 | 19.9 | 0.33 | 0.41 |
 | Indexer scoring (LidScoreKernel) | 16.8 | 135.2 | 0.22 | 0.58 |
 | Indexer selection (TopKKernel, and its merge) | 7.7 | 43.8 | 0.16 | 0.45 |
 | Everything else | 3,291.6 | 3,318.2 | 47.21 | 47.87 |
@@ -138,7 +138,7 @@ On `spark`, with the resident harness (this change's fast plan) and
 | Retrieval through the runtime | pass at 8K, 32K, 64K and 128K, plain and with DSpark |
 | The same 32K forced run twice, bit for bit | **yes**: 0 of 512 steps differ (RE-031 closed for the fast plan) |
 
-Speculation, with the fast plan's batched verify (`jitllm_spec_runner
+Speculation, with the fast plan's batched verify (`llmp_spec_runner
 --check forced --max-rows 128 --tokens 320`, so the window ring is 256
 cells and the `capital` prompt's 336 positions wrap it): 164 steps, 140
 with rejected rows (all rejected, one or two accepted, and at rows
@@ -163,7 +163,7 @@ of the swap table (its reference noise is on `spark-b` only).
 Phase 1's fast plan chose token 10386 at step 249 of the 32K prompt, where
 llama.cpp b11254 prefers 82437 by 2.62 nats; the reference form agreed.
 Diagnosed with the dsv4-decode probe's method on the resident harness
-(`jitllm_dsv4_exec --probe-step 249`, a full window so both plans read one
+(`llmp_dsv4_exec --probe-step 249`, a full window so both plans read one
 state; [probe_step.py](probe_step.py)): the step run in both plans from
 the fast plan's state (F/F, E/F) and from the reference's (E/E, F/E).
 
@@ -174,9 +174,9 @@ the fast plan's state (F/F, E/F) and from the reference's (E/E, F/E).
 | This fast plan (ring), two runs | +0.10, +0.10 |
 | Probe F/F, E/F, E/E, F/E | +0.44, +0.16, +0.78, +0.22 |
 
-- **The token is near-tied in every jitLLM path** (−0.84 to +0.78);
+- **The token is near-tied in every llmpalooza path** (−0.84 to +0.78);
   llama.cpp's 2.62 is its own arithmetic (another build, fused, with its
-  own sparse attention), 1.8 nats from jitLLM's reference form at this
+  own sparse attention), 1.8 nats from llmpalooza's reference form at this
   token.
 - **On one state the plans differ continuously**: the fast plan against
   the reference on the fast state moves the lead by 0.28, the logits by
@@ -193,7 +193,7 @@ the fast plan's state (F/F, E/F) and from the reference's (E/E, F/E).
   a host reference (unit tests).
 
 **Verdict:** noise, carried by discrete flips (the indexer's boundary rows
-and near-tied routing) at a token every jitLLM path holds within 0.9 nats
+and near-tied routing) at a token every llmpalooza path holds within 0.9 nats
 of a tie; phase 1's fast plan fell on the other side of it. Not a defect.
 
 ### Memory and the maximum
@@ -221,14 +221,14 @@ The swap table above ran with Qwen3.8 at 8,704 (3.7 GiB fixed).
 
 ## Headline
 
-Through `jitllm-runtime`'s chat route against the same-format comparator
-on the same prompt, jitLLM first. DeepSeek against llama.cpp b11254
+Through `llmp-runtime`'s chat route against the same-format comparator
+on the same prompt, llmpalooza first. DeepSeek against llama.cpp b11254
 (UD-Q2_K_XL; speculative: DSpark on both sides); Qwen3.8 against Mia's
 vLLM (NVFP4; prefill against the faster of its two launches, plain decode
 against its deterministic MTP-off launch, speculative against MTP 3 with
-jitLLM's MTP depth 2). "—": not run (below).
+llmpalooza's MTP depth 2). "—": not run (below).
 
-| Model, depth | Prefill, tok/s (ratio) | Plain decode, tok/s (ratio) | Speculative decode, tok/s (ratio) | Retrieval (jitLLM) |
+| Model, depth | Prefill, tok/s (ratio) | Plain decode, tok/s (ratio) | Speculative decode, tok/s (ratio) | Retrieval (llmpalooza) |
 | --- | --- | --- | --- | --- |
 | DeepSeek, 8K (M3's earlier runs) | 463 / 352 (b10964) | 21.9–22.2 / 19.9 (b10964) | 31.6 / 30.8 | — |
 | DeepSeek, 32K | 333 / 286 (1.16×) | 14.7 / 18.8 (**0.78×**) | 31.3 / 30.6 (1.02×) | pass |
@@ -242,12 +242,12 @@ jitLLM's MTP depth 2). "—": not run (below).
 | Qwen3.8, 256K (its maximum) | 487 / 1,775 (**0.27×**) | 6.8 / 23.7 (**0.29×**) | refused / 37.7 | pass |
 
 **The finding is the slope.** Both comparators are nearly flat with depth
-(llama.cpp's decode falls 22% from 32K to 256K, Mia's 4%); jitLLM's
+(llama.cpp's decode falls 22% from 32K to 256K, Mia's 4%); llmpalooza's
 per-token cost grows linearly: DeepSeek's decode step costs 0.7–0.8 ms
 more per 1K tokens of context (llama.cpp's 0.07), Qwen3.8's 0.3–0.4 ms
 (Mia's 0.01; computed from the rates and the profile's step times). The
 profile ([Where the time goes](#where-the-time-goes))
-shows why: jitLLM's attention does dense work over every cached cell,
+shows why: llmpalooza's attention does dense work over every cached cell,
 where both architectures only need a window and a fixed top-k.
 
 **Maximum context on one Spark** (the runtime's memory guard with its 4 GiB
@@ -293,7 +293,7 @@ margin, `kUncountedMargin`; one model registered):
 | Qwen3.8 Flash Next (`model/qwen38.h` `Qwen38State`) | 30,720 B: 12 QSA layers × (K and V 1,024 B each in F16, indexer keys 512 B in F32) | 118 MB: 36 Gated DeltaNet layers' recurrent (3 MiB) and convolution state | 7.5 GiB | — (configured maximum 262,144) |
 | … its MTP drafter's layer | +2,560 B | — | +0.6 GiB | — |
 
-Mia's vLLM keeps Qwen3.8's KV in FP8 (half of jitLLM's F16 per token) and
+Mia's vLLM keeps Qwen3.8's KV in FP8 (half of llmpalooza's F16 per token) and
 sizes its pool at 16–19 GiB for four sequences; llama.cpp keeps DeepSeek's
 window as a ring.
 
@@ -359,7 +359,7 @@ token for Qwen3.8 at 4,096-row chunks (state 30; the rest the
 Built by [build_prompts.py](build_prompts.py) from
 [corpus.json](corpus.json), both fixed before the first run, and run on a
 Spark in the pinned PyTorch image (its `tokenizers`); the prompts stay
-outside Git on both Sparks under `~/.local/share/jitllm/m3lc/prompts/`,
+outside Git on both Sparks under `~/.local/share/llmp/m3lc/prompts/`,
 identified by their content hashes (below).
 
 - **Coding context:** source files of llama.cpp at `8019dc563` (b11254,
@@ -384,7 +384,7 @@ identified by their content hashes (below).
 - **Perplexity:** *War and Peace* (Project Gutenberg #2600, public domain
   in the USA; the download's SHA-256 `2d5bb2ad…`, its header and footer
   cut: `ppl.txt`, SHA-256 `c7156148…`, 777,232 DeepSeek tokens). Each
-  oracle tokenizes it itself and jitLLM is fed the oracle's window of IDs;
+  oracle tokenizes it itself and llmpalooza is fed the oracle's window of IDs;
   scored is the second half of one window (llama-perplexity's rule for one
   chunk): 32,768 and 131,072 tokens. The book is heavily memorized (a
   32K-window perplexity of 1.4–1.9), so only ratios mean anything.
@@ -414,7 +414,7 @@ sampler) and [judge.py](judge.py). Prefill = first streamed piece −
 request sent (one decode step included); decode = (tokens − 1) ÷ (last
 piece − first piece), 512 generated tokens greedy (fewer when the model
 stopped); peak memory = the drop in `MemAvailable` from before the engine
-started, sampled every 200 ms. jitLLM runs start with a short warm-up
+started, sampled every 200 ms. Llmpalooza runs start with a short warm-up
 request so no measured prefill includes paging the model in.
 
 The final harness retains requested and actual output counts, labels natural
@@ -435,7 +435,7 @@ pass on `spark`
   #28770) with upstream's `.devops/cuda.Dockerfile`, target `full`, CUDA
   13.4.1, `CUDA_DOCKER_ARCH=121a-real` (upstream's default list includes
   121a-real; the GB10's code is the same), local image
-  `jitllm-llamacpp:b11254-cuda13`, `sha256:6dd02591…`, copied to `spark`
+  `llmp-llamacpp:b11254-cuda13`, `sha256:6dd02591…`, copied to `spark`
   ([pins.json](../fast-swap/pins.json)). Upstream publishes no image for
   b11254 yet (the newest is b11243). The b10964 pin stays the 8K oracle.
   Server arguments as the M3 baselines: `-ngl all -fa on -c 262144 -np 1
@@ -462,15 +462,15 @@ Prompt tokens are the engine's count; "peak" is the drop in
 
 | Depth | Engine | Prompt tokens | Prefill s (tok/s) | Decode tok/s | Speculative decode tok/s (acceptance) | Peak GiB (context) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 32K | jitLLM (plain on `spark-b`, DSpark on `spark`; 2,048-row chunks) | 31,705 | 95.2 (333) | 14.66 | 31.34 (context 65,536; prefill 332 tok/s with DSpark) | 116.0 (262,144) |
+| 32K | llmpalooza (plain on `spark-b`, DSpark on `spark`; 2,048-row chunks) | 31,705 | 95.2 (333) | 14.66 | 31.34 (context 65,536; prefill 332 tok/s with DSpark) | 116.0 (262,144) |
 | 32K | llama.cpp b11254 (`spark-b`; DSpark on `spark`) | 31,705 | 110.8 (286) | 18.82 | 30.61 (0.62) | 95.8 (262,144); 107.1 with DSpark |
-| 64K | jitLLM | 64,447 | 279.8 (230) | 10.79 | 21.40 (prefill 242 tok/s) | 110.8 with DSpark (65,536) |
+| 64K | llmpalooza | 64,447 | 279.8 (230) | 10.79 | 21.40 (prefill 242 tok/s) | 110.8 with DSpark (65,536) |
 | 64K | llama.cpp | 64,447 | 234.1 (275) | 18.01 | 28.96 (0.59) | |
-| 128K | jitLLM | 128,821 | the route's 600 s deadline stopped it at 108,544 tokens | — | — | |
+| 128K | llmpalooza | 128,821 | the route's 600 s deadline stopped it at 108,544 tokens | — | — | |
 | 128K | llama.cpp | 128,821 | 498.6 (258) | 16.76 | 30.59 (0.71) | |
 | 256K | llama.cpp | 258,856 | 1,128.7 (229) | 14.73 | 28.41 (0.74) | |
 
-The resident harness (`jitllm_dsv4_exec`, the same fast plan) ran the
+The resident harness (`llmp_dsv4_exec`, the same fast plan) ran the
 128K prompt for the correctness check (below): prefill 812.5 s (159
 tok/s), decode 7.4 tok/s (forced tokens, launch by launch).
 llama.cpp's prefill with DSpark loaded was within 4% of without at every
@@ -481,19 +481,19 @@ baselines' at the b10964 pin (352 / 19.9); b11254 was not run at 8K.
 
 | Depth | Engine | Prompt tokens | Prefill s (tok/s) | Decode tok/s | Speculative decode tok/s | Peak GiB (context) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 32K | jitLLM (`spark-b`, 4,096-row chunks; MTP at context 32,768) | 31,743 | 15.5 (2,053) | 21.81 | 35.39 (MTP 2) | 100.6 (131,072); 79.1 with MTP (32,768) |
+| 32K | llmpalooza (`spark-b`, 4,096-row chunks; MTP at context 32,768) | 31,743 | 15.5 (2,053) | 21.81 | 35.39 (MTP 2) | 100.6 (131,072); 79.1 with MTP (32,768) |
 | 32K | Mia's vLLM (`spark`): deterministic, MTP off / MTP 3 | 31,743 | 19.0 (1,673) / 18.4 (1,729) | 24.62 | 37.25 (0.45) | 102.4 / 100.7 (262,144 pool) |
-| 64K | jitLLM | 64,110 | 46.9 (1,367) | 17.10 | refused | |
+| 64K | llmpalooza | 64,110 | 46.9 (1,367) | 17.10 | refused | |
 | 64K | Mia's vLLM | 64,110 | 32.9 (1,947) / 33.9 (1,891) | 24.12 | 40.45 (0.50) | |
-| 128K | jitLLM | 128,799 | 149.9 (859) | 11.90 | refused | |
+| 128K | llmpalooza | 128,799 | 149.9 (859) | 11.90 | refused | |
 | 128K | Mia's vLLM | 128,799 | 67.5 (1,909) / 69.2 (1,862) | 23.80 | 48.65 (0.69) | |
-| 256K | jitLLM (context 262,144, 2,040-row chunks; the `256k-r` prompt) | 258,633 | 531.4 (487) | 6.83 | refused | 101.2 (262,144) |
+| 256K | llmpalooza (context 262,144, 2,040-row chunks; the `256k-r` prompt) | 258,633 | 531.4 (487) | 6.83 | refused | 101.2 (262,144) |
 | 256K | Mia's vLLM | 258,702 | 145.7 (1,775) / 149.6 (1,729) | 23.65 | 37.71 (0.44) | |
 
-jitLLM's 32K row is the warm run (the first attempt's included the
+Llmpalooza's 32K row is the warm run (the first attempt's included the
 model's 5.6 s page-in: 1,491 tok/s); its 64K and 128K rows followed a
 warm request in the same process. Mia's acceptance is vLLM's accepted ÷
-drafted tokens; the chat route does not report jitLLM's. Mia's 128K MTP
+drafted tokens; the chat route does not report llmpalooza's. Mia's 128K MTP
 rate reflects a higher acceptance on that prompt's answer.
 
 ## Where the time goes
@@ -528,7 +528,7 @@ the top-k belong to attention, the "sparse-index prep" row).
 From 8K to 64K the decode step grows 40.5 ms: 60% the K concatenation,
 30% flash attention, 1% the indexer. The prefill chunk grows 7.6 s: 86%
 flash attention, 10% the indexer. The weights' share is flat. The cause
-is structural: jitLLM's DeepSeek state keeps a window-cache cell per
+is structural: llmpalooza's DeepSeek state keeps a window-cache cell per
 position (`swa_full`, as llama.cpp's library default and the exact-mode
 oracle have it), and every layer's attention concatenates all of those
 cells (43 layers) with its compressed rows into one K and attends over
@@ -544,7 +544,7 @@ selected cells, so its per-token work is flat except the indexer.
 | ms | Prefill chunk 8K | 32K (2,048 rows) | 64K | Decode step 8K | 32K | 64K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Flash attention (dense, masked to the 2,051 selected cells) | 157 | 306 | 1,268 | 1.0 | 3.6 | 6.7 |
-| QSA selection: jitLLM's device select (to 8,192 blocks) | 16 | 42 | — | 0.4 | 1.5 | — |
+| QSA selection: llmpalooza's device select (to 8,192 blocks) | 16 | 42 | — | 0.4 | 1.5 | — |
 | QSA selection: GGML fallback (scores expanded to cells, ReLU, adds, transposes, radix top-k, masks) | — | — | 1,130 | — | — | 7.3 |
 | Pooling the indexer's raw keys into blocks (gather) | 0.5 | 1.8 | 73 | 0.3 | 1.3 | 3.0 |
 | Gated DeltaNet (lanes, convolution, norm and gate) | 168 | 85 | 170 | 1.2 | 1.3 | 1.4 |
@@ -556,7 +556,7 @@ The Gated DeltaNet layers and the n-gram rows are flat (O(1) in depth, as
 the architecture promises). Growth from 8K to 64K: decode +16.5 ms (flash
 attention 5.7, the selection 6.9, block pooling 2.7); prefill +2.3 s per
 4,096 rows (flash attention 1.1 s, the selection 1.1 s). Below 32,768
-cells jitLLM's device select is cheap and only attention and pooling
+cells llmpalooza's device select is cheap and only attention and pooling
 grow; past it the GGML fallback also makes the indexer's scores
 cell-sized ([n_kv, rows] F32: the RE-037 tensors) and builds both masks
 on the host for every chunk (host time, not in these device times).
@@ -584,7 +584,7 @@ Per token, what stays O(1) in the context and what cannot:
 | | O(1) in depth | O(n) by design | Its cost at 64K / 128K / 1M (computed) |
 | --- | --- | --- | --- |
 | DeepSeek V4 Flash | the window (128 positions), the CSA attention over the indexer's top 512 compressed rows, the compressors' rings, MoE, hyper-connections | the lightning indexer's scoring over every compressed row (64 heads × 128 dims, F16 keys, one row per 4 positions, 21 layers: 1,344 B a token of context), and HCA's dense attention over one row per 128 positions (20 layers: 160 B a token) | indexer keys read per decode step 88 MB / 176 MB / 1.41 GB, HCA 10 / 20 / 160 MB, against about 10 GB of weights a token (the decode step's ~48 ms at ~205 GB/s, dsv4-decode): +1% / +2% / +16% |
-| Qwen3.8 Flash Next | attention over the 2,051 selected cells, Gated DeltaNet's recurrent state (3 MiB a layer), the n-gram rows, MoE | the QSA indexer's scoring over every block of 4 cells (4 query heads, one 128-dim key a block, 12 layers: 1,536 B a token as F32 pooled keys, 768 in BF16; today jitLLM reads every cell's raw F32 key, 6,144 B, and pools them each step) | 100 / 200 MB per step, 400 MB at its 262,144 maximum (F32 pooled keys), against about 7.5 GB a token: +1.3% / +2.7% / +5.3% |
+| Qwen3.8 Flash Next | attention over the 2,051 selected cells, Gated DeltaNet's recurrent state (3 MiB a layer), the n-gram rows, MoE | the QSA indexer's scoring over every block of 4 cells (4 query heads, one 128-dim key a block, 12 layers: 1,536 B a token as F32 pooled keys, 768 in BF16; today llmpalooza reads every cell's raw F32 key, 6,144 B, and pools them each step) | 100 / 200 MB per step, 400 MB at its 262,144 maximum (F32 pooled keys), against about 7.5 GB a token: +1.3% / +2.7% / +5.3% |
 | Qwen3.8's MTP drafter | the same as one QSA layer | its one QSA layer's scoring | 1/12 of the target's |
 | Dense attention (the M2 Qwen2 fixture) | — | reading every cell's K and V each step | exactly linear; "flat" is impossible on the exact path, and the lever is a quality mode (KV compression), not measured here |
 
@@ -599,19 +599,19 @@ keys). Mia's vLLM, 6% slower at 256K than at 8K, is on that line.
 ## Correctness at depth
 
 With the resident harnesses (the runtime's fast plan and kernels) on
-`spark`, [judge.py](judge.py) in the pinned PyTorch image. Greedy: jitLLM
+`spark`, [judge.py](judge.py) in the pinned PyTorch image. Greedy: llmpalooza
 teacher-forced on the oracle's 512 greedy tokens after the oracle's own
 prompt IDs, its argmax at each step against the oracle's token, a
 difference passing as a near-tie when the oracle's log-probability margin
 between the two is under the bound. **The bound was recorded before each
 model's first comparison:** the 99th percentile of the top-two margin's
-move between jitLLM's default fast plan and its reference form
+move between llmpalooza's default fast plan and its reference form
 (`--exact`), forced on the same tokens at 32K (dsv4-decode's rule).
 **Since 2026-10-03 the greedy control is tie-aware** (the owner, D-085),
 judged against the model's pinned reference run for the history (D-085
 names them; changing one is the owner's decision). Outside steps are
 allowed only up to
-max(2, the reference's), and each must meet a per-step tolerance: jitLLM's
+max(2, the reference's), and each must meet a per-step tolerance: llmpalooza's
 own margin of its argmax over the oracle's token, and its NLL of that
 token above the oracle's own, both below the bound. The oracle
 continuation's conditional perplexity ratio to the oracle's own may also
@@ -631,7 +631,7 @@ on the oracle's own token IDs.
 | Perplexity at 32K (16,383 tokens scored) | 1.8516 against 1.8528 (−0.1%): **pass** | 1.4352 against 1.4656 (−2.1%): **pass** |
 | Perplexity at 128K (65,535 scored) | not run (stopped past 64K) | 3.9467 against 4.0042 (−1.4%): **pass** |
 | Retrieval, through the runtime | passes at 32K and 64K (the first prompts' notes, quoted in the answer); deeper not run | passes at 32K, 64K, 128K and 256K (`-r` prompts) |
-| The same run twice, bit for bit | **no**: two runs of the 32K forced prompt differ from the first step (largest logit difference 6.13; the margin moves by p99 0.93 between them): RE-031's radix top-k in the lightning indexer | **yes** at 32K (jitLLM's own device selection, ties by cell); past 32,768 cells the GGML fallback is not repeatable (RE-031; not re-run here) |
+| The same run twice, bit for bit | **no**: two runs of the 32K forced prompt differ from the first step (largest logit difference 6.13; the margin moves by p99 0.93 between them): RE-031's radix top-k in the lightning indexer | **yes** at 32K (llmpalooza's own device selection, ties by cell); past 32,768 cells the GGML fallback is not repeatable (RE-031; not re-run here) |
 
 Step 249 on DeepSeek is like dsv4-decode's step 93: the fast plan's
 margin there moves further than the bound on one token, repeatably, where
@@ -645,7 +645,7 @@ deterministic launch and declined at 256K (the "passphrase" wording).
 
 ## Swap with a long saved context
 
-At 64K, not the plan's 128K and maximum (runs past 64K stopped): `jitllm-runtime
+At 64K, not the plan's 128K and maximum (runs past 64K stopped): `llmp-runtime
 swap-table` with both LLMs registered at `context = 65536`, plain, A
 holding 61,440 tokens of the book, one first-use cycle each way, every
 check of the M3 swap table on (A's restored state must hash as it left;
@@ -675,30 +675,30 @@ short or empty. "Drop" sends back only the content (what clients do);
 
 | Engine, client | Turn 1: prompt, reused, prefill | Turn 2 | Turn 3 |
 | --- | --- | --- | --- |
-| jitLLM Qwen3.8, drop | 60,902, 0, 43.1 s | 60,949, **0**, 42.9 s | 61,113, **0**, 43.8 s |
-| jitLLM Qwen3.8, keep | 60,902, 0, 43.4 s | 61,462, 61,413, **0.27 s** | 62,007, 61,973, **0.23 s** |
-| jitLLM DeepSeek, drop | 61,115, 0, 247.6 s | 61,152, **0**, 246.7 s | 61,173, **0**, 246.9 s |
+| Llmpalooza Qwen3.8, drop | 60,902, 0, 43.1 s | 60,949, **0**, 42.9 s | 61,113, **0**, 43.8 s |
+| Llmpalooza Qwen3.8, keep | 60,902, 0, 43.4 s | 61,462, 61,413, **0.27 s** | 62,007, 61,973, **0.23 s** |
+| Llmpalooza DeepSeek, drop | 61,115, 0, 247.6 s | 61,152, **0**, 246.7 s | 61,173, **0**, 246.9 s |
 | llama.cpp DeepSeek, drop (prompt cache on) | 61,115, 0, 231.5 s | 61,152, 61,111, **0.59 s** | 61,173, 61,148, **0.49 s** |
 
-jitLLM reuses a conversation only when the re-rendered prompt extends
+Llmpalooza reuses a conversation only when the re-rendered prompt extends
 everything the state holds. With the reasoning dropped the re-rendered
 history leaves out the last turn's reasoning, which the state holds, so
-jitLLM clears it and prefills the whole prompt again: about 4 minutes a
+llmpalooza clears it and prefills the whole prompt again: about 4 minutes a
 turn for DeepSeek at 64K. llama.cpp keeps the longest common prefix
 (61,111 of 61,152 tokens) and prefills only the rest. When the client
 sends the reasoning back, the rendered prompt extends the state and
-jitLLM prefills only the new tokens.
+llmpalooza prefills only the new tokens.
 
 ## Memory and the guard's margin
 
 Peak memory (drop in `MemAvailable`) against the comparators at the same
 configured context:
 
-| Model, context | jitLLM, GiB | Comparator, GiB | Ratio |
+| Model, context | llmpalooza, GiB | Comparator, GiB | Ratio |
 | --- | ---: | ---: | ---: |
 | DeepSeek, 262,144, plain | 116.0 | 95.8 (llama.cpp) | **1.21×** |
 | DeepSeek, DSpark | 110.8 at 65,536 (the guard refuses above 143,360) | 107.1 at 262,144 | ≥ 1.04× (at a quarter of the context) |
-| Qwen3.8, 131,072 (jitLLM) / 262,144 (Mia's pool) | 100.6 | 102.4 | 0.98× |
+| Qwen3.8, 131,072 (llmpalooza) / 262,144 (Mia's pool) | 100.6 | 102.4 | 0.98× |
 | Qwen3.8, 262,144 | 101.2 | 102.4 (deterministic) / 100.7 (MTP 3) | 0.99–1.00× |
 | Qwen3.8, 32,768 with MTP | 79.1 | 100.7 (MTP 3, its 262,144 pool) | 0.79× (not like for like) |
 
@@ -750,7 +750,7 @@ Spark check set ran on the final tree):
   channels.
 - The executor's refusal now names the refused node and its first
   operand with shapes and strides, which found RE-037's second case.
-- The resident harnesses (`jitllm_dsv4_exec`, `jitllm_qwen38_exec`)
+- The resident harnesses (`llmp_dsv4_exec`, `llmp_qwen38_exec`)
   prefill a `--prompts` prompt longer than `--max-rows` in chunks, so the
   teacher-forced checks run at 32K and 128K (benchmark code only; covered
   by those runs).
@@ -764,7 +764,7 @@ a rough estimate of agent days, including tests.
 
 1. **DeepSeek's per-token cost grows with the whole context** (*done in phase
    2*, [above](#phase-2-deepseek-flat-with-depth-2026-09-29): 1.1-1.3 by the ring,
-   sparse attention and jitLLM's indexer; its scoring is a tensor-core pass per
+   sparse attention and llmpalooza's indexer; its scoring is a tensor-core pass per
    four rows, not a batched GEMM, and the selection is its own kernel after it)
    (prefill 463
    → 230 tok/s and decode 22 → 10.8 tok/s from 8K to 64K, against
@@ -875,14 +875,14 @@ reference (`--exact`) and unfused graphs are unchanged.
 
 ### What changed
 
-- **Block keys cached** (`jitllm.qsa.pool`): when a chunk completes a
+- **Block keys cached** (`llmp.qsa.pool`): when a chunk completes a
   block of 4 cells, its raw indexer keys are pooled, normalized, rotated
   (the reference form's arithmetic) and kept in the state as BF16, 256
   bytes a block (`Qwen38StateTensor::kIndexerBlocks`, +768 B a token over
   12 layers; the drafter's likewise). Nothing re-pools every block each
   step, and no host table names the blocks. A verify saves the block keys
   it completes with its cells, so a rejected row's are restored.
-- **Selection on the device at any depth** (`jitllm.qsa.topk`,
+- **Selection on the device at any depth** (`llmp.qsa.topk`,
   TensorFold #93's technique): each complete block's score is its four
   heads' relu scores (the query rounded to BF16 times the block key, F32
   sums; BF16 tensor-core products past 16 rows) plus build_qsa_top_k's
@@ -893,7 +893,7 @@ reference (`--exact`) and unfused graphs are unchanged.
   cells, ascending. It replaces the GGML top-k fallback past 8,192 blocks
   and its host masks, closes RE-031 for this graph, and lets the MTP
   drafter select at any depth.
-- **Attention over the kept cells alone** (`jitllm.qsa.attn`, #28770's
+- **Attention over the kept cells alone** (`llmp.qsa.attn`, #28770's
   gather): a warp a token's KV head, its 12 query heads one m16n8k16 tile,
   16 cells gathered at a time (K and V double-buffered), online softmax;
   decode and verify rows split their cells into shares combined in order.
@@ -938,7 +938,7 @@ same depth. MTP's rate follows its acceptance, which the route does not
 report: it is below Mia's MTP 3 at 128K (0.91×) and 256K (0.96×).
 
 **MTP at depth, diagnosed** (the review, `spark-b`, the final build,
-`jitllm_qwen38_spec --check greedy` on the 8K and 128K chat prompts; each
+`llmp_qwen38_spec --check greedy` on the 8K and 128K chat prompts; each
 answer's first 32 tokens, so acceptance is coarse): a speculative step
 costs the same at depth. At MTP depth 2 a step is 60.4 ms at 8K and 60.7
 ms at 128K (the drafter's passes 7.8 → 8.3 ms, the verify 52.0 → 51.8
@@ -952,13 +952,13 @@ at 128K: 3.10 tokens a step, 72.1 ms (drafter 11.8, verify 59.7), 43.0
 tok/s against depth 2's 39.3 (+9%) through the harness. What is left is
 the verify's cost per row (about 6 ms a row at 3 rows, 8 ms for the
 fourth, the routed experts each row adds; Mia's MTP 3 step costs about
-1.5× its plain step, jitLLM's depth-3 step 1.8×). At 256K Mia accepted
+1.5× its plain step, llmpalooza's depth-3 step 1.8×). At 256K Mia accepted
 only 0.44, so there the gap is not acceptance: 256K ran on the
 intermediate build, whose plain step was 5% slower (44.7 against 42.6
 ms), and was not re-run. Levers: the draft depth chosen by acceptance
 (depth 3 when it runs high), a cheaper verify row, and the draft head's
 selected vocabulary. Mia's actual head is a curated 47,172-row BF16 product,
-while jitLLM uses the first 65,536 rows; the
+while llmpalooza uses the first 65,536 rows; the
 [draft-head study](../qwen38-draft-head/README.md) measures that distinction
 at fixed depth. The 32-token diagnosis alone does not isolate it.
 
@@ -1001,7 +1001,7 @@ cut its gathers and its 8K cost too.
 
 ### Correctness
 
-The resident harness (`jitllm_qwen38_exec`, the runtime's kernels) on
+The resident harness (`llmp_qwen38_exec`, the runtime's kernels) on
 `spark-b`, [judge.py](judge.py), the phase-1 corpus and Mia's recorded
 deterministic outputs. The final build's logits equal the first measured
 build's bit for bit (32K forced run), so these hold for it.
@@ -1015,10 +1015,10 @@ build's bit for bit (32K forced run), so these hold for it.
 | Perplexity at 128K (65,535 scored) | 3.9476 against 4.0042 (−1.4%): **pass** (phase 1: −1.4%) |
 | Retrieval through the runtime (`-r` prompts) | all three codenames at 32K, 64K, 128K and 256K (258,633 tokens): **pass** |
 | The same run twice, bit for bit | **yes** at 64K and 128K (512 steps each, max difference 0): RE-031 closed for this graph |
-| MTP: forced rejections against a control (`jitllm_qwen38_spec --check forced`, `capital`, 160 tokens, context 8,704) | 85 steps, 57 with rejected rows: **0 states differ** from the control; 1 near-tie, 0 violations |
+| MTP: forced rejections against a control (`llmp_qwen38_spec --check forced`, `capital`, 160 tokens, context 8,704) | 85 steps, 57 with rejected rows: **0 states differ** from the control; 1 near-tie, 0 violations |
 | MTP: rollback across a swap (`--check swap`, the same, the FP16 fixture as B) | 97 steps compared, **0 states and 0 of 160 tokens' logits differ**; B's logits `bb8ae5e7…` as recorded; graphs captured before the swap replayed after it |
 | The same two checks past 32K (the 64K coding prompt, 64,110 tokens, context 65,536) | forced: 78 steps, 47 with rejected rows, **0 states differ** (the block keys included), 2 near-ties, 0 violations; swap: 93 steps, **0 states and 0 logits differ**, graphs replayed across the swap |
-| Swap with 61,440 tokens saved (`jitllm-runtime swap-table`, both LLMs at 65,536, plain, first use) | Qwen3.8 as A: A→B 9.06 s, B→A 7.52 s (restore 0.18 s), **exact**; DeepSeek as A: 8.04 s / 8.85 s, **exact** (phase 1: 8.68 / 7.54 and 8.16 / 8.57) |
+| Swap with 61,440 tokens saved (`llmp-runtime swap-table`, both LLMs at 65,536, plain, first use) | Qwen3.8 as A: A→B 9.06 s, B→A 7.52 s (restore 0.18 s), **exact**; DeepSeek as A: 8.04 s / 8.85 s, **exact** (phase 1: 8.68 / 7.54 and 8.16 / 8.57) |
 
 The bound's p99 is above phase 1's (1.47): the BF16 scores move near-tied
 blocks in and out of the selection, which moves some steps' margins
@@ -1049,24 +1049,24 @@ judge.sh repeat $W2/raw/hq-128k-fast $W2/raw/hq-128k-fast2 q128k --vocab 248320
 harness.sh qwen $W2/raw/hq-ppl-128k 131072 4096 --ppl ppl-131072.ids
 judge.sh ppl $W/raw/qw-mia-det/ppl-131072.nll.json $W2/raw/hq-ppl-128k/ppl.nll.f64 --ctx 131072
 # Speed: the runtime at context 262144, plain and with MTP.
-python3 longctx.py jitllm $W2/raw/final-plain 8k.json 32k.json 64k.json 128k.json --port 18140 \
-  --runtime build/spark-native/src/runtime/jitllm-runtime --config qw-262144-off.toml --model qwen3.8 --retries 3
+python3 longctx.py llmp $W2/raw/final-plain 8k.json 32k.json 64k.json 128k.json --port 18140 \
+  --runtime build/spark-native/src/runtime/llmp-runtime --config qw-262144-off.toml --model qwen3.8 --retries 3
 # The profile: whole 4,096-row chunks, then the split.
 nsys profile --trace=cuda --sample=none --cpuctxsw=none --export=sqlite -o qw3-64k \
-  jitllm_qwen38_exec --artifact ... --context 65536 --max-rows 4096 --prompts p64k.tsv --generate 3
+  llmp_qwen38_exec --artifact ... --context 65536 --max-rows 4096 --prompts p64k.tsv --generate 3
 python3 profile.py qw3-64k.sqlite 248320
 # Speculation at depth: a prompts file whose one chat prompt is 64k.json's messages.
-jitllm_qwen38_spec ... --prompts deep.json --only deep64k --context 65536 --tokens 160 --check forced
+llmp_qwen38_spec ... --prompts deep.json --only deep64k --context 65536 --tokens 160 --check forced
 # MTP at depth: acceptance and a step's parts (the same file shape, 128k.json's messages).
-jitllm_qwen38_spec ... --prompts rv-128k.json --only deep128k --context 131072 --check greedy [--draft 3]
+llmp_qwen38_spec ... --prompts rv-128k.json --only deep128k --context 131072 --check greedy [--draft 3]
 ```
 
 Raw outputs, logs and traces stay on `spark-b` under
-`~/.local/share/jitllm/m3lc2/`.
+`~/.local/share/llmp/m3lc2/`.
 
 ## Not run, and why
 
-- **Every jitLLM rung past 64K after 11:00** (the owner, 2026-09-29: we
+- **Every llmpalooza rung past 64K after 11:00** (the owner, 2026-09-29: we
   know enough at 64K; fix the scaling first). Qwen3.8's 128K and 256K and
   DeepSeek's 128K correctness had run by then; not run: DeepSeek at 128K,
   256K and its maximum through the runtime, DeepSeek's perplexity at 128K,
@@ -1080,24 +1080,24 @@ Raw outputs, logs and traces stay on `spark-b` under
   matters is same-format.
 - **llama.cpp b11254 at 8K:** the 8K reference is b10964's (M3
   baselines).
-- **jitLLM's speculation acceptance at depth:** the chat route does not
-  report it, and `jitllm-runtime chat` takes its prompt as an argument
+- **Llmpalooza's speculation acceptance at depth:** the chat route does not
+  report it, and `llmp-runtime chat` takes its prompt as an argument
   (128 KiB at most), too small for 32K.
 
 ## Reproduce
 
-On a Spark, with this directory at `~/.local/share/jitllm/m3lc/lc/long-context`
+On a Spark, with this directory at `~/.local/share/llmp/m3lc/lc/long-context`
 and `docs/experiments/fast-swap` beside it, the M3 model store, the pinned
 PyTorch image, and llama.cpp at `8019dc563` cloned to `~/src/lc/llama.cpp`:
 
 ```sh
-W=~/.local/share/jitllm/m3lc
+W=~/.local/share/llmp/m3lc
 IMG=nvcr.io/nvidia/pytorch@sha256:2140e699b3beaf7f96a0081fd9c9406bc3832b435cdb60dfa2d261f7d2f34a1c
 # The prompts (the tokenizer files as corpus.json pins them), and the book.
 curl -sSLo $W/corpus/pg2600.txt https://www.gutenberg.org/cache/epub/2600/pg2600.txt
 sudo docker run --rm --network none --user $(id -u):$(id -g) --entrypoint python3 \
   -v $W/lc/long-context:/tools:ro -v ~/src/lc/llama.cpp:/repo:ro \
-  -v ~/.local/share/jitllm/models:/models:ro -v $W/corpus:/corpus -v $W/prompts:/out $IMG \
+  -v ~/.local/share/llmp/models:/models:ro -v $W/corpus:/corpus -v $W/prompts:/out $IMG \
   -I /tools/build_prompts.py --repo /repo --model qwen3.8 \
   --tokenizer /models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json --out /out \
   --rung 8k=8704 --rung 32k=32768 --rung 64k=65536 --rung 128k=131072 --rung 256k=262144 \
@@ -1106,7 +1106,7 @@ sudo docker run --rm --network none --user $(id -u):$(id -g) --entrypoint python
 
 # llama.cpp (the image built from 8019dc563, pins.json), and its perplexity.
 python3 longctx.py llama $W/raw/ds-llama-plain $W/prompts/deepseek/{32k,64k,128k,256k}.json \
-  --image jitllm-llamacpp:b11254-cuda13 --model .../DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf \
+  --image llmp-llamacpp:b11254-cuda13 --model .../DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf \
   --args "-ngl all -fa on -c 262144 -np 1 --fit off -cram 0"   # DSpark: add -md ... --spec-type draft-dspark ...
 python3 longctx.py llama-ppl $W/raw/ds-llama-ppl --image ... --model ... --text $W/prompts/ppl.txt \
   --ctx 32768 --ctx 131072 --args "-ngl all -fa on --fit off"
@@ -1116,29 +1116,29 @@ python3 longctx.py vllm $W/raw/qw-mia-det $W/prompts/qwen3.8/{32k,64k,128k,256k}
   --start "cd .../mia && MTP_NUM_SPECULATIVE_TOKENS=0 VLLM_QSA_DET_TOPK=1 VLLM_MOE_DET_FINALIZE=1 exec ./start.sh" \
   --stop "cd .../mia && ./stop.sh" --ppl $W/prompts/ppl.txt --ctx 32768 --ctx 131072
 
-# jitLLM through the runtime (a configuration naming one model, its context).
-python3 longctx.py jitllm $W/raw/qw-jit $W/prompts/qwen3.8/32k.json ... --port 18140 \
-  --runtime build/spark-native/src/runtime/jitllm-runtime --config qwen-131072.toml --model qwen3.8 --retries 3
+# Llmpalooza through the runtime (a configuration naming one model, its context).
+python3 longctx.py llmp $W/raw/qw-jit $W/prompts/qwen3.8/32k.json ... --port 18140 \
+  --runtime build/spark-native/src/runtime/llmp-runtime --config qwen-131072.toml --model qwen3.8 --retries 3
 
 # Correctness: the oracle's IDs as harness input, the forced runs, the judge.
 judge.py inputs raw/ds-llama-plain/deepseek-32k.json hin/ds d32k
-jitllm_dsv4_exec --artifact ... --out raw/hd-32k-fast --context 33280 --max-rows 2048 \
+llmp_dsv4_exec --artifact ... --out raw/hd-32k-fast --context 33280 --max-rows 2048 \
   --prompts hin/ds/d32k.prompt.tsv --force hin/ds/d32k.force.tsv --generate 512   # and --exact on
 judge.py noise raw/hd-32k-fast raw/hd-32k-exact d32k --vocab 129280
 judge.py greedy raw/ds-llama-plain/deepseek-32k.json raw/hd-32k-fast d32k --vocab 129280 --bound B
-jitllm_dsv4_exec ... --ppl raw/ds-llama-ppl/ppl-32768.ids; judge.py ppl 1.8528 raw/hd-ppl-32k/ppl.nll.f64 --ctx 32768
+llmp_dsv4_exec ... --ppl raw/ds-llama-ppl/ppl-32768.ids; judge.py ppl 1.8528 raw/hd-ppl-32k/ppl.nll.f64 --ctx 32768
 
 # The profile: one nsys run per depth, then the split.
 nsys profile --trace=cuda --sample=none --cpuctxsw=none --export=sqlite -o prof/ds-64k \
-  jitllm_dsv4_exec ... --context 65536 --max-rows 2048 --prompts ds-64k.tsv --generate 3
+  llmp_dsv4_exec ... --context 65536 --max-rows 2048 --prompts ds-64k.tsv --generate 3
 python3 profile.py prof/ds-64k.sqlite 129280
 
 # Phase 2: the step probe, in each plan's run (a full window), then the comparison.
-jitllm_dsv4_exec ... --context 33280 --max-rows 2048 --prompts hin/ds/d32k.prompt.tsv \
+llmp_dsv4_exec ... --context 33280 --max-rows 2048 --prompts hin/ds/d32k.prompt.tsv \
   --force hin/ds/d32k.force.tsv --generate 251 --probe-step 249 [--exact on]
 python3 probe_step.py FAST_OUT EXACT_OUT 82437 10386
 # Speculation over a wrapping ring.
-jitllm_spec_runner --dsv4-artifact DSV4 --drafter DRAFTER --prompts ../fast-swap/prompts.json \
+llmp_spec_runner --dsv4-artifact DSV4 --drafter DRAFTER --prompts ../fast-swap/prompts.json \
   --out DIR --check forced --max-rows 128 --tokens 160 --margin 6.11
 ```
 
@@ -1153,4 +1153,4 @@ from this directory.
 Long runs went through `tools/spark-job` (`start --gpu --steps`), after
 checking free memory and that no other model process was on the Spark.
 Raw outputs (every request's record, server logs, traces) stay on the
-Sparks under `~/.local/share/jitllm/m3lc/`.
+Sparks under `~/.local/share/llmp/m3lc/`.

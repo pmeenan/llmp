@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded literal prompt admission and compact score metadata, independent
@@ -8,8 +8,8 @@
 // rows and their top scores are figured against it before any work, and
 // charged as they are made.
 
-#ifndef JITLLM_RUNTIME_COMPLETION_TOKENS_H_
-#define JITLLM_RUNTIME_COMPLETION_TOKENS_H_
+#ifndef LLMP_RUNTIME_COMPLETION_TOKENS_H_
+#define LLMP_RUNTIME_COMPLETION_TOKENS_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -25,7 +25,7 @@
 #include "runtime/api.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::runtime::api {
+namespace llmp::runtime::api {
 
 struct LiteralPrompt {
   std::vector<std::int32_t> tokens;
@@ -119,6 +119,6 @@ class LiteralOutput final {
   bool prompt_started_ = false;
 };
 
-}  // namespace jitllm::runtime::api
+}  // namespace llmp::runtime::api
 
-#endif  // JITLLM_RUNTIME_COMPLETION_TOKENS_H_
+#endif  // LLMP_RUNTIME_COMPLETION_TOKENS_H_

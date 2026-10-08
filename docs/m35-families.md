@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M3.5 model families: capability coverage and checkpoint selection
@@ -41,7 +41,7 @@ re-pinning at each task under [reference comparisons](reference-comparisons.md).
 Different-format TensorFold targets add measured speed/memory comparisons
 and separate quality controls; they do not replace those oracles.
 
-| # | Checkpoint (family) | Form | Formats, reference | Max context | New for jitLLM |
+| # | Checkpoint (family) | Form | Formats, reference | Max context | New for llmpalooza |
 | --- | --- | --- | --- | ---: | --- |
 | 1 | Gemma 4 26B-A4B-it (Google) | MoE 25.2B/3.8B | GGUF UD-Q4_K_M, llama.cpp; EXL3 mcg 2.54/3.10/4.10, ExLlamaV3 | 262,144 | 5:1 sliding/global, per-type head dims, K=V globals, GeGLU, sandwich norms, final softcap, ▁-BPE 262K, dense MLP beside MoE, KV-sharing assistant drafter, EXL3 MoE |
 | 2 | gpt-oss-120b (OpenAI) | MoE 117B/5.1B | GGUF MXFP4 + EAGLE3, llama.cpp | 131,072 | attention sinks with 1:1 window-128/full, head dim 64, biases, clamped (up+1) SwiGLU, softmax-after-top-k, o200k_harmony, harmony, EAGLE3 |
@@ -90,7 +90,7 @@ and [pooling configuration](https://huggingface.co/google/embeddinggemma-2/blob/
 name mean pooling followed by normalization. The developer guide specifies
 128/256/512-dimensional truncation with re-normalization and task-specific
 text prefixes. These are reference output/preprocessing contracts to qualify,
-not evidence that jitLLM already implements them.
+not evidence that llmpalooza already implements them.
 
 Next research must select an immutable checkpoint/format and same-format
 reference, audit the actual import/code licenses, and qualify tokenizer/task
@@ -105,7 +105,7 @@ remain unchanged until separately decided.
 
 ## Capability matrix
 
-What jitLLM runs today comes from M3's models (DeepSeek V4 Flash,
+What llmpalooza runs today comes from M3's models (DeepSeek V4 Flash,
 `model/dsv4.h`; Qwen3.8 Flash Next, `model/qwen38.h`; Qwen-Image-2.1,
 `model/qwen_image.h`) and the M2 fixtures (Qwen2.5-0.5B, `model/qwen2.h`,
 FP16 GGUF and EXL3). "Have" means an M3 model exercises it; "partial"
@@ -114,7 +114,7 @@ checkpoints above by number.
 
 ### Attention
 
-| Feature | Used by (generation) | jitLLM | Covered by | Only too-big checkpoints |
+| Feature | Used by (generation) | llmpalooza | Covered by | Only too-big checkpoints |
 | --- | --- | --- | --- | --- |
 | GQA with QK-norm, gated output | Qwen3/3.5/3.8, Laguna, Step | have (Qwen3.8 QSA layers) | 10, 12 | |
 | MQA / one KV head | DeepSeek V4 | have | | |
@@ -138,7 +138,7 @@ checkpoints above by number.
 
 ### Positions, norms, activations
 
-| Feature | Used by | jitLLM | Covered by | Only too big |
+| Feature | Used by | llmpalooza | Covered by | Only too big |
 | --- | --- | --- | --- | --- |
 | NeoX RoPE; consecutive-pair (GPT-J) RoPE; partial rotary | most; DeepSeek, GLM, Mistral 4, Cohere, ERNIE | have (Qwen2 NeoX; DeepSeek V4 pairs, `dsv4_graph.cc`) | | |
 | YaRN | DeepSeek V3/V4, gpt-oss, Mistral 3/4, Qwen (opt-in), Laguna | have (DeepSeek V4) | 2, 6 | |
@@ -162,7 +162,7 @@ checkpoints above by number.
 
 ### MoE
 
-| Feature | Used by | jitLLM | Covered by | Only too big |
+| Feature | Used by | llmpalooza | Covered by | Only too big |
 | --- | --- | --- | --- | --- |
 | Softmax top-k + shared expert with sigmoid gate | Qwen3-Next line, Qwen3.8 | have | 12 | |
 | Sigmoid, bias-corrected (`noaux_tc`), dense first layer | DeepSeek V3, MiMo V2, GLM, Kimi, Nemotron, Laguna, Step | partial (DeepSeek V4 selects with a bias over √softplus scores, `dsv4_graph.cc`) | 3, 4, 5, 13 | |
@@ -177,7 +177,7 @@ checkpoints above by number.
 
 ### Tokenizers, templates, drafters
 
-| Feature | Used by | jitLLM | Covered by |
+| Feature | Used by | llmpalooza | Covered by |
 | --- | --- | --- | --- |
 | Byte-level BPE, `qwen2`/`qwen35`/`deepseek-v3` pre-tokenizers | Qwen, DeepSeek, MiMo | have (tokenizer.md) | 3, 10, 12 |
 | ▁-space BPE over raw UTF-8 (SentencePiece style), 262K | Gemma 3/4 | new | 1 |
@@ -202,7 +202,7 @@ of which M4 takes DSA and mHC on two Sparks.
 
 ## Format coverage
 
-jitLLM already runs these (from the repository; see
+Llmpalooza already runs these (from the repository; see
 [artifact-format.md](artifact-format.md) and [model-support.md](model-support.md)):
 
 - GGUF through GGML: Q8_0, Q4_K, Q5_K, Q6_K, IQ2_XS, IQ3_XXS and MXFP4, in
@@ -217,14 +217,14 @@ jitLLM already runs these (from the repository; see
   No speed comparison with ExLlamaV3 exists yet (BP-F2 did not run; D-085
   judges engines end to end).
 
-| Format | Granularity, bpw | Dequantization | Reference kernels | GB10 (`sm_121`) | Publishers | jitLLM | M3.5 carrier |
+| Format | Granularity, bpw | Dequantization | Reference kernels | GB10 (`sm_121`) | Publishers | llmpalooza | M3.5 carrier |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | GGUF legacy Q4_0, Q4_1, Q5_0, Q8_0 | blocks of 32; 4.5, 5.0, 5.5, 8.5 | `d·(q−8)`, `d·q+m`, `d·q` | llama.cpp MMVQ, MMQ, dequant + cuBLAS ([ggml-common.h](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/ggml/src/ggml-common.h)) | generic CUDA | ggml-org, bartowski, unsloth; Google QAT Q4_0 | Q8_0 | 5, 13 (Q8_0); approved legacy/Bonsai fixtures below |
 | K-quants Q2_K–Q6_K | 256-weight superblocks, 16/32 sub-blocks; 2.625–6.5625 | `d·sc·q − dmin·m` | MMVQ, MMQ | generic | same | Q4_K–Q6_K | 1, 7, 9, 10 (UD mixes) |
 | I-quants IQ1–IQ4 | 256-weight superblocks (IQ4_NL 32); 1.5625–4.5 | lattice/grid codebook × signs × scale | MMVQ, MMQ | generic | unsloth, bartowski | IQ2_XS, IQ3_XXS | MiniMax M2.7 UD-IQ3_XXS (optional) |
 | Unsloth "UD" dynamic | per-tensor type mix | per type | llama.cpp | generic | unsloth | UD-Q2_K_XL | 1, 7 |
 | MXFP4 (GGUF, and gpt-oss safetensors) | 32 × E2M1 + E8M0; 4.25 | `2^(e−127)·fp4(q)` | llama.cpp native FP4 MMQ ([#17906](https://github.com/ggml-org/llama.cpp/pull/17906)); vLLM Marlin / FlashInfer | llama.cpp native; vLLM Marlin wrong first token on sm_121 ([#37030](https://github.com/vllm-project/vllm/issues/37030)) | ggml-org, openai, unsloth `MXFP4_MOE` | GGUF kernel yes | 2 (GGUF) |
-| NVFP4, ModelOpt (W4A4) | 16 × E2M1 + E4M3 scale + FP32 global; ≈4.5 | `g·s·fp4(q)` | CUTLASS SM120 block-scaled, FlashInfer, llama.cpp native NVFP4 | native (jitLLM's CUTLASS on `sm_121a`) | nvidia, Mia | yes | 4 |
+| NVFP4, ModelOpt (W4A4) | 16 × E2M1 + E4M3 scale + FP32 global; ≈4.5 | `g·s·fp4(q)` | CUTLASS SM120 block-scaled, FlashInfer, llama.cpp native NVFP4 | native (llmpalooza's CUTLASS on `sm_121a`) | nvidia, Mia | yes | 4 |
 | NVFP4, compressed-tensors (llm-compressor; W4A4 or W4A16) | as above, different packing | as above | vLLM CUTLASS / FlashInfer; W4A16 via Marlin | as above | RedHatAI, mistralai, poolside | no importer | surveyed; no approved carrier |
 | MXFP8 (ModelOpt) | 32 × E4M3 + E8M0; 8.25 | `2^(e−127)·fp8(q)` | CUTLASS SM120, FlashInfer | native; vLLM falls back to Marlin ([#43906](https://github.com/vllm-project/vllm/issues/43906)) | Mia, nvidia | yes | |
 | FP8, 128×128 blocks | per block FP32 or UE8M0 scale, dynamic per-1×128 activations | `s_blk·fp8(q)` | CUTLASS SM120 blockwise, FlashInfer, DeepGEMM (sm90/100 only) | vLLM v0.30.0 adds "SM12x blockwise FP8 … for GB10" ([release](https://github.com/vllm-project/vllm/releases/tag/v0.30.0)) | Qwen, DeepSeek, MiniMax, RedHatAI | no | 10 (`Qwen/Qwen3.8-27B-FP8`) |
@@ -232,7 +232,7 @@ jitLLM already runs these (from the repository; see
 | AWQ | INT4, group 128, zero point | `s·(q−z)` | AWQ-Marlin | Marlin runs on sm_121; Machete is Hopper-only | casperhansen, cyankiwi | no | 8 |
 | GPTQ (v1/v2, compressed-tensors w4a16) | INT4/INT8, group 128 or per channel, optional act-order | `s·(q−z)` with permutation | Marlin (repacks at load) | Marlin runs | RedHatAI | no | 8's sibling (same kernel); optional |
 | MLX affine 4-bit | groups of 32/64, BF16 scale and bias | `s·q + b` | TensorFold's Triton kernels on CUDA | measured on our Sparks as a baseline | mlx-community, Vontra | no | M3.5 import (owner, 2026-09-29; [tensorfold-assessment](tensorfold-assessment.md)) |
-| EXL3 | K = 1–8 per tensor (fractional targets = per-tensor mixes; fractional trellis since v1.5.1) | trellis decode → codebook → Hadamard-128 with `suh`/`svh` | ExLlamaV3 | jitLLM runs its kernels on `sm_121` | turboderp, Mia, community | dense, mcg, K 4/5/6/8 | 1, 3, 10, 11 ([below](#exl3-in-depth)) |
+| EXL3 | K = 1–8 per tensor (fractional targets = per-tensor mixes; fractional trellis since v1.5.1) | trellis decode → codebook → Hadamard-128 with `suh`/`svh` | ExLlamaV3 | llmpalooza runs its kernels on `sm_121` | turboderp, Mia, community | dense, mcg, K 4/5/6/8 | 1, 3, 10, 11 ([below](#exl3-in-depth)) |
 | EXL2, bitsandbytes, HQQ | — | — | — | — | — | — | excluded ([below](#considered-and-excluded)) |
 
 Format sources: the formats study's reads of
@@ -260,7 +260,7 @@ codebook maps each trellis state to a weight
 
 **Rates.** K is an integer 1–8 per tensor; the head (`-hb`, default 6), MTP
 (`-mb`), vision and n-gram table have their own. A fractional target such
-as 4.5 bpw is a per-tensor mix (jitLLM's 4.5 bpw fixture: 42 tensors at
+as 4.5 bpw is a per-tensor mix (llmpalooza's 4.5 bpw fixture: 42 tensors at
 K4, 118 at K5, 8 at K6). `sc_optimize.py` allocates K per tensor by
 marginal KL divergence per stored bit and writes a recipe
 ([optimize.md](https://raw.githubusercontent.com/turboderp-org/exllamav3/master/doc/optimize.md));
@@ -273,7 +273,7 @@ rows, GEMM or GEMV decodes the trellis in-kernel; above that, weights are
 reconstructed to FP16 in slices and multiplied by cuBLAS
 ([exl3-bringup.md](exl3-bringup.md)).
 
-**What jitLLM has** (M2, D-080): the dense EXL3 linear on ExLlamaV3's
+**What llmpalooza has** (M2, D-080): the dense EXL3 linear on ExLlamaV3's
 locked kernels (`src/kernels/exl3/`), bit-identical to upstream on 1,570
 cases per fixture and arm, peak memory 0.82–0.87× upstream's
 ([P3](experiments/backend-proof-p3/README.md)); mcg only, GEMV at K = 4
@@ -302,7 +302,7 @@ but 5–6% behind on the uniform 3.05 bpw pack.
 **Levers on the GB10** (analysis, not measurement):
 
 1. **Decode is bytes per token.** Active parameters × bpw / 8 against
-   ≈273 GB/s peak (≈202–229 GB/s effective in jitLLM's measurements): a
+   ≈273 GB/s peak (≈202–229 GB/s effective in llmpalooza's measurements): a
    dense 27B at 3.0 bpw reads ≈10 GB a token, so ≈20 tok/s is the ceiling.
    Lower bpw raises the ceiling only while the trellis decode keeps up.
 2. **Decode compute per byte rises as bpw falls.** Each weight costs a
@@ -336,7 +336,7 @@ repository's `/refs`):
 
 **Proposed EXL3 checkpoints:**
 
-- **MoE:** Gemma 4 26B-A4B at 2.54, 3.10 and 4.10 (mcg, the codebook jitLLM
+- **MoE:** Gemma 4 26B-A4B at 2.54, 3.10 and 4.10 (mcg, the codebook llmpalooza
   decodes, so MoE dispatch is separated from codebook work; mixes inside
   each build not verified); then MiMo-V2.6-Flash-RL at 2.27 bpw, mixed
   widths per expert at 309B, the case TensorFold's grouped kernel targets.
@@ -495,7 +495,7 @@ so one Spark means a ≈2-bit build.
     sidecars, but llama.cpp's sidecar MTP fails for `mimo2`
     ([#29345](https://github.com/ggml-org/llama.cpp/issues/29345)).
   - Reference: ExLlamaV3 `MiMoV2ForCausalLM` (README); needs ≥ v1.5.2, past
-    jitLLM's pin. A newer drop-in, `MiMo-V2.6-Flash-MOPD@2479e2d0029eca9a34cc7e7f55a121925f81908e`
+    llmpalooza's pin. A newer drop-in, `MiMo-V2.6-Flash-MOPD@2479e2d0029eca9a34cc7e7f55a121925f81908e`
     (2026-09-27, fixes repeated tool calls), has an EXL3 build a day old.
   - License MIT. Top-tier: OpenRouter's #5 open model (7.86T tokens a
     week); MiMo-V2.6-Pro leads AA's open-weights index.
@@ -678,7 +678,7 @@ Ornith's architecture.
     `qwen3_5`, 64 layers as 16 × (3 Gated DeltaNet + 1 gated full
     attention); DeltaNet 16 QK / 48 V heads at 128; attention GQA 24/4 at
     256, output gate; dense SwiGLU 17,408; partial RoPE 0.25, θ 1e7,
-    M-RoPE; 248,320 vocab (the `qwen35` BPE jitLLM has); one MTP layer;
+    M-RoPE; 248,320 vocab (the `qwen35` BPE llmpalooza has); one MTP layer;
     ChatML with `<think>`, `reasoning_effort`, XML tool calls.
   - Drafter: DFlash2 `z-lab/Qwen3.8-27B-DFlash2@50307d4c4cde6860d4eee73e2547cd786fe8e8a4`
     (mirror of `incoai/…@015e795645c74b1a0eeef3b570031fb62e769bc5`, 1.92B,
@@ -695,7 +695,7 @@ Ornith's architecture.
     ExLlamaV3; the GGUF with MTP and DFlash2 on llama.cpp (MTP
     [#22673](https://github.com/ggml-org/llama.cpp/pull/22673), DFlash2
     [#27342](https://github.com/ggml-org/llama.cpp/pull/27342)); FP8 on
-    vLLM. One architecture close to jitLLM's carries three formats, so
+    vLLM. One architecture close to llmpalooza's carries three formats, so
     format work is separated from architecture work.
   - GB10 (vLLM/SGLang): NVFP4 + MTP 18.5 tok/s, NVFP4 + DFlash2 47.9
     ([forum study](https://forums.developer.nvidia.com/t/comprehensive-qwen3-8-27b-study-on-dgx-sparks-quantization-speculative-decoding-and-tp-dp-scaling/381102)).
@@ -773,7 +773,7 @@ day.
 Cost is graded in three steps:
 
 - **Small:** a variant of an existing op, or a GGML kernel that
-  jitLLM's pin has but has not registered.
+  llmpalooza's pin has but has not registered.
 - **Medium:** a new kernel.
 - **Large:** a new state class.
 
@@ -818,11 +818,11 @@ current design.
 | --- | --- | --- | --- | --- | --- | --- |
 | 1. Classic SentencePiece: score-ordered merges on ▁-normalised text, `<0xNN>` byte fallback, dummy prefix | Meta Llama 2 (2023-07); Mistral 7B and Mixtral (2023-09 → 2024-05); Google Gemma 1–3 (2024-02 → 2025-03); Microsoft Phi-3/3.5 (2024); Yi; InternLM2 | Gemma 3 1B 3.24M, 4B 1.45M; Mistral 7B v0.3 2.18M, v0.2 1.65M; Gemma 2 9B 1.13M; Llama 2 7B chat 484K | both | abandoned: Llama 3 moved to tiktoken-style BPE, Mistral to Tekken, Gemma 4 to ▁-BPE in `tokenizer.json`, Phi-4 to 100K/200K BPE | small–medium: a vocabulary mode beside 1's ▁-BPE | **Implement.** The largest legacy use by far; with it, Gemma 1 and Gemma 3 1B, Mistral 7B, Mixtral, Llama 2 and Yi have no other gap, and Gemma 2, Gemma 3 and the dense Phi-3.x each need only one more row |
 | 2. Linear RoPE scaling (positions ÷ 8 on global layers) | Gemma 3 4B, 12B and 27B (2025-03; 1B has none) ([config](https://huggingface.co/unsloth/gemma-3-4b-it/raw/main/config.json)) | Gemma 3 4B 1.45M, 12B 530K, 27B 415K; derivatives MedGemma 4B 1.04M, 27B AWQ 1.15M, 27B GPTQ 710K | both | abandoned: Gemma 4's globals use proportional RoPE | small: GGML rope's `freq_scale` | **Implement:** with row 1 it completes Gemma 3 |
-| 3. Attention logit softcap (`c·tanh(s/c)` on QKᵀ, c = 50) | Gemma 2 (2024-06) ([config](https://huggingface.co/unsloth/gemma-2-9b-it/raw/main/config.json)); xAI Grok-2 (too big) | Gemma 2 9B 1.13M, 2B 617K | llama.cpp FA `logit_softcap`; vLLM FA2, FlashInfer and Triton `logits_soft_cap` (FA2 on sm_12x) | abandoned: Gemma 3 dropped it for QK-norm, Gemma 4 keeps only the final softcap | small: GGML's FA has the variant; jitLLM's sparse-gather path is not taken with it (`fattn_mma.cu`) | **Implement** |
+| 3. Attention logit softcap (`c·tanh(s/c)` on QKᵀ, c = 50) | Gemma 2 (2024-06) ([config](https://huggingface.co/unsloth/gemma-2-9b-it/raw/main/config.json)); xAI Grok-2 (too big) | Gemma 2 9B 1.13M, 2B 617K | llama.cpp FA `logit_softcap`; vLLM FA2, FlashInfer and Triton `logits_soft_cap` (FA2 on sm_12x) | abandoned: Gemma 3 dropped it for QK-norm, Gemma 4 keeps only the final softcap | small: GGML's FA has the variant; llmpalooza's sparse-gather path is not taken with it (`fattn_mma.cu`) | **Implement** |
 | 4. LongRoPE: per-dimension short and long divisor sets, a fixed attention factor, the long set once the context exceeds `original_max_position_embeddings` | Microsoft Phi-3-mini/medium-128k (2024-04), Phi-3.5-mini and MoE (2024-08), Phi-4-mini (2025-02, rotary 0.75) ([config](https://huggingface.co/microsoft/Phi-3.5-mini-instruct/raw/main/config.json)) | Phi-4-mini 378K, Phi-3.5-mini 355K, Phi-3-mini-128k 147K, Phi-3.5-MoE 138K | both. vLLM uses the long set for every position when `max_model_len` exceeds the original length ([code](https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/model_executor/layers/rotary_embedding/phi3_long_rope_scaled_rope.py)); llama.cpp does so when the per-sequence context does | not updated: Microsoft's newest Phi (Phi-4-reasoning-vision, 2026-01) has no RoPE scaling | small: per-dimension divisors take llama3 scaling's form (7, 8) and the factor is YaRN's; choosing the set is new | **Implement:** choose the set per context, as both references do |
 | 5. LayerNorm in the LLM path (mean-subtracting; no bias at Cohere, bias elsewhere) | Cohere Command R (2024-03), R7B, A (2025-03), A+ (2026-05), North (2026-06); Inception Jais 2 (2025-12); Phi-2, Falcon, StableLM 2, StarCoder2, GPT-J/NeoX, Bloom (2021–2024) | Command R v01 183K, Command A+ 40K; Phi-2 576K; Pythia-160m 3.37M (research) | both | not updated at Cohere and Jais 2; abandoned elsewhere | small: `ggml_norm` (the DiT has a BF16 LayerNorm) | **Implement,** with row 6 |
 | 6. Parallel attention and FFN from one norm (`x + attn + ffn`) | Cohere as in row 5 (`use_parallel_block` true through Command A+, [modeling](https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/cohere2/modeling_cohere2.py)); Falcon 1/2 (2023–2024), GPT-J/NeoX, Phi-2, StableLM 2 12B | as row 5 | both | not updated at Cohere; abandoned elsewhere (Falcon 3 is a Llama, Falcon-H1 a hybrid) | small: block topology | **Implement:** Cohere still ships it, and rows 5 and 6 together also cover Falcon, Phi-2, StableLM and GPT-J/NeoX |
-| 7. Legacy GGUF blocks Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL | Google's QAT GGUFs (Q4_0: Gemma 3 2025-03 → Gemma 4 2026-06). Any K- or I-quant tensor whose row is not a multiple of 256 falls back: Q4_K→Q5_0, Q5_K→Q5_1, Q6_K→Q8_0, Q2_K/Q3_K→Q4_0, I-quants→IQ4_NL ([`llama-quant.cpp`](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/src/llama-quant.cpp)) | gemma-4-E2B QAT Q4_0 515K; fallback use not countable | llama.cpp MMVQ and MMQ; vLLM moved GGUF to a plugin ([#39612](https://github.com/vllm-project/vllm/pull/39612), 2026-06) | current | small: the kernels are in jitLLM's GGML pin | **Implement:** checkpoint 1's verified 704-wide down experts carry Q5_1 (layers 0–28) and Q8_0 (layer 29) |
+| 7. Legacy GGUF blocks Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL | Google's QAT GGUFs (Q4_0: Gemma 3 2025-03 → Gemma 4 2026-06). Any K- or I-quant tensor whose row is not a multiple of 256 falls back: Q4_K→Q5_0, Q5_K→Q5_1, Q6_K→Q8_0, Q2_K/Q3_K→Q4_0, I-quants→IQ4_NL ([`llama-quant.cpp`](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/src/llama-quant.cpp)) | gemma-4-E2B QAT Q4_0 515K; fallback use not countable | llama.cpp MMVQ and MMQ; vLLM moved GGUF to a plugin ([#39612](https://github.com/vllm-project/vllm/pull/39612), 2026-06) | current | small: the kernels are in llmpalooza's GGML pin | **Implement:** checkpoint 1's verified 704-wide down experts carry Q5_1 (layers 0–28) and Q8_0 (layer 29) |
 | 8. Softmax top-k without renormalisation, beside shared experts | Qwen1.5-MoE (2024-03), Qwen2-57B-A14B (2024-06), DeepSeek V2 and V2-Lite (2024-05) ([config](https://huggingface.co/deepseek-ai/DeepSeek-V2-Lite/raw/main/config.json)) | Coder-V2-Lite 906K, Qwen1.5-MoE-A2.7B 463K, V2-Lite 233K | both | abandoned: Qwen3+ and DeepSeek V3+ renormalise or use sigmoid | small: a router flag | **Defer** until one is wanted; Coder-V2-Lite (MLA covered) would carry it |
 | 9. Sparsemixer routing (two masked softmaxes, weights not renormalised, [modeling](https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/phimoe/modeling_phimoe.py)) | Phi-3.5-MoE (2024-08), Phi-tiny/mini-MoE (2025-06) | 138K, 86K, 31K | both | not updated since 2025-06 | small | **Defer** |
 | 10. Dynamic NTK RoPE | Qwen 1 (2023-08), InternLM2/2.5 (2024), InternLM3 (2025-01) | InternLM3 75K, InternLM2.5 39K | both (llama.cpp's dynamic handling not verified) | abandoned: InternLM now builds on Qwen and GLM | small | **Drop** |
@@ -862,7 +862,7 @@ Notes:
   `Q1_0` (±1, one FP16 scale per 128) and `Q2_0` (ternary codes, one
   scale per 64) have been in upstream GGML since 2026-04 and 2026-07,
   CUDA included ([#21629](https://github.com/ggml-org/llama.cpp/pull/21629),
-  [#25707](https://github.com/ggml-org/llama.cpp/pull/25707)); jitLLM's
+  [#25707](https://github.com/ggml-org/llama.cpp/pull/25707)); llmpalooza's
   GGML pin has both in `mmvq.cu`. They carry Qwen3.6-27B (`qwen35`,
   checkpoint 10's architecture):
   - `prism-ml/Bonsai-27B-gguf`: 432K a month.
@@ -917,7 +917,7 @@ A new category beside M3's Qwen-Image, for the owner's MiniMax H3.
     an audio VAE (32 kHz → 40 Hz latents).
   - Text encoder: Qwen3-VL-32B, hidden states from layer 50
     ([model_index](https://huggingface.co/MiniMaxAI/MiniMax-H3/raw/main/model_index.json)),
-    a larger member of the Qwen3-VL family jitLLM already runs.
+    a larger member of the Qwen3-VL family llmpalooza already runs.
   - Output: 4–15 s at 24 fps, short side 768; flow matching, 50 steps
     suggested (8 with a turbo LoRA).
   - Fit: the full BF16 pipeline is ≈135 GB; vLLM's GB10 recipe makes FP8
@@ -925,14 +925,14 @@ A new category beside M3's Qwen-Image, for the owner's MiniMax H3.
     Comfy-Org's pruned BF16 DiT is 40.2 GB and its layer-50 encoder 51.5 GB
     ([repack](https://huggingface.co/api/models/Comfy-Org/MiniMax-H3/tree/main/diffusion_models)),
     so run as phases (encode, release, denoise, decode) each peaks near
-    51 GB: jitLLM's composition and paging model (D-089). That "pruned"
+    51 GB: llmpalooza's composition and paging model (D-089). That "pruned"
     means precomputed AdaLN is inferred from sizes, not stated.
   - Reference: diffusers `MiniMaxH3ModularPipeline`, vLLM-Omni, SGLang,
     ComfyUI. GB10: 80–111 s a request at 768×448 with vLLM-Omni FP8
     ([joeynyc](https://github.com/joeynyc/MiniMax-H3-DGX-Spark)); one
     ComfyUI report of a host loss from unified-memory exhaustion
     ([#16587](https://github.com/Comfy-Org/ComfyUI/issues/16587)).
-  - New for jitLLM: latent sequences of ≈31K tokens (5 s) to ≈92K (15 s)
+  - New for llmpalooza: latent sequences of ≈31K tokens (5 s) to ≈92K (15 s)
     against Qwen-Image's ≈4K (arithmetic, assuming 1 + (F−1)/4 latent
     frames), so long-sequence attention dominates and FP8 attention is a
     likely lever; 3D RoPE; joint audio tokens; precomputed AdaLN; a
@@ -987,7 +987,7 @@ A new category beside M3's Qwen-Image, for the owner's MiniMax H3.
     validates only one 80 GiB GPU; GB10 behaviour is unknown.
   - Reference: [inclusionAI/Ming-Image](https://github.com/inclusionAI/Ming-Image)
     (`infer.py`, MIT), and vLLM-Omni per the card; pin both at entry.
-  - New for jitLLM: an MoE multimodal encoder as text conditioner, a
+  - New for llmpalooza: an MoE multimodal encoder as text conditioner, a
     causal-LM connector, RGBA latents and alpha in the image API, a
     2,048² latent sequence (about 16K tokens at patch 2 over 8× VAE
     downsampling, arithmetic), and a second DiT layout beside
@@ -1064,7 +1064,7 @@ llama.cpp, vLLM, SGLang and transformers run it. Alternatives:
     distance-normalized formula for score
     ([confidence](https://docs.typesafe.ai/confidence.md)).
   - **Not offered:** streaming or a batch route.
-    M3.5 requires jitLLM to batch independent requests to each decision
+    M3.5 requires llmpalooza to batch independent requests to each decision
     model internally; this does not require a batch wire route.
   - **Clients:** the TypeSafe SDKs (`typesafe-sdk` 0.7.2,
     `@typesafe-ai/sdk` 0.6.0, MIT; base URL from `TYPESAFE_BASE_URL`);
@@ -1073,7 +1073,7 @@ llama.cpp, vLLM, SGLang and transformers run it. Alternatives:
 - **Workers AI** serves Clef with the same body. Its limits are 1–64
   questions, at most 4 images (data URLs, PNG, JPEG or WebP) and 64K
   tokens ([model page](https://developers.cloudflare.com/workers-ai/models/clef/)).
-  jitLLM does not adopt the counts as its limits (D-102, 2026-10-03): no
+  Llmpalooza does not adopt the counts as its limits (D-102, 2026-10-03): no
   question or image counts, TypeSafe's option (2–255) and score-level
   (2–10) ranges as wire ranges, image bytes and pixels from memory and
   the model's context.
@@ -1276,7 +1276,7 @@ from M9) so TensorFold becomes a same-format comparator.
 3. **MiMo's format.** Only a 2.27 bpw EXL3 build (community-made, 85 GiB)
    fits with its drafters; its quality against the full model is not
    measured. Accept it, or wait for an official smaller MiMo?
-4. **ExLlamaV3 re-pin.** The EXL3 picks need v1.5.2 or v1.5.3; jitLLM's
+4. **ExLlamaV3 re-pin.** The EXL3 picks need v1.5.2 or v1.5.3; llmpalooza's
    pin is `6b84a21b`. Re-pin in M3.5 (and redo P3's parity), keeping the
    old pin as the anchor?
 5. **Formats per checkpoint.** Qwen3.8-27B carries three formats (EXL3,

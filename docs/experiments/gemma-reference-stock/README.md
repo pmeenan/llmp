@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma stock routing and scaled-reduction diagnosis
@@ -73,7 +73,7 @@ which also has different width and selected-expert count. No scale can be
 dropped or that existing reducer silently substituted. Native Gemma keeps
 separate scale/routing MULs and an ordered eight-expert sum; its planner's
 existing ARGSORT/TopK does not implement the stock ten-node routing fusion.
-The new upstream CUDA units are not currently compiled into native jitLLM;
+The new upstream CUDA units are not currently compiled into native llmpalooza;
 reuse needs checked wrappers and a reviewed source-build inventory update.
 
 ## Provenance and reproduction
@@ -103,9 +103,9 @@ at that task pin. The same-format b29 llama.cpp image remains the oracle.
 
 Export `ggml` at exact pin
 `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4` to fresh external
-`~/.local/share/jitllm/gemma-reference-stock`, copy `patch_controller.py`
+`~/.local/share/llmp/gemma-reference-stock`, copy `patch_controller.py`
 there, and run `build_controller.sh` through the installed supervisor.
-`JITLLM_REFERENCE_ROOT` can name other fresh scratch. The script checks the
+`LLMP_REFERENCE_ROOT` can name other fresh scratch. The script checks the
 source identity and builds only the controller with SDK NVCC 13.4.92,
 image GCC 13.3.0, `sm_121a`, upstream fast-math and graph-support flags.
 Original image CUDA 13.3/cuBLAS 13.5.1.27 math kernels remain linked.

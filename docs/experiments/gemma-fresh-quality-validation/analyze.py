@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Fixed-capacity native schedule calibration; reuses the full-row quality judge.
 freeze ROOT SCHEDULE SOURCE SOURCE_SHA MANIFEST MANIFEST_SHA;

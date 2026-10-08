@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Gemma graph/plan foundation, not a serving runner. The caller owns and
 // funds every weight/state/activation/input region through completion.
-#ifndef JITLLM_ENGINE_GEMMA4_PLAN_H_
-#define JITLLM_ENGINE_GEMMA4_PLAN_H_
+#ifndef LLMP_ENGINE_GEMMA4_PLAN_H_
+#define LLMP_ENGINE_GEMMA4_PLAN_H_
 
 #include <cstdint>
 #include <expected>
@@ -19,7 +19,7 @@
 #include "kernels/ggml/gemma4_graph.h"
 #include "model/gemma4.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 struct Gemma4Region {
   std::uint64_t address = 0, bytes = 0;
 };
@@ -69,5 +69,5 @@ std::expected<Gemma4HostInputs, std::string> Gemma4Sources(
     std::span<const std::int32_t> frontier, std::span<const float> hidden,
     std::uint64_t funded_bytes, std::span<const std::int32_t> feature_ids = {});
 
-}  // namespace jitllm::engine
-#endif  // JITLLM_ENGINE_GEMMA4_PLAN_H_
+}  // namespace llmp::engine
+#endif  // LLMP_ENGINE_GEMMA4_PLAN_H_

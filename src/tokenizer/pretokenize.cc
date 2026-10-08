@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "tokenizer/pretokenize.h"
@@ -11,7 +11,7 @@
 
 #include "tokenizer/unicode.h"
 
-namespace jitllm::tokenizer {
+namespace llmp::tokenizer {
 namespace {
 
 using unicode::IsLetter;
@@ -269,4 +269,4 @@ void PreTokenize(PreTokenizer p, Text text, std::vector<std::uint32_t>& lengths)
   }
 }
 
-}  // namespace jitllm::tokenizer
+}  // namespace llmp::tokenizer

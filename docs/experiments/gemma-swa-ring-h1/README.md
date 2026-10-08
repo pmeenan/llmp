@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Dense31 8K ring-cache reference screen
@@ -99,7 +99,7 @@ were tuples, while JSON saved choices were lists. Original `compare.py` and
 all eight pre/own source bytes remain preserved. [compare_v2.py](compare_v2.py)
 normalizes that equality, tests actual equal/mismatched input and greedy
 streams, and authenticates its own supplied SHA. The final derivative
-`01a13267…` was frozen separately in `analysis-source2.json` before the
+`11e1c430…` was frozen separately in `analysis-source2.json` before the
 ring bookend. The first derivative receipt is retained externally. No
 native/original binary, math, paid work or acquisition changed for this fix.
 Use v2 for new analysis; the preserved initial analyzer has this known defect.
@@ -115,7 +115,7 @@ remains26B-A4B MLX-only and supplies no dense31 CUDA comparator.
 Follow [PROTOCOL](PROTOCOL.md) with the approved GGUF/artifact and canonical
 8,227 LE I32 IDs SHA6b6567ca…. Supply the exact pinned headers externally,
 checksum-sync sources with `rsync -rlpc` without timestamps, and build only
-native `jitllm_gemma_prefill` through the locked SDK and `reference.sh build`.
+native `llmp_gemma_prefill` through the locked SDK and `reference.sh build`.
 Record the real build receipt and source ancestry: base/head, empty tracked
 production diff, the measured source paths that differ from that base, and
 all eight `SOURCES` byte/SHA records. Supply the full production-source

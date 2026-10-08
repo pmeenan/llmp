@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/paged_weights.h"
@@ -16,11 +16,11 @@
 #include "ggml.h"
 #include "kernels/ggml/dsv4_graph.h"  // GgmlTypeOf
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 namespace {
 
-namespace sc = jitllm::scheduler;
+namespace sc = llmp::scheduler;
 using base::Bytes;
 using catalog::ExtentId;
 using catalog::MemoryClass;
@@ -483,4 +483,4 @@ PagedWeights::Status PagedWeights::Release(providers::VmmProvider& memory) {
   return support::Joined(problems);
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

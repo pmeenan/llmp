@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Qwen3.8 Flash Next's chat format, as the NVFP4 checkpoint's
@@ -18,7 +18,7 @@
 #include "chat/writer.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::chat {
+namespace llmp::chat {
 namespace {
 
 constexpr std::string_view kImStart = "<|im_start|>";
@@ -316,4 +316,4 @@ std::expected<ImagePrompt, Error> RenderQwenImagePrompt(std::string_view prompt,
   return ImagePrompt{w.Take(), ids.size()};
 }
 
-}  // namespace jitllm::chat
+}  // namespace llmp::chat

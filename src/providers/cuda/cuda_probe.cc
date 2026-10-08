@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "providers/cuda/cuda_probe.h"
@@ -21,11 +21,11 @@
 #include "providers/cuda/cuda_facts.h"
 #include "providers/device_probe.h"
 
-#ifndef JITLLM_CUDA_ARCHITECTURES
-#error "the build defines JITLLM_CUDA_ARCHITECTURES (src/providers/cuda/CMakeLists.txt)"
+#ifndef LLMP_CUDA_ARCHITECTURES
+#error "the build defines LLMP_CUDA_ARCHITECTURES (src/providers/cuda/CMakeLists.txt)"
 #endif
 
-namespace jitllm::providers::cuda {
+namespace llmp::providers::cuda {
 namespace {
 
 std::string ErrorText(CUresult result, const char* call) {
@@ -155,7 +155,7 @@ std::string LibraryPath() {
 CudaFacts ProbeCuda(const std::filesystem::path& root) {
   CudaFacts facts;
   facts.built_version = CUDA_VERSION;
-  facts.built_architectures = ParseCudaArchitectures(JITLLM_CUDA_ARCHITECTURES);
+  facts.built_architectures = ParseCudaArchitectures(LLMP_CUDA_ARCHITECTURES);
   facts.nvidia = platform::FindKernelModule(root, "nvidia");
   facts.nvidia_fs = platform::FindKernelModule(root, "nvidia_fs");
   facts.library = LibraryPath();
@@ -179,9 +179,9 @@ CudaFacts ProbeCuda(const std::filesystem::path& root) {
   return facts;
 }
 
-}  // namespace jitllm::providers::cuda
+}  // namespace llmp::providers::cuda
 
-namespace jitllm::providers {
+namespace llmp::providers {
 
 void DescribeDevices(const std::filesystem::path& root, base::Report& report) {
   cuda::DescribeCuda(cuda::ProbeCuda(root), report);
@@ -201,4 +201,4 @@ std::string DeviceIdentity(const std::filesystem::path& root) {
                                               : std::string("unknown"));
 }
 
-}  // namespace jitllm::providers
+}  // namespace llmp::providers

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Authenticate H1's new-recipe bookend, two complete heads and native state."""
 import importlib.util
@@ -25,7 +25,7 @@ def compare(root, source_root, expected, job):
     assert own.record(root/'native-first') == frozen['records']['native-first']
     assert own.record(root/'native-repeat') == frozen['records']['native-repeat']
     assert own.record(root/'native-bookend') == frozen['records']['native-first']
-    log = pathlib.Path.home()/'.local/share/jitllm/jobs'/job/'log'
+    log = pathlib.Path.home()/'.local/share/llmp/jobs'/job/'log'
     text = log.read_text()
     runs = own.old.runs(log, 'both', '31')
     assert [r['engine'] for r in runs] == ['PREFILL_REFERENCE','PREFILL_NATIVE','PREFILL_REFERENCE']

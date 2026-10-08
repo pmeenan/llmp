@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/prefill.h"
@@ -7,7 +7,7 @@
 #include <chrono>
 #include <format>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 std::uint32_t PrefillChunkRows(std::uint32_t context, std::optional<std::uint32_t> configured,
                                std::uint32_t preferred, std::uint32_t most) {
@@ -51,4 +51,4 @@ std::expected<PrefillRun, std::string> RunPrefillChunks(std::uint32_t from, std:
   return run;
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

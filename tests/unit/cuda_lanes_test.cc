@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The scheduler thread and its lanes over the real providers on a Spark
@@ -48,35 +48,35 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::base::PushResult;
-using jitllm::catalog::Closure;
-using jitllm::catalog::ExtentId;
-using jitllm::catalog::ExtentState;
-using jitllm::providers::Access;
-using jitllm::providers::BackingKind;
-using jitllm::providers::StreamId;
-using jitllm::scheduler::CancelRequest;
-using jitllm::scheduler::CompletionBoard;
-using jitllm::scheduler::Control;
-using jitllm::scheduler::CpuCommand;
-using jitllm::scheduler::CpuResult;
-using jitllm::scheduler::DeviceService;
-using jitllm::scheduler::DeviceSettings;
-using jitllm::scheduler::DeviceWork;
-using jitllm::scheduler::Fault;
-using jitllm::scheduler::Lane;
-using jitllm::scheduler::Outcome;
-using jitllm::scheduler::QueueSettings;
-using jitllm::scheduler::Readiness;
-using jitllm::scheduler::Scheduler;
-using jitllm::scheduler::SchedulerSettings;
-using jitllm::scheduler::StartRequest;
-using jitllm::scheduler::Step;
-using jitllm::scheduler::StorageService;
-using jitllm::scheduler::TaskContext;
-using jitllm::scheduler::TaskOutcome;
-using jitllm::scheduler::TaskProgram;
+using llmp::base::Bytes;
+using llmp::base::PushResult;
+using llmp::catalog::Closure;
+using llmp::catalog::ExtentId;
+using llmp::catalog::ExtentState;
+using llmp::providers::Access;
+using llmp::providers::BackingKind;
+using llmp::providers::StreamId;
+using llmp::scheduler::CancelRequest;
+using llmp::scheduler::CompletionBoard;
+using llmp::scheduler::Control;
+using llmp::scheduler::CpuCommand;
+using llmp::scheduler::CpuResult;
+using llmp::scheduler::DeviceService;
+using llmp::scheduler::DeviceSettings;
+using llmp::scheduler::DeviceWork;
+using llmp::scheduler::Fault;
+using llmp::scheduler::Lane;
+using llmp::scheduler::Outcome;
+using llmp::scheduler::QueueSettings;
+using llmp::scheduler::Readiness;
+using llmp::scheduler::Scheduler;
+using llmp::scheduler::SchedulerSettings;
+using llmp::scheduler::StartRequest;
+using llmp::scheduler::Step;
+using llmp::scheduler::StorageService;
+using llmp::scheduler::TaskContext;
+using llmp::scheduler::TaskOutcome;
+using llmp::scheduler::TaskProgram;
 
 // Large enough that a cancellation posted once the read is published finds
 // requests still in flight: 32 requests of 2 MiB, four at a time.
@@ -198,18 +198,18 @@ bool WaitFor(const std::atomic<bool>& flag) {
 class CudaLanes : public ::testing::Test {
  protected:
   void SetUp() override {
-    auto memory = jitllm::providers::cuda::OpenDeviceMemory(0);
+    auto memory = llmp::providers::cuda::OpenDeviceMemory(0);
     ASSERT_TRUE(memory.has_value()) << (memory ? "" : memory.error().detail);
     memory_ = std::move(*memory);
-    auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
     ASSERT_TRUE(execution.has_value()) << (execution ? "" : execution.error().detail);
     execution_ = std::move(*execution);
-    auto storage = jitllm::providers::UringStorage::Create(8);
+    auto storage = llmp::providers::UringStorage::Create(8);
     ASSERT_TRUE(storage.has_value()) << storage.error().message();
     storage_ = std::move(*storage);
 
     // The file, written through aligned memory.
-    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path directory = scratch != nullptr
                                                 ? std::filesystem::path(scratch)
                                                 : std::filesystem::path(::testing::TempDir());
@@ -242,16 +242,16 @@ class CudaLanes : public ::testing::Test {
     domain_ = catalog_.AddDomain("gb10");
     source_ = catalog_
                   .AddExtent({.domain = domain_,
-                              .memory_class = jitllm::catalog::MemoryClass::kWeights,
-                              .recovery = jitllm::catalog::Recovery::kFromArtifact,
+                              .memory_class = llmp::catalog::MemoryClass::kWeights,
+                              .recovery = llmp::catalog::Recovery::kFromArtifact,
                               .size = Bytes(kSize),
                               .content = {}})
                   .value();
     for (std::size_t i = 0; i < 2; ++i) {
       scratch_.at(i) = catalog_
                            .AddExtent({.domain = domain_,
-                                       .memory_class = jitllm::catalog::MemoryClass::kScratch,
-                                       .recovery = jitllm::catalog::Recovery::kDiscardable,
+                                       .memory_class = llmp::catalog::MemoryClass::kScratch,
+                                       .recovery = llmp::catalog::Recovery::kDiscardable,
                                        .size = Bytes(kSize),
                                        .content = {}},
                                       true)
@@ -261,28 +261,28 @@ class CudaLanes : public ::testing::Test {
 
     storage_lane_ = std::make_unique<StorageService>(
         *storage_,
-        jitllm::providers::ReaderSettings{.alignment = 4096,
-                                          .request_bytes = 2U << 20U,
-                                          .retries = 3,
-                                          .reads = 16,
-                                          .waiters = 8,
-                                          .span_bytes = jitllm::providers::kNoCoalescing,
-                                          .span_segments = jitllm::providers::kMaxSegments},
+        llmp::providers::ReaderSettings{.alignment = 4096,
+                                        .request_bytes = 2U << 20U,
+                                        .retries = 3,
+                                        .reads = 16,
+                                        .waiters = 8,
+                                        .span_bytes = llmp::providers::kNoCoalescing,
+                                        .span_segments = llmp::providers::kMaxSegments},
         board_, QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     device_lane_ = std::make_unique<DeviceService>(
         *execution_, std::span<const StreamId>(&stream_, 1), board_,
         DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16}, .handoff = 16});
     cpu_lane_ = std::make_unique<Lane<CpuCommand>>(
-        jitllm::scheduler::LaneSettings{.name = "cpu", .capacity = 16, .reserved = 4, .workers = 1},
-        jitllm::scheduler::CpuHandler(board_));
+        llmp::scheduler::LaneSettings{.name = "cpu", .capacity = 16, .reserved = 4, .workers = 1},
+        llmp::scheduler::CpuHandler(board_));
     scheduler_ = std::make_unique<Scheduler>(
         catalog_, board_, wake_,
-        jitllm::scheduler::Lanes{
+        llmp::scheduler::Lanes{
             .storage = storage_lane_.get(), .device = device_lane_.get(), .cpu = cpu_lane_.get()},
         SchedulerSettings{.tasks = 8, .budget = Bytes(kSize * 3)});
     scheduler_->SetSource(
         source_,
-        jitllm::providers::ReadSpec{.fd = fd_, .offset = 0, .memory = At(base_), .length = kSize});
+        llmp::providers::ReadSpec{.fd = fd_, .offset = 0, .memory = At(base_), .length = kSize});
     threads_.emplace_back([this] { result_ = scheduler_->Run(); });
     threads_.emplace_back([this] { storage_lane_->Run(); });
     threads_.emplace_back([this] { device_lane_->RunSubmission(); });
@@ -348,11 +348,11 @@ class CudaLanes : public ::testing::Test {
     }
   }
 
-  std::unique_ptr<jitllm::providers::VmmProvider> memory_;
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  std::unique_ptr<jitllm::providers::UringStorage> storage_;
-  jitllm::catalog::Catalog catalog_;
-  jitllm::base::WakeFlag wake_;
+  std::unique_ptr<llmp::providers::VmmProvider> memory_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  std::unique_ptr<llmp::providers::UringStorage> storage_;
+  llmp::catalog::Catalog catalog_;
+  llmp::base::WakeFlag wake_;
   CompletionBoard board_{16, wake_};
   std::unique_ptr<StorageService> storage_lane_;
   std::unique_ptr<DeviceService> device_lane_;
@@ -363,10 +363,10 @@ class CudaLanes : public ::testing::Test {
 
   int fd_ = -1;
   std::vector<std::byte> file_;
-  jitllm::providers::ReservationId reservation_;
-  std::array<jitllm::providers::BackingId, 3> backings_;
+  llmp::providers::ReservationId reservation_;
+  std::array<llmp::providers::BackingId, 3> backings_;
   std::uint64_t base_ = 0;
-  jitllm::catalog::DomainId domain_;
+  llmp::catalog::DomainId domain_;
   ExtentId source_;
   std::array<ExtentId, 2> scratch_;
   StreamId stream_;

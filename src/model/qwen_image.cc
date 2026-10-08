@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/qwen_image.h"
@@ -22,7 +22,7 @@
 #include "artifact/artifact.h"
 #include "artifact/representation.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 namespace {
 
 std::unexpected<std::string> Refused(std::string why) { return std::unexpected(std::move(why)); }
@@ -493,4 +493,4 @@ std::vector<std::uint8_t> QwenImagePixels(std::span<const std::uint16_t> decoded
   return out;
 }
 
-}  // namespace jitllm::model
+}  // namespace llmp::model

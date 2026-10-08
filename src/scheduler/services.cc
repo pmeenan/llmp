@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "scheduler/services.h"
@@ -27,7 +27,7 @@
 #include "scheduler/commands.h"
 #include "scheduler/completions.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 namespace {
 
 // The completion lane's first back-off once a fence is later than
@@ -992,4 +992,4 @@ Lane<CpuCommand>::Handler CpuHandler(CompletionBoard& board) {
   };
 }
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler

@@ -1,0 +1,29 @@
+diff --git a/cuda/mmq/ds4_mmq_d2r.cu b/cuda/mmq/ds4_mmq_d2r.cu
+--- a/cuda/mmq/ds4_mmq_d2r.cu
++++ b/cuda/mmq/ds4_mmq_d2r.cu
+@@ -18,2 +18,2 @@
+-#include "common.cuh"
+-#include "mmq.cuh"
++#include "ggml/src/ggml-cuda/common.cuh"
++#include "ggml/src/ggml-cuda/mmq.cuh"
+diff --git a/llmp/CMakeLists.txt b/llmp/CMakeLists.txt
+--- a/llmp/CMakeLists.txt
++++ b/llmp/CMakeLists.txt
+@@ -5,1 +5,8 @@
+ project(llmp_ds4 LANGUAGES CXX)
++
++# Literal numerical derivatives include the unchanged original header closure
++# through an explicit component-root path. No upstream host runtime is built.
++add_library(llmp_ds4_original_headers INTERFACE)
++target_include_directories(llmp_ds4_original_headers INTERFACE
++                           "${CMAKE_CURRENT_SOURCE_DIR}/..")
++
+@@ -14,1 +21,7 @@
+-  target_include_directories(llmp_ds4_d2r PUBLIC "${product}")
++  target_include_directories(llmp_ds4_d2r PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
++  # Keep the existing production D2R translation unit on its independently
++  # locked GGML closure after original headers appear in the product folder.
++  get_target_property(locked_ggml_source llmp_ggml_cuda SOURCE_DIR)
++  get_filename_component(locked_ggml_root "${locked_ggml_source}/.." ABSOLUTE)
++  target_include_directories(llmp_ds4_d2r PRIVATE "${locked_ggml_root}")
++

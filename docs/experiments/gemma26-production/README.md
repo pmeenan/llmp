@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 bounded production recipe
@@ -93,7 +93,7 @@ prior recipe and calibration identity. Default context 262,144 is not
 reduced, so the recipe applies only where configured within bounds.
 Thinking/tools, assistants and sustained performance remain owed. The HTTP
 controls below qualify the corrected ordinary response lifecycle and preserve
-the historical failed cross-geometry continuation assertion as evidence. A natural two-turn `jitllm-runtime chat`
+the historical failed cross-geometry continuation assertion as evidence. A natural two-turn `llmp-runtime chat`
 through the default selection used 1024-row chunks and stopped naturally ("The
 capital of France is Paris." / "The capital of Italy is Rome."). Among the GPU
 suites, only the opposite-profile switch case in `gemma4_serving_gpu_test`
@@ -291,7 +291,7 @@ The intervening Gemma3 additions do not execute in these Gemma4 controls.
 The reference is the official image
 `ghcr.io/ggml-org/llama.cpp@sha256:c604ea4f…0607db` (v0.6.0/d812350) with
 `gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`. The adoption helper is the dense31 bridge's `llama_serving.cc`, changed only
-to accept 26B's shape, take its batch from `JITLLM_DIAG_CHUNK` and allow profiler
+to accept 26B's shape, take its batch from `LLMP_DIAG_CHUNK` and allow profiler
 injection. The newer three-head controls use `llama_continuation.cc` against
 the retained original libraries. Dense31 uses approved artifact `32c92e07…`
 and `gemma-4-31B-it-UD-Q4_K_XL.gguf`. Raw logs, heads and token

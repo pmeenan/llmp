@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The CUDA device-execution provider: DeviceExecution over the driver API.
@@ -15,8 +15,8 @@
 // stream (RE-029), so a lane that fences its work, such as the landing
 // zone's copy lane, must not create events as it goes.
 
-#ifndef JITLLM_PROVIDERS_CUDA_CUDA_DEVICE_EXECUTION_H_
-#define JITLLM_PROVIDERS_CUDA_CUDA_DEVICE_EXECUTION_H_
+#ifndef LLMP_PROVIDERS_CUDA_CUDA_DEVICE_EXECUTION_H_
+#define LLMP_PROVIDERS_CUDA_CUDA_DEVICE_EXECUTION_H_
 
 #include <cstddef>
 #include <expected>
@@ -24,7 +24,7 @@
 
 #include "providers/device_execution.h"
 
-namespace jitllm::providers::cuda {
+namespace llmp::providers::cuda {
 
 struct ExecutionSettings {
   std::size_t events_ahead = 256;  // made when the provider opens
@@ -34,6 +34,6 @@ struct ExecutionSettings {
 std::expected<std::unique_ptr<DeviceExecution>, Failure> OpenDeviceExecution(
     int ordinal, ExecutionSettings settings = {});
 
-}  // namespace jitllm::providers::cuda
+}  // namespace llmp::providers::cuda
 
-#endif  // JITLLM_PROVIDERS_CUDA_CUDA_DEVICE_EXECUTION_H_
+#endif  // LLMP_PROVIDERS_CUDA_CUDA_DEVICE_EXECUTION_H_

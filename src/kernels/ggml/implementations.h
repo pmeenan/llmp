@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The GGML module's entries in the implementation registry (D-053;
@@ -66,34 +66,34 @@
 // For Qwen-Image-2.1's denoiser (M3): multi-head attention at D = 128,
 // unmasked, any number of cells:
 //   ggml.flash_attn_ext.mma_d128 {flash_attn_ext}        ops_ext.h FlashAttnMma128
-// and jitLLM's own operations on GGML tensors, for Qwen3.8's MXFP8 and
-// NVFP4 tensors (jitllm_ops.h), each a GGML_OP_CUSTOM node:
-//   jitllm.mxfp8.mul_mat_vec     {custom}                RunMxfp8MulMatVec
-//   jitllm.mxfp8.dequant         {custom}                RunMxfp8Dequant
-//   jitllm.nvfp4.get_rows        {custom}                RunNvfp4Rows
-//   jitllm.qrows.get_rows        {custom}                RunQRows
+// and llmpalooza's own operations on GGML tensors, for Qwen3.8's MXFP8 and
+// NVFP4 tensors (llmp_ops.h), each a GGML_OP_CUSTOM node:
+//   llmp.mxfp8.mul_mat_vec     {custom}                RunMxfp8MulMatVec
+//   llmp.mxfp8.dequant         {custom}                RunMxfp8Dequant
+//   llmp.nvfp4.get_rows        {custom}                RunNvfp4Rows
+//   llmp.qrows.get_rows        {custom}                RunQRows
 // (GGML's NVFP4 experts take ggml.mul_mat_id.mmvq and .mmq above; the last,
 // a GGUF checkpoint's n-gram table in a 32-value block type), and
-// jitLLM's fusions of Qwen3.8's GGML nodes, the same arithmetic in the same
+// llmpalooza's fusions of Qwen3.8's GGML nodes, the same arithmetic in the same
 // order:
-//   jitllm.hc.combine            {custom}                RunHcCombine
-//   jitllm.hc.norm               {custom}                RunHcNorm
-//   jitllm.hc.mix                {custom}                RunHcMix
-//   jitllm.moe.glu               {custom}                RunMoeGlu
-//   jitllm.moe.combine           {custom}                RunMoeCombine
-//   jitllm.bf16                  {custom}                RunBf16
-//   jitllm.gemm.bf16             {custom}                RunGemmBf16
+//   llmp.hc.combine            {custom}                RunHcCombine
+//   llmp.hc.norm               {custom}                RunHcNorm
+//   llmp.hc.mix                {custom}                RunHcMix
+//   llmp.moe.glu               {custom}                RunMoeGlu
+//   llmp.moe.combine           {custom}                RunMoeCombine
+//   llmp.bf16                  {custom}                RunBf16
+//   llmp.gemm.bf16             {custom}                RunGemmBf16
 // and a second implementation of GGML's gated_delta_net node, chosen where
-// it takes the shape (jitllm_ops.h GatedDeltaNetColumnsFits):
-//   jitllm.gated_delta_net.columns {gated_delta_net}     RunGatedDeltaNetColumns
+// it takes the shape (llmp_ops.h GatedDeltaNetColumnsFits):
+//   llmp.gated_delta_net.columns {gated_delta_net}     RunGatedDeltaNetColumns
 // A speculative verify's row-invariant plan (D-092; graph_plan.h
 // DeviceChoices::row_invariant) runs every product of up to 8 columns
 // through
-//   jitllm.mul_mat.mmvq_rows     {mul_mat}               ops_ext.h MulMatVecQRows
-//   jitllm.mul_mat_id.mmvq_rows  {mul_mat_id}            ops_ext.h MulMatVecQRows
-//   jitllm.mul_mat.mmvf_rows     {mul_mat}               ops_ext.h MulMatVecFRows
+//   llmp.mul_mat.mmvq_rows     {mul_mat}               ops_ext.h MulMatVecQRows
+//   llmp.mul_mat_id.mmvq_rows  {mul_mat_id}            ops_ext.h MulMatVecQRows
+//   llmp.mul_mat.mmvf_rows     {mul_mat}               ops_ext.h MulMatVecFRows
 // and DeepSeek's DSpark drafter chains its Markov head on
-//   jitllm.argmax                {custom}                RunArgmax
+//   llmp.argmax                {custom}                RunArgmax
 // The quantized products' two implementations are GGML's kernel families,
 // which the plan names as upstream would route (ops_ext.h SelectMulMatQ);
 // ggml.unary and ggml.rope.ext compute the function the node names.
@@ -104,8 +104,8 @@
 // Each identity covers everything that decides what an implementation
 // computes and launches:
 //   - the prepared GGML tree's digest, which covers upstream's bytes,
-//     jitLLM's patches and the build of GGML's files;
-//   - jitLLM's own code in this module: a digest of every file in
+//     llmpalooza's patches and the build of GGML's files;
+//   - Llmpalooza's own code in this module: a digest of every file in
 //     src/kernels/ggml, written at build time (module_digest.cmake), so any
 //     edit here changes every identity the module declares;
 //   - the SDK, target, device architecture, build type (NDEBUG, and with it
@@ -123,8 +123,8 @@
 // is bound; each launch then runs that kernel's host checks and launchers
 // and looks nothing up.
 
-#ifndef JITLLM_KERNELS_GGML_IMPLEMENTATIONS_H_
-#define JITLLM_KERNELS_GGML_IMPLEMENTATIONS_H_
+#ifndef LLMP_KERNELS_GGML_IMPLEMENTATIONS_H_
+#define LLMP_KERNELS_GGML_IMPLEMENTATIONS_H_
 
 #include <cstddef>
 #include <expected>
@@ -137,7 +137,7 @@
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // What this module declares to the registry.
 std::vector<execution::Implementation> Implementations();
@@ -204,6 +204,6 @@ class Kernel {
   const Entry* entry_;
 };
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_IMPLEMENTATIONS_H_
+#endif  // LLMP_KERNELS_GGML_IMPLEMENTATIONS_H_

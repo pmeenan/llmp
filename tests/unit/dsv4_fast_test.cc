@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// DeepSeek V4's fast plan (kernels/ggml/jitllm_ops.h, dsv4_fast.cu; the
+// DeepSeek V4's fast plan (kernels/ggml/llmp_ops.h, dsv4_fast.cu; the
 // owner's speed before bit exactness, D-085's note) on a GB10 (label
 // `gpu`), at the model's widths:
-// - jitllm.vecq's dense, grouped and routed products over one Q8_1
+// - llmp.vecq's dense, grouped and routed products over one Q8_1
 //   quantization against GGML's own MMVQ launches (the same per-block dot
 //   products, other sums: NMSE bounds), every launch configuration built;
 //   the routed products with experts shared between tokens (each read once)
@@ -49,8 +49,8 @@
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
@@ -60,14 +60,14 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::KernelFailure;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-namespace kg = jitllm::kernels::ggml;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::KernelFailure;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+namespace kg = llmp::kernels::ggml;
 
 constexpr std::uint64_t kWorkspace = 256ULL << 20;
 
@@ -197,7 +197,7 @@ double Q4KBlockProduct(const std::uint8_t* w, const std::uint8_t* q8) {
 class Dsv4FastTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     const std::uint64_t workspace = Allocate(kWorkspace);
     auto launch = LaunchContext::Create(0, *execution_, stream_,
@@ -268,7 +268,7 @@ class Dsv4FastTest : public ::testing::Test {
     return values;
   }
 
-  // x quantized once, then `node` (a jitllm.vecq over it) run.
+  // x quantized once, then `node` (a llmp.vecq over it) run.
   std::vector<float> RunVecQ(ggml_tensor* q8, ggml_tensor* node, const std::string& what) {
     Launched(kg::RunQuantizeQ8(launch(), q8), what + " (quantize)");
     Launched(kg::RunVecQ(launch(), node), what);
@@ -505,7 +505,7 @@ TEST_F(Dsv4FastTest, DenseAndGroupedProductsMatchGgmlsVectorKernel) {
       const std::string what = std::string(ggml_type_name(test.type)) + " k " +
                                std::to_string(test.k) + " groups " + std::to_string(test.groups) +
                                " x " + std::to_string(tokens);
-      // jitLLM's rows: [k, groups, tokens] (a token's groups together).
+      // llmpalooza's rows: [k, groups, tokens] (a token's groups together).
       const std::vector<float> x = Normal(6 + static_cast<std::uint64_t>(tokens),
                                           static_cast<std::size_t>(test.k * test.groups * tokens));
       ggml_tensor* input =
@@ -1552,14 +1552,14 @@ TEST_F(Dsv4FastTest, TheChecksRefuseWhatTheKernelsDoNotTake) {
 }
 
 TEST_F(Dsv4FastTest, TheRegistryDeclaresAndBindsTheFastPlansImplementations) {
-  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  auto registry = llmp::execution::Registry::Create(kg::Implementations());
   ASSERT_TRUE(registry.has_value());
   for (const std::string_view name :
        {kg::kQuantizeQ8Name, kg::kVecQName, kg::kDsv4RouteName, kg::kDsv4CombineName,
         kg::kDsv4HcMixName, kg::kDsv4HcPreName, kg::kDsv4CompressName,
         std::string_view{kg::kDsv4WeightedReduceName}}) {
     bool found = false;
-    for (const jitllm::execution::Implementation& implementation : kg::Implementations()) {
+    for (const llmp::execution::Implementation& implementation : kg::Implementations()) {
       if (implementation.name == name) {
         found = true;
         EXPECT_TRUE(kg::Kernel::Bind(implementation).has_value()) << name;
@@ -1781,11 +1781,11 @@ TEST_F(Dsv4FastTest, TheSparseMaskKeepsTheWindowAndTheSelectedOrVisibleRows) {
   // An indexer of other head widths.
   ggml_tensor* q64 = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 64, 64, kRows));
   EXPECT_FALSE(kg::CheckDsv4LidTopK(Place(kg::Dsv4LidTopK(c(), q64, k, w, v, 512))).has_value());
-  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  auto registry = llmp::execution::Registry::Create(kg::Implementations());
   ASSERT_TRUE(registry.has_value());
   for (const std::string_view name : {kg::kDsv4LidTopKName, kg::kDsv4SparseMaskName}) {
     bool found = false;
-    for (const jitllm::execution::Implementation& implementation : kg::Implementations()) {
+    for (const llmp::execution::Implementation& implementation : kg::Implementations()) {
       if (implementation.name == name) {
         found = true;
         EXPECT_TRUE(kg::Kernel::Bind(implementation).has_value()) << name;
@@ -1796,7 +1796,7 @@ TEST_F(Dsv4FastTest, TheSparseMaskKeepsTheWindowAndTheSelectedOrVisibleRows) {
 }
 
 TEST_F(Dsv4FastTest, QHeadRetainsNativeRmsAndRotaryRoundingAtLongPositions) {
-  const auto& profile = jitllm::model::Dsv4Flash();
+  const auto& profile = llmp::model::Dsv4Flash();
   for (const std::int64_t rows : {33, 2048}) {
     const auto count = static_cast<std::size_t>(512LL * 64 * rows);
     auto* input = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 512, 64, rows), Normal(711, count));

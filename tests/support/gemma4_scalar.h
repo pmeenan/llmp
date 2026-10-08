@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Independent analytic scalar oracle for structured, constant-per-matrix-row
 // weights at the ACTUAL 26B widths. No graph/node/planner inspection. Encoded
 // weight quantization and CUDA input rounding are judged by a quality bound;
 // solo/batch and own-repeat controls separately compare actual output bytes.
-#ifndef JITLLM_TESTS_SUPPORT_GEMMA4_SCALAR_H_
-#define JITLLM_TESTS_SUPPORT_GEMMA4_SCALAR_H_
+#ifndef LLMP_TESTS_SUPPORT_GEMMA4_SCALAR_H_
+#define LLMP_TESTS_SUPPORT_GEMMA4_SCALAR_H_
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -22,7 +22,7 @@
 #include "ggml.h"
 #include "model/gemma4.h"
 
-namespace jitllm::test_support::gemma4_scalar {
+namespace llmp::test_support::gemma4_scalar {
 inline double Coefficient(std::string_view name, std::uint32_t row, std::uint32_t expert = 0) {
   const auto centered = [](std::uint32_t value, std::uint32_t modulus) {
     return static_cast<double>(value % modulus) - static_cast<double>(modulus / 2);
@@ -262,5 +262,5 @@ inline LayerResult Layer(const model::Gemma4Profile& p, std::uint32_t il, std::u
   std::ignore = capacity;  // virtual ring changes addressing, not the unrolled oracle
   return result;
 }
-}  // namespace jitllm::test_support::gemma4_scalar
-#endif  // JITLLM_TESTS_SUPPORT_GEMMA4_SCALAR_H_
+}  // namespace llmp::test_support::gemma4_scalar
+#endif  // LLMP_TESTS_SUPPORT_GEMMA4_SCALAR_H_

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Temporary complete ds4 benchmark
@@ -14,11 +14,11 @@ only what it uses of the study: the original output-A core
 (`dsv4_ds4_product_raw.cu`) and the F16-Q token-tile HCA core
 (`dsv4_ds4_attention.cu`), beside the locked D2R and HCA units.
 
-The goal is to match the pinned ds4 pipeline inside jitLLM at the same
+The goal is to match the pinned ds4 pipeline inside llmpalooza at the same
 model, value/storage precisions, dispatch, chunking and output scope, then
 restore native stages one at a time to identify the causes of the performance
-gap. Useful techniques can then be adapted to jitLLM's architecture and the
-literal reference retired. jitLLM keeps its own streams, paging, dispatch
+gap. Useful techniques can then be adapted to llmpalooza's architecture and the
+literal reference retired. Llmpalooza keeps its own streams, paging, dispatch
 and completion ownership throughout.
 
 The initial scope is all 43 layers, two 4,096-row chunks at 8K, and one
@@ -164,11 +164,11 @@ The original source is Entrpi/ds4
 External source, build and raw results remain under
 `spark-b:~/scratch/m3-ds4-complete-original/{source-r1,build-r1,model-r1}/`.
 The authenticated community model is
-`~/.local/share/jitllm/models/antirez/deepseek-v4-gguf@f71f23d5/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf`;
-the TSV is `source-r1/jitllm-ds4-complete-original-8192.tsv`.
+`~/.local/share/llmp/models/antirez/deepseek-v4-gguf@f71f23d5/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf`;
+the TSV is `source-r1/llmp-ds4-complete-original-8192.tsv`.
 The build receipt records every reused object, exact compiler/link command,
 resolved library and source hash. This external oracle runtime is temporary
-and is not incorporated into jitLLM.
+and is not incorporated into llmpalooza.
 
 ## Numerical components and physical state
 

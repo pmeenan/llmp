@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // ARTIFACT OUTPUT_DIR 26|31 OWNERS scalar|joined ordinary|rows|rows-norm|norm [IDS_I32]
@@ -23,7 +23,7 @@
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
   const bool production = argc == 9 && std::string_view(argv[8]) == "production";
@@ -113,7 +113,7 @@ int main(int argc, char** argv) {
     const auto budget =
         fixed + runner.weights().size() * en::kPagedExtent + 2 * node.StateCapacity() + heap;
     node.SetHostFloor(runner.plan_floor_bytes() + runner.host_input_bytes() + heap);
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();
@@ -234,7 +234,7 @@ int main(int argc, char** argv) {
             auto slot = runner.request_slot(owner);
             if (!slot || (*slot)->completed_positions() != positions)
               return Error("owner completed positions differ from recipe");
-            std::vector<jitllm::catalog::ExtentId> staging;
+            std::vector<llmp::catalog::ExtentId> staging;
             auto state = node.Pinned(bytes, 0, staging);
             if (!state) return Error(state.error());
             if (auto r = runner.CopyState(owner, *state, *ranges, true); !r) return r;

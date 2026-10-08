@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-#ifndef JITLLM_BENCHMARKS_GEMMA_ATTENTION_GLOBAL_CAPTURE_H_
-#define JITLLM_BENCHMARKS_GEMMA_ATTENTION_GLOBAL_CAPTURE_H_
+#ifndef LLMP_BENCHMARKS_GEMMA_ATTENTION_GLOBAL_CAPTURE_H_
+#define LLMP_BENCHMARKS_GEMMA_ATTENTION_GLOBAL_CAPTURE_H_
 
 #include <array>
 #include <cstdint>
@@ -10,7 +10,7 @@
 #include "engine/paged_node.h"
 #include "kernels/ggml/launch.h"
 
-namespace jitllm::benchmark {
+namespace llmp::benchmark {
 // Fixed first-global D512/C4 native-origin witness. The caller retains this
 // object, its node and all node-owned pinned destinations through retirement.
 class GemmaAttentionGlobalCapture {
@@ -42,5 +42,5 @@ class GemmaAttentionGlobalCapture {
   bool enabled_ = false;
   engine::PagedNode* node_ = nullptr;
 };
-}  // namespace jitllm::benchmark
+}  // namespace llmp::benchmark
 #endif

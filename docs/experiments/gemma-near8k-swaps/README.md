@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Near-8K Gemma initialized-state swaps (2026-10-07)
@@ -79,7 +79,7 @@ state/spill directories. `MODEL` is one of `gemma26`, `gemma31`, `gemma2`, each
 configured at context 8192/slots1 and its ordinary chunk size above:
 
 ```sh
-jitllm-runtime --config CONFIG --anchor PRIVATE swap-table \
+llmp-runtime --config CONFIG --anchor PRIVATE swap-table \
   --pairs MODEL:qwen38 --context-text TEXT --context-tokens 8063 \
   --continue 64 --cycles 2 --zero-context on --handoff on --plain \
   --report REPORT.json
@@ -90,8 +90,8 @@ Official supervised jobs `m35-gemma26-near8k-swap1` and
 `m35-gemma2-near8k-swap1` finishes four steps DONE0 including transfer.
 There are no failures in this slice and no full-suite run. Raw configurations,
 inputs, logs, source/binary/library bindings, exact reports and aggregates remain
-outside Git under Spark A `~/.local/share/jitllm/gemma-context-swap-{g26,g31,g2}-1`
-and local `/tmp/jitllm-m35-coordination/gemma-context-swap-{g26,g31,g2}-result1`.
+outside Git under Spark A `~/.local/share/llmp/gemma-context-swap-{g26,g31,g2}-1`
+and local `/tmp/llmp-m35-coordination/gemma-context-swap-{g26,g31,g2}-result1`.
 TensorFold HEAD was freshly checked at task entry as
 [041d14a94e951834470fd514ed33e65b8be1059a](https://github.com/ashhart/TensorFold/blob/041d14a94e951834470fd514ed33e65b8be1059a/README.md);
 that native 1.0.0 README supplies no matching qualified Gemma GGUF CUDA recipe

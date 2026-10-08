@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The commitment ledger against D-050's worked cases
@@ -27,31 +27,31 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::test_support::Failed;
-using jitllm::base::operator""_MiB;
-using jitllm::catalog::Catalog;
-using jitllm::catalog::ExtentId;
-using jitllm::catalog::MemoryClass;
-using jitllm::catalog::Recovery;
-using jitllm::memory::CommitmentError;
-using jitllm::memory::CommitmentLedger;
-using jitllm::memory::Envelope;
-using jitllm::memory::GrantId;
+using llmp::base::Bytes;
+using llmp::test_support::Failed;
+using llmp::base::operator""_MiB;
+using llmp::catalog::Catalog;
+using llmp::catalog::ExtentId;
+using llmp::catalog::MemoryClass;
+using llmp::catalog::Recovery;
+using llmp::memory::CommitmentError;
+using llmp::memory::CommitmentLedger;
+using llmp::memory::Envelope;
+using llmp::memory::GrantId;
 using ::testing::ElementsAre;
 
 Envelope E(std::uint64_t retained, std::uint64_t phase) {
   return {.retained = Bytes(retained), .phase = Bytes(phase)};
 }
 
-constexpr jitllm::catalog::DomainId kSpark(0, 1);
-constexpr jitllm::catalog::DomainId kSparkB(1, 1);
+constexpr llmp::catalog::DomainId kSpark(0, 1);
+constexpr llmp::catalog::DomainId kSparkB(1, 1);
 constexpr Bytes kBudget = 1024_MiB;
 
-jitllm::memory::CommitmentTotals Totals(const CommitmentLedger& ledger) {
+llmp::memory::CommitmentTotals Totals(const CommitmentLedger& ledger) {
   const auto totals = ledger.Totals(kSpark);
   EXPECT_TRUE(totals.has_value());
-  return totals.value_or(jitllm::memory::CommitmentTotals{});
+  return totals.value_or(llmp::memory::CommitmentTotals{});
 }
 
 CommitmentLedger Ledger(std::uint64_t budget) {
@@ -163,7 +163,7 @@ TEST(CommitmentLedger, DomainsAreSeparate) {
   EXPECT_EQ(Failed(ledger.SetCohort(kSpark, mixed)), CommitmentError::kUnknownGrant);
   const std::vector<GrantId> twice = {here, here};
   EXPECT_EQ(Failed(ledger.SetCohort(kSpark, twice)), CommitmentError::kUnknownGrant);
-  EXPECT_EQ(Failed(ledger.Grant(jitllm::catalog::DomainId(9, 1), E(1, 1))),
+  EXPECT_EQ(Failed(ledger.Grant(llmp::catalog::DomainId(9, 1), E(1, 1))),
             CommitmentError::kUnknownDomain);
 }
 
@@ -173,11 +173,11 @@ class VictimTest : public ::testing::Test {
 
   ExtentId Resident(MemoryClass memory_class, Recovery recovery, std::uint32_t chunk,
                     std::uint64_t used) {
-    jitllm::catalog::ExtentDescriptor descriptor{.domain = domain_,
-                                                 .memory_class = memory_class,
-                                                 .recovery = recovery,
-                                                 .size = 2_MiB,
-                                                 .content = {}};
+    llmp::catalog::ExtentDescriptor descriptor{.domain = domain_,
+                                               .memory_class = memory_class,
+                                               .recovery = recovery,
+                                               .size = 2_MiB,
+                                               .content = {}};
     descriptor.content.chunk = chunk;
     const ExtentId extent = catalog_.AddExtent(descriptor).value();
     const auto ticket = catalog_.BeginLoad(extent, kBudget).value();
@@ -192,7 +192,7 @@ class VictimTest : public ::testing::Test {
   }
 
   Catalog catalog_;
-  jitllm::catalog::DomainId domain_;
+  llmp::catalog::DomainId domain_;
 };
 
 TEST_F(VictimTest, DiscardedFirstThenLeastRecentlyUsedThenContent) {
@@ -201,7 +201,7 @@ TEST_F(VictimTest, DiscardedFirstThenLeastRecentlyUsedThenContent) {
   const ExtentId old_a = Resident(MemoryClass::kWeights, Recovery::kFromArtifact, 3, 2);
   const ExtentId scratch = Resident(MemoryClass::kScratch, Recovery::kDiscardable, 0, 20);
   const ExtentId never = Resident(MemoryClass::kWeights, Recovery::kFromArtifact, 7, 0);
-  auto plan = jitllm::memory::SelectVictims(catalog_, domain_, 10_MiB);
+  auto plan = llmp::memory::SelectVictims(catalog_, domain_, 10_MiB);
   std::vector<ExtentId> order;
   order.reserve(plan.victims.size());
   for (const auto& victim : plan.victims) {
@@ -212,7 +212,7 @@ TEST_F(VictimTest, DiscardedFirstThenLeastRecentlyUsedThenContent) {
   EXPECT_EQ(plan.credited, 10_MiB);
   EXPECT_EQ(plan.passed_over, 0U);
   // Only what is needed; the rest are passed over.
-  plan = jitllm::memory::SelectVictims(catalog_, domain_, 3_MiB);
+  plan = llmp::memory::SelectVictims(catalog_, domain_, 3_MiB);
   ASSERT_EQ(plan.victims.size(), 2U);
   EXPECT_EQ(plan.passed_over, 3U);
   EXPECT_EQ(plan.victims[0].memory_class, MemoryClass::kScratch);
@@ -235,7 +235,7 @@ TEST_F(VictimTest, NeverHeldPinnedOrProtected) {
       .value();
   (void)state;
   const std::vector<ExtentId> protect = {pending};
-  const auto plan = jitllm::memory::SelectVictims(catalog_, domain_, 8_MiB, protect);
+  const auto plan = llmp::memory::SelectVictims(catalog_, domain_, 8_MiB, protect);
   ASSERT_EQ(plan.victims.size(), 1U);
   EXPECT_EQ(plan.victims[0].extent, free);
   EXPECT_FALSE(plan.sufficient);  // not enough: nothing should be evicted for it
@@ -245,8 +245,8 @@ TEST_F(VictimTest, TheChoiceIsDeterministic) {
   for (std::uint32_t chunk = 0; chunk < 16; ++chunk) {
     (void)Resident(MemoryClass::kWeights, Recovery::kFromArtifact, 15 - chunk, 1);
   }
-  const auto first = jitllm::memory::SelectVictims(catalog_, domain_, 8_MiB);
-  const auto second = jitllm::memory::SelectVictims(catalog_, domain_, 8_MiB);
+  const auto first = llmp::memory::SelectVictims(catalog_, domain_, 8_MiB);
+  const auto second = llmp::memory::SelectVictims(catalog_, domain_, 8_MiB);
   ASSERT_EQ(first.victims.size(), 4U);
   for (std::size_t i = 0; i < first.victims.size(); ++i) {
     EXPECT_EQ(first.victims[i].extent, second.victims[i].extent);
@@ -257,23 +257,23 @@ TEST_F(VictimTest, TheChoiceIsDeterministic) {
 class MaterializeTest : public VictimTest {
  protected:
   ExtentId Absent(std::uint32_t chunk) {
-    jitllm::catalog::ExtentDescriptor descriptor{.domain = domain_,
-                                                 .memory_class = MemoryClass::kWeights,
-                                                 .recovery = Recovery::kFromArtifact,
-                                                 .size = 2_MiB,
-                                                 .content = {}};
+    llmp::catalog::ExtentDescriptor descriptor{.domain = domain_,
+                                               .memory_class = MemoryClass::kWeights,
+                                               .recovery = Recovery::kFromArtifact,
+                                               .size = 2_MiB,
+                                               .content = {}};
     descriptor.content.chunk = chunk;
     return catalog_.AddExtent(descriptor).value();
   }
 
-  jitllm::catalog::Closure Of(const std::vector<ExtentId>& extents) {
+  llmp::catalog::Closure Of(const std::vector<ExtentId>& extents) {
     return catalog_.ClosureOfExtents(extents).value();
   }
 };
 
 TEST_F(MaterializeTest, AResidentClosureIsReady) {
   const ExtentId a = Resident(MemoryClass::kWeights, Recovery::kFromArtifact, 0, 1);
-  const auto plan = jitllm::memory::PlanMaterialization(catalog_, domain_, 2_MiB, Of({a}));
+  const auto plan = llmp::memory::PlanMaterialization(catalog_, domain_, 2_MiB, Of({a}));
   EXPECT_TRUE(plan.feasible);
   EXPECT_TRUE(plan.ready);
   EXPECT_EQ(plan.missing, Bytes());
@@ -291,7 +291,7 @@ TEST_F(MaterializeTest, OnlyTheShortfallIsReclaimed) {
   const std::vector<ExtentId> protect = {kept};
   // 8 MiB occupied, 4 MiB missing, B = 10 MiB: 2 MiB short.
   auto plan =
-      jitllm::memory::PlanMaterialization(catalog_, domain_, 10_MiB, Of({needed, x, y}), protect);
+      llmp::memory::PlanMaterialization(catalog_, domain_, 10_MiB, Of({needed, x, y}), protect);
   EXPECT_THAT(plan.load, ElementsAre(x, y));
   EXPECT_EQ(plan.missing, 4_MiB);
   EXPECT_EQ(plan.shortfall, 2_MiB);
@@ -300,14 +300,13 @@ TEST_F(MaterializeTest, OnlyTheShortfallIsReclaimed) {
   EXPECT_TRUE(plan.feasible);
   EXPECT_FALSE(plan.ready);
   // Loads wait for the victim's eviction to complete.
-  EXPECT_EQ(catalog_.BeginLoad(x, 10_MiB).value_or(jitllm::catalog::Ticket{}).extent, x);
-  EXPECT_EQ(Failed(catalog_.BeginLoad(y, 10_MiB)), jitllm::catalog::CatalogError::kOverBudget);
+  EXPECT_EQ(catalog_.BeginLoad(x, 10_MiB).value_or(llmp::catalog::Ticket{}).extent, x);
+  EXPECT_EQ(Failed(catalog_.BeginLoad(y, 10_MiB)), llmp::catalog::CatalogError::kOverBudget);
   auto evict = catalog_.BeginEvict(old).value();
-  EXPECT_EQ(Failed(catalog_.BeginLoad(y, 10_MiB)), jitllm::catalog::CatalogError::kOverBudget);
+  EXPECT_EQ(Failed(catalog_.BeginLoad(y, 10_MiB)), llmp::catalog::CatalogError::kOverBudget);
   ASSERT_TRUE(catalog_.CompleteEvict(evict).has_value());
   EXPECT_TRUE(catalog_.BeginLoad(y, 10_MiB).has_value());
-  plan =
-      jitllm::memory::PlanMaterialization(catalog_, domain_, 10_MiB, Of({needed, x, y}), protect);
+  plan = llmp::memory::PlanMaterialization(catalog_, domain_, 10_MiB, Of({needed, x, y}), protect);
   EXPECT_THAT(plan.loading, ElementsAre(x, y));
   EXPECT_EQ(plan.shortfall, Bytes());
   EXPECT_TRUE(plan.feasible);
@@ -319,7 +318,7 @@ TEST_F(MaterializeTest, InsufficientVictimsMakeItInfeasible) {
   const std::vector<ExtentId> only = {leased};
   (void)catalog_.AcquireLease(catalog_.ClosureOfExtents(only).value()).value();
   const ExtentId x = Absent(10);
-  const auto plan = jitllm::memory::PlanMaterialization(catalog_, domain_, 3_MiB, Of({x}));
+  const auto plan = llmp::memory::PlanMaterialization(catalog_, domain_, 3_MiB, Of({x}));
   EXPECT_EQ(plan.shortfall, 1_MiB);
   EXPECT_FALSE(plan.victims.sufficient);
   EXPECT_FALSE(plan.feasible);
@@ -333,20 +332,20 @@ TEST_F(MaterializeTest, InFlightQuarantinedAndStaleExtents) {
   (void)catalog_.BeginLoad(loading, kBudget).value();
   const auto failed = catalog_.BeginLoad(broken, kBudget).value();
   auto plan =
-      jitllm::memory::PlanMaterialization(catalog_, domain_, kBudget, Of({evicting, loading}));
+      llmp::memory::PlanMaterialization(catalog_, domain_, kBudget, Of({evicting, loading}));
   EXPECT_THAT(plan.cancel, ElementsAre(evicting));
   EXPECT_THAT(plan.loading, ElementsAre(loading));
   EXPECT_TRUE(plan.feasible);
   EXPECT_FALSE(plan.ready);
   ASSERT_TRUE(catalog_.FailLoad(failed, /*completion_known=*/false).has_value());
-  plan = jitllm::memory::PlanMaterialization(catalog_, domain_, kBudget, Of({broken}));
+  plan = llmp::memory::PlanMaterialization(catalog_, domain_, kBudget, Of({broken}));
   EXPECT_THAT(plan.quarantined, ElementsAre(broken));
   EXPECT_FALSE(plan.feasible);
   // Invalidated state cannot be restored by loading.
   const ExtentId state = Resident(MemoryClass::kLiveState, Recovery::kPreserve, 3, 0);
   const auto taken = Of({state});
   ASSERT_TRUE(catalog_.InvalidateContents(state).has_value());
-  plan = jitllm::memory::PlanMaterialization(catalog_, domain_, kBudget, taken);
+  plan = llmp::memory::PlanMaterialization(catalog_, domain_, kBudget, taken);
   EXPECT_THAT(plan.stale, ElementsAre(state));
   EXPECT_FALSE(plan.feasible);
 }
@@ -355,13 +354,13 @@ TEST_F(MaterializeTest, InFlightQuarantinedAndStaleExtents) {
 // each kind's measured cost to restore a byte, so with equal inflation the
 // cheapest kind first; strict least recent use within a kind (never largest
 // first), the running model's last.
-using jitllm::memory::KindCosts;
-using jitllm::memory::ProtectFloor;
-using jitllm::memory::ReclaimCandidate;
-using jitllm::memory::ReclaimKind;
-using jitllm::memory::ReclaimOrder;
-using jitllm::memory::RunReclaim;
-using jitllm::memory::SelectReclaim;
+using llmp::memory::KindCosts;
+using llmp::memory::ProtectFloor;
+using llmp::memory::ReclaimCandidate;
+using llmp::memory::ReclaimKind;
+using llmp::memory::ReclaimOrder;
+using llmp::memory::RunReclaim;
+using llmp::memory::SelectReclaim;
 
 constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
 
@@ -497,11 +496,11 @@ TEST(ReclaimOrder, AStaleCostlyEntryFallsBehindFreshCheapOnesAsReclaimsGoOn) {
   ASSERT_EQ(plan.priorities.size(), 1U);
   EXPECT_NEAR(plan.priorities[0], 5.12, 0.01);
   // The value only rises.
-  const double before = jitllm::memory::ReclaimInflation();
-  jitllm::memory::RaiseReclaimInflation(before + 1.5);
-  EXPECT_DOUBLE_EQ(jitllm::memory::ReclaimInflation(), before + 1.5);
-  jitllm::memory::RaiseReclaimInflation(before);
-  EXPECT_DOUBLE_EQ(jitllm::memory::ReclaimInflation(), before + 1.5);
+  const double before = llmp::memory::ReclaimInflation();
+  llmp::memory::RaiseReclaimInflation(before + 1.5);
+  EXPECT_DOUBLE_EQ(llmp::memory::ReclaimInflation(), before + 1.5);
+  llmp::memory::RaiseReclaimInflation(before);
+  EXPECT_DOUBLE_EQ(llmp::memory::ReclaimInflation(), before + 1.5);
 }
 
 // Staleness decays the expected cost directly: a plan (about 6 s a GiB)
@@ -683,7 +682,7 @@ TEST(ReclaimOrder, AReclaimTakesOnlyWhatIsCheaperAndCountsAPlanWithItsGraphOnce)
   EXPECT_FALSE(all.sufficient);
   // Below the graphs' priority: only the idle state.
   const auto cost = KindCosts(c);
-  const double graph = jitllm::memory::ReclaimPriority(c[0], cost);
+  const double graph = llmp::memory::ReclaimPriority(c[0], cost);
   const auto cheaper = SelectReclaim(c, 2000, graph);
   EXPECT_THAT(cheaper.victims, ElementsAre(2U));
   EXPECT_FALSE(cheaper.sufficient);
@@ -828,7 +827,7 @@ TEST(ReclaimOrder, AReclaimSelectsAgainWithoutAVictimThatGaveNothing) {
   EXPECT_TRUE(run.short_of_need);
   EXPECT_THAT(taken, ElementsAre(1U, 2U));
   EXPECT_EQ(rounds, 2);
-  EXPECT_LE(rounds, jitllm::memory::kReclaimRounds);
+  EXPECT_LE(rounds, llmp::memory::kReclaimRounds);
 }
 
 TEST(ReclaimOrder, WeightBatchesCreditCompletedVictimsAndRetryOnlyUntriedOnes) {
@@ -860,12 +859,12 @@ TEST(ReclaimOrder, WeightBatchesCreditCompletedVictimsAndRetryOnlyUntriedOnes) {
       }
     }
   };
-  const auto reclaims = jitllm::memory::ReclaimsTaken();
+  const auto reclaims = llmp::memory::ReclaimsTaken();
   const auto run = RunReclaim(250, false, gather, take, batch);
   EXPECT_EQ(run.freed, 300U);
   EXPECT_FALSE(run.short_of_need);
   EXPECT_THAT(batches, ElementsAre(ElementsAre(1U, 2U, 3U), ElementsAre(4U)));
-  EXPECT_EQ(jitllm::memory::ReclaimsTaken() - reclaims, 3U);
+  EXPECT_EQ(llmp::memory::ReclaimsTaken() - reclaims, 3U);
 }
 
 TEST(ReclaimOrder, WeightExtentPopulationKeepsTheSameDeterministicOrder) {

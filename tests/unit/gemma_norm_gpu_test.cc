@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cuda_runtime.h>
@@ -26,11 +26,11 @@
 #include "providers/cuda/cuda_device_execution.h"
 
 namespace {
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 class GemmaNormGpu : public ::testing::Test {
  protected:
   void SetUp() override {
-    auto opened = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto opened = llmp::providers::cuda::OpenDeviceExecution(0);
     ASSERT_TRUE(opened);
     execution = std::move(*opened);
     auto created_stream = execution->CreateStream();
@@ -38,7 +38,7 @@ class GemmaNormGpu : public ::testing::Test {
     stream = *created_stream;
     stream_ready = true;
     auto created = kg::LaunchContext::Create(
-        0, *execution, stream, {.base = Allocate(2U << 20), .size = jitllm::base::Bytes(2U << 20)});
+        0, *execution, stream, {.base = Allocate(2U << 20), .size = llmp::base::Bytes(2U << 20)});
     ASSERT_TRUE(created);
     launch = std::move(*created);
   }
@@ -59,7 +59,7 @@ class GemmaNormGpu : public ::testing::Test {
         retirement_failed = true;
         return false;
       }
-      if (*state == jitllm::providers::FenceState::kComplete) break;
+      if (*state == llmp::providers::FenceState::kComplete) break;
       std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
     if (!execution->Release(*fence)) {
@@ -155,11 +155,11 @@ class GemmaNormGpu : public ::testing::Test {
     if (positions) Upload(positions, pv);
     if (factors) Upload(factors, fv);
     ASSERT_FALSE(retirement_failed);
-    const auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+    const auto registry = llmp::execution::Registry::Create(kg::Implementations());
     ASSERT_TRUE(registry);
     kg::GraphPlan plan;
-    plan.steps.push_back({.operation = rope ? jitllm::execution::Operation::kRmsNormMulRope
-                                            : jitllm::execution::Operation::kRmsNormMulAdd,
+    plan.steps.push_back({.operation = rope ? llmp::execution::Operation::kRmsNormMulRope
+                                            : llmp::execution::Operation::kRmsNormMulAdd,
                           .implementation = rope ? kg::kGemmaNormRopeName : kg::kGemmaNormAddName,
                           .nodes = {norm, mul, out}});
     const auto scratch = kg::PlanScratch(*launch, plan);
@@ -247,8 +247,8 @@ class GemmaNormGpu : public ::testing::Test {
   std::vector<kg::CapturedGraph> graphs;
   std::vector<std::unique_ptr<kg::TensorArena>> arenas;
   std::vector<float> ReadResult;
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution;
-  jitllm::providers::StreamId stream;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution;
+  llmp::providers::StreamId stream;
   std::unique_ptr<kg::LaunchContext> launch;
   std::vector<void*> allocations;
 };

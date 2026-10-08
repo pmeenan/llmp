@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A model's calibration on this machine (D-103, runtime/calibration.h): the
@@ -26,11 +26,11 @@
 namespace {
 
 namespace fs = std::filesystem;
-using ::jitllm::runtime::Calibration;
-using ::jitllm::runtime::CalibrationKey;
-using ::jitllm::runtime::CalibrationSamples;
-using ::jitllm::runtime::FormatCalibration;
-using ::jitllm::runtime::ParseCalibration;
+using ::llmp::runtime::Calibration;
+using ::llmp::runtime::CalibrationKey;
+using ::llmp::runtime::CalibrationSamples;
+using ::llmp::runtime::FormatCalibration;
+using ::llmp::runtime::ParseCalibration;
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
 using ::testing::Not;
@@ -60,7 +60,7 @@ Calibration Measured() {
 
 TEST(Calibration, RoundTripsItsRecord) {
   const std::string text = FormatCalibration(Measured(), Key());
-  EXPECT_THAT(text, StartsWith(R"({"format":"jitllm-model-calibration-v1","artifact":")"));
+  EXPECT_THAT(text, StartsWith(R"({"format":"llmp-model-calibration-v1","artifact":")"));
   EXPECT_THAT(text, HasSubstr(R"("wave_costs":[2.18,null,2.99])"));
   const auto read = ParseCalibration(text, Key());
   ASSERT_TRUE(read.calibration.has_value()) << read.note;
@@ -85,51 +85,51 @@ TEST(Calibration, RoundTripsItsRecord) {
 // The settings a measurement depends on are part of the key: another
 // configuration of them is another key.
 TEST(Calibration, Gemma31CandidateHasDistinctCalibrationIdentity) {
-  jitllm::runtime::ModelSettings settings;
+  llmp::runtime::ModelSettings settings;
   settings.architecture = "gemma4";
-  const auto ordinary = jitllm::runtime::MeasuredWith(settings);
+  const auto ordinary = llmp::runtime::MeasuredWith(settings);
   settings.architecture.clear();
-  EXPECT_EQ(ordinary, jitllm::runtime::MeasuredWith(settings));
+  EXPECT_EQ(ordinary, llmp::runtime::MeasuredWith(settings));
   settings.architecture = "gemma4";
   settings.gemma31_production = true;
-  const auto candidate = jitllm::runtime::MeasuredWith(settings);
+  const auto candidate = llmp::runtime::MeasuredWith(settings);
   EXPECT_NE(ordinary, candidate);
   EXPECT_THAT(ordinary, Not(HasSubstr("gemma31_production=")));
   EXPECT_THAT(candidate, HasSubstr("gemma31_production=true"));
   settings.gemma31_production = false;
   settings.gemma26_production = true;
-  const auto candidate26 = jitllm::runtime::MeasuredWith(settings);
+  const auto candidate26 = llmp::runtime::MeasuredWith(settings);
   EXPECT_NE(ordinary, candidate26);
   EXPECT_NE(candidate, candidate26);
   EXPECT_THAT(candidate26, HasSubstr("gemma26_production=true"));
 }
 
 TEST(Calibration, KeysTheSettingsMeasuredWith) {
-  jitllm::runtime::ModelSettings s;
+  llmp::runtime::ModelSettings s;
   s.speculation.value = true;
   s.draft_rows.value = 3;
   s.prefill_chunk.value = 4096;
   s.max_slots.value = 4;
   s.prefill_outa_hca.value = true;
   s.prefill_outa_hca_partial.value = true;
-  EXPECT_EQ(jitllm::runtime::MeasuredWith(s), Key().settings);
+  EXPECT_EQ(llmp::runtime::MeasuredWith(s), Key().settings);
   s.speculation.value = false;  // --plain
-  EXPECT_THAT(jitllm::runtime::MeasuredWith(s), StartsWith("speculation=false"));
+  EXPECT_THAT(llmp::runtime::MeasuredWith(s), StartsWith("speculation=false"));
   s.speculation.value = true;
-  s.wave_form.value = jitllm::config::WaveForm::kPlain;
-  EXPECT_THAT(jitllm::runtime::MeasuredWith(s), HasSubstr("wave_form=plain"));
-  EXPECT_THAT(jitllm::runtime::BuildIdentity(), Not(IsEmpty()));
+  s.wave_form.value = llmp::config::WaveForm::kPlain;
+  EXPECT_THAT(llmp::runtime::MeasuredWith(s), HasSubstr("wave_form=plain"));
+  EXPECT_THAT(llmp::runtime::BuildIdentity(), Not(IsEmpty()));
 }
 
 TEST(Calibration, ChangingQwenWaveLanesInvalidatesItsMeasurements) {
-  jitllm::runtime::ModelSettings s;
+  llmp::runtime::ModelSettings s;
   s.architecture = "qwen4exp";
   s.wave_lanes.value = true;
   CalibrationKey on = Key();
-  on.settings = jitllm::runtime::MeasuredWith(s);
+  on.settings = llmp::runtime::MeasuredWith(s);
   s.wave_lanes.value = false;
   CalibrationKey off = on;
-  off.settings = jitllm::runtime::MeasuredWith(s);
+  off.settings = llmp::runtime::MeasuredWith(s);
   EXPECT_NE(on.settings, off.settings);
   const auto read = ParseCalibration(FormatCalibration(Measured(), on), off);
   EXPECT_FALSE(read.calibration.has_value());
@@ -138,7 +138,7 @@ TEST(Calibration, ChangingQwenWaveLanesInvalidatesItsMeasurements) {
 }
 
 TEST(Calibration, ChangingQwenDraftOrWavePolicyInvalidatesItsMeasurements) {
-  jitllm::runtime::ModelSettings measured;
+  llmp::runtime::ModelSettings measured;
   measured.architecture = "qwen4exp";
   measured.draft_vocab.value = 47172;
   measured.shared_wave_depth.value = 2;
@@ -146,7 +146,7 @@ TEST(Calibration, ChangingQwenDraftOrWavePolicyInvalidatesItsMeasurements) {
   measured.wave_read_align.value = 2048;
   measured.depth_cost_ratio.value = 1.16;
   CalibrationKey original = Key();
-  original.settings = jitllm::runtime::MeasuredWith(measured);
+  original.settings = llmp::runtime::MeasuredWith(measured);
   const std::string text = FormatCalibration(Measured(), original);
   ASSERT_TRUE(ParseCalibration(text, original).calibration.has_value());
   for (int which = 0; which < 5; ++which) {
@@ -170,7 +170,7 @@ TEST(Calibration, ChangingQwenDraftOrWavePolicyInvalidatesItsMeasurements) {
         break;
     }
     CalibrationKey current = original;
-    current.settings = jitllm::runtime::MeasuredWith(changed);
+    current.settings = llmp::runtime::MeasuredWith(changed);
     const auto read = ParseCalibration(text, current);
     EXPECT_FALSE(read.calibration.has_value());
     EXPECT_FALSE(read.refused);
@@ -179,43 +179,43 @@ TEST(Calibration, ChangingQwenDraftOrWavePolicyInvalidatesItsMeasurements) {
 }
 
 TEST(Calibration, QwenKeysEffectiveHeadRowsWithoutItsCalibratedRatio) {
-  jitllm::config::ModelEntry entry;
+  llmp::config::ModelEntry entry;
   entry.name = "qwen";
   entry.artifact = Key().artifact;
   entry.drafter = Key().drafter;
-  jitllm::runtime::ArtifactFacts facts;
+  llmp::runtime::ArtifactFacts facts;
   facts.architecture = "qwen4exp";
   facts.drafter_architecture = "qwen4exp-mtp";
   facts.drafter_selected_rows = 47172;
-  const auto initial = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto initial = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(initial.has_value());
   CalibrationKey key = Key();
-  key.settings = jitllm::runtime::MeasuredWith(*initial);
+  key.settings = llmp::runtime::MeasuredWith(*initial);
   const std::string text = FormatCalibration(Measured(), key);
   for (const std::int64_t requested : {0, 65536}) {
     entry.overrides["draft_vocab"] = requested;
-    const auto uncalibrated = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+    const auto uncalibrated = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
     ASSERT_TRUE(uncalibrated.has_value());
     EXPECT_EQ(uncalibrated->draft_vocab.value, 47172U);
     CalibrationKey current = key;
-    current.settings = jitllm::runtime::MeasuredWith(*uncalibrated);
+    current.settings = llmp::runtime::MeasuredWith(*uncalibrated);
     const auto read = ParseCalibration(text, current);
     ASSERT_TRUE(read.calibration.has_value()) << read.note;
     const Calibration recorded = read.calibration.value_or(Calibration{});
-    const auto resolved = jitllm::runtime::ResolveSettings(entry, facts, &recorded, false);
+    const auto resolved = llmp::runtime::ResolveSettings(entry, facts, &recorded, false);
     ASSERT_TRUE(resolved.has_value());
     EXPECT_EQ(resolved->depth_cost_ratio.value, 1.1);
-    EXPECT_EQ(resolved->depth_cost_ratio.source, jitllm::runtime::SettingSource::kCalibrated);
+    EXPECT_EQ(resolved->depth_cost_ratio.source, llmp::runtime::SettingSource::kCalibrated);
     // Registration's next lookup resolves without calibration again.
-    const auto next = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+    const auto next = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
     ASSERT_TRUE(next.has_value());
-    EXPECT_EQ(jitllm::runtime::MeasuredWith(*next), key.settings);
+    EXPECT_EQ(llmp::runtime::MeasuredWith(*next), key.settings);
   }
   entry.overrides["draft_vocab"] = std::int64_t{16384};
-  const auto smaller = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto smaller = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(smaller.has_value());
   CalibrationKey changed = key;
-  changed.settings = jitllm::runtime::MeasuredWith(*smaller);
+  changed.settings = llmp::runtime::MeasuredWith(*smaller);
   EXPECT_FALSE(ParseCalibration(text, changed).calibration.has_value());
   // An earlier v1 Qwen record omitting these policy dependencies is stale,
   // rather than corrupt, even when every other key component still agrees.
@@ -230,25 +230,25 @@ TEST(Calibration, QwenKeysEffectiveHeadRowsWithoutItsCalibratedRatio) {
 }
 
 TEST(Calibration, ExplicitFallbackOverridesInvalidateCalibratedExecutionPolicy) {
-  jitllm::config::ModelEntry entry;
+  llmp::config::ModelEntry entry;
   entry.name = "qwen";
   entry.artifact = Key().artifact;
   entry.drafter = Key().drafter;
-  jitllm::runtime::ArtifactFacts facts;
+  llmp::runtime::ArtifactFacts facts;
   facts.architecture = "qwen4exp";
   facts.drafter_architecture = "qwen4exp-mtp";
-  const auto fallback = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto fallback = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(fallback.has_value());
   Calibration calibrated = Measured();
   calibrated.prefill_chunk = 8192;
   calibrated.max_slots = 8;
-  const auto active = jitllm::runtime::ResolveSettings(entry, facts, &calibrated, false);
+  const auto active = llmp::runtime::ResolveSettings(entry, facts, &calibrated, false);
   ASSERT_TRUE(active.has_value());
   EXPECT_EQ(active->prefill_chunk.value, 8192U);
   EXPECT_EQ(active->max_slots.value, 8U);
   EXPECT_EQ(active->depth_cost_ratio.value, 1.1);
   CalibrationKey original = Key();
-  original.settings = jitllm::runtime::MeasuredWith(*fallback);
+  original.settings = llmp::runtime::MeasuredWith(*fallback);
   const std::string text = FormatCalibration(calibrated, original);
   for (const std::string name : {"prefill_chunk", "max_slots", "depth_cost_ratio"}) {
     SCOPED_TRACE(name);
@@ -260,10 +260,10 @@ TEST(Calibration, ExplicitFallbackOverridesInvalidateCalibratedExecutionPolicy) 
     } else {
       owner.overrides[name] = fallback->depth_cost_ratio.value;
     }
-    const auto uncalibrated = jitllm::runtime::ResolveSettings(owner, facts, nullptr, false);
+    const auto uncalibrated = llmp::runtime::ResolveSettings(owner, facts, nullptr, false);
     ASSERT_TRUE(uncalibrated.has_value());
     CalibrationKey overridden = original;
-    overridden.settings = jitllm::runtime::MeasuredWith(*uncalibrated);
+    overridden.settings = llmp::runtime::MeasuredWith(*uncalibrated);
     const auto changed = ParseCalibration(text, overridden);
     EXPECT_FALSE(changed.calibration.has_value());
     EXPECT_FALSE(changed.refused);
@@ -279,29 +279,29 @@ TEST(Calibration, ExplicitFallbackOverridesInvalidateCalibratedExecutionPolicy) 
 TEST(Calibration, EffectiveContextInvalidatesContextCappedPrefillMeasurements) {
   for (const std::string architecture : {"deepseek4", "qwen4exp"}) {
     SCOPED_TRACE(architecture);
-    jitllm::config::ModelEntry entry;
+    llmp::config::ModelEntry entry;
     entry.name = "model";
     entry.artifact = Key().artifact;
     entry.overrides["context"] = std::int64_t{1024};
     entry.overrides["prefill_chunk"] = std::int64_t{4096};
-    jitllm::runtime::ArtifactFacts facts;
+    llmp::runtime::ArtifactFacts facts;
     facts.architecture = architecture;
-    const auto before = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+    const auto before = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
     ASSERT_TRUE(before.has_value());
     entry.overrides["context"] = std::int64_t{2048};
-    const auto after = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+    const auto after = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
     ASSERT_TRUE(after.has_value());
     EXPECT_EQ(before->prefill_chunk.value, after->prefill_chunk.value);
-    EXPECT_EQ(jitllm::runtime::PrefillChunkRows(before->context.value, std::nullopt,
-                                                before->prefill_chunk.value, 4096),
+    EXPECT_EQ(llmp::runtime::PrefillChunkRows(before->context.value, std::nullopt,
+                                              before->prefill_chunk.value, 4096),
               1016U);
-    EXPECT_EQ(jitllm::runtime::PrefillChunkRows(after->context.value, std::nullopt,
-                                                after->prefill_chunk.value, 4096),
+    EXPECT_EQ(llmp::runtime::PrefillChunkRows(after->context.value, std::nullopt,
+                                              after->prefill_chunk.value, 4096),
               2040U);
     CalibrationKey original = Key();
-    original.settings = jitllm::runtime::MeasuredWith(*before);
+    original.settings = llmp::runtime::MeasuredWith(*before);
     CalibrationKey current = original;
-    current.settings = jitllm::runtime::MeasuredWith(*after);
+    current.settings = llmp::runtime::MeasuredWith(*after);
     const auto read = ParseCalibration(FormatCalibration(Measured(), original), current);
     EXPECT_FALSE(read.calibration.has_value());
     EXPECT_FALSE(read.refused);
@@ -310,36 +310,36 @@ TEST(Calibration, EffectiveContextInvalidatesContextCappedPrefillMeasurements) {
 }
 
 TEST(Calibration, DeepSeekKeysUncalibratedWaveCostsWithoutInvalidatingItsOwnRecord) {
-  jitllm::config::ModelEntry entry;
+  llmp::config::ModelEntry entry;
   entry.name = "ds";
   entry.artifact = Key().artifact;
   entry.drafter = Key().drafter;
-  jitllm::runtime::ArtifactFacts facts;
+  llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
   facts.drafter_architecture = "dflash";
-  const auto initial = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto initial = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(initial.has_value());
   CalibrationKey key = Key();
-  key.settings = jitllm::runtime::MeasuredWith(*initial);
+  key.settings = llmp::runtime::MeasuredWith(*initial);
   const auto read = ParseCalibration(FormatCalibration(Measured(), key), key);
   ASSERT_TRUE(read.calibration.has_value()) << read.note;
   const Calibration recorded = read.calibration.value_or(Calibration{});
-  const auto active = jitllm::runtime::ResolveSettings(entry, facts, &recorded, false);
+  const auto active = llmp::runtime::ResolveSettings(entry, facts, &recorded, false);
   ASSERT_TRUE(active.has_value());
-  EXPECT_EQ(active->wave_costs.source, jitllm::runtime::SettingSource::kCalibrated);
+  EXPECT_EQ(active->wave_costs.source, llmp::runtime::SettingSource::kCalibrated);
   EXPECT_EQ(active->wave_costs.value[0], 2.18);
   EXPECT_EQ(active->wave_costs.value[2], 2.99);
   // Both registration and the settings command resolve without calibration
   // for their next lookup, so recording these costs preserves eligibility.
-  const auto next = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto next = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(next.has_value());
-  EXPECT_EQ(jitllm::runtime::MeasuredWith(*next), key.settings);
+  EXPECT_EQ(llmp::runtime::MeasuredWith(*next), key.settings);
   EXPECT_TRUE(ParseCalibration(FormatCalibration(recorded, key), key).calibration.has_value());
   entry.overrides["wave_costs"] = std::vector<double>{3.0};
-  const auto changed = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto changed = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(changed.has_value());
   CalibrationKey current = key;
-  current.settings = jitllm::runtime::MeasuredWith(*changed);
+  current.settings = llmp::runtime::MeasuredWith(*changed);
   const auto stale = ParseCalibration(FormatCalibration(recorded, key), current);
   EXPECT_FALSE(stale.calibration.has_value());
   EXPECT_FALSE(stale.refused);
@@ -347,12 +347,12 @@ TEST(Calibration, DeepSeekKeysUncalibratedWaveCostsWithoutInvalidatingItsOwnReco
   // Hold override presence and prefix length fixed: changing only the cost
   // must also invalidate the record, independently of the override flags.
   entry.overrides["wave_costs"] = std::vector<double>{4.0};
-  const auto recosted = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto recosted = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(recosted.has_value());
   EXPECT_EQ(recosted->wave_costs.source, changed->wave_costs.source);
   EXPECT_EQ(recosted->wave_costs_override_count, changed->wave_costs_override_count);
   CalibrationKey cost_key = current;
-  cost_key.settings = jitllm::runtime::MeasuredWith(*recosted);
+  cost_key.settings = llmp::runtime::MeasuredWith(*recosted);
   const auto changed_cost = ParseCalibration(FormatCalibration(recorded, current), cost_key);
   EXPECT_FALSE(changed_cost.calibration.has_value());
   EXPECT_FALSE(changed_cost.refused);
@@ -369,23 +369,23 @@ TEST(Calibration, DeepSeekKeysUncalibratedWaveCostsWithoutInvalidatingItsOwnReco
 }
 
 TEST(Calibration, ExplicitFallbackWaveCostsInvalidateInBothDirections) {
-  jitllm::config::ModelEntry entry;
+  llmp::config::ModelEntry entry;
   entry.name = "ds";
   entry.artifact = Key().artifact;
   entry.drafter = Key().drafter;
-  jitllm::runtime::ArtifactFacts facts;
+  llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
   facts.drafter_architecture = "dflash";
-  const auto fallback = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto fallback = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(fallback.has_value());
   CalibrationKey original = Key();
-  original.settings = jitllm::runtime::MeasuredWith(*fallback);
+  original.settings = llmp::runtime::MeasuredWith(*fallback);
   entry.overrides["wave_costs"] = std::vector<double>{fallback->wave_costs.value[0]};
-  const auto owner = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto owner = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(owner.has_value());
   EXPECT_EQ(owner->wave_costs.value, fallback->wave_costs.value);
   CalibrationKey overridden = original;
-  overridden.settings = jitllm::runtime::MeasuredWith(*owner);
+  overridden.settings = llmp::runtime::MeasuredWith(*owner);
   EXPECT_NE(overridden.settings, original.settings);
   for (const bool removed : {false, true}) {
     SCOPED_TRACE(removed);
@@ -399,38 +399,38 @@ TEST(Calibration, ExplicitFallbackWaveCostsInvalidateInBothDirections) {
 }
 
 TEST(Calibration, EqualWaveCostVectorsWithDifferentOverridePrefixesHaveDifferentKeys) {
-  jitllm::config::ModelEntry entry;
+  llmp::config::ModelEntry entry;
   entry.name = "ds";
   entry.artifact = Key().artifact;
   entry.drafter = Key().drafter;
-  jitllm::runtime::ArtifactFacts facts;
+  llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
   facts.drafter_architecture = "dflash";
-  entry.overrides["wave_costs"] = std::vector<double>{jitllm::runtime::kDsv4WaveCosts[0]};
-  const auto one = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  entry.overrides["wave_costs"] = std::vector<double>{llmp::runtime::kDsv4WaveCosts[0]};
+  const auto one = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(one.has_value());
   const auto first_entry = entry;
   entry.overrides["wave_costs"] =
-      std::vector<double>{jitllm::runtime::kDsv4WaveCosts[0], jitllm::runtime::kDsv4WaveCosts[1]};
-  const auto two = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+      std::vector<double>{llmp::runtime::kDsv4WaveCosts[0], llmp::runtime::kDsv4WaveCosts[1]};
+  const auto two = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(two.has_value());
   EXPECT_EQ(one->wave_costs.value, two->wave_costs.value);
-  EXPECT_EQ(one->wave_costs.source, jitllm::runtime::SettingSource::kOverride);
-  EXPECT_EQ(two->wave_costs.source, jitllm::runtime::SettingSource::kOverride);
+  EXPECT_EQ(one->wave_costs.source, llmp::runtime::SettingSource::kOverride);
+  EXPECT_EQ(two->wave_costs.source, llmp::runtime::SettingSource::kOverride);
   EXPECT_EQ(one->wave_costs_override_count, 1U);
   EXPECT_EQ(two->wave_costs_override_count, 2U);
   Calibration measured;
   measured.wave_costs[1] = 4.5;
-  const auto first_active = jitllm::runtime::ResolveSettings(first_entry, facts, &measured, false);
-  const auto second_active = jitllm::runtime::ResolveSettings(entry, facts, &measured, false);
+  const auto first_active = llmp::runtime::ResolveSettings(first_entry, facts, &measured, false);
+  const auto second_active = llmp::runtime::ResolveSettings(entry, facts, &measured, false);
   ASSERT_TRUE(first_active.has_value());
   ASSERT_TRUE(second_active.has_value());
   EXPECT_EQ(first_active->wave_costs.value[1], 4.5);
-  EXPECT_EQ(second_active->wave_costs.value[1], jitllm::runtime::kDsv4WaveCosts[1]);
+  EXPECT_EQ(second_active->wave_costs.value[1], llmp::runtime::kDsv4WaveCosts[1]);
   CalibrationKey first = Key();
-  first.settings = jitllm::runtime::MeasuredWith(*one);
+  first.settings = llmp::runtime::MeasuredWith(*one);
   CalibrationKey second = first;
-  second.settings = jitllm::runtime::MeasuredWith(*two);
+  second.settings = llmp::runtime::MeasuredWith(*two);
   EXPECT_NE(first.settings, second.settings);
   for (const bool shortened : {false, true}) {
     SCOPED_TRACE(shortened);
@@ -443,18 +443,18 @@ TEST(Calibration, EqualWaveCostVectorsWithDifferentOverridePrefixesHaveDifferent
 }
 
 TEST(Calibration, QwenDoesNotKeyIgnoredDeepSeekWaveCostOverrides) {
-  jitllm::config::ModelEntry entry;
+  llmp::config::ModelEntry entry;
   entry.name = "qwen";
   entry.artifact = Key().artifact;
-  jitllm::runtime::ArtifactFacts facts;
+  llmp::runtime::ArtifactFacts facts;
   facts.architecture = "qwen4exp";
-  const auto before = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto before = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(before.has_value());
   entry.overrides["wave_costs"] = std::vector<double>{3.0};
-  const auto after = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto after = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(after.has_value());
   EXPECT_FALSE(after->ignored.empty());
-  EXPECT_EQ(jitllm::runtime::MeasuredWith(*before), jitllm::runtime::MeasuredWith(*after));
+  EXPECT_EQ(llmp::runtime::MeasuredWith(*before), llmp::runtime::MeasuredWith(*after));
 }
 
 // Measured for another device, driver, build, drafter or measured-with
@@ -492,7 +492,7 @@ TEST(Calibration, ACorruptOrForeignRecordIsRefused) {
   EXPECT_THAT(foreign.note, HasSubstr("artifact"));
 
   const std::string head = std::format(
-      R"({{"format":"jitllm-model-calibration-v1","artifact":"{}","drafter":"{}","device":"{}","build":"{}","settings":"{}",)",
+      R"({{"format":"llmp-model-calibration-v1","artifact":"{}","drafter":"{}","device":"{}","build":"{}","settings":"{}",)",
       Key().artifact, Key().drafter, Key().device, Key().build, Key().settings);
   // The head itself is valid.
   EXPECT_TRUE(ParseCalibration(head + R"("values":{}})", Key()).calibration.has_value());
@@ -500,7 +500,7 @@ TEST(Calibration, ACorruptOrForeignRecordIsRefused) {
            std::string("not json"),
            std::string("[]"),
            good.substr(0, good.size() - 1),
-           std::string(R"({"format":"jitllm-model-calibration-v2"})"),
+           std::string(R"({"format":"llmp-model-calibration-v2"})"),
            head + R"("values":{}, "extra":1})",
            head + R"("values":{"context":4096}})",
            head + R"("values":{"prefill_floor_tok_s":0}})",
@@ -524,7 +524,7 @@ TEST(Calibration, ACorruptOrForeignRecordIsRefused) {
 }
 
 fs::path Scratch() {
-  const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   return scratch != nullptr ? fs::path(scratch) : fs::path(::testing::TempDir());
 }
 
@@ -537,27 +537,27 @@ TEST(Calibration, WritesAndReadsItsRecord) {
   ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
   const fs::path state = pattern;
   const uid_t self = ::geteuid();
-  auto none = jitllm::runtime::ReadCalibration(state, Key(), self);
+  auto none = llmp::runtime::ReadCalibration(state, Key(), self);
   EXPECT_FALSE(none.calibration.has_value());
   EXPECT_FALSE(none.refused);
   EXPECT_EQ(none.note, "none recorded");
 
-  ASSERT_TRUE(jitllm::runtime::WriteCalibration(state, Key(), Measured()).has_value());
-  const fs::path file = jitllm::runtime::CalibrationPath(state, Key().artifact);
+  ASSERT_TRUE(llmp::runtime::WriteCalibration(state, Key(), Measured()).has_value());
+  const fs::path file = llmp::runtime::CalibrationPath(state, Key().artifact);
   struct stat status{};
   ASSERT_EQ(::stat(file.c_str(), &status), 0);
   EXPECT_EQ(status.st_mode & 0777U, 0600U);
   ASSERT_EQ(::stat(file.parent_path().c_str(), &status), 0);
   EXPECT_EQ(status.st_mode & 0077U, 0U);
-  auto read = jitllm::runtime::ReadCalibration(state, Key(), self);
+  auto read = llmp::runtime::ReadCalibration(state, Key(), self);
   ASSERT_TRUE(read.calibration.has_value()) << read.note;
   EXPECT_EQ(read.calibration.value_or(Calibration{}).decode_floor_tok_s, 7U);
 
   // Replaced whole; no temporary file stays.
   Calibration more = Measured();
   more.max_slots = 6;
-  ASSERT_TRUE(jitllm::runtime::WriteCalibration(state, Key(), more).has_value());
-  read = jitllm::runtime::ReadCalibration(state, Key(), self);
+  ASSERT_TRUE(llmp::runtime::WriteCalibration(state, Key(), more).has_value());
+  read = llmp::runtime::ReadCalibration(state, Key(), self);
   ASSERT_TRUE(read.calibration.has_value()) << read.note;
   EXPECT_EQ(read.calibration.value_or(Calibration{}).max_slots, 6U);
   std::size_t entries = 0;
@@ -568,7 +568,7 @@ TEST(Calibration, WritesAndReadsItsRecord) {
   EXPECT_EQ(entries, 1U);
 
   ASSERT_EQ(::chmod(file.c_str(), 0666), 0);
-  read = jitllm::runtime::ReadCalibration(state, Key(), self);
+  read = llmp::runtime::ReadCalibration(state, Key(), self);
   EXPECT_FALSE(read.calibration.has_value());
   EXPECT_TRUE(read.refused);
   EXPECT_THAT(read.note, HasSubstr("other users can write it"));
@@ -638,34 +638,34 @@ TEST(Calibration, MeasuresFirstUses) {
   EXPECT_EQ(merged.value_or(Calibration{}).prefill_floor_tok_s, 341U);
 }
 
-using WaveMode = jitllm::execution::AdaptiveWaveMode;
+using WaveMode = llmp::execution::AdaptiveWaveMode;
 using WaveChoice = WaveMode::Mode;
-using WaveExploration = jitllm::runtime::WaveCostExploration;
+using WaveExploration = llmp::runtime::WaveCostExploration;
 
 // The real counted policy, fed the resolver's costs; exploration receives
 // its selected mode exactly as the DeepSeek runner does.
-WaveMode CountedWaveMode(const jitllm::runtime::ModelSettings& settings) {
+WaveMode CountedWaveMode(const llmp::runtime::ModelSettings& settings) {
   WaveMode::Costs costs{};
   for (std::size_t i = 0; i < settings.wave_costs.value.size(); ++i) {
     costs[i + 2] = settings.wave_costs.value[i];
   }
   WaveMode::Force force = WaveMode::Force::kNone;
-  if (settings.wave_form.value == jitllm::config::WaveForm::kPlain) {
+  if (settings.wave_form.value == llmp::config::WaveForm::kPlain) {
     force = WaveMode::Force::kPlain;
-  } else if (settings.wave_form.value == jitllm::config::WaveForm::kSpeculative) {
+  } else if (settings.wave_form.value == llmp::config::WaveForm::kSpeculative) {
     force = WaveMode::Force::kSpeculative;
   }
   return WaveMode(costs, force);
 }
 
 TEST(Calibration, ExplicitWaveCostsKeepZeroAndCountedChoicesThroughExploration) {
-  jitllm::config::ModelEntry entry;
+  llmp::config::ModelEntry entry;
   entry.name = "ds";
   entry.overrides["wave_costs"] = std::vector<double>{0, 2.08};
-  jitllm::runtime::ArtifactFacts facts;
+  llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
   facts.drafter_architecture = "dflash";
-  const auto resolved = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto resolved = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(resolved.has_value());
   EXPECT_EQ(resolved->wave_costs_override_count, 2U);
   WaveMode zero_counted = CountedWaveMode(*resolved);
@@ -699,13 +699,13 @@ TEST(Calibration, ExplicitWaveCostsKeepZeroAndCountedChoicesThroughExploration) 
 }
 
 TEST(Calibration, ExplicitPrefixLeavesOnlyUnknownSuffixWidthsExploring) {
-  jitllm::config::ModelEntry entry;
+  llmp::config::ModelEntry entry;
   entry.name = "ds";
   entry.overrides["wave_costs"] = std::vector<double>{0};
-  jitllm::runtime::ArtifactFacts facts;
+  llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
   facts.drafter_architecture = "dflash";
-  const auto resolved = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto resolved = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(resolved.has_value());
   WaveMode counted = CountedWaveMode(*resolved);
   WaveExploration explore;
@@ -723,7 +723,7 @@ TEST(Calibration, ExplicitPrefixLeavesOnlyUnknownSuffixWidthsExploring) {
   Calibration known;
   known.wave_costs[0] = 1000;  // an explicit prefix still replaces a calibrated value
   known.wave_costs[1] = 1.5;
-  const auto calibrated = jitllm::runtime::ResolveSettings(entry, facts, &known, false);
+  const auto calibrated = llmp::runtime::ResolveSettings(entry, facts, &known, false);
   ASSERT_TRUE(calibrated.has_value());
   EXPECT_EQ(calibrated->wave_costs.value[0], 0);
   EXPECT_EQ(calibrated->wave_costs.value[1], 1.5);
@@ -737,12 +737,12 @@ TEST(Calibration, ExplicitPrefixLeavesOnlyUnknownSuffixWidthsExploring) {
 }
 
 TEST(Calibration, ForcedAndSampledWavesDoNotConsumeCalibrationExploration) {
-  jitllm::config::ModelEntry entry;
+  llmp::config::ModelEntry entry;
   entry.name = "ds";
-  jitllm::runtime::ArtifactFacts facts;
+  llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
   facts.drafter_architecture = "dflash";
-  const auto automatic = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto automatic = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(automatic.has_value());
   WaveMode counted = CountedWaveMode(*automatic);
   WaveExploration explore;
@@ -752,7 +752,7 @@ TEST(Calibration, ForcedAndSampledWavesDoNotConsumeCalibrationExploration) {
   }
   for (const std::string form : {"plain", "speculative"}) {
     entry.overrides["wave_form"] = form;
-    const auto forced = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+    const auto forced = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
     ASSERT_TRUE(forced.has_value());
     WaveMode policy = CountedWaveMode(*forced);
     const auto expected = form == "plain" ? WaveChoice::kPlain : WaveChoice::kSpeculative;
@@ -772,13 +772,13 @@ TEST(Calibration, ForcedAndSampledWavesDoNotConsumeCalibrationExploration) {
 }
 
 TEST(Calibration, FullWaveCostPrefixIncludesWidthEightAndInvalidWidthsStayUnchanged) {
-  jitllm::config::ModelEntry entry;
+  llmp::config::ModelEntry entry;
   entry.name = "ds";
   entry.overrides["wave_costs"] = std::vector<double>(7, 0);
-  jitllm::runtime::ArtifactFacts facts;
+  llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
   facts.drafter_architecture = "dflash";
-  const auto all = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  const auto all = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(all.has_value());
   EXPECT_EQ(all->wave_costs_override_count, 7U);
   WaveMode counted = CountedWaveMode(*all);

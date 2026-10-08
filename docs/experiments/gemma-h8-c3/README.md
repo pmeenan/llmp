@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma3 internal three-owner departure and rejoin
@@ -99,8 +99,8 @@ private output directory `OUT`, run the [native caller](../../../benchmarks/gemm
 twice as:
 
 ```sh
-jitllm_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-departure1 own departure
-jitllm_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-departure2 own departure
+llmp_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-departure1 own departure
+llmp_gemma3_batch_probe ARTIFACT IDS0 IDS1 OUT/native-departure2 own departure
 ```
 
 Run [the stock caller](../gemma3-execution/llama_batch_probe.cc) twice inside the

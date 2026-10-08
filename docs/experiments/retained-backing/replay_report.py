@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Applies the frozen deterministic criteria (D-079) to the replay's output.
 
-`jitllm_rb_replay` (benchmarks/retained_backing/) prints one JSON line per
+`llmp_rb_replay` (benchmarks/retained_backing/) prints one JSON line per
 design and budget file. This checks that the run is whole and not void (every
 design at every budget, both replays agreeing exactly, the recorded trace
 files), then applies backend-proof.md's deterministic criteria mechanically,

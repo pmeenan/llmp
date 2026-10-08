@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/kept_files.h"
@@ -23,7 +23,7 @@
 
 #include "platform/files.h"
 
-namespace jitllm::platform {
+namespace llmp::platform {
 namespace {
 
 // A descriptor closed when it goes out of scope, unless released.
@@ -353,4 +353,4 @@ bool LowerThreadPriority() {
   return nice && idle;
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

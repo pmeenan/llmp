@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Choosing the next token from a step's logits, on the host: greedy, and
@@ -28,8 +28,8 @@
 // speculative verifier can redraw any position and a restored request
 // continues exactly (D-068).
 
-#ifndef JITLLM_EXECUTION_SAMPLING_H_
-#define JITLLM_EXECUTION_SAMPLING_H_
+#ifndef LLMP_EXECUTION_SAMPLING_H_
+#define LLMP_EXECUTION_SAMPLING_H_
 
 #include <array>
 #include <cstdint>
@@ -39,7 +39,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::execution {
+namespace llmp::execution {
 
 struct SamplingParams {
   float temperature = 1.0F;  // 0: greedy
@@ -121,6 +121,6 @@ std::array<std::uint32_t, 4> Philox4x32(std::array<std::uint32_t, 4> counter,
 // The uniform number in [0, 1) a key draws, with 53 random bits.
 double UniformAt(const SamplingKey& key);
 
-}  // namespace jitllm::execution
+}  // namespace llmp::execution
 
-#endif  // JITLLM_EXECUTION_SAMPLING_H_
+#endif  // LLMP_EXECUTION_SAMPLING_H_

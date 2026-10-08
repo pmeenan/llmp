@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Ordinary Gemma26/31 HTTP lifecycle, stock top2 IDs and same-geometry repeats."""
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Compares DeepSeek's fast plan and reference mode at one forced step (README.md, "Step 249").
 
     probe_step.py FAST_RUN EXACT_RUN ORACLE_TOKEN OTHER_TOKEN
 
-Each RUN is a `jitllm_dsv4_exec --probe-step N` output directory (the
+Each RUN is a `llmp_dsv4_exec --probe-step N` output directory (the
 fast plan's run, and the reference mode's with --exact on): RUN/probe/fast
 and RUN/probe/exact hold that step run from the run's own state in each
 plan, every named intermediate as F32 (index.json: name -> count; I32
@@ -13,7 +13,7 @@ tensors as their values in F32). So there are four variants: F/F and E/F
 on the fast run's state, E/E and F/E on the reference's.
 
 Prints, for each variant, the step's lead of ORACLE_TOKEN over OTHER_TOKEN
-(the oracle's greedy token and the one jitLLM chose instead) and its top
+(the oracle's greedy token and the one llmpalooza chose instead) and its top
 token; and for pairs of variants: each layer's relative L2 difference of the
 attention output and the residual streams, the first layer that differs by
 more than 1%, the layers whose routed experts differ (with the reference's

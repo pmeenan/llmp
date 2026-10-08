@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/state.h"
@@ -12,7 +12,7 @@
 
 #include "base/bytes.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 namespace {
 
 std::optional<Bytes> Times(Bytes bytes, std::uint64_t count) {
@@ -146,4 +146,4 @@ std::expected<void, StateError> StateCursor::Snapshot() {
   return {};
 }
 
-}  // namespace jitllm::model
+}  // namespace llmp::model

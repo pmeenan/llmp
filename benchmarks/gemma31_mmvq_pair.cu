@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // Exact d81235049384534c167caea52b85a694f6103d14 mmvq.cu dense preparation
@@ -19,7 +19,7 @@
 #include "mmvq.cuh"
 #include "quantize.cuh"
 
-namespace jitllm::benchmarks::gemma31_mmvq {
+namespace llmp::benchmarks::gemma31_mmvq {
 namespace kg = kernels::ggml;
 namespace {
 std::unexpected<kg::KernelFailure> Refuse(std::string message) {
@@ -102,4 +102,4 @@ std::expected<void, kg::KernelFailure> OrdinaryC2Pair(kg::LaunchContext& launch,
           kColumns, kPadded, stream);
   });
 }
-}  // namespace jitllm::benchmarks::gemma31_mmvq
+}  // namespace llmp::benchmarks::gemma31_mmvq

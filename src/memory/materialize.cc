@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "memory/materialize.h"
@@ -11,7 +11,7 @@
 #include "catalog/catalog.h"
 #include "memory/victims.h"
 
-namespace jitllm::memory {
+namespace llmp::memory {
 
 MaterializationPlan PlanMaterialization(const catalog::Catalog& catalog, catalog::DomainId domain,
                                         Bytes budget, const catalog::Closure& closure,
@@ -69,4 +69,4 @@ MaterializationPlan PlanMaterialization(const catalog::Catalog& catalog, catalog
   return plan;
 }
 
-}  // namespace jitllm::memory
+}  // namespace llmp::memory

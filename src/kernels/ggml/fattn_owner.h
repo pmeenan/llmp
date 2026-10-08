@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Explicit independent cache roots for checked Gemma owner cohorts.
 // No selector uses this operation automatically. The caller holds every real
 // operand span, output and workspace through completion/captured graph lifetime.
-#ifndef JITLLM_KERNELS_GGML_FATTN_OWNER_H_
-#define JITLLM_KERNELS_GGML_FATTN_OWNER_H_
+#ifndef LLMP_KERNELS_GGML_FATTN_OWNER_H_
+#define LLMP_KERNELS_GGML_FATTN_OWNER_H_
 
 #include <array>
 #include <cstdint>
@@ -13,7 +13,7 @@
 
 #include "kernels/ggml/ops_ext.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 struct FlashAttnOwners {
   const ggml_tensor* q = nullptr;
@@ -114,5 +114,5 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(
 std::expected<void, KernelFailure> FlashAttnOwnerRoots(LaunchContext& launch,
                                                        const FlashAttnOwners& inputs);
 
-}  // namespace jitllm::kernels::ggml
-#endif  // JITLLM_KERNELS_GGML_FATTN_OWNER_H_
+}  // namespace llmp::kernels::ggml
+#endif  // LLMP_KERNELS_GGML_FATTN_OWNER_H_

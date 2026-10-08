@@ -1,10 +1,10 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # The swap path: the M3 models on the paged node, full swaps A→B→A (M3)
 
 M3's swap path and swap runner ([plan](../../plan.md#m3--single-spark-fast-full-swap-in-progress);
-since D-096 the runtime's own, [through jitllm-runtime](#through-jitllm-runtime-d-096)):
+since D-096 the runtime's own, [through llmp-runtime](#through-llmp-runtime-d-096)):
 DeepSeek V4 Flash 0731, Qwen3.8 Flash Next and the Qwen-Image-2.1
 pipeline run as device jobs over leased closures on the paged node
 (D-086), paged into device VMM through the landing zone (D-081); a full
@@ -12,8 +12,8 @@ swap evicts the outgoing model, spilling its conversation state, and hands
 its backing to the incoming one (D-033); the zone's copies have a lane of
 their own (RE-029). The swap runners drive A→B→A in one process and time
 each part: [M3's swap pairs](#m3s-swap-pairs) between the three models
-(`jitllm_swap_pairs`), and [DeepSeek with the FP16 stand-in](#what-was-built-deepseek-and-the-fp16-stand-in)
-(`jitllm_swap_runner`), where the path was first built.
+(`llmp_swap_pairs`), and [DeepSeek with the FP16 stand-in](#what-was-built-deepseek-and-the-fp16-stand-in)
+(`llmp_swap_runner`), where the path was first built.
 
 ## M3's swap pairs
 
@@ -23,7 +23,7 @@ each part: [M3's swap pairs](#m3s-swap-pairs) between the three models
 runners and helpers named here): the resident harness's graph, plan and
 kernels (`qwen38_common.h`, one planning path that `qwen38_exec.cc` now
 calls too; since the prefill slice, the fused graph and, from the
-CUTLASS-layout artifact, CUTLASS's grouped GEMM and jitLLM's vector
+CUTLASS-layout artifact, CUTLASS's grouped GEMM and llmpalooza's vector
 products over the slots as they land) over catalog extents, in DeepSeek's
 layout, now one helper (`paged_weights.h`):
 - **Dense groups:** every group but the n-gram table's, a 2 MiB-aligned
@@ -136,10 +136,10 @@ plan, `kernels/image/pipeline.h`, and later steps replay a captured graph).
 
 ### The swap pairs runner
 
-`benchmarks/swap_pairs.cc` (`jitllm_swap_pairs`, a harness binary; the
+`benchmarks/swap_pairs.cc` (`llmp_swap_pairs`, a harness binary; the
 runtime's `swap-table` runs the same protocol over every configured model
-in one process, [below](#through-jitllm-runtime-d-096)): two of the three models on one node, one process per
-ordered pair, A→B→A as `jitllm_swap_runner` does it (see its header for
+in one process, [below](#through-llmp-runtime-d-096)): two of the three models on one node, one process per
+ordered pair, A→B→A as `llmp_swap_runner` does it (see its header for
 the protocol): a control, a first-use cycle (B never ran in the process;
 A's plans dropped before it returns), a prepared cycle, and for an LLM A a
 0-context pair. An LLM A holds 8,192 tokens of `docs/decisions.md` at
@@ -248,7 +248,7 @@ step. For a full-swap model the closure is the whole model, so a request
 
 **Round trip and decode** (`spark-b`, GB10, driver 580.178.04,
 `spark-native`, `CUDA_DISABLE_PTX_JIT=1`, the artifacts above; the memory
-gate before each run; `jitllm_swap_pairs --bench N`, three passes per arm
+gate before each run; `llmp_swap_pairs --bench N`, three passes per arm
 after a warm-up, two runs per poll window; raw outputs in
 `~/scratch/m3lease/r1`, `r2`). Round trip = a step's wall less the
 device's span of its work (CUDA events around the job):
@@ -407,7 +407,7 @@ at 13.3–14.1 GB/s. The prepared return's first token 0.058–0.062 s. Peak
 memory 95.6–96.5 GiB (98.8 in the 100 ms run; one sample each, the host
 shared).
 
-## Through jitllm-runtime (D-096)
+## Through llmp-runtime (D-096)
 
 ### Final integrated table, 2026-09-30
 
@@ -475,14 +475,14 @@ and is excluded. No workstation checks were run during this table.
 ### Initial integrated table
 
 Since D-096 the runtime runs the swap path itself
-([runtime-serving.md](../../runtime-serving.md)): `jitllm-runtime
+([runtime-serving.md](../../runtime-serving.md)): `llmp-runtime
 swap-table` registers every configured model on one node and runs the
 swap pairs' protocol over every ordered pair in one process, every fast
 path on: the CUTLASS-layout Qwen3.8 artifact (`c4fb47a9…`), decode graphs,
 a lease per request, the runtime wake, the handoff, and speculation, so
 DeepSeek pages its DSpark drafter with it (108.36 GB with its state,
 against 97.46 without) and Qwen3.8 its MTP block (77.03 GB against
-75.39). The differences from `jitllm_swap_pairs`: all three models are
+75.39). The differences from `llmp_swap_pairs`: all three models are
 registered at once (so the fixed memory holds all three's own memory, 4.39
 GiB, and first use means the incoming model's plans and graphs are
 dropped, since it may have run in an earlier pair: the CUDA modules and
@@ -728,11 +728,11 @@ not a swap check).
 
 Beside the baselines ([baselines.md](baselines.md), cold page cache, one
 run each): llama.cpp's DeepSeek 0731 → Qwen3.8 (UD-IQ3_XXS) swap took
-76.6 s and the return with 8K state restored 104.4 s; jitLLM's
+76.6 s and the return with 8K state restored 104.4 s; llmpalooza's
 DeepSeek → Qwen3.8 took 7.7–8.8 s and the return 8.8–9.0 s. Mia's vLLM
 reaches Qwen3.8's first token 13 min 13 s from start and TensorFold
 141–143 s (0.3.5.1 and 0.3.6.2); diffusers reaches Qwen-Image's first
-denoising step 212 s from process start, jitLLM 5.0–6.3 s from the swap
+denoising step 212 s from process start, llmpalooza 5.0–6.3 s from the swap
 request.
 
 ## What was built (DeepSeek and the FP16 stand-in)
@@ -806,7 +806,7 @@ single copy.
 the outgoing extents, state first, 256 at a time, with or without the
 handoff, then materializes the incoming closure, and notes when each ended.
 
-**The swap runner** (`benchmarks/swap_runner.cc`, `jitllm_swap_runner`): a
+**The swap runner** (`benchmarks/swap_runner.cc`, `llmp_swap_runner`): a
 harness binary, built on the test harness's paged node (the native
 tokenizer it links is cleared for production binaries by D-088). See its
 header for the
@@ -852,7 +852,7 @@ artifact's shards were written at 01:43–01:47 and read from 04:14: about
 2.5 hours old, at rest (RE-027; 13.3–13.4 GB/s here). No other GPU
 process ran (checked before each run; `spark-b` is shared, see the
 handoff table's note on CPU load). Raw outputs in
-`~/.local/share/jitllm/m3swap-20260928/` on `spark-b` (`swap-5`, handoff
+`~/.local/share/llmp/m3swap-20260928/` on `spark-b` (`swap-5`, handoff
 on; `swap-6-nohandoff`; `swap-7-nocopylane`; `prompts-2`, and
 `prompts-1` on an earlier build, the same). A re-run after review's
 changes (the handoff kept within a domain, 1,042 events made ahead;
@@ -1083,7 +1083,7 @@ Through the runtime (D-096): a configuration naming the three models (as
 `storage.installed` the store holding the artifacts and the composition,
 and Qwen3.8's `tokenizer` and `chat_template` the checkpoint's), then
 
-    jitllm-runtime --config FILE --anchor PATH swap-table \
+    llmp-runtime --config FILE --anchor PATH swap-table \
       --context-text decisions.md --image-noise ref1/latents_init.bf16 \
       --image-expect 3b7770ca… --report table.json [--plain] [--pairs A:B,...]
 
@@ -1093,11 +1093,11 @@ and needs about 110 GiB free; it exits 1 on any failed check.
 The harnesses: on `spark-b`, with the `spark-native` build, the artifacts installed as
 dsv4-native's and the backend proof's are, and P2's `control-tokens.txt`:
 
-    jitllm_swap_runner --dsv4-artifact DSV4 --fp16-artifact FP16 \
+    llmp_swap_runner --dsv4-artifact DSV4 --fp16-artifact FP16 \
       --tokens control-tokens.txt --fp16-expect bb8ae5e7e3ac6da7… \
       --text decisions.md --out DIR --reload 2 --overlap \
       [--handoff off] [--copy-lane off --cycles 0 --overlap]
-    jitllm_swap_runner ... --cycles 0 --context 4096 \
+    llmp_swap_runner ... --cycles 0 --context 4096 \
       --prompts dsv4-native/oracle/unfused/prompts.tokens \
       --expect dsv4-native/jit-free --generate 32
 
@@ -1112,18 +1112,18 @@ M3's pairs, each ordered pair one process (3–4 minutes each), with the
 image's component artifacts and the reference's initial latents
 installed as qwen-image-native's are (copied to `spark-b` for these runs):
 
-    jitllm_swap_pairs --a dsv4|qwen38|image --b dsv4|qwen38|image --out DIR \
+    llmp_swap_pairs --a dsv4|qwen38|image --b dsv4|qwen38|image --out DIR \
       --dsv4-artifact DSV4 --qwen38-artifact QWEN38 --image-store STORE \
       --image-composition eca21baa… --image-noise ref1/latents_init.bf16 \
       --text decisions.md --qwen38-tokenizer tokenizer.json \
       --dsv4-prompt dsv4-native/oracle/unfused/prompts.tokens \
       --qwen38-prompt qwen38-native/prompts.tsv [--image-expect 3b7770ca…]
-    jitllm_swap_pairs --a qwen38 --b dsv4 ... --cycles 0 --context 4096 \
+    llmp_swap_pairs --a qwen38 --b dsv4 ... --cycles 0 --context 4096 \
       --prompts qwen38-native/prompts.tsv --expect RESIDENT --generate 32
-    jitllm_swap_pairs --a image --b qwen38 ... --cycles 0 --image-expect 3b7770ca…
-    jitllm_swap_pairs --a dsv4|qwen38 --b ... --cycles 0 --bench 64|128 [--poll-us 200]
+    llmp_swap_pairs --a image --b qwen38 ... --cycles 0 --image-expect 3b7770ca…
+    llmp_swap_pairs --a dsv4|qwen38 --b ... --cycles 0 --bench 64|128 [--poll-us 200]
 
-where RESIDENT is `jitllm_qwen38_exec --context 4096 --max-rows 512
+where RESIDENT is `llmp_qwen38_exec --context 4096 --max-rows 512
 --prompts qwen38-native/prompts.tsv --generate 32`'s output from the same
 build. The runs used a wrapper that also waits for the 1-minute load
 average to fall below 6, and checks twice 20–40 s apart: another agent's
@@ -1135,7 +1135,7 @@ not used).
 - One process, one run per configuration; timings are single samples on
   `spark-b` (D-085's coarse comparison), not distributions.
 - In the FP16 stand-in's runs, B's own page-in is 1.26 GB; M3's pairs
-  are measured with `jitllm_swap_pairs` above.
+  are measured with `llmp_swap_pairs` above.
 - The pairs' table has no CUDA graphs: "prepared" means A's plans exist
   and B ran before in the process. Since the rebase DeepSeek's decode
   steps run as graphs (`--graphs on`, the default) and one pair was rerun

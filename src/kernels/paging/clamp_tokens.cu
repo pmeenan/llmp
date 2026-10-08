@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // ClampTokens (paging.h): one thread a token.
@@ -9,7 +9,7 @@
 
 #include "kernels/paging/paging.h"
 
-namespace jitllm::kernels::paging {
+namespace llmp::kernels::paging {
 
 namespace {
 
@@ -32,4 +32,4 @@ bool ClampTokens(std::int32_t* tokens, std::uint32_t count, std::int32_t limit, 
   return cudaGetLastError() == cudaSuccess;
 }
 
-}  // namespace jitllm::kernels::paging
+}  // namespace llmp::kernels::paging

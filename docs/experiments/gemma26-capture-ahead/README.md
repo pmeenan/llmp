@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 plain-prefill capture ahead (2026-10-08)
@@ -75,10 +75,10 @@ funding/build/install/refusal tests; one new option-capacity/default refusal
 control; the existing Gemma4 defaults control; and the real Gemma31 state-only
 head/state continuation/replay control. All five affected targets compile,
 including runtime serving. The first supervised job failed only in final
-binding because the controller named nonexistent `bin/jitllm-runtime`.
+binding because the controller named nonexistent `bin/llmp-runtime`.
 All build/test children had already exited 0. A separately supervised bind-only
 correction authenticated their original records/XML and the correct
-`src/runtime/jitllm-runtime`; it retired successfully without repeating tests
+`src/runtime/llmp-runtime`; it retired successfully without repeating tests
 or compilation. The failure is retained separately, not relabeled as a pass.
 Source/method review and independent adversarial review preceded the jobs.
 
@@ -116,15 +116,15 @@ with explicit BOS and parse_special=false. Authenticate the ID SHA before use.
 Raw measurement cleanup must preserve this standing input or its reproducible
 corpus/tokenizer sources.
 
-Build `jitllm_gemma_prefill` under the pinned Spark toolchain. In one GPU-exclusive
+Build `llmp_gemma_prefill` under the pinned Spark toolchain. In one GPU-exclusive
 installed supervised job, run four fresh processes in order off/on/on/off,
 with identical ELF/receipt/actual first-resolved cuBLAS and fresh output names:
 
 ```text
-jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-off
-jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-on
-jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-on
-jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-off
+llmp_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-off
+llmp_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-on
+llmp_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-on
+llmp_gemma_prefill ARTIFACT IDS NEW_OUT 26 all 1024 normmul-off state-only lookahead-on phases-off state-chunked capture-ahead-off
 ```
 
 Each process discards six weight-warm rows, clears, and pays all planning,

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen2 adapter for an EXL3 checkpoint and its native operation plan,
@@ -32,8 +32,8 @@
 // (reconstruct_hgemm), gate and up through one multi-linear up to 32 rows
 // (mlp.py), and reconstruction slices of at most 32,768 columns.
 
-#ifndef JITLLM_MODEL_QWEN2_EXL3_H_
-#define JITLLM_MODEL_QWEN2_EXL3_H_
+#ifndef LLMP_MODEL_QWEN2_EXL3_H_
+#define LLMP_MODEL_QWEN2_EXL3_H_
 
 #include <array>
 #include <cstdint>
@@ -49,11 +49,11 @@
 #include "base/sha256.h"
 #include "model/qwen2.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 class Artifact;
 }
 
-namespace jitllm::model {
+namespace llmp::model {
 
 // Qwen2.5-0.5B-Instruct as the EXL3 fixtures' config.json gives it (the
 // same model as Qwen25Instruct05B, with RoPE's original context 32,768 as
@@ -242,6 +242,6 @@ std::expected<Exl3PhasePlan, std::string> PlanPhase(const Qwen2Profile& profile,
                                                     const Exl3LaunchTable& table, Exl3Arm arm,
                                                     const Exl3Phase& phase);
 
-}  // namespace jitllm::model
+}  // namespace llmp::model
 
-#endif  // JITLLM_MODEL_QWEN2_EXL3_H_
+#endif  // LLMP_MODEL_QWEN2_EXL3_H_

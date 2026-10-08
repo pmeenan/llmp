@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Choosing how a model's chat template renders (chat.h): a native renderer
@@ -28,7 +28,7 @@
 #include "chat/jinja.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::chat {
+namespace llmp::chat {
 namespace {
 
 std::string_view RoleName(Role role) {
@@ -648,4 +648,4 @@ std::expected<Rendered, Error> ChatTemplate::Render(const Conversation& conversa
                                          .max_output_bytes = conversation.max_render_bytes});
 }
 
-}  // namespace jitllm::chat
+}  // namespace llmp::chat

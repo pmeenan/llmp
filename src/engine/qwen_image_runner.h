@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen-Image-2.1 pipeline as a model on a paged node (paged_node.h;
@@ -54,8 +54,8 @@
 //   weights' pinned places, D-090, the image's own memory, the workspace)
 //   stays put.
 
-#ifndef JITLLM_ENGINE_QWEN_IMAGE_RUNNER_H_
-#define JITLLM_ENGINE_QWEN_IMAGE_RUNNER_H_
+#ifndef LLMP_ENGINE_QWEN_IMAGE_RUNNER_H_
+#define LLMP_ENGINE_QWEN_IMAGE_RUNNER_H_
 
 #include <array>
 #include <cstdint>
@@ -73,7 +73,7 @@
 #include "memory/reclaim.h"
 #include "model/qwen_image.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 struct QwenImageOptions {
   std::filesystem::path store;  // the installed artifacts
@@ -161,6 +161,6 @@ class QwenImageRunner final : public PagedModel {
   catalog::Closure fence_;
 };
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_QWEN_IMAGE_RUNNER_H_
+#endif  // LLMP_ENGINE_QWEN_IMAGE_RUNNER_H_

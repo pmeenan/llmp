@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # C++ source dependencies
@@ -13,7 +13,7 @@ is admitted by choosing this mechanism.
 ## Why this fits
 
 CMake is already selected. Most ordinary libraries can become local CMake
-targets, while D-053 requires selected GGML/EXL3 kernels with jitLLM-owned
+targets, while D-053 requires selected GGML/EXL3 kernels with llmpalooza-owned
 dispatch and reviewed modifications. A small, explicit source closure fits
 that work without a second package resolver. This is a maintenance judgment,
 not a measured performance advantage or a claim of bit-reproducible binaries.
@@ -87,12 +87,12 @@ than the core checkout. This keeps D-017's no-fetch rule achievable.
 
 D-077 amends this for GGML, the first adapted source: its pinned archive,
 narrowed by `archive.keep` to the paths the build uses, with reviewed
-patches and a jitLLM build file added by patch. The archive's hash proves
+patches and a llmpalooza build file added by patch. The archive's hash proves
 the origin bytes and the patches are the local changes, so nothing is
 vendored into Git.
 ExLlamaV3's kernels enter the same way, as the `exllamav3` component:
 `keep` holds exactly the closure of the compilation units the build
-compiles (upstream's GEMM units and jitLLM's instance unit, added by
+compiles (upstream's GEMM units and llmpalooza's instance unit, added by
 patch, over the GEMV kernel and three sources a patch reduces to their
 kernels), which excludes every ATen host wrapper
 ([licensing.md](licensing.md#exllamav3-gemm-kernels-in-the-core-m2)).
@@ -128,7 +128,7 @@ clears those gates nor changes D-017's allowlist.
    an isolated build area, never by modifying a shared cache in place.
 3. **Configure and build from local inputs.** Verify the prepared source
    identity against the lock before executing its build scripts. Use local
-   `add_subdirectory` for admitted CMake projects or jitLLM-owned targets for
+   `add_subdirectory` for admitted CMake projects or llmpalooza-owned targets for
    selected files. Turn off unselected upstream examples, tests, installers,
    auto-downloads, architecture detection and framework runtimes. Every
    transitive dependency must already be in the selected lock closure.

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Actual scalar production prefill, through PromptSession's hint delivery.
@@ -36,10 +36,10 @@
 #include "runtime/serving.h"
 
 namespace {
-namespace rt = jitllm::runtime;
-namespace en = jitllm::engine;
-namespace cfg = jitllm::config;
-namespace ba = jitllm::base;
+namespace rt = llmp::runtime;
+namespace en = llmp::engine;
+namespace cfg = llmp::config;
+namespace ba = llmp::base;
 using rt::Status;
 
 struct Lifetime {
@@ -93,7 +93,7 @@ std::expected<Snapshot, std::string> State(rt::Server& server, Runner& runner, s
   if (!slot) return std::unexpected(slot.error());
   auto& node = server.node();
   constexpr std::uint64_t capacity = 1ULL << 20U;
-  std::vector<jitllm::catalog::ExtentId> staging;
+  std::vector<llmp::catalog::ExtentId> staging;
   auto buffer = node.Pinned(capacity, 0, staging);
   if (!buffer) return std::unexpected(buffer.error());
   ba::Sha256 hash;

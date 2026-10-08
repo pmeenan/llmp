@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma 4 model and graph foundation
@@ -14,7 +14,7 @@ served on bounded routes with no support level verified; the family task
 remains open.
 
 **Being replaced (M3.6, D-107).** The per-family profile, graph and runner
-described here give way to one engine of shared components over jitLLM's own
+described here give way to one engine of shared components over llmpalooza's own
 graph IR ([engine-components.md](engine-components.md)); M3.5, and with it
 this family task, is parked until M3.6 exits. This file describes the code as
 it is, and changes as each piece lands.

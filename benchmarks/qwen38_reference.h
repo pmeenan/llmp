@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_BENCHMARKS_QWEN38_REFERENCE_H_
-#define JITLLM_BENCHMARKS_QWEN38_REFERENCE_H_
+#ifndef LLMP_BENCHMARKS_QWEN38_REFERENCE_H_
+#define LLMP_BENCHMARKS_QWEN38_REFERENCE_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-namespace jitllm::benchmarks::draft_vocab {
+namespace llmp::benchmarks::draft_vocab {
 
 // Private diagnostic file, never an engine restore path. The caller owns
 // two bounded, cataloged pinned views and supplies a completed D2H copy.
@@ -88,6 +88,6 @@ class ReferencePages {
   std::string sha256_;
 };
 
-}  // namespace jitllm::benchmarks::draft_vocab
+}  // namespace llmp::benchmarks::draft_vocab
 
-#endif  // JITLLM_BENCHMARKS_QWEN38_REFERENCE_H_
+#endif  // LLMP_BENCHMARKS_QWEN38_REFERENCE_H_

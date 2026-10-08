@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The device-execution provider (D-026, D-048, D-053;
-// docs/architecture.md#providers): jitLLM-owned streams, copies between
+// docs/architecture.md#providers): llmpalooza-owned streams, copies between
 // backing ranges on them, and fences recorded after a phase's last
 // consumer and queried without blocking. Kernel launches come with the
 // backend proof's operation contract; this is the part the pager needs.
@@ -24,8 +24,8 @@
 // distinct streams and fences from any threads. This header holds no
 // vendor types.
 
-#ifndef JITLLM_PROVIDERS_DEVICE_EXECUTION_H_
-#define JITLLM_PROVIDERS_DEVICE_EXECUTION_H_
+#ifndef LLMP_PROVIDERS_DEVICE_EXECUTION_H_
+#define LLMP_PROVIDERS_DEVICE_EXECUTION_H_
 
 #include <cstdint>
 #include <expected>
@@ -34,7 +34,7 @@
 #include "base/ids.h"
 #include "providers/device_memory.h"
 
-namespace jitllm::providers {
+namespace llmp::providers {
 
 struct StreamTag {
   static constexpr const char* kName = "stream";
@@ -97,6 +97,6 @@ class DeviceExecution {
   virtual std::expected<void, Failure> Release(FenceId fence) = 0;
 };
 
-}  // namespace jitllm::providers
+}  // namespace llmp::providers
 
-#endif  // JITLLM_PROVIDERS_DEVICE_EXECUTION_H_
+#endif  // LLMP_PROVIDERS_DEVICE_EXECUTION_H_

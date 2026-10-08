@@ -1,0 +1,30 @@
+Llmpalooza's build of the CUTLASS headers it uses (D-053, D-057): adds
+llmp/CMakeLists.txt, which the source lock adds as the component's
+project. It compiles nothing: it names the kept header trees as one
+interface target, which llmpalooza's own sm_121a unit
+(src/kernels/ggml/moe_cutlass.cu) includes.
+
+diff --git a/llmp/CMakeLists.txt b/llmp/CMakeLists.txt
+new file mode 100644
+index 0000000..5c1f2a8
+--- /dev/null
++++ b/llmp/CMakeLists.txt
+@@ -0,0 +1,18 @@
++# SPDX-FileCopyrightText: 2026 llmpalooza contributors
++# SPDX-License-Identifier: Apache-2.0
++
++# Llmpalooza's build of the CUTLASS subset it uses (D-053, D-057).
++# third_party/patches/cutlass/ adds this file to the pinned CUTLASS tree, and
++# the source lock adds this directory. It builds nothing and runs nothing:
++# CUTLASS's own CMake, tools, tests, examples and Python packages are not
++# kept.
++#
++#   llmp_cutlass_headers  include/cute and include/cutlass (header-only
++#                           templates) and the one utility header llmpalooza's
++#                           unit includes, tools/util/include/cutlass/util/
++#                           packed_stride.hpp.
++cmake_minimum_required(VERSION 4.4.3)
++project(llmp_cutlass LANGUAGES CXX)
++add_library(llmp_cutlass_headers INTERFACE)
++target_include_directories(llmp_cutlass_headers SYSTEM INTERFACE
++  "${CMAKE_CURRENT_SOURCE_DIR}/../include" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/util/include")

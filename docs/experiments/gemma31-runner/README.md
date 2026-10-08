@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Bounded Gemma 31B native runner
@@ -177,9 +177,9 @@ keep the header basenames and authenticate the pinned `llama.h` hash above.
 The combined wrapper reproduces the measured calls; the original split quality
 and prefill wrappers remain with the external logs.
 
-Raw data remain external under Spark-b `~/.local/share/jitllm/gemma31-quality`,
+Raw data remain external under Spark-b `~/.local/share/llmp/gemma31-quality`,
 `gemma31-prefill` and installed job directories; local logs/receipts are under
-`/tmp/jitllm-m35-coordination/gemma31-runner-raw`. Official successful jobs are
+`/tmp/llmp-m35-coordination/gemma31-runner-raw`. Official successful jobs are
 `m35-gemma31-build4`, `controls1`, `prepare1`, `native1`, `reference1` and
 `analysis1`, `screen2`, `screen3`, `bookend1` and `compare1` with the same prefix.
 All use installed GPU admission, 600-second

@@ -1,10 +1,10 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Backend proof P1: BP-F1, host and device VMM against cudaMalloc — 2026-09-27
 
-BP-F1 asks whether jitLLM's GGML kernels run slower when their memory is
-jitLLM's VMM than when it is `cudaMalloc` memory: host VMM under rule v1
+BP-F1 asks whether llmpalooza's GGML kernels run slower when their memory is
+llmpalooza's VMM than when it is `cudaMalloc` memory: host VMM under rule v1
 (D-034's reopen condition), device VMM under rule v2 (D-081's;
 [backend-proof.md](../../backend-proof.md#performance-protocol-rule-approved-2026-09-26-bp-f2s-reference-pre-registered-at-p3-entry)).
 The approved kernel-timing rule needs BP-F1's own noise calibration and
@@ -44,7 +44,7 @@ the pre-registration was reviewed and committed; then the same for rule v2.
   the owner's answer is D-081 (device VMM behind a landing-zone copy).
 
 - **53 cases**, derived from the FP16 bridge's recorded plan for the
-  held-out trajectory at 1, 16, 17 and 512 rows. Each is a kernel jitLLM
+  held-out trajectory at 1, 16, 17 and 512 rows. Each is a kernel llmpalooza
   has: RMSNorm, fused RMSNorm-multiply, multiply, three kinds of add, five
   projections, and attention's KQ and KQV products. Every block verified
   every captured launch against the recorded plan.
@@ -93,7 +93,7 @@ the pre-registration was reviewed and committed; then the same for rule v2.
   processes and eight timed blocks. A first `c3` attempt stopped before
   running anything because the load average (1.04) was above the limit; its
   empty directory was removed.
-- **Harness.** `jitllm_ggml_vmm_bench` from the `cross` preset, SHA-256
+- **Harness.** `llmp_ggml_vmm_bench` from the `cross` preset, SHA-256
   `05348df868e83768a441302bc2831df8ebbe4fa609a13c5b5cd874d9048f3b92`,
   copied read-only beside the pinned cuBLAS 13.8.0.4 (`libcublas.so.13`
   `ee7c1657…`, `libcublasLt.so.13` `ba3b942f…`, the libraries the FP16 plan
@@ -115,7 +115,7 @@ the pre-registration was reviewed and committed; then the same for rule v2.
   boundaries, identities) and each case's block medians for both arms,
   graph and stream-launched; the in-sample pairings, the holdout, and the
   power estimates. Raw samples and logs stay outside Git, on `spark` in
-  `~/.local/share/jitllm/bpf1-20260927/`.
+  `~/.local/share/llmp/bpf1-20260927/`.
 
 ## Cases
 
@@ -149,7 +149,7 @@ The KV cells in use are the trajectory's (`n_past + rows`, padded to 256)
 at each sequence's first occurrence: 256 up to the 512-row chunk and 768
 after it, so one row has both.
 
-Not cases, because jitLLM has no implementation of them yet: RoPE, softmax,
+Not cases, because llmpalooza has no implementation of them yet: RoPE, softmax,
 `set_rows`, `get_rows`, the copy after attention, the SiLU gate, and the
 fused MMVF variants (bias, gate and residual fused into the product) of the
 fused arm's single-row steps.
@@ -164,7 +164,7 @@ session driver [`bpf1_session.py`](bpf1_session.py) runs the blocks.
   given is in the block's memory kind: weights, activations and outputs,
   GGML's scratch pool (sized by the plan) and the cuBLAS workspace (32 MiB,
   upstream's). For `cudaMalloc` each is a `cudaMalloc` allocation; for host
-  VMM, a host-backed VMM reservation from jitLLM's provider, mapped
+  VMM, a host-backed VMM reservation from llmpalooza's provider, mapped
   read-write. Only a staging buffer for setup (host VMM in both kinds) is
   outside; no timed kernel touches it.
 - **Rotation.** Each case has a ring of operand sets, each holding all its
@@ -381,7 +381,7 @@ medians in `p1`), each session's ratio of arm medians and its `d`
 [`bpf1-comparison.json`](bpf1-comparison.json) holds both sessions'
 manifests, block medians and `d`, and the rule's outcome, written by
 [`bpf1_compare_record.py`](bpf1_compare_record.py). The raw samples and
-logs stay on `spark` in `~/.local/share/jitllm/bpf1-20260927/p1` and `m1`.
+logs stay on `spark` in `~/.local/share/llmp/bpf1-20260927/p1` and `m1`.
 
 What the comparison does not show: why host VMM is slower here when
 D-034's scan kernels read host and device VMM at the same bandwidth
@@ -404,12 +404,12 @@ v1's, unchanged.
 - **Placement.** The harness gains a `device-vmm` memory kind: every
   buffer the kernels are given (weights, activations, outputs, GGML's
   scratch and the cuBLAS workspace) is a device-located reservation from
-  jitLLM's CUDA provider, mapped read-write for the device only, where
+  llmpalooza's CUDA provider, mapped read-write for the device only, where
   D-081 places weights and state. The setup staging buffer stays host VMM,
   as in v1, and no timed kernel touches it. The `cudaMalloc` arm is
   unchanged. A device-VMM block, like a host-VMM one, refuses to run
   without a calibration hash.
-- **Harness.** `jitllm_ggml_vmm_bench` built by the `spark-native` preset
+- **Harness.** `llmp_ggml_vmm_bench` built by the `spark-native` preset
   on `spark-b`, SHA-256
   `0c191da79557793ee779e2cac3de241072e83f052224d1f037c7adef596d5d8c`,
   copied read-only to `spark` beside the same cuBLAS 13.8.0.4 as v1
@@ -417,7 +417,7 @@ v1's, unchanged.
   paths, so the comparison runs this copy. Sources: commit `961cc09b`
   plus the uncommitted v2 changes, identity `06409b28…` by the formula
   under [Reproduction](#reproduction); session driver `bpf1_session.py`
-  `7ba32a7e…`.
+  `3156c2bf…`.
 - **Registration.** backend-proof.md records the harness, the case file
   and [`bpf1-v2-calibration.json`](bpf1-v2-calibration.json) (SHA-256
   `567cb8494dbb36022be6ba64fb185be272561bf7e7f89680c3413931f93bb3bc`) as
@@ -489,7 +489,7 @@ largest in-sample `d` is 2.83 (`linear.q_o` at one row, `c3`).
 | `h2` | (not needed) | none (`attn.kqv` at 16 rows, 0.94) | −0.59 | passes |
 
 Rule v2 stands. `timing_protocol.py` at `c05fd2dd…`, the approved rule,
-computed the calibration and outcomes. The current script (`b841b018…`)
+computed the calibration and outcomes. The current script (`b17a2e84…`)
 gives the same calibration byte for byte and the same holdout outcomes.
 
 ### Power
@@ -514,7 +514,7 @@ A subset slowed together (the stage fails at or above):
 | Noisiest quarter | 14 | not at 3% | not at 3% | not at 3% |
 
 The raw sessions and the harness copy stay on `spark` in
-`~/.local/share/jitllm/bpf1v2-20260927/`.
+`~/.local/share/llmp/bpf1v2-20260927/`.
 
 ## Comparison: device VMM against `cudaMalloc` (BP-F1 rule v2, gated)
 
@@ -549,7 +549,7 @@ was set aside.
 - **Conditions.** The sessions were queued behind another agent's SSD
   sweep on `spark`, which the owner cancelled at 23:46:41 UTC. Each
   session started only after the sweep's results file had ended with its
-  `done` line, no `fio`, `dd`, sweep or jitLLM benchmark process was
+  `done` line, no `fio`, `dd`, sweep or llmpalooza benchmark process was
   running, no compute process was on the GPU, and the load average was
   below 0.5, at two checks 30 s apart. The load average was 0.27 and
   0.20 at the starts, and 0.46–0.90 at block boundaries (the sessions'
@@ -558,7 +558,7 @@ was set aside.
   active throttle reason; application clock 2,418 MHz, driver 580.178.04,
   kernel 7.0.0-1019-nvidia, CPU governor `performance`. Source: commit
   `72c7c62` with no uncommitted changes; the session driver was the
-  committed `bpf1_session.py` (`7ba32a7e…`), which is also the copy the
+  committed `bpf1_session.py` (`3156c2bf…`), which is also the copy the
   calibration ran.
 - **The validity checks held in every block of both arms.** Every
   captured launch matched the recorded plan on device VMM as on
@@ -635,7 +635,7 @@ medians in `p1`), each session's ratio of arm medians and its `d`
 [`bpf1-v2-comparison.json`](bpf1-v2-comparison.json) holds both sessions'
 manifests, block medians and `d`, and the rule's outcome, written by
 [`bpf1_compare_record.py`](bpf1_compare_record.py). The raw samples and
-logs stay on `spark` in `~/.local/share/jitllm/bpf1v2-20260927/p1` and
+logs stay on `spark` in `~/.local/share/llmp/bpf1v2-20260927/p1` and
 `m1`.
 
 ## Limitations
@@ -645,7 +645,7 @@ logs stay on `spark` in `~/.local/share/jitllm/bpf1v2-20260927/p1` and
   in 06:30–06:37; rule v2's calibration and holdout in 23:00–23:17 and
   its comparison in 23:47–23:53.
   `spark-b` served only development runs, which are not evidence.
-- **Not the whole model.** The cases are the kernels jitLLM has; RoPE,
+- **Not the whole model.** The cases are the kernels llmpalooza has; RoPE,
   softmax, the KV writes, the SiLU gate and the fused single-row MMVF
   variants are not covered until they exist. Attention runs at the
   trajectory's two KV lengths only.
@@ -678,7 +678,7 @@ the SDK's `libcublas.so.13` and `libcublasLt.so.13` (the binary's RUNPATH is
 `$ORIGIN/../cublas`), run each session:
 
 ```bash
-bpf1_session.py OUT/c1 --harness benchmarks/jitllm_ggml_vmm_bench --cases bpf1-cases.txt \
+bpf1_session.py OUT/c1 --harness benchmarks/llmp_ggml_vmm_bench --cases bpf1-cases.txt \
   --arm-a cuda-malloc --arm-b cuda-malloc --order primary \
   --source-commit COMMIT --source-diff-sha256 DIFF --note '…'
 ```
@@ -707,7 +707,7 @@ bpf1_compare_record.py --protocol timing_protocol.py --calibration bpf1-calibrat
 
 Rule v2 differs in two places. The harness is built on a Spark
 (`mise run test -- spark-native --locked` on `spark-b` builds
-`build/spark-native/benchmarks/jitllm_ggml_vmm_bench` beside
+`build/spark-native/benchmarks/llmp_ggml_vmm_bench` beside
 `build/spark-native/cublas/`) and copied to `spark`. The records are
 `bpf1-v2-calibration.json` and `bpf1-v2-timing.json`, computed on a Spark
 with the mise-pinned Python, from sessions named `c1`–`c4`, `h1` and `h2`

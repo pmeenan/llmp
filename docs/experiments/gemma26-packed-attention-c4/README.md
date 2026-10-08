@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 packed attention C4 transfer
@@ -89,7 +89,7 @@ identities; [provenance](provenance.json) records the source/binary/build receip
 fixed inputs, task-entry reference observation and official log hashes. The native
 own receipt was frozen exclusively before the fresh original acquisition. To
 repeat, supply the authenticated 1,024 little-endian IDs to the new manual target
-with `JITLLM_GEMMA26_PACKED_C4=0` or `1`, using CLI
+with `LLMP_GEMMA26_PACKED_C4=0` or `1`, using CLI
 `ARTIFACT OUTPUT_DIR 26 4 joined norm IDS_I32`. The protocol supplies the owner
 prefixes, warm/reset sequence, timed positions and original image contract;
 `reference.sh build` compiles only the unchanged thin client against original

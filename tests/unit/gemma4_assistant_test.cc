@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include "model/gemma4_assistant.h"
 
@@ -18,23 +18,23 @@
 #include "base/check.h"
 #include "base/json.h"
 
-namespace md = jitllm::model;
-namespace json = jitllm::base::json;
+namespace md = llmp::model;
+namespace json = llmp::base::json;
 namespace {
 json::Document Fixture(unsigned size, bool assistant = true) {
-  const auto* root = std::getenv("JITLLM_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
-  jitllm::base::Check(root != nullptr, "missing assistant fixture directory");
+  const auto* root = std::getenv("LLMP_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
+  llmp::base::Check(root != nullptr, "missing assistant fixture directory");
   const auto suffix = assistant ? "/gemma4-assistant/assistant" : "/gemma4/gemma4_";
   std::ifstream file(std::string(root) + suffix + std::to_string(size) +
                      (assistant ? ".json" : "b.json"));
   std::string text(std::istreambuf_iterator<char>{file}, {});
   auto doc = json::Parse(text);
-  jitllm::base::Check(doc.has_value(), "invalid assistant fixture");
+  llmp::base::Check(doc.has_value(), "invalid assistant fixture");
   return std::move(*doc);
 }
 json::Value Get(json::Value v, std::string_view key) {
   auto found = v.find(key);
-  jitllm::base::Check(found.has_value(), "missing assistant fixture key");
+  llmp::base::Check(found.has_value(), "missing assistant fixture key");
   return *found;
 }
 std::vector<md::Gemma4Resource> Resources(unsigned size, bool assistant = true) {
@@ -49,10 +49,10 @@ std::vector<md::Gemma4Resource> Resources(unsigned size, bool assistant = true) 
       r.type = Get(t, "type").string();
     else {
       const auto id = *Get(t, "ggml_type").int64();
-      const auto types = jitllm::artifact::GgmlTypes();
+      const auto types = llmp::artifact::GgmlTypes();
       const auto found =
           std::ranges::find_if(types, [id](const auto& type) { return type.id == id; });
-      jitllm::base::Check(found != types.end(), "unknown fixture type");
+      llmp::base::Check(found != types.end(), "unknown fixture type");
       r.type = found->name;
     }
     const auto ne = Get(t, "ne");
@@ -63,7 +63,7 @@ std::vector<md::Gemma4Resource> Resources(unsigned size, bool assistant = true) 
       r.count = static_cast<std::uint32_t>(r.ne.back());
       r.ne.pop_back();
     }
-    const auto* type = jitllm::artifact::FindGgmlType(r.type);
+    const auto* type = llmp::artifact::FindGgmlType(r.type);
     r.readable = r.ne[0] / type->block_elements * type->block_bytes;
     for (std::size_t j = 1; j < r.ne.size(); ++j) r.readable *= r.ne[j];
     if (type->block_elements > 1 && r.ne[0] % 512 != 0)

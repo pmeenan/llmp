@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Score upstream's and GGML's non-linear operations against FP64.
 
 External reference tooling for the backend proof's P0; it does not implement
-jitLLM inference. Input: ggml_ops_capture.py directories. For every captured
+llmpalooza inference. Input: ggml_ops_capture.py directories. For every captured
 operation it computes the exact result in FP64 from the captured inputs and
 compares with it (a) upstream's output as captured and (b) each candidate
 GGML path, run through the reference shim (ggml_ops.py) on the same inputs:

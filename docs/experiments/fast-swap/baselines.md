@@ -1,9 +1,9 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M3 baselines — 2026-09-28
 
-The reference engines jitLLM's M3 swap, speed, memory and correctness are
+The reference engines llmpalooza's M3 swap, speed, memory and correctness are
 judged against ([plan.md M3](../../plan.md#m3--single-spark-fast-full-swap--in-progress)),
 installed and run by us on `spark`. Coarse by design (D-085): a few
 repeats, medians, and the only question asked of a difference is whether it
@@ -28,11 +28,11 @@ A→B and **104.4 s** B→A to the first token, the return restoring A's state
 with 11 prompt tokens processed. M0's run of the older DeepSeek revision
 measured 75–93 s per switch.
 
-**jitLLM's swaps beside these** (measured on `spark-b`, 2026-09-28, one
+**Llmpalooza's swaps beside these** (measured on `spark-b`, 2026-09-28, one
 process per ordered pair, from the swap request to the first token or
 the image's first denoising step; [swap.md](swap.md#results-m3s-swap-pairs-spark-b-2026-09-28)):
 
-| Swap | jitLLM | Baseline |
+| Swap | llmpalooza | Baseline |
 | --- | ---: | ---: |
 | DeepSeek 0731 (8K context) → Qwen3.8 | 7.7–8.8 s | 76.6 s (llama.cpp, Qwen3.8's UD-IQ3_XXS GGUF: cross-quantization, speed only) |
 | Qwen3.8 → DeepSeek 0731, A's 8K state restored | 8.8–9.0 s | 104.4 s (llama.cpp, the same) |
@@ -41,7 +41,7 @@ the image's first denoising step; [swap.md](swap.md#results-m3s-swap-pairs-spark
 | Worst LLM↔LLM swap | 9.38 s | — |
 
 Not like for like: the baselines start processes and load from a cold
-page cache; jitLLM swaps in one running process with direct reads (no
+page cache; llmpalooza swaps in one running process with direct reads (no
 page cache), the LLMs' artifacts at rest (3–5 h old) and the image's
 recently written (2 h, RE-027's faster rate). Swaps into an LLM are
 page-in bound, so the margin under 10 s is the SSD's at-rest rate for
@@ -82,7 +82,7 @@ checkout, use recipe `b8439110eec0230facbe4ddf0dffe01b8f769be0` and apply
 `mia-ple-loader.patch` with `git apply`; copy the original installed payload
 from a Spark with `rsync -rlpc`. The complete file inventory in the JSON pin
 must match; a different wheel or installation needs its own qualified pin.
-The loader is an external reference dependency, not part of jitLLM's runtime.
+The loader is an external reference dependency, not part of llmpalooza's runtime.
 Keep each experiment's original `.env` and explicit inference settings.
 
 Inside an installed `spark-job --gpu` job, launch with:
@@ -108,7 +108,7 @@ Do not infer unchanged logits or throughput merely from faster loading.
 | Host | `spark` (`spark-c4e2`), NVIDIA GB10, driver 580.178.04, kernel 7.0.0-1019-nvidia, Ubuntu 24.04.5; 121.69 GiB visible memory; ext4 on the internal NVMe |
 | Isolation | Nothing else on the GPU during a timed run (checked with `nvidia-smi` and `docker ps` before each); nothing ran on `spark-b` |
 | Prompts | [prompts.json](prompts.json) (`fast-swap-prompts-v1`), fixed before the first run; the filler text is `baseline.py`'s `filler()` |
-| Harness | [baseline.py](baseline.py) (sessions and the llama.cpp swap), [summarize.py](summarize.py) (the JSON beside this file); raw logs, server logs and per-request records on `spark` under `~/.local/share/jitllm/baselines-20260928/` |
+| Harness | [baseline.py](baseline.py) (sessions and the llama.cpp swap), [summarize.py](summarize.py) (the JSON beside this file); raw logs, server logs and per-request records on `spark` under `~/.local/share/llmp/baselines-20260928/` |
 | Cold load | Before each timed start the model's files (and Mia's packed PLE table) were dropped from the page cache with `POSIX_FADV_DONTNEED`; the clock starts before `docker run` (llama.cpp) or `start.sh` (Mia) |
 
 File age (RE-027: the SSD reads recently written data about 11% faster):
@@ -271,7 +271,7 @@ counters, `prose` accepted 1.27 draft tokens per step (per position 0.67,
 0.39, 0.21), so 2.27 tokens per step and about 60 ms per step (computed),
 against the README's 61.5 ms per step at 3.00 tokens per step. The gap is
 acceptance on this prompt set, whose first 256 tokens are the model's
-reasoning prose, under the code-tuned 47k draft vocabulary; jitLLM will
+reasoning prose, under the code-tuned 47k draft vocabulary; llmpalooza will
 be compared on the same prompts. The first request of each prefill length
 after the cold start was slow (420 tok/s at 512, 770 at 2K; the recipe
 attributes this to the PLE table's page cache warming); medians of three
@@ -337,7 +337,7 @@ container memory cap and leaves the image's own `TORCH_CUDA_ARCH_LIST`
   start was not measured.
 - **Against the other Qwen3.8 numbers:** TensorFold's speculation-off
   decode (37.5) matches Mia's MTP 3 decode (37.85), and with drafts it is
-  1.46–1.48× Mia's. jitLLM's NVFP4 Qwen3.8 decodes at 25.8–26.1 tok/s plain
+  1.46–1.48× Mia's. Llmpalooza's NVFP4 Qwen3.8 decodes at 25.8–26.1 tok/s plain
   and 42.46 / 39.09 with MTP depth 2
   ([qwen38-mtp](../qwen38-mtp/README.md#performance-and-memory)): 0.69–0.70× and
   0.77 / 0.70× TensorFold's. A different quantization, so this is
@@ -362,7 +362,7 @@ files at rest. Start to ready 68.1 s, first token 68.6 s; prefill 501 /
 
 Speed, format and correctness reference. The earlier study's container
 ([image-reference](../image-reference/README.md): local image
-`jitllm-image-reference:20260922`, `sha256:700d6668…`, diffusers `8b3c707e`,
+`llmp-image-reference:20260922`, `sha256:700d6668…`, diffusers `8b3c707e`,
 PyTorch 2.14.0+cu130), checkpoint `Qwen/Qwen-Image-2.1@790c9263`, run with
 [image_baseline.py](image_baseline.py): the pipeline in BF16 on the GPU (no
 CPU offload), prompts.json's `image` entry (the teapot prompt, 1024×1024, 40
@@ -382,9 +382,9 @@ plain requests follow.
 
 All four images are pixel-identical: RGB SHA-256
 `7d00b052878a03cc01baccbede3c3cafeca58b8160687ff93e915614387aac8f`. The
-first, the reference for jitLLM's similarity check, is on `spark` and
+first, the reference for llmpalooza's similarity check, is on `spark` and
 `spark-b` at
-`~/.local/share/jitllm/references/qwen-image-2.1/teapot-1024-40steps-seed42.png`
+`~/.local/share/llmp/references/qwen-image-2.1/teapot-1024-40steps-seed42.png`
 (PNG, 1,250,893 bytes, file SHA-256
 `9de442f1e714160e0475c56fc343aa326b4d0253047f761d16218224e79777a1`); it
 depicts the requested red teapot. It is kept out of Git as a generated
@@ -396,12 +396,12 @@ the load.
 
 ## Greedy reference data
 
-For jitLLM's correctness check (plan.md M3: greedy tokens match the
+For llmpalooza's correctness check (plan.md M3: greedy tokens match the
 same-format oracle with small logit differences allowed): the six chat
 prompts of prompts.json, each rendered with the model's own chat template
 through the engine's API (default template arguments), then 32 greedy
 tokens with the top five log-probabilities at each position. The files
-carry the prompt token IDs, so jitLLM can feed the same tokens without
+carry the prompt token IDs, so llmpalooza can feed the same tokens without
 reproducing the template.
 
 - [reference-deepseek-v4-flash-0731-llamacpp.json](reference-deepseek-v4-flash-0731-llamacpp.json):
@@ -431,7 +431,7 @@ chosen token had log-probability −0.35 against −1.22 for the one the repeat
 chose, so the logits themselves moved by about a nat. The recipe documents
 two sources, the QSA top-k's order (vllm#55122) and the MoE finalize
 (vllm#54948); MTP's verify batches may add more. The cause was not isolated.
-So jitLLM's Qwen3.8 correctness is checked against the deterministic mode,
+So llmpalooza's Qwen3.8 correctness is checked against the deterministic mode,
 and "greedy with speculation equals greedy without" cannot use Mia's MTP 3
 run as its control.
 
@@ -464,7 +464,7 @@ directory, the checkpoints in the M3 model store
 `DOCKER='sudo -n docker'` (the default):
 
 ```sh
-M=$HOME/.local/share/jitllm/models
+M=$HOME/.local/share/llmp/models
 python3 tools/baseline.py session raw/ds-off \
   --llama-model $M/unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93/UD-Q2_K_XL/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf \
   --llama-args "-ngl all -fa on -c 16384 -np 1 --fit off -cram 0" \
@@ -483,7 +483,7 @@ python3 tools/summarize.py results.json LABEL=raw/DIR ...
 
 TensorFold's and diffusers' exact `docker run` lines are in the raw logs
 (`logs/tf-run-cmd.txt`; for 0.3.6.2, `tf-run-cmd.txt` on `spark-b` under
-`~/.local/share/jitllm/baselines-20260928-tensorfold-71377a53/`, run as
+`~/.local/share/llmp/baselines-20260928-tensorfold-71377a53/`, run as
 `baseline.py session --port 8090 --model tf --start "$(cat tf-run-cmd.txt)"
 --stop "sudo -n docker rm -f tfbase" --evict CHECKPOINT --tokenizer usage
 --variant mtp={} --variant 'spec_off={"draft": false}'`, after a first

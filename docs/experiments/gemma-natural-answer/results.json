@@ -6,7 +6,7 @@
     "candidate15_manifest_sha256": "c40ce2bff58085a6ed542f94fb35736d108ed2c88d7123af1182a968ef268a3a",
     "native_binary_sha256": "fe15cdb9abda6b11aad468f4c264aec500fe40538141ed5b3ab2ee8f4598dd2a",
     "sdk_receipt_sha256": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09",
-    "caller_sha256": "058942f68c2da7def61a2385fd58464732152f94949a4bfa85867b69e6ba9ae6",
+    "caller_sha256": "67415f774777b2c96966ca2120addf6e3ea3653d0dbdd243340e1384abe079ce",
     "source_packet_sha256": "842ccaa40f813deee0291f55149e82329b91248082309242b61c1d5fa041871c",
     "assessment_packet_sha256": "02a1f224685408b21ca71209645b498831cb66cd2c4c03d9d6bd4e724857f946",
     "natural_prompts_sha256": "116f5d709cfb18fc5681fabc6045d5b4d47d774ab9deba45c6a9d50dd5721b1c",

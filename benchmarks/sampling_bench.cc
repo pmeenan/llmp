@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Host sampling's cost a draw (execution/sampling.h) at the served models'
@@ -9,7 +9,7 @@
 // `--draws` positions and prints the median and the 90th percentile
 // (docs/tokenizer.md#sampling records them).
 //
-//   jitllm_sampling_bench [--draws N]
+//   llmp_sampling_bench [--draws N]
 
 #include <algorithm>
 #include <array>
@@ -28,7 +28,7 @@
 
 namespace {
 
-namespace ex = jitllm::execution;
+namespace ex = llmp::execution;
 
 std::vector<float> Row(std::size_t vocab, bool peaked, std::uint64_t seed) {
   std::mt19937_64 rng(seed);

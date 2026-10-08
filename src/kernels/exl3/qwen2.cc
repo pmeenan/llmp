@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/exl3/qwen2.h"
@@ -35,7 +35,7 @@
 #include "kernels/ggml/tensors.h"
 #include "model/qwen2_exl3.h"
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 namespace {
 
 using model::Exl3Op;
@@ -310,7 +310,7 @@ std::expected<std::unique_ptr<Qwen2Program>, KernelFailure> Qwen2Program::Bind(
   s.bound = std::move(*bound);
   {
     base::Sha256 hash;
-    hash.Update("jitllm.exl3.qwen2.plan.v0");
+    hash.Update("llmp.exl3.qwen2.plan.v0");
     hash.Update(std::as_bytes(std::span(s.bound->identity())));
     hash.Update(std::as_bytes(std::span(s.plan.launch_digest)));
     program->identity_ = hash.Finish();
@@ -762,4 +762,4 @@ std::expected<void, KernelFailure> Qwen2Program::Run(ggml::LaunchContext& ggml_l
   return {};
 }
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3

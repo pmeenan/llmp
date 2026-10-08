@@ -1,14 +1,14 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen-Image-2.1 BF16, native (M3)
 
 M3's third model slice ([plan](../../plan.md#m3--single-spark-fast-full-swap-in-progress)):
 the Qwen-Image-2.1 pipeline (Qwen3-VL-8B text encoder, single-stream DiT,
-VAE) run by jitLLM natively on one Spark from its D-056 artifacts, one per
+VAE) run by llmpalooza natively on one Spark from its D-056 artifacts, one per
 component, joined by a D-089 composition, against diffusers in BF16.
 
-## Pre-registration (fixed before jitLLM's first run on the model)
+## Pre-registration (fixed before llmpalooza's first run on the model)
 
 Inputs, fixed in the repository (D-087's entry rule):
 
@@ -21,18 +21,18 @@ Inputs, fixed in the repository (D-087's entry rule):
   42, `true_cfg_scale` 1.0 (no guidance), prefix KV cache on.
 - **Reference tensors:** [reference.py](reference.py) re-runs the pipeline's
   denoising loop by hand, in the same calls, order and dtypes as
-  `QwenImage21Pipeline.__call__`, and keeps every tensor jitLLM is compared
+  `QwenImage21Pipeline.__call__`, and keeps every tensor llmpalooza is compared
   with. Its image is pixel for pixel the baseline's (RGB SHA-256
   `7d00b052…`, [baselines.md](../fast-swap/baselines.md#qwen-image-21-diffusers-bf16)),
   so the kept tensors are the baseline's. They stay outside Git on `spark`
-  under `~/.local/share/jitllm/references/qwen-image-2.1/native/ref1/`
+  under `~/.local/share/llmp/references/qwen-image-2.1/native/ref1/`
   (raw little-endian files; `reference.json` records each one's shape and
   SHA-256).
-- **Seeded noise:** jitLLM does not reproduce PyTorch's CUDA generator. It
+- **Seeded noise:** Llmpalooza does not reproduce PyTorch's CUDA generator. It
   starts from diffusers' initial latents for seed 42 (`latents_init`, the
   packed `randn_tensor` output), the simpler of the two routes the slice
   allowed.
-- **Tokens:** jitLLM's native tokenizer and prompt renderer
+- **Tokens:** Llmpalooza's native tokenizer and prompt renderer
   (`src/tokenizer`, `src/chat`) must give the
   reference's 39 token IDs exactly, and drop the 14 system-turn tokens.
 
@@ -92,8 +92,8 @@ runs, and peak memory as the drop in `MemAvailable`.
   92 s, denoiser 75 s, VAE 6 s, full verify included) and `compose` wrote
   composition `eca21baad38229e471a44cb2479d392ffcf745fb812e8a41668f336139fa1acd`
   naming text encoder `ed89ed27…`, denoiser `d1184efd…` and VAE
-  `44c1a20a…`, in `~/.local/share/jitllm/m3-artifacts/`.
-- **Load** (`jitllm_qwen_image_exec`): the composition and each component
+  `44c1a20a…`, in `~/.local/share/llmp/m3-artifacts/`.
+- **Load** (`llmp_qwen_image_exec`): the composition and each component
   opened as untrusted input (`artifact/composition.h`, `artifact.h`),
   bound to the compiled-in profile (`model/qwen_image.h`), and the groups
   a phase reads loaded with direct reads through pinned staging into
@@ -109,8 +109,8 @@ runs, and peak memory as the drop in `MemAvailable`.
   phase's start and frees it at the end; `resident` holds all three.
 - **Kernels** ([kernels/image](../../../src/kernels/image/ops.h)): BF16
   products on cuBLAS (`cublasGemmEx`, F32 accumulation, the call PyTorch
-  makes for a BF16 `nn.Linear`), jitLLM's FlashAttention-2 forward in BF16
-  for the denoiser's attention, and jitLLM's fused BF16 kernels for the
+  makes for a BF16 `nn.Linear`), llmpalooza's FlashAttention-2 forward in BF16
+  for the denoiser's attention, and llmpalooza's fused BF16 kernels for the
   norms, modulation, rotary embeddings, gated residuals, SwiGLU, the Euler
   step and the VAE's operations (im2col and cuBLAS for its convolutions).
   Each kernel rounds to BF16 where the pinned PyTorch code materializes a
@@ -126,14 +126,14 @@ runs, and peak memory as the drop in `MemAvailable`.
 ## Results (`spark`, 2026-09-28)
 
 GB10, driver 580.178.04, the SDK's CUDA and cuBLAS (D-076). Raw outputs in
-`~/.local/share/jitllm/m3img-20260928/` on `spark` (the runs `full1`,
+`~/.local/share/llmp/m3img-20260928/` on `spark` (the runs `full1`,
 `first`, `forced`, `vae` and `released`, and compare.py's verdicts in
 `verdicts.json`). A first attempt at the reference run exhausted `spark`'s
 memory at 03:39 (its FP32 controls with the BF16 pipeline still resident);
 the kernel's OOM killer ended it and several system services (tailscaled,
 polkit, fwupd, the DGX telemetry, the user session), which systemd
 restarted within two minutes. The reference was re-run with reference.py
-as checked in and finished at 03:52; every jitLLM run here started after
+as checked in and finished at 03:52; every llmpalooza run here started after
 04:00 on the recovered host, and diffusers' full-generation and per-step
 timings are the earlier baseline's, so no measurement overlaps the
 incident.
@@ -149,7 +149,7 @@ incident.
 | 5. VAE on diffusers' latents | rel. RMS 0.0035; PSNR 55.9 dB, SSIM 0.9992 | ≤ 0.0055, ≥ 47.5 dB |
 | 6. **Image, end to end** | **PSNR 41.8 dB, SSIM 0.99604** | ≥ 32.0 dB, ≥ 0.98 |
 
-End to end, jitLLM's final latents are 0.0174 from diffusers' in relative
+End to end, llmpalooza's final latents are 0.0174 from diffusers' in relative
 RMS, closer than the FP32-DiT control's 0.0254; its image and the
 reference, inspected side by side at 512², show the same red teapot, pose
 and framing with no visible difference. With `--phases released` the pixels are identical to the
@@ -158,7 +158,7 @@ resident run's.
 **Performance and memory** (reported; plan.md's image gate is ≤ 10% slower
 than diffusers, D-085):
 
-| | jitLLM | diffusers ([baselines](../fast-swap/baselines.md#qwen-image-21-diffusers-bf16)) | Ratio |
+| | Llmpalooza | diffusers ([baselines](../fast-swap/baselines.md#qwen-image-21-diffusers-bf16)) | Ratio |
 | --- | --- | --- | ---: |
 | Full generation, weights resident (plain runs) | 36.94 / 36.99 s | 52.55 / 52.71 / 52.73 s | 0.70 |
 | Per denoising step, median (synchronized) | 0.893 s [0.885–0.900] | 1.259 s [1.255–1.263] | 0.71 |
@@ -185,7 +185,7 @@ built (`kernels/ggml/fattn_mma_d128.cu`, then `--attention ggml`, an arm
 the speed slice retired from the harness; RE-030's sinks
 issue does not arise without sinks) and matches FP64 within upstream's
 bound, but takes 19.9 ms per block call here (0.64 s per step, 64 columns
-per tile, stream-k), about 14 TFLOPS. jitLLM's own FlashAttention-2 kernel
+per tile, stream-k), about 14 TFLOPS. Llmpalooza's own FlashAttention-2 kernel
 (`kernels/image/flash_attention.cu`, BF16 `mma.sync`) takes 3.37 ms, as
 PyTorch's does, so neither cuDNN (whose license D-017 would first have to
 admit) nor a cuBLAS formulation was needed.
@@ -205,7 +205,7 @@ so turning one back is one `--choose`:
   heuristic candidates whose output equals `cublasGemmEx`'s bit for bit
   (five of the sixteen pins split K, reduced in a fixed order, as
   `cublasGemmEx`'s own choice evidently does there), timed sustained by
-  `jitllm_qwen_image_gemm_tune` (median of five batches of back-to-back
+  `llmp_qwen_image_gemm_tune` (median of five batches of back-to-back
   launches after half a second of warm-up) and pinned by its nine
   algorithm attributes, as the EXL3 reconstruction's are; other shapes,
   and a pin a later cuBLASLt would refuse, take cuBLASLt's first heuristic
@@ -256,7 +256,7 @@ so turning one back is one `--choose`:
 GB10, driver 580.178.04, the SDK's CUDA 13.4 and cuBLAS 13.8.0.4; the M3
 slice's build (`c9a17ac`) and this slice's, two plain runs per arm, the
 fast plan run between every two other arms; raw outputs in
-`~/.local/share/jitllm/m3imgspd-20260928/` on `spark`, the `h-` runs):
+`~/.local/share/llmp/m3imgspd-20260928/` on `spark`, the `h-` runs):
 
 | | M3 slice | Speed slice | diffusers |
 | --- | ---: | ---: | ---: |
@@ -296,8 +296,8 @@ no slower), everything else 112 → 87 ms (the separate gated residual,
 GPU idle between operations 2 ms a step before.
 
 **Quality** ([compare.py](compare.py), bounds 1–6, run in the
-`jitllm-exl3-reference:20260922` container on `spark-b`, which has NumPy
-and Pillow; the same numbers in `jitllm-image-reference:20260922` on
+`llmp-exl3-reference:20260922` container on `spark-b`, which has NumPy
+and Pillow; the same numbers in `llmp-image-reference:20260922` on
 `spark`): every bound passes, and every number but the VAE's and the
 image's is the M3 slice's to the last digit, since the text encoder and the
 denoiser write the same bits (the fast plan's final latents equal the
@@ -335,7 +335,7 @@ RMS).
   attention: GGML computes the former in F32 between operations where the
   reference rounds each to BF16, and its attention was 6× slower here.
 - **Bounds from calibration:** twice the measured BF16-versus-FP32 distance
-  per component, fixed before jitLLM's first run.
+  per component, fixed before llmpalooza's first run.
 - **Speed without new numbers** (the speed slice): every lever but the
   VAE's convolution keeps the M3 slice's bits. Pinned algorithms are chosen
   among the candidates that write `cublasGemmEx`'s bits, not the fastest
@@ -365,7 +365,7 @@ RMS).
 - One prompt, size (1024²), step count and seed; text-to-image only (no
   condition images, no guidance, the prefix cache on). Other sizes are
   accepted (multiples of 32, 64–2,048) but not compared: one 512², 8-step
-  run from seeded noise of jitLLM's own (not diffusers') gave a coherent
+  run from seeded noise of llmpalooza's own (not diffusers') gave a coherent
   image, and the attention kernel's tests cover that size's sequence
   lengths.
 - The phases here run on `cudaMalloc` memory. On the paged node each phase
@@ -388,11 +388,11 @@ RMS).
 ## Reproduce
 
 On `spark`, with the checkpoint in the M3 model store and a build of
-`jitllm_qwen_image_exec` (`benchmarks/`):
+`llmp_qwen_image_exec` (`benchmarks/`):
 
 ```sh
-M=$HOME/.local/share/jitllm/models/Qwen/Qwen-Image-2.1@790c9263
-S=$HOME/.local/share/jitllm/m3-artifacts
+M=$HOME/.local/share/llmp/models/Qwen/Qwen-Image-2.1@790c9263
+S=$HOME/.local/share/llmp/m3-artifacts
 cd docs/experiments/artifact-layout
 for role in text_encoder transformer vae; do
   python3 import_m3.py component $S ../fast-swap/pins.json qwen-image-2.1 $M $role \
@@ -406,13 +406,13 @@ python3 import_m3.py compose $S ../fast-swap/pins.json qwen-image-2.1 $M \
 # first; --memory caps the container's host allocations:
 sudo -n docker run --rm --memory 96g --device nvidia.com/gpu=all --network none -u $(id -u):$(id -g) \
   -e HOME=/tmp -v $M:/model:ro -v $PWD/..:/exp:ro -v $REF_PARENT:/out \
-  jitllm-image-reference:20260922 /exp/qwen-image-native/reference.py /model /out/ref1 \
+  llmp-image-reference:20260922 /exp/qwen-image-native/reference.py /model /out/ref1 \
   /exp/fast-swap/prompts.json
-# jitLLM: end to end (with two plain timed runs), then each component alone.
+# Llmpalooza: end to end (with two plain timed runs), then each component alone.
 # The fast plan and step graphs are the defaults; --plan legacy is the M3
 # slice's kernels, --choose ROLE=IMPLEMENTATION turns one lever back, and
 # --graphs off replays nothing (Speed).
-B=build/spark-native/benchmarks/jitllm_qwen_image_exec; C=eca21baa...; R=$REF_PARENT/ref1
+B=build/spark-native/benchmarks/llmp_qwen_image_exec; C=eca21baa...; R=$REF_PARENT/ref1
 $B --store $S --composition $C --out full --reference $R --runs 2
 $B --store $S --composition $C --out first --reference $R --embeds reference --stop-after 1 --no-vae
 $B --store $S --composition $C --out forced --reference $R --embeds reference --force-latents --no-vae
@@ -423,6 +423,6 @@ $B --store $S --composition $C --out released --reference $R --phases released -
 python3 compare.py $R --tokens full --text full --image full --dit-first first \
   --dit-forced forced --vae vae
 # The products' candidates at the pipeline's shapes (the pins' source):
-build/spark-native/benchmarks/jitllm_qwen_image_gemm_tune --candidates 16 --reps 10 \
+build/spark-native/benchmarks/llmp_qwen_image_gemm_tune --candidates 16 --reps 10 \
   --shape 4096,4096,4096 --shape 4096,12288,4096 ...   # each m,n,k the pipeline makes
 ```

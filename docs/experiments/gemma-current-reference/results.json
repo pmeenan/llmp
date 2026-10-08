@@ -19,7 +19,7 @@
   "reference": {
     "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
     "launcher_sha256": "f183f9eaa1eb83f3be8c12ca4f8b23bec638d44d5a265fd224fc8e2a6516fa42",
-    "container_retire_sha256": "1fd85804983ecdf720b5c0a69353fede0e294a0da0dd70a91bd8cd8b539e75e0",
+    "container_retire_sha256": "d93c10c58c792d9cad39efa816a3d94c11ccd24918a0de27c2ddc0c2643bb994",
     "cpu_threads": "Unchanged llama_context_default_params; no new thread override or affinity policy",
     "native_toolchain": "Clang22.1.8/NVCC13.4.92/toolkit13.4.2/driver580.178.04",
     "original_image_cuda": "13.3"
@@ -58,8 +58,8 @@
         "sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b"
       },
       "reference_source": {
-        "bytes": 5695,
-        "sha256": "00fb782b5af4f5b0aeb903957ac26100c099422eeeb5e873bdc99890c77e11d2"
+        "bytes": 5699,
+        "sha256": "1ffc1ae6e215a22778ce5db51eb40a975afa3ee6130e1b8143a2a1cba9fcf68a"
       },
       "reference_binary": {
         "bytes": 75376,
@@ -356,8 +356,8 @@
         "sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b"
       },
       "reference_source": {
-        "bytes": 5698,
-        "sha256": "112bfa39733efada1723c1cef5689e7236a4aca218e009cab2dbb32441f16fb6"
+        "bytes": 5702,
+        "sha256": "62f5a3234a61e910c862063b3c26f95d967c00400acb6a346e04fd39e3339b68"
       },
       "reference_binary": {
         "bytes": 75376,

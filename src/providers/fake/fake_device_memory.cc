@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "providers/fake/fake_device_memory.h"
@@ -20,7 +20,7 @@
 #include "platform/files.h"
 #include "providers/device_memory.h"
 
-namespace jitllm::providers::fake {
+namespace llmp::providers::fake {
 namespace {
 
 std::unexpected<Failure> SystemFailure(const char* what) {
@@ -154,7 +154,7 @@ std::expected<FakeDeviceMemory::Handle, Failure> FakeDeviceMemory::DoCreate(
     }
     return handle;
   }
-  const auto opened = platform::OpenAnonymousMemoryFile("jitllm-fake-backing");
+  const auto opened = platform::OpenAnonymousMemoryFile("llmp-fake-backing");
   if (!opened) {
     errno = opened.error();
     return SystemFailure("memfd_create");
@@ -255,4 +255,4 @@ std::expected<void, Failure> FakeDeviceMemory::DoUnmap(std::uint64_t address, By
   return {};
 }
 
-}  // namespace jitllm::providers::fake
+}  // namespace llmp::providers::fake

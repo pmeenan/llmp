@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Summarize a host-VMM diagnosis session (README.md in this directory).
 
@@ -131,7 +131,7 @@ def main():
     if restores:
         agg = aggregate(restores)
         result["restore"] = {"|".join(map(str, k)): v for k, v in agg.items()}
-        print("Restores of an 8 GiB file in 2 MiB direct reads through jitLLM's io_uring "
+        print("Restores of an 8 GiB file in 2 MiB direct reads through llmpalooza's io_uring "
               "provider (median of passes; range of per-process medians; latency from a read's "
               "submission to its extent being usable in the destination):\n")
         print("| Path | In flight | GB/s | p50 µs | p99 µs |")

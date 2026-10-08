@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/completion_tokens.h"
@@ -11,7 +11,7 @@
 #include "execution/sampling.h"
 #include "tokenizer/unicode.h"
 
-namespace jitllm::runtime::api {
+namespace llmp::runtime::api {
 namespace {
 
 Error BadPrompt(std::string message, std::string code = {}) {
@@ -378,4 +378,4 @@ LiteralResult LiteralOutput::TakeResult() {
   return std::move(result_);
 }
 
-}  // namespace jitllm::runtime::api
+}  // namespace llmp::runtime::api

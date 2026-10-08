@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The scheduler's task programs (scheduler/programs.h) under the names the
@@ -6,8 +6,8 @@
 // LaunchOnlyProgram, which submits a job over a closure it never
 // materialized (BP-P2's incomplete closure).
 
-#ifndef JITLLM_TESTS_SUPPORT_PAGED_PROGRAMS_H_
-#define JITLLM_TESTS_SUPPORT_PAGED_PROGRAMS_H_
+#ifndef LLMP_TESTS_SUPPORT_PAGED_PROGRAMS_H_
+#define LLMP_TESTS_SUPPORT_PAGED_PROGRAMS_H_
 
 #include <atomic>
 #include <cstdint>
@@ -17,7 +17,7 @@
 #include "scheduler/programs.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::test_support {
+namespace llmp::test_support {
 
 using Done = scheduler::ProgramDone;
 using HarnessProgram = scheduler::ReportingProgram;
@@ -65,6 +65,6 @@ class LaunchOnlyProgram final : public HarnessProgram {
   bool submitted_ = false;
 };
 
-}  // namespace jitllm::test_support
+}  // namespace llmp::test_support
 
-#endif  // JITLLM_TESTS_SUPPORT_PAGED_PROGRAMS_H_
+#endif  // LLMP_TESTS_SUPPORT_PAGED_PROGRAMS_H_

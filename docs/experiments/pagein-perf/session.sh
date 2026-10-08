@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
 # The reported page-in session (README.md), on a Spark:
@@ -17,8 +17,8 @@ set -u
 AFTER=$1 BEFORE=$2 PROBE=$3 FILE=$4 ART=$5 TOK=$6 OUT=$7 ROUNDS=$8 MAXLOAD=${9:-1.0}
 mkdir -p "$OUT"
 { hostname; uname -r; nvidia-smi --query-gpu=name,driver_version,persistence_mode --format=csv,noheader
-  sha256sum "$AFTER/benchmarks/jitllm_pagein_bench" "$BEFORE/benchmarks/jitllm_pagein_bench" "$PROBE" \
-    "$AFTER/benchmarks/jitllm_fp16_paged" "$BEFORE/benchmarks/jitllm_fp16_paged"
+  sha256sum "$AFTER/benchmarks/llmp_pagein_bench" "$BEFORE/benchmarks/llmp_pagein_bench" "$PROBE" \
+    "$AFTER/benchmarks/llmp_fp16_paged" "$BEFORE/benchmarks/llmp_fp16_paged"
   lsblk -d -o NAME,MODEL | grep nvme; } > "$OUT/manifest.txt"
 idle() {
   quiet=0
@@ -43,7 +43,7 @@ bench() {  # TAG BUILD ARGS...: 8 GiB loaded 5 times
   shift 2
   idle
   c=$(cond)
-  "$build/benchmarks/jitllm_pagein_bench" --file "$FILE" --gib 8 --offset 4096 --loads 5 "$@" \
+  "$build/benchmarks/llmp_pagein_bench" --file "$FILE" --gib 8 --offset 4096 --loads 5 "$@" \
     > "$OUT/tmp.txt" 2>&1 || { echo "FAIL $tag" >> "$OUT/results.txt"; cat "$OUT/tmp.txt" >> "$OUT/errors.txt"; return; }
   grep '^load,' "$OUT/tmp.txt" | sed "s|^|$tag,r$round,|;s|\$|,$c|" >> "$OUT/results.txt"
 }
@@ -57,7 +57,7 @@ probe() {  # TAG MODE DEPTH: 8 GiB restored 4 times
 fp16() {  # TAG BUILD WEIGHTS BACKING: the FP16 artifact's device weights loaded 6 times
   idle
   c=$(cond)
-  CUDA_DISABLE_PTX_JIT=1 "$2/benchmarks/jitllm_fp16_paged" --artifact "$ART" --trajectory control \
+  CUDA_DISABLE_PTX_JIT=1 "$2/benchmarks/llmp_fp16_paged" --artifact "$ART" --trajectory control \
     --tokens "$TOK" --fusion on --out "$OUT/fp16" --load-only 6 --weights "$3" --backing "$4" \
     > "$OUT/tmp.txt" 2>&1 || { echo "FAIL $1" >> "$OUT/results.txt"; return; }
   python3 -B -c "

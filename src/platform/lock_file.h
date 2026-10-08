@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // An exclusive lock held for a process's lifetime: flock(2) on a file that
@@ -6,8 +6,8 @@
 // goes with the open file description, so the kernel releases it when the
 // last descriptor for it closes, however the process ends.
 
-#ifndef JITLLM_PLATFORM_LOCK_FILE_H_
-#define JITLLM_PLATFORM_LOCK_FILE_H_
+#ifndef LLMP_PLATFORM_LOCK_FILE_H_
+#define LLMP_PLATFORM_LOCK_FILE_H_
 
 #include <sys/types.h>
 
@@ -15,7 +15,7 @@
 #include <filesystem>
 #include <string>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 class LockFile {
  public:
@@ -40,6 +40,6 @@ class LockFile {
   int fd_ = -1;
 };
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_LOCK_FILE_H_
+#endif  // LLMP_PLATFORM_LOCK_FILE_H_

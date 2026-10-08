@@ -1,11 +1,11 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Rough edges — findings log
 
 CUDA driver, DGX Spark platform, toolchain, and library bugs, quirks,
 surprising limits, performance cliffs, and missing capabilities encountered
-while building jitLLM. Log the ones that burned real debugging time and will
+while building llmpalooza. Log the ones that burned real debugging time and will
 bite again — this is a save-future-you log, not a compliance artifact.
 
 **Before adding:** grep for the API/library involved to avoid duplicates.
@@ -95,7 +95,7 @@ recorded global OOM kills of four model tests, NVIDIA allocation failures,
 and transient SSH unresponsiveness. Ordinary process RSS does not explain
 the device backing in this unified memory domain.
 
-GPU tests marked `MODELS` now share the CTest `jitllm_gpu_model` resource
+GPU tests marked `MODELS` now share the CTest `llmp_gpu_model` resource
 lock. They run one at a time within a suite; CPU and primitive GPU checks
 retain their parallel scheduling. The installed Spark supervisor still
 serializes separate jobs. A passing focused model run does not prove that
@@ -111,7 +111,7 @@ computes `100 * output_tiles` in int. Vector launch selection computes
 `100 * candidate_blocks` in int. Shared/broadcast operand strides can admit
 large logical shapes despite bounded output storage.
 
-The jitLLM vector planner conservatively bounds all searched candidates at
+The llmpalooza vector planner conservatively bounds all searched candidates at
 `INT32_MAX/100`; the D128/D256/D512 MMA planner bounds output efficiency and
 total iterations plus the last unaligned iteration advance separately before
 pinned invocation. These are conservative admission bounds; a refused vector
@@ -126,7 +126,7 @@ and [primitive controls](experiments/gemma-local-attention/README.md).
 ## RE-045: GGML MMVQ dots rows past a partial output block  (2026-10-04, status: worked-around)
 
 Environment: pinned llama.cpp b10964, GB10, SDK NVCC 13.4.92. Independent
-review found ordinary and jitLLM row-invariant MMVQ unconditionally read all
+review found ordinary and llmpalooza row-invariant MMVQ unconditionally read all
 rows in the final selected row block. Q5_1 K704/N129 selects four rows;
 three extra 528-byte rows exceed the canonical 384-byte tail. The finding
 was proved from the launch geometry and dot loop without submitting an
@@ -261,7 +261,7 @@ and [the standalone upstream handoff](upstream/flashinfer.md#pinned-python-profi
 
 - **Environment:** `spark`, GB10, driver 580.178.04, CUDA 13.4.92,
   Nsight Systems 2025.3.2. Job `m3-final-ds-max-swap` starts at
-  10:10:15 EDT, launching `jitllm_long_swap` through
+  10:10:15 EDT, launching `llmp_long_swap` through
   `nsys profile --trace=cuda --sample=none --cpuctxsw=none --delay=2700
   --duration=60 --kill=none --wait=all --export=sqlite`.
 - **Observed:** after the bounded capture/export, the profiler exits zero
@@ -289,20 +289,20 @@ and [the standalone upstream handoff](upstream/flashinfer.md#pinned-python-profi
   `spark:~/scratch/m3-extrapolation-ds/final-max-swap/`; see
   [the final context report](experiments/m3-final-context/README.md).
   The launch wrapper is
-  `spark:~/scratch/m3-final-launch/jitllm-final-ds-max-swap.sh`.
+  `spark:~/scratch/m3-final-launch/llmp-final-ds-max-swap.sh`.
 
 ## RE-038: GGML's concat has two kernels, and only the per-row one is bound by the grid's 65,535 channels, so a check that bounded both refused DeepSeek V4 past ~52K positions  (2026-09-29, status: fixed)
 
 - **Environment:** `spark-b`, GB10, the `spark-native` build at `6c182c3`;
   the pinned llama.cpp `b29c606e2`'s `concat.cu`.
-- **Observed:** `jitllm-runtime` with DeepSeek V4 at `context = 262144`
+- **Observed:** `llmp-runtime` with DeepSeek V4 at `context = 262144`
   failed the 64K prompt's prefill at the chunk at 51,200: "concat beyond
   the kernels' grid" on the CSA layers' concatenation of the window cells
   and the compressed rows, F16 [512, 1, 66,560]. `concat_cuda` launches
   a block per output row, channel and sample (`dim3(ne1, ne2, ne3)`, so at
   most 65,535 channels) only for strided operands; operands contiguous in
   their first three dimensions take `concat_cont`, a one-dimensional grid
-  over the plane, and whole copies along dimension 3. jitLLM's operation
+  over the plane, and whole copies along dimension 3. Llmpalooza's operation
   check (`CheckConcat`) applied the per-row kernel's limits to both, so
   every CSA layer past about 52K attended cells (the window's cells plus a
   quarter as many compressed rows) was refused. llama.cpp runs the same
@@ -320,12 +320,12 @@ and [the standalone upstream handoff](upstream/flashinfer.md#pinned-python-profi
   `fattn-mma-f16.cuh` launch signature (`nb31`, `nb32` are `int32_t`) and
   `ggml_permute` in `ggml.c` (its `ne` and `nb` locals are `int`).
 - **Observed, twice:**
-  - `jitllm-runtime` with Qwen3.8 at `context = 262144` refused to start:
+  - `llmp-runtime` with Qwen3.8 at `context = 262144` refused to start:
     "flash attention beyond the kernel's 32-bit extents and strides". The
     chunk's F16 mask is [n_kv, rows]; at 262,144 cells and the default
     4,096 rows its plane is 2^31 bytes, one past `INT32_MAX`. The MMA
     kernel reads the mask only through `nb33` (int64, `ne32` is 1), so
-    the truncated value would go unused; jitLLM's launcher check
+    the truncated value would go unused; llmpalooza's launcher check
     (`validate_ext.cc`) refuses it anyway, as intended.
   - With the chunk at 3,584 rows the service started, and the 256K
     prompt's prefill failed at the chunk at 146,944 (n_kv 150,528):
@@ -333,7 +333,7 @@ and [the standalone upstream handoff](upstream/flashinfer.md#pinned-python-profi
     (past 32,768 cells, RE-031) permutes the indexer's expanded F32
     scores [rows, n_kv] (2,157,969,408 bytes); `ggml_permute` computed
     the view's plane stride in `int` and gave 18446744071572553728
-    (2^64 − 2^31 + …). jitLLM's operation check refused it before any
+    (2^64 − 2^31 + …). Llmpalooza's operation check refused it before any
     kernel read through it. Upstream fixed the truncation in PR #29227
     (after the pin).
 - **Worked around:** `model::Qwen38State` and `Qwen38MostRows` bound a
@@ -365,7 +365,7 @@ and [the standalone upstream handoff](upstream/flashinfer.md#pinned-python-profi
 - **Environment:** `spark`, GB10, the `spark-native` build at `c7c1ead`
   plus the prefill-chunk slice; the pinned llama.cpp `b29c606e2`'s
   `fattn-common.cuh` pre-pass as `kernels/ggml/fattn_mma.cu` dispatches it.
-- **Observed:** `jitllm-runtime chat` with `prefill_chunk = 4096` (both
+- **Observed:** `llmp-runtime chat` with `prefill_chunk = 4096` (both
   DeepSeek V4 and Qwen3.8) failed its first chunk, a whole 2,164- or
   2,362-token prompt, with "the mask pre-pass reads whole column tiles
   past the mask's rows"; 512-, 1,024- and 2,048-row chunks of the same
@@ -379,13 +379,13 @@ and [the standalone upstream handoff](upstream/flashinfer.md#pinned-python-profi
   stays under the threshold, and a larger one over-reads into its compute
   buffer unnoticed; upstream CUDA still has the over-read (Metal fixed the
   same bug in llama.cpp PR 29220, merged 2026-09-21, a precedent for a
-  CUDA fix). jitLLM's launcher check refuses rather than read past the
+  CUDA fix). Llmpalooza's launcher check refuses rather than read past the
   mask, and in the runtime a refused chunk is a node failure.
 - **Worked around:** the runtime's prefill (`runtime/prefill.h`) runs a
   chunk of 1,024 rows or more in whole 8-row tiles and its remainder as a
   chunk of its own, and its chunk sizes are multiples of 8. Since the
   long-context baseline the resident harnesses' prompts and perplexity
-  chunks tile the same way (`jitllm_dsv4_exec`; `jitllm_qwen38_exec`'s
+  chunks tile the same way (`llmp_dsv4_exec`; `llmp_qwen38_exec`'s
   64-row `ChunkRows`); their other `--max-rows` paths (synthetic prefill
   benchmarks) are not covered.
 - **Impact:** anything that drives GGML attention with 1,024+ query rows
@@ -435,7 +435,7 @@ should A/B the swizzle rather than trust the default heuristic.
 
 ## RE-033: GGML's MMVQ changes its launch with the column count, so a multi-token verify's rows differ in their last bits from one-token decoding  (2026-09-28, status: worked-around)
 
-`spark-b`, GB10, the pinned llama.cpp `b29c606e2`'s `mmvq.cu` as jitLLM
+`spark-b`, GB10, the pinned llama.cpp `b29c606e2`'s `mmvq.cu` as llmpalooza
 builds it. `calc_nwarps` and `calc_rows_per_block` depend on `ncols_dst`:
 on the GB10's table one column of Q8_0, Q4_K, Q5_K or Q6_K runs 8 warps,
 two to four columns run 4, so each dot product's partial sums are
@@ -454,7 +454,7 @@ speculative and plain outputs.
 ## RE-032: GGML's ssm_conv reads up to 31 floats past its window when the tokens exceed 32 and are not a multiple of 32  (2026-09-28, status: worked-around)
 
 Environment: `spark-b` (GB10), llama.cpp `b29c606e2`'s `ssm-conv.cu` under
-jitLLM's dispatch (`kernels/ggml/ops_ext.cu SsmConv`), SDK CUDA 13.4.
+llmpalooza's dispatch (`kernels/ggml/ops_ext.cu SsmConv`), SDK CUDA 13.4.
 
 Observed: `unit.Qwen38FusedTest.GdnConvIsTheUnfusedNodes` aborted once
 under the Spark test tier's parallel run and never alone; the process
@@ -474,7 +474,7 @@ Expected: loads bounded by the window's columns.
 Impact: `CheckSsmConv` did not refuse it, so any unfused graph with an odd
 chunk past 32 tokens (Qwen3.8 with `--unfused`, or a prompt's last chunk)
 read past the concatenation it convolves, inside the activation region
-(no fault seen there). The fused graph's `jitllm.gdn.conv` does not over-read
+(no fault seen there). The fused graph's `llmp.gdn.conv` does not over-read
 and takes every chunk of 3 or more tokens.
 
 Workaround (the prefill slice's review): `CheckSsmConv` refuses more than
@@ -487,7 +487,7 @@ load by the window's columns.
 ## RE-031: GGML's radix top-k picks among tied values nondeterministically, so Qwen3.8's QSA selection varies run to run past 2,051 cells, and DeepSeek V4's indexer past 4,096 positions  (2026-09-28, status: worked-around in both models' fast plans at any depth (Qwen3.8's since its long-context phase 2); open for both reference (and unfused) graphs)
 
 `spark-b`, GB10, driver 580.178.04, the pinned llama.cpp `b29c606e2`'s
-`top-k.cu` as jitLLM builds it (no CUB). For rows over 1,024 columns
+`top-k.cu` as llmpalooza builds it (no CUB). For rows over 1,024 columns
 `top_k_radix_cuda` compacts the elements above the threshold and those
 equal to it with `atomicAdd` on per-row counters (`top-k.cu:170-173`), up
 to 64 blocks a row: which of several equal values land in the first k
@@ -496,7 +496,7 @@ depends on thread timing. Qwen3.8's QSA indexer selects the top
 cells (every score appears four times) and ReLU'd (many exact zeros), so
 wherever the k-th value is tied the selected cells, and with them the
 attention, change between runs. Observed with M3's swap runner
-(`jitllm_swap_pairs`, [swap.md](experiments/fast-swap/swap.md)): the same
+(`llmp_swap_pairs`, [swap.md](experiments/fast-swap/swap.md)): the same
 8,192-token prefill (16 chunks of 512) in one process, weights and state
 identical, gave logits that differ from the 11th to the 16th chunk on
 (positions past 5,120) in seven of twelve reruns; two processes'
@@ -515,20 +515,20 @@ can differ; one repeated cache path does have byte-identical target heads.
 Cache counts, request order and reference repeats are required when
 interpreting acceptance; this is not proof that top-k causes every
 difference. See the [reference handoff](upstream/vllm.md#same-history-acceptance-varies-across-cache-paths-and-repeats).
-Impact: jitLLM's Qwen3.8 is not repeatable past 2,051 cells; any
+Impact: llmpalooza's Qwen3.8 is not repeatable past 2,051 cells; any
 bit-identity check there must compare against the same state, not a rerun
 (the swap runner snapshots the state and runs the unswapped continuation
 from it). Fix: a top-k that breaks ties by index (a patch to GGML's radix
-select, or jitLLM's own), part of the Qwen3.8 work. Since the second
+select, or llmpalooza's own), part of the Qwen3.8 work. Since the second
 prefill pass the fast graph (the default, in prefill and decode) selects
-with jitLLM's own `jitllm.qsa.select`, which keeps the lower cell among
+with llmpalooza's own `llmp.qsa.select`, which keeps the lower cell among
 equals, and its perplexity run (3,557 positions, past the budget)
 repeated exactly three times
 ([qwen38-native](experiments/qwen38-native/README.md#results-second-pass));
 the reference (`--exact`) and unfused graphs keep GGML's top-k, and so
 did the fast graph past 32,768 cells (the kernel's shared memory). Since
 long context's phase 2 (2026-09-29) the fast graph selects on the device
-at any depth up to its configured 262,144 (`jitllm.qsa.topk`: a
+at any depth up to its configured 262,144 (`llmp.qsa.topk`: a
 byte-wise radix select over tiles of 8,192 blocks, then over the tiles'
 candidates, ties to the lower cell): two runs of the same 64K and 128K
 forced prompts gave identical logits at all 512 steps, so **for Qwen3.8's
@@ -540,7 +540,7 @@ repeatable past 2,051 cells.
 **DeepSeek V4 too** (`spark`, 2026-09-29, the `spark-native` build of
 the prefill-chunk slice): its lightning indexer keeps the top 512 of its
 compressed cells with GGML's top-k, the radix path once there are more
-than 1,024 of them (past 4,096 positions). `jitllm-runtime chat` prefilling
+than 1,024 of them (past 4,096 positions). `llmp-runtime chat` prefilling
 the same 8,088-token prompt from a cleared state in 4,096-row chunks gave
 one of two last rows (top logit 22.639 or 22.914) across 7 runs; with the
 radix gather replaced by an index-ordered one (an experiment on the
@@ -557,7 +557,7 @@ models.
 
 **Worked around for DeepSeek V4's fast plan** (`spark`, 2026-09-29, the
 long-context phase 2 slice): its indexer now scores and selects with
-jitLLM's own `jitllm.dsv4.lid_topk` (`src/kernels/ggml/dsv4_sparse.cu`), a
+llmpalooza's own `llmp.dsv4.lid_topk` (`src/kernels/ggml/dsv4_sparse.cu`), a
 radix select that keeps the lower row among equals, and two runs of the
 32K forced prompt (31,705 tokens, 512 steps) gave the same logits bit for
 bit (`judge.py repeat`: 0 of 512 steps differ), where before they differed
@@ -567,7 +567,7 @@ as llama.cpp runs it, and does not repeat.
 ## RE-030: GGML's tensor-core flash attention reads attention sinks past the last head when query heads per KV head are not a multiple of 8  (2026-09-28, status: worked-around)
 
 Environment: `spark-b` (GB10), llama.cpp `b29c606e2`'s
-`fattn-mma-f16.cuh` under jitLLM's dispatch (`kernels/ggml/fattn_mma*.cu`),
+`fattn-mma-f16.cuh` under llmpalooza's dispatch (`kernels/ggml/fattn_mma*.cu`),
 SDK CUDA 13.4.
 
 Observed: with sinks, 24 query heads over 2 KV heads (12 per KV head, as
@@ -598,7 +598,7 @@ and the check still refuses sinks at that ratio
 
 ## RE-029: A job's kernel launches can block its lane while the stream is busy  (2026-09-27, status: worked-around)
 
-On `spark-b` (GB10, driver 580.178.04), `jitllm_exl3_paged
+On `spark-b` (GB10, driver 580.178.04), `llmp_exl3_paged
 --cancel-in-flight` queues the 1,023-row EXL3 prefill as one device job
 behind a gate: a `cuStreamWaitValue32` on a host flag, queued first.
 - The job's launches stopped returning to the submission lane while the
@@ -606,7 +606,7 @@ behind a gate: a `cuStreamWaitValue32` on a host flag, queued first.
   the gate opened. The likely cause, not measured further: the phase has
   more launches than the stream can hold pending, and the driver blocks the
   launching thread while that queue is full (its depth is not documented).
-- Nothing synchronizes in jitLLM's code: `src/kernels/` has no
+- Nothing synchronizes in llmpalooza's code: `src/kernels/` has no
   synchronizing call.
 
 Impact: `commands.h` says a job only queues and never waits. The driver can
@@ -701,7 +701,7 @@ Environment: `spark` and `spark-b` (GB10, kernel 7.0.0-1019-nvidia, driver
 Observed:
 - `cublasCreate` makes three `cudaMalloc`s: 1,024, 131,072 and 67,108,864
   bytes. They stay allocated until `cublasDestroy`, even after
-  `cublasSetWorkspace` supplies a workspace (GGML's and jitLLM's 32 MiB)
+  `cublasSetWorkspace` supplies a workspace (GGML's and llmpalooza's 32 MiB)
   that later calls use. With `CUBLAS_WORKSPACE_CONFIG=:4096:2` the two
   large ones become one 8 MiB allocation, and with `:16:8` one 131,072-byte
   one, so they are cuBLAS's default workspace pool. The documentation says
@@ -721,8 +721,8 @@ Observed:
 Expected: `cublasSetWorkspace` to release the default pool, or the
 documentation to say it does not. Trace time in a documented clock.
 
-Impact: every cuBLAS handle costs 64.1 MiB beyond the workspace jitLLM
-gives it, and jitLLM cannot free it (`CUBLAS_WORKSPACE_CONFIG` is refused as
+Impact: every cuBLAS handle costs 64.1 MiB beyond the workspace llmpalooza
+gives it, and llmpalooza cannot free it (`CUBLAS_WORKSPACE_CONFIG` is refused as
 a numerics switch). The owner decided on 2026-09-27 that it does not count
 against the 32 MiB persistent-workspace figure, and that native may hold
 what the bridge holds (backend-proof.md, "Memory and workspace"). To place
@@ -844,7 +844,7 @@ up to the declared 8 bytes from its server, so the buffer must be a `long`.
 
 On `spark` (GB10, driver 580.178.04), GPU reads of memory that CUDA
 allocates at a host location miss L2 every time they re-read it. That
-covers `cuMemCreate` at `HOST_NUMA` or `HOST` (jitLLM's host VMM, whether
+covers `cuMemCreate` at `HOST_NUMA` or `HOST` (llmpalooza's host VMM, whether
 mapped for the CPU or not) and `cudaMallocHost`. A kernel re-reading a
 4 MiB buffer gets 0 of 8,388,608 L2 sector hits and 243 GB/s (DRAM rate).
 The same kernel over `cudaMalloc` or device VMM gets 98.4% hits and
@@ -871,7 +871,7 @@ In the `cross-asan` build on `spark-b` (address and undefined sanitizers,
 GGML's `ggml.c` instrumented too), `ggml_new_graph_custom` and
 `ggml_graph_overhead_custom` end the process: `ggml_graph_nbytes` sizes the
 graph by advancing a null pointer (`ggml.c:7424`, "applying non-zero offset
-96 to null pointer"). The plain builds never notice. So jitLLM builds no
+96 to null pointer"). The plain builds never notice. So llmpalooza builds no
 `ggml_cgraph`: the fusion gates (`src/kernels/ggml/fusion.h`) take a node
 list in GGML's order (`GraphOrder`) and count uses as GGML's graph does.
 Anything else that needs a `ggml_cgraph` (the graph allocator, CPU
@@ -890,7 +890,7 @@ and by `check:spark`; an offline-container pass does not claim that coverage.
 
 Environment: `spark-c4e2`, GB10, driver 580.178.04, kernel
 7.0.0-1019-nvidia, cgroup v2; backing created with `cuMemCreate` through
-jitLLM's CUDA provider.
+llmpalooza's CUDA provider.
 
 Observed: 8 GiB of device-local or host-NUMA backing moved the process's
 cgroup `memory.current` by at most 40 MiB, while `MemAvailable` fell by the
@@ -901,7 +901,7 @@ The driver's per-extent bookkeeping (about 34 KiB of unreclaimable slab per
 
 Expected: memory a process pins to be charged to its cgroup.
 
-Impact: `MemoryMax=` on `jitllm.service` would not bound the runtime's
+Impact: `MemoryMax=` on `llmp.service` would not bound the runtime's
 backing, and an OOM decision based on the cgroup would not see it. The
 runtime's own budget `B`, checked on every materialization, is the bound;
 the memory breakdown reconciles against `MemAvailable`. Measurement:
@@ -928,7 +928,7 @@ misaligned direct I/O accept either outcome on btrfs
 
 Environment: `spark-c4e2`, GB10 (Cortex-X925/A725), DGX OS 7.6.0, kernel
 7.0.0-1019-nvidia, cpuidle `acpi_idle` with the `menu` governor (LPI-0 to
-LPI-3, exit latencies 0/42/231/433 µs), cpufreq `performance`; jitLLM's
+LPI-3, exit latencies 0/42/231/433 µs), cpufreq `performance`; llmpalooza's
 `WakeFlag` (a mutex and condition variable) built with the pinned SDK.
 
 Observed: after a 100–400 µs idle gap, a thread sleeping on a condition
@@ -1095,7 +1095,7 @@ was isolated.
 
 Treat any graph-shape or lifetime change (instrumentation, extra outputs,
 debug copies) as a potential numerical-plan change under CUDA optimizations.
-Reference controls and jitLLM's own GGML integration must compare optimized
+Reference controls and llmpalooza's own GGML integration must compare optimized
 logits exactly before assuming an observation point is transparent. See the
 [fused-routes experiment](experiments/fused-routes/README.md#rejected-design-routes-as-graph-outputs).
 
@@ -1114,7 +1114,7 @@ instruction for host spin waits. EXL3 GPU kernel bodies are unchanged.
 This is a bounded **single-GPU reference build**, not a portable CPU backend
 or validation of upstream CPU offload or tensor-parallel collectives.
 The [baseline report](experiments/exl3-reference/README.md) records the build
-and execution identities. Native jitLLM integration still adopts only its
+and execution identities. Native llmpalooza integration still adopts only its
 audited operation closure; it does not inherit this whole external extension.
 
 ## RE-008: Extended reference runs do not always preserve exact top-1 predictions  (2026-09-21, status: open)
@@ -1144,7 +1144,7 @@ returns use conservative recomputation in the study. Raw evidence remains in
 external `paging/large-capture-2`, `deepseek-restore-probe-2`, `qwen-capture-1`,
 `qwen-capture-3`, and `large-restore-probe-1`; their identities and comparisons
 are retained in the study's aggregate evidence. Do not promote these reference
-observations into a jitLLM numerical or restore-compatibility guarantee.
+observations into a llmpalooza numerical or restore-compatibility guarantee.
 
 The [image-reference follow-up](experiments/image-reference/README.md)
 (2026-09-22) also finds a short Gemma configuration difference with this
@@ -1245,7 +1245,7 @@ tests discard a one-second start/end margin instead.
 
 This is an observed option-combination timeout, not an isolated root cause
 or evidence that the DAC requires a reboot. The excluded pilot receipt and
-logs remain in workstation `/tmp/jitllm-interconnect/host-sweep/`; the
+logs remain in workstation `/tmp/llmp-interconnect/host-sweep/`; the
 [baseline report](experiments/interconnect/README.md) records the working
 protocol. Also, `ib_write_bw --version` prints `Version: 6.20` but exits 1;
 do not treat that informational exit as a failed transfer.

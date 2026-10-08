@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Small helpers every engine file uses (docs/engine.md): an error result,
 // an address as a pointer and back, rounding up, seconds of a duration, and
 // a list of problems joined into one error. Header-only.
 
-#ifndef JITLLM_ENGINE_SUPPORT_H_
-#define JITLLM_ENGINE_SUPPORT_H_
+#ifndef LLMP_ENGINE_SUPPORT_H_
+#define LLMP_ENGINE_SUPPORT_H_
 
 #include <algorithm>
 #include <chrono>
@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::engine::support {
+namespace llmp::engine::support {
 
 inline std::unexpected<std::string> Error(std::string what) {
   return std::unexpected(std::move(what));
@@ -92,6 +92,6 @@ inline std::expected<void, std::string> Joined(std::span<const std::string> prob
   return Error(all);
 }
 
-}  // namespace jitllm::engine::support
+}  // namespace llmp::engine::support
 
-#endif  // JITLLM_ENGINE_SUPPORT_H_
+#endif  // LLMP_ENGINE_SUPPORT_H_

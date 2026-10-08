@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Script the driver's entrypoints to exercise cleanup failures without
@@ -16,7 +16,7 @@
 
 namespace {
 
-using jitllm::test_support::FailedCode;
+using llmp::test_support::FailedCode;
 
 struct Driver {
   CUresult current = CUDA_SUCCESS;
@@ -80,11 +80,11 @@ CUresult CUDAAPI cuGetErrorName(CUresult /*error*/, const char** pStr) {
 
 namespace {
 
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceId;
-using jitllm::providers::FenceState;
-using jitllm::providers::ProviderError;
-using jitllm::providers::StreamId;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceId;
+using llmp::providers::FenceState;
+using llmp::providers::ProviderError;
+using llmp::providers::StreamId;
 
 class CudaExecutionFailureTest : public ::testing::Test {
  protected:
@@ -93,7 +93,7 @@ class CudaExecutionFailureTest : public ::testing::Test {
     // No pool: each fence makes its event and its release destroys it, as
     // these failures of destruction need.
     auto opened =
-        jitllm::providers::cuda::OpenDeviceExecution(0, {.events_ahead = 0, .events_kept = 0});
+        llmp::providers::cuda::OpenDeviceExecution(0, {.events_ahead = 0, .events_kept = 0});
     ASSERT_TRUE(opened.has_value());
     execution_ = std::move(*opened);
     stream_ = execution_->CreateStream().value();
@@ -116,7 +116,7 @@ TEST(CudaExecutionPoolTest, FencesReuseEventsMadeAhead) {
   driver = Driver{};
   {
     auto opened =
-        jitllm::providers::cuda::OpenDeviceExecution(0, {.events_ahead = 4, .events_kept = 4});
+        llmp::providers::cuda::OpenDeviceExecution(0, {.events_ahead = 4, .events_kept = 4});
     ASSERT_TRUE(opened.has_value());
     const StreamId stream = (*opened)->CreateStream().value();
     EXPECT_EQ(driver.event_creates, 4);

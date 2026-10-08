@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The node's resource catalog (D-006, D-007; docs/architecture.md#data-model-4):
@@ -38,8 +38,8 @@
 //
 // The catalog names no model architecture and no vendor type (D-026).
 
-#ifndef JITLLM_CATALOG_CATALOG_H_
-#define JITLLM_CATALOG_CATALOG_H_
+#ifndef LLMP_CATALOG_CATALOG_H_
+#define LLMP_CATALOG_CATALOG_H_
 
 #include <array>
 #include <cstdint>
@@ -53,7 +53,7 @@
 #include "base/bytes.h"
 #include "base/ids.h"
 
-namespace jitllm::catalog {
+namespace llmp::catalog {
 
 using base::Bytes;
 
@@ -378,6 +378,6 @@ class Catalog {
   base::SlotTable<RegistrationTag, Registration> registrations_;
 };
 
-}  // namespace jitllm::catalog
+}  // namespace llmp::catalog
 
-#endif  // JITLLM_CATALOG_CATALOG_H_
+#endif  // LLMP_CATALOG_CATALOG_H_

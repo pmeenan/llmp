@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// GGML tensor descriptors over jitLLM memory (kernels/ggml/tensors.h), in
+// GGML tensor descriptors over llmpalooza memory (kernels/ggml/tensors.h), in
 // every profile: nodes built with GGML's graph functions keep upstream's
 // shapes and parameters, point where they are bound, allocate no data, and
 // an arena refuses more tensors than it holds before GGML could abort.
@@ -23,9 +23,9 @@
 
 namespace {
 
-using jitllm::kernels::ggml::KernelError;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::test_support::FailedCode;
+using llmp::kernels::ggml::KernelError;
+using llmp::kernels::ggml::TensorArena;
+using llmp::test_support::FailedCode;
 
 std::uint64_t Address(const ggml_tensor* tensor) {
   return reinterpret_cast<std::uintptr_t>(tensor->data);
@@ -114,7 +114,7 @@ TEST(GgmlTensors, TraversalScratchMovesResetsAndRejectsOverflow) {
   ASSERT_TRUE(arena);
   ggml_tensor* leaf = ggml_new_tensor_1d(arena->context(), GGML_TYPE_F32, 1);
   const std::array<ggml_tensor*, 1> outputs{leaf};
-  ASSERT_TRUE(jitllm::kernels::ggml::GraphOrder(outputs, *arena));
+  ASSERT_TRUE(llmp::kernels::ggml::GraphOrder(outputs, *arena));
   EXPECT_FALSE(std::ranges::all_of(arena->graph_visited(), [](auto* p) { return p == nullptr; }));
   arena->Reset();
   EXPECT_TRUE(std::ranges::all_of(arena->graph_visited(), [](auto* p) { return p == nullptr; }));
@@ -125,7 +125,7 @@ TEST(GgmlTensors, TraversalScratchMovesResetsAndRejectsOverflow) {
   EXPECT_EQ(arena->bytes(), 0U);
   EXPECT_EQ(arena->graph_capacity(), 0U);
   EXPECT_EQ(arena->context(), nullptr);
-  EXPECT_FALSE(jitllm::kernels::ggml::GraphOrder(outputs, *arena));
+  EXPECT_FALSE(llmp::kernels::ggml::GraphOrder(outputs, *arena));
   auto destination = TensorArena::Create(1);
   ASSERT_TRUE(destination);
   *destination = std::move(moved);

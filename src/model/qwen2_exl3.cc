@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/qwen2_exl3.h"
@@ -22,7 +22,7 @@
 #include "artifact/representation.h"
 #include "base/sha256.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 namespace {
 
 std::unexpected<std::string> Refused(std::string detail) {
@@ -776,7 +776,7 @@ std::expected<Exl3PhasePlan, std::string> PlanPhase(const Qwen2Profile& p,
 
   // The launch data, in order.
   base::Sha256 hash;
-  Field(hash, "jitllm.exl3.qwen2.launch.v0");
+  Field(hash, "llmp.exl3.qwen2.launch.v0");
   Field(hash, p.name);
   Field(hash, table.source());
   Field(hash, std::format("arm {} rows {} past {} padded {}", arm == Exl3Arm::kG ? "G" : "O",
@@ -800,4 +800,4 @@ std::expected<Exl3PhasePlan, std::string> PlanPhase(const Qwen2Profile& p,
   return plan;
 }
 
-}  // namespace jitllm::model
+}  // namespace llmp::model

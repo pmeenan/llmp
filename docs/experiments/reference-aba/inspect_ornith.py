@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Inspect the hash-verified Ornith GGUF with the pinned reference GGUF reader.
 
-Experiment accounting only; not jitLLM's future untrusted-input importer.
+Experiment accounting only; not llmpalooza's future untrusted-input importer.
 """
 import json
 import re

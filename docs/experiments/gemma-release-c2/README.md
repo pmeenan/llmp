@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma31 C2 on llama.cpp v0.6.0
@@ -26,7 +26,7 @@ Order is stock→native→native→stock after the quality pass. The 56.25 ms me
 
 ## Source, runtime and reproduction
 
-The external [release reference](../llama-reference-refresh/README.md) uses official v0.6.0/d812350/b11429 and immutable ARM64 CUDA image c604. The native [GGML refresh](../ggml-release-refresh/README.md) provides immutable helper 0d6d0952 with measured build receipt 7d8f1847. Canonical receipt 5ab70ad5 is metadata-only: all fields agree except source_lock; it did not relink the binary. The native build version is 0.1.0-dev+unknown, with exact source and binary identities separately retained. SDK installation 7b8167cd is distinct from either build receipt. The newly compiled public C2 helper a3122de5 preserves the historical [caller](../gemma-joined-serving/llama_joined.cc) 4786817b unchanged.
+The external [release reference](../llama-reference-refresh/README.md) uses official v0.6.0/d812350/b11429 and immutable ARM64 CUDA image c604. The native [GGML refresh](../ggml-release-refresh/README.md) provides immutable helper 0d6d0952 with measured build receipt 7d8f1847. Canonical receipt 5ab70ad5 is metadata-only: all fields agree except source_lock; it did not relink the binary. The native build version is 0.1.0-dev+unknown, with exact source and binary identities separately retained. SDK installation 7b8167cd is distinct from either build receipt. The newly compiled public C2 helper a3122de5 preserves the historical [caller](../gemma-joined-serving/llama_joined.cc) 96c4772f unchanged.
 
 The model process proves successful CUDA initialization, a current context, ordinal 0, one GB10, sm_121/48 SM and driver API 13040. The actually loaded driver path is /usr/local/cuda-13.4/compat/libcuda.so.615.71.09, authenticated against the image closure; ldd and no-argument usage are not substitutes for this proof. All four stock containers retire with checked absence. NVCC 13.4.92, image CUDA runtime 13.4.49 and cuBLAS versions 13.8.0.4 (native)/13.7.0.27 (image) name different components.
 

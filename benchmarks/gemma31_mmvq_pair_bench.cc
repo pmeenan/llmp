@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Private exact-shape synthetic operator control; no checkpoint/model inference.
@@ -31,8 +31,8 @@
 #include "kernels/ggml/validate_ext.h"
 #include "providers/cuda/cuda_device_execution.h"
 
-namespace kg = jitllm::kernels::ggml;
-namespace experiment = jitllm::benchmarks::gemma31_mmvq;
+namespace kg = llmp::kernels::ggml;
+namespace experiment = llmp::benchmarks::gemma31_mmvq;
 namespace {
 constexpr std::int64_t kWidth = 5376, kFfn = 21504, kColumns = 2;
 constexpr std::size_t kWorkspace = 48384, kDeviceBudget = 256U << 20U;
@@ -55,7 +55,7 @@ class Screen {
       if (cudaFree(pointer) != cudaSuccess) std::_Exit(2);
   }
   bool Setup() {
-    auto opened = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto opened = llmp::providers::cuda::OpenDeviceExecution(0);
     if (!Check(bool(opened), "device")) return false;
     execution_ = std::move(*opened);
     auto made = execution_->CreateStream();
@@ -70,7 +70,7 @@ class Screen {
     workspace_ = Allocate(kWorkspace);
     auto context = kg::LaunchContext::Create(0, *execution_, stream_,
                                              {.base = reinterpret_cast<std::uintptr_t>(workspace_),
-                                              .size = jitllm::base::Bytes(kWorkspace)});
+                                              .size = llmp::base::Bytes(kWorkspace)});
     if (!Check(workspace_ != nullptr && bool(context), "funded workspace")) return false;
     launch_ = std::move(*context);
     auto* c = arena_->context();
@@ -197,7 +197,7 @@ class Screen {
     if (experiment::OrdinaryC2Pair(*launch_, gate_, &bad)) return false;
     auto short_context = kg::LaunchContext::Create(
         0, *execution_, stream_,
-        {.base = reinterpret_cast<std::uintptr_t>(workspace_), .size = jitllm::base::Bytes(12671)});
+        {.base = reinterpret_cast<std::uintptr_t>(workspace_), .size = llmp::base::Bytes(12671)});
     if (!short_context || experiment::OrdinaryC2Pair(**short_context, gate_, up_)) return false;
     short_context->reset();
     if (!Complete() || Download() != before_refusals) return false;
@@ -272,7 +272,7 @@ class Screen {
     if (!Check(cudaStreamSynchronize(native_) == cudaSuccess, "completed operator stream"))
       return false;
     const auto state = execution_->Query(*fence);
-    return Check(state && *state == jitllm::providers::FenceState::kComplete &&
+    return Check(state && *state == llmp::providers::FenceState::kComplete &&
                      bool(execution_->Release(*fence)),
                  "provider completion retirement");
   }
@@ -345,8 +345,8 @@ class Screen {
     }
     return true;
   }
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  llmp::providers::StreamId stream_;
   cudaStream_t native_{};
   std::optional<kg::TensorArena> arena_;
   std::unique_ptr<kg::LaunchContext> launch_;

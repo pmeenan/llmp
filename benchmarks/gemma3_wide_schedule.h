@@ -1,13 +1,13 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Shared, fixed first-screen event geometry for the native and public-API probes.
-#ifndef JITLLM_BENCHMARKS_GEMMA3_WIDE_SCHEDULE_H_
-#define JITLLM_BENCHMARKS_GEMMA3_WIDE_SCHEDULE_H_
+#ifndef LLMP_BENCHMARKS_GEMMA3_WIDE_SCHEDULE_H_
+#define LLMP_BENCHMARKS_GEMMA3_WIDE_SCHEDULE_H_
 #include <array>
 #include <cstdint>
 #include <vector>
-namespace jitllm::benchmarks::gemma3_wide {
+namespace llmp::benchmarks::gemma3_wide {
 inline constexpr std::uint32_t kOwners = 12, kVocab = 262208;
 // Mixed first group, all-short second group, all-long third group.
 // C4 stays unequal while C8/C12 require a maximum outside the short group.
@@ -75,5 +75,5 @@ inline std::vector<Event> Schedule(const std::array<std::uint32_t, kOwners>& pre
     for (std::uint32_t i = 0; i < 2; ++i) add(Kind::kScalar, s, 1, 1, phase);
   return out;
 }
-}  // namespace jitllm::benchmarks::gemma3_wide
+}  // namespace llmp::benchmarks::gemma3_wide
 #endif

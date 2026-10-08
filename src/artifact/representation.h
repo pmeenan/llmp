@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Representation descriptors of the v0 index (docs/artifact-format.md,
@@ -20,8 +20,8 @@
 // saturates, and so never equals a recorded size (the prototype's integers
 // are exact; a saturated size is always beyond any size it could accept).
 
-#ifndef JITLLM_ARTIFACT_REPRESENTATION_H_
-#define JITLLM_ARTIFACT_REPRESENTATION_H_
+#ifndef LLMP_ARTIFACT_REPRESENTATION_H_
+#define LLMP_ARTIFACT_REPRESENTATION_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -35,7 +35,7 @@
 #include "artifact/error.h"
 #include "artifact/json.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 
 enum class Family : std::uint8_t { kGgml, kExl3, kPlain };
 std::string_view FamilyName(Family family);
@@ -106,6 +106,6 @@ std::optional<RowGeometry> RowGeometryOf(const Representation& rep);
 // appears without its trellis.
 bool Exl3ClosureHolds(std::span<const std::pair<std::string_view, const Representation*>> bound);
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact
 
-#endif  // JITLLM_ARTIFACT_REPRESENTATION_H_
+#endif  // LLMP_ARTIFACT_REPRESENTATION_H_

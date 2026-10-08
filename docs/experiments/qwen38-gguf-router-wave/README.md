@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 GGUF router sharing — rejected screen
@@ -39,7 +39,7 @@ multirow BF16 routing.
 
 ## Frozen comparison
 
-The benchmark is the existing `jitllm_qwen38_gguf_wave` with private timing,
+The benchmark is the existing `llmp_qwen38_gguf_wave` with private timing,
 hash and `screen` instrumentation. `screen` selects only short context and
 width four, retaining all four eager/captured and unpaired/paired cells,
 32 fixed-history steps per cell. Both binaries have the same instrumentation
@@ -98,7 +98,7 @@ Measured on Spark B, NVIDIA GB10, driver 580.178.04, from private worktree
 `codex/qwen-router-wave` based on `e2bc358`. Spark A warm-built only the
 required benchmark target, using the existing pinned SDK and source lock
 `440f03cdb52921c6c55843819e6ac950a5b2c4aafdc01055e52a0af3117ce32e`;
-GGML is b10964 with jitLLM's locked patches. Frozen binaries and source
+GGML is b10964 with llmpalooza's locked patches. Frozen binaries and source
 inventories were then copied to Spark B scratch. Its production tree was
 not modified. Each **src-only** inventory contains 446 files; the two
 inventories differ only in `src/engine/qwen38_wave_plan.cc`. These inventories
@@ -148,5 +148,5 @@ receipts, binaries, source inventories, controller and summary are retained
 on Spark B under `~/scratch/qwen-router-wave-20261004`, with build records
 on Spark A at the same scratch basename. The workstation copy and complete
 prototype patch/sources are under
-`~/scratch/jitllm-m3-qwen-router-wave-2026-10-04`. No production adoption,
+`~/scratch/llmp-m3-qwen-router-wave-2026-10-04`. No production adoption,
 broader check cycle or M3 exit-gate closure follows from this rejected screen.

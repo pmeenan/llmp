@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A turn's prefill in chunks (docs/runtime-serving.md#prefill-chunks):
@@ -24,8 +24,8 @@
 //   the chunks before, so the conversation's state holds a prefix of the
 //   turn's tokens and nothing it did not process.
 
-#ifndef JITLLM_RUNTIME_PREFILL_H_
-#define JITLLM_RUNTIME_PREFILL_H_
+#ifndef LLMP_RUNTIME_PREFILL_H_
+#define LLMP_RUNTIME_PREFILL_H_
 
 #include <cstdint>
 #include <expected>
@@ -33,7 +33,7 @@
 #include <optional>
 #include <string>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 inline constexpr std::uint32_t kPrefillRowTile = 8;
 inline constexpr std::uint32_t kPrefillTiledFrom = 1024;
@@ -78,6 +78,6 @@ std::expected<PrefillRun, std::string> RunPrefillChunks(std::uint32_t from, std:
                                                         const PrefillChunk& chunk,
                                                         const PrefillGoOn& go_on);
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_PREFILL_H_
+#endif  // LLMP_RUNTIME_PREFILL_H_

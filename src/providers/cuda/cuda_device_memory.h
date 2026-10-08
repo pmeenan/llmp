@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The CUDA device-memory provider (D-006, D-033, D-034): VmmProvider over
@@ -19,20 +19,20 @@
 //
 // This header holds no CUDA types (AGENTS.md rule 6).
 
-#ifndef JITLLM_PROVIDERS_CUDA_CUDA_DEVICE_MEMORY_H_
-#define JITLLM_PROVIDERS_CUDA_CUDA_DEVICE_MEMORY_H_
+#ifndef LLMP_PROVIDERS_CUDA_CUDA_DEVICE_MEMORY_H_
+#define LLMP_PROVIDERS_CUDA_CUDA_DEVICE_MEMORY_H_
 
 #include <expected>
 #include <memory>
 
 #include "providers/device_memory.h"
 
-namespace jitllm::providers::cuda {
+namespace llmp::providers::cuda {
 
 // Opens device `ordinal` (initializing the driver). Fails if the driver or
 // device is missing or the device has no VMM.
 std::expected<std::unique_ptr<VmmProvider>, Failure> OpenDeviceMemory(int ordinal);
 
-}  // namespace jitllm::providers::cuda
+}  // namespace llmp::providers::cuda
 
-#endif  // JITLLM_PROVIDERS_CUDA_CUDA_DEVICE_MEMORY_H_
+#endif  // LLMP_PROVIDERS_CUDA_CUDA_DEVICE_MEMORY_H_

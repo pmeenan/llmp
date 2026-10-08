@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The serving commands (commands.h) on a started server (serving.h).
@@ -29,7 +29,7 @@
 #include "runtime/intake_limits.h"
 #include "runtime/serving.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 constexpr std::uint32_t kShortContext = 16;  // an LLM A's prompt at 0 context
@@ -999,7 +999,7 @@ int RunServing(const config::NodeConfig& config, const config::RuntimeRoles& rol
     return RunService(config, roles, log);
   }
   const auto say = [log](std::string_view text) {
-    const std::string line = std::format("jitllm-runtime: {}\n", base::Printable(text));
+    const std::string line = std::format("llmp-runtime: {}\n", base::Printable(text));
     (void)std::fwrite(line.data(), 1, line.size(), log);
     (void)std::fflush(log);
   };
@@ -1026,4 +1026,4 @@ int RunServing(const config::NodeConfig& config, const config::RuntimeRoles& rol
   return 0;
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The config module: the node document's parsing, merging and schema
@@ -27,13 +27,13 @@
 namespace {
 
 namespace fs = std::filesystem;
-using ::jitllm::config::Diagnostic;
-using ::jitllm::config::FormatDiagnostic;
-using ::jitllm::config::LoadNodeConfig;
-using ::jitllm::config::LoadOptions;
-using ::jitllm::config::NodeConfig;
-using ::jitllm::config::ParseNodeConfig;
-using ::jitllm::config::SourceText;
+using ::llmp::config::Diagnostic;
+using ::llmp::config::FormatDiagnostic;
+using ::llmp::config::LoadNodeConfig;
+using ::llmp::config::LoadOptions;
+using ::llmp::config::NodeConfig;
+using ::llmp::config::ParseNodeConfig;
+using ::llmp::config::SourceText;
 using ::testing::AllOf;
 using ::testing::AnyOf;
 using ::testing::Contains;
@@ -43,7 +43,7 @@ using ::testing::IsEmpty;
 using ::testing::Not;
 using ::testing::SizeIs;
 
-const fs::path kAnchor = "/var/lib/jitllm/enrollment";
+const fs::path kAnchor = "/var/lib/llmp/enrollment";
 
 std::vector<std::string> Messages(const std::vector<Diagnostic>& diagnostics) {
   std::vector<std::string> out;
@@ -75,13 +75,13 @@ NodeConfig Parsed(const std::vector<SourceText>& files) {
 NodeConfig Parsed(std::string_view text) { return Parsed({{"a.toml", std::string(text)}}); }
 
 constexpr std::string_view kMember = R"(schema_version = 2
-cluster_file = "/etc/jitllm/cluster.toml"
+cluster_file = "/etc/llmp/cluster.toml"
 node_id = "af564a6b-8b4e-4528-8140-e50b92b40002"
 
 [credentials]
-ca_file = "/etc/jitllm/credentials/ca.pem"
-certificate_file = "/etc/jitllm/credentials/node.pem"
-private_key_file = "/etc/jitllm/credentials/node-key.pem"
+ca_file = "/etc/llmp/credentials/ca.pem"
+certificate_file = "/etc/llmp/credentials/node.pem"
+private_key_file = "/etc/llmp/credentials/node-key.pem"
 
 [control]
 port = 7443
@@ -95,11 +95,11 @@ TEST(NodeConfigTest, NoFilesAreTheStandaloneDefaults) {
   const NodeConfig config = Parsed(std::vector<SourceText>{});
   EXPECT_FALSE(config.membership.has_value());
   EXPECT_EQ(config.limits_profile, "initial-v2");
-  EXPECT_EQ(config.storage.data_dir, "/var/lib/jitllm");
-  EXPECT_EQ(config.storage.installed, "/var/lib/jitllm/models");
-  EXPECT_EQ(config.storage.spill, "/var/lib/jitllm/spill");
-  EXPECT_EQ(config.storage.state, "/var/lib/jitllm/state");
-  EXPECT_EQ(config.storage.checkpoints, "/var/lib/jitllm/checkpoints");
+  EXPECT_EQ(config.storage.data_dir, "/var/lib/llmp");
+  EXPECT_EQ(config.storage.installed, "/var/lib/llmp/models");
+  EXPECT_EQ(config.storage.spill, "/var/lib/llmp/spill");
+  EXPECT_EQ(config.storage.state, "/var/lib/llmp/state");
+  EXPECT_EQ(config.storage.checkpoints, "/var/lib/llmp/checkpoints");
   EXPECT_FALSE(config.storage.long_term.has_value());
   EXPECT_FALSE(config.storage.archive.has_value());
   EXPECT_THAT(config.files, IsEmpty());
@@ -108,9 +108,9 @@ TEST(NodeConfigTest, NoFilesAreTheStandaloneDefaults) {
 TEST(NodeConfigTest, VersionAloneIsTheDefaults) {
   const NodeConfig config = Parsed("schema_version = 2\n");
   EXPECT_FALSE(config.membership.has_value());
-  EXPECT_EQ(config.storage.installed, "/var/lib/jitllm/models");
+  EXPECT_EQ(config.storage.installed, "/var/lib/llmp/models");
   EXPECT_THAT(config.files, ElementsAre("a.toml"));
-  using Kind = jitllm::config::BindEntry::Kind;
+  using Kind = llmp::config::BindEntry::Kind;
   ASSERT_EQ(config.client.bind.size(), 2U);
   EXPECT_EQ(config.client.bind[0].kind, Kind::kLoopback);
   EXPECT_EQ(config.client.bind[1].kind, Kind::kTailscale);
@@ -121,7 +121,7 @@ TEST(NodeConfigTest, VersionAloneIsTheDefaults) {
   EXPECT_FALSE(config.client.max_queued.has_value());
   EXPECT_FALSE(config.client.queue_wait_seconds.has_value());
   EXPECT_EQ(config.client.stall_seconds, 120U);
-  EXPECT_EQ(config.client.stall_action, jitllm::config::StallAction::kReport);
+  EXPECT_EQ(config.client.stall_action, llmp::config::StallAction::kReport);
   EXPECT_FALSE(config.client.deadline_cap_seconds.has_value());
   EXPECT_EQ(config.client.idle_seconds, 60U);
   EXPECT_EQ(config.client.request_inactivity_seconds, 60U);
@@ -136,7 +136,7 @@ TEST(NodeConfigTest, VersionAloneIsTheDefaults) {
 // The chat route's listener (D-097 as amended 2026-09-28): symbolic
 // entries and any address, one or a list, with the port and the limits.
 TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
-  using Kind = jitllm::config::BindEntry::Kind;
+  using Kind = llmp::config::BindEntry::Kind;
   const NodeConfig four = Parsed("schema_version = 2\n[client]\nbind = \"127.0.0.2:9000\"\n");
   ASSERT_EQ(four.client.bind.size(), 1U);
   EXPECT_EQ(four.client.bind[0].kind, Kind::kAddress);
@@ -165,7 +165,7 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
   EXPECT_EQ(list.client.stall_seconds, 7200U);
   EXPECT_EQ(list.client.deadline_cap_seconds, 2592000U);
   EXPECT_EQ(list.client.queue_wait_seconds, 1U);
-  EXPECT_EQ(list.client.stall_action, jitllm::config::StallAction::kFail);
+  EXPECT_EQ(list.client.stall_action, llmp::config::StallAction::kFail);
   EXPECT_EQ(list.client.idle_seconds, 5U);
   EXPECT_EQ(list.client.request_inactivity_seconds, 600U);
   EXPECT_EQ(list.client.write_inactivity_seconds, 30U);
@@ -268,11 +268,10 @@ TEST(NodeConfigTest, MemoryKeepsConversationsAsConfigured) {
 TEST(NodeConfigTest, ReadsTheMemberExample) {
   const NodeConfig config = Parsed(kMember);
   ASSERT_TRUE(config.membership.has_value());
-  const jitllm::config::Membership member =
-      config.membership.value_or(jitllm::config::Membership{});
-  EXPECT_EQ(member.cluster_file, "/etc/jitllm/cluster.toml");
+  const llmp::config::Membership member = config.membership.value_or(llmp::config::Membership{});
+  EXPECT_EQ(member.cluster_file, "/etc/llmp/cluster.toml");
   EXPECT_EQ(member.node_id, "af564a6b-8b4e-4528-8140-e50b92b40002");
-  EXPECT_EQ(member.credentials.private_key_file, "/etc/jitllm/credentials/node-key.pem");
+  EXPECT_EQ(member.credentials.private_key_file, "/etc/llmp/credentials/node-key.pem");
   EXPECT_EQ(member.control.port, 7443);
   EXPECT_THAT(member.control.interfaces, IsEmpty());
 }
@@ -284,8 +283,7 @@ TEST(NodeConfigTest, ReadsSelectorsAndPeerScopes) {
       "[control.peer_scopes]\n"
       "af564a6b-8b4e-4528-8140-e50b92b40003 = \"ifname:enp1s0f1np1\""));
   ASSERT_TRUE(config.membership.has_value());
-  const jitllm::config::Membership member =
-      config.membership.value_or(jitllm::config::Membership{});
+  const llmp::config::Membership member = config.membership.value_or(llmp::config::Membership{});
   EXPECT_THAT(member.control.interfaces, ElementsAre("ifname:enp1s0f0np0", "port:0c42a1b2/p0"));
   EXPECT_EQ(member.control.peer_scopes.at("af564a6b-8b4e-4528-8140-e50b92b40003"),
             "ifname:enp1s0f1np1");
@@ -294,15 +292,15 @@ TEST(NodeConfigTest, ReadsSelectorsAndPeerScopes) {
 TEST(NodeConfigTest, ResolvesStorageRoles) {
   const NodeConfig config = Parsed(R"(schema_version = 2
 [storage]
-data_dir = "/srv/jitllm"
+data_dir = "/srv/llmp"
 installed = "/nvme/models"
-long_term = "/mnt/nas/jitllm"
-checkpoints = "/mnt/nas/jitllm/checkpoints"
+long_term = "/mnt/nas/llmp"
+checkpoints = "/mnt/nas/llmp/checkpoints"
 )");
   EXPECT_EQ(config.storage.installed, "/nvme/models");
-  EXPECT_EQ(config.storage.spill, "/srv/jitllm/spill");
-  EXPECT_EQ(config.storage.checkpoints, "/mnt/nas/jitllm/checkpoints");
-  EXPECT_EQ(config.storage.archive, fs::path("/mnt/nas/jitllm/archive"));
+  EXPECT_EQ(config.storage.spill, "/srv/llmp/spill");
+  EXPECT_EQ(config.storage.checkpoints, "/mnt/nas/llmp/checkpoints");
+  EXPECT_EQ(config.storage.archive, fs::path("/mnt/nas/llmp/archive"));
 }
 
 TEST(NodeConfigTest, SyntaxErrorsNameTheFileAndPosition) {
@@ -348,7 +346,7 @@ TEST(NodeConfigTest, UnknownDepthCostsOneProblem) {
     deep += "]\n";
   }
   const std::vector<std::string> failures = Failures(deep);
-  ASSERT_THAT(failures, SizeIs(jitllm::config::kDiagnosticLimit + 1));
+  ASSERT_THAT(failures, SizeIs(llmp::config::kDiagnosticLimit + 1));
   EXPECT_THAT(failures.front(), HasSubstr("a.toml:2:1: unknown table b0"));
   EXPECT_EQ(failures.back(), "and 100 more problems");
 }
@@ -372,10 +370,10 @@ TEST(NodeConfigTest, AnEmptyMemberTableMakesAMember) {
 
 TEST(NodeConfigTest, DiagnosticsCannotForgeLines) {
   std::string text(kMember);
-  text.replace(text.find(R"("auto")"), 6, R"("x\njitllm-runtime: ready\u202e")");
+  text.replace(text.find(R"("auto")"), 6, R"("x\nllmp-runtime: ready\u202e")");
   const std::vector<std::string> failures = Failures(text);
   ASSERT_THAT(failures, SizeIs(1));
-  EXPECT_THAT(failures[0], HasSubstr("x\\x0ajitllm-runtime: ready\\u202e"));
+  EXPECT_THAT(failures[0], HasSubstr("x\\x0allmp-runtime: ready\\u202e"));
   EXPECT_THAT(
       Failures("schema_version = 2\n[storage]\nspill = \"a\\u202eb\"\n"),
       ElementsAre(HasSubstr("must not contain control or invisible formatting characters")));
@@ -436,8 +434,8 @@ TEST(NodeConfigTest, EachKeyHasOneOwningFile) {
   const NodeConfig config =
       Parsed({{"a.toml", "schema_version = 2\n[storage]\nspill = \"s\"\n"},
               {"b.toml", "schema_version = 2\n[storage]\ninstalled = \"m\"\n"}});
-  EXPECT_EQ(config.storage.spill, "/var/lib/jitllm/s");
-  EXPECT_EQ(config.storage.installed, "/var/lib/jitllm/m");
+  EXPECT_EQ(config.storage.spill, "/var/lib/llmp/s");
+  EXPECT_EQ(config.storage.installed, "/var/lib/llmp/m");
 }
 
 TEST(NodeConfigTest, MembersNeedEveryMemberKey) {
@@ -470,7 +468,7 @@ TEST(NodeConfigTest, ChecksMemberValues) {
   EXPECT_THAT(with("\"auto\"", "[\"port:XY/p0\"]"), ElementsAre(HasSubstr("invalid port")));
   EXPECT_THAT(with("\"auto\"", "[\"ifname:a\", \"ifname:a\"]"),
               ElementsAre(HasSubstr("lists \"ifname:a\" twice")));
-  EXPECT_THAT(with("\"/etc/jitllm/cluster.toml\"", "\"cluster.toml\""),
+  EXPECT_THAT(with("\"/etc/llmp/cluster.toml\"", "\"cluster.toml\""),
               ElementsAre(HasSubstr("cluster_file must be an absolute path")));
   EXPECT_THAT(with("interfaces = \"auto\"", "peer_scopes = { nope = \"ifname:a\" }"),
               ElementsAre(HasSubstr("the key must be a member's canonical lowercase UUID")));
@@ -493,13 +491,13 @@ TEST(NodeConfigTest, RolesNeverOverlap) {
               ElementsAre(HasSubstr("storage.installed and storage.spill are the same directory")));
   EXPECT_THAT(Failures("schema_version = 2\n[storage]\nspill = \"models/spill\"\n"),
               ElementsAre(HasSubstr(
-                  "storage.spill (/var/lib/jitllm/models/spill) lies inside storage.installed")));
+                  "storage.spill (/var/lib/llmp/models/spill) lies inside storage.installed")));
   EXPECT_THAT(Failures("schema_version = 2\n[storage]\ninstalled = \"/var/lib\"\n"),
               Contains(HasSubstr("lies inside storage.installed")));
   // long_term never touches a runtime role, but may hold the job-only ones.
-  EXPECT_THAT(Failures("schema_version = 2\n[storage]\nlong_term = \"/var/lib/jitllm/state/lt\"\n"),
+  EXPECT_THAT(Failures("schema_version = 2\n[storage]\nlong_term = \"/var/lib/llmp/state/lt\"\n"),
               Contains(HasSubstr(
-                  "storage.long_term (/var/lib/jitllm/state/lt) must not equal, contain or lie "
+                  "storage.long_term (/var/lib/llmp/state/lt) must not equal, contain or lie "
                   "inside storage.state")));
   EXPECT_THAT(Failures("schema_version = 2\n[storage]\nlong_term = \"/var/lib\"\n"),
               Contains(HasSubstr("must not equal, contain or lie inside storage.installed")));
@@ -518,17 +516,17 @@ TEST(NodeConfigTest, RolesNeverOverlap) {
 TEST(NodeConfigTest, RolesStayClearOfTheAnchor) {
   EXPECT_THAT(Failures("schema_version = 2\n[storage]\nstate = \"enrollment\"\n"),
               ElementsAre(HasSubstr(
-                  "storage.state (/var/lib/jitllm/enrollment) must not equal, contain or lie "
+                  "storage.state (/var/lib/llmp/enrollment) must not equal, contain or lie "
                   "inside the enrollment anchor")));
-  EXPECT_THAT(Failures("schema_version = 2\n[storage]\nstate = \"/var/lib/jitllm\"\n"),
-              Contains(HasSubstr("storage.state (/var/lib/jitllm) must not equal, contain")));
+  EXPECT_THAT(Failures("schema_version = 2\n[storage]\nstate = \"/var/lib/llmp\"\n"),
+              Contains(HasSubstr("storage.state (/var/lib/llmp) must not equal, contain")));
   EXPECT_THAT(Failures("schema_version = 2\n[storage]\nstate = \"enrollment/x\"\n"),
               ElementsAre(HasSubstr("the enrollment anchor")));
 }
 
 TEST(NodeConfigTest, MemberFilesStayOutOfTheLongTermStore) {
   std::string text(kMember);
-  text += "[storage]\nlong_term = \"/etc/jitllm/credentials\"\n";
+  text += "[storage]\nlong_term = \"/etc/llmp/credentials\"\n";
   EXPECT_THAT(Failures(text),
               AllOf(SizeIs(3), Contains(HasSubstr("credentials.ca_file must not lie inside "
                                                   "storage.long_term"))));
@@ -729,7 +727,7 @@ artifact = "{1}"
 )",
                                                std::string(64, 'a'), std::string(64, 'b')));
   ASSERT_THAT(config.models, SizeIs(2));
-  EXPECT_EQ(config.models[0].Integer("context"), jitllm::config::kMinContext);
+  EXPECT_EQ(config.models[0].Integer("context"), llmp::config::kMinContext);
   EXPECT_EQ(config.models[0].Integer("prefill_chunk"), 4096);
   EXPECT_FALSE(config.models[1].Integer("prefill_chunk").has_value());
   EXPECT_EQ(config.models[0].Integer("prefill_floor_tok_s"), 250);
@@ -801,7 +799,7 @@ artifact = "{2}"
                          std::string(64, 'a'), std::string(64, 'b'), std::string(64, 'c')));
   ASSERT_THAT(config.models, SizeIs(3));
   EXPECT_EQ(config.models[0].Integer("max_slots"), 1);
-  EXPECT_EQ(config.models[1].Integer("max_slots"), jitllm::config::kMaxModelSlots);
+  EXPECT_EQ(config.models[1].Integer("max_slots"), llmp::config::kMaxModelSlots);
   EXPECT_FALSE(config.models[2].Integer("max_slots").has_value());
 
   const auto failures = Failures(std::format(
@@ -831,8 +829,8 @@ max_slots = 2
 // D-103's table-driven schema: a valid value of every key (its least, or
 // its first choice) is kept for a model of its kind and refused on the
 // other kind; past its range each is refused, naming the key.
-std::string ValidValue(const jitllm::config::ModelKeySpec& spec) {
-  using jitllm::config::ModelKeyType;
+std::string ValidValue(const llmp::config::ModelKeySpec& spec) {
+  using llmp::config::ModelKeyType;
   switch (spec.type) {
     case ModelKeyType::kId:
       return std::format("\"{}\"", std::string(64, '9'));
@@ -855,16 +853,16 @@ std::string ValidValue(const jitllm::config::ModelKeySpec& spec) {
 }
 
 TEST(NodeConfigTest, EveryModelKeyIsTableDriven) {
-  using jitllm::config::kArtifactModels;
-  using jitllm::config::kCompositionModels;
-  using jitllm::config::ModelKeys;
-  using jitllm::config::ModelKeyType;
+  using llmp::config::kArtifactModels;
+  using llmp::config::kCompositionModels;
+  using llmp::config::ModelKeys;
+  using llmp::config::ModelKeyType;
   for (const auto& spec : ModelKeys()) {
     if (spec.key == "artifact" || spec.key == "composition") {
       continue;
     }
     SCOPED_TRACE(spec.key);
-    EXPECT_EQ(jitllm::config::FindModelKey(spec.key), &spec);
+    EXPECT_EQ(llmp::config::FindModelKey(spec.key), &spec);
     EXPECT_FALSE(spec.summary.empty());
     const std::string value = ValidValue(spec);
     for (const bool artifact : {true, false}) {
@@ -990,10 +988,10 @@ TEST(NodeConfigTest, ModelsAreOwnedOnce) {
               Contains(HasSubstr("each key belongs to exactly one file")));
 }
 
-// Where scratch trees go: JITLLM_TEST_SCRATCH, in the build tree, so that
+// Where scratch trees go: LLMP_TEST_SCRATCH, in the build tree, so that
 // no other user shares their parent directories as they may in /tmp.
 fs::path Scratch() {
-  const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   return scratch != nullptr ? fs::path(scratch) : fs::path(::testing::TempDir());
 }
 
@@ -1028,7 +1026,7 @@ class Tree {
     ASSERT_EQ(::chmod(file.c_str(), mode), 0);
   }
 
-  LoadOptions Options(std::string_view main = "jitllm.toml") const {
+  LoadOptions Options(std::string_view main = "llmp.toml") const {
     return {.main_file = path_ / main,
             .main_file_optional = false,
             .anchor = kAnchor,
@@ -1047,28 +1045,28 @@ std::vector<std::string> LoadFailures(const LoadOptions& options) {
 
 TEST(LoadNodeConfigTest, ReadsTheMainFileThenFragmentsInOrder) {
   const Tree tree;
-  tree.Write("jitllm.toml", "schema_version = 2\n[storage]\ndata_dir = \"/srv/j\"\n");
-  tree.Write("jitllm.d/20-spill.toml", "schema_version = 2\n[storage]\nspill = \"s\"\n");
-  tree.Write("jitllm.d/10-enroll.toml", "schema_version = 2\n[limits]\nprofile = \"initial-v2\"\n");
-  tree.Write("jitllm.d/.hidden.toml", "not toml at all [");
-  tree.Write("jitllm.d/30.toml.dpkg-old", "not toml at all [");
-  tree.Write("jitllm.d/README", "not toml at all [");
+  tree.Write("llmp.toml", "schema_version = 2\n[storage]\ndata_dir = \"/srv/j\"\n");
+  tree.Write("llmp.d/20-spill.toml", "schema_version = 2\n[storage]\nspill = \"s\"\n");
+  tree.Write("llmp.d/10-enroll.toml", "schema_version = 2\n[limits]\nprofile = \"initial-v2\"\n");
+  tree.Write("llmp.d/.hidden.toml", "not toml at all [");
+  tree.Write("llmp.d/30.toml.dpkg-old", "not toml at all [");
+  tree.Write("llmp.d/README", "not toml at all [");
   auto result = LoadNodeConfig(tree.Options());
   ASSERT_TRUE(result.has_value()) << ::testing::PrintToString(Messages(result.error()));
-  EXPECT_THAT(result->files, ElementsAre(tree / "jitllm.toml", tree / "jitllm.d/10-enroll.toml",
-                                         tree / "jitllm.d/20-spill.toml"));
+  EXPECT_THAT(result->files, ElementsAre(tree / "llmp.toml", tree / "llmp.d/10-enroll.toml",
+                                         tree / "llmp.d/20-spill.toml"));
   EXPECT_EQ(result->storage.spill, "/srv/j/s");
 }
 
 TEST(LoadNodeConfigTest, FragmentsAloneFormTheDocument) {
   const Tree tree;
-  tree.Write("jitllm.d/a.toml", "schema_version = 2\n[storage]\nspill = \"s\"\n");
+  tree.Write("llmp.d/a.toml", "schema_version = 2\n[storage]\nspill = \"s\"\n");
   LoadOptions options = tree.Options();
-  EXPECT_THAT(LoadFailures(options), ElementsAre(HasSubstr("jitllm.toml: does not exist")));
+  EXPECT_THAT(LoadFailures(options), ElementsAre(HasSubstr("llmp.toml: does not exist")));
   options.main_file_optional = true;
   auto result = LoadNodeConfig(options);
   ASSERT_TRUE(result.has_value());
-  EXPECT_THAT(result->files, ElementsAre(tree / "jitllm.d/a.toml"));
+  EXPECT_THAT(result->files, ElementsAre(tree / "llmp.d/a.toml"));
 }
 
 TEST(LoadNodeConfigTest, NothingAtTheDefaultIsTheDefaults) {
@@ -1078,33 +1076,32 @@ TEST(LoadNodeConfigTest, NothingAtTheDefaultIsTheDefaults) {
   auto result = LoadNodeConfig(options);
   ASSERT_TRUE(result.has_value());
   EXPECT_THAT(result->files, IsEmpty());
-  EXPECT_EQ(result->storage.installed, "/var/lib/jitllm/models");
+  EXPECT_EQ(result->storage.installed, "/var/lib/llmp/models");
 }
 
 TEST(LoadNodeConfigTest, TheMainFileEndsInToml) {
   const Tree tree;
-  EXPECT_THAT(LoadFailures(tree.Options("jitllm.conf")),
-              ElementsAre(HasSubstr("must end in .toml")));
+  EXPECT_THAT(LoadFailures(tree.Options("llmp.conf")), ElementsAre(HasSubstr("must end in .toml")));
 }
 
 TEST(LoadNodeConfigTest, RefusesLinksAndOtherFiles) {
   const Tree tree;
   tree.Write("real.toml", "schema_version = 2\n");
-  fs::create_symlink(tree / "real.toml", tree / "jitllm.toml");
+  fs::create_symlink(tree / "real.toml", tree / "llmp.toml");
   EXPECT_THAT(LoadFailures(tree.Options()), ElementsAre(HasSubstr("is a symbolic link")));
-  fs::remove(tree / "jitllm.toml");
-  fs::create_directory(tree / "jitllm.toml");
+  fs::remove(tree / "llmp.toml");
+  fs::create_directory(tree / "llmp.toml");
   EXPECT_THAT(LoadFailures(tree.Options()), ElementsAre(HasSubstr("is not a regular file")));
-  fs::remove(tree / "jitllm.toml");
-  tree.Write("jitllm.toml", "schema_version = 2\n");
-  fs::create_directories(tree / "jitllm.d");
-  fs::create_symlink(tree / "real.toml", tree / "jitllm.d/a.toml");
+  fs::remove(tree / "llmp.toml");
+  tree.Write("llmp.toml", "schema_version = 2\n");
+  fs::create_directories(tree / "llmp.d");
+  fs::create_symlink(tree / "real.toml", tree / "llmp.d/a.toml");
   EXPECT_THAT(LoadFailures(tree.Options()),
-              ElementsAre(HasSubstr("jitllm.d/a.toml: is a symbolic link")));
-  fs::remove(tree / "jitllm.d/a.toml");
-  fs::create_directory(tree / "jitllm.d/b.toml");
+              ElementsAre(HasSubstr("llmp.d/a.toml: is a symbolic link")));
+  fs::remove(tree / "llmp.d/a.toml");
+  fs::create_directory(tree / "llmp.d/b.toml");
   EXPECT_THAT(LoadFailures(tree.Options()),
-              ElementsAre(HasSubstr("jitllm.d/b.toml: is not a regular file")));
+              ElementsAre(HasSubstr("llmp.d/b.toml: is not a regular file")));
 }
 
 TEST(LoadNodeConfigTest, RefusesWhatOthersCouldChange) {
@@ -1112,17 +1109,17 @@ TEST(LoadNodeConfigTest, RefusesWhatOthersCouldChange) {
   // Group write through a group others may share counts as theirs; the
   // private-group case depends on this host's accounts, so only other
   // write is tested here.
-  tree.Write("jitllm.toml", "schema_version = 2\n", 0646);
+  tree.Write("llmp.toml", "schema_version = 2\n", 0646);
   EXPECT_THAT(LoadFailures(tree.Options()),
               ElementsAre(HasSubstr("can be written by users other than root and its owner")));
-  ASSERT_EQ(::chmod((tree / "jitllm.toml").c_str(), 0644), 0);
-  tree.Write("jitllm.d/a.toml", "schema_version = 2\n", 0646);
+  ASSERT_EQ(::chmod((tree / "llmp.toml").c_str(), 0644), 0);
+  tree.Write("llmp.d/a.toml", "schema_version = 2\n", 0646);
   EXPECT_THAT(LoadFailures(tree.Options()),
-              ElementsAre(HasSubstr("jitllm.d/a.toml: can be written")));
-  ASSERT_EQ(::chmod((tree / "jitllm.d/a.toml").c_str(), 0644), 0);
-  ASSERT_EQ(::chmod((tree / "jitllm.d").c_str(), 01777), 0);
+              ElementsAre(HasSubstr("llmp.d/a.toml: can be written")));
+  ASSERT_EQ(::chmod((tree / "llmp.d/a.toml").c_str(), 0644), 0);
+  ASSERT_EQ(::chmod((tree / "llmp.d").c_str(), 01777), 0);
   EXPECT_THAT(LoadFailures(tree.Options()), ElementsAre(HasSubstr("can add files to")));
-  ASSERT_EQ(::chmod((tree / "jitllm.d").c_str(), 0755), 0);
+  ASSERT_EQ(::chmod((tree / "llmp.d").c_str(), 0755), 0);
   ASSERT_EQ(::chmod((tree / "").c_str(), 0757), 0);
   EXPECT_THAT(LoadFailures(tree.Options()),
               Contains(HasSubstr("can be changed by users other than")));
@@ -1139,9 +1136,9 @@ TEST(LoadNodeConfigTest, RefusesWhatOthersCouldChange) {
 
 TEST(LoadNodeConfigTest, TheNumberOfFragmentsIsBounded) {
   const Tree tree;
-  tree.Write("jitllm.toml", "schema_version = 2\n");
-  for (std::size_t i = 0; i <= jitllm::config::kDropInLimit; ++i) {
-    tree.Write(std::format("jitllm.d/{:04}.toml", i), "schema_version = 2\n");
+  tree.Write("llmp.toml", "schema_version = 2\n");
+  for (std::size_t i = 0; i <= llmp::config::kDropInLimit; ++i) {
+    tree.Write(std::format("llmp.d/{:04}.toml", i), "schema_version = 2\n");
   }
   EXPECT_THAT(LoadFailures(tree.Options()),
               ElementsAre(HasSubstr("holds 257 fragments; the configuration "
@@ -1150,8 +1147,8 @@ TEST(LoadNodeConfigTest, TheNumberOfFragmentsIsBounded) {
 
 TEST(LoadNodeConfigTest, RefusesHardLinkedFiles) {
   const Tree tree;
-  tree.Write("jitllm.toml", "schema_version = 2\n");
-  fs::create_hard_link(tree / "jitllm.toml", tree / "other");
+  tree.Write("llmp.toml", "schema_version = 2\n");
+  fs::create_hard_link(tree / "llmp.toml", tree / "other");
   EXPECT_THAT(LoadFailures(tree.Options()), ElementsAre(HasSubstr("has 2 hard links")));
 }
 
@@ -1159,9 +1156,9 @@ TEST(LoadNodeConfigTest, RefusesHardLinkedFiles) {
 // when an ACL grants it to someone else.
 TEST(LoadNodeConfigTest, RefusesAnAclGrantingWrite) {
   const Tree tree;
-  tree.Write("jitllm.toml", "schema_version = 2\n");
+  tree.Write("llmp.toml", "schema_version = 2\n");
   const std::string command =
-      std::format("setfacl -m u:nobody:rw '{}' 2>/dev/null", (tree / "jitllm.toml").string());
+      std::format("setfacl -m u:nobody:rw '{}' 2>/dev/null", (tree / "llmp.toml").string());
   // NOLINTNEXTLINE(concurrency-mt-unsafe,cert-env33-c,bugprone-command-processor): a fixed command
   if (std::system(command.c_str()) != 0) {
     GTEST_SKIP() << "setfacl is not available here";
@@ -1172,15 +1169,15 @@ TEST(LoadNodeConfigTest, RefusesAnAclGrantingWrite) {
 
 TEST(LoadNodeConfigTest, FailuresInOneFileDoNotHideTheOthers) {
   const Tree tree;
-  tree.Write("jitllm.toml", "schema_version = 2\nbad = 1\n");
-  tree.Write("jitllm.d/a.toml", "schema_version = 2\n", 0666);
-  tree.Write("jitllm.d/b.toml", "schema_version = 3\n");
+  tree.Write("llmp.toml", "schema_version = 2\nbad = 1\n");
+  tree.Write("llmp.d/a.toml", "schema_version = 2\n", 0666);
+  tree.Write("llmp.d/b.toml", "schema_version = 3\n");
   // Files that cannot be trusted are not parsed at all.
   EXPECT_THAT(LoadFailures(tree.Options()),
-              ElementsAre(HasSubstr("jitllm.d/a.toml: can be written")));
-  ASSERT_EQ(::chmod((tree / "jitllm.d/a.toml").c_str(), 0644), 0);
+              ElementsAre(HasSubstr("llmp.d/a.toml: can be written")));
+  ASSERT_EQ(::chmod((tree / "llmp.d/a.toml").c_str(), 0644), 0);
   EXPECT_THAT(LoadFailures(tree.Options()),
-              ElementsAre(HasSubstr("jitllm.toml:2:7: unknown key bad"),
+              ElementsAre(HasSubstr("llmp.toml:2:7: unknown key bad"),
                           HasSubstr("b.toml:1:18: schema_version 3")));
 }
 
@@ -1189,7 +1186,7 @@ TEST(LoadNodeConfigTest, FailuresInOneFileDoNotHideTheOthers) {
 class Roles : public ::testing::Test {
  protected:
   void SetUp() override {
-    auto filesystem = jitllm::platform::DescribeFilesystem(tree_ / "");
+    auto filesystem = llmp::platform::DescribeFilesystem(tree_ / "");
     ASSERT_TRUE(filesystem.has_value());
     if (!filesystem->accepted) {
       GTEST_SKIP() << "the build tree is on " << filesystem->type
@@ -1197,7 +1194,7 @@ class Roles : public ::testing::Test {
     }
   }
 
-  jitllm::config::Storage Storage() const {
+  llmp::config::Storage Storage() const {
     return {.data_dir = tree_ / "data",
             .installed = tree_ / "data/models",
             .spill = tree_ / "data/spill",
@@ -1207,8 +1204,8 @@ class Roles : public ::testing::Test {
             .archive = std::nullopt};
   }
 
-  std::vector<std::string> Problems(const jitllm::config::Storage& storage) const {
-    auto result = jitllm::config::PrepareRuntimeRoles(storage, ::geteuid(), tree_ / "enrollment");
+  std::vector<std::string> Problems(const llmp::config::Storage& storage) const {
+    auto result = llmp::config::PrepareRuntimeRoles(storage, ::geteuid(), tree_ / "enrollment");
     EXPECT_FALSE(result.has_value());
     return result ? std::vector<std::string>{} : result.error();
   }
@@ -1223,18 +1220,18 @@ class Roles : public ::testing::Test {
 };
 
 TEST_F(Roles, CreatesMissingRolesWithTheirModes) {
-  auto roles = jitllm::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "enrollment");
+  auto roles = llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "enrollment");
   ASSERT_TRUE(roles.has_value()) << ::testing::PrintToString(roles.error());
   EXPECT_EQ(roles->installed, tree_ / "data/models");
   EXPECT_EQ(Mode(tree_ / "data"), 0755U);
   EXPECT_EQ(Mode(tree_ / "data/models"), 0755U);
   EXPECT_EQ(Mode(tree_ / "data/spill"), 0700U);
   EXPECT_EQ(Mode(tree_ / "data/state"), 0700U);
-  EXPECT_TRUE(fs::is_regular_file(tree_ / "data/spill/.jitllm-spill"));
+  EXPECT_TRUE(fs::is_regular_file(tree_ / "data/spill/.llmp-spill"));
   // The runtime never creates the job-only roles.
   EXPECT_FALSE(fs::exists(tree_ / "data/checkpoints"));
   // A second start finds them as it left them.
-  roles = jitllm::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "enrollment");
+  roles = llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "enrollment");
   EXPECT_TRUE(roles.has_value()) << ::testing::PrintToString(roles.error());
 }
 
@@ -1243,7 +1240,7 @@ TEST_F(Roles, RefusesASpillDirectoryItDidNotMake) {
   ASSERT_EQ(::chmod((tree_ / "data/spill").c_str(), 0700), 0);
   tree_.Write("data/spill/photos.jpg", "precious");
   EXPECT_THAT(Problems(Storage()),
-              ElementsAre(HasSubstr("is not empty and has no .jitllm-spill marker")));
+              ElementsAre(HasSubstr("is not empty and has no .llmp-spill marker")));
   EXPECT_TRUE(fs::exists(tree_ / "data/spill/photos.jpg"));
   ASSERT_EQ(::chmod((tree_ / "data/spill").c_str(), 0750), 0);
   EXPECT_THAT(Problems(Storage()),
@@ -1269,10 +1266,9 @@ TEST_F(Roles, RefusesLinksAndWritableRoles) {
 TEST_F(Roles, NoRoleResolvesOntoTheAnchor) {
   fs::create_directories(tree_ / "real");
   fs::create_directory_symlink(tree_ / "real", tree_ / "dd");
-  jitllm::config::Storage storage = Storage();
+  llmp::config::Storage storage = Storage();
   storage.state = tree_ / "dd/enrollment";
-  auto result =
-      jitllm::config::PrepareRuntimeRoles(storage, ::geteuid(), tree_ / "real/enrollment");
+  auto result = llmp::config::PrepareRuntimeRoles(storage, ::geteuid(), tree_ / "real/enrollment");
   ASSERT_FALSE(result.has_value());
   EXPECT_THAT(result.error(), ElementsAre(HasSubstr("lies inside the enrollment anchor")));
   EXPECT_FALSE(fs::exists(tree_ / "real/enrollment"));
@@ -1283,7 +1279,7 @@ TEST_F(Roles, RefusesAnAnchorOthersCouldReplace) {
   fs::create_directories(tree_ / "open");
   ASSERT_EQ(::chmod((tree_ / "open").c_str(), 0777), 0);
   auto result =
-      jitllm::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "open/x/enrollment");
+      llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "open/x/enrollment");
   ASSERT_FALSE(result.has_value());
   EXPECT_THAT(result.error(), ElementsAre(HasSubstr("the enrollment anchor")));
   EXPECT_FALSE(fs::exists(tree_ / "data"));
@@ -1303,14 +1299,14 @@ TEST_F(Roles, RefusesADefaultAcl) {
 TEST_F(Roles, RefusesAMarkerItDidNotWrite) {
   fs::create_directories(tree_ / "data/spill");
   ASSERT_EQ(::chmod((tree_ / "data/spill").c_str(), 0700), 0);
-  tree_.Write("data/spill/.jitllm-spill", "someone else's\n", 0600);
+  tree_.Write("data/spill/.llmp-spill", "someone else's\n", 0600);
   EXPECT_THAT(Problems(Storage()), ElementsAre(HasSubstr("is not the marker this runtime writes")));
 }
 
 TEST_F(Roles, LinksCannotMakeTwoRolesOne) {
   fs::create_directories(tree_ / "real");
   fs::create_directory_symlink(tree_ / "real", tree_ / "alias");
-  jitllm::config::Storage storage = Storage();
+  llmp::config::Storage storage = Storage();
   storage.installed = tree_ / "real/x";
   storage.spill = tree_ / "alias/x";
   EXPECT_THAT(Problems(storage),

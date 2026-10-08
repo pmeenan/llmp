@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "execution/program.h"
@@ -21,7 +21,7 @@
 #include "model/context.h"
 #include "model/state.h"
 
-namespace jitllm::execution {
+namespace llmp::execution {
 namespace {
 
 std::unexpected<ProgramRejection> Reject(ProgramError error, std::string detail,
@@ -511,4 +511,4 @@ std::expected<void, ProgramError> OutputBuffer::Drain(Bytes bytes) {
   return {};
 }
 
-}  // namespace jitllm::execution
+}  // namespace llmp::execution

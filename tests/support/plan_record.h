@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // What a test or benchmark records of an executed plan, and the JSON lines
@@ -8,8 +8,8 @@
 // E). Test and benchmark support only; no production target links it
 // (tests/support/CMakeLists.txt checks).
 
-#ifndef JITLLM_TESTS_SUPPORT_PLAN_RECORD_H_
-#define JITLLM_TESTS_SUPPORT_PLAN_RECORD_H_
+#ifndef LLMP_TESTS_SUPPORT_PLAN_RECORD_H_
+#define LLMP_TESTS_SUPPORT_PLAN_RECORD_H_
 
 #include <array>
 #include <cstddef>
@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::test_support {
+namespace llmp::test_support {
 
 enum class EventKind : std::uint8_t { kKernel, kCopy, kMemset, kCublas };
 
@@ -76,9 +76,9 @@ std::string OpLine(std::string_view name, int layer);
 std::string EventLine(const Event& event);
 
 // plan_record_sample.txt: the lines these write for the first seven
-// launches of the bridge's decode step (jitllm_plan_record_sample).
+// launches of the bridge's decode step (llmp_plan_record_sample).
 std::string_view PlanRecordSample();
 
-}  // namespace jitllm::test_support
+}  // namespace llmp::test_support
 
-#endif  // JITLLM_TESTS_SUPPORT_PLAN_RECORD_H_
+#endif  // LLMP_TESTS_SUPPORT_PLAN_RECORD_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Greedy and seeded sampling (execution/sampling.h).
@@ -22,8 +22,8 @@
 
 namespace {
 
-namespace ex = jitllm::execution;
-using jitllm::test_support::Failed;
+namespace ex = llmp::execution;
+using llmp::test_support::Failed;
 
 // Random123's published known-answer vectors for Philox4x32-10 (its
 // tests/kat_vectors).

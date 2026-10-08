@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 speculative decoding with its MTP layer, and decode graphs (M3)
@@ -63,7 +63,7 @@ layer's F16 K and V caches, its F32 indexer keys, and a stream buffer H of
   same R rows first: rows 1..R−1 in a pass of their own (a job before the
   chunk's, whose export overwrites them), and row R copied to H[0] at the
   start of the chunk's job, so its pass covers that position too
-  (`Qwen38Injection` in `model/qwen38.h`; `jitllm_qwen38_spec --check turn`
+  (`Qwen38Injection` in `model/qwen38.h`; `llmp_qwen38_spec --check turn`
   compares the cells with a draft's own catch-up).
 
 **A step** is two jobs.
@@ -165,7 +165,7 @@ re-imported.
 
 ## Correctness
 
-**Setup.** The harness is `jitllm_qwen38_spec` (`benchmarks/qwen38_spec.cc`),
+**Setup.** The harness is `llmp_qwen38_spec` (`benchmarks/qwen38_spec.cc`),
 run on `spark` (GB10), with the target `c4fb47a9…`, the drafter `056a750e…`,
 context 8,704, graphs on, the defaults (depth 2, 65,536 draft rows), and the
 memory gate before each load. The owner released `spark` part way through
@@ -192,7 +192,7 @@ emitted.
 | The same at depth 3 (earlier build, `spark-b`) | 96 tokens, 32,768 draft rows: 41 steps, 29 with rejected rows (8 all rejected, 8 one accepted, 8 two accepted) | 0 of 41 differ; near-ties 5, largest 0.916, 0 violations |
 | Sampled speculation preserves the distribution | `capital`, `haiku`, `sky`, `fibonacci`; seeds 0–255; the first 8 tokens; temperature 1 | total variation over each prompt's 16 most frequent tokens plus "other": 0.0317, 0.0396, 0.0093, 0.0332 (bound 0.1), 8,192 sampled tokens a mode. Plain sampling took 594.7 s (inside D-085's 10 minutes, barely), speculative 452.1 s |
 | Rollback composes with swap (review, merged on `051baa6`, `spark`, 14:39–14:40) | `capital`, 160 tokens, depth 2, forced as in `swap` below: the control's 97 steps, then the same run stopped after step 47 (rows rejected), its commit and restore still owed; Qwen3.8's state, weights and drafter out for the FP16 fixture and back | the owed commit ran after the swap; all 97 steps' states equal the control's (0 differ), all 160 tokens and their logits bit for bit; B's logits hash `bb8ae5e7…`, as recorded; every weight and state extent still pinned; after the swap 48 verifies and 50 drafts replayed graphs captured before it (2 new shapes captured) |
-| Decode graphs across a swap (review, `spark`, 14:34–14:35) | `jitllm_swap_pairs --a qwen38 --b image --cycles 2 --continue 16` (8,192 context tokens) | the prepared return replayed the decode graph captured before the swap for all 16 continued steps (none captured or launched), each step's logits bit-identical to the unswapped continuation, the restored state byte-identical; every swap `exact` |
+| Decode graphs across a swap (review, `spark`, 14:34–14:35) | `llmp_swap_pairs --a qwen38 --b image --cycles 2 --continue 16` (8,192 context tokens) | the prepared return replayed the decode graph captured before the swap for all 16 continued steps (none captured or launched), each step's logits bit-identical to the unswapped continuation, the restored state byte-identical; every swap `exact` |
 
 **The control.** The forced run changes a chosen draft (to the next token
 ID). The control replays the same steps with the same row counts, but
@@ -200,7 +200,7 @@ drafts different tokens after the kept ones: the forced one is changed
 again. So the same kernels run, and a byte a rejected row wrote would show
 as a difference.
 
-**The swap check** (`--check swap`, as DeepSeek's in `jitllm_spec_runner`)
+**The swap check** (`--check swap`, as DeepSeek's in `llmp_spec_runner`)
 forces all rejected, one accepted and as drafted in turn. It swaps with
 the last step's commit still owed, so it also shows that the commit
 region survives a swap and that the commit then runs on the restored
@@ -211,7 +211,7 @@ state.
 The rule in dsv4-decode's "The bound, going forward" takes the near-tie
 bound from the verify's own rows against one-row decoding, recorded before
 the comparison. That was not done here; the review measured it afterwards
-on the merged build (`spark`, `verify_noise` in `jitllm_qwen38_spec`, the
+on the merged build (`spark`, `verify_noise` in `llmp_qwen38_spec`, the
 same runs as the table's). It is the move of the plain row's top-two
 margin when the verify's row gave the token:
 
@@ -255,7 +255,7 @@ is information only.
 **Speculative decode** (the greedy run above, `spark`, 256 tokens, three
 repeats, median in bold):
 
-| Measure | jitLLM, MTP depth 2 | Mia's vLLM, MTP 3 | Ratio |
+| Measure | llmpalooza, MTP depth 2 | Mia's vLLM, MTP 3 | Ratio |
 | --- | ---: | ---: | ---: |
 | Decode, `prose`, tok/s | 41.88 / **42.46** / 42.72 | 37.85 | 1.12 (repeats 1.11–1.13) |
 | Decode, `code`, tok/s | 39.10 / 38.72 / **39.09** | 37.85 | 1.03 (repeats 1.02–1.03) |
@@ -294,7 +294,7 @@ Past 98,304 rows, acceptance stops rising while each draft pass pays about
 46.7–47.0 ms and a depth-3 verify 52.5–52.7 ms, against 37.4 ms for a plain
 step on the device.
 
-**Plain decode, with decode graphs** (`jitllm_swap_pairs --a qwen38
+**Plain decode, with decode graphs** (`llmp_swap_pairs --a qwen38
 --cycles 0 --bench 128`, `spark-b`, the runtime wake, each generation a
 request), two runs at 13:53–13:58 of three measured passes each:
 
@@ -380,7 +380,7 @@ each row selects for itself, are the difference.
   once per verify" holds in effect, through L2, not by construction.
 - **The near-tie margin is 1.0 logit, and it was not set by the rule
   later slices use.** It is qwen38-native's bound: the 95th percentile of
-  the margin move between two of jitLLM's plain-decode plans. dsv4-decode's
+  the margin move between two of llmpalooza's plain-decode plans. dsv4-decode's
   rule ("The bound, going forward") asks for the 99th percentile of the
   verify's own rows against one-row decoding, recorded before the
   comparison. That noise was not measured before this slice's comparison;
@@ -395,8 +395,8 @@ each row selects for itself, are the difference.
   commit that is wrong the same way in both runs. The kernel's unit test
   (against the verify's own recurrence) and the near-tie rule on the tokens
   cover that part.
-- **A harness, not the runtime**: `jitllm_qwen38_spec`, like
-  `jitllm_spec_runner`.
+- **A harness, not the runtime**: `llmp_qwen38_spec`, like
+  `llmp_spec_runner`.
 The later [same-ID selected Q4_1 study](../qwen38-quantized-draft-head/README.md)
 implements the draft-head compression lead below: C1 generation −4.064%, C2
 +1.482% versus BF16 (n=2); BF16 remains ordinary. Fresh public TensorFold C1

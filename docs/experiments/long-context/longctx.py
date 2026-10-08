@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Long-context runs: the comparators and jitLLM's runtime at depth (README.md).
+"""Long-context runs: the comparators and llmpalooza's runtime at depth (README.md).
 
 Runs on a Spark, never on the workstation; Python only drives engines over
 HTTP (and llama.cpp's tools in their container). Raw output goes to a new
@@ -15,14 +15,14 @@ external directory; the checked-in report carries the aggregates.
         back without its reasoning (the turn-reuse comparator).
     longctx.py llama-ppl OUT --image IMG --model GGUF --text PPL.txt --ctx L...
         llama-perplexity over one window of each L (its rule: the second
-        half scored), and the window's IDs (llama-tokenize) for jitLLM.
+        half scored), and the window's IDs (llama-tokenize) for llmpalooza.
     longctx.py vllm OUT --start CMD --stop CMD [--ppl PPL.txt --ctx L...] PROMPT.json...
         A vLLM server (Mia's recipe): the prompt IDs from /tokenize with the
         template, one streamed /v1/completions each (greedy, --top N
         log-probabilities, a unique cache_salt so nothing is reused), then
         prompt log-probabilities over each perplexity window.
-    longctx.py jitllm OUT --runtime BIN --config TOML --model NAME PROMPT.json...
-        jitllm-runtime serving the chat route: one streamed greedy
+    longctx.py llmp OUT --runtime BIN --config TOML --model NAME PROMPT.json...
+        llmp-runtime serving the chat route: one streamed greedy
         /v1/chat/completions per prompt; --session runs a session prompt's
         follow-up turns, the client sending back its answers (with or
         without the reasoning, --reasoning keep|drop).
@@ -73,7 +73,7 @@ from baseline import Client, Memory, dump, wait_ready  # noqa: E402
 
 DOCKER = shlex.split(os.environ.get("DOCKER", "sudo -n docker"))
 GIB = 1 << 30
-ROOT = Path(os.environ.get("MODEL_ROOT", Path.home() / ".local/share/jitllm"))
+ROOT = Path(os.environ.get("MODEL_ROOT", Path.home() / ".local/share/llmp"))
 
 
 def gate(min_gib):
@@ -295,7 +295,7 @@ def cmd_llama(args):
     memory.start()
     time.sleep(1)
     baseline = Memory.available()
-    name = "jitllm-lc-" + uuid.uuid4().hex[:8]
+    name = "llmp-lc-" + uuid.uuid4().hex[:8]
     argv = llama_argv(name, args.port, args.image, "/app/llama-server", args.model,
                       f"--host 0.0.0.0 --port 8080 --metrics {args.args}")
     run = {"argv": argv, "baseline_available_bytes": baseline, "prompts": {}}
@@ -365,7 +365,7 @@ def cmd_llama_ppl(args):
     mounts = [(text.parent, "/text")]
     run = {"windows": {}}
     # The window's IDs as llama-perplexity takes them (the model's BOS rule).
-    ids_argv = llama_argv("jitllm-lc-tok-" + uuid.uuid4().hex[:8], 0, args.image,
+    ids_argv = llama_argv("llmp-lc-tok-" + uuid.uuid4().hex[:8], 0, args.image,
                           "/app/llama-tokenize", args.model,
                           f"-f /text/{text.name} --ids --log-disable", mounts)
     ids_argv = [a for a in ids_argv if a not in ("-d",)]
@@ -380,7 +380,7 @@ def cmd_llama_ppl(args):
         time.sleep(1)
         baseline = Memory.available()
         (out / f"ppl-{ctx}.ids").write_text("ppl\t" + " ".join(map(str, tokens[:ctx])) + "\n")
-        argv = llama_argv("jitllm-lc-ppl-" + uuid.uuid4().hex[:8], 0, args.image,
+        argv = llama_argv("llmp-lc-ppl-" + uuid.uuid4().hex[:8], 0, args.image,
                           "/app/llama-perplexity", args.model,
                           f"-f /text/{text.name} -c {ctx} --chunks 1 {args.args}", mounts)
         argv = [a for a in argv if a != "-d"]
@@ -495,9 +495,9 @@ def spec_counters(client):
     return values
 
 
-# ------------------------------------------------------------------ jitLLM
+# ------------------------------------------------------------------ llmpalooza
 
-def cmd_jitllm(args):
+def cmd_llmp(args):
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=False)
     # The runtime's process lock lives here and is refused in a directory
@@ -516,7 +516,7 @@ def cmd_jitllm(args):
                                     str(out / "anchor")], stdout=log, stderr=subprocess.STDOUT)
     client = Client(f"http://127.0.0.1:{args.port}", args.model)
     try:
-        while "jitllm-runtime: ready" not in (out / "service.log").read_text():
+        while "llmp-runtime: ready" not in (out / "service.log").read_text():
             if process.poll() is not None:
                 raise SystemExit("the runtime exited: " + (out / "service.log").read_text()[-2000:])
             time.sleep(0.5)
@@ -636,7 +636,7 @@ def main():
     p.add_argument("prompts", nargs="*")
     p.set_defaults(func=cmd_vllm)
 
-    p = sub.add_parser("jitllm")
+    p = sub.add_parser("llmp")
     common(p)
     p.add_argument("--runtime", required=True)
     p.add_argument("--config", required=True)
@@ -645,7 +645,7 @@ def main():
     p.add_argument("--reasoning", choices=["keep", "drop"], default="drop")
     p.add_argument("--retries", type=int, default=0)
     p.add_argument("prompts", nargs="+")
-    p.set_defaults(func=cmd_jitllm)
+    p.set_defaults(func=cmd_llmp)
 
     args = parser.parse_args()
     args.func(args)

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # Support for tests and benchmarks: reading a std::expected's error safely,
@@ -9,14 +9,14 @@
 # if one does.
 
 # Reading a std::expected's error only when it holds one (expected_error.h,
-# D-083), for every GoogleTest executable (jitllm_gtest links it).
-add_library(jitllm_test_expected INTERFACE)
-target_include_directories(jitllm_test_expected INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+# D-083), for every GoogleTest executable (llmp_gtest links it).
+add_library(llmp_test_expected INTERFACE)
+target_include_directories(llmp_test_expected INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # The recording's events and JSON lines, in every profile.
-add_library(jitllm_plan_record STATIC plan_record.cc)
-target_include_directories(jitllm_plan_record PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(jitllm_plan_record PRIVATE jitllm_warnings)
+add_library(llmp_plan_record STATIC plan_record.cc)
+target_include_directories(llmp_plan_record PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(llmp_plan_record PRIVATE llmp_warnings)
 
 # plan_record_sample.txt, the JSON lines the writer must produce for its
 # events, which plan_compare.py's tests read too, compiled in at build time
@@ -29,21 +29,21 @@ add_custom_command(
   DEPENDS plan_record_sample.txt plan_record_sample.cmake
   COMMENT "Compiling in the executed-plan recording's sample"
   VERBATIM)
-add_library(jitllm_plan_record_sample STATIC "${sample}")
-target_link_libraries(jitllm_plan_record_sample PUBLIC jitllm_plan_record)
+add_library(llmp_plan_record_sample STATIC "${sample}")
+target_link_libraries(llmp_plan_record_sample PUBLIC llmp_plan_record)
 
 # The launch recorder (launch_recorder.h), for binaries that run GGML-derived
-# kernels (jitllm_ggml_kernels brings the CUDA runtime). An object library,
+# kernels (llmp_ggml_kernels brings the CUDA runtime). An object library,
 # so its wrappers are in every link that uses it, whatever the link order.
-if(JITLLM_CUDA)
-  add_library(jitllm_launch_recorder OBJECT launch_recorder.cc)
-  target_include_directories(jitllm_launch_recorder SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  # jitllm_cuda_device_memory brings the NVIDIA driver.
-  target_link_libraries(jitllm_launch_recorder PUBLIC jitllm_plan_record jitllm_ggml_kernels
-                                                      jitllm_cuda_device_memory
-                        PRIVATE jitllm_base jitllm_warnings)
-  target_link_options(jitllm_launch_recorder INTERFACE
+if(LLMP_CUDA)
+  add_library(llmp_launch_recorder OBJECT launch_recorder.cc)
+  target_include_directories(llmp_launch_recorder SYSTEM PRIVATE
+                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
+  # llmp_cuda_device_memory brings the NVIDIA driver.
+  target_link_libraries(llmp_launch_recorder PUBLIC llmp_plan_record llmp_ggml_kernels
+                                                      llmp_cuda_device_memory
+                        PRIVATE llmp_base llmp_warnings)
+  target_link_options(llmp_launch_recorder INTERFACE
                       "LINKER:--wrap=__cudaLaunchKernel,--wrap=cudaLaunchKernelExC"
                       "LINKER:--wrap=cudaLaunchKernel,--wrap=cudaLaunchCooperativeKernel"
                       "LINKER:--wrap=cublasLtMatmul"
@@ -57,24 +57,24 @@ endif()
 # harnesses' names, with LaunchOnlyProgram, which only tests post
 # (paged_programs.h); and in CUDA builds the engine's paged node
 # (src/engine/paged_node.h) under the same names (paged_node.h).
-add_library(jitllm_paged_programs INTERFACE)
-target_include_directories(jitllm_paged_programs INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(jitllm_paged_programs INTERFACE jitllm_scheduler jitllm_memory)
-if(JITLLM_CUDA)
-  add_library(jitllm_paged_node INTERFACE)
-  target_include_directories(jitllm_paged_node INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(jitllm_paged_node INTERFACE jitllm_paged_programs jitllm_engine)
+add_library(llmp_paged_programs INTERFACE)
+target_include_directories(llmp_paged_programs INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(llmp_paged_programs INTERFACE llmp_scheduler llmp_memory)
+if(LLMP_CUDA)
+  add_library(llmp_paged_node INTERFACE)
+  target_include_directories(llmp_paged_node INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(llmp_paged_node INTERFACE llmp_paged_programs llmp_engine)
 endif()
 
 # No production binary links the support libraries, directly or through
 # another library. Checked once every target exists.
-function(jitllm_check_no_test_support)
-  set(pending jitllm jitllm-runtime)
+function(llmp_check_no_test_support)
+  set(pending llmp llmp-runtime)
   set(seen "")
   while(pending)
     list(POP_FRONT pending target)
     # Anywhere in the item, so that a generator expression cannot hide it.
-    if(target MATCHES "(^|[^A-Za-z0-9_])jitllm_(test_expected|plan_record|plan_record_sample|launch_recorder|paged_programs|paged_node|paged_runners)([^A-Za-z0-9_]|$)")
+    if(target MATCHES "(^|[^A-Za-z0-9_])llmp_(test_expected|plan_record|plan_record_sample|launch_recorder|paged_programs|paged_node|paged_runners)([^A-Za-z0-9_]|$)")
       message(FATAL_ERROR "A production binary links the test support library: ${target}.")
     endif()
     if(target IN_LIST seen OR NOT TARGET "${target}")
@@ -99,4 +99,4 @@ function(jitllm_check_no_test_support)
     endforeach()
   endwhile()
 endfunction()
-cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL jitllm_check_no_test_support)
+cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL llmp_check_no_test_support)

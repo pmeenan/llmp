@@ -36,16 +36,16 @@
         "sha256": "8a0bc46899fedd8de45449d752e71a54423c908ad3dd79052a75c3245e879434"
       },
       "benchmarks/gemma_attention_capture.cc": {
-        "bytes": 13030,
-        "sha256": "24d61b72bb5fb13ab3239c507f60f44c8f17f62b47a3bfa113e036737b04727d"
+        "bytes": 13022,
+        "sha256": "1b2014cf19b77d4b56618e95951cb2431018e416a94679a17eda4e647845a5fb"
       },
       "benchmarks/gemma_attention_capture.h": {
-        "bytes": 1664,
-        "sha256": "9e08665b222c4586fa8178569cb601904fae3f8b00fe68386ae2ffb183d93715"
+        "bytes": 1660,
+        "sha256": "b61761e121838e40a05480c6e15ebc434fdb6b26cffe7bd831eb3220e85880e3"
       },
       "benchmarks/gemma_attention_capture_wrap.cc": {
-        "bytes": 7649,
-        "sha256": "d0927e621a4bc80dfe2be74edf7bf3cb84bff4ccfa593c272e27bad873ac3c78"
+        "bytes": 7641,
+        "sha256": "4df0fef60407c4e45d979e3980d6a95bf58746c83a4bddf0607c99013fab24e6"
       }
     },
     "binary": {
@@ -128,24 +128,24 @@
         "sha256": "31474893a88c9df938d834655927a43b81560f992e7275d6278ee88e176b7e70"
       },
       "benchmarks/gemma_attention_replay.cc": {
-        "bytes": 15438,
-        "sha256": "8ac14c2edde718b2b35f344df4de65da25078f552e238b1a34acd617f4fb71f5"
+        "bytes": 15356,
+        "sha256": "cd50a19cbccb9ac074ad3e60ce4d9a6cf379cd4bee37d8ea4ed55a17cbfa0e67"
       },
       "docs/experiments/gemma-attention-c4/replay_inputs.h": {
         "bytes": 2642,
-        "sha256": "eea9f678e36bfbac5bcb0cd5d6e724eeff99f326eb7e718e4224cd887b22eea0"
+        "sha256": "11652c98e576979942d79c3486159f4c0e07a1d60f05707de930ff36a612cdbb"
       },
       "docs/experiments/gemma-attention-c4/llama_attention.cc": {
-        "bytes": 6989,
-        "sha256": "d3ea1a3f60cffb0425e115ca9a867be956bde2cadd8733ad7a027b9c7815e4d8"
+        "bytes": 6993,
+        "sha256": "97dc7870b1749fbf45c76272f5b2d22c4fd660ab86f1c5675fc7329b9a055e54"
       },
       "docs/experiments/gemma-attention-c4/reference.sh": {
         "bytes": 2087,
         "sha256": "7cfdf7db1d72c74c2971561656ae5e0ef22b4e0bcd696896747278984c14bf01"
       },
       "docs/experiments/gemma-attention-c4/prepare.py": {
-        "bytes": 4606,
-        "sha256": "a086fe5cf7bc258d590703db057fe8c2d10317a0617b0ca4b725388516866dea"
+        "bytes": 4608,
+        "sha256": "65054451d85eaffdef710ef15cbc4a59d9ef63fc9d2db4f34e784ef3eeeffe32"
       },
       "docs/experiments/gemma-attention-c4/PROTOCOL.md": {
         "bytes": 8384,
@@ -337,27 +337,27 @@
       "override": false,
       "patches": [
         {
-          "path": "patches/ggml/0001-jitllm-adaptations.patch",
+          "path": "patches/ggml/0001-llmp-adaptations.patch",
           "sha256": "255bb61de5996d31eb950a1a8a8e8a14fa5faae12c965d1da58fa7e60919402d"
         },
         {
-          "path": "patches/ggml/0002-jitllm-build.patch",
+          "path": "patches/ggml/0002-llmp-build.patch",
           "sha256": "67c5b094a83ae0871a21b350bce0b4228d0622aca191f9417ed4af5057054fcb"
         },
         {
-          "path": "patches/ggml/0003-jitllm-wide-sparse-attention.patch",
+          "path": "patches/ggml/0003-llmp-wide-sparse-attention.patch",
           "sha256": "4aef62a8db3d09ee3e7a07621d4511d46ab42b149561e5556b9f4d7830150997"
         },
         {
-          "path": "patches/ggml/0004-jitllm-compact-expert-tiles.patch",
+          "path": "patches/ggml/0004-llmp-compact-expert-tiles.patch",
           "sha256": "1359fa8e2b03886150b370b89d51594cea0ad87ceefe1be2a9196ac904e80741"
         },
         {
-          "path": "patches/ggml/0005-jitllm-iq2-compact-pair-occ2.patch",
+          "path": "patches/ggml/0005-llmp-iq2-compact-pair-occ2.patch",
           "sha256": "adb7d3cb1b15146c9b9a0c588fcb8ff66ff30e705f911d48ef357c7863ad0006"
         }
       ],
-      "source": "/home/pmeenan/src/jitLLM-wt/m3gm31/build/sources/ggml-026f1ac94af98011",
+      "source": "/home/pmeenan/src/llmp-wt/m3gm31/build/sources/ggml-026f1ac94af98011",
       "source_tree": "026f1ac94af98011933e71cee240d0a405ac4220cb208356acf61aa2bcea6207",
       "tier": "core",
       "use": "product",
@@ -383,7 +383,7 @@
     },
     "trace_wrapper": {
       "bytes": 2073,
-      "sha256": "c4eb6f328bf6d318d3a5e25de405a0bbb5f1bf7912ffff134d335a46bdb2a1ca"
+      "sha256": "02c8230996e50d3eceebd2068b52015999d00c73af9df2d30eefb749cb84fdaf"
     },
     "observer_version": "NVIDIA Nsight Systems version 2025.3.2.474-253236389321v0",
     "observer_binary": {
@@ -414,7 +414,7 @@
       },
       "final": {
         "bytes": 2073,
-        "sha256": "c4eb6f328bf6d318d3a5e25de405a0bbb5f1bf7912ffff134d335a46bdb2a1ca"
+        "sha256": "02c8230996e50d3eceebd2068b52015999d00c73af9df2d30eefb749cb84fdaf"
       }
     },
     "docs/experiments/gemma-attention-c4/PROTOCOL.md": {
@@ -423,8 +423,8 @@
         "sha256": "19aa091437bf3683b0c25552571dd3a2ef9520afbe16289d6e14b8e330a89567"
       },
       "final": {
-        "bytes": 8699,
-        "sha256": "439461f7fed93559286e48aaa9a1a14798219b5cb79552af00282dfbe9c6518a"
+        "bytes": 8707,
+        "sha256": "4c76e18937d6fb232a902c310eee46f75905bbbc2ab22567fe462fd9fe97caaa"
       }
     }
   },
@@ -792,7 +792,7 @@
       }
     }
   },
-  "external_raw_root": "~/.local/share/jitllm/gemma-attention-c4 on spark-b; local metadata/logs /tmp/jitllm-m35-coordination/gemma-attention-c4-raw",
+  "external_raw_root": "~/.local/share/llmp/gemma-attention-c4 on spark-b; local metadata/logs /tmp/llmp-m35-coordination/gemma-attention-c4-raw",
   "failure_history": {
     "build1": "mise PATH before compile",
     "build2": "extern C expected-return warning; link wrapper changed to C++ asm linkage",
@@ -828,7 +828,7 @@
       "bytes": 6751,
       "sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d"
     },
-    "measured_binaries_retained": "/home/pmeenan/.local/share/jitllm/gemma-attention-c4/measured-binaries"
+    "measured_binaries_retained": "/home/pmeenan/.local/share/llmp/gemma-attention-c4/measured-binaries"
   },
   "local_light": {
     "bytes": 1319,

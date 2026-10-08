@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // M3's speculation harness (docs/plan.md, "Speculative decoding in the
@@ -9,7 +9,7 @@
 // links the native tokenizer and chat renderer, which production binaries
 // may not until D-088 is accepted.
 //
-//   jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR
+//   llmp_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR
 //                      --check greedy|forced|swap|sampled-plain|sampled-spec|probe|frontier|sizing|
 //                              wave|plan-memory|capacity
 //                      [--tokens N] [--context N] [--max-rows N] [--graphs on|off] [--draft N]
@@ -152,11 +152,11 @@
 
 namespace {
 
-namespace ts = jitllm::test_support;
-namespace jb = jitllm::benchmarks;
-namespace md = jitllm::model;
-namespace ex = jitllm::execution;
-using jitllm::base::Bytes;
+namespace ts = llmp::test_support;
+namespace jb = llmp::benchmarks;
+namespace md = llmp::model;
+namespace ex = llmp::execution;
+using llmp::base::Bytes;
 using Clock = std::chrono::steady_clock;
 using Status = ts::Status;
 
@@ -226,11 +226,11 @@ std::string LogitsDigest(std::span<const std::vector<float>> rows) {
   if (rows.empty()) {
     return {};
   }
-  jitllm::base::Sha256 hash;
+  llmp::base::Sha256 hash;
   for (const std::vector<float>& row : rows) {
     hash.Update(std::as_bytes(std::span(row)));
   }
-  return jitllm::base::ToHex(hash.Finish());
+  return llmp::base::ToHex(hash.Finish());
 }
 
 // FNV-1a over 64-bit words (and the tail's bytes): a fingerprint of state
@@ -414,7 +414,7 @@ class Harness {
   jb::Dsv4Runner dsv4_;
   jb::Fp16Runner fp16_;
   std::vector<ts::PagedModel*> entered_models_;
-  std::unique_ptr<jitllm::tokenizer::Tokenizer> tokenizer_;
+  std::unique_ptr<llmp::tokenizer::Tokenizer> tokenizer_;
   std::vector<Prompt> decode_;
   std::vector<Prompt> chat_;
   std::vector<std::vector<float>> fp16_results_;
@@ -447,24 +447,24 @@ Status Harness::Tokenize() {
   if (!header) {
     return std::unexpected(header.error());
   }
-  auto read = jitllm::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*header)));
+  auto read = llmp::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*header)));
   if (!read) {
     return Error(std::format("{}: {}", meta.string(), read.error().ToString()));
   }
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(read->spec));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(read->spec));
   if (!tokenizer) {
     return Error(tokenizer.error().ToString());
   }
-  tokenizer_ = std::make_unique<jitllm::tokenizer::Tokenizer>(std::move(*tokenizer));
+  tokenizer_ = std::make_unique<llmp::tokenizer::Tokenizer>(std::move(*tokenizer));
   auto text = ReadFile(o_.prompts);
   if (!text) {
     return std::unexpected(text.error());
   }
-  auto doc = jitllm::base::json::Parse(*text);
+  auto doc = llmp::base::json::Parse(*text);
   if (!doc) {
     return Error(std::format("{} is not JSON", o_.prompts.string()));
   }
-  const auto render = [&](jitllm::base::json::Value entry) -> std::expected<Prompt, std::string> {
+  const auto render = [&](llmp::base::json::Value entry) -> std::expected<Prompt, std::string> {
     Prompt p;
     const auto id = entry.find("id");
     const auto messages = entry.find("messages");
@@ -487,23 +487,23 @@ Status Harness::Tokenize() {
       }
       return p;
     }
-    jitllm::chat::Conversation c;
+    llmp::chat::Conversation c;
     // As llama-server's /apply-template rendered the baselines' prompts: its
     // default turns the template's thinking on (the generation prompt ends
     // in <think>).
     c.enable_thinking = true;
     for (std::size_t i = 0; i < messages->size(); ++i) {
       const auto content = messages->at(i).find("content");
-      c.messages.push_back({.role = jitllm::chat::Role::kUser,
+      c.messages.push_back({.role = llmp::chat::Role::kUser,
                             .content = std::string(content ? content->string() : ""),
                             .reasoning_content = std::nullopt,
                             .tool_calls = {}});
     }
-    auto rendered = jitllm::chat::RenderDeepSeekV4(c);
+    auto rendered = llmp::chat::RenderDeepSeekV4(c);
     if (!rendered) {
       return Error(rendered.error().ToString());
     }
-    std::vector<jitllm::tokenizer::TokenId> ids;
+    std::vector<llmp::tokenizer::TokenId> ids;
     if (auto r = tokenizer_->EncodeMarked(rendered->text, rendered->specials, {}, ids); !r) {
       return Error(r.error().ToString());
     }
@@ -539,7 +539,7 @@ Status Harness::Tokenize() {
   const std::filesystem::path reference =
       o_.prompts.parent_path() / "reference-deepseek-v4-flash-0731-llamacpp.json";
   if (auto ref = ReadFile(reference); ref) {
-    if (auto rdoc = jitllm::base::json::Parse(*ref); rdoc) {
+    if (auto rdoc = llmp::base::json::Parse(*ref); rdoc) {
       const auto prompts = rdoc->root().find("prompts");
       for (std::size_t i = 0; prompts && i < prompts->size(); ++i) {
         const auto entry = prompts->at(i);
@@ -1079,7 +1079,7 @@ Status Harness::Frontier() {
           return w;
         }
         const auto hash = [](std::span<const std::byte> bytes) {
-          return jitllm::base::ToHex(jitllm::base::Sha256().Update(bytes).Finish());
+          return llmp::base::ToHex(llmp::base::Sha256().Update(bytes).Finish());
         };
         results_.push_back(std::format(
             R"({{"check":"frontier","prompt":"{}","prompt_tokens":{},"inject":{},"frontier":{},"repeat":{},"prefill_s":{:.6f},"prefill_tok_s":{:.3f},"target_sha256":"{}","ring_sha256":"{}","first_sha256":"{}","continuation_rows":{},"logits_sha256":"{}"}})",
@@ -1177,7 +1177,7 @@ Status Harness::Greedy() {
     }
     std::string text;
     if (auto decoded = tokenizer_->Decode(
-            std::vector<jitllm::tokenizer::TokenId>(spec.tokens.begin(), spec.tokens.end()), {},
+            std::vector<llmp::tokenizer::TokenId>(spec.tokens.begin(), spec.tokens.end()), {},
             text);
         !decoded) {
       text = "(not decodable)";
@@ -1200,9 +1200,9 @@ Status Harness::Greedy() {
         spec.draft_seconds * per_step_ms, spec.verify_seconds * per_step_ms,
         spec.decode_seconds * per_step_ms);
     std::string escaped;
-    jitllm::base::json::AppendQuoted(text.substr(0, 160), escaped);
+    llmp::base::json::AppendQuoted(text.substr(0, 160), escaped);
     // Every token, for comparisons with other drivers of the same engine
-    // (jitllm-runtime's chat).
+    // (llmp-runtime's chat).
     const auto ids = [](const std::vector<std::int32_t>& tokens) {
       std::string out;
       for (const std::int32_t t : tokens) {
@@ -1645,7 +1645,7 @@ Status Harness::Probe() {
 }
 
 Status Harness::SwapOut() {
-  std::vector<jitllm::catalog::ExtentId> out = dsv4_.state();
+  std::vector<llmp::catalog::ExtentId> out = dsv4_.state();
   const auto weights = dsv4_.weights();
   out.insert(out.end(), weights.begin(), weights.end());
   ts::SwapReport report;
@@ -1656,9 +1656,9 @@ Status Harness::SwapOut() {
   if (auto r = fp16_.Evaluate(1, result); !r) {
     return r;
   }
-  jitllm::base::Sha256 hash;
+  llmp::base::Sha256 hash;
   hash.Update(std::as_bytes(std::span(result)));
-  const std::string digest = jitllm::base::ToHex(hash.Finish());
+  const std::string digest = llmp::base::ToHex(hash.Finish());
   if (!o_.fp16_expect.empty() && digest != o_.fp16_expect) {
     problems_.push_back(std::format("B's logits {} differ from {}", digest, o_.fp16_expect));
   }
@@ -1839,7 +1839,7 @@ Status Harness::Sampled(bool speculative) {
   if (!other_text) {
     return std::unexpected(other_text.error());
   }
-  auto other = jitllm::base::json::Parse(*other_text);
+  auto other = llmp::base::json::Parse(*other_text);
   if (!other) {
     return Error(std::format("{} is not JSON", o_.sampled.string()));
   }
@@ -1980,9 +1980,8 @@ Status Harness::Wave() {
     if (auto r = read(slot, target, ring); !r) {
       return std::unexpected(r.error());
     }
-    if (target_sha)
-      *target_sha = jitllm::base::ToHex(jitllm::base::Sha256().Update(target).Finish());
-    if (ring_sha) *ring_sha = jitllm::base::ToHex(jitllm::base::Sha256().Update(ring).Finish());
+    if (target_sha) *target_sha = llmp::base::ToHex(llmp::base::Sha256().Update(target).Finish());
+    if (ring_sha) *ring_sha = llmp::base::ToHex(llmp::base::Sha256().Update(ring).Finish());
     return Fingerprint(target) ^ (Fingerprint(ring) * 31);
   };
   const auto prefill = [&](Slot& slot, const Prompt& prompt, std::vector<float>& last) -> Status {
@@ -2448,7 +2447,7 @@ Status Harness::Wave() {
       const std::string name = std::format("{}-{}", form_name, owner);
       std::ofstream file(o_.out / (name + ".f32"), std::ios::binary | std::ios::noreplace);
       if (!file) return Error("creating unique complete wave head payload");
-      jitllm::base::Sha256 sha;
+      llmp::base::Sha256 sha;
       std::uint64_t heads = 0;
       const auto append = [&](std::span<const float> values) -> Status {
         if (values.empty() || values.size() % vocab != 0 ||
@@ -2475,7 +2474,7 @@ Status Harness::Wave() {
       results_.push_back(std::format(
           R"({{"check":"wave-payload","form":"{}","owner":{},"prompt_ids":{},"tokens":{},"verify_rows":{},"kept":{},"drafts":[{}],"heads":{},"vocab":{},"head_file":"{}.f32","head_sha256":"{}","target_sha256":"{}","draft_state_sha256":"{}","fingerprint":{}}})",
           form_name, owner, integers(prompts[owner].ids), integers(run.tokens), integers(run.rows),
-          integers(run.kept), draft_json, heads, vocab, name, jitllm::base::ToHex(sha.Finish()),
+          integers(run.kept), draft_json, heads, vocab, name, llmp::base::ToHex(sha.Finish()),
           run.target_sha, run.ring_sha, run.fingerprint));
       return {};
     };
@@ -2727,7 +2726,7 @@ Status Harness::PlanMemory() {
   if (!ran) {
     return ran;
   }
-  const std::vector<jitllm::catalog::ExtentId> state = dsv4_.state();
+  const std::vector<llmp::catalog::ExtentId> state = dsv4_.state();
   const std::uint64_t state_bytes = state.size() * (std::uint64_t{2} << 20U);
   const auto spill_start = std::chrono::steady_clock::now();
   if (auto r = node_.Evict(state); !r) {
@@ -3179,7 +3178,7 @@ Status Harness::Write() {
   std::string problems;
   for (const std::string& p : problems_) {
     std::string quoted;
-    jitllm::base::json::AppendQuoted(p, quoted);
+    llmp::base::json::AppendQuoted(p, quoted);
     problems += (problems.empty() ? "" : ",") + quoted;
   }
   const std::uint64_t drop = available_before_ - std::min(available_before_, memory_.low());
@@ -3281,7 +3280,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ok = number(o.state_budget_mib) && o.state_budget_mib > 0;
     } else if (a == "--slots") {
       ok = number(o.dsv4.wave_slots) && o.dsv4.wave_slots >= 2 &&
-           o.dsv4.wave_slots <= jitllm::engine::kMaxRequestSlots;
+           o.dsv4.wave_slots <= llmp::engine::kMaxRequestSlots;
     } else if (a == "--wave-lanes") {
       o.dsv4.wave_lanes = v == "on";
       ok = v == "on" || v == "off";
@@ -3308,7 +3307,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.out.empty() || o.check.empty() || (o.fp16.artifact.empty() != o.fp16.tokens.empty()) ||
       (slotted != (o.dsv4.wave_slots > 1))) {
     return Error(
-        "usage: jitllm_spec_runner --dsv4-artifact DIR [--drafter DIR] --prompts FILE --out DIR "
+        "usage: llmp_spec_runner --dsv4-artifact DIR [--drafter DIR] --prompts FILE --out DIR "
         "--check greedy|forced|swap|sampled-plain|sampled-spec|probe|frontier|sizing|wave|"
         "plan-memory|capacity "
         "[--tokens N] [--context N] [--max-rows N] "

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The device-execution provider on the fakes: copies run in stream order
@@ -26,14 +26,14 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::test_support::FailedCode;
-using jitllm::base::operator""_MiB;
-using jitllm::providers::Access;
-using jitllm::providers::FenceState;
-using jitllm::providers::ProviderError;
-using jitllm::providers::fake::FakeDeviceExecution;
-using jitllm::providers::fake::FakeDeviceMemory;
+using llmp::base::Bytes;
+using llmp::test_support::FailedCode;
+using llmp::base::operator""_MiB;
+using llmp::providers::Access;
+using llmp::providers::FenceState;
+using llmp::providers::ProviderError;
+using llmp::providers::fake::FakeDeviceExecution;
+using llmp::providers::fake::FakeDeviceMemory;
 
 class DeviceExecutionTest : public ::testing::Test {
  protected:
@@ -42,9 +42,9 @@ class DeviceExecutionTest : public ::testing::Test {
     for (std::uint64_t i = 0; i < 3; ++i) {
       const auto backing = memory_.Create(1, 2_MiB).value();
       ASSERT_TRUE(
-          memory_.Map(reservation_, jitllm::base::Bytes(i * (2_MiB).value()), backing).has_value());
+          memory_.Map(reservation_, llmp::base::Bytes(i * (2_MiB).value()), backing).has_value());
     }
-    ASSERT_TRUE(memory_.SetAccess(reservation_, jitllm::base::Bytes(0), 6_MiB, Access::kReadWrite)
+    ASSERT_TRUE(memory_.SetAccess(reservation_, llmp::base::Bytes(0), 6_MiB, Access::kReadWrite)
                     .has_value());
     base_ = memory_.RangeOf(reservation_).value().base;
   }
@@ -57,14 +57,14 @@ class DeviceExecutionTest : public ::testing::Test {
 
   FakeDeviceMemory memory_{2_MiB, 16_MiB};
   FakeDeviceExecution execution_;
-  jitllm::providers::ReservationId reservation_;
+  llmp::providers::ReservationId reservation_;
   std::uint64_t base_ = 0;
 };
 
 TEST_F(DeviceExecutionTest, AFenceNamesTheWorkBeforeIt) {
   std::memset(Data(0), 1, 16);
   const auto stream = execution_.CreateStream().value();
-  ASSERT_TRUE(execution_.Copy(stream, Slot(1), Slot(0), jitllm::base::Bytes(16)).has_value());
+  ASSERT_TRUE(execution_.Copy(stream, Slot(1), Slot(0), llmp::base::Bytes(16)).has_value());
   const auto fence = execution_.Record(stream).value();
   EXPECT_EQ(execution_.Query(fence).value(), FenceState::kPending);
   EXPECT_NE(Data(1)[0], std::byte{1});  // not run yet: the consumer must wait
@@ -85,10 +85,10 @@ TEST_F(DeviceExecutionTest, AStreamWaitsForAnothersFence) {
   std::memset(Data(0), 2, 16);
   const auto producer = execution_.CreateStream().value();
   const auto consumer = execution_.CreateStream().value();
-  ASSERT_TRUE(execution_.Copy(producer, Slot(1), Slot(0), jitllm::base::Bytes(16)).has_value());
+  ASSERT_TRUE(execution_.Copy(producer, Slot(1), Slot(0), llmp::base::Bytes(16)).has_value());
   const auto produced = execution_.Record(producer).value();
   ASSERT_TRUE(execution_.Wait(consumer, produced).has_value());
-  ASSERT_TRUE(execution_.Copy(consumer, Slot(2), Slot(1), jitllm::base::Bytes(16)).has_value());
+  ASSERT_TRUE(execution_.Copy(consumer, Slot(2), Slot(1), llmp::base::Bytes(16)).has_value());
   const auto consumed = execution_.Record(consumer).value();
   EXPECT_FALSE(execution_.Step(consumer));  // blocked on the producer
   execution_.Drain();
@@ -116,7 +116,7 @@ TEST_F(DeviceExecutionTest, AFaultIsNotACompletion) {
 // everything queued lies behind a released fence.
 TEST_F(DeviceExecutionTest, AStreamWithUnfencedWorkIsNotDestroyed) {
   const auto stream = execution_.CreateStream().value();
-  ASSERT_TRUE(execution_.Copy(stream, Slot(1), Slot(0), jitllm::base::Bytes(16)).has_value());
+  ASSERT_TRUE(execution_.Copy(stream, Slot(1), Slot(0), llmp::base::Bytes(16)).has_value());
   execution_.Drain();  // it ran, but nothing proved it did
   EXPECT_EQ(FailedCode(execution_.DestroyStream(stream)), ProviderError::kInvalid);
   const auto fence = execution_.Record(stream).value();
@@ -153,29 +153,29 @@ TEST_F(DeviceExecutionTest, ASubmissionHandleIsQueuedWork) {
 TEST_F(DeviceExecutionTest, SubmissionAndCompletionLanesShareTheProvider) {
   constexpr int kFences = 2000;
   const auto stream = execution_.CreateStream().value();
-  jitllm::base::BoundedQueue<jitllm::providers::FenceId> recorded(kFences, 0);
-  jitllm::base::BoundedQueue<jitllm::providers::FenceId> completed(kFences, 0);
+  llmp::base::BoundedQueue<llmp::providers::FenceId> recorded(kFences, 0);
+  llmp::base::BoundedQueue<llmp::providers::FenceId> completed(kFences, 0);
   std::jthread completion([&] {
-    while (std::optional<jitllm::providers::FenceId> fence = recorded.Pop(std::stop_token{})) {
+    while (std::optional<llmp::providers::FenceId> fence = recorded.Pop(std::stop_token{})) {
       while (execution_.Query(*fence).value_or(FenceState::kPending) != FenceState::kComplete) {
         std::this_thread::yield();
       }
-      (void)completed.TryPush(jitllm::providers::FenceId{*fence});
+      (void)completed.TryPush(llmp::providers::FenceId{*fence});
     }
     completed.Close();
   });
   for (int i = 0; i < kFences; ++i) {
-    ASSERT_TRUE(execution_.Copy(stream, Slot(1), Slot(0), jitllm::base::Bytes(64)).has_value());
+    ASSERT_TRUE(execution_.Copy(stream, Slot(1), Slot(0), llmp::base::Bytes(64)).has_value());
     ASSERT_EQ(recorded.TryPush(execution_.Record(stream).value()),
-              jitllm::base::PushResult::kAccepted);
+              llmp::base::PushResult::kAccepted);
     execution_.Drain();
-    while (std::optional<jitllm::providers::FenceId> done = completed.TryPop()) {
+    while (std::optional<llmp::providers::FenceId> done = completed.TryPop()) {
       ASSERT_TRUE(execution_.Release(*done).has_value());
     }
   }
   recorded.Close();
   completion.join();
-  while (std::optional<jitllm::providers::FenceId> done = completed.TryPop()) {
+  while (std::optional<llmp::providers::FenceId> done = completed.TryPop()) {
     ASSERT_TRUE(execution_.Release(*done).has_value());
   }
   EXPECT_EQ(execution_.fences(), 0U);

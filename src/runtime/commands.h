@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The runtime's serving commands (D-096; docs/runtime-serving.md): after the
@@ -29,8 +29,8 @@
 //               process lock (so it runs beside the service), no device
 //               context or memory, any build.
 
-#ifndef JITLLM_RUNTIME_COMMANDS_H_
-#define JITLLM_RUNTIME_COMMANDS_H_
+#ifndef LLMP_RUNTIME_COMMANDS_H_
+#define LLMP_RUNTIME_COMMANDS_H_
 
 #include <cstdint>
 #include <cstdio>
@@ -46,7 +46,7 @@
 #include "config/node_config.h"
 #include "config/storage_roles.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 // The commands' turns, texts and pairs have no count or byte caps of their
 // own (D-102): the command line's own limits bound them (Linux: an argument
@@ -183,6 +183,6 @@ extern const std::string_view kCommandUsage;
 int RunServing(const config::NodeConfig& config, const config::RuntimeRoles& roles,
                const CommandOptions& command, std::FILE* out, std::FILE* log);
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_COMMANDS_H_
+#endif  // LLMP_RUNTIME_COMMANDS_H_

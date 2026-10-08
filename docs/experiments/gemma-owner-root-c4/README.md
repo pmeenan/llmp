@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma31 C4 attention without K/V packing
@@ -75,9 +75,9 @@ symbol/source and private-binary checks before any model run. Both failures are
 retained. [Aggregate results and identities](results.json) contain completion
 records; raw heads, state, logs and telemetry remain external.
 
-Reproduce with `jitllm_gemma_owner_c4 ARTIFACT NEW_DIR 31 4 joined norm IDS_I32`,
-fixing `JITLLM_GEMMA_OWNER_C4=packed|owners` before construction. The optional
-`JITLLM_GEMMA_C4_NORMMUL=0|1` defaults off. Use the canonical 4096-byte IDs with
+Reproduce with `llmp_gemma_owner_c4 ARTIFACT NEW_DIR 31 4 joined norm IDS_I32`,
+fixing `LLMP_GEMMA_OWNER_C4=packed|owners` before construction. The optional
+`LLMP_GEMMA_C4_NORMMUL=0|1` defaults off. Use the canonical 4096-byte IDs with
 SHA `b2d7aaf6…`, installed Spark supervision, private outputs and owned reference
 retirement as described in [the protocol](PROTOCOL.md). TensorFold at entry is
 `609ca419…` / 0.6.5: its primary Gemma recipe is MLX26 only, without a matching

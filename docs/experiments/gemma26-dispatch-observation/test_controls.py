@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Small source-identity and bounded metadata-parser controls."""
 import hashlib
@@ -19,7 +19,7 @@ def desc(role, name, op, dtype, ne):
 def fixture():
     lines = []
     for gid, rows in enumerate((4, 64, 65, 66, 67), 1):
-        prefix = f'JITLLM_OBSERVE graph={gid}'
+        prefix = f'LLMP_OBSERVE graph={gid}'
         lines += [f'{prefix} kind=graph nodes=100 cuda_graph=0 update=0 router_rows={rows}',
                   f'{prefix} kind=route_candidate recognized=1' +
                   desc('node', 'ffn_moe_probs-0', 'SOFT_MAX', 'f32', f'128:{rows}:1:1'),
@@ -36,7 +36,7 @@ def fixture():
 def complete_fixture():
     lines = []
     for gid, rows in enumerate((4, 64, 65, 66, 67), 1):
-        prefix = f'JITLLM_OBSERVE graph={gid}'
+        prefix = f'LLMP_OBSERVE graph={gid}'
         lines.append(f'{prefix} kind=graph nodes=100 cuda_graph=0 update=0 router_rows={rows}')
         for lid in range(30):
             lines += [f'{prefix} kind=route_candidate recognized=1' +
@@ -136,7 +136,7 @@ class Controls(unittest.TestCase):
             analyze.observations(lines, True)
 
     def test_scalar_scale_field_cannot_capture_tensor_role(self):
-        line = ('JITLLM_OBSERVE graph=1 kind=reduction_gate matched=1 count=17 scale=1 memory=1' +
+        line = ('LLMP_OBSERVE graph=1 kind=reduction_gate matched=1 count=17 scale=1 memory=1' +
                 desc('node', 'ffn_moe_down_scaled-0', 'MUL', 'f32', '2816:8:64:1') +
                 desc('experts', 'node_56', 'MUL_MAT_ID', 'f32', '2816:8:64:1') +
                 desc('scale', 'node_59', 'GET_ROWS', 'f32', '1:8:64:1'))

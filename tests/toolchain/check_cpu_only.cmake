@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # Checks that a CPU-only build directory never saw a CUDA toolkit (D-026):
@@ -11,10 +11,10 @@ cmake_minimum_required(VERSION 4.4.3)
 if(NOT IS_DIRECTORY "${BUILD_DIR}")
   message(FATAL_ERROR "set BUILD_DIR")
 endif()
-file(STRINGS "${BUILD_DIR}/CMakeCache.txt" sdk REGEX "^JITLLM_SDK:PATH=")
-string(REGEX REPLACE "^JITLLM_SDK:PATH=" "" sdk "${sdk}")
+file(STRINGS "${BUILD_DIR}/CMakeCache.txt" sdk REGEX "^LLMP_SDK:PATH=")
+string(REGEX REPLACE "^LLMP_SDK:PATH=" "" sdk "${sdk}")
 if(NOT sdk)
-  message(FATAL_ERROR "${BUILD_DIR}/CMakeCache.txt names no JITLLM_SDK")
+  message(FATAL_ERROR "${BUILD_DIR}/CMakeCache.txt names no LLMP_SDK")
 endif()
 
 set(problems "")

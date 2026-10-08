@@ -1,11 +1,11 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # First dense reference: Qwen2.5-0.5B-Instruct FP16
 
 This bounded M0 check supports [D-051's selection](../../first-slice.md).
 It inspects a hash-verified official GGUF and tests the pinned external
-llama.cpp reference. It does not implement a jitLLM model adapter, importer,
+llama.cpp reference. It does not implement a llmpalooza model adapter, importer,
 pager or spill format. `pins.json` records identities/profile;
 `results.json` contains aggregate observations, not raw logits or traces.
 
@@ -17,7 +17,7 @@ Verified 2026-09-22 on `spark-c4e2`, GB10, driver 580.178.04, kernel
 source `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`. The harness built with
 the image's default `g++`, GNU 13.3.0 (the upstream libraries were built with
 GNU 14.2.0), C++23, explicit `-march=armv8-a`, `-O2` and warnings as errors. This uses the existing external reference's ABI/build; it does
-not change jitLLM's D-032 compiler pins.
+not change llmpalooza's D-032 compiler pins.
 
 The synthetic input is fixed in `reference.cc`: plain text, numeric/code
 fragments, accented Latin and Chinese text inside an explicitly rendered
@@ -61,7 +61,7 @@ The restored state never leaves host memory, the model weights remain loaded,
 and the source context is synchronized before destruction. Thus this proves
 only the reference's short same-process context round trip, not cross-process
 state compatibility, native host-VMM execution, weight eviction/restoration,
-pending-work cancellation, long-context correctness or jitLLM's state format.
+pending-work cancellation, long-context correctness or llmpalooza's state format.
 The observed CPU/CUDA error is not an acceptance tolerance. The fixed input,
 token-ID and full-logit hashes allow reproduction without a retained raw bundle.
 
@@ -80,7 +80,7 @@ tools inside the pinned image. CUDA, the driver and the container's standard
 runtime libraries retain the separately recorded terms in the
 [reference setup](../reference-setup/README.md). The full image contains
 additional unused packages; its digest is not a blanket permissive-license
-claim or redistribution approval. All new harness code is jitLLM-authored
+claim or redistribution approval. All new harness code is llmpalooza-authored
 Apache-2.0; no upstream implementation was incorporated into the application.
 
 The future tokenizer's generated Unicode data has an explicit provenance and
@@ -99,10 +99,10 @@ digest if absent. No Hugging Face credentials are required.
 
 ```bash
 set -euo pipefail
-FIRST_MODEL=/home/pmeenan/.local/share/jitllm/reference-models/qwen2.5-0.5b-instruct-fp16.gguf
-FIRST_SOURCE=/home/pmeenan/.local/share/jitllm/paging/llama.cpp-b29c606e28a01b1bc8c1351026a0fa6e616bf6c4
+FIRST_MODEL=/home/pmeenan/.local/share/llmp/reference-models/qwen2.5-0.5b-instruct-fp16.gguf
+FIRST_SOURCE=/home/pmeenan/.local/share/llmp/paging/llama.cpp-b29c606e28a01b1bc8c1351026a0fa6e616bf6c4
 FIRST_HARNESS=/absolute/path/to/docs/experiments/first-slice
-FIRST_RUN=/tmp/jitllm-first-slice-run
+FIRST_RUN=/tmp/llmp-first-slice-run
 FIRST_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7
 FIRST_DOCKER=(sudo -n docker)
 mkdir -m 700 "$FIRST_RUN"
@@ -180,7 +180,7 @@ them in `FIRST_RUN`, then run through the same Python container invocation:
 The inspector verifies both base files' pinned sizes and hashes and the
 GGUF's full hash before parsing, then reports the base-config cross-check;
 mismatches are reported, never repaired. It is scoped to this known artifact
-and is not jitLLM's future adversarial import validator.
+and is not llmpalooza's future adversarial import validator.
 
 The fusion control reruns the same binary with fusion disabled, keeping the
 other CUDA settings, and compares it with the selected CUDA run:
@@ -195,7 +195,7 @@ other CUDA settings, and compares it with the selected CUDA run:
 ```
 
 The recorded run kept weights, metadata and raw results under
-`/home/pmeenan/.local/share/jitllm/first-slice-20260922` on `spark`; the
+`/home/pmeenan/.local/share/llmp/first-slice-20260922` on `spark`; the
 fusion control and re-inspection are under `first-slice-fusion-20260922`.
 No persistent containers or servers were left running. Keep subsequent raw
 logits, token streams, logs and downloaded weights outside the repository.

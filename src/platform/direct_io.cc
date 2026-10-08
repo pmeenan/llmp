@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/direct_io.h"
@@ -24,7 +24,7 @@
 #include <string>
 #include <utility>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 namespace {
 
 // Filesystem magic numbers (statfs(2), linux/magic.h).
@@ -249,4 +249,4 @@ std::expected<void, int> TransferDirectFile(int fd, std::uint64_t offset,
   return {};
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

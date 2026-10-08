@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitllm contributors
+// SPDX-FileCopyrightText: 2026 llmp contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Paid synthetic Gemma expert chain, original / native unfused / native
@@ -19,13 +19,13 @@
 #include <vector>
 
 #include "base/bytes.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "providers/cuda/cuda_device_execution.h"
 
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 
 int main(int argc, char** argv) {
   std::array<int, 3> args{1, 0, 32};
@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
       round(round(down_offset + down_bytes + ggml_row_size(GGML_TYPE_Q5_1, 512), 4096),
             std::lcm(std::lcm(std::size_t{16}, ggml_type_size(GGML_TYPE_Q4_K)),
                      ggml_type_size(GGML_TYPE_Q5_1)));
-  auto opened = jitllm::providers::cuda::OpenDeviceExecution(0);
+  auto opened = llmp::providers::cuda::OpenDeviceExecution(0);
   if (!opened) return 1;
   auto execution = std::move(*opened);
   auto made = execution->CreateStream();
@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
   if (!scratch) return 1;
   auto context = kg::LaunchContext::Create(
       0, *execution, stream_id,
-      {.base = reinterpret_cast<std::uintptr_t>(scratch), .size = jitllm::base::Bytes(workspace)});
+      {.base = reinterpret_cast<std::uintptr_t>(scratch), .size = llmp::base::Bytes(workspace)});
   if (!context) return 1;
   auto launch = std::move(*context);
   auto made_arena = kg::TensorArena::Create(256);
@@ -354,7 +354,7 @@ int main(int argc, char** argv) {
                allocated_bytes);
   const auto fence = execution->Record(stream_id);
   if (!fence || cudaStreamSynchronize(stream) != cudaSuccess ||
-      execution->Query(*fence).value() != jitllm::providers::FenceState::kComplete ||
+      execution->Query(*fence).value() != llmp::providers::FenceState::kComplete ||
       !execution->Release(*fence))
     return 1;
   launch.reset();

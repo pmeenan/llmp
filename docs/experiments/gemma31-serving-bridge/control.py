@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Workstation coordinator: separate supervised B jobs, own-before-cross, stop first failure."""
 import hashlib
@@ -10,8 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = '/home/pmeenan/.local/share/jitllm/gemma31-serving-bridge'
-JOBS = '/home/pmeenan/.local/share/jitllm/jobs'
+ROOT = '/home/pmeenan/.local/share/llmp/gemma31-serving-bridge'
+JOBS = '/home/pmeenan/.local/share/llmp/jobs'
 ANALYSIS = ROOT + '/source/docs/experiments/gemma31-serving-bridge/analyze.py'
 SUPERVISOR = '/home/pmeenan/.local/bin/spark-job'
 

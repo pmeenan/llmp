@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# The llmpalooza service user and group (D-063): no login shell, home at the
+# data directory. Installed as /usr/lib/sysusers.d/llmp.conf.
+u llmp - "llmpalooza runtime" /var/lib/llmp /usr/sbin/nologin

@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 The ds4.c authors
 // SPDX-FileCopyrightText: 2026 Entrpi <entrpi@proton.me> (batched-serving fork modifications)
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 //
 // attention_tokentile_hmma_q16_kernel and its F16 Q loader are MIT: a copy
 // of Entrpi/ds4 76d51ef82a81b70b78e51a3a6ea11946286de976's token-tile HCA
 // core (ds4_cuda.cu, as the locked cuda/attention/ds4_attn_tokentile.cu
-// extracts it) that reads F16 Q rows; everything else here is jitLLM's.
+// extracts it) that reads F16 Q rows; everything else here is llmpalooza's.
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -16,7 +16,7 @@
 
 #include "kernels/ggml/dsv4_ds4_attention.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 #include "kernels/ggml/dsv4_ds4_attention_core.cuh"
@@ -312,4 +312,4 @@ int Ds4HcaCoreQ16Launch(float* out, const float* sinks, const void* q, const voi
   return static_cast<int>(cudaGetLastError());
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

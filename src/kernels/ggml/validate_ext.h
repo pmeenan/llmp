@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The operand checks of the GGML operations that DeepSeek V4 Flash (GGUF)
@@ -17,8 +17,8 @@
 // its tensor reads or writes out of bounds, so the plan that writes them
 // owns the bound, as validate.h says for the backend proof's.
 
-#ifndef JITLLM_KERNELS_GGML_VALIDATE_EXT_H_
-#define JITLLM_KERNELS_GGML_VALIDATE_EXT_H_
+#ifndef LLMP_KERNELS_GGML_VALIDATE_EXT_H_
+#define LLMP_KERNELS_GGML_VALIDATE_EXT_H_
 
 #include <cstdint>
 #include <expected>
@@ -27,7 +27,7 @@
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // The quantized weight types whose matrix-product kernels this build
 // compiles (third_party/patches/ggml/0002's MMQ instance units): DeepSeek V4
@@ -64,7 +64,7 @@ enum class QuantMulMatPath : std::uint8_t {
 // weights of a type above, F32 activations and output, and no routing hint.
 // Both kernel families quantize the activations to Q8_1 blocks and read each
 // weight row in whole 512-element steps (MATRIX_ROW_PADDING), so rows must be
-// multiples of 512 elements: GGML pads a buffer past a shorter row, jitLLM's
+// multiples of 512 elements: GGML pads a buffer past a shorter row, llmpalooza's
 // memory does not unless the binder vouches for it (MarkRowPaddingReadable;
 // a shorter row's steps then read into the next row, or into that padding
 // after the last, against activations the launcher zero-pads). Weights are
@@ -179,14 +179,14 @@ std::expected<void, KernelFailure> CheckSumRows(const ggml_tensor* node);
 // bitonic kernel, which upstream takes for rows of at most 1,024 elements
 // whose power-of-two padding fits the device's shared memory
 // (argsort.cu:255-292). Longer rows take CUB's segmented sort upstream,
-// which jitLLM's build does not have (third_party/patches/ggml/0001). The
+// which llmpalooza's build does not have (third_party/patches/ggml/0001). The
 // device's shared memory is ops_ext.h's to check.
 std::expected<void, KernelFailure> CheckArgsort(const ggml_tensor* node);
 // The bytes of shared memory the bitonic kernel asks for a row.
 std::uint64_t ArgsortSharedBytes(const ggml_tensor* node);
 
 // ggml_top_k of packed F32 rows into packed I32 indices [k, rows], k at most
-// the row length (top-k.cu:219-275), in jitLLM's build without CUB: the
+// the row length (top-k.cu:219-275), in llmpalooza's build without CUB: the
 // radix select for rows over 1,024 (each row's k indices in no particular
 // order), else the bitonic argsort's first k.
 std::expected<void, KernelFailure> CheckTopK(const ggml_tensor* node);
@@ -289,6 +289,6 @@ std::expected<void, KernelFailure> CheckDsv4HcaTokentile(const ggml_tensor* node
 // rows, 1]. Qwen-Image-2.1's denoiser attends this way.
 std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_VALIDATE_EXT_H_
+#endif  // LLMP_KERNELS_GGML_VALIDATE_EXT_H_

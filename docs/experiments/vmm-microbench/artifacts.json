@@ -5,10 +5,10 @@
   "sdk_provenance": "../toolchain-smoke/artifacts.json",
   "build": "D-032 cross profile; see README.md and build.sh",
   "files": {
-    "main.cc": "9df2793fe2c11138550e083b3a54a34b15a7d9887232e5e9b0fad7c8e4f7cc97",
-    "kernel.cu": "d08f0b1c580495ce968a355e23ec8215ca17c3034f5a6c8acaf528d9eff3ee6e",
-    "build.sh": "2b94c4b63fe4747ef515a66b563d8869207a616d4cd5930117aa383f3bf73f3d",
-    "summarize.py": "857316197d5b708bc4fef838c1c620fc3a0c1956a72ebf36d3b5e1bd05fd4104"
+    "main.cc": "3f25ca8d4da73bb1379cee25a8fd9ea7c1586c7bc7faa1b5ed7db6d921b33009",
+    "kernel.cu": "16be1a8ae20425c6ee84348280a6dfaa1a45796ff3699c24297223e812605b5a",
+    "build.sh": "b452af290eef0f22e1608d8b46d032be14b24514619da793ad60bf0902c9d5f4",
+    "summarize.py": "ef0df065df625361cd6282e3d4fd09cbf3b5e0aa6529b67d1d007dd97eaf3e53"
   },
   "binaries": {
     "vmm-microbench": "a08fda8e0ae18173f6865ec7f5249c239d5f22bdd744406262c440167ee93d8a",

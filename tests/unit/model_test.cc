@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The model layer's shape contracts (D-068) in every build profile: state
@@ -25,20 +25,20 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::base::Sha256Digest;
-using jitllm::catalog::Catalog;
-using jitllm::catalog::MemoryClass;
-using jitllm::catalog::Recovery;
-using jitllm::catalog::ResourceId;
-using jitllm::model::ComponentRole;
-using jitllm::model::ContextError;
-using jitllm::model::ModelContext;
-using jitllm::model::StateCapability;
-using jitllm::model::StateCursor;
-using jitllm::model::StateError;
-using jitllm::model::StateRepresentation;
-using jitllm::test_support::Failed;
+using llmp::base::Bytes;
+using llmp::base::Sha256Digest;
+using llmp::catalog::Catalog;
+using llmp::catalog::MemoryClass;
+using llmp::catalog::Recovery;
+using llmp::catalog::ResourceId;
+using llmp::model::ComponentRole;
+using llmp::model::ContextError;
+using llmp::model::ModelContext;
+using llmp::model::StateCapability;
+using llmp::model::StateCursor;
+using llmp::model::StateError;
+using llmp::model::StateRepresentation;
+using llmp::test_support::Failed;
 using ::testing::ElementsAre;
 using ::testing::IsEmpty;
 
@@ -166,7 +166,7 @@ TEST(ModelContextTest, SharedResourcesAreChargedOnce) {
                                         .content = {}})
                             .value();
     const std::array ranges = {
-        jitllm::catalog::Range{.extent = extent, .offset = Bytes(), .length = Bytes(bytes)}};
+        llmp::catalog::Range{.extent = extent, .offset = Bytes(), .length = Bytes(bytes)}};
     return catalog.AddResource(ranges).value();
   };
   const ResourceId embeddings = resource(400);

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """One host-VMM diagnosis session on a Spark (README.md in this directory).
 
   diag_session.py OUT_DIR --bench BIN [--repeats N] [--file F] [--dir D]
                   [--note TEXT] [--only info,micro,copy,restore,ggml]
 
-Runs jitllm_vmm_diag_bench (benchmarks/vmm_diag_bench.cc) as separate
+Runs llmp_vmm_diag_bench (benchmarks/vmm_diag_bench.cc) as separate
 processes: `info`; `micro` over every memory arm; `copy` between pairs of
 arms; `restore` (with --dir, on the SSD to read from) in place into host
 VMM and through a host-VMM landing zone copied into device VMM, at two and

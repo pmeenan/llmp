@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Authenticate native-origin capture/control fidelity; construct four-stream roots."""
 import array
@@ -19,7 +19,7 @@ for path, expected in freeze['sources'].items():
     # Replay-only target additions are outside the acquired capture executable.
     if path != 'benchmarks/CMakeLists.txt':
         assert identity((root / path).read_bytes()) == expected, path
-assert identity((root / 'build/spark-native/benchmarks/jitllm_gemma_attention_capture').read_bytes()) == freeze['binary']
+assert identity((root / 'build/spark-native/benchmarks/llmp_gemma_attention_capture').read_bytes()) == freeze['binary']
 assert freeze['policy'] == 'dense31 natural C4 context256 max_rows128 normBOTH row_invariantOFF otherflagsOFF'
 heads = (base / 'control-first/heads.f32').read_bytes()
 assert len(heads) == 4 * 262144 * 4

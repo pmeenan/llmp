@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/model_settings.h"
@@ -33,12 +33,12 @@
 #include "tokenizer/gguf.h"
 #include "tokenizer/hf.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 namespace fs = std::filesystem;
-namespace ja = jitllm::artifact;
-namespace json = jitllm::base::json;
+namespace ja = llmp::artifact;
+namespace json = llmp::base::json;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
@@ -971,7 +971,7 @@ std::string ModelSettings::Summary() const {
 int PrintSettings(const config::NodeConfig& config, bool json_output, std::FILE* out,
                   std::FILE* log) {
   const auto say = [log](std::string_view text) {
-    const std::string line = std::format("jitllm-runtime: {}\n", base::Printable(text));
+    const std::string line = std::format("llmp-runtime: {}\n", base::Printable(text));
     (void)std::fwrite(line.data(), 1, line.size(), log);
   };
   const fs::path& store = config.storage.installed;
@@ -1070,4 +1070,4 @@ int PrintSettings(const config::NodeConfig& config, bool json_output, std::FILE*
   return failed ? 1 : 0;
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

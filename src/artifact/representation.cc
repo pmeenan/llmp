@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "artifact/representation.h"
@@ -19,7 +19,7 @@
 #include "artifact/json.h"
 #include "artifact/schema.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 namespace {
 
 using schema::Fail;
@@ -425,4 +425,4 @@ bool Exl3ClosureHolds(std::span<const std::pair<std::string_view, const Represen
   return true;
 }
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact

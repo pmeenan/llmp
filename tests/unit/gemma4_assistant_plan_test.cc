@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include "engine/gemma4_assistant_plan.h"
 
@@ -14,10 +14,10 @@
 #include "gemma4_assistant_fixture.h"
 
 namespace {
-namespace en = jitllm::engine;
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
-namespace fixture = jitllm::test_support::gemma4;
+namespace en = llmp::engine;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
+namespace fixture = llmp::test_support::gemma4;
 struct Case {
   const md::Gemma4Profile& target = md::Gemma4_26BA4B();
   const md::Gemma4AssistantProfile& profile = md::Gemma4Assistant26();
@@ -42,10 +42,10 @@ TEST(Gemma4AssistantPlan, FrozenMasksSeparateQueryEndpointAndPhysicalRetention) 
   for (const auto prefix : {1U, 1023U, 1024U, 1025U, 2561U}) {
     Case c(prefix, true);
     const auto bytes = en::Gemma4AssistantSourceBytes(c.graph, true);
-    ASSERT_TRUE(bytes) << *jitllm::test_support::Failed(bytes);
+    ASSERT_TRUE(bytes) << *llmp::test_support::Failed(bytes);
     const std::array<en::Gemma4AssistantInput, 2> inputs{{{0, prefix, 2}, {1, 1025, 3}}};
     auto sources = en::Gemma4AssistantSources(c.graph, inputs, {}, true, *bytes);
-    ASSERT_TRUE(sources) << *jitllm::test_support::Failed(sources);
+    ASSERT_TRUE(sources) << *llmp::test_support::Failed(sources);
     EXPECT_EQ(sources->positions,
               (std::vector<std::int32_t>{static_cast<std::int32_t>(prefix), 1025}));
     for (std::size_t owner = 0; owner < inputs.size(); ++owner) {

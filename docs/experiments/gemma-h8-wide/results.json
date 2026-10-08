@@ -394,7 +394,7 @@
           "sha256": "6b31c1a5f9f108f9f4854f4616d01d9abb3522561932e74c017d9234ed52f777",
           "bytes": 16137304
         },
-        "build/spark-native/jitllm-receipt.json": {
+        "build/spark-native/llmp-receipt.json": {
           "sha256": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89",
           "bytes": 6787
         }
@@ -403,7 +403,7 @@
     "model1": {
       "build_sha256": "5cfb6a9cc8df68638edfcb564070710119b0d9b98e5902b6d5af62417ac12ab2",
       "paths": {
-        "build/spark-native/benchmarks/jitllm_gemma3_wide_probe": {
+        "build/spark-native/benchmarks/llmp_gemma3_wide_probe": {
           "sha256": "6398a1a572b435b3dfa16914e4782548a95eb5dd30fadbe72fe108e324e837f2",
           "bytes": 146048400
         },
@@ -415,7 +415,7 @@
           "sha256": "1b6e3b96cdc26442e46a42d096df671bf90eebe94a9b371aa47d3a3079f07ca0",
           "bytes": 140916768
         },
-        "build/spark-native/jitllm-receipt.json": {
+        "build/spark-native/llmp-receipt.json": {
           "sha256": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89",
           "bytes": 6787
         }
@@ -427,11 +427,11 @@
     "performance1": {
       "build_sha256": "957dbd1c399e76d1641b41c7cc2923f493d31938c2e3ff9a2335b62dd51783b1",
       "paths": {
-        "build/spark-native/benchmarks/jitllm_gemma3_wide_cycle": {
+        "build/spark-native/benchmarks/llmp_gemma3_wide_cycle": {
           "sha256": "b079bb8ba9f34f3970427ec4dd0ec6ff38042b7800efbe6824799d2547ac1c69",
           "bytes": 145748720
         },
-        "build/spark-native/jitllm-receipt.json": {
+        "build/spark-native/llmp-receipt.json": {
           "sha256": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89",
           "bytes": 6787
         }

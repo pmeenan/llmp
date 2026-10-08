@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Fixed Gemma31 C2 admission/own/strict comparison; no empirical allowance."""
 import array
@@ -154,7 +154,7 @@ def admit(root, engine, arm, s, admission):
         assert retired['container_absent_after_checked_docker_query'] is True
         assert retired['owner_label'] == 'gemma26-late-moe'
         assert re.fullmatch('[0-9a-f]{64}', retired['cid'])
-        assert retired['name'] == 'jitllm-gemma26-late-moe-release-c2-' + arm
+        assert retired['name'] == 'llmp-gemma26-late-moe-release-c2-' + arm
     assert all(f[k] == v for k, v in common.items()) and float(f['seconds']) > 0
     records = {}
     for line in lines:

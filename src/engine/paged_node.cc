@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/paged_node.h"
@@ -24,11 +24,11 @@
 #include "providers/device_runtime.h"
 #include "providers/direct_reader.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 namespace {
 
-namespace sc = jitllm::scheduler;
+namespace sc = llmp::scheduler;
 using base::Bytes;
 using catalog::ExtentId;
 using catalog::MemoryClass;
@@ -1893,4 +1893,4 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
   return Joined(problems);
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

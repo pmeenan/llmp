@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // M3's bounded inference routes (D-097, D-100; docs/runtime-serving.md):
@@ -24,8 +24,8 @@
 // ignored (the owner's 2026-09-28 amendment of D-097), and its name, never
 // its value, is counted in IgnoredFields.
 
-#ifndef JITLLM_RUNTIME_API_H_
-#define JITLLM_RUNTIME_API_H_
+#ifndef LLMP_RUNTIME_API_H_
+#define LLMP_RUNTIME_API_H_
 
 #include <array>
 #include <cstddef>
@@ -44,7 +44,7 @@
 #include "config/node_config.h"
 #include "runtime/intake_limits.h"
 
-namespace jitllm::runtime::api {
+namespace llmp::runtime::api {
 
 // The intake bounds (client-api-baseline.md#shared-correctness-and-limits);
 // the resource each protects is in runtime-serving.md. Only real resources
@@ -368,6 +368,6 @@ class OutputText {
   bool stopped_ = false;
 };
 
-}  // namespace jitllm::runtime::api
+}  // namespace llmp::runtime::api
 
-#endif  // JITLLM_RUNTIME_API_H_
+#endif  // LLMP_RUNTIME_API_H_

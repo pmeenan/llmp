@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/dsv4_outa.h"
@@ -7,10 +7,10 @@
 #include <cstddef>
 #include <expected>
 
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 bool Dsv4OutAFits(const ggml_tensor* w, const ggml_tensor* x, const ggml_tensor* pos,
                   const Dsv4OutAParams& p) {
@@ -32,19 +32,18 @@ bool Dsv4OutAFits(const ggml_tensor* w, const ggml_tensor* x, const ggml_tensor*
 }
 
 Dsv4OutAParams Dsv4OutAParamsOf(const ggml_tensor* node) {
-  return {.original_context = JitllmOpInt(node, 0),
-          .base = JitllmOpFloat(node, 1),
-          .scale = JitllmOpFloat(node, 2),
-          .extension = JitllmOpFloat(node, 3),
-          .attention = JitllmOpFloat(node, 4),
-          .beta_fast = JitllmOpFloat(node, 5),
-          .beta_slow = JitllmOpFloat(node, 6)};
+  return {.original_context = LlmpOpInt(node, 0),
+          .base = LlmpOpFloat(node, 1),
+          .scale = LlmpOpFloat(node, 2),
+          .extension = LlmpOpFloat(node, 3),
+          .attention = LlmpOpFloat(node, 4),
+          .beta_fast = LlmpOpFloat(node, 5),
+          .beta_slow = LlmpOpFloat(node, 6)};
 }
 
 std::expected<void, KernelFailure> CheckDsv4OutA(const ggml_tensor* node) {
-  if (JitllmOpOf(node) != JitllmOp::kDsv4OutA || !detail::Bound(node) ||
-      !detail::Bound(node->src[0]) || !detail::Bound(node->src[1]) ||
-      !detail::Bound(node->src[2])) {
+  if (LlmpOpOf(node) != LlmpOp::kDsv4OutA || !detail::Bound(node) || !detail::Bound(node->src[0]) ||
+      !detail::Bound(node->src[1]) || !detail::Bound(node->src[2])) {
     return detail::Rejected("not a bound DeepSeek output-A node");
   }
   for (std::size_t i = 3; i < GGML_MAX_SRC; ++i) {
@@ -67,4 +66,4 @@ std::expected<void, KernelFailure> CheckDsv4OutA(const ggml_tensor* node) {
   return {};
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

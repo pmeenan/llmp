@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <fcntl.h>
@@ -30,8 +30,8 @@
 #include "runtime/serving.h"
 
 namespace {
-namespace rt = jitllm::runtime;
-namespace en = jitllm::engine;
+namespace rt = llmp::runtime;
+namespace en = llmp::engine;
 namespace fs = std::filesystem;
 using en::support::Error;
 constexpr std::uint32_t kVocab = 262144, kPrefix = 8063, kRows = 8192, kOutputs = 129;
@@ -53,8 +53,8 @@ rt::Status Write(const fs::path& path, std::span<const T> values) {
   return file ? rt::Status{} : Error("complete proof publication failed");
 }
 struct ServingProof {
-  jitllm::config::NodeConfig config;
-  jitllm::config::RuntimeRoles roles;
+  llmp::config::NodeConfig config;
+  llmp::config::RuntimeRoles roles;
   rt::ServingOptions options;
   std::unique_ptr<rt::Server> server;
   std::vector<std::int32_t> input;
@@ -68,10 +68,10 @@ struct ServingProof {
   rt::Llm* model = nullptr;
   en::Gemma4Runner* runner = nullptr;
   void* pinned = nullptr;
-  std::vector<jitllm::catalog::ExtentId> staging;
+  std::vector<llmp::catalog::ExtentId> staging;
   std::uint32_t owners = 0;
   bool publication_failed = false;
-  // JITLLM_BENCH_PHASES: each cycle's runner phases and node step times,
+  // LLMP_BENCH_PHASES: each cycle's runner phases and node step times,
   // split at the end of prefill.
   bool phases = false;
   void PrintPhases(std::string_view phase, const char* part) {
@@ -307,9 +307,8 @@ struct ServingProof {
   }
 };
 
-int ProofServing(const jitllm::config::NodeConfig& config,
-                 const jitllm::config::RuntimeRoles& roles, const rt::CommandOptions&, std::FILE*,
-                 std::FILE*) {
+int ProofServing(const llmp::config::NodeConfig& config, const llmp::config::RuntimeRoles& roles,
+                 const rt::CommandOptions&, std::FILE*, std::FILE*) {
   auto lifetime = std::make_unique<ServingProof>();
   lifetime->config = config;
   lifetime->roles = roles;
@@ -378,8 +377,8 @@ int ProofServing(const jitllm::config::NodeConfig& config,
       if (auto r = phase("first", true, false); !r) return r;
       if (auto r = phase("repeat", true, false); !r) return r;
     } else if (proof->mode == "cycles") {
-      // JITLLM_BENCH_PHASES: the runner's per-phase seconds for each cycle.
-      lifetime->phases = std::getenv("JITLLM_BENCH_PHASES") != nullptr;
+      // LLMP_BENCH_PHASES: the runner's per-phase seconds for each cycle.
+      lifetime->phases = std::getenv("LLMP_BENCH_PHASES") != nullptr;
       if (lifetime->phases) {
         lifetime->runner->EnablePhaseAccounting();
         (void)lifetime->runner->TakePhaseAccounting();
@@ -406,7 +405,7 @@ int ProofServing(const jitllm::config::NodeConfig& config,
     if (auto r = lifetime->server->node().FreePinned(lifetime->pinned); !r) return r;
     lifetime->pinned = nullptr;
     std::vector<std::int32_t>().swap(lifetime->input);
-    std::vector<jitllm::catalog::ExtentId>().swap(lifetime->staging);
+    std::vector<llmp::catalog::ExtentId>().swap(lifetime->staging);
     for (std::uint32_t owner = 0; owner < proof->owners; ++owner) {
       std::vector<float>().swap(lifetime->frontier[owner]);
       std::vector<float>().swap(lifetime->final_head[owner]);
@@ -431,40 +430,40 @@ int ProofServing(const jitllm::config::NodeConfig& config,
 // Before this program's other initializers: non-dumpable early, in case
 // something faults before main() installs the handlers. Shared libraries'
 // initializers (the NVIDIA driver's libcuda.so.1) and the loader still run
-// before it. Global constructors in jitLLM do no work that can fault
+// before it. Global constructors in llmpalooza do no work that can fault
 // (architecture.md, layers: nothing at static initialization).
 // A failure here is repeated, and reported, by InstallCrashPolicy.
 [[gnu::constructor(101)]] void NonDumpableFromTheStart() {
-  if (!jitllm::platform::MarkNonDumpable()) {
+  if (!llmp::platform::MarkNonDumpable()) {
     return;
   }
 }
 
-int ProductionServing(const jitllm::config::NodeConfig& config,
-                      const jitllm::config::RuntimeRoles& roles,
-                      const jitllm::runtime::CommandOptions& command, std::FILE* out,
+int ProductionServing(const llmp::config::NodeConfig& config,
+                      const llmp::config::RuntimeRoles& roles,
+                      const llmp::runtime::CommandOptions& command, std::FILE* out,
                       std::FILE* log) {
-  if (command.command == jitllm::runtime::Command::kService)
-    return jitllm::runtime::RunService(config, roles, log, false, false, true);
+  if (command.command == llmp::runtime::Command::kService)
+    return llmp::runtime::RunService(config, roles, log, false, false, true);
   // Candidate only: the production executable keeps this control false.
   auto selected = command;
   selected.serving.gemma31_production = true;
-  return jitllm::runtime::RunServing(config, roles, selected, out, log);
+  return llmp::runtime::RunServing(config, roles, selected, out, log);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
   // First: a crash leaves no core image (D-014).
-  if (auto policy = jitllm::platform::InstallCrashPolicy("jitllm-runtime"); !policy) {
-    (void)std::fprintf(stderr, "jitllm-runtime: %s\n", policy.error().c_str());
-    return jitllm::runtime::kExitFailure;
+  if (auto policy = llmp::platform::InstallCrashPolicy("llmp-runtime"); !policy) {
+    (void)std::fprintf(stderr, "llmp-runtime: %s\n", policy.error().c_str());
+    return llmp::runtime::kExitFailure;
   }
   // A closed standard descriptor would be taken by the next file opened.
   for (int fd = 0; fd <= 2; ++fd) {
     if (::fcntl(fd, F_GETFD) == -1 && errno == EBADF &&
         ::open("/dev/null", O_RDWR | O_NOCTTY) != fd) {
-      return jitllm::runtime::kExitFailure;
+      return llmp::runtime::kExitFailure;
     }
   }
   // The stop signals are waited for, not handled; blocked before any
@@ -499,5 +498,5 @@ int main(int argc, char** argv) {
   }
   const std::span<char*> all(argv, static_cast<std::size_t>(argc));
   const std::vector<std::string_view> args(all.begin() + (argc > 0 ? 1 : 0), all.end());
-  return jitllm::runtime::Run(args, stderr, &ProductionServing);
+  return llmp::runtime::Run(args, stderr, &ProductionServing);
 }

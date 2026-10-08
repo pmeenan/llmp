@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A small strict JSON reader for the retained-backing replay's inputs: the
@@ -9,8 +9,8 @@
 // and null. Duplicate keys, fractions, exponents and trailing bytes are
 // errors.
 
-#ifndef JITLLM_BENCHMARKS_RETAINED_BACKING_JSON_H_
-#define JITLLM_BENCHMARKS_RETAINED_BACKING_JSON_H_
+#ifndef LLMP_BENCHMARKS_RETAINED_BACKING_JSON_H_
+#define LLMP_BENCHMARKS_RETAINED_BACKING_JSON_H_
 
 #include <cstdint>
 #include <expected>
@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::rb {
+namespace llmp::rb {
 
 class Json {
  public:
@@ -54,6 +54,6 @@ class Json {
   std::vector<std::pair<std::string, Json>> members_;
 };
 
-}  // namespace jitllm::rb
+}  // namespace llmp::rb
 
-#endif  // JITLLM_BENCHMARKS_RETAINED_BACKING_JSON_H_
+#endif  // LLMP_BENCHMARKS_RETAINED_BACKING_JSON_H_

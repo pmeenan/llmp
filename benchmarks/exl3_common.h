@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // What the backend proof's native EXL3 model harnesses share
@@ -6,8 +6,8 @@
 // rungs 4 and 5's paged run (exl3_paged.cc). Every profile builds this;
 // nothing here launches.
 
-#ifndef JITLLM_BENCHMARKS_EXL3_COMMON_H_
-#define JITLLM_BENCHMARKS_EXL3_COMMON_H_
+#ifndef LLMP_BENCHMARKS_EXL3_COMMON_H_
+#define LLMP_BENCHMARKS_EXL3_COMMON_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -20,7 +20,7 @@
 
 #include "model/qwen2_exl3.h"
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 
 // The trajectories' single-token steps after each prefix, and the
 // reference's cache (exl3_heldout.py SUFFIX and CAPACITY).
@@ -52,6 +52,6 @@ std::expected<model::Exl3LaunchTable, std::string> LoadTable(const std::filesyst
 // BF16 to F32, exactly.
 float Bf16ToFloat(std::uint16_t value);
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks
 
-#endif  // JITLLM_BENCHMARKS_EXL3_COMMON_H_
+#endif  // LLMP_BENCHMARKS_EXL3_COMMON_H_

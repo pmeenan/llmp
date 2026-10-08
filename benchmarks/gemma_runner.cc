@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Exact integer-token native Gemma control. No implicit BOS/template.
@@ -23,7 +23,7 @@
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 using en::support::Error;
 std::expected<std::uint32_t, std::string> Number(std::string_view text) {
   std::uint32_t value = 0;
@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
     const auto budget =
         fixed + runner.weights().size() * en::kPagedExtent + 2 * node.StateCapacity();
     node.SetHostFloor(runner.plan_floor_bytes() + runner.host_input_bytes());
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();
@@ -134,7 +134,7 @@ int main(int argc, char** argv) {
               if (std::filesystem::file_size(path, size_error) != count || size_error)
                 return Error("prefix checkpoint length differs");
             }
-            std::vector<jitllm::catalog::ExtentId> staging;
+            std::vector<llmp::catalog::ExtentId> staging;
             auto saved = node.Pinned(count, 0, staging);
             if (!saved) return Error(saved.error());
             if (restore) {

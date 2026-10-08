@@ -1,15 +1,15 @@
 {
-  "name": "jitLLM reference",
+  "name": "llmpalooza reference",
   "build": {
     "dockerfile": "Dockerfile",
     "context": ".."
   },
   "runArgs": ["--platform=linux/amd64"],
   "remoteUser": "ubuntu",
-  "workspaceFolder": "/workspaces/jitLLM",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/jitLLM,type=bind",
+  "workspaceFolder": "/workspaces/llmp",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/llmp,type=bind",
   "mounts": [
-    "source=jitllm-sdk,target=/home/ubuntu/.local/share/jitllm,type=volume",
-    "source=jitllm-cache,target=/home/ubuntu/.cache/jitllm,type=volume"
+    "source=llmp-sdk,target=/home/ubuntu/.local/share/llmp,type=volume",
+    "source=llmp-cache,target=/home/ubuntu/.cache/llmp,type=volume"
   ]
 }

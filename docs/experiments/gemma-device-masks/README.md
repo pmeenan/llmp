@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma device causal and ring masks
@@ -11,7 +11,7 @@ optimized serving batches, paging or checkpoint support.
 
 ## Primitive and source contract
 
-The registered `jitllm.gemma4.mask` primitive is a native `kFill` operation,
+The registered `llmp.gemma4.mask` primitive is a native `kFill` operation,
 with zero scratch. One thread writes one output element, either half zero or
 negative infinity (`0xfc00`). Every padded query row is written and remains
 negative infinity; no position is read for a padded query. Cells are padded

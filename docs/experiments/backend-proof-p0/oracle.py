@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """FP64 teacher-forced forward pass of an EXL3 fixture: the accuracy oracle.
 
 External reference tooling for the backend proof's P0; it does not implement
-jitLLM inference. Qwen2.5-0.5B's computation (config.json: 24 layers, hidden
+llmpalooza inference. Qwen2.5-0.5B's computation (config.json: 24 layers, hidden
 896, 14 query and 2 KV heads of 64, MLP 4,864, RMSNorm eps 1e-6, NEOX RoPE
 with theta 1e6, SiLU-gated MLP, biases on Q/K/V) over the exported weights
 (exl3_export.py), entirely in FP64 on the CPU. Each linear's original-basis

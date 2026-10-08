@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // External llama.cpp reference harness for the backend proof's P0 controls
-// (docs/backend-proof.md); it does not implement jitLLM inference. It builds
+// (docs/backend-proof.md); it does not implement llmpalooza inference. It builds
 // against the pinned reference image's llama.cpp and against the toolchain
-// bridge (the same source built with jitLLM's SDK).
+// bridge (the same source built with llmpalooza's SDK).
 //
 //   fp16_reference MODEL OUTPUT_DIRECTORY cpu|cuda control
 //   fp16_reference MODEL OUTPUT_DIRECTORY cpu|cuda heldout IDS_FILE

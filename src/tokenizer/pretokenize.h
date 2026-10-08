@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Pre-tokenizers: split normalized text into the pieces BPE merges within,
@@ -32,15 +32,15 @@
 // uses Oniguruma, and both leave 'ſ (long s) and every other non-ASCII
 // letter unmatched (the corpus checks it).
 
-#ifndef JITLLM_TOKENIZER_PRETOKENIZE_H_
-#define JITLLM_TOKENIZER_PRETOKENIZE_H_
+#ifndef LLMP_TOKENIZER_PRETOKENIZE_H_
+#define LLMP_TOKENIZER_PRETOKENIZE_H_
 
 #include <cstdint>
 #include <span>
 #include <string_view>
 #include <vector>
 
-namespace jitllm::tokenizer {
+namespace llmp::tokenizer {
 
 enum class PreTokenizer : std::uint8_t { kQwen2, kQwen35, kDeepSeekV3, kGemma4, kSentencePiece };
 
@@ -51,6 +51,6 @@ std::string_view PreTokenizerName(PreTokenizer p);
 void PreTokenize(PreTokenizer p, std::span<const char32_t> text,
                  std::vector<std::uint32_t>& lengths);
 
-}  // namespace jitllm::tokenizer
+}  // namespace llmp::tokenizer
 
-#endif  // JITLLM_TOKENIZER_PRETOKENIZE_H_
+#endif  // LLMP_TOKENIZER_PRETOKENIZE_H_

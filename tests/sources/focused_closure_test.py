@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """No-compile controls for explicit focused Ninja dependency auditing."""
 import argparse
@@ -108,7 +108,7 @@ class FocusedClosureTest(unittest.TestCase):
         selected, unused = self.root / 'selected', self.root / 'unused'
         selected.mkdir()
         unused.mkdir()
-        (self.root / 'jitllm-receipt.json').write_text(json.dumps({'components': [
+        (self.root / 'llmp-receipt.json').write_text(json.dumps({'components': [
             {'id': 'selected', 'source': str(selected), 'source_tree': 'a' * 64},
             {'id': 'unused', 'source': str(unused), 'source_tree': 'b' * 64},
         ]}))

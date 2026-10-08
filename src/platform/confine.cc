@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/confine.h"
@@ -24,7 +24,7 @@
 
 #include "platform/crash_policy.h"
 
-namespace jitllm::platform {
+namespace llmp::platform {
 namespace {
 
 std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurrency-mt-unsafe)
@@ -176,4 +176,4 @@ std::expected<void, std::string> ConfineSelf(const Confinement& confinement) {
   return {};
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DSpark: speculative decoding for DeepSeek V4 Flash (M3)
@@ -56,7 +56,7 @@ beside the target's by the same runner (`src/engine/dsv4_runner.h`, in
 
 **Verify** (D-092). A verify chunk of k + 1 rows (anchor and drafts) runs a
 row-invariant plan, so each row computes exactly what its one-row decode
-step computes: a jitLLM copy of GGML's MMVQ with the one-column launch
+step computes: a llmpalooza copy of GGML's MMVQ with the one-column launch
 configuration for every column (`mmvq_rows.cu`; Q8_0, MXFP4, Q4_K, Q5_K,
 Q6_K, IQ2_XS, IQ3_XXS), per-token expert launches over grid z, MMVF for
 float products up to 8 columns, flash attention per query row, and drafts
@@ -97,11 +97,11 @@ from the plain stream, so it is reproducible per seed.
 
 ## Correctness
 
-The harness is `jitllm_spec_runner` (`benchmarks/spec_runner.cc`) on
+The harness is `llmp_spec_runner` (`benchmarks/spec_runner.cc`) on
 `spark-b` (GB10, driver 580.178.04), DeepSeek artifact `8a355bfb…`,
 drafter artifact `dd2d3f9c…`, context 8,704, graphs on. Prompts are
 [prompts.json](../fast-swap/prompts.json)'s: `prose` and `code` for
-decode, and the six chat prompts, all rendered by jitLLM's DeepSeek
+decode, and the six chat prompts, all rendered by llmpalooza's DeepSeek
 renderer with thinking on, which is what llama-server's template gives by
 default (the chat prompts' token IDs equal the recorded llama.cpp
 reference's, checked at each run). Every check compares against plain one-token
@@ -139,10 +139,10 @@ distribution and handles greedy and filtered drafts.
 `spark-b`, a clean run (no other GPU process and load under 3 throughout,
 sampled every 5 s), 256 tokens, the same prompts and settings as the
 llama.cpp baseline (DSpark n-max 3, [baselines](../fast-swap/baselines.md);
-llama.cpp's numbers are medians of three from that page). jitLLM's
+llama.cpp's numbers are medians of three from that page). Llmpalooza's
 speculative rates are three repeats, median in bold.
 
-| Measure | jitLLM | llama.cpp (UD-Q2_K_XL, DSpark Q8_0) | Ratio |
+| Measure | llmpalooza | llama.cpp (UD-Q2_K_XL, DSpark Q8_0) | Ratio |
 | --- | ---: | ---: | ---: |
 | Decode, `prose`, tok/s | 26.82 / **27.94** / 28.09 | 30.80 | 0.91 (repeats 0.87–0.91) |
 | Decode, `code`, tok/s | 29.33 / 29.25 / **29.33** | 31.94 | 0.92 (repeats 0.92) |
@@ -273,7 +273,7 @@ Made under the owner's overnight delegation, for review with the slice:
   expert is read once with every column's arithmetic unchanged, whose gain
   depends on how often neighbouring tokens share experts.
 - **A harness, not the runtime.** Speculation runs in
-  `jitllm_spec_runner` on the test harness's paged node, like the swap
+  `llmp_spec_runner` on the test harness's paged node, like the swap
   runner; the runtime process and the chat route take it with them.
 - **Prefill with the injection** equals plain prefill bit for bit but is
   not timed here (llama.cpp's drafter cost it no measurable prefill).

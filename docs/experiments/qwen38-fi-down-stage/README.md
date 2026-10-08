@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 literal FlashInfer down stage (2026-09-30)
@@ -66,7 +66,7 @@ KV, F32 recurrent state, target, drafter and serving defaults are unchanged.
 
 ## Capture and controls
 
-`jitllm_qwen38_spec --check routed-down` is benchmark-only, default off.
+`llmp_qwen38_spec --check routed-down` is benchmark-only, default off.
 It retains existing graph views through graph end, adding no arithmetic
 nodes. A mask selects at most three layers and participates in the plan
 cache key. It takes fast CUTLASS Verify rows1–4; the harness limits fixed
@@ -178,13 +178,13 @@ notice-only addition of NVIDIA2020–2025 changes no numerical source bytes.
 Capture command, with the paths rooted at the identities above:
 
 ```sh
-jitllm_qwen38_spec --qwen38-artifact TARGET --drafter SELECTED \
+llmp_qwen38_spec --qwen38-artifact TARGET --drafter SELECTED \
   --tokenizer tokenizer.json --prompts 128k.json --only qwen3.8-128k \
   --context 131072 --prefill-chunk 4096 --check routed-down --tokens 4 \
   --draft 3 --draft-vocab 47172 --adaptive-depth off \
   --runtime-prefill on --graphs on --out capture-selected
-python3 replay/jitllm-fi-replay-build.py
-python3 replay/jitllm-fi-replay-run.py
+python3 replay/llmp-fi-replay-build.py
+python3 replay/llmp-fi-replay-run.py
 ```
 
 The exact absolute commands and all operand hashes live in the named

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Qwen3.8's n-gram table paged by rows (engine/ple_rows.h): each
@@ -40,13 +40,13 @@
 
 namespace {
 
-using jitllm::engine::kPleBlock;
-using jitllm::engine::PlanPleRows;
-using jitllm::engine::PleLandingBound;
-using jitllm::engine::PleRowPlan;
-using jitllm::engine::PleTable;
-using jitllm::engine::ReadPleRows;
-using jitllm::kernels::paging::GatherPleRows;
+using llmp::engine::kPleBlock;
+using llmp::engine::PlanPleRows;
+using llmp::engine::PleLandingBound;
+using llmp::engine::PleRowPlan;
+using llmp::engine::PleTable;
+using llmp::engine::ReadPleRows;
+using llmp::kernels::paging::GatherPleRows;
 
 constexpr std::uint64_t kChunk = std::uint64_t{2} << 20U;
 
@@ -135,7 +135,7 @@ TEST(PleRowsTest, EachLookupsSlotHoldsItsRowOnceTheReadsLand) {
   }
   const auto plan = PlanPleRows(table, lookups, PleLandingBound(lookups.size()), lookups.size());
   ASSERT_TRUE(plan.has_value()) << plan.error();
-  CheckReads(*plan, table, jitllm::engine::kPleMaxRead);
+  CheckReads(*plan, table, llmp::engine::kPleMaxRead);
   const std::set<std::int32_t> distinct(lookups.begin(), lookups.end());
   EXPECT_EQ(plan->sources.size(), distinct.size());
   EXPECT_EQ(plan->useful_bytes, distinct.size() * 90);
@@ -178,8 +178,8 @@ TEST(PleRowsTest, RowsWhoseBlocksTouchShareARead) {
   }
   const auto merged = PlanPleRows(table, dense, PleLandingBound(dense.size()), dense.size());
   ASSERT_TRUE(merged.has_value()) << merged.error();
-  CheckReads(*merged, table, jitllm::engine::kPleMaxRead);
-  EXPECT_EQ(merged->reads.front().length, jitllm::engine::kPleMaxRead);
+  CheckReads(*merged, table, llmp::engine::kPleMaxRead);
+  EXPECT_EQ(merged->reads.front().length, llmp::engine::kPleMaxRead);
   EXPECT_GT(merged->reads.size(), 1U);
   // A smaller limit makes more reads over the same rows.
   const auto small =
@@ -210,8 +210,8 @@ TEST(PleRowsTest, RowsOutsideTheTableATooSmallLandingAndTooManyRowsAreRefused) {
 // its completion proves it); a short read or an error refuses the chunk's
 // rows, and only after every read in flight has completed.
 TEST(PleRowsTest, UnknownSubmissionsAreWaitedForAndShortOrFailedReadsRefuseAfterDraining) {
-  using jitllm::providers::Submission;
-  using jitllm::providers::fake::FakeStorage;
+  using llmp::providers::Submission;
+  using llmp::providers::fake::FakeStorage;
   PleTable table = Table();
   const auto file = Pattern(table.file_bytes);
   // Rows far enough apart that each is a read of its own.
@@ -257,7 +257,7 @@ TEST(PleRowsTest, UnknownSubmissionsAreWaitedForAndShortOrFailedReadsRefuseAfter
 // On a GB10: a real file read through io_uring into pinned memory, the rows
 // gathered by the kernel into device memory.
 TEST(CudaPleRowsTest, ReadsLandAndTheGatherPutsEveryRowInItsSlot) {
-  const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   const std::filesystem::path directory = scratch != nullptr
                                               ? std::filesystem::path(scratch)
                                               : std::filesystem::path(::testing::TempDir());
@@ -282,7 +282,7 @@ TEST(CudaPleRowsTest, ReadsLandAndTheGatherPutsEveryRowInItsSlot) {
   const std::uint64_t capacity = PleLandingBound(lookups.size());
   const auto plan = PlanPleRows(table, lookups, capacity, lookups.size());
   ASSERT_TRUE(plan.has_value()) << plan.error();
-  auto ring = jitllm::providers::UringStorage::Create(8);
+  auto ring = llmp::providers::UringStorage::Create(8);
   ASSERT_TRUE(ring.has_value());
   void* landing = nullptr;
   void* sources = nullptr;

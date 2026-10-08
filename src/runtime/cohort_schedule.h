@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Which unit a cooperative chat cohort runs next (docs/runtime-serving.md,
@@ -21,15 +21,15 @@
 //   by a unit, not a clock: a DeepSeek chunk of 4,096 rows takes about 4.4
 //   s, a Qwen3.8 one under 2 s.
 
-#ifndef JITLLM_RUNTIME_COHORT_SCHEDULE_H_
-#define JITLLM_RUNTIME_COHORT_SCHEDULE_H_
+#ifndef LLMP_RUNTIME_COHORT_SCHEDULE_H_
+#define LLMP_RUNTIME_COHORT_SCHEDULE_H_
 
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 // A prompt waits for at most this many other prompt units.
 inline constexpr std::uint32_t kPromptAgeUnits = 12;
@@ -59,6 +59,6 @@ struct ScheduleChoice {
 // prompt when there is none.
 ScheduleChoice NextCohortUnit(std::span<const ScheduledMember> members);
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_COHORT_SCHEDULE_H_
+#endif  // LLMP_RUNTIME_COHORT_SCHEDULE_H_

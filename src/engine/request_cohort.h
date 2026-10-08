@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A runner's independent request states (docs/engine.md, "Independent
@@ -24,8 +24,8 @@
 //
 // Nothing here dispatches work or owns memory; the runner's slots do.
 
-#ifndef JITLLM_ENGINE_REQUEST_COHORT_H_
-#define JITLLM_ENGINE_REQUEST_COHORT_H_
+#ifndef LLMP_ENGINE_REQUEST_COHORT_H_
+#define LLMP_ENGINE_REQUEST_COHORT_H_
 
 #include <array>
 #include <cstddef>
@@ -39,7 +39,7 @@
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 // The most request slots a runner keeps: a model's configured cap
 // (`[models.<name>] max_slots`, docs/runtime-serving.md#request-slots) is at
@@ -119,6 +119,6 @@ class RequestCohort {
   bool faulted_ = false;
 };
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_REQUEST_COHORT_H_
+#endif  // LLMP_ENGINE_REQUEST_COHORT_H_

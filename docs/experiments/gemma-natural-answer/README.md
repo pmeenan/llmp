@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma candidate natural answers
@@ -11,7 +11,7 @@ Root and the experiment author read all complete explanation answers. Each has e
 
 ## Actual recipe
 
-The private `jitllm-runtime` was built on Spark A (`spark-c4e2`) from base86d7c55 with the candidate15/c40 production-recipe overlay. Both approved prepared artifacts use their actual tokenizer/template, context4096, one slot and one funded output row. Prefill caps are256 for31B and1024 for26B; candidate plain norm/norm-ROPE/norm-ADD and26B route/reduce policies are retained. Owner attention and joined serving remain default-off. No source or runtime change was made for this screen.
+The private `llmp-runtime` was built on Spark A (`spark-c4e2`) from base86d7c55 with the candidate15/c40 production-recipe overlay. Both approved prepared artifacts use their actual tokenizer/template, context4096, one slot and one funded output row. Prefill caps are256 for31B and1024 for26B; candidate plain norm/norm-ROPE/norm-ADD and26B route/reduce policies are retained. Owner attention and joined serving remain default-off. No source or runtime change was made for this screen.
 
 Each checkpoint runs one existing runtime process with `chat --fresh --plain --max-tokens128 --report` and four `--turn` arguments: explanation, arithmetic, instruction and short retrieval. New owner-only data/spill/state roots and enrollment/report paths refuse overwrite. Complete native prompt IDs match the independently qualified actual chat carriers of29,30,28 and73 tokens. Four fresh turns have no history reuse; runtime return0 includes successful server teardown. The pinned SDK and exclusive private binary are checked before and after acquisition.
 
@@ -25,4 +25,4 @@ This is a four-prompt C1 natural-answer check against the reference. It establis
 
 ## Reproduction
 
-The caller is the exact reviewed acquisition/assessment source, SHA `058942f6…`. Copy it to the external `gemma-production-natural` directory with the separately supplied, authenticated prompt carriers, facts and checksum lists. The [input preparation](../gemma-input-preparation/README.md) records their generation and independent tokenizer qualification; results record the model, input, executable, configuration and output identities. Invoke `natural.py native|public|assess 26|31` only under the installed Spark supervisor. Supply the pinned private candidate runtime and its dependency/checksum lists, use new owner-only output roots, and retain official successful retirement before assessment. Raw prompts, IDs, responses, logs and machine-specific guards remain external.
+The caller is the exact reviewed acquisition/assessment source, SHA `67415f77…`. Copy it to the external `gemma-production-natural` directory with the separately supplied, authenticated prompt carriers, facts and checksum lists. The [input preparation](../gemma-input-preparation/README.md) records their generation and independent tokenizer qualification; results record the model, input, executable, configuration and output identities. Invoke `natural.py native|public|assess 26|31` only under the installed Spark supervisor. Supply the pinned private candidate runtime and its dependency/checksum lists, use new owner-only output roots, and retain official successful retirement before assessment. Raw prompts, IDs, responses, logs and machine-specific guards remain external.

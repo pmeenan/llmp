@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Runs the confined-job proof (plan.md M1, D-074) in delegated cgroups.
 
     tools/job-proof                   here, in transient units of this user's systemd manager
-    tools/job-proof --host HOST       on a Spark, as the jitllm account, with jitllm.service's settings
+    tools/job-proof --host HOST       on a Spark, as the llmp account, with llmp.service's settings
 
 It runs tests/jobs/job_proof_test (build it first: `mise run build`, or
 `mise run build -- cross` for --host) three times, each in a new transient
-service with the delegation jitllm.service has (Delegate=, DelegateSubgroup=
+service with the delegation llmp.service has (Delegate=, DelegateSubgroup=
 runtime): the job tests, then the two phases of a unit restart. With --host
-the units run as `jitllm` with every sandboxing setting of
-packaging/jitllm.service, which needs the package installed there and sudo;
-the proof's binary is copied to /var/lib/jitllm/job-proof/ and removed
+the units run as `llmp` with every sandboxing setting of
+packaging/llmp.service, which needs the package installed there and sudo;
+the proof's binary is copied to /var/lib/llmp/job-proof/ and removed
 afterwards.
 """
 
@@ -27,7 +27,7 @@ import shlex
 import subprocess
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-UNIT = REPO / "packaging" / "jitllm.service"
+UNIT = REPO / "packaging" / "llmp.service"
 # [Service] settings that describe the runtime's own process, not the
 # environment a job runs in.
 NOT_CARRIED = {"Type", "NotifyAccess", "ExecStart", "Restart", "RestartSec", "RestartPreventExitStatus",
@@ -35,7 +35,7 @@ NOT_CARRIED = {"Type", "NotifyAccess", "ExecStart", "Restart", "RestartSec", "Re
                # The service's own directories and IPC, which a transient unit
                # stopping beside a running service would remove.
                "ConfigurationDirectory", "StateDirectory", "StateDirectoryMode", "RuntimeDirectory", "RemoveIPC"}
-REMOTE_DIR = "/var/lib/jitllm/job-proof"
+REMOTE_DIR = "/var/lib/llmp/job-proof"
 
 
 def unit_properties(user: bool) -> list[str]:
@@ -66,19 +66,19 @@ class _MultiDict(dict):
 
 def runs(binary: str, state: str) -> list[tuple[str, list[str], list[str]]]:
     return [
-        ("job tests", ["JITLLM_JOB_PROOF=1", f"JITLLM_JOB_PROOF_STATE={state}"],
+        ("job tests", ["LLMP_JOB_PROOF=1", f"LLMP_JOB_PROOF_STATE={state}"],
          [binary, "--gtest_filter=JobProof.*:Confinement.*"]),
-        ("unit restart: start a job, then end the unit", ["JITLLM_JOB_PROOF_PHASE=crash", f"JITLLM_JOB_PROOF_STATE={state}"],
+        ("unit restart: start a job, then end the unit", ["LLMP_JOB_PROOF_PHASE=crash", f"LLMP_JOB_PROOF_STATE={state}"],
          [binary, "--gtest_filter=UnitRestart.*"]),
-        ("unit restart: a new unit finds the job ended", ["JITLLM_JOB_PROOF_PHASE=recover",
-                                                          f"JITLLM_JOB_PROOF_STATE={state}"],
+        ("unit restart: a new unit finds the job ended", ["LLMP_JOB_PROOF_PHASE=recover",
+                                                          f"LLMP_JOB_PROOF_STATE={state}"],
          [binary, "--gtest_filter=UnitRestart.*"]),
     ]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--host", help="the Spark to run on, as jitllm (needs the package and sudo there)")
+    parser.add_argument("--host", help="the Spark to run on, as llmp (needs the package and sudo there)")
     args = parser.parse_args()
     failed = []
     if args.host is None:
@@ -102,10 +102,10 @@ def main() -> int:
         state = f"{REMOTE_DIR}/state"
         setup = (f"sudo install -d -o root -g root -m 0755 {REMOTE_DIR} && "
                  f"sudo install -o root -g root -m 0755 /dev/stdin {remote} && "
-                 f"sudo install -d -o jitllm -g jitllm -m 0700 {state}")
+                 f"sudo install -d -o llmp -g llmp -m 0700 {state}")
         with open(binary, "rb") as data:
             if subprocess.run([*ssh, setup], stdin=data).returncode:
-                print("job-proof: cannot install the proof on the host (is the jitllm package installed?)")
+                print("job-proof: cannot install the proof on the host (is the llmp package installed?)")
                 return 1
         try:
             for name, env, command in runs(remote, state):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Authenticate full heads; aggregate bounded host observations, not CUDA counts."""
 import collections
@@ -87,7 +87,7 @@ def observations(lines, require_complete=False):
     selected_reductions = collections.Counter()
     record_count = 0
     for line in lines:
-        if not line.startswith('JITLLM_OBSERVE '):
+        if not line.startswith('LLMP_OBSERVE '):
             continue
         record_count += 1
         if record_count > 200000 or len(line) > 8192:

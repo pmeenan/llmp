@@ -187,7 +187,7 @@
       }
     },
     "summary_sha256": "b5aac0402312afe8e7df019a81aeb9348482f51d8034f0bb7bcd2e97f1ec6578",
-    "raw_directory": "/tmp/jitllm-m35-coordination/gemma26-state-preparation-raw"
+    "raw_directory": "/tmp/llmp-m35-coordination/gemma26-state-preparation-raw"
   },
   "official_jobs": [
     {

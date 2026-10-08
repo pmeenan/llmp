@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen2 chunk graph (kernels/ggml/qwen2_graph.h) and its planning and
@@ -10,7 +10,7 @@
 // - with fusion on, upstream's patterns fuse where the recorded plan fused
 //   (the RMSNorm and its mul, RoPE and the K write, and in a decode step
 //   the products with their bias or residual and the gate and up products
-//   with SwiGLU), and no pattern jitLLM lacks applies anywhere; with fusion
+//   with SwiGLU), and no pattern llmpalooza lacks applies anywhere; with fusion
 //   off, only the unfused RMSNorm-mul pairs its two launchers;
 // - the planner refuses a graph where an unimplemented pattern might apply;
 // - placed activations reproduce the pre-registered limit A exactly (rows ×
@@ -43,7 +43,7 @@
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 using kg::MulMatPath;
 
 TEST(GraphOrder, BoundedMembershipPreservesDfsViewsParamsAndDuplicateOutputs) {
@@ -146,10 +146,10 @@ struct Chunk {
 
 Chunk Build(std::int64_t rows, std::int64_t n_kv, std::int64_t cells) {
   Chunk c;
-  auto arena = kg::TensorArena::Create(kg::Qwen2GraphTensors(jitllm::model::Qwen25Instruct05B()));
+  auto arena = kg::TensorArena::Create(kg::Qwen2GraphTensors(llmp::model::Qwen25Instruct05B()));
   EXPECT_TRUE(arena.has_value());
   c.arena.emplace(std::move(*arena));
-  auto graph = kg::BuildQwen2Graph(*c.arena, jitllm::model::Qwen25Instruct05B(),
+  auto graph = kg::BuildQwen2Graph(*c.arena, llmp::model::Qwen25Instruct05B(),
                                    {.rows = rows, .n_kv = n_kv, .cells = cells});
   EXPECT_TRUE(graph.has_value()) << (graph ? "" : graph.error().detail);
   c.graph = std::move(*graph);
@@ -209,7 +209,7 @@ TEST(GemmaActivationPlanTest, PlansPrimitiveAndEligibleFusionWithSeparateOperati
       ASSERT_TRUE(ordinary);
       ASSERT_EQ(ordinary->steps.size(), 3U);
       EXPECT_EQ(ordinary->steps.back().implementation, kg::kGeGluName);
-      EXPECT_EQ(ordinary->steps.back().operation, jitllm::execution::Operation::kGeGlu);
+      EXPECT_EQ(ordinary->steps.back().operation, llmp::execution::Operation::kGeGlu);
       const auto default_off = kg::PlanGraph(nodes, true, ModelDevice());
       ASSERT_TRUE(default_off);
       EXPECT_EQ(default_off->steps.size(), 3U);
@@ -282,7 +282,7 @@ TEST(GemmaActivationPlanTest, AdversarialRetainedViewsAndReadersKeepProductsLive
     const auto read = kg::PlanGraph(extra_nodes, true, device);
     ASSERT_TRUE(read);
     ASSERT_EQ(read->steps.size(), 4U);
-    EXPECT_EQ(read->steps[2].operation, jitllm::execution::Operation::kGeGlu);
+    EXPECT_EQ(read->steps[2].operation, llmp::execution::Operation::kGeGlu);
     EXPECT_EQ(read->steps[3].implementation, kg::kContName);
   }
 }
@@ -317,9 +317,9 @@ TEST(Qwen2GraphTest, HasLlamaCppsNodesInItsOrder) {
 }
 
 TEST(Qwen2GraphTest, RefusesAShapeTheCacheCannotHold) {
-  auto arena = kg::TensorArena::Create(kg::Qwen2GraphTensors(jitllm::model::Qwen25Instruct05B()));
+  auto arena = kg::TensorArena::Create(kg::Qwen2GraphTensors(llmp::model::Qwen25Instruct05B()));
   ASSERT_TRUE(arena.has_value());
-  const auto& p = jitllm::model::Qwen25Instruct05B();
+  const auto& p = llmp::model::Qwen25Instruct05B();
   EXPECT_FALSE(kg::BuildQwen2Graph(*arena, p, {.rows = 32, .n_kv = 16, .cells = 512}).has_value());
   EXPECT_FALSE(kg::BuildQwen2Graph(*arena, p, {.rows = 1, .n_kv = 1024, .cells = 512}).has_value());
   EXPECT_FALSE(kg::BuildQwen2Graph(*arena, p, {.rows = 0, .n_kv = 256, .cells = 512}).has_value());
@@ -710,7 +710,7 @@ TEST(Qwen2GraphTest, AnUnchangedPlanIsTheSamePlan) {
   const auto choices = a->Choices();
   ASSERT_EQ(choices.size(), a->steps.size());
   EXPECT_EQ(choices.front().implementation, "ggml.rms_norm_mul.fused");
-  EXPECT_EQ(choices.front().operation, jitllm::execution::Operation::kRmsNormMul);
+  EXPECT_EQ(choices.front().operation, llmp::execution::Operation::kRmsNormMul);
 }
 
 }  // namespace

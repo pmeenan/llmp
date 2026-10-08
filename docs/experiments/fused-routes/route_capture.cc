@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // External reference harness: the paging study's session capture with several route
 // modes and per-output logit hashes. Link only to the pinned llama.cpp image (or, for
@@ -18,7 +18,7 @@
 
 // 0: no route observation. 1: legacy eval callback that requests each
 // ffn_moe_topk-N tensor (splits the graph there). 2: patched graph outputs
-// jitllm_routes-N, read after the step without requesting callback data.
+// llmp_routes-N, read after the step without requesting callback data.
 // 3: control with an eval callback that never requests data or reads routes.
 // 4: eval callback that requests data only after each layer's gated activation,
 // the end of a fusion group, and reads that layer's selected-expert IDs, which the
@@ -88,7 +88,7 @@ static bool legacy_routes(ggml_tensor * t, bool ask, void * opaque) noexcept {
 // Never requests data, so the scheduler computes each split as one graph.
 static bool record_outputs(ggml_tensor * t, bool ask, void * opaque) noexcept {
     auto & c = *static_cast<Capture *>(opaque);
-    if (ask && std::strncmp(t->name, "jitllm_routes-", 14) == 0) {
+    if (ask && std::strncmp(t->name, "llmp_routes-", 14) == 0) {
         try {
             c.outputs.emplace_back(std::stoi(t->name + 14), t);
         } catch (...) {
@@ -218,7 +218,7 @@ int main(int argc, char ** argv) try {
                           [](const auto & a, const auto & b) {return a.first<b.first;});
                 for(const auto & [layer, tensor] : c.outputs) {
                     require(layer==c.layer,"Missing/duplicate route output layer");
-                    write_routes(c,tensor,"jitllm_routes-"+std::to_string(layer));
+                    write_routes(c,tensor,"llmp_routes-"+std::to_string(layer));
                 }
             }
             require((mode!=legacy_split && mode!=graph_outputs && mode!=fusion_boundary) || c.layer==layers,

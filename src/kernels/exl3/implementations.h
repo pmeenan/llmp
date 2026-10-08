@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The EXL3 module's entries in the implementation registry (D-053;
@@ -40,16 +40,16 @@
 //
 // Each identity covers everything that decides what an implementation
 // computes and launches: the prepared ExLlamaV3 tree's digest (upstream's
-// bytes, jitLLM's patches and the build of the kernels, D-057); a digest of
-// every file of jitLLM's code in src/kernels/exl3, written at build time
+// bytes, llmpalooza's patches and the build of the kernels, D-057); a digest of
+// every file of llmpalooza's code in src/kernels/exl3, written at build time
 // (module_digest.cmake); the SDK, target, device architecture, build type
 // and sanitizers; for the reconstruction paths the pinned cuBLASLt; the
 // name and a variant naming the kernels. The launch plan (tile shape, grid,
 // pinned algorithms) is the plan's data, passed with each call, as the
 // tuning record gives it.
 
-#ifndef JITLLM_KERNELS_EXL3_IMPLEMENTATIONS_H_
-#define JITLLM_KERNELS_EXL3_IMPLEMENTATIONS_H_
+#ifndef LLMP_KERNELS_EXL3_IMPLEMENTATIONS_H_
+#define LLMP_KERNELS_EXL3_IMPLEMENTATIONS_H_
 
 #include <cstdint>
 #include <expected>
@@ -63,7 +63,7 @@
 #include "kernels/exl3/recon_gemm.h"
 #include "kernels/exl3/validate.h"
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 
 // What this module declares to the registry.
 std::vector<execution::Implementation> Implementations();
@@ -101,6 +101,6 @@ class Kernel {
   const Entry* entry_;
 };
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3
 
-#endif  // JITLLM_KERNELS_EXL3_IMPLEMENTATIONS_H_
+#endif  // LLMP_KERNELS_EXL3_IMPLEMENTATIONS_H_

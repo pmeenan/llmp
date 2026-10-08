@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Tokenizer, chat templates and sampling
@@ -10,7 +10,7 @@ family renderers for their chat templates and a bounded, sandboxed
 Jinja-subset interpreter for any other template, stop tokens, and greedy and
 seeded sampling. All of it is CPU code with no vendor types and builds in
 every profile. D-088 (accepted 2026-09-28) clears its Unicode tables for
-shipped binaries, and `jitllm-runtime` links them: its serving commands
+shipped binaries, and `llmp-runtime` links them: its serving commands
 and the chat route (runtime-serving.md) tokenize, render and sample with
 these modules. A package built from the tables lists Unicode-3.0 and
 carries its notice ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)).
@@ -19,13 +19,13 @@ carries its notice ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)).
 
 | Module | Holds |
 | --- | --- |
-| `base/json.h` (`jitllm_json`) | General RFC 8259 JSON from untrusted bytes: strict UTF-8, unescaped strings, numbers kept as text, duplicate keys refused, caps on size, depth, values and string bytes |
-| `tokenizer/` (`jitllm_tokenizer`) | `unicode.h` (UCD 15.1.0 properties, strict UTF-8, U+FFFD replacement, NFC), `pretokenize.h` (four BPE pre-tokenizers and the whole-fragment SentencePiece mode), `tokenizer.h` (vocabulary validation, encode, decode, streaming decode), `gguf.h` and `hf.h` (the readers of a GGUF file's tokenizer metadata and of `tokenizer.json`) |
-| `chat/` (`jitllm_chat`) | `chat.h` (the conversation, the native renderers and their registry, `ChatTemplate`: the choice by hash, probe or interpreter; stop tokens, Python's `str.strip`), `jinja.h` (the Jinja-subset interpreter: `jinja_parse.cc`, `jinja_eval.cc`, `jinja_value.cc`), `pyjson.h` (JSON as Python's `json.dumps` prints it, and values as `str()` prints them); the family renderers `deepseek_v4.cc`, `qwen.cc` and `gemma.cc` |
-| `execution/sampling.h` (`jitllm_sampling`) | Greedy and seeded sampling |
+| `base/json.h` (`llmp_json`) | General RFC 8259 JSON from untrusted bytes: strict UTF-8, unescaped strings, numbers kept as text, duplicate keys refused, caps on size, depth, values and string bytes |
+| `tokenizer/` (`llmp_tokenizer`) | `unicode.h` (UCD 15.1.0 properties, strict UTF-8, U+FFFD replacement, NFC), `pretokenize.h` (four BPE pre-tokenizers and the whole-fragment SentencePiece mode), `tokenizer.h` (vocabulary validation, encode, decode, streaming decode), `gguf.h` and `hf.h` (the readers of a GGUF file's tokenizer metadata and of `tokenizer.json`) |
+| `chat/` (`llmp_chat`) | `chat.h` (the conversation, the native renderers and their registry, `ChatTemplate`: the choice by hash, probe or interpreter; stop tokens, Python's `str.strip`), `jinja.h` (the Jinja-subset interpreter: `jinja_parse.cc`, `jinja_eval.cc`, `jinja_value.cc`), `pyjson.h` (JSON as Python's `json.dumps` prints it, and values as `str()` prints them); the family renderers `deepseek_v4.cc`, `qwen.cc` and `gemma.cc` |
+| `execution/sampling.h` (`llmp_sampling`) | Greedy and seeded sampling |
 
 Both new modules sit in the model layer (architecture.md), `tokenizer`
-first: it needs only `base`; `chat` needs `tokenizer` and `jitllm_json`.
+first: it needs only `base`; `chat` needs `tokenizer` and `llmp_json`.
 
 ## The tokenizer
 
@@ -210,7 +210,7 @@ DerivedCoreProperties.txt differ only in 627 new uncased characters (CJK
 Extension I, five ideographic description characters) and in identifier
 and grapheme properties (diffed on `spark-b`, 2026-10-02; `pycase_test`
 checks every code point against Python 3.12.3). On `spark` and `spark-b` the files are under
-`~/.local/share/jitllm/ucd/15.1.0/`, with NormalizationTest.txt, which a
+`~/.local/share/llmp/ucd/15.1.0/`, with NormalizationTest.txt, which a
 models test runs in full; a tools test regenerates the tables there and
 compares them with the checked-in file.
 
@@ -226,7 +226,7 @@ tokens whole, partial, adjacent and overlapping, long runs up to 3,000
 characters, and 9 ill-formed UTF-8 inputs. Each item is encoded with and
 without parsing special tokens (184 encodings per configuration):
 
-| Configuration | Source (under `~/.local/share/jitllm/` on the Sparks) | Reference | Result |
+| Configuration | Source (under `~/.local/share/llmp/` on the Sparks) | Reference | Result |
 | --- | --- | --- | --- |
 | `phi-3.5-gguf` | `tokenizer-reference/legacy/phi35.gguf`; 32,064 tokens, `llama` | pinned llama.cpp | 184 of 184 equal |
 | `gemma-2-2b-gguf` | `tokenizer-reference/legacy/gemma2.gguf`; 256,000 tokens, `llama` | pinned llama.cpp | 184 of 184 equal |
@@ -244,12 +244,12 @@ their replaced text then agrees with the reference's tokens of Python's
 text exactly; Gemma 4 additionally replaces a literal `▁` with a space.
 SentencePiece agreement checks token IDs rather than round trips: its
 dummy prefix, literal `▁` and special stripping can change decoded text.
-Where the references disagree with each other, jitLLM follows each
+Where the references disagree with each other, llmpalooza follows each
 model's oracle and records why:
 
 - **Unicode version.** Hugging Face's Oniguruma knows Unicode 16.0's emoji
   (U+1FAE9, U+1FAC6) as symbols; UCD 15.1 and llama.cpp leave them
-  unassigned, which the DeepSeek expression treats differently. jitLLM
+  unassigned, which the DeepSeek expression treats differently. Llmpalooza
   follows llama.cpp, DeepSeek's oracle; the `deepseek-v4-0731-hf` test
   asserts both the divergence and llama.cpp's result.
 - **NFC.** The Qwen tokenizer.json files normalize to NFC and llama.cpp
@@ -352,7 +352,7 @@ those parts and differs where the template does:
 | Tools with empty system text | a blank line before the header | none |
 | Tool header and footer | "the user's question"; footer `\nYou MUST …calls.\n` | "the user question"; footer `\n\nYou MUST …calls.` |
 
-Both read `thinking` (jitLLM's `enable_thinking`), off by default, end
+Both read `thinking` (llmpalooza's `enable_thinking`), off by default, end
 turns with `<｜end▁of▁sentence｜>` and render a tool call's arguments as
 DSML parameters; chat-v2 parses string arguments with `from_json`, which
 equals rendering the client's string parsed (fixtures `string-arguments`,
@@ -385,7 +385,7 @@ intake of 1,024):
   `<|tool_call>call:NAME{key:value,…}<tool_call|>`; the tool messages that
   follow it as `<|tool_response>response:NAME{value:<|"|>…<|"|>}<tool_response|>`
   inside the same turn (NAME is the message's last call's: the template
-  matches call IDs, which jitLLM's messages lack, so every call matches);
+  matches call IDs, which llmpalooza's messages lack, so every call matches);
   its content with thought channels removed. A run of assistant messages
   shares one turn; a call without results ends the turn with
   `<|tool_response>`; the generation prompt is `<|turn>model\n` plus an
@@ -403,7 +403,7 @@ intake of 1,024):
   `None`, closes every assistant turn, renders string arguments as they
   are and raises on an empty conversation. Its 2026-05-18 revision
   (`36e3a42e…`) differs only in tool results given as content parts,
-  which jitLLM's messages cannot express, so it is the same variant by
+  which llmpalooza's messages cannot express, so it is the same variant by
   probe. Google's two earlier Gemma 4 templates (2026-04-02 `2dfbfc7d…`,
   2026-04-10 `85a08664…`) are interpreted: the 2026-04-10 one prints a
   system message without content as `None`, always filters properties
@@ -648,7 +648,7 @@ returns it as the replacement.
 
 Measured on `spark-b`'s CPU, `spark-native` RelWithDebInfo with SDK
 `aarch64-e0a0c85c42806fb1`, before (`a9c3e93`) and after the shortcut
-(2026-09-29): `jitllm_sampling_bench --draws 200`, row seed 42, three
+(2026-09-29): `llmp_sampling_bench --draws 200`, row seed 42, three
 alternating before/after passes. These are medians of the pass medians,
 including parameter and logit validation, at temperature 1 and top-k 1:
 
@@ -674,7 +674,7 @@ weights by their bits (eight a binary octave) and sorts only the bucket
 its boundary falls in (ties to the lower ID). Speculative verification
 (`VerifyDraft`) builds the same distribution, so plain and speculative
 decoding draw identically distributed tokens. On `spark-b`
-(`jitllm_sampling_bench`, synthetic peaked and flat rows, median of 200
+(`llmp_sampling_bench`, synthetic peaked and flat rows, median of 200
 draws), a temperature-1 draw took 5.9 ms at DeepSeek's 129,280 logits and
 11.9 ms at Qwen3.8's 248,320 with the full sort it replaced; now 0.45 ms
 and 0.87 ms (a speculative verdict the same; top-p 0.95 0.68–1.0 ms and

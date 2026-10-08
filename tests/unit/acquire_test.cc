@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // BP-S3's acquisition (tests/support/paged_programs.h AcquireProgram) on
@@ -44,13 +44,13 @@
 
 namespace {
 
-namespace sc = jitllm::scheduler;
-namespace ts = jitllm::test_support;
-using jitllm::base::Bytes;
-using jitllm::catalog::Closure;
-using jitllm::catalog::ExtentId;
-using jitllm::catalog::ExtentState;
-using jitllm::providers::StreamId;
+namespace sc = llmp::scheduler;
+namespace ts = llmp::test_support;
+using llmp::base::Bytes;
+using llmp::catalog::Closure;
+using llmp::catalog::ExtentId;
+using llmp::catalog::ExtentState;
+using llmp::providers::StreamId;
 
 constexpr std::uint64_t kSize = 64ULL * 1024;  // one extent, one slot
 constexpr std::size_t kPerModel = 3;
@@ -66,16 +66,16 @@ class AcquireTest : public ::testing::Test {
     zone_ = memory_.Reserve(Bytes(kSize * kSlots)).value();
     const auto zone_backing = memory_.Create(kHostClass, Bytes(kSize * kSlots)).value();
     ASSERT_TRUE(memory_.Map(zone_, Bytes(0), zone_backing).has_value());
-    ASSERT_TRUE(memory_
-                    .SetAccess(zone_, Bytes(0), Bytes(kSize * kSlots),
-                               jitllm::providers::Access::kReadWrite)
-                    .has_value());
+    ASSERT_TRUE(
+        memory_
+            .SetAccess(zone_, Bytes(0), Bytes(kSize * kSlots), llmp::providers::Access::kReadWrite)
+            .has_value());
     domain_ = catalog_.AddDomain("node");
     // The workspace both closures share: resident scratch, mapped by hand.
     workspace_ = catalog_
                      .AddExtent({.domain = domain_,
-                                 .memory_class = jitllm::catalog::MemoryClass::kScratch,
-                                 .recovery = jitllm::catalog::Recovery::kDiscardable,
+                                 .memory_class = llmp::catalog::MemoryClass::kScratch,
+                                 .recovery = llmp::catalog::Recovery::kDiscardable,
                                  .size = Bytes(kSize),
                                  .content = {}},
                                 true)
@@ -94,8 +94,8 @@ class AcquireTest : public ::testing::Test {
         weights_.at(m).push_back(
             catalog_
                 .AddExtent({.domain = domain_,
-                            .memory_class = jitllm::catalog::MemoryClass::kWeights,
-                            .recovery = jitllm::catalog::Recovery::kFromArtifact,
+                            .memory_class = llmp::catalog::MemoryClass::kWeights,
+                            .recovery = llmp::catalog::Recovery::kFromArtifact,
                             .size = Bytes(kSize),
                             .content = {.artifact = artifact,
                                         .group = 0,
@@ -112,13 +112,13 @@ class AcquireTest : public ::testing::Test {
     board_ = std::make_unique<sc::CompletionBoard>(32, wake_);
     storage_lane_ = std::make_unique<sc::StorageService>(
         storage_,
-        jitllm::providers::ReaderSettings{.alignment = 4096,
-                                          .request_bytes = 16 * 1024,
-                                          .retries = 2,
-                                          .reads = 32,
-                                          .waiters = 8,
-                                          .span_bytes = jitllm::providers::kNoCoalescing,
-                                          .span_segments = jitllm::providers::kMaxSegments},
+        llmp::providers::ReaderSettings{.alignment = 4096,
+                                        .request_bytes = 16 * 1024,
+                                        .retries = 2,
+                                        .reads = 32,
+                                        .waiters = 8,
+                                        .span_bytes = llmp::providers::kNoCoalescing,
+                                        .span_segments = llmp::providers::kMaxSegments},
         *board_, sc::QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     device_lane_ = std::make_unique<sc::DeviceService>(
         execution_, std::span<const StreamId>(&stream_, 1), *board_,
@@ -219,20 +219,20 @@ class AcquireTest : public ::testing::Test {
   static constexpr std::size_t kDeviceClass = 0;
   static constexpr std::size_t kHostClass = 1;
 
-  jitllm::providers::fake::FakeDeviceMemory memory_{Bytes(kSize), Bytes(kSize * 64)};
-  jitllm::providers::fake::FakeStorage storage_{8, 4096};
-  jitllm::providers::fake::FakeDeviceExecution execution_;
-  jitllm::catalog::Catalog catalog_;
-  jitllm::base::WakeFlag wake_;
+  llmp::providers::fake::FakeDeviceMemory memory_{Bytes(kSize), Bytes(kSize * 64)};
+  llmp::providers::fake::FakeStorage storage_{8, 4096};
+  llmp::providers::fake::FakeDeviceExecution execution_;
+  llmp::catalog::Catalog catalog_;
+  llmp::base::WakeFlag wake_;
   std::unique_ptr<sc::CompletionBoard> board_;
   std::unique_ptr<sc::StorageService> storage_lane_;
   std::unique_ptr<sc::DeviceService> device_lane_;
   std::unique_ptr<sc::Scheduler> scheduler_;
 
-  jitllm::providers::ReservationId zone_;
-  jitllm::catalog::DomainId domain_;
+  llmp::providers::ReservationId zone_;
+  llmp::catalog::DomainId domain_;
   ExtentId workspace_;
-  std::array<jitllm::providers::ReservationId, 2> places_{};
+  std::array<llmp::providers::ReservationId, 2> places_{};
   std::array<std::uint64_t, 2> bases_{};
   std::array<std::vector<std::byte>, 2> files_;
   std::array<int, 2> fds_{};
@@ -281,7 +281,7 @@ TEST_F(AcquireTest, FailedOptionalZeroAcquireRetiresPartialCompletions) {
   for (int i = 0; i < 10000 && Resident(0) == 0; ++i) Round();
   ASSERT_GT(Resident(0), 0U);
   ASSERT_LT(Resident(0), kPerModel);
-  execution_.FailNextCopy(jitllm::providers::ProviderError::kFailed);
+  execution_.FailNextCopy(llmp::providers::ProviderError::kFailed);
   for (int i = 0; i < 10000 && !done.gone.load(); ++i) Round();
   ASSERT_TRUE(done.gone.load());
   EXPECT_NE(done.outcome.load(), static_cast<int>(sc::TaskOutcome::kSucceeded));
@@ -422,8 +422,8 @@ TEST_F(AcquireTest, ScopedDrainNeverRestartsMissingPagesOrCertifiesUnknownComple
   // This isolated fake extent carries no provider work or mapped backing.
   const auto unknown = catalog_
                            .AddExtent({.domain = domain_,
-                                       .memory_class = jitllm::catalog::MemoryClass::kLiveState,
-                                       .recovery = jitllm::catalog::Recovery::kPreserve,
+                                       .memory_class = llmp::catalog::MemoryClass::kLiveState,
+                                       .recovery = llmp::catalog::Recovery::kPreserve,
                                        .size = Bytes(kSize),
                                        .content = {}})
                            .value();
@@ -492,7 +492,7 @@ TEST_F(AcquireTest, TheProtectedWorkspaceIsNeverAVictim) {
                     done));
   }
   const auto unprotected =
-      jitllm::memory::PlanMaterialization(catalog_, domain_, budget_, weights_only(1));
+      llmp::memory::PlanMaterialization(catalog_, domain_, budget_, weights_only(1));
   ASSERT_FALSE(unprotected.victims.victims.empty());
   EXPECT_EQ(unprotected.victims.victims.front().extent, workspace_);
 

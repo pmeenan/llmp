@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // GGML-derived operation implementations over the K-C launch context
 // (D-053; docs/backend-proof.md#dispatch-and-implementations-d-053). Each
 // takes operation nodes built with GGML's graph functions (tensors.h) and
-// bound to jitLLM memory, checks every precondition its GGML launcher
+// bound to llmpalooza memory, checks every precondition its GGML launcher
 // asserts, so that an unsupported operand is a rejection and never an
 // abort, and queues the launcher's kernels on the context's stream.
 // GGML's graph functions assert their own shape rules when they build a
@@ -15,10 +15,10 @@
 // kernel family, since the plan, not GGML's routing, selects among them.
 // Each accepts only operands that upstream's selection would route to it,
 // which is where upstream validated it. The cuBLAS implementation is a
-// recorded jitLLM copy of upstream's (mul_mat_cublas.cu).
+// recorded llmpalooza copy of upstream's (mul_mat_cublas.cu).
 
-#ifndef JITLLM_KERNELS_GGML_OPS_H_
-#define JITLLM_KERNELS_GGML_OPS_H_
+#ifndef LLMP_KERNELS_GGML_OPS_H_
+#define LLMP_KERNELS_GGML_OPS_H_
 
 #include <cstdint>
 #include <expected>
@@ -28,7 +28,7 @@
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // A ggml_rms_norm node over F32 rows.
 std::expected<void, KernelFailure> RmsNorm(LaunchContext& launch, ggml_tensor* norm);
@@ -169,6 +169,6 @@ std::expected<void, KernelFailure> MulMatVecGeGlu(LaunchContext& launch, ggml_te
 // decides whether upstream fuses.
 bool MulMatVecFusible(const LaunchContext& launch, const ggml_tensor* mul_mat);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_OPS_H_
+#endif  // LLMP_KERNELS_GGML_OPS_H_

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen prefill chunk trades — 2026-10-04
@@ -60,7 +60,7 @@ results on that fixed binary, not a new final serving comparison.
 ## Fixed-history and four-slot controls
 
 Spark B uses the checked `5f37654` production source and
-`jitllm_qwen38_spec` SHA-256
+`llmp_qwen38_spec` SHA-256
 `444659b963f5777000a48f32b1812c26dba8c385bbdc6d0203ecce3862b7d533`.
 No numerical or library environment overrides are set.
 
@@ -137,7 +137,7 @@ its provenance; no prototype candidate binary runs in these HTTP cells.
 
 Raw controllers/results remain under `~/scratch/qwen-prefill-chunks/`
 on both Sparks and
-`/home/pmeenan/scratch/jitllm-m3-qwen-prefill-chunks-2026-10-04/` locally;
+`/home/pmeenan/scratch/llmp-m3-qwen-prefill-chunks-2026-10-04/` locally;
 the local copy excludes serving state/spill. Larger chunks remain an
 optional configured trade, with no new default or calibrated value.
 DeepSeek's controlled chunk selection, both models' controlled slot-knee

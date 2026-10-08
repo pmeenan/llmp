@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen selected-head provenance — 2026-10-04
@@ -74,7 +74,7 @@ existing two-request draft-wave limit. The measured controller SHA-256 is
 its original docstring incorrectly names two head layouts and is preserved
 as evidence rather than edited after the run. Raw output is external at
 `spark:~/scratch/qwen-shared-vocab/screen47172/` and
-`~/scratch/jitllm-m3-qwen-shared-vocab-2026-10-04/`. Installed supervised job
+`~/scratch/llmp-m3-qwen-shared-vocab-2026-10-04/`. Installed supervised job
 `qwen-shared-vocab47172` finishes zero and is waited on.
 
 ## Reporting correction
@@ -85,7 +85,7 @@ when capped. An oversized nominal limit still fails before normalization,
 as the runner already required. Plain serving does not adopt a live head.
 This changes diagnostics, not the existing head-selection arithmetic.
 
-`jitllm_qwen38_spec` retains requested `draft_vocab` and adds effective
+`llmp_qwen38_spec` retains requested `draft_vocab` and adds effective
 `draft_head_kind` and `draft_head_rows`. The same-history analyzer records
 `requested_head_rows` separately; older captures lacking effective metadata
 report null head kind/rows, not an inferred prefix layout. Use the artifact

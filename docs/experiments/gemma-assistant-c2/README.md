@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma assistant C2 identical-input and short timing screen
@@ -138,7 +138,7 @@ sizes/hashes; post-run verification proves unchanged identities and official
 retirement. The pinned-image
 wrapper uses the same stage0 root and incoming files. Raw vectors, winner IDs,
 logs and receipts remain outside Git under
-`~/.local/share/jitllm/gemma-assistant-c2` on Spark and the external coordination
+`~/.local/share/llmp/gemma-assistant-c2` on Spark and the external coordination
 scratch. Aggregate results contain no per-wave token arrays. Raw supervisor
 timestamps are EDT; provenance also records UTC.
 

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/fusion.h"
@@ -17,7 +17,7 @@
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_read_index.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 // MATRIX_ROW_PADDING (ggml-cuda/common.cuh:186): the CUDA buffer type
@@ -447,4 +447,4 @@ std::optional<std::string_view> UnimplementedFusionAt(GraphNodes graph, std::siz
   return std::nullopt;
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

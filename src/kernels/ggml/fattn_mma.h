@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Internal to the GGML module: what the tensor-core flash-attention
@@ -9,8 +9,8 @@
 // every head size, and can query its kernels' occupancy, which only the
 // unit that instantiates a kernel can name.
 
-#ifndef JITLLM_KERNELS_GGML_FATTN_MMA_H_
-#define JITLLM_KERNELS_GGML_FATTN_MMA_H_
+#ifndef LLMP_KERNELS_GGML_FATTN_MMA_H_
+#define LLMP_KERNELS_GGML_FATTN_MMA_H_
 
 #include <expected>
 #include <string>
@@ -18,7 +18,7 @@
 struct ggml_backend_cuda_context;
 struct ggml_tensor;
 
-namespace jitllm::kernels::ggml::detail {
+namespace llmp::kernels::ggml::detail {
 
 // What launch_fattn's grid arithmetic needs of one MMA kernel on a device
 // (fattn-mma-f16.cuh:1966-2067): its KV batch and how many of its blocks
@@ -54,6 +54,6 @@ MmaCase FlashAttnMmaCase512Q16(int columns);
 std::expected<MmaKernelShape, std::string> FlashAttnMmaShape128(int columns, int device);
 MmaCase FlashAttnMmaCase128(int columns);
 
-}  // namespace jitllm::kernels::ggml::detail
+}  // namespace llmp::kernels::ggml::detail
 
-#endif  // JITLLM_KERNELS_GGML_FATTN_MMA_H_
+#endif  // LLMP_KERNELS_GGML_FATTN_MMA_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The interpreter's values as Python prints and compares them (jinja.h).
@@ -21,7 +21,7 @@
 #include "chat/jinja_internal.h"
 #include "chat/pyjson.h"
 
-namespace jitllm::chat::jinja {
+namespace llmp::chat::jinja {
 namespace {
 
 std::unexpected<Error> Fail(Code code, std::string_view reason) {
@@ -894,4 +894,4 @@ std::size_t SpaceAt(std::string_view s, std::size_t at) {
 
 bool Printable(char32_t cp) { return PythonPrintable(cp); }
 
-}  // namespace jitllm::chat::jinja
+}  // namespace llmp::chat::jinja

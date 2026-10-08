@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The VAE decoder's 3x3 convolutions as one implicit GEMM (ops.h
@@ -32,7 +32,7 @@
 
 #include "kernels/image/ops.h"
 
-namespace jitllm::kernels::image {
+namespace llmp::kernels::image {
 namespace {
 
 constexpr int kTh = 4;                               // tile rows
@@ -379,4 +379,4 @@ Status Conv3x3WeightsKrsc(const float* w, Bf16* out, std::int64_t out_channels,
   return {};
 }
 
-}  // namespace jitllm::kernels::image
+}  // namespace llmp::kernels::image

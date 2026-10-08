@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """tools/gen-unicode-tables: pinned inputs only, and the checked-in tables regenerate exactly."""
 
@@ -20,8 +20,8 @@ gen = importlib.util.module_from_spec(spec)
 loader.exec_module(gen)
 
 # Where a Spark keeps the pinned UCD files (docs/tokenizer.md); another
-# directory can be named with JITLLM_TEST_UCD.
-UCD = pathlib.Path(os.environ.get("JITLLM_TEST_UCD", pathlib.Path.home() / ".local/share/jitllm/ucd/15.1.0"))
+# directory can be named with LLMP_TEST_UCD.
+UCD = pathlib.Path(os.environ.get("LLMP_TEST_UCD", pathlib.Path.home() / ".local/share/llmp/ucd/15.1.0"))
 
 
 class GenUnicodeTables(unittest.TestCase):

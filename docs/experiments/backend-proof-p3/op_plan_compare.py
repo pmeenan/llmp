@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Compares native's executed EXL3 plan with the operation plan record: the plan-first gate.
 
@@ -7,7 +7,7 @@ backend-proof.md's Tier E item "GGML-derived operations inside the EXL3 plan" re
 recorded executed plan to equal the record (../backend-proof-p0/exl3-op-plan.json, or P3's
 exl3-op-plan-g.json / exl3-op-plan-o.json, same schema) per phase kind before any operation or
 model comparison. This tool checks that. It is test and measurement tooling, never part of
-jitLLM's runtime.
+llmpalooza's runtime.
 
   op_plan_compare.py --record RECORD.json --fixture 4.0bpw|4.5bpw RECORDING.jsonl
                      [--nsys RUN.sqlite] [--sass SASS.jsonl] [--demangler c++filt] [--steps 16]
@@ -16,7 +16,7 @@ RECORDING is benchmarks/exl3_exec.cc's record.jsonl (--record): tests/support's 
 recorder's JSON lines, each phase between chunk lines and each operation after an op line.
 RUN.sqlite is `nsys export --type sqlite` of an `nsys profile -t cuda` trace of the same run:
 it shows what cuBLAS launched inside each recorded cublasLtMatmul call, and any launch or copy
-the recorder missed. SASS.jsonl is `cuobjdump -sass jitllm_exl3_exec | fp16_plan.py sass-hash
+the recorder missed. SASS.jsonl is `cuobjdump -sass llmp_exl3_exec | fp16_plan.py sass-hash
 --label native`. ExLlamaV3's and cuBLAS's kernels are named as the record names them, by
 c++filt (nsys spells some demangled names differently).
 

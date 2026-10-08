@@ -18,7 +18,7 @@
       "verification": "gpgv against the GNU keyring: good signature"
     },
     "prerequisites": {
-      "role": "build-time only: linked into the GCC compiler binaries, not into jitLLM",
+      "role": "build-time only: linked into the GCC compiler binaries, not into llmpalooza",
       "fetched_by": "contrib/download_prerequisites (SHA-512 checked against contrib/prerequisites.sha512)",
       "files": [
         {

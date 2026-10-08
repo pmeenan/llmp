@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Collects the chat-template corpus and renders its references (README.md).
 
@@ -240,7 +240,7 @@ def fetch(args) -> int:
 
 
 def template_messages(conv):
-    """The messages as jitLLM hands a template (chat/template.cc): role and
+    """The messages as llmpalooza hands a template (chat/template.cc): role and
     content, reasoning_content when given, OpenAI-shaped tool calls with
     object arguments when any."""
     out = []
@@ -276,7 +276,7 @@ def render(args) -> int:
         for conv in conversations:
             kwargs = dict(conv.get("options", {}))
             if "enable_thinking" in kwargs:
-                kwargs["thinking"] = kwargs["enable_thinking"]  # as jitLLM passes it (chat/template.cc)
+                kwargs["thinking"] = kwargs["enable_thinking"]  # as llmpalooza passes it (chat/template.cc)
             if entry["bos_token"] is not None:
                 kwargs["bos_token"] = entry["bos_token"]
             if entry["eos_token"] is not None:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Thread-owned inclusive scopes; elapsed/charged CPU are separate clock domains."""
 import collections
@@ -242,7 +242,7 @@ def summarize(text, events, gpu):
 
 def probe(scratch, root, job, name):
     retirement = validate.ring.retired(job)
-    log = pathlib.Path.home()/'.local/share/jitllm/jobs'/job/'log'
+    log = pathlib.Path.home()/'.local/share/llmp/jobs'/job/'log'
     text = log.read_text()
     parsed, _ = counters(text)
     assert len(parsed) == 2
@@ -267,7 +267,7 @@ def probe(scratch, root, job, name):
         'known_busy_wait_same_thread_clock_and_nvtx_passed':True,
         'analysis_source':validate.ring.identity(pathlib.Path(__file__)), 'ownership':ownership,
         'source_frame':validate.ring.identity(frame), 'sources':sources,
-        'probe_binary':validate.ring.identity(root/'build/spark-native/benchmarks/jitllm_gemma26_clock_probe'),
+        'probe_binary':validate.ring.identity(root/'build/spark-native/benchmarks/llmp_gemma26_clock_probe'),
         'child_binary':validate.ring.identity(scratch/'profile_child'),
         'completion':validate.ring.identity(child), 'sqlite':validate.ring.identity(scratch/(name+'.sqlite')),
         'official_retirement':retirement, 'clock_deltas_ns':{'busy_wall':bw,'busy_cpu':bc,'wait_wall':ww,'wait_cpu':wc},
@@ -391,7 +391,7 @@ if __name__ == '__main__':
         assert {key:value for key,value in json.loads(record.read_text()).items() if key not in ['source_freeze','created_utc']} == actual
         completion = json.loads((scratch/(name+'-completion.json')).read_text())
         events,gpu,unknown = ranges(scratch/(name+'.sqlite'),completion,PHASES)
-        log = pathlib.Path.home()/'.local/share/jitllm/jobs'/job/'log'
+        log = pathlib.Path.home()/'.local/share/llmp/jobs'/job/'log'
         result = summarize(log.read_text(),events,gpu)
         validate.profile.write(pathlib.Path(output), {'analysis_source':validate.ring.identity(pathlib.Path(__file__)),
             'source_freeze':validate.ring.identity(source), 'control':validate.ring.identity(control),

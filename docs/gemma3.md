@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma 3 legacy foundation
@@ -24,7 +24,7 @@ no universal parity. Wider cohorts, broader context/memory/swap and sustained
 qualification remain open.
 
 **Being replaced (M3.6, D-107).** The per-family profile, graph and runner
-described here give way to one engine of shared components over jitLLM's own
+described here give way to one engine of shared components over llmpalooza's own
 graph IR ([engine-components.md](engine-components.md)), and per-family
 optimization transfers are retired; M3.5 is parked until M3.6 exits. This file
 describes the code as it is, and changes as each piece lands.
@@ -195,7 +195,7 @@ Clear retains mapped backing for reuse; spill/restore preserves logical
 positions and refreshes the closure. Failed retirement retains the whole
 probe lifetime rather than treating destruction as completion.
 
-The internal `jitllm_gemma3_probe` uses the actual native tokenizer. Its historical
+The internal `llmp_gemma3_probe` uses the actual native tokenizer. Its historical
 default is 4096-context, C1, F16-cache, 128-row geometry. Its first screen consumes 256
 prompt rows, three supplied scalar warm rows and 32 teacher-forced rows.
 It emits 33 full vocabulary heads and 32 pre-step greedy choices; the final

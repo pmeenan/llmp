@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Artifact layout study (open question 5)
@@ -13,9 +13,9 @@ harness is a stdlib-only Python reference model of the format:
   against the source.
 
 It is the accept/reject oracle for the M5 C++ importer and verifier, not
-jitLLM's runtime parser. `results.json` holds the aggregates. The built
+llmpalooza's runtime parser. `results.json` holds the aggregates. The built
 artifacts and raw outputs stay outside Git in
-`~/.local/share/jitllm/artifact-layout-20260922/` on `spark`.
+`~/.local/share/llmp/artifact-layout-20260922/` on `spark`.
 
 | File | Purpose |
 | --- | --- |
@@ -24,7 +24,7 @@ artifacts and raw outputs stay outside Git in
 | `modelopt_qwen38.py` | Qwen3.8 Flash Next's ModelOpt checkpoint (NVFP4 experts, MXFP8 attention and shared expert) planned and written with `layout.py`'s container, index and verifier, its bytes repacked on the way: experts into the CUTLASS layout the grouped GEMM reads (GGML NVFP4 blocks in the first import), the n-gram table's shards into 90-byte rows, linear attention's value heads into tiled order ([qwen38-native](../qwen38-native/README.md)); the converter version carries its SHA-256 |
 | `test_modelopt_qwen38.py` | 23 unit tests on a synthetic 4-layer checkpoint: the repacks against element-by-element definitions and both dequantizations, the CUTLASS layout against the harness's former load-time conversion of GGML blocks, a verified build, worker processes, refusals of malformed headers, scale shapes, NaN or negative scales, bad global scales, missing, extra or duplicate tensors and keys, and a config the checkpoint contradicts (`python3 -m unittest test_modelopt_qwen38`) |
 | `test_layout.py` | 104 unit tests with synthetic GGUF/safetensors inputs (`python3 -m unittest test_layout`) |
-| `conform.py` | Upstream-reader conformance, run in the pinned `jitllm-exl3-reference:20260922` image |
+| `conform.py` | Upstream-reader conformance, run in the pinned `llmp-exl3-reference:20260922` image |
 | `io_align.py` | A/B direct-read throughput for 2 MiB- versus 4 KiB-aligned file offsets |
 | `va_probe.cc` | CUDA VMM virtual-address reservation probe |
 
@@ -62,7 +62,7 @@ python3 layout.py verify OUT/<id>
 python3 layout.py loadcheck OUT/<id> SOURCE...        # readable-range closure, vectored O_DIRECT, vs source
 python3 layout.py coldload OUT/<id> [MAX_RUN_MIB]
 sudo docker run --rm --network none -e PYTHONPATH=/app/gguf-py -v ...:ro \
-  --entrypoint python3 jitllm-exl3-reference:20260922 conform.py /art/<id> [SOURCE_GGUF]
+  --entrypoint python3 llmp-exl3-reference:20260922 conform.py /art/<id> [SOURCE_GGUF]
 python3 io_align.py FILE THREADS READS SEED
 g++ -std=c++23 -O2 -Wall -Wextra -Werror -march=armv8-a -I/usr/local/cuda/include \
   va_probe.cc -L/usr/local/cuda/lib64/stubs -lcuda -o va_probe
@@ -153,7 +153,7 @@ In this Python thread pool, fewer and longer requests were faster, which
 probably reflects per-call overhead. D-034's native io_uring already reached
 about 15 GB/s with four 2 MiB reads in flight
 ([I/O path](../io-path/README.md)). These figures compare arms only; they
-neither measure jitLLM load rates nor the native benefit of coalescing.
+neither measure llmpalooza load rates nor the native benefit of coalescing.
 
 **Hashing cost** (`openssl speed -evp sha256 -bytes 2097152 -seconds 3`,
 OpenSSL 3.0.13, pinned with `taskset`). SHA-256 ran at 2.487 GB/s on a

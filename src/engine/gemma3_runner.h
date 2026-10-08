@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Native Gemma3 runner over the shared paged engine.
-#ifndef JITLLM_ENGINE_GEMMA3_RUNNER_H_
-#define JITLLM_ENGINE_GEMMA3_RUNNER_H_
+#ifndef LLMP_ENGINE_GEMMA3_RUNNER_H_
+#define LLMP_ENGINE_GEMMA3_RUNNER_H_
 
 #include <array>
 #include <cstdint>
@@ -24,7 +24,7 @@
 #include "engine/request_cohort.h"
 #include "engine/runner_resources.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 std::expected<void, std::string> Gemma3CheckpointFootprint(
     const model::Gemma3Profile& profile, const model::Gemma3StateLayout& layout,
     std::uint32_t positions, std::span<const LiveState::Range> ranges);
@@ -247,5 +247,5 @@ class Gemma3Runner final : public PagedModel {
   bool setup_started_ = false, setup_ = false, registered_ = false, bound_ = false,
        released_ = false;
 };
-}  // namespace jitllm::engine
-#endif  // JITLLM_ENGINE_GEMMA3_RUNNER_H_
+}  // namespace llmp::engine
+#endif  // LLMP_ENGINE_GEMMA3_RUNNER_H_

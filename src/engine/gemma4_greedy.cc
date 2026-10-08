@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include "engine/gemma4_greedy.h"
 
@@ -6,7 +6,7 @@
 #include <cmath>
 
 #include "execution/sampling.h"
-namespace jitllm::engine {
+namespace llmp::engine {
 std::expected<Gemma4GreedyDecision, std::string> JudgeGemma4Greedy(
     std::span<const std::int32_t> drafts, std::span<const float> heads, std::uint32_t vocab) {
   if (drafts.empty() || drafts.size() > 3 || vocab == 0 || vocab > 262144 ||
@@ -25,4 +25,4 @@ std::expected<Gemma4GreedyDecision, std::string> JudgeGemma4Greedy(
   if (!token) return std::unexpected("Gemma greedy final row refused");
   return Gemma4GreedyDecision{matched + 1, *token};
 }
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

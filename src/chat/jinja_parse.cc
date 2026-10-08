@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Jinja-subset lexer and parser (jinja.h). Written from Jinja2 3.1's
@@ -30,7 +30,7 @@
 #include "chat/jinja_internal.h"
 #include "tokenizer/unicode.h"
 
-namespace jitllm::chat::jinja {
+namespace llmp::chat::jinja {
 namespace {
 
 enum class Tok : std::uint8_t {
@@ -1718,4 +1718,4 @@ std::expected<Body, Error> ParseProgram(std::string_view source, const Limits& l
   return parser.Run();
 }
 
-}  // namespace jitllm::chat::jinja
+}  // namespace llmp::chat::jinja

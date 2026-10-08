@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The keeper of conversation records (D-105; kept_record.h): what makes a
@@ -27,8 +27,8 @@
 // (platform/kept_files.h), read with direct I/O. The CPU tests drive it
 // with files of their own.
 
-#ifndef JITLLM_RUNTIME_STATE_KEEPER_H_
-#define JITLLM_RUNTIME_STATE_KEEPER_H_
+#ifndef LLMP_RUNTIME_STATE_KEEPER_H_
+#define LLMP_RUNTIME_STATE_KEEPER_H_
 
 #include <atomic>
 #include <chrono>
@@ -50,7 +50,7 @@
 #include "runtime/intake_limits.h"
 #include "runtime/kept_record.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 // The SHA-256 of each place in the open file `fd`, read with direct I/O
 // (each place 4 KiB-aligned and at most kept::kExtentBytes), over at most
@@ -211,6 +211,6 @@ class StateKeeper {
   std::jthread worker_;
 };
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_STATE_KEEPER_H_
+#endif  // LLMP_RUNTIME_STATE_KEEPER_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The resident expert slab's pages (engine/paged_weights.h LayOutSlab):
@@ -19,11 +19,11 @@
 
 namespace {
 
-using jitllm::engine::kPagedExtent;
-using jitllm::engine::kSlabSlotBytes;
-using jitllm::engine::LayOutSlab;
-using jitllm::engine::SlabLayout;
-using jitllm::test_support::Failed;
+using llmp::engine::kPagedExtent;
+using llmp::engine::kSlabSlotBytes;
+using llmp::engine::LayOutSlab;
+using llmp::engine::SlabLayout;
+using llmp::test_support::Failed;
 
 // Each page's read and pieces: aligned, within the slot and the page, each
 // piece's first and last byte landing where its group's byte belongs and

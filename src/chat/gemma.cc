@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Gemma family's chat formats, as their templates render them through
@@ -21,7 +21,7 @@
 //   instead of raising) and Google's 2026-04-28 template (NVIDIA's NVFP4
 //   checkpoints: no preserve_thinking, earlier reasoning only with tool
 //   calls, `None` for nulls, no turn continuation; its 2026-05-18 revision
-//   differs only in tool results given as content parts, which jitLLM's
+//   differs only in tool results given as content parts, which llmpalooza's
 //   messages cannot express). Google's two earlier templates (2026-04-02
 //   and 2026-04-10) have no renderer: the variant probes tell them apart.
 //
@@ -45,7 +45,7 @@
 #include "chat/pyjson.h"
 #include "chat/writer.h"
 
-namespace jitllm::chat {
+namespace llmp::chat {
 namespace {
 
 using base::json::Value;
@@ -803,7 +803,7 @@ std::expected<Rendered, Error> RenderGemma4Variant(const Conversation& c,
       prev = Prev::kToolCall;
     }
     // The tool results after a message with tool calls, each answering
-    // (the templates match call IDs, which jitLLM's messages lack, so every
+    // (the templates match call IDs, which llmpalooza's messages lack, so every
     // call matches) the last call.
     bool responded = false;
     if (calls) {
@@ -937,4 +937,4 @@ std::expected<Rendered, Error> RenderGemma4April(const Conversation& c) {
   return RenderGemma4Variant(c, {.july = false});
 }
 
-}  // namespace jitllm::chat
+}  // namespace llmp::chat

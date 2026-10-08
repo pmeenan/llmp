@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "providers/fake/fake_storage.h"
@@ -14,7 +14,7 @@
 
 #include "providers/storage.h"
 
-namespace jitllm::providers::fake {
+namespace llmp::providers::fake {
 
 FakeStorage::FakeStorage(std::size_t depth, std::uint32_t alignment)
     : depth_(depth), alignment_(alignment) {}
@@ -173,4 +173,4 @@ std::size_t FakeStorage::Harvest(std::span<IoCompletion> out, bool /*wait*/) {
   return produced;
 }
 
-}  // namespace jitllm::providers::fake
+}  // namespace llmp::providers::fake

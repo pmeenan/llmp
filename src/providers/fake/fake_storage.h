@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The deterministic storage fake (docs/architecture.md#providers): files
@@ -10,8 +10,8 @@
 // request's count fills its segments in order, as the kernel's does. It
 // never blocks.
 
-#ifndef JITLLM_PROVIDERS_FAKE_FAKE_STORAGE_H_
-#define JITLLM_PROVIDERS_FAKE_FAKE_STORAGE_H_
+#ifndef LLMP_PROVIDERS_FAKE_FAKE_STORAGE_H_
+#define LLMP_PROVIDERS_FAKE_FAKE_STORAGE_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -23,7 +23,7 @@
 
 #include "providers/storage.h"
 
-namespace jitllm::providers::fake {
+namespace llmp::providers::fake {
 
 class FakeStorage final : public Storage {
  public:
@@ -82,6 +82,6 @@ class FakeStorage final : public Storage {
   std::deque<std::vector<IoSegment>> segments_;  // vectored requests', for their lifetime
 };
 
-}  // namespace jitllm::providers::fake
+}  // namespace llmp::providers::fake
 
-#endif  // JITLLM_PROVIDERS_FAKE_FAKE_STORAGE_H_
+#endif  // LLMP_PROVIDERS_FAKE_FAKE_STORAGE_H_

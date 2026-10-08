@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Compatible Gemma3 HTTP prefill, ordinary progress and restart adoption controls."""
 import argparse
@@ -37,11 +37,11 @@ def main():
     parser.add_argument('--library-path', type=Path, required=True)
     args = parser.parse_args()
     binding = json.loads(args.binding.read_text())
-    runtime_sha = binding['paths']['build/spark-native/src/runtime/jitllm-runtime']['sha256']
+    runtime_sha = binding['paths']['build/spark-native/src/runtime/llmp-runtime']['sha256']
     assert sha(args.runtime) == runtime_sha
     assert binding['receipt']['official'] and binding['receipt']['cuda']
     for name in ('libcublas.so.13', 'libcublasLt.so.13'):
-        assert sha(args.library_path / name) == binding['paths']['build/spark-native/lib/jitllm/' + name]['sha256']
+        assert sha(args.library_path / name) == binding['paths']['build/spark-native/lib/llmp/' + name]['sha256']
     environment = {**os.environ, 'LD_LIBRARY_PATH': str(args.library_path.resolve())}
     # All three actual context/refusal/reference screens must finish first.
     for scenario in ('unequal', 'ring', 'short'):

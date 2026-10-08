@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-# jitLLM's clang-tidy checks (D-059). Findings are errors. Third-party code is
+# Llmpalooza's clang-tidy checks (D-059). Findings are errors. Third-party code is
 # added as SYSTEM, so its headers are never analyzed.
 ---
 Checks: >

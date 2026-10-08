@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "scheduler/scheduler.h"
@@ -28,7 +28,7 @@
 #include "scheduler/completions.h"
 #include "scheduler/tasks.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 namespace {
 std::atomic<std::uint64_t> next_placement_instance{1};
 }  // namespace
@@ -1053,4 +1053,4 @@ std::expected<void, Fault> Scheduler::Run() {
   }
 }
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler

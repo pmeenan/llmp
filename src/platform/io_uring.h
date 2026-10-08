@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A minimal io_uring ring over the raw system calls (D-034): reads, writes
@@ -10,8 +10,8 @@
 // side publishes a submission tail with release ordering and reads the
 // completion tail with acquire ordering, as the kernel's ABI requires.
 
-#ifndef JITLLM_PLATFORM_IO_URING_H_
-#define JITLLM_PLATFORM_IO_URING_H_
+#ifndef LLMP_PLATFORM_IO_URING_H_
+#define LLMP_PLATFORM_IO_URING_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -21,7 +21,7 @@
 
 struct iovec;
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 struct Completion {
   std::uint64_t user_data = 0;
@@ -102,6 +102,6 @@ class IoUring {
   unsigned sq_prepared_ = 0;  // entries written past the published tail
 };
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_IO_URING_H_
+#endif  // LLMP_PLATFORM_IO_URING_H_

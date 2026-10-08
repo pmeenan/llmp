@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The GGUF metadata an artifact keeps (docs/artifact-format.md, import rule
@@ -17,8 +17,8 @@
 // Only the values of the keys the caller names are returned; every other
 // value is skipped unread (its bytes still bounded).
 
-#ifndef JITLLM_ARTIFACT_GGUF_METADATA_H_
-#define JITLLM_ARTIFACT_GGUF_METADATA_H_
+#ifndef LLMP_ARTIFACT_GGUF_METADATA_H_
+#define LLMP_ARTIFACT_GGUF_METADATA_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -32,7 +32,7 @@
 
 #include "artifact/error.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 
 inline constexpr std::uint64_t kMaxGgufKeys = std::uint64_t{1} << 16U;
 // The longest wanted array the reader materializes (a vocabulary's worth).
@@ -62,6 +62,6 @@ using GgufMetadata = std::map<std::string, GgufValue, std::less<>>;
 std::expected<GgufMetadata, Error> ReadGgufMetadata(std::span<const std::byte> bytes,
                                                     std::span<const std::string_view> wanted);
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact
 
-#endif  // JITLLM_ARTIFACT_GGUF_METADATA_H_
+#endif  // LLMP_ARTIFACT_GGUF_METADATA_H_

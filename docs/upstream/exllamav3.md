@@ -1,13 +1,13 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # ExLlamaV3
 
 - **Repository:** [turboderp-org/exllamav3](https://github.com/turboderp-org/exllamav3),
   MIT.
-- **jitLLM's pin:** `6b84a21b6f1e5da3f291b9e1019061f0de788279` (one commit
+- **Llmpalooza's pin:** `6b84a21b6f1e5da3f291b9e1019061f0de788279` (one commit
   after v1.5.1, 2026-09-20; [sources.lock.json](../../third_party/sources.lock.json)).
-  jitLLM compiles only the kernels its native EXL3 linear launches, from its
+  Llmpalooza compiles only the kernels its native EXL3 linear launches, from its
   own launchers (`src/kernels/exl3/`, D-053, D-080), and links them into tests
   and benchmarks only. Its changes are in
   [third_party/patches/exllamav3/](../../third_party/patches/exllamav3/).
@@ -26,8 +26,8 @@
   `exllamav3/exllamav3_ext/quant/exl3_gemm_inner.cuh` (`frag_a`, `frag_b`,
   `frag_c`, `frag_c_h`, about line 217) and two in `quant/reconstruct.cu`
   (`FragB frag[2]`) carry it.
-- **jitLLM's workaround:** `0001-jitllm-adaptations.patch` and
-  `0003-jitllm-kernel-split.patch` drop the keyword. The kernels' SASS is
+- **Llmpalooza's workaround:** `0001-llmp-adaptations.patch` and
+  `0003-llmp-kernel-split.patch` drop the keyword. The kernels' SASS is
   unchanged (checked against the reference build's hashes,
   [licensing.md](../licensing.md)). Cost: two small hunks to rebase.
 - **Upstream master:** all four in `exl3_gemm_inner.cuh` are still there at
@@ -42,14 +42,14 @@
 
 - **Status:** carry.
 - **Found:** 2026-09 (M2), pin `6b84a21`.
-- **Problem (for jitLLM):** `util.cuh`'s `cuda_check`, `gpu_assert`,
+- **Problem (for llmpalooza):** `util.cuh`'s `cuda_check`, `gpu_assert`,
   `cublas_check` and `cublas_assert` print and call `exit()`. And
   `quant/reconstruct.cu`, `quant/hadamard.cu` and `add.cu` hold both the
   kernels and their ATen host wrappers, which need PyTorch headers.
-  jitLLM owns dispatch and returns errors as values (D-066), so it removes
+  Llmpalooza owns dispatch and returns errors as values (D-066), so it removes
   the helpers (0001) and the wrappers and their includes (0003), and
   instantiates only the kernels it launches (0002 adds its CMake and
-  `jitllm/jitllm_exl3_kernels.cu`).
+  `llmp/llmp_exl3_kernels.cu`).
 - **Upstream master:** not checked.
 - **Proposed action:** none by default: this is upstream's design, not a
   bug. If the owner wants a smaller patch 0003, a PR moving each file's
@@ -64,9 +64,9 @@
 - **Problem:** importing the extension builds every unit, including
   `avx512_target.cpp` (`__builtin_cpu_supports`) and host spin waits using
   `__builtin_ia32_pause`, so the unmodified build fails on ARM.
-- **jitLLM's workaround:** only the external reference build carries
+- **Llmpalooza's workaround:** only the external reference build carries
   [arm-reference.patch](../experiments/exl3-reference/arm-reference.patch).
-  jitLLM's own build never compiles those files.
+  Llmpalooza's own build never compiles those files.
 - **Upstream master:** at `d3739fd`, `avx512_target.cpp` guards the probe
   with an x86 check and `cpu/moe_handoff.cu` uses `yield` on AArch64. The
   other files in the reference patch (`avx2_target.cpp`, the CPU MoE and the

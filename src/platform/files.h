@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Small reads of the kernel's text interfaces (/proc, /sys) and of
 // directories, with errors as values (D-066); a file's inode generation;
 // and anonymous memory files.
 
-#ifndef JITLLM_PLATFORM_FILES_H_
-#define JITLLM_PLATFORM_FILES_H_
+#ifndef LLMP_PLATFORM_FILES_H_
+#define LLMP_PLATFORM_FILES_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -17,7 +17,7 @@
 #include <system_error>
 #include <vector>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 inline constexpr std::size_t kSmallFileLimit = std::size_t{64} * 1024;
 
@@ -65,6 +65,6 @@ struct ExecutableStamp {
 };
 std::optional<ExecutableStamp> RunningExecutableStamp();
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_FILES_H_
+#endif  // LLMP_PLATFORM_FILES_H_

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Validate external raw results and retain aggregates, never raw traces."""
 
@@ -234,7 +234,7 @@ def main():
     model_runner = kernel_runner = digest(here / "measure.py")
     require(all(re.fullmatch(r"[0-9a-f]{64}", h) for h in (model_runner, kernel_runner)), "invalid runner hash pin")
     fixtures = {f["repository"].rsplit("-", 1)[1]: f for f in json.loads((here / "pins.json").read_text())["fixtures"]}
-    result={"recorded_on":"2026-09-22","scope":"External reference; no native jitLLM performance or paging claim",
+    result={"recorded_on":"2026-09-22","scope":"External reference; no native llmpalooza performance or paging claim",
             "models":[],"kernels":[],"cross_profile":[],"raw_receipts":[],"kernel_symbols":[]}
     result["expected_runner_sha256"] = {"model": model_runner, "kernels": kernel_runner}
     symbols={}

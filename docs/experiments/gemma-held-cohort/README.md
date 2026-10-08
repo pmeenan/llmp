@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma4 held-cohort selection
@@ -67,7 +67,7 @@ The successful build's binding is
 `ba1b8605f3db731f7df38ef9548f240d9517c1c3eb8b60ef0d63f0024851f4a2`.
 All six installed supervised jobs completed with rc 0. Raw responses, logs,
 inventories and receipts stay outside Git under
-`/tmp/jitllm-m35-coordination/gemma4-cohort-guard-raw` and Spark B's
+`/tmp/llmp-m35-coordination/gemma4-cohort-guard-raw` and Spark B's
 `~/scratch/m35-gemma4-cohort-guard/run1`.
 
 Per-task TensorFold HEAD on 2026-10-07 is

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The base identities and byte counts, and the catalog's state machine,
@@ -22,22 +22,22 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::test_support::Failed;
-using jitllm::base::operator""_KiB;
-using jitllm::base::operator""_MiB;
-using jitllm::catalog::Catalog;
-using jitllm::catalog::CatalogError;
-using jitllm::catalog::Closure;
-using jitllm::catalog::DomainId;
-using jitllm::catalog::ExtentDescriptor;
-using jitllm::catalog::ExtentId;
-using jitllm::catalog::ExtentState;
-using jitllm::catalog::MemoryClass;
-using jitllm::catalog::Operation;
-using jitllm::catalog::Range;
-using jitllm::catalog::Recovery;
-using jitllm::catalog::ResourceId;
+using llmp::base::Bytes;
+using llmp::test_support::Failed;
+using llmp::base::operator""_KiB;
+using llmp::base::operator""_MiB;
+using llmp::catalog::Catalog;
+using llmp::catalog::CatalogError;
+using llmp::catalog::Closure;
+using llmp::catalog::DomainId;
+using llmp::catalog::ExtentDescriptor;
+using llmp::catalog::ExtentId;
+using llmp::catalog::ExtentState;
+using llmp::catalog::MemoryClass;
+using llmp::catalog::Operation;
+using llmp::catalog::Range;
+using llmp::catalog::Recovery;
+using llmp::catalog::ResourceId;
 using ::testing::ElementsAre;
 using ::testing::Pair;
 
@@ -49,7 +49,7 @@ struct ThingTag {
 };
 
 TEST(SlotTable, StaleIdentitiesNameNothing) {
-  jitllm::base::SlotTable<ThingTag, int> table;
+  llmp::base::SlotTable<ThingTag, int> table;
   const auto first = table.Insert(1);
   ASSERT_TRUE(first.valid());
   EXPECT_EQ(*table.Find(first), 1);
@@ -79,7 +79,7 @@ TEST(Bytes, ArithmeticIsChecked) {
 }
 
 TEST(CheckDeathTest, AViolatedInvariantIsFatal) {
-  EXPECT_DEATH(jitllm::base::Check(false, "the test's invariant"),
+  EXPECT_DEATH(llmp::base::Check(false, "the test's invariant"),
                "internal invariant violated: the test's invariant");
 }
 
@@ -156,7 +156,7 @@ TEST_F(CatalogTest, StaleTicketsCannotTouchANewerOperation) {
   EXPECT_EQ(Failed(catalog_.QuarantineEviction(cancelled)), CatalogError::kStaleTicket);
   EXPECT_EQ(State(extent), ExtentState::kEvicting);
   // A load ticket cannot finish an eviction, nor the reverse.
-  const jitllm::catalog::Ticket as_load{
+  const llmp::catalog::Ticket as_load{
       .extent = extent, .operation = Operation::kLoad, .serial = evict.serial};
   EXPECT_EQ(Failed(catalog_.CompleteLoad(as_load)), CatalogError::kStaleTicket);
   ASSERT_TRUE(catalog_.CompleteEvict(evict).has_value());

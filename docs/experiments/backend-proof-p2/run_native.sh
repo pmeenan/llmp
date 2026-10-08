@@ -1,8 +1,8 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Runs one FP16 arm of jitllm_fp16_exec (benchmarks/fp16_exec.cc) on a Spark
+# Runs one FP16 arm of llmp_fp16_exec (benchmarks/fp16_exec.cc) on a Spark
 # for the FP16 Tier E gate, in the gate's order (backend-proof.md):
 #   run_native.sh plan   BUILD ARTIFACT HARNESS WORK ARM
 #   run_native.sh logits BUILD ARTIFACT HARNESS WORK ARM
@@ -31,7 +31,7 @@ case $TRAJECTORY in
   heldout) TOKENS=$WORK/heldout-ids.i64le ;;
   *) echo "unknown arm $ARM" >&2; exit 2 ;;
 esac
-BIN=$BUILD/benchmarks/jitllm_fp16_exec
+BIN=$BUILD/benchmarks/llmp_fp16_exec
 CUOBJDUMP=${CUOBJDUMP:-/usr/local/cuda/bin/cuobjdump}
 P0=$HARNESS/backend-proof-p0
 P2=$HARNESS/backend-proof-p2

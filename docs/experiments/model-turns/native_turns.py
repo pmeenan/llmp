@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Native HTTP model-turn controls; run on a Spark, keep raw receipts external."""
 import argparse
@@ -18,7 +18,7 @@ HOME = pathlib.Path.home()
 TARGET = 'c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93'
 DS = 'cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac'
 MTP = '8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40'
-MODEL = HOME / '.local/share/jitllm/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6'
+MODEL = HOME / '.local/share/llmp/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6'
 
 def request(port, model, prompt, tokens, first=None, stream=True):
     body = {'model': model, 'messages': [{'role': 'user', 'content': prompt}],
@@ -78,7 +78,7 @@ class Service:
         config = f'''schema_version = 2
 [storage]
 data_dir = "{self.path}/data"
-installed = "{HOME}/.local/share/jitllm/m3-artifacts"
+installed = "{HOME}/.local/share/llmp/m3-artifacts"
 [memory]
 spill_budget_gib = {self.spill}
 [client]
@@ -112,7 +112,7 @@ max_slots = 1
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
                 assert self.process.poll() is None, 'service exited before ready'
-                if 'jitllm-runtime: ready' in (self.path / 'service.log').read_text():
+                if 'llmp-runtime: ready' in (self.path / 'service.log').read_text():
                     return self
                 time.sleep(.2)
             raise AssertionError('service readiness deadline')

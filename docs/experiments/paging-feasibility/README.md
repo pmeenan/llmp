@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M0 paging feasibility — first cut, 2026-09-21
@@ -56,7 +56,7 @@ it does not change D-032's Clang-first runtime toolchain.
 ## Replay contract and budget
 
 `replay.py` models a **hypothetical prepared layout**, not the raw GGUF's file
-ranges or an executed jitLLM artifact. Each expert's projection/scale closure
+ranges or an executed llmpalooza artifact. Each expert's projection/scale closure
 is concatenated, then padded to whole 2 MiB extents, isolated from other experts.
 Layers 0–28 need two extents per expert; layer 29 needs three. This deliberately
 simple layout has 14,353,054,720 payload bytes and **16,374,562,816 physical
@@ -89,7 +89,7 @@ batch-64 buffers were 72.11 + 9.38 MiB. Both used 1 MiB host output. The same
 reference also logs a 748 MiB CUDA-host model buffer in addition to its
 16,147.43 MiB CUDA model buffer (the latter equals all stored tensor payloads).
 The 2 GiB headroom allowance covers this extra reference buffer and leaves
-1.27 GiB for other runtime overhead; whether jitLLM needs that duplicate
+1.27 GiB for other runtime overhead; whether llmpalooza needs that duplicate
 buffer is unproved. This is not measured peak physical
 occupancy or an admission guarantee. The real capture ran resident without
 physical pressure; the budgets below exist only in offline replay.
@@ -192,7 +192,7 @@ misses or justify enabling prefetch.
 Use a new private external output directory on the chosen Spark. Supply the
 hash-verified Gemma GGUF and frozen `final-trace.json` from reference-aba;
 the latter remains external at the recorded SHA-256. The installed copy used
-here is under `/home/pmeenan/.local/share/jitllm/aba`. If unavailable, regenerate
+here is under `/home/pmeenan/.local/share/llmp/aba`. If unavailable, regenerate
 with the A→B→A preparation harness and verify its identity before using this
 exact experiment; a different trace needs new provenance and results.
 
@@ -222,12 +222,12 @@ manual cleanup. Deliberately captured synthetic tokens, predictions, logs,
 and routes remain in private external directories; no production prompts are
 logged and no service or retention job is installed.
 
-Licenses/categories follow reference-setup: jitLLM-authored harness/replay are
+Licenses/categories follow reference-setup: llmpalooza-authored harness/replay are
 Apache-2.0; llama.cpp/GGML and their headers are external MIT reference tools;
 Gemma is external Apache-2.0 benchmark data. The image's GCC and CUDA/platform
 libraries retain their separately recorded tool/runtime terms. No model,
 upstream implementation, image, or captured token data is redistributed here.
-This does not admit a backend into jitLLM's implementation dependency profile.
+This does not admit a backend into llmpalooza's implementation dependency profile.
 
 ## First-cut handoff and subsequent work
 
@@ -240,7 +240,7 @@ Workstation verification: replay completed both eight-point budget sweeps;
 unit checks cover physical padding, atomic leases, LRU/layer identity,
 impossible groups/envelopes, full-residency cold misses, route corruption and
 truncation, provenance and paired batches, simultaneous-access distances and
-ID relabeling, and cleanup success/failure/interruption. No jitLLM runtime,
+ID relabeling, and cleanup success/failure/interruption. No llmpalooza runtime,
 physical paging, Spark-b experiment, or numerical-logit comparison ran.
 
 At this first-cut handoff the full plan checkbox remained open. The subsequent
@@ -250,7 +250,7 @@ records conditional Qwen trajectory estimates after failed numerical
 equivalence, and conservative recomputation for unvalidated spill continuations.
 It also supersedes any assumption that a successful short Gemma continuation
 proves complete saved SWA-window coverage (RE-007). These are still offline
-feasibility results, not implemented paging or measured jitLLM speedups.
+feasibility results, not implemented paging or measured llmpalooza speedups.
 The owner subsequently accepted switching/stall criteria in D-036
 (2026-09-22); implementation validation remains ahead. The original first-cut
 verification and review below are historical records.

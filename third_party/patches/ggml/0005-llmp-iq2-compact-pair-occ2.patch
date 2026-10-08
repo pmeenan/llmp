@@ -1,0 +1,109 @@
+From: llmpalooza contributors
+Subject: [PATCH] cuda: scope IQ2 compact-pair occupancy two
+
+Leave generic MMQ configuration rows unchanged. Add a distinct default-false
+kernel template specialization and instantiate its guarded GB10 bridge only
+in the existing O3 IQ2 defining unit. Native paired dispatch funds the J64
+worklist while preserving ordinary map/scatter preparation and J128 guards.
+The bridge takes DeepSeek V4's gate/up experts over 256 to 4,096 tokens.
+
+diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
+--- a/ggml/src/ggml-cuda/mmq.cuh
++++ b/ggml/src/ggml-cuda/mmq.cuh
+@@ -958,8 +958,8 @@
+ 
+ // The mul_mat_q kernel implements "stream-k" work partitioning as described in https://arxiv.org/abs/2301.03598
+ 
+-template <ggml_type type, int J, bool fallback, ggml_prec prec_src1 = GGML_PREC_Q8 , bool compact = false>
+-__launch_bounds__(ggml_cuda_mmq_get_nthreads(type, J, fallback, prec_src1), ggml_cuda_mmq_get_occupancy(type, J, fallback, prec_src1))
++template <ggml_type type, int J, bool fallback, ggml_prec prec_src1 = GGML_PREC_Q8, bool compact = false, bool iq2_occ2 = false>
++__launch_bounds__(ggml_cuda_mmq_get_nthreads(type, J, fallback, prec_src1), iq2_occ2 ? 2 : ggml_cuda_mmq_get_occupancy(type, J, fallback, prec_src1))
+ static __global__ void mul_mat_q(
+         const char * __restrict__ x, const int * __restrict__ y, const int32_t * __restrict__ ids_dst,
+         const int32_t * __restrict__ expert_bounds, float * __restrict__ dst, float * __restrict__ tmp_fixup,
+@@ -968,6 +968,8 @@
+         const uint3 channel_ratio, const uint3 nchannels_y, const int stride_channel_x, const int stride_channel_y, const int stride_channel_dst,
+         const uint3 sample_ratio, const uint3 nsamples_y, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst,
+         const uint3 ntx, const int2 * __restrict__ expert_tiles = nullptr) {
++
++    static_assert(!iq2_occ2 || (type == GGML_TYPE_IQ2_XXS && J == 64 && !fallback && compact && prec_src1 == GGML_PREC_Q8));
+ 
+     // Skip unused template specializations for faster compilation:
+     if (ggml_cuda_mmq_get_config(type, J, fallback, prec_src1).type == GGML_TYPE_COUNT) {
+@@ -1465,8 +1467,9 @@
+     return nbs_ids + nbs_x + GGML_PAD(nbs_y, config.nthreads*sizeof(int));
+ }
+ 
+-template <ggml_type type, int J, bool fallback, ggml_prec prec_src1 = GGML_PREC_Q8>
++template <ggml_type type, int J, bool fallback, ggml_prec prec_src1 = GGML_PREC_Q8, bool iq2_occ2 = false>
+ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
++    static_assert(!iq2_occ2 || (type == GGML_TYPE_IQ2_XXS && J == 64 && !fallback && prec_src1 == GGML_PREC_Q8));
+     const int id = ggml_cuda_get_device();
+     const int cc = ggml_cuda_info().devices[id].cc;
+     const int nsm = ggml_cuda_info().devices[id].nsm;
+@@ -1479,8 +1482,10 @@
+ 
+     const dim3 block_dims(warp_size, nwarps, 1);
+ 
++    if constexpr (!iq2_occ2) {
+     CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, J, false, prec_src1>), nbytes_shared);
+     CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, J,  true, prec_src1>), nbytes_shared);
++    }
+ 
+     const int nty  = (args.nrows_x   + config.I - 1) / config.I;
+     const int ntx  = (args.ncols_max + config.J - 1) / config.J;
+@@ -1502,15 +1507,19 @@
+ #ifdef GGML_LLMP
+     if constexpr (type != GGML_TYPE_MXFP4 && type != GGML_TYPE_NVFP4) {
+         if (GGML_CUDA_CC_IS_NVIDIA(cc) && mmq_use_compact_experts(args, config.J)) {
++            if constexpr (iq2_occ2) {
++                CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, J, fallback, prec_src1, true, true>), nbytes_shared);
++            } else {
+             CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, J, false, prec_src1, true>), nbytes_shared);
+             CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, J,  true, prec_src1, true>), nbytes_shared);
++            }
+             const int capacity = mmq_compact_expert_capacity(type, args.nrows_x,
+                 args.ncols_max, args.ncols_dst, args.nchannels_x, config.J);
+             ggml_cuda_pool_alloc<int2> tiles(ctx.pool(id), capacity);
+             mmq_expert_tiles<J><<<1, 256, (args.nchannels_x + 1)*sizeof(int), stream>>>
+                 (args.expert_bounds, tiles.ptr, args.nchannels_x, capacity);
+             const dim3 grid(nty, capacity, 1);
+-            mul_mat_q<type, J, fallback, prec_src1, true><<<grid, block_dims, nbytes_shared, stream>>>
++            mul_mat_q<type, J, fallback, prec_src1, true, iq2_occ2><<<grid, block_dims, nbytes_shared, stream>>>
+                 (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr, args.y_scale,
+                  blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
+                  channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
+@@ -1686,6 +1695,11 @@
+ // -----------------------------------------
+ extern DECL_MMQ_CASE(GGML_TYPE_IQ1_S);
+ extern DECL_MMQ_CASE(GGML_TYPE_IQ2_XXS);
++#ifdef GGML_LLMP
++// Defined in the existing O3 IQ2 instance; caller funds J64 worklist/tail guards.
++cudaError_t ggml_cuda_mul_mat_iq2_occ2_pair_product(
++        ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream);
++#endif
+ extern DECL_MMQ_CASE(GGML_TYPE_IQ2_XS);
+ extern DECL_MMQ_CASE(GGML_TYPE_IQ2_S);
+ extern DECL_MMQ_CASE(GGML_TYPE_IQ3_XXS);
+diff --git a/ggml/src/ggml-cuda/template-instances/mmq-instance-iq2_xxs.cu b/ggml/src/ggml-cuda/template-instances/mmq-instance-iq2_xxs.cu
+--- a/ggml/src/ggml-cuda/template-instances/mmq-instance-iq2_xxs.cu
++++ b/ggml/src/ggml-cuda/template-instances/mmq-instance-iq2_xxs.cu
+@@ -3,3 +3,18 @@
+ #include "../mmq.cuh"
+ 
+ DECL_MMQ_CASE(GGML_TYPE_IQ2_XXS);
++
++#ifdef GGML_LLMP
++cudaError_t ggml_cuda_mul_mat_iq2_occ2_pair_product(
++        ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
++    if (ggml_cuda_info().devices[ctx.device].cc != 1210 || args.type_x != GGML_TYPE_IQ2_XXS ||
++            args.ncols_x != 4096 || args.nrows_x != 2048 || args.ncols_max < 256 ||
++            args.ncols_max > 4096 || args.ncols_dst != 6 * args.ncols_max || args.ncols_y != args.ncols_dst ||
++            args.nrows_dst != 2048 || args.ncols_opt != args.ncols_max || args.nchannels_x != 256 || args.nchannels_y != 256 ||
++            args.nsamples_x != 1 || args.nsamples_y != 1 || !mmq_use_compact_experts(args, 64)) {
++        return cudaErrorInvalidValue;
++    }
++    launch_mul_mat_q<GGML_TYPE_IQ2_XXS, 64, false, GGML_PREC_Q8, true>(ctx, args, stream);
++    return cudaGetLastError();
++}
++#endif

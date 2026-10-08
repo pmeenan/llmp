@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // General JSON (RFC 8259), parsed from untrusted bytes without exceptions:
@@ -18,8 +18,8 @@
 // checked while parsing. The document owns everything it returns, so it
 // does not borrow the input.
 
-#ifndef JITLLM_BASE_JSON_H_
-#define JITLLM_BASE_JSON_H_
+#ifndef LLMP_BASE_JSON_H_
+#define LLMP_BASE_JSON_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -29,7 +29,7 @@
 #include <string_view>
 #include <vector>
 
-namespace jitllm::base::json {
+namespace llmp::base::json {
 
 enum class Kind : std::uint8_t { kNull, kFalse, kTrue, kNumber, kString, kArray, kObject };
 
@@ -134,6 +134,6 @@ std::optional<std::size_t> FirstInvalidUtf8(std::string_view bytes);
 // Appends RFC 8259's minimal escaping of a UTF-8 string, with its quotes.
 void AppendQuoted(std::string_view text, std::string& out);
 
-}  // namespace jitllm::base::json
+}  // namespace llmp::base::json
 
-#endif  // JITLLM_BASE_JSON_H_
+#endif  // LLMP_BASE_JSON_H_

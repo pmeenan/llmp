@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // Port of llama.cpp b29c606e gemma4.cpp and build_ffn/build_moe_ffn.
@@ -20,13 +20,13 @@
 
 #include "artifact/representation.h"
 #include "kernels/ggml/fusion.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/shared_q8.h"
 #include "kernels/ggml/validate_ext.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
-namespace md = jitllm::model;
+namespace md = llmp::model;
 std::unexpected<KernelFailure> Rejected(std::string detail) {
   return std::unexpected(
       KernelFailure{.error = KernelError::kRejected, .detail = std::move(detail)});
@@ -104,7 +104,7 @@ std::expected<void, KernelFailure> Check(const md::Gemma4Profile& p, const md::G
       if (!o.expert_stride.empty() && r.index >= o.expert_stride.size()) {
         return Rejected("missing Gemma4 prepared expert stride");
       }
-      const auto* type = jitllm::artifact::FindGgmlType(r.type);
+      const auto* type = llmp::artifact::FindGgmlType(r.type);
       const auto align = std::lcm(std::uint64_t{16}, std::uint64_t{type->block_bytes});
       const auto stride =
           o.expert_stride.empty() ? Pad(r.readable, align) : o.expert_stride[r.index];
@@ -228,7 +228,7 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(
       return w.resource.index == r.index && w.resource.expert_array == r.expert_array;
     });
     if (it != g.weights.end()) return it->tensor;
-    const auto* type = jitllm::artifact::FindGgmlType(r.type);
+    const auto* type = llmp::artifact::FindGgmlType(r.type);
     std::array<std::int64_t, 4> ne{1, 1, 1, 1};
     for (std::size_t i = 0; i < r.ne.size(); ++i) ne[i] = static_cast<std::int64_t>(r.ne[i]);
     if (r.expert_array) ne[2] = p.experts;
@@ -239,7 +239,7 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(
       t->nb[2] = o.expert_stride.empty() ? Pad(r.readable, align) : o.expert_stride[r.index];
       t->nb[3] = t->nb[2] * p.experts;
     }
-    if (type->block_elements > 1 && r.ne[0] % jitllm::artifact::kGgmlRowPadding != 0) {
+    if (type->block_elements > 1 && r.ne[0] % llmp::artifact::kGgmlRowPadding != 0) {
       MarkRowPaddingReadable(t);
     }
     g.weights.push_back({t, r});
@@ -466,4 +466,4 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(
     return std::unexpected(transformed.error());
   return g;
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

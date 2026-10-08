@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The CUDA device-memory provider on a real device (label `gpu`, and
 // `gpu-discrete` on a discrete GPU the build targets, D-082): the shared
 // rules hold under the driver, device and host classes exist on every GPU
-// `jitllm doctor` accepts, host backing given access is the CPU's at the
+// `llmp doctor` accepts, host backing given access is the CPU's at the
 // same address, and direct file reads land in it with no copy (D-034).
 
 #include "providers/cuda/cuda_device_memory.h"
@@ -32,15 +32,15 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::providers::Access;
-using jitllm::providers::BackingKind;
-using jitllm::providers::ProviderError;
-using jitllm::providers::VmmProvider;
-using jitllm::test_support::FailedCode;
+using llmp::base::Bytes;
+using llmp::providers::Access;
+using llmp::providers::BackingKind;
+using llmp::providers::ProviderError;
+using llmp::providers::VmmProvider;
+using llmp::test_support::FailedCode;
 
 std::unique_ptr<VmmProvider> Open() {
-  auto memory = jitllm::providers::cuda::OpenDeviceMemory(0);
+  auto memory = llmp::providers::cuda::OpenDeviceMemory(0);
   EXPECT_TRUE(memory.has_value()) << (memory ? "" : memory.error().detail);
   return memory ? std::move(*memory) : nullptr;
 }
@@ -120,7 +120,7 @@ TEST(CudaDeviceMemory, DirectReadsLandInHostBacking) {
   ASSERT_NE(memory, nullptr);
   const Bytes granule = memory->Granularity();
   const std::uint64_t length = granule.value() * 2;
-  const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   const std::filesystem::path directory =
       base != nullptr ? std::filesystem::path(base) : std::filesystem::path(::testing::TempDir());
   std::filesystem::create_directories(directory);
@@ -142,17 +142,17 @@ TEST(CudaDeviceMemory, DirectReadsLandInHostBacking) {
   auto* destination =
       reinterpret_cast<std::byte*>(memory->RangeOf(reservation).value().base);  // NOLINT
 
-  auto storage = jitllm::providers::UringStorage::Create(4);
+  auto storage = llmp::providers::UringStorage::Create(4);
   ASSERT_TRUE(storage.has_value()) << storage.error().message();
-  jitllm::providers::DirectReader reader(**storage, jitllm::providers::ReaderSettings{});
+  llmp::providers::DirectReader reader(**storage, llmp::providers::ReaderSettings{});
   ASSERT_TRUE(reader.Read(1, {.fd = fd, .offset = 0, .memory = destination, .length = length}, 1)
                   .has_value());
-  std::vector<jitllm::providers::FinishedRead> finished;
+  std::vector<llmp::providers::FinishedRead> finished;
   for (int i = 0; i < 1000 && finished.empty(); ++i) {
     finished = reader.Poll(true);
   }
   ASSERT_EQ(finished.size(), 1U);
-  EXPECT_EQ(finished[0].outcome, jitllm::providers::ReadOutcome::kComplete);
+  EXPECT_EQ(finished[0].outcome, llmp::providers::ReadOutcome::kComplete);
   EXPECT_EQ(finished[0].bytes, length);
   EXPECT_EQ(std::memcmp(destination, staging, length), 0);
 
@@ -163,14 +163,14 @@ TEST(CudaDeviceMemory, DirectReadsLandInHostBacking) {
   (void)::close(fd);
 }
 
-// Host to device and back on jitLLM's streams, with fences observed by
+// Host to device and back on llmpalooza's streams, with fences observed by
 // query alone.
 TEST(CudaDeviceExecution, CopiesFollowTheirFences) {
   const std::unique_ptr<VmmProvider> memory = Open();
   ASSERT_NE(memory, nullptr);
-  auto opened = jitllm::providers::cuda::OpenDeviceExecution(0);
+  auto opened = llmp::providers::cuda::OpenDeviceExecution(0);
   ASSERT_TRUE(opened.has_value()) << (opened ? "" : opened.error().detail);
-  jitllm::providers::DeviceExecution& execution = **opened;
+  llmp::providers::DeviceExecution& execution = **opened;
   const Bytes granule = memory->Granularity();
   const auto reservation = memory->Reserve(Bytes(granule.value() * 3)).value();
   const auto source = memory->Create(ClassOf(*memory, BackingKind::kHost), granule).value();
@@ -198,11 +198,10 @@ TEST(CudaDeviceExecution, CopiesFollowTheirFences) {
           .has_value());
   const auto downloaded = execution.Record(download).value();
   // The completion lane queries while the submission lane goes on.
-  std::expected<jitllm::providers::FenceState, jitllm::providers::Failure> state =
-      jitllm::providers::FenceState::kPending;
+  std::expected<llmp::providers::FenceState, llmp::providers::Failure> state =
+      llmp::providers::FenceState::kPending;
   std::jthread completion([&] {
-    for (int i = 0; i < 1000000 && state && *state == jitllm::providers::FenceState::kPending;
-         ++i) {
+    for (int i = 0; i < 1000000 && state && *state == llmp::providers::FenceState::kPending; ++i) {
       state = execution.Query(downloaded);
     }
   });
@@ -210,9 +209,9 @@ TEST(CudaDeviceExecution, CopiesFollowTheirFences) {
             ProviderError::kInvalid);  // unreleased fence
   completion.join();
   ASSERT_TRUE(state.has_value()) << state.error().detail;
-  ASSERT_EQ(*state, jitllm::providers::FenceState::kComplete);
+  ASSERT_EQ(*state, llmp::providers::FenceState::kComplete);
   EXPECT_EQ(host_out[granule.value() - 1], 0x3c);
-  EXPECT_EQ(execution.Query(uploaded).value(), jitllm::providers::FenceState::kComplete);
+  EXPECT_EQ(execution.Query(uploaded).value(), llmp::providers::FenceState::kComplete);
   ASSERT_TRUE(execution.Release(uploaded).has_value());
   ASSERT_TRUE(execution.Release(downloaded).has_value());
   ASSERT_TRUE(execution.DestroyStream(upload).has_value());

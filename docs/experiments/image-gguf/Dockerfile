@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-# External GGML image reference runner; not a jitLLM build or SDK pin.
+# External GGML image reference runner; not a llmpalooza build or SDK pin.
 # arm64 manifest of nvidia/cuda:13.0.3-devel-ubuntu24.04 (driver stack is CUDA 13.0).
 FROM nvidia/cuda@sha256:2396393dc8a031a6faf810894ec8e40c8d80e2a1177cfda0c2bf81acac9aa240
 ARG SDCPP_COMMIT=c92d73c408515c94beef32161bb5960764fde7a0

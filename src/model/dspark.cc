@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/dspark.h"
@@ -17,7 +17,7 @@
 #include "model/dsv4.h"
 #include "model/state.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 namespace {
 
 std::unexpected<std::string> Refused(std::string detail) {
@@ -248,4 +248,4 @@ std::vector<std::vector<StateRange>> DsparkWrites(const DsparkProfile& profile,
   return out;
 }
 
-}  // namespace jitllm::model
+}  // namespace llmp::model

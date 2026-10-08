@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Judges jitLLM's DeepSeek V4 run against the llama.cpp oracle (README.md).
+"""Judges llmpalooza's DeepSeek V4 run against the llama.cpp oracle (README.md).
 
-  compare.py ORACLE_UNFUSED ORACLE_FUSED JITLLM [--dump ORACLE_DUMP] [--free JITLLM_FREE]
+  compare.py ORACLE_UNFUSED ORACLE_FUSED LLMP [--dump ORACLE_DUMP] [--free LLMP_FREE]
 
-ORACLE_* are oracle.cc's output directories, JITLLM jitllm_dsv4_exec's run
+ORACLE_* are oracle.cc's output directories, LLMP llmp_dsv4_exec's run
 forced on the unfused oracle's tokens (--force generated.tokens). Prints one
 JSON document: per prompt, the logit differences against each oracle arm and
 between the arms, the teacher-forced argmax check with its near-tie rule,
@@ -74,7 +74,7 @@ def main(argv):
             margin = float(top[1] - top[0])
             step_diff = float(np.max(np.abs(j[k] - o[k])))
             tie = margin < 2 * step_diff
-            report["exceptions"].append({"prompt": name, "step": k, "oracle": want, "jitllm": argmax[k],
+            report["exceptions"].append({"prompt": name, "step": k, "oracle": want, "llmp": argmax[k],
                                          "oracle_margin": margin, "max_abs_diff": step_diff,
                                          "near_tie": tie})
             if not tie:
@@ -89,7 +89,7 @@ def main(argv):
         found = re.search(r'"ppl":(\{[^}]*\})', text)
         report[f"ppl_{arm}"] = json.loads(found.group(1)) if found else None
     if "ppl" in jsummary:
-        report["ppl_jitllm"] = jsummary["ppl"]
+        report["ppl_llmp"] = jsummary["ppl"]
         ref = report["ppl_unfused"]["ppl"]
         rel = abs(jsummary["ppl"]["ppl"] - ref) / ref
         report["ppl_relative_to_unfused"] = rel

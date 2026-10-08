@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The task programs a driver posts to the scheduler (engine/paged_node.h,
@@ -24,8 +24,8 @@
 // lease, until the driver ends the request. The evicting programs wait for
 // a request's lease to be released rather than retrying past it.
 
-#ifndef JITLLM_SCHEDULER_PROGRAMS_H_
-#define JITLLM_SCHEDULER_PROGRAMS_H_
+#ifndef LLMP_SCHEDULER_PROGRAMS_H_
+#define LLMP_SCHEDULER_PROGRAMS_H_
 
 #include <atomic>
 #include <chrono>
@@ -48,7 +48,7 @@
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 
 // What a program tells the thread that posted it.
 struct ProgramDone {
@@ -600,6 +600,6 @@ class AcquireProgram final : public ReportingProgram {
   bool materializing_ = false;
 };
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler
 
-#endif  // JITLLM_SCHEDULER_PROGRAMS_H_
+#endif  // LLMP_SCHEDULER_PROGRAMS_H_

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Validate cache-path diagnostics without treating their clocks as performance."""
 import argparse
@@ -48,8 +48,8 @@ def reference(directory, schedule, two_paths=False, deterministic=False, all_col
             and (not deterministic or receipt['helper_sha256'] == OUTPUTS['mia-det1-helper.py']),
             'measured controller/client/helper source pins required')
     expected_pins = {
-        'observer_sha256': 'fc34ef7a55ed95204632006ebac1ec31a5b6f573f74d37b97b2cc9710ce8cab9',
-        'launcher_sha256': 'c8353f04dc30e5d0f298217edc0ef52ec2f24bcfdb6c396e57a700468760e088',
+        'observer_sha256': '5be516800512dd909fe932804285d56428e211bd568ba5d0297f83ee2b2c582c',
+        'launcher_sha256': 'b8edbe2eb4cfe1df94ca54fd88ebc30b319ba8e71e9871b2d4794fb430b2b7bc',
         'overlay_sha256': 'f87e3bcec9453f41b289f02ed3cf82bc899ff105a0fd6a24d114d9bdc928b539',
         'source_sha256': '308d4171f892f27231655289ceb03cd4566533c7d26b8f98bd62ef0a34f986f0',
     }

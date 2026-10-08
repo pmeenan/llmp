@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Reuse validated kernel wrappers within each bind
@@ -68,7 +68,7 @@ capture controls, and the existing stale/foreign registry control. The first
 checker; its corrected shell-text retry passes against unchanged outputs.
 No full suite ran; the owner defers it while optimization work continues.
 
-Reproduce with `jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 31 both 256
+Reproduce with `llmp_gemma_prefill ARTIFACT IDS NEW_OUT 31 both 256
 normmul-on state-only lookahead-on phases-on`, and `26 all 1024` in place of
 `31 both 256` for 26B. Each sequence runs before, candidate first and candidate
 repeat. The inherited [lookahead recipe](../gemma-prefill-lookahead/README.md)

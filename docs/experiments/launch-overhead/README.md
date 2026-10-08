@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Host time per launch through the K-C launch context — 2026-09-27
@@ -62,7 +62,7 @@ therefore differs from `65a650ca…`; nothing timed changed.
 
 | File | SHA-256 |
 | --- | --- |
-| `benchmarks/launch_bench.cc` | `fd110098d15af73a5b175d0a68f2ed413e409b2ad382e66e4358633186ea7466` |
+| `benchmarks/launch_bench.cc` | `df9884124c498b9610655a8306cd6aed81561582a80a67977203814a2c14541a` |
 | `src/execution/registry.cc` | `fe71401d84fd324f61b49fb30e9b1d251af541fbb938fdd10680e827ad473f2b` |
 | `src/kernels/ggml/implementations.cc` | `c983810e9abfd398fdf0a3cc335d74e5ddfb3b4e788c2f699febd46408a69409` |
 | `src/kernels/ggml/launch.cu` | `4e88df20603cce53705f63da29c73d45163303aa032304d838c527ad6a62b225` |

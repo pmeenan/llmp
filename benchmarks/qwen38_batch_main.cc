@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <algorithm>
@@ -31,8 +31,8 @@
 #include "qwen38_batch.h"
 
 namespace {
-namespace en = jitllm::engine;
-namespace batch = jitllm::benchmarks::qwen_batch;
+namespace en = llmp::engine;
+namespace batch = llmp::benchmarks::qwen_batch;
 using en::support::Error;
 using Status = en::Status;
 
@@ -105,7 +105,7 @@ std::expected<std::vector<std::int32_t>, std::string> Read(const std::filesystem
              static_cast<std::streamsize>(ids.size() * sizeof(std::int32_t)));
   if (!input || input.gcount() != static_cast<std::streamsize>(ids.size() * sizeof(std::int32_t)) ||
       input.peek() != std::char_traits<char>::eof() || !std::ranges::all_of(ids, [](auto id) {
-        return id >= 0 && std::cmp_less(id, jitllm::model::Qwen38Flash().vocab);
+        return id >= 0 && std::cmp_less(id, llmp::model::Qwen38Flash().vocab);
       })) {
     return Error("C2 packed fixture short/extra bytes or token outside vocabulary");
   }
@@ -113,9 +113,9 @@ std::expected<std::vector<std::int32_t>, std::string> Read(const std::filesystem
 }
 
 std::string Sha(std::span<const std::int32_t> ids) {
-  jitllm::base::Sha256 sha;
+  llmp::base::Sha256 sha;
   sha.Update(std::as_bytes(ids));
-  return jitllm::base::ToHex(sha.Finish());
+  return llmp::base::ToHex(sha.Finish());
 }
 
 Status Execute(en::PagedNode& node, en::Qwen38Runner& owner, batch::Proof& proof,
@@ -138,11 +138,11 @@ Status Execute(en::PagedNode& node, en::Qwen38Runner& owner, batch::Proof& proof
     return r;
   }
   const auto fixed = node.catalog().OccupancyOf(node.domain()).Total();
-  const auto state = jitllm::base::Bytes(node.StateCapacity());
-  const auto weights = jitllm::base::Bytes(owner.weights().size() * en::kPagedExtent);
+  const auto state = llmp::base::Bytes(node.StateCapacity());
+  const auto weights = llmp::base::Bytes(owner.weights().size() * en::kPagedExtent);
   // Bounded host control vectors/graph metadata have their own conservative
   // 64MiB per request, separate from cataloged pinned/device allocations.
-  const auto host = fixed.Plus(jitllm::base::Bytes(std::uint64_t{options.requests} << 26));
+  const auto host = fixed.Plus(llmp::base::Bytes(std::uint64_t{options.requests} << 26));
   const auto first = host ? host->Plus(state) : std::nullopt;
   const auto budget = first ? first->Plus(weights) : std::nullopt;
   if (!budget || budget->value() > (std::uint64_t{100} << 30)) {
@@ -220,7 +220,7 @@ int main(int argc, char** argv) {
     error += (error.empty() ? "" : "; ") + retired.error();
   }
   std::string quoted;
-  jitllm::base::json::AppendQuoted(error, quoted);
+  llmp::base::json::AppendQuoted(error, quoted);
   const double seconds = en::support::Seconds(std::chrono::steady_clock::now() - start);
   std::string input_sha;
   for (std::size_t s = 0; s < options->requests; ++s) {

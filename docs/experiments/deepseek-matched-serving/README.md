@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek matched serving inputs — 2026-10-04
@@ -86,7 +86,7 @@ reference instrumentation, not compared to a fabricated native phase clock.
 
 Reproduction sources and raw records stay outside Git in
 `~/scratch/deepseek-matched-prefill/` on Spark A and
-`/home/pmeenan/scratch/jitllm-m3-deepseek-matched-prefill-2026-10-04/` on the
+`/home/pmeenan/scratch/llmp-m3-deepseek-matched-prefill-2026-10-04/` on the
 workstation. Run the recorded controller with `--workload prefill --cells 1
 --engines current-before-lit,ds4,current-after-lit` under the installed
 GPU supervisor, then wait for its exit. For the 256-output cells use

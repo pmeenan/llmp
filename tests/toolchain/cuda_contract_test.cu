@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The CUDA toolchain contract (D-032, D-060, D-066): NVCC with the SDK's
@@ -14,8 +14,8 @@
 #include <string>
 #include <string_view>
 
-#ifndef JITLLM_CUDA_SASS
-#error "the build defines JITLLM_CUDA_SASS (tests/toolchain/CMakeLists.txt)"
+#ifndef LLMP_CUDA_SASS
+#error "the build defines LLMP_CUDA_SASS (tests/toolchain/CMakeLists.txt)"
 #endif
 
 static_assert(__cplusplus >= 202302L, "C++23 in CUDA code too (D-032)");
@@ -27,7 +27,7 @@ namespace {
 
 constexpr int kCount = 257;
 // The compute capabilities this build has SASS for, such as "/121/86/".
-constexpr std::string_view kSass = JITLLM_CUDA_SASS;
+constexpr std::string_view kSass = LLMP_CUDA_SASS;
 
 // `if consteval` needs C++23 in both passes.
 __host__ __device__ constexpr int Offset() {

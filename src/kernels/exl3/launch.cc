@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/exl3/launch.h"
@@ -17,11 +17,11 @@
 #include <utility>
 #include <vector>
 
-#include "jitllm_exl3_kernels.h"
 #include "kernels/exl3/upstream_gemv.h"
 #include "kernels/exl3/validate.h"
+#include "llmp_exl3_kernels.h"
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -78,8 +78,8 @@ std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::Crea
     return Rejected("the lock area is not a 256-byte aligned device range");
   }
   // The host checks' constants are the kernels' (validate.h).
-  if (jitllm_exl3::GemmSharedMemory() != kGemmSharedMemory ||
-      jitllm_exl3::GemvMaxRows() != kGemvMaxRows) {
+  if (llmp_exl3::GemmSharedMemory() != kGemmSharedMemory ||
+      llmp_exl3::GemvMaxRows() != kGemvMaxRows) {
     return Rejected("the kernels' constants differ from the host checks'");
   }
   // Also makes the provider's context current, where the runtime binds.
@@ -110,8 +110,8 @@ std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::Crea
   for (const int bits : kCompiledRates) {
     for (int shape = 1; shape <= kShapes; ++shape) {
       for (const bool fp32 : {false, true}) {
-        for (const void* kernel : {jitllm_exl3::GemmKernel(bits, shape, fp32),
-                                   jitllm_exl3::MultiGemmKernel(bits, shape, fp32)}) {
+        for (const void* kernel : {llmp_exl3::GemmKernel(bits, shape, fp32),
+                                   llmp_exl3::MultiGemmKernel(bits, shape, fp32)}) {
           if (kernel == nullptr ||
               cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                    kGemmSharedMemory) != cudaSuccess) {
@@ -227,7 +227,7 @@ std::expected<int, KernelFailure> LaunchContext::GemmCoresident(int bits, int sh
   if (shape < 1 || shape > kShapes) {
     return Rejected(std::format("tile shape {}", shape));
   }
-  return Coresident(jitllm_exl3::GemmKernel(bits, shape, output == Output::kF32),
+  return Coresident(llmp_exl3::GemmKernel(bits, shape, output == Output::kF32),
                     kBlockDim.at(static_cast<std::size_t>(shape)), kGemmSharedMemory);
 }
 
@@ -236,13 +236,13 @@ std::expected<int, KernelFailure> LaunchContext::MultiGemmCoresident(int bits, i
   if (shape < 1 || shape > kShapes) {
     return Rejected(std::format("tile shape {}", shape));
   }
-  return Coresident(jitllm_exl3::MultiGemmKernel(bits, shape, output == Output::kF32),
+  return Coresident(llmp_exl3::MultiGemmKernel(bits, shape, output == Output::kF32),
                     kBlockDim.at(static_cast<std::size_t>(shape)), kGemmSharedMemory);
 }
 
 std::expected<int, KernelFailure> LaunchContext::GemvCoresident(int bits, Output output, int m,
                                                                 int config) {
-  return Coresident(jitllm_exl3::GemvKernel(bits, output == Output::kF32, m == 1 ? 0 : 1, config),
+  return Coresident(llmp_exl3::GemvKernel(bits, output == Output::kF32, m == 1 ? 0 : 1, config),
                     GemvThreads(config), 0);
 }
 
@@ -272,8 +272,7 @@ std::expected<void, KernelFailure> LaunchContext::Gemm(const LinearOperands& o,
   if (auto checked = CheckGemm(o, plan, *coresident, locks_); !checked) {
     return checked;
   }
-  const void* kernel =
-      jitllm_exl3::GemmKernel(o.weights.bits, plan.shape, o.output == Output::kF32);
+  const void* kernel = llmp_exl3::GemmKernel(o.weights.bits, plan.shape, o.output == Output::kF32);
   auto stream = Begin();
   if (!stream) {
     return std::unexpected(stream.error());
@@ -311,8 +310,8 @@ std::expected<void, KernelFailure> LaunchContext::Gemv(const LinearOperands& o,
   if (auto checked = CheckGemv(o, plan, *coresident, locks_); !checked) {
     return checked;
   }
-  const void* kernel = jitllm_exl3::GemvKernel(o.weights.bits, o.output == Output::kF32,
-                                               o.m == 1 ? 0 : 1, plan.config);
+  const void* kernel = llmp_exl3::GemvKernel(o.weights.bits, o.output == Output::kF32,
+                                             o.m == 1 ? 0 : 1, plan.config);
   auto stream = Begin();
   if (!stream) {
     return std::unexpected(stream.error());
@@ -345,7 +344,7 @@ std::expected<void, KernelFailure> LaunchContext::MultiGemm(const MultiLinearOpe
     return checked;
   }
   const void* kernel =
-      jitllm_exl3::MultiGemmKernel(o.first.bits, plan.shape, o.output == Output::kF32);
+      llmp_exl3::MultiGemmKernel(o.first.bits, plan.shape, o.output == Output::kF32);
   auto stream = Begin();
   if (!stream) {
     return std::unexpected(stream.error());
@@ -388,8 +387,8 @@ std::expected<void, KernelFailure> LaunchContext::Reconstruct(const ReconstructO
   if (auto checked = CheckReconstruct(o); !checked) {
     return checked;
   }
-  const void* kernel = o.fused ? jitllm_exl3::ReconstructHadKernel(o.weights.bits)
-                               : jitllm_exl3::ReconstructKernel(o.weights.bits);
+  const void* kernel = o.fused ? llmp_exl3::ReconstructHadKernel(o.weights.bits)
+                               : llmp_exl3::ReconstructKernel(o.weights.bits);
   if (kernel == nullptr) {
     return Rejected(std::format("no reconstruction kernel for K = {}", o.weights.bits));
   }
@@ -422,7 +421,7 @@ std::expected<void, KernelFailure> LaunchContext::Hadamard(const HadamardOperand
     return checked;
   }
   const void* kernel =
-      jitllm_exl3::HadamardKernel(o.type == Output::kF32, o.input_scale, !o.input_scale);
+      llmp_exl3::HadamardKernel(o.type == Output::kF32, o.input_scale, !o.input_scale);
   if (kernel == nullptr) {
     return Rejected("no such Hadamard kernel");
   }
@@ -457,8 +456,8 @@ std::expected<void, KernelFailure> LaunchContext::Bias(const BiasOperands& o) {
   auto numel_y = static_cast<std::uint64_t>(o.columns);
   const auto blocks = static_cast<unsigned>((numel_x + kAddThreads - 1) / kAddThreads);
   auto args = Arguments(x, y, z, numel_x, numel_y);
-  return End(Launched(cudaLaunchKernel(jitllm_exl3::AddKernelHhh(), dim3(blocks), dim3(kAddThreads),
+  return End(Launched(cudaLaunchKernel(llmp_exl3::AddKernelHhh(), dim3(blocks), dim3(kAddThreads),
                                        args.data(), 0, static_cast<cudaStream_t>(*stream))));
 }
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3

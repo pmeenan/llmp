@@ -1,11 +1,11 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M0 A→B→A reference experiment — 2026-09-21
 
 This measures the unpatched, pinned llama.cpp reference on `spark`, using
 Gemma 4 as A and Ornith 1.5 as B. It supplies the first measured reference
-cycle for D-025. It is not jitLLM execution or evidence of expert-paging
+cycle for D-025. It is not llmpalooza execution or evidence of expert-paging
 feasibility. The large DeepSeek/Qwen pair remains a separate workload.
 
 ## Protocol fixed before repeated measurements
@@ -68,7 +68,7 @@ discarded on the return switch. Recompute arms save neither state.
 the harness polls actual status and verifies the outgoing child is unloaded.
 The reference's `--models-max` is a **count**, not a physical-memory limit.
 One native router plus model child processes is llama.cpp's reference design,
-not jitLLM's future one-native-process-per-node design. `/completion` and
+not llmpalooza's future one-native-process-per-node design. `/completion` and
 `/slots/0?action=save|restore` carry the model alias. Slot files are written
 by the server, then the harness fsyncs both file and directory. This adds
 durability that the pinned save API does not itself guarantee. Restore
@@ -168,8 +168,8 @@ warm weight and saved-state receipts met the 99.9% threshold.
 
 The run started at 2026-09-21 21:44:19 UTC on `spark-c4e2`, using ext4 on
 `/dev/nvme0n1p2`. The executed `experiment.py` SHA-256 is
-`b3738969f61567dd4147bfca850fd21865156b9ebb95cafd33e28102501265c0`.
-Raw results are in `/home/pmeenan/.local/share/jitllm/aba/main-1` on the
+`9639d085b682ff92c198b3033054109b8a420b8a2fad660f6bcee93b98d43f83`.
+Raw results are in `/home/pmeenan/.local/share/llmp/aba/main-1` on the
 target. All pilots are excluded; no main trial failed or was replaced.
 
 Values below are **median [observed minimum–maximum]**, with n=3 per arm.
@@ -190,7 +190,7 @@ This sample count does not establish tail percentiles or confidence bounds.
 For this trace, cold-cache return under the matched constrained budget took
 **18.304 s with saved state versus 25.236 s with recomputation**. The
 warm-cache equivalents were 4.062 and 11.215 s; live residency was 0.089 s.
-These are measured reference waits, not a prediction of jitLLM performance.
+These are measured reference waits, not a prediction of llmpalooza performance.
 
 B→A component medians, in seconds (separate medians need not sum exactly):
 
@@ -268,7 +268,7 @@ decode tokens/s, excluding the first predicted token from its decode timer:
 The live/full-recompute full-SWA path is about 27–28 tokens/s here, while
 the restored path and default-SWA paths are about 46–47. Their outputs
 match, but their runtime state histories differ. The cause of the decode
-difference was not isolated. Do not attribute it to jitLLM paging or use
+difference was not isolated. Do not attribute it to llmpalooza paging or use
 only the slower reference path when later setting generation-stall goals.
 No inter-token tail-latency histogram was collected in this experiment.
 
@@ -357,11 +357,11 @@ Clang 22.1.8, LLD and AArch64 sysroot from the
 [toolchain smoke](../toolchain-smoke/README.md):
 
 ```sh
-export LD_LIBRARY_PATH=/tmp/jitllm-clang22/sdk-amd64/usr/lib/x86_64-linux-gnu:/tmp/jitllm-clang22/sdk-amd64/usr/lib/llvm-22/lib
-export CXX=/tmp/jitllm-clang22/sdk-amd64/usr/lib/llvm-22/bin/clang++
-export LLD=/tmp/jitllm-clang22/sdk-amd64/usr/lib/llvm-22/bin/ld.lld
-export SYSROOT=/tmp/jitllm-toolchain-smoke/sysroot
-bash docs/experiments/reference-aba/build-ballast.sh /tmp/jitllm-aba/ballast
+export LD_LIBRARY_PATH=/tmp/llmp-clang22/sdk-amd64/usr/lib/x86_64-linux-gnu:/tmp/llmp-clang22/sdk-amd64/usr/lib/llvm-22/lib
+export CXX=/tmp/llmp-clang22/sdk-amd64/usr/lib/llvm-22/bin/clang++
+export LLD=/tmp/llmp-clang22/sdk-amd64/usr/lib/llvm-22/bin/ld.lld
+export SYSROOT=/tmp/llmp-toolchain-smoke/sysroot
+bash docs/experiments/reference-aba/build-ballast.sh /tmp/llmp-aba/ballast
 ```
 
 Copy this directory and the verified helper to an external tool directory
@@ -370,8 +370,8 @@ on the selected Linux target. Fetch each model from its pinned Hugging Face
 SHA-256 before promoting any partial download. Existing verified files are
 reused. Public downloads needed no Hugging Face API key.
 
-The recorded target root is `/home/pmeenan/.local/share/jitllm/aba`, with
-models in `/home/pmeenan/.local/share/jitllm/reference-models`. Frozen input
+The recorded target root is `/home/pmeenan/.local/share/llmp/aba`, with
+models in `/home/pmeenan/.local/share/llmp/reference-models`. Frozen input
 is available at `aba/final-trace.json` on that host. Copy and verify it
 for exact replay. If unavailable, `prepare` deterministically constructs
 synthetic inputs and checks A/B save/load against resident continuations,
@@ -385,20 +385,20 @@ From the copied tool directory on the target:
 umask 077
 export DOCKER='sudo -n docker'
 # Optional: regenerate the trace in a NEW external directory.
-python3 experiment.py prepare --models "$HOME/.local/share/jitllm/reference-models" \
-  --output "$HOME/.local/share/jitllm/aba/new-prepare" --device nvme0n1
+python3 experiment.py prepare --models "$HOME/.local/share/llmp/reference-models" \
+  --output "$HOME/.local/share/llmp/aba/new-prepare" --device nvme0n1
 # Replay the verified frozen trace; output must not already exist.
-python3 experiment.py run --models "$HOME/.local/share/jitllm/reference-models" \
-  --output "$HOME/.local/share/jitllm/aba/new-repeats" --device nvme0n1 \
-  --trace "$HOME/.local/share/jitllm/aba/final-trace.json" \
-  --ballast "$HOME/.local/share/jitllm/aba/tools/ballast" --repeats 3
+python3 experiment.py run --models "$HOME/.local/share/llmp/reference-models" \
+  --output "$HOME/.local/share/llmp/aba/new-repeats" --device nvme0n1 \
+  --trace "$HOME/.local/share/llmp/aba/final-trace.json" \
+  --ballast "$HOME/.local/share/llmp/aba/tools/ballast" --repeats 3
 # Validate all cases/receipts/cache conditions and emit aggregate medians/ranges.
 PYTHONDONTWRITEBYTECODE=1 python3 summarize.py \
-  "$HOME/.local/share/jitllm/aba/new-repeats" /tmp/aba-aggregate.json
+  "$HOME/.local/share/llmp/aba/new-repeats" /tmp/aba-aggregate.json
 # Run separately, after timing finishes: fixed early/late notebook recall.
-python3 recall.py --models "$HOME/.local/share/jitllm/reference-models" \
-  --output "$HOME/.local/share/jitllm/aba/new-recall" --device nvme0n1 \
-  --trace "$HOME/.local/share/jitllm/aba/final-trace.json"
+python3 recall.py --models "$HOME/.local/share/llmp/reference-models" \
+  --output "$HOME/.local/share/llmp/aba/new-recall" --device nvme0n1 \
+  --trace "$HOME/.local/share/llmp/aba/final-trace.json"
 ```
 
 For Ornith accounting, run `inspect_ornith.py` inside the pinned image with
@@ -438,7 +438,7 @@ The pressure helper cross-build reproduced its pinned binary SHA-256. Its
 and no persistent host setting changes. The selected D-032 compiler/sysroot
 and their dependency categories remain those in the toolchain smoke report.
 The Ornith inspector ran inside the pinned ARM64 reference container and
-validated every primary and stored MTP expert closure. No jitLLM application
+validated every primary and stored MTP expert closure. No llmpalooza application
 tests exist yet; inference and memory-pressure measurements run on `spark`
 only, not the workstation or `spark-b`.
 

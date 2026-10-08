@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma2 two-owner decode and ring screen
@@ -145,7 +145,7 @@ format, writer and source identity are unchanged. The fixed prepared artifact
 is `eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870`.
 Source inventories, actual binary/receipt bindings, raw outputs and installed
 supervisor receipts remain outside Git under
-`/tmp/jitllm-m35-coordination/gemma2-owner2-raw` and Spark B's
+`/tmp/llmp-m35-coordination/gemma2-owner2-raw` and Spark B's
 `~/scratch/m35-gemma2-owner2/run1`. Each installed GPU job has a 600-second
 limit and stops on failure; no full suite is part of this screen.
 

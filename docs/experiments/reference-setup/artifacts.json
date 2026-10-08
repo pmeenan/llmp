@@ -1,6 +1,6 @@
 {
   "recorded_on": "2026-09-21",
-  "purpose": "M0 external reference installation and smoke; not a jitLLM dependency lock",
+  "purpose": "M0 external reference installation and smoke; not a llmpalooza dependency lock",
   "engine": {
     "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
     "discovery_tag": "full-cuda13-v0.4.1",
@@ -8,7 +8,7 @@
     "source_revision": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
     "reported_version": "0.4.1-dev (build 10964, commit b29c606e2)",
     "compiler": "GNU 14.2.0 for Linux aarch64",
-    "category": "external reference tool; not incorporated into jitLLM",
+    "category": "external reference tool; not incorporated into llmpalooza",
     "license": "MIT (llama.cpp/GGML); container dependencies retain their own terms",
     "image_size_bytes": 3051638872,
     "server_sha256": "b2e1769c9d08b1e3b18282928f91ca11de61ec2020d38cdd389d462b0c223351",

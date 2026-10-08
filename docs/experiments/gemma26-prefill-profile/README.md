@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 paid-prefill profile
@@ -137,9 +137,9 @@ prepared artifact/raw model, pinned eight original headers and existing
 Nsight public interface in external scratch. The protocol explains the
 production-source/ancestry manifests and model-free interface runtime gate.
 Build the optional native manual target with the recorded external
-`JITLLM_BENCHMARK_NVTX_INCLUDE_DIR`, then run `reference.sh build` before
+`LLMP_BENCHMARK_NVTX_INCLUDE_DIR`, then run `reference.sh build` before
 freezing binaries. The wrappers use the owner's B `m3gm31` tree and external
-`~/.local/share/jitllm/gemma26-prefill-profile` directory. Use fresh names;
+`~/.local/share/llmp/gemma26-prefill-profile` directory. Use fresh names;
 receipts and outputs refuse overwrites.
 
 Every build, probe, control, trace and analysis runs through installed

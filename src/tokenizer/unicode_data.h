@@ -1,19 +1,19 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Unicode Character Database tables behind unicode.h, generated into
 // unicode_data.cc by tools/gen-unicode-tables from pinned UCD 15.1.0 files
 // (D-088). Only unicode.cc reads them. Every table is constant-initialized.
 
-#ifndef JITLLM_TOKENIZER_UNICODE_DATA_H_
-#define JITLLM_TOKENIZER_UNICODE_DATA_H_
+#ifndef LLMP_TOKENIZER_UNICODE_DATA_H_
+#define LLMP_TOKENIZER_UNICODE_DATA_H_
 
 #include <array>
 #include <cstdint>
 #include <span>
 #include <string_view>
 
-namespace jitllm::tokenizer::unicode_data {
+namespace llmp::tokenizer::unicode_data {
 
 inline constexpr char32_t kMaxCodePoint = 0x10FFFF;
 inline constexpr unsigned kBlockBits = 8;  // 256 code points per block
@@ -79,6 +79,6 @@ extern const std::span<const CodePointRange> kUppercase;
 extern const std::span<const CodePointRange> kCased;
 extern const std::span<const CodePointRange> kCaseIgnorable;
 
-}  // namespace jitllm::tokenizer::unicode_data
+}  // namespace llmp::tokenizer::unicode_data
 
-#endif  // JITLLM_TOKENIZER_UNICODE_DATA_H_
+#endif  // LLMP_TOKENIZER_UNICODE_DATA_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded, benchmark-only MXFP8 vector scheduling sweep. The reference is
@@ -37,15 +37,15 @@
 
 #include "base/bytes.h"
 #include "ggml.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "qwen38_mxfp8_tune_kernels.h"
 
 namespace {
-namespace kg = jitllm::kernels::ggml;
-namespace diag = jitllm::diag;
+namespace kg = llmp::kernels::ggml;
+namespace diag = llmp::diag;
 
 using Status = std::expected<void, std::string>;
 std::unexpected<std::string> Error(std::string message) {
@@ -131,7 +131,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
 class Fixture {
  public:
   Fixture() {
-    auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
     if (!execution) Terminal(execution.error().detail);
     execution_ = std::move(*execution);
     auto stream = execution_->CreateStream();
@@ -141,7 +141,7 @@ class Fixture {
     if (!native) Terminal(native.error().detail);
     native_ = static_cast<cudaStream_t>(native->handle);
     auto launch = kg::LaunchContext::Create(0, *execution_, stream_,
-                                            {.base = 0, .size = jitllm::base::Bytes(0)});
+                                            {.base = 0, .size = llmp::base::Bytes(0)});
     if (!launch) Terminal(launch.error().detail);
     launch_ = std::move(*launch);
   }
@@ -155,8 +155,7 @@ class Fixture {
     if (!fence) Terminal(fence.error().detail);
     Cuda(cudaStreamSynchronize(native_), "fence completion");
     auto state = execution_->Query(*fence);
-    if (!state || *state != jitllm::providers::FenceState::kComplete ||
-        !execution_->Release(*fence))
+    if (!state || *state != llmp::providers::FenceState::kComplete || !execution_->Release(*fence))
       Terminal("fence retirement failed");
     launch_.reset();
     if (!execution_->DestroyStream(stream_)) Terminal("stream destruction failed");
@@ -170,8 +169,8 @@ class Fixture {
     (void)std::fflush(stderr);
     std::_Exit(1);
   }
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  llmp::providers::StreamId stream_;
   cudaStream_t native_ = nullptr;
   std::unique_ptr<kg::LaunchContext> launch_;
 };

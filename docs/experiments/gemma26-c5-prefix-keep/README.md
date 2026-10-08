@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 C5 prefix-only retained-output diagnostic
@@ -29,9 +29,9 @@ frontier NLL records; every paid head is therefore exact. The earlier
 paid misses, 64 exact rows and passing independent loss gate. Its failed result
 and original FIRST reference identity are unchanged.
 
-The new manual `jitllm_gemma_joined_prefix_keep` target links the unchanged joined
+The new manual `llmp_gemma_joined_prefix_keep` target links the unchanged joined
 benchmark and execution core with a narrow `PlanGemma4Chunk` linker wrapper.
-`JITLLM_GEMMA_PREFIX_KEEP28=0|1` is required and snapshotted once at first planning.
+`LLMP_GEMMA_PREFIX_KEEP28=0|1` is required and snapshotted once at first planning.
 Mode 0 forwards the original keep span. Mode 1 appends only
 `blk.28.router_probabilities` for the approved 26 profile, context 4096, max rows 1024,
 five slots, full layers, head enabled, no feature/hidden input, a single segment

@@ -5,24 +5,24 @@
     "base": "9ff4e98",
     "owned_source5": {
       "docs/experiments/gemma-release-c2/PROTOCOL.md": {
-        "bytes": 10687,
-        "sha256": "0cea414815112a1a24204fefe8f78288710000890b0b0ad12aa062a54aadd203"
+        "bytes": 10689,
+        "sha256": "f182458a56185fe7a09543d8a853c830987897c74081d1345b0d3fcb8e07a8e9"
       },
       "docs/experiments/gemma-release-c2/analyze.py": {
-        "bytes": 20318,
-        "sha256": "df76a8dccb6ec7c3cbd27c3a577a37ada9e5aba19b8a4153ed576316d3016eff"
+        "bytes": 20320,
+        "sha256": "841b67633e6960ddbc81c1895963f25db24a52bc23b291049e65fb46864edc89"
       },
       "docs/experiments/gemma-release-c2/build.sh": {
-        "bytes": 2601,
-        "sha256": "9a4f00ce712a7b5231c41aab0caad68b4d0c8acd44e57f21fd072f9d86006e81"
+        "bytes": 2591,
+        "sha256": "b2fd263c458761c17e52cf9ccc4b94d452caf8cb56d45f973d65883e616719c4"
       },
       "docs/experiments/gemma-release-c2/llama_c2.cc": {
-        "bytes": 16983,
-        "sha256": "15c8f2f0b3480a0acb323195422091e2a8601f5bead6f2bed78bd04adae8c042"
+        "bytes": 16987,
+        "sha256": "1643499f475713a8675616b470889f51350e5c49816464173e619f89396fd402"
       },
       "docs/experiments/gemma-release-c2/run.sh": {
-        "bytes": 3086,
-        "sha256": "51b8653bebff56c2bf92caa28dea379622d8178d4a52cc1ebef0f6c54d7f2e04"
+        "bytes": 3050,
+        "sha256": "acb72dd853eb0191f62330cd58ee1f683f6d29027c771dd82776d5c97a5df6d5"
       }
     },
     "source_receipt_sha256": "435b204b37833cae8fcdca8b9c1009899ec2d48c2dabd89c0af20fb86fc7b22d",
@@ -30,17 +30,17 @@
     "runtime_source_sha256": "4284ab5ad73ce81d46f9afeed6dbe5872ad53933566458176f28f05f9e34ea7c",
     "pipeline_ready_sha256": "b32eb5ba3edccc94dfef7358dce77a994a4e2c89a5dfa0240117273f39b99441",
     "native_helper": {
-      "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/native1",
+      "path": "/home/pmeenan/.local/share/llmp/ggml-release-refresh/native1",
       "bytes": 149501192,
       "sha256": "0d6d09520a9c0a68f0eda4501a13f47c8c5a926a7a9b5bb1c903bf8d114a986f"
     },
     "native_receipts": {
       "measured": {
-        "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/jitllm-receipt1.json",
+        "path": "/home/pmeenan/.local/share/llmp/ggml-release-refresh/llmp-receipt1.json",
         "sha256": "7d8f18471d978ffe038341acc7deca9a0105166bc3d0e44dc79357f661e83204"
       },
       "canonical": {
-        "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/jitllm-receipt-final5.json",
+        "path": "/home/pmeenan/.local/share/llmp/ggml-release-refresh/llmp-receipt-final5.json",
         "sha256": "5ab70ad50b7146dbe5fc025fee9ba761e8de670331e956a50f658c4cc93a8bed"
       },
       "measured_source_lock_sha256": "80d92ad1b38e6e4b1c021297a20acad91abca12d5a80c9248e9dc986df6c3d46",
@@ -49,7 +49,7 @@
     "native_build_version": "0.1.0-dev+unknown (receipt origin none; exact source/operands pinned separately)",
     "sdk_installation_sha256": "7b8167cdbe7455b25cb41c681f321562f34683bed26dac2b64e47650b987e02d",
     "public_helper": {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma-release-c2/llama-c2",
+      "path": "/home/pmeenan/.local/share/llmp/gemma-release-c2/llama-c2",
       "bytes": 1871120,
       "sha256": "a3122de5245d4008966e87130a98d48cd475c68387a2c40b1b3107e63d4744c5"
     },
@@ -72,7 +72,7 @@
     "forced_rows_per_owner": 32,
     "one_leading_BOS_per_history": true,
     "raw_checkpoint": {
-      "path": "/home/pmeenan/.local/share/jitllm/reference-models/gemma-4-31B-it-UD-Q4_K_XL.gguf",
+      "path": "/home/pmeenan/.local/share/llmp/reference-models/gemma-4-31B-it-UD-Q4_K_XL.gguf",
       "bytes": 18822970304,
       "sha256": "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575",
       "scope": "Inherited approved checkpoint SHA, current regular-file filename/size checked; no whole payload rescan"

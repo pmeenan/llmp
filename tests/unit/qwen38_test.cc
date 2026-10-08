@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen3.8 Flash Next adapter (model/qwen38.h) and its chunk graph
@@ -12,7 +12,7 @@
 //   the same chunk at a wave's coarser read alignment;
 // - the graph at prefill, decode and past-the-budget shapes: every node
 //   planned by an implementation of this module (a model of the device's
-//   choices), MXFP8 products by jitLLM's vector product or the BF16
+//   choices), MXFP8 products by llmpalooza's vector product or the BF16
 //   dequantization, the activations placed.
 
 #include "model/qwen38.h"
@@ -41,16 +41,16 @@
 #include "expected_error.h"
 #include "ggml.h"
 #include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/qwen38_graph.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
 
 namespace {
 
-namespace md = jitllm::model;
-namespace kg = jitllm::kernels::ggml;
-using jitllm::test_support::Failed;
+namespace md = llmp::model;
+namespace kg = llmp::kernels::ggml;
+using llmp::test_support::Failed;
 
 template <typename T>
 std::string Why(const std::expected<T, std::string>& result) {
@@ -785,7 +785,7 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     // Every fast chunk caches the block keys it completes.
     EXPECT_EQ(used.contains(kg::kQsaPoolName), fast) << rows << " at " << n_past;
     // The fast form routes, and normalizes and rotates QSA's heads, in
-    // jitLLM's fusions; the others in GGML's nodes.
+    // llmpalooza's fusions; the others in GGML's nodes.
     EXPECT_EQ(used.contains(kg::kArgsortName), !fast) << rows;
     EXPECT_EQ(used.contains(kg::kRopeExtName), !fast) << rows;
     EXPECT_EQ(used.contains(kg::kMoeRouterName), fast) << rows;
@@ -833,7 +833,7 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     EXPECT_EQ(used.contains(kg::kSsmConvName), !fused || (rows < 3 && !fast)) << rows;
     EXPECT_EQ(used.contains(kg::kGdnNormGateName), fused) << rows;
     EXPECT_EQ(used.contains(kg::kGdnHistoryName), fast) << rows;
-    // (The fast form, up to 16 rows, writes the state in place: jitllm.gdn.step.)
+    // (The fast form, up to 16 rows, writes the state in place: llmp.gdn.step.)
     const bool step = fast && static_cast<std::int64_t>(rows) <= kg::kGatedDeltaNetLanesTokens;
     EXPECT_EQ(used.contains(kg::kGdnStepName), step) << rows;
     if (!step) {
@@ -1326,7 +1326,7 @@ TEST(Qwen38Test, MtpDeviceMasksFollowActualAttentionConsumers) {
         if (device && !head) {
           EXPECT_EQ(in.mask, nullptr);
           EXPECT_TRUE(std::ranges::none_of(graph->nodes, [](const auto* node) {
-            return kg::JitllmOpOf(node) == kg::JitllmOp::kGemma4Mask;
+            return kg::LlmpOpOf(node) == kg::LlmpOp::kGemma4Mask;
           }));
           continue;
         }
@@ -1350,7 +1350,7 @@ TEST(Qwen38Test, RetainingDraftHeadOperandsPreservesTheOperationSequence) {
   const auto& p = md::Qwen38Flash();
   auto target = md::BindQwen38(p, "qwen4exp", ArtifactLike(p, true));
   ASSERT_TRUE(target.has_value());
-  using NodeShape = std::tuple<ggml_op, ggml_type, kg::JitllmOp, std::vector<std::int64_t>>;
+  using NodeShape = std::tuple<ggml_op, ggml_type, kg::LlmpOp, std::vector<std::int64_t>>;
   for (const bool selected : {false, true}) {
     auto resources = MtpLike();
     const std::int64_t head_rows = selected ? 47172 : 65536;
@@ -1388,7 +1388,7 @@ TEST(Qwen38Test, RetainingDraftHeadOperandsPreservesTheOperationSequence) {
         ASSERT_TRUE(graph.has_value()) << Why(graph);
         std::size_t heads = 0;
         for (const ggml_tensor* node : graph->nodes) {
-          if (kg::JitllmOpOf(node) != kg::JitllmOp::kArgmax) {
+          if (kg::LlmpOpOf(node) != kg::LlmpOp::kArgmax) {
             continue;
           }
           ++heads;
@@ -1422,7 +1422,7 @@ TEST(Qwen38Test, RetainingDraftHeadOperandsPreservesTheOperationSequence) {
         // state write and the original token-map/confidence operations.
         std::vector<NodeShape> signature;
         for (const ggml_tensor* node : graph->nodes) {
-          signature.emplace_back(node->op, node->type, kg::JitllmOpOf(node),
+          signature.emplace_back(node->op, node->type, kg::LlmpOpOf(node),
                                  std::vector<std::int64_t>(node->ne, node->ne + GGML_MAX_DIMS));
         }
         if (!capture) {
@@ -1500,7 +1500,7 @@ TEST(Qwen38Test, DraftHeadCaptureIsOptInAndRefusesUnboundedOrHeadlessShapes) {
 
 // The drafter's graph and a verify's, planned by this module's
 // implementations: the drafter's BF16 products GGML's float product or
-// jitllm.gemm.bf16, no MXFP8 product, its heads' drafts by jitllm.argmax;
+// llmp.gemm.bf16, no MXFP8 product, its heads' drafts by llmp.argmax;
 // a verify saving its rows' inputs and writing no recurrent state.
 TEST(Qwen38Test, TheDrafterAndAVerifyArePlannedByThisModulesImplementations) {
   const md::Qwen38Profile& p = md::Qwen38Flash();
@@ -1570,7 +1570,7 @@ TEST(Qwen38Test, TheDrafterAndAVerifyArePlannedByThisModulesImplementations) {
     EXPECT_EQ(used.contains(kg::kQsaAttnName), select) << n_kv;
     EXPECT_TRUE(used.contains(kg::kQsaPoolName)) << n_kv;      // its block keys, every pass
     EXPECT_EQ(used.contains(kg::kMoeGemvName), head) << rows;  // a prefill pass has no MoE
-    // The fast mixes' products are jitllm.gemm.bf16 at every width; past
+    // The fast mixes' products are llmp.gemm.bf16 at every width; past
     // 16 rows the drafter's BF16 linears read their input rounded once.
     EXPECT_TRUE(used.contains(kg::kGemmBf16Name)) << rows;
     EXPECT_EQ(used.contains(kg::kBf16Name), rows > kg::kQwen38Bf16Rows) << rows;
@@ -2159,9 +2159,9 @@ TEST(Qwen38Test, AGgufCheckpointsGraphTakesGgmlsProductsAndTheFormatFreeFusions)
       EXPECT_FALSE(used.contains(name)) << name << ": " << at;
     }
     // The quantized products up to 8 rows (the head's one row at every
-    // width): the fast form's jitllm.vecq over one Q8_1 quantization of each
+    // width): the fast form's llmp.vecq over one Q8_1 quantization of each
     // input, else GGML's MMVQ; past them GGML's MMQ. The routed experts take
-    // jitllm.vecq where the fast form's rows times the experts used fit its
+    // llmp.vecq where the fast form's rows times the experts used fit its
     // 64 pairs.
     const bool vector = rows <= 8;
     const bool vecq_experts = fast && rows * 10 <= 64;
@@ -2189,7 +2189,7 @@ TEST(Qwen38Test, AGgufCheckpointsGraphTakesGgmlsProductsAndTheFormatFreeFusions)
     const bool sparse = fast && chunk->qsa_select;
     EXPECT_EQ(used.contains(kg::kQsaAttnName), sparse) << at;
     EXPECT_EQ(used.contains(kg::kFlashAttnMmaName), !sparse) << at;
-    // The BF16 indexer projections: jitLLM's BF16 GEMM past 16 rows where
+    // The BF16 indexer projections: llmpalooza's BF16 GEMM past 16 rows where
     // fused.
     EXPECT_EQ(used.contains(kg::kGemmBf16Name),
               fused && static_cast<std::int64_t>(rows) > kg::kQwen38Bf16Rows)
@@ -2295,7 +2295,7 @@ TEST(Qwen38Test, DeviceMaskTargetGraphsAuthenticateDtypesAndPreserveFallbackMeta
             if (mask == nullptr) continue;
             const auto dtype = mask == graph->mask ? GGML_TYPE_F16 : GGML_TYPE_F32;
             ASSERT_EQ(mask->type, dtype);
-            auto charge = jitllm::engine::GraphMaskSourceBytes(
+            auto charge = llmp::engine::GraphMaskSourceBytes(
                 mask, graph->positions, graph->nodes, inputs, device, 0, 3,
                 static_cast<std::uint32_t>(shape.n_kv), 4096, 0, 4096, kg::CausalMaskRows::kExact,
                 dtype);
@@ -2306,7 +2306,7 @@ TEST(Qwen38Test, DeviceMaskTargetGraphsAuthenticateDtypesAndPreserveFallbackMeta
             EXPECT_EQ(std::ranges::count(inputs, mask), 0);
             EXPECT_EQ(mask->src[0], graph->positions);
             const auto check = [&](const std::vector<ggml_tensor*>& source_inputs) {
-              return jitllm::engine::GraphMaskSourceBytes(
+              return llmp::engine::GraphMaskSourceBytes(
                   mask, graph->positions, graph->nodes, source_inputs, true, 0, 3,
                   static_cast<std::uint32_t>(shape.n_kv), 4096, 0, 4096, kg::CausalMaskRows::kExact,
                   dtype);
@@ -2317,7 +2317,7 @@ TEST(Qwen38Test, DeviceMaskTargetGraphsAuthenticateDtypesAndPreserveFallbackMeta
             for (const std::size_t reserved : {6U, 7U}) {
               // The custom-op header occupies the first 32 bytes.
               auto* parameter = reinterpret_cast<std::byte*>(mask->op_params) + 32 + reserved * 4;
-              const auto saved = kg::JitllmOpInt(mask, static_cast<int>(reserved));
+              const auto saved = kg::LlmpOpInt(mask, static_cast<int>(reserved));
               const std::int32_t invalid = 1;
               std::memcpy(parameter, &invalid, sizeof(invalid));
               EXPECT_FALSE(check(inputs));
@@ -2327,7 +2327,7 @@ TEST(Qwen38Test, DeviceMaskTargetGraphsAuthenticateDtypesAndPreserveFallbackMeta
             mask->src[0] = graph->tokens;
             EXPECT_FALSE(check(inputs));
             mask->src[0] = source;
-            EXPECT_FALSE(jitllm::engine::GraphMaskSourceBytes(
+            EXPECT_FALSE(llmp::engine::GraphMaskSourceBytes(
                 mask, graph->positions, graph->nodes, inputs, true, 0, 3,
                 static_cast<std::uint32_t>(shape.n_kv), 4096, 0, 4096, kg::CausalMaskRows::kExact,
                 dtype == GGML_TYPE_F16 ? GGML_TYPE_F32 : GGML_TYPE_F16));

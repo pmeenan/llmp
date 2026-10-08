@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/checkpoint_file.h"
@@ -16,7 +16,7 @@
 #include "engine/support.h"
 #include "platform/direct_io.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 namespace {
 
 using Range = LiveState::Range;
@@ -310,4 +310,4 @@ std::expected<void, CheckpointFailure> CheckpointFile::Restore(PagedNode& node,
   return {};
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

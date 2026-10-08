@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Early EXL3 execution and performance contract
@@ -83,7 +83,7 @@ They describe the input and proof obligations, not a frozen artifact ABI.
   per-tensor `k_bits`, the codebook and 4-byte marker resources
   ([format](artifact-format.md#indexjson)).
 - Port selected device kernels behind a narrow native C++/CUDA boundary;
-  jitLLM owns allocations, explicit streams, contexts, completion and errors.
+  llmpalooza owns allocations, explicit streams, contexts, completion and errors.
   Shared Qwen operations may still use GGML. Upstream ATen wrappers, implicit
   PyTorch allocations and Python scheduling do not enter the serving path.
   Catalog the per-device locks and workspace, autotuning allocations,
@@ -122,7 +122,7 @@ codebook. Dense success never means all EXL3 variants work.
 
 ## Correctness and paging gates
 
-M2 runs both real fixtures from prepared artifacts on jitLLM-owned
+M2 runs both real fixtures from prepared artifacts on llmpalooza-owned
 device VMM (D-081), with full dense prefill/decode execution. A loader,
 one matrix multiply, or an external reference process is not the native
 proof. The FP16 control remains useful for diagnosing the common model
@@ -213,9 +213,9 @@ shared with QTIP beyond identical PTX `mma` operand strings. The
 format name does not imply an
 AGPL module or clear third-party patches and calibration data. Preserve
 per-file provenance and notices. The reference includes an attributed MIT-source
-patch for external ARM host helpers. The selected kernels entered jitLLM's
+patch for external ARM host helpers. The selected kernels entered llmpalooza's
 build through the source lock in backend-proof P1 (GEMM) and P3 (GEMV,
-reconstruction, Hadamard, bias add), behind jitLLM's own launchers
+reconstruction, Hadamard, bias add), behind llmpalooza's own launchers
 (`src/kernels/exl3/`); only tests and benchmarks link them so far.
 Native builds retain the CPU-only/fake-backend guardrail and no runtime
 plugin ABI. The experimental artifact schema is settled separately

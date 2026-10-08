@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The device runtime (providers/device_runtime.h) over CUDA on a GPU: the
@@ -28,7 +28,7 @@
 
 namespace {
 
-namespace pr = jitllm::providers;
+namespace pr = llmp::providers;
 
 constexpr std::size_t kBytes = 4096;
 
@@ -136,23 +136,23 @@ TEST_F(DeviceRuntimeTest, DraftIdsAreBoundedToTheVocabulary) {
   const std::size_t bytes = sizeof(ids);
   std::memcpy(host_, ids.data(), bytes);
   ASSERT_TRUE(pr::CopyAsync(native, on_device_, host_, bytes, pr::CopyKind::kHostToDevice).ok());
-  ASSERT_TRUE(jitllm::kernels::paging::ClampTokens(static_cast<std::int32_t*>(on_device_),
-                                                   static_cast<std::uint32_t>(ids.size()), kLimit,
-                                                   native.handle));
+  ASSERT_TRUE(llmp::kernels::paging::ClampTokens(static_cast<std::int32_t*>(on_device_),
+                                                 static_cast<std::uint32_t>(ids.size()), kLimit,
+                                                 native.handle));
   std::memset(host_, 0xFF, bytes);
   ASSERT_TRUE(pr::CopyAsync(native, host_, on_device_, bytes, pr::CopyKind::kDeviceToHost).ok());
   Finish();
   std::array<std::int32_t, 7> got{};
   std::memcpy(got.data(), host_, bytes);
   EXPECT_EQ(got, (std::array<std::int32_t, 7>{0, 0, 5, kLimit - 1, 0, 0, 0}));
-  EXPECT_TRUE(jitllm::kernels::paging::ClampTokens(nullptr, 0, kLimit, native.handle));
+  EXPECT_TRUE(llmp::kernels::paging::ClampTokens(nullptr, 0, kLimit, native.handle));
 }
 
 // A paging launch that fails (a grid past CUDA's x limit, refused before
 // anything runs, so no operand is read) reports it and leaves no error
 // behind for a later check to take as its own; the next launch succeeds.
 TEST_F(DeviceRuntimeTest, AFailedPagingLaunchClearsItsError) {
-  namespace paging = jitllm::kernels::paging;
+  namespace paging = llmp::kernels::paging;
   const pr::NativeStream native = Native();
   constexpr std::uint32_t kTooMany = std::numeric_limits<std::uint32_t>::max();
   EXPECT_FALSE(paging::FillRanges(nullptr, kTooMany, 0, native.handle));

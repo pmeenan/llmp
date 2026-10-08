@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Current llama.cpp reference
@@ -19,7 +19,7 @@ contexts. No model quality or performance checks ran at this new pin.
 
 The [release](https://github.com/ggml-org/llama.cpp/releases/tag/v0.6.0) includes
 Clef text and vision support and `/v1/systemone`. This establishes upstream
-availability, not native jitLLM Clef support or a measured GB10 speed result.
+availability, not native llmpalooza Clef support or a measured GB10 speed result.
 The owner's requested dependency refresh covers new comparisons. All existing
 b10964/b29c606/image837 experiment launchers, results and serialized-state
 receipts retain their original pins. Sequence/session format changes require
@@ -29,7 +29,7 @@ fresh states; old serialized states are not migration inputs.
 
 [reference.sh](reference.sh) provides only `pull`, `inspect`, `compile` and
 `usage` modes, with a new owned name such as `llama-refresh-inspect1`. It uses
-`~/.local/share/jitllm/llama-reference-v060`, an authenticated staged header and
+`~/.local/share/llmp/llama-reference-v060`, an authenticated staged header and
 helper closure, the existing pinned SDK and the existing owned-container
 retirement helper. Run each step through the installed Spark supervisor and
 wait for official retirement. The recorded preparation ran on Spark B;

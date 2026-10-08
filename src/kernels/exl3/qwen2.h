@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Running one phase of the native EXL3 plan (model/qwen2_exl3.h) under
-// jitLLM's dispatch (D-053; docs/backend-proof.md, "Native EXL3 operation
+// llmpalooza's dispatch (D-053; docs/backend-proof.md, "Native EXL3 operation
 // plan"), CUDA builds only. Bind resolves the phase plan against the
 // implementation registry: every operation that launches a kernel is bound
 // to the implementation it names, identity and all (GGML's for the norms,
@@ -10,7 +10,7 @@
 // linears and bias adds), or the whole plan is refused (BP-S2, BP-S4); no
 // other implementation is ever bound in its place. It builds each GGML
 // operation's nodes over the memory it is given and runs every host check
-// the implementations make, and for EXL3-O checks that jitLLM's copy of
+// the implementations make, and for EXL3-O checks that llmpalooza's copy of
 // upstream's GEMV choice (upstream_gemv.h) picks exactly the table's plan
 // wherever upstream may take the GEMV. Run then queues the operations in
 // order on one stream: the GGML and EXL3 launch contexts and the provider
@@ -22,8 +22,8 @@
 // (every operation, tensor and forced launch plan, and the tuning data
 // they came from).
 
-#ifndef JITLLM_KERNELS_EXL3_QWEN2_H_
-#define JITLLM_KERNELS_EXL3_QWEN2_H_
+#ifndef LLMP_KERNELS_EXL3_QWEN2_H_
+#define LLMP_KERNELS_EXL3_QWEN2_H_
 
 #include <array>
 #include <cstddef>
@@ -46,11 +46,11 @@
 #include "model/qwen2_exl3.h"
 #include "providers/device_execution.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 class LaunchContext;
 }
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 
 // Where the model's resident tensors are, as device addresses.
 struct Qwen2Linear {
@@ -178,6 +178,6 @@ std::expected<void, KernelFailure> WriteMultiGemmTables(providers::DeviceExecuti
                                                         std::span<std::byte> staging,
                                                         Qwen2Memory& memory);
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3
 
-#endif  // JITLLM_KERNELS_EXL3_QWEN2_H_
+#endif  // LLMP_KERNELS_EXL3_QWEN2_H_

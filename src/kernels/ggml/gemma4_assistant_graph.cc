@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // Port of pinned llama.cpp b29c606e models/gemma4-assistant.cpp. The target
@@ -17,7 +17,7 @@
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/validate_ext.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 namespace md = model;
 std::unexpected<KernelFailure> Refused(std::string detail) {
@@ -166,4 +166,4 @@ std::expected<Gemma4AssistantGraph, KernelFailure> BuildGemma4AssistantGraph(
   g.nodes = std::move(*ordered);
   return g;
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

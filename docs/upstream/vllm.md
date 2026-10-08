@@ -1,11 +1,11 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # vLLM, as Mia's Qwen3.8 recipe runs it
 
-jitLLM uses vLLM only as a baseline: Qwen3.8 Flash Next NVFP4 in MiaAI's
+Llmpalooza uses vLLM only as a baseline: Qwen3.8 Flash Next NVFP4 in MiaAI's
 single-Spark recipe
-([baselines](../experiments/fast-swap/baselines.md)). None of jitLLM's code
+([baselines](../experiments/fast-swap/baselines.md)). None of llmpalooza's code
 comes from vLLM.
 
 - **Recipe:** [MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark)
@@ -42,7 +42,7 @@ comes from vLLM.
   to 151–160 s (211 s on the very first launch); main weights 458 → 40 s.
 - **Proposed action:** follow the issue. Nothing more to send unless the
   maintainers ask.
-- **jitLLM testing, owner instruction 2026-10-02:** future legacy Mia
+- **Llmpalooza testing, owner instruction 2026-10-02:** future legacy Mia
   launches use this measured startup patch, preserving the selected model
   runner and inference settings. The tested package is `instanttensor`
   0.2.0; the PLE worker's safetensors override is mandatory. The original

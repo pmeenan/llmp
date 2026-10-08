@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Initial cluster: detected links, configured authority
@@ -16,7 +16,7 @@ Start setup on the node that should provide the client endpoint. It proposes
 that node as conductor, inventories its interfaces, and finds candidate peer
 addresses on the selected interconnects. Already trusted administrative SSH
 access can collect the other nodes' inventories without hand-entering every
-interface. With jitLLM setup running on peers, a bounded link-local discovery
+interface. With llmpalooza setup running on peers, a bounded link-local discovery
 window provides candidates too. Setup groups multiple addresses by verified
 node identity and proposes a node/link diagram. The user enrolls the desired
 nodes and accepts the generated cluster configuration once. Subsequent starts
@@ -71,7 +71,7 @@ interface discovery and explicit overrides, not guessed Spark wiring.
    bandwidth claims; ordinary authenticated single-path TCP can still work.
 3. Candidate addresses come from explicit seeds, existing routes/neighbors,
    an explicitly supplied NVIDIA Sync network plan, or a setup-only mDNS
-   service `_jitllm._tcp.local.` on selected interfaces. The plan and neighbor
+   service `_llmp._tcp.local.` on selected interfaces. The plan and neighbor
    cache are hints, including when installed by an administrator. Setup scans
    directly attached IPv4 subnets of detected QSFP ports under the dedicated
    cluster-network assumption, with the scope and bounds below. No discovery-
@@ -151,7 +151,7 @@ back to scoped IPv6/mDNS, trusted inventory or an explicit network-setup step.
 
 Use interface-bound ARP resolution plus at most one bounded reachability probe
 per address; an ARP responder is retained as a candidate even if ICMP is
-filtered. Probe one explicitly advertised/configured jitLLM or administrative
+filtered. Probe one explicitly advertised/configured llmpalooza or administrative
 endpoint during candidate verification, not a range of service ports. If raw
 ARP access is unavailable, use source/interface-bound ordinary socket probes
 and the resulting OS neighbor data; report that reduced method, never install
@@ -202,7 +202,7 @@ are unchanged. No scan was executed against the owner's network for this change.
 
 Read-only probes on **2026-09-22**, over existing SSH from the x86-64 workstation,
 found the same layout on both nodes. No sudo, service installation, network
-writes, active bandwidth test or jitLLM discovery/enrollment execution occurred.
+writes, active bandwidth test or llmpalooza discovery/enrollment execution occurred.
 
 | Observation | Result on both nodes | Detection consequence |
 | --- | --- | --- |
@@ -221,15 +221,15 @@ same subnets. These are the owner's deployment, not defaults. Route lookups
 in both directions selected the expected source/interface. The known direct
 right-port cable is owner-supplied topology, corroborated by the previous
 [interconnect baseline](experiments/interconnect/README.md); the new probes
-did not establish remote identity through jitLLM or measure throughput.
+did not establish remote identity through llmpalooza or measure throughput.
 Kernel was `7.0.0-1019-nvidia` on both nodes. Raw probe output stays external.
 
 [NVIDIA's Spark port table](https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html)
 corroborates the two host paths per physical port and the left/right mapping.
 [NVIDIA Sync's inspection guide](https://docs.nvidia.com/sync/latest/cluster-network-inspection.html)
 distinguishes the configured network from workload orchestration. Both were
-checked on 2026-09-22; jitLLM consumes the network it finds, not a claim that
-Sync enrolled jitLLM members. No NVIDIA setup script was executed or copied.
+checked on 2026-09-22; llmpalooza consumes the network it finds, not a claim that
+Sync enrolled llmpalooza members. No NVIDIA setup script was executed or copied.
 
 ## Configuration v2
 
@@ -322,19 +322,19 @@ absolute. No leading-zero/negative/overflow acceptance for bounded integers.
 Per-node identity/port/path policy mismatches reject startup or peer handshake.
 
 Example local document for the first member (paths are illustrative until M1).
-D-063 makes this document the node's `/etc/jitllm/jitllm.toml` plus its
-`jitllm.d/` fragments, extended with `[storage]` and the other node keys; a standalone node omits `cluster_file`,
+D-063 makes this document the node's `/etc/llmp/llmp.toml` plus its
+`llmp.d/` fragments, extended with `[storage]` and the other node keys; a standalone node omits `cluster_file`,
 `node_id`, `[credentials]` and `[control]`:
 
 ```toml
 schema_version = 2
-cluster_file = "/etc/jitllm/cluster.toml"
+cluster_file = "/etc/llmp/cluster.toml"
 node_id = "af564a6b-8b4e-4528-8140-e50b92b40002"
 
 [credentials]
-ca_file = "/etc/jitllm/credentials/ca.pem"
-certificate_file = "/etc/jitllm/credentials/node.pem"
-private_key_file = "/etc/jitllm/credentials/node-key.pem"
+ca_file = "/etc/llmp/credentials/ca.pem"
+certificate_file = "/etc/llmp/credentials/node.pem"
+private_key_file = "/etc/llmp/credentials/node-key.pem"
 
 [control]
 port = 7443
@@ -369,7 +369,7 @@ setup never disables host-key checks or copies private SSH keys.
 
 Use TLS 1.3 mutual authentication for internal control and response transport.
 Check certificate validity, the configured CA chain, enrolled public-key pin
-and a node-ID subjectAltName URI `urn:jitllm:<cluster-uuid>:node:<node-uuid>`
+and a node-ID subjectAltName URI `urn:llmp:<cluster-uuid>:node:<node-uuid>`
 with the configured cluster/node identity.
 The certificate identity is the node, not a detected IP address. Authenticate
 both ends before capability/state reports or inference data. Client-facing
@@ -383,7 +383,7 @@ start durably increments a monotonic **authority epoch** before accepting
 clients. Setup initializes epoch state once at enrollment; normal startup
 never initializes a missing state file, and never runs a node standalone
 while its enrollment or epoch state exists. D-063's fixed-path enrollment
-anchor, `/var/lib/jitllm/enrollment`, keeps that true when a relocated
+anchor, `/var/lib/llmp/enrollment`, keeps that true when a relocated
 `state` role and its configuration are lost. Leaving a cluster is an
 explicit setup step that retires that state and removes the anchor. Missing/corrupt authority state or
 a rollback detected against worker epoch floors fails closed; it is not
@@ -584,7 +584,7 @@ Builder handoff, 2026-09-22: extended the existing uncommitted D-037 planning
 work; collected read-only sysfs/devlink/RDMA/IP/route evidence on both Sparks;
 checked current NVIDIA primary documentation; recorded observation versus
 policy distinctions. TOML syntax/local documentation links and whitespace
-were checked on the workstation. No jitLLM parser, enrollment, listener,
+were checked on the workstation. No llmpalooza parser, enrollment, listener,
 transport or runtime tests exist yet for this design; none were claimed run.
 No network settings changed. Raw samples and temporary probes stay outside
 Git. This is a design completion, with implementation gates still outstanding.

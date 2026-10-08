@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Export an EXL3 fixture's exactly decoded weights for the FP64 oracle.
 
 External reference tooling for the backend proof's P0; it does not implement
-jitLLM inference. Runs in the reference container with the GPU. Each EXL3
+llmpalooza inference. Runs in the reference container with the GPU. Each EXL3
 linear is exported as ExLlamaV3 stores it before its Hadamard transforms:
 the trellis decoded by upstream's own reconstruction kernel into FP16 in the
 rotated basis (exact, since decoding produces FP16 values), and its sign

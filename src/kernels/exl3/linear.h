@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // One EXL3 linear, through each of the paths upstream's LinearEXL3 takes
@@ -28,8 +28,8 @@
 // charged like every operand, and stays so until a fence after the last
 // launch has completed.
 
-#ifndef JITLLM_KERNELS_EXL3_LINEAR_H_
-#define JITLLM_KERNELS_EXL3_LINEAR_H_
+#ifndef LLMP_KERNELS_EXL3_LINEAR_H_
+#define LLMP_KERNELS_EXL3_LINEAR_H_
 
 #include <cstdint>
 #include <expected>
@@ -40,7 +40,7 @@
 #include "kernels/exl3/recon_gemm.h"
 #include "kernels/exl3/validate.h"
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 
 std::expected<void, KernelFailure> PackedGemmLinear(LaunchContext& launch,
                                                     const LinearOperands& operands,
@@ -59,6 +59,6 @@ std::expected<void, KernelFailure> ReconstructedLinear(LaunchContext& launch, Re
                                                        bool fused,
                                                        std::span<const LtAlgorithm> algorithms);
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3
 
-#endif  // JITLLM_KERNELS_EXL3_LINEAR_H_
+#endif  // LLMP_KERNELS_EXL3_LINEAR_H_

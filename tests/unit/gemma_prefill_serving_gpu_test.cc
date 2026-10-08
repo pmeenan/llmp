@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <gtest/gtest.h>
@@ -35,9 +35,9 @@
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
 
-namespace rt = jitllm::runtime;
-namespace en = jitllm::engine;
-namespace cfg = jitllm::config;
+namespace rt = llmp::runtime;
+namespace en = llmp::engine;
+namespace cfg = llmp::config;
 
 // Exercise the production adapters through actual PromptSession admission and
 // RunPromptWave, rather than handing precomputed hints directly to a runner.
@@ -56,7 +56,7 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   bool retirement_failed = false;
   // The approved Gemma2 and Gemma3 artifacts, in their import stores and
   // in the M3 store with the other models.
-  static std::filesystem::path Models() { return jitllm::test_support::ModelsDir(); }
+  static std::filesystem::path Models() { return llmp::test_support::ModelsDir(); }
   static constexpr const char* kGemma2 =
       "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
   static constexpr const char* kGemma3 =
@@ -72,7 +72,7 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
       GTEST_SKIP() << "no Gemma" << GetParam() << " artifact in " << installed;
     }
     // Spill files need direct I/O: scratch in the build tree.
-    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path root = base != nullptr ? base : ::testing::TempDir();
     std::error_code error;
     std::filesystem::create_directories(root, error);
@@ -140,15 +140,15 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     if (!scratch.empty()) std::filesystem::remove_all(scratch);
   }
   template <class Runner>
-  std::expected<jitllm::base::Sha256Digest, std::string> StateHash(
-      Runner& runner, std::uint32_t id, en::PagedNode* direct = nullptr) {
+  std::expected<llmp::base::Sha256Digest, std::string> StateHash(Runner& runner, std::uint32_t id,
+                                                                 en::PagedNode* direct = nullptr) {
     const auto slot = runner.request_slot(id);
     if (!slot) return std::unexpected(slot.error());
     auto& node = direct ? *direct : life->server->node();
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto buffer = node.Pinned(1U << 20U, 0, staging);
     if (!buffer) return std::unexpected(buffer.error());
-    jitllm::base::Sha256 hash;
+    llmp::base::Sha256 hash;
     for (const auto& range : (*slot)->state().used_ranges())
       for (std::uint64_t at = 0; at < range.bytes; at += 1U << 20U) {
         const en::LiveState::Range part{range.region, range.offset + at,
@@ -167,7 +167,7 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   }
   template <class Runner>
   rt::Status Prompt(Runner& runner, std::array<std::vector<float>, 2>& heads,
-                    std::array<jitllm::base::Sha256Digest, 2>& states, double& seconds,
+                    std::array<llmp::base::Sha256Digest, 2>& states, double& seconds,
                     std::uint32_t extra_rows = 0) {
     constexpr std::array<std::int32_t, 6> seed{2, 818, 5279, 529, 7001, 563};
     std::array<std::vector<std::int32_t>, 2> tokens;
@@ -234,7 +234,7 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
 TEST_P(GemmaPrefillServingGpu, PlainRuntimeTokensPreserveRowsStateAndRestoredContinuations) {
   ASSERT_TRUE(Start(false));
   const auto exercise = [&](auto& runner) {
-    return jitllm::test::CheckPlainServing(
+    return llmp::test::CheckPlainServing(
         *life->server, *model, runner.profile().vocab,
         [&](std::uint32_t id) { return StateHash(runner, id); },
         [&] { return runner.greedy_tokens(); });
@@ -250,7 +250,7 @@ TEST_P(GemmaPrefillServingGpu, DefaultPreparationPublishesOnlyActualPromptProgre
   EXPECT_TRUE(en::Gemma3Options{}.prepare_state);
   EXPECT_TRUE(rt::ServingOptions{}.gemma3_prepare_state);
   std::array<std::vector<float>, 2> expected;
-  std::array<jitllm::base::Sha256Digest, 2> expected_state{};
+  std::array<llmp::base::Sha256Digest, 2> expected_state{};
   std::array<std::int64_t, 2> expected_joined{};
   for (const bool ordinary : {false, true}) {
     life->options = rt::ServingOptions{};
@@ -264,7 +264,7 @@ TEST_P(GemmaPrefillServingGpu, DefaultPreparationPublishesOnlyActualPromptProgre
       ASSERT_EQ(runner.layout().local_cells, gemma2 ? 4352U : 1280U);
       const auto before = runner.state_preparation_stats();
       std::array<std::vector<float>, 2> heads;
-      std::array<jitllm::base::Sha256Digest, 2> states{};
+      std::array<llmp::base::Sha256Digest, 2> states{};
       double unused_seconds = 0;
       const auto result = Prompt(runner, heads, states, unused_seconds, gemma2 ? 3072U : 0U);
       ASSERT_TRUE(result) << (result ? "" : result.error());
@@ -290,7 +290,7 @@ TEST_P(GemmaPrefillServingGpu, DefaultPreparationPublishesOnlyActualPromptProgre
         EXPECT_EQ((*runner.request_slot(owner))->completed_positions(),
                   gemma2 ? (owner == 0 ? 4352U : 4480U) : (owner == 0 ? 1280U : 1536U));
       }
-      const auto extra = jitllm::base::json::Parse(model->extra());
+      const auto extra = llmp::base::json::Parse(model->extra());
       ASSERT_TRUE(extra);
       std::array<std::int64_t, 2> joined{};
       for (std::size_t i = 0; i < joined.size(); ++i) {
@@ -340,15 +340,15 @@ TEST_P(GemmaPrefillServingGpu, Admitted8448ScalarPreparationPreservesPromptAndCo
   std::ifstream stream(input, std::ios::binary);
   ASSERT_TRUE(stream.read(reinterpret_cast<char*>(ids.data()),
                           static_cast<std::streamsize>(ids.size() * sizeof(ids[0]))));
-  jitllm::base::Sha256 hash;
-  ASSERT_EQ(jitllm::base::ToHex(hash.Update(std::as_bytes(std::span(ids))).Finish()),
+  llmp::base::Sha256 hash;
+  ASSERT_EQ(llmp::base::ToHex(hash.Update(std::as_bytes(std::span(ids))).Finish()),
             "44196b939c8b53b535a59e1c139f6dc4a7959f7880cd8c8a9d91688818f5ad67");
   ASSERT_TRUE(std::ranges::all_of(ids, [](std::int32_t id) { return id >= 0 && id < 262208; }));
   ASSERT_EQ(ids.front(), 2);
   ASSERT_EQ(ids[8192], 496);
   const std::vector<std::int32_t> prompt(ids.begin(), ids.begin() + 8192);
   std::vector<float> expected_head, expected_next;
-  jitllm::base::Sha256Digest expected_state{}, expected_next_state{};
+  llmp::base::Sha256Digest expected_state{}, expected_next_state{};
   life->config.models.front().overrides["context"] = std::int64_t{8448};
   life->config.models.front().overrides["max_slots"] = std::int64_t{1};
   for (const bool ordinary : {false, true}) {
@@ -423,7 +423,7 @@ TEST_P(GemmaPrefillServingGpu, Admitted8448ScalarPreparationPreservesPromptAndCo
     EXPECT_TRUE(runner.cohort_usable());
     EXPECT_TRUE((*runner.request_slot(0))->state_usable());
     EXPECT_FALSE(life->server->node().has_pending_state_preparation());
-    const auto extra = jitllm::base::json::Parse(model->extra());
+    const auto extra = llmp::base::json::Parse(model->extra());
     ASSERT_TRUE(extra);
     const auto joined = extra->root().find("joined_prefill_groups");
     ASSERT_TRUE(joined);
@@ -453,13 +453,13 @@ TEST_P(GemmaPrefillServingGpu, Admitted8448ScalarPreparationPreservesPromptAndCo
 
 TEST_P(GemmaPrefillServingGpu, ActualJoinedHintsPreserveHeadsAndState) {
   std::array<std::vector<float>, 2> expected;
-  std::array<jitllm::base::Sha256Digest, 2> expected_state{};
+  std::array<llmp::base::Sha256Digest, 2> expected_state{};
   // Short fresh-server bookends, not sustained performance qualification.
   std::uint32_t pass = 0;
   for (const bool ahead : {false, true, true, false}) {
     ASSERT_TRUE(Start(ahead));
     std::array<std::vector<float>, 2> heads;
-    std::array<jitllm::base::Sha256Digest, 2> states{};
+    std::array<llmp::base::Sha256Digest, 2> states{};
     double seconds = 0;
     const auto exercise = [&](auto& runner) {
       const auto r = Prompt(runner, heads, states, seconds);
@@ -480,7 +480,7 @@ TEST_P(GemmaPrefillServingGpu, ActualJoinedHintsPreserveHeadsAndState) {
       exercise(dynamic_cast<en::Gemma2Runner&>(model->paged()));
     else
       exercise(dynamic_cast<en::Gemma3Runner&>(model->paged()));
-    const auto parsed = jitllm::base::json::Parse(model->extra());
+    const auto parsed = llmp::base::json::Parse(model->extra());
     ASSERT_TRUE(parsed);
     const auto joined = parsed->root().find("joined_prefill_groups");
     ASSERT_TRUE(joined);
@@ -510,12 +510,12 @@ TEST_P(GemmaPrefillServingGpu, ActualJoinedHintsPreserveHeadsAndState) {
 TEST_P(GemmaPrefillServingGpu, ActualOwnerPrefillPreservesHeadsStateAndRestart) {
   life->options.keep_conversations = true;
   std::array<std::vector<float>, 2> expected, expected_next;
-  std::array<jitllm::base::Sha256Digest, 2> expected_state{};
+  std::array<llmp::base::Sha256Digest, 2> expected_state{};
   std::uint32_t pass = 0;
   for (const bool owners : {false, true, true, false}) {
     ASSERT_TRUE(Start(true, owners));
     std::array<std::vector<float>, 2> heads;
-    std::array<jitllm::base::Sha256Digest, 2> states{};
+    std::array<llmp::base::Sha256Digest, 2> states{};
     double seconds = 0;
     const auto exercise = [&](auto& runner) {
       const auto r = Prompt(runner, heads, states, seconds, 5);
@@ -531,7 +531,7 @@ TEST_P(GemmaPrefillServingGpu, ActualOwnerPrefillPreservesHeadsStateAndRestart) 
       exercise(dynamic_cast<en::Gemma2Runner&>(model->paged()));
     else
       exercise(dynamic_cast<en::Gemma3Runner&>(model->paged()));
-    const auto parsed = jitllm::base::json::Parse(model->extra());
+    const auto parsed = llmp::base::json::Parse(model->extra());
     ASSERT_TRUE(parsed);
     const auto selected = parsed->root().find("bound_owner_prefill_attention");
     ASSERT_TRUE(selected);
@@ -627,7 +627,7 @@ void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint
     const auto directory = scratch / "larger-runner";
     if (!std::filesystem::create_directory(directory) || chmod(directory.c_str(), 0700) != 0)
       return std::unexpected("larger-runner private directory");
-    auto opened = jitllm::platform::OpenPrivateDirectory(-1, directory.c_str());
+    auto opened = llmp::platform::OpenPrivateDirectory(-1, directory.c_str());
     if (!opened) return std::unexpected("larger-runner directory open");
     const int spill_dir = *opened;
     auto primary = std::make_unique<DirectLife>(), restarted = std::make_unique<DirectLife>();
@@ -680,8 +680,8 @@ void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint
         return r;
       const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
       node.SetHostFloor(runner.host_input_bytes() + runner.plan_floor_bytes() + (16ULL << 20U));
-      if (auto r = node.Start(jitllm::base::Bytes(
-              fixed + runner.weights().size() * en::kPagedExtent + 4 * node.StateCapacity()));
+      if (auto r = node.Start(llmp::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
+                                                4 * node.StateCapacity()));
           !r)
         return r;
       if (auto r = runner.Register(); !r) return r;
@@ -696,11 +696,11 @@ void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint
     };
     std::vector<en::LiveState::Range> footprint;
     std::vector<float> expected_next;
-    jitllm::base::Sha256Digest expected_state{};
+    llmp::base::Sha256Digest expected_state{};
     std::string source_layout;
     std::uint64_t selected_owner_steps = 0;
     std::array<std::vector<float>, 2> packed_heads;
-    std::array<jitllm::base::Sha256Digest, 2> packed_states;
+    std::array<llmp::base::Sha256Digest, 2> packed_states;
     const auto prefill = [&](Runner& runner, std::array<std::vector<float>, 2>& heads,
                              bool hinted) -> en::Status {
       constexpr std::array<std::int32_t, 6> seed{2, 818, 5279, 529, 7001, 563};
@@ -960,7 +960,7 @@ TEST_P(GemmaPrefillServingGpu, UnprovenPreparationStopsServerBeforeOwnerDestruct
   // an active provider and no production fault hook are involved.
   EXPECT_EXIT(
       ([&] {
-        if (!jitllm::platform::InstallCrashPolicy("prepared-owner-control")) std::_Exit(61);
+        if (!llmp::platform::InstallCrashPolicy("prepared-owner-control")) std::_Exit(61);
         if (!Start(false)) std::_Exit(62);
         auto& node = life->server->node();
         auto& runner = dynamic_cast<en::Gemma3Runner&>(model->paged());
@@ -987,8 +987,8 @@ TEST_P(GemmaPrefillServingGpu, UnprovenPreparationStopsServerBeforeOwnerDestruct
         while (!resident && std::chrono::steady_clock::now() < deadline) {
           if (!node.Call(
                   [&]() -> en::Status {
-                    resident = node.catalog().Describe(id)->state ==
-                               jitllm::catalog::ExtentState::kResident;
+                    resident =
+                        node.catalog().Describe(id)->state == llmp::catalog::ExtentState::kResident;
                     return {};
                   },
                   "waiting for prepared owner"))
@@ -1020,7 +1020,7 @@ TEST_P(GemmaPrefillServingGpu, UnprovenPreparationStopsServerBeforeOwnerDestruct
         if (!node.Call(
                 [&]() -> en::Status {
                   const auto view = node.catalog().Describe(id);
-                  owned = view && view->state == jitllm::catalog::ExtentState::kQuarantined &&
+                  owned = view && view->state == llmp::catalog::ExtentState::kQuarantined &&
                           node.memory()
                               .MappedAt(node.scheduler().SourceOf(id)->backing->reservation,
                                         node.scheduler().SourceOf(id)->backing->offset)
@@ -1034,7 +1034,7 @@ TEST_P(GemmaPrefillServingGpu, UnprovenPreparationStopsServerBeforeOwnerDestruct
         (void)life->server->TearDown();
         std::_Exit(70);
       }()),
-      ::testing::ExitedWithCode(jitllm::platform::kFatalSignalExitBase + SIGABRT),
+      ::testing::ExitedWithCode(llmp::platform::kFatalSignalExitBase + SIGABRT),
       "unretired state preparation; aborting before owner destruction");
 }
 
@@ -1255,12 +1255,12 @@ TEST_P(GemmaPrefillServingGpu, FailedPartialLoadPreservesCachesAndRecreatesSaved
   ASSERT_FALSE(before_record.empty());
   const auto weights = peer->weights();
   ASSERT_GT(weights.size(), 1U);
-  std::vector<jitllm::catalog::ExtentId> inactive_cached;
+  std::vector<llmp::catalog::ExtentId> inactive_cached;
   ASSERT_TRUE(life->server->node().Call(
       [&]() -> rt::Status {
         for (const auto extent : inactive->weights())
           if (life->server->node().catalog().Describe(extent)->state ==
-              jitllm::catalog::ExtentState::kResident)
+              llmp::catalog::ExtentState::kResident)
             inactive_cached.push_back(extent);
         return {};
       },
@@ -1268,7 +1268,7 @@ TEST_P(GemmaPrefillServingGpu, FailedPartialLoadPreservesCachesAndRecreatesSaved
   ASSERT_FALSE(inactive_cached.empty());
   const auto missing = weights.back();
   ASSERT_TRUE(life->server->node().Evict({missing}));
-  jitllm::scheduler::PageSource original;
+  llmp::scheduler::PageSource original;
   ASSERT_TRUE(life->server->node().Call(
       [&]() -> rt::Status {
         original = *life->server->node().scheduler().SourceOf(missing);
@@ -1286,13 +1286,13 @@ TEST_P(GemmaPrefillServingGpu, FailedPartialLoadPreservesCachesAndRecreatesSaved
       [&]() -> rt::Status {
         for (std::size_t i = 0; i + 1 < weights.size(); ++i)
           EXPECT_EQ(life->server->node().catalog().Describe(weights[i])->state,
-                    jitllm::catalog::ExtentState::kResident);
+                    llmp::catalog::ExtentState::kResident);
         for (const auto extent : model->weights())
           EXPECT_EQ(life->server->node().catalog().Describe(extent)->state,
-                    jitllm::catalog::ExtentState::kResident);
+                    llmp::catalog::ExtentState::kResident);
         for (const auto extent : inactive_cached)
           EXPECT_EQ(life->server->node().catalog().Describe(extent)->state,
-                    jitllm::catalog::ExtentState::kResident);
+                    llmp::catalog::ExtentState::kResident);
         if (!life->server->node().scheduler().SetSource(missing, original))
           return std::unexpected("the original weight source could not be restored");
         return {};
@@ -1357,7 +1357,7 @@ TEST_P(GemmaPrefillServingGpu, FailedPartialLoadPreservesCachesAndRecreatesSaved
   // against either state between their completed spill and restoration.
   const auto outgoing_missing = model->weights().back();
   ASSERT_TRUE(life->server->node().Evict({outgoing_missing}));
-  jitllm::scheduler::PageSource outgoing_source;
+  llmp::scheduler::PageSource outgoing_source;
   ASSERT_TRUE(life->server->node().Call(
       [&]() -> rt::Status {
         outgoing_source = *life->server->node().scheduler().SourceOf(outgoing_missing);

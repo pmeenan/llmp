@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Real chat templates against transformers' renderings
@@ -36,22 +36,22 @@
 
 namespace {
 
-namespace chat = jitllm::chat;
-namespace json = jitllm::base::json;
-using jitllm::test_support::ConversationFrom;
-using jitllm::test_support::Get;
-using jitllm::test_support::LoadJson;
-using jitllm::test_support::ModelsDir;
-using jitllm::test_support::ReadFile;
+namespace chat = llmp::chat;
+namespace json = llmp::base::json;
+using llmp::test_support::ConversationFrom;
+using llmp::test_support::Get;
+using llmp::test_support::LoadJson;
+using llmp::test_support::ModelsDir;
+using llmp::test_support::ReadFile;
 
-const jitllm::chat::jinja::CivilTime kNow{.year = 2026,
-                                          .month = 10,
-                                          .day = 2,
-                                          .hour = 12,
-                                          .minute = 34,
-                                          .second = 56,
-                                          .weekday = 5,
-                                          .yearday = 274};
+const llmp::chat::jinja::CivilTime kNow{.year = 2026,
+                                        .month = 10,
+                                        .day = 2,
+                                        .hour = 12,
+                                        .minute = 34,
+                                        .second = 56,
+                                        .weekday = 5,
+                                        .yearday = 274};
 
 std::optional<std::string> OptionalText(json::Value v, std::string_view key) {
   const auto m = v.find(key);
@@ -113,7 +113,7 @@ TEST(ChatCorpus, EveryTemplateRendersAsTransformersDoes) {
     const auto text = ReadFile(std::format("{}/templates/{}.jinja", dir, name));
     ASSERT_TRUE(text.has_value()) << name;
     const std::string source = text.value_or(std::string());
-    ASSERT_EQ(jitllm::base::ToHex(jitllm::base::Sha256().Update(source).Finish()),
+    ASSERT_EQ(llmp::base::ToHex(llmp::base::Sha256().Update(source).Finish()),
               Get(entry, "sha256").string())
         << name;
     chat::TokenFacts facts;

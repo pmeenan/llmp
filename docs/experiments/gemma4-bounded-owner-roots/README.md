@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma4 bounded owner roots
@@ -129,8 +129,8 @@ Approved artifact/source pins remain in [Gemma4](../../gemma4.md). Stock is
 llama.cpp v0.6.0 `d81235049384534c167caea52b85a694f6103d14` in its original
 `c604ea4f…0607db` image. Source, actual binaries, receipts and retired containers
 are bound to the supervised results under
-`~/.local/share/jitllm/gemma4-owner-bounded-20261007` and local
-`/tmp/jitllm-m35-coordination/gemma4-owner-bounded-*` evidence.
+`~/.local/share/llmp/gemma4-owner-bounded-20261007` and local
+`/tmp/llmp-m35-coordination/gemma4-owner-bounded-*` evidence.
 
 Task-entry TensorFold HEAD was freshly checked as
 [`041d14a94e951834470fd514ed33e65b8be1059a`](https://github.com/ashhart/TensorFold/blob/041d14a94e951834470fd514ed33e65b8be1059a/README.md).

@@ -1,9 +1,9 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Portability
 
-How jitLLM stays ready for other GPU platforms (Apple silicon, then Intel,
+How llmpalooza stays ready for other GPU platforms (Apple silicon, then Intel,
 then AMD, D-110) and operating systems (macOS, Windows) without rewriting large parts of the
 tree, while costing nothing on the GB10 (D-026, D-082). The owner's goal
 (2026-09-29): every platform a compile target of the same tree, with shared
@@ -19,7 +19,7 @@ do.
 | Linux-specific headers and calls: `<linux/...>`, epoll, eventfd, signalfd, io_uring, memfd, `O_DIRECT`, `O_TMPFILE`, `getrandom`, `accept4`, `SOCK_CLOEXEC`, `MSG_NOSIGNAL`, prctl, raw system calls, `/proc` and `/sys` paths | `src/platform/` and the Linux providers (`src/providers/uring_storage.*`) | calls the platform module |
 | POSIX (open, poll, sockets, mmap, pthreads) | anywhere | macOS has it; a Windows port gives the platform module its own implementations (below) |
 
-`tools/jitllm_boundaries.py` enforces the first two rows over `src/`, in
+`tools/llmp_boundaries.py` enforces the first two rows over `src/`, in
 the light check tier (`tools/check`'s `boundaries` step) and in the tools
 tests (`tools/tests/test_boundaries.py` checks this tree). It reads code
 with comments removed, matches names outside string literals and paths
@@ -78,7 +78,7 @@ range fill and Qwen3.8's n-gram row gather) moved to `src/kernels/paging/`
 with a vendor-free header. The engine also opens its storage rings through
 `providers::OpenStorage` rather than naming the io_uring provider.
 
-**Cost on the GB10:** none measurable. Plain decode through `jitllm-runtime
+**Cost on the GB10:** none measurable. Plain decode through `llmp-runtime
 chat --plain` (256 tokens, second turn of each model, two alternating
 rounds; `spark`, 2026-09-29): DeepSeek V4 Flash 22.13 and 22.21 tok/s on
 main, 22.10 and 22.16 on the slice; Qwen3.8 Flash Next 27.60 and 27.67 on
@@ -98,7 +98,7 @@ HIP, a near copy of the CUDA module over `hip*` calls; for Metal, MTLHeap
 placement for backing, command queues for streams, MTLSharedEvent for
 fences, and MTLIndirectCommandBuffer or plain re-encoding for recorded
 work), kernel modules for its operations (GGML's HIP, SYCL and Metal
-backends are kernel sources to adapt under jitLLM's dispatch, D-053,
+backends are kernel sources to adapt under llmpalooza's dispatch, D-053,
 D-110), a block decoder per weight and state encoding (D-108), and a CMake
 profile that builds them instead of CUDA's. The device-memory design
 assumes explicit virtual reservation and mapping (D-006); where a platform
@@ -141,12 +141,12 @@ which any asynchronous mechanism can honour:
   `O_DIRECT`), completions from an I/O completion port, `Wake` by
   `PostQueuedCompletionStatus`.
 
-jitLLM probes direct I/O per storage role at startup
+Llmpalooza probes direct I/O per storage role at startup
 (`platform::ProbeDirectIo`) and refuses a role without it, because on the
 GB10 reads through the cache would spend the one memory budget.
 `OpenForDirectRead`'s `buffered_fallback` exists for a platform where
 direct I/O is only a preference (as TensorFold's reader falls back to
-buffered reads when `O_DIRECT` is refused); jitLLM never asks for it on
+buffered reads when `O_DIRECT` is refused); llmpalooza never asks for it on
 Linux, and a port that does decides what the role check accepts.
 
 ### What a new OS still needs
@@ -184,9 +184,9 @@ built another way, not a registry entry.
 | --- | --- | --- |
 | Qwen2 FP16 fixture | Yes: the FP16-U plan, fusion off (`mul_mat`, `soft_max` attention, NEOX RoPE, `rms_norm`, SwiGLU, `get_rows`, `set_rows`) | none |
 | EXL3 fixture | No: its plan table admits `ggml.rms_norm_mul.fused` and `ggml.flash_attn_ext.vec` but not `.unfused`, and the EXL3 linear has only ExLlamaV3's kernels | the EXL3 trellis dequant and GEMM (any backend needs its own) |
-| DeepSeek V4 Flash | Mostly: the exact plan (`--exact on`) is llama.cpp's graph node for node, the unfused form of every fast-plan operation (`jitllm.vecq`, `.dsv4.route`, `.combine`, `.hc_mix`, `.compress`, the fused norm, `mmvf_rows`) | `dsv4_hc_comb` (Sinkhorn), `dsv4_hc_post` and `lightning_indexer` have no composition of primitives; `mul_mat.fwht` is forced by its hint though the dense rotation matrix is at hand; attention is `flash_attn_ext` with sinks at D 512 only; the DSpark drafter's `jitllm.argmax` has no alternative |
-| Qwen3.8 Flash Next | In the harness only (`jitllm_qwen38_exec --unfused` on the GGML-layout artifact): MXFP8 dequant + `mul_mat`, `mul_mat_id` experts, GGML nodes for hyper-connections, routing and QSA | serving is always fused and fast from the CUTLASS-layout artifact, and the MTP drafter and batched verify exist only in the fast form; `ssm_conv`, `gated_delta_net`, `jitllm.nvfp4.get_rows` and `jitllm.argmax` have no alternative; `jitllm.mxfp8.mul_mat_vec` is always chosen at 8 rows or fewer though dequant + `mul_mat` would do |
-| Qwen-Image-2.1 | No: the legacy plan is jitLLM's own CUDA too, differing from the fast plan in five roles (cuBLAS instead of cuBLASLt, unfused gated residual, im2col convolution, unfused attention norm, plain conversion); no role is GGML's | every one of its 30 roles is a jitLLM kernel or a cuBLAS product; 25 are declared for one implementation only |
+| DeepSeek V4 Flash | Mostly: the exact plan (`--exact on`) is llama.cpp's graph node for node, the unfused form of every fast-plan operation (`llmp.vecq`, `.dsv4.route`, `.combine`, `.hc_mix`, `.compress`, the fused norm, `mmvf_rows`) | `dsv4_hc_comb` (Sinkhorn), `dsv4_hc_post` and `lightning_indexer` have no composition of primitives; `mul_mat.fwht` is forced by its hint though the dense rotation matrix is at hand; attention is `flash_attn_ext` with sinks at D 512 only; the DSpark drafter's `llmp.argmax` has no alternative |
+| Qwen3.8 Flash Next | In the harness only (`llmp_qwen38_exec --unfused` on the GGML-layout artifact): MXFP8 dequant + `mul_mat`, `mul_mat_id` experts, GGML nodes for hyper-connections, routing and QSA | serving is always fused and fast from the CUTLASS-layout artifact, and the MTP drafter and batched verify exist only in the fast form; `ssm_conv`, `gated_delta_net`, `llmp.nvfp4.get_rows` and `llmp.argmax` have no alternative; `llmp.mxfp8.mul_mat_vec` is always chosen at 8 rows or fewer though dequant + `mul_mat` would do |
+| Qwen-Image-2.1 | No: the legacy plan is llmpalooza's own CUDA too, differing from the fast plan in five roles (cuBLAS instead of cuBLASLt, unfused gated residual, im2col convolution, unfused attention norm, plain conversion); no role is GGML's | every one of its 30 roles is a llmpalooza kernel or a cuBLAS product; 25 are declared for one implementation only |
 
 **Minimum primitive set a new backend needs**, taking each model's most
 unfused path that exists:
@@ -212,7 +212,7 @@ unfused path that exists:
   `top_k`; `ssm_conv` and `gated_delta_net`. Verify and MTP add argmax.
   A GGUF checkpoint's form replaces NVFP4 and MXFP8 with `mul_mat` and
   `mul_mat_id` of its quantized types (MMVQ and MMQ) and F32 products,
-  and the n-gram table's rows with `jitllm.qrows.get_rows` (a 32-value
+  and the n-gram table's rows with `llmp.qrows.get_rows` (a 32-value
   block type's rows of 160 values, which GGML's `get_rows` reads only in
   256-value super-blocks; no fallback yet).
 - **Qwen-Image-2.1:** BF16 GEMM; 3×3 and 1×1 convolution (im2col and
@@ -221,12 +221,12 @@ unfused path that exists:
   BF16 where diffusers does; RMS, zero-centred RMS, layer norm with
   modulation and channel norms; 2D complex and NEOX RoPE; row embedding,
   transpose, nearest 2× upsampling, the Euler step and F32-to-BF16
-  conversion. All jitLLM kernels today.
+  conversion. All llmpalooza kernels today.
 - **Gemma 4 graph:** quantized `mul_mat`/`mul_mat_id`, embedding `get_rows`,
   `rms_norm`, learned mul, GELU-tanh and split GeGLU, factor-aware NEOX RoPE,
   per-slot D256/GQA2 and D512/GQA8 masked attention, `set_rows`, routing top-k,
   softmax and ordered expert sum. Device-mask mode additionally needs a packed
-  I32-position-to-F16 causal/ring `kFill` implementation (`jitllm.gemma4.mask`);
+  I32-position-to-F16 causal/ring `kFill` implementation (`llmp.gemma4.mask`);
   the funded host-reference-mask graph remains the primitive alternative for
   a backend without it. Descriptor planning/validation is CPU-buildable and
   the engine/provider interfaces contain no CUDA types.
@@ -275,7 +275,7 @@ value the audit recommended:
 
 What stays each family's own is its plan builder, state layout and steps
 (`*_plan.h`, `*_runner.h`); M3.6 removes that too, replacing the runners
-with one engine of shared components over jitLLM's own graph IR
+with one engine of shared components over llmpalooza's own graph IR
 ([engine-components.md](engine-components.md), D-107). The image runner shares the weights, the
 resources and the pinned places; it holds no conversation state or GGML
 plans and records its one step through the device runtime, which the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Exclusive Gemma26 source and fresh native two-head/state boundary before ring stock."""
 import datetime
@@ -49,7 +49,7 @@ def stream_digest(path):
 
 
 def retired(job):
-    root = pathlib.Path.home()/'.local/share/jitllm/jobs'/job
+    root = pathlib.Path.home()/'.local/share/llmp/jobs'/job
     final = json.loads((root/'final.json').read_text())
     assert final['state'] == 'done' and final['rc'] == 0
     return {n: identity(root/n) for n in ['final.json', 'job.json', 'log']}
@@ -66,7 +66,7 @@ def environment(root, scratch):
     assert ids == {'bytes': 8227*4, 'sha256': IDS}
     headers = {n: identity(scratch/'headers'/n) for n in pinned.HEADERS}
     assert {n:v['sha256'] for n,v in headers.items()} == pinned.HEADERS
-    artifact = pathlib.Path.home()/'.local/share/jitllm/m3-artifacts'/ARTIFACT
+    artifact = pathlib.Path.home()/'.local/share/llmp/m3-artifacts'/ARTIFACT
     manifest, index = identity(artifact/'manifest.json'), identity(artifact/'index.json')
     assert manifest['sha256'] == ARTIFACT and index['sha256'] == INDEX
     libraries = dict(line.split()[::-1] for line in (scratch/'libraries.sha256').read_text().splitlines())
@@ -74,8 +74,8 @@ def environment(root, scratch):
     return {'base': ancestry['base'], 'sources': sources, 'ancestry': ancestry,
             'headers': headers, 'libraries': libraries, 'ids': ids, 'manifest': manifest, 'index': index,
             'production_source_manifest': identity(scratch/'production-source-manifest.json'),
-            'build_receipt': identity(root/'build/spark-native/jitllm-receipt.json'),
-            'native_binary': identity(root/'build/spark-native/benchmarks/jitllm_gemma_prefill'),
+            'build_receipt': identity(root/'build/spark-native/llmp-receipt.json'),
+            'native_binary': identity(root/'build/spark-native/benchmarks/llmp_gemma_prefill'),
             'original_binary': identity(scratch/'llama_prefill_ring')}
 
 
@@ -102,7 +102,7 @@ def main(mode, root, scratch, job, expected=None):
         assert json.loads((scratch/'source-identities.json').read_text())['environment'] == env
         records = {n: record(scratch/n) for n in ['native-first', 'native-repeat']}
         assert records['native-first'] == records['native-repeat']
-        log = pathlib.Path.home()/'.local/share/jitllm/jobs'/job/'log'
+        log = pathlib.Path.home()/'.local/share/llmp/jobs'/job/'log'
         runs = old.runs(log, 'all', '26')
         assert len(runs) == 2 and all(r['engine'] == 'PREFILL_NATIVE' for r in runs)
         assert all(r['metrics']['chunk'] == '1024' for r in runs)

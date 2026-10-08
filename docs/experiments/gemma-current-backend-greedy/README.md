@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Current Gemma4 serving reference
@@ -50,8 +50,8 @@ arithmetic or option changed for this comparison.
 
 ## Reproducible caller and provenance
 
-The native benchmark target is `jitllm_gemma26_frontier_control`, with
-`JITLLM_BENCH_FULL_FINAL_FFN` and `JITLLM_BENCH_PHASES` unset. Invoke its
+The native benchmark target is `llmp_gemma26_frontier_control`, with
+`LLMP_BENCH_FULL_FINAL_FFN` and `LLMP_BENCH_PHASES` unset. Invoke its
 `proof quality OWNERS INPUT OUT --config CONFIG --anchor NEW_ANCHOR` mode
 before `proof cycles` with the same arguments. Both use ordinary resolved
 settings and private fresh configurations. The constructor stamp must report
@@ -78,7 +78,7 @@ stock caller is
 build receipt is
 `874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89`.
 The caller source is
-`eef0d99804cfe09e0d0eabce76a6772caeffd0b7a6ac395bb2e26911c363396d`.
+`d25c4929015805b4b856484404d8a33ede01e458ac24d134d2366434aa7738e6`.
 Prepared manifests bind the previously authenticated raw model SHA/size;
 current file inode/mtime/size are rechecked before every process. This unit
 reuses approved payload identity, rather than claiming a new full-payload audit.
@@ -86,7 +86,7 @@ All installed jobs completed successfully; each owned container retired before
 its analysis.
 Raw logs, full heads/state, method/source inventories and aggregate receipts
 remain external under `m35-gemma4-backend-greedy/run1` on Spark B and
-`/tmp/jitllm-m35-coordination/gemma4-backend-greedy-raw` on the workstation.
+`/tmp/llmp-m35-coordination/gemma4-backend-greedy-raw` on the workstation.
 
 The native caller is `benchmarks/gemma31_production.cc`, through its existing
 constructor-check target with the control environment unset. It must witness
@@ -143,7 +143,7 @@ throughput claim. Full suites and historical trace/archive audits are not part
 of this focused comparison.
 
 Supply the external replay input from
-`~/.local/share/jitllm/gemma31-serving-bridge/inputs.i32` on the owned Spark
+`~/.local/share/llmp/gemma31-serving-bridge/inputs.i32` on the owned Spark
 or an independently supplied file with the same identity. It contains four
 little-endian 8192-ID histories (131072 bytes), SHA-256
 `90bf82fd26b7040c513e7370eca2cd283ac8fd15ce89a2e8d05d6f7e670b5ba2`.

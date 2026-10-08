@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Compare repeated GPU steps (decode tokens, prefill chunks) between two nsys traces.
 
@@ -186,7 +186,7 @@ def report(a: Summary, b: Summary, labels: tuple[str, str], top: int, out) -> No
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("reference", help="the reference engine's nsys sqlite export")
-    parser.add_argument("native", help="jitLLM's nsys sqlite export")
+    parser.add_argument("native", help="llmpalooza's nsys sqlite export")
     parser.add_argument("--span", nargs=2, type=float, metavar=("LOW_MS", "HIGH_MS"), required=True,
                         help="the steps compared: those whose span lies in this range")
     parser.add_argument("--last", type=int, default=127, help="the last N such steps (0: all)")

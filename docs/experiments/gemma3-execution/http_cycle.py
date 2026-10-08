@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Native HTTP old/new bookend for the unchanged-held-cohort selection guard."""
 import argparse
@@ -30,9 +30,9 @@ def main():
     args = parser.parse_args()
     binding = json.loads(args.binding.read_text())
     assert digest(args.baseline) == '3f651433a37740575842ba916ccdc9391fccc58f96296c791c755c5f2c14b3d3'
-    assert digest(args.candidate) == binding['paths']['build/spark-native/src/runtime/jitllm-runtime']['sha256']
+    assert digest(args.candidate) == binding['paths']['build/spark-native/src/runtime/llmp-runtime']['sha256']
     for name in ('libcublas.so.13', 'libcublasLt.so.13'):
-        assert digest(args.library_path/name) == binding['paths']['build/spark-native/lib/jitllm/'+name]['sha256']
+        assert digest(args.library_path/name) == binding['paths']['build/spark-native/lib/llmp/'+name]['sha256']
     environment = {**os.environ, 'LD_LIBRARY_PATH': str(args.library_path.resolve())}
     controls = json.loads(args.http_controls.read_text())
     assert len(controls['cases']) == 4 and all(c['passed'] for c in controls['cases'])

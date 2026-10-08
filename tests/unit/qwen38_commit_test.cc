@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A Qwen3.8 speculative verify's commit (kernels/ggml/qwen38_commit.h) on a
 // GB10 (label `gpu`), at the model's widths: for every number of kept rows,
-// each layer's recurrent state is the one jitllm.gated_delta_net.columns
+// each layer's recurrent state is the one llmp.gated_delta_net.columns
 // (the verify's own recurrence) reaches over those rows, bit for bit; each
 // convolution history (and the n-gram layer's) holds the last taps of the
 // old history followed by the kept rows' inputs, exactly; and the launcher
@@ -30,21 +30,21 @@
 #include "base/bytes.h"
 #include "ggml.h"
 #include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-namespace kg = jitllm::kernels::ggml;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+namespace kg = llmp::kernels::ggml;
 
 constexpr std::int64_t kS = 128;
 constexpr std::int64_t kKeyHeads = 16;
@@ -70,7 +70,7 @@ std::vector<float> Normal(std::uint64_t seed, std::size_t n, float scale = 1.0f,
 class Qwen38CommitTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     auto launch = LaunchContext::Create(
         0, *execution_, stream_,

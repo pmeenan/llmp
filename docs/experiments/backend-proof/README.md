@@ -1,11 +1,11 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Backend proof: aggregate report — 2026-09-27
 
 The early backend integration proof ([scope](../../backend-proof.md))
-ran real GGML FP16 and ExLlamaV3 kernels on jitLLM-owned memory under
-jitLLM's dispatch. This report gathers its stages and the status of every
+ran real GGML FP16 and ExLlamaV3 kernels on llmpalooza-owned memory under
+llmpalooza's dispatch. This report gathers its stages and the status of every
 case, and gives the results of the last stages: P4 (paging), P5 (lifetime
 and failure) and P6 (the contract, recorded as D-086).
 
@@ -14,7 +14,7 @@ and failure) and P6 (the contract, recorded as D-086).
 | Stage | Result | Report |
 | --- | --- | --- |
 | P0 Bridges and controls | Both toolchain bridges bit-exact against their references; profiles, bounds and protocols approved or pre-registered | [P0](../backend-proof-p0/README.md) |
-| P1 Substrate probes | GGML launchers under jitLLM's K-C context; cuBLAS handle and workspace injection; plan selection between implementations; BP-F1 failed on host VMM and passed on device VMM (D-081) | [P1](../backend-proof-p1/README.md) |
+| P1 Substrate probes | GGML launchers under llmpalooza's K-C context; cuBLAS handle and workspace injection; plan selection between implementations; BP-F1 failed on host VMM and passed on device VMM (D-081) | [P1](../backend-proof-p1/README.md) |
 | P2 Resident FP16 | Native FP16 matches the bridge bit for bit, plan gate included (rung 3); paged into device VMM through the zone, evicted, restored and relocated, bit-identical (rungs 4, 5) | [P2](../backend-proof-p2/README.md) |
 | P3 Resident EXL3 | Every linear byte-equal to upstream at a forced plan (BP-N5); both fixtures end to end, the executed plan equal to the record, Tier E at operation level, Tier C; rungs 4 and 5 bit-identical | [P3](../backend-proof-p3/README.md) |
 | P4 Paging | Write-back through the zone; partial evictions, state spill and shared-storage views on both representations, bit-identical | below |
@@ -75,8 +75,8 @@ performance is in
   bytes do not overlap the embedding's (BP-P3).
 
 **Results** (2026-09-27, `spark-b`: GB10, kernel 7.0.0-1019-nvidia, driver
-580.178.04, the `spark-native` build, `jitllm_fp16_paged` `4bc95949…`,
-`jitllm_exl3_paged` `87140d73…`, `CUDA_DISABLE_PTX_JIT=1`, lanes on their
+580.178.04, the `spark-native` build, `llmp_fp16_paged` `4bc95949…`,
+`llmp_exl3_paged` `87140d73…`, `CUDA_DISABLE_PTX_JIT=1`, lanes on their
 own threads):
 
 | Arm | Options | Evaluation 1 | Later evaluations against 1 | Launches refused over an incomplete closure | Cache bytes differing after restore |
@@ -138,7 +138,7 @@ run on the discrete GPU):
 
 ## P5: lifetime and failure on the real providers
 
-- **BP-L1, BP-L3** (`jitllm_exl3_paged --cancel-in-flight`, both 4.0 bpw
+- **BP-L1, BP-L3** (`llmp_exl3_paged --cancel-in-flight`, both 4.0 bpw
   EXL3-G and 4.5 bpw EXL3-G above):
   - The largest reconstruction phase, the 1,023-row prefill (GGML and EXL3
     work, each reconstruction slice followed by its GEMM), is submitted
@@ -241,7 +241,7 @@ observed peak (`paging.json`):
   kind can stay below its region.
 
 The memory account and `F` per profile are D-086's. The catalog is exact
-for jitLLM's own bytes. Peak device memory for the whole process, from
+for llmpalooza's own bytes. Peak device memory for the whole process, from
 ordinary counters, is compared loosely (at most about 1.1×) against each
 reference engine. It passes: native is 0.81–0.96× the FP16 bridge on
 every arm and 0.82–0.87× ExLlamaV3 on both EXL3 fixtures
@@ -259,7 +259,7 @@ every arm and 0.82–0.87× ExLlamaV3 on both EXL3 fixtures
   [`fp16_runner.h`](../../../benchmarks/fp16_runner.h) for FP16 (GGML's
   kernels and cuBLAS), and [`exl3_runner.h`](../../../benchmarks/exl3_runner.h)
   for EXL3 (ExLlamaV3's kernels and GGML's).
-- `jitllm_fp16_paged` and `jitllm_exl3_paged` run one model each, as
+- `llmp_fp16_paged` and `llmp_exl3_paged` run one model each, as
   before. The EXL3 launch context is now made before the scheduler runs,
   and EXL3's VMM work moved to the VMM lane, as FP16's already ran.
 - The refactored binaries were rerun with P4's options (`spark-b`, same
@@ -298,7 +298,7 @@ every arm and 0.82–0.87× ExLlamaV3 on both EXL3 fixtures
     `summary.json` and `paging.json`.
 
 **Results** (2026-09-27, `spark-b`: GB10, kernel 7.0.0-1019-nvidia,
-driver 580.178.04, the `spark-native` build, `jitllm_alternate_paged`
+driver 580.178.04, the `spark-native` build, `llmp_alternate_paged`
 `1e1467ec…`, `CUDA_DISABLE_PTX_JIT=1`, lanes on their own threads, three
 rounds; an earlier build of the same code before formatting, `0bcffb4b…`,
 gave the same results, and the timings and memory below are its):
@@ -332,7 +332,7 @@ gave the same results, and the timings and memory below are its):
     cache, zone and pinned staging). The other 5 GB or so is outside the
     catalog. Not investigated.
   - EXL3 alone here drops about 1.7 GB more than native EXL3's 4,813 MiB
-    in the memory check (`jitllm_exl3_exec`, rung 3, arm O, `cudaMalloc`;
+    in the memory check (`llmp_exl3_exec`, rung 3, arm O, `cudaMalloc`;
     [backend-proof.md](../../backend-proof.md), "The memory check").
     The harness and arm differ; the gap is not explained.
 
@@ -386,7 +386,7 @@ in M2:
 
 **Results**, all with coalescing on (the harnesses' default when these
 runs were made, before BP-S3's runners; now `--coalesce on`):
-- **Rungs 4 and 5** (`spark-b`, 2026-09-27, `jitllm_fp16_paged`
+- **Rungs 4 and 5** (`spark-b`, 2026-09-27, `llmp_fp16_paged`
   `7b8d4f3d…`): `run_paged.sh threads` on all four FP16 arms gave the
   recorded hashes (`bb8ae5e7…`, `3560d337…`, `bfb36f19…`, `69ff0821…`),
   zero bit differences over four evaluations (two with every weight
@@ -395,15 +395,15 @@ runs were made, before BP-S3's runners; now `--coalesce on`):
   the 490 device chunks took 343–452 requests on the first load and
   328–352 on each restore; the 130 host-table chunks, read in place as
   each one's backing is made, did not coalesce.
-- **EXL3** (same host and build): `jitllm_exl3_paged --restores 2
+- **EXL3** (same host and build): `llmp_exl3_paged --restores 2
   --relocate` on 4.0 bpw G and 4.5 bpw O wrote every logits file equal to
   the P4 run's (rung 3's), with zero bit differences and no violation.
-- **A/B** (D-085's quick check): `jitllm_fp16_paged --load-only 6`, the
+- **A/B** (D-085's quick check): `llmp_fp16_paged --load-only 6`, the
   490 device chunks (988 MB) through the zone at depth 4 with 8 slots,
   coalescing on (64 MiB spans) and off (one request per chunk), on
   `spark`, 2026-09-28 01:52–01:54 UTC. Three interleaved rounds, one
   process per variant per round, each starting after 10 s with no other
-  GPU process, no jitLLM or benchmark process and a 1-minute load under
+  GPU process, no llmpalooza or benchmark process and a 1-minute load under
   1.5 (0.06–0.31 at the starts). The artifact's shard was written on
   2026-09-23, so at rest (RE-027). GB/s over loads 2–6 (n = 15; the
   first includes warm-up, 9.6–11.7):
@@ -505,18 +505,18 @@ Each M2 row, with the tests that carry it
 On `spark-b`, with the `spark-native` build, P2's `control-tokens.txt`
 and held-out IDs, P3's plans (`p3b-20260927/plans`), and the installed
 artifacts (`artifact-layout-20260922/installed`):
-- `jitllm_fp16_paged --artifact ART --trajectory control|heldout --tokens
+- `llmp_fp16_paged --artifact ART --trajectory control|heldout --tokens
   FILE --fusion on|off --out DIR` with the options in the table;
-- `jitllm_exl3_paged --artifact ART --fixture 4.0bpw|4.5bpw --arm G|O
+- `llmp_exl3_paged --artifact ART --fixture 4.0bpw|4.5bpw --arm G|O
   --plan PLAN --ids IDS --out DIR` with the options in the table;
-- BP-P1's A/B: `jitllm_fp16_paged ... --load-only 6 --weights device
+- BP-P1's A/B: `llmp_fp16_paged ... --load-only 6 --weights device
   --backing managed|premapped --coalesce on|off`, each load's GB/s being
   `read_bytes / seconds` in `loads.json`, which also counts its requests
   (BP-P1's rung runs: add `--coalesce on` to either harness);
 - then compare `summary.json` (logits, bit differences and coverage) and
   `paging.json` (partial evictions, refusals, cache comparison, cancel
   result, bounds against peaks);
-- for BP-S3, `jitllm_alternate_paged --fp16-artifact ART --trajectory T
+- for BP-S3, `llmp_alternate_paged --fp16-artifact ART --trajectory T
   --tokens FILE --fusion F --exl3-artifact ART --fixture X --arm A --plan
   PLAN --ids IDS --out DIR --rounds 3 --fp16-expect SHA256 --exl3-expect
   RUNG3DIR`, where RUNG3DIR is P3's `rung3-*` output. It exits 1 on any
@@ -524,6 +524,6 @@ artifacts (`artifact-layout-20260922/installed`):
   evictions and each sample's occupancy.
 
 Each run took under 20 s; each alternation, about 40 s. Raw outputs stay
-on `spark-b` under `~/.local/share/jitllm/m2close-final` and
-`~/.local/share/jitllm/bps3-20260927`. The memory runs' summaries are on
-`spark` under `~/.local/share/jitllm/bps3-20260927`.
+on `spark-b` under `~/.local/share/llmp/m2close-final` and
+`~/.local/share/llmp/bps3-20260927`. The memory runs' summaries are on
+`spark` under `~/.local/share/llmp/bps3-20260927`.

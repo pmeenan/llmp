@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Exclusive pre-load identity receipt, without rehashing model payloads."""
 import datetime
@@ -30,9 +30,9 @@ def record(path):
 def main():
     os.umask(0o077)
     home = pathlib.Path.home()
-    root = home / '.local/share/jitllm/gemma26-dispatch-observation'
-    source = home / 'src/jitLLM-wt/m3fixb'
-    previous = home / '.local/share/jitllm/gemma26-packed-attention-c4'
+    root = home / '.local/share/llmp/gemma26-dispatch-observation'
+    source = home / 'src/llmp-wt/m3fixb'
+    previous = home / '.local/share/llmp/gemma26-packed-attention-c4'
     old = json.loads((previous / 'pre-native.json').read_text())
     generated = (root / 'controller.cu').read_bytes()
     original = (root / 'ggml/src/ggml-cuda/ggml-cuda.cu').read_bytes()
@@ -55,13 +55,13 @@ def main():
     actual = {pathlib.Path(line.split()[1]).name: line.split()[0] for line in output.splitlines()}
     if actual != LIBS:
         raise ValueError('original image math changed')
-    artifact = home / '.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3'
+    artifact = home / '.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3'
     metadata = [record(artifact / name) for name in ('manifest.json', 'index.json')]
     if [m['sha256'] for m in metadata] != [
             '4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3',
             'e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171']:
         raise ValueError('prepared artifact metadata changed')
-    raw = home / '.local/share/jitllm/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf'
+    raw = home / '.local/share/llmp/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf'
     if raw.stat().st_size != 16947541728:
         raise ValueError('approved raw artifact size changed')
     files = sorted(p for p in (root / 'ggml').rglob('*') if p.is_file())
@@ -81,7 +81,7 @@ def main():
         'original_client_source': record(source / 'docs/experiments/gemma-joined-serving/llama_joined.cc'),
         'original_client_headers': old['reference_headers'],
         'controller_source_closure': [record(p) for p in files],
-        'sdk_receipt': record(home / '.local/share/jitllm/sdk/aarch64-c09daba6ac31edee/sdk.json'),
+        'sdk_receipt': record(home / '.local/share/llmp/sdk/aarch64-c09daba6ac31edee/sdk.json'),
         'original_image': IMAGE, 'original_image_libraries': actual,
         'actual_input': inputs, 'artifact_metadata': metadata,
         'raw_size': raw.stat().st_size,

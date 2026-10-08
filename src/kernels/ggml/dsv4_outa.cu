@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cuda_runtime.h>
@@ -16,7 +16,7 @@
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 constexpr std::uint64_t kBlocks = 8192ULL * (4096 / 32);
@@ -131,4 +131,4 @@ std::expected<void, KernelFailure> RunDsv4OutA(LaunchContext& launch, ggml_tenso
   });
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

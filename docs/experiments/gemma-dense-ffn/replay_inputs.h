@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-#ifndef JITLLM_BENCHMARK_DENSE_FFN_INPUTS_H_
-#define JITLLM_BENCHMARK_DENSE_FFN_INPUTS_H_
+#ifndef LLMP_BENCHMARK_DENSE_FFN_INPUTS_H_
+#define LLMP_BENCHMARK_DENSE_FFN_INPUTS_H_
 #include <array>
 #include <bit>
 #include <cmath>

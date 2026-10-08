@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // GGML's outer stream-K controller selects independent owner roots. The
@@ -11,7 +11,7 @@
 #include <type_traits>
 #pragma clang system_header
 
-namespace jitllm_fattn_owner {
+namespace llmp_fattn_owner {
 struct OwnerBases {
   const char* k[4];
   const char* v[4];
@@ -294,4 +294,4 @@ static __global__ void flash_attn_owner_f16(
 }
 
 // clang-format on
-}  // namespace jitllm_fattn_owner
+}  // namespace llmp_fattn_owner

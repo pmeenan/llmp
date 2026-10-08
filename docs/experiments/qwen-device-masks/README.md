@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen causal masks through the shared GPU producer
@@ -260,7 +260,7 @@ Compared payload SHAs are native
 FP8 `b1aaccb17c4f862a0ed137c606fc06214feaf98fb86235ee9793b77dcbae48aa`,
 and BF16 `791ec7a68621444cce358a524b898fa9ed2945a8d673759cf69e27208ba2c53c`.
 Raw evidence remains outside Git at
-`/tmp/jitllm-m35-coordination/qwen-bf16-prompt-raw/diagnostic2` and
+`/tmp/llmp-m35-coordination/qwen-bf16-prompt-raw/diagnostic2` and
 Spark B `~/scratch/m35-qwen-bf16-prompt/diagnostic2`; it may be deleted when
 M3.5 closes. The standing inputs and replay recipe below recreate the heads.
 
@@ -311,7 +311,7 @@ native build, regression suite or performance run was needed.
 Source inventory SHA
 `05504b89eff58a454d78f8dd59625f63dd7ad24b0ea5eae0cdfda6c2f712dfa2`,
 executed harness SHA
-`5df8a10794e66982a21a1167a21328a898bd1be569bc097058d49e9974a4ba51`,
+`cc5f8448216970cd57352f7e2256dbb17d31d26966f9edec2c684b01e4d2dc5b`,
 positive receipt SHA
 `e0268e11e6dfd6a1606b34b866ef99d0d19dc0716403b2d724be9d6e978f508a`.
 Derived prompt int32 SHA
@@ -321,7 +321,7 @@ Native first head SHA
 TensorFold prompt head SHA
 `9e0dbeacaccd6cc4f0d74e1a91956cad65bf2f469265eed31f928007ea8d21d1`.
 Raw evidence is external at
-`/tmp/jitllm-m35-coordination/qwen-frontier-quality-raw/frontier1` and
+`/tmp/llmp-m35-coordination/qwen-frontier-quality-raw/frontier1` and
 Spark B `~/scratch/m35-qwen-frontier-quality/frontier1`; it may be deleted at
 M3.5 close. Standing authenticated inputs and the replay recipe below remain.
 
@@ -381,16 +381,16 @@ Ordinary partial eviction remains off; its cold-switch gate is separate.
 
 Prepared target `c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93`
 and MTP `8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40`
-are under `~/.local/share/jitllm/m3-artifacts` on Spark B, imported from
+are under `~/.local/share/llmp/m3-artifacts` on Spark B, imported from
 `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6`. GGUF target
 `5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78`
-is under `~/.local/share/jitllm/qgguf-artifacts`, from
+is under `~/.local/share/llmp/qgguf-artifacts`, from
 `unsloth/Qwen3.8-Flash-Next-GGUF@38bb39ee` UD-IQ3_XXS; no GGUF drafter.
 Manifest SHA equals each artifact ID. Tokenizer is the native checkpoint's
 `tokenizer.json`, SHA 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3.
 
 Replay inputs are retained independently of raw results at
-`~/.local/share/jitllm/references/qwen-device-masks/inputs` on Spark B.
+`~/.local/share/llmp/references/qwen-device-masks/inputs` on Spark B.
 `standing-literal-prompts.json`, SHA 6d3b3aded76477a6cb1c40a64c941c0cab73411b059b3cf548f6a9293ff15809,
 is the previously captured literal set: use `p3`'s first 1536 IDs without
 retokenizing. `prompt.json`, SHA 204185510a2c6f05f7b9672a96e66de5d816d188832cde728b7d64952423c066,
@@ -406,7 +406,7 @@ invocation inside installed `spark-job --gpu` supervision. Replace the
 uppercase paths with the verified stores named above and a new output path.
 
 ```sh
-jitllm_qwen38_spec --check masks --qwen38-artifact TARGET --drafter MTP \
+llmp_qwen38_spec --check masks --qwen38-artifact TARGET --drafter MTP \
   --draft-vocab 65536 --tokenizer TOKENIZER --prompts INPUT/prompt.json \
   --only mask-short-1536 --prompt-token-ids on --tokens 32 --context 2048 \
   --prefill-chunk 512 --draft 3 --adaptive-depth off --window 0 --graphs on \
@@ -425,7 +425,7 @@ process before the next arm.
 
 Actual native cuBLAS13 SHA ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b;
 Lt SHA ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30.
-Raw results are external under `/tmp/jitllm-m35-coordination/qwen-gpu-mask-raw`
+Raw results are external under `/tmp/llmp-m35-coordination/qwen-gpu-mask-raw`
 on the workstation and its synced Spark B scratch copy. Qualification
 `passed.json` SHA db3e8bc3ee824f324266aa394c4f67d0d2d5fba6517f6a6ca3f71726ff516221;
 first-factor aggregate SHA 5b27e0b4eda935065939e1930ef05098424ca83651cee6fd97cdbfbb740bbcfd.
@@ -555,7 +555,7 @@ The quality analyzer reads already persisted heads; run it off the paid
 endpoint under the workstation shared lock (or a supervised Spark job):
 
 ```sh
-hostlock shared --label 'jitLLM: Qwen common-history analysis' -- \
+hostlock shared --label 'llmpalooza: Qwen common-history analysis' -- \
   python3 TREE/docs/experiments/qwen-device-masks/quality.py \
   OUT/tensorfold/native1-plain/plain-heads.f32 \
   OUT/tensorfold/reference2/plain-heads.f32 \
@@ -590,7 +590,7 @@ removed by the shell trap even on application failure or timeout.
 
 ```sh
 set -eu
-H="$HOME/.local/share/jitllm"
+H="$HOME/.local/share/llmp"
 F="$H/references/tensorfold/ed78d6fc"
 INPUT="$H/references/qwen-device-masks/inputs"
 MODEL="$H/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6"
@@ -636,7 +636,7 @@ and allocation observations establish this diagnostic's admission, not speed.
 Analyze the persisted heads under the workstation shared lock using the same
 `quality.py` command above, once native/BF16 and once FP8/BF16, with the plain
 history key. In the second analysis, fields named `native_*` identify the first
-operand (FP8), not jitLLM. Keep the fixed 1.0 margin and both original reference
+operand (FP8), not llmpalooza. Keep the fixed 1.0 margin and both original reference
 and controlled-policy results; no new performance or PPL claim follows from
 this replay.
 
@@ -653,7 +653,7 @@ Require actual cuts 512/512/512/29, positive BF16 consumers, zero FP8 consumers,
 head, unchanged bindings and the same positive retirement proofs. Omit the
 flag to recreate the original BF16 Teacher32 payload.
 
-For native, use a freshly bound build of the existing `jitllm_qwen38_spec`
+For native, use a freshly bound build of the existing `llmp_qwen38_spec`
 benchmark with the authenticated target artifact/tokenizer, derived 1565-ID
 input, `--check masks-target --tokens 5 --context 2048 --prefill-chunk 512`
 and `--graphs on --device-masks on`, preserving the existing reference's other options.
@@ -670,7 +670,7 @@ history, then extract row 29 (zero-based, 993,280 bytes per row) from each
 full-head file. Use [frontier_compare.py](frontier_compare.py) for each pair:
 
 ```sh
-hostlock shared --label "jitLLM: compare one Qwen frontier" -- \
+hostlock shared --label "llmpalooza: compare one Qwen frontier" -- \
   python3 docs/experiments/qwen-device-masks/frontier_compare.py \
   --left native-frontier.f32 --right bf16-frontier.f32 --target 17723 \
   --out comparison.json

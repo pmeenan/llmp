@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The D-081 page-in path over the real providers on a Spark (label `gpu`)
@@ -56,33 +56,33 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::base::PushResult;
-using jitllm::catalog::ExtentId;
-using jitllm::catalog::ExtentState;
-using jitllm::providers::Access;
-using jitllm::providers::BackingKind;
-using jitllm::providers::ReservationId;
-using jitllm::providers::StreamId;
-using jitllm::scheduler::BackingPlace;
-using jitllm::scheduler::CompletionBoard;
-using jitllm::scheduler::Control;
-using jitllm::scheduler::DeviceService;
-using jitllm::scheduler::DeviceSettings;
-using jitllm::scheduler::DeviceWork;
-using jitllm::scheduler::Fault;
-using jitllm::scheduler::LandingZone;
-using jitllm::scheduler::PageSource;
-using jitllm::scheduler::QueueSettings;
-using jitllm::scheduler::Readiness;
-using jitllm::scheduler::Scheduler;
-using jitllm::scheduler::SchedulerSettings;
-using jitllm::scheduler::StartRequest;
-using jitllm::scheduler::Step;
-using jitllm::scheduler::StorageService;
-using jitllm::scheduler::TaskContext;
-using jitllm::scheduler::TaskOutcome;
-using jitllm::scheduler::TaskProgram;
+using llmp::base::Bytes;
+using llmp::base::PushResult;
+using llmp::catalog::ExtentId;
+using llmp::catalog::ExtentState;
+using llmp::providers::Access;
+using llmp::providers::BackingKind;
+using llmp::providers::ReservationId;
+using llmp::providers::StreamId;
+using llmp::scheduler::BackingPlace;
+using llmp::scheduler::CompletionBoard;
+using llmp::scheduler::Control;
+using llmp::scheduler::DeviceService;
+using llmp::scheduler::DeviceSettings;
+using llmp::scheduler::DeviceWork;
+using llmp::scheduler::Fault;
+using llmp::scheduler::LandingZone;
+using llmp::scheduler::PageSource;
+using llmp::scheduler::QueueSettings;
+using llmp::scheduler::Readiness;
+using llmp::scheduler::Scheduler;
+using llmp::scheduler::SchedulerSettings;
+using llmp::scheduler::StartRequest;
+using llmp::scheduler::Step;
+using llmp::scheduler::StorageService;
+using llmp::scheduler::TaskContext;
+using llmp::scheduler::TaskOutcome;
+using llmp::scheduler::TaskProgram;
 
 constexpr std::uint64_t kExtent = 2ULL << 20U;
 constexpr std::size_t kExtents = 32;
@@ -108,7 +108,7 @@ struct Signals {
 // with chunk `chunks[k]`, or chunk k if none are given.
 class LoadAndCheck final : public TaskProgram {
  public:
-  LoadAndCheck(Signals& signals, const jitllm::catalog::Catalog& catalog,
+  LoadAndCheck(Signals& signals, const llmp::catalog::Catalog& catalog,
                std::vector<ExtentId> extents, std::vector<std::uint64_t> addresses, ExtentId result,
                std::uint64_t result_address, std::span<const std::byte> file, bool check,
                std::vector<std::size_t> chunks = {})
@@ -167,7 +167,7 @@ class LoadAndCheck final : public TaskProgram {
 
  private:
   Signals& signals_;
-  const jitllm::catalog::Catalog& catalog_;
+  const llmp::catalog::Catalog& catalog_;
   std::vector<ExtentId> extents_;
   std::vector<std::uint64_t> addresses_;
   ExtentId result_;
@@ -242,17 +242,17 @@ bool WaitFor(const std::atomic<bool>& flag) {
 class CudaPageIn : public ::testing::TestWithParam<bool> {
  protected:
   void SetUp() override {
-    auto memory = jitllm::providers::cuda::OpenDeviceMemory(0);
+    auto memory = llmp::providers::cuda::OpenDeviceMemory(0);
     ASSERT_TRUE(memory.has_value()) << (memory ? "" : memory.error().detail);
     memory_ = std::move(*memory);
-    auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
     ASSERT_TRUE(execution.has_value()) << (execution ? "" : execution.error().detail);
     execution_ = std::move(*execution);
-    auto storage = jitllm::providers::UringStorage::Create(4);
+    auto storage = llmp::providers::UringStorage::Create(4);
     ASSERT_TRUE(storage.has_value()) << storage.error().message();
     storage_ = std::move(*storage);
 
-    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path directory = scratch != nullptr
                                                 ? std::filesystem::path(scratch)
                                                 : std::filesystem::path(::testing::TempDir());
@@ -291,23 +291,22 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
           catalog_
               .AddExtent(
                   {.domain = domain_,
-                   .memory_class = jitllm::catalog::MemoryClass::kWeights,
-                   .recovery = jitllm::catalog::Recovery::kFromArtifact,
+                   .memory_class = llmp::catalog::MemoryClass::kWeights,
+                   .recovery = llmp::catalog::Recovery::kFromArtifact,
                    .size = Bytes(kExtent),
                    .content = {.artifact = {}, .group = 0, .chunk = static_cast<std::uint32_t>(i)}})
               .value());
     }
     // The zone and result, pinned: the catalog counts them (a declared pool).
     for (std::size_t i = 0; i <= kSlots; ++i) {
-      const ExtentId pinned =
-          catalog_
-              .AddExtent({.domain = domain_,
-                          .memory_class = jitllm::catalog::MemoryClass::kStaging,
-                          .recovery = jitllm::catalog::Recovery::kPinned,
-                          .size = Bytes(kExtent),
-                          .content = {}},
-                         true)
-              .value();
+      const ExtentId pinned = catalog_
+                                  .AddExtent({.domain = domain_,
+                                              .memory_class = llmp::catalog::MemoryClass::kStaging,
+                                              .recovery = llmp::catalog::Recovery::kPinned,
+                                              .size = Bytes(kExtent),
+                                              .content = {}},
+                                             true)
+                                  .value();
       if (i == kSlots) {
         result_ = pinned;
       }
@@ -318,13 +317,13 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
     storage_lane_ = std::make_unique<StorageService>(
         lane_storage_ != nullptr ? *lane_storage_ : *storage_,
         // The reader's default (no coalescing) unless a test turns it on.
-        jitllm::providers::ReaderSettings{.alignment = 4096,
-                                          .request_bytes = 2U << 20U,
-                                          .retries = 3,
-                                          .reads = 64,
-                                          .waiters = 8,
-                                          .span_bytes = span_bytes_,
-                                          .span_segments = jitllm::providers::kMaxSegments},
+        llmp::providers::ReaderSettings{.alignment = 4096,
+                                        .request_bytes = 2U << 20U,
+                                        .retries = 3,
+                                        .reads = 64,
+                                        .waiters = 8,
+                                        .span_bytes = span_bytes_,
+                                        .span_segments = llmp::providers::kMaxSegments},
         board_, QueueSettings{.capacity = 64, .reserved = 8, .batch = 16});
     device_lane_ = std::make_unique<DeviceService>(
         lane_execution_ != nullptr ? *lane_execution_ : *execution_,
@@ -332,7 +331,7 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
         DeviceSettings{.queue = {.capacity = 64, .reserved = 8, .batch = 16}, .handoff = 64},
         GetParam() ? nullptr : memory_.get());  // one lane calls the provider
     if (GetParam()) {
-      backing_lane_ = std::make_unique<jitllm::scheduler::BackingService>(
+      backing_lane_ = std::make_unique<llmp::scheduler::BackingService>(
           memory_.get(), board_, QueueSettings{.capacity = 64, .reserved = 8, .batch = 16});
     }
     LandingZone landing{.slots = {}, .slot_bytes = Bytes(kExtent), .stream = 0};
@@ -341,10 +340,10 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
     }
     scheduler_ = std::make_unique<Scheduler>(
         catalog_, board_, wake_,
-        jitllm::scheduler::Lanes{.storage = storage_lane_.get(),
-                                 .device = device_lane_.get(),
-                                 .cpu = nullptr,
-                                 .backing = backing_lane_.get()},
+        llmp::scheduler::Lanes{.storage = storage_lane_.get(),
+                               .device = device_lane_.get(),
+                               .cpu = nullptr,
+                               .backing = backing_lane_.get()},
         SchedulerSettings{
             .tasks = 8, .budget = Bytes(kExtent * (kExtents + kSlots + 1)), .landing = landing});
     Place(0);
@@ -467,19 +466,19 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
     return signals.outcome.load();
   }
 
-  std::unique_ptr<jitllm::providers::VmmProvider> memory_;
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  std::unique_ptr<jitllm::providers::UringStorage> storage_;
-  jitllm::providers::Storage* lane_storage_ = nullptr;            // WrapProviders
-  jitllm::providers::DeviceExecution* lane_execution_ = nullptr;  // WrapProviders
+  std::unique_ptr<llmp::providers::VmmProvider> memory_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  std::unique_ptr<llmp::providers::UringStorage> storage_;
+  llmp::providers::Storage* lane_storage_ = nullptr;            // WrapProviders
+  llmp::providers::DeviceExecution* lane_execution_ = nullptr;  // WrapProviders
   // The storage lane reader's span_bytes: the default, or set by WrapProviders.
-  std::uint32_t span_bytes_ = jitllm::providers::kNoCoalescing;
-  jitllm::catalog::Catalog catalog_;
-  jitllm::base::WakeFlag wake_;
+  std::uint32_t span_bytes_ = llmp::providers::kNoCoalescing;
+  llmp::catalog::Catalog catalog_;
+  llmp::base::WakeFlag wake_;
   CompletionBoard board_{128, wake_};
   std::unique_ptr<StorageService> storage_lane_;
   std::unique_ptr<DeviceService> device_lane_;
-  std::unique_ptr<jitllm::scheduler::BackingService> backing_lane_;
+  std::unique_ptr<llmp::scheduler::BackingService> backing_lane_;
   std::unique_ptr<Scheduler> scheduler_;
   std::optional<std::expected<void, Fault>> result_status_;
   std::vector<std::jthread> threads_;  // the scheduler first
@@ -487,12 +486,12 @@ class CudaPageIn : public ::testing::TestWithParam<bool> {
   int fd_ = -1;
   std::vector<std::byte> file_;
   ReservationId host_;
-  jitllm::providers::BackingId host_backing_;
+  llmp::providers::BackingId host_backing_;
   std::uint64_t host_base_ = 0;
   std::array<ReservationId, 2> places_;
   std::vector<std::uint64_t> addresses_;
   std::size_t baseline_ = 0;
-  jitllm::catalog::DomainId domain_;
+  llmp::catalog::DomainId domain_;
   std::vector<ExtentId> extents_;
   ExtentId result_;
   StreamId stream_;
@@ -757,26 +756,24 @@ INSTANTIATE_TEST_SUITE_P(VmmWork, CudaPageIn, ::testing::Bool(), [](const auto& 
 // reports some submissions as of unknown start although io_uring took
 // them, and hands every completion over twice; the execution decorator
 // can report fence queries as of unknown outcome.
-class PermutingStorage final : public jitllm::providers::Storage {
+class PermutingStorage final : public llmp::providers::Storage {
  public:
-  explicit PermutingStorage(jitllm::providers::Storage& inner) : inner_(inner) {}
+  explicit PermutingStorage(llmp::providers::Storage& inner) : inner_(inner) {}
   std::atomic<int> unknown_starts{0};  // the next ones reported unknown
   std::atomic<int> duplicated{0};      // completions handed over twice
 
   std::size_t depth() const override { return inner_.depth(); }
   std::size_t in_flight() const override { return inner_.in_flight(); }
-  jitllm::providers::Submission Submit(const jitllm::providers::IoRequest& request) override {
+  llmp::providers::Submission Submit(const llmp::providers::IoRequest& request) override {
     const auto submitted = inner_.Submit(request);
-    if (submitted == jitllm::providers::Submission::kAccepted && unknown_starts.load() > 0) {
+    if (submitted == llmp::providers::Submission::kAccepted && unknown_starts.load() > 0) {
       unknown_starts.fetch_sub(1);
-      return jitllm::providers::Submission::kUnknown;
+      return llmp::providers::Submission::kUnknown;
     }
     return submitted;
   }
-  jitllm::providers::Submission Cancel(std::uint64_t token) override {
-    return inner_.Cancel(token);
-  }
-  std::size_t Harvest(std::span<jitllm::providers::IoCompletion> out, bool wait) override {
+  llmp::providers::Submission Cancel(std::uint64_t token) override { return inner_.Cancel(token); }
+  std::size_t Harvest(std::span<llmp::providers::IoCompletion> out, bool wait) override {
     const std::size_t half = out.size() / 2;
     const std::size_t n = inner_.Harvest(out.first(half), wait);
     for (std::size_t i = 0; i < n; ++i) {
@@ -788,55 +785,54 @@ class PermutingStorage final : public jitllm::providers::Storage {
   void Wake() override { inner_.Wake(); }
 
  private:
-  jitllm::providers::Storage& inner_;
+  llmp::providers::Storage& inner_;
 };
 
-class UnknownQueries final : public jitllm::providers::DeviceExecution {
+class UnknownQueries final : public llmp::providers::DeviceExecution {
  public:
-  explicit UnknownQueries(jitllm::providers::DeviceExecution& inner) : inner_(inner) {}
+  explicit UnknownQueries(llmp::providers::DeviceExecution& inner) : inner_(inner) {}
   std::atomic<bool> unknown{false};  // every query from now on
 
-  std::expected<StreamId, jitllm::providers::Failure> CreateStream() override {
+  std::expected<StreamId, llmp::providers::Failure> CreateStream() override {
     return inner_.CreateStream();
   }
-  std::expected<void, jitllm::providers::Failure> DestroyStream(StreamId stream) override {
+  std::expected<void, llmp::providers::Failure> DestroyStream(StreamId stream) override {
     return inner_.DestroyStream(stream);
   }
-  std::expected<void, jitllm::providers::Failure> Copy(StreamId stream, std::uint64_t destination,
-                                                       std::uint64_t source, Bytes size) override {
+  std::expected<void, llmp::providers::Failure> Copy(StreamId stream, std::uint64_t destination,
+                                                     std::uint64_t source, Bytes size) override {
     return inner_.Copy(stream, destination, source, size);
   }
-  std::expected<void, jitllm::providers::Failure> Zero(StreamId stream, std::uint64_t destination,
-                                                       Bytes size) override {
+  std::expected<void, llmp::providers::Failure> Zero(StreamId stream, std::uint64_t destination,
+                                                     Bytes size) override {
     return inner_.Zero(stream, destination, size);
   }
-  std::expected<jitllm::providers::NativeStream, jitllm::providers::Failure> Submission(
+  std::expected<llmp::providers::NativeStream, llmp::providers::Failure> Submission(
       StreamId stream) override {
     return inner_.Submission(stream);
   }
-  std::expected<void, jitllm::providers::Failure> Wait(StreamId stream,
-                                                       jitllm::providers::FenceId fence) override {
+  std::expected<void, llmp::providers::Failure> Wait(StreamId stream,
+                                                     llmp::providers::FenceId fence) override {
     return inner_.Wait(stream, fence);
   }
-  std::expected<jitllm::providers::FenceId, jitllm::providers::Failure> Record(
+  std::expected<llmp::providers::FenceId, llmp::providers::Failure> Record(
       StreamId stream) override {
     return inner_.Record(stream);
   }
-  std::expected<jitllm::providers::FenceState, jitllm::providers::Failure> Query(
-      jitllm::providers::FenceId fence) override {
+  std::expected<llmp::providers::FenceState, llmp::providers::Failure> Query(
+      llmp::providers::FenceId fence) override {
     if (unknown.load()) {
-      return std::unexpected(jitllm::providers::Failure{
-          .error = jitllm::providers::ProviderError::kUnknown, .detail = "a scripted fault"});
+      return std::unexpected(llmp::providers::Failure{
+          .error = llmp::providers::ProviderError::kUnknown, .detail = "a scripted fault"});
     }
     return inner_.Query(fence);
   }
-  std::expected<void, jitllm::providers::Failure> Release(
-      jitllm::providers::FenceId fence) override {
+  std::expected<void, llmp::providers::Failure> Release(llmp::providers::FenceId fence) override {
     return inner_.Release(fence);
   }
 
  private:
-  jitllm::providers::DeviceExecution& inner_;
+  llmp::providers::DeviceExecution& inner_;
 };
 
 class CudaPermutations : public CudaPageIn {
@@ -950,47 +946,45 @@ INSTANTIATE_TEST_SUITE_P(VmmWork, CudaPermutations, ::testing::Bool(), [](const 
 // their own landing slots. Every extent comes back
 // identical, the requests start in file order (RE-026), each chunk is in
 // exactly one of them, and none spans more than the zone's slots.
-class RecordingStorage final : public jitllm::providers::Storage {
+class RecordingStorage final : public llmp::providers::Storage {
  public:
   struct Seen {
     std::uint64_t offset = 0;
     std::uint64_t length = 0;
-    std::vector<jitllm::providers::IoSegment> segments;
+    std::vector<llmp::providers::IoSegment> segments;
   };
   // A lone read is refused as if the ring were full, for up to `grace`, so
   // later reads reliably join it however fast this host maps backing (a
   // VMM lane can publish reads no faster than the disk takes them); past
   // that, it starts alone (the load's last read, say).
-  RecordingStorage(jitllm::providers::Storage& inner, std::chrono::microseconds grace)
+  RecordingStorage(llmp::providers::Storage& inner, std::chrono::microseconds grace)
       : inner_(inner), grace_(grace) {}
 
   std::size_t depth() const override { return inner_.depth(); }
   std::size_t in_flight() const override { return inner_.in_flight(); }
-  jitllm::providers::Submission Submit(const jitllm::providers::IoRequest& request) override {
+  llmp::providers::Submission Submit(const llmp::providers::IoRequest& request) override {
     const auto now = std::chrono::steady_clock::now();
     if (request.segments.empty()) {
       if (!lone_ || lone_->first != request.offset) {
         lone_.emplace(request.offset, now);
       }
       if (now - lone_->second < grace_) {
-        return jitllm::providers::Submission::kNotStarted;
+        return llmp::providers::Submission::kNotStarted;
       }
     }
     lone_.reset();
     const auto submitted = inner_.Submit(request);
-    if (submitted != jitllm::providers::Submission::kNotStarted) {
+    if (submitted != llmp::providers::Submission::kNotStarted) {
       const std::scoped_lock lock(mutex_);
       seen_.push_back(Seen{.offset = request.offset,
                            .length = request.length,
-                           .segments = std::vector<jitllm::providers::IoSegment>(
+                           .segments = std::vector<llmp::providers::IoSegment>(
                                request.segments.begin(), request.segments.end())});
     }
     return submitted;
   }
-  jitllm::providers::Submission Cancel(std::uint64_t token) override {
-    return inner_.Cancel(token);
-  }
-  std::size_t Harvest(std::span<jitllm::providers::IoCompletion> out, bool wait) override {
+  llmp::providers::Submission Cancel(std::uint64_t token) override { return inner_.Cancel(token); }
+  std::size_t Harvest(std::span<llmp::providers::IoCompletion> out, bool wait) override {
     return inner_.Harvest(out, wait);
   }
   void Wake() override { inner_.Wake(); }
@@ -1001,7 +995,7 @@ class RecordingStorage final : public jitllm::providers::Storage {
   }
 
  private:
-  jitllm::providers::Storage& inner_;
+  llmp::providers::Storage& inner_;
   std::chrono::microseconds grace_;
   // The lone read being held back: its offset, and since when.
   std::optional<std::pair<std::uint64_t, std::chrono::steady_clock::time_point>> lone_;
@@ -1015,7 +1009,7 @@ class RecordingStorage final : public jitllm::providers::Storage {
 class CudaCoalescing : public CudaPageIn {
  protected:
   void WrapProviders() override {
-    span_bytes_ = jitllm::providers::kSpanBytes;
+    span_bytes_ = llmp::providers::kSpanBytes;
     recording_ = std::make_unique<RecordingStorage>(*storage_, std::chrono::milliseconds(5));
     lane_storage_ = recording_.get();
   }
@@ -1078,7 +1072,7 @@ class CudaWriteBack : public CudaPageIn {
   static constexpr std::size_t kPremapped = 2;
 
   void BeforeLanes() override {
-    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path directory = scratch != nullptr
                                                 ? std::filesystem::path(scratch)
                                                 : std::filesystem::path(::testing::TempDir());
@@ -1114,22 +1108,21 @@ class CudaWriteBack : public CudaPageIn {
         const auto give_up = std::chrono::steady_clock::now() + kPatience;
         while (std::chrono::steady_clock::now() < give_up) {
           const auto state = execution_->Query(*recorded);
-          if (state && *state == jitllm::providers::FenceState::kComplete) {
+          if (state && *state == llmp::providers::FenceState::kComplete) {
             return execution_->Release(*recorded).has_value();
           }
         }
         return false;
       }();
       ASSERT_TRUE(fence);
-      const ExtentId state =
-          catalog_
-              .AddExtent({.domain = domain_,
-                          .memory_class = jitllm::catalog::MemoryClass::kLiveState,
-                          .recovery = jitllm::catalog::Recovery::kPreserve,
-                          .size = Bytes(kExtent),
-                          .content = {}},
-                         true)
-              .value();
+      const ExtentId state = catalog_
+                                 .AddExtent({.domain = domain_,
+                                             .memory_class = llmp::catalog::MemoryClass::kLiveState,
+                                             .recovery = llmp::catalog::Recovery::kPreserve,
+                                             .size = Bytes(kExtent),
+                                             .content = {}},
+                                            true)
+                                 .value();
       states_.push_back(state);
       addresses_of_states_.push_back(base + (i * kExtent));
       std::optional<BackingPlace> managed;
@@ -1188,7 +1181,7 @@ class CudaWriteBack : public CudaPageIn {
 
   int spill_ = -1;
   ReservationId states_place_;
-  std::vector<jitllm::providers::BackingId> premapped_;
+  std::vector<llmp::providers::BackingId> premapped_;
   std::vector<ExtentId> states_;
   std::vector<std::uint64_t> addresses_of_states_;
   std::vector<std::byte> patterns_;

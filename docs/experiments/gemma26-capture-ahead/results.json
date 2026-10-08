@@ -16,16 +16,16 @@
       "src/engine/gemma4_runner.cc": "e8ad00f18df049f4cfd0958375a8c2b3617db877cdd087376348e26110117841",
       "src/engine/gemma4_runner.h": "2d0dad2cb3453fac9167abbb443a6582147ffc79d6b86704d541aa165ebd00a1",
       "src/runtime/serving.cc": "fefb11801242205bd556fe295ea99e9693e4bf8373e192170ded9622fd6a2fcc",
-      "tests/unit/gemma4_runner_test.cc": "aede3135ce29b921e07fa9a503a15b020138e4f2c7b870e8c88645cdf5cf0c0c",
+      "tests/unit/gemma4_runner_test.cc": "fbf3c9120c20ef266487233a3b1ae0e8ad031f076ba49545e65a6b37fd453de9",
       "tests/unit/gemma4_runner_gpu_test.cc": "bdf839a924dd663ac9e6cf4fd45ba94ff9f439682de5ce39040495da8967fcbb",
       "src/engine/prefill_lookahead.h": "dcd733e1d9ecac7942c5782b587b7affd8d14481676ff78e2abbb6188e908a73",
       "src/engine/planned.h": "01fa8e59b5500eebb92acce952e6b610500ba4b886a38815b9a9c7d1a7ba5dc8",
       "src/engine/planned.cc": "d251604d7829c0c15192e69c65a2612c91a902c5e9dc4d3969a8932b94f76bca",
-      "src/engine/graph_runs.h": "426c5ada351d458ff6a7894fff733b5d70961681dcea84485c8ad9c7baf550ce",
-      "src/engine/graph_runs.cc": "b46e0b8bc8989c2b5654043a3b67b62b387d583d1bdfa9135ef72d7c60758669",
+      "src/engine/graph_runs.h": "f6ace8325ab35dfc384f40bd0918736b83a3c668f5c4b14480c86bc01258117b",
+      "src/engine/graph_runs.cc": "105482601f68e5cda46363c1194a3b70253e76af1a37bbc9ecf5ea900244d718",
       "src/engine/gemma4_plan.h": "756364ad86c61773016cc926b0f09a8a1319c95529a8b4e22cd1ab982a7faca6",
       "src/engine/gemma4_plan.cc": "7f39fd433e1cc04ffa98759ff02138a3cba5c86c0e217eaffd0e57f1dfcdc2a5",
-      "src/engine/gemma4_wave.h": "e2a20ca178523602cd06107eec03c7992adea7b545a4e03a721d79d61aa75f5e",
+      "src/engine/gemma4_wave.h": "fc1cd5773c05dcf927ec39190aba5d89c0f4e24ea6e77e9b434cce7f46d815a6",
       "src/kernels/ggml/gemma4_graph.h": "dd6ff076516f8993e0d8ce47e9418cbeb88f65064c75e43a6b1a8c5398273ae2",
       "src/kernels/ggml/gemma4_graph.cc": "da87488cd5f815ccca16686e1a553a681269e38c49321a1cd0811389d50a70da",
       "src/runtime/prefill.h": "f141ff34f9e3c8166a9e31cddb4cbe2378248329de3dda9f121d9c5b93eff957",
@@ -37,32 +37,32 @@
   },
   "benchmark_elf": {
     "sha256": "6971d7e88d677561aa8baae32bb46e40441fb9e9dd3d218d5dca672fb32a20a5",
-    "ldd": "\tlinux-vdso.so.1 (0x0000e4bab509c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000e4baabe00000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e4baabd50000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000e4baa7800000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000e4ba7a400000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e4baa7640000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e4bab5060000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e4baabd20000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e4baabcf0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e4baabcc0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e4ba7a3c0000)\n",
+    "ldd": "\tlinux-vdso.so.1 (0x0000e4bab509c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000e4baabe00000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e4baabd50000)\n\tlibcublas.so.13 => /home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13 (0x0000e4baa7800000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13 (0x0000e4ba7a400000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e4baa7640000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e4bab5060000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e4baabd20000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e4baabcf0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e4baabcc0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e4ba7a3c0000)\n",
     "cuBLAS": {
       "libcublas.so.13": {
-        "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
-        "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+        "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
+        "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
         "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
       },
       "libcublasLt.so.13": {
-        "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
-        "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+        "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
+        "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
         "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
       }
     }
   },
   "runtime_elf": {
     "sha256": "c6e0947c2b6b6108c6180259ef1ffb35a8c0628db6ae9519e1e83787a58f77dd",
-    "ldd": "\tlinux-vdso.so.1 (0x0000e6053ee8c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000e60535780000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e605356d0000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000e60531200000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000e60503e00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e60531040000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e6053ee50000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e60503dd0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e60503da0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e60503d70000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e60503d30000)\n",
+    "ldd": "\tlinux-vdso.so.1 (0x0000e6053ee8c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000e60535780000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e605356d0000)\n\tlibcublas.so.13 => /home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13 (0x0000e60531200000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13 (0x0000e60503e00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e60531040000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e6053ee50000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e60503dd0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e60503da0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e60503d70000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e60503d30000)\n",
     "cuBLAS": {
       "libcublas.so.13": {
-        "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
-        "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublas.so.13",
+        "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
+        "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublas.so.13",
         "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
       },
       "libcublasLt.so.13": {
-        "first_resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
-        "resolved": "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/lib/jitllm/libcublasLt.so.13",
+        "first_resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
+        "resolved": "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/lib/llmp/libcublasLt.so.13",
         "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
       }
     }
@@ -145,8 +145,8 @@
       "legacy": "48f11c85dd4670c6084ec2cbf5c47c39600a5566eb7c3be321ebf3d29d848eed"
     },
     "original_build_and_checks_child_exit0": true,
-    "original_supervisor": "failed at final binding of nonexistent bin/jitllm-runtime; no tests failed",
-    "corrected_bind_only_supervisor": "done0; actual src/runtime/jitllm-runtime; no repeated build/tests",
+    "original_supervisor": "failed at final binding of nonexistent bin/llmp-runtime; no tests failed",
+    "corrected_bind_only_supervisor": "done0; actual src/runtime/llmp-runtime; no repeated build/tests",
     "bind_checked_sha256": "99359979b34afcdf844ee8f003910d65d4f607b286ac240af40fb1d81b886e3c",
     "original_evidence": {
       "original_packet_sha256": "4166c98a4040f29b07a1ab13315f0b70e22599972d671a78a9a3fc372760f480",
@@ -167,9 +167,9 @@
       "name": "O1",
       "capacity": 1,
       "command": [
-        "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
-        "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-        "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+        "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_gemma_prefill",
+        "/home/pmeenan/.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+        "/home/pmeenan/.local/share/llmp/gemma-prefill/input1/ids.i32",
         "/home/pmeenan/scratch/m35-gemma26-capture-ahead/screen1/O1/out",
         "26",
         "all",
@@ -250,9 +250,9 @@
       "name": "A1",
       "capacity": 2,
       "command": [
-        "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
-        "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-        "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+        "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_gemma_prefill",
+        "/home/pmeenan/.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+        "/home/pmeenan/.local/share/llmp/gemma-prefill/input1/ids.i32",
         "/home/pmeenan/scratch/m35-gemma26-capture-ahead/screen1/A1/out",
         "26",
         "all",
@@ -333,9 +333,9 @@
       "name": "A2",
       "capacity": 2,
       "command": [
-        "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
-        "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-        "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+        "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_gemma_prefill",
+        "/home/pmeenan/.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+        "/home/pmeenan/.local/share/llmp/gemma-prefill/input1/ids.i32",
         "/home/pmeenan/scratch/m35-gemma26-capture-ahead/screen1/A2/out",
         "26",
         "all",
@@ -416,9 +416,9 @@
       "name": "O2",
       "capacity": 1,
       "command": [
-        "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
-        "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-        "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+        "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_gemma_prefill",
+        "/home/pmeenan/.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+        "/home/pmeenan/.local/share/llmp/gemma-prefill/input1/ids.i32",
         "/home/pmeenan/scratch/m35-gemma26-capture-ahead/screen1/O2/out",
         "26",
         "all",
@@ -786,9 +786,9 @@
         "name": "O1",
         "capacity": 1,
         "command": [
-          "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
-          "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-          "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+          "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_gemma_prefill",
+          "/home/pmeenan/.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+          "/home/pmeenan/.local/share/llmp/gemma-prefill/input1/ids.i32",
           "/home/pmeenan/scratch/m35-gemma26-capture-ahead/screen1/O1/out",
           "26",
           "all",
@@ -845,9 +845,9 @@
         "name": "A1",
         "capacity": 2,
         "command": [
-          "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
-          "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-          "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+          "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_gemma_prefill",
+          "/home/pmeenan/.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+          "/home/pmeenan/.local/share/llmp/gemma-prefill/input1/ids.i32",
           "/home/pmeenan/scratch/m35-gemma26-capture-ahead/screen1/A1/out",
           "26",
           "all",
@@ -904,9 +904,9 @@
         "name": "A2",
         "capacity": 2,
         "command": [
-          "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
-          "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-          "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+          "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_gemma_prefill",
+          "/home/pmeenan/.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+          "/home/pmeenan/.local/share/llmp/gemma-prefill/input1/ids.i32",
           "/home/pmeenan/scratch/m35-gemma26-capture-ahead/screen1/A2/out",
           "26",
           "all",
@@ -963,9 +963,9 @@
         "name": "O2",
         "capacity": 1,
         "command": [
-          "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_gemma_prefill",
-          "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-          "/home/pmeenan/.local/share/jitllm/gemma-prefill/input1/ids.i32",
+          "/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/llmp_gemma_prefill",
+          "/home/pmeenan/.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+          "/home/pmeenan/.local/share/llmp/gemma-prefill/input1/ids.i32",
           "/home/pmeenan/scratch/m35-gemma26-capture-ahead/screen1/O2/out",
           "26",
           "all",

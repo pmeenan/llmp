@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// jitLLM's own small CUDA kernels that the engine's device jobs queue
+// Llmpalooza's own small CUDA kernels that the engine's device jobs queue
 // around the paging of weights and rows (engine/paged_weights.h,
 // engine/ple_rows.h): filling device ranges, gathering Qwen3.8's n-gram
 // rows from their pinned landing, and bounding draft token ids before they
@@ -12,17 +12,17 @@
 // `stream` is the job's NativeStream handle (providers/device_execution.h),
 // which only these kernels unwrap (a cudaStream_t). Launches only queue
 // work there; completion is the caller's. Each returns false if the launch
-// failed, reading (and so clearing) the thread's last CUDA error as jitLLM's
+// failed, reading (and so clearing) the thread's last CUDA error as llmpalooza's
 // other launchers do, so a failure is not left for a later check to report.
 // CUDA builds only.
 
-#ifndef JITLLM_KERNELS_PAGING_PAGING_H_
-#define JITLLM_KERNELS_PAGING_PAGING_H_
+#ifndef LLMP_KERNELS_PAGING_PAGING_H_
+#define LLMP_KERNELS_PAGING_PAGING_H_
 
 #include <cstddef>
 #include <cstdint>
 
-namespace jitllm::kernels::paging {
+namespace llmp::kernels::paging {
 
 // Fills each of `count` device ranges (`ranges` holds address and length
 // pairs, in pinned host memory the device reads) with `value`.
@@ -43,6 +43,6 @@ bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
 // index past a token table (engine/dsv4_runner.cc, the drafts' rows).
 bool ClampTokens(std::int32_t* tokens, std::uint32_t count, std::int32_t limit, void* stream);
 
-}  // namespace jitllm::kernels::paging
+}  // namespace llmp::kernels::paging
 
-#endif  // JITLLM_KERNELS_PAGING_PAGING_H_
+#endif  // LLMP_KERNELS_PAGING_PAGING_H_

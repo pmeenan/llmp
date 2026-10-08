@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek joined-wave expert passes — 2026-10-04
@@ -56,12 +56,12 @@ experiments; the private P2 variant test-array update and trace removal
 would have been required before adoption.
 
 Reproduction: apply `p4.patch` or `p2.patch` against `16d55a5` in an isolated
-warm tree, build `jitllm_spec_runner`, then use the corresponding retained
+warm tree, build `llmp_spec_runner`, then use the corresponding retained
 controller with the installed GPU supervisor. Workstation patches, controllers
 and raw receipts live in
-`/home/pmeenan/scratch/jitllm-m3-dsv4-expert-passes-2026-10-04/`.
+`/home/pmeenan/scratch/llmp-m3-dsv4-expert-passes-2026-10-04/`.
 Spark B retains both source/binary snapshots and results in
-`~/scratch/dsv4-expert-passes/`; its private build is `~/src/jitLLM-wt/dsxp0001/`.
+`~/scratch/dsv4-expert-passes/`; its private build is `~/src/llmp-wt/dsxp0001/`.
 The target artifact is
 `cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac`,
 DSpark `dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5`.

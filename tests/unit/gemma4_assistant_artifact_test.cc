@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Actual approved prepared metadata/weights directories, without model work.
@@ -19,9 +19,9 @@
 #include "tokenizer/gguf.h"
 #include "tokenizer_fixtures.h"
 
-namespace md = jitllm::model;
-namespace ar = jitllm::artifact;
-namespace tk = jitllm::tokenizer;
+namespace md = llmp::model;
+namespace ar = llmp::artifact;
+namespace tk = llmp::tokenizer;
 namespace {
 constexpr std::array targets{"4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
                              "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"};
@@ -32,14 +32,14 @@ constexpr std::array target_files{"gemma-4-26B-A4B-it-UD-Q4_K_M.kv.gguf",
 constexpr std::array assistant_files{"mtp-gemma-4-26B-A4B-it.kv.gguf",
                                      "mtp-gemma-4-31B-it.kv.gguf"};
 std::filesystem::path Store() {
-  return std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts";
+  return std::filesystem::path(llmp::test_support::ModelsDir()) / "m3-artifacts";
 }
 bool Present(const std::filesystem::path& path) {
   std::error_code error;
   return std::filesystem::exists(path, error);
 }
 std::filesystem::path AssistantMetadata() {
-  const auto* root = std::getenv("JITLLM_ASSISTANT_METADATA");  // NOLINT(concurrency-mt-unsafe)
+  const auto* root = std::getenv("LLMP_ASSISTANT_METADATA");  // NOLINT(concurrency-mt-unsafe)
   return root ? std::filesystem::path(root) : Store();
 }
 std::expected<std::string, std::string> Read(const std::filesystem::path& path) {

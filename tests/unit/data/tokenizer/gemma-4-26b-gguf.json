@@ -2,7 +2,7 @@
   "config": "gemma-4-26b-gguf",
   "source": {"path": "tokenizer-reference/gemma-4-26b/header.gguf", "sha256": "9f1f00bb292382747a7035a8a3e5d5f41f31e7d7be80b2aefa044ff03434f990"},
   "reference": "llama.cpp llama-tokenize, image ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7 (b29c606e)",
-  "corpus_sha256": "66d3940a8d35f641d62b5e1114fbe81d22e6f22fd7f6a630071c7368ad20245b",
+  "corpus_sha256": "206453ef4086e899079d027c80a32b444b046e5878879ecb75da3e6b3128ce88",
   "items": [
     {"name": "empty", "well_formed": true, "parse": [], "plain": []},
     {"name": "ascii-sentence", "well_formed": true, "parse": [9259, 236764, 1902, 236888, 1174, 563, 496, 1594, 529, 506, 92875, 236761], "plain": [9259, 236764, 1902, 236888, 1174, 563, 496, 1594, 529, 506, 92875, 236761]},

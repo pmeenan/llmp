@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "providers/cuda/cuda_errors.h"
@@ -10,7 +10,7 @@
 
 #include "providers/device_memory.h"
 
-namespace jitllm::providers::cuda {
+namespace llmp::providers::cuda {
 namespace {
 
 // Errors the driver reports before doing anything: the call changed
@@ -55,4 +55,4 @@ std::unexpected<Failure> Error(CUresult result, const char* call) {
       .error = error, .detail = std::format("{}: {} ({})", call, name, static_cast<int>(result))});
 }
 
-}  // namespace jitllm::providers::cuda
+}  // namespace llmp::providers::cuda

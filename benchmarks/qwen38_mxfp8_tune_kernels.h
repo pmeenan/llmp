@@ -1,17 +1,17 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Benchmark-only scheduling variants of jitllm_ops.cu's MXFP8 GEMV.
+// Benchmark-only scheduling variants of llmp_ops.cu's MXFP8 GEMV.
 // No product dispatch or quantization changes. The stream owns every launch.
 
-#ifndef JITLLM_BENCHMARKS_QWEN38_MXFP8_TUNE_KERNELS_H_
-#define JITLLM_BENCHMARKS_QWEN38_MXFP8_TUNE_KERNELS_H_
+#ifndef LLMP_BENCHMARKS_QWEN38_MXFP8_TUNE_KERNELS_H_
+#define LLMP_BENCHMARKS_QWEN38_MXFP8_TUNE_KERNELS_H_
 
 #include <cuda_runtime_api.h>
 
 #include <cstdint>
 
-namespace jitllm::diag {
+namespace llmp::diag {
 
 struct Mxfp8Schedule {
   int rows = 1;
@@ -25,6 +25,6 @@ cudaError_t Mxfp8Tune(cudaStream_t stream, const std::uint8_t* codes, const std:
                       const float* input, float* output, int columns, int outputs, int inputs,
                       int input_stride, Mxfp8Schedule schedule);
 
-}  // namespace jitllm::diag
+}  // namespace llmp::diag
 
-#endif  // JITLLM_BENCHMARKS_QWEN38_MXFP8_TUNE_KERNELS_H_
+#endif  // LLMP_BENCHMARKS_QWEN38_MXFP8_TUNE_KERNELS_H_

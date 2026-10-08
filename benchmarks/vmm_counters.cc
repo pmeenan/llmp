@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Which OS counters include VMM backing (docs/architecture.md#memory-breakdown,
@@ -14,7 +14,7 @@
 // with copies from a touched host extent. The report is under
 // docs/experiments/vmm-counters/.
 //
-//   jitllm_vmm_counters GIB
+//   llmp_vmm_counters GIB
 
 #include <cuda.h>
 
@@ -42,11 +42,11 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::providers::Access;
-using jitllm::providers::BackingId;
-using jitllm::providers::BackingKind;
-using jitllm::providers::VmmProvider;
+using llmp::base::Bytes;
+using llmp::providers::Access;
+using llmp::providers::BackingId;
+using llmp::providers::BackingKind;
+using llmp::providers::VmmProvider;
 
 constexpr std::int64_t kMiB = std::int64_t{1} << 20;
 using Counters = std::map<std::string, std::int64_t>;  // bytes
@@ -126,7 +126,7 @@ void* Pointer(std::uint64_t address) {
 }
 
 // Reports a failed call.
-bool Ok(const std::expected<void, jitllm::providers::Failure>& result) {
+bool Ok(const std::expected<void, llmp::providers::Failure>& result) {
   if (!result) {
     std::println(stderr, "{}", result.error().detail);
   }
@@ -175,7 +175,7 @@ void Report(const char* kind, const std::vector<Phase>& phases) {
   }
 }
 
-bool Run(VmmProvider& memory, jitllm::providers::DeviceExecution& execution, BackingKind kind,
+bool Run(VmmProvider& memory, llmp::providers::DeviceExecution& execution, BackingKind kind,
          std::uint64_t bytes, const std::string& cgroup) {
   std::size_t allocation_class = 0;
   for (std::size_t i = 0; i < memory.Classes().size(); ++i) {
@@ -238,8 +238,8 @@ bool Run(VmmProvider& memory, jitllm::providers::DeviceExecution& execution, Bac
       }
     }
     const auto fence = execution.Record(stream).value_or({});
-    while (execution.Query(fence).value_or(jitllm::providers::FenceState::kComplete) ==
-           jitllm::providers::FenceState::kPending) {
+    while (execution.Query(fence).value_or(llmp::providers::FenceState::kComplete) ==
+           llmp::providers::FenceState::kPending) {
     }
     if (!Ok(execution.Release(fence)) || !Ok(execution.DestroyStream(stream)) ||
         !Ok(memory.Unmap(*staging_reservation, Bytes(0), extent)) ||
@@ -269,13 +269,13 @@ bool Run(VmmProvider& memory, jitllm::providers::DeviceExecution& execution, Bac
 
 int main(int argc, char** argv) {
   if (argc != 2) {
-    std::println(stderr, "usage: jitllm_vmm_counters GIB");
+    std::println(stderr, "usage: llmp_vmm_counters GIB");
     return 2;
   }
   const std::uint64_t bytes = std::strtoull(argv[1], nullptr, 10)
                               << 30U;  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-  auto memory = jitllm::providers::cuda::OpenDeviceMemory(0);
-  auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+  auto memory = llmp::providers::cuda::OpenDeviceMemory(0);
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
   if (!memory || !execution) {
     std::println(stderr, "no CUDA device");
     return 1;

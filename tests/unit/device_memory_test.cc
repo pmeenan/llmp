@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The device-memory provider's shared rules (VmmProvider), on the fake
@@ -27,18 +27,18 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::test_support::FailedCode;
-using jitllm::base::operator""_MiB;
-using jitllm::providers::Access;
-using jitllm::providers::BackingId;
-using jitllm::providers::BackingKind;
-using jitllm::providers::ProviderError;
-using jitllm::providers::ReservationId;
-using jitllm::providers::fake::Contents;
-using jitllm::providers::fake::FakeDeviceMemory;
-using jitllm::providers::fake::kPoison;
-using jitllm::providers::fake::Operation;
+using llmp::base::Bytes;
+using llmp::test_support::FailedCode;
+using llmp::base::operator""_MiB;
+using llmp::providers::Access;
+using llmp::providers::BackingId;
+using llmp::providers::BackingKind;
+using llmp::providers::ProviderError;
+using llmp::providers::ReservationId;
+using llmp::providers::fake::Contents;
+using llmp::providers::fake::FakeDeviceMemory;
+using llmp::providers::fake::kPoison;
+using llmp::providers::fake::Operation;
 
 constexpr std::size_t kDevice = 0;
 constexpr std::size_t kHost = 1;
@@ -232,16 +232,16 @@ TEST_F(DeviceMemoryDeathTest, AddressOnlyBackingKeepsTheRulesAndFaults) {
 
 // A provider whose Create waits inside the driver until let go, so that a
 // second caller can arrive while it is under way.
-class BlockingProvider final : public jitllm::providers::VmmProvider {
+class BlockingProvider final : public llmp::providers::VmmProvider {
  public:
   BlockingProvider() : VmmProvider(2_MiB) {}
-  std::span<const jitllm::providers::AllocationClass> Classes() const override { return classes_; }
+  std::span<const llmp::providers::AllocationClass> Classes() const override { return classes_; }
 
   bool Inside() const { return inside_.load(); }  // Create is under way
   void Go() { go_.store(true); }                  // lets it return
 
  protected:
-  using Failure = jitllm::providers::Failure;
+  using Failure = llmp::providers::Failure;
   std::expected<std::uint64_t, Failure> DoReserve(Bytes size) override {
     const std::uint64_t base = next_;
     next_ += size.value();
@@ -251,7 +251,7 @@ class BlockingProvider final : public jitllm::providers::VmmProvider {
     return {};
   }
   std::expected<Handle, Failure> DoCreate(
-      const jitllm::providers::AllocationClass& /*allocation_class*/, Bytes /*size*/) override {
+      const llmp::providers::AllocationClass& /*allocation_class*/, Bytes /*size*/) override {
     inside_.store(true);
     while (!go_.load()) {
       std::this_thread::yield();
@@ -272,7 +272,7 @@ class BlockingProvider final : public jitllm::providers::VmmProvider {
   }
 
  private:
-  std::array<jitllm::providers::AllocationClass, 1> classes_{jitllm::providers::AllocationClass{
+  std::array<llmp::providers::AllocationClass, 1> classes_{llmp::providers::AllocationClass{
       .kind = BackingKind::kDevice, .location = 0, .granularity = 2_MiB}};
   std::uint64_t next_ = std::uint64_t{1} << 40U;
   std::atomic<bool> inside_{false};

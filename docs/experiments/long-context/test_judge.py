@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Synthetic capture regressions; run beside judge.py in the NumPy image."""
 
@@ -59,7 +59,7 @@ class JudgeTest(unittest.TestCase):
         self.greedy(self.b, ok=False)
 
     # The oracle prefers token 0 by 2.9 nats at every step (outside a 1.0
-    # bound). [3, 0] agrees; [2.9, 3.0] is a tie flip (jitLLM's own margin
+    # bound). [3, 0] agrees; [2.9, 3.0] is a tie flip (llmpalooza's own margin
     # 0.1, its NLL of token 0 0.644 nats over the oracle's).
     AGREE, FLIP = [3, 0], [2.9, 3.0]
 
@@ -86,7 +86,7 @@ class JudgeTest(unittest.TestCase):
 
     def test_tie_aware_per_step_tolerance(self):
         clean = [self.AGREE] * 300
-        # jitLLM decisive (margin 3): a violation.
+        # Llmpalooza decisive (margin 3): a violation.
         rows = [self.AGREE] * 299 + [[0, 3]]
         self.assertEqual(self.tie_aware(rows, clean, ok=False)["violations"][0]["step"], 299)
         # Margin 0.9, but its NLL 1.14 nats over the oracle's: a violation.

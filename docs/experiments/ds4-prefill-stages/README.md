@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek native prefill: ds4 stage mechanisms
@@ -42,7 +42,7 @@ remaining gap as roughly 1–2%.
   rows directly. Layer 0 uses a standalone norm-to-F16 kernel. The
   arithmetic is native rms_norm's 1024-thread reduction, then
   round-to-nearest F16.
-- **Item 3a.** A jitLLM copy of the occupancy-two J64 compact IQ2 kernel
+- **Item 3a.** A llmpalooza copy of the occupancy-two J64 compact IQ2 kernel
   runs the up product after gate. Its write-back stores
   `swiglu_clamp(gate, up)`.
 - **Item 3b.** That write-back also quantizes the activation straight into
@@ -63,11 +63,11 @@ remaining gap as roughly 1–2%.
   second product runs at the first one's place in the graph.
 - **Item 8.** The Q-head writes RN F16 Q, which is exactly what the
   attention kernels would round F32 Q to.
-  - CSA and raw attention run a jitLLM-owned copy of GGML's D512 MMA flash
+  - CSA and raw attention run a llmpalooza-owned copy of GGML's D512 MMA flash
     attention (`fattn_mma_q16.cuh`). It is generated from the locked
     header, changing only the Q pointer type, its load and its strides,
-    and it lives in namespace `jitllm_fattn_q16`.
-  - HCA runs a jitLLM copy of the ds4 token-tile core with an F16 Q loader.
+    and it lives in namespace `llmp_fattn_q16`.
+  - HCA runs a llmpalooza copy of the ds4 token-tile core with an F16 Q loader.
   - The F32 Q write and read are gone, and the attention kernels' Q-tile
     loads are cheaper.
 
@@ -130,8 +130,8 @@ output rows are compared as one group.
 The fast plan now enables all nine mechanisms by default
 (`SetDsv4PrefillStages` in `graph_plan.h` and `dsv4_graph.h`, set by
 `engine/dsv4_plan.cc`). This covers the runtime, the runner harnesses and
-`jitllm_dsv4_exec`. Exact and reference plans keep them off, and so do
-named-tensor diagnostics. `jitllm_dsv4_exec --ds4-stages off --q2-d2r off`
+`llmp_dsv4_exec`. Exact and reference plans keep them off, and so do
+named-tensor diagnostics. `llmp_dsv4_exec --ds4-stages off --q2-d2r off`
 gives the previous fast plan for A/B runs. Where D2R takes the Q2_K down
 product, the pair writes the F32 activation (3a). Item 3b is therefore
 selected only with `--q2-d2r off`.
@@ -155,7 +155,7 @@ Production DeepSeek prefill uses 4,096-row chunks, and every chunk of a
 prompt takes these mechanisms, its last, partial one included
 ([partial chunks and other quant types](#partial-chunks-and-other-quant-types)).
 
-**2,048-row screen.** `jitllm_dsv4_exec` ran three processes, OFF/ON/OFF
+**2,048-row screen.** `llmp_dsv4_exec` ran three processes, OFF/ON/OFF
 (`--ds4-stages`/`--q2-d2r` off, then the defaults). Settings: the same
 8,192 IDs, context 9,216, frontier heads and compact experts. Every head
 was byte-identical across arms.
@@ -165,9 +165,9 @@ was byte-identical across arms.
 | Community `cd39d504…` | 14.1973 / 13.2551 / 14.2241 | +7.21% | +0.19% |
 | Original `8a355bfb…` | 14.3615 / 14.1461 / 14.3291 | +1.41% | −0.23% |
 
-**Runtime, end to end.** The setup was `jitllm-runtime`'s chat route on the
+**Runtime, end to end.** The setup was `llmp-runtime`'s chat route on the
 original checkpoint, plain, with `context = 262144` and 2,048-row chunks. It
-used the final-context harness (`longctx.py jitllm`) with the 8K retrieval
+used the final-context harness (`longctx.py llmp`) with the 8K retrieval
 prompt (7,594 prompt tokens, none cached) and 64 outputs. Each run was a
 fresh process after its warm-up request. Prefill is the first streamed
 piece minus the send time.
@@ -182,7 +182,7 @@ tok/s in both. All five replies are identical, and each one finds all
 three needles.
 
 **Controls.**
-- Runner, `jitllm_spec_runner --check frontier`: 8,192 IDs, 3 forced
+- Runner, `llmp_spec_runner --check frontier`: 8,192 IDs, 3 forced
   continuation rows, graphs off.
   - Original checkpoint with DSpark at 2,048 rows, plain and with
     injection: the target state, DSpark ring, first head and continuation
@@ -241,7 +241,7 @@ UD-Q2_K_XL types, each byte-exact:
   for IQ2_XS: 29.8 against 23.6 ms for a 4,096-token pair, so it stays
   IQ2_XXS's.
 
-**Prefill screen** (`jitllm_dsv4_exec`, base / new / base processes, 4,096-row
+**Prefill screen** (`llmp_dsv4_exec`, base / new / base processes, 4,096-row
 chunks, compact experts, frontier heads; seconds, gain against the bookends'
 mean):
 
@@ -311,8 +311,8 @@ service per cell):
   products.
 
 **Provenance.** Spark A (`spark-c4e2`, GB10, driver 580.178.04). Base
-binaries: main-equivalent `dsbchal4` (`jitllm_dsv4_exec` `793601a9…`),
-runtime main `eb2bd43` (`a49a4d1f…`). New: this build (`jitllm_dsv4_exec`
+binaries: main-equivalent `dsbchal4` (`llmp_dsv4_exec` `793601a9…`),
+runtime main `eb2bd43` (`a49a4d1f…`). New: this build (`llmp_dsv4_exec`
 `6fdad0ed…`, runtime `af841d9b…`); the original's default and output-A/HCA
 rows are its final build's screen, the community's the screen before the
 IQ2_XS write-back, which their path does not take. Patch 0005's tree

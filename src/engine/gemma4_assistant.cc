@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include "engine/gemma4_assistant.h"
 
@@ -12,7 +12,7 @@
 #include "execution/sampling.h"
 #include "providers/device_runtime.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 namespace kg = kernels::ggml;
 namespace md = model;
 namespace sc = scheduler;
@@ -410,4 +410,4 @@ Status Gemma4Assistant::Release() {
     if (auto r = weights_.Release(target_.node_.memory()); !r) problems.push_back(r.error());
   return support::Joined(problems);
 }
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

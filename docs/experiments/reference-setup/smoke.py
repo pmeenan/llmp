@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """GPU inference and cross-process slot restore on the pinned reference.
 
@@ -48,7 +48,7 @@ def main():
     slots.mkdir(mode=0o700)
     docker = shlex.split(os.environ.get("DOCKER", "docker"))
     image = pins["engine"]["image"]
-    name = "jitllm-reference-" + uuid.uuid4().hex[:12]
+    name = "llmp-reference-" + uuid.uuid4().hex[:12]
     api_key = uuid.uuid4().hex
     base = f"http://127.0.0.1:{args.port}"
     # Local API calls must not traverse a proxy configured in the environment.

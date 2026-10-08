@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A Qwen3.8 speculative verify's commit (docs/experiments/qwen38-mtp/).
@@ -11,7 +11,7 @@
 //
 // - each linear-attention layer's gated delta rule over the kept rows, from
 //   the saved convolution output (q, k, v), gate and beta, in place on its
-//   recurrent state, with jitllm.gated_delta_net.columns' arithmetic
+//   recurrent state, with llmp.gated_delta_net.columns' arithmetic
 //   operation for operation, so the state is the one the verify's own
 //   recurrence reached at its last kept row, bit for bit
 //   (tests/unit/qwen38_commit_test.cc);
@@ -21,15 +21,15 @@
 // Queued outside any graph, before the next job's own work, like DSpark's
 // restore (engine/live_state.h). CUDA builds only.
 
-#ifndef JITLLM_KERNELS_GGML_QWEN38_COMMIT_H_
-#define JITLLM_KERNELS_GGML_QWEN38_COMMIT_H_
+#ifndef LLMP_KERNELS_GGML_QWEN38_COMMIT_H_
+#define LLMP_KERNELS_GGML_QWEN38_COMMIT_H_
 
 #include <cstdint>
 #include <expected>
 
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 class LaunchContext;
 
@@ -72,6 +72,6 @@ struct Qwen38CommitArgs {
 std::expected<void, KernelFailure> Qwen38Commit(LaunchContext& launch,
                                                 const Qwen38CommitArgs& args);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_QWEN38_COMMIT_H_
+#endif  // LLMP_KERNELS_GGML_QWEN38_COMMIT_H_

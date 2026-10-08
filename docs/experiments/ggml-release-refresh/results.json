@@ -9,27 +9,27 @@
     "ggml_version": "0.26.0",
     "archive_sha256": "6b58785f0a82898f4c3442417ff962e2d4b231b1bee5d033902ad90b27901e14",
     "archive_bytes": 37887730,
-    "kept_patched_tree_sha256": "d50cb7f97867b4c5903a5b6c902474e9d716b7bf7afdb98dc360af82be4e0257",
+    "kept_patched_tree_sha256": "37947dde9e23668f876ec6cda08300f20b47588083b2269606dce57303990c0a",
     "patches": [
       {
-        "path": "patches/ggml/0001-jitllm-adaptations.patch",
-        "sha256": "ec551709a77d7d5895be0537cf4d54daa547e7d1882991ce80973e11dea7d5a7"
+        "path": "patches/ggml/0001-llmp-adaptations.patch",
+        "sha256": "1373ff2f52a8d4822cee9b46ed07f2f12ac876abb2b731bf1907b761f11ea3ca"
       },
       {
-        "path": "patches/ggml/0002-jitllm-build.patch",
-        "sha256": "0eca39345dfbb4097518e0cf026ccb3e49b063d6eda05507da37460e300c4603"
+        "path": "patches/ggml/0002-llmp-build.patch",
+        "sha256": "736b272cf7de6d7ba9ad119f8ddd776abd7e90d3c2a2a9c1398124153867dfb8"
       },
       {
-        "path": "patches/ggml/0003-jitllm-wide-sparse-attention.patch",
-        "sha256": "1c5ecb074c0eaf190b8d04c74d333e8a9a9fe5ceb4cd6ef5bc9ff7266bc9844c"
+        "path": "patches/ggml/0003-llmp-wide-sparse-attention.patch",
+        "sha256": "c443f75fa0151b9d39a4e854f69e504004de8be3a363d198cbe4c04af3e5e7fb"
       },
       {
-        "path": "patches/ggml/0004-jitllm-compact-expert-tiles.patch",
-        "sha256": "b758f07db2e0f9393f9f22a1bfcd4c5a743dbe68b6901223484d5fe5b2904aaf"
+        "path": "patches/ggml/0004-llmp-compact-expert-tiles.patch",
+        "sha256": "ce8bf673661e5d4cad38901d96c46cd15c0b3c8b8d7a473b2df461e929fb8ad2"
       },
       {
-        "path": "patches/ggml/0005-jitllm-iq2-compact-pair-occ2.patch",
-        "sha256": "b3552877ffd0f9a4da0c10c9ed6ed862265bebac07c9266fa708db1f5168b07c"
+        "path": "patches/ggml/0005-llmp-iq2-compact-pair-occ2.patch",
+        "sha256": "da725a0d8064c677cfc218440fb174cc1c55c10db508aef5166be947e8ef3ed5"
       }
     ],
     "measured_source_base": "95b8c78d2ed5e5012696639eab4c23a86e4762e4",
@@ -43,7 +43,7 @@
   },
   "changes": {
     "patch0003": "upstream sparse query unions/live counts and D256 support supersede old backport; only D512 eight-query sparse eligibility remains",
-    "source_precision": "Explicit checked Q4 packing for FP4 on Blackwell/GB10; Q8 on other architectures and for other admitted formats. Validator allows undefined/Q4 requests for FP4 and undefined/Q4/Q8 for other quantized formats; explicit FP4 Q8/higher minimum ranks are refused. Upstream environment override disabled under GGML_JITLLM.",
+    "source_precision": "Explicit checked Q4 packing for FP4 on Blackwell/GB10; Q8 on other architectures and for other admitted formats. Validator allows undefined/Q4 requests for FP4 and undefined/Q4/Q8 for other quantized formats; explicit FP4 Q8/higher minimum ranks are refused. Upstream environment override disabled under GGML_LLMP.",
     "attention": "new swizzle/configuration and GB10 asynchronous whole-tile preference used consistently by ordinary/owner planners; Q16 derivative refreshed with F16-query-only adaptation",
     "float_dispatch": "all six MMVF selector calls pass physical device warp size",
     "scoped_audit": "optional built-target dependency audit; strict full audit unchanged, components outside scope explicitly deferred; material linked inputs must exist"

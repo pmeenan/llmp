@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Native byte-level BPE, Gemma4 raw UTF-8 BPE and classic SentencePiece
@@ -42,8 +42,8 @@
 // A Tokenizer is immutable once created; Encode and Decode are safe to call
 // from several threads at once.
 
-#ifndef JITLLM_TOKENIZER_TOKENIZER_H_
-#define JITLLM_TOKENIZER_TOKENIZER_H_
+#ifndef LLMP_TOKENIZER_TOKENIZER_H_
+#define LLMP_TOKENIZER_TOKENIZER_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -59,7 +59,7 @@
 #include "tokenizer/error.h"
 #include "tokenizer/pretokenize.h"
 
-namespace jitllm::tokenizer {
+namespace llmp::tokenizer {
 
 using TokenId = std::int32_t;
 
@@ -211,6 +211,6 @@ class StreamDecoder {
   bool started_ = false;
 };
 
-}  // namespace jitllm::tokenizer
+}  // namespace llmp::tokenizer
 
-#endif  // JITLLM_TOKENIZER_TOKENIZER_H_
+#endif  // LLMP_TOKENIZER_TOKENIZER_H_

@@ -5,21 +5,21 @@
   "integration_base": "fa7cf93",
   "integration_bridge_sha256": "ffd3af8bf93b69bab5908a178352fae7096426db4511851aa0b83209e75f4166",
   "SDK_receipt_and_ELFs": {
-    "build/spark-native/benchmarks/jitllm_qwen38_spec": "2371b57f7733114fb3c53db97df80e1e1f0cfdaaf6b8d76d93a75604f72906f3",
+    "build/spark-native/benchmarks/llmp_qwen38_spec": "2371b57f7733114fb3c53db97df80e1e1f0cfdaaf6b8d76d93a75604f72906f3",
     "build/spark-native/tests/unit/qwen38_quant_head_test": "bbfc6ac3ab058782117420a6dea29f1794d9c14a13a677d7b8a208c47e3a1894",
     "build/spark-native/tests/unit/qwen38_wave_plan_test": "e156ed47c412145d9872d7fc5d4289fd1bc1107dca6ff52ab10bdda542213b1d",
-    "build/spark-native/src/runtime/jitllm-runtime": "88aacc7fd86be5198b1a7c141f2404c2a7145b4a5a2fb078dd99c3f4c7b17d7a",
-    "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+    "build/spark-native/src/runtime/llmp-runtime": "88aacc7fd86be5198b1a7c141f2404c2a7145b4a5a2fb078dd99c3f4c7b17d7a",
+    "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
   },
   "native_cuBLAS": {
     "libcublas.so.13": {
-      "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-      "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+      "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+      "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
       "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
     },
     "libcublasLt.so.13": {
-      "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
-      "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+      "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
+      "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
       "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
     }
   },
@@ -45,7 +45,7 @@
     "tokenizer.json": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
   },
   "standing_operand_fixture": {
-    "path": "~/.local/share/jitllm/references/qwen-q4-head/operand-fixture-v1",
+    "path": "~/.local/share/llmp/references/qwen-q4-head/operand-fixture-v1",
     "retention": "KEEP through milestone cleanup",
     "files": {
       "changed.drafts.i32": "22a5e793639fadd15bfa5b576b650da43b86e7f156dc6768c6cc9aa94e0bfc85",
@@ -1427,7 +1427,7 @@
   "focused_checks": {
     "unique_tests": 10,
     "full_suite": "deferred by owner",
-    "GPU_fixture_env": "JITLLM_Q4_HEAD_FIXTURE, explicitly set in focused controls; ordinary suite otherwise skips",
+    "GPU_fixture_env": "LLMP_Q4_HEAD_FIXTURE, explicitly set in focused controls; ordinary suite otherwise skips",
     "quantizer_negative_controls": 8,
     "prefix_host_XML_sha256": {
       "host": "45d3f8998cd894759ba8d722e5e54e349cca41af7d5463b3e770aa851f6cb25f",

@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen2.5-0.5B FP16 fixture as a model on a paged node
 // (tests/support/paged_node.h): its v0 prepared artifact paged into device
 // VMM through the node's landing zone, each chunk run as a device job on
 // the model's own stream under a lease on everything it touches. What
-// jitllm_fp16_paged (fp16_paged.cc) runs alone, and jitllm_alternate_paged
+// llmp_fp16_paged (fp16_paged.cc) runs alone, and llmp_alternate_paged
 // (alternate_paged.cc) runs beside the EXL3 fixture for BP-S3. CUDA builds
 // only.
 //
@@ -65,8 +65,8 @@
 // - The cuBLAS handle and its 32 MiB workspace are made current where the
 //   bridge creates them: before the first chunk whose plan calls cuBLAS.
 
-#ifndef JITLLM_BENCHMARKS_FP16_RUNNER_H_
-#define JITLLM_BENCHMARKS_FP16_RUNNER_H_
+#ifndef LLMP_BENCHMARKS_FP16_RUNNER_H_
+#define LLMP_BENCHMARKS_FP16_RUNNER_H_
 
 #include <array>
 #include <chrono>
@@ -91,7 +91,7 @@
 #include "model/qwen2.h"
 #include "paged_node.h"
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 
 struct Fp16Options {
   std::filesystem::path artifact;
@@ -135,7 +135,7 @@ class Fp16Runner final : public test_support::PagedModel {
   // After the node's workspace, before Run: the closures, the launch
   // context and the registry.
   Status Bind();
-  // After Run: jitllm_fp16_paged's whole run, its outputs written to the
+  // After Run: llmp_fp16_paged's whole run, its outputs written to the
   // output directory.
   Status RunAlone();
 
@@ -155,7 +155,7 @@ class Fp16Runner final : public test_support::PagedModel {
   // Summary and paging.json for `results` (the first is written); an error
   // for any failed check.
   Status Write(const std::vector<std::vector<float>>& results);
-  const jitllm::benchmarks::Trajectory& trajectory() const { return t_; }
+  const llmp::benchmarks::Trajectory& trajectory() const { return t_; }
 
   std::uint32_t stream() const override { return stream_; }
   const catalog::Closure& fence_closure() const override { return cache_; }
@@ -204,7 +204,7 @@ class Fp16Runner final : public test_support::PagedModel {
   test_support::Recording* recording_;
   std::string& record_;
 
-  jitllm::benchmarks::Trajectory t_;
+  llmp::benchmarks::Trajectory t_;
   std::unique_ptr<artifact::Artifact> artifact_;
   const model::Qwen2Profile& profile_ = model::Qwen25Instruct05B();
   model::Qwen2Binding binding_;
@@ -263,6 +263,6 @@ class Fp16Runner final : public test_support::PagedModel {
   std::chrono::steady_clock::time_point first_chunk_done_;
 };
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks
 
-#endif  // JITLLM_BENCHMARKS_FP16_RUNNER_H_
+#endif  // LLMP_BENCHMARKS_FP16_RUNNER_H_

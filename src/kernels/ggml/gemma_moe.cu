@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstring>
@@ -9,7 +9,7 @@
 #include "moe-weighted-reduction.cuh"
 #include "topk-moe.cuh"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 std::expected<void, KernelFailure> RunGemmaRouting(LaunchContext& launch,
                                                    const GemmaRouting& desc) {
   if (auto checked = CheckGemmaRouting(desc); !checked) return checked;
@@ -33,4 +33,4 @@ std::expected<void, KernelFailure> RunGemmaScaledReduction(LaunchContext& launch
                                         const_cast<ggml_tensor*>(desc.values.tensor));
   });
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

@@ -50,7 +50,7 @@
     "planning_scratch_allowance_bytes": 9409024
   },
   "retained_failures": [
-    "build1/check1 direct tests omitted JITLLM_TEST_DATA; compilation and14 controls passed before fixture refusal",
+    "build1/check1 direct tests omitted LLMP_TEST_DATA; compilation and14 controls passed before fixture refusal",
     "check3 long-view regression initially used unsupported GGML_DUP; replaced by SCALE without production change",
     "full1 launch rc127: supervisor PATH omitted mise; full2 uses absolute installed mise path"
   ],

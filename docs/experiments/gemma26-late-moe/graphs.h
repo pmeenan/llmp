@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-#ifndef JITLLM_BENCHMARK_GEMMA26_LATE_MOE_GRAPHS_H_
-#define JITLLM_BENCHMARK_GEMMA26_LATE_MOE_GRAPHS_H_
+#ifndef LLMP_BENCHMARK_GEMMA26_LATE_MOE_GRAPHS_H_
+#define LLMP_BENCHMARK_GEMMA26_LATE_MOE_GRAPHS_H_
 #include <array>
 #include <limits>
 #include <vector>

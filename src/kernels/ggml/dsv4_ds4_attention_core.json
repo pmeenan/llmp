@@ -230,7 +230,7 @@
     ],
     "native_stream_and_completion": "LaunchContext only, through dsv4_hca_tokentile.cu; all scratch/operands borrowed and retained by caller through completion"
   },
-  "scope": "The token-tile HCA helpers and stages that jitLLM's F16-Q copy of the original core (attention_tokentile_hmma_q16_kernel in dsv4_ds4_attention.cu) calls, for the DeepSeek V4 prefill HCA adapter (dsv4_hca_tokentile.cu). Every retained region is also byte-identical inside the locked cuda/attention/ds4_attn_tokentile.cu (patch 0002), which extracts ds4_cuda.cu 12313-12577 and 12844-13476.",
+  "scope": "The token-tile HCA helpers and stages that llmpalooza's F16-Q copy of the original core (attention_tokentile_hmma_q16_kernel in dsv4_ds4_attention.cu) calls, for the DeepSeek V4 prefill HCA adapter (dsv4_hca_tokentile.cu). Every retained region is also byte-identical inside the locked cuda/attention/ds4_attn_tokentile.cu (patch 0002), which extracts ds4_cuda.cu 12313-12577 and 12844-13476.",
   "excluded": "From those ranges: tt_dot4_f32 and the three unused tt_ldmatrix_* pointer wrappers, attention_tokentile_dense_build_kernel, the F32-Q loader tt_load_score_q_frag and the original F32-Q attention_tokentile_hmma_kernel (the locked unit builds the last three). The complete-plan benchmark's other original attention and indexer kernels were removed with it on 2026-10-04; commit ec8af04 holds them and their provenance.",
   "verification": {
     "status": "regions-verified",

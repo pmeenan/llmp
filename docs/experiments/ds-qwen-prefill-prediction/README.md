@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DS/DSpark and Qwen prefill prediction — 2026-10-08
@@ -94,7 +94,7 @@ source inventories and lists the five approved default/assertion deltas.
 
 ## Replay after raw-result cleanup
 
-Build `jitllm_prefill_prediction_probe` with the pinned Spark SDK. Use the five
+Build `llmp_prefill_prediction_probe` with the pinned Spark SDK. Use the five
 prepared artifact manifest/index pins and actual library hashes in results.json;
 no raw checkpoint, interpreter or new artifact is needed. The checked-in probe
 contains the paid endpoint and all model/state/retirement controls. Run it under
@@ -104,7 +104,7 @@ kernel cursor/new-error and empty-GPU guards as in the acquisition. Local builds
 or payload analysis use `hostlock shared`.
 
 Required tiny inputs are retained on Spark B under
-`~/.local/share/jitllm/references/prefill-ds-qwen/{ids0,ids1,qwen0,qwen1}.i32`.
+`~/.local/share/llmp/references/prefill-ds-qwen/{ids0,ids1,qwen0,qwen1}.i32`.
 DS inputs 4352/4608 are verified copies of Spark A's standing `ds4-mask4` inputs;
 the [original text/tokenization recipe](../deepseek-device-masks/README.md#checks-and-provenance)
 recreates them if needed. Qwen 1536/1280 are little-endian I32 arrays from the
@@ -116,7 +116,7 @@ raw cleanup. Tokenizer/template come from the approved Mia925d7be6 directory.
 Invocation (private fresh output directory; target/drafter are artifact IDs):
 
 ```text
-jitllm_prefill_prediction_probe ds|dspark|qn|qmtp|qg STORE TARGET DRAFTER|- TOKENIZER_DIR|- IDS0 IDS1 NEW_OUT off|on
+llmp_prefill_prediction_probe ds|dspark|qn|qmtp|qg STORE TARGET DRAFTER|- TOKENIZER_DIR|- IDS0 IDS1 NEW_OUT off|on
 ```
 
 Use three plain pairs and the two repeated factors in the table. Require 16

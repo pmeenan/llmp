@@ -193,7 +193,7 @@
       "stage1.steps.draft": "69e6545f326ae203e522f21b7823c02159692cfb482e0413288d452a703110da",
       "observe1.steps.draft": "458070fb679874ff966069d462fc31439fd98514602d134699a7b71d946b3925"
     },
-    "raw_directory": "/tmp/jitllm-m35-coordination/gemma26-routing-gate-raw"
+    "raw_directory": "/tmp/llmp-m35-coordination/gemma26-routing-gate-raw"
   },
   "official_jobs": [
     {

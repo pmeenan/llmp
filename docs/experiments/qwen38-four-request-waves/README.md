@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 four-request decode waves
@@ -10,13 +10,13 @@ C2**. C1 is unchanged, with a byte-identical reply. Spark B (`spark-56f5`),
 
 ## What limited concurrency
 
-An nsys trace of the private C2 benchmark (`jitllm_qwen38_batch --mode natural`)
+An nsys trace of the private C2 benchmark (`llmp_qwen38_batch --mode natural`)
 was decisive. A two-request wave cost 92–104 ms against 57 ms for one
 request's verify, so pairing saved only ~19%.
 
 | Cause | What the trace showed |
 | --- | --- |
-| Routed experts | 35% of GPU time. `jitllm.moe.gemv` reads each (token, expert) slot's weights separately, so pairing barely helped (4.00 → 3.66 s an arm). |
+| Routed experts | 35% of GPU time. `llmp.moe.gemv` reads each (token, expert) slot's weights separately, so pairing barely helped (4.00 → 3.66 s an arm). |
 | Fixed pairs of at most 8 rows | A 4-request wave read every dense weight twice. The earlier [exact16](../qwen38-mxfp8-sixteen/README.md) rejection was a register spill: the 8-column template was instantiated at 16 and used 1,744 bytes of local memory. It was not a limit of the approach. |
 | Graph replay | Wave graph keys hold each slot's KV extent (256-cell alignment), rows and pending draft rows. With four slots the keys seldom repeated: 241K eager launches against 86 graph launches, and the GPU was only ~45% busy for long stretches. |
 
@@ -111,7 +111,7 @@ earlier cell (spark-b, 2026-10-02; records under `~/scratch/ccqw-fix/`).
   refuses. The later [selected MTP head transfer](../qwen38-draft-head-waves/README.md)
   uses a per-product vector selector and gains 1.77% at C2 with exact heads
   and state. Other plain BF16 products remain unqualified.
-- **jitLLM's own HC kernels on every column count** (a cluster split-K down
+- **Llmpalooza's own HC kernels on every column count** (a cluster split-K down
   product, batch-invariant by construction). They are neutral solo and slower
   than cuBLAS at 12–16 columns, and they change solo trajectories. Reverted.
 - **Grouped drafts past two requests**: 3.6% slower at C4.
@@ -158,7 +158,7 @@ cap of 65,536; GGUF/plain lane cells have no live draft head.
 
 ### Correctness
 
-`jitllm_qwen38_spec --check wave --slots 4 --tokens 96 --wave-lanes off|on`
+`llmp_qwen38_spec --check wave --slots 4 --tokens 96 --wave-lanes off|on`
 produces exactly 96 greedy tokens per slot with depth two, context 16,384
 and 4,096-row prefill chunks. Short inputs use the first two decode and
 first two chat prompts in `fast-swap/prompts.json`. The long fixture repeats
@@ -196,7 +196,7 @@ The FP16 complete-logit hash is the pinned
 `bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571`.
 
 The UD-IQ3_XXS GGUF harness toggles lanes with the optional final argument
-`jitllm_qwen38_gguf_wave ARTIFACT prompts.tsv OUT 2048 off|on`. Its short
+`llmp_qwen38_gguf_wave ARTIFACT prompts.tsv OUT 2048 off|on`. Its short
 and long attention controls cover widths two, three and four, paired and
 unpaired products, eager execution and capture/replay. Each schedule passes
 1,728 compared complete rows, 12 captures and 372 replays with zero coverage
@@ -343,7 +343,7 @@ GPU probe finds no compute process or busy/waiting job.
 The installed GPU-supervised job `qwen-fast-serving-c4` completes successfully
 and is waited on. Raw records and the controller remain outside Git at
 `~/scratch/qwen-fast-serving/screen1/` on Spark B and
-`/home/pmeenan/scratch/jitllm-m3-qwen-fast-serving-2026-10-04/` locally.
+`/home/pmeenan/scratch/llmp-m3-qwen-fast-serving-2026-10-04/` locally.
 Reproduction uses that controller's native-before/Mia/native-after order,
 the canonical launcher and frozen common-v2 inputs from
 `~/scratch/m3-serving-concurrent-r1/inputs-v2/`. This is one bookended screen,
@@ -376,7 +376,7 @@ from the neutral whole-wave result.
 
 Spark B, driver 580.178.04, CUDA 13.4.92 and SDK
 `aarch64-e0a0c85c42806fb1`. The private worktree is based on `4412786`.
-`jitllm_qwen38_spec --check wave` uses the NVFP4/MTP artifacts above,
+`llmp_qwen38_spec --check wave` uses the NVFP4/MTP artifacts above,
 selected 47,172-entry head (requested cap 65,536), four slots, lanes on,
 context 16,384,
 4,096-row prefill, depth two within shared waves and 96 generated tokens per
@@ -395,9 +395,9 @@ optimization override defers full suites for rejected candidates.
 
 Raw records, controller and one-line patch remain outside Git under
 `~/scratch/qwen-expert-groups/` on Spark B and
-`/home/pmeenan/scratch/jitllm-m3-qwen-expert-groups-2026-10-04/` locally.
-The source worktree is `/home/pmeenan/src/jitLLM-qwen-expert-groups` and its
-Spark copy `~/src/jitLLM-wt/qxgrp001/`. Repeat its `screen.py` in a fresh
+`/home/pmeenan/scratch/llmp-m3-qwen-expert-groups-2026-10-04/` locally.
+The source worktree is `/home/pmeenan/src/llmp-qwen-expert-groups` and its
+Spark copy `~/src/llmp-wt/qxgrp001/`. Repeat its `screen.py` in a fresh
 output directory under the installed GPU supervisor and wait; it compares
 complete per-slot hashes, completion and capture/replay as well as medians.
 
@@ -441,7 +441,7 @@ bound qualification follows. Arrival-dependent wave composition remains.
 The installed GPU-supervised `qwen-plain-c4-screen` job completes
 successfully and is waited on. Raw records and the private controller are
 external at `~/scratch/qwen-plain-screen/` on Spark B and
-`/home/pmeenan/scratch/jitllm-m3-qwen-plain-screen-2026-10-04/` locally.
+`/home/pmeenan/scratch/llmp-m3-qwen-plain-screen-2026-10-04/` locally.
 The controller SHA-256 is
 `603f33e750c17ca5b4b76869dd13410ab070d4b4b8778404e09a649a793a3d51`;
 runtime, source inventory, frozen client and inputs retain the hashes above.

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M0 VMM microbench — 2026-09-21
@@ -6,7 +6,7 @@
 This experiment isolates memory allocation, mapping/access, unmapping, and
 physical-handle release on `spark` (GB10, driver 580.178.04). It does **not**
 transfer from SSD or measure page-in latency. CUDA VMM is the driver mechanism
-jitLLM uses to control physical backing behind GPU virtual addresses; our
+llmpalooza uses to control physical backing behind GPU virtual addresses; our
 runtime still owns eviction, loading, and completion policy. It is not an
 automatic fault-driven pager. The next I/O spike measures the transfer path.
 
@@ -34,17 +34,17 @@ the smoke's manifest. Binaries and downloaded SDKs stay outside the repository.
 Reproduce from the repository root with the existing pinned scratch SDK:
 
 ```bash
-export LD_LIBRARY_PATH=/tmp/jitllm-clang22/sdk-amd64/usr/lib/x86_64-linux-gnu
-export CXX=/tmp/jitllm-clang22/sdk-amd64/usr/bin/clang++-22
-export LLD=/tmp/jitllm-clang22/sdk-amd64/usr/bin/ld.lld-22
-export SYSROOT=/tmp/jitllm-toolchain-smoke/sysroot
-export CUDA_ROOT=/tmp/jitllm-toolchain-smoke/sdk-134/usr/local/cuda-13.4
-bash docs/experiments/vmm-microbench/build.sh /tmp/jitllm-vmm/build
-ssh spark 'mkdir -p /tmp/jitllm-vmm/build'
-rsync -a /tmp/jitllm-vmm/build/ spark:/tmp/jitllm-vmm/build/
-ssh spark 'for run in 1 2 3; do CUDA_DISABLE_PTX_JIT=1 /tmp/jitllm-vmm/build/vmm-microbench /tmp/jitllm-vmm/build/kernel.cubin > /tmp/jitllm-vmm/final-run-$run.csv || exit; done'
-rsync -a 'spark:/tmp/jitllm-vmm/final-run-*.csv' /tmp/jitllm-vmm/
-python3 docs/experiments/vmm-microbench/summarize.py /tmp/jitllm-vmm/final-run-*.csv
+export LD_LIBRARY_PATH=/tmp/llmp-clang22/sdk-amd64/usr/lib/x86_64-linux-gnu
+export CXX=/tmp/llmp-clang22/sdk-amd64/usr/bin/clang++-22
+export LLD=/tmp/llmp-clang22/sdk-amd64/usr/bin/ld.lld-22
+export SYSROOT=/tmp/llmp-toolchain-smoke/sysroot
+export CUDA_ROOT=/tmp/llmp-toolchain-smoke/sdk-134/usr/local/cuda-13.4
+bash docs/experiments/vmm-microbench/build.sh /tmp/llmp-vmm/build
+ssh spark 'mkdir -p /tmp/llmp-vmm/build'
+rsync -a /tmp/llmp-vmm/build/ spark:/tmp/llmp-vmm/build/
+ssh spark 'for run in 1 2 3; do CUDA_DISABLE_PTX_JIT=1 /tmp/llmp-vmm/build/vmm-microbench /tmp/llmp-vmm/build/kernel.cubin > /tmp/llmp-vmm/final-run-$run.csv || exit; done'
+rsync -a 'spark:/tmp/llmp-vmm/final-run-*.csv' /tmp/llmp-vmm/
+python3 docs/experiments/vmm-microbench/summarize.py /tmp/llmp-vmm/final-run-*.csv
 ```
 
 Each process queries minimum and recommended granularity for a device-local
@@ -195,7 +195,7 @@ both rebuilt binary hashes matched the manifest. A separate full execution
 on `spark`, with PTX JIT disabled, passed all 3,200 timing samples, full-content
 remap verification, and the deliberate-corruption negative control. All
 1,200 concurrent calls in that run also returned with the event pending.
-Reviewer outputs remain separate in `/tmp/jitllm-vmm-review` on the workstation
+Reviewer outputs remain separate in `/tmp/llmp-vmm-review` on the workstation
 and Spark; they are not included in the three-run reported measurements.
 
 The reviewer checked every manifest file hash and all 60 reported median

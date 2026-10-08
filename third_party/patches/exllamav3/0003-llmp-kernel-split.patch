@@ -1,0 +1,912 @@
+Llmpalooza's split of the ExLlamaV3 kernels its native linear launches from
+upstream's ATen host wrappers (D-053, D-066, D-080), for three files that
+hold both: quant/reconstruct.cu (the reconstruction kernels, plain and
+fused with both Hadamard transforms), quant/hadamard.cu (the 128-point
+Hadamard kernels) and add.cu (the bias add, add_kernel_hhh). The kernels
+are unchanged; what is removed is host code:
+
+- the ATen, c10 and PyTorch-API includes (reconstruct.cuh, hadamard's
+  quantize.cuh, add.cuh, and bits_k.cuh, which includes c10), which only
+  the host wrappers used;
+- the host wrappers themselves (reconstruct_slice, reconstruct_had_slice,
+  reconstruct, the batched variants, had_r_128 and its dual and batched
+  variants, add_gr, add, copy2d_gr and the MoE bias adds), which use
+  ATen tensors, PyTorch's current stream and TORCH_CHECK and end the
+  process on a CUDA error (cuda_check). Llmpalooza's launchers in
+  src/kernels/exl3/ replace them and return errors as values;
+- reconstruct.cu's constexpr instance tables, which instantiate every
+  rate, codebook and half-integer rate. Llmpalooza instantiates only the
+  kernels it launches (llmp/llmp_exl3_kernels.cu, patch 0002).
+
+It also drops the `register` storage class from two local arrays in
+reconstruct.cu, as 0001 does in exl3_gemm_inner.cuh: it has no effect, is
+ill-formed since C++17, and NVCC's front end rejects it with a Clang host
+compiler. The kernels' SASS equals the reference build's (docs/licensing.md).
+
+diff --git a/exllamav3/exllamav3_ext/add.cu b/exllamav3/exllamav3_ext/add.cu
+index 7c9b2c4..cd05e8d 100644
+--- a/exllamav3/exllamav3_ext/add.cu
++++ b/exllamav3/exllamav3_ext/add.cu
+@@ -1,7 +1,5 @@
+ #include <cuda_fp16.h>
+-#include "add.cuh"
+-#include <c10/cuda/CUDAGuard.h>
+-#include <ATen/cuda/CUDAContext.h>
++// llmpalooza: add.cuh and the ATen headers served only the host wrappers removed below.
+ #include "util.h"
+ #include "util.cuh"
+ 
+@@ -36,76 +34,8 @@ KERNEL_DEF(float, float, float, add_kernel_fff, a + b)
+ 
+ #undef KERNEL_DEF
+ 
+-/*
+-x + y -> z
+-Works inplace if x == z or y == z
+-*/
+-
+-void add_gr
+-(
+-    const at::Tensor& x,
+-    const at::Tensor& y,
+-    at::Tensor& z,
+-    Graph* graph
+-)
+-{
+-    const at::cuda::OptionalCUDAGuard device_guard(x.device());
+-    cudaStream_t stream = graph ? graph->capture_stream : at::cuda::getCurrentCUDAStream().stream();
+-
+-    auto xt = x.dtype();
+-    auto yt = y.dtype();
+-    auto zt = z.dtype();
+-    uint64_t numel_x = x.numel();
+-    int blocks = (int) CEIL_DIVIDE(numel_x, (uint64_t) NUM_THREADS);
+-
+-    uint64_t numel_y = y.numel();
+-    if (numel_y != numel_x)
+-    {
+-        TORCH_CHECK(numel_y < numel_x, "Tensor shape mismatch (y > x)");
+-        TORCH_CHECK(numel_x % numel_y == 0, "Tensor shape mismatch (y must divide x)");
+-    }
+-
+-    #define INSTANCE(xt_, yt_, zt_, xt__, yt__, zt__, kernel) \
+-    if (xt == xt_ && yt == yt_ && zt == zt_) \
+-    { \
+-        kernel<<<blocks, NUM_THREADS, 0, stream>>> \
+-        ( \
+-            (const xt__*) x.data_ptr(), \
+-            (const yt__*) y.data_ptr(), \
+-            (zt__*) z.data_ptr(), \
+-            numel_x, \
+-            numel_y \
+-        ); \
+-        if (graph) graph->record_param((void*) &kernel, GP_add_x, 0); \
+-        if (graph) graph->record_param((void*) &kernel, GP_add_y, 1); \
+-        if (graph) graph->record_param((void*) &kernel, GP_add_z, 2); \
+-        if (graph) graph->record_param((void*) &kernel, GP_end, 0); \
+-        cuda_check(cudaPeekAtLastError()); \
+-    }
+-
+-    INSTANCE(at::kHalf,  at::kHalf,  at::kHalf,  half,  half,  half , add_kernel_hhh)
+-    INSTANCE(at::kHalf,  at::kHalf,  at::kFloat, half,  half,  float, add_kernel_hhf)
+-    INSTANCE(at::kHalf,  at::kFloat, at::kHalf,  half,  float, half , add_kernel_hfh)
+-    INSTANCE(at::kHalf,  at::kFloat, at::kFloat, half,  float, float, add_kernel_hff)
+-    INSTANCE(at::kFloat, at::kHalf,  at::kHalf,  float, half,  half , add_kernel_fhh)
+-    INSTANCE(at::kFloat, at::kHalf,  at::kFloat, float, half,  float, add_kernel_fhf)
+-    INSTANCE(at::kFloat, at::kFloat, at::kHalf,  float, float, half , add_kernel_ffh)
+-    INSTANCE(at::kFloat, at::kFloat, at::kFloat, float, float, float, add_kernel_fff)
+-
+-    #undef INSTANCE
+-
+-    cuda_check(cudaPeekAtLastError());
+-}
+-
+-void add
+-(
+-    const at::Tensor& x,
+-    const at::Tensor& y,
+-    at::Tensor& z
+-)
+-{
+-    add_gr(x, y, z, nullptr);
+-}
++// llmpalooza: the ATen host wrappers add_gr and add are removed. Llmpalooza's launchers (src/kernels/exl3/)
++// replace them, and llmpalooza instantiates the kernels it launches itself.
+ 
+ // Strided row-block copy: dst[r, :width] = src[r, :width] for 2D tensors whose row strides may
+ // differ (zero-padded staging buffers around GEMMs with padded dims)
+@@ -128,46 +58,7 @@ __global__ void copy2d_kernel
+     dst[(int64_t) row * dst_stride + col] = src[(int64_t) row * src_stride + col];
+ }
+ 
+-void copy2d_gr
+-(
+-    const at::Tensor& src,
+-    at::Tensor& dst,
+-    Graph* graph
+-)
+-{
+-    const at::cuda::OptionalCUDAGuard device_guard(src.device());
+-    cudaStream_t stream = graph ? graph->capture_stream : at::cuda::getCurrentCUDAStream().stream();
+-
+-    TORCH_CHECK(src.dim() == 2 && dst.dim() == 2, "copy2d: tensors must be 2D");
+-    TORCH_CHECK(src.size(0) == dst.size(0), "copy2d: row count mismatch");
+-    TORCH_CHECK(src.dtype() == dst.dtype(), "copy2d: dtype mismatch");
+-    int rows = (int) src.size(0);
+-    int width = (int) MIN(src.size(1), dst.size(1));
+-    dim3 grid(CEIL_DIVIDE(width, C2D_THREADS), rows);
+-
+-    #define INSTANCE(dt, T) \
+-    if (src.dtype() == dt) \
+-    { \
+-        copy2d_kernel<T><<<grid, C2D_THREADS, 0, stream>>> \
+-        ( \
+-            (const T*) src.data_ptr(), \
+-            (T*) dst.data_ptr(), \
+-            (int) src.stride(0), \
+-            (int) dst.stride(0), \
+-            width \
+-        ); \
+-        if (graph) graph->record_param((void*) &copy2d_kernel<T>, GP_copy2d_src, 0); \
+-        if (graph) graph->record_param((void*) &copy2d_kernel<T>, GP_copy2d_dst, 1); \
+-        if (graph) graph->record_param((void*) &copy2d_kernel<T>, GP_end, 0); \
+-    }
+-
+-    INSTANCE(at::kHalf, half)
+-    INSTANCE(at::kFloat, float)
+-
+-    #undef INSTANCE
+-
+-    cuda_check(cudaPeekAtLastError());
+-}
++// llmpalooza: the ATen host wrapper copy2d_gr is removed.
+ 
+ // Per-expert bias adds for the block-sparse MLP graphs. All inputs are static buffers (the
+ // routing kernel writes sel/weights in place), so the nodes never need patching:
+@@ -250,89 +141,4 @@ __global__ void moe_bias_add_weighted_kernel
+     out_t[col] = acc;
+ }
+ 
+-void moe_bias_add_gr
+-(
+-    at::Tensor& interm,
+-    const at::Tensor& bias_ptrs,
+-    const at::Tensor& sel,
+-    int min_expert,
+-    int max_expert,
+-    Graph* graph,
+-    int num_tokens
+-)
+-{
+-    const at::cuda::OptionalCUDAGuard device_guard(interm.device());
+-    cudaStream_t stream = graph ? graph->capture_stream : at::cuda::getCurrentCUDAStream().stream();
+-
+-    TORCH_CHECK_DTYPE(interm, kHalf);
+-    TORCH_CHECK_DTYPE(sel, kLong);
+-    int num_sel = (int) sel.numel();
+-    int width = (int) interm.size(-1);
+-    int stride = (int) interm.stride(0);
+-    dim3 grid(CEIL_DIVIDE(width, C2D_THREADS), num_sel);
+-
+-    moe_bias_add_kernel<<<grid, C2D_THREADS, 0, stream>>>
+-    (
+-        (half*) interm.data_ptr(),
+-        (const uintptr_t*) bias_ptrs.data_ptr(),
+-        (const int64_t*) sel.data_ptr(),
+-        stride,
+-        width,
+-        min_expert,
+-        max_expert,
+-        num_tokens == 1 ? 1 : 0
+-    );
+-    if (graph)
+-    {
+-        graph->record_param((void*) &moe_bias_add_kernel, GP_moe_bias_add_sel, 2);
+-        graph->record_param((void*) &moe_bias_add_kernel, GP_end, 0);
+-    }
+-    cuda_check(cudaPeekAtLastError());
+-
+-}
+-
+-void moe_bias_add_weighted_gr
+-(
+-    at::Tensor& out,
+-    const at::Tensor& bias_ptrs,
+-    const at::Tensor& sel,
+-    const at::Tensor& weights,
+-    int min_expert,
+-    int max_expert,
+-    Graph* graph
+-)
+-{
+-    const at::cuda::OptionalCUDAGuard device_guard(out.device());
+-    cudaStream_t stream = graph ? graph->capture_stream : at::cuda::getCurrentCUDAStream().stream();
+-
+-    TORCH_CHECK_DTYPE(out, kFloat);
+-    TORCH_CHECK_DTYPE(sel, kLong);
+-    TORCH_CHECK_DTYPE(weights, kHalf);
+-    // sel/weights are [num_tokens, experts_per_token]; out has a row per token (row 0 only when
+-    // num_tokens == 1, the legacy/bsz-1 case -- unchanged behavior there)
+-    int num_tokens = (int) sel.size(0);
+-    int num_sel = (int) sel.size(-1);
+-    int width = (int) out.size(-1);
+-    int out_stride = (int) out.stride(0);
+-    dim3 grid(CEIL_DIVIDE(width, C2D_THREADS), num_tokens);
+-
+-    moe_bias_add_weighted_kernel<<<grid, C2D_THREADS, 0, stream>>>
+-    (
+-        (float*) out.data_ptr(),
+-        (const uintptr_t*) bias_ptrs.data_ptr(),
+-        (const int64_t*) sel.data_ptr(),
+-        (const half*) weights.data_ptr(),
+-        num_sel,
+-        width,
+-        min_expert,
+-        max_expert,
+-        out_stride
+-    );
+-    if (graph)
+-    {
+-        graph->record_param((void*) &moe_bias_add_weighted_kernel, GP_moe_bias_add_weighted_sel, 2);
+-        graph->record_param((void*) &moe_bias_add_weighted_kernel, GP_moe_bias_add_weighted_weights, 3);
+-        graph->record_param((void*) &moe_bias_add_weighted_kernel, GP_end, 0);
+-    }
+-    cuda_check(cudaPeekAtLastError());
+-}
++// llmpalooza: the ATen host wrappers moe_bias_add_gr and moe_bias_add_weighted_gr are removed.
+diff --git a/exllamav3/exllamav3_ext/quant/hadamard.cu b/exllamav3/exllamav3_ext/quant/hadamard.cu
+index cb35a8b..d85ef13 100644
+--- a/exllamav3/exllamav3_ext/quant/hadamard.cu
++++ b/exllamav3/exllamav3_ext/quant/hadamard.cu
+@@ -1,7 +1,5 @@
+ #include <cuda_fp16.h>
+-#include "quantize.cuh"
+-#include <c10/cuda/CUDAGuard.h>
+-#include <ATen/cuda/CUDAContext.h>
++// llmpalooza: quantize.cuh and the ATen headers served only the host wrappers removed below.
+ #include "../util.h"
+ #include "../util.cuh"
+ #include "hadamard_inner.cuh"
+@@ -117,281 +115,6 @@ void had_ff_r_128_batch_kernel
+     had_ff_r_128_inner<pre_scale, post_scale>(input_ptr + off, output_ptr + off, scale, r_scale);
+ }
+ 
+-/*
+-Compute y = (x.view(-1, 128) @ had_128).view(x.shape)
+-Works inplace if y == x
+-x and y must be same dtype, either float16 or float32
+-*/
+-void had_r_128
+-(
+-    const at::Tensor& input,
+-    const at::Tensor& output,
+-    const c10::optional<at::Tensor>& pre_scale,
+-    const c10::optional<at::Tensor>& post_scale,
+-    const float scale
+-)
+-{
+-    const at::cuda::OptionalCUDAGuard device_guard(input.device());
+-    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+-
+-    TORCH_CHECK_SHAPES_FULL(input, output);
+-    TORCH_CHECK_DIM(input, 2);
+-    TORCH_CHECK_DIV(input, 1, 128);
+-    int rows = input.size(0);
+-    int cols = input.size(1);
+-
+-    int blocks = cols / 128;
+-    float r_scale = scale * 0.088388347648f; // scale / sqrt(128)
+-
+-    dim3 blockDim(32);
+-    dim3 gridDim(rows, blocks);
+-
+-    if (input.dtype() == at::kHalf)
+-    {
+-        TORCH_CHECK_DTYPE(output, kHalf);
+-        if (pre_scale.has_value())
+-            had_hf_r_128_kernel<true, false><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const half*) input.data_ptr(),
+-                (half*) output.data_ptr(),
+-                (const half*) OPTPTR(pre_scale),
+-                r_scale
+-            );
+-        else if (post_scale.has_value())
+-            had_hf_r_128_kernel<false, true><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const half*) input.data_ptr(),
+-                (half*) output.data_ptr(),
+-                (const half*) OPTPTR(post_scale),
+-                r_scale
+-            );
+-        else
+-            had_hf_r_128_kernel<false, false><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const half*) input.data_ptr(),
+-                (half*) output.data_ptr(),
+-                (const half*) nullptr,
+-                r_scale
+-            );
+-        cuda_check(cudaPeekAtLastError());
+-    }
+-
+-    else if (input.dtype() == at::kFloat)
+-    {
+-        TORCH_CHECK_DTYPE(output, kFloat);
+-        if (pre_scale.has_value())
+-            had_ff_r_128_kernel<true, false><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const float*) input.data_ptr(),
+-                (float*) output.data_ptr(),
+-                (const half*) OPTPTR(pre_scale),
+-                r_scale
+-            );
+-        else if (post_scale.has_value())
+-            had_ff_r_128_kernel<false, true><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const float*) input.data_ptr(),
+-                (float*) output.data_ptr(),
+-                (const half*) OPTPTR(post_scale),
+-                r_scale
+-            );
+-        else
+-            had_ff_r_128_kernel<false, false><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const float*) input.data_ptr(),
+-                (float*) output.data_ptr(),
+-                (const half*) nullptr,
+-                r_scale
+-            );
+-        cuda_check(cudaPeekAtLastError());
+-    }
+-
+-    else TORCH_CHECK(false, "unsupported datatype");
+-}
+-
+-void had_r_128_dual
+-(
+-    const at::Tensor& input1,
+-    const at::Tensor& output1,
+-    const c10::optional<at::Tensor>& pre_scale1,
+-    const c10::optional<at::Tensor>& post_scale1,
+-    const at::Tensor& input2,
+-    const at::Tensor& output2,
+-    const c10::optional<at::Tensor>& pre_scale2,
+-    const c10::optional<at::Tensor>& post_scale2,
+-    const float scale
+-)
+-{
+-    const at::cuda::OptionalCUDAGuard device_guard(input1.device());
+-    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+-
+-    TORCH_CHECK_SHAPES_FULL(input1, output1);
+-    TORCH_CHECK_SHAPES_FULL(input1, input2);
+-    TORCH_CHECK_SHAPES_FULL(output1, output2);
+-    TORCH_CHECK_DIM(input1, 2);
+-    TORCH_CHECK_DIV(input1, 1, 128);
+-    int rows = input1.size(0);
+-    int cols = input1.size(1);
+-
+-    TORCH_CHECK(
+-        pre_scale1.has_value() == pre_scale2.has_value() &&
+-        post_scale1.has_value() == post_scale2.has_value(),
+-        "Cannot mix scaling modes in dual had"
+-    )
+-
+-    int blocks = cols / 128;
+-    float r_scale = scale * 0.088388347648f; // scale / sqrt(128)
+-
+-    dim3 blockDim(32);
+-    dim3 gridDim(rows, blocks);
+-
+-    if (input1.dtype() == at::kHalf)
+-    {
+-        TORCH_CHECK_DTYPE(output1, kHalf);
+-        if (pre_scale1.has_value())
+-            had_hf_r_128_dual_kernel<true, false><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const half*) input1.data_ptr(),
+-                (half*) output1.data_ptr(),
+-                (const half*) OPTPTR(pre_scale1),
+-                (const half*) input2.data_ptr(),
+-                (half*) output2.data_ptr(),
+-                (const half*) OPTPTR(pre_scale2),
+-                r_scale
+-            );
+-        else if (post_scale1.has_value())
+-            had_hf_r_128_dual_kernel<false, true><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const half*) input1.data_ptr(),
+-                (half*) output1.data_ptr(),
+-                (const half*) OPTPTR(post_scale1),
+-                (const half*) input2.data_ptr(),
+-                (half*) output2.data_ptr(),
+-                (const half*) OPTPTR(post_scale2),
+-                r_scale
+-            );
+-        else
+-            had_hf_r_128_dual_kernel<false, false><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const half*) input1.data_ptr(),
+-                (half*) output1.data_ptr(),
+-                (const half*) nullptr,
+-                (const half*) input2.data_ptr(),
+-                (half*) output2.data_ptr(),
+-                (const half*) nullptr,
+-                r_scale
+-            );
+-        cuda_check(cudaPeekAtLastError());
+-    }
+-
+-    else if (input1.dtype() == at::kFloat)
+-    {
+-        TORCH_CHECK_DTYPE(output1, kFloat);
+-        if (pre_scale1.has_value())
+-            had_ff_r_128_dual_kernel<true, false><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const float*) input1.data_ptr(),
+-                (float*) output1.data_ptr(),
+-                (const half*) OPTPTR(pre_scale1),
+-                (const float*) input2.data_ptr(),
+-                (float*) output2.data_ptr(),
+-                (const half*) OPTPTR(pre_scale2),
+-                r_scale
+-            );
+-        else if (post_scale1.has_value())
+-            had_ff_r_128_dual_kernel<false, true><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const float*) input1.data_ptr(),
+-                (float*) output1.data_ptr(),
+-                (const half*) OPTPTR(post_scale1),
+-                (const float*) input2.data_ptr(),
+-                (float*) output2.data_ptr(),
+-                (const half*) OPTPTR(post_scale2),
+-                r_scale
+-            );
+-        else
+-            had_ff_r_128_dual_kernel<false, false><<<gridDim, blockDim, 0, stream>>>
+-            (
+-                (const float*) input1.data_ptr(),
+-                (float*) output1.data_ptr(),
+-                (const half*) nullptr,
+-                (const float*) input2.data_ptr(),
+-                (float*) output2.data_ptr(),
+-                (const half*) nullptr,
+-                r_scale
+-            );
+-        cuda_check(cudaPeekAtLastError());
+-    }
+-
+-    else TORCH_CHECK(false, "unsupported datatype");
+-}
+-
+-
+-/*
+-had_r_128 over a [B * rows_per_expert, cols] slab with per-expert pre/post scale vectors: the
+-scale of row r is table[ids[r / rows_per_expert]], tables are [E, cols] half. Works in place.
+-*/
+-void had_r_128_batch
+-(
+-    const at::Tensor& input,
+-    const at::Tensor& output,
+-    const c10::optional<at::Tensor>& pre_table,
+-    const c10::optional<at::Tensor>& post_table,
+-    const at::Tensor& ids,
+-    int rows_per_expert,
+-    const float scale
+-)
+-{
+-    const at::cuda::OptionalCUDAGuard device_guard(input.device());
+-    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+-
+-    TORCH_CHECK_SHAPES_FULL(input, output);
+-    TORCH_CHECK_DIM(input, 2);
+-    TORCH_CHECK_DIV(input, 1, 128);
+-    TORCH_CHECK_DTYPE(ids, kLong);
+-    TORCH_CHECK(ids.is_contiguous(), "ids must be contiguous");
+-    TORCH_CHECK(rows_per_expert > 0, "rows_per_expert must be positive");
+-    TORCH_CHECK(pre_table.has_value() != post_table.has_value(), "exactly one of pre_table / post_table");
+-    int rows = input.size(0);
+-    int cols = input.size(1);
+-    TORCH_CHECK(rows % rows_per_expert == 0, "rows must be a multiple of rows_per_expert");
+-    TORCH_CHECK(ids.numel() >= rows / rows_per_expert, "ids too short for the slab");
+-    const at::Tensor& table = pre_table.has_value() ? pre_table.value() : post_table.value();
+-    TORCH_CHECK_DTYPE(table, kHalf);
+-    TORCH_CHECK_DIM(table, 2);
+-    TORCH_CHECK(table.is_contiguous() && table.size(1) == cols, "scale table must be contiguous [E, cols]");
+-    if (!rows) return;
+-
+-    int blocks = cols / 128;
+-    float r_scale = scale * 0.088388347648f;
+-    dim3 blockDim(32);
+-    dim3 gridDim(rows, blocks);
+-    bool pre = pre_table.has_value();
+-
+-    if (input.dtype() == at::kHalf)
+-    {
+-        TORCH_CHECK_DTYPE(output, kHalf);
+-        if (pre)
+-            had_hf_r_128_batch_kernel<true, false><<<gridDim, blockDim, 0, stream>>>
+-            ((const half*) input.data_ptr(), (half*) output.data_ptr(), (const half*) table.data_ptr(),
+-             (const int64_t*) ids.data_ptr(), rows_per_expert, r_scale);
+-        else
+-            had_hf_r_128_batch_kernel<false, true><<<gridDim, blockDim, 0, stream>>>
+-            ((const half*) input.data_ptr(), (half*) output.data_ptr(), (const half*) table.data_ptr(),
+-             (const int64_t*) ids.data_ptr(), rows_per_expert, r_scale);
+-    }
+-    else if (input.dtype() == at::kFloat)
+-    {
+-        TORCH_CHECK_DTYPE(output, kFloat);
+-        if (pre)
+-            had_ff_r_128_batch_kernel<true, false><<<gridDim, blockDim, 0, stream>>>
+-            ((const float*) input.data_ptr(), (float*) output.data_ptr(), (const half*) table.data_ptr(),
+-             (const int64_t*) ids.data_ptr(), rows_per_expert, r_scale);
+-        else
+-            had_ff_r_128_batch_kernel<false, true><<<gridDim, blockDim, 0, stream>>>
+-            ((const float*) input.data_ptr(), (float*) output.data_ptr(), (const half*) table.data_ptr(),
+-             (const int64_t*) ids.data_ptr(), rows_per_expert, r_scale);
+-    }
+-    else TORCH_CHECK(false, "unsupported datatype");
+-    cuda_check(cudaPeekAtLastError());
+-}
++// llmpalooza: the ATen host wrappers (had_r_128, had_r_128_dual and the
++// batched variants) are removed. Llmpalooza's launchers (src/kernels/exl3/)
++// replace them, and llmpalooza instantiates the kernels it launches itself.
+diff --git a/exllamav3/exllamav3_ext/quant/reconstruct.cu b/exllamav3/exllamav3_ext/quant/reconstruct.cu
+index e0fd776..5850367 100644
+--- a/exllamav3/exllamav3_ext/quant/reconstruct.cu
++++ b/exllamav3/exllamav3_ext/quant/reconstruct.cu
+@@ -1,12 +1,10 @@
+ #include <cuda_fp16.h>
+-#include "reconstruct.cuh"
+-#include <c10/cuda/CUDAGuard.h>
+-#include <ATen/cuda/CUDAContext.h>
++// llmpalooza: reconstruct.cuh, bits_k.cuh (which includes c10) and the ATen headers
++// served only the host wrappers removed below.
+ #include "../util.h"
+ #include "../util.cuh"
+ #include "../ptx.cuh"
+ #include "exl3_dq.cuh"
+-#include "bits_k.cuh"
+ #include "hadamard_inner.cuh"
+ 
+ template <int K, int cb, bool HALF = false>
+@@ -37,7 +35,7 @@ void reconstruct_tile
+     __syncthreads();
+ 
+     // Dequant
+-    register FragB frag[2];
++    FragB frag[2];  // llmpalooza: no `register` (see third_party/patches/exllamav3/0003)
+     dq_dispatch<K, cb, HALF>(s_packed[warp_id], lane_id * 8, frag[0], frag[1]);
+ 
+     // Shuffle from tensor core layout to row major tile
+@@ -113,88 +111,9 @@ void reconstruct_batch_kernel
+     reconstruct_tile<K, cb, HALF>(g_unpacked + (size_t) b * out_stride, packed_ptrs[b], packed_blocks_n, 0);
+ }
+ 
+-// Index cb * 8 + K - 1 for integer K; 24 + K - 1 for the half-integer rates 1.5 / 2.5 / 3.5 (mul1 only)
+-#define __(i, cb) reconstruct_batch_kernel<i, cb>
+-constexpr auto reconstruct_batch_kernel_instances = std::array
+-{
+-    __(1, 0), __(2, 0), __(3, 0), __(4, 0), __(5, 0), __(6, 0), __(7, 0), __(8, 0),
+-    __(1, 1), __(2, 1), __(3, 1), __(4, 1), __(5, 1), __(6, 1), __(7, 1), __(8, 1),
+-    __(1, 2), __(2, 2), __(3, 2), __(4, 2), __(5, 2), __(6, 2), __(7, 2), __(8, 2),
+-    reconstruct_batch_kernel<1, 2, true>, reconstruct_batch_kernel<2, 2, true>, reconstruct_batch_kernel<3, 2, true>
+-};
+-#undef __
+-
+-// Index cb * 8 + K - 1 for integer K; 24 + K - 1 for the half-integer rates 1.5 / 2.5 / 3.5 (mul1 only)
+-#define __(i, cb) reconstruct_kernel<i, cb>
+-constexpr auto reconstruct_kernel_instances = std::array
+-{
+-    __(1, 0), __(2, 0), __(3, 0), __(4, 0), __(5, 0), __(6, 0), __(7, 0), __(8, 0),
+-    __(1, 1), __(2, 1), __(3, 1), __(4, 1), __(5, 1), __(6, 1), __(7, 1), __(8, 1),
+-    __(1, 2), __(2, 2), __(3, 2), __(4, 2), __(5, 2), __(6, 2), __(7, 2), __(8, 2),
+-    reconstruct_kernel<1, 2, true>, reconstruct_kernel<2, 2, true>, reconstruct_kernel<3, 2, true>
+-};
+-#undef __
+-
+-/*
+-Reconstruct encoded+packed tensor
+-*/
+-void reconstruct_slice
+-(
+-    at::Tensor unpacked,
+-    at::Tensor packed,
+-    float K_,
+-    bool mcg,
+-    bool mul1,
+-    int64_t n_offset
+-)
+-{
+-    const at::cuda::OptionalCUDAGuard device_guard(unpacked.device());
+-    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+-
+-    // The kernel-instance tables hold 24 entries: K in 1..8 x {plain, mcg, mul1}.
+-    // K is derived from the checkpoint (trellis.shape[-1] // 16), so an untrusted
+-    // model file can drive cbi outside the table and launch whatever pointer lies
+-    // there. Bound both the input and the computed index.
+-    const BitsK bk = bits_from_K(K_);
+-    const int K = bk.bits;
+-    TORCH_CHECK(!bk.half || mul1, "reconstruct: half-integer bitrates require the mul1 codebook");
+-    TORCH_CHECK_SHAPES(unpacked, 0, packed, 0, 16);
+-    TORCH_CHECK_SIZE(packed, 2, 16 * K + (bk.half ? 8 : 0));
+-    TORCH_CHECK_DTYPE(unpacked, kHalf);
+-
+-    int rows = packed.size(0);
+-    int packed_cols = packed.size(1);
+-
+-    if (unpacked.numel() == 0)
+-        return;
+-
+-    TORCH_CHECK(unpacked.size(1) % 128 == 0, "unpacked N dimension must be divisible by 128");
+-    TORCH_CHECK(n_offset % 128 == 0, "n_offset must be divisible by 128");
+-    TORCH_CHECK(n_offset >= 0, "n_offset must be non-negative");
+-    TORCH_CHECK(n_offset + unpacked.size(1) <= packed.size(1) * 16, "reconstruct slice exceeds packed tensor bounds");
+-
+-    int cols = unpacked.size(1) / 16;
+-    int packed_n_offset = n_offset / 16;
+-
+-    dim3 blockDim(256);
+-    dim3 gridDim(cols / 8, rows);
+-
+-    int cbi = K - 1;
+-    if (bk.half) cbi += 24;
+-    else if (mcg) cbi += 8;
+-    else if (mul1) cbi += 16;
+-    TORCH_CHECK(cbi >= 0 && cbi < (int) reconstruct_kernel_instances.size(),
+-                "kernel index out of range: ", cbi);
+-
+-    reconstruct_kernel_instances[cbi]<<<gridDim, blockDim, 0, stream>>>
+-    (
+-        (half*) unpacked.data_ptr(),
+-        (const uint16_t*) packed.data_ptr(),
+-        packed_cols,
+-        packed_n_offset
+-    );
+-    cuda_check(cudaPeekAtLastError());
+-}
++// llmpalooza: upstream's instance tables, which instantiate every rate and
++// codebook, and its ATen host wrapper reconstruct_slice are removed. Llmpalooza's launchers (src/kernels/exl3/)
++// replace them, and llmpalooza instantiates the kernels it launches itself.
+ 
+ 
+ // Fused reconstruct + both-side Hadamard: emits W = diag(suh) . H128 . W_hat . H128 . diag(svh)
+@@ -253,7 +172,7 @@ void reconstruct_had_tile
+     {
+         int j = (warp_id / 8) * (8 / (RH_THREADS / 256)) + jj;
+         int wn = warp_id % 8;
+-        register FragB frag[2];
++        FragB frag[2];  // llmpalooza: no `register` (see third_party/patches/exllamav3/0003)
+         dq_dispatch<K, cb, HALF>(s_packed[j][wn], lane_id * 8, frag[0], frag[1]);
+ 
+         half2 n0 = __shfl_down_sync(0xFFFFFFFF, frag[0][0], 4, 32);
+@@ -402,225 +321,6 @@ void reconstruct_had_batch_kernel
+     );
+ }
+ 
+-// Index cb * 8 + K - 1 for integer K; 24 + K - 1 for the half-integer rates 1.5 / 2.5 / 3.5 (mul1 only)
+-#define __(i, cb) reconstruct_had_batch_kernel<i, cb>
+-constexpr auto reconstruct_had_batch_kernel_instances = std::array
+-{
+-    __(1, 0), __(2, 0), __(3, 0), __(4, 0), __(5, 0), __(6, 0), __(7, 0), __(8, 0),
+-    __(1, 1), __(2, 1), __(3, 1), __(4, 1), __(5, 1), __(6, 1), __(7, 1), __(8, 1),
+-    __(1, 2), __(2, 2), __(3, 2), __(4, 2), __(5, 2), __(6, 2), __(7, 2), __(8, 2),
+-    reconstruct_had_batch_kernel<1, 2, true>, reconstruct_had_batch_kernel<2, 2, true>, reconstruct_had_batch_kernel<3, 2, true>
+-};
+-#undef __
+-
+-// Index cb * 8 + K - 1 for integer K; 24 + K - 1 for the half-integer rates 1.5 / 2.5 / 3.5 (mul1 only)
+-#define __(i, cb) reconstruct_had_kernel<i, cb>
+-constexpr auto reconstruct_had_kernel_instances = std::array
+-{
+-    __(1, 0), __(2, 0), __(3, 0), __(4, 0), __(5, 0), __(6, 0), __(7, 0), __(8, 0),
+-    __(1, 1), __(2, 1), __(3, 1), __(4, 1), __(5, 1), __(6, 1), __(7, 1), __(8, 1),
+-    __(1, 2), __(2, 2), __(3, 2), __(4, 2), __(5, 2), __(6, 2), __(7, 2), __(8, 2),
+-    reconstruct_had_kernel<1, 2, true>, reconstruct_had_kernel<2, 2, true>, reconstruct_had_kernel<3, 2, true>
+-};
+-#undef __
+-
+-/*
+-Reconstruct in the original (unrotated) basis: fused suh/H/W_hat/H/svh. Both dims must be
+-multiples of 128. n_offset slices along n; svh must be pre-offset by the caller.
+-*/
+-void reconstruct_had_slice
+-(
+-    at::Tensor unpacked,
+-    at::Tensor packed,
+-    at::Tensor suh,
+-    at::Tensor svh,
+-    float K_,
+-    bool mcg,
+-    bool mul1,
+-    int64_t n_offset
+-)
+-{
+-    const at::cuda::OptionalCUDAGuard device_guard(unpacked.device());
+-    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+-
+-    // The kernel-instance tables hold 24 entries: K in 1..8 x {plain, mcg, mul1}.
+-    // K is derived from the checkpoint (trellis.shape[-1] // 16), so an untrusted
+-    // model file can drive cbi outside the table and launch whatever pointer lies
+-    // there. Bound both the input and the computed index.
+-    const BitsK bk = bits_from_K(K_);
+-    const int K = bk.bits;
+-    TORCH_CHECK(!bk.half || mul1, "reconstruct: half-integer bitrates require the mul1 codebook");
+-    TORCH_CHECK_SHAPES(unpacked, 0, packed, 0, 16);
+-    TORCH_CHECK_SIZE(packed, 2, 16 * K + (bk.half ? 8 : 0));
+-    TORCH_CHECK_DTYPE(unpacked, kHalf);
+-    TORCH_CHECK_DTYPE(suh, kHalf);
+-    TORCH_CHECK_DTYPE(svh, kHalf);
+-
+-    if (unpacked.numel() == 0)
+-        return;
+-
+-    TORCH_CHECK(unpacked.size(0) % 128 == 0, "reconstruct_had: K dimension must be divisible by 128");
+-    TORCH_CHECK(unpacked.size(1) % 128 == 0, "reconstruct_had: N dimension must be divisible by 128");
+-    TORCH_CHECK(n_offset % 128 == 0, "n_offset must be divisible by 128");
+-    TORCH_CHECK(n_offset >= 0, "n_offset must be non-negative");
+-    TORCH_CHECK(n_offset + unpacked.size(1) <= packed.size(1) * 16, "reconstruct slice exceeds packed tensor bounds");
+-    TORCH_CHECK(suh.numel() >= unpacked.size(0), "reconstruct_had: suh size");
+-    TORCH_CHECK(svh.numel() >= unpacked.size(1), "reconstruct_had: svh size");
+-
+-    dim3 blockDim(256);
+-    dim3 gridDim(unpacked.size(1) / 128, unpacked.size(0) / 128);
+-
+-    int cbi = K - 1;
+-    if (bk.half) cbi += 24;
+-    else if (mcg) cbi += 8;
+-    else if (mul1) cbi += 16;
+-    TORCH_CHECK(cbi >= 0 && cbi < (int) reconstruct_had_kernel_instances.size(),
+-                "kernel index out of range: ", cbi);
+-
+-    reconstruct_had_kernel_instances[cbi]<<<gridDim, RH_THREADS, 0, stream>>>
+-    (
+-        (half*) unpacked.data_ptr(),
+-        (const uint16_t*) packed.data_ptr(),
+-        (const half*) suh.data_ptr(),
+-        (const half*) svh.data_ptr(),
+-        packed.size(1),
+-        (int) (n_offset / 16)
+-    );
+-    cuda_check(cudaPeekAtLastError());
+-}
+-
+-void reconstruct
+-(
+-    at::Tensor unpacked,
+-    at::Tensor packed,
+-    float K_,
+-    bool mcg,
+-    bool mul1
+-)
+-{
+-    TORCH_CHECK_SHAPES(unpacked, 1, packed, 1, 16);
+-    reconstruct_slice(unpacked, packed, K_, mcg, mul1, 0);
+-}
+-
+-
+-/*
+-Batched reconstruct_had over B whole matrices of one shape: unpacked is [B, k, n] fp16
+-(contiguous), packed_ptrs / suh_ptrs / svh_ptrs are int64 device tensors of B addresses of
+-[k/16, n/16, 16K] trellis tensors and their k-length suh / n-length svh vectors. One launch
+-dequantizes all B matrices into the original basis (see reconstruct_had_slice).
+-*/
+-void reconstruct_had_batch
+-(
+-    at::Tensor unpacked,
+-    at::Tensor packed_ptrs,
+-    at::Tensor suh_ptrs,
+-    at::Tensor svh_ptrs,
+-    float K_,
+-    bool mcg,
+-    bool mul1
+-)
+-{
+-    const at::cuda::OptionalCUDAGuard device_guard(unpacked.device());
+-    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+-
+-    const BitsK bk = bits_from_K(K_);
+-    const int K = bk.bits;
+-    TORCH_CHECK(!bk.half || mul1, "reconstruct: half-integer bitrates require the mul1 codebook");
+-    TORCH_CHECK_DTYPE(unpacked, kHalf);
+-    TORCH_CHECK_DIM(unpacked, 3);
+-    TORCH_CHECK(unpacked.is_contiguous(), "reconstruct_had_batch: unpacked must be contiguous");
+-    TORCH_CHECK_DTYPE(packed_ptrs, kLong);
+-    TORCH_CHECK_DTYPE(suh_ptrs, kLong);
+-    TORCH_CHECK_DTYPE(svh_ptrs, kLong);
+-    TORCH_CHECK(packed_ptrs.device() == unpacked.device(), "reconstruct_had_batch: pointer tables must be on the output device");
+-    TORCH_CHECK(packed_ptrs.is_contiguous() && suh_ptrs.is_contiguous() && svh_ptrs.is_contiguous(),
+-                "reconstruct_had_batch: pointer tables must be contiguous");
+-
+-    int batch = unpacked.size(0);
+-    int k = unpacked.size(1);
+-    int n = unpacked.size(2);
+-    TORCH_CHECK(packed_ptrs.numel() >= batch && suh_ptrs.numel() >= batch && svh_ptrs.numel() >= batch,
+-                "reconstruct_had_batch: pointer table too short");
+-    if (!batch || !unpacked.numel())
+-        return;
+-    TORCH_CHECK(k % 128 == 0, "reconstruct_had_batch: K dimension must be divisible by 128");
+-    TORCH_CHECK(n % 128 == 0, "reconstruct_had_batch: N dimension must be divisible by 128");
+-
+-    dim3 blockDim(RH_THREADS);
+-    dim3 gridDim(n / 128, k / 128, batch);
+-
+-    int cbi = K - 1;
+-    if (bk.half) cbi += 24;
+-    else if (mcg) cbi += 8;
+-    else if (mul1) cbi += 16;
+-    TORCH_CHECK(cbi >= 0 && cbi < (int) reconstruct_had_batch_kernel_instances.size(),
+-                "kernel index out of range: ", cbi);
+-
+-    reconstruct_had_batch_kernel_instances[cbi]<<<gridDim, blockDim, 0, stream>>>
+-    (
+-        (half*) unpacked.data_ptr(),
+-        (const uint16_t* const*) packed_ptrs.data_ptr(),
+-        (const half* const*) suh_ptrs.data_ptr(),
+-        (const half* const*) svh_ptrs.data_ptr(),
+-        n / 16,
+-        (size_t) k * n
+-    );
+-    cuda_check(cudaPeekAtLastError());
+-}
+-
+-
+-/*
+-Batched reconstruct over B whole matrices of one shape: unpacked is [B, k, n] fp16 (contiguous),
+-packed_ptrs an int64 device tensor of B addresses of [k/16, n/16, 16K] trellis tensors. One
+-launch dequantizes all B matrices (rotated basis, as reconstruct).
+-*/
+-void reconstruct_batch
+-(
+-    at::Tensor unpacked,
+-    at::Tensor packed_ptrs,
+-    float K_,
+-    bool mcg,
+-    bool mul1
+-)
+-{
+-    const at::cuda::OptionalCUDAGuard device_guard(unpacked.device());
+-    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+-
+-    const BitsK bk = bits_from_K(K_);
+-    const int K = bk.bits;
+-    TORCH_CHECK(!bk.half || mul1, "reconstruct: half-integer bitrates require the mul1 codebook");
+-    TORCH_CHECK_DTYPE(unpacked, kHalf);
+-    TORCH_CHECK_DIM(unpacked, 3);
+-    TORCH_CHECK(unpacked.is_contiguous(), "reconstruct_batch: unpacked must be contiguous");
+-    TORCH_CHECK_DTYPE(packed_ptrs, kLong);
+-    TORCH_CHECK(packed_ptrs.device() == unpacked.device(), "reconstruct_batch: pointer table must be on the output device");
+-    TORCH_CHECK(packed_ptrs.is_contiguous(), "reconstruct_batch: pointer table must be contiguous");
+-
+-    int batch = unpacked.size(0);
+-    int k = unpacked.size(1);
+-    int n = unpacked.size(2);
+-    TORCH_CHECK(packed_ptrs.numel() >= batch, "reconstruct_batch: pointer table too short");
+-    if (!batch || !unpacked.numel())
+-        return;
+-    TORCH_CHECK(k % 16 == 0, "reconstruct_batch: K dimension must be divisible by 16");
+-    TORCH_CHECK(n % 128 == 0, "reconstruct_batch: N dimension must be divisible by 128");
+-
+-    dim3 blockDim(256);
+-    dim3 gridDim(n / 128, k / 16, batch);
+-
+-    int cbi = K - 1;
+-    if (bk.half) cbi += 24;
+-    else if (mcg) cbi += 8;
+-    else if (mul1) cbi += 16;
+-    TORCH_CHECK(cbi >= 0 && cbi < (int) reconstruct_batch_kernel_instances.size(),
+-                "kernel index out of range: ", cbi);
+-
+-    reconstruct_batch_kernel_instances[cbi]<<<gridDim, blockDim, 0, stream>>>
+-    (
+-        (half*) unpacked.data_ptr(),
+-        (const uint16_t* const*) packed_ptrs.data_ptr(),
+-        n / 16,
+-        (size_t) k * n
+-    );
+-    cuda_check(cudaPeekAtLastError());
+-}
++// llmpalooza: the instance tables and the ATen host wrappers
++// (reconstruct_had_slice, reconstruct, reconstruct_had_batch, reconstruct_batch) are removed. Llmpalooza's launchers (src/kernels/exl3/)
++// replace them, and llmpalooza instantiates the kernels it launches itself.

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 packed C4 with checked routing and reduction
@@ -116,15 +116,15 @@ llama.cpp image remains the same-format comparator. Native acquisition sources
 are separately authenticated from the post-acquisition `breakdown.py` analyzer;
 no executable or model math changed after original exposure.
 
-Build the additive `jitllm_gemma26_attention_compound` target and the unchanged
-`jitllm_gemma26_attention_packed_metadata` target with the declared Spark SDK.
+Build the additive `llmp_gemma26_attention_compound` target and the unchanged
+`llmp_gemma26_attention_packed_metadata` target with the declared Spark SDK.
 Under installed GPU supervision, run `test_controls.py NATIVE_BINARY`, then
 `prepare.py inputs EXPECTED_CHECKOUT_MANIFEST`, `reference.sh build`, and
 `prepare.py prefreeze`. Use `PYTHONDONTWRITEBYTECODE=1` for these Python commands.
 Each native invocation is:
 
 ```text
-JITLLM_GEMMA26_PACKED_C4=1 NATIVE_BINARY ARTIFACT OUTPUT 26 4 joined norm|compound IDS
+LLMP_GEMMA26_PACKED_C4=1 NATIVE_BINARY ARTIFACT OUTPUT 26 4 joined norm|compound IDS
 ```
 
 Acquire control-first/control-repeat with `norm`, candidate-first/candidate-repeat

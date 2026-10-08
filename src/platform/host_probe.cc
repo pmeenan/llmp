@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/host_probe.h"
@@ -24,7 +24,7 @@
 #include "base/report.h"
 #include "platform/files.h"
 
-namespace jitllm::platform {
+namespace llmp::platform {
 namespace {
 
 namespace fs = std::filesystem;
@@ -223,4 +223,4 @@ void DescribeHost(const std::filesystem::path& root, base::Report& report) {
   DescribeRdma(root, report);
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include "engine/gemma4_assistant_plan.h"
 
@@ -12,7 +12,7 @@
 #include "artifact/representation.h"
 #include "engine/support.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 namespace {
 namespace kg = kernels::ggml;
 using support::Error;
@@ -324,4 +324,4 @@ std::expected<Gemma4AssistantHostInputs, std::string> Gemma4AssistantSources(
   if (actual > funded_bytes) return Error("assistant host allocation exceeds its grant");
   return out;
 }
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

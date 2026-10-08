@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The dense MXFP8 products (mxfp8_cutlass.h): CUTLASS 4.7.1's SM120
@@ -22,7 +22,7 @@
 #include "cutlass/util/packed_stride.hpp"
 #include "kernels/ggml/mxfp8_cutlass.h"
 
-namespace jitllm::kernels::ggml::mxfp8 {
+namespace llmp::kernels::ggml::mxfp8 {
 
 #if defined(CUTLASS_ARCH_MMA_SM121_SUPPORTED)
 
@@ -143,4 +143,4 @@ int Run(const Gemm& /*gemm*/, int /*sms*/, void* /*stream*/) { return -1; }
 
 #endif  // defined(CUTLASS_ARCH_MMA_SM121_SUPPORTED)
 
-}  // namespace jitllm::kernels::ggml::mxfp8
+}  // namespace llmp::kernels::ggml::mxfp8

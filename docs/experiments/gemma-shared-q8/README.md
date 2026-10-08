@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Shared Q8 preparation with original Gemma MMVQ consumers
@@ -167,7 +167,7 @@ reference or parity result is claimed; this is a native factor.
 The checked-in [Gemma2 probe](../../../benchmarks/gemma2_joint_prefill_probe.cc),
 [Gemma3 probe](../../../benchmarks/gemma3_joint_prefill_probe.cc) and
 [GPU operand control](../../../tests/unit/ggml_ext_ops_test.cc) are the reusable
-harnesses. Build the two `jitllm_gemma{2,3}_joint_prefill_probe` targets using
+harnesses. Build the two `llmp_gemma{2,3}_joint_prefill_probe` targets using
 the official Spark preset. Authenticate the build receipt, actual ELF and
 first-resolved libraries before and after use. Supervise every run with the
 installed `spark-job` GPU lock/600s limit, check foreign processes and
@@ -176,11 +176,11 @@ boot/cursor guards. Keep correctness observations outside any cycle timers.
 
 Prepared artifacts are supplied externally from the standing approved stores:
 
-- Gemma2: `~/.local/share/jitllm/gemma2-import-20261007/artifacts/eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870`.
-- Gemma3: `~/.local/share/jitllm/gemma3-import-20261007/artifacts/8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb`.
+- Gemma2: `~/.local/share/llmp/gemma2-import-20261007/artifacts/eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870`.
+- Gemma3: `~/.local/share/llmp/gemma3-import-20261007/artifacts/8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb`.
 
 Standing replay inputs are retained independently of raw experiment output
-under `~/.local/share/jitllm/references/gemma-prefill-copies/{gemma2,gemma3}`.
+under `~/.local/share/llmp/references/gemma-prefill-copies/{gemma2,gemma3}`.
 Supply each `input{0,1}/ids.i32` as little-endian I32, verify complete SHA/size
 before use, and retain them through milestone cleanup. Missing stores must be
 supplied with these exact authenticated bytes, not retokenized substitutes:

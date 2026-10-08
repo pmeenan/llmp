@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Observe a pinned Mia first verify; no timing results from this process."""
 import hashlib
@@ -44,11 +44,11 @@ def enable(RejectionSampler):
             assert kept == accepted + 1 and rejected == 3 - accepted
             assert sampled[:kept] == ids[1:accepted + 1] + [verdicts[accepted]]
             raw = values.numpy().astype('<f4', copy=False).tobytes()
-            out = Path(os.environ['JITLLM_MIA_TRACE_DIR'])
+            out = Path(os.environ['LLMP_MIA_TRACE_DIR'])
             name = 'first-verify-' + hashlib.sha256(req.encode()).hexdigest()[:24]
             with (out / (name + '.f32')).open('xb') as file:
                 file.write(raw)
-            row = dict(format='jitllm-mia-first-verify-v1', request_id=req,
+            row = dict(format='llmp-mia-first-verify-v1', request_id=req,
                        observer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                        prompt_tokens=int(batch.prefill_len_np[0]), position=positions[0],
                        anchor_token=ids[0], drafts=ids[1:], verdicts=verdicts,
@@ -62,4 +62,4 @@ def enable(RejectionSampler):
         return result
 
     RejectionSampler.__call__ = observed
-    print('jitLLM first-verify observer installed (timing unqualified)', flush=True)
+    print('llmpalooza first-verify observer installed (timing unqualified)', flush=True)

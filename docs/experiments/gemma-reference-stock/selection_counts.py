@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Summarize host-side try_fuse decisions, not kernel launches or graph replays."""
 import collections
@@ -21,10 +21,10 @@ def summarize(paths):
                 assert arm not in arms, 'duplicate process record'
                 arms[arm] = dict(policy=policy, banner=None, selections=collections.Counter(),
                                  examples={}, shapes=collections.Counter())
-            if line.startswith('JITLLM_REF_CONTROLLER '):
+            if line.startswith('LLMP_REF_CONTROLLER '):
                 assert arm is not None and arms[arm]['banner'] is None
                 arms[arm]['banner'] = int(line.split('=')[1])
-            if line.startswith('JITLLM_REF_FUSION '):
+            if line.startswith('LLMP_REF_FUSION '):
                 assert arm is not None
                 fields = line.split(' | ')
                 count = int(fields[0].split('=')[1])

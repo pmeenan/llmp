@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Direct ds4 Q2_K product on the same native inputs
@@ -29,7 +29,7 @@ contributions, post-down route weighting, Q8 activation preparation,
 F16 attention/indexer caches and surrounding graph remain the same.
 ds4's runtime, cache transforms and fused IQ2/SwiGLU/early-weighting
 epilogue are not selected. This native A/B therefore avoids the cache
-and stage-precision differences of a full ds4-versus-jitLLM comparison.
+and stage-precision differences of a full ds4-versus-llmpalooza comparison.
 
 The product source is Entrpi/ds4
 `76d51ef82a81b70b78e51a3a6ea11946286de976`,
@@ -107,10 +107,10 @@ is 56,843,520 bytes in an explicitly bounded 256-MiB pool.
 
 *Later:* the [stage mechanisms](../ds4-prefill-stages/README.md#production-defaults)
 made this product a fast-plan default on the same guard;
-`jitllm_dsv4_exec` now takes `--q2-d2r on|off` (default on).
+`llmp_dsv4_exec` now takes `--q2-d2r on|off` (default on).
 
-`--q2-d2r` on `jitllm_dsv4_exec` enables the new registry identity
-`jitllm.mul_mat_id.q2_d2r`. Default selection is off; its opt-in device
+`--q2-d2r` on `llmp_dsv4_exec` enables the new registry identity
+`llmp.mul_mat_id.q2_d2r`. Default selection is off; its opt-in device
 predicate admits only measured GB10 K2048/M4096/E256/used6/T4096 shapes.
 Row-invariant verify has precedence. Other types, shapes and devices
 retain ordinary/compact products. The generic raw interface checks
@@ -167,7 +167,7 @@ The whole pinned archive was inspected before narrowing the compiled
 tree. Archive SHA-256
 `731e037da1bed009da5db31e5170681b59f1e22af00a3e56fa29cff8706ed63c`,
 length 7,794,185 bytes; raw-loader/build patch SHA-256
-`cf5f0b6686cf2917a34165a72c9ce748d6f091ba0c9a8652ea2fe6360b44f72f`;
+`44a0a9e867b57d6f250f0e663e17a1156302a943a158a2b3c591d0b33ec06611`;
 prepared tree SHA-256
 `dc925631f904c032ea2dcafaa94ca759af3c9c1ccaa1adfc8f1ecc3e81f803c7`.
 The lock records the full MIT notice, Marco Palaferri's inherited

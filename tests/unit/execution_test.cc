@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The implementation registry and plans (execution/registry.h, D-053), on
@@ -24,17 +24,17 @@
 
 namespace {
 
-using jitllm::execution::Choice;
-using jitllm::execution::Implementation;
-using jitllm::execution::Operation;
-using jitllm::execution::OperationName;
-using jitllm::execution::Plan;
-using jitllm::execution::PlanError;
-using jitllm::execution::PlanRejection;
-using jitllm::execution::Registry;
-using jitllm::execution::Resolve;
-using jitllm::test_support::Failed;
-using jitllm::test_support::FailedCode;
+using llmp::execution::Choice;
+using llmp::execution::Implementation;
+using llmp::execution::Operation;
+using llmp::execution::OperationName;
+using llmp::execution::Plan;
+using llmp::execution::PlanError;
+using llmp::execution::PlanRejection;
+using llmp::execution::Registry;
+using llmp::execution::Resolve;
+using llmp::test_support::Failed;
+using llmp::test_support::FailedCode;
 
 Implementation Fake(std::string name, Operation operation, std::string revision = "r1") {
   return {.name = std::move(name),
@@ -123,10 +123,10 @@ TEST(PlanRegistryTest, IdentityFieldsCannotTradeBytes) {
   a.build = "c";
   b.revision = "a";
   b.build = "bc";
-  EXPECT_NE(jitllm::execution::IdentityOf(a), jitllm::execution::IdentityOf(b));
+  EXPECT_NE(llmp::execution::IdentityOf(a), llmp::execution::IdentityOf(b));
   Implementation c = Fake("fake.a", Operation::kMul);
-  EXPECT_NE(jitllm::execution::IdentityOf(Fake("fake.a", Operation::kAdd)),
-            jitllm::execution::IdentityOf(c));
+  EXPECT_NE(llmp::execution::IdentityOf(Fake("fake.a", Operation::kAdd)),
+            llmp::execution::IdentityOf(c));
 }
 
 TEST(PlanRegistryTest, APlanMadeForAnotherIdentityIsStale) {

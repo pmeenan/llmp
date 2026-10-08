@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/state_keeper.h"
@@ -27,7 +27,7 @@
 #include "platform/direct_io.h"
 #include "platform/kept_files.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 struct FreeAligned {
@@ -459,4 +459,4 @@ void StateKeeper::Work(const std::stop_token& stop) {
   }
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

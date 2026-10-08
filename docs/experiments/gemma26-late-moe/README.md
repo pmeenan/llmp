@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 late-prefill common-input MoE controls
@@ -71,14 +71,14 @@ source frame externally; no acquisition code or binary changed after exposure.
 Follow the [closed protocol](PROTOCOL.md) with the installed Spark GPU supervisor,
 600-second timeout and stop-on-fail. Supply the already verified raw/artifact and
 b2d7 input file from the previous C4 recipe; raw captured operands/outputs remain
-under the owner-only `~/.local/share/jitllm/gemma26-late-moe` directory on Spark A.
+under the owner-only `~/.local/share/llmp/gemma26-late-moe` directory on Spark A.
 Keep Python bytecode out of the source directory:
 
 ```sh
 python3 -B docs/experiments/gemma26-late-moe/source_snapshot.py CHECKOUT NEW_EXTERNAL_MANIFEST
 python3 -B docs/experiments/gemma26-late-moe/test_controls.py
 bash docs/experiments/gemma26-late-moe/reference.sh build
-build/spark-native/benchmarks/jitllm_gemma26_late_moe --metadata
+build/spark-native/benchmarks/llmp_gemma26_late_moe --metadata
 python3 -B docs/experiments/gemma26-late-moe/prepare.py SOURCE_MANIFEST NEW_PRE_CAPTURE_RECEIPT
 ```
 

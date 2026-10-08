@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # First global Gemma31 attention over independent roots
@@ -69,10 +69,10 @@ The actual real/wrapped symbol has the third bool parameter, forwarded unchanged
 All checks completed before capture. No full suite was run for this unselected
 diagnostic.
 
-Reproduce with `jitllm_gemma_attention_global_capture` using the canonical IDs
+Reproduce with `llmp_gemma_attention_global_capture` using the canonical IDs
 and four new private capture/control directories described in
 [the protocol](PROTOCOL.md), then `pack_inputs.py`. Run
-`jitllm_gemma_attention_global_owner_replay --metadata`, followed by `owners`
+`llmp_gemma_attention_global_owner_replay --metadata`, followed by `owners`
 and `packed` on the authenticated carrier. Use the installed Spark supervisor
 and read outputs only after official completion. TensorFold task entry resolved
 `609ca419…` / 0.6.5; its actual Gemma recipe is MLX26 only, with no matching

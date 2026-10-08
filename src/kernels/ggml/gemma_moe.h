@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Standalone checked calls to the original pinned GGML Gemma MoE launchers.
 // No graph rewrite, dispatch policy, allocation or completion ownership.
-#ifndef JITLLM_KERNELS_GGML_GEMMA_MOE_H_
-#define JITLLM_KERNELS_GGML_GEMMA_MOE_H_
+#ifndef LLMP_KERNELS_GGML_GEMMA_MOE_H_
+#define LLMP_KERNELS_GGML_GEMMA_MOE_H_
 
 #include <cstdint>
 #include <expected>
@@ -13,7 +13,7 @@
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 class LaunchContext;
 inline constexpr std::int64_t kGemmaMoeMaxRows = 8192;
 inline constexpr float kGemmaRouteClamp = 0x1p-14f;
@@ -58,5 +58,5 @@ std::expected<void, KernelFailure> CheckGemmaScaledReduction(const GemmaScaledRe
 std::expected<void, KernelFailure> RunGemmaRouting(LaunchContext& launch, const GemmaRouting& desc);
 std::expected<void, KernelFailure> RunGemmaScaledReduction(LaunchContext& launch,
                                                            const GemmaScaledReduction& desc);
-}  // namespace jitllm::kernels::ggml
-#endif  // JITLLM_KERNELS_GGML_GEMMA_MOE_H_
+}  // namespace llmp::kernels::ggml
+#endif  // LLMP_KERNELS_GGML_GEMMA_MOE_H_

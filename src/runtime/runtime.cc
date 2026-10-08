@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/runtime.h"
@@ -33,18 +33,18 @@
 #include "providers/device_probe.h"
 #include "runtime/model_settings.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 namespace fs = std::filesystem;
 
 constexpr std::string_view kUsage =
-    "Usage: jitllm-runtime [--config FILE] [--anchor PATH] [COMMAND [ARGS...]]\n"
+    "Usage: llmp-runtime [--config FILE] [--anchor PATH] [COMMAND [ARGS...]]\n"
     "\n"
-    "The jitLLM node runtime, which jitllm.service starts without a command.\n"
-    "  --config FILE  the node's configuration (default /etc/jitllm/jitllm.toml\n"
-    "                 and /etc/jitllm/jitllm.d/)\n"
-    "  --anchor PATH  the enrollment anchor (default /var/lib/jitllm/enrollment);\n"
+    "The llmpalooza node runtime, which llmp.service starts without a command.\n"
+    "  --config FILE  the node's configuration (default /etc/llmp/llmp.toml\n"
+    "                 and /etc/llmp/llmp.d/)\n"
+    "  --anchor PATH  the enrollment anchor (default /var/lib/llmp/enrollment);\n"
     "                 the process lock is PATH.lock\n"
     "\n";
 
@@ -52,7 +52,7 @@ std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurr
 
 // One line to the journal; nothing in text can start another (D-014).
 void Log(std::FILE* log, std::string_view text) {
-  const std::string line = std::format("jitllm-runtime: {}\n", base::Printable(text));
+  const std::string line = std::format("llmp-runtime: {}\n", base::Printable(text));
   (void)std::fwrite(line.data(), 1, line.size(), log);
   (void)std::fflush(log);
 }
@@ -125,8 +125,8 @@ std::expected<Options, std::string> ParseArguments(std::span<const std::string_v
 
 std::expected<Started, int> Start(const Options& options, std::FILE* log) {
   const base::BuildInfo& build = base::GetBuildInfo();
-  Log(log, std::format("jitLLM {} ({}, license profile {}), uid {}", build.version, build.target,
-                       build.license_profile, ::geteuid()));
+  Log(log, std::format("llmpalooza {} ({}, license profile {}), uid {}", build.version,
+                       build.target, build.license_profile, ::geteuid()));
   const uid_t self = ::geteuid();
 
   // 1. The enrollment anchor, before anything else (D-063).
@@ -197,7 +197,7 @@ std::expected<Started, int> Start(const Options& options, std::FILE* log) {
                        roles->spill.string(), roles->state.string()));
 
   // Jobs (none run yet in M1): orphans of theirs re-parent here, and they
-  // live in cgroups beside the runtime's own, which jitllm.service
+  // live in cgroups beside the runtime's own, which llmp.service
   // delegates (D-074).
   // (qemu-user, where the tests run, has no subreapers.)
   if (auto subreaper = platform::BecomeSubreaper(); !subreaper) {
@@ -223,7 +223,7 @@ std::expected<Started, int> Start(const Options& options, std::FILE* log) {
       Log(log, "problem: " + problem);
     }
     // Restartable: at boot the driver or its devices may not be ready yet.
-    Log(log, "refusing to start: this host cannot run this build now (see `jitllm doctor`)");
+    Log(log, "refusing to start: this host cannot run this build now (see `llmp doctor`)");
     return std::unexpected(kExitHostNotReady);
   }
   for (const config::ModelEntry& model : loaded->models) {
@@ -331,4 +331,4 @@ int Run(std::span<const std::string_view> args, std::FILE* log, ServeFunction se
   return kExitOk;
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

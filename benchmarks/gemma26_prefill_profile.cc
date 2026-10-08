@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Manual annotated Gemma26 all1024 or Gemma31 both256 prefill diagnosis.
@@ -24,7 +24,7 @@
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 using en::support::Error;
 namespace {
 class PrefillRange {
@@ -126,7 +126,7 @@ int main(int argc, char** argv) {
               << " max_rows=" << max_rows << " call_bound=" << calls << " plan_floor=" << floor
               << " plan_graph_capacity=" << retention << " total=" << budget << '\n';
     node.SetHostFloor(runner.plan_floor_bytes() + runner.host_input_bytes());
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();
@@ -144,8 +144,8 @@ int main(int argc, char** argv) {
       // loaded comparator. These six rows are discarded on both engines.
       if (auto r = runner.Chunk(0, std::span(ids).first(6), logits); !r) return r;
       if (auto r = runner.Clear(); !r) return r;
-      PrefillRange prefill_range(variant == "31" ? "jitllm.gemma31.paid_prefill"
-                                                 : "jitllm.gemma26.paid_prefill");
+      PrefillRange prefill_range(variant == "31" ? "llmp.gemma31.paid_prefill"
+                                                 : "llmp.gemma26.paid_prefill");
       const auto started = std::chrono::steady_clock::now();
       for (std::uint32_t first = 0; first < kPrefill; first += max_rows) {
         if (auto r = runner.Chunk(first, std::span(ids).subspan(first, max_rows), logits); !r)
@@ -185,7 +185,7 @@ int main(int argc, char** argv) {
       if (!ranges) return Error(ranges.error());
       std::uint64_t state_bytes = 0;
       for (const auto& range : *ranges) state_bytes += range.bytes;
-      std::vector<jitllm::catalog::ExtentId> staging;
+      std::vector<llmp::catalog::ExtentId> staging;
       auto state = node.Pinned(state_bytes, 0, staging);
       if (!state) return Error(state.error());
       if (auto copied = runner.CopyState(0, *state, *ranges, true); !copied) return copied;

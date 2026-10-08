@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/validate.h"
@@ -17,7 +17,7 @@
 #include "ggml.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 // The shared building blocks (validate_util.h).
@@ -468,7 +468,7 @@ std::expected<CublasMulMat, KernelFailure> CheckMulMatCublas(const ggml_tensor* 
 
 namespace {
 
-// What jitLLM's RoPE takes, fused or not: forward NEOX over F32 rows with
+// What llmpalooza's RoPE takes, fused or not: forward NEOX over F32 rows with
 // I32 positions, optional packed F32 frequency factors and no rotation offset, and what the
 // launcher and kernel assume of the input (rope.cu:122-197, 401-445,
 // 536-694). The node itself is checked by the caller: the fused launcher
@@ -713,7 +713,7 @@ std::expected<void, KernelFailure> CheckRopeSetRows(const ggml_tensor* rope,
     return Rejected("set_rows stores a view of this RoPE, which is no view itself");
   }
   // Upstream's gate (ggml_cuda_should_fuse_rope_set_rows,
-  // ggml-cuda.cu:2666-2698), for the F16 destination jitLLM's KV write has.
+  // ggml-cuda.cu:2666-2698), for the F16 destination llmpalooza's KV write has.
   if (x->ne[3] != 1 || set_rows->type != GGML_TYPE_F16 || ids->type != GGML_TYPE_I64 ||
       !ggml_is_contiguous(view) || view->ne[0] != rope->ne[0] * rope->ne[1]) {
     return Rejected("RoPE and a KV write that GGML's fused launcher does not take");
@@ -1143,4 +1143,4 @@ std::expected<void, KernelFailure> CheckFlashAttnVec256(const ggml_tensor* node)
   return CheckFlashAttnVecHead(node, 256);
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

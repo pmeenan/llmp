@@ -496,7 +496,7 @@
       "base_revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
       "license_sha256": "a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08",
       "license_name": "Qwen Community License 1.0",
-      "hosts": "spark-b (~/.local/share/jitllm/reference-models/Q/, M0's download: docs/experiments/paging-feasibility/full-pins.json, id Q)",
+      "hosts": "spark-b (~/.local/share/llmp/reference-models/Q/, M0's download: docs/experiments/paging-feasibility/full-pins.json, id Q)",
       "bytes": 81961823936,
       "files": [
         {
@@ -788,7 +788,7 @@
       "build": 11254,
       "license": "MIT",
       "license_sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
-      "image": "jitllm-llamacpp:b11254-cuda13 (local build, not pushed)",
+      "image": "llmp-llamacpp:b11254-cuda13 (local build, not pushed)",
       "image_id": "sha256:6dd025913fdf0ac258850ac1405dde3edbdb64c7c6d60533ee63e16448f66607",
       "built_with": "upstream's .devops/cuda.Dockerfile at the revision, target full, CUDA_VERSION=13.4.1 (upstream's cuda13 images use it), CUDA_DOCKER_ARCH=121a-real (upstream's default list includes 121a-real), on spark-b; llama-server --version: build 11254, commit 8019dc563",
       "includes": "sparse flash-attention prefill for DeepSeek V4 (#29298, dc9879cf) and for Qwen3.8 (#28770, 3cf03257); the ggml_permute stride fix (#29227, c21284cd)",
@@ -800,9 +800,9 @@
       "base": "mia-single",
       "image": "vllm-image-default",
       "launcher": "mia-launch.py",
-      "launcher_sha256": "c8353f04dc30e5d0f298217edc0ef52ec2f24bcfdb6c396e57a700468760e088",
+      "launcher_sha256": "b8edbe2eb4cfe1df94ca54fd88ebc30b319ba8e71e9871b2d4794fb430b2b7bc",
       "manifest": "mia-launch.json",
-      "manifest_sha256": "8db60820065dc61dd07d94de430bc5a0734d7019368d14c765d8e9cda2e0e41e",
+      "manifest_sha256": "61732d66793a85ca140cb090a2c8aecad23da141eb4980f3cb8767953f3127a1",
       "note": "Required default for new Mia runs (owner 2026-10-02/03); instanttensor0.2.0, mandatory PLE safetensors override, V2 and persistent Triton cache. Historical startup data remains unchanged."
     }
   ]

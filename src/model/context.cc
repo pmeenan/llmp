@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/context.h"
@@ -18,7 +18,7 @@
 #include "base/sha256.h"
 #include "catalog/catalog.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 namespace {
 
 Bytes InDomain(const catalog::Closure& closure, catalog::DomainId domain) {
@@ -79,7 +79,7 @@ std::expected<ModelContext, ContextError> ModelContext::Create(std::vector<Compo
     return std::unexpected(ContextError::kDuplicate);
   }
   base::Sha256 hash;
-  hash.Update("jitllm.model_context.v0");
+  hash.Update("llmp.model_context.v0");
   for (const auto& [role, artifact] : keys) {
     const std::array<std::uint8_t, 1> tag = {static_cast<std::uint8_t>(role)};
     hash.Update(std::as_bytes(std::span(tag)));
@@ -130,4 +130,4 @@ std::expected<Bytes, catalog::CatalogError> ModelContext::SharedBytes(
   return summed.Minus(InDomain(*united, domain)).value_or(Bytes());
 }
 
-}  // namespace jitllm::model
+}  // namespace llmp::model

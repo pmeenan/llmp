@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Gemma 4 text chunks over prepared GGML weights. Products join row-local
 // inputs; each request segment retains independent positions, masks and KV.
 // Descriptors only: no backing allocation, dispatch or supported-model claim.
-#ifndef JITLLM_KERNELS_GGML_GEMMA4_GRAPH_H_
-#define JITLLM_KERNELS_GGML_GEMMA4_GRAPH_H_
+#ifndef LLMP_KERNELS_GGML_GEMMA4_GRAPH_H_
+#define LLMP_KERNELS_GGML_GEMMA4_GRAPH_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -19,7 +19,7 @@
 #include "kernels/ggml/tensors.h"
 #include "model/gemma4.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 struct Gemma4SegmentShape {
   // n_past authenticates the initial build but is not a plan-cache dimension:
@@ -41,7 +41,7 @@ struct Gemma4ChunkShape {
   std::uint32_t feature_outputs = 0;
   Gemma4OutputMode output_mode = Gemma4OutputMode::kHead;
   // Head mode only: each output row's greedy token is chosen on the device
-  // (jitllm.argmax: the lowest ID among equal maxima, as the host's greedy
+  // (llmp.argmax: the lowest ID among equal maxima, as the host's greedy
   // choice), and only those I32 tokens are published, not the rows.
   bool greedy = false;
   bool operator==(const Gemma4ChunkShape&) const = default;
@@ -156,5 +156,5 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(
     const Gemma4GraphOptions& options,
     const std::function<bool(ggml_type, std::int64_t)>& dense_mmvq_shape);
 
-}  // namespace jitllm::kernels::ggml
-#endif  // JITLLM_KERNELS_GGML_GEMMA4_GRAPH_H_
+}  // namespace llmp::kernels::ggml
+#endif  // LLMP_KERNELS_GGML_GEMMA4_GRAPH_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // BP-S3 (docs/backend-proof.md): models using different kernel sources,
@@ -10,7 +10,7 @@
 // workspace (the activations and the GGML pool) that both models' plans
 // bind. Each model runs on its own stream, with its own launch contexts.
 //
-//   jitllm_alternate_paged --fp16-artifact DIR --trajectory control|heldout
+//   llmp_alternate_paged --fp16-artifact DIR --trajectory control|heldout
 //                          --tokens FILE --fusion on|off
 //                          --exl3-artifact DIR --fixture 4.0bpw|4.5bpw
 //                          --arm G|O --plan PLAN.txt --ids FILE
@@ -80,13 +80,13 @@
 
 namespace {
 
-namespace ts = jitllm::test_support;
-namespace catalog = jitllm::catalog;
-using jitllm::base::Bytes;
-using jitllm::benchmarks::Exl3Options;
-using jitllm::benchmarks::Exl3Runner;
-using jitllm::benchmarks::Fp16Options;
-using jitllm::benchmarks::Fp16Runner;
+namespace ts = llmp::test_support;
+namespace catalog = llmp::catalog;
+using llmp::base::Bytes;
+using llmp::benchmarks::Exl3Options;
+using llmp::benchmarks::Exl3Runner;
+using llmp::benchmarks::Fp16Options;
+using llmp::benchmarks::Fp16Runner;
 using Status = ts::Status;
 
 constexpr int kFp16 = 0;  // owner and stream
@@ -134,7 +134,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       if (v != "G" && v != "O") {
         return Error("--arm is G or O");
       }
-      o.exl3.arm = v == "G" ? jitllm::model::Exl3Arm::kG : jitllm::model::Exl3Arm::kO;
+      o.exl3.arm = v == "G" ? llmp::model::Exl3Arm::kG : llmp::model::Exl3Arm::kO;
       arm = true;
     } else if (a == "--plan") {
       o.exl3.plan = v;
@@ -171,7 +171,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       (o.exl3.fixture != "4.0bpw" && o.exl3.fixture != "4.5bpw") || !arm || o.exl3.plan.empty() ||
       o.exl3.ids.empty() || o.exl3.prefixes.empty() || o.out.empty()) {
     return Error(
-        "usage: jitllm_alternate_paged --fp16-artifact DIR --trajectory control|heldout "
+        "usage: llmp_alternate_paged --fp16-artifact DIR --trajectory control|heldout "
         "--tokens FILE --fusion on|off --exl3-artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O "
         "--plan PLAN.txt --ids FILE --out DIR [--rounds N] [--prefixes LIST] "
         "[--fp16-expect SHA256] [--exl3-expect DIR]");
@@ -182,9 +182,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
 }
 
 std::string Sha256(std::span<const std::byte> bytes) {
-  jitllm::base::Sha256 hash;
+  llmp::base::Sha256 hash;
   hash.Update(bytes);
-  return jitllm::base::ToHex(hash.Finish());
+  return llmp::base::ToHex(hash.Finish());
 }
 
 // The SHA-256 of a .npy file's data (format 1.0 or 2.0).
@@ -443,7 +443,7 @@ Status Alternation::Run() {
         for (const auto& [prefix, values] : result) {
           const auto bytes = std::as_bytes(std::span(values));
           const std::size_t prefill =
-              static_cast<std::size_t>(prefix) * jitllm::model::Qwen25Instruct05BExl3().vocab * 4;
+              static_cast<std::size_t>(prefix) * llmp::model::Qwen25Instruct05BExl3().vocab * 4;
           e.hashes[std::format("{}.prefill", prefix)] = Sha256(bytes.first(prefill));
           e.hashes[std::format("{}.suffix", prefix)] = Sha256(bytes.subspan(prefill));
         }

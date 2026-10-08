@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Pending model turns
@@ -88,18 +88,18 @@ SHA-256 is `440f03cdb52921c6c55843819e6ac950a5b2c4aafdc01055e52a0af3117ce32e`.
 The reusable [HTTP harness](native_turns.py) retains the measured request
 and comparison logic, with its admission probe path explicit, baseline-only
 selection for both cases and a strict partial-progress witness. Its measured SHA-256 is
-`3c02ce86d4d75d24d2b86123f44b8137fb1c3a0bc7e845f2024712df7c40bfb1`.
+`aa3f1e90ad3940481e42ab62e492b27f7bcac4cb9e2d06fcd471ba70412c8935`.
 Supply a Spark probe that accepts minimum free GiB and refuses if another
 model process, GPU compute process or container is present. The measured
-probe is `~/scratch/m3-final-launch/jitllm-spark-preflight.py` on Spark A;
+probe is `~/scratch/m3-final-launch/llmp-spark-preflight.py` on Spark A;
 the host must have at least 105 GiB free before and after each service.
 Run each case through the installed `~/.local/bin/spark-job start --gpu`
 with a 600-second timeout, then wait it:
 
 ```sh
 python3 -B docs/experiments/model-turns/native_turns.py \
-  --binary build/spark-native/src/runtime/jitllm-runtime \
-  --preflight "$HOME/scratch/m3-final-launch/jitllm-spark-preflight.py" \
+  --binary build/spark-native/src/runtime/llmp-runtime \
+  --preflight "$HOME/scratch/m3-final-launch/llmp-spark-preflight.py" \
   --out "$HOME/scratch/model-turns/new-generation" --case generation --slots 1
 ```
 

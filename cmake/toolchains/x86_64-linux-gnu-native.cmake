@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # Native x86-64 build on the workstation (D-011, D-032): the SDK's Clang
@@ -6,12 +6,12 @@
 # code compiles for the GB10 (sm_121) and for the workstation's discrete GPU,
 # an RTX 3080 Ti (sm_86, D-082), where its GPU tests can run. The `native`
 # and `cpu` presets use this file.
-set(JITLLM_PROFILE native)
-set(JITLLM_BUILD_ARCH x86_64)
-set(JITLLM_TARGET_TRIPLE x86_64-linux-gnu)
-set(JITLLM_TARGET_MARCH x86-64)
-set(JITLLM_LINK_FLAGS -fuse-ld=lld)
-if(NOT DEFINED JITLLM_CUDA_DISCRETE_ARCHITECTURES)
-  set(JITLLM_CUDA_DISCRETE_ARCHITECTURES 86)
+set(LLMP_PROFILE native)
+set(LLMP_BUILD_ARCH x86_64)
+set(LLMP_TARGET_TRIPLE x86_64-linux-gnu)
+set(LLMP_TARGET_MARCH x86-64)
+set(LLMP_LINK_FLAGS -fuse-ld=lld)
+if(NOT DEFINED LLMP_CUDA_DISCRETE_ARCHITECTURES)
+  set(LLMP_CUDA_DISCRETE_ARCHITECTURES 86)
 endif()
 include("${CMAKE_CURRENT_LIST_DIR}/sdk.cmake")

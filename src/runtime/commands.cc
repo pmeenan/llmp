@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/commands.h"
@@ -11,7 +11,7 @@
 #include <string>
 #include <system_error>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
@@ -174,4 +174,4 @@ std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,
   return o;
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

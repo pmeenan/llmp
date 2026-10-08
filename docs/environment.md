@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Development and target environments
@@ -6,7 +6,7 @@
 The owner's workstation and DGX Spark inventories, and the platform follow-ups
 measured on them during M0. These are environment facts, not application
 configuration: host names, addresses and paths here are never baked into
-jitLLM (D-023). [architecture.md](architecture.md) relies on the measured
+llmpalooza (D-023). [architecture.md](architecture.md) relies on the measured
 results through the decisions they informed (D-032–D-034, D-054, D-065);
 the linked experiment reports hold methods, pins and limitations.
 
@@ -65,9 +65,9 @@ GitHub release archives. Each archive matched the SHA-256 in the release's
 `SHASUMS256.asc`, whose signature verified against the mise release key
 (`24853EC9F655CE80B48E6C3A8B81C9D17413A06D`). No system package or shell
 file changed. D-070's SDK lives under each host's
-`~/.local/share/jitllm/sdk/`, with its cache in `~/.cache/jitllm/`. The
+`~/.local/share/llmp/sdk/`, with its cache in `~/.cache/llmp/`. The
 native Spark fallback runs from a copy of the working tree at
-`spark:~/src/jitLLM`. The workstation already had
+`spark:~/src/llmp`. The workstation already had
 `binutils-aarch64-linux-gnu` 2.42-4ubuntu2.10, which the cross-built GCC
 runtime needs. The baseline table above is the historical 2026-09-20
 snapshot.
@@ -113,7 +113,7 @@ performance was subsequently validated in the M0 baseline below.
 The owner reports cluster **`sparky`**, two directly connected devices.
 Read-only SSH checks on both nodes confirmed the supplied addresses, link
 state, local routes and RDMA-device mappings. These are environment inventory,
-not hardcoded application topology or a settled jitLLM configuration format.
+not hardcoded application topology or a settled llmpalooza configuration format.
 
 | SSH alias | Network interface | IPv4 address | RDMA device / port |
 | --- | --- | --- | --- |
@@ -288,7 +288,7 @@ combined storage exceeds one node's memory. Offline replay compares partial
 extent retention, eager active-model loading, and whole-model replacement at
 matched budgets, with resident state, bounded spill, and recomputation. It
 includes actual allocation accounting and explicit storage/overlap scenarios;
-these are not measured jitLLM paging or switching speedups.
+these are not measured llmpalooza paging or switching speedups.
 
 Qwen's captured-route estimates are conditional: exact prediction equivalence
 failed, including between untraced controls. Byte-identical sequence snapshots
@@ -362,7 +362,7 @@ network, driver or SSH settings changed, and the test files were removed.
 ### M3 model store (2026-09-28)
 
 M3's checkpoints ([pins](experiments/fast-swap/pins.json)) live on each
-Spark's NVMe under `~/.local/share/jitllm/models/<org>/<repo>@<revision
+Spark's NVMe under `~/.local/share/llmp/models/<org>/<repo>@<revision
 prefix>/`, with the repository's own file layout. Owner environment, not
 application configuration.
 
@@ -376,8 +376,8 @@ application configuration.
 Every file was checked on each host against the pinned SHA-256 (or Git
 blob, for small files) and size. Binary reference outputs kept out of Git
 (the diffusers reference image, [baselines](experiments/fast-swap/baselines.md))
-live on both Sparks under `~/.local/share/jitllm/references/`. The older store,
-`~/.local/share/jitllm/reference-models/`, keeps M0's GGUFs, including
+live on both Sparks under `~/.local/share/llmp/references/`. The older store,
+`~/.local/share/llmp/reference-models/`, keeps M0's GGUFs, including
 DeepSeek V4 Flash at `e3aa0d6a` (`D/`) and Qwen3.8's UD-IQ3_XXS (`Q/`).
 
 Each checkpoint was downloaded once, on `spark`, then copied to `spark-b`
@@ -449,7 +449,7 @@ Subscriber Agreement and no email.
   leftover `_acme-challenge` TXT records.
 - **Renewal:** runs from `snap.certbot.renew.timer` with the settings saved
   in `/etc/letsencrypt/renewal/<name>.conf`. No deploy hook is set until
-  M5's jitLLM hook, which is added with
+  M5's llmpalooza hook, which is added with
   `certbot reconfigure --cert-name <name> --deploy-hook …`.
 - **Local DNS:** the names resolve only on the LAN, through the router's
   local DNS at `192.168.0.1`; `meenan.us` has no public records for them.

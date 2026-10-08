@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "fp16_common.h"
@@ -23,7 +23,7 @@
 #include "kernels/ggml/tensors.h"
 #include "model/qwen2.h"
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 namespace {
 
 namespace kg = kernels::ggml;
@@ -180,4 +180,4 @@ std::expected<ChunkGraph, std::string> PlanChunk(const model::Qwen2Profile& prof
   return out;
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks

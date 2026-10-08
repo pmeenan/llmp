@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Approved Gemma 3 4B QAT profile, checked binding and bounded state/inputs.
 // Media inputs remain outside this text profile.
-#ifndef JITLLM_MODEL_GEMMA3_H_
-#define JITLLM_MODEL_GEMMA3_H_
+#ifndef LLMP_MODEL_GEMMA3_H_
+#define LLMP_MODEL_GEMMA3_H_
 
 #include <cstdint>
 #include <expected>
@@ -15,10 +15,10 @@
 
 #include "model/state.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 class Artifact;
 }
-namespace jitllm::model {
+namespace llmp::model {
 
 struct Gemma3Profile {
   std::uint32_t layers = 0, width = 0, ffn = 0, heads = 0, kv_heads = 0;
@@ -140,5 +140,5 @@ std::expected<std::vector<StateRange>, std::string> Gemma3ChunkWrites(
     const Gemma3Profile& profile, const Gemma3StateLayout& state, std::uint32_t n_past,
     std::uint32_t rows);
 
-}  // namespace jitllm::model
-#endif  // JITLLM_MODEL_GEMMA3_H_
+}  // namespace llmp::model
+#endif  // LLMP_MODEL_GEMMA3_H_

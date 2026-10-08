@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The n-gram rows' gather (paging.h): one block per row slot, each thread
@@ -14,7 +14,7 @@
 
 #include "kernels/paging/paging.h"
 
-namespace jitllm::kernels::paging {
+namespace llmp::kernels::paging {
 
 namespace {
 
@@ -46,4 +46,4 @@ bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
   return cudaGetLastError() == cudaSuccess;
 }
 
-}  // namespace jitllm::kernels::paging
+}  // namespace llmp::kernels::paging

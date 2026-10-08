@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 packed C4 + checked MoE: closed Stage B draft
@@ -24,7 +24,7 @@ builder, matcher, operand format, weights or production-default changes.
 
 Use an additive manual benchmark main and dedicated scripts/report; link the
 existing reviewed gemma26_attention_packed_wrap.cc unchanged. Set
-JITLLM_GEMMA26_PACKED_C4=1 in BOTH process arms. The new main accepts only the
+LLMP_GEMMA26_PACKED_C4=1 in BOTH process arms. The new main accepts only the
 two closed policies, fixed before Setup and for the entire process; no toggles
 behind PlanCache. Both policies apply throughout prefill and decode. C1 prefill
 attention remains the real untransformed builder in both arms, but COMPOUND's

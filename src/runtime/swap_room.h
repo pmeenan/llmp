@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Room for a swap's incoming model (Server::MakeRoomForSwap): what the
@@ -9,8 +9,8 @@
 // whole extents past its floor). Vendor-free and host-only, so the CPU
 // tests drive it with a ledger of their own.
 
-#ifndef JITLLM_RUNTIME_SWAP_ROOM_H_
-#define JITLLM_RUNTIME_SWAP_ROOM_H_
+#ifndef LLMP_RUNTIME_SWAP_ROOM_H_
+#define LLMP_RUNTIME_SWAP_ROOM_H_
 
 #include <compare>
 #include <cstddef>
@@ -24,7 +24,7 @@
 
 #include "catalog/catalog.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 struct SwapRoomSteps {
   int reclaims = 0;         // reclaims asked
@@ -63,6 +63,6 @@ std::expected<SwapRoomSteps, std::string> MakeRoom(
     const std::function<std::uint64_t(std::uint64_t)>& reclaim, std::uint64_t unit,
     int attempts = 4);
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_SWAP_ROOM_H_
+#endif  // LLMP_RUNTIME_SWAP_ROOM_H_

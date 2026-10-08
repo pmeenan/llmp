@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """BP-F2's reference arm (pre-registered at P3 entry; docs/backend-proof.md, "Performance protocol").
 
-External reference harness in the M0 reference container; it implements nothing of jitLLM. It is
+External reference harness in the M0 reference container; it implements nothing of llmpalooza. It is
 M0's measure.py (../exl3-reference/measure.py, imported unchanged: its model loading, manifest,
 timing and checks) with its kernel modes over BP-F2's case set instead of M0's:
 

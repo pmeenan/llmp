@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The locked ExLlamaV3 GEMM kernels on a GB10 (label `gpu`;
@@ -7,7 +7,7 @@
 // GB10; on a discrete GPU the build targets, label `gpu-discrete` too,
 // its own, D-082), and each kernel the P0 launch record names uses the
 // registers per thread recorded there (GB10 only). No kernel is launched:
-// jitLLM's launchers come with the first native EXL3 linear.
+// llmpalooza's launchers come with the first native EXL3 linear.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -20,9 +20,9 @@
 
 namespace {
 
-using jitllm::tests::exl3::AllKernels;
-using jitllm::tests::exl3::kRates;
-using jitllm::tests::exl3::RateTables;
+using llmp::tests::exl3::AllKernels;
+using llmp::tests::exl3::kRates;
+using llmp::tests::exl3::RateTables;
 
 // A GEMM kernel of the P0 launch record
 // (docs/experiments/backend-proof-p0/exl3-launch.json): its rate, output

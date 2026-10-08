@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "artifact/gguf_metadata.h"
@@ -18,7 +18,7 @@
 
 #include "artifact/error.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 namespace {
 
 // GGUF value types (gguf.h).
@@ -322,4 +322,4 @@ std::expected<GgufMetadata, Error> ReadGgufMetadata(std::span<const std::byte> b
   return out;
 }
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact

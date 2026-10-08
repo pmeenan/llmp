@@ -1,10 +1,10 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Upstream log
 
 One file per upstream project. Each file lists the fixes, limitations and
-patches jitLLM has found or made in that project, so the owner can start a
+patches llmpalooza has found or made in that project, so the owner can start a
 separate effort to upstream any one of them. **Every entry stands alone.**
 A new conversation that has only the entry must be able to act on it. So
 each entry names the repository, the pinned version, the files and lines,
@@ -24,14 +24,14 @@ and the repro, and does not rely on the rest of this file.
 
 ## Upstream entries and rough edges
 
-A [rough-edges.md](../rough-edges.md) entry (RE-NNN) is the jitLLM-side
-finding: what bit us, and how jitLLM works around it. The upstream entry is
+A [rough-edges.md](../rough-edges.md) entry (RE-NNN) is the llmpalooza-side
+finding: what bit us, and how llmpalooza works around it. The upstream entry is
 the handoff: what upstream's current code does, what exists upstream
 already, and what to send. It links its RE entry and does not repeat the
 investigation. Not every RE needs an upstream entry: one with nothing to
 send and nothing to track upstream (a tool used wrongly, behaviour by
 design) has none. An upstream entry may also have no RE, for example a
-patch jitLLM carries or a change upstream worth adopting.
+patch llmpalooza carries or a change upstream worth adopting.
 
 When an agent logs a rough edge in a third-party component, or adds or
 changes a patch under `third_party/patches/`, it adds or updates that
@@ -44,10 +44,10 @@ project's entry here in the same unit of work
 - **reported**: an issue or discussion is open upstream.
 - **PR open**: a pull request is open upstream.
 - **fixed upstream at \<ref\>**: upstream's code no longer has the problem.
-  jitLLM may still carry the workaround until its pin passes that ref.
+  Llmpalooza may still carry the workaround until its pin passes that ref.
 - **won't fix**: upstream behaviour by design, or not worth sending. The
   entry says why.
-- **carry**: a jitLLM-specific change that stays in jitLLM's patches.
+- **carry**: a llmpalooza-specific change that stays in llmpalooza's patches.
 
 ## Entry template
 
@@ -58,7 +58,7 @@ project's entry here in the same unit of work
 - **Found:** <date>, <pinned version or commit>, <host>
 - **Problem:** what goes wrong, with file:line at the pin, and a minimal
   repro if there is one.
-- **jitLLM's workaround:** the patch or check (file path), and its cost in
+- **Llmpalooza's workaround:** the patch or check (file path), and its cost in
   speed, correctness or maintenance.
 - **Upstream master:** what the current code does (checked <date> at <commit>).
 - **Upstream refs:** issues and pull requests that already exist.

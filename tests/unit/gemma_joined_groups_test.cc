@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include <gtest/gtest.h>
 
@@ -10,7 +10,7 @@
 #include "engine/gemma4_wave.h"
 #include "runtime/gemma_wave.h"
 
-namespace rt = jitllm::runtime;
+namespace rt = llmp::runtime;
 using Status = std::expected<void, std::string>;
 TEST(GemmaJoinedGroups, LateCleanRefusalPreservesCompletedFirstGroupAndItsPublication) {
   std::array<Status, 12> result{};
@@ -88,7 +88,7 @@ TEST(GemmaJoinedGroups, InvalidEnvelopeNeverDispatches) {
 }
 
 TEST(GemmaJoinedGroups, OrdinaryWholeTwelveAndInvariantEightKeepDistinctCallerBounds) {
-  namespace en = jitllm::engine;
+  namespace en = llmp::engine;
   static_assert(en::kGemma4InvariantWaveRows == 8);
   for (const bool invariant : {false, true}) {
     std::vector<std::pair<std::size_t, std::size_t>> calls;

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A bounded, sandboxed interpreter for the subset of Jinja2 that chat
@@ -18,7 +18,7 @@
 // caller's cancellation (Budget::cancelled) is asked every few thousand
 // steps and megabytes, so a long rendering stops when its request ends;
 // only a Budget (probes) caps them. Where Jinja2 would raise, rendering
-// fails too; where jitLLM does not implement what Jinja2 would do, parsing
+// fails too; where llmpalooza does not implement what Jinja2 would do, parsing
 // or rendering is refused rather than approximated.
 //
 // Provenance: every rendered byte is known to come from the template's own
@@ -27,8 +27,8 @@
 // Rendered::trusted lists the template's spans; only those may hold
 // control tokens (chat::RenderInterpreted marks them).
 
-#ifndef JITLLM_CHAT_JINJA_H_
-#define JITLLM_CHAT_JINJA_H_
+#ifndef LLMP_CHAT_JINJA_H_
+#define LLMP_CHAT_JINJA_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -43,7 +43,7 @@
 
 #include "base/json.h"
 
-namespace jitllm::chat::jinja {
+namespace llmp::chat::jinja {
 
 // The template's own bounds (its size and syntax tree), the stack's
 // (nesting), memory's (values held, one string, the output) and Jinja2's
@@ -199,6 +199,6 @@ class Template {
   std::unique_ptr<Program> program_;
 };
 
-}  // namespace jitllm::chat::jinja
+}  // namespace llmp::chat::jinja
 
-#endif  // JITLLM_CHAT_JINJA_H_
+#endif  // LLMP_CHAT_JINJA_H_

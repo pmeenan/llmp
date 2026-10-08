@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The DeepSeek V4 Flash architecture adapter (M3; docs/plan.md, "Model
@@ -24,8 +24,8 @@
 // that computes a chunk is built from this adapter by the GGML kernel
 // module (kernels/ggml/dsv4_graph.h).
 
-#ifndef JITLLM_MODEL_DSV4_H_
-#define JITLLM_MODEL_DSV4_H_
+#ifndef LLMP_MODEL_DSV4_H_
+#define LLMP_MODEL_DSV4_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -37,11 +37,11 @@
 
 #include "model/state.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 class Artifact;
 }
 
-namespace jitllm::model {
+namespace llmp::model {
 
 // A DeepSeek V4 checkpoint's hyperparameters (the deepseek4.* key/values).
 struct Dsv4Profile {
@@ -382,6 +382,6 @@ bool Dsv4SameWidths(const Dsv4StateLayout& state, std::uint32_t n_past, std::uin
 inline constexpr std::uint16_t kHalfZero = 0x0000;
 inline constexpr std::uint16_t kHalfNegInf = 0xFC00;
 
-}  // namespace jitllm::model
+}  // namespace llmp::model
 
-#endif  // JITLLM_MODEL_DSV4_H_
+#endif  // LLMP_MODEL_DSV4_H_

@@ -33,7 +33,7 @@
     "trace_sha256": "7625929fd143bafa31f5d3ebfe03e4dcf96452129b0d080a67434940c85e2383",
     "prompt_tokens": 18339,
     "decode_tokens": 117,
-    "source_sha256": "457ea97dc2ded230d0ab65b478d04ffa0d8d39c54cd38959f6beca9b41ef93da",
+    "source_sha256": "0035478a0a54b5818c724a4c0bc71bf04ac671a79fc483928cd623e3615bdedd",
     "executable_sha256": "13a99673eb6d4eb2ddd2df83bf8c420d155365a20790638f4820f04769faf32d",
     "host": "spark-c4e2",
     "kernel": "7.0.0-1019-nvidia",

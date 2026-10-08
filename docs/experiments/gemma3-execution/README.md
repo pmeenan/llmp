@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma 3 prepared import and bounded native execution
@@ -54,15 +54,15 @@ Official supervised jobs `m35-gemma3-download` and `m35-gemma3-import`
 completed with exit 0; their logs and verification receipt remain external.
 
 The source lives under Spark A's
-`~/.local/share/jitllm/models/ggml-org/gemma-3-4b-it-qat-GGUF@bbcac0d0/`.
+`~/.local/share/llmp/models/ggml-org/gemma-3-4b-it-qat-GGUF@bbcac0d0/`.
 The prepared store is
-`~/.local/share/jitllm/gemma3-import-20261007/artifacts/`.
+`~/.local/share/llmp/gemma3-import-20261007/artifacts/`.
 
 ## Bounded native own control
 
-On 2026-10-07, `jitllm_gemma3_probe` executed that artifact on Spark A
+On 2026-10-07, `llmp_gemma3_probe` executed that artifact on Spark A
 (GB10, driver 580.178.04, SDK `aarch64-c09daba6ac31edee`, core profile,
-locked GGML tree `d50cb7f97867b4c5…`). This is an internal C1 probe at
+locked GGML tree `37947dde9e23668f…`). This is an internal C1 probe at
 context 4096, F16 K/V, 128-row chunks and one published head row. It consumes
 256 prompt rows, three supplied scalar warm rows and 32 teacher-forced rows.
 The actual native tokenizer produced the first 291 IDs from an authored prose
@@ -217,7 +217,7 @@ The actual native binary SHA-256 is
 `d6ca09c4e2aed2744352d7f2d51fb601a22787003642ce2772881095b4fb9e06`;
 the native receipt and locked environment remain as above. Exact source/binary
 bindings, own-repeat records, quality results and raw outputs remain external
-under Spark A's `~/.local/share/jitllm/gemma3-execution-20261007/`, in
+under Spark A's `~/.local/share/llmp/gemma3-execution-20261007/`, in
 `normrope-only`, `normropeadd-only` and `optimized`.
 
 This clears the representative C1 quality screen, without establishing speed
@@ -399,7 +399,7 @@ The first prerequisite run caught a test-only F16 download being interpreted
 as F32 in three preservation assertions; the failed receipt is retained.
 Correct typed raw-byte checks pass without changing production arithmetic.
 
-`jitllm_gemma3_c2_probe` executes two initialized slots. Each receives its own
+`llmp_gemma3_c2_probe` executes two initialized slots. Each receives its own
 actual native-tokenized 291-ID prose input, authenticated before either model
 runs and independently checked by stock tokenization. Slot0 retains the C1
 input; slot1 input/text SHA-256 are
@@ -847,19 +847,19 @@ hashed and deep verified before inference. TensorFold was rechecked for this
 task at 041d14a94e951834470fd514ed33e65b8be1059a: its documented CUDA recipes
 still offer no matching Gemma3 GGUF comparator.
 
-Reproduce own/teacher/cycle with `jitllm_gemma3_joint_prefill_probe` and
+Reproduce own/teacher/cycle with `llmp_gemma3_joint_prefill_probe` and
 `llama_joint_prefill_probe.cc` at the supplied input geometry; the native
 optional `bounded-roots` argument selects the candidate. The durable
 `analyze_bounded_roots.py` prepares authenticated ring inputs and gates native
 own freezes and strict quality. Complete raw inputs, responses, state/head
 payloads, source/binary receipts, official job outcomes and aggregates remain
 external under Spark B `scratch/m35-gemma3-owner-bounded-roots/run1/` and
-`run2/`, with local copies under `/tmp/jitllm-m35-coordination/`.
+`run2/`, with local copies under `/tmp/llmp-m35-coordination/`.
 
 
 ## Internal 8K scalar depth screen (2026-10-07)
 
-The explicit `depth` mode of `jitllm_gemma3_probe` and
+The explicit `depth` mode of `llmp_gemma3_probe` and
 `llama_fair_probe.cc` executes one slot at context 8448, with 8192 actual
 prompt tokens, 128-row chunks and 64 continuation tokens. The approved source,
 artifact, tokenizer, ordinary optimized arithmetic and original d812 image
@@ -950,8 +950,8 @@ TensorFold was refreshed at task entry to 041d14a94e951834470fd514ed33e65b8be105
 its documented CUDA recipes provide no matching approved Gemma3 GGUF comparator.
 Raw inputs, heads, state hashes, source/binary receipts, failed and completed
 supervisor jobs and aggregates remain outside Git under Spark A
-`~/.local/share/jitllm/gemma-context-depth{1,2,3}` and local
-`/tmp/jitllm-m35-coordination/gemma-context-depth-result{1,2,3}`.
+`~/.local/share/llmp/gemma-context-depth{1,2,3}` and local
+`/tmp/llmp-m35-coordination/gemma-context-depth-result{1,2,3}`.
 
 
 ## Public scalar 8K and one model-switch pair (2026-10-07)
@@ -1023,8 +1023,8 @@ reuses the successful runtime/HTTP evidence. Official jobs
 `m35-gemma3-public-8k-swap2` (steps 1–6 PASS, step7 bootstrap FAIL) and
 `m35-gemma3-public-8k-swap3` (3 steps DONE0) retain the actual checks. Raw data,
 receipts and failures stay outside Git under Spark A
-`~/.local/share/jitllm/gemma3-public-8k-swap{1,2,3}` and local
-`/tmp/jitllm-m35-coordination/gemma3-public-8k-result{1,2,3}`.
+`~/.local/share/llmp/gemma3-public-8k-swap{1,2,3}` and local
+`/tmp/llmp-m35-coordination/gemma3-public-8k-result{1,2,3}`.
 Maximum context, broader cohorts/model pairs, real-corpus retrieval and sustained
 memory/swap qualification remain open; the repeated-text 8K screen closes none
 of those gates.
@@ -1081,8 +1081,8 @@ The native source is based on 08dbd940; CUDA 13.4 cuBLAS/Lt use the pinned SDK
 c09 closure and the original v0.6.0 image/library closure is unchanged.
 TensorFold task-entry HEAD is 041d14a94e951834470fd514ed33e65b8be1059a, with no
 matching qualified Gemma3 GGUF CUDA recipe. Raw inputs, outputs, failures and
-receipts remain outside Git under Spark A `~/.local/share/jitllm/gemma3-trained-max*`
-and local `/tmp/jitllm-m35-coordination/gemma3-trained-max*`.
+receipts remain outside Git under Spark A `~/.local/share/llmp/gemma3-trained-max*`
+and local `/tmp/llmp-m35-coordination/gemma3-trained-max*`.
 Public maximum admission, maximum-depth swap/state retention, retrieval and
 sustained quality/performance remain open.
 
@@ -1142,8 +1142,8 @@ is based on b9a35fc; final composition on 14bc98e preserves the independent
 wide-cohort additions and the exact two executed production changes. Official
 `m35-gemma3-mask-host-prereq1` (five steps, 18 actual cases) and
 `m35-gemma3-mask-model1` (six steps) finish DONE0. Raw logs, outputs and receipts
-remain outside Git under Spark A `~/.local/share/jitllm/gemma3-mask-{host1,model1}`
-and local `/tmp/jitllm-m35-coordination/gemma3-mask-{host,model}-result1`.
+remain outside Git under Spark A `~/.local/share/llmp/gemma3-mask-{host1,model1}`
+and local `/tmp/llmp-m35-coordination/gemma3-mask-{host,model}-result1`.
 TensorFold task-entry HEAD is 5a73b85289b58c0998d7754822145466687a551b;
 its current README documents no matching qualified Gemma3 GGUF CUDA recipe.
 Public default/admission, retrieval, maximum-depth swaps and sustained gates
@@ -1207,8 +1207,8 @@ is `caad97e22729228a0f23b5288e044a172330f53fda9ca8d65574f78b8b283d9b`.
 Official `m35-gemma3-device-masks3` completes all 12 steps DONE0. Two preceding
 compile-only failures are preserved, corrected by a direct operator-header
 include and an explicit test-index cast. Raw outputs/receipts stay outside Git
-under Spark A `~/.local/share/jitllm/gemma3-device-masks3` and local
-`/tmp/jitllm-m35-coordination/gemma3-device-masks-result3`.
+under Spark A `~/.local/share/llmp/gemma3-device-masks3` and local
+`/tmp/llmp-m35-coordination/gemma3-device-masks-result3`.
 TensorFold task-entry HEAD remains 5a73b85289b58c0998d7754822145466687a551b,
 with no matching qualified Gemma3 GGUF CUDA recipe.
 
@@ -1233,8 +1233,8 @@ directory lets `m35-gemma3-device-masks-adopt2` finish both HTTP/aggregate steps
 DONE0 without rebuilding. That failure and both earlier compile failures remain
 preserved. Final test formatting only wraps the explicit index cast.
 Raw final controls/binding stay outside Git under Spark A
-`~/.local/share/jitllm/gemma3-device-masks-adopt1` and local
-`/tmp/jitllm-m35-coordination/gemma3-device-masks-adopt-result2`.
+`~/.local/share/llmp/gemma3-device-masks-adopt1` and local
+`/tmp/llmp-m35-coordination/gemma3-device-masks-adopt-result2`.
 Public maximum context, corpus/retrieval, maximum-depth state/swap and
 sustained gates remain open.
 
@@ -1314,5 +1314,5 @@ pinned SDK c09 CUDA 13.4 cuBLAS closure, driver 580.178.04 and the approved
 artifact; the stock caller is
 `58620960fecf643f817aced7d1930c26b566bc80b266c93f0223ec222d40688f` in the
 unchanged v0.6.0 image. Raw outputs stay outside Git under Spark A
-`~/.local/share/jitllm/g3gap-*`. TensorFold is unchanged at 5a73b85289b58c0998d7754822145466687a551b, without a
+`~/.local/share/llmp/g3gap-*`. TensorFold is unchanged at 5a73b85289b58c0998d7754822145466687a551b, without a
 matching qualified Gemma3 GGUF CUDA recipe.

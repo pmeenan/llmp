@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The v0 composition reader (D-089; docs/artifact-format.md,
@@ -31,8 +31,8 @@
 // opens by ID (artifact.h, with OpenOptions::expected_id) and whose model
 // architecture it compares with the one recorded here.
 
-#ifndef JITLLM_ARTIFACT_COMPOSITION_H_
-#define JITLLM_ARTIFACT_COMPOSITION_H_
+#ifndef LLMP_ARTIFACT_COMPOSITION_H_
+#define LLMP_ARTIFACT_COMPOSITION_H_
 
 #include <cstddef>
 #include <expected>
@@ -45,7 +45,7 @@
 #include "artifact/artifact.h"
 #include "artifact/error.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 
 inline constexpr std::size_t kMaxComponents = 16;
 
@@ -87,6 +87,6 @@ std::expected<Composition, Error> OpenComposition(
     const std::filesystem::path& root,
     const std::optional<std::string>& expected_id = std::nullopt);
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact
 
-#endif  // JITLLM_ARTIFACT_COMPOSITION_H_
+#endif  // LLMP_ARTIFACT_COMPOSITION_H_

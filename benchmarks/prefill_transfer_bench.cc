@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Family-neutral ds4-study controls: D512 one/eight-query sparse gathers,
@@ -11,7 +11,7 @@
 // changes. --compact compares shared preparation with and without compact
 // expert tiles; --large uses the target expert shape, --down its down
 // projection, and --skew concentrates assignments in a few experts.
-// Usage: jitllm_prefill_transfer_bench [--only TEXT] [--compact]
+// Usage: llmp_prefill_transfer_bench [--only TEXT] [--compact]
 //        [--large] [--down] [--skew] [--tokens N].
 
 #include <cuda_runtime.h>
@@ -45,8 +45,8 @@
 #include "providers/device_execution.h"
 
 namespace {
-namespace kg = jitllm::kernels::ggml;
-using jitllm::base::Bytes;
+namespace kg = llmp::kernels::ggml;
+using llmp::base::Bytes;
 
 constexpr std::size_t kScratch = std::size_t{256} << 20U;
 constexpr std::size_t kFlush = std::size_t{512} << 20U;
@@ -68,7 +68,7 @@ void Check(const std::expected<void, kg::KernelFailure>& result) {
 class Fixture {
  public:
   Fixture() {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     native_ = static_cast<cudaStream_t>(execution_->Submission(stream_).value().handle);
     auto* scratch = Allocate(kScratch);
@@ -88,7 +88,7 @@ class Fixture {
     Check(cudaStreamSynchronize(native_));
     const auto fence = execution_->Record(stream_).value();
     Check(cudaStreamSynchronize(native_));
-    if (execution_->Query(fence).value() != jitllm::providers::FenceState::kComplete ||
+    if (execution_->Query(fence).value() != llmp::providers::FenceState::kComplete ||
         !execution_->Release(fence)) {
       std::abort();
     }
@@ -150,8 +150,8 @@ class Fixture {
   }
 
  private:
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  llmp::providers::StreamId stream_;
   cudaStream_t native_ = nullptr;
   cudaEvent_t start_ = nullptr;
   cudaEvent_t stop_ = nullptr;
@@ -305,7 +305,7 @@ int main(int argc, char** argv) {
       }
     } else {
       std::println(stderr,
-                   "usage: jitllm_prefill_transfer_bench [--only TEXT] [--compact] "
+                   "usage: llmp_prefill_transfer_bench [--only TEXT] [--compact] "
                    "[--large] [--down] [--skew] [--tokens N]");
       return 2;
     }

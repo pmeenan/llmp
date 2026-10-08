@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "chat/chat.h"
@@ -16,7 +16,7 @@
 #include "base/sha256.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::chat {
+namespace llmp::chat {
 namespace {
 
 constexpr auto kDeepSeekEfforts = std::to_array<std::string_view>({"low", "high", "max"});
@@ -170,4 +170,4 @@ std::expected<std::vector<tokenizer::TokenId>, Error> StopTokens(
   return StopTokens(rules, tokenizer);
 }
 
-}  // namespace jitllm::chat
+}  // namespace llmp::chat

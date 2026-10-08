@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma31 target-plus-assistant greedy transaction
@@ -66,7 +66,7 @@ its separately authorized post-authentication succeeds. All other producer,
 own-freeze and candidate comparison jobs succeed; raw logs, IDs, caches and row
 payloads remain external. No full suite or paid timing was run.
 
-Reproduce with the manual `jitllm_gemma_greedy_reference` target and
+Reproduce with the manual `llmp_gemma_greedy_reference` target and
 [`reference.sh`](reference.sh), which builds the pinned original
 [`llama_greedy.cc`](llama_greedy.cc) under image 837fc732 and source b29c606e.
 Native arguments are target artifact, assistant artifact, new output directory,

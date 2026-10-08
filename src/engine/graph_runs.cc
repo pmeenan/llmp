@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/graph_runs.h"
@@ -11,11 +11,11 @@
 #include "engine/support.h"
 #include "providers/device_runtime.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 using support::Address;
 using support::Error;
 using support::Pointer;
@@ -219,4 +219,4 @@ Queued GraphRuns::Queue(PlanRuns& runs, const Copies& inputs,
   return q;
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

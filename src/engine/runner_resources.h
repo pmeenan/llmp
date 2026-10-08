@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // What a runner sets up for its life beside its weights and state
@@ -16,8 +16,8 @@
 // context, cuBLAS and the memory go, in that order. The staging is the
 // node's to free (PagedNode::Pinned), at its close.
 
-#ifndef JITLLM_ENGINE_RUNNER_RESOURCES_H_
-#define JITLLM_ENGINE_RUNNER_RESOURCES_H_
+#ifndef LLMP_ENGINE_RUNNER_RESOURCES_H_
+#define LLMP_ENGINE_RUNNER_RESOURCES_H_
 
 #include <cstdint>
 #include <expected>
@@ -31,7 +31,7 @@
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/launch.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 class RunnerResources {
  public:
@@ -102,6 +102,6 @@ class RunnerResources {
   std::unique_ptr<execution::Registry> registry_;
 };
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_RUNNER_RESOURCES_H_
+#endif  // LLMP_ENGINE_RUNNER_RESOURCES_H_

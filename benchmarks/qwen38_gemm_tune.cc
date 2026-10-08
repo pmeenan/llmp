@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded cuBLASLt search for Qwen3.8's small-column BF16 products.
@@ -6,7 +6,7 @@
 // and F32 activations may have no library implementation; a refusal is a
 // measured result, never permission to round the input.
 //
-//   jitllm_qwen38_gemm_tune --shape columns,outputs,inputs [...]
+//   llmp_qwen38_gemm_tune --shape columns,outputs,inputs [...]
 //     [--input bf16|f32] [--output bf16|f32] [--candidates 32]
 //     [--reps 128] [--warmup-ms 100] [--workspace 32]
 //     [--ggml-reference on|off]
@@ -49,15 +49,15 @@
 
 #include "base/bytes.h"
 #include "ggml.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/tensors.h"
 #include "providers/cuda/cuda_device_execution.h"
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 
 using Status = std::expected<void, std::string>;
 std::unexpected<std::string> Error(std::string message) {
@@ -663,7 +663,7 @@ Status Run(const Options& options) {
       R"({{"device":"{}","cc":{}{},"sms":{},"cublaslt":{},"workspace_mib":{},"reps":{},"warmup_ms":{}}})",
       device.name, device.major, device.minor, device.multiProcessorCount, cublasLtGetVersion(),
       options.workspace_mib, options.reps, options.warmup_ms);
-  auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
   if (!execution) return Error(execution.error().detail);
   auto stream_id = (*execution)->CreateStream();
   if (!stream_id) return Error(stream_id.error().detail);
@@ -674,7 +674,7 @@ Status Run(const Options& options) {
   }
   auto* const stream = static_cast<cudaStream_t>(native->handle);
   auto kernels = kg::LaunchContext::Create(0, **execution, *stream_id,
-                                           {.base = 0, .size = jitllm::base::Bytes(0)});
+                                           {.base = 0, .size = llmp::base::Bytes(0)});
   if (!kernels) {
     if (!(*execution)->DestroyStream(*stream_id)) std::_Exit(1);
     return Error(kernels.error().detail);
@@ -706,7 +706,7 @@ Status Run(const Options& options) {
   if (auto completed = Cuda(cudaStreamSynchronize(stream), "fence completion"); !completed)
     return completed;
   auto state = (*execution)->Query(*fence);
-  if (!state || *state != jitllm::providers::FenceState::kComplete ||
+  if (!state || *state != llmp::providers::FenceState::kComplete ||
       !(*execution)->Release(*fence)) {
     std::println(stderr, "terminal fence retirement failure");
     (void)std::fflush(stderr);

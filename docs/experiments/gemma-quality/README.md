@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma 26 representative likelihood screen
@@ -73,12 +73,12 @@ batching, memory or performance qualification.
 | Explicit diagnostic reference source | `eac301a6130cf0e7543e1fa2b90c70b7005f46a9fc45121c9add6dbba7695c2a` |
 | Explicit diagnostic reference executable | `e291d8864695c1e4c80a1324fb0758ce127700584384aa3069239ee28cf593f0` |
 
-Native invocation is `jitllm_gemma_quality ARTIFACT IDS_I32 NEW_OUTPUT_DIR
+Native invocation is `llmp_gemma_quality ARTIFACT IDS_I32 NEW_OUTPUT_DIR
 128 ordinary`, and the independent calibration arm substitutes `norm`.
 Reference invocation is `llama_quality RAW_GGUF IDS_I32 NEW_OUTPUT_DIR
 score 128`, with CUDA fusion and graph disable variables absent. The
 reference harness is compiled against the pinned image's C API and
-libraries; it is external to jitLLM. `analyze.py ROOT calibrate` creates
+libraries; it is external to llmpalooza. `analyze.py ROOT calibrate` creates
 an exclusive native-only freeze; `analyze.py ROOT oracle` verifies that
 freeze before reading the reference rows. Neither operation replaces an
 existing calibration or comparison. Full-logit analysis uses finite

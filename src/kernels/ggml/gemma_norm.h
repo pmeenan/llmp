@@ -1,15 +1,15 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_KERNELS_GGML_GEMMA_NORM_H_
-#define JITLLM_KERNELS_GGML_GEMMA_NORM_H_
+#ifndef LLMP_KERNELS_GGML_GEMMA_NORM_H_
+#define LLMP_KERNELS_GGML_GEMMA_NORM_H_
 
 #include <expected>
 #include <string_view>
 
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 class LaunchContext;
 inline constexpr std::string_view kGemmaNormRopeName = "ggml.rms_norm_mul_rope.fused";
 inline constexpr std::string_view kGemmaNormAddName = "ggml.rms_norm_mul_add.fused";
@@ -37,5 +37,5 @@ std::expected<void, KernelFailure> RunGemmaNormRope(LaunchContext& launch, ggml_
                                                     ggml_tensor* mul, ggml_tensor* rope);
 std::expected<void, KernelFailure> RunGemmaNormAdd(LaunchContext& launch, ggml_tensor* norm,
                                                    ggml_tensor* mul, ggml_tensor* add);
-}  // namespace jitllm::kernels::ggml
-#endif  // JITLLM_KERNELS_GGML_GEMMA_NORM_H_
+}  // namespace llmp::kernels::ggml
+#endif  // LLMP_KERNELS_GGML_GEMMA_NORM_H_

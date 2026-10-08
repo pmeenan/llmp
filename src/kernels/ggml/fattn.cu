@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // GGML's vector flash-attention kernel for the EXL3 plan (ops.h
@@ -33,7 +33,7 @@
 DECL_FATTN_VEC_CASE(64, GGML_TYPE_F16, GGML_TYPE_F16);
 DECL_FATTN_VEC_CASE(256, GGML_TYPE_F16, GGML_TYPE_F16);
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -168,4 +168,4 @@ bool FlashAttnVec256Selected(const LaunchContext& launch, const ggml_tensor* nod
          cc >= GGML_CUDA_CC_ADA_LOVELACE && node->src[0]->ne[1] == 1;
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen NVFP4 expert output-tile screens
@@ -14,7 +14,7 @@ final target/drafter state; neither is selected for production.
 `GemvExperts` repeats its expert-pair discovery for each output block.
 Changing output tiles trades that repeated work against the number of
 independent blocks. Only the launch grid and matching template tile counts
-change in the private `jitllm_moe.cu` variants: gate/up and down use 8/16
+change in the private `llmp_moe.cu` variants: gate/up and down use 8/16
 instead of 4/8 in the doubled candidate, and 2/4 in the halved candidate.
 The routing list, `kMatched = 8` cap, per-output arithmetic, input
 quantization and wave policy stay fixed. This is separate from the earlier
@@ -51,7 +51,7 @@ clear GPU, container and native model-process probes.
 
 The compiled production baseline is `5f37654`. The two private prototypes
 remain outside Git; apply the tile substitutions above to that baseline
-and build only `jitllm_qwen38_spec`. Use installed
+and build only `llmp_qwen38_spec`. Use installed
 `~/.local/bin/spark-job start --gpu --name NAME --timeout 600`, then
 `wait NAME`, for builds and every measurement. Sources are synchronized
 with `rsync -rlpc --exclude=.git --exclude=/build`, so changed bytes trigger
@@ -99,7 +99,7 @@ source inventory contains 487 implementation/build files.
 Raw samples, complete row/state digests, preflight logs, candidate sources
 and frozen binaries remain in `spark:~/scratch/qwen-expert-tiles/`, under
 `screen1/` and `screen2/`. Local evidence is retained in
-`~/scratch/jitllm-m3-qwen-expert-tiles-2026-10-04/`.
+`~/scratch/llmp-m3-qwen-expert-tiles-2026-10-04/`.
 The baseline/candidate builds and jobs `qwen-expert-tiles-screen8-16` and
 `qwen-expert-tiles-screen2-4` finish zero and are waited on. Production
 source is unchanged, so the rejected diagnostics do not rerun the full

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 small-column GEMM tuning (M3)
@@ -12,7 +12,7 @@ remains open.
 
 ## Method
 
-`jitllm_qwen38_gemm_tune` is a benchmark, never a serving API. It searches
+`llmp_qwen38_gemm_tune` is a benchmark, never a serving API. It searches
 the SDK's heuristic algorithms for explicit BF16 weights, BF16 or F32
 input, F32 accumulation and BF16 or F32 output. It records all nine
 algorithm attributes rather than copying the image or EXL3 pins. The
@@ -74,7 +74,7 @@ explicit. The one-row vector path has a different contract and was not
 changed.
 
 `--ggml-reference on` feeds the same unrounded generated F32 input to
-GGML MMF and to jitLLM's existing RN `ToBf16` conversion followed by Lt.
+GGML MMF and to llmpalooza's existing RN `ToBf16` conversion followed by Lt.
 The conversion launch and its transient buffer are included in the
 candidate timing. Candidate outputs are compared with both GemmEx and
 the current MMF. Reduction-order differences are reported; no arbitrary
@@ -121,10 +121,10 @@ and the build's SHA-256 records. The reusable benchmark stays in Git.
 For example:
 
 ```sh
-jitllm_qwen38_gemm_tune --input bf16 --output f32 \
+llmp_qwen38_gemm_tune --input bf16 --output f32 \
   --shape 3,320,10240 --shape 4,320,10240 --shape 5,320,10240
-jitllm_qwen38_gemm_tune --input bf16 --output bf16 --shape 4,10240,320
-jitllm_qwen38_gemm_tune --input bf16 --output f32 --ggml-reference on \
+llmp_qwen38_gemm_tune --input bf16 --output bf16 --shape 4,10240,320
+llmp_qwen38_gemm_tune --input bf16 --output f32 --ggml-reference on \
   --shape 4,248320,2560 --candidates 16 --reps 64 --warmup-ms 50
 ```
 

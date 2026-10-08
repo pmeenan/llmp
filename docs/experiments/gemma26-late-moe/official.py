@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Small installed-supervisor success proof; app markers remain separate."""
 import json
@@ -13,7 +13,7 @@ record = runpy.run_path(str(pathlib.Path(__file__).with_name('source_snapshot.py
 def success(name, expected_steps=None):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', name):
         raise ValueError('outside owned supervisor job name')
-    root = pathlib.Path.home() / '.local/share/jitllm/jobs' / name
+    root = pathlib.Path.home() / '.local/share/llmp/jobs' / name
     final = json.loads((root / 'final.json').read_text())
     steps = json.loads((root / 'steps.json').read_text())['steps']
     if final['state'] != 'done' or final['rc'] != 0 or not steps or \

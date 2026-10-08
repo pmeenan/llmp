@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Bounded Gemma2 compatible prefill and serving
@@ -451,4 +451,4 @@ Installed jobs `m35-gemma2-mask-check2`, `m35-gemma2-mask-screen1`,
 `m35-gemma2-mask-reference1` finish with exit zero. Initial `mask-check1` retains
 its failed fixture-environment launch; it ran no model, and the corrected launcher
 reused its successful build. Raw outputs and bound methods remain outside Git at
-Spark A `~/.local/share/jitllm/gemma2-mask*` for M3.5 cleanup.
+Spark A `~/.local/share/llmp/gemma2-mask*` for M3.5 cleanup.

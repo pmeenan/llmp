@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Final M3 image-inclusive swap table — 2026-10-04
@@ -124,8 +124,8 @@ and VAE `44c1a20a202ce1078588cbd4b0c594bbadf365a01f26091c715fd16d5b2eb34d`.
 
 Raw records and the pinned reproduction script are external at
 `~/scratch/m3-final-token-table-20261004/` on Spark B and
-`/home/pmeenan/scratch/jitllm-m3-final-token-table-2026-10-04/` locally.
-Use `jitllm-final-image-table.sh` with a fresh stage directory, its checked
+`/home/pmeenan/scratch/llmp-m3-final-token-table-2026-10-04/` locally.
+Use `llmp-final-image-table.sh` with a fresh stage directory, its checked
 runtime SHA and source tree under the installed GPU supervisor, then wait.
 It validates complete row/pair coverage, controls, graph reuse, swap bounds
 and final retirement. The local evidence copy excludes runtime spill/state.

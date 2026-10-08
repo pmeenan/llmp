@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # TensorFold
@@ -11,7 +11,7 @@
   source of techniques ([tensorfold-assessment.md](../tensorfold-assessment.md)).
 - **Historical baseline pin:** `71377a53` (0.3.6.2), measured as a baseline
   ([baselines](../experiments/fast-swap/baselines.md#qwen38-flash-next-tensorfold-mlx-4-bit-cross-quantization)).
-  None of jitLLM's code comes from TensorFold.
+  None of llmpalooza's code comes from TensorFold.
 - **The load study** is outside this repository, on the workstation at
   `/home/pmeenan/src/tensorfold-load-study/` (2026-09-28). Its `README.md`
   has the method and phase tables; `tensorfold/PATCHES.md` is the
@@ -41,7 +41,7 @@
   (`tensorfold/cuda/experts_pack.cu`) replacing about 40 elementwise
   operations; GLM experts stacked on the GPU; fewer device synchronisations.
   Reported in the PR: 2.9–15× across models; Flash Next MLX 146 → 24 s to
-  first token. Not re-measured in jitLLM.
+  first token. Not re-measured in llmpalooza.
 - **Proposed action:** use the upstream implementation in the updated
   baseline; no reapplication of the old PR is needed.
 
@@ -53,7 +53,7 @@
   `56e2e3ec55bc0ae1d7d5158c4fa2c79a3567ab21`, inspected 2026-10-02.
 - **Capability:** the [current Flash Next recipe](https://github.com/ashhart/TensorFold/blob/56e2e3ec55bc0ae1d7d5158c4fa2c79a3567ab21/docs/recipes/qwen3.8-flash-next.md#nvfp4-checkpoints)
   explicitly supports `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6`,
-  the checkpoint already used by jitLLM, including its MTP head. The
+  the checkpoint already used by llmpalooza, including its MTP head. The
   old 0.3.6.2 baseline accepts MLX/EXL3 and cannot run this ModelOpt export.
 - **Actual conditions:** same model files and full rendered prompt IDs,
   context 33,792 and 256 generated tokens per request, zero cached prompt
@@ -106,19 +106,19 @@
   - Reported: 27.2 → 1.5 ms per block at 262K keys; a 250K-token prompt
     311 → 145 s and a 140K one 86 → 74 s; identical state after 140K and
     250K prompts, with BF16 and int8 KV. All creator-reported.
-  - **Relevance to jitLLM:** `jitllm.qsa.select`
-    (`src/kernels/ggml/jitllm_ops.h`, 8,192 blocks in 32 KiB of shared
+  - **Relevance to llmpalooza:** `llmp.qsa.select`
+    (`src/kernels/ggml/llmp_ops.h`, 8,192 blocks in 32 KiB of shared
     memory, 32,768 cells at Qwen3.8's ratio of 4) fell back to GGML's
     nondeterministic top-k past that
     ([ggml.md](ggml.md#radix-top-k-breaks-ties-nondeterministically-re-031),
     RE-031). TensorFold is MIT, so porting the idea is fine (D-091).
-  - **Adopted (the technique, jitLLM's own code),** long context's phase 2
-    (2026-09-29): `jitllm.qsa.topk` (`src/kernels/ggml/qsa_sparse.cu`)
+  - **Adopted (the technique, llmpalooza's own code),** long context's phase 2
+    (2026-09-29): `llmp.qsa.topk` (`src/kernels/ggml/qsa_sparse.cu`)
     selects each token's 2,051 cells in tiles of 8,192 blocks (a byte-wise
     radix select for the width-th order-preserving key, ties to the lower
     cell), then once more over the tiles' candidates; Qwen3.8 repeats bit
     for bit at 64K and 128K and speculates to 262,144
     ([long-context](../experiments/long-context/README.md#phase-2-qwen38-flash-next-flat-with-depth)).
   - **Proposed action:** none; no upstream action.
-- Other TensorFold techniques, ranked for jitLLM, are in
+- Other TensorFold techniques, ranked for llmpalooza, are in
   [tensorfold-assessment.md](../tensorfold-assessment.md#upstream-to-0362-2026-09-28).

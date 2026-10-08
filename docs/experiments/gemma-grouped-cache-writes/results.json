@@ -458,7 +458,7 @@
     "kernels": [
       {
         "variant": "original",
-        "function": "_ZN6jitllm7kernels4ggml43_GLOBAL__N__40586ec7_10_ops_ext_cu_68c019e019SetRowsGroup4KernelENS2_15GroupedRowsArgsE",
+        "function": "_ZN4llmp7kernels4ggml43_GLOBAL__N__40586ec7_10_ops_ext_cu_68c019e019SetRowsGroup4KernelENS2_15GroupedRowsArgsE",
         "registers": 16,
         "stack_bytes": 0,
         "shared_bytes": 0,
@@ -472,7 +472,7 @@
       },
       {
         "variant": "fastdiv",
-        "function": "_ZN6jitllm7kernels4ggml43_GLOBAL__N__40586ec7_10_ops_ext_cu_68c019e019SetRowsGroup4KernelENS2_15GroupedRowsArgsE",
+        "function": "_ZN4llmp7kernels4ggml43_GLOBAL__N__40586ec7_10_ops_ext_cu_68c019e019SetRowsGroup4KernelENS2_15GroupedRowsArgsE",
         "registers": 16,
         "stack_bytes": 0,
         "shared_bytes": 0,

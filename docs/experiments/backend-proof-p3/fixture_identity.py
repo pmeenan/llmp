@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Which EXL3 fixture an artifact, or an FP64 oracle, is (reference only; no numpy, no GPU).
 
-Reference-side experiment tooling for the backend proof's P3; it shares no code with jitLLM. A native
+Reference-side experiment tooling for the backend proof's P3; it shares no code with llmpalooza. A native
 run's manifests carry the fixture only as the label its command line gave. The label is never trusted:
 - an artifact is the fixture whose checkpoint it was prepared from, as op_tier_e.py reads it: the
   installed directory's manifest.json must hash to the directory's name (the artifact id), and its

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Judges jitLLM's Qwen3.8 GGUF run against the llama.cpp oracle (README.md).
+"""Judges llmpalooza's Qwen3.8 GGUF run against the llama.cpp oracle (README.md).
 
-  compare.py ORACLE_UNFUSED ORACLE_FUSED JITLLM [--free JITLLM_FREE] [--ppl JITLLM_PPL]
+  compare.py ORACLE_UNFUSED ORACLE_FUSED LLMP [--free LLMP_FREE] [--ppl LLMP_PPL]
 
-ORACLE_* are oracle.cc's output directories, JITLLM jitllm_qwen38_exec's run
+ORACLE_* are oracle.cc's output directories, LLMP llmp_qwen38_exec's run
 forced on the unfused oracle's tokens (--prompts prompts.tsv --force
-ORACLE_UNFUSED/generated.tokens --generate 32), JITLLM_PPL its --ppl run.
+ORACLE_UNFUSED/generated.tokens --generate 32), LLMP_PPL its --ppl run.
 Prints one JSON document: per prompt, the logit differences against each
 oracle arm and between the arms, the teacher-forced argmax check with its
 near-tie rule (a step whose oracle top-1 to top-2 margin is below twice
@@ -82,7 +82,7 @@ def main(argv):
             margin = float(top[1] - top[0])
             step_diff = float(np.max(np.abs(j[k] - o[k])))
             tie = margin < 2 * step_diff
-            report["exceptions"].append({"prompt": name, "step": k, "oracle": want, "jitllm": argmax[k],
+            report["exceptions"].append({"prompt": name, "step": k, "oracle": want, "llmp": argmax[k],
                                          "oracle_margin": margin, "max_abs_diff": step_diff,
                                          "near_tie": tie})
             if not tie:
@@ -95,7 +95,7 @@ def main(argv):
     if "--ppl" in argv:
         ppl_dir = Path(argv[argv.index("--ppl") + 1])
         jppl = json.loads((ppl_dir / "summary.json").read_text())["ppl"]
-        report["ppl_jitllm"] = jppl
+        report["ppl_llmp"] = jppl
         ref = report["ppl_unfused"]["ppl"]
         rel = (jppl["ppl"] - ref) / ref
         report["ppl_relative_to_unfused"] = rel

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/interfaces.h"
@@ -29,7 +29,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 namespace {
 
 std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurrency-mt-unsafe)
@@ -171,4 +171,4 @@ std::uint64_t RaiseOpenFileLimit(std::uint64_t want) {
                                          : static_cast<std::uint64_t>(limit.rlim_cur);
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

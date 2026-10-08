@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// jitLLM's fusions of Qwen3.8's hyper-connection and MoE-output nodes
-// (kernels/ggml/jitllm_ops.h) on a GB10 (label `gpu`), at the model's
+// Llmpalooza's fusions of Qwen3.8's hyper-connection and MoE-output nodes
+// (kernels/ggml/llmp_ops.h) on a GB10 (label `gpu`), at the model's
 // widths: each result equals, bit for bit, that of the GGML nodes it
 // replaces (built as qwen38_graph.cc builds them unfused, planned and run
 // through the registry), and is within the default float bound (NMSE 1e-7)
@@ -39,8 +39,8 @@
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 #include "providers/cuda/cuda_device_execution.h"
@@ -48,16 +48,16 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::CublasHandle;
-using jitllm::kernels::ggml::KernelError;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-using jitllm::test_support::FailedCode;
-namespace kg = jitllm::kernels::ggml;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::CublasHandle;
+using llmp::kernels::ggml::KernelError;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+using llmp::test_support::FailedCode;
+namespace kg = llmp::kernels::ggml;
 
 constexpr double kDefaultNmse = 1e-7;
 constexpr std::uint64_t kWorkspace = 64ULL << 20;
@@ -126,7 +126,7 @@ float FromBf16(std::uint16_t b) { return std::bit_cast<float>(std::uint32_t{b} <
 class Qwen38FusedTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     int major = 0;
     int minor = 0;
@@ -143,9 +143,9 @@ class Qwen38FusedTest : public ::testing::Test {
     ASSERT_TRUE(launch.has_value()) << (launch ? "" : launch.error().detail);
     launch_ = std::move(*launch);
     arena_ = std::make_unique<TensorArena>(TensorArena::Create(1024).value());
-    auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+    auto registry = llmp::execution::Registry::Create(kg::Implementations());
     ASSERT_TRUE(registry.has_value());
-    registry_ = std::make_unique<jitllm::execution::Registry>(std::move(*registry));
+    registry_ = std::make_unique<llmp::execution::Registry>(std::move(*registry));
   }
 
   void TearDown() override {
@@ -268,7 +268,7 @@ class Qwen38FusedTest : public ::testing::Test {
   std::unique_ptr<CublasHandle> cublas_;
   std::unique_ptr<LaunchContext> launch_;
   std::unique_ptr<TensorArena> arena_;
-  std::unique_ptr<jitllm::execution::Registry> registry_;
+  std::unique_ptr<llmp::execution::Registry> registry_;
   std::vector<std::int32_t> ids_host_;
 };
 
@@ -582,7 +582,7 @@ TEST_F(Qwen38FusedTest, RoundedDraftInputKeepsTheOriginalVectorProduct) {
   ExpectSame(Download(got), Download(control), "original vector product over rounded input");
 }
 
-// jitLLM's column-blocked recurrence is upstream's gated_delta_net bit for
+// Llmpalooza's column-blocked recurrence is upstream's gated_delta_net bit for
 // bit at Qwen3.8's shape (16 query/key and 48 value heads of 128, q, k and v
 // viewed out of the convolution's output as the graph views them), and
 // within the default bound of the FP64 recurrence.
@@ -693,7 +693,7 @@ TEST_F(Qwen38FusedTest, GatedDeltaNetColumnsIsUpstreamsRecurrence) {
   }
 }
 
-// jitLLM's convolution is the graph's concatenation, ssm_conv, silu and
+// Llmpalooza's convolution is the graph's concatenation, ssm_conv, silu and
 // the query and key heads' L2 norms bit for bit, at Qwen3.8's channels
 // (16 + 16 + 48 heads of 128), and within the float bound of FP64.
 TEST_F(Qwen38FusedTest, GdnConvIsTheUnfusedNodes) {
@@ -779,7 +779,7 @@ TEST_F(Qwen38FusedTest, GdnConvIsTheUnfusedNodes) {
   }
 }
 
-// jitLLM's gated norm is the graph's rms_norm, weight, sigmoid and mul bit
+// Llmpalooza's gated norm is the graph's rms_norm, weight, sigmoid and mul bit
 // for bit (and rounded to nearest in BF16), at 48 heads of 128.
 TEST_F(Qwen38FusedTest, GdnNormGateIsTheUnfusedNodes) {
   constexpr std::int64_t kD = 128;
@@ -847,16 +847,16 @@ TEST_F(Qwen38FusedTest, TheChecksRefuseWhatTheKernelsCannotRun) {
     TensorArena::Bind(node, Allocate(ggml_nbytes(node) + 64));
     const std::vector<ggml_tensor*> nodes = {node};
     kg::BindViews(nodes);
-    switch (kg::JitllmOpOf(node)) {
-      case kg::JitllmOp::kHcCombine:
+    switch (kg::LlmpOpOf(node)) {
+      case kg::LlmpOp::kHcCombine:
         return FailedCode(kg::RunHcCombine(launch(), node));
-      case kg::JitllmOp::kHcNorm:
+      case kg::LlmpOp::kHcNorm:
         return FailedCode(kg::RunHcNorm(launch(), node));
-      case kg::JitllmOp::kHcMix:
+      case kg::LlmpOp::kHcMix:
         return FailedCode(kg::RunHcMix(launch(), node));
-      case kg::JitllmOp::kMoeCombine:
+      case kg::LlmpOp::kMoeCombine:
         return FailedCode(kg::RunMoeCombine(launch(), node));
-      case kg::JitllmOp::kGemmBf16:
+      case kg::LlmpOp::kGemmBf16:
         return FailedCode(kg::RunGemmBf16(launch(), node));
       default:
         return KernelError::kUnknown;

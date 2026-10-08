@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Offline selected-head preparation only. No runtime conversion or CUDA.
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
   std::vector<float> expanded(bf16.size());
   const auto row_bytes = ggml_row_size(GGML_TYPE_Q4_1, static_cast<std::int64_t>(width));
   std::vector<std::byte> packed(static_cast<std::size_t>(batch) * row_bytes);
-  jitllm::base::Sha256 input_digest;
+  llmp::base::Sha256 input_digest;
   for (std::uint64_t first = 0; first < rows; first += batch_rows) {
     const auto count = std::min(batch_rows, rows - first);
     const auto values = static_cast<std::size_t>(count * width);
@@ -102,6 +102,6 @@ int main(int argc, char** argv) {
   if (!output) return 1;
   ggml_quantize_free();
   std::println("QWEN_SELECTED_HEAD_QUANTIZED rows={} width={} bytes={} input_sha256={}", rows,
-               width, rows * row_bytes, jitllm::base::ToHex(input_digest.Finish()));
+               width, rows * row_bytes, llmp::base::ToHex(input_digest.Finish()));
   return 0;
 }

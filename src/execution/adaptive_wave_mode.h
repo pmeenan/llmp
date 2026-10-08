@@ -1,14 +1,14 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_EXECUTION_ADAPTIVE_WAVE_MODE_H_
-#define JITLLM_EXECUTION_ADAPTIVE_WAVE_MODE_H_
+#ifndef LLMP_EXECUTION_ADAPTIVE_WAVE_MODE_H_
+#define LLMP_EXECUTION_ADAPTIVE_WAVE_MODE_H_
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 
-namespace jitllm::execution {
+namespace llmp::execution {
 
 // How a speculative model steps a wave of concurrent requests: each one's
 // draft and one joined verify, or one plain decode row each (the drafter
@@ -147,6 +147,6 @@ class AdaptiveWaveMode {
   std::uint32_t probe_left_ = 0;
 };
 
-}  // namespace jitllm::execution
+}  // namespace llmp::execution
 
-#endif  // JITLLM_EXECUTION_ADAPTIVE_WAVE_MODE_H_
+#endif  // LLMP_EXECUTION_ADAPTIVE_WAVE_MODE_H_

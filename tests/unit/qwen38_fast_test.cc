@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Qwen3.8's fast path (kernels/ggml/jitllm_ops.h; D-085: speed before bit
+// Qwen3.8's fast path (kernels/ggml/llmp_ops.h; D-085: speed before bit
 // exactness) on a GB10 (label `gpu`), at the model's widths: the MXFP8
 // quantization (every value within E4M3's rounding of its block's scale,
 // the scale the smallest power of two that holds the block, the padding
@@ -43,8 +43,8 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/moe_cutlass.h"
 #include "kernels/ggml/mxfp8_cutlass.h"
 #include "kernels/ggml/tensors.h"
@@ -53,15 +53,15 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::CublasHandle;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-namespace kg = jitllm::kernels::ggml;
-namespace mx = jitllm::kernels::ggml::mxfp8;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::CublasHandle;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+namespace kg = llmp::kernels::ggml;
+namespace mx = llmp::kernels::ggml::mxfp8;
 
 constexpr std::uint64_t kWorkspace = 64ULL << 20;
 constexpr std::int64_t kWidth = 2560;
@@ -133,7 +133,7 @@ std::vector<double> Dequantize(const std::vector<std::uint8_t>& blob, std::int64
   std::vector<double> out(static_cast<std::size_t>(k * rows));
   for (std::int64_t r = 0; r < rows; ++r) {
     for (std::int64_t i = 0; i < k; ++i) {
-      const std::uint64_t at = jitllm::kernels::ggml::moe::SfOffset(
+      const std::uint64_t at = llmp::kernels::ggml::moe::SfOffset(
           static_cast<std::uint64_t>(r), static_cast<std::uint64_t>(i / 32),
           static_cast<std::uint64_t>(k / 32));
       out[static_cast<std::size_t>((r * k) + i)] =
@@ -161,7 +161,7 @@ void ExpectQuantized(const std::vector<std::uint8_t>& blob, const std::vector<do
         amax = std::max(amax, std::abs(x[static_cast<std::size_t>((r * k) + (b * 32) + i)]));
       }
       const double s =
-          E8m0(blob[l.scales() + jitllm::kernels::ggml::moe::SfOffset(
+          E8m0(blob[l.scales() + llmp::kernels::ggml::moe::SfOffset(
                                      static_cast<std::uint64_t>(r), static_cast<std::uint64_t>(b),
                                      static_cast<std::uint64_t>(k / 32))]);
       // (Margins for x computed in FP64 where the kernel quantized its F32.)
@@ -182,8 +182,8 @@ void ExpectQuantized(const std::vector<std::uint8_t>& blob, const std::vector<do
   for (std::uint64_t r = l.rows; r < mx::PaddedRows(l.rows); ++r) {
     for (std::int64_t b = 0; b < k / 32; ++b) {
       bad += blob[l.scales() +
-                  jitllm::kernels::ggml::moe::SfOffset(r, static_cast<std::uint64_t>(b),
-                                                       static_cast<std::uint64_t>(k / 32))] != 0;
+                  llmp::kernels::ggml::moe::SfOffset(r, static_cast<std::uint64_t>(b),
+                                                     static_cast<std::uint64_t>(k / 32))] != 0;
     }
   }
   EXPECT_EQ(bad, 0U) << what;
@@ -192,7 +192,7 @@ void ExpectQuantized(const std::vector<std::uint8_t>& blob, const std::vector<do
 class Qwen38FastTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     int major = 0;
     int minor = 0;
@@ -209,9 +209,9 @@ class Qwen38FastTest : public ::testing::Test {
     ASSERT_TRUE(launch.has_value()) << (launch ? "" : launch.error().detail);
     launch_ = std::move(*launch);
     arena_ = std::make_unique<TensorArena>(TensorArena::Create(1024).value());
-    auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+    auto registry = llmp::execution::Registry::Create(kg::Implementations());
     ASSERT_TRUE(registry.has_value());
-    registry_ = std::make_unique<jitllm::execution::Registry>(std::move(*registry));
+    registry_ = std::make_unique<llmp::execution::Registry>(std::move(*registry));
   }
 
   void TearDown() override {
@@ -320,7 +320,7 @@ class Qwen38FastTest : public ::testing::Test {
   std::unique_ptr<CublasHandle> cublas_;
   std::unique_ptr<LaunchContext> launch_;
   std::unique_ptr<TensorArena> arena_;
-  std::unique_ptr<jitllm::execution::Registry> registry_;
+  std::unique_ptr<llmp::execution::Registry> registry_;
 };
 
 // MXFP8 weights of real models' ranges: E4M3 codes (no NaN) and E8M0
@@ -384,7 +384,7 @@ TEST_F(Qwen38FastTest, TheMxfp8ProductIsTheProductOfItsQuantizedOperands) {
       for (std::int64_t b = 0; b < k / 32; ++b) {
         const std::uint8_t want =
             r < n ? w.scales[static_cast<std::size_t>((r * (k / 32)) + b)] : 0;
-        misplaced += sw[jitllm::kernels::ggml::moe::SfOffset(
+        misplaced += sw[llmp::kernels::ggml::moe::SfOffset(
                          static_cast<std::uint64_t>(r), static_cast<std::uint64_t>(b),
                          static_cast<std::uint64_t>(k / 32))] != want;
       }
@@ -816,9 +816,9 @@ TEST_F(Qwen38FastTest, GdnHistoryShiftsTheOldHistoryForShortChunks) {
   EXPECT_FALSE(kg::CheckGdnHistory(bare).has_value());
 }
 
-// jitllm.gdn.step is the columns kernel over the state in place: its
+// llmp.gdn.step is the columns kernel over the state in place: its
 // attention output and the state it leaves equal gated_delta_net's (planned
-// as jitllm.gated_delta_net.columns) output rows and state rows bit for bit.
+// as llmp.gated_delta_net.columns) output rows and state rows bit for bit.
 // This comparison runs the original pinned GGML CUDA operations rather
 // than substituting CPU math. In particular fast-math's FTZ and the
 // softplus branch at 20 must agree at every F32 rounding boundary.
@@ -1028,7 +1028,7 @@ TEST_F(Qwen38FastTest, GdnStepIsTheColumnsRecurrenceInPlace) {
   }
 }
 
-// jitllm.gemm.bf16's vector form (GemvBf16) at the hyper-connections' and
+// llmp.gemm.bf16's vector form (GemvBf16) at the hyper-connections' and
 // the router's shapes, F32 and BF16 out, against FP64; past one column
 // (kGemvBf16FastColumns) the same node runs cuBLAS. The one-column shapes
 // reach each of the vector kernel's four forms (k 320, 2,560, 10,240 and

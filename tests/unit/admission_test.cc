@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Admission and the switching policy against the M2 rows of D-050's
@@ -22,18 +22,18 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::memory::CommitmentError;
-using jitllm::scheduler::Admission;
-using jitllm::scheduler::AdmissionError;
-using jitllm::scheduler::Decision;
-using jitllm::scheduler::PolicySettings;
-using jitllm::scheduler::RequestClass;
-using jitllm::scheduler::RequestId;
-using jitllm::scheduler::RequestSpec;
-using jitllm::scheduler::RequestState;
-using jitllm::scheduler::SwitchingPolicy;
-using jitllm::test_support::Failed;
+using llmp::base::Bytes;
+using llmp::memory::CommitmentError;
+using llmp::scheduler::Admission;
+using llmp::scheduler::AdmissionError;
+using llmp::scheduler::Decision;
+using llmp::scheduler::PolicySettings;
+using llmp::scheduler::RequestClass;
+using llmp::scheduler::RequestId;
+using llmp::scheduler::RequestSpec;
+using llmp::scheduler::RequestState;
+using llmp::scheduler::SwitchingPolicy;
+using llmp::test_support::Failed;
 using ::testing::ElementsAre;
 using ::testing::IsEmpty;
 using ::testing::Pair;
@@ -47,10 +47,10 @@ RequestSpec Spec(std::uint64_t retained, std::uint64_t phase,
           .deadline = std::nullopt};
 }
 
-constexpr jitllm::catalog::DomainId kSpark(0, 1);
+constexpr llmp::catalog::DomainId kSpark(0, 1);
 
-jitllm::memory::CommitmentLedger LedgerWith(std::uint64_t budget) {
-  jitllm::memory::CommitmentLedger ledger;
+llmp::memory::CommitmentLedger LedgerWith(std::uint64_t budget) {
+  llmp::memory::CommitmentLedger ledger;
   EXPECT_TRUE(ledger.AddDomain(kSpark, Bytes(budget)).has_value());
   return ledger;
 }
@@ -59,7 +59,7 @@ jitllm::memory::CommitmentLedger LedgerWith(std::uint64_t budget) {
 struct Node {
   explicit Node(std::uint64_t budget, PolicySettings settings = {})
       : ledger(LedgerWith(budget)), admission(ledger, kSpark, settings) {}
-  jitllm::memory::CommitmentLedger ledger;
+  llmp::memory::CommitmentLedger ledger;
   Admission admission;
 };
 

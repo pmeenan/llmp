@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The toolchain contract, checked in a binary the build produced: C++23 with
@@ -23,37 +23,37 @@
 
 static_assert(__cplusplus >= 202302L, "C++23 throughout (D-032)");
 #if !defined(__clang__) || __clang_major__ != 22
-#error "jitLLM code compiles with the SDK's Clang 22 (D-032)"
+#error "llmpalooza code compiles with the SDK's Clang 22 (D-032)"
 #endif
 #if __GLIBCXX__ != 20260807
-#error "jitLLM uses the GCC 16.2.0 C++ runtime (D-060)"
+#error "llmpalooza uses the GCC 16.2.0 C++ runtime (D-060)"
 #endif
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
-#error "jitLLM builds with -fno-exceptions (D-066)"
+#error "llmpalooza builds with -fno-exceptions (D-066)"
 #endif
 
 // libstdc++'s precondition checks are on exactly where the preset asks for
 // them (D-083): the test and development presets, not the package's build.
-#ifndef JITLLM_TEST_LIBSTDCXX_ASSERTIONS
-#error "define JITLLM_TEST_LIBSTDCXX_ASSERTIONS to the configured JITLLM_LIBSTDCXX_ASSERTIONS"
-#elif JITLLM_TEST_LIBSTDCXX_ASSERTIONS && !defined(_GLIBCXX_ASSERTIONS)
-#error "JITLLM_LIBSTDCXX_ASSERTIONS builds define _GLIBCXX_ASSERTIONS (D-083)"
-#elif !JITLLM_TEST_LIBSTDCXX_ASSERTIONS && defined(_GLIBCXX_ASSERTIONS)
-#error "_GLIBCXX_ASSERTIONS is only for JITLLM_LIBSTDCXX_ASSERTIONS builds (D-083)"
+#ifndef LLMP_TEST_LIBSTDCXX_ASSERTIONS
+#error "define LLMP_TEST_LIBSTDCXX_ASSERTIONS to the configured LLMP_LIBSTDCXX_ASSERTIONS"
+#elif LLMP_TEST_LIBSTDCXX_ASSERTIONS && !defined(_GLIBCXX_ASSERTIONS)
+#error "LLMP_LIBSTDCXX_ASSERTIONS builds define _GLIBCXX_ASSERTIONS (D-083)"
+#elif !LLMP_TEST_LIBSTDCXX_ASSERTIONS && defined(_GLIBCXX_ASSERTIONS)
+#error "_GLIBCXX_ASSERTIONS is only for LLMP_LIBSTDCXX_ASSERTIONS builds (D-083)"
 #endif
 
 // The target is the profile's, at its explicit baseline: nothing that
 // -march=native on a build host would add (D-011).
-#ifdef JITLLM_TEST_TARGET_x86_64
+#ifdef LLMP_TEST_TARGET_x86_64
 #if !defined(__x86_64__) || defined(__SSE3__) || defined(__AVX__)
 #error "x86-64 builds target the x86-64 baseline"
 #endif
-#elifdef JITLLM_TEST_TARGET_aarch64
+#elifdef LLMP_TEST_TARGET_aarch64
 #if !defined(__aarch64__) || defined(__ARM_FEATURE_ATOMICS) || defined(__ARM_FEATURE_SVE)
 #error "AArch64 builds target armv8-a"
 #endif
 #else
-#error "unknown target: define JITLLM_TEST_TARGET_<arch>"
+#error "unknown target: define LLMP_TEST_TARGET_<arch>"
 #endif
 
 namespace {
@@ -151,9 +151,8 @@ int main() {
   if (checks.failures() != 0) {
     return 1;
   }
-  std::println(
-      "toolchain contract: C++ {}, libstdc++ {}, Clang {}, no exceptions, {}", __cplusplus,
-      __GLIBCXX__, __clang_version__,
-      JITLLM_TEST_LIBSTDCXX_ASSERTIONS ? "libstdc++ assertions" : "no libstdc++ assertions");
+  std::println("toolchain contract: C++ {}, libstdc++ {}, Clang {}, no exceptions, {}", __cplusplus,
+               __GLIBCXX__, __clang_version__,
+               LLMP_TEST_LIBSTDCXX_ASSERTIONS ? "libstdc++ assertions" : "no libstdc++ assertions");
   return 0;
 }

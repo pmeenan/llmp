@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma 26 native runner: bounded first controls
@@ -20,7 +20,7 @@ The actual GGUF is `unsloth/gemma-4-26B-A4B-it-GGUF` revision
 The deep-verified native import uses `m3-1+layout-a0d1980a9eddd1ad` and
 artifact identity `4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3`.
 Its immutable directory lives on both Sparks under
-`~/.local/share/jitllm/m3-artifacts/`. The supervised checksum copy published
+`~/.local/share/llmp/m3-artifacts/`. The supervised checksum copy published
 an absent destination atomically; it did not requalify the source hash.
 
 Native controls run on Spark-b with the locked Spark-native SDK/sources.
@@ -159,7 +159,7 @@ and measured executable SHA-256
 `e7d3992f1cbcc0310322049574b949cb80c63f4b6d4db5401f600aaf73980fbe`.
 The retained reproducer only corrects the inherited introductory comments
 and formatting; its SHA-256 is
-`5e4846b2d2ef71456e3415264f8c800bfe297bcbe3ef71f145dace63cfd30218`.
+`e5c8ff67bcc62eaa862a52274222583e01510a13c33737d9e117d3d65edb41d2`.
 It is external reference tooling, not linked into native inference.
 
 Place this source and the locked revision's `include/llama.h` plus
@@ -190,7 +190,7 @@ For native generation, use `2,818,5279,529,7001,563`, 32 steps, one slot,
 the full comma-separated 27-ID list above, zero steps, one slot, `ordinary`
 and `teacher`. Both commands use the same prepared artifact named above.
 
-`benchmarks/jitllm_gemma_runner` takes
+`benchmarks/llmp_gemma_runner` takes
 `ARTIFACT OUT TOKEN_CSV STEPS [SLOTS] [ordinary|norm] [teacher|warm] [host|device]`.
 Its default mask path is device-produced; `host` explicitly funds reference
 masks. Run every Spark build/test/inference via installed `spark-job --gpu`
@@ -200,16 +200,16 @@ and the locked build; source synchronization is `rsync -rlpc`, excluding
 `gemma4_runner_test`, alongside the shared cohort/plan/state controls.
 
 Raw fixtures stay outside Git. Local protocol/reference files:
-`/tmp/jitllm-m35-coordination/gemma-oracle-prep/{PROTOCOL.md,reference.json,output/}`.
+`/tmp/llmp-m35-coordination/gemma-oracle-prep/{PROTOCOL.md,reference.json,output/}`.
 Native immutable vectors/calibration/comparison:
-`/tmp/jitllm-m35-coordination/gemma-runner-raw/{ordinary,norm,teacher,device}/`,
+`/tmp/llmp-m35-coordination/gemma-runner-raw/{ordinary,norm,teacher,device}/`,
 `native-noise-frozen.json`, `first-comparison.json`, `host-device-exact.json`.
 Reproduction analysis scripts are adjacent
 `gemma-runner-noise.py` and `gemma-runner-compare.py`; root independently
 verified the same fixtures with `root-gemma-first-verify.py`.
 Remote native outputs are Spark-b `/tmp/m35-gemma-native-{first3,noise1,teacher1,device1}`;
-reference output is Spark `~/.local/share/jitllm/gemma-oracle-prep/output`.
-Official logs live at each host's `~/.local/share/jitllm/jobs/NAME/log`;
+reference output is Spark `~/.local/share/llmp/gemma-oracle-prep/output`.
+Official logs live at each host's `~/.local/share/llmp/jobs/NAME/log`;
 first/native jobs are `m35-gemma-runner-first3`, `noise1`, `teacher1`, `device1`,
 `warm1`, `state2` (retained failed byte-equality diagnostic), `state3`,
 `invariant1`, `admission1`, `check1` and `shared-state1`. The oracle job is

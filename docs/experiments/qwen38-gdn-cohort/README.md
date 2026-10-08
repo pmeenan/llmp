@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen captured four-request GDN recurrence
@@ -89,7 +89,7 @@ or production rewrite ran.
 
 The source-only kit is retained at
 `/home/pmeenan/scratch/m3-qwen-gdn-cohort/frozen-r3` on B.
-Its private files are `control.cc`, `control.py`, `jitllm_fused.cu` and
+Its private files are `control.cc`, `control.py`, `llmp_fused.cu` and
 `gdn-screen.inc`; earlier frozen kits remain unchanged.
 Local raw receipts, outputs and supervisor records are under
 `/home/pmeenan/scratch/m3-qwen-gdn-cohort-records/`.
@@ -173,9 +173,9 @@ outside main. No production suite or HTTP ladder ran for this rejected screen.
 
 The patch against `ce8173b`, per-file source hashes, controller and raw outputs
 are retained in workstation scratch
-`/home/pmeenan/scratch/jitllm-m3-qwen-gdn-waves-2026-10-04/`.
+`/home/pmeenan/scratch/llmp-m3-qwen-gdn-waves-2026-10-04/`.
 Spark A retains the controller and outputs in `~/scratch/gdn-waves/`, and the
-private build in `~/src/jitLLM-wt/gdnw4/`. Reproduction uses that source patch,
+private build in `~/src/llmp-wt/gdnw4/`. Reproduction uses that source patch,
 the pinned target artifact `c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93`,
 drafter `8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40`
 and `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json`.
@@ -185,7 +185,7 @@ and `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json`.
 | Source patch | 3ce45bae14634fcb0610c5a6258285c0c9d0e249a9b8b527633c5bc19936f47f |
 | Per-file source hashes | 00542a34ee3a8e255749010544756dd28b336542bae4299b37e031272913915d |
 | Controller | 2fa13166684f52844f0d10c63bfeec8250698b3b49b250d4028d2bff7f49237e |
-| Prompt source | d212009dadf1ddbf945c8dc7ad0214ba444236baf57c8ed9019c3ebe6b0805b4 |
+| Prompt source | c697236c56a09b0a3f2550f7514b3e4d826e1d14a96b4d1c79e3bd33a3a6f859 |
 | Unmodified copied benchmark | 4d3228cc89520db7c7866d78a4c5db6ac5bdbbcd79e4363d192063e9ab52ae93 |
 | Refactored benchmark (both settings) | 8a98e510ee702042eaa256f0a7760cfac010d04884c188c5be20a9bca2f2d2d4 |
 | Successful controller receipt | 69435eba8a3758f8294eae1de8b0a2852ef805222350a5431d8cc0bef6351096 |

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Successful live-state placement checks
@@ -46,7 +46,7 @@ funding justification. A future post-probe consumer must fund its enclosing
 objects. Qwen/DeepSeek speed benefits have not been measured here.
 
 Reproduce with the unchanged [production joined helper](../gemma-joined-serving/README.md)
-`jitllm_gemma_joined`, preserving the baseline built on `267c5fe` plus the
+`llmp_gemma_joined`, preserving the baseline built on `267c5fe` plus the
 reviewed opt-in core and its receipt, then building the four candidate files on
 `bc8fca6` with the same locked SDK. [results.json](results.json) records the exact
 source, binary, SDK, input and output identities. Both private binaries use the

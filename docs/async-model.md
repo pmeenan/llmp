@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Native tasks and completion ownership
@@ -226,7 +226,7 @@ ownership/state design with controlled event order and bounded records. It
 does not select a new source dependency, implement CUDA/io_uring adapters,
 prove multithreaded publication, or validate reservation progress. M2 must
 add real concurrency/lost-wakeup tests, coalesced page-in waiters, task-tree
-unwind, full queues during cleanup, and the GGML execution proof on jitLLM's VMM.
+unwind, full queues during cleanup, and the GGML execution proof on llmpalooza's VMM.
 M2's scheduler thread and lanes (`src/scheduler/scheduler.h`,
 `services.h`) implement this protocol over the fake and real providers,
 with those tests ([M2 record](m2-record.md), task lanes). Choices they settle:

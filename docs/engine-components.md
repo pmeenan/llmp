@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Engine components
@@ -35,7 +35,7 @@ caches, graph capture, runner resources. Each family still writes its own
   DeepSeek), with no common interface: every runner is its own
   `final : PagedModel` exposing the same twenty-odd verbs.
 - One concept is implemented several times: hyper-connections twice
-  (`jitllm.hc.mix` for Qwen3.8, `jitllm.dsv4.hc_mix` for DeepSeek), MoE
+  (`llmp.hc.mix` for Qwen3.8, `llmp.dsv4.hc_mix` for DeepSeek), MoE
   three ways.
 - Formats are woven into families: Gemma2's graph carries its Q8_0 paths,
   Qwen3.8's binding its own `Qwen38Mxfp8` (codes, scales, BF16, matrix).
@@ -95,7 +95,7 @@ chat) is unchanged and still names no architecture (D-068).
 
 ## The graph IR
 
-jitLLM's own IR (D-107), modelled on GGML's graph and taking the best of
+Llmpalooza's own IR (D-107), modelled on GGML's graph and taking the best of
 the other engines; GGML becomes one source of kernel implementations, not
 the graph runtime.
 
@@ -173,19 +173,19 @@ what exists more than once today and becomes one component.
 | RMS norm | all; weighted, unweighted (DS heads), L2 (Q38 GDN), gated output norm (Q38), BF16-rounded (Img), true `(1 + w)` only in Img (GGUF folds Gemma's offset into the weight) | a `Norm` helper in every graph builder and in `kernels/exl3/qwen2.cc` |
 | Norm placement | pre (Q2), sandwich pre/post with a layer output scale (G2–G4, Asst), inside the residual mix (Q38, DS), adaLN (Img) | inline per graph builder |
 | Rotation | NEOX (Gemma, Q2, Img text encoder), NORM pairs with YaRN (DS), interleaved multi-section, partial (Q38), proportional frequencies (G4 global), 3-axis complex (Img DiT); base and scaling per layer type | wrappers in `qwen2_graph`, `exl3/qwen2.cc`, `dsv4_graph`; literal bases in `gemma3_graph` |
-| QK norm and rotation, fused | G3, G4, Asst, Q38, DS, Img | four kernels: `ggml.rms_norm_mul_rope.fused`, `jitllm.qsa.prep`, `jitllm.dsv4.qhead`, `image.head_norm_rope.*` |
+| QK norm and rotation, fused | G3, G4, Asst, Q38, DS, Img | four kernels: `ggml.rms_norm_mul_rope.fused`, `llmp.qsa.prep`, `llmp.dsv4.qhead`, `image.head_norm_rope.*` |
 | Dense attention | GQA with softcap (G2), sliding ring and global layers (G2–G4), tied K=V and V-norm (G4 global), MQA with sinks and window (DS), query-only reading the target's cache (Asst), small causal (Img text encoder), bidirectional FA2 (Img) | Q2's GGML and EXL3 builders differ; image attention separate |
 | Owner-root attention (joined requests reading their own caches) | G2 (two owners), G3 (2–12), G4 (rewrite pass) | inline in two builders plus `gemma4_attention.cc` |
 | Masks | causal/ring producer (G2–G4, Q38, DS), noncausal block (DSp), host-built (Asst, Q2) | adapter per `*_plan.cc`; hand-written ring in the assistant plan |
 | Sparse attention with an indexer | QSA top-k over pooled blocks (Q38), lightning indexer top-512 (DS) | top-k masks in both builders |
-| Compressed KV | QSA block-key pooling (Q38), CSA/HCA gated pooling (DS) | `jitllm.qsa.pool`, `jitllm.dsv4.compress` |
+| Compressed KV | QSA block-key pooling (Q38), CSA/HCA gated pooling (DS) | `llmp.qsa.pool`, `llmp.dsv4.compress` |
 | Linear attention | gated delta net with convolution state (Q38) | one, with fixed head count |
 | Attention output gate | Q38 | one |
 | Hyper-connection residual | four streams: sigmoid mix (Q38), Sinkhorn mix (DS, DSp); head mix | three kernel sets; stream init and head in both builders |
 | Dense GLU | GeGLU-tanh (Gemma), SwiGLU (Q2, Q38 shared expert, Img), clamped SwiGLU (DS), GELU-tanh (Img) | image and GGML versions |
 | MoE router | softmax top-8 of 128 with expert scales (G4), softmax top-10 of 512 (Q38), √softplus with selection bias, scaled (DS), token-hash layers (DS) | three routers and three plain-graph copies |
 | Shared or parallel experts | parallel dense FFN (G4), sigmoid-gated shared expert (Q38), ungated (DS) | Q38 and DS copies |
-| Routed products and combine | `mul_mat_id`, CUTLASS NVFP4, `jitllm.vecq`, compact MMQ, D2R | four combine/reduce kernels; vecq MoE in two builders |
+| Routed products and combine | `mul_mat_id`, CUTLASS NVFP4, `llmp.vecq`, compact MMQ, D2R | four combine/reduce kernels; vecq MoE in two builders |
 | Per-layer side input | n-gram embedding table with its own convolution state (Q38, layer 1), token-hash routing table (DS) | one each |
 | Heads | tied or untied, final softcap (G2, G4), hyper-connection head mix (Q38, DS), selected draft heads (Q38) | per builder |
 | Drafters | in-checkpoint MTP over the target's streams (Q38), companion assistant reading target KV and features (Asst), block drafter with feature injection and a Markov head (DSp) | `Inject` and `InjectWave` copies in `dsv4_graph` |
@@ -300,8 +300,9 @@ Native C++, part of the distribution; no Python (D-109).
   everything else it reads (D-009); a mapping cannot run code.
 - **Output** is a prepared artifact whose manifest carries the spec, every
   tensor's encoding and layout, the folds applied, and the importer's
-  identity. Import stays deterministic and published by one rename
-  (D-056).
+  identity, under a new format version whose identifiers are `llmp-`
+  (v0's `jitllm-` names retire with v0's reader, D-111). Import stays
+  deterministic and published by one rename (D-056).
 - **Admission.** <a id="admitting-a-checkpoint"></a>A checkpoint of a known
   architecture is supported once it passes a standard automated gate:
   logits and perplexity against a reference engine on a fixed corpus, and
@@ -369,7 +370,7 @@ Arc (`plex`), AMD when hardware exists; Windows through the NVIDIA host for
 the OS port (D-110). A backend supplies the providers, the device runtime,
 decoders for every encoding and implementations of the op set; the
 primitive fallback plus the decoders run every model before any tuning.
-GGML's Metal, SYCL and HIP backends are kernel sources there; jitLLM's own
+GGML's Metal, SYCL and HIP backends are kernel sources there; llmpalooza's own
 CUDA kernels (CUTLASS NVFP4/MXFP8, its attention, its fusions) are not, so
 the format ladder is what keeps every model running on a new platform.
 
@@ -462,7 +463,7 @@ Gemma2 and Gemma3 builders (T92), and per-runner placement thresholds
 
 ## Survey of other engines
 
-Read from current sources on 2026-10-08; facts first, then what jitLLM
+Read from current sources on 2026-10-08; facts first, then what llmpalooza
 takes.
 
 - **GGML/llama.cpp** (`master` `71ad059`). `ggml_tensor` carries type,
@@ -550,7 +551,7 @@ takes.
 
 None of the surveyed engines builds models from declarative specs; each
 writes per-architecture code, and llama.cpp and vLLM have each grown to 150–280
-architecture files. jitLLM's spec-plus-components design is the point of
+architecture files. Llmpalooza's spec-plus-components design is the point of
 difference, and its risk: the catalog must stay expressive enough that a
 new shape is a component, not an escape hatch.
 

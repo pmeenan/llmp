@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/turn_reuse.h"
@@ -13,8 +13,8 @@
 #include "chat/chat.h"
 
 namespace {
-namespace rt = jitllm::runtime;
-namespace ch = jitllm::chat;
+namespace rt = llmp::runtime;
+namespace ch = llmp::chat;
 using Clock = std::chrono::steady_clock;
 
 TEST(TurnReuseTest, SelectsTheNearestCheckpointInsideTheExactCommonPrefix) {

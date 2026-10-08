@@ -12,7 +12,7 @@
   },
   "diagnostic_factor": {
     "environment": {
-      "JITLLM_GEMMA_KEEP28_ROUTING": "1"
+      "LLMP_GEMMA_KEEP28_ROUTING": "1"
     },
     "mechanism": "existing caller keep",
     "node": "blk.28.router_probabilities"
@@ -48,9 +48,9 @@
   "artifact_index_sha256": "e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171",
   "measured_source_sha256": {
     "benchmarks/CMakeLists.txt": "d4e7f32a66c2cb28bb01102d2b168462b77a48e21c371f0c28d73fe9d32799e0",
-    "benchmarks/gemma_quality_keep28.cc": "beac71309d87a7b5f5399df4e4990c3a044d6be07a25161ab553cea7fd008b37",
-    "benchmarks/gemma_quality_keep28.h": "081a77d0893fd65acf06be79d31fa046c3ee8b4f3b31063a9876f5b9342cd346",
-    "benchmarks/gemma_quality_keep28_wrap.cc": "858f73c6f731fea81cbb69e31b9ffcd4d4a1d0569e6ba2c3274314d44122b160",
+    "benchmarks/gemma_quality_keep28.cc": "688cf332c2bdf260bf066368925dc78393560ba422491b59039225d73c078a22",
+    "benchmarks/gemma_quality_keep28.h": "5ee4e9c99e02d60b5320b47fb8e5e1281ac06a28bfcca80c00e001c8dea0d8c7",
+    "benchmarks/gemma_quality_keep28_wrap.cc": "a9238d3520f729fd24d2cfab3d3f3967ab1d6d2f6e4a8a4faf87c03ff1f8321c",
     "docs/experiments/gemma-keep28-routing/README.md": "a52c3f29505aee98d67caa55dff1dfd7e8a8095a6a2b76359ed924b8edc74537",
     "src/engine/gemma4_plan.h": "756364ad86c61773016cc926b0f09a8a1319c95529a8b4e22cd1ab982a7faca6"
   },
@@ -132,7 +132,7 @@
     "strict_argmax_mismatches": 0,
     "full_softmax_tv": 0,
     "basis": "inherited Task57 reference aggregates by authenticated equality of all1024 complete head bytes; no scalar/softmax rescan",
-    "task57_results_sha256": "ae4f41063569dd435dd5d310689a7de732138e57a4914de97c6cbc5c63723b5d"
+    "task57_results_sha256": "a4106622b024b8d92eed05a578c0fd6d5c426778b2213bebc5d2c68ccb9c03b9"
   },
   "gpu_driver_provenance": "Inherited Task57 environment identity; not a new contemporaneous driver measurement."
 }

@@ -1,13 +1,13 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 # build|run NEW_OUTPUT. External oracle only; installed GPU supervisor required.
 set -euo pipefail
 [[ "$#" -ge 1 ]] || exit 2
-root="${JITLLM_GEMMA_MOE_ORACLE_ROOT:-$HOME/.local/share/jitllm/gemma-moe-oracle}"
-source_root="${JITLLM_GEMMA_MOE_SOURCE_ROOT:-$HOME/src/jitLLM-wt/m3fixb}"
-ggml="$HOME/.local/share/jitllm/gemma-reference-stock/ggml"
-sdk="$HOME/.local/share/jitllm/sdk/aarch64-c09daba6ac31edee"
+root="${LLMP_GEMMA_MOE_ORACLE_ROOT:-$HOME/.local/share/llmp/gemma-moe-oracle}"
+source_root="${LLMP_GEMMA_MOE_SOURCE_ROOT:-$HOME/src/llmp-wt/m3fixb}"
+ggml="$HOME/.local/share/llmp/gemma-reference-stock/ggml"
+sdk="$HOME/.local/share/llmp/sdk/aarch64-c09daba6ac31edee"
 image=ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7
 common=(run --rm --network none --read-only --user "$(id -u):$(id -g)" --device nvidia.com/gpu=all --tmpfs /tmp:rw,size=1g --mount "type=bind,src=$root,dst=/scratch" --mount "type=bind,src=$ggml,dst=/ggml,readonly" --mount "type=bind,src=$source_root/docs/experiments/gemma-moe-primitives,dst=/tool,readonly")
 case "$1" in

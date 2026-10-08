@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Dense31 scalar checked-norm first screen
@@ -97,7 +97,7 @@ Follow [PROTOCOL](PROTOCOL.md) with the approved artifact/raw source and
 canonical1,024 little-endian IDs identified there. Supply the eight pinned
 headers in external `headers/`, use the wrapper's external scratch paths,
 and checksum-sync sources to the owned Spark tree. Build only the manual
-`jitllm_gemma_dense31_c1_norm` target through the locked SDK, then run
+`llmp_gemma_dense31_c1_norm` target through the locked SDK, then run
 `bash reference.sh build` before any source/output freeze. Every command
 runs through the installed supervised GPU admission.
 

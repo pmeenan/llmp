@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "qwen38_vocab.h"
@@ -21,7 +21,7 @@
 #include "tokenizer/hf.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::benchmarks::draft_vocab {
+namespace llmp::benchmarks::draft_vocab {
 namespace {
 
 auto Error(std::string text) { return std::unexpected(std::move(text)); }
@@ -104,7 +104,7 @@ std::expected<std::vector<Example>, std::string> ReadExamples(std::string_view j
   const auto context_value = root.find("context_capacity");
   const auto chunk = root.find("prefill_chunk");
   const auto depth = root.find("draft_depth");
-  if (!format || format->string() != "jitllm-qwen-own-vocab-prepared-v1" || !split ||
+  if (!format || format->string() != "llmp-qwen-own-vocab-prepared-v1" || !split ||
       (split->string() != "calibration" && split->string() != "held_out") || !list ||
       !list->is_array() || list->size() != 8 || !signal ||
       signal->string() != "native_control_natural_argmax" || !context_value ||
@@ -329,7 +329,7 @@ std::expected<void, std::string> Prepare(const Preparation& paths) {
   };
   const auto examples = root.find("examples");
   const auto background = root.find("background");
-  if (field("format") != "jitllm-qwen-own-vocab-source-v1" ||
+  if (field("format") != "llmp-qwen-own-vocab-source-v1" ||
       field("target_signal") != "native_control_natural_argmax" ||
       field("license") != "Apache-2.0" ||
       field("target_artifact") !=
@@ -470,7 +470,7 @@ std::expected<void, std::string> Prepare(const Preparation& paths) {
       return valid;
     }
     const std::string text = std::format(
-        R"({{"format":"jitllm-qwen-own-vocab-prepared-v1","split":"{}","target_signal":"native_control_natural_argmax","source_sha256":"{}","tokenizer_sha256":"{}","template_sha256":"{}","stop_metadata_sha256":"{}","stop_token_ids":{},"context_capacity":33792,"prefill_chunk":8192,"draft_depth":3,"target_state_capacity_bytes":{},"mtp_state_capacity_bytes":{},"model_loaded":false,"cuda_initialized":false,"examples":[{}]}})",
+        R"({{"format":"llmp-qwen-own-vocab-prepared-v1","split":"{}","target_signal":"native_control_natural_argmax","source_sha256":"{}","tokenizer_sha256":"{}","template_sha256":"{}","stop_metadata_sha256":"{}","stop_token_ids":{},"context_capacity":33792,"prefill_chunk":8192,"draft_depth":3,"target_state_capacity_bytes":{},"mtp_state_capacity_bytes":{},"model_loaded":false,"cuda_initialized":false,"examples":[{}]}})",
         split, Digest(*source_text), Digest(*tokenizer_text), Digest(*template_text),
         Digest(*metadata_text), Numbers(std::span<const std::int32_t>(*stops)), state->bytes,
         mtp->bytes, records);
@@ -485,4 +485,4 @@ std::expected<void, std::string> Prepare(const Preparation& paths) {
   return {};
 }
 
-}  // namespace jitllm::benchmarks::draft_vocab
+}  // namespace llmp::benchmarks::draft_vocab

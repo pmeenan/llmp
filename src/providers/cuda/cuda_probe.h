@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Queries the CUDA driver for the device probe. Binaries that link this
@@ -8,18 +8,18 @@
 // the driver's kernel modules (through the setuid nvidia-modprobe, as any
 // CUDA program would).
 
-#ifndef JITLLM_PROVIDERS_CUDA_CUDA_PROBE_H_
-#define JITLLM_PROVIDERS_CUDA_CUDA_PROBE_H_
+#ifndef LLMP_PROVIDERS_CUDA_CUDA_PROBE_H_
+#define LLMP_PROVIDERS_CUDA_CUDA_PROBE_H_
 
 #include <filesystem>
 
 #include "providers/cuda/cuda_facts.h"
 
-namespace jitllm::providers::cuda {
+namespace llmp::providers::cuda {
 
 // Queries the driver. Kernel modules are read beneath `root`.
 CudaFacts ProbeCuda(const std::filesystem::path& root);
 
-}  // namespace jitllm::providers::cuda
+}  // namespace llmp::providers::cuda
 
-#endif  // JITLLM_PROVIDERS_CUDA_CUDA_PROBE_H_
+#endif  // LLMP_PROVIDERS_CUDA_CUDA_PROBE_H_

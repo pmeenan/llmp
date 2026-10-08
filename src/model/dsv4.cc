@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // Dsv4CompressorPlan ports llama.cpp b29c606e2's dsv4_build_comp_plan
@@ -28,7 +28,7 @@
 #include "model/host_mask.h"
 #include "model/state.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 namespace {
 
 std::unexpected<std::string> Refused(std::string detail) {
@@ -873,4 +873,4 @@ std::uint64_t Dsv4VerifySnapshotBytes(const Dsv4Profile& profile, const Dsv4Stat
   return (per_row * max_rows) + scratch;
 }
 
-}  // namespace jitllm::model
+}  // namespace llmp::model

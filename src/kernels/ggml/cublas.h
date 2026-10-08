@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// jitLLM's cuBLAS handle for GGML's cuBLAS matrix multiplication (D-053;
+// Llmpalooza's cuBLAS handle for GGML's cuBLAS matrix multiplication (D-053;
 // docs/backend-proof.md#dispatch-and-implementations-d-053). GGML's launch
 // context would create a handle on first use, with a cudaMalloc workspace
-// of its own. jitLLM creates it instead, set up as upstream does
+// of its own. Llmpalooza creates it instead, set up as upstream does
 // (common.cuh, ggml_backend_cuda_context::cublas_handle): TF32 tensor-op
 // math, bound to one provider stream, with a workspace the caller declared
 // and charged. The FP16 gate's recorded plan takes this state as part of
@@ -16,7 +16,7 @@
 // and the CUBLAS* variables other than logging and NVTX) is set. The
 // libraries report their version only to the patch level (13.8.0), not the
 // build (.4). Create reads the environment, which no other thread may
-// change meanwhile (jitLLM never changes it). The workspace size
+// change meanwhile (llmpalooza never changes it). The workspace size
 // is the caller's: cuBLAS chooses algorithms by it, so the FP16 gate's
 // recorded plan fixes it at UpstreamWorkspace's.
 //
@@ -32,8 +32,8 @@
 // cublasDestroy synchronizes the device, so it belongs where the device is
 // quiescent. One handle per stream, used on the device submission lane only.
 
-#ifndef JITLLM_KERNELS_GGML_CUBLAS_H_
-#define JITLLM_KERNELS_GGML_CUBLAS_H_
+#ifndef LLMP_KERNELS_GGML_CUBLAS_H_
+#define LLMP_KERNELS_GGML_CUBLAS_H_
 
 #include <cstdint>
 #include <expected>
@@ -47,7 +47,7 @@
 struct CUctx_st;
 struct cublasContext;
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 class CublasHandle {
  public:
@@ -94,6 +94,6 @@ class CublasHandle {
   int borrowers_ = 0;  // launch contexts holding it
 };
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_CUBLAS_H_
+#endif  // LLMP_KERNELS_GGML_CUBLAS_H_

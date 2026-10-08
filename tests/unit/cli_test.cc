@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The `jitllm` command's commands, options and output (D-062), and the
+// The `llmp` command's commands, options and output (D-062), and the
 // surface versions it is built with.
 
 #include "cli/cli.h"
@@ -72,26 +72,26 @@ struct Result {
 Result RunWith(std::vector<std::string_view> args) {
   Capture out;
   Capture err;
-  const int status = jitllm::cli::Run(args, out.stream(), err.stream());
+  const int status = llmp::cli::Run(args, out.stream(), err.stream());
   return {.status = status, .out = out.text(), .err = err.text()};
 }
 
 TEST(Cli, VersionPrintsTheBuild) {
   const Result result = RunWith({"--version"});
-  EXPECT_EQ(result.status, jitllm::cli::kExitOk);
-  EXPECT_EQ(result.out, jitllm::cli::VersionText(jitllm::base::GetBuildInfo()));
+  EXPECT_EQ(result.status, llmp::cli::kExitOk);
+  EXPECT_EQ(result.out, llmp::cli::VersionText(llmp::base::GetBuildInfo()));
   EXPECT_EQ(result.err, "");
 }
 
 TEST(Cli, VersionTextFormat) {
-  const jitllm::base::BuildInfo info{.version = "0.2.0-dev.7+g0123456789ab.dirty",
-                                     .commit = "0123456789abcdef0123456789abcdef01234567",
-                                     .modified = true,
-                                     .license_profile = "core",
-                                     .sdk = "aarch64-0123456789abcdef",
-                                     .target = "aarch64-linux-gnu"};
-  EXPECT_EQ(jitllm::cli::VersionText(info),
-            "jitllm 0.2.0-dev.7+g0123456789ab.dirty\n"
+  const llmp::base::BuildInfo info{.version = "0.2.0-dev.7+g0123456789ab.dirty",
+                                   .commit = "0123456789abcdef0123456789abcdef01234567",
+                                   .modified = true,
+                                   .license_profile = "core",
+                                   .sdk = "aarch64-0123456789abcdef",
+                                   .target = "aarch64-linux-gnu"};
+  EXPECT_EQ(llmp::cli::VersionText(info),
+            "llmp 0.2.0-dev.7+g0123456789ab.dirty\n"
             "commit: 0123456789abcdef0123456789abcdef01234567 (with uncommitted changes)\n"
             "license profile: core\n"
             "SDK: aarch64-0123456789abcdef\n"
@@ -99,23 +99,23 @@ TEST(Cli, VersionTextFormat) {
 }
 
 TEST(Cli, VersionTextWithoutGit) {
-  const jitllm::base::BuildInfo info{.version = "0.2.0-dev+unknown",
-                                     .commit = "",
-                                     .modified = false,
-                                     .license_profile = "core+example",
-                                     .sdk = "x86_64-0123456789abcdef",
-                                     .target = "x86_64-linux-gnu"};
+  const llmp::base::BuildInfo info{.version = "0.2.0-dev+unknown",
+                                   .commit = "",
+                                   .modified = false,
+                                   .license_profile = "core+example",
+                                   .sdk = "x86_64-0123456789abcdef",
+                                   .target = "x86_64-linux-gnu"};
   EXPECT_THAT(
-      jitllm::cli::VersionText(info),
-      StartsWith("jitllm 0.2.0-dev+unknown\ncommit: unknown\nlicense profile: core+example\n"));
+      llmp::cli::VersionText(info),
+      StartsWith("llmp 0.2.0-dev+unknown\ncommit: unknown\nlicense profile: core+example\n"));
 }
 
 TEST(Cli, Help) {
   for (const std::string_view option : {"--help", "-h"}) {
     const Result result = RunWith({option});
-    EXPECT_EQ(result.status, jitllm::cli::kExitOk) << option;
+    EXPECT_EQ(result.status, llmp::cli::kExitOk) << option;
     EXPECT_THAT(result.out,
-                StartsWith("Usage: jitllm doctor [--config FILE]\n       jitllm --version\n"))
+                StartsWith("Usage: llmp doctor [--config FILE]\n       llmp --version\n"))
         << option;
     EXPECT_THAT(result.out, HasSubstr("\n  doctor ")) << option;
     EXPECT_EQ(result.err, "") << option;
@@ -124,25 +124,25 @@ TEST(Cli, Help) {
 
 TEST(Cli, UsageErrors) {
   const std::vector<std::pair<std::vector<std::string_view>, std::string>> cases = {
-      {{}, "jitllm: no command or option given\n"},
-      {{"--verison"}, "jitllm: unknown command or option '--verison'\n"},
-      {{"version"}, "jitllm: unknown command or option 'version'\n"},
-      {{"Doctor"}, "jitllm: unknown command or option 'Doctor'\n"},
-      {{"--version", "--help"}, "jitllm: unexpected argument '--help' after --version\n"},
-      {{"--help", "x"}, "jitllm: unexpected argument 'x' after --help\n"},
-      {{"doctor", "--help"}, "jitllm: unexpected argument '--help' after doctor\n"},
-      {{"doctor", "--config"}, "jitllm: --config needs a file\n"},
-      {{"doctor", "--config", ""}, "jitllm: --config needs a file\n"},
-      {{"doctor", "--config", "a.toml", "x"}, "jitllm: unexpected argument 'x' after doctor\n"},
+      {{}, "llmp: no command or option given\n"},
+      {{"--verison"}, "llmp: unknown command or option '--verison'\n"},
+      {{"version"}, "llmp: unknown command or option 'version'\n"},
+      {{"Doctor"}, "llmp: unknown command or option 'Doctor'\n"},
+      {{"--version", "--help"}, "llmp: unexpected argument '--help' after --version\n"},
+      {{"--help", "x"}, "llmp: unexpected argument 'x' after --help\n"},
+      {{"doctor", "--help"}, "llmp: unexpected argument '--help' after doctor\n"},
+      {{"doctor", "--config"}, "llmp: --config needs a file\n"},
+      {{"doctor", "--config", ""}, "llmp: --config needs a file\n"},
+      {{"doctor", "--config", "a.toml", "x"}, "llmp: unexpected argument 'x' after doctor\n"},
       {{"--version", "--config", "a.toml"},
-       "jitllm: unexpected argument '--config' after --version\n"},
+       "llmp: unexpected argument '--config' after --version\n"},
   };
   for (const auto& [args, message] : cases) {
     const Result result = RunWith(args);
-    EXPECT_EQ(result.status, jitllm::cli::kExitUsage) << message;
+    EXPECT_EQ(result.status, llmp::cli::kExitUsage) << message;
     EXPECT_EQ(result.out, "") << message;
     EXPECT_THAT(result.err, StartsWith(message));
-    EXPECT_THAT(result.err, HasSubstr("Usage: jitllm doctor [--config FILE]\n")) << message;
+    EXPECT_THAT(result.err, HasSubstr("Usage: llmp doctor [--config FILE]\n")) << message;
   }
 }
 
@@ -156,8 +156,8 @@ TEST(Cli, WriteFailureFails) {
   ASSERT_NE(full, nullptr);
   Capture err;
   const std::vector<std::string_view> args = {"--version"};
-  EXPECT_EQ(jitllm::cli::Run(args, full.get(), err.stream()), jitllm::cli::kExitFailure);
-  EXPECT_EQ(err.text(), "jitllm: cannot write to standard output\n");
+  EXPECT_EQ(llmp::cli::Run(args, full.get(), err.stream()), llmp::cli::kExitFailure);
+  EXPECT_EQ(err.text(), "llmp: cannot write to standard output\n");
 }
 
 // Whatever this host is, doctor prints a report whose summary agrees with
@@ -167,7 +167,7 @@ TEST(Doctor, ExitStatusFollowsTheReport) {
   EXPECT_EQ(result.err, "");
   EXPECT_THAT(result.out, StartsWith("build\n  version: "));
   const bool clean = result.out.contains("\ndoctor: no problems, ");
-  EXPECT_EQ(result.status, clean ? jitllm::cli::kExitOk : jitllm::cli::kExitFailure) << result.out;
+  EXPECT_EQ(result.status, clean ? llmp::cli::kExitOk : llmp::cli::kExitFailure) << result.out;
   EXPECT_EQ(clean, !result.out.contains("\nproblem: ")) << result.out;
 }
 
@@ -176,21 +176,21 @@ TEST(Doctor, WriteFailureFails) {
   ASSERT_NE(full, nullptr);
   Capture err;
   const std::vector<std::string_view> args = {"doctor"};
-  EXPECT_EQ(jitllm::cli::Run(args, full.get(), err.stream()), jitllm::cli::kExitFailure);
-  EXPECT_EQ(err.text(), "jitllm: cannot write to standard output\n");
+  EXPECT_EQ(llmp::cli::Run(args, full.get(), err.stream()), llmp::cli::kExitFailure);
+  EXPECT_EQ(err.text(), "llmp: cannot write to standard output\n");
 }
 
 TEST(Doctor, Build) {
-  const jitllm::base::BuildInfo info{.version = "0.2.0-dev.7+g0123456789ab.dirty",
-                                     .commit = "0123456789abcdef0123456789abcdef01234567",
-                                     .modified = true,
-                                     .license_profile = "core",
-                                     .sdk = "aarch64-0123456789abcdef",
-                                     .target = "aarch64-linux-gnu"};
-  jitllm::base::Report report;
-  jitllm::cli::DescribeBuild(info, report);
+  const llmp::base::BuildInfo info{.version = "0.2.0-dev.7+g0123456789ab.dirty",
+                                   .commit = "0123456789abcdef0123456789abcdef01234567",
+                                   .modified = true,
+                                   .license_profile = "core",
+                                   .sdk = "aarch64-0123456789abcdef",
+                                   .target = "aarch64-linux-gnu"};
+  llmp::base::Report report;
+  llmp::cli::DescribeBuild(info, report);
   ASSERT_EQ(report.sections.size(), 1U);
-  const jitllm::base::ReportSection& build = report.sections[0];
+  const llmp::base::ReportSection& build = report.sections[0];
   EXPECT_EQ(build.title, "build");
   std::string text;
   for (const auto& line : build.lines) {
@@ -210,13 +210,13 @@ TEST(Doctor, Build) {
 }
 
 TEST(Doctor, ControlCharactersAreEscaped) {
-  EXPECT_EQ(jitllm::cli::Printable("a\nproblem: b\t\x7f\x1b[31m"),
+  EXPECT_EQ(llmp::cli::Printable("a\nproblem: b\t\x7f\x1b[31m"),
             "a\\x0aproblem: b\\x09\\x7f\\x1b[31m");
-  EXPECT_EQ(jitllm::cli::Printable("GB10 caf\xc3\xa9"), "GB10 caf\xc3\xa9");
-  jitllm::base::Report report;
+  EXPECT_EQ(llmp::cli::Printable("GB10 caf\xc3\xa9"), "GB10 caf\xc3\xa9");
+  llmp::base::Report report;
   report.AddSection("t\n").Add("k\n", "v\nproblem: forged");
   report.warnings = {"w\nproblem: forged"};
-  EXPECT_EQ(jitllm::cli::DoctorText(report),
+  EXPECT_EQ(llmp::cli::DoctorText(report),
             "t\\x0a\n  k\\x0a: v\\x0aproblem: forged\n\n"
             "warning: w\\x0aproblem: forged\ndoctor: no problems, 1 warning\n");
 }
@@ -225,9 +225,9 @@ TEST(Doctor, ControlCharactersAreEscaped) {
 // failed write stops the run.
 TEST(Doctor, WritesInStages) {
   std::vector<std::string> parts;
-  jitllm::base::Report report;
-  const jitllm::cli::DoctorOptions options{.config = "/nonexistent/jitllm.toml"};
-  ASSERT_TRUE(jitllm::cli::Doctor("/nonexistent", options, report, [&](std::string_view text) {
+  llmp::base::Report report;
+  const llmp::cli::DoctorOptions options{.config = "/nonexistent/llmp.toml"};
+  ASSERT_TRUE(llmp::cli::Doctor("/nonexistent", options, report, [&](std::string_view text) {
     parts.emplace_back(text);
     return true;
   }));
@@ -238,11 +238,11 @@ TEST(Doctor, WritesInStages) {
   EXPECT_THAT(parts[0], HasSubstr("\nconfiguration\n"));
   EXPECT_THAT(parts[0], Not(HasSubstr("doctor: ")));
   EXPECT_THAT(parts[1], HasSubstr("\ndoctor: "));
-  EXPECT_EQ(parts[0] + parts[1], jitllm::cli::DoctorText(report));
+  EXPECT_EQ(parts[0] + parts[1], llmp::cli::DoctorText(report));
 
-  jitllm::base::Report stopped;
+  llmp::base::Report stopped;
   int calls = 0;
-  EXPECT_FALSE(jitllm::cli::Doctor("/nonexistent", options, stopped, [&](std::string_view) {
+  EXPECT_FALSE(llmp::cli::Doctor("/nonexistent", options, stopped, [&](std::string_view) {
     ++calls;
     return false;
   }));
@@ -251,12 +251,12 @@ TEST(Doctor, WritesInStages) {
   EXPECT_EQ(stopped.sections.size(), 4U);
 }
 
-// Scratch trees in the build tree (JITLLM_TEST_SCRATCH), whose parents no
+// Scratch trees in the build tree (LLMP_TEST_SCRATCH), whose parents no
 // other user shares.
 class Scratch {
  public:
   Scratch() {
-    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path parent = base != nullptr ? base : ::testing::TempDir();
     std::error_code error;
     std::filesystem::create_directories(parent, error);
@@ -283,13 +283,13 @@ class Scratch {
 
 TEST(Doctor, ReportsTheConfigurationAndStorage) {
   const Scratch scratch;
-  const std::filesystem::path config = scratch.path() / "jitllm.toml";
+  const std::filesystem::path config = scratch.path() / "llmp.toml";
   std::ofstream(config) << std::format("schema_version = 2\n[storage]\ndata_dir = \"{}\"\n",
                                        (scratch.path() / "data").string());
   std::filesystem::create_directories(scratch.path() / "data/models");
-  jitllm::base::Report report;
-  jitllm::cli::DescribeConfiguration({.config = config}, report);
-  const std::string text = jitllm::cli::DoctorText(report);
+  llmp::base::Report report;
+  llmp::cli::DescribeConfiguration({.config = config}, report);
+  const std::string text = llmp::cli::DoctorText(report);
   EXPECT_THAT(text, HasSubstr("configuration\n  runtime's user: uid "));
   EXPECT_THAT(text, HasSubstr("\n  file: " + config.string() + "\n  node: standalone\n"));
   EXPECT_THAT(text,
@@ -304,41 +304,40 @@ TEST(Doctor, ReportsTheConfigurationAndStorage) {
 
 TEST(Doctor, AnInvalidConfigurationIsAProblem) {
   const Scratch scratch;
-  const std::filesystem::path config = scratch.path() / "jitllm.toml";
+  const std::filesystem::path config = scratch.path() / "llmp.toml";
   std::ofstream(config) << "schema_version = 2\nstorage.spil = 1\n";
-  jitllm::base::Report report;
-  jitllm::cli::DescribeConfiguration({.config = config}, report);
+  llmp::base::Report report;
+  llmp::cli::DescribeConfiguration({.config = config}, report);
   EXPECT_THAT(report.problems,
               ElementsAre("configuration: " + config.string() + ":2:16: unknown key storage.spil"));
-  jitllm::base::Report missing;
-  jitllm::cli::DescribeConfiguration({.config = scratch.path() / "other.toml"}, missing);
+  llmp::base::Report missing;
+  llmp::cli::DescribeConfiguration({.config = scratch.path() / "other.toml"}, missing);
   EXPECT_THAT(missing.problems, ElementsAre(HasSubstr("other.toml: does not exist")));
 }
 
 TEST(Doctor, Text) {
-  jitllm::base::Report report;
-  jitllm::base::ReportSection& first = report.AddSection("first");
+  llmp::base::Report report;
+  llmp::base::ReportSection& first = report.AddSection("first");
   first.Add("a", "1");
   first.Add("b c", "two words");
   report.AddSection("empty");
-  EXPECT_EQ(jitllm::cli::DoctorText(report),
+  EXPECT_EQ(llmp::cli::DoctorText(report),
             "first\n  a: 1\n  b c: two words\n\nempty\n\ndoctor: no problems, 0 warnings\n");
   report.problems = {"p1", "p2"};
   report.warnings = {"w1"};
-  EXPECT_EQ(jitllm::cli::DoctorText(report),
+  EXPECT_EQ(llmp::cli::DoctorText(report),
             "first\n  a: 1\n  b c: two words\n\nempty\n\n"
             "problem: p1\nproblem: p2\nwarning: w1\ndoctor: 2 problems, 1 warning\n");
   report.problems = {"p1"};
   report.warnings = {"w1", "w2"};
-  EXPECT_THAT(jitllm::cli::DoctorText(report),
-              testing::EndsWith("doctor: 1 problem, 2 warnings\n"));
+  EXPECT_THAT(llmp::cli::DoctorText(report), testing::EndsWith("doctor: 1 problem, 2 warnings\n"));
 }
 
 // What the build generated: D-062's forms, for this checkout's project(VERSION).
 TEST(BuildInfo, IsThisBuild) {
-  const jitllm::base::BuildInfo& info = jitllm::base::GetBuildInfo();
+  const llmp::base::BuildInfo& info = llmp::base::GetBuildInfo();
   const std::string version(info.version);
-  EXPECT_THAT(version, StartsWith(JITLLM_TEST_PROJECT_VERSION));
+  EXPECT_THAT(version, StartsWith(LLMP_TEST_PROJECT_VERSION));
   EXPECT_THAT(version, MatchesRegex(R"([0-9]+\.[0-9]+\.[0-9]+)"
                                     R"((-dev\.[0-9]+\+g[0-9a-f]{12,}(\.dirty)?|-dev\+unknown)?)"));
   if (info.commit.empty()) {
@@ -355,6 +354,6 @@ TEST(BuildInfo, IsThisBuild) {
 
 // Surface versions change only deliberately: a bump comes with a CHANGELOG
 // entry and a decisions.md entry (D-062), and with this test.
-TEST(SurfaceVersions, Pinned) { EXPECT_EQ(jitllm::surface::kReasoningSignatureVersion, 1U); }
+TEST(SurfaceVersions, Pinned) { EXPECT_EQ(llmp::surface::kReasoningSignatureVersion, 1U); }
 
 }  // namespace

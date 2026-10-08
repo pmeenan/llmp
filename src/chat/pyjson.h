@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // JSON written as Python's json.dumps(value, ensure_ascii=False) writes a
@@ -12,8 +12,8 @@
 // 0); other numbers as Python's float repr (shortest round trip, 1e+16 and
 // 1e-05 style exponents, Infinity for overflow).
 
-#ifndef JITLLM_CHAT_PYJSON_H_
-#define JITLLM_CHAT_PYJSON_H_
+#ifndef LLMP_CHAT_PYJSON_H_
+#define LLMP_CHAT_PYJSON_H_
 
 #include <cstddef>
 #include <limits>
@@ -22,7 +22,7 @@
 
 #include "base/json.h"
 
-namespace jitllm::chat {
+namespace llmp::chat {
 
 void AppendPythonJson(base::json::Value value, std::string& out);
 
@@ -54,6 +54,6 @@ bool PythonPrintable(char32_t cp);
 // to be well-formed (JSON strings and the interpreter's are).
 char32_t DecodeUtf8At(std::string_view s, std::size_t at, std::size_t& length);
 
-}  // namespace jitllm::chat
+}  // namespace llmp::chat
 
-#endif  // JITLLM_CHAT_PYJSON_H_
+#endif  // LLMP_CHAT_PYJSON_H_

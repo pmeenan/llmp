@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Fresh Gemma26 schedule and heldout corpus control
@@ -77,7 +77,7 @@ performance or retrieval-at-depth qualification.
 
 ## Reproduction and provenance
 
-Build the manual `jitllm_gemma_quality_schedule` target and run
+Build the manual `llmp_gemma_quality_schedule` target and run
 `ARTIFACT IDS_I32 NEW_OUTPUT_DIR 128|1024` under installed Spark supervision.
 The normal build path has its build RPATH; a copied private helper must use the
 qualified `LD_LIBRARY_PATH=$build/spark-native/cublas` binding and pass the SDK

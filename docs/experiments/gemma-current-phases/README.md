@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Current Gemma31 prefill phases
@@ -57,7 +57,7 @@ using portable SHA-256; its contribution is unmeasured. Preserve fresh descripto
 workspace and catalog validation, then judge a change with exact outputs and
 an untraced before/after. State growth remains another separate cost.
 
-Reproduce with `jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 31 both 256
+Reproduce with `llmp_gemma_prefill ARTIFACT IDS NEW_OUT 31 both 256
 normmul-on state-only lookahead-on phases-on`. Accounting is off by default;
 the benchmark resets runner and node counters after the discarded warm rows,
 immediately before the existing prefill timer, and reads them after that timer

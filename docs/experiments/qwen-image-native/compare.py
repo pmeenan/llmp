@@ -1,9 +1,9 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Judge jitLLM's Qwen-Image-2.1 outputs against diffusers' (README's bounds).
+"""Judge llmpalooza's Qwen-Image-2.1 outputs against diffusers' (README's bounds).
 
 Runs in the image-reference container (NumPy and Pillow), over the output
-directories of jitllm_qwen_image_exec and the reference.py directory:
+directories of llmp_qwen_image_exec and the reference.py directory:
 
   python3 compare.py REF_DIR [--tokens RUN] [--text RUN] [--dit-first RUN]
                      [--dit-forced RUN] [--vae RUN] [--image RUN] [--size N]

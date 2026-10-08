@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Create exclusive inputs, then authenticate the compiled checkout before native work."""
 import datetime
@@ -12,9 +12,9 @@ import subprocess
 import sys
 
 HOME = pathlib.Path.home()
-ROOT = HOME / '.local/share/jitllm/gemma26-compound-packed-c4'
-REPO = HOME / 'src/jitLLM-wt/m3fixb'
-OLD = HOME / '.local/share/jitllm/gemma26-packed-attention-c4'
+ROOT = HOME / '.local/share/llmp/gemma26-compound-packed-c4'
+REPO = HOME / 'src/llmp-wt/m3fixb'
+OLD = HOME / '.local/share/llmp/gemma26-packed-attention-c4'
 ID_SHA = 'b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610'
 CLIENT_SHA = '01889d8c4a281110f611cedcab43235a9ac80bcc21abf094d982f14dd2112f61'
 IMAGE = 'ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7'
@@ -92,23 +92,23 @@ def prefreeze():
     actual = {pathlib.Path(line.split()[1]).name: line.split()[0] for line in output.splitlines()}
     if actual != LIBS:
         raise ValueError('original image libraries changed')
-    artifact = HOME / '.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3'
+    artifact = HOME / '.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3'
     metadata = [record(artifact / name) for name in ('manifest.json', 'index.json')]
     if [item['sha256'] for item in metadata] != [
             '4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3',
             'e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171']:
         raise ValueError('prepared artifact metadata changed')
-    raw = HOME / '.local/share/jitllm/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf'
+    raw = HOME / '.local/share/llmp/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf'
     if raw.stat().st_size != 16947541728:
         raise ValueError('approved raw model size changed')
-    receipt = record(REPO / 'build/spark-native/jitllm-receipt.json')
+    receipt = record(REPO / 'build/spark-native/llmp-receipt.json')
     result = {
         'recorded_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'production_base': 'c3095754e5820acb302a26abd4eb4593465c99fa',
         'source_files': sources,
         'complete_source_manifest_sha256': record(ROOT / 'expected-source.json')['sha256'],
-        'native_binary': record(REPO / 'build/spark-native/benchmarks/jitllm_gemma26_attention_compound', 256 << 20),
-        'metadata_binary': record(REPO / 'build/spark-native/benchmarks/jitllm_gemma26_attention_packed_metadata', 256 << 20),
+        'native_binary': record(REPO / 'build/spark-native/benchmarks/llmp_gemma26_attention_compound', 256 << 20),
+        'metadata_binary': record(REPO / 'build/spark-native/benchmarks/llmp_gemma26_attention_packed_metadata', 256 << 20),
         'reference_binary': client,
         'reference_client': record(REPO / 'docs/experiments/gemma-joined-serving/llama_joined.cc'),
         'reference_headers': [record(p) for p in sorted((ROOT / 'headers').rglob('*')) if p.is_file()],

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Builds a Rendered: text, the special tokens a template places (marked so
@@ -12,8 +12,8 @@
 // that repeats client text (a name per tool result) does no more work than
 // the bound, and Finish refuses the rendering.
 
-#ifndef JITLLM_CHAT_WRITER_H_
-#define JITLLM_CHAT_WRITER_H_
+#ifndef LLMP_CHAT_WRITER_H_
+#define LLMP_CHAT_WRITER_H_
 
 #include <cstddef>
 #include <expected>
@@ -27,7 +27,7 @@
 #include "chat/jinja.h"
 #include "chat/pyjson.h"
 
-namespace jitllm::chat {
+namespace llmp::chat {
 
 class Writer {
  public:
@@ -100,6 +100,6 @@ class Writer {
   bool over_ = false;
 };
 
-}  // namespace jitllm::chat
+}  // namespace llmp::chat
 
-#endif  // JITLLM_CHAT_WRITER_H_
+#endif  // LLMP_CHAT_WRITER_H_

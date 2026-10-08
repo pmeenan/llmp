@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "execution/adaptive_depth.h"
@@ -11,7 +11,7 @@
 #include "execution/adaptive_wave_mode.h"
 
 namespace {
-using jitllm::execution::AdaptiveDepth;
+using llmp::execution::AdaptiveDepth;
 
 TEST(AdaptiveDepthTest, StartsAtLongerDepthBeforeLearningTheShorterCost) {
   AdaptiveDepth policy;
@@ -103,7 +103,7 @@ TEST(AdaptiveDepthTest, ACheckpointRestoresTheSameChoicesThroughRejectionsAndPro
   }
 }
 
-using jitllm::execution::AdaptiveWaveMode;
+using llmp::execution::AdaptiveWaveMode;
 using Mode = AdaptiveWaveMode::Mode;
 
 // A calibration like DeepSeek's (model_settings.h kDsv4WaveCosts; its

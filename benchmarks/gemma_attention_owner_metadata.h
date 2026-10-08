@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-#ifndef JITLLM_BENCHMARK_GEMMA_ATTENTION_OWNER_METADATA_H_
-#define JITLLM_BENCHMARK_GEMMA_ATTENTION_OWNER_METADATA_H_
+#ifndef LLMP_BENCHMARK_GEMMA_ATTENTION_OWNER_METADATA_H_
+#define LLMP_BENCHMARK_GEMMA_ATTENTION_OWNER_METADATA_H_
 
 #include <algorithm>
 #include <array>
@@ -12,7 +12,7 @@
 #include "kernels/ggml/fattn_owner.h"
 
 namespace attention_owner_metadata {
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 
 // These addresses are never dereferenced. Descriptor admission is a CPU-only
 // operation; the manual GPU proof separately maps and holds real operands.
@@ -119,4 +119,4 @@ inline bool Controls() {
   return ok;
 }
 }  // namespace attention_owner_metadata
-#endif  // JITLLM_BENCHMARK_GEMMA_ATTENTION_OWNER_METADATA_H_
+#endif  // LLMP_BENCHMARK_GEMMA_ATTENTION_OWNER_METADATA_H_

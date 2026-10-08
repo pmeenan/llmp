@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The Qwen-Image-2.1 pipeline's three phases under jitLLM's dispatch (D-053;
+// The Qwen-Image-2.1 pipeline's three phases under llmpalooza's dispatch (D-053;
 // docs/experiments/qwen-image-native/README.md), CUDA builds only: the text
 // encoder (Qwen3-VL's text path), a denoising step of the block-causal DiT
 // with its prefix K/V cache and the flow-matching Euler update, and the VAE
@@ -29,8 +29,8 @@
 // the latents' statistics) are the caller's to upload to their places
 // before a phase is queued; nothing here reads host memory or waits.
 
-#ifndef JITLLM_KERNELS_IMAGE_PIPELINE_H_
-#define JITLLM_KERNELS_IMAGE_PIPELINE_H_
+#ifndef LLMP_KERNELS_IMAGE_PIPELINE_H_
+#define LLMP_KERNELS_IMAGE_PIPELINE_H_
 
 #include <array>
 #include <cstddef>
@@ -50,7 +50,7 @@
 
 struct cublasContext;
 
-namespace jitllm::kernels::image {
+namespace llmp::kernels::image {
 
 class LtGemm;
 
@@ -97,7 +97,7 @@ enum class PlanKind : std::uint8_t { kLegacy, kFast };
 std::expected<std::vector<execution::Choice>, std::string> QwenImageChoices(
     PlanKind kind, std::span<const std::string> overrides = {});
 
-// The cuBLAS handles a plan's products use: `blas` (jitLLM's, on the
+// The cuBLAS handles a plan's products use: `blas` (llmpalooza's, on the
 // stream) for the cublasGemmEx implementations, `lt` for
 // image.linear.cublaslt.
 struct Handles {
@@ -218,6 +218,6 @@ class QwenImagePipeline {
   std::vector<std::uint64_t> vae_elements_;
 };
 
-}  // namespace jitllm::kernels::image
+}  // namespace llmp::kernels::image
 
-#endif  // JITLLM_KERNELS_IMAGE_PIPELINE_H_
+#endif  // LLMP_KERNELS_IMAGE_PIPELINE_H_

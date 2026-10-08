@@ -1,0 +1,128 @@
+Llmpalooza's build of the GGML subset it uses (D-053, D-057, D-077): adds
+llmp/CMakeLists.txt, which the source lock adds as the component's
+project. It compiles only the files it names, with GGML_LLMP defined.
+
+diff --git a/llmp/CMakeLists.txt b/llmp/CMakeLists.txt
+new file mode 100644
+--- /dev/null
++++ b/llmp/CMakeLists.txt
+@@ -0,0 +1,119 @@
++# SPDX-FileCopyrightText: 2026 llmpalooza contributors
++# SPDX-License-Identifier: Apache-2.0
++
++# Llmpalooza's build of the GGML subset it uses (D-053, D-057, D-077;
++# docs/backend-proof.md). third_party/patches/ggml/ adds this file to the
++# pinned llama.cpp tree, and the source lock adds this directory. It compiles
++# only the files named here, never GGML's own CMake, its CPU backend, its
++# backend registry or ggml-cuda.cu: llmpalooza owns dispatch and supplies the
++# few ggml-cuda.cu symbols the launchers need (src/kernels/ggml/).
++#
++#   llmp_ggml_base  GGML's tensor, allocator and backend-buffer code, for
++#                     tensor descriptors over llmpalooza memory. Every profile.
++#   llmp_ggml_cuda  ggml-cuda operation launchers and their kernels, for
++#                     sm_121a and the discrete GPUs llmpalooza's toolchain names
++#                     (LLMP_CUDA_DISCRETE_SASS, D-082). CUDA profiles only;
++#                     elsewhere an empty placeholder, so the lock's targets
++#                     exist in every build.
++#
++# GGML_LLMP selects the reviewed adaptations in the patches beside this
++# one. The flags reproduce the FP16 toolchain bridge's (P0,
++# docs/experiments/backend-proof-p0/): -O3, C11/C++17 with GNU extensions
++# for the host code, C++17 CUDA with -use_fast_math and -extended-lambda,
++# SASS for sm_121a (the bridge's only architecture; a discrete target adds
++# its own SASS beside it and leaves sm_121a's unchanged). Not reproduced: the bridge's GGML_CUDA_USE_GRAPHS
++# and flash-attention instance definitions, which no file here reads.
++cmake_minimum_required(VERSION 4.4.3)
++project(llmp_ggml LANGUAGES C CXX)
++
++set(ggml "${CMAKE_CURRENT_SOURCE_DIR}/../ggml")
++# The bridge's -O3 replaces the build type's optimization level here.
++foreach(lang IN ITEMS C CXX CUDA)
++  foreach(config IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
++    string(REGEX REPLACE "(^| )-O[0-9s]( |$)" " " CMAKE_${lang}_FLAGS_${config} "${CMAKE_${lang}_FLAGS_${config}}")
++  endforeach()
++endforeach()
++set(definitions GGML_LLMP GGML_SCHED_MAX_COPIES=4 _GNU_SOURCE _XOPEN_SOURCE=600)
++
++add_library(llmp_ggml_base STATIC
++  "${ggml}/src/ggml.c"
++  "${ggml}/src/ggml-alloc.c"
++  "${ggml}/src/ggml-backend.cpp"
++  "${ggml}/src/ggml-backend-meta.cpp"
++  "${ggml}/src/ggml-quants.c"
++  "${ggml}/src/ggml-threading.cpp")
++# ggml.c's version header, which GGML's CMake would generate: its version
++# (ggml/CMakeLists.txt) and the pinned commit.
++set(GGML_VERSION 0.26.0)
++set(GGML_BUILD_COMMIT d81235049384534c167caea52b85a694f6103d14)
++configure_file("${ggml}/src/ggml-version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/ggml-version.h" @ONLY)
++target_include_directories(llmp_ggml_base PUBLIC "${ggml}/include" "${ggml}/src"
++                           PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
++target_compile_definitions(llmp_ggml_base PUBLIC ${definitions})
++target_compile_options(llmp_ggml_base PRIVATE -O3)
++set_target_properties(llmp_ggml_base PROPERTIES
++  C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
++  CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
++# ggml.c uses the math library; glibc provides threads.
++target_link_libraries(llmp_ggml_base PUBLIC m)
++
++if(CMAKE_CUDA_COMPILER)
++  set(cuda "${ggml}/src/ggml-cuda")
++  set(instances "")
++  foreach(ncols RANGE 1 16)
++    list(APPEND instances "${cuda}/template-instances/mmf-instance-ncols_${ncols}.cu")
++  endforeach()
++  # The quantized matrix products' tile kernels (MMQ), one instance unit per
++  # weight type: only the types of the models llmpalooza runs (DeepSeek V4 Flash's
++  # and Qwen3.8's GGUF quantizations, Qwen3.8's NVFP4 experts). mmq.cu's type
++  # switch has a case for these (patches/ggml/0001, GGML_LLMP_MMQ_<type>);
++  # MMVQ's vector kernels (mmvq.cu) instantiate every type in their own unit.
++  set(mmq_types q4_1 q5_0 q5_1 q8_0 q2_k q4_k q5_k q6_k iq2_xxs iq2_xs iq3_xxs mxfp4 nvfp4 q4_0 q2_0 q3_k iq1_s iq2_s iq3_s iq4_nl iq4_xs)
++  set(mmq_definitions "")
++  foreach(type IN LISTS mmq_types)
++    list(APPEND instances "${cuda}/template-instances/mmq-instance-${type}.cu")
++    string(TOUPPER "${type}" upper)
++    list(APPEND mmq_definitions "GGML_LLMP_MMQ_${upper}")
++  endforeach()
++  set(architectures 121a-real ${LLMP_CUDA_DISCRETE_SASS})
++  add_library(llmp_ggml_cuda STATIC
++    "${cuda}/argsort.cu"
++    "${cuda}/binbcast.cu"
++    "${cuda}/clamp.cu"
++    "${cuda}/concat.cu"
++    "${cuda}/convert.cu"
++    "${cuda}/cpy.cu"
++    "${cuda}/dsv4-hc.cu"
++    "${cuda}/fill.cu"
++    "${cuda}/fwht.cu"
++    "${cuda}/gated_delta_net.cu"
++    "${cuda}/getrows.cu"
++    "${cuda}/lightning-indexer.cu"
++    "${cuda}/mmf.cu"
++    "${cuda}/mmid.cu"
++    "${cuda}/mmq.cu"
++    "${cuda}/mmvf.cu"
++    "${cuda}/mmvq.cu"
++    "${cuda}/norm.cu"
++    "${cuda}/quantize.cu"
++    "${cuda}/rope.cu"
++    "${cuda}/scale.cu"
++    "${cuda}/set-rows.cu"
++    "${cuda}/softmax.cu"
++    "${cuda}/ssm-conv.cu"
++    "${cuda}/sumrows.cu"
++    "${cuda}/top-k.cu"
++    "${cuda}/topk-moe.cu"
++    "${cuda}/moe-weighted-reduction.cu"
++    "${cuda}/unary.cu"
++    ${instances})
++  target_include_directories(llmp_ggml_cuda PUBLIC "${cuda}")
++  # Public: llmpalooza's launchers check a weight type against the same list.
++  target_compile_definitions(llmp_ggml_cuda PUBLIC ${mmq_definitions})
++  target_link_libraries(llmp_ggml_cuda PUBLIC llmp_ggml_base)
++  target_compile_options(llmp_ggml_cuda PRIVATE -O3 -use_fast_math -extended-lambda -compress-mode=size)
++  set_target_properties(llmp_ggml_cuda PROPERTIES
++    CUDA_ARCHITECTURES "${architectures}" CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF)
++else()
++  add_library(llmp_ggml_cuda INTERFACE)
++endif()

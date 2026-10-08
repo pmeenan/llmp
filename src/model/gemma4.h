@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Gemma 4 text-model foundation: approved checkpoint profiles, strict GGML
@@ -6,8 +6,8 @@
 // No graph, kernel, importer or serving runner is supplied here. Semantics
 // follow llama.cpp b29c606e's gemma4.cpp and llama-kv-cache-iswa.cpp; actual
 // pinned GGUF metadata/tensor contracts are retained in tests/unit/data/gemma4.
-#ifndef JITLLM_MODEL_GEMMA4_H_
-#define JITLLM_MODEL_GEMMA4_H_
+#ifndef LLMP_MODEL_GEMMA4_H_
+#define LLMP_MODEL_GEMMA4_H_
 
 #include <cstdint>
 #include <expected>
@@ -19,10 +19,10 @@
 
 #include "model/state.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 class Artifact;
 }
-namespace jitllm::model {
+namespace llmp::model {
 
 struct Gemma4Profile {
   std::string_view name;
@@ -167,5 +167,5 @@ std::expected<std::vector<StateRange>, std::string> Gemma4ChunkWrites(
     const Gemma4Profile& profile, const Gemma4StateLayout& state, std::uint32_t n_past,
     std::uint32_t rows);
 
-}  // namespace jitllm::model
-#endif  // JITLLM_MODEL_GEMMA4_H_
+}  // namespace llmp::model
+#endif  // LLMP_MODEL_GEMMA4_H_

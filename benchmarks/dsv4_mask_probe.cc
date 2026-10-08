@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // One production-width DeepSeek target mask factor: independent prefills,
@@ -30,7 +30,7 @@
 #include "tokenizer/tokenizer.h"
 
 namespace {
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 namespace fs = std::filesystem;
 using en::support::Error;
 constexpr std::uint32_t kSteps = 16;
@@ -71,16 +71,16 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
   auto metadata = read(metadata_path, 32ULL << 20U);
   auto text = read(text_path, 1ULL << 20U);
   if (!metadata || !text) return Error("preparation input failed");
-  auto gguf = jitllm::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*metadata)));
+  auto gguf = llmp::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*metadata)));
   if (!gguf) return Error(gguf.error().ToString());
   if (gguf->spec.tokens.size() != 129280 || gguf->spec.bos != 0 || gguf->spec.add_bos ||
       gguf->spec.add_eos)
     return Error("DeepSeek vocabulary/BOS contract differs");
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(gguf->spec));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(gguf->spec));
   if (!tokenizer) return Error(tokenizer.error().ToString());
-  std::vector<jitllm::tokenizer::TokenId> ids;
+  std::vector<llmp::tokenizer::TokenId> ids;
   if (auto r = tokenizer->Encode(*text,
-                                 {.special = jitllm::tokenizer::SpecialTokens::kUserDefinedOnly,
+                                 {.special = llmp::tokenizer::SpecialTokens::kUserDefinedOnly,
                                   .add_bos_eos = true,
                                   .max_tokens = 262144},
                                  ids);
@@ -94,15 +94,14 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
   const auto kept = std::span(ids).first(rows);
   if (auto r = Save<std::int32_t>(output, kept); !r) return r;
   std::cout << "DSV4_MASK_PREPARED rows=" << rows << " sha256="
-            << jitllm::base::ToHex(jitllm::base::Sha256{}.Update(std::as_bytes(kept)).Finish())
-            << " text_sha256=" << jitllm::base::ToHex(jitllm::base::Sha256{}.Update(*text).Finish())
+            << llmp::base::ToHex(llmp::base::Sha256{}.Update(std::as_bytes(kept)).Finish())
+            << " text_sha256=" << llmp::base::ToHex(llmp::base::Sha256{}.Update(*text).Finish())
             << '\n';
   return {};
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if ((argc != 6 && argc != 7) || !jitllm::platform::InstallCrashPolicy("dsv4-mask-probe"))
-    return 2;
+  if ((argc != 6 && argc != 7) || !llmp::platform::InstallCrashPolicy("dsv4-mask-probe")) return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
     auto result = Prepare(argv[2], argv[3], argv[4], argv[5]);
@@ -128,8 +127,8 @@ int main(int argc, char** argv) {
         file.peek() != std::char_traits<char>::eof())
       return 2;
     std::cout << "DSV4_MASK_INPUT slot=" << slot << " rows=" << prefix[slot] << " sha256="
-              << jitllm::base::ToHex(
-                     jitllm::base::Sha256{}.Update(std::as_bytes(std::span(ids[slot]))).Finish())
+              << llmp::base::ToHex(
+                     llmp::base::Sha256{}.Update(std::as_bytes(std::span(ids[slot]))).Finish())
               << '\n';
   }
   if (ids[0] == ids[1]) return 2;
@@ -170,7 +169,7 @@ int main(int argc, char** argv) {
                               std::ios::noreplace);
     for (std::uint32_t slot = 0; slot < 2; ++slot) {
       const auto ranges = slots[slot]->used_state_ranges();
-      jitllm::base::Sha256 hash;
+      llmp::base::Sha256 hash;
       for (const auto& range : ranges) {
         bytes[slot] += range.bytes;
         ranges_file << slot << ' ' << range.region << ' ' << range.offset << ' ' << range.bytes
@@ -188,7 +187,7 @@ int main(int argc, char** argv) {
           at += part.bytes;
         }
       }
-      hashes[slot] = jitllm::base::ToHex(hash.Finish());
+      hashes[slot] = llmp::base::ToHex(hash.Finish());
     }
     ranges_file.flush();
     return ranges_file ? en::Status{} : Error("state range output failed");
@@ -208,7 +207,7 @@ int main(int argc, char** argv) {
               ids[slot], [&](auto id) { return id >= 0 && std::cmp_less(id, runner.vocab()); }))
         return Error("token IDs outside actual vocabulary");
     }
-    std::vector<jitllm::catalog::ExtentId> extents;
+    std::vector<llmp::catalog::ExtentId> extents;
     auto allocation = node.Pinned(kCopy, 0, extents);
     if (!allocation) return Error(allocation.error());
     pinned = *allocation;
@@ -221,8 +220,8 @@ int main(int argc, char** argv) {
       saved.reserve(std::size_t{runner.vocab()} * 2 * (kSteps + 1));
       choices.reserve(kSteps * 2);
     }
-    if (auto r = node.Start(jitllm::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
-                                                4 * node.StateCapacity()));
+    if (auto r = node.Start(llmp::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
+                                              4 * node.StateCapacity()));
         !r)
       return r;
     if (auto r = runner.Register(); !r) return r;

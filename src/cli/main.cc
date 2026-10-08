@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <fcntl.h>
@@ -20,12 +20,12 @@ int main(int argc, char** argv) {
   for (int fd = 0; fd <= 2; ++fd) {
     if (::fcntl(fd, F_GETFD) == -1 && errno == EBADF &&
         ::open("/dev/null", O_RDONLY | O_NOCTTY) != fd) {
-      return jitllm::cli::kExitFailure;
+      return llmp::cli::kExitFailure;
     }
   }
   // A closed pipe is a failed write (exit 1), not death by SIGPIPE.
   (void)std::signal(SIGPIPE, SIG_IGN);
   const std::span<char*> all(argv, static_cast<std::size_t>(argc));
   const std::vector<std::string_view> args(all.begin() + (argc > 0 ? 1 : 0), all.end());
-  return jitllm::cli::Run(args, stdout, stderr);
+  return llmp::cli::Run(args, stdout, stderr);
 }

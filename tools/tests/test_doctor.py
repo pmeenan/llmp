@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Failed shared-library checks must not become successful doctor results."""
 
@@ -15,7 +15,7 @@ from unittest import mock
 sys.dont_write_bytecode = True
 TOOLS = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
-import jitllm_sdk as sdklib  # noqa: E402
+import llmp_sdk as sdklib  # noqa: E402
 
 loader = importlib.machinery.SourceFileLoader("doctor_failure_tests", str(TOOLS / "check-toolchain"))
 spec = importlib.util.spec_from_loader(loader.name, loader)

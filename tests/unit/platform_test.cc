@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The platform module: small file reads and the host probe, on fake /proc,
@@ -52,7 +52,7 @@ using ::testing::IsEmpty;
 class FakeRoot {
  public:
   FakeRoot() {
-    std::string pattern = (fs::path(::testing::TempDir()) / "jitllm-platform-XXXXXX").string();
+    std::string pattern = (fs::path(::testing::TempDir()) / "llmp-platform-XXXXXX").string();
     if (::mkdtemp(pattern.data()) != nullptr) {
       path_ = pattern;
     } else {
@@ -97,7 +97,7 @@ class FakeRoot {
 };
 
 // The value of a line in a report section, or nullopt.
-std::optional<std::string> Value(const jitllm::base::Report& report, std::string_view title,
+std::optional<std::string> Value(const llmp::base::Report& report, std::string_view title,
                                  std::string_view key) {
   for (const auto& section : report.sections) {
     if (section.title != title) {
@@ -116,26 +116,26 @@ TEST(Files, ReadSmallFile) {
   const FakeRoot root;
   ASSERT_FALSE(root.path().empty());
   root.Write("a", "hello\nworld\n");
-  EXPECT_EQ(jitllm::platform::ReadSmallFile(root.path() / "a"), "hello\nworld\n");
+  EXPECT_EQ(llmp::platform::ReadSmallFile(root.path() / "a"), "hello\nworld\n");
   root.Write("empty", "");
-  EXPECT_EQ(jitllm::platform::ReadSmallFile(root.path() / "empty"), "");
+  EXPECT_EQ(llmp::platform::ReadSmallFile(root.path() / "empty"), "");
 }
 
 TEST(Files, ReadSmallFileLimit) {
   const FakeRoot root;
   root.Write("four", "1234");
-  EXPECT_EQ(jitllm::platform::ReadSmallFile(root.path() / "four", 4), "1234");
-  const auto longer = jitllm::platform::ReadSmallFile(root.path() / "four", 3);
+  EXPECT_EQ(llmp::platform::ReadSmallFile(root.path() / "four", 4), "1234");
+  const auto longer = llmp::platform::ReadSmallFile(root.path() / "four", 3);
   ASSERT_FALSE(longer);
   EXPECT_EQ(longer.error(), std::errc::file_too_large);
 }
 
 TEST(Files, ReadSmallFileErrors) {
   const FakeRoot root;
-  const auto missing = jitllm::platform::ReadSmallFile(root.path() / "missing");
+  const auto missing = llmp::platform::ReadSmallFile(root.path() / "missing");
   ASSERT_FALSE(missing);
   EXPECT_EQ(missing.error(), std::errc::no_such_file_or_directory);
-  const auto directory = jitllm::platform::ReadSmallFile(root.path());
+  const auto directory = llmp::platform::ReadSmallFile(root.path());
   ASSERT_FALSE(directory);
   EXPECT_EQ(directory.error(), std::errc::is_a_directory);
 }
@@ -143,12 +143,12 @@ TEST(Files, ReadSmallFileErrors) {
 TEST(Files, ReadFirstLine) {
   const FakeRoot root;
   root.Write("a", "580.178.04  \r\nnext\n");
-  EXPECT_EQ(jitllm::platform::ReadFirstLine(root.path() / "a"), "580.178.04");
+  EXPECT_EQ(llmp::platform::ReadFirstLine(root.path() / "a"), "580.178.04");
   root.Write("b", "no newline");
-  EXPECT_EQ(jitllm::platform::ReadFirstLine(root.path() / "b"), "no newline");
+  EXPECT_EQ(llmp::platform::ReadFirstLine(root.path() / "b"), "no newline");
   root.Write("c", "\n");
-  EXPECT_EQ(jitllm::platform::ReadFirstLine(root.path() / "c"), "");
-  EXPECT_FALSE(jitllm::platform::ReadFirstLine(root.path() / "missing"));
+  EXPECT_EQ(llmp::platform::ReadFirstLine(root.path() / "c"), "");
+  EXPECT_FALSE(llmp::platform::ReadFirstLine(root.path() / "missing"));
 }
 
 TEST(Files, ListDirectory) {
@@ -156,22 +156,21 @@ TEST(Files, ListDirectory) {
   root.Write("d/b", "");
   root.Write("d/a", "");
   root.Directory("d/C");
-  EXPECT_THAT(jitllm::platform::ListDirectory(root.path() / "d").value(),
-              ElementsAre("C", "a", "b"));
+  EXPECT_THAT(llmp::platform::ListDirectory(root.path() / "d").value(), ElementsAre("C", "a", "b"));
   root.Directory("empty");
-  EXPECT_THAT(jitllm::platform::ListDirectory(root.path() / "empty").value(), IsEmpty());
-  const auto missing = jitllm::platform::ListDirectory(root.path() / "missing");
+  EXPECT_THAT(llmp::platform::ListDirectory(root.path() / "empty").value(), IsEmpty());
+  const auto missing = llmp::platform::ListDirectory(root.path() / "missing");
   ASSERT_FALSE(missing);
   EXPECT_EQ(missing.error(), std::errc::no_such_file_or_directory);
 }
 
 TEST(MemoryPressure, ParsesTheStallLines) {
-  using jitllm::platform::ParsePressure;
+  using llmp::platform::ParsePressure;
   const auto stall = ParsePressure(
       "some avg10=1.50 avg60=0.10 avg300=0.00 total=1234\n"
       "full avg10=0.25 avg60=0.00 avg300=0.00 total=56\n");
   ASSERT_TRUE(stall.has_value());
-  const auto parsed = stall.value_or(jitllm::platform::PressureStall{});
+  const auto parsed = stall.value_or(llmp::platform::PressureStall{});
   EXPECT_DOUBLE_EQ(parsed.some_avg10, 1.5);
   EXPECT_DOUBLE_EQ(parsed.full_avg10, 0.25);
   EXPECT_FALSE(ParsePressure("some avg10=1.50 avg60=0.10 avg300=0.00 total=1\n").has_value());
@@ -180,7 +179,7 @@ TEST(MemoryPressure, ParsesTheStallLines) {
   EXPECT_FALSE(ParsePressure("somewhere avg10=1.0\nfull avg10=0.00\n").has_value());
   EXPECT_FALSE(ParsePressure("").has_value());
   // This host's, when it has PSI: both lines, each a share in [0, 100].
-  const auto now = jitllm::platform::ReadMemoryPressure();
+  const auto now = llmp::platform::ReadMemoryPressure();
   if (now.stall) {
     EXPECT_LE(now.stall->full_avg10, 100.0);
     EXPECT_GE(now.stall->some_avg10, 0.0);
@@ -193,7 +192,7 @@ TEST(Meminfo, Values) {
       "MemFree:        1 kB\n"
       "MemAvailable:   123791920 kB\n"
       "HugePages_Total:       0\n";
-  using jitllm::platform::MeminfoBytes;
+  using llmp::platform::MeminfoBytes;
   EXPECT_EQ(MeminfoBytes(kMeminfo, "MemTotal"), std::uint64_t{127598832} * 1024);
   EXPECT_EQ(MeminfoBytes(kMeminfo, "MemAvailable"), std::uint64_t{123791920} * 1024);
   EXPECT_EQ(MeminfoBytes(kMeminfo, "HugePages_Total"), 0U);
@@ -210,13 +209,13 @@ TEST(KernelModule, Found) {
   const FakeRoot root;
   root.Write("sys/module/nvidia/version", "580.178.04\n");
   root.Directory("sys/module/nvidia_uvm");
-  const auto nvidia = jitllm::platform::FindKernelModule(root.path(), "nvidia");
+  const auto nvidia = llmp::platform::FindKernelModule(root.path(), "nvidia");
   EXPECT_TRUE(nvidia.loaded);
   EXPECT_EQ(nvidia.version, "580.178.04");
-  const auto uvm = jitllm::platform::FindKernelModule(root.path(), "nvidia_uvm");
+  const auto uvm = llmp::platform::FindKernelModule(root.path(), "nvidia_uvm");
   EXPECT_TRUE(uvm.loaded);
   EXPECT_EQ(uvm.version, "");
-  const auto fs_module = jitllm::platform::FindKernelModule(root.path(), "nvidia_fs");
+  const auto fs_module = llmp::platform::FindKernelModule(root.path(), "nvidia_fs");
   EXPECT_FALSE(fs_module.loaded);
 }
 
@@ -241,14 +240,14 @@ void WriteSparkLike(const FakeRoot& root) {
 TEST(DescribeHost, SparkLike) {
   const FakeRoot root;
   WriteSparkLike(root);
-  jitllm::base::Report report;
-  jitllm::platform::DescribeHost(root.path(), report);
+  llmp::base::Report report;
+  llmp::platform::DescribeHost(root.path(), report);
   EXPECT_EQ(Value(report, "host", "memory"), "121.7 GiB total, 118.1 GiB available");
   EXPECT_EQ(Value(report, "host", "fs.protected_hardlinks"), "1");
   EXPECT_TRUE(Value(report, "host", "glibc"));
   EXPECT_TRUE(Value(report, "host", "kernel"));
   EXPECT_EQ(Value(report, "host", "page size"),
-            jitllm::base::FormatBytes(static_cast<std::uint64_t>(::sysconf(_SC_PAGESIZE))));
+            llmp::base::FormatBytes(static_cast<std::uint64_t>(::sysconf(_SC_PAGESIZE))));
   EXPECT_EQ(Value(report, "RDMA", "rocep1s0f0 port 1"),
             "DOWN, Ethernet, 200 Gb/sec (2X NDR), enp1s0f0np0, /dev/infiniband/uverbs0 read-write");
   EXPECT_EQ(
@@ -263,8 +262,8 @@ TEST(DescribeHost, SparkLike) {
 
 TEST(DescribeHost, NothingThere) {
   const FakeRoot root;
-  jitllm::base::Report report;
-  jitllm::platform::DescribeHost(root.path(), report);
+  llmp::base::Report report;
+  llmp::platform::DescribeHost(root.path(), report);
   EXPECT_EQ(Value(report, "host", "memory"), "unknown");
   EXPECT_EQ(Value(report, "host", "fs.protected_hardlinks"), "unknown");
   EXPECT_EQ(Value(report, "RDMA", "devices"), "none");
@@ -281,8 +280,8 @@ TEST(DescribeHost, Warnings) {
   root.Write("sys/class/infiniband/mlx5_0/ports/1/state", "4: ACTIVE\n");
   root.Directory("sys/class/infiniband/mlx5_0/device/infiniband_verbs/uverbs0");
   root.Directory("sys/class/infiniband/mlx5_1");  // no ports
-  jitllm::base::Report report;
-  jitllm::platform::DescribeHost(root.path(), report);
+  llmp::base::Report report;
+  llmp::platform::DescribeHost(root.path(), report);
   EXPECT_EQ(Value(report, "RDMA", "mlx5_0 port 1"),
             "ACTIVE, unknown link layer, unknown rate, /dev/infiniband/uverbs0 No such file or "
             "directory");
@@ -306,8 +305,8 @@ TEST(DescribeHost, InaccessibleVerbs) {
   const FakeRoot root;
   WriteSparkLike(root);
   ASSERT_EQ(::chmod((root.path() / "dev/infiniband/uverbs1").c_str(), 0), 0);
-  jitllm::base::Report report;
-  jitllm::platform::DescribeHost(root.path(), report);
+  llmp::base::Report report;
+  llmp::platform::DescribeHost(root.path(), report);
   EXPECT_EQ(Value(report, "RDMA", "rocep1s0f1 port 1"),
             "ACTIVE, Ethernet, 200 Gb/sec (2X NDR), enp1s0f1np1, /dev/infiniband/uverbs1 "
             "Permission denied");
@@ -315,12 +314,12 @@ TEST(DescribeHost, InaccessibleVerbs) {
   EXPECT_THAT(report.warnings[0], HasSubstr("RDMA device rocep1s0f1"));
 }
 
-// Scratch directories in the build tree (JITLLM_TEST_SCRATCH), whose
+// Scratch directories in the build tree (LLMP_TEST_SCRATCH), whose
 // parents no other user shares, as they may /tmp's.
 class Scratch {
  public:
   Scratch() {
-    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const fs::path parent = base != nullptr ? fs::path(base) : fs::path(::testing::TempDir());
     std::error_code error;
     fs::create_directories(parent, error);
@@ -355,13 +354,13 @@ TEST(WalkTrusted, ResolvesLinksAndMissingTails) {
   std::ofstream(root / "real/sub/file") << "x";
   const uid_t me = ::geteuid();
 
-  auto walked = jitllm::platform::WalkTrusted(root / "rel/sub/file", me, false);
+  auto walked = llmp::platform::WalkTrusted(root / "rel/sub/file", me, false);
   ASSERT_TRUE(walked.has_value()) << walked.error();
   EXPECT_TRUE(walked->exists);
   EXPECT_EQ(walked->resolved, fs::canonical(root / "real/sub/file"));
   EXPECT_TRUE(S_ISREG(walked->status.st_mode));
 
-  walked = jitllm::platform::WalkTrusted(root / "abs/sub/../missing/deeper", me, false);
+  walked = llmp::platform::WalkTrusted(root / "abs/sub/../missing/deeper", me, false);
   ASSERT_TRUE(walked.has_value()) << walked.error();
   EXPECT_FALSE(walked->exists);
   EXPECT_EQ(walked->resolved, fs::canonical(root / "real") / "missing/deeper");
@@ -369,10 +368,10 @@ TEST(WalkTrusted, ResolvesLinksAndMissingTails) {
 
   // A link as the last component is refused unless allowed.
   fs::create_symlink("real/sub/file", root / "link");
-  walked = jitllm::platform::WalkTrusted(root / "link", me, false);
+  walked = llmp::platform::WalkTrusted(root / "link", me, false);
   ASSERT_FALSE(walked.has_value());
   EXPECT_THAT(walked.error(), HasSubstr("is a symbolic link"));
-  walked = jitllm::platform::WalkTrusted(root / "link", me, true);
+  walked = llmp::platform::WalkTrusted(root / "link", me, true);
   ASSERT_TRUE(walked.has_value()) << walked.error();
   EXPECT_EQ(walked->resolved, fs::canonical(root / "real/sub/file"));
 }
@@ -382,19 +381,19 @@ TEST(WalkTrusted, RefusesLoopsAndNonDirectories) {
   const fs::path& root = scratch.path();
   fs::create_symlink("b", root / "a");
   fs::create_symlink("a", root / "b");
-  auto walked = jitllm::platform::WalkTrusted(root / "a/x", ::geteuid(), false);
+  auto walked = llmp::platform::WalkTrusted(root / "a/x", ::geteuid(), false);
   ASSERT_FALSE(walked.has_value());
   EXPECT_THAT(walked.error(), HasSubstr("too many symbolic links"));
   std::ofstream(root / "file") << "x";
-  walked = jitllm::platform::WalkTrusted(root / "file/x", ::geteuid(), false);
+  walked = llmp::platform::WalkTrusted(root / "file/x", ::geteuid(), false);
   ASSERT_FALSE(walked.has_value());
   EXPECT_THAT(walked.error(), HasSubstr("file is not a directory"));
   // ".." after a missing component: the kernel stops at the missing one.
   fs::create_symlink("missing/../../x", root / "dotdot");
-  walked = jitllm::platform::WalkTrusted(root / "dotdot/y", ::geteuid(), false);
+  walked = llmp::platform::WalkTrusted(root / "dotdot/y", ::geteuid(), false);
   ASSERT_FALSE(walked.has_value());
   EXPECT_THAT(walked.error(), HasSubstr("does not exist, and the path goes on to '..'"));
-  walked = jitllm::platform::WalkTrusted("relative/path", ::geteuid(), false);
+  walked = llmp::platform::WalkTrusted("relative/path", ::geteuid(), false);
   ASSERT_FALSE(walked.has_value());
   EXPECT_THAT(walked.error(), HasSubstr("not an absolute path"));
 }
@@ -405,22 +404,22 @@ TEST(WalkTrusted, RefusesWhatOthersCanChange) {
   fs::create_directories(root / "open/inner");
   const uid_t me = ::geteuid();
   ASSERT_EQ(::chmod((root / "open").c_str(), 0757), 0);
-  auto walked = jitllm::platform::WalkTrusted(root / "open/inner", me, false);
+  auto walked = llmp::platform::WalkTrusted(root / "open/inner", me, false);
   ASSERT_FALSE(walked.has_value());
   EXPECT_THAT(walked.error(), HasSubstr("open can be changed by users other than root and uid"));
   // A sticky directory is passable: others cannot replace what it holds.
   ASSERT_EQ(::chmod((root / "open").c_str(), 01777), 0);
-  walked = jitllm::platform::WalkTrusted(root / "open/inner", me, false);
+  walked = llmp::platform::WalkTrusted(root / "open/inner", me, false);
   EXPECT_TRUE(walked.has_value()) << walked.error();
   // But not as a directory to add files to.
   struct stat status{};
   ASSERT_EQ(::stat((root / "open").c_str(), &status), 0);
-  const auto private_dir = jitllm::platform::CheckPrivateDirectory(root / "open", status, me);
+  const auto private_dir = llmp::platform::CheckPrivateDirectory(root / "open", status, me);
   ASSERT_FALSE(private_dir.has_value());
   EXPECT_THAT(private_dir.error(), HasSubstr("can add files to"));
   // Entries another user owns are untrusted: here, trusting root alone.
   if (me != 0) {
-    walked = jitllm::platform::WalkTrusted(root / "open/inner", 0, false);
+    walked = llmp::platform::WalkTrusted(root / "open/inner", 0, false);
     ASSERT_FALSE(walked.has_value());
     // Under qemu-user, "/" is the sysroot, which this user owns: the walk
     // stops there instead.
@@ -431,26 +430,26 @@ TEST(WalkTrusted, RefusesWhatOthersCanChange) {
 }
 
 TEST(DirectIo, DescribesFilesystems) {
-  auto proc = jitllm::platform::DescribeFilesystem("/proc");
+  auto proc = llmp::platform::DescribeFilesystem("/proc");
   ASSERT_TRUE(proc.has_value()) << proc.error();
   EXPECT_FALSE(proc->accepted);
-  EXPECT_FALSE(jitllm::platform::DescribeFilesystem("/nonexistent/jitllm").has_value());
-  auto refused = jitllm::platform::ProbeDirectIo("/proc");
+  EXPECT_FALSE(llmp::platform::DescribeFilesystem("/nonexistent/llmp").has_value());
+  auto refused = llmp::platform::ProbeDirectIo("/proc");
   ASSERT_FALSE(refused.has_value());
   EXPECT_THAT(refused.error(), HasSubstr("not a local block-device filesystem"));
 }
 
 TEST(DirectIo, ProbesTheBuildTreesFilesystem) {
   const Scratch scratch;
-  auto filesystem = jitllm::platform::DescribeFilesystem(scratch.path());
+  auto filesystem = llmp::platform::DescribeFilesystem(scratch.path());
   ASSERT_TRUE(filesystem.has_value()) << filesystem.error();
   if (!filesystem->accepted) {
     GTEST_SKIP() << "the build tree is on " << filesystem->type
                  << ", which the storage roles refuse";
   }
-  auto probe = jitllm::platform::ProbeDirectIo(scratch.path());
+  auto probe = llmp::platform::ProbeDirectIo(scratch.path());
   ASSERT_TRUE(probe.has_value()) << probe.error();
-  EXPECT_LE(probe->offset_alignment, jitllm::platform::kDirectIoAlignment);
+  EXPECT_LE(probe->offset_alignment, llmp::platform::kDirectIoAlignment);
   // The probe's file had no name: nothing is left behind.
   EXPECT_TRUE(fs::is_empty(scratch.path()));
 }
@@ -459,28 +458,28 @@ TEST(DirectIo, ProbesTheBuildTreesFilesystem) {
 // every host has its loopback addresses, and the open-file limit only
 // rises.
 TEST(InterfacesTest, ReadsTheLoopbackAddress) {
-  auto addresses = jitllm::platform::ReadInterfaceAddresses();
+  auto addresses = llmp::platform::ReadInterfaceAddresses();
   ASSERT_TRUE(addresses.has_value()) << addresses.error();
   bool loopback = false;
-  for (const jitllm::platform::InterfaceAddress& a : *addresses) {
+  for (const llmp::platform::InterfaceAddress& a : *addresses) {
     if (!a.ipv6 && a.Text() == "127.0.0.1") {
       loopback = a.loopback;
     }
   }
   EXPECT_TRUE(loopback);
-  const std::uint64_t now = jitllm::platform::RaiseOpenFileLimit(0);
+  const std::uint64_t now = llmp::platform::RaiseOpenFileLimit(0);
   EXPECT_GT(now, 0U);
-  EXPECT_GE(jitllm::platform::RaiseOpenFileLimit(now + 1), now);
+  EXPECT_GE(llmp::platform::RaiseOpenFileLimit(now + 1), now);
 }
 
 // A reverse lookup never holds its caller past its limit, whatever the
 // resolver does (here it may answer at once, from /etc/hosts, or not).
 TEST(InterfacesTest, AReverseLookupKeepsToItsLimit) {
-  jitllm::platform::InterfaceAddress address;
+  llmp::platform::InterfaceAddress address;
   address.bytes = {192, 0, 2, 1};  // TEST-NET-1: no name anywhere, perhaps a slow no
   for (const auto limit : {std::chrono::milliseconds(0), std::chrono::milliseconds(50)}) {
     const auto start = std::chrono::steady_clock::now();
-    (void)jitllm::platform::ReverseName(address, limit);
+    (void)llmp::platform::ReverseName(address, limit);
     EXPECT_LT(std::chrono::steady_clock::now() - start, limit + std::chrono::seconds(1));
   }
 }
@@ -489,39 +488,39 @@ TEST(InterfacesTest, AReverseLookupKeepsToItsLimit) {
 // reported readable with its tag until drained; a connection's peer
 // closing is reported; a removed descriptor is no longer.
 TEST(EventLoopTest, ReportsWakersAndPeers) {
-  using jitllm::platform::ReadyEvent;
-  auto loop = jitllm::platform::EventLoop::Open();
-  auto waker = jitllm::platform::Waker::Open();
+  using llmp::platform::ReadyEvent;
+  auto loop = llmp::platform::EventLoop::Open();
+  auto waker = llmp::platform::Waker::Open();
   ASSERT_TRUE(loop.valid());
   ASSERT_TRUE(waker.valid());
   std::array<ReadyEvent, 8> events{};
   const auto wait = [&] { return loop.Wait(events, std::chrono::milliseconds(0)); };
-  ASSERT_TRUE(loop.Add(waker.descriptor(), 7, jitllm::platform::kReadable));
+  ASSERT_TRUE(loop.Add(waker.descriptor(), 7, llmp::platform::kReadable));
   EXPECT_EQ(wait().value_or(9), 0U);
   waker.Signal();
   waker.Signal();
   ASSERT_EQ(wait().value_or(9), 1U);
   EXPECT_EQ(events[0].tag, 7U);
-  EXPECT_EQ(events[0].ready, jitllm::platform::kReadable);
+  EXPECT_EQ(events[0].ready, llmp::platform::kReadable);
   waker.Drain();
   EXPECT_EQ(wait().value_or(9), 0U);
 
   std::array<int, 2> pair{-1, -1};
   ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair.data()), 0);
-  const jitllm::platform::OwnedDescriptor ours(pair[0]);
-  jitllm::platform::OwnedDescriptor theirs(pair[1]);
+  const llmp::platform::OwnedDescriptor ours(pair[0]);
+  llmp::platform::OwnedDescriptor theirs(pair[1]);
   ASSERT_TRUE(loop.Add(
       ours.get(), 8,
-      jitllm::platform::kReadable | jitllm::platform::kWritable | jitllm::platform::kPeerClosed));
+      llmp::platform::kReadable | llmp::platform::kWritable | llmp::platform::kPeerClosed));
   ASSERT_EQ(wait().value_or(9), 1U);
   EXPECT_EQ(events[0].tag, 8U);
-  EXPECT_EQ(events[0].ready, jitllm::platform::kWritable);
-  ASSERT_TRUE(loop.Change(ours.get(), 9, jitllm::platform::kPeerClosed));
+  EXPECT_EQ(events[0].ready, llmp::platform::kWritable);
+  ASSERT_TRUE(loop.Change(ours.get(), 9, llmp::platform::kPeerClosed));
   EXPECT_EQ(wait().value_or(9), 0U);
-  theirs = jitllm::platform::OwnedDescriptor();  // the peer closes
+  theirs = llmp::platform::OwnedDescriptor();  // the peer closes
   ASSERT_EQ(wait().value_or(9), 1U);
   EXPECT_EQ(events[0].tag, 9U);
-  EXPECT_NE(events[0].ready & (jitllm::platform::kPeerClosed | jitllm::platform::kHangUp), 0U);
+  EXPECT_NE(events[0].ready & (llmp::platform::kPeerClosed | llmp::platform::kHangUp), 0U);
   loop.Remove(ours.get());
   EXPECT_EQ(wait().value_or(9), 0U);
   // Nothing to wait for but the limit, which is kept.
@@ -540,7 +539,7 @@ TEST(EventLoopTest, WatchesBlockedSignals) {
   ASSERT_EQ(::pthread_sigmask(SIG_BLOCK, &block, &previous), 0);
   {
     constexpr std::array kWatched = {SIGUSR1};
-    const auto watch = jitllm::platform::SignalWatch::Open(kWatched);
+    const auto watch = llmp::platform::SignalWatch::Open(kWatched);
     ASSERT_TRUE(watch.valid());
     EXPECT_EQ(watch.Take(), 0);
     ASSERT_EQ(::raise(SIGUSR1), 0);
@@ -555,25 +554,25 @@ TEST(EventLoopTest, WatchesBlockedSignals) {
 TEST(SocketsTest, RandomBytesDiffer) {
   std::array<std::byte, 32> a{};
   std::array<std::byte, 32> b{};
-  ASSERT_TRUE(jitllm::platform::FillRandom(a));
-  ASSERT_TRUE(jitllm::platform::FillRandom(b));
+  ASSERT_TRUE(llmp::platform::FillRandom(a));
+  ASSERT_TRUE(llmp::platform::FillRandom(b));
   EXPECT_NE(a, b);
 }
 
 TEST(Files, AvailableMemoryAndAnonymousFiles) {
-  const auto available = jitllm::platform::AvailableMemoryBytes();
+  const auto available = llmp::platform::AvailableMemoryBytes();
   ASSERT_TRUE(available.has_value());
   EXPECT_GT(available.value_or(0), 0U);
-  const auto memory = jitllm::platform::OpenAnonymousMemoryFile("jitllm-test");
+  const auto memory = llmp::platform::OpenAnonymousMemoryFile("llmp-test");
   ASSERT_TRUE(memory.has_value());
-  const jitllm::platform::OwnedDescriptor owned(*memory);
+  const llmp::platform::OwnedDescriptor owned(*memory);
   EXPECT_EQ(::ftruncate(owned.get(), 4096), 0);
   // The test's own executable: a size and a time (the calibration key's
   // stamp of an untracked build).
-  const auto stamp = jitllm::platform::RunningExecutableStamp();
+  const auto stamp = llmp::platform::RunningExecutableStamp();
   ASSERT_TRUE(stamp.has_value());
-  EXPECT_GT(stamp.value_or(jitllm::platform::ExecutableStamp{}).size, 0U);
-  EXPECT_GT(stamp.value_or(jitllm::platform::ExecutableStamp{}).modified_ns, 0);
+  EXPECT_GT(stamp.value_or(llmp::platform::ExecutableStamp{}).size, 0U);
+  EXPECT_GT(stamp.value_or(llmp::platform::ExecutableStamp{}).modified_ns, 0);
 }
 
 // The direct-I/O opens: a shard opened for direct reads (and, on a
@@ -581,7 +580,7 @@ TEST(Files, AvailableMemoryAndAnonymousFiles) {
 // through the cache), and an unnamed spill file that leaves nothing behind.
 TEST(DirectIo, OpensFilesForDirectIo) {
   const Scratch scratch;
-  auto filesystem = jitllm::platform::DescribeFilesystem(scratch.path());
+  auto filesystem = llmp::platform::DescribeFilesystem(scratch.path());
   ASSERT_TRUE(filesystem.has_value()) << filesystem.error();
   if (!filesystem->accepted) {
     GTEST_SKIP() << "the build tree is on " << filesystem->type
@@ -590,32 +589,32 @@ TEST(DirectIo, OpensFilesForDirectIo) {
   {
     std::ofstream(scratch.path() / "shard") << std::string(8192, 'x');
   }
-  const jitllm::platform::OwnedDescriptor dir(
+  const llmp::platform::OwnedDescriptor dir(
       ::open(scratch.path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
   ASSERT_TRUE(dir.valid());
-  auto shard = jitllm::platform::OpenForDirectRead(dir.get(), "shard");
+  auto shard = llmp::platform::OpenForDirectRead(dir.get(), "shard");
   ASSERT_TRUE(shard.has_value()) << shard.error();
-  const jitllm::platform::OwnedDescriptor shard_fd(shard->fd);
+  const llmp::platform::OwnedDescriptor shard_fd(shard->fd);
   EXPECT_TRUE(shard->direct);
-  EXPECT_EQ(jitllm::platform::FileGeneration(shard_fd.get()),
-            jitllm::platform::FileGeneration(shard_fd.get()));
-  EXPECT_EQ(jitllm::platform::OpenForDirectRead(dir.get(), "missing").error_or(0), ENOENT);
+  EXPECT_EQ(llmp::platform::FileGeneration(shard_fd.get()),
+            llmp::platform::FileGeneration(shard_fd.get()));
+  EXPECT_EQ(llmp::platform::OpenForDirectRead(dir.get(), "missing").error_or(0), ENOENT);
 
-  auto spill = jitllm::platform::OpenUnnamedDirectFile(scratch.path());
+  auto spill = llmp::platform::OpenUnnamedDirectFile(scratch.path());
   ASSERT_TRUE(spill.has_value()) << spill.error();
-  const jitllm::platform::OwnedDescriptor spill_fd(*spill);
+  const llmp::platform::OwnedDescriptor spill_fd(*spill);
   EXPECT_EQ(::ftruncate(spill_fd.get(), 2 << 20), 0);
   std::error_code error;
   EXPECT_EQ(std::distance(fs::directory_iterator(scratch.path(), error), fs::directory_iterator()),
             1);  // the shard alone
 
   // procfs refuses direct I/O.
-  const jitllm::platform::OwnedDescriptor proc(::open("/proc", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+  const llmp::platform::OwnedDescriptor proc(::open("/proc", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
   ASSERT_TRUE(proc.valid());
-  EXPECT_EQ(jitllm::platform::OpenForDirectRead(proc.get(), "meminfo").error_or(0), EINVAL);
-  auto buffered = jitllm::platform::OpenForDirectRead(proc.get(), "meminfo", true);
+  EXPECT_EQ(llmp::platform::OpenForDirectRead(proc.get(), "meminfo").error_or(0), EINVAL);
+  auto buffered = llmp::platform::OpenForDirectRead(proc.get(), "meminfo", true);
   ASSERT_TRUE(buffered.has_value()) << buffered.error();
-  const jitllm::platform::OwnedDescriptor buffered_fd(buffered->fd);
+  const llmp::platform::OwnedDescriptor buffered_fd(buffered->fd);
   EXPECT_FALSE(buffered->direct);
 }
 

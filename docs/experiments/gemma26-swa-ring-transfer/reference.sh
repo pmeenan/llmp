@@ -1,11 +1,11 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 umask 077
-scratch="$HOME/.local/share/jitllm/gemma26-swa-ring-transfer"
-source_root="$HOME/src/jitLLM-wt/m3gm31"
-models="$HOME/.local/share/jitllm/reference-models"
+scratch="$HOME/.local/share/llmp/gemma26-swa-ring-transfer"
+source_root="$HOME/src/llmp-wt/m3gm31"
+models="$HOME/.local/share/llmp/reference-models"
 image=ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7
 common=(run --rm --network none --read-only --user "$(id -u):$(id -g)" --tmpfs /tmp:rw,size=1g
         --mount "type=bind,src=$scratch,dst=/scratch"

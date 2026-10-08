@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The scheduler thread (D-048, docs/async-model.md): the node's single
@@ -182,8 +182,8 @@
 // reports a boundary only where the request's ProgramCursor::AtBoundary
 // holds (execution/program.h).
 
-#ifndef JITLLM_SCHEDULER_SCHEDULER_H_
-#define JITLLM_SCHEDULER_SCHEDULER_H_
+#ifndef LLMP_SCHEDULER_SCHEDULER_H_
+#define LLMP_SCHEDULER_SCHEDULER_H_
 
 #include <array>
 #include <atomic>
@@ -213,7 +213,7 @@
 #include "scheduler/services.h"
 #include "scheduler/tasks.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 
 // How a step ends.
 struct Step {
@@ -1086,6 +1086,6 @@ class TaskContext {
   TaskId task_;
 };
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler
 
-#endif  // JITLLM_SCHEDULER_SCHEDULER_H_
+#endif  // LLMP_SCHEDULER_SCHEDULER_H_

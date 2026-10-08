@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma multirow prefill without cache-packing copies
@@ -104,7 +104,7 @@ remain unchanged.
 ## Evidence and limitations
 
 The initial compile attempt caught two signed-conversion warnings; bounded
-uint64 casts corrected them. The next launcher omitted JITLLM_TEST_DATA and
+uint64 casts corrected them. The next launcher omitted LLMP_TEST_DATA and
 aborted on the first plan test before GPU execution. Both failure records
 remain preserved. Corrected qualification passed 18 focused controls, then
 23 controls for the cap0 transfer. Independent review found that the initial
@@ -194,7 +194,7 @@ under the owner's current override.
 
 Authenticated replay inputs are retained separately from disposable raw logs
 in Spark B's standing reference store
-`~/.local/share/jitllm/references/gemma-prefill-copies/`, under `gemma2/` and
+`~/.local/share/llmp/references/gemma-prefill-copies/`, under `gemma2/` and
 `gemma3/`. `inputs.json` authenticates the four ID files and matching original
 texts. Another host may supply externally retained files with these identities;
 raw traces/logs and this session's scratch directories are not required to
@@ -223,10 +223,10 @@ installed GPU-exclusive Spark job, supply the approved prepared artifact,
 matching ID paths and a fresh private output directory:
 
 ```text
-jitllm_gemma2_joint_prefill_probe ARTIFACT IDS0 IDS1 NEW_OUT own bounded-roots device-masks prefill-ahead owner-prefill
-jitllm_gemma3_joint_prefill_probe ARTIFACT IDS0 IDS1 NEW_OUT own bounded-roots owner-prefill
-jitllm_gemma2_joint_prefill_probe ARTIFACT IDS0 IDS1 NEW_OUT cycle bounded-roots device-masks prefill-ahead owner-prefill
-jitllm_gemma3_joint_prefill_probe ARTIFACT IDS0 IDS1 NEW_OUT cycle bounded-roots owner-prefill
+llmp_gemma2_joint_prefill_probe ARTIFACT IDS0 IDS1 NEW_OUT own bounded-roots device-masks prefill-ahead owner-prefill
+llmp_gemma3_joint_prefill_probe ARTIFACT IDS0 IDS1 NEW_OUT own bounded-roots owner-prefill
+llmp_gemma2_joint_prefill_probe ARTIFACT IDS0 IDS1 NEW_OUT cycle bounded-roots device-masks prefill-ahead owner-prefill
+llmp_gemma3_joint_prefill_probe ARTIFACT IDS0 IDS1 NEW_OUT cycle bounded-roots owner-prefill
 ```
 
 Omit only `owner-prefill` for the packed control; use separate fresh processes
@@ -918,7 +918,7 @@ Its original texts are the first 20000 UTF-8-complete bytes of
 `git show 46cfd5c:docs/async-model.md`, SHA
 `5f420b26bc12eb5f77bb1ff599b2351935b6ef7f73374908f82aa19ba5e09c5a` /
 `cd7b0613fd963dd35d1f81a4abdfd867484d9747b8ae01c572507ab33bf6094b`.
-Use `jitllm_gemma3_joint_prefill_probe prepare METADATA TEXT COUNT NEW_OUT`
+Use `llmp_gemma3_joint_prefill_probe prepare METADATA TEXT COUNT NEW_OUT`
 with the approved tokenizer metadata and counts 3111/3623 to regenerate the IDs.
 
 For first-traversal factors, use the checked-in native probe with

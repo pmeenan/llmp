@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 draft-head input rounding (2026-09-30)
@@ -40,7 +40,7 @@ runner RN option was removed; rounding is external replay only.
 
 ## Capture and replay controls
 
-`jitllm_qwen38_spec --check draft-head` retains mixed rows and head logits
+`llmp_qwen38_spec --check draft-head` retains mixed rows and head logits
 only for this diagnostic. It refuses context above 131,072, chunk above
 8,192, more than eight steps, depth above three and heads above 65,536.
 Pinned destinations remain node-owned through successful device-job
@@ -225,7 +225,7 @@ provide the full validated head/map and require original logits to match
 the captured model logits before interpreting timing.
 
 ```sh
-jitllm_qwen38_spec --qwen38-artifact TARGET --drafter PREFIX \
+llmp_qwen38_spec --qwen38-artifact TARGET --drafter PREFIX \
   --tokenizer TOKENIZER --prompts 128k.json --only qwen3.8-128k \
   --context 131072 --prefill-chunk 4096 --check draft-head \
   --tokens 4 --draft 3 --draft-vocab 65536 --adaptive-depth off \

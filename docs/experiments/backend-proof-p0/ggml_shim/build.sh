@@ -1,9 +1,9 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
 # Builds the reference-only GGML operation shim (CMakeLists.txt) on a Spark,
-# inside the EXL3 reference container (image jitllm-exl3-reference:20260922),
+# inside the EXL3 reference container (image llmp-exl3-reference:20260922),
 # so it loads into the same process as upstream ExLlamaV3:
 #
 #   build.sh NAME
@@ -11,7 +11,7 @@
 # EXL_RUN is M0's reference directory (for cxx-target, the container's g++
 # with -march=armv8-a); P0 holds this harness in harness/ and receives the
 # build in ggmlops/NAME; LLAMA_SOURCE is the pinned llama.cpp source
-# (b29c606e2), of which only ggml/ is built, unmodified; SDK is jitLLM's
+# (b29c606e2), of which only ggml/ is built, unmodified; SDK is llmpalooza's
 # aarch64 SDK, used only for its CMake (the container has none). CUDA is the
 # toolkit mounted at CUDA_MOUNT whose NVCC compiles the kernels: by default the
 # host's CUDA 13.0 at the same path, as the reference's extension build uses;
@@ -32,7 +32,7 @@ exec sudo -n docker run --rm --network none --user "$(id -u):$(id -g)" \
   --mount "type=bind,src=$LLAMA_SOURCE,dst=/llama.cpp,readonly" \
   --mount "type=bind,src=$SDK/cmake,dst=/sdk-cmake,readonly" \
   --mount "type=bind,src=$CUDA,dst=$CUDA_MOUNT,readonly" \
-  -e HOME=/tmp --entrypoint sh jitllm-exl3-reference:20260922 -c "
+  -e HOME=/tmp --entrypoint sh llmp-exl3-reference:20260922 -c "
 set -eu
 /sdk-cmake/bin/cmake -S /p0/harness/ggml_shim -B /p0/ggmlops/$name -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/local/bin/ninja \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \

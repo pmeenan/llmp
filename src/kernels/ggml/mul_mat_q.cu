@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // GGML's quantized matrix products (ops_ext.h): the vector (MMVQ) and tile
-// (MMQ) kernel families under jitLLM's dispatch. SelectMulMatQ repeats
+// (MMQ) kernel families under llmpalooza's dispatch. SelectMulMatQ repeats
 // upstream's routing for quantized weights (ggml-cuda.cu:1864-1871 and
 // 1924-1942 at llama.cpp b29c606e2) with upstream's own predicates; the
 // scratch plans are recorded copies of the host arithmetic by which
@@ -23,7 +23,7 @@
 #include "base/bytes.h"
 #include "common.cuh"
 #include "kernels/ggml/cublas.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/mul_mat_q_glu.cuh"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_ext.h"
@@ -36,21 +36,21 @@
 // The weight types CheckMulMatQ admits must be those whose MMQ instance
 // units the build compiles (third_party/patches/ggml/0002), or mmq.cu's
 // switch would reach its abort.
-#if !defined(GGML_JITLLM_MMQ_Q2_K) || !defined(GGML_JITLLM_MMQ_IQ2_XXS) ||   \
-    !defined(GGML_JITLLM_MMQ_Q8_0) || !defined(GGML_JITLLM_MMQ_Q4_K) ||      \
-    !defined(GGML_JITLLM_MMQ_Q5_K) || !defined(GGML_JITLLM_MMQ_Q6_K) ||      \
-    !defined(GGML_JITLLM_MMQ_IQ2_XS) || !defined(GGML_JITLLM_MMQ_IQ3_XXS) || \
-    !defined(GGML_JITLLM_MMQ_MXFP4) || !defined(GGML_JITLLM_MMQ_NVFP4) ||    \
-    !defined(GGML_JITLLM_MMQ_Q4_1) || !defined(GGML_JITLLM_MMQ_Q5_0) ||      \
-    !defined(GGML_JITLLM_MMQ_Q5_1) || !defined(GGML_JITLLM_MMQ_Q4_0) ||      \
-    !defined(GGML_JITLLM_MMQ_Q2_0) || !defined(GGML_JITLLM_MMQ_Q3_K) ||      \
-    !defined(GGML_JITLLM_MMQ_IQ1_S) || !defined(GGML_JITLLM_MMQ_IQ2_S) ||    \
-    !defined(GGML_JITLLM_MMQ_IQ3_S) || !defined(GGML_JITLLM_MMQ_IQ4_NL) ||   \
-    !defined(GGML_JITLLM_MMQ_IQ4_XS)
+#if !defined(GGML_LLMP_MMQ_Q2_K) || !defined(GGML_LLMP_MMQ_IQ2_XXS) ||   \
+    !defined(GGML_LLMP_MMQ_Q8_0) || !defined(GGML_LLMP_MMQ_Q4_K) ||      \
+    !defined(GGML_LLMP_MMQ_Q5_K) || !defined(GGML_LLMP_MMQ_Q6_K) ||      \
+    !defined(GGML_LLMP_MMQ_IQ2_XS) || !defined(GGML_LLMP_MMQ_IQ3_XXS) || \
+    !defined(GGML_LLMP_MMQ_MXFP4) || !defined(GGML_LLMP_MMQ_NVFP4) ||    \
+    !defined(GGML_LLMP_MMQ_Q4_1) || !defined(GGML_LLMP_MMQ_Q5_0) ||      \
+    !defined(GGML_LLMP_MMQ_Q5_1) || !defined(GGML_LLMP_MMQ_Q4_0) ||      \
+    !defined(GGML_LLMP_MMQ_Q2_0) || !defined(GGML_LLMP_MMQ_Q3_K) ||      \
+    !defined(GGML_LLMP_MMQ_IQ1_S) || !defined(GGML_LLMP_MMQ_IQ2_S) ||    \
+    !defined(GGML_LLMP_MMQ_IQ3_S) || !defined(GGML_LLMP_MMQ_IQ4_NL) ||   \
+    !defined(GGML_LLMP_MMQ_IQ4_XS)
 #error "validate_ext.h's quantized weight types need their MMQ instance units"
 #endif
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -865,4 +865,4 @@ std::expected<void, KernelFailure> MulMatIdQCompactPrequant(LaunchContext& launc
   return RunExpertProducts(launch, down, nullptr, true, nullptr, false, down->src[1]);
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

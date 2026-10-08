@@ -1,5 +1,5 @@
 {
- "format": "jitllm-retained-backing-library",
+ "format": "llmp-retained-backing-library",
  "version": 1,
  "planner": {
   "path": "docs/experiments/artifact-layout/layout.py",

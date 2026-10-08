@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// What jitLLM's EXL3 launchers check on the host before anything is queued
+// What llmpalooza's EXL3 launchers check on the host before anything is queued
 // (D-053; docs/backend-proof.md, "ExLlamaV3"), in every profile: the
 // operands of each kernel the native linear launches, the forced launch
 // plan, and the rules of launch_contract.h that a host can check. A CUDA
@@ -22,8 +22,8 @@
 // GEMV at K = 4 only (docs/exl3-bringup.md). Every dimension of an EXL3
 // linear is a multiple of 128: both sides carry a 128-point Hadamard.
 
-#ifndef JITLLM_KERNELS_EXL3_VALIDATE_H_
-#define JITLLM_KERNELS_EXL3_VALIDATE_H_
+#ifndef LLMP_KERNELS_EXL3_VALIDATE_H_
+#define LLMP_KERNELS_EXL3_VALIDATE_H_
 
 #include <array>
 #include <cstdint>
@@ -31,7 +31,7 @@
 #include <string>
 #include <vector>
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 
 // Why a call failed. kRejected: a precondition did not hold and nothing was
 // queued. kUnknown: a launch reported a device error, so what was queued is
@@ -282,6 +282,6 @@ struct ReconstructedOperands {
 std::expected<void, KernelFailure> CheckReconstructedScratch(const ReconstructedOperands& operands,
                                                              bool fused);
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3
 
-#endif  // JITLLM_KERNELS_EXL3_VALIDATE_H_
+#endif  // LLMP_KERNELS_EXL3_VALIDATE_H_

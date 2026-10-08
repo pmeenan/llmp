@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // The elementwise, row, routing, recurrent and DeepSeek V4 operations of
 // ops_ext.h over GGML's launchers. PlanTopK is a recorded copy of what
-// ggml_cuda_op_top_k draws from the pool in jitLLM's build, which has no
+// ggml_cuda_op_top_k draws from the pool in llmpalooza's build, which has no
 // CUB (third_party/patches/ggml/0001): top_k_radix_cuda's state and
 // histograms for rows over 1,024, else the bitonic argsort's full indices
 // (top-k.cu:175-181 and 262-268 at llama.cpp b29c606e2).
@@ -40,10 +40,10 @@
 
 // PlanTopK sizes the paths of a build without CUB (patches/ggml/0001).
 #if defined(GGML_CUDA_USE_CUB)
-#error "jitLLM's GGML build takes no CUB; PlanTopK sizes the radix and bitonic paths"
+#error "llmpalooza's GGML build takes no CUB; PlanTopK sizes the radix and bitonic paths"
 #endif
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -178,7 +178,7 @@ std::expected<void, KernelFailure> Argsort(LaunchContext& launch, ggml_tensor* n
     return checked;
   }
   // Upstream sorts in CUB beyond the shared memory the bitonic kernel may
-  // use (argsort.cu:272-278); jitLLM's build has no CUB, and the bitonic
+  // use (argsort.cu:272-278); llmpalooza's build has no CUB, and the bitonic
   // launcher would assert.
   if (ArgsortSharedBytes(node) > Device(launch).smpb) {
     return Rejected("an argsort row beyond the device's shared memory");
@@ -275,4 +275,4 @@ std::expected<void, KernelFailure> HcPost(LaunchContext& launch, ggml_tensor* no
   return RunChecked(launch, node, CheckHcPost(node), &ggml_cuda_op_dsv4_hc_post);
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Bounded, supervised scalar HTTP controls for the two approved profiles.
 
@@ -57,7 +57,7 @@ def main():
     )
     os.chmod(config, 0o600)
     results = {
-        "format": "jitllm-gemma31-scalar-http-control-v1",
+        "format": "llmp-gemma31-scalar-http-control-v1",
         "artifacts": ARTIFACTS,
         "runtime_sha256": hashlib.sha256(args.runtime.read_bytes()).hexdigest(),
         "cases": [],

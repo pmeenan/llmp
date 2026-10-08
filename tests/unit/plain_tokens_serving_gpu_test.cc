@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <gtest/gtest.h>
@@ -23,9 +23,9 @@
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
 
-namespace rt = jitllm::runtime;
-namespace en = jitllm::engine;
-namespace cfg = jitllm::config;
+namespace rt = llmp::runtime;
+namespace en = llmp::engine;
+namespace cfg = llmp::config;
 
 class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
  protected:
@@ -41,7 +41,7 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   void SetUp() override {
     const bool gguf = GetParam() == 1, deepseek = GetParam() >= 2;
     const bool adaptive = GetParam() == 3;
-    const std::filesystem::path models = jitllm::test_support::ModelsDir();
+    const std::filesystem::path models = llmp::test_support::ModelsDir();
     const auto installed = models / (gguf ? "qgguf-artifacts" : "m3-artifacts");
     const char* artifact =
         deepseek ? "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234"
@@ -56,7 +56,7 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
       GTEST_SKIP() << "no artifact or tokenizer for case " << GetParam() << " in " << models;
     }
     // Spill files need direct I/O: scratch in the build tree.
-    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path root = base != nullptr ? base : ::testing::TempDir();
     std::filesystem::create_directories(root, error);
     std::string name = (root / "plain-tokens-XXXXXX").string();
@@ -108,16 +108,15 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     if (!scratch.empty()) std::filesystem::remove_all(scratch);
   }
   template <class Runner>
-  std::expected<jitllm::base::Sha256Digest, std::string> StateHash(Runner& runner,
-                                                                   std::uint32_t id) {
+  std::expected<llmp::base::Sha256Digest, std::string> StateHash(Runner& runner, std::uint32_t id) {
     auto slot = runner.request_slot(id);
     if (!slot) return std::unexpected(slot.error());
     auto& node = life->server->node();
     constexpr std::uint64_t capacity = 1ULL << 20U;
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto buffer = node.Pinned(capacity, 0, staging);
     if (!buffer) return std::unexpected(buffer.error());
-    jitllm::base::Sha256 hash;
+    llmp::base::Sha256 hash;
     std::uint64_t bytes = 0;
     for (const auto& range : (*slot)->used_state_ranges()) {
       bytes += range.bytes;
@@ -140,7 +139,7 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
 
 TEST_P(PlainTokensServingGpu, ScalarJoinedMixedAndSpilledRowsMatchDeviceTokens) {
   const auto exercise = [&](auto& runner) {
-    return jitllm::test::CheckPlainServing(
+    return llmp::test::CheckPlainServing(
         *life->server, *model, runner.vocab(),
         [&](std::uint32_t id) { return StateHash(runner, id); },
         [&] { return runner.device_token_outputs(); },
@@ -174,7 +173,7 @@ TEST_P(PlainTokensServingGpu, ScalarJoinedMixedAndSpilledRowsMatchDeviceTokens) 
     ASSERT_TRUE(life->server->SelectRequestBranches(*model, branches));
     std::array<std::vector<std::int32_t>, 2> expected_drafts;
     std::array<std::vector<float>, 2> expected_heads;
-    std::array<jitllm::base::Sha256Digest, 2> expected_state{}, expected_settled{};
+    std::array<llmp::base::Sha256Digest, 2> expected_state{}, expected_settled{};
     const auto finite = [&](const std::vector<float>& rows, std::uint32_t count) {
       return rows.size() == std::size_t{count} * runner.vocab() &&
              std::ranges::all_of(rows, [](float x) { return std::isfinite(x); });

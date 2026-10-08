@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Derived from gemma_attention_packed.cc at 802c33b: funded state witnesses and finite checks.
@@ -25,7 +25,7 @@
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
   if (argc != 7 && argc != 8) return 2;
@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     if (!witness_ranges) return Error(witness_ranges.error());
     std::uint64_t witness_bytes = 0;
     for (const auto& range : *witness_ranges) witness_bytes += range.bytes;
-    std::vector<jitllm::catalog::ExtentId> witness_extents;
+    std::vector<llmp::catalog::ExtentId> witness_extents;
     auto witness = node.Pinned(witness_bytes, 0, witness_extents);
     if (!witness) return Error(witness.error());
     const auto heap = std::uint64_t{count} * (steps + 2) * vocab * sizeof(float);
@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
     const auto budget =
         fixed + runner.weights().size() * en::kPagedExtent + 2 * node.StateCapacity() + heap;
     node.SetHostFloor(runner.plan_floor_bytes() + runner.host_input_bytes() + heap);
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();

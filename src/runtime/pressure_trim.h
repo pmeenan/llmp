@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // When pressure on the host's memory from outside the runtime has it trim
@@ -28,8 +28,8 @@
 //   and asks for one log line a log interval at most. The back-off resets
 //   when pressure ends.
 
-#ifndef JITLLM_RUNTIME_PRESSURE_TRIM_H_
-#define JITLLM_RUNTIME_PRESSURE_TRIM_H_
+#ifndef LLMP_RUNTIME_PRESSURE_TRIM_H_
+#define LLMP_RUNTIME_PRESSURE_TRIM_H_
 
 #include <chrono>
 #include <cstdint>
@@ -37,7 +37,7 @@
 
 #include "platform/memory_pressure.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 struct PressureTrimLimits {
   std::uint64_t low_bytes = std::uint64_t{512} << 20U;     // the trigger
@@ -82,6 +82,6 @@ class PressureTrim {
   std::uint64_t short_trims_ = 0;
 };
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_PRESSURE_TRIM_H_
+#endif  // LLMP_RUNTIME_PRESSURE_TRIM_H_

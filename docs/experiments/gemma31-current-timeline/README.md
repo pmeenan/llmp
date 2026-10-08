@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Current Gemma31 prefill timeline
@@ -95,9 +95,9 @@ Formatting after measurement changed only whitespace in the C++ observers;
 the result file retains both measured and committed source identities.
 Raw SQLite, traces, logs, state, vectors and child/official records remain in
 external gemma31-current-timeline storage. Reproduce using the existing manual
-`jitllm_gemma26_prefill_profile` target with `31 both 256`, the CAPI
+`llmp_gemma26_prefill_profile` target with `31 both 256`, the CAPI
 observer's optional `31` argument, and the Task42 Nsight 2025.3.2 CUDA/NVTX/OSRT flags; pass the explicit
-`jitllm.gemma31.paid_prefill` label to `trace_v2.extract`. Native SDK math remains
+`llmp.gemma31.paid_prefill` label to `trace_v2.extract`. Native SDK math remains
 CUDA 13.4 and original-image math CUDA 13.3; only observer clients were compiled.
 Task-entry TensorFold HEAD remained 609ca419 (0.6.5, Gemma 26B MLX recipe, no 31B CUDA
 recipe); it supplies no comparable CUDA result. No additional model ladder,

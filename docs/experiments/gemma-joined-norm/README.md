@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Dense31 natural C4 norm/row first screen
@@ -98,14 +98,14 @@ retained ubatch4 file.
 On Spark-b, synchronize the isolated source with checksum comparison and fresh
 mtimes, then use the installed supervisor for a locked native build. Supply
 `ids31.i32` and the exact pinned headers in
-`~/.local/share/jitllm/gemma-joined-norm`; obtain headers from `git show` at the
+`~/.local/share/llmp/gemma-joined-norm`; obtain headers from `git show` at the
 pinned llama.cpp revision, without changing the owner checkout. Run
 `reference.sh build` under the same supervisor. Reference paths in this wrapper
 are the experiment's owner-local paths, not application configuration.
 
 Acquire into a fresh external `native/` directory, recording source and binary
 hashes in `native/source-identities.json` before the arms. Run the existing
-`jitllm_gemma_joined ARTIFACT OUTPUT 31 4 MODE POLICY IDS` with these five arms:
+`llmp_gemma_joined ARTIFACT OUTPUT 31 4 MODE POLICY IDS` with these five arms:
 `rows-control/joined/rows`, `scalar-a/scalar/rows-norm`,
 `joined-first/joined/rows-norm`, `joined-repeat/joined/rows-norm`,
 `scalar-b/scalar/rows-norm`. Invoke `own_freeze.py NATIVE_DIRECTORY`; existing

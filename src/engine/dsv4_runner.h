@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // DeepSeek V4 Flash as a model on a paged node (paged_node.h; M3's swap
@@ -84,8 +84,8 @@
 //   verify, for several slots in one job: every row-local product reads its
 //   weights once for all of them.
 
-#ifndef JITLLM_ENGINE_DSV4_RUNNER_H_
-#define JITLLM_ENGINE_DSV4_RUNNER_H_
+#ifndef LLMP_ENGINE_DSV4_RUNNER_H_
+#define LLMP_ENGINE_DSV4_RUNNER_H_
 
 #include <array>
 #include <cstddef>
@@ -116,7 +116,7 @@
 #include "model/dspark.h"
 #include "model/dsv4.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 struct Dsv4Options {
   std::filesystem::path artifact;
@@ -181,7 +181,7 @@ struct Dsv4Options {
   std::function<LiveState::SpillPlace(std::uint32_t slot)> spill_place;
 };
 
-// The prefill arithmetic jitllm-runtime serves DeepSeek with: the
+// The prefill arithmetic llmp-runtime serves DeepSeek with: the
 // output-A/HCA prefill on every prefill chunk of 64 to 4,096 rows, a
 // prompt's last, partial one included (docs/experiments/ds4-output-prefix,
 // "Default-on acceptance"). Its own guards keep other weights, devices and
@@ -810,7 +810,7 @@ class Dsv4Runner final : public PagedModel {
   std::expected<WavePlans::Entry*, std::string> PlannedWave(const WaveKey& key);
   std::expected<DraftWavePlans::Entry*, std::string> PlannedDraftWave(const DraftWaveKey& key);
   // Whether a DSpark wave of `count` slots drafts as one graph. One-row
-  // blocks never join: a lone one-row block takes jitllm.vecq's one-token
+  // blocks never join: a lone one-row block takes llmp.vecq's one-token
   // launch, whose sums the joined multi-token launch does not reproduce.
   bool JoinedDrafts(std::size_t count) const {
     return joined_drafts_ && o_.draft_rows >= 2 && count >= 2 &&
@@ -1013,6 +1013,6 @@ class Dsv4Runner final : public PagedModel {
   std::array<std::vector<ggml_tensor*>, kRequestSlots> draft_rows_;
 };
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_DSV4_RUNNER_H_
+#endif  // LLMP_ENGINE_DSV4_RUNNER_H_

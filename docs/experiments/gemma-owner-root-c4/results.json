@@ -332,18 +332,18 @@
         "sha256": "ca7066469c05468cca252b1757bb48737c8def76684514b0c1d96365ac607e8a"
       },
       {
-        "path": "src/kernels/ggml/jitllm_ops.cc",
+        "path": "src/kernels/ggml/llmp_ops.cc",
         "bytes": 116570,
         "sha256": "79962fdc7ca2ae22b55934323daaf1172346c167264e031fad62303ba16b6237"
       },
       {
-        "path": "src/kernels/ggml/jitllm_ops.h",
+        "path": "src/kernels/ggml/llmp_ops.h",
         "bytes": 60003,
         "sha256": "c43404afc888c60936578e04f7253d209c405570d72574d21d39a505ee61b317"
       }
     ],
     "original_binary": {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma-packed-attention-c4/llama_joined",
+      "path": "/home/pmeenan/.local/share/llmp/gemma-packed-attention-c4/llama_joined",
       "bytes": 76792,
       "sha256": "01889d8c4a281110f611cedcab43235a9ac80bcc21abf094d982f14dd2112f61"
     },
@@ -355,7 +355,7 @@
       "libggml-cuda.so": "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e"
     },
     "original_source": {
-      "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/docs/experiments/gemma-joined-serving/llama_joined.cc",
+      "path": "/home/pmeenan/src/llmp-wt/m3fixb/docs/experiments/gemma-joined-serving/llama_joined.cc",
       "bytes": 7772,
       "sha256": "c80b73c85453ece170eda57bc0725cdef5b4e0af3d7cacf3d1a8bee0d1cfa19e"
     },
@@ -364,8 +364,8 @@
       "sha256": "3fda4b7d5ab61aa5ea1e0b93ab922722669f8291fb8eb632043091d272195aef"
     },
     "owned_retirement_helper": {
-      "bytes": 2296,
-      "sha256": "1fd85804983ecdf720b5c0a69353fede0e294a0da0dd70a91bd8cd8b539e75e0"
+      "bytes": 2294,
+      "sha256": "d93c10c58c792d9cad39efa816a3d94c11ccd24918a0de27c2ddc0c2643bb994"
     },
     "tensorfold_task_entry": {
       "task": "Gemma31 full C4 independent-owner consumer source entry",

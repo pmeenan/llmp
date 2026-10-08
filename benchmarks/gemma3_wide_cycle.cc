@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // One internal C12 natural cycle; quality is qualified separately, no public admission.
@@ -30,10 +30,10 @@
 #include "tokenizer/tokenizer.h"
 
 namespace {
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 namespace fs = std::filesystem;
 using en::support::Error;
-namespace wide = jitllm::benchmarks::gemma3_wide;
+namespace wide = llmp::benchmarks::gemma3_wide;
 constexpr auto kVocab = wide::kVocab, kOwners = wide::kOwners;
 std::expected<std::string, std::string> Read(const fs::path& path, std::uint64_t cap) {
   std::error_code error;
@@ -61,7 +61,7 @@ std::expected<std::int32_t, std::string> Best(const std::vector<float>& row) {
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma3-wide-cycle") || (argc != 5 && argc != 6))
+  if (!llmp::platform::InstallCrashPolicy("gemma3-wide-cycle") || (argc != 5 && argc != 6))
     return 2;
   const bool bounded = argc == 6;
   if (bounded && std::string_view(argv[5]) != "bounded-whole12") return 2;
@@ -172,8 +172,8 @@ int main(int argc, char** argv) {
     if (runner.plan_floor_bytes() > (64ULL << 30U) / (kEvents * kRatio))
       return Error("finite cache envelope exceeds64GiB");
     const auto cache_budget = kEvents * kRatio * runner.plan_floor_bytes();
-    if (auto r = node.Start(jitllm::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
-                                                node.StateCapacity() + cache_budget));
+    if (auto r = node.Start(llmp::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
+                                              node.StateCapacity() + cache_budget));
         !r)
       return r;
     if (auto r = runner.Register(); !r) return r;

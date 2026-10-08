@@ -196,6 +196,6 @@
     "known_vector_bound_excludes": "original image model/backend allocations",
     "physical_peak_measured": false
   },
-  "raw_storage": "Spark-b ~/.local/share/jitllm/gemma-assistant-reference; original files not included",
+  "raw_storage": "Spark-b ~/.local/share/llmp/gemma-assistant-reference; original files not included",
   "source_extraction": "Exact pinned header closure from read-only git show or primary raw URLs; no owner checkout changes"
 }

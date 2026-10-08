@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Development tool pins: Ninja, GoogleTest, LLVM tools and libstdc++ 14
@@ -13,7 +13,7 @@ D-059 pins the rest of the development tool set:
 - the candidate [`.clang-format`](.clang-format), [`.clang-tidy`](.clang-tidy)
   and warning set in [CMakeLists.txt](CMakeLists.txt).
 
-**Superseded in part (D-060):** jitLLM now uses a source-built GCC 16.2
+**Superseded in part (D-060):** Llmpalooza now uses a source-built GCC 16.2
 runtime linked statically ([report](../gcc16-static/README.md)). The GCC 14.2
 results below stay as the record for D-059. `build.sh` accepts
 `STATIC_RUNTIME=1` and any `GCC_INSTALL_DIR`.
@@ -82,7 +82,7 @@ repository root would write into the checkout. The script therefore sets
 left the working directory empty. [build.sh](build.sh) configures with CMake 4.4.3 and
 the pinned Ninja, using `RelWithDebInfo` and fresh build directories.
 GoogleTest is added `EXCLUDE_FROM_ALL SYSTEM`, with `INSTALL_GTEST=OFF` and
-`GTEST_HAS_ABSL=OFF`. The candidate warnings apply only to jitLLM targets:
+`GTEST_HAS_ABSL=OFF`. The candidate warnings apply only to llmpalooza targets:
 
     -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
     -Wnon-virtual-dtor -Wold-style-cast -Wimplicit-fallthrough -Werror
@@ -120,7 +120,7 @@ architectures. Without the symbolizer, frames are addresses only.
 scans every source for module dependencies by default using
 `clang-scan-deps`. Through the cross-compiler wrapper, CMake could not find
 the scanner (`CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS-NOTFOUND`), and the build
-failed. jitLLM uses no C++ modules, so the harness sets
+failed. Llmpalooza uses no C++ modules, so the harness sets
 `CMAKE_CXX_SCAN_FOR_MODULES OFF`. That also removes a scan and dyndep step
 per source.
 

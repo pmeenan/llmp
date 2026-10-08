@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for tools/jitllm_headers.py, the embedded-header check (D-029).
+"""Unit tests for tools/llmp_headers.py, the embedded-header check (D-029).
 
 The REUSE report is synthetic here: by default it says what REUSE reads from
 each fixture's own header or sidecar. The check step runs the real tool.
@@ -17,7 +17,7 @@ import unittest
 sys.dont_write_bytecode = True
 TOOLS = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
-import jitllm_headers as headers  # noqa: E402
+import llmp_headers as headers  # noqa: E402
 
 COPYRIGHT_TAG, LICENSE_TAG = "SPDX-" + "FileCopyrightText", "SPDX-" + "License-Identifier"
 IGNORE_START, IGNORE_END = "REUSE-" + "IgnoreStart", "REUSE-" + "IgnoreEnd"

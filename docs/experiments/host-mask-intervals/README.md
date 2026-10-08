@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Shared exact host mask intervals (2026-10-08)
@@ -89,17 +89,17 @@ deltas and bookend movement directly from that file. No disposable bundle,
 checkpoint, tokenizer input or model acquisition is needed.
 
 In a normally prepared `spark-native` tree, put the following commands in a
-scratch script with `set -eu`, `cd` to that tree and set `JITLLM_TEST_DATA` to
+scratch script with `set -eu`, `cd` to that tree and set `LLMP_TEST_DATA` to
 its `tests/unit/data`. Run the script through the installed `spark-job start
 --name UNIQUE --gpu --timeout 600 --grace 30 --stop-on-fail -- /usr/bin/bash
 SCRATCH_SCRIPT`, then positively wait for it. The GPU lock excludes concurrent
 heavy measurements; the test/probe itself does not acquire a device.
 
 ```sh
-SDK="$HOME/.local/share/jitllm/sdk/aarch64-c09daba6ac31edee"
-export JITLLM_TEST_DATA="$PWD/tests/unit/data"
+SDK="$HOME/.local/share/llmp/sdk/aarch64-c09daba6ac31edee"
+export LLMP_TEST_DATA="$PWD/tests/unit/data"
 timeout 480 "$SDK/bin/cmake" --build build/spark-native --parallel 4 --target \
-  host_mask_test jitllm_host_mask_probe gemma2_plan_test gemma3_plan_test gemma4_plan_test -- -k 0
+  host_mask_test llmp_host_mask_probe gemma2_plan_test gemma3_plan_test gemma4_plan_test -- -k 0
 timeout 100 build/spark-native/tests/unit/host_mask_test --gtest_filter='HostMaskTest.*'
 timeout 100 build/spark-native/tests/unit/gemma2_plan_test \
   --gtest_filter='Gemma2Plan.FreshRaggedSourcesAreFundedPaddedAndRevalidatedForReuse'
@@ -107,7 +107,7 @@ timeout 100 build/spark-native/tests/unit/gemma3_plan_test \
   --gtest_filter='Gemma3Plan.FreshRaggedSourcesAreFundedPaddedAndRevalidatedForReuse'
 timeout 100 build/spark-native/tests/unit/gemma4_plan_test \
   --gtest_filter='Gemma4Plan.ReferenceSourcesAreFundedPaddedAndIsolatedBeforeStaging:Gemma4Plan.FreshPositionsReuseTheSameGraphAcrossARingWrap'
-timeout 100 build/spark-native/benchmarks/jitllm_host_mask_probe
+timeout 100 build/spark-native/benchmarks/llmp_host_mask_probe
 python3 docs/experiments/host-mask-intervals/compare.py
 ```
 

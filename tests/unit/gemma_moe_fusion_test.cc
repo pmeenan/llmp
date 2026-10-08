@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/gemma_moe_fusion.h"
@@ -19,8 +19,8 @@
 #include "kernels/ggml/graph_read_index.h"
 
 namespace {
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
 class GemmaMoeFusion : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -248,7 +248,7 @@ TEST_F(GemmaMoeFusion, PlacementFundsEveryDescriptorAndTheCompleteRoutingRoot) {
   }
 }
 TEST(GemmaMoeActualGraph, AllActualRoutingAndReductionChainsMatchAcrossIndependentSegments) {
-  namespace fixture = jitllm::test_support::gemma4;
+  namespace fixture = llmp::test_support::gemma4;
   for (const auto size : {26U, 31U})
     for (const auto slots : {1U, 2U, 4U}) {
       const auto& p = size == 26 ? md::Gemma4_26BA4B() : md::Gemma4_31B();

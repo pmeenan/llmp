@@ -4,10 +4,10 @@
  "interpretation": "Reference and bridge controls for the backend proof's P0. Observed differences between runs; none is an acceptance tolerance until the owner approves the P0 declarations in docs/backend-proof.md",
  "fp16": {
   "harness": {
-   "fp16_reference.cc": "2364595ee85232c74491c7e13329e32567bc3bd1ab60396adb576eeec377acf3",
-   "compare.py": "6500a16eab0d2fc510642531849aaa25328c7de7bfe0414197816cbc979b13a6",
-   "bridge/CMakeLists.txt": "a5a270ccbda7304e08aeb060482aa82d18bdce0f35f2331ac76be2cff5d73f9f",
-   "bridge/bridge.sh": "e1e1a6def431ce07945398b43d062b49207792d8c8e6a392241afdc193b49068"
+   "fp16_reference.cc": "85a656f6c72d2afa45c36ba7fa49d5acb4d4963c391a44b36bb01547b3af5bf8",
+   "compare.py": "4bb2b5051cc33092a730c0abf42ad4607e15df39fbc5e6c3702cf56f5e181e2d",
+   "bridge/CMakeLists.txt": "27fb2cf0347008e90c466310e62b49513fea20f7c2af0c8ca699c98cec9a0a5f",
+   "bridge/bridge.sh": "a8f42eb2f1d71df9aaa1a1860b51039790395694183c503a0f2f1026ab762d47"
   },
   "binaries": {
    "reference (image g++ 14.2.0, image libllama/libggml)": "23835629afc95dbe57d3e4e83b9ec543e9e5eadbbc704090ca5279b727fb20a2",
@@ -853,30 +853,30 @@
  },
  "exl3": {
   "harness": {
-   "exl3_heldout.py": "462f33207e11c16832171cfa68ef2c233f5ff50e9d1ca7aa89d79f81960fecff",
-   "exl3_compare.py": "c34ed36d58f2196e8b25fd47b97dcbe7a5cf5128d37fcc234507c87274c8676b",
-   "decode_tuning.py": "433ebfe1d975d6590f7a4358645b9b07ead6fa1aff2be77db7c885b60822fa1d",
-   "exl3_run.sh": "2c43e8e9f330f93e5884aeb8a72f46cccf050f5632b17915d714a7f76598ef6a",
-   "exl3_export.py": "d0eefc47577e2f6453964509176593001d75f7b60a232c4d34f73b8edb30d5d6",
-   "oracle.py": "b13c4e6c4e56b05e10c6e1a8c3915a3b8763eb2f40e3f05059761e2f30237951",
-   "oracle_compare.py": "e9f56627b9d335a84a77e0ba54873e9486d94f6ff69fe475756629deca6b5970",
+   "exl3_heldout.py": "419c9109d38ea6287ba7275bf5dea28e7264d379e77bc7558d3c4a1018fa9b5a",
+   "exl3_compare.py": "e726de6b6f8975226efe27dc5a6c086cf09c0ea52f9ed763fc8821f560945068",
+   "decode_tuning.py": "665e48c291da2bbfb0701391ab5e9b459523191ebfeb6aeabb3076726b2ac675",
+   "exl3_run.sh": "293fb3a9a4c2c0a89dbd326cb09c9012b575910c4d509947ad453194c0a53b2f",
+   "exl3_export.py": "46b007f69ca1e5e3f45237798206e6399fcd2c0621faf20c459a964798c02136",
+   "oracle.py": "a0953792efd047cbd2e873cb4b5a5f0a8469cd450e3a2265f3203c512302fbe6",
+   "oracle_compare.py": "b9ac84932ed08ed94fbab5e818768f91cddf11bf1d7824a767db807f9d60f0b5",
    "timing_session.sh": "ad977fe5efcab0c79617d3e5c0ae3ee78a8ccf2439a618c2df2a6cae18bcc0fb",
    "timing_stats.py": "de21176ac15ba230e325bb90b2016371f15a113c198eb157de67c48667d50b36",
    "exl3_heldout.py (v1 runs)": "021900a9f020103f67c42f730ca3465cd18c43ee3d763f9c4ce2ffa6601f982a",
    "timing_protocol.py": "c05fd2ddcfc2867e556ac0969c19012c8aa51cf9cc15a4b1eb6647d3fed79fdd",
-   "fp16_plan.py": "37ad4328a0f024e81f4f08efd37b65b0c653fc3b142550c6fac984e4f8989d21",
-   "fp16_pool_peak.sh": "6403cfe4ab461b2918390c2433d092993a714dc0e4dec28d064e85a7d2cac739",
+   "fp16_plan.py": "831a88a763b27bd078d718e7b25bcb9475d1a1f71758968d70308b00fbc3a93c",
+   "fp16_pool_peak.sh": "422e3db06773206e648093fef45f2e88af9b75cd0af74bb5d816852b05722380",
    "tierc.py": "4a3ed067d490dae1542bf062404f8963d27249632e7aa050c9f6cf4a085aab4c",
-   "cublas_plan.py": "8f7ce112952f3c893b7b343ba63227f00069785310324473e8928ed7588e2c59",
-   "cublaslt_pin_probe.cc": "ea3be9efaf6a981ef483e185f1bc09c65cfa1848e6d39298f31f0485f4a92a8e",
+   "cublas_plan.py": "d2de3d034d958a1666f6a9eb9b47612dde638bc0283e45cd2624520d0ed05cce",
+   "cublaslt_pin_probe.cc": "1d41da53ef003bb44caabddd95971f4d92e55c20fce72935bbf3a16366b08cf6",
    "exl3_launch_record.py": "e5936c5153cefc4c19c3136ff1ff6b767c8148ce866cb30af438f32a4b70762d",
    "ggml_ops.py": "9492b14a3368ebe5535cced3ee4d94a0dfa2c0522f4c6eb2d8b3485a93d7774b",
-   "ggml_ops_capture.py": "94c319b6b254cafd373b446bdf8287d2f85233e9cf73106043e17ca884ae6b9f",
-   "ggml_ops_score.py": "7eaf6c0931f66e7fc7337a3ab1498bf07fc943d5fd3de7f535953f3fef2dcade",
-   "ggml_ops_run.sh": "1ff3c4805250181d0400e3e63a6f7ff1daf3c44d34cb8c9f5677a57c408786d3",
+   "ggml_ops_capture.py": "6827376b608e732f6af04cb703fd72c78cb4b756d1c76a9a6a0a758a6ca7a1f8",
+   "ggml_ops_score.py": "c089f8d77cd737ec34b45112a914a06f9f81001ea49e87edc78cc7ff84231533",
+   "ggml_ops_run.sh": "23ff4a47f89891261a504e84aabf19e02a5e44ccbb26f9a57e7a46e13f99aeba",
    "ggml_shim/ggml_shim.cu": "e713f7e803121a000890d4ea88f8695741bc42d60e1892a37a99d12336f89dbf",
-   "ggml_shim/build.sh": "1e98ba351eda2ee3465d0ca130230cc65cb366f59c4c7fef4323ec76719378ac",
-   "ggml_shim/CMakeLists.txt": "bc835a3c4e4c93dc3cfee389c82f9d650c2634a857c1ce167d815f6099ea44aa"
+   "ggml_shim/build.sh": "4913d577a8b834178ae290cfd2f10674fd1832bbb2bc1709f193c30d81aaa9a6",
+   "ggml_shim/CMakeLists.txt": "1e88c33c3c2eeeaf19ff9700f6eaeabba1d146b817281ab603fa70aa7e6f0452"
   },
   "runs": [
    {
@@ -7668,7 +7668,7 @@
     "tune_cache_before_sha256": "c6c01843042cde6ee97624ca83d32e694be2b3839fda8eb53b7d686c98d5fdd0",
     "tune_cache_after_sha256": "c6c01843042cde6ee97624ca83d32e694be2b3839fda8eb53b7d686c98d5fdd0",
     "passed": true,
-    "harness_sha256": "462f33207e11c16832171cfa68ef2c233f5ff50e9d1ca7aa89d79f81960fecff",
+    "harness_sha256": "419c9109d38ea6287ba7275bf5dea28e7264d379e77bc7558d3c4a1018fa9b5a",
     "prefixes": [
      {
       "prefix": 32,
@@ -7996,7 +7996,7 @@
     "tune_cache_before_sha256": "c6c01843042cde6ee97624ca83d32e694be2b3839fda8eb53b7d686c98d5fdd0",
     "tune_cache_after_sha256": "c6c01843042cde6ee97624ca83d32e694be2b3839fda8eb53b7d686c98d5fdd0",
     "passed": true,
-    "harness_sha256": "462f33207e11c16832171cfa68ef2c233f5ff50e9d1ca7aa89d79f81960fecff",
+    "harness_sha256": "419c9109d38ea6287ba7275bf5dea28e7264d379e77bc7558d3c4a1018fa9b5a",
     "prefixes": [
      {
       "prefix": 32,
@@ -8570,7 +8570,7 @@
     "tune_cache_before_sha256": "e5de5226aa03bf1238b4fbe589c2b76e230c13a5fc77c0d888df535eb13748db",
     "tune_cache_after_sha256": "e5de5226aa03bf1238b4fbe589c2b76e230c13a5fc77c0d888df535eb13748db",
     "passed": true,
-    "harness_sha256": "462f33207e11c16832171cfa68ef2c233f5ff50e9d1ca7aa89d79f81960fecff",
+    "harness_sha256": "419c9109d38ea6287ba7275bf5dea28e7264d379e77bc7558d3c4a1018fa9b5a",
     "prefixes": [
      {
       "prefix": 32,
@@ -8898,7 +8898,7 @@
     "tune_cache_before_sha256": "e5de5226aa03bf1238b4fbe589c2b76e230c13a5fc77c0d888df535eb13748db",
     "tune_cache_after_sha256": "e5de5226aa03bf1238b4fbe589c2b76e230c13a5fc77c0d888df535eb13748db",
     "passed": true,
-    "harness_sha256": "462f33207e11c16832171cfa68ef2c233f5ff50e9d1ca7aa89d79f81960fecff",
+    "harness_sha256": "419c9109d38ea6287ba7275bf5dea28e7264d379e77bc7558d3c4a1018fa9b5a",
     "prefixes": [
      {
       "prefix": 32,
@@ -9428,7 +9428,7 @@
      130800
     ],
     "passed": true,
-    "harness_sha256": "462f33207e11c16832171cfa68ef2c233f5ff50e9d1ca7aa89d79f81960fecff",
+    "harness_sha256": "419c9109d38ea6287ba7275bf5dea28e7264d379e77bc7558d3c4a1018fa9b5a",
     "prefixes": [
      {
       "prefix": 32,
@@ -9571,7 +9571,7 @@
      130800
     ],
     "passed": true,
-    "harness_sha256": "462f33207e11c16832171cfa68ef2c233f5ff50e9d1ca7aa89d79f81960fecff",
+    "harness_sha256": "419c9109d38ea6287ba7275bf5dea28e7264d379e77bc7558d3c4a1018fa9b5a",
     "prefixes": [
      {
       "prefix": 32,

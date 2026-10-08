@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek V4 Flash concurrent request batching
@@ -23,14 +23,14 @@ DSpark reply at C4 may differ from C1 unless `wave_form = "speculative"`.
   chat backend admits DeepSeek.
 - **Wave graph.** `BuildDsv4WaveGraph` builds one fast-plan graph over
   every slot's rows. Row-local work runs once over all rows: every
-  quantized product (`jitllm.vecq`, routed experts deduplicated across
+  quantized product (`llmp.vecq`, routed experts deduplicated across
   slots), the HC mixes, routing, combine, norms, rotations and the head.
   Each slot's compressors, indexer, attention, cache writes and DSpark
   injection run on its own state. The attention outputs are then joined
   again. A wave holds at most 16 rows.
 - **Exactness.** A request's rows in a wave equal its rows alone, bit for
   bit:
-  - **Verify rows.** `jitllm.vecq` gives each token the same arithmetic at
+  - **Verify rows.** `llmp.vecq` gives each token the same arithmetic at
     any count from 2 to 16, so it now takes 16 tokens. GGML's float vector
     kernel is count-invariant only to 8 columns, so past 8 rows a wave
     runs the router, indexer-weight and head-mix products per slot (since
@@ -68,7 +68,7 @@ DSpark reply at C4 may differ from C1 unless `wave_form = "speculative"`.
 
 ## Controls
 
-Harness: `jitllm_spec_runner --check wave --slots N`. The first N
+Harness: `llmp_spec_runner --check wave --slots N`. The first N
 decode/chat prompts of `fast-swap/prompts.json`, 96 tokens each.
 Results are against each slot running alone in the same process.
 
@@ -333,7 +333,7 @@ That figure is inferred, not measured. The chat route's turn boundary
    ds4 cannot load that GGUF, so there is no reference for it.
 
 **Conditions.** Spark A (`spark-c4e2`, GB10, driver 580.178.04).
-- **Native.** `jitllm-runtime` `60d1eb20…`, the `spark-native` build of a
+- **Native.** `llmp-runtime` `60d1eb20…`, the `spark-native` build of a
   tree equal to main `64faee6`.
 - **Shim.** `cbc1acc5…`. It recompiles only `serving.cc`, reading
   `DS4M_WAVE_SLOTS` and `DS4M_OUTA_HCA`, with the build's exact flags and
@@ -351,13 +351,13 @@ That figure is inferred, not measured. The chat route's turn boundary
 
 ## Community artifact in waves
 
-The fused form now takes any HC mixing-weight type. `jitllm.dsv4.hc_mix`
+The fused form now takes any HC mixing-weight type. `llmp.dsv4.hc_mix`
 reads F32, F16 and BF16 weights, widening each to F32 exactly, so the sums
 keep one order for every type. A quantized mix takes GGML's product inside
 an otherwise fused layer, per slot in a wave. The community artifact
 (F16 mixes) therefore starts with four slots, decodes in waves, and its
 single-request decode takes the fused form too. A wave still needs each
-layer's expert products to be `jitllm.vecq` types; an artifact whose
+layer's expert products to be `llmp.vecq` types; an artifact whose
 experts are not is served one request at a time, with a log line, instead
 of refused (`Dsv4WaveSupport`).
 
@@ -366,7 +366,7 @@ of refused (`Dsv4WaveSupport`).
   4 slots 332/332 rows byte-identical to each slot alone, every argmax
   the same, a leaving slot's state unchanged. The original artifact's 4
   slots: 332/332, as before.
-- Forced 8K ds4 trajectory (`jitllm_dsv4_exec`, community): all 32
+- Forced 8K ds4 trajectory (`llmp_dsv4_exec`, community): all 32
   argmaxes agree with ds4 (the unfused base: also 32), and all 32 equal
   the base's. The prefill row is byte-identical to the base's; the 31
   decode rows move by at most 5.45 (mean RMS 0.29). Against ds4's own
@@ -410,7 +410,7 @@ jobs `dss0-checks` and `dss0-http`, 2026-10-02.
 | Kernels | One request | Wave of four, before | Wave of four, after |
 | --- | ---: | ---: | ---: |
 | Graph span | 49.5 | 93.4 | 86.0 |
-| `jitllm.vecq`, all | 39.3 | 73.5 | 65.8 |
+| `llmp.vecq`, all | 39.3 | 73.5 | 65.8 |
 | — routed gate+up | 5.6 | 22.1 | 19.5 |
 | — routed down | 3.4 | 18.1 | 12.7 |
 | Attention | 1.3 | 5.3 | 5.3 |
@@ -577,7 +577,7 @@ only quantized token tables, but the community GGUF's is F16, so it
 failed ("get_rows of quantized rows into F32"). The runner's lookup
 (`LookUpRows`, `engine/dsv4_runner.cc`) now gives F32, F16 and BF16 tables
 to GGML's float gather. That widens exactly, as the host's lookup does.
-Checks on the community artifact with the drafter (`jitllm_spec_runner`):
+Checks on the community artifact with the drafter (`llmp_spec_runner`):
 - the device lookup equals the host's for all 129,280 tokens' rows;
 - greedy speculation: every speculative token the plain engine's argmax,
   or a near-tie within the verify's noise (2.61); no violations on the
@@ -664,7 +664,7 @@ without the drafter, and forced DSpark waves, gave the same replies in
 every run. A failed plain wave now keeps the conversation's prefix as the
 ordinary plain step does.
 
-`jitllm_spec_runner --check wave --wave-mode alternate` checks the
+`llmp_spec_runner --check wave --wave-mode alternate` checks the
 drafter's ring across forms: plain and DSpark waves alternate on the same
 slots, and each slot is compared with a solo run that alternates the same
 way; a plain row that differs is a reported problem. Community: 82 of 82
@@ -715,7 +715,7 @@ inside the wave's captured graph:
   own, carved from the workspace's end (`LaunchContext::ConfigureLanes`).
 - **Exactness.** The same kernels run with the same operands, so each
   step computes what it computes on one stream. Wave checks
-  (`jitllm_spec_runner --check wave --wave-lanes on|off`, 96 tokens,
+  (`llmp_spec_runner --check wave --wave-lanes on|off`, 96 tokens,
   community unless named) show this at widths 2 to 4. Plain rows are
   identical (332 of 332 at four slots, both artifacts). DSpark drafts and
   verify rows equal each slot alone, with 0 stale bytes after a discarded
@@ -832,7 +832,7 @@ the runner's `DraftWavePlans`), when the blocks' rows fit a wave's 16
 (three-row blocks: up to five requests; past five each block runs alone):
 - **Row-local work joined.** Every product reads its weight once for all
   slots' rows: the blocks' projections, routed and shared experts and the
-  target's vocabulary head. `jitllm.vecq` gives each row the same sums at
+  target's vocabulary head. `llmp.vecq` gives each row the same sums at
   any count of two or more.
 - **Per slot.** Each slot's attention runs over its own ring under its
   own window mask, as its own block's. Its Markov head chain and argmax
@@ -1079,7 +1079,7 @@ cleared as idle; once idle slot 0 is cleared, slot 1 grows and runs.
 - **Harnesses.**
   - The HTTP cells used `deepseek-concurrent`'s `run.py`, pointed at this
     build.
-  - The wave controls used `jitllm_spec_runner --check wave`; plan memory
+  - The wave controls used `llmp_spec_runner --check wave`; plan memory
     `--check plan-memory`, the runner's capacity refusal `--check capacity`.
   - The probes (`cf`, `fill3`, `react2`, `fill4`) are the challenge's
     `dsprobe.py`, with the state room read from the guard line (its plan

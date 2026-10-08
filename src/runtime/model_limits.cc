@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/model_limits.h"
@@ -7,7 +7,7 @@
 
 #include "model/dsv4.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 bool Dsv4FrontierHeadForServing(const model::Dsv4Binding& binding) {
   return binding.output.type == "Q4_K" &&
@@ -16,4 +16,4 @@ bool Dsv4FrontierHeadForServing(const model::Dsv4Binding& binding) {
          binding.hc_head_fn.ne == std::vector<std::uint64_t>{16384, 4};
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # The runtime wake: from a step's fence to the next step's launch — 2026-09-28
@@ -31,9 +31,9 @@ A sleeping thread on the Spark takes 0.1–0.8 ms to run once woken
 
 ## Method
 
-`benchmarks/wake_bench.cc` (`jitllm_wake_bench`), two modes:
+`benchmarks/wake_bench.cc` (`llmp_wake_bench`), two modes:
 
-- **chain:** the four threads over raw CUDA, K and S waiting on jitLLM's
+- **chain:** the four threads over raw CUDA, K and S waiting on llmpalooza's
   `WakeFlag` as the scheduler and lanes do, the step a one-thread kernel
   that spins on the GPU's global timer and stamps its start and end. Round
   trip = the GPU's idle gap between a step's end and the next step's
@@ -170,8 +170,8 @@ model. Completion semantics are unchanged: only a query that sees a fence
 complete proves it; an anticipation only says when to poll.
 
 The harness's 100 ms window stays as a labelled diagnostic
-(`NodeSettings::poll_window`, `--poll-us` in `jitllm_swap_pairs` and
-`jitllm_spec_runner`); by default the harness runs the runtime's wake,
+(`NodeSettings::poll_window`, `--poll-us` in `llmp_swap_pairs` and
+`llmp_spec_runner`); by default the harness runs the runtime's wake,
 and its driver waits the same way (asleep through most of a step,
 spinning around its likely ends, woken early by the step's report).
 
@@ -358,7 +358,7 @@ margins: 8 and 267 µs), as the table of states predicts.
    at 45 ms, 0.92–0.95 → 1.15 at 5 ms): not isolated; the threads that
    spin now run on cores that wake at once. Idle stayed at 0.00.
 
-**DeepSeek decode** (`jitllm_swap_pairs --a dsv4 --b qwen38 --cycles 0
+**DeepSeek decode** (`llmp_swap_pairs --a dsv4 --b qwen38 --cycles 0
 --bench 64`, the artifacts and driver of the re-benchmark above, the
 memory gate before each process, 12:31–12:38, alternating; the hold from
 outside, at 0 µs, for the whole process):
@@ -403,13 +403,13 @@ step matters. What it would take:
   costs more, and an unprivileged service cannot reopen a root-only
   device.
 - **Permissions, least privilege:** systemd's `OpenFile=` in
-  `jitllm.service` (`OpenFile=/dev/cpu_dma_latency:cpu-latency:graceful`,
+  `llmp.service` (`OpenFile=/dev/cpu_dma_latency:cpu-latency:graceful`,
   systemd 253+; `spark-b` runs 255) has the service manager open the
   device and pass the descriptor. The runtime finds it by name
   (`LISTEN_FDS`, `LISTEN_FDNAMES`), marks it close-on-exec so its jobs do
   not inherit it, and needs no capability, no device access
   (`DevicePolicy=closed` stays) and no change to the device node. The
-  alternatives give more: a udev rule granting the `jitllm` group `rw`
+  alternatives give more: a udev rule granting the `llmp` group `rw`
   (plus `DeviceAllow=`) lets every process of that group, and every job
   in the unit's cgroup, open a host-wide knob, and changes the node for
   the host's life; a root helper service is a second process and an IPC
@@ -454,7 +454,7 @@ step matters. What it would take:
   spins once the request has ended.
 - The death tests of the lanes' and the scheduler's settings cover the
   new bounds.
-- Under ThreadSanitizer (`spark-native` with `JITLLM_SANITIZE=thread` on
+- Under ThreadSanitizer (`spark-native` with `LLMP_SANITIZE=thread` on
   `spark-b`): `wake_test` and `held_lease_test` three times each, and the
   scheduler, page-in, lanes and acquisition tests, with no report.
 
@@ -485,11 +485,11 @@ step matters. What it would take:
 On `spark-b`, from the tree's `spark-native` build:
 
 ```bash
-build/spark-native/benchmarks/jitllm_wake_bench chain --steps 100 --step-us 45000 --host-us 200 --repeats 3
+build/spark-native/benchmarks/llmp_wake_bench chain --steps 100 --step-us 45000 --host-us 200 --repeats 3
 ```
 
 ```bash
-build/spark-native/benchmarks/jitllm_wake_bench node --steps 100 --repeats 3 [--poll-us 100000]
+build/spark-native/benchmarks/llmp_wake_bench node --steps 100 --repeats 3 [--poll-us 100000]
 ```
 
 `--mix` mixes in 1/9-length steps; `--only PREFIX,...` picks
@@ -499,6 +499,6 @@ it after, and check the device reads 2000000000 again):
 
 ```bash
 sudo -n python3 -c 'import os,struct,time; fd=os.open("/dev/cpu_dma_latency",os.O_WRONLY); os.write(fd,struct.pack("i",0)); time.sleep(600)' &
-build/spark-native/benchmarks/jitllm_wake_bench node --steps 100 --repeats 1
+build/spark-native/benchmarks/llmp_wake_bench node --steps 100 --repeats 1
 sudo -n pkill -f 'struct.pack\("i",0\)'; sudo -n od -An -td4 /dev/cpu_dma_latency
 ```

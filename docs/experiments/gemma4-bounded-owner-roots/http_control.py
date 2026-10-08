@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Ordinary bounded Gemma4 C2 common-root HTTP adoption; no timing claim."""
 import argparse
@@ -38,10 +38,10 @@ def main():
     profile, model = args.profile, 'gemma'+args.profile
     artifact, chunk = ARTIFACTS[profile], 1024 if profile == '26' else 256
     binding = json.loads(args.binding.read_text())
-    runtime_sha = binding['paths']['build/spark-native/src/runtime/jitllm-runtime']['sha256']
+    runtime_sha = binding['paths']['build/spark-native/src/runtime/llmp-runtime']['sha256']
     assert sha(args.runtime) == runtime_sha and binding['receipt']['official'] and binding['receipt']['cuda']
     for name in ('libcublas.so.13', 'libcublasLt.so.13'):
-        assert sha(args.library_path/name) == binding['paths']['build/spark-native/lib/jitllm/'+name]['sha256']
+        assert sha(args.library_path/name) == binding['paths']['build/spark-native/lib/llmp/'+name]['sha256']
     environment = {**os.environ, 'LD_LIBRARY_PATH': str(args.library_path.resolve())}
     assert json.loads((args.context_root/'ring-pass.json').read_text())['passed']
     own = json.loads((args.context_root/'own-control.json').read_text())

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "execution/registry.h"
@@ -19,7 +19,7 @@
 #include "base/check.h"
 #include "base/sha256.h"
 
-namespace jitllm::execution {
+namespace llmp::execution {
 namespace {
 
 std::unexpected<PlanRejection> Rejected(PlanError error, std::size_t operation,
@@ -199,7 +199,7 @@ std::string_view OperationName(Operation operation) {
 
 base::Sha256Digest IdentityOf(const Implementation& implementation) {
   base::Sha256 hash;
-  Field(hash, "jitllm.implementation.v0");
+  Field(hash, "llmp.implementation.v0");
   Field(hash, implementation.name);
   Field(hash, OperationName(implementation.operation));
   Field(hash, implementation.source);
@@ -277,7 +277,7 @@ std::expected<Plan, PlanRejection> Plan::Build(const Registry& registry,
   std::vector<Step> steps;
   steps.reserve(choices.size());
   base::Sha256 hash;
-  Field(hash, "jitllm.plan.v0");
+  Field(hash, "llmp.plan.v0");
   Field(hash, std::format("{}", choices.size()));
   for (std::size_t i = 0; i < choices.size(); ++i) {
     const Choice& choice = choices[i];
@@ -323,4 +323,4 @@ std::expected<BoundPlan, PlanRejection> Resolve(const Registry& registry, const 
   return BoundPlan(std::move(bound), plan.identity());
 }
 
-}  // namespace jitllm::execution
+}  // namespace llmp::execution

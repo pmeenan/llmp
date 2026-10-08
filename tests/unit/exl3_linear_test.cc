@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// jitLLM's EXL3 launchers on a GB10 (label `gpu`; all but the pinned
+// Llmpalooza's EXL3 launchers on a GB10 (label `gpu`; all but the pinned
 // reconstruction GEMM's tests also on a discrete GPU the build targets,
 // `gpu-discrete`, D-082; docs/backend-proof.md, P3), on a synthetic linear
 // shaped like Qwen2.5-0.5B's q_proj (896 × 896, K = 4, mcg; random trellis
@@ -71,15 +71,15 @@
 
 namespace {
 
-namespace exl3 = jitllm::kernels::exl3;
+namespace exl3 = llmp::kernels::exl3;
 using exl3::Output;
-using jitllm::base::Bytes;
-using jitllm::providers::Access;
-using jitllm::providers::BackingKind;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-using jitllm::test_support::FailedCode;
+using llmp::base::Bytes;
+using llmp::providers::Access;
+using llmp::providers::BackingKind;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+using llmp::test_support::FailedCode;
 
 constexpr int kK = 896;
 constexpr int kN = 896;
@@ -152,8 +152,8 @@ class Exl3LinearTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_EQ(cudaSetDevice(0), cudaSuccess);
-    memory_ = std::move(jitllm::providers::cuda::OpenDeviceMemory(0).value());
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    memory_ = std::move(llmp::providers::cuda::OpenDeviceMemory(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     for (std::size_t i = 0; i < memory_->Classes().size(); ++i) {
       if (memory_->Classes()[i].kind == BackingKind::kDevice) {
@@ -527,15 +527,15 @@ class Exl3LinearTest : public ::testing::Test {
                                                             {4864, 896, 5},
                                                             {896, 1024, 4}}};
 
-  std::unique_ptr<jitllm::providers::VmmProvider> memory_;
+  std::unique_ptr<llmp::providers::VmmProvider> memory_;
   std::unique_ptr<DeviceExecution> execution_;
   StreamId stream_;
   std::size_t device_class_ = 0;
   std::uint64_t granule_ = 0;
   std::vector<void*> malloced_;
   struct Mapped {
-    jitllm::providers::ReservationId reservation;
-    jitllm::providers::BackingId backing;
+    llmp::providers::ReservationId reservation;
+    llmp::providers::BackingId backing;
     std::uint64_t offset;
     std::uint64_t size;
   };
@@ -596,7 +596,7 @@ TEST_F(Exl3LinearTest, EveryPathIsExactAcrossMemoryKindsAndThePathsAgree) {
 TEST_F(Exl3LinearTest, TheRegistryBindsEachPathToItsOwnCalls) {
   const auto declared = exl3::Implementations();
   ASSERT_EQ(declared.size(), 6U);
-  auto registry = jitllm::execution::Registry::Create(declared);
+  auto registry = llmp::execution::Registry::Create(declared);
   ASSERT_TRUE(registry.has_value());
   for (const auto& implementation : declared) {
     auto kernel = exl3::Kernel::Bind(implementation);
@@ -674,42 +674,41 @@ class FaultingExecution final : public DeviceExecution {
   explicit FaultingExecution(DeviceExecution& inner) : inner_(inner) {}
   bool fault_next = false;
 
-  std::expected<StreamId, jitllm::providers::Failure> CreateStream() override {
+  std::expected<StreamId, llmp::providers::Failure> CreateStream() override {
     return inner_.CreateStream();
   }
-  std::expected<void, jitllm::providers::Failure> DestroyStream(StreamId stream) override {
+  std::expected<void, llmp::providers::Failure> DestroyStream(StreamId stream) override {
     return inner_.DestroyStream(stream);
   }
-  std::expected<void, jitllm::providers::Failure> Copy(StreamId stream, std::uint64_t destination,
-                                                       std::uint64_t source, Bytes size) override {
+  std::expected<void, llmp::providers::Failure> Copy(StreamId stream, std::uint64_t destination,
+                                                     std::uint64_t source, Bytes size) override {
     return inner_.Copy(stream, destination, source, size);
   }
-  std::expected<void, jitllm::providers::Failure> Zero(StreamId stream, std::uint64_t destination,
-                                                       Bytes size) override {
+  std::expected<void, llmp::providers::Failure> Zero(StreamId stream, std::uint64_t destination,
+                                                     Bytes size) override {
     return inner_.Zero(stream, destination, size);
   }
-  std::expected<jitllm::providers::NativeStream, jitllm::providers::Failure> Submission(
+  std::expected<llmp::providers::NativeStream, llmp::providers::Failure> Submission(
       StreamId stream) override {
     if (std::exchange(fault_next, false)) {
-      return std::unexpected(jitllm::providers::Failure{
-          .error = jitllm::providers::ProviderError::kUnknown, .detail = "a scripted fault"});
+      return std::unexpected(llmp::providers::Failure{
+          .error = llmp::providers::ProviderError::kUnknown, .detail = "a scripted fault"});
     }
     return inner_.Submission(stream);
   }
-  std::expected<void, jitllm::providers::Failure> Wait(StreamId stream,
-                                                       jitllm::providers::FenceId fence) override {
+  std::expected<void, llmp::providers::Failure> Wait(StreamId stream,
+                                                     llmp::providers::FenceId fence) override {
     return inner_.Wait(stream, fence);
   }
-  std::expected<jitllm::providers::FenceId, jitllm::providers::Failure> Record(
+  std::expected<llmp::providers::FenceId, llmp::providers::Failure> Record(
       StreamId stream) override {
     return inner_.Record(stream);
   }
-  std::expected<FenceState, jitllm::providers::Failure> Query(
-      jitllm::providers::FenceId fence) override {
+  std::expected<FenceState, llmp::providers::Failure> Query(
+      llmp::providers::FenceId fence) override {
     return inner_.Query(fence);
   }
-  std::expected<void, jitllm::providers::Failure> Release(
-      jitllm::providers::FenceId fence) override {
+  std::expected<void, llmp::providers::Failure> Release(llmp::providers::FenceId fence) override {
     return inner_.Release(fence);
   }
 

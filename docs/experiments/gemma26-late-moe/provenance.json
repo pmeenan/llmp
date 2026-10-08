@@ -11,84 +11,84 @@
         "sha256": "988706afcc557571e2b7a5e0618b1c864e141bfbf6f9de87564a45acad5f2159"
       },
       "benchmarks/gemma26_late_moe.cc": {
-        "bytes": 15861,
-        "sha256": "72f531af5aa46e4a7e4239b29856ca799413311618ae2ff77a3185439a4db901"
+        "bytes": 15781,
+        "sha256": "b41e6d91143fa49ed18e0c9ee7f2b3c203a7ef61958fca1eaeaa0dd72c08b48e"
       },
       "docs/experiments/gemma26-late-moe/PROTOCOL.md": {
-        "bytes": 16880,
-        "sha256": "3ce2d667d6bd2818d10087ab6f4f570fa2c7c3fb43ed8fca052658d91c290a18"
+        "bytes": 16886,
+        "sha256": "1cf349decba15d494ce94c328184b84e999685136372d21506abb91dd594b848"
       },
       "docs/experiments/gemma26-late-moe/README.md": {
         "bytes": 4471,
         "sha256": "9611de579525a2f1be330935f91d5dc651da50a44cebdc1e9a0c7d7b657d7985"
       },
       "docs/experiments/gemma26-late-moe/capture.h": {
-        "bytes": 12258,
-        "sha256": "ce1005b7b3458265997d5b7e394550d7afdb130e114f9562fb67561d424afef1"
+        "bytes": 12078,
+        "sha256": "e38722964016ac6f4951be7c7a5887a07b234f78f8ae42fbf7de7c01ae8261fc"
       },
       "docs/experiments/gemma26-late-moe/capture_controller.py": {
-        "bytes": 3488,
-        "sha256": "2278ab29a8c7606155295e1e2e77535072dad08709d7f6a83cbe103e7cb969f6"
+        "bytes": 3466,
+        "sha256": "561adfc9f6cabe6734bb99a8d492cfafa710c5ea6596cff1f4fa80d6de69fa6f"
       },
       "docs/experiments/gemma26-late-moe/capture_freeze.py": {
-        "bytes": 7538,
-        "sha256": "d277cb16ea5e7c99e8cf936d696c517bbee75ff1772d4673dbfcb6c444746fcb"
+        "bytes": 7536,
+        "sha256": "e7f0ba9fa63ee8a746427d4ea1b9a484602d11118a3f8a774216f96d12808db3"
       },
       "docs/experiments/gemma26-late-moe/capture_main.cc": {
         "bytes": 1386,
-        "sha256": "a94c4fad55b2923ebd405a846abded608d751958189e382cf7a569977f056d73"
+        "sha256": "e2149b81cdcb0a1debd105acc5a6518dd36cdd894ac435dd54572582a1166cc0"
       },
       "docs/experiments/gemma26-late-moe/compare.py": {
-        "bytes": 6133,
-        "sha256": "0f4b3ad3569f5491c30c152cdefb83a7463cf7dd146c718f37dc0f3124e79a0f"
+        "bytes": 6137,
+        "sha256": "0cbb325560eb712eedeee31e0101631303c2ab1536bd88a37ddc0a447a80580f"
       },
       "docs/experiments/gemma26-late-moe/container_retire.py": {
-        "bytes": 2296,
-        "sha256": "1fd85804983ecdf720b5c0a69353fede0e294a0da0dd70a91bd8cd8b539e75e0"
+        "bytes": 2294,
+        "sha256": "d93c10c58c792d9cad39efa816a3d94c11ccd24918a0de27c2ddc0c2643bb994"
       },
       "docs/experiments/gemma26-late-moe/graphs.h": {
         "bytes": 2254,
-        "sha256": "640ad6d50382d24e7381b547a7f9153809f24fbe77d6d9d21e475a034c938d3c"
+        "sha256": "b9548d84288f51b220c3726598872f148b849269b23116f9bdb663bcebbb679d"
       },
       "docs/experiments/gemma26-late-moe/inputs.h": {
-        "bytes": 3968,
-        "sha256": "b0d817a98f34affd74f6e8cbe4a06ffffea80ac6079a2bd66612cb87a2927f04"
+        "bytes": 3964,
+        "sha256": "512603e94bea9e1a12567e65d2902704761f14c3fbedaa797dc63b7d14846963"
       },
       "docs/experiments/gemma26-late-moe/official.py": {
-        "bytes": 1196,
-        "sha256": "172fb100f4c9f40a577fdb39390ec834806d797ad87f6328e524fd352e6d55a0"
+        "bytes": 1198,
+        "sha256": "a09e0e1fcf9db7d699bc5d9b835c4f5d872d934a28960bdf86bd3aae176e7132"
       },
       "docs/experiments/gemma26-late-moe/oracle.cu": {
-        "bytes": 9259,
-        "sha256": "ffbbbfd5cbd36e3108bdbdb681706ce7ed70466fc34a4a4e3ff51656a7ee1c86"
+        "bytes": 9263,
+        "sha256": "3f0712ca1a674828dd614eee74dbda6b862c85f157ba2c34898c7817bf262d04"
       },
       "docs/experiments/gemma26-late-moe/original_freeze.py": {
-        "bytes": 4905,
-        "sha256": "263a9e817b42453805ab6559f482eb77579af93e47706c34028b9fe1437a2b8c"
+        "bytes": 4901,
+        "sha256": "568df250b52d314dc4f3b6b14100a0a3b0b895736fbb0e0c23f20f6716def0d4"
       },
       "docs/experiments/gemma26-late-moe/own_freeze.py": {
-        "bytes": 4905,
-        "sha256": "12e95f61a86da6e10c9df5f980b4b1a93b8ac6b581bdc87c5a7eadb3f044ac76"
+        "bytes": 4901,
+        "sha256": "ee2d710b90769c24a9f8f0a7779a2ebcc2663604e6012de9f2ca7973942f51ca"
       },
       "docs/experiments/gemma26-late-moe/prepare.py": {
-        "bytes": 7935,
-        "sha256": "a81215d485c03d727dbad16b049592751f0451919ee5e3bf30796486a4adbb93"
+        "bytes": 7921,
+        "sha256": "c7e18fe586367e07cfbeb139e0119067078462693bb010db113eb8b4568adbf5"
       },
       "docs/experiments/gemma26-late-moe/reference.sh": {
-        "bytes": 6842,
-        "sha256": "69db75f1855786b2fe4a2ac9408ec4ddb4c4dc4bdecfc1aa68da4fa8cab95b28"
+        "bytes": 6822,
+        "sha256": "46249eb52539a671c918183fca3f376214afe6f686571c4877c302cf05f54ef7"
       },
       "docs/experiments/gemma26-late-moe/release_inputs.py": {
-        "bytes": 3065,
-        "sha256": "0aa30e97c96795f0a2f1b0226c2920e5204b6ffaff1b097fed4d0fe87dc460c2"
+        "bytes": 3069,
+        "sha256": "ccc325997c53f3bb109b9353faf4b56b7ba0ce0798c8c8e8cc49d9913974920a"
       },
       "docs/experiments/gemma26-late-moe/source_snapshot.py": {
-        "bytes": 2939,
-        "sha256": "be80f03caac838387d9de5cbf0f9a2f1c0c4f5d603ea17ad95db37216b4a0bb6"
+        "bytes": 2943,
+        "sha256": "e305b6e7b0a947e8b6fbc540a8e35f6a4afcfc519b9f15f4c01f715ac4e4f03c"
       },
       "docs/experiments/gemma26-late-moe/test_controls.py": {
-        "bytes": 11330,
-        "sha256": "cd6be7785708e656a2ba77c3a1b44f92b8f4f08b2e256d0c7fc91e341b8073cd"
+        "bytes": 11328,
+        "sha256": "f688a84fe451b5d54606951e7137c6fd7f0a4b79e3524a7d79ba81dca5f5b82c"
       }
     }
   },
@@ -299,7 +299,7 @@
     "gemma_moe.cu": {
       "native_source": {
         "bytes": 1764,
-        "sha256": "60957b0cbd458ba970fc1d121529cb64468fe6c9767e251749dbb4a2c06fd30e"
+        "sha256": "b8b5c3d6efe9af9f404f9bce76795dbaebd90b909a615c9085e278b5c7afc85c"
       },
       "actual_compile_command_sha256": "03a7f30ac98f94bbcbc762f8844cf1710e0ba19e4dd7703c5e2492d18a73c8a0",
       "original_pinned_source_bytes_equal": null
@@ -401,6 +401,6 @@
     "metadata_route": "10descriptors/6primitive steps or1fused",
     "metadata_reduction": "17descriptors/9primitive steps or1fused"
   },
-  "external_raw_root": "~/.local/share/jitllm/gemma26-late-moe on Spark A; separate owner-only native/original and capture directories",
+  "external_raw_root": "~/.local/share/llmp/gemma26-late-moe on Spark A; separate owner-only native/original and capture directories",
   "operational_note": "Remote reference.sh user execute permission set for direct shebang commands; bytes remain unchanged; checked original argv excludes a leading bash token."
 }

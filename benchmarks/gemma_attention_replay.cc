@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // PACKED_OPERANDS NEW_OUTPUT B(vec4)|C(mma4)|D(mma4streams). No model graph changes.
 #include <sys/stat.h>
@@ -20,16 +20,16 @@
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "providers/device_runtime.h"
-namespace en = jitllm::engine;
-namespace kg = jitllm::kernels::ggml;
+namespace en = llmp::engine;
+namespace kg = llmp::kernels::ggml;
 namespace ar = attention_replay;
 using en::support::Error;
 class Replay final : public en::PagedModel {
  public:
   explicit Replay(en::PagedNode& node) : node_(node), resources_(node, 0, 0) {}
   std::uint32_t stream() const override { return 0; }
-  const jitllm::catalog::Closure& fence_closure() const override { return closure_; }
-  std::vector<jitllm::catalog::ExtentId> managed_extents() const override { return {}; }
+  const llmp::catalog::Closure& fence_closure() const override { return closure_; }
+  std::vector<llmp::catalog::ExtentId> managed_extents() const override { return {}; }
   en::Status Release() override {
     graph_.reset();
     arena_.reset();
@@ -53,7 +53,7 @@ class Replay final : public en::PagedModel {
     arena_.emplace(std::move(*arena));
     constexpr std::uint64_t device_bytes = 32U << 20U;
     if (auto r = resources_.Map(storage_, "attention replay immutable operands/output",
-                                device_bytes, jitllm::catalog::MemoryClass::kRuntime);
+                                device_bytes, llmp::catalog::MemoryClass::kRuntime);
         !r)
       return r;
     std::uint64_t offset = 0;
@@ -95,12 +95,12 @@ class Replay final : public en::PagedModel {
     output_ = *output;
     node_.SetHostFloor(ar::kHostAllowance);
     const auto fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
-    if (auto r = node_.Start(jitllm::base::Bytes(fixed + ar::kHostAllowance)); !r) return r;
+    if (auto r = node_.Start(llmp::base::Bytes(fixed + ar::kHostAllowance)); !r) return r;
     auto extents = resources_.extents();
     for (const auto* workspace : {&node_.activations(), &node_.pool()})
       extents.insert(extents.end(), workspace->extents.begin(), workspace->extents.end());
     auto closure = node_.catalog().ClosureOfExtents(extents);
-    if (!closure) return Error(jitllm::catalog::ToString(closure.error()));
+    if (!closure) return Error(llmp::catalog::ToString(closure.error()));
     closure_ = std::move(*closure);
     if (auto r = resources_.BindLaunch(16U << 20U); !r) return r;
     node_.Run();
@@ -115,13 +115,13 @@ class Replay final : public en::PagedModel {
       std::memcpy(upload_, inputs_.data[i].data(), inputs_.data[i].size());
       if (auto r = node_.Job(
               closure_,
-              [&, i](jitllm::providers::NativeStream stream) {
-                return jitllm::providers::CopyAsync(stream, roots_[i]->data, upload_,
-                                                    inputs_.data[i].size(),
-                                                    jitllm::providers::CopyKind::kHostToDevice)
+              [&, i](llmp::providers::NativeStream stream) {
+                return llmp::providers::CopyAsync(stream, roots_[i]->data, upload_,
+                                                  inputs_.data[i].size(),
+                                                  llmp::providers::CopyKind::kHostToDevice)
                                .ok()
-                           ? jitllm::scheduler::JobResult::kQueued
-                           : jitllm::scheduler::JobResult::kUnknown;
+                           ? llmp::scheduler::JobResult::kQueued
+                           : llmp::scheduler::JobResult::kUnknown;
               },
               "replay staged immutable operand", 0);
           !r)
@@ -129,22 +129,22 @@ class Replay final : public en::PagedModel {
     }
     auto planning = node_.Job(
         closure_,
-        [&](jitllm::providers::NativeStream) {
+        [&](llmp::providers::NativeStream) {
           for (auto* node : nodes_) {
             if (vector_) {
               auto plan = kg::PlanFlashAttnVec256(resources_.launch(), node);
-              if (!plan) return jitllm::scheduler::JobResult::kUnknown;
+              if (!plan) return llmp::scheduler::JobResult::kUnknown;
               std::cout << "REPLAY_PLAN vector head256 scratch=" << plan->scratch << '\n';
             } else {
               auto plan = kg::PlanFlashAttnMmaGqa2(resources_.launch(), node);
-              if (!plan) return jitllm::scheduler::JobResult::kUnknown;
+              if (!plan) return llmp::scheduler::JobResult::kUnknown;
               std::cout << "REPLAY_PLAN mma head=" << plan->head << " tile=" << plan->columns
                         << " group=" << plan->group << " streams=" << node->src[0]->ne[3]
                         << " blocks=" << plan->blocks << " mask_prepass=" << plan->mask_prepass
                         << " scratch=" << plan->scratch << '\n';
             }
           }
-          return jitllm::scheduler::JobResult::kQueued;
+          return llmp::scheduler::JobResult::kQueued;
         },
         "attention replay checked launch plans", 0);
     if (!planning) return planning;
@@ -153,13 +153,13 @@ class Replay final : public en::PagedModel {
       for (std::size_t i = 0; i < roots_.size(); ++i) {
         auto copied = node_.Job(
             closure_,
-            [&, i](jitllm::providers::NativeStream stream) {
-              return jitllm::providers::CopyAsync(stream, upload_, roots_[i]->data,
-                                                  inputs_.data[i].size(),
-                                                  jitllm::providers::CopyKind::kDeviceToHost)
+            [&, i](llmp::providers::NativeStream stream) {
+              return llmp::providers::CopyAsync(stream, upload_, roots_[i]->data,
+                                                inputs_.data[i].size(),
+                                                llmp::providers::CopyKind::kDeviceToHost)
                              .ok()
-                         ? jitllm::scheduler::JobResult::kQueued
-                         : jitllm::scheduler::JobResult::kUnknown;
+                         ? llmp::scheduler::JobResult::kQueued
+                         : llmp::scheduler::JobResult::kUnknown;
             },
             "complete GPU operand witness", 0);
         if (!copied) return copied;
@@ -182,20 +182,20 @@ class Replay final : public en::PagedModel {
     const auto step = [&](bool captured) -> en::Status {
       auto r = node_.Job(
           closure_,
-          [&](jitllm::providers::NativeStream stream) {
+          [&](llmp::providers::NativeStream stream) {
             auto launched =
                 captured ? resources_.launch().Launch(*graph_) : kernels(resources_.launch());
-            if (!launched) return jitllm::scheduler::JobResult::kUnknown;
+            if (!launched) return llmp::scheduler::JobResult::kUnknown;
             std::size_t offset = 0;
             for (auto* tensor : nodes_) {
-              if (!jitllm::providers::CopyAsync(stream, static_cast<std::byte*>(output_) + offset,
-                                                tensor->data, ggml_nbytes(tensor),
-                                                jitllm::providers::CopyKind::kDeviceToHost)
+              if (!llmp::providers::CopyAsync(stream, static_cast<std::byte*>(output_) + offset,
+                                              tensor->data, ggml_nbytes(tensor),
+                                              llmp::providers::CopyKind::kDeviceToHost)
                        .ok())
-                return jitllm::scheduler::JobResult::kUnknown;
+                return llmp::scheduler::JobResult::kUnknown;
               offset += ggml_nbytes(tensor);
             }
-            return jitllm::scheduler::JobResult::kQueued;
+            return llmp::scheduler::JobResult::kQueued;
           },
           "complete attention operands replay and full publication", 0);
       if (!r) return r;
@@ -208,11 +208,11 @@ class Replay final : public en::PagedModel {
                              static_cast<float*>(output_) + ar::kOutputElements);
     auto capture_job = node_.Job(
         closure_,
-        [&](jitllm::providers::NativeStream) {
+        [&](llmp::providers::NativeStream) {
           auto captured = resources_.launch().Capture(kernels);
-          if (!captured) return jitllm::scheduler::JobResult::kUnknown;
+          if (!captured) return llmp::scheduler::JobResult::kUnknown;
           graph_.emplace(std::move(*captured));
-          return jitllm::scheduler::JobResult::kQueued;
+          return llmp::scheduler::JobResult::kQueued;
         },
         "completion-aware attention graph capture", 0);
     if (!capture_job) return capture_job;
@@ -232,12 +232,12 @@ class Replay final : public en::PagedModel {
       std::memcpy(upload_, q.data(), q.size());
       return node_.Job(
           closure_,
-          [&](jitllm::providers::NativeStream stream) {
-            return jitllm::providers::CopyAsync(stream, roots_[0]->data, upload_, q.size(),
-                                                jitllm::providers::CopyKind::kHostToDevice)
+          [&](llmp::providers::NativeStream stream) {
+            return llmp::providers::CopyAsync(stream, roots_[0]->data, upload_, q.size(),
+                                              llmp::providers::CopyKind::kHostToDevice)
                            .ok()
-                       ? jitllm::scheduler::JobResult::kQueued
-                       : jitllm::scheduler::JobResult::kUnknown;
+                       ? llmp::scheduler::JobResult::kQueued
+                       : llmp::scheduler::JobResult::kUnknown;
           },
           "fresh query control upload", 0);
     };
@@ -294,7 +294,7 @@ class Replay final : public en::PagedModel {
   std::optional<kg::CapturedGraph> graph_;
   std::array<ggml_tensor*, 4> roots_{};
   std::vector<ggml_tensor*> nodes_;
-  jitllm::catalog::Closure closure_;
+  llmp::catalog::Closure closure_;
   void* upload_ = nullptr;
   void* output_ = nullptr;
   bool fourstreams_ = false, vector_ = false, host_charged_ = false;

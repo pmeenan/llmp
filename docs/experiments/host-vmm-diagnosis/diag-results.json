@@ -2,7 +2,7 @@
  "manifest": {
   "schema": 1,
   "started": "2026-09-27T07:29:25+00:00",
-  "note": "session s2: source commit d3b4f2ab plus uncommitted diagnosis; vmm_diag_bench.cc 4eab72c9, vmm_diag_kernels.cu 568c046c, vmm_diag_kernels.h f81c751c, benchmarks/CMakeLists.txt 21cdb588; cross preset, SDK x86_64-e0a0c85c42806fb1",
+  "note": "session s2: source commit d3b4f2ab plus uncommitted diagnosis; vmm_diag_bench.cc 4eab72c9, vmm_diag_kernels.cu 10778874, vmm_diag_kernels.h a5457b6a, benchmarks/CMakeLists.txt 21cdb588; cross preset, SDK x86_64-e0a0c85c42806fb1",
   "host": "spark-c4e2",
   "kernel": "7.0.0-1019-nvidia",
   "gpu": {
@@ -20,7 +20,7 @@
    "libcublas.so.13": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b",
    "libcublasLt.so.13": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
   },
-  "script_sha256": "78318b4eaed44a6024307bafbd87a8e0aafe849c9e1bab7216875911164b781f",
+  "script_sha256": "e4af5c87f89cf68f2cc0b1ac280cab5064514c7ec84ec57eedfd2031a07d6a45",
   "finished": "2026-09-27T07:39:25+00:00"
  },
  "processes": 79,

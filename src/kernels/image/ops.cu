@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cuda_fp16.h>
@@ -14,7 +14,7 @@
 
 #include "kernels/image/ops.h"
 
-namespace jitllm::kernels::image {
+namespace llmp::kernels::image {
 namespace {
 
 constexpr std::int64_t kMaxGrid = std::int64_t{1} << 30;
@@ -1050,4 +1050,4 @@ Status SoftmaxRowsToBf16(const float* scores, Bf16* probs, std::int64_t rows, st
   return Launched("SoftmaxRowsToBf16");
 }
 
-}  // namespace jitllm::kernels::image
+}  // namespace llmp::kernels::image

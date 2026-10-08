@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Supervised C1 R/N/N/R, pinned current TensorFold or same-format llama.cpp."""
 import argparse, hashlib, json, math, os, re, signal, struct, subprocess, time
@@ -20,7 +20,7 @@ if args.family != 'tensorfold' and (args.native_drafter or args.native_spec_only
     parser.error('native drafter/spec-only controls require the TensorFold comparison')
 P = Path(__file__).parent
 T = args.tree.resolve()
-H = Path.home() / '.local/share/jitllm'
+H = Path.home() / '.local/share/llmp'
 R = args.out.resolve()
 M = args.source_manifest.resolve()
 Q = args.native_build.resolve()
@@ -30,8 +30,8 @@ INPUT = H / 'references/qwen-device-masks/inputs'
 MODEL = H / 'models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6'
 TF_IMAGE = 'sha256:c8dc97d6dab8995704b6c151715f11f84419775a193c96a5ed3399407ad41c20'
 LLAMA_IMAGE = 'ghcr.io/ggml-org/llama.cpp@sha256:c604ea4f1c2e8d5c8b27d89fef727384d59e23c5b07e369cde5393820e0607db'
-B = T / 'build/spark-native/benchmarks/jitllm_qwen38_spec'
-E = dict(os.environ, LD_LIBRARY_PATH=f'{T}/build/spark-native/lib/jitllm:{T}/build/spark-native/cublas')
+B = T / 'build/spark-native/benchmarks/llmp_qwen38_spec'
+E = dict(os.environ, LD_LIBRARY_PATH=f'{T}/build/spark-native/lib/llmp:{T}/build/spark-native/cublas')
 os.umask(63)
 
 def sha(p):
@@ -263,7 +263,7 @@ for arm in ['reference1', 'native1', 'native2', 'reference2']:
             rows[mode] = row
         records[arm] = rows
     else:
-        name = 'jitllm-qwen-mask-' + args.family + '-' + arm
+        name = 'llmp-qwen-mask-' + args.family + '-' + arm
         out = R / arm
         if args.family == 'tensorfold':
             cmd = docker_base(name, TF_IMAGE) + ['--mount', f'type=bind,src={F},dst=/reference,readonly', '--mount', f'type=bind,src={MODEL},dst=/model,readonly', '--mount', f'type=bind,src={H}/tensorfold-0.6.2-nvfp4-home,dst=/tfhome', '--mount', f'type=bind,src={harness},dst=/harness.py,readonly', '--mount', f'type=bind,src={wrapper},dst=/wrapper.py,readonly', '--env', 'HOME=/tfhome', '--env', 'PYTHONPATH=/reference/package', '--env', 'PYTHONDONTWRITEBYTECODE=1', '--env', 'TENSORFOLD_PREFILL_ROWS=512', '--env', 'MAX_JOBS=4', '--env', 'TORCH_CUDA_ARCH_LIST=12.1', '--entrypoint', 'python3', TF_IMAGE, '-B', '/wrapper.py', '/harness.py', '--model', '/model', '--inputs', '/inputs/prompt.json', '--histories', '/inputs/native-histories.json', '--out', '/out/' + arm]

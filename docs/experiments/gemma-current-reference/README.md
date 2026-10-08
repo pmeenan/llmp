@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Current Gemma solo performance against fresh ring-cache references
@@ -62,7 +62,7 @@ Reproduce in order reference, native, native, reference using the unchanged
 owned-container launcher from the [state-only comparison](../gemma-state-only-prefill/README.md)
 and its [31B](../gemma-swa-ring-h1/README.md) /
 [26B](../gemma26-swa-ring-transfer/README.md) ring recipes. Native uses
-`jitllm_gemma_prefill ARTIFACT IDS NEW_OUT PROFILE POLICY ROWS normmul-on
+`llmp_gemma_prefill ARTIFACT IDS NEW_OUT PROFILE POLICY ROWS normmul-on
 state-only lookahead-on phases-on state-chunked`, with 31/both/256 or
 26/all/1024. Both engines discard six warm rows, reset state, pay for 8,192 rows,
 append three untimed anchors and execute 32 forced decode units. One paid

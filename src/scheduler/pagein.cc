@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The scheduler's page-ins and evictions (scheduler.h; D-033, D-048,
@@ -29,7 +29,7 @@
 #include "scheduler/scheduler.h"
 #include "scheduler/tasks.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 namespace {
 
 // A load zeroes its backing on the device instead of reading (PageSource::zero).
@@ -1225,4 +1225,4 @@ void Scheduler::QuarantineEvicting(catalog::ExtentId extent, Fault fault) {
   }
 }
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler

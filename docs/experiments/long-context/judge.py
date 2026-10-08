@@ -1,28 +1,28 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Judges jitLLM at depth against its oracle (README.md, "Correctness").
+"""Judges llmpalooza at depth against its oracle (README.md, "Correctness").
 
     judge.py inputs ORACLE.json OUTDIR NAME
         The oracle record's prompt IDs and greedy tokens as harness input
-        lines (NAME.prompt.tsv, NAME.force.tsv) for jitllm_dsv4_exec or
-        jitllm_qwen38_exec --prompts ... --force ... --generate N.
+        lines (NAME.prompt.tsv, NAME.force.tsv) for llmp_dsv4_exec or
+        llmp_qwen38_exec --prompts ... --force ... --generate N.
     judge.py noise A B NAME --vocab V
-        The near-tie bound, recorded before the comparison: two of jitLLM's
+        The near-tie bound, recorded before the comparison: two of llmpalooza's
         own paths forced on the same tokens (its default fast plan and its
         reference form); at each step the change in A's top-two logit margin
         when B scores the same two tokens; the bound is the 99th percentile.
     judge.py greedy ORACLE.json HARNESS NAME --vocab V --bound B
                     [--reference REF [--tolerance T]]
-        jitLLM forced on the oracle's greedy tokens: at each step its argmax
+        llmpalooza forced on the oracle's greedy tokens: at each step its argmax
         is the oracle's token, or the oracle's log-probability margin between
-        its token and jitLLM's argmax is below B (a near-tie; when jitLLM's
+        its token and llmpalooza's argmax is below B (a near-tie; when llmpalooza's
         argmax is outside the oracle's top list, the margin is at least the
         oracle token's lead over the list's last). Every exception is listed.
         `strict_pass`: no step outside (the rule before 2026-10-03). With
         REF, the model's pinned reference run on this history (NAME's
         logits; D-085 names each, and changing one is the owner's decision),
         `pass` applies the tie-aware rule (the owner, 2026-10-03; README.md,
-        "Correctness"): every outside step a tie flip (jitLLM's own logit
+        "Correctness"): every outside step a tie flip (llmpalooza's own logit
         margin of its argmax over the oracle's token below B, and its NLL of
         that token less than B above the oracle's own), at most max(2, REF's
         outside steps) of them, and the oracle continuation's conditional
@@ -35,7 +35,7 @@
     judge.py ppl ORACLE HARNESS --ctx L [--within F]
         Perplexity over the window's second half (tokens L/2+1 .. L-1):
         ORACLE is a vLLM ppl-L.nll.json or a number (llama-perplexity's),
-        HARNESS the jitLLM harness's ppl.nll.f64. Within F (default 0.03).
+        HARNESS the llmpalooza harness's ppl.nll.f64. Within F (default 0.03).
 
 Runs on a Spark in a container whose Python has NumPy (the pinned PyTorch
 image). Comparisons require complete, nonempty captures: matching row
@@ -119,7 +119,7 @@ def score(record, logits, bound):
     steps = len(record["steps"])
     require_count(len(logits), steps, "greedy rows")
     agree, near, outside, flips, violations = 0, [], [], [], []
-    excess = []  # jitLLM's NLL of the oracle's token minus the oracle's own
+    excess = []  # llmpalooza's NLL of the oracle's token minus the oracle's own
     for k in range(steps):
         step = record["steps"][k]
         row = logits[k]
@@ -132,18 +132,18 @@ def score(record, logits, bound):
             continue
         top = {int(t): float(v) for t, v in step["top"]}
         lead = step["logprob"] - top.get(mine, min(top.values()) if top else -math.inf)
-        entry = {"step": k, "oracle": step["id"], "jitllm": mine, "oracle_margin": lead,
-                 "in_top": mine in top, "jitllm_margin": float(row[mine] - row[step["id"]]),
+        entry = {"step": k, "oracle": step["id"], "llmp": mine, "oracle_margin": lead,
+                 "in_top": mine in top, "llmp_margin": float(row[mine] - row[step["id"]]),
                  "nll_excess": excess[-1]}
         if lead < bound and mine in top:
             near.append(entry)
             continue
         outside.append(entry)
-        # The per-step tolerance (README.md, "Correctness"): jitLLM itself
+        # The per-step tolerance (README.md, "Correctness"): llmpalooza itself
         # holds the oracle's token within the bound, and its NLL of that
         # token is within the bound of the oracle's own. An owner-accepted
         # tolerance, not a calibrated test of a tie.
-        tie = entry["jitllm_margin"] < bound and entry["nll_excess"] < bound
+        tie = entry["llmp_margin"] < bound and entry["nll_excess"] < bound
         (flips if tie else violations).append(entry)
     # The oracle continuation's conditional perplexity against the oracle's
     # own (the oracle's greedy path, so every engine sits above 1).
@@ -210,7 +210,7 @@ def ppl(oracle, harness, ctx, within):
     if not math.isfinite(theirs) or theirs <= 0:
         raise SystemExit("oracle perplexity must be finite and positive")
     ratio = ours / theirs
-    return {"window": ctx, "scored": int(half.size), "jitllm_ppl": ours, "oracle_ppl": theirs,
+    return {"window": ctx, "scored": int(half.size), "llmp_ppl": ours, "oracle_ppl": theirs,
             "ratio": ratio, "within": within, "pass": abs(ratio - 1) <= within}
 
 

@@ -186,8 +186,8 @@
       },
       {
         "path": "benchmarks/gemma_tokenize.cc",
-        "bytes": 6990,
-        "sha256": "faad7f9eece8fd519fba91f4b983b0921c19505a84619224803a00897b057cd0"
+        "bytes": 6970,
+        "sha256": "404571107ba3041b39737f332be297df633d1e7b4829a5ef55ec1bdf1405cd3b"
       },
       {
         "path": "docs/experiments/gemma-quality/analyze.py",
@@ -196,8 +196,8 @@
       },
       {
         "path": "docs/experiments/gemma-quality/llama_quality.cc",
-        "bytes": 6871,
-        "sha256": "78a0d497820e323e370225687c735ceecaa90d1680f98ac628c73e40bd46fe3f"
+        "bytes": 6875,
+        "sha256": "a1af9896d5057c34859611d7e296a5a9d52b4373c0563b74087054c9cc103c53"
       },
       {
         "path": "docs/experiments/gemma-input-preparation/prepare.py",
@@ -206,8 +206,8 @@
       },
       {
         "path": "docs/experiments/gemma-input-preparation/test_controls.py",
-        "bytes": 3600,
-        "sha256": "9e3b35a57eecc757213501141ec0cf4d889f578431a6a110825b780479d1b57d"
+        "bytes": 3604,
+        "sha256": "4afcf9a3b47ab863866af143ec26e6d272abce70d6ca86893c05827a8a1af239"
       },
       {
         "path": "docs/experiments/gemma-input-preparation/README.md",

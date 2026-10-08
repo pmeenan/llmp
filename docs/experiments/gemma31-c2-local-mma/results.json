@@ -6,7 +6,7 @@
   "compiled_source": {
     "base": "774515ed1df47055948106389f3880ca47089d82",
     "native_binary": {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma-c2-local-mma/native-factor1",
+      "path": "/home/pmeenan/.local/share/llmp/gemma-c2-local-mma/native-factor1",
       "sha256": "b79567dfbb8d40d2974f6e9bb1c631980ce52f94aac6351dbd1b6acc1a978d30"
     },
     "native_sdk_receipt_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",

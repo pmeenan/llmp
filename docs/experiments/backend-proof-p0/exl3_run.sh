@@ -1,9 +1,9 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
 # Runs one arm of the EXL3 held-out trajectory (exl3_heldout.py) in the M0
-# reference container (../exl3-reference, image jitllm-exl3-reference:20260922):
+# reference container (../exl3-reference, image llmp-exl3-reference:20260922):
 #
 #   exl3_run.sh NAME FIXTURE TUNE_CACHE [exl3_heldout.py options...]
 #
@@ -32,6 +32,6 @@ exec sudo -n docker run --rm --gpus all --shm-size 2g --memory 32g --memory-swap
   -e CXX=/experiment/cxx-target -e CUDAHOSTCXX=/experiment/cxx-target \
   -e CUDA_DISABLE_PTX_JIT=1 -e OMP_NUM_THREADS=4 -e HOME=/tmp \
   -e "EXLLAMAV3_TUNE_CACHE=/p0/exl3/$tune" \
-  ${DOCKER_EXTRA:-} --entrypoint python3 jitllm-exl3-reference:20260922 /p0/harness/exl3_heldout.py \
+  ${DOCKER_EXTRA:-} --entrypoint python3 llmp-exl3-reference:20260922 /p0/harness/exl3_heldout.py \
   --model "/experiment/models/$fixture" --ids /p0/heldout-ids.i64le --pins /p0/exl3/pins.json \
   --output "/p0/exl3/$name" "$@"

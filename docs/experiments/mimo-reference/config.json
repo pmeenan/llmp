@@ -6,7 +6,7 @@
   "nccl_ib_hca": "=rocep1s0f1:1,roceP2p1s0f1:1",
   "dist_port": 29500,
   "port": 30000,
-  "image": "jitllm-mimo-reference:20260922",
+  "image": "llmp-mimo-reference:20260922",
   "context_length": 32768,
   "max_total_tokens": 131072,
   "mem_fraction": 0.85,

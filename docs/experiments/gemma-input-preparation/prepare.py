@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Input-only preparation. extract PPL NATURAL NEW_OUT;
 render TEMPLATE NATURAL NEW_OUT; pack TEXTS TEXT_SHA NATIVE PUBLIC PROFILE NEW_OUT.

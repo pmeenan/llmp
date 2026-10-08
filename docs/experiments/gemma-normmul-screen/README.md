@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Plain RMSNorm/Mul first screen
@@ -48,7 +48,7 @@ finite scans and hashes occur outside both timers. Native reports one captured
 graph and 33 replays per arm; reference graphs are allowed with the original
 fusion policy. Reference GGML graph reuse is not a CUDA replay count.
 
-Reproduce the native arm with `jitllm_gemma_prefill ARTIFACT IDS NEW_OUTPUT_DIR
+Reproduce the native arm with `llmp_gemma_prefill ARTIFACT IDS NEW_OUTPUT_DIR
 31 both 256 normmul-off` or `normmul-on`, using the artifact and 8,227-ID identity
 in [results](results.json). Use the existing untraced original ring client and
 owned-container wrapper from the planner-index comparison with unique output

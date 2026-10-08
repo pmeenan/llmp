@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The deterministic device-execution fake: each stream is a queue of
@@ -12,8 +12,8 @@
 // refused, as the CUDA provider refuses them. Every call takes one lock, so
 // a completion lane may query while the submission lane submits.
 
-#ifndef JITLLM_PROVIDERS_FAKE_FAKE_DEVICE_EXECUTION_H_
-#define JITLLM_PROVIDERS_FAKE_FAKE_DEVICE_EXECUTION_H_
+#ifndef LLMP_PROVIDERS_FAKE_FAKE_DEVICE_EXECUTION_H_
+#define LLMP_PROVIDERS_FAKE_FAKE_DEVICE_EXECUTION_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -26,7 +26,7 @@
 #include "base/ids.h"
 #include "providers/device_execution.h"
 
-namespace jitllm::providers::fake {
+namespace llmp::providers::fake {
 
 class FakeDeviceExecution final : public DeviceExecution {
  public:
@@ -118,6 +118,6 @@ class FakeDeviceExecution final : public DeviceExecution {
   std::uint64_t next_native_ = 0;
 };
 
-}  // namespace jitllm::providers::fake
+}  // namespace llmp::providers::fake
 
-#endif  // JITLLM_PROVIDERS_FAKE_FAKE_DEVICE_EXECUTION_H_
+#endif  // LLMP_PROVIDERS_FAKE_FAKE_DEVICE_EXECUTION_H_

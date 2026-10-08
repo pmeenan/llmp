@@ -77,8 +77,8 @@
       "python3": "3.12.3-0ubuntu2.1"
     },
     "cmake": "-DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real -DSD_WEBP=OFF -DSD_WEBM=OFF -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a",
-    "built_image": "jitllm-image-gguf:20260922",
+    "built_image": "llmp-image-gguf:20260922",
     "built_image_id": "sha256:a84cfa880f77967e9080bc8cbc406b26bf4c3f8b5ce96492f0b9399936b13b63",
-    "analysis_image": "jitllm-image-reference:20260922 (../image-reference/Dockerfile)"
+    "analysis_image": "llmp-image-reference:20260922 (../image-reference/Dockerfile)"
   }
 }

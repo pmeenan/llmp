@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A model's planned shapes (docs/engine.md): the graph of one chunk (or
@@ -18,8 +18,8 @@
 // The model's graph builder, binding and inputs stay the model's own
 // (dsv4_plan.h, qwen38_plan.h); only the mechanics are here.
 
-#ifndef JITLLM_ENGINE_PLANNED_H_
-#define JITLLM_ENGINE_PLANNED_H_
+#ifndef LLMP_ENGINE_PLANNED_H_
+#define LLMP_ENGINE_PLANNED_H_
 
 #include <algorithm>
 #include <array>
@@ -45,7 +45,7 @@
 #include "kernels/ggml/tensors.h"
 #include "memory/reclaim.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 class PagedNode;
 
@@ -559,6 +559,6 @@ struct Coverage {
 void CheckCoverage(const PagedNode& node, int owner, std::span<ggml_tensor* const> nodes,
                    const TensorClasses& classes, Coverage& coverage);
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_PLANNED_H_
+#endif  // LLMP_ENGINE_PLANNED_H_

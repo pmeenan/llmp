@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// GGML's CUDA launchers under jitLLM's launch context on a GB10 (label
+// GGML's CUDA launchers under llmpalooza's launch context on a GB10 (label
 // `gpu`; docs/backend-proof.md, P1), the memory and launch-context tests
 // also on a discrete GPU the build targets (`gpu-discrete`, D-082):
 // - operands in cudaMalloc memory (the control), device VMM and host VMM
@@ -58,17 +58,17 @@ void ggml_cuda_error(const char* stmt, const char* func, const char* file, int l
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::KernelError;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::Access;
-using jitllm::providers::BackingKind;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-using jitllm::providers::VmmProvider;
-using jitllm::test_support::FailedCode;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::KernelError;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::Access;
+using llmp::providers::BackingKind;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+using llmp::providers::VmmProvider;
+using llmp::test_support::FailedCode;
 
 constexpr std::int64_t kWidth = 896;  // Qwen2.5-0.5B's hidden size
 constexpr std::int64_t kOutputs = 1024;
@@ -93,42 +93,41 @@ class FaultingExecution final : public DeviceExecution {
   explicit FaultingExecution(DeviceExecution& inner) : inner_(inner) {}
   bool fault_next = false;
 
-  std::expected<StreamId, jitllm::providers::Failure> CreateStream() override {
+  std::expected<StreamId, llmp::providers::Failure> CreateStream() override {
     return inner_.CreateStream();
   }
-  std::expected<void, jitllm::providers::Failure> DestroyStream(StreamId stream) override {
+  std::expected<void, llmp::providers::Failure> DestroyStream(StreamId stream) override {
     return inner_.DestroyStream(stream);
   }
-  std::expected<void, jitllm::providers::Failure> Copy(StreamId stream, std::uint64_t destination,
-                                                       std::uint64_t source, Bytes size) override {
+  std::expected<void, llmp::providers::Failure> Copy(StreamId stream, std::uint64_t destination,
+                                                     std::uint64_t source, Bytes size) override {
     return inner_.Copy(stream, destination, source, size);
   }
-  std::expected<void, jitllm::providers::Failure> Zero(StreamId stream, std::uint64_t destination,
-                                                       Bytes size) override {
+  std::expected<void, llmp::providers::Failure> Zero(StreamId stream, std::uint64_t destination,
+                                                     Bytes size) override {
     return inner_.Zero(stream, destination, size);
   }
-  std::expected<jitllm::providers::NativeStream, jitllm::providers::Failure> Submission(
+  std::expected<llmp::providers::NativeStream, llmp::providers::Failure> Submission(
       StreamId stream) override {
     if (std::exchange(fault_next, false)) {
-      return std::unexpected(jitllm::providers::Failure{
-          .error = jitllm::providers::ProviderError::kUnknown, .detail = "a scripted fault"});
+      return std::unexpected(llmp::providers::Failure{
+          .error = llmp::providers::ProviderError::kUnknown, .detail = "a scripted fault"});
     }
     return inner_.Submission(stream);
   }
-  std::expected<void, jitllm::providers::Failure> Wait(StreamId stream,
-                                                       jitllm::providers::FenceId fence) override {
+  std::expected<void, llmp::providers::Failure> Wait(StreamId stream,
+                                                     llmp::providers::FenceId fence) override {
     return inner_.Wait(stream, fence);
   }
-  std::expected<jitllm::providers::FenceId, jitllm::providers::Failure> Record(
+  std::expected<llmp::providers::FenceId, llmp::providers::Failure> Record(
       StreamId stream) override {
     return inner_.Record(stream);
   }
-  std::expected<FenceState, jitllm::providers::Failure> Query(
-      jitllm::providers::FenceId fence) override {
+  std::expected<FenceState, llmp::providers::Failure> Query(
+      llmp::providers::FenceId fence) override {
     return inner_.Query(fence);
   }
-  std::expected<void, jitllm::providers::Failure> Release(
-      jitllm::providers::FenceId fence) override {
+  std::expected<void, llmp::providers::Failure> Release(llmp::providers::FenceId fence) override {
     return inner_.Release(fence);
   }
 
@@ -149,8 +148,8 @@ std::vector<std::uint32_t> Bits(const std::vector<float>& values) {
 class GgmlKernelsTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    memory_ = std::move(jitllm::providers::cuda::OpenDeviceMemory(0).value());
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    memory_ = std::move(llmp::providers::cuda::OpenDeviceMemory(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     staging_ = Vmm(BackingKind::kHost, Bytes(16ULL << 20));
   }
@@ -247,8 +246,8 @@ class GgmlKernelsTest : public ::testing::Test {
   std::uint64_t staging_used_ = 0;
   std::vector<void*> malloced_;
   struct Mapped {
-    jitllm::providers::ReservationId reservation;
-    jitllm::providers::BackingId backing;
+    llmp::providers::ReservationId reservation;
+    llmp::providers::BackingId backing;
     Bytes size;
   };
   std::vector<Mapped> mapped_;
@@ -325,18 +324,18 @@ class GgmlMemoryTest : public GgmlKernelsTest {
     TensorArena::Bind(biased, biased_at);
 
     auto launch = Launcher();
-    EXPECT_TRUE(jitllm::kernels::ggml::RmsNorm(*launch, norm).has_value());
-    EXPECT_TRUE(jitllm::kernels::ggml::Mul(*launch, scaled).has_value());
-    EXPECT_TRUE(jitllm::kernels::ggml::RmsNormMul(*launch, fused_norm, fused).has_value());
-    auto mmf = jitllm::kernels::ggml::MulMatF(*launch, product);
+    EXPECT_TRUE(llmp::kernels::ggml::RmsNorm(*launch, norm).has_value());
+    EXPECT_TRUE(llmp::kernels::ggml::Mul(*launch, scaled).has_value());
+    EXPECT_TRUE(llmp::kernels::ggml::RmsNormMul(*launch, fused_norm, fused).has_value());
+    auto mmf = llmp::kernels::ggml::MulMatF(*launch, product);
     EXPECT_TRUE(mmf.has_value()) << (mmf ? "" : mmf.error().detail);
-    auto mmvf = jitllm::kernels::ggml::MulMatVecF(*launch, vector);
+    auto mmvf = llmp::kernels::ggml::MulMatVecF(*launch, vector);
     EXPECT_TRUE(mmvf.has_value()) << (mmvf ? "" : mmvf.error().detail);
-    EXPECT_TRUE(jitllm::kernels::ggml::MulMatF(*launch, vector_mmf).has_value());
-    EXPECT_TRUE(jitllm::kernels::ggml::Add(*launch, added).has_value());
-    EXPECT_TRUE(jitllm::kernels::ggml::Add(*launch, biased).has_value());
+    EXPECT_TRUE(llmp::kernels::ggml::MulMatF(*launch, vector_mmf).has_value());
+    EXPECT_TRUE(llmp::kernels::ggml::Add(*launch, added).has_value());
+    EXPECT_TRUE(llmp::kernels::ggml::Add(*launch, biased).has_value());
     // MMVF is upstream's choice for one column only.
-    EXPECT_EQ(FailedCode(jitllm::kernels::ggml::MulMatVecF(*launch, product)),
+    EXPECT_EQ(FailedCode(llmp::kernels::ggml::MulMatVecF(*launch, product)),
               KernelError::kRejected);
     EXPECT_EQ(launch->scratch_peak(), Bytes(0));
 
@@ -451,7 +450,7 @@ TEST_F(GgmlKernelsTest, LaunchesUseTheProvidersContextAndStreamOrder) {
   ggml_tensor* norm = ggml_rms_norm(arena.context(), x, 0.0f);
   TensorArena::Bind(norm, out);
   Upload(rows, ones.data(), ones.size() * sizeof(float));
-  ASSERT_TRUE(jitllm::kernels::ggml::RmsNorm(*launch, norm).has_value());
+  ASSERT_TRUE(llmp::kernels::ggml::RmsNorm(*launch, norm).has_value());
   const std::vector<float> got = Download(out, kWidth);
   for (const float v : got) {
     EXPECT_FLOAT_EQ(v, 1.0f);
@@ -464,7 +463,7 @@ TEST_F(GgmlKernelsTest, LaunchesUseTheProvidersContextAndStreamOrder) {
   // fenced and released, a later run again keeps the stream from being
   // destroyed until a fence covers it.
   Finish();
-  ASSERT_TRUE(jitllm::kernels::ggml::RmsNorm(*launch, norm).has_value());
+  ASSERT_TRUE(llmp::kernels::ggml::RmsNorm(*launch, norm).has_value());
   EXPECT_FALSE(execution_->DestroyStream(stream_).has_value());
 }
 
@@ -513,7 +512,7 @@ class GgmlStaleMemoryDeathTest : public GgmlKernelsTest {
     const auto near_one = [](const std::vector<float>& values) {
       return std::ranges::all_of(values, [](float v) { return std::fabs(v - 1.0F) < 1e-5F; });
     };
-    if (!launch || !jitllm::kernels::ggml::RmsNorm(*launch, norm).has_value() ||
+    if (!launch || !llmp::kernels::ggml::RmsNorm(*launch, norm).has_value() ||
         !near_one(Download(out, kWidth))) {
       std::cerr << "the run over mapped memory failed\n";
       std::_Exit(2);
@@ -522,7 +521,7 @@ class GgmlStaleMemoryDeathTest : public GgmlKernelsTest {
       std::cerr << "the unmap failed\n";
       std::_Exit(3);
     }
-    std::ignore = jitllm::kernels::ggml::RmsNorm(*launch, norm);  // queued; faults on the device
+    std::ignore = llmp::kernels::ggml::RmsNorm(*launch, norm);  // queued; faults on the device
     const auto fence = execution_->Record(stream_);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (fence && std::chrono::steady_clock::now() < deadline) {
@@ -562,7 +561,7 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   TensorArena::Bind(x, rows);
   ggml_tensor* norm = ggml_rms_norm(arena.context(), x, kEps);
   TensorArena::Bind(norm, rows);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNorm(*launch, norm)), KernelError::kRejected);
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::RmsNorm(*launch, norm)), KernelError::kRejected);
   EXPECT_FALSE(launch->faulted());
 
   // Operands GGML's launchers would abort on, or index past: none is
@@ -577,31 +576,31 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   }
   ggml_tensor* sum = ggml_add(context, empty, empty);  // divides by its extents
   TensorArena::Bind(sum, rows);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::Add(*launch, sum)), KernelError::kRejected);
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::Add(*launch, sum)), KernelError::kRejected);
   // Two rows at a stride of kWidth + 1: normalized in place, the kernel
   // would write them densely.
   ggml_tensor* spaced = ggml_view_2d(context, strided, kWidth, 2, (kWidth + 1) * sizeof(float), 0);
   ggml_tensor* in_place = ggml_rms_norm_inplace(context, spaced, kEps);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNorm(*launch, in_place)), KernelError::kRejected);
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::RmsNorm(*launch, in_place)), KernelError::kRejected);
   // An odd activation column stride, which MMVF's launcher asserts on: MMVF
   // loads float2 pairs, so the alignment check refuses it first.
   ggml_tensor* column = ggml_view_2d(context, strided, kWidth, 1, (kWidth + 1) * sizeof(float), 0);
   ggml_tensor* vector = ggml_mul_mat(context, matrix, column);
   TensorArena::Bind(vector, rows);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::MulMatVecF(*launch, vector)), KernelError::kRejected);
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::MulMatVecF(*launch, vector)), KernelError::kRejected);
   // A misaligned operand, which would be a sticky fault for the process.
   ggml_tensor* odd = ggml_new_tensor_1d(context, GGML_TYPE_F32, kWidth);
   TensorArena::Bind(odd, rows + 2);
   ggml_tensor* odd_norm = ggml_rms_norm(context, odd, kEps);
   TensorArena::Bind(odd_norm, rows);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNorm(*launch, odd_norm)), KernelError::kRejected);
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::RmsNorm(*launch, odd_norm)), KernelError::kRejected);
   // A norm scaled by itself: the fused kernel would read the norm it never
   // writes.
   ggml_tensor* self_norm = ggml_rms_norm(context, strided, kEps);
   ggml_tensor* squared = ggml_mul(context, self_norm, self_norm);
   TensorArena::Bind(self_norm, rows);
   TensorArena::Bind(squared, rows + 8192U);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNormMul(*launch, self_norm, squared)),
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::RmsNormMul(*launch, self_norm, squared)),
             KernelError::kRejected);
   // In place into a transposed view: the kernel would write it densely.
   ggml_tensor* square = ggml_new_tensor_2d(context, GGML_TYPE_F32, 4, 4);
@@ -609,21 +608,20 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   TensorArena::Bind(square, rows);
   TensorArena::Bind(addend, rows + 4096U);
   ggml_tensor* transposed_sum = ggml_add_inplace(context, ggml_transpose(context, square), addend);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::Add(*launch, transposed_sum)),
-            KernelError::kRejected);
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::Add(*launch, transposed_sum)), KernelError::kRejected);
   // An output one row into its input.
   ggml_tensor* two_rows = ggml_new_tensor_2d(context, GGML_TYPE_F32, kWidth, 2);
   TensorArena::Bind(two_rows, rows);
   ggml_tensor* shifted = ggml_rms_norm(context, two_rows, kEps);
   TensorArena::Bind(shifted, rows + (kWidth * sizeof(float)));
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNorm(*launch, shifted)), KernelError::kRejected);
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::RmsNorm(*launch, shifted)), KernelError::kRejected);
   // An odd channel stride: MMVF loads activations as float2 from every
   // channel's offset.
   ggml_tensor* channels = ggml_view_3d(context, strided, kWidth, 1, 2, kWidth * sizeof(float),
                                        (kWidth + 1) * sizeof(float), 0);
   ggml_tensor* per_channel = ggml_mul_mat(context, matrix, channels);
   TensorArena::Bind(per_channel, rows + 65536U);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::MulMatVecF(*launch, per_channel)),
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::MulMatVecF(*launch, per_channel)),
             KernelError::kRejected);
   // A dimension of one with an unpacked stride: GGML counts it contiguous,
   // and the broadcast launcher's dimension merging would misindex it.
@@ -632,7 +630,7 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   TensorArena::Bind(four, rows + 4096U);
   ggml_tensor* loose_sum = ggml_add(context, loose, four);
   TensorArena::Bind(loose_sum, rows + 65536U);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::Add(*launch, loose_sum)), KernelError::kRejected);
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::Add(*launch, loose_sum)), KernelError::kRejected);
   // Strides that wrap: ggml_nbytes sums them to a few hundred bytes, while
   // the kernel would read gigabytes away.
   ggml_tensor* small = ggml_new_tensor_2d(context, GGML_TYPE_F16, 64, 16);
@@ -642,7 +640,7 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
                    (~std::size_t{0} - (std::size_t{1} << 33)) + 1, (std::size_t{1} << 33) + 256, 0);
   ggml_tensor* wrapped_product = ggml_mul_mat(context, small, wrapped);
   TensorArena::Bind(wrapped_product, rows + 65536U);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::MulMatVecF(*launch, wrapped_product)),
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::MulMatVecF(*launch, wrapped_product)),
             KernelError::kRejected);
   // A view made before its source was bound again keeps the old address.
   ggml_tensor* source = ggml_new_tensor_1d(context, GGML_TYPE_F32, kWidth);
@@ -651,8 +649,7 @@ TEST_F(GgmlKernelsTest, WhatDoesNotFitIsRefusedAndALaunchErrorIsAFault) {
   TensorArena::Bind(source, rows + 4096U);
   ggml_tensor* stale_norm = ggml_rms_norm(context, stale, kEps);
   TensorArena::Bind(stale_norm, rows + 65536U);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNorm(*launch, stale_norm)),
-            KernelError::kRejected);
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::RmsNorm(*launch, stale_norm)), KernelError::kRejected);
   EXPECT_FALSE(launch->faulted());
 
   // GGML's launcher itself, past the check: the launch fails, and the
@@ -691,14 +688,14 @@ class GgmlPlanTest : public GgmlKernelsTest {
   // RMSNorm-mul by the one operation of `plan`, resolved against
   // `registry`, over inputs in `memory`; output and intermediate start as
   // NaN, so whatever is not written shows.
-  NormResult Run(const jitllm::execution::Registry& registry, const jitllm::execution::Plan& plan,
+  NormResult Run(const llmp::execution::Registry& registry, const llmp::execution::Plan& plan,
                  NormShape shape, Memory memory) {
-    const auto bound = jitllm::execution::Resolve(registry, plan);
+    const auto bound = llmp::execution::Resolve(registry, plan);
     EXPECT_TRUE(bound.has_value()) << (bound ? "" : bound.error().detail);
     if (!bound) {
       return {};
     }
-    const auto kernel = jitllm::kernels::ggml::RmsNormMulKernel::Bind(bound->at(0));
+    const auto kernel = llmp::kernels::ggml::RmsNormMulKernel::Bind(bound->at(0));
     EXPECT_TRUE(kernel.has_value()) << (kernel ? "" : kernel.error().detail);
     if (!kernel) {
       return {};
@@ -764,18 +761,18 @@ std::vector<double> ReferenceNormMul(NormShape shape) {
 const char* const kFused = "ggml.rms_norm_mul.fused";
 const char* const kUnfused = "ggml.rms_norm_mul.unfused";
 
-jitllm::execution::Plan NormPlan(const jitllm::execution::Registry& registry, const char* name) {
-  const std::vector<jitllm::execution::Choice> choices = {
-      {.operation = jitllm::execution::Operation::kRmsNormMul, .implementation = name}};
-  return jitllm::execution::Plan::Build(registry, choices).value();
+llmp::execution::Plan NormPlan(const llmp::execution::Registry& registry, const char* name) {
+  const std::vector<llmp::execution::Choice> choices = {
+      {.operation = llmp::execution::Operation::kRmsNormMul, .implementation = name}};
+  return llmp::execution::Plan::Build(registry, choices).value();
 }
 
 TEST_F(GgmlPlanTest, EachSelectionIsExactAcrossMemoryAndCloseToTheReference) {
   const auto registry =
-      jitllm::execution::Registry::Create(jitllm::kernels::ggml::Implementations()).value();
+      llmp::execution::Registry::Create(llmp::kernels::ggml::Implementations()).value();
   std::size_t candidates = 0;
   for (std::size_t i = 0; i < registry.size(); ++i) {
-    candidates += registry.at(i).operation == jitllm::execution::Operation::kRmsNormMul ? 1 : 0;
+    candidates += registry.at(i).operation == llmp::execution::Operation::kRmsNormMul ? 1 : 0;
   }
   EXPECT_EQ(candidates, 2U);
   const auto fused = NormPlan(registry, kFused);
@@ -823,45 +820,44 @@ TEST_F(GgmlPlanTest, EachSelectionIsExactAcrossMemoryAndCloseToTheReference) {
 }
 
 TEST_F(GgmlPlanTest, AStaleOrForeignImplementationSelectsNoKernel) {
-  using jitllm::execution::PlanError;
+  using llmp::execution::PlanError;
   const auto registry =
-      jitllm::execution::Registry::Create(jitllm::kernels::ggml::Implementations()).value();
+      llmp::execution::Registry::Create(llmp::kernels::ggml::Implementations()).value();
 
   // A plan made in a build whose fused implementation had another GGML
   // tree (BP-S2): stale here, and never run as the unfused one.
-  std::vector<jitllm::execution::Implementation> older = jitllm::kernels::ggml::Implementations();
+  std::vector<llmp::execution::Implementation> older = llmp::kernels::ggml::Implementations();
   for (auto& implementation : older) {
     implementation.revision = "0000";
   }
-  const auto old_registry = jitllm::execution::Registry::Create(older).value();
-  const auto stale = jitllm::execution::Resolve(registry, NormPlan(old_registry, kFused));
+  const auto old_registry = llmp::execution::Registry::Create(older).value();
+  const auto stale = llmp::execution::Resolve(registry, NormPlan(old_registry, kFused));
   ASSERT_FALSE(stale.has_value());
   EXPECT_EQ(stale.error().error, PlanError::kStale);
   // Nor does the stale declaration itself select a kernel.
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNormMulKernel::Bind(older[0])),
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::RmsNormMulKernel::Bind(older[0])),
             KernelError::kRejected);
 
   // A plan naming an implementation of a module this build lacks (BP-S4).
-  std::vector<jitllm::execution::Implementation> with_module =
-      jitllm::kernels::ggml::Implementations();
+  std::vector<llmp::execution::Implementation> with_module = llmp::kernels::ggml::Implementations();
   with_module.push_back({.name = "module.rms_norm_mul.other",
-                         .operation = jitllm::execution::Operation::kRmsNormMul,
+                         .operation = llmp::execution::Operation::kRmsNormMul,
                          .source = "module",
                          .revision = "1",
                          .build = "1",
                          .variant = "1"});
-  const auto module_registry = jitllm::execution::Registry::Create(with_module).value();
+  const auto module_registry = llmp::execution::Registry::Create(with_module).value();
   const auto unsupported =
-      jitllm::execution::Resolve(registry, NormPlan(module_registry, "module.rms_norm_mul.other"));
+      llmp::execution::Resolve(registry, NormPlan(module_registry, "module.rms_norm_mul.other"));
   ASSERT_FALSE(unsupported.has_value());
   EXPECT_EQ(unsupported.error().error, PlanError::kUnsupported);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::RmsNormMulKernel::Bind(with_module.back())),
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::RmsNormMulKernel::Bind(with_module.back())),
             KernelError::kRejected);
 
   // A bound kernel refuses operands it cannot take, before any launch: the
   // unfused norm needs memory of its own.
-  const auto unfused = jitllm::execution::Resolve(registry, NormPlan(registry, kUnfused)).value();
-  const auto kernel = jitllm::kernels::ggml::RmsNormMulKernel::Bind(unfused.at(0)).value();
+  const auto unfused = llmp::execution::Resolve(registry, NormPlan(registry, kUnfused)).value();
+  const auto kernel = llmp::kernels::ggml::RmsNormMulKernel::Bind(unfused.at(0)).value();
   EXPECT_EQ(kernel.name(), kUnfused);
   const std::uint64_t rows = Allocate(Memory::kDeviceVmm, 3 * kWidth * sizeof(float));
   auto arena = TensorArena::Create(4).value();

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 # TensorFold at its pin (71377a53, 0.3.6.2; beddbb7b before) in NVIDIA's PyTorch container, as its
 # runbook installs it. Build context: a checkout of TensorFold at the pin.

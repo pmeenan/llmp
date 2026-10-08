@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
 # Runs one of P3's reference-side scripts (op_plan_record.py probe, op_tier_e.py,
@@ -22,10 +22,10 @@
 # DOCKER_EXTRA adds docker options, split on spaces (read-only mounts of an
 # artifact store or a native recording, GGML_OPS_LIB).
 set -eu
-: "${EXL_RUN:=$HOME/.local/share/jitllm/exl3-reference-20260922}"
-: "${P0:=$HOME/.local/share/jitllm/p0-20260925}"
-: "${OUT:=$HOME/.local/share/jitllm/p3b-20260927}"
-: "${SDK:=$HOME/.local/share/jitllm/sdk/aarch64-e0a0c85c42806fb1}"
+: "${EXL_RUN:=$HOME/.local/share/llmp/exl3-reference-20260922}"
+: "${P0:=$HOME/.local/share/llmp/p0-20260925}"
+: "${OUT:=$HOME/.local/share/llmp/p3b-20260927}"
+: "${SDK:=$HOME/.local/share/llmp/sdk/aarch64-e0a0c85c42806fb1}"
 : "${CUDA:=/usr/local/cuda-13.0}" "${CUDA_MOUNT:=/usr/local/cuda-13.0}" "${EXT_CACHE:=build-cache}"
 here=$(cd "$(dirname "$0")" && pwd)
 script=$1
@@ -47,4 +47,4 @@ exec sudo -n docker run --rm ${GPUS---gpus=all} --shm-size 2g --memory 48g --mem
   -e CXX=/experiment/cxx-target -e CUDAHOSTCXX=/experiment/cxx-target \
   -e CUDA_DISABLE_PTX_JIT=1 -e OMP_NUM_THREADS=4 -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
   ${TUNE:+-e EXLLAMAV3_TUNE_CACHE=$TUNE} \
-  ${DOCKER_EXTRA:-} --entrypoint python3 jitllm-exl3-reference:20260922 "/harness/backend-proof-p3/$script" "$@"
+  ${DOCKER_EXTRA:-} --entrypoint python3 llmp-exl3-reference:20260922 "/harness/backend-proof-p3/$script" "$@"

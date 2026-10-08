@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """The FP16 gate's plan comparator (docs/experiments/backend-proof-p2/plan_compare.py), no GPU needed.
 

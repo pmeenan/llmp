@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Freeze native operators without reading any counterpart output bytes."""
 import json
@@ -52,17 +52,17 @@ def main():
         command = shlex.split(step['cmd'])
         expected = [str(inputs), manifest_sha, str(root), kind, policy]
         if len(command) != 6 or command[1:] != expected or \
-                not command[0].endswith('/benchmarks/jitllm_gemma26_late_moe'):
+                not command[0].endswith('/benchmarks/llmp_gemma26_late_moe'):
             raise ValueError('actual native acquisition command/input/policy differs')
-    log_path = pathlib.Path.home() / '.local/share/jitllm/jobs' / job / 'log'
+    log_path = pathlib.Path.home() / '.local/share/llmp/jobs' / job / 'log'
     log = log_path.read_text()
     if log.splitlines().count('LATE_NATIVE_RETIRED complete=1') != 4:
         raise ValueError('missing native owner retirement markers')
-    source = pathlib.Path.home() / 'src/jitLLM-wt/m3fixb'
+    source = pathlib.Path.home() / 'src/llmp-wt/m3fixb'
     for name, expected in pre['source_files'].items():
         if identity(source / name, 32 << 20) != expected:
             raise ValueError('source changed before calibration freeze')
-    if identity(source / 'build/spark-native/benchmarks/jitllm_gemma26_late_moe') != pre['native_operator_client']:
+    if identity(source / 'build/spark-native/benchmarks/llmp_gemma26_late_moe') != pre['native_operator_client']:
         raise ValueError('native binary changed')
     records = {}
     for policy, first, repeat in (('primitive', roots[0], roots[1]), ('fused', roots[2], roots[3])):

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/gemma4_assistant.h"
@@ -14,7 +14,7 @@
 #include "artifact/gguf_metadata.h"
 #include "artifact/representation.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 namespace {
 auto Refused(std::string_view why) { return std::unexpected(std::string(why)); }
 bool Approved(const Gemma4AssistantProfile& p) {
@@ -339,4 +339,4 @@ std::expected<void, std::string> CheckGemma4AssistantVocabulary(
   }
   return {};
 }
-}  // namespace jitllm::model
+}  // namespace llmp::model

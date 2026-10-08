@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M0 I/O path comparison — 2026-09-21
@@ -61,7 +61,7 @@ The experiment never passes an absent mapping to a kernel or I/O request.
   libcufile API version 2.12. The binary links the unmodified target library;
   its header/library were copied into scratch for cross-building. They
   remain CUDA platform-runtime dependencies under their actual terms
-  (D-017), not incorporated jitLLM code. No SDK or library was installed
+  (D-017), not incorporated llmpalooza code. No SDK or library was installed
   into the host baseline.
 - Dataset: **32 GiB**, fully written and `fdatasync`ed, non-sparse, private
   regular scratch file, deterministic offset-specific 32-bit contents from
@@ -146,13 +146,13 @@ directory containing the installed Spark `cufile.h` and
 `libcufile.so.1.15.1`. Exact dependency hashes are in `artifacts.json`.
 
 ```bash
-export LD_LIBRARY_PATH=/tmp/jitllm-clang22/sdk-amd64/usr/lib/x86_64-linux-gnu
-export CXX=/tmp/jitllm-clang22/sdk-amd64/usr/bin/clang++-22
-export LLD=/tmp/jitllm-clang22/sdk-amd64/usr/bin/ld.lld-22
-export SYSROOT=/tmp/jitllm-toolchain-smoke/sysroot
-export CUDA_ROOT=/tmp/jitllm-toolchain-smoke/sdk-134/usr/local/cuda-13.4
-export CUFILE_ROOT=/tmp/jitllm-io/sdk
-bash docs/experiments/io-path/build.sh /tmp/jitllm-io/build-final
+export LD_LIBRARY_PATH=/tmp/llmp-clang22/sdk-amd64/usr/lib/x86_64-linux-gnu
+export CXX=/tmp/llmp-clang22/sdk-amd64/usr/bin/clang++-22
+export LLD=/tmp/llmp-clang22/sdk-amd64/usr/bin/ld.lld-22
+export SYSROOT=/tmp/llmp-toolchain-smoke/sysroot
+export CUDA_ROOT=/tmp/llmp-toolchain-smoke/sdk-134/usr/local/cuda-13.4
+export CUFILE_ROOT=/tmp/llmp-io/sdk
+bash docs/experiments/io-path/build.sh /tmp/llmp-io/build-final
 ```
 
 Copy the resulting cubin/executable into a private, otherwise unused scratch
@@ -179,7 +179,7 @@ Copy result directories into scratch outside the workstation repository,
 then validate and summarize them there (for example):
 
 ```bash
-python3 docs/experiments/io-path/summarize.py /tmp/jitllm-io/results
+python3 docs/experiments/io-path/summarize.py /tmp/llmp-io/results
 ```
 
 `pack.py SCRATCH_RESULTS NEW_RESULTS_DIRECTORY` first validates individual

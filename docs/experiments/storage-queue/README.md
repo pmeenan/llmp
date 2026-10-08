@@ -1,7 +1,7 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Storage queue depth and request size through jitLLM's providers — 2026-09-25
+# Storage queue depth and request size through llmpalooza's providers — 2026-09-25
 
 M2's providers item asks for storage queue depths and run sizes to be
 measured; M3 and M6 tune them against spill write-back. This experiment measures
@@ -54,7 +54,7 @@ Source identities (SHA-256):
 | `benchmarks/storage_bench.cc` | `2abeecbc02609e1ce743e5213ed22410b11ad023125e7645bf641b59b29c9e96` |
 | `src/providers/uring_storage.cc` | `bc6457f33d7887fa3eddf558e0f8d1c9b13635ce24bce32511bc83151839b192` |
 | `src/platform/io_uring.cc` | `b73246c81d8c0c19c04e612085f085ad8ab4174d14b93a4130583848da57f02d` |
-| `src/providers/cuda/cuda_device_memory.cc` | `a70aba0af02e9222e127e3de680dc199a47b99afa2eee32b46c869231c9acfd6` |
+| `src/providers/cuda/cuda_device_memory.cc` | `8c09b9526c2f9c7e3411b47b64afc8ee5794fd19eacfb5542e02cbbe802196c9` |
 | `src/providers/device_memory.cc` | `78c2a441694a570706190aafc39abd6f1b64f7d126c5d8d7b35e5ac36a121fdd` |
 
 These are the sources measured. Later review fixes cover cancellation
@@ -127,5 +127,5 @@ Then run it on the Spark, with a directory on the filesystem to measure (the
 file it writes is unnamed and disappears on exit):
 
 ```bash
-ssh spark 'mkdir -p ~/.cache/jitllm/bench && ~/.cache/jitllm/deploy/cross-<id>/benchmarks/jitllm_storage_bench ~/.cache/jitllm/bench 8'
+ssh spark 'mkdir -p ~/.cache/llmp/bench && ~/.cache/llmp/deploy/cross-<id>/benchmarks/llmp_storage_bench ~/.cache/llmp/bench 8'
 ```

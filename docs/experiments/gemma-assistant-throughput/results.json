@@ -8,33 +8,33 @@
   "final_measured_source_files": [
     {
       "path": "benchmarks/gemma_greedy_reference.cc",
-      "bytes": 33352,
-      "sha256": "68eb55c33f55040c4a85c9883658cc4ffa13bb9fc45a78572c577dcdd0017c77"
+      "bytes": 33314,
+      "sha256": "a47223e33361327a311c164cf935b84b2f29ffa679d461b0ef250a6ecd4a6a28"
     },
     {
       "path": "docs/experiments/gemma-assistant-greedy-reference/PERFORMANCE.md",
-      "bytes": 6082,
-      "sha256": "007d02de5ddd736ab3c0975a8ba33f270d9c8d9cca3bd26f9e875e1133f7f103"
+      "bytes": 6084,
+      "sha256": "d9581d0dda9735bcf40484d9feb72a1ab84654cf6ea70e49f65c51efdf71be62"
     },
     {
       "path": "docs/experiments/gemma-assistant-greedy-reference/llama_greedy.cc",
-      "bytes": 35227,
-      "sha256": "fc06fa359225d8b5af1b76dafef06b0c5c7504b7c7bec147b392c3a5cdd805b9"
+      "bytes": 35231,
+      "sha256": "add3573293de41f83d13521007eff1f5be0b85b0f847b42ef53cab70abcc6f3e"
     },
     {
       "path": "docs/experiments/gemma-assistant-greedy-reference/performance_analyze.py",
-      "bytes": 13585,
-      "sha256": "437fa672c31827e8013104f4fab8df7090c6e7802d52c68d5eaba87cb53ed9f0"
+      "bytes": 13589,
+      "sha256": "708249eab46c0dfc4361823726547bb6b68d6deb05e004551d3e95b3af0638e7"
     },
     {
       "path": "docs/experiments/gemma-assistant-greedy-reference/performance_reference.sh",
-      "bytes": 3686,
-      "sha256": "a849e33d6ffff1a0c67d2e7d7e30e037d90cc931450b807cc8a18a8a9e0a091b"
+      "bytes": 3672,
+      "sha256": "4ea9576337e2fea9ae5a4ba98969bddc513bedeaf0f210235a83868da656238d"
     },
     {
       "path": "docs/experiments/gemma-assistant-greedy-reference/test_performance_analyze.py",
-      "bytes": 1947,
-      "sha256": "dca5309e278d7ec40cddd3487531bffb4884d5e41af0fed93ff79a8f4ac0945c"
+      "bytes": 1951,
+      "sha256": "c63fea9984fa46c4b2b8b0bc5dfbd70438feaef689bd00049d3118c7a59b712e"
     }
   ],
   "recipe": {
@@ -290,7 +290,7 @@
         "record": {
           "cid": "30d7de4fbdab5e32dd55d70c542f94d4f803c340138967ad7046ed7331ba7238",
           "container_absent_after_checked_docker_query": true,
-          "name": "jitllm-gemma26-late-moe-throughput31-build1",
+          "name": "llmp-gemma26-late-moe-throughput31-build1",
           "owner_label": "gemma26-late-moe"
         }
       },
@@ -300,7 +300,7 @@
         "record": {
           "cid": "a7b74dec544b15b321da81f98ad66435f92e78e296d557269d910a493e062f09",
           "container_absent_after_checked_docker_query": true,
-          "name": "jitllm-gemma26-late-moe-throughput31-reference-plain32-1",
+          "name": "llmp-gemma26-late-moe-throughput31-reference-plain32-1",
           "owner_label": "gemma26-late-moe"
         }
       },
@@ -310,7 +310,7 @@
         "record": {
           "cid": "785e1896ec5b9081675773da2c1468cd66b2b59028cb11940031eea84002fa89",
           "container_absent_after_checked_docker_query": true,
-          "name": "jitllm-gemma26-late-moe-throughput31-reference-unit32-1",
+          "name": "llmp-gemma26-late-moe-throughput31-reference-unit32-1",
           "owner_label": "gemma26-late-moe"
         }
       }
@@ -336,7 +336,7 @@
       "rc": 0,
       "queued_steps": 8,
       "successful_steps": 8,
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-build1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-throughput-raw/official-build1",
       "files_sha256": {
         "job.json": "2dcb46487006bb66866c03b6934b5652f4711f31b5a86aa1fa29f566ea333482",
         "steps.json": "df86cbe889d7612c571e6d5688f8335fcfd9fad7075f9c676f09a4c8054da624",
@@ -350,7 +350,7 @@
       "rc": 0,
       "queued_steps": 1,
       "successful_steps": 1,
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-compare31-1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-throughput-raw/official-compare31-1",
       "files_sha256": {
         "job.json": "0a1c7dd08fadd6aa038bf2580e2e23f08e583ae6df759bb9112be810371e6fd4",
         "steps.json": "bda2362b7d4dbed212d7b7843f31ceb3a56ffb108bac1979eced47cd47a7b4a3",
@@ -364,7 +364,7 @@
       "rc": 0,
       "queued_steps": 1,
       "successful_steps": 1,
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-native-plain32-1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-throughput-raw/official-native-plain32-1",
       "files_sha256": {
         "job.json": "f6ef67c920d718afdc050a202544d272d7f4b0819ed095cf79e97cdd88bb8101",
         "steps.json": "8aef1af1780c804c4c1c6de09b933b7c1bb1c8061a1aaf6f9b8d73f724144a2c",
@@ -378,7 +378,7 @@
       "rc": 0,
       "queued_steps": 1,
       "successful_steps": 1,
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-native-plain32-own1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-throughput-raw/official-native-plain32-own1",
       "files_sha256": {
         "job.json": "087bae066797a7f6999620e0f31b269fdbba18cfdf4ac3dca6ea963732c10657",
         "steps.json": "b767f9b6f291062d82710a4e91a241fb57fffc64312aa0778863d05d71a55fcd",
@@ -392,7 +392,7 @@
       "rc": 0,
       "queued_steps": 1,
       "successful_steps": 1,
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-native-unit32-1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-throughput-raw/official-native-unit32-1",
       "files_sha256": {
         "job.json": "06829ea1a42ec6b627b6136aac06484ed2e99a32e085f7fdb96967cdeec91b04",
         "steps.json": "7fe17b3356cb30cdc3ce9a3238d1a48355cc1dd92d29761ca4787aeb4780395a",
@@ -406,7 +406,7 @@
       "rc": 0,
       "queued_steps": 1,
       "successful_steps": 1,
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-native-unit32-own1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-throughput-raw/official-native-unit32-own1",
       "files_sha256": {
         "job.json": "28256b027452eafb31c1d647d70f33df8bb6378b5c64a5f523e91414e1dff329",
         "steps.json": "6b1fc1d4758f402b3d0e9adabbd82b87783a499f2491acebb2648d2ca01ca4e1",
@@ -420,7 +420,7 @@
       "rc": 0,
       "queued_steps": 1,
       "successful_steps": 1,
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-reference-plain32-1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-throughput-raw/official-reference-plain32-1",
       "files_sha256": {
         "job.json": "f2daa2e5810ff9bf0bccfefc5d9bb131738646190a03f6fbdfa7fb18f36a0e9a",
         "steps.json": "ebcb2fe5e8f5d8857ca4715bca6fc0b339d4b406c421da033d2761b78ee25b98",
@@ -434,7 +434,7 @@
       "rc": 0,
       "queued_steps": 1,
       "successful_steps": 1,
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-reference-plain32-own1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-throughput-raw/official-reference-plain32-own1",
       "files_sha256": {
         "job.json": "9f4ebdeb70f36534aea78c6636e7a2ed40ff469ff9b7f77076fd2d69a28421cc",
         "steps.json": "e6de7940591068534838a2b5ac5f89feccc868c5ee1e5e805f6d0457b6258809",
@@ -448,7 +448,7 @@
       "rc": 0,
       "queued_steps": 1,
       "successful_steps": 1,
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-reference-unit32-1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-throughput-raw/official-reference-unit32-1",
       "files_sha256": {
         "job.json": "27db16e2b72a266115f83c2f827f4b8942ad28c7c4254346c69192f9bc1fecd4",
         "steps.json": "008489fde02bda85a58d4ba3a5e2c1d8b67c50a96c44b77e286767dc8a17b6f6",
@@ -462,7 +462,7 @@
       "rc": 0,
       "queued_steps": 1,
       "successful_steps": 1,
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-reference-unit32-own1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-throughput-raw/official-reference-unit32-own1",
       "files_sha256": {
         "job.json": "11672b90279b2ae97a1436b84dab38ee9e002235d210dfaea88d3e6799f94064",
         "steps.json": "92740916c308743b353aac57dc4603b5db4e7d18456e9c3a490e967143777cc5",
@@ -475,7 +475,7 @@
     "query_utc": "2026-10-06T14:26:25.732030+00:00",
     "head": "cb2ebf0540f42604e2759b2ddef497861e928248",
     "observation": "Primary git ls-remote at this new task entry returns cb2ebf0540f42604e2759b2ddef497861e928248; authenticated same-HEAD source receipts inherited, old observation preserved. No comparable CUDA Q8 assistant result.",
-    "previous_receipt": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/tensorfold-entry1.json",
+    "previous_receipt": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/tensorfold-entry1.json",
     "README.md": {
       "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/README.md",
       "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/gemma_norm.h"
@@ -20,7 +20,7 @@
 #include "kernels/ggml/tensors.h"
 
 namespace {
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 class GemmaNormTest : public ::testing::Test {
  protected:
   kg::TensorArena arena = kg::TensorArena::Create(160).value();
@@ -252,7 +252,7 @@ TEST_F(GemmaNormTest, ResidualGatherStaysPaidAndPlacedRawInputLivesUntilDeferred
     const auto plan = kg::PlanGraph(nodes, false, on);
     ASSERT_TRUE(plan);
     ASSERT_EQ(plan->steps.size(), 3);
-    EXPECT_EQ(plan->steps[1].operation, jitllm::execution::Operation::kGetRows);
+    EXPECT_EQ(plan->steps[1].operation, llmp::execution::Operation::kGetRows);
     EXPECT_EQ(plan->steps[1].nodes[0], gather);
     EXPECT_EQ(plan->steps[2].implementation, kg::kGemmaNormAddName);
     EXPECT_EQ(plan->steps[2].nodes[0], t.norm);

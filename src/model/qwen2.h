@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen2 dense architecture adapter, as small as backend-proof P2 needs
@@ -22,8 +22,8 @@
 // that computes a chunk is built from this adapter by the GGML kernel
 // module (kernels/ggml/qwen2_graph.h).
 
-#ifndef JITLLM_MODEL_QWEN2_H_
-#define JITLLM_MODEL_QWEN2_H_
+#ifndef LLMP_MODEL_QWEN2_H_
+#define LLMP_MODEL_QWEN2_H_
 
 #include <array>
 #include <cstddef>
@@ -34,11 +34,11 @@
 #include <string_view>
 #include <vector>
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 class Artifact;
 }
 
-namespace jitllm::model {
+namespace llmp::model {
 
 // A Qwen2 dense checkpoint's hyperparameters.
 struct Qwen2Profile {
@@ -136,6 +136,6 @@ std::expected<void, std::string> EmbedRows(std::span<const std::uint16_t> table,
 // IEEE binary16 to binary32, exactly (every half is a float).
 float HalfToFloat(std::uint16_t half);
 
-}  // namespace jitllm::model
+}  // namespace llmp::model
 
-#endif  // JITLLM_MODEL_QWEN2_H_
+#endif  // LLMP_MODEL_QWEN2_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Qwen3.8's n-gram (PLE) table paged by rows on demand (D-035; M3's swap
@@ -27,8 +27,8 @@
 // - No CPU payload copy: the reads land by direct I/O and a kernel copies
 //   each row into its slot (D-081's GPU copy, by an SM kernel here).
 
-#ifndef JITLLM_ENGINE_PLE_ROWS_H_
-#define JITLLM_ENGINE_PLE_ROWS_H_
+#ifndef LLMP_ENGINE_PLE_ROWS_H_
+#define LLMP_ENGINE_PLE_ROWS_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -38,11 +38,11 @@
 #include <string>
 #include <vector>
 
-namespace jitllm::providers {
+namespace llmp::providers {
 class Storage;
 }
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 // Where the table is: `rows` rows of `row_bytes` from `file_offset` in one
 // shard, stored contiguously; `chunk_file_offset` is where the table's
@@ -105,6 +105,6 @@ std::expected<void, std::string> ReadPleRows(providers::Storage& storage, int fd
 // The job's gather is a kernel of its own (kernels/paging/paging.h,
 // GatherPleRows).
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_PLE_ROWS_H_
+#endif  // LLMP_ENGINE_PLE_ROWS_H_

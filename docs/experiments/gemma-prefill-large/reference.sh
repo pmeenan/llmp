@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 # Reproduce the measured original-image thin-client commands; math is not rebuilt.
 # VARIANT build | VARIANT screen NEW_OUTPUT UBATCH
@@ -10,12 +10,12 @@ variant="$1"
 mode="$2"
 shift 2
 case "$variant" in
-  26) scratch="$HOME/.local/share/jitllm/gemma-prefill"; model=gemma-4-26B-A4B-it-UD-Q4_K_M.gguf ;;
-  31) scratch="$HOME/.local/share/jitllm/gemma31-prefill"; model=gemma-4-31B-it-UD-Q4_K_XL.gguf ;;
+  26) scratch="$HOME/.local/share/llmp/gemma-prefill"; model=gemma-4-26B-A4B-it-UD-Q4_K_M.gguf ;;
+  31) scratch="$HOME/.local/share/llmp/gemma31-prefill"; model=gemma-4-31B-it-UD-Q4_K_XL.gguf ;;
   *) exit 2 ;;
 esac
-source_root="${JITLLM_GEMMA_PREFILL_SOURCE_ROOT:-$HOME/src/jitLLM-wt/m3fixb}"
-models="$HOME/.local/share/jitllm/reference-models"
+source_root="${LLMP_GEMMA_PREFILL_SOURCE_ROOT:-$HOME/src/llmp-wt/m3fixb}"
+models="$HOME/.local/share/llmp/reference-models"
 image=ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7
 common=(run --rm --network none --read-only --user "$(id -u):$(id -g)" --tmpfs /tmp:rw,size=1g --mount "type=bind,src=$scratch,dst=/scratch" --mount "type=bind,src=$source_root/docs/experiments/gemma-prefill,dst=/tool,readonly" --mount "type=bind,src=$models,dst=/model,readonly")
 if [[ "$mode" == build ]]; then

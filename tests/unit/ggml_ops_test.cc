@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The remaining operations of the FP16 bridge's recorded plan under
-// jitLLM's launch context on a GB10 (label `gpu`; docs/backend-proof.md,
+// llmpalooza's launch context on a GB10 (label `gpu`; docs/backend-proof.md,
 // P1; kernels/ggml/ops.h):
 // - each is bit-identical in cudaMalloc memory, device VMM and host VMM
 //   (BP-N3, D-034), and close to a CPU reference;
@@ -22,7 +22,7 @@
 // the FP16 gate allows. The first seven launches of the fused decode step
 // are also written as the recorder's JSON lines and must equal
 // plan_record_sample.txt with the current pin's kernel names;
-// with JITLLM_TEST_PLAN_RECORD set they are also written to that file.
+// with LLMP_TEST_PLAN_RECORD set they are also written to that file.
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -69,20 +69,20 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::KernelError;
-using jitllm::kernels::ggml::KernelFailure;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::Access;
-using jitllm::providers::BackingKind;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-using jitllm::providers::VmmProvider;
-using jitllm::test_support::Event;
-using jitllm::test_support::EventKind;
-using jitllm::test_support::FailedCode;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::KernelError;
+using llmp::kernels::ggml::KernelFailure;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::Access;
+using llmp::providers::BackingKind;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+using llmp::providers::VmmProvider;
+using llmp::test_support::Event;
+using llmp::test_support::EventKind;
+using llmp::test_support::FailedCode;
 
 // Qwen2.5-0.5B's shapes.
 constexpr std::int64_t kWidth = 896;
@@ -223,8 +223,8 @@ class GgmlOpsTest : public ::testing::Test {
   static constexpr std::uint64_t kStaging = 64ULL << 20;
 
   void SetUp() override {
-    memory_ = std::move(jitllm::providers::cuda::OpenDeviceMemory(0).value());
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    memory_ = std::move(llmp::providers::cuda::OpenDeviceMemory(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     staging_ = Vmm(BackingKind::kHost, Bytes(kStaging));
   }
@@ -339,7 +339,7 @@ class GgmlOpsTest : public ::testing::Test {
   std::vector<Event> Record(Run&& run) {
     std::vector<Event> launched;
     {
-      jitllm::test_support::Recording recording;
+      llmp::test_support::Recording recording;
       std::forward<Run>(run)();
       launched = recording.Take();
     }
@@ -357,8 +357,8 @@ class GgmlOpsTest : public ::testing::Test {
   std::uint64_t staging_used_ = 0;
   std::vector<void*> malloced_;
   struct Mapped {
-    jitllm::providers::ReservationId reservation;
-    jitllm::providers::BackingId backing;
+    llmp::providers::ReservationId reservation;
+    llmp::providers::BackingId backing;
     Bytes size;
   };
   std::vector<Mapped> mapped_;
@@ -409,20 +409,20 @@ TEST_F(GgmlOpsTest, F16ApeRowsWidenExactlyAcrossMemoryDomains) {
         Place(memory, ggml_new_tensor_2d(arena.context(), GGML_TYPE_F16, kWidth, 8), source);
     auto* ids = Place(memory, ggml_new_tensor_1d(arena.context(), GGML_TYPE_I32, kRows), picks);
     auto* gathered = Place(memory, ggml_get_rows(arena.context(), rows, ids));
-    Launched(jitllm::kernels::ggml::GetRows(*launch, gathered), "F16 APE gather");
+    Launched(llmp::kernels::ggml::GetRows(*launch, gathered), "F16 APE gather");
     EXPECT_EQ(Bits(Download(gathered)), Bits(want));
   }
 }
 
 TEST_F(GgmlOpsTest, GroupedStoresMatchPrimitiveFullBuffersAndChangedCapturedIndices) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   auto arena = TensorArena::Create(256).value();
   auto* c = arena.context();
   auto launch = Launcher();
   ASSERT_TRUE(launch);
   const auto declared = kg::Implementations();
-  const auto declaration = std::ranges::find(declared, kg::kSetRowsGroupedName,
-                                             &jitllm::execution::Implementation::name);
+  const auto declaration =
+      std::ranges::find(declared, kg::kSetRowsGroupedName, &llmp::execution::Implementation::name);
   ASSERT_NE(declaration, declared.end());
   const auto kernel = kg::Kernel::Bind(*declaration);
   ASSERT_TRUE(kernel);
@@ -551,10 +551,10 @@ class GgmlOpsMemoryTest : public GgmlOpsTest {
     }
     ggml_tensor* many_ids = Place(memory, ggml_new_tensor_1d(c, GGML_TYPE_I32, 128), many);
     ggml_tensor* picked_vec = Place(memory, ggml_get_rows(c, many_rows, many_ids));
-    EXPECT_FALSE(jitllm::kernels::ggml::GetRowsVectorized(picked));
-    EXPECT_TRUE(jitllm::kernels::ggml::GetRowsVectorized(picked_vec));
-    Launched(jitllm::kernels::ggml::GetRows(*launch, picked), "get_rows");
-    Launched(jitllm::kernels::ggml::GetRows(*launch, picked_vec), "get_rows (vector)");
+    EXPECT_FALSE(llmp::kernels::ggml::GetRowsVectorized(picked));
+    EXPECT_TRUE(llmp::kernels::ggml::GetRowsVectorized(picked_vec));
+    Launched(llmp::kernels::ggml::GetRows(*launch, picked), "get_rows");
+    Launched(llmp::kernels::ggml::GetRows(*launch, picked_vec), "get_rows (vector)");
 
     // set_rows: five K rows into a 16-cell cache.
     const std::vector<ggml_fp16_t> poison(kKvWidth * 16, std::bit_cast<ggml_fp16_t>(kPoisonHalf));
@@ -563,7 +563,7 @@ class GgmlOpsMemoryTest : public GgmlOpsTest {
                                 Values(3, kKvWidth * kRows, 4.0f));
     ggml_tensor* slots = Place(memory, ggml_new_tensor_1d(c, GGML_TYPE_I64, kRows),
                                std::vector<std::int64_t>(kSlots.begin(), kSlots.end()));
-    Launched(jitllm::kernels::ggml::SetRows(*launch, ggml_set_rows(c, cache, values, slots)),
+    Launched(llmp::kernels::ggml::SetRows(*launch, ggml_set_rows(c, cache, values, slots)),
              "set_rows");
 
     // RoPE of Q, and of K fused with its write or not.
@@ -572,7 +572,7 @@ class GgmlOpsMemoryTest : public GgmlOpsTest {
     ggml_tensor* q = Place(memory, ggml_new_tensor_3d(c, GGML_TYPE_F32, kHead, kHeads, kRows),
                            Values(4, kHead * kHeads * kRows, 2.0f));
     ggml_tensor* rotated = Place(memory, QwenRope(c, q, positions));
-    Launched(jitllm::kernels::ggml::Rope(*launch, rotated), "rope");
+    Launched(llmp::kernels::ggml::Rope(*launch, rotated), "rope");
     ggml_tensor* k = Place(memory, ggml_new_tensor_3d(c, GGML_TYPE_F32, kHead, kKvHeads, kRows),
                            Values(5, kKvWidth * kRows, 2.0f));
     ggml_tensor* fused_cache =
@@ -580,15 +580,15 @@ class GgmlOpsMemoryTest : public GgmlOpsTest {
     ggml_tensor* fused_rope = QwenRope(c, k, positions);  // never written
     ggml_tensor* fused_write = ggml_set_rows(
         c, fused_cache, ggml_view_2d(c, fused_rope, kKvWidth, kRows, fused_rope->nb[2], 0), slots);
-    Launched(jitllm::kernels::ggml::RopeSetRows(*launch, fused_rope, fused_write),
+    Launched(llmp::kernels::ggml::RopeSetRows(*launch, fused_rope, fused_write),
              "rope fused with set_rows");
     ggml_tensor* unfused_cache =
         Place(memory, ggml_new_tensor_2d(c, GGML_TYPE_F16, kKvWidth, 16), poison);
     ggml_tensor* k_rope = Place(memory, QwenRope(c, k, positions));
     ggml_tensor* unfused_write = ggml_set_rows(
         c, unfused_cache, ggml_view_2d(c, k_rope, kKvWidth, kRows, k_rope->nb[2], 0), slots);
-    Launched(jitllm::kernels::ggml::Rope(*launch, k_rope), "rope of K");
-    Launched(jitllm::kernels::ggml::SetRows(*launch, unfused_write), "set_rows of K");
+    Launched(llmp::kernels::ggml::Rope(*launch, k_rope), "rope of K");
+    Launched(llmp::kernels::ggml::SetRows(*launch, unfused_write), "set_rows of K");
 
     // soft_max over 256 and 768 cells, with a causal mask.
     ggml_tensor* probabilities = nullptr;
@@ -609,7 +609,7 @@ class GgmlOpsMemoryTest : public GgmlOpsTest {
       ggml_tensor* mask_tensor =
           Place(memory, ggml_new_tensor_2d(c, GGML_TYPE_F32, cells, kRows), mask);
       ggml_tensor* soft = Place(memory, ggml_soft_max_ext(c, scores, mask_tensor, kScale, 0.0f));
-      Launched(jitllm::kernels::ggml::SoftMax(*launch, soft), "soft_max");
+      Launched(llmp::kernels::ggml::SoftMax(*launch, soft), "soft_max");
       (cells == 256 ? probabilities : probabilities_wide) = soft;
     }
 
@@ -619,12 +619,12 @@ class GgmlOpsMemoryTest : public GgmlOpsTest {
                                Values(7, kHead * kRows * kHeads));
     ggml_tensor* merged =
         Place(memory, ggml_cont_2d(c, ggml_permute(c, heads, 0, 2, 1, 3), kWidth, kRows));
-    Launched(jitllm::kernels::ggml::Cont(*launch, merged), "cont");
+    Launched(llmp::kernels::ggml::Cont(*launch, merged), "cont");
     ggml_tensor* head_row = Place(memory, ggml_new_tensor_3d(c, GGML_TYPE_F32, kHead, 1, kHeads),
                                   Values(8, kHead * kHeads));
     ggml_tensor* merged_row =
         Place(memory, ggml_cont_2d(c, ggml_permute(c, head_row, 0, 2, 1, 3), kWidth, 1));
-    Launched(jitllm::kernels::ggml::Cont(*launch, merged_row), "cont of one row");
+    Launched(llmp::kernels::ggml::Cont(*launch, merged_row), "cont of one row");
 
     // SwiGLU.
     ggml_tensor* gate_in = Place(memory, ggml_new_tensor_2d(c, GGML_TYPE_F32, kFfn, kRows),
@@ -632,7 +632,7 @@ class GgmlOpsMemoryTest : public GgmlOpsTest {
     ggml_tensor* up_in = Place(memory, ggml_new_tensor_2d(c, GGML_TYPE_F32, kFfn, kRows),
                                Values(10, kFfn * kRows, 2.0f));
     ggml_tensor* glu = Place(memory, ggml_swiglu_split(c, gate_in, up_in));
-    Launched(jitllm::kernels::ggml::SwiGlu(*launch, glu), "swiglu");
+    Launched(llmp::kernels::ggml::SwiGlu(*launch, glu), "swiglu");
 
     // MMVF with a bias, fused and not.
     ggml_tensor* x =
@@ -643,11 +643,11 @@ class GgmlOpsMemoryTest : public GgmlOpsTest {
         Place(memory, ggml_new_tensor_1d(c, GGML_TYPE_F32, kWidth), Values(13, kWidth));
     ggml_tensor* product = ggml_mul_mat(c, w, x);  // never written
     ggml_tensor* biased = Place(memory, ggml_add(c, product, bias));
-    Launched(jitllm::kernels::ggml::MulMatVecBias(*launch, product, biased), "fused bias");
+    Launched(llmp::kernels::ggml::MulMatVecBias(*launch, product, biased), "fused bias");
     ggml_tensor* product_unfused = Place(memory, ggml_mul_mat(c, w, x));
     ggml_tensor* biased_unfused = Place(memory, ggml_add(c, product_unfused, bias));
-    Launched(jitllm::kernels::ggml::MulMatVecF(*launch, product_unfused), "MMVF");
-    Launched(jitllm::kernels::ggml::Add(*launch, biased_unfused), "add");
+    Launched(llmp::kernels::ggml::MulMatVecF(*launch, product_unfused), "MMVF");
+    Launched(llmp::kernels::ggml::Add(*launch, biased_unfused), "add");
 
     // MMVF with gate, up and SwiGLU, fused and not.
     ggml_tensor* w_gate = Place(memory, ggml_new_tensor_2d(c, GGML_TYPE_F16, kWidth, kFfn),
@@ -657,13 +657,13 @@ class GgmlOpsMemoryTest : public GgmlOpsTest {
     ggml_tensor* gate = ggml_mul_mat(c, w_gate, x);  // never written
     ggml_tensor* up = ggml_mul_mat(c, w_up, x);      // never written
     ggml_tensor* gated = Place(memory, ggml_swiglu_split(c, gate, up));
-    Launched(jitllm::kernels::ggml::MulMatVecGlu(*launch, gate, up, gated), "fused gate and up");
+    Launched(llmp::kernels::ggml::MulMatVecGlu(*launch, gate, up, gated), "fused gate and up");
     ggml_tensor* gate_unfused = Place(memory, ggml_mul_mat(c, w_gate, x));
     ggml_tensor* up_unfused = Place(memory, ggml_mul_mat(c, w_up, x));
     ggml_tensor* gated_unfused = Place(memory, ggml_swiglu_split(c, gate_unfused, up_unfused));
-    Launched(jitllm::kernels::ggml::MulMatVecF(*launch, gate_unfused), "MMVF gate");
-    Launched(jitllm::kernels::ggml::MulMatVecF(*launch, up_unfused), "MMVF up");
-    Launched(jitllm::kernels::ggml::SwiGlu(*launch, gated_unfused), "swiglu of the products");
+    Launched(llmp::kernels::ggml::MulMatVecF(*launch, gate_unfused), "MMVF gate");
+    Launched(llmp::kernels::ggml::MulMatVecF(*launch, up_unfused), "MMVF up");
+    Launched(llmp::kernels::ggml::SwiGlu(*launch, gated_unfused), "swiglu of the products");
     EXPECT_EQ(launch->scratch_peak(), Bytes(0));
     EXPECT_FALSE(launch->faulted());
 
@@ -916,8 +916,8 @@ class GgmlOpsPlanMatchTest : public GgmlOpsTest {
         EXPECT_EQ(got[i].bytes, want[i].bytes) << what;
         continue;
       }
-      EXPECT_EQ(jitllm::test_support::NormalizedKernelName(got[i].name),
-                jitllm::test_support::NormalizedKernelName(PlanKernel(want[i].id)))
+      EXPECT_EQ(llmp::test_support::NormalizedKernelName(got[i].name),
+                llmp::test_support::NormalizedKernelName(PlanKernel(want[i].id)))
           << what << ": kernel " << want[i].id;
       EXPECT_EQ(got[i].grid, want[i].grid) << what << ": kernel " << want[i].id;
       EXPECT_EQ(got[i].block, want[i].block) << what << ": kernel " << want[i].id;
@@ -955,7 +955,7 @@ TEST_F(GgmlOpsPlanMatchTest, PrefillAndDecodeOperationsLaunchAsRecorded) {
     ggml_tensor* hidden = At(ggml_new_tensor_2d(c, GGML_TYPE_F32, kWidth, n));
     ggml_tensor* out_ids = At(ggml_new_tensor_1d(c, GGML_TYPE_I32, n), Iota<std::int32_t>(n));
     ggml_tensor* picked = At(ggml_get_rows(c, hidden, out_ids));
-    Matches(Record([&] { Launched(jitllm::kernels::ggml::GetRows(*launch, picked), "get_rows"); }),
+    Matches(Record([&] { Launched(llmp::kernels::ggml::GetRows(*launch, picked), "get_rows"); }),
             {n == 512 ? PlanLaunch(7, {512, 1, 1}, {256, 1, 1})
                       : PlanLaunch(6, {U(n), 4, 1}, {256, 1, 1})},
             "get_rows, " + rows);
@@ -966,7 +966,7 @@ TEST_F(GgmlOpsPlanMatchTest, PrefillAndDecodeOperationsLaunchAsRecorded) {
     ggml_tensor* q =
         ggml_reshape_3d(c, At(ggml_new_tensor_2d(c, GGML_TYPE_F32, kWidth, n)), kHead, kHeads, n);
     ggml_tensor* q_rope = At(QwenRope(c, q, positions));
-    Matches(Record([&] { Launched(jitllm::kernels::ggml::Rope(*launch, q_rope), "rope"); }),
+    Matches(Record([&] { Launched(llmp::kernels::ggml::Rope(*launch, q_rope), "rope"); }),
             {PlanLaunch(25, {U(kHeads * n), 1, 1}, {1, 256, 1})}, "Q rope, " + rows);
     ggml_tensor* k = ggml_reshape_3d(c, At(ggml_new_tensor_2d(c, GGML_TYPE_F32, kKvWidth, n)),
                                      kHead, kKvHeads, n);
@@ -977,8 +977,8 @@ TEST_F(GgmlOpsPlanMatchTest, PrefillAndDecodeOperationsLaunchAsRecorded) {
         ggml_set_rows(c, k_cache, ggml_view_2d(c, k_rope, kKvWidth, n, k_rope->nb[2], 0), k_ids);
     const unsigned write_blocks = U(((kKvWidth * n) + 255) / 256);
     Matches(Record([&] {
-              Launched(jitllm::kernels::ggml::Rope(*launch, k_rope), "rope");
-              Launched(jitllm::kernels::ggml::SetRows(*launch, k_write), "set_rows");
+              Launched(llmp::kernels::ggml::Rope(*launch, k_rope), "rope");
+              Launched(llmp::kernels::ggml::SetRows(*launch, k_write), "set_rows");
             }),
             {PlanLaunch(25, {U(kKvHeads * n), 1, 1}, {1, 256, 1}),
              PlanLaunch(8, {write_blocks, 1, 1}, {256, 1, 1})},
@@ -987,7 +987,7 @@ TEST_F(GgmlOpsPlanMatchTest, PrefillAndDecodeOperationsLaunchAsRecorded) {
     ggml_tensor* fused_write = ggml_set_rows(
         c, k_cache, ggml_view_2d(c, fused_rope, kKvWidth, n, fused_rope->nb[2], 0), k_ids);
     Matches(Record([&] {
-              Launched(jitllm::kernels::ggml::RopeSetRows(*launch, fused_rope, fused_write),
+              Launched(llmp::kernels::ggml::RopeSetRows(*launch, fused_rope, fused_write),
                        "rope_set_rows");
             }),
             {PlanLaunch(24, {U(kKvHeads * n), 1, 1}, {1, 256, 1})},
@@ -999,7 +999,7 @@ TEST_F(GgmlOpsPlanMatchTest, PrefillAndDecodeOperationsLaunchAsRecorded) {
         At(ggml_new_tensor_1d(c, GGML_TYPE_I64, kKvWidth * n), Iota<std::int64_t>(kKvWidth * n));
     ggml_tensor* v_write =
         ggml_set_rows(c, ggml_reshape_2d(c, v_cache, 1, kCells * kKvWidth), v, v_ids);
-    Matches(Record([&] { Launched(jitllm::kernels::ggml::SetRows(*launch, v_write), "set_rows"); }),
+    Matches(Record([&] { Launched(llmp::kernels::ggml::SetRows(*launch, v_write), "set_rows"); }),
             {PlanLaunch(8, {write_blocks, 1, 1}, {256, 1, 1})}, "V write, " + rows);
 
     // soft_max over 256 cells (CF/CU 0 and 1, HF/HU 0-2) and 768 (HF/HU 3
@@ -1011,7 +1011,7 @@ TEST_F(GgmlOpsPlanMatchTest, PrefillAndDecodeOperationsLaunchAsRecorded) {
       ggml_tensor* scores = At(ggml_new_tensor_3d(c, GGML_TYPE_F32, cells, n, kHeads));
       ggml_tensor* mask = At(ggml_new_tensor_2d(c, GGML_TYPE_F32, cells, n));
       ggml_tensor* soft = At(ggml_soft_max_ext(c, scores, mask, kScale, 0.0f));
-      Matches(Record([&] { Launched(jitllm::kernels::ggml::SoftMax(*launch, soft), "soft_max"); }),
+      Matches(Record([&] { Launched(llmp::kernels::ggml::SoftMax(*launch, soft), "soft_max"); }),
               {cells == 256 ? PlanLaunch(27, {U(n), 14, 1}, {256, 1, 1}, 1152)
                             : PlanLaunch(26, {U(n), 14, 1}, {1024, 1, 1}, 3200)},
               "soft_max over " + std::to_string(cells) + " cells, " + rows);
@@ -1021,7 +1021,7 @@ TEST_F(GgmlOpsPlanMatchTest, PrefillAndDecodeOperationsLaunchAsRecorded) {
     // and 4), else the scalar kernel at [14n, 1, 1].
     ggml_tensor* kqv = At(ggml_new_tensor_3d(c, GGML_TYPE_F32, kHead, n, kHeads));
     ggml_tensor* merged = At(ggml_cont_2d(c, ggml_permute(c, kqv, 0, 2, 1, 3), kWidth, n));
-    Matches(Record([&] { Launched(jitllm::kernels::ggml::Cont(*launch, merged), "cont"); }),
+    Matches(Record([&] { Launched(llmp::kernels::ggml::Cont(*launch, merged), "cont"); }),
             {n == 1 ? PlanCopy(kWidth * sizeof(float))
                     : PlanLaunch(3, {U(kHeads * n), 1, 1}, {64, 1, 1})},
             "cont, " + rows);
@@ -1029,7 +1029,7 @@ TEST_F(GgmlOpsPlanMatchTest, PrefillAndDecodeOperationsLaunchAsRecorded) {
     // SwiGLU (prefill in every arm; decode unfused, CU 1 and HU 2 and 4).
     ggml_tensor* glu = At(ggml_swiglu_split(c, At(ggml_new_tensor_2d(c, GGML_TYPE_F32, kFfn, n)),
                                             At(ggml_new_tensor_2d(c, GGML_TYPE_F32, kFfn, n))));
-    Matches(Record([&] { Launched(jitllm::kernels::ggml::SwiGlu(*launch, glu), "swiglu"); }),
+    Matches(Record([&] { Launched(llmp::kernels::ggml::SwiGlu(*launch, glu), "swiglu"); }),
             {PlanLaunch(28, {U(((kFfn * n) + 255) / 256), 1, 1}, {256, 1, 1})}, "swiglu, " + rows);
     Finish();
   }
@@ -1066,14 +1066,14 @@ TEST_F(GgmlOpsPlanMatchTest, DecodeProductsLaunchAsRecordedFusedAndNot) {
   ggml_tensor* up = ggml_mul_mat(c, w_up, x);
   ggml_tensor* glu = At(ggml_swiglu_split(c, gate, up));
   for (ggml_tensor* product : {q, k, down, gate, up}) {
-    EXPECT_TRUE(jitllm::kernels::ggml::MulMatVecFusible(*launch, product));
+    EXPECT_TRUE(llmp::kernels::ggml::MulMatVecFusible(*launch, product));
   }
   Matches(
       Record([&] {
-        Launched(jitllm::kernels::ggml::MulMatVecBias(*launch, q, q_biased), "Q");
-        Launched(jitllm::kernels::ggml::MulMatVecBias(*launch, k, k_biased), "K");
-        Launched(jitllm::kernels::ggml::MulMatVecBias(*launch, down, out), "down");
-        Launched(jitllm::kernels::ggml::MulMatVecGlu(*launch, gate, up, glu), "gate and up");
+        Launched(llmp::kernels::ggml::MulMatVecBias(*launch, q, q_biased), "Q");
+        Launched(llmp::kernels::ggml::MulMatVecBias(*launch, k, k_biased), "K");
+        Launched(llmp::kernels::ggml::MulMatVecBias(*launch, down, out), "down");
+        Launched(llmp::kernels::ggml::MulMatVecGlu(*launch, gate, up, glu), "gate and up");
       }),
       {PlanLaunch(17, {896, 1, 1}, {224, 1, 1}, 256), PlanLaunch(17, {128, 1, 1}, {224, 1, 1}, 256),
        PlanLaunch(19, {896, 1, 1}, {256, 1, 1}, 256),
@@ -1088,11 +1088,11 @@ TEST_F(GgmlOpsPlanMatchTest, DecodeProductsLaunchAsRecordedFusedAndNot) {
   ggml_tensor* gate_written = At(ggml_mul_mat(c, w_gate, x));
   Matches(
       Record([&] {
-        Launched(jitllm::kernels::ggml::MulMatVecF(*launch, q_written), "Q");
-        Launched(jitllm::kernels::ggml::Add(*launch, q_added), "bias");
-        Launched(jitllm::kernels::ggml::MulMatVecF(*launch, k_written), "K");
-        Launched(jitllm::kernels::ggml::MulMatVecF(*launch, down_written), "down");
-        Launched(jitllm::kernels::ggml::MulMatVecF(*launch, gate_written), "gate");
+        Launched(llmp::kernels::ggml::MulMatVecF(*launch, q_written), "Q");
+        Launched(llmp::kernels::ggml::Add(*launch, q_added), "bias");
+        Launched(llmp::kernels::ggml::MulMatVecF(*launch, k_written), "K");
+        Launched(llmp::kernels::ggml::MulMatVecF(*launch, down_written), "down");
+        Launched(llmp::kernels::ggml::MulMatVecF(*launch, gate_written), "gate");
       }),
       {PlanLaunch(16, {896, 1, 1}, {224, 1, 1}, 128), PlanLaunch(4, {4, 1, 1}, {128, 1, 1}),
        PlanLaunch(16, {128, 1, 1}, {224, 1, 1}, 128), PlanLaunch(18, {896, 1, 1}, {256, 1, 1}, 128),
@@ -1103,9 +1103,9 @@ TEST_F(GgmlOpsPlanMatchTest, DecodeProductsLaunchAsRecordedFusedAndNot) {
   // so does the fused implementation.
   ggml_tensor* two = At(ggml_new_tensor_2d(c, GGML_TYPE_F32, kWidth, 2));
   ggml_tensor* q2 = ggml_mul_mat(c, wq, two);
-  EXPECT_FALSE(jitllm::kernels::ggml::MulMatVecFusible(*launch, q2));
+  EXPECT_FALSE(llmp::kernels::ggml::MulMatVecFusible(*launch, q2));
   EXPECT_EQ(
-      FailedCode(jitllm::kernels::ggml::MulMatVecBias(
+      FailedCode(llmp::kernels::ggml::MulMatVecBias(
           *launch, q2, At(ggml_add(c, q2, At(ggml_new_tensor_2d(c, GGML_TYPE_F32, kWidth, 2)))))),
       KernelError::kRejected);
   EXPECT_FALSE(launch->faulted());
@@ -1120,7 +1120,7 @@ TEST_F(GgmlOpsPlanMatchTest, DecodeProductsLaunchAsRecordedFusedAndNot) {
 // that an nsys trace of this test alone lines up with it (plan_compare.py
 // --nsys).
 TEST_F(GgmlOpsPlanMatchTest, DecodeStepStartRecordsAsTheSample) {
-  jitllm::test_support::Recording recording;
+  llmp::test_support::Recording recording;
   auto launch = Launcher();
   auto arena = TensorArena::Create(64).value();
   ggml_context* c = arena.context();
@@ -1150,13 +1150,13 @@ TEST_F(GgmlOpsPlanMatchTest, DecodeStepStartRecordsAsTheSample) {
   ggml_tensor* v_write = ggml_set_rows(c, ggml_reshape_2d(c, v_cache, 1, kCells * kKvWidth),
                                        ggml_reshape_2d(c, v_biased, 1, kKvWidth), v_ids);
   const std::vector<Event> uploads = recording.Take();
-  Launched(jitllm::kernels::ggml::RmsNormMul(*launch, norm, normed), "attention norm");
-  Launched(jitllm::kernels::ggml::MulMatVecBias(*launch, q, q_biased), "Q");
-  Launched(jitllm::kernels::ggml::Rope(*launch, q_rope), "Q's RoPE");
-  Launched(jitllm::kernels::ggml::MulMatVecBias(*launch, k, k_biased), "K");
-  Launched(jitllm::kernels::ggml::MulMatVecBias(*launch, v, v_biased), "V");
-  Launched(jitllm::kernels::ggml::RopeSetRows(*launch, k_rope, k_write), "K's RoPE and write");
-  Launched(jitllm::kernels::ggml::SetRows(*launch, v_write), "V's write");
+  Launched(llmp::kernels::ggml::RmsNormMul(*launch, norm, normed), "attention norm");
+  Launched(llmp::kernels::ggml::MulMatVecBias(*launch, q, q_biased), "Q");
+  Launched(llmp::kernels::ggml::Rope(*launch, q_rope), "Q's RoPE");
+  Launched(llmp::kernels::ggml::MulMatVecBias(*launch, k, k_biased), "K");
+  Launched(llmp::kernels::ggml::MulMatVecBias(*launch, v, v_biased), "V");
+  Launched(llmp::kernels::ggml::RopeSetRows(*launch, k_rope, k_write), "K's RoPE and write");
+  Launched(llmp::kernels::ggml::SetRows(*launch, v_write), "V's write");
   std::vector<Event> events = recording.Take();
   Finish();
   EXPECT_FALSE(launch->faulted());
@@ -1169,24 +1169,24 @@ TEST_F(GgmlOpsPlanMatchTest, DecodeStepStartRecordsAsTheSample) {
     EXPECT_EQ(upload.kind, EventKind::kCopy);
     EXPECT_EQ(upload.api, "driver");
     EXPECT_EQ(upload.stream, native);
-    outside += jitllm::test_support::EventLine(upload);
+    outside += llmp::test_support::EventLine(upload);
   }
-  std::string lines = jitllm::test_support::ChunkLine(
-      jitllm::test_support::Chunk{.evaluation = 1, .chunk = 1, .rows = 1, .n_past = 32});
+  std::string lines = llmp::test_support::ChunkLine(
+      llmp::test_support::Chunk{.evaluation = 1, .chunk = 1, .rows = 1, .n_past = 32});
   for (Event& event : events) {
     EXPECT_EQ(event.stream, native) << event.name;
     event.stream = reinterpret_cast<const void*>(0x10);  // NOLINT(performance-no-int-to-ptr)
-    lines += jitllm::test_support::EventLine(event);
+    lines += llmp::test_support::EventLine(event);
   }
-  lines += jitllm::test_support::EndChunkLine();
-  const std::string_view sample = jitllm::test_support::PlanRecordSample();
+  lines += llmp::test_support::EndChunkLine();
+  const std::string_view sample = llmp::test_support::PlanRecordSample();
   EXPECT_EQ(lines, sample.substr(sample.find('\n') + 1));
 
   // For plan_compare.py by hand: the recording with this build's libraries.
-  if (const char* out = std::getenv("JITLLM_TEST_PLAN_RECORD")) {  // NOLINT(concurrency-mt-unsafe)
+  if (const char* out = std::getenv("LLMP_TEST_PLAN_RECORD")) {  // NOLINT(concurrency-mt-unsafe)
     std::ofstream file(out);
-    file << jitllm::test_support::HeaderLine("ggml_ops_test: the decode step's first launches",
-                                             jitllm::test_support::LoadedCublas())
+    file << llmp::test_support::HeaderLine("ggml_ops_test: the decode step's first launches",
+                                           llmp::test_support::LoadedCublas())
          << outside << lines;
     EXPECT_TRUE(file.good()) << out;
   }
@@ -1195,10 +1195,10 @@ TEST_F(GgmlOpsPlanMatchTest, DecodeStepStartRecordsAsTheSample) {
 // The registry declares every new implementation, binds it by identity and
 // runs it over its nodes (D-053); a stale or foreign declaration binds none.
 TEST_F(GgmlOpsTest, TheRegistryDeclaresBindsAndRunsEveryNewImplementation) {
-  using jitllm::execution::Operation;
-  const std::vector<jitllm::execution::Implementation> declared =
-      jitllm::kernels::ggml::Implementations();
-  const auto registry = jitllm::execution::Registry::Create(declared).value();
+  using llmp::execution::Operation;
+  const std::vector<llmp::execution::Implementation> declared =
+      llmp::kernels::ggml::Implementations();
+  const auto registry = llmp::execution::Registry::Create(declared).value();
   const std::array<std::pair<const char*, Operation>, 9> expected = {{
       {"ggml.get_rows", Operation::kGetRows},
       {"ggml.set_rows", Operation::kSetRows},
@@ -1214,27 +1214,26 @@ TEST_F(GgmlOpsTest, TheRegistryDeclaresBindsAndRunsEveryNewImplementation) {
     const std::size_t index = registry.Find(name).value_or(registry.size());
     ASSERT_LT(index, registry.size()) << name;
     EXPECT_EQ(registry.at(index).operation, operation) << name;
-    const std::vector<jitllm::execution::Choice> choices = {
+    const std::vector<llmp::execution::Choice> choices = {
         {.operation = operation, .implementation = name}};
-    const auto plan = jitllm::execution::Plan::Build(registry, choices).value();
-    const auto bound = jitllm::execution::Resolve(registry, plan).value();
-    const auto kernel = jitllm::kernels::ggml::Kernel::Bind(bound.at(0));
+    const auto plan = llmp::execution::Plan::Build(registry, choices).value();
+    const auto bound = llmp::execution::Resolve(registry, plan).value();
+    const auto kernel = llmp::kernels::ggml::Kernel::Bind(bound.at(0));
     ASSERT_TRUE(kernel.has_value()) << name;
     EXPECT_EQ(kernel->name(), name);
     EXPECT_EQ(kernel->operation(), operation);
   }
   // RMSNorm-mul's declarations are RmsNormMulKernel's, not Kernel's.
-  EXPECT_FALSE(jitllm::kernels::ggml::Kernel::Bind(declared[0]).has_value());
+  EXPECT_FALSE(llmp::kernels::ggml::Kernel::Bind(declared[0]).has_value());
   // A declaration from a build with another module digest binds nothing.
-  jitllm::execution::Implementation stale = declared.back();
-  stale.revision = "ggml tree 0; jitllm module 0";
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::Kernel::Bind(stale)), KernelError::kRejected);
+  llmp::execution::Implementation stale = declared.back();
+  stale.revision = "ggml tree 0; llmp module 0";
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::Kernel::Bind(stale)), KernelError::kRejected);
 
   // A bound kernel runs its operation over its nodes, as the operation
   // does, and refuses the wrong number of nodes before any launch.
   const auto swiglu =
-      jitllm::kernels::ggml::Kernel::Bind(declared[registry.Find("ggml.swiglu").value_or(0)])
-          .value();
+      llmp::kernels::ggml::Kernel::Bind(declared[registry.Find("ggml.swiglu").value_or(0)]).value();
   EXPECT_EQ(swiglu.arity(), 1U);
   auto arena = TensorArena::Create(8).value();
   ggml_context* c = arena.context();
@@ -1248,7 +1247,7 @@ TEST_F(GgmlOpsTest, TheRegistryDeclaresBindsAndRunsEveryNewImplementation) {
   const std::array<ggml_tensor*, 1> nodes = {by_kernel};
   EXPECT_TRUE(swiglu.Check(std::span<const ggml_tensor* const>(nodes.data(), 1)).has_value());
   Launched(swiglu.Run(*launch, nodes), "swiglu by kernel");
-  Launched(jitllm::kernels::ggml::SwiGlu(*launch, direct), "swiglu");
+  Launched(llmp::kernels::ggml::SwiGlu(*launch, direct), "swiglu");
   EXPECT_EQ(Bits(Download(by_kernel)), Bits(Download(direct)));
   const std::array<ggml_tensor*, 2> two = {by_kernel, direct};
   EXPECT_EQ(FailedCode(swiglu.Run(*launch, two)), KernelError::kRejected);
@@ -1261,7 +1260,7 @@ double GemmaGelu(double x) {
 }
 
 TEST_F(GgmlOpsTest, GemmaGeGluMatchesTanhGeluAcrossRowsViewsAndMemoryDomains) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   const std::array<float, 14> values{0.0f,
                                      -0.0f,
                                      1e-8f,
@@ -1335,7 +1334,7 @@ TEST_F(GgmlOpsTest, GemmaGeGluMatchesTanhGeluAcrossRowsViewsAndMemoryDomains) {
 }
 
 TEST_F(GgmlOpsTest, GemmaGeluUnaryAndRegistryUseTheTanhPrimitive) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   auto arena = TensorArena::Create(16).value();
   auto* c = arena.context();
   auto launch = Launcher();
@@ -1362,13 +1361,13 @@ TEST_F(GgmlOpsTest, GemmaGeluUnaryAndRegistryUseTheTanhPrimitive) {
   auto* up = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F32, 2112, 4),
                    Values(88, input.size()));
   auto* glu = Place(Memory::kDeviceVmm, ggml_geglu_split(c, x, up));
-  const auto registry = jitllm::execution::Registry::Create(kg::Implementations()).value();
+  const auto registry = llmp::execution::Registry::Create(kg::Implementations()).value();
   const auto ix = registry.Find("ggml.geglu");
   ASSERT_TRUE(ix);
-  const std::array<jitllm::execution::Choice, 1> choices{
-      {{.operation = jitllm::execution::Operation::kGeGlu, .implementation = "ggml.geglu"}}};
-  const auto plan = jitllm::execution::Plan::Build(registry, choices).value();
-  const auto bound = jitllm::execution::Resolve(registry, plan).value();
+  const std::array<llmp::execution::Choice, 1> choices{
+      {{.operation = llmp::execution::Operation::kGeGlu, .implementation = "ggml.geglu"}}};
+  const auto plan = llmp::execution::Plan::Build(registry, choices).value();
+  const auto bound = llmp::execution::Resolve(registry, plan).value();
   auto kernel = kg::Kernel::Bind(bound.at(0)).value();
   const std::array<ggml_tensor*, 1> nodes{glu};
   Launched(kernel.Run(*launch, nodes), "GeGLU registry");
@@ -1381,7 +1380,7 @@ TEST_F(GgmlOpsTest, GemmaGeluUnaryAndRegistryUseTheTanhPrimitive) {
 }
 
 TEST_F(GgmlOpsTest, GemmaFloatingGeGluFusionMatchesItsPrimitiveFallbackAndRefusesBatchFusion) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   auto arena = TensorArena::Create(48).value();
   auto* c = arena.context();
   auto launch = Launcher();
@@ -1438,8 +1437,8 @@ TEST_F(GgmlOpsTest, GemmaFloatingGeGluFusionMatchesItsPrimitiveFallbackAndRefuse
       };
       if (rows == 4) {
         EXPECT_EQ(FailedCode(kg::MulMatVecGeGlu(*launch, gate, up, glu)), KernelError::kRejected);
-        if (std::getenv("JITLLM_GEMMA_ACTIVATION_TIMING") != nullptr &&
-            (width == 704 || std::getenv("JITLLM_GEMMA_ACTIVATION_TIMING_N704_ONLY") == nullptr)) {
+        if (std::getenv("LLMP_GEMMA_ACTIVATION_TIMING") != nullptr &&
+            (width == 704 || std::getenv("LLMP_GEMMA_ACTIVATION_TIMING_N704_ONLY") == nullptr)) {
           const auto a1 = measure(false), a2 = measure(false);
           std::cout << "GEMMA_GEGLU_FLOAT k=2816 n=" << width << " rows=4 fallback1_us=" << a1
                     << " fallback2_us=" << a2 << " fused=unsupported\n";
@@ -1451,18 +1450,18 @@ TEST_F(GgmlOpsTest, GemmaFloatingGeGluFusionMatchesItsPrimitiveFallbackAndRefuse
       const auto got = Download(glu);
       std::vector<double> reference(want.begin(), want.end());
       ExpectClose(got, reference, 3e-6, "fused versus primitive GeGLU");
-      const auto registry = jitllm::execution::Registry::Create(kg::Implementations()).value();
-      const std::array<jitllm::execution::Choice, 1> choices{
-          {{.operation = jitllm::execution::Operation::kMulMatGeGlu,
+      const auto registry = llmp::execution::Registry::Create(kg::Implementations()).value();
+      const std::array<llmp::execution::Choice, 1> choices{
+          {{.operation = llmp::execution::Operation::kMulMatGeGlu,
             .implementation = "ggml.mul_mat_geglu.mmvf_fused"}}};
-      const auto plan = jitllm::execution::Plan::Build(registry, choices).value();
-      const auto bound = jitllm::execution::Resolve(registry, plan).value();
+      const auto plan = llmp::execution::Plan::Build(registry, choices).value();
+      const auto bound = llmp::execution::Resolve(registry, plan).value();
       auto kernel = kg::Kernel::Bind(bound.at(0)).value();
       const std::array<ggml_tensor*, 3> nodes{gate, up, glu};
       Launched(kernel.Run(*launch, nodes), "fused GeGLU registry");
       EXPECT_EQ(Bits(Download(glu)), Bits(got));
-      if (std::getenv("JITLLM_GEMMA_ACTIVATION_TIMING") != nullptr &&
-          (width == 704 || std::getenv("JITLLM_GEMMA_ACTIVATION_TIMING_N704_ONLY") == nullptr)) {
+      if (std::getenv("LLMP_GEMMA_ACTIVATION_TIMING") != nullptr &&
+          (width == 704 || std::getenv("LLMP_GEMMA_ACTIVATION_TIMING_N704_ONLY") == nullptr)) {
         // Include both products and the activation; inputs/weights stay resident.
         const auto a1 = measure(false), b = measure(true), a2 = measure(false);
         std::cout << "GEMMA_GEGLU_FLOAT k=2816 n=" << width << " rows=1 fallback1_us=" << a1
@@ -1473,7 +1472,7 @@ TEST_F(GgmlOpsTest, GemmaFloatingGeGluFusionMatchesItsPrimitiveFallbackAndRefuse
 }
 
 TEST_F(GgmlOpsTest, GemmaAdversarialOddRowsAndUpOverwritePreserveEveryElement) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   auto arena = TensorArena::Create(32).value();
   auto* c = arena.context();
   auto launch = Launcher();
@@ -1534,7 +1533,7 @@ TEST_F(GgmlOpsTest, GemmaAdversarialOddRowsAndUpOverwritePreserveEveryElement) {
 }
 
 TEST_F(GgmlOpsTest, GemmaAdversarialRefusalsSubmitNoGpuWorkOrOutputWrites) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   auto arena = TensorArena::Create(32).value();
   auto* c = arena.context();
   auto launch = Launcher();
@@ -1590,14 +1589,14 @@ TEST_F(GgmlOpsTest, GemmaAdversarialRefusalsSubmitNoGpuWorkOrOutputWrites) {
   });
   EXPECT_TRUE(precision_events.empty());
   EXPECT_FALSE(launch->faulted());
-  const auto registry = jitllm::execution::Registry::Create(kg::Implementations()).value();
-  const std::array<jitllm::execution::Choice, 1> wrong{
-      {{.operation = jitllm::execution::Operation::kSwiGlu, .implementation = "ggml.geglu"}}};
-  EXPECT_FALSE(jitllm::execution::Plan::Build(registry, wrong));
+  const auto registry = llmp::execution::Registry::Create(kg::Implementations()).value();
+  const std::array<llmp::execution::Choice, 1> wrong{
+      {{.operation = llmp::execution::Operation::kSwiGlu, .implementation = "ggml.geglu"}}};
+  EXPECT_FALSE(llmp::execution::Plan::Build(registry, wrong));
 }
 
 TEST_F(GgmlOpsTest, GemmaAdversarialF32AndBf16FusionPreserveBroadcastChannels) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   auto arena = TensorArena::Create(32).value();
   auto* c = arena.context();
   auto launch = Launcher();

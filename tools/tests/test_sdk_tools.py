@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the SDK tools' pure logic (no downloads, builds or SDK needed).
 
@@ -28,7 +28,7 @@ from unittest import mock
 sys.dont_write_bytecode = True
 TOOLS = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
-import jitllm_sdk as sdklib  # noqa: E402
+import llmp_sdk as sdklib  # noqa: E402
 
 
 def load_script(name: str):
@@ -188,21 +188,21 @@ class Provenance(unittest.TestCase):
 
 
 class Roots(unittest.TestCase):
-    SPEC = {"env": "JITLLM_TEST_HOME", "xdg": "JITLLM_TEST_XDG", "default": "~/.local/share", "suffix": "jitllm/sdk"}
+    SPEC = {"env": "LLMP_TEST_HOME", "xdg": "LLMP_TEST_XDG", "default": "~/.local/share", "suffix": "llmp/sdk"}
 
     def test_override_then_xdg_then_default(self):
-        with mock.patch.dict(os.environ, {"JITLLM_TEST_HOME": "/opt/sdk", "JITLLM_TEST_XDG": "/x"}):
+        with mock.patch.dict(os.environ, {"LLMP_TEST_HOME": "/opt/sdk", "LLMP_TEST_XDG": "/x"}):
             self.assertEqual(sdklib.resolve_root(self.SPEC), pathlib.Path("/opt/sdk"))
-        with mock.patch.dict(os.environ, {"JITLLM_TEST_XDG": "/x"}):
-            os.environ.pop("JITLLM_TEST_HOME", None)
-            self.assertEqual(sdklib.resolve_root(self.SPEC), pathlib.Path("/x/jitllm/sdk"))
+        with mock.patch.dict(os.environ, {"LLMP_TEST_XDG": "/x"}):
+            os.environ.pop("LLMP_TEST_HOME", None)
+            self.assertEqual(sdklib.resolve_root(self.SPEC), pathlib.Path("/x/llmp/sdk"))
         with mock.patch.dict(os.environ, {"HOME": "/home/u"}):
-            os.environ.pop("JITLLM_TEST_HOME", None)
-            os.environ.pop("JITLLM_TEST_XDG", None)
-            self.assertEqual(sdklib.resolve_root(self.SPEC), pathlib.Path("/home/u/.local/share/jitllm/sdk"))
+            os.environ.pop("LLMP_TEST_HOME", None)
+            os.environ.pop("LLMP_TEST_XDG", None)
+            self.assertEqual(sdklib.resolve_root(self.SPEC), pathlib.Path("/home/u/.local/share/llmp/sdk"))
 
     def test_relative_override_is_rejected(self):
-        with mock.patch.dict(os.environ, {"JITLLM_TEST_HOME": "relative/dir"}):
+        with mock.patch.dict(os.environ, {"LLMP_TEST_HOME": "relative/dir"}):
             with self.assertRaises(sdklib.SdkError):
                 sdklib.resolve_root(self.SPEC)
 

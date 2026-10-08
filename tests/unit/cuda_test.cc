@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The CUDA provider's device probe: its judgment of what the driver
@@ -21,16 +21,16 @@
 
 namespace {
 
-using jitllm::providers::cuda::CudaDeviceFacts;
-using jitllm::providers::cuda::CudaFacts;
-using jitllm::providers::cuda::CudaGranularity;
+using llmp::providers::cuda::CudaDeviceFacts;
+using llmp::providers::cuda::CudaFacts;
+using llmp::providers::cuda::CudaGranularity;
 using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
 
 constexpr std::uint64_t kTwoMiB = 2 << 20;
 
-std::optional<std::string> Value(const jitllm::base::Report& report, std::string_view title,
+std::optional<std::string> Value(const llmp::base::Report& report, std::string_view title,
                                  std::string_view key) {
   for (const auto& section : report.sections) {
     if (section.title != title) {
@@ -104,14 +104,14 @@ CudaFacts WorkstationFacts() {
   return facts;
 }
 
-jitllm::base::Report Describe(const CudaFacts& facts) {
-  jitllm::base::Report report;
-  jitllm::providers::cuda::DescribeCuda(facts, report);
+llmp::base::Report Describe(const CudaFacts& facts) {
+  llmp::base::Report report;
+  llmp::providers::cuda::DescribeCuda(facts, report);
   return report;
 }
 
 TEST(CudaArchitectures, Parse) {
-  using jitllm::providers::cuda::ParseCudaArchitectures;
+  using llmp::providers::cuda::ParseCudaArchitectures;
   EXPECT_THAT(ParseCudaArchitectures("121-real"), ElementsAre(121));
   EXPECT_THAT(ParseCudaArchitectures("121-real,90-virtual,86"), ElementsAre(121, 86));
   EXPECT_THAT(ParseCudaArchitectures("121-virtual"), IsEmpty());
@@ -121,14 +121,14 @@ TEST(CudaArchitectures, Parse) {
 }
 
 TEST(CudaVersion, Text) {
-  using jitllm::providers::cuda::CudaVersionText;
+  using llmp::providers::cuda::CudaVersionText;
   EXPECT_EQ(CudaVersionText(13040), "13.4");
   EXPECT_EQ(CudaVersionText(13000), "13.0");
   EXPECT_EQ(CudaVersionText(12090), "12.9");
 }
 
 TEST(DescribeCuda, Spark) {
-  const jitllm::base::Report report = Describe(SparkFacts());
+  const llmp::base::Report report = Describe(SparkFacts());
   EXPECT_THAT(report.problems, IsEmpty());
   EXPECT_THAT(report.warnings, IsEmpty());
   EXPECT_EQ(Value(report, "NVIDIA driver", "kernel module"), "580.178.04");
@@ -154,7 +154,7 @@ TEST(DescribeCuda, Spark) {
 // A discrete GPU the build targets is judged as a GB10 is: VMM, both
 // backing classes and the compute mode (D-082).
 TEST(DescribeCuda, Workstation) {
-  const jitllm::base::Report report = Describe(WorkstationFacts());
+  const llmp::base::Report report = Describe(WorkstationFacts());
   EXPECT_THAT(report.problems, IsEmpty());
   EXPECT_THAT(report.warnings, IsEmpty());
   EXPECT_EQ(Value(report, "NVIDIA driver", "GPU code (this build)"), "sm_121, sm_86");
@@ -171,7 +171,7 @@ TEST(DescribeCuda, Workstation) {
   facts.devices[0].vmm = false;
   facts.devices[0].device_local.reset();
   EXPECT_THAT(Describe(facts).problems,
-              ElementsAre("GPU 0 does not report CUDA virtual memory management, which jitLLM "
+              ElementsAre("GPU 0 does not report CUDA virtual memory management, which llmpalooza "
                           "requires (D-006)"));
   facts = WorkstationFacts();
   facts.devices[0].host_numa_vmm = false;
@@ -186,7 +186,7 @@ TEST(DescribeCuda, Workstation) {
   EXPECT_THAT(Describe(facts).problems[0], HasSubstr("GPU 0: device-local VMM backing: "));
 }
 
-// jitLLM uses GPU 0 only (D-082): another GPU, even one the build has code
+// Llmpalooza uses GPU 0 only (D-082): another GPU, even one the build has code
 // for, is reported but not judged, and a host with more than one is warned.
 TEST(DescribeCuda, OnlyGpu0IsUsed) {
   CudaFacts facts = WorkstationFacts();
@@ -195,14 +195,14 @@ TEST(DescribeCuda, OnlyGpu0IsUsed) {
   facts.devices[1].host_numa_vmm = false;
   facts.devices[1].host_numa.reset();
   facts.device_count = 2;
-  const jitllm::base::Report report = Describe(facts);
+  const llmp::base::Report report = Describe(facts);
   const std::string_view other = "GPU 1: NVIDIA GeForce RTX 3080 Ti";
   EXPECT_EQ(Value(report, other, "compute capability"), "8.6 (sm_86)");
-  EXPECT_EQ(Value(report, other, "use"), "none: jitLLM uses GPU 0 only (D-082)");
+  EXPECT_EQ(Value(report, other, "use"), "none: llmpalooza uses GPU 0 only (D-082)");
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "use"), std::nullopt);
   EXPECT_THAT(report.problems, IsEmpty());
   EXPECT_THAT(report.warnings,
-              ElementsAre("the CUDA driver reports 2 GPUs; jitLLM uses only GPU 0, which "
+              ElementsAre("the CUDA driver reports 2 GPUs; llmpalooza uses only GPU 0, which "
                           "CUDA_VISIBLE_DEVICES selects (D-082)"));
 }
 
@@ -214,7 +214,7 @@ TEST(DescribeCuda, Gpu0MustBeTargeted) {
   facts.devices = {Rtx3080Ti(), gb10};
   facts.device_count = 2;
   EXPECT_THAT(Describe(facts).problems,
-              ElementsAre("GPU 0 is not one this build has code for (sm_121), and jitLLM uses "
+              ElementsAre("GPU 0 is not one this build has code for (sm_121), and llmpalooza uses "
                           "only GPU 0: select one it has code for with CUDA_VISIBLE_DEVICES "
                           "(D-082)"));
 }
@@ -222,9 +222,9 @@ TEST(DescribeCuda, Gpu0MustBeTargeted) {
 // The code for each architecture assumes its class of memory: sm_121 the
 // GB10's unified budget, anything else a discrete GPU's own.
 TEST(DescribeCuda, ClassMustMatchTheTargetedArchitecture) {
-  using jitllm::providers::cuda::CudaDeviceClass;
-  using jitllm::providers::cuda::DeviceClassOf;
-  using jitllm::providers::cuda::TargetClass;
+  using llmp::providers::cuda::CudaDeviceClass;
+  using llmp::providers::cuda::DeviceClassOf;
+  using llmp::providers::cuda::TargetClass;
   EXPECT_EQ(TargetClass(121), CudaDeviceClass::kUnified);
   EXPECT_EQ(TargetClass(86), CudaDeviceClass::kDiscrete);
   EXPECT_EQ(TargetClass(120), CudaDeviceClass::kDiscrete);
@@ -233,7 +233,7 @@ TEST(DescribeCuda, ClassMustMatchTheTargetedArchitecture) {
 
   CudaFacts facts = SparkFacts();
   facts.devices[0].integrated = false;
-  jitllm::base::Report report = Describe(facts);
+  llmp::base::Report report = Describe(facts);
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "class"), "discrete (its own device memory)");
   EXPECT_THAT(report.problems,
               ElementsAre("GPU 0 is sm_121 but discrete, and this build's sm_121 code is for the "
@@ -298,7 +298,7 @@ TEST(DescribeCuda, NoDevices) {
 TEST(DescribeCuda, NoTargetedDevice) {
   CudaFacts facts = SparkFacts();
   facts.devices = {Rtx3080Ti()};
-  const jitllm::base::Report report = Describe(facts);
+  const llmp::base::Report report = Describe(facts);
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GeForce RTX 3080 Ti", "compute capability"),
             "8.6 (sm_86, which this build has no code for)");
   EXPECT_THAT(report.problems, ElementsAre("no GPU here is one this build has code for (sm_121)"));
@@ -315,7 +315,7 @@ TEST(DescribeCuda, UntargetedDevicesAreNotJudged) {
   other.host_numa.reset();
   facts.devices.push_back(other);
   facts.device_count = 2;
-  const jitllm::base::Report report = Describe(facts);
+  const llmp::base::Report report = Describe(facts);
   EXPECT_EQ(Value(report, "GPU 1: NVIDIA GeForce RTX 3080 Ti", "virtual memory management"),
             "not supported");
   EXPECT_THAT(report.problems, IsEmpty());
@@ -327,7 +327,7 @@ TEST(DescribeCuda, NoVmm) {
   facts.devices[0].vmm = false;
   facts.devices[0].device_local.reset();
   EXPECT_THAT(Describe(facts).problems,
-              ElementsAre("GPU 0 does not report CUDA virtual memory management, which jitLLM "
+              ElementsAre("GPU 0 does not report CUDA virtual memory management, which llmpalooza "
                           "requires (D-006)"));
   facts.devices[0].vmm.reset();
   EXPECT_EQ(Value(Describe(facts), "GPU 0: NVIDIA GB10", "virtual memory management"), "unknown");
@@ -337,7 +337,7 @@ TEST(DescribeCuda, NoVmm) {
 TEST(DescribeCuda, DeviceGranularityFailed) {
   CudaFacts facts = SparkFacts();
   facts.devices[0].device_local = CudaGranularity{.minimum = 0, .recommended = 0, .error = "x"};
-  const jitllm::base::Report report = Describe(facts);
+  const llmp::base::Report report = Describe(facts);
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "device-local backing"), "unknown: x");
   EXPECT_THAT(report.problems, ElementsAre("GPU 0: device-local VMM backing: x"));
 }
@@ -346,7 +346,7 @@ TEST(DescribeCuda, NoHostBacking) {
   CudaFacts facts = SparkFacts();
   facts.devices[0].host_numa_vmm = false;
   facts.devices[0].host_numa.reset();
-  jitllm::base::Report report = Describe(facts);
+  llmp::base::Report report = Describe(facts);
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "host NUMA node 0 backing"), "not supported");
   EXPECT_THAT(report.warnings, IsEmpty());
   EXPECT_THAT(report.problems,
@@ -382,7 +382,7 @@ TEST(DescribeCuda, HostBackingUnknown) {
   facts.devices[0].host_numa_vmm.reset();
   facts.devices[0].host_numa_id.reset();
   facts.devices[0].host_numa.reset();
-  const jitllm::base::Report report = Describe(facts);
+  const llmp::base::Report report = Describe(facts);
   EXPECT_EQ(Value(report, "GPU 0: NVIDIA GB10", "host NUMA backing"), "unknown");
   ASSERT_EQ(report.problems.size(), 1U);
   EXPECT_THAT(report.problems[0], HasSubstr("(support is unknown)"));
@@ -399,7 +399,7 @@ TEST(DescribeCuda, GranularityCannotBackPagingChunks) {
     facts.devices[0].device_local =
         CudaGranularity{.minimum = minimum, .recommended = recommended, .error = ""};
     facts.devices[0].host_numa = facts.devices[0].device_local;
-    const jitllm::base::Report report = Describe(facts);
+    const llmp::base::Report report = Describe(facts);
     // One problem for each backing class.
     ASSERT_EQ(report.problems.size(), 2U) << minimum;
     EXPECT_THAT(report.problems[0], HasSubstr("GPU 0: device-local VMM backing: a minimum of "));
@@ -416,7 +416,7 @@ TEST(DescribeCuda, GranularityCannotBackPagingChunks) {
 TEST(DescribeCuda, UnknownDriverVersion) {
   CudaFacts facts = SparkFacts();
   facts.driver_version = 0;
-  const jitllm::base::Report report = Describe(facts);
+  const llmp::base::Report report = Describe(facts);
   EXPECT_EQ(Value(report, "NVIDIA driver", "CUDA driver API"), "unknown");
   EXPECT_THAT(report.problems,
               ElementsAre("the driver did not report its CUDA version, so whether it can run this "
@@ -424,7 +424,7 @@ TEST(DescribeCuda, UnknownDriverVersion) {
 }
 
 TEST(DescribeCuda, ComputeMode) {
-  using jitllm::providers::cuda::CudaComputeMode;
+  using llmp::providers::cuda::CudaComputeMode;
   CudaFacts facts = SparkFacts();
   facts.devices[0].compute_mode = CudaComputeMode::kDefault;
   EXPECT_EQ(Value(Describe(facts), "GPU 0: NVIDIA GB10", "compute mode"), "default");
@@ -462,7 +462,7 @@ TEST(DescribeCuda, DeviceError) {
   CudaFacts facts = SparkFacts();
   facts.devices[0] = CudaDeviceFacts{};
   facts.devices[0].error = "cuDeviceGet returned CUDA_ERROR_INVALID_DEVICE (101)";
-  const jitllm::base::Report report = Describe(facts);
+  const llmp::base::Report report = Describe(facts);
   EXPECT_EQ(Value(report, "GPU 0: ", "error"),
             "cuDeviceGet returned CUDA_ERROR_INVALID_DEVICE (101)");
   EXPECT_THAT(report.problems, ElementsAre("no GPU here is one this build has code for (sm_121)"));
@@ -472,7 +472,7 @@ TEST(DescribeCuda, DeviceError) {
 // found libcuda.so.1 (the driver, or on hosts without it NVIDIA's stub, whose
 // cuInit() fails).
 TEST(ProbeCuda, ThisBuild) {
-  const CudaFacts facts = jitllm::providers::cuda::ProbeCuda("/nonexistent");
+  const CudaFacts facts = llmp::providers::cuda::ProbeCuda("/nonexistent");
   EXPECT_GT(facts.built_version, 0);
   EXPECT_THAT(facts.built_architectures, testing::Not(IsEmpty()));
   EXPECT_THAT(facts.library, HasSubstr("libcuda.so"));

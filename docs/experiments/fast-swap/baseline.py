@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """M3 baselines: load, prefill, decode, peak memory and swap of reference engines.
 
@@ -24,7 +24,7 @@ HERE = Path(__file__).resolve().parent
 PROMPTS = json.loads((HERE / "prompts.json").read_text())
 DOCKER = shlex.split(os.environ.get("DOCKER", "sudo -n docker"))
 # The pinned b10964 image; LLAMA_IMAGE overrides it (pins.json's local
-# b11254 build, jitllm-llamacpp:b11254-cuda13, for the Qwen3.8 GGUF study).
+# b11254 build, llmp-llamacpp:b11254-cuda13, for the Qwen3.8 GGUF study).
 LLAMA_IMAGE = os.environ.get("LLAMA_IMAGE", "ghcr.io/ggml-org/llama.cpp@sha256:"
                              "837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7")
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -323,7 +323,7 @@ def first_token(client, extra):
 def llama_command(name, port, model, args, states=None):
     """The pinned llama.cpp server; ROOT is mounted read-only at /models and
     paths under it (the model, and a drafter in ARGS) are given as /models/..."""
-    root = Path(os.environ.get("MODEL_ROOT", Path.home() / ".local/share/jitllm"))
+    root = Path(os.environ.get("MODEL_ROOT", Path.home() / ".local/share/llmp"))
     model = Path(model).resolve().relative_to(root)
     argv = DOCKER + ["run", "-d", "--name", name, "--device", "nvidia.com/gpu=all",
                      "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -364,7 +364,7 @@ def session(args):
     process = None
     t0 = time.monotonic()
     if args.llama_model:
-        name = "jitllm-m3base-" + uuid.uuid4().hex[:8]
+        name = "llmp-m3base-" + uuid.uuid4().hex[:8]
         subprocess.run(llama_command(name, args.port, args.llama_model, args.llama_args),
                        check=True, capture_output=True)
     else:
@@ -417,7 +417,7 @@ def swap(args):
     models = {"A": args.a, "B": args.b}
 
     def start(key):
-        name = f"jitllm-m3swap-{key}-" + uuid.uuid4().hex[:8]
+        name = f"llmp-m3swap-{key}-" + uuid.uuid4().hex[:8]
         t = time.monotonic()
         subprocess.run(llama_command(name, args.port, models[key], llama_args[key], states),
                        check=True, capture_output=True)

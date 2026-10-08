@@ -45,28 +45,28 @@
     "benchmarks/CMakeLists.txt": "fd77f6ed9153b2b8a74e9c122e4dd835f8e6f73d87d5173810b1c27551db8e35",
     "benchmarks/gemma_assistant_fixture.cc": "59fddb4df2c304406c96dd0125f70ef3cba312ca504da5f1b1f45ab3ffb981f8",
     "benchmarks/gemma_assistant_wave_fixture.cc": "6f90cc7787c4c603cb327a070e2cf7910680dceeee5b9aacd58c47e59e85f0c0",
-    "docs/experiments/gemma-assistant-c2/PROTOCOL.md": "cd2d9b6c3e20a577e7bee7a61688e755c3ed7a6e3cd9816650b153d11480a8d0",
-    "docs/experiments/gemma-assistant-c2/llama_assistant_timing.cc": "a2b87d1a25614969c95bc28d0cc3e2993545079cb07fce0efd719e2fde7bc9de",
-    "docs/experiments/gemma-assistant-c2/reference.sh": "d9bef789b75d0884013b158ea88a6562709080599f276b158b4f9957466fd484",
+    "docs/experiments/gemma-assistant-c2/PROTOCOL.md": "f12130fbe302efd299b78941a39dd88ae7bb4c50d4996590cb4cfac62bdd2ee4",
+    "docs/experiments/gemma-assistant-c2/llama_assistant_timing.cc": "3e5273938516fe69fafcbfeb5bb5cee5a2b4a0e0768854cad45d3d13185ee3c1",
+    "docs/experiments/gemma-assistant-c2/reference.sh": "9a64e97074ef23c696e5223bc107aba58497fa8cec6978922d05cf3f755cd276",
     "src/engine/CMakeLists.txt": "4125b5ca0083ae4df10c3921cfa1f1cb9f20eb21749b9513c4385cce5c4e78d5",
     "src/engine/gemma4_assistant.cc": "4c91e0bf2cd02135801fd55d51f8d8826ba9d9ef133e699c7f8f5989d17e306d",
     "src/engine/gemma4_assistant.h": "adb2ca4221d449bead55e8dd4a01e0acdcdde9f0e07479fa521dbd5029d06531",
-    "src/engine/gemma4_assistant_plan.cc": "b5052ede555b16f48f9797b3f527c116da156e7f9a0511ba71dfed373be530e6",
-    "src/engine/gemma4_assistant_plan.h": "c23f52f1d14d80c443d3c6c5b792cc0c35924caa6eb798dcf329b70f6dc7d4ae",
+    "src/engine/gemma4_assistant_plan.cc": "a2dd9472efa2fcdfe8a8a66b2fcf9f16b631f863c5b99cace57b0d136eb6b8e8",
+    "src/engine/gemma4_assistant_plan.h": "87e1d8702b47bbfd159094db90a72487dfae917d51cad030f4a7bc84a51244e6",
     "src/engine/gemma4_plan.cc": "be415cd4c580853e33e5816f48ec70f3dba69c6960b5cb1829c2f7d9422af168",
     "src/engine/gemma4_plan.h": "756364ad86c61773016cc926b0f09a8a1319c95529a8b4e22cd1ab982a7faca6",
     "src/engine/gemma4_runner.cc": "8228f479eabd85caf0af59f315b86a8ddb28d4e5d9f418f69c4065b9e208cced",
     "src/engine/gemma4_runner.h": "7efb0b6056cb331c8e0ae01d46bef80a3efae0e8b1a2d3879497bf72f8e6d2e5",
     "src/kernels/ggml/CMakeLists.txt": "2b1c34291c8a04ab34522f1f584177ac567cc6813bb7856c570d3ac1ddaaaf4e",
     "src/kernels/ggml/gemma4_assistant_graph.cc": "55ade12c49cdba2ea0ca79a1a348a06f7a4ce1c9cf85e712b79645850c05879e",
-    "src/kernels/ggml/gemma4_assistant_graph.h": "ee03ef673ddaa489b8a48e65015228c26624b833c3e478d46ba66bf3dab61caa",
+    "src/kernels/ggml/gemma4_assistant_graph.h": "f8e37e40ff8695d1435c22e204d1f30bc19ca27e7601a16de52b5d958083bc64",
     "src/kernels/ggml/gemma4_graph.cc": "c4003561df4986e4d0a26335889ad11ddc91c417c0cd5c01e5f087cf738a0d10",
     "src/kernels/ggml/gemma4_graph.h": "a424a3cdfa5095e7d3f25d702f7055b81d99fca05bd9c62fb04b1884f2a2d4f4",
-    "tests/support/gemma4_assistant_fixture.h": "03fe393509ed6649af363a9d506d0e23b696f2e10df1f208bb5b9433ad7cc6a6",
+    "tests/support/gemma4_assistant_fixture.h": "a1b1d25d229bf561df73a6266be67bea62550d48ddb87ec0c57a844d8e58c829",
     "tests/unit/CMakeLists.txt": "85f66ac36cbd64927f8492ab5c7ba0c35629d91db67f5c57c4fa7e61b4a8267d",
     "tests/unit/gemma4_assistant_gpu_test.cc": "1d08ebef7e5a4e60ca89013f19ac6cc5285dccb636a2107519459c6e52f2f22a",
-    "tests/unit/gemma4_assistant_graph_test.cc": "bb340ab8691898164ec91893ef01fdcebdb34e7158c719800a194b1f92c0a965",
-    "tests/unit/gemma4_assistant_plan_test.cc": "ceded0dd5612d0532410fbc4de4b2c422729c448a48f430a6e71c497f9a68017",
+    "tests/unit/gemma4_assistant_graph_test.cc": "1cecfd6dc1f45b174ebb0605a3d93f6b07e8afe868ae13b7bde81be78ee519c6",
+    "tests/unit/gemma4_assistant_plan_test.cc": "9ef888c0404d64c2087564aa69ae0f3affdc458cfcf1a750eee1d398dc2cc16a",
     "tests/unit/gemma4_plan_test.cc": "5ae4cd51b7186ade1241d0f38f4bfe1c609785298b7b4113aa9a65f004297e85",
     "tests/unit/gemma4_runner_gpu_test.cc": "73a70e643244a4e2ae8db0d9408c348c941f0ff1fd70f6e2d8a180fed0193cec"
   },
@@ -89,27 +89,27 @@
     "override": false,
     "patches": [
       {
-        "path": "patches/ggml/0001-jitllm-adaptations.patch",
+        "path": "patches/ggml/0001-llmp-adaptations.patch",
         "sha256": "255bb61de5996d31eb950a1a8a8e8a14fa5faae12c965d1da58fa7e60919402d"
       },
       {
-        "path": "patches/ggml/0002-jitllm-build.patch",
+        "path": "patches/ggml/0002-llmp-build.patch",
         "sha256": "67c5b094a83ae0871a21b350bce0b4228d0622aca191f9417ed4af5057054fcb"
       },
       {
-        "path": "patches/ggml/0003-jitllm-wide-sparse-attention.patch",
+        "path": "patches/ggml/0003-llmp-wide-sparse-attention.patch",
         "sha256": "4aef62a8db3d09ee3e7a07621d4511d46ab42b149561e5556b9f4d7830150997"
       },
       {
-        "path": "patches/ggml/0004-jitllm-compact-expert-tiles.patch",
+        "path": "patches/ggml/0004-llmp-compact-expert-tiles.patch",
         "sha256": "1359fa8e2b03886150b370b89d51594cea0ad87ceefe1be2a9196ac904e80741"
       },
       {
-        "path": "patches/ggml/0005-jitllm-iq2-compact-pair-occ2.patch",
+        "path": "patches/ggml/0005-llmp-iq2-compact-pair-occ2.patch",
         "sha256": "adb7d3cb1b15146c9b9a0c588fcb8ff66ff30e705f911d48ef357c7863ad0006"
       }
     ],
-    "source": "/home/pmeenan/src/jitLLM-wt/m3fixb/build/sources/ggml-026f1ac94af98011",
+    "source": "/home/pmeenan/src/llmp-wt/m3fixb/build/sources/ggml-026f1ac94af98011",
     "source_tree": "026f1ac94af98011933e71cee240d0a405ac4220cb208356acf61aa2bcea6207",
     "tier": "core",
     "use": "product",
@@ -401,7 +401,7 @@
       "role": "serial-c2 ORIGINAL three-step posthoc package; released only after native serial/joined source and endogenous output freeze",
       "original_pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
       "image": "sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
-      "source_root": "/home/pmeenan/.local/share/jitllm/gemma-assistant-reference/serial-c2/steps-3",
+      "source_root": "/home/pmeenan/.local/share/llmp/gemma-assistant-reference/serial-c2/steps-3",
       "files": {
         "incoming-feature.f32": {
           "bytes": 67584,
@@ -430,7 +430,7 @@
       "role": "batch-c2 ORIGINAL three-step posthoc package; released only after native serial/joined source and endogenous output freeze",
       "original_pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
       "image": "sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
-      "source_root": "/home/pmeenan/.local/share/jitllm/gemma-assistant-reference/batch-c2/steps-3",
+      "source_root": "/home/pmeenan/.local/share/llmp/gemma-assistant-reference/batch-c2/steps-3",
       "files": {
         "incoming-feature.f32": {
           "bytes": 67584,
@@ -536,7 +536,7 @@
   "analysis_review_correction": {
     "previous_author_bundle_sha256": "e20720f62bf1142e4728c61b99548ad5ed3fe80ba6b5ada77411abb941d55f37",
     "previous_analyzer_sha256": "7a0e2042ed43ef8e0e04052962075e5ab59690254d1e0aa0dc866b9a0326c62c",
-    "final_analyzer_sha256": "ebc497b2b856b39fc2bd464d91dbf69f81ec8000c157a9fc1eb1e80d189ca47a",
+    "final_analyzer_sha256": "086d5f6fa14754f532de8f9dbca5271806e7f374c0690343850f31f61dc4ad80",
     "scope": "Analyzer-only correction after acquisition: positive-margin differences compare the reference winner against the native chosen ID; reference top-two margin remains separate. Added tied reference top with a lower native choice control. All measured strict counts are zero, so retained comparison aggregates are unchanged. Native helper, original client, protocol, wrappers and measured binaries remain unchanged.",
     "controls": 6,
     "official_job": "m35-assistant-c2-analysis2",

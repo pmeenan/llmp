@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Literal requests in native cohorts
@@ -95,7 +95,7 @@ Native runtime identities (SHA-256):
 - Boundary candidate: `29471bd269f7b5122066a6c551f5ed45240cc58620317418cc690896bb8fb58f`; it precedes only the initial-row invariant's explicit fatal guard, with the same boundary/scoring behavior.
 
 The measured harness SHA-256 for both final model screens and continuation
-controls is `de8b1422a3dd5967e28a258c88c37d92337656f0eb7d1427cee9e8fdbe94ecdf`.
+controls is `87709c5ac4d165d478621a8342ef1b4ea8987c23f1016b8af7e9b88d82dcdbd9`.
 The throughput receipt records
 `28f94fc36e9cef7015afbfa3f176128a3626d252dccd2fab4651d3c7da8c6cc9`,
 before the additional short mixed-score/EOS/family controls, with the same
@@ -116,20 +116,20 @@ GGUF tokenizer/template. Source-lock SHA-256:
 The reusable [native harness](native_controls.py) requires an explicit
 Spark admission/retirement probe accepting minimum free GiB and refusing
 other model processes, GPU compute processes or containers. The measured
-probe is `~/scratch/m3-final-launch/jitllm-spark-preflight.py` on A, with
+probe is `~/scratch/m3-final-launch/llmp-spark-preflight.py` on A, with
 at least 105 GiB free before and after each service. Every qualified
 service retires with exit 0; jobs use the installed `spark-job`,
 `--gpu`, a 600-second timeout and an explicitly waited successful result.
 Raw receipts, responses, configs, logs and kept state stay outside Git in
 `~/scratch/literal-cohorts/` on A; summaries also live in the workstation's
-`~/scratch/jitllm-m3-literal-cohorts-2026-10-03/results/`.
+`~/scratch/llmp-m3-literal-cohorts-2026-10-03/results/`.
 
 ```sh
 python3 -B docs/experiments/literal-batching/native_controls.py \
-  --binary build/spark-native/src/runtime/jitllm-runtime \
+  --binary build/spark-native/src/runtime/llmp-runtime \
   --baseline "$HOME/scratch/literal-cohorts/baseline-runtime" \
-  --library-dir "$PWD/build/spark-native/lib/jitllm" \
-  --preflight "$HOME/scratch/m3-final-launch/jitllm-spark-preflight.py" \
+  --library-dir "$PWD/build/spark-native/lib/llmp" \
+  --preflight "$HOME/scratch/m3-final-launch/llmp-spark-preflight.py" \
   --out "$HOME/scratch/literal-cohorts/new-screen" --case screen
 ```
 

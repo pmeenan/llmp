@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The commands the scheduler thread publishes to its service lanes (D-048,
@@ -8,8 +8,8 @@
 // value: it owns no memory, and the backing it names is protected by the
 // leases or load the scheduler recorded before publishing it.
 
-#ifndef JITLLM_SCHEDULER_COMMANDS_H_
-#define JITLLM_SCHEDULER_COMMANDS_H_
+#ifndef LLMP_SCHEDULER_COMMANDS_H_
+#define LLMP_SCHEDULER_COMMANDS_H_
 
 #include <array>
 #include <cstddef>
@@ -23,7 +23,7 @@
 #include "providers/direct_reader.h"
 #include "scheduler/completions.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 
 using base::Bytes;
 
@@ -148,6 +148,6 @@ struct CpuCommand {
   CpuJob job;
 };
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler
 
-#endif  // JITLLM_SCHEDULER_COMMANDS_H_
+#endif  // LLMP_SCHEDULER_COMMANDS_H_

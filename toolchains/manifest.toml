@@ -1,7 +1,7 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# jitLLM development SDK manifest (D-012, D-049, D-070).
+# Llmpalooza development SDK manifest (D-012, D-049, D-070).
 #
 # This file says what the SDK contains for each build host. The exact bytes
 # (URLs, SHA-256, sizes and how each was verified) are in artifacts.lock.json.
@@ -15,8 +15,8 @@ schema = 1
 [sdk]
 # Persistent roots outside the checkout and /tmp (D-049). Environment
 # variables override them; unset, they follow the XDG base directories.
-home = { env = "JITLLM_SDK_HOME", xdg = "XDG_DATA_HOME", default = "~/.local/share", suffix = "jitllm/sdk" }
-cache = { env = "JITLLM_CACHE_HOME", xdg = "XDG_CACHE_HOME", default = "~/.cache", suffix = "jitllm" }
+home = { env = "LLMP_SDK_HOME", xdg = "XDG_DATA_HOME", default = "~/.local/share", suffix = "llmp/sdk" }
+cache = { env = "LLMP_CACHE_HOME", xdg = "XDG_CACHE_HOME", default = "~/.cache", suffix = "llmp" }
 
 # Pinned versions, for reports. The lock holds the bytes.
 [versions]
@@ -92,7 +92,7 @@ select = ["usr/local/cuda-13.4/targets/sbsa-linux"]
 
 [components.cublas]
 # cuBLAS and cuBLASLt 13.8.0.4, the newest for CUDA 13.4 (D-076): the headers
-# and the shared libraries, which jitLLM links dynamically and the package
+# and the shared libraries, which llmpalooza links dynamically and the package
 # ships. The static archives are left out.
 kind = "debs"
 dest = "pkgs/cuda"
@@ -148,7 +148,7 @@ sysroot = "sysroot/aarch64-linux-gnu"
 dest = "sysroot/aarch64-linux-gnu/opt/gcc"
 
 [components.sysroot-aarch64-runtime]
-# cuBLAS needs libgcc_s.so.1 even when jitLLM links GCC 16.2 statically.
+# cuBLAS needs libgcc_s.so.1 even when llmpalooza links GCC 16.2 statically.
 # Runtime-only Ubuntu closure, merged after the sysroot and GCC build so
 # it changes neither the cross compiler's inputs nor its static outputs.
 kind = "debs"
@@ -162,7 +162,7 @@ select = ["usr/lib/aarch64-linux-gnu/libgcc_s.so.1",
 # The REUSE lint tool and its Python dependencies (D-071), for the check
 # gate. The wheels are unpacked, not installed: `python3 -I -S` runs the tool
 # with only the standard library and this directory on its path
-# (jitllm_sdk.python_tool). reuse's wheel is pure Python despite its
+# (llmp_sdk.python_tool). reuse's wheel is pure Python despite its
 # manylinux_2_41 tag; MarkupSafe's is CPython 3.14's x86-64 build, whose
 # optional speedups module falls back to pure Python under another Python.
 # python-magic loads the host's libmagic (a prerequisite).
@@ -185,7 +185,7 @@ configure = [
   "--disable-libvtv", "--disable-libquadmath", "--disable-libquadmath-support",
   "--disable-nls", "--disable-werror",
 ]
-# The only outputs jitLLM uses (D-060), copied into the native install layout.
+# The only outputs llmpalooza uses (D-060), copied into the native install layout.
 # libstdc++exp.a (std::stacktrace, libbacktrace) is deliberately absent.
 headers = "include/c++/16"
 libraries = ["libstdc++.a", "libsupc++.a", "libatomic.a"]

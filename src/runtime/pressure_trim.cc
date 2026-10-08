@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/pressure_trim.h"
@@ -8,7 +8,7 @@
 
 #include "platform/memory_pressure.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 PressureTrim::Trim PressureTrim::Observe(const platform::MemoryPressure& reading,
                                          Clock::time_point now) {
@@ -67,4 +67,4 @@ bool PressureTrim::Trimmed(std::uint64_t freed, std::uint64_t needed, Clock::tim
   return false;
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

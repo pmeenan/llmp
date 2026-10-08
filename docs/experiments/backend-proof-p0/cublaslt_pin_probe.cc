@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // Reference probe for the backend proof's P0 (docs/backend-proof.md, EXL3
-// reconstruction-path Tier E); it does not implement jitLLM inference. For
+// reconstruction-path Tier E); it does not implement llmpalooza inference. For
 // each reconstruction GEMM recorded in exl3-recon-plan.json (cuBLAS
 // 13.8.0.4), on seeded random FP16 inputs:
 //

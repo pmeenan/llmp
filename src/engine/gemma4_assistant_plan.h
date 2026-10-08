@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-#ifndef JITLLM_ENGINE_GEMMA4_ASSISTANT_PLAN_H_
-#define JITLLM_ENGINE_GEMMA4_ASSISTANT_PLAN_H_
+#ifndef LLMP_ENGINE_GEMMA4_ASSISTANT_PLAN_H_
+#define LLMP_ENGINE_GEMMA4_ASSISTANT_PLAN_H_
 
 #include <cstdint>
 #include <expected>
@@ -13,7 +13,7 @@
 #include "engine/gemma4_plan.h"
 #include "kernels/ggml/gemma4_assistant_graph.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 struct Gemma4AssistantModel {
   const model::Gemma4AssistantProfile* profile = nullptr;
   const model::Gemma4AssistantBinding* binding = nullptr;
@@ -48,5 +48,5 @@ std::expected<std::uint64_t, std::string> Gemma4AssistantSourceBytes(
 std::expected<Gemma4AssistantHostInputs, std::string> Gemma4AssistantSources(
     const kernels::ggml::Gemma4AssistantGraph& graph, std::span<const Gemma4AssistantInput> inputs,
     std::span<const float> features, bool device_features, std::uint64_t funded_bytes);
-}  // namespace jitllm::engine
-#endif  // JITLLM_ENGINE_GEMMA4_ASSISTANT_PLAN_H_
+}  // namespace llmp::engine
+#endif  // LLMP_ENGINE_GEMMA4_ASSISTANT_PLAN_H_

@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Approved Gemma 2 2B Q8_0 profile, checked binding and bounded state/inputs.
 // No media adapter.
-#ifndef JITLLM_MODEL_GEMMA2_H_
-#define JITLLM_MODEL_GEMMA2_H_
+#ifndef LLMP_MODEL_GEMMA2_H_
+#define LLMP_MODEL_GEMMA2_H_
 
 #include <cstdint>
 #include <expected>
@@ -15,10 +15,10 @@
 
 #include "model/state.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 class Artifact;
 }
-namespace jitllm::model {
+namespace llmp::model {
 
 struct Gemma2Profile {
   std::uint32_t layers = 0, width = 0, ffn = 0, heads = 0, kv_heads = 0;
@@ -140,5 +140,5 @@ std::expected<std::vector<StateRange>, std::string> Gemma2ChunkWrites(
     const Gemma2Profile& profile, const Gemma2StateLayout& state, std::uint32_t n_past,
     std::uint32_t rows);
 
-}  // namespace jitllm::model
-#endif  // JITLLM_MODEL_GEMMA2_H_
+}  // namespace llmp::model
+#endif  // LLMP_MODEL_GEMMA2_H_

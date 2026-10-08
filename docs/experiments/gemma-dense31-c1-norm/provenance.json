@@ -27,27 +27,27 @@
         },
         "benchmarks/gemma_dense31_c1_norm.cc": {
           "bytes": 10366,
-          "sha256": "a1251a14ce58f2404b8fa9b1fad6f3410b281ce01c01c22328919b94551a7afe"
+          "sha256": "1a354494f5b95d44508b154de61f04f9fccffa90d582c6529494ec5274f1d408"
         },
         "docs/experiments/gemma-dense31-c1-norm/PROTOCOL.md": {
-          "bytes": 5548,
-          "sha256": "5a81b895a665b4d8f63bdafe519a2a0a93eeb3cc1890e21b91759edeec09eeb0"
+          "bytes": 5552,
+          "sha256": "45669fdd4dd9d91fe7c19d3902b9e3636ff4c68d36434cc77bd77e389916b024"
         },
         "docs/experiments/gemma-dense31-c1-norm/compare.py": {
-          "bytes": 4166,
-          "sha256": "8af28fa036524667c029aafa3d84caa5f03c114e9aaeaef9b609aa1a04591d7f"
+          "bytes": 4170,
+          "sha256": "ab9a081a2e3515b160e0a753ab1097a60a63e03e63c4e0709b0532f745211557"
         },
         "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
-          "bytes": 6448,
-          "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+          "bytes": 6442,
+          "sha256": "6481dae39d4510eb26842535ac4cf3b9cc87e3941617e5fabfc6f478efc6d385"
         },
         "docs/experiments/gemma-dense31-c1-norm/reference.sh": {
-          "bytes": 1505,
-          "sha256": "391dce0decfc5b8af70ae7d1f1d8522f6bbeb85a4bf793a2ca307977ed009cf2"
+          "bytes": 1503,
+          "sha256": "88cc4c0df35f0ae24391acd9c6f17614a22c84dcb11088f5bb8c6c9b624bef0a"
         },
         "docs/experiments/gemma-joined-serving/analyze.py": {
-          "bytes": 8876,
-          "sha256": "d9c4efae191cedc2797617264bfe3ddaf71dbe04c4c8132914c38367e2011ce1"
+          "bytes": 8880,
+          "sha256": "af2458e13546b100e71dd1321752d58f4dd98256642d5c82857a8ae02d40d6eb"
         },
         "docs/experiments/gemma-joined-serving/llama_joined.cc": {
           "bytes": 7772,
@@ -132,27 +132,27 @@
       },
       "benchmarks/gemma_dense31_c1_norm.cc": {
         "bytes": 10366,
-        "sha256": "a1251a14ce58f2404b8fa9b1fad6f3410b281ce01c01c22328919b94551a7afe"
+        "sha256": "1a354494f5b95d44508b154de61f04f9fccffa90d582c6529494ec5274f1d408"
       },
       "docs/experiments/gemma-dense31-c1-norm/PROTOCOL.md": {
-        "bytes": 5548,
-        "sha256": "5a81b895a665b4d8f63bdafe519a2a0a93eeb3cc1890e21b91759edeec09eeb0"
+        "bytes": 5552,
+        "sha256": "45669fdd4dd9d91fe7c19d3902b9e3636ff4c68d36434cc77bd77e389916b024"
       },
       "docs/experiments/gemma-dense31-c1-norm/compare.py": {
-        "bytes": 4166,
-        "sha256": "8af28fa036524667c029aafa3d84caa5f03c114e9aaeaef9b609aa1a04591d7f"
+        "bytes": 4170,
+        "sha256": "ab9a081a2e3515b160e0a753ab1097a60a63e03e63c4e0709b0532f745211557"
       },
       "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
-        "bytes": 6448,
-        "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+        "bytes": 6442,
+        "sha256": "6481dae39d4510eb26842535ac4cf3b9cc87e3941617e5fabfc6f478efc6d385"
       },
       "docs/experiments/gemma-dense31-c1-norm/reference.sh": {
-        "bytes": 1505,
-        "sha256": "391dce0decfc5b8af70ae7d1f1d8522f6bbeb85a4bf793a2ca307977ed009cf2"
+        "bytes": 1503,
+        "sha256": "88cc4c0df35f0ae24391acd9c6f17614a22c84dcb11088f5bb8c6c9b624bef0a"
       },
       "docs/experiments/gemma-joined-serving/analyze.py": {
-        "bytes": 8876,
-        "sha256": "d9c4efae191cedc2797617264bfe3ddaf71dbe04c4c8132914c38367e2011ce1"
+        "bytes": 8880,
+        "sha256": "af2458e13546b100e71dd1321752d58f4dd98256642d5c82857a8ae02d40d6eb"
       },
       "docs/experiments/gemma-joined-serving/llama_joined.cc": {
         "bytes": 7772,
@@ -386,7 +386,7 @@
     "sha256": "bd5944921a4a0adf4733f3e93dd18b761a40f64145d675b1cca34c0440751b30"
   },
   "raw_arrays_and_telemetry_checked_in": false,
-  "raw_root_on_spark_b": "~/.local/share/jitllm/gemma-dense31-c1-norm",
+  "raw_root_on_spark_b": "~/.local/share/llmp/gemma-dense31-c1-norm",
   "reference": {
     "batch": 128,
     "cache_setting_basis": "unchanged public C-API defaults at the pinned source; short prefix stays below the local window",

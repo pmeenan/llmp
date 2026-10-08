@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Direct landing in GPU device memory through a dma-buf — 2026-09-27
@@ -131,7 +131,7 @@ the kernel gains a dma-buf read path for files.
   `-std=c++20 -O3 -arch=sm_121 -Xcompiler -Wall,-Wextra`, linked with
   `-lcuda` and the static cudart. It is a standalone probe, not the SDK
   build. Session `s1` used the binary with SHA-256 `66fd2941…` (source
-  `a714a48a…`). The committed source (`b642d831…`) adds two things after the
+  `a714a48a…`). The committed source (`3c58eaa5…`) adds two things after the
   session: a CPU-bandwidth measurement of the `cuMemAllocHost` dma-buf
   mapping, and a fix to the restore's negative control (below). Those were
   run as `s1b` (binaries `4a6be4fb…` and `4c2f191c…`), by hand rather than
@@ -140,7 +140,7 @@ the kernel gains a dma-buf read path for files.
   its `feasibility` output predates that build and came from `4a6be4fb…`,
   whose source differs only in the negative control.
 - **Raw output** stays outside Git, on `spark` in
-  `~/.local/share/jitllm/dmabuf-20260927/raw/` (`s1`, `s1b`, and the trial
+  `~/.local/share/llmp/dmabuf-20260927/raw/` (`s1`, `s1b`, and the trial
   runs). [`results.json`](results.json) holds the session's aggregates.
 
 ## Method
@@ -182,7 +182,7 @@ The probe's subcommands (see its usage text):
   stores then replace it, and the CPU verifies. There are 20 rounds per
   process.
 - `restore`: `O_DIRECT` io_uring `READ`s of 2 MiB (non-fixed buffers, as
-  jitLLM's `UringStorage` issues), with 2, 4 or 8 in flight, over 8 GiB. The
+  llmpalooza's `UringStorage` issues), with 2, 4 or 8 in flight, over 8 GiB. The
   modes:
   - `hvmm-inplace`: reads land in place in host VMM (D-034 as written).
   - `land-ce` / `land-sm`: reads land in 2 × depth host-VMM slots. On each
@@ -349,7 +349,7 @@ word in all 6 reruns (`s1b`: `land-ce` and `hvmm-inplace`, 3 each).
 On `spark`:
 
 ```bash
-d=~/.local/share/jitllm/dmabuf-20260927 && mkdir -p $d/{bin,raw,scratch}
+d=~/.local/share/llmp/dmabuf-20260927 && mkdir -p $d/{bin,raw,scratch}
 # copy dmabuf_probe.cu, build.sh and session.sh into $d/bin, then:
 cd $d && bin/build.sh bin/dmabuf_probe
 bin/dmabuf_probe create scratch/pattern-16g.bin 16

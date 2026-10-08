@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Host time per launch of RMSNorm-mul (docs/backend-proof.md, BP-F4 in P1:
@@ -17,7 +17,7 @@
 // per-operation host time across batches; the report is under
 // docs/experiments/launch-overhead/.
 //
-//   jitllm_launch_bench [BATCHES [OPERATIONS_PER_BATCH]]
+//   llmp_launch_bench [BATCHES [OPERATIONS_PER_BATCH]]
 
 #include <cuda_runtime.h>
 
@@ -59,16 +59,16 @@ void ggml_cuda_op_mul(ggml_backend_cuda_context& ctx, ggml_tensor* dst);
 namespace {
 
 using Clock = std::chrono::steady_clock;
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::RmsNormMulKernel;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::Access;
-using jitllm::providers::BackingKind;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-using jitllm::providers::VmmProvider;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::RmsNormMulKernel;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::Access;
+using llmp::providers::BackingKind;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+using llmp::providers::VmmProvider;
 
 constexpr std::int64_t kWidth = 896;
 constexpr int kWarmupBatches = 20;
@@ -162,11 +162,11 @@ int main(int argc, char** argv) {
   int per_batch = 64;
   if ((argc > 1 && !Parse(argv[1], batches)) || (argc > 2 && !Parse(argv[2], per_batch)) ||
       argc > 3) {
-    std::println(stderr, "usage: jitllm_launch_bench [BATCHES [OPERATIONS_PER_BATCH]]");
+    std::println(stderr, "usage: llmp_launch_bench [BATCHES [OPERATIONS_PER_BATCH]]");
     return 2;
   }
-  auto memory = jitllm::providers::cuda::OpenDeviceMemory(0);
-  auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+  auto memory = llmp::providers::cuda::OpenDeviceMemory(0);
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
   if (!memory || !execution) {
     std::println(stderr, "no CUDA device");
     return 1;
@@ -197,23 +197,22 @@ int main(int argc, char** argv) {
   TensorArena::Bind(scaled, base + (3 * kWidth * sizeof(float)));
 
   auto launch = LaunchContext::Create(0, **execution, *stream, {.base = 0, .size = Bytes(0)});
-  const auto registry =
-      jitllm::execution::Registry::Create(jitllm::kernels::ggml::Implementations());
+  const auto registry = llmp::execution::Registry::Create(llmp::kernels::ggml::Implementations());
   if (!launch || !registry) {
     std::println(stderr, "cannot create the launch context or registry");
     return 1;
   }
   std::array<std::optional<RmsNormMulKernel>, 2> kernels;  // unfused, fused
   for (const bool fused : {false, true}) {
-    const std::vector<jitllm::execution::Choice> choices = {
-        {.operation = jitllm::execution::Operation::kRmsNormMul,
+    const std::vector<llmp::execution::Choice> choices = {
+        {.operation = llmp::execution::Operation::kRmsNormMul,
          .implementation = fused ? "ggml.rms_norm_mul.fused" : "ggml.rms_norm_mul.unfused"}};
-    const auto plan = jitllm::execution::Plan::Build(*registry, choices);
+    const auto plan = llmp::execution::Plan::Build(*registry, choices);
     if (!plan) {
       std::println(stderr, "no plan: {}", plan.error().detail);
       return 1;
     }
-    const auto bound = jitllm::execution::Resolve(*registry, *plan);
+    const auto bound = llmp::execution::Resolve(*registry, *plan);
     if (!bound) {
       std::println(stderr, "the plan does not bind: {}", bound.error().detail);
       return 1;
@@ -257,8 +256,8 @@ int main(int argc, char** argv) {
         break;
       case Layer::kChecked:
         for (int i = 0; i < per_batch && ok; ++i) {
-          ok = (fused ? jitllm::kernels::ggml::RmsNormMul(**launch, norm, scaled)
-                      : jitllm::kernels::ggml::RmsNormThenMul(**launch, norm, scaled))
+          ok = (fused ? llmp::kernels::ggml::RmsNormMul(**launch, norm, scaled)
+                      : llmp::kernels::ggml::RmsNormThenMul(**launch, norm, scaled))
                    .has_value();
         }
         break;

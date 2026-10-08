@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-FileCopyrightText: 1991-2023 Unicode, Inc.
 // SPDX-License-Identifier: Apache-2.0 AND Unicode-3.0
 
@@ -12,7 +12,7 @@
 
 #include "tokenizer/unicode_data.h"
 
-namespace jitllm::tokenizer::unicode_data {
+namespace llmp::tokenizer::unicode_data {
 namespace {
 
 constexpr std::array<std::uint16_t, 4352> kPropertyIndexData = {{
@@ -8802,5 +8802,5 @@ const std::span<const CodePointRange> kUppercase(kUppercaseData);
 const std::span<const CodePointRange> kCased(kCasedData);
 const std::span<const CodePointRange> kCaseIgnorable(kCaseIgnorableData);
 
-}  // namespace jitllm::tokenizer::unicode_data
+}  // namespace llmp::tokenizer::unicode_data
 // clang-format on

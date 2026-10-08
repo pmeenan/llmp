@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 #include <algorithm>
@@ -13,14 +13,14 @@
 #include "kernels/ggml/fattn_owner_partial_kernel.cuh"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 using detail::Rejected;
-using jitllm_fattn_owner::flash_attn_owner_f16;
-using jitllm_fattn_owner::flash_attn_owner_fixup_general;
-using jitllm_fattn_owner::flash_attn_owner_fixup_uniform;
-using jitllm_fattn_owner::flash_attn_owner_partial_f16;
-using jitllm_fattn_owner::OwnerBases;
+using llmp_fattn_owner::flash_attn_owner_f16;
+using llmp_fattn_owner::flash_attn_owner_fixup_general;
+using llmp_fattn_owner::flash_attn_owner_fixup_uniform;
+using llmp_fattn_owner::flash_attn_owner_partial_f16;
+using llmp_fattn_owner::OwnerBases;
 
 template <int D, int Columns, int Group, bool Softcap = false, bool Bounded = false>
 std::expected<void, KernelFailure> Resources(int device, FlashAttnOwnersPlan& plan) {
@@ -130,7 +130,7 @@ void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
   CUDA_CHECK(cudaGetLastError());
   if (tiles % plan.original.blocks != 0)
     metadata.alloc(std::size_t(blocks) * Columns * Group * (2 + D / 2));
-  jitllm_fattn_owner::OwnerRootBases<Bounded> bases{};
+  llmp_fattn_owner::OwnerRootBases<Bounded> bases{};
   for (std::size_t owner = 0; owner < in.owner_count; ++owner) {
     bases.k[owner] = static_cast<const char*>(in.k[owner]->data);
     bases.v[owner] = static_cast<const char*>(in.v[owner]->data);
@@ -368,4 +368,4 @@ std::expected<void, KernelFailure> FlashAttnOwnerRoots(LaunchContext& launch,
       Queue<512, 1, 8>(context, in, *plan);
   });
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Llm's real teacher-forcing and generation loops over a completed fake
@@ -27,7 +27,7 @@
 #include "chat/chat.h"
 #include "engine/qwen38_wave_plan.h"
 #include "ggml.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "memory/reclaim.h"
 #include "runtime/cohort_schedule.h"
@@ -37,14 +37,14 @@
 
 namespace {
 
-namespace rt = jitllm::runtime;
-namespace engine = jitllm::engine;
-namespace catalog = jitllm::catalog;
+namespace rt = llmp::runtime;
+namespace engine = llmp::engine;
+namespace catalog = llmp::catalog;
 using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 
 TEST(Qwen38WaveHead, AdaptiveRowsRequireContiguousFullBf16Geometry) {
-  auto arena = jitllm::kernels::ggml::TensorArena::Create(32);
+  auto arena = llmp::kernels::ggml::TensorArena::Create(32);
   ASSERT_TRUE(arena);
   auto* context = arena->context();
   auto* weight = ggml_new_tensor_2d(context, GGML_TYPE_BF16, 2560, 248320);
@@ -74,7 +74,7 @@ TEST(Qwen38WaveHead, AdaptiveRowsRequireContiguousFullBf16Geometry) {
 }
 
 TEST(Qwen38WaveHc, OnlyContiguousMultirowBf16ProductsAreCandidates) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   auto arena = kg::TensorArena::Create(48);
   ASSERT_TRUE(arena);
   auto* context = arena->context();
@@ -143,14 +143,14 @@ class FakeLlm : public rt::Llm {
   std::vector<catalog::ExtentId> state() const override { return {}; }
   const catalog::Closure& everything() const override { return paged_.fence_closure(); }
   std::uint64_t weight_read_bytes() const override { return 0; }
-  void Defaults(jitllm::chat::Conversation& /*conversation*/) const override {}
+  void Defaults(llmp::chat::Conversation& /*conversation*/) const override {}
   void ConfigurePrefill(std::uint32_t context, std::uint32_t rows) {
     context_ = context;
     max_rows_ = rows;
   }
   // A tokenizer and chat template, as registration gives a model them.
-  rt::Status UseChat(jitllm::tokenizer::Tokenizer tokenizer, std::string_view chat_template) {
-    tokenizer_ = std::make_unique<jitllm::tokenizer::Tokenizer>(std::move(tokenizer));
+  rt::Status UseChat(llmp::tokenizer::Tokenizer tokenizer, std::string_view chat_template) {
+    tokenizer_ = std::make_unique<llmp::tokenizer::Tokenizer>(std::move(tokenizer));
     return UseTemplate(chat_template);
   }
 
@@ -331,7 +331,7 @@ TEST(LlmScores, RowFreeGreedyEligibilityPreservesOrdinarySpeculationRefusal) {
     rt::GenerateOptions options;
     options.max_tokens = 2;
     if (sampled)
-      options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 4};
+      options.sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 4};
     rt::Generation out;
     auto session = model.BeginGeneration(last, options, out);
     ASSERT_TRUE(session);
@@ -455,7 +455,7 @@ class NativeBranchesFake final : public FakeLlm {
     return tokens;
   }
   const auto& selected() const { return selected_; }
-  jitllm::execution::AdaptiveDepth& policy(Branch& branch) { return BranchDecoding(branch); }
+  llmp::execution::AdaptiveDepth& policy(Branch& branch) { return BranchDecoding(branch); }
   std::uint32_t& pending_cursor(Branch& branch) { return cursors_[BranchIndex(branch)]; }
   rt::Status SelectBranches(std::span<Branch* const> active) override {
     if (active.size() > kMaxBranches) {
@@ -668,11 +668,11 @@ class NativeBranchesFake final : public FakeLlm {
   }
   void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
   void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
-  jitllm::execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
+  llmp::execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
     return BranchDecoding(branch);
   }
   void RestoreTurnDecodingStateFor(Branch& branch,
-                                   const jitllm::execution::AdaptiveDepth& decoding) override {
+                                   const llmp::execution::AdaptiveDepth& decoding) override {
     BranchDecoding(branch) = decoding;
   }
 
@@ -715,22 +715,22 @@ std::string ByteText(unsigned b) {
     n += printable(x) ? 0 : 1;
   }
   std::string out;
-  jitllm::tokenizer::unicode::AppendUtf8(printable(b) ? b : 256 + n, out);
+  llmp::tokenizer::unicode::AppendUtf8(printable(b) ? b : 256 + n, out);
   return out;
 }
 
-jitllm::tokenizer::Tokenizer ByteTokenizer() {
-  jitllm::tokenizer::TokenizerSpec spec;
+llmp::tokenizer::Tokenizer ByteTokenizer() {
+  llmp::tokenizer::TokenizerSpec spec;
   for (unsigned b = 0; b < 256; ++b) {
     spec.tokens.push_back(ByteText(b));
-    spec.kinds.push_back(jitllm::tokenizer::TokenKind::kNormal);
+    spec.kinds.push_back(llmp::tokenizer::TokenKind::kNormal);
   }
   for (const char* control : {"<|im_start|>", "<|im_end|>", "<|endoftext|>"}) {
     spec.tokens.emplace_back(control);
-    spec.kinds.push_back(jitllm::tokenizer::TokenKind::kControl);
+    spec.kinds.push_back(llmp::tokenizer::TokenKind::kControl);
   }
   spec.eos = 258;
-  auto t = jitllm::tokenizer::Tokenizer::Create(std::move(spec));
+  auto t = llmp::tokenizer::Tokenizer::Create(std::move(spec));
   EXPECT_TRUE(t.has_value()) << t.error().ToString();
   return std::move(*t);
 }
@@ -752,8 +752,8 @@ TEST(LlmRender, AChatOverFourMiBRendersWithinTheContext) {
   // At least the floor; four times the context times the longest token.
   EXPECT_GE(model.render_bytes(), std::size_t{32} << 20U);
   const std::size_t bytes = (std::size_t{4} << 20U) + 300'000;  // past 2^22 tokens too
-  jitllm::chat::Conversation c;
-  c.messages.push_back({jitllm::chat::Role::kUser, std::string(bytes, 'x'), std::nullopt, {}});
+  llmp::chat::Conversation c;
+  c.messages.push_back({llmp::chat::Role::kUser, std::string(bytes, 'x'), std::nullopt, {}});
   c.max_render_bytes = model.render_bytes();
   std::uint32_t boundary = 0;
   rt::ChatRenderFailure failure = rt::ChatRenderFailure::kOther;
@@ -1316,12 +1316,12 @@ TEST(LlmScores, ResumableSamplingUsesAbsolutePositionKeysForCompletedRows) {
   options.max_tokens = 2;
   options.stop = false;
   options.sampling =
-      jitllm::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
+      llmp::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
   options.seed = 731;
-  std::vector<jitllm::execution::SamplingCandidate> scratch;
-  const auto first = jitllm::execution::Sample(
+  std::vector<llmp::execution::SamplingCandidate> scratch;
+  const auto first = llmp::execution::Sample(
       row, *options.sampling, {.seed = options.seed, .stream = 0, .position = 3}, scratch);
-  const auto second = jitllm::execution::Sample(
+  const auto second = llmp::execution::Sample(
       row, *options.sampling, {.seed = options.seed, .stream = 0, .position = 4}, scratch);
   ASSERT_TRUE(first.has_value());
   ASSERT_TRUE(second.has_value());
@@ -1347,7 +1347,7 @@ TEST(LlmScores, ResumableEarlyAndCompletedFailuresPreserveOnlyProvenHistory) {
   options.max_tokens = 2;
   options.stop = false;
   options.sampling =
-      jitllm::execution::SamplingParams{.temperature = 1, .top_k = 1, .top_p = 1, .min_p = 0};
+      llmp::execution::SamplingParams{.temperature = 1, .top_k = 1, .top_p = 1, .min_p = 0};
   auto bad = last;
   bad[0] = std::numeric_limits<float>::quiet_NaN();
   rt::Generation result;
@@ -1445,11 +1445,11 @@ TEST(LlmScores, FourResumableBranchesInterleaveSamplingWithoutSharingKeysOrGuard
     option.max_tokens = 3;
     option.stop = false;
     option.sampling =
-        jitllm::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
+        llmp::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
     option.seed = 731 + slot;
-    std::vector<jitllm::execution::SamplingCandidate> scratch;
+    std::vector<llmp::execution::SamplingCandidate> scratch;
     for (std::size_t generated = 0; generated < 3; ++generated) {
-      auto token = jitllm::execution::Sample(
+      auto token = llmp::execution::Sample(
           row, *option.sampling,
           {.seed = option.seed, .stream = 0, .position = prompt.size() + generated}, scratch);
       ASSERT_TRUE(token.has_value());
@@ -1670,21 +1670,21 @@ TEST(LlmScores, AdmissionsReclaimSparesTheChosenBranch) {
     ASSERT_TRUE((*branch)->Prefill(prompt, last).has_value());
   }
   const rt::IdleStateRates rates{.spill_rate = 11.0e9, .restore_rate = 14.5e9};
-  const auto ids = [](const std::vector<jitllm::memory::ReclaimCandidate>& c) {
+  const auto ids = [](const std::vector<llmp::memory::ReclaimCandidate>& c) {
     std::vector<std::uint64_t> out;
     for (const auto& x : c) {
-      EXPECT_EQ(x.kind, jitllm::memory::ReclaimKind::kIdleState);
+      EXPECT_EQ(x.kind, llmp::memory::ReclaimKind::kIdleState);
       EXPECT_GT(x.bytes, 0U);
       out.push_back(x.id);
     }
     return out;
   };
-  std::vector<jitllm::memory::ReclaimCandidate> all;
+  std::vector<llmp::memory::ReclaimCandidate> all;
   rt::AddIdleStateCandidates(model, 0, true, nullptr, rates, all);
   EXPECT_THAT(ids(all), ElementsAre(0U, 1U, 3U));  // slot 2 holds nothing
   auto chosen = model.branch(1);
   ASSERT_TRUE(chosen.has_value());
-  std::vector<jitllm::memory::ReclaimCandidate> spared;
+  std::vector<llmp::memory::ReclaimCandidate> spared;
   rt::AddIdleStateCandidates(model, 0, true, *chosen, rates, spared);
   EXPECT_THAT(ids(spared), ElementsAre(0U, 3U));
   // A branch the request open on the stream leases is no candidate either.
@@ -1693,7 +1693,7 @@ TEST(LlmScores, AdmissionsReclaimSparesTheChosenBranch) {
   const std::array<rt::Llm::Branch*, 1> selected = {*peer};
   ASSERT_TRUE(model.SelectBranches(selected).has_value());
   model.lease_held = true;
-  std::vector<jitllm::memory::ReclaimCandidate> leased;
+  std::vector<llmp::memory::ReclaimCandidate> leased;
   rt::AddIdleStateCandidates(model, 0, true, *chosen, rates, leased);
   EXPECT_THAT(ids(leased), ElementsAre(3U));
   model.lease_held = false;
@@ -1703,20 +1703,20 @@ TEST(LlmScores, AdmissionsReclaimSparesTheChosenBranch) {
   auto held = model.branch(3);
   ASSERT_TRUE(held.has_value());
   (*held)->HoldContinuation();
-  std::vector<jitllm::memory::ReclaimCandidate> spilled;
+  std::vector<llmp::memory::ReclaimCandidate> spilled;
   rt::AddIdleStateCandidates(model, 0, true, nullptr, rates, spilled);
   EXPECT_THAT(ids(spilled), ElementsAre(0U, 1U, 3U));
   for (const std::uint64_t budget : {std::uint64_t{0}, model.ResidentStateBytes(**held) - 1}) {
     rt::IdleStateRates small = rates;
     small.spill_budget = budget;
-    std::vector<jitllm::memory::ReclaimCandidate> dropped;
+    std::vector<llmp::memory::ReclaimCandidate> dropped;
     rt::AddIdleStateCandidates(model, 0, true, nullptr, small, dropped);
     EXPECT_THAT(ids(dropped), ElementsAre(0U, 1U)) << budget;
   }
   (*held)->ReleaseContinuation();
   rt::IdleStateRates none = rates;
   none.spill_budget = 0;
-  std::vector<jitllm::memory::ReclaimCandidate> unheld;
+  std::vector<llmp::memory::ReclaimCandidate> unheld;
   rt::AddIdleStateCandidates(model, 0, true, nullptr, none, unheld);
   EXPECT_THAT(ids(unheld), ElementsAre(0U, 1U, 3U));
 }
@@ -1790,7 +1790,7 @@ TEST(LlmScores, AGenerationWaveSamplingErrorPublishesTheCompletedPeer) {
   options.max_tokens = 3;
   options.stop = false;
   options.sampling =
-      jitllm::execution::SamplingParams{.temperature = 1, .top_k = 1, .top_p = 1, .min_p = 0};
+      llmp::execution::SamplingParams{.temperature = 1, .top_k = 1, .top_p = 1, .min_p = 0};
   rt::Generation result_a;
   rt::Generation result_b;
   auto opened_a = (*a)->BeginGeneration(last_a, options, result_a);
@@ -2698,7 +2698,7 @@ TEST(LlmScores, APreemptedGenerationResumesFromItsRebuiltStateWithoutRepeatingTo
     options.stop = false;
     if (sampled) {
       options.sampling =
-          jitllm::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
+          llmp::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
       options.seed = 913;
     }
     // The same request, uninterrupted, on another branch.
@@ -2774,7 +2774,7 @@ TEST(LlmScores, AGenerationSetAsideResumesFromItsSpilledStateWithoutPrefill) {
     options.stop = false;
     if (sampled) {
       options.sampling =
-          jitllm::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
+          llmp::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
       options.seed = 913;
     }
     auto reference = model.branch(3);
@@ -3511,7 +3511,7 @@ TEST(LlmScores, ScalarUnitPublicationKeepsEarlierSuccessOnLaterCleanDispatchRefu
   options.max_tokens = 4;
   options.stop = false;
   options.seed = 73;
-  options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 4};
+  options.sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 4};
   std::vector<float> last;
   ASSERT_TRUE(reference->Prefill(std::array<std::int32_t, 1>{0}, last));
   rt::Generation expected;

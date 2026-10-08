@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Dense Gemma 31B reference norm attribution
@@ -102,14 +102,14 @@ are the previously committed V2 implementation, unchanged for dense31.
 
 Export `ggml` from exact llama pin
 `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4` to new external
-`~/.local/share/jitllm/gemma31-reference-fusions`, copy the checked
+`~/.local/share/llmp/gemma31-reference-fusions`, copy the checked
 `patch_controller.py`, and run `build_controller.sh` through installed
 `spark-job --gpu`. Use the existing authenticated 31B quality files under
 `gemma31-quality` and its preserved C API executable. `run_reference.sh`
 changes only the external roots and raw31 filename from the committed26
 wrapper. Run `all`/`none`, compare their full outputs to the actual31 ON/OFF
 files, then acquire `both` twice in new output directories and compare all
-bytes. `JITLLM_REFERENCE_ROOT` may select another fresh external scratch.
+bytes. `LLMP_REFERENCE_ROOT` may select another fresh external scratch.
 
 `screen.py ROOT QUALITY_ROOT both` authenticates the fixed31 calibration,
 IDs and baseline complete files, checks every finite F32 cell and candidate
@@ -124,6 +124,6 @@ Official supervised jobs `m35-gemma31-norm-fidelity1` and
 `m35-gemma31-norm-screen1` complete 10/10 and 3/3 steps respectively, rc0;
 the latter includes five bounded analyzer controls. Both jobs have 600-second
 limits and successful official waits. Raw logs/aggregates are external under
-`/tmp/jitllm-m35-coordination/gemma31-reference-fusions-raw` and Spark-b job
+`/tmp/llmp-m35-coordination/gemma31-reference-fusions-raw` and Spark-b job
 directories. No native default, source-lock, model support or serving change
 lands with this diagnosis.

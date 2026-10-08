@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Page-in through the landing zone at disk speed — 2026-09-27
@@ -86,12 +86,12 @@ drive's bandwidth only for recently written data.
   access, and unmap and release, carried out as the device lane did, on a
   thread of its own. `Lanes::backing` routes VMM work to it; without one
   it goes to the device lane, as before. Programs that page through the
-  zone (`jitllm_fp16_paged`, the new harness) wire it.
+  zone (`llmp_fp16_paged`, the new harness) wire it.
 - `PageInObserver` (`SchedulerSettings::observer`): the scheduler tells an
   optional observer when a page-in's backing is mapped, its read is
   published, and it is published resident or fails. The harness times
   per-extent latency with it.
-- `jitllm_pagein_bench`: the scheduler and every lane on its own thread,
+- `llmp_pagein_bench`: the scheduler and every lane on its own thread,
   loading a file of 2 MiB extents through the zone or in place, with
   backing mapped once or made per load, at a chosen depth, zone size and
   file offset, verified against the file on request; or a decode-like
@@ -172,7 +172,7 @@ figure is the load's own length (~300 ms) and is not shown.
   and pass through the storage lane's queue while it also harvests. Not
   pursued: it is D-034's path, which D-081 replaced for execution.
 
-The FP16 artifact through `jitllm_fp16_paged` (`run_paged.sh loads`'s
+The FP16 artifact through `llmp_fp16_paged` (`run_paged.sh loads`'s
 variants: its 490 device weight chunks, 988 MB, depth 4, 8 slots; five
 loads per process after its first, two processes), GB/s, on `spark`
 (`spark-b` in brackets):
@@ -232,7 +232,7 @@ victim's backing to a load (not built) would skip the create.
 
 ## Polling's cost during decode
 
-`jitllm_pagein_bench --decode` runs a decode-like loop: one task's steps,
+`llmp_pagein_bench --decode` runs a decode-like loop: one task's steps,
 each a device job that spins 100 µs on the host and queues a memset of
 16, 256 or 1,024 MiB (steps of ~0.17, ~1.6 and ~5.6 ms), the next once its
 fence completes, while a load of one more 2 MiB extent through the zone,
@@ -271,21 +271,21 @@ scheduler (0.19–0.33, or all of one core with the shortest steps).
   another measurement; no process of it overlapped one). Every start found
   no other compute process, a 1-minute load of 0.31–0.88 and the GPU in
   P8. Binaries: harness `2e6b5956…` (after) and `d0e6bff5…` (before),
-  `jitllm_fp16_paged` `2fe3f465…` and `b00e5609…`, probe `3faaa9ed…`.
+  `llmp_fp16_paged` `2fe3f465…` and `b00e5609…`, probe `3faaa9ed…`.
 - **Session `b2`** on `spark-b`, 2026-09-27 21:12–21:27 UTC, 60 processes, two rounds.
   Another agent was using the host: each process started once no compute
   process had held the GPU for 10 s and the 1-minute load average stayed
   under 2.0. At the starts the load average was 0.51–1.54, one start found
   another compute process on the GPU, and the GPU was in P8 (P0 once).
   Binaries: harness `a15647a3…` (after, built before two last edits: a
-  comment, and where VMM work goes when there is no VMM lane) and `d0e6bff5…` (before), `jitllm_fp16_paged`
+  comment, and where VMM work goes when there is no VMM lane) and `d0e6bff5…` (before), `llmp_fp16_paged`
   `7b01c4c4…` and `771627df…`, probe `d231f159…`.
 - **Builds.** `spark-native`, SDK `aarch64-e0a0c85c42806fb1`; the probe
   with CUDA 13.0 `nvcc` and `probe_offset.patch`.
 - **Traces and single measurements** in the other sections, and the
   at-rest file, were taken on `spark-b` the same day during development,
   with the conditions stated where they matter. Raw results stay on each
-  host under `~/.local/share/jitllm/pagein-perf-20260927/`.
+  host under `~/.local/share/llmp/pagein-perf-20260927/`.
 - **Not measured on an idle `spark`:** files at rest (RE-027).
 
 ## Method
@@ -341,7 +341,7 @@ mise run build -- spark-native --locked
 cd docs/experiments/dmabuf-direct && git apply ../pagein-perf/probe_offset.patch
 ./build.sh /path/probe_off && /path/probe_off create /path/pattern-16g.bin 16
 git checkout dmabuf_probe.cu
-build/spark-native/benchmarks/jitllm_pagein_bench --file /path/pattern-16g.bin \
+build/spark-native/benchmarks/llmp_pagein_bench --file /path/pattern-16g.bin \
   --gib 8 --offset 4096 --mode zone --backing managed --depth 4 --loads 5 --verify
 sh docs/experiments/pagein-perf/session.sh AFTER BEFORE PROBE FILE ARTIFACT TOKENS OUT 3
 python3 -B docs/experiments/pagein-perf/summarize.py OUT/results.txt

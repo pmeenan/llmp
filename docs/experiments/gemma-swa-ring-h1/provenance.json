@@ -38,32 +38,32 @@
           "sha256": "8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2"
         },
         "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
-          "bytes": 6448,
-          "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+          "bytes": 6442,
+          "sha256": "6481dae39d4510eb26842535ac4cf3b9cc87e3941617e5fabfc6f478efc6d385"
         },
         "docs/experiments/gemma-prefill-large/compare.py": {
-          "bytes": 9154,
-          "sha256": "c159a10aa2e775ce052c948b8e9eadbc61ee805efa563721d450382469c829a3"
+          "bytes": 9158,
+          "sha256": "98edae08ee76ca541598774ae15810ab2d08b096f443453a386ac7ab248b36d6"
         },
         "docs/experiments/gemma-swa-ring-h1/PROTOCOL.md": {
-          "bytes": 6709,
-          "sha256": "ec2a949ecfc6978f900d73d87457108c127a26171acf80284762b1eb76f3ff74"
+          "bytes": 6713,
+          "sha256": "8a0918111ca29bc7800f396f0e81fae31fd0a97bf71893c2adb02fb88e6e0b3c"
         },
         "docs/experiments/gemma-swa-ring-h1/compare.py": {
-          "bytes": 3825,
-          "sha256": "6443e7224e3a5c41414d7637afb2cd5580a707e390ab3668c0711fc3dfc0c63e"
+          "bytes": 3827,
+          "sha256": "8f3185ab9909dafd6e9b1bfc554067f782e59641fb22790615b7ba9b8f61725a"
         },
         "docs/experiments/gemma-swa-ring-h1/llama_prefill_ring.cc": {
-          "bytes": 5695,
-          "sha256": "00fb782b5af4f5b0aeb903957ac26100c099422eeeb5e873bdc99890c77e11d2"
+          "bytes": 5699,
+          "sha256": "1ffc1ae6e215a22778ce5db51eb40a975afa3ee6130e1b8143a2a1cba9fcf68a"
         },
         "docs/experiments/gemma-swa-ring-h1/own_freeze.py": {
-          "bytes": 6342,
-          "sha256": "50797060d6780ec09b7dd7c51a53e9490ca413d479bc6d6fad1de86185173d0b"
+          "bytes": 6336,
+          "sha256": "d5804aa38590d6066336d7af4dd010cb08134d45e3f24ffca7bd8dbf8da7885e"
         },
         "docs/experiments/gemma-swa-ring-h1/reference.sh": {
-          "bytes": 1524,
-          "sha256": "33e7f04356ac86f4f4c0196d9ebc01f702e826e34026c3a3d74d2e60f6011d7c"
+          "bytes": 1522,
+          "sha256": "5831b3c6722802e86b451a88834d41352b626e131cb2a44a967054e7b883507f"
         }
       },
       "tracked_production_diff": []
@@ -143,32 +143,32 @@
         "sha256": "8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2"
       },
       "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
-        "bytes": 6448,
-        "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+        "bytes": 6442,
+        "sha256": "6481dae39d4510eb26842535ac4cf3b9cc87e3941617e5fabfc6f478efc6d385"
       },
       "docs/experiments/gemma-prefill-large/compare.py": {
-        "bytes": 9154,
-        "sha256": "c159a10aa2e775ce052c948b8e9eadbc61ee805efa563721d450382469c829a3"
+        "bytes": 9158,
+        "sha256": "98edae08ee76ca541598774ae15810ab2d08b096f443453a386ac7ab248b36d6"
       },
       "docs/experiments/gemma-swa-ring-h1/PROTOCOL.md": {
-        "bytes": 6709,
-        "sha256": "ec2a949ecfc6978f900d73d87457108c127a26171acf80284762b1eb76f3ff74"
+        "bytes": 6713,
+        "sha256": "8a0918111ca29bc7800f396f0e81fae31fd0a97bf71893c2adb02fb88e6e0b3c"
       },
       "docs/experiments/gemma-swa-ring-h1/compare.py": {
-        "bytes": 3825,
-        "sha256": "6443e7224e3a5c41414d7637afb2cd5580a707e390ab3668c0711fc3dfc0c63e"
+        "bytes": 3827,
+        "sha256": "8f3185ab9909dafd6e9b1bfc554067f782e59641fb22790615b7ba9b8f61725a"
       },
       "docs/experiments/gemma-swa-ring-h1/llama_prefill_ring.cc": {
-        "bytes": 5695,
-        "sha256": "00fb782b5af4f5b0aeb903957ac26100c099422eeeb5e873bdc99890c77e11d2"
+        "bytes": 5699,
+        "sha256": "1ffc1ae6e215a22778ce5db51eb40a975afa3ee6130e1b8143a2a1cba9fcf68a"
       },
       "docs/experiments/gemma-swa-ring-h1/own_freeze.py": {
-        "bytes": 6342,
-        "sha256": "50797060d6780ec09b7dd7c51a53e9490ca413d479bc6d6fad1de86185173d0b"
+        "bytes": 6336,
+        "sha256": "d5804aa38590d6066336d7af4dd010cb08134d45e3f24ffca7bd8dbf8da7885e"
       },
       "docs/experiments/gemma-swa-ring-h1/reference.sh": {
-        "bytes": 1524,
-        "sha256": "33e7f04356ac86f4f4c0196d9ebc01f702e826e34026c3a3d74d2e60f6011d7c"
+        "bytes": 1522,
+        "sha256": "5831b3c6722802e86b451a88834d41352b626e131cb2a44a967054e7b883507f"
       }
     }
   },
@@ -418,7 +418,7 @@
   },
   "production_source_manifest_file_count": 457,
   "raw_arrays_logs_choices_checked_in": false,
-  "raw_root": "~/.local/share/jitllm/gemma-swa-ring-h1 on Spark-b",
+  "raw_root": "~/.local/share/llmp/gemma-swa-ring-h1 on Spark-b",
   "reference": {
     "batch": 8192,
     "capacity_basis": "both original context-creation logs validated by compare_v2",

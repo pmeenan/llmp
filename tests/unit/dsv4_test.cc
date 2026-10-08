@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The DeepSeek V4 adapter (model/dsv4.h) and its chunk graph
@@ -40,16 +40,16 @@
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
 
 namespace {
 
-namespace md = jitllm::model;
-namespace kg = jitllm::kernels::ggml;
-using jitllm::test_support::Failed;
+namespace md = llmp::model;
+namespace kg = llmp::kernels::ggml;
+using llmp::test_support::Failed;
 
 // Why a result failed, read safely (D-083).
 template <typename T>
@@ -600,8 +600,7 @@ TEST(Dsv4Test, GroupedStoresRespectActualCompressorReadBarriers) {
     ASSERT_TRUE(grouped) << Why(grouped);
     EXPECT_GT(std::ranges::count_if(plan->steps,
                                     [](const auto& step) {
-                                      return step.operation ==
-                                             jitllm::execution::Operation::kSetRows;
+                                      return step.operation == llmp::execution::Operation::kSetRows;
                                     }),
               0);
     EXPECT_EQ(std::ranges::count_if(
@@ -644,7 +643,7 @@ TEST(Dsv4Test, PlainDeviceTokensRetainTheCompleteHeadAndSeparateShapeIdentity) {
     EXPECT_EQ(graph.token->ne[0], count);
     EXPECT_EQ(graph.logits->ne[0], p.vocab);
     EXPECT_EQ(graph.logits->ne[1], count);
-    EXPECT_EQ(kg::JitllmOpInt(graph.token, 1),
+    EXPECT_EQ(kg::LlmpOpInt(graph.token, 1),
               static_cast<std::int32_t>(kg::ArgmaxFlavor::kHostGreedy));
     EXPECT_EQ(graph.nodes.back(), graph.token);
     std::uint64_t next = std::uint64_t{1} << 40U;
@@ -829,7 +828,7 @@ TEST(Dsv4Test, StateOnlyCannotBroadenHeadedOutputAEligibilityAtTheRemovedFinalLa
       // These two state-only graphs have the same surviving node count.
       // It cannot authorize HCA without the all-layer metadata above.
       const auto count = std::ranges::count_if(
-          graph->nodes, [](const auto* t) { return kg::JitllmOpOf(t) == kg::JitllmOp::kDsv4OutA; });
+          graph->nodes, [](const auto* t) { return kg::LlmpOpOf(t) == kg::LlmpOp::kDsv4OutA; });
       EXPECT_EQ(count, static_cast<std::ptrdiff_t>(
                            p.layers - static_cast<std::uint32_t>(state_only || !eligible)));
     }
@@ -914,7 +913,7 @@ TEST(Dsv4Test, OrderedReductionSelectionRequiresTheCompleteCanonicalContract) {
 
 // The fast plan (Dsv4GraphOptions::fused, DeviceChoices::fuse_norms and
 // vector_floats; D-085's note): chunks of up to 8 rows run the hyper-
-// connections, the MoE blocks and the quantized products as jitLLM's fused
+// connections, the MoE blocks and the quantized products as llmpalooza's fused
 // operations, wider chunks keep GGML's products and hyper-connections, and
 // every chunk's compressors are fused; far fewer steps than the reference.
 TEST(Dsv4Test, TheFastPlanFusesDecodeAndVerifyChunks) {
@@ -1039,11 +1038,11 @@ TEST(Dsv4Test, DeviceRawMasksPlanAsExactRowActivationsForScalarAndJoinedTargets)
       EXPECT_EQ(mask->ne[0], 4352);
       EXPECT_EQ(mask->ne[1], chunks[slot].rows);
       EXPECT_EQ(mask->src[0], positions);
-      EXPECT_EQ(kg::JitllmOpInt(mask, 0), joined ? wave.first[slot] : 0);
-      EXPECT_EQ(kg::JitllmOpInt(mask, 5), 1);
+      EXPECT_EQ(kg::LlmpOpInt(mask, 0), joined ? wave.first[slot] : 0);
+      EXPECT_EQ(kg::LlmpOpInt(mask, 5), 1);
       EXPECT_EQ(std::ranges::count(inputs, mask), 0);
       for (const auto* node : nodes) {
-        if (kg::JitllmOpOf(node) == kg::JitllmOp::kDsv4SparseMask && node->src[0] == mask)
+        if (kg::LlmpOpOf(node) == kg::LlmpOp::kDsv4SparseMask && node->src[0] == mask)
           EXPECT_EQ(node->ne[1], chunks[slot].rows);
       }
     }
@@ -1217,12 +1216,12 @@ TEST(Dsv4Test, TheFastPlanAttendsSparselyAtAnyDepth) {
       ASSERT_TRUE(sharing.has_value()) << rows << " rows: " << Why(sharing);
       std::array<std::size_t, 3> families{};
       for (const auto& step : sharing->steps) {
-        if (step.operation != jitllm::execution::Operation::kFlashAttn) {
+        if (step.operation != llmp::execution::Operation::kFlashAttn) {
           continue;
         }
         const ggml_tensor* mask = step.nodes[0]->src[3];
-        const std::size_t family = kg::JitllmOpOf(mask) == kg::JitllmOp::kDsv4SparseMask
-                                       ? static_cast<std::size_t>(kg::JitllmOpInt(mask, 1))
+        const std::size_t family = kg::LlmpOpOf(mask) == kg::LlmpOp::kDsv4SparseMask
+                                       ? static_cast<std::size_t>(kg::LlmpOpInt(mask, 1))
                                        : 2;
         ASSERT_LT(family, families.size());
         ++families[family];
@@ -1438,7 +1437,7 @@ TEST(Dsv4Test, AWaveJoinsRowLocalWorkAndKeepsEachSlotsStateItsOwn) {
 
 // Waves, and a decode step's fused form, take every mixing-weight type a
 // GGUF stores: F32 (UD-Q2_K_XL), F16 (the community GGUF) and BF16 through
-// jitllm.dsv4.hc_mix, a quantized one through GGML's product, a slot at a
+// llmp.dsv4.hc_mix, a quantized one through GGML's product, a slot at a
 // time in a wave. What cannot wave is an expert the fused form cannot
 // take: Dsv4WaveSupport names the first such layer and its types, and the
 // wave builder refuses it too (the runner then serves one request at a
@@ -1513,7 +1512,7 @@ TEST(Dsv4Test, WavesTakeAnyMixingWeightTypeAndRefuseOnlyUnfusedExperts) {
     ASSERT_TRUE(one.has_value()) << type << ": " << Why(one);
     auto one_plan = plan_of(one->nodes, one->inputs());
     ASSERT_TRUE(one_plan.has_value()) << type << ": " << Why(one_plan);
-    // Both in the fused form: the routed products jitllm.vecq's.
+    // Both in the fused form: the routed products llmp.vecq's.
     EXPECT_GT(count(*one_plan, kg::kVecQName), 0) << type;
     EXPECT_EQ(count(*plan, kg::kVecQName), count(*one_plan, kg::kVecQName)) << type;
     const bool mixed = type != "Q8_0";
@@ -1531,7 +1530,7 @@ TEST(Dsv4Test, WavesTakeAnyMixingWeightTypeAndRefuseOnlyUnfusedExperts) {
     }
     EXPECT_EQ(products, mixed ? 0 : layers_mixes * std::int64_t{4}) << type;
   }
-  // Attention weights jitllm.vecq has no kernel for (IQ1_S), output-A among
+  // Attention weights llmp.vecq has no kernel for (IQ1_S), output-A among
   // them, beside quantized mixes: still a wave, and every GGML product of a
   // quantized weight a slot's own row, as its own chunk runs it.
   {
@@ -1569,7 +1568,7 @@ TEST(Dsv4Test, WavesTakeAnyMixingWeightTypeAndRefuseOnlyUnfusedExperts) {
     EXPECT_EQ(out_a, std::int64_t{p.layers} * 4);
     EXPECT_GE(quantized, std::int64_t{p.layers} * 4 * 7);  // five IQ1_S and two mixes a layer
   }
-  // Experts the fused form cannot take: a down product jitllm.vecq has no
+  // Experts the fused form cannot take: a down product llmp.vecq has no
   // kernel for, gate and up of different types.
   const auto refused = [&](std::string_view role, std::string_view type, std::uint32_t layer) {
     auto resources = mixes_typed("F16");
@@ -1813,7 +1812,7 @@ TEST(Dsv4Test, OutAPrefillIsOptInAndKeepsUnrotatedHeadsLive) {
         std::int64_t views = 0;
         for (const auto* node : graph->nodes) {
           if (node->op == GGML_OP_MUL_MAT && node->src[1]->view_src != nullptr &&
-              kg::JitllmOpOf(node->src[1]->view_src) == kg::JitllmOp::kDsv4OutA) {
+              kg::LlmpOpOf(node->src[1]->view_src) == kg::LlmpOp::kDsv4OutA) {
             ++views;
             EXPECT_EQ(node->src[1]->ne[1], chunk_rows);
           }
@@ -1960,7 +1959,7 @@ TEST(Dsv4Test, PrefillStageMechanismsSelectOnlyWhereTheirGuardsAdmit) {
     EXPECT_EQ(count(kg::kDsv4HcPostExpertsNormF16Name), wide ? layers - 1 : 0) << what;
     std::ptrdiff_t f32_rows = 0;
     for (const ggml_tensor* node : graph->nodes) {
-      if (kg::JitllmOpOf(node) == kg::JitllmOp::kDsv4HcNormF16) {
+      if (kg::LlmpOpOf(node) == kg::LlmpOp::kDsv4HcNormF16) {
         EXPECT_EQ(node->type, test.community ? GGML_TYPE_F16 : GGML_TYPE_F32) << what;
         f32_rows += node->type == GGML_TYPE_F32 ? 1 : 0;
       }
@@ -2015,7 +2014,7 @@ TEST(Dsv4Test, PrefillStageMechanismsSelectOnlyWhereTheirGuardsAdmit) {
     std::ptrdiff_t f16_heads = 0;
     std::ptrdiff_t f16_queries = 0;
     for (const ggml_tensor* node : graph->nodes) {
-      if (kg::JitllmOpOf(node) == kg::JitllmOp::kDsv4QHead && node->type == GGML_TYPE_F16) {
+      if (kg::LlmpOpOf(node) == kg::LlmpOp::kDsv4QHead && node->type == GGML_TYPE_F16) {
         ++f16_heads;
       }
       if (node->op == GGML_OP_FLASH_ATTN_EXT && node->src[0]->type == GGML_TYPE_F16) {

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 short-rung policy and phase controls — 2026-10-01
@@ -150,8 +150,8 @@ supervisor records the job complete with rc0. Spark A was explicitly released.
 Raw receipts, complete specs/traces and the excluded preparation remain
 outside Git at `spark:~/scratch/m3-qwen-policy-phase-r2/` and the preserved
 qualification/supplement roots. Local compact evidence is in
-`/tmp/jitllm-qwen-policy-phase-timing-r2/` and
-`/tmp/jitllm-qwen-policy-phase-analysis-r2.json`.
+`/tmp/llmp-qwen-policy-phase-timing-r2/` and
+`/tmp/llmp-qwen-policy-phase-analysis-r2.json`.
 
 | Evidence | SHA-256 |
 | --- | --- |

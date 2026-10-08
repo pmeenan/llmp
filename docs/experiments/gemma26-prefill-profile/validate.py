@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Freeze annotation environment; authenticate completed output against Task40."""
 import datetime
@@ -51,7 +51,7 @@ def environment(root, scratch):
     assert {n:v['sha256'] for n,v in headers.items()} == ring.pinned.HEADERS
     libraries = dict(line.split()[::-1] for line in (scratch/'libraries.sha256').read_text().splitlines())
     assert libraries == ring.LIBRARIES
-    artifact = pathlib.Path.home()/'.local/share/jitllm/m3-artifacts'/ring.ARTIFACT
+    artifact = pathlib.Path.home()/'.local/share/llmp/m3-artifacts'/ring.ARTIFACT
     assert ring.identity(artifact/'manifest.json')['sha256'] == ring.ARTIFACT
     assert ring.identity(artifact/'index.json')['sha256'] == ring.INDEX
     interface_path = scratch/'nvtx-interface.json'
@@ -60,17 +60,17 @@ def environment(root, scratch):
     observer = pathlib.Path(interface['observer_root'])
     assert all(ring.identity(observer/n) == v for n,v in interface['headers'].items())
     assert all(ring.identity(pathlib.Path(n)) == v for n,v in interface['tools'].items())
-    baseline = pathlib.Path.home()/'.local/share/jitllm/gemma26-swa-ring-transfer'
+    baseline = pathlib.Path.home()/'.local/share/llmp/gemma26-swa-ring-transfer'
     assert ring.identity(baseline/'native-frozen.json')['sha256'] == TASK40_OWN
     assert ring.identity(baseline/'source-identities.json')['sha256'] == TASK40_SOURCE
-    baseline_log = pathlib.Path.home()/'.local/share/jitllm/jobs/m35-gemma26-swa-ring-bookend1/log'
+    baseline_log = pathlib.Path.home()/'.local/share/llmp/jobs/m35-gemma26-swa-ring-bookend1/log'
     assert ring.identity(baseline_log)['sha256'] == TASK40_LOG
     return {'base':BASE,'sources':sources,'ancestry':ancestry,'headers':headers,'libraries':libraries,
             'ids':ring.identity(scratch/'ids.i32'),'manifest':ring.identity(artifact/'manifest.json'),
             'index':ring.identity(artifact/'index.json'),'interface':ring.identity(interface_path),
             'production_source_manifest':ring.identity(scratch/'production-source-manifest.json'),
-            'build_receipt':ring.identity(root/'build/spark-native/jitllm-receipt.json'),
-            'native_binary':ring.identity(root/'build/spark-native/benchmarks/jitllm_gemma26_prefill_profile'),
+            'build_receipt':ring.identity(root/'build/spark-native/llmp-receipt.json'),
+            'native_binary':ring.identity(root/'build/spark-native/benchmarks/llmp_gemma26_prefill_profile'),
             'original_binary':ring.identity(scratch/'llama_prefill_profile'),
             'child_binary':ring.identity(scratch/'profile_child'),
             'task40_own':ring.identity(baseline/'native-frozen.json'),
@@ -85,10 +85,10 @@ def tokens_equal(a,b):
 def check_run(scratch, name, engine, job):
     assert engine in TASK40_HEADS and re.fullmatch('[A-Za-z0-9][A-Za-z0-9_-]*',name)
     retirement = ring.retired(job)
-    log = pathlib.Path.home()/'.local/share/jitllm/jobs'/job/'log'
+    log = pathlib.Path.home()/'.local/share/llmp/jobs'/job/'log'
     runs = ring.old.runs(log,'all','26')
     assert len(runs) == 1 and runs[0]['engine'] == ('PREFILL_NATIVE' if engine == 'native' else 'PREFILL_REFERENCE')
-    baseline_log = pathlib.Path.home()/'.local/share/jitllm/jobs/m35-gemma26-swa-ring-bookend1/log'
+    baseline_log = pathlib.Path.home()/'.local/share/llmp/jobs/m35-gemma26-swa-ring-bookend1/log'
     baseline_runs = ring.old.runs(baseline_log,'all','26')
     baseline = baseline_runs[1] if engine == 'native' else baseline_runs[0]
     assert tokens_equal(runs[0]['tokens'],baseline['tokens']) and len(runs[0]['tokens']) == 32
@@ -102,7 +102,7 @@ def check_run(scratch, name, engine, job):
         record['heads'][n] = ring.identity(scratch/name/n)
     if engine == 'native':
         actual = ring.record(scratch/name)
-        old = json.loads((pathlib.Path.home()/'.local/share/jitllm/gemma26-swa-ring-transfer/native-frozen.json').read_text())
+        old = json.loads((pathlib.Path.home()/'.local/share/llmp/gemma26-swa-ring-transfer/native-frozen.json').read_text())
         assert actual == old['records']['native-first']
         record.update(actual)
     else:
@@ -110,7 +110,7 @@ def check_run(scratch, name, engine, job):
         container_record = json.loads(container.read_text())
         assert container_record['container_absent_after_checked_docker_query'] is True
         assert container_record['owner_label'] == 'gemma26-prefill-profile'
-        assert container_record['name'] == 'jitllm-gemma26-prefill-profile-'+name
+        assert container_record['name'] == 'llmp-gemma26-prefill-profile-'+name
         assert container_record['cid'] == (scratch/(name+'.cid')).read_text().strip()
         assert re.fullmatch('[0-9a-f]{64}',container_record['cid'])
         container_retirement = ring.identity(container)

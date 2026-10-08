@@ -1,7 +1,7 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Ubuntu 24.04 packages an x86-64 build host needs for the jitLLM SDK
+# Ubuntu 24.04 packages an x86-64 build host needs for the llmpalooza SDK
 # (D-049). tools/check-toolchain checks them; setup never installs them.
 # Format: `package`, `package >= version` or `package = version`.
 

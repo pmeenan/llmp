@@ -1,13 +1,13 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # CUTLASS
 
 - **Repository:** [NVIDIA/cutlass](https://github.com/NVIDIA/cutlass),
   BSD-3-Clause.
-- **jitLLM's pin:** v4.7.1, commit `cb4247394dd82148787aed73e5dc7cef33cbf862`
+- **Llmpalooza's pin:** v4.7.1, commit `cb4247394dd82148787aed73e5dc7cef33cbf862`
   ([sources.lock.json](../../third_party/sources.lock.json)), headers only.
-  jitLLM's own `sm_121a` units include them: Qwen3.8's routed experts over
+  Llmpalooza's own `sm_121a` units include them: Qwen3.8's routed experts over
   the NVFP4 grouped GEMM (`src/kernels/ggml/moe_cutlass.cu`) and the MXFP8
   products (`src/kernels/ggml/mxfp8_cutlass.cu`).
 - **Last upstream check:** 2026-09-29. v4.8.0 (2026-09-22) mostly adds Rubin
@@ -30,7 +30,7 @@
   It fits an L2 working-set cliff.
   Repro: the kernel at M 8,192, N 10,240, K 2,560, with and without the
   swizzle.
-- **jitLLM's workaround:** `src/kernels/ggml/mxfp8_cutlass.cu` swizzles past
+- **Llmpalooza's workaround:** `src/kernels/ggml/mxfp8_cutlass.cu` swizzles past
   4,096 rows. No cost.
 - **Upstream master:** not checked beyond the release notes above.
 - **Upstream refs:** none found.
@@ -40,10 +40,10 @@
 - **Links:** RE-034 in [rough-edges.md](../rough-edges.md);
   [qwen38-native](../experiments/qwen38-native/README.md#prefill-second-pass-speed-before-bit-exactness).
 
-## jitLLM's build glue (patch 0001)
+## Llmpalooza's build glue (patch 0001)
 
 - **Status:** carry.
-- **What:** `third_party/patches/cutlass/0001-jitllm-build.patch` adds
-  `jitllm/CMakeLists.txt`, an interface target over the kept header trees.
+- **What:** `third_party/patches/cutlass/0001-llmp-build.patch` adds
+  `llmp/CMakeLists.txt`, an interface target over the kept header trees.
   It compiles nothing and changes no CUTLASS file.
 - **Proposed action:** none.

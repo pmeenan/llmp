@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2023-2026 The ggml authors
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: MIT AND Apache-2.0
 """Remove one pinned stock fusion family, retaining every other stock gate."""
 import hashlib
@@ -11,9 +11,9 @@ PINNED_SHA = '523470d6604755b82d0208414ce40f1378941b10bc1349763bbdf02edaab9634'
 
 HELPER = r'''
 // External diagnosis only: all other original stock gates remain in place.
-static int jitllm_reference_policy() {
+static int llmp_reference_policy() {
     static const int policy = [] {
-        const char * p = getenv("JITLLM_REFERENCE_FUSION_POLICY");
+        const char * p = getenv("LLMP_REFERENCE_FUSION_POLICY");
         if (p == nullptr || strcmp(p, "all") == 0) return 0;
         if (strcmp(p, "no_routing") == 0) return 1;
         if (strcmp(p, "no_reduction") == 0) return 2;
@@ -27,16 +27,16 @@ static int jitllm_reference_policy() {
 
 BANNER = r'''
     static const bool announced = [] {
-        fprintf(stderr, "JITLLM_REF_CONTROLLER policy=%d\n", jitllm_reference_policy());
+        fprintf(stderr, "LLMP_REF_CONTROLLER policy=%d\n", llmp_reference_policy());
         return true;
     }();
     (void) announced;
 '''
 
 TRACE = r'''
-                static const bool trace = getenv("JITLLM_REFERENCE_TRACE") != nullptr;
+                static const bool trace = getenv("LLMP_REFERENCE_TRACE") != nullptr;
                 if (trace && nodes_to_skip > 0) {
-                    fprintf(stderr, "JITLLM_REF_FUSION count=%d", nodes_to_skip + 1);
+                    fprintf(stderr, "LLMP_REF_FUSION count=%d", nodes_to_skip + 1);
                     for (int f = i; f <= i + nodes_to_skip; ++f) {
                         const auto * t = cgraph->nodes[f];
                         fprintf(stderr, " | %s:%s:%s:[%lld,%lld,%lld,%lld]",
@@ -66,15 +66,15 @@ def main():
     function = function.replace(anchor, BANNER + '\n' + anchor)
     anchor = '    if (node->op == GGML_OP_MUL) {\n        ggml_cuda_moe_weighted_reduction_match match;'
     assert function.count(anchor) == 1
-    function = function.replace(anchor, '    if (jitllm_reference_policy() != 2 && node->op == GGML_OP_MUL) {\n        ggml_cuda_moe_weighted_reduction_match match;')
+    function = function.replace(anchor, '    if (llmp_reference_policy() != 2 && node->op == GGML_OP_MUL) {\n        ggml_cuda_moe_weighted_reduction_match match;')
     anchor = '    if (cgraph->nodes[i]->op == GGML_OP_UNARY || cgraph->nodes[i]->op == GGML_OP_SOFT_MAX ||\n            cgraph->nodes[i]->op == GGML_OP_ARGSORT) {'
     assert function.count(anchor) == 1
-    function = function.replace(anchor, '    if (jitllm_reference_policy() != 1 && (cgraph->nodes[i]->op == GGML_OP_UNARY || cgraph->nodes[i]->op == GGML_OP_SOFT_MAX ||\n            cgraph->nodes[i]->op == GGML_OP_ARGSORT)) {')
+    function = function.replace(anchor, '    if (llmp_reference_policy() != 1 && (cgraph->nodes[i]->op == GGML_OP_UNARY || cgraph->nodes[i]->op == GGML_OP_SOFT_MAX ||\n            cgraph->nodes[i]->op == GGML_OP_ARGSORT)) {')
     for policy, pattern in [(3, '{ GGML_OP_RMS_NORM, GGML_OP_MUL }, {}'),
                             (4, '{ GGML_OP_SCALE, GGML_OP_UNARY, GGML_OP_SCALE }, { GGML_UNARY_OP_TANH }')]:
         anchor = '    if (ggml_cuda_can_fuse(cgraph, i, ' + pattern + ')) {'
         assert function.count(anchor) == 1
-        function = function.replace(anchor, '    if (jitllm_reference_policy() != ' + str(policy) + ' && ggml_cuda_can_fuse(cgraph, i, ' + pattern + ')) {')
+        function = function.replace(anchor, '    if (llmp_reference_policy() != ' + str(policy) + ' && ggml_cuda_can_fuse(cgraph, i, ' + pattern + ')) {')
     text = text[:start] + function + text[end:]
     anchor = '                int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);\n'
     assert text.count(anchor) == 1
@@ -85,7 +85,7 @@ def main():
     # Preserve all original weighted-reduction allocation hints except in
     # the one policy which disables that specialized reduction kernel.
     text = text[:offset] + text[offset:].replace(
-        anchor, '    if (!disable_fusion && jitllm_reference_policy() != 2) {', 1)
+        anchor, '    if (!disable_fusion && llmp_reference_policy() != 2) {', 1)
     destination.write_text(text)
     print('original_sha256=' + PINNED_SHA)
     print('diagnostic_sha256=' + hashlib.sha256(destination.read_bytes()).hexdigest())

@@ -98,7 +98,7 @@
     "source_revision": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
     "reported_version": "0.4.1-dev (build 10964, commit b29c606e2)",
     "compiler": "GNU 14.2.0 for Linux aarch64",
-    "category": "external reference tool; not incorporated into jitLLM",
+    "category": "external reference tool; not incorporated into llmpalooza",
     "license": "MIT (llama.cpp/GGML); container dependencies retain their own terms",
     "image_size_bytes": 3051638872,
     "server_sha256": "b2e1769c9d08b1e3b18282928f91ca11de61ec2020d38cdd389d462b0c223351",
@@ -151,7 +151,7 @@
     "kernel": "7.0.0-1019-nvidia"
   },
   "harness": {
-    "reference.cc_sha256": "7c0d8eab4b812482bfc58ef3e9b8dcba07ee8685430d533ee1a142c7687c1205",
+    "reference.cc_sha256": "5e996fca713d268eaaa79d2ca63f753c2735a5ddf937957c08b172d302df8ea0",
     "executable_sha256": "e57c9998b2b576eeee1a4df4e19fb48b6b5dd356cec65fa860e07b29ac87b00d",
     "compiler": "GNU 13.3.0 (image default g++ -> g++-13), inside pinned external image; verified from the executable's .comment section",
     "flags": [

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Explicit scalar context8448 HTTP boundary; repeated input is not corpus quality."""
 import argparse
@@ -30,10 +30,10 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     args = parser.parse_args()
     binding = json.loads(args.binding.read_text())
-    assert sha(args.runtime) == binding['paths']['build/spark-native/src/runtime/jitllm-runtime']['sha256']
+    assert sha(args.runtime) == binding['paths']['build/spark-native/src/runtime/llmp-runtime']['sha256']
     assert binding['receipt']['official'] and binding['receipt']['cuda']
     for name in ('libcublas.so.13', 'libcublasLt.so.13'):
-        assert sha(args.library_path / name) == binding['paths']['build/spark-native/lib/jitllm/' + name]['sha256']
+        assert sha(args.library_path / name) == binding['paths']['build/spark-native/lib/llmp/' + name]['sha256']
     env = {**os.environ, 'LD_LIBRARY_PATH': str(args.library_path.resolve())}
     quality = json.loads((args.depth_root / 'quality.json').read_text())
     cycle = json.loads((args.depth_root / 'cycle.json').read_text())

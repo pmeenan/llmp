@@ -1,6 +1,6 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-// External llama.cpp reference only; this does not implement jitLLM inference.
+// External llama.cpp reference only; this does not implement llmpalooza inference.
 //
 // The correctness oracle of M3's DeepSeek V4 Flash slice: llama.cpp at the
 // pinned build (b29c606e, the digest-pinned image) on the same GGUF, with

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Shared physical KV store grouping (2026-10-08)
@@ -140,16 +140,16 @@ installed Spark B job, `--gpu --timeout 600 --grace 30 --stop-on-fail`, with
 before timing, with no concurrent host work.
 
 ```text
-jitllm_gemma{2,3}_joint_prefill_probe ARTIFACT INPUT0 INPUT1 OUT
+llmp_gemma{2,3}_joint_prefill_probe ARTIFACT INPUT0 INPUT1 OUT
   first-cycle bounded-roots device-masks prefill-ahead owner-prefill
   flexible-owner-prefill chunk=128 lookahead-capacity=2 shared-q8
   budget-bytes=34359738368 prepare-state [GROUP]
 
-jitllm_gemma_prefill ARTIFACT INPUT OUT 26 serving 1024 normmul-on state-only
+llmp_gemma_prefill ARTIFACT INPUT OUT 26 serving 1024 normmul-on state-only
   lookahead-on phases-off state-chunked capture-ahead-off features-off
   prepare-on 8192 7680 stores-off|stores-on 34359738368
 
-jitllm_plain_token_probe ARTIFACT INPUT0 INPUT1 OUT on [gguf] [GROUP]
+llmp_plain_token_probe ARTIFACT INPUT0 INPUT1 OUT on [gguf] [GROUP]
   budget=115964116992
 ```
 
@@ -161,7 +161,7 @@ Gemma26 uses `gemma-prefill/input1/ids.i32`, authenticating the whole 8227-ID
 file while consuming 7715 positions. Qwen inputs derive as little-endian i32
 from standing `references/qwen-device-masks/inputs/wave-prompts.json`, entries
 `mask-short-1536` and `mask-short-1280`. Paths are under
-`~/.local/share/jitllm`. Preserve originals; no new corpus or artifact import.
+`~/.local/share/llmp`. Preserve originals; no new corpus or artifact import.
 
 Before/after each arm authenticate source, actual prerequisite, ELF, receipt,
 first-resolved pinned cuBLAS/Lt, ID size/SHA and small artifact metadata.

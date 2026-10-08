@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/dsv4_qhead.h"
@@ -7,10 +7,10 @@
 #include <cstddef>
 #include <expected>
 
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 bool Dsv4QHeadFits(const ggml_tensor* x, const ggml_tensor* positions, const Dsv4QHeadParams& p) {
   if (!detail::IsF32(x) || positions == nullptr || positions->type != GGML_TYPE_I32 ||
@@ -30,18 +30,18 @@ bool Dsv4QHeadFits(const ggml_tensor* x, const ggml_tensor* positions, const Dsv
 }
 
 Dsv4QHeadParams Dsv4QHeadParamsOf(const ggml_tensor* node) {
-  return {.eps = JitllmOpFloat(node, 0),
-          .original_context = JitllmOpInt(node, 1),
-          .base = JitllmOpFloat(node, 2),
-          .scale = JitllmOpFloat(node, 3),
-          .extension = JitllmOpFloat(node, 4),
-          .attention = JitllmOpFloat(node, 5),
-          .beta_fast = JitllmOpFloat(node, 6),
-          .beta_slow = JitllmOpFloat(node, 7)};
+  return {.eps = LlmpOpFloat(node, 0),
+          .original_context = LlmpOpInt(node, 1),
+          .base = LlmpOpFloat(node, 2),
+          .scale = LlmpOpFloat(node, 3),
+          .extension = LlmpOpFloat(node, 4),
+          .attention = LlmpOpFloat(node, 5),
+          .beta_fast = LlmpOpFloat(node, 6),
+          .beta_slow = LlmpOpFloat(node, 7)};
 }
 
 std::expected<void, KernelFailure> CheckDsv4QHead(const ggml_tensor* node) {
-  if (JitllmOpOf(node) != JitllmOp::kDsv4QHead || !detail::Bound(node) ||
+  if (LlmpOpOf(node) != LlmpOp::kDsv4QHead || !detail::Bound(node) ||
       !detail::Bound(node->src[0]) || !detail::Bound(node->src[1])) {
     return detail::Rejected("not a bound DeepSeek Q-head node");
   }
@@ -63,4 +63,4 @@ std::expected<void, KernelFailure> CheckDsv4QHead(const ggml_tensor* node) {
   return {};
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

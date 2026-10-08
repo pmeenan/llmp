@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Bound analysis to actual NVTX interval; aggregate activity, never headline speed."""
 import collections
@@ -13,7 +13,7 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('profile_validate',pathlib.Path(__file__).with_name('validate.py'))
 validate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(validate)
-LABEL = 'jitllm.gemma26.paid_prefill'
+LABEL = 'llmp.gemma26.paid_prefill'
 
 
 def union_ns(intervals):

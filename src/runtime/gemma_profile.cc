@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/gemma_profile.h"
 
 #include "artifact/artifact.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 std::expected<const model::Gemma4Profile*, std::string> Candidate(std::string_view architecture,
                                                                   std::uint32_t experts) {
@@ -32,4 +32,4 @@ std::expected<const model::Gemma4Profile*, std::string> ApprovedGemmaProfile(
     return std::unexpected(binding.error());
   return *candidate;
 }
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

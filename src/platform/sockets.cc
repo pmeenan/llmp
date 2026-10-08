@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/sockets.h"
@@ -10,7 +10,7 @@
 #include <cstddef>
 #include <span>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 int OpenStreamSocket(int family) {
   return ::socket(family, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
@@ -35,4 +35,4 @@ bool FillRandom(std::span<std::byte> out) {
   return ::getrandom(out.data(), out.size(), 0) == static_cast<ssize_t>(out.size());
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

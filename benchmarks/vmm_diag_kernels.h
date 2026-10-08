@@ -1,19 +1,19 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The microkernels of the host-VMM diagnosis (vmm_diag_bench.cc;
 // docs/experiments/host-vmm-diagnosis/). Each queues one launch on `stream`
 // over device-accessible addresses and returns the launch's error. None is
-// part of jitLLM: they are probes of how the GPU reads a kind of memory.
+// part of llmpalooza: they are probes of how the GPU reads a kind of memory.
 
-#ifndef JITLLM_BENCHMARKS_VMM_DIAG_KERNELS_H_
-#define JITLLM_BENCHMARKS_VMM_DIAG_KERNELS_H_
+#ifndef LLMP_BENCHMARKS_VMM_DIAG_KERNELS_H_
+#define LLMP_BENCHMARKS_VMM_DIAG_KERNELS_H_
 
 #include <cuda_runtime.h>
 
 #include <cstdint>
 
-namespace jitllm::diag {
+namespace llmp::diag {
 
 // Fills `words` 32-bit words at `data` with a pattern of `seed`.
 cudaError_t Fill(cudaStream_t stream, std::uint64_t data, std::uint64_t words, std::uint32_t seed);
@@ -66,6 +66,6 @@ cudaError_t RandomLines(cudaStream_t stream, std::uint64_t data, std::uint64_t b
 cudaError_t CopyVector(cudaStream_t stream, std::uint64_t to, std::uint64_t from,
                        std::uint64_t bytes, int blocks);
 
-}  // namespace jitllm::diag
+}  // namespace llmp::diag
 
-#endif  // JITLLM_BENCHMARKS_VMM_DIAG_KERNELS_H_
+#endif  // LLMP_BENCHMARKS_VMM_DIAG_KERNELS_H_

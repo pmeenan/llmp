@@ -1,9 +1,9 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # The product version of a checkout (D-062).
 #
-#   jitllm_version_derive(<prefix> SOURCE_DIR <dir> PROJECT_VERSION <X.Y.Z> [GIT <git>])
+#   llmp_version_derive(<prefix> SOURCE_DIR <dir> PROJECT_VERSION <X.Y.Z> [GIT <git>])
 #
 # sets, in the caller's scope:
 #   <prefix>_VERSION   SemVer 2.0.0: X.Y.Z for a clean checkout of the release
@@ -19,7 +19,7 @@
 #   <prefix>_ORIGIN    `git`, or `none` for a tree with no Git metadata
 #   <prefix>_GIT       the git it ran, or empty with no Git metadata
 #
-#   jitllm_version_json(<out> <prefix>)
+#   llmp_version_json(<out> <prefix>)
 #
 # gives those values as the build receipt's `version` object.
 #
@@ -36,20 +36,20 @@
 
 include_guard(GLOBAL)
 
-set(_JITLLM_SEMVER_CORE "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)")
+set(_LLMP_SEMVER_CORE "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)")
 
 # Runs git on the checkout alone: no repository, index, work tree or shallow
 # file named in the environment, and no replacement objects or grafts (the
 # environment's or the repository's), either of which would rewrite the
 # history N counts.
-set(_JITLLM_GIT_ENV
+set(_LLMP_GIT_ENV
   --unset=GIT_DIR --unset=GIT_WORK_TREE --unset=GIT_INDEX_FILE --unset=GIT_OBJECT_DIRECTORY
   --unset=GIT_ALTERNATE_OBJECT_DIRECTORIES --unset=GIT_COMMON_DIR --unset=GIT_NAMESPACE
   --unset=GIT_CEILING_DIRECTORIES --unset=GIT_DISCOVERY_ACROSS_FILESYSTEM --unset=GIT_SHALLOW_FILE
   GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null)
 
-function(_jitllm_git out)
-  execute_process(COMMAND "${CMAKE_COMMAND}" -E env ${_JITLLM_GIT_ENV}
+function(_llmp_git out)
+  execute_process(COMMAND "${CMAKE_COMMAND}" -E env ${_LLMP_GIT_ENV}
                           "${_git}" -c advice.graftFileDeprecated=false --no-optional-locks
                           -C "${_source_dir}" ${ARGN}
                   OUTPUT_VARIABLE output ERROR_VARIABLE error RESULT_VARIABLE result
@@ -63,12 +63,12 @@ function(_jitllm_git out)
   set(${out} "${output}" PARENT_SCOPE)
 endfunction()
 
-function(jitllm_version_derive prefix)
+function(llmp_version_derive prefix)
   cmake_parse_arguments(PARSE_ARGV 1 arg "" "SOURCE_DIR;PROJECT_VERSION;GIT" "")
   if(NOT arg_SOURCE_DIR OR NOT arg_PROJECT_VERSION)
-    message(FATAL_ERROR "jitllm_version_derive needs SOURCE_DIR and PROJECT_VERSION")
+    message(FATAL_ERROR "llmp_version_derive needs SOURCE_DIR and PROJECT_VERSION")
   endif()
-  if(NOT arg_PROJECT_VERSION MATCHES "^${_JITLLM_SEMVER_CORE}$")
+  if(NOT arg_PROJECT_VERSION MATCHES "^${_LLMP_SEMVER_CORE}$")
     message(FATAL_ERROR "project(VERSION) is ${arg_PROJECT_VERSION}; the product version is "
                         "MAJOR.MINOR.PATCH without leading zeros (D-062)")
   endif()
@@ -93,25 +93,25 @@ function(jitllm_version_derive prefix)
                           "but git is not installed (see toolchains/prerequisites/)")
     endif()
   endif()
-  _jitllm_git(shallow rev-parse --is-shallow-repository)
+  _llmp_git(shallow rev-parse --is-shallow-repository)
   if(shallow STREQUAL "true")
     message(FATAL_ERROR "${_source_dir} is a shallow clone, so its distance from the last release tag "
                         "is unknown (D-062). Fetch its full history: `git fetch --unshallow --tags`")
   endif()
   # HEAD is read once: a commit made while this runs cannot mix two commits'
   # IDs, distances or tags into one version.
-  _jitllm_git(commit rev-parse --verify "HEAD^{commit}")
-  _jitllm_git(short rev-parse --short=12 "${commit}")
+  _llmp_git(commit rev-parse --verify "HEAD^{commit}")
+  _llmp_git(short rev-parse --short=12 "${commit}")
 
   # The highest release tag HEAD contains. Lightweight tags peel to a commit,
   # annotated ones are tag objects. A tag name may hold `;`, CMake's list
   # separator, so it becomes `,` first: `v1.0.0;x` must not read as v1.0.0.
-  _jitllm_git(tags for-each-ref "--merged=${commit}" "--format=%(objecttype) %(refname)" refs/tags/)
+  _llmp_git(tags for-each-ref "--merged=${commit}" "--format=%(objecttype) %(refname)" refs/tags/)
   string(REPLACE ";" "," tags "${tags}")
   string(REPLACE "\n" ";" tags "${tags}")
   set(last "")
   foreach(tag IN LISTS tags)
-    if(tag MATCHES "^tag refs/tags/v(${_JITLLM_SEMVER_CORE})$")
+    if(tag MATCHES "^tag refs/tags/v(${_LLMP_SEMVER_CORE})$")
       set(candidate "${CMAKE_MATCH_1}")
       if(last STREQUAL "" OR candidate VERSION_GREATER last)
         set(last "${candidate}")
@@ -119,11 +119,11 @@ function(jitllm_version_derive prefix)
     endif()
   endforeach()
   if(NOT last STREQUAL "")
-    _jitllm_git(distance rev-list --count "refs/tags/v${last}^{commit}..${commit}")
+    _llmp_git(distance rev-list --count "refs/tags/v${last}^{commit}..${commit}")
   else()
-    _jitllm_git(distance rev-list --count "${commit}")
+    _llmp_git(distance rev-list --count "${commit}")
   endif()
-  _jitllm_git(status status --porcelain --untracked-files=normal)
+  _llmp_git(status status --porcelain --untracked-files=normal)
   if(status STREQUAL "")
     set(dirty FALSE)
   else()
@@ -165,7 +165,7 @@ function(jitllm_version_derive prefix)
   set(${prefix}_GIT "${_git}" PARENT_SCOPE)
 endfunction()
 
-function(jitllm_version_json out prefix)
+function(llmp_version_json out prefix)
   if(NOT "${${prefix}_COMMIT}" STREQUAL "")
     set(commit "\"${${prefix}_COMMIT}\"")
   else()

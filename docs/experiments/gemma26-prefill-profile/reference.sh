@@ -1,11 +1,11 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 umask 077
-scratch="$HOME/.local/share/jitllm/gemma26-prefill-profile"
-source_root="$HOME/src/jitLLM-wt/m3gm31"
-models="$HOME/.local/share/jitllm/reference-models"
+scratch="$HOME/.local/share/llmp/gemma26-prefill-profile"
+source_root="$HOME/src/llmp-wt/m3gm31"
+models="$HOME/.local/share/llmp/reference-models"
 nsight=/opt/nvidia/nsight-systems/2025.3.2
 image=ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7
 common=(run --rm --network none --read-only --user "$(id -u):$(id -g)" --tmpfs /tmp:rw,size=1g
@@ -51,7 +51,7 @@ case "${1:-}" in
               --force-overwrite=false --export=sqlite "--output=/scratch/$2" "${launch[@]}")
     fi
     sudo -n docker "${common[@]}" --cidfile "$scratch/$output_name.cid" \
-      --name "jitllm-gemma26-prefill-profile-$output_name" --label jitllm.observer=gemma26-prefill-profile \
+      --name "llmp-gemma26-prefill-profile-$output_name" --label llmp.observer=gemma26-prefill-profile \
       --device nvidia.com/gpu=all --env CUDA_DISABLE_PTX_JIT=1 \
       --mount "type=bind,src=$models,dst=/model,readonly" --entrypoint "${launch[0]}" "$image" "${launch[@]:1}"
     [[ -s "$scratch/$2-completion.json" ]]

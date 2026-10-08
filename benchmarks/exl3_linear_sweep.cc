@@ -1,14 +1,14 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Backend-proof P3, the per-linear sweep (BP-N5; docs/backend-proof.md,
 // Tier E "EXL3 packed linears" and "EXL3 reconstruction-path linears";
 // docs/experiments/backend-proof-p3/README.md): every real projection of
 // an EXL3 fixture, from its v0 prepared artifact on cudaMalloc memory,
-// through jitLLM's launchers at the forced plans upstream's frozen tuning
+// through llmpalooza's launchers at the forced plans upstream's frozen tuning
 // cache gives, on the inputs upstream's run used.
 //
-//   jitllm_exl3_linear_sweep --artifact DIR --fixture 4.0bpw|4.5bpw
+//   llmp_exl3_linear_sweep --artifact DIR --fixture 4.0bpw|4.5bpw
 //                            --plan PLAN.txt --out OUT.jsonl
 //                            [--placement malloc|minimal|flush-end|flush-start]
 //
@@ -17,7 +17,7 @@
 // (opened as untrusted input, artifact.h) with pread and copied to the
 // device; their SHA-256s are written, for comparison with the reference's.
 // For each packed case it also records where upstream's EXL3-O would
-// launch the GEMV, by jitLLM's copy of upstream's choice (upstream_gemv.h).
+// launch the GEMV, by llmpalooza's copy of upstream's choice (upstream_gemv.h).
 // Each case runs twice: once step by step through the launch context
 // (launch.h), hashing every buffer a step writes, as the reference hashes
 // upstream's (linear_reference.py), and once through the implementation the
@@ -76,7 +76,7 @@
 
 namespace {
 
-namespace exl3 = jitllm::kernels::exl3;
+namespace exl3 = llmp::kernels::exl3;
 using exl3::Output;
 
 std::unexpected<std::string> Error(std::string text) { return std::unexpected(std::move(text)); }
@@ -93,9 +93,9 @@ void* Pointer(std::uint64_t address) { return reinterpret_cast<void*>(address); 
 // NOLINTEND(performance-no-int-to-ptr)
 
 std::string Hex(std::span<const std::byte> bytes) {
-  jitllm::base::Sha256 hash;
+  llmp::base::Sha256 hash;
   hash.Update(bytes);
-  return jitllm::base::ToHex(hash.Finish());
+  return llmp::base::ToHex(hash.Finish());
 }
 
 // Where operands go (--placement): cudaMalloc at its 256-byte alignment; at
@@ -124,8 +124,7 @@ class Arena {
     }
     // A failure leaves nothing to do at exit: the process is ending.
     for (const Mapped& m : mapped_) {
-      if (memory_->Unmap(m.reservation, jitllm::base::Bytes(m.offset),
-                         jitllm::base::Bytes(m.size)) &&
+      if (memory_->Unmap(m.reservation, llmp::base::Bytes(m.offset), llmp::base::Bytes(m.size)) &&
           memory_->Release(m.backing)) {
         std::ignore = memory_->Free(m.reservation);
       }
@@ -147,13 +146,13 @@ class Arena {
       return Region{.start = start, .end = start + bytes};
     }
     if (!memory_) {
-      auto memory = jitllm::providers::cuda::OpenDeviceMemory(0);
+      auto memory = llmp::providers::cuda::OpenDeviceMemory(0);
       if (!memory) {
         return Error("device VMM did not open: " + memory.error().detail);
       }
       memory_ = std::move(*memory);
       for (std::size_t i = 0; i < memory_->Classes().size(); ++i) {
-        if (memory_->Classes()[i].kind == jitllm::providers::BackingKind::kDevice) {
+        if (memory_->Classes()[i].kind == llmp::providers::BackingKind::kDevice) {
           device_class_ = i;
         }
       }
@@ -161,20 +160,20 @@ class Arena {
     const std::uint64_t granule = memory_->Granularity().value();
     const std::uint64_t size =
         (std::max<std::uint64_t>(bytes, 1) + granule - 1) / granule * granule;
-    auto reservation = memory_->Reserve(jitllm::base::Bytes(size + granule));
+    auto reservation = memory_->Reserve(llmp::base::Bytes(size + granule));
     if (!reservation) {
       return Error("a VMM reservation failed: " + reservation.error().detail);
     }
-    auto backing = memory_->Create(device_class_, jitllm::base::Bytes(size));
+    auto backing = memory_->Create(device_class_, llmp::base::Bytes(size));
     if (!backing) {
       return Error("a VMM backing failed: " + backing.error().detail);
     }
     // The unmapped granule follows the mapping (flush at the end) or
     // precedes it (flush at the start).
     const std::uint64_t offset = mode_ == Mode::kFlushStart ? granule : 0;
-    if (!memory_->Map(*reservation, jitllm::base::Bytes(offset), *backing) ||
-        !memory_->SetAccess(*reservation, jitllm::base::Bytes(offset), jitllm::base::Bytes(size),
-                            jitllm::providers::Access::kReadWrite)) {
+    if (!memory_->Map(*reservation, llmp::base::Bytes(offset), *backing) ||
+        !memory_->SetAccess(*reservation, llmp::base::Bytes(offset), llmp::base::Bytes(size),
+                            llmp::providers::Access::kReadWrite)) {
       return Error("a VMM mapping failed");
     }
     mapped_.push_back({*reservation, *backing, offset, size});
@@ -190,14 +189,14 @@ class Arena {
 
  private:
   struct Mapped {
-    jitllm::providers::ReservationId reservation;
-    jitllm::providers::BackingId backing;
+    llmp::providers::ReservationId reservation;
+    llmp::providers::BackingId backing;
     std::uint64_t offset;
     std::uint64_t size;
   };
   Mode mode_;
   std::vector<void*> regions_;
-  std::unique_ptr<jitllm::providers::VmmProvider> memory_;
+  std::unique_ptr<llmp::providers::VmmProvider> memory_;
   std::size_t device_class_ = 0;
   std::vector<Mapped> mapped_;
 };
@@ -232,7 +231,7 @@ std::uint64_t SplitMix64(std::uint64_t x) {
 }
 
 std::vector<__half> Inputs(std::string_view fixture, std::string_view key, int rows, int k) {
-  jitllm::base::Sha256 hash;
+  llmp::base::Sha256 hash;
   hash.Update(std::format("p3a|{}|{}|{}", fixture, key, rows));
   const auto digest = hash.Finish();
   std::uint64_t seed = 0;
@@ -338,7 +337,7 @@ std::expected<Plan, std::string> ReadPlan(const std::filesystem::path& path) {
 
 // Reads one resource's bytes from its shard.
 std::expected<std::vector<std::byte>, std::string> ReadResource(
-    const jitllm::artifact::Artifact& artifact, const std::filesystem::path& root,
+    const llmp::artifact::Artifact& artifact, const std::filesystem::path& root,
     std::string_view role) {
   const auto index = artifact.FindResource(role);
   if (!index) {
@@ -376,7 +375,7 @@ class Sweep {
     if (auto r = Cuda(cudaSetDevice(0), "cudaSetDevice"); !r) {
       return r;
     }
-    auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
     if (!execution) {
       return Error("the CUDA provider did not open: " + execution.error().detail);
     }
@@ -402,7 +401,7 @@ class Sweep {
       return Error("the reconstruction GEMM was refused: " + gemm.error().detail);
     }
     gemm_ = std::move(*gemm);
-    auto registry = jitllm::execution::Registry::Create(exl3::Implementations());
+    auto registry = llmp::execution::Registry::Create(exl3::Implementations());
     if (!registry) {
       return Error("the registry was refused: " + registry.error().detail);
     }
@@ -434,7 +433,7 @@ class Sweep {
       if (!state) {
         return Error("the fence query failed: " + state.error().detail);
       }
-      if (*state == jitllm::providers::FenceState::kComplete) {
+      if (*state == llmp::providers::FenceState::kComplete) {
         break;
       }
       if (std::chrono::steady_clock::now() > deadline) {
@@ -450,7 +449,7 @@ class Sweep {
 
   std::expected<void, std::string> LoadWeights(const std::filesystem::path& root, const Plan& plan,
                                                std::FILE* out) {
-    auto artifact = jitllm::artifact::Artifact::Open(root);
+    auto artifact = llmp::artifact::Artifact::Open(root);
     if (!artifact) {
       return Error("the artifact did not open");
     }
@@ -832,8 +831,8 @@ class Sweep {
  private:
   std::string fixture_;
   Arena arena_;
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  llmp::providers::StreamId stream_;
   std::unique_ptr<exl3::LaunchContext> launch_;
   std::unique_ptr<exl3::ReconGemm> gemm_;
   std::map<std::string, exl3::Kernel> kernels_;

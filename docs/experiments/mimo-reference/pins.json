@@ -472,7 +472,7 @@
       "audit": "PretrainedConfig subclass; imports copy and transformers only; no I/O, network or dynamic execution. Required because the pinned Transformers has no native mimo_v2 config; SGLang's own mimo_v2 model code executes."
     },
     "derived_image": {
-      "tag": "jitllm-mimo-reference:20260922",
+      "tag": "llmp-mimo-reference:20260922",
       "dockerfile": "Dockerfile",
       "extra": "torchcodec 0.16.0 (BSD-3-Clause), hash-pinned in requirements-extra.txt",
       "local_image_ids": {

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Client API baseline
@@ -8,7 +8,7 @@ and D-045 (front-door listener, auth and CORS defaults, admission status and
 keepalive contract, standard-client signals, alias echo), with D-047's
 reasoning, storage and non-streaming corrections, following D-022/D-030.
 This is the M5 implementation contract and test plan for the
-inference front door, not a claim that jitLLM serves these clients. M3
+inference front door, not a claim that llmpalooza serves these clients. M3
 serves a minimal `/v1/chat/completions` and non-streaming raw
 `/v1/completions` with supplied-token likelihoods on loopback and the tailnet
 ([runtime-serving.md](runtime-serving.md#the-chat-route), D-097), checked
@@ -37,14 +37,14 @@ reasoning and hint spellings adopted on the OpenAI-shaped routes; hosted-routing
 features excluded). Delivery milestones for scope outside M5 are in
 [plan.md's milestone ladder](plan.md#milestone-ladder). D-040's JSON response
 envelopes do not imply schema-constrained generation; that comes from D-043.
-Advertise only the implemented feature profile; jitLLM extensions stay separate.
+Advertise only the implemented feature profile; llmpalooza extensions stay separate.
 
 ## Named clients
 
 | Client | Documented connection and selected baseline | Evidence limits |
 | --- | --- | --- |
 | OpenCode | Custom provider with `/v1` base URL and configured model IDs; select Chat Completions. The main docs use `provider`, `npm: @ai-sdk/openai-compatible`, and `options.baseURL`; they explicitly distinguish `/v1/chat/completions` from `/v1/responses` via `@ai-sdk/openai`. Model limits and capabilities come from models.dev or the user's `models` config, not from `/v1/models`. | The separately published v2 docs use different configuration/package names. Pin the installed version and follow its matching docs; do not combine schemas. |
-| Codex | Custom provider with `base_url`, `env_key`, and `wire_api = "responses"`; serve `POST /v1/responses` over HTTP/SSE. The config reference documents `responses` as the only `wire_api` value and the default. Documented defaults: `stream_idle_timeout_ms` 300000, `request_max_retries` 4, `stream_max_retries` 5. `ollama` and `lmstudio` are reserved built-in provider IDs; Ollama's Codex guide configures `http://localhost:11434/v1/` with Responses, and `codex --oss` selects a local provider. | Validate the chosen CLI build first; desktop/IDE compatibility is not established. With response storage disabled, Codex returns `reasoning` items, including `encrypted_content`, on later turns; the profile must accept items jitLLM produced. Whether the built-in `ollama` provider can target another host, and exactly what it sends, is unverified. |
+| Codex | Custom provider with `base_url`, `env_key`, and `wire_api = "responses"`; serve `POST /v1/responses` over HTTP/SSE. The config reference documents `responses` as the only `wire_api` value and the default. Documented defaults: `stream_idle_timeout_ms` 300000, `request_max_retries` 4, `stream_max_retries` 5. `ollama` and `lmstudio` are reserved built-in provider IDs; Ollama's Codex guide configures `http://localhost:11434/v1/` with Responses, and `codex --oss` selects a local provider. | Validate the chosen CLI build first; desktop/IDE compatibility is not established. With response storage disabled, Codex returns `reasoning` items, including `encrypted_content`, on later turns; the profile must accept items llmpalooza produced. Whether the built-in `ollama` provider can target another host, and exactly what it sends, is unverified. |
 | Claude Code | `ANTHROPIC_BASE_URL` selects Messages; serve `POST /v1/messages`, including `?beta=true`, and `POST /v1/messages/count_tokens`. With `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` it also calls `GET /v1/models?limit=1000` in the Anthropic list shape with a 3 s default timeout, treats any redirect as failure, and keeps entries whose `id` contains `claude` or `anthropic`. `x-claude-code-session-id` and, on subagent traffic, `x-claude-code-agent-id` arrive on every request. The gateway hint headers are off by default on a custom base URL and arrive only with `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` (v2.1.273+): then every request carries `x-claude-code-request-class` (`main`, `subagent`, `workflow`, `compaction`, `auxiliary`) and the first main-conversation request after a compaction carries `x-claude-code-context-compacted`. Startup may also send a best-effort `HEAD /api/hello` probe that can be rejected. | Use a gateway credential, configured local model IDs and supported capabilities. Unrecognized aliases receive the full current-model field set: adaptive `thinking`, `output_config` effort and `context_management` with its beta header, plus `cache_control` markers and a conversation-fingerprinted attribution block as the first `system` entry. Claude Code aborts a stream silent for 300 s, reads integer `retry-after` and stops retrying above 60 s, reads `x-should-retry`, and matches error wording to recover from capability rejections. Background requests use the main model unless `ANTHROPIC_DEFAULT_HAIKU_MODEL` pins one, except that a credential supplied through `ANTHROPIC_API_KEY` with `ANTHROPIC_AUTH_TOKEN` unset can send them to the default Haiku ID; the pinned profile uses `ANTHROPIC_AUTH_TOKEN` or pins the Haiku variable. |
 | Cursor | Target the OpenAI-compatible chat path, pending an actual custom-endpoint capture. | Official BYOK docs cover chat models, exclude Tab, and say requests pass through Cursor servers. They do not specify a complete custom-endpoint wire contract. Arbitrary local-model Agent compatibility remains unverified. |
 
@@ -70,7 +70,7 @@ reason to claim all four clients already work.
 All routes terminate at the single inference front door (D-045 defines its
 listener, authentication and CORS defaults). This is a bounded compatibility
 subset, not a clone of either hosted platform. The following choices are
-jitLLM requirements informed by the linked protocol references.
+llmpalooza requirements informed by the linked protocol references.
 
 | Route | Baseline behavior |
 | --- | --- |
@@ -107,8 +107,8 @@ complete JSON object. Implement and test the selected model's tool template;
 an HTTP-shaped response alone does not prove tool use. Reasoning output on
 this route uses `reasoning` for both current vLLM and OpenRouter; only a
 pinned legacy profile may use `reasoning_content`. OpenRouter also uses
-`reasoning_details`, with jitLLM-signed blocks carrying `format: "unknown"`
-and jitLLM identity/version inside their opaque signatures (D-047). The
+`reasoning_details`, with llmpalooza-signed blocks carrying `format: "unknown"`
+and llmpalooza identity/version inside their opaque signatures (D-047). The
 version is that of the signature's representation, an integer independent
 of the product version (D-062; version 1, `src/base/surface_versions.h`),
 whose contents M5 fixes. A signature of a version the runtime does not
@@ -139,9 +139,9 @@ alone. See [streaming Responses](https://developers.openai.com/api/docs/guides/s
 Statelessness (D-047): accept `store: false`; omission means false in this
 profile. Reject explicit `store: true`, non-boolean values, non-null
 `previous_response_id` and conversation references with a protocol-shaped
-400 before admission. Nothing is retrievable afterwards. Accept `reasoning` input items that jitLLM produced, or
+400 before admission. Nothing is retrievable afterwards. Accept `reasoning` input items that llmpalooza produced, or
 empty ones, on later turns; encrypted reasoning continuity, if ever offered,
-uses jitLLM's own opaque blobs and never a provider-shaped imitation.
+uses llmpalooza's own opaque blobs and never a provider-shaped imitation.
 `prompt_cache_key` is an advisory retention hint (D-045). M5 does not promise
 hosted tools, background jobs, stored-response retrieval, remote compaction or
 WebSockets. Reject unsupported semantic requests explicitly. In particular, if
@@ -168,7 +168,7 @@ Tool inputs stream as `input_json_delta` fragments. See
 
 Accept configured gateway credentials through bearer or `x-api-key` auth;
 validate `anthropic-version`. Bound headers, including comma-separated beta
-values. jitLLM terminates inference rather than forwarding to Claude: it must
+values. Llmpalooza terminates inference rather than forwarding to Claude: it must
 implement, explicitly reject, or document safe advisory handling for each
 profile's beta/body feature. Disable unsupported client features through
 documented settings and verify the actual requests. Pin main and auxiliary
@@ -180,7 +180,7 @@ handling:
 - `thinking` with `type: adaptive`: honor on models whose reasoning contract
   (D-043) supports it; otherwise reject with a 400 that names the `thinking`
   field, which the client documents as its trigger to disable thinking for
-  the conversation. jitLLM signs its own thinking blocks; a block it cannot
+  the conversation. Llmpalooza signs its own thinking blocks; a block it cannot
   verify is rejected with the documented `bound to a different conversation`
   wording so the client drops earlier thinking blocks and retries. Never
   fabricate a provider's signature or accept one blindly.
@@ -334,11 +334,11 @@ the leading system/tool segment, hosted-cache TTLs are ignored, and
 
 **Alias echo and extensions.** The response `model` field echoes the
 requested alias exactly, and the resolved immutable artifact identity travels
-in a jitLLM response header and in native discovery and diagnostics. jitLLM
+in a llmpalooza response header and in native discovery and diagnostics. Llmpalooza
 extensions travel as namespaced request and response headers on every
 protocol, and as namespaced body fields only where the protocol tolerates
-unknown keys. D-062 sets the lowercase `jitllm-` header prefix and a single
-top-level `jitllm` body object; M5 fixes the individual names.
+unknown keys. D-062 sets the lowercase `llmp-` header prefix and a single
+top-level `llmp` body object; M5 fixes the individual names.
 
 ## Shared correctness and limits
 

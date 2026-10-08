@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Decode graphs (D-090; kernels/ggml/launch.h Capture and Launch) on a GB10,
@@ -71,13 +71,13 @@ void ggml_cuda_error(const char* stmt, const char* func, const char* file, int l
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
-namespace sc = jitllm::scheduler;
-namespace ts = jitllm::test_support;
-using jitllm::base::Bytes;
-using jitllm::catalog::ExtentId;
-using jitllm::catalog::MemoryClass;
-using jitllm::catalog::Recovery;
+namespace kg = llmp::kernels::ggml;
+namespace sc = llmp::scheduler;
+namespace ts = llmp::test_support;
+using llmp::base::Bytes;
+using llmp::catalog::ExtentId;
+using llmp::catalog::MemoryClass;
+using llmp::catalog::Recovery;
 
 // Binding checks descriptors only; these aligned, distinct addresses are never
 // dereferenced or submitted. Repeated declarations must not cache their operands.
@@ -98,7 +98,7 @@ class GgmlBindingTest : public ::testing::Test {
 };
 
 TEST_F(GgmlBindingTest, RepeatedMixedWrappersCheckEveryOccurrenceAndEveryBind) {
-  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  auto registry = llmp::execution::Registry::Create(kg::Implementations());
   ASSERT_TRUE(registry.has_value());
   auto* c = arena_->context();
   kg::GraphPlan plan;
@@ -109,10 +109,10 @@ TEST_F(GgmlBindingTest, RepeatedMixedWrappersCheckEveryOccurrenceAndEveryBind) {
     auto* norm = Bind(ggml_rms_norm(c, x, 1e-6f));
     auto* mul = Bind(ggml_mul(c, norm, w));
     auto* add = Bind(ggml_add(c, mul, x));
-    plan.steps.push_back({.operation = jitllm::execution::Operation::kRmsNormMul,
+    plan.steps.push_back({.operation = llmp::execution::Operation::kRmsNormMul,
                           .implementation = kg::kRmsNormMulFused,
                           .nodes = {norm, mul}});
-    plan.steps.push_back({.operation = jitllm::execution::Operation::kAdd,
+    plan.steps.push_back({.operation = llmp::execution::Operation::kAdd,
                           .implementation = kg::kAddName,
                           .nodes = {add}});
     last_mul = mul;
@@ -144,7 +144,7 @@ TEST_F(GgmlBindingTest, RepeatedMixedWrappersCheckEveryOccurrenceAndEveryBind) {
     for (auto& declaration : declarations) {
       if (declaration.name == name) declaration.revision = "stale binding declaration";
     }
-    auto stale = jitllm::execution::Registry::Create(std::move(declarations));
+    auto stale = llmp::execution::Registry::Create(std::move(declarations));
     ASSERT_TRUE(stale.has_value());
     auto rejected = kg::BoundGraph::Bind(*stale, plan);
     ASSERT_FALSE(rejected.has_value());
@@ -154,7 +154,7 @@ TEST_F(GgmlBindingTest, RepeatedMixedWrappersCheckEveryOccurrenceAndEveryBind) {
 }
 
 TEST_F(GgmlBindingTest, RepeatedCublasWrapperStillChecksTheLaterLaneAndOperands) {
-  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  auto registry = llmp::execution::Registry::Create(kg::Implementations());
   ASSERT_TRUE(registry.has_value());
   auto* c = arena_->context();
   kg::GraphPlan plan;
@@ -163,7 +163,7 @@ TEST_F(GgmlBindingTest, RepeatedCublasWrapperStillChecksTheLaterLaneAndOperands)
     auto* w = Bind(ggml_new_tensor_2d(c, GGML_TYPE_F32, 32, 16));
     auto* x = Bind(ggml_new_tensor_2d(c, GGML_TYPE_F32, 32, 2));
     last = Bind(ggml_mul_mat(c, w, x));
-    plan.steps.push_back({.operation = jitllm::execution::Operation::kMatMul,
+    plan.steps.push_back({.operation = llmp::execution::Operation::kMatMul,
                           .implementation = kg::kMulMatCublas,
                           .nodes = {last}});
   }
@@ -218,7 +218,7 @@ float Value(std::uint64_t seed, std::uint64_t i) {
 }
 
 std::filesystem::path Scratch() {
-  const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   std::filesystem::path directory = scratch != nullptr
                                         ? std::filesystem::path(scratch)
                                         : std::filesystem::path(::testing::TempDir());
@@ -245,7 +245,7 @@ int DirectFile(const std::vector<std::byte>& bytes) {
 }
 
 sc::PageSource Landed(int fd, std::uint64_t offset, std::uint64_t address,
-                      jitllm::providers::ReservationId reservation, std::uint64_t at,
+                      llmp::providers::ReservationId reservation, std::uint64_t at,
                       std::size_t allocation_class, bool write_back) {
   return sc::PageSource{.read = {.fd = fd, .offset = offset, .memory = nullptr, .length = kExtent},
                         .landed = true,
@@ -337,7 +337,7 @@ class GraphModel final : public ts::PagedModel {
     }
     ASSERT_TRUE(node_
                     .MapResident(cache_, "the cache", kOut * kCells * sizeof(ggml_fp16_t),
-                                 jitllm::providers::BackingKind::kDevice, MemoryClass::kLiveState,
+                                 llmp::providers::BackingKind::kDevice, MemoryClass::kLiveState,
                                  Recovery::kPreserve, 0)
                     .has_value());
     auto staging = node_.Pinned(std::uint64_t{64} * 1024, 0, staging_);
@@ -373,7 +373,7 @@ class GraphModel final : public ts::PagedModel {
     ASSERT_TRUE(node_
                     .Job(
                         fence_,
-                        [&](jitllm::providers::NativeStream) {
+                        [&](llmp::providers::NativeStream) {
                           auto launch =
                               kg::LaunchContext::Create(0, node_.execution(), node_.stream(0),
                                                         {.base = pool, .size = Bytes(pool_bytes)});
@@ -386,9 +386,9 @@ class GraphModel final : public ts::PagedModel {
                         "making the launch context", 0)
                     .has_value());
     ASSERT_NE(launch_, nullptr);
-    auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+    auto registry = llmp::execution::Registry::Create(kg::Implementations());
     ASSERT_TRUE(registry.has_value());
-    registry_ = std::make_unique<jitllm::execution::Registry>(std::move(*registry));
+    registry_ = std::make_unique<llmp::execution::Registry>(std::move(*registry));
     auto arena = kg::TensorArena::Create(32);
     ASSERT_TRUE(arena.has_value());
     arena_.emplace(std::move(*arena));
@@ -469,7 +469,7 @@ class GraphModel final : public ts::PagedModel {
     ASSERT_TRUE(node_
                     .Job(
                         fence_,
-                        [&](jitllm::providers::NativeStream) {
+                        [&](llmp::providers::NativeStream) {
                           return launch_->ConfigureLanes(kg::kMaxLanes, Bytes(*lane_scratch))
                                      ? sc::JobResult::kQueued
                                      : sc::JobResult::kNotStarted;
@@ -492,7 +492,7 @@ class GraphModel final : public ts::PagedModel {
   // replayed, or replayed. The output, bit patterns.
   std::expected<std::vector<std::uint32_t>, std::string> Step(int k, Mode mode) {
     std::string failed;
-    auto job = [&, k, mode](jitllm::providers::NativeStream native) -> sc::JobResult {
+    auto job = [&, k, mode](llmp::providers::NativeStream native) -> sc::JobResult {
       auto* const stream = static_cast<cudaStream_t>(native.handle);
       const auto token = static_cast<std::int32_t>(((k * 7) + 3) % kVocab);
       const std::int32_t position = k;
@@ -556,7 +556,7 @@ class GraphModel final : public ts::PagedModel {
     EXPECT_TRUE(node_
                     .Job(
                         closure_,
-                        [=](jitllm::providers::NativeStream native) {
+                        [=](llmp::providers::NativeStream native) {
                           return cudaMemcpyAsync(at, Pointer(base), bytes, cudaMemcpyDeviceToHost,
                                                  static_cast<cudaStream_t>(native.handle)) ==
                                          cudaSuccess
@@ -575,7 +575,7 @@ class GraphModel final : public ts::PagedModel {
     EXPECT_TRUE(node_
                     .Job(
                         closure_,
-                        [=](jitllm::providers::NativeStream native) {
+                        [=](llmp::providers::NativeStream native) {
                           return cudaMemsetAsync(Pointer(base), 0, kExtent,
                                                  static_cast<cudaStream_t>(native.handle)) ==
                                          cudaSuccess
@@ -606,8 +606,8 @@ class GraphModel final : public ts::PagedModel {
   }
 
   // What is mapped at each managed extent's place now (with the lanes idle).
-  std::vector<std::optional<jitllm::providers::BackingId>> Backings() {
-    std::vector<std::optional<jitllm::providers::BackingId>> out;
+  std::vector<std::optional<llmp::providers::BackingId>> Backings() {
+    std::vector<std::optional<llmp::providers::BackingId>> out;
     out.reserve(weights_.size() + 1);
     for (std::size_t i = 0; i < weights_.size(); ++i) {
       out.push_back(node_.memory().MappedAt(place_, Bytes(i * kExtent)));
@@ -621,12 +621,12 @@ class GraphModel final : public ts::PagedModel {
   bool captured() const { return graph_.has_value(); }
   int captures() const { return captures_; }
   std::size_t steps() const { return steps_; }
-  const jitllm::catalog::Closure& closure() const { return closure_; }
+  const llmp::catalog::Closure& closure() const { return closure_; }
   std::vector<ExtentId> weights() const { return weights_; }
   std::vector<ExtentId> all_out() const { return managed_extents(); }
 
   std::uint32_t stream() const override { return 0; }
-  const jitllm::catalog::Closure& fence_closure() const override { return fence_; }
+  const llmp::catalog::Closure& fence_closure() const override { return fence_; }
   std::vector<ExtentId> managed_extents() const override {
     std::vector<ExtentId> all = weights_;
     all.push_back(cache_.extents.at(0));
@@ -651,16 +651,16 @@ class GraphModel final : public ts::PagedModel {
   ts::PagedNode& node_;
   int fd_ = -1;
   int spill_ = -1;
-  jitllm::providers::ReservationId place_;
+  llmp::providers::ReservationId place_;
   std::uint64_t base_ = 0;
   std::vector<ExtentId> weights_;
   ts::Mapped cache_;
   std::vector<sc::PageSource> sources_;  // by managed extent
   std::vector<ExtentId> staging_;
   std::byte* staging_bytes_ = nullptr;
-  jitllm::catalog::Closure closure_;
-  jitllm::catalog::Closure fence_;
-  std::unique_ptr<jitllm::execution::Registry> registry_;
+  llmp::catalog::Closure closure_;
+  llmp::catalog::Closure fence_;
+  std::unique_ptr<llmp::execution::Registry> registry_;
   std::optional<kg::TensorArena> arena_;
   std::vector<ggml_tensor*> nodes_;
   ggml_tensor* ids_ = nullptr;
@@ -716,11 +716,11 @@ class OtherModel final : public ts::PagedModel {
     closure_ = node_.catalog().ClosureOfExtents(weights_).value();
     fence_ = node_.catalog().ClosureOfExtents(staging_).value();
   }
-  const jitllm::catalog::Closure& closure() const { return closure_; }
+  const llmp::catalog::Closure& closure() const { return closure_; }
   std::vector<ExtentId> weights() const { return weights_; }
 
   std::uint32_t stream() const override { return 1; }
-  const jitllm::catalog::Closure& fence_closure() const override { return fence_; }
+  const llmp::catalog::Closure& fence_closure() const override { return fence_; }
   std::vector<ExtentId> managed_extents() const override { return weights_; }
   ts::Status Release() override {
     const bool freed = node_.memory().Free(place_).has_value();
@@ -733,12 +733,12 @@ class OtherModel final : public ts::PagedModel {
  private:
   ts::PagedNode& node_;
   int fd_ = -1;
-  jitllm::providers::ReservationId place_;
+  llmp::providers::ReservationId place_;
   std::uint64_t base_ = 0;
   std::vector<ExtentId> weights_;
   std::vector<ExtentId> staging_;
-  jitllm::catalog::Closure closure_;
-  jitllm::catalog::Closure fence_;
+  llmp::catalog::Closure closure_;
+  llmp::catalog::Closure fence_;
 };
 
 // A node with A and B, under a budget that holds only one of them.
@@ -912,7 +912,7 @@ TEST_F(CudaGraphTest, ACaptureThatCannotBeMadeIsRefusedCleanly) {
   ASSERT_TRUE(node_
                   .Job(
                       a_.fence_closure(),
-                      [&](jitllm::providers::NativeStream native) {
+                      [&](llmp::providers::NativeStream native) {
                         auto* const stream = static_cast<cudaStream_t>(native.handle);
                         // A synchronization inside the capture: refused, and
                         // the rest of the record fails.
@@ -973,7 +973,7 @@ TEST_F(CudaGraphTest, ACaptureThatCannotBeMadeIsRefusedCleanly) {
   ASSERT_TRUE(node_
                   .Job(
                       b_.fence_closure(),
-                      [&](jitllm::providers::NativeStream) {
+                      [&](llmp::providers::NativeStream) {
                         auto other =
                             kg::LaunchContext::Create(0, node_.execution(), node_.stream(1), {});
                         if (!other) {
@@ -1034,7 +1034,7 @@ TEST_F(CudaGraphTest, AGraphOfManyKernelsIsOneOperationInItsStream) {
   ts::Done done;
   const std::uint64_t request = node_.Submit(std::make_unique<ts::RunProgram>(
       done, a_.closure(),
-      [&](jitllm::providers::NativeStream native) {
+      [&](llmp::providers::NativeStream native) {
         auto captured = launch.Capture([&](kg::LaunchContext& l) {
           for (ggml_tensor* sum : sums) {
             if (auto r = kg::Add(l, sum); !r) {

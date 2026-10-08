@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M3 final context checks (2026-09-30, in progress)
@@ -46,7 +46,7 @@ plain/speculation protocol are recorded in the
 
 Provenance:
 
-- Native `jitllm_dsv4_exec` SHA-256:
+- Native `llmp_dsv4_exec` SHA-256:
   `8ab9bab817cdb43557a57f3c6dbb3663e0770925cae9bb9c13a14c26bb0e8867`.
 - Original artifact:
   `8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234`.
@@ -109,12 +109,12 @@ Provenance:
   `08e68c23920f93c1d74c20df516e1a189cd27b14e81225f1d81d77b9eedc7254`;
   kernel source is `d753aa0` plus the unchanged `a5dff04` diagnostic fields.
 - Measurement harness SHA-256:
-  `20b10388886c1abff54e96ca8ec12a5f00701fffa2d8955fd9a534cc8e63f437`.
+  `340f7d2a3ca6397c807cf0b2502954fe0a22552c3e5aa44997b34c9ba24f5cae`.
 - Target/drafter identities and the llama.cpp pin are the same as below.
 - Raw native captures:
   `~/scratch/m3-extrapolation-ds/final-262k-{plain,spec}/run.json` on
   `spark-b`; references:
-  `~/.local/share/jitllm/m3lc/raw/ds-llama-{plain,dspark}/run.json`
+  `~/.local/share/llmp/m3lc/raw/ds-llama-{plain,dspark}/run.json`
   on the respective hosts above.
 
 ## Final DeepSeek neutral retrieval through 256K
@@ -188,7 +188,7 @@ requested outputs from the same canonical timing fixture:
 | DSpark, maximum draft depth 3 | 8,086.05 | 128.364 | 16.870 | 113.788 |
 
 Minimum available memory is 15,737,749,504 bytes plain and 3,757,690,880
-bytes with DSpark. The image is `jitllm-llamacpp:b11254-cuda13`, source
+bytes with DSpark. The image is `llmp-llamacpp:b11254-cuda13`, source
 `8019dc563b1ecbae6b161a70c3a1359f1b206c1e`, all target/drafter layers
 on GPU, flash attention on, context 1,048,576, one slot, automatic fitting
 off and prompt cache disabled. Target and drafter are the same GGUFs as
@@ -261,7 +261,7 @@ The separate maximum-length saved-state continuation passes below.
 
 ## Continuing-context swap protocol
 
-`jitllm_long_swap` uses the production runtime and runners. It warms the
+`llmp_long_swap` uses the production runtime and runners. It warms the
 alternate model, clears the target, prefills exactly the requested number
 of raw token IDs and generates 64 uninterrupted tokens. It then clears
 and independently repeats that prefill, swaps A→B→A, and generates the
@@ -486,11 +486,11 @@ supports retaining the existing floors.
 
 Runtime SHA-256 is
 `757c29452d26bfbd0fcc07686d0a13a632eef0850621be68e02ad7144886eaf0`.
-The HTTP harness is the pinned `20b10388…` helper above, with
+The HTTP harness is the pinned `340f7d2a…` helper above, with
 `baseline.py` SHA-256
 `41c693de64e2d63b32622cb03f29024d76455c0ad7efac4394ea3f5d45f4b1e2`
 and its `prompts.json` fixture SHA-256
-`d212009dadf1ddbf945c8dc7ad0214ba444236baf57c8ed9019c3ebe6b0805b4`.
+`c697236c56a09b0a3f2550f7514b3e4d826e1d14a96b4d1c79e3bd33a3a6f859`.
 All three were pinned and their import checked before loading. Raw results
 are `spark-b:~/scratch/m3-final-qwen/{plain,prefix,selected}-{timing,retrieval}/`.
 Earlier rejected old-helper captures are preserved separately and excluded.

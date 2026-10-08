@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The GGML graph of one Qwen3.8 Flash Next chunk (model/qwen38.h), built
@@ -11,10 +11,10 @@
 // planes, no LoRA. The oracle is Mia's vLLM on the same checkpoint, not
 // llama.cpp, so the port keeps upstream's operation plan but not its node
 // order; where they differ:
-//   - the checkpoint's formats: MXFP8 products run jitLLM's own operations
-//     (jitllm_ops.h), the vector product up to 8 rows and otherwise the
+//   - the checkpoint's formats: MXFP8 products run llmpalooza's own operations
+//     (llmp_ops.h), the vector product up to 8 rows and otherwise the
 //     weights dequantized to BF16 for GGML's float product; the n-gram
-//     table's NVFP4 rows are gathered by jitllm.nvfp4.get_rows; routed
+//     table's NVFP4 rows are gathered by llmp.nvfp4.get_rows; routed
 //     experts are GGML NVFP4 with each expert's global scale applied after
 //     its product, as llama.cpp's build_lora_mm_id applies a `_s` tensor;
 //   - the indexer's fused q/k projection is one product whose rows are
@@ -36,14 +36,14 @@
 //     (llama.cpp gathers them in the last layer);
 //   - with Qwen38GraphOptions::fused and ::exact (the reference form) the
 //     hyper-connections' and the MoE output's elementwise nodes run as
-//     jitLLM's fusions of them, and wide float products read activations
-//     converted to BF16 once (jitllm_ops.h), with the unfused graph's
+//     llmpalooza's fusions of them, and wide float products read activations
+//     converted to BF16 once (llmp_ops.h), with the unfused graph's
 //     result;
 //   - by default (fused, not exact: the fast form, D-085's speed before
 //     bit exactness) the MXFP8 products past 8 rows run on tensor cores
 //     over activations quantized to MXFP8, as the oracle runs them; each
 //     block's output is combined into the streams by the next mix's
-//     jitllm.hc.prep, which also normalizes them into BF16 and gives the
+//     llmp.hc.prep, which also normalizes them into BF16 and gives the
 //     next combine's logits, and the mix reads those and the BF16 up
 //     product; the router's softmax, top experts and the shared expert's
 //     gate are one kernel; Gated DeltaNet's QKV and z rows are BF16 and its
@@ -55,12 +55,12 @@
 //   - and in the fast form QSA's cost per token does not grow with the
 //     context but for the indexer's scoring (docs/experiments/long-context/):
 //     each block's pooled, normalized and rotated key is cached in the state
-//     once, when the chunk that completes the block runs (jitllm.qsa.pool;
+//     once, when the chunk that completes the block runs (llmp.qsa.pool;
 //     the reference form pools every block again at every step); the
 //     selection scores the cached keys and keeps its cells on the device at
 //     any depth, deterministically, ties to the lower cell
-//     (jitllm.qsa.topk); and attention reads the kept cells alone
-//     (jitllm.qsa.attn) rather than every cell under a mask. No tensor of
+//     (llmp.qsa.topk); and attention reads the kept cells alone
+//     (llmp.qsa.attn) rather than every cell under a mask. No tensor of
 //     every cell by every row is built, and no mask or block table on the
 //     host.
 //
@@ -68,14 +68,14 @@
 // GGML's own products for every matrix of its types (MMVQ and MMQ for the
 // k- and i-quants and Q8_0, MMVF or cuBLAS for F32, the BF16 path above for
 // BF16), GGML's mul_mat_id for its routed experts (no global scales), and
-// jitllm.qrows.get_rows for its n-gram table (jitllm_ops.h). Its fast form
+// llmp.qrows.get_rows for its n-gram table (llmp_ops.h). Its fast form
 // keeps every fusion that does not read the ModelOpt formats: QSA's
 // selection, pool and sparse attention, Gated DeltaNet's convolution,
 // history, step and gated norm, the router (an F32 gate row) and the
 // experts' sum (unscaled); its hyper-connections take the reference
-// form's fusions (jitllm.hc.norm, .mix, .combine) over its products, since
+// form's fusions (llmp.hc.norm, .mix, .combine) over its products, since
 // the fast mix's are BF16-only. Up to kVecQTokens rows (decode) its fast
-// form's quantized products are jitllm.vecq over one Q8_1 quantization of
+// form's quantized products are llmp.vecq over one Q8_1 quantization of
 // each input (DeepSeek's fast plan's product, for the types it takes), the
 // routed experts' gate and up with their SwiGLU in one where the rows times
 // the experts used fit its 64 pairs. Speculation (a verify, the drafter's
@@ -92,8 +92,8 @@
 // nodes, then bind the views (graph_plan.h BindViews). Nothing here
 // launches.
 
-#ifndef JITLLM_KERNELS_GGML_QWEN38_GRAPH_H_
-#define JITLLM_KERNELS_GGML_QWEN38_GRAPH_H_
+#ifndef LLMP_KERNELS_GGML_QWEN38_GRAPH_H_
+#define LLMP_KERNELS_GGML_QWEN38_GRAPH_H_
 
 #include <bit>
 #include <cstddef>
@@ -107,7 +107,7 @@
 #include "kernels/ggml/tensors.h"
 #include "model/qwen38.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 struct Qwen38ChunkShape {
   std::int64_t rows = 0;
@@ -128,7 +128,7 @@ struct Qwen38Mxfp8Tensors {
   ggml_tensor* codes = nullptr;   // I8 [k, n]
   ggml_tensor* scales = nullptr;  // I8 [k / 32, n]
   // Or, the MTP drafter's (model/qwen38.h Qwen38Mxfp8::bf16), BF16 [k, n]:
-  // GGML's float product up to kQwen38Bf16Rows rows, else jitllm.gemm.bf16.
+  // GGML's float product up to kQwen38Bf16Rows rows, else llmp.gemm.bf16.
   ggml_tensor* bf16 = nullptr;
   // Or a GGUF checkpoint's (Qwen38Mxfp8::matrix), [k, n] of its GGML type:
   // GGML's product (MMVQ or MMQ for a quantized type, MMVF or cuBLAS for
@@ -196,7 +196,7 @@ struct Qwen38GraphOptions {
   // Each layer's routed-expert stride in bytes (nb[2] of the three expert
   // weights); 0 for the packed stride of one slice.
   std::vector<std::uint64_t> expert_stride;
-  // jitLLM's fusions (jitllm_ops.h) in place of the GGML nodes they repeat:
+  // llmpalooza's fusions (llmp_ops.h) in place of the GGML nodes they repeat:
   // the hyper-connections' combine, norm and mix, the experts' scales with
   // SwiGLU, and their weighted sum with the gated shared expert; and, above
   // kQwen38Bf16Rows rows, each float product's activations converted to
@@ -209,14 +209,14 @@ struct Qwen38GraphOptions {
   // result, but for the chunked delta rule's order of sums). Otherwise the
   // fast form, the default (D-085: speed before bit exactness): those
   // products on tensor cores over activations quantized to MXFP8
-  // (jitllm.mxfp8.*, as the oracle's vLLM runs the checkpoint's MXFP8
+  // (llmp.mxfp8.*, as the oracle's vLLM runs the checkpoint's MXFP8
   // linears), judged against the oracle coarsely
   // (docs/experiments/qwen38-native/README.md).
   bool exact = false;
   // The routed experts' resident layout: GGML's block_nvfp4 slices (GGML's
   // mul_mat_id: MMVQ and MMQ), or the CUTLASS layout (moe_layout.h;
-  // jitllm.moe.gemv up to 8 rows, else CUTLASS's grouped GEMM over rows
-  // sorted by expert, jitllm_ops.h), which needs the fused graph and an
+  // llmp.moe.gemv up to 8 rows, else CUTLASS's grouped GEMM over rows
+  // sorted by expert, llmp_ops.h), which needs the fused graph and an
   // expert stride per layer.
   enum class Experts : std::uint8_t { kGgml, kCutlass };
   Experts experts = Experts::kGgml;
@@ -225,7 +225,7 @@ struct Qwen38GraphOptions {
   // linear-attention layer's recurrence inputs and convolution input, and
   // the n-gram layer's convolution input, are saved row by row (the layers'
   // commit_* tensors, rows `row_ids`) for the runner's commit of the
-  // accepted rows (qwen38_commit.h). Its convolutions run jitllm.gdn.conv
+  // accepted rows (qwen38_commit.h). Its convolutions run llmp.gdn.conv
   // at every width. Its KV and indexer cells are written as any chunk's.
   bool verify = false;
   // Each row's streams after the last layer (before the head's mix) set
@@ -417,6 +417,6 @@ std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
     const model::Qwen38MtpBinding& drafter, const Qwen38MtpShape& shape,
     std::uint64_t expert_stride, bool device_masks = false);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_QWEN38_GRAPH_H_
+#endif  // LLMP_KERNELS_GGML_QWEN38_GRAPH_H_

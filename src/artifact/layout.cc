@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "artifact/layout.h"
@@ -15,7 +15,7 @@
 #include "artifact/error.h"
 #include "base/bytes.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 namespace {
 
 std::unexpected<Error> Fail(Rule rule, std::string_view reason, std::uint64_t item = kNoItem) {
@@ -108,4 +108,4 @@ std::expected<std::vector<ReadRun>, Error> PlanReads(const Layout& layout,
   return runs;
 }
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact

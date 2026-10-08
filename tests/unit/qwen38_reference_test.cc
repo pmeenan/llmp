@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "qwen38_reference.h"
@@ -21,22 +21,22 @@
 
 #include "base/sha256.h"
 
-namespace jitllm::benchmarks::draft_vocab {
+namespace llmp::benchmarks::draft_vocab {
 struct ReferencePagesTestAccess {
   static bool Resize(const ReferencePages& reference, std::uint64_t bytes) {
     return ::ftruncate(reference.fd_, static_cast<off_t>(bytes)) == 0;
   }
 };
-}  // namespace jitllm::benchmarks::draft_vocab
+}  // namespace llmp::benchmarks::draft_vocab
 
 namespace {
-namespace dv = jitllm::benchmarks::draft_vocab;
+namespace dv = llmp::benchmarks::draft_vocab;
 
 class Qwen38Reference : public ::testing::Test {
  protected:
   void SetUp() override {
     // NOLINTNEXTLINE(concurrency-mt-unsafe): immutable test environment
-    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
     ASSERT_NE(scratch, nullptr);
     directory_ = std::filesystem::path(scratch) / "qwen38-reference";
     std::error_code error;
@@ -60,13 +60,13 @@ TEST_F(Qwen38Reference, AuthenticatesEveryLogicalByteAndPadsOnlyTheFileTransfer)
   auto saved = dv::ReferencePages::Capture(directory_, ranges_, 1, live_, Copy, stats_);
   ASSERT_TRUE(saved);
   EXPECT_EQ(saved->bytes(), 4138);
-  jitllm::base::Sha256 hash;
+  llmp::base::Sha256 hash;
   for (const auto& range : ranges_) {
     ASSERT_TRUE(Copy(live_.data(), range));
     hash.Update(std::format("{}:{}:{};", range.region, range.offset, range.bytes));
     hash.Update(std::span(live_).first(static_cast<std::size_t>(range.bytes)));
   }
-  EXPECT_EQ(saved->sha256(), jitllm::base::ToHex(hash.Finish()));
+  EXPECT_EQ(saved->sha256(), llmp::base::ToHex(hash.Finish()));
   ASSERT_TRUE(saved->Compare(ranges_, 1, expected_, live_, Copy, stats_));
   EXPECT_EQ(stats_.captures, 1);
   EXPECT_EQ(stats_.comparisons, 1);

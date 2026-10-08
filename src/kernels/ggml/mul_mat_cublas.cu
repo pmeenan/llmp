@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
-// GGML's cuBLAS matrix multiplication as a jitLLM implementation (D-053,
+// GGML's cuBLAS matrix multiplication as a llmpalooza implementation (D-053,
 // D-077; docs/backend-proof.md#dispatch-and-implementations-d-053): a
 // recorded copy of ggml_cuda_mul_mat_cublas, ggml_cuda_mul_mat_cublas_impl
 // and k_compute_batched_ptrs, which ggml-cuda.cu at llama.cpp b29c606e2
@@ -71,7 +71,7 @@ static __global__ void k_compute_batched_ptrs(
 }
 // clang-format on
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -366,4 +366,4 @@ std::expected<void, KernelFailure> MulMatCublas(LaunchContext& launch, ggml_tens
                     });
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

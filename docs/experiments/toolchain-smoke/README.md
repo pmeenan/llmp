@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M0 toolchain smoke — 2026-09-21
@@ -59,8 +59,8 @@ Sources: [NVIDIA compatibility guidance](https://docs.nvidia.com/deploy/cuda-com
 ## Reproduction
 
 Use Ubuntu 24.04 x86-64 for workstation steps. Set `smoke_root` to scratch
-outside the repository (the recorded run used `/tmp/jitllm-toolchain-smoke`).
-Also set `llvm_root=/tmp/jitllm-clang22` for the new compiler extraction
+outside the repository (the recorded run used `/tmp/llmp-toolchain-smoke`).
+Also set `llvm_root=/tmp/llmp-clang22` for the new compiler extraction
 and outputs. Remote commands below assume these displayed fixed scratch paths. Build products
 and SDK bytes are local artifacts, not committed.
 
@@ -112,11 +112,11 @@ and SDK bytes are local artifacts, not committed.
    bash docs/experiments/toolchain-smoke/build.sh native "$llvm_root/native"
    "$llvm_root/native/cpu-smoke"
    bash docs/experiments/toolchain-smoke/build.sh cross "$llvm_root/cross"
-   ssh spark 'mkdir -p /tmp/jitllm-clang22/cross'
-   rsync -a "$smoke_root/sdk-134-arm/" spark:/tmp/jitllm-toolchain-smoke/sdk-134/
-   rsync -a "$llvm_root/cross/" spark:/tmp/jitllm-clang22/cross/
-   ssh spark '/tmp/jitllm-clang22/cross/cpu-smoke'
-   ssh spark 'LD_LIBRARY_PATH=/tmp/jitllm-toolchain-smoke/sdk-134/usr/local/cuda-13.4/targets/sbsa-linux/lib CUDA_DISABLE_PTX_JIT=1 /tmp/jitllm-clang22/cross/cuda-smoke'
+   ssh spark 'mkdir -p /tmp/llmp-clang22/cross'
+   rsync -a "$smoke_root/sdk-134-arm/" spark:/tmp/llmp-toolchain-smoke/sdk-134/
+   rsync -a "$llvm_root/cross/" spark:/tmp/llmp-clang22/cross/
+   ssh spark '/tmp/llmp-clang22/cross/cpu-smoke'
+   ssh spark 'LD_LIBRARY_PATH=/tmp/llmp-toolchain-smoke/sdk-134/usr/local/cuda-13.4/targets/sbsa-linux/lib CUDA_DISABLE_PTX_JIT=1 /tmp/llmp-clang22/cross/cuda-smoke'
    ```
 
    The cross profile supplies Clang's target/sysroot/GCC search path through
@@ -129,11 +129,11 @@ and SDK bytes are local artifacts, not committed.
 4. Native Spark fallback, using the extracted ARM LLVM and CUDA SDKs:
 
    ```bash
-   rsync -a "$llvm_root/sdk-arm64/" spark:/tmp/jitllm-clang22/sdk-arm64/
-   rsync -a docs/experiments/toolchain-smoke/ spark:/tmp/jitllm-clang22/source/
-   ssh spark 'LD_LIBRARY_PATH=/tmp/jitllm-clang22/sdk-arm64/usr/lib/aarch64-linux-gnu CXX=/tmp/jitllm-clang22/sdk-arm64/usr/bin/clang++-22 CUDA_ROOT=/tmp/jitllm-toolchain-smoke/sdk-134/usr/local/cuda-13.4 bash /tmp/jitllm-clang22/source/build.sh spark /tmp/jitllm-clang22/native'
-   ssh spark '/tmp/jitllm-clang22/native/cpu-smoke'
-   ssh spark 'LD_LIBRARY_PATH=/tmp/jitllm-toolchain-smoke/sdk-134/usr/local/cuda-13.4/targets/sbsa-linux/lib CUDA_DISABLE_PTX_JIT=1 /tmp/jitllm-clang22/native/cuda-smoke'
+   rsync -a "$llvm_root/sdk-arm64/" spark:/tmp/llmp-clang22/sdk-arm64/
+   rsync -a docs/experiments/toolchain-smoke/ spark:/tmp/llmp-clang22/source/
+   ssh spark 'LD_LIBRARY_PATH=/tmp/llmp-clang22/sdk-arm64/usr/lib/aarch64-linux-gnu CXX=/tmp/llmp-clang22/sdk-arm64/usr/bin/clang++-22 CUDA_ROOT=/tmp/llmp-toolchain-smoke/sdk-134/usr/local/cuda-13.4 bash /tmp/llmp-clang22/source/build.sh spark /tmp/llmp-clang22/native'
+   ssh spark '/tmp/llmp-clang22/native/cpu-smoke'
+   ssh spark 'LD_LIBRARY_PATH=/tmp/llmp-toolchain-smoke/sdk-134/usr/local/cuda-13.4/targets/sbsa-linux/lib CUDA_DISABLE_PTX_JIT=1 /tmp/llmp-clang22/native/cuda-smoke'
    ```
 
 ## Results and limits

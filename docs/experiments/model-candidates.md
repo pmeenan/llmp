@@ -1,16 +1,16 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Additional reference-model candidates
 
 Owner-added and source-inspected 2026-09-22; the first bounded reference for
 each ran the same day (reports linked below). These are external references,
-not measured jitLLM support. Existing reference results and the canonical
+not measured llmpalooza support. Existing reference results and the canonical
 DeepSeek/Qwen switching workload remain unchanged.
 
 | Candidate | Reference role | Status and next evidence |
 | --- | --- | --- |
-| Qwen-Image-2.1 GGUF | Quantized image-component footprint and repeated denoising, compared with the [BF16 study](image-reference/README.md) | [Bounded GGML-runner study done](image-gguf/README.md): pinned stable-diffusion.cpp, component identity reconciled, full-pipeline memory, same-runner quantization agreement, phase release and budgeted disk-backed denoising. Next, only if scheduled: native GGML execution in jitLLM, a quality metric beyond pixel agreement, text↔image switching with this runner |
+| Qwen-Image-2.1 GGUF | Quantized image-component footprint and repeated denoising, compared with the [BF16 study](image-reference/README.md) | [Bounded GGML-runner study done](image-gguf/README.md): pinned stable-diffusion.cpp, component identity reconciled, full-pipeline memory, same-runner quantization agreement, phase release and budgeted disk-backed denoising. Next, only if scheduled: native GGML execution in llmpalooza, a quality metric beyond pixel agreement, text↔image switching with this runner |
 | MiMo-V2.6-Flash-RL | Large sparse MoE across two Spark memory domains | [Bounded text-only TP=2/EP=2 reference done](mimo-reference/README.md). Next: switching/state and multimodal cases separately, repeated boots and concurrency; native sharding remains M4 |
 | Future smaller MiMo quantizations | Single-Spark resident or forced-paging case | Revisit when an artifact and compatible packed kernels exist; measure full execution budget and quality |
 

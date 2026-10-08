@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Storage queue depth and request (run) size through jitLLM's own providers
+// Storage queue depth and request (run) size through llmpalooza's own providers
 // (docs/m2-record.md, "Providers"; D-034): direct reads by UringStorage into
 // CUDA host-VMM backing from VmmProvider, the path the runtime pages
 // through. Writes an unnamed direct-I/O file (O_TMPFILE, gone when the
@@ -10,7 +10,7 @@
 // in flight. Prints Markdown tables; the report is under
 // docs/experiments/storage-queue/.
 //
-//   jitllm_storage_bench DIRECTORY GIB
+//   llmp_storage_bench DIRECTORY GIB
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -41,15 +41,15 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
-using jitllm::base::Bytes;
-using jitllm::providers::Access;
-using jitllm::providers::BackingKind;
-using jitllm::providers::IoCompletion;
-using jitllm::providers::IoKind;
-using jitllm::providers::IoRequest;
-using jitllm::providers::Submission;
-using jitllm::providers::UringStorage;
-using jitllm::providers::VmmProvider;
+using llmp::base::Bytes;
+using llmp::providers::Access;
+using llmp::providers::BackingKind;
+using llmp::providers::IoCompletion;
+using llmp::providers::IoKind;
+using llmp::providers::IoRequest;
+using llmp::providers::Submission;
+using llmp::providers::UringStorage;
+using llmp::providers::VmmProvider;
 
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
 
@@ -149,7 +149,7 @@ int main(int argc, char** argv) {
   const std::vector<std::string> args(
       argv, argv + argc);  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   if (args.size() != 3) {
-    std::println(stderr, "usage: jitllm_storage_bench DIRECTORY GIB");
+    std::println(stderr, "usage: llmp_storage_bench DIRECTORY GIB");
     return 2;
   }
   std::uint64_t gib = 0;
@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
   constexpr std::size_t kMaxDepth = 8;
   constexpr std::uint64_t kMaxRequest = 8 * kMiB;
 
-  auto memory = jitllm::providers::cuda::OpenDeviceMemory(0);
+  auto memory = llmp::providers::cuda::OpenDeviceMemory(0);
   if (!memory) {
     std::println(stderr, "no device memory: {}", memory.error().detail);
     return 1;

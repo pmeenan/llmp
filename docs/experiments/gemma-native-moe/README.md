@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Checked native Gemma MoE dispatch
@@ -27,7 +27,7 @@ partial sum requires its ordinary producer chain.
 Both registered operations retain every descriptor for placement and recheck
 structure, bounds, aliases and current views at bind/run. Bounded graph/keep
 preflight precedes storage scans. The launchers use zero scratch, the original
-fast-math source, and jitLLM's stream/completion ownership. Logical operand
+fast-math source, and llmpalooza's stream/completion ownership. Logical operand
 spans describe required backing; callers still fund residency and protect it
 through completion and replay. This is not activation-storage elision. The
 routing tail is protected against readers and aliases. Dense31 selects neither
@@ -156,19 +156,19 @@ Task-entry refresh on 2026-10-05 at 04:53:58 UTC observed latest TensorFold
 and Gemma recipe still expose Gemma26 through MLX, without a CUDA comparator.
 The same-format pinned llama.cpp remains the numerical oracle.
 
-For fresh external output directories: run `jitllm_gemma_quality ARTIFACT
+For fresh external output directories: run `llmp_gemma_quality ARTIFACT
 IDS_I32 NEW_OUTPUT_DIR 128 all 26` twice, authenticate source/build identities,
 then `analyze.py freeze ROOT IDS_I32 SOURCE_IDENTITIES` before
 `analyze.py compare ROOT RETAINED_QUALITY FREEZE_SHA`. Root contains
 `all-first/logits.f32` and `all-repeat/logits.f32`. `reference_gates.sh` requires
 the retained pinned stock-controller headers and must run under installed
-GPU supervision. Paid commands are `jitllm_gemma_runner ARTIFACT NEW_OUTPUT_DIR
+GPU supervision. Paid commands are `llmp_gemma_runner ARTIFACT NEW_OUTPUT_DIR
 2,818,5279,529,7001,563 32 1 ordinary|all warm device`; summarize the three
 ordered arms with `compare_paid.py OFFICIAL_LOG`.
 
 Raw vectors, source/build identities and official logs remain outside Git at
-`spark:~/.local/share/jitllm/gemma-moe-dispatch`, with receipts under
-`~/.local/share/jitllm/jobs/m35-gemma-moe-dispatch-{order1,check5,native1,compare1,gates1,paid1,final1}`.
+`spark:~/.local/share/llmp/gemma-moe-dispatch`, with receipts under
+`~/.local/share/llmp/jobs/m35-gemma-moe-dispatch-{order1,check5,native1,compare1,gates1,paid1,final1}`.
 Locked Spark-native build and all 23 final focused controls passed without
 skips (12 CPU, 11 GPU, including six model controls); the separate CPU-only
 set passed 28/28.

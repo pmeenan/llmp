@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded Gemma Q5_1 down screen: original GGML preparation/product versus
-// jitLLM shared Q8_1 preparation/joined products, identical actual geometry.
+// llmpalooza shared Q8_1 preparation/joined products, identical actual geometry.
 // Each launch changes expert IDs; A/B/A bookends include input preparation.
-// jitllm_gemma_quant_bench [launches, default 64] [shared experts per row: 0|2|8]
+// llmp_gemma_quant_bench [launches, default 64] [shared experts per row: 0|2|8]
 
 #include <cuda_runtime.h>
 
@@ -20,12 +20,12 @@
 
 #include "base/bytes.h"
 #include "kernels/ggml/dsv4_fast.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "providers/cuda/cuda_device_execution.h"
 
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 
 int main(int argc, char** argv) {
   int launches = 64;
@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
   }
   constexpr std::int64_t k = 704, n = 2816, experts = 128, used = 8;
   constexpr std::size_t workspace_bytes = 4U << 20U;
-  auto opened = jitllm::providers::cuda::OpenDeviceExecution(0);
+  auto opened = llmp::providers::cuda::OpenDeviceExecution(0);
   if (!opened) {
     return 1;
   }
@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
   void* scratch = allocate(workspace_bytes);
   auto context = kg::LaunchContext::Create(0, *execution, stream_id,
                                            {.base = reinterpret_cast<std::uintptr_t>(scratch),
-                                            .size = jitllm::base::Bytes(workspace_bytes)});
+                                            .size = llmp::base::Bytes(workspace_bytes)});
   if (!scratch || !context) {
     return 1;
   }
@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
         d.dst_slot = static_cast<int>(n);
         bool accepted = false;
         return launch
-                   ->Run(jitllm::base::Bytes(0),
+                   ->Run(llmp::base::Bytes(0),
                          [&](auto&) { accepted = kg::LaunchVecQ(GGML_TYPE_Q5_1, d, 7, stream); })
                    .has_value() &&
                accepted;
@@ -272,7 +272,7 @@ int main(int argc, char** argv) {
   }
   const auto fence = execution->Record(stream_id).value();
   if (cudaDeviceSynchronize() != cudaSuccess ||
-      execution->Query(fence).value() != jitllm::providers::FenceState::kComplete ||
+      execution->Query(fence).value() != llmp::providers::FenceState::kComplete ||
       !execution->Release(fence)) {
     return 1;
   }

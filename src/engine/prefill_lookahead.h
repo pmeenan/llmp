@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_ENGINE_PREFILL_LOOKAHEAD_H_
-#define JITLLM_ENGINE_PREFILL_LOOKAHEAD_H_
+#ifndef LLMP_ENGINE_PREFILL_LOOKAHEAD_H_
+#define LLMP_ENGINE_PREFILL_LOOKAHEAD_H_
 
 #include <array>
 #include <chrono>
@@ -14,7 +14,7 @@
 #include "engine/paged_node.h"
 #include "engine/planned.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 // Optional future geometry, never a promise to execute work or publish state.
 // Output intent travels with the prediction; a family that still always emits
@@ -206,6 +206,6 @@ class PrefillLookaheadGroup {
   std::array<PrefillLookahead<Planned>, Capacity> slots_;
 };
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_PREFILL_LOOKAHEAD_H_
+#endif  // LLMP_ENGINE_PREFILL_LOOKAHEAD_H_

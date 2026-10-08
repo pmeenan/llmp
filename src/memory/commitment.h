@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The commitment ledger (D-050;
@@ -25,8 +25,8 @@
 // Occupancy (catalog::Occupancy) is a separate ledger: cached bytes are
 // never added here, and a grant maps nothing.
 
-#ifndef JITLLM_MEMORY_COMMITMENT_H_
-#define JITLLM_MEMORY_COMMITMENT_H_
+#ifndef LLMP_MEMORY_COMMITMENT_H_
+#define LLMP_MEMORY_COMMITMENT_H_
 
 #include <expected>
 #include <map>
@@ -39,7 +39,7 @@
 #include "base/ids.h"
 #include "catalog/catalog.h"
 
-namespace jitllm::memory {
+namespace llmp::memory {
 
 using base::Bytes;
 using catalog::DomainId;
@@ -166,6 +166,6 @@ class CommitmentLedger {
   base::SlotTable<GrantTag, GrantRecord> grants_;
 };
 
-}  // namespace jitllm::memory
+}  // namespace llmp::memory
 
-#endif  // JITLLM_MEMORY_COMMITMENT_H_
+#endif  // LLMP_MEMORY_COMMITMENT_H_

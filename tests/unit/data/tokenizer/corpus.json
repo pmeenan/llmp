@@ -1,5 +1,5 @@
 {
-  "about": "The tokenizer agreement corpus (docs/tokenizer.md). Each item is {name, text}, {name, repeat, count} (repeat written count times) or {name, hex} (raw bytes, for ill-formed UTF-8). Written for jitLLM.",
+  "about": "The tokenizer agreement corpus (docs/tokenizer.md). Each item is {name, text}, {name, repeat, count} (repeat written count times) or {name, hex} (raw bytes, for ill-formed UTF-8). Written for llmpalooza.",
   "items": [
     {"name": "empty", "text": ""},
     {"name": "ascii-sentence", "text": "Hello, world! This is a test of the tokenizer."},

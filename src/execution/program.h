@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Phase kinds, decoding modes and request programs (D-050, D-068;
@@ -58,8 +58,8 @@
 // None of this names a model architecture; the resource core (catalog,
 // ledgers, admission) never includes it.
 
-#ifndef JITLLM_EXECUTION_PROGRAM_H_
-#define JITLLM_EXECUTION_PROGRAM_H_
+#ifndef LLMP_EXECUTION_PROGRAM_H_
+#define LLMP_EXECUTION_PROGRAM_H_
 
 #include <cstdint>
 #include <expected>
@@ -75,7 +75,7 @@
 #include "model/context.h"
 #include "model/state.h"
 
-namespace jitllm::execution {
+namespace llmp::execution {
 
 using base::Bytes;
 
@@ -298,6 +298,6 @@ class OutputBuffer {
   std::uint64_t published_positions_ = 0;  // at most bound_
 };
 
-}  // namespace jitllm::execution
+}  // namespace llmp::execution
 
-#endif  // JITLLM_EXECUTION_PROGRAM_H_
+#endif  // LLMP_EXECUTION_PROGRAM_H_

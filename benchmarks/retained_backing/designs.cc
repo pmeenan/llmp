@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "retained_backing/designs.h"
@@ -27,7 +27,7 @@
 #include "providers/device_memory.h"
 #include "retained_backing/trace.h"
 
-namespace jitllm::rb {
+namespace llmp::rb {
 namespace {
 
 using base::Bytes;
@@ -1125,4 +1125,4 @@ std::unique_ptr<Design> MakeDesign(const DesignSpec& spec, std::span<const Group
   return std::make_unique<Slabs>(groups, budget, spec.slab, spec.policy, memory);
 }
 
-}  // namespace jitllm::rb
+}  // namespace llmp::rb

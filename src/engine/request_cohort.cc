@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/request_cohort.h"
@@ -10,7 +10,7 @@
 
 #include "engine/support.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 namespace {
 using catalog::ExtentId;
@@ -129,4 +129,4 @@ void RequestCohort::CheckFailedJob(PagedNode& node, std::uint32_t stream,
   }
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

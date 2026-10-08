@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "retained_backing/replay.h"
@@ -23,7 +23,7 @@
 #include "retained_backing/designs.h"
 #include "retained_backing/trace.h"
 
-namespace jitllm::rb {
+namespace llmp::rb {
 namespace {
 
 using base::Check;
@@ -356,4 +356,4 @@ std::string ToJson(const Metrics& m) {
       m.refused_at, m.delayed_admissions, m.relocations, m.relocated_bytes, calls, m.digest);
 }
 
-}  // namespace jitllm::rb
+}  // namespace llmp::rb

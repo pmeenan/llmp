@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 
 # Builds GCC 16.2's C/C++ runtimes (libstdc++, libgcc, libatomic) natively for
-# the current host into PREFIX. Only those runtimes and headers are used; jitLLM
+# the current host into PREFIX. Only those runtimes and headers are used; llmpalooza
 # compiles with Clang. Retained experiment, not M1 provisioning.
 if [[ $# != 3 ]]; then
   echo "Usage: $0 PREPARED_GCC_SOURCE OUTSIDE_REPO_BUILD_DIR NEW_PREFIX" >&2

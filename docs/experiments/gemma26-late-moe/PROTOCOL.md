@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 common-input late-prefill MoE probe
@@ -135,7 +135,7 @@ complete closures and completion-aware pinned publication. No foreign backend
 runtime in native. Fresh captured replay and input byte witnesses establish that
 common inputs are unchanged, with all actual outputs finite before publication.
 Original thin external client may use its original backend context ONLY outside
-jitLLM; existing original-image standalone MoE oracle already proves both exported
+llmpalooza; existing original-image standalone MoE oracle already proves both exported
 seams. No original kernel rebuild is needed to obtain these outputs.
 
 ## Defining translation units and compiler identity, before attribution
@@ -208,7 +208,7 @@ Only two logits files are initially released; original route outputs remain
 withheld. Reduction input release includes original weights only after native
 routing own-freeze. Captured sums remain withheld until native reduction freeze.
 
-The new manual `jitllm_gemma26_late_moe` target shares graph construction with the
+The new manual `llmp_gemma26_late_moe` target shares graph construction with the
 external original operator client. Native metadata controls launch nothing and
 report actual descriptor/plan counts. Execution maps every complete root, funds
 inputs/outputs, host retention, pinned uploads, workspace and captured graphs,

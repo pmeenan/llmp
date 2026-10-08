@@ -1,10 +1,10 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
 # Builds the FP16 toolchain bridge on a Spark:
 #   bridge.sh SDK LLAMA_SOURCE CUDA_ROOT BUILD_DIR
-# SDK is the aarch64 jitLLM SDK; CUDA_ROOT is the SDK's CUDA 13.4 tree with
+# SDK is the aarch64 llmpalooza SDK; CUDA_ROOT is the SDK's CUDA 13.4 tree with
 # the pinned cuBLAS packages unpacked into it. The compilers and flags are
 # the ones cmake/toolchains/sdk.cmake sets for the spark-native profile:
 # the SDK's Clang with its GCC 16.2 runtime (static), the host's GNU linker,

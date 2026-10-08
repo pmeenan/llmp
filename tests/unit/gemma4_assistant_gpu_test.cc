@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include <gtest/gtest.h>
 
@@ -21,10 +21,10 @@
 #include "tokenizer_fixtures.h"
 
 namespace {
-namespace en = jitllm::engine;
-namespace md = jitllm::model;
-namespace ar = jitllm::artifact;
-namespace tk = jitllm::tokenizer;
+namespace en = llmp::engine;
+namespace md = llmp::model;
+namespace ar = llmp::artifact;
+namespace tk = llmp::tokenizer;
 struct Vocabulary {
   tk::GgufTokenizer tokenizer;
   ar::GgufMetadata raw;
@@ -57,20 +57,20 @@ class Gemma4AssistantGpu : public ::testing::Test {
   en::PagedNode& node = lifetime->node;
   std::unique_ptr<en::Gemma4Runner>& runner = lifetime->runner;
   en::Gemma4Assistant* assistant = nullptr;
-  std::expected<jitllm::base::Sha256Digest, std::string> Witness(std::uint32_t slot,
-                                                                 std::uint32_t prefix) {
+  std::expected<llmp::base::Sha256Digest, std::string> Witness(std::uint32_t slot,
+                                                               std::uint32_t prefix) {
     auto ranges = runner->CheckpointRanges(prefix);
     if (!ranges) return en::support::Error(ranges.error());
     std::uint64_t bytes = 0;
     for (const auto& range : *ranges) bytes += range.bytes;
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto pinned = node.Pinned(std::max(bytes, std::uint64_t{2816} * sizeof(float)), 0, staging);
     if (!pinned) return en::support::Error(pinned.error());
     // Failed or unknown copies leave the pinned owner registered until the
     // fixture proves its final fence; no destructor guesses retirement.
     if (auto copied = runner->CopyState(slot, *pinned, *ranges, true); !copied)
       return en::support::Error(copied.error());
-    jitllm::base::Sha256 digest;
+    llmp::base::Sha256 digest;
     digest.Update(std::span(static_cast<const std::byte*>(*pinned), bytes));
     if (auto copied = runner->CopyFeatures(slot, prefix - 1, 1, *pinned); !copied)
       return en::support::Error(copied.error());
@@ -82,7 +82,7 @@ class Gemma4AssistantGpu : public ::testing::Test {
   virtual std::uint32_t MaxRows() const { return 128; }
   virtual bool CaptureAhead() const { return false; }
   void SetUp() override {
-    const auto store = std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts";
+    const auto store = std::filesystem::path(llmp::test_support::ModelsDir()) / "m3-artifacts";
     const auto target = store / "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
     const auto path = store / "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42";
     if (std::error_code error;
@@ -90,7 +90,7 @@ class Gemma4AssistantGpu : public ::testing::Test {
       GTEST_SKIP() << "no Gemma 4 26B target and assistant in " << store;
     }
     // Spill files need direct I/O: scratch in the build tree.
-    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path root = scratch != nullptr ? scratch : ::testing::TempDir();
     ASSERT_TRUE(node.Open());
     runner = std::make_unique<en::Gemma4Runner>(
@@ -134,8 +134,8 @@ class Gemma4AssistantGpu : public ::testing::Test {
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     node.SetHostFloor(runner->host_input_bytes() +
                       (CaptureAhead() ? 2U : 1U) * runner->plan_floor_bytes());
-    ASSERT_TRUE(node.Start(jitllm::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
-                                               2 * node.StateCapacity())));
+    ASSERT_TRUE(node.Start(llmp::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
+                                             2 * node.StateCapacity())));
     ASSERT_TRUE(runner->Register());
     ASSERT_TRUE(runner->Bind());
     node.Run();
@@ -166,7 +166,7 @@ TEST_F(Gemma4AssistantGpu, EndogenousThreeStepRepeatsAndIndependentFrozenOwners)
           const en::Gemma4Runner::Work work{slot, 0, tokens, &target_heads[slot]};
           if (auto done = runner->Wave(std::span(&work, 1)); !done) return done;
         }
-        std::array<jitllm::base::Sha256Digest, 2> immutable;
+        std::array<llmp::base::Sha256Digest, 2> immutable;
         for (std::uint32_t slot = 0; slot < 2; ++slot) {
           auto witness = Witness(slot, slot == 0 ? 6U : 5U);
           if (!witness) return en::support::Error(witness.error());
@@ -259,7 +259,7 @@ TEST_F(Gemma4AssistantCapturedGpu, ThreeEndogenousStepsMatchAfterCapturedTargetF
   for (std::size_t i = 0; i < prompt.size(); ++i) prompt[i] = seed[i % seed.size()];
   const std::array<std::int32_t, 5> peer{2, 818, 5279, 529, 818};
   std::array<std::array<std::vector<float>, 2>, 3> expected_heads, expected_features;
-  std::array<jitllm::base::Sha256Digest, 2> expected_target;
+  std::array<llmp::base::Sha256Digest, 2> expected_target;
   ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
   auto ran = node.WithRequest(
       0, runner->closure(), "assistant consumes captured target frontier", [&]() -> en::Status {

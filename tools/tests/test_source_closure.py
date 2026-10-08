@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Regression tests for the build inventory audit, without a compiler or SDK."""
 
@@ -36,7 +36,7 @@ class Inventory(unittest.TestCase):
         self.component_output = "third_party/selected-" + "a" * 16
         self.receipt = {"components": [{"id": "selected", "source_tree": "a" * 64,
                                          "source": str(self.tree)}]}
-        (self.build / "CMakeCache.txt").write_text(f"JITLLM_SOURCES_DIR:PATH={self.prepared}\n")
+        (self.build / "CMakeCache.txt").write_text(f"LLMP_SOURCES_DIR:PATH={self.prepared}\n")
         self.commands = [{"directory": str(self.build), "file": str(self.tree / "source.cc"),
                           "output": str(self.build / "object.o"),
                           "command": "clang++ -O2 -fno-exceptions -c source.cc -o object.o"}]
@@ -78,7 +78,7 @@ class Inventory(unittest.TestCase):
         return subprocess.CompletedProcess(command, 0, stdout=out, stderr="")
 
     def check(self, expected=0, message=None):
-        (self.build / "jitllm-receipt.json").write_text(json.dumps(self.receipt))
+        (self.build / "llmp-receipt.json").write_text(json.dumps(self.receipt))
         (self.build / "compile_commands.json").write_text(json.dumps(self.commands))
         (self.build / "build.ninja").write_text(
             f"build app: {self.link_rule} {self.link_inputs}\n{self.link_lines}\n{self.extra_edges}")
@@ -250,7 +250,7 @@ class Inventory(unittest.TestCase):
         self.link_lines = "  LINK_LIBRARIES = libown.a\n"
         self.check(1, "a link uses the shared library libown.a")
 
-    RUNTIME = "src/runtime/jitllm-runtime"
+    RUNTIME = "src/runtime/llmp-runtime"
 
     def ship(self, *built_from):
         """A test-only component the test executable uses, and the shipped runtime built from built_from."""
@@ -273,7 +273,7 @@ class Inventory(unittest.TestCase):
         self.check()
 
     def test_shipped_executable_linking_a_test_only_component_rejected(self):
-        # Its notices are not in the package (tools/jitllm_package.py ships only `use: product` ones).
+        # Its notices are not in the package (tools/llmp_package.py ships only `use: product` ones).
         self.ship("object.o", "test_object.o")
         self.check(1, f"{self.RUNTIME}, which the package ships, is built from testonly, a test-only component")
 
@@ -315,9 +315,9 @@ class Inventory(unittest.TestCase):
 
     def test_shipped_executables_are_the_packaged_ones(self):
         sys.path.insert(0, str(SCRIPT.parents[2] / "tools"))
-        import jitllm_package  # noqa: PLC0415 (the package tool needs the tools directory on the path)
+        import llmp_package  # noqa: PLC0415 (the package tool needs the tools directory on the path)
 
-        self.assertEqual(closure.SHIPPED_EXECUTABLES, tuple(built for built, _ in jitllm_package.EXECUTABLES))
+        self.assertEqual(closure.SHIPPED_EXECUTABLES, tuple(built for built, _ in llmp_package.EXECUTABLES))
 
     def test_libstdcxx_assertions_all_or_none(self):
         # D-083: as libstdc++'s c++config.h decides, explicitly or for an unoptimized compile.

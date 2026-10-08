@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # Chat templates (M3; D-067 as amended 2026-10-02): native family renderers
@@ -9,8 +9,8 @@
 # arguments.
 # The model layer (docs/architecture.md#layers-and-dependency-rules), after
 # the tokenizer.
-add_library(jitllm_chat STATIC chat.cc deepseek_v4.cc gemma.cc jinja_eval.cc jinja_parse.cc
+add_library(llmp_chat STATIC chat.cc deepseek_v4.cc gemma.cc jinja_eval.cc jinja_parse.cc
                                jinja_value.cc pycase.cc pyjson.cc qwen.cc template.cc)
-target_include_directories(jitllm_chat PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(jitllm_chat PUBLIC jitllm_json jitllm_tokenizer PRIVATE jitllm_base
-                      jitllm_warnings)
+target_include_directories(llmp_chat PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(llmp_chat PUBLIC llmp_json llmp_tokenizer PRIVATE llmp_base
+                      llmp_warnings)

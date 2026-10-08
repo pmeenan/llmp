@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # AArch64 cross build for DGX Spark from an x86-64 host (D-011, D-032,
@@ -8,10 +8,10 @@
 # (tools/run-target). The `cross` preset uses this file.
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
-set(JITLLM_PROFILE cross)
-set(JITLLM_BUILD_ARCH x86_64)
-set(JITLLM_TARGET_TRIPLE aarch64-linux-gnu)
-set(JITLLM_TARGET_MARCH armv8-a)
-set(JITLLM_LINK_FLAGS -fuse-ld=lld)
-set(JITLLM_SYSROOT sysroot/aarch64-linux-gnu)
+set(LLMP_PROFILE cross)
+set(LLMP_BUILD_ARCH x86_64)
+set(LLMP_TARGET_TRIPLE aarch64-linux-gnu)
+set(LLMP_TARGET_MARCH armv8-a)
+set(LLMP_LINK_FLAGS -fuse-ld=lld)
+set(LLMP_SYSROOT sysroot/aarch64-linux-gnu)
 include("${CMAKE_CURRENT_LIST_DIR}/sdk.cmake")

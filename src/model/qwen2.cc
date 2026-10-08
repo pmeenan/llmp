@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/qwen2.h"
@@ -19,7 +19,7 @@
 #include "artifact/artifact.h"
 #include "artifact/representation.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 namespace {
 
 std::unexpected<std::string> Refused(std::string detail) {
@@ -243,4 +243,4 @@ std::expected<void, std::string> EmbedRows(std::span<const std::uint16_t> table,
   return {};
 }
 
-}  // namespace jitllm::model
+}  // namespace llmp::model

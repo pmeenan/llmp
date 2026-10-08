@@ -1,21 +1,21 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// GGML tensor descriptors over jitLLM memory (D-053;
+// GGML tensor descriptors over llmpalooza memory (D-053;
 // docs/backend-proof.md#ggml-llamacpp-b29c606e2). An arena holds the
-// metadata of a bounded number of tensors in a buffer jitLLM owns, in a
+// metadata of a bounded number of tensors in a buffer llmpalooza owns, in a
 // GGML context that never allocates tensor data (no_alloc). Operation
 // nodes are built with GGML's own graph functions on context(), so their
 // shapes, strides and operation parameters are upstream's, and Bind points
 // each tensor at memory the caller owns and keeps valid. Tensors carry no
-// GGML backend buffer: jitLLM's launchers never read one.
+// GGML backend buffer: llmpalooza's launchers never read one.
 //
 // GGML aborts when a context runs out of room, so callers check Reserve
 // before building nodes. Every build profile has this; only CUDA builds
 // launch anything on it.
 
-#ifndef JITLLM_KERNELS_GGML_TENSORS_H_
-#define JITLLM_KERNELS_GGML_TENSORS_H_
+#ifndef LLMP_KERNELS_GGML_TENSORS_H_
+#define LLMP_KERNELS_GGML_TENSORS_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -27,7 +27,7 @@
 
 #include "ggml.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // Why a kernel-module call failed. kRejected: a precondition did not hold
 // and nothing was queued. kUnknown: a launch reported a device error, so
@@ -96,6 +96,6 @@ class TensorArena {
   std::size_t graph_capacity_ = 0;     // every reached tensor, including omitted leaves
 };
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_TENSORS_H_
+#endif  // LLMP_KERNELS_GGML_TENSORS_H_

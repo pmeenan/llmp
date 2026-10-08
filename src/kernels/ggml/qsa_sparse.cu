@@ -1,13 +1,13 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Qwen3.8's QSA at any depth (jitllm_ops.h jitllm.qsa.pool, .topk and
-// .attn; the fast graph's, qwen38_graph.h): jitLLM's own kernels, none of
+// Qwen3.8's QSA at any depth (llmp_ops.h llmp.qsa.pool, .topk and
+// .attn; the fast graph's, qwen38_graph.h): llmpalooza's own kernels, none of
 // them GGML's arithmetic bit for bit, each deterministic (no atomics on
 // floats, every sum in a fixed order), so a run repeats bit for bit.
 //
 // - The pool writes each block's key once, when the block completes, as
-//   jitllm.qsa.prep computes a pooled key (qwen38_graph.cc's reference
+//   llmp.qsa.prep computes a pooled key (qwen38_graph.cc's reference
 //   form pools every block again at every step).
 // - The selection scores every complete block against the token's four
 //   indexer heads (a thread a block up to kQsaTopKVecRows tokens; past them
@@ -15,7 +15,7 @@
 //   tokens stream through), into one order-preserving key a block, then
 //   selects the width best cells with a byte-wise radix select over tiles
 //   of kQsaTopKTile blocks, ties to the lower cell, and the tiles'
-//   candidates once more (TensorFold #93's technique, written for jitLLM).
+//   candidates once more (TensorFold #93's technique, written for llmpalooza).
 // - The attention gathers each token's kept cells, 16 at a time, and runs
 //   its KV head's query heads over them as one m16n8k16 tile (llama.cpp
 //   #28770's gather, one token a warp).
@@ -33,10 +33,10 @@
 
 #include "base/bytes.h"
 #include "common.cuh"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 std::unexpected<KernelFailure> Refused(std::string detail) {
@@ -141,7 +141,7 @@ constexpr int kPoolSlots = 16;  // d / 32, at most
 
 // A warp a block the chunk completes: its raw keys summed in cell order and
 // scaled by 1 / ratio (the reference form's adds and scale), then
-// jitllm.qsa.prep's norm and rotation at the block's first position, in
+// llmp.qsa.prep's norm and rotation at the block's first position, in
 // BF16. Blocks past the positions' range, the cache or the table write
 // nothing.
 __global__ void __launch_bounds__(32)
@@ -1047,15 +1047,15 @@ std::expected<void, KernelFailure> RunQsaPool(LaunchContext& launch, ggml_tensor
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* raw = node->src[0];
     const ggml_tensor* blocks = node->src[1];
-    const int d = JitllmOpInt(node, 0);
-    const int ratio = JitllmOpInt(node, 1);
-    const int t = JitllmOpInt(node, 2);
+    const int d = LlmpOpInt(node, 0);
+    const int ratio = LlmpOpInt(node, 1);
+    const int t = LlmpOpInt(node, 2);
     QsaPoolKernel<<<static_cast<unsigned>((t + ratio - 1) / ratio), 32, 0, context.stream()>>>(
         static_cast<const float*>(raw->data), static_cast<std::int64_t>(raw->nb[1] / sizeof(float)),
         static_cast<int>(raw->ne[1]), static_cast<__nv_bfloat16*>(blocks->data),
         static_cast<int>(blocks->ne[1]), static_cast<const float*>(node->src[2]->data),
-        static_cast<const std::int32_t*>(node->src[3]->data), t, d, ratio, JitllmOpFloat(node, 3),
-        JitllmOpFloat(node, 4));
+        static_cast<const std::int32_t*>(node->src[3]->data), t, d, ratio, LlmpOpFloat(node, 3),
+        LlmpOpFloat(node, 4));
   });
 }
 
@@ -1073,10 +1073,10 @@ std::expected<void, KernelFailure> RunQsaTopK(LaunchContext& launch, ggml_tensor
   }
   const std::uint64_t scratch = PlanQsaTopK(node);
   return launch.Run(base::Bytes(scratch), [node, scratch](ggml_backend_cuda_context& context) {
-    const int n_blocks = JitllmOpInt(node, 0);
-    const int width = JitllmOpInt(node, 1);
-    const int ratio = JitllmOpInt(node, 2);
-    const int t = JitllmOpInt(node, 3);
+    const int n_blocks = LlmpOpInt(node, 0);
+    const int width = LlmpOpInt(node, 1);
+    const int ratio = LlmpOpInt(node, 2);
+    const int t = LlmpOpInt(node, 3);
     const QsaTopKLayout layout{.t = t, .n_blocks = n_blocks, .width = width, .ratio = ratio};
     const auto row = static_cast<int>(QsaTopKRow(width));
     const auto tiles = static_cast<int>(layout.tiles());
@@ -1129,10 +1129,10 @@ std::expected<void, KernelFailure> RunQsaAttn(LaunchContext& launch, ggml_tensor
   const std::uint64_t scratch = PlanQsaAttn(node);
   return launch.Run(base::Bytes(scratch), [node, scratch](ggml_backend_cuda_context& context) {
     const ggml_tensor* k = node->src[1];
-    const int heads = JitllmOpInt(node, 0);
-    const int kv_heads = JitllmOpInt(node, 1);
-    const int t = JitllmOpInt(node, 2);
-    const int row = JitllmOpInt(node, 3);
+    const int heads = LlmpOpInt(node, 0);
+    const int kv_heads = LlmpOpInt(node, 1);
+    const int t = LlmpOpInt(node, 2);
+    const int row = LlmpOpInt(node, 3);
     const auto shares = static_cast<int>(QsaAttnShares(t, kv_heads, row));
     const std::int64_t items = static_cast<std::int64_t>(t) * kv_heads * shares;
     ggml_cuda_pool_alloc<float> pool;
@@ -1147,7 +1147,7 @@ std::expected<void, KernelFailure> RunQsaAttn(LaunchContext& launch, ggml_tensor
         static_cast<const __half*>(node->src[2]->data),
         static_cast<std::int64_t>(k->nb[1] / sizeof(__half)), static_cast<int>(k->ne[1]),
         static_cast<const std::int32_t*>(node->src[3]->data), row, out, partial, heads, kv_heads,
-        shares, JitllmOpFloat(node, 4));
+        shares, LlmpOpFloat(node, 4));
     if (shares > 1) {
       QsaAttnCombineKernel<<<static_cast<unsigned>(t * heads), kHead, 0, context.stream()>>>(
           partial, out, heads, kv_heads, shares);
@@ -1155,4 +1155,4 @@ std::expected<void, KernelFailure> RunQsaAttn(LaunchContext& launch, ggml_tensor
   });
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Cross-model swap trace for the retained-backing comparison (D-035, D-079).
 
@@ -25,7 +25,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FEASIBILITY = HERE.parent / "paging-feasibility"
-FORMAT = "jitllm-swap-trace"
+FORMAT = "llmp-swap-trace"
 VERSION = 1
 GIB = 1 << 30
 # Every event a replayer may see, and the record types, in file order.
@@ -81,7 +81,7 @@ def load_feasibility():
 
 
 def check_params(params, library):
-    if params.get("format") != "jitllm-swap-trace-params" or params.get("version") != 1:
+    if params.get("format") != "llmp-swap-trace-params" or params.get("version") != 1:
         raise ValueError("unknown parameter format")
     seeds = params["seeds"]
     if set(seeds) != {"primary", "confirmation"} or seeds["primary"] == seeds["confirmation"]:

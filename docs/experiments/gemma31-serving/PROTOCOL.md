@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Scalar route reproduction
@@ -34,8 +34,8 @@ the child before returning; forced retirement timeout fails the result.
   --stop-on-fail -- bash -lc \
   'python3 docs/experiments/gemma31-serving/http_control.py \
     --output "$HOME/.cache/gemma-serving-http-new" \
-    --installed "$HOME/.local/share/jitllm/m3-artifacts" \
-    --runtime build/spark-native/src/runtime/jitllm-runtime'
+    --installed "$HOME/.local/share/llmp/m3-artifacts" \
+    --runtime build/spark-native/src/runtime/llmp-runtime'
 ~/.local/bin/spark-job wait gemma-serving-http
 ```
 

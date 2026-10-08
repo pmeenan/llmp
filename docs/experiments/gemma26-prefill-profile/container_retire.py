@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Retire only this acquisition's labelled CID, including SIGKILL recovery."""
 import json
@@ -29,12 +29,12 @@ def retire(scratch,name):
         assert remaining == cid
         metadata = json.loads(docker('inspect',cid))
         assert len(metadata) == 1 and metadata[0]['Id'] == cid
-        assert metadata[0]['Config']['Labels']['jitllm.observer'] == LABEL
-        assert metadata[0]['Name'] == '/jitllm-gemma26-prefill-profile-'+name
+        assert metadata[0]['Config']['Labels']['llmp.observer'] == LABEL
+        assert metadata[0]['Name'] == '/llmp-gemma26-prefill-profile-'+name
         docker('rm','-f',cid)
     assert not docker('ps','-aq','--no-trunc','--filter','id='+cid)
     final = scratch/(name+'-container-retired.json')
-    record = {'cid':cid,'name':'jitllm-gemma26-prefill-profile-'+name,
+    record = {'cid':cid,'name':'llmp-gemma26-prefill-profile-'+name,
               'owner_label':LABEL,'container_absent_after_checked_docker_query':True}
     if final.exists():
         assert json.loads(final.read_text()) == record

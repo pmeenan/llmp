@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma31 assistant: frozen C1 component control
@@ -38,7 +38,7 @@ Reproduce with the approved prepared target/assistant pair and the source-bound
 and [native protocol](../gemma-assistant-execution/PROTOCOL.md).
 The existing wrapper's `build31`/`acquire31` modes select the pinned original
 image and 19-header closure; use `own_freeze.py --profile 31`. Native invocation is
-`jitllm_gemma_assistant_fixture --profile31 STAGE0_DIR STAGE0_MANIFEST NEW_OUTPUT`,
+`llmp_gemma_assistant_fixture --profile31 STAGE0_DIR STAGE0_MANIFEST NEW_OUTPUT`,
 with the qualified SDK/cuBLAS library path. Use exclusive outputs and preserve
 the original-own → stage-zero → native-own → comparison order. Legacy 26
 invocations retain their existing bounds and behavior. The build receipt reports

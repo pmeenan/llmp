@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The engine's model runners and planning (src/engine/), which the M3
 // harnesses drive, under the names the harnesses have always used. CUDA
 // builds only.
 
-#ifndef JITLLM_BENCHMARKS_ENGINE_NAMES_H_
-#define JITLLM_BENCHMARKS_ENGINE_NAMES_H_
+#ifndef LLMP_BENCHMARKS_ENGINE_NAMES_H_
+#define LLMP_BENCHMARKS_ENGINE_NAMES_H_
 
 #include "engine/dsv4_plan.h"
 #include "engine/dsv4_runner.h"
@@ -14,7 +14,7 @@
 #include "engine/qwen38_runner.h"
 #include "engine/qwen_image_runner.h"
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 
 using engine::Argmax;
 using engine::Dsv4ChunkKind;
@@ -34,6 +34,6 @@ using engine::Qwen38Sources;
 using engine::QwenImageOptions;
 using engine::QwenImageRunner;
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks
 
-#endif  // JITLLM_BENCHMARKS_ENGINE_NAMES_H_
+#endif  // LLMP_BENCHMARKS_ENGINE_NAMES_H_

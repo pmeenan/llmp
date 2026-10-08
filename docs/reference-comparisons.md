@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Model reference comparisons
@@ -84,7 +84,7 @@ Default-branch HEAD resolved with `git ls-remote` to
 whose [package version](https://github.com/ashhart/TensorFold/blob/609ca419abecebdc5a059498a613680bd3aa847f/src/tensorfold/__init__.py)
 is **0.6.5**. Its [README](https://github.com/ashhart/TensorFold/blob/609ca419abecebdc5a059498a613680bd3aa847f/README.md)
 declares the following coverage. These are reference candidates, not
-jitLLM qualification results or proof that our approved checkpoints match.
+llmpalooza qualification results or proof that our approved checkpoints match.
 Format-specific topology limits come from the pinned
 [27B recipe](https://github.com/ashhart/TensorFold/blob/609ca419abecebdc5a059498a613680bd3aa847f/docs/recipes/qwen3.8-27b.md)
 and [Flash Next recipe](https://github.com/ashhart/TensorFold/blob/609ca419abecebdc5a059498a613680bd3aa847f/docs/recipes/qwen3.8-flash-next.md).

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/exl3/linear.h"
@@ -16,7 +16,7 @@
 #include "kernels/exl3/recon_gemm.h"
 #include "kernels/exl3/validate.h"
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -177,4 +177,4 @@ std::expected<void, KernelFailure> ReconstructedLinear(LaunchContext& launch, Re
   return o.bias == 0 ? std::expected<void, KernelFailure>() : launch.Bias(*add);
 }
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3

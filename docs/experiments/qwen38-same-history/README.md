@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen first-verify acceptance on the same history
@@ -95,7 +95,7 @@ The prompt digests below hash little-endian signed I32 IDs:
 | p2 | `a3261b4f298733484a629fe27f0e0109b4945e0d8d750d92ef8d85e855341e28` |
 | p3 | `184d7c02214ef662c0e927ca63f4e0091eb42a918a1f79423c1be34b7303ae1e` |
 
-Run `jitllm_qwen38_spec` with the target/drafter/tokenizer paths,
+Run `llmp_qwen38_spec` with the target/drafter/tokenizer paths,
 `--prompts INPUT --prompt-token-ids on --runtime-prefill on --context 33792
 --prefill-chunk 4096 --draft 3 --draft-vocab 47172 --check greedy
 --tokens 9 --repeats 2 --out OUTPUT`; repeat with `--draft-vocab 65536`.
@@ -127,19 +127,19 @@ The pinned V2 rejection sampler is
 Copy its unchanged bytes to an external overlay and append:
 
 ```python
-# jitLLM diagnostic observer; the original sampler runs unchanged.
-from jitllm_mia_observer import enable as _jitllm_enable
-_jitllm_enable(RejectionSampler)
+# Llmpalooza diagnostic observer; the original sampler runs unchanged.
+from llmp_mia_observer import enable as _llmp_enable
+_llmp_enable(RejectionSampler)
 ```
 
 Mount that overlay and [mia_observer.py](mia_observer.py), named
-`jitllm_mia_observer.py`, read-only into their Python package paths.
-Set `JITLLM_MIA_TRACE_DIR` to an owned mounted directory with mode 0700.
+`llmp_mia_observer.py`, read-only into their Python package paths.
+Set `LLMP_MIA_TRACE_DIR` to an owned mounted directory with mode 0700.
 The observer calls the original sampler first, reads inputs through
 `batch.logits_indices`, and asserts its independently derived acceptance
 against the actual returned sampled prefix, kept and rejected counts.
 Python assertions must be enabled. Its source SHA-256 is
-`fc34ef7a55ed95204632006ebac1ec31a5b6f573f74d37b97b2cc9710ce8cab9`;
+`5be516800512dd909fe932804285d56428e211bd568ba5d0297f83ee2b2c582c`;
 the complete sampler overlay SHA-256 is
 `f87e3bcec9453f41b289f02ed3cf82bc899ff105a0fd6a24d114d9bdc928b539`.
 Join each worker request to its API response identity using the pinned
@@ -252,7 +252,7 @@ archived supervisor commands/receipts, not by `spec.json` alone.
 controllers/clients from the pinned originals, checking input and generated
 source hashes. On B, pass `--controller ~/scratch/acceptance/mia-first-verify-run.py`,
 `--client ~/scratch/m3-serving-concurrent-r1/frozen-v2/mia-anchor-client.py`,
-`--helper ~/scratch/m3-serving-concurrent-r1/frozen-v2/jitllm-mia-concurrent-run.py`
+`--helper ~/scratch/m3-serving-concurrent-r1/frozen-v2/llmp-mia-concurrent-run.py`
 and `--out ~/scratch/acceptance`. Run each emitted `mia-cold-p3-run.py`,
 `mia-cache-paths-run.py` and `mia-cache-det1-run.py` under installed
 `spark-job start --gpu --timeout 600`, then wait. Each requires its output
@@ -392,7 +392,7 @@ historical analysis; relabeling it all-cold is rejected.
 
 Raw records remain at `spark:~/scratch/qwen-cold-anchors/native-cold-all/`
 and `spark-b:~/scratch/qwen-cold-anchors/{mia-cold-all,supervision.json}`;
-local copies are in `~/scratch/jitllm-m3-qwen-cold-anchors-2026-10-04/`.
+local copies are in `~/scratch/llmp-m3-qwen-cold-anchors-2026-10-04/`.
 Jobs `qwen-cold-all-native`, `qwen-cold-all-mia`,
 `qwen-cold-all-analysis` and final `qwen-cold-all-analysis-check3` finish
 zero and are waited on. The final check authenticates all eight generated

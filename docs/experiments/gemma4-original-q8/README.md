@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma4 original-consumer Q8 sharing and bounded startup placement
@@ -185,7 +185,7 @@ The fixed private cuBLAS13/Lt payloads are
 `ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30`.
 
 Approved prepared artifacts are supplied externally from
-`~/.local/share/jitllm/m3-artifacts/`:
+`~/.local/share/llmp/m3-artifacts/`:
 
 | Profile | Manifest SHA / directory | Index SHA |
 | --- | --- | --- |
@@ -193,7 +193,7 @@ Approved prepared artifacts are supplied externally from
 | 31 | `32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08` | `9ae365a17ed73528262d7befdb505bf07e6695e03f0fa36f69e69099dbd5f34c` |
 
 Standing replay inputs are KEEP data, separate from raw experiment output,
-under `~/.local/share/jitllm/references/gemma4-original-q8/`. Supply these exact
+under `~/.local/share/llmp/references/gemma4-original-q8/`. Supply these exact
 little-endian I32 bytes externally if the store is absent; no retokenized
 substitutes. `parent-histories.i32` is 12 owner-major histories of 1024 IDs,
 49,152B, SHA `d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3`.

@@ -1,18 +1,18 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // GGML's tensor-core flash attention for head dimensions 256 and 512 under
-// jitLLM's dispatch (ops_ext.h FlashAttnMma), and at 128 without head
-// grouping or a mask (FlashAttnMma128). jitLLM does not compile
+// llmpalooza's dispatch (ops_ext.h FlashAttnMma), and at 128 without head
+// grouping or a mask (FlashAttnMma128). Llmpalooza does not compile
 // GGML's fattn.cu, whose dispatcher names every head size's and K/V type's
 // instance; this unit has, from fattn.cu at llama.cpp b29c606e2, with
 // the query-tile sparse union backported from dc9879cf (PR 29298):
 //
 // - flash_attn_mask_to_sparse_indices, ggml_cuda_flash_attn_ext_compact_mask
 //   and ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse (fattn.cu:8-128),
-//   with formatting and one jitLLM condition (a node its graph
-//   marks, jitllm_ops.h SetFlashAttnSparseAny, gathers below 4,096 cells
+//   with formatting and one llmpalooza condition (a node its graph
+//   marks, llmp_ops.h SetFlashAttnSparseAny, gathers below 4,096 cells
 //   too): a sparse gather shared by up to eight queries at D=256/512;
 // - the column choice of ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1 for
 //   groups of 8 query heads (fattn.cu:131-164).
@@ -32,7 +32,7 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
 #include "kernels/ggml/fattn_mma.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_ext.h"
 #include "kernels/ggml/validate_util.h"
@@ -181,9 +181,9 @@ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_
   const int32_t n_kv_max = ggml_get_op_params_i32(dst, 4);
 
   GGML_UNUSED_VARS(ncols2);
-  const bool any = ggml_get_op_params_i32(dst, jitllm::kernels::ggml::kFlashAttnSparseParam) == 1;
+  const bool any = ggml_get_op_params_i32(dst, llmp::kernels::ggml::kFlashAttnSparseParam) == 1;
   const bool wide =
-      ggml_get_op_params_i32(dst, jitllm::kernels::ggml::kFlashAttnWideSparseParam) == 1;
+      ggml_get_op_params_i32(dst, llmp::kernels::ggml::kFlashAttnWideSparseParam) == 1;
 
   return GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) && mask != nullptr &&
          (wide || (Q->ne[0] == 512 && ncols1 == 1)) && n_kv_max > 0 && max_bias == 0.0f &&
@@ -192,9 +192,9 @@ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_
 #endif  // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 }
 
-// ---- jitLLM ----
+// ---- llmpalooza ----
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -462,4 +462,4 @@ std::expected<void, KernelFailure> FlashAttnMma(LaunchContext& launch, ggml_tens
       [&dispatch, run](ggml_backend_cuda_context& context) { run(context, &dispatch); });
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

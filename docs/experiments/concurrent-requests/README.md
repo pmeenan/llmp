@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Concurrent generation measurements
@@ -10,9 +10,9 @@ prompt-plus-generation throughput from 23.06 to 41.05 tokens/s in plain
 mode (1.78×), and from 31.62 to 40.53 with speculation (1.28×). All fourteen
 concurrent outputs matched their matching solo controls exactly. These are
 one observation per cell, with serialized fresh prefills; they do not
-establish pure decode scaling or parity with jitLLM's different weight format.
+establish pure decode scaling or parity with llmpalooza's different weight format.
 
-Spark B, 2026-10-01, one CUDA rank, image `jitllm-tensorfold:71377a53`
+Spark B, 2026-10-01, one CUDA rank, image `llmp-tensorfold:71377a53`
 (`sha256:1a2afff2bd001cdea746d96bdb7614a4f937caa28e1646babd9acb951ea3aa48`),
 TensorFold 0.3.6.2. Model: Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP at
 `dadefa80`, affine 4-bit, group 32. This is a cross-quantization baseline
@@ -185,7 +185,7 @@ seven comparisons from completed per-request records.
 | Complete client receipt | `90562f54abf4aae571d5fcd9c3258218e03f995081addac6a6b9cdcc0939cbf8` |
 | Descriptive analysis | `f0732207dd39601ca8347af63e16c085537d63176f351946a8b6443474764e8c` |
 
-## jitLLM: first 8K queue screen
+## Llmpalooza: first 8K queue screen
 
 The current native service runs one request to completion while other
 clients wait. Its aggregate fresh-prompt throughput stayed near 20.2

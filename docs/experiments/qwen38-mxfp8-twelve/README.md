@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen twelve-column MXFP8 CTA screen — 2026-10-04
@@ -99,7 +99,7 @@ not establish cross-engine parity or sampled quality bounds.
 Both executables are freshly built from checked `580aab0`, with only the
 candidate's one-file private dispatch/instrumentation patch. Each 487-file
 source inventory covers tracked source/build inputs, and differs only in
-`src/kernels/ggml/jitllm_ops.cu`. The controller separately checks the
+`src/kernels/ggml/llmp_ops.cu`. The controller separately checks the
 unchanged benchmark and operand-test sources. The ordinary 16-column
 microbenchmark's retained source SHA-256 is
 `8deb785975e92adb2ad6481e2e6fc6a2edabf75ea1d7d3e8ffb5b73f8dd22055`.
@@ -113,9 +113,9 @@ microbenchmark's retained source SHA-256 is
 | Private patch | `a1674f13fa57a1156849cd06e6ffbb0fe92c117b0fb864301f8f6fa8afc041c9` |
 | Wave controller | `2df542bfc4a9fffc44cd2b8d7859fee4187668429384854d8f96bde4d8f326a2` |
 | Wave aggregate | `534b22da5d9b0e0a8397d4739ca425052437a3defc38dc7d2562f39fe0fe86bb` |
-| Complete short prompt JSON | `d212009dadf1ddbf945c8dc7ad0214ba444236baf57c8ed9019c3ebe6b0805b4` |
+| Complete short prompt JSON | `c697236c56a09b0a3f2550f7514b3e4d826e1d14a96b4d1c79e3bd33a3a6f859` |
 | Benchmark source | `e7c95af532772e89c24d5315b36751e8ff8fab82bc10c2156a184aad3c700e72` |
-| Operand-test source | `870170cb52a9bcba712b159a711e6f7105c625db1cfc617fed7199e997883dba` |
+| Operand-test source | `37aa5133cb46870ca31e9a3fde6f31344298bae77afaecc1b6dca0a3b44d9f9f` |
 
 Use the unchanged [wave harness](../../../benchmarks/qwen38_spec.cc)
 with the supplied target/drafter/tokenizer and frozen prompts:
@@ -126,7 +126,7 @@ uses depth two; the nominal `--draft 3` does not widen it.
 Raw controllers, source snapshots, patch, frozen binaries, build/test logs,
 per-arm specs and gate/retirement receipts stay outside Git at
 `spark:~/scratch/mxfp8-twelve/` and
-`/home/pmeenan/scratch/jitllm-m3-qwen-mxfp8-twelve-2026-10-04/` locally.
+`/home/pmeenan/scratch/llmp-m3-qwen-mxfp8-twelve-2026-10-04/` locally.
 Installed GPU-supervised `mx12-control-build`, `mx12-candidate-build` and
 `mx12-screen1` complete zero and are waited on; the model batch takes
 96 seconds. One clone setup initially fails on an unstaged source directory

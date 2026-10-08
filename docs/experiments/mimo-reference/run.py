@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Orchestrate one bounded two-Spark MiMo reference boot from the workstation.
 
@@ -7,7 +7,7 @@ Starts a memory guard on each node, launches the worker rank then the head
 rank of the pinned SGLang image, waits for loopback health on the head, runs
 workload.py, and tears down while waiting for GPU memory to be released.
 Node names, addresses and interfaces are this measured deployment's inputs,
-not jitLLM configuration.
+not llmpalooza configuration.
 """
 
 import argparse
@@ -19,7 +19,7 @@ import sys
 import time
 
 HERE = Path(__file__).resolve().parent
-REMOTE = ".local/share/jitllm/mimo-reference"
+REMOTE = ".local/share/llmp/mimo-reference"
 
 
 def ssh(host, command, check=True, timeout=None):
@@ -113,7 +113,7 @@ def main():
         ssh(host, f"mkdir -p -m 700 {REMOTE}/runs {REMOTE}/cache && mkdir -m 700 {run_dir}")
         for f in ("guard.py", "workload.py"):
             subprocess.run(["scp", "-q", str(HERE / f), f"{host}:{run_dir}/"], check=True)
-    names = {host: f"jitllm-mimo-rank{rank}" for host, rank in nodes.items()}
+    names = {host: f"llmp-mimo-rank{rank}" for host, rank in nodes.items()}
     guard_attempts = []
     container_attempts = []
     try:

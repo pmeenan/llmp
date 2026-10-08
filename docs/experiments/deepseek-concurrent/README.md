@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek V4 Flash 0731 concurrent serving baseline
@@ -113,13 +113,13 @@ activation: 7.6–8.6 s, outside the measured burst. llama.cpp loads in
 
 ## Conditions and provenance
 
-- Native: `jitllm-runtime` SHA-256
+- Native: `llmp-runtime` SHA-256
   `a8ab24049f353f5641ccb7d466e1d88c1947d1ac56875a75192ee66b5fc994c0`. It
   was built on Spark A from a tree whose `src/` equals main `7907561`.
   Target `8a355bfb…`, drafter `dd2d3f9c…`, `speculation = true|false`,
   `context = 262144`, `prefill_chunk = 4096` (2048 in the reference
   cells), F16 caches, loopback.
-- llama.cpp: image `jitllm-llamacpp:b11254-cuda13`
+- llama.cpp: image `llmp-llamacpp:b11254-cuda13`
   (`sha256:6dd025913fdf0ac258850ac1405dde3edbdb64c7c6d60533ee63e16448f66607`,
   source `8019dc56`), unpatched. Arguments: `-ngl all -fa on -c 262144
   -np 4 --fit off -cram 0`, with the request's `cache_prompt: false`, and

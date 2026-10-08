@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Unicode for the tokenizer: code point properties from the Unicode
@@ -10,8 +10,8 @@
 // generated from (docs/licensing.md), so the pre-tokenizers classify code
 // points exactly as the reference does.
 
-#ifndef JITLLM_TOKENIZER_UNICODE_H_
-#define JITLLM_TOKENIZER_UNICODE_H_
+#ifndef LLMP_TOKENIZER_UNICODE_H_
+#define LLMP_TOKENIZER_UNICODE_H_
 
 #include <array>
 #include <cstddef>
@@ -24,7 +24,7 @@
 
 #include "tokenizer/error.h"
 
-namespace jitllm::tokenizer::unicode {
+namespace llmp::tokenizer::unicode {
 
 // The general category (UAX #44), in unicode_data.h's order.
 enum class Category : std::uint8_t {
@@ -111,6 +111,6 @@ std::size_t CompleteUtf8Prefix(std::string_view bytes);
 // usually itself (a quick check skips the rest).
 void ToNfc(std::vector<char32_t>& text);
 
-}  // namespace jitllm::tokenizer::unicode
+}  // namespace llmp::tokenizer::unicode
 
-#endif  // JITLLM_TOKENIZER_UNICODE_H_
+#endif  // LLMP_TOKENIZER_UNICODE_H_

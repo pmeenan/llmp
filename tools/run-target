@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Runs a cross-built executable for CTest: under qemu-user, or on a Spark over SSH (D-011, D-061).
 
@@ -9,8 +9,8 @@ GoogleTest discovery) call it as
     run-target --build-dir DIR --sysroot SYSROOT --qemu QEMU -- EXECUTABLE [ARGS...]
 
 By default it runs EXECUTABLE locally under qemu-user with the target
-sysroot's dynamic loader. With JITLLM_TARGET_HOST set it runs EXECUTABLE on
-that host instead, from JITLLM_TARGET_DIR there, where `mise run deploy` copied
+sysroot's dynamic loader. With LLMP_TARGET_HOST set it runs EXECUTABLE on
+that host instead, from LLMP_TARGET_DIR there, where `mise run deploy` copied
 the build directory: paths under the build directory, in the arguments and the
 working directory, map to that copy. `mise run test -- cross --host HOST` sets
 both. Standard input and the exit status pass through.
@@ -26,7 +26,7 @@ import shlex
 
 # Test-control variables that go with a remote run; the remote host's own
 # environment supplies everything else.
-FORWARD_PREFIXES = ("GTEST_", "JITLLM_TEST_")
+FORWARD_PREFIXES = ("GTEST_", "LLMP_TEST_")
 FORWARD_NAMES = ("ASAN_OPTIONS", "UBSAN_OPTIONS", "LSAN_OPTIONS", "TSAN_OPTIONS")
 
 
@@ -74,7 +74,7 @@ def main() -> int:
     if not command:
         parser.error("no executable to run")
 
-    host = os.environ.get("JITLLM_TARGET_HOST")
+    host = os.environ.get("LLMP_TARGET_HOST")
     if not host:
         env = dict(os.environ, QEMU_LD_PREFIX=args.sysroot)
         try:
@@ -82,14 +82,14 @@ def main() -> int:
         except OSError as e:
             print(f"run-target: cannot run {args.qemu} ({e}); install qemu-user-static (D-061)", file=sys.stderr)
             return 127
-    remote_dir = os.environ.get("JITLLM_TARGET_DIR")
+    remote_dir = os.environ.get("LLMP_TARGET_DIR")
     if not remote_dir or not remote_dir.startswith("/"):
-        print("run-target: JITLLM_TARGET_HOST needs JITLLM_TARGET_DIR, the absolute directory `mise run deploy` "
+        print("run-target: LLMP_TARGET_HOST needs LLMP_TARGET_DIR, the absolute directory `mise run deploy` "
               "copied the build to; run the tests with `mise run test -- cross --host HOST`", file=sys.stderr)
         return 2
     build_dir = os.path.normpath(os.path.abspath(args.build_dir))
     remote = remote_command(build_dir, remote_dir.rstrip("/") or "/", os.getcwd(), command, dict(os.environ))
-    ssh = ssh_command(host, remote, os.environ.get("JITLLM_TARGET_SSH_CONTROL"))
+    ssh = ssh_command(host, remote, os.environ.get("LLMP_TARGET_SSH_CONTROL"))
     try:
         os.execvp(ssh[0], ssh)
     except OSError as e:

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # FlashInfer
@@ -8,7 +8,7 @@
 - **Inspected pin:** 0.6.17, commit
   `a0a6b019b9b27d49d209f85d028a1ae5a9b347d7`, installed in Mia's image
   `sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8`.
-  This is an external source experiment, not a jitLLM source-lock dependency.
+  This is an external source experiment, not a llmpalooza source-lock dependency.
 
 ## Literal NVFP4 downstream-stage transfer
 
@@ -40,7 +40,7 @@
   Static activation scales are layer maxima over512 experts; reciprocal
   encoding and raw-weight-scale multiplication are F32 CUDA operations.
   A no-model pinned-image probe records their actual bits and environment.
-- **jitLLM outcome:** external source specialization and captured-operand
+- **Llmpalooza outcome:** external source specialization and captured-operand
   replay only. Complete G2 preparation/product/combine is20.95–27.64%
   slower cold, so no arithmetic integration or model quality claim follows.
   The original captured output and actual scalar bits pass before timing.
@@ -70,7 +70,7 @@ original notices and changed-file attribution in the same unit.
   validates and uses two absolute IDs in `setRunnerProfiles` at839–873.
   `[-1,-1]` selects first native entries; it is not an API/autotuner cache
   selection. Finalize copies precede SwapAB copies in the pinned list.
-- **jitLLM workaround:** external replay calls that actual installed
+- **Llmpalooza workaround:** external replay calls that actual installed
   native binding with source/trace-proved19/56 and ordered19/36, preserving
   all operand, weight-transform and graph proofs. The full traced fused
   consumer is2.32% slower cold and effectively neutral warm; ordered is

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // ARTIFACT NEW_OUTPUT IDS_I32 capture|control. Untimed scalar P67 acquisition.
 #include "gemma_dense_ffn_capture.h"
@@ -13,7 +13,7 @@
 
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
   umask(0077);
@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
     en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
     std::unique_ptr<en::Gemma4Runner> runner;
     std::vector<en::PagedModel*> entered;
-    jitllm::benchmark::DenseFfnCapture capture;
+    llmp::benchmark::DenseFfnCapture capture;
   };
   auto life = std::make_unique<Lifetime>();
   auto& node = life->node;
@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
   auto& runner = *life->runner;
   const auto execute = [&]() -> en::Status {
     if (auto r = node.Open(); !r) return r;
-    constexpr auto metadata = jitllm::benchmark::DenseFfnCapture::kHostBytes;
+    constexpr auto metadata = llmp::benchmark::DenseFfnCapture::kHostBytes;
     if (!node.ChargeHost(metadata, false)) return Error("capture metadata charge");
     struct Grant {
       en::PagedNode& node;
@@ -63,14 +63,14 @@ int main(int argc, char** argv) {
     life->entered.push_back(&runner);
     if (auto r = life->capture.Setup(node, argv[1], std::string_view(argv[4]) == "capture"); !r)
       return r;
-    jitllm::benchmark::DenseFfnCapture::active = &life->capture;
+    llmp::benchmark::DenseFfnCapture::active = &life->capture;
     if (auto r = runner.Setup(); !r) return r;
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
     constexpr std::uint64_t heap = 3 * 262144 * 4 + 4096;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     node.SetHostFloor(runner.plan_floor_bytes() + runner.host_input_bytes() + heap + metadata);
-    if (auto r = node.Start(jitllm::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
-                                                2 * node.StateCapacity() + heap + metadata));
+    if (auto r = node.Start(llmp::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
+                                              2 * node.StateCapacity() + heap + metadata));
         !r)
       return r;
     if (auto r = runner.Register(); !r) return r;
@@ -127,6 +127,6 @@ int main(int argc, char** argv) {
     std::cerr << retired.error() << '\n';
     (void)life.release();
   } else
-    jitllm::benchmark::DenseFfnCapture::active = nullptr;
+    llmp::benchmark::DenseFfnCapture::active = nullptr;
   return result && retired ? 0 : 1;
 }

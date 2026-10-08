@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // A port of llama.cpp b29c606e2's src/models/qwen4exp.cpp graph (with the
@@ -27,13 +27,13 @@
 #include "ggml.h"
 #include "kernels/ggml/dsv4_graph.h"
 #include "kernels/ggml/fusion.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/moe_layout.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
 #include "model/qwen38.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -140,9 +140,9 @@ class Builder {
     }
     return in.bf16;
   }
-  // An MXFP8 product y[n, t] = W x: jitLLM's vector product up to its
+  // An MXFP8 product y[n, t] = W x: llmpalooza's vector product up to its
   // column bound; past it, in the fast graph, the tensor-core product
-  // (`out` F32 or BF16), else the weights dequantized to BF16 for jitLLM's
+  // (`out` F32 or BF16), else the weights dequantized to BF16 for llmpalooza's
   // BF16 product (the fused graph) or GGML's (the unfused one). F32 unless
   // `out` is BF16 and the tensor-core product runs.
   ggml_tensor* Linear(const Qwen38Mxfp8Tensors& w, Input& in, ggml_type out = GGML_TYPE_F32) {
@@ -176,7 +176,7 @@ class Builder {
     return Linear(w, in);
   }
   // A BF16 linear (the MTP drafter's): GGML's float product (MMVF or MMF)
-  // up to kQwen38Bf16Rows rows, F32 out; past them jitllm.gemm.bf16 over x
+  // up to kQwen38Bf16Rows rows, F32 out; past them llmp.gemm.bf16 over x
   // in BF16 (made once for every product that reads it), `out` out.
   ggml_tensor* LinearBf16(ggml_tensor* w, Input& in, ggml_type out = GGML_TYPE_F32) {
     if (in.x->ne[1] <= kQwen38Bf16Rows) {
@@ -198,7 +198,7 @@ class Builder {
   ggml_type RowsType(std::int64_t rows) const {
     return fast_ && rows > kMxfp8VecColumns ? GGML_TYPE_BF16 : GGML_TYPE_F32;
   }
-  // A product with BF16 weights: jitLLM's over x in BF16 where the fused
+  // A product with BF16 weights: llmpalooza's over x in BF16 where the fused
   // graph converts it, else GGML's (and GGML's for any other type, a GGUF
   // checkpoint's).
   ggml_tensor* MulMat(ggml_tensor* w, Input& in) {
@@ -209,8 +209,8 @@ class Builder {
   // tensor-core products and their fused quantizations read it).
   static bool Mxfp8(const Qwen38Mxfp8Tensors& w) { return w.codes != nullptr; }
   // A GGUF checkpoint's fast form up to kVecQTokens rows (decode): a
-  // quantized matrix of a type jitllm.vecq takes is its product over the
-  // input's one Q8_1 quantization (DeepSeek's fast plan's, jitllm_ops.h),
+  // quantized matrix of a type llmp.vecq takes is its product over the
+  // input's one Q8_1 quantization (DeepSeek's fast plan's, llmp_ops.h),
   // every product of an input sharing it; anything else GGML's product.
   bool VecQFits(const ggml_tensor* w, const ggml_tensor* x) const {
     return gguf_ && fast_ && w != nullptr && VecQType(w->type) && w->ne[2] == 1 && w->ne[3] == 1 &&
@@ -233,7 +233,7 @@ class Builder {
   }
   // Whether the fused graph gives a float product of `rows` BF16 inputs.
   bool Bf16Inputs(std::int64_t rows) const { return fused_ && rows > kQwen38Bf16Rows; }
-  // Whether the fast graph's QSA fusions (jitllm.qsa.prep and .select) take
+  // Whether the fast graph's QSA fusions (llmp.qsa.prep and .select) take
   // the profile's heads: a 64-dimension rotation, heads of whole warps.
   bool FastSelect() const {
     return fast_ && p_.rope_dims == 64 && p_.indexer_head_dim % 32 == 0 &&
@@ -241,14 +241,14 @@ class Builder {
            p_.head_dim >= 64 && p_.head_dim <= 512;
   }
   // Whether the fast graph caches block keys, selects and attends sparsely
-  // (jitllm.qsa.pool, .topk and .attn): the profile's heads are the kernels'.
+  // (llmp.qsa.pool, .topk and .attn): the profile's heads are the kernels'.
   bool Sparse() const {
     return FastSelect() && p_.head_dim == kQsaAttnHead && p_.indexer_head_dim == kQsaIndexDim &&
            p_.indexer_heads == kQsaIndexHeads && p_.kv_heads > 0 && p_.heads % p_.kv_heads == 0 &&
            p_.heads / p_.kv_heads <= 16 && p_.indexer_ratio > 0 && p_.indexer_ratio <= 32;
   }
-  // Whether this chunk's QSA selection runs on the device (jitllm.qsa.topk,
-  // then jitllm.qsa.attn over the kept cells): the sparse graph's, within
+  // Whether this chunk's QSA selection runs on the device (llmp.qsa.topk,
+  // then llmp.qsa.attn over the kept cells): the sparse graph's, within
   // the selection's tiles. Otherwise GGML's top-k selects over the host's
   // masks and attention reads every cell under them.
   bool DeviceSelect() const {
@@ -279,7 +279,7 @@ class Builder {
     return ggml_set_rows(c_, state, rows, g_.state_row);
   }
 
-  // A packed `type` [ne0, ne1] view of a byte blob a jitLLM operation wrote
+  // A packed `type` [ne0, ne1] view of a byte blob a llmpalooza operation wrote
   // (several outputs laid out in one tensor), from `offset`.
   ggml_tensor* TypedView(ggml_tensor* blob, ggml_type type, std::int64_t ne0, std::int64_t ne1,
                          std::size_t offset) {
@@ -298,7 +298,7 @@ class Builder {
   }
   ggml_tensor* HcMix(ggml_tensor* x, ggml_tensor* w_norm, ggml_tensor* w_down, ggml_tensor* w_up,
                      ggml_tensor* w_inject, ggml_tensor** inject, int il);
-  // The fast graph's mix (jitllm.hc.prep, .lo, .mix_bf16): `res` the streams,
+  // The fast graph's mix (llmp.hc.prep, .lo, .mix_bf16): `res` the streams,
   // or, given the previous block's output `out` and its combine logits
   // `logits`, the streams before that combine, which is done first and
   // `res` set to its result. Returns the mixed input; `inject`, if given,
@@ -468,11 +468,11 @@ std::expected<void, KernelFailure> LayerLeaves(ggml_context* c, const model::Qwe
     }
     return {};
   };
-#define JITLLM_LEAF(into, tensor)                       \
+#define LLMP_LEAF(into, tensor)                         \
   if (auto made = leaf(into, tensor, #tensor); !made) { \
     return made;                                        \
   }
-#define JITLLM_MX(into, tensor)                       \
+#define LLMP_MX(into, tensor)                         \
   if (auto made = mx(into, tensor, #tensor); !made) { \
     return made;                                      \
   }
@@ -487,48 +487,48 @@ std::expected<void, KernelFailure> LayerLeaves(ggml_context* c, const model::Qwe
     into = *made;
     return {};
   };
-#define JITLLM_MATRIX(into, tensor)                       \
+#define LLMP_MATRIX(into, tensor)                         \
   if (auto made = matrix(into, tensor, #tensor); !made) { \
     return made;                                          \
   }
-  JITLLM_LEAF(l.hc_attn_norm, w.hc_attn_norm)
-  JITLLM_MATRIX(l.hc_attn_down, w.hc_attn_down)
-  JITLLM_MATRIX(l.hc_attn_up, w.hc_attn_up)
-  JITLLM_MATRIX(l.hc_attn_inject, w.hc_attn_inject)
-  JITLLM_LEAF(l.hc_ffn_norm, w.hc_ffn_norm)
-  JITLLM_MATRIX(l.hc_ffn_down, w.hc_ffn_down)
-  JITLLM_MATRIX(l.hc_ffn_up, w.hc_ffn_up)
-  JITLLM_MATRIX(l.hc_ffn_inject, w.hc_ffn_inject)
+  LLMP_LEAF(l.hc_attn_norm, w.hc_attn_norm)
+  LLMP_MATRIX(l.hc_attn_down, w.hc_attn_down)
+  LLMP_MATRIX(l.hc_attn_up, w.hc_attn_up)
+  LLMP_MATRIX(l.hc_attn_inject, w.hc_attn_inject)
+  LLMP_LEAF(l.hc_ffn_norm, w.hc_ffn_norm)
+  LLMP_MATRIX(l.hc_ffn_down, w.hc_ffn_down)
+  LLMP_MATRIX(l.hc_ffn_up, w.hc_ffn_up)
+  LLMP_MATRIX(l.hc_ffn_inject, w.hc_ffn_inject)
   if (w.linear) {
-    JITLLM_MX(l.qkv, w.qkv)
-    JITLLM_MX(l.z, w.z)
-    JITLLM_MX(l.beta, w.beta)
-    JITLLM_MX(l.alpha, w.alpha)
-    JITLLM_MX(l.ssm_out, w.ssm_out)
-    JITLLM_LEAF(l.dt_bias, w.dt_bias)
-    JITLLM_LEAF(l.ssm_a, w.ssm_a)
-    JITLLM_LEAF(l.conv1d, w.conv1d)
-    JITLLM_LEAF(l.ssm_norm, w.ssm_norm)
+    LLMP_MX(l.qkv, w.qkv)
+    LLMP_MX(l.z, w.z)
+    LLMP_MX(l.beta, w.beta)
+    LLMP_MX(l.alpha, w.alpha)
+    LLMP_MX(l.ssm_out, w.ssm_out)
+    LLMP_LEAF(l.dt_bias, w.dt_bias)
+    LLMP_LEAF(l.ssm_a, w.ssm_a)
+    LLMP_LEAF(l.conv1d, w.conv1d)
+    LLMP_LEAF(l.ssm_norm, w.ssm_norm)
     const std::int64_t d = p.lin_head_dim;
     l.conv_state =
         ggml_new_tensor_2d(c, GGML_TYPE_F32, std::int64_t{p.conv - 1} * p.conv_channels(), 1);
     l.recurrent = ggml_new_tensor_2d(c, GGML_TYPE_F32, d * d * p.lin_v_heads, 1);
   } else {
-    JITLLM_MX(l.q, w.q)
-    JITLLM_MX(l.k, w.k)
-    JITLLM_MX(l.v, w.v)
-    JITLLM_MX(l.o, w.o)
+    LLMP_MX(l.q, w.q)
+    LLMP_MX(l.k, w.k)
+    LLMP_MX(l.v, w.v)
+    LLMP_MX(l.o, w.o)
     if (w.idx_q.is_matrix()) {
       // A GGUF checkpoint's split indexer projection.
-      JITLLM_MX(l.idx_q, w.idx_q)
-      JITLLM_MX(l.idx_k, w.idx_k)
+      LLMP_MX(l.idx_q, w.idx_q)
+      LLMP_MX(l.idx_k, w.idx_k)
     } else {
-      JITLLM_MX(l.idx_qk, w.idx_qk)
+      LLMP_MX(l.idx_qk, w.idx_qk)
     }
-    JITLLM_LEAF(l.q_norm, w.q_norm)
-    JITLLM_LEAF(l.k_norm, w.k_norm)
-    JITLLM_LEAF(l.idx_q_norm, w.idx_q_norm)
-    JITLLM_LEAF(l.idx_k_norm, w.idx_k_norm)
+    LLMP_LEAF(l.q_norm, w.q_norm)
+    LLMP_LEAF(l.k_norm, w.k_norm)
+    LLMP_LEAF(l.idx_q_norm, w.idx_q_norm)
+    LLMP_LEAF(l.idx_k_norm, w.idx_k_norm)
     const std::int64_t kv = std::int64_t{p.head_dim} * p.kv_heads;
     l.cache_k = ggml_new_tensor_2d(c, GGML_TYPE_F16, kv, cells);
     l.cache_v = ggml_new_tensor_2d(c, GGML_TYPE_F16, kv, cells);
@@ -537,33 +537,33 @@ std::expected<void, KernelFailure> LayerLeaves(ggml_context* c, const model::Qwe
                                       (cells + p.indexer_ratio - 1) / p.indexer_ratio);
   }
   if (ple) {
-    JITLLM_MATRIX(l.ple_key, w.ple_key)
-    JITLLM_MATRIX(l.ple_value, w.ple_value)
-    JITLLM_LEAF(l.ple_norm_key, w.ple_norm_key)
-    JITLLM_LEAF(l.ple_norm_query, w.ple_norm_query)
-    JITLLM_LEAF(l.ple_norm_conv, w.ple_norm_conv)
-    JITLLM_LEAF(l.ple_conv1d, w.ple_conv1d)
+    LLMP_MATRIX(l.ple_key, w.ple_key)
+    LLMP_MATRIX(l.ple_value, w.ple_value)
+    LLMP_LEAF(l.ple_norm_key, w.ple_norm_key)
+    LLMP_LEAF(l.ple_norm_query, w.ple_norm_query)
+    LLMP_LEAF(l.ple_norm_conv, w.ple_norm_conv)
+    LLMP_LEAF(l.ple_conv1d, w.ple_conv1d)
     l.ple_state =
         ggml_new_tensor_2d(c, GGML_TYPE_F32, std::int64_t{p.ple_history()} * p.hc_width(), 1);
   }
-  JITLLM_MATRIX(l.router, w.router)
-  JITLLM_LEAF(l.shared_gate, w.shared_gate)
+  LLMP_MATRIX(l.router, w.router)
+  LLMP_LEAF(l.shared_gate, w.shared_gate)
   if (l.shared_gate->type != GGML_TYPE_F32 && l.shared_gate->type != GGML_TYPE_BF16) {
     return Rejected(std::format("layer {}: the shared expert's gate is {}, not F32 or BF16", il,
                                 w.shared_gate.type));
   }
-  JITLLM_MX(l.gate_shexp, w.gate_shexp)
-  JITLLM_MX(l.up_shexp, w.up_shexp)
-  JITLLM_MX(l.down_shexp, w.down_shexp)
+  LLMP_MX(l.gate_shexp, w.gate_shexp)
+  LLMP_MX(l.up_shexp, w.up_shexp)
+  LLMP_MX(l.down_shexp, w.down_shexp)
   // NVFP4's per-expert global scales; a GGUF checkpoint's experts have none.
   if (!w.gate_exps_scale.type.empty()) {
-    JITLLM_LEAF(l.gate_exps_scale, w.gate_exps_scale)
-    JITLLM_LEAF(l.up_exps_scale, w.up_exps_scale)
-    JITLLM_LEAF(l.down_exps_scale, w.down_exps_scale)
+    LLMP_LEAF(l.gate_exps_scale, w.gate_exps_scale)
+    LLMP_LEAF(l.up_exps_scale, w.up_exps_scale)
+    LLMP_LEAF(l.down_exps_scale, w.down_exps_scale)
   }
-#undef JITLLM_LEAF
-#undef JITLLM_MX
-#undef JITLLM_MATRIX
+#undef LLMP_LEAF
+#undef LLMP_MX
+#undef LLMP_MATRIX
   const auto experts = [&](ggml_tensor*& into,
                            const model::Qwen38Tensor& t) -> std::expected<void, KernelFailure> {
     auto type = GgmlTypeOf(t.type);
@@ -699,17 +699,17 @@ std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& opt
     into = *made;
     return {};
   };
-#define JITLLM_LEAF(into, tensor)                       \
+#define LLMP_LEAF(into, tensor)                         \
   if (auto made = leaf(into, tensor, #tensor); !made) { \
     return made;                                        \
   }
-  JITLLM_LEAF(g_.token_embd, b_.token_embd)
-  JITLLM_LEAF(g_.ple_table, b_.ple_table)
+  LLMP_LEAF(g_.token_embd, b_.token_embd)
+  LLMP_LEAF(g_.ple_table, b_.ple_table)
   if (gguf_) {
     // The tables' lookups: GGML's get_rows of float rows, or of quantized
     // ones in whole 256-value super-blocks (validate_ext.h
     // CheckGetRowsExt); the n-gram table's (160-value rows) by
-    // jitllm.qrows.get_rows in a 32-value block type.
+    // llmp.qrows.get_rows in a 32-value block type.
     // (Not NVFP4: GGML's get_rows has no case for it.)
     const auto gathers = [](const ggml_tensor* t) {
       return t->type == GGML_TYPE_F32 || t->type == GGML_TYPE_F16 || t->type == GGML_TYPE_BF16 ||
@@ -728,12 +728,12 @@ std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& opt
                       b_.ple_table.type, g_.ple_table->ne[0]));
     }
   } else {
-    JITLLM_LEAF(g_.ple_table_scale, b_.ple_table_scale)
+    LLMP_LEAF(g_.ple_table_scale, b_.ple_table_scale)
   }
-  JITLLM_LEAF(g_.output, b_.output)
-  JITLLM_LEAF(g_.output_hc_norm, b_.output_hc_norm)
-  JITLLM_LEAF(g_.output_hc_down, b_.output_hc_down)
-  JITLLM_LEAF(g_.output_hc_up, b_.output_hc_up)
+  LLMP_LEAF(g_.output, b_.output)
+  LLMP_LEAF(g_.output_hc_norm, b_.output_hc_norm)
+  LLMP_LEAF(g_.output_hc_down, b_.output_hc_down)
+  LLMP_LEAF(g_.output_hc_up, b_.output_hc_up)
   for (const auto& [t, role] :
        {std::pair{g_.output, "output"}, std::pair{g_.output_hc_down, "output_hc_down"},
         std::pair{g_.output_hc_up, "output_hc_up"}}) {
@@ -746,7 +746,7 @@ std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& opt
   if (!options.expert_stride.empty() && options.expert_stride.size() != p_.layers) {
     return Rejected("an expert stride per layer, or none");
   }
-#undef JITLLM_LEAF
+#undef LLMP_LEAF
   g_.layers.resize(p_.layers);
   const bool cutlass = options.experts == Qwen38GraphOptions::Experts::kCutlass;
   for (std::uint32_t il = 0; il < p_.layers; ++il) {
@@ -782,7 +782,7 @@ ggml_tensor* Builder::HcMix(ggml_tensor* x, ggml_tensor* w_norm, ggml_tensor* w_
   const std::int64_t n_embd = p_.width;
   if (fused_) {
     // The norm (in BF16 for cuBLAS's products), the products, then the
-    // gate and fold over the streams, the norm recomputed (jitllm.hc.mix).
+    // gate and fold over the streams, the norm recomputed (llmp.hc.mix).
     // A GGUF checkpoint's mixer weights (Q8_0, an F32 inject) take GGML's
     // products over the F32 norm.
     const bool bf16 = Bf16Inputs(nt) && w_down->type == GGML_TYPE_BF16 &&
@@ -854,7 +854,7 @@ Builder::Input Builder::HcFast(ggml_tensor*& res, ggml_tensor* out, ggml_tensor*
     res = ggml_reshape_3d(c_, streams, n_embd, hc, nt);
   }
   ggml_tensor* xn = TypedView(blob, GGML_TYPE_BF16, hc_dim, nt, layout.normed());
-  // At one row (a decode step) the products run jitLLM's BF16 vector kernel
+  // At one row (a decode step) the products run llmpalooza's BF16 vector kernel
   // (GemvBf16, kGemvBf16FastColumns), wider cuBLAS.
   ggml_tensor* lo = HcLo(c_, GemvBf16(c_, w_down, xn), hc);
   ggml_tensor* gate = GemvBf16(c_, w_up, lo, GGML_TYPE_BF16);
@@ -878,7 +878,7 @@ Builder::Input Builder::HcFast(ggml_tensor*& res, ggml_tensor* out, ggml_tensor*
 }
 
 // The fast graph's layers: each block's output combined into the streams by
-// the next mix's jitllm.hc.prep, so the streams are read once a mix; the
+// the next mix's llmp.hc.prep, so the streams are read once a mix; the
 // n-gram layer and the head take the streams combined on their own.
 void Builder::BuildFast(ggml_tensor* res, ggml_tensor* ple) {
   const std::int64_t nt = s_.rows;
@@ -1053,7 +1053,7 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
   }
   ggml_tensor* state = ggml_reshape_4d(c_, l.recurrent, d, d, hv, 1);
   const std::int64_t history = p_.conv - 1;
-  // jitLLM's convolution (jitllm.gdn.conv) reads the history and the rows
+  // llmpalooza's convolution (llmp.gdn.conv) reads the history and the rows
   // in place and normalizes the query and key heads itself; it takes whole
   // histories' worth of rows, so that the new history is the last rows (a
   // verify, which stores no history, takes it at every width).
@@ -1117,7 +1117,7 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
   ggml_tensor* output = nullptr;
   if (fast_ && d == 128 && nt <= kGatedDeltaNetLanesTokens) {
     // Decode's recurrence writes the new state over the old in place
-    // (jitllm.gdn.step): no state rows in the output, no set_rows copy. A
+    // (llmp.gdn.step): no state rows in the output, no set_rows copy. A
     // verify's reads it and writes none (the commit replays the kept rows).
     output = GdnStep(c_, q, k, v, gate, beta, state, !verify_);
     Expand(output);
@@ -1143,14 +1143,14 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
   if (state_only) return nullptr;
   ggml_tensor* out = nullptr;
   if (fast_ && d == 128) {
-    // build_norm_gated as jitllm.gdn.norm_gate, quantized to MXFP8 for the
+    // build_norm_gated as llmp.gdn.norm_gate, quantized to MXFP8 for the
     // tensor-core product (in F32 for a GGUF checkpoint's GGML product).
     const bool wide = nt > kMxfp8VecColumns && Mxfp8(l.ssm_out);
     ggml_tensor* normed = GdnNormGate(c_, output, l.ssm_norm, ggml_reshape_2d(c_, z, d * hv, nt),
                                       p_.rms_eps, wide ? GGML_TYPE_I8 : GGML_TYPE_F32);
     out = wide ? LinearMxfp8(l.ssm_out, normed, nt) : Linear(l.ssm_out, normed);
   } else if (fused_ && d == 128) {
-    // build_norm_gated as jitllm.gdn.norm_gate, in BF16 for cuBLAS's product
+    // build_norm_gated as llmp.gdn.norm_gate, in BF16 for cuBLAS's product
     // (F32 for a GGUF checkpoint's GGML product).
     const bool bf16 = Bf16Inputs(nt) && Mxfp8(l.ssm_out);
     ggml_tensor* normed = GdnNormGate(c_, output, l.ssm_norm, ggml_reshape_2d(c_, z, d * hv, nt),
@@ -1203,8 +1203,8 @@ ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il, b
     return nullptr;
   }
   if (DeviceSelect()) {
-    // The queries' norm and rotation by jitllm.qsa.prep, then the selection
-    // over the cached block keys (jitllm.qsa.topk, after the pool), whose
+    // The queries' norm and rotation by llmp.qsa.prep, then the selection
+    // over the cached block keys (llmp.qsa.topk, after the pool), whose
     // kept cells Attention reads alone.
     ggml_tensor* q = QsaPrep(c_, qk, l.idx_q_norm, g_.positions, idx_dim, n_idx_h, idx_dim,
                              p_.rms_eps, theta_scale);
@@ -1276,7 +1276,7 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   ggml_tensor* v = Linear(l.v, in);
   ggml_tensor* q = nullptr;
   // The fast graph's query and key heads: norm and rotation in one pass
-  // (jitllm.qsa.prep), where the rotation is 64 dimensions.
+  // (llmp.qsa.prep), where the rotation is 64 dimensions.
   if (FastSelect()) {
     const float theta_scale = std::pow(p_.rope_base, -2.0f / static_cast<float>(p_.rope_dims));
     if (!state_only)
@@ -1307,7 +1307,7 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   const float scale = 1.0f / std::sqrt(static_cast<float>(d));
   ggml_tensor* attn = nullptr;
   ggml_tensor* kq_mask = g_.mask;
-  if (top_k != nullptr && JitllmOpOf(top_k) == JitllmOp::kQsaTopK) {
+  if (top_k != nullptr && LlmpOpOf(top_k) == LlmpOp::kQsaTopK) {
     // The sparse graph: attention over each row's kept cells alone, read
     // from the caches after this chunk's cells are stored.
     attn = QsaAttn(c_, q, stored_k, stored_v, top_k, scale);
@@ -1370,7 +1370,7 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
   ggml_tensor* weights = nullptr;
   ggml_tensor* fast_gate = nullptr;
   if (fast_) {
-    // jitllm.moe.router: the softmax, top experts and their renormalized
+    // llmp.moe.router: the softmax, top experts and their renormalized
     // weights, and the shared expert's gate logit, in one pass.
     ggml_tensor* routed = MoeRouter(c_, logits, in.x, l.shared_gate, used);
     const MoeRouterLayout layout{.used = used, .t = nt};
@@ -1450,7 +1450,7 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
     return MoeCombineSorted(c_, d2, a2, route, l.down_exps_scale, weights, sh, shared_gate_dot());
   }
   // A GGUF checkpoint's fast form at decode: the routed experts' gate and up
-  // products with their SwiGLU in one jitllm.vecq (each selected expert read
+  // products with their SwiGLU in one llmp.vecq (each selected expert read
   // once), the down product over the activations' one quantization, the
   // shared expert likewise (dsv4_graph.h's fast plan's MoE), then the
   // unscaled combine.
@@ -1475,7 +1475,7 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
     return MoeCombine(c_, down, selected, nullptr, weights, sh, shared_gate_dot());
   }
   if (fused_) {
-    // jitllm.moe.glu and jitllm.moe.combine over the same products; experts
+    // llmp.moe.glu and llmp.moe.combine over the same products; experts
     // without global scales (a GGUF checkpoint's) take GGML's SwiGLU and the
     // combine's unscaled form.
     ggml_tensor* up = ggml_mul_mat_id(c_, l.up_exps, x, selected);
@@ -1925,4 +1925,4 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
   return g;
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

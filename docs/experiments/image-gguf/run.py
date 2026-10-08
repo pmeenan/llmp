@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Run one pinned stable-diffusion.cpp image case in a container and record it.
 
@@ -22,7 +22,7 @@ import time
 
 HERE = Path(__file__).resolve().parent
 PROMPT = "A red ceramic teapot on a plain wooden table, soft daylight, no text."
-IMAGE = "jitllm-image-gguf:20260922"
+IMAGE = "llmp-image-gguf:20260922"
 DENOISERS = {
     "bf16": ("control", "diffusion_models/qwen_image_2.1_bf16.safetensors"),
     "q8_0": ("gguf", "qwen-image-2.1-Q8_0.gguf"),
@@ -199,7 +199,7 @@ def main():
         sd_args += ["--max-vram", args.max_vram]
     sd_args += args.extra
 
-    name = f"jitllm-image-gguf-{os.getpid()}-{int(time.time())}"
+    name = f"llmp-image-gguf-{os.getpid()}-{int(time.time())}"
     (out / "container-name").write_text(name + "\n")
     before_mem, before_vm = meminfo(), vmstat()
     sampler = Sampler()

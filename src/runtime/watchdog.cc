@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/watchdog.h"
@@ -10,7 +10,7 @@
 #include <optional>
 #include <string_view>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 // Thirty days in milliseconds bounds every allowance: far past any cap,
@@ -110,4 +110,4 @@ std::optional<WatchClock::time_point> Watchdog::due() const {
   return due_;
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

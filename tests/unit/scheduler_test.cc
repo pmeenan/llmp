@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The scheduler thread's turn loop and its lanes (D-048,
@@ -58,66 +58,66 @@
 #include "scheduler/tasks.h"
 
 #ifdef __SANITIZE_THREAD__
-#define JITLLM_TEST_TSAN 1
+#define LLMP_TEST_TSAN 1
 #elifdef __has_feature
 #if __has_feature(thread_sanitizer)
-#define JITLLM_TEST_TSAN 1
+#define LLMP_TEST_TSAN 1
 #endif
 #endif
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::base::PushResult;
-using jitllm::catalog::Closure;
-using jitllm::catalog::ExtentId;
-using jitllm::catalog::ExtentState;
-using jitllm::catalog::ExtentView;
-using jitllm::catalog::Occupancy;
-using jitllm::providers::ProviderError;
-using jitllm::providers::ReaderSettings;
-using jitllm::providers::ReadSpec;
-using jitllm::providers::StreamId;
-using jitllm::providers::Submission;
-using jitllm::providers::UringStorage;
-using jitllm::providers::fake::FakeDeviceExecution;
-using jitllm::providers::fake::FakeDeviceMemory;
-using jitllm::providers::fake::FakeStorage;
-using jitllm::providers::fake::kPoison;
-using jitllm::scheduler::Acceptance;
-using jitllm::scheduler::CancelRead;
-using jitllm::scheduler::CancelRequest;
-using jitllm::scheduler::CompletionBoard;
-using jitllm::scheduler::Control;
-using jitllm::scheduler::CpuCommand;
-using jitllm::scheduler::CpuHandler;
-using jitllm::scheduler::CpuJob;
-using jitllm::scheduler::CpuResult;
-using jitllm::scheduler::DeviceService;
-using jitllm::scheduler::DeviceSettings;
-using jitllm::scheduler::DeviceWork;
-using jitllm::scheduler::Fault;
-using jitllm::scheduler::Lane;
-using jitllm::scheduler::Lanes;
-using jitllm::scheduler::LaneSettings;
-using jitllm::scheduler::OperationId;
-using jitllm::scheduler::Outcome;
-using jitllm::scheduler::Published;
-using jitllm::scheduler::QueueSettings;
-using jitllm::scheduler::ReadCommand;
-using jitllm::scheduler::Readiness;
-using jitllm::scheduler::Scheduler;
-using jitllm::scheduler::SchedulerSettings;
-using jitllm::scheduler::StartError;
-using jitllm::scheduler::StartRequest;
-using jitllm::scheduler::Step;
-using jitllm::scheduler::StorageService;
-using jitllm::scheduler::TaskContext;
-using jitllm::scheduler::TaskOutcome;
-using jitllm::scheduler::TaskProgram;
-using jitllm::scheduler::Terminal;
-using jitllm::scheduler::WorkError;
-using jitllm::test_support::Failed;
+using llmp::base::Bytes;
+using llmp::base::PushResult;
+using llmp::catalog::Closure;
+using llmp::catalog::ExtentId;
+using llmp::catalog::ExtentState;
+using llmp::catalog::ExtentView;
+using llmp::catalog::Occupancy;
+using llmp::providers::ProviderError;
+using llmp::providers::ReaderSettings;
+using llmp::providers::ReadSpec;
+using llmp::providers::StreamId;
+using llmp::providers::Submission;
+using llmp::providers::UringStorage;
+using llmp::providers::fake::FakeDeviceExecution;
+using llmp::providers::fake::FakeDeviceMemory;
+using llmp::providers::fake::FakeStorage;
+using llmp::providers::fake::kPoison;
+using llmp::scheduler::Acceptance;
+using llmp::scheduler::CancelRead;
+using llmp::scheduler::CancelRequest;
+using llmp::scheduler::CompletionBoard;
+using llmp::scheduler::Control;
+using llmp::scheduler::CpuCommand;
+using llmp::scheduler::CpuHandler;
+using llmp::scheduler::CpuJob;
+using llmp::scheduler::CpuResult;
+using llmp::scheduler::DeviceService;
+using llmp::scheduler::DeviceSettings;
+using llmp::scheduler::DeviceWork;
+using llmp::scheduler::Fault;
+using llmp::scheduler::Lane;
+using llmp::scheduler::Lanes;
+using llmp::scheduler::LaneSettings;
+using llmp::scheduler::OperationId;
+using llmp::scheduler::Outcome;
+using llmp::scheduler::Published;
+using llmp::scheduler::QueueSettings;
+using llmp::scheduler::ReadCommand;
+using llmp::scheduler::Readiness;
+using llmp::scheduler::Scheduler;
+using llmp::scheduler::SchedulerSettings;
+using llmp::scheduler::StartError;
+using llmp::scheduler::StartRequest;
+using llmp::scheduler::Step;
+using llmp::scheduler::StorageService;
+using llmp::scheduler::TaskContext;
+using llmp::scheduler::TaskOutcome;
+using llmp::scheduler::TaskProgram;
+using llmp::scheduler::Terminal;
+using llmp::scheduler::WorkError;
+using llmp::test_support::Failed;
 
 constexpr std::uint64_t kSize = 64ULL * 1024;          // one extent
 constexpr std::size_t kSources = 4;                    // extents loaded from the file
@@ -284,7 +284,7 @@ class SchedulerTest : public ::testing::Test {
     backing_ = memory_.Create(1, total).value();
     ASSERT_TRUE(memory_.Map(reservation_, Bytes(0), backing_).has_value());
     ASSERT_TRUE(
-        memory_.SetAccess(reservation_, Bytes(0), total, jitllm::providers::Access::kReadWrite)
+        memory_.SetAccess(reservation_, Bytes(0), total, llmp::providers::Access::kReadWrite)
             .has_value());
     base_ = memory_.RangeOf(reservation_).value().base;
     file_ = FileContents();
@@ -295,8 +295,8 @@ class SchedulerTest : public ::testing::Test {
           catalog_
               .AddExtent(
                   {.domain = domain_,
-                   .memory_class = jitllm::catalog::MemoryClass::kWeights,
-                   .recovery = jitllm::catalog::Recovery::kFromArtifact,
+                   .memory_class = llmp::catalog::MemoryClass::kWeights,
+                   .recovery = llmp::catalog::Recovery::kFromArtifact,
                    .size = Bytes(kSize),
                    .content = {.artifact = {}, .group = 0, .chunk = static_cast<std::uint32_t>(i)}})
               .value();
@@ -304,8 +304,8 @@ class SchedulerTest : public ::testing::Test {
     for (std::size_t i = 0; i < kScratch; ++i) {
       scratch_.at(i) = catalog_
                            .AddExtent({.domain = domain_,
-                                       .memory_class = jitllm::catalog::MemoryClass::kScratch,
-                                       .recovery = jitllm::catalog::Recovery::kDiscardable,
+                                       .memory_class = llmp::catalog::MemoryClass::kScratch,
+                                       .recovery = llmp::catalog::Recovery::kDiscardable,
                                        .size = Bytes(kSize),
                                        .content = {}},
                                       true)
@@ -329,8 +329,8 @@ class SchedulerTest : public ::testing::Test {
                        .retries = 2,
                        .reads = 16,
                        .waiters = 8,
-                       .span_bytes = jitllm::providers::kNoCoalescing,
-                       .span_segments = jitllm::providers::kMaxSegments},
+                       .span_bytes = llmp::providers::kNoCoalescing,
+                       .span_segments = llmp::providers::kMaxSegments},
         board_, storage);
     device_lane_ =
         std::make_unique<DeviceService>(execution_, std::span<const StreamId>(&stream_, 1), board_,
@@ -488,8 +488,8 @@ class SchedulerTest : public ::testing::Test {
   FakeDeviceMemory memory_{Bytes(kSize), Bytes(kSize * 64)};
   FakeStorage storage_{8, 4096};
   FakeDeviceExecution execution_;
-  jitllm::catalog::Catalog catalog_;
-  jitllm::base::WakeFlag wake_;
+  llmp::catalog::Catalog catalog_;
+  llmp::base::WakeFlag wake_;
   CompletionBoard board_{16, wake_};
   std::array<Report, 8> reports_;
   std::vector<int> retirements_;
@@ -498,12 +498,12 @@ class SchedulerTest : public ::testing::Test {
   std::unique_ptr<Lane<CpuCommand>> cpu_lane_;
   std::unique_ptr<Scheduler> scheduler_;
 
-  jitllm::providers::ReservationId reservation_;
-  jitllm::providers::BackingId backing_;
+  llmp::providers::ReservationId reservation_;
+  llmp::providers::BackingId backing_;
   std::uint64_t base_ = 0;
   std::vector<std::byte> file_;
   int fd_ = -1;
-  jitllm::catalog::DomainId domain_;
+  llmp::catalog::DomainId domain_;
   std::array<ExtentId, kSources> sources_;
   std::array<ExtentId, kScratch> scratch_;
   StreamId stream_;
@@ -1121,7 +1121,7 @@ class RepeatProgram final : public TaskProgram {
 // refused as unavailable (a permanent condition, not "busy"), and the
 // node admits no new request; shutdown is still clean.
 TEST_F(SchedulerTest, ExhaustedOperationIdentitiesStopAdmissionWithoutAborting) {
-  jitllm::base::WakeFlag wake;
+  llmp::base::WakeFlag wake;
   CompletionBoard board(2, wake, UINT32_MAX);
   Lane<CpuCommand> cpu(LaneSettings{.name = "cpu", .capacity = 4, .reserved = 1, .workers = 1},
                        CpuHandler(board));
@@ -1208,7 +1208,7 @@ TEST(StorageLaneTest, ACancellationReachesAReadThatNeverCompletes) {
   ASSERT_EQ(::pipe2(pipe_fds.data(), O_CLOEXEC), 0);
   auto* memory = static_cast<std::byte*>(
       std::aligned_alloc(4096, 4096));  // NOLINT(cppcoreguidelines-no-malloc)
-  jitllm::base::WakeFlag wake;
+  llmp::base::WakeFlag wake;
   CompletionBoard board(4, wake);
   StorageService lane(**storage,
                       ReaderSettings{.alignment = 4096,
@@ -1216,8 +1216,8 @@ TEST(StorageLaneTest, ACancellationReachesAReadThatNeverCompletes) {
                                      .retries = 0,
                                      .reads = 4,
                                      .waiters = 2,
-                                     .span_bytes = jitllm::providers::kNoCoalescing,
-                                     .span_segments = jitllm::providers::kMaxSegments},
+                                     .span_bytes = llmp::providers::kNoCoalescing,
+                                     .span_segments = llmp::providers::kMaxSegments},
                       board, QueueSettings{.capacity = 4, .reserved = 1, .batch = 4});
   // The test is the board's owner here.
   const OperationId read = board.Open();
@@ -1244,7 +1244,7 @@ TEST(StorageLaneTest, ACancellationReachesAReadThatNeverCompletes) {
     // Most likely waiting in the kernel by now; the cancellation must reach
     // the read either way.
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    ASSERT_EQ(lane.Submit(CancelRead{.operation = read}, jitllm::base::PushKind::kCleanup),
+    ASSERT_EQ(lane.Submit(CancelRead{.operation = read}, llmp::base::PushKind::kCleanup),
               PushResult::kAccepted);
     cancelled = observe([](const auto& seen) {
       return seen.terminal && seen.terminal->outcome == Outcome::kCancelled &&
@@ -1269,7 +1269,7 @@ TEST(StorageLaneTest, ACancellationReachesAReadThatNeverCompletes) {
 
 // On an idle Spark the cross build runs these in about 0.1 s each; a
 // loaded workstation takes seconds. ThreadSanitizer runs fewer.
-#ifdef JITLLM_TEST_TSAN
+#ifdef LLMP_TEST_TSAN
 constexpr int kPings = 500;  // per producer
 constexpr int kStressTasks = 1000;
 #else
@@ -1397,7 +1397,7 @@ TEST_F(SchedulerTest, ReusedTagsLoseNoCancellationAmongManyThreads) {
   Build({.capacity = 16, .reserved = 4, .batch = 16}, {.capacity = 16, .reserved = 4, .batch = 16},
         0, std::chrono::microseconds(0), std::chrono::hours(1));
   constexpr int kProducers = 4;  // two tasks each: the task bound
-#ifdef JITLLM_TEST_TSAN
+#ifdef LLMP_TEST_TSAN
   constexpr int kRounds = 300;
 #else
   constexpr int kRounds = 3000;

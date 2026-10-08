@@ -15,7 +15,7 @@
     "ggml_type_source_commit": "d81235049384534c167caea52b85a694f6103d14",
     "ggml_type_helper_origin": "current native table; F32/Q8_0 IDs and block geometry agree with d812",
     "ggml_type_helper": "src/artifact/representation.cc",
-    "ggml_type_helper_sha256": "0c231ad5cda103cbdef2f25ba5a2eec6d0c46e0b7780d215e8b3e5d10e7f6811"
+    "ggml_type_helper_sha256": "777580642ab148a731381e350ea7c958b4c7c7be8a31fa85ffad54ba9da0ecfc"
   },
   "metadata": {
     "general.architecture": "gemma2",

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma31 repeated greedy assistant screen
@@ -82,7 +82,7 @@ additional arms, new calibration or new original revision was acquired.
 and container identities. TensorFold was re-pinned at entry to cb2ebf05/version
 0.6.6; its retained MLX recipe supplies no comparable CUDA Q8 assistant result.
 
-Reproduce using manual `jitllm_gemma_greedy_reference` with mode `plain32` or
+Reproduce using manual `llmp_gemma_greedy_reference` with mode `plain32` or
 `unit32`, or the pinned [original wrapper](../gemma-assistant-greedy-reference/performance_reference.sh)
 with the same mode. The [frozen method](../gemma-assistant-greedy-reference/PERFORMANCE.md)
 sets paid boundaries and funding. Use

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma C4 attention over variable-width independent roots
@@ -103,9 +103,9 @@ four default/head-cap controls. The CPU object symbol check and four source
 contract checks pass. The stale dependency-record repair rebuilds only three
 existing manual targets; measured kernels and outputs are unchanged.
 
-Reproduce with `jitllm_gemma_owner_c4 ARTIFACT NEW_DIR 31|26 4 joined
-norm|compound IDS_I32 8k`, fixing `JITLLM_GEMMA_OWNER_C4=packed|owners` and
-`JITLLM_GEMMA_C4_NORMMUL=1` before construction. Use installed Spark supervision,
+Reproduce with `llmp_gemma_owner_c4 ARTIFACT NEW_DIR 31|26 4 joined
+norm|compound IDS_I32 8k`, fixing `LLMP_GEMMA_OWNER_C4=packed|owners` and
+`LLMP_GEMMA_C4_NORMMUL=1` before construction. Use installed Spark supervision,
 private outputs and the [tracked reference wrapper](../gemma-owner-root-c4/reference_8k.sh)
 with the fixed client SHA. The [shared protocol](../gemma-owner-root-c4/PROTOCOL.md)
 and earlier [closed consumer](../gemma-owner-root-c4/README.md) describe the lifetime

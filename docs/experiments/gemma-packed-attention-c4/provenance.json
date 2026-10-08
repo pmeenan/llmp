@@ -24,51 +24,51 @@
   },
   "measured_native_source": {
     "benchmarks/gemma_attention_packed.cc": {
-      "bytes": 14694,
-      "sha256": "4065d52215ac7d175fd9d10abfc68cd0c3fcedb8a12931c7e9301a6064f77d81"
+      "bytes": 14692,
+      "sha256": "174a191f3be91e372d6d6f6ee6e761ba287d06d5809b65dc81c4540e720e46af"
     },
     "benchmarks/gemma_attention_packed_wrap.cc": {
-      "bytes": 10692,
-      "sha256": "3d769788063e91d4e61f86c192a8706cc8203e8f8959caa675b493ad00686320"
+      "bytes": 10680,
+      "sha256": "31fdf195346bc8521cea863470eda4e95f8a581d80cb7c09395e7dce723fae45"
     },
     "benchmarks/gemma_attention_packed_metadata.cc": {
-      "bytes": 3855,
-      "sha256": "7a8f7babb05699297bbf671b1e61643f8a12a3337d48e3d5564ddf98203a4fa6"
+      "bytes": 3847,
+      "sha256": "55956845ee6a90dbbcbea6b29c30d118f38a543fbbec6046b9c89b4a0b5faf5e"
     },
     "benchmarks/CMakeLists.txt": {
       "bytes": 28587,
       "sha256": "c9fa94196489c271b431f46c15fea4235f5d6706acadfa5637a766687fb7b248"
     },
     "docs/experiments/gemma-packed-attention-c4/PROTOCOL.md": {
-      "bytes": 3638,
-      "sha256": "80458353520bea96b4e3e1be7cac8c2d8146552ef5263570f1ff6c71e5fef5e3"
+      "bytes": 3642,
+      "sha256": "9042b6c14cb21385f410d078116d038d4d2a7c7a437cce538f5f74aad0597762"
     },
     "docs/experiments/gemma-packed-attention-c4/own_freeze.py": {
-      "bytes": 2629,
-      "sha256": "c23fd84033f399b6ec11ccc0701f0d0c6ab2b4a0f59f371b9bfa2e9105c3807d"
+      "bytes": 2633,
+      "sha256": "859792a79500904babeaa75e0364e719b6d6e851f48e46a3b830d30d6361242e"
     },
     "docs/experiments/gemma-packed-attention-c4/reference.sh": {
-      "bytes": 1388,
-      "sha256": "195fe38df62493e073b187cd853902a4c16b02b7911cf3a709e83cbf4724ba19"
+      "bytes": 1386,
+      "sha256": "27ca6c7ec48fde69e1a06e7570d33116443330e5b5adf5941258296c45658110"
     }
   },
   "native_binary": {
-    "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/build/spark-native/benchmarks/jitllm_gemma_attention_packed",
+    "path": "/home/pmeenan/src/llmp-wt/m3fixb/build/spark-native/benchmarks/llmp_gemma_attention_packed",
     "bytes": 144405576,
     "sha256": "1ce9e7bd4a7ceceea15b18e7d6ddcd3f06b43a42fb8818d345c30a65266d4eb2"
   },
   "native_metadata_binary": {
-    "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/build/spark-native/benchmarks/jitllm_gemma_attention_packed_metadata",
+    "path": "/home/pmeenan/src/llmp-wt/m3fixb/build/spark-native/benchmarks/llmp_gemma_attention_packed_metadata",
     "bytes": 129696944,
     "sha256": "50238a17ad70ccc23ad261d4b79d589c38ce3afe999828cc63f7ed5730df291b"
   },
   "original_client": {
-    "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/docs/experiments/gemma-joined-serving/llama_joined.cc",
+    "path": "/home/pmeenan/src/llmp-wt/m3fixb/docs/experiments/gemma-joined-serving/llama_joined.cc",
     "bytes": 7772,
     "sha256": "c80b73c85453ece170eda57bc0725cdef5b4e0af3d7cacf3d1a8bee0d1cfa19e"
   },
   "original_binary": {
-    "path": "/home/pmeenan/.local/share/jitllm/gemma-packed-attention-c4/llama_joined",
+    "path": "/home/pmeenan/.local/share/llmp/gemma-packed-attention-c4/llama_joined",
     "bytes": 76792,
     "sha256": "01889d8c4a281110f611cedcab43235a9ac80bcc21abf094d982f14dd2112f61"
   },
@@ -99,12 +99,12 @@
   "artifact": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
   "artifact_metadata": [
     {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08/manifest.json",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08/manifest.json",
       "bytes": 1601,
       "sha256": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
     },
     {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08/index.json",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08/index.json",
       "bytes": 774295,
       "sha256": "9ae365a17ed73528262d7befdb505bf07e6695e03f0fa36f69e69099dbd5f34c"
     }

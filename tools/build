@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Configures, builds, tests and deploys jitLLM with the pinned SDK (D-011, D-012, D-061).
+"""Configures, builds, tests and deploys llmpalooza with the pinned SDK (D-011, D-012, D-061).
 
     tools/build build [PRESET...] [--fresh] [--locked]
     tools/build test [PRESET...] [--host HOST | --gpu] [--fresh] [--locked] [-- CTEST_ARGS...]
@@ -11,7 +11,7 @@
 `mise run build`, `mise run test` and `mise run deploy` run these. PRESET
 names a configure preset in CMakePresets.json; the default is this host's
 native one (`native` on x86-64, `spark-native` on a Spark). Each runs the
-SDK's CMake with JITLLM_SDK set to the SDK this checkout's inputs describe,
+SDK's CMake with LLMP_SDK set to the SDK this checkout's inputs describe,
 into build/<PRESET>.
 
 `test` builds, then runs CTest with the preset's test preset: GPU tests are
@@ -23,13 +23,13 @@ runs only that way. With --gpu, a native build (`native`) runs only its
 driver (test preset `native-gpu`, D-082); nothing runs them by default, and
 on a shared host they belong under its lock for GPU work. `deploy` copies a
 cross build's executables and test files to HOST under
-~/.cache/jitllm/deploy/. Remote hosts are never implied
+~/.cache/llmp/deploy/. Remote hosts are never implied
 (D-012): name one.
 
 `package` builds the `cross` preset --locked and makes the arm64 Debian
-package from it (D-063, D-074): tools/jitllm_package.py writes its copyright
+package from it (D-063, D-074): tools/llmp_package.py writes its copyright
 file, third-party notices, SBOM and control facts into build/cross/package/doc,
-then CPack writes build/cross/package/jitllm_<version>_arm64.deb.
+then CPack writes build/cross/package/llmp_<version>_arm64.deb.
 
 --locked configures as the check gate and release builds do (D-057, D-061):
 the core profile, with no optional module, and no source override. Without
@@ -50,9 +50,9 @@ import shutil
 import subprocess
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import jitllm_package as packagelib  # noqa: E402
-import jitllm_sdk as sdklib  # noqa: E402
-from jitllm_sdk import SdkError  # noqa: E402
+import llmp_package as packagelib  # noqa: E402
+import llmp_sdk as sdklib  # noqa: E402
+from llmp_sdk import SdkError  # noqa: E402
 
 PRESETS_FILE = sdklib.REPO / "CMakePresets.json"
 DEFAULT_PRESET = {"x86_64": "native", "aarch64": "spark-native"}
@@ -102,10 +102,10 @@ def run(cmd: list, env: dict | None = None) -> None:
 
 
 def sdk_env(sdk: sdklib.Sdk) -> dict:
-    env = dict(os.environ, JITLLM_SDK=str(sdk.root))
+    env = dict(os.environ, LLMP_SDK=str(sdk.root))
     # Only --host may select a remote run. Inherited runner controls could
     # otherwise test stale deployed binaries after building new local ones.
-    for name in ("JITLLM_TARGET_HOST", "JITLLM_TARGET_DIR", "JITLLM_TARGET_SSH_CONTROL"):
+    for name in ("LLMP_TARGET_HOST", "LLMP_TARGET_DIR", "LLMP_TARGET_SSH_CONTROL"):
         env.pop(name, None)
     return env
 
@@ -114,7 +114,7 @@ def configured_sdk(preset: str) -> str | None:
     """The SDK root a build directory was configured with, if any."""
     try:
         for line in (build_dir(preset) / "CMakeCache.txt").read_text().splitlines():
-            if line.startswith("JITLLM_SDK:PATH="):
+            if line.startswith("LLMP_SDK:PATH="):
                 return line.split("=", 1)[1]
     except OSError:
         pass
@@ -122,12 +122,12 @@ def configured_sdk(preset: str) -> str | None:
 
 
 def configure_args(sdk: sdklib.Sdk, preset: str, fresh: bool, locked: bool) -> list[str]:
-    args = ["--preset", preset, f"-DJITLLM_SDK={sdk.root}"]
+    args = ["--preset", preset, f"-DLLMP_SDK={sdk.root}"]
     # Explicit either way, so a checked build's setting does not stay in the cache.
     if locked:
-        args += ["-DJITLLM_REQUIRE_LOCKED_SOURCES=ON", "-DJITLLM_MODULES="]
+        args += ["-DLLMP_REQUIRE_LOCKED_SOURCES=ON", "-DLLMP_MODULES="]
     else:
-        args += ["-DJITLLM_REQUIRE_LOCKED_SOURCES=OFF"]
+        args += ["-DLLMP_REQUIRE_LOCKED_SOURCES=OFF"]
     return args + (["--fresh"] if fresh else [])
 
 
@@ -145,7 +145,7 @@ def build(sdk: sdklib.Sdk, preset: str, fresh: bool, locked: bool = False) -> No
 def ssh_control_path() -> str | None:
     """A connection-sharing socket for the deploy and its remote tests, if there is a private runtime dir."""
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    return f"{runtime}/jitllm-ssh-%C" if runtime and os.path.isdir(runtime) else None
+    return f"{runtime}/llmp-ssh-%C" if runtime and os.path.isdir(runtime) else None
 
 
 def ssh_base(control: str | None) -> list[str]:
@@ -162,7 +162,7 @@ def deploy(sdk: sdklib.Sdk, preset: str, host: str, control: str | None) -> str:
             raise SdkError(f"deploy needs {tool} on this host")
     local = build_dir(preset)
     tag = hashlib.sha256(str(local).encode()).hexdigest()[:16]
-    remote = f".cache/jitllm/deploy/{preset}-{tag}"
+    remote = f".cache/llmp/deploy/{preset}-{tag}"
     # One command creates the directory, reports its absolute path and checks for rsync there.
     script = f'mkdir -p "$HOME"/{remote} && command -v rsync >/dev/null && printf "%s\\n" "$HOME"/{remote}'
     result = subprocess.run([*ssh_base(control), "--", host, script], capture_output=True, text=True)
@@ -262,9 +262,9 @@ def main() -> int:
             ctest = sdk.root / "bin" / "ctest"
             if args.host:
                 remote_dir = deploy(sdk, preset, args.host, control)
-                env = sdk_env(sdk) | {"JITLLM_TARGET_HOST": args.host, "JITLLM_TARGET_DIR": remote_dir}
+                env = sdk_env(sdk) | {"LLMP_TARGET_HOST": args.host, "LLMP_TARGET_DIR": remote_dir}
                 if control:
-                    env["JITLLM_TARGET_SSH_CONTROL"] = control
+                    env["LLMP_TARGET_SSH_CONTROL"] = control
                 run([ctest, "--preset", REMOTE_TEST_PRESET[preset], "--parallel", REMOTE_TEST_JOBS,
                      *ctest_args], env)
             elif args.gpu:

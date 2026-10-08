@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma implementation handoff — 2026-10-06
@@ -115,7 +115,7 @@ A useful native result then warrants a fresh matched reference/native/native/
 reference comparison before adopting a policy or claiming gap closure.
 
 The unrun draft is preserved at
-`/tmp/jitllm-m35-coordination/gemma-prefill-capture-policy`, branch
+`/tmp/llmp-m35-coordination/gemma-prefill-capture-policy`, branch
 `m35/gemma-prefill-capture-policy`, base `302e0c2`; external caller/diff are in
 its sibling `gemma-prefill-capture-policy-raw`. Nothing in this experiment is
 committed, compiled or qualified. Its two prospective native files add a
@@ -186,7 +186,7 @@ raw payloads remain external; the bridge retains 40 successful and 6 failed
 records without waiving a numerical failure.
 
 The original serving evidence/raw receipts are at
-`/tmp/jitllm-m35-coordination/gemma31-production-bridge-raw`; phase diagnostic
+`/tmp/llmp-m35-coordination/gemma31-production-bridge-raw`; phase diagnostic
 support is at `gemma-state-phase-attribution-raw` in the same parent. Reusable
 native/public callers, analysis and HTTP method are committed in the bridge.
 Inspect the relevant current receipts rather than revalidating every historical

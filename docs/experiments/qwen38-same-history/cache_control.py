@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Materialize the exact measured cache-control drivers from pinned originals.
 
@@ -57,7 +57,7 @@ def main():
         'schedule = [(3, False), (3, True), (0, False), (3, False), (3, True)]\n'
         '        require(args.limit == 4 and args.previous is None, "exact two-cache-path schedule required")')
     paths_client = change(paths_client, 'prompt = prefix + continuation[:position]',
-        'if index == 2:\n                salt = "jitllm-anchor-" + uuid.uuid4().hex\n'
+        'if index == 2:\n                salt = "llmp-anchor-" + uuid.uuid4().hex\n'
         '            prompt = prefix + continuation[:position]')
     paths_client = change(paths_client, "'position': position, 'repeat': repeat, 'complete': False",
         "'position': position, 'repeat': repeat, 'cache_salt': salt, 'complete': False")
@@ -72,7 +72,7 @@ def main():
     made['mia-det1-helper.py'] = helper
     raw = helper.encode()
     blob = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
-    det = change(paths, "helper_path = FROZEN / 'jitllm-mia-concurrent-run.py'", "helper_path = BASE / 'mia-det1-helper.py'")
+    det = change(paths, "helper_path = FROZEN / 'llmp-mia-concurrent-run.py'", "helper_path = BASE / 'mia-det1-helper.py'")
     det = change(det, '01d606e9d9c7c362216ef9e0e3c18f01c0477f9b', blob)
     det = change(det, "out = BASE / 'mia-cache-paths'", "out = BASE / 'mia-cache-det1'")
     det = change(det, "requested.update(TP1_CONTAINER_NAME=name, PORT=str(PORT), READY_TIMEOUT_S='400')",
@@ -85,7 +85,7 @@ def main():
         'schedule = [(0, False), (1, False), (2, False), (3, False), (3, True)]\n'
         '        require(args.limit == 4 and args.previous is None, "four cold anchors and a cold p3 repeat required")')
     all_client = change(all_client, 'prompt = prefix + continuation[:position]',
-        "salt = 'jitllm-anchor-' + uuid.uuid4().hex\n            prompt = prefix + continuation[:position]")
+        "salt = 'llmp-anchor-' + uuid.uuid4().hex\n            prompt = prefix + continuation[:position]")
     all_client = change(all_client, "'position': position, 'repeat': repeat, 'complete': False",
         "'position': position, 'repeat': repeat, 'cache_salt': salt, 'complete': False")
     made['mia-cold-all-client.py'] = all_client

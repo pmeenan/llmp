@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The few socket calls whose spelling differs between systems
@@ -11,8 +11,8 @@
 // random bytes (getrandom; getentropy or arc4random_buf on macOS,
 // BCryptGenRandom on Windows). The rest of the sockets API is POSIX's.
 
-#ifndef JITLLM_PLATFORM_SOCKETS_H_
-#define JITLLM_PLATFORM_SOCKETS_H_
+#ifndef LLMP_PLATFORM_SOCKETS_H_
+#define LLMP_PLATFORM_SOCKETS_H_
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -20,7 +20,7 @@
 #include <cstddef>
 #include <span>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 // A non-blocking, close-on-exec stream socket of `family`; -1 with errno
 // as socket()'s.
@@ -39,6 +39,6 @@ ssize_t SendNoSignal(int fd, const void* data, std::size_t size, bool wait);
 // could not fill all of it.
 bool FillRandom(std::span<std::byte> out);
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_SOCKETS_H_
+#endif  // LLMP_PLATFORM_SOCKETS_H_

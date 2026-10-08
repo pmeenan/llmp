@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The checks follow docs/experiments/artifact-layout/import_m3.py's
@@ -31,7 +31,7 @@
 #include "base/bytes.h"
 #include "base/sha256.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 
 const CompositionComponent* Composition::Find(std::string_view role) const {
   const auto it = std::ranges::find(components_, role, &CompositionComponent::role);
@@ -252,7 +252,7 @@ class CompositionOpener {
     const json::Value m = doc_->root();
     const auto format = m.find("format");
     if (!m.is_object() || !format || !schema::IsString(*format, kFormat)) {
-      return Fail(Rule::kFormat, "not a jitLLM composition");
+      return Fail(Rule::kFormat, "not a llmpalooza composition");
     }
     // import_m3.py checks for data after the format, as here.
     if (has_data_) {
@@ -469,4 +469,4 @@ std::expected<Composition, Error> OpenComposition(const std::filesystem::path& r
   return CompositionOpener(root, expected_id).Run();
 }
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact

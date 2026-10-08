@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Summarizes session.sh results: GB/s per variant (the first load or pass of
 each process dropped), and per-extent latency (p50 and p99, microseconds).

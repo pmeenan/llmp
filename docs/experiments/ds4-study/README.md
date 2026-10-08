@@ -1,7 +1,7 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# DeepSeek V4 on ds4 and jitLLM
+# DeepSeek V4 on ds4 and llmpalooza
 
 M3's same-format study uses Entrpi's MIT-licensed ds4 fork at
 `76d51ef82a81b70b78e51a3a6ea11946286de976` and
@@ -10,7 +10,7 @@ The target is
 `DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf`,
 86,720,111,488 bytes, SHA-256
 `ca22ae2f838e14077c22bc1c1417b71b45b5e5a3687bd96c2ac6e17fdb6261c0`.
-jitLLM imports the same tensor bytes, including IQ2_XXS gate/up experts,
+Llmpalooza imports the same tensor bytes, including IQ2_XXS gate/up experts,
 Q2_K down experts, and F16 APE tables, without changing their precision.
 
 ## Comparison fixed before the first native run
@@ -28,12 +28,12 @@ Prefill is the entire prompt from empty state; decode is reported
 separately at the frontier. The earlier ds4 ladder measured incremental
 frontier deltas and is excluded from the cold comparison.
 
-The existing long-context correctness rules apply: force jitLLM on
+The existing long-context correctness rules apply: force llmpalooza on
 ds4's generated token IDs and report every differing argmax with ds4's
-margin between its token and jitLLM's choice. The existing DeepSeek
+margin between its token and llmpalooza's choice. The existing DeepSeek
 near-tie bound is 0.947 nats; a difference above it requires investigation.
 Report full-logit maximum and RMS differences, and repeatability of
-jitLLM's own forced run. Performance decisions use D-085's coarse 10%
+llmpalooza's own forced run. Performance decisions use D-085's coarse 10%
 threshold; memory is the sampled drop in `MemAvailable`, with about
 1.1 times the reference as the bound. Perplexity evidence is required
 before adopting a change in quantization or activation precision.
@@ -43,16 +43,16 @@ warm-up. Whole-run kernel totals are not prefill timings. ds4's
 single-stream plain decode is the comparator here; its batched serving
 throughput and DSpark creator reports describe different workloads.
 The driver is 580.178.04. ds4 uses eight CPU threads and its pinned
-`sm_121` build; jitLLM uses the locked `spark-native` build.
+`sm_121` build; llmpalooza uses the locked `spark-native` build.
 
 ## Reproduction inputs
 
 External raw results and instrumentation live in `spark:~/scratch/m3-ds4/`.
 The pinned source is `ds4/`; the source model is under
-`~/.local/share/jitllm/models/antirez/deepseek-v4-gguf@f71f23d5/`.
-jitLLM's generic imported artifact is
+`~/.local/share/llmp/models/antirez/deepseek-v4-gguf@f71f23d5/`.
+Llmpalooza's generic imported artifact is
 `cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac`
-in `~/.local/share/jitllm/m3-artifacts/`.
+in `~/.local/share/llmp/m3-artifacts/`.
 Its disk payload is 86,714,925,056 bytes and its extent handles total
 101,160,321,024 bytes; those accounting values are distinct from a
 measured peak working-set drop.
@@ -84,7 +84,7 @@ The support file is 5,989,114,272 bytes, SHA-256
 `7e319924541db3f7a163ed7e11d7532a70d48228ab59d36cb81e1d4511885360`,
 at the same HF revision.
 
-The native command is `jitllm_dsv4_exec --artifact ARTIFACT --prompts
+The native command is `llmp_dsv4_exec --artifact ARTIFACT --prompts
 prompt-N.tsv --generate 128 --context N_PLUS_1024 --max-rows 4096 --out
 OUT`. The TSV contains `ds4`, a tab, and the space-separated raw IDs.
 Its SHA-256 at 8,192 / 32,768 / 65,536 / 128,817 IDs is, respectively:
@@ -176,7 +176,7 @@ nsys options without a capture range and `--generate 3`; the first
 whole-row vocabulary copy after the first kernel delimits the first 4K
 chunk. Repack, boot and decode kernels are excluded from the table.
 
-| First 4K chunk | ds4 | jitLLM before transfer |
+| First 4K chunk | ds4 | llmpalooza before transfer |
 | --- | ---: | ---: |
 | GPU kernel busy | 4.295 s | 8.140 s |
 | Kernel span | 4.532 s | 8.221 s |
@@ -267,9 +267,9 @@ is consistent with input preparation being a fraction of the product
 work; it does not close the product-kernel gap.
 
 ds4's full fused D2R product is not a direct transfer: its dense SoA
-weights differ from raw GGUF blocks at jitLLM's expert strides, and its
+weights differ from raw GGUF blocks at llmpalooza's expert strides, and its
 fused epilogue weights before quantizing the activation and before down.
-jitLLM retains post-down weighting. Keeping an extra SoA replica would
+Llmpalooza retains post-down weighting. Keeping an extra SoA replica would
 also invalidate the memory comparison. No cache precision change,
 early weighting or nonfinite-value sanitization is adopted.
 
@@ -391,12 +391,12 @@ first full tests passed before a test-only lint correction, and the
 second check includes the initial 256-row production opt-in. The final
 third check refreshes the measured 2,048-row production floor.
 
-The model command is `jitllm_dsv4_exec --artifact ART --prompts TSV
+The model command is `llmp_dsv4_exec --artifact ART --prompts TSV
 --generate 32 --context 9216 --max-rows 4096 --out OUT`, with
 `--compact-experts` for the compact arms. Community arms add its pinned
 `--force` file; original compact/repeat arms add the ordinary arm's
 recorded continuation. Product commands are
-`jitllm_prefill_transfer_bench --compact --large`, with `--skew` for
+`llmp_prefill_transfer_bench --compact --large`, with `--skew` for
 concentrated routes, `--down --only q2` for the IQ2/Q2 down formats,
 and `--tokens 256|512|2048` for shorter chunks; original down controls
 also select `--only iq3` and `--only q4`.
@@ -433,7 +433,7 @@ community GGUF supplies 32,768 IDs. Both native variants score the same
 
 The relative changes are -0.215% and -0.0797%, inside the registered
 3% tolerance. This is an own-plan quality control, not ds4 perplexity.
-ds4 defaults to FP8 compressed KV and FP4 indexer cache; jitLLM uses
+ds4 defaults to FP8 compressed KV and FP4 indexer cache; llmpalooza uses
 F16 caches. ds4 exposes F32 controls with `DS4_CUDA_FP8_KV=0` and
 `DS4_CUDA_FP4_INDEX=0`, but no matching F16 mode. Same weights alone
 do not make these precision policies equivalent.
@@ -502,7 +502,7 @@ aggregates included index 16,383 and are superseded by these values.
 
 ## Cross-model and format applicability
 
-`jitllm_prefill_transfer_bench` measures nine alternating samples per
+`llmp_prefill_transfer_bench` measures nine alternating samples per
 arm after two warmups, one invocation per sample. A separate 512 MiB
 write before each timing displaces operands from L2 and is excluded
 from the CUDA event interval. These are medians on finite synthetic

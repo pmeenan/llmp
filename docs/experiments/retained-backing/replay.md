@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Retained-backing deterministic replay — 2026-09-27
@@ -22,7 +22,7 @@ peak waste is above D-033's (6.3–19.4 GiB against 5.16 at 53 GiB,
 ## Harness
 
 - [`benchmarks/retained_backing/`](../../../benchmarks/retained_backing/):
-  `jitllm_rb_replay` reads the trace after checking the manifest's and the
+  `llmp_rb_replay` reads the trace after checking the manifest's and the
   file's SHA-256 against the [identity](README.md#identity), and refuses the
   confirmation seed unless it is named. It replays each design twice, each
   time on a fresh fake provider, and a disagreement voids the run.
@@ -129,13 +129,13 @@ The hole policies:
   identical to these in every field, digests included.
 - Trace: primary seed 20260926, manifest `44f9f2b4…`, files as in the
   [identity](README.md#identity); budgets 64, 53 and 40 GiB.
-- Sources as run (SHA-256): `designs.cc` `bc20a030…`, `replay.cc`
-  `4c86099a…`, `trace.cc` `58310536…`, `main.cc` `e6d24a02…`,
+- Sources as run (SHA-256): `designs.cc` `b173ba34…`, `replay.cc`
+  `02d8bb63…`, `trace.cc` `b7610097…`, `main.cc` `e09ea292…`,
   `fake_device_memory.cc` `047b5968…`.
-- `jitllm_rb_replay --threads 12 --check-every 1000 TRACE_DIR`; every one
+- `llmp_rb_replay --threads 12 --check-every 1000 TRACE_DIR`; every one
   of the 78 replays agreed with its twin. The raw output
   (`results.jsonl`, SHA-256 `9da54daa…`) is outside Git in
-  `~/.local/share/jitllm/retained-backing-20260926/replay-primary-2/`.
+  `~/.local/share/llmp/retained-backing-20260926/replay-primary-2/`.
   An earlier run (`replay-primary-1/`, `designs.cc` `afb54a2b…`) had
   size classes evict their own class's newer groups before reclaiming an
   older slab of another class; its D-033, `run` and `compact` records are

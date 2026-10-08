@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Compatible two-owner prefill, ring/departure/restore and matched C2 decode.
@@ -29,7 +29,7 @@
 #include "tokenizer/tokenizer.h"
 
 namespace {
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 namespace fs = std::filesystem;
 using en::support::Error;
 constexpr std::uint32_t kVocab = 262208, kSteps = 32, kTail = 4;
@@ -63,14 +63,14 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
   auto metadata = Read(metadata_path, 32ULL << 20U);
   auto text = Read(text_path, 65536);
   if (!metadata || !text) return Error("preparation input refused");
-  auto parsed = jitllm::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*metadata)));
+  auto parsed = llmp::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*metadata)));
   if (!parsed) return Error(parsed.error().ToString());
   if (parsed->spec.tokens.size() != kVocab || parsed->spec.bos != 2 || !parsed->spec.add_bos ||
       parsed->spec.add_eos)
     return Error("Gemma3 vocabulary/BOS contract differs");
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(parsed->spec));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(parsed->spec));
   if (!tokenizer) return Error(tokenizer.error().ToString());
-  std::vector<jitllm::tokenizer::TokenId> ids;
+  std::vector<llmp::tokenizer::TokenId> ids;
   if (auto r = tokenizer->Encode(*text, {.add_bos_eos = true, .max_tokens = 8192}, ids); !r)
     return Error(r.error().ToString());
   if (ids.size() < input_rows || ids.front() != 2 || std::ranges::any_of(ids, [](auto id) {
@@ -81,15 +81,14 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
   const auto kept = std::span(ids).first(input_rows);
   if (auto r = Save<std::int32_t>(fs::path(output_path) / "ids.i32", kept); !r) return r;
   std::cout << "GEMMA3_INPUT rows=" << input_rows << " sha256="
-            << jitllm::base::ToHex(jitllm::base::Sha256{}.Update(std::as_bytes(kept)).Finish())
-            << " text_sha256=" << jitllm::base::ToHex(jitllm::base::Sha256{}.Update(*text).Finish())
+            << llmp::base::ToHex(llmp::base::Sha256{}.Update(std::as_bytes(kept)).Finish())
+            << " text_sha256=" << llmp::base::ToHex(llmp::base::Sha256{}.Update(*text).Finish())
             << '\n';
   return {};
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") ||
-      (argc < 6 || argc > 18))
+  if (!llmp::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") || (argc < 6 || argc > 18))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -227,7 +226,7 @@ int main(int argc, char** argv) {
     for (std::uint32_t slot = 0; slot < 2; ++slot) {
       auto ranges = runner.CheckpointRanges(past[slot]);
       if (!ranges) return Error(ranges.error());
-      jitllm::base::Sha256 hash;
+      llmp::base::Sha256 hash;
       for (const auto& range : *ranges)
         for (std::uint64_t at = 0; at < range.bytes;) {
           auto part = range;
@@ -240,7 +239,7 @@ int main(int argc, char** argv) {
           hash.Update(std::span(static_cast<const std::byte*>(pinned), std::size_t(part.bytes)));
           at += part.bytes;
         }
-      result[slot] = jitllm::base::ToHex(hash.Finish());
+      result[slot] = llmp::base::ToHex(hash.Finish());
     }
     return result;
   };
@@ -362,7 +361,7 @@ int main(int argc, char** argv) {
       return Error("matched stock ring capacity differs");
     // Final initialized-state hashes are outside paid spans in every mode.
     // Register their bounded copy buffer before computing the startup budget.
-    std::vector<jitllm::catalog::ExtentId> snapshot_extents;
+    std::vector<llmp::catalog::ExtentId> snapshot_extents;
     auto allocation = node.Pinned(kCopy, 0, snapshot_extents);
     if (!allocation) return Error(allocation.error());
     pinned = *allocation;
@@ -386,7 +385,7 @@ int main(int argc, char** argv) {
               << " plan_floor=" << runner.plan_floor_bytes() << " joined_global_mask_bytes="
               << std::uint64_t{2} * runner.layout().global_cells * ((chunk + 31U) / 32U * 32U) * 2
               << " derived_minimum=" << required_budget << " total=" << budget << '\n';
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();

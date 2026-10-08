@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The operand checks of the operations DeepSeek V4 Flash and Qwen3.8 Flash
@@ -21,14 +21,14 @@
 
 #include "ggml.h"
 #include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 using kg::KernelError;
 using kg::TensorArena;
 
@@ -125,7 +125,7 @@ TEST_F(GgmlExtValidateTest, GemmaDeviceMaskGuardsItsEntirePaddedOutputBeforeSubm
   ASSERT_TRUE(plan);
   ASSERT_EQ(plan->steps.size(), 1);
   EXPECT_EQ(plan->steps[0].implementation, kg::kGemma4MaskName);
-  EXPECT_EQ(plan->steps[0].operation, jitllm::execution::Operation::kFill);
+  EXPECT_EQ(plan->steps[0].operation, llmp::execution::Operation::kFill);
 }
 
 TEST_F(GgmlExtValidateTest, GemmaQuantGeGluUsesExactGateViewsAndNoClamp) {
@@ -463,8 +463,8 @@ TEST_F(GgmlExtValidateTest, Ds4HcaRequiresExplicitCanonicalMetadataAndPreservesD
   EXPECT_EQ(node->src[0]->nb[2], 512U * sizeof(float));
   EXPECT_EQ(node->src[0]->nb[3], ggml_nbytes(node));
   EXPECT_EQ(node->op_params[3], GGML_PREC_F32);
-  EXPECT_EQ(kg::JitllmOpInt(node->src[3], 0), 4352);
-  EXPECT_EQ(kg::JitllmOpInt(node->src[3], 1), 1);
+  EXPECT_EQ(kg::LlmpOpInt(node->src[3], 0), 4352);
+  EXPECT_EQ(kg::LlmpOpInt(node->src[3], 1), 1);
   EXPECT_EQ(node->op_params[4], 384);
   Accepted(kg::CheckDsv4HcaTokentile(node));
   for (const auto first : {127U, 128U, 511U, 28672U})

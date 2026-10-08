@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded full-vocabulary teacher forcing on exact shared integer IDs.
 // Closed diagnostic: ARTIFACT IDS_I32 OUTPUT_DIR. Required process environment
-// JITLLM_GEMMA_KEEP28_ROUTING=0|1 is immutable across sizing and execution.
+// LLMP_GEMMA_KEEP28_ROUTING=0|1 is immutable across sizing and execution.
 // One 26B/C1 1024-row all-output chunk, all policy plus plain norm. No support claim.
 #include "gemma_quality_keep28.h"
 
@@ -22,7 +22,7 @@
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
   if (argc != 4) return 2;
@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
     const auto budget = fixed + runner.weights().size() * en::kPagedExtent +
                         2 * node.StateCapacity() + output_bytes;
     node.SetHostFloor(runner.plan_floor_bytes() + runner.host_input_bytes());
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();

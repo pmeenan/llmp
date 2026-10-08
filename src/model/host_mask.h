@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_MODEL_HOST_MASK_H_
-#define JITLLM_MODEL_HOST_MASK_H_
+#ifndef LLMP_MODEL_HOST_MASK_H_
+#define LLMP_MODEL_HOST_MASK_H_
 
 #include <algorithm>
 #include <array>
@@ -12,7 +12,7 @@
 #include <optional>
 #include <span>
 
-namespace jitllm::model {
+namespace llmp::model {
 
 // Physical visible cells in ascending order; all other cells are blocked.
 // A logical causal interval crosses a ring boundary at most once.
@@ -113,6 +113,6 @@ inline bool FillHostQsaBias(std::span<float> row, std::size_t full, std::uint64_
   return true;
 }
 
-}  // namespace jitllm::model
+}  // namespace llmp::model
 
-#endif  // JITLLM_MODEL_HOST_MASK_H_
+#endif  // LLMP_MODEL_HOST_MASK_H_

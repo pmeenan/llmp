@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // DeepSeek V4 Flash's DSpark drafter (M3, "Speculative decoding in the
@@ -31,8 +31,8 @@
 // llama.cpp's confidence head (conf_proj) only truncates a draft below
 // --spec-draft-p-min, 0 by default: bound, never computed.
 
-#ifndef JITLLM_MODEL_DSPARK_H_
-#define JITLLM_MODEL_DSPARK_H_
+#ifndef LLMP_MODEL_DSPARK_H_
+#define LLMP_MODEL_DSPARK_H_
 
 #include <cstdint>
 #include <expected>
@@ -44,11 +44,11 @@
 #include "model/dsv4.h"
 #include "model/state.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 class Artifact;
 }
 
-namespace jitllm::model {
+namespace llmp::model {
 
 struct DsparkProfile {
   std::string_view name;
@@ -157,6 +157,6 @@ std::vector<std::vector<StateRange>> DsparkWrites(const DsparkProfile& profile,
                                                   const DsparkStateLayout& state,
                                                   std::uint32_t n_past, std::uint32_t rows);
 
-}  // namespace jitllm::model
+}  // namespace llmp::model
 
-#endif  // JITLLM_MODEL_DSPARK_H_
+#endif  // LLMP_MODEL_DSPARK_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // DeepSeek V4's DSpark drafter (model/dspark.h) and speculation's parts of
@@ -37,16 +37,16 @@
 #include "ggml.h"
 #include "kernels/ggml/dsv4_graph.h"
 #include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "model/dsv4.h"
 #include "model/state.h"
 
 namespace {
 
-namespace md = jitllm::model;
-namespace kg = jitllm::kernels::ggml;
-using jitllm::test_support::Failed;
+namespace md = llmp::model;
+namespace kg = llmp::kernels::ggml;
+using llmp::test_support::Failed;
 
 template <typename T>
 std::string Why(const std::expected<T, std::string>& result) {
@@ -573,7 +573,7 @@ TEST(DsparkTest, PlainTokenWavesKeepEveryFeatureAndIndependentInjectionWrite) {
       EXPECT_EQ(graph->joined.token->src[0], graph->joined.logits);
       EXPECT_EQ(graph->joined.token->type, GGML_TYPE_I32);
       EXPECT_EQ(graph->joined.token->ne[0], 2);
-      EXPECT_EQ(kg::JitllmOpInt(graph->joined.token, 1),
+      EXPECT_EQ(kg::LlmpOpInt(graph->joined.token, 1),
                 static_cast<std::int32_t>(kg::ArgmaxFlavor::kHostGreedy));
     } else {
       EXPECT_EQ(graph->joined.token, nullptr);
@@ -700,7 +700,7 @@ TEST(DsparkTest, TheDraftBlocksGraphChainsTheMarkovHeadOnArgmax) {
   // Two argmax links in the chain, and the drafts' own.
   EXPECT_EQ(std::ranges::count_if(
                 graph->core.nodes,
-                [](const ggml_tensor* n) { return kg::JitllmOpOf(n) == kg::JitllmOp::kArgmax; }),
+                [](const ggml_tensor* n) { return kg::LlmpOpOf(n) == kg::LlmpOp::kArgmax; }),
             3);
   BindAll(*graph, graph->core.nodes);
   auto plan = kg::PlanGraph(graph->core.nodes, false, ModelDevice(false));
@@ -719,7 +719,7 @@ TEST(DsparkTest, TheDraftBlocksGraphChainsTheMarkovHeadOnArgmax) {
   ASSERT_TRUE(sharing.has_value()) << Why(sharing);
   std::size_t attention = 0;
   for (const auto& step : sharing->steps) {
-    if (step.operation == jitllm::execution::Operation::kFlashAttn) {
+    if (step.operation == llmp::execution::Operation::kFlashAttn) {
       ++attention;
       EXPECT_EQ(step.implementation, kg::kFlashAttnMmaWideName);
     }
@@ -771,14 +771,14 @@ TEST(DsparkTest, DeviceBlockMasksUseEachActualPositionSegmentAndAreNotHostInputs
       if (device) {
         EXPECT_TRUE(kg::Gemma4MaskFits(mask));
         EXPECT_EQ(mask->src[0], positions);
-        EXPECT_EQ(kg::JitllmOpInt(mask, 0), first);
-        EXPECT_EQ(kg::JitllmOpInt(mask, 1), 3);
-        EXPECT_EQ(kg::JitllmOpInt(mask, 2), 256);
-        EXPECT_EQ(kg::JitllmOpInt(mask, 3), profile.blocks.window);
-        EXPECT_EQ(kg::JitllmOpInt(mask, 4), INT32_MAX);
-        EXPECT_EQ(kg::JitllmOpInt(mask, 5), static_cast<int>(kg::CausalMaskRows::kExact));
-        EXPECT_EQ(kg::JitllmOpInt(mask, 6), static_cast<int>(kg::MaskPolicy::kBlock));
-        EXPECT_EQ(kg::JitllmOpInt(mask, 7), 0);
+        EXPECT_EQ(kg::LlmpOpInt(mask, 0), first);
+        EXPECT_EQ(kg::LlmpOpInt(mask, 1), 3);
+        EXPECT_EQ(kg::LlmpOpInt(mask, 2), 256);
+        EXPECT_EQ(kg::LlmpOpInt(mask, 3), profile.blocks.window);
+        EXPECT_EQ(kg::LlmpOpInt(mask, 4), INT32_MAX);
+        EXPECT_EQ(kg::LlmpOpInt(mask, 5), static_cast<int>(kg::CausalMaskRows::kExact));
+        EXPECT_EQ(kg::LlmpOpInt(mask, 6), static_cast<int>(kg::MaskPolicy::kBlock));
+        EXPECT_EQ(kg::LlmpOpInt(mask, 7), 0);
       } else
         EXPECT_EQ(mask->op, GGML_OP_NONE);
     };
@@ -840,7 +840,7 @@ TEST(DsparkTest, AJoinedDraftJoinsTheProductsAndKeepsEachSlotsBlock) {
   }
   const auto argmaxes = [](std::span<ggml_tensor* const> nodes) {
     return std::ranges::count_if(
-        nodes, [](const ggml_tensor* n) { return kg::JitllmOpOf(n) == kg::JitllmOp::kArgmax; });
+        nodes, [](const ggml_tensor* n) { return kg::LlmpOpOf(n) == kg::LlmpOp::kArgmax; });
   };
   EXPECT_EQ(argmaxes(one->core.nodes), 3);
   EXPECT_EQ(argmaxes(joined->joined.nodes), 4 * 3);
@@ -859,7 +859,7 @@ TEST(DsparkTest, AJoinedDraftJoinsTheProductsAndKeepsEachSlotsBlock) {
   EXPECT_EQ(count(*plan, kg::kVecQName), count(*one_plan, kg::kVecQName));
   std::size_t attention = 0;
   for (const auto& step : plan->steps) {
-    attention += step.operation == jitllm::execution::Operation::kFlashAttn ? 1 : 0;
+    attention += step.operation == llmp::execution::Operation::kFlashAttn ? 1 : 0;
   }
   EXPECT_EQ(attention, 4U * d.blocks.layers);
   // Refusals: one block, six of three rows (18, past a wave's 16), a block

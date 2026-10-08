@@ -210,7 +210,7 @@
     "check_official_sha256": "3e5eea28cce7b5c22414285b2fc4e7f0ae11826b73b72f461e2c958d9afc7ea8",
     "performance_official_sha256": "e14560608d04c5931e08a1996499ec68bcedfcb13d2c33509b083ef741b86b8e",
     "method_sha256": "1334cfbc5da52da85b1882a929d846e2f60d759b56862a782b93e1b0b57a7764",
-    "analyzer_sha256": "ccfc3e687bb3abed8374cae8d529606a35035c4ec72be1cd0bf79cf252849f8b"
+    "analyzer_sha256": "ee4ae95b563c7c35447793a2ff364d6764078c64be75a1ec494fb2b396239a47"
   },
   "tensorfold_task_entry": {
     "head": "5a73b85289b58c0998d7754822145466687a551b",

@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Owned MXFP8 GEMV arithmetic from src/kernels/ggml/jitllm_ops.cu. Only
+// Owned MXFP8 GEMV arithmetic from src/kernels/ggml/llmp_ops.cu. Only
 // scheduling changes: rows/warp, warps/block and the input/weight load order.
 
 #include <cuda_fp16.h>
@@ -12,7 +12,7 @@
 #include "common.cuh"
 #include "qwen38_mxfp8_tune_kernels.h"
 
-namespace jitllm::diag {
+namespace llmp::diag {
 namespace {
 
 __device__ __forceinline__ float E8m0(std::uint8_t e) {
@@ -214,4 +214,4 @@ cudaError_t Mxfp8Tune(cudaStream_t stream, const std::uint8_t* codes, const std:
   return cudaGetLastError();
 }
 
-}  // namespace jitllm::diag
+}  // namespace llmp::diag

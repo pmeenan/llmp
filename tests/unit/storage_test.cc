@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The storage provider and whole reads over it (D-034, D-048): short
@@ -39,28 +39,28 @@
 #include "providers/uring_storage.h"
 
 #ifdef __SANITIZE_THREAD__
-#define JITLLM_TEST_TSAN 1
+#define LLMP_TEST_TSAN 1
 #elifdef __has_feature
 #if __has_feature(thread_sanitizer)
-#define JITLLM_TEST_TSAN 1
+#define LLMP_TEST_TSAN 1
 #endif
 #endif
 
 namespace {
 
-using jitllm::providers::DirectReader;
-using jitllm::providers::FinishedRead;
-using jitllm::providers::IoCompletion;
-using jitllm::providers::IoKind;
-using jitllm::providers::IoRequest;
-using jitllm::providers::ReadError;
-using jitllm::providers::ReaderSettings;
-using jitllm::providers::ReadOutcome;
-using jitllm::providers::ReadSpec;
-using jitllm::providers::Submission;
-using jitllm::providers::UringStorage;
-using jitllm::providers::fake::FakeStorage;
-using jitllm::test_support::Failed;
+using llmp::providers::DirectReader;
+using llmp::providers::FinishedRead;
+using llmp::providers::IoCompletion;
+using llmp::providers::IoKind;
+using llmp::providers::IoRequest;
+using llmp::providers::ReadError;
+using llmp::providers::ReaderSettings;
+using llmp::providers::ReadOutcome;
+using llmp::providers::ReadSpec;
+using llmp::providers::Submission;
+using llmp::providers::UringStorage;
+using llmp::providers::fake::FakeStorage;
+using llmp::test_support::Failed;
 using ::testing::ElementsAre;
 using ::testing::IsEmpty;
 
@@ -99,7 +99,7 @@ ReaderSettings Settings() {
                         .reads = 4,
                         .waiters = 2,
                         .span_bytes = ReaderSettings{}.span_bytes,
-                        .span_segments = jitllm::providers::kMaxSegments};
+                        .span_segments = llmp::providers::kMaxSegments};
 }
 
 ReaderSettings Coalescing(std::uint32_t span_blocks = 64, std::size_t segments = 64) {
@@ -709,7 +709,7 @@ TEST(ReaderDeathTest, CoalescingSettingsAreBounded) {
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   FakeStorage storage(1, static_cast<std::uint32_t>(kAlignment));
   ReaderSettings too_many = Settings();
-  too_many.span_segments = jitllm::providers::kMaxSegments + 1;
+  too_many.span_segments = llmp::providers::kMaxSegments + 1;
   EXPECT_DEATH({ const DirectReader reader(storage, too_many); }, "coalesced reads need");
   ReaderSettings too_long = Settings();
   too_long.span_bytes = (1U << 30U) + 4096;
@@ -772,12 +772,12 @@ class UringTest : public ::testing::Test {
     }
     ASSERT_TRUE(storage.has_value()) << storage.error().message();
     storage_ = std::move(*storage);
-    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path directory =
         base != nullptr ? std::filesystem::path(base) : std::filesystem::path(::testing::TempDir());
     std::filesystem::create_directories(directory);
-    filesystem_ = jitllm::platform::DescribeFilesystem(directory)
-                      .value_or(jitllm::platform::FilesystemFacts{})
+    filesystem_ = llmp::platform::DescribeFilesystem(directory)
+                      .value_or(llmp::platform::FilesystemFacts{})
                       .type;
     fd_ = ::open(directory.c_str(), O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
     ASSERT_GE(fd_, 0) << std::strerror(errno);  // NOLINT(concurrency-mt-unsafe)
@@ -831,7 +831,7 @@ TEST_F(UringTest, DirectReadsLandInPlace) {
 TEST_F(UringTest, VectoredRequestsFillEachSegmentInOrder) {
   Buffer buffer(16 * kAlignment);
   // Three segments of 2, 1 and 3 blocks, out of memory order.
-  const std::array<jitllm::providers::IoSegment, 3> segments = {{
+  const std::array<llmp::providers::IoSegment, 3> segments = {{
       {.memory = buffer.data + (8 * kAlignment),
        .length = static_cast<std::uint32_t>(2 * kAlignment)},
       {.memory = buffer.data, .length = static_cast<std::uint32_t>(kAlignment)},
@@ -1041,7 +1041,7 @@ TEST_F(UringTest, WakeEndsAHarvestWaitingForAReadThatNeverCompletes) {
 // lane asleep with a command published, which shows as a producer that is
 // never answered (bounded: the test then ends the read itself).
 TEST_F(UringTest, NoWakeIsLostAmongManyProducers) {
-#ifdef JITLLM_TEST_TSAN
+#ifdef LLMP_TEST_TSAN
   constexpr std::uint64_t kCommands = 2000;  // per producer
 #else
   constexpr std::uint64_t kCommands = 20000;

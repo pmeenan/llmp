@@ -4,7 +4,7 @@
  "interpretation": "Reference-only measurements for choosing the GGML paths native EXL3 uses for its non-linear operations. Operation level: every captured operation of frozen EXL3-G (layers 0, 6, 12, 18, 23; each prefix's prefill and single-token steps 0 and 15; both fixtures) recomputed in FP64 from its captured inputs; upstream's captured output and each GGML candidate's output on the same inputs compared with it. Full model: the recommended plan as a Tier C arm (ggml_ops), scored against the FP64 oracle with the third pass's arms. No timing was measured.",
  "pins": {
   "ggml": "llama.cpp b29c606e28a01b1bc8c1351026a0fa6e616bf6c4, ggml/ subtree, unmodified",
-  "exllamav3": "6b84a21b (M0 reference image jitllm-exl3-reference:20260922)",
+  "exllamav3": "6b84a21b (M0 reference image llmp-exl3-reference:20260922)",
   "device": "NVIDIA GB10, compute capability 12.1, driver 580.178.04",
   "profile": "EXL3-G: EXL3_GEMV=0, EXL3_HGEMM_F16ACC=0, frozen tune-40-gemvoff / tune-45-gemvoff (copies), EXL3_BC_ATTN=0 (bit-identical)"
  },
@@ -35,7 +35,7 @@
   "conversion": "ggml_cpy F32 -> F16 rounds to nearest (cpy-utils.cuh)."
  },
  "build": {
-  "script": "ggml_shim/build.sh (CMake project ggml_shim/CMakeLists.txt), inside jitllm-exl3-reference:20260922; the SDK's CMake, the container's GCC 13.3.0 (-march=armv8-a) as C, C++ and CUDA host compiler; GGML's own CMake options: BUILD_SHARED_LIBS=ON, GGML_BACKEND_DL=OFF, GGML_NATIVE=OFF, GGML_CUDA=ON, GGML_CUDA_NCCL=OFF, GGML_CUDA_GRAPHS=OFF, GGML_OPENMP=OFF, no tests/examples, Release; CMAKE_CUDA_ARCHITECTURES=121-real, mapped by GGML to 121a-real",
+  "script": "ggml_shim/build.sh (CMake project ggml_shim/CMakeLists.txt), inside llmp-exl3-reference:20260922; the SDK's CMake, the container's GCC 13.3.0 (-march=armv8-a) as C, C++ and CUDA host compiler; GGML's own CMake options: BUILD_SHARED_LIBS=ON, GGML_BACKEND_DL=OFF, GGML_NATIVE=OFF, GGML_CUDA=ON, GGML_CUDA_NCCL=OFF, GGML_CUDA_GRAPHS=OFF, GGML_OPENMP=OFF, no tests/examples, Release; CMAKE_CUDA_ARCHITECTURES=121-real, mapped by GGML to 121a-real",
   "nvcc_flags_ggml_cuda": "-O3 -std=c++17 --generate-code=arch=compute_121a,code=[sm_121a] -Xcompiler=-fPIC -use_fast_math -extended-lambda -compress-mode=size -Xcompiler \"-Wmissing-declarations -Wmissing-noreturn -Wall -Wextra -Wpedantic -Wcast-qual -Wno-unused-function -Wno-array-bounds -Wextra-semi -Wno-pedantic\" (-ccbin cxx-target = g++ -march=armv8-a); definitions GGML_CUDA_FA_QUANTS=q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16, GGML_SCHED_MAX_COPIES=4, GGML_SHARED, GGML_BACKEND_BUILD, GGML_BACKEND_SHARED",
   "builds": {
    "cuda130": {
@@ -78,7 +78,7 @@
     18,
     23
    ],
-   "capture_harness_sha256": "94c319b6b254cafd373b446bdf8287d2f85233e9cf73106043e17ca884ae6b9f",
+   "capture_harness_sha256": "6827376b608e732f6af04cb703fd72c78cb4b756d1c76a9a6a0a758a6ca7a1f8",
    "mlp_bc_none": [
     {
      "prefix": 32,
@@ -102,7 +102,7 @@
     18,
     23
    ],
-   "capture_harness_sha256": "94c319b6b254cafd373b446bdf8287d2f85233e9cf73106043e17ca884ae6b9f",
+   "capture_harness_sha256": "6827376b608e732f6af04cb703fd72c78cb4b756d1c76a9a6a0a758a6ca7a1f8",
    "mlp_bc_none": [
     {
      "prefix": 32,

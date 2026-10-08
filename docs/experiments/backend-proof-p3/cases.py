@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """The per-linear sweep's cases and inputs (BP-N5; docs/backend-proof.md), shared by the reference
 harness (linear_reference.py, in the ExLlamaV3 reference container), the plan writer
 (native_plan.py) and the comparison (compare.py). Reference-only experiment tooling; it does not
-implement jitLLM inference and shares no code with the native launchers.
+implement llmpalooza inference and shares no code with the native launchers.
 
 Cases. For each fixture and arm (EXL3-G: GEMV off; EXL3-O: GEMV on) and each BP-N5 row count, every
 real projection of Qwen2.5-0.5B (24 layers × q, k, v, o, gate, up, down, and lm_head) through the

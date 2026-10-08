@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The executed-plan recording's JSON lines (tests/support/plan_record.h),
@@ -22,9 +22,9 @@
 
 namespace {
 
-using jitllm::test_support::Chunk;
-using jitllm::test_support::Event;
-using jitllm::test_support::EventKind;
+using llmp::test_support::Chunk;
+using llmp::test_support::Event;
+using llmp::test_support::EventKind;
 
 // A kernel launch of the sample: the bridge's decode step, on stream 0x10.
 Event Launch(std::string_view name, std::array<unsigned, 3> grid, std::array<unsigned, 3> block,
@@ -62,15 +62,15 @@ TEST(PlanRecordTest, TheWriterProducesTheSample) {
       Launch(kRopeHalf, {2, 1, 1}, {1, 256, 1}, 0, 18),
       Launch(kSetRows, {1, 1, 1}, {256, 1, 1}, 0, 18),
   };
-  std::string written = jitllm::test_support::HeaderLine(
+  std::string written = llmp::test_support::HeaderLine(
       "sample: the first seven launches of control-fused's decode step", {});
   written +=
-      jitllm::test_support::ChunkLine(Chunk{.evaluation = 1, .chunk = 1, .rows = 1, .n_past = 32});
+      llmp::test_support::ChunkLine(Chunk{.evaluation = 1, .chunk = 1, .rows = 1, .n_past = 32});
   for (const Event& event : events) {
-    written += jitllm::test_support::EventLine(event);
+    written += llmp::test_support::EventLine(event);
   }
-  written += jitllm::test_support::EndChunkLine();
-  EXPECT_EQ(written, jitllm::test_support::PlanRecordSample());
+  written += llmp::test_support::EndChunkLine();
+  EXPECT_EQ(written, llmp::test_support::PlanRecordSample());
 }
 
 TEST(PlanRecordTest, CopiesMemsetsAndCublasCallsCarryTheirFields) {
@@ -78,40 +78,40 @@ TEST(PlanRecordTest, CopiesMemsetsAndCublasCallsCarryTheirFields) {
   copy.kind = EventKind::kCopy;
   copy.api = "driver";
   copy.bytes = 3584;
-  EXPECT_EQ(jitllm::test_support::EventLine(copy),
+  EXPECT_EQ(llmp::test_support::EventLine(copy),
             "{\"type\":\"memcpy\",\"kind\":\"driver\",\"bytes\":3584,\"stream\":\"0x0\"}\n");
   Event memset;
   memset.kind = EventKind::kMemset;
   memset.bytes = 608;
   memset.value = 0;
-  EXPECT_EQ(jitllm::test_support::EventLine(memset),
+  EXPECT_EQ(llmp::test_support::EventLine(memset),
             "{\"type\":\"memset\",\"bytes\":608,\"value\":0,\"stream\":\"0x0\"}\n");
   Event gemm;
   gemm.kind = EventKind::kCublas;
   gemm.name = "cublasGemmEx";
   gemm.shape = {896, 32, 896, 0};
-  EXPECT_EQ(jitllm::test_support::EventLine(gemm),
+  EXPECT_EQ(llmp::test_support::EventLine(gemm),
             "{\"type\":\"cublas\",\"function\":\"cublasGemmEx\",\"m\":896,\"n\":32,\"k\":896}\n");
   gemm.name = "cublasGemmBatchedEx";
   gemm.shape = {256, 32, 64, 14};
-  EXPECT_EQ(jitllm::test_support::EventLine(gemm),
+  EXPECT_EQ(llmp::test_support::EventLine(gemm),
             "{\"type\":\"cublas\",\"function\":\"cublasGemmBatchedEx\",\"m\":256,\"n\":32,\"k\":64,"
             "\"batch\":14}\n");
   const std::string header =
-      jitllm::test_support::HeaderLine("a \"quoted\"\\source\n", {{"libcublas.so.13", "/a/b"}});
+      llmp::test_support::HeaderLine("a \"quoted\"\\source\n", {{"libcublas.so.13", "/a/b"}});
   EXPECT_EQ(header,
-            "{\"type\":\"header\",\"format\":\"jitllm-plan-record/1\",\"source\":\"a "
+            "{\"type\":\"header\",\"format\":\"llmp-plan-record/1\",\"source\":\"a "
             "\\\"quoted\\\"\\\\source\\u000a\",\"loaded\":{\"libcublas.so.13\":\"/a/b\"}}\n");
 }
 
 TEST(PlanRecordTest, OnlyNvccsPerFileHashesAreMasked) {
-  EXPECT_EQ(jitllm::test_support::NormalizedKernelName(
+  EXPECT_EQ(llmp::test_support::NormalizedKernelName(
                 "_Z11k_bin_bcastIXadL_ZN42_INTERNAL_d5c41c42_11_binbcast_cu_6840010b6op_addEffEEv"),
             "_Z11k_bin_bcastIXadL_ZN42_INTERNAL_xxxxxxxx_11_binbcast_cu_xxxxxxxx6op_addEffEEv");
   constexpr std::string_view kPlain = "_Z16k_get_rows_floatIffEvPKT_PKiPT0_ll5uint3mmmmmmmmm";
-  EXPECT_EQ(jitllm::test_support::NormalizedKernelName(kPlain), kPlain);
+  EXPECT_EQ(llmp::test_support::NormalizedKernelName(kPlain), kPlain);
   // A truncated token is left as it is past the point it ends.
-  EXPECT_EQ(jitllm::test_support::NormalizedKernelName("_INTERNAL_d5c4"), "_INTERNAL_d5c4");
+  EXPECT_EQ(llmp::test_support::NormalizedKernelName("_INTERNAL_d5c4"), "_INTERNAL_d5c4");
 }
 
 }  // namespace

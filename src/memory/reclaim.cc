@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "memory/reclaim.h"
@@ -22,7 +22,7 @@
 
 #include "base/check.h"
 
-namespace jitllm::memory {
+namespace llmp::memory {
 namespace {
 
 std::atomic<double> inflation{0.0};
@@ -375,4 +375,4 @@ void ProtectFloor(std::vector<ReclaimCandidate>& candidates, std::uint64_t floor
   });
 }
 
-}  // namespace jitllm::memory
+}  // namespace llmp::memory

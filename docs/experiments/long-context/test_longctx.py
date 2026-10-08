@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Synthetic long-context protocol checks; run on a Spark, never locally."""
 import contextlib
@@ -91,7 +91,7 @@ class ProtocolTest(unittest.TestCase):
                     mock.patch.object(LONGCTX.subprocess, "Popen") as started,
                 ):
                     with self.assertRaises(subprocess.CalledProcessError):
-                        LONGCTX.cmd_jitllm(args)
+                        LONGCTX.cmd_llmp(args)
                 started.assert_not_called()
 
     def test_reasoning_does_not_count_as_a_visible_retrieval_answer(self):
@@ -215,7 +215,7 @@ class ProtocolTest(unittest.TestCase):
                 process.poll.return_value = None
 
                 def started(*args, **kwargs):
-                    (out / "service.log").write_text("jitllm-runtime: ready\n")
+                    (out / "service.log").write_text("llmp-runtime: ready\n")
                     return process
 
                 response = (sse([{"error": {"code": "capacity_refused"}}], done=False)
@@ -239,7 +239,7 @@ class ProtocolTest(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()),
                 ):
                     with self.assertRaisesRegex(RuntimeError, "no timed requests"):
-                        LONGCTX.cmd_jitllm(args)
+                        LONGCTX.cmd_llmp(args)
                 prompt_files.assert_not_called()
                 self.assertEqual(opened.call_count, 1)
                 saved = json.loads((out / "run.json").read_text())

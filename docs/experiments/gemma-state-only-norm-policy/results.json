@@ -683,7 +683,7 @@
       "norm_registry_kernels": 2,
       "norm_descriptor_bounds": 3,
       "selected_plan_binding": 3,
-      "initial_driver_failure": "Missing JITLLM_TEST_DATA for plan-control step; SIGABRT before completion, retained record",
+      "initial_driver_failure": "Missing LLMP_TEST_DATA for plan-control step; SIGABRT before completion, retained record",
       "narrow_plan_retry": "PASS, no source change",
       "full_suite": "Deferred by owner until selected performance work settles"
     },

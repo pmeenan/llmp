@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Compares the native per-linear sweep with upstream's (BP-N5, Tier E).
 
@@ -16,7 +16,7 @@ checks, and exits 1 unless all hold:
 - every case's input is the same, and every stage native hashed equals upstream's: the
   transformed input, the product, the output transform, the bias, and each reconstruction slice;
 - native's composed implementation (implementations.h) reproduces its steps;
-- for EXL3-O, jitLLM's copy of upstream's GEMV choice (upstream_gemv.h) picks, for every packed
+- for EXL3-O, llmpalooza's copy of upstream's GEMV choice (upstream_gemv.h) picks, for every packed
   case, what upstream launched: the GEMV at its configuration and grid, or the GEMM.
 Reference-only experiment tooling; the summary (per path and row count) is what the report
 records.
@@ -95,7 +95,7 @@ def main():
             problems.append(f"{case['id']}: stages differ {mismatched}, native only {extra}")
         else:
             row["exact"] += 1
-        # jitLLM's copy of upstream's GEMV choice (upstream_gemv.h) must pick what EXL3-O picked:
+        # Llmpalooza's copy of upstream's GEMV choice (upstream_gemv.h) must pick what EXL3-O picked:
         # the recorded configuration and grid where upstream launched the GEMV, and the GEMM
         # where it did not.
         if case["path"] == "packed" and ref["arm"] == "O":
@@ -107,7 +107,7 @@ def main():
             else:
                 expected = None
             if n.get("upstream_gemv") != expected:
-                problems.append(f"{case['id']}: jitLLM's GEMV choice {n.get('upstream_gemv')}, upstream's {expected}")
+                problems.append(f"{case['id']}: llmpalooza's GEMV choice {n.get('upstream_gemv')}, upstream's {expected}")
             else:
                 row["gemv_choice"] = row.get("gemv_choice", 0) + 1
         if n["composed_equal"]:

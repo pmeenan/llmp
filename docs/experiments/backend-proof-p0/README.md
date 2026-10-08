@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Backend proof P0: toolchain bridges and reference controls — 2026-09-25
@@ -16,13 +16,13 @@ challenge, a second pass added:
 This gives the numerical profiles, bounds and performance protocol a
 measured basis. They are [declared](../../backend-proof.md#p0-declarations)
 for the owner's approval, in parts, each before the native output it
-governs. No jitLLM inference code runs here. Every
+governs. No llmpalooza inference code runs here. Every
 harness is an external reference harness.
 
 **Results in brief.**
 
 - **The bridges reproduce the references exactly.**
-  - The FP16 reference rebuilt from its pinned source with jitLLM's SDK
+  - The FP16 reference rebuilt from its pinned source with llmpalooza's SDK
     (Clang 22.1.8, NVCC 13.4.92, cuBLAS 13.8.0.4) produces the same logits
     as the digest-pinned image, bit for bit. That holds for both
     trajectories, with fusion on and with fusion off.
@@ -88,7 +88,7 @@ harness is an external reference harness.
     by the harness on every run against that report's `pins.json`.
 - **References.**
   - llama.cpp: the digest-pinned image of [first-slice](../first-slice/pins.json).
-  - ExLlamaV3: `jitllm-exl3-reference:20260922` with the M0 source,
+  - ExLlamaV3: `llmp-exl3-reference:20260922` with the M0 source,
     patch and extension cache.
 - **Held-out IDs.**
   - 1,040 little-endian int64 token IDs from numpy 2.2.6
@@ -1074,7 +1074,7 @@ the llama.cpp source at `b29c606e2`.
     next `Function :` line, so the last function of each cubin also
     hashes the text `cuobjdump` prints before the next one: the `Fatbin`
     header and, in an archive, the `member` line with its path. That
-    hash depends on the container, not only the SASS. In jitLLM's
+    hash depends on the container, not only the SASS. In llmpalooza's
     locked build it changes three kernels' hashes between an object, its
     archive and a linked binary. None of the 14 GEMM kernels the launch
     record names is affected: the locked build reproduces all 14. The 12

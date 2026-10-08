@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Forced plans for the per-linear sweep (BP-N5), from upstream's frozen tuning caches.
 
-Reference-side experiment tooling for the backend proof's P3; it shares no code with jitLLM's
+Reference-side experiment tooling for the backend proof's P3; it shares no code with llmpalooza's
 planner or launchers.
 
   native_plan.py caches OUTDIR

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/runner_resources.h"
@@ -11,11 +11,11 @@
 #include "kernels/ggml/implementations.h"
 #include "providers/device_runtime.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 using base::Bytes;
 using support::Error;
 
@@ -115,4 +115,4 @@ void RunnerResources::Release(std::vector<std::string>& problems) {
   mapped_.clear();
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

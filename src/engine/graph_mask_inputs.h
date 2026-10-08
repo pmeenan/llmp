@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Shared causal/ring and noncausal block mask source contract for native GGML graph adapters.
-#ifndef JITLLM_ENGINE_GRAPH_MASK_INPUTS_H_
-#define JITLLM_ENGINE_GRAPH_MASK_INPUTS_H_
+#ifndef LLMP_ENGINE_GRAPH_MASK_INPUTS_H_
+#define LLMP_ENGINE_GRAPH_MASK_INPUTS_H_
 
 #include <algorithm>
 #include <cstdint>
@@ -14,9 +14,9 @@
 #include <vector>
 
 #include "engine/support.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 // Device masks are graph activations, never staged inputs. Authenticate the
 // complete producer before excluding its bytes from the host-input grant.
 inline std::expected<std::uint64_t, std::string> GraphMaskSourceBytes(
@@ -56,14 +56,13 @@ inline std::expected<std::uint64_t, std::string> GraphMaskSourceBytes(
       std::ranges::count(nodes, mask) != 1 || mask->src[0] != positions ||
       std::ranges::any_of(std::span(mask->src).subspan(1),
                           [](const auto* source) { return source != nullptr; }) ||
-      kg::JitllmOpInt(mask, 0) != static_cast<std::int64_t>(first_row) ||
-      kg::JitllmOpInt(mask, 1) != static_cast<std::int64_t>(rows) ||
-      kg::JitllmOpInt(mask, 2) != static_cast<std::int64_t>(capacity) ||
-      kg::JitllmOpInt(mask, 3) != static_cast<std::int64_t>(window) ||
-      kg::JitllmOpInt(mask, 4) != static_cast<std::int64_t>(context) ||
-      kg::JitllmOpInt(mask, 5) != static_cast<std::int32_t>(row_layout) ||
-      kg::JitllmOpInt(mask, 6) != static_cast<std::int32_t>(policy) ||
-      kg::JitllmOpInt(mask, 7) != 0)
+      kg::LlmpOpInt(mask, 0) != static_cast<std::int64_t>(first_row) ||
+      kg::LlmpOpInt(mask, 1) != static_cast<std::int64_t>(rows) ||
+      kg::LlmpOpInt(mask, 2) != static_cast<std::int64_t>(capacity) ||
+      kg::LlmpOpInt(mask, 3) != static_cast<std::int64_t>(window) ||
+      kg::LlmpOpInt(mask, 4) != static_cast<std::int64_t>(context) ||
+      kg::LlmpOpInt(mask, 5) != static_cast<std::int32_t>(row_layout) ||
+      kg::LlmpOpInt(mask, 6) != static_cast<std::int32_t>(policy) || kg::LlmpOpInt(mask, 7) != 0)
     return support::Error("device mask differs from its graph-owned position producer");
   return 0;
 }
@@ -77,5 +76,5 @@ inline void StageHostGraphMask(ggml_tensor* mask, std::span<const std::uint16_t>
   std::ranges::copy(logical, padded.begin());
   sources.emplace_back(mask, padded.data());
 }
-}  // namespace jitllm::engine
-#endif  // JITLLM_ENGINE_GRAPH_MASK_INPUTS_H_
+}  // namespace llmp::engine
+#endif  // LLMP_ENGINE_GRAPH_MASK_INPUTS_H_

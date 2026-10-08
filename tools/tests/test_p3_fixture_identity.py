@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Which EXL3 fixture an artifact or oracle is (docs/experiments/backend-proof-p3/fixture_identity.py).
 

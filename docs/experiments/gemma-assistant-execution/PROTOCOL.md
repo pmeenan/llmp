@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Bounded assistant component protocol
@@ -56,7 +56,7 @@ and exact admitted input hashes. Run the manual target through the installed
 supervisor, with a new output directory:
 
 ```sh
-jitllm_gemma_assistant_fixture STAGE0_DIR STAGE0_MANIFEST NEW_OUTPUT
+llmp_gemma_assistant_fixture STAGE0_DIR STAGE0_MANIFEST NEW_OUTPUT
 ```
 
 The helper owns separate cataloged mapped cache operands, pinned upload and
@@ -88,7 +88,7 @@ files owner-only and unchanged. The optional branch was compiled before the
 native endogenous freeze:
 
 ```sh
-jitllm_gemma_assistant_fixture STAGE0_DIR STAGE0_MANIFEST NEW_OUTPUT ORIGINAL_STEPS3
+llmp_gemma_assistant_fixture STAGE0_DIR STAGE0_MANIFEST NEW_OUTPUT ORIGINAL_STEPS3
 ```
 
 This supplies each original incoming feature/anchor independently, while
@@ -138,7 +138,7 @@ Job retirement; feature recurrence is separate from constant target P64.
 Run the unchanged one-step and three-step repeat controls using:
 
 ```sh
-jitllm_gemma_assistant_fixture --profile31 STAGE0_DIR STAGE0_MANIFEST NEW_OUTPUT
+llmp_gemma_assistant_fixture --profile31 STAGE0_DIR STAGE0_MANIFEST NEW_OUTPUT
 ```
 
 Freeze complete native heads/projections, cache witnesses and official successful

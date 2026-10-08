@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "dsv4_common.h"
@@ -12,7 +12,7 @@
 #include <string_view>
 #include <utility>
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 
 std::expected<std::vector<TokenLine>, std::string> ReadTokenLines(const std::filesystem::path& p) {
   std::ifstream file(p);
@@ -61,4 +61,4 @@ std::expected<void, std::string> WriteFloats(const std::filesystem::path& p,
   return {};
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks

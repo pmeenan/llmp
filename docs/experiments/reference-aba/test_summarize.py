@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Aggregation regressions using synthetic receipts outside the repository."""
 
@@ -14,7 +14,7 @@ import summarize as aggregator
 
 class SummaryTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="jitllm-summary-test-")
+        self.temp = tempfile.TemporaryDirectory(prefix="llmp-summary-test-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.pins = {"trace_sha256": "trace", "image": "image", "swap_allowance_bytes": 256 << 20}

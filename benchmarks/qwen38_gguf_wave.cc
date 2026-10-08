@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Fixed-history GGUF wave qualification: every target logit and final state
@@ -29,7 +29,7 @@
 #include "engine/support.h"
 
 namespace {
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 using en::support::Error;
 using Slot = en::Qwen38Runner::Slot;
 constexpr std::size_t kSteps = 32;
@@ -42,10 +42,10 @@ std::string StateHash(Slot& slot, en::Status& status) {
   if (!status) {
     return {};
   }
-  jitllm::base::Sha256 sha;
+  llmp::base::Sha256 sha;
   sha.Update(target);
   sha.Update(draft);
-  return jitllm::base::ToHex(sha.Finish());
+  return llmp::base::ToHex(sha.Finish());
 }
 
 std::int32_t Argmax(std::span<const float> row) {
@@ -75,8 +75,8 @@ en::Status Check(en::PagedNode& node, en::Qwen38Runner& runner, const Histories&
     slots[i] = *slot;
   }
   std::uint64_t identical = 0;
-  jitllm::base::Sha256 wave_logits;
-  jitllm::base::Sha256 wave_states;
+  llmp::base::Sha256 wave_logits;
+  llmp::base::Sha256 wave_states;
   for (const bool long_context : {false, true}) {
     Histories histories = prompts;
     if (long_context) {
@@ -225,8 +225,7 @@ en::Status Check(en::PagedNode& node, en::Qwen38Runner& runner, const Histories&
       read_align == 256 ? "scalar" : "unpaired-wave", read_align, identical, graphs.captured,
       graphs.replayed, runner.coverage_violations());
   std::println("wave_logits_sha256={} wave_states_sha256={}",
-               jitllm::base::ToHex(wave_logits.Finish()),
-               jitllm::base::ToHex(wave_states.Finish()));
+               llmp::base::ToHex(wave_logits.Finish()), llmp::base::ToHex(wave_states.Finish()));
   return runner.coverage_violations() == 0 ? en::Status{} : Error("GGUF coverage violation");
 }
 }  // namespace
@@ -235,7 +234,7 @@ int main(int argc, char** argv) {
   if (argc < 4 || argc > 6) {
     std::println(
         stderr,
-        "usage: jitllm_qwen38_gguf_wave ARTIFACT PROMPTS.tsv NEW_STATE_DIR [256|2048] [on|off]");
+        "usage: llmp_qwen38_gguf_wave ARTIFACT PROMPTS.tsv NEW_STATE_DIR [256|2048] [on|off]");
     return 2;
   }
   const std::string_view alignment = argc >= 5 ? argv[4] : "2048";
@@ -294,7 +293,7 @@ int main(int argc, char** argv) {
         !workspace) {
       return workspace;
     }
-    if (auto started = node.Start(jitllm::base::Bytes(std::uint64_t{100} << 30)); !started) {
+    if (auto started = node.Start(llmp::base::Bytes(std::uint64_t{100} << 30)); !started) {
       return started;
     }
     if (auto registered = runner.Register(); !registered) {

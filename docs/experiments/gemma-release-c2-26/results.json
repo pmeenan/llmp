@@ -5,16 +5,16 @@
     "base": "80f4cb0",
     "owned_source3": {
       "docs/experiments/gemma-release-c2-26/PROTOCOL.md": {
-        "bytes": 9530,
-        "sha256": "90bc9de1ee1cb8f457f2324c8ef1e05ff57be8925fcd06d35da15d2f87f3c286"
+        "bytes": 9534,
+        "sha256": "dadb2ff8e6b1df3b06f798e6b6efc57c47016ba0ee019db3538f67e49e747b19"
       },
       "docs/experiments/gemma-release-c2-26/analyze.py": {
-        "bytes": 21013,
-        "sha256": "9c2b66c1f9b7e2f43f7c9daa294ca4e566b641c2c38438e859db477e8ae6b164"
+        "bytes": 21015,
+        "sha256": "a75ef22fd4c2569405751aa8e61fb1003e9e3186d5d712b3421c521073e4b8ca"
       },
       "docs/experiments/gemma-release-c2-26/run.sh": {
-        "bytes": 3279,
-        "sha256": "7864e48cb77b570781bcea5cd5080cdda9249fd59180ac2b30929ee23036deb6"
+        "bytes": 3243,
+        "sha256": "cc206a6f14a241f619be9832d723ad5b534785a28f110ee21523aac117f76b49"
       }
     },
     "source_ready_sha256": "3f3a5ae469b495c5095927ce66ae295f35702fda17e0f88508477c40d7634506",
@@ -22,24 +22,24 @@
     "runtime_source_sha256": "dc8572fe4099b6b4ce44ec2ed88da18bf6a15cada42d1c7be0dbccdc159af807",
     "preparation_sha256": "66f32533f92086c541087d27d9b9c7a72f0d7c5242d6045c5c12396d37e92ac1",
     "native_helper": {
-      "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/native1",
+      "path": "/home/pmeenan/.local/share/llmp/ggml-release-refresh/native1",
       "bytes": 149501192,
       "sha256": "0d6d09520a9c0a68f0eda4501a13f47c8c5a926a7a9b5bb1c903bf8d114a986f"
     },
     "native_receipts": {
       "measured": {
-        "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/jitllm-receipt1.json",
+        "path": "/home/pmeenan/.local/share/llmp/ggml-release-refresh/llmp-receipt1.json",
         "sha256": "7d8f18471d978ffe038341acc7deca9a0105166bc3d0e44dc79357f661e83204"
       },
       "canonical": {
-        "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/jitllm-receipt-final5.json",
+        "path": "/home/pmeenan/.local/share/llmp/ggml-release-refresh/llmp-receipt-final5.json",
         "sha256": "5ab70ad50b7146dbe5fc025fee9ba761e8de670331e956a50f658c4cc93a8bed"
       },
       "measured_source_lock_sha256": "80d92ad1b38e6e4b1c021297a20acad91abca12d5a80c9248e9dc986df6c3d46",
       "canonical_source_lock_sha256": "5d33f395b2699cb5e929dd3003e4aed4e44f513d7b83cf5dea906e42dbe19ff2"
     },
     "public_helper": {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma-release-c2-26/llama-c2",
+      "path": "/home/pmeenan/.local/share/llmp/gemma-release-c2-26/llama-c2",
       "bytes": 1871120,
       "sha256": "a3122de5245d4008966e87130a98d48cd475c68387a2c40b1b3107e63d4744c5"
     },
@@ -53,7 +53,7 @@
     "llama_build": "b11429",
     "image_manifest": "c604ea4f1c2e8d5c8b27d89fef727384d59e23c5b07e369cde5393820e0607db",
     "closure": {
-      "path": "/home/pmeenan/.local/share/jitllm/llama-reference-v060/image-closure1/receipt.json",
+      "path": "/home/pmeenan/.local/share/llmp/llama-reference-v060/image-closure1/receipt.json",
       "sha256": "63ccae40a696fb574bedf1145a75f9576a0f7914efbd8081fc6b085babe3cf64"
     },
     "native_build_version": "0.1.0-dev+unknown; exact source/operands independently authenticated",
@@ -68,7 +68,7 @@
     "prefill_rows": 992,
     "forced_rows": 32,
     "raw_model": {
-      "path": "/home/pmeenan/.local/share/jitllm/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+      "path": "/home/pmeenan/.local/share/llmp/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
       "bytes": 16947541728,
       "sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f",
       "scope": "Inherited approved checkpoint SHA, current regular-file filename/size checked; no whole payload rescan"

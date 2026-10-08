@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "providers/cuda/cuda_device_memory.h"
@@ -19,7 +19,7 @@
 #include "providers/cuda/cuda_errors.h"
 #include "providers/device_memory.h"
 
-namespace jitllm::providers::cuda {
+namespace llmp::providers::cuda {
 namespace {
 
 CUmemLocation Location(const AllocationClass& allocation_class) {
@@ -211,4 +211,4 @@ std::expected<std::unique_ptr<VmmProvider>, Failure> OpenDeviceMemory(int ordina
   return std::make_unique<CudaDeviceMemory>(device, context, std::move(classes), Bytes(common));
 }
 
-}  // namespace jitllm::providers::cuda
+}  // namespace llmp::providers::cuda

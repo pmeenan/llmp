@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Current Qwen four-slot conditional oracle qualification
@@ -127,7 +127,7 @@ particular measured TV result. No new distribution pass is inferred.
 | Prompt LE I32 IDs | `306136a7dc2a5f66c94cbf4ac874e9011c0af79b79072731407a144bfba1fbd5` |
 | Retained reference complete rows | `18a76456b1277a1c148c7bda3003472b773fe9a4ed39e4875cf5bd5cb80df8b2` |
 | Retained reference original summary | `a10c9616a88ff8ed1d1236a7f70e915937b3f67d3ce749a4f84832a7a9e464e0` |
-| Unchanged judge | `115ea29757c8c682b30d6fd418afe71ba081bc528c2b9f77b90562e978b7e854` |
+| Unchanged judge | `0919f64a78e1637f3935a4ff39011f2eb8f68a7b2a05560395214c287f257ef0` |
 | External driver source | `c4741dc87735197d6bb8f7e3bc85667e2456c5bb1aca7fc66d096d31465640e2` |
 | External executable | `a8375282f8d327d9679e0dd7a74f6d69495a7432e842964ae05c621686f2863d` |
 | 491-file source inventory | `54e6cd8f0106d072c90ef98a546afcabb950fdf2c1d363e599049cced97c01d2` |
@@ -142,7 +142,7 @@ The analysis image is
 Raw rows, initialized-state hashes/byte counts, traces, helpers, source/archive/library pins
 and receipts remain outside Git on Spark B under
 `~/scratch/qwen-concurrent-oracle/`; small local evidence is under
-`~/scratch/jitllm-m3-qwen-concurrent-oracle-2026-10-04/`.
+`~/scratch/llmp-m3-qwen-concurrent-oracle-2026-10-04/`.
 The fixed oracle/reference stay in their retained `m3lc`/`m3lc2` locations.
 
 Installed GPU-supervised jobs, each timeout 600 and completed/waited zero:

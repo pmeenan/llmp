@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The deterministic device-memory fake (docs/architecture.md#providers):
@@ -11,7 +11,7 @@
 //   - Mapping maps that file at the address with no access; SetAccess
 //     grants it; Unmap puts the reservation's no-access hole back.
 // Every allocation class is served from host memory: the fake proves
-// jitLLM's logic, not GPU placement or performance. Tests can make the
+// llmpalooza's logic, not GPU placement or performance. Tests can make the
 // next call of an operation fail with a chosen error.
 //
 // An address-only fake (Contents::kNone) keeps the shared rules, the
@@ -20,8 +20,8 @@
 // touching any of it faults. It is for replays that count provider calls
 // at real scale and never touch contents (the retained-backing replay).
 
-#ifndef JITLLM_PROVIDERS_FAKE_FAKE_DEVICE_MEMORY_H_
-#define JITLLM_PROVIDERS_FAKE_FAKE_DEVICE_MEMORY_H_
+#ifndef LLMP_PROVIDERS_FAKE_FAKE_DEVICE_MEMORY_H_
+#define LLMP_PROVIDERS_FAKE_FAKE_DEVICE_MEMORY_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -34,7 +34,7 @@
 #include "base/bytes.h"
 #include "providers/device_memory.h"
 
-namespace jitllm::providers::fake {
+namespace llmp::providers::fake {
 
 // The byte every fresh or released backing is filled with.
 inline constexpr std::byte kPoison{0xa5};
@@ -108,6 +108,6 @@ class FakeDeviceMemory final : public VmmProvider {
   std::map<Handle, Bytes> files_;
 };
 
-}  // namespace jitllm::providers::fake
+}  // namespace llmp::providers::fake
 
-#endif  // JITLLM_PROVIDERS_FAKE_FAKE_DEVICE_MEMORY_H_
+#endif  // LLMP_PROVIDERS_FAKE_FAKE_DEVICE_MEMORY_H_

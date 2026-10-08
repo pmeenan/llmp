@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """The EXL3 plan gate's comparator (docs/experiments/backend-proof-p3/op_plan_compare.py), no GPU needed.
 

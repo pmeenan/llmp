@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 adaptive-depth and MXFP8 crossover — 2026-09-30
@@ -214,4 +214,4 @@ Replay the external executable with
 The archived original source and parser-only adaptation, exact build
 commands, source/library pins, generated-input recipe, raw output and
 supervised receipts remain outside Git at `spark:~/scratch/mxfp8-twelve-tc/`
-and `/home/pmeenan/scratch/jitllm-m3-qwen-mxfp8-twelve-tc-2026-10-04/` locally.
+and `/home/pmeenan/scratch/llmp-m3-qwen-mxfp8-twelve-tc-2026-10-04/` locally.

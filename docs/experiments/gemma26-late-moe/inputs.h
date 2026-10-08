@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-#ifndef JITLLM_BENCHMARK_GEMMA26_LATE_MOE_INPUTS_H_
-#define JITLLM_BENCHMARK_GEMMA26_LATE_MOE_INPUTS_H_
+#ifndef LLMP_BENCHMARK_GEMMA26_LATE_MOE_INPUTS_H_
+#define LLMP_BENCHMARK_GEMMA26_LATE_MOE_INPUTS_H_
 #include <unistd.h>
 
 #include <array>
@@ -23,7 +23,7 @@ namespace late_moe {
 static_assert(std::endian::native == std::endian::little && sizeof(float) == 4);
 inline constexpr std::uint64_t kHostAllowance = 64U << 20U;
 inline std::string Hash(std::span<const std::byte> data) {
-  return jitllm::base::ToHex(jitllm::base::Sha256().Update(data).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256().Update(data).Finish());
 }
 inline bool Hex(std::string_view text) {
   return text.size() == 64 && text.find_first_not_of("0123456789abcdef") == text.npos;

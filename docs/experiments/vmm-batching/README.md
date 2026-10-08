@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # VMM call costs, batching, the lazy handoff and the handle reserve — 2026-10-07
@@ -14,7 +14,7 @@ reserve slice `zero_state` and `handle_reserve`).
 
 `spark-b`, NVIDIA GB10, driver API 13000 (driver 580.178.04), pinned SDK
 `aarch64-c09daba6ac31edee` (clang++ and CUDA 13.4 headers, linked against the
-driver stub), binary `6b980b41…`, source `1ee321a6…`; seven rounds a case,
+driver stub), binary `6b980b41…`, source `a1be05fe…`; seven rounds a case,
 medians, two runs (the second's figures in parentheses where they differ by
 more than a few percent). Per 2 MiB extent, µs:
 
@@ -153,6 +153,6 @@ current chunk's device run would hide the rest. A swap still evicts the
 outgoing model whole; evicting only what the incoming model needs would let
 a return skip re-reading what stayed.
 
-Raw outputs stay outside Git under `spark-b` `~/.local/share/jitllm/vmm-batching1`,
+Raw outputs stay outside Git under `spark-b` `~/.local/share/llmp/vmm-batching1`,
 `~/scratch/pager-overlap1` and `~/scratch/pager-reserve1`, and `spark`
-`~/.local/share/jitllm/g3gap-pager1`.
+`~/.local/share/llmp/g3gap-pager1`.

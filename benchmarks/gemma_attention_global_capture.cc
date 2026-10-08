@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // ARTIFACT OUTPUT_DIR 31 4 joined norm IDS_I32 capture|control
@@ -26,7 +26,7 @@
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
   umask(0077);
@@ -68,7 +68,7 @@ int main(int argc, char** argv) {
     en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
     std::unique_ptr<en::Gemma4Runner> runner;
     std::vector<en::PagedModel*> entered;
-    jitllm::benchmark::GemmaAttentionGlobalCapture capture;
+    llmp::benchmark::GemmaAttentionGlobalCapture capture;
     bool metadata_charged = false;
   };
   auto lifetime = std::make_unique<Lifetime>();
@@ -90,13 +90,13 @@ int main(int argc, char** argv) {
   auto& runner = *lifetime->runner;
   const auto execute = [&]() -> en::Status {
     if (auto r = node.Open(); !r) return r;
-    constexpr auto metadata_bytes = jitllm::benchmark::GemmaAttentionGlobalCapture::kHostBytes;
+    constexpr auto metadata_bytes = llmp::benchmark::GemmaAttentionGlobalCapture::kHostBytes;
     if (!node.ChargeHost(metadata_bytes, false)) return Error("capture metadata funding refused");
     lifetime->metadata_charged = true;
     // Metadata and pinned snapshot descriptors outlive execute(). Keep the
     // host charge with the complete bundle until teardown proves retirement.
     if (auto r = lifetime->capture.Setup(node, witness_mode == "capture"); !r) return r;
-    jitllm::benchmark::GemmaAttentionGlobalCapture::active = &lifetime->capture;
+    llmp::benchmark::GemmaAttentionGlobalCapture::active = &lifetime->capture;
     lifetime->entered.push_back(&runner);
     if (auto r = runner.Setup(); !r) return r;
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
@@ -107,7 +107,7 @@ int main(int argc, char** argv) {
                         2 * node.StateCapacity() + heap + metadata_bytes;
     node.SetHostFloor(runner.plan_floor_bytes() + runner.host_input_bytes() + heap +
                       metadata_bytes);
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();
@@ -254,9 +254,9 @@ int main(int argc, char** argv) {
     std::ignore = lifetime.release();
   }
   if (retired) {
-    jitllm::benchmark::GemmaAttentionGlobalCapture::active = nullptr;
+    llmp::benchmark::GemmaAttentionGlobalCapture::active = nullptr;
     if (lifetime->metadata_charged) {
-      node.UnchargeHost(jitllm::benchmark::GemmaAttentionGlobalCapture::kHostBytes);
+      node.UnchargeHost(llmp::benchmark::GemmaAttentionGlobalCapture::kHostBytes);
       lifetime->metadata_charged = false;
     }
   }

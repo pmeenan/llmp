@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // D-048's lane measurements (docs/m2-record.md, "Task lanes"): how quickly a
@@ -28,16 +28,16 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
-using jitllm::base::PushResult;
-using jitllm::base::WakeFlag;
-using jitllm::scheduler::Acceptance;
-using jitllm::scheduler::CompletionBoard;
-using jitllm::scheduler::Lane;
-using jitllm::scheduler::LaneSettings;
-using jitllm::scheduler::Observation;
-using jitllm::scheduler::OperationId;
-using jitllm::scheduler::Outcome;
-using jitllm::scheduler::Terminal;
+using llmp::base::PushResult;
+using llmp::base::WakeFlag;
+using llmp::scheduler::Acceptance;
+using llmp::scheduler::CompletionBoard;
+using llmp::scheduler::Lane;
+using llmp::scheduler::LaneSettings;
+using llmp::scheduler::Observation;
+using llmp::scheduler::OperationId;
+using llmp::scheduler::Outcome;
+using llmp::scheduler::Terminal;
 
 std::int64_t Nanos(Clock::time_point t) {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count();

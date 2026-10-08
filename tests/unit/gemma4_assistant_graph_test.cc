@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include "kernels/ggml/gemma4_assistant_graph.h"
 
@@ -10,9 +10,9 @@
 #include "gemma4_assistant_fixture.h"
 
 namespace {
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
-namespace fixture = jitllm::test_support::gemma4;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
+namespace fixture = llmp::test_support::gemma4;
 struct Case {
   const md::Gemma4Profile& target;
   const md::Gemma4AssistantProfile& profile;

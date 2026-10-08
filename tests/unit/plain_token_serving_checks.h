@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -14,7 +14,7 @@
 #include "base/sha256.h"
 #include "runtime/serving.h"
 
-namespace jitllm::test {
+namespace llmp::test {
 // Actual adapter oracle shared by the small-family and paged-LLM fixtures.
 // StateHash observes every initialized range; TokenCount comes from the runner,
 // rather than the requested serving option. All host observations are funded.
@@ -200,4 +200,4 @@ runtime::Status CheckPlainServing(runtime::Server& server, runtime::Llm& model, 
   }
   return {};
 }
-}  // namespace jitllm::test
+}  // namespace llmp::test

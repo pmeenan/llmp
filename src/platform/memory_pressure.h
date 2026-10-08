@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Pressure on the host's memory from outside the runtime (D-004: a Spark's
@@ -9,14 +9,14 @@
 // amended 2026-10-02); and the C library's free heap returned to the
 // system once plans are dropped.
 
-#ifndef JITLLM_PLATFORM_MEMORY_PRESSURE_H_
-#define JITLLM_PLATFORM_MEMORY_PRESSURE_H_
+#ifndef LLMP_PLATFORM_MEMORY_PRESSURE_H_
+#define LLMP_PLATFORM_MEMORY_PRESSURE_H_
 
 #include <cstdint>
 #include <optional>
 #include <string_view>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 // One line of a pressure file: the share of the last 10 seconds in which
 // some (or all) tasks stalled on memory, in percent.
@@ -41,6 +41,6 @@ MemoryPressure ReadMemoryPressure();
 // malloc_trim): freed plans' memory then shows as available again.
 void ReleaseFreeHeap();
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_MEMORY_PRESSURE_H_
+#endif  // LLMP_PLATFORM_MEMORY_PRESSURE_H_

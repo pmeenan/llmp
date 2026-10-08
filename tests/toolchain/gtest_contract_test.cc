@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The test-framework contract (D-059, D-066): GoogleTest 1.18.0 and gMock,
 // built from the source lock (D-057) without exceptions, run the features
-// jitLLM's tests use, in every profile, death tests of libstdc++'s
+// llmpalooza's tests use, in every profile, death tests of libstdc++'s
 // assertions (D-083) where the preset has them. NegativeControl.DISABLED_Fails runs
 // only when asked for, to show that a failure fails the run
 // (check_gtest_failure.cmake).
@@ -29,7 +29,7 @@
 
 namespace {
 
-using jitllm::test_support::Failed;
+using llmp::test_support::Failed;
 
 struct Bytes {
   std::uint64_t value{};

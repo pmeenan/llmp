@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "artifact/json.h"
@@ -17,7 +17,7 @@
 #include "artifact/error.h"
 #include "base/check.h"
 
-namespace jitllm::artifact::json {
+namespace llmp::artifact::json {
 
 Kind Value::kind() const { return document_->nodes_[node_].kind; }
 
@@ -448,4 +448,4 @@ void Serialize(Value v, std::string& out) {
   }
 }
 
-}  // namespace jitllm::artifact::json
+}  // namespace llmp::artifact::json

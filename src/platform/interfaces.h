@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The node's network identity for its listeners (D-097): the addresses its
@@ -8,8 +8,8 @@
 // particular, the tailnet is found from its interface, not the tailscale
 // CLI.
 
-#ifndef JITLLM_PLATFORM_INTERFACES_H_
-#define JITLLM_PLATFORM_INTERFACES_H_
+#ifndef LLMP_PLATFORM_INTERFACES_H_
+#define LLMP_PLATFORM_INTERFACES_H_
 
 #include <array>
 #include <chrono>
@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 struct InterfaceAddress {
   std::string interface;  // "lo", "tailscale0", ...
@@ -52,6 +52,6 @@ std::string HostName();
 // the hard limit allows; the soft limit afterwards.
 std::uint64_t RaiseOpenFileLimit(std::uint64_t want);
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_INTERFACES_H_
+#endif  // LLMP_PLATFORM_INTERFACES_H_

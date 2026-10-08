@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Host-VMM diagnosis: why BP-F1's products slowed, and what each option costs — 2026-09-27
@@ -20,7 +20,7 @@ does not choose for D-034.
   8,388,608 L2 read sectors hit, and it runs at 1,952 GB/s. With host VMM,
   every sector misses (0 hits), and it runs at 243 GB/s, the DRAM rate. The
   pattern is the same for every host-located CUDA allocation:
-  `cuMemCreate` at `HOST_NUMA` (jitLLM's provider) or `HOST`, mapped for
+  `cuMemCreate` at `HOST_NUMA` (llmpalooza's provider) or `HOST`, mapped for
   the GPU alone or for the CPU too, in one handle or in 2 MiB handles, and
   `cudaMallocHost`. The GB10 is integrated (`CU_DEVICE_ATTRIBUTE_INTEGRATED`
   = 1), so to L2 every allocation, `cudaMalloc` included, is in the
@@ -55,7 +55,7 @@ does not choose for D-034.
   else in device VMM: the sum of the covered kernels per token is 1.00× at
   1 and 16 rows and 1.49× at 512 rows. (B) A host-VMM landing zone copied
   into device VMM: the kernels run at `cudaMalloc` speed. A restore through
-  jitLLM's io_uring provider runs at 14.92–14.95 GB/s, against 14.96 GB/s
+  llmpalooza's io_uring provider runs at 14.92–14.95 GB/s, against 14.96 GB/s
   in place, and each 2 MiB extent is usable 29–39 µs later at the median.
   (C) Ordinary memory read through ATS (huge-page-backed, registered): L2
   does keep its lines, but its streaming read tops out at 165 GB/s.
@@ -90,16 +90,16 @@ does not choose for D-034.
   Compute 2025.3.1 (the Spark's `/usr/local/cuda/bin/ncu`), run as root
   because the driver has `RmProfilingAdminOnly=1`. These are counts; ncu
   serializes kernels, so its durations are not the timings reported.
-- **Binary.** `jitllm_vmm_diag_bench` from the `cross` preset, SDK
+- **Binary.** `llmp_vmm_diag_bench` from the `cross` preset, SDK
   `x86_64-e0a0c85c42806fb1`, SHA-256 `9e26330a…`, beside the pinned cuBLAS
   13.8.0.4 (`libcublas.so.13` `ee7c1657…`, `libcublasLt.so.13` `ba3b942f…`).
   Sources: commit `d3b4f2ab` plus this directory's uncommitted work;
   [`../../../benchmarks/vmm_diag_bench.cc`](../../../benchmarks/vmm_diag_bench.cc)
-  `4eab72c9…`, `vmm_diag_kernels.cu` `568c046c…`, `vmm_diag_kernels.h`
-  `f81c751c…`. The session's manifest records all of these, and
+  `4eab72c9…`, `vmm_diag_kernels.cu` `10778874…`, `vmm_diag_kernels.h`
+  `a5457b6a…`. The session's manifest records all of these, and
   [`diag-results.json`](diag-results.json) holds every aggregate below.
   Raw CSVs, logs and ncu output stay outside Git, on `spark` in
-  `~/.local/share/jitllm/hostvmm-diag-20260927/raw/` (`s1`, `s2`, `ncu2`).
+  `~/.local/share/llmp/hostvmm-diag-20260927/raw/` (`s1`, `s2`, `ncu2`).
 
 ## Method
 
@@ -109,8 +109,8 @@ The benchmark allocates each buffer as one of these **memory arms**:
 | --- | --- |
 | `malloc` | `cudaMalloc` |
 | `dvmm` | `cuMemCreate` at the device, mapped for the device |
-| `hvmm` | `cuMemCreate` at `HOST_NUMA` 0, one handle, mapped read-write for the device and the CPU: what jitLLM's CUDA provider does |
-| `hvmm-jit` | the same through jitLLM's `VmmProvider` itself |
+| `hvmm` | `cuMemCreate` at `HOST_NUMA` 0, one handle, mapped read-write for the device and the CPU: what llmpalooza's CUDA provider does |
+| `hvmm-jit` | the same through llmpalooza's `VmmProvider` itself |
 | `hvmm-gpu` | host-NUMA backing mapped for the device only |
 | `hvmm-2m` | host-NUMA backing in 2 MiB handles, the pager's extent size |
 | `hvmm-host` | `CU_MEM_LOCATION_TYPE_HOST` backing |
@@ -149,7 +149,7 @@ the same bytes as a buffered read (`info`).
   copy engine) or by a 16-byte SM copy kernel. Sizes are 2 MiB (successive
   extents through the buffer), 64 MiB and 1 GiB, with ten samples after two
   warm-ups, in each of three processes.
-- **Restores** (`restore`): jitLLM's `UringStorage` reads an unnamed 8 GiB
+- **Restores** (`restore`): llmpalooza's `UringStorage` reads an unnamed 8 GiB
   `O_DIRECT` file on the root NVMe in 2 MiB extents, with two or four
   reads in flight. The reads go either in place into `hvmm` (D-034's path)
   or into a landing zone of 2 × depth 2 MiB `hvmm` slots. When a read
@@ -162,8 +162,8 @@ the same bytes as a buffered read (`info`).
   the implementation its recorded plan chose. They are the Qwen2.5-0.5B
   projections at 1, 16 and 512 rows (MMVF, MMF, cuBLAS) and attention's KQ
   and KQV. For attention, the "weights" operand is the F16 KV cache. The
-  products run through jitLLM's launch context and cuBLAS handle on
-  jitLLM's provider stream. Each buffer group is placed separately:
+  products run through llmpalooza's launch context and cuBLAS handle on
+  llmpalooza's provider stream. Each buffer group is placed separately:
   weights or KV cache (W), inputs and outputs (A, or inputs A and outputs
   O when split), GGML's scratch (S) and the 32 MiB cuBLAS workspace (K).
   Rings rotate as BP-F1's do: more sets than fit four times in L2, per
@@ -313,7 +313,7 @@ These sums are **derived** from the medians above, not a measured token.
 Per layer they add two `q_o`, two `k_v`, two `gate_up`, one `down`, one KQ
 and one KQV, over Qwen2.5-0.5B's 24 layers, plus one output head. The
 attention products are the measured ones: 768 cache cells at 1 and 512
-rows, 256 at 16. They exclude every operation jitLLM does not have yet
+rows, 256 at 16. They exclude every operation llmpalooza does not have yet
 (RoPE, softmax, norms, SiLU, copies). `summarize.py` prints this table.
 
 | Placement | 1 row, µs | 16 rows | 512 rows |
@@ -349,7 +349,7 @@ but it uses the SMs.
 
 ### Restores
 
-8 GiB in 2 MiB direct reads through jitLLM's io_uring provider:
+8 GiB in 2 MiB direct reads through llmpalooza's io_uring provider:
 
 | Path | In flight | GB/s | p50 µs | p99 µs |
 | --- | ---: | ---: | ---: | ---: |
@@ -477,7 +477,7 @@ Not available on this platform, as measured:
   aperture) cannot be seen from user space, and this work did not search
   NVIDIA's documentation for it. Whether a driver setting changes it is
   unknown.
-- **Kernels only.** The per-token figures are sums of the kernels jitLLM
+- **Kernels only.** The per-token figures are sums of the kernels llmpalooza
   has, at one model's shapes. Real steps add operations and overlap. No
   quantized kernel (EXL3, GGML quants) was measured; their tile reuse will
   differ.
@@ -502,7 +502,7 @@ the SDK's cuBLAS, as the BP-F1 harness is:
 mise run build -- cross
 ssh spark 'mkdir -p ~/diag/{benchmarks,cublas}'
 rsync -aL build/cross/cublas/ spark:diag/cublas/
-rsync -a build/cross/benchmarks/jitllm_vmm_diag_bench spark:diag/benchmarks/
+rsync -a build/cross/benchmarks/llmp_vmm_diag_bench spark:diag/benchmarks/
 scp docs/experiments/host-vmm-diagnosis/{diag_session.py,ncu_counters.sh} spark:diag/
 ```
 
@@ -511,9 +511,9 @@ the SSD for the restore's unnamed 8 GiB file:
 
 ```bash
 cd ~/diag && mkdir -p scratch && head -c 67108864 /dev/urandom > scratch/dio-64m.bin
-python3 -B diag_session.py raw/s2 --bench benchmarks/jitllm_vmm_diag_bench --repeats 3 \
+python3 -B diag_session.py raw/s2 --bench benchmarks/llmp_vmm_diag_bench --repeats 3 \
   --file scratch/dio-64m.bin --dir scratch --note '…'
-bash ncu_counters.sh benchmarks/jitllm_vmm_diag_bench raw/ncu2
+bash ncu_counters.sh benchmarks/llmp_vmm_diag_bench raw/ncu2
 ```
 
 Then, on the workstation, with the raw directories copied back:

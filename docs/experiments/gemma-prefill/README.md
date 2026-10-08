@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma 26 paid 8K prefill screen
@@ -91,10 +91,10 @@ No production runner or pager behavior changed.
 | --- | --- |
 | Corrected native harness | `5507395cc99b4688e15b5c5f0895fd56eab9463d096a9ea7c9c39c4ea8286015` |
 | Native executable | `7f197eacfebf758d163ed2bcbf2a92339a57f62cd37deeedd852baa4e9be2eac` |
-| Reference harness | `0e7092d7163d98f109cd7a5fb99b922cedfefe28f3da9632bb95f8cef13403ba` |
+| Reference harness | `ae4a5ee25e9a77a9305e7c2c127d984622e372e31f09adcfdc1ebbaf4095b3de` |
 | Reference executable | `bd2dd3aca6e1eeac227f18a3af6099c7a3a8631be7aae27206eb0bac50b28e56` |
 
-Native invocation is `jitllm_gemma_prefill ARTIFACT IDS_I32 NEW_OUTPUT_DIR`.
+Native invocation is `llmp_gemma_prefill ARTIFACT IDS_I32 NEW_OUTPUT_DIR`.
 Reference invocation is `llama_prefill RAW_GGUF IDS_I32 NEW_OUTPUT_DIR
 screen UBATCH`, with fusion/graph disable variables absent; `prepare`
 produces the shared prefix from the full corpus. Both output full F32

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // DeepSeek V4 Flash's chunk planning (docs/experiments/dsv4-native/,
@@ -9,8 +9,8 @@
 // plans over cudaMalloc; and each chunk's host-built inputs. CUDA builds
 // only.
 
-#ifndef JITLLM_ENGINE_DSV4_PLAN_H_
-#define JITLLM_ENGINE_DSV4_PLAN_H_
+#ifndef LLMP_ENGINE_DSV4_PLAN_H_
+#define LLMP_ENGINE_DSV4_PLAN_H_
 
 #include <array>
 #include <cstddef>
@@ -34,7 +34,7 @@
 #include "model/dspark.h"
 #include "model/dsv4.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 // Allocation-free shape prediction; compressor dimensions share the actual
 // input builder's checked geometry. The caller supplies its actual head policy.
@@ -64,7 +64,7 @@ struct Dsv4Model {
   // The reference mode (the owner's policy, 2026-09-28: speed first): the
   // graph node for node as llama.cpp builds it, planned unfused, so its
   // logits equal llama.cpp's with fusion off bit for bit, and a verify's
-  // row-invariant plan (D-092). Off (the default): jitLLM's fused plan and
+  // row-invariant plan (D-092). Off (the default): llmpalooza's fused plan and
   // a batched verify, judged coarsely against llama.cpp.
   bool exact = false;
   // The output-A/HCA prefill combination on full 4,096-row chunks (the
@@ -303,6 +303,6 @@ std::expected<void, std::string> BuildDsparkWaveInputs(
 // equals (as the harnesses and llama.cpp's greedy sampler choose).
 std::int32_t Argmax(std::span<const float> row);
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_DSV4_PLAN_H_
+#endif  // LLMP_ENGINE_DSV4_PLAN_H_

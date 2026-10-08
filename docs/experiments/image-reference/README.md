@@ -1,9 +1,9 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen-Image-2.1 reference experiment
 
-This is an external reference experiment on `spark`, not native jitLLM image
+This is an external reference experiment on `spark`, not native llmpalooza image
 support or evidence that GGML can execute this pipeline. The checkpoint and
 reference implementation were inspected on 2026-09-22. Measurements and their
 limits are recorded below; raw images, traces, logs, and state stay outside Git.
@@ -100,7 +100,7 @@ control with `cache_prompt=False`, and its comparison to resident tokens is
 reported separately. Restore must process only the suffix and at most one cached
 tail token. This deliberately does not generalize past Gemma's known
 long-context rollback/coverage failure (RE-007). There is no forced physical
-pressure, partial eviction, or claim of jitLLM's eventual switching speed.
+pressure, partial eviction, or claim of llmpalooza's eventual switching speed.
 The outward measurement includes image-process startup and checkpoint hash
 verification, model loading and image generation; it is not a serving API
 latency. The restore arm also includes a fresh durable text-state save.
@@ -214,7 +214,7 @@ combination at larger resolution.
 
 Outward timings include verification/import overhead and have highly variable
 device-placement cost. They are not an isolated retention-policy speedup or
-an acceptance floor for jitLLM. There is no cold-cache or forced-displacement
+an acceptance floor for llmpalooza. There is no cold-cache or forced-displacement
 control, latency distribution, or larger-than-memory image workload here.
 The bounded result establishes a standalone reference and useful release
 boundaries; native image backend/API scope and delivery milestones remain
@@ -227,7 +227,7 @@ limits use to non-commercial research/evaluation; commercial use requires a
 separate license. This work is scoped to local reference evaluation. The
 checkpoint is external benchmark input, not an Apache-2.0 implementation
 dependency or a supported redistribution. No weights or upstream model code
-are copied into jitLLM. Redistribution would require the agreement,
+are copied into llmpalooza. Redistribution would require the agreement,
 attribution notice and modification notices; this experiment does not approve it.
 
 Under D-017, Diffusers, Transformers, Accelerate, PyTorch and their Python
@@ -241,7 +241,7 @@ component terms; the existing host driver is unchanged. The `cuda-toolkit`
 metapackage has no executable payload and supplies no license declaration;
 its installed CUDA components have separate recorded declarations.
 The base image's unused packages retain the earlier reference setup's scope
-and licensing caveats. None of this admits new dependencies into jitLLM's core
+and licensing caveats. None of this admits new dependencies into llmpalooza's core
 or copyleft-disabled build.
 
 ## Reproduction

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "providers/fake/fake_device_execution.h"
@@ -16,7 +16,7 @@
 #include "base/check.h"
 #include "providers/device_execution.h"
 
-namespace jitllm::providers::fake {
+namespace llmp::providers::fake {
 namespace {
 
 std::unexpected<Failure> Invalid(std::string detail) {
@@ -231,4 +231,4 @@ void FakeDeviceExecution::Drain() {
   }
 }
 
-}  // namespace jitllm::providers::fake
+}  // namespace llmp::providers::fake

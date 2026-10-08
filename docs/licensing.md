@@ -1,9 +1,9 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Licensing and provenance
 
-jitLLM-authored code is Apache-2.0. [D-002, D-003, D-017, D-080 and
+Llmpalooza-authored code is Apache-2.0. [D-002, D-003, D-017, D-080 and
 D-091](decisions.md) govern incorporation, optional modules, tools and
 platform dependencies.
 
@@ -11,11 +11,11 @@ platform dependencies.
 license (no copyleft or share-alike obligation, no field-of-use or
 non-commercial restriction) may enter the core without a decision of its
 own, beside MPL-2.0 with its file-level obligations. Copyleft code lives in
-optional modules, which jitLLM's own builds ship by default, with the
+optional modules, which llmpalooza's own builds ship by default, with the
 copyleft-disabled profile as the build-time opt-out (D-080). Unknown,
 non-permissive or proprietary terms still need a decision. Every component
 still gets its provenance record, and its notices and attribution still
-ship. `CORE_LICENSES` in [tools/jitllm_sources.py](../tools/jitllm_sources.py)
+ship. `CORE_LICENSES` in [tools/llmp_sources.py](../tools/llmp_sources.py)
 lists the permissive SPDX identifiers recognized so far; adding one (or a
 `LicenseRef-` for custom terms read and found permissive) needs no
 decision, only the heavy-path review of the change. The source lock
@@ -24,7 +24,7 @@ file outside it, or under a license no source-lock component or shipped
 provenance unit declares, that has no record (below).
 
 The first three sections record how the repository declares licenses and
-what the pinned toolchain puts into a jitLLM binary (M1, checked
+what the pinned toolchain puts into a llmpalooza binary (M1, checked
 **2026-09-24**; D-071). The rest is the M0 reference inventory, checked on
 **2026-09-22**: evidence for the first dense slice, early EXL3 proof and
 later optional-backend design, not approval to import these repositories or
@@ -39,8 +39,8 @@ Every file follows the [REUSE specification 3.3](https://reuse.software/spec-3.3
 (D-029, D-071):
 
 - A file whose format has comments starts with `SPDX-FileCopyrightText` and
-  `SPDX-License-Identifier` tags in a header comment. jitLLM's own files say
-  `2026 jitLLM contributors` and `Apache-2.0`; third-party material names its
+  `SPDX-License-Identifier` tags in a header comment. Llmpalooza's own files say
+  `2026 llmpalooza contributors` and `Apache-2.0`; third-party material names its
   holders and actual license, as the patches with MIT upstream context do
   (GGML's and ExLlamaV3's in `third_party/patches/`, and two experiments').
 - A file that cannot hold a comment (JSON, a patch, plain text, `NOTICE`, or
@@ -49,11 +49,11 @@ Every file follows the [REUSE specification 3.3](https://reuse.software/spec-3.3
 - [LICENSES/](../LICENSES/) holds the text of every license a file declares:
   Apache-2.0 (the same bytes as the root `LICENSE`), MIT (SPDX License
   List 3.29.0) and Unicode-3.0 (the tokenizer's tables, below).
-- [NOTICE](../NOTICE) carries jitLLM's attribution and names the
+- [NOTICE](../NOTICE) carries llmpalooza's attribution and names the
   third-party material in the repository.
 
 `mise run check` enforces this with two steps. `reuse` runs REUSE lint 6.2.0
-from the SDK. `headers` ([tools/jitllm_headers.py](../tools/jitllm_headers.py))
+from the SDK. `headers` ([tools/llmp_headers.py](../tools/llmp_headers.py))
 checks what REUSE lint accepts but D-029 does not, against REUSE's own JSON
 report. Each commentable file must carry its own header rather than a
 sidecar, and REUSE must read exactly that header's license from the file
@@ -63,19 +63,19 @@ reads for that file, so no tag can show a reader a license REUSE skipped.
 Every sidecar must have a file, REUSE must cover every file the check does,
 and no file type may go unclassified.
 
-## What builds jitLLM
+## What builds llmpalooza
 
 The M3 direct-product experiment also incorporates the MIT D2R unit from
 Entrpi/ds4 at `76d51ef82a81b70b78e51a3a6ea11946286de976`, through its
 locked archive and reviewed patches for raw-Q2_K and the extracted original
 token-tile HCA numerical helpers/core. The kept D2R source includes
 the original IQ2/Q8 routines, guarded out of the native target by
-`JITLLM_DS4_RAW_Q2_ONLY`; it compiles the raw Q2_K down path and helpers,
-with jitLLM's preparation and completion. The HCA core uses native F16 cache
+`LLMP_DS4_RAW_Q2_ONLY`; it compiles the raw Q2_K down path and helpers,
+with llmpalooza's preparation and completion. The HCA core uses native F16 cache
 bytes with caller-owned mirror/record scratch; its original numerical source
 is copied verbatim. The raw Q2_K D2R down product is now the fast DeepSeek
 plan's default on its measured GB10 shape; the HCA core, also reached with
-F16 queries through jitLLM's own loader, remains opt-in and default off.
+F16 queries through llmpalooza's own loader, remains opt-in and default off.
 That loader's kernel (`src/kernels/ggml/dsv4_ds4_attention.cu`, MIT AND
 Apache-2.0) is a copy of the original token-tile core that reads F16 Q
 rows, otherwise unchanged, over the original helpers and stages it calls
@@ -98,7 +98,7 @@ links into tests alone, and toml++ (MIT, D-073) into the shipped binaries,
 whose notices then carry its MIT text and Bjoern Hoehrmann's copyright line
 from its UTF-8 decoder. GGML (MIT, D-077) links into the runtime's engine
 as well as tests and benchmarks (D-096); the package carries its MIT text
-and the YaRN attribution from its RoPE kernel. jitLLM's
+and the YaRN attribution from its RoPE kernel. Llmpalooza's
 `src/kernels/ggml/ggml_support.cu`, adapted from GGML, and
 `src/kernels/ggml/fattn.cu`, which instantiates GGML's vector
 flash-attention case and copies `launch_fattn`'s host arithmetic, keep
@@ -118,12 +118,12 @@ The Gemma3 descriptor graph (`src/kernels/ggml/gemma3_graph.cc`) ports
 llama.cpp v0.6.0/d81235049384534c167caea52b85a694f6103d14's Gemma3 text and
 GeGLU build-FFN graph arithmetic, retaining MIT AND Apache-2.0 and the GGML
 authors' copyright. Its native state, binding and plan adapter are
-jitLLM-authored Apache-2.0. The source-lock scope records the derivative;
+llmpalooza-authored Apache-2.0. The source-lock scope records the derivative;
 existing packaged MIT attribution covers it. This incorporates no upstream
 backend runtime or new archive members.
 
-jitLLM's own kernels for Qwen3.8's formats (`src/kernels/ggml/jitllm_ops.*`)
-and its fusions of Qwen3.8's GGML nodes (`jitllm_fused.cu`, which repeats
+Llmpalooza's own kernels for Qwen3.8's formats (`src/kernels/ggml/llmp_ops.*`)
+and its fusions of Qwen3.8's GGML nodes (`llmp_fused.cu`, which repeats
 their arithmetic without their code) and its importer (`docs/experiments/artifact-layout/modelopt_qwen38.py`,
 which applies llama.cpp's converter's value-head order and norm rules
 without its code) are Apache-2.0 only. The M3 widening compiles more of the kept
@@ -135,11 +135,11 @@ quantizations added, `mmq-instance-{q4_0,q2_0,q3_k,iq1_s,iq2_s,iq3_s,iq4_nl,iq4_
 each upstream's generated one-line `DECL_MMQ_CASE` unit with no header of
 its own, checked 2026-10-02; the legacy Q4_1/Q5_0/Q5_1 instance units
 are the same unchanged generated wrappers with no additional notice or
-header closure, checked 2026-10-04). jitLLM's GGUF n-gram row lookup
-(`jitllm_ops.cu` `QRowsKernel`) calls GGML's `dequantize.cuh` functions
+header closure, checked 2026-10-04). Llmpalooza's GGUF n-gram row lookup
+(`llmp_ops.cu` `QRowsKernel`) calls GGML's `dequantize.cuh` functions
 and reads its `kvalues_iq4nl` table through the include, copying neither.
 Upstream's
-`argsort.cu` and `top-k.cu` would include CUB directly, and jitLLM's patch
+`argsort.cu` and `top-k.cu` would include CUB directly, and llmpalooza's patch
 builds them without it (bitonic argsort; top-k's radix select, upstream's
 HIP path). D-080 cleared libcu++ only. CUB's own headers in the SDK's
 CCCL are BSD-3-Clause, Apache-2.0 or Apache-2.0 WITH LLVM-exception, but
@@ -166,9 +166,9 @@ chosen differs. ExLlamaV3's GEMM kernels (MIT) also link only into tests so
 far; a shipped binary that links them carries ExLlamaV3's MIT text
 ([below](#exllamav3-gemm-kernels-in-the-core-m2)). CUTLASS 4.7.1
 (BSD-3-Clause, lock component `cutlass`, headers only; M3's Qwen3.8
-prefill) is included by two jitLLM units: `src/kernels/ggml/moe_cutlass.cu`
+prefill) is included by two llmpalooza units: `src/kernels/ggml/moe_cutlass.cu`
 (Apache-2.0), which instantiates its SM120 block-scaled NVFP4 grouped GEMM
-for the routed experts, and `jitllm_ops.cc`, which reads only
+for the routed experts, and `llmp_ops.cc`, which reads only
 `cutlass/version.h` to pin the version the expert layout follows. Since
 D-096 the runtime links the engine and so GGML's and CUTLASS's kernels:
 both are `use: product` in the lock, and the package carries GGML's MIT
@@ -178,7 +178,7 @@ below). Every
 kept header was checked for its BSD-3-Clause SPDX line and NVIDIA's
 copyright (the lock's `license.evidence`); the CuTe DSL, under NVIDIA's
 EULA, is not kept. The routed experts' activation quantization
-(`src/kernels/ggml/jitllm_moe.cu`) copies GGML's
+(`src/kernels/ggml/llmp_moe.cu`) copies GGML's
 `nvfp4_native_scale_error` and repeats `quantize_mmq_nvfp4`'s scale
 search, so that file keeps GGML's MIT notice.
 
@@ -193,7 +193,7 @@ search, so that file keeps GGML's MIT notice.
 | Linux UAPI headers 6.8.0-142.142 | platform | GPL-2.0-only WITH Linux-syscall-note | Constants and macros |
 | CUDA 13.4.92 runtime and headers | platform | NVIDIA CUDA EULA | CUDA builds: `libcudart_static.a`, NVCC's host stubs and registration code, device code |
 | CUDA driver link stub 13.4.92 (`cuda-driver-dev-13-4`) | platform | NVIDIA CUDA EULA | Nothing: CUDA builds need `libcuda.so.1`, which the driver supplies (D-072) |
-| cuBLAS and cuBLASLt 13.8.0.4 (D-076) | platform | NVIDIA CUDA EULA | `jitllm-runtime` (CUDA builds, since D-096) links `libcublas.so.13` and `libcublasLt.so.13` dynamically; the package ships both unmodified and unstripped (EULA Attachment A, section 2.3) in `/usr/lib/jitllm`, which the runtime's run path names, carries the EULA notice and depends on `libgcc-s1`, which `libcublas.so.13` needs |
+| cuBLAS and cuBLASLt 13.8.0.4 (D-076) | platform | NVIDIA CUDA EULA | `llmp-runtime` (CUDA builds, since D-096) links `libcublas.so.13` and `libcublasLt.so.13` dynamically; the package ships both unmodified and unstripped (EULA Attachment A, section 2.3) in `/usr/lib/llmp`, which the runtime's run path names, carries the EULA notice and depends on `libgcc-s1`, which `libcublas.so.13` needs |
 | CCCL 13.3.4.3.1 (libcu++, `nv/`) | platform | Apache-2.0 WITH LLVM-exception | Through CUDA headers such as `cuda_fp16.h` |
 | NVCC, libNVVM, ptxas and the other CUDA tools | tool | NVIDIA CUDA EULA (internal use) | Generated code |
 | REUSE lint 6.2.0 and nine wheels | tool | GPL-3.0-or-later and others (provenance.toml) | Nothing |
@@ -219,9 +219,9 @@ corrects and extends the [GCC 16.2 report](experiments/gcc16-static/README.md#pr
 
 ## What a packaged binary carries
 
-For a CUDA-enabled arm64 `jitllm`, cross-built by the SDK:
+For a CUDA-enabled arm64 `llmp`, cross-built by the SDK:
 
-- **Always:** jitLLM's `LICENSE` and `NOTICE`; the HP and SGI permission
+- **Always:** Llmpalooza's `LICENSE` and `NOTICE`; the HP and SGI permission
   notices, which ask to appear in supporting documentation; a statement that
   the CUDA runtime and NVCC-generated code are under the NVIDIA CUDA EULA,
   not Apache-2.0; and the CUDA headers' Disclaimer and U.S. Government End
@@ -258,8 +258,8 @@ Three constraints follow:
   the owner's name), but `cccl`'s record must first name what is included
   and carry the notices that follow.
 
-**How the package carries them** (D-074): `tools/jitllm_package.py` writes
-`/usr/share/doc/jitllm/THIRD-PARTY-NOTICES` from the source lock's notices
+**How the package carries them** (D-074): `tools/llmp_package.py` writes
+`/usr/share/doc/llmp/THIRD-PARTY-NOTICES` from the source lock's notices
 and the text that each shipped unit's notices locate in
 [provenance.toml](../toolchains/provenance.toml) (`extract`), including every
 "when the code is used" notice and the whole CUDA EULA, whether or not the
@@ -270,10 +270,10 @@ statement that NVIDIA code is under the EULA opens the notices.
 **Decisions** (the owner's answers on 2026-09-24, for the Package item;
 D-074):
 
-1. jitLLM's CUDA sources do not carry the CUDA header notice; it ships in
+1. Llmpalooza's CUDA sources do not carry the CUDA header notice; it ships in
    the documentation (`THIRD-PARTY-NOTICES`), which the headers' text also
    asks for. The headers ask for it "in the user documentation and internal
-   comments to the code", and jitLLM's `.cu` files are its own code.
+   comments to the code", and llmpalooza's `.cu` files are its own code.
 2. The package ships the CUDA EULA's full text, and its `copyright` file
    names the NVIDIA code under `LicenseRef-NVIDIA-CUDA-EULA`. The reading
    that static linking and stripping do not "modify" the runtime object
@@ -327,9 +327,9 @@ The inventory is not clearance of the future compiled dependency closure.
 | Unit and use | Category / observed terms / disposition |
 | --- | --- |
 | Official Qwen GGUF and base metadata/tokenizer files | External model/test data; both repositories supply the same Apache-2.0 license file. No weights redistributed; retain source terms and required notices with future derived artifacts. Exact source-to-GGUF conversion lineage is unverified |
-| Pinned llama.cpp executable/libraries and GGUF Python inspector | External reference/inspection tools, root MIT and gguf-py MIT; actual container/runtime terms remain in the reference setup record. Used only outside jitLLM serving |
+| Pinned llama.cpp executable/libraries and GGUF Python inspector | External reference/inspection tools, root MIT and gguf-py MIT; actual container/runtime terms remain in the reference setup record. Used only outside llmpalooza serving |
 | Selected GGML core, CPU/CUDA kernels; Qwen2 graph/tensor semantics; native GGUF reader | Future core implementation candidates, root MIT plus local MIT notices (including Mozilla llamafile SGEMM and YaRN authors). Preserve notices and audit the selected compiled closure before adoption. GGML allocator/workspace behavior still needs the M2 proof |
-| Tokenizer implementation and generated Unicode tables | Root MIT implementation is not a blanket grant for derived data. `src/unicode-data.cpp`'s provenance was established on 2026-09-28: UCD 15.1.0 ([below](#tokenizer-unicode-tables-m3)). Not incorporated: jitLLM's tokenizer generates its own tables from the pinned UCD files, admitted to the core by D-088 (accepted 2026-09-28) |
+| Tokenizer implementation and generated Unicode tables | Root MIT implementation is not a blanket grant for derived data. `src/unicode-data.cpp`'s provenance was established on 2026-09-28: UCD 15.1.0 ([below](#tokenizer-unicode-tables-m3)). Not incorporated: llmpalooza's tokenizer generates its own tables from the pinned UCD files, admitted to the core by D-088 (accepted 2026-09-28) |
 | Chat-template rendering | The pinned template is model data under its source terms. Future owned native rendering must pass exact byte/token fixtures for enabled branches. Full `common/jinja`, chat/parser and vendor closure is not adopted or cleared |
 | HF converter and Python package closure | Inspected only; neither executed nor incorporated. The split converter has remote-code/legacy-checkpoint paths outside the selected model path. Any future use needs independently pinned/audited tools, allowlisted data formats and remote code disabled |
 | CUDA, driver and standard runtimes; NumPy/GGUF Python packages | D-017 platform dependencies and external experiment tools, respectively; retain exact image/component identities and their own terms. No new platform exception or source dependency is approved |
@@ -389,7 +389,7 @@ whitespace set equals PropList.txt's White_Space, and its NFD table equals
 what 15.0.0 and 15.1.0 give alike, so it does not say which Python made it.
 The tables are therefore UCD 15.1.0 data.
 
-**What jitLLM uses instead.** `tools/gen-unicode-tables` (jitLLM's,
+**What llmpalooza uses instead.** `tools/gen-unicode-tables` (llmpalooza's,
 Apache-2.0; a developer-run build tool) generates
 `src/tokenizer/unicode_data.cc` from five UCD 15.1.0 files and checks each:
 
@@ -404,11 +404,11 @@ Apache-2.0; a developer-run build tool) generates
 
 | Field | Record |
 | --- | --- |
-| Role | Incorporated data: general categories, White_Space, NFC quick-check values, combining classes, canonical decompositions and compositions, and the full case mappings and case properties (Lowercase, Uppercase, Cased, Case_Ignorable) that Python's str operations use, compiled into `jitllm_tokenizer` |
+| Role | Incorporated data: general categories, White_Space, NFC quick-check values, combining classes, canonical decompositions and compositions, and the full case mappings and case properties (Lowercase, Uppercase, Cased, Case_Ignorable) that Python's str operations use, compiled into `llmp_tokenizer` |
 | Version | Unicode Character Database 15.1.0 (release 2023-09) |
 | License | Unicode License V3 (SPDX `Unicode-3.0`; [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt)). The files point to unicode.org's terms of use, which (read 2026-09-28) place every data file under `/Public/` under that license |
-| In a binary | None shipped yet: `jitllm` and `jitllm-runtime` do not link `jitllm_tokenizer` (the swap runner and the chat route will). Tests and harnesses link it |
-| Obligations | The copyright and permission notice, with the data or in associated documentation; no source offer. The repository carries it: [NOTICE](../NOTICE) names the file, its UCD version and Unicode's copyright, and [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt) holds the text. Every package carries it already: `THIRD-PARTY-NOTICES` includes the notice's full text ([provenance.toml](../toolchains/provenance.toml)'s `unicode` notice, `packaging/notices/Unicode-3.0.txt`, the same bytes as the LICENSES copy) whenever the GCC runtime ships, which is always (decision 4 above), and the package installs NOTICE unchanged. When a packaged executable is built from `unicode_data.cc`, `tools/jitllm_package.py` also lists the data: `Unicode-3.0` in the copyright file's license and a Unicode Character Database 15.1.0 entry in the SBOM, its notice under its own heading in `THIRD-PARTY-NOTICES`; the package check requires them. Packaging stops if a file under `src/` declares a license outside the core's (`CORE_LICENSES`, D-091), one no source-lock component or shipped provenance unit declares, or Unicode-3.0, which only this record lists, without a record in the tool's `IN_TREE_UNITS`, if a recorded file is gone, or if Ninja cannot list the executables' inputs |
+| In a binary | None shipped yet: `llmp` and `llmp-runtime` do not link `llmp_tokenizer` (the swap runner and the chat route will). Tests and harnesses link it |
+| Obligations | The copyright and permission notice, with the data or in associated documentation; no source offer. The repository carries it: [NOTICE](../NOTICE) names the file, its UCD version and Unicode's copyright, and [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt) holds the text. Every package carries it already: `THIRD-PARTY-NOTICES` includes the notice's full text ([provenance.toml](../toolchains/provenance.toml)'s `unicode` notice, `packaging/notices/Unicode-3.0.txt`, the same bytes as the LICENSES copy) whenever the GCC runtime ships, which is always (decision 4 above), and the package installs NOTICE unchanged. When a packaged executable is built from `unicode_data.cc`, `tools/llmp_package.py` also lists the data: `Unicode-3.0` in the copyright file's license and a Unicode Character Database 15.1.0 entry in the SBOM, its notice under its own heading in `THIRD-PARTY-NOTICES`; the package check requires them. Packaging stops if a file under `src/` declares a license outside the core's (`CORE_LICENSES`, D-091), one no source-lock component or shipped provenance unit declares, or Unicode-3.0, which only this record lists, without a record in the tool's `IN_TREE_UNITS`, if a recorded file is gone, or if Ninja cannot list the executables' inputs |
 | Source file | `src/tokenizer/unicode_data.cc` declares `Apache-2.0 AND Unicode-3.0` and "1991-2023 Unicode, Inc."; [NOTICE](../NOTICE) names it |
 
 **Chat templates' text.** The renderers write the format text their
@@ -431,7 +431,7 @@ transformers 5.12.1 (Apache-2.0), Jinja2 3.1.6 (BSD-3-Clause), and DeepSeek's
 published Philox known-answer vectors (values, cited in the test).
 
 **The template interpreter** (`src/chat/jinja*`, D-067 as amended
-2026-10-02) is jitLLM's own Apache-2.0 code, written from Jinja2's
+2026-10-02) is llmpalooza's own Apache-2.0 code, written from Jinja2's
 documentation and its observed behaviour under transformers; no code of
 Jinja2 (BSD-3-Clause), minja or llama.cpp's Jinja engine (MIT) is
 incorporated. Its tests compare with transformers 5.12.1 and Jinja2 3.1.6,
@@ -449,10 +449,10 @@ is Apache-2.0: the repository declares `apache-2.0` at every one of those
 revisions (Hugging Face's model card metadata, checked 2026-10-02).
 Gemma 3's template comes from repositories under the Gemma terms, which
 are not a permissive license, so it is not committed: its fixture
-(`gemma-3.json`) holds only jitLLM's own conversations rendered, and the
+(`gemma-3.json`) holds only llmpalooza's own conversations rendered, and the
 template text stays in the corpus. `tests/unit/data/chat/pycase-reference.json`
 is Python 3.12.3's case data for every code point (from its Unicode
-15.0.0 database) and its case operations on jitLLM's strings: data
+15.0.0 database) and its case operations on llmpalooza's strings: data
 derived from the Unicode Character Database, under `Apache-2.0 AND
 Unicode-3.0` in its sidecar, like `src/tokenizer/unicode_data.cc`. The
 38-template corpus stays outside
@@ -570,7 +570,7 @@ executable built from one.
     8, the M2 fixtures' rates, unchanged. They instantiate
     `exl3_gemm_kernel` and `exl3_mgemm_kernel` for FP16 and FP32 outputs
     at tile shapes 1 to 4;
-  - jitLLM's instance unit (`jitllm/jitllm_exl3_kernels.cu`, patch 0002,
+  - Llmpalooza's instance unit (`llmp/llmp_exl3_kernels.cu`, patch 0002,
     Apache-2.0), which includes the GEMV kernel's header and the three
     sources patch 0003 reduces to their kernels, and instantiates what the
     native linear launches: the K = 4 mcg GEMV (as upstream's
@@ -579,7 +579,7 @@ executable built from one.
     file defines them.
 
   So far only test and benchmark executables link them. In every profile
-  jitLLM includes `exl3_devctx.cuh` for the device context's sizes.
+  llmpalooza includes `exl3_devctx.cuh` for the device context's sizes.
 - **What is kept.** Exactly the files those units include (23 files,
   5,087 lines at the pin), and the root `LICENSE`. A test follows the
   includes of the prepared tree and fails if `keep` holds more or less
@@ -589,7 +589,7 @@ executable built from one.
   - the ATen host wrappers that remain whole (`exl3_gemm.cu`, which
     carries a QTIP comment, `exl3_kernel_map.cu`, `exl3_devctx.cu`,
     `exl3_gemv.cu`, `hgemm.cu`) and the headers declaring them, and
-    `bits_k.cuh` with its c10 include. jitLLM's launchers
+    `bits_k.cuh` with its c10 include. Llmpalooza's launchers
     (`src/kernels/exl3/`) replace them; the GEMV choice is a recorded
     copy (`upstream_gemv.cc`, MIT AND Apache-2.0);
   - other codebooks and rates, the half-integer GEMV instances and the
@@ -634,8 +634,8 @@ documentation.
   test refuses any kept file that can end the process (host exits, aborts
   and asserts; device traps and asserts). It also drops a no-op `register` from four
   arrays in `exl3_gemm_inner.cuh`: NVCC rejects it with a Clang host compiler.
-- `0002` adds `jitllm/CMakeLists.txt`, jitLLM's build of the units, and
-  `jitllm/jitllm_exl3_kernels.cu` and `.h`, jitLLM's instance unit and its
+- `0002` adds `llmp/CMakeLists.txt`, llmpalooza's build of the units, and
+  `llmp/llmp_exl3_kernels.cu` and `.h`, llmpalooza's instance unit and its
   lookups.
 - `0003` (MIT AND Apache-2.0) reduces `quant/reconstruct.cu`,
   `quant/hadamard.cu` and `add.cu` to their kernels: it removes their ATen,
@@ -713,11 +713,11 @@ permissive with no viral code issues"):
 ## Reference instrumentation
 
 The [fused-routes experiment](experiments/fused-routes/README.md) reads MoE
-routes from the unmodified pinned llama.cpp image with jitLLM-authored
+routes from the unmodified pinned llama.cpp image with llmpalooza-authored
 Apache-2.0 harness code. It retains `route-outputs.patch`, a rejected
 libllama change with MIT upstream context and The ggml authors' notice in
 `UPSTREAM-NOTICE.txt`, only to reproduce a negative result. The runner does
-not build it, and nothing from it enters jitLLM.
+not build it, and nothing from it enters llmpalooza.
 
 ## Additional reference candidates
 
@@ -731,7 +731,7 @@ checkpoint, the pinned SGLang (Apache-2.0) image and hash-pinned `torchcodec`
 executed for config parsing only. The AGPL-3.0 MiaAI MiMo recipe was read as
 documentation; none of its code or patches ran or entered this repository.
 No weights are redistributed, and neither study clears a container's full
-component closure or approves any of these for jitLLM's core.
+component closure or approves any of these for llmpalooza's core.
 
 ## Fast-swap models and baselines (M3, M4)
 
@@ -740,11 +740,11 @@ D-087's models and baselines. M3's are pinned and audited below (checked
 "Cleared" means confirmed from the license texts themselves; a declared
 license is recorded as declared, and D-080's rule separates a project's
 own code from included files that state a different license for
-themselves. Nothing here is incorporated into jitLLM: running a recipe
+themselves. Nothing here is incorporated into llmpalooza: running a recipe
 or engine as a baseline incorporates nothing, and any reuse of code is a
 later decision with its own per-file record.
 
-**Model weights are informational (owner, 2026-09-28; D-087).** jitLLM
+**Model weights are informational (owner, 2026-09-28; D-087).** Llmpalooza
 never distributes model weights: users supply checkpoints, and artifacts
 are made locally from them. A weight license therefore blocks no import,
 execution, baseline or support; the rows below record it for information,
@@ -766,7 +766,7 @@ resolved from the Hugging Face, GitHub and registry APIs on 2026-09-28.
 | Qwen-Image-2.1, BF16 diffusers pipeline (33,131,614,782 B) | `Qwen/Qwen-Image-2.1@790c92633540aa0cb11d9abf19eb46d861714758`, the revision the [BF16 study](experiments/image-reference/README.md) pinned and still the head | Qwen Research License (`LICENSE`, `8dc973f0…`), non-commercial research and evaluation |
 | TensorFold's checkpoint, MLX affine 4-bit, group size 32 (`config.json`), with its MTP layer (113,233,046,214 B) | `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa8066e3be900a0d148d0f5a2f4eb1cf6534` | `LICENSE` is the Qwen Community License 1.0, byte-identical to the base's (`a0dc4225…`) |
 | MiaAI single-Spark recipe | `MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark@b8439110eec0230facbe4ddf0dffe01b8f769be0` (main on 2026-09-28) | AGPL-3.0-or-later ([below](#miaai-single-spark-recipe)) |
-| Mia fast-start reference: PLE override patch and `instanttensor` 0.2.0 | [Launcher and payload pin](experiments/fast-swap/mia-launch.json); base recipe unchanged | Recipe patch AGPL-3.0-or-later (sidecar and license text retained); installed loader METADATA declares Apache-2.0. External measurement dependency only; no jitLLM execution/runtime linkage |
+| Mia fast-start reference: PLE override patch and `instanttensor` 0.2.0 | [Launcher and payload pin](experiments/fast-swap/mia-launch.json); base recipe unchanged | Recipe patch AGPL-3.0-or-later (sidecar and license text retained); installed loader METADATA declares Apache-2.0. External measurement dependency only; no llmpalooza execution/runtime linkage |
 | Its default engine | `vllm/vllm-openai:qwen38-flash-next`, index `sha256:fc120ece…`, arm64 `sha256:3b0e188f…`; built 2026-08-26 as a local build (its labels give no vLLM commit); FlashInfer 0.6.17, CUDA 13.0.1, NCCL 2.30.7 | vLLM Apache-2.0; the image's full closure is not audited |
 | Its opt-in lane (`start-v030.sh`) | `vllm/vllm-openai:v0.30.0`, index `sha256:8a69ffad…`, arm64 `sha256:4864d466…`; vLLM `ced6857a` (tag v0.30.0); FlashInfer 0.6.18.post1, CUTLASS v4.7.1, CUDA 13.0.2. It serves `nvidia/Qwen3.8-Flash-Next-NVFP4`, not pinned: only if this lane becomes a baseline | As above |
 | TensorFold | `ashhart/TensorFold@71377a5373ed7b394f1b480ba2a6a3986b03af1c` (0.3.6.2, main on 2026-09-28; moved from `beddbb7b`, 0.3.5.1, the same day); runs in `nvcr.io/nvidia/pytorch:26.07-py3`, index `sha256:2140e699…` | MIT ([below](#tensorfold)) |
@@ -798,9 +798,9 @@ not vLLM, the container image or the checkpoints they act on. Every path:
 
 **Disposition** (owner, 2026-09-28): the scripts may be **run unmodified
 as a baseline recipe**. Running them locally conveys nothing and
-incorporates nothing into jitLLM; the AGPL's section 13 applies to a
+incorporates nothing into llmpalooza; the AGPL's section 13 applies to a
 modified version offered over a network, which a local benchmark of the
-unmodified recipe is not. No file here is a candidate for jitLLM's code;
+unmodified recipe is not. No file here is a candidate for llmpalooza's code;
 any later reuse starts from vLLM's or another upstream's own sources.
 
 ### TensorFold
@@ -858,7 +858,7 @@ Marlin's license is not recorded here yet. No reuse decision is made here.
 | vLLM `csrc/libtorch_stable/quantization/fp4/` | vLLM's NVFP4 activation quantization and CUTLASS GEMMs, `nvfp4_scaled_mm_sm120_kernels.cu` among them | Apache-2.0: 9 files "Copyright (c) 2025, NVIDIA CORPORATION" with the Apache notice, 2 MXFP4 files vLLM's SPDX header |
 | FlashInfer `csrc/fused_moe/cutlass_backend/`, `csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/`, `csrc/cute_sm120_mxfp8_groupwise/` (97 files) | The CUTLASS fused MoE and FP4 GEMMs, from TensorRT-LLM, and an sm_120 MXFP8 groupwise GEMM | Apache-2.0 notices, NVIDIA or FlashInfer team copyright. Root `LICENSE` Apache-2.0; `NOTICE` names NVIDIA and the FlashInfer community; `licenses/` holds CUTLASS's BSD-3-Clause, FlashAttention-3's, fmt's and spdlog's texts |
 | FlashInfer `flashinfer/gemm/kernels/` CuTe-DSL kernels, `dense_blockscaled_gemm_sm120_b12x.py` among them | Block-scaled FP4 and FP8 GEMMs written in CUTLASS's Python DSL | BSD-3-Clause SPDX headers (NVIDIA); three cuTile files MIT. They compile through `nvidia-cutlass-dsl` 4.7.1, whose wheel is under NVIDIA's proprietary CUTLASS Python DSL license (PyPI "Other/Proprietary License"; [terms](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html)). Those terms are proprietary, not permissive, so reusing a CuTe-DSL kernel would need a decision (D-091) |
-| CUTLASS C++ (vLLM fetches v4.7.1; FlashInfer's submodule `b46b16d0`) | Templates under both | BSD-3-Clause. jitLLM's source lock pins v4.7.1's headers for its own grouped GEMM ([above](#what-builds-jitllm)) |
+| CUTLASS C++ (vLLM fetches v4.7.1; FlashInfer's submodule `b46b16d0`) | Templates under both | BSD-3-Clause. Llmpalooza's source lock pins v4.7.1's headers for its own grouped GEMM ([above](#what-builds-llmpalooza)) |
 | `humming-kernels` 0.1.12, the `b12x` extra | Other vLLM candidates | PyPI declares no license for `humming-kernels`; `b12x` not checked. Unknown until needed |
 
 ### Still owed
@@ -869,7 +869,7 @@ Marlin's license is not recorded here yet. No reuse decision is made here.
 | `MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks` (M4) | Pinned below at `c1b7d4c9`; HEAD `943912cd` is 65 commits ahead. The checkpoint mirror's license is not verified. Its DFlash2 drafter's weights are CC BY-NC-ND 4.0 | Re-audit the recipe if the baseline moves to HEAD; record the mirror's and the drafter's licenses for information. The drafter is allowed in artifacts and benchmarks (owner, 2026-09-28) |
 | DeepSeek v4.1 Flash EXL3 checkpoint (M4; weights, informational) | `Mia-AiLab/DeepSeek-V4.1-Flash-EXL3-2.9bpw@64ba41b6`, MIT; the recipe is pinned below at its HEAD | Record the checkpoint pin |
 | Kernels from Mia's recipes (M4) | E3 fat-expert and cooperative MoE: AGPL or mixed provenance (below) | Under D-080 once copyleft is confirmed; mixed provenance blocks until clarified |
-| Wider GGML closure (M3) | llama.cpp MIT at the locked pin; widened for DeepSeek V4 Flash and Qwen3.8 Flash on 2026-09-28: the added ggml-cuda units carry no header of their own, and cite only upstream PRs, CCCL issues and the stream-k paper (arXiv 2301.03598) by reference | Done for these models' operations (lock `license.scope`), the NVFP4 MMQ instance unit Qwen3.8's A/B chose included; audit again for the image pipeline's operations. CUTLASS 4.7.1's headers became a lock component of their own for Qwen3.8's prefill ([above](#what-builds-jitllm)) |
+| Wider GGML closure (M3) | llama.cpp MIT at the locked pin; widened for DeepSeek V4 Flash and Qwen3.8 Flash on 2026-09-28: the added ggml-cuda units carry no header of their own, and cite only upstream PRs, CCCL issues and the stream-k paper (arXiv 2301.03598) by reference | Done for these models' operations (lock `license.scope`), the NVFP4 MMQ instance unit Qwen3.8's A/B chose included; audit again for the image pipeline's operations. CUTLASS 4.7.1's headers became a lock component of their own for Qwen3.8's prefill ([above](#what-builds-llmpalooza)) |
 | stable-diffusion.cpp graph code (M3) | MIT at `c92d73c4`; its GGML fork's patches are separate | Audit the ported code; audit the fork's patches before any is used |
 
 ## Pinned reference inventory
@@ -993,7 +993,7 @@ when no binary is distributed. [Section 1][agpl1] defines the source scope,
 including relevant build/install/run scripts and covered dependencies;
 [sections 4–6][agpl4] separately govern conveying source and object code.
 
-**Shipping (D-080).** jitLLM's own builds and packages include its
+**Shipping (D-080).** Llmpalooza's own builds and packages include its
 optional copyleft modules by default; the copyleft-disabled profile is the
 build-time opt-out. A component counts as copyleft only once that is
 confirmed; a provenance suspicion alone does not. A project's declared
@@ -1013,14 +1013,14 @@ only public Internet access. Choose and verify the user-facing source-offer
 mechanism before serving that configuration; this inventory does not add an
 API or approve an optional-module boundary.
 
-This does not relicense independently authored jitLLM source files. It means
+This does not relicense independently authored llmpalooza source files. It means
 the combined configuration must meet its applicable terms. The copyleft-disabled
 profile must exclude the optional implementation's entire source/header/
 generator/generated-code/binary closure from fetching and building, while
 retaining an independently useful scheduler and allocator (D-002/D-017).
 Tools and platform runtimes are recorded separately under D-017, and model
 weights remain user-supplied and outside project licensing scope per D-002;
-since 2026-09-28 (D-087) a weight license gates nothing in jitLLM and is
+since 2026-09-28 (D-087) a weight license gates nothing in llmpalooza and is
 recorded for information only.
 
 ## Adoption gate and verification handoff

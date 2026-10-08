@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cli/doctor.h"
@@ -23,7 +23,7 @@
 #include "platform/host_probe.h"
 #include "providers/device_probe.h"
 
-namespace jitllm::cli {
+namespace llmp::cli {
 namespace {
 
 // A local account's uid, if there is one.
@@ -67,9 +67,9 @@ void DescribeConfiguration(const DoctorOptions& options, base::Report& report) {
   load.main_file_optional = !options.config;
   if (options.config) {
     load.main_file = *options.config;
-  } else if (const auto service = AccountUid("jitllm")) {
+  } else if (const auto service = AccountUid("llmp")) {
     // Packaged: the unit's sandbox lets the runtime write only its
-    // StateDirectory (packaging/jitllm.service).
+    // StateDirectory (packaging/llmp.service).
     trusted = *service;
     writable = config::kDefaultDataDir;
   }
@@ -162,4 +162,4 @@ std::string DoctorText(const base::Report& report) {
   return SectionsText(report, 0) + SummaryText(report);
 }
 
-}  // namespace jitllm::cli
+}  // namespace llmp::cli

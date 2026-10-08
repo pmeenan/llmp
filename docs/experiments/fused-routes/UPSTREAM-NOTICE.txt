@@ -4,7 +4,7 @@ route-outputs.patch contains context and modifications of the following source:
 https://github.com/ggml-org/llama.cpp
 Revision: b29c606e28a01b1bc8c1351026a0fa6e616bf6c4
 
-The original root license is reproduced below. jitLLM-authored patch additions
+The original root license is reproduced below. Llmpalooza-authored patch additions
 are Apache-2.0. This notice does not clear any other upstream file.
 
 MIT License

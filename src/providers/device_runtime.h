@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The device runtime (D-026, D-053; docs/portability.md): what the engine
@@ -28,8 +28,8 @@
 // thread-local: the recording thread queues nothing else on the device
 // until it ends. This header holds no vendor types.
 
-#ifndef JITLLM_PROVIDERS_DEVICE_RUNTIME_H_
-#define JITLLM_PROVIDERS_DEVICE_RUNTIME_H_
+#ifndef LLMP_PROVIDERS_DEVICE_RUNTIME_H_
+#define LLMP_PROVIDERS_DEVICE_RUNTIME_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -40,7 +40,7 @@
 #include "providers/device_execution.h"
 #include "providers/device_memory.h"
 
-namespace jitllm::providers {
+namespace llmp::providers {
 
 // A backend call's outcome: 0 is success; any other value is the backend's
 // own error code (a cudaError_t in a CUDA build), which text() names.
@@ -168,6 +168,6 @@ std::expected<void*, DeviceStatus> AllocatePinned(std::size_t bytes);
 // Once nothing queued reads or writes it.
 void FreePinned(void* pointer);
 
-}  // namespace jitllm::providers
+}  // namespace llmp::providers
 
-#endif  // JITLLM_PROVIDERS_DEVICE_RUNTIME_H_
+#endif  // LLMP_PROVIDERS_DEVICE_RUNTIME_H_

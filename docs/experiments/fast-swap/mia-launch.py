@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Launch the pinned fast-start Mia reference; run under spark-job --gpu."""
 import argparse
@@ -54,7 +54,7 @@ def main():
     require('PYTHONPATH' not in extra and 'TRITON_CACHE_DIR' not in extra and 'VLLM_USE_V2_MODEL_RUNNER' not in extra,
             'launcher owns loader path, persistent Triton cache and V2 runner')
     env['EXTRA_DOCKER_ARGS'] = (extra + ' --mount type=bind,src=' + str(args.pylib)
-        + ',dst=/opt/jitllm-mia-pylib,readonly -e PYTHONPATH=/opt/jitllm-mia-pylib'
+        + ',dst=/opt/llmp-mia-pylib,readonly -e PYTHONPATH=/opt/llmp-mia-pylib'
         + ' -e TRITON_CACHE_DIR=/root/.cache/vllm/triton-issue -e VLLM_USE_V2_MODEL_RUNNER=1')
     require('--load-format' not in env.get('EXTRA_VLLM_ARGS', ''), 'launcher owns the load format')
     env['EXTRA_VLLM_ARGS'] = env.get('EXTRA_VLLM_ARGS', '') + ' --load-format instanttensor'

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 # External reference runner: the pinned SGLang nightly plus torchcodec. The
 # engine's MiMo-V2 input processor imports torchcodec; without it the processor

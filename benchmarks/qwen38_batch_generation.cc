@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <algorithm>
@@ -17,7 +17,7 @@
 #include "engine/support.h"
 #include "qwen38_batch.h"
 
-namespace jitllm::benchmarks::qwen_batch {
+namespace llmp::benchmarks::qwen_batch {
 namespace {
 namespace en = engine;
 namespace dv = draft_vocab;
@@ -495,7 +495,7 @@ std::string Proof::GenerationReceipt() const {
   }
   Requests<std::uint32_t> prompt_counts = {8192, 8192, 8192, 8192};
   return std::format(
-      R"({{"schema":"jitllm-qwen-c{}-natural-shared-rows-v1","complete":{},"requests":{},)"
+      R"({{"schema":"llmp-qwen-c{}-natural-shared-rows-v1","complete":{},"requests":{},)"
       R"("prompt_tokens":{},"output_cap":256,"fixed_depth":3,"draft_vocab":47172,)"
       R"("stops_literal":true,"timed_output_mode":"ids_only","cold_private_plans_each_arm":true,)"
       R"("shared_weight_owners":1,"live_request_states":{},"prefill_owner_state":1,)"
@@ -516,4 +516,4 @@ std::string Proof::GenerationReceipt() const {
       std::uint64_t{requests_} << 26, workspace_probes_, workspace_masks_,
       conservative_activation_bytes_, activations_, pool_, coverage_.violations, arms);
 }
-}  // namespace jitllm::benchmarks::qwen_batch
+}  // namespace llmp::benchmarks::qwen_batch

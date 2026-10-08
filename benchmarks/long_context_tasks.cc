@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "long_context_tasks.h"
@@ -15,7 +15,7 @@
 
 #include "base/json.h"
 
-namespace jitllm::benchmarks::long_context {
+namespace llmp::benchmarks::long_context {
 namespace {
 template <class T>
 std::unexpected<std::string> Fail(T&& message) {
@@ -412,4 +412,4 @@ std::expected<std::vector<std::int32_t>, std::string> ParseStopIds(std::string_v
 bool IsStop(std::span<const std::int32_t> stops, std::int32_t token) {
   return std::ranges::find(stops, token) != stops.end();
 }
-}  // namespace jitllm::benchmarks::long_context
+}  // namespace llmp::benchmarks::long_context

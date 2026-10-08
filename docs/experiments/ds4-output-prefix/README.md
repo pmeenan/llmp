@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek inverse rotation and output-A prefix
@@ -119,7 +119,7 @@ The fixed-history comparison uses the original
 `8a355bfb…`, whose output-A projections have the same guarded Q8_0
 geometry. The saved oracle is llama.cpp b11254 (`8019dc563`), flash
 attention, all layers on GPU, one sequence, context 262,144, no prompt
-reuse, fit off and five log-probabilities. jitLLM holds capacity 32,768,
+reuse, fit off and five log-probabilities. Llmpalooza holds capacity 32,768,
 chunk size 4,096, compact scheduling, frontier heads and HCA off in both
 arms. Seven full chunks replace 301 output-A prefixes in the candidate;
 the existing 3,032+1 remainder and 511 one-row decode steps stay native.
@@ -293,7 +293,7 @@ task matrix. Production/default acceptance remains separate.
 ## Native graph restoration
 
 The selected adapter makes the prefix a direct native graph operation,
-`jitllm.dsv4.outa_prefill`, behind a default-off benchmark option. It
+`llmp.dsv4.outa_prefill`, behind a default-off benchmark option. It
 accepts only the qualified GB10, 4,096-row packed Q8_0/F32 shape. Exact
 and unsupported shapes retain the original inverse RoPE, MMQ and layout
 copy. The three direct dependencies retain unrotated heads, positions
@@ -541,7 +541,7 @@ original UD-Q2_K_XL checkpoint's 32K and 128K fixed histories against the
 same-checkpoint llama.cpp oracle (0.947-nat bound, no row outside), its
 128K held-out perplexity (3% around 1.9298), the frozen 127K answer task,
 and on the community GGUF ds4's own 8K trajectory and the 32K perplexity
-against ds4's. `jitllm_dsv4_exec`, compact experts, frontier heads, Spark A,
+against ds4's. `llmp_dsv4_exec`, compact experts, frontier heads, Spark A,
 2026-10-03.
 
 | Configuration | 32K history (equal / near / outside) | 128K history | 128K PPL | Community 8K vs ds4 |
@@ -570,13 +570,13 @@ against ds4's. `jitllm_dsv4_exec`, compact experts, frontier heads, Spark A,
   with the others: 1.344718 against 1.344124 (full chunks) and 1.344185
   (current default). These are near-tie flips of a strict per-row gate,
   but under the registered rule they fail, so partial chunks stayed off
-  (`Dsv4Model::prefill_outa_hca_partial`; `jitllm_dsv4_exec
+  (`Dsv4Model::prefill_outa_hca_partial`; `llmp_dsv4_exec
   --outa-partial`). The owner's tie-aware rule admits them
   ([below](#tie-aware-re-scoring-and-partial-chunks)).
 - **Repeats.** A fresh repeat of the every-chunk 32K run reproduces its
   logits byte for byte (`f5669a25…`).
 
-**The default.** `jitllm-runtime` turns the combination on for DeepSeek
+**The default.** `llmp-runtime` turns the combination on for DeepSeek
 (`Dsv4Options::prefill_outa_hca`), on full 4,096-row chunks, and since the
 tie-aware rule on partial ones too (`prefill_outa_hca_partial`,
 [below](#tie-aware-re-scoring-and-partial-chunks)). Its own guards keep
@@ -659,7 +659,7 @@ community one; that is fixed separately.)
     token 32.7 → 33.3 tok/s, so acceptance is level.
   - C4 (DSpark waves): 14.75 → 16.69 (+13.2%); decode 9.9–10.0 → 10.6–11.0
     tok/s a request.
-- **`jitllm_spec_runner --check greedy`**, the four 7K chat prompts, 32
+- **`llmp_spec_runner --check greedy`**, the four 7K chat prompts, 32
   tokens each, output-A/HCA off against on: acceptance 86 of 111 (0.775)
   against 83 of 114 (0.728). These are short samples of different token
   sequences, so they are no evidence of a change. The short prompts, with
@@ -683,11 +683,11 @@ reference does not ratchet. For Qwen3.8 it is `hq-32k-fast` and
 also refuses a reference with an outside step past the per-step
 tolerance, or more than two.
 - **Outside steps.** At most max(2, the reference's), here 2.
-- **Per-step tolerance.** Each outside step must have jitLLM's own margin
+- **Per-step tolerance.** Each outside step must have llmpalooza's own margin
   of its argmax over the oracle's token below the bound (0.947 nats), and
   its NLL of the oracle's token less than the bound above the oracle's
   own. This is an owner-accepted tolerance, not a calibrated test of a
-  tie. At step 249, the one step it has decided, jitLLM's paths spread
+  tie. At step 249, the one step it has decided, llmpalooza's paths spread
   0.65–1.13 nats of NLL excess; two runs of the phase-1 fast plan on one
   build gave 0.99 and 1.13 (RE-031). The bound sits inside that spread.
   From the oracle's side the step is no tie (probabilities 0.909 and
@@ -704,7 +704,7 @@ tolerance, or more than two.
 `judge.py greedy --reference` (long-context) reports both verdicts. Every
 recorded run, judged again from its saved logits:
 
-| Run | 32K: equal / near / outside | Outside steps: oracle margin, jitLLM margin, NLL excess | 32K continuation | 128K: equal / near / outside, continuation | Strict / tie-aware |
+| Run | 32K: equal / near / outside | Outside steps: oracle margin, llmpalooza margin, NLL excess | 32K continuation | 128K: equal / near / outside, continuation | Strict / tie-aware |
 | --- | --- | --- | --- | --- | --- |
 | Full 4,096-row chunks (the reference) | 492 / 20 / 0 | — | +1.075% | 500 / 12 / 0, +1.127% | pass / pass |
 | Output-A/HCA off (the previous default) | 492 / 19 / 1 | 249: 2.616, 0.041, 0.653 | +1.079% | — | fail / **pass** |
@@ -733,10 +733,10 @@ owner's tolerance; they are not measured differences.
 the whole flip cap (two) and is 0.044 points over the reference's
 continuation. It matches full chunks on the held-out perplexity and the
 127K answer task, which have no partial tail, and on the community 8K
-trajectory, whose 8,192 tokens are two full chunks. So `jitllm-runtime`
+trajectory, whose 8,192 tokens are two full chunks. So `llmp-runtime`
 now sets `prefill_outa_hca_partial` too (`SetDsv4ServedPrefill`, pinned by
 a unit test): output-A/HCA takes every prefill chunk of 64 to 4,096 rows.
-The option stays as the off switch (`jitllm_dsv4_exec --outa-partial`
+The option stays as the off switch (`llmp_dsv4_exec --outa-partial`
 turns it on in the harness). On this build the every-chunk 32K and 128K
 histories repeat their logits byte for byte (`f5669a25…`, `55162439…`).
 
@@ -755,7 +755,7 @@ Replies change with the arithmetic of the 2,947-row tail. Decode rates
 are unchanged.
 
 Records: `spark:~/scratch/dss5/` (`rejudge2`, `tie`, `h8`, `t8`; the
-earlier records in `~/.local/share/jitllm/m3lc/raw/`), 2026-10-03.
+earlier records in `~/.local/share/llmp/m3lc/raw/`), 2026-10-03.
 
 ## Provenance
 

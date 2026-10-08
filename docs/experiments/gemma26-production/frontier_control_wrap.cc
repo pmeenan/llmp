@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Benchmark-only constructor wrapper; absent from production targets.
-// JITLLM_BENCH_FULL_FINAL_FFN=0|1 selects the historical narrow/full
+// LLMP_BENCH_FULL_FINAL_FFN=0|1 selects the historical narrow/full
 // final FFN for exact bounded Gemma4 options. Unset preserves ordinary options.
 #include <cstdio>
 #include <cstdlib>
@@ -11,17 +11,17 @@
 
 #include "engine/gemma4_runner.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 extern "C" void
 RealGemma4Constructor(en::Gemma4Runner*, en::PagedNode&, en::Gemma4Options, int, std::uint32_t) asm(
-    "__real__ZN6jitllm6engine12Gemma4RunnerC1ERNS0_9PagedNodeENS0_13Gemma4OptionsEij");
+    "__real__ZN4llmp6engine12Gemma4RunnerC1ERNS0_9PagedNodeENS0_13Gemma4OptionsEij");
 extern "C" void
 WrappedGemma4Constructor(en::Gemma4Runner*, en::PagedNode&, en::Gemma4Options, int, std::uint32_t) asm(
-    "__wrap__ZN6jitllm6engine12Gemma4RunnerC1ERNS0_9PagedNodeENS0_13Gemma4OptionsEij");
+    "__wrap__ZN4llmp6engine12Gemma4RunnerC1ERNS0_9PagedNodeENS0_13Gemma4OptionsEij");
 extern "C" void WrappedGemma4Constructor(en::Gemma4Runner* self, en::PagedNode& node,
                                          en::Gemma4Options options, int owner,
                                          std::uint32_t stream) {
-  const auto* supplied = std::getenv("JITLLM_BENCH_FULL_FINAL_FFN");
+  const auto* supplied = std::getenv("LLMP_BENCH_FULL_FINAL_FFN");
   const std::string_view mode = supplied == nullptr ? "ordinary" : supplied;
   const bool dense = options.variant == en::Gemma4Variant::k31B;
   if ((supplied != nullptr && mode != "0" && mode != "1") ||

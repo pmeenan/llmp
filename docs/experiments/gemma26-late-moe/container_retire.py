@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Retire only this acquisition's labelled CID, including SIGKILL recovery."""
 import json
@@ -32,14 +32,14 @@ def retire(scratch,name):
             raise ValueError('ambiguous Docker CID query')
         metadata = json.loads(docker('inspect',cid))
         if len(metadata) != 1 or metadata[0]['Id'] != cid or \
-                metadata[0]['Config']['Labels'].get('jitllm.observer') != LABEL or \
-                metadata[0]['Name'] != '/jitllm-gemma26-late-moe-'+name:
+                metadata[0]['Config']['Labels'].get('llmp.observer') != LABEL or \
+                metadata[0]['Name'] != '/llmp-gemma26-late-moe-'+name:
             raise ValueError('refuse another container owner')
         docker('rm','-f',cid)
     if docker('ps','-aq','--no-trunc','--filter','id='+cid):
         raise ValueError('owned container still exists')
     final = scratch/(name+'-container-retired.json')
-    record = {'cid':cid,'name':'jitllm-gemma26-late-moe-'+name,
+    record = {'cid':cid,'name':'llmp-gemma26-late-moe-'+name,
               'owner_label':LABEL,'container_absent_after_checked_docker_query':True}
     if final.exists():
         if json.loads(final.read_text()) != record:

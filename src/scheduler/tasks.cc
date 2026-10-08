@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "scheduler/tasks.h"
@@ -12,7 +12,7 @@
 
 #include "base/check.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 
 std::string ToString(TaskError error) {
   switch (error) {
@@ -294,4 +294,4 @@ void ReadyQueue::Remove(TaskId task) {
   }
 }
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler

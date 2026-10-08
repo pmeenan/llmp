@@ -4,7 +4,7 @@ arm-reference.patch contains context and modifications of the following source:
 https://github.com/turboderp-org/exllamav3
 Revision: 6b84a21b6f1e5da3f291b9e1019061f0de788279
 
-The original root license is reproduced below. jitLLM-authored patch additions
+The original root license is reproduced below. Llmpalooza-authored patch additions
 are Apache-2.0. This notice does not clear other upstream files or calibration data.
 
 MIT License

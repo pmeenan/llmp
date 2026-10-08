@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A typed byte count with checked arithmetic (AGENTS.md rule 6; D-050's
 // "checked arithmetic"): a sum that would overflow or a difference that
 // would go negative is an empty optional, never a wrapped value.
 
-#ifndef JITLLM_BASE_BYTES_H_
-#define JITLLM_BASE_BYTES_H_
+#ifndef LLMP_BASE_BYTES_H_
+#define LLMP_BASE_BYTES_H_
 
 #include <compare>
 #include <cstdint>
@@ -14,7 +14,7 @@
 
 #include "base/check.h"
 
-namespace jitllm::base {
+namespace llmp::base {
 
 class Bytes {
  public:
@@ -56,6 +56,6 @@ consteval Bytes operator""_MiB(unsigned long long value) {
   return Bytes(value << 20U);
 }
 
-}  // namespace jitllm::base
+}  // namespace llmp::base
 
-#endif  // JITLLM_BASE_BYTES_H_
+#endif  // LLMP_BASE_BYTES_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // M3's first model slice (docs/experiments/dsv4-native/README.md): DeepSeek
@@ -6,7 +6,7 @@
 // artifact, for the correctness comparison with llama.cpp on the same GGUF
 // and a coarse speed and memory report.
 //
-//   jitllm_dsv4_exec --artifact DIR --out DIR [--context N] [--max-rows N]
+//   llmp_dsv4_exec --artifact DIR --out DIR [--context N] [--max-rows N]
 //                    [--prompts FILE --generate N [--force FILE]]
 //                    [--stop-ids ID[,ID...]]
 //                    [--ppl FILE] [--dump NAMES] [--layout-proof]
@@ -26,7 +26,7 @@
 //   fast plan without them, for A/B comparisons.
 // - --exact on: the reference mode, the graph node for node as llama.cpp
 //   builds it and planned unfused (its logits llama.cpp's with fusion off,
-//   bit for bit); off (the default), jitLLM's fast plan (dsv4_graph.h
+//   bit for bit); off (the default), llmpalooza's fast plan (dsv4_graph.h
 //   Dsv4GraphOptions::fused), judged coarsely against llama.cpp; its window
 //   cache a ring (model/dsv4.h Dsv4Window::kRing), the reference mode's the
 //   full cache.
@@ -125,8 +125,8 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 #include "long_context_tasks.h"
@@ -136,9 +136,9 @@
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
-using jitllm::base::Bytes;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
+using llmp::base::Bytes;
 using Status = std::expected<void, std::string>;
 using Clock = std::chrono::steady_clock;
 
@@ -225,7 +225,7 @@ class Device {
     if (auto context = Cuda(cudaFree(nullptr), "the CUDA context"); !context) {
       return std::unexpected(context.error());
     }
-    auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
     if (!execution) {
       return Error("OpenDeviceExecution failed");
     }
@@ -244,8 +244,8 @@ class Device {
       std::println(stderr, "the stream could not be retired");
     }
   }
-  jitllm::providers::DeviceExecution& execution() { return *execution_; }
-  jitllm::providers::StreamId stream() const { return stream_; }
+  llmp::providers::DeviceExecution& execution() { return *execution_; }
+  llmp::providers::StreamId stream() const { return stream_; }
   std::expected<cudaStream_t, std::string> Stream() {
     const auto native = execution_->Submission(stream_);
     if (!native) {
@@ -264,7 +264,7 @@ class Device {
       if (!state) {
         return Error("Query failed");
       }
-      if (*state == jitllm::providers::FenceState::kComplete) {
+      if (*state == llmp::providers::FenceState::kComplete) {
         break;
       }
       if (Clock::now() > deadline) {
@@ -279,11 +279,11 @@ class Device {
   }
 
  private:
-  Device(std::unique_ptr<jitllm::providers::DeviceExecution> execution,
-         jitllm::providers::StreamId stream)
+  Device(std::unique_ptr<llmp::providers::DeviceExecution> execution,
+         llmp::providers::StreamId stream)
       : execution_(std::move(execution)), stream_(stream) {}
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  llmp::providers::StreamId stream_;
 };
 
 // ------------------------------------------------------------------ weights
@@ -307,19 +307,19 @@ struct Weights {
   double load_seconds = 0;
 };
 
-std::uint64_t ResourceAddress(const jitllm::artifact::Artifact& artifact, const Weights& w,
+std::uint64_t ResourceAddress(const llmp::artifact::Artifact& artifact, const Weights& w,
                               std::uint32_t resource) {
   const auto& r = artifact.resources()[resource];
   return w.group_address[r.group] + r.offset.value();
 }
 
-std::uint64_t ArrayAddress(const jitllm::artifact::Artifact& artifact, const Weights& w,
+std::uint64_t ArrayAddress(const llmp::artifact::Artifact& artifact, const Weights& w,
                            std::uint32_t array) {
   const auto& a = artifact.expert_arrays()[array];
   return w.group_address[a.first_group] + a.group_offset.value();
 }
 
-Status PlaceWeights(const jitllm::artifact::Artifact& artifact, const md::Dsv4Profile& profile,
+Status PlaceWeights(const llmp::artifact::Artifact& artifact, const md::Dsv4Profile& profile,
                     const md::Dsv4Binding& binding, Weights& w) {
   const auto groups = artifact.groups();
   w.group_address.assign(groups.size(), 0);
@@ -357,7 +357,7 @@ Status PlaceWeights(const jitllm::artifact::Artifact& artifact, const md::Dsv4Pr
     const std::uint32_t layer_first = first_group.value_or(0);
     for (std::uint32_t e = 0; e < profile.experts; ++e) {
       const auto& g = groups[layer_first + e];
-      if (g.kind != jitllm::artifact::GroupKind::kExpert || g.stored.value() != stored) {
+      if (g.kind != llmp::artifact::GroupKind::kExpert || g.stored.value() != stored) {
         return Error(std::format("layer {}'s expert groups are not uniform", il));
       }
     }
@@ -381,7 +381,7 @@ Status PlaceWeights(const jitllm::artifact::Artifact& artifact, const md::Dsv4Pr
     if (expert[g] || g == w.table_group) {
       continue;
     }
-    if (groups[g].kind == jitllm::artifact::GroupKind::kExpert) {
+    if (groups[g].kind == llmp::artifact::GroupKind::kExpert) {
       return Error(std::format("expert group {} belongs to no bound array", g));
     }
     offset[g] = w.dense_bytes;
@@ -427,16 +427,16 @@ Status PlaceWeights(const jitllm::artifact::Artifact& artifact, const md::Dsv4Pr
   return {};
 }
 
-Status LoadWeights(const jitllm::artifact::Artifact& artifact, Device& device, Weights& w) {
+Status LoadWeights(const llmp::artifact::Artifact& artifact, Device& device, Weights& w) {
   const auto start = Clock::now();
   const auto groups = artifact.groups();
-  std::vector<jitllm::artifact::ChunkKey> all;
+  std::vector<llmp::artifact::ChunkKey> all;
   for (std::uint32_t g = 0; g < groups.size(); ++g) {
     for (std::uint32_t c = 0; c < groups[g].chunks; ++c) {
       all.push_back({.group = g, .chunk = c});
     }
   }
-  const jitllm::artifact::ReadLimits limits{};
+  const llmp::artifact::ReadLimits limits{};
   const auto runs = artifact.PlanReads(all, {}, limits);
   if (!runs) {
     return Error("the artifact's read plan was refused");
@@ -448,7 +448,7 @@ Status LoadWeights(const jitllm::artifact::Artifact& artifact, Device& device, W
       return r;
     }
   }
-  std::vector<jitllm::artifact::FileDescriptor> shards;
+  std::vector<llmp::artifact::FileDescriptor> shards;
   for (std::uint32_t s = 0; s < artifact.shards().size(); ++s) {
     auto fd = artifact.OpenShardForDirectRead(s);
     if (!fd) {
@@ -538,7 +538,7 @@ struct Planned {
 };
 
 struct Model {
-  const jitllm::artifact::Artifact* artifact = nullptr;
+  const llmp::artifact::Artifact* artifact = nullptr;
   const md::Dsv4Profile* profile = nullptr;
   const md::Dsv4Binding* binding = nullptr;
   const Weights* weights = nullptr;
@@ -680,8 +680,8 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
     // benchmark's opt-in cache includes it; no runtime plan changes.
     for (auto* node : g.nodes) {
       if (node->op == GGML_OP_FLASH_ATTN_EXT &&
-          kg::JitllmOpOf(node->src[3]) == kg::JitllmOp::kDsv4SparseMask &&
-          kg::JitllmOpInt(node->src[3], 1) == 1) {
+          kg::LlmpOpOf(node->src[3]) == kg::LlmpOp::kDsv4SparseMask &&
+          kg::LlmpOpInt(node->src[3], 1) == 1) {
         kg::MarkDsv4HcaTokentile(node, first_position);
       }
     }
@@ -749,7 +749,7 @@ Status WriteFloats(const std::filesystem::path& p, std::span<const float> v);
 class Runner {
  public:
   Runner(Device& device, Model model, kg::LaunchContext& launch,
-         const jitllm::execution::Registry& registry, std::uint64_t activations,
+         const llmp::execution::Registry& registry, std::uint64_t activations,
          std::uint64_t activation_bytes, void* staging, std::uint64_t staging_bytes)
       : d_(device),
         m_(std::move(model)),
@@ -1203,7 +1203,7 @@ class Runner {
   Device& d_;
   Model m_;
   kg::LaunchContext& launch_;
-  const jitllm::execution::Registry& registry_;
+  const llmp::execution::Registry& registry_;
   std::uint64_t activations_;
   std::uint64_t activation_bytes_;
   std::byte* staging_;
@@ -1281,7 +1281,7 @@ Status WriteFloats(const std::filesystem::path& p, std::span<const float> v) {
 // Every layer's routed products over the slab against the reference layout
 // ([k, n, experts] packed), bit for bit, at 1, 5 and 64 tokens.
 Status LayoutProof(const Model& m, Device& d, kg::LaunchContext& launch,
-                   const jitllm::execution::Registry& registry, std::string& report) {
+                   const llmp::execution::Registry& registry, std::string& report) {
   const auto& a = *m.artifact;
   const auto& w = *m.weights;
   std::mt19937 rng(20260928);  // NOLINT(bugprone-random-generator-seed): reproducible
@@ -1512,7 +1512,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       auto text = value();
       if (!text) return std::unexpected(text.error());
       if (!o.stop_ids.empty()) return Error("--stop-ids may be supplied once");
-      auto stops = jitllm::benchmarks::long_context::ParseStopIds(*text, md::Dsv4Flash().vocab);
+      auto stops = llmp::benchmarks::long_context::ParseStopIds(*text, md::Dsv4Flash().vocab);
       if (!stops) return std::unexpected(stops.error());
       o.stop_ids = std::move(*stops);
     } else if (a == "--bench-prefill") {
@@ -1637,7 +1637,7 @@ Status Run(const Options& o) {
     return std::unexpected(device.error());
   }
   Device& d = **device;
-  auto artifact = jitllm::artifact::Artifact::Open(o.artifact);
+  auto artifact = llmp::artifact::Artifact::Open(o.artifact);
   if (!artifact) {
     return Error(std::format("the artifact was refused: {}", artifact.error().reason));
   }
@@ -1789,7 +1789,7 @@ Status Run(const Options& o) {
   if (!launch) {
     return Error(launch.error().detail);
   }
-  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  auto registry = llmp::execution::Registry::Create(kg::Implementations());
   if (!registry) {
     return Error(registry.error().detail);
   }
@@ -1926,7 +1926,7 @@ Status Run(const Options& o) {
       auto n_past = static_cast<std::uint32_t>(prompt.ids.size());
       double decode = 0;
       std::uint32_t decode_steps = 0;
-      bool stopped = jitllm::benchmarks::long_context::IsStop(o.stop_ids, argmax.back());
+      bool stopped = llmp::benchmarks::long_context::IsStop(o.stop_ids, argmax.back());
       for (std::uint32_t k = 1; k < o.generate; ++k) {
         if (stopped) break;
         const std::int32_t next = forced.empty() ? argmax.back() : forced[pi].ids[k - 1];
@@ -1944,7 +1944,7 @@ Status Run(const Options& o) {
         ++decode_steps;
         steps.insert(steps.end(), logits.begin(), logits.end());
         argmax.push_back(Argmax(logits));
-        stopped = jitllm::benchmarks::long_context::IsStop(o.stop_ids, argmax.back());
+        stopped = llmp::benchmarks::long_context::IsStop(o.stop_ids, argmax.back());
       }
       if (auto r = WriteFloats(o.out / (prompt.name + ".logits.f32"), steps); !r) {
         return r;
@@ -2089,7 +2089,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   if (auto r = Run(*options); !r) {
-    std::println(stderr, "jitllm_dsv4_exec: {}", r.error());
+    std::println(stderr, "llmp_dsv4_exec: {}", r.error());
     return 1;
   }
   return 0;

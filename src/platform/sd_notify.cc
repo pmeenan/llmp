@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/sd_notify.h"
@@ -15,7 +15,7 @@
 #include <string>
 #include <string_view>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 std::expected<bool, std::string> NotifyServiceManager(std::string_view state) {
   const char* socket_path = std::getenv("NOTIFY_SOCKET");  // NOLINT(concurrency-mt-unsafe)
@@ -49,4 +49,4 @@ std::expected<bool, std::string> NotifyServiceManager(std::string_view state) {
   return true;
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

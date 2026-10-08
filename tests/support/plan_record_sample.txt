@@ -1,4 +1,4 @@
-{"type":"header","format":"jitllm-plan-record/1","source":"sample: the first seven launches of control-fused's decode step","loaded":{}}
+{"type":"header","format":"llmp-plan-record/1","source":"sample: the first seven launches of control-fused's decode step","loaded":{}}
 {"type":"chunk","evaluation":1,"chunk":1,"rows":1,"n_past":32}
 {"type":"kernel","name":"_Z12rms_norm_f32ILi256ELb1ELb0ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_f","api":"cudaLaunchKernelExC","grid":[1,1,1],"block":[256,1,1],"shared":128,"registers":40,"static_shared":0,"local":0,"stream":"0x10"}
 {"type":"kernel","name":"_Z13mul_mat_vec_fI6__halfS0_Li1ELi224ELb1ELb0EEvPKT_PKfPKi31ggml_cuda_mm_fusion_args_devicePfi5uint3iiiSA_iiiSA_iiii","api":"cudaLaunchKernelExC","grid":[896,1,1],"block":[224,1,1],"shared":256,"registers":42,"static_shared":0,"local":0,"stream":"0x10"}

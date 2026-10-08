@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A request's lease (M3's lease per request; scheduler.h HoldLease,
@@ -50,17 +50,17 @@
 
 namespace {
 
-namespace sc = jitllm::scheduler;
-namespace ts = jitllm::test_support;
-using jitllm::base::Bytes;
-using jitllm::catalog::Closure;
-using jitllm::catalog::ExtentId;
-using jitllm::catalog::ExtentState;
-using jitllm::catalog::ExtentView;
-using jitllm::catalog::LeaseId;
-using jitllm::providers::ProviderError;
-using jitllm::providers::StreamId;
-using jitllm::test_support::Failed;
+namespace sc = llmp::scheduler;
+namespace ts = llmp::test_support;
+using llmp::base::Bytes;
+using llmp::catalog::Closure;
+using llmp::catalog::ExtentId;
+using llmp::catalog::ExtentState;
+using llmp::catalog::ExtentView;
+using llmp::catalog::LeaseId;
+using llmp::providers::ProviderError;
+using llmp::providers::StreamId;
+using llmp::test_support::Failed;
 
 constexpr std::uint64_t kSize = 64ULL * 1024;  // one extent, one slot
 constexpr std::size_t kPerModel = 3;
@@ -71,14 +71,14 @@ constexpr auto kPatience = std::chrono::seconds(120);  // a hang, not a timing
 // Posts a control, retrying while the queue is full.
 void Offer(sc::Scheduler& scheduler, sc::Control&& control) {
   // NOLINTNEXTLINE(bugprone-use-after-move): a refused control is untouched
-  while (scheduler.Post(std::move(control)) == jitllm::base::PushResult::kFull) {
+  while (scheduler.Post(std::move(control)) == llmp::base::PushResult::kFull) {
     std::this_thread::yield();
   }
 }
 
 // A job that queues nothing and counts its runs.
 sc::DeviceJob Counting(std::atomic<int>& runs) {
-  return [&runs](jitllm::providers::NativeStream /*stream*/) {
+  return [&runs](llmp::providers::NativeStream /*stream*/) {
     runs.fetch_add(1);
     return sc::JobResult::kQueued;
   };
@@ -118,7 +118,7 @@ class EndingProgram final : public sc::TaskProgram {
       }
       report_.ended = context.EndLease(*held);
       report_.ended_again = context.EndLease(*held);  // waits once, not twice
-      report_.after_end = jitllm::test_support::Failed(
+      report_.after_end = llmp::test_support::Failed(
           context.SubmitLaunch(*held, sc::LaunchWork{.stream = 0, .job = Counting(runs_)}));
       return sc::Step::Wait();  // the step's fence, then the lease's release
     }
@@ -216,15 +216,15 @@ class HeldLeaseTest : public ::testing::Test {
     zone_ = memory_.Reserve(Bytes(kSize * kSlots)).value();
     const auto zone_backing = memory_.Create(kHostClass, Bytes(kSize * kSlots)).value();
     ASSERT_TRUE(memory_.Map(zone_, Bytes(0), zone_backing).has_value());
-    ASSERT_TRUE(memory_
-                    .SetAccess(zone_, Bytes(0), Bytes(kSize * kSlots),
-                               jitllm::providers::Access::kReadWrite)
-                    .has_value());
+    ASSERT_TRUE(
+        memory_
+            .SetAccess(zone_, Bytes(0), Bytes(kSize * kSlots), llmp::providers::Access::kReadWrite)
+            .has_value());
     domain_ = catalog_.AddDomain("node");
     workspace_ = catalog_
                      .AddExtent({.domain = domain_,
-                                 .memory_class = jitllm::catalog::MemoryClass::kScratch,
-                                 .recovery = jitllm::catalog::Recovery::kDiscardable,
+                                 .memory_class = llmp::catalog::MemoryClass::kScratch,
+                                 .recovery = llmp::catalog::Recovery::kDiscardable,
                                  .size = Bytes(kSize),
                                  .content = {}},
                                 true)
@@ -243,8 +243,8 @@ class HeldLeaseTest : public ::testing::Test {
         weights_.at(m).push_back(
             catalog_
                 .AddExtent({.domain = domain_,
-                            .memory_class = jitllm::catalog::MemoryClass::kWeights,
-                            .recovery = jitllm::catalog::Recovery::kFromArtifact,
+                            .memory_class = llmp::catalog::MemoryClass::kWeights,
+                            .recovery = llmp::catalog::Recovery::kFromArtifact,
                             .size = Bytes(kSize),
                             .content = {.artifact = artifact,
                                         .group = 0,
@@ -261,13 +261,13 @@ class HeldLeaseTest : public ::testing::Test {
     board_ = std::make_unique<sc::CompletionBoard>(32, wake_);
     storage_lane_ = std::make_unique<sc::StorageService>(
         storage_,
-        jitllm::providers::ReaderSettings{.alignment = 4096,
-                                          .request_bytes = 16 * 1024,
-                                          .retries = 2,
-                                          .reads = 32,
-                                          .waiters = 8,
-                                          .span_bytes = jitllm::providers::kNoCoalescing,
-                                          .span_segments = jitllm::providers::kMaxSegments},
+        llmp::providers::ReaderSettings{.alignment = 4096,
+                                        .request_bytes = 16 * 1024,
+                                        .retries = 2,
+                                        .reads = 32,
+                                        .waiters = 8,
+                                        .span_bytes = llmp::providers::kNoCoalescing,
+                                        .span_segments = llmp::providers::kMaxSegments},
         *board_, sc::QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     device_lane_ = std::make_unique<sc::DeviceService>(
         execution_, std::span<const StreamId>(&stream_, 1), *board_,
@@ -374,7 +374,7 @@ class HeldLeaseTest : public ::testing::Test {
   }
   void Signal(const Request& request) {
     ASSERT_EQ(scheduler_->Post(sc::SignalRequest{.request = request.tag}),
-              jitllm::base::PushResult::kAccepted);
+              llmp::base::PushResult::kAccepted);
   }
   // One step: hands it over and turns everything (with `device`, the fake
   // device runs it; without, its fence stays pending).
@@ -427,21 +427,21 @@ class HeldLeaseTest : public ::testing::Test {
   static constexpr std::size_t kHostClass = 1;
 
   // Declared in dependency order: the scheduler goes first, the providers last.
-  jitllm::providers::fake::FakeDeviceMemory memory_{Bytes(kSize), Bytes(kSize * 64)};
-  jitllm::providers::fake::FakeStorage storage_{8, 4096};
-  jitllm::providers::fake::FakeDeviceExecution execution_;
-  jitllm::catalog::Catalog catalog_;
-  jitllm::base::WakeFlag wake_;
+  llmp::providers::fake::FakeDeviceMemory memory_{Bytes(kSize), Bytes(kSize * 64)};
+  llmp::providers::fake::FakeStorage storage_{8, 4096};
+  llmp::providers::fake::FakeDeviceExecution execution_;
+  llmp::catalog::Catalog catalog_;
+  llmp::base::WakeFlag wake_;
   std::unique_ptr<sc::CompletionBoard> board_;
   std::unique_ptr<sc::StorageService> storage_lane_;
   std::unique_ptr<sc::DeviceService> device_lane_;
   Request unproven_request_;  // its reporting program may survive until scheduler destruction
   std::unique_ptr<sc::Scheduler> scheduler_;
 
-  jitllm::providers::ReservationId zone_;
-  jitllm::catalog::DomainId domain_;
+  llmp::providers::ReservationId zone_;
+  llmp::catalog::DomainId domain_;
   ExtentId workspace_;
-  std::array<jitllm::providers::ReservationId, 2> places_;
+  std::array<llmp::providers::ReservationId, 2> places_;
   std::array<std::uint64_t, 2> bases_{};
   std::array<int, 2> fds_{};
   std::array<std::vector<ExtentId>, 2> weights_;
@@ -644,9 +644,9 @@ TEST_F(HeldLeaseTest, EndingWithAStepInFlightWaitsForItsFence) {
   // A signal for the request once it has ended (and one for a request that
   // never was) finds no task: nothing is woken, kept or released.
   ASSERT_EQ(scheduler_->Post(sc::SignalRequest{.request = request_}),
-            jitllm::base::PushResult::kAccepted);
+            llmp::base::PushResult::kAccepted);
   ASSERT_EQ(scheduler_->Post(sc::SignalRequest{.request = request_ + 100}),
-            jitllm::base::PushResult::kAccepted);
+            llmp::base::PushResult::kAccepted);
   Settle();
   EXPECT_EQ(scheduler_->tasks().size(), 0U);
   EXPECT_EQ(scheduler_->held(), 0U);
@@ -835,8 +835,8 @@ TEST_F(HeldLeaseTest, AnExternalCountOutlivesItsChannel) {
 // to wait and registering that wait. ASan checks that retirement never leaves
 // EndLease accessing a freed Held; the task must also receive its wake exactly once.
 TEST(HeldLeaseRaceTest, ExternalCompletionRacesLeaseEnd) {
-  jitllm::catalog::Catalog catalog;
-  jitllm::base::WakeFlag wake;
+  llmp::catalog::Catalog catalog;
+  llmp::base::WakeFlag wake;
   sc::CompletionBoard board(16, wake);
   ts::Done done;  // outlives the scheduler even if the deadline assertion fails
   auto external = std::make_shared<std::atomic<std::uint32_t>>(0);
@@ -968,7 +968,7 @@ TEST_F(HeldLeaseTest, ThreadedStepsLoseNoSignalAndASwapWaitsForTheEnd) {
                                swapping, weights_[0], ModelClosure(1), /*handoff=*/true, report)});
     int seen = 0;
     for (int step = 0; step < kSteps; ++step) {
-      request.channel.job = [&ran, step](jitllm::providers::NativeStream /*stream*/) {
+      request.channel.job = [&ran, step](llmp::providers::NativeStream /*stream*/) {
         ran = step + 1;
         return sc::JobResult::kQueued;
       };

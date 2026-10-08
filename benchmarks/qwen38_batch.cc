@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "qwen38_batch.h"
@@ -22,7 +22,7 @@
 #include "providers/device_runtime.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::benchmarks::qwen_batch {
+namespace llmp::benchmarks::qwen_batch {
 namespace {
 namespace en = engine;
 namespace kg = kernels::ggml;
@@ -267,7 +267,7 @@ Proof::Status Proof::Setup() {
       std::uint64_t packed = 0;
       for (const auto& pair : p.products) {
         const auto* both = pair[2];
-        const bool mx = kg::JitllmOpOf(both) == kg::JitllmOp::kMxfp8MulMatVec;
+        const bool mx = kg::LlmpOpOf(both) == kg::LlmpOp::kMxfp8MulMatVec;
         if (!add(packed, ggml_nbytes(both)) || !add(packed, ggml_nbytes(both->src[mx ? 2 : 1])) ||
             (!mx && !add(packed, ggml_nbytes(both->src[2])))) {
           return Error("C4 paid pack/replacement allocation sum overflow");
@@ -1195,7 +1195,7 @@ std::string Proof::receipt() const {
                     paths.refused, paths.nodes, paths.capture_seconds, paths.instantiate_seconds);
   }
   return std::format(
-      R"({{"schema":"jitllm-qwen-c2-shared-rows-graphs-v1","complete":{},"requests":2,)"
+      R"({{"schema":"llmp-qwen-c2-shared-rows-graphs-v1","complete":{},"requests":2,)"
       R"("fixed_depth":3,"draft_vocab":47172,"timing_claim":false,"shared_weight_owners":1,)"
       R"("live_request_states":2,"prefill_owner_state":1,"baseline_device_bytes":{},)"
       R"("copied_checkpoint_bytes":{},"initial_history_sha256":[{}],"output_controls":{},)"
@@ -1241,4 +1241,4 @@ Proof::Status Proof::Release() {
   // owner.Release follows this call, before this object's members die.
   return en::support::Joined(problems);
 }
-}  // namespace jitllm::benchmarks::qwen_batch
+}  // namespace llmp::benchmarks::qwen_batch

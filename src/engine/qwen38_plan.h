@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Qwen3.8 Flash Next's chunk planning (docs/experiments/qwen38-native/,
@@ -10,8 +10,8 @@
 // copy order. The paged runner's logits are checked equal to the resident
 // harness's outputs bit for bit. CUDA builds only.
 
-#ifndef JITLLM_ENGINE_QWEN38_PLAN_H_
-#define JITLLM_ENGINE_QWEN38_PLAN_H_
+#ifndef LLMP_ENGINE_QWEN38_PLAN_H_
+#define LLMP_ENGINE_QWEN38_PLAN_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -33,7 +33,7 @@
 #include "kernels/ggml/tensors.h"
 #include "model/qwen38.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 // Where a Qwen3.8 model's weights and state live.
 struct Qwen38Places {
@@ -68,7 +68,7 @@ struct Qwen38Model {
   const model::Qwen38Binding* binding = nullptr;
   const model::Qwen38StateLayout* state = nullptr;
   Qwen38Places places;
-  // The graph (qwen38_graph.h Qwen38GraphOptions): jitLLM's fusions, and
+  // The graph (qwen38_graph.h Qwen38GraphOptions): llmpalooza's fusions, and
   // whether each layer's expert slots hold the CUTLASS layout (the
   // artifact's, binding->cutlass(), or converted at load by the resident
   // harness) rather than GGML's.
@@ -160,6 +160,6 @@ void Qwen38MtpSources(const kernels::ggml::Qwen38MtpGraph& g,
                       std::span<const model::Qwen38ChunkInputs> passes,
                       std::span<const std::int32_t> tokens, Qwen38MtpHostInputs& out);
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_QWEN38_PLAN_H_
+#endif  // LLMP_ENGINE_QWEN38_PLAN_H_

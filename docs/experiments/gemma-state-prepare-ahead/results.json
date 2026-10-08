@@ -694,9 +694,9 @@
     "checked_sha256": "7f48d9ef6a29bc1dadd02bf628a83258c7c1f0b460b443bd4a99b9d85075318f",
     "sdk_receipt_sha256": "0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd",
     "final_ELFs": {
-      "benchmarks/jitllm_gemma3_joint_prefill_probe": "f0431a4f3807ee9a62a2c58698be7d03d65c583c3ef959f22e884cf51accb675",
+      "benchmarks/llmp_gemma3_joint_prefill_probe": "f0431a4f3807ee9a62a2c58698be7d03d65c583c3ef959f22e884cf51accb675",
       "tests/unit/gemma_prefill_serving_gpu_test": "9ab9426b63bf0113066149dcce2d2a1b1b9edd8d68504bd628ec7b0fc88d605e",
-      "src/runtime/jitllm-runtime": "259f9315afb69ce84a33177abb8bb8bd471a933bf5f8c3c6c423c440bcb7dc35"
+      "src/runtime/llmp-runtime": "259f9315afb69ce84a33177abb8bb8bd471a933bf5f8c3c6c423c440bcb7dc35"
     },
     "cuBLAS_sha256": {
       "libcublas.so.13": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b",
@@ -873,9 +873,9 @@
     "checked_sha256": "a530d06dd344fe7bbbae3a77816ad07581e86618744abbb028a3f03d71452549",
     "sdk_receipt_sha256": "0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd",
     "final_ELFs": {
-      "benchmarks/jitllm_gemma2_joint_prefill_probe": "c8f2d85e12c08f10cc187b6c2ae4e0276a6d7bc61f97f1e644f101da4f4917e2",
+      "benchmarks/llmp_gemma2_joint_prefill_probe": "c8f2d85e12c08f10cc187b6c2ae4e0276a6d7bc61f97f1e644f101da4f4917e2",
       "tests/unit/gemma_prefill_serving_gpu_test": "3b8007964abb7cc5d69daeb09c1f8b641f66856c0a612b6b298900453f87962c",
-      "src/runtime/jitllm-runtime": "0aefc8004e3bbf1c52c3907f27636a22bf0575c63f36a7b114363b266a95aaff"
+      "src/runtime/llmp-runtime": "0aefc8004e3bbf1c52c3907f27636a22bf0575c63f36a7b114363b266a95aaff"
     },
     "positive_executions": 2,
     "unique_positive_cases": 2,
@@ -919,14 +919,14 @@
       "Admitted8448ScalarPreparationPreservesPromptAndContinuation/1"
     ],
     "inputs": {
-      "retained_relative_path": ".local/share/jitllm/references/gemma3-depth/ids.i32",
+      "retained_relative_path": ".local/share/llmp/references/gemma3-depth/ids.i32",
       "bytes": 33024,
       "count": 8256,
       "sha256": "44196b939c8b53b535a59e1c139f6dc4a7959f7880cd8c8a9d91688818f5ad67",
       "prefix8192_sha256": "ae6c58cc2269b72b4ab3d98feb83dc318d805fb60b507a0200bcee139805e83d",
       "anchor8192": 496,
       "bos": 2,
-      "original_source": ".local/share/jitllm/gemma-context-depth3/input/ids.i32",
+      "original_source": ".local/share/llmp/gemma-context-depth3/input/ids.i32",
       "input_manifest_sha256": "1a4aec9ad5c3a55f1d4ba6a81ce6b206888887834a4fbbcabe1573518c707754",
       "quality_manifest_sha256": "945a57798269af14dc6c074e21d3fdd49274c2f4392ac95d7f184fd0c8d09312",
       "source_prompt_sha256": "3016ddb3960e77f9a9dc649bca88dad0a7578d8afb07dd8ecf00b98144dc3756",

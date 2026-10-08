@@ -4,7 +4,7 @@
     "base": "87858b503d52f3e860474349d7ec6954fb9e9530",
     "ggml_release": "v0.6.0",
     "ggml_commit": "d81235049384534c167caea52b85a694f6103d14",
-    "patched_ggml_tree": "d50cb7f97867b4c5903a5b6c902474e9d716b7bf7afdb98dc360af82be4e0257",
+    "patched_ggml_tree": "37947dde9e23668f876ec6cda08300f20b47588083b2269606dce57303990c0a",
     "source_bundle_sha256": "9c2b71dd0e4fbaa9b1ed29a2b06791ebf3bcac0b73fd36367e7d002f0ed7b3bb",
     "source_bundle_encoding": "sorted owned relative path + NUL + raw file bytes + NUL",
     "owned_source": {
@@ -13,16 +13,16 @@
         "sha256": "8d1a329c37ce3e0160388fbaa97eb45aec31e13d905577455012de944778844e"
       },
       "benchmarks/gemma31_mmvq_pair.h": {
-        "bytes": 791,
-        "sha256": "a067238e5e06a23e7542708f2c42cc502d3855ebdb540f4080a64963050ced19"
+        "bytes": 787,
+        "sha256": "f3eebd8ceaa671956d7b4ad81b6b0768967929514e238261b8ab0b70cc0c29c6"
       },
       "benchmarks/gemma31_mmvq_pair.cu": {
         "bytes": 5596,
-        "sha256": "60bac41c1da27e7b36653c823d42cb01ec4037370166b4df9b73dc6257734a1c"
+        "sha256": "0e726c13e2af0dfde719cf582724413c114725c83e693f1a7aa6a11663457ea6"
       },
       "benchmarks/gemma31_mmvq_pair_bench.cc": {
-        "bytes": 16751,
-        "sha256": "59005a0953fa94c47b32f58e02641f18465ca74624bf9dbbdd08fa753cdf8954"
+        "bytes": 16739,
+        "sha256": "1442c9ed6b6123da5b8216cf9bbc0c2cae3c6d7fcd5d8eb5bb908642ed378fa4"
       }
     },
     "native_binary": {

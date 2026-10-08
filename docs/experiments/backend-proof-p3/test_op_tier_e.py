@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Self-test of op_tier_e.py on synthetic recordings (reference only; GPU, reference container).
 
@@ -120,7 +120,7 @@ def generate(out, artifact_dir, ids_path, lib):
     kcache = [np.zeros((cap, kvh, hd), "<f2") for _ in range(layers)]
     vcache = [np.zeros((cap, kvh, hd), "<f2") for _ in range(layers)]
     (out / str(PREFIX)).mkdir(parents=True, exist_ok=True)
-    (out / "manifest.json").write_text(json.dumps({"format": "jitllm-exl3-ops/1", "fixture": "4.0bpw", "arm": "G",
+    (out / "manifest.json").write_text(json.dumps({"format": "llmp-exl3-ops/1", "fixture": "4.0bpw", "arm": "G",
                                                    "artifact": artifact_dir.name, "prefixes": [PREFIX],
                                                    "suffix": SUFFIX}))
     logits_rows = []
@@ -234,12 +234,12 @@ def generate(out, artifact_dir, ids_path, lib):
         blob.close()
         (out / str(PREFIX) / f"{phase}.json").write_text(json.dumps(
             {"prefix": PREFIX, "phase": phase, "rows": n, "past": past, "npad": npad, "ops": ops_list}))
-    control = out / "uninstrumented"   # as jitllm_exl3_exec writes an uninstrumented run's --out
+    control = out / "uninstrumented"   # as llmp_exl3_exec writes an uninstrumented run's --out
     control.mkdir()
     np.save(control / f"logits-{PREFIX}.prefill.npy", logits_rows[0])
     np.save(control / f"logits-{PREFIX}.suffix.npy", np.concatenate(logits_rows[1:]))
     (control / "manifest.json").write_text(json.dumps(
-        {"harness": "jitllm_exl3_exec", "fixture": "4.0bpw", "arm": "G", "artifact": artifact_dir.name,
+        {"harness": "llmp_exl3_exec", "fixture": "4.0bpw", "arm": "G", "artifact": artifact_dir.name,
          "capture": False, "record_ops": False, "evaluations": 2, "mismatches": 0}))
 
 

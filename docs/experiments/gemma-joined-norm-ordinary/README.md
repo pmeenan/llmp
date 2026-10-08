@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Dense31 ordinary-product norm C4 first screen
@@ -112,14 +112,14 @@ ubatch128 heads equal the retained ubatch128 file.
 Synchronize the isolated source with checksum comparison and fresh mtimes,
 then run a locked native build under Spark-b's installed supervisor. Supply
 `ids31.i32` and exact pinned llama.cpp headers in
-`~/.local/share/jitllm/gemma-joined-norm-ordinary`, obtained with `git show` at
+`~/.local/share/llmp/gemma-joined-norm-ordinary`, obtained with `git show` at
 the pin without changing the owner checkout. Invoke `reference.sh build` under
 the same supervisor. Wrapper scratch/source/model paths are owner-local
 reproduction paths, not application configuration.
 
 Create a fresh external `native/` directory and record source/binary/receipt
 identities in `native/source-identities.json` before acquiring arms. Invoke
-`jitllm_gemma_joined ARTIFACT OUTPUT 31 4 joined POLICY IDS` first with
+`llmp_gemma_joined ARTIFACT OUTPUT 31 4 joined POLICY IDS` first with
 `rows-norm-control/rows-norm`, then `joined-first/norm` and
 `joined-repeat/norm`. Run `own_freeze.py NATIVE_DIRECTORY`, which refuses an
 existing freeze path. Only afterward run `reference.sh 31 REF_FIRST 4 128

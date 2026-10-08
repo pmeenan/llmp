@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Dense31 natural C4 first-local attention replay
@@ -122,14 +122,14 @@ verified artifact and the external 1,024-ID I32 file identified in provenance:
 ```sh
 # Freeze the capture sources/binary/ID recipe before these four runs.
 bash reference.sh build
-jitllm_gemma_attention_capture ARTIFACT capture-first 31 4 joined norm IDS_I32 capture
-jitllm_gemma_attention_capture ARTIFACT control-first 31 4 joined norm IDS_I32 control
+llmp_gemma_attention_capture ARTIFACT capture-first 31 4 joined norm IDS_I32 capture
+llmp_gemma_attention_capture ARTIFACT control-first 31 4 joined norm IDS_I32 control
 # Repeat both in new directories before preparing the immutable replay payload.
 python3 prepare.py EXPERIMENT_ROOT SOURCE_ROOT
 # Freeze the replay sources, both binaries, headers and packed inputs now.
-jitllm_gemma_attention_replay EXPERIMENT_ROOT/packed native-own-B B
-jitllm_gemma_attention_replay EXPERIMENT_ROOT/packed native-own-C C
-jitllm_gemma_attention_replay EXPERIMENT_ROOT/packed native-own-D D
+llmp_gemma_attention_replay EXPERIMENT_ROOT/packed native-own-B B
+llmp_gemma_attention_replay EXPERIMENT_ROOT/packed native-own-C C
+llmp_gemma_attention_replay EXPERIMENT_ROOT/packed native-own-D D
 # Freeze complete native own outputs and successful retirement before A.
 bash reference.sh replay original-first
 # Paid B/C/D calls in new directories, then:

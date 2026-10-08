@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "memory/commitment.h"
@@ -12,7 +12,7 @@
 
 #include "base/bytes.h"
 
-namespace jitllm::memory {
+namespace llmp::memory {
 
 std::string ToString(CommitmentError error) {
   switch (error) {
@@ -322,4 +322,4 @@ std::optional<CommitmentTotals> CommitmentLedger::Totals(DomainId domain) const 
   return totals ? std::optional<CommitmentTotals>(*totals) : std::nullopt;
 }
 
-}  // namespace jitllm::memory
+}  // namespace llmp::memory

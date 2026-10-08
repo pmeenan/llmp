@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Bounded graph-order membership
@@ -56,7 +56,7 @@ binary passes all eight focused controls without skips. Full regression is defer
 the performance changes settle. The focused 145 controls and exact model
 screens remain the completed checks.
 
-Reproduce with the existing `jitllm_gemma_prefill ARTIFACT IDS NEW_OUT PROFILE
+Reproduce with the existing `llmp_gemma_prefill ARTIFACT IDS NEW_OUT PROFILE
 POLICY ROWS normmul-off state-only`, selecting 31/both/256 or 26/all/1024. Use
 original → preserved before binary → candidate first/repeat → original, with
 the existing owned-container ring launcher from the preceding

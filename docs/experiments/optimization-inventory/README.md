@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Cross-implementation optimization inventory
@@ -21,7 +21,7 @@ It proposes bounded comparisons; it does not expand a quality exception.
 | Shared sampling | Validated parameters and finite-logit checks; seeded exact sampling/verification | Validated top_k=1 greedy shortcut, candidate filtering and deterministic token tie handling | Already shared across the LLMs. No family-specific shortcut is owed. New GPU sampling should be justified by measured request cost. |
 
 Source anchors: `src/kernels/ggml/{qwen2_graph,dsv4_graph,qwen38_graph,graph_plan,implementations}.cc`,
-`src/kernels/ggml/{jitllm_ops,ops_ext}.h`,
+`src/kernels/ggml/{llmp_ops,ops_ext}.h`,
 `src/kernels/exl3/{implementations,linear}.cc`,
 `src/kernels/image/{ops,implementations}.h`,
 `src/kernels/image/{flash_attention,conv}.cu`,

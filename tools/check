@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Runs the local check gate's tiers (D-061) at milestone gates and where D-084 asks.
 
@@ -10,7 +10,7 @@
 
 `mise run check`, `mise run check:full` and `mise run check:spark -- --host
 HOST` run these. `check` checks formatting, REUSE compliance, embedded
-license headers and the portability boundaries (tools/jitllm_boundaries.py),
+license headers and the portability boundaries (tools/llmp_boundaries.py),
 runs the tooling tests, builds and tests the native,
 CPU-only and cross presets (cross under qemu-user), then runs clang-tidy. `full` adds the sanitizer builds, the offline,
 copyleft-disabled build in the reference container, the arm64 package with
@@ -47,18 +47,18 @@ import time
 from collections.abc import Callable
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import jitllm_boundaries as boundaries  # noqa: E402
-import jitllm_headers as headers  # noqa: E402
-import jitllm_package as packagelib  # noqa: E402
-import jitllm_sdk as sdklib  # noqa: E402
-import jitllm_sources as srclib  # noqa: E402
-from jitllm_sdk import SdkError  # noqa: E402
+import llmp_boundaries as boundaries  # noqa: E402
+import llmp_headers as headers  # noqa: E402
+import llmp_package as packagelib  # noqa: E402
+import llmp_sdk as sdklib  # noqa: E402
+import llmp_sources as srclib  # noqa: E402
+from llmp_sdk import SdkError  # noqa: E402
 
 REPO = sdklib.REPO
 BUILD = REPO / "tools" / "build"
 
-# jitLLM's own C, C++ and CUDA sources: every tracked or new file with these
-# suffixes outside frozen experiment evidence and third-party code. jitLLM
+# Llmpalooza's own C, C++ and CUDA sources: every tracked or new file with these
+# suffixes outside frozen experiment evidence and third-party code. Llmpalooza
 # names its C++ .cc and .h, but a file named otherwise is checked, not skipped.
 SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx", ".c", ".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp", ".cu", ".cuh")
 NOT_OURS = ("docs/experiments/", "third_party/")
@@ -78,17 +78,17 @@ IGNORED_ENV = frozenset({
     "NVCC_PREPEND_FLAGS", "NVCC_APPEND_FLAGS", "NVCC_CCBIN", "LD_PRELOAD", "LD_LIBRARY_PATH",
     "ASAN_OPTIONS", "UBSAN_OPTIONS", "LSAN_OPTIONS", "TSAN_OPTIONS", "MSAN_OPTIONS",
     "ASAN_SYMBOLIZER_PATH", "LLVM_SYMBOLIZER_PATH"})
-IGNORED_ENV_PREFIXES = ("CMAKE_", "CTEST_", "GTEST_", "JITLLM_TEST_", "QEMU_")
+IGNORED_ENV_PREFIXES = ("CMAKE_", "CTEST_", "GTEST_", "LLMP_TEST_", "QEMU_")
 
 # The reference container (.devcontainer/, D-012, D-049). Its SDK lives in the
 # devcontainer's volumes; each check copies the checkout into a fresh volume
 # at /workspaces, whose download cache starts empty.
-IMAGE = "jitllm-reference:check"
+IMAGE = "llmp-reference:check"
 PLATFORM = "linux/amd64"  # never let a multi-arch digest pick the architecture (RE-015)
-SDK_VOLUME = "jitllm-sdk:/home/ubuntu/.local/share/jitllm"
-SDK_CACHE_VOLUME = "jitllm-cache:/home/ubuntu/.cache/jitllm"
+SDK_VOLUME = "llmp-sdk:/home/ubuntu/.local/share/llmp"
+SDK_CACHE_VOLUME = "llmp-cache:/home/ubuntu/.cache/llmp"
 WORKSPACE = "/workspaces"
-CONTAINER_REPO = f"{WORKSPACE}/jitLLM"
+CONTAINER_REPO = f"{WORKSPACE}/llmp"
 CONTAINER_CACHE = f"{WORKSPACE}/cache"
 # Checked inside the network-denied container before it builds anything.
 NO_NETWORK = ('test "$(ls /sys/class/net)" = lo || '
@@ -270,12 +270,12 @@ class Reference:
 
     def __init__(self):
         self.token = f"{os.getpid()}-{secrets.token_hex(4)}"
-        self.volume = f"jitllm-check-{self.token}"
+        self.volume = f"llmp-check-{self.token}"
         self.containers: list[str] = []
 
     def docker(self, command: list[str], *, network: bool = True, sdk_writable: bool = False,
                sdk_cache: bool = False, stdin=None, workdir: str = CONTAINER_REPO) -> list[str]:
-        name = f"jitllm-check-{self.token}-{len(self.containers)}"
+        name = f"llmp-check-{self.token}-{len(self.containers)}"
         self.containers.append(name)
         sdk = SDK_VOLUME if sdk_writable else SDK_VOLUME + ":ro"
         args = ["docker", "run", "--rm", "--name", name, "--platform", PLATFORM,
@@ -328,7 +328,7 @@ class Reference:
                 log(f"could not remove the docker volume {self.volume}; run `docker volume rm {self.volume}`")
 
 
-INSTALL_TEST_IMAGE = "jitllm-install-test:check"
+INSTALL_TEST_IMAGE = "llmp-install-test:check"
 
 
 def package_and_install_test() -> bool:
@@ -350,7 +350,7 @@ def package_and_install_test() -> bool:
     if run(["docker", "build", "--platform", "linux/arm64", "-f", "packaging/install-test/Dockerfile",
             "-t", INSTALL_TEST_IMAGE, "packaging/install-test"]):
         return False
-    receipt = json.loads((build / "jitllm-receipt.json").read_text())
+    receipt = json.loads((build / "llmp-receipt.json").read_text())
     with tempfile.TemporaryDirectory() as scratch:
         inputs = pathlib.Path(scratch)
         shutil.copy(debs[0], inputs)
@@ -358,7 +358,7 @@ def package_and_install_test() -> bool:
         (inputs / "version").write_text(receipt["version"]["product"] + "\n")
         os.chmod(scratch, 0o755)
         tested = run(["docker", "run", "--rm", "--platform", "linux/arm64", "--network", "none",
-                      "--mount", "type=volume,dst=/var/lib/jitllm", "-v", f"{inputs}:/in:ro",
+                      "--mount", "type=volume,dst=/var/lib/llmp", "-v", f"{inputs}:/in:ro",
                       "-v", f"{REPO / 'packaging/install-test/install-test.sh'}:/install-test.sh:ro",
                       INSTALL_TEST_IMAGE, "/install-test.sh"]) == 0
     return not problems and tested
@@ -381,7 +381,7 @@ def plan(tier: str, sdk: sdklib.Sdk | None, host: str | None = None) -> list[Ste
             ("cross-asan", "ASan, UBSan and LeakSanitizer on the Spark, GPU tests included"),
             ("cross-tsan", "ThreadSanitizer on the Spark, GPU tests included"))]
     steps = [
-        Step("format", "clang-format --dry-run --Werror on jitLLM's C++ and CUDA sources", lambda: check_format(sdk)),
+        Step("format", "clang-format --dry-run --Werror on llmpalooza's C++ and CUDA sources", lambda: check_format(sdk)),
         Step("reuse", "REUSE lint: copyright and license information for every file (D-029)",
              lambda: check_reuse(sdk)),
         Step("headers", "embedded license headers wherever a file can hold a comment, as REUSE reads them (D-029)",

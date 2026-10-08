@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/dsv4_runner.h"
@@ -22,7 +22,7 @@
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/paging/paging.h"
@@ -30,13 +30,13 @@
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
-namespace sc = jitllm::scheduler;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
+namespace sc = llmp::scheduler;
 using catalog::ExtentId;
 using catalog::MemoryClass;
 using support::Address;
@@ -3067,4 +3067,4 @@ Status Dsv4Runner::Release() {
   return support::Joined(problems);
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

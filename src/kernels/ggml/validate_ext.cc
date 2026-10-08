@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/validate_ext.h"
@@ -15,11 +15,11 @@
 #include <utility>
 
 #include "ggml.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 using detail::Aligned;
@@ -1339,11 +1339,11 @@ std::expected<void, KernelFailure> CheckDsv4HcaTokentile(const ggml_tensor* node
   const auto* mask = node->src[3];
   const auto* sinks = node->src[4];
   if (node->op_params[kDsv4HcaTagParam] != kDsv4HcaTag ||
-      JitllmOpOf(mask) != JitllmOp::kDsv4SparseMask || JitllmOpInt(mask, 1) != 1) {
+      LlmpOpOf(mask) != LlmpOp::kDsv4SparseMask || LlmpOpInt(mask, 1) != 1) {
     return Rejected("ds4 HCA requires an explicitly vouched causal count-mask graph");
   }
   if (auto checked = CheckDsv4SparseMask(mask); !checked) return checked;
-  const auto raw = JitllmOpInt(mask, 0);
+  const auto raw = LlmpOpInt(mask, 0);
   const auto compressed = kv->ne[1] - raw;
   const auto tokens = q->ne[1];
   std::uint32_t first = 0;
@@ -1426,4 +1426,4 @@ std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node)
   return {};
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Renders the interpreter's snippet fixtures (README.md).
 
     snippets.py --out tests/unit/data/chat/jinja-snippets.json
 
-Each snippet is a small template written for jitLLM's tests, rendered by
+Each snippet is a small template written for llmpalooza's tests, rendered by
 transformers' compiled chat-template environment (the one apply_chat_template
 uses) with the snippet's JSON variables and strftime_now fixed at
 2026-10-02 12:34:56. The fixture records the text or the exception;
-`jitllm` names what jitLLM does differently on purpose ("unsupported": the
+`llmp` names what llmpalooza does differently on purpose ("unsupported": the
 subset refuses it).
 """
 
@@ -38,8 +38,8 @@ CTX = {
 S = []
 
 
-def add(name, template, jitllm=None, **ctx):
-    S.append({"name": name, "template": template, "jitllm": jitllm, "extra": ctx})
+def add(name, template, llmp=None, **ctx):
+    S.append({"name": name, "template": template, "llmp": llmp, "extra": ctx})
 
 
 # Output, literals and whitespace control.
@@ -140,8 +140,8 @@ add("filter-replace", "{{ 'aaa'|replace('a','b') }} {{ 'aaa'|replace('a','b', 2)
 add("filter-indent", "{{ 'x'|indent(2) }}|{{ 'a\\nb\\n\\nc'|indent(2) }}|{{ 'a\\nb'|indent(2, true) }}|{{ 'a\\n\\nb'|indent(2, blank=true) }}|{{ 'a\\nb'|indent('> ') }}")
 add("filter-safe-escape", "{{ 'a<' + ('<b>'|safe) }}|{{ ('<b>'|safe) + '<' }}|{{ ('<b>'|safe) ~ '<' }}|{{ ['<',('<'|safe)]|join }}|{{ '<&>\"\\''|e }}|{{ ('<'|safe) is escaped }}|{{ ('x'|safe)|trim is escaped }}|{{ (('a'|safe) + '&') ~ 'b' }}")
 add("filter-string", "{{ none|string }} {{ [1]|string }} {{ 1.5|string }} {{ (1, 'a')|string }}")
-add("filter-unknown", "{{ 'x'|wordcount }}", jitllm="unsupported")
-add("test-unknown", "{{ 'x' is truthy }}", jitllm="unsupported")
+add("filter-unknown", "{{ 'x'|wordcount }}", llmp="unsupported")
+add("test-unknown", "{{ 'x' is truthy }}", llmp="unsupported")
 # Tests.
 add("tests-types", "{{ 'abc' is string }} {{ 1 is number }} {{ true is number }} {{ true is integer }} {{ {} is mapping }} {{ 'a' is sequence }} {{ {} is sequence }} {{ 'a' is iterable }} {{ 1 is iterable }} {{ none is none }} {{ x is undefined }} {{ 1 is boolean }} {{ false is false }} {{ 1.0 is float }} {{ 1 is float }} {{ big is integer }} {{ x is iterable }} {{ x is sequence }}")
 add("tests-values", "{{ 2 is even }} {{ 3 is odd }} {{ 9 is divisibleby 3 }} {{ 9 is divisibleby(2) }} {{ 1 is eq 1 }} {{ 'a' is in 'abc' }} {{ 1 is sameas 1 }} {{ 'a' is lower }} {{ 'A' is upper }} {{ 2 is gt 1 }} {{ 2 is lessthan 1 }} {{ 1 is ne 2 }} {{ 1 is ge 1 }} {{ 1 is le 0 }} {{ x is not defined }} {{ msgs is not string }} {{ (x is defined) and x }}")
@@ -162,8 +162,8 @@ add("message-loop", "{%- for m in msgs %}<|{{ m.role }}|>{{ m['content'] }}{% if
 add("tools-loop", "{%- for t in tools %}{{ t.function.name }}: {{ t.function.parameters.properties|tojson }} {{ t.function.parameters.required|join(',') }}{% endfor %}")
 add("nested-dict-iter", "{% for k, v in nested.x|dictsort %}{{ k }}={{ v }}{% endfor %}")
 add("is-mapping-content", "{% for m in msgs %}{% if m.content is string %}s{% elif m.content is mapping %}m{% else %}o{% endif %}{% endfor %}")
-add("unsupported-include", "{% include 'x' %}", jitllm="unsupported")
-add("unsupported-call-block", "{% call foo() %}x{% endcall %}", jitllm="unsupported")
+add("unsupported-include", "{% include 'x' %}", llmp="unsupported")
+add("unsupported-call-block", "{% call foo() %}x{% endcall %}", llmp="unsupported")
 add("syntax-unclosed", "{% if true %}x")
 add("syntax-bad-expr", "{{ 1 + }}")
 add("syntax-endfor-alone", "{% endfor %}")
@@ -217,8 +217,8 @@ def main() -> int:
         if s["extra"]:
             entry["variables"] = s["extra"]
         entry.update(render(s["template"], s["extra"]))
-        if s["jitllm"]:
-            entry["jitllm"] = s["jitllm"]
+        if s["llmp"]:
+            entry["llmp"] = s["llmp"]
         out["snippets"].append(entry)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=1, ensure_ascii=True)  # ASCII: the variables hold control characters

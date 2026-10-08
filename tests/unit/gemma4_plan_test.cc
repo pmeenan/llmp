@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/gemma4_plan.h"
@@ -18,14 +18,14 @@
 #include "gemma4_fixture.h"
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/fusion.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/set_rows_group.h"
 
 namespace {
-namespace en = jitllm::engine;
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
-namespace fixture = jitllm::test_support::gemma4;
+namespace en = llmp::engine;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
+namespace fixture = llmp::test_support::gemma4;
 
 TEST(Gemma4Plan, SizedTraversalScratchIsChargedAtStartupAndInRetainedPlans) {
   constexpr std::size_t estimate = 16;
@@ -113,13 +113,13 @@ TEST(Gemma4Plan, GroupedStoresKeepRaggedRootsSourcesAndPlacement) {
   choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
   choices.group_set_rows = true;
   auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
                                     (*measured)->placement.extent);
-  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
   std::size_t groups = 0, writes = 0;
   for (const auto& step : (*placed)->plan.steps) {
-    if (step.operation != jitllm::execution::Operation::kSetRows) continue;
+    if (step.operation != llmp::execution::Operation::kSetRows) continue;
     writes += step.nodes.size();
     if (step.implementation == kg::kSetRowsGroupedName) {
       ++groups;
@@ -145,10 +145,10 @@ TEST(Gemma4Plan, StateOnlyPlacesWithoutHiddenOrHeadAndRetainsFreshInputs) {
   choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
   choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
   auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
                                     (*measured)->placement.extent);
-  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
   EXPECT_EQ((*placed)->graph.hidden, nullptr);
   EXPECT_EQ((*placed)->graph.logits, nullptr);
   auto bytes = en::Gemma4SourceBytes((*placed)->graph);
@@ -187,10 +187,10 @@ TEST(Gemma4Plan, CommonOwnerReadPaddingIsPlacedAndKeepsActualSourceWidths) {
         choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
         choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
         auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-        ASSERT_TRUE(measured) << jitllm::test_support::Failed(measured).value_or("");
+        ASSERT_TRUE(measured) << llmp::test_support::Failed(measured).value_or("");
         auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
                                           (*measured)->placement.extent);
-        ASSERT_TRUE(placed) << jitllm::test_support::Failed(placed).value_or("");
+        ASSERT_TRUE(placed) << llmp::test_support::Failed(placed).value_or("");
         EXPECT_EQ((*placed)->graph.attention_mode, kg::Gemma4AttentionMode::kOwners);
         EXPECT_EQ((*placed)->graph.segments[0].global_mask->ne[0], 512);
         EXPECT_EQ((*placed)->graph.segments[1].global_mask->ne[0], 1024);
@@ -199,8 +199,8 @@ TEST(Gemma4Plan, CommonOwnerReadPaddingIsPlacedAndKeepsActualSourceWidths) {
         EXPECT_TRUE(en::Gemma4Sources((*placed)->graph, c.input, c.frontier, {}, *bytes));
         EXPECT_FALSE(en::Gemma4Sources((*placed)->graph, c.input, c.frontier, {}, *bytes - 1));
         for (auto* node : (*placed)->graph.nodes) {
-          if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners) {
-            EXPECT_EQ(kg::JitllmOpInt(node, 4), bounded ? 1 : 0);
+          if (kg::LlmpOpOf(node) == kg::LlmpOp::kFlashAttnOwners) {
+            EXPECT_EQ(kg::LlmpOpInt(node, 4), bounded ? 1 : 0);
             if (bounded) {
               EXPECT_EQ(node->src[2]->ne[1], 512);
               EXPECT_EQ(node->src[3]->ne[1], 1024);
@@ -236,16 +236,16 @@ TEST(Gemma4Plan, OwnerOptInPlacesAllRealRootsAndChargesSizedMetadata) {
   choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
   choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
   auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   EXPECT_EQ((*measured)->graph.attention_mode, kg::Gemma4AttentionMode::kOwners);
   EXPECT_GE((*measured)->arena->graph_capacity(), estimate);
   EXPECT_GE(en::PlannedHostBytes(**measured), (*measured)->arena->bytes());
   auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
                                     (*measured)->placement.extent);
-  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
   std::size_t count = 0;
   for (const auto* node : (*placed)->graph.nodes) {
-    if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+    if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
     ++count;
     EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(node));
     for (const auto index : {2, 3, 4, 5, 6, 7, 8, 9}) {
@@ -291,24 +291,24 @@ TEST(Gemma4Plan, TwoAndThreeQuadsAreFundedAcrossSizedArenaAndBothPlacementPasses
         choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
         choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
         auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-        ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+        ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
         EXPECT_EQ((*measured)->graph.attention_quad_mask, (1U << (owners / 4)) - 1);
         for (const auto* node : (*measured)->graph.nodes)
-          if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners)
-            EXPECT_EQ(kg::JitllmOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
+          if (kg::LlmpOpOf(node) == kg::LlmpOp::kFlashAttnOwners)
+            EXPECT_EQ(kg::LlmpOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
         EXPECT_GE((*measured)->arena->graph_capacity(), estimate);
         EXPECT_GE(en::ScratchArenaBytes(), (*measured)->arena->bytes());
         EXPECT_GE(en::PlannedHostBytes(**measured), (*measured)->arena->bytes());
         auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
                                           (*measured)->placement.extent);
-        ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+        ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
         EXPECT_EQ((*placed)->graph.attention_quad_mask, (1U << (owners / 4)) - 1);
         EXPECT_EQ((*placed)->placement.extent, (*measured)->placement.extent);
         std::size_t owner_nodes = 0;
         for (const auto* node : (*placed)->graph.nodes) {
-          if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+          if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
           ++owner_nodes;
-          EXPECT_EQ(kg::JitllmOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
+          EXPECT_EQ(kg::LlmpOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
           EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(node));
           for (std::size_t i = 0; i < 8; ++i) {
             auto* raw = node->src[2 + i]->src[0];
@@ -351,10 +351,10 @@ TEST(Gemma4Plan, SelectedOwnerStepsCountQuadsAndKeepIndependentTailsAndFallback)
         choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
         choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
         auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-        ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+        ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
         auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
                                           (*measured)->placement.extent);
-        ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+        ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
         const bool partial = !fallback && kg::detail::PartialOwnerCohort(owners);
         const auto quads =
             partial ? (owners + 3) / 4 : owners / 4 - (fallback && owners % 4 == 0 ? 1U : 0U);
@@ -366,7 +366,7 @@ TEST(Gemma4Plan, SelectedOwnerStepsCountQuadsAndKeepIndependentTailsAndFallback)
         EXPECT_EQ(std::ranges::count_if((*placed)->plan.steps,
                                         [](const auto& step) {
                                           return step.operation ==
-                                                 jitllm::execution::Operation::kFlashAttn;
+                                                 llmp::execution::Operation::kFlashAttn;
                                         }),
                   (partial ? quads : owners - 3 * quads) * c.p.layers);
       }
@@ -388,11 +388,11 @@ TEST(Gemma4Plan, PostNormFeatureRowsAreIndependentOfTheHeadFrontier) {
   choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
   choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
   auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   const auto activation = std::uint64_t{1} << 53U;
   auto placed =
       en::PlanGemma4Chunk(model, c.shape, choices, activation, (*measured)->placement.extent);
-  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
   const auto& g = (*placed)->graph;
   const auto head = reinterpret_cast<std::uintptr_t>(g.logits->data);
   const auto feature = reinterpret_cast<std::uintptr_t>(g.normalized_features->data);
@@ -405,7 +405,7 @@ TEST(Gemma4Plan, PostNormFeatureRowsAreIndependentOfTheHeadFrontier) {
   const std::array<std::int32_t, 1> frontier{1};
   const std::array<std::int32_t, 2> feature_ids{0, 1};
   auto source = en::Gemma4Sources(g, c.input, frontier, {}, *bytes, feature_ids);
-  ASSERT_TRUE(source) << *jitllm::test_support::Failed(source);
+  ASSERT_TRUE(source) << *llmp::test_support::Failed(source);
   EXPECT_EQ(source->feature_ids, (std::vector<std::int32_t>{0, 1}));
   for (const auto id : {-1, 2, INT32_MAX}) {
     const std::array<std::int32_t, 2> invalid{0, id};
@@ -448,11 +448,11 @@ TEST(Gemma4Plan, StorePolicyKeepsAllRotatedStorageFundedAndWritesDiagnosticKeeps
   choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
   choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
   auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   constexpr auto address = std::uint64_t{1} << 53U;
   auto placed =
       en::PlanGemma4Chunk(model, c.shape, choices, address, (*measured)->placement.extent);
-  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
   const auto& p = **placed;
   // Independent graph arenas have different descriptor identities; compare
   // their dispatch. PlaceAndPlan itself checks identity before/after binding.
@@ -464,14 +464,14 @@ TEST(Gemma4Plan, StorePolicyKeepsAllRotatedStorageFundedAndWritesDiagnosticKeeps
   EXPECT_EQ(std::ranges::count_if(p.plan.steps,
                                   [](const auto& step) {
                                     return step.operation ==
-                                           jitllm::execution::Operation::kRopeSetRows;
+                                           llmp::execution::Operation::kRopeSetRows;
                                   }),
             c.p.layers * 2);
   // Existing CheckCoverage checks every original descriptor and its sources.
   // Even unwritten intermediates remain placed; every fused RoPE and flattening
   // view therefore still lies in the activation region it checks.
   for (const auto& step : p.plan.steps)
-    if (step.operation == jitllm::execution::Operation::kRopeSetRows) {
+    if (step.operation == llmp::execution::Operation::kRopeSetRows) {
       for (const auto* t : {step.nodes[0], step.nodes[1]->src[0]}) {
         const auto data = reinterpret_cast<std::uintptr_t>(t->data);
         EXPECT_GE(data, address);
@@ -481,18 +481,18 @@ TEST(Gemma4Plan, StorePolicyKeepsAllRotatedStorageFundedAndWritesDiagnosticKeeps
     }
   const std::array<std::string, 1> keep{"blk.0.slot.0.k_rope"};
   auto protected_plan = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0, keep);
-  ASSERT_TRUE(protected_plan) << *jitllm::test_support::Failed(protected_plan);
+  ASSERT_TRUE(protected_plan) << *llmp::test_support::Failed(protected_plan);
   auto* kept = (*protected_plan)->graph.Named(keep[0]);
   EXPECT_EQ(std::ranges::count_if((*protected_plan)->plan.steps,
                                   [kept](const auto& step) {
-                                    return step.operation == jitllm::execution::Operation::kRope &&
+                                    return step.operation == llmp::execution::Operation::kRope &&
                                            step.nodes[0] == kept;
                                   }),
             1);
   EXPECT_EQ(std::ranges::count_if((*protected_plan)->plan.steps,
                                   [](const auto& step) {
                                     return step.operation ==
-                                           jitllm::execution::Operation::kRopeSetRows;
+                                           llmp::execution::Operation::kRopeSetRows;
                                   }),
             c.p.layers * 2 - 1);
 }
@@ -656,7 +656,7 @@ TEST(Gemma4Plan, ReferenceSourcesAreFundedPaddedAndIsolatedBeforeStaging) {
     ASSERT_TRUE(bytes);
     EXPECT_FALSE(en::Gemma4Sources(*g, c.input, c.frontier, {}, *bytes - 1));
     auto sources = en::Gemma4Sources(*g, c.input, c.frontier, {}, *bytes);
-    ASSERT_TRUE(sources) << *jitllm::test_support::Failed(sources);
+    ASSERT_TRUE(sources) << *llmp::test_support::Failed(sources);
     EXPECT_EQ(sources->sources.size(), g->inputs.size());
     EXPECT_EQ(sources->masks.size(), slots * 2);
     for (std::uint32_t i = 0; i < slots; ++i) {
@@ -699,7 +699,7 @@ TEST(Gemma4Plan, FreshPositionsReuseTheSameGraphAcrossARingWrap) {
   c.Set(1, 2561);
   EXPECT_EQ(c.shape, g->shape);
   auto after = en::Gemma4Sources(*g, c.input, c.frontier, {}, *bytes);
-  ASSERT_TRUE(after) << *jitllm::test_support::Failed(after);
+  ASSERT_TRUE(after) << *llmp::test_support::Failed(after);
   EXPECT_EQ(c.input.segments[0].local_cells, (std::vector<std::int64_t>{1, 2}));
   auto stale = c.input;
   stale.segments[0].local_mask[(stale.segments[0].n_past - c.p.window) % c.state.local_cells] = 0;
@@ -747,24 +747,24 @@ TEST(Gemma4Plan, SmallRealOwnerGroupsAreFundedAcrossSizedArenaAndBothPlacementPa
         choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
         choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
         auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-        ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+        ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
         EXPECT_EQ((*measured)->graph.attention_quad_mask, 1U);
         for (const auto* node : (*measured)->graph.nodes)
-          if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners)
-            EXPECT_EQ(kg::JitllmOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
+          if (kg::LlmpOpOf(node) == kg::LlmpOp::kFlashAttnOwners)
+            EXPECT_EQ(kg::LlmpOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
         EXPECT_GE((*measured)->arena->graph_capacity(), estimate);
         EXPECT_GE(en::ScratchArenaBytes(), (*measured)->arena->bytes());
         EXPECT_GE(en::PlannedHostBytes(**measured), (*measured)->arena->bytes());
         auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
                                           (*measured)->placement.extent);
-        ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+        ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
         EXPECT_EQ((*placed)->graph.attention_quad_mask, 1U);
         EXPECT_EQ((*placed)->placement.extent, (*measured)->placement.extent);
         std::size_t owner_nodes = 0;
         for (const auto* node : (*placed)->graph.nodes) {
-          if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+          if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
           ++owner_nodes;
-          EXPECT_EQ(kg::JitllmOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
+          EXPECT_EQ(kg::LlmpOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
           EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(node));
           for (std::size_t i = 0; i < owners * 2; ++i) {
             const auto source = 2 + i % owners + (i / owners) * 4;
@@ -812,24 +812,24 @@ TEST(Gemma4Plan, PartialOwnerGroupsAreFundedAcrossSizedArenaAndBothPlacementPass
         choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
         choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
         auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-        ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+        ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
         EXPECT_EQ((*measured)->graph.attention_quad_mask, 3U);
         for (const auto* node : (*measured)->graph.nodes)
-          if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners)
-            EXPECT_EQ(kg::JitllmOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
+          if (kg::LlmpOpOf(node) == kg::LlmpOp::kFlashAttnOwners)
+            EXPECT_EQ(kg::LlmpOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
         EXPECT_GE((*measured)->arena->graph_capacity(), estimate);
         EXPECT_GE(en::ScratchArenaBytes(), (*measured)->arena->bytes());
         EXPECT_GE(en::PlannedHostBytes(**measured), (*measured)->arena->bytes());
         auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
                                           (*measured)->placement.extent);
-        ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+        ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
         EXPECT_EQ((*placed)->graph.attention_quad_mask, 3U);
         EXPECT_EQ((*placed)->placement.extent, (*measured)->placement.extent);
         std::size_t owner_nodes = 0;
         for (const auto* node : (*placed)->graph.nodes) {
-          if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+          if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
           ++owner_nodes;
-          EXPECT_EQ(kg::JitllmOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
+          EXPECT_EQ(kg::LlmpOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
           EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(node));
           for (std::size_t i = 0; i < static_cast<std::size_t>(node->ne[3]) * 2; ++i) {
             const auto active = static_cast<std::size_t>(node->ne[3]);
@@ -869,11 +869,11 @@ TEST(Gemma4Plan, OriginalDenseSharingFundsPreparedInputsAndRetainedFeatureRows) 
       choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
       choices.dense_mmvq_shape = selected;
       auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-      ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+      ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
       const auto activation = std::uint64_t{1} << 53U;
       auto placed =
           en::PlanGemma4Chunk(model, c.shape, choices, activation, (*measured)->placement.extent);
-      ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+      ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
       EXPECT_EQ((*placed)->placement.extent, (*measured)->placement.extent);
       EXPECT_GT(en::PlannedHostBytes(**placed), 0U);
       const auto& g = (*placed)->graph;
@@ -882,7 +882,7 @@ TEST(Gemma4Plan, OriginalDenseSharingFundsPreparedInputsAndRetainedFeatureRows) 
       EXPECT_EQ(g.logits->ne[1], owners);
       std::size_t prepared = 0;
       for (const auto* node : g.nodes) {
-        if (kg::JitllmOpOf(node) != kg::JitllmOp::kQuantizeQ8) continue;
+        if (kg::LlmpOpOf(node) != kg::LlmpOp::kQuantizeQ8) continue;
         ++prepared;
         const auto address = reinterpret_cast<std::uintptr_t>(node->data);
         EXPECT_GE(address, activation);
@@ -894,7 +894,7 @@ TEST(Gemma4Plan, OriginalDenseSharingFundsPreparedInputsAndRetainedFeatureRows) 
       auto bytes = en::Gemma4SourceBytes(g);
       ASSERT_TRUE(bytes);
       auto sources = en::Gemma4Sources(g, c.input, c.frontier, {}, *bytes, features);
-      ASSERT_TRUE(sources) << *jitllm::test_support::Failed(sources);
+      ASSERT_TRUE(sources) << *llmp::test_support::Failed(sources);
       EXPECT_EQ(sources->feature_ids, features);
     }
   }
@@ -923,10 +923,10 @@ TEST(Gemma4Plan, OriginalDenseSharingPreservesRowInvariantConsumers) {
         return true;
       };
       auto ordinary = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-      ASSERT_TRUE(ordinary) << *jitllm::test_support::Failed(ordinary);
+      ASSERT_TRUE(ordinary) << *llmp::test_support::Failed(ordinary);
       model.options.dense_shared_q8 = true;
       auto candidate = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-      ASSERT_TRUE(candidate) << *jitllm::test_support::Failed(candidate);
+      ASSERT_TRUE(candidate) << *llmp::test_support::Failed(candidate);
       EXPECT_EQ(selector_calls, 0U);
       EXPECT_FALSE(en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
                                        (*ordinary)->placement.extent, {},
@@ -954,8 +954,8 @@ TEST(Gemma4Plan, OriginalDenseSharingPreservesRowInvariantConsumers) {
                     [](const auto& step) { return step.implementation == kg::kMulMatVecQRows; }),
                 0);
       for (const auto* node : (*candidate)->graph.nodes) {
-        EXPECT_NE(kg::JitllmOpOf(node), kg::JitllmOp::kQuantizeQ8);
-        EXPECT_NE(kg::JitllmOpOf(node), kg::JitllmOp::kMmvqPrepared);
+        EXPECT_NE(kg::LlmpOpOf(node), kg::LlmpOp::kQuantizeQ8);
+        EXPECT_NE(kg::LlmpOpOf(node), kg::LlmpOp::kMmvqPrepared);
       }
       ASSERT_NE((*candidate)->graph.normalized_features, nullptr);
       EXPECT_EQ((*candidate)->graph.normalized_features->ne[1], owners * 2);

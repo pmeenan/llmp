@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/serving.h"
@@ -58,7 +58,7 @@
 #include "runtime/swap_room.h"
 #include "scheduler/programs.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 // strftime_now's clock for an interpreted chat template: local time, as
@@ -95,7 +95,7 @@ class HistoryFundingGuard {
 };
 
 namespace fs = std::filesystem;
-namespace ja = jitllm::artifact;
+namespace ja = llmp::artifact;
 
 constexpr std::uint64_t kExtent = engine::kPagedExtent;
 // Extents the page-in observer tracks (the M3 models use about 100,000).
@@ -2400,7 +2400,7 @@ class Qwen38 final : public Llm {
         b.target_per_branch, b.drafter_per_branch, b.virtual_per_branch, b.initialized_logical,
         b.initialized_extent_bytes);
     return std::format(
-        "{{\"format\":\"jitllm-qwen-wave-setup-budget-v1\",\"context\":{},"
+        "{{\"format\":\"llmp-qwen-wave-setup-budget-v1\",\"context\":{},"
         "\"prefill_rows\":{},\"wave_capacity\":{},\"branch_count\":{},"
         "\"speculative\":{},\"draft_rows\":{},{},{},{}}}",
         context_, max_rows_, runner_.wave_capacity(), branches(), speculate_, options_.draft_rows,
@@ -5712,7 +5712,7 @@ Server::~Server() {
 }
 
 void Server::Log(std::string_view text) {
-  const std::string line = std::format("jitllm-runtime: {}\n", base::Printable(text));
+  const std::string line = std::format("llmp-runtime: {}\n", base::Printable(text));
   (void)std::fwrite(line.data(), 1, line.size(), log_);
   (void)std::fflush(log_);
 }
@@ -5912,7 +5912,7 @@ Status Server::Start(bool snapshot) {
     Log(std::format("model {}: set up in {:.2f} s, {} weight extents ({:.2f} GB read a load){}",
                     m->name(), Seconds(Clock::now() - started), m->weights().size(),
                     static_cast<double>(m->weight_read_bytes()) / 1e9, chunks));
-    // Each effective setting and its source (D-103; `jitllm-runtime
+    // Each effective setting and its source (D-103; `llmp-runtime
     // settings` lists them with what each came from).
     Log(std::format("model {}: settings {}", m->name(), m->settings().Summary()));
     if (const auto report = m->allocation_report(); !report.empty()) {
@@ -5990,7 +5990,7 @@ Status Server::Start(bool snapshot) {
   bounds.requests = request_memory_;
   const auto guard = CheckMemoryGuard(bounds);
   Log(
-      std::format("allocation guard: {{\"format\":\"jitllm-wave-startup-guard-v1\","
+      std::format("allocation guard: {{\"format\":\"llmp-wave-startup-guard-v1\","
                   "\"fixed_catalog_bytes\":{},\"shared_activation_bytes\":{},"
                   "\"shared_scratch_bytes\":{},\"largest_weight_extent_bytes\":{},"
                   "\"host_input_bytes\":{},\"plan_floor_bytes\":{},\"uncounted_margin_bytes\":{},"
@@ -8295,4 +8295,4 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   return {};
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

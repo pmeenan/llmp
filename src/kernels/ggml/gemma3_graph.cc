@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // Descriptor port of llama.cpp d8123504 src/models/gemma3.cpp and build_ffn.
@@ -20,12 +20,12 @@
 #include "artifact/representation.h"
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/fusion.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/shared_q8.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
-namespace md = jitllm::model;
+namespace md = llmp::model;
 std::unexpected<KernelFailure> Rejected(std::string detail) {
   return std::unexpected(
       KernelFailure{.error = KernelError::kRejected, .detail = std::move(detail)});
@@ -438,4 +438,4 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(
   g.nodes = std::move(*ordered);
   return g;
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

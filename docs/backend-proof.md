@@ -1,12 +1,12 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Early backend integration proof
 
 D-028, D-051 and D-052 require the Qwen2.5-0.5B-Instruct FP16 control and
-both small EXL3 fixtures to run natively on jitLLM-owned memory before the
+both small EXL3 fixtures to run natively on llmpalooza-owned memory before the
 internal operation contract and executable layout are settled. Under D-053,
-jitLLM owns dispatch: GGML- and ExLlamaV3-derived kernels, and later other
+llmpalooza owns dispatch: GGML- and ExLlamaV3-derived kernels, and later other
 sources or our own, are build-time implementations of operations, selected
 per plan. This is the M0 scope for that proof, which M2 executes alongside the resource core. It
 fixes stages, numerical oracles, cases and evidence, and records what the
@@ -21,13 +21,13 @@ consumes or hosts them.
 
 | Question | Settled by | Feeds |
 | --- | --- | --- |
-| How GGML-derived operations run under jitLLM dispatch, per operation: GGML's launchers behind a jitLLM-supplied context, or lifted kernels behind owned launchers | P1–P2, BP-A/BP-L cases | D-053 integration record and build-time patch set |
+| How GGML-derived operations run under llmpalooza dispatch, per operation: GGML's launchers behind a llmpalooza-supplied context, or lifted kernels behind owned launchers | P1–P2, BP-A/BP-L cases | D-053 integration record and build-time patch set |
 | Coexistence and swapping: several implementations of one operation, and several kernel sources, in one build and process, selected per plan | P1, P3, BP-S cases | Operation contract and implementation registry |
 | Dispatch overhead against upstream's captured decode | BP-F4 | Whether M3 parity needs graph capture with a relocation proof |
 | The operation contract: dependencies, workspace, streams/fences, captured pointers, backend allocations, errors (ideation §10) | All stages | Decision entry at M2 close, before M3 builds on it |
 | Executable-layout constraints: alignment, padding, kernel-readable ranges, tile rules | P2–P4 against D-056's v0 encoding | Validates or amends the experimental artifact |
 | Phase envelopes and fixed runtime overhead `F` for the declared profiles | P6 | D-050 admission numbers for M2/M3 |
-| Whether actual kernels regress on jitLLM's VMM (host VMM failed; device VMM, D-081, passed) | BP-F1 | D-081 reopen check |
+| Whether actual kernels regress on llmpalooza's VMM (host VMM failed; device VMM, D-081, passed) | BP-F1 | D-081 reopen check |
 | EXL3 per-kernel time and workspace parity with upstream | BP-F2 | D-052 M2 gate |
 
 The proof is not complete with a loader, one matrix multiply, an external
@@ -65,7 +65,7 @@ for the proof.
 | --- | --- |
 | FP16 fixture | D-051 official GGUF; identities in [first-slice.md](first-slice.md) |
 | EXL3 fixtures | D-052 4.0 bpw and mixed 4.5 bpw; identities in [exl3-bringup.md](exl3-bringup.md) |
-| GGML source | `ggml/` subtree of llama.cpp [`b29c606e2`](https://github.com/ggml-org/llama.cpp/tree/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/ggml), root MIT; compiled into jitLLM's build under owned dispatch (D-053) |
+| GGML source | `ggml/` subtree of llama.cpp [`b29c606e2`](https://github.com/ggml-org/llama.cpp/tree/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/ggml), root MIT; compiled into llmpalooza's build under owned dispatch (D-053) |
 | EXL3 kernels | ExLlamaV3 [`6b84a21b`](https://github.com/turboderp-org/exllamav3/tree/6b84a21b6f1e5da3f291b9e1019061f0de788279), root MIT; the selected closure below |
 | llama.cpp reference | Digest-pinned image: GNU 14.2.0, cudart 13.3.29, cuBLAS 13.5.1.27 ([pins](experiments/first-slice/pins.json)) |
 | ExLlamaV3 reference | PyTorch 2.14.0+cu130, NVCC 13.0.88 `-O3 --use_fast_math`, ARM host-helper patch ([report](experiments/exl3-reference/README.md)) |
@@ -76,17 +76,17 @@ for the proof.
 
 Read-only source inspection on 2026-09-22. These are facts about the code,
 not measurements. The proof confirms each on Spark before relying on it.
-The GGML backend-runtime findings are why D-053 moves dispatch into jitLLM.
+The GGML backend-runtime findings are why D-053 moves dispatch into llmpalooza.
 They also list what adapted launchers must not inherit.
 
 ### GGML (llama.cpp `b29c606e2`)
 
-- **Tensors over jitLLM memory.** Launchers dereference `tensor->data`, but
+- **Tensors over llmpalooza memory.** Launchers dereference `tensor->data`, but
   some compute paths query `src->buffer` (usage and allocation size), so
   tensor descriptors still need a buffer object. The CUDA backend has no
   buffer-from-pointer entry point ([`buffer_from_host_ptr = NULL`](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/ggml/src/ggml-cuda/ggml-cuda.cu#L5590)).
   The workaround is a wrapper buffer: `ggml_backend_buffer_init` with the
-  CUDA *buffer type*, a jitLLM interface and a jitLLM address range. That
+  CUDA *buffer type*, a llmpalooza interface and a llmpalooza address range. That
   buffer passes the always-on asynchronous-transfer asserts, which compare
   buffer-type pointers ([example](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/ggml/src/ggml-cuda/ggml-cuda.cu#L2449)),
   and it passes `supports_buft`. GGML casts a buffer's context only inside
@@ -97,9 +97,9 @@ They also list what adapted launchers must not inherit.
   change on upgrade. GGML's own CUDA buffer type allocates with
   [`cudaMalloc`](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/ggml/src/ggml-cuda/ggml-cuda.cu#L883-L900)
   and must never hold model data.
-- **Activations.** If jitLLM reuses GGML's graph allocator to plan activation
+- **Activations.** If llmpalooza reuses GGML's graph allocator to plan activation
   offsets: `ggml_gallocr` obtains memory only through its buffer type's
-  `alloc_buffer` and does not check the returned buffer's type. A jitLLM
+  `alloc_buffer` and does not check the returned buffer's type. A llmpalooza
   buffer type can return wrapper buffers, putting the compute buffer in
   charged workspace. `ggml_gallocr_reserve_n_size` sizes it without
   allocating; `ggml_gallocr_reserve` allocates. Owned dispatch uses neither
@@ -114,7 +114,7 @@ They also list what adapted launchers must not inherit.
   handle from it. Scratch goes through `ggml_cuda_pool`, an
   [abstract allocate/free interface](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/ggml/src/ggml-cuda/common.cuh#L1207-L1212).
   The stream, handle and pool members are public and are created only when
-  absent, so jitLLM can supply its own. Pre-setting the cuBLAS handle also
+  absent, so llmpalooza can supply its own. Pre-setting the cuBLAS handle also
   skips GGML's workspace allocation and handle setup (stream binding,
   `CUBLAS_TF32_TENSOR_OP_MATH`, 32 MiB workspace); a supplied handle
   reproduces that setup or records its own in the numerical plan.
@@ -151,11 +151,11 @@ They also list what adapted launchers must not inherit.
   which owned dispatch replaces. Fused launchers such as
   `ggml_cuda_op_rms_norm_fused` are separate implementations that the plan
   may choose. Runtime-API launchers bind to the current runtime context; P1
-  checks that against jitLLM's context.
+  checks that against llmpalooza's context.
 - **Hidden allocations in GGML's own backend.** None of these can be capped,
   pre-sized or queried through an API. Under owned dispatch the pool becomes
-  a jitLLM `ggml_cuda_pool` over declared workspace, and the cuBLAS handle and
-  workspace are jitLLM's. The usage analysis after this list sizes that
+  a llmpalooza `ggml_cuda_pool` over declared workspace, and the cuBLAS handle and
+  workspace are llmpalooza's. The usage analysis after this list sizes that
   workspace.
   - **Scratch pool.** One per device and stream. By default it reserves
     [32 GiB of virtual address space](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/ggml/src/ggml-cuda/ggml-cuda.cu#L536)
@@ -177,7 +177,7 @@ They also list what adapted launchers must not inherit.
 - **Process side effect on GB10.** Device initialization on compute
   capability 12.1 calls
   [`cudaSetDeviceFlags(cudaDeviceScheduleSpin)`](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/ggml/src/ggml-cuda/ggml-cuda.cu#L366-L369),
-  a process-wide synchronization policy that also affects jitLLM's own waits.
+  a process-wide synchronization policy that also affects llmpalooza's own waits.
   D-053 patches it out.
 - **Duplication hazards.** Two settings convert whole F16 weights to F32 in
   the pool, which never shrinks: `GGML_PREC_F32` on a weight multiply, and
@@ -281,30 +281,30 @@ They also list what adapted launchers must not inherit.
 
 ## Dispatch and implementations (D-053)
 
-jitLLM's dispatcher launches every operation on a jitLLM stream, with
-jitLLM workspace and library handles. GGML's backend runtime does not execute
+Llmpalooza's dispatcher launches every operation on a llmpalooza stream, with
+llmpalooza workspace and library handles. GGML's backend runtime does not execute
 model work.
 
 **GGML-derived operations.** For each operation, the proof chooses between
 two approaches and records the choice:
 
 - **K-C (context adapter).** Call GGML's CUDA operation launchers with a
-  jitLLM-populated context: jitLLM's stream, its cuBLAS handle and workspace,
+  llmpalooza-populated context: llmpalooza's stream, its cuBLAS handle and workspace,
   and a `ggml_cuda_pool` over declared, charged workspace. Build-time patches
   cover context ownership on destruction, the GB10 device flag and error
   propagation through the selected launchers. Scratch sizing is checked
   before submission, and pool reuse preserves completion-owned lifetimes.
-  Tensor descriptors use wrapper buffers over jitLLM memory. Prefer this
+  Tensor descriptors use wrapper buffers over llmpalooza memory. Prefer this
   where it holds: it reuses upstream launch selection with the least new code.
   For matrix multiplication that selection is `static` in `ggml-cuda.cu`, so
-  reuse needs a linkage patch there or a recorded jitLLM copy.
-- **K-L (lifted kernel).** Call the device kernel from a jitLLM launcher.
+  reuse needs a linkage patch there or a recorded llmpalooza copy.
+- **K-L (lifted kernel).** Call the device kernel from a llmpalooza launcher.
   Use this when a launcher needs more than the adapter or small patches
   provide. The launcher keeps upstream's launch-parameter selection (D-013)
   or records the difference in implementation identity.
 
 As built in P1 (D-077), K-C needs no destructor or device-flag patch.
-jitLLM never compiles `ggml-cuda.cu`: it defines the five symbols the
+Llmpalooza never compiles `ggml-cuda.cu`: it defines the five symbols the
 launchers take from it, among them the device table, and the context
 destructor, in `src/kernels/ggml/ggml_support.cu`. One patch drops
 `ggml_cuda_error`'s `[[noreturn]]` so that errors propagate. Descriptors
@@ -312,10 +312,10 @@ carry no buffer, since the selected launchers never read one; a launcher
 that does needs a wrapper buffer. Matrix multiplication does not reuse
 GGML's `static` routing: each kernel family (MMVF, MMF, cuBLAS) is its own
 implementation, and it accepts only operands that upstream's selection
-would route to it. The cuBLAS path, `static` too, is a recorded jitLLM
+would route to it. The cuBLAS path, `static` too, is a recorded llmpalooza
 copy (`src/kernels/ggml/mul_mat_cublas.cu`). One host plan drives it,
 fixing its conversions, entry point and scratch bound before launch. It
-runs on a handle jitLLM creates as upstream sets it up (TF32 math, the
+runs on a handle llmpalooza creates as upstream sets it up (TF32 math, the
 context's stream, a declared workspace, whose size the FP16 gate fixes at
 upstream's) and lends to the context. The handle refuses a cuBLAS other
 than the pinned one and cuBLAS's own numerics switches in the environment.
@@ -341,18 +341,18 @@ of cuBLAS's internal memory. Workspace exhaustion must return an error,
 never abort (BP-V2). Fusion is an explicit plan choice among fused and
 unfused implementations. GGML's graph-compute loop, and the fusion checks
 in it, do not run. To fuse where FP16-F's bridge fused, a planner asks
-jitLLM's copies of upstream's gates (`src/kernels/ggml/fusion.h`), which
+llmpalooza's copies of upstream's gates (`src/kernels/ggml/fusion.h`), which
 take the model graph's nodes in GGML's order and reproduce, per pattern,
 upstream's conditions on operations, edges, uses and overlapping data
 ranges.
 
-**EXL3-derived operations.** Lifted kernels behind jitLLM launchers
+**EXL3-derived operations.** Lifted kernels behind llmpalooza launchers
 (exl3-bringup.md). The dispatcher sequences them and GGML-derived operations
 on the same stream. No segment boundaries or cross-stream events are needed.
 
 As built in P3, the kernels are the source lock's, built with the
-reference's device flags: upstream's GEMM units and jitLLM's instance unit
-(`jitllm/jitllm_exl3_kernels.cu`, patch 0002) over the GEMV header and the
+reference's device flags: upstream's GEMM units and llmpalooza's instance unit
+(`llmp/llmp_exl3_kernels.cu`, patch 0002) over the GEMV header and the
 reconstruction, Hadamard and bias-add sources, which patch 0003 reduces to
 their kernels. Their SASS equals the reference extension's. The launchers
 (`src/kernels/exl3/`) replace upstream's ATen wrappers:
@@ -405,7 +405,7 @@ fusion off, the unfused one also accepts a norm broadcast as the mul's
 second operand, which the fused one refuses.) The registry
 (`src/execution/registry.h`) holds each compiled implementation's
 identity: name, operation, source, the prepared source tree's digest, a
-digest of every file of jitLLM's own code in the module (written at build
+digest of every file of llmpalooza's own code in the module (written at build
 time, so any edit there changes the identity), the SDK, target, device
 architecture, build type, libstdc++ assertions (D-083) and sanitizers,
 and a variant naming the launchers. A plan records each operation's
@@ -422,7 +422,7 @@ token with captured blocks ([report](experiments/exl3-reference/README.md)),
 and a decode token runs 169 linear layers plus norm, RoPE and attention
 launches. Host cost per launch can
 therefore threaten M3 parity even when M2 kernel parity passes. BP-F4
-measures it early. jitLLM-owned graph capture remains possible only under
+measures it early. Llmpalooza-owned graph capture remains possible only under
 the captured-pointer relocation rules.
 
 ## Numerical oracles
@@ -432,17 +432,17 @@ absorbed into a tolerance.
 
 1. **Reference.** The pinned external runs, as already recorded.
 2. **Toolchain bridge.** The pinned llama.cpp source and the same reference
-   harness, built with the jitLLM SDK. This separates compiler, CUDA and
+   harness, built with the llmpalooza SDK. This separates compiler, CUDA and
    cuBLAS effects from integration. For EXL3, the equivalent bridge compiles
-   the upstream kernel sources with jitLLM's NVCC and upstream's flags, and
+   the upstream kernel sources with llmpalooza's NVCC and upstream's flags, and
    runs them on captured inputs with forced shape and grid.
-3. **Native dispatch, conventional memory.** jitLLM's dispatcher on
+3. **Native dispatch, conventional memory.** Llmpalooza's dispatcher on
    `cudaMalloc` memory. Expect bit-identical logits to the bridge when the
    plan reproduces the bridge's kernel selection, launch parameters, fusion,
    batch splits, cuBLAS paths and handle setup. Compare an unfused plan with
    a fusion-disabled bridge arm, the counterpart of the recorded reference
    arm (first-slice.md).
-4. **Native, jitLLM device VMM** loaded through the host-VMM landing zone
+4. **Native, llmpalooza device VMM** loaded through the host-VMM landing zone
    (D-081). Expect results identical to rung 3.
 5. **Native after eviction, restoration or relocation.** Must be identical to
    rung 4.
@@ -1047,7 +1047,7 @@ They are identical under cuBLAS 13.1.1 and 13.8.0.4.
     `E` before the run. `E` covers everything the phase allocates or holds
     as scratch: activations and intermediates, operation scratch (the
     attention pool), transient reconstruction and the logits output.
-  - Its observed peak, from jitLLM's catalog, must stay within `E`. Since
+  - Its observed peak, from llmpalooza's catalog, must stay within `E`. Since
     D-085, the process as a whole is judged by the memory check below,
     not by a driver and library census.
   - Weights must equal the artifact's bytes. Padding is reported
@@ -1118,7 +1118,7 @@ slots in every layer), so its own need is known without running it:
 - *Pool:* the GGML pool scratch of the forced vector attention, the only
   pool draw of the plan: from 1,024 rows the mask pre-pass's KV_max, then
   the partial results and their metadata, each block from a 256-byte
-  boundary as jitLLM's pool hands it out (`ops.h` PlanFlashAttnVec, whose
+  boundary as llmpalooza's pool hands it out (`ops.h` PlanFlashAttnVec, whose
   parallel blocks equal the record's in six of the eight kinds in
   `unit.GgmlExl3OpsTest.VectorAttentionMatchesTheRecordAndAnFp64Reference`,
   and in all eight in the plan gate's attention grids).
@@ -1168,7 +1168,7 @@ registered (details are in Git history).
   sampled every 20 ms, below its median over the second before the start.
   The runner is [`peak_memory.sh`](experiments/backend-proof-p2/peak_memory.sh).
   Both FP16 engines run their census harnesses with a 50 ms settle:
-  the bridge is `fp16_census` and native is `jitllm_fp16_exec --census`
+  the bridge is `fp16_census` and native is `llmp_fp16_exec --census`
   (rung 3, `cudaMalloc`). They make the same 64 MiB controls, so both
   peaks include one pinned 64 MiB probe.
 - **FP16, rung 3** (`spark`, idle, 2026-09-27; kernel 7.0.0-1019-nvidia,
@@ -1187,7 +1187,7 @@ registered (details are in Git history).
   `control` ratios were 0.99 and 1.01, and FP16-F `heldout` read 1.66.
 - **EXL3, rung 3, against EXL3-O** (`spark`, idle, 2026-09-27; the
   held-out trajectory, prefixes 32, 144, 145, 1,023 and 1,024 with 16
-  single-token steps each). Native is `jitllm_exl3_exec --arm O
+  single-token steps each). Native is `llmp_exl3_exec --arm O
   --evaluations 1` (binary `6a5574fb…`, P3's, cuBLAS 13.8.0.4, the
   `plan-NN-O` plans); its logits equal P3's rung 3 bit for bit. The
   reference is `exl3_heldout.py` in the reference container
@@ -1373,7 +1373,7 @@ reference container.
   reference arm, identified by its SHA-256. `measure.py` on the same binary
   is the reference, under this rule. The session must pass before any
   native kernel is timed.
-- **BP-F1: jitLLM's VMM against `cudaMalloc`.** Host VMM failed rule v1
+- **BP-F1: llmpalooza's VMM against `cudaMalloc`.** Host VMM failed rule v1
   below; under D-081 BP-F1 was rerun against device VMM under rule v2,
   pre-registered below, and passed.
   - Compares the same GGML kernels, at the held-out trajectory's chunk
@@ -1401,15 +1401,15 @@ reference container.
       KQV, at 1, 16, 17 and 512 rows with the implementation and launches
       the plan recorded (MMVF, MMF, GGML's cuBLAS path). Each block
       verifies every captured launch against them before timing. BP-F1
-      judges these cases only: a kernel jitLLM adds later (RoPE, softmax,
+      judges these cases only: a kernel llmpalooza adds later (RoPE, softmax,
       the KV writes) needs its own calibration and holdout first.
     - *Placement:* arm A (the reference) holds every buffer the kernels are
       given in `cudaMalloc` memory; arm B (the candidate) in host-backed
-      VMM from jitLLM's provider. That is weights, activations, outputs,
+      VMM from llmpalooza's provider. That is weights, activations, outputs,
       GGML's scratch and the cuBLAS workspace. Each case rotates through a ring of
       identical operand sets totalling more than four times the queried
       L2.
-    - *Harness:* `jitllm_ggml_vmm_bench` with cuBLAS 13.8.0.4, run by
+    - *Harness:* `llmp_ggml_vmm_bench` with cuBLAS 13.8.0.4, run by
       `bpf1_session.py`; the comparison uses this binary, kept with the
       raw sessions. A rebuild elsewhere differs: the binary embeds its
       source paths.
@@ -1453,11 +1453,11 @@ reference container.
       (BP-F1 v2 cases SHA-256: `fe78d03360b12824e1fad2f0d9e6f152b867d8c502aa6d451671684302e6a20c`).
     - *Placement:* arm A (the reference) holds every buffer the kernels
       are given in `cudaMalloc` memory; arm B (the candidate) in
-      device-located VMM from jitLLM's provider, where D-081 places
+      device-located VMM from llmpalooza's provider, where D-081 places
       weights and state: weights, activations, outputs, GGML's scratch and
       the cuBLAS workspace. The setup staging buffer (host VMM in both
       arms) is outside; no timed kernel touches it. Rings as in v1.
-    - *Harness:* `jitllm_ggml_vmm_bench` with a `device-vmm` memory kind,
+    - *Harness:* `llmp_ggml_vmm_bench` with a `device-vmm` memory kind,
       built by the `spark-native` preset on `spark-b` and copied, with
       cuBLAS 13.8.0.4, to `spark`; the comparison uses this binary, kept
       with the raw sessions.
@@ -1578,7 +1578,7 @@ reference container.
 | Stage | Needs | Exit evidence |
 | --- | --- | --- |
 | **P0** Bridges and controls | M1 build | Toolchain bridges run, FP16 with fusion on and off. Held-out trajectories run on both references. The reference EXL3 tuned shapes and grids are decoded. Numerical profiles, bounds and the performance protocol are frozen, owner-approved or pre-registered under D-079 |
-| **P1** Substrate probes | M1; no artifacts | GGML launchers under a jitLLM context (K-C): stream, handle and pool injection, runtime-context binding, patched destructor and device flag. Values and kernel times on jitLLM's VMM versus `cudaMalloc` (device VMM since D-081). Allocation census. One native EXL3 linear byte-equal to upstream at a forced plan, including alignment probes. Two implementations of one operation selected by plan. Per-launch host cost |
+| **P1** Substrate probes | M1; no artifacts | GGML launchers under a llmpalooza context (K-C): stream, handle and pool injection, runtime-context binding, patched destructor and device flag. Values and kernel times on llmpalooza's VMM versus `cudaMalloc` (device VMM since D-081). Allocation census. One native EXL3 linear byte-equal to upstream at a forced plan, including alignment probes. Two implementations of one operation selected by plan. Per-launch host cost |
 | **P2** Resident FP16 | Question-5 encoding and importer; M2 catalog; the [P2 prerequisites](#p2-prerequisites) | Prepared-artifact execution on device VMM through the landing zone (D-081); oracle rungs 3–4; BP-A cases |
 | **P3** Resident EXL3 | P2 infrastructure; the GEMV port for BP-F2 (gate closed, D-080) | Both fixtures; per-linear and full-model oracles; BP-F2 kernel parity |
 | **P4** Paging | M2 leases and storage service | BP-P cases on both representations |
@@ -1601,7 +1601,7 @@ under "Memory and workspace" above), and the plan comparator.
 **The plan comparator** tells whether a native run executed the bridge's
 recorded plan (the FP16 Tier E gate).
 
-- **Recording.** A test or benchmark links `jitllm_launch_recorder`
+- **Recording.** A test or benchmark links `llmp_launch_recorder`
   (`tests/support/`). It is for tests and benchmarks only: the configure
   fails if a production binary links it.
   - At link time it wraps the CUDA runtime's launch, copy and memset
@@ -1652,7 +1652,7 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
 
 **Backing and accounting**
 
-- **BP-A1:** Every pointer a launch dereferences lies in a cataloged jitLLM
+- **BP-A1:** Every pointer a launch dereferences lies in a cataloged llmpalooza
   range or a cataloged backend allocation. Reconcile a complete run's CUDA
   allocation census with the catalog, distinguishing virtual reservations,
   physical backing and aliases. Use CUPTI callbacks or an equivalent whose
@@ -1676,7 +1676,7 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
   extra buffer types and no permanent FP16 shadow. Transient reconstruction
   is charged to the phase peak.
 - **BP-A4:** After retirement and unmap, no backend object references
-  jitLLM backing. Submitting a stale graph or pointer table is rejected
+  llmpalooza backing. Submitting a stale graph or pointer table is rejected
   before launch. A negative control faults deterministically instead of
   reading stale memory (invariant 1).
 - **BP-A5:** Node-level observations (`/proc/meminfo`, cgroup, CUDA memory
@@ -1688,7 +1688,7 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
 - **BP-N1:** The toolchain bridges versus the references; differences
   recorded.
 - **BP-N2:** Native dispatch on conventional memory versus the bridge.
-- **BP-N3:** jitLLM's VMM (device VMM, D-081) versus conventional memory.
+- **BP-N3:** Llmpalooza's VMM (device VMM, D-081) versus conventional memory.
 - **BP-N4:** Native versus the reference within the declared bound, on
   held-out inputs.
 - **BP-N5:** Per-linear EXL3 byte equality at a forced plan across the row
@@ -1753,7 +1753,7 @@ and CPU-only cases run on the workstation; everything else runs on `spark`.
 **Performance** (under the frozen protocol, with the reference repeated
 beside the candidate)
 
-- **BP-F1:** GGML kernel times on jitLLM's VMM versus `cudaMalloc` memory
+- **BP-F1:** GGML kernel times on llmpalooza's VMM versus `cudaMalloc` memory
   (the D-081 check; host VMM failed it, and device VMM passed it,
   2026-09-27).
 - **BP-F2:** EXL3 kernel parity on the 176 declared cases (the D-052 M2
@@ -1861,8 +1861,8 @@ has run on the trace; frozen). D-033 stays unless a slab or hybrid design
 meets all of them at every budget and on both seeds.
 
 - **Trace** ([identity and retrieval](experiments/retained-backing/README.md#identity)):
-  - generator `swap_trace.py` `0145799a…`, `params.json` `d7e7d6b2…`,
-    `library.json` `1880e984…`;
+  - generator `swap_trace.py` `e6ea1214…`, `params.json` `42c8a044…`,
+    `library.json` `a64b453a…`;
   - primary seed 20260926 (manifest `44f9f2b4…`);
   - confirmation seed 926202601 (manifest `8aee64a5…`), never looked at
     while choosing.

@@ -16,35 +16,35 @@
   "runs_sha256": "e6bb1bfba14c28b9de2e88b1d10f0b749b763616c3dff1ea0468a1358fe0be14",
   "artifacts": {
     "ds": {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
       "files": {
         "manifest.json": "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
         "index.json": "68ddac15cff7cfcac5162beab7559884632244651797aed1b000cc7325ea24fc"
       }
     },
     "dspark": {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5",
       "files": {
         "manifest.json": "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5",
         "index.json": "437561ad6dd1e8d5fd3758be2a8eac52b8a1c81f6a1fb54b27e0b3badfeaa11c"
       }
     },
     "qn": {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
       "files": {
         "manifest.json": "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
         "index.json": "5b65dcce8169374e638264d7ebdcb5cca517234b3dec26f1272a5f4f9c0e4c89"
       }
     },
     "qmtp": {
-      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
+      "path": "/home/pmeenan/.local/share/llmp/m3-artifacts/8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
       "files": {
         "manifest.json": "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
         "index.json": "5cd45fc5354ab224d281c2416027f224c61e32e2ae0acf8e7580d063fc274d99"
       }
     },
     "qg": {
-      "path": "/home/pmeenan/.local/share/jitllm/qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
+      "path": "/home/pmeenan/.local/share/llmp/qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
       "files": {
         "manifest.json": "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
         "index.json": "d6c69d701ead0cbadc3a64f1f3c354a70ecac7179f61dbac1e1163fca0cd3550"
@@ -53,13 +53,13 @@
   },
   "native_libraries": {
     "libcublas.so.13": {
-      "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
-      "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+      "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
+      "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublas.so.13",
       "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
     },
     "libcublasLt.so.13": {
-      "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
-      "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+      "first_resolved_path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
+      "path": "/home/pmeenan/src/llmp-wt/m3clean-main/build/spark-native/lib/llmp/libcublasLt.so.13",
       "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
     }
   },
@@ -427,11 +427,11 @@
     "source_manifest_sha256": "601023aff25b008e89650a93e148b7edbc7c674815c4607aa0e7864448e52cec",
     "passed_sha256": "2c245d1931e69cbb61768da9f7daf6cbc30a502962977c21ec4dcd5d23e640ca",
     "files": {
-      "build/spark-native/src/runtime/jitllm-runtime": "bebe87c9a6f2f78932d9b9351bcde29c88d18abe22091da8a1186a8f6883b6f2",
-      "build/spark-native/benchmarks/jitllm_startup_measurement_probe": "8e5d9521871de02db102192071fee257595617359411e6c34302bd97c3c9a482",
+      "build/spark-native/src/runtime/llmp-runtime": "bebe87c9a6f2f78932d9b9351bcde29c88d18abe22091da8a1186a8f6883b6f2",
+      "build/spark-native/benchmarks/llmp_startup_measurement_probe": "8e5d9521871de02db102192071fee257595617359411e6c34302bd97c3c9a482",
       "build/spark-native/tests/unit/dsv4_prefill_plan_test": "9e09236378a4fcdd484eb67a86b2d4dad32e570d98f7e406106ee27fc43240be",
       "build/spark-native/tests/unit/qwen38_wave_plan_test": "5b0616f49f51b05f5ed4d310906f688855abca5f0cd6842ceb17d20986afc083",
-      "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+      "build/spark-native/llmp-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
     },
     "tests": [
       "Dsv4PrefillPlan.StartupMeasurementRejectsRuntimeStorageBeforeModelAccess",

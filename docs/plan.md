@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Plan
@@ -51,7 +51,7 @@ Each milestone leaves a usable, testable result. None has a promised date.
 | M2 Resource core | Catalog, admission and leases on a fake backend and a Spark; the backend proof settles the operation contract | M1 (done) |
 | M3 Single-Spark fast swap | DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swap A→B→A on one Spark, aiming at ~10 s to first token, as correct, fast and lean as their references | M2 |
 | M3.5 Model families | The core engine runs the major open model families, MoE and dense (Gemma, Llama, MiMo and the other top-tier families), each correct, as fast as its reference and flat with context, before the system is built around it; image, video and audio file inputs on the models that take them, decision models over the Jev API, and image, video and speech generation routes (D-101) | M3; parked 2026-10-08, resumes on M3.6's exit |
-| M3.6 Engine components | One engine of shared components over jitLLM's own graph IR: the format layer, one runner and serving adapter, the native importer, every current model migrated within 1% of its current speed (D-107 to D-110) | M3; runs before M3.5 resumes |
+| M3.6 Engine components | One engine of shared components over llmpalooza's own graph IR: the format layer, one runner and serving adapter, the native importer, every current model migrated within 1% of its current speed (D-107 to D-110) | M3; runs before M3.5 resumes |
 | M4 Two-Spark fast swap | GLM-5.3 Flash, then DeepSeek v4.1 Flash, sharded over both Sparks in the same cycle, with their image (and GLM's video) inputs | M3.5 |
 | M5 One resident model | Importer, verifier, the three client protocols plus the Gemini API and code completion, TLS and management on the small fixtures | M4 |
 | M6 First useful product | A→B→A with partial retention; switching policy chosen from measurement | M5 |
@@ -93,9 +93,9 @@ Ran 2026-09-23 to 2026-09-24 and exited on the owner's word. M1 built the
 pinned SDK and its reference container (D-070), the CMake presets and build
 tasks, the source lock with GoogleTest and toml++ (D-057, D-073), the local
 check gate (`check`, `check:full`, `check:spark`; D-061), license and
-provenance records (D-071), versioning (D-062), `jitllm doctor` (D-072), the
+provenance records (D-071), versioning (D-062), `llmp doctor` (D-072), the
 node configuration and storage-role checks (D-073), and the arm64 package
-with `jitllm-runtime`, `jitllm.service`, crash handling and confined jobs in
+with `llmp-runtime`, `llmp.service`, crash handling and confined jobs in
 delegated cgroups (D-074), validated on `spark`. The
 [M1 record](m1-record.md) keeps each item's outcome, verification and
 hand-offs. What it handed on: the GPU, VMM, I/O and ARM stress suites in
@@ -113,8 +113,8 @@ resource core: the catalog, commitment ledger, LRU victim baseline and
 materialization planning (D-006, D-007), admission with D-069's pauses
 (D-050), D-048's task lanes and scheduler loop, and the providers with
 their fakes, CUDA VMM and io_uring (D-026). Its backend proof (P0–P6) ran
-GGML's and ExLlamaV3's kernels under jitLLM's dispatch (D-077, D-080),
-selected by plan (D-053), with cuBLAS on a jitLLM handle (D-076): native
+GGML's and ExLlamaV3's kernels under llmpalooza's dispatch (D-077, D-080),
+selected by plan (D-053), with cuBLAS on a llmpalooza handle (D-076): native
 Qwen2.5-0.5B FP16 matches the bridge bit for bit and both EXL3 fixtures
 match their approved record and bounds, paged at disk speed through a
 host-VMM landing zone into device VMM (D-081), evicted, written back,
@@ -259,7 +259,7 @@ family" guide, and its long-context scaling work.
       capability coverage, not particular models (the owner, 2026-09-29).
       Survey each top-tier open family's current and older widely used
       generations, list every architectural feature they use, and mark
-      which jitLLM already supports in a capability matrix. Then choose
+      which llmpalooza already supports in a capability matrix. Then choose
       the smallest set of checkpoints that fit one Spark, each with a
       same-format reference engine, that covers every feature still in
       wide use. A feature only a too-large model uses is flagged. Record each pick's architecture
@@ -1172,7 +1172,7 @@ M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#
         options, 2–10 score levels); image bytes and pixels follow memory
         and the context, as the chat route's media do.
       - **Clients:** the TypeSafe Python and JavaScript SDKs, unmodified,
-        pointed at jitLLM by base URL.
+        pointed at llmpalooza by base URL.
 - [ ] **Media generation routes** (D-101, the owner, 2026-10-02):
       - **Image batching:** Qwen-Image-2.1 and
         Ming-Image-0.1-Design join compatible phase work across requests,
@@ -1335,7 +1335,7 @@ TensorFold comparisons report speed, memory and separate quality controls.
 
 Goal (the owner, 2026-10-08; D-107 to D-110): replace the per-family
 runners, plans, graph builders, bindings, serving classes and Python
-importers with one engine of shared components over jitLLM's own graph IR,
+importers with one engine of shared components over llmpalooza's own graph IR,
 so every optimization, format and platform is written once and every model
 benefits. Take the architecture hit now, before more families, formats or
 platforms. The design is [engine-components.md](engine-components.md).
@@ -1592,7 +1592,7 @@ M3.
       startup, and detail and plans built on first use inside an `F`
       reservation. Startup rejects an installed store that fails the
       direct-I/O probe (D-054).
-- [ ] **Resident execution:** the FP16 and both EXL3 fixtures under jitLLM
+- [ ] **Resident execution:** the FP16 and both EXL3 fixtures under llmpalooza
       dispatch, finite context and chunk profiles within the 8K context,
       and state block sizes and KV layouts for each adapter. Decode graphs
       and their relocation proof come from M3.
@@ -1623,16 +1623,16 @@ M3.
 - [ ] **Local management API and CLI** (D-064): versioned routes for import,
       listing, representation inspection, removal, jobs and node health.
 - [ ] **Service hardening** (D-074; M1's hand-offs, moved from M2 by the
-      owner on 2026-09-27): a system-call filter for `jitllm.service`
+      owner on 2026-09-27): a system-call filter for `llmp.service`
       that admits io_uring, and a single reaper for jobs started from
       other threads.
 - [ ] **TLS** (D-065): per-name certificate files selected by SNI, reload on
       change, key-match and expiry checks, the name-constrained local CA,
       the certbot deploy hook, and the Tailscale certificate timer. The
-      root-run hook and timer touch only `/etc/jitllm/tls/`, their units are
+      root-run hook and timer touch only `/etc/llmp/tls/`, their units are
       sandboxed to it, and they take the heavy path.
 - [ ] **Surface definitions:** front-door, alias and TLS configuration keys;
-      the individual `jitllm-` header and body-field names (D-062); the
+      the individual `llmp-` header and body-field names (D-062); the
       HTTP, TLS and JSON libraries, chosen under D-017, D-057 and D-066.
 - [ ] Move the fixtures' rows in the model support matrix (started in M3,
       where they are listed as fixtures) to served, with their templates.
@@ -1743,15 +1743,15 @@ new matched controls ([exl3-bringup.md](exl3-bringup.md)).
 
 - D-055's [timed workload](retention-policy.md#m6-acceptance-workload)
   passes its pass rule: Qwen2.5-0.5B FP16 and EXL3 4.0 bpw in both
-  orientations, six jitLLM arms against fresh interleaved references, 72
+  orientations, six llmpalooza arms against fresh interleaved references, 72
   accepted repetitions per arm, orientation and cache condition. For each
   floor arm (J-partial, J-spill), orientation, direction and cache
-  condition, at the median and at p95, jitLLM's one-sided 97.5% upper bound
+  condition, at the median and at p95, llmpalooza's one-sided 97.5% upper bound
   is at most the smallest one-sided 97.5% lower bound among the valid
   reference arms; a comparison with no valid reference arm does not pass
   (D-036). The report covers latency distributions, bytes read and written,
   peak memory and spill, prompt tokens reused versus recomputed, and deltas
-  against jitLLM's whole-model control (M9's comparator).
+  against llmpalooza's whole-model control (M9's comparator).
 - The [correctness gates](retention-policy.md#correctness-gates) pass: exact
   outputs and bit-identical teacher-forced logits against
   provenance-matched controls, and catalog state and events show that only
@@ -1800,7 +1800,7 @@ cluster's placement layer; sharding under pressure and failure is M8.
       prepared artifacts over the cluster link, archive to and install from
       the long-term store, and the explicit archive-or-delete choice when a
       node lacks space.
-- [ ] The package gains its rdma-core dependencies when jitLLM first links
+- [ ] The package gains its rdma-core dependencies when llmpalooza first links
       them (D-063).
 - [ ] Decide whether a worker node serves its own loopback management
       listener.
@@ -1907,7 +1907,7 @@ sustained-use schedule and duration.
 - Resident prefill, time to first token and decode inter-token p50/p95/p99
   on both models meet the approved bound against the pinned llama.cpp
   reference, or the owner approves an explicit tradeoff, as D-052 requires
-  for EXL3. Paging limits compare jitLLM with itself, so they cannot stand
+  for EXL3. Paging limits compare llmpalooza with itself, so they cannot stand
   in for this.
 - The sustained-use run ends with every completed, cancelled and paused
   request retired and no lease, grant, task or I/O outstanding. Memory, the
@@ -2031,7 +2031,7 @@ partial-retention benefit workload are pinned before acceptance runs
 **Exit criteria:**
 
 - D-036's benefit target: at least 25% lower median return-switch latency
-  than jitLLM's own whole-model control, with identical state handling at
+  than llmpalooza's own whole-model control, with identical state handling at
   the same budget, on the agreed partial-retention workload, with at least
   one named library exceeding physical memory, while the switching floor
   and generation limits still hold.

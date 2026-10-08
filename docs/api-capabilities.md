@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # API capability assessment: Ollama, lifecycle and cluster sharing
@@ -22,7 +22,7 @@ or client compatibility. Delivery milestones are in
 
 ## Recommendation
 
-Keep the three accepted inference protocols and add a versioned jitLLM
+Keep the three accepted inference protocols and add a versioned llmpalooza
 management/discovery surface. An optional Ollama-compatible subset is useful
 for local clients that speak its native API; it does not replace Responses or
 Messages. Start with catalog queries and text inference, adding lifecycle and
@@ -33,18 +33,18 @@ alone does not establish that its startup and model-management flows work.
 
 ## What Ollama offers and how it maps
 
-| Ollama surface | Fit for jitLLM |
+| Ollama surface | Fit for llmpalooza |
 | --- | --- |
 | `GET /api/tags` | Available-model catalog; maps to prepared, supported models, whether resident or not. Keep downloading/import-only entries in management, outside the selectable inference list. |
 | `POST /api/show` | Model metadata and capabilities; useful alongside a richer native description. Only expose truthful metadata; do not invent an Ollama Modelfile or raw-file digest for a repacked artifact. |
 | `GET /api/ps` | Running/loaded-model view. Partial residency and replicas do not have a clean one-row, one-expiry mapping. Defer this route until tested field meanings exist. |
 | `POST /api/chat` | Good candidate: model selection, role-labelled history, tools and JSON/streaming output. |
 | `POST /api/generate` | Useful for simpler clients: prompt plus separate `system` and optional images. Raw/template/options variants need explicit support or rejection. |
-| Empty chat/generate request | Ollama preloads a model. A jitLLM warm operation can prepare a supported execution configuration, subject to admission. Do not claim full residency if it only warmed metadata or some extents. |
+| Empty chat/generate request | Ollama preloads a model. A llmpalooza warm operation can prepare a supported execution configuration, subject to admission. Do not claim full residency if it only warmed metadata or some extents. |
 | `keep_alive` | Ollama model-residency duration: default 5 minutes, zero unloads, negative pins indefinitely. Not a conversation-end signal. D-045 maps it faithfully: `0` releases the requester's own residency lease after its request (eligibility, not eviction, D-007; other consumers and admitted work untouched), a positive duration is an advisory retention preference, and a negative value is rejected explicitly because the node budget cannot honor an indefinite pin. |
-| `POST /api/pull` | Registry download with resumable progress. Useful later, but success must also await jitLLM validation/repacking and atomic publication of an executable artifact. |
+| `POST /api/pull` | Registry download with resumable progress. Useful later, but success must also await llmpalooza validation/repacking and atomic publication of an executable artifact. |
 | `POST /api/embed` | Worth considering for retrieval workloads; requires a validated embedding model/output contract. Not supplied by merely wrapping chat inference. |
-| `GET /api/version`, `GET /` | Ollama's CLI and common clients probe these at startup: `/api/version` returns `{"version": ...}` and the root returns the `Ollama is running` text on `GET` and `HEAD` ([server source](https://github.com/ollama/ollama/blob/main/server/routes.go)). Served only with the profile enabled (D-045): `version` carries the Ollama release the profile was tested against, as an API compatibility level, alongside a `jitllm` field with the real server version. Never report a release the profile was not tested against. |
+| `GET /api/version`, `GET /` | Ollama's CLI and common clients probe these at startup: `/api/version` returns `{"version": ...}` and the root returns the `Ollama is running` text on `GET` and `HEAD` ([server source](https://github.com/ollama/ollama/blob/main/server/routes.go)). Served only with the profile enabled (D-045): `version` carries the Ollama release the profile was tested against, as an API compatibility level, alongside a `llmp` field with the real server version. Never report a release the profile was not tested against. |
 | Create/blob upload/copy/delete/push | Not in the recommended first subset. Mutation and registry semantics expand the surface substantially. |
 
 Official sources checked: [tags](https://docs.ollama.com/api/tags),
@@ -76,7 +76,7 @@ an explicit authorized operation, never the default eviction policy, and
 cannot destroy admitted work.
 
 Deployment shape under D-045: the profile shares the inference front door and
-its configurable port; jitLLM does not claim 11434 by default because Ollama
+its configurable port; llmpalooza does not claim 11434 by default because Ollama
 may be installed, and Ollama-native clients are pointed at the front door with
 `OLLAMA_HOST`. Loopback requests need no credential until one is configured,
 and cross-origin requests are allowed from loopback origins by default, with a
@@ -185,14 +185,14 @@ Filter it by caller authority and avoid exposing secrets or private model paths.
 
 MCP offers [discoverable tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
 and [resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources).
-A proposed jitLLM MCP server could expose model/capacity resources and tools
+A proposed llmpalooza MCP server could expose model/capacity resources and tools
 for explain-admission, warming, import-job status and continuation release.
 It would be a separate process over the native management API (D-005), with
 read-only access by default and explicitly granted mutation authority. Schema
 annotations are not authorization. Tool calls cannot elevate an inference key
 to install/delete/control privileges; returned model metadata is untrusted data.
 
-This differs from jitLLM acting as an MCP client that executes arbitrary model
+This differs from llmpalooza acting as an MCP client that executes arbitrary model
 requested tools, which is not recommended for the runtime. Existing agent
 clients can handle tools and return results through D-040. MCP
 [sampling](https://modelcontextprotocol.io/specification/2026-07-28/client/sampling)

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The implementation registry and plans (D-053;
@@ -22,8 +22,8 @@
 // unsupported (BP-S4), one whose identity has changed is stale (BP-S2),
 // and neither is ever replaced by another implementation of the operation.
 
-#ifndef JITLLM_EXECUTION_REGISTRY_H_
-#define JITLLM_EXECUTION_REGISTRY_H_
+#ifndef LLMP_EXECUTION_REGISTRY_H_
+#define LLMP_EXECUTION_REGISTRY_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -37,7 +37,7 @@
 
 #include "base/sha256.h"
 
-namespace jitllm::execution {
+namespace llmp::execution {
 
 // The operations the implementations cover (kernels/ggml/ops.h,
 // kernels/exl3/linear.h and launch.h).
@@ -234,6 +234,6 @@ class BoundPlan {
 // with the identity it recorded, or rejects the plan.
 std::expected<BoundPlan, PlanRejection> Resolve(const Registry& registry, const Plan& plan);
 
-}  // namespace jitllm::execution
+}  // namespace llmp::execution
 
-#endif  // JITLLM_EXECUTION_REGISTRY_H_
+#endif  // LLMP_EXECUTION_REGISTRY_H_

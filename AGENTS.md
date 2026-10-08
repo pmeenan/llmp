@@ -1,11 +1,12 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# jitLLM — just-in-time LLM inference engine with intelligent SSD paging
+# Llmpalooza — all models, all containers, all the time
 
-jitLLM is an independent, open-source inference runtime for workloads where
-many models should be available, only some components are active at a time,
-and aggregate model storage exceeds physical memory. It keeps the useful parts
+Llmpalooza (formerly jitLLM, D-111) is an independent, open-source
+inference runtime for workloads where many models should be available, only
+some components are active at a time, and aggregate model storage exceeds
+physical memory. It keeps the useful parts
 of models resident, reclaims the least valuable extents across all models when
 capacity is needed, and brings missing weights or state back on demand from
 prepared on-disk artifacts. The primary workload is one user switching among
@@ -15,6 +16,9 @@ developed from an x86-64 Linux workstation, whose discrete NVIDIA GPU is a
 secondary target (D-082). Almost all code is written by AI
 agents working from the project documentation, directed and reviewed by a
 human.
+
+**Naming:** "llmpalooza" in prose ("Llmpalooza" at a sentence start);
+`llmp` in code, commands, paths, packages and identifiers.
 
 **Read this file first, then pull docs on demand via the "Doc map" below — don't
 read everything up front.** This file is long-term project memory and the
@@ -26,7 +30,7 @@ Constraints evolve as we learn, but never by silent drift: changing one means
 making the case in [docs/decisions.md](docs/decisions.md) and updating the
 affected docs. Until then, these govern.
 
-- **Our own native runtime, one process per node.** jitLLM is not a vLLM fork
+- **Our own native runtime, one process per node.** Llmpalooza is not a vLLM fork
   or plugin. One modular native execution process per node owns all local
   model execution, scheduling, memory policy, VMM control, and completion
   tracking. Dashboard, importer, and supervisors are separate processes and
@@ -84,7 +88,7 @@ affected docs. Until then, these govern.
   experimental; compatibility guarantees follow execution/restore evidence.
   Import repacks weights into contiguous, indexed dependency groups
   (4 KiB-aligned on disk, paged in 2 MiB chunks with direct reads, which
-  may coalesce; off by default, BP-P1); v0 uses safetensors shards with a jitLLM manifest/index and no
+  may coalesce; off by default, BP-P1); v0 uses safetensors shards with a llmpalooza manifest/index and no
   page-in hashing. From M3.6 a native importer (no Python) reads containers
   and formats by capability and architectures through declarative mappings,
   and the artifact carries the model spec. Weights stay resident in their
@@ -94,8 +98,8 @@ affected docs. Until then, these govern.
 - **C++23, Clang-first, native hot path.** No interpreter in the serving,
   paging, or scheduling path. NVCC is the CUDA compiler with Clang as host
   compiler where validated. Build-time tooling may use Python. (D-010)
-- **jitLLM owns dispatch; kernels are swappable build-time implementations.**
-  jitLLM owns streams, workspace, library handles, fusion choice and
+- **Llmpalooza owns dispatch; kernels are swappable build-time implementations.**
+  Llmpalooza owns streams, workspace, library handles, fusion choice and
   completion; third-party backend runtimes never dispatch model work. Kernels
   from GGML (first), ExLlamaV3 (a real EXL3 companion is required in M2 before
   settling the artifact/backend contracts; once operational, each engine
@@ -106,7 +110,7 @@ affected docs. Until then, these govern.
   correctness and speed. No runtime plugin ABI. (D-028, D-052, D-053, D-080)
 - **One engine of shared components; optimize once.** Models are specs of
   components (graph fragment, weights, state contract, batching,
-  partitioning, patterns) over jitLLM's own graph IR, not per-family code;
+  partitioning, patterns) over llmpalooza's own graph IR, not per-family code;
   every pipeline uses the same blocks. An optimization lands in the
   component, pattern or lifecycle piece it belongs to, never in one model.
   Sharding is TP, PP and EP of any shape, chosen to minimize cross-device
@@ -136,9 +140,9 @@ affected docs. Until then, these govern.
   is needed now. New Mia reference runs use the [pinned fast-start launcher](docs/experiments/fast-swap/baselines.md#default-mia-launcher-for-new-runs-2026-10-03).
   (D-011, D-012, D-084, D-085)
 - **Apache-2.0 core with license tiers; reuse under actual licenses.**
-  jitLLM's own code is Apache-2.0. Any permissive license is allowed in
+  Llmpalooza's own code is Apache-2.0. Any permissive license is allowed in
   the core (D-091), as is MPL-2.0; copyleft lives in optional modules,
-  which jitLLM's own builds ship by default; the copyleft-disabled profile
+  which llmpalooza's own builds ship by default; the copyleft-disabled profile
   is the build-time opt-out (D-080). Unknown, non-permissive or
   proprietary terms need a decision; obligations are still recorded. A
   component counts as copyleft once that is confirmed, not on suspicion.
@@ -160,22 +164,22 @@ affected docs. Until then, these govern.
 | --- | --- |
 | `docs/` | Vision, plan, architecture, decisions, features, rough edges, workflow |
 | `docs/ideation.md` | The kickoff design brief (2026-09-20). Frozen origin document with source links; the living docs above supersede it where they differ |
-| `LICENSE`, `LICENSES/`, `NOTICE` | Apache-2.0, the license for all jitLLM-authored code (D-003; dependency policy in D-017); the text of every license a file declares; the attribution notice. Every file carries SPDX tags in its header, or in a `.license` sidecar if it cannot hold a comment (D-029, D-071) |
+| `LICENSE`, `LICENSES/`, `NOTICE` | Apache-2.0, the license for all llmpalooza-authored code (D-003; dependency policy in D-017); the text of every license a file declares; the attribution notice. Every file carries SPDX tags in its header, or in a `.license` sidecar if it cannot hold a comment (D-029, D-071) |
 | `CHANGELOG.md` | Keep a Changelog; a change with user-visible effect adds its line (D-062) |
 | `mise.toml`, `mise.lock` | mise tasks (`setup`, `prepare`, `doctor`, `build`, `test`, `deploy`) and the pinned Python that runs `tools/` (D-070) |
-| `toolchains/` | The SDK manifest, artifact lock, host prerequisite lists and the provenance records of everything that builds jitLLM ([README](toolchains/README.md); D-049, D-070, D-071) |
+| `toolchains/` | The SDK manifest, artifact lock, host prerequisite lists and the provenance records of everything that builds llmpalooza ([README](toolchains/README.md); D-049, D-070, D-071) |
 | `third_party/` | The source lock: every third-party source component, prepared into `build/sources/` by `mise run prepare` ([README](third_party/README.md); D-017, D-057), and in `patches/` the reviewed changes to them (GGML's, ExLlamaV3's, CUTLASS's and ds4's, D-077) |
-| `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | The build: presets `native` (CUDA for `sm_121` and the discrete `sm_86`, D-082; test preset `native-gpu` runs its `gpu-discrete` tests on the workstation's GPU), `cpu`, `cross` and `spark-native` (GB10 only) use the SDK (plus the host GNU linker on Spark) and the prepared sources (`JitllmSources.cmake`); `project(VERSION)` and the version derived from Git on every build (`JitllmVersion.cmake`, D-062); outputs and the build receipt go to the ignored `build/<preset>/` |
-| `src/` | jitLLM's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions, diagnostic reports, typed identities, checked byte counts, invariant checks, bounded queues, the wake flag, SHA-256, general JSON), `platform/` (reads of `/proc` and `/sys`, the host probe, the path-trust walk, the direct-I/O probe and opens, a raw io_uring ring, the interface addresses, the event loop, wakers and signal watch, socket calls, memory pressure from outside (MemAvailable, PSI), the owner-only files kept across a restart, D-105; with the Linux providers the only Linux-specific code), `providers/` (the device probe; the device-memory, device-execution and storage interfaces, the device runtime (`device_runtime.h`: the engine's copies, graphs, pinned memory), whole direct reads, and their fakes in `providers/fake/`; `providers/cuda/` links the NVIDIA driver, D-072, and with the kernels is the only CUDA code), `config/` (the node's TOML configuration and storage roles, D-073), `catalog/` (extents, resources, leases, generations, occupancy), `memory/` (the commitment ledger, victim selection, materialization planning, the reclaim order) and `scheduler/` (admission and switching, the completion board, lanes, task trees, the storage, device and CPU lanes over the providers, and the scheduler thread's turn loop) of the resource core, `tokenizer/` (byte-level BPE with the M3 pre-tokenizers, Gemma 4 raw UTF-8 BPE, classic SentencePiece GGUF, UCD 15.1.0 tables and NFC, and readers of GGUF and `tokenizer.json` tokenizers, D-088) and `chat/` (native chat-template family renderers chosen by template hash or probe equivalence, the bounded Jinja-subset interpreter for any other template, stop tokens, D-067), `model/` (state representations with their capabilities, a request's live state, model contexts composed of components, D-068, and architecture adapters: the Qwen2 profile, its binding to an artifact and each chunk's host-built inputs, the EXL3 binding and native operation plan, DeepSeek V4's and Qwen3.8's profiles, bindings, bounded state layouts and chunk inputs, Gemma 4's [foundation](docs/gemma4.md) with checked profiles, tensor bindings and independent-slot state/inputs, and Qwen-Image-2.1's profiles, component bindings, VAE plan and host arithmetic), `execution/` (the implementation registry and plans that name one implementation per operation, D-053; phase kinds, decoding modes and request programs with their envelopes, D-050, D-068; greedy and seeded sampling) and `artifact/` (the v0 prepared-artifact reader: strict JSON, validation as untrusted input, groups, chunks and direct-read plans, D-056; and the composition reader, D-089) of the model layer, `kernels/ggml/` (GGML tensor descriptors over jitLLM memory, the K-C launch context, jitLLM's cuBLAS handle and GGML-derived operations, cuBLAS matrix multiplication and the forced vector attention among them, and DeepSeek V4's and Qwen3.8's in `ops_ext.h`: quantized products and `mul_mat_id`, tensor-core attention at D 256 and 512, the indexer, hyper-connections and linear attention; jitLLM's own MXFP8 and NVFP4-row operations on GGML tensors in `jitllm_ops.h`, with its fusions of Qwen3.8's GGML nodes and the routed experts over CUTLASS's NVFP4 grouped GEMM (`moe_cutlass.h`), upstream's fusion gates, their registry declarations, the Qwen2, DeepSeek V4 and Qwen3.8 chunk graphs, graph planning with activation placement, and the executor of bound plans, D-053, D-077), `kernels/exl3/` (jitLLM's launchers of ExLlamaV3's locked kernels under their launch contract, host checks, the reconstruction GEMM on cuBLASLt, the EXL3 linear's paths and their registry declarations, D-080, and the executor of a native EXL3 phase), `kernels/image/` (jitLLM's own BF16 kernels for Qwen-Image-2.1, FlashAttention-2 and the VAE's implicit-GEMM convolution among them, its cuBLAS and pinned cuBLASLt BF16 products, their registry declarations, and the pipeline's phases dispatched through a bound plan), `kernels/paging/` (the engine's fill and n-gram row-gather kernels), `engine/` (the paged node, the runner skeleton: weights as extents, live state with spill and a verify's snapshot, plan caches, graph runs, runner resources, the request cohort; and each M3 model's runner on it; CUDA builds, D-096, but no CUDA calls or headers of its own), `runtime/` (`jitllm-runtime`, the node runtime process, D-074, its serving commands `chat` and `swap-table` over the engine, D-096, each model's settings in three layers, their calibration record and the `settings` command, D-103, hang recovery's ladder, D-102, conversations kept across a restart, D-105, and the chat route's HTTP server and listeners, D-097) and `cli/` (the `jitllm` command: `--version`, `doctor`) |
-| `packaging/` | `jitllm.service`, the sysusers and tmpfiles files, the maintainer scripts, the annotated example configuration, the notice texts the package needs and the arm64 install test; CPack settings (D-063, D-074) |
+| `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | The build: presets `native` (CUDA for `sm_121` and the discrete `sm_86`, D-082; test preset `native-gpu` runs its `gpu-discrete` tests on the workstation's GPU), `cpu`, `cross` and `spark-native` (GB10 only) use the SDK (plus the host GNU linker on Spark) and the prepared sources (`LlmpSources.cmake`); `project(VERSION)` and the version derived from Git on every build (`LlmpVersion.cmake`, D-062); outputs and the build receipt go to the ignored `build/<preset>/` |
+| `src/` | llmpalooza's modules, one directory per module of the [layers](docs/architecture.md#layers-and-dependency-rules): so far `base/` (build info, public-surface versions, diagnostic reports, typed identities, checked byte counts, invariant checks, bounded queues, the wake flag, SHA-256, general JSON), `platform/` (reads of `/proc` and `/sys`, the host probe, the path-trust walk, the direct-I/O probe and opens, a raw io_uring ring, the interface addresses, the event loop, wakers and signal watch, socket calls, memory pressure from outside (MemAvailable, PSI), the owner-only files kept across a restart, D-105; with the Linux providers the only Linux-specific code), `providers/` (the device probe; the device-memory, device-execution and storage interfaces, the device runtime (`device_runtime.h`: the engine's copies, graphs, pinned memory), whole direct reads, and their fakes in `providers/fake/`; `providers/cuda/` links the NVIDIA driver, D-072, and with the kernels is the only CUDA code), `config/` (the node's TOML configuration and storage roles, D-073), `catalog/` (extents, resources, leases, generations, occupancy), `memory/` (the commitment ledger, victim selection, materialization planning, the reclaim order) and `scheduler/` (admission and switching, the completion board, lanes, task trees, the storage, device and CPU lanes over the providers, and the scheduler thread's turn loop) of the resource core, `tokenizer/` (byte-level BPE with the M3 pre-tokenizers, Gemma 4 raw UTF-8 BPE, classic SentencePiece GGUF, UCD 15.1.0 tables and NFC, and readers of GGUF and `tokenizer.json` tokenizers, D-088) and `chat/` (native chat-template family renderers chosen by template hash or probe equivalence, the bounded Jinja-subset interpreter for any other template, stop tokens, D-067), `model/` (state representations with their capabilities, a request's live state, model contexts composed of components, D-068, and architecture adapters: the Qwen2 profile, its binding to an artifact and each chunk's host-built inputs, the EXL3 binding and native operation plan, DeepSeek V4's and Qwen3.8's profiles, bindings, bounded state layouts and chunk inputs, Gemma 4's [foundation](docs/gemma4.md) with checked profiles, tensor bindings and independent-slot state/inputs, and Qwen-Image-2.1's profiles, component bindings, VAE plan and host arithmetic), `execution/` (the implementation registry and plans that name one implementation per operation, D-053; phase kinds, decoding modes and request programs with their envelopes, D-050, D-068; greedy and seeded sampling) and `artifact/` (the v0 prepared-artifact reader: strict JSON, validation as untrusted input, groups, chunks and direct-read plans, D-056; and the composition reader, D-089) of the model layer, `kernels/ggml/` (GGML tensor descriptors over llmpalooza memory, the K-C launch context, llmpalooza's cuBLAS handle and GGML-derived operations, cuBLAS matrix multiplication and the forced vector attention among them, and DeepSeek V4's and Qwen3.8's in `ops_ext.h`: quantized products and `mul_mat_id`, tensor-core attention at D 256 and 512, the indexer, hyper-connections and linear attention; llmpalooza's own MXFP8 and NVFP4-row operations on GGML tensors in `llmp_ops.h`, with its fusions of Qwen3.8's GGML nodes and the routed experts over CUTLASS's NVFP4 grouped GEMM (`moe_cutlass.h`), upstream's fusion gates, their registry declarations, the Qwen2, DeepSeek V4 and Qwen3.8 chunk graphs, graph planning with activation placement, and the executor of bound plans, D-053, D-077), `kernels/exl3/` (llmpalooza's launchers of ExLlamaV3's locked kernels under their launch contract, host checks, the reconstruction GEMM on cuBLASLt, the EXL3 linear's paths and their registry declarations, D-080, and the executor of a native EXL3 phase), `kernels/image/` (llmpalooza's own BF16 kernels for Qwen-Image-2.1, FlashAttention-2 and the VAE's implicit-GEMM convolution among them, its cuBLAS and pinned cuBLASLt BF16 products, their registry declarations, and the pipeline's phases dispatched through a bound plan), `kernels/paging/` (the engine's fill and n-gram row-gather kernels), `engine/` (the paged node, the runner skeleton: weights as extents, live state with spill and a verify's snapshot, plan caches, graph runs, runner resources, the request cohort; and each M3 model's runner on it; CUDA builds, D-096, but no CUDA calls or headers of its own), `runtime/` (`llmp-runtime`, the node runtime process, D-074, its serving commands `chat` and `swap-table` over the engine, D-096, each model's settings in three layers, their calibration record and the `settings` command, D-103, hang recovery's ladder, D-102, conversations kept across a restart, D-105, and the chat route's HTTP server and listeners, D-097) and `cli/` (the `llmp` command: `--version`, `doctor`) |
+| `packaging/` | `llmp.service`, the sysusers and tmpfiles files, the maintainer scripts, the annotated example configuration, the notice texts the package needs and the arm64 install test; CPack settings (D-063, D-074) |
 | `.clang-format`, `.clang-tidy`, `.clangd` | Style and lint configuration (D-059); clangd reads `build/native` |
 | `tests/toolchain/` | The toolchain contract (C++23, GCC 16.2 runtime, no exceptions, libstdc++ assertions in the test presets (D-083), explicit targets, static runtimes, GoogleTest), tested in each profile's binaries |
 | `tests/jobs/` | The confined-job proof, which `tools/job-proof` runs in delegated cgroups (D-074) |
 | `benchmarks/` | Measurement harnesses, built but never run by CTest; their reports live under `docs/experiments/`. `retained_backing/` holds the retained-backing replay and its candidate designs, which unit tests cover |
-| `tests/unit/`, `tests/version/`, `tests/smoke/` | Module unit tests (GoogleTest; a `std::expected`'s error is read through `tests/support/expected_error.h`, D-083; `tests/unit/data/` holds the tokenizer corpus and reference fixtures, and the `models` label marks tests that need the model files on a Spark); the version rules on synthetic repositories, and `jitllm --version` against the receipt; `jitllm doctor` on each host, requiring a clean report on a GB10 (`gpu`) |
+| `tests/unit/`, `tests/version/`, `tests/smoke/` | Module unit tests (GoogleTest; a `std::expected`'s error is read through `tests/support/expected_error.h`, D-083; `tests/unit/data/` holds the tokenizer corpus and reference fixtures, and the `models` label marks tests that need the model files on a Spark); the version rules on synthetic repositories, and `llmp --version` against the receipt; `llmp doctor` on each host, requiring a clean report on a GB10 (`gpu`) |
 | `tests/sources/` | The source mechanism: the receipt and the compile/link inventory against the lock, and D-057's gates on a synthetic lock |
 | `tests/support/` | Test and benchmark support, never linked into production binaries (configure checks): the safe reading of a `std::expected`'s error (D-083), the launch recorder and the executed-plan recording that `docs/experiments/backend-proof-p2/plan_compare.py` compares with the FP16 bridge's recorded plan; the harnesses' names for the engine's paged node and the scheduler's task programs (`paged_node.h`, `paged_programs.h`, D-096) |
-| `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test, deploy and package tasks; the package's documents and inventory in `jitllm_package.py`), `job-proof` (the confined-job proof), `spark-job` (detached long runs on a Spark, supervised and waited on; required, docs/workflow.md), `run-target` (runs cross-built tests under qemu-user or over SSH), `gen-unicode-tables` (the tokenizer's tables from pinned UCD files, D-088), `nsys_steps.py` (matched GPU-step comparison of two nsys traces, docs/optimization-inventory.md) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061; its header check is `jitllm_headers.py`, its portability boundary check `jitllm_boundaries.py`) |
+| `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test, deploy and package tasks; the package's documents and inventory in `llmp_package.py`), `job-proof` (the confined-job proof), `spark-job` (detached long runs on a Spark, supervised and waited on; required, docs/workflow.md), `run-target` (runs cross-built tests under qemu-user or over SSH), `gen-unicode-tables` (the tokenizer's tables from pinned UCD files, D-088), `nsys_steps.py` (matched GPU-step comparison of two nsys traces, docs/optimization-inventory.md) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061; its header check is `llmp_headers.py`, its portability boundary check `llmp_boundaries.py`) |
 | `.devcontainer/` | The digest-pinned reference container (D-012, D-061) |
 
 Update this table as new top-level scaffolding lands.
@@ -199,13 +203,13 @@ the commit gate.
 | [docs/environment.md](docs/environment.md) | Workstation and Spark inventories, links, NAS and certificates, and the M0 platform measurements behind D-032–D-034 |
 | [docs/decisions.md](docs/decisions.md) | Settled choices (D-NNN). Scan headings; read only the entries your task touches |
 | [docs/rough-edges.md](docs/rough-edges.md) | Findings log (RE-NNN). Grep before adding a finding or debugging weirdness |
-| [docs/upstream/](docs/upstream/README.md) | Per upstream project, what to send upstream: fixes, limitations and jitLLM's patches, each entry a standalone handoff |
+| [docs/upstream/](docs/upstream/README.md) | Per upstream project, what to send upstream: fixes, limitations and llmpalooza's patches, each entry a standalone handoff |
 | [docs/async-model.md](docs/async-model.md) | The D-048 task/completion design: thread roles, submission/completion protocol, cancellation versus retirement, bounded queues; the internal contract M2 builds on |
-| [docs/runtime-serving.md](docs/runtime-serving.md) | How `jitllm-runtime` serves models (D-096): the engine module, `[models]` in the configuration, registration, the full swap, turns, the `chat` and `swap-table` commands, and the chat route with its listeners, intake bounds and connections (D-097) |
+| [docs/runtime-serving.md](docs/runtime-serving.md) | How `llmp-runtime` serves models (D-096): the engine module, `[models]` in the configuration, registration, the full swap, turns, the `chat` and `swap-table` commands, and the chat route with its listeners, intake bounds and connections (D-097) |
 | [docs/engine-components.md](docs/engine-components.md) | M3.6's design: components, the graph IR, the format layer and its ladder, the native importer, execution, partitioning, the migration gate and where each retired transfer lands |
 | [docs/engine.md](docs/engine.md) | The engine's runner skeleton and how a new model family plugs in: what a runner holds, its life, and where the long-context work goes |
 | [docs/artifact-format.md](docs/artifact-format.md) | The experimental v0 prepared-artifact format (D-056): container, manifest/index schema, layout and page-in rules, worked examples |
-| [docs/model-support.md](docs/model-support.md) | The model support matrix: each model and drafter jitLLM runs, its pin, artifact, template hash, tokenizer, decoding modes, evidence, divergences and status |
+| [docs/model-support.md](docs/model-support.md) | The model support matrix: each model and drafter llmpalooza runs, its pin, artifact, template hash, tokenizer, decoding modes, evidence, divergences and status |
 | [docs/portability.md](docs/portability.md) | Other GPU platforms and OSes: where vendor and Linux code may live (the boundary check), the device runtime and platform seams, the registry's primitive-fallback rule and each model's minimum primitive set, the runners' shared skeleton, distribution |
 | [docs/optimization-inventory.md](docs/optimization-inventory.md) | The catalog of optimization techniques with their measurements, consumers as of `cc70d69` (the per-family transfer record, frozen by D-107) and shape/format limits, including useful pieces of rejected kernels; read before proposing another kernel experiment |
 | [docs/tokenizer.md](docs/tokenizer.md) | The native tokenizer, chat renderers, stop tokens and sampling: pre-tokenizers, bounds, Unicode tables, agreement with the references, template hashes |
@@ -252,7 +256,7 @@ the commit gate.
    compiler; CUDA-facing translation units stay narrow and don't leak heavy
    runtime containers through headers. Typed byte counts, spans/views,
    `std::expected` error results, bounded queues, move-only ownership
-   wrappers. No exceptions: jitLLM code builds with `-fno-exceptions` (D-066).
+   wrappers. No exceptions: llmpalooza code builds with `-fno-exceptions` (D-066).
    GPU/I/O lifetime is completion-aware: a
    destructor is not proof that submitted work finished. Warning, format, and
    lint pins are recorded in D-059; M1 applies them at the repository root.
@@ -270,7 +274,7 @@ the commit gate.
 **M0 through M3 are complete; M3.6 is in progress; M3.5 is parked.**
 On 2026-10-08 the owner stopped per-family optimization transfers and
 inserted [M3.6](docs/plan.md): one engine of shared components over
-jitLLM's own graph IR, a format layer that keeps weights compressed, a
+llmpalooza's own graph IR, a format layer that keeps weights compressed, a
 native importer, and every current model migrated within 1% of its current
 speed ([design](docs/engine-components.md), D-107 to D-110). M3.5's
 remaining families, formats, batching gaps, media inputs, Clef/Jev and

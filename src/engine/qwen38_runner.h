@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Qwen3.8 Flash Next as a model on a paged node (paged_node.h; M3's swap
@@ -71,8 +71,8 @@
 //   undone whole; any other failure after a job may have written the state
 //   quarantines it until Clear.
 
-#ifndef JITLLM_ENGINE_QWEN38_RUNNER_H_
-#define JITLLM_ENGINE_QWEN38_RUNNER_H_
+#ifndef LLMP_ENGINE_QWEN38_RUNNER_H_
+#define LLMP_ENGINE_QWEN38_RUNNER_H_
 
 #include <array>
 #include <cstddef>
@@ -100,17 +100,17 @@
 #include "engine/qwen38_wave_plan.h"
 #include "engine/request_cohort.h"
 #include "engine/runner_resources.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/qwen38_commit.h"
 #include "kernels/ggml/qwen38_graph.h"
 #include "model/qwen38.h"
 #include "providers/storage.h"
 
-namespace jitllm::benchmarks::qwen_batch {
+namespace llmp::benchmarks::qwen_batch {
 class Proof;
 }
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 struct Qwen38Options {
   std::filesystem::path artifact;
@@ -1005,6 +1005,6 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t routed_capture_bytes_ = 0;
 };
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_QWEN38_RUNNER_H_
+#endif  // LLMP_ENGINE_QWEN38_RUNNER_H_

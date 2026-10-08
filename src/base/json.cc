@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "base/json.h"
@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::base::json {
+namespace llmp::base::json {
 
 std::string Error::ToString() const { return std::format("json: {} (byte {})", reason, offset); }
 
@@ -661,4 +661,4 @@ std::optional<Value> Value::find(std::string_view name) const {
   return std::nullopt;
 }
 
-}  // namespace jitllm::base::json
+}  // namespace llmp::base::json

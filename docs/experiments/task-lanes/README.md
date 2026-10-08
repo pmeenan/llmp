@@ -1,11 +1,11 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # D-048 task lanes: wakeup, worker counts and queue sizes — 2026-09-24
 
 M2's task-lane item asks for measured worker counts, queue sizes, and wakeup
 and polling behavior before those settings are chosen
-([async model](../../async-model.md)). This experiment measures jitLLM's own
+([async model](../../async-model.md)). This experiment measures llmpalooza's own
 lane primitives on the workstation and on `spark`:
 
 - `base::WakeFlag`, the owner's coalesced wake flag;
@@ -59,7 +59,7 @@ Source identities (SHA-256) of the files these runs built from:
 | `src/base/wake.h` | `a58ffa305f7f1ee7287fa66fffafcd7f75a537765ea9df6b0e8f52f4b64797c3` |
 | `src/scheduler/completions.cc` | `8880bafb4036af70d44b16348ddaed2b2458ea5fc9583b20dac424bfc8ac155d` |
 | `src/scheduler/completions.h` | `2f654d9d5de978af8f6148891a647b30440f219a23844bad30a85bfa1f6cfc58` |
-| `src/scheduler/lane.h` | `d8c667a5d4f3a1710d95a9df304e42b086afbe274519c9f432aeec2671941d48` |
+| `src/scheduler/lane.h` | `30ca50af8a09555a0a907bb6ec517f5674c14cf22a3881bd966d815017aa0d77` |
 
 These are the sources measured. A later review fix to `completions.cc`
 changed only the path where a result races `Close` on an operation that
@@ -166,7 +166,7 @@ tools/build build native
 ```
 
 ```bash
-build/native/benchmarks/jitllm_lanes_bench
+build/native/benchmarks/llmp_lanes_bench
 ```
 
 On `spark`, through a cross build (the deploy directory name is the one
@@ -177,5 +177,5 @@ tools/build deploy --host spark cross
 ```
 
 ```bash
-ssh spark '~/.cache/jitllm/deploy/cross-<id>/benchmarks/jitllm_lanes_bench'
+ssh spark '~/.cache/llmp/deploy/cross-<id>/benchmarks/llmp_lanes_bench'
 ```

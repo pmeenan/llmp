@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // External llama.cpp reference harness for backend-proof P2's memory
 // measurements (docs/backend-proof.md, "Memory and workspace"): the FP16
 // toolchain bridge run with the census readings and controls, the
 // reference side of the coarse memory check (D-085, which ended the census
-// rules). It does not implement jitLLM inference. It links the
+// rules). It does not implement llmpalooza inference. It links the
 // bridge's existing build (census_bridge.sh) and evaluates the trajectories
 // of ../backend-proof-p0/fp16_reference.cc twice on one context (the second
 // from a cleared cache, as native's second evaluation runs), with readings
@@ -492,7 +492,7 @@ int main(int argc, char ** argv) try {
     }
 
     std::ofstream out(argv[2]);
-    out << "{\"format\":\"jitllm-census/2\",\"source\":\"fp16_census (bridge)\",\"trajectory\":\"" << which
+    out << "{\"format\":\"llmp-census/2\",\"source\":\"fp16_census (bridge)\",\"trajectory\":\"" << which
         << "\",\"fusion\":" << (std::getenv("GGML_CUDA_DISABLE_FUSION") ? "false" : "true")
         << ",\"settle_ms\":" << settle_ms() << ",\"evaluations\":" << kEvaluations
         << ",\"repeat_bit_differences\":" << repeat_differences

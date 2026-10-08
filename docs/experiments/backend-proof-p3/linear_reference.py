@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Upstream ExLlamaV3's output for every case of the per-linear sweep (BP-N5; cases.py).
 
-Reference-only experiment tooling for the backend proof's P3; it does not implement jitLLM
+Reference-only experiment tooling for the backend proof's P3; it does not implement llmpalooza
 inference. Runs in the reference container (run_reference.sh) with upstream's extension built by
 the SDK's NVCC 13.4.92 (the EXL3 bridge build), the SDK's cuBLAS 13.8.0.4 bind-mounted, a tuning
 cache named by EXLLAMAV3_TUNE_CACHE, EXL3_HGEMM_F16ACC=0, and EXL3_GEMV=0 for EXL3-G or unset for

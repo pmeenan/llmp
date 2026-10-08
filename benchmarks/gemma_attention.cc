@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded pinned original versus registered Gemma local attention.
-// jitllm_gemma_attention_bench [heads16|32] [rows1|2|4|8|16|33|1025] [segments1|2|4]
+// llmp_gemma_attention_bench [heads16|32] [rows1|2|4|8|16|33|1025] [segments1|2|4]
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -27,7 +27,7 @@
 // device templates into this host benchmark translation unit.
 template <int D, ggml_type K, ggml_type V>
 void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context&, ggml_tensor*);
-namespace kg = jitllm::kernels::ggml;
+namespace kg = llmp::kernels::ggml;
 int main(int argc, char** argv) {
   int heads = 16, rows = 1, segments = 1;
   if (argc == 3 || argc == 4) {
@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
       (segments != 1 && segments != 2 && segments != 4))
     return 1;
   constexpr int d = 256, cells = 1280, launches = 128;
-  auto opened = jitllm::providers::cuda::OpenDeviceExecution(0);
+  auto opened = llmp::providers::cuda::OpenDeviceExecution(0);
   if (!opened) return 1;
   auto execution = std::move(*opened);
   auto made = execution->CreateStream();
@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
   if (!workspace) return 1;
   auto context = kg::LaunchContext::Create(
       0, *execution, stream_id,
-      {.base = reinterpret_cast<std::uintptr_t>(workspace), .size = jitllm::base::Bytes(reserve)});
+      {.base = reinterpret_cast<std::uintptr_t>(workspace), .size = llmp::base::Bytes(reserve)});
   if (!context) return 1;
   auto owner = std::move(*context);
   auto& launch = *owner;
@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
   if (vector != (rows == 1)) return 1;
   const auto original = [&](kg::LaunchContext& l) {
     for (auto* segment : nodes) {
-      auto result = l.Run(jitllm::base::Bytes(scratch), [=](ggml_backend_cuda_context& c) {
+      auto result = l.Run(llmp::base::Bytes(scratch), [=](ggml_backend_cuda_context& c) {
         if (vector)
           ggml_cuda_flash_attn_ext_vec_case<256, GGML_TYPE_F16, GGML_TYPE_F16>(c, segment);
         else
@@ -213,7 +213,7 @@ int main(int argc, char** argv) {
   b.reset();
   const auto fence = execution->Record(stream_id);
   if (!fence || cudaDeviceSynchronize() != cudaSuccess ||
-      execution->Query(*fence).value() != jitllm::providers::FenceState::kComplete ||
+      execution->Query(*fence).value() != llmp::providers::FenceState::kComplete ||
       !execution->Release(*fence))
     return 1;
   owner.reset();

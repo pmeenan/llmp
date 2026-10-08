@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/gemma4_graph.h"
@@ -22,14 +22,14 @@
 #include "gemma4_fixture.h"
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
 
 namespace {
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
-namespace fixture = jitllm::test_support::gemma4;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
+namespace fixture = llmp::test_support::gemma4;
 struct Case {
   const md::Gemma4Profile& p;
   md::Gemma4Binding binding;
@@ -39,16 +39,16 @@ struct Case {
   explicit Case(std::uint32_t size = 26, std::uint32_t slots = 1)
       : p(size == 26 ? md::Gemma4_26BA4B() : md::Gemma4_31B()) {
     auto b = md::BindGemma4(p, "gemma4", fixture::Resources(size));
-    jitllm::base::Check(b.has_value(), "Gemma graph fixture binding failed");
+    llmp::base::Check(b.has_value(), "Gemma graph fixture binding failed");
     binding = std::move(*b);
     auto s = md::Gemma4State(p, 4096, 16);
-    jitllm::base::Check(s.has_value(), "Gemma graph state failed");
+    llmp::base::Check(s.has_value(), "Gemma graph state failed");
     state = std::move(*s);
     const std::array<std::int32_t, 2> tokens{1, 2};
     std::vector<md::Gemma4Segment> segments;
     for (std::uint32_t i = 0; i < slots; ++i) segments.push_back({i, i * 1100, tokens});
     auto in = md::Gemma4Chunk(p, state, segments, true);
-    jitllm::base::Check(in.has_value(), "Gemma graph input failed");
+    llmp::base::Check(in.has_value(), "Gemma graph input failed");
     input = std::move(*in);
     for (const auto& seg : input.segments)
       shape.segments.push_back({seg.slot, seg.rows, seg.n_past, seg.global_n_kv, seg.local_n_kv});
@@ -138,7 +138,7 @@ TEST(Gemma4Graph, OwnerOperandsUseActualVariableSpansAndWidths) {
         EXPECT_EQ(kg::CheckFlashAttnOwnersNode(out).has_value(), fits)
             << heads << '/' << d << '/' << cells;
         if (!fits) continue;
-        EXPECT_EQ(kg::JitllmOpInt(out, 0), 4);
+        EXPECT_EQ(kg::LlmpOpInt(out, 0), 4);
         // Custom integer payload begins at byte32 after the operation tag.
         for (const auto cohort : {0, 1, 13, 16, -1}) {
           out->op_params[8] = cohort;
@@ -245,7 +245,7 @@ TEST(Gemma4Graph, FullConfiguredContextKeepsBoundedOwnerReadsAndDepthFallback) {
           EXPECT_EQ(g->attention_quad_mask, owners == 8 ? 3U : 1U);
           BindLeaves(*g);
           for (const auto* node : g->nodes)
-            if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners) {
+            if (kg::LlmpOpOf(node) == kg::LlmpOp::kFlashAttnOwners) {
               const auto valid = kg::CheckFlashAttnOwnersNode(node);
               EXPECT_TRUE(valid) << (valid ? "" : valid.error().detail);
             }
@@ -332,7 +332,7 @@ TEST(Gemma4Graph, CommonOwnerReadsPreserveEqualGraphsAndRejectTheSecondBrokenWri
         });
         auto* out = found == g->nodes.end() ? nullptr : *found;
         ASSERT_NE(out, nullptr);
-        EXPECT_EQ(kg::JitllmOpInt(out, 4), 0);
+        EXPECT_EQ(kg::LlmpOpInt(out, 4), 0);
         for (const auto index : {2, 3, 6, 7}) EXPECT_EQ(out->src[index]->src[0]->op, GGML_OP_VIEW);
       }
     }
@@ -380,7 +380,7 @@ TEST(Gemma4Graph, CommonOwnerReadsKeepActualRootsAndPadOnlyBoundedTwoOwnerWaves)
         auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2, options));
         ASSERT_TRUE(arena);
         auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
-        ASSERT_TRUE(g) << jitllm::test_support::Failed(g, &kg::KernelFailure::detail).value_or("");
+        ASSERT_TRUE(g) << llmp::test_support::Failed(g, &kg::KernelFailure::detail).value_or("");
         EXPECT_EQ(g->attention_mode, common ? kg::Gemma4AttentionMode::kOwners
                                             : kg::Gemma4AttentionMode::kIndependent);
         if (!common) continue;
@@ -393,8 +393,8 @@ TEST(Gemma4Graph, CommonOwnerReadsKeepActualRootsAndPadOnlyBoundedTwoOwnerWaves)
           });
           auto* out = found == g->nodes.end() ? nullptr : *found;
           ASSERT_NE(out, nullptr);
-          EXPECT_EQ(kg::JitllmOpOf(out), kg::JitllmOp::kFlashAttnOwners);
-          EXPECT_EQ(kg::JitllmOpInt(out, 4), bounded ? 1 : 0);
+          EXPECT_EQ(kg::LlmpOpOf(out), kg::LlmpOp::kFlashAttnOwners);
+          EXPECT_EQ(kg::LlmpOpInt(out, 4), bounded ? 1 : 0);
           EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(out));
           EXPECT_EQ(out->src[1]->ne[0], 1024);
           EXPECT_EQ(out->src[1]->ne[1], 32);
@@ -456,7 +456,7 @@ TEST(Gemma4Graph, VariableOwnerAttentionKeepsSlotOrderWritersAndFundedMetadata) 
         auto arena = kg::TensorArena::Create(count);
         ASSERT_TRUE(arena);
         auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
-        ASSERT_TRUE(g) << jitllm::test_support::Failed(g)->detail;
+        ASSERT_TRUE(g) << llmp::test_support::Failed(g)->detail;
         const bool eligible = size != 31 || max_rows != 8192;
         EXPECT_EQ(g->attention_mode, eligible ? mode : kg::Gemma4AttentionMode::kIndependent);
         EXPECT_EQ(Count(*g, GGML_OP_SET_ROWS), c.p.layers * 8);
@@ -468,7 +468,7 @@ TEST(Gemma4Graph, VariableOwnerAttentionKeepsSlotOrderWritersAndFundedMetadata) 
                   mode == kg::Gemma4AttentionMode::kPacked ? c.p.layers : 0);
         std::size_t owner_nodes = 0;
         for (auto* node : g->nodes) {
-          if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+          if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
           ++owner_nodes;
           for (const auto index : {2, 3, 4, 5, 6, 7, 8, 9}) {
             const auto* raw = node->src[index]->src[0];
@@ -575,10 +575,10 @@ TEST(Gemma4Graph, CompleteQuadsKeepProductsAndIndependentTailsInOriginalOwnerOrd
                       (independent + (mode == kg::Gemma4AttentionMode::kPacked ? owners / 4 : 0)));
         std::size_t owner_nodes = 0;
         for (auto* node : graph->nodes) {
-          if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+          if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
           ++owner_nodes;
           EXPECT_EQ(node->ne[3], 4);
-          EXPECT_EQ(kg::JitllmOpInt(node, 0), 4);  // Widths differ between the quads.
+          EXPECT_EQ(kg::LlmpOpInt(node, 0), 4);  // Widths differ between the quads.
           for (std::size_t i = 0; i < 8; ++i) {
             auto* raw = node->src[2 + i]->src[0];
             ASSERT_NE(raw, nullptr);
@@ -718,7 +718,7 @@ TEST(Gemma4Graph, StateOnlyKeepsEveryCacheStoreAndOmitsOnlyTheFinalTail) {
     options.device_masks = true;
     options.narrow_final = true;
     auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
-    ASSERT_TRUE(graph) << jitllm::test_support::Failed(graph)->detail;
+    ASSERT_TRUE(graph) << llmp::test_support::Failed(graph)->detail;
     EXPECT_EQ(graph->logits, nullptr);
     EXPECT_EQ(graph->hidden, nullptr);
     EXPECT_EQ(graph->out_ids, nullptr);
@@ -791,17 +791,17 @@ TEST(Gemma4Graph, ExplicitSegmentStoresFuseOnlyEligibleUnkeptKRotations) {
       choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
       choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
       auto plan = kg::PlanGraph(built->nodes, false, choices);
-      ASSERT_TRUE(plan) << jitllm::test_support::Failed(plan)->detail;
+      ASSERT_TRUE(plan) << llmp::test_support::Failed(plan)->detail;
       const auto stores = [](const auto& p) {
         return std::ranges::count_if(p.steps, [](const auto& step) {
-          return step.operation == jitllm::execution::Operation::kRopeSetRows;
+          return step.operation == llmp::execution::Operation::kRopeSetRows;
         });
       };
       EXPECT_EQ(stores(*plan), c.p.layers * slots);
       auto placement = kg::PlaceActivations(built->nodes, *plan, built->inputs, 256);
-      ASSERT_TRUE(placement) << jitllm::test_support::Failed(placement)->detail;
+      ASSERT_TRUE(placement) << llmp::test_support::Failed(placement)->detail;
       for (const auto& step : plan->steps)
-        if (step.operation == jitllm::execution::Operation::kRopeSetRows) {
+        if (step.operation == llmp::execution::Operation::kRopeSetRows) {
           EXPECT_TRUE(kg::CheckRopeSetRows(step.nodes[0], step.nodes[1]));
           EXPECT_EQ(step.nodes[1]->src[0]->view_offs, 0U);
           EXPECT_EQ(step.nodes[0]->ne[2], step.nodes[1]->src[1]->ne[0]);
@@ -857,8 +857,8 @@ TEST(Gemma4Graph, PartialFlatteningFallsBackToCheckedPrimitiveStores) {
   auto plan = kg::PlanGraph(nodes, false, choices);
   ASSERT_TRUE(plan);
   ASSERT_EQ(plan->steps.size(), 2U);
-  EXPECT_EQ(plan->steps[0].operation, jitllm::execution::Operation::kRope);
-  EXPECT_EQ(plan->steps[1].operation, jitllm::execution::Operation::kSetRows);
+  EXPECT_EQ(plan->steps[0].operation, llmp::execution::Operation::kRope);
+  EXPECT_EQ(plan->steps[1].operation, llmp::execution::Operation::kSetRows);
 }
 
 TEST(Gemma4Graph, BothActualContractsBuildCompleteTextGraphs) {
@@ -867,7 +867,7 @@ TEST(Gemma4Graph, BothActualContractsBuildCompleteTextGraphs) {
     auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 1));
     ASSERT_TRUE(arena);
     auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape);
-    ASSERT_TRUE(g) << jitllm::test_support::Failed(g)->detail;
+    ASSERT_TRUE(g) << llmp::test_support::Failed(g)->detail;
     EXPECT_EQ(g->logits->ne[0], c.p.vocab);
     EXPECT_EQ(g->logits->ne[1], 1);
     EXPECT_EQ(g->hidden->ne[1], 2);
@@ -888,7 +888,7 @@ TEST(Gemma4Graph, JoinedProductsKeepEverySlotAttentionAndCacheIndependent) {
     auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, slots));
     ASSERT_TRUE(arena);
     auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape);
-    ASSERT_TRUE(g) << jitllm::test_support::Failed(g)->detail;
+    ASSERT_TRUE(g) << llmp::test_support::Failed(g)->detail;
     EXPECT_EQ(Count(*g, GGML_OP_FLASH_ATTN_EXT), c.p.layers * slots);
     EXPECT_EQ(Count(*g, GGML_OP_SET_ROWS), c.p.layers * slots * 2);
     // Q projection and routed products join row-local inputs, not KV heads.
@@ -975,7 +975,7 @@ TEST(Gemma4Graph, PartialLayerControlsRemainExplicitAndUseSameArithmetic) {
   auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 1));
   ASSERT_TRUE(arena);
   auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, o);
-  ASSERT_TRUE(g) << jitllm::test_support::Failed(g)->detail;
+  ASSERT_TRUE(g) << llmp::test_support::Failed(g)->detail;
   EXPECT_EQ(g->options, o);
   EXPECT_EQ(g->tokens, nullptr);
   EXPECT_EQ(g->logits, nullptr);
@@ -1007,8 +1007,7 @@ TEST(Gemma4Graph, GreedyShapesAddOnlyTheFrontierArgmaxAfterTheHead) {
   EXPECT_EQ(g->greedy->type, GGML_TYPE_I32);
   EXPECT_EQ(g->greedy->ne[0], g->logits->ne[1]);
   EXPECT_EQ(g->greedy->src[0], g->logits);
-  EXPECT_EQ(kg::JitllmOpInt(g->greedy, 1),
-            static_cast<std::int32_t>(kg::ArgmaxFlavor::kHostGreedy));
+  EXPECT_EQ(kg::LlmpOpInt(g->greedy, 1), static_cast<std::int32_t>(kg::ArgmaxFlavor::kHostGreedy));
   EXPECT_EQ(g->nodes.back(), g->greedy);
   auto plain = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2));
   ASSERT_TRUE(plain);
@@ -1143,13 +1142,13 @@ TEST(Gemma4Graph, DecodePreparationSharesInputsAndKeepsQuantOneTokenArithmetic) 
   BindLeaves(*g);
   std::size_t products = 0, prepared = 0;
   for (const auto* t : g->nodes) {
-    if (kg::JitllmOpOf(t) == kg::JitllmOp::kVecQ) {
+    if (kg::LlmpOpOf(t) == kg::LlmpOp::kVecQ) {
       const auto valid = kg::CheckVecQ(t);
       EXPECT_TRUE(valid) << (valid ? "" : valid.error().detail);
       EXPECT_TRUE(kg::VecQOneToken(t));
       ++products;
     }
-    if (kg::JitllmOpOf(t) == kg::JitllmOp::kQuantizeQ8) {
+    if (kg::LlmpOpOf(t) == kg::LlmpOp::kQuantizeQ8) {
       const auto valid = kg::CheckQuantizeQ8(t);
       EXPECT_TRUE(valid) << (valid ? "" : valid.error().detail);
       ++prepared;
@@ -1160,13 +1159,13 @@ TEST(Gemma4Graph, DecodePreparationSharesInputsAndKeepsQuantOneTokenArithmetic) 
   std::size_t consumers = 0;
   ggml_tensor* q8 = nullptr;
   for (auto* t : g->nodes) {
-    if (kg::JitllmOpOf(t) != kg::JitllmOp::kQuantizeQ8 || t->src[0] != input) continue;
+    if (kg::LlmpOpOf(t) != kg::LlmpOp::kQuantizeQ8 || t->src[0] != input) continue;
     EXPECT_EQ(q8, nullptr);
     q8 = t;
   }
   ASSERT_NE(q8, nullptr);
   for (const auto* t : g->nodes) {
-    if (kg::JitllmOpOf(t) == kg::JitllmOp::kVecQ && t->src[1] == q8) ++consumers;
+    if (kg::LlmpOpOf(t) == kg::LlmpOp::kVecQ && t->src[1] == q8) ++consumers;
   }
   EXPECT_EQ(consumers, 3U);
 }
@@ -1279,11 +1278,11 @@ TEST(Gemma4Graph, SmallRealOwnerGroupsPreserveProductsAndPreflightEveryWriter) {
       EXPECT_EQ(Count(*graph, GGML_OP_SET_ROWS), c.p.layers * owners * 2);
       std::size_t owner_nodes = 0;
       for (auto* node : graph->nodes) {
-        if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+        if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
         ++owner_nodes;
         EXPECT_EQ(node->ne[3], owners);
-        EXPECT_EQ(kg::JitllmOpInt(node, 0), static_cast<std::int32_t>(owners));
-        EXPECT_EQ(kg::JitllmOpInt(node, 1), static_cast<std::int32_t>(owners));
+        EXPECT_EQ(kg::LlmpOpInt(node, 0), static_cast<std::int32_t>(owners));
+        EXPECT_EQ(kg::LlmpOpInt(node, 1), static_cast<std::int32_t>(owners));
         for (std::size_t i = owners; i < 4; ++i) {
           EXPECT_EQ(node->src[2 + i], nullptr);
           EXPECT_EQ(node->src[6 + i], nullptr);
@@ -1292,7 +1291,7 @@ TEST(Gemma4Graph, SmallRealOwnerGroupsPreserveProductsAndPreflightEveryWriter) {
       EXPECT_EQ(owner_nodes, c.p.layers);
       BindLeaves(*graph);
       for (auto* node : graph->nodes)
-        if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners) {
+        if (kg::LlmpOpOf(node) == kg::LlmpOp::kFlashAttnOwners) {
           EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(node));
           node->src[2 + owners] = node->src[2];
           EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(node));
@@ -1370,14 +1369,14 @@ TEST(Gemma4Graph, PartialOwnerGroupsPreserveProductsAndPreflightEveryWriter) {
       EXPECT_EQ(Count(*graph, GGML_OP_SET_ROWS), c.p.layers * owners * 2);
       std::size_t owner_nodes = 0;
       for (auto* node : graph->nodes) {
-        if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+        if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
         ++owner_nodes;
-        const auto offset = static_cast<std::uint32_t>(kg::JitllmOpInt(node, 2));
+        const auto offset = static_cast<std::uint32_t>(kg::LlmpOpInt(node, 2));
         const auto active = std::min(4U, owners - offset);
         EXPECT_EQ(node->ne[3], active);
         EXPECT_EQ(offset % 4, 0U);
-        EXPECT_EQ(kg::JitllmOpInt(node, 0), static_cast<std::int32_t>(owners));
-        EXPECT_EQ(kg::JitllmOpInt(node, 1), active == 4 ? 0 : static_cast<std::int32_t>(active));
+        EXPECT_EQ(kg::LlmpOpInt(node, 0), static_cast<std::int32_t>(owners));
+        EXPECT_EQ(kg::LlmpOpInt(node, 1), active == 4 ? 0 : static_cast<std::int32_t>(active));
         for (std::size_t i = active; i < 4; ++i) {
           EXPECT_EQ(node->src[2 + i], nullptr);
           EXPECT_EQ(node->src[6 + i], nullptr);
@@ -1386,9 +1385,9 @@ TEST(Gemma4Graph, PartialOwnerGroupsPreserveProductsAndPreflightEveryWriter) {
       EXPECT_EQ(owner_nodes, c.p.layers * ((owners + 3) / 4));
       BindLeaves(*graph);
       for (auto* node : graph->nodes)
-        if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners) {
+        if (kg::LlmpOpOf(node) == kg::LlmpOp::kFlashAttnOwners) {
           EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(node));
-          const auto offset = kg::JitllmOpInt(node, 2);
+          const auto offset = kg::LlmpOpInt(node, 2);
           const auto active = std::min(4U, owners - static_cast<std::uint32_t>(offset));
           if (active < 4) {
             node->src[2 + active] = node->src[2];
@@ -1420,9 +1419,9 @@ TEST(Gemma4Graph, PartialOwnerGroupsPreserveProductsAndPreflightEveryWriter) {
       EXPECT_EQ(fallback->attention_mode, kg::Gemma4AttentionMode::kOwners);
       EXPECT_EQ(Count(*fallback, GGML_OP_FLASH_ATTN_EXT), c.p.layers * (owners % 4));
       for (const auto* node : fallback->nodes)
-        if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners) {
-          EXPECT_EQ(kg::JitllmOpInt(node, 0), 4);
-          EXPECT_EQ(kg::JitllmOpInt(node, 2), 0);
+        if (kg::LlmpOpOf(node) == kg::LlmpOp::kFlashAttnOwners) {
+          EXPECT_EQ(kg::LlmpOpInt(node, 0), 4);
+          EXPECT_EQ(kg::LlmpOpInt(node, 2), 0);
         }
     }
 }
@@ -1506,10 +1505,10 @@ TEST(Gemma4Graph, OriginalDenseSharingUsesTransientChoicesAndPreservesOtherConsu
         BindLeaves(*g);
         std::size_t preparations = 0, products = 0, old_vecq = 0;
         for (const auto* node : g->nodes) {
-          const auto op = kg::JitllmOpOf(node);
-          preparations += op == kg::JitllmOp::kQuantizeQ8;
-          old_vecq += op == kg::JitllmOp::kVecQ;
-          if (op != kg::JitllmOp::kMmvqPrepared) continue;
+          const auto op = kg::LlmpOpOf(node);
+          preparations += op == kg::LlmpOp::kQuantizeQ8;
+          old_vecq += op == kg::LlmpOp::kVecQ;
+          if (op != kg::LlmpOp::kMmvqPrepared) continue;
           const auto valid = kg::CheckMmvqPrepared(node);
           EXPECT_TRUE(valid) << (valid ? "" : valid.error().detail);
           EXPECT_EQ(node->src[2]->ne[1], columns);
@@ -1526,13 +1525,13 @@ TEST(Gemma4Graph, OriginalDenseSharingUsesTransientChoicesAndPreservesOtherConsu
           ASSERT_NE(attn_input, nullptr);
           std::size_t q8 = 0;
           for (const auto* node : g->nodes)
-            q8 += kg::JitllmOpOf(node) == kg::JitllmOp::kQuantizeQ8 && node->src[0] == attn_input;
+            q8 += kg::LlmpOpOf(node) == kg::LlmpOp::kQuantizeQ8 && node->src[0] == attn_input;
           EXPECT_EQ(q8, 1U);
         }
         // Whole immutable resources for routed experts and single-consumer
         // attention/down/head products never enter the new preparation path.
         for (const auto* node : g->nodes) {
-          if (kg::JitllmOpOf(node) != kg::JitllmOp::kMmvqPrepared) continue;
+          if (kg::LlmpOpOf(node) != kg::LlmpOp::kMmvqPrepared) continue;
           const auto leaf = std::ranges::find_if(
               g->weights, [&](const auto& w) { return w.tensor == node->src[0]; });
           ASSERT_NE(leaf, g->weights.end());
@@ -1568,8 +1567,8 @@ TEST(Gemma4Graph, OriginalDenseSharingKeepsHistoricalOverloadAndDiagnosticPreced
     ASSERT_TRUE(historical);
     std::size_t prepared = 0, vecq = 0;
     for (const auto* node : historical->nodes) {
-      prepared += kg::JitllmOpOf(node) == kg::JitllmOp::kMmvqPrepared;
-      vecq += kg::JitllmOpOf(node) == kg::JitllmOp::kVecQ;
+      prepared += kg::LlmpOpOf(node) == kg::LlmpOp::kMmvqPrepared;
+      vecq += kg::LlmpOpOf(node) == kg::LlmpOp::kVecQ;
     }
     EXPECT_EQ(prepared, 0U);
     EXPECT_EQ(vecq > 0, old);
@@ -1581,8 +1580,8 @@ TEST(Gemma4Graph, OriginalDenseSharingKeepsHistoricalOverloadAndDiagnosticPreced
       ASSERT_TRUE(graph);
       std::size_t new_prepared = 0, new_vecq = 0;
       for (const auto* node : graph->nodes) {
-        new_prepared += kg::JitllmOpOf(node) == kg::JitllmOp::kMmvqPrepared;
-        new_vecq += kg::JitllmOpOf(node) == kg::JitllmOp::kVecQ;
+        new_prepared += kg::LlmpOpOf(node) == kg::LlmpOp::kMmvqPrepared;
+        new_vecq += kg::LlmpOpOf(node) == kg::LlmpOp::kVecQ;
       }
       EXPECT_EQ(new_prepared, 0U);
       EXPECT_EQ(new_vecq, vecq);
@@ -1606,7 +1605,7 @@ TEST(Gemma4Graph, OriginalDenseSharingKeepsStateOnlyTiedKvSingletonOrdinary) {
     ASSERT_NE(input, nullptr);
     std::size_t preparations = 0, products = 0;
     for (const auto* node : graph->nodes) {
-      preparations += kg::JitllmOpOf(node) == kg::JitllmOp::kQuantizeQ8 && node->src[0] == input;
+      preparations += kg::LlmpOpOf(node) == kg::LlmpOp::kQuantizeQ8 && node->src[0] == input;
       products += node->op == GGML_OP_MUL_MAT && node->src[1] == input;
     }
     EXPECT_EQ(preparations, 0U);

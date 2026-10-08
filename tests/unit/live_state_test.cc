@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/live_state.h"
@@ -31,19 +31,19 @@
 #include "runtime/intake_limits.h"
 #include "scheduler/commands.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 struct LiveStatePlacementTestAccess {
   static bool Check(LiveState& state, const scheduler::Scheduler& scheduler, PlaceCheck& check) {
     return state.CheckPlacesImpl(scheduler, check);
   }
 };
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
 namespace {
 
-namespace en = jitllm::engine;
-namespace pr = jitllm::providers;
-using jitllm::base::Bytes;
+namespace en = llmp::engine;
+namespace pr = llmp::providers;
+using llmp::base::Bytes;
 constexpr std::uint64_t kExtent = en::kPagedExtent;
 
 class BareState final : public en::PagedModel {
@@ -52,8 +52,8 @@ class BareState final : public en::PagedModel {
   en::LiveState live{"test"};
 
   std::uint32_t stream() const override { return 0; }
-  const jitllm::catalog::Closure& fence_closure() const override { return fence_; }
-  std::vector<jitllm::catalog::ExtentId> managed_extents() const override {
+  const llmp::catalog::Closure& fence_closure() const override { return fence_; }
+  std::vector<llmp::catalog::ExtentId> managed_extents() const override {
     auto result = live.extents();
     const auto kept = live.kept_extents();
     result.insert(result.end(), kept.begin(), kept.end());
@@ -82,7 +82,7 @@ class BareState final : public en::PagedModel {
 
  private:
   en::PagedNode& node_;
-  jitllm::catalog::Closure fence_;
+  llmp::catalog::Closure fence_;
 };
 
 class LiveStateTest : public ::testing::Test {
@@ -99,28 +99,28 @@ class LiveStateTest : public ::testing::Test {
 
   void SetUp() override {
     auto opened = node_.Open();
-    ASSERT_TRUE(opened) << jitllm::test_support::Failed(opened).value_or("");
+    ASSERT_TRUE(opened) << llmp::test_support::Failed(opened).value_or("");
     fixed_ = node_.catalog().OccupancyOf(node_.domain()).Total().value();
     auto added = model_.live.AddGrowing(node_, "a cache", 8 * kExtent, 0);
-    ASSERT_TRUE(added) << jitllm::test_support::Failed(added).value_or("");
+    ASSERT_TRUE(added) << llmp::test_support::Failed(added).value_or("");
     auto started = node_.Start(Bytes(fixed_ + (BudgetExtents() * kExtent)));
-    ASSERT_TRUE(started) << jitllm::test_support::Failed(started).value_or("");
+    ASSERT_TRUE(started) << llmp::test_support::Failed(started).value_or("");
     // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
-    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
     ASSERT_NE(scratch, nullptr);
     auto registered = RegisterState(std::filesystem::path(scratch));
-    ASSERT_TRUE(registered) << jitllm::test_support::Failed(registered).value_or("");
+    ASSERT_TRUE(registered) << llmp::test_support::Failed(registered).value_or("");
     node_.Run();
     running_ = true;
   }
   void TearDown() override {
     if (running_) {
       auto refreshed = model_.Refresh();
-      EXPECT_TRUE(refreshed) << jitllm::test_support::Failed(refreshed).value_or("");
+      EXPECT_TRUE(refreshed) << llmp::test_support::Failed(refreshed).value_or("");
     }
     std::array<en::PagedModel*, 1> models = {&model_};
     auto closed = node_.TearDown(models);
-    EXPECT_TRUE(closed) << jitllm::test_support::Failed(closed).value_or("");
+    EXPECT_TRUE(closed) << llmp::test_support::Failed(closed).value_or("");
   }
 
   bool PlacementMemoHit() {
@@ -132,27 +132,27 @@ class LiveStateTest : public ::testing::Test {
           return {};
         },
         "test state placement check");
-    EXPECT_TRUE(checked) << jitllm::test_support::Failed(checked).value_or("");
+    EXPECT_TRUE(checked) << llmp::test_support::Failed(checked).value_or("");
     EXPECT_EQ(check.moved, 0U) << check.first;
     return hit;
   }
 
-  jitllm::catalog::ExtentView Describe(jitllm::catalog::ExtentId id) {
-    jitllm::catalog::ExtentView view;
+  llmp::catalog::ExtentView Describe(llmp::catalog::ExtentId id) {
+    llmp::catalog::ExtentView view;
     auto read = node_.Call(
         [&]() -> en::Status {
           view = node_.catalog().Describe(id).value();
           return {};
         },
         "test extent view");
-    EXPECT_TRUE(read) << jitllm::test_support::Failed(read).value_or("");
+    EXPECT_TRUE(read) << llmp::test_support::Failed(read).value_or("");
     return view;
   }
 
   // Every one of `ids` nonresident: its backing released.
-  bool Released(const std::vector<jitllm::catalog::ExtentId>& ids) {
+  bool Released(const std::vector<llmp::catalog::ExtentId>& ids) {
     return std::ranges::all_of(ids, [&](auto id) {
-      return Describe(id).state == jitllm::catalog::ExtentState::kNonresident;
+      return Describe(id).state == llmp::catalog::ExtentState::kNonresident;
     });
   }
 
@@ -166,8 +166,8 @@ class LiveStateTest : public ::testing::Test {
         [bases, value](pr::NativeStream native) {
           for (const auto base : bases)
             if (!pr::FillAsync(native, en::support::Pointer(base), value, kExtent).ok())
-              return jitllm::scheduler::JobResult::kUnknown;
-          return jitllm::scheduler::JobResult::kQueued;
+              return llmp::scheduler::JobResult::kUnknown;
+          return llmp::scheduler::JobResult::kQueued;
         },
         "test pattern", 0);
   }
@@ -177,7 +177,7 @@ class LiveStateTest : public ::testing::Test {
     std::vector<std::byte> copy;
     std::array<std::vector<std::byte>*, 1> output = {&copy};
     auto read = model_.live.Read(node_, model_.fence_closure(), 0, "test read", output);
-    EXPECT_TRUE(read) << jitllm::test_support::Failed(read).value_or("");
+    EXPECT_TRUE(read) << llmp::test_support::Failed(read).value_or("");
     return copy;
   }
   std::byte Contents(std::size_t at) {
@@ -198,14 +198,14 @@ class LiveStateTest : public ::testing::Test {
           return {};
         },
         "test occupancy");
-    EXPECT_TRUE(read) << jitllm::test_support::Failed(read).value_or("");
+    EXPECT_TRUE(read) << llmp::test_support::Failed(read).value_or("");
     return bytes;
   }
 
-  bool WaitResident(jitllm::catalog::ExtentId id) {
+  bool WaitResident(llmp::catalog::ExtentId id) {
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     do {
-      if (Describe(id).state == jitllm::catalog::ExtentState::kResident) return true;
+      if (Describe(id).state == llmp::catalog::ExtentState::kResident) return true;
       std::this_thread::sleep_for(std::chrono::microseconds(100));
     } while (std::chrono::steady_clock::now() < until);
     return false;
@@ -238,7 +238,7 @@ TEST_F(LiveStateTest, PreparationIsUnpublishedReclaimableZeroBackingUntilUse) {
   for (const auto id : kept) {
     const auto view = Describe(id);
     EXPECT_TRUE(view.discarded);
-    EXPECT_TRUE(jitllm::catalog::Catalog::Evictable(view));
+    EXPECT_TRUE(llmp::catalog::Catalog::Evictable(view));
   }
   const auto occupancy = Occupancy();
   ASSERT_TRUE(model_.live.Use(node_, next));
@@ -281,7 +281,7 @@ TEST_F(LiveStateTest, RepeatedSpillRegistrationRefusesWithoutSettlingOrReplacing
   const auto id = model_.live.reserved_extents()[4];
   ASSERT_TRUE(WaitResident(id));
   const auto before = Describe(id);
-  jitllm::scheduler::PageSource original;
+  llmp::scheduler::PageSource original;
   ASSERT_TRUE(node_.Call(
       [&]() -> en::Status {
         original = *node_.scheduler().SourceOf(id);
@@ -300,7 +300,7 @@ TEST_F(LiveStateTest, RepeatedSpillRegistrationRefusesWithoutSettlingOrReplacing
   ASSERT_TRUE(node_.Call(
       [&]() -> en::Status {
         const auto* source = node_.scheduler().SourceOf(id);
-        EXPECT_TRUE(jitllm::scheduler::SamePlace(*source, original));
+        EXPECT_TRUE(llmp::scheduler::SamePlace(*source, original));
         EXPECT_EQ(source->read.fd, original.read.fd);
         EXPECT_EQ(source->zero, original.zero);
         return {};
@@ -319,7 +319,7 @@ TEST_F(LiveStateTest, PreparationValidatesWholeRangeAndSourceBeforeSubmitting) {
   EXPECT_FALSE(model_.live.Prepare(node_, invalid));
   const auto ids = model_.live.reserved_extents();
   const std::array next = {en::LiveState::Range{0, 4 * kExtent, 2 * kExtent}};
-  jitllm::scheduler::PageSource original;
+  llmp::scheduler::PageSource original;
   ASSERT_TRUE(node_.Call(
       [&]() -> en::Status {
         original = *node_.scheduler().SourceOf(ids[5]);
@@ -348,7 +348,7 @@ TEST_F(LiveStateTest, ChangedPreparedGenerationIsRetainedQuarantinedAndClearReco
   ASSERT_TRUE(model_.live.Prepare(node_, next).value_or(false));
   const auto id = model_.live.reserved_extents()[4];
   ASSERT_TRUE(WaitResident(id));
-  jitllm::catalog::Closure changed;
+  llmp::catalog::Closure changed;
   ASSERT_TRUE(node_.Call(
       [&]() -> en::Status {
         if (!node_.catalog().InvalidateContents(id) || !node_.catalog().ReviveDiscarded(id))
@@ -363,8 +363,8 @@ TEST_F(LiveStateTest, ChangedPreparedGenerationIsRetainedQuarantinedAndClearReco
         return pr::FillAsync(native, en::support::Pointer(model_.live.base(0) + 4 * kExtent), 0xD7,
                              kExtent)
                        .ok()
-                   ? jitllm::scheduler::JobResult::kQueued
-                   : jitllm::scheduler::JobResult::kUnknown;
+                   ? llmp::scheduler::JobResult::kQueued
+                   : llmp::scheduler::JobResult::kUnknown;
       },
       "write changed authority", 0));
   const auto generation = Describe(id).content_generation;
@@ -373,7 +373,7 @@ TEST_F(LiveStateTest, ChangedPreparedGenerationIsRetainedQuarantinedAndClearReco
   EXPECT_EQ(Describe(id).content_generation, generation);
   EXPECT_FALSE(Describe(id).discarded);  // collection must not erase changed authority
   EXPECT_FALSE(model_.live.Use(node_, next));
-  std::vector<jitllm::catalog::ExtentId> staging;
+  std::vector<llmp::catalog::ExtentId> staging;
   auto buffer = node_.Pinned(256, 0, staging);
   ASSERT_TRUE(buffer);
   ASSERT_TRUE(node_.Job(
@@ -383,8 +383,8 @@ TEST_F(LiveStateTest, ChangedPreparedGenerationIsRetainedQuarantinedAndClearReco
                              en::support::Pointer(model_.live.base(0) + 4 * kExtent), 256,
                              pr::CopyKind::kDeviceToHost)
                        .ok()
-                   ? jitllm::scheduler::JobResult::kQueued
-                   : jitllm::scheduler::JobResult::kUnknown;
+                   ? llmp::scheduler::JobResult::kQueued
+                   : llmp::scheduler::JobResult::kUnknown;
       },
       "read changed authority", 0));
   EXPECT_EQ(static_cast<const std::byte*>(*buffer)[0], std::byte{0xD7});
@@ -399,7 +399,7 @@ TEST_F(LiveStateTest, PreparationInvalidationRefusalRetainsOwnerUntilHoldRelease
   ASSERT_TRUE(model_.live.Prepare(node_, next).value_or(false));
   const auto id = model_.live.reserved_extents()[4];
   ASSERT_TRUE(WaitResident(id));
-  jitllm::catalog::RegistrationId held;
+  llmp::catalog::RegistrationId held;
   ASSERT_TRUE(node_.Call(
       [&]() -> en::Status {
         held = node_.catalog().AddRegistration(id).value();
@@ -435,7 +435,7 @@ TEST_F(LiveStateTest, TeardownDrainsPreparationBeforeCollectingManagedExtents) {
   EXPECT_EQ(model_.live.preparation_stats().cancel_requested, 1U);
   EXPECT_TRUE(model_.live.extents().empty());
   for (const auto id : model_.live.reserved_extents())
-    EXPECT_EQ(node_.catalog().Describe(id)->state, jitllm::catalog::ExtentState::kNonresident);
+    EXPECT_EQ(node_.catalog().Describe(id)->state, llmp::catalog::ExtentState::kNonresident);
 }
 
 TEST_F(LiveStateTest, PlacementMemoRechecksGrowthTrimClearAndRestoreWithoutCachingResidency) {
@@ -514,7 +514,7 @@ TEST_F(LiveStateTest, OnlyUsedExtentsAreMappedAndTheirFirstContentsAreZero) {
       en::LiveState::Range{.region = 0, .offset = 7 * kExtent, .bytes = 16},
       en::LiveState::Range{.region = 0, .offset = (7 * kExtent) + 8, .bytes = 16}};
   auto used = model_.live.Use(node_, ranges);
-  ASSERT_TRUE(used) << jitllm::test_support::Failed(used).value_or("");
+  ASSERT_TRUE(used) << llmp::test_support::Failed(used).value_or("");
   EXPECT_TRUE(*used);
   EXPECT_EQ(model_.live.extents().size(), 1);
   EXPECT_EQ(Occupancy(), fixed_ + kExtent);
@@ -537,7 +537,7 @@ TEST_F(LiveStateTest, UsedBytesOfIsWhatUseWouldLeaveAndMapsNothing) {
       en::LiveState::Range{.region = 0, .offset = 8, .bytes = 16},  // the same extent
       en::LiveState::Range{.region = 0, .offset = (3 * kExtent) + 5, .bytes = kExtent}};
   auto estimate = model_.live.UsedBytesOf(ranges);
-  ASSERT_TRUE(estimate) << jitllm::test_support::Failed(estimate).value_or("");
+  ASSERT_TRUE(estimate) << llmp::test_support::Failed(estimate).value_or("");
   EXPECT_EQ(*estimate, 3 * kExtent);
   EXPECT_TRUE(model_.live.extents().empty());
   EXPECT_EQ(Occupancy(), fixed_);
@@ -567,8 +567,8 @@ TEST_F(LiveStateTest, GrowthAndEvictionPreserveTheInitializedRangesAtTheirAddres
       model_.fence_closure(),
       [&](pr::NativeStream stream) {
         return pr::FillAsync(stream, en::support::Pointer(address), 0x5A, kExtent).ok()
-                   ? jitllm::scheduler::JobResult::kQueued
-                   : jitllm::scheduler::JobResult::kUnknown;
+                   ? llmp::scheduler::JobResult::kQueued
+                   : llmp::scheduler::JobResult::kUnknown;
       },
       "test pattern", 0));
   const std::array<en::LiveState::Range, 1> later = {
@@ -599,8 +599,8 @@ TEST_F(LiveStateTest, ClearReleasesResidentAndSavedPagesAndRegrowthStartsWithZer
       model_.fence_closure(),
       [&](pr::NativeStream stream) {
         return pr::FillAsync(stream, en::support::Pointer(model_.live.base(0)), 0x5A, kExtent).ok()
-                   ? jitllm::scheduler::JobResult::kQueued
-                   : jitllm::scheduler::JobResult::kUnknown;
+                   ? llmp::scheduler::JobResult::kQueued
+                   : llmp::scheduler::JobResult::kUnknown;
       },
       "test pattern", 0));
   ASSERT_TRUE(node_.Evict(model_.live.extents()));
@@ -636,11 +636,11 @@ TEST_F(LiveStateTest, ZeroedClearKeepsBackingOutsideTheStateAndGrowthTakesItBack
   ASSERT_TRUE(model_.Refresh());
   ASSERT_EQ(Contents(0), std::byte{0x5A});
   const auto ids = model_.live.extents();
-  const jitllm::catalog::Closure stale = model_.fence_closure();
+  const llmp::catalog::Closure stale = model_.fence_closure();
   const std::uint64_t backing = Describe(ids.front()).backing_generation;
   const std::uint64_t occupied = Occupancy();
   auto zeroed = model_.live.ZeroForReuse(node_, model_.fence_closure(), 0);
-  ASSERT_TRUE(zeroed) << jitllm::test_support::Failed(zeroed).value_or("");
+  ASSERT_TRUE(zeroed) << llmp::test_support::Failed(zeroed).value_or("");
   EXPECT_TRUE(*zeroed);
   ASSERT_TRUE(model_.live.DiscardGrowingState(node_, true));
   EXPECT_TRUE(model_.live.extents().empty());
@@ -649,8 +649,8 @@ TEST_F(LiveStateTest, ZeroedClearKeepsBackingOutsideTheStateAndGrowthTakesItBack
   EXPECT_EQ(Occupancy(), occupied);
   EXPECT_TRUE(Describe(ids.front()).discarded);
   EXPECT_FALSE(node_.Job(
-      stale, [](pr::NativeStream) { return jitllm::scheduler::JobResult::kQueued; },
-      "stale closure", 0));
+      stale, [](pr::NativeStream) { return llmp::scheduler::JobResult::kQueued; }, "stale closure",
+      0));
   ASSERT_TRUE(model_.live.Use(node_, both));
   EXPECT_EQ(model_.live.extents(), ids);
   EXPECT_TRUE(model_.live.kept_extents().empty());
@@ -738,8 +738,8 @@ TEST_F(LiveStateTest, TrimDiscardsSavedTailAndRegrowthCannotRestoreItsOldContent
                                      en::support::Pointer(model_.live.base(0) + (4 * kExtent)),
                                      0x7B, kExtent)
                            .ok()
-                   ? jitllm::scheduler::JobResult::kQueued
-                   : jitllm::scheduler::JobResult::kUnknown;
+                   ? llmp::scheduler::JobResult::kQueued
+                   : llmp::scheduler::JobResult::kUnknown;
       },
       "trim patterns", 0));
   ASSERT_TRUE(node_.Evict(model_.live.extents()));
@@ -760,7 +760,7 @@ TEST_F(LiveStateTest, PackedSnapshotCopiesOnlyNamedPagesAndDynamicPinnedStagingR
       en::LiveState::Range{.region = 0, .offset = 7 * kExtent, .bytes = 16}};
   ASSERT_TRUE(model_.live.Use(node_, tail));
   ASSERT_TRUE(model_.Refresh());
-  std::vector<jitllm::catalog::ExtentId> staging;
+  std::vector<llmp::catalog::ExtentId> staging;
   auto host = node_.Pinned(256, 0, staging);
   ASSERT_TRUE(host);
   EXPECT_EQ(Occupancy(), fixed_ + kExtent + 256);
@@ -771,10 +771,10 @@ TEST_F(LiveStateTest, PackedSnapshotCopiesOnlyNamedPagesAndDynamicPinnedStagingR
   EXPECT_TRUE(std::ranges::all_of(std::span(static_cast<std::byte*>(*host), 16),
                                   [](std::byte b) { return b == std::byte{0x6C}; }));
   EXPECT_EQ(static_cast<std::byte*>(*host)[16], std::byte{0});
-  jitllm::catalog::ResourceId resource;
+  llmp::catalog::ResourceId resource;
   ASSERT_TRUE(node_.Call(
       [&]() -> en::Status {
-        const std::array<jitllm::catalog::Range, 1> ranges = {jitllm::catalog::Range{
+        const std::array<llmp::catalog::Range, 1> ranges = {llmp::catalog::Range{
             .extent = staging.front(), .offset = Bytes(0), .length = Bytes(16)}};
         auto added = node_.catalog().AddResource(ranges);
         if (!added) {
@@ -808,7 +808,7 @@ TEST_F(LowCapacityStateTest, OptionalPreparationRefusesHeadroomWithoutReclaimOrO
   ASSERT_TRUE(model_.Refresh());
   std::uint64_t reclaims = 0;
   node_.SetReclaimer(
-      [&](std::uint64_t, en::PagedNode::ReclaimFor, std::span<const jitllm::catalog::ExtentId>) {
+      [&](std::uint64_t, en::PagedNode::ReclaimFor, std::span<const llmp::catalog::ExtentId>) {
         ++reclaims;
         return 0U;
       });
@@ -830,10 +830,10 @@ class KeptPreparationStateTest : public LiveStateTest {
   std::filesystem::path directory_;
   en::Status RegisterState(const std::filesystem::path& scratch) override {
     directory_ = scratch / ("kept-prepare-" + std::to_string(::getpid()));
-    auto dir = jitllm::platform::OpenPrivateDirectory(-1, directory_.c_str());
+    auto dir = llmp::platform::OpenPrivateDirectory(-1, directory_.c_str());
     if (!dir) return std::unexpected("test kept directory");
-    auto file = jitllm::platform::OpenPrivateFile(
-        *dir, "state", {.write = true, .create = true, .truncate = true});
+    auto file = llmp::platform::OpenPrivateFile(*dir, "state",
+                                                {.write = true, .create = true, .truncate = true});
     if (!file) {
       (void)::close(*dir);
       return std::unexpected("test kept file");
@@ -878,7 +878,7 @@ TEST_F(LowCapacityStateTest, CleanCapacityRefusalPreservesTheExistingPrefix) {
   EXPECT_TRUE(model_.live.Usable());
   EXPECT_EQ(model_.live.extents().size(), 1);
   EXPECT_EQ(Occupancy(), fixed_ + kExtent);
-  std::vector<jitllm::catalog::ExtentId> staging;
+  std::vector<llmp::catalog::ExtentId> staging;
   EXPECT_FALSE(node_.Pinned(256, 0, staging));
   EXPECT_TRUE(staging.empty());
 }
@@ -919,8 +919,8 @@ TEST_F(LiveStateTest, DiskCheckpointRestoresTheWholeMutablePageAndDropsNewTailPa
       [&](pr::NativeStream stream) {
         return pr::FillAsync(stream, en::support::Pointer(model_.live.base(0)), 0x21, 3 * kExtent)
                        .ok()
-                   ? jitllm::scheduler::JobResult::kQueued
-                   : jitllm::scheduler::JobResult::kUnknown;
+                   ? llmp::scheduler::JobResult::kQueued
+                   : llmp::scheduler::JobResult::kUnknown;
       },
       "checkpoint prefix", 0));
   const auto footprint = model_.live.used_ranges();
@@ -931,7 +931,7 @@ TEST_F(LiveStateTest, DiskCheckpointRestoresTheWholeMutablePageAndDropsNewTailPa
   ASSERT_EQ(pages->size(), 1);
   EXPECT_EQ(pages->front().bytes, kExtent);
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
-  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   auto checkpoint = en::CheckpointFile::Capture(
       node_, directory, *pages, [&](void* host, std::span<const en::LiveState::Range> ranges) {
         return model_.live.Copy(node_, model_.fence_closure(), 0, host, ranges, true);
@@ -948,8 +948,8 @@ TEST_F(LiveStateTest, DiskCheckpointRestoresTheWholeMutablePageAndDropsNewTailPa
         return pr::FillAsync(stream, en::support::Pointer(model_.live.base(0) + (2 * kExtent)),
                              0x62, 3 * kExtent)
                        .ok()
-                   ? jitllm::scheduler::JobResult::kQueued
-                   : jitllm::scheduler::JobResult::kUnknown;
+                   ? llmp::scheduler::JobResult::kQueued
+                   : llmp::scheduler::JobResult::kUnknown;
       },
       "a newer branch", 0));
   ASSERT_TRUE(node_.Evict(model_.live.extents()));
@@ -980,7 +980,7 @@ TEST_F(LiveStateTest, DiskCheckpointPadsFileTransfersButRestoresOnlyLogicalBytes
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 123},
       en::LiveState::Range{.region = 0, .offset = kExtent, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
-  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   auto checkpoint = en::CheckpointFile::Capture(
       node_, directory, ranges,
       [](void* host, std::span<const en::LiveState::Range> page) -> en::Status {
@@ -1010,7 +1010,7 @@ TEST_F(LowCapacityStateTest, OptionalCheckpointAllocationRefusesBeforeStateMutat
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
   ASSERT_TRUE(model_.live.Use(node_, range));
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
-  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   bool copied = false;
   auto checkpoint = en::CheckpointFile::Capture(
       node_, directory, range, [&](void*, std::span<const en::LiveState::Range>) -> en::Status {
@@ -1028,7 +1028,7 @@ TEST_F(LiveStateTest, FailedCheckpointDeviceCopyRetainsItsOriginalStagingAllocat
   const std::array<en::LiveState::Range, 1> range = {
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
-  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   auto checkpoint = en::CheckpointFile::Capture(
       node_, directory, range, [](void*, std::span<const en::LiveState::Range>) -> en::Status {
         return std::unexpected("copy completion is unknown");
@@ -1036,7 +1036,7 @@ TEST_F(LiveStateTest, FailedCheckpointDeviceCopyRetainsItsOriginalStagingAllocat
   ASSERT_FALSE(checkpoint);
   EXPECT_TRUE(checkpoint.error().invalid_state);
   EXPECT_EQ(node_.kept_pinned(), 1);
-  EXPECT_EQ(Occupancy(), fixed_ + kExtent + jitllm::platform::kDirectIoAlignment);
+  EXPECT_EQ(Occupancy(), fixed_ + kExtent + llmp::platform::kDirectIoAlignment);
 }
 
 TEST_F(LiveStateTest, CancelledCheckpointCaptureDropsItsCandidateAfterTheCurrentPage) {
@@ -1044,7 +1044,7 @@ TEST_F(LiveStateTest, CancelledCheckpointCaptureDropsItsCandidateAfterTheCurrent
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16},
       en::LiveState::Range{.region = 0, .offset = kExtent, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
-  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   std::size_t copied = 0;
   auto checkpoint = en::CheckpointFile::Capture(
       node_, directory, ranges,
@@ -1067,7 +1067,7 @@ TEST_F(LiveStateTest, RestoreCancellationReportsWhetherTheBranchNeedsClearing) {
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16},
       en::LiveState::Range{.region = 0, .offset = kExtent, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
-  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   auto checkpoint = en::CheckpointFile::Capture(
       node_, directory, ranges,
       [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
@@ -1114,7 +1114,7 @@ TEST_F(CheckpointCapacityStateTest, RestoreStagingRefusalLeavesTheBranchUntouche
   const std::array<en::LiveState::Range, 1> range = {
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
-  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   auto checkpoint = en::CheckpointFile::Capture(
       node_, directory, range, [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
         std::memset(host, 0, 16);
@@ -1146,7 +1146,7 @@ TEST_F(CheckpointCapacityStateTest, ABudgetFullOfPlansAndGraphsStillCheckpoints)
   EXPECT_EQ(Occupancy(), fixed_ + (2 * kExtent));
   std::uint64_t asked = 0;
   node_.SetReclaimer([&](std::uint64_t needed, en::PagedNode::ReclaimFor what,
-                         std::span<const jitllm::catalog::ExtentId>) {
+                         std::span<const llmp::catalog::ExtentId>) {
     EXPECT_EQ(what, en::PagedNode::ReclaimFor::kStaging);  // a state need: whole
     asked += needed;
     const std::uint64_t freed =
@@ -1157,7 +1157,7 @@ TEST_F(CheckpointCapacityStateTest, ABudgetFullOfPlansAndGraphsStillCheckpoints)
   const std::array<en::LiveState::Range, 1> range = {
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
-  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   auto checkpoint = en::CheckpointFile::Capture(
       node_, directory, range, [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
         std::memset(host, 0x5a, 16);
@@ -1178,12 +1178,12 @@ TEST_F(CheckpointCapacityStateTest, ReservedStagingServesCheckpointsWithNothingT
   ASSERT_TRUE(node_.ChargeHost(2 * kExtent, true));  // required: past the budget
   const std::uint64_t full = Occupancy();
   EXPECT_GT(full, fixed_ + (2 * kExtent));
-  std::vector<jitllm::catalog::ExtentId> staging;
+  std::vector<llmp::catalog::ExtentId> staging;
   EXPECT_FALSE(node_.Pinned(256, 0, staging));  // nothing else fits
   const std::array<en::LiveState::Range, 1> range = {
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
-  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  const auto directory = std::filesystem::path(std::getenv("LLMP_TEST_SCRATCH"));
   auto checkpoint = en::CheckpointFile::Capture(
       node_, directory, range, [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
         std::memset(host, 0x5a, 16);
@@ -1228,7 +1228,7 @@ class TokenCapacityStateTest : public LiveStateTest {
 };
 
 TEST_F(TokenCapacityStateTest, NativeHistoryReclaimReleasesRoundedCatalogOccupancy) {
-  namespace rt = jitllm::runtime;
+  namespace rt = llmp::runtime;
   rt::RequestMemory memory(0, 8 * kExtent, true);
   rt::MemoryCharge idle_charge;
   std::vector<std::int32_t> idle;
@@ -1269,7 +1269,7 @@ class TokenBoundaryStateTest : public LiveStateTest {
 };
 
 TEST_F(TokenBoundaryStateTest, TinyIdleHistoryAvoidsAnUnfundedProspectiveExtent) {
-  namespace rt = jitllm::runtime;
+  namespace rt = llmp::runtime;
   rt::RequestMemory memory(0, 4 * kExtent, true);
   rt::MemoryCharge idle_charge;
   std::vector<std::int32_t> idle;

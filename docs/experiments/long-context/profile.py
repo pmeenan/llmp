@@ -1,17 +1,17 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Per-kernel time of one prefill chunk and one decode step at depth (README.md, "Where the time goes").
 
     profile.py TRACE.sqlite VOCAB [--top N] [--decode-steps D]
     profile.py TRACE.sqlite --graphs [--top N]
 
-With --graphs (a trace of jitllm-runtime serving, whose decode steps, and
+With --graphs (a trace of llmp-runtime serving, whose decode steps, and
 speculation's drafts and verifies, are CUDA graphs): each kind of graph
 launch, its count and its mean kernel time per launch, by kernel.
 
 TRACE is `nsys profile --trace=cuda --sample=none --cpuctxsw=none
---export=sqlite` of one resident harness run (jitllm_dsv4_exec or
-jitllm_qwen38_exec --prompts P --generate G): the prompt in chunks, then
+--export=sqlite` of one resident harness run (llmp_dsv4_exec or
+llmp_qwen38_exec --prompts P --generate G): the prompt in chunks, then
 D = G - 1 decode steps (default 2). Each chunk ends with its logits copied
 to the host (a device-to-host copy of a multiple of VOCAB floats), which
 splits the kernels into chunks. Reports the prompt's last chunk and the

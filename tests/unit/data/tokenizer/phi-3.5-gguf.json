@@ -2,7 +2,7 @@
   "config": "phi-3.5-gguf",
   "source": {"path": "tokenizer-reference/legacy/phi35.gguf", "sha256": "876536e399233294995425441ee13b2b5ae01a6ad88281696c8cb38dc03752fa", "checkpoint": {"name": "phi35", "repository": "bartowski/Phi-3.5-mini-instruct-GGUF", "revision": "6d70da17e749a471ccb62ade694486011a75cda3", "file": "Phi-3.5-mini-instruct-Q8_0.gguf", "full_bytes": 4061222688, "full_sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823", "header_bytes": 727029, "header_sha256": "876536e399233294995425441ee13b2b5ae01a6ad88281696c8cb38dc03752fa", "path": "tokenizer-reference/legacy/phi35.gguf"}},
   "reference": "llama.cpp llama-tokenize, image ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7 (b29c606e)",
-  "corpus_sha256": "66d3940a8d35f641d62b5e1114fbe81d22e6f22fd7f6a630071c7368ad20245b",
+  "corpus_sha256": "206453ef4086e899079d027c80a32b444b046e5878879ecb75da3e6b3128ce88",
   "items": [
     {"name": "empty", "well_formed": true, "parse": [], "plain": []},
     {"name": "ascii-sentence", "well_formed": true, "parse": [15043, 29892, 3186, 29991, 910, 338, 263, 1243, 310, 278, 5993, 3950, 29889], "plain": [15043, 29892, 3186, 29991, 910, 338, 263, 1243, 310, 278, 5993, 3950, 29889]},

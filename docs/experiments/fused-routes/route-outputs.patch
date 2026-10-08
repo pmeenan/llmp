@@ -12,10 +12,10 @@
      }
      cb(selected_experts, "ffn_moe_topk", il);
  
-+    // jitLLM reference patch: record the selection; llama_model::build_graph appends
++    // Llmpalooza reference patch: record the selection; llama_model::build_graph appends
 +    // its copy after the complete graph so fused selection sequences keep their order
 +    static const bool route_outputs = [] {
-+        const char * value = getenv("JITLLM_ROUTE_OUTPUTS");
++        const char * value = getenv("LLMP_ROUTE_OUTPUTS");
 +        return value != nullptr && atoi(value) != 0;
 +    }();
 +    if (route_outputs) {
@@ -31,8 +31,8 @@
      std::vector<ggml_tensor *> t_sampled_logits;
      std::vector<ggml_tensor *> t_candidates;
  
-+    // jitLLM reference patch: MoE top-k selections to expose as graph outputs
-+    // when JITLLM_ROUTE_OUTPUTS=1 (layer index, selected expert IDs)
++    // Llmpalooza reference patch: MoE top-k selections to expose as graph outputs
++    // when LLMP_ROUTE_OUTPUTS=1 (layer index, selected expert IDs)
 +    std::vector<std::pair<int, ggml_tensor *>> t_route_ids;
 +
      std::vector<llm_graph_input_ptr> inputs;
@@ -44,12 +44,12 @@
      // TODO: move reranking logic here and generalize
      llm->build_dense_out(dense_2_out_layers, dense_2_out_layers_b, dense_3_out_layers);
  
-+    // jitLLM reference patch: copy recorded MoE selections into output tensors appended
++    // Llmpalooza reference patch: copy recorded MoE selections into output tensors appended
 +    // after every other node. Readers need no eval-callback split, so upstream fusion
 +    // and node order are unchanged; the copies only extend the selections' lifetimes.
 +    for (const auto & [il, ids] : llm->res->t_route_ids) {
 +        ggml_tensor * routes = ggml_cont(llm->ctx0, ids);
-+        ggml_format_name(routes, "jitllm_routes-%d", il);
++        ggml_format_name(routes, "llmp_routes-%d", il);
 +        ggml_set_output(routes);
 +        ggml_build_forward_expand(llm->res->get_gf(), routes);
 +    }

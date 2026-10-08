@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The image module's entries in the implementation registry (D-053;
@@ -46,15 +46,15 @@
 //                                                      HeadNormRopeComplex on q
 //
 // Each identity covers everything that decides what an implementation
-// computes and launches: jitLLM's code in the module (a digest of every
+// computes and launches: llmpalooza's code in the module (a digest of every
 // file in src/kernels/image, written at build time, module_digest.cmake,
 // so an edit here, the pinned algorithms' table included, changes every
 // identity the module declares); the SDK, target, device architectures,
 // build type and sanitizers; for the cuBLAS paths the pinned cuBLAS; the
 // name and a variant naming the kernels.
 
-#ifndef JITLLM_KERNELS_IMAGE_IMPLEMENTATIONS_H_
-#define JITLLM_KERNELS_IMAGE_IMPLEMENTATIONS_H_
+#ifndef LLMP_KERNELS_IMAGE_IMPLEMENTATIONS_H_
+#define LLMP_KERNELS_IMAGE_IMPLEMENTATIONS_H_
 
 #include <cstdint>
 #include <expected>
@@ -64,7 +64,7 @@
 
 #include "execution/registry.h"
 
-namespace jitllm::kernels::image {
+namespace llmp::kernels::image {
 
 // What this module declares to the registry.
 std::vector<execution::Implementation> Implementations();
@@ -115,6 +115,6 @@ std::expected<Impl, std::string> Bind(const execution::Implementation& implement
 
 std::string_view ImplName(Impl impl);
 
-}  // namespace jitllm::kernels::image
+}  // namespace llmp::kernels::image
 
-#endif  // JITLLM_KERNELS_IMAGE_IMPLEMENTATIONS_H_
+#endif  // LLMP_KERNELS_IMAGE_IMPLEMENTATIONS_H_

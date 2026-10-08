@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The retained-backing replay (benchmarks/retained_backing/): its trace
@@ -28,18 +28,18 @@
 
 namespace {
 
-using jitllm::rb::Call;
-using jitllm::rb::DesignSpec;
-using jitllm::rb::Ev;
-using jitllm::rb::Event;
-using jitllm::rb::GroupId;
-using jitllm::rb::HolePolicy;
-using jitllm::rb::Json;
-using jitllm::rb::Metrics;
-using jitllm::rb::Reference;
-using jitllm::rb::Replay;
-using jitllm::rb::ReplayOptions;
-using jitllm::rb::Trace;
+using llmp::rb::Call;
+using llmp::rb::DesignSpec;
+using llmp::rb::Ev;
+using llmp::rb::Event;
+using llmp::rb::GroupId;
+using llmp::rb::HolePolicy;
+using llmp::rb::Json;
+using llmp::rb::Metrics;
+using llmp::rb::Reference;
+using llmp::rb::Replay;
+using llmp::rb::ReplayOptions;
+using llmp::rb::Trace;
 
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
 constexpr std::uint64_t kKiB4 = 4096;
@@ -55,12 +55,12 @@ class Builder {
   // Groups are added model by model.
   GroupId Add(std::uint32_t model, std::uint64_t stored, bool expert = false) {
     if (trace_.models.size() <= model) {
-      trace_.models.push_back(jitllm::rb::Model{.name = std::to_string(model),
-                                                .first = static_cast<GroupId>(trace_.groups.size()),
-                                                .end = static_cast<GroupId>(trace_.groups.size())});
+      trace_.models.push_back(llmp::rb::Model{.name = std::to_string(model),
+                                              .first = static_cast<GroupId>(trace_.groups.size()),
+                                              .end = static_cast<GroupId>(trace_.groups.size())});
     }
     trace_.groups.push_back(
-        jitllm::rb::Group{.model = model, .expert = expert, .used = stored, .stored = stored});
+        llmp::rb::Group{.model = model, .expert = expert, .used = stored, .stored = stored});
     ++trace_.models.back().end;
     return static_cast<GroupId>(trace_.groups.size() - 1);
   }
@@ -217,7 +217,7 @@ TEST(RbJsonTest, ParsesTheTraceSubsetStrictly) {
 
 TEST(RbTraceTest, ParseChecksRecords) {
   const std::string header =
-      R"({"record":"header","format":"jitllm-swap-trace","version":1,"role":"primary",)"
+      R"({"record":"header","format":"llmp-swap-trace","version":1,"role":"primary",)"
       R"("budget_bytes":8388608,"unique_bytes":8192,"models":1,"groups":2,)"
       R"("chunk_bytes":2097152,"file_align":4096})"
       "\n"
@@ -228,11 +228,11 @@ TEST(RbTraceTest, ParseChecksRecords) {
   const std::string group1 =
       R"({"record":"group","id":1,"model":"m","kind":"expert","layer":0,"expert":0,"used":4096,"stored":4096})"
       "\n";
-  const auto trace = jitllm::rb::ParseTrace(header + group1 +
-                                            R"({"ev":"lease","lease":0,"groups":[0,1]})"
-                                            "\n"
-                                            R"({"ev":"release","lease":0})"
-                                            "\n");
+  const auto trace = llmp::rb::ParseTrace(header + group1 +
+                                          R"({"ev":"lease","lease":0,"groups":[0,1]})"
+                                          "\n"
+                                          R"({"ev":"release","lease":0})"
+                                          "\n");
   ASSERT_TRUE(trace.has_value()) << trace.error();
   EXPECT_EQ(trace->groups.size(), 2U);
   EXPECT_TRUE(trace->groups[1].expert);
@@ -242,32 +242,32 @@ TEST(RbTraceTest, ParseChecksRecords) {
   // unknown ids, unknown events and a missing final newline are refused.
   std::string unaligned = group1;
   unaligned.replace(unaligned.find("\"stored\":4096"), 13, "\"stored\":8192");
-  EXPECT_FALSE(jitllm::rb::ParseTrace(header + unaligned).has_value());
-  EXPECT_FALSE(jitllm::rb::ParseTrace(header + group1 +
-                                      R"({"ev":"use","groups":[1,1]})"
-                                      "\n")
+  EXPECT_FALSE(llmp::rb::ParseTrace(header + unaligned).has_value());
+  EXPECT_FALSE(llmp::rb::ParseTrace(header + group1 +
+                                    R"({"ev":"use","groups":[1,1]})"
+                                    "\n")
                    .has_value());
-  EXPECT_FALSE(jitllm::rb::ParseTrace(header + group1 +
-                                      R"({"ev":"use","groups":[2]})"
-                                      "\n")
+  EXPECT_FALSE(llmp::rb::ParseTrace(header + group1 +
+                                    R"({"ev":"use","groups":[2]})"
+                                    "\n")
                    .has_value());
-  EXPECT_FALSE(jitllm::rb::ParseTrace(header + group1 +
-                                      R"({"ev":"page"})"
-                                      "\n")
+  EXPECT_FALSE(llmp::rb::ParseTrace(header + group1 +
+                                    R"({"ev":"page"})"
+                                    "\n")
                    .has_value());
-  EXPECT_FALSE(jitllm::rb::ParseTrace(header + group1 + R"({"ev":"grow","bytes":1})").has_value());
+  EXPECT_FALSE(llmp::rb::ParseTrace(header + group1 + R"({"ev":"grow","bytes":1})").has_value());
 }
 
 TEST(RbTraceTest, LoadRequiresTheRecordedIdentity) {
-  const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   ASSERT_NE(scratch, nullptr);
   const std::filesystem::path dir = std::filesystem::path(scratch) / "rb-identity";
   std::filesystem::create_directories(dir);
   std::ofstream(dir / "manifest.json") << R"({"files":{}})" << "\n";
-  const auto primary = jitllm::rb::LoadTrace(dir.string(), "trace-r5-4.jsonl", "primary");
+  const auto primary = llmp::rb::LoadTrace(dir.string(), "trace-r5-4.jsonl", "primary");
   ASSERT_FALSE(primary.has_value());
   EXPECT_NE(primary.error().find("not the recorded primary manifest"), std::string::npos);
-  EXPECT_FALSE(jitllm::rb::LoadTrace(dir.string(), "trace-r5-4.jsonl", "other").has_value());
+  EXPECT_FALSE(llmp::rb::LoadTrace(dir.string(), "trace-r5-4.jsonl", "other").has_value());
   std::filesystem::remove_all(dir);
 }
 
@@ -336,7 +336,7 @@ INSTANTIATE_TEST_SUITE_P(Designs, RbDesignTest, ::testing::ValuesIn(TestDesigns(
 
 TEST(RbDesignsTest, TheThirteenInTheCriteriaOrder) {
   std::vector<std::string> names;
-  for (const DesignSpec& spec : jitllm::rb::AllDesigns()) {
+  for (const DesignSpec& spec : llmp::rb::AllDesigns()) {
     names.push_back(spec.name);
   }
   EXPECT_EQ(names, (std::vector<std::string>{

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Per-node memory sampler and userspace guard for the sharded reference.
 
 Spark's CUDA allocations come from the same physical memory as the host and
 are not bounded by a container cgroup. This samples MemAvailable and kills the
 named container if it falls below the guard, before the node can wedge. It is
-a reference-harness safety net, not a jitLLM budget mechanism.
+a reference-harness safety net, not a llmpalooza budget mechanism.
 """
 
 import argparse

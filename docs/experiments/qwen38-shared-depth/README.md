@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen shared draft-depth screen — 2026-10-04
@@ -63,7 +63,7 @@ aggregate report
 Raw controller, source/binary pins, configs, full responses, gates, logs
 and retirement receipts remain at
 `spark-b:~/scratch/qwen-shared-depth/screen1/` and
-`~/scratch/jitllm-m3-qwen-shared-depth-2026-10-04/`.
+`~/scratch/llmp-m3-qwen-shared-depth-2026-10-04/`.
 Installed supervisor job `qwen-shared-depth-one` completes zero and is
 waited on. Reproduce with the frozen fixtures/client and the settings
 above, keeping each fresh-process arm under installed `spark-job --gpu`.

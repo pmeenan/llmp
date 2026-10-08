@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "fp16_runner.h"
@@ -37,13 +37,13 @@
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
-namespace sc = jitllm::scheduler;
-namespace ts = jitllm::test_support;
+namespace kg = llmp::kernels::ggml;
+namespace sc = llmp::scheduler;
+namespace ts = llmp::test_support;
 using base::Bytes;
 using catalog::ExtentId;
 using catalog::MemoryClass;
@@ -1146,4 +1146,4 @@ Status Fp16Runner::Release() {
   return Error(all);
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks

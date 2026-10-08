@@ -1,9 +1,9 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
-scratch="${JITLLM_REFERENCE_ROOT:-$HOME/.local/share/jitllm/gemma31-reference-fusions}"
-sdk="$HOME/.local/share/jitllm/sdk/aarch64-c09daba6ac31edee"
+scratch="${LLMP_REFERENCE_ROOT:-$HOME/.local/share/llmp/gemma31-reference-fusions}"
+sdk="$HOME/.local/share/llmp/sdk/aarch64-c09daba6ac31edee"
 image=ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7
 if [[ ! -e "$scratch/controller.cu" ]]; then python3 "$scratch/patch_controller.py" "$scratch/ggml/src/ggml-cuda/ggml-cuda.cu" "$scratch/controller.cu"; fi
 printf '%s  %s\n' d74c89feeaed4320ea8e1351b435a23618f66fad65eccbdc17a258254b92dcd6 "$scratch/controller.cu" | sha256sum --check --status

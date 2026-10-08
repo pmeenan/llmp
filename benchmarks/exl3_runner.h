@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // An EXL3 fixture as a model on a paged node (tests/support/paged_node.h):
 // its v0 prepared artifact paged into device VMM through the node's landing
 // zone, run through the native operation plan (kernels/exl3/qwen2.h) as
 // device jobs on the model's own stream, each holding a lease on everything
-// it touches. What jitllm_exl3_paged (exl3_paged.cc) runs alone, and
-// jitllm_alternate_paged (alternate_paged.cc) runs beside the FP16 fixture
+// it touches. What llmp_exl3_paged (exl3_paged.cc) runs alone, and
+// llmp_alternate_paged (alternate_paged.cc) runs beside the FP16 fixture
 // for BP-S3. fp16_runner.h's model, for the EXL3 plan. CUDA builds only.
 //
 // - Memory, registered in the node's one catalog domain:
@@ -70,8 +70,8 @@
 //   observed peak (the highest region byte an operation reaches, and the
 //   pool's peak in that phase).
 
-#ifndef JITLLM_BENCHMARKS_EXL3_RUNNER_H_
-#define JITLLM_BENCHMARKS_EXL3_RUNNER_H_
+#ifndef LLMP_BENCHMARKS_EXL3_RUNNER_H_
+#define LLMP_BENCHMARKS_EXL3_RUNNER_H_
 
 #include <array>
 #include <cstddef>
@@ -97,7 +97,7 @@
 #include "model/qwen2_exl3.h"
 #include "paged_node.h"
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 
 struct Exl3Options {
   std::filesystem::path artifact;
@@ -137,7 +137,7 @@ class Exl3Runner final : public test_support::PagedModel {
   // After Run, once every weight is resident: the norms and tables
   // derived from the weights.
   Status Derive();
-  // After Run: jitllm_exl3_paged's whole run, its outputs written.
+  // After Run: llmp_exl3_paged's whole run, its outputs written.
   Status RunAlone();
 
   // BP-S3's hooks. One evaluation of every prefix (numbered as RunAlone
@@ -258,6 +258,6 @@ class Exl3Runner final : public test_support::PagedModel {
   std::string cancel_result_;                  // --cancel-in-flight's, as JSON
 };
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks
 
-#endif  // JITLLM_BENCHMARKS_EXL3_RUNNER_H_
+#endif  // LLMP_BENCHMARKS_EXL3_RUNNER_H_

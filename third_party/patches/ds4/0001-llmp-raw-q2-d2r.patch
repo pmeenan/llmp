@@ -1,0 +1,322 @@
+diff --git a/cuda/mmq/ds4_mmq_d2r.cu b/cuda/mmq/ds4_mmq_d2r.cu
+index 072be74..2994fd9 100644
+--- a/cuda/mmq/ds4_mmq_d2r.cu
++++ b/cuda/mmq/ds4_mmq_d2r.cu
+@@ -1,5 +1,9 @@
+-// SPDX-License-Identifier: MIT
++// SPDX-FileCopyrightText: 2026 llmpalooza contributors
++// SPDX-License-Identifier: MIT AND Apache-2.0
+ // ds4_mmq_d2r.cu - gated D2R Q2_K MoE down-GEMM production path.
++// Llmpalooza adaptation: the original SoA path is retained; the raw Q2_K loader
++// reads native blocks without a permanent repacked weight copy.
++// Source pin: Entrpi/ds4 76d51ef82a81b70b78e51a3a6ea11946286de976.
+ //
+ // The fused gate/up+SwiGLU+Q8 prefill pipeline (FusedGateUpSmem,
+ // iq2_gateup_fused_mainloop, gateup_iq2_swiglu_q8_d2r_kernel and its
+@@ -254,6 +258,20 @@ __device__ __forceinline__ void cp_async_commit() {
+ #endif
+ }
+ 
++__device__ __forceinline__ void q2raw_cp_async_4B(void *dst, const void *src, bool pred) {
++#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
++    if (pred) {
++        const unsigned smem = static_cast<unsigned>(__cvta_generic_to_shared(dst));
++        asm volatile("cp.async.ca.shared.global [%0], [%1], 4;"
++                     :: "r"(smem), "l"(src));
++    } else {
++        *reinterpret_cast<uint32_t *>(dst) = 0;
++    }
++#else
++    *reinterpret_cast<uint32_t *>(dst) = pred ? *reinterpret_cast<const uint32_t *>(src) : 0;
++#endif
++}
++
+ template <int KeepGroups>
+ __device__ __forceinline__ void cp_async_wait_group() {
+     static_assert(KeepGroups >= 0 && KeepGroups <= 7, "bad cp.async wait_group depth");
+@@ -846,6 +864,78 @@ __device__ __forceinline__ void issue_q2k_raw_prefetch_fast(
+     cp_async_commit();
+ }
+ 
++// Same shared ring as the pinned SoA path; only global addressing changes.
++// w_base is this expert's raw tensor, sc_off_bytes is its raw row stride.
++// Every raw Q2_K block is scales[16], codes[64], half2 dm (84 bytes).
++template <bool FullTile, int Iter>
++__device__ __forceinline__ void issue_q2k_native_prefetch_iter(
++        Q2KRawWarpStage (&s_raw)[kWarps][kRawStages],
++        const volatile SmemInvariants &s_inv, int raw_stage, int k256_iter) {
++    const int warp = d2r_warp();
++    const int lane = d2r_lane();
++    const int warp_row0 = s_inv.cta_row0 + warp * 16;
++    constexpr int half = Iter < 4 ? Iter / 2 : 0;
++    if constexpr (Iter < 4) {
++        const int rem = lane + (Iter % 2) * 32;
++        const int pair = rem / kRawQSWordsPerHalf;
++        const int word = rem % kRawQSWordsPerHalf;
++        const bool valid = k256_iter < s_inv.nb &&
++            (FullTile || q2k_raw_pair_valid(warp_row0, pair, s_inv.M));
++        const uint64_t row = valid ? (uint64_t)(warp_row0 + 2 * pair) : 0;
++        const uint64_t kb = valid ? (uint64_t)k256_iter : 0;
++        const char *src0 = s_inv.w_base + row * s_inv.sc_off_bytes + kb * 84ull;
++        const char *src1 = src0 + s_inv.sc_off_bytes;
++        uint2 *dst = &s_raw[warp][raw_stage].qs[half][pair][word];
++        q2raw_cp_async_4B(&dst->x, src0 + 16 + half * 32 + word * 4, valid);
++        q2raw_cp_async_4B(&dst->y, src1 + 16 + half * 32 + word * 4, valid);
++    } else {
++        if (lane < kRawSCChunks) {
++            const int which_half = lane / kRawPairsPerWarp;
++            const int pair = lane % kRawPairsPerWarp;
++            const bool valid = k256_iter < s_inv.nb &&
++                (FullTile || q2k_raw_pair_valid(warp_row0, pair, s_inv.M));
++            const uint64_t row = valid ? (uint64_t)(warp_row0 + 2 * pair) : 0;
++            const uint64_t kb = valid ? (uint64_t)k256_iter : 0;
++            const char *src0 = s_inv.w_base + row * s_inv.sc_off_bytes + kb * 84ull;
++            const char *src1 = src0 + s_inv.sc_off_bytes;
++            int4 *dst = &s_raw[warp][raw_stage].sc[which_half][pair];
++            q2raw_cp_async_4B(&dst->x, src0 + which_half * 8, valid);
++            q2raw_cp_async_4B(&dst->y, src0 + which_half * 8 + 4, valid);
++            q2raw_cp_async_4B(&dst->z, src1 + which_half * 8, valid);
++            q2raw_cp_async_4B(&dst->w, src1 + which_half * 8 + 4, valid);
++        } else if (lane < kRawSCChunks + kRawDMChunks) {
++            const int pair = lane - kRawSCChunks;
++            const bool valid = k256_iter < s_inv.nb &&
++                (FullTile || q2k_raw_pair_valid(warp_row0, pair, s_inv.M));
++            const uint64_t row = valid ? (uint64_t)(warp_row0 + 2 * pair) : 0;
++            const uint64_t kb = valid ? (uint64_t)k256_iter : 0;
++            const char *src0 = s_inv.w_base + row * s_inv.sc_off_bytes + kb * 84ull;
++            const char *src1 = src0 + s_inv.sc_off_bytes;
++            uint2 *dst = &s_raw[warp][raw_stage].dm[pair];
++            q2raw_cp_async_4B(&dst->x, src0 + 80, valid);
++            q2raw_cp_async_4B(&dst->y, src1 + 80, valid);
++        }
++    }
++}
++
++template <bool FullTile, int Iter = 0>
++__device__ __forceinline__ void issue_q2k_native_prefetch_unrolled(
++        Q2KRawWarpStage (&s_raw)[kWarps][kRawStages],
++        const volatile SmemInvariants &s_inv, int raw_stage, int k256_iter) {
++    if constexpr (Iter < kRawCopyTrips) {
++        issue_q2k_native_prefetch_iter<FullTile, Iter>(s_raw, s_inv, raw_stage, k256_iter);
++        issue_q2k_native_prefetch_unrolled<FullTile, Iter + 1>(s_raw, s_inv, raw_stage, k256_iter);
++    }
++}
++
++template <bool FullTile>
++__device__ __forceinline__ void issue_q2k_native_prefetch(
++        Q2KRawWarpStage (&s_raw)[kWarps][kRawStages],
++        const volatile SmemInvariants &s_inv, int raw_stage, int k256_iter) {
++    issue_q2k_native_prefetch_unrolled<FullTile>(s_raw, s_inv, raw_stage, k256_iter);
++    cp_async_commit();
++}
++
+ __device__ __forceinline__ void load_q2k_weight_half_raw(
+         Q2KWeightHalf &w,
+         const Q2KRawWarpStage (&s_raw)[kWarps][kRawStages],
+@@ -2076,7 +2166,7 @@ __device__ __forceinline__ void mma_fold_k64_pair_t(
+ }
+ 
+ template <bool FullTile, int NFrag,
+-          typename TileA, typename TileB, typename TileC>
++          typename TileA, typename TileB, typename TileC, bool RawWeights = false>
+ __device__ __forceinline__ void down_q2k_d2r_mainloop(
+         float (&acc)[NFrag][TileC::ne],
+         block_q8_1_mmq (&s_q8)[kStages][NFrag][8],
+@@ -2109,7 +2199,9 @@ __device__ __forceinline__ void down_q2k_d2r_mainloop(
+ #pragma unroll
+     for (int pf = 0; pf < kRawStages; ++pf) {
+         if (pf < s_inv.nb) {
+-            if constexpr (FullTile) {
++            if constexpr (RawWeights) {
++                issue_q2k_native_prefetch<FullTile>(s_raw, s_inv, d2r_raw_stage(pf), pf);
++            } else if constexpr (FullTile) {
+                 issue_q2k_raw_prefetch_fast(s_raw, s_inv, d2r_raw_stage(pf), pf);
+             } else {
+                 issue_q2k_raw_prefetch<false>(
+@@ -2177,7 +2269,9 @@ __device__ __forceinline__ void down_q2k_d2r_mainloop(
+         if ((k128_iter & 1) != 0) {
+             const int raw_pf = (k128_iter >> 1) + kRawStages;
+             if (raw_pf < s_inv.nb) {
+-                if constexpr (FullTile) {
++                if constexpr (RawWeights) {
++                    issue_q2k_native_prefetch<FullTile>(s_raw, s_inv, d2r_raw_stage(raw_pf), raw_pf);
++                } else if constexpr (FullTile) {
+                     issue_q2k_raw_prefetch_fast(s_raw, s_inv, d2r_raw_stage(raw_pf), raw_pf);
+                 } else {
+                     issue_q2k_raw_prefetch<false>(
+@@ -2249,7 +2343,7 @@ void d2r_build_worklist_kernel(const int32_t * __restrict__ expert_bounds,
+     }
+ }
+ 
+-template <int TileN, int BaseTileN>
++template <int TileN, int BaseTileN, bool RawWeights = false>
+ __global__ __launch_bounds__(kThreads, 2)
+ void down_q2k_d2r_kernel(const void * __restrict__ W_soa,
+                          const block_q8_1_mmq * __restrict__ q8,
+@@ -2258,7 +2352,8 @@ void down_q2k_d2r_kernel(const void * __restrict__ W_soa,
+                          const int * __restrict__ work,
+                          const int * __restrict__ n_items_ptr,
+                          float * __restrict__ out,
+-                         int M, int K, int n_assign, int E) {
++                         int M, int K, int n_assign, int E,
++                         uint64_t raw_row_stride = 0, uint64_t raw_expert_stride = 0) {
+ #if defined(TURING_MMA_AVAILABLE)
+     const int n_items = *n_items_ptr;
+     if ((int)blockIdx.y >= n_items) {
+@@ -2311,10 +2406,11 @@ void down_q2k_d2r_kernel(const void * __restrict__ W_soa,
+         const uint64_t npair = (uint64_t)E * (uint64_t)(M >> 1) * (uint64_t)nb;
+         const uint64_t dm_bytes = (npair * 8ull + 63ull) & ~63ull;
+         const uint64_t sc_bytes = (npair * 32ull + 63ull) & ~63ull;
+-        s_inv.w_base = (const char *)W_soa;
++        s_inv.w_base = (const char *)W_soa +
++            (RawWeights ? (uint64_t)expert * raw_expert_stride : 0ull);
+         s_inv.q8_tile_base = (const char *)q8 + (uint64_t)col_lo * sizeof(block_q8_1_mmq);
+         s_inv.out = out;
+-        s_inv.sc_off_bytes = (uint32_t)dm_bytes;
++        s_inv.sc_off_bytes = (uint32_t)(RawWeights ? raw_row_stride : dm_bytes);
+         s_inv.qs_off_bytes = (uint32_t)(dm_bytes + sc_bytes);
+         s_inv.q8_k128_stride_bytes = (uint32_t)((uint64_t)n_assign * sizeof(block_q8_1_mmq));
+         s_inv.nb = nb;
+@@ -2325,7 +2421,7 @@ void down_q2k_d2r_kernel(const void * __restrict__ W_soa,
+         s_inv.col_count = col_tile_hi - col_lo;
+     }
+     if (d2r_lane() == 0) {
+-        const uint64_t expert_row_pair = (uint64_t)expert * (uint64_t)(M >> 1);
++        const uint64_t expert_row_pair = RawWeights ? 0ull : (uint64_t)expert * (uint64_t)(M >> 1);
+         const uint64_t warp_pair0_base =
+             (expert_row_pair + (uint64_t)(warp_row0 >> 1)) * (uint64_t)nb;
+         s_inv.warp_pair0_blk[d2r_warp()] = (uint32_t)warp_pair0_base;
+@@ -2341,14 +2437,14 @@ void down_q2k_d2r_kernel(const void * __restrict__ W_soa,
+         const bool full_warp_tile =
+             (warp_row0 + 15 < M) && (col_lo + TileN <= col_hi_full);
+         if (full_warp_tile) {
+-            down_q2k_d2r_mainloop<true, NFrag, tile_A, tile_B, tile_C>(
++            down_q2k_d2r_mainloop<true, NFrag, tile_A, tile_B, tile_C, RawWeights>(
+                 acc, s_q8, s_q8_fix, s_raw, s_inv);
+         } else {
+-            down_q2k_d2r_mainloop<false, NFrag, tile_A, tile_B, tile_C>(
++            down_q2k_d2r_mainloop<false, NFrag, tile_A, tile_B, tile_C, RawWeights>(
+                 acc, s_q8, s_q8_fix, s_raw, s_inv);
+         }
+     } else {
+-        down_q2k_d2r_mainloop<false, NFrag, tile_A, tile_B, tile_C>(
++        down_q2k_d2r_mainloop<false, NFrag, tile_A, tile_B, tile_C, RawWeights>(
+             acc, s_q8, s_q8_fix, s_raw, s_inv);
+     }
+ 
+@@ -2735,14 +2831,9 @@ static int64_t d2r_work_capacity(int64_t ncols_max, int n_experts) {
+ } // namespace
+ 
+ bool ds4_mmq_q2_K_moe_d2r_available(int cc) {
+-    static int cached_cc = -1;
+-    static int cached = 0;
+-    if (cached_cc != cc) {
+-        cached_cc = cc;
+-        cached = (GGML_CUDA_CC_IS_NVIDIA(cc) &&
+-                  ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_AMPERE) ? 1 : 0;
+-    }
+-    return cached != 0;
++    // No mutable cross-context cache in the native operation contract.
++    return GGML_CUDA_CC_IS_NVIDIA(cc) &&
++           ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_AMPERE;
+ }
+ 
+ bool ds4_mmq_iq2_xxs_moe_d2r_available(int cc) {
+@@ -2864,6 +2955,47 @@ int ds4_mmq_q2_K_moe_d2r_launch(const void *W_soa,
+     return 0;
+ }
+ 
++int llmp_q2_K_raw_d2r_launch(const void *weights, uint64_t weight_bytes,
++                                uint64_t row_stride, uint64_t expert_stride,
++                                const void *q8, const int32_t *ids_dst,
++                                const int32_t *bounds, float *output,
++                                int M, int K, int64_t assignments, int E,
++                                void *scratch, size_t scratch_bytes, cudaStream_t stream) {
++    const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
++    if (!ds4_mmq_q2_K_moe_d2r_available(cc)) return 1;
++    // Bound the original 16-bit worklist column tile encoding, keep the
++    // expert's sign bit clear for its signed decode, and bound all raw
++    // address arithmetic including padded expert and row strides.
++    if (!weights || !q8 || !ids_dst || !bounds || !output || !scratch ||
++        M <= 0 || (M & 1) != 0 || K <= 0 || K % 256 != 0 ||
++        E <= 0 || E > 32768 || assignments <= 0 || assignments > 65535ll * kNTile ||
++        (reinterpret_cast<uintptr_t>(weights) & 3u) != 0 ||
++        row_stride == 0 || row_stride > UINT32_MAX || (row_stride & 3u) != 0 ||
++        (expert_stride & 3u) != 0) return -1;
++    const uint64_t row_bytes = static_cast<uint64_t>(K / 256) * 84ull;
++    if (row_stride < row_bytes || static_cast<uint64_t>(M) > UINT64_MAX / row_stride ||
++        expert_stride < static_cast<uint64_t>(M) * row_stride ||
++        static_cast<uint64_t>(E) > UINT64_MAX / expert_stride) return -1;
++    const uint64_t accessed = static_cast<uint64_t>(E - 1) * expert_stride +
++        static_cast<uint64_t>(M - 1) * row_stride + row_bytes;
++    if (weight_bytes < accessed) return -1;
++    const int64_t capacity64 = d2r_work_capacity(assignments, E);
++    if (capacity64 <= 0 || capacity64 > 65535) return -1;
++    const size_t needed = static_cast<size_t>(capacity64) * sizeof(int) + sizeof(int);
++    if (scratch_bytes < needed) return -1;
++    auto *work = static_cast<int *>(scratch);
++    int *count = work + capacity64;
++    d2r_build_worklist_kernel<kNTile><<<1, kThreads, 0, stream>>>(bounds, work, count, E);
++    if (cudaGetLastError() != cudaSuccess) return -2;
++    const dim3 grid(static_cast<unsigned>((static_cast<uint64_t>(M) + kMTile - 1) / kMTile),
++                    static_cast<unsigned>(capacity64), 1);
++    down_q2k_d2r_kernel<64, kNTile, true><<<grid, dim3(32, kWarps, 1), 0, stream>>>(
++        weights, static_cast<const block_q8_1_mmq *>(q8), ids_dst, bounds, work, count,
++        output, M, K, static_cast<int>(assignments), E, row_stride, expert_stride);
++    if (cudaGetLastError() != cudaSuccess) return -3;
++    return 0;
++}
++
+ int ds4_mmq_iq2_xxs_moe_d2r_pair_launch(const void *gate_soa,
+                                          const void *up_soa,
+                                          int64_t soa_blocks,
+diff --git a/cuda/mmq/ds4_mmq_d2r.cuh b/cuda/mmq/ds4_mmq_d2r.cuh
+index 1d662ff..02f7c5c 100644
+--- a/cuda/mmq/ds4_mmq_d2r.cuh
++++ b/cuda/mmq/ds4_mmq_d2r.cuh
+@@ -8,6 +8,16 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ 
++// Llmpalooza adaptation: original D2R product over native raw Q2_K rows.
++// Complete valid backing and unique selected experts per token are caller
++// contracts. This reads only experts named by the original routing maps.
++int llmp_q2_K_raw_d2r_launch(
++    const void* weights, uint64_t weight_bytes, uint64_t row_stride,
++    uint64_t expert_stride, const void* q8, const int32_t* ids_dst,
++    const int32_t* bounds, float* output, int m, int k,
++    int64_t assignments, int experts, void* scratch, size_t scratch_bytes,
++    cudaStream_t stream);
++
+ bool ds4_mmq_q2_K_moe_d2r_available(int cc);
+ bool ds4_mmq_iq2_xxs_moe_d2r_available(int cc);
+ 
+diff --git a/tmp/q2-d2r-patch-new/llmp/CMakeLists.txt b/llmp/CMakeLists.txt
+new file mode 100644
+index 0000000..8d47533
+--- /dev/null
++++ b/llmp/CMakeLists.txt
+@@ -0,0 +1,23 @@
++# SPDX-FileCopyrightText: 2026 llmpalooza contributors
++# SPDX-License-Identifier: Apache-2.0
++
++cmake_minimum_required(VERSION 4.4.3)
++project(llmp_ds4 LANGUAGES CXX)
++
++# Only the pinned D2R product unit. No upstream runtime, graph, preparation,
++# repack, dispatcher or build script is compiled/executed. The includes
++# resolve to our independently locked GGML target, not ds4's vendored shim.
++set(product "${CMAKE_CURRENT_SOURCE_DIR}/../cuda/mmq")
++if(CMAKE_CUDA_COMPILER)
++  add_library(llmp_ds4_d2r STATIC "${product}/ds4_mmq_d2r.cu")
++  target_link_libraries(llmp_ds4_d2r PUBLIC llmp_ggml_cuda)
++  target_include_directories(llmp_ds4_d2r PUBLIC "${product}")
++  target_compile_options(llmp_ds4_d2r PRIVATE -O3 -use_fast_math -extended-lambda)
++  set_target_properties(llmp_ds4_d2r PROPERTIES
++    CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON
++    CUDA_ARCHITECTURES "121a-real;${LLMP_CUDA_DISCRETE_SASS}")
++else()
++  # Every component target exists in CPU profiles, without CUDA includes
++  # or links reaching llmpalooza's CPU-only model/plan modules.
++  add_library(llmp_ds4_d2r INTERFACE)
++endif()

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek frontier head
@@ -66,13 +66,13 @@ It has not been measured in this follow-up and is not enabled in serving.
 
 ## Harness
 
-`jitllm_dsv4_exec --frontier-head` selects the final head row for prompt
+`llmp_dsv4_exec --frontier-head` selects the final head row for prompt
 prefill and `--bench-prefill`; PPL and named dumps stay all-row. The
-experimental flag is off by default. `jitllm_spec_runner
+experimental flag is off by default. `llmp_spec_runner
 --frontier-head on|off` drives the same production runner choice for
 DSpark state, rollback and swap controls.
 
-`jitllm_spec_runner --check frontier` runs all-head, frontier, frontier,
+`llmp_spec_runner --check frontier` runs all-head, frontier, frontier,
 all-head prefills with production last-row copies, both with and without
 DSpark injection. Timing stops before diagnostic state readback; raw
 target/ring state and the common forced continuation must match exactly,
@@ -85,7 +85,7 @@ loading or running model weights. Its `weights_loaded` field is false;
 `read_bytes` and `drafter_read_bytes` describe the registered payloads,
 not disk reads in that sizing invocation.
 
-`jitllm_dsv4_exec --probe-head --prompts TSV` captures the first prompt's
+`llmp_dsv4_exec --probe-head --prompts TSV` captures the first prompt's
 final chunk's complete `l_last` streams, then runs only the original
 builder's head suffix at all rows and at one row over those same bytes.
 It repeats both, writing their last mixed/norm/logit rows, the input
@@ -306,7 +306,7 @@ The spec-runner SHA-256 is
 `81954b884ec317ddf0536851895aface44f896282167c1219c4f8340e6a91008`;
 the final planner SHA-256 is `1355f003…` as recorded below.
 Prompt-fixture SHA-256 is
-`d212009dadf1ddbf945c8dc7ad0214ba444236baf57c8ed9019c3ebe6b0805b4`.
+`c697236c56a09b0a3f2550f7514b3e4d826e1d14a96b4d1c79e3bd33a3a6f859`.
 Raw captures and the binary/source/fixture identities are under
 `~/scratch/m3-final-ds-sampled/frontier-hca-1355f003/` on `spark`.
 
@@ -470,8 +470,8 @@ seven CLI refusal controls, REUSE and 1,001 header checks. Workstation
 checks remain deferred by the owner until the optimization run ends.
 
 Phase-2 command/config provenance survives on `spark` in
-`~/.local/share/jitllm/jobs/lcds-f32k/job.json`,
-`~/.local/share/jitllm/lcds/steps-c{1,2}.txt` and the raw summaries above.
+`~/.local/share/llmp/jobs/lcds-f32k/job.json`,
+`~/.local/share/llmp/lcds/steps-c{1,2}.txt` and the raw summaries above.
 Its adopted source is `1f33ab0`. The old `lcds` build was rebuilt later
 on 2026-09-29 at 19:30 EDT with growing-state work, so its present
 `21c6371e…` binary and dirty `cdcf66b…` receipt are not a trustworthy

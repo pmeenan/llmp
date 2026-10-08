@@ -1,10 +1,10 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Changelog
 
-All notable changes to jitLLM are recorded here, in the format of
-[Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/). jitLLM
+All notable changes to llmpalooza are recorded here, in the format of
+[Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/). Llmpalooza
 follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html) and
 stays at 0.x, where a minor release may break compatibility, until 1.0
 (D-062). A change to a public surface names its version bump here.
@@ -277,7 +277,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   cost, DeepSeek's wave costs per width, Qwen3.8's draft depth cost) and
   recorded under the state directory per artifact, device, driver, build
   and the settings the measurements depend on (a new on-disk record,
-  `jitllm-model-calibration-v1`; delete it to measure again), in force
+  `llmp-model-calibration-v1`; delete it to measure again), in force
   from the next start; a stale record is measured again, a corrupt one
   refused and replaced. The reclaim order's cost of recomputing dropped
   state is now a cost a token (`recompute_ms_per_token`), scaled by each
@@ -295,7 +295,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   NVFP4 artifact (none kept), but Qwen3.8's GGUF quantizations now sample
   with their checkpoint's top_k 20 and top_p 0.95 when a request sends
   neither. The start logs each value and its source, and the new
-  `jitllm-runtime settings [--json]` lists them with what each came from,
+  `llmp-runtime settings [--json]` lists them with what each came from,
   beside a running service. A key a composition does not take is now
   refused naming that key; the throughput floors are resolved once per
   model instead of looked up per request.
@@ -334,7 +334,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   spill directory's kept conversations. The records are hashed in the
   background at the lowest priority, waiting while a swap or a prefill
   runs.
-- `jitllm.service` retries a failing start forever, backing off from 5 s
+- `llmp.service` retries a failing start forever, backing off from 5 s
   to 30 s (it gave up after ten starts in five minutes), and its
   start and stop timeouts are extended while the start registers and
   adopts conversations and the stop spills and records them.
@@ -393,9 +393,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   (Gemma, Llama, Mistral, gpt-oss, GLM, Kimi, Phi and others). Only control
   tokens in the template's own text become control tokens. Models whose
   templates were refused at registration now register; the request and
-  response formats and `jitllm-inference-version` are unchanged.
+  response formats and `llmp-inference-version` are unchanged.
 - Native renderers for the Gemma 3 and Gemma 4 chat templates (template
-  support only: jitLLM has no Gemma runner yet). By hash: Google's Gemma 4
+  support only: llmpalooza has no Gemma runner yet). By hash: Google's Gemma 4
   template (`ae53464b…`, 26B-A4B, 31B, 12B and its QAT GGUFs), the E2B and
   E4B one (`0a2c8073…`) and Gemma 3's (`7de1c58e…`, Unsloth's copies and
   the converted GGUFs surveyed); by probe: Unsloth's Gemma 4 templates,
@@ -454,7 +454,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   Compatible multirow HC products and unequal verification heads also share weights.
 - `/v1/completions` accepts raw text or exact token IDs, legacy OpenAI
   echo/logprobs and vLLM prompt_logprobs with zero-token scoring. The
-  bounded inference subset establishes `jitllm-inference-version: 1`.
+  bounded inference subset establishes `llmp-inference-version: 1`.
 - A bounded Qwen draft-head capture diagnostic supplies real operands for
   isolated product comparisons without changing serving arithmetic.
 - A bounded Qwen routed-down capture diagnostic preserves common-input
@@ -465,35 +465,35 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   with two private disk checkpoints per model and a 24-hour reuse limit.
 - LLM conversation state allocates and spills only used cache extents;
   long context ceilings no longer allocate the whole cache at registration.
-- The `jitllm` command, with `--version`: the product version (`X.Y.Z` for a
+- The `llmp` command, with `--version`: the product version (`X.Y.Z` for a
   release, `X.Y.Z-dev.N+g<commit>` otherwise), the commit, the license
   profile, the SDK identity and the target. The build receipt records the
   same version, with its Debian form (`X.Y.Z~dev.N+g<commit>-1`).
-- `jitllm doctor`, a capability probe: the build, the host (kernel, glibc,
+- `llmp doctor`, a capability probe: the build, the host (kernel, glibc,
   memory), RDMA ports, the NVIDIA driver and each GPU's compute capability,
   compute mode, VMM support and backing granularity, and whether it is
   unified (the GB10) or discrete. It exits 1 when the host cannot run the
   build: a GPU the build has code for is needed, with VMM and host-backed
   VMM.
-- CUDA builds of `jitllm` need the NVIDIA driver (`libcuda.so.1`) to start.
+- CUDA builds of `llmp` need the NVIDIA driver (`libcuda.so.1`) to start.
 - Discrete NVIDIA GPUs are a secondary target (D-082): the x86-64 build
-  also has code for compute capability 8.6 (`sm_86`), and `jitllm doctor`
+  also has code for compute capability 8.6 (`sm_86`), and `llmp doctor`
   and the runtime accept such a GPU with VMM and host-backed VMM. Arm64
-  builds stay GB10-only. jitLLM uses one GPU, device 0: `jitllm doctor`
+  builds stay GB10-only. Llmpalooza uses one GPU, device 0: `llmp doctor`
   judges only it and warns on a host with more.
-- The node's configuration, `schema_version = 2`: `/etc/jitllm/jitllm.toml`
-  and the fragments in `/etc/jitllm/jitllm.d/`, strict TOML 1.0 in which
+- The node's configuration, `schema_version = 2`: `/etc/llmp/llmp.toml`
+  and the fragments in `/etc/llmp/llmp.d/`, strict TOML 1.0 in which
   every key has one owning file, with the `[storage]` roles, `[limits]` and
   a cluster member's keys. Every problem is reported with its file, line
   and column, and files or directories that other users could change are
   refused.
-- An arm64 Debian package, `jitllm`: the `jitllm` command, the node runtime
-  `/usr/libexec/jitllm/jitllm-runtime` and `jitllm.service`, which runs it
-  as the new `jitllm` system user with `/var/lib/jitllm` as its data
+- An arm64 Debian package, `llmp`: the `llmp` command, the node runtime
+  `/usr/libexec/llmp/llmp-runtime` and `llmp.service`, which runs it
+  as the new `llmp` system user with `/var/lib/llmp` as its data
   directory. It depends on the NVIDIA driver 580 or newer. The runtime reads
   its configuration, prepares its storage, checks the host and waits; it
   serves nothing yet. It exits on a fatal signal instead of dumping core.
-- `jitllm doctor --config FILE` reads a configuration other than the
+- `llmp doctor --config FILE` reads a configuration other than the
   default, and doctor now reports the configuration and the storage roles:
   their owners, modes and filesystems.
 - The configuration names the models a node serves, `[models.<name>]`
@@ -501,9 +501,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   composition by ID, a speculative drafter, whether to speculate, the
   conversation's context, its prefill chunk, and a tokenizer and chat
   template where the artifact keeps none (D-096).
-- `jitllm-runtime` serves models by hand, in its own process (D-096):
-  `jitllm-runtime chat --turn MODEL TEXT...` sends each turn to its model,
-  swapping models as needed, and `jitllm-runtime swap-table` measures M3's
+- `llmp-runtime` serves models by hand, in its own process (D-096):
+  `llmp-runtime chat --turn MODEL TEXT...` sends each turn to its model,
+  swapping models as needed, and `llmp-runtime swap-table` measures M3's
   swap table between the configured models. Replies are greedy, and
   speculative where a model has a drafter (`--plain` turns it off). CUDA
   builds only.
@@ -526,7 +526,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   they wait, swap or prefill. Known fields the route does not implement
   are refused when they would change the answer; unknown fields are
   ignored, their names (never values) counted at
-  `GET /jitllm/v1/ignored-fields` for loopback clients. Every intake
+  `GET /llmp/v1/ignored-fields` for loopback clients. Every intake
   bound, timeout and refusal is listed in docs/runtime-serving.md. The
   configuration's schema version stays 2. The runtime can sample (seeded,
   with speculative sampling where a model has a drafter) as well as decode
@@ -535,16 +535,25 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   refused when it registers, as Qwen3.8's already was, naming the
   template's SHA-256.
 - The arm64 package ships NVIDIA's cuBLAS (`libcublas.so.13`,
-  `libcublasLt.so.13`, unmodified) in `/usr/lib/jitllm` for the runtime, and
+  `libcublasLt.so.13`, unmodified) in `/usr/lib/llmp` for the runtime, and
   depends on `libgcc-s1`; its third-party notices now include GGML's and
   CUTLASS's, whose kernels the runtime links (D-076, D-096).
-- The model support matrix, `docs/model-support.md`: the models jitLLM
+- The model support matrix, `docs/model-support.md`: the models llmpalooza
   runs and serves (DeepSeek V4 Flash 0731 with DSpark, Qwen3.8 Flash Next
   NVFP4 with its MTP drafter, Qwen-Image-2.1, and the M2 fixtures), each
   with its checkpoint, artifact, chat template hash, decoding modes,
   evidence and known divergences.
 
 ### Changed
+
+- Rename the project from jitLLM to llmpalooza (`llmp`, D-111): the `llmp`
+  and `llmp-runtime` commands, the `llmp` package, service, user and group,
+  `/etc/llmp/llmp.toml` and `/etc/llmp/llmp.d/`, `/var/lib/llmp`, the
+  `llmp-inference-version` header, the `/llmp/v1/` routes, `owned_by`
+  `"llmp"` and the `.llmp-spill` marker. Existing installations, kept
+  conversations and calibration records are not migrated, and a spill
+  directory holding the old marker is refused until it is emptied; v0
+  artifacts keep their `jitllm-*` format identifiers and load unchanged.
 
 - Omit unused nonfinal prompt dependencies for ordinary plain DeepSeek and
   native/GGUF Qwen while preserving exact initialized state and scoring. Bounded
@@ -815,7 +824,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   rendering bounds follow the model's context and memory. The
   configuration no longer caps models at 16 or contexts at 1,048,576. All
   earlier configurations and requests stay valid: `schema_version` 2 and
-  `jitllm-inference-version` 1 are unchanged.
+  `llmp-inference-version` 1 are unchanged.
 - DeepSeek serves its output-A/HCA prefill by default on full 4,096-row
   chunks, where it passes every registered quality bound on both GGUFs:
   7K-token chat completes 7% faster alone and 12% faster four at a time
@@ -965,10 +974,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Removed
 
-- The temporary complete ds4 prefill reference (the `jitllm_ds4_complete`
+- The temporary complete ds4 prefill reference (the `llmp_ds4_complete`
   benchmark and its original cache, HC/norm, compressor, repack, product,
   indexer, sparse-attention and router/FFN stages, weight preparation and
-  state layout) no longer builds into jitLLM's libraries; production keeps
+  state layout) no longer builds into llmpalooza's libraries; production keeps
   the original output-A and F16-Q token-tile HCA cores it selects. Commit
   `ec8af04` holds the rest
   ([report](docs/experiments/ds4-complete-plan/README.md)).
@@ -996,8 +1005,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   on its stream until the hang check: the idle task is cancelled, as the
   request's end already did.
 
-- GPU and model-file tests resolve artifacts under `JITLLM_TEST_MODELS`
-  (else `~/.local/share/jitllm`) and scratch under `JITLLM_TEST_SCRATCH`,
+- GPU and model-file tests resolve artifacts under `LLMP_TEST_MODELS`
+  (else `~/.local/share/llmp`) and scratch under `LLMP_TEST_SCRATCH`,
   and skip when the files are absent instead of failing.
 
 - Bounded Gemma26 and Gemma31 serving keeps the full final FFN before
@@ -1108,7 +1117,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 - The cross SDK includes a pinned ARM shared GCC support runtime for
   cuBLAS, allowing CPU test discovery under qemu without changing the
-  compiler or jitLLM's static C++ runtime.
+  compiler or llmpalooza's static C++ runtime.
 
 - Package provenance checks read license sidecars for JSON and other
   noncommentable source files, while code still requires embedded headers.
@@ -1146,7 +1155,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   refused by the tokenizer's library defaults below the body limit and
   DeepSeek's 1M context; the chat and literal routes now bound
   tokenization by the rendering and the model's context.
-- `jitllm-runtime` refused to start the community DeepSeek V4 Flash
+- `llmp-runtime` refused to start the community DeepSeek V4 Flash
   IQ2_XXS GGUF ("a DeepSeek V4 wave needs every layer in the fast plan's
   fused form"): its F16 hyper-connection mixing weights kept every layer
   off the fused form that four-request waves need. The fused form now
@@ -1156,7 +1165,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   single-request decode takes the fused form too (+4%). An artifact whose
   weights cannot form a wave is now served one request at a time, with a
   log line at start, instead of being refused.
-- Stopping `jitllm-runtime` with two models configured, after a swap,
+- Stopping `llmp-runtime` with two models configured, after a swap,
   logged "a compute stream could not be fenced" and exited with a failure
   status: the stop's fence of the swapped-out model's stream tried to page
   its spilled state back in, beyond the execution budget. The fence now

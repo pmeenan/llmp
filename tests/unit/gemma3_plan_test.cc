@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/gemma3_plan.h"
@@ -16,22 +16,21 @@
 #include "expected_error.h"
 #include "gemma3_fixture.h"
 #include "kernels/ggml/fattn_owner.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/validate_ext.h"
 
 namespace {
-namespace md = jitllm::model;
-namespace en = jitllm::engine;
-namespace kg = jitllm::kernels::ggml;
+namespace md = llmp::model;
+namespace en = llmp::engine;
+namespace kg = llmp::kernels::ggml;
 static_assert(!std::is_copy_constructible_v<en::Gemma3HostInputs>);
 static_assert(!std::is_copy_assignable_v<en::Gemma3HostInputs>);
 static_assert(std::is_nothrow_move_constructible_v<en::Gemma3HostInputs>);
 static_assert(std::is_nothrow_move_assignable_v<en::Gemma3HostInputs>);
 struct Case {
   const md::Gemma3Profile& p = md::Gemma3_4BQat();
-  md::Gemma3Binding binding =
-      *md::BindGemma3(p, "gemma3", jitllm::test_support::gemma3::Resources());
+  md::Gemma3Binding binding = *md::BindGemma3(p, "gemma3", llmp::test_support::gemma3::Resources());
   md::Gemma3StateLayout state = *md::Gemma3State(p, 4096, 16);
   std::array<std::int32_t, 3> a{1, 2, 3};
   std::array<std::int32_t, 1> b{4};
@@ -77,13 +76,13 @@ TEST(Gemma3Plan, GroupedStoresKeepRaggedRootsSourcesAndPlacement) {
   auto choices = Choices();
   choices.group_set_rows = true;
   auto measured = en::PlanGemma3Chunk(model, c.shape, choices, 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   auto placed = en::PlanGemma3Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
                                     (*measured)->placement.extent);
-  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
   std::size_t groups = 0, writes = 0;
   for (const auto& step : (*placed)->plan.steps) {
-    if (step.operation != jitllm::execution::Operation::kSetRows) continue;
+    if (step.operation != llmp::execution::Operation::kSetRows) continue;
     writes += step.nodes.size();
     if (step.implementation == kg::kSetRowsGroupedName) {
       ++groups;
@@ -116,10 +115,10 @@ TEST(Gemma3Plan, MultirowOwnersRetainActualRootsAndNarrowShapeFallback) {
       ASSERT_TRUE(graph);
       const auto model = Places(c, *graph);
       auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
-      ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+      ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
       auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
                                         (*measured)->placement.extent);
-      ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+      ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
       auto& g = (*placed)->graph;
       if (rows != 128 && (!flexible || rows > 512)) {
         EXPECT_EQ(g.Named("blk.0.owner_prefill_attention"), nullptr);
@@ -128,9 +127,9 @@ TEST(Gemma3Plan, MultirowOwnersRetainActualRootsAndNarrowShapeFallback) {
       }
       auto* attention = g.Named("blk.0.owner_prefill_attention");
       ASSERT_NE(attention, nullptr);
-      EXPECT_EQ(kg::JitllmOpOf(attention), kg::JitllmOp::kFlashAttnOwners);
-      EXPECT_EQ(kg::JitllmOpInt(attention, 3), 0);
-      EXPECT_EQ(kg::JitllmOpInt(attention, 4), 0);
+      EXPECT_EQ(kg::LlmpOpOf(attention), kg::LlmpOp::kFlashAttnOwners);
+      EXPECT_EQ(kg::LlmpOpInt(attention, 3), 0);
+      EXPECT_EQ(kg::LlmpOpInt(attention, 4), 0);
       EXPECT_EQ(attention->src[0]->ne[1], rows);
       EXPECT_EQ(attention->ne[2], rows);
       EXPECT_EQ(attention->src[1]->ne[1], (rows + 31) / 32 * 32);
@@ -169,10 +168,10 @@ TEST(Gemma3Plan, MultirowOwnersRetainActualRootsThroughTheTrainedMaximum) {
       ASSERT_TRUE(graph);
       const auto model = Places(c, *graph);
       auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
-      ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+      ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
       auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
                                         (*measured)->placement.extent);
-      ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+      ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
       for (std::uint32_t layer = 0; layer < c.p.layers; ++layer) {
         const auto prefix = "blk." + std::to_string(layer) + ".";
         EXPECT_EQ((*placed)->graph.Named(prefix + "owner_prefill_attention") != nullptr, true);
@@ -209,18 +208,18 @@ TEST(Gemma3Plan, ThreeAndFourOwnerHeadsAndSourcesUseTheFundedEnvelope) {
       ASSERT_TRUE(graph);
       auto model = Places(c, *graph);
       auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
-      ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+      ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
       const auto bytes = (*measured)->placement.extent;
       const auto base = std::uint64_t{1} << 53U;
       EXPECT_FALSE(en::PlanGemma3Chunk(model, c.shape, Choices(), base, bytes - 1));
       auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), base, bytes);
-      ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+      ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
       auto& g = (*placed)->graph;
       EXPECT_EQ(g.logits->ne[0], c.p.vocab);
       EXPECT_EQ(g.logits->ne[1], count);
       std::size_t owner_nodes = 0;
       for (auto* node : g.nodes) {
-        if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+        if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
         ++owner_nodes;
         auto inputs = kg::FlashAttnOwnersFromNode(node);
         ASSERT_TRUE(inputs);
@@ -277,12 +276,12 @@ TEST(Gemma3Plan, GroupedWideHeadsAndEveryPaddingMultiplicityUseTheFundedEnvelope
       ASSERT_TRUE(graph);
       auto model = Places(c, *graph);
       auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
-      ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+      ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
       const auto bytes = (*measured)->placement.extent;
       const auto base = std::uint64_t{1} << 53U;
       EXPECT_FALSE(en::PlanGemma3Chunk(model, c.shape, Choices(), base, bytes - 1));
       auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), base, bytes);
-      ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+      ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
       auto& g = (*placed)->graph;
       EXPECT_EQ(g.logits->ne[0], c.p.vocab);
       EXPECT_EQ(g.logits->ne[1], count);
@@ -369,7 +368,7 @@ TEST(Gemma3Plan, WholeTwelveBoundedFactorKeepsGlobalMasksAndActualCacheSources) 
     ASSERT_TRUE(graph);
     auto model = Places(c, *graph);
     auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
-    ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+    ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
     const auto bytes = (*measured)->placement.extent;
     if (!bounded)
       baseline_bytes = bytes;
@@ -434,16 +433,16 @@ TEST(Gemma3Plan, BoundedOwnerRootsKeepActualViewsAndRecipeIdentity) {
     ASSERT_TRUE(graph);
     auto model = Places(c, *graph);
     auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
-    ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+    ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
     extents[bounded] = (*measured)->placement.extent;
     auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
                                       (*measured)->placement.extent);
-    ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+    ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
     auto& g = (*placed)->graph;
     std::size_t owners = 0, cache_copies = 0;
     for (const auto* node : g.nodes) {
       cache_copies += node->op == GGML_OP_CONCAT && node->ne[0] == 256 && node->ne[1] == 4;
-      if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+      if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
       ++owners;
       auto inputs = kg::FlashAttnOwnersFromNode(const_cast<ggml_tensor*>(node));
       ASSERT_TRUE(inputs);
@@ -528,14 +527,14 @@ TEST(Gemma3Plan, DeviceMasksBindFreshSegmentPositionsAndExcludeHostMatrices) {
         EXPECT_TRUE(kg::Gemma4MaskFits(mask));
         EXPECT_EQ(std::ranges::count(graph->nodes, mask), 1);
         EXPECT_FALSE(std::ranges::contains(graph->inputs, mask));
-        EXPECT_EQ(kg::JitllmOpInt(mask, 0), seg.first_row);
-        EXPECT_EQ(kg::JitllmOpInt(mask, 1), rows);
+        EXPECT_EQ(kg::LlmpOpInt(mask, 0), seg.first_row);
+        EXPECT_EQ(kg::LlmpOpInt(mask, 1), rows);
         const std::vector<std::int32_t> saved(std::begin(mask->op_params),
                                               std::end(mask->op_params));
         for (std::uint32_t index = 0; index < 5; ++index) {
           std::array<std::int32_t, 5> params{};
           for (std::uint32_t i = 0; i < 5; ++i)
-            params[i] = kg::JitllmOpInt(mask, static_cast<int>(i));
+            params[i] = kg::LlmpOpInt(mask, static_cast<int>(i));
           ++params[index];
           auto* wrong = kg::Gemma4Mask(arena->context(), graph->positions, mask->ne[0], params[0],
                                        params[1], params[2], params[3], params[4]);
@@ -674,10 +673,10 @@ TEST(Gemma3Plan, PackedPrefillFundsRealCacheCopiesAndTwoSequenceMasks) {
   ASSERT_TRUE(graph);
   const auto model = Places(c, *graph);
   auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
                                     (*measured)->placement.extent);
-  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
   auto& g = (*placed)->graph;
   auto* attention = g.Named("blk.0.packed_prefill_attention");
   ASSERT_NE(attention, nullptr);
@@ -721,10 +720,10 @@ TEST(Gemma3Plan, ExplicitC2OwnerPlanFundsMasksAndValidatesIndependentRoots) {
   ASSERT_TRUE(graph);
   const auto model = Places(c, *graph);
   auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
                                     (*measured)->placement.extent);
-  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
   std::size_t owners = 0;
   for (const auto& step : (*placed)->plan.steps) {
     if (step.implementation != kg::kFlashAttnOwnersName) continue;
@@ -757,10 +756,10 @@ TEST(Gemma3Plan, UnequalDecodePadsActivationsWithoutWideningStateOrHostSources) 
   ASSERT_TRUE(graph);
   const auto model = Places(c, *graph);
   auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
                                     (*measured)->placement.extent);
-  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
   auto& g = (*placed)->graph;
   EXPECT_EQ(g.segments[0].global_mask->ne[0], 512);
   EXPECT_EQ(g.segments[1].global_mask->ne[0], 1024);
@@ -810,10 +809,10 @@ TEST(Gemma3Plan, GreedyPlanRetainsArgmaxOutputAcrossPlacementAndRejectsDetachedO
   ASSERT_TRUE(graph);
   const auto model = Places(c, *graph);
   const auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   const auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
                                           (*measured)->placement.extent);
-  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
   EXPECT_EQ((*placed)->plan.steps.back().implementation, kg::kArgmaxName);
   EXPECT_EQ((*placed)->plan.steps.back().nodes[0], (*placed)->graph.greedy);
   EXPECT_NE((*placed)->graph.greedy->data, nullptr);
@@ -831,13 +830,13 @@ TEST(Gemma3Plan, BothPlacementPassesRetainPrimitiveAttentionAndChargeEverySource
   const auto model = Places(c, *graph);
   const auto choices = Choices();
   auto measured = en::PlanGemma3Chunk(model, c.shape, choices, 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   EXPECT_GT((*measured)->placement.extent, 0);
   const auto base = std::uint64_t{1} << 53U;
   EXPECT_FALSE(
       en::PlanGemma3Chunk(model, c.shape, choices, base, (*measured)->placement.extent - 1));
   auto placed = en::PlanGemma3Chunk(model, c.shape, choices, base, (*measured)->placement.extent);
-  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  ASSERT_TRUE(placed) << *llmp::test_support::Failed(placed);
   EXPECT_TRUE(std::ranges::equal(
       (*measured)->plan.steps, (*placed)->plan.steps, [](const auto& a, const auto& b) {
         return a.operation == b.operation && a.implementation == b.implementation &&
@@ -954,10 +953,10 @@ TEST(Gemma3Plan, FreshRaggedSourcesAreFundedPaddedAndRevalidatedForReuse) {
   auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape);
   ASSERT_TRUE(graph);
   auto bytes = en::Gemma3SourceBytes(*graph);
-  ASSERT_TRUE(bytes) << *jitllm::test_support::Failed(bytes);
+  ASSERT_TRUE(bytes) << *llmp::test_support::Failed(bytes);
   EXPECT_FALSE(en::Gemma3Sources(*graph, c.input, c.frontier, {}, *bytes - 1));
   auto sources = en::Gemma3Sources(*graph, c.input, c.frontier, {}, *bytes);
-  ASSERT_TRUE(sources) << *jitllm::test_support::Failed(sources);
+  ASSERT_TRUE(sources) << *llmp::test_support::Failed(sources);
   EXPECT_EQ(sources->sources.size(), graph->inputs.size());
   ASSERT_EQ(sources->masks.size(), 4);
   for (std::size_t i = 0; i < c.input.segments.size(); ++i) {
@@ -1027,7 +1026,7 @@ TEST(Gemma3Plan, StateOnlyAndHiddenDiagnosticSourcesRetainTheirOwnContracts) {
   auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape);
   ASSERT_TRUE(graph);
   auto measured = en::PlanGemma3Chunk(Places(c, *graph), c.shape, Choices(), 0, 0);
-  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  ASSERT_TRUE(measured) << *llmp::test_support::Failed(measured);
   EXPECT_EQ((*measured)->graph.hidden, nullptr);
   EXPECT_EQ((*measured)->graph.logits, nullptr);
   auto bytes = en::Gemma3SourceBytes((*measured)->graph);
@@ -1065,10 +1064,10 @@ TEST(Gemma3Plan, SharedPreparationPreservesRowInvariantConsumers) {
     return true;
   };
   auto ordinary = en::PlanGemma3Chunk(model, c.shape, choices, 0, 0);
-  ASSERT_TRUE(ordinary) << *jitllm::test_support::Failed(ordinary);
+  ASSERT_TRUE(ordinary) << *llmp::test_support::Failed(ordinary);
   model.options.shared_q8 = true;
   auto candidate = en::PlanGemma3Chunk(model, c.shape, choices, 0, 0);
-  ASSERT_TRUE(candidate) << *jitllm::test_support::Failed(candidate);
+  ASSERT_TRUE(candidate) << *llmp::test_support::Failed(candidate);
   EXPECT_EQ(selector_calls, 0U);
   EXPECT_EQ((*candidate)->placement.extent, (*ordinary)->placement.extent);
   EXPECT_EQ((*candidate)->graph.logits->ne[1], (*ordinary)->graph.logits->ne[1]);
@@ -1084,8 +1083,8 @@ TEST(Gemma3Plan, SharedPreparationPreservesRowInvariantConsumers) {
                 after, [](const auto& step) { return step.implementation == kg::kMulMatVecQRows; }),
             0);
   for (const auto* node : (*candidate)->graph.nodes) {
-    EXPECT_NE(kg::JitllmOpOf(node), kg::JitllmOp::kQuantizeQ8);
-    EXPECT_NE(kg::JitllmOpOf(node), kg::JitllmOp::kMmvqPrepared);
+    EXPECT_NE(kg::LlmpOpOf(node), kg::LlmpOp::kQuantizeQ8);
+    EXPECT_NE(kg::LlmpOpOf(node), kg::LlmpOp::kMmvqPrepared);
   }
 }
 

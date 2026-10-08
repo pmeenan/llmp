@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_RUNTIME_TURN_REUSE_H_
-#define JITLLM_RUNTIME_TURN_REUSE_H_
+#ifndef LLMP_RUNTIME_TURN_REUSE_H_
+#define LLMP_RUNTIME_TURN_REUSE_H_
 
 #include <chrono>
 #include <cstddef>
@@ -10,7 +10,7 @@
 #include <optional>
 #include <span>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 // Branch-local rollback cache. Prefix equality identifies reusable state,
 // not a conversation or its lifetime (D-031). Independent shared-prefix
@@ -51,6 +51,6 @@ inline std::optional<std::size_t> MatchingTurnBoundary(
   return best;
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_TURN_REUSE_H_
+#endif  // LLMP_RUNTIME_TURN_REUSE_H_

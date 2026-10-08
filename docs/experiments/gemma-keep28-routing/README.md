@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 layer 28 routing keep diagnostic
@@ -23,7 +23,7 @@ The dedicated manual target copies the quality helper with a closed
 norm/add, routing and reduction are enabled; ordinary products and every other
 optimization remain unchanged. Normal graphs/fusion and F16 local2048/global4096
 KV remain enabled. The required process environment
-`JITLLM_GEMMA_KEEP28_ROUTING=0|1` is read once before setup. Mode 0 forwards the
+`LLMP_GEMMA_KEEP28_ROUTING=0|1` is read once before setup. Mode 0 forwards the
 original planner keep span exactly; it was not acquired again. Mode 1 appends
 only the named probabilities through the existing six-argument
 `PlanGemma4Chunk` keep seam. That external reader refuses the fused routing
@@ -41,7 +41,7 @@ and unknown-completion quarantine are copied unchanged.
 
 ## Reproduction and provenance
 
-Base `fbac6dc`. Build only `jitllm_gemma_quality_keep28` using the locked Spark
+Base `fbac6dc`. Build only `llmp_gemma_quality_keep28` using the locked Spark
 SDK. B's actual engine archive `nm` authenticated the six-argument ABI against
 `gemma4_plan.h` SHA `756364ad…`. Measured private helper `846287ab…`, SDK receipt
 `3474b122…`, source record `438df705…` and own freeze `2e9373f0…` are recorded

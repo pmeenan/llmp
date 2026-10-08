@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen-Image-2.1 adapter (model/qwen_image.h): the flow-matching
@@ -30,7 +30,7 @@
 
 namespace {
 
-namespace md = jitllm::model;
+namespace md = llmp::model;
 
 TEST(QwenImage, TheScheduleIsDiffusers) {
   // FlowMatchEulerDiscreteScheduler.sigmas for 40 steps over 4,096 image
@@ -210,11 +210,11 @@ TEST(QwenImage, TimestepSinusoidAndPixelsRoundAsDiffusers) {
 TEST(QwenImage, InstalledComponentsBind) {
   const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
   const std::filesystem::path store =
-      std::filesystem::path(home != nullptr ? home : "/") / ".local/share/jitllm/m3-artifacts";
+      std::filesystem::path(home != nullptr ? home : "/") / ".local/share/llmp/m3-artifacts";
   std::error_code error;
-  std::optional<jitllm::artifact::Composition> composition;
+  std::optional<llmp::artifact::Composition> composition;
   for (const auto& entry : std::filesystem::directory_iterator(store, error)) {
-    auto c = jitllm::artifact::OpenComposition(entry.path());
+    auto c = llmp::artifact::OpenComposition(entry.path());
     if (c && c->architecture() == md::QwenImage21().pipeline_architecture) {
       composition.emplace(std::move(*c));
     }
@@ -233,7 +233,7 @@ TEST(QwenImage, InstalledComponentsBind) {
   for (std::size_t i = 0; i < roles.size(); ++i) {
     const auto* c = composition->Find(roles[i].first);
     ASSERT_NE(c, nullptr) << roles[i].first;
-    auto a = jitllm::artifact::Artifact::Open(store / c->artifact);
+    auto a = llmp::artifact::Artifact::Open(store / c->artifact);
     ASSERT_TRUE(a.has_value()) << a.error().ToString();
     const auto bound = md::BindQwenImageComponent(roles[i].second, archs[i], *a);
     EXPECT_TRUE(bound.has_value()) << roles[i].first << ": " << bound.error();

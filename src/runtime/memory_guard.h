@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The memory guard at a serving start (docs/runtime-serving.md): after each
@@ -31,14 +31,14 @@
 //   and what passes them is charged inside the budget as requests grow,
 //   through the reclaim order, like any other need.
 
-#ifndef JITLLM_RUNTIME_MEMORY_GUARD_H_
-#define JITLLM_RUNTIME_MEMORY_GUARD_H_
+#ifndef LLMP_RUNTIME_MEMORY_GUARD_H_
+#define LLMP_RUNTIME_MEMORY_GUARD_H_
 
 #include <cstdint>
 #include <expected>
 #include <string>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 inline constexpr std::uint64_t kUncountedMargin = std::uint64_t{6} << 30U;
 
@@ -71,6 +71,6 @@ std::expected<void, std::string> CheckDiagnosticBudgetCap(const MemoryGuard& gua
                                                           std::uint64_t cap,
                                                           std::uint64_t extra_pinned);
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_MEMORY_GUARD_H_
+#endif  // LLMP_RUNTIME_MEMORY_GUARD_H_

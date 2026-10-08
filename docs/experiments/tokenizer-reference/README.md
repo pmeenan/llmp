@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Tokenizer and chat-template references (M3), 2026-09-28
@@ -14,7 +14,7 @@ and container outputs are not.
 
 On `spark-b` (spark-56f5), in a virtual environment holding
 [requirements.txt](requirements.txt) (Python 3.12.3), with the model files
-under `~/.local/share/jitllm/`:
+under `~/.local/share/llmp/`:
 
 | Reference | Identity | Role |
 | --- | --- | --- |
@@ -26,7 +26,7 @@ under `~/.local/share/jitllm/`:
 The DeepSeek repository's `tokenizer.json` (`8f9f37ca…`),
 `tokenizer_config.json` (`6ac8c8dc…`), `LICENSE` (MIT, `f2c6c602…`) and
 `encoding/` were fetched at `7872f01b` into
-`~/.local/share/jitllm/tokenizer-reference/deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b/`
+`~/.local/share/llmp/tokenizer-reference/deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b/`
 on `spark` and `spark-b`, beside the model downloads rather than among them.
 The encoder is run, never incorporated; the models test reads that
 `tokenizer.json`. Each fixture records its source file's SHA-256, which the
@@ -49,7 +49,7 @@ nothing.
 ```sh
 python3 -m venv venv && venv/bin/pip install -r requirements.txt
 HF_HUB_OFFLINE=1 venv/bin/python docs/experiments/tokenizer-reference/generate.py \
-    --repo . --models ~/.local/share/jitllm --work <scratch>
+    --repo . --models ~/.local/share/llmp --work <scratch>
 ```
 
 It needs `sudo -n docker` for the llama.cpp image and takes about two
@@ -64,7 +64,7 @@ The chat cases are in `generate.py` (`COMMON_CASES`, `DEEPSEEK_CASES`,
 `DEEPSEEK_V2_CASES`, `QWEN_CASES`) and are copied into each fixture with
 their outputs. A tool call's `arguments` may be a string, the client's
 text, which the template sees as is and the test parses. A case
-the template refuses records the template's exception; a case jitLLM
+the template refuses records the template's exception; a case llmpalooza
 refuses although the template renders it (an unknown `reasoning_effort`)
 records the template's text beside the expected error. For DeepSeek,
 `upstream_encoder` is `same` when `encoding_dsv4.py` gives the template's
@@ -138,7 +138,7 @@ Rerun each configuration with the original prefixes present:
 
 ```sh
 python3 docs/experiments/tokenizer-reference/generate.py --repo . \
-    --models ~/.local/share/jitllm --work <scratch> --only tokens \
+    --models ~/.local/share/llmp --work <scratch> --only tokens \
     --config phi-3.5-gguf
 ```
 

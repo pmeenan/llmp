@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Bounded Gemma prefill plan lookahead
@@ -77,7 +77,7 @@ The owner deferred full regression suites until selected performance work is
 settled; no routine full suite was run for this incremental change.
 
 Reproduce with the existing manual helper:
-`jitllm_gemma_prefill ARTIFACT IDS NEW_OUT 31 both 256 normmul-off state-only lookahead-off|lookahead-on`.
+`llmp_gemma_prefill ARTIFACT IDS NEW_OUT 31 both 256 normmul-off state-only lookahead-off|lookahead-on`.
 For the 26B transfer use `26 all 1024` with the same trailing modes. It exercises
 the production prefill API. Both engines discard six warm rows,
 Clear, pay 8,192 prompt rows, append three untimed anchors and complete 32 forced

@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// GGML's cuBLAS matrix multiplication under jitLLM's launch context, on
-// jitLLM's cuBLAS handle, on a GB10 (label `gpu`; docs/backend-proof.md,
+// GGML's cuBLAS matrix multiplication under llmpalooza's launch context, on
+// llmpalooza's cuBLAS handle, on a GB10 (label `gpu`; docs/backend-proof.md,
 // P1):
 // - the handle carries upstream's state (TF32 math, the provider's stream)
 //   and GGML finds it instead of creating its own;
@@ -49,19 +49,19 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::CublasGemm;
-using jitllm::kernels::ggml::CublasHandle;
-using jitllm::kernels::ggml::CublasOperand;
-using jitllm::kernels::ggml::KernelError;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::Access;
-using jitllm::providers::BackingKind;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-using jitllm::providers::VmmProvider;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::CublasGemm;
+using llmp::kernels::ggml::CublasHandle;
+using llmp::kernels::ggml::CublasOperand;
+using llmp::kernels::ggml::KernelError;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::Access;
+using llmp::providers::BackingKind;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+using llmp::providers::VmmProvider;
 
 constexpr std::int64_t kWidth = 896;     // Qwen2.5-0.5B's hidden size
 constexpr std::int64_t kVocab = 151936;  // and its vocabulary
@@ -117,8 +117,8 @@ double Worst(const std::vector<float>& got, const std::vector<double>& want) {
 class GgmlCublasTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    memory_ = std::move(jitllm::providers::cuda::OpenDeviceMemory(0).value());
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    memory_ = std::move(llmp::providers::cuda::OpenDeviceMemory(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     staging_ = Vmm(BackingKind::kHost, Bytes(64ULL << 20));
   }
@@ -238,8 +238,8 @@ class GgmlCublasTest : public ::testing::Test {
   std::uint64_t staging_ = 0;
   std::vector<void*> malloced_;
   struct Mapped {
-    jitllm::providers::ReservationId reservation;
-    jitllm::providers::BackingId backing;
+    llmp::providers::ReservationId reservation;
+    llmp::providers::BackingId backing;
     Bytes size;
   };
   std::vector<Mapped> mapped_;
@@ -265,8 +265,8 @@ TEST_F(GgmlCublasTest, TheHandleCarriesUpstreamsStateAndGgmlFindsIt) {
   EXPECT_EQ(launch->cublas(), handle.get());
   const auto looked_up = launch->Run(Bytes(0), [&handle](ggml_backend_cuda_context& context) {
     // What every GGML cuBLAS call site asks for.
-    EXPECT_EQ(jitllm::kernels::ggml::internal::CublasHandleOf(context), handle->native());
-    EXPECT_FALSE(jitllm::kernels::ggml::internal::HoldsCublasWorkspace(context));
+    EXPECT_EQ(llmp::kernels::ggml::internal::CublasHandleOf(context), handle->native());
+    EXPECT_FALSE(llmp::kernels::ggml::internal::HoldsCublasWorkspace(context));
   });
   EXPECT_TRUE(looked_up.has_value());
   launch.reset();  // before the handle it borrows
@@ -324,7 +324,7 @@ TEST_F(GgmlCublasTest, OperandsMayNotOverlapAWorkspace) {
   // before the GEMM read them; in the cuBLAS workspace, by cuBLAS.
   for (const std::uint64_t at : {launch->workspace().base, handle->workspace().base}) {
     TensorArena::Bind(w, at);
-    const auto refused = jitllm::kernels::ggml::MulMatCublas(*launch, y);
+    const auto refused = llmp::kernels::ggml::MulMatCublas(*launch, y);
     ASSERT_FALSE(refused.has_value());
     EXPECT_EQ(refused.error().error, KernelError::kRejected);
   }
@@ -501,13 +501,13 @@ class GgmlCublasMemoryTest : public GgmlCublasTest {
     const auto expect = [this, &handle](ggml_tensor* node, CublasGemm gemm, ggml_type compute,
                                         CublasOperand weights, std::uint64_t alignment) {
       auto launch = Launcher(handle.get());
-      const auto plan = jitllm::kernels::ggml::PlanMulMatCublas(*launch, node);
+      const auto plan = llmp::kernels::ggml::PlanMulMatCublas(*launch, node);
       ASSERT_TRUE(plan.has_value()) << plan.error().detail;
       EXPECT_EQ(plan->gemm, gemm);
       EXPECT_EQ(plan->compute, compute);
       EXPECT_EQ(plan->weights, weights);
       EXPECT_EQ(plan->alignment, alignment);
-      const auto ran = jitllm::kernels::ggml::MulMatCublas(*launch, node);
+      const auto ran = llmp::kernels::ggml::MulMatCublas(*launch, node);
       ASSERT_TRUE(ran.has_value()) << ran.error().detail;
       EXPECT_EQ(launch->scratch_peak().value(), plan->scratch);  // the bound is exact
       EXPECT_FALSE(launch->faulted());
@@ -744,7 +744,7 @@ TEST_F(GgmlCublasTest, TheOutputHeadDrawsTheRecordedPoolPeaks) {
     ggml_tensor* logits = ggml_mul_mat(arena.context(), head, x);
     TensorArena::Bind(logits, Vmm(BackingKind::kDevice, Bytes(ggml_nbytes(logits))));
     auto launch = Launcher(handle.get());
-    const auto plan = jitllm::kernels::ggml::PlanMulMatCublas(*launch, logits);
+    const auto plan = llmp::kernels::ggml::PlanMulMatCublas(*launch, logits);
     ASSERT_TRUE(plan.has_value()) << plan.error().detail;
     EXPECT_EQ(plan->gemm, CublasGemm::kGemmEx);
     EXPECT_EQ(plan->weights, CublasOperand::kDirect);
@@ -752,7 +752,7 @@ TEST_F(GgmlCublasTest, TheOutputHeadDrawsTheRecordedPoolPeaks) {
     EXPECT_FALSE(plan->f32_output);
     EXPECT_EQ(plan->alignment, 256U);
     EXPECT_EQ(plan->scratch, peak) << rows;
-    ASSERT_TRUE(jitllm::kernels::ggml::MulMatCublas(*launch, logits).has_value());
+    ASSERT_TRUE(llmp::kernels::ggml::MulMatCublas(*launch, logits).has_value());
     EXPECT_EQ(launch->scratch_peak(), Bytes(peak)) << rows;
     const std::vector<float> got =
         Download(reinterpret_cast<std::uintptr_t>(logits->data), static_cast<std::size_t>(kVocab));
@@ -773,7 +773,7 @@ TEST_F(GgmlCublasTest, WhatThePathCannotRunIsRefusedBeforeLaunch) {
 
   // Without a handle GGML would create its own, with its own workspace.
   auto bare = Launcher(nullptr);
-  const auto no_handle = jitllm::kernels::ggml::MulMatCublas(*bare, y);
+  const auto no_handle = llmp::kernels::ggml::MulMatCublas(*bare, y);
   ASSERT_FALSE(no_handle.has_value());
   EXPECT_EQ(no_handle.error().error, KernelError::kRejected);
   EXPECT_FALSE(bare->faulted());
@@ -785,7 +785,7 @@ TEST_F(GgmlCublasTest, WhatThePathCannotRunIsRefusedBeforeLaunch) {
   TensorArena::Bind(wide, memory + (24ULL << 20));
   ggml_tensor* big = ggml_mul_mat(context, w, wide);
   TensorArena::Bind(big, memory + (40ULL << 20));
-  const auto too_big = jitllm::kernels::ggml::MulMatCublas(*tight, big);
+  const auto too_big = llmp::kernels::ggml::MulMatCublas(*tight, big);
   ASSERT_FALSE(too_big.has_value());
   EXPECT_EQ(too_big.error().error, KernelError::kRejected);
   EXPECT_FALSE(tight->faulted());
@@ -796,7 +796,7 @@ TEST_F(GgmlCublasTest, WhatThePathCannotRunIsRefusedBeforeLaunch) {
     ggml_tensor* narrow = ggml_view_2d(context, x, kWidth, rows, x->nb[1], 0);
     ggml_tensor* product = ggml_mul_mat(context, w, narrow);
     TensorArena::Bind(product, memory + (16ULL << 20));
-    const auto refused = jitllm::kernels::ggml::MulMatCublas(*launch, product);
+    const auto refused = llmp::kernels::ggml::MulMatCublas(*launch, product);
     ASSERT_FALSE(refused.has_value()) << rows;
     EXPECT_EQ(refused.error().error, KernelError::kRejected);
   }

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/gemma2.h"
@@ -25,12 +25,12 @@
 #include "gemma2_fixture.h"
 
 namespace {
-namespace md = jitllm::model;
-namespace json = jitllm::base::json;
-using jitllm::test_support::gemma2::Fixture;
-using jitllm::test_support::gemma2::Get;
-using jitllm::test_support::gemma2::Resources;
-using jitllm::test_support::gemma2::Role;
+namespace md = llmp::model;
+namespace json = llmp::base::json;
+using llmp::test_support::gemma2::Fixture;
+using llmp::test_support::gemma2::Get;
+using llmp::test_support::gemma2::Resources;
+using llmp::test_support::gemma2::Role;
 
 TEST(Gemma2FoundationTest, ApprovedProfileMatchesActualMetadataAndAllTensorStorage) {
   const auto& p = md::Gemma2_2B();
@@ -59,7 +59,7 @@ TEST(Gemma2FoundationTest, ApprovedProfileMatchesActualMetadataAndAllTensorStora
   const auto resources = Resources();
   ASSERT_EQ(resources.size(), 288);
   const auto bound = md::BindGemma2(p, "gemma2", resources);
-  ASSERT_TRUE(bound) << *jitllm::test_support::Failed(bound);
+  ASSERT_TRUE(bound) << *llmp::test_support::Failed(bound);
   EXPECT_EQ(bound->token_embd.type, "Q8_0");
   EXPECT_EQ(bound->token_embd.readable, 626688272);
   EXPECT_EQ(bound->output, bound->token_embd);
@@ -91,7 +91,7 @@ TEST(Gemma2FoundationTest, RejectsIncompleteDuplicateAndUnusedRolesAndIndependen
   resources = Resources();
   Role(resources, "token_embd.weight").roles.push_back("output.weight");
   const auto alias = md::BindGemma2(p, "gemma2", resources);
-  ASSERT_TRUE(alias) << *jitllm::test_support::Failed(alias);
+  ASSERT_TRUE(alias) << *llmp::test_support::Failed(alias);
   EXPECT_EQ(alias->output, alias->token_embd);
 }
 
@@ -196,7 +196,7 @@ TEST(Gemma2StateTest, ScheduleRepresentationsAndInitializedFootprintsAreChecked)
   const auto& p = md::Gemma2_2B();
   const std::vector<std::uint32_t> globals{1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25};
   auto state = md::Gemma2State(p, 8192, 16);
-  ASSERT_TRUE(state) << *jitllm::test_support::Failed(state);
+  ASSERT_TRUE(state) << *llmp::test_support::Failed(state);
   EXPECT_EQ(state->global_cells, 8192);
   EXPECT_EQ(state->local_cells, 4352);
   ASSERT_EQ(state->tensors.size(), 52);
@@ -253,7 +253,7 @@ TEST(Gemma2StateTest, RaggedInputsKeepIndependentCausalityAndSplitRingWrites) {
   auto envelope = md::Gemma2HostInputBytes(p, *state, segments, true);
   auto input = md::Gemma2Chunk(p, *state, segments, true);
   ASSERT_TRUE(envelope);
-  ASSERT_TRUE(input) << *jitllm::test_support::Failed(input);
+  ASSERT_TRUE(input) << *llmp::test_support::Failed(input);
   EXPECT_EQ(input->positions, (std::vector<std::int32_t>{4351, 4352, 4353, 7}));
   EXPECT_EQ(input->out_ids, (std::vector<std::int32_t>{0, 1, 2, 3}));
   ASSERT_EQ(input->segments.size(), 2);

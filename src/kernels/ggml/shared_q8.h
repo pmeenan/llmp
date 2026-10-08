@@ -1,19 +1,19 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Descriptor-only, per-graph preparation cache. The normal graph planner owns
 // and funds each producer's activation; tensor identity is never inferred from
 // names, shape, values or an address shared by two different descriptors.
-#ifndef JITLLM_KERNELS_GGML_SHARED_Q8_H_
-#define JITLLM_KERNELS_GGML_SHARED_Q8_H_
+#ifndef LLMP_KERNELS_GGML_SHARED_Q8_H_
+#define LLMP_KERNELS_GGML_SHARED_Q8_H_
 
 #include <cstdint>
 #include <functional>
 #include <unordered_map>
 
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 class SharedQ8Inputs {
  public:
   explicit SharedQ8Inputs(ggml_context* context) : context_(context) {}
@@ -48,5 +48,5 @@ class SharedQ8Inputs {
   ggml_context* context_;
   std::unordered_map<ggml_tensor*, ggml_tensor*> inputs_;
 };
-}  // namespace jitllm::kernels::ggml
-#endif  // JITLLM_KERNELS_GGML_SHARED_Q8_H_
+}  // namespace llmp::kernels::ggml
+#endif  // LLMP_KERNELS_GGML_SHARED_Q8_H_

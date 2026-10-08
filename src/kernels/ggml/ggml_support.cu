@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
-// jitLLM's definitions of the ggml-cuda.cu symbols that GGML's CUDA
+// Llmpalooza's definitions of the ggml-cuda.cu symbols that GGML's CUDA
 // operation launchers use (D-053; docs/backend-proof.md#ggml-llamacpp-b29c606e2).
-// jitLLM does not compile ggml-cuda.cu, GGML's CUDA backend runtime; these
+// Llmpalooza does not compile ggml-cuda.cu, GGML's CUDA backend runtime; these
 // are adapted from it at llama.cpp b29c606e2:
 //
 // - ggml_cuda_error records the first failure on this thread for the launch
 //   context (launch.h) and returns, where upstream aborts. The build's
-//   GGML_JITLLM drops its [[noreturn]] (third_party/patches/ggml/).
+//   GGML_LLMP drops its [[noreturn]] (third_party/patches/ggml/).
 // - ggml_cuda_set_device and ggml_cuda_get_device are upstream's, with no
 //   virtual devices, and get_device returns device 0 after a failure
 //   instead of an uninitialized value.
@@ -17,9 +17,9 @@
 //   side effects: no process-wide scheduling flag (upstream sets
 //   cudaDeviceScheduleSpin on compute capability 12.1), no peer access, no
 //   environment and no logging.
-// - The launch context's destructor destroys nothing, since jitLLM lends
+// - The launch context's destructor destroys nothing, since llmpalooza lends
 //   its stream and pool and takes them back first; new_pool_for_device is
-//   fatal, since jitLLM always lends a pool.
+//   fatal, since llmpalooza always lends a pool.
 
 #include <algorithm>
 #include <cstddef>
@@ -134,21 +134,21 @@ const ggml_cuda_device_info& ggml_cuda_info() {
 
 ggml_backend_cuda_context::~ggml_backend_cuda_context() {
   // Whatever GGML created itself would be a hidden allocation (D-053).
-  jitllm::base::Check(copy_event == nullptr, "GGML created no copy event");
+  llmp::base::Check(copy_event == nullptr, "GGML created no copy event");
   for (int i = 0; i < GGML_CUDA_MAX_DEVICES; ++i) {
     for (int j = 0; j < GGML_CUDA_MAX_STREAMS; ++j) {
-      jitllm::base::Check(streams[i][j] == nullptr && cublas_handles[i][j] == nullptr &&
-                              cublas_workspaces[i][j] == nullptr && pools[i][j] == nullptr,
-                          "the launch context took back what it lent GGML");
+      llmp::base::Check(streams[i][j] == nullptr && cublas_handles[i][j] == nullptr &&
+                            cublas_workspaces[i][j] == nullptr && pools[i][j] == nullptr,
+                        "the launch context took back what it lent GGML");
     }
   }
 }
 
 std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(int, int) {
-  jitllm::base::Fatal("a GGML launcher asked for a pool the launch context did not lend");
+  llmp::base::Fatal("a GGML launcher asked for a pool the launch context did not lend");
 }
 
-namespace jitllm::kernels::ggml::internal {
+namespace llmp::kernels::ggml::internal {
 
 std::optional<std::string> TakeCudaError() { return std::exchange(recorded_error, std::nullopt); }
 
@@ -172,4 +172,4 @@ bool HoldsCublasWorkspace(const ggml_backend_cuda_context& context) {
   return false;
 }
 
-}  // namespace jitllm::kernels::ggml::internal
+}  // namespace llmp::kernels::ggml::internal

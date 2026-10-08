@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A model's settings in three layers (D-103, runtime/model_settings.h):
@@ -24,13 +24,13 @@
 
 namespace {
 
-using ::jitllm::config::ModelEntry;
-using ::jitllm::runtime::ArtifactFacts;
-using ::jitllm::runtime::Calibration;
-using ::jitllm::runtime::ModelSettings;
-using ::jitllm::runtime::ResolveReasoning;
-using ::jitllm::runtime::ResolveSettings;
-using ::jitllm::runtime::SettingSource;
+using ::llmp::config::ModelEntry;
+using ::llmp::runtime::ArtifactFacts;
+using ::llmp::runtime::Calibration;
+using ::llmp::runtime::ModelSettings;
+using ::llmp::runtime::ResolveReasoning;
+using ::llmp::runtime::ResolveSettings;
+using ::llmp::runtime::SettingSource;
 using ::testing::Contains;
 using ::testing::HasSubstr;
 
@@ -66,7 +66,7 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   EXPECT_EQ(s.context.source, SettingSource::kFallback);
   EXPECT_FALSE(s.speculation.value);
   EXPECT_EQ(s.speculation.source, SettingSource::kDerived);  // no drafter
-  EXPECT_EQ(s.prefill_chunk.value, jitllm::runtime::kDsv4PrefillRows);
+  EXPECT_EQ(s.prefill_chunk.value, llmp::runtime::kDsv4PrefillRows);
   EXPECT_EQ(s.prefill_chunk.source, SettingSource::kFallback);
   EXPECT_EQ(s.max_slots.value, 4U);
   EXPECT_EQ(s.prefill_floor_tok_s.value, 100U);
@@ -76,9 +76,9 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   EXPECT_EQ(s.temperature.source, SettingSource::kFallback);
   EXPECT_EQ(s.top_k.value, 0U);
   EXPECT_EQ(s.draft_rows.value, 3U);
-  EXPECT_EQ(s.wave_form.value, jitllm::config::WaveForm::kAuto);
-  EXPECT_EQ(s.wave_costs.value, (std::vector<double>(jitllm::runtime::kDsv4WaveCosts.begin(),
-                                                     jitllm::runtime::kDsv4WaveCosts.end())));
+  EXPECT_EQ(s.wave_form.value, llmp::config::WaveForm::kAuto);
+  EXPECT_EQ(s.wave_costs.value, (std::vector<double>(llmp::runtime::kDsv4WaveCosts.begin(),
+                                                     llmp::runtime::kDsv4WaveCosts.end())));
   EXPECT_EQ(s.wave_costs_override_count, 0U);
   EXPECT_TRUE(s.prefill_outa_hca.value);
   EXPECT_TRUE(s.prefill_outa_hca_partial.value);
@@ -86,7 +86,7 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
 
   const ModelSettings q = Resolved(Model("q"), Facts("qwen4exp"));
   EXPECT_EQ(q.context.value, 262144U);
-  EXPECT_EQ(q.prefill_chunk.value, jitllm::runtime::kQwen38PrefillRows);
+  EXPECT_EQ(q.prefill_chunk.value, llmp::runtime::kQwen38PrefillRows);
   EXPECT_EQ(q.draft_vocab.value, 65536U);
   EXPECT_EQ(q.depth_cost_ratio.value, 1.16);
   EXPECT_EQ(q.shared_wave_depth.value, 2U);
@@ -307,7 +307,7 @@ TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {
   entry.overrides["prefill_chunk"] = std::int64_t{1024};
   entry.overrides["max_slots"] = std::int64_t{4};
   auto facts = Facts("gemma4");
-  facts.gemma_profile = &jitllm::model::Gemma4_31B();
+  facts.gemma_profile = &llmp::model::Gemma4_31B();
   auto ordinary = ResolveSettings(entry, facts, nullptr, true, false);
   ASSERT_TRUE(ordinary);
   EXPECT_FALSE(ordinary->gemma31_production);
@@ -330,7 +330,7 @@ TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {
   EXPECT_FALSE(larger_cohort->gemma31_production);
   EXPECT_EQ(larger_cohort->prefill_chunk.value, 128U);
   entry.overrides["max_slots"] = std::int64_t{4};
-  facts.gemma_profile = &jitllm::model::Gemma4_26BA4B();
+  facts.gemma_profile = &llmp::model::Gemma4_26BA4B();
   auto profile26 = ResolveSettings(entry, facts, nullptr, true, true);
   ASSERT_TRUE(profile26);
   EXPECT_FALSE(profile26->gemma31_production);
@@ -346,7 +346,7 @@ TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {
 TEST(ModelSettings, Gemma26ProductionUses1024WithinBoundsAndPreservesSmallerOverride) {
   auto entry = Model("gemma");
   auto facts = Facts("gemma4");
-  facts.gemma_profile = &jitllm::model::Gemma4_26BA4B();
+  facts.gemma_profile = &llmp::model::Gemma4_26BA4B();
   auto ordinary = ResolveSettings(entry, facts, nullptr, true, false);
   ASSERT_TRUE(ordinary);
   EXPECT_FALSE(ordinary->gemma26_production);
@@ -390,7 +390,7 @@ TEST(ModelSettings, Gemma26ProductionUses1024WithinBoundsAndPreservesSmallerOver
 TEST(ModelSettings, Gemma31ProductionUses256WithinBoundsAndPreservesSmallerOverride) {
   auto entry = Model("gemma");
   auto facts = Facts("gemma4");
-  facts.gemma_profile = &jitllm::model::Gemma4_31B();
+  facts.gemma_profile = &llmp::model::Gemma4_31B();
   auto candidate = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(candidate);
   EXPECT_FALSE(candidate->gemma31_production);
@@ -449,7 +449,7 @@ TEST(ModelSettings, DerivesFromTheArtifact) {
 // generation_config.json's sampling defaults (ahead of a GGUF's), and
 // sampling defaults no request could ask for ignored.
 TEST(ModelSettings, ReadsFactsFromMetadata) {
-  using jitllm::artifact::GgufValue;
+  using llmp::artifact::GgufValue;
   const auto integer = [](std::int64_t v) {
     GgufValue g;
     g.kind = GgufValue::Kind::kInteger;
@@ -463,15 +463,15 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
     return g;
   };
   ArtifactFacts ds = Facts("deepseek4");
-  EXPECT_EQ(jitllm::runtime::GgufFactKeys("deepseek4").front(), "deepseek4.context_length");
-  jitllm::artifact::GgufMetadata gguf;
+  EXPECT_EQ(llmp::runtime::GgufFactKeys("deepseek4").front(), "deepseek4.context_length");
+  llmp::artifact::GgufMetadata gguf;
   gguf["deepseek4.context_length"] = integer(1048576);
   gguf["deepseek4.rope.scaling.factor"] = real(16.0);
   gguf["deepseek4.rope.scaling.original_context_length"] = integer(65536);
   gguf["general.sampling.temp"] = real(1.0);
   gguf["general.sampling.top_p"] = real(1.0);
   gguf["general.sampling.top_k"] = integer(-1);  // not a request's: ignored
-  jitllm::runtime::FactsFromGguf(gguf, ds);
+  llmp::runtime::FactsFromGguf(gguf, ds);
   EXPECT_EQ(ds.trained_context, 1048576U);
   EXPECT_EQ(ds.trained_context_from, "deepseek4.context_length");
   EXPECT_EQ(ds.temperature, 1.0);
@@ -481,20 +481,20 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
 
   // A GGUF that states the original context: scaled.
   ArtifactFacts scaled = Facts("llama");
-  jitllm::artifact::GgufMetadata original;
+  llmp::artifact::GgufMetadata original;
   original["llama.context_length"] = integer(32768);
   original["llama.rope.scaling.factor"] = real(4.0);
   original["llama.rope.scaling.original_context_length"] = integer(32768);
-  jitllm::runtime::FactsFromGguf(original, scaled);
+  llmp::runtime::FactsFromGguf(original, scaled);
   EXPECT_EQ(scaled.trained_context, 131072U);
   EXPECT_THAT(scaled.trained_context_from, HasSubstr("rope.scaling.factor"));
 
   ArtifactFacts qwen = Facts("qwen4exp");
   ASSERT_TRUE(
-      jitllm::runtime::FactsFromGenerationConfig(
+      llmp::runtime::FactsFromGenerationConfig(
           R"({"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":2.0,"do_sample":true})", qwen)
           .has_value());
-  ASSERT_TRUE(jitllm::runtime::FactsFromConfigJson(
+  ASSERT_TRUE(llmp::runtime::FactsFromConfigJson(
                   R"({"architectures":["X"],"text_config":{"max_position_embeddings":262144,)"
                   R"("rope_scaling":{"factor":2.0,"original_max_position_embeddings":32768}}})",
                   qwen)
@@ -505,29 +505,29 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
   EXPECT_EQ(qwen.top_k, 20);
   EXPECT_FALSE(qwen.min_p.has_value());  // 2.0: not a request's
   // A GGUF's sampling after it adds nothing it already has.
-  jitllm::runtime::FactsFromGguf(gguf, qwen);
+  llmp::runtime::FactsFromGguf(gguf, qwen);
   EXPECT_EQ(qwen.temperature, 0.6);
   EXPECT_EQ(qwen.sampling_from, "generation_config.json");
 
   ArtifactFacts top = Facts("qwen2");
-  ASSERT_TRUE(jitllm::runtime::FactsFromConfigJson(R"({"max_position_embeddings":32768})", top)
-                  .has_value());
+  ASSERT_TRUE(
+      llmp::runtime::FactsFromConfigJson(R"({"max_position_embeddings":32768})", top).has_value());
   EXPECT_EQ(top.trained_context, 32768U);
   EXPECT_EQ(top.trained_context_from, "config.json max_position_embeddings");
-  EXPECT_FALSE(jitllm::runtime::FactsFromConfigJson("{", top).has_value());
-  EXPECT_FALSE(jitllm::runtime::FactsFromGenerationConfig("[1,", top).has_value());
+  EXPECT_FALSE(llmp::runtime::FactsFromConfigJson("{", top).has_value());
+  EXPECT_FALSE(llmp::runtime::FactsFromGenerationConfig("[1,", top).has_value());
 
   // A Qwen3.8 GGUF quantization keeps its checkpoint's sampling (the
   // UD-IQ3_XXS: top_k 20, top_p 0.95 as F32): requests that send neither
   // sample with them, and 0.95 stays 0.95, not the float's 0.949999988.
-  jitllm::artifact::GgufMetadata qwen_gguf;
+  llmp::artifact::GgufMetadata qwen_gguf;
   GgufValue top_p_f32 = real(static_cast<double>(0.95F));
   top_p_f32.type = 6;  // F32
   qwen_gguf["general.sampling.top_p"] = top_p_f32;
   qwen_gguf["general.sampling.top_k"] = integer(20);
   qwen_gguf["qwen4exp.context_length"] = integer(262144);
   ArtifactFacts quant = Facts("qwen4exp");
-  jitllm::runtime::FactsFromGguf(qwen_gguf, quant);
+  llmp::runtime::FactsFromGguf(qwen_gguf, quant);
   EXPECT_EQ(quant.top_p, 0.95);
   EXPECT_EQ(quant.top_k, 20);
   const ModelSettings sampled = Resolved(Model("q"), quant);
@@ -540,21 +540,21 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
   // generation_config.json's do_sample false: greedy, whatever its
   // temperature.
   ArtifactFacts greedy = Facts("qwen4exp");
-  ASSERT_TRUE(jitllm::runtime::FactsFromGenerationConfig(
+  ASSERT_TRUE(llmp::runtime::FactsFromGenerationConfig(
                   R"({"temperature":0.6,"top_p":0.9,"do_sample":false})", greedy)
                   .has_value());
   EXPECT_EQ(greedy.temperature, 0.0);
   EXPECT_EQ(greedy.top_p, 0.9);
   EXPECT_THAT(greedy.sampling_from, HasSubstr("do_sample false"));
   ArtifactFacts sampling = Facts("qwen4exp");
-  ASSERT_TRUE(jitllm::runtime::FactsFromGenerationConfig(R"({"temperature":0.6,"do_sample":true})",
-                                                         sampling)
-                  .has_value());
+  ASSERT_TRUE(
+      llmp::runtime::FactsFromGenerationConfig(R"({"temperature":0.6,"do_sample":true})", sampling)
+          .has_value());
   EXPECT_EQ(sampling.temperature, 0.6);
 
   // Through resolution: the derived context below the default.
   ArtifactFacts small = Facts("qwen4exp");
-  ASSERT_TRUE(jitllm::runtime::FactsFromConfigJson(
+  ASSERT_TRUE(llmp::runtime::FactsFromConfigJson(
                   R"({"text_config":{"max_position_embeddings":40960}})", small)
                   .has_value());
   const ModelSettings s = Resolved(Model("q"), small);
@@ -598,7 +598,7 @@ TEST(ModelSettings, LayersResolveInOrder) {
   EXPECT_EQ(some.wave_costs.source, SettingSource::kCalibrated);
   EXPECT_THAT(some.wave_costs.basis, HasSubstr("widths 3 measured"));
   EXPECT_EQ(some.wave_costs.value[1], 1.25);
-  EXPECT_EQ(some.wave_costs.value[0], jitllm::runtime::kDsv4WaveCosts[0]);
+  EXPECT_EQ(some.wave_costs.value[0], llmp::runtime::kDsv4WaveCosts[0]);
   calibration.wave_costs = {};
   EXPECT_EQ(Resolved(entry, facts, &calibration).wave_costs.source, SettingSource::kFallback);
 
@@ -616,7 +616,7 @@ TEST(ModelSettings, LayersResolveInOrder) {
     EXPECT_EQ(p.wave_costs_override_count, 1U);
     ASSERT_EQ(p.wave_costs.value.size(), 7U);
     EXPECT_EQ(p.wave_costs.value[0], 3.0);
-    EXPECT_EQ(p.wave_costs.value[1], jitllm::runtime::kDsv4WaveCosts[1]);
+    EXPECT_EQ(p.wave_costs.value[1], llmp::runtime::kDsv4WaveCosts[1]);
     EXPECT_EQ(p.wave_costs.value[2], 2.5);
     EXPECT_THAT(p.wave_costs.basis, HasSubstr("widths 2, 4 measured"));
   }
@@ -629,7 +629,7 @@ TEST(ModelSettings, LayersResolveInOrder) {
   ASSERT_EQ(w.wave_costs.value.size(), 7U);
   EXPECT_EQ(w.wave_costs.value[0], 0.0);
   EXPECT_EQ(w.wave_costs.value[1], 3.0);
-  EXPECT_EQ(w.wave_costs.value[2], jitllm::runtime::kDsv4WaveCosts[2]);
+  EXPECT_EQ(w.wave_costs.value[2], llmp::runtime::kDsv4WaveCosts[2]);
 }
 
 // The context within the checkpoint's ceiling; DeepSeek's chunk past
@@ -651,10 +651,10 @@ TEST(ModelSettings, BoundsFromTheArchitecture) {
 
   entry.overrides["context"] = std::int64_t{1048576};
   EXPECT_EQ(Resolved(entry, Facts("deepseek4")).prefill_chunk.value,
-            jitllm::runtime::kDsv4DeepPrefillRows);
+            llmp::runtime::kDsv4DeepPrefillRows);
   entry.overrides["context"] = std::int64_t{262144};
   EXPECT_EQ(Resolved(entry, Facts("deepseek4")).prefill_chunk.value,
-            jitllm::runtime::kDsv4PrefillRows);
+            llmp::runtime::kDsv4PrefillRows);
 
   ModelEntry wide = Model("ds", true);
   wide.overrides["max_slots"] = std::int64_t{16};
@@ -775,11 +775,11 @@ TEST(ModelSettings, ListsEverySettingOfTheSchema) {
   const auto keys_of = [&](const ModelSettings& s, std::string_view architecture,
                            bool composition) {
     std::vector<std::string_view> expected;
-    for (const auto& spec : jitllm::config::ModelKeys()) {
+    for (const auto& spec : llmp::config::ModelKeys()) {
       const auto kind =
-          composition ? jitllm::config::kCompositionModels : jitllm::config::kArtifactModels;
+          composition ? llmp::config::kCompositionModels : llmp::config::kArtifactModels;
       if (spec.setting && (spec.kinds & kind) != 0 &&
-          (composition || jitllm::config::KeyAppliesTo(spec, architecture))) {
+          (composition || llmp::config::KeyAppliesTo(spec, architecture))) {
         expected.push_back(spec.key);
       }
     }
@@ -805,7 +805,7 @@ TEST(ModelSettings, ListsEverySettingOfTheSchema) {
   EXPECT_EQ(img.image_steps.source, SettingSource::kOverride);
   EXPECT_EQ(img.image_size.value, 1024U);
   keys_of(img, "", true);
-  for (const auto& spec : jitllm::config::ModelKeys()) {
+  for (const auto& spec : llmp::config::ModelKeys()) {
     if (spec.setting) {
       EXPECT_TRUE(listed.contains(spec.key)) << spec.key << " is in no model's listing";
     }

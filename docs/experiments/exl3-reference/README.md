@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Small EXL3 reference on Spark
@@ -8,7 +8,7 @@ exact repeated logits and exact continuation after synchronized in-place
 cache restoration. The baseline includes 4.0 bpw and mixed-rate 4.5 bpw,
 optimized Model API execution, an attention-graph control, and 176
 real/synthetic projection cases. This is external reference evidence for the
-[early EXL3 contract](../../exl3-bringup.md); native jitLLM execution, paging
+[early EXL3 contract](../../exl3-bringup.md); native llmpalooza execution, paging
 and performance parity remain M2–M6 work.
 
 [Aggregates](aggregates.json) contain statistics, numerical controls, memory
@@ -38,7 +38,7 @@ Its extension compiles 181 translation units with NVCC 13.0.88 and GNU
 13.3.0, C++20, explicit host `-march=armv8-a` and device `sm_121`.
 Upstream retains `-Ofast`/CUDA `-O3 --use_fast_math`. Driver PTX JIT is disabled;
 Triton's own compilation remains enabled. This external build does not change
-jitLLM's native C++23/Clang toolchain pins.
+llmpalooza's native C++23/Clang toolchain pins.
 
 Unmodified upstream fails to compile its unconditional x86 host helpers on
 ARM ([RE-009](../../rough-edges.md#re-009-pinned-exllamav3-compiles-x86-only-cpu-helpers-on-spark--2026-09-22-status-worked-around)).
@@ -253,7 +253,7 @@ the candidate under the frozen rule. A quieter repeat does not erase earlier
 variability. No samples or failing numerical cases were dropped.
 
 This baseline establishes executable packing and upstream measurements early.
-Native M2 still must prove prepared-artifact execution on jitLLM-owned VMM,
+Native M2 still must prove prepared-artifact execution on llmpalooza-owned VMM,
 complete dependency closures, bounds, relocation/cancellation/restore and
 per-kernel parity. M5 adds actual request TTFT and resident serving parity;
 M6 adds switching under pressure. Dense K=4/5/6/8 `mcg` success does not
@@ -270,7 +270,7 @@ It refuses mismatched existing files, symlink targets, truncation, extra bytes
 and replacement of a destination created concurrently.
 
 Build from `docs/experiments` with `docker build -f exl3-reference/Dockerfile
--t jitllm-exl3-reference:20260922 .`. The measured container mounts
+-t llmp-exl3-reference:20260922 .`. The measured container mounts
 `$EXL_RUN:/experiment` and `/usr/local/cuda-13.0:/usr/local/cuda-13.0:ro`,
 uses `--gpus all --shm-size 2g --memory 32g --memory-swap 32g`, and sets:
 
@@ -324,7 +324,7 @@ contains receipt hashes of the exact raw bundle. Reproduction uses fresh
 results and regenerates receipts; prior raw files are not required.
 
 The measured external directory is
-`/home/pmeenan/.local/share/jitllm/exl3-reference-20260922` on `spark`.
+`/home/pmeenan/.local/share/llmp/exl3-reference-20260922` on `spark`.
 Only `accepted-*` and `final-kernels-*` enter the report; exploratory runs
 remain external. Reuse or retrieve raw files only after matching their listed
 receipt hashes. Host prerequisites and runtime/compiler identities must be

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Checks a build's actual compile and link inventory against its receipt (D-017, D-057, D-066, D-083).
 
@@ -15,7 +15,7 @@ and checks:
   component in the receipt is compiled into something (the closure is the
   inventory);
 - third-party outputs come only from those components' build directories;
-- everything else is jitLLM's own source, this build tree or the SDK, never
+- everything else is llmpalooza's own source, this build tree or the SDK, never
   another build directory; a native build may also use the host's glibc and
   kernel headers (the declared platform packages), a cross build nothing
   from the host at all;
@@ -60,9 +60,9 @@ import sys
 HOST_PLATFORM_PACKAGES = ("libc6", "libc6-dev", "linux-libc-dev")
 # Libraries a link may name with -l: glibc's and the static CUDA runtime's.
 PLATFORM_LIBRARIES = ("c", "m", "dl", "rt", "pthread", "cudart_static", "cudadevrt")
-# The executables the package ships, as tools/jitllm_package.py's EXECUTABLES
+# The executables the package ships, as tools/llmp_package.py's EXECUTABLES
 # names them (a tooling test keeps the two equal).
-SHIPPED_EXECUTABLES = ("src/cli/jitllm", "src/runtime/jitllm-runtime")
+SHIPPED_EXECUTABLES = ("src/cli/llmp", "src/runtime/llmp-runtime")
 # The SDK's cuBLAS, linked dynamically (D-076): the SDK-relative path of the
 # file its libcublas.so or libcublasLt.so resolves to, inside the unpacked libcublas package
 # (toolchains/manifest.toml, component cublas or cublas-sbsa-target).
@@ -338,12 +338,12 @@ def main() -> int:
     source = os.path.realpath(args.source_dir)
     builds_root = os.path.join(source, "build")  # CMakePresets.json's binaryDir parent
     sdk = os.path.realpath(args.sdk)
-    receipt = json.loads((args.build_dir / "jitllm-receipt.json").read_text())
+    receipt = json.loads((args.build_dir / "llmp-receipt.json").read_text())
     components = {c["id"]: c for c in receipt["components"]}
     trees = {cid: os.path.realpath(c["source"]) for cid, c in components.items()}
     outputs = {f"third_party/{cid}-{c['source_tree'][:16]}": cid for cid, c in components.items()}
     cache = next((line.split("=", 1)[1] for line in (args.build_dir / "CMakeCache.txt").read_text().splitlines()
-                  if line.startswith("JITLLM_SOURCES_DIR:PATH=")), "")
+                  if line.startswith("LLMP_SOURCES_DIR:PATH=")), "")
     prepared_root = os.path.realpath(cache) if cache else None
     platform = None if args.cross else host_platform_files()
 
@@ -546,7 +546,7 @@ def main() -> int:
         if kind == "object":
             objects.append(full)
         elif kind == "shared":
-            problems.append(f"a link uses the shared library {path}; jitLLM links only static code (D-060, D-064)")
+            problems.append(f"a link uses the shared library {path}; llmpalooza links only static code (D-060, D-064)")
         else:
             problems.append(f"a link uses {path}, which is {kind}, not an object file or archive")
     objects = sorted(set(objects))

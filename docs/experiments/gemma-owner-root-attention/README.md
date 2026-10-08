@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Independent owner roots for Gemma C4 attention
@@ -67,7 +67,7 @@ only explicit host/fixture casts; build3 and proof1 complete successfully.
 Failures, official retirement records and raw outputs remain external. No full
 suite was run for this unselected diagnostic.
 
-Reproduce with the manual target `jitllm_gemma_attention_owner_replay`: first
+Reproduce with the manual target `llmp_gemma_attention_owner_replay`: first
 `--metadata`, then authenticated retained inputs and a new private output
 directory, selecting `owners` or `packed`. Use the installed Spark supervisor
 and retain official completion before reading outputs. The fixed input hashes

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/binding.h"
@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::runtime::api {
+namespace llmp::runtime::api {
 namespace {
 
 using Bytes = std::array<std::uint8_t, 16>;
@@ -381,4 +381,4 @@ Listening ResolveListening(const config::ClientConfig& client,
   return out;
 }
 
-}  // namespace jitllm::runtime::api
+}  // namespace llmp::runtime::api

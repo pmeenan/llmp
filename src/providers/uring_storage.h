@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Linux storage provider: Storage over one io_uring ring
@@ -15,8 +15,8 @@
 // looks for commands again, so a wake is either seen by that look or
 // writes the eventfd again.
 
-#ifndef JITLLM_PROVIDERS_URING_STORAGE_H_
-#define JITLLM_PROVIDERS_URING_STORAGE_H_
+#ifndef LLMP_PROVIDERS_URING_STORAGE_H_
+#define LLMP_PROVIDERS_URING_STORAGE_H_
 
 #include <sys/uio.h>
 
@@ -34,7 +34,7 @@
 #include "platform/io_uring.h"
 #include "providers/storage.h"
 
-namespace jitllm::providers {
+namespace llmp::providers {
 
 class UringStorage final : public Storage {
  public:
@@ -99,6 +99,6 @@ class UringStorage final : public Storage {
   std::uint64_t wake_count_ = 0;  // the wake read's destination
 };
 
-}  // namespace jitllm::providers
+}  // namespace llmp::providers
 
-#endif  // JITLLM_PROVIDERS_URING_STORAGE_H_
+#endif  // LLMP_PROVIDERS_URING_STORAGE_H_

@@ -1,13 +1,13 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // M3's second model slice (docs/experiments/qwen38-native/README.md): Qwen3.8
-// Flash Next in Mia's NVFP4 and MXFP8 checkpoint, run by jitLLM natively and
+// Flash Next in Mia's NVFP4 and MXFP8 checkpoint, run by llmpalooza natively and
 // resident on one Spark from its v0 prepared artifact, for the correctness
 // comparison with Mia's vLLM on the same checkpoint and a coarse speed and
 // memory report.
 //
-//   jitllm_qwen38_exec --artifact DIR --out DIR [--context N] [--max-rows N]
+//   llmp_qwen38_exec --artifact DIR --out DIR [--context N] [--max-rows N]
 //                      [--prompts FILE --generate N [--force FILE]]
 //                      [--ppl FILE] [--dump NAMES] [--layout-proof] [--ab]
 //                      [--bench-prefill N --bench-decode N] [--unfused | --exact]
@@ -28,7 +28,7 @@
 //   off and placed by the path the paged runner shares
 //   (engine/qwen38_plan.h),
 //   bound to the registry's implementations and run on one stream; plans
-//   are kept per chunk shape. The graph runs jitLLM's fusions (qwen38_graph.h
+//   are kept per chunk shape. The graph runs llmpalooza's fusions (qwen38_graph.h
 //   Qwen38GraphOptions::fused) in their fast form by default (D-085: speed
 //   before bit exactness), judged against the oracle; --exact runs the
 //   reference form, and --unfused builds the GGML nodes the reference form
@@ -108,8 +108,8 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/moe_layout.h"
 #include "kernels/ggml/qwen38_graph.h"
 #include "kernels/ggml/tensors.h"
@@ -120,10 +120,10 @@
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
-namespace moe = jitllm::kernels::ggml::moe;
-namespace md = jitllm::model;
-using jitllm::base::Bytes;
+namespace kg = llmp::kernels::ggml;
+namespace moe = llmp::kernels::ggml::moe;
+namespace md = llmp::model;
+using llmp::base::Bytes;
 using Status = std::expected<void, std::string>;
 using Clock = std::chrono::steady_clock;
 
@@ -199,7 +199,7 @@ class Device {
     if (auto context = Cuda(cudaFree(nullptr), "the CUDA context"); !context) {
       return std::unexpected(context.error());
     }
-    auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
     if (!execution) {
       return Error("OpenDeviceExecution failed");
     }
@@ -218,8 +218,8 @@ class Device {
       std::println(stderr, "the stream could not be retired");
     }
   }
-  jitllm::providers::DeviceExecution& execution() { return *execution_; }
-  jitllm::providers::StreamId stream() const { return stream_; }
+  llmp::providers::DeviceExecution& execution() { return *execution_; }
+  llmp::providers::StreamId stream() const { return stream_; }
   std::expected<cudaStream_t, std::string> Stream() {
     const auto native = execution_->Submission(stream_);
     if (!native) {
@@ -238,7 +238,7 @@ class Device {
       if (!state) {
         return Error("Query failed");
       }
-      if (*state == jitllm::providers::FenceState::kComplete) {
+      if (*state == llmp::providers::FenceState::kComplete) {
         break;
       }
       if (Clock::now() > deadline) {
@@ -253,11 +253,11 @@ class Device {
   }
 
  private:
-  Device(std::unique_ptr<jitllm::providers::DeviceExecution> execution,
-         jitllm::providers::StreamId stream)
+  Device(std::unique_ptr<llmp::providers::DeviceExecution> execution,
+         llmp::providers::StreamId stream)
       : execution_(std::move(execution)), stream_(stream) {}
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  llmp::providers::StreamId stream_;
 };
 
 // ------------------------------------------------------------------ weights
@@ -274,19 +274,19 @@ struct Weights {
   double load_seconds = 0;
 };
 
-std::uint64_t ResourceAddress(const jitllm::artifact::Artifact& artifact, const Weights& w,
+std::uint64_t ResourceAddress(const llmp::artifact::Artifact& artifact, const Weights& w,
                               std::uint32_t resource) {
   const auto& r = artifact.resources()[resource];
   return w.group_address[r.group] + r.offset.value();
 }
 
-std::uint64_t ArrayAddress(const jitllm::artifact::Artifact& artifact, const Weights& w,
+std::uint64_t ArrayAddress(const llmp::artifact::Artifact& artifact, const Weights& w,
                            std::uint32_t array) {
   const auto& a = artifact.expert_arrays()[array];
   return w.group_address[a.first_group] + a.group_offset.value();
 }
 
-Status PlaceWeights(const jitllm::artifact::Artifact& artifact, const md::Qwen38Profile& profile,
+Status PlaceWeights(const llmp::artifact::Artifact& artifact, const md::Qwen38Profile& profile,
                     const md::Qwen38Binding& binding, Weights& w) {
   const auto groups = artifact.groups();
   w.group_address.assign(groups.size(), 0);
@@ -315,7 +315,7 @@ Status PlaceWeights(const jitllm::artifact::Artifact& artifact, const md::Qwen38
     const std::uint32_t layer_first = first_group.value_or(0);
     for (std::uint32_t e = 0; e < profile.experts; ++e) {
       const auto& g = groups[layer_first + e];
-      if (g.kind != jitllm::artifact::GroupKind::kExpert || g.stored.value() != stored) {
+      if (g.kind != llmp::artifact::GroupKind::kExpert || g.stored.value() != stored) {
         return Error(std::format("layer {}'s expert groups are not uniform", il));
       }
     }
@@ -335,7 +335,7 @@ Status PlaceWeights(const jitllm::artifact::Artifact& artifact, const md::Qwen38
     if (expert[g]) {
       continue;
     }
-    if (groups[g].kind == jitllm::artifact::GroupKind::kExpert) {
+    if (groups[g].kind == llmp::artifact::GroupKind::kExpert) {
       return Error(std::format("expert group {} belongs to no bound array", g));
     }
     offset[g] = w.dense_bytes;
@@ -374,16 +374,16 @@ Status PlaceWeights(const jitllm::artifact::Artifact& artifact, const md::Qwen38
   return Cuda(cudaDeviceSynchronize(), "zeroing the slabs' padding");
 }
 
-Status LoadWeights(const jitllm::artifact::Artifact& artifact, Device& device, Weights& w) {
+Status LoadWeights(const llmp::artifact::Artifact& artifact, Device& device, Weights& w) {
   const auto start = Clock::now();
   const auto groups = artifact.groups();
-  std::vector<jitllm::artifact::ChunkKey> all;
+  std::vector<llmp::artifact::ChunkKey> all;
   for (std::uint32_t g = 0; g < groups.size(); ++g) {
     for (std::uint32_t c = 0; c < groups[g].chunks; ++c) {
       all.push_back({.group = g, .chunk = c});
     }
   }
-  const jitllm::artifact::ReadLimits limits{};
+  const llmp::artifact::ReadLimits limits{};
   const auto runs = artifact.PlanReads(all, {}, limits);
   if (!runs) {
     return Error("the artifact's read plan was refused");
@@ -395,7 +395,7 @@ Status LoadWeights(const jitllm::artifact::Artifact& artifact, Device& device, W
       return r;
     }
   }
-  std::vector<jitllm::artifact::FileDescriptor> shards;
+  std::vector<llmp::artifact::FileDescriptor> shards;
   for (std::uint32_t s = 0; s < artifact.shards().size(); ++s) {
     auto fd = artifact.OpenShardForDirectRead(s);
     if (!fd) {
@@ -467,7 +467,7 @@ Status LoadWeights(const jitllm::artifact::Artifact& artifact, Device& device, W
 
 // The n-gram hash's constants, read back from the loaded weights and checked
 // against the table's rows.
-std::expected<md::Qwen38PleHash, std::string> ReadPleHash(const jitllm::artifact::Artifact& a,
+std::expected<md::Qwen38PleHash, std::string> ReadPleHash(const llmp::artifact::Artifact& a,
                                                           const Weights& w,
                                                           const md::Qwen38Profile& p,
                                                           const md::Qwen38Binding& b) {
@@ -498,10 +498,10 @@ std::expected<md::Qwen38PleHash, std::string> ReadPleHash(const jitllm::artifact
 
 // ------------------------------------------------------------------ chunks
 
-using Planned = jitllm::benchmarks::Qwen38Planned;
+using Planned = llmp::benchmarks::Qwen38Planned;
 
 struct Model {
-  const jitllm::artifact::Artifact* artifact = nullptr;
+  const llmp::artifact::Artifact* artifact = nullptr;
   const md::Qwen38Profile* profile = nullptr;
   const md::Qwen38Binding* binding = nullptr;
   const Weights* weights = nullptr;
@@ -517,8 +517,8 @@ struct Model {
 
 // The shared planning path's view of the model (engine/qwen38_plan.h): the
 // weights and state at their cudaMalloc addresses.
-jitllm::benchmarks::Qwen38Model CommonOf(const Model& m) {
-  const jitllm::artifact::Artifact* a = m.artifact;
+llmp::benchmarks::Qwen38Model CommonOf(const Model& m) {
+  const llmp::artifact::Artifact* a = m.artifact;
   const Weights* w = m.weights;
   return {.artifact = a,
           .profile = m.profile,
@@ -538,14 +538,14 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
     const Model& m, const kg::Qwen38ChunkShape& shape, const kg::DeviceChoices& choices,
     std::span<const std::string> keep_names, std::uint64_t activations,
     std::uint64_t activation_bytes) {
-  return jitllm::benchmarks::PlanQwen38Chunk(CommonOf(m), shape, choices, activations,
-                                             activation_bytes, keep_names);
+  return llmp::benchmarks::PlanQwen38Chunk(CommonOf(m), shape, choices, activations,
+                                           activation_bytes, keep_names);
 }
 
 class Runner {
  public:
   Runner(Device& device, Model model, kg::LaunchContext& launch,
-         const jitllm::execution::Registry& registry, std::uint64_t activations,
+         const llmp::execution::Registry& registry, std::uint64_t activations,
          std::uint64_t activation_bytes, void* staging, std::uint64_t staging_bytes)
       : d_(device),
         m_(model),
@@ -617,8 +617,8 @@ class Runner {
         return std::unexpected(in.error());
       }
     }
-    jitllm::benchmarks::Qwen38HostInputs host;
-    jitllm::benchmarks::Qwen38Sources(g, *in, outputs, {}, host);
+    llmp::benchmarks::Qwen38HostInputs host;
+    llmp::benchmarks::Qwen38Sources(g, *in, outputs, {}, host);
     const auto& sources = host.sources;
     auto stream = d_.Stream();
     if (!stream) {
@@ -738,7 +738,7 @@ class Runner {
   Device& d_;
   Model m_;
   kg::LaunchContext& launch_;
-  const jitllm::execution::Registry& registry_;
+  const llmp::execution::Registry& registry_;
   std::uint64_t activations_;
   std::uint64_t activation_bytes_;
   std::byte* staging_;
@@ -875,7 +875,7 @@ std::string FailingStep(const kg::LaunchContext& launch, const kg::GraphPlan& pl
 // Plans, binds and runs `nodes` (their leaves bound) with every computed
 // tensor in `buffer`; `reps` timed runs after one warm-up, the mean in ms.
 std::expected<double, std::string> RunNodes(Device& d, kg::LaunchContext& launch,
-                                            const jitllm::execution::Registry& registry,
+                                            const llmp::execution::Registry& registry,
                                             std::vector<ggml_tensor*> nodes, std::uint64_t buffer,
                                             std::uint64_t buffer_bytes, int reps,
                                             std::string* implementation = nullptr) {
@@ -962,7 +962,7 @@ std::vector<std::int32_t> RandomRoutes(std::mt19937& rng, std::int64_t experts, 
 }
 
 Status LayoutProof(const Model& m, Device& d, kg::LaunchContext& launch,
-                   const jitllm::execution::Registry& registry, std::string& report) {
+                   const llmp::execution::Registry& registry, std::string& report) {
   const auto& a = *m.artifact;
   const auto& w = *m.weights;
   std::mt19937 rng(20260928);  // NOLINT(bugprone-random-generator-seed): reproducible
@@ -1093,7 +1093,7 @@ Status LayoutProof(const Model& m, Device& d, kg::LaunchContext& launch,
 // The kernel A/B on layer 0's (and layer 3's) weights: each candidate's mean
 // time over 50 runs, with the bytes it must read.
 Status KernelAb(const Model& m, Device& d, kg::LaunchContext& launch,
-                const jitllm::execution::Registry& registry, std::string& report) {
+                const llmp::execution::Registry& registry, std::string& report) {
   const auto& a = *m.artifact;
   const auto& w = *m.weights;
   const md::Qwen38Profile& p = *m.profile;
@@ -1166,7 +1166,7 @@ Status KernelAb(const Model& m, Device& d, kg::LaunchContext& launch,
     }
   }
   // MXFP8 dense products: GDN layer 0's QKV (2560 -> 10240) and output
-  // (6144 -> 2560), QSA layer 3's Q (2560 -> 12288): jitLLM's MXFP8 vector
+  // (6144 -> 2560), QSA layer 3's Q (2560 -> 12288): llmpalooza's MXFP8 vector
   // product against GGML's BF16 products over the dequantized weights (the
   // candidate that needs no MXFP8 kernel), and at prefill widths the
   // dequantization plus GGML's product.
@@ -1338,7 +1338,7 @@ Status ConvertExperts(const Model& m, Device& d, bool proof, std::string& report
 // slab holds: GGML's (mul_mat_id: MMQ) or CUTLASS's (the grouped GEMM path).
 // The mean of 10 runs after a warm-up.
 Status MoeAb(const Model& m, Device& d, kg::LaunchContext& launch,
-             const jitllm::execution::Registry& registry, bool cutlass, std::string& report) {
+             const llmp::execution::Registry& registry, bool cutlass, std::string& report) {
   const auto& a = *m.artifact;
   const auto& w = *m.weights;
   const md::Qwen38Profile& p = *m.profile;
@@ -1557,7 +1557,7 @@ Status Run(const Options& o) {
     return std::unexpected(device.error());
   }
   Device& d = **device;
-  auto artifact = jitllm::artifact::Artifact::Open(o.artifact);
+  auto artifact = llmp::artifact::Artifact::Open(o.artifact);
   if (!artifact) {
     return Error(std::format("the artifact was refused: {}", artifact.error().reason));
   }
@@ -1694,7 +1694,7 @@ Status Run(const Options& o) {
   if (!launch) {
     return Error(launch.error().detail);
   }
-  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  auto registry = llmp::execution::Registry::Create(kg::Implementations());
   if (!registry) {
     return Error(registry.error().detail);
   }
@@ -2002,7 +2002,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   if (auto r = Run(*options); !r) {
-    std::println(stderr, "jitllm_qwen38_exec: {}", r.error());
+    std::println(stderr, "llmp_qwen38_exec: {}", r.error());
     return 1;
   }
   return 0;

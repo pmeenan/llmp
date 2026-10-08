@@ -2,7 +2,7 @@
   "config": "qwen-image-2.1",
   "source": {"path": "models/Qwen/Qwen-Image-2.1@790c9263/processor/tokenizer.json", "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"},
   "reference": "Hugging Face tokenizers 0.22.2",
-  "corpus_sha256": "66d3940a8d35f641d62b5e1114fbe81d22e6f22fd7f6a630071c7368ad20245b",
+  "corpus_sha256": "206453ef4086e899079d027c80a32b444b046e5878879ecb75da3e6b3128ce88",
   "items": [
     {"name": "empty", "well_formed": true, "parse": [], "plain": []},
     {"name": "ascii-sentence", "well_formed": true, "parse": [9707, 11, 1879, 0, 1096, 374, 264, 1273, 315, 279, 45958, 13], "plain": [9707, 11, 1879, 0, 1096, 374, 264, 1273, 315, 279, 45958, 13]},

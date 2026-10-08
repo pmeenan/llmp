@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """The declared EXL3 held-out trajectory on the pinned ExLlamaV3 reference.
 
 External reference harness for the backend proof's P0 controls; it does not
-implement jitLLM inference. It follows the M0 reference's numerical mode
+implement llmpalooza inference. It follows the M0 reference's numerical mode
 (../exl3-reference/measure.py): for each prefix, a forward pass over the
 prefix (recording every row's logits), then 16 teacher-forced single-token
 steps, repeated three times; then the cache is snapshotted, poisoned,

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "base/bytes.h"
@@ -7,7 +7,7 @@
 #include "norm.cuh"
 #include "rope.cuh"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 std::expected<void, KernelFailure> RunGemmaNormRope(LaunchContext& launch, ggml_tensor* norm,
                                                     ggml_tensor* mul, ggml_tensor* rope) {
   if (auto r = CheckGemmaNormRope(norm, mul, rope); !r) return r;
@@ -22,4 +22,4 @@ std::expected<void, KernelFailure> RunGemmaNormAdd(LaunchContext& launch, ggml_t
     ggml_cuda_op_rms_norm_fused_add(context, norm, mul, add);
   });
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

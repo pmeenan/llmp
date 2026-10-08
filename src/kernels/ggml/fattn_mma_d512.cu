@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // GGML's tensor-core flash attention at head dimension 512 (DeepSeek V4's
@@ -22,7 +22,7 @@ DECL_FATTN_MMA_F16_CASE(512, 512, 2, 8);
 DECL_FATTN_MMA_F16_CASE(512, 512, 4, 8);
 DECL_FATTN_MMA_F16_CASE(512, 512, 8, 8);
 
-namespace jitllm::kernels::ggml::detail {
+namespace llmp::kernels::ggml::detail {
 
 std::expected<MmaKernelShape, std::string> FlashAttnMmaShape512(int columns, bool sparse,
                                                                 int device) {
@@ -64,4 +64,4 @@ MmaCase FlashAttnMmaCase512(int columns) {
   }
 }
 
-}  // namespace jitllm::kernels::ggml::detail
+}  // namespace llmp::kernels::ggml::detail

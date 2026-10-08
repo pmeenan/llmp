@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/api_server.h"
@@ -44,7 +44,7 @@
 #include "platform/memory_pressure.h"
 #include "platform/sockets.h"
 
-namespace jitllm::runtime::api {
+namespace llmp::runtime::api {
 namespace {
 
 constexpr std::string_view kJson = "application/json";
@@ -199,7 +199,7 @@ struct Server::Channel {
   // Everything below: with Server::mutex_ held.
   void PutHead(int status, std::string_view type, std::optional<std::size_t> length,
                std::vector<std::string> extra = {}) {
-    extra.push_back(std::format("jitllm-inference-version: {}", surface::kInferenceVersion));
+    extra.push_back(std::format("llmp-inference-version: {}", surface::kInferenceVersion));
     chunked = !length && !http10;
     if (!length && http10) {
       keep_alive = false;  // the body ends with the connection
@@ -827,7 +827,7 @@ void Server::Log(std::string_view line) const {
   if (options_.log == nullptr) {
     return;
   }
-  const std::string text = std::format("jitllm-runtime: {}\n", line);
+  const std::string text = std::format("llmp-runtime: {}\n", line);
   (void)std::fwrite(text.data(), 1, text.size(), options_.log);
   (void)std::fflush(options_.log);
 }
@@ -1364,7 +1364,7 @@ void Server::OnRequest(Connection& c, http::Request request) {
     }
     Flush(c);
   };
-  if (request.path == "/jitllm/v1/ignored-fields" && c.peer_loopback) {
+  if (request.path == "/llmp/v1/ignored-fields" && c.peer_loopback) {
     if (request.method != "GET") {
       method_not_allowed("GET");
       return;
@@ -1607,7 +1607,7 @@ void Server::OnParsed(Connection& c, Parse& parse) {
        ignored_.Record(parsed->ignored, static_cast<std::int64_t>(std::time(nullptr)))) {
     Log(
         std::format("an unknown request field is ignored: {} (logged once; "
-                    "GET /jitllm/v1/ignored-fields counts them)",
+                    "GET /llmp/v1/ignored-fields counts them)",
                     base::Printable(name)));
   }
   const auto model = std::ranges::find(models_, parsed->model, &ModelInfo::name);
@@ -2686,4 +2686,4 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
   return result;
 }
 
-}  // namespace jitllm::runtime::api
+}  // namespace llmp::runtime::api

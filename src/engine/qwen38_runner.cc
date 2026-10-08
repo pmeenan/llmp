@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/qwen38_runner.h"
@@ -30,7 +30,7 @@
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 kernels::ggml::DeviceChoices Qwen38Runner::Choices(kernels::ggml::LaunchContext& launch) const {
   auto choices = kernels::ggml::DeviceChoicesOf(launch);
@@ -40,9 +40,9 @@ kernels::ggml::DeviceChoices Qwen38Runner::Choices(kernels::ggml::LaunchContext&
 
 namespace {
 
-namespace kg = jitllm::kernels::ggml;
-namespace md = jitllm::model;
-namespace sc = jitllm::scheduler;
+namespace kg = llmp::kernels::ggml;
+namespace md = llmp::model;
+namespace sc = llmp::scheduler;
 using catalog::ExtentId;
 using catalog::MemoryClass;
 using support::Address;
@@ -3879,4 +3879,4 @@ std::expected<std::vector<LiveState::Range>, std::string> Qwen38Runner::StateWri
   return writes;
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

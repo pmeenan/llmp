@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/kept_record.h"
@@ -24,7 +24,7 @@
 #include "base/sha256.h"
 #include "runtime/intake_limits.h"
 
-namespace jitllm::runtime::kept {
+namespace llmp::runtime::kept {
 namespace {
 
 namespace json = base::json;
@@ -827,4 +827,4 @@ std::expected<void, std::string> Check(Record& r, const Expected& e,
   return {};
 }
 
-}  // namespace jitllm::runtime::kept
+}  // namespace llmp::runtime::kept

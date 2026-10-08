@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The runtime module's startup steps on scratch trees, and the platform
@@ -57,7 +57,7 @@ using ::testing::HasSubstr;
 class Scratch {
  public:
   Scratch() {
-    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const fs::path parent = base != nullptr ? fs::path(base) : fs::path(::testing::TempDir());
     std::error_code error;
     fs::create_directories(parent, error);
@@ -80,8 +80,8 @@ class Scratch {
   const fs::path& path() const { return path_; }
 
   // A standalone configuration whose roles live here.
-  jitllm::runtime::Options Options(std::string_view extra = "") const {
-    const fs::path config = path_ / "jitllm.toml";
+  llmp::runtime::Options Options(std::string_view extra = "") const {
+    const fs::path config = path_ / "llmp.toml";
     std::ofstream(config) << std::format("schema_version = 2\n{}[storage]\ndata_dir = \"{}\"\n",
                                          extra, (path_ / "data").string());
     return {.config = config, .config_given = true, .anchor = path_ / "enrollment", .help = false};
@@ -97,13 +97,13 @@ struct Outcome {
   int status = -1;  // -1: started
 };
 
-Outcome StartWith(const jitllm::runtime::Options& options) {
+Outcome StartWith(const llmp::runtime::Options& options) {
   char* buffer = nullptr;
   std::size_t size = 0;
   std::FILE* log = ::open_memstream(&buffer, &size);
   Outcome outcome;
   {
-    auto started = jitllm::runtime::Start(options, log);
+    auto started = llmp::runtime::Start(options, log);
     if (!started) {
       outcome.status = started.error();
     }
@@ -116,31 +116,31 @@ Outcome StartWith(const jitllm::runtime::Options& options) {
 
 TEST(RuntimeArguments, Parse) {
   const std::vector<std::string_view> args = {"--config", "a.toml", "--anchor", "/x/anchor"};
-  auto options = jitllm::runtime::ParseArguments(args);
+  auto options = llmp::runtime::ParseArguments(args);
   ASSERT_TRUE(options.has_value()) << options.error();
   EXPECT_EQ(options->config, "a.toml");
   EXPECT_TRUE(options->config_given);
   EXPECT_EQ(options->anchor, "/x/anchor");
-  auto defaults = jitllm::runtime::ParseArguments({});
+  auto defaults = llmp::runtime::ParseArguments({});
   ASSERT_TRUE(defaults.has_value());
-  EXPECT_EQ(defaults->config, "/etc/jitllm/jitllm.toml");
+  EXPECT_EQ(defaults->config, "/etc/llmp/llmp.toml");
   EXPECT_FALSE(defaults->config_given);
-  EXPECT_EQ(defaults->anchor, "/var/lib/jitllm/enrollment");
+  EXPECT_EQ(defaults->anchor, "/var/lib/llmp/enrollment");
   for (const std::vector<std::string_view>& bad :
        {std::vector<std::string_view>{"--config"}, {"--anchor", ""}, {"serve"}}) {
-    EXPECT_FALSE(jitllm::runtime::ParseArguments(bad).has_value());
+    EXPECT_FALSE(llmp::runtime::ParseArguments(bad).has_value());
   }
-  EXPECT_EQ(defaults->command.command, jitllm::runtime::Command::kService);
+  EXPECT_EQ(defaults->command.command, llmp::runtime::Command::kService);
 }
 
 // The serving commands (D-096): everything after the command's name is its.
 TEST(RuntimeArguments, Commands) {
-  using jitllm::runtime::Command;
+  using llmp::runtime::Command;
   const std::vector<std::string_view> chat = {
       "--config",      "a.toml", "chat",   "--max-tokens", "32",   "--ignore-stop",
       "--turn",        "ds",     "Hi",     "--turn",       "qwen", "--plain here stays text",
       "--image-noise", "n.bf16", "--plain"};
-  auto options = jitllm::runtime::ParseArguments(chat);
+  auto options = llmp::runtime::ParseArguments(chat);
   ASSERT_TRUE(options.has_value()) << options.error();
   EXPECT_EQ(options->config, "a.toml");
   EXPECT_EQ(options->command.command, Command::kChat);
@@ -156,7 +156,7 @@ TEST(RuntimeArguments, Commands) {
   const std::vector<std::string_view> table = {
       "swap-table", "--pairs",        "a:b,b:a", "--context-text", "t.md",  "--cycles",
       "1",          "--zero-context", "off",     "--report",       "r.json"};
-  options = jitllm::runtime::ParseArguments(table);
+  options = llmp::runtime::ParseArguments(table);
   ASSERT_TRUE(options.has_value()) << options.error();
   EXPECT_EQ(options->command.command, Command::kSwapTable);
   ASSERT_EQ(options->command.table.pairs.size(), 2U);
@@ -166,32 +166,31 @@ TEST(RuntimeArguments, Commands) {
   EXPECT_EQ(options->command.table.context_tokens, 8192U);
   EXPECT_EQ(options->command.serving.report, "r.json");
 
-  options = jitllm::runtime::ParseArguments(
+  options = llmp::runtime::ParseArguments(
       std::array<std::string_view, 3>{"swap-table", "--context-tokens", "1048576"});
   ASSERT_TRUE(options.has_value()) << options.error();
   EXPECT_EQ(options->command.table.context_tokens, 1048576U);
 
   // No generic context cap (D-102): the model's usable context decides.
-  options = jitllm::runtime::ParseArguments(
+  options = llmp::runtime::ParseArguments(
       std::array<std::string_view, 3>{"swap-table", "--context-tokens", "4294967295"});
   ASSERT_TRUE(options.has_value()) << options.error();
   EXPECT_EQ(options->command.table.context_tokens, 4294967295U);
 
   // The settings listing (D-103): --json only.
-  options = jitllm::runtime::ParseArguments(std::array<std::string_view, 1>{"settings"});
+  options = llmp::runtime::ParseArguments(std::array<std::string_view, 1>{"settings"});
   ASSERT_TRUE(options.has_value()) << options.error();
   EXPECT_EQ(options->command.command, Command::kSettings);
   EXPECT_FALSE(options->command.json);
-  options = jitllm::runtime::ParseArguments(
+  options = llmp::runtime::ParseArguments(
       std::array<std::string_view, 4>{"--config", "a.toml", "settings", "--json"});
   ASSERT_TRUE(options.has_value()) << options.error();
   EXPECT_EQ(options->command.command, Command::kSettings);
   EXPECT_TRUE(options->command.json);
-  EXPECT_FALSE(
-      jitllm::runtime::ParseArguments(std::array<std::string_view, 2>{"settings", "--plain"})
-          .has_value());
+  EXPECT_FALSE(llmp::runtime::ParseArguments(std::array<std::string_view, 2>{"settings", "--plain"})
+                   .has_value());
 
-  const std::string long_image_prompt(jitllm::runtime::kMaxImagePromptBytes + 1, 'x');
+  const std::string long_image_prompt(llmp::runtime::kMaxImagePromptBytes + 1, 'x');
   const std::string upper_sha(64, 'A');  // hex, but not as the table prints it
   for (const std::vector<std::string_view>& bad : {
            std::vector<std::string_view>{"chat"},  // no turn
@@ -214,7 +213,7 @@ TEST(RuntimeArguments, Commands) {
            {"swap-table", "--image-expect", "abc"},
            {"swap-table", "--report"},
        }) {
-    EXPECT_FALSE(jitllm::runtime::ParseArguments(bad).has_value()) << bad.front();
+    EXPECT_FALSE(llmp::runtime::ParseArguments(bad).has_value()) << bad.front();
   }
   // Turns, a turn's text and --max-tokens have no caps of their own
   // (D-102): the command line bounds them, and the model's context
@@ -224,7 +223,7 @@ TEST(RuntimeArguments, Commands) {
   for (std::size_t i = 0; i < 100; ++i) {
     many.insert(many.end(), {"--turn", "ds", i == 0 ? std::string_view(long_text) : "Hi"});
   }
-  options = jitllm::runtime::ParseArguments(many);
+  options = llmp::runtime::ParseArguments(many);
   ASSERT_TRUE(options.has_value()) << options.error();
   EXPECT_EQ(options->command.chat.turns.size(), 100U);
   EXPECT_EQ(options->command.chat.turns.front().text.size(), long_text.size());
@@ -235,7 +234,7 @@ TEST(RuntimeArguments, Commands) {
     list += std::format("{}a{}:b{}", i == 0 ? "" : ",", i, i);
   }
   pairs.emplace_back(list);
-  options = jitllm::runtime::ParseArguments(pairs);
+  options = llmp::runtime::ParseArguments(pairs);
   ASSERT_TRUE(options.has_value()) << options.error();
   EXPECT_EQ(options->command.table.pairs.size(), 100U);
 }
@@ -249,10 +248,10 @@ TEST(RuntimeStart, CreatesItsRolesAndTakesTheLock) {
   const Outcome outcome = StartWith(scratch.Options());
   EXPECT_THAT(outcome.log,
               HasSubstr("storage: installed " + (scratch.path() / "data/models").string()));
-  EXPECT_TRUE(fs::is_regular_file(scratch.path() / "data/spill/.jitllm-spill"));
+  EXPECT_TRUE(fs::is_regular_file(scratch.path() / "data/spill/.llmp-spill"));
   EXPECT_TRUE(fs::is_regular_file(scratch.path() / "enrollment.lock"));
   if (outcome.status != -1) {
-    EXPECT_EQ(outcome.status, jitllm::runtime::kExitHostNotReady);
+    EXPECT_EQ(outcome.status, llmp::runtime::kExitHostNotReady);
     EXPECT_THAT(outcome.log, HasSubstr("refusing to start: this host cannot run this build now"));
   }
 }
@@ -262,7 +261,7 @@ TEST(RuntimeStart, RefusesWhileTheAnchorExists) {
   const auto options = scratch.Options();
   std::ofstream(options.anchor) << "anchor";
   const Outcome outcome = StartWith(options);
-  EXPECT_EQ(outcome.status, jitllm::runtime::kExitRefused);
+  EXPECT_EQ(outcome.status, llmp::runtime::kExitRefused);
   EXPECT_THAT(outcome.log,
               HasSubstr("the enrollment anchor " + options.anchor.string() + " exists"));
   EXPECT_FALSE(fs::exists(scratch.path() / "data"));
@@ -271,19 +270,19 @@ TEST(RuntimeStart, RefusesWhileTheAnchorExists) {
 TEST(RuntimeStart, RefusesAnInvalidOrMemberConfiguration) {
   const Scratch scratch;
   Outcome outcome = StartWith(scratch.Options("bogus = 1\n"));
-  EXPECT_EQ(outcome.status, jitllm::runtime::kExitRefused);
+  EXPECT_EQ(outcome.status, llmp::runtime::kExitRefused);
   EXPECT_THAT(outcome.log, HasSubstr(":2:9: unknown key bogus"));
   outcome = StartWith(scratch.Options(
-      "cluster_file = \"/etc/jitllm/cluster.toml\"\nnode_id = "
+      "cluster_file = \"/etc/llmp/cluster.toml\"\nnode_id = "
       "\"af564a6b-8b4e-4528-8140-e50b92b40002\"\n"
       "credentials.ca_file = \"/c/ca.pem\"\ncredentials.certificate_file = \"/c/n.pem\"\n"
       "credentials.private_key_file = \"/c/k.pem\"\ncontrol.port = 7443\n"));
-  EXPECT_EQ(outcome.status, jitllm::runtime::kExitRefused);
+  EXPECT_EQ(outcome.status, llmp::runtime::kExitRefused);
   EXPECT_THAT(outcome.log, HasSubstr("a cluster member's, and this build has no cluster support"));
-  jitllm::runtime::Options missing = scratch.Options();
+  llmp::runtime::Options missing = scratch.Options();
   missing.config = scratch.path() / "missing.toml";
   outcome = StartWith(missing);
-  EXPECT_EQ(outcome.status, jitllm::runtime::kExitRefused);
+  EXPECT_EQ(outcome.status, llmp::runtime::kExitRefused);
   EXPECT_THAT(outcome.log, HasSubstr("missing.toml: does not exist"));
 }
 
@@ -292,10 +291,10 @@ TEST(RuntimeStart, OneRuntimePerNode) {
   const auto options = scratch.Options();
   fs::path lock_path = options.anchor;
   lock_path += ".lock";
-  auto held = jitllm::platform::LockFile::Acquire(lock_path, ::geteuid());
+  auto held = llmp::platform::LockFile::Acquire(lock_path, ::geteuid());
   ASSERT_TRUE(held.has_value()) << held.error();
   const Outcome outcome = StartWith(options);
-  EXPECT_EQ(outcome.status, jitllm::runtime::kExitRefused);
+  EXPECT_EQ(outcome.status, llmp::runtime::kExitRefused);
   EXPECT_THAT(outcome.log, HasSubstr("enrollment.lock is locked: another process holds it"));
   EXPECT_FALSE(fs::exists(scratch.path() / "data"));
 }
@@ -304,21 +303,21 @@ TEST(LockFile, RefusesLinksAndOpenModes) {
   const Scratch scratch;
   std::ofstream(scratch.path() / "open.lock") << "";
   ASSERT_EQ(::chmod((scratch.path() / "open.lock").c_str(), 0644), 0);
-  auto lock = jitllm::platform::LockFile::Acquire(scratch.path() / "open.lock", ::geteuid());
+  auto lock = llmp::platform::LockFile::Acquire(scratch.path() / "open.lock", ::geteuid());
   ASSERT_FALSE(lock.has_value());
   EXPECT_THAT(lock.error(), HasSubstr("with mode 0600, not uid"));
   fs::create_symlink(scratch.path() / "elsewhere", scratch.path() / "link.lock");
-  lock = jitllm::platform::LockFile::Acquire(scratch.path() / "link.lock", ::geteuid());
+  lock = llmp::platform::LockFile::Acquire(scratch.path() / "link.lock", ::geteuid());
   ASSERT_FALSE(lock.has_value());
   EXPECT_THAT(lock.error(), HasSubstr("symbolic link"));
   EXPECT_FALSE(fs::exists(scratch.path() / "elsewhere"));
   // Released with its last descriptor.
   {
-    auto first = jitllm::platform::LockFile::Acquire(scratch.path() / "a.lock", ::geteuid());
+    auto first = llmp::platform::LockFile::Acquire(scratch.path() / "a.lock", ::geteuid());
     ASSERT_TRUE(first.has_value()) << first.error();
   }
   EXPECT_TRUE(
-      jitllm::platform::LockFile::Acquire(scratch.path() / "a.lock", ::geteuid()).has_value());
+      llmp::platform::LockFile::Acquire(scratch.path() / "a.lock", ::geteuid()).has_value());
 }
 
 // Runs body in a child with the crash policy installed; returns its wait
@@ -328,7 +327,7 @@ int CrashChild(Body body) {
   (void)std::fflush(nullptr);
   const pid_t child = ::fork();
   if (child == 0) {
-    if (!jitllm::platform::InstallCrashPolicy("crash-test")) {
+    if (!llmp::platform::InstallCrashPolicy("crash-test")) {
       ::_exit(99);
     }
     body();
@@ -345,11 +344,11 @@ TEST(CrashPolicy, FatalSignalsExitWithoutACoreDump) {
   for (const int signal : {SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGQUIT, SIGSYS, SIGTRAP}) {
     const int status = CrashChild([signal] { (void)std::raise(signal); });
     EXPECT_TRUE(WIFEXITED(status)) << signal << ": wait status " << status;
-    EXPECT_EQ(WEXITSTATUS(status), jitllm::platform::kFatalSignalExitBase + signal) << signal;
+    EXPECT_EQ(WEXITSTATUS(status), llmp::platform::kFatalSignalExitBase + signal) << signal;
   }
   const int aborted = CrashChild([] { std::abort(); });
   EXPECT_TRUE(WIFEXITED(aborted));
-  EXPECT_EQ(WEXITSTATUS(aborted), jitllm::platform::kFatalSignalExitBase + SIGABRT);
+  EXPECT_EQ(WEXITSTATUS(aborted), llmp::platform::kFatalSignalExitBase + SIGABRT);
 }
 
 TEST(CrashPolicy, StackOverflowStillExits) {
@@ -367,14 +366,14 @@ TEST(CrashPolicy, StackOverflowStillExits) {
     (void)Recurse::Deeper(0, go_on);
   });
   EXPECT_TRUE(WIFEXITED(status)) << "wait status " << status;
-  EXPECT_EQ(WEXITSTATUS(status), jitllm::platform::kFatalSignalExitBase + SIGSEGV);
+  EXPECT_EQ(WEXITSTATUS(status), llmp::platform::kFatalSignalExitBase + SIGSEGV);
 }
 
 // A thread that installs its own signal stack is covered too.
 TEST(CrashPolicy, AThreadsStackOverflowStillExits) {
   const int status = CrashChild([] {
     std::thread worker([] {
-      if (!jitllm::platform::InstallThreadSignalStack()) {
+      if (!llmp::platform::InstallThreadSignalStack()) {
         ::_exit(97);
       }
       struct Recurse {
@@ -390,12 +389,12 @@ TEST(CrashPolicy, AThreadsStackOverflowStillExits) {
     worker.join();
   });
   EXPECT_TRUE(WIFEXITED(status)) << "wait status " << status;
-  EXPECT_EQ(WEXITSTATUS(status), jitllm::platform::kFatalSignalExitBase + SIGSEGV);
+  EXPECT_EQ(WEXITSTATUS(status), llmp::platform::kFatalSignalExitBase + SIGSEGV);
 }
 
 TEST(CrashPolicy, MarkingTwiceIsFine) {
   const int status = CrashChild([] {
-    ::_exit(jitllm::platform::MarkNonDumpable() && jitllm::platform::MarkNonDumpable() ? 0 : 1);
+    ::_exit(llmp::platform::MarkNonDumpable() && llmp::platform::MarkNonDumpable() ? 0 : 1);
   });
   ASSERT_TRUE(WIFEXITED(status));
   EXPECT_EQ(WEXITSTATUS(status), 0);
@@ -403,7 +402,7 @@ TEST(CrashPolicy, MarkingTwiceIsFine) {
 
 TEST(CrashPolicy, MarksTheProcessNonDumpable) {
   const int status = CrashChild([] {
-    auto filter = jitllm::platform::ReadFirstLine("/proc/self/coredump_filter");
+    auto filter = llmp::platform::ReadFirstLine("/proc/self/coredump_filter");
     const bool filtered = filter && std::strtoul(filter->c_str(), nullptr, 16) == 0;
     ::_exit(::prctl(PR_GET_DUMPABLE) == 0 && filtered ? 0 : 1);
   });
@@ -425,7 +424,7 @@ TEST(NotifyServiceManager, SendsToTheSocket) {
   (void)socket_path.string().copy(address.sun_path, sizeof(address.sun_path) - 1);
   ASSERT_EQ(::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)), 0);  // NOLINT
   ASSERT_EQ(::setenv("NOTIFY_SOCKET", socket_path.c_str(), 1), 0);  // NOLINT(concurrency-mt-unsafe)
-  auto sent = jitllm::platform::NotifyServiceManager("READY=1");
+  auto sent = llmp::platform::NotifyServiceManager("READY=1");
   (void)::unsetenv("NOTIFY_SOCKET");  // NOLINT(concurrency-mt-unsafe)
   ASSERT_TRUE(sent.has_value()) << sent.error();
   EXPECT_TRUE(*sent);
@@ -434,14 +433,14 @@ TEST(NotifyServiceManager, SendsToTheSocket) {
   (void)::close(fd);
   EXPECT_EQ(std::string_view(received.data(), got > 0 ? static_cast<std::size_t>(got) : 0),
             "READY=1");
-  auto unset = jitllm::platform::NotifyServiceManager("READY=1");
+  auto unset = llmp::platform::NotifyServiceManager("READY=1");
   ASSERT_TRUE(unset.has_value());
   EXPECT_FALSE(*unset);
 }
 
 TEST(ModelContext, FrontierHeadSelectionStaysWithinTheMeasuredFormatAndShape) {
-  using jitllm::runtime::Dsv4FrontierHeadForServing;
-  jitllm::model::Dsv4Binding binding;
+  using llmp::runtime::Dsv4FrontierHeadForServing;
+  llmp::model::Dsv4Binding binding;
   binding.output = {.type = "Q4_K", .ne = {4096, 129280}};
   binding.hc_head_fn = {.type = "F32", .ne = {16384, 4}};
   EXPECT_TRUE(Dsv4FrontierHeadForServing(binding));
@@ -463,7 +462,7 @@ TEST(ModelContext, FrontierHeadSelectionStaysWithinTheMeasuredFormatAndShape) {
 // The runners' own ceilings (model_settings.h; resolution refuses a
 // context past them before setup: model_settings_test).
 TEST(ModelContext, TheRunnersCeilings) {
-  using jitllm::runtime::RunnerContextCeiling;
+  using llmp::runtime::RunnerContextCeiling;
   EXPECT_EQ(RunnerContextCeiling("deepseek4"), 1048576U);
   EXPECT_EQ(RunnerContextCeiling("qwen4exp"), 262144U);
   EXPECT_EQ(RunnerContextCeiling("unknown"), 0U);
@@ -472,7 +471,7 @@ TEST(ModelContext, TheRunnersCeilings) {
 // A prefill's chunk (runtime/prefill.h): the configured or default rows,
 // capped by the model and below the context.
 TEST(PrefillChunk, TakesTheConfiguredOrDefaultRowsWithinTheModelAndContext) {
-  using jitllm::runtime::PrefillChunkRows;
+  using llmp::runtime::PrefillChunkRows;
   EXPECT_EQ(PrefillChunkRows(8704, std::nullopt, 2048, 8192), 2048U);
   EXPECT_EQ(PrefillChunkRows(8704, 4096U, 2048, 8192), 4096U);
   EXPECT_EQ(PrefillChunkRows(8704, 65536U, 2048, 8192), 8192U);  // the model's most
@@ -496,7 +495,7 @@ TEST(PrefillChunk, TakesTheConfiguredOrDefaultRowsWithinTheModelAndContext) {
 // before each (with its rows) stops the loop between chunks, never inside
 // one.
 TEST(PrefillChunk, RunsChunksUntilToldToStop) {
-  using jitllm::runtime::RunPrefillChunks;
+  using llmp::runtime::RunPrefillChunks;
   std::vector<std::pair<std::uint32_t, std::uint32_t>> ran;
   const auto chunk = [&](std::uint32_t at, std::uint32_t rows) -> std::expected<void, std::string> {
     ran.emplace_back(at, rows);
@@ -550,7 +549,7 @@ TEST(PrefillChunk, RunsChunksUntilToldToStop) {
 // A chunk of 1,024 rows or more runs in whole 8-row tiles (the attention's
 // mask pre-pass reads them; RE-036), its remainder a chunk of its own.
 TEST(PrefillChunk, WideChunksRunInWholeTiles) {
-  using jitllm::runtime::RunPrefillChunks;
+  using llmp::runtime::RunPrefillChunks;
   std::vector<std::pair<std::uint32_t, std::uint32_t>> ran;
   const auto chunk = [&](std::uint32_t at, std::uint32_t rows) -> std::expected<void, std::string> {
     ran.emplace_back(at, rows);
@@ -574,7 +573,7 @@ TEST(PrefillChunk, WideChunksRunInWholeTiles) {
 }
 
 TEST(PrefillChunk, AFailedChunkIsTheError) {
-  using jitllm::runtime::RunPrefillChunks;
+  using llmp::runtime::RunPrefillChunks;
   int calls = 0;
   auto failed =
       RunPrefillChunks(0, 2048, 512,
@@ -596,13 +595,13 @@ TEST(PrefillChunk, AFailedChunkIsTheError) {
 
 // ---------------------------------------------------------------- the watchdog
 
-using jitllm::runtime::Allowance;
-using jitllm::runtime::ExpectedSeconds;
-using jitllm::runtime::Floors;
-using jitllm::runtime::Phase;
-using jitllm::runtime::ScaledDeadline;
-using jitllm::runtime::WatchClock;
-using jitllm::runtime::Watchdog;
+using llmp::runtime::Allowance;
+using llmp::runtime::ExpectedSeconds;
+using llmp::runtime::Floors;
+using llmp::runtime::Phase;
+using llmp::runtime::ScaledDeadline;
+using llmp::runtime::WatchClock;
+using llmp::runtime::Watchdog;
 using std::chrono::milliseconds;
 using std::chrono::minutes;
 using std::chrono::seconds;
@@ -699,7 +698,7 @@ TEST(Watchdog, APauseForAClientIsNotAStall) {
   EXPECT_FALSE(dog.Check(start + std::chrono::hours(48)));
   EXPECT_TRUE(dog.health().healthy);
   EXPECT_EQ(dog.health().phase, Phase::kPaused);
-  EXPECT_EQ(jitllm::runtime::PhaseName(Phase::kPaused), "waiting for a client to read");
+  EXPECT_EQ(llmp::runtime::PhaseName(Phase::kPaused), "waiting for a client to read");
   // Resumed, the unit is watched again.
   const auto resumed = start + std::chrono::hours(48);
   (void)dog.Beat(Phase::kDecode, 0, resumed);
@@ -713,13 +712,13 @@ TEST(Watchdog, APauseForAClientIsNotAStall) {
 // context's bytes; a stream's unread output a sixty-fourth of the floor,
 // 1 to 64 MiB. [client] replaces each.
 TEST(IntakeLimits, FollowTheRequestMemoryUnlessConfigured) {
-  using jitllm::runtime::ContextBodyBytes;
-  using jitllm::runtime::DeriveIntakeLimits;
-  using jitllm::runtime::RequestFloor;
+  using llmp::runtime::ContextBodyBytes;
+  using llmp::runtime::DeriveIntakeLimits;
+  using llmp::runtime::RequestFloor;
   constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
   constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
   EXPECT_EQ(RequestFloor({}), 256 * kMiB);
-  jitllm::config::ClientConfig capped;
+  llmp::config::ClientConfig capped;
   capped.request_memory_bytes = 64 * kMiB;
   EXPECT_EQ(RequestFloor(capped), 64 * kMiB);
   // About a Spark's beside DeepSeek V4 Flash: ~15 GiB of state room.
@@ -741,10 +740,10 @@ TEST(IntakeLimits, FollowTheRequestMemoryUnlessConfigured) {
   EXPECT_EQ(nominal.request_capacity, kGiB);
   EXPECT_EQ(nominal.max_body, 64 * kMiB);
   const auto huge = DeriveIntakeLimits(256 * kMiB, std::uint64_t{1} << 40U, 0, {});
-  EXPECT_EQ(huge.max_body, jitllm::config::kMaxBodyCeiling);
+  EXPECT_EQ(huge.max_body, llmp::config::kMaxBodyCeiling);
   // Configured values replace the derived ones; request_memory_bytes caps
   // the capacity and, smaller than it, the floor.
-  jitllm::config::ClientConfig client;
+  llmp::config::ClientConfig client;
   client.max_body_bytes = kGiB;
   client.stream_buffer_bytes = 4096;
   client.request_memory_bytes = 2 * kGiB;
@@ -765,9 +764,9 @@ TEST(IntakeLimits, FollowTheRequestMemoryUnlessConfigured) {
 // grant is given back toward what is used. Memory already built is
 // charged past the grant (Force), and waits.
 TEST(IntakeLimits, TheRequestMemoryGrowsThroughTheDriver) {
-  using jitllm::runtime::MemoryCharge;
+  using llmp::runtime::MemoryCharge;
   constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
-  jitllm::runtime::RequestMemory pool(8 * kMiB, 64 * kMiB);
+  llmp::runtime::RequestMemory pool(8 * kMiB, 64 * kMiB);
   EXPECT_FALSE(pool.grows());  // no driver yet
   std::uint64_t held = 8 * kMiB;
   bool allow = true;
@@ -843,8 +842,8 @@ TEST(IntakeLimits, TheRequestMemoryGrowsThroughTheDriver) {
 
 // The pool's accounting: charges fit or are refused whole, and release.
 TEST(IntakeLimits, TheRequestMemoryChargesAndReleases) {
-  using jitllm::runtime::MemoryCharge;
-  jitllm::runtime::RequestMemory pool(1000);
+  using llmp::runtime::MemoryCharge;
+  llmp::runtime::RequestMemory pool(1000);
   {
     MemoryCharge a;
     EXPECT_TRUE(a.Add(pool, 600));
@@ -866,8 +865,8 @@ TEST(IntakeLimits, TheRequestMemoryChargesAndReleases) {
 // (context × longest token, four times under NFC), at least 1 MiB;
 // connections: the open-file limit less the runtime's own.
 TEST(IntakeLimits, RenderingAndConnectionsFollowTheirResources) {
-  using jitllm::runtime::ConnectionsFor;
-  using jitllm::runtime::RenderBytes;
+  using llmp::runtime::ConnectionsFor;
+  using llmp::runtime::RenderBytes;
   constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
   EXPECT_EQ(RenderBytes(262'144, 128, false), 32 * kMiB);  // DeepSeek V4
   EXPECT_EQ(RenderBytes(262'144, 128, true), 128 * kMiB);  // NFC: four times
@@ -879,11 +878,11 @@ TEST(IntakeLimits, RenderingAndConnectionsFollowTheirResources) {
 }
 
 TEST(MemoryGuard, DiagnosticCapPreservesPhysicalAndRequiredFootprintBounds) {
-  using jitllm::runtime::CheckDiagnosticBudgetCap;
+  using llmp::runtime::CheckDiagnosticBudgetCap;
   constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
-  const jitllm::runtime::MemoryGuard guard{
+  const llmp::runtime::MemoryGuard guard{
       .largest = 100 * kGiB, .available = 120 * kGiB, .fixed = 4 * kGiB};
-  EXPECT_FALSE(jitllm::runtime::ServingOptions{}.diagnostic_budget_cap_bytes.has_value());
+  EXPECT_FALSE(llmp::runtime::ServingOptions{}.diagnostic_budget_cap_bytes.has_value());
   EXPECT_TRUE(CheckDiagnosticBudgetCap(guard, 110 * kGiB, 108 * kGiB, kGiB));
   EXPECT_TRUE(CheckDiagnosticBudgetCap(guard, 110 * kGiB, 105 * kGiB, kGiB));
   EXPECT_FALSE(CheckDiagnosticBudgetCap(guard, 110 * kGiB, 110 * kGiB + 1, kGiB));
@@ -898,14 +897,14 @@ TEST(MemoryGuard, DiagnosticCapPreservesPhysicalAndRequiredFootprintBounds) {
 // The request memory's floor is set apart beside the margin: the guard
 // counts it, and only it (what passes it is charged inside the budget).
 TEST(MemoryGuard, CountsTheRequestMemoryFloor) {
-  using jitllm::runtime::CheckMemoryGuard;
-  using jitllm::runtime::GuardReserve;
-  using jitllm::runtime::kRequestMemoryFloor;
-  using jitllm::runtime::kUncountedMargin;
+  using llmp::runtime::CheckMemoryGuard;
+  using llmp::runtime::GuardReserve;
+  using llmp::runtime::kRequestMemoryFloor;
+  using llmp::runtime::kUncountedMargin;
   constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
   const std::uint64_t weights = 90 * kGiB;
   const std::uint64_t exact = weights + kGiB + kUncountedMargin + kRequestMemoryFloor;
-  const jitllm::runtime::MemoryGuard guard{
+  const llmp::runtime::MemoryGuard guard{
       .largest = weights, .host_inputs = kGiB, .available = exact, .requests = kRequestMemoryFloor};
   EXPECT_TRUE(CheckMemoryGuard(guard).has_value());
   EXPECT_EQ(GuardReserve(guard), kGiB + kRequestMemoryFloor + kUncountedMargin);
@@ -919,8 +918,8 @@ TEST(MemoryGuard, CountsTheRequestMemoryFloor) {
 // The start's memory guard (memory_guard.h): the largest model's weights,
 // the host-built chunk inputs and a 6 GiB margin against what is available.
 TEST(MemoryGuard, CountsTheWeightsTheHostInputsAndTheMargin) {
-  using jitllm::runtime::CheckMemoryGuard;
-  using jitllm::runtime::kUncountedMargin;
+  using llmp::runtime::CheckMemoryGuard;
+  using llmp::runtime::kUncountedMargin;
   constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
   EXPECT_EQ(kUncountedMargin, 6 * kGiB);
   // DeepSeek's 90.3 GiB of weights, 1 GiB of host inputs: 97.3 GiB needed.
@@ -959,9 +958,9 @@ TEST(MemoryGuard, CountsTheWeightsTheHostInputsAndTheMargin) {
 // The most plans one step of a model holds at once (Served::
 // plan_floor_bytes) is set apart beside the margin, never taken from it.
 TEST(MemoryGuard, CountsThePlansBesideTheMargin) {
-  using jitllm::runtime::CheckMemoryGuard;
-  using jitllm::runtime::GuardReserve;
-  using jitllm::runtime::kUncountedMargin;
+  using llmp::runtime::CheckMemoryGuard;
+  using llmp::runtime::GuardReserve;
+  using llmp::runtime::kUncountedMargin;
   constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
   const std::uint64_t weights = (903 * kGiB) / 10;
   const std::uint64_t plans = (3 * kGiB) / 2;
@@ -989,7 +988,7 @@ TEST(MemoryGuard, CountsThePlansBesideTheMargin) {
 }  // namespace
 
 TEST(TokenStorage, GrowthFundsBothAllocationsAndRefusalChangesNothing) {
-  using namespace jitllm::runtime;
+  using namespace llmp::runtime;
   RequestMemory memory(48);
   MemoryCharge charge;
   std::vector<std::int32_t> tokens;
@@ -1010,7 +1009,7 @@ TEST(TokenStorage, GrowthFundsBothAllocationsAndRefusalChangesNothing) {
 }
 
 TEST(TokenStorage, OwnershipTransfersWithTheStorage) {
-  using namespace jitllm::runtime;
+  using namespace llmp::runtime;
   RequestMemory memory(64);
   MemoryCharge first_charge;
   std::vector<std::int32_t> first;
@@ -1026,7 +1025,7 @@ TEST(TokenStorage, OwnershipTransfersWithTheStorage) {
 }
 
 TEST(TokenStorage, ExactGrowthRecomputesAfterNestedReclaimAndShrinksImmediately) {
-  using namespace jitllm::runtime;
+  using namespace llmp::runtime;
   RequestMemory memory(0, 1024, true);
   std::uint64_t held = 0;
   MemoryCharge idle_charge;
@@ -1059,7 +1058,7 @@ TEST(TokenStorage, ExactGrowthRecomputesAfterNestedReclaimAndShrinksImmediately)
 }
 
 TEST(TokenStorage, WorkerReleaseDoesNotCallTheDriversCatalog) {
-  using namespace jitllm::runtime;
+  using namespace llmp::runtime;
   RequestMemory memory(0, 1024, true);
   unsigned calls = 0;
   memory.SetDriver(std::this_thread::get_id(), [&](std::uint64_t) {
@@ -1083,7 +1082,7 @@ TEST(TokenStorage, WorkerReleaseDoesNotCallTheDriversCatalog) {
 }
 
 TEST(TokenStorage, ReclaimCreditsTinyAndCombinedHistoriesAtCatalogBoundaries) {
-  using namespace jitllm::runtime;
+  using namespace llmp::runtime;
   constexpr std::uint64_t extent = 2U << 20U;
   const std::array<std::uint64_t, 1> tiny{32};
   const auto one = GroupTokenReclaim(tiny, extent + 32, extent);
@@ -1099,7 +1098,7 @@ TEST(TokenStorage, ReclaimCreditsTinyAndCombinedHistoriesAtCatalogBoundaries) {
 }
 
 TEST(TokenStorage, ReclaimGroupsDoNotCreditCapacityThatDependsOnAnEarlierVictim) {
-  using namespace jitllm::runtime;
+  using namespace llmp::runtime;
   constexpr std::uint64_t extent = 2U << 20U;
   constexpr std::uint64_t used = 3 * extent + 8;
   const std::array<std::uint64_t, 2> capacities{3 * extent + 4, 4};
@@ -1119,7 +1118,7 @@ TEST(TokenStorage, ReclaimGroupsDoNotCreditCapacityThatDependsOnAnEarlierVictim)
 }
 
 TEST(TokenStorage, OnePrefixCreditsProspectiveBoundaryWithoutDuplicatingItsBonus) {
-  using namespace jitllm::runtime;
+  using namespace llmp::runtime;
   constexpr std::uint64_t extent = 2U << 20U;
   const std::array<std::uint64_t, 1> tiny{32};
   EXPECT_TRUE(GroupTokenReclaim(tiny, extent, extent, extent).empty());
@@ -1135,7 +1134,7 @@ TEST(TokenStorage, OnePrefixCreditsProspectiveBoundaryWithoutDuplicatingItsBonus
 }
 
 TEST(TokenStorage, AdmissionCreditsTheProspectiveBoundaryAndOtherCatalogRelease) {
-  using namespace jitllm::runtime;
+  using namespace llmp::runtime;
   constexpr std::uint64_t extent = 2U << 20U;
   // Existing usage 2E+32, incoming E-32, idle capacity E+32: its deletion
   // frees two currently charged extents but reduces the admission target

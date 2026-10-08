@@ -23,9 +23,9 @@
     "artifact_identity": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
   },
   "source_sha256": {
-    "benchmarks/gemma26_prefill_profile.cc": "aab71d1ccb49399ab5a4dad593d4441309e6a85f5c6f97cd6342d5870b7a0f1d",
-    "docs/experiments/gemma26-prefill-profile/llama_prefill_profile.cc": "2aa87ccb267a23a0cc989ed04672439dc216f69d89e31a7bb5c0a9e389099e4c",
-    "docs/experiments/gemma26-prefill-profile/trace_v2.py": "bf69781f5f4d5da6e5a999b0c9e23a623d801fb2385e0a56e75b0c584bf6bf7d"
+    "benchmarks/gemma26_prefill_profile.cc": "79286e510a9044d4877ba2ee62fab137eca6ee23168fa461e799e6352eb445c6",
+    "docs/experiments/gemma26-prefill-profile/llama_prefill_profile.cc": "6e725509735953dac181beb3e312616aeaf1e335ac5f788e2db0dbd3da2ca530",
+    "docs/experiments/gemma26-prefill-profile/trace_v2.py": "3007edafb37bf0c33c0ecc186f9fbc868a9061aa16d6a380613f8e2bc46f2645"
   },
   "original_libraries": [
     "36f5cb5b9361fd7ce4c9c38ad7276367a39e753a2f4764d9aca952b29c5aba55  /app/libllama.so",
@@ -299,7 +299,7 @@
   "measured_source_sha256": {
     "benchmarks/gemma26_prefill_profile.cc": "d125c9a33e61d848d545b97b3fb123b1e4bcacbea9835fd451bda19fec558769",
     "docs/experiments/gemma26-prefill-profile/llama_prefill_profile.cc": "a92c73df8e50935394c98ed1ef1c3eb9ac5095147095eb5c3a572d35e2935865",
-    "docs/experiments/gemma26-prefill-profile/trace_v2.py": "bf69781f5f4d5da6e5a999b0c9e23a623d801fb2385e0a56e75b0c584bf6bf7d"
+    "docs/experiments/gemma26-prefill-profile/trace_v2.py": "3007edafb37bf0c33c0ecc186f9fbc868a9061aa16d6a380613f8e2bc46f2645"
   },
   "source_after_measurement": "clang-format only; measured build input identities retained separately"
 }

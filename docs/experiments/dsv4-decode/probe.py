@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Compares the variants of a probed step (README.md, "Step 93, diagnosed").
 
   probe.py DIR
-      DIR is jitllm_spec_runner --check probe's --out DIR/probe: each
+      DIR is llmp_spec_runner --check probe's --out DIR/probe: each
       variant's named intermediates (VARIANT/index.json, dump.bin) and the
       target's states before the probed chunk (state-*.bin, state.json).
 

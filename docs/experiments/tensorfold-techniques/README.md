@@ -1,11 +1,11 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# TensorFold's techniques in jitLLM (M3): Qwen3.8's decode gap first
+# TensorFold's techniques in llmpalooza (M3): Qwen3.8's decode gap first
 
-TensorFold decodes Qwen3.8 Flash Next about 1.3–1.45× faster than jitLLM
+TensorFold decodes Qwen3.8 Flash Next about 1.3–1.45× faster than llmpalooza
 ([baselines](../fast-swap/baselines.md#qwen38-flash-next-tensorfold-mlx-4-bit-cross-quantization)):
-36.9–37.6 tok/s plain and 55.1–55.2 with its MTP drafts, against jitLLM's
+36.9–37.6 tok/s plain and 55.1–55.2 with its MTP drafts, against llmpalooza's
 25.7–25.9 and 42.5 / 39.1 (MTP depth 2,
 [qwen38-mtp](../qwen38-mtp/README.md)). The owner asked to adopt its
 techniques wherever they measurably help, speed before bit exactness
@@ -30,7 +30,7 @@ safetensors headers (`spark`, 2026-09-28): routed experts count 10 of 512 a
 layer, the token table one row, the n-gram table its 16 rows, everything
 else whole.
 
-| Part | jitLLM (Mia's NVFP4, MXFP8, BF16) | TensorFold (MLX 4-bit g32: 4 bits, a BF16 scale and bias per 32) |
+| Part | llmpalooza (Mia's NVFP4, MXFP8, BF16) | TensorFold (MLX 4-bit g32: 4 bits, a BF16 scale and bias per 32) |
 | --- | ---: | ---: |
 | Routed experts, 10 × 48 layers | 1,327 MB (NVFP4) | 1,475 MB |
 | Shared expert, 48 | 243 MB (MXFP8) | 147 MB |
@@ -43,17 +43,17 @@ else whole.
 | Gated DeltaNet state, read and written | 453 MB before this study, 226 MB after | 226 MB (double-buffered) |
 | **Total** | **7.55 GB before, 7.33 GB after** | **4.48 GB** |
 
-This full-read model assigns jitLLM 1.64–1.69× TensorFold's bytes. The MXFP8 dense layers (8.25
+This full-read model assigns llmpalooza 1.64–1.69× TensorFold's bytes. The MXFP8 dense layers (8.25
 bits a weight against 5) and the BF16 hyper-connection products and head
 (16 against 5) make up all of it; Mia's NVFP4 experts read *fewer* bytes
 than MLX's (4.5 bits against 5).
 
-**Effective bandwidth estimates.** jitLLM's plain step took 37.4 ms on the device
+**Effective bandwidth estimates.** Llmpalooza's plain step took 37.4 ms on the device
 before this study ([qwen38-mtp](../qwen38-mtp/README.md#performance-and-memory)):
 7.55 GB at 202 GB/s. TensorFold's 36.9–37.6 tok/s (the baseline) is 165–168
 GB/s on its 4.48 GB, and its 39.4–39.8 tok/s in this study's session
 (`"draft": false`, 32 and 256 tokens of `prose`) 177–178 GB/s. Applying
-jitLLM's modeled 202 GB/s to TensorFold's 4.48 GB predicts 22.2 ms, 45 tok/s.
+llmpalooza's modeled 202 GB/s to TensorFold's 4.48 GB predicts 22.2 ms, 45 tok/s.
 This counterfactual makes format a plausible substantial explanation of the
 solo gap. Checkpoint bytes are not measured DRAM traffic, however, and
 TensorFold's kernel profile was unavailable. Cache reuse, numerical products,
@@ -61,8 +61,8 @@ state and scheduling remain confounded; these estimates establish neither a
 complete format attribution nor an engine-for-engine advantage. Concurrent
 sharing also changes how often common weights need to be read.
 
-**Where jitLLM's step went** (Nsight Systems, the decode graph's nodes
-traced, `spark-b`, `jitllm_swap_pairs --a qwen38 --bench 16`, 8 steps;
+**Where llmpalooza's step went** (Nsight Systems, the decode graph's nodes
+traced, `spark-b`, `llmp_swap_pairs --a qwen38 --bench 16`, 8 steps;
 38.1 ms busy of a 38.4 ms step under tracing):
 
 | Kernel class | ms a step | Bytes | GB/s |
@@ -106,7 +106,7 @@ the state (read one, write the other) and copies nothing.
 - *The n-gram rows* from the host page cache (a memory map), copied each
   step.
 - *CUDA graphs* for decode, verify windows and draft steps; about 17
-  kernels a layer (from its forward pass), against jitLLM's 41 (34 after
+  kernels a layer (from its forward pass), against llmpalooza's 41 (34 after
   this study).
 - *Its drafter:* its MTP layer over a 79,591-token draft vocabulary, 1 to
   6 drafts a round, a chain cut before a draft whose probability is under
@@ -121,18 +121,18 @@ Each kept only where end-to-end decode moved. Stage 1 is the first four
 rows (with the adaptive window's plumbing, below), stage 2 adds PDL, and
 the final build keeps the BF16 vector kernel to one row.
 
-| Technique (TensorFold's, or its lesson) | jitLLM change | Effect |
+| Technique (TensorFold's, or its lesson) | llmpalooza change | Effect |
 | --- | --- | --- |
-| The recurrent state double-buffered | `jitllm.gdn.step`: the fast graph's gated delta rule up to 16 rows writes the new state over the old in place (the columns kernel's arithmetic, so the same state and output bit for bit); no state rows in the output, no `set_rows` copy. A verify's reads the state and writes none (the commit replays the kept rows) | 226 MB a token less; the output product after it 89 us instead of 98–102; `set_rows` (0.28 ms) gone |
-| Enough blocks, not one | `jitllm.hc.prep` up to 8 tokens as a cluster of 8 blocks a token (`HcPrepClusterKernel`), its sums through distributed shared memory in block order, the second half's weights prefetched | 11.2 us instead of 13–18 a mix: −0.29 ms |
-| Its own vector kernels for the mixes | `GemvBf16`: the fast graph's hyper-connection products at one row (a decode step; wider, cuBLAS, below) on a jitLLM BF16 vector kernel (a warp a row for the up product, 128 threads a row for the down one, every weight load issued before the arithmetic) instead of cuBLAS's gemv and split-K reduce | 5.73 ms instead of 6.15 |
-| About 17 kernels a layer | the one-row short convolution on the fused `jitllm.gdn.conv` (the reference fusion's arithmetic), its history kept by `jitllm.gdn.history` reading the old history | 7 kernels a layer to 3: −0.4 ms, and fewer gaps (0.21 ms a step instead of 0.58) |
+| The recurrent state double-buffered | `llmp.gdn.step`: the fast graph's gated delta rule up to 16 rows writes the new state over the old in place (the columns kernel's arithmetic, so the same state and output bit for bit); no state rows in the output, no `set_rows` copy. A verify's reads the state and writes none (the commit replays the kept rows) | 226 MB a token less; the output product after it 89 us instead of 98–102; `set_rows` (0.28 ms) gone |
+| Enough blocks, not one | `llmp.hc.prep` up to 8 tokens as a cluster of 8 blocks a token (`HcPrepClusterKernel`), its sums through distributed shared memory in block order, the second half's weights prefetched | 11.2 us instead of 13–18 a mix: −0.29 ms |
+| Its own vector kernels for the mixes | `GemvBf16`: the fast graph's hyper-connection products at one row (a decode step; wider, cuBLAS, below) on a llmpalooza BF16 vector kernel (a warp a row for the up product, 128 threads a row for the down one, every weight load issued before the arithmetic) instead of cuBLAS's gemv and split-K reduce | 5.73 ms instead of 6.15 |
+| About 17 kernels a layer | the one-row short convolution on the fused `llmp.gdn.conv` (the reference fusion's arithmetic), its history kept by `llmp.gdn.history` reading the old history | 7 kernels a layer to 3: −0.4 ms, and fewer gaps (0.21 ms a step instead of 0.58) |
 | Enough bytes in flight (stage 2) | programmatic dependent launch for `Mxfp8Gemv`, `GemvBf16` and the routed experts' `Gemv`, each prefetching its first weights into L2 before waiting for the kernel before; the small kernels before them trigger early | +1.6% end to end (below) |
 
 A decode step went from 1,957 kernels to 1,644, and from 38.1 to 36.3 ms
 busy under tracing (stage 1, `nsys`).
 
-**Plain decode** (`jitllm_swap_pairs --a qwen38 --bench 128`, the runtime
+**Plain decode** (`llmp_swap_pairs --a qwen38 --bench 128`, the runtime
 wake, a request's lease, graphs; `spark-b`, no other GPU process, each
 the mean of 3 passes of 128 steps):
 
@@ -154,9 +154,9 @@ the remaining format contribution has not been isolated.
 ## Speculation: the adaptive window
 
 The MTP draft's argmax now also gives the draft's softmax probability over
-the draft head's rows (`jitllm.argmax` with probabilities, one more pass
+the draft head's rows (`llmp.argmax` with probabilities, one more pass
 over the row), which `Qwen38Runner::Draft` returns beside the drafts, and
-`jitllm_qwen38_spec --window P` verifies the first draft and each later one
+`llmp_qwen38_spec --window P` verifies the first draft and each later one
 only while its probability is at least P, TensorFold's rule at its 0.3.
 `spark-b`, stage 2, the greedy check (256 tokens of `prose` and `code`,
 the six chat prompts' 32), one run each, 16:58–17:10:
@@ -257,7 +257,7 @@ the ~40 ms the products take), and the rest to the 230–245 alone is not
 isolated. Its hyper-connection prep (`HcPreKernel`, one block a token,
 0.82 ms a step) is the same shape of lever as Qwen3.8's (13–18 us to 11),
 worth about 1%, and was not taken. Decode before and after (`spark-b`,
-`jitllm_swap_pairs --a dsv4 --bench 64`, a request's lease, graphs, the
+`llmp_swap_pairs --a dsv4 --bench 64`, a request's lease, graphs, the
 same session): main's build 21.99 tok/s (45.16 ms on the device), this
 study's 22.15 (44.83): unchanged within the runs' spread, as expected;
 DSpark was not rerun (its path is unchanged).
@@ -275,7 +275,7 @@ and migration counters, `MemAvailable`):
 | A decode bench whose run another agent's 100 GB process started beside (the OOM killer ended it) | 731,160 | 291,801 direct-compaction stalls |
 
 So on GB10 our runs are not disturbed by migration or compaction when
-memory is not overcommitted: jitLLM's direct reads keep the page cache out
+memory is not overcommitted: llmpalooza's direct reads keep the page cache out
 of it, and its extents are allocated once. The bursts TensorFold reports
 come with memory pressure, which the memory gate exists to prevent; the
 two contaminated windows are where two agents' processes met on one
@@ -286,7 +286,7 @@ Spark.
 The owner's coarse rule (D-085's note). **The near-tie bound, recorded
 before the new build was compared with the oracle** (16:22, from main's
 build only): the top-1 to top-2 margin's move between main's two paths on
-the oracle's tokens (`jitllm_qwen38_exec` as run and `--stepwise`) has
+the oracle's tokens (`llmp_qwen38_exec` as run and `--stepwise`) has
 p50 0.23, p95 0.99, p99 1.94, maximum 2.17 over 192 steps; **B = 2.0** (the
 p99 on the oracle's 0.125 grid; qwen38-native's p95 rule gave 1.0).
 
@@ -336,7 +336,7 @@ PDL changes no arithmetic.
 
 ## Judgement calls
 
-- **A new operation for the in-place step** (`jitllm.gdn.step`), not a
+- **A new operation for the in-place step** (`llmp.gdn.step`), not a
   flag on GGML's `gated_delta_net` node: the node's output layout (rows
   then state) is GGML's, and an operation that writes its state operand is
   explicit in the plan and its check (the state disjoint from every other
@@ -390,11 +390,11 @@ PDL changes no arithmetic.
   kernels, twice; the host's nsys mounted into the container was queued
   when `spark` was reserved. The TensorFold runs this study still needs:
   one decode step under the host's `nsys` (2025.3.2) in the container,
-  plain and with drafts, to set its kernel classes beside jitLLM's.
+  plain and with drafts, to set its kernel classes beside llmpalooza's.
 - **The intermediate builds' two forced-run tokens** (above) were not
   diagnosed; the final build passes, and a Qwen3.8 probe like DeepSeek's
   is the tool if one comes back.
-- **Harness, not runtime:** the window is `jitllm_qwen38_spec`'s; the
+- **Harness, not runtime:** the window is `llmp_qwen38_spec`'s; the
   runtime's chat path (D-096) gets the kernels, not the window.
 
 ## Reproduce
@@ -403,11 +403,11 @@ On `spark-b`, the `spark-native` build, the artifacts of
 [qwen38-native](../qwen38-native/README.md) (`c4fb47a9…`) and
 [qwen38-mtp](../qwen38-mtp/README.md) (`056a750e…`):
 
-    jitllm_swap_pairs --a qwen38 --b dsv4 --cycles 0 --bench 128 ...   # plain decode
-    jitllm_qwen38_spec ... --check greedy|forced|swap [--draft N] [--window P]
-    jitllm_qwen38_exec --artifact Q --context 4096 --prompts prompts.tsv \
+    llmp_swap_pairs --a qwen38 --b dsv4 --cycles 0 --bench 128 ...   # plain decode
+    llmp_qwen38_spec ... --check greedy|forced|swap [--draft N] [--window P]
+    llmp_qwen38_exec --artifact Q --context 4096 --prompts prompts.tsv \
       --force forced.tsv --generate 32 [--stepwise] --out DIR          # greedy data
-    jitllm_qwen38_exec --artifact Q --context 4096 --ppl ppl.tsv --max-rows 8 --out DIR
+    llmp_qwen38_exec --artifact Q --context 4096 --ppl ppl.tsv --max-rows 8 --out DIR
     python3 ../qwen38-native/compare.py ppl ../fast-swap DIR
 
 The bytes tables come from the checkpoints' safetensors and GGUF headers;

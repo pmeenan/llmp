@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/dsv4_weighted_reduce.h"
@@ -9,10 +9,10 @@
 #include <expected>
 #include <limits>
 
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 bool Shape(const ggml_tensor* tensor, const std::array<std::int64_t, 4>& shape) {
@@ -94,7 +94,7 @@ std::expected<void, KernelFailure> CheckDsv4WeightedReduce(const Dsv4WeightedRed
 }
 
 std::expected<void, KernelFailure> CheckDsv4OrderedReduce(const ggml_tensor* node) {
-  if (JitllmOpOf(node) != JitllmOp::kDsv4WeightedReduce || !detail::Bound(node) ||
+  if (LlmpOpOf(node) != LlmpOp::kDsv4WeightedReduce || !detail::Bound(node) ||
       !detail::Bound(node->src[0]) || !detail::Bound(node->src[1])) {
     return detail::Rejected("not a bound ordered weighted-reduction node");
   }
@@ -115,4 +115,4 @@ std::expected<void, KernelFailure> CheckDsv4OrderedReduce(const ggml_tensor* nod
                                   .values = {node, base::Bytes(ggml_nbytes(node))}});
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

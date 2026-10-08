@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Records the FP16 toolchain bridge's executed plan (reference only).
 
@@ -212,7 +212,7 @@ def parse_llama_log(path):
 def parse_pool_log(path):
     out = []
     for line in open(path, errors="replace"):
-        m = re.search(r"jitllm_pool: nodes=(\d+) last_ne1=(\d+) allocs=(\d+) peak_used=(\d+) pool_size=(\d+) "
+        m = re.search(r"llmp_pool: nodes=(\d+) last_ne1=(\d+) allocs=(\d+) peak_used=(\d+) pool_size=(\d+) "
                       r"used_after=(\d+)", line)
         if m:
             out.append(dict(zip(("nodes", "rows", "allocs", "peak_used", "pool_size", "used_after"),
@@ -547,7 +547,7 @@ def main():
         c["launches"] = [[l[0], index[l[1]], *l[2:]] if l[0] == "kernel" else l for l in c["launches"]]
         calls.append(c)
     out = {
-        "description": "Executed plan of the FP16 toolchain bridge (llama.cpp b29c606e2 built with the jitLLM SDK) "
+        "description": "Executed plan of the FP16 toolchain bridge (llama.cpp b29c606e2 built with the llmpalooza SDK) "
                        "for the four P0 arms, from nsys CUDA traces, cuBLAS/cuBLASLt logs, cuobjdump SASS and "
                        "an instrumented pool-peak copy. Reference only.",
         "token_format": {

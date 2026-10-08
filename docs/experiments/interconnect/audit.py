@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Verify measured executable identities and retain a read-only process audit."""
 import hashlib
@@ -10,7 +10,7 @@ import re
 import subprocess
 import time
 
-root = Path('/home/pmeenan/.local/share/jitllm/interconnect')
+root = Path('/home/pmeenan/.local/share/llmp/interconnect')
 pins = json.loads(Path(__file__).with_name('pins.json').read_text())
 files = {root/'nccl-runtime/lib/libnccl.so.2.30.7': pins['nccl']['runtime_sha256']}
 files.update({root/'nccl-tests-runtime'/name: digest

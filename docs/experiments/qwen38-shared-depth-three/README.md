@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen shared draft cap three — 2026-10-04
@@ -86,7 +86,7 @@ Aggregate report:
 Raw controller, pins, configs, full responses, settings logs, six gates
 and retirement receipts remain at
 `spark-b:~/scratch/qwen-shared-depth-three/screen1/` and
-`~/scratch/jitllm-m3-qwen-shared-depth-three-2026-10-04/`;
+`~/scratch/llmp-m3-qwen-shared-depth-three-2026-10-04/`;
 spill payloads remain on Spark B. Installed GPU supervisor job
 `qwen-shared-cap-three-screen` completes zero and is waited on, taking
 165 seconds. Reproduce with the frozen fixtures/client, the checked

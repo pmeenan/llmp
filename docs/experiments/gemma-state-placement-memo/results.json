@@ -18,8 +18,8 @@
         "bytes": 16576
       },
       "tests/unit/release_mapped_test.cc": {
-        "sha256": "85640828096635a46e19f082f249f96fe1f2b0a12b33cd59ef43616bef494ab9",
-        "bytes": 18637
+        "sha256": "333ad60f20749e4320c94e72cd88eab7d0bb7eec86240c155c2b0c48ee74197a",
+        "bytes": 18609
       },
       "tests/unit/live_state_test.cc": {
         "sha256": "e574c5db7ead6b68ed0e96f9d623168648d46624b664ad9cdf898834d2fde6e8",

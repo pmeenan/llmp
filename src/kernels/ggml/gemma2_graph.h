@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Descriptor-only Gemma2 chunks. Products share columns; each segment has
 // independent positions, causal/window masks and cache roots.
-#ifndef JITLLM_KERNELS_GGML_GEMMA2_GRAPH_H_
-#define JITLLM_KERNELS_GGML_GEMMA2_GRAPH_H_
+#ifndef LLMP_KERNELS_GGML_GEMMA2_GRAPH_H_
+#define LLMP_KERNELS_GGML_GEMMA2_GRAPH_H_
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -17,7 +17,7 @@
 #include "kernels/ggml/tensors.h"
 #include "model/gemma2.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 struct Gemma2SegmentShape {
   std::uint32_t slot = 0, rows = 0, n_past = 0, global_n_kv = 0, local_n_kv = 0;
   // Fresh positions/cells/masks are inputs, not cache-key dimensions. Equal
@@ -103,5 +103,5 @@ std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(
     const model::Gemma2StateLayout& state, const Gemma2ChunkShape& shape,
     const Gemma2GraphOptions& options = {},
     const std::function<bool(ggml_type, std::int64_t)>& dense_mmvq_shape = {});
-}  // namespace jitllm::kernels::ggml
-#endif  // JITLLM_KERNELS_GGML_GEMMA2_GRAPH_H_
+}  // namespace llmp::kernels::ggml
+#endif  // LLMP_KERNELS_GGML_GEMMA2_GRAPH_H_

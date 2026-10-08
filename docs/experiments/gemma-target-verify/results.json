@@ -234,7 +234,7 @@
       }
     }
   ],
-  "raw_external": "/tmp/jitllm-m35-coordination/gemma-target-verify-raw",
+  "raw_external": "/tmp/llmp-m35-coordination/gemma-target-verify-raw",
   "local_light": {
     "reuse": "PASS 1693 files",
     "headers": "PASS 1693 files",

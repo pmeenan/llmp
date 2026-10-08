@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/set_rows_group.h"
@@ -9,7 +9,7 @@
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 bool BoundedChain(const ggml_tensor* tensor) {
   for (unsigned depth = 0; tensor != nullptr && depth < 64; ++depth) {
@@ -52,4 +52,4 @@ std::expected<void, KernelFailure> CheckSetRowsGroup(std::span<const ggml_tensor
   }
   return {};
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

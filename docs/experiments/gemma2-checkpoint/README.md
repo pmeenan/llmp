@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma2 checkpoint and kept-state adoption
@@ -85,7 +85,7 @@ source stat and metadata/index identities are checked before inference.
 
 Source and actual binary/receipt bindings, private files, logs and installed
 supervisor receipts stay outside Git under
-`/tmp/jitllm-m35-coordination/gemma2-checkpoint-raw` and Spark B's
+`/tmp/llmp-m35-coordination/gemma2-checkpoint-raw` and Spark B's
 `~/scratch/m35-gemma2-checkpoint/run1`. The focused installed GPU job has a
 600-second limit and stops on failure. No full suite, fresh stock inference or
 performance comparison is needed for this internal state foundation; arithmetic

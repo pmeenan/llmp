@@ -149,9 +149,9 @@
     "input_preparation_summary_sha256": "6ea36043fd8ea910f00527cec66b555df684462ae3f0356c94c8c3cd4e9574e8",
     "input_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
     "input_text_manifest_sha256": "c30dfd97a19615fcc4eb1831a7cc053f39336e1466fa0744f9c78a1b218153d8",
-    "judge_sha256": "702251d1afc20d75dc7c27b5a7724c4ce2a8a0ce60222b52aab52549264dab71",
+    "judge_sha256": "74c29de64d8189035e6a687c35818ee7ac4cfe14f14e0e7e749641885f2f0a59",
     "native_binary": {
-      "path": "/home/pmeenan/.local/share/jitllm/gemma-production-serving/native1",
+      "path": "/home/pmeenan/.local/share/llmp/gemma-production-serving/native1",
       "sha256": "5ac9f0ed4ebdfe549a26c70a74e81b538c91eaac8283be41276a87f474fe24b5"
     },
     "native_sdk_receipt_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",

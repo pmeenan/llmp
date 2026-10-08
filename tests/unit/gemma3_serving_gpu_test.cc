@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <gtest/gtest.h>
@@ -23,20 +23,20 @@
 #include "scheduler/scheduler.h"
 #include "tokenizer_fixtures.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 class Gemma3ServingGpu : public ::testing::Test {
  protected:
-  struct PreparationObserver final : jitllm::scheduler::PageInObserver {
-    jitllm::catalog::Catalog* catalog = nullptr;
-    jitllm::catalog::ExtentId target;
+  struct PreparationObserver final : llmp::scheduler::PageInObserver {
+    llmp::catalog::Catalog* catalog = nullptr;
+    llmp::catalog::ExtentId target;
     std::uint64_t generation = 0;
-    jitllm::catalog::RegistrationId registration;
+    llmp::catalog::RegistrationId registration;
     bool held = false;
-    void Staged(jitllm::catalog::ExtentId extent, jitllm::scheduler::PageInEvent event) override {
-      if (held || extent != target || event != jitllm::scheduler::PageInEvent::kResident) return;
+    void Staged(llmp::catalog::ExtentId extent, llmp::scheduler::PageInEvent event) override {
+      if (held || extent != target || event != llmp::scheduler::PageInEvent::kResident) return;
       const auto view = catalog->Describe(extent);
       if (view && view->content_generation == generation && !view->discarded &&
-          view->descriptor.memory_class == jitllm::catalog::MemoryClass::kLiveState) {
+          view->descriptor.memory_class == llmp::catalog::MemoryClass::kLiveState) {
         if (auto acquired = catalog->AddRegistration(extent); acquired) {
           registration = *acquired;
           held = true;
@@ -59,14 +59,14 @@ class Gemma3ServingGpu : public ::testing::Test {
   const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
   void SetUp() override {
     const std::filesystem::path artifact =
-        jitllm::test_support::ModelsDir() +
+        llmp::test_support::ModelsDir() +
         "/gemma3-import-20261007/artifacts/"
         "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb";
     if (std::error_code error; !std::filesystem::exists(artifact, error)) {
       GTEST_SKIP() << "no Gemma3 artifact in " << artifact;
     }
     // Spill files need direct I/O: scratch in the build tree.
-    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path root = scratch != nullptr ? scratch : ::testing::TempDir();
     runner =
         std::make_unique<en::Gemma3Runner>(node,
@@ -90,8 +90,8 @@ class Gemma3ServingGpu : public ::testing::Test {
     ASSERT_TRUE(node.MapWorkspace(runner->activations_needed(), runner->pool_needed()));
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     node.SetHostFloor(runner->host_input_bytes() + runner->plan_floor_bytes() + (16ULL << 20U));
-    ASSERT_TRUE(node.Start(jitllm::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
-                                               4 * node.StateCapacity())));
+    ASSERT_TRUE(node.Start(llmp::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
+                                             4 * node.StateCapacity())));
     ASSERT_TRUE(runner->Register());
     ASSERT_TRUE(runner->Bind());
     node.Run();
@@ -110,13 +110,13 @@ class Gemma3ServingGpu : public ::testing::Test {
   en::Status Held(const std::function<en::Status()>& body) {
     return node.WithRequest(0, runner->closure(), "Gemma3 serving lifecycle", body);
   }
-  std::expected<jitllm::base::Sha256Digest, std::string> StateHash(std::uint32_t id) {
+  std::expected<llmp::base::Sha256Digest, std::string> StateHash(std::uint32_t id) {
     const auto slot = runner->request_slot(id);
     if (!slot) return en::support::Error(slot.error());
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto buffer = node.Pinned(1U << 20U, 0, staging);
     if (!buffer) return en::support::Error(buffer.error());
-    jitllm::base::Sha256 hash;
+    llmp::base::Sha256 hash;
     for (const auto& range : (*slot)->state().used_ranges()) {
       for (std::uint64_t at = 0; at < range.bytes; at += 1U << 20U) {
         const en::LiveState::Range part{range.region, range.offset + at,
@@ -153,7 +153,7 @@ TEST_F(Gemma3ServingGpu, ServingRestoreNeedsProvenCompleteCopiesAndProtectsThePe
     if (!slot) return en::support::Error(slot.error());
     const auto footprint = (*slot)->state().used_ranges();
     const auto saved_bytes = (*slot)->used_state_bytes();
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto pinned = node.Pinned(saved_bytes, 0, staging);
     if (!pinned) return en::support::Error(pinned.error());
     auto exercised = [&]() -> en::Status {
@@ -307,7 +307,7 @@ TEST_F(Gemma3ServingGpu, HeldSelectionPreservesAdmissionAndRefreshesChangedOwner
 TEST_F(Gemma3ServingGpu, JointPrefillFundsTwoFullChunksAndReplaysFreshIndependentInputs) {
   EXPECT_EQ(runner->CheckpointLayoutId(), "gemma3-4b-f16-kv-device-v1:4096:128:4096:1280");
   std::array<std::vector<float>, 2> saved_heads[2];
-  std::array<jitllm::base::Sha256Digest, 2> saved_states[2];
+  std::array<llmp::base::Sha256Digest, 2> saved_states[2];
   const auto status = Held([&]() -> en::Status {
     for (std::uint32_t pass = 0; pass < 4; ++pass) {
       for (std::uint32_t id = 0; id < 2; ++id)
@@ -333,7 +333,7 @@ TEST_F(Gemma3ServingGpu, JointPrefillFundsTwoFullChunksAndReplaysFreshIndependen
           work[id] = {id, past, std::span(tokens[id]).last(1), &heads[id]};
         if (auto ran = runner->Wave(work); !ran) return ran;
       }
-      std::array<jitllm::base::Sha256Digest, 2> states;
+      std::array<llmp::base::Sha256Digest, 2> states;
       for (std::uint32_t id = 0; id < 2; ++id) {
         EXPECT_EQ((*runner->request_slot(id))->completed_positions(), 259U);
         auto hash = StateHash(id);
@@ -372,7 +372,7 @@ TEST_F(Gemma3ServingGpu, JointPrefillFundsTwoFullChunksAndReplaysFreshIndependen
     std::array<std::vector<float>, 2> heads;
     if (auto ran = Single(1, 259, continuation, heads[1]); !ran) return ran;
     if (auto ran = Single(1, 387, continuation, heads[1]); !ran) return ran;
-    std::array<jitllm::base::Sha256Digest, 2> before;
+    std::array<llmp::base::Sha256Digest, 2> before;
     for (std::uint32_t id = 0; id < 2; ++id) {
       auto hash = StateHash(id);
       if (!hash) return en::support::Error(hash.error());
@@ -407,7 +407,7 @@ TEST_F(Gemma3ServingGpu, PrefillHintsBuildAndCaptureAheadWithoutChangingStateOrH
     tokens[i] = prompt[(i * 7 + i / 5) % prompt.size()];
   const auto status = Held([&]() -> en::Status {
     std::vector<float> reference_head;
-    jitllm::base::Sha256Digest reference_state{};
+    llmp::base::Sha256Digest reference_state{};
     // 0: no hints; 1: hints; 2: hints whose second chunk is wrong; 3: hints, warm.
     for (std::uint32_t pass = 0; pass < 4; ++pass) {
       if (auto cleared = runner->Clear(0); !cleared) return cleared;
@@ -467,7 +467,7 @@ TEST_F(Gemma3ServingGpu, SuppressedNextHeadsStillCaptureTheCorrectAfterOwnerPosi
   }
   const auto status = Held([&]() -> en::Status {
     std::array<std::vector<float>, 2> expected;
-    std::array<jitllm::base::Sha256Digest, 2> expected_state{};
+    std::array<llmp::base::Sha256Digest, 2> expected_state{};
     for (const bool hinted : {false, true}) {
       for (std::uint32_t id = 0; id < 2; ++id)
         if (auto r = runner->Clear(id); !r) return r;
@@ -555,7 +555,7 @@ TEST_F(Gemma3PreparationGpu, SuccessfulWrappedWaveWithHeldFutureQuarantinesEvery
     if (auto armed = node.Call(
             [&]() -> en::Status {
               const auto view = node.catalog().Describe(future);
-              if (!view || view->state != jitllm::catalog::ExtentState::kNonresident)
+              if (!view || view->state != llmp::catalog::ExtentState::kNonresident)
                 return en::support::Error("test future must be unpublished");
               observer.target = future;
               observer.generation = view->content_generation;
@@ -580,7 +580,7 @@ TEST_F(Gemma3PreparationGpu, SuccessfulWrappedWaveWithHeldFutureQuarantinesEvery
             [&]() -> en::Status {
               EXPECT_TRUE(observer.held);
               const auto view = node.catalog().Describe(future);
-              EXPECT_EQ(view->state, jitllm::catalog::ExtentState::kResident);
+              EXPECT_EQ(view->state, llmp::catalog::ExtentState::kResident);
               EXPECT_FALSE(view->discarded);
               EXPECT_EQ(view->content_generation, observer.generation);
               EXPECT_EQ(view->registrations, 1U);

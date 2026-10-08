@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 import argparse, hashlib, json, os, signal, subprocess, time
 from pathlib import Path
@@ -9,9 +9,9 @@ parser.add_argument('--out', type=Path, required=True)
 args = parser.parse_args()
 T = args.tree.resolve()
 R = args.out.resolve()
-S = Path.home() / '.local/share/jitllm/sdk/aarch64-c09daba6ac31edee'
+S = Path.home() / '.local/share/llmp/sdk/aarch64-c09daba6ac31edee'
 M = args.source_manifest.resolve()
-E = dict(os.environ, JITLLM_TEST_DATA=str(T / 'tests/unit/data'), LD_LIBRARY_PATH=f'{T}/build/spark-native/lib/jitllm:{T}/build/spark-native/cublas')
+E = dict(os.environ, LLMP_TEST_DATA=str(T / 'tests/unit/data'), LD_LIBRARY_PATH=f'{T}/build/spark-native/lib/llmp:{T}/build/spark-native/cublas')
 os.umask(63)
 
 def sha(p):
@@ -63,12 +63,12 @@ def run(n, cmd, timeout):
 R.mkdir(parents=True, exist_ok=False)
 source_check()
 if not (T / 'tests/unit/data').is_dir():
-    raise RuntimeError('JITLLM_TEST_DATA directory absent')
+    raise RuntimeError('LLMP_TEST_DATA directory absent')
 guard('before')
-targets = ['jitllm-runtime', 'jitllm_qwen38_spec']
+targets = ['llmp-runtime', 'llmp_qwen38_spec']
 run('build', [str(S / 'bin/cmake'), '--build', str(T / 'build/spark-native'), '--target', *targets, '--parallel', '4'], 480)
-binaries = [T / 'build/spark-native/benchmarks/jitllm_qwen38_spec', T / 'build/spark-native/src/runtime/jitllm-runtime']
-receipt = T / 'build/spark-native/jitllm-receipt.json'
+binaries = [T / 'build/spark-native/benchmarks/llmp_qwen38_spec', T / 'build/spark-native/src/runtime/llmp-runtime']
+receipt = T / 'build/spark-native/llmp-receipt.json'
 rc = json.loads(receipt.read_text())
 if not rc['official'] or rc['sdk'] != S.name or (not rc['cuda']):
     raise RuntimeError('unapproved SDK build receipt')

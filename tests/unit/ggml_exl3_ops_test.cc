@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The GGML operations the native EXL3 plan adds (kernels/ggml/ops.h;
-// docs/backend-proof.md, "Native EXL3 operation plan") under jitLLM's
+// docs/backend-proof.md, "Native EXL3 operation plan") under llmpalooza's
 // launch context on a GB10 (label `gpu`; the over-read probe and the host
 // checks also on a discrete GPU the build targets, `gpu-discrete`, D-082):
 // - the casts (ggml.convert): F32 to F16 rounds to nearest even and F16 to
@@ -61,15 +61,15 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::KernelError;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-using jitllm::test_support::Event;
-using jitllm::test_support::FailedCode;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::KernelError;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+using llmp::test_support::Event;
+using llmp::test_support::FailedCode;
 
 constexpr std::int64_t kHead = 64;
 constexpr std::int64_t kHeads = 14;
@@ -84,7 +84,7 @@ float FromHalf(std::uint16_t bits) { return static_cast<float>(std::bit_cast<_Fl
 class GgmlExl3OpsTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
   }
   void TearDown() override {
@@ -153,7 +153,7 @@ class GgmlExl3OpsTest : public ::testing::Test {
   std::vector<Event> Record(Run&& run) {
     std::vector<Event> launched;
     {
-      jitllm::test_support::Recording recording;
+      llmp::test_support::Recording recording;
       std::forward<Run>(run)();
       launched = recording.Take();
     }
@@ -165,7 +165,7 @@ class GgmlExl3OpsTest : public ::testing::Test {
   std::vector<void*> device_;
 };
 
-void Launched(const std::expected<void, jitllm::kernels::ggml::KernelFailure>& result) {
+void Launched(const std::expected<void, llmp::kernels::ggml::KernelFailure>& result) {
   EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().detail);
 }
 
@@ -192,13 +192,13 @@ TEST_F(GgmlExl3OpsTest, ConvertRoundsToNearestEvenAndWidensExactly) {
   ggml_tensor* narrow = ggml_cpy(c, src, dst);
   auto launch = Launcher();
   const std::vector<Event> events =
-      Record([&] { Launched(jitllm::kernels::ggml::Convert(*launch, narrow)); });
+      Record([&] { Launched(llmp::kernels::ggml::Convert(*launch, narrow)); });
   const auto halves = Download<std::uint16_t>(dst);
   for (std::size_t i = 0; i < values.size(); ++i) {
     ASSERT_EQ(halves[i], HalfBits(values[i])) << i << ": " << values[i];
   }
   ASSERT_EQ(events.size(), 1U);
-  EXPECT_EQ(jitllm::test_support::NormalizedKernelName(events[0].name),
+  EXPECT_EQ(llmp::test_support::NormalizedKernelName(events[0].name),
             "_Z21cpy_scalar_contiguousIf6__halfEvPKcPcl");
   EXPECT_EQ(events[0].grid[0], ((rows * width) + 63) / 64);  // the record's [448] at 32 rows
   EXPECT_EQ(events[0].block[0], 64U);
@@ -208,7 +208,7 @@ TEST_F(GgmlExl3OpsTest, ConvertRoundsToNearestEvenAndWidensExactly) {
   ggml_tensor* src16 = ggml_new_tensor_3d(c, GGML_TYPE_F16, kHead, width / kHead, rows);
   TensorArena::Bind(src16, reinterpret_cast<std::uintptr_t>(dst->data));
   ggml_tensor* widen = ggml_cpy(c, src16, back);
-  Launched(jitllm::kernels::ggml::Convert(*launch, widen));
+  Launched(llmp::kernels::ggml::Convert(*launch, widen));
   const auto widened = Download<float>(back);
   for (std::size_t i = 0; i < halves.size(); ++i) {
     ASSERT_EQ(std::bit_cast<std::uint32_t>(widened[i]),
@@ -219,17 +219,17 @@ TEST_F(GgmlExl3OpsTest, ConvertRoundsToNearestEvenAndWidensExactly) {
   // Refused: another shape of the same count (GGML's builder asserts the
   // count), the same type, BF16, overlapping operands.
   ggml_tensor* other = Place<std::uint16_t>(ggml_new_tensor_1d(c, GGML_TYPE_F16, width * rows));
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::CheckConvert(ggml_cpy(c, src, other))),
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckConvert(ggml_cpy(c, src, other))),
             KernelError::kRejected);
   ggml_tensor* same = Place<float>(ggml_new_tensor_2d(c, GGML_TYPE_F32, width, rows));
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::CheckConvert(ggml_cpy(c, src, same))),
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckConvert(ggml_cpy(c, src, same))),
             KernelError::kRejected);
   ggml_tensor* bf16 = Place<std::uint16_t>(ggml_new_tensor_2d(c, GGML_TYPE_BF16, width, rows));
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::CheckConvert(ggml_cpy(c, src, bf16))),
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckConvert(ggml_cpy(c, src, bf16))),
             KernelError::kRejected);
   ggml_tensor* over = ggml_new_tensor_2d(c, GGML_TYPE_F16, width, rows);
   TensorArena::Bind(over, reinterpret_cast<std::uintptr_t>(src->data) + 256);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::CheckConvert(ggml_cpy(c, src, over))),
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckConvert(ggml_cpy(c, src, over))),
             KernelError::kRejected);
 }
 
@@ -254,7 +254,7 @@ TEST_F(GgmlExl3OpsTest, EmbeddingWidensTheBf16TableExactly) {
   Place<float>(node);
   auto launch = Launcher();
   const std::vector<Event> events =
-      Record([&] { Launched(jitllm::kernels::ggml::GetRows(*launch, node)); });
+      Record([&] { Launched(llmp::kernels::ggml::GetRows(*launch, node)); });
   const auto out = Download<float>(node);
   for (std::size_t r = 0; r < ids.size(); ++r) {
     for (std::int64_t j = 0; j < width; ++j) {
@@ -374,7 +374,7 @@ TEST_F(GgmlExl3OpsTest, VectorAttentionMatchesTheRecordAndAnFp64Reference) {
     Place<float>(node);
 
     auto planning = Launcher();
-    const auto plan = jitllm::kernels::ggml::PlanFlashAttnVec(*planning, node);
+    const auto plan = llmp::kernels::ggml::PlanFlashAttnVec(*planning, node);
     ASSERT_TRUE(plan.has_value()) << plan.error().detail;
     EXPECT_EQ(plan->parallel_blocks, a.parallel_blocks);
     EXPECT_EQ(plan->mask_prepass, a.rows >= 1024);
@@ -391,12 +391,12 @@ TEST_F(GgmlExl3OpsTest, VectorAttentionMatchesTheRecordAndAnFp64Reference) {
 
     // Too little workspace is refused before anything is queued.
     auto starved = Launcher(plan->scratch - 256);
-    EXPECT_EQ(FailedCode(jitllm::kernels::ggml::FlashAttnVec(*starved, node)),
+    EXPECT_EQ(FailedCode(llmp::kernels::ggml::FlashAttnVec(*starved, node)),
               KernelError::kRejected);
 
     auto launch = Launcher(plan->scratch);
     const std::vector<Event> events =
-        Record([&] { Launched(jitllm::kernels::ggml::FlashAttnVec(*launch, node)); });
+        Record([&] { Launched(llmp::kernels::ggml::FlashAttnVec(*launch, node)); });
     const auto out = Download<float>(node);
     const auto want = Reference(a, q, k, v);
     double error = 0;
@@ -451,17 +451,17 @@ TEST_F(GgmlExl3OpsTest, VectorAttentionMatchesTheRecordAndAnFp64Reference) {
 // without the mask pre-pass.
 TEST_F(GgmlExl3OpsTest, OperationsReadAndWriteOnlyTheirTensors) {
   enum class Where : std::uint8_t { kMalloc, kEnd, kStart };
-  auto memory = std::move(jitllm::providers::cuda::OpenDeviceMemory(0).value());
+  auto memory = std::move(llmp::providers::cuda::OpenDeviceMemory(0).value());
   std::size_t device_class = 0;
   for (std::size_t i = 0; i < memory->Classes().size(); ++i) {
-    if (memory->Classes()[i].kind == jitllm::providers::BackingKind::kDevice) {
+    if (memory->Classes()[i].kind == llmp::providers::BackingKind::kDevice) {
       device_class = i;
     }
   }
   const std::uint64_t granule = memory->Granularity().value();
   struct Mapped {
-    jitllm::providers::ReservationId reservation;
-    jitllm::providers::BackingId backing;
+    llmp::providers::ReservationId reservation;
+    llmp::providers::BackingId backing;
     std::uint64_t offset;
     std::uint64_t size;
   };
@@ -477,7 +477,7 @@ TEST_F(GgmlExl3OpsTest, OperationsReadAndWriteOnlyTheirTensors) {
     EXPECT_TRUE(memory->Map(reservation, Bytes(offset), backing).has_value());
     EXPECT_TRUE(memory
                     ->SetAccess(reservation, Bytes(offset), Bytes(size),
-                                jitllm::providers::Access::kReadWrite)
+                                llmp::providers::Access::kReadWrite)
                     .has_value());
     mapped.push_back({reservation, backing, offset, size});
     const std::uint64_t base = memory->RangeOf(reservation).value().base + offset;
@@ -526,7 +526,7 @@ TEST_F(GgmlExl3OpsTest, OperationsReadAndWriteOnlyTheirTensors) {
   // tensors, placing each operand in order before any view of it is made.
   using Place = std::function<ggml_tensor*(ggml_tensor*)>;
   using Run =
-      std::function<std::expected<void, jitllm::kernels::ggml::KernelFailure>(LaunchContext&)>;
+      std::function<std::expected<void, llmp::kernels::ggml::KernelFailure>(LaunchContext&)>;
   struct Built {
     std::vector<ggml_tensor*> outputs;
     Run run;
@@ -588,7 +588,7 @@ TEST_F(GgmlExl3OpsTest, OperationsReadAndWriteOnlyTheirTensors) {
     }
   };
 
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   constexpr std::int64_t kWidth = 896;
   constexpr std::int64_t kFfn = 4864;
   constexpr std::int64_t kVocab = 1000;
@@ -753,27 +753,27 @@ TEST_F(GgmlExl3OpsTest, AttentionChecksRefuseWhatTheLauncherWouldNotTake) {
     return node;
   };
   EXPECT_TRUE(
-      jitllm::kernels::ggml::CheckFlashAttnVec(make(8, 256, GGML_TYPE_F16, GGML_TYPE_F16, 0, true))
+      llmp::kernels::ggml::CheckFlashAttnVec(make(8, 256, GGML_TYPE_F16, GGML_TYPE_F16, 0, true))
           .has_value());
   // K not padded to 256 cells; BF16 K and V; no F32 precision; a soft cap.
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::CheckFlashAttnVec(
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckFlashAttnVec(
                 make(8, 200, GGML_TYPE_F16, GGML_TYPE_F16, 0, true))),
             KernelError::kRejected);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::CheckFlashAttnVec(
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckFlashAttnVec(
                 make(8, 256, GGML_TYPE_BF16, GGML_TYPE_F16, 0, true))),
             KernelError::kRejected);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::CheckFlashAttnVec(
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckFlashAttnVec(
                 make(8, 256, GGML_TYPE_F16, GGML_TYPE_F16, 0, false))),
             KernelError::kRejected);
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::CheckFlashAttnVec(
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckFlashAttnVec(
                 make(8, 256, GGML_TYPE_F16, GGML_TYPE_F16, 30.0f, true))),
             KernelError::kRejected);
   // From 1,024 rows the mask pre-pass reads two rows per tile unbounded: an
   // odd row count with one mask row per query would be read past its end.
-  EXPECT_TRUE(jitllm::kernels::ggml::CheckFlashAttnVec(
+  EXPECT_TRUE(llmp::kernels::ggml::CheckFlashAttnVec(
                   make(1024, 1024, GGML_TYPE_F16, GGML_TYPE_F16, 0, true))
                   .has_value());
-  EXPECT_EQ(FailedCode(jitllm::kernels::ggml::CheckFlashAttnVec(
+  EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckFlashAttnVec(
                 make(1025, 1280, GGML_TYPE_F16, GGML_TYPE_F16, 0, true))),
             KernelError::kRejected);
 }

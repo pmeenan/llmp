@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The host-VMM diagnosis (docs/experiments/host-vmm-diagnosis/): why BP-F1's
@@ -12,8 +12,8 @@
 //   dvmm-cpu    the same, also mapped for the CPU on the host NUMA node (if the
 //               driver allows it)
 //   hvmm        cuMemCreate at the host NUMA node, one handle, mapped for the
-//               device and the CPU: what jitLLM's CUDA provider does
-//   hvmm-jit    the same through jitLLM's provider itself (VmmProvider)
+//               device and the CPU: what llmpalooza's CUDA provider does
+//   hvmm-jit    the same through llmpalooza's provider itself (VmmProvider)
 //   hvmm-gpu    host NUMA backing mapped for the device only
 //   hvmm-2m     host NUMA backing in 2 MiB handles (the pager's extents)
 //   hvmm-host   CU_MEM_LOCATION_TYPE_HOST backing (no NUMA node)
@@ -33,7 +33,7 @@
 //                                     microkernels, arms interleaved per round
 //   copy --from A --to B [--rounds R] copy bandwidth and 2 MiB copy latency
 //   restore --dir D --gib G --landing A --to A --method M [--depth N] [--rounds R]
-//                                     a restore through jitLLM's io_uring
+//                                     a restore through llmpalooza's io_uring
 //                                     provider: direct reads of 2 MiB extents
 //                                     of an unnamed G GiB file in D, into the
 //                                     destination itself (M none; A must then
@@ -89,16 +89,16 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::CublasHandle;
-using jitllm::kernels::ggml::KernelFailure;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::Access;
-using jitllm::providers::BackingKind;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::StreamId;
-using jitllm::providers::VmmProvider;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::CublasHandle;
+using llmp::kernels::ggml::KernelFailure;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::Access;
+using llmp::providers::BackingKind;
+using llmp::providers::DeviceExecution;
+using llmp::providers::StreamId;
+using llmp::providers::VmmProvider;
 
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
 constexpr std::uint64_t kAlign = 256;
@@ -193,14 +193,14 @@ struct Buffer {
   std::uint64_t reserved = 0;  // VMM: the reservation and backing
   std::vector<CUmemGenericAllocationHandle> handles;
   void* pointer = nullptr;  // runtime and system allocations
-  jitllm::providers::ReservationId reservation;
-  jitllm::providers::BackingId backing;
+  llmp::providers::ReservationId reservation;
+  llmp::providers::BackingId backing;
 };
 
 class Memory {
  public:
   static std::expected<std::unique_ptr<Memory>, std::string> Open() {
-    auto provider = jitllm::providers::cuda::OpenDeviceMemory(0);
+    auto provider = llmp::providers::cuda::OpenDeviceMemory(0);
     if (!provider) {
       return Fail("no device memory: {}", provider.error().detail);
     }
@@ -703,7 +703,7 @@ int Micro(Memory& memory, std::span<const Arm> arms, int rounds, std::uint64_t b
       std::println(stderr, "{}: {}", ArmName(arm), base.error());
       return 1;
     }
-    if (auto got = Cuda(jitllm::diag::Fill(stream, *base, bytes / 4, 1), "fill"); !got) {
+    if (auto got = Cuda(llmp::diag::Fill(stream, *base, bytes / 4, 1), "fill"); !got) {
       std::println(stderr, "{}", got.error());
       return 1;
     }
@@ -746,22 +746,22 @@ int Micro(Memory& memory, std::span<const Arm> arms, int rounds, std::uint64_t b
   }};
   const auto launch = [&](std::string_view test, std::uint64_t base) -> cudaError_t {
     if (test == "scan4") {
-      return jitllm::diag::ScanWords(stream, base, kScan, out);
+      return llmp::diag::ScanWords(stream, base, kScan, out);
     }
     if (test == "scan16") {
-      return jitllm::diag::ScanVector(stream, base, kScan, out, blocks);
+      return llmp::diag::ScanVector(stream, base, kScan, out, blocks);
     }
     if (test == "write16") {
-      return jitllm::diag::WriteVector(stream, base + kScan, kScan, blocks);
+      return llmp::diag::WriteVector(stream, base + kScan, kScan, blocks);
     }
     if (test == "write-sparse") {
-      return jitllm::diag::WriteSparse(stream, base + kScan, kSparse, 128, blocks);
+      return llmp::diag::WriteSparse(stream, base + kScan, kSparse, 128, blocks);
     }
     if (test == "write-per-block") {
-      return jitllm::diag::WritePerBlock(stream, base + kScan, kBlocks);
+      return llmp::diag::WritePerBlock(stream, base + kScan, kBlocks);
     }
     if (test == "reread-4m") {
-      return jitllm::diag::Reread(stream, base, 4 * kMiB, 64, out, blocks);
+      return llmp::diag::Reread(stream, base, 4 * kMiB, 64, out, blocks);
     }
     if (test == "reread-4m-persist") {
       // The same, inside a persisting access-policy window over the buffer.
@@ -777,32 +777,32 @@ int Micro(Memory& memory, std::span<const Arm> arms, int rounds, std::uint64_t b
           error != cudaSuccess) {
         return error;
       }
-      const cudaError_t launched = jitllm::diag::Reread(stream, base, 4 * kMiB, 64, out, blocks);
+      const cudaError_t launched = llmp::diag::Reread(stream, base, 4 * kMiB, 64, out, blocks);
       window.accessPolicyWindow.num_bytes = 0;
       (void)cudaStreamSetAttribute(stream, cudaStreamAttributeAccessPolicyWindow, &window);
       (void)cudaCtxResetPersistingL2Cache();
       return launched;
     }
     if (test == "reread-16m") {
-      return jitllm::diag::Reread(stream, base, 16 * kMiB, 16, out, blocks);
+      return llmp::diag::Reread(stream, base, 16 * kMiB, 16, out, blocks);
     }
     if (test == "reread-64m") {
-      return jitllm::diag::Reread(stream, base, 64 * kMiB, 4, out, blocks);
+      return llmp::diag::Reread(stream, base, 64 * kMiB, 4, out, blocks);
     }
     if (test == "rand-all") {
-      return jitllm::diag::RandomLines(stream, base, bytes, 0, 1, kLines, out, blocks);
+      return llmp::diag::RandomLines(stream, base, bytes, 0, 1, kLines, out, blocks);
     }
     if (test == "rand-2m") {
-      return jitllm::diag::RandomLines(stream, base, bytes, 2 * kMiB, kLines, kLines, out, blocks);
+      return llmp::diag::RandomLines(stream, base, bytes, 2 * kMiB, kLines, kLines, out, blocks);
     }
     if (test == "rand-64k") {
-      return jitllm::diag::RandomLines(stream, base, bytes, std::uint64_t{64} << 10U, kLines,
-                                       kLines, out, blocks);
+      return llmp::diag::RandomLines(stream, base, bytes, std::uint64_t{64} << 10U, kLines, kLines,
+                                     out, blocks);
     }
     if (test == "rand-8m-span") {
-      return jitllm::diag::RandomLines(stream, base, 8 * kMiB, 0, 1, kLines, out, blocks);
+      return llmp::diag::RandomLines(stream, base, 8 * kMiB, 0, 1, kLines, out, blocks);
     }
-    return jitllm::diag::CopyVector(stream, base + kScan, base, kScan, blocks);
+    return llmp::diag::CopyVector(stream, base + kScan, base, kScan, blocks);
   };
   std::println("# micro,arm,test,bytes_moved,round,sample,us");
   Events events;
@@ -853,11 +853,11 @@ int Copy(Memory& memory, Arm from, Arm to, int rounds) {
     std::println(stderr, "allocation: {}", !source ? source.error() : destination.error());
     return 1;
   }
-  if (auto got = Cuda(jitllm::diag::Fill(stream, *source, kBytes / 4, 3), "fill"); !got) {
+  if (auto got = Cuda(llmp::diag::Fill(stream, *source, kBytes / 4, 3), "fill"); !got) {
     std::println(stderr, "{}", got.error());
     return 1;
   }
-  if (auto got = Cuda(jitllm::diag::Fill(stream, *destination, kBytes / 4, 4), "fill"); !got) {
+  if (auto got = Cuda(llmp::diag::Fill(stream, *destination, kBytes / 4, 4), "fill"); !got) {
     std::println(stderr, "{}", got.error());
     return 1;
   }
@@ -884,8 +884,8 @@ int Copy(Memory& memory, Arm from, Arm to, int rounds) {
                       size, cudaMemcpyDefault, stream),
                   "cudaMemcpyAsync");
             }
-            return Cuda(jitllm::diag::CopyVector(stream, *destination + offset, *source + offset,
-                                                 size, sms * 16),
+            return Cuda(llmp::diag::CopyVector(stream, *destination + offset, *source + offset,
+                                               size, sms * 16),
                         "copy kernel");
           });
           if (!us) {
@@ -923,11 +923,11 @@ double Percentile(std::vector<double> samples, double p) {
 
 int RunRestore(Memory& memory, const Restore& r) {
   using Clock = std::chrono::steady_clock;
-  using jitllm::providers::IoCompletion;
-  using jitllm::providers::IoKind;
-  using jitllm::providers::IoRequest;
-  using jitllm::providers::Submission;
-  using jitllm::providers::UringStorage;
+  using llmp::providers::IoCompletion;
+  using llmp::providers::IoKind;
+  using llmp::providers::IoRequest;
+  using llmp::providers::Submission;
+  using llmp::providers::UringStorage;
   constexpr std::uint64_t kExtent = 2 * kMiB;
   const bool in_place = r.method == "none";
   if ((in_place && !CpuMapped(r.to)) || !CpuMapped(r.landing)) {
@@ -1037,7 +1037,7 @@ int RunRestore(Memory& memory, const Restore& r) {
                 ? cudaMemcpyAsync(reinterpret_cast<void*>(to),  // NOLINT(performance-no-int-to-ptr)
                                   reinterpret_cast<const void*>(from),  // NOLINT
                                   kExtent, cudaMemcpyDefault, stream)
-                : jitllm::diag::CopyVector(stream, to, from, kExtent, sms * 4);
+                : llmp::diag::CopyVector(stream, to, from, kExtent, sms * 4);
         if (queued != cudaSuccess || cudaEventRecord(copied[slot], stream) != cudaSuccess) {
           std::println(stderr, "cannot queue a copy");
           status = 1;
@@ -1251,7 +1251,7 @@ struct Rig {
 };
 
 std::expected<void, std::string> RunCase(Rig& rig, const Case& c, const Placement& placement) {
-  namespace ops = jitllm::kernels::ggml;
+  namespace ops = llmp::kernels::ggml;
   const Shape shape = ShapeOf(c);
   const std::uint64_t weight_bytes = RoundUp(shape.weights * 2, kAlign);
   const std::uint64_t input_bytes = RoundUp(shape.input * 4, kAlign);
@@ -1287,16 +1287,16 @@ std::expected<void, std::string> RunCase(Rig& rig, const Case& c, const Placemen
                            : *acts + (set * act_bytes) + input_bytes;
   };
   for (std::uint64_t s = 0; s < weight_sets; ++s) {
-    if (auto got = Cuda(
-            jitllm::diag::FillHalf(rig.native, *weights + (s * weight_bytes), shape.weights, 1),
-            "fill");
+    if (auto got =
+            Cuda(llmp::diag::FillHalf(rig.native, *weights + (s * weight_bytes), shape.weights, 1),
+                 "fill");
         !got) {
       return got;
     }
   }
   for (std::uint64_t s = 0; s < act_sets; ++s) {
-    if (auto got = Cuda(
-            jitllm::diag::FillFloat(rig.native, *acts + (s * act_bytes), shape.input, 2), "fill");
+    if (auto got = Cuda(llmp::diag::FillFloat(rig.native, *acts + (s * act_bytes), shape.input, 2),
+                        "fill");
         !got) {
       return got;
     }
@@ -1443,7 +1443,7 @@ std::expected<void, std::string> RunCase(Rig& rig, const Case& c, const Placemen
 }
 
 int Ggml(Memory& memory, const Placement& placement, std::span<const std::string> only) {
-  auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
   if (!execution) {
     std::println(stderr, "no device execution: {}", execution.error().detail);
     return 1;
@@ -1509,7 +1509,7 @@ int main(int argc, char** argv) {
   const std::vector<std::string> args(
       argv, argv + argc);  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   if (args.size() < 2) {
-    std::println(stderr, "usage: jitllm_vmm_diag_bench info|micro|copy|ggml [options]");
+    std::println(stderr, "usage: llmp_vmm_diag_bench info|micro|copy|ggml [options]");
     return 2;
   }
   const std::string& mode = args[1];

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/exl3/validate.h"
@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 namespace {
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
@@ -510,4 +510,4 @@ std::expected<void, KernelFailure> CheckBiasApart(const LinearOperands& o, std::
                   {{"a_had", o.a_had, ScratchBytes(o)}, {"the lock area", locks, kLockBytes}});
 }
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3

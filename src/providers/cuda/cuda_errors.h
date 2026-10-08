@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // How the CUDA providers turn driver errors into provider failures: out of
@@ -7,8 +7,8 @@
 // the like), and an unknown outcome for everything else. Internal to providers/cuda: it includes
 // the driver's header.
 
-#ifndef JITLLM_PROVIDERS_CUDA_CUDA_ERRORS_H_
-#define JITLLM_PROVIDERS_CUDA_CUDA_ERRORS_H_
+#ifndef LLMP_PROVIDERS_CUDA_CUDA_ERRORS_H_
+#define LLMP_PROVIDERS_CUDA_CUDA_ERRORS_H_
 
 #include <cuda.h>
 
@@ -16,10 +16,10 @@
 
 #include "providers/device_memory.h"
 
-namespace jitllm::providers::cuda {
+namespace llmp::providers::cuda {
 
 std::unexpected<Failure> Error(CUresult result, const char* call);
 
-}  // namespace jitllm::providers::cuda
+}  // namespace llmp::providers::cuda
 
-#endif  // JITLLM_PROVIDERS_CUDA_CUDA_ERRORS_H_
+#endif  // LLMP_PROVIDERS_CUDA_CUDA_ERRORS_H_

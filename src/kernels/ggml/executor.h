@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Running a planned GGML graph (graph_plan.h) under the K-C launch context
@@ -9,8 +9,8 @@
 // implementation this build lacks, or one whose identity changed, binds
 // nothing. CUDA builds only.
 
-#ifndef JITLLM_KERNELS_GGML_EXECUTOR_H_
-#define JITLLM_KERNELS_GGML_EXECUTOR_H_
+#ifndef LLMP_KERNELS_GGML_EXECUTOR_H_
+#define LLMP_KERNELS_GGML_EXECUTOR_H_
 
 #include <cstdint>
 #include <expected>
@@ -25,7 +25,7 @@
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // The device's part of upstream's choices on the context's device
 // (ops.h SelectMulMat and MulMatVecFusible), for PlanGraph. The context
@@ -79,6 +79,6 @@ class BoundGraph {
   std::vector<GraphPlan::Region> regions_;
 };
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_EXECUTOR_H_
+#endif  // LLMP_KERNELS_GGML_EXECUTOR_H_

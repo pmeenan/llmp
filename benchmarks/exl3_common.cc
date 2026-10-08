@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "exl3_common.h"
@@ -23,11 +23,11 @@
 #include "base/sha256.h"
 #include "model/qwen2_exl3.h"
 
-namespace jitllm::benchmarks {
+namespace llmp::benchmarks {
 namespace {
 
 using Status = std::expected<void, std::string>;
-namespace model = jitllm::model;
+namespace model = llmp::model;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
@@ -39,9 +39,9 @@ constexpr std::string_view kHeldOut =
 }  // namespace
 
 std::string Hex(std::span<const std::byte> bytes) {
-  jitllm::base::Sha256 hash;
+  llmp::base::Sha256 hash;
   hash.Update(bytes);
-  return jitllm::base::ToHex(hash.Finish());
+  return llmp::base::ToHex(hash.Finish());
 }
 
 std::string HexFile(const std::filesystem::path& path) {
@@ -206,4 +206,4 @@ float Bf16ToFloat(std::uint16_t value) {
   return std::bit_cast<float>(static_cast<std::uint32_t>(value) << 16U);
 }
 
-}  // namespace jitllm::benchmarks
+}  // namespace llmp::benchmarks

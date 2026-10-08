@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Qwen3.8 Flash Next architecture adapter (M3; docs/plan.md, "Model
@@ -22,8 +22,8 @@
 // built from this adapter by the GGML kernel module
 // (kernels/ggml/qwen38_graph.h).
 
-#ifndef JITLLM_MODEL_QWEN38_H_
-#define JITLLM_MODEL_QWEN38_H_
+#ifndef LLMP_MODEL_QWEN38_H_
+#define LLMP_MODEL_QWEN38_H_
 
 #include <array>
 #include <cstddef>
@@ -36,11 +36,11 @@
 
 #include "model/state.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 class Artifact;
 }
 
-namespace jitllm::model {
+namespace llmp::model {
 
 struct Qwen38Profile {
   std::string_view name;
@@ -279,8 +279,8 @@ struct Qwen38StateTensor {
     kIndexerK,  // F32 [indexer_head_dim, cells]: the indexer's raw keys
     // BF16 [indexer_head_dim, cells / indexer_ratio]: each complete block's
     // pooled key, normalized and rotated (the fast graph writes each once,
-    // when its block completes, and reads them; kernels/ggml/jitllm_ops.h
-    // jitllm.qsa.pool)
+    // when its block completes, and reads them; kernels/ggml/llmp_ops.h
+    // llmp.qsa.pool)
     kIndexerBlocks,
     kConv,       // F32 [(conv - 1) · channels]: the last conv - 1 inputs, time fastest
     kRecurrent,  // F32 [head_dim · head_dim · v_heads]
@@ -539,6 +539,6 @@ struct Qwen38CommitLayout {
 std::expected<Qwen38CommitLayout, std::string> Qwen38Commit(const Qwen38Profile& profile,
                                                             std::uint32_t rows);
 
-}  // namespace jitllm::model
+}  // namespace llmp::model
 
-#endif  // JITLLM_MODEL_QWEN38_H_
+#endif  // LLMP_MODEL_QWEN38_H_

@@ -3,8 +3,8 @@
   "comparison": {
     "all_32_head_vectors_retained": false,
     "analysis_source_identity": {
-      "bytes": 4597,
-      "sha256": "01a13267e3fc994b8827bc5c9ec190e71653c566058f737d3e1e90825212bf97"
+      "bytes": 4599,
+      "sha256": "11e1c430ae4eba919660f2a79eb3ff302d99379262f8a7fc9b09145a406e02f8"
     },
     "heads": {
       "final.f32": {

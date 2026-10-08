@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <algorithm>
@@ -15,7 +15,7 @@
 #include "model/host_mask.h"
 
 namespace {
-namespace md = jitllm::model;
+namespace md = llmp::model;
 constexpr std::uint32_t kRows = 512;
 constexpr std::uint32_t kWidth = 4608;
 constexpr std::uint32_t kPast = 8191;

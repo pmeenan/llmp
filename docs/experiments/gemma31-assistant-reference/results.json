@@ -82,28 +82,28 @@
       },
       {
         "path": "docs/experiments/gemma-assistant-execution/PROTOCOL.md",
-        "bytes": 8093,
-        "sha256": "8cbb404ad300fc7ce38b11c04e67dac620646843114416f46e9a22c3ff431058"
+        "bytes": 8091,
+        "sha256": "64847777a4e0e2bd742628aa109b73bf3981f73a5211c2ddcc906cd11707c12a"
       },
       {
         "path": "docs/experiments/gemma-assistant-reference/PROTOCOL.md",
-        "bytes": 8589,
-        "sha256": "c290552a5721cc024093fe1ac85f00d55b66ae207e041097b316843cf003f3de"
+        "bytes": 8597,
+        "sha256": "e99fef4213c673079c55bc3b6de246741e180bf63f1c11da6e75623958b62aae"
       },
       {
         "path": "docs/experiments/gemma-assistant-reference/llama_assistant.cc",
-        "bytes": 21952,
-        "sha256": "76578ba6b195d82174884fef630f06c4163773a00f4c3abf6e4318e0620b856c"
+        "bytes": 21956,
+        "sha256": "54da1e072d66fe9a41f726866d047826aa38f9f53424c71dee0e0d79928ef3c9"
       },
       {
         "path": "docs/experiments/gemma-assistant-reference/own_freeze.py",
-        "bytes": 9687,
-        "sha256": "93b5b1d82a462b7b02ce422696bf4991f98f0657c24fc50248ae1f26b4a0a0b8"
+        "bytes": 9691,
+        "sha256": "fda80b502eea225363a612ee7b2c69b64dab66f70c2a2f65ae5f9bd9680ad276"
       },
       {
         "path": "docs/experiments/gemma-assistant-reference/reference.sh",
-        "bytes": 4348,
-        "sha256": "c5c4648c9c40ad3eac39b87e651764f65039baedfa8c20e1e1f48f4b932938e3"
+        "bytes": 4332,
+        "sha256": "5f22bf8220952a0cffde6f1f87fe06e77b87dfb9836b08adb946cc6fe6bd7369"
       }
     ],
     "native_binary": {

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Complete attention quads: shared products retain their existing row group.
@@ -15,11 +15,11 @@
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/gemma4_graph.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
-namespace md = jitllm::model;
+namespace md = llmp::model;
 constexpr std::size_t kExtraPerLayer = 64;
 std::unexpected<KernelFailure> Reject(std::string_view why) {
   return std::unexpected(KernelFailure{.detail = std::string(why)});
@@ -377,7 +377,7 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
   for (auto* node : g.nodes) {
     if (std::ranges::find(removed, node) != removed.end())
       return Reject("old attention executable");
-    if (node->op == GGML_OP_FLASH_ATTN_EXT || JitllmOpOf(node) == JitllmOp::kFlashAttnOwners)
+    if (node->op == GGML_OP_FLASH_ATTN_EXT || LlmpOpOf(node) == LlmpOp::kFlashAttnOwners)
       ++attention;
   }
   std::size_t removed_per_layer = 0;
@@ -390,7 +390,7 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
     for (std::uint32_t il = 0; il < p.layers; ++il) {
       const auto at = std::ranges::find(g.nodes, packed[quad][il]);
       if (mode == Gemma4AttentionMode::kOwners) {
-        if (JitllmOpOf(packed[quad][il]) != JitllmOp::kFlashAttnOwners)
+        if (LlmpOpOf(packed[quad][il]) != LlmpOp::kFlashAttnOwners)
           return Reject("missing owner attention operation");
         for (std::size_t owner = 0; owner < counts[quad]; ++owner) {
           for (std::size_t which = 0; which < 2; ++which) {
@@ -426,4 +426,4 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
   g.attention_mode = mode;
   return {};
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

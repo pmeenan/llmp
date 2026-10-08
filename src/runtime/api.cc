@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/api.h"
@@ -22,7 +22,7 @@
 
 #include "base/json.h"
 
-namespace jitllm::runtime::api {
+namespace llmp::runtime::api {
 namespace {
 
 namespace json = base::json;
@@ -936,7 +936,7 @@ std::string UsageChunkJson(std::string_view id, std::int64_t created, std::strin
 }
 
 std::string ModelJson(const ModelInfo& model, std::int64_t created) {
-  return std::format(R"({{"id":{},"object":"model","created":{},"owned_by":"jitllm"}})",
+  return std::format(R"({{"id":{},"object":"model","created":{},"owned_by":"llmp"}})",
                      Quoted(model.name), created);
 }
 
@@ -1161,4 +1161,4 @@ OutputText::Out OutputText::Finish() {
   return out;
 }
 
-}  // namespace jitllm::runtime::api
+}  // namespace llmp::runtime::api

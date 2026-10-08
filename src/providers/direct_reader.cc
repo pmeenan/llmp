@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "providers/direct_reader.h"
@@ -17,7 +17,7 @@
 #include "base/check.h"
 #include "providers/storage.h"
 
-namespace jitllm::providers {
+namespace llmp::providers {
 
 std::string ToString(ReadError error) {
   switch (error) {
@@ -393,4 +393,4 @@ std::vector<FinishedRead> DirectReader::Poll(bool wait) {
   return finished;
 }
 
-}  // namespace jitllm::providers
+}  // namespace llmp::providers

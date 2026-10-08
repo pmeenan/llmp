@@ -546,8 +546,8 @@
         },
         {
           "path": "benchmarks/gemma_owner_c4_metadata.cc",
-          "bytes": 6614,
-          "sha256": "6589508644dae41534280ae4f7cd7099f82626ae6a0fdf38bab023087e9e0673"
+          "bytes": 6581,
+          "sha256": "2c0b9ac519c3a4cd4a56fc13c01ebbf3121c10ea25d540b9b7cc7c0b86324542"
         },
         {
           "path": "docs/experiments/gemma-owner-root-c4/PROTOCOL.md",
@@ -569,19 +569,19 @@
     "reference_gguf": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
     "reference_gguf_sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f, inherited approved raw pin; no payload rescan",
     "reference_wrapper_sha256": "3d88b5a6de40d834e2269e1972207d8dd373cb0d7325e9a1ad5c37fa30016ffe",
-    "existing_row_comparator_sha256": "eab8b3f6f8e8a17bc16ae376a46864f7bf47f6a97b45c8636059ae9719adad0f",
+    "existing_row_comparator_sha256": "9e9a9902eb8af2c639a7678b993549b7ea96f845700a1fcea59b62e6843c368d",
     "fresh_comparison_wrapper_sha256": "862a67a03459e207ef0db16cf8f74e3e4b94cf2728acc3785af8c3f1de41e74a",
     "reference_retirement": [
       {
         "cid": "2f6866e45cedd8ec9cbed20e70b26e52506e20c91d95b29c03dd254f45ca859a",
         "container_absent_after_checked_docker_query": true,
-        "name": "jitllm-gemma26-late-moe-task68-reference-a",
+        "name": "llmp-gemma26-late-moe-task68-reference-a",
         "owner_label": "gemma26-late-moe"
       },
       {
         "cid": "693aa1f424b9b3f9ede4c2ee209267d12509b93a5a34c215a9a643c75daa7801",
         "container_absent_after_checked_docker_query": true,
-        "name": "jitllm-gemma26-late-moe-task68-reference-b",
+        "name": "llmp-gemma26-late-moe-task68-reference-b",
         "owner_label": "gemma26-late-moe"
       }
     ],

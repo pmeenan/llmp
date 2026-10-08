@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The confined-job proof (plan.md M1, D-074): job processes in delegated
-// cgroups, holding their record's lock, under what jitllm.service gives
+// cgroups, holding their record's lock, under what llmp.service gives
 // the runtime. It needs a delegated cgroup, so tools/job-proof runs it in a
 // transient systemd unit with the service's delegation (and, on a Spark,
-// its user and sandbox); anywhere else it skips, unless JITLLM_JOB_PROOF=1
+// its user and sandbox); anywhere else it skips, unless LLMP_JOB_PROOF=1
 // says it must not.
 
 #include <fcntl.h>
@@ -37,7 +37,7 @@ namespace {
 
 namespace fs = std::filesystem;
 using ::testing::HasSubstr;
-namespace job = ::jitllm::platform;
+namespace job = ::llmp::platform;
 
 const char* Env(const char* name) {
   return std::getenv(name);  // NOLINT(concurrency-mt-unsafe): read before any thread starts
@@ -48,7 +48,7 @@ class JobProof : public ::testing::Test {
   void SetUp() override {
     auto root = job::JobsCgroupRoot();
     if (!root) {
-      if (Env("JITLLM_JOB_PROOF") != nullptr) {
+      if (Env("LLMP_JOB_PROOF") != nullptr) {
         FAIL() << root.error();
       }
       GTEST_SKIP() << "not in a delegated cgroup (" << root.error() << "); run tools/job-proof";
@@ -56,8 +56,8 @@ class JobProof : public ::testing::Test {
     root_ = *root;
     ASSERT_TRUE(job::BecomeSubreaper().has_value());
     std::string pattern =
-        (fs::path(Env("JITLLM_JOB_PROOF_STATE") != nullptr ? Env("JITLLM_JOB_PROOF_STATE")
-                                                           : ::testing::TempDir()) /
+        (fs::path(Env("LLMP_JOB_PROOF_STATE") != nullptr ? Env("LLMP_JOB_PROOF_STATE")
+                                                         : ::testing::TempDir()) /
          "jobs-XXXXXX")
             .string();
     ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
@@ -123,7 +123,7 @@ TEST_F(JobProof, AChildThatOutlivesItsJobIsContained) {
 // the environment names, and the runtime keeps none.
 TEST_F(JobProof, TheLockIsInheritedAcrossExec) {
   const auto started =
-      Start("exec", R"(test -e "/proc/self/fd/$JITLLM_JOB_LOCK_FD" && exec /bin/sleep 600)");
+      Start("exec", R"(test -e "/proc/self/fd/$LLMP_JOB_LOCK_FD" && exec /bin/sleep 600)");
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   std::error_code error;
   EXPECT_EQ(fs::read_symlink(std::format("/proc/{}/exe", started.pid), error).filename(), "sleep");
@@ -200,8 +200,8 @@ TEST_F(JobProof, ARestartedRuntimeSettlesItsPredecessorsJob) {
 // and systemd stops the unit, killing its whole cgroup. Phase "recover", a
 // new unit, finds the job ended: its cgroup gone and its lock free.
 TEST(UnitRestart, Phase) {
-  const char* phase = Env("JITLLM_JOB_PROOF_PHASE");
-  const char* state = Env("JITLLM_JOB_PROOF_STATE");
+  const char* phase = Env("LLMP_JOB_PROOF_PHASE");
+  const char* state = Env("LLMP_JOB_PROOF_STATE");
   if (phase == nullptr || state == nullptr) {
     GTEST_SKIP() << "tools/job-proof runs this in two units";
   }
@@ -243,7 +243,7 @@ TEST(Confinement, AStageReachesOnlyItsInputsAndStaging) {
   if (child == 0) {
     const std::array read = {root / "input"};
     const std::array write = {root / "staging"};
-    if (!jitllm::platform::ConfineSelf({.read = read, .write = write})) {
+    if (!llmp::platform::ConfineSelf({.read = read, .write = write})) {
       ::_exit(100);
     }
     const auto opens = [](const fs::path& path, int flags) {

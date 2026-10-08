@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// BP-F1 (docs/backend-proof.md, "Performance protocol"): jitLLM's GGML
+// BP-F1 (docs/backend-proof.md, "Performance protocol"): llmpalooza's GGML
 // kernels at the FP16 fixture's held-out shapes, timed with every operand
 // in one kind of memory: cudaMalloc, host VMM (D-034; rule v1) or device
-// VMM (D-081; rule v2), the VMM from jitLLM's provider. One process is one
+// VMM (D-081; rule v2), the VMM from llmpalooza's provider. One process is one
 // block of a timing session; the session driver
 // (docs/experiments/backend-proof-p1/bpf1_session.py) runs the blocks in
 // the protocol's order and records the host's state between them.
@@ -43,7 +43,7 @@
 // block records it. The setup staging buffer is host VMM in every kind; no
 // timed kernel touches it.
 //
-//   jitllm_ggml_vmm_bench --cases FILE --memory cuda-malloc|host-vmm|device-vmm --output FILE
+//   llmp_ggml_vmm_bench --cases FILE --memory cuda-malloc|host-vmm|device-vmm --output FILE
 //                         [--calibration-sha256 HEX] [--case NAME@ROWS]...
 
 #include <cuda.h>
@@ -84,17 +84,17 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::CublasHandle;
-using jitllm::kernels::ggml::KernelFailure;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::Access;
-using jitllm::providers::BackingKind;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-using jitllm::providers::VmmProvider;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::CublasHandle;
+using llmp::kernels::ggml::KernelFailure;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::Access;
+using llmp::providers::BackingKind;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+using llmp::providers::VmmProvider;
 
 constexpr int kInvocations = 10;  // per graph and per stream sample
 constexpr int kWarmups = 5;
@@ -331,18 +331,18 @@ struct Allocation {
   std::uint64_t base = 0;
   std::uint64_t size = 0;
   void* malloced = nullptr;
-  jitllm::providers::ReservationId reservation;
-  jitllm::providers::BackingId backing;
+  llmp::providers::ReservationId reservation;
+  llmp::providers::BackingId backing;
 };
 
 class Device {
  public:
   static std::expected<std::unique_ptr<Device>, std::string> Open() {
-    auto memory = jitllm::providers::cuda::OpenDeviceMemory(0);
+    auto memory = llmp::providers::cuda::OpenDeviceMemory(0);
     if (!memory) {
       return Fail("no device memory: {}", memory.error().detail);
     }
-    auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
     if (!execution) {
       return Fail("no device execution: {}", execution.error().detail);
     }
@@ -712,7 +712,7 @@ std::expected<Nodes, std::string> Build(TensorArena& arena, const Case& c, const
 
 std::expected<void, KernelFailure> Invoke(const Case& c, const Nodes& nodes,
                                           LaunchContext& launch) {
-  namespace ops = jitllm::kernels::ggml;
+  namespace ops = llmp::kernels::ggml;
   switch (c.op) {
     case Op::kRmsNorm:
       return ops::RmsNorm(launch, nodes.node);
@@ -1064,7 +1064,7 @@ std::expected<Result, std::string> RunCase(Context& ctx, const Case& c, bool& mi
     if (!planner) {
       return Fail("launch context: {}", planner.error().detail);
     }
-    auto plan = jitllm::kernels::ggml::PlanMulMatCublas(**planner, nodes[0].node);
+    auto plan = llmp::kernels::ggml::PlanMulMatCublas(**planner, nodes[0].node);
     if (!plan) {
       return Fail("{} at {} rows: {}", c.name, c.rows, plan.error().detail);
     }
@@ -1258,7 +1258,7 @@ int main(int argc, char** argv) {
   if (args.size() % 2 == 0 || cases_path.empty() || output_path.empty() ||
       (memory_name != "cuda-malloc" && memory_name != "host-vmm" && memory_name != "device-vmm")) {
     std::println(stderr,
-                 "usage: jitllm_ggml_vmm_bench --cases FILE "
+                 "usage: llmp_ggml_vmm_bench --cases FILE "
                  "--memory cuda-malloc|host-vmm|device-vmm --output FILE "
                  "[--calibration-sha256 HEX] [--case NAME@ROWS]...");
     return 2;
@@ -1370,7 +1370,7 @@ int main(int argc, char** argv) {
   }
   std::println(out, "{{");
   std::println(out, " \"schema\": 1,");
-  std::println(out, R"( "harness": "jitllm_ggml_vmm_bench",)");
+  std::println(out, R"( "harness": "llmp_ggml_vmm_bench",)");
   std::println(out, R"( "memory": "{}",)", memory_name);
   std::println(out, " \"calibration_sha256\": {},",
                calibration.empty() ? std::string("null") : std::format("\"{}\"", calibration));

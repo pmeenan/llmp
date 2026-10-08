@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Qwen3.8's routed experts over the CUTLASS layout (kernels/ggml/
-// moe_layout.h, jitllm_ops.h) on a GB10 (label `gpu`), at the model's
+// moe_layout.h, llmp_ops.h) on a GB10 (label `gpu`), at the model's
 // expert shapes (hidden 640, width 2560) with 16 experts, 10 selected:
 // - the layout conversion is lossless: GGML's blocks, converted and back,
 //   are the same bytes;
@@ -50,8 +50,8 @@
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/moe_cutlass.h"
 #include "kernels/ggml/moe_layout.h"
 #include "kernels/ggml/tensors.h"
@@ -61,14 +61,14 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-namespace kg = jitllm::kernels::ggml;
-namespace moe = jitllm::kernels::ggml::moe;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+namespace kg = llmp::kernels::ggml;
+namespace moe = llmp::kernels::ggml::moe;
 
 constexpr std::int64_t kExperts = 16;
 constexpr std::int64_t kUsed = 10;
@@ -197,16 +197,16 @@ std::vector<float> Normal(std::int64_t seed, std::size_t n, float scale) {
 class Qwen38MoeTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     auto launch = LaunchContext::Create(0, *execution_, stream_,
                                         {.base = Allocate(kWorkspace), .size = Bytes(kWorkspace)});
     ASSERT_TRUE(launch.has_value()) << (launch ? "" : launch.error().detail);
     launch_ = std::move(*launch);
     arena_ = std::make_unique<TensorArena>(TensorArena::Create(1024).value());
-    auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+    auto registry = llmp::execution::Registry::Create(kg::Implementations());
     ASSERT_TRUE(registry.has_value());
-    registry_ = std::make_unique<jitllm::execution::Registry>(std::move(*registry));
+    registry_ = std::make_unique<llmp::execution::Registry>(std::move(*registry));
     // The experts' slab in GGML's layout: gate, up and down slices at the
     // artifact's offsets, a stride of the layout rounded as the harness's.
     for (std::int64_t e = 0; e < kExperts; ++e) {
@@ -351,7 +351,7 @@ class Qwen38MoeTest : public ::testing::Test {
   std::vector<void*> device_;
   std::unique_ptr<LaunchContext> launch_;
   std::unique_ptr<TensorArena> arena_;
-  std::unique_ptr<jitllm::execution::Registry> registry_;
+  std::unique_ptr<llmp::execution::Registry> registry_;
   std::vector<Weights> gate_, up_, down_;
   std::vector<std::uint8_t> ggml_slab_;
   std::uint64_t slab_ = 0;
@@ -641,7 +641,7 @@ TEST_F(Qwen38MoeTest, TheVectorProductsMatchTheReference) {
     Run({glu, swiglu, down});
     const auto got_up = Download(up);
     const auto got_down = Download(down);
-    // The SwiGLU form is the two products and jitllm.moe.glu, bit for bit
+    // The SwiGLU form is the two products and llmp.moe.glu, bit for bit
     // (NaN where the id is outside).
     const auto got_glu = Download(glu);
     const auto got_swiglu = Download(swiglu);

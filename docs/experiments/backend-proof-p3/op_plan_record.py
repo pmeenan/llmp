@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """The native EXL3 operation plan records for P3's trajectories (reference only).
 
-External reference tooling for the backend proof's P3; it does not implement jitLLM inference and
+External reference tooling for the backend proof's P3; it does not implement llmpalooza inference and
 shares no code with native's planner. It reuses P0's ../backend-proof-p0/exl3_op_plan.py unchanged
 (probe, sass and build) with one more phase kind: the trajectory "prefix 1,023 then 16 steps"
 takes its first step at position 1,023 with N = 1,024 attended positions, so K is padded to 1,024,

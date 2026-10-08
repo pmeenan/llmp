@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Separate fixed-policy C4 owner-root factor; historical packed helper is unchanged.
@@ -28,7 +28,7 @@
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
   if ((argc != 8 && argc != 9) || std::string_view(argv[4]) != "4" ||
@@ -40,17 +40,17 @@ int main(int argc, char** argv) {
   const bool long_context = argc == 9;
   const std::uint32_t context = long_context ? 16384 : 256;
   const std::size_t input_rows = long_context ? 8227 : 1024;
-  const char* factor = std::getenv("JITLLM_GEMMA_OWNER_C4");
+  const char* factor = std::getenv("LLMP_GEMMA_OWNER_C4");
   if (!factor || (std::string_view(factor) != "packed" && std::string_view(factor) != "owners"))
     return 2;
-  const char* normmul_option = std::getenv("JITLLM_GEMMA_C4_NORMMUL");
+  const char* normmul_option = std::getenv("LLMP_GEMMA_C4_NORMMUL");
   if (normmul_option && std::string_view(normmul_option) != "0" &&
       std::string_view(normmul_option) != "1")
     return 2;
   // Preserve the dense31 default; the closed26 compound transfer defaults on.
   const bool compound = std::string_view(argv[3]) == "26";
   const bool normmul = normmul_option ? std::string_view(normmul_option) == "1" : compound;
-  const char* phases_option = std::getenv("JITLLM_GEMMA_C4_PHASES");
+  const char* phases_option = std::getenv("LLMP_GEMMA_C4_PHASES");
   if (phases_option && std::string_view(phases_option) != "0" &&
       std::string_view(phases_option) != "1")
     return 2;
@@ -65,9 +65,9 @@ int main(int argc, char** argv) {
         !std::ranges::all_of(supplied, [](auto id) { return id >= 0 && id < 262144; }))
       return 2;
   }
-  jitllm::base::Sha256 input_hash;
+  llmp::base::Sha256 input_hash;
   input_hash.Update(std::as_bytes(std::span(supplied)));
-  if (jitllm::base::ToHex(input_hash.Finish()) !=
+  if (llmp::base::ToHex(input_hash.Finish()) !=
       (long_context ? "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b"
                     : "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610"))
     return 2;
@@ -132,7 +132,7 @@ int main(int argc, char** argv) {
     if (!witness_ranges) return Error(witness_ranges.error());
     std::uint64_t witness_bytes = 0;
     for (const auto& range : *witness_ranges) witness_bytes += range.bytes;
-    std::vector<jitllm::catalog::ExtentId> witness_extents;
+    std::vector<llmp::catalog::ExtentId> witness_extents;
     auto witness = node.Pinned(witness_bytes, 0, witness_extents);
     if (!witness) return Error(witness.error());
     const auto heap = std::uint64_t{count} * (steps + 2) * vocab * sizeof(float);
@@ -177,7 +177,7 @@ int main(int argc, char** argv) {
         return Error("long26 capacity grant exceeds the Spark physical budget");
     }
     node.SetHostFloor(host_floor);
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();

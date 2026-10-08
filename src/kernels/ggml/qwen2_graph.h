@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The GGML graph of one Qwen2 chunk (model/qwen2.h), built with GGML's
@@ -21,8 +21,8 @@
 // cache), give every computed node that is no view memory, then bind the
 // views (graph_plan.h BindViews). Every profile builds this; nothing here launches.
 
-#ifndef JITLLM_KERNELS_GGML_QWEN2_GRAPH_H_
-#define JITLLM_KERNELS_GGML_QWEN2_GRAPH_H_
+#ifndef LLMP_KERNELS_GGML_QWEN2_GRAPH_H_
+#define LLMP_KERNELS_GGML_QWEN2_GRAPH_H_
 
 #include <array>
 #include <cstddef>
@@ -34,7 +34,7 @@
 #include "kernels/ggml/tensors.h"
 #include "model/qwen2.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // A chunk's shape: its rows, the cells attention reads (n_kv, as
 // model::PaddedKv gives it) and the cache's size in cells.
@@ -95,6 +95,6 @@ std::expected<Qwen2Graph, KernelFailure> BuildQwen2Graph(TensorArena& arena,
                                                          const model::Qwen2Profile& profile,
                                                          const Qwen2ChunkShape& shape);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_QWEN2_GRAPH_H_
+#endif  // LLMP_KERNELS_GGML_QWEN2_GRAPH_H_

@@ -861,7 +861,7 @@
      "--vae-tile-size",
      "32x32"
     ],
-    "image": "jitllm-image-gguf:20260922"
+    "image": "llmp-image-gguf:20260922"
    },
    "exit_code": 0,
    "image_sha256": "25f2fcafb97d460cbb0f6f8f440e69d51c5ad9a9d518261358e49c6f79f618ed",
@@ -1464,7 +1464,7 @@
     "max_vram": null,
     "cold": false,
     "extra": [],
-    "image": "jitllm-image-gguf:20260922"
+    "image": "llmp-image-gguf:20260922"
    },
    "exit_code": 0,
    "image_sha256": "0cc028201214cac32c3b11a9785d68a115f4e4d294863e4404fad347c28662c7",
@@ -1531,7 +1531,7 @@
     "max_vram": null,
     "cold": false,
     "extra": [],
-    "image": "jitllm-image-gguf-upstream:20260922"
+    "image": "llmp-image-gguf-upstream:20260922"
    },
    "exit_code": 0,
    "image_sha256": "880bde99ba481d22db7253caa43fd55e2a1b2a9e6b365fe4817d13f0897e52ab",
@@ -1598,7 +1598,7 @@
     "max_vram": null,
     "cold": false,
     "extra": [],
-    "image": "jitllm-image-gguf-upstream:20260922"
+    "image": "llmp-image-gguf-upstream:20260922"
    },
    "exit_code": 0,
    "image_sha256": "0cc028201214cac32c3b11a9785d68a115f4e4d294863e4404fad347c28662c7",
@@ -1665,7 +1665,7 @@
     "max_vram": null,
     "cold": false,
     "extra": [],
-    "image": "jitllm-image-gguf-upstream:20260922"
+    "image": "llmp-image-gguf-upstream:20260922"
    },
    "exit_code": 0,
    "image_sha256": "82412123c5c9baa353e6cc5e5728775d25563f01bb8fd6c6a2c4399c592b46cb",
@@ -1732,7 +1732,7 @@
     "max_vram": null,
     "cold": false,
     "extra": [],
-    "image": "jitllm-image-gguf-upstream:20260922"
+    "image": "llmp-image-gguf-upstream:20260922"
    },
    "exit_code": 133,
    "image_sha256": null,

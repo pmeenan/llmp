@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma4 fresh-zero state preparation
@@ -132,7 +132,7 @@ separate in results.json.
 
 ## Replay and identity
 
-Use the existing `jitllm_gemma_prefill` helper, pinned official Spark toolchain
+Use the existing `llmp_gemma_prefill` helper, pinned official Spark toolchain
 and installed supervised GPU protocol. Approved artifact manifest IDs are
 `4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3`
 (G26) and `32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08`
@@ -144,7 +144,7 @@ recreates that input with `llama_prefill RAW_GGUF CORPUS NEW_INPUT prepare 1024`
 No disposable controller/raw bundle is required.
 
 ```text
-jitllm_gemma_prefill ARTIFACT IDS FRESH_OUT 26 serving 1024 normmul-on
+llmp_gemma_prefill ARTIFACT IDS FRESH_OUT 26 serving 1024 normmul-on
   state-only lookahead-on phases-off state-chunked capture-ahead-off
   features-off prepare-off 8192 7680
 ```

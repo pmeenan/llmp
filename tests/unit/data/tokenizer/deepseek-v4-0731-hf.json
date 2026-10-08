@@ -2,7 +2,7 @@
   "config": "deepseek-v4-0731-hf",
   "source": {"path": "tokenizer-reference/deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b/tokenizer.json", "sha256": "8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf"},
   "reference": "Hugging Face tokenizers 0.22.2",
-  "corpus_sha256": "66d3940a8d35f641d62b5e1114fbe81d22e6f22fd7f6a630071c7368ad20245b",
+  "corpus_sha256": "206453ef4086e899079d027c80a32b444b046e5878879ecb75da3e6b3128ce88",
   "items": [
     {"name": "empty", "well_formed": true, "parse": [], "plain": []},
     {"name": "ascii-sentence", "well_formed": true, "parse": [19923, 14, 2058, 3, 1162, 344, 260, 1950, 294, 270, 17840, 9160, 16], "plain": [19923, 14, 2058, 3, 1162, 344, 260, 1950, 294, 270, 17840, 9160, 16]},

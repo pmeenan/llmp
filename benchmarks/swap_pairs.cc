@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // M3's swap pairs (docs/plan.md, the swap acceptance table;
@@ -7,9 +7,9 @@
 // (qwen38_runner.h, its n-gram table paged by rows) and the Qwen-Image-2.1
 // pipeline (qwen_image_runner.h) — and full swaps A→B→A between them in one
 // process, each part of each swap timed. A harness binary, not
-// jitllm-runtime (yet: D-088 now clears the native tokenizer it links).
+// llmp-runtime (yet: D-088 now clears the native tokenizer it links).
 //
-//   jitllm_swap_pairs --a dsv4|qwen38|image --b dsv4|qwen38|image --out DIR
+//   llmp_swap_pairs --a dsv4|qwen38|image --b dsv4|qwen38|image --out DIR
 //                     [--dsv4-artifact DIR] [--qwen38-artifact DIR]
 //                     [--image-store DIR --image-composition ID --image-noise FILE]
 //                     [--text FILE] [--qwen38-tokenizer FILE]
@@ -145,11 +145,11 @@
 
 namespace {
 
-namespace ts = jitllm::test_support;
-namespace sc = jitllm::scheduler;
-namespace catalog = jitllm::catalog;
-namespace jb = jitllm::benchmarks;
-using jitllm::base::Bytes;
+namespace ts = llmp::test_support;
+namespace sc = llmp::scheduler;
+namespace catalog = llmp::catalog;
+namespace jb = llmp::benchmarks;
+using llmp::base::Bytes;
 using Clock = std::chrono::steady_clock;
 using Status = ts::Status;
 
@@ -162,9 +162,9 @@ std::unexpected<std::string> Error(std::string what) { return std::unexpected(st
 double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
 
 std::string Sha256(std::span<const std::byte> bytes) {
-  jitllm::base::Sha256 hash;
+  llmp::base::Sha256 hash;
   hash.Update(bytes);
-  return jitllm::base::ToHex(hash.Finish());
+  return llmp::base::ToHex(hash.Finish());
 }
 
 std::uint64_t MemAvailable() {
@@ -588,7 +588,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   if (!known(o.a) || !known(o.b) || o.a == o.b || o.out.empty() || needs(o.a) || needs(o.b) ||
       (o.prompts.empty() != o.expect.empty())) {
     return Error(
-        "usage: jitllm_swap_pairs --a dsv4|qwen38|image --b dsv4|qwen38|image --out DIR "
+        "usage: llmp_swap_pairs --a dsv4|qwen38|image --b dsv4|qwen38|image --out DIR "
         "[--dsv4-artifact DIR] [--qwen38-artifact DIR] [--image-store DIR "
         "--image-composition ID --image-noise FILE] [--text FILE] [--qwen38-tokenizer FILE] "
         "[--dsv4-prompt FILE] [--qwen38-prompt FILE] [--context-tokens N] [--continue N] "
@@ -834,7 +834,7 @@ Status Swapper::CopyState(bool save) {
   void* host = snapshot_;
   return node_.Job(
       a_->paged().fence_closure(),
-      [base, bytes, host, save](jitllm::providers::NativeStream native) {
+      [base, bytes, host, save](llmp::providers::NativeStream native) {
         auto* const s = static_cast<cudaStream_t>(native.handle);
         auto* device = reinterpret_cast<void*>(base);  // NOLINT(performance-no-int-to-ptr)
         const cudaError_t r = save
@@ -856,7 +856,7 @@ Status Swapper::Tokenize() {
     return Error(std::format("{} is empty or unreadable", o_.text.string()));
   }
   text_sha256_ = Sha256(std::as_bytes(std::span(text)));
-  std::expected<jitllm::tokenizer::TokenizerSpec, jitllm::tokenizer::Error> spec;
+  std::expected<llmp::tokenizer::TokenizerSpec, llmp::tokenizer::Error> spec;
   if (o_.a == "dsv4") {
     // The tokenizer from the artifact's GGUF metadata (import rule 7).
     std::filesystem::path meta;
@@ -868,7 +868,7 @@ Status Swapper::Tokenize() {
     std::ifstream gguf(meta, std::ios::binary);
     const std::vector<char> header{std::istreambuf_iterator<char>(gguf),
                                    std::istreambuf_iterator<char>()};
-    auto read = jitllm::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(header)));
+    auto read = llmp::tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(header)));
     if (!read) {
       return Error(std::format("{}: {}", meta.string(), read.error().ToString()));
     }
@@ -877,16 +877,16 @@ Status Swapper::Tokenize() {
     std::ifstream json(o_.qwen38_tokenizer, std::ios::binary);
     const std::string content{std::istreambuf_iterator<char>(json),
                               std::istreambuf_iterator<char>()};
-    spec = jitllm::tokenizer::ReadHfTokenizer(content);
+    spec = llmp::tokenizer::ReadHfTokenizer(content);
   }
   if (!spec) {
     return Error(spec.error().ToString());
   }
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(*spec));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(*spec));
   if (!tokenizer) {
     return Error(tokenizer.error().ToString());
   }
-  std::vector<jitllm::tokenizer::TokenId> ids;
+  std::vector<llmp::tokenizer::TokenId> ids;
   if (auto r = tokenizer->Encode(text, {.add_bos_eos = true}, ids); !r) {
     return Error(r.error().ToString());
   }
@@ -1234,7 +1234,7 @@ Status Swapper::Fill(std::uint8_t value) {
   const ts::Mapped& p = node_.pool();
   return node_.Job(
       closure,
-      [&](jitllm::providers::NativeStream native) {
+      [&](llmp::providers::NativeStream native) {
         auto* const s = static_cast<cudaStream_t>(native.handle);
         // NOLINTBEGIN(performance-no-int-to-ptr)
         const bool ok =

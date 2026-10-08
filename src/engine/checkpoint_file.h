@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_ENGINE_CHECKPOINT_FILE_H_
-#define JITLLM_ENGINE_CHECKPOINT_FILE_H_
+#ifndef LLMP_ENGINE_CHECKPOINT_FILE_H_
+#define LLMP_ENGINE_CHECKPOINT_FILE_H_
 
 #include <cstdint>
 #include <expected>
@@ -16,7 +16,7 @@
 #include "engine/live_state.h"
 #include "platform/kept_files.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 // A mutable byte anywhere in a retained extent makes that whole extent a
 // checkpoint range. Bytes beyond the last padded read may be overwritten by
@@ -106,6 +106,6 @@ class CheckpointFile {
   bool preserve_ = false;
 };
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_CHECKPOINT_FILE_H_
+#endif  // LLMP_ENGINE_CHECKPOINT_FILE_H_

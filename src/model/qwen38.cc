@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // Qwen38Chunk's QSA block tables and n-gram hash port llama.cpp b29c606e2's
@@ -31,7 +31,7 @@
 #include "model/host_mask.h"
 #include "model/state.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 namespace {
 
 std::unexpected<std::string> Refused(std::string detail) {
@@ -1172,4 +1172,4 @@ std::expected<Qwen38CommitLayout, std::string> Qwen38Commit(const Qwen38Profile&
   return c;
 }
 
-}  // namespace jitllm::model
+}  // namespace llmp::model

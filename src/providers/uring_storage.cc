@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "providers/uring_storage.h"
@@ -22,7 +22,7 @@
 #include "platform/io_uring.h"
 #include "providers/storage.h"
 
-namespace jitllm::providers {
+namespace llmp::providers {
 
 std::expected<std::unique_ptr<UringStorage>, std::error_code> UringStorage::Create(
     std::size_t depth) {
@@ -229,4 +229,4 @@ std::size_t UringStorage::Harvest(std::span<IoCompletion> out, bool wait) {
   return produced;
 }
 
-}  // namespace jitllm::providers
+}  // namespace llmp::providers

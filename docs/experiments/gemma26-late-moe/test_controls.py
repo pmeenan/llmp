@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Light metadata, byte semantics and owned-container refusal controls."""
 import json
@@ -168,7 +168,7 @@ class Controls(unittest.TestCase):
                 calls.append(args)
                 if args[0] == 'ps': return cid
                 if args[0] == 'inspect': return json.dumps([{'Id': cid, 'Name': '/wrong',
-                    'Config': {'Labels': {'jitllm.observer': 'another-task'}}}])
+                    'Config': {'Labels': {'llmp.observer': 'another-task'}}}])
                 raise AssertionError('must never remove a wrong owner')
             function = retire['retire']
             original = function.__globals__['docker']
@@ -188,8 +188,8 @@ class Controls(unittest.TestCase):
             def docker(*args):
                 if args[0] == 'ps': return cid if active[0] else ''
                 if args[0] == 'inspect': return json.dumps([{'Id': cid,
-                    'Name': '/jitllm-gemma26-late-moe-capture',
-                    'Config': {'Labels': {'jitllm.observer': 'gemma26-late-moe'}}}])
+                    'Name': '/llmp-gemma26-late-moe-capture',
+                    'Config': {'Labels': {'llmp.observer': 'gemma26-late-moe'}}}])
                 if args == ('rm', '-f', cid): active[0] = False; return ''
                 raise AssertionError('unexpected Docker command')
             function = retire['retire']

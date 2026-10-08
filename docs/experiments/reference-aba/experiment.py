@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Pinned llama.cpp A→B→A reference experiment; run on the selected Linux node.
 
@@ -133,7 +133,7 @@ class Router:
     def __init__(self, args, pins, directory, normal=False, maximum=1):
         self.args, self.pins, self.directory = args, pins, directory
         self.normal, self.maximum = normal, maximum
-        self.name = "jitllm-aba-" + uuid.uuid4().hex[:12]
+        self.name = "llmp-aba-" + uuid.uuid4().hex[:12]
         self.key = uuid.uuid4().hex
         self.docker = shlex.split(os.environ.get("DOCKER", "docker"))
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

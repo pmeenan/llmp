@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Fixed long-context answer checks
@@ -121,7 +121,7 @@ invalidated every changed source/header/build input before rebuilding.
 | --- | --- |
 | Completed source qualification | `fbf92103e09ca9ae338d4803a44b5583754d4d63223e8fe98bafb14d9015f052` |
 | Exact 1,230-file source map | `caebc8f6687e55877cc5dca9ec66943b1817bccc91a1cd9dcc62072e170a3051` |
-| Measured `jitllm_dsv4_exec` | `1ff74abfc648a62182d507ab06eae54bf042b1b694048aefa365f40c1601fe3f` |
+| Measured `llmp_dsv4_exec` | `1ff74abfc648a62182d507ab06eae54bf042b1b694048aefa365f40c1601fe3f` |
 | Native CPU preparation/scoring helper | `86dcb79051a44ab5aab5f07f164e3acb346eb1831ef708ea8049f1bbb7e3361a` |
 | Complete four-task preparation | `5776c2c3969d10a6c40c0e11e3255552d79e3f9384081ebce27977b0255aa1b3` |
 | Frozen pre-output protocol | `b917ff2e8ecf9d57f03755f85b267819f04bf01dc3ca3dbf9e7bb509282adc9a` |

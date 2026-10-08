@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // No launch: stub the real planner to verify exact forwarding and keep lifetime.
 #include <array>
@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "gemma_joined_prefix_keep.h"
-namespace en = jitllm::engine;
-namespace kg = jitllm::kernels::ggml;
+namespace en = llmp::engine;
+namespace kg = llmp::kernels::ggml;
 namespace {
 const en::Gemma4Model* seen_model = nullptr;
 const kg::Gemma4ChunkShape* seen_shape = nullptr;
@@ -33,8 +33,8 @@ int main(int argc, char** argv) {
   if (argc != 2) return 2;
   const std::string_view expected = argv[1];
   if (expected != "off" && expected != "on" && expected != "invalid") return 2;
-  const auto profile = jitllm::model::Gemma4_26BA4B();
-  jitllm::model::Gemma4StateLayout state;
+  const auto profile = llmp::model::Gemma4_26BA4B();
+  llmp::model::Gemma4StateLayout state;
   state.context = 4096;
   state.max_rows = 1024;
   en::Gemma4Model model;

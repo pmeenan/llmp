@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Fresh Gemma26 schedule calibration and heldout corpus control
@@ -17,7 +17,7 @@ exactly these bytes. Require one BOS and byte-identical supplied 1,024-token
 prefixes for each independent history. Never score a transition into the other
 history or beyond the final row.
 
-`jitllm_gemma_quality_schedule ARTIFACT IDS NEW_OUTPUT 128|1024` holds context 4,096,
+`llmp_gemma_quality_schedule ARTIFACT IDS NEW_OUTPUT 128|1024` holds context 4,096,
 configured maximum rows 1,024, local F16 capacity 2,048, global F16 capacity 4,096,
 slot count 1 and full-head capacity unchanged. Both schedules fund the same
 1 GiB publication vector and select plain norms, norm/RoPE, norm/Add, routing

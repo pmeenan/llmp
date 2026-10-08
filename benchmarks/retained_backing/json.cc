@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "retained_backing/json.h"
@@ -12,7 +12,7 @@
 #include <string_view>
 #include <utility>
 
-namespace jitllm::rb {
+namespace llmp::rb {
 
 class JsonParser {
  public:
@@ -246,4 +246,4 @@ const Json* Json::Find(std::string_view key) const {
   return nullptr;
 }
 
-}  // namespace jitllm::rb
+}  // namespace llmp::rb

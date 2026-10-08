@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek target GPU masks — 2026-10-07
@@ -140,8 +140,8 @@ complete zero and are waited on; the latter takes 102 seconds. Source
 manifest `03402329cd6411d897b76afbee6a034f60349efab9877ffeeb704126d3aecc9f`
 and method `8ed7e199d8002df0ce560d716fd37c4bed2952378c6589e5ff2620b68723c1d2`
 bind that qualification. Raw records are at Spark A
-`~/.local/share/jitllm/ds4-mask-production-check1/`, with workstation copies
-in `/tmp/jitllm-m35-coordination/ds4-mask-production-evidence1/`.
+`~/.local/share/llmp/ds4-mask-production-check1/`, with workstation copies
+in `/tmp/llmp-m35-coordination/ds4-mask-production-evidence1/`.
 
 The final candidate is integrated on main `763bcbd`, preserving the completed
 Gemma2/Gemma3 prefill changes. A narrow combined Spark build and check passes:
@@ -168,9 +168,9 @@ Neither supplies this CUDA comparison. This existing-model factor makes no
 new reference speed claim.
 
 Raw outputs, manifests, exact payloads, logs and scripts remain outside Git:
-Spark A `~/.local/share/jitllm/ds4-mask{1,2,3,4}` and
+Spark A `~/.local/share/llmp/ds4-mask{1,2,3,4}` and
 `ds4-mask-method{1..7}`; workstation
-`/tmp/jitllm-m35-coordination/ds4-mask-*`. Installed supervised screen jobs
+`/tmp/llmp-m35-coordination/ds4-mask-*`. Installed supervised screen jobs
 `m35-ds4-mask-screen1` and `m35-ds4-mask-screen2` complete zero and are waited
 on. Methods bind all source/input/binary/receipt identities and the
 first-resolved cuBLAS libraries. Reproduction does not depend on keeping
@@ -186,8 +186,8 @@ fresh-process arms in this order, with a fresh output parent directory:
 ```sh
 git show 2fe9c65:docs/architecture.md > text0.txt
 git show 0ea0a18:docs/engine.md > text1.txt
-probe=build/spark-native/benchmarks/jitllm_dsv4_mask_probe
-artifact=/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234
+probe=build/spark-native/benchmarks/llmp_dsv4_mask_probe
+artifact=/home/pmeenan/.local/share/llmp/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234
 metadata="$artifact/meta/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.kv.gguf"
 "$probe" prepare "$metadata" text0.txt 4352 ids0.i32
 "$probe" prepare "$metadata" text1.txt 4608 ids1.i32

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Proposed checked native norm contracts
@@ -14,7 +14,7 @@ immutable calibrations.
 
 The pinned `norm.cu` and `rope.cu` units already expose
 `ggml_cuda_op_rms_norm_fused_add` and
-`ggml_cuda_op_rms_norm_mul_rope_fused`. They are already in jitLLM's locked
+`ggml_cuda_op_rms_norm_mul_rope_fused`. They are already in llmpalooza's locked
 kernel inventory. No new upstream CUDA unit, source-lock patch or dispatcher
 is needed for these two launchers. Routing/reduction contracts remain separate.
 

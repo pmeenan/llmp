@@ -1,6 +1,0 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
-# SPDX-License-Identifier: Apache-2.0
-#
-# The jitLLM service user and group (D-063): no login shell, home at the
-# data directory. Installed as /usr/lib/sysusers.d/jitllm.conf.
-u jitllm - "jitLLM runtime" /var/lib/jitllm /usr/sbin/nologin

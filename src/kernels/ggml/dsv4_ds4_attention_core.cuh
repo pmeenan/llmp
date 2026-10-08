@@ -8,12 +8,12 @@
 // lists the ranges): the constants, layouts, cp.async/ldmatrix/HMMA
 // helpers and score, softmax and PV stages that the locked
 // cuda/attention/ds4_attn_tokentile.cu also extracts. Only the helpers
-// jitLLM's F16-Q copy of the core (dsv4_ds4_attention.cu) calls are kept;
+// llmpalooza's F16-Q copy of the core (dsv4_ds4_attention.cu) calls are kept;
 // the original F32-Q core and its F32 Q loader stay in the locked unit.
 // Included only inside dsv4_ds4_attention.cu's unnamed namespace, compiled
 // with the original numerical flags.
-#ifndef JITLLM_KERNELS_GGML_DSV4_DS4_ATTENTION_CORE_CUH_
-#define JITLLM_KERNELS_GGML_DSV4_DS4_ATTENTION_CORE_CUH_
+#ifndef LLMP_KERNELS_GGML_DSV4_DS4_ATTENTION_CORE_CUH_
+#define LLMP_KERNELS_GGML_DSV4_DS4_ATTENTION_CORE_CUH_
 
 // clang-format off
 static constexpr uint32_t kTTTileTokens = 4u;
@@ -602,4 +602,4 @@ static_assert(tt_TokentileSmemBudget<kTTStageRows, kTTG>::total == 88576ull,
 static_assert(tt_TokentileSmemBudget<kTTStageRows, kTTG>::total <= kTTSmemHardCap,
               "token-tile dynamic shared memory must stay under the 90 KiB pass gate");
 
-#endif  // JITLLM_KERNELS_GGML_DSV4_DS4_ATTENTION_CORE_CUH_
+#endif  // LLMP_KERNELS_GGML_DSV4_DS4_ATTENTION_CORE_CUH_

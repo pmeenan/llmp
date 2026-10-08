@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The Jinja-subset interpreter (chat/jinja.h): every snippet fixture against
@@ -28,11 +28,11 @@
 
 namespace {
 
-namespace jinja = jitllm::chat::jinja;
-namespace json = jitllm::base::json;
-using jitllm::test_support::Failed;
-using jitllm::test_support::Get;
-using jitllm::test_support::LoadJson;
+namespace jinja = llmp::chat::jinja;
+namespace json = llmp::base::json;
+using llmp::test_support::Failed;
+using llmp::test_support::Get;
+using llmp::test_support::LoadJson;
 
 using Variables = std::vector<std::pair<std::string, jinja::Input>>;
 
@@ -105,7 +105,7 @@ TEST(JinjaSnippets, MatchTransformers) {
       AddObject(*extra, variables);
     }
     const auto rendered = Render(Get(s, "template").string(), variables);
-    if (const auto j = s.find("jitllm"); j && j->string() == "unsupported") {
+    if (const auto j = s.find("llmp"); j && j->string() == "unsupported") {
       EXPECT_EQ(Failed(rendered, &jinja::Error::code), jinja::Code::kUnsupported) << name;
       continue;
     }

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // The locked GGML arithmetic of dsv4-hc.cu's HC post and norm.cu's
@@ -18,10 +18,10 @@
 #include "base/bytes.h"
 #include "common.cuh"
 #include "kernels/ggml/dsv4_hc_norm.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 constexpr int kThreads = 1024;
@@ -157,7 +157,7 @@ std::expected<void, KernelFailure> RunDsv4HcNormF16(LaunchContext& launch, ggml_
   }
   const auto* x = static_cast<const float*>(norm->src[0]->data);
   const auto rows = static_cast<unsigned>(norm->ne[1]);
-  const float epsilon = JitllmOpEps(norm);
+  const float epsilon = LlmpOpEps(norm);
   return launch.Run(base::Bytes(0), [=](auto& context) {
     WithRows(norm, [&](auto* normalized) {
       HcNormF16Kernel<<<rows, kThreads, 32 * sizeof(float), context.stream()>>>(x, normalized,
@@ -178,7 +178,7 @@ std::expected<void, KernelFailure> RunDsv4HcPostNormF16(LaunchContext& launch, g
   const auto* comb = static_cast<const float*>(post->src[3]->data);
   auto* expanded = static_cast<float*>(post->data);
   const auto rows = static_cast<unsigned>(post->ne[2]);
-  const float epsilon = JitllmOpEps(norm);
+  const float epsilon = LlmpOpEps(norm);
   return launch.Run(base::Bytes(0), [=](auto& context) {
     WithRows(norm, [&](auto* normalized) {
       HcPostNormF16Kernel<false><<<rows, kThreads, 32 * sizeof(float), context.stream()>>>(
@@ -204,7 +204,7 @@ std::expected<void, KernelFailure> RunDsv4HcPostExpertsNormF16(LaunchContext& la
   const auto* comb = static_cast<const float*>(post->src[3]->data);
   auto* expanded = static_cast<float*>(post->data);
   const auto rows = static_cast<unsigned>(post->ne[2]);
-  const float epsilon = JitllmOpEps(norm);
+  const float epsilon = LlmpOpEps(norm);
   return launch.Run(base::Bytes(0), [=](auto& context) {
     WithRows(norm, [&](auto* normalized) {
       HcPostNormF16Kernel<true><<<rows, kThreads, 32 * sizeof(float), context.stream()>>>(
@@ -242,4 +242,4 @@ std::expected<void, KernelFailure> RunDsv4F16Copy(LaunchContext& launch, ggml_te
   });
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

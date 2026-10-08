@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Original-image public API for the fixed grouped H8 schedule.
@@ -26,7 +26,7 @@
 namespace {
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
-namespace wide = jitllm::benchmarks::gemma3_wide;
+namespace wide = llmp::benchmarks::gemma3_wide;
 constexpr auto kVocab = wide::kVocab, kOwners = wide::kOwners;
 void Require(bool good, const char* message) {
   if (!good) throw std::runtime_error(message);

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Controlled DeepSeek request-slot cap (2026-10-04)
@@ -253,13 +253,13 @@ attempt is not presented as a calibration pass.
 Proof raw data remains outside Git at Spark B
 `~/scratch/deepseek-slot-calibration/{prime1,prime2,calibration-proof1}`
 and the workstation
-`~/scratch/jitllm-m3-deepseek-slot-calibration-2026-10-04/`, excluding state
+`~/scratch/llmp-m3-deepseek-slot-calibration-2026-10-04/`, excluding state
 payloads. Broader artifacts, contexts and slot knees remain open.
 
 ## Performance provenance and limits
 
 The performance arms use the checked `995cced` implementation in Spark B's read-only
-`~/src/jitLLM-wt/calkey01`. No runtime build or code/default change is made
+`~/src/llmp-wt/calkey01`. No runtime build or code/default change is made
 for those arms. Device identity is NVIDIA GB10 sm_121, driver
 580.178.04 and runtime-reported CUDA 13.0 driver/device API; the checked
 toolkit compiler is 13.4.92. The 487-file compiled source inventory, binary,
@@ -299,7 +299,7 @@ quality, calibrated kernel schedule or peak-memory claim follows here.
 
 Raw receipts, strict streamed responses, passive keys, pins and supervisor
 logs are outside Git at Spark B `~/scratch/deepseek-slot-knee/{screen1,screen2,long1}`
-and the workstation `~/scratch/jitllm-m3-deepseek-slot-knee-2026-10-04/`;
+and the workstation `~/scratch/llmp-m3-deepseek-slot-knee-2026-10-04/`;
 state payloads are not copied to the workstation. The preserved `screen.py`
 requires fresh arm directories, an installed GPU-supervised job with a
 600-second bound and a successful wait. Its internal 530-second work

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Task trees and the ready queue (D-048,
@@ -23,8 +23,8 @@
 // Free slots are reused in rotation, so generations advance evenly across
 // the table and exhaustion comes after about capacity x 2^32 tasks.
 
-#ifndef JITLLM_SCHEDULER_TASKS_H_
-#define JITLLM_SCHEDULER_TASKS_H_
+#ifndef LLMP_SCHEDULER_TASKS_H_
+#define LLMP_SCHEDULER_TASKS_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -35,7 +35,7 @@
 
 #include "base/ids.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 
 struct TaskTag {
   static constexpr const char* kName = "task";
@@ -168,6 +168,6 @@ class TaskTable {
   ReadyQueue ready_;
 };
 
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler
 
-#endif  // JITLLM_SCHEDULER_TASKS_H_
+#endif  // LLMP_SCHEDULER_TASKS_H_

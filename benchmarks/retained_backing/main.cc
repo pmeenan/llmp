@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The retained-backing comparison's deterministic replay (part (a),
@@ -9,7 +9,7 @@
 // A disagreement voids the run (exit status 1). The report and the
 // criteria's application are in docs/experiments/retained-backing/.
 //
-//   jitllm_rb_replay [--threads N] [--check-every N] [--role ROLE]
+//   llmp_rb_replay [--threads N] [--check-every N] [--role ROLE]
 //                    [--file NAME]... TRACE_DIR [DESIGN]...
 //
 // ROLE is primary (the default) or confirmation; the confirmation seed is
@@ -36,8 +36,8 @@
 
 namespace {
 
-using jitllm::rb::DesignSpec;
-using jitllm::rb::Metrics;
+using llmp::rb::DesignSpec;
+using llmp::rb::Metrics;
 
 std::optional<std::uint64_t> Number(std::string_view text) {
   std::uint64_t value = 0;
@@ -50,7 +50,7 @@ std::optional<std::uint64_t> Number(std::string_view text) {
 
 int Usage() {
   std::println(stderr,
-               "usage: jitllm_rb_replay [--threads N] [--check-every N] [--role ROLE] "
+               "usage: llmp_rb_replay [--threads N] [--check-every N] [--role ROLE] "
                "[--file NAME]... TRACE_DIR [DESIGN]...");
   return 2;
 }
@@ -60,7 +60,7 @@ int Usage() {
 int main(int argc, char** argv) {
   const std::vector<std::string_view> args(argv + 1, argv + argc);
   std::uint64_t threads = 4;
-  jitllm::rb::ReplayOptions options;
+  llmp::rb::ReplayOptions options;
   std::string role = "primary";
   std::vector<std::string> files;
   std::optional<std::string> dir;
@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
       return Usage();
     } else if (!dir) {
       dir = std::string(arg);
-    } else if (const auto spec = jitllm::rb::FindDesign(arg)) {
+    } else if (const auto spec = llmp::rb::FindDesign(arg)) {
       designs.push_back(*spec);
     } else {
       std::println(stderr, "unknown design {}", arg);
@@ -99,15 +99,15 @@ int main(int argc, char** argv) {
     return Usage();
   }
   if (designs.empty()) {
-    designs = jitllm::rb::AllDesigns();
+    designs = llmp::rb::AllDesigns();
   }
   if (files.empty()) {
-    files.assign(jitllm::rb::kTraceFiles.begin(), jitllm::rb::kTraceFiles.end());
+    files.assign(llmp::rb::kTraceFiles.begin(), llmp::rb::kTraceFiles.end());
   }
 
   bool agreed = true;
   for (const std::string& file : files) {
-    auto trace = jitllm::rb::LoadTrace(*dir, file, role);
+    auto trace = llmp::rb::LoadTrace(*dir, file, role);
     if (!trace) {
       std::println(stderr, "{}", trace.error());
       return 1;
@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
         workers.emplace_back([&] {
           for (std::size_t task = next++; task < results.size(); task = next++) {
             const auto start = std::chrono::steady_clock::now();
-            results[task] = jitllm::rb::Replay(*trace, designs[task / 2], options);
+            results[task] = llmp::rb::Replay(*trace, designs[task / 2], options);
             const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
             std::println(stderr, "{} {} replay {}: {:.1f} s", file, designs[task / 2].name,
                          (task % 2) + 1, took.count());
@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
       const Metrics& first = results[d * 2];
       const bool same = first == results[(d * 2) + 1];
       agreed = agreed && same;
-      std::string line = jitllm::rb::ToJson(first);
+      std::string line = llmp::rb::ToJson(first);
       line.pop_back();  // the closing brace
       std::println(R"({},"role":"{}","trace_sha256":"{}","replays_agree":{}}})", line, role,
                    trace->sha256, same);

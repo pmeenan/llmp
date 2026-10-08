@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // One Q-only assistant query per independent frozen target slot. Descriptors
 // only: the caller funds and protects every immutable operand through completion.
-#ifndef JITLLM_KERNELS_GGML_GEMMA4_ASSISTANT_GRAPH_H_
-#define JITLLM_KERNELS_GGML_GEMMA4_ASSISTANT_GRAPH_H_
+#ifndef LLMP_KERNELS_GGML_GEMMA4_ASSISTANT_GRAPH_H_
+#define LLMP_KERNELS_GGML_GEMMA4_ASSISTANT_GRAPH_H_
 
 #include <array>
 #include <cstdint>
@@ -14,7 +14,7 @@
 #include "kernels/ggml/gemma4_graph.h"
 #include "model/gemma4_assistant.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 struct Gemma4AssistantSegment {
   std::uint32_t slot = 0, prefix = 0, local_n_kv = 0, global_n_kv = 0;
   // The prefix/query position is a fresh input, not a capture/cache dimension.
@@ -55,5 +55,5 @@ std::expected<Gemma4AssistantGraph, KernelFailure> BuildGemma4AssistantGraph(
     const model::Gemma4AssistantBinding& binding, const model::Gemma4Profile& target,
     const model::Gemma4Binding& target_binding, const model::Gemma4StateLayout& state,
     const Gemma4AssistantShape& shape);
-}  // namespace jitllm::kernels::ggml
-#endif  // JITLLM_KERNELS_GGML_GEMMA4_ASSISTANT_GRAPH_H_
+}  // namespace llmp::kernels::ggml
+#endif  // LLMP_KERNELS_GGML_GEMMA4_ASSISTANT_GRAPH_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Actual runner startup only: no Register, Start, Load, binding or model dispatch.
@@ -23,7 +23,7 @@
 #include "engine/qwen38_runner.h"
 
 namespace {
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 
 std::string Stats(const en::StartupPlacementStats& s) {
   return std::format(
@@ -137,7 +137,7 @@ int Measure(std::unique_ptr<Lifetime<Runner>> owner, const std::filesystem::path
 int main(int argc, char** argv) {
   if (argc != 6) {
     std::println(stderr,
-                 "usage: jitllm_startup_measurement_probe ds|dspark|qn|qmtp|qg TARGET DRAFTER|- "
+                 "usage: llmp_startup_measurement_probe ds|dspark|qn|qmtp|qg TARGET DRAFTER|- "
                  "NEW_OUT off|on");
     return 2;
   }

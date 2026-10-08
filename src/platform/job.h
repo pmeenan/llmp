@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Job processes contained in delegated cgroups (D-074;
-// docs/architecture.md#import-install-and-archive-jobs). jitllm.service
+// docs/architecture.md#import-install-and-archive-jobs). llmp.service
 // delegates its cgroup to the runtime's user and runs the runtime one level
 // down (Delegate=, DelegateSubgroup=runtime), so the runtime can make a
 // cgroup per job beside its own: <unit>/jobs/<id>. Every process a job
@@ -19,8 +19,8 @@
 // input also confine themselves (platform/confine.h), leaving them no
 // access to /sys/fs/cgroup.
 
-#ifndef JITLLM_PLATFORM_JOB_H_
-#define JITLLM_PLATFORM_JOB_H_
+#ifndef LLMP_PLATFORM_JOB_H_
+#define LLMP_PLATFORM_JOB_H_
 
 #include <sys/types.h>
 
@@ -30,11 +30,11 @@
 #include <string>
 #include <string_view>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 // The name of the environment variable that tells a job which descriptor
 // holds its lock.
-inline constexpr std::string_view kJobLockFdVariable = "JITLLM_JOB_LOCK_FD";
+inline constexpr std::string_view kJobLockFdVariable = "LLMP_JOB_LOCK_FD";
 
 // The cgroup v2 directory the calling process is in, under /sys/fs/cgroup.
 std::expected<std::filesystem::path, std::string> OwnCgroup();
@@ -57,7 +57,7 @@ struct StartedJob {
 // Starts argv[0] (an absolute path) with argv as a job: a new cgroup
 // jobs_root/<id>, and the lock file (created 0600 if missing), locked
 // before the job starts and inherited by it on the descriptor that
-// JITLLM_JOB_LOCK_FD names. The caller keeps no descriptor for the lock.
+// LLMP_JOB_LOCK_FD names. The caller keeps no descriptor for the lock.
 // Fails if the lock is held or the cgroup exists.
 std::expected<StartedJob, std::string> StartJob(const std::filesystem::path& jobs_root,
                                                 std::string_view id,
@@ -83,6 +83,6 @@ std::expected<bool, std::string> JobEnded(const std::filesystem::path& cgroup,
 // reaps, StartJob's own waits must go through it (or through pidfds).
 int ReapExited();
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_JOB_H_
+#endif  // LLMP_PLATFORM_JOB_H_

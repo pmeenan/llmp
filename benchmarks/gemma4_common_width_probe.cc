@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded unequal-prefix/ring screen with partial cohort departure and restore.
@@ -27,7 +27,7 @@
 #include "platform/crash_policy.h"
 
 namespace {
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 namespace fs = std::filesystem;
 using en::support::Error;
 constexpr std::uint32_t kVocab = 262144, kSteps = 32;
@@ -47,8 +47,7 @@ std::expected<std::int32_t, std::string> Best(const std::vector<float>& row) {
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma4-common-width-probe") ||
-      (argc != 8 && argc != 9))
+  if (!llmp::platform::InstallCrashPolicy("gemma4-common-width-probe") || (argc != 8 && argc != 9))
     return 2;
   const bool dense_shared_q8 = argc == 9 && std::string_view(argv[8]) == "dense-shared-q8";
   if (argc == 9 && !dense_shared_q8) return 2;
@@ -118,7 +117,7 @@ int main(int argc, char** argv) {
     for (std::uint32_t slot = 0; slot < 2; ++slot) {
       auto ranges = runner.CheckpointRanges(past[slot]);
       if (!ranges) return Error(ranges.error());
-      jitllm::base::Sha256 hash;
+      llmp::base::Sha256 hash;
       for (const auto& range : *ranges)
         for (std::uint64_t at = 0; at < range.bytes;) {
           auto part = range;
@@ -131,7 +130,7 @@ int main(int argc, char** argv) {
           hash.Update(std::span(static_cast<const std::byte*>(pinned), std::size_t(part.bytes)));
           at += part.bytes;
         }
-      result[slot] = jitllm::base::ToHex(hash.Finish());
+      result[slot] = llmp::base::ToHex(hash.Finish());
     }
     return result;
   };
@@ -198,7 +197,7 @@ int main(int argc, char** argv) {
               << en::support::Seconds(std::chrono::steady_clock::now() - setup_begin) << '\n';
     // Both modes observe initialized state after the paid endpoint. Fund
     // the same bounded copy buffer before deriving the physical budget.
-    std::vector<jitllm::catalog::ExtentId> extents;
+    std::vector<llmp::catalog::ExtentId> extents;
     auto allocation = node.Pinned(kCopy, 0, extents);
     if (!allocation) return Error(allocation.error());
     pinned = *allocation;
@@ -213,7 +212,7 @@ int main(int argc, char** argv) {
               << " activations=" << runner.activations_needed()
               << " scratch=" << runner.pool_needed() << " host_input=" << runner.host_input_bytes()
               << " plan_floor=" << runner.plan_floor_bytes() << " total=" << budget << '\n';
-    if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
+    if (auto r = node.Start(llmp::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
     node.Run();
@@ -221,11 +220,11 @@ int main(int argc, char** argv) {
       if (!node.InRequest(0)) return Error("held direct request required");
       const std::array<std::uint32_t, 2> slots{0, 1};
       if (auto r = runner.SelectSlots(slots); !r) return r;
-      std::array<jitllm::model::Gemma4Segment, 2> frontier;
+      std::array<llmp::model::Gemma4Segment, 2> frontier;
       for (std::uint32_t slot = 0; slot < 2; ++slot)
         frontier[slot] = {slot, prefix[slot] + 3,
                           std::span(ids[slot]).subspan(prefix[slot] + 3, 1)};
-      auto inputs = jitllm::model::Gemma4Chunk(runner.profile(), runner.layout(), frontier);
+      auto inputs = llmp::model::Gemma4Chunk(runner.profile(), runner.layout(), frontier);
       if (!inputs) return Error(inputs.error());
       std::uint32_t expected_owners = 0, expected_bounded = 0;
       for (std::uint32_t layer = 0; layer < runner.profile().layers; ++layer) {

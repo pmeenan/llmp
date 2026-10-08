@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// jitllm.vecq's raw launch (dsv4_fast.cu; jitllm_ops.h, "DeepSeek V4's fast
+// llmp.vecq's raw launch (dsv4_fast.cu; llmp_ops.h, "DeepSeek V4's fast
 // plan"), below the node checks, for the launch-configuration measurements
 // (benchmarks/vecq_bench.cc) and RunVecQ. CUDA builds only.
 
-#ifndef JITLLM_KERNELS_GGML_DSV4_FAST_H_
-#define JITLLM_KERNELS_GGML_DSV4_FAST_H_
+#ifndef LLMP_KERNELS_GGML_DSV4_FAST_H_
+#define LLMP_KERNELS_GGML_DSV4_FAST_H_
 
 #include <cuda_runtime.h>
 
@@ -15,9 +15,9 @@
 
 #include "ggml.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
-// What a jitllm.vecq launch reads and writes. Weight offsets count the
+// What a llmp.vecq launch reads and writes. Weight offsets count the
 // weight type's blocks; activation offsets count Q8_1 blocks (36 bytes).
 struct VecQDesc {
   const void* w = nullptr;            // weights (the up projection with a GLU)
@@ -46,6 +46,6 @@ int VecQVariants();
 std::string VecQVariantName(int variant);
 bool LaunchVecQ(ggml_type type, const VecQDesc& d, int variant, cudaStream_t stream);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_DSV4_FAST_H_
+#endif  // LLMP_KERNELS_GGML_DSV4_FAST_H_

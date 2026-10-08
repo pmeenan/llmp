@@ -78,13 +78,13 @@
         },
         {
           "path": "src/execution/registry.cc",
-          "bytes": 11284,
-          "sha256": "118d334fb3b72b358a21d02bac98eac806047ae1620a9ab689bfa91c77818505"
+          "bytes": 11280,
+          "sha256": "089329421a2ecbc9b605c6afcef6b6b48293e7b10118584c65e03101fbec9076"
         },
         {
           "path": "src/execution/registry.h",
-          "bytes": 10558,
-          "sha256": "292cddfc1720be55e0f4463345951e0153514deb802f5a2ef83276e3d6bb5da3"
+          "bytes": 10552,
+          "sha256": "27371d97f0f889ad3b20416b508d2dec02ce2689c37ef41b5a77146660aec065"
         },
         {
           "path": "src/kernels/ggml/gemma4_graph.cc",
@@ -159,7 +159,7 @@
         },
         {
           "path": "docs/experiments/gemma-joined-serving/analyze.py",
-          "sha256": "d9c4efae191cedc2797617264bfe3ddaf71dbe04c4c8132914c38367e2011ce1"
+          "sha256": "af2458e13546b100e71dd1321752d58f4dd98256642d5c82857a8ae02d40d6eb"
         },
         {
           "path": "docs/experiments/gemma-joined-serving/llama_joined.cc",
@@ -167,7 +167,7 @@
         },
         {
           "path": "docs/experiments/gemma-joined-serving/reference.sh",
-          "sha256": "d193b98b43364f481a941d9de0972dfe59bed1dde6c398c82f1da014eaa444e3"
+          "sha256": "476e8feff9af740e8bf6b135a861d5c5229e0e58e01c22817c2eb848cd173d51"
         },
         {
           "path": "src/engine/gemma4_plan.cc",
@@ -183,11 +183,11 @@
         },
         {
           "path": "src/execution/registry.cc",
-          "sha256": "118d334fb3b72b358a21d02bac98eac806047ae1620a9ab689bfa91c77818505"
+          "sha256": "089329421a2ecbc9b605c6afcef6b6b48293e7b10118584c65e03101fbec9076"
         },
         {
           "path": "src/execution/registry.h",
-          "sha256": "292cddfc1720be55e0f4463345951e0153514deb802f5a2ef83276e3d6bb5da3"
+          "sha256": "27371d97f0f889ad3b20416b508d2dec02ce2689c37ef41b5a77146660aec065"
         },
         {
           "path": "src/kernels/ggml/gemma4_graph.cc",
@@ -215,7 +215,7 @@
         },
         {
           "path": "src/runtime/gemma_wave.h",
-          "sha256": "cc34ce7d44ced90afa7594f8a3e8f621b8d24a79b6b126b7100108f000110ce7"
+          "sha256": "97cc331c567e2fe66edcdd7c3d43d290004a0e1c5a95aa56501c8cafafb993c8"
         },
         {
           "path": "src/runtime/serving.cc",

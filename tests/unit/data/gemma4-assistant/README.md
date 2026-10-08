@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Approved Gemma assistant tensor contracts
@@ -13,6 +13,6 @@ separately under the `models` label.
 
 See [assistant binding](../../../../docs/gemma4-assistant.md) for complete source,
 carrier, semantic contracts and qualification limits. The code and curated
-contract fixtures are jitLLM-authored Apache-2.0; no upstream kernel/graph code
+contract fixtures are llmpalooza-authored Apache-2.0; no upstream kernel/graph code
 is ported in this foundation. Model files remain external under their recorded
 upstream terms.

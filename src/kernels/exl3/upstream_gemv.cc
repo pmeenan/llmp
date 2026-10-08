@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2025 Turboderp
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 #include "kernels/exl3/upstream_gemv.h"
@@ -9,7 +9,7 @@
 
 #include "kernels/exl3/validate.h"
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 
 CcClass UpstreamCcClass(int major, int minor) {
   if (major >= 10) {
@@ -86,4 +86,4 @@ std::optional<GemvPlan> UpstreamGemvPlan(CcClass cc, int m, int k, int n, int bi
   return GemvPlan{.config = config, .blocks = blocks};
 }
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3

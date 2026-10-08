@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma state-only intermediate prefill
@@ -63,7 +63,7 @@ putting the test's borrow inside a held request passed. Production math was
 unchanged across these fixture corrections. The expanded tests changed only
 test bytes after timing; the measured helper identity remains retained.
 
-Reproduce with manual `jitllm_gemma_prefill ARTIFACT IDS NEW_OUT PROFILE POLICY
+Reproduce with manual `llmp_gemma_prefill ARTIFACT IDS NEW_OUT PROFILE POLICY
 ROWS normmul-off full|state-only`, using 26/all/1024 or 31/both/256. The existing
 owned-container ring launcher supplies the original bookends, retaining the
 [26B](../gemma26-swa-ring-transfer/README.md) and

@@ -1,15 +1,15 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_RUNTIME_GEMMA_WAVE_H_
-#define JITLLM_RUNTIME_GEMMA_WAVE_H_
+#ifndef LLMP_RUNTIME_GEMMA_WAVE_H_
+#define LLMP_RUNTIME_GEMMA_WAVE_H_
 
 #include <algorithm>
 #include <cstddef>
 #include <expected>
 #include <string>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 // Callers validate all tuples before this first dispatch. A successful run
 // proves its group's native completion. A clean refusal belongs only to that
 // group; completed peers remain available for the caller's later publication.
@@ -27,5 +27,5 @@ std::expected<void, std::string> RunGemmaGroups(std::size_t owners, std::size_t 
   }
   return {};
 }
-}  // namespace jitllm::runtime
-#endif  // JITLLM_RUNTIME_GEMMA_WAVE_H_
+}  // namespace llmp::runtime
+#endif  // LLMP_RUNTIME_GEMMA_WAVE_H_

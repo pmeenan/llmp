@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include <nvtx3/nvToolsExt.h>
 #include <sys/syscall.h>
@@ -17,7 +17,7 @@
 
 #include "gemma26_prefill_coarse.h"
 
-namespace jitllm::benchmark::coarse {
+namespace llmp::benchmark::coarse {
 namespace {
 constexpr std::uint32_t kThreads = 4;
 constexpr auto kPhases = static_cast<std::uint32_t>(Phase::kCount);
@@ -204,4 +204,4 @@ bool ClockProbe(std::ostream& output) {
   return reported && !invalid.load() && bw > 0 && bc > 0 && ww >= 150000000 && wc >= 0 &&
          bc > bw / 2 && wc < ww / 10 && output.good();
 }
-}  // namespace jitllm::benchmark::coarse
+}  // namespace llmp::benchmark::coarse

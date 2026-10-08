@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The module's typed checks on parsed JSON, and the string patterns of the
@@ -6,8 +6,8 @@
 // the prototype verifier names for it; types are exact (`false` is not 0).
 // Internal to src/artifact.
 
-#ifndef JITLLM_ARTIFACT_SCHEMA_H_
-#define JITLLM_ARTIFACT_SCHEMA_H_
+#ifndef LLMP_ARTIFACT_SCHEMA_H_
+#define LLMP_ARTIFACT_SCHEMA_H_
 
 #include <algorithm>
 #include <cstddef>
@@ -23,7 +23,7 @@
 #include "base/check.h"
 #include "base/sha256.h"
 
-namespace jitllm::artifact::schema {
+namespace llmp::artifact::schema {
 
 inline constexpr std::int64_t kMaxInt = std::numeric_limits<std::int64_t>::max();
 
@@ -188,6 +188,6 @@ constexpr bool IsText(std::string_view s) {
                              [](char c) { return c >= ' ' && c <= '~' && c != '"' && c != '\\'; });
 }
 
-}  // namespace jitllm::artifact::schema
+}  // namespace llmp::artifact::schema
 
-#endif  // JITLLM_ARTIFACT_SCHEMA_H_
+#endif  // LLMP_ARTIFACT_SCHEMA_H_

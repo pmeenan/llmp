@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Page-in throughput through the scheduler and its lanes (D-081, BP-P6;
@@ -8,11 +8,11 @@
 // with backing mapped once or made on each load (D-033). Every lane runs
 // on its own thread, as a program wires them.
 //
-//   jitllm_pagein_bench --file PATH | --dir DIR  [--gib N | --mib N] [--offset BYTES]
+//   llmp_pagein_bench --file PATH | --dir DIR  [--gib N | --mib N] [--offset BYTES]
 //                       [--mode zone|inplace] [--backing premapped|managed]
 //                       [--depth D] [--slots S] [--loads K] [--verify]
 //                       [--vmm-lane on|off] [--submit-poll US] [--storage-poll US]
-//   jitllm_pagein_bench ... --decode STEPS [--gpu-mib M] [--host-us H] [--pagein-ms P]
+//   llmp_pagein_bench ... --decode STEPS [--gpu-mib M] [--host-us H] [--pagein-ms P]
 //
 // --file reads an existing file of dmabuf_probe's pattern
 // (docs/experiments/dmabuf-direct/), so the standalone probe and this
@@ -91,11 +91,11 @@
 
 namespace {
 
-namespace sc = jitllm::scheduler;
-using jitllm::base::Bytes;
-using jitllm::catalog::ExtentId;
-using jitllm::providers::BackingKind;
-using jitllm::providers::ReservationId;
+namespace sc = llmp::scheduler;
+using llmp::base::Bytes;
+using llmp::catalog::ExtentId;
+using llmp::providers::BackingKind;
+using llmp::providers::ReservationId;
 using Clock = std::chrono::steady_clock;
 using Status = std::expected<void, std::string>;
 
@@ -205,7 +205,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   if (o.file.empty() == o.dir.empty()) {
     return Error(
-        "usage: jitllm_pagein_bench --file PATH | --dir DIR [--gib N] [--mode zone|inplace] "
+        "usage: llmp_pagein_bench --file PATH | --dir DIR [--gib N] [--mode zone|inplace] "
         "[--backing premapped|managed] [--depth D] [--slots S] [--loads K] [--verify] "
         "[--vmm-lane on|off] [--submit-poll US] [--storage-poll US] "
         "[--decode STEPS [--gpu-mib M] [--host-us H] [--pagein-ms P]]");
@@ -309,7 +309,7 @@ class Program : public sc::TaskProgram {
 // Materializes every extent at once and waits for them.
 class LoadProgram final : public Program {
  public:
-  LoadProgram(Done& done, jitllm::catalog::Closure closure)
+  LoadProgram(Done& done, llmp::catalog::Closure closure)
       : Program(done), closure_(std::move(closure)) {}
   sc::Step Advance(sc::TaskContext& context) override {
     if (context.TakeFailure()) {
@@ -325,7 +325,7 @@ class LoadProgram final : public Program {
   }
 
  private:
-  jitllm::catalog::Closure closure_;
+  llmp::catalog::Closure closure_;
 };
 
 // Evicts every resident extent, waiting once for all the unmaps.
@@ -341,7 +341,7 @@ class EvictProgram final : public Program {
     while (next_ < extents_.size()) {
       const ExtentId extent = extents_[next_];
       if (context.catalog().Describe(extent).value().state !=
-          jitllm::catalog::ExtentState::kResident) {
+          llmp::catalog::ExtentState::kResident) {
         ++next_;
         continue;
       }
@@ -371,7 +371,7 @@ class EvictProgram final : public Program {
 // Records each step's submission and the task's wake after it.
 class DecodeProgram final : public Program {
  public:
-  DecodeProgram(Done& done, jitllm::catalog::Closure weights, int steps,
+  DecodeProgram(Done& done, llmp::catalog::Closure weights, int steps,
                 std::function<sc::DeviceJob()> make, std::vector<std::int64_t>& starts,
                 std::vector<std::int64_t>& ends)
       : Program(done),
@@ -414,7 +414,7 @@ class DecodeProgram final : public Program {
   }
 
  private:
-  jitllm::catalog::Closure weights_;
+  llmp::catalog::Closure weights_;
   std::size_t steps_;
   std::function<sc::DeviceJob()> make_;
   std::vector<std::int64_t>& starts_;
@@ -500,22 +500,22 @@ class Bench {
   CUdevice device_ = 0;
   int fd_ = -1;
   std::uint64_t extents_ = 0;
-  std::unique_ptr<jitllm::providers::VmmProvider> memory_;
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  std::unique_ptr<jitllm::providers::UringStorage> storage_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::VmmProvider> memory_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  std::unique_ptr<llmp::providers::UringStorage> storage_;
+  llmp::providers::StreamId stream_;
   std::size_t device_class_ = 0;
   std::size_t host_class_ = 0;
   ReservationId zone_;
   std::uint64_t zone_base_ = 0;
-  std::vector<jitllm::providers::BackingId> zone_backings_;
+  std::vector<llmp::providers::BackingId> zone_backings_;
   ReservationId destination_;
   std::uint64_t destination_base_ = 0;
-  std::vector<jitllm::providers::BackingId> premapped_;
+  std::vector<llmp::providers::BackingId> premapped_;
 
-  jitllm::catalog::Catalog catalog_;
+  llmp::catalog::Catalog catalog_;
   std::vector<ExtentId> extent_ids_;
-  jitllm::base::WakeFlag wake_;
+  llmp::base::WakeFlag wake_;
   std::unique_ptr<Observer> observer_;
   std::unique_ptr<sc::CompletionBoard> board_;
   std::unique_ptr<sc::StorageService> storage_lane_;
@@ -557,8 +557,8 @@ Status Bench::Setup() {
     return Error("no CUDA device");
   }
   device_ = device;
-  auto memory = jitllm::providers::cuda::OpenDeviceMemory(0);
-  auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+  auto memory = llmp::providers::cuda::OpenDeviceMemory(0);
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
   if (!memory || !execution) {
     return Error("the CUDA providers");
   }
@@ -572,7 +572,7 @@ Status Bench::Setup() {
   for (std::size_t i = 0; i < memory_->Classes().size(); ++i) {
     (memory_->Classes()[i].kind == BackingKind::kDevice ? device_class_ : host_class_) = i;
   }
-  auto storage = jitllm::providers::UringStorage::Create(o_.depth);
+  auto storage = llmp::providers::UringStorage::Create(o_.depth);
   if (!storage) {
     return Error(std::format("io_uring: {}", storage.error().message()));
   }
@@ -581,7 +581,7 @@ Status Bench::Setup() {
   // The zone: host VMM the CPU and the device map.
   const auto map_all = [&](ReservationId& reservation, std::uint64_t& base, std::uint64_t bytes,
                            std::size_t allocation_class,
-                           std::vector<jitllm::providers::BackingId>* backings) -> Status {
+                           std::vector<llmp::providers::BackingId>* backings) -> Status {
     auto reserved = memory_->Reserve(Bytes(bytes));
     if (!reserved) {
       return Error("Reserve");
@@ -599,7 +599,7 @@ Status Bench::Setup() {
       backings->push_back(*backing);
     }
     if (!memory_->SetAccess(reservation, Bytes(0), Bytes(bytes),
-                            jitllm::providers::Access::kReadWrite)) {
+                            llmp::providers::Access::kReadWrite)) {
       return Error("SetAccess");
     }
     return {};
@@ -620,15 +620,15 @@ Status Bench::Setup() {
   board_ = std::make_unique<sc::CompletionBoard>(operations, wake_);
   storage_lane_ = std::make_unique<sc::StorageService>(
       *storage_,
-      jitllm::providers::ReaderSettings{.alignment = 4096,
-                                        .request_bytes = 2U << 20U,
-                                        .retries = 3,
-                                        .reads = operations,
-                                        .waiters = 8,
-                                        .span_bytes = jitllm::providers::kNoCoalescing,
-                                        .span_segments = jitllm::providers::kMaxSegments},
+      llmp::providers::ReaderSettings{.alignment = 4096,
+                                      .request_bytes = 2U << 20U,
+                                      .retries = 3,
+                                      .reads = operations,
+                                      .waiters = 8,
+                                      .span_bytes = llmp::providers::kNoCoalescing,
+                                      .span_segments = llmp::providers::kMaxSegments},
       *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32}, o_.storage_poll);
-  const std::array<jitllm::providers::StreamId, 1> streams = {stream_};
+  const std::array<llmp::providers::StreamId, 1> streams = {stream_};
   device_lane_ = std::make_unique<sc::DeviceService>(
       *execution_, streams, *board_,
       sc::DeviceSettings{.queue = {.capacity = 256, .reserved = 16, .batch = 32},
@@ -655,8 +655,8 @@ Status Bench::Setup() {
   for (std::uint64_t i = 0; i < extents_; ++i) {
     auto extent = catalog_.AddExtent(
         {.domain = domain,
-         .memory_class = jitllm::catalog::MemoryClass::kWeights,
-         .recovery = jitllm::catalog::Recovery::kFromArtifact,
+         .memory_class = llmp::catalog::MemoryClass::kWeights,
+         .recovery = llmp::catalog::Recovery::kFromArtifact,
          .size = Bytes(kExtent),
          .content = {.artifact = {}, .group = 0, .chunk = static_cast<std::uint32_t>(i)}});
     if (!extent) {
@@ -705,7 +705,7 @@ void Bench::Start(std::unique_ptr<sc::TaskProgram> program) {
   sc::Control start =
       sc::StartRequest{.request = ++request_, .priority = 1, .program = std::move(program)};
   // NOLINTNEXTLINE(bugprone-use-after-move): Post moves only what it takes
-  while (scheduler_->Post(std::move(start)) == jitllm::base::PushResult::kFull) {
+  while (scheduler_->Post(std::move(start)) == llmp::base::PushResult::kFull) {
     std::this_thread::yield();
   }
 }
@@ -766,7 +766,7 @@ std::vector<double> Bench::ThreadSeconds() {
 Status Bench::Decode() {
   const auto weights = catalog_.ClosureOfExtents(std::vector{extent_ids_.front()}).value();
   const auto make = [this]() -> sc::DeviceJob {
-    return [this](jitllm::providers::NativeStream stream) {
+    return [this](llmp::providers::NativeStream stream) {
       const auto until = Clock::now() + std::chrono::microseconds(o_.host_us);
       while (Clock::now() < until) {
         // the step's host-side work
@@ -942,7 +942,7 @@ Status Bench::Teardown() {
   }
   if (memory_ != nullptr) {
     const auto release = [&](ReservationId reservation,
-                             std::vector<jitllm::providers::BackingId>& backings) {
+                             std::vector<llmp::providers::BackingId>& backings) {
       if (!reservation.valid()) {
         return;
       }

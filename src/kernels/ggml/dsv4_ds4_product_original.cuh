@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The ds4.c authors
 // SPDX-FileCopyrightText: 2026 Entrpi <entrpi@proton.me> (batched-serving fork modifications)
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 //
 // Verbatim numerical functions from Entrpi/ds4

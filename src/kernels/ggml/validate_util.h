@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The building blocks of the GGML implementations' operand checks
 // (validate.h, validate_ext.h), on the host and in every build profile.
 // Internal to the module: callers use the checks, not these.
 
-#ifndef JITLLM_KERNELS_GGML_VALIDATE_UTIL_H_
-#define JITLLM_KERNELS_GGML_VALIDATE_UTIL_H_
+#ifndef LLMP_KERNELS_GGML_VALIDATE_UTIL_H_
+#define LLMP_KERNELS_GGML_VALIDATE_UTIL_H_
 
 #include <algorithm>
 #include <cstddef>
@@ -22,7 +22,7 @@
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml::detail {
+namespace llmp::kernels::ggml::detail {
 
 inline std::unexpected<KernelFailure> Rejected(std::string detail) {
   return std::unexpected(
@@ -262,6 +262,6 @@ inline std::optional<std::uint64_t> Product(std::initializer_list<std::int64_t> 
   return product;
 }
 
-}  // namespace jitllm::kernels::ggml::detail
+}  // namespace llmp::kernels::ggml::detail
 
-#endif  // JITLLM_KERNELS_GGML_VALIDATE_UTIL_H_
+#endif  // LLMP_KERNELS_GGML_VALIDATE_UTIL_H_

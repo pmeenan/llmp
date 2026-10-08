@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include "kernels/ggml/graph_read_index.h"
 
@@ -8,7 +8,7 @@
 
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml::detail {
+namespace llmp::kernels::ggml::detail {
 namespace {
 // Keep the original matcher validation, including the depth bound for EACH
 // starting descriptor; memoize only the complete result, not partial walks.
@@ -164,4 +164,4 @@ bool GraphReadIndex::Private(std::span<ggml_tensor* const> nodes, const ggml_ten
   }
   return true;
 }
-}  // namespace jitllm::kernels::ggml::detail
+}  // namespace llmp::kernels::ggml::detail

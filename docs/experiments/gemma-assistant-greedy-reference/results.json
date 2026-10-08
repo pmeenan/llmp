@@ -15,13 +15,13 @@
     },
     {
       "path": "docs/experiments/gemma-assistant-greedy-reference/PROTOCOL.md",
-      "bytes": 7120,
-      "sha256": "f068e130bebe8c792c4d76d4b77fed281098d17fbc8ca9036eb79cf07cdbaac7"
+      "bytes": 7124,
+      "sha256": "bc164428da2dcd1af5bcc2b41b984ba9a277ffafeae494183aedd36572197ed9"
     },
     {
       "path": "docs/experiments/gemma-assistant-greedy-reference/analyze.py",
-      "bytes": 13155,
-      "sha256": "b2d6c4fae2d9f632a03232978c52d4291c4e47dc27254ba4d78fe2a50e1f35e0"
+      "bytes": 13159,
+      "sha256": "48644393237691f185c33b0b11cc7a62380757167f8e0fd262406e5e608f7e83"
     },
     {
       "path": "docs/experiments/gemma-assistant-greedy-reference/llama_greedy.cc",
@@ -30,13 +30,13 @@
     },
     {
       "path": "docs/experiments/gemma-assistant-greedy-reference/reference.sh",
-      "bytes": 3059,
-      "sha256": "28a4cadb602e683356116029b3efaf52bea25daec900eb682ba5737f1cece563"
+      "bytes": 3045,
+      "sha256": "ce4ca1698d7f9e82b7f1d2e6a85ec9483e908de72cce234e53b1aa97cf18c175"
     },
     {
       "path": "docs/experiments/gemma-assistant-greedy-reference/test_analyze.py",
-      "bytes": 1386,
-      "sha256": "7faee1b6069d36741b55c411056d94da0eea8ae0849314141fd054ca71115e27"
+      "bytes": 1390,
+      "sha256": "62c0f7903e7c0c335154d87d97e1c058e70e2371270be29569dc4961fd61b0f1"
     }
   ],
   "source_ready1_sha256": "ab8ac3f4b919cd253f35659644c118e70bf4d1873b524216429925c31bd5cb15",
@@ -221,7 +221,7 @@
   ],
   "official_jobs": [
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-build1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-build1",
       "job_name": "m35-gemma-assistant-greedy-reference-build1",
       "state": "done",
       "rc": 0,
@@ -235,7 +235,7 @@
       }
     },
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-compare31-1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-compare31-1",
       "job_name": "m35-gemma-assistant-greedy-reference-compare31-1",
       "state": "failed",
       "rc": 1,
@@ -249,7 +249,7 @@
       }
     },
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-compare31-postauth1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-compare31-postauth1",
       "job_name": "m35-gemma-assistant-greedy-reference-compare31-postauth1",
       "state": "done",
       "rc": 0,
@@ -263,7 +263,7 @@
       }
     },
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-native31-1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-native31-1",
       "job_name": "m35-gemma-assistant-greedy-reference-native31-1",
       "state": "failed",
       "rc": 1,
@@ -277,7 +277,7 @@
       }
     },
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-native31-2",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-native31-2",
       "job_name": "m35-gemma-assistant-greedy-reference-native31-2",
       "state": "done",
       "rc": 0,
@@ -291,7 +291,7 @@
       }
     },
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-native31-own1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-native31-own1",
       "job_name": "m35-gemma-assistant-greedy-reference-native31-own1",
       "state": "done",
       "rc": 0,
@@ -305,7 +305,7 @@
       }
     },
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-build2",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-build2",
       "job_name": "m35-gemma-assistant-greedy-reference-norm31-build2",
       "state": "done",
       "rc": 0,
@@ -319,7 +319,7 @@
       }
     },
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-compare2",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-compare2",
       "job_name": "m35-gemma-assistant-greedy-reference-norm31-compare2",
       "state": "done",
       "rc": 0,
@@ -333,7 +333,7 @@
       }
     },
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-native2",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-native2",
       "job_name": "m35-gemma-assistant-greedy-reference-norm31-native2",
       "state": "done",
       "rc": 0,
@@ -347,7 +347,7 @@
       }
     },
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-own2",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-own2",
       "job_name": "m35-gemma-assistant-greedy-reference-norm31-own2",
       "state": "done",
       "rc": 0,
@@ -361,7 +361,7 @@
       }
     },
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-reference31-1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-reference31-1",
       "job_name": "m35-gemma-assistant-greedy-reference-reference31-1",
       "state": "done",
       "rc": 0,
@@ -375,7 +375,7 @@
       }
     },
     {
-      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-reference31-own1",
+      "local_external_directory": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-reference-raw/official-reference31-own1",
       "job_name": "m35-gemma-assistant-greedy-reference-reference31-own1",
       "state": "done",
       "rc": 0,
@@ -393,7 +393,7 @@
     "query_utc": "2026-10-06T12:42:18.142268+00:00",
     "head": "cb2ebf0540f42604e2759b2ddef497861e928248",
     "observation": "Fresh primary git ls-remote at this task entry remains cb2ebf; same-HEAD authenticated source snapshots retained from the greedy-unit observation. No inference or comparable CUDA Q8 assistant result.",
-    "previous_receipt": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-unit-raw/tensorfold-entry1.json",
+    "previous_receipt": "/tmp/llmp-m35-coordination/gemma-assistant-greedy-unit-raw/tensorfold-entry1.json",
     "README.md": {
       "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/README.md",
       "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"

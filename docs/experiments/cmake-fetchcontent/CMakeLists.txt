@@ -1,10 +1,10 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 cmake_minimum_required(VERSION 4.4.3)
 if(NOT CMAKE_VERSION VERSION_EQUAL "4.4.3")
   message(FATAL_ERROR "This experiment validates exactly CMake 4.4.3")
 endif()
-project(jitllm_cmake_smoke LANGUAGES CXX)
+project(llmp_cmake_smoke LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

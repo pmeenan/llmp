@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.26.0@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 # check=skip=FromPlatformFlagConstDisallowed
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# jitLLM reference container (D-012, D-049, D-061, D-070): Ubuntu 24.04 by
+# Llmpalooza reference container (D-012, D-049, D-061, D-070): Ubuntu 24.04 by
 # digest, the declared host prerequisites from a dated Ubuntu snapshot, mise
 # by hash and mise's pinned Python. The SDK is not baked in: `mise run setup`
 # inside the container provisions it with the same tools/setup-toolchain a
@@ -20,7 +20,7 @@ ARG MISE_SHA256=b4058dece685259910d3aba5782445996eea79dbdb3cf952a6eb81aadf0373ff
 # image.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
- && echo "APT::Snapshot \"${UBUNTU_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50jitllm-snapshot \
+ && echo "APT::Snapshot \"${UBUNTU_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50llmp-snapshot \
  && rm -rf /var/lib/apt/lists/*
 
 # The declared prerequisites (version constraints stripped; the snapshot
@@ -46,11 +46,11 @@ RUN install -d -o ubuntu -g ubuntu /workspaces
 # fresh named volumes mounted on them inherit this ownership.
 USER ubuntu
 WORKDIR /home/ubuntu
-RUN mkdir -p .local/share/jitllm .cache/jitllm
+RUN mkdir -p .local/share/llmp .cache/llmp
 ENV MISE_TRUSTED_CONFIG_PATHS=/workspaces
 
 # mise's pinned Python, installed from mise.lock so offline runs need no download.
-COPY --chown=ubuntu:ubuntu mise.toml mise.lock /home/ubuntu/.jitllm-mise/
-RUN cd /home/ubuntu/.jitllm-mise && MISE_TRUSTED_CONFIG_PATHS=$PWD mise install --locked \
- && rm -rf /home/ubuntu/.jitllm-mise
+COPY --chown=ubuntu:ubuntu mise.toml mise.lock /home/ubuntu/.llmp-mise/
+RUN cd /home/ubuntu/.llmp-mise && MISE_TRUSTED_CONFIG_PATHS=$PWD mise install --locked \
+ && rm -rf /home/ubuntu/.llmp-mise
 ENV PATH=/home/ubuntu/.local/share/mise/shims:$PATH

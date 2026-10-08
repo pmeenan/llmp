@@ -1,9 +1,9 @@
 {
   "version": 10,
   "$comment": [
-    "Build profiles (D-011, D-026, D-032). Every preset needs JITLLM_SDK, the pinned SDK's root, and that SDK's cmake; `mise run build`, `test` and `deploy` (tools/build) supply both.",
+    "Build profiles (D-011, D-026, D-032). Every preset needs LLMP_SDK, the pinned SDK's root, and that SDK's cmake; `mise run build`, `test` and `deploy` (tools/build) supply both.",
     "Test presets skip the `gpu` label except where a GB10 is present: spark-native, and cross-remote, with which `mise run test -- cross --host HOST` runs the deployed cross build's tests on a Spark over SSH.",
-    "The test and development presets (native, cpu, spark-native, the per-slice test build of D-084, and the sanitizer presets) build everything with libstdc++'s assertions, JITLLM_LIBSTDCXX_ASSERTIONS (D-083); only cross, which builds the package, does not.",
+    "The test and development presets (native, cpu, spark-native, the per-slice test build of D-084, and the sanitizer presets) build everything with libstdc++'s assertions, LLMP_LIBSTDCXX_ASSERTIONS (D-083); only cross, which builds the package, does not.",
     "native-gpu runs only the `gpu-discrete` tests, on the workstation's discrete GPU with its driver (D-082): `mise run test -- native --gpu`. Nothing runs it by default.",
     "CUDA builds link the driver's libcuda.so.1 (D-072). Where GPU tests are skipped, the tests always load NVIDIA's stub from build/<preset>/cuda-stub instead, so they also run on hosts without the driver; only Spark runs and native-gpu use the driver."
   ],
@@ -21,46 +21,46 @@
       "inherits": "base",
       "displayName": "x86-64 native, CUDA for sm_121 and the discrete sm_86",
       "toolchainFile": "${sourceDir}/cmake/toolchains/x86_64-linux-gnu-native.cmake",
-      "cacheVariables": {"JITLLM_CUDA": "ON", "JITLLM_LIBSTDCXX_ASSERTIONS": "ON"}
+      "cacheVariables": {"LLMP_CUDA": "ON", "LLMP_LIBSTDCXX_ASSERTIONS": "ON"}
     },
     {
       "name": "cpu",
       "inherits": "base",
       "displayName": "x86-64 native, CPU only (no CUDA toolkit)",
       "toolchainFile": "${sourceDir}/cmake/toolchains/x86_64-linux-gnu-native.cmake",
-      "cacheVariables": {"JITLLM_CUDA": "OFF", "JITLLM_LIBSTDCXX_ASSERTIONS": "ON"}
+      "cacheVariables": {"LLMP_CUDA": "OFF", "LLMP_LIBSTDCXX_ASSERTIONS": "ON"}
     },
     {
       "name": "cross",
       "inherits": "base",
       "displayName": "AArch64 cross build for DGX Spark, CUDA for sm_121",
       "toolchainFile": "${sourceDir}/cmake/toolchains/aarch64-linux-gnu-cross.cmake",
-      "cacheVariables": {"JITLLM_CUDA": "ON"}
+      "cacheVariables": {"LLMP_CUDA": "ON"}
     },
     {
       "name": "spark-native",
       "inherits": "base",
       "displayName": "Native build on a DGX Spark (diagnostic fallback)",
       "toolchainFile": "${sourceDir}/cmake/toolchains/aarch64-linux-gnu-native.cmake",
-      "cacheVariables": {"JITLLM_CUDA": "ON", "JITLLM_LIBSTDCXX_ASSERTIONS": "ON"}
+      "cacheVariables": {"LLMP_CUDA": "ON", "LLMP_LIBSTDCXX_ASSERTIONS": "ON"}
     },
     {
       "name": "cpu-asan",
       "inherits": "cpu",
       "displayName": "x86-64 native, CPU only, ASan+UBSan with leak detection",
-      "cacheVariables": {"JITLLM_SANITIZE": "address;undefined"}
+      "cacheVariables": {"LLMP_SANITIZE": "address;undefined"}
     },
     {
       "name": "cross-asan",
       "inherits": "cross",
       "displayName": "AArch64 cross build, ASan+UBSan (leak detection only on a Spark)",
-      "cacheVariables": {"JITLLM_SANITIZE": "address;undefined", "JITLLM_LIBSTDCXX_ASSERTIONS": "ON"}
+      "cacheVariables": {"LLMP_SANITIZE": "address;undefined", "LLMP_LIBSTDCXX_ASSERTIONS": "ON"}
     },
     {
       "name": "cross-tsan",
       "inherits": "cross",
       "displayName": "AArch64 cross build, ThreadSanitizer (tests run only on a Spark)",
-      "cacheVariables": {"JITLLM_SANITIZE": "thread", "JITLLM_LIBSTDCXX_ASSERTIONS": "ON"}
+      "cacheVariables": {"LLMP_SANITIZE": "thread", "LLMP_LIBSTDCXX_ASSERTIONS": "ON"}
     }
   ],
   "buildPresets": [
@@ -109,7 +109,7 @@
       "environment": {
         "ASAN_OPTIONS": "detect_leaks=1",
         "UBSAN_OPTIONS": "print_stacktrace=1",
-        "ASAN_SYMBOLIZER_PATH": "$env{JITLLM_SDK}/bin/llvm-symbolizer"
+        "ASAN_SYMBOLIZER_PATH": "$env{LLMP_SDK}/bin/llvm-symbolizer"
       }
     },
     {
@@ -119,7 +119,7 @@
       "environment": {
         "ASAN_OPTIONS": "detect_leaks=0",
         "UBSAN_OPTIONS": "print_stacktrace=1",
-        "ASAN_SYMBOLIZER_PATH": "$env{JITLLM_SDK}/bin/llvm-symbolizer"
+        "ASAN_SYMBOLIZER_PATH": "$env{LLMP_SDK}/bin/llvm-symbolizer"
       }
     },
     {

@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A speculative verify's row-invariant operations (D-092;
-// kernels/ggml/ops_ext.h MulMatVecQRows and MulMatVecFRows, jitllm_ops.h
-// Argmax and CopyRanges) under jitLLM's launch context on a GB10 (label
+// kernels/ggml/ops_ext.h MulMatVecQRows and MulMatVecFRows, llmp_ops.h
+// Argmax and CopyRanges) under llmpalooza's launch context on a GB10 (label
 // `gpu`):
 // - every column of a row-invariant quantized product of 1 to 8 columns
 //   equals, bit for bit, GGML's own one-column MMVQ launch on that column
@@ -16,7 +16,7 @@
 // - GGML's float vector kernel over 1 to 8 columns equals its one-column
 //   launch, for F32 and BF16 weights, where upstream would take the tile
 //   kernel or cuBLAS past one BF16 or three F32 columns;
-// - jitLLM's argmax takes the lowest index among equal maxima and never a
+// - Llmpalooza's argmax takes the lowest index among equal maxima and never a
 //   NaN; the range copies copy exactly the ranges named;
 // - the registry declares and binds the new implementations (D-053).
 
@@ -45,8 +45,8 @@
 #include "ggml.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
@@ -56,15 +56,15 @@
 
 namespace {
 
-using jitllm::base::Bytes;
-using jitllm::kernels::ggml::KernelFailure;
-using jitllm::kernels::ggml::LaunchContext;
-using jitllm::kernels::ggml::QuantMulMatPath;
-using jitllm::kernels::ggml::TensorArena;
-using jitllm::providers::DeviceExecution;
-using jitllm::providers::FenceState;
-using jitllm::providers::StreamId;
-namespace kg = jitllm::kernels::ggml;
+using llmp::base::Bytes;
+using llmp::kernels::ggml::KernelFailure;
+using llmp::kernels::ggml::LaunchContext;
+using llmp::kernels::ggml::QuantMulMatPath;
+using llmp::kernels::ggml::TensorArena;
+using llmp::providers::DeviceExecution;
+using llmp::providers::FenceState;
+using llmp::providers::StreamId;
+namespace kg = llmp::kernels::ggml;
 
 constexpr std::uint64_t kWorkspace = 256ULL << 20;
 
@@ -99,7 +99,7 @@ void Launched(const std::expected<void, KernelFailure>& result, const std::strin
 class SpecRowsTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
+    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
     const std::uint64_t workspace = Allocate(kWorkspace);
     auto launch = LaunchContext::Create(0, *execution_, stream_,
@@ -520,7 +520,7 @@ TEST_F(SpecRowsTest, ArgmaxTakesTheLowestIndexAmongEqualMaximaAndNeverANan) {
   std::fill(x.begin() + (3 * kN), x.begin() + (4 * kN), nan);
   ggml_tensor* input = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kN, kRows), x);
   ggml_tensor* out = Place(kg::Argmax(c(), input));
-  EXPECT_EQ(kg::JitllmOpOf(out), kg::JitllmOp::kArgmax);
+  EXPECT_EQ(kg::LlmpOpOf(out), kg::LlmpOp::kArgmax);
   Launched(kg::RunArgmax(launch(), out), "argmax");
   const std::vector<std::int32_t> got = Download<std::int32_t>(out);
   ASSERT_EQ(got.size(), static_cast<std::size_t>(kRows));
@@ -601,12 +601,12 @@ TEST_F(SpecRowsTest, RangeCopiesCopyExactlyTheRangesNamed) {
 }
 
 TEST_F(SpecRowsTest, TheRegistryDeclaresAndBindsTheRowInvariantImplementations) {
-  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  auto registry = llmp::execution::Registry::Create(kg::Implementations());
   ASSERT_TRUE(registry.has_value());
   for (const std::string_view name :
        {kg::kMulMatVecQRows, kg::kMulMatIdVecQRows, kg::kMulMatVecFRows, kg::kArgmaxName}) {
     bool found = false;
-    for (const jitllm::execution::Implementation& implementation : kg::Implementations()) {
+    for (const llmp::execution::Implementation& implementation : kg::Implementations()) {
       if (implementation.name == name) {
         found = true;
         EXPECT_TRUE(kg::Kernel::Bind(implementation).has_value()) << name;

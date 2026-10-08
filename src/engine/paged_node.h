@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The paged node (docs/runtime-serving.md; first built for the backend
@@ -12,7 +12,7 @@
 // (engine/dsv4_runner.h, qwen38_runner.h, qwen_image_runner.h; the
 // harnesses' benchmarks/fp16_runner.h, exl3_runner.h) register their memory
 // and sources with it and post their work through it, so several models
-// share one catalog, one scheduler and one zone. jitllm-runtime drives one
+// share one catalog, one scheduler and one zone. llmp-runtime drives one
 // (runtime/serving.h), and so do the paged harnesses. CUDA builds only (the
 // build's device backend, docs/portability.md).
 //
@@ -73,8 +73,8 @@
 // owner (a model's index, or kShared for the zone and the workspace), and
 // Covered accepts a model's own spans and the shared ones.
 
-#ifndef JITLLM_ENGINE_PAGED_NODE_H_
-#define JITLLM_ENGINE_PAGED_NODE_H_
+#ifndef LLMP_ENGINE_PAGED_NODE_H_
+#define LLMP_ENGINE_PAGED_NODE_H_
 
 #include <atomic>
 #include <chrono>
@@ -106,7 +106,7 @@
 #include "scheduler/scheduler.h"
 #include "scheduler/services.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 class LiveState;
 
@@ -797,6 +797,6 @@ class PagedNode {
   std::vector<std::pair<providers::TimingMark, providers::TimingMark>> events_;
 };
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_PAGED_NODE_H_
+#endif  // LLMP_ENGINE_PAGED_NODE_H_

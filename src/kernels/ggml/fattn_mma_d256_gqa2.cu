@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // Pinned D256/group2 MMA cases for Gemma local attention; no copied kernel.
@@ -15,7 +15,7 @@ DECL_FATTN_MMA_F16_CASE(256, 256, 8, 2);
 DECL_FATTN_MMA_F16_CASE(256, 256, 16, 2);
 DECL_FATTN_MMA_F16_CASE(256, 256, 32, 2);
 
-namespace jitllm::kernels::ggml::detail {
+namespace llmp::kernels::ggml::detail {
 template <bool kSoftcap>
 static std::expected<MmaKernelShape, std::string> Gqa2Shape(int columns, int device) {
   switch (columns) {
@@ -49,4 +49,4 @@ MmaCase FlashAttnMmaCaseGqa2(int columns) {
       return nullptr;
   }
 }
-}  // namespace jitllm::kernels::ggml::detail
+}  // namespace llmp::kernels::ggml::detail

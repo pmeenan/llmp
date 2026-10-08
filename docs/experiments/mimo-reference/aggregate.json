@@ -120,7 +120,7 @@
           "oom_kill": 0
         }
       },
-      "jitllm-mimo-rank0": [
+      "llmp-mimo-rank0": [
         "Detected MiMo-V2 mxfp4 routed-expert layout. [x4]",
         "Hybrid SWA model detected. architectures=['MiMoV2ForCausalLM']",
         "spark-c4e2:129:129 [0] NCCL INFO NCCL version 2.30.7+cuda13.3",
@@ -154,7 +154,7 @@
           "oom_kill": 0
         }
       },
-      "jitllm-mimo-rank1": [
+      "llmp-mimo-rank1": [
         "Detected MiMo-V2 mxfp4 routed-expert layout. [x3]",
         "Hybrid SWA model detected. architectures=['MiMoV2ForCausalLM']",
         "spark-56f5:130:130 [0] NCCL INFO NCCL version 2.30.7+cuda13.3",

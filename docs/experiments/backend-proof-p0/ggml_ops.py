@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """ctypes wrapper over the reference-only GGML operation shim (ggml_shim/).
 
 External reference tooling for the backend proof's P0; it does not implement
-jitLLM inference. Each method runs one GGML CUDA operation on PyTorch CUDA
+llmpalooza inference. Each method runs one GGML CUDA operation on PyTorch CUDA
 tensors and returns a new tensor. The shim synchronizes the device on entry
 and exit, so no stream coordination is needed. Layouts follow ExLlamaV3's:
 rows are tokens, the last dimension is contiguous; attention takes the F16

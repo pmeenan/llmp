@@ -81,7 +81,7 @@
     "nvcc": "13.4.92",
     "toolkit": "13.4.2",
     "source_sha256": {
-      "benchmarks/gemma_quality.cc": "5013d98652b3f02705ab7f8110745460eb195310926e2edcc3ee841b9859a31e",
+      "benchmarks/gemma_quality.cc": "4093e0123f1b776bd8e5c46d90cd0623e15a22c36a83aa8407f83775c64765ba",
       "docs/experiments/gemma-quality/analyze.py": "c37605fbcd8c70c8b7c7d58be1cfb56a43526b48d7d576a334c434687edcbd4a",
       "docs/experiments/gemma-quality/llama_quality.cc": "84848a18e2329681450224c4711dc3df92c157d3b9f9573b48ba8b38b5073109",
       "src/kernels/ggml/executor.cc": "78d1c7bc1727869517126e7aef4d8d958ce4172555aed226a94b3c8085a0bac8"
@@ -102,7 +102,7 @@
     },
     "original_llama_header_sha256": "fedb52ea9291c9900e637ed6ffec339919dd27c3dadc2c8cf216c552e0488dda",
     "original_launcher_sha256": "a97e19e266dc87e8c5d863f2c34272aba01e83177bd6ece29bcd4bca99f511c6",
-    "retirement_helper_sha256": "1fd85804983ecdf720b5c0a69353fede0e294a0da0dd70a91bd8cd8b539e75e0",
+    "retirement_helper_sha256": "d93c10c58c792d9cad39efa816a3d94c11ccd24918a0de27c2ddc0c2643bb994",
     "tensorfold": {
       "observed_utc": "2026-10-05T23:46:46Z",
       "project": "https://github.com/ashhart/TensorFold",

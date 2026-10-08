@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // DeepSeek V4's post-down route weighting followed
 // by its six selected contributions' ascending sum. No graph selection,
 // shared expert addition, router, allocation or stream ownership.
-#ifndef JITLLM_KERNELS_GGML_DSV4_WEIGHTED_REDUCE_H_
-#define JITLLM_KERNELS_GGML_DSV4_WEIGHTED_REDUCE_H_
+#ifndef LLMP_KERNELS_GGML_DSV4_WEIGHTED_REDUCE_H_
+#define LLMP_KERNELS_GGML_DSV4_WEIGHTED_REDUCE_H_
 
 #include <cstdint>
 #include <expected>
@@ -14,14 +14,14 @@
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 class LaunchContext;
 
 inline constexpr std::int64_t kDsv4WeightedReduceWidth = 4096;
 inline constexpr std::int64_t kDsv4WeightedReduceSlots = 6;
 inline constexpr std::int64_t kDsv4WeightedReduceMaxRows = 4096;
-inline constexpr const char* kDsv4WeightedReduceName = "jitllm.dsv4.weighted_reduce";
+inline constexpr const char* kDsv4WeightedReduceName = "llmp.dsv4.weighted_reduce";
 
 // Metadata-only selection: exact canonical F32 inputs, without requiring
 // bound addresses. Unsupported consumers keep their ordinary MUL/ADD graph.
@@ -55,7 +55,7 @@ struct Dsv4WeightedReduce {
 
 std::expected<void, KernelFailure> CheckDsv4WeightedReduce(const Dsv4WeightedReduce& desc);
 
-// CUDA only. Refusal queues nothing. A successful call queues on jitLLM's
+// CUDA only. Refusal queues nothing. A successful call queues on llmpalooza's
 // existing stream; it is not completion proof. kUnknown faults the context:
 // all operand owners remain protected until recovery proves quiescence.
 // Graph capture stores addresses and fixed rows, reads current operand
@@ -66,6 +66,6 @@ std::expected<void, KernelFailure> CheckDsv4WeightedReduce(const Dsv4WeightedRed
 std::expected<void, KernelFailure> RunDsv4WeightedReduce(LaunchContext& launch,
                                                          const Dsv4WeightedReduce& desc);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_DSV4_WEIGHTED_REDUCE_H_
+#endif  // LLMP_KERNELS_GGML_DSV4_WEIGHTED_REDUCE_H_

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma local attention primitive controls
@@ -61,14 +61,14 @@ trial search safely before its worst-case bound ([RE-046](../../rough-edges.md#r
 
 Measured 2026-10-04 on `spark` (`spark-c4e2`), NVIDIA GB10, driver 580.178.04,
 NVCC 13.4.92/Clang 22.1.8, official locked `spark-native` RelWithDebInfo SDK
-`aarch64-c09daba6ac31edee`; base jitLLM 39d4c22. GGML is llama.cpp b10964,
+`aarch64-c09daba6ac31edee`; base llmpalooza 39d4c22. GGML is llama.cpp b10964,
 commit `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`, prepared tree
 `1ae467d0fced412beb16faca3d0a910441477a06f1e2bae4ccbe0cdb6230bd11`.
 The new wrapper instantiates unchanged pinned kernels. The source lock's
 license inventory records the additional wrapper; source payload, patches
 and prepared-tree digest are unchanged.
 
-[`jitllm_gemma_attention_bench`](../../../benchmarks/gemma_attention.cc)
+[`llmp_gemma_attention_bench`](../../../benchmarks/gemma_attention.cc)
 uses 128 launches per arm, warmed original/selected output and A/B/A CUDA
 event timings. Inputs are deterministic random F32 Q and resident F16 KV,
 scale 1, 1280 padded cells and causal 1024-cell ring masks crossing wrap.

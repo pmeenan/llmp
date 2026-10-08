@@ -1,16 +1,16 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
-// DeepSeek V4's fast decode plan (jitllm_ops.h, "DeepSeek V4's fast plan"):
-// jitLLM's kernels for the quantized vector products, the routing, the
+// DeepSeek V4's fast decode plan (llmp_ops.h, "DeepSeek V4's fast plan"):
+// llmpalooza's kernels for the quantized vector products, the routing, the
 // routed experts' combination and the hyper-connections' pre-mix. None
 // reproduces GGML's arithmetic bit for bit (the owner's policy, 2026-09-28:
 // speed first, correctness judged coarsely against llama.cpp); each is
 // deterministic (no atomics, fixed summation orders), so a model's own runs,
 // swaps and restores still repeat bit for bit.
 //
-// jitllm.vecq's body is GGML's MMVQ loop (mmvq.cu at llama.cpp b29c606e2,
+// llmp.vecq's body is GGML's MMVQ loop (mmvq.cu at llama.cpp b29c606e2,
 // MIT): the same per-block vec_dot_*_q8_1 functions over Q8_1 activations,
 // each thread striding the row's blocks, a shared-memory reduction over
 // the warps and a warp reduction. What differs is what a block reads once:
@@ -34,13 +34,13 @@
 #include "base/bytes.h"
 #include "common.cuh"
 #include "kernels/ggml/dsv4_fast.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "quantize.cuh"
 #include "unary.cuh"
 #include "vecdotq.cuh"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 // ---------------------------------------------------------------- vecq
@@ -1375,8 +1375,8 @@ std::expected<void, KernelFailure> RunVecQ(LaunchContext& launch, ggml_tensor* n
     const bool routed = node->src[2] != nullptr && node->src[2]->type == GGML_TYPE_I32;
     const ggml_tensor* ids = routed ? node->src[2] : nullptr;
     const ggml_tensor* gate = routed ? node->src[3] : node->src[2];
-    const int tokens = JitllmOpInt(node, 0);
-    const bool per_slot = JitllmOpInt(node, 1) != 0;
+    const int tokens = LlmpOpInt(node, 0);
+    const bool per_slot = LlmpOpInt(node, 1) != 0;
     const auto type_size = static_cast<std::size_t>(ggml_type_size(w->type));
     const std::int64_t k = w->ne[0];
     const std::int64_t y_row = (k + MATRIX_ROW_PADDING - 1) / MATRIX_ROW_PADDING *
@@ -1402,8 +1402,8 @@ std::expected<void, KernelFailure> RunVecQ(LaunchContext& launch, ggml_tensor* n
     a.dst_token =
         static_cast<int>(slotted ? node->nb[2] / sizeof(float) : node->nb[1] / sizeof(float));
     a.dst_slot = static_cast<int>(slotted ? node->nb[1] / sizeof(float) : 0);
-    a.glu = JitllmOpInt(node, 2);
-    a.limit = JitllmOpFloat(node, 3);
+    a.glu = LlmpOpInt(node, 2);
+    a.limit = LlmpOpFloat(node, 3);
     int variant = -1;
     if (VecQOneToken(node)) {
       // The configuration a one-token product of this shape takes
@@ -1424,7 +1424,7 @@ std::expected<void, KernelFailure> RunVecQ(LaunchContext& launch, ggml_tensor* n
     if (!LaunchVecQ(w->type, a, variant, context.stream())) {
       // CheckVecQ admits only what the default launches.
       ggml_cuda_error("LaunchVecQ", __func__, __FILE__, __LINE__,
-                      "jitllm.vecq refused a node its check admitted");
+                      "llmp.vecq refused a node its check admitted");
     }
   });
 }
@@ -1444,10 +1444,10 @@ std::expected<void, KernelFailure> RunDsv4Route(LaunchContext& launch, ggml_tens
     a.tokens = hashed ? static_cast<const std::int32_t*>(node->src[2]->data) : nullptr;
     a.out = static_cast<std::int32_t*>(node->data);
     a.n_tokens = static_cast<int>(logits->ne[1]);
-    a.used = JitllmOpInt(node, 0);
-    a.norm = JitllmOpInt(node, 1);
-    a.clamp = JitllmOpFloat(node, 2);
-    a.scale = JitllmOpFloat(node, 3);
+    a.used = LlmpOpInt(node, 0);
+    a.norm = LlmpOpInt(node, 1);
+    a.clamp = LlmpOpFloat(node, 2);
+    a.scale = LlmpOpFloat(node, 3);
     const dim3 grid(static_cast<unsigned>((a.n_tokens + kRouteWarps - 1) / kRouteWarps));
     ggml_cuda_kernel_launch(
         RouteKernel,
@@ -1524,8 +1524,8 @@ std::expected<void, KernelFailure> RunDsv4Compress(LaunchContext& launch, ggml_t
     a.read = static_cast<const std::int32_t*>(node->src[4]->data);
     a.out = static_cast<float*>(node->data);
     a.head = static_cast<int>(node->ne[0]);
-    a.ratio = JitllmOpInt(node, 0);
-    a.overlap = JitllmOpInt(node, 1);
+    a.ratio = LlmpOpInt(node, 0);
+    a.overlap = LlmpOpInt(node, 1);
     // A block a compressed block and 64 channels: decode's one or two
     // blocks still spread over the SMs.
     constexpr int kChannels = 64;
@@ -1550,9 +1550,9 @@ std::expected<void, KernelFailure> RunDsv4HcPre(LaunchContext& launch, ggml_tens
     a.norm = static_cast<const float*>(node->src[4]->data);
     a.out = static_cast<float*>(node->data);
     a.width = static_cast<int>(node->src[1]->ne[0]);
-    a.rms_eps = JitllmOpFloat(node, 0);
-    a.hc_eps = JitllmOpFloat(node, 1);
-    a.iterations = JitllmOpInt(node, 2);
+    a.rms_eps = LlmpOpFloat(node, 0);
+    a.hc_eps = LlmpOpFloat(node, 1);
+    a.iterations = LlmpOpInt(node, 2);
     ggml_cuda_kernel_launch(
         HcPreKernel,
         ggml_cuda_kernel_launch_params(dim3(static_cast<unsigned>(node->src[1]->ne[2])),
@@ -1561,4 +1561,4 @@ std::expected<void, KernelFailure> RunDsv4HcPre(LaunchContext& launch, ggml_tens
   });
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

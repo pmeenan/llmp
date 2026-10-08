@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Literal Mia MXFP8 projection on captured native inputs
@@ -99,7 +99,7 @@ it does not retain a separate CuTe JIT cubin/cache artifact.
 
 Raw sources, operands, binaries and receipts remain on A under
 `~/scratch/m3-qwen-mxfp8-r1/`; compact local copies are under
-`/tmp/jitllm-qwen-mxfp8-*`. No raw vectors or binary payloads are in Git.
+`/tmp/llmp-qwen-mxfp8-*`. No raw vectors or binary payloads are in Git.
 
 | Receipt | SHA-256 |
 | --- | --- |

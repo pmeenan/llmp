@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DSpark block GPU-mask screen — 2026-10-08
@@ -147,7 +147,7 @@ Jobs `dspark-block-masks-build1`, `dspark-block-masks-build2` and
 `dspark-block-masks-screen3` complete 0 and are waited on;
 `dspark-block-masks-screen2` remains a failed setup attempt. Raw records are outside
 Git at Spark B `~/scratch/m35-dspark-device-masks/` and workstation
-`/tmp/jitllm-m35-coordination/dspark-device-mask-raw/`; milestone cleanup can
+`/tmp/llmp-m35-coordination/dspark-device-mask-raw/`; milestone cleanup can
 remove them without losing replay inputs or the aggregate result.
 
 At task entry, checked 2026-10-08T10:27:53Z, TensorFold native main is
@@ -160,9 +160,9 @@ makes no new competitive or corpus/PPL claim.
 ## Replay after raw-output cleanup
 
 The [benchmark](../../../benchmarks/spec_runner.cc) and [payload checker](compare.py)
-are durable. Build `jitllm_spec_runner` with the approved Spark SDK and its
+are durable. Build `llmp_spec_runner` with the approved Spark SDK and its
 private cuBLAS closure. Supply the approved prepared artifacts above from the
-standing `~/.local/share/jitllm/m3-artifacts/` store (or recreate them with
+standing `~/.local/share/llmp/m3-artifacts/` store (or recreate them with
 those pinned imports); authenticate manifests/indexes before measurement.
 Recreate both inputs from the checked-in frozen reference, without new
 tokenization or external raw samples:
@@ -189,7 +189,7 @@ Under the installed GPU-exclusive supervisor, run four fresh processes in
 host/device/device/host order, with fresh output directories, using:
 
 ```sh
-build/spark-native/benchmarks/jitllm_spec_runner \
+build/spark-native/benchmarks/llmp_spec_runner \
   --dsv4-artifact "$target_artifact" --drafter "$dspark_artifact" \
   --prompts "$prompts" --out "$fresh_output" --check wave --slots 2 \
   --wave-mode verify --tokens 32 --context 1024 --max-rows 512 --draft 3 \

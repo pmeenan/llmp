@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// DeepSeek V4's sparse attention at depth (jitllm_ops.h, "DeepSeek V4's
-// sparse attention"): jitLLM's own kernels for the lightning indexer's
+// DeepSeek V4's sparse attention at depth (llmp_ops.h, "DeepSeek V4's
+// sparse attention"): llmpalooza's own kernels for the lightning indexer's
 // scores and its selection, and the attention mask the selection gives.
 // Each is deterministic (fixed summation orders, no atomics whose order
 // reaches a result), so a model's runs repeat bit for bit (RE-031).
@@ -33,10 +33,10 @@
 
 #include "base/bytes.h"
 #include "common.cuh"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 constexpr int kLidDim = 128;   // the indexer's head
@@ -674,7 +674,7 @@ std::expected<void, KernelFailure> RunDsv4SparseMask(LaunchContext& launch, ggml
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* window = node->src[0];
     const ggml_tensor* rows_of = node->src[1];
-    const bool counts = JitllmOpInt(node, 1) == 1;
+    const bool counts = LlmpOpInt(node, 1) == 1;
     SparseMaskArgs m;
     m.window = static_cast<const half*>(window->data);
     m.window_row = static_cast<std::int64_t>(window->nb[1] / sizeof(half));
@@ -683,7 +683,7 @@ std::expected<void, KernelFailure> RunDsv4SparseMask(LaunchContext& launch, ggml
     m.k = counts ? 0 : static_cast<int>(rows_of->ne[0]);
     m.visible = counts ? static_cast<const std::int32_t*>(rows_of->data) : nullptr;
     m.out = static_cast<half*>(node->data);
-    m.cells = JitllmOpInt(node, 0);
+    m.cells = LlmpOpInt(node, 0);
     m.n_kv = static_cast<int>(node->ne[0]) - m.cells;
     const auto spans = static_cast<unsigned>((node->ne[0] + kMaskSpan - 1) / kMaskSpan);
     ggml_cuda_kernel_launch(
@@ -694,4 +694,4 @@ std::expected<void, KernelFailure> RunDsv4SparseMask(LaunchContext& launch, ggml
   });
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

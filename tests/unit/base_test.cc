@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The base module: diagnostic reports and SHA-256.
@@ -19,7 +19,7 @@
 
 namespace {
 
-using jitllm::base::FormatBytes;
+using llmp::base::FormatBytes;
 
 TEST(FormatBytes, BelowOneKibibyteIsBytes) {
   EXPECT_EQ(FormatBytes(0), "0 B");
@@ -47,9 +47,9 @@ TEST(FormatBytes, RoundsUpToTheNextUnit) {
 }
 
 TEST(Report, SectionsKeepTheirOrder) {
-  jitllm::base::Report report;
+  llmp::base::Report report;
   report.AddSection("first").Add("a", "1");
-  jitllm::base::ReportSection& second = report.AddSection("second");
+  llmp::base::ReportSection& second = report.AddSection("second");
   second.Add("b", "2");
   second.Add("c", "3");
   ASSERT_EQ(report.sections.size(), 2U);
@@ -60,7 +60,7 @@ TEST(Report, SectionsKeepTheirOrder) {
 }
 
 TEST(Printable, EscapesWhatCouldForgeOrHideText) {
-  using jitllm::base::Printable;
+  using llmp::base::Printable;
   EXPECT_EQ(Printable("plain caf\xc3\xa9"), "plain caf\xc3\xa9");
   EXPECT_EQ(Printable("a\nb\tc\x7f"), "a\\x0ab\\x09c\\x7f");
   EXPECT_EQ(Printable("\xc2\x9b"
@@ -75,7 +75,7 @@ TEST(Printable, EscapesWhatCouldForgeOrHideText) {
 }
 
 TEST(Printable, EscapesSeparatorsAndTags) {
-  using jitllm::base::Printable;
+  using llmp::base::Printable;
   EXPECT_EQ(Printable("a\xe2\x80\xa8"
                       "b"),
             "a\\u2028b");                                // line separator
@@ -83,7 +83,7 @@ TEST(Printable, EscapesSeparatorsAndTags) {
 }
 
 std::string Sha256Hex(std::string_view text) {
-  return jitllm::base::ToHex(jitllm::base::Sha256().Update(text).Finish());
+  return llmp::base::ToHex(llmp::base::Sha256().Update(text).Finish());
 }
 
 // FIPS 180-4's examples (NIST's SHA-256 example values).
@@ -123,16 +123,16 @@ TEST(Sha256, UpdatesInPiecesHashTheWhole) {
     }
   }
   const std::string want = "f3a25aa93aa2fbba28d79260535bbd6a5eb0fc1c24a8b0f04e12b484c1dfe363";
-  EXPECT_EQ(jitllm::base::ToHex(jitllm::base::Sha256().Update(bytes).Finish()), want);
+  EXPECT_EQ(llmp::base::ToHex(llmp::base::Sha256().Update(bytes).Finish()), want);
   for (const std::size_t piece : {std::size_t{1}, std::size_t{7}, std::size_t{63}, std::size_t{64},
                                   std::size_t{65}, std::size_t{200}}) {
-    jitllm::base::Sha256 hash;
+    llmp::base::Sha256 hash;
     for (std::size_t at = 0; at < bytes.size(); at += piece) {
       hash.Update(std::span(bytes).subspan(at, std::min(piece, bytes.size() - at)));
       // An empty update, whose span has no data pointer, changes nothing.
       hash.Update(std::span<const std::byte>());
     }
-    EXPECT_EQ(jitllm::base::ToHex(hash.Finish()), want) << piece;
+    EXPECT_EQ(llmp::base::ToHex(hash.Finish()), want) << piece;
   }
 }
 

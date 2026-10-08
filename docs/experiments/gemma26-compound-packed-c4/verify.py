@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Authenticate unchanged reference identities or paid native full outputs."""
 import json
@@ -43,7 +43,7 @@ else:
     actual = {pathlib.Path(line.split()[1]).name: line.split()[0] for line in output.splitlines()}
     if actual != pre['image_libraries'] or actual != prepare.LIBS:
         raise ValueError('original math libraries changed')
-    raw = prepare.HOME / '.local/share/jitllm/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf'
+    raw = prepare.HOME / '.local/share/llmp/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf'
     if raw.stat().st_size != pre['raw_model_bytes']:
         raise ValueError('approved raw model size changed')
     print('REFERENCE_PRECHECK frozen source/binaries/headers/libraries/IDs/artifact metadata PASS')

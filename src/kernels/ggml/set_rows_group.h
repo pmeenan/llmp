@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_KERNELS_GGML_SET_ROWS_GROUP_H_
-#define JITLLM_KERNELS_GGML_SET_ROWS_GROUP_H_
+#ifndef LLMP_KERNELS_GGML_SET_ROWS_GROUP_H_
+#define LLMP_KERNELS_GGML_SET_ROWS_GROUP_H_
 
 #include <cstddef>
 #include <expected>
@@ -11,10 +11,10 @@
 
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 class LaunchContext;
 inline constexpr std::size_t kSetRowsGroupMax = 16;
-inline constexpr std::string_view kSetRowsGroupedName = "jitllm.set_rows.grouped";
+inline constexpr std::string_view kSetRowsGroupedName = "llmp.set_rows.grouped";
 
 // Two through sixteen independently addressed ordinary F32 -> F16/I64 stores.
 // Every complete destination span must be disjoint from every other destination
@@ -30,5 +30,5 @@ std::expected<void, KernelFailure> CheckSetRowsForGrouping(const ggml_tensor* no
 std::expected<void, KernelFailure> CheckSetRowsGroup(std::span<const ggml_tensor* const> nodes);
 std::expected<void, KernelFailure> RunSetRowsGroup(LaunchContext& launch,
                                                    std::span<ggml_tensor* const> nodes);
-}  // namespace jitllm::kernels::ggml
-#endif  // JITLLM_KERNELS_GGML_SET_ROWS_GROUP_H_
+}  // namespace llmp::kernels::ggml
+#endif  // LLMP_KERNELS_GGML_SET_ROWS_GROUP_H_

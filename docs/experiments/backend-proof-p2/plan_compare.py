@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Compares a native executed plan with the FP16 bridge's recorded plan.
 
 backend-proof.md's FP16 Tier E gate compares logits only after the native
 executed plan matches the bridge's (../backend-proof-p0/fp16-plan.json), per
 chunk shape. This tool does that comparison. It is test and measurement
-tooling, never part of jitLLM's runtime.
+tooling, never part of llmpalooza's runtime.
 
   plan_compare.py convert RECORDING.jsonl [--cublas-log F --cublaslt-log F]
                   [--sass SASS.jsonl] [--nsys RUN.sqlite] [--library NAME=SHA256 ...] --out NATIVE.json
@@ -17,7 +17,7 @@ tooling, never part of jitLLM's runtime.
 
 `convert` turns what tests/support's launch recorder wrote (JSON lines: a
 header, chunk markers, and each kernel launch, copy, memset and cuBLAS call
-the process made) into a native plan. The recorder sees the calls jitLLM
+the process made) into a native plan. The recorder sees the calls llmpalooza
 makes, not the kernels cuBLAS launches inside itself. Those come from an
 Nsight Systems trace of the same run (--nsys, run where the trace is; the
 bridge's record came from one too). cuBLAS's parameters, resolved algorithm
@@ -62,14 +62,14 @@ import sys
 import tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
-FORMAT = "jitllm-plan-record/1"
+FORMAT = "llmp-plan-record/1"
 # The cuBLAS libraries whose identity is part of the plan (the record's
-# `libraries`). The bridge's cudart is dynamic and jitLLM's static; neither
+# `libraries`). The bridge's cudart is dynamic and llmpalooza's static; neither
 # chooses a kernel.
 PLAN_LIBRARIES = ("libcublas.so.13.8.0.4", "libcublasLt.so.13.8.0.4")
 # cuBLAS handle calls that set state, in the order upstream makes them.
 HANDLE_SETUP = ("cublasCreate_v2", "cublasSetMathMode", "cublasSetStream_v2", "cublasSetWorkspace_v2")
-# How jitLLM's own kernels may be launched: with or without the PDL
+# How llmpalooza's own kernels may be launched: with or without the PDL
 # attribute, the only launch attribute the gate lets differ. The launch
 # recorder names any other (cudaLaunchKernelExC+attributes).
 LAUNCH_APIS = ("cudaLaunchKernel", "cudaLaunchKernelExC")

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Tier C: a full-model EXL3-G run against the approved bounds (reference only).
 
 Reference-side experiment tooling for the backend proof's P3 (docs/backend-proof.md, "Tier C: EXL3
-full model against an FP64 oracle"); it shares no code with jitLLM. A run directory in the reference
+full model against an FP64 oracle"); it shares no code with llmpalooza. A run directory in the reference
 layout (pack_run.py packs native's output into it) is scored against the FP64 oracle with P0's
 oracle_compare.score and reduced to its 750 statistics with P0's tierc.flatten (both unchanged).
 The run passes only when every statistic is present and within the approved bound for its fixture

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A model context's components (D-068; docs/architecture.md#model-lifecycle):
@@ -18,8 +18,8 @@
 // canonical order: retained state that depends on the context depends on
 // every component (D-055, D-068).
 
-#ifndef JITLLM_MODEL_CONTEXT_H_
-#define JITLLM_MODEL_CONTEXT_H_
+#ifndef LLMP_MODEL_CONTEXT_H_
+#define LLMP_MODEL_CONTEXT_H_
 
 #include <cstdint>
 #include <expected>
@@ -32,7 +32,7 @@
 #include "base/sha256.h"
 #include "catalog/catalog.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 
 using base::Bytes;
 
@@ -85,6 +85,6 @@ class ModelContext {
   base::Sha256Digest identity_;
 };
 
-}  // namespace jitllm::model
+}  // namespace llmp::model
 
-#endif  // JITLLM_MODEL_CONTEXT_H_
+#endif  // LLMP_MODEL_CONTEXT_H_

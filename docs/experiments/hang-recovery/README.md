@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Hang recovery and conversations kept across a restart (2026-10-03)
@@ -19,7 +19,7 @@ repository.
 
 ## Setup
 
-The service (`jitllm-runtime` with no command) serving DeepSeek V4 Flash
+The service (`llmp-runtime` with no command) serving DeepSeek V4 Flash
 (artifact `8a355bfb…`, DSpark drafter `dd2d3f9c…`, context 32,768) and
 Qwen3.8 Flash Next (artifact `c4fb47a9…`, MTP drafter `8600a998…`,
 context 33,792, prefill chunk 4,096) on loopback, greedy (`temperature`
@@ -29,13 +29,13 @@ whose swap writes Qwen3.8's state back to its spill file; R4 is Qwen3.8's
 third turn; R5 is DeepSeek's second (R4's swap writes DeepSeek's state
 back, or a graceful stop spilled it).
 
-The test hook `JITLLM_TEST_HOLD_READS` (a file; while it exists the
+The test hook `LLMP_TEST_HOLD_READS` (a file; while it exists the
 node's reads are held: `engine/paged_node.h` CountingStorage) has two
 forms. By default a held read behaves as one a drive or a hung mount
 holds: the lane's cancellation does not end it (io_uring's cancellation
 is best effort; `providers/direct_reader.cc` cancels and still waits for
 the completion), and it completes only once the hold lifts. With
-`JITLLM_TEST_HOLD_READS_CANCELLABLE=1` a held read completes as cancelled
+`LLMP_TEST_HOLD_READS_CANCELLABLE=1` a held read completes as cancelled
 when the lane cancels it, as a read still queued would. The first build's
 hook was the cancellable form only, so its rung-2 evidence did not cover
 a real stuck read; the independent review reproduced that case under a

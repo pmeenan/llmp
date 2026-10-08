@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Fresh Gemma text and tokenizer inputs
@@ -89,7 +89,7 @@ Retain its full-head and argmax comparison, but do not score it against the
 next owner's BOS or pretend that the corpus carrier supplies position 1,024.
 No additional target tail is introduced here.
 
-Build only `jitllm_gemma_tokenize` and the existing public quality client after
+Build only `llmp_gemma_tokenize` and the existing public quality client after
 source/configuration review. The tiny `test_controls.py [NATIVE_EXPORTER]`
 checks manifest replacement, legacy-pin refusal, one-BOS enforcement, final-row
 bounds, and exporter refusal paths using invalid synthetic metadata. It does

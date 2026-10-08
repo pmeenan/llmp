@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Choosing how a template renders (chat::ChatTemplate): native renderers by
@@ -28,19 +28,19 @@
 
 namespace {
 
-namespace chat = jitllm::chat;
-namespace json = jitllm::base::json;
-using jitllm::test_support::ConversationFrom;
-using jitllm::test_support::DataDir;
-using jitllm::test_support::Failed;
-using jitllm::test_support::Get;
-using jitllm::test_support::LoadJson;
-using jitllm::test_support::ReadFile;
+namespace chat = llmp::chat;
+namespace json = llmp::base::json;
+using llmp::test_support::ConversationFrom;
+using llmp::test_support::DataDir;
+using llmp::test_support::Failed;
+using llmp::test_support::Get;
+using llmp::test_support::LoadJson;
+using llmp::test_support::ReadFile;
 
 std::string Template(std::string_view name) {
   auto text = ReadFile(DataDir() + "/chat/templates/" + std::string(name) + ".jinja");
   if (!text) {
-    jitllm::test_support::BadFixture(name);
+    llmp::test_support::BadFixture(name);
   }
   return *text;
 }
@@ -95,7 +95,7 @@ std::string Replace(std::string s, std::string_view from, std::string_view to,
     ++n;
   }
   if (n == 0 && required) {
-    jitllm::test_support::BadFixture(from);
+    llmp::test_support::BadFixture(from);
   }
   return s;
 }
@@ -304,7 +304,8 @@ TEST(ChatTemplates, InterpreterReproducesEveryFixture) {
       const auto r = chat::RenderInterpreted(*program, conv, p.facts, std::nullopt);
       std::optional<json::Value> want = c.find("text");
       if (!want) {
-        want = c.find("reference_text");  // jitLLM's native renderer refuses; the template renders
+        want =
+            c.find("reference_text");  // llmpalooza's native renderer refuses; the template renders
       }
       if (want) {
         ASSERT_TRUE(r.has_value()) << p.file << "/" << name << ": " << r.error().ToString();

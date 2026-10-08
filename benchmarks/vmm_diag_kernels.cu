@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cuda_fp16.h>
@@ -8,7 +8,7 @@
 
 #include "vmm_diag_kernels.h"
 
-namespace jitllm::diag {
+namespace llmp::diag {
 namespace {
 
 constexpr int kThreads = 256;
@@ -220,4 +220,4 @@ cudaError_t CopyVector(cudaStream_t stream, std::uint64_t to, std::uint64_t from
   return cudaGetLastError();
 }
 
-}  // namespace jitllm::diag
+}  // namespace llmp::diag

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // Standalone probe for docs/experiments/dmabuf-direct: can a direct read land
 // in GPU device memory that the driver exports as a dma-buf and the CPU maps?
@@ -839,7 +839,7 @@ bool ubuf_alloc(UBuf& u, std::size_t bytes, bool huge, std::size_t chunk, std::s
   u.bytes = bytes;
   u.chunk = chunk;
   unsigned flags = MFD_ALLOW_SEALING | MFD_CLOEXEC | (huge ? MFD_HUGETLB | MFD_HUGE_2MB : 0U);
-  u.memfd = static_cast<int>(syscall(SYS_memfd_create, "jitllm-udmabuf", flags));
+  u.memfd = static_cast<int>(syscall(SYS_memfd_create, "llmp-udmabuf", flags));
   if (u.memfd < 0) { *why = std::string("memfd_create ") + std::strerror(errno); return false; }
   if (ftruncate(u.memfd, static_cast<off_t>(bytes)) != 0) { *why = std::string("ftruncate ") + std::strerror(errno); return false; }
   if (fcntl(u.memfd, F_ADD_SEALS, F_SEAL_SHRINK) != 0) { *why = std::string("seal ") + std::strerror(errno); return false; }

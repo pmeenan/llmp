@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cli/cli.h"
@@ -15,26 +15,26 @@
 #include "base/report.h"
 #include "cli/doctor.h"
 
-namespace jitllm::cli {
+namespace llmp::cli {
 namespace {
 
 constexpr std::string_view kUsage =
-    "Usage: jitllm doctor [--config FILE]\n"
-    "       jitllm --version\n"
-    "       jitllm --help\n";
+    "Usage: llmp doctor [--config FILE]\n"
+    "       llmp --version\n"
+    "       llmp --help\n";
 
 constexpr std::string_view kHelp =
-    "Usage: jitllm doctor [--config FILE]\n"
-    "       jitllm --version\n"
-    "       jitllm --help\n"
+    "Usage: llmp doctor [--config FILE]\n"
+    "       llmp --version\n"
+    "       llmp --help\n"
     "\n"
-    "jitLLM, a just-in-time LLM inference engine.\n"
+    "llmpalooza, a just-in-time LLM inference engine.\n"
     "\n"
     "  doctor     report this build, the host, the node's configuration and\n"
     "             storage, the GPU driver and devices, and RDMA; exit 1 if\n"
     "             this host cannot run this build\n"
     "    --config FILE  the node's configuration (default\n"
-    "             /etc/jitllm/jitllm.toml and /etc/jitllm/jitllm.d/)\n"
+    "             /etc/llmp/llmp.toml and /etc/llmp/llmp.d/)\n"
     "  --version  print the version, commit, license profile, SDK and target\n"
     "  --help     print this help\n";
 
@@ -48,12 +48,12 @@ int Print(std::FILE* out, std::FILE* err, std::string_view text) {
   if (WriteAll(out, text)) {
     return kExitOk;
   }
-  WriteAll(err, "jitllm: cannot write to standard output\n");
+  WriteAll(err, "llmp: cannot write to standard output\n");
   return kExitFailure;
 }
 
 int UsageError(std::FILE* err, std::string_view message) {
-  WriteAll(err, std::format("jitllm: {}\n{}", message, kUsage));
+  WriteAll(err, std::format("llmp: {}\n{}", message, kUsage));
   return kExitUsage;
 }
 
@@ -64,7 +64,7 @@ std::string VersionText(const base::BuildInfo& info) {
   if (info.modified) {
     commit += " (with uncommitted changes)";
   }
-  return std::format("jitllm {}\ncommit: {}\nlicense profile: {}\nSDK: {}\ntarget: {}\n",
+  return std::format("llmp {}\ncommit: {}\nlicense profile: {}\nSDK: {}\ntarget: {}\n",
                      info.version, commit, info.license_profile, info.sdk, info.target);
 }
 
@@ -96,7 +96,7 @@ int Run(std::span<const std::string_view> args, std::FILE* out, std::FILE* err) 
     base::Report report;
     if (!Doctor("/", options, report,
                 [out](std::string_view text) { return WriteAll(out, text); })) {
-      WriteAll(err, "jitllm: cannot write to standard output\n");
+      WriteAll(err, "llmp: cannot write to standard output\n");
       return kExitFailure;
     }
     return report.problems.empty() ? kExitOk : kExitFailure;
@@ -107,4 +107,4 @@ int Run(std::span<const std::string_view> args, std::FILE* out, std::FILE* err) 
   return Print(out, err, kHelp);
 }
 
-}  // namespace jitllm::cli
+}  // namespace llmp::cli

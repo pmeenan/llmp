@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/gemma3_runner.h"
@@ -14,10 +14,10 @@
 #include "engine/support.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/gemma_norm.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/set_rows_group.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 namespace kg = kernels::ggml;
 namespace md = model;
 namespace sc = scheduler;
@@ -654,9 +654,9 @@ std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::CachePlann
     plan_selections_.device_masks += selected.implementation == kg::kGemma4MaskName;
     for (const auto* node : selected.nodes) {
       plan_selections_.bounded_owner_attention +=
-          kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners && kg::JitllmOpInt(node, 4) == 1;
+          kg::LlmpOpOf(node) == kg::LlmpOp::kFlashAttnOwners && kg::LlmpOpInt(node, 4) == 1;
       const bool owner_prefill =
-          kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners &&
+          kg::LlmpOpOf(node) == kg::LlmpOp::kFlashAttnOwners &&
           std::string_view(ggml_get_name(node)).ends_with("owner_prefill_attention");
       plan_selections_.owner_prefill_attention += owner_prefill;
       if (owner_prefill) {
@@ -1094,4 +1094,4 @@ Status Gemma3Runner::Release() {
   if (auto r = weights_.Release(node_.memory()); !r) problems.push_back(r.error());
   return support::Joined(problems);
 }
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

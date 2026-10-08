@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Whether a path is safe from other users (D-063, D-054): that nobody but
@@ -26,8 +26,8 @@
 // the owners. The check is a snapshot: callers open what it approved
 // without following links and compare device and inode.
 
-#ifndef JITLLM_PLATFORM_PATH_TRUST_H_
-#define JITLLM_PLATFORM_PATH_TRUST_H_
+#ifndef LLMP_PLATFORM_PATH_TRUST_H_
+#define LLMP_PLATFORM_PATH_TRUST_H_
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -36,7 +36,7 @@
 #include <filesystem>
 #include <string>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 // Where a trusted walk ended.
 struct TrustedPath {
@@ -78,6 +78,6 @@ bool HasDefaultAcl(const std::filesystem::path& path);
 // The mode bits as four octal digits, "0755".
 std::string OctalMode(mode_t mode);
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_PATH_TRUST_H_
+#endif  // LLMP_PLATFORM_PATH_TRUST_H_

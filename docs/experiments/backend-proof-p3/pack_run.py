@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Packs native's full-model output into the reference runs' layout (reference only).
 
-Reference-side experiment tooling for the backend proof's P3 (Tier C); it shares no code with jitLLM.
+Reference-side experiment tooling for the backend proof's P3 (Tier C); it shares no code with llmpalooza.
 Native writes, per prefix p of the held-out trajectories, in NATIVE_DIR:
   logits-<p>.prefill.npy          float32 [p, 151936]   every prefill row
   logits-<p>.suffix.npy           float32 [16, 151936]  the 16 single-token steps
@@ -16,7 +16,7 @@ and, with capture,
   pack_run.py NATIVE_DIR OUT_DIR --ids HELD_OUT_IDS --uninstrumented RUNG3_DIR --artifact ARTIFACT_DIR
   pack_run.py --reference NATIVE_LAYOUT_DIR OUT_DIR --ids HELD_OUT_IDS   (validation on reference runs)
 
-NATIVE_DIR/manifest.json must be jitllm_exl3_exec's capture run, with no mismatched evaluation, and
+NATIVE_DIR/manifest.json must be llmp_exl3_exec's capture run, with no mismatched evaluation, and
 every logits .npy must equal RUNG3_DIR's (an uninstrumented run of the same fixture, arm and artifact)
 byte for byte (RE-010). The run's fixture is its artifact's (fixture_identity.py: the checkpoint it was
 prepared from), never its label: the manifest must name ARTIFACT_DIR's id and a fixture label that
@@ -80,11 +80,11 @@ def identity(native, uninstrumented, prefixes, artifact):
             raise Malformed(f"missing {path}")
         manifests[role] = {k: json.loads(path.read_text()).get(k) for k in keys}
     cap, plain = manifests["capture"], manifests["uninstrumented"]
-    if cap["harness"] != "jitllm_exl3_exec" or cap["capture"] is not True or cap["mismatches"] != 0:
-        raise Malformed(f"{native} is not a jitllm_exl3_exec capture run: {cap}")
-    if plain["harness"] != "jitllm_exl3_exec" or plain["capture"] is not False or \
+    if cap["harness"] != "llmp_exl3_exec" or cap["capture"] is not True or cap["mismatches"] != 0:
+        raise Malformed(f"{native} is not a llmp_exl3_exec capture run: {cap}")
+    if plain["harness"] != "llmp_exl3_exec" or plain["capture"] is not False or \
             plain["record_ops"] is not False or plain["mismatches"] != 0:
-        raise Malformed(f"{uninstrumented} is not an uninstrumented jitllm_exl3_exec run: {plain}")
+        raise Malformed(f"{uninstrumented} is not an uninstrumented llmp_exl3_exec run: {plain}")
     same_run = all(cap[k] == plain[k] for k in ("fixture", "arm", "artifact", "plan_file_sha256"))
     if not same_run:
         raise Malformed(f"the capture and uninstrumented runs differ in identity: {cap} {plain}")

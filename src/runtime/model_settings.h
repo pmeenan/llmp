@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A model's settings in three layers (D-103; docs/runtime-serving.md#model-
@@ -18,11 +18,11 @@
 // later layers winning; a setting none of them gives takes its fallback,
 // the constant measured on a GB10 that M3 shipped. Each value keeps its
 // source and what it came from, logged at registration and listed by
-// `jitllm-runtime settings`. Vendor-free: the CPU tests drive it, and the
+// `llmp-runtime settings`. Vendor-free: the CPU tests drive it, and the
 // settings command runs in any build.
 
-#ifndef JITLLM_RUNTIME_MODEL_SETTINGS_H_
-#define JITLLM_RUNTIME_MODEL_SETTINGS_H_
+#ifndef LLMP_RUNTIME_MODEL_SETTINGS_H_
+#define LLMP_RUNTIME_MODEL_SETTINGS_H_
 
 #include <sys/types.h>
 
@@ -44,10 +44,10 @@
 #include "config/node_config.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 struct Gemma4Profile;
 }
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 enum class SettingSource : std::uint8_t { kDerived, kCalibrated, kOverride, kFallback };
 std::string_view SourceName(SettingSource source);
@@ -88,7 +88,7 @@ inline constexpr std::uint32_t kDsv4SpeculativeMostSlots = 8;
 inline constexpr double kRecomputeMsPerToken = 1.4;
 // DeepSeek with DSpark: a draft-verify wave's time over a plain decode
 // wave's, widths 2 to 8 (execution/adaptive_wave_mode.h): the median joined
-// wave of `jitllm_spec_runner --check wave --slots N --wave-mode
+// wave of `llmp_spec_runner --check wave --slots N --wave-mode
 // verify|decode` (GB10, community GGUF, wave lanes on, 2026-10-03;
 // docs/experiments/deepseek-batching, "Wave lanes" and "Joined draft
 // blocks"): with joined drafts, 127.5 / 61.3, 180.0 / 71.5, 231.2 / 82.3
@@ -319,7 +319,7 @@ std::expected<void, std::string> ResolveReasoning(ModelSettings& settings,
                                                   const config::ModelEntry& entry,
                                                   const FindToken& find);
 
-// `jitllm-runtime settings`: every configured model's settings resolved
+// `llmp-runtime settings`: every configured model's settings resolved
 // (its artifacts, tokenizer and calibration record read under their trust
 // rules), printed to `out` as a table, or with `json` one JSON object;
 // problems to `log`. It reads and never writes, takes no process lock (a
@@ -328,6 +328,6 @@ std::expected<void, std::string> ResolveReasoning(ModelSettings& settings,
 // could not be.
 int PrintSettings(const config::NodeConfig& config, bool json, std::FILE* out, std::FILE* log);
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_MODEL_SETTINGS_H_
+#endif  // LLMP_RUNTIME_MODEL_SETTINGS_H_

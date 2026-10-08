@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Compares the SASS of every ExLlamaV3 kernel jitLLM's port launches with the reference build's.
+"""Compares the SASS of every ExLlamaV3 kernel llmpalooza's port launches with the reference build's.
 
   sass_compare.py --reference EXT.so --port BINARY --launches REF.json... [--cuobjdump PATH] [--out OUT.json]
 
 EXT.so is upstream's extension as the reference built it (P0's NVCC 13.4.92 bridge build,
-build-cache-nvcc134, SHA-256 aa8b9f16...), BINARY a jitLLM binary that links the port
+build-cache-nvcc134, SHA-256 aa8b9f16...), BINARY a llmpalooza binary that links the port
 (benchmarks/exl3_linear_sweep.cc's), and REF.json the reference runs of the per-linear sweep
 (linear_reference.py --profile), whose recorded launches name every kernel the sweep's cases run.
 Each function's SASS is hashed two ways, as ../backend-proof-p0/fp16_plan.py sass-hash does: its

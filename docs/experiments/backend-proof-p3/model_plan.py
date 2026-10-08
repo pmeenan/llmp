@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """The native full model's forced linear plans, one per fixture and arm (reference only).
 
-Reference-side experiment tooling for the backend proof's P3; it shares no code with jitLLM's
+Reference-side experiment tooling for the backend proof's P3; it shares no code with llmpalooza's
 planner. The native full-model run reads its linears' plans in the per-linear sweep's format
 (native_plan.py plan; benchmarks/exl3_linear_sweep.cc ReadPlan). This writes that plan restricted to
 the row counts the held-out trajectories run (1, 32, 144, 145, 1,023 and 1,024), regenerated with

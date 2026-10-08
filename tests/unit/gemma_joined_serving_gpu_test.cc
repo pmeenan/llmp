@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The production adapter and driver over the approved native artifact.
@@ -25,14 +25,13 @@
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
 
-namespace rt = jitllm::runtime;
-namespace en = jitllm::engine;
-namespace cfg = jitllm::config;
+namespace rt = llmp::runtime;
+namespace en = llmp::engine;
+namespace cfg = llmp::config;
 class GemmaJoinedGpu : public ::testing::TestWithParam<std::uint32_t> {
  protected:
   void SetUp() override {
-    const auto installed =
-        std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts";
+    const auto installed = std::filesystem::path(llmp::test_support::ModelsDir()) / "m3-artifacts";
     const char* artifact = GetParam() == 26
                                ? "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
                                : "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08";
@@ -40,7 +39,7 @@ class GemmaJoinedGpu : public ::testing::TestWithParam<std::uint32_t> {
       GTEST_SKIP() << "no Gemma 4 artifact in " << installed;
     }
     // Spill files need direct I/O: scratch in the build tree.
-    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path root = base != nullptr ? base : ::testing::TempDir();
     std::error_code error;
     std::filesystem::create_directories(root, error);
@@ -126,7 +125,7 @@ class GemmaJoinedGpu : public ::testing::TestWithParam<std::uint32_t> {
     if (!ranges) return std::unexpected(ranges.error());
     std::uint64_t count = 0;
     for (const auto& r : *ranges) count += r.bytes;
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto pinned = server->node().Pinned(count, 0, staging);
     if (!pinned) return std::unexpected(pinned.error());
     auto copied = Runner().CopyState(slot, *pinned, *ranges, true);
@@ -257,7 +256,7 @@ TEST_P(GemmaJoinedGpu, CallbackStopAndIndependentCancelPreserveOtherOwnersAndRel
   gen.max_tokens = 4;
   gen.stop = false;
   gen.seed = 883;
-  gen.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+  gen.sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
   std::vector<float> baseline;
   ASSERT_TRUE(Branch(11).Prefill(prompt, baseline));
   rt::Generation expected;
@@ -332,8 +331,8 @@ TEST_P(GemmaJoinedGpu, CompleteLikelihoodRowsMatchOwnedOneTokenFrontiersAndStopA
       [&](std::int32_t id, std::span<const float> row) {
         EXPECT_EQ(id, prompt[at]);
         EXPECT_TRUE(std::ranges::equal(row, rows[at - 1]));
-        const auto actual = jitllm::execution::ScoreToken(row, id, 16);
-        const auto expected = jitllm::execution::ScoreToken(rows[at - 1], prompt[at], 16);
+        const auto actual = llmp::execution::ScoreToken(row, id, 16);
+        const auto expected = llmp::execution::ScoreToken(rows[at - 1], prompt[at], 16);
         EXPECT_TRUE(actual);
         EXPECT_TRUE(expected);
         if (actual && expected) EXPECT_EQ(actual->logprob, expected->logprob);
@@ -373,7 +372,7 @@ TEST_P(GemmaJoinedGpu, JoinedSnapshotSpillAndRestartPreserveExactOwnedContinuati
   };
   auto snapshots = std::make_unique<Snapshots>(server->node());
   for (std::uint32_t i = 0; i < 2; ++i) {
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto buffer = server->node().Pinned(Branch(i).state_snapshot_bytes(), 0, staging);
     ASSERT_TRUE(buffer);
     snapshots->buffers[i] = *buffer;
@@ -514,7 +513,7 @@ TEST_P(GemmaJoinedGpu, IndependentPrepareRefusalPreservesCompletedPrefixAndPeerP
   options.max_tokens = 3;
   options.stop = false;
   options.seed = 909;
-  options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+  options.sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
   rt::Generation peer_expected;
   ASSERT_TRUE(Branch(1).Generate(last[1], options, peer_expected));
   ASSERT_TRUE(Branch(1).Clear());

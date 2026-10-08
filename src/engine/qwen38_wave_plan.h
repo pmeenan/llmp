@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_ENGINE_QWEN38_WAVE_PLAN_H_
-#define JITLLM_ENGINE_QWEN38_WAVE_PLAN_H_
+#ifndef LLMP_ENGINE_QWEN38_WAVE_PLAN_H_
+#define LLMP_ENGINE_QWEN38_WAVE_PLAN_H_
 
 #include <array>
 #include <cstddef>
@@ -16,7 +16,7 @@
 
 #include "engine/qwen38_plan.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 // The most slots a wave composes: the runner's kMaxRequestSlots
 // (request_cohort.h). Slot sets below are masks of these, bit i slot i.
@@ -175,6 +175,6 @@ std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> PlanQwen38DraftWa
     std::span<const Qwen38DraftWaveInput> requests, const kernels::ggml::DeviceChoices& choices,
     Qwen38WavePlacement placement, std::optional<ActivationMeasurement> measurement);
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_QWEN38_WAVE_PLAN_H_
+#endif  // LLMP_ENGINE_QWEN38_WAVE_PLAN_H_

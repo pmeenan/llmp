@@ -1,9 +1,9 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # NVIDIA: CUDA, cuBLAS, cuFile, the GB10 and DGX OS
 
-- **jitLLM's pins:** CUDA toolkit 13.4.2 (NVCC 13.4.92) and cuBLAS 13.8.0.4
+- **Llmpalooza's pins:** CUDA toolkit 13.4.2 (NVCC 13.4.92) and cuBLAS 13.8.0.4
   in the SDK (D-076, [toolchains/](../../toolchains/README.md)). On
   2026-09-29 NVIDIA's apt repository tops out at those versions, so there is
   nothing newer to move to.
@@ -91,7 +91,7 @@
   group. No complete native JSON or application exit status was retained
   after the profiler exited. The surrounding `spark-job`
   supervised the profiler, not that surviving process.
-- **jitLLM's workaround:** separate the long validation command from
+- **Llmpalooza's workaround:** separate the long validation command from
   bounded profiling, and keep the application's lifetime/output explicitly
   supervised. `spark-job busy` plus all-query memory/process probes caught
   the surviving model before a second model could load. The unfinished
@@ -121,7 +121,7 @@
   `CAN_USE_STREAM_WAIT_VALUE_NOR` (123) read 1. Code that reads the
   deprecated attribute wrongly concludes the GB10 lacks stream memory
   operations ([vllm.md](vllm.md) has one such case).
-- **jitLLM's workaround:** page-in copies run on a copy lane of their own,
+- **Llmpalooza's workaround:** page-in copies run on a copy lane of their own,
   a separate device service with its own threads and stream (`Lanes::copy`,
   `src/scheduler/scheduler.h`). DeepSeek's decode steps replay as graphs, one
   entry each (D-090). Its prefill chunks, about 4,972 launches, can still
@@ -146,7 +146,7 @@
   another, idle stream returned at once. It looks like a context-wide lock
   held across the blocked launch. Repro: thread A fills a gated stream with
   1,100 launches; thread B then calls `cuEventCreate` and times it.
-- **jitLLM's workaround:** the CUDA device-execution provider takes fences'
+- **Llmpalooza's workaround:** the CUDA device-execution provider takes fences'
   events from a pool made when it opens (`src/providers/cuda/cuda_device_execution.h`);
   the paged node makes 1,042 up front. Cost: the pool's size is a bound on
   fences in flight.
@@ -165,11 +165,11 @@
   128 KiB and 64 MiB. They stay until `cublasDestroy`, even after
   `cublasSetWorkspace` supplies the workspace later calls use.
   `CUBLAS_WORKSPACE_CONFIG` resizes the pool, but it also affects
-  numerics, which jitLLM refuses. Also, nsys's memory trace gives each
+  numerics, which llmpalooza refuses. Also, nsys's memory trace gives each
   allocation's size but not its caller, and its timestamps count
   `CLOCK_MONOTONIC_RAW` without saying so.
-- **jitLLM's workaround:** none. Each handle costs 64.1 MiB beyond the
-  workspace jitLLM gives it; the owner accepted that (backend-proof.md,
+- **Llmpalooza's workaround:** none. Each handle costs 64.1 MiB beyond the
+  workspace llmpalooza gives it; the owner accepted that (backend-proof.md,
   "Memory and workspace").
 - **Upstream refs:** the cuBLAS documentation (section 2.4.8) says the pool
   is allocated at context creation, not that `cublasSetWorkspace` leaves it.
@@ -188,7 +188,7 @@
   1,952 GB/s from device memory. Streaming reads run at ~240 GB/s from both,
   so a bandwidth scan hides it. The CUDA 13.4 headers offer no flag to
   change it, and a persisting access-policy window does not.
-- **jitLLM's workaround:** weights and state live in device VMM, and host VMM
+- **Llmpalooza's workaround:** weights and state live in device VMM, and host VMM
   is only a landing zone that the GPU copies from (D-081). Cost: one GPU copy
   per page-in extent.
 - **Upstream refs:** none found; NVIDIA's documentation does not mention it.
@@ -210,7 +210,7 @@
   with `EFAULT`. Importing a `udmabuf` of a shmem memfd works, although the
   documentation lists it for Jetson Thor only, and the GPU treats it as
   host memory (no L2 reuse).
-- **jitLLM's workaround:** the landing zone and a GPU copy, as above (D-081).
+- **Llmpalooza's workaround:** the landing zone and a GPU copy, as above (D-081).
 - **Upstream refs:** none found. The open kernel module's
   `nv_dma_buf_mmap` still maps by PFN in 610.57.04's source (read, not
   tested).
@@ -228,7 +228,7 @@
   the cgroup's `memory.current` by at most 40 MiB while `MemAvailable` fell
   by 8 GiB. The driver's ~34 KiB of slab per 2 MiB extent is not charged
   either.
-- **jitLLM's workaround:** the runtime's own budget is the bound, and the
+- **Llmpalooza's workaround:** the runtime's own budget is the bound, and the
   memory breakdown reconciles against `MemAvailable`. `MemoryMax=` on the
   service does not bound backing.
 - **Upstream refs:** none found.
@@ -251,14 +251,14 @@
   A PM QoS request of 0 µs (`/dev/cpu_dma_latency`) cut each hop to ~5 µs,
   which confirms the cores' deep idle states (LPI-2 and LPI-3, exit
   latencies 231 and 433 µs) as the cause.
-- **jitLLM's workaround:** the runtime wake (D-094): the completion lane
+- **Llmpalooza's workaround:** the runtime wake (D-094): the completion lane
   sleeps through most of a fence's expected length and spins only around
   its likely end. Cost: 0.11–0.12 of a core while stepping. The latency
   hold is not adopted (D-095).
 - **Upstream refs:** none found.
 - **Proposed action:** optional: ask on the forums whether DGX OS's idle
   settings are tuned for GPU completion latency, and why blocking-sync
-  waits take ~1 ms. Nothing to fix in jitLLM.
+  waits take ~1 ms. Nothing to fix in llmpalooza.
 - **Links:** RE-017 in [rough-edges.md](../rough-edges.md);
   [runtime-wake](../experiments/runtime-wake/README.md),
   [task-lanes](../experiments/task-lanes/README.md).
@@ -272,9 +272,9 @@
   (`CU_FILE_INVALID_FILE_OPEN_FLAG`); the log reports unsupported flags
   `229376`. `O_NOFOLLOW` and `O_CLOEXEC` say nothing about how the file is
   read, so rejecting them is overly strict.
-- **jitLLM's workaround:** only in the I/O comparison harness: reopen
+- **Llmpalooza's workaround:** only in the I/O comparison harness: reopen
   `/proc/self/fd/<fd>` without `O_NOFOLLOW`, check device and inode, then
-  register. jitLLM's runtime does not use cuFile (D-034).
+  register. Llmpalooza's runtime does not use cuFile (D-034).
 - **Upstream refs:** none found.
 - **Proposed action:** check a current libcufile; if unchanged, a short bug
   report. Low priority.
@@ -283,7 +283,7 @@
 
 ## CUDA 13.0 NVCC rejects `-std=c++23` (RE-001)
 
-- **Status:** fixed upstream at CUDA 13.4 (NVCC 13.4.92 accepts it; jitLLM's
+- **Status:** fixed upstream at CUDA 13.4 (NVCC 13.4.92 accepts it; llmpalooza's
   pin).
 - **Found:** 2026-09-21, NVCC 13.0.88.
 - **Proposed action:** none. Kept so nobody falls back to an installed 13.0

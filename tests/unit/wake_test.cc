@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The runtime wake (docs/experiments/runtime-wake/) on the fake device:
@@ -39,21 +39,21 @@
 
 namespace {
 
-using jitllm::base::PushResult;
-using jitllm::base::WakeFlag;
-using jitllm::providers::NativeStream;
-using jitllm::providers::ProviderError;
-using jitllm::providers::StreamId;
-using jitllm::scheduler::Acceptance;
-using jitllm::scheduler::CompletionBoard;
-using jitllm::scheduler::DeviceCommand;
-using jitllm::scheduler::DeviceService;
-using jitllm::scheduler::DeviceSettings;
-using jitllm::scheduler::JobResult;
-using jitllm::scheduler::LaunchWork;
-using jitllm::scheduler::OperationId;
-using jitllm::scheduler::Outcome;
-using jitllm::scheduler::Terminal;
+using llmp::base::PushResult;
+using llmp::base::WakeFlag;
+using llmp::providers::NativeStream;
+using llmp::providers::ProviderError;
+using llmp::providers::StreamId;
+using llmp::scheduler::Acceptance;
+using llmp::scheduler::CompletionBoard;
+using llmp::scheduler::DeviceCommand;
+using llmp::scheduler::DeviceService;
+using llmp::scheduler::DeviceSettings;
+using llmp::scheduler::JobResult;
+using llmp::scheduler::LaunchWork;
+using llmp::scheduler::OperationId;
+using llmp::scheduler::Outcome;
+using llmp::scheduler::Terminal;
 using Clock = std::chrono::steady_clock;
 using std::chrono::milliseconds;
 
@@ -142,7 +142,7 @@ class DeviceWakeTest : public ::testing::Test {
     ASSERT_TRUE(Await(operation).has_value());
   }
 
-  jitllm::providers::fake::FakeDeviceExecution execution_;
+  llmp::providers::fake::FakeDeviceExecution execution_;
   WakeFlag wake_;
   CompletionBoard board_{512, wake_};
   StreamId stream_;
@@ -372,7 +372,7 @@ TEST_F(DeviceWakeTest, ManySubmittersLoseNoCommandOrFence) {
 TEST(DeviceWakeShutdown, ClosingWakesSleepingLanes) {
   std::vector<double> joins;
   for (int i = 0; i < 5; ++i) {
-    jitllm::providers::fake::FakeDeviceExecution execution;
+    llmp::providers::fake::FakeDeviceExecution execution;
     WakeFlag wake;
     CompletionBoard board(8, wake);
     const StreamId stream = execution.CreateStream().value();

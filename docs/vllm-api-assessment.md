@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # vLLM API gap assessment
@@ -12,7 +12,7 @@ pin the relevant version before implementing a compatibility profile.
 D-043 now accepts the first three additions: compatible tokenization/rendering,
 JSON/schema-constrained output with strict tools, and protocol-specific reasoning
 output/controls. Direct compatibility with unmodified tooling is the default;
-select and test a pinned version/feature profile, with separate jitLLM extensions.
+select and test a pinned version/feature profile, with separate llmpalooza extensions.
 Regex/grammar extensions are deferred until a client needs them, after validated
 JSON/schema support. D-044 completes triage: compatible reranking, monitoring
 and raw Completions/token diagnostics are confirmed. LoRA and classification/
@@ -57,7 +57,7 @@ vLLM also offers rendering without inference, including a Responses renderer
 that applies the same prompt construction and requires matching model,
 tokenizer, template and preprocessing configuration. See
 [renderer APIs](https://docs.vllm.ai/en/latest/serving/online_serving/renderer/).
-For jitLLM, recommend an optional prompt preview for caller-supplied content,
+For llmpalooza, recommend an optional prompt preview for caller-supplied content,
 not a new distributed rendering service. Never disclose private server prompt
 material through an unprivileged preview. Counts do not reserve capacity;
 reject stale identity on a subsequent request that requires an exact match.
@@ -174,7 +174,7 @@ confirmed, along with bounded vLLM-compatible token diagnostics. Preserve the ra
   handles postprocessing for a split serving pipeline; D-005 still governs our
   own native runtime. No arbitrary caller-provided embedding tensors, serialized
   worker objects or external executable processors should be adopted by analogy.
-- MCP: the confirmed adapter is for managing jitLLM. A server-side agent/tool
+- MCP: the confirmed adapter is for managing llmpalooza. A server-side agent/tool
   execution loop is a separate feature and remains outside accepted scope.
 
 ## Cross-cutting validation

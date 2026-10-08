@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// jitLLM's launchers of ExLlamaV3's kernels (K-L, D-053;
+// Llmpalooza's launchers of ExLlamaV3's kernels (K-L, D-053;
 // docs/backend-proof.md, "EXL3-derived operations"), CUDA builds only. They
 // replace upstream's ATen host wrappers: each checks its operands and plan
 // on the host (validate.h), then launches the locked kernel
-// (jitllm_exl3_kernels.h) on a jitLLM stream exactly as upstream's wrapper
+// (llmp_exl3_kernels.h) on a llmpalooza stream exactly as upstream's wrapper
 // would at that plan, and returns a launch error as a fault instead of
 // ending the process.
 //
@@ -50,8 +50,8 @@
 // device submission lane only; the context must not outlive the provider
 // or the stream.
 
-#ifndef JITLLM_KERNELS_EXL3_LAUNCH_H_
-#define JITLLM_KERNELS_EXL3_LAUNCH_H_
+#ifndef LLMP_KERNELS_EXL3_LAUNCH_H_
+#define LLMP_KERNELS_EXL3_LAUNCH_H_
 
 #include <cstdint>
 #include <expected>
@@ -64,7 +64,7 @@
 #include "kernels/exl3/validate.h"
 #include "providers/device_execution.h"
 
-namespace jitllm::kernels::exl3 {
+namespace llmp::kernels::exl3 {
 
 class LaunchContext {
  public:
@@ -155,6 +155,6 @@ class LaunchContext {
   std::map<const void*, int> coresident_;
 };
 
-}  // namespace jitllm::kernels::exl3
+}  // namespace llmp::kernels::exl3
 
-#endif  // JITLLM_KERNELS_EXL3_LAUNCH_H_
+#endif  // LLMP_KERNELS_EXL3_LAUNCH_H_

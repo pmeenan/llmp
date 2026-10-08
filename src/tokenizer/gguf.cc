@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "tokenizer/gguf.h"
@@ -23,7 +23,7 @@
 #include "tokenizer/pretokenize.h"
 #include "tokenizer/tokenizer.h"
 
-namespace jitllm::tokenizer {
+namespace llmp::tokenizer {
 namespace {
 
 enum class Type : std::uint32_t {
@@ -581,4 +581,4 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
   return out;
 }
 
-}  // namespace jitllm::tokenizer
+}  // namespace llmp::tokenizer

@@ -1,19 +1,19 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek V4 Flash, native and resident (M3)
 
 M3's first model slice ([plan](../../plan.md#m3--single-spark-fast-full-swap-in-progress)):
-DeepSeek V4 Flash 0731 UD-Q2_K_XL run by jitLLM natively and resident on one
+DeepSeek V4 Flash 0731 UD-Q2_K_XL run by llmpalooza natively and resident on one
 Spark from its D-056 prepared artifact, against llama.cpp on the same GGUF.
 
 *Since 2026-09-28 (the owner: speed before bit exactness, D-085's note):
 the node-for-node graph planned unfused, which this slice measured, is
-the optional reference mode (`jitllm_dsv4_exec --exact on`); the default
+the optional reference mode (`llmp_dsv4_exec --exact on`); the default
 is DeepSeek's fast plan, judged coarsely against llama.cpp
 ([dsv4-decode](../dsv4-decode/README.md)).*
 
-## Pre-registration (fixed before jitLLM's first run on the model)
+## Pre-registration (fixed before llmpalooza's first run on the model)
 
 Inputs, fixed in the repository (D-087's entry rule):
 
@@ -24,12 +24,12 @@ Inputs, fixed in the repository (D-087's entry rule):
   [oracle.cc](oracle.cc) ([run_oracle.sh](run_oracle.sh)): flash attention on,
   F16 caches, one sequence, context 4,096, ubatch 512, every layer on the
   GPU, no speculation. Two arms: upstream's CUDA fusion on (the default) and
-  off (`GGML_CUDA_DISABLE_FUSION=1`). jitLLM's plan runs the graph unfused
+  off (`GGML_CUDA_DISABLE_FUSION=1`). Llmpalooza's plan runs the graph unfused
   (the model-level fused operations, `dsv4_hc_*` and the lightning indexer,
   are graph nodes in both), so the unfused arm is the like-for-like one; the
   fused arm is reported beside it.
 - **Tokens:** llama.cpp tokenizes (the native tokenizer is a parallel slice);
-  BOS first, no chat template. jitLLM reads the oracle's token IDs.
+  BOS first, no chat template. Llmpalooza reads the oracle's token IDs.
 - **Prompts:** the eight lines of [prompts.tsv](prompts.tsv), 32 greedy tokens
   each. The last prompt is long enough (over 128 tokens) to complete an HCA
   block.
@@ -41,7 +41,7 @@ Inputs, fixed in the repository (D-087's entry rule):
 
 Bounds:
 
-1. **Greedy tokens.** jitLLM is teacher-forced on the unfused oracle's 32
+1. **Greedy tokens.** Llmpalooza is teacher-forced on the unfused oracle's 32
    generated tokens per prompt, and its argmax at each of the 256 steps must
    equal the oracle's token, except at a step where the oracle's top-1 to
    top-2 logit margin is below twice the largest absolute logit difference
@@ -75,7 +75,7 @@ in `MemAvailable` over the run.
   bytes, 1 head), 48,171 chunks, 0.000% disk padding: the plan of
   [artifact-format.md](../../artifact-format.md#worked-examples-measured-plans-of-real-files)'s
   worked example, which the 0731 revision shares.
-- **Load** (`jitllm_dsv4_exec`): the artifact is opened as untrusted input,
+- **Load** (`llmp_dsv4_exec`): the artifact is opened as untrusted input,
   bound to the compiled-in profile (`model/dsv4.h`;
   [gguf_profile_check.py](gguf_profile_check.py) finds its 37 key/values
   in both the 0731 and the `e3aa0d6a` GGUF) and read with
@@ -107,7 +107,7 @@ in `MemAvailable` over the run.
 ## Results (`spark-b`, 2026-09-28)
 
 GB10, driver 580.178.04. Raw outputs in
-`~/.local/share/jitllm/m3dsv4-20260928/` on `spark-b`.
+`~/.local/share/llmp/m3dsv4-20260928/` on `spark-b`.
 
 **Correctness** (`compare.py`, bounds 1–4 above): every bound passes, with
 no difference at all from the unfused oracle.
@@ -116,21 +116,21 @@ no difference at all from the unfused oracle.
 | --- | --- |
 | Greedy, teacher-forced (bound 1) | 256 of 256 argmax equal to the unfused oracle's tokens; no exceptions |
 | Logits vs unfused oracle (bound 2) | max abs 0.0 and RMS 0.0 on all 8 prompts × 32 steps (bit-identical) |
-| Fused vs unfused oracle (the scale) | max abs 3.1–68.4, RMS 0.18–3.85 per prompt; jitLLM vs fused is the same |
+| Fused vs unfused oracle (the scale) | max abs 3.1–68.4, RMS 0.18–3.85 per prompt; llmpalooza vs fused is the same |
 | Free-running greedy | 8 of 8 prompts' 32 tokens identical to the oracle's |
-| Perplexity (bound 3), 3,540 tokens | jitLLM 20.2311, unfused oracle 20.2311, fused 20.2149; every per-token NLL equal to the unfused oracle's |
+| Perplexity (bound 3), 3,540 tokens | llmpalooza 20.2311, unfused oracle 20.2311, fused 20.2149; every per-token NLL equal to the unfused oracle's |
 | Prefill intermediates, prompt 1 | 38 of 41 named tensors, from `hc_init` through every layer kind to `result_output`, bit-identical; the other 3 do not compare (llama.cpp reuses two names for earlier tensors, and the indexer's scores hold -inf) |
 | Expert layout (bound 4) | 0 of 147,947,520 outputs differ |
 
 The first perplexity run differed after position 592 (PPL 20.2104, NLL max
-difference 1.21) because jitLLM's window cache was a 768-cell ring while
+difference 1.21) because llmpalooza's window cache was a 768-cell ring while
 llama.cpp's contexts default to a full-size SWA cache: the attention length,
 and with it the summation order, differed. The cache now holds a cell per
 position as llama.cpp's does, and every NLL matches.
 
 **Performance and memory** (reported, not gated; neither side speculates):
 
-| | jitLLM | llama.cpp (`llama-bench`, fusion and CUDA graphs on) |
+| | Llmpalooza | llama.cpp (`llama-bench`, fusion and CUDA graphs on) |
 | --- | --- | --- |
 | Prefill, 512 tokens | 368.7 tok/s (best of 3) | 340.5 ± 27.0 tok/s (pp512, mean of 3) |
 | Decode, 64 tokens from empty | 19.41 tok/s (mean of 3, after a warm-up) | 20.62 ± 0.09 tok/s (tg64) |
@@ -138,7 +138,7 @@ position as llama.cpp's does, and every NLL matches.
 | Load | 7.1–7.3 s (artifact, direct reads) | 86–95 s (GGUF, plain reads, oracle) |
 | Peak memory (drop in `MemAvailable`) | 92.4 GiB (96,910,964 kB) | 93.1 GiB (97,585,588 kB) |
 
-So prefill is 1.08× llama.cpp's, decode 0.94×, peak memory 0.99×. jitLLM
+So prefill is 1.08× llama.cpp's, decode 0.94×, peak memory 0.99×. Llmpalooza
 launches each of the 4,972 steps from the host every token (no CUDA
 graphs yet, an M3 item), where llama-bench replays a captured graph; that
 is the likely share of the 6% decode gap, not measured. *Measured since*
@@ -164,7 +164,7 @@ windows in the same session: 1.020–1.024× llama.cpp with fusion off
 - **Expert dispatch:** uniform stride with stock kernels, no A/B: the
   pointer table needs a GGML kernel patch (a source-lock change) and buys a
   resident model nothing; it stays M7's for demand-paged experts.
-- **Oracle arm:** jitLLM's plan is unfused (the model-level fused operations
+- **Oracle arm:** Llmpalooza's plan is unfused (the model-level fused operations
   are graph nodes), so the unfused arm is the like-for-like one; upstream's
   fusion changes logits by up to 68 on these prompts.
 - **Window cache:** full size, as llama.cpp's default; a ring of window +

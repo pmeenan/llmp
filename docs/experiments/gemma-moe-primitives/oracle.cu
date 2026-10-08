@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // External diagnostic only: directly call the pinned image's original math.
-// Compile against exact b29 headers; never link into jitLLM production.
+// Compile against exact b29 headers; never link into llmpalooza production.
 #include <cuda_runtime.h>
 
 #include <cstdio>

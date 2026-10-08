@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "artifact/error.h"
@@ -7,7 +7,7 @@
 #include <string>
 #include <string_view>
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 
 std::string_view RuleName(Rule rule) {
   switch (rule) {
@@ -64,4 +64,4 @@ std::string Error::ToString() const {
   return std::format("{}: {} (item {})", RuleName(rule), reason, item);
 }
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact

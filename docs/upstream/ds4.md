@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # ds4
@@ -17,7 +17,7 @@
 - **Native ownership:** borrowed checked operands and paid producer
   chains: query preparation, causal selection, union/bitmap or deep sort,
   chronological raw/packed mirrors, split combines and sink normalization.
-  jitLLM supplies its stream, workspace and completion; no original model
+  Llmpalooza supplies its stream, workspace and completion; no original model
   runtime, allocator, handles or global sidecar registry is imported.
 - **Evidence:** Spark A's final locked check passes 1,168 tests, including
   248 GPU tests, ten SDK format checks, four host-unit tidies, boundaries
@@ -36,7 +36,7 @@
   `ec8af04` is the last that holds them. The DeepSeek output-A stage
   keeps one: the fused own output-A core (`dsv4_ds4_product_original.cuh`,
   verbatim, behind `dsv4_ds4_product_raw.cu`). The thirteen original headers
-  stay in the prepared tree (patch 0003), but no jitLLM target includes them.
+  stay in the prepared tree (patch 0003), but no llmpalooza target includes them.
 - **Source:** the same original source pin. Four private numerical
   derivatives retain complete function spans (including embedding, conversion
   and fused wide Q/KV normalization); the companion source record lists each
@@ -46,7 +46,7 @@
   locked GGML numerical headers explicitly.
 - **Native ownership:** borrowed checked operands, explicit F16/F32 input
   forms, D4/Q8_1 producer identity, original launch tiers, charged scratch
-  and ragged physical padding. jitLLM supplies the stream, cuBLAS handle,
+  and ragged physical padding. Llmpalooza supplies the stream, cuBLAS handle,
   workspace and completion. No original allocator, pool, global sidecar
   registry or model runtime is linked.
 - **Evidence:** Spark A's final locked check passes 1,135 tests, including
@@ -76,7 +76,7 @@
   REUSE/header checks. All twelve original functions match the pinned source;
   analytical pooling, frontier, byte-permutation/inverse, padding and graph
   controls pass. No end-to-end equality or performance result is claimed.
-- **Proposed upstream action:** none; the adapters expose jitLLM-owned
+- **Proposed upstream action:** none; the adapters expose llmpalooza-owned
   buffers and streams. Prepared archive/tree identities are unchanged.
 
 ## Literal wide-prefill normalization and hyper-connections
@@ -98,7 +98,7 @@
   211 GPU tests, SDK format/tidy, boundaries and REUSE/header checks.
   This supplies operators, not a complete model run or quality/speed result.
 - **Proposed upstream action:** none; the borrowed-view adapters serve
-  jitLLM's ownership contract. Prepared source/archive identities are unchanged.
+  llmpalooza's ownership contract. Prepared source/archive identities are unchanged.
 
 - **Repository:** [Entrpi/ds4](https://github.com/Entrpi/ds4), fork of
   [antirez/ds4](https://github.com/antirez/ds4), MIT.
@@ -113,7 +113,7 @@
 - **Status:** no upstream action; measurement method corrected.
 - **What:** `ds4_bench.c` reuses one session as `ctx-start` advances to
   `ctx-max`. Its reported prefill rate is the added frontier tokens,
-  rather than a fresh prefill of each reported context. jitLLM's first
+  rather than a fresh prefill of each reported context. Llmpalooza's first
   ladder used that result as a cold rung and excluded it after inspection.
 - **Reproduction:** a rung uses a fresh `ds4-bench` process with
   `--ctx-start N --ctx-max N --ctx-alloc N_PLUS_1024`; study commands,
@@ -135,19 +135,19 @@
 
 - **Status:** study recorded; no upstream patch.
 - **What:** isolated profiles show fused IQ2 gate/up products and Q2 down
-  products, expert-major tiles, and token-tiled attention. jitLLM shares
+  products, expert-major tiles, and token-tiled attention. Llmpalooza shares
   sparse attention gathers across up to eight queries using GGML's
   query-tile union, an explicit fast-plan choice that defaults off for
   unknown sparse patterns after disjoint D512 lists regressed. Its paired-MMQ path shares the expert maps and
   quantized input preparation while retaining the two ordinary products.
 - **Original layout mismatch:** `cuda/mmq/ds4_mmq_d2r.cu` requires dense
-  whole-array SoA `[half scales, pad64, uint2 codes]`; jitLLM's resident
+  whole-array SoA `[half scales, pad64, uint2 codes]`; llmpalooza's resident
   experts use raw GGUF blocks at padded per-expert strides. ds4's fused
   epilogue weights the activation before Q8 quantization and the down
-  product; jitLLM weights after down. It also replaces nonfinite values
+  product; llmpalooza weights after down. It also replaces nonfinite values
   with zero. A direct kernel copy would change layout and arithmetic.
   The raw Q2 loader below resolves the weight-layout mismatch while
-  retaining post-down weighting and jitLLM's cache precision. The IQ2
+  retaining post-down weighting and llmpalooza's cache precision. The IQ2
   fused epilogue and its nonfinite-value sanitization are not selected.
 - **Earlier Q2 prototype assessment:** GGML's D2S6 activation layout retains
   original F32 subgroup sums for its affine minimum correction. A simple
@@ -163,13 +163,13 @@
 - **Precision:** default compressed KV and indexer caches use FP8 and
   FP4 respectively. `DS4_CUDA_FP8_KV=0` and `DS4_CUDA_FP4_INDEX=0`
   restore F32 primary storage, retaining FP8/FP4-rounded values.
-  jitLLM keeps its F16 caches; default ds4 timings are a same-weight
+  Llmpalooza keeps its F16 caches; default ds4 timings are a same-weight
   comparator with the different transforms and storage disclosed.
 
-## Raw Q2_K weight loader under jitLLM's launch contract
+## Raw Q2_K weight loader under llmpalooza's launch contract
 
 - **Status:** local adaptation in
-  `third_party/patches/ds4/0001-jitllm-raw-q2-d2r.patch`; the fast
+  `third_party/patches/ds4/0001-llmp-raw-q2-d2r.patch`; the fast
   DeepSeek plan's default down product on GB10 prefill chunks of 64 to
   4,096 rows ([stage mechanisms](../experiments/ds4-prefill-stages/README.md));
   exact plans keep it off.
@@ -177,7 +177,7 @@
   blocks through an added loader, preserving its paired-row integer MMA
   and F32 accumulation from the stored half coefficients. Weight row and
   expert strides are explicit;
-  no persistent SoA or dequantized weight copy is created. jitLLM owns
+  no persistent SoA or dequantized weight copy is created. Llmpalooza owns
   expert maps, unchanged GGML Q8 input preparation, bounded worklist
   scratch and completion. It does not invoke ds4's runtime or dispatch.
 - **Bounds:** the original worklist stores an expert in the high 16 bits
@@ -195,8 +195,8 @@
   original-input minimum correction. Quality uses the unchanged model
   bounds; isolated error is not a model-quality result.
 - **Compiled scope:** patch
-  `third_party/patches/ds4/0004-jitllm-raw-q2-only.patch` makes the native
-  target define `JITLLM_DS4_RAW_Q2_ONLY`. It excludes unselected original
+  `third_party/patches/ds4/0004-llmp-raw-q2-only.patch` makes the native
+  target define `LLMP_DS4_RAW_Q2_ONLY`. It excludes unselected original
   IQ2 paired/fused, dense Q8 and SoA Q2 entry points and their global
   instantiations. The raw-Q2 launcher, down numerical template, worklist
   and availability/scratch helpers retain their complete original bodies.
@@ -212,12 +212,12 @@
 - **Proposed upstream action:** consider a raw-GGUF/explicit-stride
   product entry point, and document the signed expert-index limit and
   unique-experts-per-token routing precondition. The new loader is
-  jitLLM-specific; no upstream submission is claimed.
+  llmpalooza-specific; no upstream submission is claimed.
 
 ## Literal token-tile HCA core over native F16 state
 
 - **Status:** native benchmark-only integration checked, default off;
-  `third_party/patches/ds4/0002-jitllm-hca-tokentile.patch`.
+  `third_party/patches/ds4/0002-llmp-hca-tokentile.patch`.
 - **Source:** `ds4_cuda.cu` at the same study pin, numerical sections
   12,313–12,577 and 12,844–13,476 copied verbatim. The original four-token,
   G8, M32/R32 core retains RN-F16 Q loading, F32 QK and PV tensor-core
@@ -259,7 +259,7 @@
 - **Proposed upstream action:** expose a narrow standalone token-tile
   entry point with explicit causal first position, raw prefix availability,
   record extents, and workspace ownership. The native ring adaptation is
-  jitLLM-specific; no upstream submission is claimed.
+  llmpalooza-specific; no upstream submission is claimed.
 
 ## Explicit cache/QAT numerical stages for the complete comparison
 
@@ -276,7 +276,7 @@
   caller-owned, accounted decode table. Original numerical compile options
   remain `-O3 --use_fast_math -lineinfo`.
 - **Native ownership:** checked logical spans, no allocation or stream/cache
-  counter ownership; jitLLM's launch scope queues the stages. Raw stores
+  counter ownership; llmpalooza's launch scope queues the stages. Raw stores
   retain the original F16 round trip into physically F32 storage. Their host
   position is eager-only to prevent stale graph replay. Packed KV preserves
   the F32 rotary tail; indexer query preparation supports scale-only output.
@@ -312,7 +312,7 @@
   controls distinguish direct-F16 Q8_1 scales, reciprocal-F32 D4 scales and
   reciprocal-F16 D2S6 scales; the existing physical bound is unchanged.
 - **Native ownership:** checked borrowed extents and explicit six-of256
-  source strides, jitLLM streams/workspace/fixup and current producer
+  source strides, llmpalooza streams/workspace/fixup and current producer
   identities. No original context, allocator, weight server, global sidecar
   registry or model dispatcher is linked. Complete source and transformed
   scratch are charged. D2R's CTA-barrier contract permits complete 128-row
@@ -335,7 +335,7 @@
   third-party notices retain those obligations; no source offer is owed.
 - **Proposed upstream action:** document the low-level D2R tail/barrier
   eligibility and explicit producer-buffer contracts. No submission is
-  claimed; native ownership adapters are jitLLM-specific.
+  claimed; native ownership adapters are llmpalooza-specific.
 
 ## Cache-off is a storage control, not an unrounded quality oracle
 

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma bounded head publication capacity
@@ -49,7 +49,7 @@ Run the `Gemma4Runner` head-capacity/invalid-envelope tests; all `Gemma4HeadCapG
 `Gemma4HeadCapacityGpu` tests; the legacy `MaximumAllHeadRowsReplayWithSeparatelyFundedCallerVectors`;
 and both serving parameters for pinned publication capacity, literal teacher
 forcing, maximum literal scoring and complete likelihood rows. Serving controls
-need `JITLLM_TEST_DATA=tests/unit/data`; run under installed GPU supervision.
+need `LLMP_TEST_DATA=tests/unit/data`; run under installed GPU supervision.
 
 Source base is `f5d946e`, with the six source/test identities and actual official
 records in [results.json](results.json). Build math uses native NVCC 13.4.92

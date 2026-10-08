@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Current Gemma teacher-forcing recipes
@@ -62,11 +62,11 @@ and `score-unfused` modes remain available with their original cache settings;
 `score-ring` explicitly chooses the production ring topology. Existing analyzer
 modes and their old 128-row recipes remain unchanged.
 
-Build only `jitllm_gemma_quality` and the existing pinned-image
+Build only `llmp_gemma_quality` and the existing pinned-image
 `docs/experiments/gemma-quality/llama_quality.cc` client. A current run is:
 
 ```sh
-jitllm_gemma_quality ARTIFACT IDS NEW_NATIVE_OUT 256 both 31 normmul-on
+llmp_gemma_quality ARTIFACT IDS NEW_NATIVE_OUT 256 both 31 normmul-on
 llama_quality MODEL IDS NEW_REFERENCE_OUT score-ring 256
 python3 -B docs/experiments/gemma-quality/analyze.py current-selftest
 python3 -B docs/experiments/gemma-quality/analyze.py current-freeze ROOT 256 31 both normmul-on SOURCE_JSON SOURCE_SHA

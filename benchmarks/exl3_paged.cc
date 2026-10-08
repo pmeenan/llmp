@@ -1,16 +1,16 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Backend-proof P3, oracle rungs 4 and 5 for EXL3 (docs/backend-proof.md),
 // and P4-P5's paging and lifetime cases: an EXL3 fixture from its v0
 // prepared artifact, alone on a paged node (tests/support/paged_node.h),
-// paged into jitLLM's device VMM through the host-VMM landing zone (D-081)
+// paged into llmpalooza's device VMM through the host-VMM landing zone (D-081)
 // by the scheduler and its lanes, and run through the native operation
 // plan as device jobs that hold leases on everything they touch
 // (docs/experiments/backend-proof-p3/README.md). What each option does is
 // exl3_runner.h's.
 //
-//   jitllm_exl3_paged --artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O
+//   llmp_exl3_paged --artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O
 //                     --plan PLAN.txt --ids FILE --out DIR
 //                     [--prefixes 32,144,145,1023,1024] [--restores N]
 //                     [--relocate] [--partial] [--spill premapped|managed]
@@ -48,8 +48,8 @@
 
 namespace {
 
-namespace ts = jitllm::test_support;
-using jitllm::benchmarks::Exl3Options;
+namespace ts = llmp::test_support;
+using llmp::benchmarks::Exl3Options;
 using Status = ts::Status;
 
 struct Options {
@@ -97,7 +97,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       if (v != "G" && v != "O") {
         return std::unexpected("--arm is G or O");
       }
-      o.arm = v == "G" ? jitllm::model::Exl3Arm::kG : jitllm::model::Exl3Arm::kO;
+      o.arm = v == "G" ? llmp::model::Exl3Arm::kG : llmp::model::Exl3Arm::kO;
       arm = true;
     } else if (a == "--plan") {
       o.plan = v;
@@ -139,7 +139,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.plan.empty() || o.ids.empty() || o.out.empty() || o.prefixes.empty() ||
       (o.record && !options.inline_lanes) || (o.cancel && options.inline_lanes)) {
     return std::unexpected(
-        "usage: jitllm_exl3_paged --artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O --plan PLAN.txt "
+        "usage: llmp_exl3_paged --artifact DIR --fixture 4.0bpw|4.5bpw --arm G|O --plan PLAN.txt "
         "--ids FILE --out DIR [--prefixes LIST] [--restores N] [--relocate] [--partial] "
         "[--spill premapped|managed] [--cancel-in-flight] [--lanes threads|inline] "
         "[--record (with --lanes inline)] [--coalesce on|off]");
@@ -148,7 +148,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
 }
 
 // The node with the one model on stream 0, set up and run.
-Status Run(jitllm::benchmarks::Exl3Runner& runner, ts::PagedNode& node,
+Status Run(llmp::benchmarks::Exl3Runner& runner, ts::PagedNode& node,
            std::vector<ts::PagedModel*>& entered_models) {
   if (auto r = node.Open(); !r) {
     return r;
@@ -160,7 +160,7 @@ Status Run(jitllm::benchmarks::Exl3Runner& runner, ts::PagedNode& node,
   if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) {
     return r;
   }
-  if (auto r = node.Start(jitllm::base::Bytes(std::uint64_t{64} << 30U)); !r) {
+  if (auto r = node.Start(llmp::base::Bytes(std::uint64_t{64} << 30U)); !r) {
     return r;
   }
   if (auto r = runner.Register(); !r) {
@@ -187,7 +187,7 @@ int main(int argc, char** argv) {
                         .slots = ts::kPagedSlots,
                         .inline_lanes = options->inline_lanes,
                         .coalesce = options->coalesce});
-    jitllm::benchmarks::Exl3Runner runner(node, options->model, 0, 0);
+    llmp::benchmarks::Exl3Runner runner(node, options->model, 0, 0);
     std::vector<ts::PagedModel*> entered_models;
     ran = Run(runner, node, entered_models);
     if (auto finished = node.TearDown(entered_models); !finished) {

@@ -2,7 +2,7 @@
   "config": "qwen3.8-gguf",
   "source": {"path": "reference-models/Q/UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf", "sha256": "268f81fdedf3149a538f252308927a4d5d1f6e062c178568a51e3b519744f8a8"},
   "reference": "llama.cpp llama-tokenize, image ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7 (b29c606e)",
-  "corpus_sha256": "66d3940a8d35f641d62b5e1114fbe81d22e6f22fd7f6a630071c7368ad20245b",
+  "corpus_sha256": "206453ef4086e899079d027c80a32b444b046e5878879ecb75da3e6b3128ce88",
   "items": [
     {"name": "empty", "well_formed": true, "parse": [], "plain": []},
     {"name": "ascii-sentence", "well_formed": true, "parse": [9419, 11, 1814, 0, 1061, 369, 264, 1228, 314, 279, 44424, 13], "plain": [9419, 11, 1814, 0, 1061, 369, 264, 1228, 314, 279, 44424, 13]},

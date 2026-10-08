@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Admit immutable operator inputs only after unchanged-stock fidelity proof."""
 import hashlib
@@ -86,7 +86,7 @@ def main():
     container = json.loads((root.parent / 'capture-container-retired.json').read_text())
     cid = (root.parent / 'capture.cid').read_text().strip()
     if not re.fullmatch(r'[0-9a-f]{64}', cid) or container != {
-            'cid': cid, 'name': 'jitllm-gemma26-late-moe-capture',
+            'cid': cid, 'name': 'llmp-gemma26-late-moe-capture',
             'owner_label': 'gemma26-late-moe', 'container_absent_after_checked_docker_query': True}:
         raise ValueError('missing owned capture-container absence proof')
     for source in (log, old_log):
@@ -94,9 +94,9 @@ def main():
             raise ValueError('unbounded observation log')
     lines = log.read_text().splitlines()
     if lines.count('LATE_CLIENT_EXIT0 explicit_public_backend_teardown=source_verified') != 1 or \
-            lines.count('JITLLM_LATE retired_complete_roles=14 actual64calls=2') != 1:
+            lines.count('LLMP_LATE retired_complete_roles=14 actual64calls=2') != 1:
         raise ValueError('missing successful public/backend/device retirement')
-    chronology = [line for line in lines if line.startswith('JITLLM_LATE graph64=1 ')]
+    chronology = [line for line in lines if line.startswith('LLMP_LATE graph64=1 ')]
     if len(chronology) != 2 or 'occurrence64=1 selected=0' not in chronology[0] or \
             'occurrence64=2 selected=1' not in chronology[1]:
         raise ValueError('wrong selected post-reset occurrence')

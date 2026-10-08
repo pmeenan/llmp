@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // M3's third model slice (docs/experiments/qwen-image-native/README.md):
@@ -6,7 +6,7 @@
 // component artifacts and their D-089 composition, for the comparison with
 // diffusers and a coarse speed and memory report.
 //
-//   jitllm_qwen_image_exec --store DIR --composition ID --out DIR
+//   llmp_qwen_image_exec --store DIR --composition ID --out DIR
 //                          [--prompt TEXT] [--size N] [--steps N] [--stop-after N]
 //                          [--reference DIR] [--embeds native|reference]
 //                          [--noise FILE] [--force-latents] [--decode-reference]
@@ -97,11 +97,11 @@
 
 namespace {
 
-namespace ja = jitllm::artifact;
-namespace kg = jitllm::kernels::ggml;
-namespace ki = jitllm::kernels::image;
-namespace md = jitllm::model;
-using jitllm::base::Bytes;
+namespace ja = llmp::artifact;
+namespace kg = llmp::kernels::ggml;
+namespace ki = llmp::kernels::image;
+namespace md = llmp::model;
+using llmp::base::Bytes;
 using Status = std::expected<void, std::string>;
 using Clock = std::chrono::steady_clock;
 using Bf16 = std::uint16_t;
@@ -219,7 +219,7 @@ class Device {
     if (auto context = Cuda(cudaFree(nullptr), "the CUDA context"); !context) {
       return std::unexpected(context.error());
     }
-    auto execution = jitllm::providers::cuda::OpenDeviceExecution(0);
+    auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
     if (!execution) {
       return Error("OpenDeviceExecution failed");
     }
@@ -244,8 +244,8 @@ class Device {
       std::println(stderr, "the stream could not be retired");
     }
   }
-  jitllm::providers::DeviceExecution& execution() { return *execution_; }
-  jitllm::providers::StreamId stream() const { return stream_; }
+  llmp::providers::DeviceExecution& execution() { return *execution_; }
+  llmp::providers::StreamId stream() const { return stream_; }
   cudaStream_t native() const { return native_; }
   Status Finish() {
     const auto fence = execution_->Record(stream_);
@@ -258,7 +258,7 @@ class Device {
       if (!state) {
         return Error("Query failed");
       }
-      if (*state == jitllm::providers::FenceState::kComplete) {
+      if (*state == llmp::providers::FenceState::kComplete) {
         break;
       }
       if (Clock::now() > deadline) {
@@ -273,11 +273,11 @@ class Device {
   }
 
  private:
-  Device(std::unique_ptr<jitllm::providers::DeviceExecution> execution,
-         jitllm::providers::StreamId stream)
+  Device(std::unique_ptr<llmp::providers::DeviceExecution> execution,
+         llmp::providers::StreamId stream)
       : execution_(std::move(execution)), stream_(stream) {}
-  std::unique_ptr<jitllm::providers::DeviceExecution> execution_;
-  jitllm::providers::StreamId stream_;
+  std::unique_ptr<llmp::providers::DeviceExecution> execution_;
+  llmp::providers::StreamId stream_;
   cudaStream_t native_ = nullptr;
 };
 
@@ -733,7 +733,7 @@ Status Run(const Options& o) {
   const std::uint64_t baseline = MemAvailable();
 
   // The plan, bound against this build's registry (D-053).
-  auto registry = jitllm::execution::Registry::Create(ki::Implementations());
+  auto registry = llmp::execution::Registry::Create(ki::Implementations());
   if (!registry) {
     return Error("registry: " + registry.error().detail);
   }
@@ -741,7 +741,7 @@ Status Run(const Options& o) {
   if (!choices) {
     return Error("plan: " + choices.error());
   }
-  auto plan = jitllm::execution::Plan::Build(*registry, *choices);
+  auto plan = llmp::execution::Plan::Build(*registry, *choices);
   if (!plan) {
     return Error("plan: " + plan.error().detail);
   }
@@ -751,7 +751,7 @@ Status Run(const Options& o) {
   }
   const ki::QwenImagePipeline& pipe = **pipeline;
   report << std::format("  \"plan\": {{\"identity\": \"{}\", \"roles\": {}}},\n",
-                        jitllm::base::ToHex(pipe.identity()), pipe.Describe());
+                        llmp::base::ToHex(pipe.identity()), pipe.Describe());
 
   // The composition and its components, as untrusted input.
   auto composition = ja::OpenComposition(o.store / o.composition);
@@ -797,19 +797,19 @@ Status Run(const Options& o) {
   if (!tokenizer_json) {
     return Error("the composition keeps no tokenizer.json");
   }
-  auto spec = jitllm::tokenizer::ReadHfTokenizer(*tokenizer_json);
+  auto spec = llmp::tokenizer::ReadHfTokenizer(*tokenizer_json);
   if (!spec) {
     return Error("tokenizer: " + spec.error().ToString());
   }
-  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(*spec));
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(*spec));
   if (!tokenizer) {
     return Error("tokenizer: " + tokenizer.error().ToString());
   }
-  auto rendered = jitllm::chat::RenderQwenImagePrompt(o.prompt, *tokenizer);
+  auto rendered = llmp::chat::RenderQwenImagePrompt(o.prompt, *tokenizer);
   if (!rendered) {
     return Error("prompt: " + rendered.error().ToString());
   }
-  std::vector<jitllm::tokenizer::TokenId> ids;
+  std::vector<llmp::tokenizer::TokenId> ids;
   if (auto e =
           tokenizer->EncodeMarked(rendered->rendered.text, rendered->rendered.specials, {}, ids);
       !e) {
@@ -894,7 +894,7 @@ Status Run(const Options& o) {
     }
     if (path.empty()) {
       return Error(
-          "the initial latents: --noise or --reference (jitLLM does not reproduce "
+          "the initial latents: --noise or --reference (llmpalooza does not reproduce "
           "PyTorch's CUDA generator)");
     }
     auto n = ReadBf16(path, static_cast<std::size_t>(latent_elems));
@@ -1224,8 +1224,8 @@ Status Run(const Options& o) {
         }
       }
       const auto pixels = md::QwenImagePixels(*got, profile.vae.out_channels, o.size, o.size);
-      t.pixels_sha256 = jitllm::base::ToHex(
-          jitllm::base::Sha256().Update(std::as_bytes(std::span(pixels))).Finish());
+      t.pixels_sha256 =
+          llmp::base::ToHex(llmp::base::Sha256().Update(std::as_bytes(std::span(pixels))).Finish());
       if (record) {
         if (auto w = WriteBytes(o.out / "image.rgba8", pixels.data(), pixels.size()); !w) return w;
       }

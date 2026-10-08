@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M3.5 legacy quant primitives (2026-10-04)
@@ -75,7 +75,7 @@ fault after rejection whenever the selected block has multiple rows.
 ## Bounded paid-preparation benchmark
 
 Harness: [gemma_quant.cc](../../../benchmarks/gemma_quant.cc), target
-`jitllm_gemma_quant_bench`. Run `128 0`, `128 2`, `128 8` for the retained
+`llmp_gemma_quant_bench`. Run `128 0`, `128 2`, `128 8` for the retained
 128 timed launches per arm. Each arm runs original A, selected one-token
 VecQ B, four-token variant P4 (four rows only), then original A. CUDA events
 measure complete input preparation plus product on the same stream. All

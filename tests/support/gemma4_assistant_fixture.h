@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-#ifndef JITLLM_TESTS_SUPPORT_GEMMA4_ASSISTANT_FIXTURE_H_
-#define JITLLM_TESTS_SUPPORT_GEMMA4_ASSISTANT_FIXTURE_H_
+#ifndef LLMP_TESTS_SUPPORT_GEMMA4_ASSISTANT_FIXTURE_H_
+#define LLMP_TESTS_SUPPORT_GEMMA4_ASSISTANT_FIXTURE_H_
 #include "gemma4_fixture.h"
 #include "model/gemma4_assistant.h"
-namespace jitllm::test_support::gemma4 {
+namespace llmp::test_support::gemma4 {
 inline std::vector<md::Gemma4Resource> AssistantResources(std::uint32_t size) {
-  const auto* dir = std::getenv("JITLLM_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
+  const auto* dir = std::getenv("LLMP_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
   base::Check(dir != nullptr, "missing assistant fixtures");
   std::ifstream file(std::string(dir) + "/gemma4-assistant/assistant" + std::to_string(size) +
                      ".json");
@@ -28,5 +28,5 @@ inline std::vector<md::Gemma4Resource> AssistantResources(std::uint32_t size) {
   }
   return resources;
 }
-}  // namespace jitllm::test_support::gemma4
-#endif  // JITLLM_TESTS_SUPPORT_GEMMA4_ASSISTANT_FIXTURE_H_
+}  // namespace llmp::test_support::gemma4
+#endif  // LLMP_TESTS_SUPPORT_GEMMA4_ASSISTANT_FIXTURE_H_

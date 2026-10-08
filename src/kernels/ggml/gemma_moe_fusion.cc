@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/gemma_moe_fusion.h"
@@ -10,7 +10,7 @@
 #include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 using namespace detail;
 // Borrowed descriptors may be mutated. Bound chains before any storage scan
@@ -186,4 +186,4 @@ std::optional<GemmaReductionFusionNodes> GemmaReductionFusionAt(
     return std::nullopt;
   return f;
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Reading the error of a std::expected in a test, safely (D-083).
@@ -19,8 +19,8 @@
 // A result a test goes on to inspect further can instead be guarded with
 // ASSERT_FALSE(result.has_value()) before its first .error().
 
-#ifndef JITLLM_TESTS_SUPPORT_EXPECTED_ERROR_H_
-#define JITLLM_TESTS_SUPPORT_EXPECTED_ERROR_H_
+#ifndef LLMP_TESTS_SUPPORT_EXPECTED_ERROR_H_
+#define LLMP_TESTS_SUPPORT_EXPECTED_ERROR_H_
 
 #include <expected>
 #include <functional>
@@ -28,7 +28,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace jitllm::test_support {
+namespace llmp::test_support {
 
 // The error a result holds, or nothing when it holds a value.
 template <typename T, typename E>
@@ -64,6 +64,6 @@ auto FailedCode(const std::expected<T, E>& result)
   return result.error().error;
 }
 
-}  // namespace jitllm::test_support
+}  // namespace llmp::test_support
 
-#endif  // JITLLM_TESTS_SUPPORT_EXPECTED_ERROR_H_
+#endif  // LLMP_TESTS_SUPPORT_EXPECTED_ERROR_H_

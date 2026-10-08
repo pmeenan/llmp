@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// jitLLM's own CUDA kernels for the Qwen-Image-2.1 pipeline's BF16
+// Llmpalooza's own CUDA kernels for the Qwen-Image-2.1 pipeline's BF16
 // operations (M3; D-053's "our own, on measured need": GGML computes these
 // in F32 between its operations, where the reference, diffusers in BF16,
 // rounds every intermediate to BF16). Each kernel computes in F32 and
@@ -16,14 +16,14 @@
 // cannot index, and reports a launch error. No kernel reads or writes
 // outside the extents it is given.
 
-#ifndef JITLLM_KERNELS_IMAGE_OPS_H_
-#define JITLLM_KERNELS_IMAGE_OPS_H_
+#ifndef LLMP_KERNELS_IMAGE_OPS_H_
+#define LLMP_KERNELS_IMAGE_OPS_H_
 
 #include <cstdint>
 #include <expected>
 #include <string>
 
-namespace jitllm::kernels::image {
+namespace llmp::kernels::image {
 
 using Bf16 = std::uint16_t;
 using F16 = std::uint16_t;
@@ -223,6 +223,6 @@ Status AddDupUp(Bf16* x, const Bf16* shortcut, std::int64_t in_channels, std::in
 Status SoftmaxRowsToBf16(const float* scores, Bf16* probs, std::int64_t rows, std::int64_t cols,
                          float scale, Stream stream);
 
-}  // namespace jitllm::kernels::image
+}  // namespace llmp::kernels::image
 
-#endif  // JITLLM_KERNELS_IMAGE_OPS_H_
+#endif  // LLMP_KERNELS_IMAGE_OPS_H_

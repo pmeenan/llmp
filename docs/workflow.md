@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Development workflow
@@ -8,7 +8,7 @@ Complements the root `AGENTS.md` rules (especially: commits need the user's
 authorization; the main agent has standing authorization to commit
 completed plan tasks).
 
-jitLLM is a single-developer project that is meant to be consumed externally
+Llmpalooza is a single-developer project that is meant to be consumed externally
 (D-016). The process is sized for that: heavier than a personal project,
 lighter than a team with maintainers. The default path from idea to commit is
 **one agent builds, a second agent reviews, the human commits** (or asks
@@ -171,7 +171,7 @@ downgrade a heavy-path change to the light loop on their own.
 - **Clean up when a milestone closes** (owner, 2026-10-07). Once a
   milestone's exit is accepted, delete its work files on every host that
   was used (the workstation and both Sparks): raw experiment outputs,
-  logs, traces and snapshots under `~/.local/share/jitllm`, scratch
+  logs, traces and snapshots under `~/.local/share/llmp`, scratch
   directories (`~/scratch`, `/tmp` work trees, session scratchpads),
   Spark source and build copies, finished git worktrees, and finished job
   records (`spark-job gc`). Raw outputs need no archive; the committed
@@ -179,7 +179,7 @@ downgrade a heavy-path change to the light loop on their own.
   as history. Keep what later work uses: prepared artifacts, pinned
   source checkpoints and references, frozen oracles, captured replay
   inputs, test inputs, the SDK and the other standing stores under
-  `~/.local/share/jitllm` (`sdk/`, `models/`, `references/`,
+  `~/.local/share/llmp` (`sdk/`, `models/`, `references/`,
   `reference-models/`, `ucd/`, `chat-templates/`), and the next
   milestone's work. When unsure, list the file for the owner. Model
   checkpoints no longer needed locally go to the NAS (`/mnt/llm`) rather

@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The node runtime process (D-005; /usr/libexec/jitllm/jitllm-runtime,
-// started by jitllm.service). In M1 it runs the startup order of
+// The node runtime process (D-005; /usr/libexec/llmp/llmp-runtime,
+// started by llmp.service). In M1 it runs the startup order of
 // docs/architecture.md#errors-faults-startup-and-shutdown as far as this
 // build has steps for, reports readiness, and waits to be stopped:
 //
@@ -17,7 +17,7 @@
 //  (6.) the job side of step 6: it becomes the subreaper for its jobs'
 //     orphans and finds the delegated cgroup its jobs would run in
 //     (platform/job.h), warning if there is none;
-//  7. the platform: the host and device probes that `jitllm doctor` runs,
+//  7. the platform: the host and device probes that `llmp doctor` runs,
 //     refusing (for now) a host with problems, and an open of each RDMA device node,
 //     which shows whether the unit's sandbox lets it through;
 //  10. readiness (sd_notify).
@@ -35,8 +35,8 @@
 // serves the loopback chat route (api_server.h) and then reports
 // readiness; without models it waits as above.
 
-#ifndef JITLLM_RUNTIME_RUNTIME_H_
-#define JITLLM_RUNTIME_RUNTIME_H_
+#ifndef LLMP_RUNTIME_RUNTIME_H_
+#define LLMP_RUNTIME_RUNTIME_H_
 
 #include <cstdio>
 #include <expected>
@@ -50,7 +50,7 @@
 #include "platform/lock_file.h"
 #include "runtime/commands.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 // Exit statuses. A refusal at startup that a restart would only repeat
 // (configuration, anchor, lock, roles) is kExitRefused, EX_CONFIG from
@@ -99,6 +99,6 @@ using ServeFunction = int (*)(const config::NodeConfig&, const config::RuntimeRo
                               const CommandOptions&, std::FILE*, std::FILE*);
 int Run(std::span<const std::string_view> args, std::FILE* log, ServeFunction serve);
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_RUNTIME_H_
+#endif  // LLMP_RUNTIME_RUNTIME_H_

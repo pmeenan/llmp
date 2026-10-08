@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // External C API harness for the pinned same-format llama.cpp comparator.
@@ -110,8 +110,8 @@ int main(int argc, char** argv) {
     // Both arms page/warm weights on these six discarded input rows.
     decode(0, 6);
     llama_memory_clear(llama_get_memory(ctx.get()), true);
-    PrefillRange prefill_range(variant == "31" ? "jitllm.gemma31.paid_prefill"
-                                               : "jitllm.gemma26.paid_prefill");
+    PrefillRange prefill_range(variant == "31" ? "llmp.gemma31.paid_prefill"
+                                               : "llmp.gemma26.paid_prefill");
     const auto before_prefill = std::chrono::steady_clock::now();
     decode(0, 8192);
     const double prefill =

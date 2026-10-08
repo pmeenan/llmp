@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the source lock and its tools (no downloads, builds or SDK needed).
 
@@ -30,8 +30,8 @@ sys.dont_write_bytecode = True
 TOOLS = pathlib.Path(__file__).resolve().parent.parent
 REPO = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
-import jitllm_sources as srclib  # noqa: E402
-from jitllm_sources import SourceError  # noqa: E402
+import llmp_sources as srclib  # noqa: E402
+from llmp_sources import SourceError  # noqa: E402
 
 
 def load_script(name: str):
@@ -91,8 +91,8 @@ class CheckedInLock(unittest.TestCase):
 class ExllamaV3Component(unittest.TestCase):
     """The locked ExLlamaV3 subset: the pin, and a keep set that is exactly the native linear's closure.
 
-    That is upstream's GEMM compilation units and what jitLLM's instance unit (jitllm/
-    jitllm_exl3_kernels.cu, added by patch 0002) includes: the GEMV kernel's header (core since
+    That is upstream's GEMM compilation units and what llmpalooza's instance unit (llmp/
+    llmp_exl3_kernels.cu, added by patch 0002) includes: the GEMV kernel's header (core since
     D-080) and the reconstruction, Hadamard and bias-add sources that patch 0003 reduces to their
     kernels. The closure test reads the prepared tree (`mise run prepare`) and is skipped where
     none exists.
@@ -101,13 +101,13 @@ class ExllamaV3Component(unittest.TestCase):
     COMMIT = "6b84a21b6f1e5da3f291b9e1019061f0de788279"
     EXT = "exllamav3/exllamav3_ext/"
     # The compilation units the build compiles: the mcg codebook (cb1) at the M2 fixtures' rates,
-    # and jitLLM's instance unit.
+    # and llmpalooza's instance unit.
     UNITS = [EXT + "quant/comp_units/exl3_comp_unit_4_cb1.cu", EXT + "quant/comp_units/exl3_comp_unit_5_cb1.cu",
              EXT + "quant/comp_units/exl3_comp_unit_6_cb1.cu", EXT + "quant/comp_units/exl3_comp_unit_8_cb1.cu",
-             "jitllm/jitllm_exl3_kernels.cu"]
+             "llmp/llmp_exl3_kernels.cu"]
     # Kept sources the instance unit includes rather than compiles on their own.
     INCLUDED_SOURCES = [EXT + "add.cu", EXT + "quant/hadamard.cu", EXT + "quant/reconstruct.cu"]
-    # Upstream files the core component does not keep: the ATen host wrappers (jitLLM's launchers
+    # Upstream files the core component does not keep: the ATen host wrappers (llmpalooza's launchers
     # replace them, with recorded copies of what they decide), bits_k.cuh's c10 include, the int8
     # GEMV and the MoE kernels.
     EXCLUDED = ["quant/exl3_gemv.cu", "quant/exl3_gemv.cuh", "quant/comp_units/exl3_gemv_half_inst.cu",
@@ -131,7 +131,7 @@ class ExllamaV3Component(unittest.TestCase):
         self.assertEqual((comp["category"], comp["tier"], comp["use"]), ("implementation", "core", "test"))
         self.assertNotIn("module", comp)
         self.assertEqual(comp["license"]["expression"], "MIT")
-        self.assertEqual(comp["cmake"]["targets"], ["jitllm_exl3_headers", "jitllm_exl3_cuda"])
+        self.assertEqual(comp["cmake"]["targets"], ["llmp_exl3_headers", "llmp_exl3_cuda"])
 
     def test_patches_carry_their_license(self):
         for patch in self.comp["patches"]:
@@ -223,18 +223,18 @@ class ExllamaV3Component(unittest.TestCase):
             self.skipTest(f"{tree} is not prepared (mise run prepare)")
         self.assertEqual(srclib.tree_digest(tree), self.comp["tree_sha256"])
         # The build exposes one include root, the extension's directory, and compiles exactly the units.
-        build = (tree / "jitllm" / "CMakeLists.txt").read_text()
+        build = (tree / "llmp" / "CMakeLists.txt").read_text()
         self.assertIn('set(ext "${CMAKE_CURRENT_SOURCE_DIR}/../exllamav3/exllamav3_ext")', build)
         self.assertEqual(re.findall(r"target_include_directories\(([^)]*)\)", build),
-                         ['jitllm_exl3_headers INTERFACE "${ext}" "${CMAKE_CURRENT_SOURCE_DIR}"'])
+                         ['llmp_exl3_headers INTERFACE "${ext}" "${CMAKE_CURRENT_SOURCE_DIR}"'])
         self.assertIn('foreach(bits IN ITEMS 4 5 6 8)', build)
         self.assertIn('exl3_comp_unit_${bits}_cb1.cu', build)
-        self.assertIn('list(APPEND units "${CMAKE_CURRENT_SOURCE_DIR}/jitllm_exl3_kernels.cu")', build)
+        self.assertIn('list(APPEND units "${CMAKE_CURRENT_SOURCE_DIR}/llmp_exl3_kernels.cu")', build)
         # Every include, quoted or angle, that resolves in the tree is followed; nothing gated is reached.
         seen, problems = self.include_closure(tree, self.UNITS, [self.EXT.rstrip("/")])
         self.assertEqual(problems, [])
-        # jitLLM's own files (patch 0002) are the build's, not upstream's kept ones.
-        self.assertEqual(sorted({p for p in seen if not p.startswith("jitllm/")} | {"LICENSE"}), self.keep)
+        # Llmpalooza's own files (patch 0002) are the build's, not upstream's kept ones.
+        self.assertEqual(sorted({p for p in seen if not p.startswith("llmp/")} | {"LICENSE"}), self.keep)
         # The three kept sources are included, never compiled as units of their own.
         for source in self.INCLUDED_SOURCES:
             self.assertNotIn(source.removeprefix(self.EXT), build)
@@ -366,7 +366,7 @@ class Validation(unittest.TestCase):
                 ({"archive": dict(component()["archive"], file="../x.tgz")}, "plain file name"),
                 ({"cmake": dict(component()["cmake"], options={"X": "a b"})}, "plain string values"),
                 ({"cmake": dict(component()["cmake"], subdirectory="../up")}, "relative path"),
-                ({"cmake": dict(component()["cmake"], targets=[])}, "must name what jitLLM links"),
+                ({"cmake": dict(component()["cmake"], targets=[])}, "must name what llmpalooza links"),
                 ({"verification": ""}, "how the pin was checked")):
             with self.subTest(change=change):
                 self.assertIn(text, self.problems(lock({"x": component(**change)})))
@@ -390,14 +390,14 @@ class Validation(unittest.TestCase):
         self.assertIn("schema must be 1", self.problems(dict(lock({"x": component()}), schema=True)))
         self.assertIn("ids are lowercase", self.problems(lock({"x\n": component()})))
 
-    def test_options_cannot_rebind_cmake_or_jitllm_variables_or_name_paths(self):
+    def test_options_cannot_rebind_cmake_or_llmp_variables_or_name_paths(self):
         for options, text in (
                 ({"CMAKE_PROJECT_INCLUDE": "x"}, "may not set CMAKE_*"),
                 ({"cmake_sysroot": "x"}, "may not set CMAKE_*"),
-                ({"JITLLM_PYTHON": "x"}, "may not set"),
+                ({"LLMP_PYTHON": "x"}, "may not set"),
                 ({"FETCHCONTENT_FULLY_DISCONNECTED": "OFF"}, "may not set"),
                 ({"BUILD_SHARED_LIBS": "ON"}, "may not set"),
-                ({"_JITLLM_SOURCES_SCRIPTS": "x"}, "cmake.options must map"),
+                ({"_LLMP_SOURCES_SCRIPTS": "x"}, "cmake.options must map"),
                 ({"X_TESTS": "/tmp/evil.cmake"}, "plain string values"),
                 ({"X_TESTS": "a;b"}, "plain string values")):
             with self.subTest(options=options):

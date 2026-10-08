@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Partial weight eviction and exact switch recovery
@@ -210,7 +210,7 @@ Spark-native pinned SDKaarch64-c09daba6ac31edee, official core receipt,
 CUDA13.4.2/cuBLAS13.8.0.4, GB10 driver580.178.04. Wrapper SHA256
 `22b0c9b4576c50ce3589ac14216d2199ce12d6b7f197c13520c488ff1df6ae23`;
 runtime`72de809f81a717b7968d90d244389228d1e951fc7b4c3f609d21daf82fa45314`.
-Both first-resolved `lib/jitllm` cuBLAS payloads equal the authenticated
+Both first-resolved `lib/llmp` cuBLAS payloads equal the authenticated
 `cublas` copies (`libcublas.so.13` SHA256ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b,
 `libcublasLt.so.13` ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30).
 
@@ -239,7 +239,7 @@ Run the built wrapper in orderfull/partial/partial/full through the installed
 Spark GPU-exclusive supervisor,600sectotal/stop-on-fail,145secpernativeprocess:
 
 ```
-jitllm_swap_pager ARM --budget-bytes 115964116992 \
+llmp_swap_pager ARM --budget-bytes 115964116992 \
   --config FRESH_CONFIG --anchor FRESH_ENROLLMENT swap-table \
   --pairs deepseek:qwen3.8 --context-text CONTEXT --context-tokens 8192 \
   --continue 16 --cycles 2 --zero-context off --handoff on \
@@ -383,7 +383,7 @@ its common47 bindings are unchanged. The original wake header is retrieved
 with `git show c382965:src/base/wake.h`, SHA256
 `5f7cf85f2695cfadd8692e2597eadae14901cd297ea0b2f4fe6d70305c9f076d`.
 The candidate header SHA256 is
-`34f1cc025330d7142268843e3b89587839f004b95dffb55c9fbd6e60ea216b48`.
+`3e6e5a3ed73f75b979757e133d15eb90e2b3bc7b3af03bb8d78452093c0aeacc`.
 The source-manifest digests are not Git commits.
 
 | Measured payload | Old | Candidate |
@@ -779,13 +779,13 @@ the combined test fixture changing.
 To reproduce after raw cleanup, retrieve the context with
 `git show 4655685:docs/decisions.md > CONTEXT.md` and verify its recorded
 368882-byte/SHA256 identity above. Use the approved prepared DeepSeek/Qwen
-artifacts, pinned SDK libraries and a freshly built `jitllm_swap_pager`.
+artifacts, pinned SDK libraries and a freshly built `llmp_swap_pager`.
 For F1, P1, P2, F2 in that exact order, create four otherwise identical runtime
 TOML files whose only difference is a fresh absolute `data_dir` namespace,
 and invoke the benchmark as follows with MODE full, partial, partial, full:
 
 ```sh
-jitllm_swap_pager MODE --budget-bytes 115964116992 \
+llmp_swap_pager MODE --budget-bytes 115964116992 \
   --config ARM.toml --anchor ARM/enrollment swap-table \
   --pairs deepseek:qwen3.8 --context-text CONTEXT.md \
   --context-tokens 8192 --continue 16 --cycles 2 --zero-context off \

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # DeepSeek and Qwen state-only prefill — 2026-10-08
@@ -67,7 +67,7 @@ SDK/private-library pins and standing little-endian I32 inputs as
 The new optional last argument is headed or state-only:
 
 ```text
-jitllm_prefill_prediction_probe ds|dspark|qn|qmtp|qg STORE TARGET DRAFTER|- TOKENIZER_DIR|- IDS0 IDS1 NEW_OUT on headed|state-only
+llmp_prefill_prediction_probe ds|dspark|qn|qmtp|qg STORE TARGET DRAFTER|- TOKENIZER_DIR|- IDS0 IDS1 NEW_OUT on headed|state-only
 ```
 
 Keep actual contexts 16384/2048, chunk sizes 4096/512, two slots and prefill
@@ -131,10 +131,10 @@ tiers remain deferred; only this focused union and recorded actual
 controls/factors are claimed. Keep milestone raw stores because M3.5 is
 not closed. Standing prepared artifacts, pinned checkpoints and replay inputs stay.
 
-Spark A warm tree is `/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution`,
+Spark A warm tree is `/home/pmeenan/src/llmp-wt/gemma-state-phase-attribution`,
 measured T86 source 5f80afcf, official receipt 0296e41b. Its old Gemma3 default is
 false; the qualified explicit ON branch is selected by 7520f12. Spark B warm tree
-is `/home/pmeenan/src/jitLLM-wt/m3clean-main`, selected source manifest a36b5d3e
+is `/home/pmeenan/src/llmp-wt/m3clean-main`, selected source manifest a36b5d3e
 and official receipt 874aaf7a, with the final runtime/probe compile recorded in
 the aggregate. Both hosts report no GPU jobs, waiting jobs or compute processes
 after positive retirement. Local raw records are retained outside Git; the

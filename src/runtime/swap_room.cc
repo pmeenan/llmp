@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/swap_room.h"
@@ -12,7 +12,7 @@
 #include <map>
 #include <string>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 std::expected<std::vector<catalog::ExtentId>, std::string> ReleaseForHandoff(
     catalog::DomainId domain, std::uint64_t occupancy, std::uint64_t budget,
@@ -117,4 +117,4 @@ std::expected<SwapRoomSteps, std::string> MakeRoom(
   }
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

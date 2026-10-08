@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
-#ifndef JITLLM_KERNELS_GGML_GRAPH_READ_INDEX_H_
-#define JITLLM_KERNELS_GGML_GRAPH_READ_INDEX_H_
+#ifndef LLMP_KERNELS_GGML_GRAPH_READ_INDEX_H_
+#define LLMP_KERNELS_GGML_GRAPH_READ_INDEX_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -12,7 +12,7 @@
 
 #include "kernels/ggml/fusion.h"
 
-namespace jitllm::kernels::ggml::detail {
+namespace llmp::kernels::ggml::detail {
 // Borrowed, immutable descriptors for one PlanGraph invocation only. Rebuild
 // after placement: neither logical identity nor validation survives mutation.
 class GraphReadIndex {
@@ -57,5 +57,5 @@ class GraphReadIndex {
   mutable std::optional<bool> strictly_valid_;
   bool bounded_ = true;
 };
-}  // namespace jitllm::kernels::ggml::detail
-#endif  // JITLLM_KERNELS_GGML_GRAPH_READ_INDEX_H_
+}  // namespace llmp::kernels::ggml::detail
+#endif  // LLMP_KERNELS_GGML_GRAPH_READ_INDEX_H_

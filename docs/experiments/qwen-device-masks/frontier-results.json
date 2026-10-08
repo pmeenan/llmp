@@ -187,7 +187,7 @@
   "acquisition": {
     "base_commit": "409a26a",
     "source_inventory_sha256": "05504b89eff58a454d78f8dd59625f63dd7ad24b0ea5eae0cdfda6c2f712dfa2",
-    "harness_sha256": "5df8a10794e66982a21a1167a21328a898bd1be569bc097058d49e9974a4ba51",
+    "harness_sha256": "cc5f8448216970cd57352f7e2256dbb17d31d26966f9edec2c684b01e4d2dc5b",
     "passed_receipt_sha256": "e0268e11e6dfd6a1606b34b866ef99d0d19dc0716403b2d724be9d6e978f508a",
     "native_spec_sha256": "2371b57f7733114fb3c53db97df80e1e1f0cfdaaf6b8d76d93a75604f72906f3",
     "native_five_heads_sha256": "68dcfb8281d4b0d807991ab69fb61a6730ceb8fb5d47108e5ddf4a0215d8e8c9",

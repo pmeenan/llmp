@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // What a request may hold in host memory (D-102;
@@ -43,8 +43,8 @@
 // composition shortens text at most threefold). Vendor-free and pure but
 // for RequestMemory's lock, so the CPU tests hold the arithmetic.
 
-#ifndef JITLLM_RUNTIME_INTAKE_LIMITS_H_
-#define JITLLM_RUNTIME_INTAKE_LIMITS_H_
+#ifndef LLMP_RUNTIME_INTAKE_LIMITS_H_
+#define LLMP_RUNTIME_INTAKE_LIMITS_H_
 
 #include <chrono>
 #include <cstddef>
@@ -59,7 +59,7 @@
 
 #include "config/node_config.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 // The request memory set apart at the start, beside the guard's margin.
 inline constexpr std::uint64_t kRequestMemoryFloor = std::uint64_t{256} << 20U;
@@ -252,6 +252,6 @@ std::uint64_t TokenReclaimCredit(std::uint64_t catalog_drop, std::uint64_t token
 
 void ReleaseTokenStorage(std::vector<std::int32_t>& tokens, MemoryCharge& charge);
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime
 
-#endif  // JITLLM_RUNTIME_INTAKE_LIMITS_H_
+#endif  // LLMP_RUNTIME_INTAKE_LIMITS_H_

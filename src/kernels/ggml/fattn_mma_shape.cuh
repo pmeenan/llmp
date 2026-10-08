@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // Internal to the GGML module, for the tensor-core flash-attention instance
@@ -9,8 +9,8 @@
 // launch_fattn's occupancy query, for the kernel the case
 // launches with the selected logit-softcap specialization.
 
-#ifndef JITLLM_KERNELS_GGML_FATTN_MMA_SHAPE_CUH_
-#define JITLLM_KERNELS_GGML_FATTN_MMA_SHAPE_CUH_
+#ifndef LLMP_KERNELS_GGML_FATTN_MMA_SHAPE_CUH_
+#define LLMP_KERNELS_GGML_FATTN_MMA_SHAPE_CUH_
 
 #include <algorithm>
 #include <cstddef>
@@ -21,7 +21,7 @@
 // before this header.
 #include "kernels/ggml/fattn_mma.h"
 
-namespace jitllm::kernels::ggml::detail {
+namespace llmp::kernels::ggml::detail {
 
 // kGroup is ncols2: query heads per KV head in a tile (8 for the grouped
 // kernels, 1 for multi-head attention).
@@ -77,6 +77,6 @@ std::expected<MmaKernelShape, std::string> MmaShape(int device) {
       .kv_batch = nbatch_fa, .blocks_per_sm = per_sm, .async_kv_preload = nstages == 2 && !kSparse};
 }
 
-}  // namespace jitllm::kernels::ggml::detail
+}  // namespace llmp::kernels::ggml::detail
 
-#endif  // JITLLM_KERNELS_GGML_FATTN_MMA_SHAPE_CUH_
+#endif  // LLMP_KERNELS_GGML_FATTN_MMA_SHAPE_CUH_

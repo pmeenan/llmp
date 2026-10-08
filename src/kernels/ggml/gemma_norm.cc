@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/gemma_norm.h"
@@ -9,7 +9,7 @@
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 using namespace detail;
 const ggml_tensor* Weight(const ggml_tensor* norm, const ggml_tensor* mul) {
@@ -110,4 +110,4 @@ std::expected<void, KernelFailure> CheckGemmaNormAddGather(const ggml_tensor* no
     return Rejected("early residual GET_ROWS overwrites an actual norm input");
   return {};
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

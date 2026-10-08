@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Provisions jitLLM's pinned development SDK for this build host (D-012, D-049, D-070).
+"""Provisions llmpalooza's pinned development SDK for this build host (D-012, D-049, D-070).
 
 Reads toolchains/manifest.toml and toolchains/artifacts.lock.json, downloads
 each pinned artifact into a persistent cache (checking its size and SHA-256
@@ -39,8 +39,8 @@ import urllib.request
 import zipfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import jitllm_sdk as sdklib  # noqa: E402
-from jitllm_sdk import SdkError  # noqa: E402
+import llmp_sdk as sdklib  # noqa: E402
+from llmp_sdk import SdkError  # noqa: E402
 
 # Bump when the GCC build steps change in a way the cache key doesn't capture.
 GCC_RECIPE = 2
@@ -138,7 +138,7 @@ def fetch(sdk: sdklib.Sdk, key: str) -> pathlib.Path:
             with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".part-", delete=False) as tmp:
                 try:
                     digest, size = hashlib.sha256(), 0
-                    request = urllib.request.Request(url, headers={"User-Agent": "jitllm-setup-toolchain"})
+                    request = urllib.request.Request(url, headers={"User-Agent": "llmp-setup-toolchain"})
                     with urllib.request.urlopen(request, timeout=60) as response:
                         while chunk := response.read(1 << 20):
                             size += len(chunk)
@@ -414,7 +414,7 @@ def build_gcc(sdk: sdklib.Sdk, comp: dict, out: pathlib.Path, inputs: dict, jobs
     # directory to a fixed name so no local path ends up in the runtime and
     # the bytes don't depend on where the cache lives. Otherwise GCC's
     # default target flags.
-    target_flags = f"-g -O2 -ffile-prefix-map={work}=/usr/src/jitllm-gcc-{sdk.artifact('source/gcc')['version']}"
+    target_flags = f"-g -O2 -ffile-prefix-map={work}=/usr/src/llmp-gcc-{sdk.artifact('source/gcc')['version']}"
     env |= {"CFLAGS_FOR_TARGET": target_flags, "CXXFLAGS_FOR_TARGET": target_flags}
     logfile = work / "build.log"
     log(f"  building GCC runtime for {target} ({jobs} jobs; log: {logfile})")
@@ -452,7 +452,7 @@ def record_cross_results(configure: pathlib.Path, defines: list[str]) -> None:
 
 def curate_gcc(sdk: sdklib.Sdk, src: pathlib.Path, prefix: pathlib.Path, target: str, cross: bool,
                out: pathlib.Path) -> None:
-    """Copies only the outputs jitLLM uses (D-060) into a native-layout tree."""
+    """Copies only the outputs llmpalooza uses (D-060) into a native-layout tree."""
     g = sdk.manifest["gcc"]
     base = prefix / target if cross else prefix
     headers = base / g["headers"]

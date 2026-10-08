@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # CMake 4.4.3 source preparation and build smoke
@@ -119,7 +119,7 @@ absence of RPATH/RUNPATH. Generated files and logs stay outside Git.
 CMake is a D-017 **build tool**. The archives contain Kitware's BSD-3-Clause
 text at `doc/cmake/LICENSE.rst` plus bundled-component notices below
 `doc/cmake/`; keep that directory intact. The smoke uses these binaries
-externally and incorporates no CMake source or model data into jitLLM.
+externally and incorporates no CMake source or model data into llmpalooza.
 This is not a full binary-bundle redistribution audit. M1's SDK audit must
 record the bundled components and any shipped notices/terms.
 

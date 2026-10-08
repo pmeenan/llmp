@@ -1,13 +1,13 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 umask 077
-scratch="$HOME/.local/share/jitllm/gemma26-dispatch-observation"
-source_root="$HOME/src/jitLLM-wt/m3fixb"
-previous="$HOME/.local/share/jitllm/gemma26-packed-attention-c4"
-sdk="$HOME/.local/share/jitllm/sdk/aarch64-c09daba6ac31edee"
-models="$HOME/.local/share/jitllm/reference-models"
+scratch="$HOME/.local/share/llmp/gemma26-dispatch-observation"
+source_root="$HOME/src/llmp-wt/m3fixb"
+previous="$HOME/.local/share/llmp/gemma26-packed-attention-c4"
+sdk="$HOME/.local/share/llmp/sdk/aarch64-c09daba6ac31edee"
+models="$HOME/.local/share/llmp/reference-models"
 image=ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7
 tool="$source_root/docs/experiments/gemma26-dispatch-observation"
 [[ $# == 1 ]] || exit 2
@@ -15,7 +15,7 @@ case "$1" in
   build)
     [[ ! -e "$scratch" ]]
     mkdir -m 700 "$scratch"
-    cp -R "$HOME/.local/share/jitllm/gemma-reference-stock/ggml" "$scratch/ggml"
+    cp -R "$HOME/.local/share/llmp/gemma-reference-stock/ggml" "$scratch/ggml"
     cp "$previous/llama_joined" "$scratch/llama_joined"
     cp "$previous/ids.i32" "$scratch/ids.i32"
     python3 "$tool/observe_controller.py" "$scratch/ggml/src/ggml-cuda/ggml-cuda.cu" "$scratch/controller.cu"

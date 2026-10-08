@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "config/storage_roles.h"
@@ -26,13 +26,13 @@
 #include "platform/direct_io.h"
 #include "platform/path_trust.h"
 
-namespace jitllm::config {
+namespace llmp::config {
 namespace {
 
 namespace fs = std::filesystem;
 
 // What the marker holds: its format's version, for D-062.
-constexpr std::string_view kSpillMarkerText = "jitllm spill directory, version 1\n";
+constexpr std::string_view kSpillMarkerText = "llmp spill directory, version 1\n";
 
 std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurrency-mt-unsafe)
 
@@ -324,10 +324,10 @@ std::expected<RuntimeRoles, std::vector<std::string>> PrepareRuntimeRoles(const 
       continue;
     }
     if (filesystem->read_only) {
-      problems.push_back(std::format(
-          "storage.{} ({}) is on a read-only filesystem; a role outside /var/lib/jitllm "
-          "needs ReadWritePaths= in a jitllm.service drop-in",
-          role.name, path.string()));
+      problems.push_back(
+          std::format("storage.{} ({}) is on a read-only filesystem; a role outside /var/lib/llmp "
+                      "needs ReadWritePaths= in a llmp.service drop-in",
+                      role.name, path.string()));
       continue;
     }
     if (role.direct_io) {
@@ -416,11 +416,11 @@ void DescribeStorage(const Storage& storage, uid_t trusted, const fs::path& writ
     if (!writable_under.empty() && !Within(writable_under, walked->resolved)) {
       report.warnings.push_back(
           std::format("storage.{} ({}) is outside {}, which is all the packaged "
-                      "jitllm.service can write: add ReadWritePaths={} in a drop-in",
+                      "llmp.service can write: add ReadWritePaths={} in a drop-in",
                       role.name, walked->resolved.string(), writable_under.string(),
                       walked->resolved.string()));
     }
   }
 }
 
-}  // namespace jitllm::config
+}  // namespace llmp::config

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2023-2026 The ggml authors
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // A copy of ggml mmq.cuh's compact-expert branch of mul_mat_q and of
@@ -20,7 +20,7 @@
 #include "mmq.cuh"
 #include "unary.cuh"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 
 constexpr bool kFallback = false;
@@ -294,4 +294,4 @@ cudaError_t LaunchIq2PairGluUp(ggml_backend_cuda_context& ctx, const mmq_args& a
   }
 }
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

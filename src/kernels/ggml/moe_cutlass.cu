@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The routed experts' grouped GEMM (moe_cutlass.h): CUTLASS 4.7.1's SM120
@@ -25,7 +25,7 @@
 #include "cutlass/util/packed_stride.hpp"
 #include "kernels/ggml/moe_cutlass.h"
 
-namespace jitllm::kernels::ggml::moe {
+namespace llmp::kernels::ggml::moe {
 
 #if defined(CUTLASS_ARCH_MMA_SM121_SUPPORTED)
 
@@ -195,4 +195,4 @@ int RunGroupedGemm(const GroupedGemm& /*gemm*/, int /*sms*/, void* /*stream*/) {
 
 #endif  // defined(CUTLASS_ARCH_MMA_SM121_SUPPORTED)
 
-}  // namespace jitllm::kernels::ggml::moe
+}  // namespace llmp::kernels::ggml::moe

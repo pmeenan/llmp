@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Native turn-boundary reuse (2026-09-29)
@@ -37,7 +37,7 @@ excludes model activation and generation. Raw reports stay outside Git.
 Usage on a free Spark, after the memory/model-process gate:
 
 ```sh
-build/spark-native/benchmarks/jitllm_turn_reuse \
+build/spark-native/benchmarks/llmp_turn_reuse \
   CONFIG.toml ENROLLMENT_ANCHOR MODEL PROMPT.txt TOKENS SWAP_MODEL
 ```
 

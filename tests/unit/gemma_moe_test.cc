@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/gemma_moe.h"
@@ -11,8 +11,8 @@
 #include <memory>
 
 namespace {
-namespace kg = jitllm::kernels::ggml;
-using jitllm::base::Bytes;
+namespace kg = llmp::kernels::ggml;
+using llmp::base::Bytes;
 class GemmaMoe : public ::testing::Test {
  protected:
   void SetUp() override {

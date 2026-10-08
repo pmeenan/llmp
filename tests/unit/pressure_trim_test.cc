@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // When pressure on memory from outside has the runtime trim
@@ -22,8 +22,8 @@
 
 namespace {
 
-namespace rt = jitllm::runtime;
-namespace pf = jitllm::platform;
+namespace rt = llmp::runtime;
+namespace pf = llmp::platform;
 using Clock = rt::PressureTrim::Clock;
 using std::chrono::milliseconds;
 using std::chrono::seconds;

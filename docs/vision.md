@@ -1,21 +1,21 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Vision
 
 ## What this is
 
-jitLLM is an independent, open-source inference runtime built around one
+Llmpalooza is an independent, open-source inference runtime built around one
 premise: **model implementations describe computation and dependencies;
-jitLLM owns storage, residency, scheduling, and execution lifetime.**
+llmpalooza owns storage, residency, scheduling, and execution lifetime.**
 
-The workload jitLLM is built for first is one user, or one user's agent and
+The workload llmpalooza is built for first is one user, or one user's agent and
 its subagents, switching among a library of models that is larger than
 memory (D-019). A conversation spans minutes to hours; the main model is
 expected to resume after a subagent on a different model finishes; models are
 time-sliced under contention and run concurrently when their complete
 execution budgets fit. Switching can require expensive weight reloads and
-prompt recomputation. jitLLM keeps a node-wide catalog of every managed
+prompt recomputation. Llmpalooza keeps a node-wide catalog of every managed
 extent, reclaims the least valuable eligible extents across all models when
 capacity is needed, preserves conversation state through residency or spill
 within explicit retention bounds (D-024), and brings missing weights or state back only
@@ -46,7 +46,7 @@ repeated paging stalls during generation matter.
 
 ## Who it's for
 
-jitLLM is built by one developer but meant to be consumed externally (D-016),
+Llmpalooza is built by one developer but meant to be consumed externally (D-016),
 so the audience is anyone with the problem, not just the owner.
 
 1. **People running local inference on one or two DGX Sparks**, the project
@@ -86,7 +86,7 @@ checkpoints.
   reports which happened.
 - **Standard clients work unmodified.** Cursor, OpenCode, Codex, Claude
   Code, and other standard web-API clients talk to the conductor's
-  endpoint with no jitLLM-specific changes; the request's model field
+  endpoint with no llmpalooza-specific changes; the request's model field
   drives switching, and compatible cached state is recovered by prefix
   identity. Prefix matching identifies neither a conversation nor its lifetime.
   A system-prompt prefix is reusable across compatible conversations, with
@@ -139,7 +139,7 @@ checkpoints.
   implementation is under permissive licenses or MPL-2.0 (D-017, D-091);
   declared tools and platform runtimes are recorded under their separate
   terms (D-017). It and the copyleft-disabled profile build, pass the core
-  tests, and have their full dependency closures audited. jitLLM's own
+  tests, and have their full dependency closures audited. Llmpalooza's own
   builds include optional modules and their dependencies by default, with
   the copyleft-disabled profile as the build-time opt-out (D-080); builds
   that include them ship matching notices and source obligations.

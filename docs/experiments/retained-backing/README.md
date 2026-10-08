@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Retained-backing swap trace — 2026-09-26
@@ -122,10 +122,10 @@ Each file also holds 96 requests, 783,282 uses and 32 shrink probes.
 
 ## Identity
 
-- Generator `swap_trace.py`: `0145799a0e8616cb1512add292fdfe65276ad4078ee3ab62acf40f46b4ebfc5d`.
-- `params.json`: `d7e7d6b29aba2e3500260a6d4bfc6a5e6d9c6dbbf79c456f005165559042fa0f`.
-- `library.json`: `1880e984c2ab01def9b28140906ac94afa07159080024341207297c36238c291`.
-- `extract_library.py`: `daba141a905e4dd56bb066e2aae8f91442aca379e85a1da4629abcedcc4e2a22`.
+- Generator `swap_trace.py`: `e6ea1214762d25885390d9e9204a808626e0622304408ead6cf07a0c4069c1ee`.
+- `params.json`: `42c8a044fa31baa68abbeedb1451ea543d373f56462a9352f6ee7501b2fee4b8`.
+- `library.json`: `a64b453ae1d9b4f66fc6aa1440b28cf40775be5c02489706523da5d5577429bd`.
+- `extract_library.py`: `fed45acfc700bb20de18b91756a228f7ad3dc2db6dd8b711e6c0743481b62bca`.
 - Primary seed 20260926:
   - `manifest.json` `44f9f2b40bb9ed8bab7ac337c5736de08dfdf2e1821ae2755c7a78bb191b7fc9`;
   - `trace-r5-4.jsonl` `01611f43c464dd42b954224b00f21f8aeaef0476e75b9021e9d827a4991c692d`;
@@ -144,13 +144,13 @@ out on `spark` (Python 3.12.3) and on the workstation (the mise-pinned
 
 ## Retrieval and regeneration
 
-The traces are in `~/.local/share/jitllm/retained-backing-20260926/`
+The traces are in `~/.local/share/llmp/retained-backing-20260926/`
 (`trace-primary/`, `trace-confirmation/`), on `spark` and on the
 workstation. The inputs they were generated from are in its `captures/`:
 - the five capture files and three receipts listed above;
 - `aba-input/sessions.json`.
 
-The originals are in `~/.local/share/jitllm/paging/` on `spark`, and on
+The originals are in `~/.local/share/llmp/paging/` on `spark`, and on
 `spark-b` for `large-capture-2`.
 
 To check a copy, run `python3 swap_trace.py verify DIR`. It checks the

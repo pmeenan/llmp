@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A Qwen3.8 wave's composition (engine/qwen38_wave_plan.h), planned on the
@@ -41,16 +41,16 @@
 #include "engine/qwen38_runner.h"
 #include "ggml.h"
 #include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/qwen38_graph.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "model/qwen38.h"
 
 namespace {
 
-namespace engine = jitllm::engine;
-namespace md = jitllm::model;
-namespace kg = jitllm::kernels::ggml;
+namespace engine = llmp::engine;
+namespace md = llmp::model;
+namespace kg = llmp::kernels::ggml;
 
 constexpr std::uint64_t kTableRows = 320001536;
 constexpr std::uint64_t kExpertStride = 2768976;
@@ -486,11 +486,11 @@ struct Products {
 Products Of(std::span<ggml_tensor* const> nodes) {
   Products out;
   for (const ggml_tensor* t : nodes) {
-    switch (kg::JitllmOpOf(t)) {
-      case kg::JitllmOp::kMxfp8MulMatVec:
+    switch (kg::LlmpOpOf(t)) {
+      case kg::LlmpOp::kMxfp8MulMatVec:
         out.mxfp8.push_back(t->src[2]->ne[1]);
         break;
-      case kg::JitllmOp::kMoeGemv:
+      case kg::LlmpOp::kMoeGemv:
         out.routed.push_back(t->src[2]->ne[1]);
         break;
       default:
@@ -514,18 +514,18 @@ std::size_t Count(const std::vector<std::int64_t>& v, std::int64_t value) {
 // SET_ROWS. Every state tensor is identified independently of arena addresses.
 auto StateWrites(const kg::Qwen38Graph& g) {
   using Shape = std::array<std::int64_t, 4>;
-  using Write = std::tuple<std::size_t, std::size_t, ggml_op, kg::JitllmOp, Shape>;
+  using Write = std::tuple<std::size_t, std::size_t, ggml_op, kg::LlmpOp, Shape>;
   std::vector<Write> out;
   const auto root = [](const ggml_tensor* t) {
     while (t != nullptr && t->view_src != nullptr) t = t->view_src;
     return t;
   };
   for (const auto* n : g.nodes) {
-    const auto op = kg::JitllmOpOf(n);
+    const auto op = kg::LlmpOpOf(n);
     const ggml_tensor* into = nullptr;
     if (n->op == GGML_OP_SET_ROWS) into = n->src[2];
-    if (op == kg::JitllmOp::kQsaPool) into = n->src[1];
-    if (op == kg::JitllmOp::kGdnStep && kg::JitllmOpInt(n, 0) == 0) into = n->src[5];
+    if (op == kg::LlmpOp::kQsaPool) into = n->src[1];
+    if (op == kg::LlmpOp::kGdnStep && kg::LlmpOpInt(n, 0) == 0) into = n->src[5];
     if (into == nullptr) continue;
     for (std::size_t il = 0; il < g.layers.size(); ++il) {
       const auto& l = g.layers[il];
@@ -561,7 +561,7 @@ class Qwen38WavePlanTest : public ::testing::Test {
       const std::uint64_t base = kPleTable + (kSlotPlaces * (s + 1));
       models_[s] = {
           // Only compared (one common model), never read, on this path.
-          .artifact = reinterpret_cast<const jitllm::artifact::Artifact*>(artifact_.data()),
+          .artifact = reinterpret_cast<const llmp::artifact::Artifact*>(artifact_.data()),
           .profile = &p_,
           .binding = &*binding_,
           .state = &*state_,
@@ -689,7 +689,7 @@ class Qwen38WavePlanTest : public ::testing::Test {
       EXPECT_EQ(graph->argmax->src[0], graph->logits);
       EXPECT_EQ(graph->argmax->type, GGML_TYPE_I32);
       EXPECT_EQ(graph->argmax->ne[0], 1);
-      EXPECT_EQ(kg::JitllmOpInt(graph->argmax, 1),
+      EXPECT_EQ(kg::LlmpOpInt(graph->argmax, 1),
                 static_cast<std::int32_t>(kg::ArgmaxFlavor::kHostGreedy));
       EXPECT_TRUE(std::ranges::any_of(wave.placement.offsets,
                                       [&](const auto& at) { return at.first == graph->argmax; }));
@@ -909,7 +909,7 @@ TEST_F(Qwen38GgufWavePlanTest, JoinsOneRowProductsWithinTheRoutedPairLimit) {
     ASSERT_TRUE(alone.has_value()) << alone.error();
     const auto scalar = static_cast<std::uint64_t>(std::ranges::count_if(
         (*alone)->nodes(),
-        [](const ggml_tensor* t) { return kg::JitllmOpOf(t) == kg::JitllmOp::kVecQ; }));
+        [](const ggml_tensor* t) { return kg::LlmpOpOf(t) == kg::LlmpOp::kVecQ; }));
     ASSERT_GT(scalar, 0);
     auto planned = Plan(requests);
     ASSERT_TRUE(planned.has_value()) << planned.error();
@@ -918,14 +918,14 @@ TEST_F(Qwen38GgufWavePlanTest, JoinsOneRowProductsWithinTheRoutedPairLimit) {
     EXPECT_EQ(wave.stats().vecq_pairs, count == 1 ? 0 : groups * scalar);
     std::uint64_t products = 0;
     for (const ggml_tensor* t : wave.nodes()) {
-      if (kg::JitllmOpOf(t) != kg::JitllmOp::kVecQ) {
+      if (kg::LlmpOpOf(t) != kg::LlmpOp::kVecQ) {
         continue;
       }
       ++products;
       EXPECT_EQ(kg::VecQOneToken(t), count > 1);
       EXPECT_TRUE(kg::CheckVecQ(t).has_value());
       const bool routed = t->src[2] != nullptr && t->src[2]->type == GGML_TYPE_I32;
-      const auto tokens = kg::JitllmOpInt(t, 0);
+      const auto tokens = kg::LlmpOpInt(t, 0);
       EXPECT_LE(tokens, kg::kVecQMaxTokens);
       if (routed) {
         EXPECT_LE(tokens * t->src[2]->ne[0], 128);
@@ -1022,7 +1022,7 @@ TEST_F(Qwen38WavePlanTest, LanesCarryEachSlotsOwnOperations) {
   const auto& w = **laned;
   for (const kg::PlanStep& step : b.steps) {
     for (const ggml_tensor* node : step.nodes) {
-      if (kg::JitllmOpOf(node) == kg::JitllmOp::kMxfp8MulMatVec && node->src[2]->ne[1] == 16) {
+      if (kg::LlmpOpOf(node) == kg::LlmpOp::kMxfp8MulMatVec && node->src[2]->ne[1] == 16) {
         EXPECT_EQ(step.lane, 0U);
       }
     }
@@ -1289,7 +1289,7 @@ TEST_F(Qwen38DraftWavePlanTest, SelectedQ4HeadsShareOneTokenArithmeticAndFundThe
     EXPECT_EQ((*planned)->stats().quantized_draft_head_pairs, joined ? 3U : 0U);
     unsigned heads = 0;
     for (const ggml_tensor* t : (*planned)->nodes()) {
-      if (kg::JitllmOpOf(t) != kg::JitllmOp::kVecQ || t->ne[0] != 47172) continue;
+      if (kg::LlmpOpOf(t) != kg::LlmpOp::kVecQ || t->ne[0] != 47172) continue;
       ++heads;
       EXPECT_EQ(t->ne[1], joined ? 2 : 1);
       EXPECT_EQ(t->src[0]->type, GGML_TYPE_Q4_1);
@@ -1297,7 +1297,7 @@ TEST_F(Qwen38DraftWavePlanTest, SelectedQ4HeadsShareOneTokenArithmeticAndFundThe
       EXPECT_EQ(t->src[0]->nb[1], 1600U);
       EXPECT_EQ(kg::VecQOneToken(t), joined);
       EXPECT_TRUE(kg::CheckVecQ(t).has_value());
-      ASSERT_EQ(kg::JitllmOpOf(t->src[1]), kg::JitllmOp::kQuantizeQ8);
+      ASSERT_EQ(kg::LlmpOpOf(t->src[1]), kg::LlmpOp::kQuantizeQ8);
       EXPECT_EQ(ggml_nbytes(t->src[1]), 2880U * (joined ? 2U : 1U));
       EXPECT_NE(t->src[1]->data, nullptr);
     }
@@ -1315,7 +1315,7 @@ TEST_F(Qwen38DraftWavePlanTest, SelectedQ4PrefixesKeepOneTokenArithmeticAndTheir
       EXPECT_EQ((*planned)->stats().quantized_draft_head_pairs, paired ? 3U : 0U);
       unsigned heads = 0;
       for (const ggml_tensor* t : (*planned)->nodes()) {
-        if (kg::JitllmOpOf(t) != kg::JitllmOp::kVecQ || t->ne[0] != rows) continue;
+        if (kg::LlmpOpOf(t) != kg::LlmpOp::kVecQ || t->ne[0] != rows) continue;
         ++heads;
         ASSERT_EQ(t->src[0]->op, GGML_OP_VIEW);
         EXPECT_TRUE(engine::Qwen38SelectedQ4HeadPrefix(t->src[0], t->src[0]->view_src));
@@ -1324,7 +1324,7 @@ TEST_F(Qwen38DraftWavePlanTest, SelectedQ4PrefixesKeepOneTokenArithmeticAndTheir
         EXPECT_EQ(t->ne[1], paired ? 2 : 1);
         EXPECT_EQ(kg::VecQOneToken(t), paired);
         EXPECT_TRUE(kg::CheckVecQ(t));
-        ASSERT_EQ(kg::JitllmOpOf(t->src[1]), kg::JitllmOp::kQuantizeQ8);
+        ASSERT_EQ(kg::LlmpOpOf(t->src[1]), kg::LlmpOp::kQuantizeQ8);
         EXPECT_EQ(ggml_nbytes(t->src[1]), 2880U * (paired ? 2U : 1U));
         EXPECT_NE(t->src[1]->data, nullptr);
       }
@@ -1416,7 +1416,7 @@ TEST_F(Qwen38DraftWavePlanTest, ConfidenceOutputsRetainTheirPackedI32Probability
           EXPECT_TRUE(ggml_is_contiguous(probability));
           EXPECT_NE(probability->data, nullptr);
           ASSERT_NE(probability->view_src, nullptr);
-          EXPECT_EQ(kg::JitllmOpOf(probability->view_src), kg::JitllmOp::kArgmax);
+          EXPECT_EQ(kg::LlmpOpOf(probability->view_src), kg::LlmpOp::kArgmax);
           EXPECT_EQ(probability->view_src->ne[0], 2);
           EXPECT_EQ(probability->view_offs, sizeof(std::int32_t));
           EXPECT_EQ(std::ranges::count((*planned)->nodes(), probability), 1);

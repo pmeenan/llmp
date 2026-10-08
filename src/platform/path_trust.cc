@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "platform/path_trust.h"
@@ -21,7 +21,7 @@
 #include <string>
 #include <string_view>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 namespace {
 
 namespace fs = std::filesystem;
@@ -268,4 +268,4 @@ std::expected<TrustedPath, std::string> WalkTrusted(const fs::path& path, uid_t 
   return result;
 }
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform

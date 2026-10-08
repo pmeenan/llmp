@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Prepare fresh Gemma state beside the current prefill chunk
@@ -192,7 +192,7 @@ slice's production protocol or relabel its actual 60d0c30-based execution.
 [Separate integration evidence](../gemma4-original-q8/README.md).
 
 The retained input is `references/gemma3-depth/ids.i32` under the node's
-jitllm data directory: 33024 bytes / 8256 little-endian I32 IDs, SHA
+llmp data directory: 33024 bytes / 8256 little-endian I32 IDs, SHA
 44196b939c8b53b535a59e1c139f6dc4a7959f7880cd8c8a9d91688818f5ad67.
 Its first 8192 IDs have SHA
 ae6c58cc2269b72b4ab3d98feb83dc318d805fb60b507a0200bcee139805e83d;
@@ -294,7 +294,7 @@ not incompatibility. Kept restart requires preserving its authoritative bytes.
 
 ## Reproduction and identity chain
 
-Use the retained `jitllm_gemma3_joint_prefill_probe`, fresh output directories,
+Use the retained `llmp_gemma3_joint_prefill_probe`, fresh output directories,
 and the installed supervised Spark GPU job protocol. Prepare or retrieve the
 standing 3111/3623 ID files using the frozen source texts and native-tokenizer
 recipe in [prefill transfer](../prefill-transfer/README.md#two-distinct-future-shapes-2026-10-08).
@@ -311,7 +311,7 @@ For ordinary 128-row, run the following argv in off/on/on/off order, appending
 benchmark's control false despite the final runner default true:
 
 ```text
-jitllm_gemma3_joint_prefill_probe ARTIFACT IDS0 IDS1 FRESH_OUT first-cycle
+llmp_gemma3_joint_prefill_probe ARTIFACT IDS0 IDS1 FRESH_OUT first-cycle
   bounded-roots device-masks prefill-ahead owner-prefill flexible-owner-prefill
   chunk=128 lookahead-capacity=2 shared-q8 budget-bytes=34359738368
 ```
@@ -342,7 +342,7 @@ TensorFold or stock competitive-parity claim follows from these own controls.
 
 ## Gemma2 reproduction and source bridge
 
-Use `jitllm_gemma2_joint_prefill_probe` in fresh supervised output directories,
+Use `llmp_gemma2_joint_prefill_probe` in fresh supervised output directories,
 with the approved artifact and the standing two distinct ID files from
 [prefill copies](../gemma-prefill-copies/README.md). Artifact manifest SHA is
 eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870 and
@@ -358,7 +358,7 @@ on arms. Its absence explicitly assigns false despite the adopted true runner
 default. There is no stock-ring flag.
 
 ```text
-jitllm_gemma2_joint_prefill_probe ARTIFACT IDS0 IDS1 FRESH_OUT first-cycle
+llmp_gemma2_joint_prefill_probe ARTIFACT IDS0 IDS1 FRESH_OUT first-cycle
   bounded-roots device-masks prefill-ahead owner-prefill flexible-owner-prefill
   chunk=128 lookahead-capacity=2 shared-q8 budget-bytes=34359738368
 ```

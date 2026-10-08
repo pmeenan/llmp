@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Writes the reference for Python's str case operations (README.md).
 
@@ -83,7 +83,7 @@ def main() -> int:
     # script's own.
     copyright_tag, license_tag = "SPDX-" + "FileCopyrightText", "SPDX-" + "License-Identifier"
     with open(sys.argv[1] + ".license", "w", encoding="utf-8") as f:
-        f.write(f"{copyright_tag}: 2026 jitLLM contributors\n"
+        f.write(f"{copyright_tag}: 2026 llmpalooza contributors\n"
                 f"{copyright_tag}: 1991-2023 Unicode, Inc.\n"
                 f"{license_tag}: Apache-2.0 AND Unicode-3.0\n")
     print({k: len(v) for k, v in singles.items()}, len(lower_true), len(upper_true), len(strings))

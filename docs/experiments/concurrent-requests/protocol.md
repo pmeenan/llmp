@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Concurrent generation comparisons
@@ -16,7 +16,7 @@ limit, greedy sampling, cache precision, speculative/plain mode and model
 weights explicit. Report unsupported or refused combinations, never remove
 them from the report. Different weight formats remain separate comparisons.
 
-For Qwen, compare jitLLM, Mia and TensorFold. TensorFold's existing
+For Qwen, compare llmpalooza, Mia and TensorFold. TensorFold's existing
 71377a53 image supports Flash Next's shared CUDA forwards with explicit
 `--parallel 4`; its default `auto` selects one request. Test both the default
 single-request deployment and the explicit concurrent deployment. The pinned
@@ -55,7 +55,7 @@ Keep cold engine startup separate from warm serving throughput. A single
 request on the concurrent deployment is also measured, because shared
 forwards may disable its single-request CUDA graphs.
 
-jitLLM's Qwen serving path now retains four independent branches and funds
+Llmpalooza's Qwen serving path now retains four independent branches and funds
 two active requests, alternating prefill chunks and sharing eligible decode
 products. A third request waits for a retirement before entering; other
 families still serve one active request. Report these actual admission limits

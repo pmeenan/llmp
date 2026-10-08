@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Confinement for the job stages that parse untrusted input (D-074;
@@ -17,15 +17,15 @@
 // the files a stage can reach, nor descriptors it inherited: the job must
 // start it with only the descriptors it needs.
 
-#ifndef JITLLM_PLATFORM_CONFINE_H_
-#define JITLLM_PLATFORM_CONFINE_H_
+#ifndef LLMP_PLATFORM_CONFINE_H_
+#define LLMP_PLATFORM_CONFINE_H_
 
 #include <expected>
 #include <filesystem>
 #include <span>
 #include <string>
 
-namespace jitllm::platform {
+namespace llmp::platform {
 
 struct Confinement {
   // Trees the stage may read (files and directory listings) and execute.
@@ -43,6 +43,6 @@ struct Confinement {
 // in a single-threaded job process before it touches untrusted input.
 std::expected<void, std::string> ConfineSelf(const Confinement& confinement);
 
-}  // namespace jitllm::platform
+}  // namespace llmp::platform
 
-#endif  // JITLLM_PLATFORM_CONFINE_H_
+#endif  // LLMP_PLATFORM_CONFINE_H_

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Ordinary whole-C12 Gemma factor
@@ -73,7 +73,7 @@ allowance. Actual first-decode metadata reports owner/request12 steps 180/90,
 request 8 zero, 32 paid groups and 32 replays. These are selected-plan counts,
 not per-replay launch records. Reuse the input/artifact/client pins and normal
 physical12 F16 reference recipe in the [original screen](../gemma-c12-joined-screen/README.md):
-`jitllm_gemma_joined ARTIFACT OUT PROFILE 12 joined norm|all CARRIER production`.
+`llmp_gemma_joined ARTIFACT OUT PROFILE 12 joined norm|all CARRIER production`.
 Two own native arms precede a separately supervised complete own-repeat proof
 and retained-FIRST-stock assessment using the unchanged analyzer/judge numeric
 functions. All six acquisition/proof/comparison jobs retire DONE0; all eight

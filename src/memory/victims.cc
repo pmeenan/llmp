@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "memory/victims.h"
@@ -13,7 +13,7 @@
 #include "base/bytes.h"
 #include "catalog/catalog.h"
 
-namespace jitllm::memory {
+namespace llmp::memory {
 
 VictimPlan SelectVictims(const catalog::Catalog& catalog, catalog::DomainId domain, Bytes needed,
                          std::span<const catalog::ExtentId> protect) {
@@ -50,4 +50,4 @@ VictimPlan SelectVictims(const catalog::Catalog& catalog, catalog::DomainId doma
   return plan;
 }
 
-}  // namespace jitllm::memory
+}  // namespace llmp::memory

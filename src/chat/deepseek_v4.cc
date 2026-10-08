@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // DeepSeek V4 Flash 0731's chat format, as the 0731 GGUF's embedded template
 // (SHA-256 e643c31f..., Unsloth's port of DeepSeek's encoding_dsv4.py at
 // deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b) renders it for the roles and
-// options jitLLM supports. Written from the format, not translated from the
+// options llmpalooza supports. Written from the format, not translated from the
 // template; the fixtures hold both references (docs/tokenizer.md).
 //
 // And the simpler "chat-v2" template of the community GGUF
@@ -23,7 +23,7 @@
 #include "chat/chat.h"
 #include "chat/writer.h"
 
-namespace jitllm::chat {
+namespace llmp::chat {
 namespace {
 
 constexpr std::string_view kBos = "<｜begin▁of▁sentence｜>";
@@ -385,4 +385,4 @@ std::expected<Rendered, Error> RenderDeepSeekV4ChatV2(const Conversation& c) {
   return w.Finish();
 }
 
-}  // namespace jitllm::chat
+}  // namespace llmp::chat

@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M1 record — Bootstrap
@@ -19,7 +19,7 @@ repository works now. Later corrections go in those documents, not here.
 
 Goal: a reproducible, pinned developer setup and repository skeleton that
 every later milestone builds, tests and packages on, with D-061's local check
-gate in force and the first `jitllm` binary running on a Spark.
+gate in force and the first `llmp` binary running on a Spark.
 
 **Entry:** M0 exited on 2026-09-23.
 
@@ -77,12 +77,12 @@ gate in force and the first `jitllm` binary running on a Spark.
       validates the lock, selects the profile's closure before fetching,
       refuses archives with links or special files, and unpacks through
       FetchContent's script mode with exact patches and a tree digest; and
-      `cmake/JitllmSources.cmake`, which validates the lock again, checks each
+      `cmake/LlmpSources.cmake`, which validates the lock again, checks each
       tree before any third-party CMake runs and on every build, rejects
       unrecorded overrides, dependency providers, declared FetchContent
       population, reserved option names and undeclared `find_package()`
       lookups, refuses a profile without an optional module in a directory
-      that built it, and writes `jitllm-receipt.json`. GoogleTest and gMock
+      that built it, and writes `llmp-receipt.json`. GoogleTest and gMock
       build and pass with `-fno-exceptions` (D-066); `sources.closure` checks
       the compile and link inputs Ninja recorded against the receipt, accepts
       build-tree files only from current build rules and selected components,
@@ -120,7 +120,7 @@ gate in force and the first `jitllm` binary running on a Spark.
       REUSE lint and the embedded-header check joined `check` with License
       and provenance. *Owned elsewhere:* the `.deb`, its install test and
       the package inventory against the receipt, NOTICE and SBOM join
-      `check:full` with the Package item. `jitllm doctor` joined
+      `check:full` with the Package item. `llmp doctor` joined
       `check:spark` with the Smoke binary item. The GPU, VMM, I/O and ARM
       stress suites join it in M2.
 - [x] **License and provenance** (D-017, D-029): `LICENSES/`, REUSE
@@ -132,12 +132,12 @@ gate in force and the first `jitllm` binary running on a Spark.
       every file (headers where the format allows, `.license` sidecars
       otherwise, no `REUSE.toml`) and the root `NOTICE`. `check` gains
       `reuse`, REUSE lint 6.2.0 from hash-pinned wheels in the x86-64 SDK,
-      and `headers` (`tools/jitllm_headers.py`). `headers` checks REUSE's
+      and `headers` (`tools/llmp_headers.py`). `headers` checks REUSE's
       JSON report against each file's own header or sidecar. It fails on a
       commentable file without its own header, on metadata REUSE takes
       from anywhere else, on a misplaced or orphaned sidecar, on a file REUSE
       skips, and on an unclassified file type. The audit is in
-      [licensing.md](licensing.md#what-builds-jitllm), with every locked SDK
+      [licensing.md](licensing.md#what-builds-llmpalooza), with every locked SDK
       artifact, host prerequisite and mise tool recorded in
       `toolchains/provenance.toml` (category, license, what enters a binary,
       the notices that follow), which a test keeps complete. It corrects
@@ -146,11 +146,11 @@ gate in force and the first `jitllm` binary running on a Spark.
       with the new SDK. *Moved to the Package item:* the SBOM and the
       package's third-party notices, since no binary ships before it.
 - [x] **Versioning** (D-062): `project(VERSION)`, the dev-version
-      derivation and its Debian `~` mapping, `jitllm --version` and the
+      derivation and its Debian `~` mapping, `llmp --version` and the
       receipt (version, commit, license profile, SDK identity), a root
       `CHANGELOG.md`, and the version of D-047's opaque reasoning-signature
       representation.
-      *Landed:* `project(VERSION 0.1.0)` and `cmake/JitllmVersion.cmake`,
+      *Landed:* `project(VERSION 0.1.0)` and `cmake/LlmpVersion.cmake`,
       which derives the version at configure and again on every build
       (`cmake/version/`), so a commit needs no fresh configure; the rules
       and their refusals are in [README.md](../README.md#versions). Release
@@ -158,21 +158,21 @@ gate in force and the first `jitllm` binary running on a Spark.
       metadata, such as the reference build's copy, reports
       `X.Y.Z-dev+unknown`, and a shallow clone is refused. The receipt
       gains a `version` object (product and Debian versions, commit,
-      modified state); the first `jitllm` binary (`src/cli/`) has
+      modified state); the first `llmp` binary (`src/cli/`) has
       `--version` and `--help`; `CHANGELOG.md` is seeded; the reasoning
       signature's representation is version 1
       (`src/base/surface_versions.h`), whose contents M3 fixes. `git`
       joins the AArch64 host prerequisites. Tests: `version.derive` on
-      synthetic repositories, `version.jitllm` (`--version` against the
+      synthetic repositories, `version.llmp` (`--version` against the
       receipt and the checkout now) and the binary's link contract, and
       the CLI unit tests.
-- [x] **Smoke binary and capability probe** (D-026): a `jitllm` binary,
+- [x] **Smoke binary and capability probe** (D-026): a `llmp` binary,
       from the cross build and from the native Spark fallback, that runs on
       `spark` over SSH, with a first-cut `doctor` reporting VMM granularity,
       GDS mode, RDMA availability, driver and toolkit versions, glibc and
       ABI, the selected tools and host prerequisites, and any data role
       relocated onto a read-only filesystem (D-063).
-      *Landed (D-072):* `jitllm doctor` reports the build (version, SDK,
+      *Landed (D-072):* `llmp doctor` reports the build (version, SDK,
       target, compiler, C++ runtime), the host (kernel, glibc, page size,
       memory, `fs.protected_hardlinks`), RDMA ports with this user's access
       to their device nodes, the NVIDIA driver (kernel module, library,
@@ -196,11 +196,11 @@ gate in force and the first `jitllm` binary running on a Spark.
       keeps reporting the SDK and the development host's prerequisites.
 - [x] **Package and installed layout** (D-027, D-063): an arm64 `.deb`
       (M1 chooses CPack or debhelper) in the
-      [installed layout](architecture.md#installed-layout): the `jitllm`
-      user; `jitllm.service` with sandboxing that keeps GPU and RDMA device
+      [installed layout](architecture.md#installed-layout): the `llmp`
+      user; `llmp.service` with sandboxing that keeps GPU and RDMA device
       access, and its restart policy; the per-node process lock; core dumps
       off and a non-dumpable process, checked on each host by an abort that
-      leaves no core file or apport report; `/etc/jitllm` and the `/var/lib/jitllm` roles
+      leaves no core file or apport report; `/etc/llmp` and the `/var/lib/llmp` roles
       with their modes. It depends on `libc6` (`GLIBC_2.38`) and a versioned
       `libcuda.so.1` floored at NVIDIA's minimum driver for the pinned
       toolkit. The install test runs in an arm64 container; M1 decides
@@ -212,9 +212,9 @@ gate in force and the first `jitllm` binary running on a Spark.
       settled first.
       *Landed (D-074):* CPack writes
       the `.deb` from the `cross` preset `--locked` (`mise run package`);
-      `jitllm-runtime` (`src/runtime/`) runs the startup order to readiness
+      `llmp-runtime` (`src/runtime/`) runs the startup order to readiness
       with the per-node lock at `<anchor>.lock`; crashes exit through a
-      signal handler instead of dumping; `jitllm.service` with its restart
+      signal handler instead of dumping; `llmp.service` with its restart
       policy, delegation and sandboxing; the sysusers and tmpfiles files;
       the dependencies from the binaries (`libcuda.so.1 (>= 580)`); and the
       notices, Debian copyright file and SPDX SBOM generated from the
@@ -244,16 +244,16 @@ gate in force and the first `jitllm` binary running on a Spark.
       and checks the runtime's roles (modes, owners, aliasing by device and
       inode, ext4/XFS/Btrfs only, D-034's direct-I/O probe on `installed`
       and `spill`, the spill marker) for the runtime to call at startup.
-      `jitllm doctor [--config FILE]` reports the configuration and the
+      `llmp doctor [--config FILE]` reports the configuration and the
       roles, including a role outside the packaged unit's writable
-      `/var/lib/jitllm`. The configuration's `schema_version` joins the
+      `/var/lib/llmp`. The configuration's `schema_version` joins the
       surface versions. *Owned elsewhere:* checks of the credential and
       cluster files on disk, and of enrollment records in `state`, with
       M4a; deleting runtime-named spill files, with M3's spill names.
 - [x] **Confined job proof** ([job rules](architecture.md#import-install-and-archive-jobs)):
       choose the mechanism (a delegated cgroup or a subreaper) together with
       the unit's sandboxing; unprivileged `unshare` and `bwrap` are blocked
-      on these hosts (RE-013). Prove, under the `jitllm` account, containment
+      on these hosts (RE-013). Prove, under the `llmp` account, containment
       of a child that outlives its job, the job lock inherited across exec,
       and correct handling across a runtime restart, before M3 builds the
       importer on it. Any system change the proof needs on a host is the
@@ -268,7 +268,7 @@ gate in force and the first `jitllm` binary running on a Spark.
       that outlives its job, the lock across exec, no inheritance between
       jobs, a restarted runtime, a unit restart, and a confined stage.
       *Verified 2026-09-24* in the workstation user's systemd manager
-      (`check:full` runs it there) and on `spark` as `jitllm` with the
+      (`check:full` runs it there) and on `spark` as `llmp` with the
       service's sandbox settings (`tools/job-proof --host spark`).
 - [x] Update AGENTS.md's repository-layout table as the scaffolding lands.
 

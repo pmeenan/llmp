@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Metadata-only controls: providers/artifact payload are never opened.
@@ -14,7 +14,7 @@
 #include "engine/gemma3_runner.h"
 #include "engine/support.h"
 
-namespace en = jitllm::engine;
+namespace en = llmp::engine;
 TEST(Gemma2Runner, UninitializedLifecycleRefusesWithoutPublishingOrOwningCopies) {
   EXPECT_TRUE(en::Gemma2Options{}.device_masks);
   en::PagedNode node({});
@@ -29,11 +29,11 @@ TEST(Gemma2Runner, UninitializedLifecycleRefusesWithoutPublishingOrOwningCopies)
   EXPECT_FALSE(runner.Held(0));
 }
 TEST(Gemma2Runner, CheckpointFootprintRequiresOrderedWholeExtentsAtRingAndContextBoundaries) {
-  const auto& profile = jitllm::model::Gemma2_2B();
-  auto layout = jitllm::model::Gemma2State(profile, 8192, 128);
+  const auto& profile = llmp::model::Gemma2_2B();
+  auto layout = llmp::model::Gemma2State(profile, 8192, 128);
   ASSERT_TRUE(layout);
   for (const auto positions : {1U, 4096U, 4224U, 4353U, 8192U}) {
-    auto needed = jitllm::model::Gemma2UsedState(profile, *layout, positions);
+    auto needed = llmp::model::Gemma2UsedState(profile, *layout, positions);
     ASSERT_TRUE(needed);
     std::vector<en::LiveState::Range> footprint;
     for (const auto& range : *needed)

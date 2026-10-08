@@ -1,9 +1,9 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # MiMo-V2.6-Flash-RL two-Spark sharded reference
 
-External reference on `spark` and `spark-b` (2026-09-22), not jitLLM
+External reference on `spark` and `spark-b` (2026-09-22), not llmpalooza
 execution, sharding support or a supported model combination. It answers
 the [candidate matrix](../model-candidates.md)'s first MiMo step: a bounded
 text-only sharded boot with per-node physical peaks, weight/state bytes,
@@ -124,7 +124,7 @@ The runner is `lmsysorg/sglang@sha256:9e1fb4c3…` (tag
 MXFP4 MoE path per the recipe): SGLang `0f6761b54`, Transformers 5.12.1,
 PyTorch 2.13.0+cu130, Triton 3.7.1; PyTorch reports NCCL 2.29.7 but the ranks
 loaded NCCL 2.30.7. [`Dockerfile`](Dockerfile) derives
-`jitllm-mimo-reference:20260922` from it by adding hash-pinned `torchcodec`
+`llmp-mimo-reference:20260922` from it by adding hash-pinned `torchcodec`
 0.16.0 ([`requirements-extra.txt`](requirements-extra.txt)); without it the
 engine cannot start this architecture (RE-012). Both boots before the one
 reported here failed at startup, before loading weights, on the missing
@@ -138,7 +138,7 @@ parsing requires `--trust-remote-code`. The executed file,
 audited first: a `PretrainedConfig` subclass importing only `copy` and
 Transformers, with no I/O, network or dynamic execution. Model execution uses
 SGLang's own `mimo_v2` implementation, not the checkpoint's
-`modeling_mimo_v2.py`. This reference exception does not relax jitLLM's rule
+`modeling_mimo_v2.py`. This reference exception does not relax llmpalooza's rule
 that native import never executes checkpoint code.
 
 ## Method
@@ -146,7 +146,7 @@ that native import never executes checkpoint code.
 [`run.py`](run.py) runs from the workstation with [`config.json`](config.json).
 Node names, addresses and interfaces there are this deployment's measured
 inputs (see the [interconnect baseline](../interconnect/README.md)), not
-jitLLM configuration.
+llmpalooza configuration.
 
 - **Preflight:** both nodes idle (no CUDA compute processes) with at least
   100 GiB `MemAvailable`.
@@ -154,7 +154,7 @@ jitLLM configuration.
   each node and kills that node's rank container below 6 GiB. Spark's CUDA
   allocations share host memory and are not bounded by a container cgroup;
   the recipe reports node reboots from exhausted memory. The guard is a
-  harness safety net, not a jitLLM budget mechanism.
+  harness safety net, not a llmpalooza budget mechanism.
 - **Ranks:** one container per node, worker first. Host networking is needed
   for NCCL and the rendezvous on the DAC address; the API binds to head
   loopback only. Containers run as the invoking user with `IPC_LOCK`,
@@ -205,9 +205,9 @@ uses SGLang's default mmap path and speculative decoding stays off.
 
 ```sh
 python3 docs/experiments/hf_fetch.py --pins docs/experiments/mimo-reference/pins.json \
-  --output ~/.local/share/jitllm/mimo-reference/model --jobs 6   # on each node
+  --output ~/.local/share/llmp/mimo-reference/model --jobs 6   # on each node
 sudo -n docker pull lmsysorg/sglang@sha256:9e1fb4c395b9c406136e10aa445b8784d06bca3839623b52cbe4a3b231a157a8
-sudo -n docker build --platform linux/arm64 -t jitllm-mimo-reference:20260922 docs/experiments/mimo-reference   # on each node
+sudo -n docker build --platform linux/arm64 -t llmp-mimo-reference:20260922 docs/experiments/mimo-reference   # on each node
 python3 docs/experiments/mimo-reference/run.py --name RUN --results PRIVATE_DIR   # workstation
 python3 docs/experiments/mimo-reference/summarize.py PRIVATE_DIR/RUN > aggregate.json
 ```

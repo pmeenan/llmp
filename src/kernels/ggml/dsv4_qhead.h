@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_KERNELS_GGML_DSV4_QHEAD_H_
-#define JITLLM_KERNELS_GGML_DSV4_QHEAD_H_
+#ifndef LLMP_KERNELS_GGML_DSV4_QHEAD_H_
+#define LLMP_KERNELS_GGML_DSV4_QHEAD_H_
 
 #include <cstdint>
 #include <expected>
@@ -10,10 +10,10 @@
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 class LaunchContext;
-inline constexpr const char* kDsv4QHeadName = "jitllm.dsv4.qhead";
+inline constexpr const char* kDsv4QHeadName = "llmp.dsv4.qhead";
 
 // Normal RoPE on the last64 values of a512-value head, after unweighted
 // F32 RMSNorm. Parameters are graph-owned values, never device pointers.
@@ -43,6 +43,6 @@ std::expected<void, KernelFailure> CheckDsv4QHead(const ggml_tensor* node);
 // RoPE multiply/FMA ordering are explicit; completion belongs to the caller.
 std::expected<void, KernelFailure> RunDsv4QHead(LaunchContext& launch, ggml_tensor* node);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_DSV4_QHEAD_H_
+#endif  // LLMP_KERNELS_GGML_DSV4_QHEAD_H_

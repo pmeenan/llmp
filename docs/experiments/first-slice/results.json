@@ -124,7 +124,7 @@
     "root_mean_square_logit_difference": 0.015205389032228013,
     "top1_equal_rows": 76,
     "rows": 76,
-    "interpretation": "Observed backend difference; not a jitLLM acceptance tolerance"
+    "interpretation": "Observed backend difference; not a llmpalooza acceptance tolerance"
   },
   "cuda_fusion_control": {
     "recorded_on": "2026-09-22",
@@ -150,7 +150,7 @@
   },
   "limitations": [
     "Single synthetic 76-token trajectory, no long-context or model-quality test.",
-    "External llama.cpp context round trip only; no jitLLM backing, weight eviction, spill format, cancellation or admission validation.",
+    "External llama.cpp context round trip only; no llmpalooza backing, weight eviction, spill format, cancellation or admission validation.",
     "Cross-backend differences are observations, not numerical acceptance tolerances.",
     "An exploratory CUDA-graphs-enabled run also repeated/restored exactly but is not the selected reference profile.",
     "CUDA fusion enabled/disabled arms repeat and restore exactly within each arm but differ from each other; a native comparison must use the arm matching its fused-operation plan."

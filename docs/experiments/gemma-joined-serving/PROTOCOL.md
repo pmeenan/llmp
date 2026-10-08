@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Bounded Gemma joined-serving diagnostic
@@ -95,7 +95,7 @@ paid time. This bounded natural-prefix screen is still not corpus PPL.
 C4 uses one native shared group; C12 uses 8+4, while the stock comparator
 executes all twelve independent sequence rows in one batch.
 
-The dedicated `jitllm_gemma_joined_http` executable uses the ordinary runtime
+The dedicated `llmp_gemma_joined_http` executable uses the ordinary runtime
 startup and HTTP serving implementation, selecting only these two internal
 Gemma diagnostics in a local command copy. Its production counterpart keeps
 them false. `http_control.py` compares same-policy own solo outputs with
@@ -121,7 +121,7 @@ Fresh-location approved payload transfers were supervised and destination
 verified before atomic publication. They were coordinated outside measurements.
 
 Use the declared Spark-native locked build and installed GPU supervisor for
-each bounded job. `jitllm_gemma_joined ARTIFACT OUTDIR 26|31 OWNERS
+each bounded job. `llmp_gemma_joined ARTIFACT OUTDIR 26|31 OWNERS
 scalar|joined ordinary|rows [IDS_I32]` acquires native outputs. For each axis
 acquire ordinary, row-policy scalar-a, joined-first, joined-repeat, scalar-b,
 then freeze before any oracle with `analyze.py freeze AXIS OWNERS`.

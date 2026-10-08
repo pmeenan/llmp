@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Python's str case operations, exactly as CPython 3.12 performs them on
@@ -15,15 +15,15 @@
 // Each operation is linear in the text; a mapping is at most three code
 // points, so the output is at most three times the input.
 
-#ifndef JITLLM_CHAT_PYCASE_H_
-#define JITLLM_CHAT_PYCASE_H_
+#ifndef LLMP_CHAT_PYCASE_H_
+#define LLMP_CHAT_PYCASE_H_
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
 
-namespace jitllm::chat {
+namespace llmp::chat {
 
 enum class CaseOp : std::uint8_t {
   kUpper,       // str.upper()
@@ -62,6 +62,6 @@ std::string PythonCase(std::string_view text, CaseOp op);
 bool PythonIsLower(std::string_view text);
 bool PythonIsUpper(std::string_view text);
 
-}  // namespace jitllm::chat
+}  // namespace llmp::chat
 
-#endif  // JITLLM_CHAT_PYCASE_H_
+#endif  // LLMP_CHAT_PYCASE_H_

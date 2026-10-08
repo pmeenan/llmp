@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/gemma_profile.h"
@@ -10,9 +10,9 @@
 #include "gemma4_fixture.h"
 
 namespace {
-namespace rt = jitllm::runtime;
-namespace md = jitllm::model;
-namespace fixture = jitllm::test_support::gemma4;
+namespace rt = llmp::runtime;
+namespace md = llmp::model;
+namespace fixture = llmp::test_support::gemma4;
 TEST(GemmaServingProfile, ClosedCandidateRequiresTheCompleteApprovedBinding) {
   for (const auto size : {26U, 31U}) {
     const auto& p = size == 26 ? md::Gemma4_26BA4B() : md::Gemma4_31B();

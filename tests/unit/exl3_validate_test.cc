@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The EXL3 launchers' host checks (src/kernels/exl3/validate.h) and
@@ -23,9 +23,9 @@
 
 namespace {
 
-namespace exl3 = jitllm::kernels::exl3;
+namespace exl3 = llmp::kernels::exl3;
 using exl3::Output;
-using jitllm::test_support::FailedCode;
+using llmp::test_support::FailedCode;
 
 constexpr std::uint64_t kMiB = 1ULL << 20;
 

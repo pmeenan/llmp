@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Private, CPU-only preparation and scoring for three fixed synthetic
 // long-context tasks and one separately judged code-review prompt.
-#ifndef JITLLM_BENCHMARKS_LONG_CONTEXT_TASKS_H_
-#define JITLLM_BENCHMARKS_LONG_CONTEXT_TASKS_H_
+#ifndef LLMP_BENCHMARKS_LONG_CONTEXT_TASKS_H_
+#define LLMP_BENCHMARKS_LONG_CONTEXT_TASKS_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -14,7 +14,7 @@
 #include <string_view>
 #include <vector>
 
-namespace jitllm::benchmarks::long_context {
+namespace llmp::benchmarks::long_context {
 
 inline constexpr std::uint32_t kSeed = 42;
 inline constexpr std::uint32_t kChunkRows = 2048;
@@ -94,5 +94,5 @@ std::expected<std::vector<std::int32_t>, std::string> ParseStopIds(std::string_v
                                                                    std::uint32_t vocab);
 bool IsStop(std::span<const std::int32_t> stops, std::int32_t token);
 
-}  // namespace jitllm::benchmarks::long_context
-#endif  // JITLLM_BENCHMARKS_LONG_CONTEXT_TASKS_H_
+}  // namespace llmp::benchmarks::long_context
+#endif  // LLMP_BENCHMARKS_LONG_CONTEXT_TASKS_H_

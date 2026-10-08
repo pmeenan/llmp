@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The node's one reclaim order (D-055 as amended 2026-10-02,
@@ -32,8 +32,8 @@
 //
 // Vendor-free and host-only: the CPU tests hold the order.
 
-#ifndef JITLLM_MEMORY_RECLAIM_H_
-#define JITLLM_MEMORY_RECLAIM_H_
+#ifndef LLMP_MEMORY_RECLAIM_H_
+#define LLMP_MEMORY_RECLAIM_H_
 
 #include <array>
 #include <chrono>
@@ -45,7 +45,7 @@
 #include <string_view>
 #include <vector>
 
-namespace jitllm::memory {
+namespace llmp::memory {
 
 // The chance of reuse halves with every reclaim since a candidate's last
 // use and with every this many seconds idle (ReclaimPriority).
@@ -179,6 +179,6 @@ ReclaimRun RunReclaim(std::uint64_t needed, bool partial, const GatherReclaim& g
 // keeps nothing.
 void ProtectFloor(std::vector<ReclaimCandidate>& candidates, std::uint64_t floor_bytes);
 
-}  // namespace jitllm::memory
+}  // namespace llmp::memory
 
-#endif  // JITLLM_MEMORY_RECLAIM_H_
+#endif  // LLMP_MEMORY_RECLAIM_H_

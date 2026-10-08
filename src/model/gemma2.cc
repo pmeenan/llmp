@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/gemma2.h"
@@ -18,7 +18,7 @@
 #include "base/sha256.h"
 #include "model/host_mask.h"
 
-namespace jitllm::model {
+namespace llmp::model {
 namespace {
 // Every multiplication follows equality with the closed, bounded profile.
 // Keep the existing artifact's 512-element quantized over-read contract:
@@ -436,4 +436,4 @@ std::expected<std::vector<StateRange>, std::string> Gemma2ChunkWrites(const Gemm
   }
   return out;
 }
-}  // namespace jitllm::model
+}  // namespace llmp::model

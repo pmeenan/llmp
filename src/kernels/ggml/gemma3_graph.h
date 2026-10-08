@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Descriptor-only Gemma3 chunks. Products share columns; each segment has
 // independent positions, causal/window masks and cache roots. No runner.
-#ifndef JITLLM_KERNELS_GGML_GEMMA3_GRAPH_H_
-#define JITLLM_KERNELS_GGML_GEMMA3_GRAPH_H_
+#ifndef LLMP_KERNELS_GGML_GEMMA3_GRAPH_H_
+#define LLMP_KERNELS_GGML_GEMMA3_GRAPH_H_
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -17,7 +17,7 @@
 #include "kernels/ggml/tensors.h"
 #include "model/gemma3.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 struct Gemma3SegmentShape {
   std::uint32_t slot = 0, rows = 0, n_past = 0, global_n_kv = 0, local_n_kv = 0;
   // Fresh positions/cells/masks are inputs, not cache-key dimensions. Equal
@@ -105,5 +105,5 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(
     const model::Gemma3StateLayout& state, const Gemma3ChunkShape& shape,
     const Gemma3GraphOptions& options = {},
     const std::function<bool(ggml_type, std::int64_t)>& dense_mmvq_shape = {});
-}  // namespace jitllm::kernels::ggml
-#endif  // JITLLM_KERNELS_GGML_GEMMA3_GRAPH_H_
+}  // namespace llmp::kernels::ggml
+#endif  // LLMP_KERNELS_GGML_GEMMA3_GRAPH_H_

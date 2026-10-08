@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Additional M4 references
@@ -7,7 +7,7 @@ The owner added [Kindling's GLM-5.3 Flash GB10 recipe](https://github.com/kindli
 on 2026-09-29. HEAD observed with `git ls-remote` is
 `1a2d38af4561c52f274c15f39ddfd62d757a2cfa`; re-pin and audit at M4 entry,
 alongside Mia's recipe. This is an additional baseline candidate and
-technique source, not a measured jitLLM result or a change to M4's EXL3 target.
+technique source, not a measured llmpalooza result or a change to M4's EXL3 target.
 
 Its [README](https://github.com/kindlingai/glm-5.3-flash-gx10/blob/1a2d38af4561c52f274c15f39ddfd62d757a2cfa/README.md)
 reports TP2 on NVIDIA's NVFP4 checkpoint: cold prefill 2,929 / 2,864 tok/s
@@ -30,7 +30,7 @@ subject to the actual files' licenses and D-053/D-080.
 The headline configuration also requantizes checkpoint BF16 dense layers
 to FP8/NVFP4; its README reports about 1% prose NLL cost. Under D-085,
 measure that separately as a quality/performance mode, off by default
-in jitLLM. Compare configurations with their dense-layer precision stated.
+in llmpalooza. Compare configurations with their dense-layer precision stated.
 At M4 entry, record the image and checkpoint pins, overlay flags, topology,
 memory, prompts, reasoning mode, warmup and restart conditions, and run
 the same two-node workload ourselves before making performance claims.

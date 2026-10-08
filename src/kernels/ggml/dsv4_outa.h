@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_KERNELS_GGML_DSV4_OUTA_H_
-#define JITLLM_KERNELS_GGML_DSV4_OUTA_H_
+#ifndef LLMP_KERNELS_GGML_DSV4_OUTA_H_
+#define LLMP_KERNELS_GGML_DSV4_OUTA_H_
 
 #include <cstdint>
 #include <expected>
@@ -10,12 +10,12 @@
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 class LaunchContext;
-inline constexpr const char* kDsv4OutAName = "jitllm.dsv4.outa_prefill";
+inline constexpr const char* kDsv4OutAName = "llmp.dsv4.outa_prefill";
 // Experimental: the same, with a coalesced weight repack (identical bytes).
-inline constexpr const char* kDsv4OutAFastPackName = "jitllm.dsv4.outa_prefill_fastpack";
+inline constexpr const char* kDsv4OutAFastPackName = "llmp.dsv4.outa_prefill_fastpack";
 
 struct Dsv4OutAParams {
   std::int32_t original_context = 0;
@@ -52,6 +52,6 @@ std::expected<std::uint64_t, KernelFailure> PlanDsv4OutA(const LaunchContext& la
 std::expected<void, KernelFailure> RunDsv4OutA(LaunchContext& launch, ggml_tensor* node,
                                                bool fast_pack = false);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_DSV4_OUTA_H_
+#endif  // LLMP_KERNELS_GGML_DSV4_OUTA_H_

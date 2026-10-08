@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/gemma_moe.h"
@@ -9,7 +9,7 @@
 
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 // Original launchers narrow expert/token offsets and grid counts to int.
 // The fixed shape ceiling proves their largest linear element offset fits,
@@ -98,4 +98,4 @@ std::expected<void, KernelFailure> CheckGemmaScaledReduction(const GemmaScaledRe
       return detail::Rejected("Gemma scaled reduction output overlaps an input");
   return {};
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

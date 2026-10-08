@@ -1,15 +1,15 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Shared by the JSON, tokenizer and chat tests: the fixtures under
-// tests/unit/data (copied into the build tree, JITLLM_TEST_DATA), the model
-// files on a Spark (JITLLM_TEST_MODELS, or ~/.local/share/jitllm), reading
+// tests/unit/data (copied into the build tree, LLMP_TEST_DATA), the model
+// files on a Spark (LLMP_TEST_MODELS, or ~/.local/share/llmp), reading
 // fixture JSON, and conversations read from a chat fixture. The fixtures
 // are this repository's own files: one that is missing or malformed ends
 // the test binary with its name, rather than failing test by test.
 
-#ifndef JITLLM_TESTS_UNIT_TOKENIZER_FIXTURES_H_
-#define JITLLM_TESTS_UNIT_TOKENIZER_FIXTURES_H_
+#ifndef LLMP_TESTS_UNIT_TOKENIZER_FIXTURES_H_
+#define LLMP_TESTS_UNIT_TOKENIZER_FIXTURES_H_
 
 #include <cstdint>
 #include <cstdio>
@@ -27,7 +27,7 @@
 #include "base/json.h"
 #include "chat/chat.h"
 
-namespace jitllm::test_support {
+namespace llmp::test_support {
 
 [[noreturn]] inline void BadFixture(std::string_view what) {
   std::println(stderr, "test fixture: {}", what);
@@ -35,17 +35,17 @@ namespace jitllm::test_support {
 }
 
 inline std::string DataDir() {
-  const char* dir = std::getenv("JITLLM_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
+  const char* dir = std::getenv("LLMP_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
   return dir != nullptr ? dir : "";
 }
 
 inline std::string ModelsDir() {
   // NOLINTNEXTLINE(concurrency-mt-unsafe): tests read, never set, the environment
-  if (const char* dir = std::getenv("JITLLM_TEST_MODELS"); dir != nullptr) {
+  if (const char* dir = std::getenv("LLMP_TEST_MODELS"); dir != nullptr) {
     return dir;
   }
   const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
-  return home != nullptr ? std::string(home) + "/.local/share/jitllm" : "";
+  return home != nullptr ? std::string(home) + "/.local/share/llmp" : "";
 }
 
 inline std::optional<std::string> ReadFile(const std::string& path,
@@ -176,6 +176,6 @@ inline chat::Conversation ConversationFrom(base::json::Value c,
   return conv;
 }
 
-}  // namespace jitllm::test_support
+}  // namespace llmp::test_support
 
-#endif  // JITLLM_TESTS_UNIT_TOKENIZER_FIXTURES_H_
+#endif  // LLMP_TESTS_UNIT_TOKENIZER_FIXTURES_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/gemma3_graph.h"
@@ -14,15 +14,14 @@
 #include "expected_error.h"
 #include "gemma3_fixture.h"
 #include "kernels/ggml/fattn_owner.h"
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 
 namespace {
-namespace md = jitllm::model;
-namespace kg = jitllm::kernels::ggml;
+namespace md = llmp::model;
+namespace kg = llmp::kernels::ggml;
 struct Case {
   const md::Gemma3Profile& p = md::Gemma3_4BQat();
-  md::Gemma3Binding binding =
-      *md::BindGemma3(p, "gemma3", jitllm::test_support::gemma3::Resources());
+  md::Gemma3Binding binding = *md::BindGemma3(p, "gemma3", llmp::test_support::gemma3::Resources());
   md::Gemma3StateLayout state = *md::Gemma3State(p, 4096, 16);
   kg::Gemma3ChunkShape shape{{{3, 3, 1279, 1536, 1280}, {1, 1, 7, 256, 256}}, 2};
 };
@@ -60,22 +59,22 @@ TEST(Gemma3Graph, SharedQ8UsesOriginalDeviceSelectorThroughEightAndPreservesFall
         ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
         std::size_t products = 0, prepared = 0, owners = 0, glus = 0;
         for (const auto* t : graph->nodes) {
-          const auto op = kg::JitllmOpOf(t);
-          if (op == kg::JitllmOp::kMmvqPrepared) {
+          const auto op = kg::LlmpOpOf(t);
+          if (op == kg::LlmpOp::kMmvqPrepared) {
             ++products;
             ASSERT_EQ(t->src[2], t->src[1]->src[0]);
             EXPECT_EQ(t->ne[1], columns);
             EXPECT_EQ(t->src[2]->ne[1], columns);
           }
-          prepared += op == kg::JitllmOp::kQuantizeQ8;
-          owners += op == kg::JitllmOp::kFlashAttnOwners;
+          prepared += op == kg::LlmpOp::kQuantizeQ8;
+          owners += op == kg::LlmpOp::kFlashAttnOwners;
           if (t->op == GGML_OP_GLU) {
             ++glus;
             for (const auto* source : {t->src[0], t->src[1]})
-              EXPECT_EQ(kg::JitllmOpOf(source),
+              EXPECT_EQ(kg::LlmpOpOf(source),
                         enabled && selector_mode == 2 && columns > 1 && columns <= 8
-                            ? kg::JitllmOp::kMmvqPrepared
-                            : kg::JitllmOp::kNone);
+                            ? kg::LlmpOp::kMmvqPrepared
+                            : kg::LlmpOp::kNone);
           }
         }
         const bool selected = enabled && selector_mode == 2 && columns <= 8;
@@ -241,12 +240,12 @@ TEST(Gemma3Graph, ExplicitC2OwnerDecodeViewsQAndJoinsMasksWithoutJoiningCacheRoo
   auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
   ASSERT_TRUE(arena);
   auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape, options);
-  ASSERT_TRUE(graph) << *jitllm::test_support::Failed(graph, &kg::KernelFailure::detail);
+  ASSERT_TRUE(graph) << *llmp::test_support::Failed(graph, &kg::KernelFailure::detail);
   EXPECT_EQ(Count(*graph, GGML_OP_FLASH_ATTN_EXT), 0);
   EXPECT_EQ(Count(*graph, GGML_OP_SET_ROWS), 136);
   std::size_t owners = 0;
   for (const auto* node : graph->nodes) {
-    if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+    if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
     ++owners;
     EXPECT_EQ(node->src[0]->op, GGML_OP_PERMUTE);
     EXPECT_EQ(node->src[0]->ne[0], 256);
@@ -255,8 +254,8 @@ TEST(Gemma3Graph, ExplicitC2OwnerDecodeViewsQAndJoinsMasksWithoutJoiningCacheRoo
     EXPECT_EQ(node->src[1]->op, GGML_OP_CONCAT);
     EXPECT_NE(node->src[2]->view_src, node->src[3]->view_src);
     EXPECT_NE(node->src[6]->view_src, node->src[7]->view_src);
-    EXPECT_EQ(kg::JitllmOpInt(node, 0), 2);
-    EXPECT_EQ(kg::JitllmOpInt(node, 1), 2);
+    EXPECT_EQ(kg::LlmpOpInt(node, 0), 2);
+    EXPECT_EQ(kg::LlmpOpInt(node, 1), 2);
   }
   EXPECT_EQ(owners, 34);
   options.first_layer = 1;
@@ -286,19 +285,19 @@ TEST(Gemma3Graph, ThreeAndFourOwnerDecodeKeepIndependentRootsAndPairPrefillCapac
     auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, count));
     ASSERT_TRUE(arena);
     auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape, options);
-    ASSERT_TRUE(graph) << *jitllm::test_support::Failed(graph, &kg::KernelFailure::detail);
+    ASSERT_TRUE(graph) << *llmp::test_support::Failed(graph, &kg::KernelFailure::detail);
     EXPECT_EQ(Count(*graph, GGML_OP_FLASH_ATTN_EXT), 0U);
     EXPECT_EQ(Count(*graph, GGML_OP_SET_ROWS), 68U * count);
     std::size_t owners = 0;
     for (const auto* node : graph->nodes) {
-      if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+      if (kg::LlmpOpOf(node) != kg::LlmpOp::kFlashAttnOwners) continue;
       ++owners;
       EXPECT_EQ(node->src[0]->ne[3], count);
       EXPECT_EQ(node->src[1]->ne[3], count);
-      EXPECT_EQ(kg::JitllmOpInt(node, 0), count);
-      EXPECT_EQ(kg::JitllmOpInt(node, 1), count == 4 ? 0 : 3);  // Canonical full-root encoding.
-      EXPECT_EQ(kg::JitllmOpInt(node, 3), 0);
-      EXPECT_EQ(kg::JitllmOpInt(node, 4), 0);  // C3/C4 never request bounded-root specialization.
+      EXPECT_EQ(kg::LlmpOpInt(node, 0), count);
+      EXPECT_EQ(kg::LlmpOpInt(node, 1), count == 4 ? 0 : 3);  // Canonical full-root encoding.
+      EXPECT_EQ(kg::LlmpOpInt(node, 3), 0);
+      EXPECT_EQ(kg::LlmpOpInt(node, 4), 0);  // C3/C4 never request bounded-root specialization.
       for (std::size_t i = 0; i < count; ++i)
         for (std::size_t j = i + 1; j < count; ++j) {
           EXPECT_NE(node->src[2 + i]->view_src, node->src[2 + j]->view_src);
@@ -320,7 +319,7 @@ TEST(Gemma3Graph, ActualArithmeticUsesRawVDirectNormAndPerLayerRopeThenQueryScal
   auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
   ASSERT_TRUE(arena);
   auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape);
-  ASSERT_TRUE(graph) << *jitllm::test_support::Failed(graph, &kg::KernelFailure::detail);
+  ASSERT_TRUE(graph) << *llmp::test_support::Failed(graph, &kg::KernelFailure::detail);
   EXPECT_EQ(graph->weights.size(), 444);
   EXPECT_EQ(graph->logits->ne[0], c.p.vocab);
   EXPECT_EQ(graph->logits->ne[1], 2);
@@ -375,7 +374,7 @@ TEST(Gemma3Graph, StateOnlyRetainsAllWritesAndNarrowingKeepsFullFinalAttention) 
   auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
   ASSERT_TRUE(arena);
   auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape);
-  ASSERT_TRUE(graph) << *jitllm::test_support::Failed(graph, &kg::KernelFailure::detail);
+  ASSERT_TRUE(graph) << *llmp::test_support::Failed(graph, &kg::KernelFailure::detail);
   EXPECT_EQ(graph->hidden, nullptr);
   EXPECT_EQ(graph->logits, nullptr);
   EXPECT_EQ(graph->Named("blk.33.q_rope"), nullptr);
@@ -388,7 +387,7 @@ TEST(Gemma3Graph, StateOnlyRetainsAllWritesAndNarrowingKeepsFullFinalAttention) 
   c.shape.outputs = 2;
   c.shape.output_mode = kg::Gemma3OutputMode::kHead;
   graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape, {.narrow_final = true});
-  ASSERT_TRUE(graph) << *jitllm::test_support::Failed(graph, &kg::KernelFailure::detail);
+  ASSERT_TRUE(graph) << *llmp::test_support::Failed(graph, &kg::KernelFailure::detail);
   EXPECT_EQ(graph->Named("blk.33.q_rope")->ne[2], 4);
   EXPECT_EQ(graph->Named("blk.33.attn_projection")->ne[1], 4);
   EXPECT_EQ(graph->Named("blk.33.output")->ne[1], 2);
@@ -409,8 +408,8 @@ TEST(Gemma3Graph, GreedyFrontiersHaveDistinctShapeAndKeptArgmaxDescriptor) {
   EXPECT_EQ(graph->greedy->type, GGML_TYPE_I32);
   EXPECT_EQ(graph->greedy->ne[0], 2);
   EXPECT_EQ(graph->greedy->src[0], graph->logits);
-  EXPECT_EQ(kg::JitllmOpOf(graph->greedy), kg::JitllmOp::kArgmax);
-  EXPECT_EQ(kg::JitllmOpInt(graph->greedy, 1),
+  EXPECT_EQ(kg::LlmpOpOf(graph->greedy), kg::LlmpOp::kArgmax);
+  EXPECT_EQ(kg::LlmpOpInt(graph->greedy, 1),
             static_cast<std::int32_t>(kg::ArgmaxFlavor::kHostGreedy));
   EXPECT_EQ(graph->nodes.back(), graph->greedy);
   auto malformed = c.shape;

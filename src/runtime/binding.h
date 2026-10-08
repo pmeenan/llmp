@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Where the chat route listens and which names reach it (D-097 as the
@@ -19,8 +19,8 @@
 // loopback nor the tailnet is served without it, and the resolution says
 // so for the start log.
 
-#ifndef JITLLM_RUNTIME_BINDING_H_
-#define JITLLM_RUNTIME_BINDING_H_
+#ifndef LLMP_RUNTIME_BINDING_H_
+#define LLMP_RUNTIME_BINDING_H_
 
 #include <array>
 #include <cstdint>
@@ -33,7 +33,7 @@
 #include "config/node_config.h"
 #include "platform/interfaces.h"
 
-namespace jitllm::runtime::api {
+namespace llmp::runtime::api {
 
 // Whether a Host header names a loopback address or localhost (any port).
 bool IsLoopbackHost(std::string_view host);
@@ -97,6 +97,6 @@ Listening ResolveListening(const config::ClientConfig& client,
                            const std::vector<platform::InterfaceAddress>& addresses,
                            std::string_view hostname, const ReverseLookup& reverse);
 
-}  // namespace jitllm::runtime::api
+}  // namespace llmp::runtime::api
 
-#endif  // JITLLM_RUNTIME_BINDING_H_
+#endif  // LLMP_RUNTIME_BINDING_H_

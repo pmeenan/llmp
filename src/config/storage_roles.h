@@ -1,17 +1,17 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The storage roles on the filesystem (D-054, D-055, D-063): what the
 // runtime checks, and creates when missing, before it uses its own three
-// roles (installed, spill and state), and what `jitllm doctor` reports
+// roles (installed, spill and state), and what `llmp doctor` reports
 // about them without changing anything.
 //
 // The runtime opens only its own roles. It compares the job-only paths
 // (checkpoints, archive and long_term) with its resolved roles by text
 // alone, so that a hung mount cannot stall startup.
 
-#ifndef JITLLM_CONFIG_STORAGE_ROLES_H_
-#define JITLLM_CONFIG_STORAGE_ROLES_H_
+#ifndef LLMP_CONFIG_STORAGE_ROLES_H_
+#define LLMP_CONFIG_STORAGE_ROLES_H_
 
 #include <sys/types.h>
 
@@ -24,11 +24,11 @@
 #include "base/report.h"
 #include "config/node_config.h"
 
-namespace jitllm::config {
+namespace llmp::config {
 
 // The spill directory's marker file (D-055): startup refuses a non-empty
 // spill directory without it.
-inline constexpr std::string_view kSpillMarker = ".jitllm-spill";
+inline constexpr std::string_view kSpillMarker = ".llmp-spill";
 
 struct RuntimeRoles {
   // Each role resolved, with links followed.
@@ -62,6 +62,6 @@ std::expected<RuntimeRoles, std::vector<std::string>> PrepareRuntimeRoles(
 void DescribeStorage(const Storage& storage, uid_t trusted,
                      const std::filesystem::path& writable_under, base::Report& report);
 
-}  // namespace jitllm::config
+}  // namespace llmp::config
 
-#endif  // JITLLM_CONFIG_STORAGE_ROLES_H_
+#endif  // LLMP_CONFIG_STORAGE_ROLES_H_

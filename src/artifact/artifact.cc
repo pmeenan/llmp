@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The checks follow docs/experiments/artifact-layout/layout.py's _verify
@@ -45,7 +45,7 @@
 #include "platform/files.h"
 #include "platform/path_trust.h"
 
-namespace jitllm::artifact {
+namespace llmp::artifact {
 
 FileDescriptor& FileDescriptor::operator=(FileDescriptor&& other) noexcept {
   if (this != &other) {
@@ -396,7 +396,7 @@ class Opener {
     const json::Value m = manifest_.root();
     const auto format = m.find("format");
     if (!m.is_object() || !format || !schema::IsString(*format, kManifestFormat)) {
-      return Fail(Rule::kFormat, "not a jitLLM artifact");
+      return Fail(Rule::kFormat, "not a llmpalooza artifact");
     }
     const auto version = m.find("format_version");
     if (!version || !schema::IsInt(*version, 0)) {
@@ -1713,4 +1713,4 @@ std::expected<std::string, Error> Artifact::ReadMetadata(std::string_view name) 
   return bytes;
 }
 
-}  // namespace jitllm::artifact
+}  // namespace llmp::artifact

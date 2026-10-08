@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 #
 # Runs one of the GGML operation study's scripts (ggml_ops_capture.py,
@@ -25,4 +25,4 @@ exec sudo -n docker run --rm --gpus all --shm-size 2g --memory 32g --memory-swap
   -e CXX=/experiment/cxx-target -e CUDAHOSTCXX=/experiment/cxx-target \
   -e CUDA_DISABLE_PTX_JIT=1 -e OMP_NUM_THREADS=4 -e HOME=/tmp \
   ${TUNE:+-e EXLLAMAV3_TUNE_CACHE=/p0/exl3/$TUNE} \
-  ${DOCKER_EXTRA:-} --entrypoint python3 jitllm-exl3-reference:20260922 "/p0/harness/$script" "$@"
+  ${DOCKER_EXTRA:-} --entrypoint python3 llmp-exl3-reference:20260922 "/p0/harness/$script" "$@"

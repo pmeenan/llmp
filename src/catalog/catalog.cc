@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "catalog/catalog.h"
@@ -15,7 +15,7 @@
 #include "base/bytes.h"
 #include "base/check.h"
 
-namespace jitllm::catalog {
+namespace llmp::catalog {
 namespace {
 
 Bytes Add(Bytes a, Bytes b) {
@@ -664,4 +664,4 @@ std::vector<std::pair<ExtentId, ExtentView>> Catalog::ExtentsOf(DomainId domain)
   return out;
 }
 
-}  // namespace jitllm::catalog
+}  // namespace llmp::catalog

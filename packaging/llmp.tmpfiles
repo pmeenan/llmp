@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# The data directory and the default checkpoint store (D-063). Installed as
+# /usr/lib/tmpfiles.d/llmp.conf. No age, so nothing here is ever cleaned.
+# The checkpoint store's mode and owner apply only when it is created (":").
+d /var/lib/llmp 0755 llmp llmp -
+d /var/lib/llmp/checkpoints :1777 :llmp :llmp -

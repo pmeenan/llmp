@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A coalesced wake flag for one owner thread (D-048,
@@ -25,8 +25,8 @@
 // is a hint about when to poll, never a publication: the owner still
 // learns what happened only from what producers published and signalled.
 
-#ifndef JITLLM_BASE_WAKE_H_
-#define JITLLM_BASE_WAKE_H_
+#ifndef LLMP_BASE_WAKE_H_
+#define LLMP_BASE_WAKE_H_
 
 #include <algorithm>
 #include <array>
@@ -39,7 +39,7 @@
 #include <mutex>
 #include <optional>
 
-namespace jitllm::base {
+namespace llmp::base {
 
 class WakeFlag {
  public:
@@ -143,6 +143,6 @@ class Expectation {
   std::size_t next_ = 0;
 };
 
-}  // namespace jitllm::base
+}  // namespace llmp::base
 
-#endif  // JITLLM_BASE_WAKE_H_
+#endif  // LLMP_BASE_WAKE_H_

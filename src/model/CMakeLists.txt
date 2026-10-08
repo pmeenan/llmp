@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 # The model layer's adapters (docs/architecture.md#layers-and-dependency-rules):
@@ -12,7 +12,7 @@
 # (gemma4.h) for M3.5, plus the Gemma 3 and Gemma 2 legacy tensor foundations (gemma3.h, gemma2.h).
 # Model layer: no vendor or kernel-module types, and
 # the resource core never includes it.
-add_library(jitllm_model STATIC context.cc dspark.cc dsv4.cc gemma2.cc gemma3.cc gemma4.cc gemma4_assistant.cc qwen2.cc qwen2_exl3.cc qwen38.cc
+add_library(llmp_model STATIC context.cc dspark.cc dsv4.cc gemma2.cc gemma3.cc gemma4.cc gemma4_assistant.cc qwen2.cc qwen2_exl3.cc qwen38.cc
                                 qwen_image.cc state.cc)
-target_include_directories(jitllm_model PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(jitllm_model PUBLIC jitllm_base jitllm_catalog PRIVATE jitllm_artifact jitllm_warnings)
+target_include_directories(llmp_model PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(llmp_model PUBLIC llmp_base llmp_catalog PRIVATE llmp_artifact llmp_warnings)

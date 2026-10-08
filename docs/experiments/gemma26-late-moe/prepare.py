@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Authenticate actual compiled identities without rescanning model payloads."""
 import datetime
@@ -27,8 +27,8 @@ def main():
         raise ValueError('SOURCE_SNAPSHOT NEW_PRE_CAPTURE_RECEIPT')
     source_manifest, output = map(pathlib.Path, sys.argv[1:])
     home = pathlib.Path.home()
-    source = home / 'src/jitLLM-wt/m3fixb'
-    root = home / '.local/share/jitllm/gemma26-late-moe'
+    source = home / 'src/llmp-wt/m3fixb'
+    root = home / '.local/share/llmp/gemma26-late-moe'
     declared = json.loads(source_manifest.read_text())
     if declared['base'] != snapshot['BASE'] or len(declared['files']) > 5000:
         raise ValueError('wrong source declaration')
@@ -58,22 +58,22 @@ def main():
     retired = json.loads((root / 'build-container-retired.json').read_text())
     cid = (root / 'build.cid').read_text().strip()
     if not re.fullmatch(r'[0-9a-f]{64}', cid) or retired != {
-            'cid': cid, 'name': 'jitllm-gemma26-late-moe-build', 'owner_label': 'gemma26-late-moe',
+            'cid': cid, 'name': 'llmp-gemma26-late-moe-build', 'owner_label': 'gemma26-late-moe',
             'container_absent_after_checked_docker_query': True}:
         raise ValueError('build container not retired')
-    sdk = home / '.local/share/jitllm/sdk/aarch64-c09daba6ac31edee/sdk.json'
-    artifact = home / '.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3'
+    sdk = home / '.local/share/llmp/sdk/aarch64-c09daba6ac31edee/sdk.json'
+    artifact = home / '.local/share/llmp/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3'
     metadata = {name: record(artifact / name) for name in ('manifest.json', 'index.json')}
     if metadata['manifest.json']['sha256'] != artifact.name or metadata['index.json']['sha256'] != \
             'e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171':
         raise ValueError('approved artifact metadata differs')
-    raw = home / '.local/share/jitllm/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf'
+    raw = home / '.local/share/llmp/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf'
     if raw.stat().st_size != 16947541728:
         raise ValueError('approved raw size differs')
     files = sorted(p for p in (root / 'ggml').rglob('*') if p.is_file())
     if len(files) > 5000 or sum(p.stat().st_size for p in files) > (256 << 20):
         raise ValueError('unbounded original header/source closure')
-    previous = home / '.local/share/jitllm/gemma26-packed-attention-c4'
+    previous = home / '.local/share/llmp/gemma26-packed-attention-c4'
     old = json.loads((tool.parent / 'gemma26-packed-attention-c4/provenance.json').read_text())
     header_records = {}
     for expected in old['original_public_headers']:
@@ -108,8 +108,8 @@ def main():
               'source_files': declared['files'], 'generated': record(root / 'controller.cu'),
               'controller_library': record(root / 'controller.so'),
               'capture_client': record(root / 'capture-client'), 'original_operator_client': record(root / 'oracle'),
-              'native_operator_client': record(source / 'build/spark-native/benchmarks/jitllm_gemma26_late_moe'),
-              'native_build_receipt': record(source / 'build/spark-native/jitllm-receipt.json'),
+              'native_operator_client': record(source / 'build/spark-native/benchmarks/llmp_gemma26_late_moe'),
+              'native_build_receipt': record(source / 'build/spark-native/llmp-receipt.json'),
               'native_compile_commands': record(source_flags),
               'native_defining_translation_units': defining, 'actual_C_API_headers': actual_headers,
               'sdk_receipt': record(sdk), 'original_libraries': libs,

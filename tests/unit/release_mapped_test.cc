@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // ReleaseMapped (engine/paged_node.h) over fake device memory: a region
@@ -22,7 +22,7 @@
 #include "expected_error.h"
 #include "providers/fake/fake_device_memory.h"
 
-namespace jitllm::scheduler {
+namespace llmp::scheduler {
 struct SchedulerPlacementTestAccess {
   static std::uint64_t Token(std::atomic<std::uint64_t>& next) {
     return Scheduler::TakePlacementInstance(next);
@@ -34,9 +34,9 @@ struct SchedulerPlacementTestAccess {
     scheduler.placement_stamp_.instance = value;
   }
 };
-}  // namespace jitllm::scheduler
+}  // namespace llmp::scheduler
 
-namespace jitllm::engine {
+namespace llmp::engine {
 struct LiveStatePlacementTestAccess {
   static void Expected(LiveState& state, catalog::ExtentId extent,
                        const scheduler::PageSource& source) {
@@ -69,36 +69,36 @@ struct PagedWeightsTestAccess {
     weights.reservation_ = reservation;
   }
 };
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
 namespace {
-namespace engine = jitllm::engine;
-namespace providers = jitllm::providers;
+namespace engine = llmp::engine;
+namespace providers = llmp::providers;
 namespace fake = providers::fake;
-using jitllm::base::operator""_MiB;
-using jitllm::test_support::FailedCode;
-namespace scheduler = jitllm::scheduler;
+using llmp::base::operator""_MiB;
+using llmp::test_support::FailedCode;
+namespace scheduler = llmp::scheduler;
 using WeightsAccess = engine::PagedWeightsTestAccess;
 using SchedulerAccess = scheduler::SchedulerPlacementTestAccess;
 
 // Descriptor-only weights and scheduler: no device context, paging, or model.
 struct WeightsFixture {
-  jitllm::catalog::Catalog catalog;
-  jitllm::base::WakeFlag wake;
+  llmp::catalog::Catalog catalog;
+  llmp::base::WakeFlag wake;
   scheduler::CompletionBoard board{16, wake};
   std::array<std::byte, 64> bytes{};
   std::optional<scheduler::Scheduler> scheduled;
   engine::PagedWeights weights;
-  jitllm::catalog::ExtentId extent;
+  llmp::catalog::ExtentId extent;
   scheduler::PageSource source;
 
   WeightsFixture() {
     const auto domain = catalog.AddDomain("weights test");
     extent = catalog
                  .AddExtent({.domain = domain,
-                             .memory_class = jitllm::catalog::MemoryClass::kWeights,
-                             .recovery = jitllm::catalog::Recovery::kFromArtifact,
-                             .size = jitllm::base::Bytes(32),
+                             .memory_class = llmp::catalog::MemoryClass::kWeights,
+                             .recovery = llmp::catalog::Recovery::kFromArtifact,
+                             .size = llmp::base::Bytes(32),
                              .content = {}})
                  .value();
     source.read.memory = bytes.data();
@@ -151,7 +151,7 @@ TEST(WeightsPlacement, SuccessfulSamePlaceReplacementInvalidatesButRefusalsDoNot
   auto moved = reread;
   moved.read.memory = fixture.bytes.data() + 16;
   EXPECT_FALSE(fixture.scheduled->SetSource(fixture.extent, moved));  // Pinned.
-  EXPECT_FALSE(fixture.scheduled->PinPlaces(std::array{jitllm::catalog::ExtentId{}}));
+  EXPECT_FALSE(fixture.scheduled->PinPlaces(std::array{llmp::catalog::ExtentId{}}));
   EXPECT_EQ(fixture.scheduled->placement_stamp(), unchanged);
   EXPECT_TRUE(fixture.Check(check));
   fixture.scheduled->UnpinPlaces(std::span(&fixture.extent, 1));

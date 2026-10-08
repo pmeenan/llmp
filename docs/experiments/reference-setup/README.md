@@ -1,10 +1,10 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M0 llama.cpp reference setup — 2026-09-21
 
 This installs an external reference engine on `spark` for the later A→B→A
-and expert-route experiments. It does not implement jitLLM inference,
+and expert-route experiments. It does not implement llmpalooza inference,
 establish paging feasibility, or measure the full-swap floor.
 The subsequent [A→B→A experiment](../reference-aba/README.md) now measures
 Gemma/Ornith switching and long-context state reuse; the scope and historical
@@ -37,7 +37,7 @@ conversion and checkpoint Python code were not executed.
 The upstream build disables `GGML_NATIVE`, builds its explicit ARM CPU
 variants, and includes native GB10 CUDA code. GPU enumeration passed with
 `CUDA_DISABLE_PTX_JIT=1`; the inference smoke also uses this setting. This is
-the reference's upstream GCC/CUDA build, not a change to jitLLM's D-032
+the reference's upstream GCC/CUDA build, not a change to llmpalooza's D-032
 Clang/C++23 toolchain. A future source rebuild must explicitly select its
 CPU and CUDA targets and record the resulting new image identity.
 
@@ -72,7 +72,7 @@ Dependency categories under D-017:
 
 | Unit used | Category and terms | Scope |
 | --- | --- | --- |
-| llama.cpp/GGML and bundled GGUF reader | External reference/inspection tools, MIT; exact source license hash in `artifacts.json` | No implementation copied or linked into jitLLM |
+| llama.cpp/GGML and bundled GGUF reader | External reference/inspection tools, MIT; exact source license hash in `artifacts.json` | No implementation copied or linked into llmpalooza |
 | Gemma GGUF | External benchmark data, Apache-2.0 | Local test input only |
 | NVIDIA driver, CUDA runtime, cuBLAS | Reference platform dependencies, NVIDIA/component terms | Existing host driver plus libraries inside the digest-pinned image |
 | glibc; libstdc++, libgcc, libgomp | Reference platform dependencies; LGPL-2.1-or-later; GPL with applicable GCC runtime exceptions | Container's observed versions recorded; not vendored |
@@ -82,7 +82,7 @@ Dependency categories under D-017:
 The upstream **full** image also contains unused conversion and multimedia
 dependencies under their own licenses. Its digest pins that external
 environment; this is not a claim that the whole image is permissively
-licensed, an audit for redistribution, or admission into jitLLM's
+licensed, an audit for redistribution, or admission into llmpalooza's
 copyleft-disabled implementation profile. Upstream/license links:
 [llama.cpp MIT](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/LICENSE),
 [container recipe](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/.devops/cuda.Dockerfile),
@@ -93,8 +93,8 @@ copyleft-disabled implementation profile. Upstream/license links:
 Run these commands on the chosen target, with this directory copied there
 and the working directory set to that copy. The harness contains no host
 names. Keep weights and outputs outside the repository. The installed model
-in this run lives in `/home/pmeenan/.local/share/jitllm/reference-models`;
-raw results live in `/home/pmeenan/.local/share/jitllm/reference-results`.
+in this run lives in `/home/pmeenan/.local/share/llmp/reference-models`;
+raw results live in `/home/pmeenan/.local/share/llmp/reference-results`.
 
 ```sh
 set -eu
@@ -102,8 +102,8 @@ umask 077
 export DOCKER='sudo -n docker'
 REFERENCE_IMAGE=$(python3 -c 'import json; print(json.load(open("artifacts.json"))["engine"]["image"])')
 sudo -n docker pull --platform linux/arm64 "$REFERENCE_IMAGE"
-mkdir -p "$HOME/.local/share/jitllm/reference-models"
-REFERENCE_MODEL="$HOME/.local/share/jitllm/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+mkdir -p "$HOME/.local/share/llmp/reference-models"
+REFERENCE_MODEL="$HOME/.local/share/llmp/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
 
 # Skip this transfer when the installed file already matches the checksum.
 # A .partial file is resumable; only promote it after verification.
@@ -115,7 +115,7 @@ printf '%s  %s\n' f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f29
 test ! -e "$REFERENCE_MODEL" && mv "$REFERENCE_MODEL.partial" "$REFERENCE_MODEL"
 
 python3 smoke.py "$REFERENCE_MODEL" \
-  "$HOME/.local/share/jitllm/reference-results/smoke-1"
+  "$HOME/.local/share/llmp/reference-results/smoke-1"
 ```
 
 `smoke.py` verifies exact size and SHA-256 before loading the GGUF. The
@@ -156,7 +156,7 @@ sudo -n docker run --rm --network none --read-only \
 This uses the reader bundled with the pinned source, not an independently
 updated PyPI reader. `inspect_model.py` fails on unexpected architecture,
 expert axis, projection names, or missing expert layers. It summarizes tensor
-storage bytes, not jitLLM's future 2 MiB paging layout or actual read traffic.
+storage bytes, not llmpalooza's future 2 MiB paging layout or actual read traffic.
 
 ## Verified model and memory accounting
 
@@ -257,7 +257,7 @@ the checks without that raw bundle.
 
 Workstation checks: Python compilation, JSON parsing, `git diff --check`,
 plus the independent review's adversarial harness/inspector checks.
-No jitLLM application tests exist yet; no inference ran on the workstation
+No llmpalooza application tests exist yet; no inference ran on the workstation
 or `spark-b`. Host drivers/toolkits/security settings were unchanged, and
 all changes remain uncommitted for the human.
 

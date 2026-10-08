@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen routed FP4 products in a small target verify
@@ -13,7 +13,7 @@ tests, with the stage-precision differences below held visible.
 
 ## One chain, two product schedules
 
-The archived `jitllm_qwen38_spec --verify-experts vector|grouped|grouped-mia` changes
+The archived `llmp_qwen38_spec --verify-experts vector|grouped|grouped-mia` changes
 only the target Verify kind. Plain decode, prefill and the MTP drafter
 keep their existing choices. The choice enters the plan-cache key and
 Setup's workspace probes. Invalid nonverify/reference/GGML-layout choices
@@ -162,7 +162,7 @@ in that audit matched `cf63418`. These native benchmark comparisons do
 not use `longctx.py`; their measured source/object pins remain separate
 from the later HTTP runtime queue. The stale-helper HTTP run is excluded
 from qualification. The replacement HTTP protocol pins the checked helpers to
-SHA-256 `20b10388886c1abff54e96ca8ec12a5f00701fffa2d8955fd9a534cc8e63f437`
+SHA-256 `340f7d2a3ca6397c807cf0b2502954fe0a22552c3e5aa44997b34c9ba24f5cae`
 (`longctx.py`) and
 `41c693de64e2d63b32622cb03f29024d76455c0ad7efac4394ea3f5d45f4b1e2`
 (baseline helper), with its sibling prompt fixture required as well.

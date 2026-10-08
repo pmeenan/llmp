@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Compiler selection follow-up — 2026-09-21
@@ -79,10 +79,10 @@ checks match the main report; both GPU executables passed with
 System compiler defaults, target system libraries, and drivers are unchanged.
 The original CUDA 13.0 and Clang 18 runs remain historical comparisons.
 
-Build directories: workstation `/tmp/jitllm-clang22/{native,cross}`;
-Spark `/tmp/jitllm-clang22/{native,cross}`. The compiler SDKs are in
-`/tmp/jitllm-clang22/sdk-amd64` (workstation) and
-`/tmp/jitllm-clang22/sdk-arm64` (Spark); CUDA and sysroot inputs remain
-under `/tmp/jitllm-toolchain-smoke`. Clean provisioning, full backend
+Build directories: workstation `/tmp/llmp-clang22/{native,cross}`;
+Spark `/tmp/llmp-clang22/{native,cross}`. The compiler SDKs are in
+`/tmp/llmp-clang22/sdk-amd64` (workstation) and
+`/tmp/llmp-clang22/sdk-arm64` (Spark); CUDA and sysroot inputs remain
+under `/tmp/llmp-toolchain-smoke`. Clean provisioning, full backend
 compilation, compiler-performance comparisons, and additional C++23 library
 features remain untested. This follow-up changes no runtime code.

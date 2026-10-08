@@ -1,20 +1,20 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// A diagnostic report, such as `jitllm doctor` prints: titled sections of
+// A diagnostic report, such as `llmp doctor` prints: titled sections of
 // facts, the problems that make the check fail, and warnings that do not.
 // Each probe adds its own sections and judges its own facts; the program
 // that runs the probes formats the result.
 
-#ifndef JITLLM_BASE_REPORT_H_
-#define JITLLM_BASE_REPORT_H_
+#ifndef LLMP_BASE_REPORT_H_
+#define LLMP_BASE_REPORT_H_
 
 #include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
-namespace jitllm::base {
+namespace llmp::base {
 
 struct ReportLine {
   std::string key;
@@ -56,6 +56,6 @@ std::string Printable(std::string_view text);
 // otherwise one decimal place ("121.7 GiB"), and plain bytes below 1 KiB.
 std::string FormatBytes(std::uint64_t bytes);
 
-}  // namespace jitllm::base
+}  // namespace llmp::base
 
-#endif  // JITLLM_BASE_REPORT_H_
+#endif  // LLMP_BASE_REPORT_H_

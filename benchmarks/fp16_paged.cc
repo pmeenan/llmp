@@ -1,20 +1,20 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Backend-proof P2, oracle rungs 4 and 5 (docs/backend-proof.md), and P4's
 // paging cases for FP16: the Qwen2.5-0.5B FP16 fixture from its v0
 // prepared artifact, alone on a paged node (tests/support/paged_node.h),
-// paged into jitLLM's device VMM through the host-VMM landing zone (D-081)
+// paged into llmpalooza's device VMM through the host-VMM landing zone (D-081)
 // by the scheduler and its lanes, and executed as device jobs that hold
 // leases on everything they touch (docs/experiments/backend-proof-p2/
 // README.md). What each option does is fp16_runner.h's.
 //
-//   jitllm_fp16_paged --artifact DIR --trajectory control|heldout --tokens FILE
+//   llmp_fp16_paged --artifact DIR --trajectory control|heldout --tokens FILE
 //                     --fusion on|off --out DIR [--restores N] [--relocate]
 //                     [--partial] [--spill premapped|managed]
 //                     [--embeddings duplicated|shared]
 //                     [--lanes threads|inline] [--record] [--coalesce on|off]
-//   jitllm_fp16_paged --artifact DIR ... --out DIR --load-only N
+//   llmp_fp16_paged --artifact DIR ... --out DIR --load-only N
 //                     [--weights device|host] [--backing managed|premapped]
 //                     [--slots N] [--coalesce on|off]
 //
@@ -69,11 +69,11 @@
 
 namespace {
 
-namespace ts = jitllm::test_support;
+namespace ts = llmp::test_support;
 using Status = ts::Status;
 
 struct Options {
-  jitllm::benchmarks::Fp16Options model;
+  llmp::benchmarks::Fp16Options model;
   bool inline_lanes = false;
   bool record = false;
   std::size_t slots = ts::kPagedSlots;
@@ -82,7 +82,7 @@ struct Options {
 
 std::expected<Options, std::string> Parse(std::span<char*> args) {
   Options options;
-  jitllm::benchmarks::Fp16Options& o = options.model;
+  llmp::benchmarks::Fp16Options& o = options.model;
   bool fusion_set = false;
   for (std::size_t i = 1; i < args.size(); ++i) {
     const std::string_view a = args[i];
@@ -167,7 +167,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ((o.weights_host || o.premapped || options.slots != ts::kPagedSlots) && o.load_only == 0) ||
       ((o.partial || !o.spill.empty() || o.shared_embeddings) && o.load_only > 0)) {
     return std::unexpected(
-        "usage: jitllm_fp16_paged --artifact DIR --trajectory control|heldout --tokens FILE "
+        "usage: llmp_fp16_paged --artifact DIR --trajectory control|heldout --tokens FILE "
         "--fusion on|off --out DIR [--restores N] [--relocate] [--partial] "
         "[--spill premapped|managed] [--embeddings duplicated|shared] [--lanes threads|inline] "
         "[--record (with --lanes inline)] [--coalesce on|off] | --load-only N "
@@ -177,7 +177,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
 }
 
 // The node with the one model on stream 0, set up, run and torn down.
-Status Run(jitllm::benchmarks::Fp16Runner& runner, ts::PagedNode& node,
+Status Run(llmp::benchmarks::Fp16Runner& runner, ts::PagedNode& node,
            std::vector<ts::PagedModel*>& entered_models) {
   if (auto r = node.Open(); !r) {
     return r;
@@ -189,7 +189,7 @@ Status Run(jitllm::benchmarks::Fp16Runner& runner, ts::PagedNode& node,
   if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) {
     return r;
   }
-  if (auto r = node.Start(jitllm::base::Bytes(std::uint64_t{64} << 30U)); !r) {
+  if (auto r = node.Start(llmp::base::Bytes(std::uint64_t{64} << 30U)); !r) {
     return r;
   }
   if (auto r = runner.Register(); !r) {
@@ -225,7 +225,7 @@ int main(int argc, char** argv) {
                         .slots = options->slots,
                         .inline_lanes = options->inline_lanes,
                         .coalesce = options->coalesce});
-    jitllm::benchmarks::Fp16Runner runner(node, options->model, 0, 0, recording.get(), lines);
+    llmp::benchmarks::Fp16Runner runner(node, options->model, 0, 0, recording.get(), lines);
     std::vector<ts::PagedModel*> entered_models;
     ran = Run(runner, node, entered_models);
     if (auto finished = node.TearDown(entered_models); !finished) {
@@ -240,7 +240,7 @@ int main(int argc, char** argv) {
     }
     std::filesystem::create_directories(options->model.out);
     std::ofstream file(options->model.out / "recording.jsonl");
-    file << ts::HeaderLine(std::format("jitllm_fp16_paged {} fusion {}", options->model.trajectory,
+    file << ts::HeaderLine(std::format("llmp_fp16_paged {} fusion {}", options->model.trajectory,
                                        options->model.fusion ? "on" : "off"),
                            ts::LoadedCublas())
          << lines;

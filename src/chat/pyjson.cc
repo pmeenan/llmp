@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "chat/pyjson.h"
@@ -17,7 +17,7 @@
 #include "base/json.h"
 #include "tokenizer/unicode.h"
 
-namespace jitllm::chat {
+namespace llmp::chat {
 
 void AppendPythonFloat(double value, std::string& out) {
   if (std::isinf(value)) {
@@ -379,4 +379,4 @@ void AppendPythonJson(base::json::Value value, std::string& out) {
   }
 }
 
-}  // namespace jitllm::chat
+}  // namespace llmp::chat

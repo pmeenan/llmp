@@ -1,0 +1,266 @@
+Llmpalooza's build of the ExLlamaV3 subset it uses (D-053, D-057): adds
+llmp/CMakeLists.txt, which the source lock adds as the component's
+project. It compiles only the files it names: upstream's GEMM compilation
+units, and llmp/llmp_exl3_kernels.cu, llmpalooza's instances of the other
+kernels the native linear launches, with their lookups declared in
+llmp/llmp_exl3_kernels.h.
+
+diff --git a/llmp/CMakeLists.txt b/llmp/CMakeLists.txt
+new file mode 100644
+index 0000000..0c4a382
+--- /dev/null
++++ b/llmp/CMakeLists.txt
+@@ -0,0 +1,72 @@
++# SPDX-FileCopyrightText: 2026 llmpalooza contributors
++# SPDX-License-Identifier: Apache-2.0
++
++# Llmpalooza's build of the ExLlamaV3 subset it uses (D-052, D-053, D-057;
++# docs/backend-proof.md). third_party/patches/exllamav3/ adds this file to
++# the pinned ExLlamaV3 tree, and the source lock adds this directory. It
++# compiles only the files named here, never upstream's setup.py, ext.py or
++# any ATen host wrapper: llmpalooza owns dispatch.
++#
++#   llmp_exl3_headers  the kept headers' directory and this one, in
++#                     every profile: exl3_devctx.cuh's context sizes are host
++#                     constants, and llmp_exl3_kernels.h declares the
++#                     kernels without CUDA types.
++#   llmp_exl3_cuda  the EXL3 GEMM kernels (exl3_gemm_kernel and
++#                     exl3_mgemm_kernel) for the mcg codebook at K = 4, 5, 6
++#                     and 8, the rates of the two M2 fixtures, with FP16 and
++#                     FP32 outputs and tile shapes 1 to 4: upstream's
++#                     compilation units exl3_comp_unit_<K>_cb1.cu, unchanged.
++#                     Each defines the tables tfp_exl3_{gemm,mgemm}_kernel_
++#                     {fp16,fp32}_b<K>_cb1[], indexed by shape, that
++#                     comp_units/exl3_comp_unit_<K>.cuh declares. And
++#                     llmp_exl3_kernels.cu, llmpalooza's unit for the rest of
++#                     the native linear: the K = 4 GEMV kernel, the
++#                     reconstruction kernels (plain and with both Hadamard
++#                     transforms), the input and output Hadamard kernels and
++#                     the FP16 bias add, instantiated from the kept kernel
++#                     sources, and lookups of every kernel
++#                     (llmp_exl3_kernels.h). For sm_121 and the discrete
++#                     GPUs llmpalooza's toolchain names (LLMP_CUDA_DISCRETE_SASS,
++#                     D-082). CUDA profiles only; elsewhere an empty
++#                     placeholder, so the lock's targets exist in every build.
++#
++# The flags reproduce what upstream's extension builds with, as the P0
++# reference was built (docs/experiments/backend-proof-p0/): NVCC -O3
++# --use_fast_math, SASS for sm_121 (not sm_121a; a discrete target adds its
++# own SASS beside it), C++20, and the half and bfloat16 macros and
++# --expt-relaxed-constexpr that PyTorch's extension builder adds. Not
++# reproduced: -lineinfo, PyTorch's include paths and extension-name macros,
++# which no file here reads and which leave the SASS unchanged.
++cmake_minimum_required(VERSION 4.4.3)
++project(llmp_exl3 LANGUAGES CXX)
++
++set(ext "${CMAKE_CURRENT_SOURCE_DIR}/../exllamav3/exllamav3_ext")
++
++add_library(llmp_exl3_headers INTERFACE)
++target_include_directories(llmp_exl3_headers INTERFACE "${ext}" "${CMAKE_CURRENT_SOURCE_DIR}")
++
++if(CMAKE_CUDA_COMPILER)
++  # The reference's -O3 replaces the build type's optimization level here.
++  foreach(config IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
++    string(REGEX REPLACE "(^| )-O[0-9s]( |$)" " " CMAKE_CUDA_FLAGS_${config} "${CMAKE_CUDA_FLAGS_${config}}")
++  endforeach()
++  set(units "")
++  foreach(bits IN ITEMS 4 5 6 8)
++    list(APPEND units "${ext}/quant/comp_units/exl3_comp_unit_${bits}_cb1.cu")
++  endforeach()
++  list(APPEND units "${CMAKE_CURRENT_SOURCE_DIR}/llmp_exl3_kernels.cu")
++  set(architectures 121-real ${LLMP_CUDA_DISCRETE_SASS})
++  add_library(llmp_exl3_cuda STATIC ${units})
++  target_link_libraries(llmp_exl3_cuda PUBLIC llmp_exl3_headers)
++  target_compile_definitions(llmp_exl3_cuda
++    PRIVATE __CUDA_NO_HALF_OPERATORS__ __CUDA_NO_HALF_CONVERSIONS__
++            __CUDA_NO_BFLOAT16_CONVERSIONS__ __CUDA_NO_HALF2_OPERATORS__)
++  # Upstream suppresses two front-end warnings: 177 (declared but never
++  # referenced) and 20012 (__device__ on a defaulted constructor).
++  target_compile_options(llmp_exl3_cuda PRIVATE -O3 --use_fast_math --expt-relaxed-constexpr
++                                                  --diag-suppress=177,20012)
++  set_target_properties(llmp_exl3_cuda PROPERTIES
++    CUDA_ARCHITECTURES "${architectures}" CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF)
++else()
++  add_library(llmp_exl3_cuda INTERFACE)
++endif()
+diff --git a/llmp/llmp_exl3_kernels.cu b/llmp/llmp_exl3_kernels.cu
+new file mode 100644
+index 0000000..53f9b73
+--- /dev/null
++++ b/llmp/llmp_exl3_kernels.cu
+@@ -0,0 +1,116 @@
++// SPDX-FileCopyrightText: 2026 llmpalooza contributors
++// SPDX-License-Identifier: Apache-2.0
++
++// Llmpalooza's instances of the ExLlamaV3 kernels its native linear launches
++// beyond upstream's GEMM compilation units (llmp_exl3_kernels.h). It
++// replaces the instance tables and selectors of upstream's ATen host
++// wrappers (exl3_gemv.cu, reconstruct.cu, hadamard.cu, add.cu), which
++// llmpalooza does not compile, and instantiates only what the linear
++// launches. The kernels come unchanged from the locked sources: the GEMV
++// kernel's header, and the three .cu files that
++// third_party/patches/exllamav3/0003 reduces to their kernels, included
++// here as upstream's own units include kernel headers. Built with the
++// same flags as upstream's compilation units (CMakeLists.txt).
++
++#include <cuda_fp16.h>
++#include <cublas_v2.h>
++#include <cooperative_groups.h>
++namespace cg = cooperative_groups;
++#include "../exllamav3/exllamav3_ext/util.h"
++#include "../exllamav3/exllamav3_ext/util.cuh"
++#include "../exllamav3/exllamav3_ext/ptx.cuh"
++// exl3_gemm_kernel.cuh's order: exl3_gemm_inner.cuh (SMEM_MAX) needs the other two first.
++#include "../exllamav3/exllamav3_ext/quant/exl3_kernel_map.cuh"
++#include "../exllamav3/exllamav3_ext/quant/hadamard_inner.cuh"
++#include "../exllamav3/exllamav3_ext/quant/exl3_gemm_inner.cuh"
++#include "../exllamav3/exllamav3_ext/quant/exl3_gemv_kernel.cuh"
++#include "../exllamav3/exllamav3_ext/quant/reconstruct.cu"
++#include "../exllamav3/exllamav3_ext/quant/hadamard.cu"
++#include "../exllamav3/exllamav3_ext/add.cu"
++#include "llmp_exl3_kernels.h"
++
++// The GEMM tables of the compiled units: the mcg codebook (cb 1) only.
++EXL3_KERNEL_EXTERNS_CB(4, 1)
++EXL3_KERNEL_EXTERNS_CB(5, 1)
++EXL3_KERNEL_EXTERNS_CB(6, 1)
++EXL3_KERNEL_EXTERNS_CB(8, 1)
++
++namespace llmp_exl3 {
++namespace {
++
++// Rate index of the compiled rates: 4, 5, 6, 8; -1 otherwise.
++int RateIndex(int bits) {
++    switch (bits) {
++        case 4: return 0;
++        case 5: return 1;
++        case 6: return 2;
++        case 8: return 3;
++        default: return -1;
++    }
++}
++
++fp_exl3_gemm_kernel* const kGemmFp16[4] = {tfp_exl3_gemm_kernel_fp16_b4_cb1, tfp_exl3_gemm_kernel_fp16_b5_cb1,
++                                           tfp_exl3_gemm_kernel_fp16_b6_cb1, tfp_exl3_gemm_kernel_fp16_b8_cb1};
++fp_exl3_gemm_kernel* const kGemmFp32[4] = {tfp_exl3_gemm_kernel_fp32_b4_cb1, tfp_exl3_gemm_kernel_fp32_b5_cb1,
++                                           tfp_exl3_gemm_kernel_fp32_b6_cb1, tfp_exl3_gemm_kernel_fp32_b8_cb1};
++fp_exl3_mgemm_kernel* const kMgemmFp16[4] = {tfp_exl3_mgemm_kernel_fp16_b4_cb1, tfp_exl3_mgemm_kernel_fp16_b5_cb1,
++                                             tfp_exl3_mgemm_kernel_fp16_b6_cb1, tfp_exl3_mgemm_kernel_fp16_b8_cb1};
++fp_exl3_mgemm_kernel* const kMgemmFp32[4] = {tfp_exl3_mgemm_kernel_fp32_b4_cb1, tfp_exl3_mgemm_kernel_fp32_b5_cb1,
++                                             tfp_exl3_mgemm_kernel_fp32_b6_cb1, tfp_exl3_mgemm_kernel_fp32_b8_cb1};
++
++// exl3_gemv_select_kernel's SEL_GRID(4, 1, false): [fp32][mmode][cfg].
++const void* const kGemv[2][2][2] = {
++    {{(const void*) exl3_gemv_kernel<4, false, 1, 0, 0, false>, (const void*) exl3_gemv_kernel<4, false, 1, 0, 1, false>},
++     {(const void*) exl3_gemv_kernel<4, false, 1, 1, 0, false>, (const void*) exl3_gemv_kernel<4, false, 1, 1, 1, false>}},
++    {{(const void*) exl3_gemv_kernel<4, true, 1, 0, 0, false>, (const void*) exl3_gemv_kernel<4, true, 1, 0, 1, false>},
++     {(const void*) exl3_gemv_kernel<4, true, 1, 1, 0, false>, (const void*) exl3_gemv_kernel<4, true, 1, 1, 1, false>}}};
++
++const void* const kReconstruct[4] = {(const void*) reconstruct_kernel<4, 1>, (const void*) reconstruct_kernel<5, 1>,
++                                     (const void*) reconstruct_kernel<6, 1>, (const void*) reconstruct_kernel<8, 1>};
++const void* const kReconstructHad[4] = {
++    (const void*) reconstruct_had_kernel<4, 1>, (const void*) reconstruct_had_kernel<5, 1>,
++    (const void*) reconstruct_had_kernel<6, 1>, (const void*) reconstruct_had_kernel<8, 1>};
++
++}  // namespace
++
++const void* GemmKernel(int bits, int shape, bool fp32) {
++    const int rate = RateIndex(bits);
++    if (rate < 0 || shape < 1 || shape > EXL3_GEMM_NUM_SHAPES) return nullptr;
++    return (const void*) (fp32 ? kGemmFp32 : kGemmFp16)[rate][shape];
++}
++
++const void* MultiGemmKernel(int bits, int shape, bool fp32) {
++    const int rate = RateIndex(bits);
++    if (rate < 0 || shape < 1 || shape > EXL3_GEMM_NUM_SHAPES) return nullptr;
++    return (const void*) (fp32 ? kMgemmFp32 : kMgemmFp16)[rate][shape];
++}
++
++const void* GemvKernel(int bits, bool fp32, int mmode, int cfg) {
++    if (bits != 4 || mmode < 0 || mmode > 1 || cfg < 0 || cfg > 1) return nullptr;
++    return kGemv[fp32 ? 1 : 0][mmode][cfg];
++}
++
++const void* ReconstructKernel(int bits) {
++    const int rate = RateIndex(bits);
++    return rate < 0 ? nullptr : kReconstruct[rate];
++}
++
++const void* ReconstructHadKernel(int bits) {
++    const int rate = RateIndex(bits);
++    return rate < 0 ? nullptr : kReconstructHad[rate];
++}
++
++const void* HadamardKernel(bool fp32, bool pre_scale, bool post_scale) {
++    if (pre_scale && !post_scale) return fp32 ? nullptr : (const void*) had_hf_r_128_kernel<true, false>;
++    if (!pre_scale && post_scale)
++        return fp32 ? (const void*) had_ff_r_128_kernel<false, true> : (const void*) had_hf_r_128_kernel<false, true>;
++    return nullptr;
++}
++
++const void* AddKernelHhh() { return (const void*) add_kernel_hhh; }
++
++int GemmSharedMemory() { return SMEM_MAX; }
++
++int GemvMaxRows() { return EXL3_GEMV_MAX_M; }
++
++}  // namespace llmp_exl3
+diff --git a/llmp/llmp_exl3_kernels.h b/llmp/llmp_exl3_kernels.h
+new file mode 100644
+index 0000000..4f26bb7
+--- /dev/null
++++ b/llmp/llmp_exl3_kernels.h
+@@ -0,0 +1,53 @@
++// SPDX-FileCopyrightText: 2026 llmpalooza contributors
++// SPDX-License-Identifier: Apache-2.0
++
++// The ExLlamaV3 kernels llmpalooza's native EXL3 linear launches (D-052, D-053;
++// docs/backend-proof.md), as host stubs for the CUDA runtime's launch,
++// occupancy and attribute calls. llmp_exl3_kernels.cu, built as
++// upstream's extension builds its kernels, defines them in CUDA profiles;
++// this header holds no CUDA types, so every profile can include it, and a
++// profile without CUDA defines none of the functions.
++//
++// Each returns nullptr for an instance this build does not compile, so a
++// caller's refusal, not an out-of-range table read, answers an unsupported
++// rate, shape or variant. Only the mcg codebook (cb 1) is compiled, at the
++// M2 fixtures' rates K = 4, 5, 6 and 8, and the GEMV only at K = 4, the
++// one rate of these fixtures upstream's GEMV takes.
++
++#ifndef LLMP_EXL3_KERNELS_H_
++#define LLMP_EXL3_KERNELS_H_
++
++namespace llmp_exl3 {
++
++// exl3_gemm_kernel<bits, false, fp32, 1, SHAPE_shape>, from the tables of
++// upstream's compilation units (comp_units/exl3_comp_unit_<bits>_cb1.cu);
++// shape 1 to 4.
++const void* GemmKernel(int bits, int shape, bool fp32);
++// exl3_mgemm_kernel<bits, false, fp32, 1, SHAPE_shape>, from the same tables.
++const void* MultiGemmKernel(int bits, int shape, bool fp32);
++// exl3_gemv_kernel<4, fp32, 1, mmode, cfg, false>: what upstream's
++// exl3_gemv_select_kernel (exl3_gemv.cu) returns for the mcg codebook at
++// K = 4 with shuffle extraction. mmode 0 is one row, 1 up to eight; cfg 0
++// is the narrow configuration (512 threads), 1 the wide one (256).
++const void* GemvKernel(int bits, bool fp32, int mmode, int cfg);
++// reconstruct_kernel<bits, 1, false> (quant/reconstruct.cu).
++const void* ReconstructKernel(int bits);
++// reconstruct_had_kernel<bits, 1, false> (quant/reconstruct.cu).
++const void* ReconstructHadKernel(int bits);
++// had_hf_r_128_kernel (FP16) or had_ff_r_128_kernel (FP32) <pre_scale,
++// post_scale> (quant/hadamard.cu), in the three variants the linear uses:
++// <true, false> on its FP16 input, <false, true> on its FP16 or FP32
++// output.
++const void* HadamardKernel(bool fp32, bool pre_scale, bool post_scale);
++// add_kernel_hhh (add.cu): FP16 plus FP16 into FP16.
++const void* AddKernelHhh();
++
++// The GEMM kernels' dynamic shared memory, SMEM_MAX (quant/exl3_gemm_inner.cuh).
++int GemmSharedMemory();
++// The rows the GEMV kernel takes at most, EXL3_GEMV_MAX_M
++// (quant/exl3_gemv_kernel.cuh).
++int GemvMaxRows();
++
++}  // namespace llmp_exl3
++
++#endif  // LLMP_EXL3_KERNELS_H_

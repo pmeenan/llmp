@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef JITLLM_EXECUTION_ADAPTIVE_DEPTH_H_
-#define JITLLM_EXECUTION_ADAPTIVE_DEPTH_H_
+#ifndef LLMP_EXECUTION_ADAPTIVE_DEPTH_H_
+#define LLMP_EXECUTION_ADAPTIVE_DEPTH_H_
 
 #include <algorithm>
 #include <array>
@@ -13,7 +13,7 @@
 #include <optional>
 #include <span>
 
-namespace jitllm::execution {
+namespace llmp::execution {
 
 // Compare adjacent draft depths by accepted tokens per calibrated step
 // cost. The default relative cost (depth3/depth2) is 1.16, measured on
@@ -146,6 +146,6 @@ class AdaptiveDepth {
   std::array<Stats, 2> stats_{};
 };
 
-}  // namespace jitllm::execution
+}  // namespace llmp::execution
 
-#endif  // JITLLM_EXECUTION_ADAPTIVE_DEPTH_H_
+#endif  // LLMP_EXECUTION_ADAPTIVE_DEPTH_H_

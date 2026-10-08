@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A model's conversation state on a paged node (docs/engine.md), the part
@@ -29,8 +29,8 @@
 // checkpoints of recurrent or indexer state are saved ranges kept across
 // jobs, the snapshot's mechanism with a longer life.
 
-#ifndef JITLLM_ENGINE_LIVE_STATE_H_
-#define JITLLM_ENGINE_LIVE_STATE_H_
+#ifndef LLMP_ENGINE_LIVE_STATE_H_
+#define LLMP_ENGINE_LIVE_STATE_H_
 
 #include <algorithm>
 #include <cstddef>
@@ -49,12 +49,12 @@
 
 #include "catalog/catalog.h"
 #include "engine/paged_node.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "platform/kept_files.h"
 #include "scheduler/scheduler.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 class RunnerResources;
 
@@ -381,6 +381,6 @@ struct SpillTrack {
   }
 };
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine
 
-#endif  // JITLLM_ENGINE_LIVE_STATE_H_
+#endif  // LLMP_ENGINE_LIVE_STATE_H_

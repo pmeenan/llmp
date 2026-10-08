@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/calibration.h"
@@ -22,11 +22,11 @@
 #include "platform/kept_files.h"
 #include "providers/device_probe.h"
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 namespace fs = std::filesystem;
-namespace json = jitllm::base::json;
+namespace json = llmp::base::json;
 
 std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurrency-mt-unsafe)
 
@@ -460,4 +460,4 @@ execution::AdaptiveWaveMode::Mode WaveCostExploration::Choose(
   return mode;
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

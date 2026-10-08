@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Upstream's fusion gates for the fused implementations in ops.h (D-053;
@@ -9,14 +9,14 @@
 //
 // Each gate takes a graph's nodes in GGML's execution order (GraphOrder
 // gives the order ggml_build_forward_expand records) over tensors bound to
-// jitLLM memory, and a node index, and reproduces ggml_cuda_try_fuse's
+// llmpalooza memory, and a node index, and reproduces ggml_cuda_try_fuse's
 // conditions for its pattern at llama.cpp b29c606e2: the operations and
 // edges, uses confined to the fused nodes (counted as GGML's graph counts
 // them, over every node listed), no output flags on elided nodes, and for
 // some patterns that the fused output overlaps no input other than an
 // elided intermediate. Where upstream measures a tensor's bytes through
 // its CUDA buffer type, the gates measure them as that buffer type does,
-// from the tensor alone: tensors over jitLLM memory carry no buffer, so
+// from the tensor alone: tensors over llmpalooza memory carry no buffer, so
 // none counts as a constant weight either.
 //
 // The gates take a node list rather than GGML's graph object because
@@ -26,7 +26,7 @@
 //
 // Upstream tries its patterns in a fixed order at each node
 // (ggml-cuda.cu:3432-4180); a planner asks these gates in that order, and
-// must show that no pattern jitLLM does not implement applies. For a
+// must show that no pattern llmpalooza does not implement applies. For a
 // matrix product the gate+GLU pattern comes before the bias pattern. The
 // two MMVF gates leave out the one condition that needs the device, its
 // MMVF selection (ops.h MulMatVecFusible). A gate that matches says what
@@ -34,8 +34,8 @@
 // may still refuse the nodes, and then no plan reproduces upstream's.
 // Every profile builds these.
 
-#ifndef JITLLM_KERNELS_GGML_FUSION_H_
-#define JITLLM_KERNELS_GGML_FUSION_H_
+#ifndef LLMP_KERNELS_GGML_FUSION_H_
+#define LLMP_KERNELS_GGML_FUSION_H_
 
 #include <cstddef>
 #include <expected>
@@ -47,7 +47,7 @@
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 namespace detail {
 class GraphReadIndex;
@@ -161,6 +161,6 @@ std::optional<std::string_view> UnimplementedFusionAt(GraphNodes graph, std::siz
 // checked, as upstream does not.
 bool FusionMemoryClear(GraphNodes graph, std::size_t index, std::size_t count, std::size_t output);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_FUSION_H_
+#endif  // LLMP_KERNELS_GGML_FUSION_H_

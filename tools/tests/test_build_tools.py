@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for tools/build, tools/run-target and the presets they rely on (no SDK needed)."""
 
@@ -85,7 +85,7 @@ class Presets(unittest.TestCase):
                 self.assertIn(name, tests)
 
     def test_sanitizer_presets_and_their_run_time_options(self):
-        sanitize = lambda name: cache_variable(name, "JITLLM_SANITIZE")  # noqa: E731
+        sanitize = lambda name: cache_variable(name, "LLMP_SANITIZE")  # noqa: E731
         self.assertEqual(sanitize("cpu-asan"), "address;undefined")
         self.assertEqual(sanitize("cross-asan"), "address;undefined")
         self.assertEqual(sanitize("cross-tsan"), "thread")
@@ -108,11 +108,11 @@ class Presets(unittest.TestCase):
         # D-083: the test and development presets, spark-native (D-084's per-slice
         # test build) included, check libstdc++'s preconditions; only the package's build (cross) does not.
         visible = {p["name"] for p in PRESETS["configurePresets"] if not p.get("hidden")}
-        on = {n for n in visible if cache_variable(n, "JITLLM_LIBSTDCXX_ASSERTIONS") == "ON"}
+        on = {n for n in visible if cache_variable(n, "LLMP_LIBSTDCXX_ASSERTIONS") == "ON"}
         self.assertEqual(on, {"native", "cpu", "spark-native", "cpu-asan", "cross-asan", "cross-tsan"})
         self.assertEqual(visible - on, {"cross"})
         for name in visible - on:
-            self.assertIsNone(cache_variable(name, "JITLLM_LIBSTDCXX_ASSERTIONS"), name)
+            self.assertIsNone(cache_variable(name, "LLMP_LIBSTDCXX_ASSERTIONS"), name)
 
     def test_build_dir_matches_the_presets_binary_dir(self):
         base = next(p for p in PRESETS["configurePresets"] if p["name"] == "base")
@@ -151,7 +151,7 @@ class ConfiguredSdk(unittest.TestCase):
         build.build_dir = lambda preset: tmp / preset
         self.assertIsNone(build.configured_sdk("native"))
         (tmp / "native").mkdir()
-        (tmp / "native" / "CMakeCache.txt").write_text("X:BOOL=ON\nJITLLM_SDK:PATH=/sdk/a\n")
+        (tmp / "native" / "CMakeCache.txt").write_text("X:BOOL=ON\nLLMP_SDK:PATH=/sdk/a\n")
         self.assertEqual(build.configured_sdk("native"), "/sdk/a")
 
 
@@ -167,20 +167,20 @@ class ConfigureArgs(unittest.TestCase):
 
     def test_locked_selects_the_core_profile_from_locked_sources(self):
         self.assertEqual(build.configure_args(self.SDK, "cpu", False, True),
-                         ["--preset", "cpu", "-DJITLLM_SDK=/sdk", "-DJITLLM_REQUIRE_LOCKED_SOURCES=ON",
-                          "-DJITLLM_MODULES="])
+                         ["--preset", "cpu", "-DLLMP_SDK=/sdk", "-DLLMP_REQUIRE_LOCKED_SOURCES=ON",
+                          "-DLLMP_MODULES="])
 
     def test_unlocked_clears_a_previous_checks_setting_and_keeps_modules(self):
         args = build.configure_args(self.SDK, "cpu", True, False)
-        self.assertEqual(args, ["--preset", "cpu", "-DJITLLM_SDK=/sdk", "-DJITLLM_REQUIRE_LOCKED_SOURCES=OFF",
+        self.assertEqual(args, ["--preset", "cpu", "-DLLMP_SDK=/sdk", "-DLLMP_REQUIRE_LOCKED_SOURCES=OFF",
                                 "--fresh"])
 
 
 class TestDriverEnvironment(unittest.TestCase):
     def run_driver(self, *args, preset="cross"):
         sdk = types.SimpleNamespace(root=pathlib.Path("/sdk"), arch="x86_64")
-        ambient = {"JITLLM_TARGET_HOST": "stale-host", "JITLLM_TARGET_DIR": "/stale/build",
-                   "JITLLM_TARGET_SSH_CONTROL": "/stale/socket", "GTEST_FILTER": "Example.*"}
+        ambient = {"LLMP_TARGET_HOST": "stale-host", "LLMP_TARGET_DIR": "/stale/build",
+                   "LLMP_TARGET_SSH_CONTROL": "/stale/socket", "GTEST_FILTER": "Example.*"}
         with mock.patch.dict(os.environ, ambient), \
                 mock.patch.object(sys, "argv", ["build", "test", preset, *args]), \
                 mock.patch.object(build, "ready_sdk", return_value=sdk), \
@@ -197,7 +197,7 @@ class TestDriverEnvironment(unittest.TestCase):
         self.assertEqual(calls[-1].args[0][1:3], ["--preset", "cross"])
         for call in calls:
             env = call.args[1]
-            self.assertFalse(any(k.startswith("JITLLM_TARGET_") for k in env))
+            self.assertFalse(any(k.startswith("LLMP_TARGET_") for k in env))
             self.assertEqual(env["GTEST_FILTER"], "Example.*")
 
     def test_explicit_host_uses_only_the_new_deployment(self):
@@ -205,16 +205,16 @@ class TestDriverEnvironment(unittest.TestCase):
         self.assertEqual(deploy.call_args.args[2:], ("new-host", None))
         self.assertEqual(calls[-1].args[0][1:3], ["--preset", "cross-remote"])
         env = calls[-1].args[1]
-        self.assertEqual(env["JITLLM_TARGET_HOST"], "new-host")
-        self.assertEqual(env["JITLLM_TARGET_DIR"], "/new/build")
-        self.assertNotIn("JITLLM_TARGET_SSH_CONTROL", env)
+        self.assertEqual(env["LLMP_TARGET_HOST"], "new-host")
+        self.assertEqual(env["LLMP_TARGET_DIR"], "/new/build")
+        self.assertNotIn("LLMP_TARGET_SSH_CONTROL", env)
         for call in calls[:-1]:
-            self.assertNotIn("JITLLM_TARGET_HOST", call.args[1])
+            self.assertNotIn("LLMP_TARGET_HOST", call.args[1])
 
     def test_sanitizer_cross_builds_use_their_remote_presets(self):
         for preset in ("cross-asan", "cross-tsan"):
             calls, _ = self.run_driver("--host", "new-host", "--locked", preset=preset)
-            self.assertIn("-DJITLLM_REQUIRE_LOCKED_SOURCES=ON", calls[0].args[0])
+            self.assertIn("-DLLMP_REQUIRE_LOCKED_SOURCES=ON", calls[0].args[0])
             self.assertEqual(calls[-1].args[0][1:3], ["--preset", f"{preset}-remote"])
 
     def test_gpu_runs_the_native_builds_discrete_gpu_tests_one_at_a_time(self):
@@ -246,7 +246,7 @@ class TestDriverEnvironment(unittest.TestCase):
 
 
 class PathMapping(unittest.TestCase):
-    B, R = "/work/build/cross", "/home/u/.cache/jitllm/deploy/cross-1"
+    B, R = "/work/build/cross", "/home/u/.cache/llmp/deploy/cross-1"
 
     def test_prefixes_map_and_lookalikes_do_not(self):
         m = lambda v: run_target.map_path(v, self.B, self.R)  # noqa: E731
@@ -258,11 +258,11 @@ class PathMapping(unittest.TestCase):
         self.assertEqual(m("-x"), "-x")
 
     def test_remote_command_maps_cwd_and_forwards_test_variables_only(self):
-        env = {"GTEST_FILTER": "A.*", "ASAN_OPTIONS": "a=1", "HOME": "/home/me", "JITLLM_TEST_X": "it's"}
+        env = {"GTEST_FILTER": "A.*", "ASAN_OPTIONS": "a=1", "HOME": "/home/me", "LLMP_TEST_X": "it's"}
         cmd = run_target.remote_command(self.B, self.R, self.B + "/tests", [self.B + "/tests/t", "--flag"], env)
         self.assertEqual(shlex.split(cmd), [
             "cd", self.R + "/tests", "&&", "exec", "env", "ASAN_OPTIONS=a=1", "GTEST_FILTER=A.*",
-            "JITLLM_TEST_X=it's", self.R + "/tests/t", "--flag"])
+            "LLMP_TEST_X=it's", self.R + "/tests/t", "--flag"])
 
     def test_a_cwd_outside_the_build_dir_starts_at_the_remote_root(self):
         cmd = run_target.remote_command(self.B, self.R, "/tmp", [self.B + "/t"], {})
@@ -271,11 +271,11 @@ class PathMapping(unittest.TestCase):
     def test_paths_in_forwarded_environment_values_map_to_the_deployment(self):
         env = {"GTEST_OUTPUT": f"xml:{self.B}/results.xml",
                "ASAN_OPTIONS": f"suppressions={self.B}/suppressions:detect_leaks=1",
-               "JITLLM_TEST_DATA": f"{self.B}/data with spaces"}
+               "LLMP_TEST_DATA": f"{self.B}/data with spaces"}
         command = shlex.split(run_target.remote_command(self.B, self.R, self.B, [self.B + "/t"], env))
         self.assertIn(f"GTEST_OUTPUT=xml:{self.R}/results.xml", command)
         self.assertIn(f"ASAN_OPTIONS=suppressions={self.R}/suppressions:detect_leaks=1", command)
-        self.assertIn(f"JITLLM_TEST_DATA={self.R}/data with spaces", command)
+        self.assertIn(f"LLMP_TEST_DATA={self.R}/data with spaces", command)
 
     def test_ssh_shares_a_connection_only_when_asked(self):
         self.assertEqual(run_target.ssh_command("h", "c", None), ["ssh", "-o", "BatchMode=yes", "--", "h", "c"])
@@ -312,13 +312,13 @@ class RunTargetProcess(unittest.TestCase):
                          {"argv": [str(self.build_dir / "tests" / "t"), "-a"], "ld": "/sys/root"})
 
     def test_remote_needs_the_deployed_directory(self):
-        result = self.run_target({"JITLLM_TARGET_HOST": "spark"}, "t")
+        result = self.run_target({"LLMP_TARGET_HOST": "spark"}, "t")
         self.assertEqual(result.returncode, 2)
-        self.assertIn("JITLLM_TARGET_DIR", result.stderr)
+        self.assertIn("LLMP_TARGET_DIR", result.stderr)
         self.assertFalse(self.log.exists())
 
     def test_remote_runs_over_ssh_and_returns_its_status(self):
-        result = self.run_target({"JITLLM_TARGET_HOST": "spark", "JITLLM_TARGET_DIR": "/r/x"},
+        result = self.run_target({"LLMP_TARGET_HOST": "spark", "LLMP_TARGET_DIR": "/r/x"},
                                  str(self.build_dir / "tests" / "t"))
         self.assertEqual(result.returncode, 7)
         argv = json.loads(self.log.read_text())["argv"]

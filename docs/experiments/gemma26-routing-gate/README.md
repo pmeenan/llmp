@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Gemma26 current routing refusal
@@ -51,7 +51,7 @@ allowance, default, performance or corpus score was changed here.
 ## Reproduction and provenance
 
 Reuse the compiled Task39 controller 306e33c7 at
-`~/.local/share/jitllm/gemma26-dispatch-observation/controller.so`, verifying its
+`~/.local/share/llmp/gemma26-dispatch-observation/controller.so`, verifying its
 full identity in [results.json](results.json). Actual generated source is
 `controller-v2.cu` 4c042fcd, which reconstructs original 523470d6 exactly;
 historical raw `controller.cu` is the earlier version and is not this binary's

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "kernels/ggml/fattn_owner.h"
@@ -9,10 +9,10 @@
 #include <limits>
 #include <optional>
 
-#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/validate_util.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 namespace {
 using detail::Rejected;
 constexpr std::uint64_t kMaxSpan = 64ULL << 20U;
@@ -213,23 +213,23 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
 }
 std::expected<FlashAttnOwners, KernelFailure> FlashAttnOwnersFromNode(ggml_tensor* node) {
   static_assert(GGML_MAX_SRC == 10);
-  if (!node || JitllmOpOf(node) != JitllmOp::kFlashAttnOwners || node->view_src)
+  if (!node || LlmpOpOf(node) != LlmpOp::kFlashAttnOwners || node->view_src)
     return Rejected("not a ten-source owner attention custom node");
-  const auto cohort = JitllmOpInt(node, 0);
+  const auto cohort = LlmpOpInt(node, 0);
   if (cohort != 2 && cohort != 3 && cohort != 4 && cohort != 8 && cohort != 12 &&
       !detail::PartialOwnerCohort(static_cast<std::uint32_t>(cohort)))
     return Rejected("owner attention has an unsupported logical cohort");
-  const auto encoded_count = JitllmOpInt(node, 1);
+  const auto encoded_count = LlmpOpInt(node, 1);
   if (encoded_count != 0 && encoded_count != 1 && encoded_count != 2 && encoded_count != 3)
     return Rejected("owner attention has an unsupported active root count");
-  const auto offset = JitllmOpInt(node, 2);
+  const auto offset = LlmpOpInt(node, 2);
   if (offset < 0) return Rejected("owner attention has a negative group offset");
   for (int i = 5; i < 8; ++i)
-    if (JitllmOpInt(node, i) != 0) return Rejected("owner attention has unsupported parameters");
-  const auto bounded = JitllmOpInt(node, 4);
+    if (LlmpOpInt(node, i) != 0) return Rejected("owner attention has unsupported parameters");
+  const auto bounded = LlmpOpInt(node, 4);
   if (bounded != 0 && bounded != 1)
     return Rejected("owner attention has an unsupported root bound");
-  const auto cap = JitllmOpInt(node, 3);
+  const auto cap = LlmpOpInt(node, 3);
   if (cap != 0 && cap != 50) return Rejected("owner attention has an unsupported softcap");
   FlashAttnOwners in{
       .q = node->src[0],
@@ -252,4 +252,4 @@ std::expected<void, KernelFailure> CheckFlashAttnOwnersNode(const ggml_tensor* n
   if (!in) return std::unexpected(in.error());
   return {};
 }
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml

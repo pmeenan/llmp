@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Plain greedy decode tokens on the GPU — 2026-10-08
@@ -152,7 +152,7 @@ launch contributes no test or timing sample.
 Replay the existing DeepSeek input recipe below, with the same target and
 DSpark artifact dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5
 (index 437561ad6dd1e8d5fd3758be2a8eac52b8a1c81f6a1fb54b27e0b3badfeaa11c).
-Run `jitllm_dsv4_mask_probe ARTIFACT IDS0 IDS1 NEW_OUT
+Run `llmp_dsv4_mask_probe ARTIFACT IDS0 IDS1 NEW_OUT
 injected-host|injected-device DRAFTER` four times in host/device/device/host
 order under installed supervision and the same pinned library environment.
 Require the existing factor retirement/setup/work guards plus exactly one
@@ -261,7 +261,7 @@ Native Qwen derives from checkpoint925d7be6, GGUF UD-IQ3_XXS from38bb39ee;
 the existing model support entries retain complete import provenance.
 
 Obtain the authenticated standing Qwen `wave-prompts.json` from
-`~/.local/share/jitllm/references/qwen-device-masks/inputs` on Spark B or
+`~/.local/share/llmp/references/qwen-device-masks/inputs` on Spark B or
 supply its byte-identical capture, SHA
 52dd48eb2b96be3ebc6de1a9c8e3f5155016599a20c85c1dc1dd3778d2123952.
 Serialize its named 1536/1280-ID decode prompts as little-endian I32 without
@@ -278,9 +278,9 @@ frozen-source text retrieval/preparation recipe.
 
 Inside installed `spark-job --gpu` supervision, with pinned first-resolved
 cuBLAS, run four fresh processes with a new OUT for each, in off/on/on/off
-order. Qwen invocation is `jitllm_plain_token_probe ARTIFACT IDS0 IDS1 OUT
+order. Qwen invocation is `llmp_plain_token_probe ARTIFACT IDS0 IDS1 OUT
 off|on`; append `c1` for actual scalar Slot hooks, or `gguf` for GGUF C2.
-DeepSeek invocation is `jitllm_dsv4_mask_probe ARTIFACT IDS0 IDS1 OUT
+DeepSeek invocation is `llmp_dsv4_mask_probe ARTIFACT IDS0 IDS1 OUT
 tokens-host|tokens-device`. The probes fix the registered context/chunk/
 owners, warm traversal, 32-unit paid work and output proofs described above.
 Require all retirement markers, zero exits, matching setup, actual output

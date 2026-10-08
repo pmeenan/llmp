@@ -1,7 +1,7 @@
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# Runs `jitllm doctor` and checks its report (D-026).
+# Runs `llmp doctor` and checks its report (D-026).
 #
 #   MODE=report  any host: a report on standard output, nothing on standard
 #                error, and exit 0 exactly when the summary says "no
@@ -16,7 +16,7 @@
 #                the same, for a discrete GPU 0 of any targeted architecture
 #                but sm_121.
 #
-#   cmake -DBINARY=<jitllm> [-DEMULATOR=<runner args joined by |>] -DMODE=<mode>
+#   cmake -DBINARY=<llmp> [-DEMULATOR=<runner args joined by |>] -DMODE=<mode>
 #         -P check_doctor.cmake
 cmake_minimum_required(VERSION 4.4.3)
 
@@ -26,7 +26,7 @@ endif()
 string(REPLACE "|" ";" command "${EMULATOR}")
 list(APPEND command "${BINARY}" doctor)
 execute_process(COMMAND ${command} OUTPUT_VARIABLE output ERROR_VARIABLE error RESULT_VARIABLE result)
-message(STATUS "jitllm doctor exited ${result}:\n${output}")
+message(STATUS "llmp doctor exited ${result}:\n${output}")
 
 set(problems "")
 if(NOT error STREQUAL "")

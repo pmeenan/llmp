@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Qwen3.8 MXFP8 vector scheduling — 2026-09-30
@@ -17,7 +17,7 @@ of target verification kernel time to MXFP8 vector products. Their existing
 kernel already shares weights across input columns, but its fixed grouping
 leaves very few CTAs for small output counts.
 
-The benchmark copies jitLLM's owned MXFP8 arithmetic and sweeps rows per
+The benchmark copies llmpalooza's owned MXFP8 arithmetic and sweeps rows per
 warp 1/2/4, warps per block 4/8, and two input/weight loading orders.
 Every lane retains its original `v = lane + 32j` order, sixteen ordered
 FMAs per vector, scale FMA per block, and XOR reduction offsets 16 through
@@ -144,13 +144,13 @@ it was not unnecessarily repeated for this bit-preserving schedule.
 
 ## Reproduction and remaining work
 
-The reusable diagnostic is `jitllm_qwen38_mxfp8_tune`, built only in CUDA
+The reusable diagnostic is `llmp_qwen38_mxfp8_tune`, built only in CUDA
 profiles with GB10 device code. For example:
 
 ```sh
-jitllm_qwen38_mxfp8_tune --check-only on --padding 12 \
+llmp_qwen38_mxfp8_tune --check-only on --padding 12 \
   --shape 3,47,640 --shape 8,257,6144
-jitllm_qwen38_mxfp8_tune --shape 3,48,2560 --shape 4,512,2560 \
+llmp_qwen38_mxfp8_tune --shape 3,48,2560 --shape 4,512,2560 \
   --shape 5,640,2560 --reps 1024
 ```
 

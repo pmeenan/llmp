@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // M3's chat route as a server (D-097 as the owner amended it on 2026-09-28;
 // docs/runtime-serving.md#the-chat-route): `GET /v1/models`,
 // `GET /v1/models/{id}`, `POST /v1/chat/completions`, non-streaming
 // `POST /v1/completions` (D-100) and, for loopback
-// peers, `GET /jitllm/v1/ignored-fields`, on one listener per resolved
+// peers, `GET /llmp/v1/ignored-fields`, on one listener per resolved
 // endpoint (binding.h), over a Backend that runs the requests.
 // Vendor-free, so the CPU tests drive it with a fake backend.
 //
@@ -102,8 +102,8 @@
 // is logged: each logs an opaque ID, the model, the status and token
 // counts; an unknown field's name is logged once, when first seen.
 
-#ifndef JITLLM_RUNTIME_API_SERVER_H_
-#define JITLLM_RUNTIME_API_SERVER_H_
+#ifndef LLMP_RUNTIME_API_SERVER_H_
+#define LLMP_RUNTIME_API_SERVER_H_
 
 #include <atomic>
 #include <chrono>
@@ -134,7 +134,7 @@
 #include "runtime/intake_limits.h"
 #include "runtime/watchdog.h"
 
-namespace jitllm::runtime::api {
+namespace llmp::runtime::api {
 
 using Clock = std::chrono::steady_clock;
 
@@ -624,6 +624,6 @@ class Server {
   std::jthread parser_;
 };
 
-}  // namespace jitllm::runtime::api
+}  // namespace llmp::runtime::api
 
-#endif  // JITLLM_RUNTIME_API_SERVER_H_
+#endif  // LLMP_RUNTIME_API_SERVER_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // A model-fixture check of the selected Q4_1 head's existing scalar/joined
@@ -26,15 +26,15 @@
 #include "base/bytes.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_fast.h"
-#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
 
 namespace {
-namespace kg = jitllm::kernels::ggml;
-namespace dv = jitllm::providers;
+namespace kg = llmp::kernels::ggml;
+namespace dv = llmp::providers;
 constexpr std::int64_t kWidth = 2560, kRows = 47172, kColumns = 3;
 
 class Qwen38QuantHeadTest : public ::testing::Test {
@@ -49,7 +49,7 @@ class Qwen38QuantHeadTest : public ::testing::Test {
   std::filesystem::path fixture;
 
   void SetUp() override {
-    const char* path = std::getenv("JITLLM_Q4_HEAD_FIXTURE");
+    const char* path = std::getenv("LLMP_Q4_HEAD_FIXTURE");
     if (path == nullptr) GTEST_SKIP() << "needs the authenticated selected-head model fixture";
     fixture = path;
     ASSERT_TRUE(std::filesystem::is_directory(fixture));
@@ -61,7 +61,7 @@ class Qwen38QuantHeadTest : public ::testing::Test {
     stream = *created;
     auto made = kg::LaunchContext::Create(
         0, *execution, stream,
-        {.base = Allocate(256U << 20U), .size = jitllm::base::Bytes(256U << 20U)});
+        {.base = Allocate(256U << 20U), .size = llmp::base::Bytes(256U << 20U)});
     ASSERT_TRUE(made);
     launch = std::move(*made);
     auto tensors = kg::TensorArena::Create(256);

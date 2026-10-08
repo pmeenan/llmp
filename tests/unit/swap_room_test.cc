@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // Room for a swap's incoming model (runtime/swap_room.h), against a ledger
@@ -19,13 +19,13 @@
 
 namespace {
 
-namespace rt = jitllm::runtime;
+namespace rt = llmp::runtime;
 
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
 constexpr std::uint64_t kExtent = 2 * kMiB;
 
 TEST(SwapRoom, IncompatibleDonorsReleaseBeforeHostFirstLoadsAtTheBudget) {
-  const jitllm::catalog::DomainId domain{0, 1};
+  const llmp::catalog::DomainId domain{0, 1};
   const auto extent = [&](std::uint32_t id, std::size_t allocation_class) {
     return rt::SwapBackingExtent{
         .extent = {id, 1},
@@ -38,7 +38,7 @@ TEST(SwapRoom, IncompatibleDonorsReleaseBeforeHostFirstLoadsAtTheBudget) {
   const std::array selected = {extent(1, 2), extent(2, 2), extent(3, 2), extent(4, 2)};
   auto release = rt::ReleaseForHandoff(domain, 4 * kExtent, 4 * kExtent, missing, selected);
   ASSERT_TRUE(release) << release.error();
-  EXPECT_EQ(*release, (std::vector<jitllm::catalog::ExtentId>{{1, 1}}));
+  EXPECT_EQ(*release, (std::vector<llmp::catalog::ExtentId>{{1, 1}}));
   std::ranges::reverse(missing);
   EXPECT_EQ(rt::ReleaseForHandoff(domain, 4 * kExtent, 4 * kExtent, missing, selected), release);
   missing.front().backing->allocation_class = 1;
@@ -48,7 +48,7 @@ TEST(SwapRoom, IncompatibleDonorsReleaseBeforeHostFirstLoadsAtTheBudget) {
 }
 
 TEST(SwapRoom, CompatibleDonorsStillReleaseEnoughForAnExistingOvercharge) {
-  const jitllm::catalog::DomainId domain{0, 1};
+  const llmp::catalog::DomainId domain{0, 1};
   const auto extent = [&](std::uint32_t id) {
     return rt::SwapBackingExtent{.extent = {id, 1},
                                  .bytes = kExtent,
@@ -61,12 +61,12 @@ TEST(SwapRoom, CompatibleDonorsStillReleaseEnoughForAnExistingOvercharge) {
   EXPECT_TRUE(release->empty());
   release = rt::ReleaseForHandoff(domain, 5 * kExtent, 4 * kExtent, missing, selected);
   ASSERT_TRUE(release) << release.error();
-  EXPECT_EQ(*release, (std::vector<jitllm::catalog::ExtentId>{{1, 1}}));
+  EXPECT_EQ(*release, (std::vector<llmp::catalog::ExtentId>{{1, 1}}));
   EXPECT_FALSE(rt::ReleaseForHandoff(domain, 6 * kExtent, 4 * kExtent, missing, selected));
 }
 
 TEST(SwapRoom, HandoffPartitionRejectsAliasesCrossDomainAndMismatchedCharge) {
-  const jitllm::catalog::DomainId domain{0, 1};
+  const llmp::catalog::DomainId domain{0, 1};
   const rt::SwapBackingExtent incoming{
       .extent = {10, 1}, .bytes = kExtent, .backing = std::nullopt};
   rt::SwapBackingExtent outgoing{.extent = {1, 1},
@@ -86,11 +86,11 @@ TEST(SwapRoom, HandoffPartitionRejectsAliasesCrossDomainAndMismatchedCharge) {
   selected[0].backing.reset();
   const auto release = rt::ReleaseForHandoff(domain, kExtent, kExtent, missing, selected);
   ASSERT_TRUE(release) << release.error();
-  EXPECT_EQ(*release, (std::vector<jitllm::catalog::ExtentId>{{1, 1}}));
+  EXPECT_EQ(*release, (std::vector<llmp::catalog::ExtentId>{{1, 1}}));
 }
 
 TEST(SwapRoom, HandoffPartitionAuthenticatesWholeTypedIdentitiesAndSelectedOrder) {
-  const jitllm::catalog::DomainId domain{0, 1};
+  const llmp::catalog::DomainId domain{0, 1};
   const auto extent = [&](std::uint32_t index, std::uint32_t generation,
                           std::size_t allocation_class) {
     return rt::SwapBackingExtent{
@@ -105,13 +105,13 @@ TEST(SwapRoom, HandoffPartitionAuthenticatesWholeTypedIdentitiesAndSelectedOrder
   std::vector selected{extent(8, 1, 2), extent(4, 1, 2), extent(1, 1, 2)};
   const auto release = rt::ReleaseForHandoff(domain, 3 * kExtent, 3 * kExtent, missing, selected);
   ASSERT_TRUE(release) << release.error();
-  EXPECT_EQ(*release, (std::vector<jitllm::catalog::ExtentId>{{8, 1}, {4, 1}}));
+  EXPECT_EQ(*release, (std::vector<llmp::catalog::ExtentId>{{8, 1}, {4, 1}}));
   std::ranges::reverse(missing);
   EXPECT_EQ(rt::ReleaseForHandoff(domain, 3 * kExtent, 3 * kExtent, missing, selected), release);
   std::ranges::reverse(selected);
   const auto reversed = rt::ReleaseForHandoff(domain, 3 * kExtent, 3 * kExtent, missing, selected);
   ASSERT_TRUE(reversed) << reversed.error();
-  EXPECT_EQ(*reversed, (std::vector<jitllm::catalog::ExtentId>{{1, 1}, {4, 1}}));
+  EXPECT_EQ(*reversed, (std::vector<llmp::catalog::ExtentId>{{1, 1}, {4, 1}}));
 
   auto duplicated = missing;
   duplicated.push_back(missing.front());

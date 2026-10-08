@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 # Builds the probe on the Spark itself with its CUDA 13.0 toolkit and the
 # system GCC as host compiler (a standalone probe, not the SDK build).

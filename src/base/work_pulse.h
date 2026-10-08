@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The pulse of long work on the CPU (D-102's hang recovery,
@@ -11,13 +11,13 @@
 // pulse beats nothing and is never asked to stop. Header-only and
 // lock-free: a beat is one relaxed increment.
 
-#ifndef JITLLM_BASE_WORK_PULSE_H_
-#define JITLLM_BASE_WORK_PULSE_H_
+#ifndef LLMP_BASE_WORK_PULSE_H_
+#define LLMP_BASE_WORK_PULSE_H_
 
 #include <atomic>
 #include <cstdint>
 
-namespace jitllm::base {
+namespace llmp::base {
 
 class WorkPulse {
  public:
@@ -65,6 +65,6 @@ inline bool Pulse() {
   return !pulse->cancelled();
 }
 
-}  // namespace jitllm::base
+}  // namespace llmp::base
 
-#endif  // JITLLM_BASE_WORK_PULSE_H_
+#endif  // LLMP_BASE_WORK_PULSE_H_

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The GGML-derived implementations' operand checks (kernels/ggml/
@@ -34,35 +34,35 @@
 
 namespace {
 
-using jitllm::kernels::ggml::CheckBinary;
-using jitllm::kernels::ggml::CheckClearOf;
-using jitllm::kernels::ggml::CheckCont;
-using jitllm::kernels::ggml::CheckGetRows;
-using jitllm::kernels::ggml::CheckMulMat;
-using jitllm::kernels::ggml::CheckMulMatCublas;
-using jitllm::kernels::ggml::CheckMulMatF;
-using jitllm::kernels::ggml::CheckMulMatVecBias;
-using jitllm::kernels::ggml::CheckMulMatVecGlu;
-using jitllm::kernels::ggml::CheckRmsNorm;
-using jitllm::kernels::ggml::CheckRmsNormMul;
-using jitllm::kernels::ggml::CheckRmsNormThenMul;
-using jitllm::kernels::ggml::CheckRope;
-using jitllm::kernels::ggml::CheckRopeSetRows;
-using jitllm::kernels::ggml::CheckSetRows;
-using jitllm::kernels::ggml::CheckSoftMax;
-using jitllm::kernels::ggml::CheckSwiGlu;
-using jitllm::kernels::ggml::ContCopy;
-using jitllm::kernels::ggml::CublasGemm;
-using jitllm::kernels::ggml::CublasOperand;
-using jitllm::kernels::ggml::FusionMemoryClear;
-using jitllm::kernels::ggml::GetRowsVectorized;
-using jitllm::kernels::ggml::GraphOrder;
-using jitllm::kernels::ggml::KernelError;
-using jitllm::kernels::ggml::MulMatAddFusionAt;
-using jitllm::kernels::ggml::MulMatGluFusionAt;
-using jitllm::kernels::ggml::RopeSetRowsFusionAt;
-using jitllm::kernels::ggml::SoftMaxSharedBytes;
-using jitllm::kernels::ggml::TensorArena;
+using llmp::kernels::ggml::CheckBinary;
+using llmp::kernels::ggml::CheckClearOf;
+using llmp::kernels::ggml::CheckCont;
+using llmp::kernels::ggml::CheckGetRows;
+using llmp::kernels::ggml::CheckMulMat;
+using llmp::kernels::ggml::CheckMulMatCublas;
+using llmp::kernels::ggml::CheckMulMatF;
+using llmp::kernels::ggml::CheckMulMatVecBias;
+using llmp::kernels::ggml::CheckMulMatVecGlu;
+using llmp::kernels::ggml::CheckRmsNorm;
+using llmp::kernels::ggml::CheckRmsNormMul;
+using llmp::kernels::ggml::CheckRmsNormThenMul;
+using llmp::kernels::ggml::CheckRope;
+using llmp::kernels::ggml::CheckRopeSetRows;
+using llmp::kernels::ggml::CheckSetRows;
+using llmp::kernels::ggml::CheckSoftMax;
+using llmp::kernels::ggml::CheckSwiGlu;
+using llmp::kernels::ggml::ContCopy;
+using llmp::kernels::ggml::CublasGemm;
+using llmp::kernels::ggml::CublasOperand;
+using llmp::kernels::ggml::FusionMemoryClear;
+using llmp::kernels::ggml::GetRowsVectorized;
+using llmp::kernels::ggml::GraphOrder;
+using llmp::kernels::ggml::KernelError;
+using llmp::kernels::ggml::MulMatAddFusionAt;
+using llmp::kernels::ggml::MulMatGluFusionAt;
+using llmp::kernels::ggml::RopeSetRowsFusionAt;
+using llmp::kernels::ggml::SoftMaxSharedBytes;
+using llmp::kernels::ggml::TensorArena;
 
 constexpr std::int64_t kWidth = 896;
 constexpr std::uint64_t kBase = 1ULL << 40;  // never dereferenced
@@ -80,7 +80,7 @@ class GgmlValidateTest : public ::testing::Test {
     return Bound(ggml_new_tensor_2d(context(), GGML_TYPE_F32, ne0, ne1));
   }
   template <typename T>
-  static void Rejected(const std::expected<T, jitllm::kernels::ggml::KernelFailure>& checked) {
+  static void Rejected(const std::expected<T, llmp::kernels::ggml::KernelFailure>& checked) {
     ASSERT_FALSE(checked.has_value());
     EXPECT_EQ(checked.error().error, KernelError::kRejected);
   }
@@ -525,10 +525,10 @@ TEST_F(GgmlOpsValidateTest, GetRowsIsRefusedWhatItsLauncherAssertsOn) {
   EXPECT_TRUE(CheckGetRows(from_half));
   EXPECT_FALSE(GetRowsVectorized(from_half));
   const std::array<ggml_tensor*, 1> half_nodes = {from_half};
-  auto half_plan = jitllm::kernels::ggml::PlanGraph(half_nodes, false, {});
+  auto half_plan = llmp::kernels::ggml::PlanGraph(half_nodes, false, {});
   ASSERT_TRUE(half_plan);
   ASSERT_EQ(half_plan->steps.size(), 1U);
-  EXPECT_EQ(half_plan->steps.front().implementation, jitllm::kernels::ggml::kGetRowsName);
+  EXPECT_EQ(half_plan->steps.front().implementation, llmp::kernels::ggml::kGetRowsName);
   // An output over the rows it reads.
   ggml_tensor* over = ggml_get_rows(context(), rows, ids);
   TensorArena::Bind(over, reinterpret_cast<std::uintptr_t>(rows->data));
@@ -553,7 +553,7 @@ TEST_F(GgmlOpsValidateTest, GetRowsIsRefusedWhatItsLauncherAssertsOn) {
 }
 
 TEST_F(GgmlOpsValidateTest, GroupedStoresRequireWholeCrossStoreIndependence) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   const auto store = [&](std::int64_t width, std::int64_t rows) {
     return ggml_set_rows(context(), Typed(GGML_TYPE_F16, width, 32), F32(width, rows),
                          Typed(GGML_TYPE_I64, rows));
@@ -600,7 +600,7 @@ TEST_F(GgmlOpsValidateTest, GroupedStoresRequireWholeCrossStoreIndependence) {
 }
 
 TEST(GroupedSetRowsPlan, SplitsLongRunsAndPreservesReadsKeepsAndAliasFallback) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   auto arena = TensorArena::Create(256).value();
   auto* ctx = arena.context();
   std::uint64_t address = kBase;
@@ -859,7 +859,7 @@ TEST_F(GgmlOpsValidateTest, SwiGluIsSplitAndMayRunInPlace) {
 }
 
 TEST_F(GgmlOpsValidateTest, GemmaGeGluTakesIndependentUniformRowsAndRefusesVariants) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   for (const std::int64_t width : {2112, 704}) {
     for (const std::int64_t rows : {1, 4}) {
       auto* both = F32(2 * width, rows);
@@ -896,7 +896,7 @@ TEST_F(GgmlOpsValidateTest, GemmaGeGluTakesIndependentUniformRowsAndRefusesVaria
 }
 
 TEST_F(GgmlOpsValidateTest, GemmaExpertGeGluViewsRequireUniformRowsAndCurrentBindings) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   auto* both = Typed(GGML_TYPE_F32, 1408, 8, 4);
   auto* gate = ggml_view_3d(context(), both, 704, 8, 4, both->nb[1], both->nb[2], 0);
   auto* up =
@@ -914,7 +914,7 @@ TEST_F(GgmlOpsValidateTest, GemmaExpertGeGluViewsRequireUniformRowsAndCurrentBin
 }
 
 TEST_F(GgmlOpsValidateTest, GemmaMmvfGeGluFusionPreservesItsOwnOneColumnContract) {
-  namespace kg = jitllm::kernels::ggml;
+  namespace kg = llmp::kernels::ggml;
   for (const std::int64_t rows : {1, 4}) {
     auto* x = F32(2816, rows);
     auto* wg = Typed(GGML_TYPE_F16, 2816, 2112);
@@ -987,13 +987,13 @@ class GgmlFusionTest : public GgmlOpsValidateTest {
   // The nodes GGML's graph would record for `outputs`, in its order.
   static std::vector<ggml_tensor*> Graph(std::initializer_list<ggml_tensor*> outputs) {
     auto nodes = GraphOrder(std::span<ggml_tensor* const>(outputs.begin(), outputs.size()));
-    const jitllm::kernels::ggml::detail::GraphReadIndex reads(nodes, {});
+    const llmp::kernels::ggml::detail::GraphReadIndex reads(nodes, {});
     for (std::size_t i = 0; i < nodes.size(); ++i) {
       EXPECT_EQ(bool(MulMatGluFusionAt(nodes, i)), bool(MulMatGluFusionAt(nodes, i, &reads)));
       EXPECT_EQ(bool(MulMatAddFusionAt(nodes, i)), bool(MulMatAddFusionAt(nodes, i, &reads)));
       EXPECT_EQ(bool(RopeSetRowsFusionAt(nodes, i)), bool(RopeSetRowsFusionAt(nodes, i, &reads)));
-      EXPECT_EQ(bool(jitllm::kernels::ggml::RmsNormMulFusionAt(nodes, i)),
-                bool(jitllm::kernels::ggml::RmsNormMulFusionAt(nodes, i, &reads)));
+      EXPECT_EQ(bool(llmp::kernels::ggml::RmsNormMulFusionAt(nodes, i)),
+                bool(llmp::kernels::ggml::RmsNormMulFusionAt(nodes, i, &reads)));
     }
     return nodes;
   }
@@ -1028,7 +1028,7 @@ TEST_F(GgmlFusionTest, TheDecodeFfnFusesGateUpAndDownWithTheResidual) {
   if (!fused) {
     FAIL() << "not fused";
   }
-  const jitllm::kernels::ggml::MulMatGluNodes nodes = *fused;
+  const llmp::kernels::ggml::MulMatGluNodes nodes = *fused;
   EXPECT_EQ(nodes.gate, gate);
   EXPECT_EQ(nodes.up, up);
   EXPECT_EQ(nodes.glu, glu);

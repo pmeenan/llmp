@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 
 import array,hashlib,json,pathlib,math,datetime
-s=pathlib.Path('/home/pmeenan/.local/share/jitllm/gemma-assistant-native')
+s=pathlib.Path('/home/pmeenan/.local/share/llmp/gemma-assistant-native')
 def ident(p):
  b=p.read_bytes();return {'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()}
 pre=json.loads((s/'native-pre3.json').read_text()); own=json.loads((s/'native-own3-frozen.json').read_text()); m=json.loads((s/'posthoc-c1-owner0-manifest.json').read_text())
 assert hashlib.sha256((s/'native-own3-frozen.json').read_bytes()).hexdigest()==m['native_endogenous_freeze_sha256']
-assert ident(pathlib.Path('/home/pmeenan/src/jitLLM-wt/m3fixb/build/spark-native/benchmarks/jitllm_gemma_assistant_fixture'))==pre['binary']
+assert ident(pathlib.Path('/home/pmeenan/src/llmp-wt/m3fixb/build/spark-native/benchmarks/llmp_gemma_assistant_fixture'))==pre['binary']
 for n,r in m['files'].items():assert ident(s/'posthoc-c1'/n)==r
-job=pathlib.Path('/home/pmeenan/.local/share/jitllm/jobs/m35-assistant-execution-posthoc3')
+job=pathlib.Path('/home/pmeenan/.local/share/llmp/jobs/m35-assistant-execution-posthoc3')
 assert json.loads((job/'final.json').read_text())['rc']==0
 assert all(r['rc']==0 for r in json.loads((job/'steps.json').read_text())['steps'])
 log=(job/'log').read_text();cache=[x.split('=')[-1] for x in log.splitlines() if 'immutable_cache_' in x];assert len(cache)==5 and len(set(cache))==1 and cache[0]==own['borrowed_cache_sha256']

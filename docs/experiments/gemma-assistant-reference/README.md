@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Original-image Gemma assistant oracle seam
@@ -94,7 +94,7 @@ Known client vector capacity is conservatively bounded by 256 MiB for at most
 two owners/three steps, including at most 32 MiB opaque state per owner;
 the descriptor-only arena is 1 MiB. Original model/backend allocations are
 separate. No whole-process or physical peak is measured, and this is no
-jitLLM memory qualification.
+llmpalooza memory qualification.
 
 Two failed acquisitions remain preserved. The first refused the all-MTP
 assistant because the client confused public trunk count zero with total

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Check the pinned CMake's FetchContent semantics using synthetic local input."""
 
@@ -52,7 +52,7 @@ def main():
         return result.stdout
 
     passed = []
-    with tempfile.TemporaryDirectory(prefix="jitllm-cmake-fetchcontent-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="llmp-cmake-fetchcontent-") as tmp:
         root = Path(tmp)
         require(run(["--version"], root).splitlines()[0] == f"cmake version {version}",
                 f"Expected the pinned CMake {version}")

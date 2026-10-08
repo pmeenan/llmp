@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/cohort_capacity.h"
 
 #include <algorithm>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 namespace {
 
 // A member that retires or runs next: the cohort is not stuck.
@@ -111,4 +111,4 @@ bool AdmissionOpen(const Cohort& cohort) {
   });
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

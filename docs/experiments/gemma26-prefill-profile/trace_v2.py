@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Bound analysis to actual NVTX interval; aggregate activity, never headline speed."""
 import collections
@@ -13,7 +13,7 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('profile_validate',pathlib.Path(__file__).with_name('validate.py'))
 validate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(validate)
-LABEL = 'jitllm.gemma26.paid_prefill'
+LABEL = 'llmp.gemma26.paid_prefill'
 
 
 def union_ns(intervals):
@@ -72,7 +72,7 @@ def extract(path, completion_record, engine, label=LABEL):
     model = [r for r in processes if r['pid'] == completion_record['child_pid']]
     assert len(model) == 1
     model = model[0]
-    expected = 'jitllm_gemma26_prefill_profile' if engine == 'native' else 'llama_prefill_profile'
+    expected = 'llmp_gemma26_prefill_profile' if engine == 'native' else 'llama_prefill_profile'
     # Linux comm can truncate to 15 bytes; PID ownership comes from the atomic
     # waitpid completion receipt and the actual process metadata, not the name.
     assert pathlib.Path(model['name']).name in (expected,expected[:15])

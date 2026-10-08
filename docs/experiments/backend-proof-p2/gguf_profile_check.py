@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Checks jitLLM's compiled-in Qwen2 profile against the checkpoint's GGUF.
+"""Checks llmpalooza's compiled-in Qwen2 profile against the checkpoint's GGUF.
 
 M2 has no GGUF reader, so the Qwen2.5-0.5B profile the native runs use is
 compiled in (src/model/qwen2.cc). This reference-side check reads the FP16

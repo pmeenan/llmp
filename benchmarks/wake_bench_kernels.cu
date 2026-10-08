@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cuda_runtime.h>
@@ -7,7 +7,7 @@
 
 #include "wake_bench_kernels.h"
 
-namespace jitllm::wake {
+namespace llmp::wake {
 namespace {
 
 __device__ std::uint64_t Now() {
@@ -49,4 +49,4 @@ cudaError_t Tick(cudaStream_t stream, std::uint64_t ns, std::uint64_t* out) {
   return cudaGetLastError();
 }
 
-}  // namespace jitllm::wake
+}  // namespace llmp::wake

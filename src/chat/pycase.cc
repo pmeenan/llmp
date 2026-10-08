@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "chat/pycase.h"
@@ -10,7 +10,7 @@
 #include "chat/pyjson.h"
 #include "tokenizer/unicode.h"
 
-namespace jitllm::chat {
+namespace llmp::chat {
 namespace {
 
 namespace unicode = tokenizer::unicode;
@@ -270,4 +270,4 @@ bool PythonIsCase(std::string_view text, bool lower) {
 bool PythonIsLower(std::string_view text) { return PythonIsCase(text, true); }
 bool PythonIsUpper(std::string_view text) { return PythonIsCase(text, false); }
 
-}  // namespace jitllm::chat
+}  // namespace llmp::chat

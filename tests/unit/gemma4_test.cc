@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "model/gemma4.h"
@@ -24,22 +24,22 @@
 #include "expected_error.h"
 
 namespace {
-namespace md = jitllm::model;
-namespace json = jitllm::base::json;
+namespace md = llmp::model;
+namespace json = llmp::base::json;
 constexpr std::uint64_t kExtent = 2U << 20U;
 json::Value Get(json::Value value, std::string_view key) {
   auto found = value.find(key);
-  jitllm::base::Check(found.has_value(), "Gemma4 fixture has a missing key");
+  llmp::base::Check(found.has_value(), "Gemma4 fixture has a missing key");
   return *found;
 }
 json::Document Fixture(std::uint32_t size) {
-  const auto* dir = std::getenv("JITLLM_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
-  jitllm::base::Check(dir != nullptr, "Gemma4 test fixture directory is missing");
+  const auto* dir = std::getenv("LLMP_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
+  llmp::base::Check(dir != nullptr, "Gemma4 test fixture directory is missing");
   std::ifstream file(std::string(dir) + "/gemma4/gemma4_" + std::to_string(size) + "b.json");
-  jitllm::base::Check(file.good(), "Gemma4 fixture is missing");
+  llmp::base::Check(file.good(), "Gemma4 fixture is missing");
   std::string text(std::istreambuf_iterator<char>{file}, {});
   auto doc = json::Parse(text);
-  jitllm::base::Check(doc.has_value(), "Gemma4 fixture is not JSON");
+  llmp::base::Check(doc.has_value(), "Gemma4 fixture is not JSON");
   return std::move(*doc);
 }
 std::uint64_t PreparedReadable(const md::Gemma4Resource& resource) {
@@ -51,10 +51,10 @@ std::uint64_t PreparedReadable(const md::Gemma4Resource& resource) {
     text += std::to_string(dim);
   }
   text += "]}";
-  const auto doc = jitllm::artifact::json::Parse(text);
-  jitllm::base::Check(doc.has_value(), "Gemma4 test representation is not JSON");
-  const auto repr = jitllm::artifact::ParseRepresentation(doc->root());
-  jitllm::base::Check(repr.has_value(), "Gemma4 test representation is invalid");
+  const auto doc = llmp::artifact::json::Parse(text);
+  llmp::base::Check(doc.has_value(), "Gemma4 test representation is not JSON");
+  const auto repr = llmp::artifact::ParseRepresentation(doc->root());
+  llmp::base::Check(repr.has_value(), "Gemma4 test representation is invalid");
   return repr->readable;
 }
 std::vector<md::Gemma4Resource> Resources(std::uint32_t size) {
@@ -66,9 +66,9 @@ std::vector<md::Gemma4Resource> Resources(std::uint32_t size) {
     md::Gemma4Resource r;
     r.roles = {std::string(Get(t, "name").string())};
     const auto id = *Get(t, "ggml_type").int64();
-    const auto types = jitllm::artifact::GgmlTypes();
+    const auto types = llmp::artifact::GgmlTypes();
     const auto type = std::ranges::find_if(types, [id](const auto& x) { return x.id == id; });
-    jitllm::base::Check(type != types.end(), "Gemma4 fixture GGML type is unknown");
+    llmp::base::Check(type != types.end(), "Gemma4 fixture GGML type is unknown");
     r.type = type->name;
     const auto ne = Get(t, "ne");
     for (std::size_t j = 0; j < ne.size(); ++j) {
@@ -89,7 +89,7 @@ std::vector<md::Gemma4Resource> Resources(std::uint32_t size) {
 md::Gemma4Resource& Role(std::vector<md::Gemma4Resource>& resources, std::string_view role) {
   const auto found = std::ranges::find_if(
       resources, [role](const auto& r) { return std::ranges::contains(r.roles, role); });
-  jitllm::base::Check(found != resources.end(), "Gemma4 test role is missing");
+  llmp::base::Check(found != resources.end(), "Gemma4 test role is missing");
   return *found;
 }
 void CheckProfile(const md::Gemma4Profile& p, std::uint32_t size) {
@@ -149,7 +149,7 @@ TEST(Gemma4, BothActualTensorContractsBindWithTiedHeadsAndGlobalProjections) {
   for (const auto size : {26U, 31U}) {
     const auto& p = size == 26 ? md::Gemma4_26BA4B() : md::Gemma4_31B();
     auto bound = md::BindGemma4(p, "gemma4", Resources(size));
-    ASSERT_TRUE(bound) << *jitllm::test_support::Failed(bound);
+    ASSERT_TRUE(bound) << *llmp::test_support::Failed(bound);
     EXPECT_EQ(bound->output.index, bound->token_embd.index);
     EXPECT_EQ(bound->rope_freqs.ne, (std::vector<std::uint64_t>{256}));
     EXPECT_EQ(bound->layers[5].v.index, bound->layers[5].k.index);

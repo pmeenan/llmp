@@ -2,7 +2,7 @@
   "config": "gemma-3-4b-gguf",
   "source": {"path": "tokenizer-reference/legacy/gemma3.gguf", "sha256": "3073f37db9c1977ed7d68cd64707ce32043eecd250000a929a2ceb6723b1ad4c", "checkpoint": {"name": "gemma3", "repository": "ggml-org/gemma-3-4b-it-qat-GGUF", "revision": "bbcac0d065076c47042838c0675c602411b0dd4c", "file": "gemma-3-4b-it-qat-Q4_0.gguf", "full_bytes": 2526080992, "full_sha256": "ee91c3e7a4ab95d8c95672f9fcb58bf236b257e9f217966bcf53a5a6df4ab49a", "header_bytes": 6514895, "header_sha256": "3073f37db9c1977ed7d68cd64707ce32043eecd250000a929a2ceb6723b1ad4c", "path": "tokenizer-reference/legacy/gemma3.gguf"}},
   "reference": "llama.cpp llama-tokenize, image ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7 (b29c606e)",
-  "corpus_sha256": "66d3940a8d35f641d62b5e1114fbe81d22e6f22fd7f6a630071c7368ad20245b",
+  "corpus_sha256": "206453ef4086e899079d027c80a32b444b046e5878879ecb75da3e6b3128ce88",
   "items": [
     {"name": "empty", "well_formed": true, "parse": [], "plain": []},
     {"name": "ascii-sentence", "well_formed": true, "parse": [9259, 236764, 1902, 236888, 1174, 563, 496, 1594, 529, 506, 92875, 236761], "plain": [9259, 236764, 1902, 236888, 1174, 563, 496, 1594, 529, 506, 92875, 236761]},

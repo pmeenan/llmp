@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "runtime/memory_guard.h"
@@ -8,7 +8,7 @@
 #include <format>
 #include <string>
 
-namespace jitllm::runtime {
+namespace llmp::runtime {
 
 std::uint64_t GuardReserve(const MemoryGuard& guard) {
   return guard.host_inputs + guard.plans + guard.requests + kUncountedMargin;
@@ -51,4 +51,4 @@ std::expected<void, std::string> CheckDiagnosticBudgetCap(const MemoryGuard& gua
   return {};
 }
 
-}  // namespace jitllm::runtime
+}  // namespace llmp::runtime

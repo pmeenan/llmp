@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 # SPDX-License-Identifier: Apache-2.0
 """Bounded real-serving admission, independent own freeze, strict lineage/loss and bookends."""
 import array
@@ -111,7 +111,7 @@ def admit(root, s, key, admission, phases):
         retired = load(root / (key+'-container-retired.json'), admission['retirement_sha256'])
         assert retired['container_absent_after_checked_docker_query'] is True
         assert retired['owner_label'] == 'gemma26-late-moe'
-        assert retired['name'] == 'jitllm-gemma26-late-moe-serving-'+key
+        assert retired['name'] == 'llmp-gemma26-late-moe-serving-'+key
         assert re.fullmatch('[0-9a-f]{64}', retired['cid'])
         caches = re.findall(r'llama_kv_cache: size = .*?\(\s*(\d+) cells,\s*(\d+) layers,\s*(\d+)/(\d+) seqs\), K \(f16\): .*?V \(f16\):', log)
         assert sorted(tuple(map(int,x)) for x in caches) == [(1280,50,count,count),(8192,10,count,count)]
@@ -260,7 +260,7 @@ def carrier(root,source_sha,count,native_sha):
 
 
 # Preserve the already-qualified current-pin full-vocabulary FP64 calculation.
-NUMERICAL_SHA = 'df76a8dccb6ec7c3cbd27c3a577a37ada9e5aba19b8a4153ed576316d3016eff'
+NUMERICAL_SHA = '841b67633e6960ddbc81c1895963f25db24a52bc23b291049e65fb46864edc89'
 NUMERICAL_PATH = Path(__file__).resolve().parent.parent / 'gemma-release-c2/analyze.py'
 assert digest(NUMERICAL_PATH) == NUMERICAL_SHA
 spec = importlib.util.spec_from_file_location('gemma_current_c2_numerics', NUMERICAL_PATH)

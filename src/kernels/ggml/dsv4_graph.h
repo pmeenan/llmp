@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // The GGML graph of one DeepSeek V4 chunk (model/dsv4.h), built with GGML's
@@ -22,7 +22,7 @@
 // That is the reference form. The fast plan (Dsv4GraphOptions::fused)
 // departs from it also in the attention at depth (docs/experiments/
 // long-context, phase 2): no concatenated K, the masks built on the device
-// from each row's visible counts, jitLLM's deterministic indexer, and the
+// from each row's visible counts, llmpalooza's deterministic indexer, and the
 // MMA kernel's sparse gather, so its host inputs carry no CSA, HCA or
 // indexer mask (Dsv4Graph::csa_visible, hca_visible instead).
 // A positive shape.outputs selects trailing rows before the final mix,
@@ -50,8 +50,8 @@
 // views (graph_plan.h BindViews). Every profile builds this; nothing here
 // launches.
 
-#ifndef JITLLM_KERNELS_GGML_DSV4_GRAPH_H_
-#define JITLLM_KERNELS_GGML_DSV4_GRAPH_H_
+#ifndef LLMP_KERNELS_GGML_DSV4_GRAPH_H_
+#define LLMP_KERNELS_GGML_DSV4_GRAPH_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -67,7 +67,7 @@
 #include "model/dspark.h"
 #include "model/dsv4.h"
 
-namespace jitllm::kernels::ggml {
+namespace llmp::kernels::ggml {
 
 // The measured compact expert scheduling floor for production DeepSeek
 // prefill. Native model controls share it; direct operation controls may
@@ -204,19 +204,19 @@ struct Dsv4GraphOptions {
   std::vector<std::uint32_t> features = {};
   // With `features`, the drafter's KV injection in the same graph.
   std::optional<Dsv4Injection> inject = std::nullopt;
-  // The fast plan (jitllm_ops.h, "DeepSeek V4's fast plan"; the owner's
+  // The fast plan (llmp_ops.h, "DeepSeek V4's fast plan"; the owner's
   // policy, 2026-09-28): for chunks of at most kVecQTokens rows, each
-  // hyper-connection pre-mix and the norm after it as jitllm.dsv4.hc_mix
+  // hyper-connection pre-mix and the norm after it as llmp.dsv4.hc_mix
   // and hc_pre, and each MoE block as the routing, one activation
   // quantization, the routed and shared experts' products with their SwiGLU
   // in the kernel (each distinct expert read once for the chunk) and the
   // combination. And for every chunk, sparse attention at depth
-  // (jitllm_ops.h, "DeepSeek V4's sparse attention"): each layer's window
+  // (llmp_ops.h, "DeepSeek V4's sparse attention"): each layer's window
   // cells and, in a compressed layer, its compressed rows read in place as
   // one K (no concatenation), masked on the device (the indexer's selection
   // for CSA, the visible rows for HCA), attended through the MMA kernel's
   // gather of the unmasked cells; the indexer's scores and selection as
-  // jitllm.dsv4.lid_topk (deterministic, ties to the lower row). A token's
+  // llmp.dsv4.lid_topk (deterministic, ties to the lower row). A token's
   // attention and indexer then cost the same at any depth but for the
   // indexer's scoring and HCA's one row per 128 positions, over a ring
   // window (model/dsv4.h Dsv4Window::kRing) or the full one. Not llama.cpp's
@@ -298,7 +298,7 @@ struct Dsv4Graph {
   bool state_only_tail_cut = false;  // final trunk omitted; required exports retain it
   std::vector<ggml_tensor*> nodes;   // GGML's order, views included
   // Intermediate tensors under llama.cpp's callback names ("l_last-7",
-  // "attn_out-7", "ffn_moe_out-7", "hc_head-1", ...) and a few of jitLLM's
+  // "attn_out-7", "ffn_moe_out-7", "hc_head-1", ...) and a few of llmpalooza's
   // ("kq_mask-7", "lid_topk-7", the fast plan's "ffn_moe_route-7"), for
   // comparisons.
   std::vector<std::pair<std::string, ggml_tensor*>> named;
@@ -328,7 +328,7 @@ std::size_t Dsv4GraphTensors(const model::Dsv4Profile& profile);
 // plan's vector products and GGML's float vector kernel give each column
 // the same arithmetic at any count from two to eight, so a slot's verify
 // rows in a wave equal its verify alone bit for bit; a wave of one-row
-// steps gives its vector products the one-token launch (jitllm_ops.h
+// steps gives its vector products the one-token launch (llmp_ops.h
 // SetVecQOneToken), so each slot's row equals its step alone bit for bit.
 // A wave mixing one-row and wider slots keeps the wider launch. Every
 // slot's rows count toward kDsv4WaveRows, so sixteen one-row steps (the
@@ -370,9 +370,9 @@ std::size_t Dsv4WaveGraphTensors(const model::Dsv4Profile& profile, std::size_t 
 
 // Whether the binding's weights let every layer take the fast plan's fused
 // form, which a wave needs: the profile's widths, and each layer's routed
-// and shared expert products jitllm.vecq types with gate and up alike. The
+// and shared expert products llmp.vecq types with gate and up alike. The
 // mixing weights' type is not a condition (F32, F16 and BF16 take
-// jitllm.dsv4.hc_mix; another type GGML's product). Refused with the first
+// llmp.dsv4.hc_mix; another type GGML's product). Refused with the first
 // layer that does not, and its types: a runner then serves one request at a
 // time rather than refusing the model.
 std::expected<void, KernelFailure> Dsv4WaveSupport(const model::Dsv4Profile& profile,
@@ -440,7 +440,7 @@ std::expected<DsparkGraph, KernelFailure> BuildDsparkGraph(TensorArena& arena,
 // (the products read each weight once for every slot's rows), and each
 // slot's attention over its own ring and its Markov head over its own rows,
 // as BuildDsv4WaveGraph joins a wave's verifies. Each slot's drafts equal
-// its own draft block's (BuildDsparkGraph) bit for bit: jitllm.vecq gives
+// its own draft block's (BuildDsparkGraph) bit for bit: llmp.vecq gives
 // each row the same sums at any count of two or more, a float product past
 // GGML's column-invariant count runs over groups of whole slots that fit
 // its eight columns, and the rest is per row or per slot.
@@ -485,6 +485,6 @@ std::expected<ggml_type, KernelFailure> GgmlTypeOf(std::string_view name);
 // F32, row-major.
 std::vector<float> HadamardMatrix(std::int64_t n);
 
-}  // namespace jitllm::kernels::ggml
+}  // namespace llmp::kernels::ggml
 
-#endif  // JITLLM_KERNELS_GGML_DSV4_GRAPH_H_
+#endif  // LLMP_KERNELS_GGML_DSV4_GRAPH_H_

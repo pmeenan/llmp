@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "engine/ple_rows.h"
@@ -14,7 +14,7 @@
 #include "engine/support.h"
 #include "providers/storage.h"
 
-namespace jitllm::engine {
+namespace llmp::engine {
 
 namespace {
 
@@ -183,4 +183,4 @@ std::expected<void, std::string> ReadPleRows(providers::Storage& storage, int fd
   return {};
 }
 
-}  // namespace jitllm::engine
+}  // namespace llmp::engine

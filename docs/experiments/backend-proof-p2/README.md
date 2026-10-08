@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # Backend proof P2: resident FP16 — 2026-09-27
@@ -70,7 +70,7 @@ the bridge.
 - **Plan.** `graph_plan.cc` walks the nodes as the CUDA backend does. With
   fusion on it asks upstream's gates in `ggml_cuda_try_fuse`'s order
   (`fusion.h`, which gains the RMSNorm-mul gate and a conservative check
-  that no pattern jitLLM lacks can apply) and the device's MMVF, MMF or
+  that no pattern llmpalooza lacks can apply) and the device's MMVF, MMF or
   cuBLAS choice (`ops.h SelectMulMat`); with fusion off it runs node by
   node, the RMSNorm-mul pair as the unfused implementation. Activations are
   placed largest first in one region, 128-byte aligned, from a plan made
@@ -97,7 +97,7 @@ recorded them (`d2601ad`, judged by `census.py`). Since D-085 the stage is
 `fp16-f-caps.json` are in Git history only. Conditions of the runs
 above: `spark-b` (GB10, kernel
 7.0.0-1019-nvidia, driver 580.178.04), the `cross` build (SDK
-`x86_64-e0a0c85c42806fb1`) deployed there, `jitllm_fp16_exec` SHA-256
+`x86_64-e0a0c85c42806fb1`) deployed there, `llmp_fp16_exec` SHA-256
 `0f4d6331…`, cuBLAS 13.8.0.4 (the libraries' hashes equal the record's),
 nsys 2025.3.2, cuobjdump 13.0.85, `CUDA_DISABLE_PTX_JIT=1`. Token IDs: the
 bridge's `control` `tokens.txt` (76 IDs, SHA-256 `37e46a23…`) and the
@@ -185,7 +185,7 @@ was moved. What each arm shows (binary `0f4d6331…`, 2026-09-27, `spark-b`):
   S, I and L equal the itemized limit's terms exactly (for example the
   512-row prefill: 312,999,936 + 156,499,968 + 3,940,352 + 311,164,928 =
   784,605,184, the limit), so `E` has no slack. KV equals its declared
-  layout, and the persistent library workspace jitLLM allocates is the
+  layout, and the persistent library workspace llmpalooza allocates is the
   32 MiB cuBLAS workspace; in FP16-U `control` the 0.51 MiB charged to it
   at the controls step (below) takes it over its limit.
 - **What is charged, and fails:**
@@ -237,7 +237,7 @@ was moved. What each arm shows (binary `0f4d6331…`, 2026-09-27, `spark-b`):
 ## Rungs 4 and 5: paged into device VMM through the landing zone
 
 **Results** (2026-09-27, `spark-b`, the `spark-native` build,
-`jitllm_fp16_paged` SHA-256 `5b10fd5b…`):
+`llmp_fp16_paged` SHA-256 `5b10fd5b…`):
 
 | Arm | Plan (`plan_compare.py`) | Evaluation 1 against the bridge | Evaluations 2–4 against 1 | Bound tensors outside the catalog |
 | --- | --- | --- | --- | --- |

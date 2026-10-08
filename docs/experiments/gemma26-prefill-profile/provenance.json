@@ -90,48 +90,48 @@
       "sha256": "8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2"
     },
     "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
-      "bytes": 6448,
-      "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+      "bytes": 6442,
+      "sha256": "6481dae39d4510eb26842535ac4cf3b9cc87e3941617e5fabfc6f478efc6d385"
     },
     "docs/experiments/gemma-prefill-large/compare.py": {
-      "bytes": 9154,
-      "sha256": "c159a10aa2e775ce052c948b8e9eadbc61ee805efa563721d450382469c829a3"
+      "bytes": 9158,
+      "sha256": "98edae08ee76ca541598774ae15810ab2d08b096f443453a386ac7ab248b36d6"
     },
     "docs/experiments/gemma26-prefill-profile/PROTOCOL.md": {
       "bytes": 12933,
-      "sha256": "c717f31455c7a84d022fc0a1c6dfc2b6e10dcbf84ac0f3bc660f76daaacee6cd"
+      "sha256": "826521f62ee3babe46688bb2da0fae8f0a95fcf89f6418420c32731bad2b7ca3"
     },
     "docs/experiments/gemma26-prefill-profile/container_retire.py": {
-      "bytes": 1926,
-      "sha256": "21b1160e42ed14f3b118314eb0dafac290fa71654935fade4d21c783dd662f0a"
+      "bytes": 1924,
+      "sha256": "e5717b1975442c9312c100f5928de4187b5e7191cb29354bd0b18fddec71422e"
     },
     "docs/experiments/gemma26-prefill-profile/llama_prefill_profile.cc": {
       "bytes": 6066,
       "sha256": "1e640e472f1a86004ecb5396fb26a3eb60e80c0e9a40744c7f5e87e7f3dd76c6"
     },
     "docs/experiments/gemma26-prefill-profile/native.sh": {
-      "bytes": 1148,
-      "sha256": "cf63062305caf18aeada41c26dc7d9ceb38d960c741d3146c8314868d826c71c"
+      "bytes": 1144,
+      "sha256": "6d159f07448bcb2c86c06576137457dbbfa5d00252bb9b30b06a01713d1f8d71"
     },
     "docs/experiments/gemma26-prefill-profile/profile_child.cc": {
-      "bytes": 2123,
-      "sha256": "7888fdba751201c1712f316b502ae42325943a08cc33caab394896eac0af4e73"
+      "bytes": 2127,
+      "sha256": "6c461e2103d7f9f7fb85fe13acfd28e0edb8847388e3f7855fd37157bcc30774"
     },
     "docs/experiments/gemma26-prefill-profile/reference.sh": {
-      "bytes": 3223,
-      "sha256": "7497fb7b2e2c8cb4a861c0eac21c2f5203d17997f99987d53c386dee477bc0be"
+      "bytes": 3217,
+      "sha256": "7efc8b35a83438f1bc590d7cfa948b084848128c82ae3ef8598ab5cc67c504f9"
     },
     "docs/experiments/gemma26-prefill-profile/trace.py": {
-      "bytes": 6011,
-      "sha256": "faee4883ccd5c705e0df7ce910d2d9a21864a1135d429f5db72102fb0a592186"
+      "bytes": 6013,
+      "sha256": "e2df35c2d8febb51c18ddfa088f5eea319b6326b6d8949152cd2247a53dbaabc"
     },
     "docs/experiments/gemma26-prefill-profile/validate.py": {
-      "bytes": 9262,
-      "sha256": "0b5dc8d4be04a64c5904429b16ccbc24b991476d5380400921acc97e06dfe7ed"
+      "bytes": 9248,
+      "sha256": "4b93b214db633af4ac179df8a12b2eb4ffa399b61e067d5edd138478a77c9f0d"
     },
     "docs/experiments/gemma26-swa-ring-transfer/own_freeze.py": {
-      "bytes": 6485,
-      "sha256": "cbb3254944ae6c15eed1d6c9193003a15fb84494b8bc9f7d84aea3942bd73d6e"
+      "bytes": 6479,
+      "sha256": "30ddbcab44cd6e3477e34857262800d290dc2f34ee5c239116758e87c7b97a9d"
     }
   },
   "measured_base": "36811f4ac93975c490e9118b93506aa3880df298",

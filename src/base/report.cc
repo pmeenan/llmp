@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include "base/report.h"
@@ -12,7 +12,7 @@
 #include <string_view>
 #include <utility>
 
-namespace jitllm::base {
+namespace llmp::base {
 
 namespace {
 
@@ -113,4 +113,4 @@ std::string FormatBytes(std::uint64_t bytes) {
   return std::format("{:.1f} {}", value, kUnits.at(unit));
 }
 
-}  // namespace jitllm::base
+}  // namespace llmp::base

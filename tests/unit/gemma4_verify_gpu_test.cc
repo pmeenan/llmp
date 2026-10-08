@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 #include <gtest/gtest.h>
@@ -21,12 +21,12 @@
 #include "engine/support.h"
 #include "tokenizer_fixtures.h"
 
-namespace en = jitllm::engine;
-namespace base = jitllm::base;
+namespace en = llmp::engine;
+namespace base = llmp::base;
 class Gemma4VerifyGpu : public ::testing::TestWithParam<en::Gemma4Variant> {
  protected:
   std::filesystem::path Artifact() const {
-    return std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts" /
+    return std::filesystem::path(llmp::test_support::ModelsDir()) / "m3-artifacts" /
            (GetParam() == en::Gemma4Variant::k31B
                 ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
                 : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
@@ -40,7 +40,7 @@ class Gemma4VerifyGpu : public ::testing::TestWithParam<en::Gemma4Variant> {
     const auto artifact = Artifact();
     ASSERT_TRUE(std::filesystem::exists(artifact));
     // Spill files need direct I/O: scratch in the build tree.
-    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path root = scratch != nullptr ? scratch : ::testing::TempDir();
     en::Gemma4Options options{.artifact = artifact,
                               .out = root / "gemma4-verify-control",
@@ -106,7 +106,7 @@ class Gemma4VerifyGpu : public ::testing::TestWithParam<en::Gemma4Variant> {
       std::uint32_t slot, std::span<const en::LiveState::Range> ranges) {
     std::uint64_t bytes = 0;
     for (const auto& r : ranges) bytes += r.bytes;
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     if (bytes == 0) return base::Sha256{}.Finish();
     auto pinned = node.Pinned(bytes, 0, staging);
     if (!pinned) return std::unexpected(pinned.error());
@@ -123,7 +123,7 @@ class Gemma4VerifyGpu : public ::testing::TestWithParam<en::Gemma4Variant> {
   }
   en::Status Feature(std::uint32_t slot, std::uint32_t position, std::vector<float>& out) {
     const auto bytes = std::uint64_t{runner->profile().width} * sizeof(float);
-    std::vector<jitllm::catalog::ExtentId> staging;
+    std::vector<llmp::catalog::ExtentId> staging;
     auto pinned = node.Pinned(bytes, 0, staging);
     if (!pinned) return en::support::Error(pinned.error());
     if (auto r = runner->CopyFeatures(slot, position, 1, *pinned); !r) return r;
@@ -235,8 +235,8 @@ TEST_P(Gemma4VerifyGpu, AcceptedPrefixesEqualIndependentFourRowWave) {
       if (auto r = runner->ReserveStateThrough(0, 10); !r) return r;
       std::vector<en::LiveState::Range> rejected;
       if (keep < 4) {
-        auto writes = jitllm::model::Gemma4ChunkWrites(runner->profile(), runner->layout(),
-                                                       6 + keep, 4 - keep);
+        auto writes =
+            llmp::model::Gemma4ChunkWrites(runner->profile(), runner->layout(), 6 + keep, 4 - keep);
         if (!writes) return en::support::Error(writes.error());
         for (const auto& r : *writes)
           rejected.push_back({.region = 0, .offset = r.offset, .bytes = r.bytes});
@@ -254,7 +254,7 @@ TEST_P(Gemma4VerifyGpu, AcceptedPrefixesEqualIndependentFourRowWave) {
       // CheckpointRanges includes aligned future cells, which differ because
       // the manual wave keeps all four rows and acceptance restores the tail.
       auto writes =
-          jitllm::model::Gemma4ChunkWrites(runner->profile(), runner->layout(), 0, 6 + keep);
+          llmp::model::Gemma4ChunkWrites(runner->profile(), runner->layout(), 0, 6 + keep);
       if (!writes) return en::support::Error(writes.error());
       std::vector<en::LiveState::Range> prefix;
       for (const auto& r : *writes)
@@ -277,7 +277,7 @@ TEST_P(Gemma4VerifyGpu, AcceptedPrefixesEqualIndependentFourRowWave) {
         if (!ranges) return en::support::Error(ranges.error());
         std::uint64_t bytes = 0;
         for (const auto& range : *ranges) bytes += range.bytes;
-        std::vector<jitllm::catalog::ExtentId> staging;
+        std::vector<llmp::catalog::ExtentId> staging;
         auto saved = node.Pinned(bytes, 0, staging);
         if (!saved) return en::support::Error(saved.error());
         if (auto r = runner->CopyState(1, *saved, *ranges, true); !r) return r;

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
 // FillRanges (paging.h): one block per range, its threads striding over the
@@ -10,7 +10,7 @@
 
 #include "kernels/paging/paging.h"
 
-namespace jitllm::kernels::paging {
+namespace llmp::kernels::paging {
 
 namespace {
 
@@ -34,4 +34,4 @@ bool FillRanges(const std::uint64_t* ranges, std::uint32_t count, std::uint8_t v
   return cudaGetLastError() == cudaSuccess;
 }
 
-}  // namespace jitllm::kernels::paging
+}  // namespace llmp::kernels::paging
