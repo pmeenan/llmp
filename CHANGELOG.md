@@ -13,6 +13,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Extend Gemma2/Gemma3 actual-root prefill to configured equal two-owner
+  chunks through 256 rows with checked mask, cache and query-tile bounds.
+  Native 256-row prefill improves about 5.1%/0.8%; matched-cache llama.cpp
+  outputs are exact, with measured speed residuals retained. Public chunks
+  remain 128 rows.
+
 - Extend Gemma2/Gemma3 actual-root prefill to flexible 2–128-row query tiles
   and partial tails, preserving original MMA arithmetic. Short 64-row native
   comparisons improve prefill 10.5%/2.8%; ordinary chunks and public contexts

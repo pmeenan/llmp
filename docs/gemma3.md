@@ -341,5 +341,21 @@ admission and the 128-row chunk default are unchanged. The flexible tile/tail
 extension improves same-native 64-row prefill 2.789% (n=2), with exact eager /
 changed replay and actual five-row serving/restart controls. Fresh matched
 64-row stock bookends retain +2.290% prefill / +1.813% paid cycle, explicitly
-open rather than a parity pass. Compatible >128 rows, mixed-width roots and
-other cohorts remain extension tasks with checked fallback.
+open for that host-mask/no-hint diagnostic recipe. Subsequent aligned
+GPU-mask/hinted runner-policy prefill is +0.188% to stock, within n=2
+bookend movement; full HTTP reference remains separate. Compatible >256
+rows, mixed-width roots and other cohorts remain extension tasks with
+checked fallback.
+
+Configured equal-C2 chunks through 256 now retain actual roots under the
+same original MMA body, with a funded 512-row wave and two-head envelope.
+The native 256-row factor improves prefill 0.838% (n=2, descriptive).
+Twenty focused controls include the full 256×131072 cap0 operand boundary,
+configured state/checkpoint/kept restart and unchanged ordinary adapters.
+An explicit reference control matches stock's 1536-cell SWA ring instead
+of the default configured 1280; complete final heads and choices then match.
+Fresh matched-ring stock bookends retain +3.552% prefill / +1.025% decode /
++2.195% paid, without a parity claim. Identical-input cross-owner differences
+also occur in packed attention, while each packed/root owner is exact; the
+baseline cause remains unresolved. Public chunks/context/slots stay
+unchanged. [Method and remaining transfers](experiments/gemma-prefill-copies/README.md#configured-129256-row-equal-owner-extension).

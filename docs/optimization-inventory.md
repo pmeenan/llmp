@@ -713,8 +713,9 @@ architecture exclusions:
   VAE spatial attention has no independent-owner F16 KV bank or packing.
   These no-copy dispositions concern this eliminated work, not a permanent
   exclusion from other shared attention kernels.
-- **T93** Gemma2/Gemma3 now select equal-width C2 query tiles/tails at
-  2–128 rows, mirroring original Columns4/8/16/32 selection and padded masks.
+- **T93** Gemma2/Gemma3 now select equal-width C2 query tiles/tails through
+  256 rows in explicitly funded configured runners; ordinary chunks remain
+  128. Original Columns4/8/16/32 selection and padded masks are retained.
   Same-native 64-row prefill improves 10.474%/2.789% (n=2); 52 focused
   controls include exact eager/changed replay, actual five-row serving tails,
   initialized state, kept restart and scalar continuation. Fresh 64-row
@@ -725,15 +726,25 @@ architecture exclusions:
   no fix. Subsequent GPU-mask/hinted bounded runner-policy prefill is
   +0.188% to stock (within 1.136% stock drift), decode +0.992%, paid +0.548%,
   n=2/exact. Full HTTP reference remains open; prompt publication differs.
-  Compatible >128 rows, mixed-width roots and other cohorts/layouts remain
-  OPEN, with checked fallback. The 8192-total-row foundation has a plausible
+  The configured 256-row factor improves native prefill 5.096%/0.838%;
+  20 focused controls include the full 256×131072 cap0 boundary and exact
+  packed/root per-owner identical-input/restart proof. Cross-owner baseline
+  differences remain unexplained and are identical in packed controls.
+  Matching stock's legitimate SWA capacities (4608/1536) gives exact full
+  logits/choices, with fresh n=2 prefill/paid gaps +1.242%/+0.797% and
+  +3.552%/+2.195%; no parity or public 256-row admission claim.
+  Compatible >256 rows, mixed-width roots and other cohorts/layouts remain
+  OPEN, with checked fallback. Cold changing-key capture needs a shared
+  two-future funded pipeline; warm 256-row capture ahead already executes.
+  The 8192-total-row foundation has a plausible
   larger equal-C2 recipient, requiring explicit expanded mask/parent bounds,
   funding, index/workspace and performance qualification. Production
   1285/1541 tails currently run scalar because padded read widths differ;
   that historical admission bound does not rule out a shared-max-width
   extension. T61 separately owns wider/partial one-query policies, T55
   Gemma4 joined-prefill admission, and T92 DeepSeek bank-root exploration.
-  [Flexible qualification and current references](experiments/gemma-prefill-copies/README.md#flexible-query-tiles-and-partial-tails).
+  [Flexible qualification](experiments/gemma-prefill-copies/README.md#flexible-query-tiles-and-partial-tails),
+  [configured larger rows and current references](experiments/gemma-prefill-copies/README.md#configured-129256-row-equal-owner-extension).
 
 
 

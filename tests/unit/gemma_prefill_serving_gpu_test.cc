@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <memory>
 #include <print>
 #include <tuple>
@@ -18,8 +19,10 @@
 
 #include "base/json.h"
 #include "base/sha256.h"
+#include "engine/checkpoint_file.h"
 #include "engine/gemma2_runner.h"
 #include "engine/gemma3_runner.h"
+#include "platform/kept_files.h"
 #include "runtime/serving.h"
 
 namespace rt = jitllm::runtime;
@@ -102,11 +105,11 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     std::filesystem::remove_all(scratch);
   }
   template <class Runner>
-  std::expected<jitllm::base::Sha256Digest, std::string> StateHash(Runner& runner,
-                                                                   std::uint32_t id) {
+  std::expected<jitllm::base::Sha256Digest, std::string> StateHash(
+      Runner& runner, std::uint32_t id, en::PagedNode* direct = nullptr) {
     const auto slot = runner.request_slot(id);
     if (!slot) return std::unexpected(slot.error());
-    auto& node = life->server->node();
+    auto& node = direct ? *direct : life->server->node();
     std::vector<jitllm::catalog::ExtentId> staging;
     auto buffer = node.Pinned(1U << 20U, 0, staging);
     if (!buffer) return std::unexpected(buffer.error());
@@ -350,6 +353,246 @@ TEST_P(GemmaPrefillServingGpu, ActualOwnerPrefillPreservesHeadsStateAndRestart) 
     }
     ++pass;
   }
+}
+
+// Public Gemma chunk admission remains 128. Qualify the explicitly configured
+// larger runner and its kept-file layout without bypassing that API clamp.
+TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartContinuation) {
+  const auto exercise = [&]<class Runner, class Options>() -> en::Status {
+    struct DirectLife {
+      en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+      std::unique_ptr<Runner> runner;
+      std::vector<en::PagedModel*> entered;
+      bool retired = false;
+    };
+    const auto directory = scratch / "larger-runner";
+    if (!std::filesystem::create_directory(directory) || chmod(directory.c_str(), 0700) != 0)
+      return std::unexpected("larger-runner private directory");
+    auto opened = jitllm::platform::OpenPrivateDirectory(-1, directory.c_str());
+    if (!opened) return std::unexpected("larger-runner directory open");
+    const int spill_dir = *opened;
+    auto primary = std::make_unique<DirectLife>(), restarted = std::make_unique<DirectLife>();
+    auto packed = std::make_unique<DirectLife>();
+    const auto retire = [&](DirectLife& target) -> en::Status {
+      if (target.retired) return {};
+      target.retired = true;
+      const auto result = target.node.TearDown(target.entered);
+      if (!result) retirement_failed = true;
+      return result;
+    };
+    const auto start = [&](DirectLife& target, bool keep, bool owners) -> en::Status {
+      Options options;
+      options.artifact = life->roles.installed / *life->config.models[0].artifact;
+      options.out = directory;
+      options.context = GetParam() == 2 ? 8192 : 4096;
+      options.max_rows = 256;
+      options.slots = 2;
+      options.max_wave_rows = 512;
+      options.max_head_rows = 2;
+      options.owner_decode = true;
+      options.packed_prefill = true;
+      options.owner_prefill = owners;
+      options.flexible_owner_prefill = owners;
+      options.bounded_roots = true;
+      options.device_masks = true;
+      options.fuse_norms = true;
+      options.fuse_quant_glu = true;
+      options.fuse_norm_rope = GetParam() == 3;
+      options.fuse_norm_add = true;
+      options.prefill_lookahead = true;
+      options.capture_ahead = true;
+      options.spill_place = [spill_dir, keep, owners](std::uint32_t slot) {
+        return en::LiveState::SpillPlace{
+            .directory = {},
+            .dir = spill_dir,
+            .name = std::format("{}slot{}.kv", owners ? "" : "packed-", slot),
+            .keep = keep};
+      };
+      auto& node = target.node;
+      target.runner = std::make_unique<Runner>(node, std::move(options), 0, 0);
+      auto& runner = *target.runner;
+      if (auto r = node.Open(); !r) return r;
+      target.entered.push_back(&runner);
+      if (auto r = runner.Setup(); !r) return r;
+      if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r)
+        return r;
+      const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+      node.SetHostFloor(runner.host_input_bytes() + runner.plan_floor_bytes() + (16ULL << 20U));
+      if (auto r = node.Start(jitllm::base::Bytes(
+              fixed + runner.weights().size() * en::kPagedExtent + 4 * node.StateCapacity()));
+          !r)
+        return r;
+      if (auto r = runner.Register(); !r) return r;
+      if (auto r = runner.Bind(); !r) return r;
+      node.Run();
+      return runner.SelectSlots(std::array<std::uint32_t, 2>{0, 1});
+    };
+    const auto vocab = GetParam() == 2 ? 256000U : 262208U;
+    const auto valid = [&](const std::vector<float>& head) {
+      return head.size() == vocab &&
+             std::ranges::all_of(head, [](float value) { return std::isfinite(value); });
+    };
+    std::vector<en::LiveState::Range> footprint;
+    std::vector<float> expected_next;
+    jitllm::base::Sha256Digest expected_state{};
+    std::string source_layout;
+    std::uint64_t selected_owner_steps = 0;
+    std::array<std::vector<float>, 2> packed_heads;
+    const auto prefill = [&](Runner& runner,
+                             std::array<std::vector<float>, 2>& heads) -> en::Status {
+      constexpr std::array<std::int32_t, 6> seed{2, 818, 5279, 529, 7001, 563};
+      std::vector<std::int32_t> ids(256);
+      for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = seed[i % seed.size()];
+      std::array<typename Runner::Work, 2> work{{{0, 0, ids, &heads[0]}, {1, 0, ids, &heads[1]}}};
+      if (auto r = runner.WavePrefill(work, true); !r) return r;
+      if (!valid(heads[0]) || !valid(heads[1]))
+        return std::unexpected("larger independent owner heads incomplete");
+      return {};
+    };
+    const auto checked = [&]() -> en::Status {
+      if (auto r = start(*packed, false, false); !r) return r;
+      auto control = packed->node.WithRequest(
+          0, packed->runner->closure(), "larger identical-input packed control",
+          [&]() -> en::Status {
+            if (auto r = prefill(*packed->runner, packed_heads); !r) return r;
+            const auto selection = packed->runner->plan_selections();
+            if (selection.owner_prefill_attention || !selection.packed_prefill_attention ||
+                packed->runner->coverage().violations)
+              return std::unexpected("larger packed control path not selected");
+            return {};
+          });
+      if (!control) return control;
+      if (auto r = retire(*packed); !r) return r;
+      if (auto r = start(*primary, false, true); !r) return r;
+      auto& runner = *primary->runner;
+      source_layout = runner.CheckpointLayoutId();
+      auto produced = primary->node.WithRequest(
+          0, runner.closure(), "larger owner restart", [&]() -> en::Status {
+            std::array<std::vector<float>, 2> heads;
+            if (auto r = prefill(runner, heads); !r) return r;
+            for (std::size_t owner = 0; owner < 2; ++owner)
+              if (std::memcmp(heads[owner].data(), packed_heads[owner].data(),
+                              vocab * sizeof(float)))
+                return std::unexpected("larger identical-input root differs from packed owner");
+            std::uint64_t differing = 0;
+            double total_difference = 0, max_difference = 0;
+            for (std::size_t index = 0; index < vocab; ++index) {
+              const double difference = std::abs(double(heads[0][index]) - double(heads[1][index]));
+              differing += heads[0][index] != heads[1][index];
+              total_difference += difference;
+              max_difference = std::max(max_difference, difference);
+            }
+            const auto best = [](const auto& head) {
+              return std::distance(head.begin(), std::max_element(head.begin(), head.end()));
+            };
+            std::println(
+                "GEMMA_LARGER_IDENTICAL_INPUT family={} rows=256 packed_root_exact=1 "
+                "cross_owner_differing={} max_abs={} mean_abs={} argmax0={} argmax1={}",
+                GetParam(), differing, max_difference, total_difference / vocab, best(heads[0]),
+                best(heads[1]));
+            selected_owner_steps = runner.plan_selections().owner_prefill_attention;
+            if (selected_owner_steps == 0 || runner.coverage().violations != 0)
+              return std::unexpected("larger actual-root path not selected");
+            const auto first = StateHash(runner, 0, &primary->node);
+            const auto peer = StateHash(runner, 1, &primary->node);
+            if (!first) return std::unexpected("larger owner state read: " + first.error());
+            if (!peer) return std::unexpected("larger peer state read: " + peer.error());
+            expected_state = *first;
+            footprint = (*runner.request_slot(0))->state().used_ranges();
+            if (footprint.size() < 2) return std::unexpected("larger state footprint missing");
+            // A same-owner checkpoint supplies the uninterrupted restart oracle;
+            // it requires no cross-owner equality assumption.
+            auto checkpoint = en::CheckpointFile::Capture(
+                primary->node, directory, footprint,
+                [&](void* host, std::span<const en::LiveState::Range> ranges) {
+                  return runner.CopyState(0, host, ranges);
+                });
+            if (!checkpoint) return std::unexpected(checkpoint.error().detail);
+            constexpr std::array<std::int32_t, 1> anchor{563};
+            const typename Runner::Work next{0, 256, anchor, &expected_next};
+            if (auto r = runner.Wave(std::span(&next, 1)); !r) return r;
+            if (!valid(expected_next))
+              return std::unexpected("larger live control head incomplete");
+            const auto restored_checkpoint = checkpoint->Restore(
+                primary->node,
+                [&] { return runner.PrepareRestore(0, 256, footprint, source_layout); },
+                [&](void* host, std::span<const en::LiveState::Range> ranges) {
+                  return runner.CopyState(0, host, ranges, false);
+                });
+            if (!restored_checkpoint) return std::unexpected(restored_checkpoint.error().detail);
+            if (auto r = runner.CompleteRestore(0, 256); !r) return r;
+            const auto rewound = StateHash(runner, 0, &primary->node);
+            const auto unchanged_peer = StateHash(runner, 1, &primary->node);
+            if (!rewound)
+              return std::unexpected("larger checkpoint state read: " + rewound.error());
+            if (!unchanged_peer)
+              return std::unexpected("larger checkpoint peer read: " + unchanged_peer.error());
+            if (*rewound != expected_state || *unchanged_peer != *peer ||
+                (*runner.request_slot(1))->completed_positions() != 256)
+              return std::unexpected("larger checkpoint or peer state changed");
+            if (auto r = runner.Spill(0); !r) return r;
+            if (!(*runner.request_slot(0))->is_spilled())
+              return std::unexpected("larger owner was not spilled");
+            return {};
+          });
+      if (!produced) return produced;
+      if (auto r = retire(*primary); !r) return r;
+      if (auto r = start(*restarted, true, true); !r) return r;
+      auto& restored = *restarted->runner;
+      if (restored.CheckpointLayoutId() != source_layout)
+        return std::unexpected("larger restart layout changed");
+      auto incomplete = footprint;
+      incomplete.pop_back();
+      if (restored.Adopt(0, 256, footprint, "wrong-larger-layout") ||
+          restored.Adopt(0, 256, incomplete, source_layout))
+        return std::unexpected("larger malformed adoption accepted");
+      if (auto r = restored.Adopt(0, 256, footprint, source_layout); !r) return r;
+      if (restored.Adopt(0, 256, footprint, source_layout))
+        return std::unexpected("larger duplicate adoption accepted");
+      if (auto r = restored.Restore(0); !r) return r;
+      return restarted->node.WithRequest(
+          0, restored.closure(), "larger adopted continuation", [&]() -> en::Status {
+            const auto state = StateHash(restored, 0, &restarted->node);
+            if (!state) return std::unexpected("larger adopted state read: " + state.error());
+            if (*state != expected_state)
+              return std::unexpected("larger adopted state bytes changed");
+            constexpr std::array<std::int32_t, 1> anchor{563};
+            std::vector<float> head;
+            const typename Runner::Work next{0, 256, anchor, &head};
+            if (auto r = restored.Wave(std::span(&next, 1)); !r) return r;
+            if (!valid(head) ||
+                std::memcmp(head.data(), expected_next.data(), vocab * sizeof(float)))
+              return std::unexpected(
+                  "larger adopted continuation differs from uninterrupted owner");
+            if ((*restored.request_slot(0))->completed_positions() != 257 ||
+                (*restored.request_slot(1))->completed_positions() != 0)
+              return std::unexpected("larger adopted continuation changed a peer cursor");
+            return {};
+          });
+    }();
+    const auto packed_retired = retire(*packed);
+    const auto first_retired = retire(*primary), second_retired = retire(*restarted);
+    if (retirement_failed) {
+      std::ignore = packed.release();
+      std::ignore = primary.release();
+      std::ignore = restarted.release();
+      return std::unexpected("larger runner retirement unproven; files and directory held");
+    }
+    close(spill_dir);
+    if (!packed_retired) return packed_retired;
+    if (!first_retired) return first_retired;
+    if (!second_retired) return second_retired;
+    if (!checked) return checked;
+    std::println(
+        "GEMMA_LARGER_OWNER_RESTART family={} rows=256 selected_owner_steps={} "
+        "state_exact=1 continuation_exact=1",
+        GetParam(), selected_owner_steps);
+    return {};
+  };
+  const auto result = GetParam() == 2
+                          ? exercise.template operator()<en::Gemma2Runner, en::Gemma2Options>()
+                          : exercise.template operator()<en::Gemma3Runner, en::Gemma3Options>();
+  ASSERT_TRUE(result) << (result ? "" : result.error());
 }
 
 INSTANTIATE_TEST_SUITE_P(ApprovedFamilies, GemmaPrefillServingGpu, ::testing::Values(2U, 3U));

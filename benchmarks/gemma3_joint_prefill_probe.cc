@@ -89,7 +89,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }  // namespace
 int main(int argc, char** argv) {
   if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") ||
-      (argc < 6 || argc > 12))
+      (argc < 6 || argc > 13))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
     return status ? 0 : 1;
   }
   bool bounded = false, owner_prefill = false;
-  bool flexible = false, have_chunk = false;
+  bool flexible = false, have_chunk = false, stock_ring = false;
   bool device_masks = false, prefill_ahead = false;
   std::uint32_t chunk = 128;
   for (int i = 6; i < argc; ++i) {
@@ -115,6 +115,8 @@ int main(int argc, char** argv) {
       owner_prefill = true;
     else if (flag == "flexible-owner-prefill" && !flexible)
       flexible = true;
+    else if (flag == "stock-ring" && !stock_ring)
+      stock_ring = true;
     else if (flag == "device-masks" && !device_masks)
       device_masks = true;
     else if (flag == "prefill-ahead" && !prefill_ahead)
@@ -123,13 +125,16 @@ int main(int argc, char** argv) {
       const auto number = flag.substr(6);
       const auto parsed = std::from_chars(number.data(), number.data() + number.size(), chunk);
       if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || chunk < 2 ||
-          chunk > 128)
+          chunk > 256)
         return 2;
       have_chunk = true;
     } else
       return 2;
   }
   if (flexible && !owner_prefill) return 2;
+  if (stock_ring && chunk != 256) return 2;
+  // Match stock's joined ubatch allowance for this explicit comparison only.
+  const auto state_rows = stock_ring ? 2 * chunk : chunk;
   const std::string mode = argv[5];
   const bool own = mode == "own", cycle = mode == "cycle";
   if (!own && !cycle) return 2;
@@ -162,7 +167,7 @@ int main(int argc, char** argv) {
       std::make_unique<en::Gemma3Runner>(node,
                                          en::Gemma3Options{.artifact = argv[1],
                                                            .out = out,
-                                                           .max_rows = chunk,
+                                                           .max_rows = state_rows,
                                                            .slots = 2,
                                                            .max_wave_rows = 2 * chunk,
                                                            .max_head_rows = 2,
@@ -317,6 +322,8 @@ int main(int argc, char** argv) {
     if (auto r = node.Open(); !r) return r;
     life->entered.push_back(&runner);
     if (auto r = runner.Setup(); !r) return r;
+    if (stock_ring && runner.layout().local_cells != 1536)
+      return Error("stock ring diagnostic requires 1536 local cells");
     if (own) {
       std::vector<jitllm::catalog::ExtentId> extents;
       auto allocation = node.Pinned(kCopy, 0, extents);
@@ -528,8 +535,8 @@ int main(int argc, char** argv) {
           (owner_prefill ? !bound.owner_prefill_attention : !bound.packed_prefill_attention) ||
           !bound.owner_attention ||
           (device_masks ? !bound.device_masks : bound.device_masks != 0) ||
-          (prefill_ahead &&
-           (!runner.lookahead_stats().cached || !runner.lookahead_stats().captured_ahead)) ||
+          (prefill_ahead && (!runner.lookahead_stats().cached ||
+                             (chunk <= 128 && !runner.lookahead_stats().captured_ahead))) ||
           !stats.captured || !stats.replayed || !bound.norm_rope || !bound.norm_add ||
           runner.coverage().violations)
         return Error("C2 did not select/replay checked implementation families");
@@ -538,8 +545,10 @@ int main(int argc, char** argv) {
       std::cout
           << "GEMMA3_JOINT_PREFILL mode=" << mode
           << " slots=2 context_per_slot=4096 chunk=" << chunk
-          << " compatible_prefill=1 max_wave_rows=" << 2 * chunk << " prompt_rows0=" << prefix[0]
-          << " prompt_rows1=" << prefix[1] << " untimed_rows_per_slot=3"
+          << " compatible_prefill=1 max_wave_rows=" << 2 * chunk << " state_max_rows=" << state_rows
+          << " local_cache_cells=" << runner.layout().local_cells << " stock_ring=" << stock_ring
+          << " prompt_rows0=" << prefix[0] << " prompt_rows1=" << prefix[1]
+          << " untimed_rows_per_slot=3"
           << " decode_steps=32 departure_steps=" << (own ? kTail : 0U)
           << " paid_generated_tokens=64 past0=" << past[0] << " past1=" << past[1]
           << " prefill_seconds=" << prefill << " decode_seconds=" << decode

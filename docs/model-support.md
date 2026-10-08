@@ -96,7 +96,13 @@ paid cycle), with exact choices and full final heads. Ordinary adapter state,
 kept restart and continuation controls pass. Flexible 2–128-row tiles/tails
 are subsequently adopted: same-native 64-row prefill improves 10.474% (n=2),
 and fresh 64-row stock bookends are level with exact choices/full heads.
-Larger rows, mixed-width roots/cohorts and broader qualification remain open.
+Configured equal-C2 chunks now extend through 256 with a separately funded
+512-row wave/two-head envelope, 20 focused controls and exact per-owner
+packed/root state/continuation checks. The native 256-row factor improves
+prefill 5.096%; fresh stock with matched 4608-cell SWA geometry leaves
++1.242% prefill / +0.797% paid with exact full outputs. Public chunks remain
+128; >256, mixed-width roots/cohorts, larger admission and broader gates
+remain open.
 
 The subsequent copy-free bounded cap50 owner policy is selected by this recipe.
 It preserves original logical attention geometry, 128 rows per owner and local
@@ -167,7 +173,14 @@ The initial 128-row slice adds no fresh stock cycle. The subsequent flexible
 extension improves same-native 64-row prefill 2.789%, with exact five-row
 serving tails/state/restart. Fresh 64-row stock bookends retain +2.290%
 prefill / +1.813% paid cycle; larger compatible rows, mixed-width roots,
-cohorts and that residual remain open. Ordinary chunks stay 128 rows.
+cohorts and that diagnostic residual remain open. Aligned GPU-mask/hinted
+64-row runner-policy prefill is +0.188% to stock within n=2 movement;
+full HTTP publication is separate. Configured equal-C2 chunks now extend
+through 256, with 20 focused controls including the maximum 256×131072
+primitive boundary and state/restart. The native 256-row factor improves
+prefill 0.838%; matched-ring fresh stock retains +3.552% prefill / +2.195%
+paid with exact complete outputs. Public chunks stay 128; >256, mixed-width
+and larger public admission remain open.
 
 The [internal trained-maximum scalar screen](experiments/gemma3-execution/README.md#internal-trained-maximum-c1-screen-2026-10-07)
 also initializes 131,072 positions without a whole-state snapshot, matching all

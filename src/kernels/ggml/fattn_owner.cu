@@ -294,7 +294,8 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
     return Rejected("owner MMA occupancy grid exceeds the launcher bounds");
   auto partition = detail::PlanOwnerPartition(
       original->blocks_per_sm * device.nsm, kvtiles, query_tiles * static_cast<int>(in.k[0]->ne[2]),
-      in.logical_cohort, original->async_kv_preload, prefill && in.logit_softcap == 0);
+      in.logical_cohort, original->async_kv_preload, prefill && in.logit_softcap == 0,
+      prefill ? query_tiles : 0);
   if (!partition) return std::unexpected(partition.error());
   plan.cohort_blocks = partition->cohort_blocks;
   plan.effective_cohort = partition->effective_cohort;

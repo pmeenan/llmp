@@ -163,6 +163,7 @@ class GgmlExtOpsTest : public ::testing::Test {
  protected:
   void SmallOwnerControl(std::uint32_t cap, std::uint32_t small_owners = 0);
   void BoundedOwnerControl(std::uint32_t cap);
+  void MultirowOwnerControl(std::span<const std::pair<std::int64_t, std::int64_t>> shapes);
   void SetUp() override {
     execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
@@ -2818,6 +2819,21 @@ TEST(FlashAttnOwnersPartitionTest, WideMultirowBoundDoesNotWidenDecodeOrOtherGri
   EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 4096, 16, 3, true, true));
 }
 
+TEST(FlashAttnOwnersPartitionTest, LargerQueryTilesDoNotWidenTheKvOrDecodeBounds) {
+  EXPECT_TRUE(kg::detail::PlanOwnerPartition(96, 512, 32, 2, true, false, 8));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 513, 32, 2, true, false, 8));
+  EXPECT_TRUE(kg::detail::PlanOwnerPartition(96, 4096, 32, 2, true, true, 8));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 4097, 32, 2, true, true, 8));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 32, 2, true));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 36, 2, true, false, 9));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 32, 2, true, false, 7));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 32, 3, true, false, 8));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 512, 4, 2, true, false, -1));
+  for (const int query_tiles : {1, 2, 3, 4, 5, 6, 7, 8})
+    EXPECT_TRUE(
+        kg::detail::PlanOwnerPartition(96, 512, 4 * query_tiles, 2, true, false, query_tiles));
+}
+
 TEST(FlashAttnOwnersPartitionTest, WholeTilePreferenceMatchesTheReleaseEfficiencyBoundary) {
   for (const std::uint32_t cohort : {2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U}) {
     const int tiles = 4 * static_cast<int>(cohort);
@@ -4072,20 +4088,14 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
   EXPECT_EQ(FailedCode(scale.Check(wrong)), KernelError::kRejected);
 }
 
-TEST_F(GgmlExtOpsTest, GemmaMultirowOwnerRootsMatchPackedMmaEagerAndChangedReplay) {
+void GgmlExtOpsTest::MultirowOwnerControl(
+    std::span<const std::pair<std::int64_t, std::int64_t>> shapes) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "Owner implementation is GB10 only";
   constexpr std::int64_t d = 256, heads = 8, kvh = 4, owners = 2;
   const auto n = [](std::int64_t value) { return static_cast<std::size_t>(value); };
   const auto submission = execution_->Submission(stream_);
   ASSERT_TRUE(submission);
   const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
-  std::vector<std::pair<std::int64_t, std::int64_t>> shapes;
-  for (const auto rows : {2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128})
-    shapes.emplace_back(rows, 512);
-  for (const auto cells : {256, 4352, 16384, 32768, 131072}) shapes.emplace_back(128, cells);
-  for (const auto cells : {4352, 16384}) shapes.emplace_back(64, cells);
-  shapes.emplace_back(5, 32768);
-  shapes.emplace_back(33, 131072);
   for (const int cap : {0, 50}) {
     for (const auto [rows, cells] : shapes) {
       if (cap == 50 && cells > 16384) continue;
@@ -4215,11 +4225,23 @@ TEST_F(GgmlExtOpsTest, GemmaMultirowOwnerRootsMatchPackedMmaEagerAndChangedRepla
       bad = *inputs;
       bad.mask = &malformed;
       EXPECT_EQ(FailedCode(kg::CheckFlashAttnOwners(bad)), KernelError::kRejected);
-      malformed = *q;
-      malformed.ne[1] = 129;
+      // Keep all row-dependent dimensions/strides coherent: the explicit
+      // range gate, not a layout inconsistency, must refuse the next row.
+      ggml_tensor too_many_q = *q, too_many_mask = *mask, too_many_output = *node;
+      too_many_q.ne[1] = 257;
+      too_many_q.nb[3] = n(d * heads * 257) * sizeof(float);
+      too_many_mask.ne[1] = 288;
+      too_many_mask.nb[2] = too_many_mask.nb[3] = n(cells * 288) * sizeof(ggml_fp16_t);
+      too_many_output.ne[2] = 257;
+      too_many_output.nb[3] = n(d * heads * 257) * sizeof(float);
       bad = *inputs;
-      bad.q = &malformed;
-      EXPECT_EQ(FailedCode(kg::CheckFlashAttnOwners(bad)), KernelError::kRejected);
+      bad.q = &too_many_q;
+      bad.mask = &too_many_mask;
+      bad.output = &too_many_output;
+      const auto range_refused = kg::CheckFlashAttnOwners(bad);
+      ASSERT_FALSE(range_refused);
+      EXPECT_EQ(range_refused.error().error, KernelError::kRejected);
+      EXPECT_NE(range_refused.error().detail.find("2-to-256-row"), std::string::npos);
       malformed = *mask;
       malformed.ne[1] = 127;
       bad = *inputs;
@@ -4230,12 +4252,53 @@ TEST_F(GgmlExtOpsTest, GemmaMultirowOwnerRootsMatchPackedMmaEagerAndChangedRepla
       bad = *inputs;
       bad.output = &malformed;
       EXPECT_EQ(FailedCode(kg::CheckFlashAttnOwners(bad)), KernelError::kRejected);
+      malformed = *node;
+      malformed.data = mask->data;
+      bad = *inputs;
+      bad.output = &malformed;
+      EXPECT_EQ(FailedCode(kg::CheckFlashAttnOwners(bad)), KernelError::kRejected);
+      ggml_tensor mask_parent = *mask;
+      malformed = *mask;
+      malformed.view_src = &mask_parent;
+      bad = *inputs;
+      bad.mask = &malformed;
+      EXPECT_TRUE(kg::CheckFlashAttnOwners(bad));
+      malformed.view_offs = 16;
+      EXPECT_EQ(FailedCode(kg::CheckFlashAttnOwners(bad)), KernelError::kRejected);
+      malformed.view_offs = 0;
+      mask_parent.nb[3] = 1ULL << 30U;
+      EXPECT_EQ(FailedCode(kg::CheckFlashAttnOwners(bad)), KernelError::kRejected);
       std::cout << "GEMMA_MULTIROW_OWNER cap=" << cap << " rows=" << rows << " cells=" << cells
                 << " columns=" << actual->original.columns << " blocks=" << actual->original.blocks
                 << " scratch=" << scratch << " exact_eager_and_changed_replay=1\n";
     }
   }
 }
+TEST_F(GgmlExtOpsTest, GemmaMultirowOwnerRootsMatchPackedMmaEagerAndChangedReplay) {
+  std::vector<std::pair<std::int64_t, std::int64_t>> shapes;
+  for (const auto rows : {2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128})
+    shapes.emplace_back(rows, 512);
+  for (const auto cells : {256, 4352, 16384, 32768, 131072}) shapes.emplace_back(128, cells);
+  for (const auto cells : {4352, 16384}) shapes.emplace_back(64, cells);
+  shapes.emplace_back(5, 32768);
+  shapes.emplace_back(33, 131072);
+  MultirowOwnerControl(shapes);
+}
+
+TEST_F(GgmlExtOpsTest, GemmaLargerMultirowOwnersMatchPackedMmaEagerAndChangedReplay) {
+  const std::array shapes{std::pair<std::int64_t, std::int64_t>{129, 512},
+                          std::pair<std::int64_t, std::int64_t>{256, 512},
+                          std::pair<std::int64_t, std::int64_t>{256, 4352},
+                          std::pair<std::int64_t, std::int64_t>{256, 16384},
+                          std::pair<std::int64_t, std::int64_t>{129, 131072}};
+  MultirowOwnerControl(shapes);
+}
+
+TEST_F(GgmlExtOpsTest, GemmaLargestMultirowMaskMatchesPackedMmaEagerAndChangedReplay) {
+  const std::array shapes{std::pair<std::int64_t, std::int64_t>{256, 131072}};
+  MultirowOwnerControl(shapes);
+}
+
 TEST_F(GgmlExtOpsTest, Gemma3PrefillCommonOperandsExposePackedAndSplitMmaGeometry) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "GB10 prefill diagnostic";
   constexpr std::int64_t d = 256, heads = 8, kvh = 4, rows = 128, owners = 2;

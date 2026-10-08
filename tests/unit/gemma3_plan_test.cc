@@ -68,10 +68,11 @@ kg::DeviceChoices Choices() {
 
 TEST(Gemma3Plan, MultirowOwnersRetainActualRootsAndNarrowShapeFallback) {
   for (const bool flexible : {false, true}) {
-    for (const std::uint32_t rows : {2U, 5U, 9U, 17U, 33U, 64U, 127U, 128U, 256U}) {
+    for (const std::uint32_t rows : {2U, 5U, 9U, 17U, 33U, 64U, 127U, 128U, 129U, 256U, 512U}) {
       Case c;
       c.state = *md::Gemma3State(c.p, 4096, std::max(128U, rows));
-      c.shape = {{{0, rows, 0, 256, 256}, {1, rows, 0, 256, 256}}, 2};
+      const auto width = (rows + 255U) / 256U * 256U;
+      c.shape = {{{0, rows, 0, width, width}, {1, rows, 0, width, width}}, 2};
       const kg::Gemma3GraphOptions options{.max_total_rows = 2 * std::max(128U, rows),
                                            .narrow_final = true,
                                            .packed_prefill = true,
@@ -88,7 +89,7 @@ TEST(Gemma3Plan, MultirowOwnersRetainActualRootsAndNarrowShapeFallback) {
                                         (*measured)->placement.extent);
       ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
       auto& g = (*placed)->graph;
-      if (rows != 128 && (!flexible || rows > 128)) {
+      if (rows != 128 && (!flexible || rows > 256)) {
         EXPECT_EQ(g.Named("blk.0.owner_prefill_attention"), nullptr);
         EXPECT_NE(g.Named("blk.0.packed_prefill_attention"), nullptr);
         continue;
@@ -105,7 +106,7 @@ TEST(Gemma3Plan, MultirowOwnersRetainActualRootsAndNarrowShapeFallback) {
         EXPECT_EQ(attention->src[2 + owner]->data, g.segments[owner].caches[0].first->data);
         EXPECT_EQ(attention->src[6 + owner]->data, g.segments[owner].caches[0].second->data);
         for (const auto* root : {attention->src[2 + owner], attention->src[6 + owner]}) {
-          EXPECT_EQ(root->ne[1], 256);
+          EXPECT_EQ(root->ne[1], width);
           EXPECT_EQ(root->ne[3], 1);
           for (const auto* view = root; view != nullptr; view = view->view_src)
             EXPECT_NE(view->op, GGML_OP_CONCAT);

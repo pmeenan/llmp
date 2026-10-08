@@ -65,10 +65,11 @@ bool Shape(const ggml_tensor* t, ggml_type type, std::array<std::int64_t, 4> ne,
   return t && t->type == type && std::equal(ne.begin(), ne.end(), t->ne) &&
          std::equal(nb.begin(), nb.end(), t->nb) && Current(t, limit);
 }
-bool Overlap(const ggml_tensor* a, const ggml_tensor* b, std::uint64_t limit) {
+bool Overlap(const ggml_tensor* a, const ggml_tensor* b, std::uint64_t a_limit,
+             std::uint64_t b_limit) {
   const auto first = reinterpret_cast<std::uintptr_t>(a->data);
   const auto second = reinterpret_cast<std::uintptr_t>(b->data);
-  const auto a_bytes = Span(a, limit), b_bytes = Span(b, limit);
+  const auto a_bytes = Span(a, a_limit), b_bytes = Span(b, b_limit);
   if (!a_bytes || !b_bytes) return true;
   return first < second + *b_bytes && second < first + *a_bytes;
 }
@@ -76,14 +77,15 @@ bool Overlap(const ggml_tensor* a, const ggml_tensor* b, std::uint64_t limit) {
 
 std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
     int max_blocks, int kv_tiles, int tiles_per_owner, std::uint32_t logical_cohort,
-    bool prefer_whole_tiles, bool multirow) {
-  if (max_blocks <= 0 || kv_tiles <= 0 || kv_tiles > (multirow ? 4096 : 512) ||
-      tiles_per_owner <= 0 || tiles_per_owner > 16 ||
+    bool prefer_whole_tiles, bool wide_kv, int query_tiles) {
+  if (max_blocks <= 0 || kv_tiles <= 0 || kv_tiles > (wide_kv ? 4096 : 512) || query_tiles < 0 ||
+      query_tiles > 8 || tiles_per_owner <= 0 || tiles_per_owner > (query_tiles ? 32 : 16) ||
       (logical_cohort != 2 && logical_cohort != 3 && logical_cohort != 4 && logical_cohort != 8 &&
        logical_cohort != 12 && !PartialOwnerCohort(logical_cohort)))
     return Rejected("owner MMA partition inputs are outside the closed grid bounds");
-  if (multirow && (logical_cohort != 2 || tiles_per_owner % 4 != 0))
-    return Rejected("wide owner partition requires C2 and one-to-four GQA2 query tiles");
+  if ((wide_kv && (logical_cohort != 2 || tiles_per_owner % 4 != 0)) ||
+      (query_tiles && (logical_cohort != 2 || tiles_per_owner != 4 * query_tiles)))
+    return Rejected("multirow owner partition requires C2 and one-to-eight GQA2 query tiles");
   const auto grid = [&](std::uint32_t cohort) {
     const auto tiles = static_cast<std::int64_t>(tiles_per_owner) * cohort;
     const auto waves = (tiles + max_blocks - 1) / max_blocks;
@@ -143,15 +145,16 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
   if (in.bounded_roots && !bounded_c2 && !bounded_whole12)
     return Rejected("bounded owner roots require closed C2 or Gemma3 whole-C12 carriers");
   const auto rows = in.q->ne[1];
-  if (rows != 1 && (rows < 2 || rows > 128 || in.q->ne[0] != 256 || in.q->ne[2] != 8 ||
+  if (rows != 1 && (rows < 2 || rows > 256 || in.q->ne[0] != 256 || in.q->ne[2] != 8 ||
                     in.owner_count != 2 || in.logical_cohort != 2 || in.owner_offset != 0 ||
                     (in.logit_softcap != 0 && in.logit_softcap != 50) || in.bounded_roots))
-    return Rejected("multirow owner MMA requires Gemma2/Gemma3 cap0/50 C2/2-to-128-row inputs");
+    return Rejected("multirow owner MMA requires Gemma2/Gemma3 cap0/50 C2/2-to-256-row inputs");
   const bool wide_prefill = rows > 1 && in.logit_softcap == 0;
   const auto maximum_cells = wide_prefill ? 131072 : 16384;
   // Only the closed Gemma3 multirow contract needs 256 MiB per actual root.
-  // Q/output remain 2 MiB, and the largest joined mask is exactly 64 MiB.
+  // Q/output remain 4 MiB, and the largest joined mask is exactly 128 MiB.
   const auto operand_limit = wide_prefill ? (256ULL << 20U) : kMaxSpan;
+  const auto mask_limit = wide_prefill ? (128ULL << 20U) : kMaxSpan;
   if (in.mask->ne[0] < 256 || in.mask->ne[0] > maximum_cells || in.mask->ne[0] % 256 != 0)
     return Rejected("owner MMA requires bounded actual padded cache widths");
   const auto cells = std::size_t(in.mask->ne[0]);
@@ -163,7 +166,7 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
              {4, qrow, d * 4, qrow * std::size_t(rows)}) ||
       !Shape(in.mask, GGML_TYPE_F16,
              {std::int64_t(cells), std::int64_t(mask_rows), 1, in.owner_count},
-             {2, cells * 2, cells * mask_rows * 2, cells * mask_rows * 2}) ||
+             {2, cells * 2, cells * mask_rows * 2, cells * mask_rows * 2}, mask_limit) ||
       !Shape(in.output, GGML_TYPE_F32, {std::int64_t(d), std::int64_t(heads), rows, in.owner_count},
              {4, d * 4, qrow, qrow * std::size_t(rows)}) ||
       in.output->view_src)
@@ -192,8 +195,11 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
   }
   if (in.bounded_roots && !bounded_whole12 && largest_actual != cells)
     return Rejected("bounded owner mask must match the largest actual width");
-  for (const auto* input : reads)
-    if (input && Overlap(in.output, input, operand_limit))
+  for (std::size_t i = 0; i < reads.size(); ++i)
+    if (reads[i] && Overlap(in.output, reads[i], kMaxSpan,
+                            i == 0   ? kMaxSpan
+                            : i == 1 ? mask_limit
+                                     : operand_limit))
       return Rejected("owner MMA output overlaps a real operand");
   // Independent owner storage: aliases within an owner are read-only, but one
   // owner's K/V must not be another owner's payload.
@@ -201,7 +207,7 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
     for (std::size_t b = a + 1; b < in.owner_count; ++b)
       for (const auto* first : {in.k[a], in.v[a]})
         for (const auto* second : {in.k[b], in.v[b]})
-          if (Overlap(first, second, operand_limit))
+          if (Overlap(first, second, operand_limit, operand_limit))
             return Rejected("owner MMA cache owners overlap");
   return {};
 }

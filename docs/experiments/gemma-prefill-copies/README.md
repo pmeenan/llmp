@@ -586,3 +586,182 @@ retain reference `cycle chunk=64`. Raw build, six-arm payload/retirement
 records and aggregate calculation remain external under Spark B
 `~/scratch/m35-gemma-prefill-wide/alignment-build1` and `alignment1`, plus
 coordination scratch. Replay inputs stay in the standing reference store.
+
+## Configured 129–256-row equal-owner extension
+
+The same actual-root implementation now admits equal C2 chunks through 256
+rows. Above 128 it retains original Columns32 arithmetic and eight query
+tiles per owner, using the existing flexible-owner flag. No kernel per row
+count or new public capability is added. Ordinary chunks remain 128;
+configured 256-row runners fund a 512-row input/activation envelope and two
+head rows. Larger chunks and mixed read widths retain checked fallback.
+
+Operand validation separates Q/output, actual-root, mask and parent spans.
+At 256 rows these are 4 MiB Q/output, 256 MiB per cap0 K/V root, a 128 MiB
+joined mask and 1 GiB parent containment. Cap0 retains aligned cache widths
+through 131072; cap50 and every one-query path retain 16384. Query-tile
+permission and wide-KV permission are separate partition inputs, so extra
+cap50 query rows cannot widen its KV domain. The original MMA body,
+reductions, padded-mask semantics and legacy one-query path are unchanged.
+
+### Same-native factor
+
+One off/on/on/off acquisition per family fixes GPU masks, shared hints,
+bounded decode, actual chunk 256 and a 512-row wave envelope. All 64 natural
+choices and both complete finite final heads agree byte for byte within each
+family. Paid optional planning/cache insertion, capture-first and eager-path
+counts are zero. Paid capture/replay/ahead tuples agree across arms:
+4/16/15 for Gemma2's 20 waves and 4/3/3 for Gemma3's seven. Warm retained plans
+already support capture ahead at 256. The first launcher incorrectly rejected
+that positive ahead count after one completed arm; its failed record remains
+unpooled. The corrected acquisition starts eight fresh arms.
+
+| Family/arm | Prefill | Decode | Paid sum |
+| --- | ---: | ---: | ---: |
+| Gemma2 packed 1 | 1.122040 s | 0.582387 s | 1.704427 s |
+| Gemma2 roots 1 | 1.068720 s | 0.582238 s | 1.650958 s |
+| Gemma2 roots 2 | 1.057180 s | 0.582079 s | 1.639259 s |
+| Gemma2 packed 2 | 1.118020 s | 0.582343 s | 1.700363 s |
+| Gemma3 packed 1 | 0.431840 s | 0.473553 s | 0.905393 s |
+| Gemma3 roots 1 | 0.429590 s | 0.473625 s | 0.903215 s |
+| Gemma3 roots 2 | 0.427714 s | 0.475324 s | 0.903038 s |
+| Gemma3 packed 2 | 0.432707 s | 0.472439 s | 0.905146 s |
+
+At n=2, prefill/paid sum improve 5.096%/3.365% for Gemma2 and
+0.838%/0.237% for Gemma3. Packed/root prefill drift is −0.358%/−1.080%
+and +0.201%/−0.437%, respectively. Gemma3's smaller benefit is descriptive;
+decode changes −0.035%/+0.313% are not demonstrated decode gains. This
+compares implementations at 256, not different chunk geometries.
+
+### Bounds, state and the identical-input control
+
+Twenty unique focused controls pass: 13 initial operand/plan controls, four
+ordinary 128-row adapter hint/tail/state/restart controls, two configured
+256-row checkpoint/spill/kept-restart cases and one maximum 256×131072
+operand case. Both caps cover 129/256 rows and 4352/16384-cell reductions;
+cap0 covers both 129 and 256 rows at 131072. The maximum exercises the full
+128 MiB mask, 256 MiB roots, eight query tiles, last valid addresses and
+complete finite packed-MMA equality eagerly and after poisoned changed
+replay. A coherent 257-row descriptor set explicitly refuses the row bound.
+This primitive coverage does not increase public model contexts.
+
+The first adoption job passes six controls but its new fixture's combined
+cross-owner head guard fails. A same-owner checkpoint oracle then exposes a
+fixture state read outside the held two-owner request, which is correctly
+refused. The corrected retry moves the read inside the request, distinguishes
+read errors from mismatches, and passes both cases. These failed jobs remain
+failed records. The final fixture additionally runs an independent packed
+control on exactly the same repeated 256-token seed, retires it, then runs
+actual roots. Each complete finite owner's head is byte-exact packed↔root.
+
+Cross-owner differences already occur in the packed control: Gemma2 differs
+in 255998/256000 logits (maximum absolute difference 0.630257845, mean
+0.0941923012; both argmax 235248); Gemma3 differs in 262208/262208
+(maximum 0.284272194, mean 0.0499853384; both argmax 7001). This clears
+the extension as the cause of that initial failure; it does not establish
+the baseline numerical cause or imply harmless rounding. The same-owner
+checkpoint rewind, unchanged peer state, spill/kept adoption, malformed
+adoption refusals and exact scalar continuation remain independently checked.
+
+### Match the reference's sliding-window cache geometry
+
+The first strict Gemma2 reference job stops after a completed stock/native
+pair: all choices agree but full logits differ. Every prior native packed
+and root factor has the same final-head bytes, so the new root path is not
+the source of that discrepancy. The pinned [stock SWA allocator](https://github.com/ggml-org/llama.cpp/blob/d81235049384534c167caea52b85a694f6103d14/src/llama-kv-cache-iswa.cpp)
+uses `PAD(window + n_ubatch, 256)` for these independent caches. Its
+joined ubatch of 512 gives Gemma2 4608 cells and Gemma3 1536; native's
+legitimate per-owner `max_rows=256` gives 4352/1280. At the earlier
+128-row comparisons both engines rounded to the same widths.
+
+Explicit probe-only `stock-ring` funds `max_rows=512` with unchanged actual
+256-row chunks, wave limit 512 and head limit two. It asserts and prints
+4608/1536 cells; absent the flag, original rings remain unchanged. One
+Gemma2 diagnostic then reproduces the retained stock's complete heads and
+choices exactly. That is sufficient explanation for this case, without an
+n=1 timing claim or a production state-layout change. Fresh stock logs
+confirm both actual capacities below. The earlier failed comparison is
+preserved and excluded from those bookends.
+
+Four matched-ring own-mode diagnostics (packed/root per family) agree on
+74 complete finite teacher heads, two final heads, 72 choices and initialized
+state hashes, plus Gemma2's two prefill heads. GPU/full-head publication,
+refusal invariance, spill/restore, checkpoint continuation and partial
+departure checks pass. These qualify comparison geometry separately from
+the original-ring kept-restart cases; public 256-row admission stays open.
+
+### Fresh matched-ring llama.cpp comparisons
+
+Each family runs stock/native/native/stock with warm retained backing,
+plans and graphs, the same approved inputs, three untimed anchor tokens per
+owner, 32 paid decode steps per owner and two final full-logit heads. Paid
+state/mask/capture work remains included. All four arms per family agree on
+64 valid choices and both complete finite heads byte for byte. Native
+counters confirm the specified roots/masks/hints, no paid optional planning
+and the same capture schedule across its two arms. Every target completes
+explicit teardown and returns zero; authenticated stock-container absence
+and final GPU/identity guards pass.
+
+| Family/arm | Prefill | Decode | Paid sum |
+| --- | ---: | ---: | ---: |
+| Gemma2 stock 1 | 1.056750 s | 0.587505 s | 1.644255 s |
+| Gemma2 native 1 | 1.067370 s | 0.586435 s | 1.653805 s |
+| Gemma2 native 2 | 1.068660 s | 0.586695 s | 1.655355 s |
+| Gemma2 stock 2 | 1.053070 s | 0.585675 s | 1.638745 s |
+| Gemma3 stock 1 | 0.412612 s | 0.476944 s | 0.889556 s |
+| Gemma3 native 1 | 0.426298 s | 0.481685 s | 0.907983 s |
+| Gemma3 native 2 | 0.425202 s | 0.482108 s | 0.907310 s |
+| Gemma3 stock 2 | 0.409679 s | 0.477068 s | 0.886747 s |
+
+Native mean prefill/decode/paid deltas are +1.242%/−0.004%/+0.797% for
+Gemma2 and +3.552%/+1.025%/+2.195% for Gemma3. Stock/native prefill
+bookend drift is −0.348%/+0.121% and −0.711%/−0.257%, respectively;
+paid drift is −0.335%/+0.094% and −0.316%/−0.074%. These descriptive
+n=2 results retain both residuals, with no parity claim. They measure the
+explicit matched-ring runner policy; ordinary HTTP prompt-frontier
+publication and public 128-row defaults are separate gates.
+
+### Provenance and remaining transfers
+
+Compiled source base is `8204d9d`, final prerequisite source manifest
+`22cb0f6474514ddffc14eb47c4daea4b1a554080b7f503cd5f83c4a5bdea6afb`.
+Final Gemma2/Gemma3 probe ELFs are
+`5d8bf3323150bc220316e98bc209403008ebdfa2c090778fb35cbf83880e5c96` /
+`4e3ca567667ab25ce8315ebe82cc4a2ed2aa6b6747f33be6f00be914b4beb8a9`.
+The parser-only extended stock helpers are
+`827ba9d5d27ef82c79b5d6656f0f5fcc251fd9dbe6e4441e163d93b8fbf912ed` /
+`24d49d720a2efe91b52ec7cd91cd044028bc5f8e8aa3a47828029786ac2ca854`.
+The SDK receipt, artifact/GGUF, approved input IDs, immutable image and
+actual native/stock backend/cuBLAS identities remain those recorded above
+and are checked before and after acquisition. Task-entry TensorFold native
+`f8fe17d24629aedabf90bbf78279dd776e6d62e7` and Python
+`ed78d6fc204d89d90b045bf033d6551e7714f3a1` refs were rechecked unchanged
+before final comparison; their pinned recipes still lack an applicable
+Gemma2/Gemma3 CUDA/GGUF target.
+
+Replay uses the standing inputs identified above: prefixes 4352/4864 for
+Gemma2 and 1280/1536 for Gemma3, each followed by 3+32+4 supplied IDs.
+Use the checked-in native probes with `cycle bounded-roots device-masks
+prefill-ahead owner-prefill flexible-owner-prefill chunk=256 stock-ring`
+and the stock helpers with `cycle chunk=256`; `own` instead of `cycle`
+selects state diagnostics. Omit owner/flexible words for the packed factor;
+omit `stock-ring` for the original-ring factor. These authenticated replay
+inputs remain in the standing reference store and can be supplied externally;
+raw logs are not required to reconstruct the work.
+
+External evidence under Spark B `~/scratch/m35-gemma-prefill-wide` includes
+`wide-screen2`, the failed screen/reference/fixture attempts,
+`wide-final-prerequisite1`, `matched-ring-own1` and
+`matched-reference-g2-1`/`matched-reference-g3-1`. The 20-control aggregate is
+`ed92b2c987aa7d3733fd74381752aa67f965982d6cdbb969b681fe7a0d99b47f`;
+matched-reference aggregate is
+`c857e942be7b58a7e1a26929d2042bfad30e02273b2b8e26852b85c22b29f570`.
+Raw samples remain external until milestone cleanup. Full regression remains
+deferred under the owner's override.
+
+T93 remains open for rows above 256, mixed-width roots, other compatible
+cohorts and public larger-chunk admission. Cold changing-key capture also
+remains open: warm capture already works, but the first traversal's
+one-missing-plan build cannot prime both distinct future shapes. A shared
+two-future funded lifecycle is the concrete next transfer, with installation
+only after current completion and no speculative state initialization.

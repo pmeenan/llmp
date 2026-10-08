@@ -351,7 +351,7 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
       auto* mask = p.local(il) ? owner_local_mask : owner_global_mask;
       ggml_tensor* attention = nullptr;
       if (o.owner_prefill &&
-          (chunk_rows == 128 || (o.flexible_owner_prefill && chunk_rows <= 128)) &&
+          (chunk_rows == 128 || (o.flexible_owner_prefill && chunk_rows <= 256)) &&
           mask->ne[0] <= 131072) {
         std::array<ggml_tensor*, 4> keys{}, values{};
         std::copy_n(owner_keys.begin(), 2, keys.begin());

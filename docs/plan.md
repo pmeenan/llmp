@@ -465,9 +465,12 @@ family" guide, and its long-context scaling work.
         - [ ] **T86** Grouped physical KV stores.
         - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
           exact heads/state and actual serving/restart controls pass.
-        - [ ] **T93** Equal-width C2 rows 2–128 and partial tails are adopted;
-          extend compatible >128 rows, mixed-width roots and other cohorts
+        - [ ] **T93** Equal-width C2 rows 2–256 are qualified in configured
+          runners;
+          ordinary chunks stay 128. Extend compatible >256 rows, public
+          larger-chunk admission, mixed-width roots and other cohorts
           with explicit bounds/funding, original geometry and recipient checks.
+          Extend cold changing-key capture with a shared two-future lifecycle.
       - **Gemma3 4B QAT**
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T11** Reuse decode Q8 quantization.
@@ -488,9 +491,12 @@ family" guide, and its long-context scaling work.
         - [ ] **T86** Grouped physical KV stores.
         - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
           exact heads/state and actual serving/restart controls pass.
-        - [ ] **T93** Equal-width C2 rows 2–128 and partial tails are adopted;
-          extend compatible >128 rows, mixed-width roots and other cohorts
+        - [ ] **T93** Equal-width C2 rows 2–256 are qualified in configured
+          runners;
+          ordinary chunks stay 128. Extend compatible >256 rows, public
+          larger-chunk admission, mixed-width roots and other cohorts
           with explicit bounds/funding, original geometry and recipient checks.
+          Extend cold changing-key capture with a shared two-future lifecycle.
           The 64-row diagnostic host-mask/no-hint recipe remains +2.290%
           prefill / +1.813% paid. One matched timeline finds little active-work
           excess and distributed replay/capture gaps; no cause is established.
@@ -579,9 +585,17 @@ family" guide, and its long-context scaling work.
       distributed intra-wave inactivity, without establishing a fix. The aligned
       GPU-mask/hinted bounded runner-policy comparison is level in prefill
       within n=2 bookend movement (+0.188%); decode/paid remain +0.992%/+0.548%.
-      Full HTTP reference remains open. T93 tracks compatible >128 rows,
-      mixed-width roots/cohorts and their bounded admission; T92 tracks
-      DeepSeek reference bank joins. Selector bounds do not close ports.
+      Full HTTP reference remains open. The configured 256-row extension
+      passes 20 focused controls, including maximum 256×131072 operands and
+      same-owner checkpoint/restart. Native prefill improves 5.096%/0.838%.
+      Matched-ring fresh reference outputs are exact; prefill/paid gaps remain
+      +1.242%/+0.797% (Gemma2), +3.552%/+2.195% (Gemma3), n=2.
+      Identical-input cross-owner differences also occur in packed controls;
+      their baseline cause is unresolved, while each packed/root owner is exact.
+      Public chunks stay 128. T93 tracks compatible >256 rows, mixed widths,
+      larger admission and the cold two-future capture pipeline; warm capture
+      already works at 256. T92 tracks DeepSeek reference bank joins.
+      Selector bounds do not close ports.
       Confirm every open matrix consumer has its own checked result before
       closing this parent. T68 is the owner-approved partial-eviction direction
       and requires D-096's amendment, not another lazy-handoff timing change.

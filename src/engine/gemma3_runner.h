@@ -39,7 +39,8 @@ struct Gemma3Options {
   bool owner_decode = false, packed_prefill = false;
   // Copy-free C2 prefill; false retains the packed control.
   bool owner_prefill = true;
-  // Qualified 2..128-row tiles and tails; false retains the 128-row selector.
+  // Qualified 2..256-row tiles and tails in funded configured envelopes.
+  // False retains the 128-row selector; ordinary max_rows remains 128.
   bool flexible_owner_prefill = true;
   // Opt-in copy-free C2 attention; state layout and publication are unchanged.
   bool bounded_roots = false;
