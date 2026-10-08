@@ -51,7 +51,8 @@ struct MaterializationPlan {
 // the closure's own extents or `protect` as victims.
 MaterializationPlan PlanMaterialization(const catalog::Catalog& catalog, catalog::DomainId domain,
                                         Bytes budget, const catalog::Closure& closure,
-                                        std::span<const catalog::ExtentId> protect = {});
+                                        std::span<const catalog::ExtentId> protect = {},
+                                        bool select_victims = true);
 
 }  // namespace jitllm::memory
 

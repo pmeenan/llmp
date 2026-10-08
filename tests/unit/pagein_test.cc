@@ -2144,6 +2144,84 @@ TEST(VmmLaneTest, ALazilyKeptBackingThatCannotBeUnmappedIsSetAsideNotTaken) {
 // plain unmap's backing, or a kept one released, refills a short reserve
 // instead of being released; other classes or sizes never touch it; and
 // ReleaseReserve releases what it holds.
+TEST(VmmLaneTest, DiagnosticIntervalsAuthenticateBusyCompletionAndRefusalWithoutAHistory) {
+  jitllm::scheduler::BackingCreateCounters counters(true);
+  counters.Attempt(true);
+  const auto busy = counters.Snapshot();
+  ASSERT_TRUE(busy.timing.enabled);
+  EXPECT_TRUE(busy.timing.current_create_reserve);
+  ASSERT_NE(busy.timing.current_create.serial, 0U);
+  EXPECT_GT(busy.timing.current_create.start_ns, 0U);
+  EXPECT_EQ(busy.timing.current_create.end_ns, 0U);
+  EXPECT_EQ(busy.timing.reserve.started, 1U);
+  EXPECT_EQ(busy.timing.reserve.completed, 0U);
+  counters.Completed(true);
+  const auto completed = counters.Snapshot();
+  EXPECT_EQ(completed.timing.current_create.serial, 0U);
+  EXPECT_EQ(completed.timing.reserve.completed, 1U);
+  EXPECT_EQ(completed.timing.reserve.last.serial, busy.timing.current_create.serial);
+  EXPECT_EQ(completed.timing.reserve.last.start_ns, busy.timing.current_create.start_ns);
+  EXPECT_GE(completed.timing.reserve.last.end_ns, completed.timing.reserve.last.start_ns);
+  EXPECT_EQ(completed.timing.reserve.total_ns,
+            completed.timing.reserve.last.end_ns - completed.timing.reserve.last.start_ns);
+  counters.Attempt(false);
+  counters.Completed(false);
+  counters.Failed(false, {.error = ProviderError::kOutOfMemory, .detail = "diagnostic refusal"});
+  const auto refused = counters.Snapshot();
+  EXPECT_EQ(refused.ordinary_failures, 1U);
+  EXPECT_EQ(refused.timing.ordinary.started, 1U);
+  EXPECT_EQ(refused.timing.ordinary.completed, 1U);
+  EXPECT_GT(refused.timing.ordinary.last.serial, completed.timing.reserve.last.serial);
+  counters.BeginPark();
+  EXPECT_NE(counters.Snapshot().timing.current_park.serial, 0U);
+  counters.ParkMetadataDone();
+  counters.ParkStashDone();
+  counters.EndPark();
+  const auto parked = counters.Snapshot();
+  EXPECT_EQ(parked.timing.park.started, 1U);
+  EXPECT_EQ(parked.timing.park.completed, 1U);
+  EXPECT_EQ(parked.timing.current_park.serial, 0U);
+  EXPECT_EQ(parked.timing.park.first.serial, parked.timing.park.last.serial);
+  EXPECT_EQ(parked.timing.park_metadata.completed, 1U);
+  EXPECT_EQ(parked.timing.park_stash.completed, 1U);
+  EXPECT_EQ(parked.timing.park_publication.completed, 1U);
+  EXPECT_EQ(parked.timing.park_metadata.total_ns + parked.timing.park_stash.total_ns +
+                parked.timing.park_publication.total_ns,
+            parked.timing.park.total_ns);
+  EXPECT_EQ(parked.timing.park_metadata.longest.serial, parked.timing.park.last.serial);
+  EXPECT_EQ(parked.timing.park_metadata.longest.start_ns, parked.timing.park.last.start_ns);
+  EXPECT_EQ(parked.timing.park_metadata.longest.end_ns, parked.timing.park_stash.longest.start_ns);
+  EXPECT_EQ(parked.timing.park_stash.longest.end_ns,
+            parked.timing.park_publication.longest.start_ns);
+  EXPECT_EQ(parked.timing.park_publication.longest.end_ns, parked.timing.park.last.end_ns);
+  // A metadata refusal publishes its result without completing either
+  // milestone: retain the whole handler, but do not label its stages.
+  counters.BeginPark();
+  counters.EndPark();
+  const auto incomplete = counters.Snapshot();
+  EXPECT_EQ(incomplete.timing.park.completed, 2U);
+  EXPECT_EQ(incomplete.timing.park_metadata.completed, 1U);
+  EXPECT_EQ(incomplete.timing.park_stash.completed, 1U);
+  EXPECT_EQ(incomplete.timing.park_publication.completed, 1U);
+  EXPECT_GE(incomplete.timing.park.total_ns, parked.timing.park.total_ns);
+
+  jitllm::scheduler::BackingCreateCounters ordinary;
+  ordinary.Attempt(true);
+  ordinary.Completed(true);
+  ordinary.BeginPark();
+  ordinary.ParkMetadataDone();
+  ordinary.ParkStashDone();
+  ordinary.EndPark();
+  const auto unset = ordinary.Snapshot();
+  EXPECT_FALSE(unset.timing.enabled);
+  EXPECT_EQ(unset.reserve_attempts, 1U);
+  EXPECT_EQ(unset.timing.create_serial, 0U);
+  EXPECT_EQ(unset.timing.park.started, 0U);
+  EXPECT_EQ(unset.timing.park_metadata.completed, 0U);
+  EXPECT_EQ(unset.timing.park_stash.completed, 0U);
+  EXPECT_EQ(unset.timing.park_publication.completed, 0U);
+}
+
 TEST(VmmLaneTest, TheHandleReserveFillsWhileIdleAndIsTakenBeforeCreating) {
   using jitllm::scheduler::BackingWork;
   using jitllm::scheduler::ReserveSettings;
@@ -2152,7 +2230,8 @@ TEST(VmmLaneTest, TheHandleReserveFillsWhileIdleAndIsTakenBeforeCreating) {
   jitllm::base::WakeFlag wake;
   CompletionBoard board{16, wake};
   BackingService lane(&memory, board, QueueSettings{.capacity = 8, .reserved = 1, .batch = 8},
-                      ReserveSettings{.allocation_class = 0, .size = Bytes(kSize), .count = 2});
+                      ReserveSettings{.allocation_class = 0, .size = Bytes(kSize), .count = 2},
+                      true);
   const auto run = [&](BackingWork::Kind kind, std::uint64_t at, bool retain, std::uint64_t size) {
     const auto operation = board.Open();
     EXPECT_EQ(lane.Submit(
@@ -2178,6 +2257,12 @@ TEST(VmmLaneTest, TheHandleReserveFillsWhileIdleAndIsTakenBeforeCreating) {
   EXPECT_FALSE(lane.Turn());
   EXPECT_EQ(lane.reserved(), 2U);
   EXPECT_EQ(memory.backings(), 2U);
+  EXPECT_EQ(lane.create_stats().reserve_attempts, 2U);
+  EXPECT_EQ(lane.create_stats().reserve_failures, 0U);
+  EXPECT_TRUE(lane.create_stats().timing.enabled);
+  EXPECT_EQ(lane.create_stats().timing.reserve.started, 2U);
+  EXPECT_EQ(lane.create_stats().timing.reserve.completed, 2U);
+  EXPECT_EQ(lane.create_stats().timing.current_create.serial, 0U);
   // A map takes one (the same turn's idle refill is not needed: the
   // command was the turn's progress).
   ASSERT_TRUE(run(BackingWork::Kind::kMap, 0, false, kSize));
@@ -2233,7 +2318,8 @@ TEST(VmmLaneTest, AFailedRefillWaitsForACommandAndAnUnknownOneShortensTheReserve
   jitllm::base::WakeFlag wake;
   CompletionBoard board{16, wake};
   BackingService lane(&memory, board, QueueSettings{.capacity = 8, .reserved = 1, .batch = 8},
-                      ReserveSettings{.allocation_class = 0, .size = Bytes(kSize), .count = 2});
+                      ReserveSettings{.allocation_class = 0, .size = Bytes(kSize), .count = 2},
+                      true);
   const auto run = [&](BackingWork::Kind kind) {
     const auto operation = board.Open();
     EXPECT_EQ(
@@ -2257,6 +2343,23 @@ TEST(VmmLaneTest, AFailedRefillWaitsForACommandAndAnUnknownOneShortensTheReserve
   EXPECT_FALSE(lane.Turn());  // refused: nothing kept
   EXPECT_FALSE(lane.Turn());  // and not tried again while idle
   EXPECT_EQ(lane.reserved(), 0U);
+  const auto reserve_failure = lane.create_stats();
+  EXPECT_EQ(reserve_failure.reserve_attempts, 1U);
+  EXPECT_EQ(reserve_failure.reserve_failures, 1U);
+  EXPECT_EQ(reserve_failure.timing.reserve.started, 1U);
+  EXPECT_EQ(reserve_failure.timing.reserve.completed, 1U);
+  EXPECT_NE(reserve_failure.timing.reserve.last.serial, 0U);
+  EXPECT_EQ(reserve_failure.ordinary_attempts, 0U);
+  EXPECT_TRUE(reserve_failure.last_failure_reserve);
+  EXPECT_EQ(reserve_failure.last_failure_error, ProviderError::kOutOfMemory);
+  EXPECT_GT(reserve_failure.last_failure_monotonic_ns, 0U);
+  memory.FailNext(Operation::kCreate, ProviderError::kOutOfMemory);
+  EXPECT_FALSE(run(BackingWork::Kind::kMap));
+  const auto ordinary_failure = lane.create_stats();
+  EXPECT_EQ(ordinary_failure.ordinary_attempts, 1U);
+  EXPECT_EQ(ordinary_failure.ordinary_failures, 1U);
+  EXPECT_FALSE(ordinary_failure.last_failure_reserve);
+  EXPECT_GE(ordinary_failure.last_failure_monotonic_ns, reserve_failure.last_failure_monotonic_ns);
   // A map creates its own; the next idle turn tries again.
   ASSERT_TRUE(run(BackingWork::Kind::kMap));
   EXPECT_EQ(memory.backings(), 1U);
@@ -2266,6 +2369,12 @@ TEST(VmmLaneTest, AFailedRefillWaitsForACommandAndAnUnknownOneShortensTheReserve
   EXPECT_FALSE(lane.Turn());
   EXPECT_EQ(lane.reserved(), 1U);
   EXPECT_EQ(memory.backings(), 3U);  // mapped, kept, and one undetermined
+  const auto unknown_failure = lane.create_stats();
+  EXPECT_EQ(unknown_failure.reserve_failures, 2U);
+  EXPECT_EQ(unknown_failure.ordinary_failures, 1U);
+  EXPECT_EQ(unknown_failure.ordinary_attempts, 2U);
+  EXPECT_TRUE(unknown_failure.last_failure_reserve);
+  EXPECT_EQ(unknown_failure.last_failure_error, ProviderError::kUnknown);
   ASSERT_TRUE(run(BackingWork::Kind::kUnmap));
   EXPECT_FALSE(lane.Turn());
   EXPECT_EQ(lane.reserved(), 1U);

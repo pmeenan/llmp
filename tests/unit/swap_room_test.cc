@@ -11,8 +11,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -20,6 +23,111 @@ namespace rt = jitllm::runtime;
 
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
 constexpr std::uint64_t kExtent = 2 * kMiB;
+
+TEST(SwapRoom, IncompatibleDonorsReleaseBeforeHostFirstLoadsAtTheBudget) {
+  const jitllm::catalog::DomainId domain{0, 1};
+  const auto extent = [&](std::uint32_t id, std::size_t allocation_class) {
+    return rt::SwapBackingExtent{
+        .extent = {id, 1},
+        .bytes = kExtent,
+        .backing = rt::SwapBackingKey{
+            .domain = domain, .allocation_class = allocation_class, .size = kExtent}};
+  };
+  std::vector<rt::SwapBackingExtent> missing = {extent(10, 1), extent(11, 2), extent(12, 2),
+                                                extent(13, 2)};
+  const std::array selected = {extent(1, 2), extent(2, 2), extent(3, 2), extent(4, 2)};
+  auto release = rt::ReleaseForHandoff(domain, 4 * kExtent, 4 * kExtent, missing, selected);
+  ASSERT_TRUE(release) << release.error();
+  EXPECT_EQ(*release, (std::vector<jitllm::catalog::ExtentId>{{1, 1}}));
+  std::ranges::reverse(missing);
+  EXPECT_EQ(rt::ReleaseForHandoff(domain, 4 * kExtent, 4 * kExtent, missing, selected), release);
+  missing.front().backing->allocation_class = 1;
+  release = rt::ReleaseForHandoff(domain, 4 * kExtent, 4 * kExtent, missing, selected);
+  ASSERT_TRUE(release) << release.error();
+  EXPECT_EQ(release->size(), 2U);
+}
+
+TEST(SwapRoom, CompatibleDonorsStillReleaseEnoughForAnExistingOvercharge) {
+  const jitllm::catalog::DomainId domain{0, 1};
+  const auto extent = [&](std::uint32_t id) {
+    return rt::SwapBackingExtent{.extent = {id, 1},
+                                 .bytes = kExtent,
+                                 .backing = rt::SwapBackingKey{.domain = domain, .size = kExtent}};
+  };
+  const std::array missing = {extent(10), extent(11)};
+  const std::array selected = {extent(1), extent(2), extent(3)};
+  auto release = rt::ReleaseForHandoff(domain, 4 * kExtent, 4 * kExtent, missing, selected);
+  ASSERT_TRUE(release) << release.error();
+  EXPECT_TRUE(release->empty());
+  release = rt::ReleaseForHandoff(domain, 5 * kExtent, 4 * kExtent, missing, selected);
+  ASSERT_TRUE(release) << release.error();
+  EXPECT_EQ(*release, (std::vector<jitllm::catalog::ExtentId>{{1, 1}}));
+  EXPECT_FALSE(rt::ReleaseForHandoff(domain, 6 * kExtent, 4 * kExtent, missing, selected));
+}
+
+TEST(SwapRoom, HandoffPartitionRejectsAliasesCrossDomainAndMismatchedCharge) {
+  const jitllm::catalog::DomainId domain{0, 1};
+  const rt::SwapBackingExtent incoming{
+      .extent = {10, 1}, .bytes = kExtent, .backing = std::nullopt};
+  rt::SwapBackingExtent outgoing{.extent = {1, 1},
+                                 .bytes = kExtent,
+                                 .backing = rt::SwapBackingKey{.domain = domain, .size = kExtent}};
+  const std::array missing = {incoming};
+  std::array selected = {outgoing};
+  EXPECT_TRUE(rt::ReleaseForHandoff(domain, kExtent, kExtent, missing, selected));
+  selected[0].backing->domain = {1, 1};
+  EXPECT_FALSE(rt::ReleaseForHandoff(domain, kExtent, kExtent, missing, selected));
+  selected[0] = outgoing;
+  selected[0].backing->size = kExtent / 2;
+  EXPECT_FALSE(rt::ReleaseForHandoff(domain, kExtent, kExtent, missing, selected));
+  selected[0] = incoming;
+  EXPECT_FALSE(rt::ReleaseForHandoff(domain, kExtent, kExtent, missing, selected));
+  selected[0] = outgoing;
+  selected[0].backing.reset();
+  const auto release = rt::ReleaseForHandoff(domain, kExtent, kExtent, missing, selected);
+  ASSERT_TRUE(release) << release.error();
+  EXPECT_EQ(*release, (std::vector<jitllm::catalog::ExtentId>{{1, 1}}));
+}
+
+TEST(SwapRoom, HandoffPartitionAuthenticatesWholeTypedIdentitiesAndSelectedOrder) {
+  const jitllm::catalog::DomainId domain{0, 1};
+  const auto extent = [&](std::uint32_t index, std::uint32_t generation,
+                          std::size_t allocation_class) {
+    return rt::SwapBackingExtent{
+        .extent = {index, generation},
+        .bytes = kExtent,
+        .backing = rt::SwapBackingKey{
+            .domain = domain, .allocation_class = allocation_class, .size = kExtent}};
+  };
+  // Typed identities include the generation: an old index reused at another
+  // generation is not an alias. Shuffled input must keep selected release order.
+  std::vector missing{extent(4, 2, 1), extent(2, 1, 2), extent(10, 1, 1)};
+  std::vector selected{extent(8, 1, 2), extent(4, 1, 2), extent(1, 1, 2)};
+  const auto release = rt::ReleaseForHandoff(domain, 3 * kExtent, 3 * kExtent, missing, selected);
+  ASSERT_TRUE(release) << release.error();
+  EXPECT_EQ(*release, (std::vector<jitllm::catalog::ExtentId>{{8, 1}, {4, 1}}));
+  std::ranges::reverse(missing);
+  EXPECT_EQ(rt::ReleaseForHandoff(domain, 3 * kExtent, 3 * kExtent, missing, selected), release);
+  std::ranges::reverse(selected);
+  const auto reversed = rt::ReleaseForHandoff(domain, 3 * kExtent, 3 * kExtent, missing, selected);
+  ASSERT_TRUE(reversed) << reversed.error();
+  EXPECT_EQ(*reversed, (std::vector<jitllm::catalog::ExtentId>{{1, 1}, {4, 1}}));
+
+  auto duplicated = missing;
+  duplicated.push_back(missing.front());
+  EXPECT_FALSE(rt::ReleaseForHandoff(domain, 3 * kExtent, 4 * kExtent, duplicated, selected));
+  auto selected_duplicate = selected;
+  selected_duplicate.push_back(selected.front());
+  EXPECT_FALSE(
+      rt::ReleaseForHandoff(domain, 3 * kExtent, 3 * kExtent, missing, selected_duplicate));
+  selected_duplicate = selected;
+  selected_duplicate[1] = missing.front();
+  EXPECT_FALSE(
+      rt::ReleaseForHandoff(domain, 3 * kExtent, 3 * kExtent, missing, selected_duplicate));
+  duplicated = missing;
+  duplicated.front().extent = {};
+  EXPECT_FALSE(rt::ReleaseForHandoff(domain, 3 * kExtent, 3 * kExtent, duplicated, selected));
+}
 
 // The node's budget with a plans charge in whole extents past its floor.
 struct Ledger {

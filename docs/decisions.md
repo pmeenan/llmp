@@ -1612,6 +1612,30 @@ DeepSeek decode plan 1.8 MiB of a 9.4 MiB estimate). The image pipeline's
 recorded step is charged the same way. **Reopen if** a model must move
 between swaps, as above.
 
+**Amended 2026-10-08** (M3.5's internal partial-weight foundation;
+[comparison and recovery controls](experiments/partial-weight-eviction/README.md)).
+The internal full/partial benchmark can spill whole outgoing live state,
+retain clean inactive prepared weights at pinned addresses, and reload only
+the incoming closure's missing extents. Global GreedyDual selects across all
+inactive owners, protecting the complete incoming closure, live leases and
+registrations. The completed outgoing request ends even with zero victims.
+Selected weights are evicted in batches; parked backing stays charged, and
+only actual completed catalog releases count as free capacity. Incompatible
+or surplus selected backing is released before a load that needs its class.
+Rollback preserves preexisting incoming and unrelated caches, removes only
+new additions and restores only missing outgoing extents. Spill membership
+and durable records commit after readiness; failed undo preserves only state
+whose saved generations and files are proven intact.
+
+Ordinary serving still uses full eviction. The current same-binary bounded
+factor saves 18.3% prepared first-output time and 19.5% read bytes, but cold
+first-arrival is 11.9% slower with nonoverlapping ranges. The never-worse-than-
+full adoption gate remains open in M3.5. No public opt-in, configuration or
+on-disk format changes are introduced. M6 retains its broader shared-prefix,
+retention-policy and workload qualification. Storage accounting now records
+positive completed READ bytes, including padding and state, excluding writes,
+zero-fill and failed or unsubmitted work; it does not estimate a whole model.
+
 **Amended 2026-10-03** (wave lanes, under the owner's delegation of M3
 judgement calls; D-086 as amended the same day). A capture still begins
 and ends on the model's stream, but a DeepSeek wave's graph also records
@@ -5410,6 +5434,21 @@ entries yet); M6's entry classes keep the rules above.
   recently used plans up to its step floor, with their graphs) or what a
   step under way uses, so pressure kept up from outside cannot make the
   runtime drop and rebuild its plans every look.
+
+**Amended 2026-10-08** (M3.5's internal partial-weight foundation, D-096).
+Clean inactive prepared weights enter the existing GreedyDual order only
+when the internal partial benchmark is selected; ordinary serving keeps the
+whole-model swap. Every inactive owner is eligible, subject to leases,
+registrations and protected incoming closure generations. Actual completed
+request use refreshes weight priority without a per-wave scheduler call.
+Both optional plan and graph charges continue to displace only plan/graph
+cache, never weights or state. Runtime-managed state acquisition validates
+its complete closure before reclaim and disables the standalone catalog-LRU
+fallback when the runtime reclaimer is installed. Standalone harness behavior
+is unchanged. Pending selected backing is not free credit, and rollback
+retains preexisting caches. Prepared savings do not close the cold-switch
+adoption gate; see the [final factor](experiments/partial-weight-eviction/README.md#final-current-source-selection).
+
 
 ## D-054: Installed artifacts stay node-local; optional long-term store; one import per cluster with peer replication  (2026-09-22, status: accepted; specializes D-009, D-018, D-034 and D-041; role paths and keys in D-063)
 

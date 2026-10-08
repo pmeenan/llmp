@@ -17,6 +17,8 @@
 
 #include "base/bounded_queue.h"
 #include "engine/support.h"
+#include "memory/materialize.h"
+#include "memory/reclaim.h"
 #include "platform/crash_policy.h"
 #include "providers/device_runtime.h"
 #include "providers/direct_reader.h"
@@ -200,16 +202,30 @@ std::optional<std::chrono::steady_clock::time_point> CountingStorage::oldest_in_
           std::chrono::nanoseconds(ns)));
 }
 
-void CountingStorage::Started(std::uint64_t token) {
+void CountingStorage::Started(const providers::IoRequest& request, bool submitted) {
   const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                        std::chrono::steady_clock::now().time_since_epoch())
                        .count();
-  started_.insert_or_assign(token, std::max<std::int64_t>(now, 1));
+  started_.insert_or_assign(request.token, StartedRead{.at = std::max<std::int64_t>(now, 1),
+                                                       .kind = request.kind,
+                                                       .length = request.length,
+                                                       .submitted = submitted});
+  if (submitted && request.kind == providers::IoKind::kRead) {
+    read_submitted_bytes.fetch_add(request.length, std::memory_order_relaxed);
+  }
   Publish();
 }
 
 void CountingStorage::Ended(std::span<const providers::IoCompletion> done) {
   for (const providers::IoCompletion& completion : done) {
+    const auto found = started_.find(completion.token);
+    if (found != started_.end() && found->second.submitted &&
+        found->second.kind == providers::IoKind::kRead && completion.result > 0) {
+      read_completed_bytes.fetch_add(
+          std::min<std::uint64_t>(static_cast<std::uint64_t>(completion.result),
+                                  found->second.length),
+          std::memory_order_relaxed);
+    }
     started_.erase(completion.token);
   }
   Publish();
@@ -218,7 +234,7 @@ void CountingStorage::Ended(std::span<const providers::IoCompletion> done) {
 void CountingStorage::Publish() {
   std::int64_t oldest = 0;
   for (const auto& entry : started_) {
-    oldest = oldest == 0 ? entry.second : std::min(oldest, entry.second);
+    oldest = oldest == 0 ? entry.second.at : std::min(oldest, entry.second.at);
   }
   oldest_ns_.store(oldest, std::memory_order_release);
 }
@@ -234,7 +250,7 @@ providers::Submission CountingStorage::Submit(const providers::IoRequest& reques
     held_.back().segments = {};
     held_segments_.emplace_back(request.segments.begin(), request.segments.end());
     held.fetch_add(1, std::memory_order_relaxed);
-    Started(request.token);
+    Started(request, false);
     return providers::Submission::kAccepted;
   }
   PassHeld();
@@ -242,7 +258,7 @@ providers::Submission CountingStorage::Submit(const providers::IoRequest& reques
   if (submitted != providers::Submission::kNotStarted) {
     requests.fetch_add(1, std::memory_order_relaxed);
     pieces.fetch_add(std::max<std::size_t>(request.segments.size(), 1), std::memory_order_relaxed);
-    Started(request.token);
+    Started(request, true);
   }
   return submitted;
 }
@@ -261,6 +277,10 @@ void CountingStorage::PassHeld() {
     // Accepted or unknown: its completion comes from the ring either way.
     requests.fetch_add(1, std::memory_order_relaxed);
     pieces.fetch_add(std::max<std::size_t>(request.segments.size(), 1), std::memory_order_relaxed);
+    const auto found = started_.find(request.token);
+    base::Check(found != started_.end(), "a passed held read was recorded");
+    found->second.submitted = true;
+    read_submitted_bytes.fetch_add(request.length, std::memory_order_relaxed);
     held_.erase(held_.begin());
     held_segments_.erase(held_segments_.begin());
   }
@@ -681,12 +701,13 @@ bool PagedNode::ChargeHost(std::uint64_t bytes, bool required) {
   return true;
 }
 
-std::uint64_t PagedNode::AskReclaim(std::uint64_t needed, ReclaimFor what) {
+std::uint64_t PagedNode::AskReclaim(std::uint64_t needed, ReclaimFor what,
+                                    std::span<const ExtentId> protect) {
   if (!reclaimer_ || reclaiming_ || needed == 0) {
     return 0;
   }
   reclaiming_ = true;
-  const std::uint64_t freed = reclaimer_(needed, what);
+  const std::uint64_t freed = reclaimer_(needed, what, protect);
   reclaiming_ = false;
   return freed;
 }
@@ -915,7 +936,7 @@ Status PagedNode::Start(Bytes budget) {
   }
   backing_lane_ = std::make_unique<sc::BackingService>(
       memory_.get(), *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32},
-      reserve);
+      reserve, settings_.diagnostic_backing_timing);
   sc::LandingZone landing{
       .slots = {},
       .slot_bytes = Bytes(settings_.slot_bytes),
@@ -1102,15 +1123,31 @@ Status PagedNode::Evict(std::vector<ExtentId> extents, sc::EvictOptions options)
 }
 
 Status PagedNode::Swap(std::vector<ExtentId> out, const catalog::Closure& in, bool handoff,
-                       SwapReport& report) {
+                       SwapReport& report, std::vector<ExtentId> release,
+                       catalog::Closure weights) {
   // Asked for between a request's steps: the requests holding what goes
   // out end first, since the swap would wait for their leases.
+  if (!weights.extents.empty()) {
+    auto checked = Call(
+        [&]() -> Status {
+          for (const auto& [extent, generation] : weights.extents) {
+            const auto view = catalog_.Describe(extent);
+            if (!view || view->content_generation != generation ||
+                !catalog::Catalog::Evictable(*view))
+              return Error("a selected idle weight is stale or held");
+          }
+          return {};
+        },
+        "validating selected idle weights before request retirement");
+    if (!checked) return checked;
+  }
   auto ended = EndRequestsOver(out);
   if (!ended) {
     return std::unexpected(ended.error());
   }
   Done done;
-  auto swapped = Post(std::make_unique<SwapProgram>(done, std::move(out), in, handoff, report),
+  auto swapped = Post(std::make_unique<SwapProgram>(done, std::move(out), in, handoff, report,
+                                                    std::move(release), std::move(weights)),
                       done, "a swap");
   report.requests_ended = *ended;
   return swapped;
@@ -1121,17 +1158,25 @@ std::expected<sc::SchedulerStats, std::string> PagedNode::Stats() {
   if (auto r = Call(
           [&]() -> Status {
             stats = scheduler_->stats();
+            stats.catalog_occupancy_bytes = catalog_.OccupancyOf(domain_).Total().value();
             return {};
           },
           "reading the scheduler's counters");
       !r) {
     return std::unexpected(r.error());
   }
+  stats.backing_creates = backing_create_stats();
   return stats;
 }
 
 Status PagedNode::Job(const catalog::Closure& closure, sc::DeviceJob job, std::string_view what,
                       std::uint32_t stream, const std::function<void()>& meanwhile) {
+  if (job_active_) return Error("a device job cannot recursively dispatch another job");
+  job_active_ = true;
+  struct ActiveJob {
+    bool& active;
+    ~ActiveJob() { active = false; }
+  } active{job_active_};
   if (const auto open = requests_.find(stream); open != requests_.end()) {
     return Step(stream, *open->second, closure, std::move(job), what, meanwhile);
   }
@@ -1612,14 +1657,56 @@ Status PagedNode::Call(std::function<Status()> call, std::string_view what) {
 
 Status PagedNode::Acquire(const catalog::Closure& closure, AcquireReport& report,
                           std::string_view what, bool* over_budget) {
+  if (over_budget != nullptr) *over_budget = false;
+  if (job_active_) return Error("an acquisition cannot run while a device job is in flight");
   // The shared workspace is never a victim, whether or not the closure
   // names it: it is discardable, so it would be chosen first, and nothing
   // restores it.
   std::vector<ExtentId> workspace = activations_.extents;
   workspace.insert(workspace.end(), pool_.extents.begin(), pool_.extents.end());
+  if (reclaimer_) {
+    std::vector<ExtentId> protect = workspace;
+    for (const auto& [extent, generation] : closure.extents) {
+      (void)generation;
+      protect.push_back(extent);
+    }
+    std::uint64_t reclaimed = 1;
+    for (int round = 0;; ++round) {
+      memory::MaterializationPlan plan;
+      if (auto checked = Call(
+              [&]() -> Status {
+                // A node owns one physical domain. Validate the entire
+                // closure before domain-local sizing or any reclaim callback.
+                for (const auto& [extent, generation] : closure.extents) {
+                  const auto view = catalog_.Describe(extent);
+                  if (!view || view->descriptor.domain != domain_ ||
+                      view->content_generation != generation || view->discarded ||
+                      view->state == catalog::ExtentState::kQuarantined) {
+                    return Error("an acquisition closure is foreign, stale or quarantined");
+                  }
+                }
+                plan = memory::PlanMaterialization(catalog_, domain_, budget_, closure, protect,
+                                                   /*select_victims=*/false);
+                return {};
+              },
+              "checking a policy-managed acquisition");
+          !checked)
+        return checked;
+      if (!plan.stale.empty() || !plan.quarantined.empty() ||
+          (!plan.feasible && plan.shortfall.value() == 0)) {
+        return Error(std::format("{}: the acquisition closure is stale or quarantined", what));
+      }
+      if (plan.shortfall.value() == 0) break;
+      if (round >= memory::kReclaimRounds || reclaimed == 0) {
+        if (over_budget != nullptr) *over_budget = true;
+        return Error(std::format("{}: the acquisition remains over budget", what));
+      }
+      reclaimed = AskReclaim(plan.shortfall.value(), ReclaimFor::kMaterialize, protect);
+    }
+  }
   Done done;
   auto program = std::make_unique<AcquireProgram>(done, closure, domain_, budget_, report,
-                                                  std::move(workspace));
+                                                  std::move(workspace), !reclaimer_);
   auto acquired = Post(std::move(program), done, what);
   if (over_budget != nullptr) {
     // Read once the program is gone (Post returns only then).

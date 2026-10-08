@@ -137,7 +137,11 @@ reserve in its first milliseconds. The first arm of the first run (an
 790 driver out-of-memory messages in the kernel log during that run only and
 host planning three times slower; the repeat, with the log checked between
 arms, had none in any arm, and a later `plain` arm showed the same kind of
-page-in blip. It is recorded as host memory pressure outside the runtime.
+page-in blip. It was initially classified as outside-runtime host pressure
+without allocator attribution. Later [partial-weight attribution](../partial-weight-eviction/README.md#rejected-first-control-and-attribution)
+reproduces the exact recovered memdesc warning class alongside successful
+`cuMemCreate` calls and no returned provider failures. The earlier run's cause
+remains unproven; outside-runtime pressure was not established.
 
 ## What follows
 

@@ -33,6 +33,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <utility>
@@ -168,8 +169,11 @@ class EvictingProgram : public ReportingProgram {
   static constexpr std::size_t kWindow = 256;
 
   EvictingProgram(ProgramDone& done, std::vector<catalog::ExtentId> extents,
-                  scheduler::EvictOptions options)
-      : ReportingProgram(done), extents_(std::move(extents)), options_(options) {}
+                  scheduler::EvictOptions options, std::vector<catalog::ExtentId> release = {})
+      : ReportingProgram(done),
+        extents_(std::move(extents)),
+        options_(options),
+        release_(release.begin(), release.end()) {}
 
  protected:
   // One round of evictions: nullopt once every one has ended, else the
@@ -182,7 +186,9 @@ class EvictingProgram : public ReportingProgram {
         ++next_;
         continue;
       }
-      const auto evicted = context.Evict(extent, options_);
+      auto options = options_;
+      if (release_.contains(extent)) options.handoff = false;
+      const auto evicted = context.Evict(extent, options);
       if (!evicted) {
         if (evicted.error() == scheduler::WorkError::kBusy) {
           // A request's lease holds it: wait for its release (this extent
@@ -213,6 +219,7 @@ class EvictingProgram : public ReportingProgram {
  private:
   std::vector<catalog::ExtentId> extents_;
   scheduler::EvictOptions options_;
+  std::set<catalog::ExtentId> release_;
   std::size_t next_ = 0;
   std::uint64_t evicted_ = 0;
 };
@@ -254,9 +261,12 @@ struct SwapReport {
 class SwapProgram final : public EvictingProgram {
  public:
   SwapProgram(ProgramDone& done, std::vector<catalog::ExtentId> out, catalog::Closure in,
-              bool handoff, SwapReport& report)
-      : EvictingProgram(done, std::move(out), scheduler::EvictOptions{.handoff = handoff}),
+              bool handoff, SwapReport& report, std::vector<catalog::ExtentId> release = {},
+              catalog::Closure weights = {})
+      : EvictingProgram(done, std::move(out), scheduler::EvictOptions{.handoff = handoff},
+                        std::move(release)),
         in_(std::move(in)),
+        weights_(std::move(weights)),
         report_(report) {}
 
   scheduler::Step Advance(scheduler::TaskContext& context) override {
@@ -264,6 +274,21 @@ class SwapProgram final : public EvictingProgram {
       return scheduler::Step::Finish(scheduler::TaskOutcome::kFailed);
     }
     if (!started_) {
+      // Refuse stale or newly held policy victims before any eviction.
+      for (const auto& [extent, generation] : weights_.extents) {
+        const auto view = context.catalog().Describe(extent);
+        if (!view || view->content_generation != generation ||
+            !catalog::Catalog::Evictable(*view) ||
+            view->descriptor.memory_class != catalog::MemoryClass::kWeights ||
+            view->descriptor.recovery != catalog::Recovery::kFromArtifact)
+          return Fail(scheduler::WorkError::kBusy);
+      }
+      for (const auto& [extent, generation] : in_.extents) {
+        const auto view = context.catalog().Describe(extent);
+        if (!view || view->content_generation != generation || view->discarded ||
+            view->state == catalog::ExtentState::kQuarantined)
+          return Fail(scheduler::WorkError::kBusy);
+      }
       started_ = true;
       report_.started = std::chrono::steady_clock::now();
     }
@@ -296,6 +321,7 @@ class SwapProgram final : public EvictingProgram {
 
  private:
   catalog::Closure in_;
+  catalog::Closure weights_;
   SwapReport& report_;
   bool started_ = false;
   bool evicted_all_ = false;
@@ -462,13 +488,14 @@ class AcquireProgram final : public ReportingProgram {
 
   AcquireProgram(ProgramDone& done, catalog::Closure closure, catalog::DomainId domain,
                  base::Bytes budget, AcquireReport& report,
-                 std::vector<catalog::ExtentId> protect = {})
+                 std::vector<catalog::ExtentId> protect = {}, bool select_victims = true)
       : ReportingProgram(done),
         closure_(std::move(closure)),
         domain_(domain),
         budget_(budget),
         report_(report),
-        protect_(std::move(protect)) {}
+        protect_(std::move(protect)),
+        select_victims_(select_victims) {}
 
   scheduler::Step Advance(scheduler::TaskContext& context) override {
     if (context.TakeFailure()) {
@@ -495,8 +522,8 @@ class AcquireProgram final : public ReportingProgram {
           return scheduler::Step::Wait();
         }
       }
-      const memory::MaterializationPlan plan =
-          memory::PlanMaterialization(context.catalog(), domain_, budget_, closure_, protect_);
+      const memory::MaterializationPlan plan = memory::PlanMaterialization(
+          context.catalog(), domain_, budget_, closure_, protect_, select_victims_);
       ++report_.plans;
       if (!plan.feasible) {
         return Fail(plan.victims.sufficient || plan.shortfall.value() == 0
@@ -536,6 +563,7 @@ class AcquireProgram final : public ReportingProgram {
   base::Bytes budget_;
   AcquireReport& report_;
   std::vector<catalog::ExtentId> protect_;
+  bool select_victims_ = true;
   std::vector<catalog::ExtentId> victims_;
   std::size_t next_ = 0;
   bool materializing_ = false;

@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -63,6 +64,75 @@ using jitllm::catalog::ExtentState;
 constexpr std::uint64_t kExtent = ts::kPagedExtent;
 constexpr std::array<std::size_t, 2> kExtents = {4, 3};  // model 0 is the larger
 
+TEST(CountingStorageTest, CompletedReadBytesExcludeWritesFailuresAndUnstartedRequests) {
+  namespace pr = jitllm::providers;
+  pr::fake::FakeStorage inner(8, 1);
+  jitllm::engine::CountingStorage storage(inner);
+  std::array<std::byte, 16> memory{};
+  const int fd = inner.AddFile(std::vector<std::byte>(memory.size(), std::byte{7}));
+  const auto submit = [&](std::uint64_t token, pr::IoKind kind) {
+    return storage.Submit({.token = token,
+                           .kind = kind,
+                           .fd = fd,
+                           .memory = memory.data(),
+                           .length = static_cast<std::uint32_t>(memory.size()),
+                           .segments = {}});
+  };
+  inner.ScriptNext({.submission = pr::Submission::kNotStarted, .result = std::nullopt});
+  EXPECT_EQ(submit(1, pr::IoKind::kRead), pr::Submission::kNotStarted);
+  EXPECT_EQ(storage.read_submitted_bytes.load(), 0U);
+  inner.ScriptNext({.submission = pr::Submission::kUnknown, .result = 5});
+  EXPECT_EQ(submit(2, pr::IoKind::kRead), pr::Submission::kUnknown);
+  inner.ScriptNext({.result = -EIO});
+  EXPECT_EQ(submit(3, pr::IoKind::kRead), pr::Submission::kAccepted);
+  EXPECT_EQ(submit(4, pr::IoKind::kWrite), pr::Submission::kAccepted);
+  EXPECT_EQ(storage.read_submitted_bytes.load(), 32U);
+  EXPECT_EQ(storage.read_completed_bytes.load(), 0U);
+  std::array<pr::IoCompletion, 8> done{};
+  EXPECT_EQ(storage.Harvest(done, false), 3U);
+  EXPECT_EQ(storage.read_completed_bytes.load(), 5U);
+  EXPECT_EQ(storage.requests.load(), 3U);
+  EXPECT_FALSE(storage.oldest_in_flight());
+  const std::array<pr::IoSegment, 2> pieces = {
+      pr::IoSegment{.memory = memory.data(), .length = 8},
+      pr::IoSegment{.memory = memory.data() + 8, .length = 8}};
+  EXPECT_EQ(storage.Submit({.token = 5, .fd = fd, .length = 16, .segments = pieces}),
+            pr::Submission::kAccepted);
+  EXPECT_EQ(storage.Harvest(done, false), 1U);
+  EXPECT_EQ(storage.read_submitted_bytes.load(), 48U);
+  EXPECT_EQ(storage.read_completed_bytes.load(), 21U);
+}
+
+TEST(CountingStorageTest, HeldReadsCountOnlyOncePassedAndCancelledHeldReadsCountNothing) {
+  namespace pr = jitllm::providers;
+  pr::fake::FakeStorage inner(8, 1);
+  std::atomic<bool> hold{true};
+  jitllm::engine::CountingStorage storage(inner, &hold, true);
+  std::array<std::byte, 16> memory{};
+  const int fd = inner.AddFile(std::vector<std::byte>(memory.size(), std::byte{7}));
+  const auto submit = [&](std::uint64_t token) {
+    return storage.Submit({.token = token,
+                           .fd = fd,
+                           .memory = memory.data(),
+                           .length = static_cast<std::uint32_t>(memory.size()),
+                           .segments = {}});
+  };
+  EXPECT_EQ(submit(1), pr::Submission::kAccepted);
+  EXPECT_EQ(storage.Cancel(1), pr::Submission::kAccepted);
+  std::array<pr::IoCompletion, 8> done{};
+  EXPECT_EQ(storage.Harvest(done, false), 1U);
+  EXPECT_EQ(storage.read_submitted_bytes.load(), 0U);
+  EXPECT_EQ(storage.read_completed_bytes.load(), 0U);
+  EXPECT_EQ(submit(2), pr::Submission::kAccepted);
+  hold.store(false);
+  EXPECT_EQ(storage.Harvest(done, false), 1U);
+  EXPECT_EQ(storage.read_submitted_bytes.load(), 16U);
+  EXPECT_EQ(storage.read_completed_bytes.load(), 16U);
+  EXPECT_EQ(storage.requests.load(), 1U);
+  EXPECT_EQ(storage.held.load(), 2U);
+  EXPECT_FALSE(storage.oldest_in_flight());
+}
+
 // A synthetic model: its weights in an unnamed direct-I/O file, read into
 // managed device backing at one place, and pinned staging to read them
 // back through the shared workspace.
@@ -70,8 +140,9 @@ class Model final : public ts::PagedModel {
  public:
   // `fence_weights`: its fence closure is its weights (like a runner's
   // state, nonresident once the model is swapped out), not its staging.
-  Model(ts::PagedNode& node, std::uint32_t index, bool fence_weights = false)
-      : node_(node), index_(index), fence_weights_(fence_weights) {}
+  Model(ts::PagedNode& node, std::uint32_t index, bool fence_weights = false,
+        bool host_first = false)
+      : node_(node), index_(index), fence_weights_(fence_weights), host_first_(host_first) {}
 
   void Setup(const std::filesystem::path& directory) {
     const std::size_t extents = kExtents.at(index_);
@@ -109,18 +180,19 @@ class Model final : public ts::PagedModel {
     for (std::size_t i = 0; i < weights_.size(); ++i) {
       ASSERT_TRUE(
           node_.scheduler()
-              .SetSource(weights_[i],
-                         sc::PageSource{
-                             .read = {.fd = fd_,
-                                      .offset = i * kExtent,
-                                      .memory = nullptr,
-                                      .length = kExtent},
-                             .landed = true,
-                             .destination = base_ + (i * kExtent),
-                             .backing = sc::BackingPlace{.reservation = place_,
-                                                         .offset = Bytes(i * kExtent),
-                                                         .size = Bytes(kExtent),
-                                                         .allocation_class = node_.device_class()}})
+              .SetSource(
+                  weights_[i],
+                  sc::PageSource{
+                      .read =
+                          {.fd = fd_, .offset = i * kExtent, .memory = nullptr, .length = kExtent},
+                      .landed = true,
+                      .destination = base_ + (i * kExtent),
+                      .backing = sc::BackingPlace{.reservation = place_,
+                                                  .offset = Bytes(i * kExtent),
+                                                  .size = Bytes(kExtent),
+                                                  .allocation_class = host_first_ && i == 0
+                                                                          ? node_.host_class()
+                                                                          : node_.device_class()}})
               .has_value());
     }
     std::vector<ExtentId> all = weights_;
@@ -194,6 +266,7 @@ class Model final : public ts::PagedModel {
   ts::PagedNode& node_;
   std::uint32_t index_;
   bool fence_weights_ = false;
+  bool host_first_ = false;
   std::vector<std::byte> file_;
   int fd_ = -1;
   jitllm::providers::ReservationId place_;
@@ -284,10 +357,178 @@ std::filesystem::path Scratch() {
   return directory;
 }
 
+TEST(CudaPagedNodeTest, ManagedAcquireValidatesProtectsAndNeverFallsBackToCatalogLru) {
+  ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false});
+  Model first(node, 0);
+  Model second(node, 1);
+  const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
+  ASSERT_TRUE(node.Open());
+  first.Setup(Scratch());
+  second.Setup(Scratch());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent));
+  const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + kExtents[0] * kExtent)));
+  first.Register();
+  second.Register();
+  node.Run();
+  ASSERT_TRUE(first.ReadBack());
+  ASSERT_TRUE(first.Intact());
+  std::uint64_t calls = 0;
+  bool take = false;
+  node.SetReclaimer([&](std::uint64_t needed, jitllm::engine::PagedNode::ReclaimFor what,
+                        std::span<const ExtentId> protect) -> std::uint64_t {
+    ++calls;
+    EXPECT_EQ(what, jitllm::engine::PagedNode::ReclaimFor::kMaterialize);
+    EXPECT_EQ(needed, kExtents[1] * kExtent);
+    for (const auto& [extent, generation] : second.closure().extents) {
+      (void)generation;
+      EXPECT_NE(std::ranges::find(protect, extent), protect.end());
+    }
+    if (take) {
+      // Recursive acquisition refuses, without recursively entering this callback.
+      bool nested_capacity = false;
+      ts::AcquireReport nested;
+      EXPECT_FALSE(
+          node.Acquire(second.closure(), nested, "recursive acquisition", &nested_capacity));
+      EXPECT_TRUE(nested_capacity);
+      EXPECT_EQ(calls, 2U);
+      std::vector<ExtentId> victims(first.weights().begin(), first.weights().begin() + 3);
+      EXPECT_TRUE(node.Evict(std::move(victims)));
+    }
+    return 0;  // the caller must recheck actual occupancy, not trust this count
+  });
+  auto stale = second.closure();
+  ++stale.extents.front().second;
+  bool capacity = true;
+  ts::AcquireReport report;
+  EXPECT_FALSE(node.Acquire(stale, report, "stale acquisition", &capacity));
+  EXPECT_FALSE(capacity);
+  EXPECT_EQ(calls, 0U);
+  ExtentId foreign;
+  ASSERT_TRUE(node.Call(
+      [&]() -> ts::Status {
+        const auto domain = node.catalog().AddDomain("foreign acquisition control");
+        auto added =
+            node.catalog().AddExtent({.domain = domain,
+                                      .memory_class = jitllm::catalog::MemoryClass::kRuntime,
+                                      .recovery = jitllm::catalog::Recovery::kPinned,
+                                      .size = Bytes(kExtent),
+                                      .content = {}},
+                                     true);
+        if (!added) return std::unexpected("adding a foreign acquisition extent");
+        foreign = *added;
+        return {};
+      },
+      "constructing a foreign stale acquisition"));
+  auto foreign_stale = second.closure();
+  foreign_stale.extents.emplace_back(foreign, 2);
+  EXPECT_FALSE(node.Acquire(foreign_stale, report, "foreign stale acquisition", &capacity));
+  EXPECT_FALSE(capacity);
+  EXPECT_EQ(calls, 0U);
+  ASSERT_TRUE(node.Call(
+      [&]() -> ts::Status {
+        if (!node.catalog().ReleasePinned(foreign)) {
+          return std::unexpected("releasing the foreign logical extent");
+        }
+        return {};
+      },
+      "retiring the foreign acquisition control"));
+  EXPECT_FALSE(
+      node.Acquire(second.closure(), report, "insufficient managed acquisition", &capacity));
+  EXPECT_TRUE(capacity);
+  EXPECT_EQ(calls, 1U);
+  EXPECT_TRUE(report.evicted.empty());
+  take = true;
+  ASSERT_TRUE(node.Acquire(second.closure(), report, "managed partial acquisition", &capacity));
+  EXPECT_FALSE(capacity);
+  EXPECT_EQ(calls, 2U);
+  ASSERT_TRUE(second.ReadBack());
+  EXPECT_TRUE(second.Intact());
+  bool meanwhile_ran = false;
+  ASSERT_TRUE(node.Job(
+      second.closure(), [](jitllm::providers::NativeStream) { return sc::JobResult::kQueued; },
+      "in-flight acquisition guard", 1,
+      [&]() {
+        meanwhile_ran = true;
+        ts::AcquireReport nested;
+        bool refused_for_capacity = true;
+        EXPECT_FALSE(
+            node.Acquire({}, nested, "forbidden meanwhile acquisition", &refused_for_capacity));
+        EXPECT_FALSE(refused_for_capacity);
+      }));
+  EXPECT_TRUE(meanwhile_ran);
+  EXPECT_EQ(calls, 2U);
+  node.SetReclaimer({});
+  EXPECT_TRUE(node.TearDown(teardown));
+}
+
 // M3's full swap (SwapProgram) with the handoff (D-033) on the real VMM
 // provider: each model's evicted backing is unmapped, kept, and mapped
 // again under the other's weights, which are read back whole; what no load
 // took is released once the swap is done, and teardown leaves no backing.
+TEST(CudaPagedNodeTest, PartialSwapReleasesIncompatibleDonorBeforeHostFirstLoad) {
+  ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false});
+  Model first(node, 0);
+  Model second(node, 1, false, true);
+  const std::array<ts::PagedModel*, 2> teardown{&first, &second};
+  ASSERT_TRUE(node.Open());
+  first.Setup(Scratch());
+  second.Setup(Scratch());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent));
+  const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  const auto budget = fixed + kExtents[0] * kExtent;
+  ASSERT_TRUE(node.Start(Bytes(budget)));
+  first.Register();
+  second.Register();
+  node.Run();
+  EXPECT_FALSE(node.retired_harvest_stats());
+  ASSERT_TRUE(node.BeginRequest(0, first.closure(), "the outgoing completed request"));
+  ASSERT_TRUE(first.ReadBack());
+  ASSERT_TRUE(first.Intact());
+  std::vector<ExtentId> victims(first.weights().begin(), first.weights().begin() + 3);
+  jitllm::catalog::Closure strict;
+  ASSERT_TRUE(node.Call(
+      [&]() -> ts::Status {
+        strict = node.catalog().ClosureOfExtents(victims).value();
+        return {};
+      },
+      "snapshotting selected policy victim generations"));
+  sc::SwapReport refused;
+  EXPECT_FALSE(node.Swap(victims, second.closure(), true, refused, {victims[0]}, strict));
+  EXPECT_TRUE(node.InRequest(0));  // a held policy victim cannot end another request
+  ASSERT_TRUE(node.EndRequest(0));
+  const auto before = node.Stats();
+  ASSERT_TRUE(before);
+  sc::SwapReport report;
+  ASSERT_TRUE(node.Swap(victims, second.closure(), true, report, {victims[0]}, strict));
+  ASSERT_TRUE(second.ReadBack());
+  EXPECT_TRUE(second.Intact());
+  const auto after = node.Stats();
+  ASSERT_TRUE(after);
+  EXPECT_EQ(after->handed_off - before->handed_off, 2U);
+  EXPECT_EQ(report.evictions, 3U);
+  EXPECT_EQ(report.loads, 3U);
+  ASSERT_TRUE(node.Call(
+      [&]() -> ts::Status {
+        EXPECT_EQ(first.Resident(), 1U);
+        EXPECT_EQ(second.Resident(), 3U);
+        EXPECT_LE(node.catalog().OccupancyOf(node.domain()).Total().value(), budget);
+        return {};
+      },
+      "checking partial host-first occupancy and retained device weight"));
+  EXPECT_TRUE(node.TearDown(teardown));
+  const auto harvested = node.retired_harvest_stats();
+  ASSERT_TRUE(harvested);
+  EXPECT_GT(harvested->indices, 0U);
+  EXPECT_GT(harvested->pop_locks, 0U);
+  EXPECT_LE(harvested->pop_locks, harvested->indices);
+  const auto final_creates = node.backing_create_stats();
+  EXPECT_GT(final_creates.ordinary_attempts, 0U);
+  EXPECT_GE(final_creates.ordinary_attempts, after->backing_creates.ordinary_attempts);
+  EXPECT_EQ(final_creates.ordinary_failures, 0U);
+  EXPECT_EQ(final_creates.reserve_failures, 0U);
+}
+
 TEST(CudaPagedNodeTest, SwapsHandBackingOverAndEveryByteReadsBack) {
   ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false});
   Model first(node, 0);

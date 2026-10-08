@@ -55,7 +55,8 @@ Outcome OutcomeOf(providers::ReadOutcome outcome) {
 // (DeviceService and BackingService alike), keeping handed-off backing in
 // the lane's `stash`.
 void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, HandleReserve* reserve,
-              CompletionBoard& board, OperationId operation, const BackingWork& work) {
+              CompletionBoard& board, OperationId operation, const BackingWork& work,
+              BackingCreateCounters* creates = nullptr) {
   if (memory == nullptr) {
     (void)board.Accept(operation, Acceptance::kNotStarted);
     return;
@@ -180,8 +181,11 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, HandleReserv
       backing = reserve->Take(work.allocation_class, work.size);
     }
     if (!backing) {
+      if (creates != nullptr) creates->Attempt(false);
       const auto created = memory->Create(work.allocation_class, work.size);
+      if (creates != nullptr) creates->Completed(false);
       if (!created) {
+        if (creates != nullptr) creates->Failed(false, created.error());
         unknown(created.error()) ? unproven(Acceptance::kUnknown) : not_started();
         return;
       }
@@ -233,10 +237,12 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, HandleReserv
             : not_started();
         return;
       }
+      if (creates != nullptr) creates->ParkMetadataDone();
       stash.Put(
           work.allocation_class, work.size,
           {.backing = *backing,
            .at = HandoffStash::Place{.reservation = work.reservation, .offset = work.offset}});
+      if (creates != nullptr) creates->ParkStashDone();
       (void)board.Accept(operation, Acceptance::kAccepted);
       (void)board.Complete(operation, Terminal{.outcome = Outcome::kSucceeded,
                                                .bytes = work.size.value(),
@@ -286,6 +292,130 @@ void HandoffStash::Put(std::size_t allocation_class, Bytes size, Kept kept, bool
   if (kept.at) {
     mapped_[*kept.at] = it;
   }
+}
+
+namespace {
+
+std::uint64_t TimingNowNs() {
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now().time_since_epoch())
+                                        .count());
+}
+
+void CompleteTiming(BackingTimingTotals& totals, const BackingTimingEvent& event) {
+  ++totals.completed;
+  totals.total_ns += event.end_ns - event.start_ns;
+  if (totals.first.serial == 0) totals.first = event;
+  totals.last = event;
+  if (event.end_ns - event.start_ns > totals.longest.end_ns - totals.longest.start_ns)
+    totals.longest = event;
+}
+
+void CompleteParkStage(BackingParkStageTotals& totals, std::uint64_t serial, std::uint64_t started,
+                       std::uint64_t ended) {
+  ++totals.completed;
+  totals.total_ns += ended - started;
+  if (totals.longest.serial == 0 ||
+      ended - started > totals.longest.end_ns - totals.longest.start_ns)
+    totals.longest = {.serial = serial, .start_ns = started, .end_ns = ended};
+}
+
+}  // namespace
+
+void BackingCreateCounters::Attempt(bool reserve) {
+  if (!timing_enabled_) {
+    (reserve ? reserve_attempts_ : ordinary_attempts_).fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  const auto started = TimingNowNs();
+  std::lock_guard lock(mutex_);
+  (reserve ? reserve_attempts_ : ordinary_attempts_).fetch_add(1, std::memory_order_relaxed);
+  auto& timing = failures_.timing;
+  base::Check(timing.current_create.serial == 0, "overlapping backing Create diagnostics");
+  timing.current_create_reserve = reserve;
+  timing.current_create = {.serial = ++timing.create_serial, .start_ns = started};
+  ++(reserve ? timing.reserve : timing.ordinary).started;
+}
+
+void BackingCreateCounters::Completed(bool reserve) {
+  if (!timing_enabled_) return;
+  const auto ended = TimingNowNs();
+  std::lock_guard lock(mutex_);
+  auto& timing = failures_.timing;
+  base::Check(timing.current_create.serial != 0 && timing.current_create_reserve == reserve,
+              "completing a different backing Create diagnostic");
+  timing.current_create.end_ns = ended;
+  CompleteTiming(reserve ? timing.reserve : timing.ordinary, timing.current_create);
+  timing.current_create = {};
+}
+
+void BackingCreateCounters::BeginPark() {
+  if (!timing_enabled_) return;
+  const auto started = TimingNowNs();
+  std::lock_guard lock(mutex_);
+  auto& timing = failures_.timing;
+  base::Check(timing.current_park.serial == 0, "overlapping lazy park diagnostics");
+  timing.current_park = {.serial = ++timing.park.started, .start_ns = started};
+  park_metadata_end_ns_ = 0;
+  park_stash_end_ns_ = 0;
+}
+
+void BackingCreateCounters::ParkMetadataDone() {
+  if (!timing_enabled_) return;
+  const auto ended = TimingNowNs();
+  std::lock_guard lock(mutex_);
+  base::Check(failures_.timing.current_park.serial != 0 && park_metadata_end_ns_ == 0,
+              "completing absent or repeated lazy park metadata");
+  park_metadata_end_ns_ = ended;
+}
+
+void BackingCreateCounters::ParkStashDone() {
+  if (!timing_enabled_) return;
+  const auto ended = TimingNowNs();
+  std::lock_guard lock(mutex_);
+  base::Check(park_metadata_end_ns_ != 0 && park_stash_end_ns_ == 0,
+              "completing absent or repeated lazy park stash insertion");
+  park_stash_end_ns_ = ended;
+}
+
+void BackingCreateCounters::EndPark() {
+  if (!timing_enabled_) return;
+  const auto ended = TimingNowNs();
+  std::lock_guard lock(mutex_);
+  auto& timing = failures_.timing;
+  base::Check(timing.current_park.serial != 0, "completing an absent lazy park diagnostic");
+  timing.current_park.end_ns = ended;
+  if (park_metadata_end_ns_ != 0 && park_stash_end_ns_ != 0) {
+    const auto& event = timing.current_park;
+    CompleteParkStage(timing.park_metadata, event.serial, event.start_ns, park_metadata_end_ns_);
+    CompleteParkStage(timing.park_stash, event.serial, park_metadata_end_ns_, park_stash_end_ns_);
+    CompleteParkStage(timing.park_publication, event.serial, park_stash_end_ns_, event.end_ns);
+  }
+  CompleteTiming(timing.park, timing.current_park);
+  timing.current_park = {};
+  park_metadata_end_ns_ = 0;
+  park_stash_end_ns_ = 0;
+}
+
+void BackingCreateCounters::Failed(bool reserve, const providers::Failure& failure) {
+  std::lock_guard lock(mutex_);
+  ++(reserve ? failures_.reserve_failures : failures_.ordinary_failures);
+  failures_.last_failure_monotonic_ns =
+      static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
+  failures_.last_failure_reserve = reserve;
+  failures_.last_failure_error = failure.error;
+  failures_.last_failure_detail = failure.detail;
+}
+
+BackingCreateStats BackingCreateCounters::Snapshot() const {
+  std::lock_guard lock(mutex_);
+  BackingCreateStats result = failures_;
+  result.reserve_attempts = reserve_attempts_.load(std::memory_order_relaxed);
+  result.ordinary_attempts = ordinary_attempts_.load(std::memory_order_relaxed);
+  result.timing.enabled = timing_enabled_;
+  return result;
 }
 
 std::optional<providers::BackingId> HandleReserve::Take(std::size_t allocation_class, Bytes size) {
@@ -763,19 +893,23 @@ void DeviceService::AwaitCompletion(bool releasing) {
 }
 
 BackingService::BackingService(providers::DeviceMemory* memory, CompletionBoard& board,
-                               QueueSettings queue, ReserveSettings reserve)
+                               QueueSettings queue, ReserveSettings reserve, bool timing)
     : memory_(memory),
       board_(board),
       queue_(queue.capacity, queue.reserved),
       batch_(queue.batch),
-      reserve_(reserve) {
+      reserve_(reserve),
+      creates_(timing) {
   base::Check(batch_ > 0, "a lane turn takes at least one command");
 }
 
 void BackingService::Handle(DeviceCommand& command) {
   refill_ok_ = true;
   if (const auto* work = std::get_if<BackingWork>(&command.work)) {
-    CarryOut(memory_, stash_, &reserve_, board_, command.operation, *work);
+    const bool lazy_park = work->kind == BackingWork::Kind::kUnmap && work->retain && work->lazy;
+    if (lazy_park) creates_.BeginPark();
+    CarryOut(memory_, stash_, &reserve_, board_, command.operation, *work, &creates_);
+    if (lazy_park) creates_.EndPark();
     return;
   }
   (void)board_.Accept(command.operation, Acceptance::kNotStarted);  // not VMM work
@@ -789,8 +923,11 @@ bool BackingService::Refill() {
     return false;
   }
   const ReserveSettings& settings = reserve_.settings();
+  creates_.Attempt(true);
   const auto created = memory_->Create(settings.allocation_class, settings.size);
+  creates_.Completed(true);
   if (!created) {
+    creates_.Failed(true, created.error());
     // Known: tried again after the next command. Unknown: the provider's
     // state is not what the reserve's count says, so it is left short, the
     // backing that may exist counted in its place.

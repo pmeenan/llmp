@@ -295,6 +295,136 @@ class BoardTest : public ::testing::Test {
   CompletionBoard board_{4, wake_};
 };
 
+TEST(CompletionBoard, BoundedBatchesKeepPartialLimitsAcrossClosedNewsAndReuse) {
+  WakeFlag wake;
+  CompletionBoard board(130, wake);
+  std::vector<OperationId> original;
+  for (std::uint64_t i = 0; i < 130; ++i) {
+    const auto op = board.Open();
+    ASSERT_TRUE(op.valid());
+    original.push_back(op);
+    ASSERT_EQ(board.Accept(op, Acceptance::kAccepted), Published::kRecorded);
+    ASSERT_EQ(board.Complete(op, Terminal{.bytes = i, .no_further_access = true}),
+              Published::kRecorded);
+  }
+  for (std::size_t i = 0; i < 70; ++i) ASSERT_TRUE(board.Close(original[i]));
+  (void)wake.Consume();
+  const auto first = board.Harvest(5);
+  ASSERT_EQ(first.size(), 5U);
+  for (std::size_t i = 0; i < first.size(); ++i) {
+    EXPECT_EQ(first[i].operation, original[i + 70]);
+    ASSERT_TRUE(board.Close(first[i].operation));
+  }
+  EXPECT_EQ(board.harvest_stats().indices, 75U);  // closed holes do not consume the limit
+  EXPECT_EQ(board.harvest_stats().pop_locks, 15U);
+  EXPECT_TRUE(wake.Consume());  // the partial harvest re-signalled remaining news
+  std::vector<OperationId> reused;
+  for (std::size_t i = 0; i < 75; ++i) {
+    const auto op = board.Open();
+    ASSERT_TRUE(op.valid());
+    EXPECT_EQ(op.index(), original[i].index());
+    EXPECT_NE(op.generation(), original[i].generation());
+    reused.push_back(op);
+    ASSERT_EQ(board.Accept(op, Acceptance::kAccepted), Published::kRecorded);
+    ASSERT_EQ(board.Complete(op, Terminal{.bytes = op.generation(), .no_further_access = true}),
+              Published::kRecorded);
+    EXPECT_EQ(board.Accept(original[i], Acceptance::kAccepted), Published::kStale);
+  }
+  const auto rest = board.Harvest(130);
+  ASSERT_EQ(rest.size(), 130U);  // 55 original plus75 reused, across three bounded batches
+  EXPECT_EQ(board.harvest_stats().indices, 205U);
+  EXPECT_EQ(board.harvest_stats().pop_locks, 18U);
+  for (std::size_t i = 0; i < rest.size(); ++i) {
+    EXPECT_EQ(rest[i].operation, i < 55 ? original[i + 75] : reused[i - 55]);
+    EXPECT_TRUE(board.Close(rest[i].operation));
+  }
+  const auto stats = board.harvest_stats();
+  EXPECT_TRUE(board.Harvest(0).empty());
+  EXPECT_TRUE(board.Harvest(130).empty());
+  EXPECT_EQ(board.harvest_stats().indices, stats.indices);
+  EXPECT_EQ(board.harvest_stats().pop_locks, stats.pop_locks);
+}
+
+TEST(CompletionBoard, BatchRemovalDropsRetiredNewsWithoutIssuingAnIdentityAgain) {
+  WakeFlag wake;
+  CompletionBoard board(3, wake, UINT32_MAX);
+  for (int i = 0; i < 3; ++i) {
+    const auto op = board.Open();
+    ASSERT_EQ(board.Accept(op, Acceptance::kNotStarted), Published::kRecorded);
+    ASSERT_TRUE(board.Close(op));
+  }
+  EXPECT_TRUE(board.Harvest(3).empty());
+  EXPECT_EQ(board.harvest_stats().indices, 3U);
+  EXPECT_EQ(board.harvest_stats().pop_locks, 1U);
+  EXPECT_TRUE(board.exhausted());
+  EXPECT_FALSE(board.Open().valid());
+}
+
+TEST(CompletionBoard, BatchedHarvestRacesNewObservationsProofAndGenerationReuse) {
+  constexpr std::size_t kMailboxes = 64;
+  constexpr int kOperations = 4000;
+  WakeFlag wake;
+  CompletionBoard board(kMailboxes, wake);
+  BoundedQueue<OperationId> submitted(kMailboxes, 0);
+  std::atomic<int> wrong{0};
+  std::vector<std::jthread> providers;
+  for (int p = 0; p < 3; ++p) {
+    providers.emplace_back([&] {
+      while (const auto op = submitted.Pop(std::stop_token{})) {
+        if (board.Accept(*op, Acceptance::kAccepted) != Published::kRecorded) ++wrong;
+        std::this_thread::yield();
+        const Terminal unproven{.bytes = op->generation()};
+        if (board.Complete(*op, unproven) != Published::kRecorded) ++wrong;
+        std::this_thread::yield();
+        if (board.Complete(*op, Terminal{.bytes = op->generation(), .no_further_access = true}) !=
+            Published::kRecorded)
+          ++wrong;
+        const auto repeat =
+            board.Complete(*op, Terminal{.bytes = op->generation(), .no_further_access = true});
+        if (repeat != Published::kDuplicate && repeat != Published::kStale) ++wrong;
+      }
+    });
+  }
+  int opened = 0;
+  int finished = 0;
+  const auto until = std::chrono::steady_clock::now() + kPatience;
+  while (finished < kOperations && std::chrono::steady_clock::now() < until) {
+    while (opened < kOperations) {
+      const auto op = board.Open();
+      if (!op.valid()) break;
+      if (submitted.TryPush(OperationId{op}) != PushResult::kAccepted) {
+        ++wrong;
+        break;
+      }
+      ++opened;
+    }
+    (void)wake.Consume();
+    const auto seen = board.Harvest(64);
+    for (std::size_t i = 0; i < seen.size(); ++i) {
+      for (std::size_t j = 0; j < i; ++j) {
+        if (seen[i].operation == seen[j].operation) ++wrong;
+      }
+      const auto& item = seen[i];
+      if (item.contradictory) ++wrong;
+      if (item.acceptance == Acceptance::kAccepted && item.terminal &&
+          item.terminal->no_further_access) {
+        if (item.terminal->bytes != item.operation.generation()) ++wrong;
+        if (board.Close(item.operation)) ++finished;
+      }
+    }
+    if (finished < opened && board.open() != 0) {
+      (void)wake.WaitFor(std::chrono::milliseconds(100));
+    }
+  }
+  submitted.Close();
+  providers.clear();  // publishers return before board/wake destruction
+  EXPECT_EQ(finished, kOperations);
+  EXPECT_EQ(wrong.load(), 0);
+  EXPECT_EQ(board.publications(), 3U * kOperations);
+  EXPECT_GE(board.harvest_stats().indices, static_cast<std::uint64_t>(kOperations));
+  EXPECT_LE(board.harvest_stats().pop_locks, board.harvest_stats().indices);
+}
+
 TEST_F(BoardTest, CompletionBeforeAcceptanceIsKept) {
   const OperationId op = board_.Open();
   ASSERT_TRUE(op.valid());

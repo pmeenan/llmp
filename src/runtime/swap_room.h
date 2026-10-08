@@ -12,10 +12,17 @@
 #ifndef JITLLM_RUNTIME_SWAP_ROOM_H_
 #define JITLLM_RUNTIME_SWAP_ROOM_H_
 
+#include <compare>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <optional>
+#include <span>
 #include <string>
+#include <vector>
+
+#include "catalog/catalog.h"
 
 namespace jitllm::runtime {
 
@@ -24,6 +31,28 @@ struct SwapRoomSteps {
   std::uint64_t asked = 0;  // bytes asked in all
   std::uint64_t freed = 0;  // bytes the reclaims reported
 };
+
+// A scheduler donor matches all three fields and charges exactly `size`.
+// Missing/selected entries without a key need/give actual free bytes instead.
+struct SwapBackingKey {
+  catalog::DomainId domain;
+  std::size_t allocation_class = 0;
+  std::uint64_t size = 0;
+  auto operator<=>(const SwapBackingKey&) const = default;
+};
+struct SwapBackingExtent {
+  catalog::ExtentId extent;
+  std::uint64_t bytes = 0;
+  std::optional<SwapBackingKey> backing;
+};
+
+// Partitions an already selected eviction set without changing its policy.
+// These extents must release, rather than park, before any incoming load.
+// Accounts for initial occupancy above budget and refuses insufficient or
+// malformed selections. All entries belong to this one physical domain.
+std::expected<std::vector<catalog::ExtentId>, std::string> ReleaseForHandoff(
+    catalog::DomainId domain, std::uint64_t occupancy, std::uint64_t budget,
+    std::span<const SwapBackingExtent> missing, std::span<const SwapBackingExtent> selected);
 
 // Until `shortfall()` (the bytes the swap lacks now) is 0: asks `reclaim`
 // for it rounded up to whole `unit`s, then checks again, at most

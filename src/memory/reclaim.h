@@ -161,8 +161,13 @@ struct ReclaimRun {
 };
 using GatherReclaim = std::function<void(std::vector<ReclaimCandidate>& out, double& below)>;
 using TakeReclaim = std::function<std::uint64_t(const ReclaimCandidate& victim)>;
+// Consecutive selected idle-weight victims may be evicted in one owner call.
+// `freed` has the same size, initially zero: publish each victim's actual
+// completed release (at most its bytes), including releases before a failure.
+using TakeWeightBatch =
+    std::function<void(std::span<const ReclaimCandidate> victims, std::span<std::uint64_t> freed)>;
 ReclaimRun RunReclaim(std::uint64_t needed, bool partial, const GatherReclaim& gather,
-                      const TakeReclaim& take);
+                      const TakeReclaim& take, const TakeWeightBatch& weights = {});
 
 // Takes the running model's in-use floor out of `candidates`: its most
 // recently used plans, newest first, until their own bytes (without their

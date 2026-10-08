@@ -63,6 +63,14 @@ std::uint64_t GuardReserve(const MemoryGuard& guard);
 // passes.
 std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard);
 
+// Internal matched controls can reduce the ordinary dynamic catalog budget,
+// never raise it or bypass known physical availability. Include pinned memory
+// charged after the startup guard, such as the backing handle reserve.
+std::expected<void, std::string> CheckDiagnosticBudgetCap(const MemoryGuard& guard,
+                                                          std::uint64_t dynamic_budget,
+                                                          std::uint64_t cap,
+                                                          std::uint64_t extra_pinned);
+
 }  // namespace jitllm::runtime
 
 #endif  // JITLLM_RUNTIME_MEMORY_GUARD_H_

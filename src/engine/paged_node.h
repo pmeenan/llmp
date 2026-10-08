@@ -210,6 +210,7 @@ struct NodeSettings {
   // the device-memory provider while idle, so once the lanes run nothing
   // else may call it until they have joined (device_memory.h).
   std::size_t handle_reserve = 0;
+  bool diagnostic_backing_timing = false;  // internal cap-only attribution, no public setting
   // Each slot's bytes (and the reader's largest request): 2 MiB, or more
   // for reads longer than their extent (a DeepSeek expert slab's pages,
   // paged_weights.h kSlabSlotBytes). A multiple of 4 KiB.
@@ -285,6 +286,11 @@ class CountingStorage final : public providers::Storage {
 
   std::atomic<std::uint64_t> requests{0};
   std::atomic<std::uint64_t> pieces{0};
+  // Actual storage reads, independently of write-backs and zero-fill loads.
+  // Submission counts only when handed to the inner provider; completion
+  // counts positive bytes harvested, including short reads.
+  std::atomic<std::uint64_t> read_submitted_bytes{0};
+  std::atomic<std::uint64_t> read_completed_bytes{0};
   // Reads held so far (the test hook). Any thread.
   std::atomic<std::uint64_t> held{0};
 
@@ -293,7 +299,7 @@ class CountingStorage final : public providers::Storage {
   void PassHeld();
   // The lane's thread: an operation submitted, or completions harvested;
   // the oldest published again.
-  void Started(std::uint64_t token);
+  void Started(const providers::IoRequest& request, bool submitted);
   void Ended(std::span<const providers::IoCompletion> done);
   void Publish();
 
@@ -307,7 +313,13 @@ class CountingStorage final : public providers::Storage {
   std::vector<std::uint64_t> cancelled_;
   // The lane's thread only: each operation in flight and when it was
   // submitted (steady clock, nanoseconds).
-  std::map<std::uint64_t, std::int64_t> started_;
+  struct StartedRead {
+    std::int64_t at = 0;
+    providers::IoKind kind = providers::IoKind::kRead;
+    std::uint32_t length = 0;
+    bool submitted = false;
+  };
+  std::map<std::uint64_t, StartedRead> started_;
   // The oldest of started_, for any thread: 0 when none.
   std::atomic<std::int64_t> oldest_ns_{0};
 };
@@ -479,8 +491,9 @@ class PagedNode {
   // plans and graphs, never conversation state; pinned staging (a turn
   // checkpoint's, a snapshot's) may spill idle conversations too.
   // Returns what it freed. Unset, nothing is reclaimed.
-  enum class ReclaimFor : std::uint8_t { kPlan, kGraph, kStaging };
-  using Reclaimer = std::function<std::uint64_t(std::uint64_t needed, ReclaimFor what)>;
+  enum class ReclaimFor : std::uint8_t { kPlan, kGraph, kStaging, kMaterialize };
+  using Reclaimer = std::function<std::uint64_t(std::uint64_t needed, ReclaimFor what,
+                                                std::span<const catalog::ExtentId> protect)>;
   void SetReclaimer(Reclaimer reclaimer) { reclaimer_ = std::move(reclaimer); }
   // Charges `bytes` more (on the driver's thread): false, charging
   // nothing, when they do not fit beside the occupancy even after the
@@ -566,9 +579,25 @@ class PagedNode {
   // A full swap (SwapProgram): `out` evicted, with their backing handed
   // to `in`'s loads if `handoff`, then `in` materialized.
   Status Swap(std::vector<catalog::ExtentId> out, const catalog::Closure& in, bool handoff,
-              scheduler::SwapReport& report);
+              scheduler::SwapReport& report, std::vector<catalog::ExtentId> release = {},
+              catalog::Closure weights = {});
   // The scheduler's counters, read on its thread.
   std::expected<scheduler::SchedulerStats, std::string> Stats();
+  // The backing lane's atomic/mutex counters, without a scheduler call.
+  // Its object survives TearDown's lane joins, so a final snapshot includes
+  // every completed provider Create even after scheduler retirement.
+  scheduler::BackingCreateStats backing_create_stats() const {
+    return backing_lane_ != nullptr ? backing_lane_->create_stats()
+                                    : scheduler::BackingCreateStats{};
+  }
+  // Owner-only board counters become readable after teardown joins the
+  // scheduler and lanes. Never read them concurrently with Harvest.
+  std::optional<scheduler::HarvestStats> retired_harvest_stats() const {
+    if (!torn_down_ || !threads_.empty() || !stopped_.has_value() || board_ == nullptr) {
+      return std::nullopt;
+    }
+    return board_->harvest_stats();
+  }
   // Requests and pieces the storage lane has handed io_uring so far.
   std::uint64_t requests() const { return counting_->requests.load(); }
   // One job on `stream` over `closure`: a step of the request open there
@@ -721,7 +750,8 @@ class PagedNode {
   Reclaimer reclaimer_;
   bool reclaiming_ = false;
   // The reclaimer asked for `needed` (ChargeHost, Pinned); what it freed.
-  std::uint64_t AskReclaim(std::uint64_t needed, ReclaimFor what);
+  std::uint64_t AskReclaim(std::uint64_t needed, ReclaimFor what,
+                           std::span<const catalog::ExtentId> protect = {});
   // The bytes past the budget an allocation of `bytes` would take now (0:
   // it fits), on the scheduler's thread.
   std::uint64_t Shortfall(std::uint64_t bytes) const;
@@ -747,6 +777,7 @@ class PagedNode {
   bool hang_cancelled_ = false;   // TakeHangCancelled
   std::vector<StepTimes> times_;  // by compute stream
   std::uint64_t direct_steps_ = 0;
+  bool job_active_ = false;  // no acquisition/reclaimer callback from a job's meanwhile hook
   // By compute stream: the marks before and after its job.
   std::vector<std::pair<providers::TimingMark, providers::TimingMark>> events_;
 };

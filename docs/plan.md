@@ -335,9 +335,14 @@ family" guide, and its long-context scaling work.
         loads take it, so the unmaps run beside page-in reads; DeepSeek ↔
         Qwen3.8 swaps fall from 7.9–9.7 to 6.1–8.4 s, exact. VMM batching
         and larger extents measured and not adopted.
-      - [ ] Evict only what the incoming model needs (by the reclaim
-        order), leaving the rest of the outgoing model resident at its
-        places so a return re-reads only what went: a D-096 amendment.
+      - [x] [Internal shared partial-weight foundation](experiments/partial-weight-eviction/README.md):
+        whole state spill, global GreedyDual deficit selection, mixed backing,
+        missing-only reload and exact cache-preserving recovery; D-055/D-096
+        amended. Shared wake/harvest and donor identity work are qualified.
+      - [ ] Adopt partial eviction for ordinary serving only after its
+        never-worse-than-full cold-switch gate passes. The final current-source
+        factor saves 18.3% prepared first-output time and 19.5% read bytes,
+        but cold first-arrival is 11.9% slower; ordinary default stays full.
       - [x] [Handle reserve and device zero-fill](experiments/vmm-batching/README.md#handle-reserve-and-device-zero-fill)
         (D-033 amended): 32 device handles created while the VMM lane is
         idle, charged as one pinned extent, and new state zeroed on the
@@ -597,8 +602,10 @@ family" guide, and its long-context scaling work.
       already works at 256. T92 tracks DeepSeek reference bank joins.
       Selector bounds do not close ports.
       Confirm every open matrix consumer has its own checked result before
-      closing this parent. T68 is the owner-approved partial-eviction direction
-      and requires D-096's amendment, not another lazy-handoff timing change.
+      closing this parent. T68 now has the internal shared foundation and
+      D-055/D-096 amendments, but its ordinary adoption remains open on the
+      cold-switch floor. T94's shared wake/harvest removals are adopted without
+      implying an intermittent-tail repair or an unmeasured family speedup.
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:

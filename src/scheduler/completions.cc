@@ -4,6 +4,7 @@
 #include "scheduler/completions.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -269,42 +270,52 @@ Published CompletionBoard::Complete(OperationId operation, const Terminal& termi
 
 std::vector<Observation> CompletionBoard::Harvest(std::size_t limit) {
   std::vector<Observation> observations;
+  std::array<std::uint32_t, 64> batch{};
   while (observations.size() < limit) {
-    std::uint32_t index = 0;
+    std::size_t taken = 0;
     {
       const std::scoped_lock lock(news_mutex_);
-      if (news_count_ == 0) {
-        break;
+      taken = std::min({batch.size(), limit - observations.size(), news_count_});
+      if (taken == 0) break;
+      for (std::size_t i = 0; i < taken; ++i) {
+        batch[i] = news_[news_head_];
+        news_head_ = (news_head_ + 1) % count_;
       }
-      index = news_[news_head_];
-      news_head_ = (news_head_ + 1) % count_;
-      --news_count_;
+      news_count_ -= taken;
+      ++harvest_stats_.pop_locks;
+      harvest_stats_.indices += taken;
     }
-    Mailbox& mailbox = mailboxes_[index];
-    // Cleared before reading, so a later publication queues it again.
-    mailbox.queued.exchange(false, std::memory_order_acq_rel);
-    if (!mailbox.open) {
-      continue;  // news of an operation the owner already closed
-    }
-    const std::uint32_t generation = mailbox.generation;
-    const std::uint64_t acceptance = mailbox.acceptance.load(std::memory_order_acquire);
-    Observation seen{
-        .operation = OperationId(index, generation),
-        .acceptance = GenerationOf(acceptance) == generation
-                          ? static_cast<Acceptance>(ValueOf(acceptance))
-                          : Acceptance::kNone,
-        .terminal = ReadTerminal(mailbox, generation),
-        .contradictory =
-            mailbox.contradictory.load(std::memory_order_acquire) == Word(generation, 1),
-    };
-    seen.contradictory =
-        seen.contradictory || (seen.acceptance == Acceptance::kNotStarted && seen.terminal);
-    // A mailbox queued again during this harvest is reported once, as last read.
-    const auto earlier = std::ranges::find(observations, seen.operation, &Observation::operation);
-    if (earlier != observations.end()) {
-      *earlier = seen;
-    } else {
-      observations.push_back(seen);
+    // Take only existing news, without waiting to fill the local batch.
+    // Publishers can keep recording while the owner reads these mailboxes.
+    // Their queued flags remain set until each index is processed below.
+    for (std::size_t i = 0; i < taken; ++i) {
+      const std::uint32_t index = batch[i];
+      Mailbox& mailbox = mailboxes_[index];
+      // Cleared before reading, so a later publication queues it again.
+      mailbox.queued.exchange(false, std::memory_order_acq_rel);
+      if (!mailbox.open) {
+        continue;  // news of an operation the owner already closed
+      }
+      const std::uint32_t generation = mailbox.generation;
+      const std::uint64_t acceptance = mailbox.acceptance.load(std::memory_order_acquire);
+      Observation seen{
+          .operation = OperationId(index, generation),
+          .acceptance = GenerationOf(acceptance) == generation
+                            ? static_cast<Acceptance>(ValueOf(acceptance))
+                            : Acceptance::kNone,
+          .terminal = ReadTerminal(mailbox, generation),
+          .contradictory =
+              mailbox.contradictory.load(std::memory_order_acquire) == Word(generation, 1),
+      };
+      seen.contradictory =
+          seen.contradictory || (seen.acceptance == Acceptance::kNotStarted && seen.terminal);
+      // A mailbox queued again during this harvest is reported once, as last read.
+      const auto earlier = std::ranges::find(observations, seen.operation, &Observation::operation);
+      if (earlier != observations.end()) {
+        *earlier = seen;
+      } else {
+        observations.push_back(seen);
+      }
     }
   }
   // A partial harvest leaves news behind: keep the owner awake for it.

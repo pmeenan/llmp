@@ -12,11 +12,15 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <map>
+#include <set>
 #include <span>
 #include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
+
+#include "base/check.h"
 
 namespace jitllm::memory {
 namespace {
@@ -105,11 +109,14 @@ std::vector<std::size_t> ReclaimOrder(std::span<const ReclaimCandidate> candidat
       order.push_back(i);
     }
   }
-  const auto key = [&](std::size_t i) {
-    const ReclaimCandidate& c = candidates[i];
-    return std::tuple(ReclaimPriority(c, cost), static_cast<std::size_t>(c.kind), c.running,
+  using Key = std::tuple<double, std::size_t, bool, std::uint64_t, std::uint32_t, std::uint64_t>;
+  std::vector<Key> keys;
+  keys.reserve(candidates.size());
+  for (const ReclaimCandidate& c : candidates) {
+    keys.emplace_back(ReclaimPriority(c, cost), static_cast<std::size_t>(c.kind), c.running,
                       c.last_use, c.owner, c.id);
-  };
+  }
+  const auto key = [&](std::size_t i) -> const Key& { return keys[i]; };
   std::ranges::sort(order, [&](std::size_t a, std::size_t b) { return key(a) < key(b); });
   return order;
 }
@@ -131,21 +138,18 @@ namespace {
 ReclaimPlan SelectFrom(std::span<const ReclaimCandidate> candidates,
                        std::span<const std::size_t> all_order, std::uint64_t needed, double below,
                        const std::array<double, kReclaimKinds>& cost, unsigned kinds,
-                       bool skip_large, double& expected) {
+                       bool skip_large, double& expected,
+                       const std::map<std::pair<std::uint32_t, std::uint64_t>,
+                                      const ReclaimCandidate*>& graph_by_handle) {
   ReclaimPlan plan;
   expected = 0;
   // A plan's bytes include its graphs': a graph taken before its plan is
   // not counted again, and a graph whose plan was taken is skipped.
-  std::vector<std::pair<std::uint32_t, std::uint64_t>> plans;
-  std::vector<std::pair<std::uint32_t, std::uint64_t>> graphs;
+  std::set<std::pair<std::uint32_t, std::uint64_t>> plans;
+  std::set<std::pair<std::uint32_t, std::uint64_t>> graphs;
   const auto graph_of = [&](const ReclaimCandidate& plan_candidate) -> const ReclaimCandidate* {
-    for (const ReclaimCandidate& c : candidates) {
-      if (c.kind == ReclaimKind::kGraph && c.owner == plan_candidate.owner &&
-          c.id == plan_candidate.id) {
-        return &c;
-      }
-    }
-    return nullptr;
+    const auto found = graph_by_handle.find({plan_candidate.owner, plan_candidate.id});
+    return found != graph_by_handle.end() ? found->second : nullptr;
   };
   std::vector<std::size_t> order;
   for (const std::size_t i : all_order) {
@@ -203,18 +207,18 @@ ReclaimPlan SelectFrom(std::span<const ReclaimCandidate> candidates,
     double seconds = std::max(c.restore_seconds, 0.0);
     const auto handle = std::pair(c.owner, c.id);
     if (c.kind == ReclaimKind::kGraph) {
-      if (std::ranges::find(plans, handle) != plans.end()) {
+      if (plans.contains(handle)) {
         continue;  // gone with its plan
       }
-      graphs.push_back(handle);
+      graphs.insert(handle);
     } else if (c.kind == ReclaimKind::kPlan) {
-      if (std::ranges::find(graphs, handle) != graphs.end()) {
+      if (graphs.contains(handle)) {
         if (const ReclaimCandidate* graph = graph_of(c); graph != nullptr) {
           b -= std::min(b, graph->bytes);
           seconds = std::max(0.0, seconds - std::max(graph->restore_seconds, 0.0));
         }
       }
-      plans.push_back(handle);
+      plans.insert(handle);
     }
     plan.victims.push_back(i);
     plan.priorities.push_back(priority);
@@ -231,6 +235,10 @@ ReclaimPlan SelectReclaim(std::span<const ReclaimCandidate> candidates, std::uin
                           double below) {
   const std::array<double, kReclaimKinds> cost = KindCosts(candidates);
   const std::vector<std::size_t> order = ReclaimOrder(candidates);
+  std::map<std::pair<std::uint32_t, std::uint64_t>, const ReclaimCandidate*> graph_by_handle;
+  for (const ReclaimCandidate& c : candidates) {
+    if (c.kind == ReclaimKind::kGraph) graph_by_handle.try_emplace({c.owner, c.id}, &c);
+  }
   unsigned present = 0;
   for (const std::size_t i : order) {
     present |= 1U << static_cast<unsigned>(candidates[i].kind);
@@ -245,16 +253,16 @@ ReclaimPlan SelectReclaim(std::span<const ReclaimCandidate> candidates, std::uin
   // may give way to a later, smaller one of its kind that fits (an old
   // large conversation for a newer small one).
   double best_expected = 0;
-  ReclaimPlan best =
-      SelectFrom(candidates, order, needed, below, cost, present, false, best_expected);
+  ReclaimPlan best = SelectFrom(candidates, order, needed, below, cost, present, false,
+                                best_expected, graph_by_handle);
   for (unsigned kinds = present; kinds != 0; kinds = (kinds - 1) & present) {
     for (const bool skip_large : {false, true}) {
       if (kinds == present && !skip_large) {
         continue;
       }
       double expected = 0;
-      ReclaimPlan plan =
-          SelectFrom(candidates, order, needed, below, cost, kinds, skip_large, expected);
+      ReclaimPlan plan = SelectFrom(candidates, order, needed, below, cost, kinds, skip_large,
+                                    expected, graph_by_handle);
       if (plan.sufficient && (!best.sufficient || expected < best_expected)) {
         best = std::move(plan);
         best_expected = expected;
@@ -265,17 +273,17 @@ ReclaimPlan SelectReclaim(std::span<const ReclaimCandidate> candidates, std::uin
 }
 
 ReclaimRun RunReclaim(std::uint64_t needed, bool partial, const GatherReclaim& gather,
-                      const TakeReclaim& take) {
+                      const TakeReclaim& take, const TakeWeightBatch& weights) {
   ReclaimRun run;
   // Every victim tried so far, by kind, owner and handle: taken (gone) or
   // failed, never offered again within this reclaim.
-  std::vector<std::tuple<ReclaimKind, std::uint32_t, std::uint64_t>> tried;
+  std::set<std::tuple<ReclaimKind, std::uint32_t, std::uint64_t>> tried;
   for (int round = 0; round < kReclaimRounds && run.freed < needed; ++round) {
     std::vector<ReclaimCandidate> candidates;
     double below = std::numeric_limits<double>::infinity();
     gather(candidates, below);
     std::erase_if(candidates, [&](const ReclaimCandidate& c) {
-      return std::ranges::find(tried, std::tuple(c.kind, c.owner, c.id)) != tried.end();
+      return tried.contains(std::tuple(c.kind, c.owner, c.id));
     });
     const ReclaimPlan plan = SelectReclaim(candidates, needed - run.freed, below);
     if (!plan.sufficient) {
@@ -287,7 +295,31 @@ ReclaimRun RunReclaim(std::uint64_t needed, bool partial, const GatherReclaim& g
     std::uint64_t got_round = 0;
     for (std::size_t v = 0; v < plan.victims.size() && run.freed < needed; ++v) {
       const ReclaimCandidate& c = candidates[plan.victims[v]];
-      tried.emplace_back(c.kind, c.owner, c.id);
+      if (weights && c.kind == ReclaimKind::kIdleWeights) {
+        std::size_t end = v;
+        std::vector<ReclaimCandidate> batch;
+        std::uint64_t credit = 0;
+        while (end < plan.victims.size() && credit < needed - run.freed &&
+               candidates[plan.victims[end]].kind == ReclaimKind::kIdleWeights) {
+          const auto& victim = candidates[plan.victims[end++]];
+          batch.push_back(victim);
+          credit = victim.bytes > UINT64_MAX - credit ? UINT64_MAX : credit + victim.bytes;
+          tried.emplace(victim.kind, victim.owner, victim.id);
+        }
+        std::vector<std::uint64_t> freed(batch.size(), 0);
+        weights(batch, freed);
+        for (std::size_t i = 0; i < batch.size(); ++i) {
+          base::Check(freed[i] <= batch[i].bytes, "a weight batch credits only its own bytes");
+          if (freed[i] != 0) {
+            RaiseReclaimInflation(plan.priorities[v + i]);
+            run.freed += freed[i];
+            got_round += freed[i];
+          }
+        }
+        v = end - 1;
+        continue;
+      }
+      tried.emplace(c.kind, c.owner, c.id);
       const std::uint64_t got = take(c);
       if (got != 0) {
         RaiseReclaimInflation(plan.priorities[v]);

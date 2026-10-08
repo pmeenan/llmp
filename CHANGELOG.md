@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Reduce shared completion wake/queue-lock work and qualify an internal
+  partial-weight swap foundation with missing-only reads and exact recovery.
+  Ordinary serving keeps full swaps because the cold-switch floor is unmet.
+
 - Extend Gemma2/Gemma3 actual-root prefill to configured equal two-owner
   chunks through 256 rows with checked mask, cache and query-tile bounds.
   Native 256-row prefill improves about 5.1%/0.8%; matched-cache llama.cpp

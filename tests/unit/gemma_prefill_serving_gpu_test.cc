@@ -12,8 +12,11 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <print>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -41,6 +44,7 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   };
   std::unique_ptr<Lifetime> life = std::make_unique<Lifetime>();
   rt::Llm* model = nullptr;
+  rt::SwapParts first_activation;
   std::filesystem::path scratch;
   bool retirement_failed = false;
   void SetUp() override {
@@ -79,8 +83,8 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     if (auto r = life->server->Start(true); !r) return r;
     model = dynamic_cast<rt::Llm*>(life->server->Find("gemma"));
     if (!model) return std::unexpected("configured Gemma adapter missing");
-    rt::SwapParts parts;
-    if (auto r = life->server->Activate(*model, parts); !r) return r;
+    first_activation = {};
+    if (auto r = life->server->Activate(*model, first_activation); !r) return r;
     std::array<rt::Llm::Branch*, 2> branches{*model->branch(0), *model->branch(1)};
     return life->server->SelectRequestBranches(*model, branches);
   }
@@ -593,6 +597,344 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
                           ? exercise.template operator()<en::Gemma2Runner, en::Gemma2Options>()
                           : exercise.template operator()<en::Gemma3Runner, en::Gemma3Options>();
   ASSERT_TRUE(result) << (result ? "" : result.error());
+}
+
+TEST_P(GemmaPrefillServingGpu, DiagnosticBudgetCapLeavesDefaultsAndChecksActualAdmission) {
+  EXPECT_FALSE(life->options.partial_weight_eviction);
+  EXPECT_FALSE(life->options.diagnostic_budget_cap_bytes);
+  ASSERT_TRUE(Start(true));
+  EXPECT_EQ(life->server->budget(), life->server->dynamic_budget());
+  EXPECT_FALSE(first_activation.diagnostic.enabled);
+  EXPECT_FALSE(life->server->node().backing_create_stats().timing.enabled);
+  const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
+  std::vector<float> expected;
+  ASSERT_TRUE((*model->branch(0))->Prefill(prompt, expected));
+  ASSERT_FALSE(expected.empty());
+  ASSERT_TRUE(Retire());
+
+  constexpr std::uint64_t kCap = std::uint64_t{16} << 30U;
+  life->options.diagnostic_budget_cap_bytes = kCap;
+  ASSERT_TRUE(Start(true));
+  EXPECT_EQ(life->server->budget(), kCap);
+  EXPECT_GE(life->server->dynamic_budget(), kCap);
+  ASSERT_TRUE(first_activation.diagnostic.enabled);
+  EXPECT_FALSE(first_activation.diagnostic.eviction_split_available);  // direct first Load
+  EXPECT_GT(first_activation.diagnostic.ready.room_seconds,
+            first_activation.diagnostic.requested.room_seconds);
+  const auto& diagnostic = first_activation.diagnostic;
+  EXPECT_FALSE(diagnostic.creates_loaded.timing.enabled);
+  EXPECT_EQ(diagnostic.creates_loaded.timing.ordinary.completed +
+                diagnostic.creates_loaded.timing.reserve.completed +
+                diagnostic.creates_loaded.timing.park.completed,
+            0U);
+  EXPECT_EQ(diagnostic.creates_loaded.timing.ordinary.total_ns +
+                diagnostic.creates_loaded.timing.reserve.total_ns +
+                diagnostic.creates_loaded.timing.park.total_ns,
+            0U);
+  EXPECT_GT(
+      diagnostic.creates_loaded.reserve_attempts + diagnostic.creates_loaded.ordinary_attempts,
+      diagnostic.creates_requested.reserve_attempts +
+          diagnostic.creates_requested.ordinary_attempts);
+  EXPECT_GE(diagnostic.creates_ready.reserve_attempts, diagnostic.creates_loaded.reserve_attempts);
+  EXPECT_EQ(diagnostic.creates_ready.reserve_failures, 0U);
+  EXPECT_EQ(diagnostic.creates_ready.ordinary_failures, 0U);
+  std::vector<float> actual;
+  ASSERT_TRUE((*model->branch(0))->Prefill(prompt, actual));
+  ASSERT_EQ(actual.size(), expected.size());
+  EXPECT_EQ(std::memcmp(actual.data(), expected.data(), actual.size() * sizeof(float)), 0);
+  ASSERT_TRUE(Retire());
+
+  life->options.diagnostic_budget_cap_bytes = 1;
+  const auto too_small = Start(true);
+  EXPECT_FALSE(too_small);
+  if (!too_small)
+    EXPECT_NE(too_small.error().find("required startup footprint"), std::string::npos);
+  ASSERT_TRUE(Retire());
+  life->options.diagnostic_budget_cap_bytes = ~std::uint64_t{0};
+  const auto too_large = Start(true);
+  EXPECT_FALSE(too_large);
+  if (!too_large) EXPECT_NE(too_large.error().find("ordinary dynamic budget"), std::string::npos);
+}
+
+// Small real adapters exercise Server's shared transaction, not a second
+// synthetic approximation of its request and restart-record behavior.
+TEST_P(GemmaPrefillServingGpu, PartialCachedSwitchReleasesRequestAndRetainsOtherWeights) {
+  life->roles.installed = "/home/pmeenan/.local/share/jitllm/m3-artifacts";
+  auto other = life->config.models.front();
+  other.name = "other";
+  other.artifact = GetParam() == 2
+                       ? "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
+                       : "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
+  other.overrides["context"] = std::int64_t{4096};
+  life->config.models.push_back(other);
+  life->options.partial_weight_eviction = true;
+  life->options.diagnostic_budget_cap_bytes = std::uint64_t{16} << 30U;
+  ASSERT_TRUE(Start(true));
+  ASSERT_TRUE(first_activation.diagnostic.eviction_split_available);  // empty-victim Swap
+  auto* peer = dynamic_cast<rt::Llm*>(life->server->Find("other"));
+  ASSERT_NE(peer, nullptr);
+  const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
+  std::vector<float> expected;
+  ASSERT_TRUE((*model->branch(0))->Prefill(prompt, expected));
+  const auto first_weight_tick = model->weight_tick();
+  std::uint64_t incoming_bytes = 0;
+  ASSERT_TRUE(life->server->node().Call(
+      [&]() -> rt::Status {
+        for (const auto extent : peer->weights())
+          incoming_bytes +=
+              life->server->node().catalog().Describe(extent)->descriptor.size.value();
+        return {};
+      },
+      "binding the zero-victim fixture's actual missing weight size"));
+  const auto free = life->server->node().FreeBytes();
+  ASSERT_TRUE(free);
+  ASSERT_GE(*free, incoming_bytes);
+  rt::SwapParts outgoing;
+  ASSERT_TRUE(life->server->Activate(*peer, outgoing));
+  ASSERT_TRUE(outgoing.diagnostic.eviction_split_available);
+  EXPECT_LE(outgoing.diagnostic.requested_ns, outgoing.diagnostic.scheduler_started_ns);
+  EXPECT_LE(outgoing.diagnostic.scheduler_started_ns, outgoing.diagnostic.scheduler_evicted_ns);
+  EXPECT_LE(outgoing.diagnostic.scheduler_evicted_ns, outgoing.diagnostic.scheduler_loaded_ns);
+  EXPECT_FALSE(outgoing.diagnostic.creates_loaded.timing.enabled);
+  EXPECT_EQ(outgoing.diagnostic.creates_loaded.timing.create_serial, 0U);
+  EXPECT_EQ(outgoing.diagnostic.creates_loaded.timing.park.completed, 0U);
+  EXPECT_EQ(outgoing.diagnostic.creates_loaded.timing.park.total_ns, 0U);
+  EXPECT_EQ(outgoing.diagnostic.creates_loaded.timing.park_metadata.completed +
+                outgoing.diagnostic.creates_loaded.timing.park_stash.completed +
+                outgoing.diagnostic.creates_loaded.timing.park_publication.completed,
+            0U);
+  EXPECT_GT(outgoing.diagnostic.eviction_prepare_seconds, 0);
+  EXPECT_GE(outgoing.diagnostic.eviction_retire_seconds, 0);
+  EXPECT_NEAR(
+      outgoing.diagnostic.eviction_prepare_seconds + outgoing.diagnostic.eviction_retire_seconds,
+      outgoing.evict, 1e-9);
+  ASSERT_FALSE(life->server->node().InRequest(model->paged().stream()));
+  EXPECT_GT(model->weight_tick(), first_weight_tick);
+  EXPECT_EQ(outgoing.evicted_weight_bytes, 0U);
+  EXPECT_GT(outgoing.retained_outgoing_weight_bytes, 0U);
+  ASSERT_TRUE(life->server->FinishSwap(outgoing));
+  const std::array<rt::Llm::Branch*, 1> one{*peer->branch(0)};
+  ASSERT_TRUE(life->server->SelectRequestBranches(*peer, one));
+  std::vector<float> peer_head;
+  ASSERT_TRUE(one[0]->Prefill(prompt, peer_head));
+  rt::SwapParts incoming;
+  ASSERT_TRUE(life->server->Activate(*model, incoming));
+  ASSERT_TRUE(incoming.diagnostic.eviction_split_available);
+  EXPECT_NEAR(
+      incoming.diagnostic.eviction_prepare_seconds + incoming.diagnostic.eviction_retire_seconds,
+      incoming.evict, 1e-9);
+  ASSERT_FALSE(life->server->node().InRequest(peer->paged().stream()));
+  EXPECT_EQ(incoming.evicted_weight_bytes, 0U);
+  EXPECT_GT(incoming.retained_incoming_weight_bytes, 0U);
+  EXPECT_GT(incoming.retained_outgoing_weight_bytes, 0U);
+  ASSERT_TRUE(life->server->FinishSwap(incoming));
+  const std::array<rt::Llm::Branch*, 1> resumed{*model->branch(0)};
+  ASSERT_TRUE(life->server->SelectRequestBranches(*model, resumed));
+  ASSERT_TRUE(resumed[0]->Clear());
+  std::vector<float> actual;
+  ASSERT_TRUE(resumed[0]->Prefill(prompt, actual));
+  ASSERT_EQ(actual.size(), expected.size());
+  EXPECT_EQ(std::memcmp(actual.data(), expected.data(), actual.size() * sizeof(float)), 0);
+  EXPECT_TRUE(life->server->RetireRequestBranches(*model, true).references_retired);
+  model->DropPlans();
+  peer->DropPlans();
+  auto protected_kept = model->kept_state();
+  const auto peer_kept = peer->kept_state();
+  protected_kept.insert(protected_kept.end(), peer_kept.begin(), peer_kept.end());
+  EXPECT_EQ(life->server->Reclaim(2U << 20U, false, "optional cache eligibility control", nullptr,
+                                  std::nullopt, false, nullptr, 0, protected_kept, nullptr, false),
+            0U);
+  // The same catalog population is eligible for a genuine load need.
+  EXPECT_EQ(life->server->Reclaim(2U << 20U, false, "materialization eligibility control", nullptr,
+                                  std::nullopt, false, nullptr, 0, protected_kept),
+            2U << 20U);
+}
+
+TEST_P(GemmaPrefillServingGpu, FailedPartialLoadPreservesCachesAndRecreatesSavedRecord) {
+  life->roles.installed = "/home/pmeenan/.local/share/jitllm/m3-artifacts";
+  auto other = life->config.models.front();
+  other.name = "other";
+  other.artifact = GetParam() == 2
+                       ? "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
+                       : "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
+  other.overrides["context"] = std::int64_t{4096};
+  life->config.models.push_back(other);
+  auto inactive_entry = other;
+  inactive_entry.name = "inactive";
+  inactive_entry.artifact = "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
+  life->config.models.push_back(inactive_entry);
+  life->options.partial_weight_eviction = true;
+  life->options.keep_conversations = true;
+  life->config.memory.keep_across_restart = true;
+  ASSERT_TRUE(Start(true));
+  auto* peer = dynamic_cast<rt::Llm*>(life->server->Find("other"));
+  ASSERT_NE(peer, nullptr);
+  ASSERT_TRUE(peer->keeps());
+  const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
+  std::vector<float> expected;
+  ASSERT_TRUE((*model->branch(0))->Prefill(prompt, expected));
+  rt::SwapParts swap;
+  auto* inactive = life->server->Find("inactive");
+  ASSERT_NE(inactive, nullptr);
+  ASSERT_TRUE(life->server->Activate(*inactive, swap));
+  ASSERT_TRUE(life->server->FinishSwap(swap));
+  ASSERT_TRUE(life->server->Activate(*peer, swap));
+  ASSERT_TRUE(life->server->FinishSwap(swap));
+  const std::array<rt::Llm::Branch*, 1> selected{*peer->branch(0)};
+  ASSERT_TRUE(life->server->SelectRequestBranches(*peer, selected));
+  std::vector<float> peer_head;
+  ASSERT_TRUE(selected[0]->Prefill(prompt, peer_head));
+  ASSERT_TRUE(life->server->Activate(*model, swap));
+  ASSERT_TRUE(life->server->FinishSwap(swap));
+  ASSERT_TRUE(life->server->DrainKept(rt::Clock::now() + std::chrono::seconds(10)));
+  std::filesystem::path record;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(life->roles.spill))
+    if (entry.path().filename() == "slot-0.record" &&
+        entry.path().parent_path().filename() == *other.artifact)
+      record = entry.path();
+  ASSERT_FALSE(record.empty());
+  const auto read = [&]() {
+    std::ifstream file(record, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+  };
+  const auto before_record = read();
+  ASSERT_FALSE(before_record.empty());
+  const auto weights = peer->weights();
+  ASSERT_GT(weights.size(), 1U);
+  std::vector<jitllm::catalog::ExtentId> inactive_cached;
+  ASSERT_TRUE(life->server->node().Call(
+      [&]() -> rt::Status {
+        for (const auto extent : inactive->weights())
+          if (life->server->node().catalog().Describe(extent)->state ==
+              jitllm::catalog::ExtentState::kResident)
+            inactive_cached.push_back(extent);
+        return {};
+      },
+      "snapshotting unrelated retained cache before the failed switch"));
+  ASSERT_FALSE(inactive_cached.empty());
+  const auto missing = weights.back();
+  ASSERT_TRUE(life->server->node().Evict({missing}));
+  jitllm::scheduler::PageSource original;
+  ASSERT_TRUE(life->server->node().Call(
+      [&]() -> rt::Status {
+        original = *life->server->node().scheduler().SourceOf(missing);
+        auto bad = original;
+        bad.read.offset = std::uint64_t{1} << 60U;  // a clean short-read failure
+        if (!life->server->node().scheduler().SetSource(missing, bad))
+          return std::unexpected("the test read failure source was refused");
+        return {};
+      },
+      "injecting one missing weight read failure"));
+  const auto failed = life->server->Activate(*peer, swap);
+  EXPECT_FALSE(failed);
+  EXPECT_EQ(life->server->resident(), model);
+  ASSERT_TRUE(life->server->node().Call(
+      [&]() -> rt::Status {
+        for (std::size_t i = 0; i + 1 < weights.size(); ++i)
+          EXPECT_EQ(life->server->node().catalog().Describe(weights[i])->state,
+                    jitllm::catalog::ExtentState::kResident);
+        for (const auto extent : model->weights())
+          EXPECT_EQ(life->server->node().catalog().Describe(extent)->state,
+                    jitllm::catalog::ExtentState::kResident);
+        for (const auto extent : inactive_cached)
+          EXPECT_EQ(life->server->node().catalog().Describe(extent)->state,
+                    jitllm::catalog::ExtentState::kResident);
+        if (!life->server->node().scheduler().SetSource(missing, original))
+          return std::unexpected("the original weight source could not be restored");
+        return {};
+      },
+      "checking rollback cache preservation and repairing the injected source"));
+  ASSERT_TRUE(life->server->DrainKept(rt::Clock::now() + std::chrono::seconds(10)));
+  EXPECT_EQ(read(), before_record);  // Unkeep was followed by proven saved generations.
+  const std::array<rt::Llm::Branch*, 1> resumed{*model->branch(0)};
+  ASSERT_TRUE(life->server->SelectRequestBranches(*model, resumed));
+  ASSERT_TRUE(resumed[0]->Clear());
+  std::vector<float> actual;
+  ASSERT_TRUE(resumed[0]->Prefill(prompt, actual));
+  ASSERT_EQ(actual.size(), expected.size());
+  EXPECT_EQ(std::memcmp(actual.data(), expected.data(), actual.size() * sizeof(float)), 0);
+  EXPECT_TRUE(life->server->RetireRequestBranches(*model, true).references_retired);
+  // A later successful return uses the repaired missing source and retained cache.
+  ASSERT_TRUE(life->server->Activate(*peer, swap));
+  EXPECT_GT(swap.retained_incoming_weight_bytes, 0U);
+  ASSERT_TRUE(life->server->FinishSwap(swap));
+  ASSERT_TRUE(life->server->Activate(*model, swap));
+  ASSERT_TRUE(life->server->FinishSwap(swap));
+  ASSERT_TRUE(life->server->DrainKept(rt::Clock::now() + std::chrono::seconds(10)));
+  const auto before_late_record = read();
+  ASSERT_FALSE(before_late_record.empty());
+  const auto unpinned = weights.front();
+  ASSERT_TRUE(life->server->node().Call(
+      [&]() -> rt::Status {
+        life->server->node().scheduler().UnpinPlaces(std::span(&unpinned, 1));
+        if (life->server->node().scheduler().PlacePinned(unpinned))
+          return std::unexpected("the test weight still has another place pin");
+        return {};
+      },
+      "injecting a completed-transfer readiness failure"));
+  const auto late_failed = life->server->Activate(*peer, swap);
+  EXPECT_FALSE(late_failed);
+  EXPECT_EQ(life->server->resident(), model);
+  ASSERT_TRUE(life->server->node().Call(
+      [&]() -> rt::Status {
+        if (!life->server->node().scheduler().PinPlaces(std::span(&unpinned, 1)))
+          return std::unexpected("the readiness test's place pin could not be restored");
+        return {};
+      },
+      "repairing the readiness-only failure"));
+  ASSERT_TRUE(life->server->DrainKept(rt::Clock::now() + std::chrono::seconds(10)));
+  EXPECT_EQ(read(), before_late_record);
+  const auto outgoing_record =
+      record.parent_path().parent_path() / *life->config.models.front().artifact / "slot-0.record";
+  EXPECT_FALSE(std::filesystem::exists(outgoing_record));  // outgoing is live again
+  ASSERT_TRUE(life->server->Activate(*peer, swap));
+  EXPECT_GT(swap.restore, 0);  // incoming's spilled membership survived late rollback
+  ASSERT_TRUE(life->server->FinishSwap(swap));
+  ASSERT_TRUE(life->server->Activate(*model, swap));
+  ASSERT_TRUE(life->server->FinishSwap(swap));
+  const auto hash_state = [&]() {
+    if (GetParam() == 2) return StateHash(dynamic_cast<en::Gemma2Runner&>(model->paged()), 0);
+    return StateHash(dynamic_cast<en::Gemma3Runner&>(model->paged()), 0);
+  };
+  const auto saved_hash = hash_state();
+  ASSERT_TRUE(saved_hash);
+  // Two independent failures: the incoming readiness check, followed by
+  // a missing outgoing weight's short read during undo. No request runs
+  // against either state between their completed spill and restoration.
+  const auto outgoing_missing = model->weights().back();
+  ASSERT_TRUE(life->server->node().Evict({outgoing_missing}));
+  jitllm::scheduler::PageSource outgoing_source;
+  ASSERT_TRUE(life->server->node().Call(
+      [&]() -> rt::Status {
+        outgoing_source = *life->server->node().scheduler().SourceOf(outgoing_missing);
+        auto bad = outgoing_source;
+        bad.read.offset = std::uint64_t{1} << 60U;
+        if (!life->server->node().scheduler().SetSource(outgoing_missing, bad))
+          return std::unexpected("the undo read failure source was refused");
+        life->server->node().scheduler().UnpinPlaces(std::span(&unpinned, 1));
+        return {};
+      },
+      "injecting independent late readiness and undo-read failures"));
+  const auto twice_failed = life->server->Activate(*peer, swap);
+  EXPECT_FALSE(twice_failed);
+  EXPECT_EQ(life->server->resident(), nullptr);
+  ASSERT_TRUE(life->server->node().Call(
+      [&]() -> rt::Status {
+        if (!life->server->node().scheduler().SetSource(outgoing_missing, outgoing_source) ||
+            !life->server->node().scheduler().PinPlaces(std::span(&unpinned, 1)))
+          return std::unexpected("the double-failure sources could not be repaired");
+        return {};
+      },
+      "repairing both completed failure controls"));
+  ASSERT_TRUE(life->server->DrainKept(rt::Clock::now() + std::chrono::seconds(10)));
+  EXPECT_TRUE(std::filesystem::exists(outgoing_record));
+  EXPECT_FALSE(read().empty());
+  ASSERT_TRUE(life->server->Activate(*model, swap));
+  EXPECT_GT(swap.restore, 0);
+  ASSERT_TRUE(life->server->FinishSwap(swap));
+  const auto restored_hash = hash_state();
+  ASSERT_TRUE(restored_hash);
+  EXPECT_EQ(*restored_hash, *saved_hash);
 }
 
 INSTANTIATE_TEST_SUITE_P(ApprovedFamilies, GemmaPrefillServingGpu, ::testing::Values(2U, 3U));

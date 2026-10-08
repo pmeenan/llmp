@@ -4,6 +4,7 @@
 // The serving commands (commands.h) on a started server (serving.h).
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -67,6 +68,18 @@ std::string Tokens(std::span<const std::int32_t> tokens) {
   return out;
 }
 
+// Complete rows, framed by each uint64 row length (native little endian on
+// supported targets), so differently partitioned row bytes cannot alias.
+std::string LogitsDigest(const Generation& generation) {
+  base::Sha256 hash;
+  for (const auto& row : generation.logits) {
+    const std::uint64_t length = row.size();
+    hash.Update(std::as_bytes(std::span(&length, 1)));
+    hash.Update(std::as_bytes(std::span(row)));
+  }
+  return base::ToHex(hash.Finish());
+}
+
 // A row's highest logits, highest first, as JSON pairs [token, logit]: the
 // report's view of a prefill's last row, to compare prefills (chunk sizes).
 std::string TopLogits(std::span<const float> row) {
@@ -90,14 +103,78 @@ std::string TopLogits(std::span<const float> row) {
   return out;
 }
 
+std::string HostPhasesJson(const SwapHostPhases& p) {
+  return std::format(
+      R"({{"room_seconds":{},"gather_seconds":{},"selection_bookkeeping_seconds":{},)"
+      R"("take_seconds":{},"heap_release_seconds":{},"partition_seconds":{},)"
+      R"("reclaim_calls":{},"heap_release_calls":{}}})",
+      p.room_seconds, p.gather_seconds, p.selection_bookkeeping_seconds, p.take_seconds,
+      p.heap_release_seconds, p.partition_seconds, p.reclaim_calls, p.heap_release_calls);
+}
+
+std::string TimingEventJson(const scheduler::BackingTimingEvent& e) {
+  return std::format(R"({{"serial":{},"start_ns":{},"end_ns":{}}})", e.serial, e.start_ns,
+                     e.end_ns);
+}
+
+std::string TimingTotalsJson(const scheduler::BackingTimingTotals& t) {
+  return std::format(
+      R"({{"started":{},"completed":{},"total_ns":{},"first":{},"last":{},"longest":{}}})",
+      t.started, t.completed, t.total_ns, TimingEventJson(t.first), TimingEventJson(t.last),
+      TimingEventJson(t.longest));
+}
+
+std::string ParkStageJson(const scheduler::BackingParkStageTotals& t) {
+  return std::format(R"({{"completed":{},"total_ns":{},"longest":{}}})", t.completed, t.total_ns,
+                     TimingEventJson(t.longest));
+}
+
+std::string BackingTimingJson(const scheduler::BackingTimingStats& t) {
+  if (!t.enabled) return "null";
+  return std::format(R"({{"create_serial":{},"current_create_reserve":{},"current_create":{},)"
+                     R"("reserve":{},"ordinary":{},"current_park":{},"park":{},)"
+                     R"("park_metadata":{},"park_stash":{},"park_publication":{}}})",
+                     t.create_serial, t.current_create_reserve ? "true" : "false",
+                     TimingEventJson(t.current_create), TimingTotalsJson(t.reserve),
+                     TimingTotalsJson(t.ordinary), TimingEventJson(t.current_park),
+                     TimingTotalsJson(t.park), ParkStageJson(t.park_metadata),
+                     ParkStageJson(t.park_stash), ParkStageJson(t.park_publication));
+}
+
+std::string CreateCountsJson(const scheduler::BackingCreateStats& c) {
+  return std::format(R"({{"reserve_attempts":{},"reserve_failures":{},"ordinary_attempts":{},)"
+                     R"("ordinary_failures":{},"timing":{}}})",
+                     c.reserve_attempts, c.reserve_failures, c.ordinary_attempts,
+                     c.ordinary_failures, BackingTimingJson(c.timing));
+}
+
+std::string SwapDiagnosticJson(const SwapDiagnostic& d) {
+  if (!d.enabled) return "null";
+  return std::format(R"({{"eviction_split_available":{},"eviction_prepare_seconds":{},)"
+                     R"("eviction_retire_seconds":{},"requested_ns":{},"scheduler_started_ns":{},)"
+                     R"("scheduler_evicted_ns":{},"scheduler_loaded_ns":{},)"
+                     R"("requested":{},"ready":{},"finished":{},"creates_requested":{},)"
+                     R"("creates_loaded":{},"creates_ready":{},"creates_finished":{}}})",
+                     d.eviction_split_available ? "true" : "false", d.eviction_prepare_seconds,
+                     d.eviction_retire_seconds, d.requested_ns, d.scheduler_started_ns,
+                     d.scheduler_evicted_ns, d.scheduler_loaded_ns, HostPhasesJson(d.requested),
+                     HostPhasesJson(d.ready), HostPhasesJson(d.finished),
+                     CreateCountsJson(d.creates_requested), CreateCountsJson(d.creates_loaded),
+                     CreateCountsJson(d.creates_ready), CreateCountsJson(d.creates_finished));
+}
+
 std::string PartsJson(const SwapParts& p) {
   return std::format(
       R"({{"from":{},"to":{},"with_state":{},"evict":{:.6f},"restore":{:.6f},"page_in":{:.6f},)"
-      R"("setup":{:.6f},"ready":{:.6f},"release_after":{:.6f},"evicted":{},"loaded":{},)"
-      R"("read_bytes":{},"spilled_bytes":{},"handed_off":{},"released_unused":{}}})",
+      R"("setup":{:.6f},"ready":{:.6f},"release_after":{:.6f},"diagnostic":{},"evicted":{},"loaded":{},)"
+      R"("read_bytes":{},"read_submitted_bytes":{},"occupancy_requested":{},"occupancy_released":{},)"
+      R"("retained_incoming_weight_bytes":{},)"
+      R"("retained_outgoing_weight_bytes":{},"evicted_weight_bytes":{},"spilled_bytes":{},"handed_off":{},"released_unused":{}}})",
       Quoted(p.from), Quoted(p.to), p.with_state ? "true" : "false", p.evict, p.restore, p.page_in,
-      p.setup, p.total, p.release, p.evicted, p.loaded, p.read_bytes, p.spilled_bytes, p.handed_off,
-      p.released_unused);
+      p.setup, p.total, p.release, SwapDiagnosticJson(p.diagnostic), p.evicted, p.loaded,
+      p.read_bytes, p.read_submitted_bytes, p.occupancy_requested, p.occupancy_released,
+      p.retained_incoming_weight_bytes, p.retained_outgoing_weight_bytes, p.evicted_weight_bytes,
+      p.spilled_bytes, p.handed_off, p.released_unused);
 }
 
 std::string PartsLine(const SwapParts& p) {
@@ -329,6 +406,15 @@ struct Row {
   bool exact = true;
   bool state_exact = true;
   std::string output;
+  std::string context_ids_sha256;  // actual int32 context IDs, not the source text
+  std::uint64_t initialized_state_bytes = 0;
+  std::string state_before_sha256;
+  std::string state_restored_sha256;
+  std::string reference_logits_sha256;
+  std::string continued_logits_sha256;
+  std::uint64_t continuation_vocabulary = 0;
+  std::uint64_t continuation_logit_rows = 0;
+  std::uint64_t continuation_logit_bytes = 0;
   GraphCounts graphs;  // an LLM A's steps after it (captured, replayed, launched)
   std::uint64_t graphs_kept = 0;
   double plan_seconds = 0;
@@ -595,6 +681,7 @@ Status Table::Pair(Served& a, Served& b) {
     Row ab;
     ab.pair = pair;
     ab.name = std::format("A->B, {} ({})", use, held);
+    if (a.llm()) ab.context_ids_sha256 = Sha256(std::as_bytes(std::span(context)));
     server_.memory().Reset();
     if (auto r = server_.Activate(b, ab.parts); !r) {
       return r;
@@ -625,6 +712,7 @@ Status Table::Pair(Served& a, Served& b) {
     Row ba;
     ba.pair = pair;
     ba.name = std::format("B->A, {} ({})", use, held);
+    ba.context_ids_sha256 = ab.context_ids_sha256;
     server_.memory().Reset();
     if (auto r = server_.Activate(a, ba.parts); !r) {
       return r;
@@ -665,8 +753,11 @@ Status Table::Pair(Served& a, Served& b) {
       if (auto r = server_.InRequest(a, [&]() -> Status { return server_.SaveSnapshot(l); }); !r) {
         return r;
       }
-      ba.state_exact = Sha256(std::span(static_cast<const std::byte*>(server_.snapshot()),
-                                        l.state_snapshot_bytes())) == digest;
+      ba.initialized_state_bytes = l.state_snapshot_bytes();
+      ba.state_before_sha256 = digest;
+      ba.state_restored_sha256 = Sha256(
+          std::span(static_cast<const std::byte*>(server_.snapshot()), l.state_snapshot_bytes()));
+      ba.state_exact = ba.state_restored_sha256 == ba.state_before_sha256;
       if (!ba.state_exact) {
         problems_.push_back(
             std::format("{} {}: A's restored state differs from the state it "
@@ -692,6 +783,24 @@ Status Table::Pair(Served& a, Served& b) {
       ba.exact = differing == 0 && continued.tokens == reference.tokens &&
                  continued.logits.size() == reference.logits.size();
       ba.output = Tokens(continued.tokens);
+      // Diagnostics after the endpoint was recorded; hashing does not enter
+      // swap setup, first-output timing or the restored-state digest interval.
+      const auto complete = [&](const Generation& generation) {
+        return generation.logits.size() == o_.continue_tokens &&
+               std::ranges::all_of(generation.logits, [&](const auto& row) {
+                 return row.size() == last.size() &&
+                        std::ranges::all_of(row, [](float v) { return std::isfinite(v); });
+               });
+      };
+      if (last.empty() || last.size() != l.tokenizer().size() || !complete(reference) ||
+          !complete(continued))
+        return Error("the swap continuation needs complete finite target-vocabulary rows");
+      ba.continuation_vocabulary = last.size();
+      ba.reference_logits_sha256 = LogitsDigest(reference);
+      ba.continued_logits_sha256 = LogitsDigest(continued);
+      ba.continuation_logit_rows = continued.logits.size();
+      for (const auto& row : continued.logits)
+        ba.continuation_logit_bytes += row.size() * sizeof(float);
       if (!ba.exact) {
         problems_.push_back(
             std::format("{} {}: {} of {} continued steps' logits differ from the "
@@ -825,12 +934,19 @@ std::string Table::Json() const {
     rows += std::format(
         R"({}{{"pair":{},"name":{},"total":{:.6f},"first_output":{:.6f},"digest_seconds":{:.6f},)"
         R"("plan_seconds":{:.6f},"demand_seconds":{:.6f},"peak_bytes":{},"exact":{},)"
-        R"("state_exact":{},"output":{},"graphs_kept":{},"graphs":{{"eager":{},"captured":{},)"
+        R"("state_exact":{},"output":{},"context_ids_sha256":{},"initialized_state_bytes":{},)"
+        R"("state_before_sha256":{},)"
+        R"("state_restored_sha256":{},"reference_logits_sha256":{},"continued_logits_sha256":{},)"
+        R"("continuation_vocabulary":{},"continuation_logit_rows":{},"continuation_logit_bytes":{},)"
+        R"("graphs_kept":{},"graphs":{{"eager":{},"captured":{},)"
         R"("replayed":{}}},"parts":{}}})",
         rows.empty() ? "" : ",\n  ", Quoted(r.pair), Quoted(r.name), r.total, r.first, r.digest,
         r.plan_seconds, r.demand_seconds, r.peak, r.exact ? "true" : "false",
-        r.state_exact ? "true" : "false", Quoted(r.output), r.graphs_kept, r.graphs.eager,
-        r.graphs.captured, r.graphs.replayed, PartsJson(r.parts));
+        r.state_exact ? "true" : "false", Quoted(r.output), Quoted(r.context_ids_sha256),
+        r.initialized_state_bytes, Quoted(r.state_before_sha256), Quoted(r.state_restored_sha256),
+        Quoted(r.reference_logits_sha256), Quoted(r.continued_logits_sha256),
+        r.continuation_vocabulary, r.continuation_logit_rows, r.continuation_logit_bytes,
+        r.graphs_kept, r.graphs.eager, r.graphs.captured, r.graphs.replayed, PartsJson(r.parts));
   }
   std::string problems;
   for (const std::string& p : problems_) {
@@ -844,16 +960,29 @@ std::string Table::Json() const {
   for (const auto& m : server_.models()) {
     models += std::format("{}{}:{}", models.empty() ? "" : ",\n  ", Quoted(m->name()), m->extra());
   }
+  const auto stats = server_.node().Stats();
+  std::string creates = "null";
+  if (stats) {
+    const auto& c = stats->backing_creates;
+    creates = std::format(
+        R"({{"reserve_attempts":{},"reserve_failures":{},"ordinary_attempts":{},)"
+        R"("ordinary_failures":{},"last_failure_monotonic_ns":{},"last_failure_reserve":{},)"
+        R"("last_failure_error":{},"last_failure_detail":{}}})",
+        c.reserve_attempts, c.reserve_failures, c.ordinary_attempts, c.ordinary_failures,
+        c.last_failure_monotonic_ns, c.last_failure_reserve ? "true" : "false",
+        Quoted(providers::ToString(c.last_failure_error)), Quoted(c.last_failure_detail));
+  }
   return std::format(
       "{{\"command\":\"swap-table\",\"handoff\":{},\"context_tokens\":{},\"continue\":{},"
-      "\"cycles\":{},\"context_sha256\":\"{}\",\"budget\":{},\"fixed\":{},"
+      "\"cycles\":{},\"context_sha256\":\"{}\",\"budget\":{},\"dynamic_budget\":{},\"fixed\":{},"
       "\"native_token_history_bytes\":{},\"native_token_catalog_bytes\":{},"
-      "\"mem_available_start\":{},\"mem_available_low\":{},\n \"models\":{{\n  {}}},\n"
+      "\"backing_creates\":{},\"mem_available_start\":{},\"mem_available_low\":{},\n "
+      "\"models\":{{\n  {}}},\n"
       " \"problems\":[{}],\n \"positioning\":[\n  {}],\n \"rows\":[\n  {}]}}\n",
       o_.handoff ? "true" : "false", o_.context_tokens, o_.continue_tokens, o_.cycles,
-      Sha256(std::as_bytes(std::span(text_))), server_.budget(), server_.fixed_bytes(),
-      server_.token_history_bytes(), server_.token_catalog_bytes(), server_.memory().start(),
-      server_.memory().all(), models, problems, positioning, rows);
+      Sha256(std::as_bytes(std::span(text_))), server_.budget(), server_.dynamic_budget(),
+      server_.fixed_bytes(), server_.token_history_bytes(), server_.token_catalog_bytes(), creates,
+      server_.memory().start(), server_.memory().all(), models, problems, positioning, rows);
 }
 
 }  // namespace

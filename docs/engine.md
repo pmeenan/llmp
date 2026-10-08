@@ -498,3 +498,26 @@ rather than works around:
   so does Qwen3.8's fast graph (`jitllm.qsa.pool`, `.topk`, `.attn`; its
   block keys a state tensor of the model's layout, their verify saves the
   runner's).
+
+## Shared partial-weight foundation and completion news
+
+Ordinary runtime switches still evict the outgoing prepared footprint. The
+internal partial swap benchmark uses the shared server/node transaction to
+retain clean inactive weights, select a global GreedyDual capacity deficit,
+release incompatible handoff backing, and reload only missing closure members.
+Whole outgoing state spills first. Protected generation, lease and registration
+checks, zero-victim request retirement, saved-state proof and cache-preserving
+rollback apply to every model adapter. Runtime-managed state acquisition
+validates the entire closure before invoking the installed reclaimer; callback
+refusal or reentry never enables the standalone LRU fallback. Positive completed
+storage READ bytes are measured separately from writes, failures and zero-fill.
+
+The internal partial path remains default-off because its measured cold-switch
+tradeoff leaves the ordinary adoption gate open. The shared WakeFlag handshake
+now notifies after unlocking; CompletionBoard removes at most 64 already queued
+indices per news lock, unlocking before mailbox reads and observation. Neither
+waits to fill a batch nor adds per-step scheduler calls. All current families
+inherit these shared changes; actual performance was screened on DeepSeek/Qwen,
+with concurrency/lifetime controls and whole-node lock counters. Their narrow
+publication/eviction benefits establish no repair of the intermittent long tail
+and no per-family speed claim. See [partial-weight evidence](experiments/partial-weight-eviction/README.md).

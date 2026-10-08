@@ -1998,3 +1998,18 @@ evidence or a later choice:
 | Companion and multi-component artifacts: manifest references by artifact ID, shared-resource accounting | M3 (D-068) |
 | Per-step expert closures of wide phases (speculative verify, diffusion canvas) on routed experts | A bounded DiffusionGemma reference study, before M9 planning |
 | Numerical bounds and trace protocols for speculative and diffusion decoding | Before execution: M3 (speculative), M9 (diffusion) |
+
+### Internal partial-weight switch qualification
+
+Ordinary serving retains the full-swap policy. M3.5's internal partial benchmark
+keeps unselected clean prepared weights of inactive models at pinned addresses,
+spills outgoing live state whole, and loads only the protected incoming closure's
+missing extents. It uses global GreedyDual across inactive owners and batches
+selected weights; parked backing stays charged until consumed or proven released.
+Mixed allocation classes may require releasing part of that selected backing
+before the first incoming load. Rollback removes only newly loaded members,
+retains preexisting caches and commits spill membership/durable records only at
+readiness or after saved-generation proof on failed recovery. Runtime-managed
+state acquisition shares the protected preflight rather than autonomous LRU.
+The cold-switch adoption gate remains open despite prepared read/time savings
+([comparison](experiments/partial-weight-eviction/README.md)).

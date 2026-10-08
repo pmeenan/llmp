@@ -28,6 +28,42 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-049: Successful VMM creation can emit recovered memdesc out-of-memory diagnostics  (2026-10-07, status: open)
+
+Environment: `spark` (`spark-c4e2`), GB10, driver580.178.04,
+DGX OS7.6.0/kernel7.0.0-1019-nvidia, pinned CUDA13.4.2 and
+SDK`aarch64-c09daba6ac31edee`. A production full-swap control completed
+four exact state/continuation rows but logged7 new NVRM messages:
+`NV_ERR_NO_MEMORY`/0x51 from `_memdescAllocInternal(pMemDesc)` at
+`mem_desc.c:1359`. A separate unprofiled attribution run reproduced3
+messages with zero returned backing-provider Create failures. Catalog
+occupancy stayed within its actual budget; nearest MemAvailable6.54GiB
+and absent large buddy blocks give a fragmentation lead, not a proven cause.
+
+One CUDA-only Nsight capture reproduced13 messages, with all83,314 traced
+`cuMemCreate` calls returningSuccess and all four state/continuation rows
+exact. The native process's independent exit/retirement was verified.
+The installed Nsight serializes these driver names in its RUNTIME table;
+name-based API ownership avoids assuming a DRIVER table. UTC epoch/session
+offset and RAW/REAL brackets were authenticated. Kernel source/receipt
+clocks still differ by a few milliseconds, so exact call IDs are not proven.
+For all13 messages, the union of receipt REAL and mapped source times
+expanded10ms in both directions contains only `cuMemCreate` among allocator,
+creation, module or library APIs; adjacent matching calls succeed and narrow
+overlaps last6.05–59.07ms. This supports successful VMM creation as the
+recovered-allocation family, without establishing its internal mechanism or
+the causes of earlier clusters. A distinct early refcnt0x56 warning from the
+profile is separate and remains unexpected. Profile timings are ineligible.
+
+Matched pager comparisons retain and count only this exact known memdesc
+message as recovered allocation cost, included in measured time. Actual
+reserve/ordinary provider failures, Xid/UVM/refcnt and any other driver or
+host allocation errors still refuse a run. Completion-safe counters include
+the final joined teardown. Neither physical guards nor the handle reserve
+were changed to hide warnings. See the [comparison, exact message and
+attribution limits](experiments/partial-weight-eviction/README.md#rejected-first-control-and-attribution)
+and [CUDA upstream note](upstream/cuda.md#recovered-memdesc-allocation-diagnostics-during-successful-vmm-creation-re-049).
+
 ## RE-048: Early final-row gathering changes Gemma4 quantized arithmetic  (2026-10-07, status: worked-around)
 
 Environment: spark-b GB10, driver 580.178.04, NVCC 13.4 SDK, GGML 0.26.0 /

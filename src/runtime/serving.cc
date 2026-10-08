@@ -16,7 +16,9 @@
 #include <ctime>
 #include <filesystem>
 #include <format>
+#include <map>
 #include <print>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -123,6 +125,8 @@ std::string SlotsReport(const ModelSettings& s) {
 // recompute_ms_per_token.
 constexpr double kSpillBytesPerSecond = 11.0e9;
 constexpr double kRestoreBytesPerSecond = 14.5e9;
+// Prepared weight page-in measured on the GB10 (D-055, memory-pressure).
+constexpr double kWeightReadBytesPerSecond = 13.3e9;
 // A graph's capture and instantiation a GiB counted, measured on a GB10
 // (0.33–0.45 s in the services' logs): what a graph's capture weighs
 // against before any graph is held (Server::Reclaim).
@@ -133,6 +137,31 @@ constexpr auto kMaintenanceInterval = std::chrono::milliseconds(250);
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
 double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
+
+// Diagnostic caps alone enable these clocks; ordinary serving adds no clock
+// reads or scheduler calls. The driver owns every accumulator.
+class SwapPhaseTimer {
+ public:
+  explicit SwapPhaseTimer(double* total)
+      : total_(total), begin_(total != nullptr ? Clock::now() : Clock::time_point{}) {}
+  SwapPhaseTimer(const SwapPhaseTimer&) = delete;
+  SwapPhaseTimer& operator=(const SwapPhaseTimer&) = delete;
+  ~SwapPhaseTimer() {
+    if (total_ != nullptr) *total_ += Seconds(Clock::now() - begin_);
+  }
+
+ private:
+  double* total_;
+  Clock::time_point begin_;
+};
+
+std::uint64_t WeightHandle(catalog::ExtentId extent) {
+  return (static_cast<std::uint64_t>(extent.generation()) << 32U) | extent.index();
+}
+
+catalog::ExtentId WeightExtent(std::uint64_t handle) {
+  return {static_cast<std::uint32_t>(handle), static_cast<std::uint32_t>(handle >> 32U)};
+}
 
 // An installed artifact, opened under the store's trust rules (D-056's
 // integrity rests on them) and its ID checked; the runner opens it again.
@@ -5880,6 +5909,19 @@ Status Server::Start(bool snapshot) {
   } else {
     budget_ += node_.StateCapacity();
   }
+  dynamic_budget_ = budget_;
+  if (options_.diagnostic_budget_cap_bytes) {
+    const auto reserve = options_.handle_reserve.value_or(engine::kHandleReserve);
+    if (reserve > std::numeric_limits<std::uint64_t>::max() / kExtent)
+      return Error("diagnostic budget cap handle reserve overflows");
+    const auto cap = *options_.diagnostic_budget_cap_bytes;
+    if (auto checked = CheckDiagnosticBudgetCap(bounds, dynamic_budget_, cap, reserve * kExtent);
+        !checked)
+      return std::unexpected(checked.error());
+    budget_ = cap;
+    Log(std::format("diagnostic budget cap: dynamic={} selected={} bytes", dynamic_budget_,
+                    budget_));
+  }
   if (auto r = node_.Start(base::Bytes(budget_)); !r) {
     return r;
   }
@@ -5898,7 +5940,8 @@ Status Server::Start(bool snapshot) {
   // Plans and graphs past the floor are charged inside the budget; a charge
   // that does not fit has the reclaim order make room first.
   node_.SetHostFloor(step_plans);
-  node_.SetReclaimer([this](std::uint64_t needed, engine::PagedNode::ReclaimFor what) {
+  node_.SetReclaimer([this](std::uint64_t needed, engine::PagedNode::ReclaimFor what,
+                            std::span<const catalog::ExtentId> protect) {
     // Cache charges displace only other plans and graphs, never
     // conversation state (a graph's only what costs less to restore than a
     // graph); pinned staging (a checkpoint's, a snapshot's) is a state need
@@ -5906,12 +5949,16 @@ Status Server::Start(bool snapshot) {
     using For = engine::PagedNode::ReclaimFor;
     switch (what) {
       case For::kPlan:
-        return Reclaim(needed, false, "a plan past the free budget");
+        return Reclaim(needed, false, "a plan past the free budget", nullptr, std::nullopt, false,
+                       nullptr, 0, {}, nullptr, false);
       case For::kGraph:
         return Reclaim(needed, false, "a graph past the free budget", nullptr,
-                       memory::ReclaimKind::kGraph);
+                       memory::ReclaimKind::kGraph, false, nullptr, 0, {}, nullptr, false);
       case For::kStaging:
         break;
+      case For::kMaterialize:
+        return Reclaim(needed, false, "state materialization past the free budget", nullptr,
+                       std::nullopt, false, nullptr, 0, protect);
     }
     return Reclaim(needed, true, "pinned staging past the free budget");
   });
@@ -6411,7 +6458,20 @@ Status Server::TearDown() {
       static_cast<Llm&>(*m).PreserveKeptFiles();
     }
   }
-  return node_.TearDown(models);
+  const auto stopped = node_.TearDown(models);
+  if (options_.diagnostic_budget_cap_bytes) {
+    const auto c = node_.backing_create_stats();
+    const auto h = node_.retired_harvest_stats();
+    const auto harvest =
+        h ? std::format("{{\"indices\":{},\"pop_locks\":{}}}", h->indices, h->pop_locks) : "null";
+    Log(std::format(
+        "diagnostic final backing creates: {{\"retired\":{},\"reserve_attempts\":{},"
+        "\"reserve_failures\":{},\"ordinary_attempts\":{},\"ordinary_failures\":{},"
+        "\"last_failure_monotonic_ns\":{},\"harvest\":{}}}",
+        stopped.has_value(), c.reserve_attempts, c.reserve_failures, c.ordinary_attempts,
+        c.ordinary_failures, c.last_failure_monotonic_ns, harvest));
+  }
+  return stopped;
 }
 
 Served* Server::Find(std::string_view name) {
@@ -6427,8 +6487,25 @@ Status Server::InRequest(Served& m, const std::function<Status()>& body) {
   if (auto selected = m.PrepareDefaultRequest(); !selected) {
     return selected;
   }
-  return node_.WithRequest(m.paged().stream(), m.request_closure(),
-                           std::format("{}'s request", m.name()), body);
+  auto ran = node_.WithRequest(m.paged().stream(), m.request_closure(),
+                               std::format("{}'s request", m.name()), body);
+  if (ran) return RecordWeightUse(m);
+  return ran;
+}
+
+Status Server::RecordWeightUse(Served& m) {
+  const auto weights = m.weights();
+  return node_.Call(
+      [&]() -> Status {
+        std::uint64_t tick = 0;
+        for (const auto extent : weights) {
+          if (const auto view = node_.catalog().Describe(extent))
+            tick = std::max(tick, view->last_use);
+        }
+        m.RecordWeightsUsed(tick);
+        return {};
+      },
+      "recording a completed model's weight use");
 }
 
 Status Server::SelectRequestBranches(Llm& model, std::span<Llm::Branch* const> active) {
@@ -6454,7 +6531,10 @@ Status Server::EndRequestBranches(Llm& model) {
   const auto stream = model.paged().stream();
   // A proven failed job or state helper can already have ended its request.
   // The caller must separately prove that no work still borrows its owners.
-  return node_.InRequest(stream) ? node_.EndRequest(stream) : Status{};
+  if (node_.InRequest(stream)) {
+    if (auto ended = node_.EndRequest(stream); !ended) return ended;
+  }
+  return RecordWeightUse(model);
 }
 
 Server::ReferenceRetirement Server::RetireRequestBranches(Llm& model, bool last_owner) {
@@ -6524,6 +6604,11 @@ Status Server::FinishSwap(SwapParts& parts) {
   }
   parts.handed_off = after->handed_off - swap_before_.handed_off;
   parts.released_unused = after->released_unused - swap_before_.released_unused;
+  parts.occupancy_released = after->catalog_occupancy_bytes;
+  if (parts.diagnostic.enabled) {
+    parts.diagnostic.finished = swap_host_phases_;
+    parts.diagnostic.creates_finished = node_.backing_create_stats();
+  }
   return {};
 }
 
@@ -6686,18 +6771,25 @@ bool Server::RoomFor(std::uint64_t needed, std::string_view why, const Llm::Bran
 
 std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_view why,
                               const Served* running, std::optional<memory::ReclaimKind> below_kind,
-                              bool partial, const Llm::Branch* spare,
-                              std::uint64_t token_incoming) {
+                              bool partial, const Llm::Branch* spare, std::uint64_t token_incoming,
+                              std::span<const catalog::ExtentId> protect,
+                              PendingWeightEvictions* pending, bool allow_weights) {
   if (reclaiming_ || !started_ || torn_down_ || needed == 0) {
     return 0;
   }
   reclaiming_ = true;
+  const bool diagnostic = options_.diagnostic_budget_cap_bytes.has_value();
+  if (diagnostic) ++swap_host_phases_.reclaim_calls;
   if (running == nullptr) {
     running = resident_;
   }
   // Kept zeroed state backing holds nothing: it goes first, before the
   // order prices anything (other models' before the running one's).
-  const std::uint64_t kept = ReleaseKept(needed, running);
+  std::set<catalog::ExtentId> protected_ids(activation_protect_.begin(), activation_protect_.end());
+  protected_ids.insert(protect.begin(), protect.end());
+  const std::vector<catalog::ExtentId> protected_extents(protected_ids.begin(),
+                                                         protected_ids.end());
+  const std::uint64_t kept = ReleaseKept(needed, running, protected_extents);
   if (kept >= needed) {
     reclaiming_ = false;
     return kept;
@@ -6739,12 +6831,23 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
   };
   std::vector<HistoryVictim> histories;
   std::vector<TokenReclaimGroup> history_groups;
+  struct WeightView {
+    std::uint32_t owner = 0;
+    std::uint64_t generation = 0;
+    std::uint64_t bytes = 0;
+  };
+  std::map<catalog::ExtentId, WeightView> weight_views;
+  const double weight_rate = page_read_bytes_ >= (std::uint64_t{1} << 30U) && page_read_seconds_ > 0
+                                 ? static_cast<double>(page_read_bytes_) / page_read_seconds_
+                                 : kWeightReadBytesPerSecond;
   // The candidates afresh each round (memory::RunReclaim): every model's
   // plans and graphs, and with `states` the resident model's idle state.
   const auto gather = [&](std::vector<memory::ReclaimCandidate>& candidates, double& below) {
+    const SwapPhaseTimer timer(diagnostic ? &swap_host_phases_.gather_seconds : nullptr);
     idle_owner = nullptr;
     histories.clear();
     history_groups.clear();
+    weight_views.clear();
     std::uint32_t resident_index = 0;
     for (std::uint32_t i = 0; i < models_.size(); ++i) {
       models_[i]->ReclaimCandidates(i, models_[i].get() == running, candidates);
@@ -6764,6 +6867,56 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
       }
       if (models_[i].get() == resident_) {
         resident_index = i;
+      }
+    }
+    if (options_.partial_weight_eviction && allow_weights) {
+      std::set<catalog::ExtentId> pending_ids;
+      if (pending != nullptr) {
+        pending_ids = pending->rejected;
+        for (const auto& selected : pending->selected) pending_ids.insert(selected.extent);
+      }
+      std::vector<std::vector<catalog::ExtentId>> weights;
+      weights.reserve(models_.size());
+      for (const auto& model : models_) {
+        weights.push_back(model.get() == running ? std::vector<catalog::ExtentId>{}
+                                                 : model->weights());
+      }
+      const auto listed = node_.Call(
+          [&]() -> Status {
+            for (std::uint32_t i = 0; i < weights.size(); ++i) {
+              for (const auto extent : weights[i]) {
+                if (protected_ids.contains(extent) || pending_ids.contains(extent)) continue;
+                const auto view = node_.catalog().Describe(extent);
+                const auto* source = node_.scheduler().SourceOf(extent);
+                if (!view || !catalog::Catalog::Evictable(*view) || source == nullptr ||
+                    view->descriptor.memory_class != catalog::MemoryClass::kWeights ||
+                    view->descriptor.recovery != catalog::Recovery::kFromArtifact)
+                  continue;
+                if (!weight_views
+                         .try_emplace(extent, WeightView{.owner = i,
+                                                         .generation = view->content_generation,
+                                                         .bytes = view->descriptor.size.value()})
+                         .second) {
+                  return Error("a prepared weight extent has more than one owner");
+                }
+                candidates.push_back(
+                    {.kind = memory::ReclaimKind::kIdleWeights,
+                     .owner = i,
+                     .id = WeightHandle(extent),
+                     .bytes = view->descriptor.size.value(),
+                     .last_use = view->last_use,
+                     .restore_seconds = static_cast<double>(source->read.length) / weight_rate});
+                memory::SetUse(candidates.back(), models_[i]->weight_use());
+              }
+            }
+            return {};
+          },
+          "gathering inactive weight reclaim candidates");
+      if (!listed) {
+        Log(std::format("listing inactive weights: {}", listed.error()));
+        std::erase_if(candidates,
+                      [](const auto& c) { return c.kind == memory::ReclaimKind::kIdleWeights; });
+        weight_views.clear();
       }
     }
     std::ranges::sort(histories, [](const HistoryVictim& a, const HistoryVictim& b) {
@@ -6819,6 +6972,7 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     }
   };
   const auto take = [&](const memory::ReclaimCandidate& c) -> std::uint64_t {
+    const SwapPhaseTimer timer(diagnostic ? &swap_host_phases_.take_seconds : nullptr);
     std::uint64_t got = 0;
     if (c.kind == memory::ReclaimKind::kTokenHistory) {
       std::size_t first = 0;
@@ -6884,7 +7038,26 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
         ++dropped;
       }
     } else {
+      std::optional<std::uint64_t> before_charge;
+      if (options_.partial_weight_eviction) {
+        std::ignore = node_.Call(
+            [&]() -> Status {
+              before_charge = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+              return {};
+            },
+            "sizing a cache reclaim's catalog charge");
+      }
       got = models_[c.owner]->Reclaim(c.kind, c.id);
+      if (before_charge) {
+        const auto measured = node_.Call(
+            [&]() -> Status {
+              const auto after = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+              got = *before_charge - std::min(*before_charge, after);
+              return {};
+            },
+            "measuring a cache reclaim's catalog gain");
+        if (!measured) got = 0;
+      }
     }
     if (got != 0) {
       took = true;
@@ -6893,19 +7066,112 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     }
     return got;
   };
+  const auto take_weights = [&](std::span<const memory::ReclaimCandidate> victims,
+                                std::span<std::uint64_t> freed) {
+    const SwapPhaseTimer timer(diagnostic ? &swap_host_phases_.take_seconds : nullptr);
+    std::vector<catalog::ExtentId> eligible;
+    const auto listed = node_.Call(
+        [&]() -> Status {
+          for (const auto& c : victims) {
+            const auto extent = WeightExtent(c.id);
+            const auto known = weight_views.find(extent);
+            const auto view = node_.catalog().Describe(extent);
+            if (known != weight_views.end() && known->second.owner == c.owner && view &&
+                view->content_generation == known->second.generation &&
+                view->descriptor.size.value() == c.bytes && catalog::Catalog::Evictable(*view) &&
+                !protected_ids.contains(extent))
+              eligible.push_back(extent);
+          }
+          return {};
+        },
+        "rechecking selected idle weights");
+    if (!listed || eligible.empty()) return;
+    const auto evicted = node_.Evict(eligible);
+    if (!evicted) Log(std::format("reclaiming idle weights: {}", evicted.error()));
+    const std::set<catalog::ExtentId> attempted(eligible.begin(), eligible.end());
+    const auto reconciled = node_.Call(
+        [&]() -> Status {
+          for (std::size_t i = 0; i < victims.size(); ++i) {
+            const auto extent = WeightExtent(victims[i].id);
+            const auto view = node_.catalog().Describe(extent);
+            if (attempted.contains(extent) && view &&
+                view->state == catalog::ExtentState::kNonresident)
+              freed[i] = victims[i].bytes;
+          }
+          return {};
+        },
+        "reconciling completed idle weight releases");
+    if (!reconciled) return;
+    for (const auto bytes : freed) {
+      if (bytes != 0) {
+        took = true;
+        ++count[k(memory::ReclaimKind::kIdleWeights)];
+        freed_by[k(memory::ReclaimKind::kIdleWeights)] += bytes;
+      }
+    }
+  };
   // All of it or nothing (memory::RunReclaim): a selection that cannot
   // cover what is needed reclaims nothing (the caller waits or refuses);
   // another round, without it, only when a victim gave back less than its
   // count (held, or gone meanwhile), and what the rounds before took then
   // stays taken even when the rest cannot be covered.
-  const memory::ReclaimRun run = memory::RunReclaim(needed - kept, partial, gather, take);
+  memory::ReclaimRun run;
+  if (pending == nullptr) {
+    const auto begin = diagnostic ? Clock::now() : Clock::time_point{};
+    const auto gather_before = swap_host_phases_.gather_seconds;
+    const auto take_before = swap_host_phases_.take_seconds;
+    run = memory::RunReclaim(needed - kept, partial, gather, take, take_weights);
+    if (diagnostic) {
+      swap_host_phases_.selection_bookkeeping_seconds += std::max(
+          0.0, Seconds(Clock::now() - begin) - (swap_host_phases_.gather_seconds - gather_before) -
+                   (swap_host_phases_.take_seconds - take_before));
+    }
+  } else {
+    std::vector<memory::ReclaimCandidate> candidates;
+    double below = std::numeric_limits<double>::infinity();
+    gather(candidates, below);
+    memory::ReclaimPlan plan;
+    {
+      const SwapPhaseTimer timer(diagnostic ? &swap_host_phases_.selection_bookkeeping_seconds
+                                            : nullptr);
+      plan = memory::SelectReclaim(candidates, needed - kept, below);
+    }
+    if (!plan.sufficient) {
+      run.short_of_need = true;
+    } else {
+      std::uint64_t pending_credit = 0;
+      for (std::size_t i = 0; i < plan.victims.size() && run.freed + pending_credit < needed - kept;
+           ++i) {
+        const auto& c = candidates[plan.victims[i]];
+        if (c.kind == memory::ReclaimKind::kIdleWeights) {
+          const auto extent = WeightExtent(c.id);
+          const auto known = weight_views.find(extent);
+          if (known != weight_views.end()) {
+            pending->selected.push_back({.extent = extent,
+                                         .generation = known->second.generation,
+                                         .candidate = c,
+                                         .priority = plan.priorities[i]});
+            pending_credit += c.bytes;
+          }
+        } else {
+          const auto got = take(c);
+          if (got != 0) {
+            memory::RaiseReclaimInflation(plan.priorities[i]);
+            run.freed += got;
+          }
+        }
+      }
+    }
+  }
   const std::uint64_t freed = run.freed + kept;
   if (freed == 0 && run.short_of_need) {
     ++reclaims_short_;
-  } else if (!partial && freed != 0 && freed < needed) {
+  } else if (pending == nullptr && !partial && freed != 0 && freed < needed) {
     ++reclaims_cut_short_;
   }
   if (freed != 0) {
+    const SwapPhaseTimer timer(diagnostic ? &swap_host_phases_.heap_release_seconds : nullptr);
+    if (diagnostic) ++swap_host_phases_.heap_release_calls;
     platform::ReleaseFreeHeap();
   }
   if (took) {
@@ -6914,10 +7180,12 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     // Counts, bytes and measured costs only (D-014).
     Log(std::format(
         "reclaimed {:.1f} MiB of {:.1f} MiB needed for {}: {} graphs ({:.1f} MiB), {} plans "
-        "({:.1f} MiB), {} idle conversations {} ({:.1f} MiB); measured s a GiB: graphs {:.2f}, "
+        "({:.1f} MiB), {} idle weights ({:.1f} MiB), {} idle conversations {} ({:.1f} MiB); "
+        "measured s a GiB: graphs {:.2f}, "
         "plans {:.2f}, idle state {:.2f}; {} history groups discarded ({:.1f} MiB capacity)",
         mib(freed), mib(needed), why, count[k(K::kGraph)], mib(freed_by[k(K::kGraph)]),
-        count[k(K::kPlan)], mib(freed_by[k(K::kPlan)]), count[k(K::kIdleState)],
+        count[k(K::kPlan)], mib(freed_by[k(K::kPlan)]), count[k(K::kIdleWeights)],
+        mib(freed_by[k(K::kIdleWeights)]), count[k(K::kIdleState)],
         dropped != 0 ? "dropped" : "spilled", mib(freed_by[k(K::kIdleState)]), cost[k(K::kGraph)],
         cost[k(K::kPlan)], cost[k(K::kIdleState)], count[k(K::kTokenHistory)],
         mib(freed_by[k(K::kTokenHistory)])));
@@ -6926,55 +7194,75 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
   return freed;
 }
 
-Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out) {
-  // The bytes the swap lacks now: what it pages in beyond what goes out
-  // and the budget's free room, from the catalog itself (what a reclaim
-  // reports freed need not be what occupancy dropped by: the plans'
-  // charge moves in whole extents past its floor).
-  std::string sizing_error;
-  const auto shortfall = [&]() -> std::uint64_t {
-    std::uint64_t incoming = 0;
-    std::uint64_t outgoing = 0;
-    std::uint64_t free = 0;
+Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out,
+                               PendingWeightEvictions* pending) {
+  const SwapPhaseTimer timer(options_.diagnostic_budget_cap_bytes ? &swap_host_phases_.room_seconds
+                                                                  : nullptr);
+  // Size physical occupancy afresh, including required charges above B.
+  const auto add = [](std::uint64_t& value, std::uint64_t bytes) {
+    if (bytes > UINT64_MAX - value) return false;
+    value += bytes;
+    return true;
+  };
+  for (int round = 0; round < memory::kReclaimRounds + 1; ++round) {
+    std::uint64_t need = 0;
+    std::uint64_t credit = 0;
     auto sized = node_.Call(
         [&]() -> Status {
-          const catalog::Catalog& catalog = node_.catalog();
+          const auto& catalog = node_.catalog();
+          std::uint64_t after = catalog.OccupancyOf(node_.domain()).Total().value();
           for (const auto& [extent, generation] : m.everything().extents) {
-            (void)generation;
-            if (const auto view = catalog.Describe(extent);
-                view && view->state != catalog::ExtentState::kResident) {
-              incoming += view->descriptor.size.value();
-            }
+            const auto view = catalog.Describe(extent);
+            if (!view || view->descriptor.domain != node_.domain() ||
+                view->content_generation != generation || view->discarded ||
+                view->state == catalog::ExtentState::kQuarantined)
+              return Error("a swap's incoming closure is stale or invalid");
+            if (view->state != catalog::ExtentState::kResident &&
+                !add(after, view->descriptor.size.value()))
+              return Error("a swap's incoming occupancy overflows");
           }
-          for (const catalog::ExtentId extent : out) {
-            if (const auto view = catalog.Describe(extent);
-                view && view->state == catalog::ExtentState::kResident) {
-              outgoing += view->descriptor.size.value();
-            }
+          std::set<catalog::ExtentId> counted;
+          for (const auto extent : out) {
+            const auto view = catalog.Describe(extent);
+            if (counted.insert(extent).second && view &&
+                view->state == catalog::ExtentState::kResident &&
+                !add(credit, view->descriptor.size.value()))
+              return Error("a swap's outgoing credit overflows");
           }
-          const std::uint64_t occupancy = catalog.OccupancyOf(node_.domain()).Total().value();
-          free = occupancy < budget_ ? budget_ - occupancy : 0;
+          need = after > budget_ ? after - budget_ : 0;
+          if (pending != nullptr) {
+            std::erase_if(pending->selected, [&](const auto& selected) {
+              const auto view = catalog.Describe(selected.extent);
+              const bool valid = view && view->content_generation == selected.generation &&
+                                 view->descriptor.size.value() == selected.candidate.bytes &&
+                                 catalog::Catalog::Evictable(*view) &&
+                                 !counted.contains(selected.extent);
+              if (!valid) pending->rejected.insert(selected.extent);
+              return !valid;
+            });
+            // Keep only the policy-ordered prefix still needed after actual
+            // cache-charge rounding. A single final extent may overshoot.
+            std::size_t keep = 0;
+            while (keep < pending->selected.size() && credit < need) {
+              const auto& selected = pending->selected[keep++];
+              if (!add(credit, selected.candidate.bytes))
+                return Error("a swap's selected weight credit overflows");
+            }
+            pending->selected.resize(keep);
+          }
           return {};
         },
-        "sizing a swap");
-    if (!sized) {
-      sizing_error = sized.error();
-      return 0;
-    }
-    return incoming > outgoing + free ? incoming - outgoing - free : 0;
-  };
-  auto made = MakeRoom(
-      shortfall,
-      [&](std::uint64_t ask) { return Reclaim(ask, false, "a swap's incoming model", &m); },
-      kExtent);
-  if (!sizing_error.empty()) {
-    return Error(sizing_error);
+        "sizing actual missing incoming and selected swap extents");
+    if (!sized) return sized;
+    if (credit >= need) return {};
+    if (round == memory::kReclaimRounds) break;
+    const auto selected_before = pending == nullptr ? 0 : pending->selected.size();
+    const auto freed = Reclaim(need - credit, false, "a swap's incoming model", &m, std::nullopt,
+                               false, nullptr, 0, {}, pending);
+    if (freed == 0 && (pending == nullptr || pending->selected.size() == selected_before)) break;
   }
-  if (!made) {
-    return Error(std::format("{} to {}: {}", resident_ != nullptr ? resident_->name() : "a swap",
-                             m.name(), made.error()));
-  }
-  return {};
+  return Error(std::format("{} to {}: the incoming closure cannot fit without held extents",
+                           resident_ != nullptr ? resident_->name() : "a swap", m.name()));
 }
 
 bool Server::NodeHealthy() {
@@ -6989,7 +7277,9 @@ bool Server::NodeHealthy() {
   return checked.has_value();
 }
 
-std::uint64_t Server::ReleaseKept(std::uint64_t needed, const Served* last) {
+std::uint64_t Server::ReleaseKept(std::uint64_t needed, const Served* last,
+                                  std::span<const catalog::ExtentId> protect) {
+  const std::set<catalog::ExtentId> protected_ids(protect.begin(), protect.end());
   std::vector<catalog::ExtentId> kept;
   for (const bool running : {false, true}) {
     for (const auto& m : models_) {
@@ -7009,6 +7299,7 @@ std::uint64_t Server::ReleaseKept(std::uint64_t needed, const Served* last) {
       [&]() -> Status {
         const catalog::Catalog& catalog = node_.catalog();
         for (const catalog::ExtentId extent : kept) {
+          if (protected_ids.contains(extent)) continue;
           if (bytes >= needed) {
             break;
           }
@@ -7028,12 +7319,12 @@ std::uint64_t Server::ReleaseKept(std::uint64_t needed, const Served* last) {
   return bytes;
 }
 
-Status Server::EvictPaged(Served& m) {
+Status Server::EvictPaged(Served& m, bool weights) {
   // Only what a swap moves: its weights and its conversation state (the
   // shared workspace and its own pinned runtime memory stay where they
   // are), with the zeroed backing its clears kept. State is written back
   // to its places.
-  std::vector<catalog::ExtentId> own = m.weights();
+  std::vector<catalog::ExtentId> own = weights ? m.weights() : std::vector<catalog::ExtentId>{};
   const std::vector<catalog::ExtentId> state = m.state();
   own.insert(own.end(), state.begin(), state.end());
   const std::vector<catalog::ExtentId> kept = m.kept_state();
@@ -7106,13 +7397,29 @@ Status Server::RecoverModel(Served& m) {
   return {};
 }
 
-Status Server::UndoSwap(Served& out, Served& in) {
-  // What of the incoming model came in goes out again (its state written
-  // back to its place), then the outgoing model comes back whole: its
-  // weights, and its state from what its write-back saved.
-  if (auto r = EvictPaged(in); !r) {
-    return r;
+Status Server::UndoSwap(Served& out, Served& in, std::span<const catalog::ExtentId> preexisting) {
+  const std::set<catalog::ExtentId> kept(preexisting.begin(), preexisting.end());
+  std::vector<catalog::ExtentId> newly_resident;
+  if (auto listed = node_.Call(
+          [&]() -> Status {
+            for (const auto& [extent, generation] : in.everything().extents) {
+              (void)generation;
+              const auto view = node_.catalog().Describe(extent);
+              if (!kept.contains(extent) && view && view->state == catalog::ExtentState::kResident)
+                newly_resident.push_back(extent);
+            }
+            return {};
+          },
+          "listing only newly loaded extents of a failed swap");
+      !listed)
+    return listed;
+  if (!newly_resident.empty())
+    if (auto evicted = node_.Evict(newly_resident); !evicted) return evicted;
+  for (const auto& [extent, generation] : out.everything().extents) {
+    (void)generation;
+    activation_protect_.push_back(extent);
   }
+  if (auto room = MakeRoomForSwap(out, {}); !room) return room;
   std::vector<catalog::ExtentId> again;
   auto listed = node_.Call(
       [&]() -> Status {
@@ -7237,11 +7544,65 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   if (resident_ == &m) {
     return {};
   }
+  parts.requested = Clock::now();
+  if (options_.diagnostic_budget_cap_bytes) {
+    parts.diagnostic.enabled = true;
+    parts.diagnostic.requested = swap_host_phases_;
+    parts.diagnostic.creates_requested = node_.backing_create_stats();
+    parts.diagnostic.requested_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(parts.requested.time_since_epoch())
+            .count());
+  }
   auto before = node_.Stats();
   if (!before) {
     return std::unexpected(before.error());
   }
   swap_before_ = *before;
+  parts.occupancy_requested = before->catalog_occupancy_bytes;
+  Served* const outgoing_model = resident_;
+  const auto protected_before = activation_protect_.size();
+  struct ProtectedActivation {
+    std::vector<catalog::ExtentId>& ids;
+    std::size_t before;
+    ~ProtectedActivation() { ids.resize(before); }
+  } protection{activation_protect_, protected_before};
+  for (const auto& [extent, generation] : m.everything().extents) {
+    (void)generation;
+    activation_protect_.push_back(extent);
+  }
+  std::vector<catalog::ExtentId> preexisting;
+  catalog::Closure saved_state;
+  bool state_was_spilled = true;
+  if (auto snapshot = node_.Call(
+          [&]() -> Status {
+            for (const auto& [extent, generation] : m.everything().extents) {
+              const auto view = node_.catalog().Describe(extent);
+              if (!view || view->content_generation != generation || view->discarded ||
+                  view->state == catalog::ExtentState::kQuarantined)
+                return Error("the incoming activation closure is stale or invalid");
+              if (view->state == catalog::ExtentState::kResident) preexisting.push_back(extent);
+            }
+            for (const auto extent : m.state()) {
+              const auto view = node_.catalog().Describe(extent);
+              if (!view) return Error("the incoming state extent is absent");
+              saved_state.extents.push_back({extent, view->content_generation});
+              state_was_spilled =
+                  state_was_spilled && view->state == catalog::ExtentState::kNonresident;
+            }
+            const std::set<catalog::ExtentId> cached(preexisting.begin(), preexisting.end());
+            for (const auto extent : m.weights()) {
+              if (cached.contains(extent))
+                parts.retained_incoming_weight_bytes +=
+                    node_.catalog().Describe(extent)->descriptor.size.value();
+            }
+            return {};
+          },
+          "snapshotting incoming cache and saved state before activation");
+      !snapshot)
+    return snapshot;
+  PendingWeightEvictions pending;
+  const auto completed_before = node_.counting().read_completed_bytes.load();
+  const auto submitted_before = node_.counting().read_submitted_bytes.load();
   const bool restoring = std::ranges::find(spilled_, &m) != spilled_.end();
   // The incoming model's conversations a swap wrote back come back live:
   // their records go before anything of it loads (D-105), not before a
@@ -7257,7 +7618,191 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
       }
     }
   };
-  parts.requested = Clock::now();
+  const auto rekeep_incoming = [&]() {
+    if (!restoring || !state_was_spilled || saved_state.extents.empty() || !m.llm()) return;
+    bool intact = true;
+    const auto checked = node_.Call(
+        [&]() -> Status {
+          for (const auto& [extent, generation] : saved_state.extents) {
+            const auto view = node_.catalog().Describe(extent);
+            intact = intact && view && view->content_generation == generation &&
+                     view->state == catalog::ExtentState::kNonresident && !view->discarded;
+          }
+          return {};
+        },
+        "proving a failed incoming load still has whole saved generations");
+    if (!checked || !intact) return;
+    m.StateWrittenBack(true);
+    auto& in = static_cast<Llm&>(m);
+    for (std::size_t i = 0; i < in.branches(); ++i)
+      if (auto branch = in.branch(i); branch && !(*branch)->spilled()) in.KeepBranch(**branch);
+  };
+  const auto discard_new_incoming = [&]() -> Status {
+    std::vector<catalog::ExtentId> newly_loaded;
+    const std::set<catalog::ExtentId> cached(preexisting.begin(), preexisting.end());
+    if (auto listed = node_.Call(
+            [&]() -> Status {
+              for (const auto& [extent, generation] : m.everything().extents) {
+                (void)generation;
+                const auto view = node_.catalog().Describe(extent);
+                if (!cached.contains(extent) && view &&
+                    view->state == catalog::ExtentState::kResident)
+                  newly_loaded.push_back(extent);
+              }
+              return {};
+            },
+            "listing only additions to the incoming activation cache");
+        !listed)
+      return listed;
+    return newly_loaded.empty() ? Status{} : node_.Evict(newly_loaded);
+  };
+  const auto account_pending = [&]() {
+    std::vector<double> priorities;
+    std::ignore = node_.Call(
+        [&]() -> Status {
+          for (const auto& selected : pending.selected) {
+            const auto view = node_.catalog().Describe(selected.extent);
+            if (view && view->content_generation == selected.generation &&
+                (view->state == catalog::ExtentState::kNonresident ||
+                 node_.scheduler().EvictionUnmapped(selected.extent))) {
+              parts.evicted_weight_bytes += selected.candidate.bytes;
+              priorities.push_back(selected.priority);
+            }
+          }
+          return {};
+        },
+        "accounting only completed or parked selected weight evictions");
+    for (const auto priority : priorities) memory::RaiseReclaimInflation(priority);
+  };
+  bool outgoing_published = false;
+  bool outgoing_transfer_complete = false;
+  catalog::Closure saved_outgoing;
+  const auto publish_outgoing = [&]() {
+    if (outgoing_published || outgoing_model == nullptr || !parts.with_state) return;
+    outgoing_published = true;
+    outgoing_model->StateWrittenBack(true);
+    if (std::ranges::find(spilled_, outgoing_model) == spilled_.end())
+      spilled_.push_back(outgoing_model);
+    auto& out = static_cast<Llm&>(*outgoing_model);
+    for (std::size_t i = 0; i < out.branches(); ++i)
+      if (auto branch = out.branch(i); branch && !(*branch)->spilled()) out.KeepBranch(**branch);
+  };
+  const auto keep_outgoing_after_failed_undo = [&]() {
+    if (!outgoing_transfer_complete || outgoing_model == nullptr || !parts.with_state ||
+        saved_outgoing.extents.empty())
+      return;
+    std::vector<catalog::ExtentId> restored;
+    auto proved = node_.Call(
+        [&]() -> Status {
+          for (const auto& [extent, generation] : saved_outgoing.extents) {
+            const auto view = node_.catalog().Describe(extent);
+            const auto* source = node_.scheduler().SourceOf(extent);
+            if (!view || view->content_generation != generation ||
+                view->saved_generation != generation || view->discarded || source == nullptr ||
+                !source->write_back ||
+                (view->state != catalog::ExtentState::kResident &&
+                 view->state != catalog::ExtentState::kNonresident))
+              return Error("outgoing saved generations cannot be proven after failed undo");
+            if (view->state == catalog::ExtentState::kResident)
+              restored.push_back(extent);
+            else if (!view->preserved)
+              return Error("outgoing saved state is not preserved");
+          }
+          return {};
+        },
+        "proving the completed outgoing spill after failed undo");
+    // The successful original transfer saved every extent. The undo only
+    // restored it; no outgoing request ran. Release that restored subset
+    // unchanged before advertising the model as wholly spilled again.
+    if (proved && !restored.empty()) proved = node_.Evict(restored, {.unchanged = true});
+    if (proved)
+      proved = node_.Call(
+          [&]() -> Status {
+            for (const auto& [extent, generation] : saved_outgoing.extents) {
+              const auto view = node_.catalog().Describe(extent);
+              if (!view || view->content_generation != generation ||
+                  view->saved_generation != generation || !view->preserved ||
+                  view->state != catalog::ExtentState::kNonresident)
+                return Error("outgoing state did not retire wholly to its saved generations");
+            }
+            return {};
+          },
+          "checking whole outgoing spill retirement after failed undo");
+    if (proved)
+      publish_outgoing();
+    else
+      Log(std::format("failed undo's outgoing state was not kept: {}", proved.error()));
+  };
+  const auto release_subset = [&](std::span<const catalog::ExtentId> selected,
+                                  std::vector<catalog::ExtentId>& release) -> Status {
+    if (!options_.partial_weight_eviction || !handoff_) return {};
+    const SwapPhaseTimer timer(
+        options_.diagnostic_budget_cap_bytes ? &swap_host_phases_.partition_seconds : nullptr);
+    std::vector<SwapBackingExtent> missing;
+    std::vector<SwapBackingExtent> donors;
+    std::uint64_t occupancy = 0;
+    const auto listed = node_.Call(
+        [&]() -> Status {
+          const auto describe =
+              [&](catalog::ExtentId extent) -> std::expected<SwapBackingExtent, std::string> {
+            const auto view = node_.catalog().Describe(extent);
+            const auto* source = node_.scheduler().SourceOf(extent);
+            if (!view || source == nullptr)
+              return Error("a swap extent has no descriptor or source");
+            SwapBackingExtent result{
+                .extent = extent, .bytes = view->descriptor.size.value(), .backing = std::nullopt};
+            if (source->backing && source->backing->size.value() == result.bytes)
+              result.backing = SwapBackingKey{.domain = view->descriptor.domain,
+                                              .allocation_class = source->backing->allocation_class,
+                                              .size = source->backing->size.value()};
+            return result;
+          };
+          for (const auto& [extent, generation] : m.everything().extents) {
+            (void)generation;
+            const auto view = node_.catalog().Describe(extent);
+            if (view && view->state != catalog::ExtentState::kResident) {
+              auto entry = describe(extent);
+              if (!entry) return std::unexpected(entry.error());
+              missing.push_back(*entry);
+            }
+          }
+          for (const auto extent : selected) {
+            const auto view = node_.catalog().Describe(extent);
+            if (view && view->state == catalog::ExtentState::kResident) {
+              auto entry = describe(extent);
+              if (!entry) return std::unexpected(entry.error());
+              donors.push_back(*entry);
+            }
+          }
+          occupancy = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+          return {};
+        },
+        "partitioning selected donor backing by actual class and size");
+    if (!listed) return listed;
+    const auto partition = ReleaseForHandoff(node_.domain(), occupancy, budget_, missing, donors);
+    if (!partition) return std::unexpected(partition.error());
+    release = *partition;
+    return {};
+  };
+  const auto selected_weights = [&]() {
+    catalog::Closure closure;
+    for (const auto& selected : pending.selected)
+      closure.extents.push_back({selected.extent, selected.generation});
+    return closure;
+  };
+  const auto record_eviction_split = [&](const scheduler::SwapReport& report) {
+    if (!parts.diagnostic.enabled || report.started == Clock::time_point{}) return;
+    parts.diagnostic.eviction_split_available = true;
+    const auto ns = [](Clock::time_point at) {
+      return static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(at.time_since_epoch()).count());
+    };
+    parts.diagnostic.scheduler_started_ns = ns(report.started);
+    parts.diagnostic.scheduler_evicted_ns = ns(report.evicted);
+    parts.diagnostic.scheduler_loaded_ns = ns(report.loaded);
+    parts.diagnostic.eviction_prepare_seconds = Seconds(report.started - parts.requested);
+    parts.diagnostic.eviction_retire_seconds = Seconds(report.evicted - report.started);
+  };
   Clock::time_point evicted = parts.requested;
   Clock::time_point loaded;
   if (resident_ == nullptr) {
@@ -7268,7 +7813,7 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     // not be undone goes out first (state written back).
     for (const auto& other : models_) {
       if (other.get() != &m) {
-        if (auto r = EvictPaged(*other); !r) {
+        if (auto r = EvictPaged(*other, !options_.partial_weight_eviction); !r) {
           return r;
         }
         if (other->llm() && other->HasRetainedState() &&
@@ -7281,7 +7826,8 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     // for the whole load is made through the reclaim order first, as a
     // swap's is, or a load after a failed swap (or a recovery) could be
     // refused for room again and again with nothing to free it.
-    if (auto room = MakeRoomForSwap(m, {}); !room) {
+    if (auto room = MakeRoomForSwap(m, {}, options_.partial_weight_eviction ? &pending : nullptr);
+        !room) {
       return room;
     }
     std::vector<engine::LoadStats> log;
@@ -7290,17 +7836,42 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
       (void)generation;
       all.push_back(extent);
     }
-    unkeep_incoming();
-    // A load that fails (a read error) leaves no model resident: the next
-    // activation loads one whole again.
-    if (auto r = node_.Load(all, std::format("{}'s first load", m.name()), log); !r) {
-      return r;
+    Status loaded_result;
+    if (options_.partial_weight_eviction) {
+      std::vector<catalog::ExtentId> victims;
+      for (const auto& selected : pending.selected) victims.push_back(selected.extent);
+      std::vector<catalog::ExtentId> release;
+      if (auto partition = release_subset(victims, release); !partition) return partition;
+      scheduler::SwapReport report;
+      unkeep_incoming();
+      loaded_result = node_.Swap(std::move(victims), m.everything(), handoff_, report,
+                                 std::move(release), selected_weights());
+      account_pending();
+      if (loaded_result) record_eviction_split(report);
+      evicted = report.evicted == Clock::time_point{} ? evicted : report.evicted;
+      parts.evicted = report.evictions;
+      parts.loaded = report.loads;
+    } else {
+      unkeep_incoming();
+      loaded_result = node_.Load(all, std::format("{}'s first load", m.name()), log);
+      parts.loaded = log.empty() ? 0 : log.front().extents;
+    }
+    if (!loaded_result) {
+      if (auto cleaned = discard_new_incoming(); !cleaned)
+        Log(std::format("failed first-load additions could not be cleaned: {}", cleaned.error()));
+      rekeep_incoming();
+      return loaded_result;
     }
     loaded = Clock::now();
-    parts.loaded = log.empty() ? 0 : log.front().extents;
   } else {
     Served& out = *resident_;
     parts.from = out.name();
+    // The caller yields only at a completed unit. Release its request even
+    // when the incoming closure is cached and no weight victim is needed.
+    if (node_.InRequest(out.paged().stream())) {
+      if (auto ended = node_.EndRequest(out.paged().stream()); !ended) return ended;
+    }
+    if (auto used = RecordWeightUse(out); !used) return used;
     const bool conversation = out.llm() && out.HasRetainedState();
     parts.with_state = out.llm() && spill_state.value_or(conversation);
     std::vector<catalog::ExtentId> extents;
@@ -7331,6 +7902,20 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
         }
       }
     }
+    if (options_.partial_weight_eviction && parts.with_state) {
+      if (auto saved = node_.Call(
+              [&]() -> Status {
+                for (const auto extent : out.state()) {
+                  const auto view = node_.catalog().Describe(extent);
+                  if (!view) return Error("the settled outgoing state extent is absent");
+                  saved_outgoing.extents.push_back({extent, view->content_generation});
+                }
+                return {};
+              },
+              "snapshotting settled outgoing state generations");
+          !saved)
+        return saved;
+    }
     // Its plans and graphs stay (D-090 as amended 2026-10-02): charged
     // inside the budget, they go only when the reclaim order needs their
     // room, here first if the incoming model does not fit beside them. The
@@ -7343,7 +7928,8 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     const std::vector<catalog::ExtentId> kept = out.kept_state();
     const std::uint64_t graphs_before = out.graphs().kept + m.graphs().kept;
     {
-      std::vector<catalog::ExtentId> going = weights;
+      std::vector<catalog::ExtentId> going =
+          options_.partial_weight_eviction ? std::vector<catalog::ExtentId>{} : weights;
       going.insert(going.end(), kept.begin(), kept.end());
       if (parts.with_state) {
         const std::vector<catalog::ExtentId> state = out.state();
@@ -7354,7 +7940,9 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
           }
         }
       }
-      if (auto room = MakeRoomForSwap(m, going); !room) {
+      if (auto room =
+              MakeRoomForSwap(m, going, options_.partial_weight_eviction ? &pending : nullptr);
+          !room) {
         return room;
       }
     }
@@ -7384,28 +7972,43 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
       }
     }
     extents.insert(extents.end(), kept.begin(), kept.end());
-    extents.insert(extents.end(), weights.begin(), weights.end());
+    if (options_.partial_weight_eviction) {
+      for (const auto& selected : pending.selected) extents.push_back(selected.extent);
+    } else {
+      extents.insert(extents.end(), weights.begin(), weights.end());
+    }
     const std::uint64_t graphs_after = out.graphs().kept + m.graphs().kept;
     parts.dropped_graphs = graphs_before > graphs_after ? graphs_before - graphs_after : 0;
     unkeep_incoming();
     if (!unchanged.empty()) {
       if (auto r = node_.Evict(unchanged, {.unchanged = true}); !r) {
         out.StateWrittenBack(false);
-        if (auto undone = UndoSwap(out, m); !undone) {
+        if (auto undone = UndoSwap(out, m, preexisting); !undone) {
           resident_ = nullptr;  // the next activation loads one whole
         }
+        rekeep_incoming();
         return r;
       }
     }
     scheduler::SwapReport report;
-    if (auto r = node_.Swap(std::move(extents), m.everything(), handoff_, report); !r) {
+    std::vector<catalog::ExtentId> release;
+    if (auto partition = release_subset(extents, release); !partition) {
+      if (auto undone = UndoSwap(out, m, preexisting); !undone) resident_ = nullptr;
+      rekeep_incoming();
+      return partition;
+    }
+    const auto swapped = node_.Swap(std::move(extents), m.everything(), handoff_, report,
+                                    std::move(release), selected_weights());
+    account_pending();
+    if (!swapped) {
+      const auto& r = swapped;
       if (parts.with_state) {
         out.StateWrittenBack(false);
       }
       // Never the process: whatever of the incoming model came in goes out
       // again and the outgoing one comes back whole, so both stay usable and
       // only the request that needed the swap fails.
-      if (auto undone = UndoSwap(out, m); undone) {
+      if (auto undone = UndoSwap(out, m, preexisting); undone) {
         Log(std::format("swap {} -> {} failed and was undone: {}", out.name(), m.name(),
                         r.error()));
       } else {
@@ -7418,33 +8021,44 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
         }
         resident_ = nullptr;
       }
+      rekeep_incoming();
       return r;
     }
-    if (parts.with_state) {
-      out.StateWrittenBack(true);
-      spilled_.push_back(&out);
-      // Its conversations are wholly on disk: their records follow (D-105).
-      auto& l = static_cast<Llm&>(out);
-      for (std::size_t i = 0; i < l.branches(); ++i) {
-        if (auto b = l.branch(i); b && !(*b)->spilled()) {
-          l.KeepBranch(**b);
-        }
-      }
-    }
+    outgoing_transfer_complete = true;
+    record_eviction_split(report);
+    if (!options_.partial_weight_eviction) publish_outgoing();
     evicted = report.evicted;
     loaded = report.loaded;
     parts.evicted = report.evictions;
     parts.loaded = report.loads;
   }
+  if (parts.diagnostic.enabled) parts.diagnostic.creates_loaded = node_.backing_create_stats();
   parts.evict = Seconds(evicted - parts.requested);
   Clock::time_point restored = evicted;
   if (restoring) {
     restored = std::max(restored, times_.Latest(m.state()));
     parts.restore = Seconds(restored - evicted);
-    std::erase(spilled_, &m);
+    if (!options_.partial_weight_eviction) std::erase(spilled_, &m);
   }
   parts.page_in = Seconds(loaded - restored);
-  parts.read_bytes = m.weight_read_bytes() + (restoring ? m.state().size() * kExtent : 0);
+  parts.read_bytes = node_.counting().read_completed_bytes.load() - completed_before;
+  parts.read_submitted_bytes = node_.counting().read_submitted_bytes.load() - submitted_before;
+  if (outgoing_model != nullptr) {
+    std::ignore = node_.Call(
+        [&]() -> Status {
+          for (const auto extent : outgoing_model->weights()) {
+            const auto view = node_.catalog().Describe(extent);
+            if (view && view->state == catalog::ExtentState::kResident)
+              parts.retained_outgoing_weight_bytes += view->descriptor.size.value();
+            else if (!options_.partial_weight_eviction && view &&
+                     (view->state == catalog::ExtentState::kNonresident ||
+                      node_.scheduler().EvictionUnmapped(extent)))
+              parts.evicted_weight_bytes += view->descriptor.size.value();
+          }
+          return {};
+        },
+        "measuring actual retained outgoing weights");
+  }
   resident_ = &m;
   // A model whose checks after its load fail is not left resident: its
   // kernels index what those checks cover unchecked (DeepSeek's hash
@@ -7452,6 +8066,24 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   // Evicted (its state written back), its next activation loads it whole
   // and checks it again; only the requests that needed it fail (D-102).
   const auto unload = [&](std::string error) -> Status {
+    if (options_.partial_weight_eviction && outgoing_model != nullptr) {
+      if (auto undone = UndoSwap(*outgoing_model, m, preexisting); undone)
+        resident_ = outgoing_model;
+      else {
+        error += std::format("; undoing it: {}", undone.error());
+        resident_ = nullptr;
+        keep_outgoing_after_failed_undo();
+      }
+      rekeep_incoming();
+      return Error(std::move(error));
+    }
+    if (options_.partial_weight_eviction) {
+      if (auto cleaned = discard_new_incoming(); !cleaned)
+        error += std::format("; cleaning its new extents: {}", cleaned.error());
+      resident_ = nullptr;
+      rekeep_incoming();
+      return Error(std::move(error));
+    }
     if (auto evicted = EvictPaged(m); !evicted) {
       error += std::format("; evicting it: {}", evicted.error());
       m.StateWrittenBack(false);
@@ -7474,9 +8106,6 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   if (auto r = m.AfterLoad(); !r) {
     return unload(std::format("{} after its load: {}", m.name(), r.error()));
   }
-  parts.ready = Clock::now();
-  parts.setup = Seconds(parts.ready - loaded);
-  parts.total = Seconds(parts.ready - parts.requested);
   // Its places still pinned where it registered them (D-090).
   std::size_t unpinned = 0;
   const std::vector<catalog::ExtentId> managed = m.paged().managed_extents();
@@ -7489,7 +8118,7 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
           },
           "checking places");
       !r) {
-    return r;
+    return unload(std::format("checking incoming places failed: {}", r.error()));
   }
   if (unpinned != 0) {
     return unload(std::format("{} of {}'s {} extents are not pinned at their places", unpinned,
@@ -7497,6 +8126,17 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   }
   if (auto r = m.CheckPlaces(); !r) {
     return unload(std::format("{}'s places: {}", m.name(), r.error()));
+  }
+  publish_outgoing();
+  if (restoring) std::erase(spilled_, &m);
+  page_read_bytes_ += parts.read_bytes;
+  page_read_seconds_ += parts.page_in + parts.restore;
+  parts.ready = Clock::now();
+  parts.setup = Seconds(parts.ready - loaded);
+  parts.total = Seconds(parts.ready - parts.requested);
+  if (parts.diagnostic.enabled) {
+    parts.diagnostic.ready = swap_host_phases_;
+    parts.diagnostic.creates_ready = node_.backing_create_stats();
   }
   return {};
 }

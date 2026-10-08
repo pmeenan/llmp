@@ -487,6 +487,8 @@ enum class StartError : std::uint8_t {
 };
 
 struct SchedulerStats {
+  std::uint64_t catalog_occupancy_bytes = 0;  // the paged node's domain, at Stats
+  BackingCreateStats backing_creates;         // populated by the paged node from its backing lane
   std::uint64_t turns = 0;
   std::uint64_t polls = 0;   // idle turns spent polling for a critical completion
   std::uint64_t sleeps = 0;  // waits on the wake flag
@@ -612,6 +614,13 @@ class Scheduler {
   std::size_t loads() const { return loads_.size(); }
   // Evictions parked with their backing kept for a handoff.
   std::size_t parked() const { return parked_count_; }
+  // A policy victim's unmap completed, even if its donor backing is
+  // still parked/releasing. Such backing is not free catalog capacity.
+  bool EvictionUnmapped(catalog::ExtentId extent) const {
+    const auto found = evictions_.find(extent);
+    return found != evictions_.end() && (found->second.stage == EvictStage::kParked ||
+                                         found->second.stage == EvictStage::kReleasing);
+  }
   // Evictions in flight, in any stage (parked, and releasing, included).
   std::size_t evictions() const { return evictions_.size(); }
   // Landing slots in use by a read or copy, and quarantined ones.

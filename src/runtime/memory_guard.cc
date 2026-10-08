@@ -35,4 +35,20 @@ std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard) {
   return {};
 }
 
+std::expected<void, std::string> CheckDiagnosticBudgetCap(const MemoryGuard& guard,
+                                                          std::uint64_t dynamic_budget,
+                                                          std::uint64_t cap,
+                                                          std::uint64_t extra_pinned) {
+  if (guard.available == 0)
+    return std::unexpected("diagnostic budget cap requires known physical availability");
+  if (auto checked = CheckMemoryGuard(guard); !checked) return checked;
+  if (cap > dynamic_budget)
+    return std::unexpected("diagnostic budget cap exceeds the ordinary dynamic budget");
+  // Subtract the required terms rather than adding an overflowing minimum.
+  if (guard.fixed > cap || guard.largest > cap - guard.fixed ||
+      extra_pinned > cap - guard.fixed - guard.largest)
+    return std::unexpected("diagnostic budget cap is below the required startup footprint");
+  return {};
+}
+
 }  // namespace jitllm::runtime

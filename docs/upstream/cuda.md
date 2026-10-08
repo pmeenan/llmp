@@ -17,6 +17,35 @@
   account); [NVIDIA/cccl](https://github.com/NVIDIA/cccl) issues for CUB and
   Thrust. None of these reports has been filed yet.
 
+## Recovered memdesc allocation diagnostics during successful VMM creation (RE-049)
+
+- **Status:** open; allocator-family evidence, no isolated driver defect or
+  internal fallback mechanism established.
+- **Found:**2026-10-07, SparkA GB10, driver580.178.04,
+  kernel7.0.0-1019-nvidia, pinned CUDA13.4.2/SDKc09daba6.
+- **Observed:** exact production swap controls log NVRM0x51
+  `_memdescAllocInternal(pMemDesc) @ mem_desc.c:1359` while returning
+  success. One CUDA-only capture reproduces13 messages with all83,314
+  `cuMemCreate` calls successful and exact initialized state/continuations.
+  In owned API windows spanning both kernel clock interpretations plus
+  +/-10ms, the only allocation/creation/module/library family is
+  successful `cuMemCreate`; exact adjacent call and internal cause remain
+  unproven. Narrow overlaps last6.05–59.07ms. Actual budget stayed within
+  bounds, so logged OOM alone does not establish overcommit. Distinct early
+  refcnt0x56 warning is preserved separately.
+- **Handling:** diagnostic comparisons count only the exact known message
+  as recovered cost included in timing; all actual provider failures and
+  unexpected driver/Xid/UVM/refcnt errors still refuse. No guard/reserve
+  change adopted. Ordinary serving does not suppress kernel messages.
+- **Action:** ask NVIDIA which successful VMM creation paths emit this
+  message and whether fragmentation/retry telemetry or rate-limited
+  diagnostics are available. No report filed. Preserve clock ambiguity
+  and successful return facts rather than claiming a particular fallback.
+- **Links:** [RE-049](../rough-edges.md#re-049-successful-vmm-creation-can-emit-recovered-memdesc-out-of-memory-diagnostics--2026-10-07-status-open)
+  and [bounded attribution](../experiments/partial-weight-eviction/README.md#rejected-first-control-and-attribution).
+
+
+
 ## CUDA current free memory excludes inactive file cache (RE-041)
 
 - **Status:** benchmark workaround; no isolated upstream defect claimed.

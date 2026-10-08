@@ -9,7 +9,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <set>
+#include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -825,6 +829,88 @@ TEST(ReclaimOrder, AReclaimSelectsAgainWithoutAVictimThatGaveNothing) {
   EXPECT_THAT(taken, ElementsAre(1U, 2U));
   EXPECT_EQ(rounds, 2);
   EXPECT_LE(rounds, jitllm::memory::kReclaimRounds);
+}
+
+TEST(ReclaimOrder, WeightBatchesCreditCompletedVictimsAndRetryOnlyUntriedOnes) {
+  std::set<std::uint64_t> gone;
+  std::vector<std::vector<std::uint64_t>> batches;
+  const auto gather = [&](std::vector<ReclaimCandidate>& out, double&) {
+    for (std::uint64_t id = 1; id <= 4; ++id) {
+      if (!gone.contains(id)) {
+        out.push_back({.kind = ReclaimKind::kIdleWeights,
+                       .id = id,
+                       .bytes = 100,
+                       .last_use = id,
+                       .restore_seconds = 0.01});
+      }
+    }
+  };
+  const auto take = [](const ReclaimCandidate&) -> std::uint64_t {
+    ADD_FAILURE() << "weights should use the batch path";
+    return 0;
+  };
+  const auto batch = [&](std::span<const ReclaimCandidate> victims,
+                         std::span<std::uint64_t> freed) {
+    batches.emplace_back();
+    for (std::size_t i = 0; i < victims.size(); ++i) {
+      batches.back().push_back(victims[i].id);
+      if (victims[i].id != 1) {
+        gone.insert(victims[i].id);
+        freed[i] = victims[i].bytes;
+      }
+    }
+  };
+  const auto reclaims = jitllm::memory::ReclaimsTaken();
+  const auto run = RunReclaim(250, false, gather, take, batch);
+  EXPECT_EQ(run.freed, 300U);
+  EXPECT_FALSE(run.short_of_need);
+  EXPECT_THAT(batches, ElementsAre(ElementsAre(1U, 2U, 3U), ElementsAre(4U)));
+  EXPECT_EQ(jitllm::memory::ReclaimsTaken() - reclaims, 3U);
+}
+
+TEST(ReclaimOrder, WeightExtentPopulationKeepsTheSameDeterministicOrder) {
+  std::vector<ReclaimCandidate> candidates;
+  constexpr std::size_t kCandidates = 100000;
+  candidates.reserve(kCandidates);
+  for (std::size_t i = 0; i < kCandidates; ++i) {
+    candidates.push_back({.kind = ReclaimKind::kIdleWeights,
+                          .owner = static_cast<std::uint32_t>(i / 25000),
+                          .id = i,
+                          .bytes = 2U << 20U,
+                          .last_use = i,
+                          .restore_seconds = 0.0002});
+  }
+  const auto start = std::chrono::steady_clock::now();
+  const auto plan = SelectReclaim(candidates, 5000ULL * (2U << 20U));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  RecordProperty(
+      "selection_microseconds",
+      std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()));
+  ASSERT_TRUE(plan.sufficient);
+  ASSERT_EQ(plan.victims.size(), 5000U);
+  for (std::size_t i = 0; i < plan.victims.size(); ++i) EXPECT_EQ(plan.victims[i], i);
+}
+
+TEST(ReclaimOrder, WeightBatchStopsAtActualRemainingNeedAfterRoundedPlanRelease) {
+  const auto gather = [](std::vector<ReclaimCandidate>& out, double&) {
+    out = {{.kind = ReclaimKind::kGraph, .id = 1, .bytes = 100, .restore_seconds = 0.00001},
+           {.kind = ReclaimKind::kIdleWeights, .id = 2, .bytes = 100, .restore_seconds = 0.1},
+           {.kind = ReclaimKind::kIdleWeights, .id = 3, .bytes = 100, .restore_seconds = 0.1},
+           {.kind = ReclaimKind::kIdleWeights, .id = 4, .bytes = 100, .restore_seconds = 0.1}};
+  };
+  const auto take = [](const ReclaimCandidate& c) -> std::uint64_t {
+    EXPECT_EQ(c.kind, ReclaimKind::kGraph);
+    return 230;  // the pinned charge dropped past a rounded boundary
+  };
+  std::size_t tried_weights = 0;
+  const auto batch = [&](std::span<const ReclaimCandidate> victims,
+                         std::span<std::uint64_t> freed) {
+    tried_weights += victims.size();
+    for (std::size_t i = 0; i < victims.size(); ++i) freed[i] = victims[i].bytes;
+  };
+  const auto run = RunReclaim(250, false, gather, take, batch);
+  EXPECT_EQ(run.freed, 330U);
+  EXPECT_EQ(tried_weights, 1U);
 }
 
 }  // namespace

@@ -15,7 +15,8 @@ namespace jitllm::memory {
 
 MaterializationPlan PlanMaterialization(const catalog::Catalog& catalog, catalog::DomainId domain,
                                         Bytes budget, const catalog::Closure& closure,
-                                        std::span<const catalog::ExtentId> protect) {
+                                        std::span<const catalog::ExtentId> protect,
+                                        bool select_victims) {
   MaterializationPlan plan;
   std::vector<catalog::ExtentId> keep(protect.begin(), protect.end());
   bool overflow = false;
@@ -60,7 +61,7 @@ MaterializationPlan PlanMaterialization(const catalog::Catalog& catalog, catalog
   }
   if (*after > budget) {
     plan.shortfall = after->Minus(budget).value_or(Bytes());
-    plan.victims = SelectVictims(catalog, domain, plan.shortfall, keep);
+    if (select_victims) plan.victims = SelectVictims(catalog, domain, plan.shortfall, keep);
   }
   plan.feasible = plan.quarantined.empty() && plan.stale.empty() &&
                   (plan.shortfall == Bytes() || plan.victims.sufficient);

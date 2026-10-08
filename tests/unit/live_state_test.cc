@@ -835,7 +835,8 @@ TEST_F(CheckpointCapacityStateTest, ABudgetFullOfPlansAndGraphsStillCheckpoints)
   ASSERT_TRUE(node_.ChargeHost(2 * kExtent, true));
   EXPECT_EQ(Occupancy(), fixed_ + (2 * kExtent));
   std::uint64_t asked = 0;
-  node_.SetReclaimer([&](std::uint64_t needed, en::PagedNode::ReclaimFor what) {
+  node_.SetReclaimer([&](std::uint64_t needed, en::PagedNode::ReclaimFor what,
+                         std::span<const jitllm::catalog::ExtentId>) {
     EXPECT_EQ(what, en::PagedNode::ReclaimFor::kStaging);  // a state need: whole
     asked += needed;
     const std::uint64_t freed =

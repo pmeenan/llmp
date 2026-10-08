@@ -21,13 +21,16 @@
 #ifndef JITLLM_SCHEDULER_SERVICES_H_
 #define JITLLM_SCHEDULER_SERVICES_H_
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <list>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -42,6 +45,77 @@
 #include "scheduler/lane.h"
 
 namespace jitllm::scheduler {
+
+// Internal cap-only attribution, with no per-operation history or heap storage.
+// Intervals use steady_clock nanoseconds and identify one actual lane call.
+struct BackingTimingEvent {
+  std::uint64_t serial = 0;
+  std::uint64_t start_ns = 0;
+  std::uint64_t end_ns = 0;  // zero while the operation is in flight
+};
+struct BackingTimingTotals {
+  std::uint64_t started = 0;
+  std::uint64_t completed = 0;
+  std::uint64_t total_ns = 0;
+  BackingTimingEvent first;
+  BackingTimingEvent last;
+  BackingTimingEvent longest;
+};
+struct BackingParkStageTotals {
+  std::uint64_t completed = 0;
+  std::uint64_t total_ns = 0;
+  BackingTimingEvent longest;
+};
+struct BackingTimingStats {
+  bool enabled = false;
+  std::uint64_t create_serial = 0;
+  bool current_create_reserve = false;
+  BackingTimingEvent current_create;
+  BackingTimingTotals reserve;
+  BackingTimingTotals ordinary;
+  BackingTimingEvent current_park;
+  BackingTimingTotals park;
+  BackingParkStageTotals park_metadata;
+  BackingParkStageTotals park_stash;
+  BackingParkStageTotals park_publication;
+};
+static_assert(sizeof(BackingTimingStats) <= 512);
+
+// Actual device-memory provider Create outcomes on the backing lane. These
+// diagnostics do not imply that an internally retried driver call was clean.
+struct BackingCreateStats {
+  std::uint64_t reserve_attempts = 0;
+  std::uint64_t reserve_failures = 0;
+  std::uint64_t ordinary_attempts = 0;
+  std::uint64_t ordinary_failures = 0;
+  std::uint64_t last_failure_monotonic_ns = 0;
+  bool last_failure_reserve = false;
+  providers::ProviderError last_failure_error = providers::ProviderError::kFailed;
+  std::string last_failure_detail;
+  BackingTimingStats timing;
+};
+
+class BackingCreateCounters {
+ public:
+  explicit BackingCreateCounters(bool timing = false) : timing_enabled_(timing) {}
+  void Attempt(bool reserve);
+  void Completed(bool reserve);
+  void BeginPark();
+  void ParkMetadataDone();
+  void ParkStashDone();
+  void EndPark();
+  void Failed(bool reserve, const providers::Failure& failure);
+  BackingCreateStats Snapshot() const;
+
+ private:
+  std::atomic<std::uint64_t> reserve_attempts_ = 0;
+  std::atomic<std::uint64_t> ordinary_attempts_ = 0;
+  const bool timing_enabled_;
+  mutable std::mutex mutex_;  // never held across a provider call
+  BackingCreateStats failures_;
+  std::uint64_t park_metadata_end_ns_ = 0;
+  std::uint64_t park_stash_end_ns_ = 0;
+};
 
 struct QueueSettings {
   std::size_t capacity = 64;  // queued commands, including the reserve
@@ -415,7 +489,7 @@ class DeviceService {
 class BackingService {
  public:
   BackingService(providers::DeviceMemory* memory, CompletionBoard& board, QueueSettings queue,
-                 ReserveSettings reserve = {});
+                 ReserveSettings reserve = {}, bool timing = false);
 
   // Any thread. Moves from `command` only if it is accepted.
   base::PushResult Submit(DeviceCommand&& command,
@@ -435,6 +509,7 @@ class BackingService {
   // and will run no more (teardown). False if any release failed.
   std::size_t reserved() const { return reserve_.size(); }
   bool ReleaseReserve();
+  BackingCreateStats create_stats() const { return creates_.Snapshot(); }
 
  private:
   void Handle(DeviceCommand& command);
@@ -445,8 +520,9 @@ class BackingService {
   CompletionBoard& board_;
   base::BoundedQueue<DeviceCommand> queue_;
   std::size_t batch_;
-  HandoffStash stash_;        // the lane's thread only
-  HandleReserve reserve_;     // the lane's thread only
+  HandoffStash stash_;     // the lane's thread only
+  HandleReserve reserve_;  // the lane's thread only
+  BackingCreateCounters creates_;
   bool refill_ok_ = true;     // a create failed: none until the next command
   bool refill_lost_ = false;  // an unknown outcome: never again
 };

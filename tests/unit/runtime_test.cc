@@ -41,6 +41,7 @@
 #include "platform/files.h"
 #include "platform/lock_file.h"
 #include "platform/sd_notify.h"
+#include "runtime/commands.h"
 #include "runtime/intake_limits.h"
 #include "runtime/memory_guard.h"
 #include "runtime/model_limits.h"
@@ -875,6 +876,23 @@ TEST(IntakeLimits, RenderingAndConnectionsFollowTheirResources) {
   EXPECT_EQ(ConnectionsFor(524'288), 524'288U - 256);
   EXPECT_EQ(ConnectionsFor(1024), 768U);
   EXPECT_EQ(ConnectionsFor(100), 16U);
+}
+
+TEST(MemoryGuard, DiagnosticCapPreservesPhysicalAndRequiredFootprintBounds) {
+  using jitllm::runtime::CheckDiagnosticBudgetCap;
+  constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
+  const jitllm::runtime::MemoryGuard guard{
+      .largest = 100 * kGiB, .available = 120 * kGiB, .fixed = 4 * kGiB};
+  EXPECT_FALSE(jitllm::runtime::ServingOptions{}.diagnostic_budget_cap_bytes.has_value());
+  EXPECT_TRUE(CheckDiagnosticBudgetCap(guard, 110 * kGiB, 108 * kGiB, kGiB));
+  EXPECT_TRUE(CheckDiagnosticBudgetCap(guard, 110 * kGiB, 105 * kGiB, kGiB));
+  EXPECT_FALSE(CheckDiagnosticBudgetCap(guard, 110 * kGiB, 110 * kGiB + 1, kGiB));
+  EXPECT_FALSE(CheckDiagnosticBudgetCap(guard, 110 * kGiB, 105 * kGiB - 1, kGiB));
+  EXPECT_FALSE(CheckDiagnosticBudgetCap(guard, 110 * kGiB, 3 * kGiB, 0));
+  EXPECT_FALSE(CheckDiagnosticBudgetCap({}, 110 * kGiB, 108 * kGiB, 0));
+  auto overflow = guard;
+  overflow.fixed = ~std::uint64_t{0};
+  EXPECT_FALSE(CheckDiagnosticBudgetCap(overflow, ~std::uint64_t{0}, ~std::uint64_t{0}, kGiB));
 }
 
 // The request memory's floor is set apart beside the margin: the guard

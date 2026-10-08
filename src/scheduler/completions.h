@@ -93,6 +93,13 @@ enum class Published : std::uint8_t {
   kStale,          // the identity names no open operation
 };
 
+// Owner-thread counters. Read only by that owner, or after it has joined.
+// Locks count successful nonempty removals, excluding empty/final-more checks.
+struct HarvestStats {
+  std::uint64_t indices = 0;
+  std::uint64_t pop_locks = 0;
+};
+
 class CompletionBoard {
  public:
   // `mailboxes` operations may be in flight at once; `wake` is the owner's.
@@ -143,6 +150,8 @@ class CompletionBoard {
   // read or write landed, a VMM operation). The runtime's hang watch reads
   // it as progress (D-102; engine/paged_node.h PagedNode::progress).
   std::uint64_t publications() const { return publications_.load(std::memory_order_relaxed); }
+
+  const HarvestStats& harvest_stats() const { return harvest_stats_; }
 
   std::size_t open() const { return open_count_; }
   std::size_t capacity() const { return count_; }
@@ -214,6 +223,7 @@ class CompletionBoard {
   std::size_t free_count_ = 0;
   std::size_t open_count_ = 0;
   std::size_t retired_ = 0;
+  HarvestStats harvest_stats_;  // owner only
   // The news queue: each mailbox at most once, so it never overflows.
   std::mutex news_mutex_;
   std::vector<std::uint32_t> news_;

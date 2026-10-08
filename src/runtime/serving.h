@@ -53,6 +53,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -144,8 +145,43 @@ struct GraphCounts {
   std::uint64_t kept = 0;  // captured and not yet destroyed
 };
 
+// Internal cap-only attribution: cumulative driver-side host phases. The
+// phases overlap (room contains gather/selection/take/heap release), so they
+// must not be summed. Selection includes RunReclaim bookkeeping outside its
+// separately timed gather/take callbacks.
+struct SwapHostPhases {
+  double room_seconds = 0;
+  double gather_seconds = 0;
+  double selection_bookkeeping_seconds = 0;
+  double take_seconds = 0;
+  double heap_release_seconds = 0;
+  double partition_seconds = 0;
+  std::uint64_t reclaim_calls = 0;
+  std::uint64_t heap_release_calls = 0;
+};
+
+struct SwapDiagnostic {
+  bool enabled = false;
+  // Existing scheduler endpoints split evict; absent for a direct first Load.
+  bool eviction_split_available = false;
+  double eviction_prepare_seconds = 0;
+  double eviction_retire_seconds = 0;
+  std::uint64_t requested_ns = 0;
+  std::uint64_t scheduler_started_ns = 0;
+  std::uint64_t scheduler_evicted_ns = 0;
+  std::uint64_t scheduler_loaded_ns = 0;
+  SwapHostPhases requested;
+  SwapHostPhases ready;
+  SwapHostPhases finished;
+  scheduler::BackingCreateStats creates_requested;
+  scheduler::BackingCreateStats creates_loaded;
+  scheduler::BackingCreateStats creates_ready;
+  scheduler::BackingCreateStats creates_finished;
+};
+
 // One swap's parts, in seconds, each from the end of the one before.
 struct SwapParts {
+  SwapDiagnostic diagnostic;
   std::string from;
   std::string to;
   bool with_state = false;  // the outgoing model's conversation spilled
@@ -157,13 +193,32 @@ struct SwapParts {
   double release = 0;       // after it: backing no load took, released (off the path)
   std::uint64_t evicted = 0;
   std::uint64_t loaded = 0;
-  std::uint64_t read_bytes = 0;     // weights and state paged in
-  std::uint64_t spilled_bytes = 0;  // the outgoing state written back
+  std::uint64_t read_bytes = 0;  // weights and state paged in
+  std::uint64_t read_submitted_bytes = 0;
+  std::uint64_t occupancy_requested = 0;
+  std::uint64_t occupancy_released = 0;
+  std::uint64_t retained_incoming_weight_bytes = 0;
+  std::uint64_t retained_outgoing_weight_bytes = 0;
+  std::uint64_t evicted_weight_bytes = 0;  // logical, includes parked backing; not freed credit
+  std::uint64_t spilled_bytes = 0;         // the outgoing state written back
   std::uint64_t handed_off = 0;
   std::uint64_t released_unused = 0;
   std::uint64_t dropped_graphs = 0;  // graphs the reclaim order took for the incoming model
   Clock::time_point requested;
   Clock::time_point ready;  // setup's end
+};
+
+// A switch's selected future weight releases, distinct from actual reclaimed
+// memory. Each identity/generation is authenticated again before using credit.
+struct PendingWeightEviction {
+  catalog::ExtentId extent;
+  std::uint64_t generation = 0;
+  memory::ReclaimCandidate candidate;
+  double priority = 0;
+};
+struct PendingWeightEvictions {
+  std::vector<PendingWeightEviction> selected;
+  std::set<catalog::ExtentId> rejected;
 };
 
 // A configured model on the node.
@@ -259,10 +314,21 @@ class Served {
   // Its settings as registration resolved them (D-103), each with its
   // source; the reasoning markers once Setup read the vocabulary.
   const ModelSettings& settings() const { return settings_; }
+  // Recorded at a completed request boundary, never at prefetch/load alone.
+  void RecordWeightsUsed(std::uint64_t tick) {
+    if (tick > weight_tick_) {
+      weight_tick_ = tick;
+      weight_use_ = memory::StampUse();
+    }
+  }
+  const memory::ReclaimStamp& weight_use() const { return weight_use_; }
+  std::uint64_t weight_tick() const { return weight_tick_; }
 
  protected:
   std::string name_;
   ModelSettings settings_;
+  memory::ReclaimStamp weight_use_;
+  std::uint64_t weight_tick_ = 0;
 };
 
 // A generation's result.
@@ -1437,7 +1503,9 @@ class Server {
                         const Served* running = nullptr,
                         std::optional<memory::ReclaimKind> below_kind = std::nullopt,
                         bool partial = false, const Llm::Branch* spare = nullptr,
-                        std::uint64_t token_incoming = 0);
+                        std::uint64_t token_incoming = 0,
+                        std::span<const catalog::ExtentId> protect = {},
+                        PendingWeightEvictions* pending = nullptr, bool allow_weights = true);
   // Whether the resident model has `needed` bytes of the budget for another
   // request slot's state (docs/runtime-serving.md#request-slots): free now,
   // or freed through the reclaim order (Reclaim with idle state, all of it
@@ -1460,19 +1528,22 @@ class Server {
   // What a swap to `m` pages in beyond what it evicts and the budget's free
   // room: reclaimed before the swap (its plans and graphs; the outgoing
   // state is spilled by the swap itself).
-  Status MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out);
+  Status MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out,
+                         PendingWeightEvictions* pending = nullptr);
   // After a swap from `out` to `in` failed partway: what of `in` came in
   // (its weights and state) evicted again and `out` loaded back whole, so
   // `out` stays resident and usable; an error when that could not be done
   // either (no model is then resident: the next activation loads one whole).
-  Status UndoSwap(Served& out, Served& in);
+  Status UndoSwap(Served& out, Served& in, std::span<const catalog::ExtentId> preexisting = {});
   // Evicts a model's resident weights and conversation state (state
   // written back), never the shared workspace or its own pinned memory.
-  Status EvictPaged(Served& m);
+  Status EvictPaged(Served& m, bool weights = true);
+  Status RecordWeightUse(Served& m);
   // Evicts resident kept zeroed state backing (Model::kept_state) until
   // `needed` bytes are freed, other models' before `last`'s: no contents,
   // so the cheapest of reclaims. The bytes it freed.
-  std::uint64_t ReleaseKept(std::uint64_t needed, const Served* last);
+  std::uint64_t ReleaseKept(std::uint64_t needed, const Served* last,
+                            std::span<const catalog::ExtentId> protect = {});
   // D-102's hang recovery. FenceModel: the model's stream fenced, any
   // request still open on it ended first: proof that nothing it queued
   // still runs (a fence that never completes is the hang ladder's to
@@ -1518,6 +1589,7 @@ class Server {
   bool handoff() const { return handoff_; }
   void set_handoff(bool on) { handoff_ = on; }
   std::uint64_t budget() const { return budget_; }
+  std::uint64_t dynamic_budget() const { return dynamic_budget_; }
   std::uint64_t fixed_bytes() const { return fixed_; }
   // The most any model's chunk builds on the host (Served::host_input_bytes;
   // one model runs at a time), which the start's memory guard counts beside
@@ -1603,12 +1675,18 @@ class Server {
   engine::PagedNode node_;
   std::vector<std::unique_ptr<Served>> models_;
   Served* resident_ = nullptr;
+  // Extra closure protection during a switch/rollback, also honored by
+  // preliminary zero-state release and policy-managed acquisitions.
+  std::vector<catalog::ExtentId> activation_protect_;
   bool handoff_ = true;
+  std::uint64_t page_read_bytes_ = 0;
+  double page_read_seconds_ = 0;
   bool started_ = false;
   bool token_catalog_ready_ = false;
   std::uint64_t startup_token_capacity_ = 0;
   bool torn_down_ = false;
   std::uint64_t budget_ = 0;
+  std::uint64_t dynamic_budget_ = 0;  // ordinary guard-derived B before an internal cap
   std::uint64_t fixed_ = 0;
   std::uint64_t host_inputs_ = 0;
   std::uint64_t plans_ = 0;  // plan_floor_bytes()
@@ -1621,6 +1699,7 @@ class Server {
   bool snapshot_unproven_ = false;
   Llm* snapshot_model_ = nullptr;
   scheduler::SchedulerStats swap_before_;  // the counters at the last Activate
+  SwapHostPhases swap_host_phases_;        // cap-only cumulative attribution, driver owned
   // Models whose conversation state was spilled by a swap out (and is
   // restored when they come back).
   std::vector<const Served*> spilled_;

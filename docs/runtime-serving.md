@@ -505,6 +505,26 @@ that growing back-off (once a minute at most once it settles), never four
 times a second. Each reclaim, deletion and pressure event is one log line
 of counts, bytes and the measured costs (D-014).
 
+Ordinary activation below remains a full eviction. The internal
+`jitllm_swap_pager full|partial` benchmark also qualifies a shared partial
+transaction: whole outgoing state spill, global GreedyDual selection of only
+the missing incoming capacity deficit, and missing-only reload with retained
+clean weights. It ends the completed outgoing request even for an entirely
+cached incoming closure; protects generation/lease/registration eligibility;
+and preserves preexisting incoming and unrelated caches through failure.
+Mixed backing classes release the needed incompatible selected subset before
+handoff; parked backing remains charged. Read bytes count actual positive
+completed storage reads, including aligned padding and state, rather than a
+whole-model estimate. Both optional plan/graph caches remain restricted to
+reclaiming plans/graphs. Runtime state acquisition uses the same protected
+reclaim preflight, with no autonomous LRU fallback. The internal capacity
+control retains startup physical/required-footprint guards.
+
+Partial eviction is not exposed by production configuration, CLI or HTTP,
+and remains off by default: prepared first-output/read savings do not satisfy
+the measured cold-switch floor. [The final comparison and exact rollback
+controls](experiments/partial-weight-eviction/README.md) retain that open gate.
+
 One model is resident at a time (M3's full swap). Activating another
 (`Server::Activate`) is one `SwapProgram`: the resident LLM's conversation
 state written back through the zone to each slot's spill file in

@@ -11,8 +11,10 @@
 // Why no wakeup is lost: a producer's publication happens before its
 // signal (release on the flag, acquire where the owner consumes it). A
 // producer that sets the flag while the owner is checking it either is seen
-// by that check, or notifies under the mutex, which it can only take once
-// the owner is waiting.
+// by that check, or takes the handshake mutex after the owner reaches its
+// wait. The producer releases that mutex before notifying. Producers must
+// finish Signal before the WakeFlag is destroyed; observing a publication
+// alone does not prove that its producer has returned.
 //
 // An anticipation (the runtime wake, docs/experiments/runtime-wake/): a
 // thread that expects to publish soon, such as a completion lane about to
@@ -46,7 +48,11 @@ class WakeFlag {
   // Any thread, after publishing: wake the owner.
   void Signal() {
     if (!pending_.exchange(true, std::memory_order_acq_rel)) {
-      const std::scoped_lock lock(mutex_);
+      {
+        // Keep the waiter's predicate-to-sleep handshake, then let the
+        // awakened owner take the mutex without contending with this notifier.
+        const std::scoped_lock lock(mutex_);
+      }
       wake_.notify_one();
     }
   }
