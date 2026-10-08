@@ -435,6 +435,7 @@ class HeldLeaseTest : public ::testing::Test {
   std::unique_ptr<sc::CompletionBoard> board_;
   std::unique_ptr<sc::StorageService> storage_lane_;
   std::unique_ptr<sc::DeviceService> device_lane_;
+  Request unproven_request_;  // its reporting program may survive until scheduler destruction
   std::unique_ptr<sc::Scheduler> scheduler_;
 
   jitllm::providers::ReservationId zone_;
@@ -750,7 +751,7 @@ TEST_F(HeldLeaseTest, OnlyTheHolderSubmitsAndOnlyAResidentClosureIsHeld) {
 // faults, and the stop reports it.
 TEST_F(HeldLeaseTest, AnUnprovenStepKeepsTheLeaseForGood) {
   Build(2 * kPerModel);
-  Request request;
+  Request& request = unproven_request_;
   Open(request, 0);
   std::atomic<int> runs{0};
   Step(request, Counting(runs), /*device=*/false);
@@ -828,6 +829,77 @@ TEST_F(HeldLeaseTest, AnExternalCountOutlivesItsChannel) {
   EXPECT_EQ(Leases(0), 0U);
   EXPECT_EQ(scheduler_->held(), 0U);
   EXPECT_EQ(count.use_count(), 1);  // the lease let go of it
+}
+
+// The external completion races the two parts of EndLease: deciding whether
+// to wait and registering that wait. ASan checks that retirement never leaves
+// EndLease accessing a freed Held; the task must also receive its wake exactly once.
+TEST(HeldLeaseRaceTest, ExternalCompletionRacesLeaseEnd) {
+  jitllm::catalog::Catalog catalog;
+  jitllm::base::WakeFlag wake;
+  sc::CompletionBoard board(16, wake);
+  ts::Done done;  // outlives the scheduler even if the deadline assertion fails
+  auto external = std::make_shared<std::atomic<std::uint32_t>>(0);
+  std::atomic<std::uint64_t> offered{0};
+  sc::Scheduler scheduler(catalog, board, wake, {}, {.tasks = 4});
+  std::jthread completing([&](std::stop_token stop) {
+    std::uint64_t seen = 0;
+    while (!stop.stop_requested()) {
+      const auto next = offered.load(std::memory_order_acquire);
+      if (next == seen) {
+        std::this_thread::yield();
+        continue;
+      }
+      external->store(0, std::memory_order_release);
+      seen = next;
+    }
+  });
+  class Ending final : public sc::ReportingProgram {
+   public:
+    Ending(ts::Done& done, std::shared_ptr<std::atomic<std::uint32_t>> external,
+           std::atomic<std::uint64_t>& offered)
+        : ReportingProgram(done), external_(std::move(external)), offered_(offered) {}
+    sc::Step Advance(sc::TaskContext& context) override {
+      if (!ending_) {
+        const auto held = context.HoldLease({}, external_);
+        if (!held) return Fail(held.error());
+        ending_ = true;
+        external_->store(1, std::memory_order_relaxed);
+        offered_.fetch_add(1, std::memory_order_release);
+        const auto ended = context.EndLease(*held);
+        if (!ended) return Fail(ended.error());
+        if (*ended == sc::Readiness::kWaiting) return sc::Step::Wait();
+      }
+      return sc::Step::Finish(sc::TaskOutcome::kSucceeded);
+    }
+
+   private:
+    std::shared_ptr<std::atomic<std::uint32_t>> external_;
+    std::atomic<std::uint64_t>& offered_;
+    bool ending_ = false;
+  };
+  constexpr std::uint64_t kTrials = 20000;
+  const auto deadline = std::chrono::steady_clock::now() + kPatience;
+  for (std::uint64_t trial = 1; trial <= kTrials; ++trial) {
+    done.outcome.store(-1);
+    done.error.store(-1);
+    done.retired.store(false);
+    done.gone.store(false);
+    ASSERT_TRUE(scheduler.Start(trial, std::make_unique<Ending>(done, external, offered)));
+    while (!done.gone.load() && std::chrono::steady_clock::now() < deadline) {
+      (void)scheduler.Turn();
+      std::this_thread::yield();
+    }
+    ASSERT_TRUE(done.gone.load()) << trial;
+    ASSERT_EQ(done.outcome.load(), static_cast<int>(sc::TaskOutcome::kSucceeded)) << trial;
+    ASSERT_EQ(scheduler.held(), 0U) << trial;
+  }
+  EXPECT_EQ(scheduler.stats().leases_held, kTrials);
+  EXPECT_EQ(scheduler.stats().leases_released, kTrials);
+  scheduler.RequestShutdown();
+  (void)scheduler.Turn();
+  ASSERT_TRUE(scheduler.Stopped().has_value());
+  EXPECT_TRUE(scheduler.Stopped()->has_value());
 }
 
 // External work never seen to end keeps the lease for good, and the stop

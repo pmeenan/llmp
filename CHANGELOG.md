@@ -975,6 +975,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Ending a residency lease while external work finishes no longer risks
+  accessing a released lease record or leaving its holder waiting forever.
+
 - DeepSeek V4 with its DSpark drafter funds each step's history for its
   whole verify (the anchor and every draft). A long generation whose
   verify kept more tokens than the funded room could abort the runtime.

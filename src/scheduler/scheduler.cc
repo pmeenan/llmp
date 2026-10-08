@@ -540,8 +540,12 @@ std::expected<Readiness, WorkError> Scheduler::EndLease(TaskId task, catalog::Le
     ReleaseHeld(found);
     return Readiness::kReady;
   }
-  if (held.operations == 0) {
-    ReleaseWhenDrained(found);  // external work only
+  if (held.operations == 0 &&
+      std::ranges::find(external_ending_, lease) == external_ending_.end()) {
+    // The external count can reach zero after Drained above. Defer its next
+    // check until ReleaseExternal, after the waiter below is registered:
+    // releasing here would erase `held` before we finish using it.
+    external_ending_.push_back(lease);
   }
   // Released once the last operation's fence is seen (or the external
   // work's end): the holder waits.
