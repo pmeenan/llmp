@@ -49,9 +49,12 @@ joined problems).
 Gemma2, Gemma3 and both Gemma4 profiles use the shared prefill lookahead lifecycle.
 Their family adapters still choose future shapes, outputs and capture eligibility;
 `GraphRuns::CaptureAhead` records an eligible future graph without executing it.
-Gemma2/Gemma3 select two distinct missing futures; Gemma4 retains one. Cached
-current/next/after keys are protected before optional capture funding in the
-two-future adapters. Each future has independent refusal and cleanup; no future
+Gemma2/Gemma3 select two distinct missing futures. Both Gemma4 profiles now
+compose the same fixed group, but ordinary policy retains one future and no
+capture ahead: the [plain Gemma26 8192-row diagnostic screen](experiments/gemma26-capture-ahead/README.md)
+replays six chunks without a meaningful paid gain. Cached current/next/after
+keys are protected before optional capture funding in eligible adapters. Each
+future has independent refusal and cleanup; no future
 state or cursor is prepared. DeepSeek and Qwen
 adapters remain open transfers. `PromptSession::NextPrefillHint` supplies the same
 checkpoint/scoring-aware descriptors to scalar and joined Gemma2/Gemma3 prefill
@@ -311,6 +314,11 @@ allowances,
 capture a shape the next chunk repeats on its first run, and capture the next
 planned shape beside current execution. The [two-future transfer](experiments/prefill-transfer/README.md#two-distinct-future-shapes-2026-10-08)
 checks cold changing-width replay and exact state; no speculative KV is prepared.
+Gemma4's explicit plain capture-ahead comparison uses the same group and
+next/after descriptors; the scalar adapter forwards both stages. Ordinary
+Gemma26/Gemma31 remain off/one-future. Feature/assistant, verification and
+all-output execution retain their path; other context/cohort capture policies
+remain separate qualification gates.
 
 Gemma's [assistant component](gemma4-assistant.md#native-component-and-protected-target-operands)
 adds explicit post-finalnorm feature retention and scoped readonly cache

@@ -276,6 +276,17 @@ to the wave path. Setup measures a shared workspace/input envelope across
 slot counts, maximal ragged rows and full read depth; it does not eagerly
 materialize every slot's context ceiling.
 
+The [plain capture-ahead transfer](experiments/gemma26-capture-ahead/README.md)
+reuses the shared two-future helper and forwards both scalar prefill hints.
+It checks complete-key protection, independent funding/installation and actual
+six-chunk replay for an 8192-row diagnostic prefill with 1024-row chunks and
+context 16384, with exact heads,
+choices and initialized state. The −0.0922% prefill change is inside bookend
+drift, so ordinary Gemma26/Gemma31 retain capture off and one future. Explicit
+capture excludes retained features, verification, greedy and all-output paths;
+other contexts/cohorts and assistant capture remain separate qualification.
+This screen does not qualify public 8K admission or reference parity.
+
 An engine-only typed variant selects one of the two approved fixed profiles;
 the default remains 26B-A4B. Unknown variants refuse before opening artifacts,
 and exact artifact binding precedes state allocation. The [dense 31B controls](experiments/gemma31-runner/README.md)

@@ -343,6 +343,8 @@ Status Gemma4Runner::Setup() {
       o_.max_rows >= o_.context) {
     return Error("Gemma4 runner needs bounded slots/chunks");
   }
+  if (o_.prefill_lookahead_capacity < 1 || o_.prefill_lookahead_capacity > 2)
+    return Error("Gemma4 lookahead capacity must be one or two");
   const auto head_rows = o_.max_head_rows == 0 ? o_.max_rows : o_.max_head_rows;
   if (head_rows < o_.slots || head_rows > o_.max_rows)
     return Error("Gemma4 head capacity must cover slots within max_rows");
@@ -1135,18 +1137,20 @@ Status Gemma4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> t
 }
 Status Gemma4Runner::ChunkPrefill(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                                   std::vector<float>& logits, bool want_head,
-                                  std::uint32_t next_rows, bool next_want_head) {
+                                  std::uint32_t next_rows, bool next_want_head,
+                                  std::uint32_t after_rows, bool after_want_head) {
   const Work work{0, n_past, tokens, &logits};
-  const PrefillNext next{0, next_rows};
+  const PrefillNext next{0, next_rows, after_rows};
   return WavePrefill(std::span(&work, 1), want_head, std::span(&next, next_rows == 0 ? 0U : 1U),
-                     next_want_head);
+                     next_want_head, after_want_head);
 }
 Status Gemma4Runner::WavePrefill(std::span<const Work> work, bool want_head,
-                                 std::span<const PrefillNext> next, bool next_want_head) {
+                                 std::span<const PrefillNext> next, bool next_want_head,
+                                 bool after_want_head) {
   return WaveWithMode(work, false, false,
                       !want_head && !o_.retain_features ? kg::Gemma4OutputMode::kStateOnly
                                                         : kg::Gemma4OutputMode::kHead,
-                      next, next_want_head);
+                      next, next_want_head, false, after_want_head);
 }
 Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all_features) {
   return WaveWithMode(work, all_outputs, all_features, kg::Gemma4OutputMode::kHead);
@@ -1230,7 +1234,7 @@ Status Gemma4Runner::DiscardVerify(std::uint32_t index) {
 }
 Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, bool all_features,
                                   kg::Gemma4OutputMode mode, std::span<const PrefillNext> next,
-                                  bool next_want_head, bool verify) {
+                                  bool next_want_head, bool verify, bool after_want_head) {
   const auto phase = [&](Phase which) -> double* {
     return account_phases_ ? &phases_.seconds[static_cast<std::size_t>(which)] : nullptr;
   };
@@ -1341,8 +1345,158 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   if (!host) return Error(host.error());
   auto copies = runs_.Stage(host->sources, 0);
   if (!copies) return Error(copies.error());
-  bool capture = entry.runs[0].CaptureDue(runs_.graphs());
+  // Only plain frontier/state-only prefill may capture a predicted graph.
+  // Feature/assistant, verification and greedy publication retain their path.
+  const bool plain = !verify && !all_outputs && !all_features && !greedy && !o_.retain_features;
+  // Two bounded <=kMaxRequestSlots descriptor vectors fit the existing
+  // startup-funded 1MiB host descriptor slack, independently of plan grants.
+  const bool far = plain && (o_.prefill_lookahead_capacity == 2 || o_.capture_ahead);
+  std::array<kg::Gemma4ChunkShape, 2> ahead;
+  std::array<bool, 2> known{};
+  bool valid_hints = !next.empty() && next.size() <= work.size();
+  std::array<bool, kMaxRequestSlots> hint_slots{};
+  std::uint32_t next_rows = 0, after_rows = 0;
+  // Authenticate the WHOLE next cohort before deriving any after position:
+  // an owner disappearing later cannot hide an oversized/duplicate next wave.
+  for (const auto& hint : next) {
+    if (!valid_hints) break;
+    const auto from = std::ranges::find(work, hint.slot, &Work::slot);
+    valid_hints = from != work.end() && hint.slot < o_.slots && !hint_slots[hint.slot] &&
+                  hint.rows <= o_.max_rows - next_rows &&
+                  (!far || hint.after <= o_.max_rows - after_rows) &&
+                  (hint.rows != 0 || (far && hint.after == 0));
+    if (!valid_hints) break;
+    hint_slots[hint.slot] = true;
+    const auto end = from->n_past + static_cast<std::uint32_t>(from->tokens.size());
+    valid_hints = end <= o_.context && hint.rows <= o_.context - end &&
+                  (!far || hint.after <= o_.context - end - hint.rows);
+    if (!valid_hints) break;
+    next_rows += hint.rows;
+    if (far) after_rows += hint.after;
+  }
+  if (valid_hints && (o_.prefill_lookahead || (plain && o_.capture_ahead))) {
+    for (std::size_t k = 0; k < (far ? ahead.size() : 1U); ++k) {
+      bool valid = true;
+      std::uint32_t predicted_rows = 0;
+      for (const auto& hint : next) {
+        const auto rows_k = k == 0 ? hint.rows : hint.after;
+        if (rows_k == 0) continue;
+        const auto from = std::ranges::find(work, hint.slot, &Work::slot);
+        const auto end = from == work.end()
+                             ? 0U
+                             : from->n_past + static_cast<std::uint32_t>(from->tokens.size());
+        valid = from != work.end() && hint.slot < o_.slots && hint.rows != 0 &&
+                hint.rows <= o_.max_rows && end <= o_.context && hint.rows <= o_.context - end;
+        if (!valid) break;
+        const auto past = end + (k == 0 ? 0U : hint.rows);
+        valid =
+            std::ranges::none_of(ahead[k].segments,
+                                 [&](const auto& segment) { return segment.slot == hint.slot; }) &&
+            rows_k <= o_.max_rows - predicted_rows && past <= o_.context &&
+            rows_k <= o_.context - past;
+        if (!valid) break;
+        predicted_rows += rows_k;
+        const auto cells = static_cast<std::uint32_t>(Round(std::uint64_t{past} + rows_k, 256));
+        ahead[k].segments.push_back({hint.slot, rows_k, past, std::min(cells, layout_.global_cells),
+                                     std::min(cells, layout_.local_cells)});
+      }
+      if (!valid || ahead[k].segments.empty()) continue;
+      const bool head = k == 0 ? next_want_head : after_want_head;
+      ahead[k].output_mode = !head && !o_.retain_features ? kg::Gemma4OutputMode::kStateOnly
+                                                          : kg::Gemma4OutputMode::kHead;
+      ahead[k].outputs = ahead[k].output_mode == kg::Gemma4OutputMode::kHead
+                             ? static_cast<std::uint32_t>(ahead[k].segments.size())
+                             : 0U;
+      ahead[k].feature_outputs =
+          o_.retain_features ? static_cast<std::uint32_t>(ahead[k].segments.size()) : 0U;
+      known[k] = true;
+    }
+  }
+  // Find protects cached current/near/far plans under PlanStep before ANY
+  // optional graph/plan charge can reclaim them. Complete-key equality also
+  // distinguishes features, publication mode and device greedy outputs.
+  std::array<Plans::Entry*, 2> ahead_cached{};
+  std::array<bool, 2> distinct{};
+  for (std::size_t k = 0; k < ahead.size(); ++k) {
+    if (!known[k]) continue;
+    if (ahead[k] == shape) {
+      ahead_cached[k] = &entry;
+      continue;
+    }
+    bool duplicate = false;
+    for (std::size_t prior = 0; prior < k; ++prior)
+      if (known[prior] && ahead[k] == ahead[prior]) {
+        ahead_cached[k] = ahead_cached[prior];
+        duplicate = true;
+        break;
+      }
+    if (duplicate) continue;
+    distinct[k] = true;
+    ahead_cached[k] = plans_.Find(ahead[k]);
+  }
+  auto& run = entry.runs[0];
+  if (plain && o_.capture_ahead && runs_.graphs() && run.graph.has_value() &&
+      *copies != run.copies) {
+    run.DropGraph();
+    ++lookahead_.dropped_ahead;
+  }
+  const bool repeats = known[0] && ahead[0] == shape;
+  bool capture =
+      run.CaptureDue(runs_.graphs()) || (plain && o_.capture_ahead && repeats && runs_.graphs() &&
+                                         !run.graph.has_value() && !run.uncapturable);
   if (capture && !plans_.ChargeGraph(entry)) capture = false;
+  const bool capture_first = capture && run.eager_runs == 0;
+  Plans::Entry* upcoming = nullptr;
+  Copies upcoming_copies;
+  std::array<RunCopy, 1> upcoming_output{};
+  if (plain && o_.capture_ahead && known[0] && !repeats && runs_.graphs()) {
+    upcoming = ahead_cached[0];
+    const Gemma4Planned* u = upcoming == nullptr ? nullptr : upcoming->planned.get();
+    auto layout =
+        u == nullptr ? std::expected<Copies, std::string>{} : runs_.Layout(u->graph.inputs, 0);
+    if (u == nullptr || upcoming->runs[0].graph.has_value() || upcoming->runs[0].uncapturable ||
+        upcoming->runs[0].ahead_refused || !layout || !plans_.ChargeGraph(*upcoming)) {
+      upcoming = nullptr;
+    } else {
+      upcoming_copies = std::move(*layout);
+      if (ahead[0].output_mode == kg::Gemma4OutputMode::kHead)
+        upcoming_output[0] = {Address(logits_), Address(u->graph.logits->data),
+                              std::uint64_t{ahead[0].outputs} * profile_.vocab * sizeof(float)};
+    }
+  }
+  std::array<const kg::Gemma4ChunkShape*, 2> build{};
+  std::size_t build_count = 0;
+  if (o_.prefill_lookahead && node_.threaded())
+    for (std::size_t k = 0; k < ahead.size() && build_count < o_.prefill_lookahead_capacity; ++k)
+      if (distinct[k] && ahead_cached[k] == nullptr) build[build_count++] = &ahead[k];
+  PrefillLookaheadGroup<Gemma4Planned, 2> future(node_, plan_floor_bytes_);
+  std::array<kg::DeviceChoices, 2> choices{};
+  bool funded = false;
+  for (std::size_t i = 0; i < build_count; ++i) {
+    ++lookahead_.attempted;
+    if (!future.Fund(i)) {
+      ++lookahead_.refused;
+      build[i] = nullptr;
+    } else {
+      // Device policy queries belong to the driver, never the CPU meanwhile.
+      std::uint32_t future_rows = 0;
+      for (const auto& segment : build[i]->segments) future_rows += segment.rows;
+      choices[i] = Choices(resources_.launch(), future_rows);
+      funded = true;
+    }
+  }
+  const std::function<void()> meanwhile = funded ? std::function<void()>([&] {
+    const auto built = future.BuildAll([&](std::size_t i) {
+      return PlanGemma4Chunk(model_, *build[i], choices[i], node_.activations().base,
+                             node_.activations().bytes);
+    });
+    for (std::size_t i = 0; i < built.size(); ++i) {
+      lookahead_.built += built[i];
+      lookahead_.build_seconds += future.seconds(i);
+    }
+    lookahead_.built_pairs += built[0] && built[1];
+  })
+                                                 : std::function<void()>{};
   std::array<RunCopy, 1> output_copy{};
   if (greedy)
     output_copy[0] = {Address(logits_), Address(p.graph.greedy->data),
@@ -1350,75 +1504,6 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   else if (mode == kg::Gemma4OutputMode::kHead)
     output_copy[0] = {Address(logits_), Address(p.graph.logits->data), output_bytes};
   const auto outputs = std::span(output_copy).first(mode == kg::Gemma4OutputMode::kHead ? 1U : 0U);
-  // Validate a shape prediction against this complete wave before borrowing
-  // catalog/accounting state. Optional refusal never changes the current unit.
-  std::array<kg::Gemma4SegmentShape, kMaxRequestSlots> predicted{};
-  bool predict =
-      o_.prefill_lookahead && node_.threaded() && !next.empty() && next.size() <= work.size();
-  std::array<bool, kMaxRequestSlots> predicted_slots{};
-  std::uint32_t predicted_rows = 0;
-  for (std::size_t i = 0; predict && i < next.size(); ++i) {
-    const auto& hint = next[i];
-    const auto from = std::ranges::find(work, hint.slot, &Work::slot);
-    if (from == work.end() || hint.slot >= o_.slots || predicted_slots[hint.slot] ||
-        hint.rows == 0 || hint.rows > o_.max_rows - predicted_rows) {
-      predict = false;
-      break;
-    }
-    const auto past = from->n_past + static_cast<std::uint32_t>(from->tokens.size());
-    if (past > o_.context || hint.rows > o_.context - past) {
-      predict = false;
-      break;
-    }
-    predicted_slots[hint.slot] = true;
-    predicted_rows += hint.rows;
-    const auto cells = static_cast<std::uint32_t>(Round(std::uint64_t{past} + hint.rows, 256));
-    predicted[i] = {hint.slot, hint.rows, past, std::min(cells, layout_.global_cells),
-                    std::min(cells, layout_.local_cells)};
-  }
-  const auto next_mode = !next_want_head && !o_.retain_features ? kg::Gemma4OutputMode::kStateOnly
-                                                                : kg::Gemma4OutputMode::kHead;
-  const auto next_outputs =
-      next_mode == kg::Gemma4OutputMode::kHead ? static_cast<std::uint32_t>(next.size()) : 0U;
-  const auto next_features = o_.retain_features ? static_cast<std::uint32_t>(next.size()) : 0U;
-  // Scoring and short chunks usually share the current padded shape. Avoid
-  // optional catalog charges when the already borrowed plan covers the hint.
-  if (predict && shape.output_mode == next_mode && shape.outputs == next_outputs &&
-      shape.feature_outputs == next_features && shape.segments.size() == next.size() &&
-      std::ranges::equal(shape.segments, std::span(predicted).first(next.size())))
-    predict = false;
-  kg::Gemma4ChunkShape next_shape;
-  PrefillLookahead<Gemma4Planned> future(node_, plan_floor_bytes_);
-  if (predict) {
-    ++lookahead_.attempted;
-    // Fund the maximum temporary plan before any of its heap allocations.
-    // The shared sizing/index scratch already has its startup charge.
-    if (future.Fund()) {
-      next_shape.segments.assign(predicted.begin(), predicted.begin() + next.size());
-      next_shape.output_mode = next_mode;
-      next_shape.outputs = next_outputs;
-      next_shape.feature_outputs = next_features;
-      // Find/Settle examines capture state: do this before the job can mutate it.
-      if (plans_.Find(next_shape) != nullptr) {
-        predict = false;
-        future.Abandon();
-      }
-    } else {
-      ++lookahead_.refused;
-      predict = false;
-    }
-  }
-  // CPU descriptors only. BindPlanned's MMA scratch queries call CUDA, so
-  // binding, catalog coverage and cache insertion wait for proven completion.
-  const std::function<void()> meanwhile = predict ? std::function<void()>([&] {
-    if (future.Build([&] {
-          return PlanGemma4Chunk(model_, next_shape, Choices(resources_.launch(), predicted_rows),
-                                 node_.activations().base, node_.activations().bytes);
-        }))
-      ++lookahead_.built;
-    lookahead_.build_seconds += future.seconds();
-  })
-                                                  : std::function<void()>{};
   Slot* verifying = verify ? slots_[work.front().slot].get() : nullptr;
   if (verifying) {
     verifying->live.BeginSaves();
@@ -1465,6 +1550,21 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
           return unknown                           ? sc::JobResult::kUnknown
                  : (result.before || saves_queued) ? sc::JobResult::kFailed
                                                    : sc::JobResult::kNotStarted;
+        }
+        if (upcoming != nullptr) {
+          const auto ahead_outputs =
+              std::span(upcoming_output)
+                  .first(ahead[0].output_mode == kg::Gemma4OutputMode::kHead ? 1U : 0U);
+          auto captured =
+              runs_.CaptureAhead(upcoming->runs[0], upcoming_copies, *upcoming->planned->bound,
+                                 ahead_outputs, graph_stats_, native);
+          if (!captured) {
+            // Current work is already queued; an uncertain capture faults it.
+            queued = Error(captured.error().detail);
+            unknown = true;
+            return sc::JobResult::kUnknown;
+          }
+          lookahead_.captured_ahead += *captured;
         }
         if (o_.retain_features) {
           std::uint64_t first = 0;
@@ -1522,10 +1622,13 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   }
   timer.reset();
   timer.emplace(phase(Phase::kPublication));
-  if (future.InstallAfterCompletion([&](auto planned, double seconds, const auto& transfer) {
-        return CachePlanned(next_shape, std::move(planned), seconds, transfer);
-      }))
-    ++lookahead_.cached;
+  const auto installed = future.InstallAfterCompletion(
+      [&](std::size_t i, auto planned, double seconds, const auto& transfer) {
+        return CachePlanned(*build[i], std::move(planned), seconds, transfer);
+      });
+  for (const bool cached : installed) lookahead_.cached += cached;
+  lookahead_.cached_pairs += installed[0] && installed[1];
+  lookahead_.captured_first += capture_first && path == RunPath::kCaptured;
   Count(graph_stats_, path);
   std::size_t at = 0;
   for (std::size_t i = 0; i < work.size(); ++i) {

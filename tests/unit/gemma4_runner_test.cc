@@ -63,6 +63,21 @@ TEST(Gemma4Runner, HeadCapacityDefaultsToLegacyInputRows) {
     EXPECT_FALSE(runner.request_slot(0));
   }
 }
+TEST(Gemma4Runner, LookaheadCapacityRefusesBeforeArtifactsProvidersAndReservations) {
+  EXPECT_FALSE(en::Gemma4Options{}.capture_ahead);
+  EXPECT_EQ(en::Gemma4Options{}.prefill_lookahead_capacity, 1U);
+  for (const auto capacity : {0U, 3U, UINT32_MAX}) {
+    en::PagedNode node({});
+    en::Gemma4Runner runner(node, {.artifact = "/missing", .prefill_lookahead_capacity = capacity},
+                            0, 0);
+    const auto setup = runner.Setup();
+    ASSERT_FALSE(setup);
+    EXPECT_EQ(setup.error(), "Gemma4 lookahead capacity must be one or two");
+    EXPECT_EQ(node.StateCapacity(), 0U);
+    EXPECT_EQ(node.host_counted(), 0U);
+    EXPECT_EQ(runner.activations_needed(), 0U);
+  }
+}
 TEST(Gemma4Runner, UninitializedRunnerCannotDispatchSelectRestoreOrCopy) {
   en::PagedNode node({});
   en::Gemma4Runner runner(node, {}, 0, 0);

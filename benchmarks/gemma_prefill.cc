@@ -4,7 +4,8 @@
 // First paid 8K prefill and fixed-prefix decode screen. No quality claim.
 // ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31] [ordinary|both|all] [MAX_ROWS]
 // [normmul-off|normmul-on] [full|state-only] [lookahead-on|lookahead-off]
-// [phases-off|phases-on] [state-chunked|state-upfront].
+// [phases-off|phases-on] [state-chunked|state-upfront]
+// [capture-ahead-off|capture-ahead-on].
 // Row-cap experiments do not change production defaults.
 #include <algorithm>
 #include <array>
@@ -27,7 +28,7 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc < 4 || argc > 12) return 2;
+  if (argc < 4 || argc > 13) return 2;
   const std::string_view variant = argc >= 5 ? argv[4] : "26";
   const std::string_view policy = argc >= 6 ? argv[5] : "ordinary";
   if (variant != "26" && variant != "31") return 2;
@@ -41,8 +42,11 @@ int main(int argc, char** argv) {
   const std::string_view phases_mode = argc >= 11 ? argv[10] : "phases-off";
   if (phases_mode != "phases-off" && phases_mode != "phases-on") return 2;
   const bool account_phases = phases_mode == "phases-on";
-  const std::string_view state_prepare = argc == 12 ? argv[11] : "state-chunked";
+  const std::string_view state_prepare = argc >= 12 ? argv[11] : "state-chunked";
   if (state_prepare != "state-chunked" && state_prepare != "state-upfront") return 2;
+  const std::string_view capture_ahead = argc >= 13 ? argv[12] : "capture-ahead-off";
+  if (capture_ahead != "capture-ahead-off" && capture_ahead != "capture-ahead-on") return 2;
+  const bool ahead = capture_ahead == "capture-ahead-on";
   std::uint32_t max_rows = 128;
   if (argc >= 7) {
     const std::string_view number(argv[6]);
@@ -85,7 +89,9 @@ int main(int argc, char** argv) {
           .fuse_norm_add = policy == "both" || policy == "all",
           .fuse_gemma_route = policy == "all",
           .fuse_gemma_reduce = policy == "all",
-          .prefill_lookahead = lookahead == "lookahead-on"},
+          .prefill_lookahead = lookahead == "lookahead-on",
+          .capture_ahead = ahead,
+          .prefill_lookahead_capacity = ahead ? 2U : 1U},
       0, 0);
   auto& runner = *lifetime->runner;
   auto& entered = lifetime->entered;
@@ -96,8 +102,10 @@ int main(int argc, char** argv) {
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
     constexpr std::uint64_t kOutputBytes = kVocab * 4;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-    // Every call can introduce at most one plan and one captured graph.
-    // PlannedHostBytes includes kPlanNodeHostBytes per launched node, so
+    // These exact hints name only later actual calls: even two future plans
+    // cannot increase the unique retained key count beyond this call bound.
+    // Each key retains at most one plan and one graph. PlannedHostBytes
+    // includes kPlanNodeHostBytes per launched node, so
     // floor/kPlanNodeHostBytes bounds its graph's catalog charge. This
     // derives a conservative retention budget from the exact call count,
     // rather than consuming state funding with accumulated plan charges.
@@ -107,21 +115,25 @@ int main(int argc, char** argv) {
     if (floor > std::numeric_limits<std::uint64_t>::max() / calls / (1 + kGraphRatio))
       return Error("plan/graph budget overflow");
     const auto retention = calls * floor * (1 + kGraphRatio);
+    // Both comparison arms fund the same maximum two independent temporary
+    // plans; retained plans/graphs above cover all actual hinted future calls.
+    const auto temporary = 2 * floor;
     const auto base = fixed + runner.weights().size() * en::kPagedExtent +
                       2 * node.StateCapacity() + kOutputBytes;
     const auto planning_scratch = en::ScratchArenaBytes();
     if (planning_scratch > std::numeric_limits<std::uint64_t>::max() - base ||
-        retention > std::numeric_limits<std::uint64_t>::max() - base - planning_scratch)
+        retention > std::numeric_limits<std::uint64_t>::max() - base - planning_scratch ||
+        temporary > std::numeric_limits<std::uint64_t>::max() - base - planning_scratch - retention)
       return Error("execution budget overflow");
-    const auto budget = base + planning_scratch + retention;
+    const auto budget = base + planning_scratch + retention + temporary;
     std::cout << "PREFILL_BUDGET fixed=" << fixed
               << " weights=" << runner.weights().size() * en::kPagedExtent
               << " state_capacity=" << node.StateCapacity() << " publication=" << kOutputBytes
               << " pinned_head_envelope=" << std::uint64_t{max_rows} * kVocab * 4
               << " max_rows=" << max_rows << " call_bound=" << calls << " plan_floor=" << floor
               << " planning_scratch=" << planning_scratch << " plan_graph_capacity=" << retention
-              << " total=" << budget << '\n';
-    node.SetHostFloor(runner.plan_floor_bytes() + runner.host_input_bytes() + planning_scratch);
+              << " temporary_plans=" << temporary << " total=" << budget << '\n';
+    node.SetHostFloor(temporary + runner.host_input_bytes() + planning_scratch);
     if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
@@ -145,6 +157,8 @@ int main(int argc, char** argv) {
         (void)runner.TakePhaseAccounting();
         (void)node.TakeTimes(0);
       }
+      const auto graph_before = runner.graph_stats();
+      const auto lookahead_before = runner.lookahead_stats();
       const auto started = std::chrono::steady_clock::now();
       // Keep all preparation inside paid prefill. The existing budget funds
       // this same initialized footprint; completed positions stay unchanged.
@@ -157,12 +171,16 @@ int main(int argc, char** argv) {
                 runner.ChunkPrefill(first, std::span(ids).subspan(first, max_rows), logits,
                                     prefill_output == "full" || first + max_rows == kPrefill,
                                     first + max_rows < kPrefill ? max_rows : 0U,
-                                    prefill_output == "full" || first + 2 * max_rows == kPrefill);
+                                    prefill_output == "full" || first + 2 * max_rows == kPrefill,
+                                    first + 2 * max_rows < kPrefill ? max_rows : 0U,
+                                    prefill_output == "full" || first + 3 * max_rows == kPrefill);
             !r)
           return r;
       }
       const auto prefill_policy = runner.last_built_policy();
       const auto prefill = en::support::Seconds(std::chrono::steady_clock::now() - started);
+      const auto graph_prefill = runner.graph_stats();
+      const auto lookahead_prefill = runner.lookahead_stats();
       if (account_phases) {
         // Completed prefill only: exclude anchors, decode, and snapshot writes.
         const auto phases = runner.TakePhaseAccounting();
@@ -241,7 +259,20 @@ int main(int argc, char** argv) {
                 << " prefill_chunks=" << kPrefill / max_rows << " intermediate_heads="
                 << (prefill_output == "full" ? kPrefill / max_rows - 1 : 0)
                 << " prefill_output=" << prefill_output << " state_prepare=" << state_prepare
-                << " lookahead=" << lookahead
+                << " lookahead=" << lookahead << " capture_ahead=" << ahead
+                << " lookahead_capacity=" << (ahead ? 2 : 1)
+                << " prefill_captures=" << graph_prefill.captured - graph_before.captured
+                << " prefill_replays=" << graph_prefill.replayed - graph_before.replayed
+                << " prefill_built_pairs="
+                << lookahead_prefill.built_pairs - lookahead_before.built_pairs
+                << " prefill_cached_pairs="
+                << lookahead_prefill.cached_pairs - lookahead_before.cached_pairs
+                << " prefill_captured_ahead="
+                << lookahead_prefill.captured_ahead - lookahead_before.captured_ahead
+                << " prefill_captured_first="
+                << lookahead_prefill.captured_first - lookahead_before.captured_first
+                << " prefill_dropped_ahead="
+                << lookahead_prefill.dropped_ahead - lookahead_before.dropped_ahead
                 << " lookahead_attempted=" << runner.lookahead_stats().attempted
                 << " lookahead_built=" << runner.lookahead_stats().built
                 << " lookahead_cached=" << runner.lookahead_stats().cached
@@ -274,5 +305,6 @@ int main(int argc, char** argv) {
     std::cerr << retired.error() << '\n';
     std::ignore = lifetime.release();
   }
+  if (ran && retired) std::cout << "PREFILL_RETIRED completed=1\n";
   return ran && retired ? 0 : 1;
 }

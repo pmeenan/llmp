@@ -536,7 +536,13 @@ family" guide, and its long-context scaling work.
         - [ ] **T16** Join draft blocks across requests.
         - [ ] **T19** Selective draft-head MMVF.
         - [ ] **T20** Column-invariant grouped float products.
-        - [ ] **T23** Single-request prefill lookahead/capture ahead.
+        - [ ] **T23** Retained-feature/assistant capture-ahead extension
+          remains open. Plain diagnostic capture (context 16384, prefill 8192, chunk 1024)
+          was measured and not adopted: [six actual replays](experiments/gemma26-capture-ahead/README.md),
+          −0.0922% prefill inside −0.5348% bookend drift, exact heads/choices/state.
+          Ordinary capture stays off/one-future. Other context/cohort and
+          feature/assistant capture remain open; the plain result does not
+          qualify or reject those compatible contracts.
         - [ ] **T31** One-column fused quantized gate/up GLU.
         - [ ] **T37** Shape-pinned library GEMM algorithms.
         - [ ] **T39** Device greedy verify verdicts.
@@ -552,8 +558,10 @@ family" guide, and its long-context scaling work.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
           producer validation and padded host staging shared across Gemma plans;
           [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
-        - [x] **T70** Shared funded host-only next-plan lifecycle; family
-          prediction/capture policy unchanged. [Focused controls](experiments/prefill-transfer/README.md).
+        - [x] **T70** Shared fixed two-slot lifecycle with complete-key
+          protection before optional charges; ordinary single-future policy
+          remains selected after the neutral plain capture screen.
+          [Focused controls](experiments/gemma26-capture-ahead/README.md).
         - [ ] **T71** Assistant-specific optimized execution.
         - [ ] **T72** Expert worklist sharing across vector products.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.

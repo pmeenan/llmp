@@ -59,6 +59,10 @@ struct Gemma4Options {
   // decode arithmetic); never in row-invariant plans.
   bool fuse_quant_glu = false;
   bool prefill_lookahead = true;
+  // Explicit plain-prefill capture policy; feature/assistant and verify paths
+  // retain their existing execution. Both profiles remain off until qualified.
+  bool capture_ahead = false;
+  std::uint32_t prefill_lookahead_capacity = 1;
   // Explicit independent-root attention policy, immutable for this runner.
   bool owner_attention = false;
   // Initially bounded to two one-row owners; wider cohorts keep equal reads.
@@ -234,17 +238,21 @@ class Gemma4Runner final : public PagedModel {
   // Intermediate prompt chunks may finish after final KV stores. Requests
   // needing retained features keep the existing complete output path.
   struct PrefillNext {
-    std::uint32_t slot = 0, rows = 0;
+    std::uint32_t slot = 0, rows = 0, after = 0;
   };
   // A bounded shape prediction only: no future tokens, state or work is posted.
   // Next slots must belong to this wave; their past is its completed end.
   Status WavePrefill(std::span<const Work> work, bool want_head = true,
-                     std::span<const PrefillNext> next = {}, bool next_want_head = true);
+                     std::span<const PrefillNext> next = {}, bool next_want_head = true,
+                     bool after_want_head = true);
   Status ChunkPrefill(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                       std::vector<float>& logits, bool want_head = true,
-                      std::uint32_t next_rows = 0, bool next_want_head = true);
+                      std::uint32_t next_rows = 0, bool next_want_head = true,
+                      std::uint32_t after_rows = 0, bool after_want_head = true);
   struct LookaheadStats {
     std::uint64_t attempted = 0, built = 0, cached = 0, refused = 0;
+    std::uint64_t built_pairs = 0, cached_pairs = 0;
+    std::uint64_t captured_first = 0, captured_ahead = 0, dropped_ahead = 0;
     double build_seconds = 0;
   };
   const LookaheadStats& lookahead_stats() const { return lookahead_; }
@@ -302,7 +310,7 @@ class Gemma4Runner final : public PagedModel {
   friend class Gemma4Assistant;
   Status WaveWithMode(std::span<const Work> work, bool all_outputs, bool all_features,
                       kernels::ggml::Gemma4OutputMode mode, std::span<const PrefillNext> next = {},
-                      bool next_want_head = true, bool verify = false);
+                      bool next_want_head = true, bool verify = false, bool after_want_head = true);
   void InvalidateFeatures(Slot& slot);
   std::expected<std::array<std::uint8_t, 32>, std::string> CacheGenerations(const Slot& slot) const;
   Status RefreshClosures(SlotMask protect);

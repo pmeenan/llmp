@@ -1165,9 +1165,10 @@ class Gemma final : public Llm {
                             PrefillHint next) override {
     if (inject || past >= all.size()) return Error("Gemma needs a plain nonempty prefill chunk");
     const engine::Gemma4Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
-    const engine::Gemma4Runner::PrefillNext hint{work.slot, next.rows};
+    const engine::Gemma4Runner::PrefillNext hint{work.slot, next.rows, next.after_rows};
     return runner_.WavePrefill(std::span(&work, 1), want_head,
-                               std::span(&hint, next.rows == 0 ? 0U : 1U), next.want_head);
+                               std::span(&hint, next.rows == 0 ? 0U : 1U), next.want_head,
+                               next.after_want_head);
   }
   Status SettleFor(Branch& branch) override {
     return NativeSlot(branch).state_usable() ? Status{} : Error("Gemma state is quarantined");
