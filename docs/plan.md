@@ -343,32 +343,185 @@ family" guide, and its long-context scaling work.
         idle, charged as one pinned extent, and new state zeroed on the
         GPU; Gemma3's 131K cold state growth falls 38% (0.47 to 0.29 s),
         exact, now at or slightly ahead of stock; swaps unchanged.
-- [ ] **Retroactive optimization transfer audit** (owner, 2026-10-07;
-      [workflow.md](workflow.md)'s transfer rule): the first task when the
-      main agent picks M3.5 back up. For every technique in the
-      [inventory](optimization-inventory.md#transfers-and-gaps) and in the
-      streams since (Gemma gap closing, the decode hot path, Gemma3
-      execution, the pager), record each current family's disposition:
-      DeepSeek V4, Qwen3.8 (native and GGUF), Qwen-Image, Gemma2, Gemma3
-      and Gemma 4 26B/31B, including the families M3 closed out. Each open
-      one becomes its own checkbox here, screened with focused correctness
-      and a matched comparison. Every port is in scope now for every
-      family, new kernels and fusions included; none waits for M9's pass.
-      Known open items to start from:
-      - [ ] Gemma2: GPU-built masks, prefill lookahead (it ignores the
-        hint) and capture ahead (a 2B model, so plausibly worth more than
-        on Gemma31).
-      - [ ] Gemma26: capture ahead, measured only on Gemma31.
-      - [ ] DeepSeek V4 and Qwen3.8: prefill lookahead and prefill
-        capture (they ignore the hint and capture only decode/verify
-        shapes), and their host-built F16 masks.
-      - [ ] Joined two-request prefill waves pass no prefill hints in any
-        family.
-      - [ ] DeepSeek V4 and Qwen3.8 plain (non-speculative) steps still
-        choose their token on the host; Gemma's choose on the GPU.
-      - [ ] Qwen-Image's direct steps: adopted, never measured.
-      - [ ] Mask building and the prefill lookahead hook: move into the
-        shared engine where the families' contracts allow.
+- [x] **Retroactive optimization transfer inventory audit** (owner,
+      2026-10-07; [complete dispositions](optimization-inventory.md#complete-cross-family-dispositions--2026-10-07)):
+      every historical table technique and material later kernel, fusion,
+      graph, serving and pager mechanism has explicit current-family
+      dispositions, including native/GGUF Qwen and image T/D/V boundaries.
+      This closes recording coverage, not the open transfers below. Every
+      eligible port is M3.5 work, including families M3 closed out; none waits
+      for M9. Screen one representative shape with focused correctness and
+      matched paid A/B before broader qualification.
+- [ ] **Complete open optimization transfers from the audit.** IDs refer to
+      the [inventory matrix](optimization-inventory.md#complete-cross-family-dispositions--2026-10-07).
+      Preserve each recipient's original math, artifact, state, memory and
+      completion contracts. No target A disposition closes a drafter item.
+      - **DeepSeek V4 / DSpark**
+        - [ ] **T19** Selective draft-head MMVF.
+        - [ ] **T21** Clustered small reduction/prefetch.
+        - [ ] **T22** Graph-owned GPU attention masks.
+        - [ ] **T23** Single-request prefill lookahead/capture ahead.
+        - [ ] **T27** Plain greedy token on GPU.
+        - [ ] **T29** Operand joins by view.
+        - [ ] **T37** Shape-pinned library GEMM algorithms.
+        - [ ] **T39** Device greedy verify verdicts.
+        - [ ] **T41** Residual-add plus next normalization.
+        - [ ] **T45** Selected learned head/adaptive draft depth.
+        - [ ] **T54** State-only nonfinal prompt dependency cut.
+        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [ ] **T56** Gemma checked norm/ADD arithmetic.
+        - [ ] **T57** RoPE directly into KV cache stores.
+        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T68** Evict only incoming closure deficit.
+        - [ ] **T69** Shared GPU-mask construction contract.
+        - [ ] **T70** Shared lookahead/capture hook.
+        - [ ] **T78** BF16 multirow vector alternative.
+        - [ ] **T81** Paired-prefix/incremental adaptive stopping.
+        - [ ] **T88** Share compatible HC matrix products.
+      - **Qwen3.8 native / MTP**
+        - [ ] **T10** HC-normalized expert sum in post.
+        - [ ] **T20** Column-invariant grouped float products.
+        - [ ] **T22** Graph-owned GPU attention masks.
+        - [ ] **T23** Single-request prefill lookahead/capture ahead.
+        - [ ] **T27** Plain greedy token on GPU.
+        - [ ] **T29** Operand joins by view.
+        - [ ] **T41** Residual-add plus next normalization.
+        - [ ] **T54** State-only nonfinal prompt dependency cut.
+        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [ ] **T56** Gemma checked norm/ADD arithmetic.
+        - [ ] **T57** RoPE directly into KV cache stores.
+        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T68** Evict only incoming closure deficit.
+        - [ ] **T69** Shared GPU-mask construction contract.
+        - [ ] **T70** Shared lookahead/capture hook.
+        - [ ] **T72** Expert worklist sharing across vector products.
+      - **Qwen3.8 GGUF / drafter**
+        - [ ] **T03** Sparse query-union KV reuse.
+        - [ ] **T04** Share adjacent-product input preparation.
+        - [ ] **T07** Compact expert-major MMQ scheduling.
+        - [ ] **T10** HC-normalized expert sum in post.
+        - [ ] **T12** Share expert reads across verify rows.
+        - [ ] **T21** Clustered small reduction/prefetch.
+        - [ ] **T22** Graph-owned GPU attention masks.
+        - [ ] **T23** Single-request prefill lookahead/capture ahead.
+        - [ ] **T27** Plain greedy token on GPU.
+        - [ ] **T29** Operand joins by view.
+        - [ ] **T37** Shape-pinned library GEMM algorithms.
+        - [ ] **T41** Residual-add plus next normalization.
+        - [ ] **T54** State-only nonfinal prompt dependency cut.
+        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [ ] **T56** Gemma checked norm/ADD arithmetic.
+        - [ ] **T57** RoPE directly into KV cache stores.
+        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T68** Evict only incoming closure deficit.
+        - [ ] **T69** Shared GPU-mask construction contract.
+        - [ ] **T70** Shared lookahead/capture hook.
+        - [ ] **T72** Expert worklist sharing across vector products.
+        - [ ] **T80** Qwen lower cache-read alignment.
+        - [ ] **T89** Independent-state recurrent cohort kernel.
+      - **Qwen-Image T/D/V**
+        - [ ] **T15** Concurrent per-owner graph lanes.
+        - [ ] **T26** Capture beside eager execution.
+        - [ ] **T53** Measure direct-step gain on image phases.
+        - [ ] **T59** Whole-wave products and exact partial cohorts.
+        - [ ] **T64** Batch compatible image phases/requests.
+        - [ ] **T68** Evict only incoming closure deficit.
+        - [ ] **T78** BF16 multirow vector alternative.
+        - [ ] **T87** Alternative image encoder/VAE attention.
+      - **Gemma2 2B**
+        - [ ] **T04** Share adjacent-product input preparation.
+        - [ ] **T11** Reuse decode Q8 quantization.
+        - [ ] **T15** Concurrent per-owner graph lanes.
+        - [ ] **T22** Graph-owned GPU attention masks.
+        - [ ] **T23** Single-request prefill lookahead/capture ahead.
+        - [ ] **T41** Residual-add plus next normalization.
+        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [ ] **T57** RoPE directly into KV cache stores.
+        - [ ] **T59** Whole-wave products and exact partial cohorts.
+        - [ ] **T61** Wider/partial bounded owner-root variants.
+        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T68** Evict only incoming closure deficit.
+        - [ ] **T69** Shared GPU-mask construction contract.
+        - [ ] **T70** Shared lookahead/capture hook.
+        - [ ] **T86** Grouped physical KV stores.
+      - **Gemma3 4B QAT**
+        - [ ] **T04** Share adjacent-product input preparation.
+        - [ ] **T11** Reuse decode Q8 quantization.
+        - [ ] **T15** Concurrent per-owner graph lanes.
+        - [ ] **T41** Residual-add plus next normalization.
+        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [ ] **T57** RoPE directly into KV cache stores.
+        - [ ] **T59** Whole-wave products and exact partial cohorts.
+        - [ ] **T61** Wider/partial bounded owner-root variants.
+        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T68** Evict only incoming closure deficit.
+        - [ ] **T69** Shared GPU-mask construction contract.
+        - [ ] **T70** Shared lookahead/capture hook.
+        - [ ] **T86** Grouped physical KV stores.
+      - **Gemma4 26B-A4B / assistant**
+        - [ ] **T04** Share adjacent-product input preparation.
+        - [ ] **T07** Compact expert-major MMQ scheduling.
+        - [ ] **T09** Write activation in routed gate/up consumer.
+        - [ ] **T11** Reuse decode Q8 quantization.
+        - [ ] **T12** Share expert reads across verify rows.
+        - [ ] **T14** Warp-ballot routed pair lookup.
+        - [ ] **T15** Concurrent per-owner graph lanes.
+        - [ ] **T16** Join draft blocks across requests.
+        - [ ] **T19** Selective draft-head MMVF.
+        - [ ] **T20** Column-invariant grouped float products.
+        - [ ] **T23** Single-request prefill lookahead/capture ahead.
+        - [ ] **T31** One-column fused quantized gate/up GLU.
+        - [ ] **T37** Shape-pinned library GEMM algorithms.
+        - [ ] **T39** Device greedy verify verdicts.
+        - [ ] **T41** Residual-add plus next normalization.
+        - [ ] **T45** Selected learned head/adaptive draft depth.
+        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [ ] **T58** Shared Q8 GeGLU assistant/target preparation.
+        - [ ] **T59** Whole-wave products and exact partial cohorts.
+        - [ ] **T61** Wider/partial bounded owner-root variants.
+        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T68** Evict only incoming closure deficit.
+        - [ ] **T69** Shared GPU-mask construction contract.
+        - [ ] **T70** Shared lookahead/capture hook.
+        - [ ] **T71** Assistant-specific optimized execution.
+        - [ ] **T72** Expert worklist sharing across vector products.
+        - [ ] **T81** Paired-prefix/incremental adaptive stopping.
+        - [ ] **T86** Grouped physical KV stores.
+      - **Gemma4 31B / assistant**
+        - [ ] **T04** Share adjacent-product input preparation.
+        - [ ] **T11** Reuse decode Q8 quantization.
+        - [ ] **T15** Concurrent per-owner graph lanes.
+        - [ ] **T16** Join draft blocks across requests.
+        - [ ] **T19** Selective draft-head MMVF.
+        - [ ] **T39** Device greedy verify verdicts.
+        - [ ] **T41** Residual-add plus next normalization.
+        - [ ] **T45** Selected learned head/adaptive draft depth.
+        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [ ] **T57** RoPE directly into KV cache stores.
+        - [ ] **T58** Shared Q8 GeGLU assistant/target preparation.
+        - [ ] **T59** Whole-wave products and exact partial cohorts.
+        - [ ] **T61** Wider/partial bounded owner-root variants.
+        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T68** Evict only incoming closure deficit.
+        - [ ] **T69** Shared GPU-mask construction contract.
+        - [ ] **T70** Shared lookahead/capture hook.
+        - [ ] **T71** Assistant-specific optimized execution.
+        - [ ] **T81** Paired-prefix/incremental adaptive stopping.
+      Shared T69/T70 ports own the funded host-only next-plan/mask lifecycle;
+      family adapters retain shape prediction, causal/selection semantics and
+      eligibility. For T55, extend PreparedPrefill with bounded next/after
+      hints computed by the same checkpoint-aware PromptSession rule; scoring
+      and checkpoint boundaries refuse inappropriate lookahead. Hints never
+      initialize speculative future state. T67 is separate state-growth work.
+      Confirm every open matrix consumer has its own checked result before
+      closing this parent. T68 is the owner-approved partial-eviction direction
+      and requires D-096's amendment, not another lazy-handoff timing change.
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:

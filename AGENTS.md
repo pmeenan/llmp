@@ -308,9 +308,9 @@ complement its ring, checkpoint/restore and restart-adoption controls.
 [Gemma2 2B](docs/gemma2.md) has bounded 8K/two-slot serving with checked cap50
 compatible prefill, template refusal and restart replay.
 Broader reference, batching and sustained qualification remain open.
-First comes a retroactive optimization transfer audit across every family,
-including those M3 closed out (plan.md; workflow.md's transfer rule). Then
-come approved model checkpoints, legacy fixtures, Bonsai, formats with
+The retroactive optimization transfer audit now records every current
+family, including those M3 closed out; its open ports are first in M3.5
+(plan.md; workflow.md's transfer rule). Then come approved model checkpoints, legacy fixtures, Bonsai, formats with
 EXL3 in focus, the remaining batching/skeleton gaps, media file inputs,
 Clef/Clef-flash over the Jev API and media generation routes (D-101).
 That scope includes batching compatible decision and image requests/phases.
