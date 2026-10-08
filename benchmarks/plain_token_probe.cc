@@ -3,9 +3,10 @@
 
 // Existing-model plain-token factor. Full initialized states and an actual
 // full-row continuation are observed after the paid endpoint, in both arms.
-// Usage: ARTIFACT IDS0.i32 IDS1.i32 NEW_OUT off|on [c1] [gguf]
+// Usage: ARTIFACT IDS0.i32 IDS1.i32 NEW_OUT off|on [c1] [gguf] [group-stores] [budget=BYTES]
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -51,15 +53,25 @@ std::int32_t Choose(std::span<const float> row) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 6 || argc > 8 || !jitllm::platform::InstallCrashPolicy("plain-token-probe")) return 2;
-  bool scalar = false, gguf = false;
+  if (argc < 6 || argc > 10 || !jitllm::platform::InstallCrashPolicy("plain-token-probe")) return 2;
+  bool scalar = false, gguf = false, group_stores = false;
+  std::uint64_t budget_override = 0;
   for (int i = 6; i < argc; ++i) {
     const std::string_view flag = argv[i];
     if (flag == "c1" && !scalar)
       scalar = true;
     else if (flag == "gguf" && !gguf)
       gguf = true;
-    else
+    else if (flag == "group-stores" && !group_stores)
+      group_stores = true;
+    else if (flag.starts_with("budget=") && budget_override == 0) {
+      const auto number = flag.substr(7);
+      const auto [end, error] =
+          std::from_chars(number.data(), number.data() + number.size(), budget_override);
+      if (error != std::errc{} || end != number.data() + number.size() || budget_override == 0 ||
+          budget_override % en::kPagedExtent != 0)
+        return 2;
+    } else
       return 2;
   }
   const std::uint32_t owners = scalar ? 1 : 2;
@@ -96,7 +108,8 @@ int main(int argc, char** argv) {
                             .wave_slots = owners,
                             .request_slots = owners,
                             .spill_place = {},
-                            .device_tokens = device};
+                            .device_tokens = device,
+                            .group_kv_stores = group_stores};
   life->runner = std::make_unique<en::Qwen38Runner>(node, options, 0, 0);
   auto& runner = *life->runner;
   std::array<en::Qwen38Runner::Slot*, 2> slots{};
@@ -204,8 +217,17 @@ int main(int argc, char** argv) {
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     node.SetHostFloor(runner.host_input_bytes() + runner.plan_floor_bytes() + (64ULL << 20U));
     for (std::size_t i = 0; i < owners; ++i) history[i].reserve(kPrefix[i] + kSteps + 2);
-    const auto budget =
-        fixed + runner.weights().size() * en::kPagedExtent + 4 * node.StateCapacity();
+    const auto state_capacity = node.StateCapacity();
+    if (runner.weights().size() >
+        (std::numeric_limits<std::uint64_t>::max() - fixed) / en::kPagedExtent)
+      return Error("factor weight budget overflow");
+    const auto weight_budget = fixed + runner.weights().size() * en::kPagedExtent;
+    if (state_capacity > (std::numeric_limits<std::uint64_t>::max() - weight_budget) / 4)
+      return Error("factor state budget overflow");
+    const auto derived_minimum = weight_budget + 4 * state_capacity;
+    if (budget_override != 0 && budget_override < derived_minimum)
+      return Error("common factor budget is below the derived minimum");
+    const auto budget = budget_override != 0 ? budget_override : derived_minimum;
     if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
@@ -215,9 +237,10 @@ int main(int argc, char** argv) {
     if (auto r = runner.ReadPleHash(); !r) return r;
     if (auto r = runner.SelectSlots(std::span(slots).first(owners)); !r) return r;
     const auto setup = runner.setup_budget();
-    std::cout << "PLAIN_TOKEN_SETUP budget=" << budget << " fixed=" << fixed
-              << " activations=" << setup.activations << " scratch=" << setup.scratch
-              << " pinned=" << setup.pinned << " host_inputs=" << setup.host_inputs
+    std::cout << "PLAIN_TOKEN_SETUP budget=" << budget << " derived_minimum=" << derived_minimum
+              << " fixed=" << fixed << " activations=" << setup.activations
+              << " scratch=" << setup.scratch << " pinned=" << setup.pinned
+              << " host_inputs=" << setup.host_inputs
               << " wave_output_pinned=" << setup.wave_output_pinned << '\n';
     return node.WithRequest(
         0, runner.execution_closure(), "plain-token factor", [&]() -> en::Status {
@@ -266,6 +289,10 @@ int main(int argc, char** argv) {
                     << " eager=" << after.eager - before.eager
                     << " captured=" << after.captured - before.captured
                     << " replayed=" << after.replayed - before.replayed
+                    << " group_stores=" << group_stores
+                    << " grouped_store_steps=" << paired.grouped_store_steps
+                    << " grouped_stores=" << paired.grouped_stores
+                    << " primitive_store_steps=" << paired.primitive_store_steps
                     << " mxfp8_pairs=" << paired.mxfp8_pairs << " vecq_pairs=" << paired.vecq_pairs;
           for (std::size_t i = 0; i < owners; ++i)
             std::cout << " state" << i << "_bytes=" << state_bytes[i] << " state" << i << '='

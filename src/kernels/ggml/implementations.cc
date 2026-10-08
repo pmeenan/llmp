@@ -27,6 +27,7 @@
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
@@ -54,7 +55,7 @@ struct Kernel::Entry {
   execution::Operation operation;
   std::string_view variant;
   std::size_t arity;
-  // Called with exactly `arity` nodes.
+  // Called with exactly `arity` nodes, or validator-owned bounded arity if zero.
   std::expected<void, KernelFailure> (*check)(std::span<const ggml_tensor* const> nodes);
   std::expected<void, KernelFailure> (*run)(LaunchContext& launch,
                                             std::span<ggml_tensor* const> nodes);
@@ -103,7 +104,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
   return std::unexpected(
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
-constexpr std::array<Kernel::Entry, 125> kKernels = {{
+constexpr std::array<Kernel::Entry, 126> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -259,6 +260,13 @@ constexpr std::array<Kernel::Entry, 125> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckSetRows(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return SetRows(launch, n[0]); }},
+    {.name = kSetRowsGroupedName,
+     .operation = execution::Operation::kSetRows,
+     .variant = "two through sixteen independent F32/I64/F16 stores; per-store strides and "
+                "fastdiv; primitive ggml_cuda_cast<half>; stack launch arguments; scratch0",
+     .arity = 0,
+     .check = &CheckSetRowsGroup,
+     .run = &RunSetRowsGroup},
     {.name = "ggml.rope.neox",
      .operation = execution::Operation::kRope,
      .variant = "ggml_cuda_op_rope: rope_neox<true, false, float, float>; upstream launch "
@@ -1142,7 +1150,7 @@ std::expected<Kernel, KernelFailure> Kernel::Bind(const execution::Implementatio
 }
 
 std::expected<void, KernelFailure> Kernel::Check(std::span<const ggml_tensor* const> nodes) const {
-  if (nodes.size() != entry_->arity) {
+  if (entry_->arity != 0 && nodes.size() != entry_->arity) {
     return std::unexpected(KernelFailure{
         .error = KernelError::kRejected,
         .detail =
@@ -1153,7 +1161,7 @@ std::expected<void, KernelFailure> Kernel::Check(std::span<const ggml_tensor* co
 
 std::expected<void, KernelFailure> Kernel::Run(LaunchContext& launch,
                                                std::span<ggml_tensor* const> nodes) const {
-  if (nodes.size() != entry_->arity) {
+  if (entry_->arity != 0 && nodes.size() != entry_->arity) {
     return std::unexpected(KernelFailure{
         .error = KernelError::kRejected,
         .detail =

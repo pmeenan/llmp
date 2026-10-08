@@ -19,6 +19,7 @@
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/set_rows_group.h"
 
 namespace {
 namespace en = jitllm::engine;
@@ -97,6 +98,38 @@ en::Gemma4Model Places(const Case& c, const kg::Gemma4Graph& g) {
     address += c.state.bytes + 256;
   }
   return m;
+}
+
+TEST(Gemma4Plan, GroupedStoresKeepRaggedRootsSourcesAndPlacement) {
+  Case c(2);
+  c.shape.segments[1].rows = 1;
+  auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape);
+  ASSERT_TRUE(graph);
+  const auto model = Places(c, *graph);
+  kg::DeviceChoices choices;
+  choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
+  choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
+  choices.group_set_rows = true;
+  auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
+  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
+                                    (*measured)->placement.extent);
+  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  std::size_t groups = 0, writes = 0;
+  for (const auto& step : (*placed)->plan.steps) {
+    if (step.operation != jitllm::execution::Operation::kSetRows) continue;
+    writes += step.nodes.size();
+    if (step.implementation == kg::kSetRowsGroupedName) {
+      ++groups;
+      std::vector<const ggml_tensor*> nodes(step.nodes.begin(), step.nodes.end());
+      EXPECT_TRUE(kg::CheckSetRowsGroup(nodes));
+    }
+  }
+  EXPECT_GT(groups, 0U);
+  EXPECT_EQ(writes, 4U * c.p.layers);
+  EXPECT_EQ((*measured)->plan.steps.size(), (*placed)->plan.steps.size());
 }
 
 TEST(Gemma4Plan, StateOnlyPlacesWithoutHiddenOrHeadAndRetainsFreshInputs) {

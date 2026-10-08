@@ -33,7 +33,7 @@ target_sources(jitllm_ggml_tensors PRIVATE gemma_moe_fusion.cc graph_read_index.
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_qhead.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_hc_norm.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_outa.cc)
-target_sources(jitllm_ggml_tensors PRIVATE gemma_norm.cc)
+target_sources(jitllm_ggml_tensors PRIVATE gemma_norm.cc set_rows_group.cc)
 target_sources(jitllm_ggml_tensors PRIVATE gemma4_assistant_graph.cc gemma4_attention.cc fattn_owner.cc)
 target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base jitllm_execution
                                                  jitllm_model
@@ -77,7 +77,7 @@ if(JITLLM_CUDA)
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_hc_norm.cu)
   target_sources(jitllm_ggml_kernels PRIVATE mul_mat_q_glu.cu)
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_outa.cu)
-  target_sources(jitllm_ggml_kernels PRIVATE gemma_norm.cu fattn_owner.cu)
+  target_sources(jitllm_ggml_kernels PRIVATE gemma_norm.cu fattn_owner.cu set_rows_group.cu)
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   # CUTLASS's NVFP4 grouped GEMM for the routed experts (moe_cutlass.h) and
@@ -155,6 +155,7 @@ if(JITLLM_CUDA)
                    mul_mat_q_glu.cuh mul_mat_q_glu.cu
                    dsv4_outa.h dsv4_outa.cc dsv4_outa.cu
                    gemma_norm.h gemma_norm.cc gemma_norm.cu
+                   set_rows_group.h set_rows_group.cc set_rows_group.cu
                    gemma4_assistant_graph.h gemma4_assistant_graph.cc
                    dsv4_ds4_attention.h dsv4_ds4_attention.cu
                    dsv4_ds4_attention_core.cuh dsv4_ds4_attention_core.json

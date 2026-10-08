@@ -424,6 +424,10 @@ family" guide, and its long-context scaling work.
           [Controls](experiments/ds-qwen-prefill-prediction/README.md).
         - [ ] **T78** BF16 multirow vector alternative.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.
+        - [ ] **T86** Physical KV store grouping: actual raw/compressed graphs
+          retain producer/read barriers and select zero groups. Safe compatible
+          ordering remains open; no layout-based exclusion.
+          [Controls](experiments/grouped-kv-stores/README.md).
         - [ ] **T88** Share compatible HC matrix products.
         - [ ] **T92** Remove reference CSA/HCA raw/compressed bank packing
           through actual roots; preserve sinks, selection and reduction math.
@@ -466,6 +470,9 @@ family" guide, and its long-context scaling work.
           departure and checkpoint/spill controls. Capture policy remains T23.
           [Controls](experiments/ds-qwen-prefill-prediction/README.md).
         - [ ] **T72** Expert worklist sharing across vector products.
+        - [ ] **T86** Target-only grouping is checked but neutral and stays
+          off; actual MTP/drafter composition remains unqualified/open.
+          [Controls](experiments/grouped-kv-stores/README.md).
       - **Qwen3.8 GGUF / target**
         - [x] **T96** Shared startup placement threshold selected for GGUF target
           Setup with exact funding and descriptor work; latency pair is n=1.
@@ -510,6 +517,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T72** Expert worklist sharing across vector products.
         - [ ] **T80** Qwen lower cache-read alignment.
         - [ ] **T89** Independent-state recurrent cohort kernel.
+        - [x] **T86** Compatible physical cache pairs checked; short target-only
+          whole paid factor is neutral (+0.053%), so grouping stays off.
+          [Controls](experiments/grouped-kv-stores/README.md).
       - **Qwen-Image T/D/V**
         - [ ] **T15** Concurrent per-owner graph lanes.
         - [ ] **T26** Capture beside eager execution.
@@ -560,7 +570,9 @@ family" guide, and its long-context scaling work.
         - [x] **T70** Shared funded CPU-only next-plan lifecycle; two independent
           future slots now protect/deduplicate complete keys before optional
           capture charges. Refusal preserves the completed prefix/other slot.
-        - [ ] **T86** Grouped physical KV stores.
+        - [x] **T86** Shared grouping checked; whole paid is neutral (−0.024%),
+          so the ordinary default stays off.
+          [Controls](experiments/grouped-kv-stores/README.md).
         - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
           exact heads/state and actual serving/restart controls pass.
         - [ ] **T93** Equal-width C2 rows 2–512 are qualified in configured
@@ -609,7 +621,9 @@ family" guide, and its long-context scaling work.
         - [x] **T70** Shared funded host-only next-plan lifecycle; two independently
           funded next/after shapes now enable cold changing-width capture.
           [Focused controls](experiments/prefill-transfer/README.md).
-        - [ ] **T86** Grouped physical KV stores.
+        - [x] **T86** Shared checked grouping adopted: bounded C2 prefill/decode
+          −0.517%/−0.313%, combined paid −0.454%, n=2; exact heads/state.
+          [Controls and bounds](experiments/grouped-kv-stores/README.md).
         - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
           exact heads/state and actual serving/restart controls pass.
         - [ ] **T93** Equal-width C2 rows 2–512 are qualified in configured
@@ -685,7 +699,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T71** Assistant-specific optimized execution.
         - [ ] **T72** Expert worklist sharing across vector products.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.
-        - [ ] **T86** Grouped physical KV stores.
+        - [x] **T86** Shared grouping checked; ordinary 8K whole paid +0.228%
+          overlaps off movement, so grouping stays off.
+          [Controls](experiments/grouped-kv-stores/README.md).
       - **Gemma4 31B / assistant**
         - [ ] **T96** Threshold shortcut is qualified for optional dense-sharing
           Setup; ordinary selection and remaining construction/sizing latency

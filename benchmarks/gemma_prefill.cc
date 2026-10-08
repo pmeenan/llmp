@@ -32,7 +32,7 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc < 4 || argc > 17 || argc == 16) return 2;
+  if (argc < 4 || argc > 19 || argc == 16) return 2;
   const std::string_view variant = argc >= 5 ? argv[4] : "26";
   const std::string_view policy = argc >= 6 ? argv[5] : "ordinary";
   if (variant != "26" && variant != "31") return 2;
@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
     return 2;
   constexpr std::uint32_t kWarm = 3, kSteps = 32, kInputCapacity = 8227, kVocab = 262144;
   std::uint32_t context = 16384, kPrefill = 8192;
-  if (argc == 17) {
+  if (argc >= 17) {
     const auto parse = [](const char* arg, std::uint32_t& value) {
       const std::string_view number(arg);
       const auto [end, error] =
@@ -86,6 +86,17 @@ int main(int argc, char** argv) {
   if (serving &&
       (context > 8192 || normmul != "normmul-on" || max_rows > (variant == "31" ? 256U : 1024U)))
     return 2;
+  const std::string_view stores = argc >= 18 ? argv[17] : "stores-off";
+  if (stores != "stores-off" && stores != "stores-on") return 2;
+  std::uint64_t budget_override = 0;
+  if (argc == 19) {
+    const std::string_view number(argv[18]);
+    const auto [end, error] =
+        std::from_chars(number.data(), number.data() + number.size(), budget_override);
+    if (error != std::errc{} || end != number.data() + number.size() || budget_override == 0 ||
+        budget_override % en::kPagedExtent != 0)
+      return 2;
+  }
   const std::uint32_t kInput = kPrefill + kWarm + kSteps;
   const std::uint32_t chunks = (kPrefill + max_rows - 1) / max_rows;
   std::error_code error;
@@ -124,6 +135,7 @@ int main(int argc, char** argv) {
           .fuse_quant_glu = serving && variant == "31",
           .prefill_lookahead = lookahead == "lookahead-on",
           .prepare_state = prepare_state,
+          .group_kv_stores = stores == "stores-on",
           .capture_ahead = ahead,
           .prefill_lookahead_capacity = ahead ? 2U : 1U,
           .owner_attention = serving},
@@ -162,7 +174,10 @@ int main(int argc, char** argv) {
         retention > std::numeric_limits<std::uint64_t>::max() - base - planning_scratch ||
         temporary > std::numeric_limits<std::uint64_t>::max() - base - planning_scratch - retention)
       return Error("execution budget overflow");
-    const auto budget = base + planning_scratch + retention + temporary;
+    const auto derived_budget = base + planning_scratch + retention + temporary;
+    if (budget_override != 0 && budget_override < derived_budget)
+      return Error("explicit benchmark budget is below the derived minimum");
+    const auto budget = budget_override != 0 ? budget_override : derived_budget;
     std::cout << "PREFILL_BUDGET fixed=" << fixed
               << " weights=" << runner.weights().size() * en::kPagedExtent
               << " state_capacity=" << node.StateCapacity() << " publication=" << kOutputBytes
@@ -170,7 +185,8 @@ int main(int argc, char** argv) {
               << " pinned_head_envelope=" << std::uint64_t{serving ? 1U : max_rows} * kVocab * 4
               << " max_rows=" << max_rows << " call_bound=" << calls << " plan_floor=" << floor
               << " planning_scratch=" << planning_scratch << " plan_graph_capacity=" << retention
-              << " temporary_plans=" << temporary << " total=" << budget << '\n';
+              << " temporary_plans=" << temporary << " derived_minimum=" << derived_budget
+              << " total=" << budget << '\n';
     node.SetHostFloor(temporary + runner.host_input_bytes() + planning_scratch);
     if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
@@ -398,6 +414,13 @@ int main(int argc, char** argv) {
                 << " row_products=" << decode_policy.row_products
                 << " norm_fused=" << decode_policy.norm_fused
                 << " rope_store=" << decode_policy.rope_store
+                << " group_stores=" << (stores == "stores-on")
+                << " prefill_grouped_store_steps=" << prefill_policy.grouped_store_steps
+                << " prefill_grouped_stores=" << prefill_policy.grouped_stores
+                << " prefill_primitive_store_steps=" << prefill_policy.primitive_store_steps
+                << " decode_grouped_store_steps=" << decode_policy.grouped_store_steps
+                << " decode_grouped_stores=" << decode_policy.grouped_stores
+                << " decode_primitive_store_steps=" << decode_policy.primitive_store_steps
                 << " norm_rope=" << decode_policy.norm_rope
                 << " norm_add=" << decode_policy.norm_add
                 << " captures=" << runner.graph_stats().captured

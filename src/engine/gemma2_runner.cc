@@ -14,6 +14,7 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/set_rows_group.h"
 
 namespace jitllm::engine {
 namespace kg = kernels::ggml;
@@ -36,6 +37,7 @@ Gemma2Runner::~Gemma2Runner() = default;
 kg::DeviceChoices Gemma2Runner::Choices(kg::LaunchContext& launch) const {
   auto choices = kg::DeviceChoicesOf(launch);
   choices.fuse_norms = o_.fuse_norms;
+  choices.group_set_rows = o_.group_kv_stores;
   choices.fuse_quant_glu = o_.fuse_quant_glu;
   choices.fuse_norm_rope = o_.fuse_norm_rope;
   choices.fuse_norm_add = o_.fuse_norm_add;
@@ -636,6 +638,10 @@ std::expected<Gemma2Runner::Plans::Entry*, std::string> Gemma2Runner::CachePlann
   ++plan_selections_.plans;
   plan_selections_.steps += p->plan.steps.size();
   for (const auto& selected : p->plan.steps) {
+    plan_selections_.grouped_store_steps += selected.implementation == kg::kSetRowsGroupedName;
+    plan_selections_.grouped_stores +=
+        selected.implementation == kg::kSetRowsGroupedName ? selected.nodes.size() : 0;
+    plan_selections_.primitive_store_steps += selected.implementation == kg::kSetRowsName;
     plan_selections_.device_masks += selected.implementation == kg::kGemma4MaskName;
     plan_selections_.q8_preparations += selected.implementation == kg::kQuantizeQ8Name;
     plan_selections_.prepared_mmvq_products += selected.implementation == kg::kMmvqPreparedName;

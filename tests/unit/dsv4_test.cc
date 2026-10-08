@@ -40,6 +40,7 @@
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
 
@@ -490,7 +491,8 @@ kg::DeviceChoices ModelDevice() {
         const std::int64_t columns =
             node->op == GGML_OP_MUL_MAT_ID ? node->src[2]->ne[1] : node->src[1]->ne[1];
         return columns <= 8 ? kg::QuantMulMatPath::kVector : kg::QuantMulMatPath::kTile;
-      }};
+      },
+      .dense_mmvq_shape = {}};
 }
 
 TEST(Dsv4Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
@@ -548,6 +550,73 @@ TEST(Dsv4Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     EXPECT_GT(placed->extent, 0U);
     EXPECT_NE(graph->Named("l_last-42"), nullptr);
     EXPECT_NE(graph->Named("result_output"), nullptr);
+  }
+}
+
+TEST(Dsv4Test, GroupedStoresRespectActualCompressorReadBarriers) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  const std::vector<md::Dsv4Resource> resources = GgufLike(p);
+  auto binding = md::BindDsv4(p, "deepseek4", resources);
+  ASSERT_TRUE(binding.has_value()) << Why(binding);
+  auto state = md::Dsv4State(p, 4096, 512);
+  ASSERT_TRUE(state.has_value());
+  // The slab strides: whole IQ2_XS (74) and IQ3_XXS (98) blocks and 16 bytes.
+  std::vector<std::uint64_t> strides(p.layers, 8064224);
+  strides[42] = 9309200;  // IQ2_XS with MXFP4 (17): 925 x 10,064
+  for (const auto& [n_past, rows] : {std::pair{37U, 1U}, {3000U, 512U}}) {
+    auto chunk = md::Dsv4Chunk(p, *state, n_past, rows);
+    ASSERT_TRUE(chunk.has_value()) << Why(chunk);
+    const kg::Dsv4ChunkShape shape = kg::Dsv4ShapeOf(*state, *chunk);
+    auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+    ASSERT_TRUE(arena.has_value());
+    auto graph =
+        kg::BuildDsv4Graph(*arena, p, *binding, shape, {.expert_stride = strides, .fused = true});
+    ASSERT_TRUE(graph.has_value()) << Why(graph);
+    // Leaves at distinct addresses, every computed node too, then the plan.
+    std::uint64_t next = std::uint64_t{1} << 40U;
+    const auto bind_leaf = [&](ggml_tensor* t) {
+      if (t != nullptr && t->data == nullptr) {
+        kg::TensorArena::Bind(t, next);
+        next += ((ggml_nbytes(t) + 255) / 256 * 256) + 256;
+      }
+    };
+    for (ggml_tensor* t : graph->inputs()) {
+      bind_leaf(t);
+    }
+    for (ggml_tensor* node : graph->nodes) {
+      for (ggml_tensor* src : node->src) {
+        if (src != nullptr && src->op == GGML_OP_NONE && src->view_src == nullptr) {
+          bind_leaf(src);
+        }
+      }
+    }
+    kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
+    auto plan = kg::PlanGraph(graph->nodes, false, ModelDevice());
+    ASSERT_TRUE(plan.has_value()) << rows << " at " << n_past << ": " << Why(plan);
+    auto choices = ModelDevice();
+    choices.group_set_rows = true;
+    auto grouped = kg::PlanGraph(graph->nodes, false, choices);
+    ASSERT_TRUE(grouped) << Why(grouped);
+    EXPECT_GT(std::ranges::count_if(plan->steps,
+                                    [](const auto& step) {
+                                      return step.operation ==
+                                             jitllm::execution::Operation::kSetRows;
+                                    }),
+              0);
+    EXPECT_EQ(std::ranges::count_if(
+                  grouped->steps,
+                  [](const auto& step) { return step.implementation == kg::kSetRowsGroupedName; }),
+              0);
+    ASSERT_EQ(grouped->steps.size(), plan->steps.size());
+    for (std::size_t i = 0; i < plan->steps.size(); ++i) {
+      EXPECT_EQ(grouped->steps[i].implementation, plan->steps[i].implementation);
+      EXPECT_EQ(grouped->steps[i].nodes, plan->steps[i].nodes);
+    }
+    // CSA/HCA/lid stores have actual producer/read launches between them;
+    // grouping never moves those dependencies to manufacture an eligible run.
+    auto placed = kg::PlaceActivations(graph->nodes, *grouped, graph->inputs(), 256);
+    ASSERT_TRUE(placed) << Why(placed);
+    EXPECT_GT(placed->extent, 0U);
   }
 }
 

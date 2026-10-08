@@ -63,6 +63,8 @@ struct Gemma3Options {
   // Optional no-victim growth for the next hinted chunk. Only
   // fresh zero sources; logical state/cursors are published by actual Use.
   bool prepare_state = true;
+  // Checked independent physical KV copies; producers keep their original math.
+  bool group_kv_stores = true;
   std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
 };
 class Gemma3Runner final : public PagedModel {
@@ -109,7 +111,8 @@ class Gemma3Runner final : public PagedModel {
                   owner_attention = 0, packed_prefill_attention = 0, owner_prefill_attention = 0,
                   flexible_owner_prefill_attention = 0, largest_owner_prefill_rows = 0,
                   largest_owner_prefill_kv_cells = 0, bounded_owner_attention = 0, device_masks = 0,
-                  q8_preparations = 0, prepared_mmvq_products = 0;
+                  q8_preparations = 0, prepared_mmvq_products = 0, grouped_store_steps = 0,
+                  grouped_stores = 0, primitive_store_steps = 0;
   };
   Gemma3Runner(PagedNode& node, Gemma3Options options, int owner, std::uint32_t stream);
   ~Gemma3Runner() override;

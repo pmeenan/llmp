@@ -57,6 +57,10 @@ struct Qwen38WavePlacement {
 };
 
 struct Qwen38WaveStats {
+  // Selections in this bound plan, not executed kernel counts.
+  std::uint64_t grouped_store_steps = 0;
+  std::uint64_t grouped_stores = 0;
+  std::uint64_t primitive_store_steps = 0;
   std::uint64_t vecq_pairs = 0;
   std::uint64_t mxfp8_pairs = 0;
   std::uint64_t routed_pairs = 0;

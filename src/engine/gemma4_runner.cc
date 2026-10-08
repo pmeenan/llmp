@@ -21,6 +21,7 @@
 #include "engine/support.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/set_rows_group.h"
 #include "providers/device_runtime.h"
 
 namespace jitllm::engine {
@@ -278,6 +279,7 @@ Status Gemma4Runner::SelectSlots(std::span<const std::uint32_t> slots) {
 kg::DeviceChoices Gemma4Runner::Choices(kg::LaunchContext& launch, std::uint32_t rows) const {
   auto choices = kg::DeviceChoicesOf(launch);
   choices.fuse_norms = o_.fuse_norms;
+  choices.group_set_rows = o_.group_kv_stores;
   choices.fuse_norm_rope = o_.fuse_norm_rope;
   choices.fuse_norm_add = o_.fuse_norm_add;
   choices.fuse_gemma_route = o_.fuse_gemma_route;
@@ -1112,6 +1114,11 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::CachePlann
     policy_.gemma_route += step.implementation == "ggml.gemma.route.fused";
     policy_.gemma_reduce += step.implementation == "ggml.gemma.scaled_reduce.fused";
     policy_.rope_store += step.implementation == "ggml.rope_set_rows.fused";
+    policy_.grouped_store_steps += step.implementation == kg::kSetRowsGroupedName;
+    policy_.grouped_stores += step.implementation == kg::kSetRowsGroupedName
+                                  ? static_cast<std::uint32_t>(step.nodes.size())
+                                  : 0;
+    policy_.primitive_store_steps += step.implementation == kg::kSetRowsName;
     policy_.shared_vecq += step.implementation == "jitllm.vecq";
     policy_.q8_preparations += step.implementation == kg::kQuantizeQ8Name;
     policy_.prepared_mmvq_products += step.implementation == kg::kMmvqPreparedName;

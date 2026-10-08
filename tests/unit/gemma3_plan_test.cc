@@ -17,6 +17,7 @@
 #include "gemma3_fixture.h"
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/validate_ext.h"
 
 namespace {
@@ -64,6 +65,36 @@ kg::DeviceChoices Choices() {
   out.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
   out.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
   return out;
+}
+
+TEST(Gemma3Plan, GroupedStoresKeepRaggedRootsSourcesAndPlacement) {
+  Case c;
+  auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape);
+  ASSERT_TRUE(graph);
+  const auto model = Places(c, *graph);
+  auto choices = Choices();
+  choices.group_set_rows = true;
+  auto measured = en::PlanGemma3Chunk(model, c.shape, choices, 0, 0);
+  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  auto placed = en::PlanGemma3Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
+                                    (*measured)->placement.extent);
+  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  std::size_t groups = 0, writes = 0;
+  for (const auto& step : (*placed)->plan.steps) {
+    if (step.operation != jitllm::execution::Operation::kSetRows) continue;
+    writes += step.nodes.size();
+    if (step.implementation == kg::kSetRowsGroupedName) {
+      ++groups;
+      std::vector<const ggml_tensor*> nodes(step.nodes.begin(), step.nodes.end());
+      EXPECT_TRUE(kg::CheckSetRowsGroup(nodes));
+    }
+  }
+  EXPECT_GT(groups, 0U);
+  EXPECT_EQ(writes, 4U * c.p.layers);
+  EXPECT_GE(en::PlannedHostBytes(**placed), (*placed)->arena->bytes());
+  EXPECT_EQ((*measured)->plan.steps.size(), (*placed)->plan.steps.size());
 }
 
 TEST(Gemma3Plan, MultirowOwnersRetainActualRootsAndNarrowShapeFallback) {

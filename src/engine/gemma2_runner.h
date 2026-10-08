@@ -45,6 +45,8 @@ struct Gemma2Options {
   // Optional no-victim growth for the next hinted chunk. Only fresh zero
   // sources; logical state/cursors are published by actual Use.
   bool prepare_state = true;
+  // Independent physical KV copies only; producers and default policy unchanged.
+  bool group_kv_stores = false;
   bool owner_decode = false, packed_prefill = false;
   // Exact ordinary-MMVQ preparation sharing; false retains the matched control.
   bool shared_q8 = true;
@@ -103,7 +105,8 @@ class Gemma2Runner final : public PagedModel {
                   owner_attention = 0, packed_prefill_attention = 0, owner_prefill_attention = 0,
                   flexible_owner_prefill_attention = 0, largest_owner_prefill_rows = 0,
                   largest_owner_prefill_kv_cells = 0, bounded_owner_attention = 0, device_masks = 0,
-                  q8_preparations = 0, prepared_mmvq_products = 0;
+                  q8_preparations = 0, prepared_mmvq_products = 0, grouped_store_steps = 0,
+                  grouped_stores = 0, primitive_store_steps = 0;
   };
   Gemma2Runner(PagedNode& node, Gemma2Options options, int owner, std::uint32_t stream);
   ~Gemma2Runner() override;

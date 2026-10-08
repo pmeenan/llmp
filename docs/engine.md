@@ -610,3 +610,8 @@ inherit these shared changes; actual performance was screened on DeepSeek/Qwen,
 with concurrency/lifetime controls and whole-node lock counters. Their narrow
 publication/eviction benefits establish no repair of the intermittent long tail
 and no per-family speed claim. See [partial-weight evidence](experiments/partial-weight-eviction/README.md).
+
+Independent GGML cache stores can use the shared checked physical grouping
+implementation, preserving primitive conversion, dependency order, lane tags
+and completion ownership. Gemma3 selects it; other measured recipients stay
+off after neutral results. [T86 controls and scope](experiments/grouped-kv-stores/README.md).

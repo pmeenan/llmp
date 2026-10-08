@@ -161,6 +161,8 @@ struct Qwen38Options {
   // Plain target greedy decode publication; scoring, sampling and speculation
   // keep their existing output contracts. False is the internal matched reference.
   bool device_tokens = true;
+  // Internal matched control for independent physical F32-to-F16 stores.
+  bool group_kv_stores = false;
   // Startup-only same-binary control. Runtime plans always retain exact placement.
   bool startup_activation_threshold = true;
   // Optional scalar prefill prediction; no future logical state is published.
@@ -711,6 +713,7 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t device_token_outputs() const { return device_token_outputs_; }
 
  private:
+  kernels::ggml::DeviceChoices Choices(kernels::ggml::LaunchContext& launch) const;
   struct TargetWork {
     Slot* slot;
     std::span<const std::int32_t> history;

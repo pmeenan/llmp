@@ -43,6 +43,7 @@
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/qwen38_graph.h"
+#include "kernels/ggml/set_rows_group.h"
 #include "model/qwen38.h"
 
 namespace {
@@ -548,7 +549,8 @@ class Qwen38WavePlanTest : public ::testing::Test {
 
   std::expected<std::unique_ptr<engine::Qwen38WavePlanned>, std::string> Plan(
       std::span<const Request> requests, bool paired = true, bool lanes = false,
-      std::optional<engine::ActivationMeasurement> measurement = std::nullopt) {
+      std::optional<engine::ActivationMeasurement> measurement = std::nullopt,
+      bool group_stores = false) {
     if (!state_.has_value()) {
       return std::unexpected(std::string("the fixture has no state layout"));
     }
@@ -567,8 +569,10 @@ class Qwen38WavePlanTest : public ::testing::Test {
                         .kind = r.kind});
       inputs.back().shape.token = r.token;
     }
+    auto choices = ModelDevice();
+    choices.group_set_rows = group_stores;
     return engine::PlanQwen38TargetWave(
-        inputs, ModelDevice(), {.paired = paired, .share_target_head = true, .lanes = lanes},
+        inputs, choices, {.paired = paired, .share_target_head = true, .lanes = lanes},
         measurement);
   }
 
@@ -594,6 +598,39 @@ class Qwen38WavePlanTest : public ::testing::Test {
         EXPECT_EQ(stats.bounded + stats.exact, 1U);
         EXPECT_EQ(stats.max_inputs, (*ordinary)->inputs_bytes);
       }
+    }
+  }
+
+  void CheckGroupedStores() {
+    EXPECT_FALSE(engine::Qwen38Options{}.group_kv_stores);
+    const std::array<Request, 2> requests = {Request{.slot = 0, .n_past = 100, .rows = 1},
+                                             Request{.slot = 2, .n_past = 3000, .rows = 3}};
+    for (const bool lanes : {false, true}) {
+      auto ordinary = Plan(requests, true, lanes);
+      auto grouped = Plan(requests, true, lanes, std::nullopt, true);
+      ASSERT_TRUE(ordinary) << ordinary.error();
+      ASSERT_TRUE(grouped) << grouped.error();
+      const auto& stats = (*grouped)->stats();
+      EXPECT_GT(stats.grouped_store_steps, 0U);
+      EXPECT_GT(stats.grouped_stores, stats.grouped_store_steps);
+      EXPECT_EQ((*ordinary)->stats().grouped_stores, 0U);
+      EXPECT_EQ(stats.vecq_pairs, (*ordinary)->stats().vecq_pairs);
+      EXPECT_EQ(stats.mxfp8_pairs, (*ordinary)->stats().mxfp8_pairs);
+      EXPECT_EQ(stats.routed_pairs, (*ordinary)->stats().routed_pairs);
+      const auto expand = [](const auto& plan) {
+        std::vector<std::pair<std::string_view, std::uint8_t>> steps;
+        for (const auto& step : plan.steps) {
+          if (step.implementation == kg::kSetRowsGroupedName)
+            for ([[maybe_unused]] const auto* node : step.nodes)
+              steps.emplace_back(kg::kSetRowsName, step.lane);
+          else
+            steps.emplace_back(step.implementation, step.lane);
+        }
+        return steps;
+      };
+      EXPECT_EQ(expand((*ordinary)->plan), expand((*grouped)->plan));
+      EXPECT_GT((*grouped)->placement.extent, 0U);
+      EXPECT_GT((*grouped)->host_bytes(), 0U);
     }
   }
 
@@ -692,6 +729,14 @@ TEST_F(Qwen38GgufWavePlanTest, StartupMeasurementPreservesTargetSelectorsLanesAn
 // Plain GGUF waves retain one-token reductions for dense, shared GLU,
 // routed GLU and per-expert down products. Ten experts per token cap a
 // group at twelve slots (120 pairs), even though dense products take sixteen.
+TEST_F(Qwen38WavePlanTest, GroupedStoresPreserveDenseCachePairsAndOwnerLanes) {
+  CheckGroupedStores();
+}
+
+TEST_F(Qwen38GgufWavePlanTest, GroupedStoresPreserveDenseCachePairsAndOwnerLanes) {
+  CheckGroupedStores();
+}
+
 TEST_F(Qwen38WavePlanTest, PlainTokensRetainIndependentHostCompatibleOutputs) {
   CheckPlainTokens();
 }

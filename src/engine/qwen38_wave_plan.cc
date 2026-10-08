@@ -22,6 +22,7 @@
 #include "engine/support.h"
 #include "ggml.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/set_rows_group.h"
 
 namespace jitllm::engine {
 
@@ -847,15 +848,53 @@ struct Qwen38WaveBuilder {
   }
 
   static std::expected<void, std::string> Authenticate(const Originals& originals,
-                                                       const Qwen38WavePlanned& out) {
+                                                       const Qwen38WavePlanned& out,
+                                                       bool group_requested) {
+    const auto grouped = [](const auto& plan) {
+      return std::ranges::any_of(plan.steps, [](const auto& step) {
+        return step.implementation == kg::kSetRowsGroupedName;
+      });
+    };
+    const bool expand_stores =
+        group_requested && (grouped(out.plan) || std::ranges::any_of(originals, grouped));
     const auto replaced = [&](const ggml_tensor* node) {
       return std::ranges::any_of(out.products_, [&](const Product& p) {
         return std::ranges::find(p.originals, node) != p.originals.end();
       });
     };
     for (const auto& plan : originals) {
+      if (expand_stores) {
+        std::vector<const ggml_tensor*> expected_stores;
+        for (const auto& step : plan.steps)
+          if (step.implementation == kg::kSetRowsName ||
+              step.implementation == kg::kSetRowsGroupedName)
+            expected_stores.insert(expected_stores.end(), step.nodes.begin(), step.nodes.end());
+        std::vector<const ggml_tensor*> actual_stores;
+        for (const auto& step : out.plan.steps)
+          if (step.implementation == kg::kSetRowsName ||
+              step.implementation == kg::kSetRowsGroupedName)
+            for (const auto* node : step.nodes)
+              if (std::ranges::find(expected_stores, node) != expected_stores.end())
+                actual_stores.push_back(node);
+        if (actual_stores != expected_stores)
+          return Error("Qwen3.8 wave changed cache store order or count");
+      }
       for (const auto& step : plan.steps) {
         if (step.nodes.size() == 1 && replaced(step.nodes.front())) {
+          continue;
+        }
+        // Grouping may change only the packaging of these exact primitive
+        // stores, including lane-boundary splits. All other fusions stay exact.
+        if (expand_stores && (step.implementation == kg::kSetRowsName ||
+                              step.implementation == kg::kSetRowsGroupedName)) {
+          for (const auto* node : step.nodes) {
+            const auto count = std::ranges::count_if(out.plan.steps, [&](const kg::PlanStep& s) {
+              return (s.implementation == kg::kSetRowsName ||
+                      s.implementation == kg::kSetRowsGroupedName) &&
+                     std::ranges::count(s.nodes, node) == 1;
+            });
+            if (count != 1) return Error("Qwen3.8 wave changed a physical cache store");
+          }
           continue;
         }
         const auto count = std::ranges::count_if(out.plan.steps, [&](const kg::PlanStep& s) {
@@ -939,7 +978,15 @@ struct Qwen38WaveBuilder {
         !made) {
       return made;
     }
-    return Authenticate(originals, out);
+    for (const auto& step : out.plan.steps) {
+      if (step.implementation == kg::kSetRowsGroupedName) {
+        ++out.stats_.grouped_store_steps;
+        out.stats_.grouped_stores += step.nodes.size();
+      } else if (step.implementation == kg::kSetRowsName) {
+        ++out.stats_.primitive_store_steps;
+      }
+    }
+    return Authenticate(originals, out, choices.group_set_rows);
   }
 
   static std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> Target(

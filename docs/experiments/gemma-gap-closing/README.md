@@ -178,3 +178,9 @@ These passed on `spark-b` against the first change's source:
 
 The full spark-native suite, the workstation tiers and Gemma26 adoption
 remain owed.
+
+The later [shared T86 transfer](../grouped-kv-stores/README.md) preserves this
+Dense31 neutral result without repetition. It groups compatible physical
+stores across other recipients; only Gemma3 selects it after its own bounded
+screen. Independent cache writes are compatible in Qwen/DeepSeek even when
+their attention reads different layouts.

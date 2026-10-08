@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Group independent Gemma3 KV stores under one checked launch, preserving
+  exact rounding, heads and initialized state. A bounded C2 screen reduces
+  combined paid prefill/decode time 0.45%; other measured recipients remain off.
+
 - Plan upcoming DeepSeek/DSpark and native/GGUF Qwen scalar prompt chunks and
   prepare eligible fresh backing beside current work, preserving exact heads,
   histories and target/drafter state. Short DSpark/MTP prefill takes 0.562%/0.936%

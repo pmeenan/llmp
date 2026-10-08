@@ -30,6 +30,7 @@
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
@@ -152,7 +153,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
     return Rejected("a row-invariant plan is planned without fusion");
   }
   if (device.fuse_norm_rope || device.fuse_norm_add || device.fuse_gemma_route ||
-      device.fuse_gemma_reduce || device.fuse_quant_glu) {
+      device.fuse_gemma_reduce || device.fuse_quant_glu || device.group_set_rows) {
     // OnlyReader examines every graph/keep storage root, including tensors
     // outside a prospective chain. Bound those traversals before selection.
     for (const auto* node : graph) {
@@ -492,6 +493,29 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         add(Operation::kRope, kRopeExtName, i, {node}, 1);
         break;
       case GGML_OP_SET_ROWS:
+        if (device.group_set_rows) {
+          std::array<const ggml_tensor*, kSetRowsGroupMax> checked{};
+          std::vector<ggml_tensor*> stores;
+          std::size_t end = i;
+          for (std::size_t j = i; j < graph.size() && stores.size() < kSetRowsGroupMax; ++j) {
+            if (taken[j]) break;
+            const auto* candidate = graph[j];
+            if (LaunchesNothing(candidate)) continue;
+            if (candidate->op != GGML_OP_SET_ROWS || !CheckSetRowsForGrouping(candidate)) break;
+            if (std::ranges::any_of(keep, [candidate](const auto* kept) {
+                  return kept != nullptr && detail::Overlap(candidate, kept);
+                }))
+              break;
+            checked[stores.size()] = candidate;
+            if (!stores.empty() && !CheckSetRowsGroup({checked.data(), stores.size() + 1})) break;
+            stores.push_back(graph[j]);
+            end = j + 1;
+          }
+          if (stores.size() > 1) {
+            add(Operation::kSetRows, kSetRowsGroupedName, i, std::move(stores), end - i);
+            break;
+          }
+        }
         // The backend proof's KV write takes F32 rows into F16 at I64 row
         // indices; everything else the extended implementation. (A
         // set_rows node's sources are the rows, the indices and then the
@@ -828,6 +852,47 @@ void AssignLanes(GraphPlan& plan, const LaneTags& tags,
   tag.reserve(tags.size());
   for (const auto& [tensor, t] : tags) {
     tag.emplace(tensor, t);
+  }
+  // Grouping never joins separately scheduled regions/lanes. Split those
+  // groups before deriving region indices, retaining the original stores.
+  const auto tag_of = [&](const ggml_tensor* node) {
+    const auto found = tag.find(node);
+    return found == tag.end() ? LaneTag{} : found->second;
+  };
+  const auto split_group = [&](const PlanStep& step) {
+    if (step.implementation != kSetRowsGroupedName || step.nodes.empty()) return false;
+    const auto first = tag_of(step.nodes.front());
+    return std::ranges::any_of(step.nodes, [&](const auto* node) {
+      const auto next = tag_of(node);
+      return next.lane != first.lane || next.region != first.region;
+    });
+  };
+  if (std::ranges::any_of(plan.steps, split_group)) {
+    std::vector<PlanStep> separated;
+    separated.reserve(plan.steps.size());
+    for (auto& step : plan.steps) {
+      if (split_group(step)) {
+        for (std::size_t first = 0; first < step.nodes.size();) {
+          const auto lane = tag_of(step.nodes[first]);
+          auto end = first + 1;
+          while (end < step.nodes.size()) {
+            const auto next = tag_of(step.nodes[end]);
+            if (next.lane != lane.lane || next.region != lane.region) break;
+            ++end;
+          }
+          separated.push_back(
+              {.operation = Operation::kSetRows,
+               .implementation = end - first > 1 ? kSetRowsGroupedName : kSetRowsName,
+               .nodes = {step.nodes.begin() + static_cast<std::ptrdiff_t>(first),
+                         step.nodes.begin() + static_cast<std::ptrdiff_t>(end)},
+               .lane = 0});
+          first = end;
+        }
+      } else {
+        separated.push_back(std::move(step));
+      }
+    }
+    plan.steps = std::move(separated);
   }
   std::map<std::uint32_t, GraphPlan::Region> spans;
   for (std::size_t s = 0; s < plan.steps.size(); ++s) {

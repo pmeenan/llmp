@@ -57,6 +57,7 @@
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "launch_recorder.h"
@@ -411,6 +412,121 @@ TEST_F(GgmlOpsTest, F16ApeRowsWidenExactlyAcrossMemoryDomains) {
     Launched(jitllm::kernels::ggml::GetRows(*launch, gathered), "F16 APE gather");
     EXPECT_EQ(Bits(Download(gathered)), Bits(want));
   }
+}
+
+TEST_F(GgmlOpsTest, GroupedStoresMatchPrimitiveFullBuffersAndChangedCapturedIndices) {
+  namespace kg = jitllm::kernels::ggml;
+  auto arena = TensorArena::Create(256).value();
+  auto* c = arena.context();
+  auto launch = Launcher();
+  ASSERT_TRUE(launch);
+  const auto declared = kg::Implementations();
+  const auto declaration = std::ranges::find(declared, kg::kSetRowsGroupedName,
+                                             &jitllm::execution::Implementation::name);
+  ASSERT_NE(declaration, declared.end());
+  const auto kernel = kg::Kernel::Bind(*declaration);
+  ASSERT_TRUE(kernel);
+  EXPECT_EQ(kernel->arity(), 0U);
+  struct Operand {
+    ggml_tensor *source, *ids, *ordinary_root, *grouped_root, *ordinary, *grouped;
+    std::vector<float> values;
+    std::vector<std::int64_t> indices;
+    std::vector<ggml_fp16_t> poison;
+  };
+  std::vector<Operand> operands;
+  std::vector<ggml_tensor*> grouped;
+  const std::array<float, 12> special{0.0f,
+                                      -0.0f,
+                                      1.00048828125f,
+                                      -1.00048828125f,
+                                      65504.0f,
+                                      65520.0f,
+                                      std::numeric_limits<float>::infinity(),
+                                      -std::numeric_limits<float>::infinity(),
+                                      std::bit_cast<float>(0x7fc12345U),
+                                      std::bit_cast<float>(0xffc12345U),
+                                      0x1p-25f,
+                                      -0x1p-25f};
+  for (std::size_t index = 0; index < kg::kSetRowsGroupMax; ++index) {
+    const std::int64_t width = index == 0 ? 257 : static_cast<std::int64_t>(1 + index * 3);
+    const std::int64_t rows = static_cast<std::int64_t>(1 + index % 5);
+    const std::int64_t planes = index == 0 ? 2 : 1;
+    const std::int64_t batches = index == 0 ? 3 : 1;
+    auto* source_root = ggml_new_tensor_4d(c, GGML_TYPE_F32, width, rows + 2, planes, batches);
+    std::vector<float> values(static_cast<std::size_t>(ggml_nelements(source_root)));
+    for (std::size_t i = 0; i < values.size(); ++i)
+      values[i] = special[(i + index) % special.size()];
+    source_root = Place(Memory::kCudaMalloc, source_root, values);
+    auto* source = ggml_view_4d(c, source_root, width, rows, planes, batches, source_root->nb[1],
+                                source_root->nb[2], source_root->nb[3], source_root->nb[1]);
+    std::vector<std::int64_t> indices(static_cast<std::size_t>(rows));
+    for (std::size_t row = 0; row < indices.size(); ++row)
+      indices[row] = static_cast<std::int64_t>((row * 7 + index) % 37);
+    auto* ids = Place(Memory::kCudaMalloc, ggml_new_tensor_1d(c, GGML_TYPE_I64, rows), indices);
+    // Guard columns/rows and nonpacked per-plane strides stay poisoned.
+    auto* ordinary_root = ggml_new_tensor_4d(c, GGML_TYPE_F16, width + 4, 39, planes, batches);
+    std::vector<ggml_fp16_t> poison(static_cast<std::size_t>(ggml_nelements(ordinary_root)),
+                                    std::bit_cast<ggml_fp16_t>(std::uint16_t{0x3555}));
+    ordinary_root = Place(Memory::kDeviceVmm, ordinary_root, poison);
+    auto* grouped_root =
+        Place(Memory::kDeviceVmm,
+              ggml_new_tensor_4d(c, GGML_TYPE_F16, width + 4, 39, planes, batches), poison);
+    const auto destination = [&](ggml_tensor* root) {
+      return ggml_view_4d(c, root, width, 37, planes, batches, root->nb[1], root->nb[2],
+                          root->nb[3], root->nb[1] + sizeof(ggml_fp16_t));
+    };
+    auto* ordinary = ggml_set_rows(c, destination(ordinary_root), source, ids);
+    auto* group = ggml_set_rows(c, destination(grouped_root), source, ids);
+    grouped.push_back(group);
+    operands.push_back({source_root, ids, ordinary_root, grouped_root, ordinary, group,
+                        std::move(values), std::move(indices), std::move(poison)});
+  }
+  Finish();
+  // Empty/over-capacity checks refuse without queuing any work.
+  EXPECT_FALSE(kernel->Run(*launch, {}));
+  auto too_many = grouped;
+  too_many.push_back(grouped.front());
+  EXPECT_FALSE(kernel->Run(*launch, too_many));
+  const auto compare = [&]() {
+    for (const auto& operand : operands) {
+      const auto ordinary = Download<ggml_fp16_t>(operand.ordinary_root);
+      const auto candidate = Download<ggml_fp16_t>(operand.grouped_root);
+      EXPECT_EQ(
+          std::memcmp(ordinary.data(), candidate.data(), ordinary.size() * sizeof(ggml_fp16_t)), 0);
+      EXPECT_EQ(std::bit_cast<std::uint16_t>(candidate.front()), 0x3555U);
+      EXPECT_EQ(std::bit_cast<std::uint16_t>(candidate.back()), 0x3555U);
+    }
+  };
+  for (const auto& operand : operands) ASSERT_TRUE(kg::SetRows(*launch, operand.ordinary));
+  const auto launches = Record([&] { EXPECT_TRUE(kernel->Run(*launch, grouped)); });
+  ASSERT_EQ(launches.size(), 1U);
+  EXPECT_EQ(launches.front().grid[1], kg::kSetRowsGroupMax);
+  std::cout << "GROUPED_STORES_ORACLE descriptors=" << grouped.size()
+            << " launches=" << launches.size() << " registers=" << launches.front().registers
+            << " local_bytes=" << launches.front().local
+            << " static_shared=" << launches.front().static_shared << '\n';
+  compare();
+  auto capture = launch->Capture([&](kg::LaunchContext& l) { return kernel->Run(l, grouped); });
+  ASSERT_TRUE(capture);
+  EXPECT_EQ(capture->nodes(), 1U);
+  for (auto& operand : operands) {
+    for (auto& value : operand.values) value = std::isfinite(value) ? value * -0.5f : value;
+    for (auto& row : operand.indices) row = (row + 11) % 37;
+    Upload(reinterpret_cast<std::uintptr_t>(operand.source->data), operand.values.data(),
+           operand.values.size() * sizeof(float));
+    Upload(reinterpret_cast<std::uintptr_t>(operand.ids->data), operand.indices.data(),
+           operand.indices.size() * sizeof(std::int64_t));
+    Upload(reinterpret_cast<std::uintptr_t>(operand.ordinary_root->data), operand.poison.data(),
+           operand.poison.size() * sizeof(ggml_fp16_t));
+    Upload(reinterpret_cast<std::uintptr_t>(operand.grouped_root->data), operand.poison.data(),
+           operand.poison.size() * sizeof(ggml_fp16_t));
+    ASSERT_TRUE(kg::SetRows(*launch, operand.ordinary));
+  }
+  Finish();
+  ASSERT_TRUE(launch->Launch(*capture));
+  compare();
+  EXPECT_EQ(launch->scratch_peak().value(), 0U);
+  EXPECT_FALSE(launch->faulted());
 }
 
 class GgmlOpsMemoryTest : public GgmlOpsTest {

@@ -32,6 +32,12 @@
 
 namespace jitllm::engine {
 
+kernels::ggml::DeviceChoices Qwen38Runner::Choices(kernels::ggml::LaunchContext& launch) const {
+  auto choices = kernels::ggml::DeviceChoicesOf(launch);
+  choices.group_set_rows = o_.group_kv_stores;
+  return choices;
+}
+
 namespace {
 
 namespace kg = jitllm::kernels::ggml;
@@ -572,7 +578,7 @@ Status Qwen38Runner::Setup() {
     if (!measure) {
       return std::unexpected(measure.error());
     }
-    const kg::DeviceChoices choices = kg::DeviceChoicesOf(**measure);
+    const kg::DeviceChoices choices = Choices(**measure);
     // Scalar and wave envelopes remain independent, including their first exact seed.
     const auto measurement =
         [&](std::uint64_t exact_maximum) -> std::optional<ActivationMeasurement> {
@@ -1784,7 +1790,7 @@ std::expected<Qwen38Runner::ChunkPlans::Entry*, std::string> Qwen38Runner::Plann
     return found;
   }
   const auto start = std::chrono::steady_clock::now();
-  auto planned = PlanQwen38Chunk(request.model, key.shape, kg::DeviceChoicesOf(resources_.launch()),
+  auto planned = PlanQwen38Chunk(request.model, key.shape, Choices(resources_.launch()),
                                  node_.activations().base, node_.activations().bytes, {}, key.kind);
   if (!planned) return std::unexpected(planned.error());
   return CachePrefillPlan(request, key, std::move(*planned),
@@ -1816,7 +1822,7 @@ std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::Planned
     return found;
   }
   const auto start = std::chrono::steady_clock::now();
-  auto planned = PlanQwen38Mtp(request.model, shape, kg::DeviceChoicesOf(resources_.launch()),
+  auto planned = PlanQwen38Mtp(request.model, shape, Choices(resources_.launch()),
                                node_.activations().base, node_.activations().bytes);
   if (!planned) return std::unexpected(planned.error());
   return CachePrefillMtp(request, shape, std::move(*planned),
@@ -2105,7 +2111,7 @@ std::expected<Qwen38Runner::TargetWaves::Entry*, std::string> Qwen38Runner::Plan
     }
   }
   auto& launch = resources_.launch();
-  auto planned = PlanQwen38TargetWave(inputs, kg::DeviceChoicesOf(launch),
+  auto planned = PlanQwen38TargetWave(inputs, Choices(launch),
                                       {.activations = node_.activations().base,
                                        .bytes = node_.activations().bytes,
                                        .paired = key.paired,
@@ -2144,7 +2150,7 @@ std::expected<Qwen38Runner::DraftWaves::Entry*, std::string> Qwen38Runner::Plann
     }
   }
   auto& launch = resources_.launch();
-  auto planned = PlanQwen38DraftWave(inputs, kg::DeviceChoicesOf(launch),
+  auto planned = PlanQwen38DraftWave(inputs, Choices(launch),
                                      {.activations = node_.activations().base,
                                       .bytes = node_.activations().bytes,
                                       .paired = key.paired,
@@ -3009,7 +3015,7 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
         ++prefill_stats_.refused;
     }
   }
-  const auto choices = funded ? kg::DeviceChoicesOf(launch) : kg::DeviceChoices{};
+  const auto choices = funded ? Choices(launch) : kg::DeviceChoices{};
   const std::function<void()> cpu = funded ? std::function<void()>([&] {
     const auto built = future.BuildAll([&](std::size_t i) {
       return PlanQwen38Chunk(request.model, keys[i].shape, choices, node_.activations().base,

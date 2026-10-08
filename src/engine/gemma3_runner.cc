@@ -15,6 +15,7 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/set_rows_group.h"
 
 namespace jitllm::engine {
 namespace kg = kernels::ggml;
@@ -37,6 +38,7 @@ Gemma3Runner::~Gemma3Runner() = default;
 kg::DeviceChoices Gemma3Runner::Choices(kg::LaunchContext& launch) const {
   auto choices = kg::DeviceChoicesOf(launch);
   choices.fuse_norms = o_.fuse_norms;
+  choices.group_set_rows = o_.group_kv_stores;
   choices.fuse_quant_glu = o_.fuse_quant_glu;
   choices.fuse_norm_rope = o_.fuse_norm_rope;
   choices.fuse_norm_add = o_.fuse_norm_add;
@@ -645,6 +647,10 @@ std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::CachePlann
     plan_selections_.norm_rope += selected.implementation == kg::kGemmaNormRopeName;
     plan_selections_.norm_add += selected.implementation == kg::kGemmaNormAddName;
     plan_selections_.owner_attention += selected.implementation == kg::kFlashAttnOwnersName;
+    plan_selections_.grouped_store_steps += selected.implementation == kg::kSetRowsGroupedName;
+    plan_selections_.grouped_stores +=
+        selected.implementation == kg::kSetRowsGroupedName ? selected.nodes.size() : 0;
+    plan_selections_.primitive_store_steps += selected.implementation == kg::kSetRowsName;
     plan_selections_.device_masks += selected.implementation == kg::kGemma4MaskName;
     for (const auto* node : selected.nodes) {
       plan_selections_.bounded_owner_attention +=

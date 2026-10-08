@@ -65,6 +65,8 @@ struct Gemma4Options {
   // Optional fresh-zero backing preparation beside the current prefill job.
   // It neither advances future cursors nor enables CPU plan lookahead.
   bool prepare_state = true;
+  // Independent physical KV copies only; producers and default policy unchanged.
+  bool group_kv_stores = false;
   // Explicit frontier-prefill capture policy, including one retained feature
   // per owner. Verification/all-row paths stay excluded; both profiles default off.
   bool capture_ahead = false;
@@ -303,6 +305,7 @@ class Gemma4Runner final : public PagedModel {
   std::size_t plan_count() const { return plans_.size(); }
   struct PolicyCounts {
     std::uint32_t rows = 0, segments = 0, norm_fused = 0, rope_store = 0;
+    std::uint32_t grouped_store_steps = 0, grouped_stores = 0, primitive_store_steps = 0;
     std::uint32_t shared_vecq = 0, row_products = 0, lane_steps = 0;
     std::uint32_t q8_preparations = 0, prepared_mmvq_products = 0;
     std::uint32_t norm_rope = 0, norm_add = 0;

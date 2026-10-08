@@ -96,6 +96,8 @@ struct DeviceChoices {
   // Explicit RoPE/direct-view/cache-store fusion without enabling upstream's
   // other fusion gates. Full operand checks and diagnostic keep apply.
   bool fuse_rope_store = false;
+  // Group independent consecutive physical KV stores; no producer fusion.
+  bool group_set_rows = false;
   // Upstream's quantized gate/up/GLU MMVQ fusion without enabling its other
   // fusion gates: where quant_glu_fusible (ops_ext.h MulMatVecQGluFusible)
   // holds and only the GLU reads the products. Default off.

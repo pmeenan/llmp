@@ -89,7 +89,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }  // namespace
 int main(int argc, char** argv) {
   if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") ||
-      (argc < 6 || argc > 17))
+      (argc < 6 || argc > 18))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
     return status ? 0 : 1;
   }
   bool bounded = false, device_masks = false, prefill_ahead = false, owner_prefill = false;
-  bool shared_q8 = false, prepare_state = false;
+  bool shared_q8 = false, prepare_state = false, group_stores = false;
   bool flexible = false, have_chunk = false, stock_ring = false, have_capacity = false;
   std::uint32_t lookahead_capacity = 1;
   std::optional<std::uint64_t> budget_override;
@@ -119,6 +119,8 @@ int main(int argc, char** argv) {
       device_masks = true;
     else if (flag == "prefill-ahead" && !prefill_ahead)
       prefill_ahead = true;
+    else if (flag == "group-stores" && !group_stores)
+      group_stores = true;
     else if (flag == "prepare-state" && !prepare_state)
       prepare_state = true;
     else if (flag == "owner-prefill" && !owner_prefill)
@@ -202,6 +204,7 @@ int main(int argc, char** argv) {
                         .capture_ahead = prefill_ahead,
                         .prefill_lookahead_capacity = lookahead_capacity,
                         .prepare_state = prepare_state,
+                        .group_kv_stores = group_stores,
                         .owner_decode = true,
                         .packed_prefill = true,
                         .shared_q8 = shared_q8,
@@ -662,6 +665,10 @@ int main(int argc, char** argv) {
           << " selected_bounded_owner=" << bound.bounded_owner_attention
           << " shared_q8=" << shared_q8 << " q8_preparations=" << bound.q8_preparations
           << " prepared_mmvq_products=" << bound.prepared_mmvq_products
+          << " group_stores=" << group_stores
+          << " selected_grouped_store_steps=" << bound.grouped_store_steps
+          << " selected_grouped_stores=" << bound.grouped_stores
+          << " selected_primitive_store_steps=" << bound.primitive_store_steps
           << " selected_norm_mul=" << bound.norm_mul
           << " selected_quant_geglu=" << bound.quant_geglu
           << " selected_norm_rope=" << bound.norm_rope << " selected_norm_add=" << bound.norm_add
