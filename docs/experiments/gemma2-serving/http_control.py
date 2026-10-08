@@ -127,6 +127,7 @@ def main():
         extra = json.loads(rows[0])
         assert extra['architecture'] == 'gemma2' and extra['recipe'] == 'bounded-8192-two-owner'
         assert extra['max_rows'] == 128 and extra['max_wave_rows'] == 256
+        assert extra['device_masks'] is True and extra['bound_device_masks'] > 0
         result['epochs'].append(dict(epoch=epoch, exit=rc, final=extra, log_sha256=sha(args.output/f'runtime{epoch}.log')))
 
     def case(name, fn):

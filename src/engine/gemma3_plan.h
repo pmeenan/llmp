@@ -44,9 +44,10 @@ std::expected<std::unique_ptr<Gemma3Planned>, std::string> PlanGemma3Chunk(
     const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
     std::uint64_t activation_bytes, std::span<const std::string> keep = {});
 
-// Graphs own/stage padded host reference masks; their O(rows*n_kv) host cost is
-// fully funded. `chunk`/`hidden` must outlive staging, the returned object owns
-// frontier IDs and every padded mask. `funded_bytes` is a caller-held grant,
+// Host-reference graphs stage funded padded masks; device-mask graphs keep
+// those matrices in activation storage and stage only checked positions/indices.
+// `chunk`/`hidden` must outlive staging; the returned object owns frontier IDs
+// and any host-reference mask padding. `funded_bytes` is a caller-held grant,
 // checked before allocation, not an internally obtained memory reservation.
 // Move-only ownership keeps the staged pointers into owned buffers stable.
 struct Gemma3HostInputs {

@@ -347,3 +347,108 @@ analysis helper were added after the causal screen. The latest task-entry
 TensorFold HEAD is again `041d14a94e951834470fd514ed33e65b8be1059a`,
 with unchanged documented Gemma2 applicability. Raw payloads, prompts, logs,
 traces and method queues remain private and external.
+
+## Shared GPU masks (2026-10-07)
+
+Ordinary Gemma2 runners now reuse the unchanged Gemma3/Gemma 4 causal/ring mask
+producer. Host-reference graph construction and an explicit runner override remain
+available. Cap50 attention, state layout, 128 rows per owner, 256 joined rows,
+4,096-token visibility and local capacity 4,352 are unchanged. The ring proof uses
+capacity >= window + **per-segment** rows, including offset 128 in a joined wave.
+Every padded F16 row remains negative infinity.
+
+`engine/graph_mask_inputs.h` shares producer/descriptor validation and host padded
+staging across Gemma2, Gemma3 and both Gemma 4 profiles. It checks positions,
+all five producer parameters, view/source identity, unique graph membership and
+absence from host inputs before removing host mask funding. Device masks remain
+funded activations; no physical mask-allocation elimination is claimed. G2 sources
+still validate every token, position and global/local cache index. The explicit
+host path keeps its existing source order and complete visibility checks.
+
+The first representative control uses the previously qualified actual-tokenizer
+4,352/4,864 prefixes, then three supplied rows, 32 joined steps and four departure
+steps per owner. Host/device executions match all 76 full heads, 72 choices and
+initialized state hashes byte for byte, including the retained qualified native
+oracle. Device/full-head publication, protected peers, refusal, Clear, spill/restore
+and checkpoint next-continuation replay remain exact. Each own run selects 102 mask
+producer steps in bound plans; this excludes Setup and counts plans, not replayed
+kernel launches.
+
+The same-binary H1/D1/D2/H2 performance screen uses fresh processes, a warm prefix,
+three supplied rows/eight joined steps, logical Clear with retained backing/plans,
+paid compatible prefill, three off-clock supplied rows and 32 paid natural joined
+steps. The last step publishes two complete heads inside the decode timer; payload
+file writes stay outside both paid intervals. All four 64-token histories and two
+final heads match exactly. Each arm records 26 captures and 78 replays; device arms
+select 90 mask producer steps in bound plans, host arms zero.
+
+| Arm | Prefill s | Decode s |
+| --- | ---: | ---: |
+| Host H1 | 1.374160 | 0.548300 |
+| Device D1 | 1.286700 | 0.544513 |
+| Device D2 | 1.286310 | 0.547098 |
+| Host H2 | 1.381140 | 0.547780 |
+
+Mean prefill falls 1.377650 → 1.286505 s (**6.616%**). Decode changes
+0.548040 → 0.5458055 s (−0.408%), within run-to-run noise at n=2.
+
+A separate fresh R1/N1/N2/R2 uses the same inputs and paid work, original pinned
+llama.cpp public backend sampling, F16 KV and false/false full-SWA/unified-cache
+policy. Its sampled-logit transfers remain ordinary reference work. All 64 choices
+and both complete final heads are byte exact across the four arms.
+
+| Arm | Prefill s | Decode s |
+| --- | ---: | ---: |
+| Stock R1 | 1.206630 | 0.547259 |
+| Native N1 | 1.282630 | 0.545772 |
+| Native N2 | 1.280930 | 0.546565 |
+| Stock R2 | 1.195480 | 0.546205 |
+
+Native means are 1.281780 s prefill and 0.5461685 s decode; stock means are
+1.201055 and 0.546732 s. Native prefill remains **6.721% slower**, decode differs
+−0.103% within noise, and paid cycle is 1.8279485 vs 1.747787 s (**4.586% slower**).
+These wrapped prefixes are longer than the earlier 256/768 screen, so this is not
+a change to its historical result. Lookahead/capture transfer remains open.
+No sustained, endpoint, full-corpus, broader-context or memory parity is claimed.
+
+Two fresh original stock teacher runs also reproduce every retained qualified
+stock payload exactly. Together with exact native host/device/oracle payloads,
+this preserves the original 73/76 stock-exact heads, zero strict/tie differences,
+relative conditional-loss delta 1.59279e−9 and mean TV 4.73244e−9. There is no new
+quality allowance or full-PPL claim; the natural final heads have no target-NLL label.
+All four new reference containers are checked absent after retirement.
+
+Focused verification on Spark A passes 10 Gemma2, 15 Gemma3 and 17 Gemma4 plan
+cases, three full-buffer mask GPU cases, two Gemma2 metadata and four checkpoint
+GPU cases: **51 tests**, with positive XML counts and no skips. New mask controls
+cover scalar/128-row owners, offset 128, ring wrap, the 8K boundary, fresh positions,
+eager/capture/replay, guards and complete padded bytes. Shared-source checks include
+malformed Gemma4 view/extra-parent/duplicate-or-missing-node/input refusals. The
+ordinary runtime also passes all five HTTP cases and both clean restart epochs,
+selecting 72/16 mask producer steps respectively. Exact cached scalar/joined and
+restart responses, finite likelihoods, SSE/stops and queued peer progress remain
+checked; no endpoint timing comparison is made. The full regression suite remains
+deferred under the owner's Gemma optimization override.
+
+Provenance: Spark A/GB10, driver 580.178.04, SDK `aarch64-c09daba6ac31edee`, CUDA
+13.4/cuBLAS 130800, approved Q8_0 artifact
+`eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870` and
+GGUF `2d448a9aab894b8e8e18168cf3f490cb9f65632222f29f93514ac9ecc754debe`.
+Input SHA-256 values are
+`102c7b555b1caed5aed3d9880a173aae153f8f8dc1534e6a4c58685c243b6c0c` and
+`a930726bd964ae88ef0448f50a51d2e376ce2487313f26063ab84c1b0b41d77f`.
+The measured code starts from `3ab8d5c`; the actual native probe is
+`e177bc6e8943e9083f4b76481c47b46ec22125c6b47dd957767d04a5b07d5855`, the
+adopted runtime `00a263475907fa5f20df20940177e8b91179fd5cd445918e0fe660a7a6cea07a`.
+Stock remains `d81235049384534c167caea52b85a694f6103d14` with original image
+`c604ea4f1c2e8d5c8b27d89fef727384d59e23c5b07e369cde5393820e0607db` and helper
+`49961825ca4b2e1c9ee0f5a2073aee1646cdd961cf9b8f594dc202d883780def`.
+TensorFold task-entry HEAD is `f8fe17d24629aedabf90bbf78279dd776e6d62e7`, with no
+listed Gemma2 CUDA/GGUF recipe; llama.cpp is the applicable target.
+
+Installed jobs `m35-gemma2-mask-check2`, `m35-gemma2-mask-screen1`,
+`m35-gemma2-mask-reference-copy1`, `m35-gemma2-mask-adopt-check1` and
+`m35-gemma2-mask-reference1` finish with exit zero. Initial `mask-check1` retains
+its failed fixture-environment launch; it ran no model, and the corrected launcher
+reused its successful build. Raw outputs and bound methods remain outside Git at
+Spark A `~/.local/share/jitllm/gemma2-mask*` for M3.5 cleanup.

@@ -182,6 +182,17 @@ lazy handoff and handle reserve) come with the skeleton; those still
 written per runner (GPU-built masks, the prefill lookahead hook, the
 device greedy token) are ported until they move into the engine.
 
+Causal/ring mask source validation and padded host staging are shared in
+`engine/graph_mask_inputs.h`, used by Gemma2, Gemma3 and both Gemma 4 profiles.
+`GraphMaskSourceBytes` authenticates the complete graph-owned producer, positions,
+per-segment row offset, capacity/window/context and unique node/input membership
+before excluding device-mask bytes from the host-input grant. Mask activations
+remain funded. `StageHostGraphMask` retains the explicit host-reference path and
+fills every padded F16 row with negative infinity. A new compatible adapter uses
+these helpers with the existing mask kernel; sparse/select masks need their own
+visibility contract. The [Gemma2 transfer](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07)
+checks joined 128-row owners, ring wrap, fresh captured positions and restart.
+
 The [Gemma2 runner](gemma2.md) reuses held requests, charged outputs and
 capture ownership, retained Clear and initialized-state spill/restore. It
 admits only the approved 2B Q8_0 artifact with one or two slots, separate F16 KV and

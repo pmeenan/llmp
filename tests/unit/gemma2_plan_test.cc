@@ -517,4 +517,106 @@ TEST(Gemma2Plan, JoinedPrefillFundsTotalRowsWithoutChangingSlotLayout) {
   EXPECT_FALSE(kg::CheckGemma2Graph(c.p, c.binding, c.state, invalid, options));
 }
 
+TEST(Gemma2Plan, DeviceMasksBindFreshSegmentPositionsAndExcludeHostMatrices) {
+  Case c;
+  c.state = *md::Gemma2State(c.p, 8192, 128);
+  const std::array<std::int32_t, 128> tokens{};
+  EXPECT_FALSE(kg::Gemma2GraphOptions{}.device_masks);
+  for (const auto [past, rows] :
+       {std::pair{4351U, 1U}, std::pair{4224U, 128U}, std::pair{7936U, 128U}}) {
+    const std::array segments{md::Gemma2Segment{0, past, std::span(tokens).first(rows)},
+                              md::Gemma2Segment{1, past + rows, std::span(tokens).first(rows)}};
+    auto input = md::Gemma2Chunk(c.p, c.state, segments, false, 256, 256);
+    ASSERT_TRUE(input);
+    kg::Gemma2ChunkShape shape;
+    shape.outputs = 2;
+    for (const auto& seg : input->segments)
+      shape.segments.push_back({seg.slot, seg.rows, seg.n_past, seg.global_n_kv, seg.local_n_kv});
+    auto arena = kg::TensorArena::Create(kg::Gemma2GraphTensors(c.p, 2));
+    ASSERT_TRUE(arena);
+    auto graph = kg::BuildGemma2Graph(*arena, c.p, c.binding, c.state, shape,
+                                      {.max_total_rows = 256, .device_masks = true});
+    ASSERT_TRUE(graph);
+    auto model = Places(c, *graph);
+    EXPECT_TRUE(en::BindGemma2Weights(model, *graph));
+    auto planned = en::PlanGemma2Chunk(model, shape, Choices(), std::uint64_t{1} << 30U,
+                                       std::uint64_t{1} << 29U);
+    ASSERT_TRUE(planned);
+    EXPECT_EQ(std::ranges::count_if(
+                  (*planned)->plan.steps,
+                  [](const auto& step) { return step.implementation == kg::kGemma4MaskName; }),
+              4);
+    std::uint64_t mask_bytes = 0;
+    for (const auto& seg : (*planned)->graph.segments)
+      for (const auto* mask : {seg.global_mask, seg.local_mask}) {
+        EXPECT_NE(mask->data, nullptr);
+        mask_bytes += ggml_nbytes(mask);
+      }
+    EXPECT_GE((*planned)->placement.extent, mask_bytes);
+    const auto bytes = en::Gemma2SourceBytes(*graph);
+    ASSERT_TRUE(bytes);
+    EXPECT_LT(*bytes, 1024);
+    const std::array<std::int32_t, 2> frontier{static_cast<std::int32_t>(rows - 1),
+                                               static_cast<std::int32_t>(2 * rows - 1)};
+    auto source = en::Gemma2Sources(*graph, *input, frontier, {}, *bytes);
+    ASSERT_TRUE(source);
+    EXPECT_TRUE(source->masks.empty());
+    EXPECT_EQ(source->sources.size(), graph->inputs.size());
+    EXPECT_FALSE(en::Gemma2Sources(*graph, *input, frontier, {}, *bytes - 1));
+    for (const auto& seg : graph->segments) {
+      for (auto* mask : {seg.global_mask, seg.local_mask}) {
+        EXPECT_TRUE(kg::Gemma4MaskFits(mask));
+        EXPECT_EQ(std::ranges::count(graph->nodes, mask), 1);
+        EXPECT_FALSE(std::ranges::contains(graph->inputs, mask));
+        EXPECT_EQ(kg::JitllmOpInt(mask, 0), seg.first_row);
+        EXPECT_EQ(kg::JitllmOpInt(mask, 1), rows);
+        const std::vector<std::int32_t> saved(std::begin(mask->op_params),
+                                              std::end(mask->op_params));
+        for (std::uint32_t index = 0; index < 5; ++index) {
+          std::array<std::int32_t, 5> params{};
+          for (std::uint32_t i = 0; i < 5; ++i)
+            params[i] = kg::JitllmOpInt(mask, static_cast<int>(i));
+          ++params[index];
+          auto* wrong = kg::Gemma4Mask(arena->context(), graph->positions, mask->ne[0], params[0],
+                                       params[1], params[2], params[3], params[4]);
+          std::ranges::copy(wrong->op_params, mask->op_params);
+          EXPECT_FALSE(en::Gemma2SourceBytes(*graph));
+          std::ranges::copy(saved, mask->op_params);
+        }
+        mask->src[0] = graph->tokens;
+        EXPECT_FALSE(en::Gemma2SourceBytes(*graph));
+        mask->src[0] = graph->positions;
+        mask->src[2] = graph->tokens;
+        EXPECT_FALSE(en::Gemma2SourceBytes(*graph));
+        mask->src[2] = nullptr;
+        graph->inputs.push_back(mask);
+        EXPECT_FALSE(en::Gemma2SourceBytes(*graph));
+        graph->inputs.pop_back();
+      }
+    }
+    for (const auto kind : {0, 1, 2, 3, 4}) {
+      auto bad = *input;
+      if (kind == 0) ++bad.positions[rows];
+      if (kind == 1) ++bad.segments[1].global_cells.back();
+      if (kind == 2) ++bad.segments[1].local_cells.back();
+      if (kind == 3) bad.tokens.back() = -1;
+      if (kind == 4) bad.segments[0].global_mask.push_back(0);
+      EXPECT_FALSE(en::Gemma2Sources(*graph, bad, frontier, {}, *bytes));
+    }
+    for (auto& seg : input->segments) {
+      const std::int32_t delta = (seg.n_past + rows) % 256 == 0 ? -1 : 1;
+      seg.n_past = static_cast<std::uint32_t>(static_cast<std::int64_t>(seg.n_past) + delta);
+      for (std::uint32_t r = 0; r < rows; ++r) {
+        input->positions[seg.first_row + r] += delta;
+        seg.global_cells[r] += delta;
+        seg.local_cells[r] = (seg.n_past + r) % c.state.local_cells;
+      }
+    }
+    // Same read bucket and graph, fresh positions beside a ring boundary.
+    EXPECT_TRUE(en::Gemma2Sources(*graph, *input, frontier, {}, *bytes));
+    graph->options.device_masks = false;
+    EXPECT_FALSE(en::Gemma2SourceBytes(*graph));
+  }
+}
+
 }  // namespace

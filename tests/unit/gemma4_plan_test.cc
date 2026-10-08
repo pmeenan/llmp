@@ -528,6 +528,27 @@ TEST(Gemma4Plan, DeviceMasksReuseTheSameGraphAcrossARingWrap) {
   EXPECT_TRUE(after->masks.empty());
   EXPECT_EQ(c.input.segments[0].local_cells, (std::vector<std::int64_t>{1, 2}));
   EXPECT_EQ(g->segments[0].shape.n_past, 2559U);
+  for (auto* mask : {g->segments[0].global_mask, g->segments[0].local_mask}) {
+    mask->view_src = g->positions;
+    EXPECT_FALSE(en::Gemma4SourceBytes(*g));
+    mask->view_src = nullptr;
+    mask->src[2] = g->tokens;
+    EXPECT_FALSE(en::Gemma4SourceBytes(*g));
+    mask->src[2] = nullptr;
+    g->nodes.push_back(mask);
+    EXPECT_FALSE(en::Gemma4SourceBytes(*g));
+    g->nodes.pop_back();
+    const auto where = std::ranges::find(g->nodes, mask);
+    ASSERT_NE(where, g->nodes.end());
+    const auto index = std::distance(g->nodes.begin(), where);
+    g->nodes.erase(where);
+    EXPECT_FALSE(en::Gemma4SourceBytes(*g));
+    g->nodes.insert(g->nodes.begin() + index, mask);
+    g->inputs.push_back(mask);
+    EXPECT_FALSE(en::Gemma4SourceBytes(*g));
+    g->inputs.pop_back();
+    EXPECT_TRUE(en::Gemma4SourceBytes(*g));
+  }
 }
 
 TEST(Gemma4Plan, BoundedBindingRefusesShortOverlappingAndOverflowingRegionsWithoutPartialBind) {

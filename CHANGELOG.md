@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Build Gemma2 causal/ring masks on the GPU using shared mask-source checks
+  across Gemma2, Gemma3 and Gemma 4. Wrapped two-owner prefill improves about
+  6.6%, with exact heads/state and checked restart replay.
+
 - Keep a small reserve of device memory handles created ahead of need and
   zero new conversation state on the GPU instead of reading it from disk:
   growing state during long prefills costs about 38% less (Gemma3 at 131K

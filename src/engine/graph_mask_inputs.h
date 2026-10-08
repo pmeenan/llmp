@@ -1,0 +1,64 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// Shared causal/ring mask source contract for native GGML graph adapters.
+#ifndef JITLLM_ENGINE_GRAPH_MASK_INPUTS_H_
+#define JITLLM_ENGINE_GRAPH_MASK_INPUTS_H_
+
+#include <algorithm>
+#include <cstdint>
+#include <expected>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "engine/support.h"
+#include "kernels/ggml/jitllm_ops.h"
+
+namespace jitllm::engine {
+// Device masks are graph activations, never staged inputs. Authenticate the
+// complete producer before excluding its bytes from the host-input grant.
+inline std::expected<std::uint64_t, std::string> GraphMaskSourceBytes(
+    const ggml_tensor* mask, const ggml_tensor* positions, std::span<ggml_tensor* const> nodes,
+    std::span<ggml_tensor* const> inputs, bool device, std::uint32_t first_row, std::uint32_t rows,
+    std::uint32_t cells, std::uint32_t capacity, std::uint32_t window, std::uint32_t context) {
+  namespace kg = kernels::ggml;
+  if (mask == nullptr || cells == 0 || cells > INT32_MAX / 2 || rows == 0 ||
+      rows > static_cast<std::uint32_t>(INT32_MAX - 31) ||
+      ((std::uint64_t{rows} + 31) / 32 * 32) > INT32_MAX / 2 / cells ||
+      mask->type != GGML_TYPE_F16 || mask->view_src != nullptr || mask->ne[0] != cells ||
+      mask->ne[1] != ((std::int64_t{rows} + 31) / 32 * 32) || mask->ne[2] != 1 ||
+      mask->ne[3] != 1 || mask->nb[0] != 2 || mask->nb[1] != std::uint64_t{cells} * 2 ||
+      mask->nb[2] != mask->nb[1] * static_cast<std::uint64_t>(mask->ne[1]) ||
+      mask->nb[3] != mask->nb[2])
+    return support::Error("malformed causal/ring mask descriptor");
+  if (!device) {
+    if (mask->op != GGML_OP_NONE || std::ranges::count(inputs, mask) != 1)
+      return support::Error("reference mask is not a unique host input");
+    return ggml_nbytes(mask);
+  }
+  if (std::ranges::contains(inputs, mask) || !kg::Gemma4MaskFits(mask) ||
+      std::ranges::count(nodes, mask) != 1 || mask->src[0] != positions ||
+      std::ranges::any_of(std::span(mask->src).subspan(1),
+                          [](const auto* source) { return source != nullptr; }) ||
+      kg::JitllmOpInt(mask, 0) != static_cast<std::int64_t>(first_row) ||
+      kg::JitllmOpInt(mask, 1) != static_cast<std::int64_t>(rows) ||
+      kg::JitllmOpInt(mask, 2) != static_cast<std::int64_t>(capacity) ||
+      kg::JitllmOpInt(mask, 3) != static_cast<std::int64_t>(window) ||
+      kg::JitllmOpInt(mask, 4) != static_cast<std::int64_t>(context))
+    return support::Error("device mask differs from its graph-owned position producer");
+  return 0;
+}
+
+// Call only after logical visibility and GraphMaskSourceBytes are checked.
+// Reserving both vectors first keeps all staged pointers stable through launch.
+inline void StageHostGraphMask(ggml_tensor* mask, std::span<const std::uint16_t> logical,
+                               std::vector<std::vector<std::uint16_t>>& storage,
+                               std::vector<std::pair<ggml_tensor*, const void*>>& sources) {
+  auto& padded = storage.emplace_back(ggml_nbytes(mask) / sizeof(std::uint16_t), 0xFC00);
+  std::ranges::copy(logical, padded.begin());
+  sources.emplace_back(mask, padded.data());
+}
+}  // namespace jitllm::engine
+#endif  // JITLLM_ENGINE_GRAPH_MASK_INPUTS_H_

@@ -305,7 +305,7 @@ bounded serving for both approved profiles. Both select their checked
 Gemma3 4B QAT keeps its 4K default/two-slot route and admits explicit 8448
 context with one slot; checked 8K boundary and model-switch state gates
 complement its ring, checkpoint/restore and restart-adoption controls.
-[Gemma2 2B](docs/gemma2.md) has bounded 8K/two-slot serving with checked cap50
+[Gemma2 2B](docs/gemma2.md) has bounded 8K/two-slot serving with GPU masks, checked cap50
 compatible prefill, template refusal and restart replay.
 Broader reference, batching and sustained qualification remain open.
 The retroactive optimization transfer audit now records every current

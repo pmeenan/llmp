@@ -82,6 +82,15 @@ pass with actual joined groups. The earlier padded short n=2 C2 cycle retained
 a 5.78% stock latency gap. At that snapshot, mixed ring/joint-prefill and broader
 qualification remained open. This is not a full execution support entry.
 
+A later [GPU-mask transfer](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07)
+removes host mask construction/staging from ordinary runners and shares source
+validation with Gemma3/Gemma 4. At wrapped 4,352/4,864 prefixes, same-native
+prefill improves 6.616% with exact heads/state. Fresh stock teachers preserve
+zero strict choices; five HTTP/restart and four checkpoint GPU cases pass.
+The fresh n=2 wrapped C2 cycle remains 4.586% slower than stock, with decode
+within noise. This longer workload is separate from the earlier short-prefix
+comparison below; lookahead/capture and broader qualification remain open.
+
 The subsequent copy-free bounded cap50 owner policy is selected by this recipe.
 It preserves original logical attention geometry, 128 rows per owner and local
 ring 4,352. Four poisoned operands and 22 focused controls pass; small and

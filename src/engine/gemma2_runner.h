@@ -38,6 +38,7 @@ struct Gemma2Options {
   std::uint32_t max_head_rows = 0;
   bool graphs = true, frontier_head = true;
   bool owner_decode = false, packed_prefill = false;
+  bool device_masks = true;    // explicit false retains the host-reference comparison
   bool bounded_roots = false;  // selected by the checked bounded cap50 C2 serving recipe
   // Explicit numerical comparisons only; ordinary plans use primitives.
   bool fuse_norms = false, fuse_quant_glu = false, fuse_norm_rope = false, fuse_norm_add = false;
@@ -84,7 +85,8 @@ class Gemma2Runner final : public PagedModel {
   // plans later reclaimed. Setup's envelope probes are not counted.
   struct PlanSelections {
     std::uint64_t plans = 0, steps = 0, norm_mul = 0, quant_geglu = 0, norm_rope = 0, norm_add = 0,
-                  owner_attention = 0, packed_prefill_attention = 0, bounded_owner_attention = 0;
+                  owner_attention = 0, packed_prefill_attention = 0, bounded_owner_attention = 0,
+                  device_masks = 0;
   };
   Gemma2Runner(PagedNode& node, Gemma2Options options, int owner, std::uint32_t stream);
   ~Gemma2Runner() override;

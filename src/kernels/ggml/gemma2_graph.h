@@ -48,6 +48,7 @@ struct Gemma2GraphOptions {
   // Original attention keeps the approved softcap50 specialization.
   bool packed_prefill = false;
   // Diagnostic C2 cap50 transfer; preserve actual roots at common logical width.
+  bool device_masks = false;  // graph-owned causal/ring producer, host reference remains explicit
   bool bounded_roots = false;
   bool operator==(const Gemma2GraphOptions&) const = default;
 };

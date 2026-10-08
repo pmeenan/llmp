@@ -435,7 +435,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T11** Reuse decode Q8 quantization.
         - [ ] **T15** Concurrent per-owner graph lanes.
-        - [ ] **T22** Graph-owned GPU attention masks.
+        - [x] **T22** Graph-owned GPU attention masks: same-native wrapped C2
+          prefill −6.616%, exact heads/state and ordinary restart controls;
+          native paid cycle remains 4.586% above fresh stock (n=2).
         - [ ] **T23** Single-request prefill lookahead/capture ahead.
         - [ ] **T41** Residual-add plus next normalization.
         - [ ] **T55** Joined prefill lookahead/capture hints.
@@ -445,7 +447,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T63** Fast exact host causal-mask fill/check.
         - [ ] **T67** Prepare next chunk state beside current work.
         - [ ] **T68** Evict only incoming closure deficit.
-        - [ ] **T69** Shared GPU-mask construction contract.
+        - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
+          producer validation and padded host staging shared across Gemma plans;
+          [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
         - [ ] **T70** Shared lookahead/capture hook.
         - [ ] **T86** Grouped physical KV stores.
       - **Gemma3 4B QAT**
@@ -459,7 +463,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T61** Wider/partial bounded owner-root variants.
         - [ ] **T67** Prepare next chunk state beside current work.
         - [ ] **T68** Evict only incoming closure deficit.
-        - [ ] **T69** Shared GPU-mask construction contract.
+        - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
+          producer validation and padded host staging shared across Gemma plans;
+          [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
         - [ ] **T70** Shared lookahead/capture hook.
         - [ ] **T86** Grouped physical KV stores.
       - **Gemma4 26B-A4B / assistant**
@@ -486,7 +492,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T63** Fast exact host causal-mask fill/check.
         - [ ] **T67** Prepare next chunk state beside current work.
         - [ ] **T68** Evict only incoming closure deficit.
-        - [ ] **T69** Shared GPU-mask construction contract.
+        - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
+          producer validation and padded host staging shared across Gemma plans;
+          [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
         - [ ] **T70** Shared lookahead/capture hook.
         - [ ] **T71** Assistant-specific optimized execution.
         - [ ] **T72** Expert worklist sharing across vector products.
@@ -509,7 +517,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T63** Fast exact host causal-mask fill/check.
         - [ ] **T67** Prepare next chunk state beside current work.
         - [ ] **T68** Evict only incoming closure deficit.
-        - [ ] **T69** Shared GPU-mask construction contract.
+        - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
+          producer validation and padded host staging shared across Gemma plans;
+          [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
         - [ ] **T70** Shared lookahead/capture hook.
         - [ ] **T71** Assistant-specific optimized execution.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.

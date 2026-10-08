@@ -66,6 +66,7 @@
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
+#include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
 #include "providers/cuda/cuda_device_execution.h"
@@ -319,6 +320,103 @@ TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMa
         segments[segment].n_past =
             static_cast<std::uint32_t>(static_cast<std::int64_t>(segments[segment].n_past) + delta);
         auto fresh = jitllm::model::Gemma3Chunk(profile, state, segments, true, 256, 256);
+        ASSERT_TRUE(fresh);
+        ASSERT_EQ(fresh->segments[segment].global_n_kv, input.global_n_kv);
+        ASSERT_EQ(fresh->segments[segment].local_n_kv, input.local_n_kv);
+        ASSERT_EQ(cudaMemcpyAsync(positions->data, fresh->positions.data(), ggml_nbytes(positions),
+                                  cudaMemcpyHostToDevice, stream),
+                  cudaSuccess);
+        poison();
+        ASSERT_TRUE(launch().Launch(*captured));
+        const auto replay = Download<std::uint16_t>(mask);
+        EXPECT_EQ(replay, expected(*fresh));
+        poison();
+        ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+        EXPECT_EQ(Download<std::uint16_t>(mask), replay);
+        EXPECT_EQ(Download<std::int32_t>(positions), fresh->positions);
+        guards();
+        segments[segment].n_past =
+            static_cast<std::uint32_t>(static_cast<std::int64_t>(segments[segment].n_past) - delta);
+        ASSERT_EQ(cudaMemcpyAsync(positions->data, host->positions.data(), ggml_nbytes(positions),
+                                  cudaMemcpyHostToDevice, stream),
+                  cudaSuccess);
+        const auto saved = positions->type;
+        positions->type = GGML_TYPE_F32;
+        EXPECT_FALSE(kg::RunGemma4Mask(launch(), mask));
+        positions->type = saved;
+        EXPECT_FALSE(launch().faulted());
+      }
+    }
+  }
+}
+
+TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBoundary) {
+  const auto submission = execution_->Submission(stream_);
+  ASSERT_TRUE(submission);
+  const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
+  const auto& profile = jitllm::model::Gemma2_2B();
+  const auto state = *jitllm::model::Gemma2State(profile, 8192, 128);
+  const std::array<std::int32_t, 128> tokens{};
+  for (const auto [past, rows] :
+       {std::pair{4351U, 1U}, std::pair{4224U, 128U}, std::pair{7936U, 128U}}) {
+    std::array segments{
+        jitllm::model::Gemma2Segment{0, past, std::span(tokens).first(rows)},
+        jitllm::model::Gemma2Segment{1, past + rows, std::span(tokens).first(rows)}};
+    auto host = jitllm::model::Gemma2Chunk(profile, state, segments, true, 256, 256);
+    ASSERT_TRUE(host);
+    auto* positions = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 2 * rows), host->positions);
+    for (std::uint32_t segment = 0; segment < 2; ++segment) {
+      for (const bool local : {false, true}) {
+        const auto& input = host->segments[segment];
+        const auto cells = local ? input.local_n_kv : input.global_n_kv;
+        auto* mask = kg::Gemma4Mask(
+            c(), positions, cells, static_cast<std::int32_t>(segment * rows),
+            static_cast<std::int32_t>(rows),
+            static_cast<std::int32_t>(local ? state.local_cells : state.global_cells),
+            local ? static_cast<std::int32_t>(profile.window) : 0, 8192);
+        const auto address = Allocate(ggml_nbytes(mask) + 512);
+        kg::TensorArena::Bind(mask, address + 256);
+        const auto expected = [&](const auto& fresh) {
+          const auto& in = fresh.segments[segment];
+          const auto& logical = local ? in.local_mask : in.global_mask;
+          std::vector<std::uint16_t> padded(ggml_nbytes(mask) / 2, 0xFC00);
+          std::ranges::copy(logical, padded.begin());
+          return padded;
+        };
+        const auto poison = [&] {
+          EXPECT_EQ(cudaMemsetAsync(reinterpret_cast<void*>(address), 0xa5, ggml_nbytes(mask) + 512,
+                                    stream),
+                    cudaSuccess);
+        };
+        const auto guards = [&] {
+          std::array<std::uint8_t, 256> before{}, after{};
+          Finish();
+          EXPECT_EQ(cudaMemcpy(before.data(), reinterpret_cast<void*>(address), 256,
+                               cudaMemcpyDeviceToHost),
+                    cudaSuccess);
+          EXPECT_EQ(
+              cudaMemcpy(after.data(), reinterpret_cast<void*>(address + 256 + ggml_nbytes(mask)),
+                         256, cudaMemcpyDeviceToHost),
+              cudaSuccess);
+          EXPECT_TRUE(std::ranges::all_of(before, [](auto x) { return x == 0xa5; }));
+          EXPECT_EQ(before, after);
+        };
+        poison();
+        ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+        const auto eager = Download<std::uint16_t>(mask);
+        EXPECT_EQ(eager, expected(*host));
+        auto captured =
+            launch().Capture([&](auto& context) { return kg::RunGemma4Mask(context, mask); });
+        ASSERT_TRUE(captured);
+        poison();
+        ASSERT_TRUE(launch().Launch(*captured));
+        EXPECT_EQ(Download<std::uint16_t>(mask), eager);
+        guards();
+        // Advance only this owner, leaving the peer's offset/positions untouched.
+        const std::int32_t delta = (segments[segment].n_past + rows) % 256 == 0 ? -1 : 1;
+        segments[segment].n_past =
+            static_cast<std::uint32_t>(static_cast<std::int64_t>(segments[segment].n_past) + delta);
+        auto fresh = jitllm::model::Gemma2Chunk(profile, state, segments, true, 256, 256);
         ASSERT_TRUE(fresh);
         ASSERT_EQ(fresh->segments[segment].global_n_kv, input.global_n_kv);
         ASSERT_EQ(fresh->segments[segment].local_n_kv, input.local_n_kv);

@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "engine/graph_mask_inputs.h"
 #include "engine/support.h"
 #include "kernels/ggml/jitllm_ops.h"
 
@@ -200,29 +201,12 @@ std::expected<std::uint64_t, std::string> Gemma4SourceBytes(const kg::Gemma4Grap
     for (const auto [mask, capacity, window, cells] :
          {std::tuple{seg.global_mask, g.global_capacity, 0U, seg.shape.global_n_kv},
           std::tuple{seg.local_mask, g.local_capacity, g.profile.window, seg.shape.local_n_kv}}) {
-      if (mask == nullptr || cells == 0 || cells > INT32_MAX / 2 || seg.shape.rows == 0 ||
-          seg.shape.rows > static_cast<std::uint32_t>(INT32_MAX - 31) ||
-          ((std::uint64_t{seg.shape.rows} + 31) / 32 * 32) > INT32_MAX / 2 / cells ||
-          mask->type != GGML_TYPE_F16 || mask->ne[0] != cells ||
-          mask->ne[1] != ((std::int64_t{seg.shape.rows} + 31) / 32 * 32) || mask->ne[2] != 1 ||
-          mask->ne[3] != 1 || mask->nb[0] != 2 || mask->nb[1] != std::uint64_t{cells} * 2 ||
-          mask->nb[2] != mask->nb[1] * static_cast<std::uint64_t>(mask->ne[1]) ||
-          mask->nb[3] != mask->nb[2] || ggml_nbytes(mask) > UINT64_MAX - bytes)
-        return Error("malformed Gemma4 mask descriptor");
-      const bool input = std::ranges::find(g.inputs, mask) != g.inputs.end();
-      if (g.options.device_masks) {
-        if (input || !kg::Gemma4MaskFits(mask) || mask->src[0] != g.positions ||
-            kg::JitllmOpInt(mask, 0) != static_cast<std::int64_t>(seg.first_row) ||
-            kg::JitllmOpInt(mask, 1) != static_cast<std::int64_t>(seg.shape.rows) ||
-            kg::JitllmOpInt(mask, 2) != static_cast<std::int64_t>(capacity) ||
-            kg::JitllmOpInt(mask, 3) != static_cast<std::int64_t>(window) ||
-            kg::JitllmOpInt(mask, 4) != static_cast<std::int64_t>(g.context))
-          return Error("Gemma4 device mask is not its graph-owned position producer");
-      } else {
-        if (!input || mask->op != GGML_OP_NONE)
-          return Error("Gemma4 reference mask is not a host input");
-        bytes += ggml_nbytes(mask);
-      }
+      auto source =
+          GraphMaskSourceBytes(mask, g.positions, g.nodes, g.inputs, g.options.device_masks,
+                               seg.first_row, seg.shape.rows, cells, capacity, window, g.context);
+      if (!source || *source > UINT64_MAX - bytes)
+        return Error("invalid or overflowing graph mask source");
+      bytes += *source;
     }
   }
   return bytes;
@@ -315,9 +299,7 @@ std::expected<Gemma4HostInputs, std::string> Gemma4Sources(
     if (g.options.device_masks) continue;
     for (const auto& [mask, logical] : {std::pair{seg.global_mask, &host.global_mask},
                                         std::pair{seg.local_mask, &host.local_mask}}) {
-      auto& padded = out.masks.emplace_back(ggml_nbytes(mask) / sizeof(std::uint16_t), 0xFC00);
-      std::ranges::copy(*logical, padded.begin());
-      out.sources.emplace_back(mask, padded.data());
+      StageHostGraphMask(mask, *logical, out.masks, out.sources);
     }
   }
   std::uint64_t actual =

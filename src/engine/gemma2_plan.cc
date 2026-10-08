@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "artifact/representation.h"
+#include "engine/graph_mask_inputs.h"
 #include "engine/support.h"
 
 namespace jitllm::engine {
@@ -326,32 +327,31 @@ std::expected<std::uint64_t, std::string> Gemma2SourceBytes(const kg::Gemma2Grap
         !leaf(segment.local_cells, GGML_TYPE_I64, segment.shape.rows, 1, 8))
       return Error("malformed Gemma2 segment source");
     first_row += segment.shape.rows;
-    for (const auto* tensor :
-         {segment.global_cells, segment.local_cells, segment.global_mask, segment.local_mask})
-      expected.push_back(tensor);
+    expected.push_back(segment.global_cells);
+    expected.push_back(segment.local_cells);
+    if (!g.options.device_masks) {
+      expected.push_back(segment.global_mask);
+      expected.push_back(segment.local_mask);
+    }
   }
   if (expected.size() != g.inputs.size()) return Error("Gemma2 source set differs from its graph");
   for (const auto* tensor : expected)
     if (std::ranges::count(expected, tensor) != 1 || std::ranges::count(g.inputs, tensor) != 1)
       return Error("duplicate or absent Gemma2 source");
-  std::uint64_t bytes = std::uint64_t{g.shape.outputs} * sizeof(std::int32_t) +
-                        g.inputs.size() * sizeof(std::pair<ggml_tensor*, const void*>) +
-                        g.segments.size() * 2 * sizeof(std::vector<std::uint16_t>);
+  std::uint64_t bytes =
+      std::uint64_t{g.shape.outputs} * sizeof(std::int32_t) +
+      g.inputs.size() * sizeof(std::pair<ggml_tensor*, const void*>) +
+      (g.options.device_masks ? 0 : g.segments.size() * 2 * sizeof(std::vector<std::uint16_t>));
   for (const auto& seg : g.segments) {
-    for (const auto [mask, cells] : {std::pair{seg.global_mask, seg.shape.global_n_kv},
-                                     std::pair{seg.local_mask, seg.shape.local_n_kv}}) {
-      if (mask == nullptr || cells == 0 || cells > INT32_MAX / 2 || seg.shape.rows == 0 ||
-          seg.shape.rows > static_cast<std::uint32_t>(INT32_MAX - 31) ||
-          ((std::uint64_t{seg.shape.rows} + 31) / 32 * 32) > INT32_MAX / 2 / cells ||
-          mask->type != GGML_TYPE_F16 || mask->ne[0] != cells ||
-          mask->ne[1] != ((std::int64_t{seg.shape.rows} + 31) / 32 * 32) || mask->ne[2] != 1 ||
-          mask->ne[3] != 1 || mask->nb[0] != 2 || mask->nb[1] != std::uint64_t{cells} * 2 ||
-          mask->nb[2] != mask->nb[1] * static_cast<std::uint64_t>(mask->ne[1]) ||
-          mask->nb[3] != mask->nb[2] || ggml_nbytes(mask) > UINT64_MAX - bytes)
-        return Error("malformed Gemma2 mask descriptor");
-      if (mask->op != GGML_OP_NONE || mask->view_src != nullptr)
-        return Error("Gemma2 mask must be a host input");
-      bytes += ggml_nbytes(mask);
+    for (const auto [mask, capacity, window, cells] :
+         {std::tuple{seg.global_mask, g.global_capacity, 0U, seg.shape.global_n_kv},
+          std::tuple{seg.local_mask, g.local_capacity, g.profile.window, seg.shape.local_n_kv}}) {
+      auto source =
+          GraphMaskSourceBytes(mask, g.positions, g.nodes, g.inputs, g.options.device_masks,
+                               seg.first_row, seg.shape.rows, cells, capacity, window, g.context);
+      if (!source || *source > UINT64_MAX - bytes)
+        return Error("invalid or overflowing graph mask source");
+      bytes += *source;
     }
   }
   return bytes;
@@ -386,8 +386,9 @@ std::expected<Gemma2HostInputs, std::string> Gemma2Sources(const kg::Gemma2Graph
         s.local_n_kv < std::min(host.n_past + s.rows, g.local_capacity) ||
         host.global_n_kv != s.global_n_kv || host.local_n_kv != s.local_n_kv ||
         host.global_cells.size() != s.rows || host.local_cells.size() != s.rows ||
-        (host.global_mask.size() != std::size_t{s.global_n_kv} * s.rows ||
-         host.local_mask.size() != std::size_t{s.local_n_kv} * s.rows)) {
+        (g.options.device_masks ? (!host.global_mask.empty() || !host.local_mask.empty())
+                                : (host.global_mask.size() != std::size_t{s.global_n_kv} * s.rows ||
+                                   host.local_mask.size() != std::size_t{s.local_n_kv} * s.rows))) {
       return Error("Gemma2 segment or reference mask differs from graph");
     }
     // Cell/value correctness comes from the checked chunk builder; refuse
@@ -400,6 +401,7 @@ std::expected<Gemma2HostInputs, std::string> Gemma2Sources(const kg::Gemma2Graph
           std::cmp_greater_equal(in.tokens[seg.first_row + r], g.profile.vocab)) {
         return Error("Gemma2 host position or cache index is invalid");
       }
+      if (g.options.device_masks) continue;
       const auto end = host.n_past + s.rows;
       for (std::uint32_t cell = 0; cell < s.global_n_kv; ++cell) {
         const std::uint16_t expected = cell <= position ? 0 : 0xFC00;
@@ -422,7 +424,7 @@ std::expected<Gemma2HostInputs, std::string> Gemma2Sources(const kg::Gemma2Graph
   }
   Gemma2HostInputs out;
   out.out_ids.assign(frontier.begin(), frontier.end());
-  out.masks.reserve(g.segments.size() * 2);
+  if (!g.options.device_masks) out.masks.reserve(g.segments.size() * 2);
   out.sources.reserve(g.inputs.size());
   out.sources.emplace_back(g.input_hidden != nullptr ? g.input_hidden : g.tokens,
                            g.input_hidden != nullptr ? static_cast<const void*>(hidden.data())
@@ -434,11 +436,10 @@ std::expected<Gemma2HostInputs, std::string> Gemma2Sources(const kg::Gemma2Graph
     const auto& host = in.segments[i];
     out.sources.emplace_back(seg.global_cells, host.global_cells.data());
     out.sources.emplace_back(seg.local_cells, host.local_cells.data());
+    if (g.options.device_masks) continue;
     for (const auto& [mask, logical] : {std::pair{seg.global_mask, &host.global_mask},
                                         std::pair{seg.local_mask, &host.local_mask}}) {
-      auto& padded = out.masks.emplace_back(ggml_nbytes(mask) / sizeof(std::uint16_t), 0xFC00);
-      std::ranges::copy(*logical, padded.begin());
-      out.sources.emplace_back(mask, padded.data());
+      StageHostGraphMask(mask, *logical, out.masks, out.sources);
     }
   }
   std::uint64_t actual = out.out_ids.capacity() * sizeof(std::int32_t) +

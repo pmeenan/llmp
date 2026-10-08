@@ -77,6 +77,7 @@ Status Gemma2Runner::Setup() {
   model_.options.owner_decode = o_.owner_decode;
   model_.options.packed_prefill = o_.packed_prefill;
   model_.options.bounded_roots = o_.bounded_roots;
+  model_.options.device_masks = o_.device_masks;
   model_.options.max_total_rows = wave_rows;
   std::vector<GroupPlace> places(weights_.artifact().groups().size(), GroupPlace::kDevice);
   if (auto r = weights_.Reserve(node_, places, {}); !r) return r;
@@ -108,9 +109,10 @@ Status Gemma2Runner::Setup() {
                                   std::span(tokens).first(n)});
             }
             if (rows * count > budget && rows != budget - count + 1) continue;
-            auto input = md::Gemma2Chunk(profile_, layout_, segments, true, 256, wave_rows);
-            auto input_bytes =
-                md::Gemma2HostInputBytes(profile_, layout_, segments, true, 256, wave_rows);
+            auto input =
+                md::Gemma2Chunk(profile_, layout_, segments, !o_.device_masks, 256, wave_rows);
+            auto input_bytes = md::Gemma2HostInputBytes(profile_, layout_, segments,
+                                                        !o_.device_masks, 256, wave_rows);
             if (!input || !input_bytes) return Error("Gemma2 measuring input contract");
             for (const auto output : {0U, 1U, 2U, 3U}) {
               const bool all = output == 1, state_only = output == 2, greedy = output == 3;
@@ -601,6 +603,7 @@ std::expected<Gemma2Runner::Plans::Entry*, std::string> Gemma2Runner::Planned(
   ++plan_selections_.plans;
   plan_selections_.steps += (*p)->plan.steps.size();
   for (const auto& selected : (*p)->plan.steps) {
+    plan_selections_.device_masks += selected.implementation == kg::kGemma4MaskName;
     plan_selections_.norm_mul += selected.implementation == kg::kRmsNormMulFused;
     plan_selections_.quant_geglu += selected.implementation == kg::kMulMatGeGluQFused;
     plan_selections_.norm_rope += selected.implementation == kg::kGemmaNormRopeName;
@@ -678,13 +681,14 @@ Status Gemma2Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
                                      : static_cast<std::uint32_t>(work.size());
   if (outputs > head_rows) return Error("Gemma2 wave exceeds head publication capacity");
   const auto selected = std::span(segments).first(work.size());
-  auto bytes = md::Gemma2HostInputBytes(profile_, layout_, selected, true, 256, wave_rows);
+  auto bytes =
+      md::Gemma2HostInputBytes(profile_, layout_, selected, !o_.device_masks, 256, wave_rows);
   if (!bytes) return Error(bytes.error());
   if (*bytes > host_input_bytes_) return Error("Gemma2 host descriptor envelope exceeded");
   if (auto r = CheckPlaces(); !r) return r;
   // The caller funds host_input_bytes()+plan_floor_bytes() in the node's
   // startup host floor, as for the shared runners. One driver stages a wave.
-  auto input = md::Gemma2Chunk(profile_, layout_, selected, true, 256, wave_rows);
+  auto input = md::Gemma2Chunk(profile_, layout_, selected, !o_.device_masks, 256, wave_rows);
   if (!input) return Error(input.error());
   kg::Gemma2ChunkShape shape;
   shape.output_mode = mode;

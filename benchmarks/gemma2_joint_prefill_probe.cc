@@ -87,8 +87,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") ||
-      (argc != 6 && argc != 7))
+  if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") || (argc < 6 || argc > 8))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -102,8 +101,16 @@ int main(int argc, char** argv) {
     if (!status) std::cerr << status.error() << '\n';
     return status ? 0 : 1;
   }
-  const bool bounded = argc == 7;
-  if (bounded && std::string_view(argv[6]) != "bounded-roots") return 2;
+  bool bounded = false, device_masks = false;
+  for (int arg = 6; arg < argc; ++arg) {
+    const std::string_view flag = argv[arg];
+    if (flag == "bounded-roots" && !bounded)
+      bounded = true;
+    else if (flag == "device-masks" && !device_masks)
+      device_masks = true;
+    else
+      return 2;
+  }
   const std::string mode = argv[5];
   const bool own = mode == "own", cycle = mode == "cycle";
   if (!own && !cycle) return 2;
@@ -141,6 +148,7 @@ int main(int argc, char** argv) {
                                                                       .max_head_rows = 2,
                                                                       .owner_decode = true,
                                                                       .packed_prefill = true,
+                                                                      .device_masks = device_masks,
                                                                       .bounded_roots = bounded,
                                                                       .fuse_norms = true,
                                                                       .fuse_quant_glu = true,
@@ -453,8 +461,9 @@ int main(int argc, char** argv) {
       const auto& stats = runner.graph_stats();
       const auto& bound = runner.plan_selections();
       if (!prefill_groups || !bound.packed_prefill_attention || !bound.owner_attention ||
-          !stats.captured || !stats.replayed || bound.norm_rope != 0 || !bound.norm_mul ||
-          !bound.quant_geglu || !bound.norm_add || runner.coverage().violations)
+          (device_masks ? !bound.device_masks : bound.device_masks != 0) || !stats.captured ||
+          !stats.replayed || bound.norm_rope != 0 || !bound.norm_mul || !bound.quant_geglu ||
+          !bound.norm_add || runner.coverage().violations)
         return Error("C2 did not select/replay checked implementation families");
       std::cout << "GEMMA2_JOINT_PREFILL mode=" << mode
                 << " slots=2 context_per_slot=8192 chunk=128"
@@ -466,7 +475,8 @@ int main(int argc, char** argv) {
                 << " eager=" << stats.eager << " captured=" << stats.captured
                 << " replayed=" << stats.replayed << " selected_owner=" << bound.owner_attention
                 << " selected_packed_prefill=" << bound.packed_prefill_attention
-                << " bounded_roots=" << bounded
+                << " device_masks=" << device_masks
+                << " selected_device_masks=" << bound.device_masks << " bounded_roots=" << bounded
                 << " selected_bounded_owner=" << bound.bounded_owner_attention
                 << " selected_norm_mul=" << bound.norm_mul
                 << " selected_quant_geglu=" << bound.quant_geglu

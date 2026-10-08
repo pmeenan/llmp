@@ -1414,11 +1414,12 @@ class Gemma2 final : public Llm {
   std::string extra() const override {
     const auto& selected = runner_.plan_selections();
     return std::format(
-        R"({{"architecture":"gemma2","recipe":"bounded-8192-two-owner","max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"bound_bounded_owner_attention":{},"attention_softcap":50,"bound_norm_mul":{},"bound_quant_geglu":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{}}})",
+        R"({{"architecture":"gemma2","recipe":"bounded-8192-two-owner","max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"attention_softcap":50,"bound_norm_mul":{},"bound_quant_geglu":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{}}})",
         options_.max_rows, options_.max_wave_rows, joined_prefill_groups_, joined_prefill_rows_,
         joined_groups_, joined_units_, selected.owner_attention, selected.packed_prefill_attention,
-        selected.bounded_owner_attention, selected.norm_mul, selected.quant_geglu,
-        selected.norm_rope, selected.norm_add, runner_.greedy_tokens());
+        selected.bounded_owner_attention, options_.device_masks, selected.device_masks,
+        selected.norm_mul, selected.quant_geglu, selected.norm_rope, selected.norm_add,
+        runner_.greedy_tokens());
   }
   std::string slots_report() const override { return SlotsReport(settings_); }
   std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }

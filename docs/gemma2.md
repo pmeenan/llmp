@@ -212,3 +212,21 @@ graphs and replays 63 times. The worst prepared handoff is 5.911946 s, with the
 diagnostic snapshot charged separately from sampled MemAvailable reporting.
 This repeated-text boundary is near-8K, not an exact 8192 saved state or a
 real-corpus/retrieval, maximum-context or sustained-memory qualification.
+
+## Graph-owned GPU masks
+
+Ordinary runners now construct causal and 4,096-window ring masks on the GPU
+from checked absolute positions, using the same producer as Gemma3/Gemma 4.
+The [transfer control](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07)
+keeps per-owner 128 rows, a 256-row joined wave, local capacity 4,352 and
+softcap50 unchanged. The graph/plan foundation and explicit runner override
+retain host-reference masks; ordinary runners default to device masks.
+Shared engine helpers authenticate producers and fund optional host padding
+separately from device activations.
+
+Wrapped C2 prefill falls 6.616% in a same-binary host/device/device/host screen;
+all heads, choices and initialized states remain exact. Five HTTP/restart cases
+and four checkpoint GPU cases pass through the adopted path. A fresh short
+llama.cpp comparison at these 4,352/4,864 prefixes still shows native prefill
+6.721% slower and the paid cycle 4.586% slower; decode is within noise.
+This is a remaining lookahead/capture transfer opportunity, not a parity claim.

@@ -13,6 +13,7 @@
 
 namespace en = jitllm::engine;
 TEST(Gemma2Runner, UninitializedLifecycleRefusesWithoutPublishingOrOwningCopies) {
+  EXPECT_TRUE(en::Gemma2Options{}.device_masks);
   en::PagedNode node({});
   en::Gemma2Runner runner(node, {}, 0, 0);
   en::LiveState::CopyRetirement retirement = en::LiveState::CopyRetirement::kUnproven;
