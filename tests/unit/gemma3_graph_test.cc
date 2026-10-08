@@ -347,6 +347,8 @@ TEST(Gemma3Graph, GreedyFrontiersHaveDistinctShapeAndKeptArgmaxDescriptor) {
   EXPECT_EQ(graph->greedy->ne[0], 2);
   EXPECT_EQ(graph->greedy->src[0], graph->logits);
   EXPECT_EQ(kg::JitllmOpOf(graph->greedy), kg::JitllmOp::kArgmax);
+  EXPECT_EQ(kg::JitllmOpInt(graph->greedy, 1),
+            static_cast<std::int32_t>(kg::ArgmaxFlavor::kHostGreedy));
   EXPECT_EQ(graph->nodes.back(), graph->greedy);
   auto malformed = c.shape;
   malformed.outputs = 4;

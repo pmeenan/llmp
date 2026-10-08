@@ -927,10 +927,11 @@ void Builder::BuildFast(ggml_tensor* res, ggml_tensor* ple) {
   g_.logits = ggml_mul_mat(c_, g_.output, cur);
   Name(g_.logits, "result_output", -1);
   Expand(g_.logits);
-  if (verify_) {
+  if (verify_ || s_.token) {
     // The greedy verdict's argmaxes on the device: the host reads a row's
     // logits only when it samples.
-    g_.argmax = Argmax(c_, g_.logits);
+    g_.argmax =
+        Argmax(c_, g_.logits, false, s_.token ? ArgmaxFlavor::kHostGreedy : ArgmaxFlavor::kNative);
     Expand(g_.argmax);
   }
 }
@@ -1561,6 +1562,10 @@ void Builder::Build() {
   g_.logits = Mm(g_.output, cur);
   Name(g_.logits, "result_output", -1);
   Expand(g_.logits);
+  if (s_.token) {
+    g_.argmax = Argmax(c_, g_.logits, false, ArgmaxFlavor::kHostGreedy);
+    Expand(g_.argmax);
+  }
 }
 
 // Qwen3_8FlashNextMultiTokenPredictor.forward (mtp.py:262-329) for one
@@ -1833,6 +1838,9 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
                                                            const Qwen38ChunkShape& shape,
                                                            const Qwen38GraphOptions& options) {
   const Qwen38ChunkShape& s = shape;
+  if (s.token && (s.rows != 1 || s.outputs != 1 || options.verify || options.export_streams ||
+                  options.capture_routed != 0 || options.exact))
+    return Rejected("token publication needs a plain one-row Qwen target");
   if (s.rows <= 0 || s.cells <= 0 || s.n_kv < 256 || s.n_kv > s.cells || s.n_kv % 256 != 0 ||
       s.outputs <= 0 || s.outputs > s.rows || (s.qsa_select && s.qsa_blocks <= 0)) {
     return Rejected("not a Qwen3.8 chunk shape the state holds");

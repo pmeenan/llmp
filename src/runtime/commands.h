@@ -71,6 +71,9 @@ struct Turn {
 struct ServingOptions {
   // Decode plainly even where a model has a drafter.
   bool plain = false;
+  // Internal matched plain-token qualification; absent from CLI/TOML/HTTP.
+  // Unset uses each runner's ordinary policy.
+  std::optional<bool> diagnostic_plain_device_tokens;
   // The image pipeline's generation, fixed when it registers (this slice's
   // image runner takes its prompt at setup): its prompt, and its initial
   // latents (BF16, the reference's for its seed), without which an image

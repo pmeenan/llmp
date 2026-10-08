@@ -21,8 +21,10 @@
 //                             n-gram embedding lookup.
 //   jitllm.argmax             I32 [rows]: each F32 row's highest value's
 //                             index, the lowest index among equals (the rule
-//                             of execution/sampling.h's Greedy); a NaN never
-//                             wins, and a row of NaN only gives 0 (the
+//                             of execution/sampling.h's Greedy). Native mode
+//                             ignores NaN; plain host-greedy mode instead
+//                             gives 0 when the first value is NaN, matching
+//                             the host's max_element. A row of NaN gives 0 (the
 //                             index feeds unchecked row lookups, so it is
 //                             always in the row). DeepSeek's DSpark drafter
 //                             chains its Markov head on it (GGML's argmax
@@ -227,7 +229,12 @@ bool QRowsType(ggml_type type);
 // indices, then each row's softmax probability of its highest value (F32
 // bits; 0 for a row of NaN), the drafter's confidence that TensorFold's
 // adaptive window reads (docs/experiments/tensorfold-techniques/).
-ggml_tensor* Argmax(ggml_context* context, ggml_tensor* x, bool probability = false);
+// Plain host greedy uses max_element: a NaN in column zero keeps index zero;
+// later NaNs never replace a non-NaN incumbent. Draft/verify callers retain
+// the original flavor, which ignores every NaN before its reduction.
+enum class ArgmaxFlavor : std::int32_t { kNative = 0, kHostGreedy = 1 };
+ggml_tensor* Argmax(ggml_context* context, ggml_tensor* x, bool probability = false,
+                    ArgmaxFlavor flavor = ArgmaxFlavor::kNative);
 
 // The fusions. `res` F32 [width, hc, t], `out` F32 [width, t], `inject` F32
 // [hc, t]: F32 [width, hc, t].

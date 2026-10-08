@@ -1,0 +1,635 @@
+{
+  "date": "2026-10-08",
+  "order": [
+    "O1",
+    "A1",
+    "A2",
+    "O2"
+  ],
+  "samples_per_policy": 2,
+  "reference_parity_claim": false,
+  "factors": {
+    "qwen-native-c2": {
+      "host": "spark",
+      "checked_sha256": "48ad21b8fec84a2756b5bf777aa6fc9d81b85edea7758941f132c8b1fedec4b4",
+      "source_sha256": "3170dd08d46fe96aa36c72993c5127971aae93af1704265be903f44316e546bb",
+      "method_sha256": "cdbbdb0cc11fc1bcfa90a4943a4ab05c4d3cb41f953b8b20c603b7de295ec76f",
+      "elf_sha256": "4bd71da688d77e427bbc6248822f160fbf3ab4a83b7afeffb32459f727c99712",
+      "metrics": {
+        "prefill_seconds": {
+          "off": [
+            2.2410542,
+            2.24683899
+          ],
+          "on": [
+            2.246322286,
+            2.23761105
+          ],
+          "off_mean": 2.243946595,
+          "on_mean": 2.241966668,
+          "delta_percent": -0.08823414088428017,
+          "old_bookend_percent": 0.2581280720475254,
+          "off_range": [
+            2.2410542,
+            2.24683899
+          ],
+          "on_range": [
+            2.23761105,
+            2.246322286
+          ]
+        },
+        "decode_seconds": {
+          "off": [
+            1.753088708,
+            1.753922012
+          ],
+          "on": [
+            1.737580724,
+            1.740369786
+          ],
+          "off_mean": 1.7535053600000001,
+          "on_mean": 1.7389752550000002,
+          "delta_percent": -0.8286319124795827,
+          "old_bookend_percent": 0.04753347598427382,
+          "off_range": [
+            1.753088708,
+            1.753922012
+          ],
+          "on_range": [
+            1.737580724,
+            1.740369786
+          ]
+        },
+        "paid_seconds": {
+          "off": [
+            3.994142908,
+            4.000761002
+          ],
+          "on": [
+            3.9839030099999997,
+            3.977980836
+          ],
+          "off_mean": 3.997451955,
+          "on_mean": 3.9809419229999996,
+          "delta_percent": -0.41301389449720505,
+          "old_bookend_percent": 0.16569497267471256,
+          "off_range": [
+            3.994142908,
+            4.000761002
+          ],
+          "on_range": [
+            3.977980836,
+            3.9839030099999997
+          ]
+        }
+      },
+      "setup": {
+        "budget": "76865400860",
+        "fixed": "329838620",
+        "activations": "178257920",
+        "scratch": "10485760",
+        "pinned": "78180380",
+        "host_inputs": "2097152",
+        "wave_output_pinned": "7946752"
+      },
+      "arms": [
+        {
+          "name": "O1",
+          "mode": "off",
+          "eager": 6,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 0,
+          "warm_prefill_seconds": 2.448893797,
+          "warm_decode_seconds": 1.81429646
+        },
+        {
+          "name": "A1",
+          "mode": "on",
+          "eager": 6,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 64,
+          "warm_prefill_seconds": 2.439677313,
+          "warm_decode_seconds": 1.79855174
+        },
+        {
+          "name": "A2",
+          "mode": "on",
+          "eager": 6,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 64,
+          "warm_prefill_seconds": 2.449975631,
+          "warm_decode_seconds": 1.797091398
+        },
+        {
+          "name": "O2",
+          "mode": "off",
+          "eager": 6,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 0,
+          "warm_prefill_seconds": 2.440618876,
+          "warm_decode_seconds": 1.81251224
+        }
+      ],
+      "exact_output": {
+        "states": [
+          {
+            "bytes": 182525952,
+            "sha256": "96496e0de0fcce850ad5ce3f542b045adab9fa43c1b15fa176319992b412b890"
+          },
+          {
+            "bytes": 182525952,
+            "sha256": "b2c2c81bb3a8cc2e1dcb16446bf538de8b789eb7b547a91daefcedd58b1e8b63"
+          }
+        ],
+        "histories": [
+          {
+            "bytes": 6276,
+            "sha256": "21c95cb1aa071b029127afa3f488d920eeba0d4cc7ec6d41316f5732dbd634a0"
+          },
+          {
+            "bytes": 5252,
+            "sha256": "ed42f5e5b2d49619b1d0ef973bea4ba9823f4ccf58b6b6c0956a06ba9fc60105"
+          }
+        ],
+        "heads": [
+          {
+            "bytes": 993280,
+            "sha256": "7c00202bc815713650e4b7f79d55500a09a26210d4cab0ade68e3077cec6ce91"
+          },
+          {
+            "bytes": 993280,
+            "sha256": "2557028d8859ad8c13f2d7d063bd64a43a06c5015af5ddac6a897c65304b40df"
+          }
+        ],
+        "state_ranges_sha256": "14fcd9ed224cea936da6337b5d160487d5e9373b8778b485d76c6233907de94a"
+      }
+    },
+    "qwen-native-c1": {
+      "host": "spark",
+      "checked_sha256": "591ffdaec5a81de34e49cef507279d051775e13dd92909b3f380362e9e134e57",
+      "source_sha256": "80787e30ec6dbc2d1094934efd0a6ce8f9560f63d0a534d5cd8d6b05b23ccefa",
+      "method_sha256": "72b0d7be5d5eb77e166cf1d273dae71cd2c81cda88f9f6472124fe8aec01f3ad",
+      "elf_sha256": "7f126b69d87774d2a5098d217602b7e980dd911e6a4aba208547133466dd6bb0",
+      "metrics": {
+        "prefill_seconds": {
+          "off": [
+            1.176481867,
+            1.17787241
+          ],
+          "on": [
+            1.178423055,
+            1.177525647
+          ],
+          "off_mean": 1.1771771384999998,
+          "on_mean": 1.177974351,
+          "delta_percent": 0.06772239061794139,
+          "old_bookend_percent": 0.11819502187024877,
+          "off_range": [
+            1.176481867,
+            1.17787241
+          ],
+          "on_range": [
+            1.177525647,
+            1.178423055
+          ]
+        },
+        "decode_seconds": {
+          "off": [
+            1.169299534,
+            1.169786338
+          ],
+          "on": [
+            1.162793658,
+            1.161198721
+          ],
+          "off_mean": 1.169542936,
+          "on_mean": 1.1619961895,
+          "delta_percent": -0.6452731462609718,
+          "old_bookend_percent": 0.041632104165345574,
+          "off_range": [
+            1.169299534,
+            1.169786338
+          ],
+          "on_range": [
+            1.161198721,
+            1.162793658
+          ]
+        },
+        "paid_seconds": {
+          "off": [
+            2.345781401,
+            2.3476587479999997
+          ],
+          "on": [
+            2.341216713,
+            2.3387243680000003
+          ],
+          "off_mean": 2.3467200745,
+          "on_mean": 2.3399705405000004,
+          "delta_percent": -0.2876156416498632,
+          "old_bookend_percent": 0.08003077350684507,
+          "off_range": [
+            2.345781401,
+            2.3476587479999997
+          ],
+          "on_range": [
+            2.3387243680000003,
+            2.341216713
+          ]
+        }
+      },
+      "setup": {
+        "budget": "76119256604",
+        "fixed": "321891868",
+        "activations": "178257920",
+        "scratch": "10485760",
+        "pinned": "70233628",
+        "host_inputs": "2097152",
+        "wave_output_pinned": "0"
+      },
+      "arms": [
+        {
+          "name": "O1",
+          "mode": "off",
+          "eager": 3,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 0,
+          "warm_prefill_seconds": 1.336788019,
+          "warm_decode_seconds": 1.185507647
+        },
+        {
+          "name": "A1",
+          "mode": "on",
+          "eager": 3,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 32,
+          "warm_prefill_seconds": 1.332452309,
+          "warm_decode_seconds": 1.179108778
+        },
+        {
+          "name": "A2",
+          "mode": "on",
+          "eager": 3,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 32,
+          "warm_prefill_seconds": 1.318099161,
+          "warm_decode_seconds": 1.175066731
+        },
+        {
+          "name": "O2",
+          "mode": "off",
+          "eager": 3,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 0,
+          "warm_prefill_seconds": 1.334079702,
+          "warm_decode_seconds": 1.1865896
+        }
+      ],
+      "exact_output": {
+        "states": [
+          {
+            "bytes": 182525952,
+            "sha256": "69d68c90dcacada36588f6098135bdfa4dc4c7630037c614abfe001f4f90b6a7"
+          }
+        ],
+        "histories": [
+          {
+            "bytes": 6276,
+            "sha256": "21c95cb1aa071b029127afa3f488d920eeba0d4cc7ec6d41316f5732dbd634a0"
+          }
+        ],
+        "heads": [
+          {
+            "bytes": 993280,
+            "sha256": "3a92477ebf8b3ec79877fc1fb23f835363b5a512d6a1d1ac19d1add9372d4c54"
+          }
+        ],
+        "state_ranges_sha256": "b63f9cd2fdc4ea7d00a8beabaf498908c01f435d39d3a019b3f6cab97913c412"
+      }
+    },
+    "qwen-gguf-c2": {
+      "host": "spark-b",
+      "checked_sha256": "09ba1acf7577b6ef113cb9fd2a33b9a316c6e2f2768ca639c3373b9f3f28730e",
+      "source_sha256": "80787e30ec6dbc2d1094934efd0a6ce8f9560f63d0a534d5cd8d6b05b23ccefa",
+      "method_sha256": "b84e5d469187d629c9fca73bea3d733978b983103c17321b274f0536088fdba5",
+      "elf_sha256": "7f126b69d87774d2a5098d217602b7e980dd911e6a4aba208547133466dd6bb0",
+      "metrics": {
+        "prefill_seconds": {
+          "off": [
+            3.999851041,
+            4.013963586
+          ],
+          "on": [
+            4.008452874,
+            4.008838265
+          ],
+          "off_mean": 4.0069073135,
+          "on_mean": 4.0086455695,
+          "delta_percent": 0.04338148761622307,
+          "old_bookend_percent": 0.35282676418049164,
+          "off_range": [
+            3.999851041,
+            4.013963586
+          ],
+          "on_range": [
+            4.008452874,
+            4.008838265
+          ]
+        },
+        "decode_seconds": {
+          "off": [
+            1.403611019,
+            1.407200842
+          ],
+          "on": [
+            1.386049606,
+            1.3898188
+          ],
+          "off_mean": 1.4054059305,
+          "on_mean": 1.387934203,
+          "delta_percent": -1.2431801460937475,
+          "old_bookend_percent": 0.2557562566413596,
+          "off_range": [
+            1.403611019,
+            1.407200842
+          ],
+          "on_range": [
+            1.386049606,
+            1.3898188
+          ]
+        },
+        "paid_seconds": {
+          "off": [
+            5.40346206,
+            5.421164428
+          ],
+          "on": [
+            5.39450248,
+            5.398657065
+          ],
+          "off_mean": 5.412313244,
+          "on_mean": 5.3965797725,
+          "delta_percent": -0.29069772555093687,
+          "old_bookend_percent": 0.32761159055867406,
+          "off_range": [
+            5.40346206,
+            5.421164428
+          ],
+          "on_range": [
+            5.39450248,
+            5.398657065
+          ]
+        }
+      },
+      "setup": {
+        "budget": "55223185772",
+        "fixed": "357495148",
+        "activations": "195035136",
+        "scratch": "20971520",
+        "pinned": "78573932",
+        "host_inputs": "2097152",
+        "wave_output_pinned": "7946752"
+      },
+      "arms": [
+        {
+          "name": "O1",
+          "mode": "off",
+          "eager": 6,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 0,
+          "warm_prefill_seconds": 4.159742594,
+          "warm_decode_seconds": 1.493818892
+        },
+        {
+          "name": "A1",
+          "mode": "on",
+          "eager": 6,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 64,
+          "warm_prefill_seconds": 4.173757073,
+          "warm_decode_seconds": 1.478748011
+        },
+        {
+          "name": "A2",
+          "mode": "on",
+          "eager": 6,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 64,
+          "warm_prefill_seconds": 4.189679256,
+          "warm_decode_seconds": 1.478670471
+        },
+        {
+          "name": "O2",
+          "mode": "off",
+          "eager": 6,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 0,
+          "warm_prefill_seconds": 4.171253886,
+          "warm_decode_seconds": 1.487129738
+        }
+      ],
+      "exact_output": {
+        "states": [
+          {
+            "bytes": 182525952,
+            "sha256": "fcade6166b070cbcc799d47361833d6125963d477e5c7d020100ce5b6ad12e05"
+          },
+          {
+            "bytes": 182525952,
+            "sha256": "a81acadbb44c2b3f89bf1e35a2bd4d5810897b9d4f227554331d9c65ca528189"
+          }
+        ],
+        "histories": [
+          {
+            "bytes": 6276,
+            "sha256": "2a6cdb44ce52c8cad61e88450f27721b1f3478c844346f2c972bded6a0bcf177"
+          },
+          {
+            "bytes": 5252,
+            "sha256": "000e6e7ca1902688026e6f3728908dadf37905789a97e83af27c7c4855978104"
+          }
+        ],
+        "heads": [
+          {
+            "bytes": 993280,
+            "sha256": "b1564ce52912e9138b924b61d69f5b291fa06885dbe1ecb6f21b375681f70f0e"
+          },
+          {
+            "bytes": 993280,
+            "sha256": "867cdc8e1fccb6365439efac5c4b0c6fff1073adc76c98a6264873165c495be7"
+          }
+        ],
+        "state_ranges_sha256": "14fcd9ed224cea936da6337b5d160487d5e9373b8778b485d76c6233907de94a"
+      }
+    },
+    "deepseek-c2": {
+      "host": "spark",
+      "checked_sha256": "0b4141d57cacacfbf4554026d1ca65ef27100a7a67a1d48f2e6400ee38c65cbc",
+      "source_sha256": "59ce8211bda43e1f050b363d191affedb8c42752d5c58dc11eec97f1dc211116",
+      "method_sha256": "b7c8b444bedfd86bc0212537ebc3b9d344eeafb85b36438838024f24fa3c03e6",
+      "elf_sha256": "a6ef30803b6ea21cec23c59daafad6dd035c7a75ba2fdc9dc55b86acbf4902db",
+      "metrics": {
+        "prefill_seconds": {
+          "off": [
+            11.206957602,
+            11.270190541
+          ],
+          "on": [
+            11.229779714,
+            11.247713418
+          ],
+          "off_mean": 11.2385740715,
+          "on_mean": 11.238746566,
+          "delta_percent": 0.0015348432897521747,
+          "old_bookend_percent": 0.5642293050944991,
+          "off_range": [
+            11.206957602,
+            11.270190541
+          ],
+          "on_range": [
+            11.229779714,
+            11.247713418
+          ]
+        },
+        "decode_seconds": {
+          "off": [
+            1.830888575,
+            1.838062516
+          ],
+          "on": [
+            1.826006933,
+            1.826831024
+          ],
+          "off_mean": 1.8344755455,
+          "on_mean": 1.8264189785,
+          "delta_percent": -0.4391754918599333,
+          "old_bookend_percent": 0.3918283776499054,
+          "off_range": [
+            1.830888575,
+            1.838062516
+          ],
+          "on_range": [
+            1.826006933,
+            1.826831024
+          ]
+        },
+        "paid_seconds": {
+          "off": [
+            13.037846176999999,
+            13.108253056999999
+          ],
+          "on": [
+            13.055786647,
+            13.074544442
+          ],
+          "off_mean": 13.073049616999999,
+          "on_mean": 13.065165544500001,
+          "delta_percent": -0.060307829702910265,
+          "old_bookend_percent": 0.5400192565870654,
+          "off_range": [
+            13.037846176999999,
+            13.108253056999999
+          ],
+          "on_range": [
+            13.055786647,
+            13.074544442
+          ]
+        }
+      },
+      "setup": {
+        "budget": "101313155072",
+        "fixed": "2176585728",
+        "activations": "1807745024",
+        "scratch": "153092096",
+        "host_inputs": "69206016"
+      },
+      "arms": [
+        {
+          "name": "O1",
+          "mode": "off",
+          "eager": 4,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 0,
+          "warm_prefill_seconds": 11.36136688,
+          "warm_decode_seconds": 1.849781521
+        },
+        {
+          "name": "A1",
+          "mode": "on",
+          "eager": 4,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 64,
+          "warm_prefill_seconds": 11.39363112,
+          "warm_decode_seconds": 1.855594961
+        },
+        {
+          "name": "A2",
+          "mode": "on",
+          "eager": 4,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 64,
+          "warm_prefill_seconds": 11.425414259,
+          "warm_decode_seconds": 1.853931831
+        },
+        {
+          "name": "O2",
+          "mode": "off",
+          "eager": 4,
+          "captured": 0,
+          "replayed": 32,
+          "device_tokens": 0,
+          "warm_prefill_seconds": 11.443164524,
+          "warm_decode_seconds": 1.858981692
+        }
+      ],
+      "exact_output": {
+        "states": [
+          {
+            "bytes": 271007744,
+            "sha256": "f895392f0f0df16746c28cbc26796aabc4b96ae75a9707caec128b7ad9d5ae8f"
+          },
+          {
+            "bytes": 271007744,
+            "sha256": "bc55e40c4f19bbba180e4ed33fcac38824c8134a9b2e70d8e18a4546ed9ffe09"
+          }
+        ],
+        "histories": [
+          {
+            "bytes": 17540,
+            "sha256": "fc5201a9e43774b7096c5d79e2306c17a4baf89baca3a891f78e6ca8422e222c"
+          },
+          {
+            "bytes": 18564,
+            "sha256": "5c06f9ac89d9055c1a6deef6c7733b75e2181b4aa1918edeb7f7d1a5eb0eb21e"
+          }
+        ],
+        "heads": [
+          {
+            "bytes": 517120,
+            "sha256": "d3300a613d083dcc5cc29311a98b92585c4df383069e408eb431e687aaa4176b"
+          },
+          {
+            "bytes": 517120,
+            "sha256": "6d81b059b11639989f0592ba0c174d01972cd1e44b7942ec0f5c4d4913a35d3f"
+          }
+        ],
+        "state_ranges_sha256": "ecc5b4c977373a37c3df7a3908b07815d5ef93b1cae66bc22263392c6142b9b6"
+      }
+    }
+  }
+}

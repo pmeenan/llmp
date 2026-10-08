@@ -213,6 +213,9 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
     const Qwen38Model& m, const kg::Qwen38ChunkShape& shape, const kg::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes, std::span<const std::string> keep,
     Qwen38ChunkKind kind) {
+  if (shape.token && (shape.rows != 1 || shape.outputs != 1 || kind.verify || kind.export_streams ||
+                      kind.capture_routed != 0 || m.exact || !keep.empty()))
+    return Error("a device token needs one plain Qwen target row without diagnostic captures");
   if ((kind.verify && m.commit == nullptr) || (kind.export_streams && m.mtp_state == nullptr)) {
     return Error("a verify or the drafter's streams without the drafter");
   }

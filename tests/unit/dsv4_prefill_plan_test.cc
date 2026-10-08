@@ -26,6 +26,52 @@ namespace {
 namespace kg = kernels::ggml;
 namespace md = model;
 
+TEST(Dsv4PrefillPlan, CompletedTokenBatchRefusesAnyInvalidOwnerBeforePublication) {
+  const std::array<std::int32_t, 3> valid{0, 8, 16};
+  const std::array<std::int32_t, 3> negative{0, -1, 16};
+  const std::array<std::int32_t, 3> outside{0, 8, 17};
+  EXPECT_TRUE(CheckGreedyTokens(valid, 17));
+  EXPECT_FALSE(CheckGreedyTokens(negative, 17));
+  EXPECT_FALSE(CheckGreedyTokens(outside, 17));
+  EXPECT_FALSE(CheckGreedyTokens(valid, 0));
+  EXPECT_FALSE(CheckGreedyTokens({}, 17));
+}
+
+TEST(Dsv4PrefillPlan, PlainTokenOutputAuthenticatesFlavorCountTypeAndActivationSpan) {
+  auto arena = kg::TensorArena::Create(16);
+  ASSERT_TRUE(arena);
+  auto* input = ggml_new_tensor_2d(arena->context(), GGML_TYPE_F32, 513, 2);
+  auto* token = kg::Argmax(arena->context(), input, false, kg::ArgmaxFlavor::kHostGreedy);
+  kg::TensorArena::Bind(input, 0x100000);
+  kg::TensorArena::Bind(token, 0x200000);
+  auto checked = GreedyOutputBytes(token, 2, 0x200000, 8);
+  ASSERT_TRUE(checked);
+  EXPECT_EQ(*checked, 8);
+  EXPECT_FALSE(GreedyOutputBytes(token, 0, 0x200000, 8));
+  EXPECT_FALSE(GreedyOutputBytes(token, 1, 0x200000, 8));
+  EXPECT_FALSE(GreedyOutputBytes(token, 2, 0x200000, 7));
+  EXPECT_FALSE(GreedyOutputBytes(token, 2, 0x200004, 8));
+  kg::TensorArena::Bind(token, 0x200001);
+  EXPECT_FALSE(GreedyOutputBytes(token, 2, 0x200000, 16));
+  kg::TensorArena::Bind(token, 0x200000);
+  token->type = GGML_TYPE_F32;
+  EXPECT_FALSE(GreedyOutputBytes(token, 2, 0x200000, 8));
+  token->type = GGML_TYPE_I32;
+  token->src[1] = input;
+  EXPECT_FALSE(GreedyOutputBytes(token, 2, 0x200000, 8));
+  token->src[1] = nullptr;
+  auto* native = kg::Argmax(arena->context(), input);
+  kg::TensorArena::Bind(native, 0x200000);
+  EXPECT_TRUE(kg::CheckArgmax(native));
+  EXPECT_FALSE(GreedyOutputBytes(native, 2, 0x200000, 8));
+  auto* unknown = kg::Argmax(arena->context(), input, false, static_cast<kg::ArgmaxFlavor>(2));
+  kg::TensorArena::Bind(unknown, 0x200000);
+  EXPECT_FALSE(kg::CheckArgmax(unknown));
+  auto* probability = kg::Argmax(arena->context(), input, true, kg::ArgmaxFlavor::kHostGreedy);
+  kg::TensorArena::Bind(probability, 0x200000);
+  EXPECT_FALSE(kg::CheckArgmax(probability));
+}
+
 // Off for the harnesses unless asked; serving turns on both, partial
 // chunks included (docs/experiments/ds4-output-prefix, "Tie-aware
 // re-scoring and partial chunks").
@@ -36,10 +82,24 @@ TEST(Dsv4PrefillPlan, HarnessesDefaultOffServingTakesEveryChunk) {
   EXPECT_FALSE(Dsv4Model{}.prefill_outa_hca_partial);
   EXPECT_TRUE(Dsv4Options{}.device_raw_masks);
   EXPECT_FALSE(Dsv4Model{}.device_raw_masks);  // Low-level plan reference is explicit.
+  EXPECT_TRUE(Dsv4Options{}.device_tokens);
+  EXPECT_FALSE(kg::Dsv4ChunkShape{}.token);  // Low-level plans retain explicit output policy.
   Dsv4Options served;
   SetDsv4ServedPrefill(served);
   EXPECT_TRUE(served.prefill_outa_hca);
   EXPECT_TRUE(served.prefill_outa_hca_partial);
+}
+
+TEST(Dsv4PrefillPlan, TokenPolicyRefusesNonPlainShapesBeforeModelAccess) {
+  Dsv4Model model;
+  auto refused = PlanDsv4Chunk(model, {.rows = 2, .token = true}, {}, {}, 0, 0);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error(), "plain device token plans require one non-speculative target row");
+  const kg::Dsv4ChunkShape shape{.rows = 1, .token = true};
+  EXPECT_FALSE(PlanDsv4Chunk(model, shape, {}, {}, 0, 0, {.verify = true}));
+  EXPECT_FALSE(PlanDsv4Chunk(model, shape, {}, {}, 0, 0, {}, 0U));
+  model.exact = true;
+  EXPECT_FALSE(PlanDsv4Chunk(model, shape, {}, {}, 0, 0));
 }
 
 TEST(Dsv4PrefillPlan, RefusesInvalidFirstPositionBeforeGraphAllocation) {

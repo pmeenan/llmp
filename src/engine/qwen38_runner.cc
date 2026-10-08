@@ -637,6 +637,13 @@ Status Qwen38Runner::Setup() {
       if (auto r = account(**planned, chunk_kind); !r) {
         return r;
       }
+      if (probe.rows == 1 && !speculative() && !model_.exact) {
+        auto token_shape = kg::Qwen38ShapeOf(layout_, *in, 1);
+        token_shape.token = true;
+        auto token_plan = PlanQwen38Chunk(model_, token_shape, choices, 0, 0);
+        if (!token_plan) return Error(token_plan.error());
+        if (auto r = account(**token_plan, chunk_kind); !r) return r;
+      }
     }
     if (speculative()) {
       // A prefill pass of a whole chunk at the end, and a draft there; and
@@ -729,6 +736,13 @@ Status Qwen38Runner::Setup() {
       }
       if (auto r = wave_account(**target, target_wave_host); !r) {
         return r;
+      }
+      if (!speculative() && !model_.exact) {
+        for (auto& input : targets) input.shape.token = true;
+        auto token_plan = PlanQwen38TargetWave(targets, choices,
+                                               {.share_target_head = true, .lanes = o_.wave_lanes});
+        if (!token_plan) return Error(token_plan.error());
+        if (auto r = wave_account(**token_plan, target_wave_host); !r) return r;
       }
       if (speculative()) {
         const std::uint32_t passes = std::min(o_.draft_rows, 3U);
@@ -2149,7 +2163,8 @@ Status Qwen38Runner::ChunkWave(std::span<const ChunkWork> work, bool paired) {
   }
   std::array<TargetWork, kRequestSlots> target{};
   for (std::size_t i = 0; i < work.size(); ++i) {
-    target[i] = {work[i].slot, work[i].history, work[i].n_past, nullptr, work[i].logits};
+    target[i] = {work[i].slot, work[i].history, work[i].n_past,
+                 nullptr,      work[i].logits,  work[i].token};
   }
   return TargetWave(std::span(target).first(work.size()), false, paired);
 }
@@ -2170,6 +2185,9 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
   if (work.empty() || work.size() > o_.wave_slots || (verify && !speculative())) {
     return Error("the Qwen3.8 target wave exceeds its provisioned cohort or lacks a drafter");
   }
+  const bool tokens = work.front().token != nullptr;
+  if (tokens && (verify || speculative() || model_.exact))
+    return Error("plain device-token waves cannot run speculation or diagnostic captures");
   for (const TargetWork& w : work) {
     if (w.slot != nullptr && &w.slot->owner_ == this) {
       w.slot->request_.track.Wrote(w.n_past > 0 ? w.n_past - 1 : 0);
@@ -2204,12 +2222,16 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
         w.history.size() - w.n_past > std::min<std::size_t>(4, o_.max_rows) ||
         (verify &&
          (w.argmax == nullptr || w.history.size() - w.n_past > std::size_t{o_.draft_rows} + 1)) ||
-        (!verify && w.logits == nullptr)) {
+        (!verify &&
+         (tokens ? (w.token == nullptr || w.logits != nullptr || w.history.size() - w.n_past != 1)
+                 : (w.logits == nullptr || w.token != nullptr))) ||
+        (verify && w.token != nullptr)) {
       return Error("a Qwen3.8 target wave has invalid rows, context or outputs");
     }
     for (const auto& other : work) {
       if (&other != &w && ((w.logits != nullptr && w.logits == other.logits) ||
-                           (w.argmax != nullptr && w.argmax == other.argmax))) {
+                           (w.argmax != nullptr && w.argmax == other.argmax) ||
+                           (w.token != nullptr && w.token == other.token))) {
         return Error("Qwen3.8 target wave outputs must have independent owners");
       }
     }
@@ -2236,6 +2258,7 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
     }
     key.slots[s] = {.shape = kg::Qwen38ShapeOf(layout_, f->in, verify ? rows : 1),
                     .kind = {.verify = verify, .export_streams = verify}};
+    key.slots[s].shape.token = tokens;
     if (verify) {
       using K = md::Qwen38StateTensor::Kind;
       const auto base = f->request->live.base(kTarget);
@@ -2341,6 +2364,12 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
       }
       outputs.push_back(
           {Address(wave_ids_ + (std::size_t{s} * 8)), Address(g.argmax->data), bytes});
+    } else if (tokens) {
+      auto bytes =
+          GreedyOutputBytes(g.argmax, 1, node_.activations().base, node_.activations().bytes);
+      if (!bytes) return Error(bytes.error());
+      outputs.push_back(
+          {Address(wave_ids_ + (std::size_t{s} * 8)), Address(g.argmax->data), *bytes});
     }
   }
   if (auto valid = CheckWaveSources(sources, planned); !valid) {
@@ -2449,6 +2478,17 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
   Count(graph_stats_, path);
   for (const auto& w : work) CountMasks(mask_stats_, *planned.target(w.slot->index()));
   last_wave_ = planned.stats();
+  if (tokens) {
+    std::array<std::int32_t, kRequestSlots> ids{};
+    for (std::size_t i = 0; i < work.size(); ++i)
+      ids[i] = wave_ids_[std::size_t{work[i].slot->index()} * 8];
+    if (auto checked = CheckGreedyTokens(std::span(ids).first(work.size()), profile_.vocab);
+        !checked) {
+      for (const auto& w : work) Settle(w.slot->request_, false, true, false);
+      return Error(checked.error());
+    }
+    device_token_outputs_ += work.size();
+  }
   for (const auto& w : work) {
     const auto s = w.slot->index();
     auto& f = *frames[s];
@@ -2460,6 +2500,7 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
     } else {
       f.request->pending_rows = 0;
     }
+    if (tokens) *w.token = wave_ids_[std::size_t{s} * 8];
     if (w.logits != nullptr) {
       const auto* from = wave_logits_ + (s * wave_logit_words_);
       w.logits->assign(from, from + (std::size_t{verify ? f.in.rows : 1} * profile_.vocab));
@@ -2651,8 +2692,12 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
 }
 
 Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> history,
-                           std::uint32_t n_past, std::vector<float>& logits, bool inject) {
+                           std::uint32_t n_past, std::vector<float>& logits, bool inject,
+                           std::int32_t* token) {
   const PlanStep step;  // the plans this step borrows stay until its job ends
+  if (token != nullptr &&
+      (inject || speculative() || model_.exact || history.size() != std::size_t{n_past} + 1))
+    return Error("a device token needs one plain non-speculative Qwen row");
   // With the injection the drafter catches up the pending rows before the
   // chunk's first position too.
   request.track.Wrote(inject && n_past > 0
@@ -2702,7 +2747,9 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
     return std::unexpected(slots.error());
   }
   const Qwen38ChunkKind kind{.verify = false, .export_streams = inject};
-  auto planned = Planned(request, {.shape = kg::Qwen38ShapeOf(layout_, *in, 1), .kind = kind});
+  auto shape = kg::Qwen38ShapeOf(layout_, *in, 1);
+  shape.token = token != nullptr;
+  auto planned = Planned(request, {.shape = shape, .kind = kind});
   if (!planned) {
     return std::unexpected(planned.error());
   }
@@ -2776,7 +2823,16 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
   if (capture && !request.plans.ChargeGraph(entry, kWithLogits)) {
     capture = false;  // no room for its graph even after a reclaim: launch by launch
   }
-  const Copies outputs = {{Address(logits_), Address(g.logits->data), row_bytes}};
+  std::uint64_t output_bytes = row_bytes;
+  if (token != nullptr) {
+    auto bytes =
+        GreedyOutputBytes(g.argmax, 1, node_.activations().base, node_.activations().bytes);
+    if (!bytes) return Error(bytes.error());
+    output_bytes = *bytes;
+  }
+  const Copies outputs = {{Address(logits_),
+                           token != nullptr ? Address(g.argmax->data) : Address(g.logits->data),
+                           output_bytes}};
   kg::LaunchContext& launch = resources_.launch();
   RunPath path = RunPath::kEager;
   Status ran;
@@ -2851,8 +2907,18 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
   // the streams rows no longer precede the anchor, so no draft may read
   // them until a chunk with the injection or an accepted verify.
   request.pending_rows = inject ? 1 : 0;
-  const auto* values = static_cast<const float*>(logits_);
-  logits.assign(values, values + profile_.vocab);
+  if (token != nullptr) {
+    const auto value = *static_cast<const std::int32_t*>(logits_);
+    if (auto checked = CheckGreedyTokens(std::span(&value, 1), profile_.vocab); !checked) {
+      Settle(request, false, true, false);
+      return Error(checked.error());
+    }
+    *token = value;
+    ++device_token_outputs_;
+  } else {
+    const auto* values = static_cast<const float*>(logits_);
+    logits.assign(values, values + profile_.vocab);
+  }
   return {};
 }
 

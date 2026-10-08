@@ -395,7 +395,7 @@ std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(TensorArena& arena,
     g.logits = named("logits", ggml_scale(c, logits, p.final_softcap));
     expanded.push_back(g.logits);
     if (shape.greedy) {
-      g.greedy = named("greedy", Argmax(c, g.logits));
+      g.greedy = named("greedy", Argmax(c, g.logits, false, ArgmaxFlavor::kHostGreedy));
       expanded.push_back(g.greedy);
     }
   } else if (g.hidden != nullptr)

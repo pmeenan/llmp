@@ -363,6 +363,12 @@ family" guide, and its long-context scaling work.
       neutral (−0.108%, overlapping ranges), whole diagnostic +0.224%; keep
       host masks selected. This closes only the block sub-investigation as
       not adopted; compressed visible-count masks keep composite T22/T69 open.
+- [ ] **Publish the greedy prompt-completion token on device.** Extend the
+      shared first-token contract across all LLM families, including injected
+      prefill, retained assistant features, catch-up/export/carry and pending
+      rows; preserve requested-score/sampling fallbacks and exact state/head
+      controls. This is a compatible extension of decode publication, not
+      completed T27 decode work or a new public capability.
 - [ ] **Complete open optimization transfers from the audit.** IDs refer to
       the [inventory matrix](optimization-inventory.md#complete-cross-family-dispositions--2026-10-07).
       Preserve each recipient's original math, artifact, state, memory and
@@ -378,7 +384,9 @@ family" guide, and its long-context scaling work.
           noncausal block masks are checked but not adopted after a neutral short
           screen; optional compressed masks remain open.
         - [ ] **T23** Single-request prefill lookahead/capture ahead.
-        - [ ] **T27** Plain greedy token on GPU.
+        - [ ] **T27** Plain greedy token on GPU: non-spec target scalar/joined
+          publication adopted with exact states/heads; compatible adaptive-spec
+          `PlainWave` remains open. [Controls](experiments/plain-gpu-tokens/README.md).
         - [ ] **T29** Operand joins by view.
         - [ ] **T37** Shape-pinned library GEMM algorithms.
         - [ ] **T39** Device greedy verify verdicts.
@@ -411,7 +419,10 @@ family" guide, and its long-context scaling work.
           graphs plus the executed F32 primitive, without a fallback-model
           speed claim.
         - [ ] **T23** Single-request prefill lookahead/capture ahead.
-        - [ ] **T27** Plain greedy token on GPU.
+        - [x] **T27** Plain greedy decode token on GPU: non-spec native target
+          scalar/joined publication adopted with exact initialized states/heads.
+          Speculative Draft/Verify already publishes lean IDs; there is no
+          separate plain-decode fallback. [Controls](experiments/plain-gpu-tokens/README.md).
         - [ ] **T29** Operand joins by view.
         - [ ] **T41** Residual-add plus next normalization.
         - [ ] **T54** State-only nonfinal prompt dependency cut.
@@ -438,7 +449,10 @@ family" guide, and its long-context scaling work.
           graphs plus the executed F32 primitive, without a fallback-model
           speed claim.
         - [ ] **T23** Single-request prefill lookahead/capture ahead.
-        - [ ] **T27** Plain greedy token on GPU.
+        - [x] **T27** Plain greedy target tokens on the GPU, scalar/joined GGUF
+          with exact initialized states, histories and complete continuation heads.
+          Sampling/scoring retain rows; GGUF has no MTP/speculation contract.
+          [Controls](experiments/plain-gpu-tokens/README.md).
         - [ ] **T29** Operand joins by view.
         - [ ] **T37** Shape-pinned library GEMM algorithms.
         - [ ] **T41** Residual-add plus next normalization.

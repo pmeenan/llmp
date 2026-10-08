@@ -537,6 +537,42 @@ TEST_F(SpecRowsTest, ArgmaxTakesTheLowestIndexAmongEqualMaximaAndNeverANan) {
   EXPECT_EQ(got[4], want);
 }
 
+TEST_F(SpecRowsTest, PlainHostGreedyMatchesMaxElementForOddRowsAndNonFiniteValues) {
+  constexpr std::int64_t kN = 513;
+  constexpr std::int64_t kRows = 8;
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  std::vector<float> x(static_cast<std::size_t>(kN * kRows), -inf);
+  x[0] = nan;
+  x[512] = inf;  // Native ignores column-zero NaN; host keeps zero.
+  x[kN] = -1.0F;
+  x[kN + 255] = nan;
+  x[kN + 256] = 5.0F;
+  x[kN + 512] = 5.0F;
+  x[2 * kN + 2] = -0.0F;
+  x[2 * kN + 511] = +0.0F;
+  x[3 * kN + 3] = inf;
+  x[3 * kN + 512] = inf;
+  // Row four is all -infinity; row five all NaN.
+  std::fill(x.begin() + (5 * kN), x.begin() + (6 * kN), nan);
+  x[6 * kN + 512] = 1.0F;  // Last odd column participates.
+  x[7 * kN] = 3.0F;
+  x[7 * kN + 512] = nan;
+  ggml_tensor* input = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kN, kRows), x);
+  ggml_tensor* host = Place(kg::Argmax(c(), input, false, kg::ArgmaxFlavor::kHostGreedy));
+  ggml_tensor* native = Place(kg::Argmax(c(), input));
+  Launched(kg::RunArgmax(launch(), host), "plain host-greedy argmax");
+  const auto got = Download<std::int32_t>(host);
+  ASSERT_EQ(got.size(), kRows);
+  for (std::size_t r = 0; r < kRows; ++r) {
+    const auto row = std::span<const float>(x).subspan(r * kN, kN);
+    const auto want = static_cast<std::int32_t>(std::ranges::max_element(row) - row.begin());
+    EXPECT_EQ(got[r], want) << r;
+  }
+  Launched(kg::RunArgmax(launch(), native), "unchanged native argmax");
+  EXPECT_EQ(Download<std::int32_t>(native)[0], 512);
+}
+
 TEST_F(SpecRowsTest, RangeCopiesCopyExactlyTheRangesNamed) {
   constexpr std::size_t kBytes = std::size_t{64} * 1024;
   std::vector<std::uint8_t> source(kBytes);

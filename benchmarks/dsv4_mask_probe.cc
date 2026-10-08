@@ -3,7 +3,7 @@
 
 // One production-width DeepSeek target mask factor: independent prefills,
 // joined C2 natural decode, full head bytes and initialized-state hashes.
-// Usage: ARTIFACT IDS0.i32 IDS1.i32 OUT host|device
+// Usage: ARTIFACT IDS0.i32 IDS1.i32 OUT host|device|tokens-host|tokens-device
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -13,6 +13,7 @@
 #include <expected>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <span>
@@ -106,7 +107,9 @@ int main(int argc, char** argv) {
     return result ? 0 : 1;
   }
   const std::string_view mode = argv[5];
-  if (mode != "host" && mode != "device") return 2;
+  const bool token_factor = mode == "tokens-host" || mode == "tokens-device";
+  const bool token_device = mode == "tokens-device";
+  if (!token_factor && mode != "host" && mode != "device") return 2;
   const bool device = mode == "device";
   const fs::path out = argv[4];
   if (!fs::create_directory(out)) return 2;
@@ -140,7 +143,8 @@ int main(int argc, char** argv) {
                           .drafter = {},
                           .frontier_head = true,
                           .wave_slots = 2,
-                          .device_raw_masks = device,
+                          .device_raw_masks = token_factor || device,
+                          .device_tokens = token_device,
                           .spill_place = {}};
   en::SetDsv4ServedPrefill(options);
   life->runner = std::make_unique<en::Dsv4Runner>(node, options, 0, 0);
@@ -152,12 +156,14 @@ int main(int argc, char** argv) {
   std::vector<std::int32_t> choices;
   void* pinned = nullptr;
   std::array<std::string, 2> state_hashes;
+  std::array<std::uint64_t, 2> state_bytes{};
   const auto snapshot = [&]() -> en::Status {
     std::ofstream ranges_file(out / "state-ranges.txt", std::ios::noreplace);
     for (std::uint32_t slot = 0; slot < 2; ++slot) {
       const auto ranges = slots[slot]->used_state_ranges();
       jitllm::base::Sha256 hash;
       for (const auto& range : ranges) {
+        state_bytes[slot] += range.bytes;
         ranges_file << slot << ' ' << range.region << ' ' << range.offset << ' ' << range.bytes
                     << '\n';
         for (std::uint64_t at = 0; at < range.bytes;) {
@@ -202,8 +208,10 @@ int main(int argc, char** argv) {
     // Fund retained full heads/choices before allocating the diagnostic payload.
     constexpr std::uint64_t kDiagnosticHost = 64ULL << 20U;
     node.SetHostFloor(runner.host_input_bytes() + runner.plan_floor_bytes() + kDiagnosticHost);
-    saved.reserve(std::size_t{runner.vocab()} * 2 * (kSteps + 1));
-    choices.reserve(kSteps * 2);
+    if (!token_factor) {
+      saved.reserve(std::size_t{runner.vocab()} * 2 * (kSteps + 1));
+      choices.reserve(kSteps * 2);
+    }
     if (auto r = node.Start(jitllm::base::Bytes(fixed + runner.weights().size() * en::kPagedExtent +
                                                 4 * node.StateCapacity()));
         !r)
@@ -213,6 +221,119 @@ int main(int argc, char** argv) {
     node.Run();
     if (auto r = runner.CheckHashRouting(); !r) return r;
     if (auto r = runner.SelectSlots(slots); !r) return r;
+    if (token_factor) {
+      const auto budget =
+          fixed + runner.weights().size() * en::kPagedExtent + 4 * node.StateCapacity();
+      std::cout << "PLAIN_TOKEN_SETUP budget=" << budget << " fixed=" << fixed
+                << " activations=" << runner.activations_needed()
+                << " scratch=" << runner.pool_needed()
+                << " host_inputs=" << runner.host_input_bytes() << '\n';
+      std::array<std::vector<std::int32_t>, 2> histories;
+      for (std::size_t i = 0; i < 2; ++i) histories[i].reserve(prefix[i] + 34);
+      const auto choose = [&](std::size_t i) -> std::expected<std::int32_t, std::string> {
+        if (heads[i].size() != runner.vocab()) return Error("complete plain head required");
+        return static_cast<std::int32_t>(std::ranges::max_element(heads[i]) - heads[i].begin());
+      };
+      const auto traversal = [&](double& prefill, double& decode) -> en::Status {
+        const auto begin = std::chrono::steady_clock::now();
+        for (std::size_t i = 0; i < 2; ++i) {
+          if (auto r = slots[i]->Clear(); !r) return r;
+          histories[i].assign(ids[i].begin(), ids[i].end());
+          past[i] = 0;
+          while (past[i] < prefix[i]) {
+            const auto rows = std::min(4096U, prefix[i] - past[i]);
+            if (auto r = slots[i]->Chunk(past[i], std::span(histories[i]).subspan(past[i], rows),
+                                         heads[i]);
+                !r)
+              return r;
+            past[i] += rows;
+          }
+          const auto anchor = choose(i);
+          if (!anchor) return Error(anchor.error());
+          histories[i].push_back(*anchor);
+        }
+        const auto prefill_end = std::chrono::steady_clock::now();
+        for (std::uint32_t step = 0; step < 32; ++step) {
+          std::array<std::int32_t, 2> tokens{};
+          std::array<en::Dsv4Runner::WaveWork, 2> work;
+          for (std::size_t i = 0; i < 2; ++i)
+            work[i] = {.slot = slots[i],
+                       .pos = past[i],
+                       .anchor = histories[i].back(),
+                       .logits = token_device ? nullptr : &heads[i],
+                       .token = token_device ? &tokens[i] : nullptr};
+          if (auto r = runner.DecodeWave(work); !r) return r;
+          for (std::size_t i = 0; i < 2; ++i) {
+            if (!token_device) {
+              const auto selected = choose(i);
+              if (!selected) return Error(selected.error());
+              tokens[i] = *selected;
+            }
+            histories[i].push_back(tokens[i]);
+            ++past[i];
+          }
+        }
+        const auto end = std::chrono::steady_clock::now();
+        prefill = en::support::Seconds(prefill_end - begin);
+        decode = en::support::Seconds(end - prefill_end);
+        return {};
+      };
+      return node.WithRequest(
+          0, runner.execution_closure(), "DeepSeek plain-token factor", [&]() -> en::Status {
+            double warm_prefill = 0, warm_decode = 0;
+            if (auto r = traversal(warm_prefill, warm_decode); !r) return r;
+            const auto target_before = runner.graph_stats();
+            const auto wave_before = runner.wave_stats();
+            const auto tokens_before = runner.device_token_outputs();
+            double prefill = 0, decode = 0;
+            if (auto r = traversal(prefill, decode); !r) return r;
+            const auto target_after = runner.graph_stats();
+            const auto wave_after = runner.wave_stats();
+            const auto selected_tokens = runner.device_token_outputs() - tokens_before;
+            const auto target_completed = target_after.eager - target_before.eager +
+                                          target_after.captured - target_before.captured +
+                                          target_after.replayed - target_before.replayed;
+            const auto wave_completed = wave_after.eager - wave_before.eager + wave_after.captured -
+                                        wave_before.captured + wave_after.replayed -
+                                        wave_before.replayed;
+            if (selected_tokens != (token_device ? 64U : 0U) || target_completed != 36 ||
+                wave_completed != 32 || wave_before.captured == 0 ||
+                wave_after.replayed <= wave_before.replayed || runner.bound_raw_masks() == 0 ||
+                runner.coverage_violations() != 0 || !std::isfinite(prefill) ||
+                !std::isfinite(decode) || prefill <= 0 || decode <= 0)
+              return Error(
+                  "actual plain-token, completed-work, capture/replay or coverage witness refused");
+            if (auto r = snapshot(); !r) return r;
+            for (std::size_t i = 0; i < 2; ++i) {
+              if (state_bytes[i] == 0) return Error("initialized target state required");
+              if (auto r = Save<std::int32_t>(out / ("history" + std::to_string(i) + ".i32"),
+                                              histories[i]);
+                  !r)
+                return r;
+              const std::array<std::int32_t, 1> anchor{histories[i].back()};
+              if (auto r = slots[i]->Chunk(past[i], anchor, heads[i]); !r) return r;
+              if (!Best(heads[i], runner.vocab()))
+                return Error("finite complete continuation head required");
+              if (auto r = Save<float>(out / ("head" + std::to_string(i) + ".f32"), heads[i]); !r)
+                return r;
+            }
+            std::cout
+                << std::setprecision(17)
+                << "PLAIN_TOKEN_FACTOR mode=" << (token_device ? "on" : "off")
+                << " context=8704 chunk=4096 slots=2 format=gguf decode_units=32 device_tokens="
+                << selected_tokens << " prefill_seconds=" << prefill << " decode_seconds=" << decode
+                << " paid_seconds=" << prefill + decode << " warm_prefill_seconds=" << warm_prefill
+                << " warm_decode_seconds=" << warm_decode
+                << " eager=" << target_after.eager - target_before.eager
+                << " captured=" << target_after.captured - target_before.captured
+                << " replayed=" << target_after.replayed - target_before.replayed
+                << " wave_replayed=" << wave_after.replayed - wave_before.replayed
+                << " selected_raw_masks=" << runner.bound_raw_masks()
+                << " state0_bytes=" << state_bytes[0] << " state0=" << state_hashes[0]
+                << " state1_bytes=" << state_bytes[1] << " state1=" << state_hashes[1] << '\n';
+            return {};
+          });
+    }
     return node.WithRequest(
         0, runner.execution_closure(), "DeepSeek target raw-mask factor", [&]() -> en::Status {
           if (!node.InRequest(0)) return Error("held direct request required");
@@ -283,6 +404,7 @@ int main(int argc, char** argv) {
     std::cerr << retired.error() << '\n';
     std::ignore = life.release();
   }
-  if (ran && retired) std::cout << "DSV4_MASK_FACTOR_RETIRED\n";
+  if (ran && retired)
+    std::cout << (token_factor ? "PLAIN_TOKEN_FACTOR_RETIRED\n" : "DSV4_MASK_FACTOR_RETIRED\n");
   return ran && retired ? 0 : 1;
 }

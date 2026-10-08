@@ -163,6 +163,9 @@ struct Dsv4Options {
   bool device_raw_masks = true;
   // Experimental noncausal DSpark block producer; independent host reference.
   bool device_draft_masks = false;
+  // Plain target greedy decode publication; scoring, sampling and speculation
+  // keep their existing output contracts. False is the internal row reference.
+  bool device_tokens = true;
   // Where each slot's spill file lives (LiveState::SpillPlace), asked once
   // at Register; unset, an unnamed file in `out`. The runtime names them
   // to keep conversations across a restart (D-105).
@@ -336,6 +339,7 @@ class Dsv4Runner final : public PagedModel {
 
   // Speculation (Dsv4Options::drafter).
   bool speculative() const { return dweights_.opened(); }
+  std::uint64_t device_token_outputs() const { return device_token_outputs_; }
   // After a verify: its first `keep` rows (1 to its rows) stay; the rest,
   // and its scratch rows, are restored from its snapshot at the start of
   // the next job (Rollback runs that now).
@@ -601,6 +605,11 @@ class Dsv4Runner final : public PagedModel {
                  std::vector<float>& logits, Dsv4ChunkKind kind = Dsv4ChunkKind::kPlain) {
       return owner_.Chunk(request_, n_past, tokens, logits, {}, kind);
     }
+    Status GreedyChunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
+                       std::int32_t& token) {
+      std::vector<float> unused;
+      return owner_.Chunk(request_, n_past, tokens, unused, {}, Dsv4ChunkKind::kPlain, &token);
+    }
     Status Draft(std::uint32_t pos0, std::int32_t anchor, std::vector<std::int32_t>& drafts) {
       return owner_.Draft(request_, pos0, anchor, drafts);
     }
@@ -697,6 +706,7 @@ class Dsv4Runner final : public PagedModel {
     std::uint32_t rows = 1;
     std::vector<std::int32_t>* drafts = nullptr;
     std::vector<float>* logits = nullptr;
+    std::int32_t* token = nullptr;  // instead of logits, homogeneous plain owners only
   };
   // Slots active, each once, in ascending order, at most wave_capacity()
   // and kDsv4WaveRows rows in all. A decode wave is one step of every slot
@@ -831,7 +841,7 @@ class Dsv4Runner final : public PagedModel {
   Status EnsureState(RequestState& request, std::uint32_t positions);
   Status Chunk(RequestState& request, std::uint32_t n_past, std::span<const std::int32_t> tokens,
                std::vector<float>& logits, const std::function<Status()>& meanwhile,
-               Dsv4ChunkKind kind);
+               Dsv4ChunkKind kind, std::int32_t* token = nullptr);
   Status Accept(RequestState& request, std::uint32_t keep);
   Status DiscardVerify(RequestState& request);
   Status Rollback(RequestState& request);
@@ -921,6 +931,7 @@ class Dsv4Runner final : public PagedModel {
   std::uint64_t bound_raw_masks_ = 0;
   std::uint64_t bound_draft_masks_ = 0;
   std::uint64_t draft_mask_host_bytes_ = 0;
+  std::uint64_t device_token_outputs_ = 0;
   GraphStats draft_stats_;
   GraphStats wave_stats_;
   RunPath last_path_ = RunPath::kEager;

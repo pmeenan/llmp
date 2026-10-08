@@ -116,6 +116,7 @@ struct Qwen38ChunkShape {
   std::int64_t outputs = 0;  // rows whose logits are computed: the last `outputs`
   bool qsa_select = false;
   std::int64_t qsa_blocks = 0;
+  bool token = false;  // Plain one-row host-greedy token publication.
 
   bool operator==(const Qwen38ChunkShape&) const = default;
 };
@@ -296,8 +297,8 @@ struct Qwen38Graph {
   ggml_tensor* output_hc_up = nullptr;
   std::vector<Qwen38LayerTensors> layers;
   ggml_tensor* logits = nullptr;  // F32 [vocab, outputs]
-  // A verify's: each row's argmax (I32 [outputs], the lowest index among
-  // equals, jitllm.argmax), the last node; the logits stay live beside it.
+  // A verify's native argmaxes, or a plain token shape's host-compatible
+  // argmax (I32 [outputs]), the last node; logits stay live beside it.
   ggml_tensor* argmax = nullptr;
   std::vector<ggml_tensor*> nodes;
   std::vector<Qwen38RoutedTensors> routed;

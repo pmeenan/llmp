@@ -503,7 +503,7 @@ constexpr int kArgmaxThreads = 256;
 // kProbability, a second pass sums exp(v - max) over the row (each thread
 // its part in order, then the block in a fixed tree) and the row's
 // probability of its highest value, 1 / sum, follows the indices.
-template <bool kProbability>
+template <bool kProbability, bool kHostGreedy = false>
 __global__ void __launch_bounds__(kArgmaxThreads)
     ArgmaxKernel(const float* __restrict__ x, std::int32_t* __restrict__ out, int n) {
   const float* row = x + static_cast<std::int64_t>(blockIdx.x) * n;
@@ -531,7 +531,7 @@ __global__ void __launch_bounds__(kArgmaxThreads)
   if (threadIdx.x == 0) {
     // A row of NaN gives 0, never -1: the index feeds unchecked row
     // lookups (the Markov head's, the verify's embedding rows).
-    out[blockIdx.x] = indices[0] < 0 ? 0 : indices[0];
+    out[blockIdx.x] = (kHostGreedy && isnan(row[0])) || indices[0] < 0 ? 0 : indices[0];
   }
   if constexpr (kProbability) {
     const bool none = indices[0] < 0;
@@ -801,6 +801,11 @@ std::expected<void, KernelFailure> RunArgmax(LaunchContext& launch, ggml_tensor*
       ArgmaxKernel<true><<<static_cast<unsigned>(x->ne[1]), kArgmaxThreads, 0, context.stream()>>>(
           static_cast<const float*>(x->data), static_cast<std::int32_t*>(node->data),
           static_cast<int>(x->ne[0]));
+    } else if (JitllmOpInt(node, 1) == static_cast<std::int32_t>(ArgmaxFlavor::kHostGreedy)) {
+      ArgmaxKernel<false, true>
+          <<<static_cast<unsigned>(x->ne[1]), kArgmaxThreads, 0, context.stream()>>>(
+              static_cast<const float*>(x->data), static_cast<std::int32_t*>(node->data),
+              static_cast<int>(x->ne[0]));
     } else {
       ArgmaxKernel<false><<<static_cast<unsigned>(x->ne[1]), kArgmaxThreads, 0, context.stream()>>>(
           static_cast<const float*>(x->data), static_cast<std::int32_t*>(node->data),

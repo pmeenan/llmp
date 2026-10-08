@@ -23,8 +23,45 @@
 #include "engine/support.h"
 #include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/implementations.h"
+#include "kernels/ggml/jitllm_ops.h"
 
 namespace jitllm::engine {
+
+std::expected<void, std::string> CheckGreedyTokens(std::span<const std::int32_t> tokens,
+                                                   std::uint32_t vocab) {
+  if (tokens.empty() || vocab == 0 || std::ranges::any_of(tokens, [vocab](auto id) {
+        return id < 0 || std::cmp_greater_equal(id, vocab);
+      }))
+    return support::Error("completed device tokens are outside the vocabulary");
+  return {};
+}
+
+std::expected<std::uint64_t, std::string> GreedyOutputBytes(const ggml_tensor* node,
+                                                            std::uint32_t count,
+                                                            std::uint64_t activations,
+                                                            std::uint64_t activation_bytes) {
+  const std::uint64_t bytes = std::uint64_t{count} * sizeof(std::int32_t);
+  if (count == 0 || node == nullptr || node->data == nullptr || node->type != GGML_TYPE_I32 ||
+      node->ne[0] != count || node->ne[1] != 1 || node->ne[2] != 1 || node->ne[3] != 1 ||
+      !ggml_is_contiguous(node) || ggml_nbytes(node) != bytes ||
+      reinterpret_cast<std::uintptr_t>(node->data) % alignof(std::int32_t) != 0) {
+    return support::Error("a greedy output needs one packed, aligned I32 token per owner");
+  }
+  const auto address = support::Address(node->data);
+  if (address < activations || bytes > activation_bytes ||
+      address - activations > activation_bytes - bytes) {
+    return support::Error("the greedy output is outside current activation backing");
+  }
+  if (kernels::ggml::JitllmOpInt(node, 0) != 0 ||
+      kernels::ggml::JitllmOpInt(node, 1) !=
+          static_cast<std::int32_t>(kernels::ggml::ArgmaxFlavor::kHostGreedy)) {
+    return support::Error("plain token publication needs the host-greedy argmax flavor");
+  }
+  if (auto checked = kernels::ggml::CheckArgmax(node); !checked) {
+    return support::Error(checked.error().detail);
+  }
+  return bytes;
+}
 
 namespace {
 

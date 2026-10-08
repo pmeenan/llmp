@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Choose plain target greedy decode tokens on the GPU for DeepSeek and native/GGUF
+  Qwen, preserving complete states and continuation heads. Share scalar
+  dispatch/output validation and match host NaN/tie behavior across Gemma too;
+  sampling/scoring and speculation retain their existing contracts.
+
 - Add a checked opt-in DSpark noncausal GPU block-mask producer through shared
   F16/F32 source contracts. A short screen is neutral, so host masks stay default.
 

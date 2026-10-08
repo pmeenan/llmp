@@ -186,6 +186,9 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     std::span<const std::string> keep_names, std::uint64_t activations,
     std::uint64_t activation_bytes, const Dsv4Speculation& speculation,
     std::optional<std::uint32_t> first_position) {
+  if (shape.token && (shape.rows != 1 || m.exact || speculation.verify ||
+                      speculation.drafter != nullptr || !keep_names.empty() || first_position))
+    return Error("plain device token plans require one non-speculative target row");
   // A verify never takes the output-A/HCA prefill (its rows are captured
   // as a graph, which would keep one position).
   if (first_position &&
@@ -240,6 +243,7 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
   }
   // The logits are read after the run whatever node comes last.
   std::vector<ggml_tensor*> keep = {g.logits};
+  if (g.token != nullptr) keep.push_back(g.token);
   for (const std::string& name : keep_names) {
     if (name == "*") {
       for (const auto& [n, t] : g.named) {
@@ -389,7 +393,8 @@ std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
       }
     }
   }
-  const std::vector<ggml_tensor*> keep = {g.joined.logits};
+  std::vector<ggml_tensor*> keep = {g.joined.logits};
+  if (g.joined.token != nullptr) keep.push_back(g.joined.token);
   kg::DeviceChoices device = choices;
   device.row_invariant = false;
   device.fuse_norms = true;

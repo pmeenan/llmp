@@ -606,6 +606,14 @@ Status Dsv4Runner::Setup() {
       if (auto r = account(**planned, chunk_host); !r) {
         return r;
       }
+      if (probe.rows == 1 && probe.kind == Dsv4ChunkKind::kPlain && !speculative() &&
+          !model_.exact && dump_.empty()) {
+        auto token_shape = shape;
+        token_shape.token = true;
+        auto token_plan = PlanDsv4Chunk(model_, token_shape, choices, {}, 0, 0);
+        if (!token_plan) return Error(token_plan.error());
+        if (auto r = account(**token_plan, chunk_host); !r) return r;
+      }
     }
     if (speculative()) {
       auto planned = PlanDsparkDraft(dmodel_, o_.draft_rows, choices, 0, 0);
@@ -642,7 +650,14 @@ Status Dsv4Runner::Setup() {
           return Error(
               std::format("measuring a wave of {} slots: {}", wave_slots_, planned.error()));
         }
-        return account(**planned, wave_host);
+        if (auto r = account(**planned, wave_host); !r) return r;
+        if (rows == 1 && !speculative() && !model_.exact) {
+          shape.token = true;
+          auto token_plan = PlanDsv4Wave(model_, states, shape, choices, 0, 0);
+          if (!token_plan) return Error(token_plan.error());
+          if (auto r = account(**token_plan, wave_host); !r) return r;
+        }
+        return {};
       };
       if (auto r = wave(1); !r) {
         return r;
@@ -1663,8 +1678,12 @@ Status Dsv4Runner::Rollback(RequestState& request) {
 
 Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
                          std::span<const std::int32_t> tokens, std::vector<float>& logits,
-                         const std::function<Status()>& meanwhile, Dsv4ChunkKind kind) {
+                         const std::function<Status()>& meanwhile, Dsv4ChunkKind kind,
+                         std::int32_t* token) {
   const PlanStep step;  // the plan this step borrows stays until its job ends
+  if (token != nullptr && (tokens.size() != 1 || kind != Dsv4ChunkKind::kPlain || speculative() ||
+                           model_.exact || !dump_.empty()))
+    return Error("a device token needs one plain non-speculative DeepSeek row");
   request.state_refused = false;
   request.track.Wrote(n_past);
   const auto rows = static_cast<std::uint32_t>(tokens.size());
@@ -1705,7 +1724,8 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
       o_.frontier_head && !model.exact && !o_.full_window && rows > 1 && !verify && dump_.empty()
           ? 1
           : 0;
-  const auto shape = kg::Dsv4ShapeOf(layout_, *in, requested_outputs);
+  auto shape = kg::Dsv4ShapeOf(layout_, *in, requested_outputs);
+  shape.token = token != nullptr;
   // A plain or injected prefill chunk may take HCA; a verify never does
   // (PlanDsv4Chunk refuses it).
   const bool hca = !verify && Dsv4PrefillHca(model, shape);
@@ -1724,6 +1744,12 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
   const kg::Dsv4Graph& g = p->graph;
   const std::uint64_t row_bytes = std::uint64_t{profile_.vocab} * sizeof(float);
   const std::uint32_t out_rows = verify ? rows : 1;
+  std::uint64_t token_bytes = 0;
+  if (token != nullptr) {
+    auto bytes = GreedyOutputBytes(g.token, 1, node_.activations().base, node_.activations().bytes);
+    if (!bytes) return Error(bytes.error());
+    token_bytes = *bytes;
+  }
   // Decode graphs (D-090): replay a shape's graph; capture a one-row
   // shape (or a verify's) that has run once launch by launch; otherwise
   // launch by launch. An HCA plan never: its position changes each run.
@@ -1735,9 +1761,11 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
   // The last row's logits (the next token's), or a verify's every row's.
   const std::array<RunCopy, 1> outputs = {
       RunCopy{Address(request.logits),
-              Address(static_cast<const std::byte*>(g.logits->data) +
-                      (static_cast<std::uint64_t>(g.logits->ne[1] - out_rows) * row_bytes)),
-              out_rows * row_bytes}};
+              token != nullptr
+                  ? Address(g.token->data)
+                  : Address(static_cast<const std::byte*>(g.logits->data) +
+                            (static_cast<std::uint64_t>(g.logits->ne[1] - out_rows) * row_bytes)),
+              token != nullptr ? token_bytes : out_rows * row_bytes}};
   kg::LaunchContext& launch = resources_.launch();
   RunPath path = RunPath::kEager;
   Status ran;
@@ -1826,8 +1854,18 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
   if (verify) {
     live.Verified(rows);
   }
-  const auto* values = static_cast<const float*>(request.logits);
-  logits.assign(values, values + (std::size_t{out_rows} * profile_.vocab));
+  if (token != nullptr) {
+    const auto value = *static_cast<const std::int32_t*>(request.logits);
+    if (auto checked = CheckGreedyTokens(std::span(&value, 1), profile_.vocab); !checked) {
+      Settle(request, false, true, false);
+      return Error(checked.error());
+    }
+    *token = value;
+    ++device_token_outputs_;
+  } else {
+    const auto* values = static_cast<const float*>(request.logits);
+    logits.assign(values, values + (std::size_t{out_rows} * profile_.vocab));
+  }
   return {};
 }
 
@@ -2169,6 +2207,9 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
       (spec && !speculative()) || model_.exact) {
     return Error("a DeepSeek wave needs provisioned slots (and a drafter to verify)");
   }
+  const bool tokens = work.front().token != nullptr;
+  if (tokens && (spec || speculative()))
+    return Error("plain device-token waves cannot run speculation");
   for (const WaveWork& w : work) {
     if (w.slot != nullptr && &w.slot->owner_ == this) {
       w.slot->request_.track.Wrote(w.pos > 0 ? w.pos - 1 : 0);
@@ -2198,17 +2239,21 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
   Queued jq;
   WaveKey key;
   key.verify = spec;
+  key.shape.token = tokens;
   std::uint32_t previous = 0;
   std::int64_t total = 0;
   for (std::size_t i = 0; i < work.size(); ++i) {
     const WaveWork& w = work[i];
     if (w.slot == nullptr || &w.slot->owner_ != this || !w.slot->request_.provisioned ||
-        (i != 0 && w.slot->index() <= previous) || w.logits == nullptr ||
+        (i != 0 && w.slot->index() <= previous) ||
+        (tokens ? (w.token == nullptr || w.logits != nullptr)
+                : (w.logits == nullptr || w.token != nullptr)) ||
         (spec && w.drafts == nullptr)) {
       return Error("a DeepSeek wave needs this runner's slots, ascending, with their outputs");
     }
     for (std::size_t j = 0; j < i; ++j) {
-      if (work[j].logits == w.logits || (spec && work[j].drafts == w.drafts)) {
+      if ((tokens ? work[j].token == w.token : work[j].logits == w.logits) ||
+          (spec && work[j].drafts == w.drafts)) {
         return Error("DeepSeek wave outputs must have independent owners");
       }
     }
@@ -2351,9 +2396,17 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
     frames[i].dcapture =
         frames[i].dcapture && frames[i].request->dplans.ChargeGraph(*frames[i].draft);
   }
-  const std::array<RunCopy, 1> outputs = {
-      RunCopy{Address(wave_logits_), Address(g.joined.logits->data),
-              static_cast<std::uint64_t>(total) * profile_.vocab * sizeof(float)}};
+  std::uint64_t token_bytes = 0;
+  if (tokens) {
+    auto bytes = GreedyOutputBytes(g.joined.token, static_cast<std::uint32_t>(count),
+                                   node_.activations().base, node_.activations().bytes);
+    if (!bytes) return Error(bytes.error());
+    token_bytes = *bytes;
+  }
+  const std::array<RunCopy, 1> outputs = {RunCopy{
+      Address(wave_logits_),
+      tokens ? Address(g.joined.token->data) : Address(g.joined.logits->data),
+      tokens ? token_bytes : static_cast<std::uint64_t>(total) * profile_.vocab * sizeof(float)}};
   kg::LaunchContext& launch = resources_.launch();
   std::byte* const staging = runs_.staging();
   Status ran;
@@ -2491,9 +2544,21 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
   if (joined) {
     Count(draft_stats_, jq.path);
   }
+  const auto* token_ids = reinterpret_cast<const std::int32_t*>(wave_logits_);
+  if (tokens) {
+    if (auto checked = CheckGreedyTokens(std::span(token_ids, count), profile_.vocab); !checked) {
+      for (std::size_t j = 0; j < count; ++j) Settle(*frames[j].request, false, true, false);
+      return Error(checked.error());
+    }
+  }
+  if (tokens) device_token_outputs_ += count;
   for (std::size_t i = 0; i < count; ++i) {
     Frame& f = frames[i];
     const WaveWork& w = work[i];
+    if (tokens) {
+      *w.token = token_ids[i];
+      continue;
+    }
     const float* from = wave_logits_ + (static_cast<std::size_t>(g.first[i]) * profile_.vocab);
     w.logits->assign(from, from + (std::size_t{f.rows} * profile_.vocab));
     if (spec) {

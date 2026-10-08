@@ -1007,6 +1007,8 @@ TEST(Gemma4Graph, GreedyShapesAddOnlyTheFrontierArgmaxAfterTheHead) {
   EXPECT_EQ(g->greedy->type, GGML_TYPE_I32);
   EXPECT_EQ(g->greedy->ne[0], g->logits->ne[1]);
   EXPECT_EQ(g->greedy->src[0], g->logits);
+  EXPECT_EQ(kg::JitllmOpInt(g->greedy, 1),
+            static_cast<std::int32_t>(kg::ArgmaxFlavor::kHostGreedy));
   EXPECT_EQ(g->nodes.back(), g->greedy);
   auto plain = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2));
   ASSERT_TRUE(plain);

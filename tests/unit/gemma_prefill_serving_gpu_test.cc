@@ -25,6 +25,7 @@
 #include "engine/checkpoint_file.h"
 #include "engine/gemma2_runner.h"
 #include "engine/gemma3_runner.h"
+#include "plain_token_serving_checks.h"
 #include "platform/kept_files.h"
 #include "runtime/serving.h"
 
@@ -199,6 +200,19 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   }
   void CheckConfiguredRoots(std::uint32_t rows, std::uint32_t chunks);
 };
+
+TEST_P(GemmaPrefillServingGpu, PlainRuntimeTokensPreserveRowsStateAndRestoredContinuations) {
+  ASSERT_TRUE(Start(false));
+  const auto exercise = [&](auto& runner) {
+    return jitllm::test::CheckPlainServing(
+        *life->server, *model, runner.profile().vocab,
+        [&](std::uint32_t id) { return StateHash(runner, id); },
+        [&] { return runner.greedy_tokens(); });
+  };
+  const auto r = GetParam() == 2 ? exercise(dynamic_cast<en::Gemma2Runner&>(model->paged()))
+                                 : exercise(dynamic_cast<en::Gemma3Runner&>(model->paged()));
+  ASSERT_TRUE(r) << (r ? "" : r.error());
+}
 
 TEST_P(GemmaPrefillServingGpu, ActualJoinedHintsPreserveHeadsAndState) {
   std::array<std::vector<float>, 2> expected;

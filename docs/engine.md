@@ -214,8 +214,17 @@ families too; incompatible math or absent redundant work remains a concrete
 non-applicability reason. Shared mechanisms (graph
 capture policy, held direct steps, state reuse across Clear, the pager's
 lazy handoff and handle reserve) come with the skeleton; those still
-written per runner (GPU-built masks, the prefill lookahead hook, the
-device greedy token) are ported until they move into the engine.
+written per runner retain their family descriptors while shared source,
+lifetime and dispatch helpers carry compatible transfers. Plain greedy
+publication now shares `Llm::RunPlainGenerationUnit` and
+`engine/planned.h` output authentication: a successful optional scalar hook
+publishes one token, nullopt retains rows, and joined runners validate all
+completed IDs before publishing any owner. DeepSeek and native/GGUF Qwen
+non-spec target paths join Gemma on host-compatible device argmax; sampling,
+scoring and speculation keep their existing contracts. DeepSeek adaptive
+plain decode remains an open consumer; shared prompt-completion first-token
+publication is a separate compatible extension for every family.
+[Controls and open consumers](experiments/plain-gpu-tokens/README.md).
 
 Causal/ring mask source validation and host staging are shared in
 `engine/graph_mask_inputs.h`, used by Gemma2, Gemma3, both Gemma 4 profiles,

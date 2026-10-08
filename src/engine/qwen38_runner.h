@@ -157,6 +157,9 @@ struct Qwen38Options {
   // Graph-owned exact causal masks; the host route remains an explicit
   // comparison control. Device QSA selection keeps its own sparse producer.
   bool device_masks = true;
+  // Plain target greedy decode publication; scoring, sampling and speculation
+  // keep their existing output contracts. False is the internal matched reference.
+  bool device_tokens = true;
 };
 
 // Completed graph executions only, including replay. Host bytes count the
@@ -535,6 +538,12 @@ class Qwen38Runner final : public PagedModel {
       request_.state_refused = false;
       return owner_.Chunk(request_, history, n_past, logits, inject);
     }
+    Status GreedyChunk(std::span<const std::int32_t> history, std::uint32_t n_past,
+                       std::int32_t& token) {
+      request_.state_refused = false;
+      std::vector<float> unused;
+      return owner_.Chunk(request_, history, n_past, unused, false, &token);
+    }
     // After a failed ReserveStateThrough or Chunk: true when it failed only
     // because the state's growth did not fit the execution budget beside
     // what is leased (WorkError::kOverBudget). No graph ran; the state is
@@ -625,6 +634,7 @@ class Qwen38Runner final : public PagedModel {
     std::span<const std::int32_t> history;
     std::uint32_t n_past = 0;
     std::vector<float>* logits = nullptr;
+    std::int32_t* token = nullptr;
   };
   struct DraftWork {
     Slot* slot = nullptr;
@@ -668,6 +678,7 @@ class Qwen38Runner final : public PagedModel {
   Status DraftWave(std::span<const DraftWork> work, bool paired = true);
   Status VerifyWave(std::span<const VerifyWork> work, bool paired = true);
   const Qwen38WaveStats& last_wave() const { return last_wave_; }
+  std::uint64_t device_token_outputs() const { return device_token_outputs_; }
 
  private:
   struct TargetWork {
@@ -676,6 +687,7 @@ class Qwen38Runner final : public PagedModel {
     std::uint32_t n_past;
     std::vector<std::int32_t>* argmax;
     std::vector<float>* logits;
+    std::int32_t* token = nullptr;
   };
   struct TargetWaveKey {
     std::array<ChunkKey, kRequestSlots> slots{};
@@ -751,7 +763,7 @@ class Qwen38Runner final : public PagedModel {
   std::expected<std::vector<LiveState::Range>, std::string> StateRanges(
       std::uint32_t positions, std::uint32_t read_align) const;
   Status Chunk(RequestState& request, std::span<const std::int32_t> history, std::uint32_t n_past,
-               std::vector<float>& logits, bool inject);
+               std::vector<float>& logits, bool inject, std::int32_t* token = nullptr);
   // An injected chunk's catch-up (model/qwen38.h Qwen38Injection): the
   // drafter's pass over `rows` pending rows from `first` (streams from
   // H[1], each with the token after it), its own job before the chunk's.
@@ -897,6 +909,7 @@ class Qwen38Runner final : public PagedModel {
   ChunkPlans& plans_ = default_request_.plans;  // cleared before the launch context (Release)
   MtpPlans& mplans_ = default_request_.mplans;
   TargetWaves target_waves_;
+  std::uint64_t device_token_outputs_ = 0;
   DraftWaves draft_waves_;
   // What the plans and graphs hold, charged to the node (Bind).
   PlanAccount account_;

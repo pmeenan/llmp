@@ -1026,6 +1026,10 @@ class Llm : public Served {
   // Success means the native unit completed. Each independent judgement
   // supplies its own result. A shared error supplies no result to apply.
   virtual Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared);
+  // One plain unit, selecting the device token when eligible and supported.
+  // Nullopt from the model retains its ordinary full-row path. Chosen is
+  // published only after successful native completion.
+  Status RunPlainGenerationUnit(PreparedGeneration& unit);
   // Independent scalar native units, with per-unit completion publication.
   Status RunScalarGenerationUnits(std::span<PreparedGeneration> prepared);
   // Execution health only: false prevents dispatch after a shared failure.

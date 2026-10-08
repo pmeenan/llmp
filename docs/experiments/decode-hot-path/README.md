@@ -103,9 +103,12 @@ sampling, and no `on_logits` or `keep_logits`. Chat requests at temperature 0
 qualify. Scoring, sampling and speculation keep the rows. Each greedy shape is
 its own plan and graph, and the startup scratch measurement covers it.
 
-The two choices agree on every finite row. They differ only for a row with
-NaN: the device skips NaN values (a row of NaN gives 0), whereas the host's
-`max_element` result then depends on where the NaN lies.
+The original factor agreed on finite rows but used native device NaN behavior.
+The later [plain-token transfer](../plain-gpu-tokens/README.md) closes that
+limitation for plain Gemma, DeepSeek and native/GGUF Qwen outputs: the explicit
+host-greedy flavor preserves lowest-index ties and selects zero when the
+first row element is NaN, matching `max_element`. Native draft/verify behavior
+is unchanged.
 
 ## Direct steps
 

@@ -287,12 +287,15 @@ std::int32_t JitllmOpInt(const ggml_tensor* node, int index) {
   return value;
 }
 
-ggml_tensor* Argmax(ggml_context* context, ggml_tensor* x, bool probability) {
+ggml_tensor* Argmax(ggml_context* context, ggml_tensor* x, bool probability, ArgmaxFlavor flavor) {
   ggml_tensor* node = Custom(context, GGML_TYPE_I32, {(probability ? 2 : 1) * x->ne[1], 1, 1, 1},
                              {x}, kTagArgmax.data());
   // JitllmOpInt(node, 0): whether the probabilities follow.
   const std::int32_t flag = probability ? 1 : 0;
   std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, &flag, sizeof(flag));
+  const auto mode = static_cast<std::int32_t>(flavor);
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + sizeof(mode), &mode,
+              sizeof(mode));
   return node;
 }
 
@@ -301,6 +304,14 @@ std::expected<void, KernelFailure> CheckArgmax(const ggml_tensor* node) {
     return checked;
   }
   const ggml_tensor* x = node->src[0];
+  const auto probability = JitllmOpInt(node, 0);
+  const auto flavor = JitllmOpInt(node, 1);
+  if ((probability != 0 && probability != 1) ||
+      (flavor != static_cast<std::int32_t>(ArgmaxFlavor::kNative) &&
+       flavor != static_cast<std::int32_t>(ArgmaxFlavor::kHostGreedy)) ||
+      (probability != 0 && flavor != static_cast<std::int32_t>(ArgmaxFlavor::kNative))) {
+    return Rejected("known argmax flavor, with probabilities only in the native flavor");
+  }
   const std::int64_t per_row = JitllmOpInt(node, 0) == 1 ? 2 : 1;
   if (!IsF32(x) || node->type != GGML_TYPE_I32 || AnyEmpty({x, node}) || !AllSane({x, node}) ||
       !Matrix2d(x) || node->ne[0] != per_row * x->ne[1] || ggml_nrows(node) != 1) {

@@ -1695,6 +1695,10 @@ void Builder::Build() {
   g_.logits = Mm(g_.output, cur);
   Name(g_.logits, "result_output", -1);
   Expand(g_.logits);
+  if (s_.token) {
+    g_.token = Argmax(c_, g_.logits, false, ArgmaxFlavor::kHostGreedy);
+    Expand(g_.token);
+  }
   // The drafter's part after the target's own, so the target's nodes keep
   // their order: the features (the streams' means, llama.cpp's layer_inp
   // extraction), and the injection.
@@ -2028,6 +2032,9 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
        (profile.window > INT32_MAX || shape.raw_cells > INT32_MAX || shape.rows > INT32_MAX - 31)))
     return Rejected("raw causal/ring mask parameters exceed int32");
   const Dsv4ChunkShape& s = shape;
+  if (s.token &&
+      (s.rows != 1 || options.inject || !options.features.empty() || options.row_invariant))
+    return Rejected("token publication needs a plain one-row target");
   if (s.rows <= 0 || s.outputs < 0 || s.outputs > s.rows || s.raw_cells <= 0 || s.raw_n_kv < 256 ||
       s.raw_n_kv > s.raw_cells || s.raw_n_kv % 256 != 0 || s.csa_n_kv < 256 ||
       s.csa_n_kv > s.csa_cells || s.csa_n_kv % 256 != 0 || s.hca_n_kv < 256 ||
@@ -2112,6 +2119,9 @@ std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& aren
       std::ranges::any_of(shape.slots, [](const auto& slot) { return slot.raw_cells > INT32_MAX; }))
     return Rejected("raw causal/ring mask parameters exceed int32");
   const std::size_t count = shape.slots.size();
+  if (shape.token && (options.inject || !options.features.empty() ||
+                      std::ranges::any_of(shape.slots, [](const auto& s) { return s.rows != 1; })))
+    return Rejected("token publication needs plain one-row target owners");
   if (count == 0 || count > kDsv4WaveSlots ||
       (options.inject ? shape.inject_rows.size() != count
                       : std::ranges::any_of(shape.inject_rows, [](auto r) { return r != 0; }))) {
@@ -2124,7 +2134,7 @@ std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& aren
   const Dsv4ChunkShape& lead = shape.slots.front();
   std::int64_t rows = 0;
   for (const Dsv4ChunkShape& s : shape.slots) {
-    if (s.rows <= 0 || s.outputs != 0 || s.raw_cells <= 0 || s.raw_n_kv < 256 ||
+    if (s.token || s.rows <= 0 || s.outputs != 0 || s.raw_cells <= 0 || s.raw_n_kv < 256 ||
         s.raw_n_kv > s.raw_cells || s.raw_n_kv % 256 != 0 || s.csa_n_kv < 256 ||
         s.csa_n_kv > s.csa_cells || s.csa_n_kv % 256 != 0 || s.hca_n_kv < 256 ||
         s.hca_n_kv > s.hca_cells || s.hca_n_kv % 256 != 0 || s.csa_blocks <= 0 ||
@@ -2167,6 +2177,7 @@ std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& aren
     first += shape.slots[i].rows;
   }
   Dsv4ChunkShape joined = lead;
+  joined.token = shape.token;
   joined.rows = rows;
   Builder builder(arena.context(), profile, binding, joined, wave.joined, options, true, segments);
   builder.SetLanes(&wave.lanes);

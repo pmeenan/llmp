@@ -11,6 +11,15 @@ links show. Where evidence is missing the row says "not verified". Started
 in M3 (moved from M5); every change that alters a row's capability or
 evidence updates it in the same change ([workflow](workflow.md)).
 
+Plain target-only greedy decode now publishes a device I32 token by default
+for DeepSeek V4 and native/GGUF Qwen3.8, as for Gemma. Short scalar/joined own
+comparisons preserve complete initialized state, endogenous history and full
+continuation heads; mixed scoring/sampling and spill/restore controls pass.
+This changes no approved model/context/quantization envelope or reference
+quality disposition. DeepSeek adaptive plain decode and shared
+prompt-completion first-token publication remain open compatible extensions.
+[Scope and bounded decode results](experiments/plain-gpu-tokens/README.md).
+
 ## Status and level
 
 **Status** is how a user can run the model today:

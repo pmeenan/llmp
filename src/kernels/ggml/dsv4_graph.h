@@ -77,6 +77,8 @@ inline constexpr std::int64_t kDsv4CompactMinRows = 2048;
 // A chunk's shape, from its host-built inputs.
 struct Dsv4ChunkShape {
   std::int64_t rows = 0;
+  // Plain one-row generation publishes its host-greedy-compatible I32 token.
+  bool token = false;
   // The head's last rows; 0 keeps the reference/default's every-row head.
   // This never narrows the streams a DSpark feature capture reads.
   std::int64_t outputs = 0;
@@ -281,6 +283,7 @@ struct Dsv4Graph {
   ggml_tensor* hc_head_base = nullptr;
   ggml_tensor* hc_head_scale = nullptr;
   ggml_tensor* logits = nullptr;  // F32 [vocab, outputs]; default outputs = chunk rows
+  ggml_tensor* token = nullptr;   // I32 [outputs], only explicit plain token shapes
   // With options.features: F32 [width · features, rows], each row the
   // listed layers' stream means in order (DSpark's fc input).
   ggml_tensor* features = nullptr;
@@ -331,6 +334,7 @@ inline constexpr std::int64_t kDsv4WaveRows = 16;
 struct Dsv4WaveShape {
   std::vector<Dsv4ChunkShape> slots;
   std::vector<std::int64_t> inject_rows;
+  bool token = false;  // homogeneous non-speculative one-row owners
   bool operator==(const Dsv4WaveShape&) const = default;
 };
 

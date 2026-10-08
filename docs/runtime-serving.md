@@ -560,6 +560,19 @@ its share of the wave's rows and so accepts drafts at other positions,
 depending on its peers ([request slots](#request-slots)). (Plain
 and speculative sampling turn one seed into different tokens, so DeepSeek
 keeps every wave with a sampling member speculative, below.)
+
+Plain non-speculative greedy decode without requested logits selects its
+I32 token on the GPU for DeepSeek, native/GGUF Qwen and Gemma; only four bytes
+per owner return to the host. Complete head arithmetic is unchanged. The
+prepared scalar hook, scalar fallback and homogeneous joined routes share
+eligibility and validate completed token IDs before publication. Sampling,
+scoring and DeepSeek's adaptive speculative-model plain decode retain rows.
+Qwen speculative Draft/Verify keeps its existing lean ID contract. Prompt
+completion still publishes its first-token head to the host across families;
+that compatible device-publication extension remains open. Plain device
+argmax matches host ties and NaN placement, including a NaN at index zero.
+[Own-state/output and bounded performance controls](experiments/plain-gpu-tokens/README.md).
+
 Qwen3.8 greedy speculation chooses depth two or three using a moving
 acceptance average and a measured relative step cost of 1.16 (its
 `depth_cost_ratio`, model settings above). It tries

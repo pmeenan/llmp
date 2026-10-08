@@ -961,6 +961,8 @@ struct Qwen38WaveBuilder {
       if (r.shape.rows < 1 || r.shape.rows > 4) {
         return Error("Qwen3.8 target wave requires one to four rows per slot");
       }
+      if (r.shape.token != requests.front().shape.token)
+        return Error("Qwen3.8 target publication mode must be homogeneous across the wave");
       auto p = PlanQwen38Chunk(*r.model, r.shape, choices, 0, 0, {}, r.kind);
       if (!p) {
         return std::unexpected(p.error());

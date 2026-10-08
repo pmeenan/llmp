@@ -286,6 +286,98 @@ class FakeLlm : public rt::Llm {
   FakePaged paged_;
 };
 
+class PlainDeviceFake final : public FakeLlm {
+ public:
+  bool enabled = true;
+  bool scalar = false;
+  bool fail = false;
+  unsigned device_calls = 0;
+  std::optional<std::int32_t> observed_chosen;
+
+ protected:
+  std::optional<rt::Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
+                                              std::uint32_t past, std::int32_t& token) override {
+    if (!enabled) return std::nullopt;
+    ++device_calls;
+    token = 6;  // A failed implementation must not publish this value.
+    if (fail) return std::unexpected("fake plain token refused before dispatch");
+    std::vector<float> row;
+    auto ran = RunChunkFor(branch, all, past, false, row);
+    if (ran) token = static_cast<std::int32_t>(std::ranges::max_element(row) - row.begin());
+    return ran;
+  }
+  rt::Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) override {
+    auto ran =
+        scalar ? RunScalarGenerationUnits(prepared) : Llm::RunPreparedGenerationWave(prepared);
+    observed_chosen = prepared.front().chosen;
+    return ran;
+  }
+};
+
+TEST(LlmScores, PreparedPlainAndScalarFallbackPublishOnlySuccessfulDeviceTokens) {
+  for (const bool scalar : {false, true}) {
+    PlainDeviceFake model;
+    model.scalar = scalar;
+    std::vector<float> last;
+    ASSERT_TRUE(model.Prefill(std::array<std::int32_t, 1>{0}, last));
+    rt::GenerateOptions options;
+    options.max_tokens = 2;
+    rt::Generation out;
+    auto session = model.BeginGeneration(last, options, out);
+    ASSERT_TRUE(session);
+    const std::array<rt::Llm::GenerationSession*, 1> one = {session->get()};
+    ASSERT_TRUE(model.RunGenerationWave(one));
+    ASSERT_TRUE((*session)->Finish());
+    EXPECT_EQ(model.device_calls, 1);
+    EXPECT_EQ(model.observed_chosen, 2);
+    EXPECT_THAT(out.tokens, ElementsAre(1, 2));
+    EXPECT_THAT(model.target, ElementsAre(0, 1));
+  }
+}
+
+TEST(LlmScores, PreparedPlainNulloptAndRequestedScoresRetainRows) {
+  for (const bool scores : {false, true}) {
+    PlainDeviceFake model;
+    model.enabled = scores;  // Nullopt otherwise; scores must never ask.
+    std::vector<float> last;
+    ASSERT_TRUE(model.Prefill(std::array<std::int32_t, 1>{0}, last));
+    rt::GenerateOptions options;
+    options.max_tokens = 2;
+    options.keep_logits = scores;
+    rt::Generation out;
+    auto session = model.BeginGeneration(last, options, out);
+    ASSERT_TRUE(session);
+    const std::array<rt::Llm::GenerationSession*, 1> one = {session->get()};
+    ASSERT_TRUE(model.RunGenerationWave(one));
+    ASSERT_TRUE((*session)->Finish());
+    EXPECT_EQ(model.device_calls, 0);
+    EXPECT_FALSE(model.observed_chosen);
+    EXPECT_THAT(out.tokens, ElementsAre(1, 2));
+  }
+}
+
+TEST(LlmScores, FailedPreparedDeviceTokenDoesNotPublishTheWrittenOutput) {
+  for (const bool scalar : {false, true}) {
+    PlainDeviceFake model;
+    model.scalar = scalar;
+    model.fail = true;
+    std::vector<float> last;
+    ASSERT_TRUE(model.Prefill(std::array<std::int32_t, 1>{0}, last));
+    rt::GenerateOptions options;
+    options.max_tokens = 2;
+    rt::Generation out;
+    auto session = model.BeginGeneration(last, options, out);
+    ASSERT_TRUE(session);
+    const std::array<rt::Llm::GenerationSession*, 1> one = {session->get()};
+    // Independent scalar refusal belongs to its session; a shared C1 error
+    // fails the outer wave. Neither path may publish the temporary token.
+    EXPECT_EQ(model.RunGenerationWave(one).has_value(), scalar);
+    EXPECT_FALSE(model.observed_chosen);
+    EXPECT_THAT(out.tokens, ElementsAre(1));
+    EXPECT_FALSE((*session)->Finish());
+  }
+}
+
 class NativeBranchesFake final : public FakeLlm {
  public:
   explicit NativeBranchesFake(bool speculative = false, std::size_t wave_capacity = 4,

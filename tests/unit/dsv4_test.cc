@@ -551,6 +551,84 @@ TEST(Dsv4Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
   }
 }
 
+TEST(Dsv4Test, PlainDeviceTokensRetainTheCompleteHeadAndSeparateShapeIdentity) {
+  const auto& p = md::Dsv4Flash();
+  auto binding = md::BindDsv4(p, "deepseek4", GgufLike(p));
+  ASSERT_TRUE(binding) << Why(binding);
+  auto state = md::Dsv4State(p, 8192, 512, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state);
+  auto chunk = md::Dsv4Chunk(p, *state, 2000, 1, false);
+  ASSERT_TRUE(chunk);
+  const auto row_shape = kg::Dsv4ShapeOf(*state, *chunk);
+  auto token_shape = row_shape;
+  token_shape.token = true;
+  EXPECT_NE(row_shape, token_shape);
+  std::vector<std::uint64_t> strides(p.layers, 8064224);
+  strides[42] = 9309200;
+  const kg::Dsv4GraphOptions options{.expert_stride = strides, .fused = true};
+  const auto check = [&](kg::Dsv4Graph& graph, std::span<ggml_tensor* const> inputs,
+                         std::uint32_t count) {
+    ASSERT_NE(graph.token, nullptr);
+    EXPECT_EQ(graph.token->src[0], graph.logits);
+    EXPECT_EQ(graph.token->type, GGML_TYPE_I32);
+    EXPECT_EQ(graph.token->ne[0], count);
+    EXPECT_EQ(graph.logits->ne[0], p.vocab);
+    EXPECT_EQ(graph.logits->ne[1], count);
+    EXPECT_EQ(kg::JitllmOpInt(graph.token, 1),
+              static_cast<std::int32_t>(kg::ArgmaxFlavor::kHostGreedy));
+    EXPECT_EQ(graph.nodes.back(), graph.token);
+    std::uint64_t next = std::uint64_t{1} << 40U;
+    for (auto* node : graph.nodes) {
+      for (auto* src : node->src) {
+        if (src && src->op == GGML_OP_NONE && src->view_src == nullptr && src->data == nullptr) {
+          kg::TensorArena::Bind(src, next);
+          next += ((ggml_nbytes(src) + 255) / 256 * 256) + 256;
+        }
+      }
+    }
+    kg::BindDistinct(graph.nodes, std::uint64_t{1} << 46U);
+    EXPECT_TRUE(kg::CheckArgmax(graph.token));
+    auto plan = kg::PlanGraph(graph.nodes, false, ModelDevice());
+    ASSERT_TRUE(plan) << Why(plan);
+    EXPECT_EQ(plan->steps.back().implementation, kg::kArgmaxName);
+    const std::array<ggml_tensor*, 2> kept{graph.logits, graph.token};
+    auto placement = kg::PlaceActivations(graph.nodes, *plan, inputs, 256, kept);
+    EXPECT_TRUE(placement) << Why(placement);
+  };
+  auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+  ASSERT_TRUE(arena);
+  auto scalar = kg::BuildDsv4Graph(*arena, p, *binding, token_shape, options);
+  ASSERT_TRUE(scalar) << Why(scalar);
+  check(*scalar, scalar->inputs(), 1);
+  kg::Dsv4WaveShape shape;
+  shape.slots.assign(2, row_shape);
+  auto rows_shape = shape;
+  shape.token = true;
+  EXPECT_NE(rows_shape, shape);
+  auto wave_arena = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, 2));
+  ASSERT_TRUE(wave_arena);
+  auto wave = kg::BuildDsv4WaveGraph(*wave_arena, p, *binding, shape, options);
+  ASSERT_TRUE(wave) << Why(wave);
+  check(wave->joined, wave->inputs(), 2);
+  const auto refused = [&](kg::Dsv4WaveShape bad) {
+    auto a = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, 2));
+    ASSERT_TRUE(a);
+    EXPECT_FALSE(kg::BuildDsv4WaveGraph(*a, p, *binding, bad, options));
+  };
+  auto bad = shape;
+  bad.slots[0].rows = 2;
+  refused(bad);
+  bad = rows_shape;
+  bad.slots[0].token = true;  // Publication mode belongs to the whole wave.
+  refused(bad);
+  auto invalid = token_shape;
+  invalid.rows = 2;
+  EXPECT_FALSE(kg::BuildDsv4Graph(*arena, p, *binding, invalid, options));
+  auto verify = options;
+  verify.row_invariant = true;
+  EXPECT_FALSE(kg::BuildDsv4Graph(*arena, p, *binding, token_shape, verify));
+}
+
 TEST(Dsv4Test, RequestedHeadRowsLeaveTheFullChunkBeforeTheGather) {
   const md::Dsv4Profile& p = md::Dsv4Flash();
   const std::vector<md::Dsv4Resource> resources = GgufLike(p);

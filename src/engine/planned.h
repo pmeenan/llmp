@@ -49,6 +49,19 @@ namespace jitllm::engine {
 
 class PagedNode;
 
+// Authenticate a plain token publication before queuing a copy: the exact
+// packed I32 argmax output must be wholly inside current activation backing.
+// The caller still validates every copied ID after completion before publishing
+// any owner, and quarantines written state if that check fails.
+std::expected<std::uint64_t, std::string> GreedyOutputBytes(const ggml_tensor* node,
+                                                            std::uint32_t count,
+                                                            std::uint64_t activations,
+                                                            std::uint64_t activation_bytes);
+// After completion, validate the whole copied batch before any owner receives
+// its token. A caller with processed state quarantines it on refusal.
+std::expected<void, std::string> CheckGreedyTokens(std::span<const std::int32_t> tokens,
+                                                   std::uint32_t vocab);
+
 // What every planned shape holds besides its graph: its arena (which owns
 // the graph's tensors, so it outlives them), plan, placement, bound
 // implementations, and the pool scratch and staged input bytes it needs.

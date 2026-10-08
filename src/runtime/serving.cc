@@ -258,7 +258,7 @@ std::string KeptBuild() {
 class Dsv4 final : public Llm {
  public:
   Dsv4(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-       const config::RuntimeRoles& roles, int index)
+       const config::RuntimeRoles& roles, int index, std::optional<bool> plain_device_tokens)
       : entry_(entry),
         artifact_id_(entry.artifact.value_or("")),
         drafter_id_(entry.drafter.value_or("")),
@@ -287,6 +287,7 @@ class Dsv4 final : public Llm {
                                  model::Dsv4MostRows(model::Dsv4Flash(), context_));
     options_.max_rows = max_rows_;
     options_.graphs = true;
+    if (plain_device_tokens) options_.device_tokens = *plain_device_tokens;
     // Request slots share the weights and workspace, each with its own
     // conversation state: concurrent chat requests decode in waves
     // (engine/dsv4_runner.h), whose row-local products read each weight
@@ -488,6 +489,13 @@ class Dsv4 final : public Llm {
         n_past, all.subspan(n_past), logits,
         inject ? engine::Dsv4ChunkKind::kInject : engine::Dsv4ChunkKind::kPlain);
   }
+  std::optional<Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
+                                          std::uint32_t pos, std::int32_t& token) override {
+    if (!options_.device_tokens || speculate_) return std::nullopt;
+    if (all.size() != std::size_t{pos} + 1)
+      return Error("a DeepSeek greedy step needs one anchor row");
+    return NativeSlot(branch).GreedyChunk(pos, all.subspan(pos), token);
+  }
   Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
                      std::uint32_t left, std::vector<std::int32_t>& kept,
                      std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
@@ -631,6 +639,10 @@ class Dsv4 final : public Llm {
       return Llm::RunPreparedGenerationWave(prepared);
     }
     if (!speculate_) {
+      const bool greedy =
+          options_.device_tokens &&
+          std::ranges::all_of(prepared, [](const auto& unit) { return DeviceGreedy(unit); });
+      std::array<std::int32_t, engine::Dsv4Runner::kRequestSlots> chosen{};
       std::vector<engine::Dsv4Runner::WaveWork> work;
       work.reserve(prepared.size());
       for (PreparedGeneration& unit : prepared) {
@@ -642,9 +654,13 @@ class Dsv4 final : public Llm {
                         .anchor = unit.step.all.back(),
                         .rows = 1,
                         .drafts = nullptr,
-                        .logits = &unit.row});
+                        .logits = greedy ? nullptr : &unit.row,
+                        .token = greedy ? &chosen[work.size()] : nullptr});
       }
-      return runner_.DecodeWave(work);
+      if (auto ran = runner_.DecodeWave(work); !ran) return ran;
+      if (greedy)
+        for (std::size_t i = 0; i < prepared.size(); ++i) prepared[i].chosen = chosen[i];
+      return {};
     }
     // With DSpark, a wave of several requests is a draft-verify wave or a
     // plain decode wave (the drafter still fed), as the accepted tokens
@@ -1095,18 +1111,9 @@ class Gemma final : public Llm {
     // host scan. A wave is all one kind (the runner publishes one or the other).
     const bool greedy =
         !units.empty() && std::ranges::all_of(units, [](const auto& u) { return DeviceGreedy(u); });
+    if (!joined_ || units.size() == 1) return RunScalarGenerationUnits(units);
     if (greedy)
       for (auto& unit : units) unit.chosen = 0;
-    if (!joined_ || units.size() == 1) {
-      if (!greedy) return RunScalarGenerationUnits(units);
-      for (auto& unit : units) {
-        unit.result =
-            *RunGreedyChunkFor(*unit.branch, unit.step.all, unit.step.position, *unit.chosen);
-        if (!unit.result && !GenerationCohortUsable()) return unit.result;
-        if (!unit.result) unit.failed_prefix_valid = StateUsableFor(*unit.branch);
-      }
-      return {};
-    }
     if (units.empty() || units.size() > options_.slots)
       return Error("Gemma joined generation exceeds its funded owner envelope");
     std::array<engine::Gemma4Runner::Work, engine::kMaxRequestSlots> work{};
@@ -1527,18 +1534,9 @@ class Gemma2 final : public Llm {
     // host scan. A wave is all one kind (the runner publishes one or the other).
     const bool greedy =
         !units.empty() && std::ranges::all_of(units, [](const auto& u) { return DeviceGreedy(u); });
+    if (units.size() == 1) return RunScalarGenerationUnits(units);
     if (greedy)
       for (auto& unit : units) unit.chosen = 0;
-    if (units.size() == 1) {
-      if (!greedy) return RunScalarGenerationUnits(units);
-      for (auto& unit : units) {
-        unit.result =
-            *RunGreedyChunkFor(*unit.branch, unit.step.all, unit.step.position, *unit.chosen);
-        if (!unit.result && !GenerationCohortUsable()) return unit.result;
-        if (!unit.result) unit.failed_prefix_valid = StateUsableFor(*unit.branch);
-      }
-      return {};
-    }
     if (units.empty() || units.size() > options_.slots)
       return Error("Gemma joined generation exceeds its funded owner envelope");
     std::array<engine::Gemma2Runner::Work, engine::kMaxRequestSlots> work{};
@@ -1979,18 +1977,9 @@ class Gemma3 final : public Llm {
     // host scan. A wave is all one kind (the runner publishes one or the other).
     const bool greedy =
         !units.empty() && std::ranges::all_of(units, [](const auto& u) { return DeviceGreedy(u); });
+    if (units.size() == 1) return RunScalarGenerationUnits(units);
     if (greedy)
       for (auto& unit : units) unit.chosen = 0;
-    if (units.size() == 1) {
-      if (!greedy) return RunScalarGenerationUnits(units);
-      for (auto& unit : units) {
-        unit.result =
-            *RunGreedyChunkFor(*unit.branch, unit.step.all, unit.step.position, *unit.chosen);
-        if (!unit.result && !GenerationCohortUsable()) return unit.result;
-        if (!unit.result) unit.failed_prefix_valid = StateUsableFor(*unit.branch);
-      }
-      return {};
-    }
     if (units.empty() || units.size() > options_.slots)
       return Error("Gemma joined generation exceeds its funded owner envelope");
     std::array<engine::Gemma3Runner::Work, engine::kMaxRequestSlots> work{};
@@ -2281,7 +2270,7 @@ class Gemma3 final : public Llm {
 class Qwen38 final : public Llm {
  public:
   Qwen38(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-         const config::RuntimeRoles& roles, int index)
+         const config::RuntimeRoles& roles, int index, std::optional<bool> plain_device_tokens)
       : entry_(entry),
         artifact_id_(entry.artifact.value_or("")),
         drafter_id_(entry.drafter.value_or("")),
@@ -2304,6 +2293,7 @@ class Qwen38 final : public Llm {
                                  model::Qwen38MostRows(context_, false));
     options_.max_rows = max_rows_;
     options_.graphs = true;
+    if (plain_device_tokens) options_.device_tokens = *plain_device_tokens;
     // Request slots share weights and workspace while each branch retains
     // its own native state: the requests decode in one wave
     // (engine/qwen38_wave_plan.h), whose row-local products read each weight
@@ -2538,6 +2528,11 @@ class Qwen38 final : public Llm {
                      bool inject, std::vector<float>& logits) override {
     return NativeSlot(branch).Chunk(all, n_past, logits, inject);
   }
+  std::optional<Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
+                                          std::uint32_t pos, std::int32_t& token) override {
+    if (!options_.device_tokens || speculate_) return std::nullopt;
+    return NativeSlot(branch).GreedyChunk(all, pos, token);
+  }
   Status SettleFor(Branch& branch) override { return NativeSlot(branch).Rollback(); }
   bool StateUsableFor(const Branch& branch) const override {
     return NativeSlot(branch).state_usable();
@@ -2734,15 +2729,23 @@ class Qwen38 final : public Llm {
       return Llm::RunPreparedGenerationWave(prepared);
     }
     if (!speculate_) {
+      const bool greedy =
+          options_.device_tokens &&
+          std::ranges::all_of(prepared, [](const auto& unit) { return DeviceGreedy(unit); });
+      std::array<std::int32_t, engine::Qwen38Runner::kRequestSlots> chosen{};
       std::vector<engine::Qwen38Runner::ChunkWork> chunks;
       chunks.reserve(prepared.size());
       for (PreparedGeneration& unit : prepared) {
         chunks.push_back({.slot = &NativeSlot(*unit.branch),
                           .history = unit.step.all,
                           .n_past = unit.step.position,
-                          .logits = &unit.row});
+                          .logits = greedy ? nullptr : &unit.row,
+                          .token = greedy ? &chosen[chunks.size()] : nullptr});
       }
-      return runner_.ChunkWave(chunks);
+      if (auto ran = runner_.ChunkWave(chunks); !ran) return ran;
+      if (greedy)
+        for (std::size_t i = 0; i < prepared.size(); ++i) prepared[i].chosen = chosen[i];
+      return {};
     }
 
     // These owners never move once the borrowed descriptors are made. Each
@@ -5312,13 +5315,26 @@ Status Llm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) {
                        unit.step.need_logits ? &unit.logits : nullptr, unit.drafted,
                        &unit.failed_prefix_valid);
   }
+  return RunPlainGenerationUnit(unit);
+}
+
+Status Llm::RunPlainGenerationUnit(PreparedGeneration& unit) {
+  if (unit.step.speculative) return Error("a plain generation unit cannot be speculative");
+  unit.chosen.reset();
+  if (DeviceGreedy(unit)) {
+    std::int32_t token = 0;
+    if (auto ran = RunGreedyChunkFor(*unit.branch, unit.step.all, unit.step.position, token)) {
+      if (*ran) unit.chosen = token;
+      return *ran;
+    }
+  }
   return RunChunkFor(*unit.branch, unit.step.all, unit.step.position, false, unit.row);
 }
 
 Status Llm::RunScalarGenerationUnits(std::span<PreparedGeneration> prepared) {
   for (auto& unit : prepared) {
     if (unit.step.speculative) return Error("independent scalar units require plain generation");
-    unit.result = RunChunkFor(*unit.branch, unit.step.all, unit.step.position, false, unit.row);
+    unit.result = RunPlainGenerationUnit(unit);
     if (!unit.result && !GenerationCohortUsable()) return unit.result;
     if (!unit.result) unit.failed_prefix_valid = StateUsableFor(*unit.branch);
   }
@@ -5635,7 +5651,8 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
     return {};
   }
   if (settings.architecture == "deepseek4") {
-    models_.push_back(std::make_unique<Dsv4>(node_, entry, settings, roles_, index));
+    models_.push_back(std::make_unique<Dsv4>(node_, entry, settings, roles_, index,
+                                             options_.diagnostic_plain_device_tokens));
   } else if (settings.architecture == "gemma4") {
     auto artifact = OpenTrusted(roles_.installed, entry.artifact.value_or(""));
     if (!artifact) return Error(artifact.error());
@@ -5650,7 +5667,8 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
   } else if (settings.architecture == "gemma3") {
     models_.push_back(std::make_unique<Gemma3>(node_, entry, settings, roles_, index, options_));
   } else if (settings.architecture == "qwen4exp") {
-    models_.push_back(std::make_unique<Qwen38>(node_, entry, settings, roles_, index));
+    models_.push_back(std::make_unique<Qwen38>(node_, entry, settings, roles_, index,
+                                               options_.diagnostic_plain_device_tokens));
   } else {
     return Error(
         std::format("model {}: no runner for architecture {}", entry.name, settings.architecture));

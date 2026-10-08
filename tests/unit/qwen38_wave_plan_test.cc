@@ -37,6 +37,7 @@
 
 #include "artifact/artifact.h"
 #include "engine/qwen38_plan.h"
+#include "engine/qwen38_runner.h"
 #include "ggml.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -51,6 +52,11 @@ namespace kg = jitllm::kernels::ggml;
 
 constexpr std::uint64_t kTableRows = 320001536;
 constexpr std::uint64_t kExpertStride = 2768976;
+
+TEST(Qwen38PlainTokens, DefaultPublicationKeepsLowLevelRowPlansExplicit) {
+  EXPECT_TRUE(engine::Qwen38Options{}.device_tokens);
+  EXPECT_FALSE(kg::Qwen38ChunkShape{}.token);
+}
 
 // The artifact's resources with the CUTLASS expert layout (as
 // qwen38_test.cc's ArtifactLike(p, true)).
@@ -346,6 +352,7 @@ struct Request {
   std::uint32_t n_past = 0;
   std::uint32_t rows = 0;
   engine::Qwen38ChunkKind kind{};
+  bool token = false;
 };
 
 struct Products {
@@ -439,12 +446,57 @@ class Qwen38WavePlanTest : public ::testing::Test {
                         .model = &models_[r.slot],
                         .shape = kg::Qwen38ShapeOf(state, *chunk, r.rows),
                         .kind = r.kind});
+      inputs.back().shape.token = r.token;
     }
     return engine::PlanQwen38TargetWave(
         inputs, ModelDevice(), {.paired = paired, .share_target_head = true, .lanes = lanes});
   }
 
   // A lone slot's products (the composition keeps them as they are).
+  void CheckPlainTokens() {
+    const std::array<Request, 2> token = {
+        Request{.slot = 0, .n_past = 100, .rows = 1, .token = true},
+        Request{.slot = 2, .n_past = 3000, .rows = 1, .token = true}};
+    auto planned = Plan(token);
+    ASSERT_TRUE(planned) << planned.error();
+    const auto& wave = **planned;
+    EXPECT_EQ(wave.active_slots(), 0b0101U);
+    EXPECT_GT(wave.placement.extent, 0U);
+    EXPECT_EQ(std::ranges::count_if(
+                  wave.plan.steps,
+                  [](const auto& step) { return step.implementation == kg::kArgmaxName; }),
+              2);
+    for (const auto slot : {0U, 2U}) {
+      const auto* graph = wave.target(slot);
+      ASSERT_NE(graph, nullptr);
+      ASSERT_NE(graph->argmax, nullptr);
+      EXPECT_EQ(graph->argmax->src[0], graph->logits);
+      EXPECT_EQ(graph->argmax->type, GGML_TYPE_I32);
+      EXPECT_EQ(graph->argmax->ne[0], 1);
+      EXPECT_EQ(kg::JitllmOpInt(graph->argmax, 1),
+                static_cast<std::int32_t>(kg::ArgmaxFlavor::kHostGreedy));
+      EXPECT_TRUE(std::ranges::any_of(wave.placement.offsets,
+                                      [&](const auto& at) { return at.first == graph->argmax; }));
+    }
+    auto row_requests = token;
+    for (auto& r : row_requests) r.token = false;
+    auto rows = Plan(row_requests);
+    ASSERT_TRUE(rows) << rows.error();
+    EXPECT_EQ((*rows)->target(0)->argmax, nullptr);
+    auto bad = token;
+    bad[0].token = false;
+    EXPECT_FALSE(Plan(bad));
+    bad = token;
+    bad[0].rows = 2;
+    EXPECT_FALSE(Plan(bad));
+    bad = token;
+    bad[0].kind = {.verify = true, .export_streams = true};
+    EXPECT_FALSE(Plan(bad));
+    bad = token;
+    bad[0].kind.export_streams = true;
+    EXPECT_FALSE(Plan(bad));
+  }
+
   Products Lone(engine::Qwen38ChunkKind kind = {}) {
     const std::array<Request, 1> one = {Request{.slot = 0, .n_past = 100, .rows = 4, .kind = kind}};
     auto planned = Plan(one);
@@ -487,6 +539,14 @@ class Qwen38GgufWavePlanTest : public Qwen38WavePlanTest {
 // Plain GGUF waves retain one-token reductions for dense, shared GLU,
 // routed GLU and per-expert down products. Ten experts per token cap a
 // group at twelve slots (120 pairs), even though dense products take sixteen.
+TEST_F(Qwen38WavePlanTest, PlainTokensRetainIndependentHostCompatibleOutputs) {
+  CheckPlainTokens();
+}
+
+TEST_F(Qwen38GgufWavePlanTest, PlainTokensRetainIndependentHostCompatibleOutputs) {
+  CheckPlainTokens();
+}
+
 TEST_F(Qwen38GgufWavePlanTest, JoinsOneRowProductsWithinTheRoutedPairLimit) {
   for (const std::uint32_t count : {1U, 2U, 3U, 4U, 16U}) {
     std::vector<Request> requests;
