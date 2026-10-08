@@ -235,7 +235,11 @@ final build's plain rate, against main's 1.49–1.64×.
 - **A quantized draft head** (MXFP8 or NVFP4 rows of the BF16 head, about
   1.2 ms a step at 65,536 rows, [qwen38-mtp](../qwen38-mtp/README.md)): it
   changes only acceptance, but needs a cataloged extent of its own; left
-  as a lead.
+  as a lead in this study. The later
+  [selected Q4_1 implementation](../qwen38-quantized-draft-head/README.md)
+  keeps 47,172 native IDs and qualified scalar/joined prefixes, with C1 benefit
+  and C2 regression; BF16 remains the ordinary artifact. GGML Q4_1/Q8 arithmetic
+  differs from public TensorFold MLX affine Q4.
 
 ## DeepSeek V4 Flash
 

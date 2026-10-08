@@ -619,7 +619,11 @@ headed native MTP pass; existing device QSA selection remains separate.
 heads and initialized state, joined replay and spill/restore.
 The fresh bounded C1 reference comparison takes 7.067% less time than TensorFold
 for target-only generation and 3.237% more time for ordinary lean speculative
-generation (n=2, disclosed FP8/state/draft-head policies). Same-conditioned
+generation with the BF16 drafter (n=2, disclosed FP8/state/draft-head policies).
+The [optional same-ID Q4_1 draft head](experiments/qwen38-quantized-draft-head/README.md)
+takes 1.999% less C1 generation time than fresh public TensorFold, but its
+same-native C2 format factor takes 1.482% more time than BF16. BF16 stays the
+ordinary configuration. Same-conditioned
 Teacher32 agrees 31/32; one reference margin 1.5625 exceeds the unchanged 1.0
 bound and remains an open M3.5 quality lead. Same-format GGUF generation takes
 5.719% less time than llama.cpp v0.6.0; its single common-history teacher agrees
@@ -765,8 +769,8 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 - **Checkpoint:** the same pinned checkpoint (its last shard and
   `config.json`).
 - **Artifact:** v0 `056a750e…`, its own artifact; binds the target's token
-  table and head at load. An optional imported selected head stores BF16
-  `draft_output.weight` and strictly ascending original token IDs in
+  table and head at load. An optional imported selected head stores BF16 or
+  separately prepared Q4_1 `draft_output.weight` and strictly ascending original token IDs in
   `draft_output.ids`; neither changes the target artifact. No vocabulary
   list ships with jitLLM. See the [draft-head study](experiments/qwen38-draft-head/README.md).
 - **Depth:** greedy chooses between two and three passes from observed

@@ -562,7 +562,10 @@ std::expected<Qwen38MtpBinding, std::string> BindQwen38Mtp(
       if (r.ne.size() != 2 || r.ne[1] == 0 || r.ne[1] > p.vocab) {
         return Refused("draft_output.weight has no bounded draft vocabulary");
       }
-      wants.Ggml("draft_output.weight", "BF16", {w, r.ne[1]}, &b.draft_output);
+      if (r.type != "BF16" && r.type != "Q4_1") {
+        return Refused("draft_output.weight requires BF16 or Q4_1 rows");
+      }
+      wants.Ggml("draft_output.weight", r.type, {w, r.ne[1]}, &b.draft_output);
       wants.Ggml("draft_output.ids", "I32", {1, r.ne[1]}, &b.draft_ids);
       break;
     }

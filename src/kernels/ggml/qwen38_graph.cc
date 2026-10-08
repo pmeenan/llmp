@@ -1605,12 +1605,19 @@ Builder::MtpOut Builder::MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, g
                               m.output_hc_up, nullptr, nullptr, false, -1)
                            .x;
   ggml_tensor* head_input = mixed;
-  ggml_tensor* w =
-      head_rows > 0 ? ggml_view_2d(c_, m.output, width, head_rows, m.output->nb[1], 0) : m.output;
+  const bool quantized_head = m.draft_ids != nullptr && m.output->type == GGML_TYPE_Q4_1;
+  // A whole selected quantized head keeps its immutable leaf so the wave
+  // composer can share VecQ while retaining its one-token reductions.
+  // A smaller prefix keeps a checked immutable view; qualified wave
+  // composition shares it under the same one-token reduction contract.
+  ggml_tensor* w = head_rows > 0 && (!quantized_head || head_rows != m.output->ne[1])
+                       ? ggml_view_2d(c_, m.output, width, head_rows, m.output->nb[1], 0)
+                       : m.output;
   // The argmax and its probability (the drafter's confidence, which an
   // adaptive window reads): the draft is the first I32, the probability's
   // bits the second.
-  ggml_tensor* head_logits = ggml_mul_mat(c_, w, mixed);
+  ggml_tensor* head_logits =
+      quantized_head ? VecQ(c_, w, Q8Of(mixed), nullptr, 1, false) : ggml_mul_mat(c_, w, mixed);
   ggml_tensor* both = Argmax(c_, head_logits, confidence);
   Expand(res);
   Expand(both);

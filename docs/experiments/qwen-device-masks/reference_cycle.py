@@ -13,7 +13,11 @@ parser.add_argument('--checkpoint-auth', type=Path)
 parser.add_argument('--tf-preparation-receipts', type=Path)
 parser.add_argument('--checkpoint-auth-sha256', default='e2ff99b2ea1405ca2c7162e86855eb885e68edd7fd9f4fe92abe8511214b4b1c')
 parser.add_argument('--out', type=Path, required=True)
+parser.add_argument('--native-drafter', type=Path, help='explicit prepared TensorFold-comparison MTP artifact')
+parser.add_argument('--native-spec-only', action='store_true', help='run native speculative arms only; retain public TF control outputs')
 args = parser.parse_args()
+if args.family != 'tensorfold' and (args.native_drafter or args.native_spec_only):
+    parser.error('native drafter/spec-only controls require the TensorFold comparison')
 P = Path(__file__).parent
 T = args.tree.resolve()
 H = Path.home() / '.local/share/jitllm'
@@ -136,6 +140,8 @@ if libs != qualified['native_cuBLAS']:
 for v in libs.values():
     bound[v['path']] = v['sha256']
 paths = {'native': H / 'm3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93', 'draft': H / 'm3-artifacts/8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40', 'gguf': H / 'qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78'}
+if args.native_drafter:
+    paths['draft'] = args.native_drafter.resolve()
 for a in paths.values():
     if sha(a / 'manifest.json') != a.name or not (a / 'data').is_dir():
         raise RuntimeError('approved prepared artifact absent')
@@ -223,12 +229,12 @@ tf_libs = None
 stock_linkage = None
 for arm in ['reference1', 'native1', 'native2', 'reference2']:
     if arm.startswith('native'):
-        modes = ['plain', 'spec-lean'] if args.family == 'tensorfold' else ['plain']
+        modes = (['spec-lean'] if args.native_spec_only else ['plain', 'spec-lean']) if args.family == 'tensorfold' else ['plain']
         rows = {}
         for mode in modes:
             name = arm + '-' + mode
             out = R / name
-            cmd = [str(B), '--qwen38-artifact', str(paths['native' if args.family == 'tensorfold' else 'gguf']), '--tokenizer', str(tokenizer), '--prompts', str(INPUT / 'prompt.json'), '--only', 'mask-short-1536', '--prompt-token-ids', 'on', '--context', '2048', '--prefill-chunk', '512', '--check', 'masks-lean' if mode == 'spec-lean' else 'masks-target', '--tokens', '32', '--draft', '3', '--draft-vocab', '65536', '--adaptive-depth', 'off', '--window', '0', '--graphs', 'on', '--out', str(out)]
+            cmd = [str(B), '--qwen38-artifact', str(paths['native' if args.family == 'tensorfold' else 'gguf']), '--tokenizer', str(tokenizer), '--prompts', str(INPUT / 'prompt.json'), '--only', 'mask-short-1536', '--prompt-token-ids', 'on', '--context', '2048', '--prefill-chunk', '512', '--check', 'masks-lean' if mode == 'spec-lean' else 'masks-target', '--tokens', '32', '--draft', '3', '--draft-vocab', '65536', '--adaptive-depth', 'off', '--window', '0', '--graphs', 'on', '--device-masks', 'on', '--out', str(out)]
             if mode == 'spec-lean':
                 cmd += ['--drafter', str(paths['draft'])]
             text = run(name, cmd, 100)
@@ -238,6 +244,8 @@ for arm in ['reference1', 'native1', 'native2', 'reference2']:
             row = result['results'][0]
             if result['problems'] or result['adaptive_depth'] or result['window'] or (len(result['results']) != 1) or (row['mode'] != mode) or (row['generated'] != 32) or (row['prompt_tokens'] != 1536) or (not row['device_masks']) or row['host_mask_bytes'] or (row['target_device_masks'] <= 0) or (row['heads_teacher_forced'] != (mode == 'spec-lean')) or any((row[k] <= 0 for k in ['warm_plans', 'warm_graphs', 'warm_plan_bytes', 'target_state_bytes'])):
                 raise RuntimeError('native actual mask/work/policy differs')
+            if any(not math.isfinite(row[k]) or row[k]<=0 for k in ['seconds','decode_seconds']):
+                raise RuntimeError('native paid metrics invalid')
             if row['prompt_ids_sha256'] != '35ece15522faff9e2895774eb9146b83a7ad623de08b484ac7e6a8feeb29c35d':
                 raise RuntimeError('native conditioning differs')
             if mode == 'spec-lean' and (result['draft_head_rows'] != 47172 or row['draft_device_masks'] <= 0 or row['draft_state_bytes'] <= 0):
@@ -271,6 +279,8 @@ for arm in ['reference1', 'native1', 'native2', 'reference2']:
                 raise RuntimeError('TF actual library payload changed across bookends')
             tf_libs = observed
             for mode, row in result['results'].items():
+                if any(not math.isfinite(value) or value<=0 for value in [row['seconds'],row['stats']['prefill_s'],row['stats']['decode_s']]):
+                    raise RuntimeError('TF paid metrics invalid')
                 tokens(row['tokens'])
                 payload(out / (mode + '-heads.f32'), row['heads_sha256'])
                 if row['teacher_history'] != histories[mode] or row['stats']['cached'] or row['stats']['drafts'] != (mode == 'spec-lean'):

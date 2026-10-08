@@ -25,6 +25,32 @@
 
 namespace jitllm::engine {
 
+bool Qwen38SelectedQ4HeadPrefix(const ggml_tensor* weight, const ggml_tensor* parent) {
+  constexpr std::uint64_t kRowBytes = 1600;
+  const auto shape = [](const ggml_tensor* t) {
+    return t != nullptr && t->type == GGML_TYPE_Q4_1 && t->ne[0] == 2560 && t->ne[1] >= 1 &&
+           t->ne[1] <= 248320 && t->ne[2] == 1 && t->ne[3] == 1 && t->nb[0] == 20 &&
+           t->nb[1] == kRowBytes && t->nb[2] == kRowBytes * static_cast<std::uint64_t>(t->ne[1]) &&
+           t->nb[3] == t->nb[2] && t->data != nullptr;
+  };
+  if (!shape(parent) || parent->op != GGML_OP_NONE || parent->view_src != nullptr ||
+      !std::ranges::all_of(parent->src, [](const auto* src) { return src == nullptr; }))
+    return false;
+  const auto address = reinterpret_cast<std::uintptr_t>(parent->data);
+  const auto bytes = kRowBytes * static_cast<std::uint64_t>(parent->ne[1]);
+  if (bytes > std::numeric_limits<std::uintptr_t>::max() - address) return false;
+  if (weight == parent) return true;
+  if (!shape(weight) || weight->op != GGML_OP_VIEW || weight->view_src != parent ||
+      weight->src[0] != parent || weight->view_offs != 0 || weight->data != parent->data ||
+      weight->ne[1] > parent->ne[1] ||
+      !std::ranges::all_of(std::span(weight->src).subspan(1),
+                           [](const auto* src) { return src == nullptr; }))
+    return false;
+  std::size_t encoded_offset = 0;
+  std::memcpy(&encoded_offset, weight->op_params, sizeof(encoded_offset));
+  return encoded_offset == 0 && ggml_nbytes(weight) <= bytes;
+}
+
 bool Qwen38FullHeadPairCandidate(const ggml_tensor* t) {
   if (t == nullptr || t->op != GGML_OP_MUL_MAT || t->type != GGML_TYPE_F32 ||
       t->src[0] == nullptr || t->src[1] == nullptr) {
@@ -197,6 +223,17 @@ bool SameHeadWeight(const ggml_tensor* a, const ggml_tensor* b,
   return SameImmutableLeaf(a->view_src, b->view_src, mutable_places);
 }
 
+bool SameSelectedQ4Prefix(const ggml_tensor* a, const ggml_tensor* b,
+                          std::span<const Range> mutable_places) {
+  if (a == nullptr || b == nullptr || a->op != GGML_OP_VIEW || b->op != GGML_OP_VIEW ||
+      !Qwen38SelectedQ4HeadPrefix(a, a->view_src) || !Qwen38SelectedQ4HeadPrefix(b, b->view_src) ||
+      !std::ranges::equal(a->ne, b->ne) || !std::ranges::equal(a->nb, b->nb) ||
+      std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) != 0)
+    return false;
+  // Authenticate the complete immutable parent, including its unused suffix.
+  return SameImmutableLeaf(a->view_src, b->view_src, mutable_places);
+}
+
 bool Concatenable(const ggml_tensor* a, const ggml_tensor* b, std::size_t dim, ggml_type type) {
   if (a == nullptr || b == nullptr || a->type != type || b->type != type) {
     return false;
@@ -242,8 +279,10 @@ bool Match(const ggml_tensor* a, const ggml_tensor* b, std::span<const Range> mu
   }
   if (!Eligible(a) || !Eligible(b) || kg::JitllmOpOf(a) != kg::JitllmOpOf(b) ||
       std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) != 0 ||
-      !SameImmutableLeaf(a->src[0], b->src[0], mutable_places) || a->type != GGML_TYPE_F32 ||
-      b->type != GGML_TYPE_F32 || a->ne[0] != b->ne[0]) {
+      !(SameImmutableLeaf(a->src[0], b->src[0], mutable_places) ||
+        (kg::JitllmOpOf(a) == kg::JitllmOp::kVecQ && !VecQRouted(a) && !VecQRouted(b) &&
+         SameSelectedQ4Prefix(a->src[0], b->src[0], mutable_places))) ||
+      a->type != GGML_TYPE_F32 || b->type != GGML_TYPE_F32 || a->ne[0] != b->ne[0]) {
     return false;
   }
   if (kg::JitllmOpOf(a) == kg::JitllmOp::kVecQ) {
@@ -726,6 +765,15 @@ struct Qwen38WaveBuilder {
           }
           out.stats_.packed_bytes += ggml_nbytes(x) + (routed ? ggml_nbytes(joined_ids) : 0);
           ++out.stats_.vecq_pairs;
+          bool selected_head = a->src[0]->type == GGML_TYPE_Q4_1;
+          for (std::size_t k = 0; k < g.size(); ++k) {
+            const auto* draft = out.draft_[g[k]].get();
+            selected_head = selected_head && draft != nullptr &&
+                            draft->graph.draft_ids != nullptr &&
+                            Qwen38SelectedQ4HeadPrefix(members[k]->src[0], draft->graph.output) &&
+                            members[k]->ne[0] == members[k]->src[0]->ne[1];
+          }
+          if (selected_head) ++out.stats_.quantized_draft_head_pairs;
         } else if (kg::JitllmOpOf(a) == kg::JitllmOp::kMxfp8MulMatVec) {
           for (ggml_tensor* m : members) {
             xs.push_back(m->src[2]);

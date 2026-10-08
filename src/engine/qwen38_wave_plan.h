@@ -63,6 +63,8 @@ struct Qwen38WaveStats {
   std::uint64_t packed_bytes = 0;
   std::uint64_t full_head_pairs = 0;
   std::uint64_t draft_head_pairs = 0;
+  // Joined VecQ products whose actual weight is a selected Q4_1 draft head.
+  std::uint64_t quantized_draft_head_pairs = 0;
   std::uint64_t head_packed_bytes = 0;
   std::uint32_t paired_slots = 0;
 };
@@ -117,6 +119,12 @@ class Qwen38WavePlanned : public PlannedBase {
   Qwen38WaveStats stats_;
   std::uint32_t active_slots_ = 0;
 };
+
+// The selected Q4_1 head's actual immutable [2560, rows] leaf, or its
+// contiguous zero-offset prefix view. Checks descriptor/parent/address/span
+// identity only; the composer also proves the complete parent's immutable
+// residency and disjointness from every mutable request place.
+bool Qwen38SelectedQ4HeadPrefix(const ggml_tensor* weight, const ggml_tensor* parent);
 
 // Geometry-only eligibility. The
 // composer separately authenticates the immutable leaf and MMF selectors.

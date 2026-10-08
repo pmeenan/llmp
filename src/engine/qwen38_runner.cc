@@ -2561,7 +2561,8 @@ Status Qwen38Runner::DraftWave(std::span<const DraftWork> work, bool paired) {
                          sizeof(std::int32_t)});
     }
     for (std::size_t j = 0; j < g.probabilities.size(); ++j) {
-      if (auto valid = CheckWaveOutput(g.probabilities[j], GGML_TYPE_F32, sizeof(float)); !valid) {
+      // Argmax packs the confidence's F32 bits in its second I32 cell.
+      if (auto valid = CheckWaveOutput(g.probabilities[j], GGML_TYPE_I32, sizeof(float)); !valid) {
         return valid;
       }
       outputs.push_back({Address(wave_probabilities_ + (std::size_t{s} * 8) + j),

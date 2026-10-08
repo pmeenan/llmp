@@ -397,7 +397,12 @@ each row selects for itself, are the difference.
   cover that part.
 - **A harness, not the runtime**: `jitllm_qwen38_spec`, like
   `jitllm_spec_runner`.
-- **Speed leads, none measured:**
+The later [same-ID selected Q4_1 study](../qwen38-quantized-draft-head/README.md)
+implements the draft-head compression lead below: C1 generation −4.064%, C2
++1.482% versus BF16 (n=2); BF16 remains ordinary. Fresh public TensorFold C1
+comparison takes 1.999% less time, with the target-quality exception still open.
+
+- **Original speed leads (historical, unmeasured in this study):**
   - Plain decode's head is about 1.3 GB of BF16, 5.2 ms of a 37.4 ms step.
     An MXFP8 or NVFP4 copy would halve or quarter it, but it changes the
     logits, so it is an owner call.

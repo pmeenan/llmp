@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Accept an optional prepared Q4_1 Qwen3.8 selected draft head, with exact
+  scalar/joined prefix arithmetic and restored state. Its payload is 68.75%
+  smaller; bounded C1 improves while C2 regresses, so BF16 remains the default.
+  Authenticate joined confidence as the actual I32-packed probability view.
+
 - Extend explicitly configured Gemma2/Gemma3 two-owner prefill through 512
   rows, preserving exact wrapped state, restart continuations and llama.cpp
   outputs. Public chunks remain 128; measured reference gaps remain recorded.

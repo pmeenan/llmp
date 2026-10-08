@@ -714,6 +714,12 @@ if(JITLLM_CUDA)
   target_link_libraries(dsv4_fast_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(dsv4_fast_test)
 
+  add_executable(qwen38_quant_head_test qwen38_quant_head_test.cc)
+  target_include_directories(qwen38_quant_head_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(qwen38_quant_head_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(qwen38_quant_head_test MODELS)
+
   # The fast plan's ds4 prefill stage mechanisms (docs/experiments/
   # ds4-prefill-stages): each against the launches it replaces, byte for
   # byte, with its selection, refusals and registry declaration.

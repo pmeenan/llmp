@@ -22,8 +22,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -768,10 +770,11 @@ TEST_F(Qwen38WavePlanTest, WithoutPairingEverySlotKeepsItsProducts) {
 
 class Qwen38DraftWavePlanTest : public Qwen38WavePlanTest {
  protected:
-  void BindDraft(bool selected) {
+  void BindDraft(bool selected, std::string_view head_type = "BF16") {
     auto resources = MtpLike();
     if (selected) {
-      resources.push_back({.roles = {"draft_output.weight"}, .type = "BF16", .ne = {2560, 47172}});
+      resources.push_back(
+          {.roles = {"draft_output.weight"}, .type = std::string(head_type), .ne = {2560, 47172}});
       resources.push_back({.roles = {"draft_output.ids"}, .type = "I32", .ne = {1, 47172}});
     }
     auto binding = md::BindQwen38Mtp(p_, "qwen4exp-mtp", resources);
@@ -789,13 +792,15 @@ class Qwen38DraftWavePlanTest : public Qwen38WavePlanTest {
     }
   }
 
-  auto DraftPlan(bool paired = true, bool capture = false, std::int64_t head_rows = 65536) {
+  auto DraftPlan(bool paired = true, bool capture = false, std::int64_t head_rows = 65536,
+                 bool confidence = false) {
     const kg::Qwen38MtpShape shape{.rows = 4,
                                    .passes = 3,
                                    .n_kv = 256,
                                    .cells = 4096,
                                    .head = true,
                                    .head_rows = head_rows,
+                                   .confidence = confidence,
                                    .capture_head = capture,
                                    .hidden_rows = 513};
     const std::array<engine::Qwen38DraftWaveInput, 2> inputs = {
@@ -826,6 +831,155 @@ TEST_F(Qwen38DraftWavePlanTest, PrefixAndSelectedHeadsShareEveryPassWithVectorAr
       }
     }
     EXPECT_EQ(heads, 3U);
+  }
+}
+
+TEST_F(Qwen38DraftWavePlanTest, SelectedQ4HeadsShareOneTokenArithmeticAndFundTheirQ8Inputs) {
+  BindDraft(true, "Q4_1");
+  for (const auto& [paired, capture] :
+       {std::pair{true, false}, std::pair{false, false}, std::pair{true, true}}) {
+    auto planned = DraftPlan(paired, capture, 47172);
+    ASSERT_TRUE(planned.has_value()) << planned.error();
+    const bool joined = paired && !capture;
+    EXPECT_EQ((*planned)->stats().vecq_pairs, joined ? 3U : 0U);
+    EXPECT_EQ((*planned)->stats().draft_head_pairs, 0U);
+    EXPECT_EQ((*planned)->stats().quantized_draft_head_pairs, joined ? 3U : 0U);
+    unsigned heads = 0;
+    for (const ggml_tensor* t : (*planned)->nodes()) {
+      if (kg::JitllmOpOf(t) != kg::JitllmOp::kVecQ || t->ne[0] != 47172) continue;
+      ++heads;
+      EXPECT_EQ(t->ne[1], joined ? 2 : 1);
+      EXPECT_EQ(t->src[0]->type, GGML_TYPE_Q4_1);
+      EXPECT_EQ(t->src[0]->op, GGML_OP_NONE);
+      EXPECT_EQ(t->src[0]->nb[1], 1600U);
+      EXPECT_EQ(kg::VecQOneToken(t), joined);
+      EXPECT_TRUE(kg::CheckVecQ(t).has_value());
+      ASSERT_EQ(kg::JitllmOpOf(t->src[1]), kg::JitllmOp::kQuantizeQ8);
+      EXPECT_EQ(ggml_nbytes(t->src[1]), 2880U * (joined ? 2U : 1U));
+      EXPECT_NE(t->src[1]->data, nullptr);
+    }
+    EXPECT_EQ(heads, joined ? 3U : 6U);
+  }
+}
+
+TEST_F(Qwen38DraftWavePlanTest, SelectedQ4PrefixesKeepOneTokenArithmeticAndTheirParentIdentity) {
+  BindDraft(true, "Q4_1");
+  for (const std::int64_t rows : {1, 31, 32, 33, 16385, 47171}) {
+    for (const bool paired : {false, true}) {
+      auto planned = DraftPlan(paired, false, rows);
+      ASSERT_TRUE(planned.has_value()) << planned.error();
+      EXPECT_EQ((*planned)->stats().vecq_pairs, paired ? 3U : 0U);
+      EXPECT_EQ((*planned)->stats().quantized_draft_head_pairs, paired ? 3U : 0U);
+      unsigned heads = 0;
+      for (const ggml_tensor* t : (*planned)->nodes()) {
+        if (kg::JitllmOpOf(t) != kg::JitllmOp::kVecQ || t->ne[0] != rows) continue;
+        ++heads;
+        ASSERT_EQ(t->src[0]->op, GGML_OP_VIEW);
+        EXPECT_TRUE(engine::Qwen38SelectedQ4HeadPrefix(t->src[0], t->src[0]->view_src));
+        EXPECT_EQ(t->src[0]->ne[1], rows);
+        EXPECT_EQ(t->src[0]->view_src->ne[1], 47172);
+        EXPECT_EQ(t->ne[1], paired ? 2 : 1);
+        EXPECT_EQ(kg::VecQOneToken(t), paired);
+        EXPECT_TRUE(kg::CheckVecQ(t));
+        ASSERT_EQ(kg::JitllmOpOf(t->src[1]), kg::JitllmOp::kQuantizeQ8);
+        EXPECT_EQ(ggml_nbytes(t->src[1]), 2880U * (paired ? 2U : 1U));
+        EXPECT_NE(t->src[1]->data, nullptr);
+      }
+      EXPECT_EQ(heads, paired ? 3U : 6U);
+    }
+  }
+}
+
+TEST_F(Qwen38DraftWavePlanTest, ASelectedPrefixCannotBorrowAParentWithAMutableUnusedSuffix) {
+  BindDraft(true, "Q4_1");
+  const auto parent = models_[2].places.mtp_resource(drafter_->draft_output.index);
+  // The requested 47171 rows are disjoint, but the complete immutable parent
+  // includes its last 1600-byte row. A mutable alias there still forbids a join.
+  models_[2].places.mtp_state = parent + 1600U * 47171;
+  auto planned = DraftPlan(true, false, 47171);
+  ASSERT_TRUE(planned.has_value()) << planned.error();
+  EXPECT_EQ((*planned)->stats().quantized_draft_head_pairs, 0U);
+  EXPECT_EQ((*planned)->stats().vecq_pairs, 0U);
+}
+
+TEST(Qwen38SelectedHeadTest, PrefixIdentityRejectsMalformedViewParentAddressAndSpan) {
+  auto arena = kg::TensorArena::Create(16);
+  ASSERT_TRUE(arena);
+  auto* c = arena->context();
+  auto* parent = ggml_new_tensor_2d(c, GGML_TYPE_Q4_1, 2560, 47172);
+  kg::TensorArena::Bind(parent, std::uint64_t{1} << 46U);
+  auto* view = ggml_view_2d(c, parent, 2560, 47171, parent->nb[1], 0);
+  ASSERT_TRUE(engine::Qwen38SelectedQ4HeadPrefix(parent, parent));
+  ASSERT_TRUE(engine::Qwen38SelectedQ4HeadPrefix(view, parent));
+  const auto original_parent = *parent, original_view = *view;
+  const auto rejected = [&] {
+    EXPECT_FALSE(engine::Qwen38SelectedQ4HeadPrefix(view, parent));
+    *parent = original_parent;
+    *view = original_view;
+  };
+  view->data = reinterpret_cast<void*>((std::uint64_t{1} << 46U) + 2);
+  rejected();
+  view->view_src = nullptr;
+  rejected();
+  view->src[0] = nullptr;
+  rejected();
+  view->src[1] = parent;
+  rejected();
+  view->view_offs = 1600;
+  rejected();
+  const std::size_t offset = 1600;
+  std::memcpy(view->op_params, &offset, sizeof(offset));
+  rejected();
+  view->ne[1] = 47173;
+  view->nb[2] = view->nb[3] = 1600U * 47173;
+  rejected();
+  view->nb[0] = 18;
+  rejected();
+  view->nb[1] += 20;
+  rejected();
+  view->nb[2] += 20;
+  rejected();
+  view->type = GGML_TYPE_Q4_0;
+  rejected();
+  parent->op = GGML_OP_ADD;
+  rejected();
+  parent->src[0] = view;
+  rejected();
+  parent->view_src = view;
+  rejected();
+  parent->ne[1] = 248321;
+  parent->nb[2] = parent->nb[3] = 1600U * 248321;
+  rejected();
+  parent->data = reinterpret_cast<void*>(std::numeric_limits<std::uintptr_t>::max() - 1599);
+  view->data = parent->data;
+  rejected();
+  EXPECT_TRUE(engine::Qwen38SelectedQ4HeadPrefix(view, parent));
+}
+
+TEST_F(Qwen38DraftWavePlanTest, ConfidenceOutputsRetainTheirPackedI32ProbabilityBits) {
+  for (const std::string_view type : {"BF16", "Q4_1"}) {
+    BindDraft(true, type);
+    for (const bool paired : {false, true}) {
+      auto planned = DraftPlan(paired, false, 47172, true);
+      ASSERT_TRUE(planned.has_value()) << planned.error();
+      for (const std::size_t slot : {0U, 2U}) {
+        const auto* graph = (*planned)->draft(slot);
+        ASSERT_NE(graph, nullptr);
+        ASSERT_EQ(graph->probabilities.size(), 3U);
+        for (const auto* probability : graph->probabilities) {
+          ASSERT_NE(probability, nullptr);
+          EXPECT_EQ(probability->type, GGML_TYPE_I32);
+          EXPECT_EQ(ggml_nbytes(probability), sizeof(float));
+          EXPECT_TRUE(ggml_is_contiguous(probability));
+          EXPECT_NE(probability->data, nullptr);
+          ASSERT_NE(probability->view_src, nullptr);
+          EXPECT_EQ(kg::JitllmOpOf(probability->view_src), kg::JitllmOp::kArgmax);
+          EXPECT_EQ(probability->view_src->ne[0], 2);
+          EXPECT_EQ(probability->view_offs, sizeof(std::int32_t));
+          EXPECT_EQ(std::ranges::count((*planned)->nodes(), probability), 1);
+        }
+      }
+    }
   }
 }
 

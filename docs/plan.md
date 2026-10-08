@@ -362,6 +362,8 @@ family" guide, and its long-context scaling work.
       Preserve each recipient's original math, artifact, state, memory and
       completion contracts. No target A disposition closes a drafter item.
       - **DeepSeek V4 / DSpark**
+        - [ ] **T95** Quantized draft head: qualify compatible independent/tied
+          head binding, state/closure funding, scalar/joined arithmetic and quality.
         - [ ] **T19** Selective draft-head MMVF.
         - [ ] **T21** Clustered small reduction/prefetch.
         - [ ] **T22** Graph-owned GPU attention masks: target raw causal/ring
@@ -532,6 +534,8 @@ family" guide, and its long-context scaling work.
           +0.548% paid at n=2, exact. Full HTTP reference remains open;
           the same 25-wave schedule rules out an extra native wave.
       - **Gemma4 26B-A4B / assistant**
+        - [ ] **T95** Quantized draft head: qualify compatible independent/tied
+          head binding, state/closure funding, scalar/joined arithmetic and quality.
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T07** Compact expert-major MMQ scheduling.
         - [ ] **T09** Write activation in routed gate/up consumer.
@@ -574,6 +578,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.
         - [ ] **T86** Grouped physical KV stores.
       - **Gemma4 31B / assistant**
+        - [ ] **T95** Quantized draft head: qualify compatible independent/tied
+          head binding, state/closure funding, scalar/joined arithmetic and quality.
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T11** Reuse decode Q8 quantization.
         - [ ] **T15** Concurrent per-owner graph lanes.
@@ -656,14 +662,20 @@ family" guide, and its long-context scaling work.
       no parity or PPL pass. [Controlled diagnostic](experiments/qwen-device-masks/README.md#controlled-bf16-prompt-follow-up).
 - [x] Isolate pinned TensorFold FP8/BF16 prompt policy with one untimed,
       same-conditioned Teacher32 and actual-consumer/retirement proof.
-- [ ] **Current TensorFold MTP performance lead:** bounded ordinary
-      lean generation remains 3.237% slower than public TensorFold, n=2.
-      Investigate compatible same-ID selected-head affine Q4 group 32
-      quantization (native 47172 BF16 rows versus public 79591 Q4 rows),
-      preserving acceptance/quality and actual funding. Native MTP
-      experts already use NVFP4 CUTLASS; no missing expert-quant port
-      is established. A matched quant-only factor is required before
-      attributing the gap. [Reference evidence](experiments/qwen-device-masks/README.md).
+- [x] Implement and qualify an optional same-47,172-ID Q4_1 selected MTP
+      head, including odd-prefix scalar/joined OneToken capture/replay,
+      proposals/confidence, initialized state and protected-peer restore.
+      [Results](experiments/qwen38-quantized-draft-head/README.md): C1 generation
+      −4.064%, C2 +1.482% versus BF16; BF16 remains ordinary. Fresh public TF
+      C1 generation is −1.999%, n=2, with the target-quality lead above unchanged.
+- [ ] **Selected draft-head performance limitation:** C2 Q4 generation
+      regresses 1.482% against BF16 in the bounded format factor. Own-Q4
+      draft sharing reduces its draft interval 5.049%, but whole generation
+      −0.143% is inside +0.229% off-bookend movement. Preserve the optional
+      artifact/default distinction: the earlier ordinary BF16 comparison still
+      takes 3.237% more time than public TF. Wider context/cohort and production
+      request qualification remain open. This does not establish that all
+      remaining Qwen/TF performance gaps are closed.
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:

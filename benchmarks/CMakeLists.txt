@@ -13,6 +13,10 @@ add_library(jitllm_vocab_reference STATIC qwen38_reference.cc)
 target_include_directories(jitllm_vocab_reference PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(jitllm_vocab_reference PRIVATE jitllm_base jitllm_platform jitllm_warnings)
 
+# Offline selected-draft-head preparation with the pinned GGML quantizer.
+add_executable(jitllm_qwen38_quantize_head qwen38_quantize_head.cc)
+target_link_libraries(jitllm_qwen38_quantize_head PRIVATE jitllm_ggml_base jitllm_base jitllm_warnings)
+
 # D-048's lanes: wakeup latency against polling, lane throughput, and the
 # completion board's round trip (docs/experiments/task-lanes/).
 add_executable(jitllm_lanes_bench lanes_bench.cc)

@@ -1111,6 +1111,17 @@ TEST(Qwen38Test, SelectedDraftHeadRequiresAMatchingTokenMap) {
     bad[bad.size() - 2].ne[1] = wrong;
     EXPECT_FALSE(md::BindQwen38Mtp(p, "qwen4exp-mtp", bad));
   }
+  for (const std::string_view type : {"BF16", "Q4_1"}) {
+    resources[resources.size() - 2].type = type;
+    auto selected = md::BindQwen38Mtp(p, "qwen4exp-mtp", resources);
+    ASSERT_TRUE(selected.has_value()) << Why(selected);
+    EXPECT_EQ(selected->draft_output.type, type);
+  }
+  for (const std::string_view type : {"F32", "Q4_0", "Q8_0"}) {
+    resources[resources.size() - 2].type = type;
+    EXPECT_FALSE(md::BindQwen38Mtp(p, "qwen4exp-mtp", resources));
+  }
+  resources[resources.size() - 2].type = "BF16";
   resources.back().type = "F32";
   EXPECT_FALSE(md::BindQwen38Mtp(p, "qwen4exp-mtp", resources));
   resources.back().type = "I32";

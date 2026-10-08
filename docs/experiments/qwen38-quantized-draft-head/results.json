@@ -1,0 +1,1528 @@
+{
+  "scope": "Optional same-ID native Q4_1 draft head; bounded 32-output C1/C2 factors, not blanket default, HTTP, all-context or held-out PPL qualification",
+  "host": "spark-b GB10",
+  "native_reference_source_sha256": "e7de78c75eddcf941f0cc71d01a267298c007294fbc6bba28509455a0fffa6d9",
+  "integration_base": "fa7cf93",
+  "integration_bridge_sha256": "ffd3af8bf93b69bab5908a178352fae7096426db4511851aa0b83209e75f4166",
+  "SDK_receipt_and_ELFs": {
+    "build/spark-native/benchmarks/jitllm_qwen38_spec": "2371b57f7733114fb3c53db97df80e1e1f0cfdaaf6b8d76d93a75604f72906f3",
+    "build/spark-native/tests/unit/qwen38_quant_head_test": "bbfc6ac3ab058782117420a6dea29f1794d9c14a13a677d7b8a208c47e3a1894",
+    "build/spark-native/tests/unit/qwen38_wave_plan_test": "e156ed47c412145d9872d7fc5d4289fd1bc1107dca6ff52ab10bdda542213b1d",
+    "build/spark-native/src/runtime/jitllm-runtime": "88aacc7fd86be5198b1a7c141f2404c2a7145b4a5a2fb078dd99c3f4c7b17d7a",
+    "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
+  },
+  "native_cuBLAS": {
+    "libcublas.so.13": {
+      "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+      "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+      "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+    },
+    "libcublasLt.so.13": {
+      "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+      "path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+      "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+    }
+  },
+  "artifacts": {
+    "target": "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
+    "BF16_drafter": "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
+    "Q4_drafter": "95e8d51aa17f7f9e9199d034dccc51978b820194a2dc3bd1bf8e42f8c59765ff",
+    "Q4_head_sha256": "18a5c8af022b5edd7ef0e13d624aa5c386349a6ea4245e4f313ffdc82990b51b",
+    "BF16_head_sha256": "bda94395b78cbb472d7214bf7017a7a8d5ac6a3b7ad786fbf9d796a281d20e8e",
+    "selected_ids_sha256": "cfbfa2466c5c2b0246cdf62ca0ca2b6e7b94f72091fe650f62004909b1ac14b3",
+    "rows": 47172,
+    "width": 2560,
+    "Q4_head_bytes": 75475200,
+    "BF16_head_bytes": 241520640,
+    "other_unchanged_slices": 2081,
+    "quantizer_source_commit": "d81235049384534c167caea52b85a694f6103d14",
+    "quantizer_ELF_sha256": "c1e2b498a8df429af95657d763ca6c002bdfcad84d7e30fd1e102e2b4360d37b"
+  },
+  "inputs": {
+    "prompt.json": "204185510a2c6f05f7b9672a96e66de5d816d188832cde728b7d64952423c066",
+    "wave-prompts.json": "52dd48eb2b96be3ebc6de1a9c8e3f5155016599a20c85c1dc1dd3778d2123952",
+    "native-histories.json": "11250b3551f0492dd0a6b4f59f09ab6f438a6eb7474e9e6b31befb8c250c437b",
+    "tokenizer.json": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
+  },
+  "standing_operand_fixture": {
+    "path": "~/.local/share/jitllm/references/qwen-q4-head/operand-fixture-v1",
+    "retention": "KEEP through milestone cleanup",
+    "files": {
+      "changed.drafts.i32": "22a5e793639fadd15bfa5b576b650da43b86e7f156dc6768c6cc9aa94e0bfc85",
+      "first.inputs.f32": "62c81e30104247cdffc8033b13bb0402e29fffb02a471ec46d412ebe10b9079a",
+      "changed.logits.f32": "bf56eb353f54ec6e71b260928fbdd71b92a0e29666d3091380611b11aebfe5d7",
+      "first.logits.f32": "4fbfe42b0e5a101e06870d044a19f07a8650449958a30291b751ca31db9fb22b",
+      "head.q4_1": "18a5c8af022b5edd7ef0e13d624aa5c386349a6ea4245e4f313ffdc82990b51b",
+      "head.ids.i32": "cfbfa2466c5c2b0246cdf62ca0ca2b6e7b94f72091fe650f62004909b1ac14b3",
+      "changed.inputs.f32": "2d23849502549394d398b19150da6113ac600d2a2d0cdc22c06c80a0011df3b0",
+      "first.drafts.i32": "cf5ee42bff610642f1c599365bde44911bade35b6830e845611d01024aa07977"
+    }
+  },
+  "format_factor": {
+    "arms": [
+      {
+        "name": "c1-1-BF16",
+        "cohort": 1,
+        "head_format": "BF16",
+        "actual_depth": 3,
+        "seconds": 1.831711619,
+        "prefill_seconds": 1.173924451,
+        "decode_seconds": 0.657787168,
+        "result_sha256": "a7eb0aa9013b10d71ef7b91ef282c78895a2939a80fa507518eb579622f20219",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "f3a381e00e5b04f637b3dd1a08445a20875ddbface69e8ed85610ecbe6ec604d",
+            "draft_state_sha256": "924f65bc54054f2fbce6fe44ec6daf31605b60c46f35918f1dce7331ffc0f4f6",
+            "drafted": 32,
+            "accepted": 20,
+            "verifies": 11
+          }
+        ],
+        "paid_work": {
+          "warm_plans": 5,
+          "warm_graphs": 4,
+          "warm_plan_bytes": 18645648,
+          "draft_seconds": 0.080742786,
+          "verify_seconds": 0.574858169,
+          "drafted": 32,
+          "accepted": 20,
+          "verifies": 11,
+          "host_mask_bytes": 0,
+          "target_device_masks": 14,
+          "draft_device_masks": 33,
+          "target_paths": [
+            3,
+            1,
+            10
+          ],
+          "draft_paths": [
+            3,
+            1,
+            10
+          ]
+        },
+        "static_budget_sha256": "d685b1f895aa5cb83854eafff9ea87bd30b30064fdbd657ee48d1965eba09c00"
+      },
+      {
+        "name": "c1-2-Q4_1",
+        "cohort": 1,
+        "head_format": "Q4_1",
+        "actual_depth": 3,
+        "seconds": 1.757921481,
+        "prefill_seconds": 1.182687987,
+        "decode_seconds": 0.575233494,
+        "result_sha256": "0e412fd056b8b508ad10d4478423756eef673ba9183548e9b130ba9b0552c1ed",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "f3a381e00e5b04f637b3dd1a08445a20875ddbface69e8ed85610ecbe6ec604d",
+            "draft_state_sha256": "da0a2d0a582a02e542e8abe162f8d9eda9cdb6f33ffb0d702be02381362bb2fb",
+            "drafted": 29,
+            "accepted": 21,
+            "verifies": 10
+          }
+        ],
+        "paid_work": {
+          "warm_plans": 5,
+          "warm_graphs": 4,
+          "warm_plan_bytes": 18424944,
+          "draft_seconds": 0.052929206,
+          "verify_seconds": 0.520122604,
+          "drafted": 29,
+          "accepted": 21,
+          "verifies": 10,
+          "host_mask_bytes": 0,
+          "target_device_masks": 13,
+          "draft_device_masks": 30,
+          "target_paths": [
+            3,
+            1,
+            9
+          ],
+          "draft_paths": [
+            3,
+            0,
+            10
+          ]
+        },
+        "static_budget_sha256": "d685b1f895aa5cb83854eafff9ea87bd30b30064fdbd657ee48d1965eba09c00"
+      },
+      {
+        "name": "c1-3-Q4_1",
+        "cohort": 1,
+        "head_format": "Q4_1",
+        "actual_depth": 3,
+        "seconds": 1.759660095,
+        "prefill_seconds": 1.1821332850000001,
+        "decode_seconds": 0.57752681,
+        "result_sha256": "f692ce94e293614fc0b3e06a7fef198844a64346400dedcbbf046f0f10413a30",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "f3a381e00e5b04f637b3dd1a08445a20875ddbface69e8ed85610ecbe6ec604d",
+            "draft_state_sha256": "da0a2d0a582a02e542e8abe162f8d9eda9cdb6f33ffb0d702be02381362bb2fb",
+            "drafted": 29,
+            "accepted": 21,
+            "verifies": 10
+          }
+        ],
+        "paid_work": {
+          "warm_plans": 5,
+          "warm_graphs": 4,
+          "warm_plan_bytes": 18424944,
+          "draft_seconds": 0.052981382,
+          "verify_seconds": 0.522350432,
+          "drafted": 29,
+          "accepted": 21,
+          "verifies": 10,
+          "host_mask_bytes": 0,
+          "target_device_masks": 13,
+          "draft_device_masks": 30,
+          "target_paths": [
+            3,
+            1,
+            9
+          ],
+          "draft_paths": [
+            3,
+            0,
+            10
+          ]
+        },
+        "static_budget_sha256": "d685b1f895aa5cb83854eafff9ea87bd30b30064fdbd657ee48d1965eba09c00"
+      },
+      {
+        "name": "c1-4-BF16",
+        "cohort": 1,
+        "head_format": "BF16",
+        "actual_depth": 3,
+        "seconds": 1.834884397,
+        "prefill_seconds": 1.183410893,
+        "decode_seconds": 0.651473504,
+        "result_sha256": "017c26a77d3dadb157f64d38a24e55ef1a6ef8b5a858feaafa6e3c36db6f498f",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "f3a381e00e5b04f637b3dd1a08445a20875ddbface69e8ed85610ecbe6ec604d",
+            "draft_state_sha256": "924f65bc54054f2fbce6fe44ec6daf31605b60c46f35918f1dce7331ffc0f4f6",
+            "drafted": 32,
+            "accepted": 20,
+            "verifies": 11
+          }
+        ],
+        "paid_work": {
+          "warm_plans": 5,
+          "warm_graphs": 4,
+          "warm_plan_bytes": 18645648,
+          "draft_seconds": 0.080329925,
+          "verify_seconds": 0.570021041,
+          "drafted": 32,
+          "accepted": 20,
+          "verifies": 11,
+          "host_mask_bytes": 0,
+          "target_device_masks": 14,
+          "draft_device_masks": 33,
+          "target_paths": [
+            3,
+            1,
+            10
+          ],
+          "draft_paths": [
+            3,
+            1,
+            10
+          ]
+        },
+        "static_budget_sha256": "d685b1f895aa5cb83854eafff9ea87bd30b30064fdbd657ee48d1965eba09c00"
+      },
+      {
+        "name": "c2-1-BF16",
+        "cohort": 2,
+        "head_format": "BF16",
+        "actual_depth": 2,
+        "seconds": 3.46182644,
+        "prefill_seconds": 2.258475441,
+        "decode_seconds": 1.203350743,
+        "result_sha256": "f35cfc59257a70ae573e35543cd77c190d09cd307b843ba9c835ada830a0b1d1",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "1ad8f326748a5aecd659b8c43b862c62523f3d5a014b2d125abd47c6d38c8c76",
+            "draft_state_sha256": "4771e31e83b7cfa19d443d58cfa8d339fb86f1ef291a58dbc6bed7fd309356d4",
+            "drafted": 21,
+            "accepted": 20,
+            "verifies": 11
+          },
+          {
+            "heads_sha256": "f43a1107ec3619b61f65b6f4cc1f899b53fdeb93f7dfbe7dc436fb143c1296a6",
+            "target_state_sha256": "1b508f1ed93aa7dc5965f6ffc7b0034ee01596c90929cec49dd57c0ca45febbf",
+            "draft_state_sha256": "b0e8649b4bcaeb1ecd2225d0daaaa9134500585285b8aea74515585e84a78385",
+            "drafted": 32,
+            "accepted": 14,
+            "verifies": 17
+          }
+        ],
+        "paid_work": {
+          "draft_seconds": 0.129580471,
+          "verify_seconds": 1.028950067,
+          "warm_plans": 14,
+          "warm_graphs": 7,
+          "observation_bytes": 1761607680,
+          "joined_draft_waves": 11,
+          "joined_verify_waves": 11,
+          "selected_draft_head_pairs": 22,
+          "quantized_draft_head_pairs": 0,
+          "shared_head_verify_waves": 10,
+          "fallback_verify_waves": 1,
+          "verify_shapes": [
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              2,
+              3,
+              3,
+              0
+            ]
+          ],
+          "target_paths": [
+            6,
+            2,
+            15
+          ],
+          "draft_paths": [
+            6,
+            2,
+            15
+          ],
+          "host_mask_bytes": 0,
+          "target_device_masks": 34,
+          "draft_device_masks": 56
+        },
+        "static_budget_sha256": "4ed0fcb0adeffe51c3aa83cb56d4f343f52f8045894d50a6e60ec3ff36bc4875"
+      },
+      {
+        "name": "c2-2-Q4_1",
+        "cohort": 2,
+        "head_format": "Q4_1",
+        "actual_depth": 2,
+        "seconds": 3.500321435,
+        "prefill_seconds": 2.258907084,
+        "decode_seconds": 1.241414095,
+        "result_sha256": "d11c5ef07ac34f968efa1b164b89d567d45b7d985592ec3ef98eb37b47c46ee1",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "1ad8f326748a5aecd659b8c43b862c62523f3d5a014b2d125abd47c6d38c8c76",
+            "draft_state_sha256": "4771e31e83b7cfa19d443d58cfa8d339fb86f1ef291a58dbc6bed7fd309356d4",
+            "drafted": 21,
+            "accepted": 20,
+            "verifies": 11
+          },
+          {
+            "heads_sha256": "f43a1107ec3619b61f65b6f4cc1f899b53fdeb93f7dfbe7dc436fb143c1296a6",
+            "target_state_sha256": "1b508f1ed93aa7dc5965f6ffc7b0034ee01596c90929cec49dd57c0ca45febbf",
+            "draft_state_sha256": "349a53cc539728bab50ca67efabd0a5e09f1c109b5e3249cdf5a0d1a49904a74",
+            "drafted": 34,
+            "accepted": 13,
+            "verifies": 18
+          }
+        ],
+        "paid_work": {
+          "draft_seconds": 0.111503145,
+          "verify_seconds": 1.084575519,
+          "warm_plans": 14,
+          "warm_graphs": 6,
+          "observation_bytes": 1761607680,
+          "joined_draft_waves": 11,
+          "joined_verify_waves": 11,
+          "selected_draft_head_pairs": 22,
+          "quantized_draft_head_pairs": 22,
+          "shared_head_verify_waves": 10,
+          "fallback_verify_waves": 1,
+          "verify_shapes": [
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              2,
+              3,
+              3,
+              0
+            ]
+          ],
+          "target_paths": [
+            6,
+            2,
+            16
+          ],
+          "draft_paths": [
+            6,
+            3,
+            15
+          ],
+          "host_mask_bytes": 0,
+          "target_device_masks": 35,
+          "draft_device_masks": 58
+        },
+        "static_budget_sha256": "4ed0fcb0adeffe51c3aa83cb56d4f343f52f8045894d50a6e60ec3ff36bc4875"
+      },
+      {
+        "name": "c2-3-Q4_1",
+        "cohort": 2,
+        "head_format": "Q4_1",
+        "actual_depth": 2,
+        "seconds": 3.52618616,
+        "prefill_seconds": 2.269847897,
+        "decode_seconds": 1.256337959,
+        "result_sha256": "cf87498ec3fdbc6d62186eec727b03c86c11d96837741246a90648b290e4e6d9",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "1ad8f326748a5aecd659b8c43b862c62523f3d5a014b2d125abd47c6d38c8c76",
+            "draft_state_sha256": "4771e31e83b7cfa19d443d58cfa8d339fb86f1ef291a58dbc6bed7fd309356d4",
+            "drafted": 21,
+            "accepted": 20,
+            "verifies": 11
+          },
+          {
+            "heads_sha256": "f43a1107ec3619b61f65b6f4cc1f899b53fdeb93f7dfbe7dc436fb143c1296a6",
+            "target_state_sha256": "1b508f1ed93aa7dc5965f6ffc7b0034ee01596c90929cec49dd57c0ca45febbf",
+            "draft_state_sha256": "349a53cc539728bab50ca67efabd0a5e09f1c109b5e3249cdf5a0d1a49904a74",
+            "drafted": 34,
+            "accepted": 13,
+            "verifies": 18
+          }
+        ],
+        "paid_work": {
+          "draft_seconds": 0.111364897,
+          "verify_seconds": 1.083918214,
+          "warm_plans": 14,
+          "warm_graphs": 6,
+          "observation_bytes": 1761607680,
+          "joined_draft_waves": 11,
+          "joined_verify_waves": 11,
+          "selected_draft_head_pairs": 22,
+          "quantized_draft_head_pairs": 22,
+          "shared_head_verify_waves": 10,
+          "fallback_verify_waves": 1,
+          "verify_shapes": [
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              2,
+              3,
+              3,
+              0
+            ]
+          ],
+          "target_paths": [
+            6,
+            2,
+            16
+          ],
+          "draft_paths": [
+            6,
+            3,
+            15
+          ],
+          "host_mask_bytes": 0,
+          "target_device_masks": 35,
+          "draft_device_masks": 58
+        },
+        "static_budget_sha256": "4ed0fcb0adeffe51c3aa83cb56d4f343f52f8045894d50a6e60ec3ff36bc4875"
+      },
+      {
+        "name": "c2-4-BF16",
+        "cohort": 2,
+        "head_format": "BF16",
+        "actual_depth": 2,
+        "seconds": 3.462061287,
+        "prefill_seconds": 2.25296811,
+        "decode_seconds": 1.209092969,
+        "result_sha256": "06994c2917e3006f600fb587a64fc524bd74864c3089df1039aedf977e9b0aec",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "1ad8f326748a5aecd659b8c43b862c62523f3d5a014b2d125abd47c6d38c8c76",
+            "draft_state_sha256": "4771e31e83b7cfa19d443d58cfa8d339fb86f1ef291a58dbc6bed7fd309356d4",
+            "drafted": 21,
+            "accepted": 20,
+            "verifies": 11
+          },
+          {
+            "heads_sha256": "f43a1107ec3619b61f65b6f4cc1f899b53fdeb93f7dfbe7dc436fb143c1296a6",
+            "target_state_sha256": "1b508f1ed93aa7dc5965f6ffc7b0034ee01596c90929cec49dd57c0ca45febbf",
+            "draft_state_sha256": "b0e8649b4bcaeb1ecd2225d0daaaa9134500585285b8aea74515585e84a78385",
+            "drafted": 32,
+            "accepted": 14,
+            "verifies": 17
+          }
+        ],
+        "paid_work": {
+          "draft_seconds": 0.129938696,
+          "verify_seconds": 1.035113659,
+          "warm_plans": 14,
+          "warm_graphs": 7,
+          "observation_bytes": 1761607680,
+          "joined_draft_waves": 11,
+          "joined_verify_waves": 11,
+          "selected_draft_head_pairs": 22,
+          "quantized_draft_head_pairs": 0,
+          "shared_head_verify_waves": 10,
+          "fallback_verify_waves": 1,
+          "verify_shapes": [
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              2,
+              3,
+              3,
+              0
+            ]
+          ],
+          "target_paths": [
+            6,
+            2,
+            15
+          ],
+          "draft_paths": [
+            6,
+            2,
+            15
+          ],
+          "host_mask_bytes": 0,
+          "target_device_masks": 34,
+          "draft_device_masks": 56
+        },
+        "static_budget_sha256": "4ed0fcb0adeffe51c3aa83cb56d4f343f52f8045894d50a6e60ec3ff36bc4875"
+      }
+    ],
+    "own_repeats_exact": true,
+    "cross_format_committed_IDs_teacher_heads_target_state_exact": true,
+    "draft_state_across_formats_not_oracle": true,
+    "C1_generation_pct": -4.06410849,
+    "C1_decode_pct": -11.95333911,
+    "C2_generation_pct": 1.4821134,
+    "C2_decode_pct": 3.53617958,
+    "ordinary_drafter": "BF16"
+  },
+  "sharing_factor": {
+    "arms": [
+      {
+        "name": "c2-1-unpaired",
+        "cohort": 2,
+        "head_format": "Q4_1",
+        "paired_draft": false,
+        "actual_depth": 2,
+        "seconds": 3.498808274,
+        "prefill_seconds": 2.249729323,
+        "decode_seconds": 1.249078727,
+        "result_sha256": "adaaae1207e2195c23a344fe609e63cab18a15ac246b35bb78f0ee1307494606",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "1ad8f326748a5aecd659b8c43b862c62523f3d5a014b2d125abd47c6d38c8c76",
+            "draft_state_sha256": "4771e31e83b7cfa19d443d58cfa8d339fb86f1ef291a58dbc6bed7fd309356d4",
+            "drafted": 21,
+            "accepted": 20,
+            "verifies": 11
+          },
+          {
+            "heads_sha256": "f43a1107ec3619b61f65b6f4cc1f899b53fdeb93f7dfbe7dc436fb143c1296a6",
+            "target_state_sha256": "1b508f1ed93aa7dc5965f6ffc7b0034ee01596c90929cec49dd57c0ca45febbf",
+            "draft_state_sha256": "349a53cc539728bab50ca67efabd0a5e09f1c109b5e3249cdf5a0d1a49904a74",
+            "drafted": 34,
+            "accepted": 13,
+            "verifies": 18
+          }
+        ],
+        "paid_work": {
+          "draft_seconds": 0.11748822,
+          "verify_seconds": 1.085523944,
+          "warm_plans": 14,
+          "warm_graphs": 6,
+          "observation_bytes": 1761607680,
+          "joined_draft_waves": 0,
+          "joined_verify_waves": 11,
+          "selected_draft_head_pairs": 0,
+          "quantized_draft_head_pairs": 0,
+          "shared_head_verify_waves": 10,
+          "fallback_verify_waves": 1,
+          "verify_shapes": [
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              2,
+              3,
+              3,
+              0
+            ]
+          ],
+          "draft_wave_calls": 11,
+          "target_paths": [
+            6,
+            2,
+            16
+          ],
+          "draft_paths": [
+            6,
+            3,
+            15
+          ],
+          "host_mask_bytes": 0,
+          "target_device_masks": 35,
+          "draft_device_masks": 58
+        },
+        "static_budget_sha256": "4ed0fcb0adeffe51c3aa83cb56d4f343f52f8045894d50a6e60ec3ff36bc4875"
+      },
+      {
+        "name": "c2-2-paired",
+        "cohort": 2,
+        "head_format": "Q4_1",
+        "paired_draft": true,
+        "actual_depth": 2,
+        "seconds": 3.498378613,
+        "prefill_seconds": 2.2532984,
+        "decode_seconds": 1.245080005,
+        "result_sha256": "000a580de1b6fff76a0c7a2baee54d8be38ad8992dec5650a86f56d3c6161995",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "1ad8f326748a5aecd659b8c43b862c62523f3d5a014b2d125abd47c6d38c8c76",
+            "draft_state_sha256": "4771e31e83b7cfa19d443d58cfa8d339fb86f1ef291a58dbc6bed7fd309356d4",
+            "drafted": 21,
+            "accepted": 20,
+            "verifies": 11
+          },
+          {
+            "heads_sha256": "f43a1107ec3619b61f65b6f4cc1f899b53fdeb93f7dfbe7dc436fb143c1296a6",
+            "target_state_sha256": "1b508f1ed93aa7dc5965f6ffc7b0034ee01596c90929cec49dd57c0ca45febbf",
+            "draft_state_sha256": "349a53cc539728bab50ca67efabd0a5e09f1c109b5e3249cdf5a0d1a49904a74",
+            "drafted": 34,
+            "accepted": 13,
+            "verifies": 18
+          }
+        ],
+        "paid_work": {
+          "draft_seconds": 0.111944324,
+          "verify_seconds": 1.0889186,
+          "warm_plans": 14,
+          "warm_graphs": 6,
+          "observation_bytes": 1761607680,
+          "joined_draft_waves": 11,
+          "joined_verify_waves": 11,
+          "selected_draft_head_pairs": 22,
+          "quantized_draft_head_pairs": 22,
+          "shared_head_verify_waves": 10,
+          "fallback_verify_waves": 1,
+          "verify_shapes": [
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              2,
+              3,
+              3,
+              0
+            ]
+          ],
+          "draft_wave_calls": 11,
+          "target_paths": [
+            6,
+            2,
+            16
+          ],
+          "draft_paths": [
+            6,
+            3,
+            15
+          ],
+          "host_mask_bytes": 0,
+          "target_device_masks": 35,
+          "draft_device_masks": 58
+        },
+        "static_budget_sha256": "4ed0fcb0adeffe51c3aa83cb56d4f343f52f8045894d50a6e60ec3ff36bc4875"
+      },
+      {
+        "name": "c2-3-paired",
+        "cohort": 2,
+        "head_format": "Q4_1",
+        "paired_draft": true,
+        "actual_depth": 2,
+        "seconds": 3.497209758,
+        "prefill_seconds": 2.253306056,
+        "decode_seconds": 1.243903398,
+        "result_sha256": "ef0b983c7bcc5faf9f1aac4bee2564076d62722ecc0dfb0af52487bc0b04b864",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "1ad8f326748a5aecd659b8c43b862c62523f3d5a014b2d125abd47c6d38c8c76",
+            "draft_state_sha256": "4771e31e83b7cfa19d443d58cfa8d339fb86f1ef291a58dbc6bed7fd309356d4",
+            "drafted": 21,
+            "accepted": 20,
+            "verifies": 11
+          },
+          {
+            "heads_sha256": "f43a1107ec3619b61f65b6f4cc1f899b53fdeb93f7dfbe7dc436fb143c1296a6",
+            "target_state_sha256": "1b508f1ed93aa7dc5965f6ffc7b0034ee01596c90929cec49dd57c0ca45febbf",
+            "draft_state_sha256": "349a53cc539728bab50ca67efabd0a5e09f1c109b5e3249cdf5a0d1a49904a74",
+            "drafted": 34,
+            "accepted": 13,
+            "verifies": 18
+          }
+        ],
+        "paid_work": {
+          "draft_seconds": 0.111488775,
+          "verify_seconds": 1.087622568,
+          "warm_plans": 14,
+          "warm_graphs": 6,
+          "observation_bytes": 1761607680,
+          "joined_draft_waves": 11,
+          "joined_verify_waves": 11,
+          "selected_draft_head_pairs": 22,
+          "quantized_draft_head_pairs": 22,
+          "shared_head_verify_waves": 10,
+          "fallback_verify_waves": 1,
+          "verify_shapes": [
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              2,
+              3,
+              3,
+              0
+            ]
+          ],
+          "draft_wave_calls": 11,
+          "target_paths": [
+            6,
+            2,
+            16
+          ],
+          "draft_paths": [
+            6,
+            3,
+            15
+          ],
+          "host_mask_bytes": 0,
+          "target_device_masks": 35,
+          "draft_device_masks": 58
+        },
+        "static_budget_sha256": "4ed0fcb0adeffe51c3aa83cb56d4f343f52f8045894d50a6e60ec3ff36bc4875"
+      },
+      {
+        "name": "c2-4-unpaired",
+        "cohort": 2,
+        "head_format": "Q4_1",
+        "paired_draft": false,
+        "actual_depth": 2,
+        "seconds": 3.506821667,
+        "prefill_seconds": 2.260022479,
+        "decode_seconds": 1.246798884,
+        "result_sha256": "8baecc2a35423c3d81df21de249c867c47dc5e2aef250a1150fed7e900930710",
+        "owners": [
+          {
+            "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+            "target_state_sha256": "1ad8f326748a5aecd659b8c43b862c62523f3d5a014b2d125abd47c6d38c8c76",
+            "draft_state_sha256": "4771e31e83b7cfa19d443d58cfa8d339fb86f1ef291a58dbc6bed7fd309356d4",
+            "drafted": 21,
+            "accepted": 20,
+            "verifies": 11
+          },
+          {
+            "heads_sha256": "f43a1107ec3619b61f65b6f4cc1f899b53fdeb93f7dfbe7dc436fb143c1296a6",
+            "target_state_sha256": "1b508f1ed93aa7dc5965f6ffc7b0034ee01596c90929cec49dd57c0ca45febbf",
+            "draft_state_sha256": "349a53cc539728bab50ca67efabd0a5e09f1c109b5e3249cdf5a0d1a49904a74",
+            "drafted": 34,
+            "accepted": 13,
+            "verifies": 18
+          }
+        ],
+        "paid_work": {
+          "draft_seconds": 0.11782484,
+          "verify_seconds": 1.083979827,
+          "warm_plans": 14,
+          "warm_graphs": 6,
+          "observation_bytes": 1761607680,
+          "joined_draft_waves": 0,
+          "joined_verify_waves": 11,
+          "selected_draft_head_pairs": 0,
+          "quantized_draft_head_pairs": 0,
+          "shared_head_verify_waves": 10,
+          "fallback_verify_waves": 1,
+          "verify_shapes": [
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              3,
+              3,
+              3,
+              1
+            ],
+            [
+              2,
+              3,
+              3,
+              0
+            ]
+          ],
+          "draft_wave_calls": 11,
+          "target_paths": [
+            6,
+            2,
+            16
+          ],
+          "draft_paths": [
+            6,
+            3,
+            15
+          ],
+          "host_mask_bytes": 0,
+          "target_device_masks": 35,
+          "draft_device_masks": 58
+        },
+        "static_budget_sha256": "4ed0fcb0adeffe51c3aa83cb56d4f343f52f8045894d50a6e60ec3ff36bc4875"
+      }
+    ],
+    "same_quant_complete_heads_history_state_acceptance_target_work_static_budget_exact": true,
+    "generation_pct": -0.143335718,
+    "draft_interval_pct": -5.048576989,
+    "unpaired_generation_bookend_pct": 0.22903207,
+    "scope": "whole draft-sharing policy, verifier pairing fixed; no robust endpoint gain"
+  },
+  "fresh_TensorFold": {
+    "native_branch": "f8fe17d24629aedabf90bbf78279dd776e6d62e7",
+    "applicable_python_branch": "ed78d6fc204d89d90b045bf033d6551e7714f3a1",
+    "version": "0.6.6",
+    "arms": {
+      "reference1": {
+        "seconds": 1.789887567050755,
+        "heads_sha256": "b1aaccb17c4f862a0ed137c606fc06214feaf98fb86235ee9793b77dcbae48aa",
+        "stats": {
+          "prefill_s": 1.1798,
+          "cached": 0,
+          "drafts": true,
+          "drafted": 30,
+          "accepted": 21,
+          "min_rows": 2,
+          "decode_s": 0.6077,
+          "rounds": 11,
+          "decode_tps": 51.01
+        }
+      },
+      "native1": {
+        "seconds": 1.755203094,
+        "decode_seconds": 0.574180146,
+        "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+        "target_state_sha256": "f3a381e00e5b04f637b3dd1a08445a20875ddbface69e8ed85610ecbe6ec604d",
+        "draft_state_sha256": "da0a2d0a582a02e542e8abe162f8d9eda9cdb6f33ffb0d702be02381362bb2fb",
+        "drafted": 29,
+        "accepted": 21,
+        "verifies": 10
+      },
+      "native2": {
+        "seconds": 1.755633087,
+        "decode_seconds": 0.575793549,
+        "heads_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+        "target_state_sha256": "f3a381e00e5b04f637b3dd1a08445a20875ddbface69e8ed85610ecbe6ec604d",
+        "draft_state_sha256": "da0a2d0a582a02e542e8abe162f8d9eda9cdb6f33ffb0d702be02381362bb2fb",
+        "drafted": 29,
+        "accepted": 21,
+        "verifies": 10
+      },
+      "reference2": {
+        "seconds": 1.7925753688905388,
+        "heads_sha256": "b1aaccb17c4f862a0ed137c606fc06214feaf98fb86235ee9793b77dcbae48aa",
+        "stats": {
+          "prefill_s": 1.1811,
+          "cached": 0,
+          "drafts": true,
+          "drafted": 30,
+          "accepted": 21,
+          "min_rows": 2,
+          "decode_s": 0.6091,
+          "rounds": 11,
+          "decode_tps": 50.89
+        }
+      }
+    },
+    "generation_pct": -1.999371835,
+    "decode_pct": -5.491971154,
+    "reference_generation_bookend_pct": 0.15016596,
+    "reference_decode_bookend_pct": 0.23037683,
+    "natural_argmax_agreement": 29,
+    "first_natural_divergence": 29,
+    "native_selected_rows": 47172,
+    "TF_selected_rows": 79591,
+    "TF_decode_seconds_precision": 4,
+    "same_conditioned_quality": {
+      "scope": "32 supplied generated-history targets, identical conditioning; no held-out PPL qualification",
+      "native_sha256": "aa5b3e0876e7ac8d2618b08aadfc261ffdb4e3dafc8e4f68cb40c02c28c2ee74",
+      "reference_sha256": "b1aaccb17c4f862a0ed137c606fc06214feaf98fb86235ee9793b77dcbae48aa",
+      "argmax_agreement": 31,
+      "prior_near_tie_margin": 1.0,
+      "mismatches_outside_prior_margin": [
+        29
+      ],
+      "native_mean_nll": 0.17607837652276653,
+      "reference_mean_nll": 0.2753261909845765,
+      "mean_nll_delta": -0.09924781446180997,
+      "generated_history_exp_mean_nll_ratio": 0.9055182796912631,
+      "disagreement_rows": [
+        {
+          "row": 29,
+          "target": 17723,
+          "native_argmax": 17723,
+          "reference_argmax": 47149,
+          "agree": false,
+          "native_top2_margin": 0.8287172317504883,
+          "reference_top2_margin": 1.5625,
+          "native_loss_for_reference_argmax": 0.8287172317504883,
+          "reference_loss_for_native_argmax": 2.6875,
+          "native_nll": 1.3208872753391478,
+          "reference_nll": 3.56893493428875,
+          "native_top5": [
+            17723,
+            47149,
+            653,
+            2153,
+            2663
+          ],
+          "reference_top5": [
+            47149,
+            2153,
+            653,
+            17723,
+            1510
+          ],
+          "union_top5_logprob_max_abs_delta": 2.248047658949602,
+          "union_top5_logprob_mean_abs_delta": 0.7765395412347355
+        }
+      ]
+    },
+    "quality_gate": "OPEN: row29 outside unchanged1.0; descriptive generated-history NLL, not held-out PPL",
+    "target_head_quant_unchanged": true,
+    "actual_binding": {
+      "module": "/reference/package/tensorfold/__init__.py",
+      "version": "0.6.6",
+      "torch": "2.13.0a0+9186a08b2c.nv26.07",
+      "cuda": "13.3",
+      "prompt_fp8": true,
+      "witnessed_fp8_calls": 4128,
+      "warm_cuts": {
+        "plain": [
+          [
+            0,
+            512
+          ],
+          [
+            512,
+            512
+          ],
+          [
+            1024,
+            512
+          ]
+        ],
+        "spec-lean": [
+          [
+            0,
+            512
+          ],
+          [
+            512,
+            512
+          ],
+          [
+            1024,
+            512
+          ]
+        ]
+      },
+      "context": 2048,
+      "cache_slots": 2052,
+      "prefill_rows": 512,
+      "kv_dtype": "bf16",
+      "depth": 3,
+      "confidence": 0.0,
+      "copy_drafts": true,
+      "plain_graphs": false,
+      "spec_graphs": true,
+      "actual_draft_vocab": 79591,
+      "draft_ids_sha256": "998317c397023e24afeb9b6839ba54d8611bd3a4dddab4f7288344fd191b6ed8"
+    },
+    "runtime_loaded_libraries": {
+      "/tfhome/.cache/torch_extensions/py312_cu133/tensorfold_nvfp4_ck_v6/tensorfold_nvfp4_ck_v6.so": "afefc86b3ca90b437c219b5cb58918b114cb09c2fc53dedb9aa6dab173463a09",
+      "/tfhome/.cache/torch_extensions/py312_cu133/tensorfold_nvfp4_prompt_v1/tensorfold_nvfp4_prompt_v1.so": "08fb7351c2b8762afab23e51c8f3e5907d2a77848a3d5ecabf1ce0eaae916107",
+      "/tfhome/.cache/torch_extensions/py312_cu133/tensorfold_nvfp4_v3/tensorfold_nvfp4_v3.so": "2e38901a061374f0ae75edb1516076935911e09426728c17604547055d59db0d",
+      "/tfhome/.cache/torch_extensions/py312_cu133/tensorfold_qmm_v5/tensorfold_qmm_v5.so": "227886a8aa0ba601afc988d1021f5fbb5ce19cf360751fb29afe04862c736640",
+      "/tfhome/.cache/torch_extensions/py312_cu133/tensorfold_qwen4_exp_gdn/tensorfold_qwen4_exp_gdn.so": "e546009e537f95e4e9b2f8b20bb45e6e608bfa8607d1e612e66e85f0e35d8368",
+      "/tfhome/.cache/torch_extensions/py312_cu133/tensorfold_qwen4_exp_gdn_io/tensorfold_qwen4_exp_gdn_io.so": "d526ae129fe72dcee55d0a9023cbbca0f8fe1b5e5b279ae6893963a4010ec465",
+      "/tfhome/.cache/torch_extensions/py312_cu133/tensorfold_gdn_v2/tensorfold_gdn_v2.so": "7c964d901edac6e376e302ad0fb4983c10b13bb999cf6ade41724ad1fda7f3bc",
+      "/tfhome/.triton/cache/4IDTX457LEKM6A5SBZFELBJ3TOMW3QJUNG6PULCD7N5ML5SDRROA/cuda_utils.cpython-312-aarch64-linux-gnu.so": "f295d8934bd1c866cf7ab1c7d9339564998a325110a6039fa54c283725d462fc",
+      "/tfhome/.cache/torch_extensions/py312_cu133/tensorfold_experts_v7/tensorfold_experts_v7.so": "c871f6d4020811801f20d9b7982e5cd2cb0e2265c210e9424dee5711d93452df",
+      "/usr/local/cuda-13.3/targets/sbsa-linux/lib/libcublasLt.so.13.6.0.2": "4198b8726952fbf25a4e78f07178d66509aca4919b7324e935fe3915bff3efc8",
+      "/usr/local/cuda-13.3/targets/sbsa-linux/lib/libcublas.so.13.6.0.2": "8062c27c479c249292b48c4bc73af1deb22edee4dfff191fb48a7491ac506410",
+      "/usr/local/cuda-13.3/targets/sbsa-linux/lib/libcudart.so.13.3.29": "83b2ccdccdbb285613a97e8be332d1b17cbd55e267e1d2e047adb3081660335e"
+    },
+    "image": "sha256:c8dc97d6dab8995704b6c151715f11f84419775a193c96a5ed3399407ad41c20"
+  },
+  "focused_checks": {
+    "unique_tests": 10,
+    "full_suite": "deferred by owner",
+    "GPU_fixture_env": "JITLLM_Q4_HEAD_FIXTURE, explicitly set in focused controls; ordinary suite otherwise skips",
+    "quantizer_negative_controls": 8,
+    "prefix_host_XML_sha256": {
+      "host": "45d3f8998cd894759ba8d722e5e54e349cca41af7d5463b3e770aa851f6cb25f",
+      "operand": "0e98318dde94cdf98158d9e78cbb24922945988b97e6cc89ce5d643aac2bfbcf"
+    },
+    "actual_prefix_rows": 47171,
+    "actual_prefix_C2_proof_sha256": "d0f734c0dfcd02d00f781e6612945c61f15713fd46e9bf92d45db377cc8bb716",
+    "retained_partial_failed_jobs": "Previously completed positives retained only with exact source/ELF/result bridges; no failed arm pooled",
+    "positive_tests": [
+      "Qwen38DraftWavePlanTest.ASelectedPrefixCannotBorrowAParentWithAMutableUnusedSuffix",
+      "Qwen38DraftWavePlanTest.ConfidenceOutputsRetainTheirPackedI32ProbabilityBits",
+      "Qwen38DraftWavePlanTest.PrefixAndSelectedHeadsShareEveryPassWithVectorArithmetic",
+      "Qwen38DraftWavePlanTest.SelectedQ4HeadsShareOneTokenArithmeticAndFundTheirQ8Inputs",
+      "Qwen38DraftWavePlanTest.SelectedQ4PrefixesKeepOneTokenArithmeticAndTheirParentIdentity",
+      "Qwen38DraftWavePlanTest.UnpairedAndCapturedDraftHeadsRemainSeparate",
+      "Qwen38QuantHeadTest.ActualSelectedHeadsKeepEveryScalarColumnAndRefreshChangedReplay",
+      "Qwen38QuantHeadTest.ActualSelectedPrefixesKeepEveryScalarRowTailAndRefreshChangedReplay",
+      "Qwen38SelectedHeadTest.PrefixIdentityRejectsMalformedViewParentAddressAndSpan",
+      "Qwen38Test.SelectedDraftHeadRequiresAMatchingTokenMap"
+    ],
+    "XML_records": {
+      "build1/binding.xml": {
+        "sha256": "25aca03fce660771359224aca8176e2d15dd85a4de0b95167188917b0cce64ab",
+        "passed": [
+          "Qwen38Test.SelectedDraftHeadRequiresAMatchingTokenMap"
+        ]
+      },
+      "build1/wave.xml": {
+        "sha256": "afc9f9461e2335d473f66141686d230c5c9124975a3179219287cfedf69e87f5",
+        "passed": [
+          "Qwen38DraftWavePlanTest.PrefixAndSelectedHeadsShareEveryPassWithVectorArithmetic",
+          "Qwen38DraftWavePlanTest.SelectedQ4HeadsShareOneTokenArithmeticAndFundTheirQ8Inputs",
+          "Qwen38DraftWavePlanTest.UnpairedAndCapturedDraftHeadsRemainSeparate"
+        ]
+      },
+      "proof-build3/wave.xml": {
+        "sha256": "c705e7efa5767c51350d98dd5cf83f8558fc45898e9365e9e62d1e9dd674b6a8",
+        "passed": [
+          "Qwen38DraftWavePlanTest.ConfidenceOutputsRetainTheirPackedI32ProbabilityBits"
+        ]
+      },
+      "prefix-build1/host.xml": {
+        "sha256": "45d3f8998cd894759ba8d722e5e54e349cca41af7d5463b3e770aa851f6cb25f",
+        "passed": [
+          "Qwen38DraftWavePlanTest.SelectedQ4HeadsShareOneTokenArithmeticAndFundTheirQ8Inputs",
+          "Qwen38DraftWavePlanTest.SelectedQ4PrefixesKeepOneTokenArithmeticAndTheirParentIdentity",
+          "Qwen38DraftWavePlanTest.ASelectedPrefixCannotBorrowAParentWithAMutableUnusedSuffix",
+          "Qwen38SelectedHeadTest.PrefixIdentityRejectsMalformedViewParentAddressAndSpan"
+        ]
+      },
+      "prefix-build1/operand.xml": {
+        "sha256": "0e98318dde94cdf98158d9e78cbb24922945988b97e6cc89ce5d643aac2bfbcf",
+        "passed": [
+          "Qwen38QuantHeadTest.ActualSelectedHeadsKeepEveryScalarColumnAndRefreshChangedReplay",
+          "Qwen38QuantHeadTest.ActualSelectedPrefixesKeepEveryScalarRowTailAndRefreshChangedReplay"
+        ]
+      }
+    }
+  },
+  "evidence_sha256": {
+    "build1/passed.json": "cca2c8f7db289633f9f50ebbeae09ded1cc28e67b60b2ec442debd988274e700",
+    "repack1/passed.json": "a806ddf40507c0992a16bc554f8068551de6eead817be90b3d161fa3cf24cf0b",
+    "proof-build3/passed.json": "833427652589218d6007c6f1159f2adc9fb079ea9c13e0c54f83782190b9d651",
+    "proof-model2/passed.json": "d8218e19157951ea2e1810ba7c15fe2704efa4a446f15ecb9b6d464b4c572125",
+    "factor-build3/passed.json": "55bb9fef4cdaf3f4641c96fd4ace45cfe50146924470c84505c979824921750d",
+    "factor-model3/passed.json": "1c14bb970397710057a30b988002710fdd27133b5a8ed34b870a0069d3ee7599",
+    "prefix-build1/passed.json": "9e2717170ca6460f2ab6570eea36c920cda98039cdaa6a0fa35cea73b54441e8",
+    "prefix-model1/passed.json": "d0f734c0dfcd02d00f781e6612945c61f15713fd46e9bf92d45db377cc8bb716",
+    "sharing-model1/passed.json": "52902f2dd734465c1bf31d690c347ecdb1d655bc183bd44613ca59af7450b1ee",
+    "reference1/runs.json": "f3e4162ffdbe73c3d9a6afe67db950077d9b1a1a52788a305d034cc68f4c2207",
+    "quality-reference1.json": "2ce2f5d60db4e0734c2b755eaf5078b836c06179d4033e31145b82dcbee360e8",
+    "quality-reference2.json": "2ce2f5d60db4e0734c2b755eaf5078b836c06179d4033e31145b82dcbee360e8",
+    "prefix-source1.json": "e7de78c75eddcf941f0cc71d01a267298c007294fbc6bba28509455a0fffa6d9",
+    "prefix-main-bridge.json": "6aec638c88a1b37bf243101f620c76f6d3700523bb9e830bcb9382bb2f787c3a",
+    "final-main-bridge.json": "ffd3af8bf93b69bab5908a178352fae7096426db4511851aa0b83209e75f4166",
+    "reference-task-entry.json": "198fd59abf76cdfd38b6a974244c0b23e0ffd61d136ae21a46210570e14094ba"
+  },
+  "conditions": {
+    "context": 2048,
+    "prefill_chunk": 512,
+    "C1_prompt_rows": 1536,
+    "C2_prompt_rows": [
+      1536,
+      1280
+    ],
+    "outputs_per_owner": 32,
+    "graphs": true,
+    "device_masks": true,
+    "confidence_window": 0,
+    "adaptive_depth": false,
+    "configured_draft_capacity": 3,
+    "C1_actual_depth": 3,
+    "C2_actual_depth": 2,
+    "endpoint": "warm traversal/state reset, paid prefill+decode with final owed settlement; full Teacher/state observation outside paid endpoint",
+    "observation_funded": true,
+    "sample_count_per_policy": 2
+  }
+}

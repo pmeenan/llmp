@@ -447,12 +447,13 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
       if (head) {
         const auto& weight = drafter->resources()[*head].repr;
         const auto& map = drafter->resources()[*ids].repr;
-        if (weight.family != ja::Family::kGgml || weight.type != "BF16" ||
-            weight.dims.size() != 2 || weight.dims[1] == 0 ||
-            weight.dims[1] > std::numeric_limits<std::uint32_t>::max() ||
+        if (weight.family != ja::Family::kGgml ||
+            (weight.type != "BF16" && weight.type != "Q4_1") || weight.dims.size() != 2 ||
+            weight.dims[1] == 0 || weight.dims[1] > std::numeric_limits<std::uint32_t>::max() ||
             map.family != ja::Family::kGgml || map.type != "I32" ||
             map.dims != std::vector<std::uint64_t>{1, weight.dims[1]}) {
-          return Error("the selected draft head requires BF16 rows and a matching I32 token map");
+          return Error(
+              "the selected draft head requires BF16 or Q4_1 rows and a matching I32 token map");
         }
         facts.drafter_selected_rows = static_cast<std::uint32_t>(weight.dims[1]);
       }

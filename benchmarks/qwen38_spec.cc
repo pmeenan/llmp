@@ -302,6 +302,8 @@ struct Options {
   bool adaptive_depth = false;
   bool runtime_prefill = false;
   bool prompt_token_ids = false;
+  bool paired_draft = true;  // benchmark-only scalar/joined MTP control
+  bool draft_head_proof = false;
   bool profile_decode = false;
   std::filesystem::path sampled;
   std::string only;
@@ -439,6 +441,7 @@ class Harness {
   Status SwapIn();
   Status Sampled(bool speculative);
   Status Wave();
+  Status LeanWave();
   Status Turn();
   Status Write();
 
@@ -1182,7 +1185,7 @@ Status Harness::Masks() {
         R"({{"check":"masks","mode":"{}","device_masks":{},"prompt_tokens":{},)"
         R"("prompt_ids_sha256":"{}","generated":{},"warm_plans":{},"warm_graphs":{},"warm_plan_bytes":{},)"
         R"("seconds":{:.9f},"decode_seconds":{:.9f},)"
-        R"("draft_seconds":{:.9f},"verify_seconds":{:.9f},"host_mask_bytes":{},)"
+        R"("draft_seconds":{:.9f},"verify_seconds":{:.9f},"drafted":{},"accepted":{},"verifies":{},"host_mask_bytes":{},)"
         R"("target_device_masks":{},"draft_device_masks":{},)"
         R"("target_paths":[{},{},{}],"draft_paths":[{},{},{}],"tokens":[{}],"step_trace":[{}],)"
         R"("heads_teacher_forced":{},"heads_sha256":"{}","target_state_bytes":{},"target_state_sha256":"{}",)"
@@ -1190,8 +1193,9 @@ Status Harness::Masks() {
         mode, o_.qwen.device_masks ? "true" : "false", prompt.ids.size(),
         digest(std::as_bytes(std::span(prompt.ids))), generation.tokens.size(), warm_plans,
         warm_graphs, warm_plan_bytes, seconds, generation.decode_seconds, generation.draft_seconds,
-        generation.verify_seconds, host_bytes, target_masks, draft_masks,
-        graphs_after.eager - graphs_before.eager, graphs_after.captured - graphs_before.captured,
+        generation.verify_seconds, generation.drafted, generation.accepted, generation.verifies,
+        host_bytes, target_masks, draft_masks, graphs_after.eager - graphs_before.eager,
+        graphs_after.captured - graphs_before.captured,
         graphs_after.replayed - graphs_before.replayed, drafts_after.eager - drafts_before.eager,
         drafts_after.captured - drafts_before.captured,
         drafts_after.replayed - drafts_before.replayed, tokens, trace, lean,
@@ -1915,12 +1919,15 @@ Status Harness::DraftHead(bool routed_down) {
                  !write("draft-head.ids.i32", std::as_bytes(std::span(head.token_ids))))) {
               return Error("writing the external draft-head capture");
             }
+            std::string remapped;
+            for (const auto token : current.drafts)
+              remapped += std::format("{}{}", remapped.empty() ? "" : ",", token);
             results_.push_back(std::format(
-                R"({{"check":"draft_head_capture","step":{},"anchor_position":{},"passes":{},"catch_up_rows":{},"head_rows":{},"width":{},"input_fingerprint":{},"logit_fingerprint":{},"ids_fingerprint":{}}})",
+                R"({{"check":"draft_head_capture","step":{},"anchor_position":{},"passes":{},"catch_up_rows":{},"head_rows":{},"width":{},"input_fingerprint":{},"logit_fingerprint":{},"ids_fingerprint":{},"drafts":[{}]}})",
                 s, history.size() - 1, depth, head.catch_up_rows, head.head_rows, width,
                 Fingerprint(std::as_bytes(std::span(head.inputs))),
                 Fingerprint(std::as_bytes(std::span(head.logits))),
-                Fingerprint(std::as_bytes(std::span(head.token_ids)))));
+                Fingerprint(std::as_bytes(std::span(head.token_ids))), remapped));
           } else if (head.catch_up_rows != captured[s].catch_up_rows ||
                      head.head_rows != captured[s].head_rows ||
                      head.token_ids != captured[s].token_ids ||
@@ -2666,6 +2673,9 @@ Status Harness::Wave() {
   std::vector<double> verify_ms;
   std::uint64_t waves = 0;
   std::uint64_t joined_draft_waves = 0;
+  std::uint64_t joined_quantized_draft_head_pairs = 0;
+  std::uint64_t joined_selected_draft_head_pairs = 0;
+  jitllm::base::Sha256 draft_proposals, draft_confidence;
   std::uint64_t joined_verify_waves = 0;
   std::uint64_t verify_captured = 0;
   std::uint64_t verify_replayed = 0;
@@ -2725,35 +2735,60 @@ Status Harness::Wave() {
         return r;
       }
       std::vector<std::vector<std::int32_t>> drafts(active.size());
+      std::vector<std::vector<float>> confidence(active.size());
       std::vector<jb::Qwen38Runner::DraftWork> dwork;
       dwork.reserve(active.size());
       for (std::size_t k = 0; k < active.size(); ++k) {
         dwork.push_back({.slot = slots[active[k]],
                          .history = runs[active[k]].all,
                          .drafts = &drafts[k],
-                         .probabilities = nullptr,
+                         .probabilities = o_.draft_head_proof ? &confidence[k] : nullptr,
                          .passes = kDepth});
       }
       auto at = Clock::now();
       if (active.size() > 2) {
         for (std::size_t k = 0; k < active.size(); ++k) {
-          if (auto r = slots[active[k]]->Draft(runs[active[k]].all, drafts[k], nullptr, kDepth);
+          if (auto r =
+                  slots[active[k]]->Draft(runs[active[k]].all, drafts[k],
+                                          o_.draft_head_proof ? &confidence[k] : nullptr, kDepth);
               !r) {
             return r;
           }
         }
       } else if (active.size() > 1) {
-        if (auto r = qwen_.DraftWave(dwork); !r) {
+        if (auto r = qwen_.DraftWave(dwork, o_.paired_draft); !r) {
           return r;
         }
-        if (masks && qwen_.last_wave().paired_slots == 3U && qwen_.last_wave().draft_head_pairs > 0)
+        const auto& wave_stats = qwen_.last_wave();
+        if (masks && wave_stats.paired_slots == 3U &&
+            (wave_stats.draft_head_pairs > 0 || wave_stats.quantized_draft_head_pairs > 0))
           ++joined_draft_waves;
-      } else if (auto r = slots[active[0]]->Draft(runs[active[0]].all, drafts[0], nullptr, kDepth);
+        joined_quantized_draft_head_pairs += wave_stats.quantized_draft_head_pairs;
+        joined_selected_draft_head_pairs +=
+            wave_stats.draft_head_pairs + wave_stats.quantized_draft_head_pairs;
+        if (masks && !o_.paired_draft &&
+            (wave_stats.paired_slots != 0 || wave_stats.draft_head_pairs != 0 ||
+             wave_stats.vecq_pairs != 0))
+          return Error("unpaired draft control unexpectedly joined products");
+      } else if (auto r = slots[active[0]]->Draft(runs[active[0]].all, drafts[0],
+                                                  o_.draft_head_proof ? &confidence[0] : nullptr,
+                                                  kDepth);
                  !r) {
         return r;
       }
       if (active.size() == n) {
         draft_ms.push_back(Seconds(Clock::now() - at) * 1e3);
+      }
+      if (o_.draft_head_proof) {
+        for (std::size_t k = 0; k < active.size(); ++k) {
+          if (drafts[k].size() != kDepth || confidence[k].size() != kDepth ||
+              !std::ranges::all_of(confidence[k],
+                                   [](float v) { return std::isfinite(v) && v >= 0 && v <= 1; }))
+            return Error("quantized head proof lacks complete proposals/confidence");
+          draft_proposals.Update(std::as_bytes(std::span(&active[k], 1)));
+          draft_proposals.Update(std::as_bytes(std::span(drafts[k])));
+          draft_confidence.Update(std::as_bytes(std::span(confidence[k])));
+        }
       }
       std::vector<std::vector<std::int32_t>> inputs(active.size());
       std::vector<std::vector<std::int32_t>> argmax(active.size());
@@ -2916,7 +2951,9 @@ Status Harness::Wave() {
     return read;
   }
   if (masks) {
-    if (state_digests.size() != n || joined_draft_waves == 0 || joined_verify_waves == 0)
+    if (state_digests.size() != n ||
+        (o_.paired_draft ? joined_draft_waves == 0 : joined_draft_waves != 0) ||
+        joined_verify_waves == 0)
       return Error("mask wave lacks initialized owner states or actual joined headed graphs");
     if (auto spilled = slots[0]->Spill(); !spilled) return spilled;
     if (!slots[0]->spilled() || slots[0]->spilled_bytes() == 0)
@@ -2941,6 +2978,11 @@ Status Harness::Wave() {
             });
         !checked)
       return checked;
+    if (o_.draft_head_proof &&
+        (qwen_.draft_head_rows() != o_.qwen.draft_vocab || !qwen_.selected_draft_head() ||
+         (o_.paired_draft ? joined_selected_draft_head_pairs != kDepth * joined_draft_waves
+                          : joined_selected_draft_head_pairs != 0)))
+      return Error("selected head proof lacks its actual paired products");
     const auto after = qwen_.mask_stats();
     const auto host = after.host_bytes - masks_before.host_bytes;
     const auto target = after.target_device - masks_before.target_device;
@@ -2963,13 +3005,17 @@ Status Harness::Wave() {
       }
       output_tokens += std::format("{}[{}]", output_tokens.empty() ? "" : ",", ids);
     }
-    results_.push_back(
-        std::format(R"({{"check":"masks-wave","device_masks":{},"host_mask_bytes":{},)"
-                    R"("target_device_masks":{},"draft_device_masks":{},"full_head_rows":[{}],)"
-                    R"("joined_draft_waves":{},"joined_verify_waves":{},"tokens":[{}],)"
-                    R"("spill_restore_exact":true,"protected_peer_exact":true}})",
-                    o_.qwen.device_masks ? "true" : "false", host, target, draft, head_rows,
-                    joined_draft_waves, joined_verify_waves, output_tokens));
+    results_.push_back(std::format(
+        R"({{"check":"masks-wave","device_masks":{},"host_mask_bytes":{},)"
+        R"("target_device_masks":{},"draft_device_masks":{},"full_head_rows":[{}],)"
+        R"("joined_draft_waves":{},"joined_verify_waves":{},"quantized_draft_head_pairs":{},"selected_draft_head_pairs":{},"paired_draft":{},"tokens":[{}],)"
+        R"("draft_head_proof":{},"draft_proposals_sha256":"{}","draft_confidence_sha256":"{}",)"
+        R"("spill_restore_exact":true,"protected_peer_exact":true}})",
+        o_.qwen.device_masks ? "true" : "false", host, target, draft, head_rows, joined_draft_waves,
+        joined_verify_waves, joined_quantized_draft_head_pairs, joined_selected_draft_head_pairs,
+        o_.paired_draft ? "true" : "false", output_tokens, o_.draft_head_proof ? "true" : "false",
+        jitllm::base::ToHex(draft_proposals.Finish()),
+        jitllm::base::ToHex(draft_confidence.Finish())));
   }
   const auto median = [](std::vector<double> v) {
     if (v.empty()) {
@@ -2996,6 +3042,324 @@ Status Harness::Wave() {
       n, o_.qwen.wave_lanes ? "true" : "false", waves, median(draft_ms), median(verify_ms), tokens,
       rows, states, verify_captured, verify_replayed, swapped_after_wave, swap_owed_slots,
       graphs_kept_at_swap, verify_replayed_after_swap));
+  return {};
+}
+
+// A bounded two-owner greedy endpoint. Warm the identical verdict-only
+// program once; pay Clear, both prefills, every draft/verify/Accept and the
+// final owed settlement. Observe complete state and teacher heads afterward.
+Status Harness::LeanWave() {
+  constexpr std::uint32_t kDepth = 2;
+  constexpr std::size_t kOwners = 2;
+  const auto& profile = md::Qwen38Flash();
+  if (decode_.size() != kOwners || !qwen_.selected_draft_head() || qwen_.draft_head_rows() != 47172)
+    return Error("lean wave needs two selected-head literal owners");
+  for (const auto& prompt : decode_) {
+    if (prompt.ids.empty() || prompt.ids.size() + o_.tokens + kDepth > o_.qwen.context ||
+        prompt.ids.size() + o_.tokens + kDepth > profile.indexer_budget)
+      return Error("lean wave needs two short prompt histories and draft room");
+  }
+  // One owner's copied state at a time, complete <=32-row teacher heads,
+  // current rows and bounded token/step vectors. These are CPU copies, never
+  // DMA destinations. Fund before their allocations, release after destruction.
+  const std::uint64_t observation_bytes = 2 * node_.StateCapacity() + (64ULL << 20U);
+  if (!node_.SetRequestCharge(observation_bytes)) return Error("funding lean wave observations");
+  struct ObservationCharge {
+    ts::PagedNode& node;
+    ~ObservationCharge() { (void)node.SetRequestCharge(0); }
+  } observation_charge{node_};
+  if (node_.request_charged() != observation_bytes)
+    return Error("lean wave observations lack their catalog charge");
+  std::array<jb::Qwen38Runner::Slot*, kOwners> slots{};
+  for (std::size_t owner = 0; owner < kOwners; ++owner) {
+    auto slot = qwen_.request_slot(owner);
+    if (!slot) return Error(slot.error());
+    slots[owner] = *slot;
+  }
+  struct Cohort {
+    std::array<std::vector<std::int32_t>, kOwners> history;
+    std::array<Generation, kOwners> generation;
+    std::uint64_t draft_wave_calls = 0;
+    std::uint64_t joined_drafts = 0;
+    std::uint64_t joined_verifies = 0;
+    std::uint64_t shared_head_verifies = 0;
+    std::uint64_t fallback_verifies = 0;
+    std::vector<std::array<std::uint64_t, 4>> verify_shapes;
+    std::uint64_t selected_pairs = 0;
+    std::uint64_t quantized_pairs = 0;
+    double prefill_seconds = 0;
+    double decode_seconds = 0;
+    double draft_seconds = 0;
+    double verify_seconds = 0;
+  };
+  const auto generate = [&](Cohort& cohort) -> Status {
+    const auto prefill_start = Clock::now();
+    if (auto run = InRequest(
+            "lean cohort prefill",
+            [&]() -> Status {
+              if (auto selected = qwen_.SelectSlots(slots); !selected) return selected;
+              for (std::size_t owner = 0; owner < kOwners; ++owner) {
+                if (auto cleared = slots[owner]->Clear(); !cleared) return cleared;
+                const auto& prompt = decode_[owner];
+                std::vector<float> frontier;
+                for (std::uint32_t at = 0; at < prompt.ids.size(); at += o_.qwen.max_rows) {
+                  const auto rows = static_cast<std::uint32_t>(
+                      std::min<std::size_t>(o_.qwen.max_rows, prompt.ids.size() - at));
+                  if (auto chunk = slots[owner]->Chunk(std::span(prompt.ids).first(at + rows), at,
+                                                       frontier, true);
+                      !chunk)
+                    return chunk;
+                }
+                if (frontier.size() != profile.vocab)
+                  return Error("lean cohort has an incomplete prompt frontier");
+                cohort.history[owner] = prompt.ids;
+                const auto token = Argmax(frontier);
+                cohort.history[owner].push_back(token);
+                cohort.generation[owner].tokens.push_back(token);
+              }
+              return {};
+            });
+        !run)
+      return run;
+    cohort.prefill_seconds = Seconds(Clock::now() - prefill_start);
+    const auto decode_start = Clock::now();
+    for (;;) {
+      std::vector<std::size_t> active;
+      std::vector<jb::Qwen38Runner::Slot*> selected;
+      for (std::size_t owner = 0; owner < kOwners; ++owner) {
+        if (cohort.generation[owner].tokens.size() < o_.tokens) {
+          active.push_back(owner);
+          selected.push_back(slots[owner]);
+        }
+      }
+      if (active.empty()) break;
+      if (auto run = InRequest(
+              "lean cohort step",
+              [&]() -> Status {
+                if (auto picked = qwen_.SelectSlots(selected); !picked) return picked;
+                std::vector<std::vector<std::int32_t>> drafts(active.size());
+                std::vector<jb::Qwen38Runner::DraftWork> draft_work;
+                for (std::size_t i = 0; i < active.size(); ++i)
+                  draft_work.push_back({.slot = selected[i],
+                                        .history = cohort.history[active[i]],
+                                        .drafts = &drafts[i],
+                                        .passes = kDepth});
+                const auto draft_start = Clock::now();
+                if (active.size() == kOwners) {
+                  if (auto drafted = qwen_.DraftWave(draft_work, o_.paired_draft); !drafted)
+                    return drafted;
+                  const auto& stats = qwen_.last_wave();
+                  const auto pairs = stats.draft_head_pairs + stats.quantized_draft_head_pairs;
+                  if (stats.paired_slots != (o_.paired_draft ? 3U : 0U) ||
+                      pairs != (o_.paired_draft ? kDepth : 0U))
+                    return Error("lean cohort changed its selected-head sharing policy");
+                  ++cohort.draft_wave_calls;
+                  cohort.joined_drafts += pairs != 0;
+                  cohort.selected_pairs += pairs;
+                  cohort.quantized_pairs += stats.quantized_draft_head_pairs;
+                } else if (auto drafted = selected[0]->Draft(cohort.history[active[0]], drafts[0],
+                                                             nullptr, kDepth);
+                           !drafted)
+                  return drafted;
+                cohort.draft_seconds += Seconds(Clock::now() - draft_start);
+                std::vector<std::vector<std::int32_t>> input(active.size()), verdict(active.size());
+                std::vector<jb::Qwen38Runner::VerifyWork> verify_work;
+                for (std::size_t i = 0; i < active.size(); ++i) {
+                  auto& generation = cohort.generation[active[i]];
+                  if (drafts[i].size() != kDepth)
+                    return Error("lean cohort has incomplete depth-two proposals");
+                  const auto rows = static_cast<std::uint32_t>(std::min<std::size_t>(
+                      drafts[i].size() + 1, o_.tokens - generation.tokens.size()));
+                  generation.drafted += rows - 1;
+                  drafts[i].resize(rows - 1);
+                  input[i] = cohort.history[active[i]];
+                  input[i].insert(input[i].end(), drafts[i].begin(), drafts[i].end());
+                  verify_work.push_back(
+                      {.slot = selected[i],
+                       .history = input[i],
+                       .n_past = static_cast<std::uint32_t>(cohort.history[active[i]].size() - 1),
+                       .argmax = &verdict[i]});
+                }
+                const auto verify_start = Clock::now();
+                if (active.size() == kOwners) {
+                  if (auto verified = qwen_.VerifyWave(verify_work); !verified) return verified;
+                  const auto& stats = qwen_.last_wave();
+                  const auto rows0 =
+                      static_cast<std::uint32_t>(input[0].size() - verify_work[0].n_past);
+                  const auto rows1 =
+                      static_cast<std::uint32_t>(input[1].size() - verify_work[1].n_past);
+                  // Only the ordinary three-row heads are guaranteed to share.
+                  // Clipped or ragged tails retain their original dispatch when
+                  // the wave's product barriers or head shape do not match.
+                  if (rows0 == 3 && rows1 == 3 &&
+                      (stats.paired_slots != 3U || stats.full_head_pairs == 0))
+                    return Error(std::format(
+                        "lean cohort omitted eligible verifier rows={}/{} paired={} heads={}",
+                        rows0, rows1, stats.paired_slots, stats.full_head_pairs));
+                  cohort.verify_shapes.push_back(
+                      {rows0, rows1, stats.paired_slots, stats.full_head_pairs});
+                  cohort.joined_verifies += stats.paired_slots == 3U;
+                  cohort.shared_head_verifies += stats.full_head_pairs != 0;
+                  cohort.fallback_verifies += stats.full_head_pairs == 0;
+                } else if (auto verified = selected[0]->Verify(input[0], verify_work[0].n_past,
+                                                               verdict[0], nullptr);
+                           !verified)
+                  return verified;
+                cohort.verify_seconds += Seconds(Clock::now() - verify_start);
+                for (std::size_t i = 0; i < active.size(); ++i) {
+                  if (verdict[i].size() != drafts[i].size() + 1)
+                    return Error("lean cohort has incomplete verdict rows");
+                  std::uint32_t accepted = 0;
+                  while (accepted < drafts[i].size() && verdict[i][accepted] == drafts[i][accepted])
+                    ++accepted;
+                  if (auto kept = selected[i]->Accept(accepted + 1); !kept) return kept;
+                  auto& generation = cohort.generation[active[i]];
+                  Step stamp{};
+                  stamp.depth = kDepth;
+                  stamp.pos = verify_work[i].n_past;
+                  stamp.rows = static_cast<std::uint32_t>(verdict[i].size());
+                  stamp.kept = accepted + 1;
+                  generation.steps.push_back(std::move(stamp));
+                  generation.accepted += accepted;
+                  ++generation.verifies;
+                  auto& history = cohort.history[active[i]];
+                  for (std::size_t j = 0; j <= accepted; ++j) {
+                    const auto token = j < accepted ? drafts[i][j] : verdict[i][accepted];
+                    history.push_back(token);
+                    generation.tokens.push_back(token);
+                  }
+                }
+                return {};
+              });
+          !run)
+        return run;
+    }
+    if (auto settled = InRequest("settling lean cohort",
+                                 [&]() -> Status {
+                                   if (auto selected = qwen_.SelectSlots(slots); !selected)
+                                     return selected;
+                                   for (auto* slot : slots)
+                                     if (auto rollback = slot->Rollback(); !rollback)
+                                       return rollback;
+                                   return {};
+                                 });
+        !settled)
+      return settled;
+    cohort.decode_seconds = Seconds(Clock::now() - decode_start);
+    return {};
+  };
+  Cohort warm;
+  if (auto ran = generate(warm); !ran) return ran;
+  const auto warm_plans = qwen_.plans(), warm_graphs = qwen_.graphs();
+  if (warm_plans == 0 || warm_graphs == 0 || qwen_.cached_plan_bytes() == 0)
+    return Error("lean cohort did not retain warmed plans and graphs");
+  const auto masks_before = qwen_.mask_stats();
+  const auto target_before = qwen_.graph_stats(), draft_before = qwen_.draft_stats();
+  Cohort paid;
+  const auto start = Clock::now();
+  if (auto ran = generate(paid); !ran) return ran;
+  const double seconds = Seconds(Clock::now() - start);
+  const auto target_after = qwen_.graph_stats(), draft_after = qwen_.draft_stats();
+  const auto masks_after = qwen_.mask_stats();
+  if (paid.draft_wave_calls == 0 || (o_.paired_draft && paid.joined_drafts == 0) ||
+      (!o_.paired_draft && (paid.joined_drafts || paid.selected_pairs || paid.quantized_pairs)) ||
+      paid.joined_verifies == 0 || paid.shared_head_verifies == 0 ||
+      masks_after.host_bytes != masks_before.host_bytes ||
+      masks_after.target_device == masks_before.target_device ||
+      masks_after.draft_device == masks_before.draft_device)
+    return Error("lean cohort did not execute its GPU-mask and joined verdict policy");
+  const auto digest = [](std::span<const std::byte> bytes) {
+    jitllm::base::Sha256 hash;
+    hash.Update(bytes);
+    return jitllm::base::ToHex(hash.Finish());
+  };
+  std::array<std::string, kOwners> target_state, draft_state;
+  if (auto read = InRequest("observing settled lean cohort",
+                            [&]() -> Status {
+                              if (auto selected = qwen_.SelectSlots(slots); !selected)
+                                return selected;
+                              for (std::size_t owner = 0; owner < kOwners; ++owner) {
+                                std::vector<std::byte> target, draft;
+                                if (slots[owner]->owed())
+                                  return Error("lean cohort left a commit owed");
+                                if (auto state = slots[owner]->ReadState(target, draft); !state)
+                                  return state;
+                                if (target.empty() || draft.empty())
+                                  return Error("lean cohort state is empty");
+                                target_state[owner] = digest(target);
+                                draft_state[owner] = digest(draft);
+                              }
+                              return {};
+                            });
+      !read)
+    return read;
+  std::string owners;
+  for (std::size_t owner = 0; owner < kOwners; ++owner) {
+    auto& generation = paid.generation[owner];
+    if (generation.tokens.size() != o_.tokens)
+      return Error("lean cohort did not finish its output budget");
+    Generation teacher;
+    if (auto observed = InRequest("observing lean cohort heads",
+                                  [&]() -> Status {
+                                    const std::array<jb::Qwen38Runner::Slot*, 1> first{slots[0]};
+                                    if (auto selected = qwen_.SelectSlots(first); !selected)
+                                      return selected;
+                                    return Teacher(decode_[owner], generation.tokens, teacher);
+                                  });
+        !observed)
+      return observed;
+    std::ofstream payload(o_.out / std::format("lean-wave-{}-heads.f32", owner), std::ios::binary);
+    if (teacher.logits.size() != o_.tokens) return Error("lean cohort teacher is incomplete");
+    for (const auto& row : teacher.logits) {
+      if (row.size() != profile.vocab ||
+          !std::ranges::all_of(row, [](float x) { return std::isfinite(x); }))
+        return Error("lean cohort teacher has invalid complete heads");
+      payload.write(reinterpret_cast<const char*>(row.data()),
+                    static_cast<std::streamsize>(row.size() * sizeof(float)));
+    }
+    payload.close();
+    if (!payload) return Error("persisting lean cohort teacher heads");
+    std::string tokens, trace;
+    for (const auto token : generation.tokens) {
+      if (token < 0 || std::cmp_greater_equal(token, profile.vocab))
+        return Error("lean cohort emitted an invalid token");
+      tokens += std::format("{}{}", tokens.empty() ? "" : ",", token);
+    }
+    for (const auto& step : generation.steps)
+      trace += std::format("{}[{},{},{},{}]", trace.empty() ? "" : ",", step.pos, step.depth,
+                           step.rows, step.kept);
+    owners +=
+        std::format(R"({}{{"owner":{},"prompt_tokens":{},"prompt_ids_sha256":"{}",)"
+                    R"("tokens":[{}],"step_trace":[{}],"drafted":{},"accepted":{},"verifies":{},)"
+                    R"("heads_sha256":"{}","target_state_sha256":"{}","draft_state_sha256":"{}"}})",
+                    owners.empty() ? "" : ",", owner, decode_[owner].ids.size(),
+                    digest(std::as_bytes(std::span(decode_[owner].ids))), tokens, trace,
+                    generation.drafted, generation.accepted, generation.verifies,
+                    LogitsDigest(teacher.logits), target_state[owner], draft_state[owner]);
+  }
+  std::string verify_shapes;
+  for (const auto& shape : paid.verify_shapes)
+    verify_shapes += std::format("{}[{},{},{},{}]", verify_shapes.empty() ? "" : ",", shape[0],
+                                 shape[1], shape[2], shape[3]);
+  results_.push_back(std::format(
+      R"({{"check":"masks-wave-lean","owners":[{}],"seconds":{:.9f},)"
+      R"("prefill_seconds":{:.9f},"decode_seconds":{:.9f},"draft_seconds":{:.9f},"verify_seconds":{:.9f},)"
+      R"("warm_plans":{},"warm_graphs":{},"observation_bytes":{},"heads_teacher_forced":true,)"
+      R"("joined_draft_waves":{},"joined_verify_waves":{},"selected_draft_head_pairs":{},"quantized_draft_head_pairs":{},)"
+      R"("shared_head_verify_waves":{},"fallback_verify_waves":{},"verify_shapes":[{}],)"
+      R"("paired_draft":{},"draft_wave_calls":{},)"
+      R"("target_paths":[{},{},{}],"draft_paths":[{},{},{}],"host_mask_bytes":{},"target_device_masks":{},"draft_device_masks":{}}})",
+      owners, seconds, paid.prefill_seconds, paid.decode_seconds, paid.draft_seconds,
+      paid.verify_seconds, warm_plans, warm_graphs, observation_bytes, paid.joined_drafts,
+      paid.joined_verifies, paid.selected_pairs, paid.quantized_pairs, paid.shared_head_verifies,
+      paid.fallback_verifies, verify_shapes, o_.paired_draft ? "true" : "false",
+      paid.draft_wave_calls, target_after.eager - target_before.eager,
+      target_after.captured - target_before.captured,
+      target_after.replayed - target_before.replayed, draft_after.eager - draft_before.eager,
+      draft_after.captured - draft_before.captured, draft_after.replayed - draft_before.replayed,
+      masks_after.host_bytes - masks_before.host_bytes,
+      masks_after.target_device - masks_before.target_device,
+      masks_after.draft_device - masks_before.draft_device));
   return {};
 }
 
@@ -3161,6 +3525,7 @@ Status Harness::Run() {
   // State diagnostics keep a cataloged pinned copy alongside the device state.
   const std::uint64_t budget =
       fixed + (2 * node_.StateCapacity()) +
+      (o_.check == "masks-wave-lean" ? 2 * node_.StateCapacity() + (64ULL << 20U) : 0) +
       ((qwen_.weights().size() + (with_fp16() ? fp16_.weights().size() : 0)) * ts::kPagedExtent);
   if (auto r = node_.Start(Bytes(budget)); !r) {
     return r;
@@ -3214,6 +3579,8 @@ Status Harness::Run() {
     checked = Sampled(true);
   } else if (o_.check == "wave" || o_.check == "masks-wave") {
     checked = Wave();
+  } else if (o_.check == "masks-wave-lean") {
+    checked = LeanWave();
   } else if (o_.check == "turn") {
     checked = Turn();
   } else {
@@ -3232,7 +3599,7 @@ Status Harness::Run() {
 
 Status Harness::Write() {
   if (o_.check == "masks" || o_.check == "masks-target" || o_.check == "masks-lean" ||
-      o_.check == "masks-wave") {
+      o_.check == "masks-wave" || o_.check == "masks-wave-lean") {
     const auto budget = qwen_.setup_budget();
     std::string fields;
     const auto field = [&](std::string_view name, std::uint64_t value) {
@@ -3393,6 +3760,12 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--slots") {
       ok = number(o.qwen.wave_slots) && o.qwen.wave_slots >= 2 && o.qwen.wave_slots <= 4;
       o.qwen.request_slots = std::max<std::uint32_t>(o.qwen.request_slots, o.qwen.wave_slots);
+    } else if (a == "--draft-head-proof") {
+      o.draft_head_proof = v == "on";
+      ok = v == "on" || v == "off";
+    } else if (a == "--paired-draft") {
+      o.paired_draft = v == "on";
+      ok = v == "on" || v == "off";
     } else if (a == "--wave-lanes") {
       o.qwen.wave_lanes = v == "on";
       ok = v == "on" || v == "off";
@@ -3414,7 +3787,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     return Error(
         "usage: jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE "
         "--prompts FILE --out DIR --check "
-        "greedy|timing|masks|masks-target|masks-lean|masks-wave|forced|swap|sampled-plain|sampled-"
+        "greedy|timing|masks|masks-target|masks-lean|masks-wave|masks-wave-lean|forced|swap|"
+        "sampled-plain|sampled-"
         "spec|draft-"
         "head|routed-down|mxfp8-"
         "projection|wave|turn "
@@ -3425,16 +3799,29 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "[--repeats N] [--margin B] [--seeds N] "
         "[--sampled FILE] [--only ID] "
         "[--poll-us N] [--window P] [--prefill-chunk N] [--slots N (wave: 2-4)] "
-        "[--wave-lanes on|off] [--fp16-artifact "
+        "[--wave-lanes on|off] [--draft-head-proof on|off] [--paired-draft on|off (head proof "
+        "only)] [--fp16-artifact "
         "DIR --fp16-tokens FILE "
         "--fp16-expect "
         "SHA256]");
   }
-  if ((o.check == "wave" || o.check == "masks-wave") != (o.qwen.wave_slots > 1)) {
+  if ((o.check == "wave" || o.check == "masks-wave" || o.check == "masks-wave-lean") !=
+      (o.qwen.wave_slots > 1)) {
     return Error("the wave check, and only it, takes --slots 2-4");
   }
-  if (o.prompt_token_ids && o.check != "masks" && o.check != "masks-target" &&
-      o.check != "masks-wave" && o.check != "masks-lean" &&
+  const bool literal_head = o.check == "draft-head" && !o.only.empty() && o.tokens == 2 &&
+                            o.qwen.context <= 2048 && o.qwen.max_rows <= 512 &&
+                            o.qwen.draft_rows == 3 && o.qwen.draft_vocab == 47172 &&
+                            !o.adaptive_depth && o.window == 0 && o.reference.empty() &&
+                            o.fp16.artifact.empty() && !o.profile_decode;
+  if (o.draft_head_proof &&
+      (o.check != "masks-wave" || o.qwen.draft_vocab < 1 || o.qwen.draft_vocab > 47172))
+    return Error("selected-head proof requires a masks-wave cohort and 1 to 47172 rows");
+  if (!o.paired_draft && o.check != "masks-wave-lean" &&
+      (o.check != "masks-wave" || !o.draft_head_proof))
+    return Error("unpaired drafting requires a lean wave or selected-head wave proof");
+  if (o.prompt_token_ids && !literal_head && o.check != "masks" && o.check != "masks-target" &&
+      o.check != "masks-wave" && o.check != "masks-wave-lean" && o.check != "masks-lean" &&
       (o.check != "greedy" || o.repeats != 2 || o.adaptive_depth || o.window != 0.0 ||
        o.qwen.draft_rows != 3 || o.tokens < 5)) {
     return Error(
@@ -3451,7 +3838,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "chunk<=512, depth<=3, graphs and no adaptive/window/profile/reference/swap");
   if (o.check == "masks-target" && !o.qwen.drafter.empty())
     return Error("masks-target executes the target alone without a drafter");
-  if (o.check == "masks-wave" &&
+  if ((o.check == "masks-wave" || o.check == "masks-wave-lean") &&
       (!o.prompt_token_ids || o.qwen.wave_slots != 2 || o.tokens < 8 || o.tokens > 32 ||
        o.qwen.context > 2048 || o.qwen.max_rows > 512 || o.qwen.draft_rows != 3 ||
        o.adaptive_depth || o.window != 0 || !o.qwen.graphs || !o.reference.empty() ||
@@ -3459,6 +3846,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     return Error(
         "masks-wave needs two short literal owners, 8..32 outputs, context<=2048, "
         "chunk<=512, fixed depth3, graphs and no reference/swap/profile");
+  if (o.check == "masks-wave-lean" && (!o.qwen.device_masks || o.qwen.draft_vocab != 47172))
+    return Error("lean mask wave requires GPU masks and selected head47172");
   if (preparing && (o.chat_template.empty() || o.stop_metadata.empty())) {
     return Error("vocab-prepare requires --template and --stop-metadata");
   }
