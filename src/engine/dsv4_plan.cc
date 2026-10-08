@@ -511,7 +511,8 @@ std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
     const DsparkModel& d, std::int64_t rows, const kg::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes) {
   auto out = std::make_unique<DsparkPlanned>();
-  const kg::Dsv4GraphOptions options{.expert_stride = d.places.stride, .fused = !d.exact};
+  const kg::Dsv4GraphOptions options{
+      .expert_stride = d.places.stride, .fused = !d.exact, .device_draft_masks = d.device_masks};
   auto arena = SizedArena(kg::DsparkGraphTensors(*d.profile, rows), [&](kg::TensorArena& a) {
     return kg::BuildDsparkGraph(a, *d.profile, *d.binding, rows, d.state->ring, options)
         .has_value();
@@ -550,7 +551,8 @@ std::expected<std::unique_ptr<DsparkWavePlanned>, std::string> PlanDsparkWave(
     return Error("a joined draft runs the fast plan over two rings or more");
   }
   auto out = std::make_unique<DsparkWavePlanned>();
-  const kg::Dsv4GraphOptions options{.expert_stride = d.places.stride, .fused = true};
+  const kg::Dsv4GraphOptions options{
+      .expert_stride = d.places.stride, .fused = true, .device_draft_masks = d.device_masks};
   const std::size_t slots = rings.size();
   auto arena =
       SizedArena(kg::DsparkWaveGraphTensors(*d.profile, rows, slots), [&](kg::TensorArena& a) {
@@ -673,56 +675,110 @@ std::expected<void, std::string> Dsv4EmbeddingRows(const Dsv4Model& m,
   return {};
 }
 
-std::expected<void, std::string> BuildDsparkInputs(const Dsv4Model& m, const kg::DsparkGraph& g,
+namespace {
+std::expected<void, std::string> DraftMaskInputs(const DsparkModel& d, const kg::Dsv4Graph& g,
+                                                 const md::DsparkBlockInputs& in,
+                                                 const ggml_tensor* positions,
+                                                 std::span<ggml_tensor* const> nodes,
+                                                 std::span<ggml_tensor* const> inputs,
+                                                 std::uint32_t first) {
+  if (d.profile == nullptr || d.state == nullptr || g.device_raw_mask != d.device_masks ||
+      in.rows == 0 || in.rows > d.state->max_rows || in.rows > d.profile->block_size ||
+      in.tokens.size() != in.rows || in.positions.size() != in.rows || in.cells.size() != in.rows ||
+      std::uint64_t{in.pos0} + in.rows > INT32_MAX || positions == nullptr ||
+      positions->type != GGML_TYPE_I32 || positions->ne[0] < 0 ||
+      std::uint64_t{first} + in.rows > static_cast<std::uint64_t>(positions->ne[0]) ||
+      g.raw_k_idxs == nullptr || g.raw_k_idxs->type != GGML_TYPE_I64 ||
+      std::cmp_not_equal(g.raw_k_idxs->ne[0], in.rows))
+    return Error("draft mask positions/cells differ from the actual block");
+  const auto packed_input = [&](const ggml_tensor* input, ggml_type type, std::uint64_t rows,
+                                std::uint64_t bytes) {
+    return rows > 0 && rows <= INT32_MAX / bytes && input->type == type &&
+           input->op == GGML_OP_NONE && input->view_src == nullptr &&
+           !std::ranges::any_of(input->src, [](const auto* parent) { return parent != nullptr; }) &&
+           std::cmp_equal(input->ne[0], rows) && input->ne[1] == 1 && input->ne[2] == 1 &&
+           input->ne[3] == 1 && input->nb[0] == bytes && input->nb[1] == rows * bytes &&
+           input->nb[2] == input->nb[1] && input->nb[3] == input->nb[2] &&
+           std::ranges::count(inputs, input) == 1;
+  };
+  if (!packed_input(positions, GGML_TYPE_I32, static_cast<std::uint64_t>(positions->ne[0]), 4) ||
+      !packed_input(g.raw_k_idxs, GGML_TYPE_I64, in.rows, 8))
+    return Error("draft positions/cells are not unique packed host inputs");
+  const auto ring = d.state->ring;
+  if (ring == 0 || ring != d.profile->ring || d.profile->blocks.window == 0 ||
+      std::uint64_t{ring} < std::uint64_t{d.profile->blocks.window} + in.rows)
+    return Error("draft mask ring does not retain the current block and window");
+  for (std::uint32_t row = 0; row < in.rows; ++row) {
+    const std::uint64_t pos = std::uint64_t{in.pos0} + row;
+    if (std::cmp_not_equal(in.positions[row], pos) || std::cmp_not_equal(in.cells[row], pos % ring))
+      return Error("draft mask input is not its contiguous block and ring cells");
+  }
+  auto bytes =
+      GraphMaskSourceBytes(g.raw_mask, positions, nodes, inputs, d.device_masks, first, in.rows,
+                           ring, ring, d.profile->blocks.window, INT32_MAX,
+                           kg::CausalMaskRows::kExact, GGML_TYPE_F16, kg::MaskPolicy::kBlock);
+  if (!bytes) return std::unexpected(bytes.error());
+  if (in.mask.size() != *bytes / sizeof(std::uint16_t))
+    return Error("draft mask host payload differs from the authenticated source policy");
+  return {};
+}
+}  // namespace
+
+std::expected<void, std::string> BuildDsparkInputs(const Dsv4Model& m, const DsparkModel& d,
+                                                   const kg::DsparkGraph& g,
                                                    const md::DsparkBlockInputs& in,
                                                    std::span<const std::byte> table,
                                                    Dsv4HostInputs& out) {
-  if (auto rows = Dsv4EmbeddingRows(m, in.tokens, table, out.embd); !rows) {
-    return rows;
-  }
+  const auto inputs = g.inputs();
+  if (g.core.positions == nullptr || std::cmp_not_equal(g.core.positions->ne[0], in.rows))
+    return Error("draft scalar positions differ from its block");
+  if (auto mask = DraftMaskInputs(d, g.core, in, g.core.positions, g.core.nodes, inputs, 0); !mask)
+    return mask;
+  if (auto rows = Dsv4EmbeddingRows(m, in.tokens, table, out.embd); !rows) return rows;
   out.tokens = in.tokens;
   out.sources = {{g.core.embd, out.embd.data()},
                  {g.tokens, out.tokens.data()},
                  {g.core.positions, in.positions.data()},
-                 {g.core.raw_k_idxs, in.cells.data()},
-                 {g.core.raw_mask, in.mask.data()}};
+                 {g.core.raw_k_idxs, in.cells.data()}};
+  if (!d.device_masks) out.sources.emplace_back(g.core.raw_mask, in.mask.data());
   return {};
 }
 
 std::expected<void, std::string> BuildDsparkWaveInputs(
-    const Dsv4Model& m, const kg::DsparkWaveGraph& g,
+    const Dsv4Model& m, const DsparkModel& d, const kg::DsparkWaveGraph& g,
     std::span<const md::DsparkBlockInputs* const> blocks, std::span<const std::byte> table,
     DsparkWaveHostInputs& out) {
-  if (blocks.size() != g.slots.size()) {
+  if (blocks.size() != g.slots.size() || g.first.size() != blocks.size() ||
+      g.joined.positions == nullptr || g.tokens == nullptr ||
+      g.joined.positions->ne[0] != g.tokens->ne[0])
     return Error("a joined draft's blocks are not its graph's slots");
+  const auto inputs = g.inputs();
+  std::uint64_t total = 0;
+  for (std::size_t i = 0; i < blocks.size(); ++i) {
+    if (blocks[i] == nullptr || g.first[i] < 0 || std::cmp_not_equal(g.first[i], total) ||
+        total > UINT32_MAX)
+      return Error("a joined draft's block offset differs from its real rows");
+    if (auto mask = DraftMaskInputs(d, g.slots[i], *blocks[i], g.joined.positions, g.joined.nodes,
+                                    inputs, static_cast<std::uint32_t>(total));
+        !mask)
+      return mask;
+    total += blocks[i]->rows;
   }
+  if (std::cmp_not_equal(total, g.tokens->ne[0]))
+    return Error("a joined draft's rows are not its graph's");
   out.tokens.clear();
   out.positions.clear();
-  for (std::size_t i = 0; i < blocks.size(); ++i) {
-    const md::DsparkBlockInputs& in = *blocks[i];
-    const kg::Dsv4Graph& sg = g.slots[i];
-    if (std::cmp_not_equal(in.tokens.size(), sg.raw_k_idxs->ne[0]) ||
-        std::cmp_not_equal(in.positions.size(), in.tokens.size()) ||
-        std::cmp_not_equal(in.cells.size(), in.tokens.size()) ||
-        std::cmp_not_equal(in.mask.size(), ggml_nelements(sg.raw_mask)) ||
-        std::cmp_not_equal(out.tokens.size(), g.first[i])) {
-      return Error("a joined draft's block is not its slot's");
-    }
-    out.tokens.insert(out.tokens.end(), in.tokens.begin(), in.tokens.end());
-    out.positions.insert(out.positions.end(), in.positions.begin(), in.positions.end());
+  for (const auto* block : blocks) {
+    out.tokens.insert(out.tokens.end(), block->tokens.begin(), block->tokens.end());
+    out.positions.insert(out.positions.end(), block->positions.begin(), block->positions.end());
   }
-  if (std::cmp_not_equal(out.tokens.size(), g.tokens->ne[0])) {
-    return Error("a joined draft's rows are not its graph's");
-  }
-  if (auto rows = Dsv4EmbeddingRows(m, out.tokens, table, out.embd); !rows) {
-    return rows;
-  }
+  if (auto rows = Dsv4EmbeddingRows(m, out.tokens, table, out.embd); !rows) return rows;
   out.sources = {{g.joined.embd, out.embd.data()},
                  {g.tokens, out.tokens.data()},
                  {g.joined.positions, out.positions.data()}};
   for (std::size_t i = 0; i < blocks.size(); ++i) {
     out.sources.emplace_back(g.slots[i].raw_k_idxs, blocks[i]->cells.data());
-    out.sources.emplace_back(g.slots[i].raw_mask, blocks[i]->mask.data());
+    if (!d.device_masks) out.sources.emplace_back(g.slots[i].raw_mask, blocks[i]->mask.data());
   }
   return {};
 }

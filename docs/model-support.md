@@ -450,9 +450,9 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
 - **Target raw masks:** ordinary runners use graph-owned GPU causal/ring masks
   with exact query-row dimensions. A bounded UD-Q2_K_XL C2 ring transfer has
   identical complete heads, choices and initialized states; repeated native
-  prefill improves 0.69% (two samples per policy). DSpark's noncausal block
-  masks and optional compressed visible-count masks retain their separate
-  contracts. This is an existing-model transfer, not a new competitive
+  prefill improves 0.69% (two samples per policy). DSpark's checked opt-in
+  noncausal block producer stays off after a neutral short screen; optional
+  compressed visible-count masks remain open under their separate contracts. This is an existing-model transfer, not a new competitive
   qualification ([controls](experiments/deepseek-device-masks/README.md)).
 - **Context:** exercised at 4,096 (against the oracle) and at 8,704, the
   runtime's original default (8,192 tokens of conversation in the swap
@@ -601,6 +601,11 @@ seeded-sampling evidence in this study.
 - **Components:** drafter only; runs with DeepSeek V4 Flash 0731.
 - **Template and tokenizer:** its target's.
 - **Decoding:** as its target's speculative rows above.
+- **Block masks:** the shared noncausal GPU producer is an explicit checked
+  opt-in; host masks remain selected. A short C2 factor preserves complete
+  heads, proposals and settled state, but joined-call time is neutral and the
+  whole diagnostic takes 0.224% more time (n=2). This is not a serving/reference
+  qualification ([block screen](experiments/dspark-device-masks/README.md)).
 - **Verified:** greedy speculation equal to plain greedy (bit for bit in
   exact mode; near-ties on the fast plan); forced rejections leave no
   stale state; rollback across a swap; sampled speculation within its

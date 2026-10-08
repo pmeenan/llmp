@@ -2346,14 +2346,14 @@ ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_ten
 ggml_tensor* CausalRingMask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
                             std::int32_t first_row, std::int32_t rows, std::int32_t capacity,
                             std::int32_t window, std::int32_t context_limit,
-                            CausalMaskRows row_layout, ggml_type output_type) {
+                            CausalMaskRows row_layout, ggml_type output_type, MaskPolicy policy) {
   const auto output_rows = row_layout == CausalMaskRows::kExact
                                ? std::int64_t{rows}
                                : (std::int64_t{rows} + 31) / 32 * 32;
   return WithInts(
       Custom(context, output_type, {cells, output_rows, 1, 1}, {positions}, kTagGemma4Mask.data()),
-      {first_row, rows, capacity, window, context_limit, static_cast<std::int32_t>(row_layout), 0,
-       0});
+      {first_row, rows, capacity, window, context_limit, static_cast<std::int32_t>(row_layout),
+       static_cast<std::int32_t>(policy), 0});
 }
 
 ggml_tensor* Gemma4Mask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
@@ -2368,8 +2368,8 @@ bool Gemma4MaskFits(const ggml_tensor* node) {
       std::ranges::any_of(std::span(node->src).subspan(1),
                           [](const auto* parent) { return parent != nullptr; }))
     return false;
-  if ((node->type != GGML_TYPE_F16 && node->type != GGML_TYPE_F32) || JitllmOpInt(node, 6) != 0 ||
-      JitllmOpInt(node, 7) != 0)
+  if ((node->type != GGML_TYPE_F16 && node->type != GGML_TYPE_F32) ||
+      (JitllmOpInt(node, 6) != 0 && JitllmOpInt(node, 6) != 1) || JitllmOpInt(node, 7) != 0)
     return false;
   constexpr std::int64_t max = std::numeric_limits<std::int32_t>::max();
   const std::int64_t element_bytes = node->type == GGML_TYPE_F16 ? 2 : 4;
@@ -2389,6 +2389,8 @@ bool Gemma4MaskFits(const ggml_tensor* node) {
       node->ne[0] > max / element_bytes / node->ne[1])
     return false;
   const std::int64_t output_rows = layout == 1 ? rows : (rows + 31) / 32 * 32;
+  const bool block = JitllmOpInt(node, 6) == static_cast<std::int32_t>(MaskPolicy::kBlock);
+  if (block && (window == 0 || node->ne[0] != capacity || capacity < window + rows)) return false;
   const std::int64_t retained = std::min(limit, window + rows);
   if ((window != 0 && capacity < retained) || positions->type != GGML_TYPE_I32 ||
       !Shaped(node, node->ne[0], output_rows, 1) || AnyEmpty({node, positions}) ||

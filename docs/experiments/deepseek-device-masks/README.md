@@ -15,8 +15,9 @@ larger apparent gain. The two screens are reported separately below.
 This ports one existing optimization to an existing M3 model. It establishes
 no new competitive parity, maximum-context, corpus or quant qualification.
 The accepted M3 speed gaps and separate reference gates remain as recorded.
-DSpark's draft-block masks and the optional CSA/HCA/LID visible-count masks
-remain separate open transfers.
+DSpark's [draft-block transfer](../dspark-device-masks/README.md) is now
+checked but not selected after a neutral screen; optional CSA/HCA/LID
+visible-count masks remain a separate open transfer.
 
 ## Contract and shared mechanism
 
@@ -46,9 +47,10 @@ fresh staged absolute positions and each joined segment's actual offset.
 
 DSpark does not share the target formula: its entire current draft block is
 visible, including later positions in that block. Its mask remains on the
-host, and target-only device options are refused by draft constructors.
+host by default; a separately authenticated block-policy opt-in is now checked
+and measured neutral. Target-only device options are refused by draft constructors.
 Compressed masks have visible-count/top-k semantics and remain unchanged.
-No target result closes these drafter/compressed audit items.
+No target result qualifies these separate drafter/compressed consumers.
 
 ## Matched factor screen
 

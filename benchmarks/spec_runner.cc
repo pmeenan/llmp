@@ -271,10 +271,25 @@ struct Options {
   std::uint32_t probe_step = 0;
   // wave: with a drafter, "verify" (DSpark waves) or "decode" (injected decode waves).
   std::string wave_mode = "verify";
+  // Bounded complete output/state evidence for the draft-mask factor.
+  bool wave_payloads = false;
   // capacity: the state's room in the budget (MiB), beside the fixed memory
   // and the weights; 0: room for every slot's whole state twice.
   std::uint64_t state_budget_mib = 0;
 };
+
+// The payload diagnostic's physical grant is additional to the normal
+// device/pinned state allowance. Its parser closes these products at C2/p3
+// and <=32 outputs. Use the same bound at startup and before allocation.
+std::uint64_t WaveObservationBytes(const Options& options, std::uint64_t state_bytes,
+                                   std::uint32_t vocab) {
+  if (!options.wave_payloads) return 0;
+  const std::uint64_t bytes = 2 * state_bytes + (64ULL << 20U) +
+                              2ULL * options.dsv4.wave_slots * options.tokens *
+                                  options.dsv4.max_verify * vocab * sizeof(float);
+  // Request charges are whole catalog extents; budget and prove that same grant.
+  return (bytes + ts::kPagedExtent - 1) / ts::kPagedExtent * ts::kPagedExtent;
+}
 
 struct Prompt {
   std::string id;
@@ -1899,6 +1914,20 @@ Status Harness::Wave() {
       dsv4_.speculative() ? jb::Dsv4ChunkKind::kInject : jb::Dsv4ChunkKind::kPlain;
   const std::uint32_t vocab = dsv4_.vocab();
   const std::uint32_t tokens = o_.tokens;
+  // Fund retained full verify heads, transient output/metadata and state
+  // observations before allocating them; release only after their destruction.
+  const std::uint64_t observation_bytes = WaveObservationBytes(o_, node_.StateCapacity(), vocab);
+  if (o_.wave_payloads && !node_.SetRequestCharge(observation_bytes))
+    return Error("funding bounded wave observations");
+  struct ObservationCharge {
+    ts::PagedNode& node;
+    bool held;
+    ~ObservationCharge() {
+      if (held) (void)node.SetRequestCharge(0);
+    }
+  } observation_charge{node_, o_.wave_payloads};
+  if (o_.wave_payloads && node_.request_charged() != observation_bytes)
+    return Error("bounded wave observations lack their catalog charge");
   std::vector<Prompt> prompts = decode_;
   prompts.insert(prompts.end(), chat_.begin(), chat_.end());
   if (prompts.size() < slots) {
@@ -1943,12 +1972,17 @@ Status Harness::Wave() {
     }
     return slot.ReadState(target, ring);
   };
-  const auto fingerprint = [&](Slot& slot) -> std::expected<std::uint64_t, std::string> {
+  const auto fingerprint = [&](Slot& slot, std::string* target_sha = nullptr,
+                               std::string* ring_sha =
+                                   nullptr) -> std::expected<std::uint64_t, std::string> {
     std::vector<std::byte> target;
     std::vector<std::byte> ring;
     if (auto r = read(slot, target, ring); !r) {
       return std::unexpected(r.error());
     }
+    if (target_sha)
+      *target_sha = jitllm::base::ToHex(jitllm::base::Sha256().Update(target).Finish());
+    if (ring_sha) *ring_sha = jitllm::base::ToHex(jitllm::base::Sha256().Update(ring).Finish());
     return Fingerprint(target) ^ (Fingerprint(ring) * 31);
   };
   const auto prefill = [&](Slot& slot, const Prompt& prompt, std::vector<float>& last) -> Status {
@@ -1977,8 +2011,11 @@ Status Harness::Wave() {
     std::vector<std::uint32_t> kept;
     std::vector<std::size_t> next;  // each step's next anchor, in tokens
     std::uint64_t fingerprint = 0;
+    std::string target_sha;
+    std::string ring_sha;
   };
   std::vector<Run> solo(slots);
+  std::vector<Run> observed(o_.wave_payloads ? slots : 0);
   double solo_seconds = 0;
   std::uint64_t solo_tokens = 0;
   for (std::uint32_t i = 0; i < slots; ++i) {
@@ -2036,7 +2073,8 @@ Status Harness::Wave() {
       }
       solo_seconds += Seconds(Clock::now() - start);
       solo_tokens += run.tokens.size() - 1;
-      auto print = fingerprint(slot);
+      auto print = fingerprint(slot, o_.wave_payloads ? &run.target_sha : nullptr,
+                               o_.wave_payloads ? &run.ring_sha : nullptr);
       if (!print) {
         return std::unexpected(print.error());
       }
@@ -2091,6 +2129,10 @@ Status Harness::Wave() {
       if (!SameBits(last, solo[i].first)) {
         problems_.push_back(
             std::format("slot {}'s prefill beside its peers differs from alone", i));
+      }
+      if (o_.wave_payloads) {
+        observed[i].first = last;
+        observed[i].tokens = {solo[i].tokens.front()};
       }
       at[i].pos = static_cast<std::uint32_t>(prompts[i].ids.size());
       at[i].anchor = solo[i].tokens.front();
@@ -2299,6 +2341,15 @@ Status Harness::Wave() {
         if (auto r = handles[i]->Accept(m + 1); !r) {
           return r;
         }
+        if (o_.wave_payloads) {
+          auto& output = observed[i];
+          output.tokens.insert(output.tokens.end(), drafts[k].begin(), drafts[k].begin() + m);
+          output.tokens.push_back(next);
+          output.rows.push_back(rows);
+          output.kept.push_back(m + 1);
+          output.drafts.push_back(std::move(drafts[k]));
+          output.logits.push_back(std::move(logits[k]));
+        }
         c.pos += m + 1;
         c.anchor = next;
         ++c.step;
@@ -2321,11 +2372,13 @@ Status Harness::Wave() {
       }
     }
     for (std::uint32_t i = 0; i < slots; ++i) {
-      auto print = fingerprint(*handles[i]);
+      auto print = fingerprint(*handles[i], o_.wave_payloads ? &observed[i].target_sha : nullptr,
+                               o_.wave_payloads ? &observed[i].ring_sha : nullptr);
       if (!print) {
         return std::unexpected(print.error());
       }
       fingerprints[i] = *print;
+      if (o_.wave_payloads) observed[i].fingerprint = *print;
       if (spec && !at[i].left && *print != solo[i].fingerprint) {
         problems_.push_back(std::format("slot {}'s state after its waves differs from alone", i));
       }
@@ -2370,7 +2423,7 @@ Status Harness::Wave() {
       waves, wave_tokens, wave_seconds, static_cast<double>(wave_tokens) / wave_seconds);
   results_.push_back(std::format(
       R"({{"check":"wave","slots":{},"speculative":{},"share":{},"solo_tokens":{},)"
-      R"("solo_seconds":{:.4f},"wave_tokens":{},"wave_seconds":{:.4f},"waves":{},"widths":{{{}}},)"
+      R"("solo_seconds":{:.9f},"wave_tokens":{},"wave_seconds":{:.9f},"waves":{},"widths":{{{}}},)"
       R"("width_ms":{{{}}},"width_median_ms":{{{}}},)"
       R"("rows_compared":{},"rows_identical":{},"argmax_agree":{},"largest_difference":{:.6f},)"
       R"("margin_move_p50":{:.6f},"margin_move_p99":{:.6f},"margin_move_max":{:.6f},)"
@@ -2381,6 +2434,65 @@ Status Harness::Wave() {
       largest, quantile(0.5), quantile(0.99), moves.empty() ? 0.0 : moves.back(), exact_mismatches,
       discard_stale ? std::format("{}", *discard_stale) : std::string("null"),
       discard_rerun_exact ? "true" : "false", left_unchanged ? "true" : "false"));
+  if (o_.wave_payloads) {
+    const auto integers = [](const auto& values) {
+      std::string json;
+      for (const auto value : values) json += std::format("{}{}", json.empty() ? "" : ",", value);
+      return "[" + json + "]";
+    };
+    const auto write = [&](const Run& run, std::string_view form_name,
+                           std::uint32_t owner) -> Status {
+      if (run.first.size() != vocab || run.logits.size() != run.rows.size() ||
+          run.rows.size() != run.drafts.size() || run.rows.size() != run.kept.size())
+        return Error("wave payload has incomplete full-head or step geometry");
+      const std::string name = std::format("{}-{}", form_name, owner);
+      std::ofstream file(o_.out / (name + ".f32"), std::ios::binary | std::ios::noreplace);
+      if (!file) return Error("creating unique complete wave head payload");
+      jitllm::base::Sha256 sha;
+      std::uint64_t heads = 0;
+      const auto append = [&](std::span<const float> values) -> Status {
+        if (values.empty() || values.size() % vocab != 0 ||
+            !std::ranges::all_of(values, [](float value) { return std::isfinite(value); }))
+          return Error("wave payload contains incomplete or nonfinite vocabulary rows");
+        const auto bytes = std::as_bytes(values);
+        file.write(reinterpret_cast<const char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
+        if (!file) return Error("writing complete wave head payload");
+        sha.Update(bytes);
+        heads += values.size() / vocab;
+        return {};
+      };
+      if (auto r = append(run.first); !r) return r;
+      std::string draft_json;
+      for (std::size_t step = 0; step < run.logits.size(); ++step) {
+        if (run.logits[step].size() != std::size_t{run.rows[step]} * vocab)
+          return Error("wave payload row count differs from actual verify geometry");
+        if (auto r = append(run.logits[step]); !r) return r;
+        draft_json += (draft_json.empty() ? "" : ",") + integers(run.drafts[step]);
+      }
+      file.close();
+      if (!file) return Error("closing complete wave head payload");
+      results_.push_back(std::format(
+          R"({{"check":"wave-payload","form":"{}","owner":{},"prompt_ids":{},"tokens":{},"verify_rows":{},"kept":{},"drafts":[{}],"heads":{},"vocab":{},"head_file":"{}.f32","head_sha256":"{}","target_sha256":"{}","draft_state_sha256":"{}","fingerprint":{}}})",
+          form_name, owner, integers(prompts[owner].ids), integers(run.tokens), integers(run.rows),
+          integers(run.kept), draft_json, heads, vocab, name, jitllm::base::ToHex(sha.Finish()),
+          run.target_sha, run.ring_sha, run.fingerprint));
+      return {};
+    };
+    for (std::uint32_t owner = 0; owner < slots; ++owner) {
+      if (auto r = write(solo[owner], "solo", owner); !r) return r;
+      if (auto r = write(observed[owner], "wave", owner); !r) return r;
+    }
+    const auto& draft = dsv4_.draft_stats();
+    const auto& graph = dsv4_.graph_stats();
+    const auto& wave = dsv4_.wave_stats();
+    results_.push_back(std::format(
+        R"({{"check":"draft-mask-work","device_masks":{},"bound_mask_plan_nodes":{},"constructed_host_mask_bytes":{},"observation_charge_bytes":{},"plan_floor_bytes":{},"draft_graphs":[{},{},{}],"target_graphs":[{},{},{}],"wave_graphs":[{},{},{}]}})",
+        o_.dsv4.device_draft_masks ? "true" : "false", dsv4_.bound_draft_masks(),
+        dsv4_.draft_mask_host_bytes(), observation_bytes, dsv4_.plan_floor_bytes(), draft.eager,
+        draft.captured, draft.replayed, graph.eager, graph.captured, graph.replayed, wave.eager,
+        wave.captured, wave.replayed));
+  }
   return {};
 }
 
@@ -2964,7 +3076,7 @@ Status Harness::Run() {
   const std::uint64_t fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
   // State diagnostics keep a cataloged pinned copy alongside the device state.
   const std::uint64_t budget =
-      fixed +
+      fixed + WaveObservationBytes(o_, node_.StateCapacity(), dsv4_.vocab()) +
       (o_.state_budget_mib != 0 ? (o_.state_budget_mib << 20U) : 2 * node_.StateCapacity()) +
       ((dsv4_.weights().size() + (with_fp16() ? fp16_.weights().size() : 0)) * ts::kPagedExtent);
   if (auto r = node_.Start(Bytes(budget)); !r) {
@@ -3173,6 +3285,12 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--wave-lanes") {
       o.dsv4.wave_lanes = v == "on";
       ok = v == "on" || v == "off";
+    } else if (a == "--device-draft-masks") {
+      o.dsv4.device_draft_masks = v == "on";
+      ok = v == "on" || v == "off";
+    } else if (a == "--wave-payloads") {
+      o.wave_payloads = v == "on";
+      ok = v == "on" || v == "off";
     } else if (a == "--joined-drafts") {
       o.dsv4.joined_drafts = v == "on";
       ok = v == "on" || v == "off";
@@ -3200,8 +3318,14 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "--fp16-expect SHA256] [--seeds N] [--sampled FILE] [--probe-step N] "
         "[--slots N (wave, plan-memory, capacity: 2-16)] [--wave-mode verify|decode|alternate] "
         "[--wave-lanes on|off] [--joined-drafts on|off] "
+        "[--device-draft-masks on|off] [--wave-payloads on|off] "
         "[--state-budget-mib N]");
   }
+  if (o.wave_payloads &&
+      (o.check != "wave" || o.wave_mode != "verify" || o.dsv4.drafter.empty() ||
+       o.dsv4.wave_slots != 2 || o.dsv4.draft_rows != 3 || o.dsv4.max_verify != 4 ||
+       o.tokens > 32 || o.dsv4.context > 8704 || o.dsv4.max_rows > 4096))
+    return Error("wave payloads require two DSpark p3 owners, <=32 outputs and context<=8704");
   // The paired control needs the all-row workspace for its original arm.
   if (o.check == "frontier") {
     if (o.dsv4.exact || o.dsv4.context > 131072 || o.dsv4.max_rows > 4096 || o.tokens > 1024 ||

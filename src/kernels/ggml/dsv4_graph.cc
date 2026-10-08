@@ -1722,7 +1722,13 @@ std::expected<void, KernelFailure> Builder::DraftInputs(DsparkGraph& d,
   d.tokens = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
   g_.positions = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
   g_.raw_k_idxs = ggml_new_tensor_1d(c_, GGML_TYPE_I64, n);
-  g_.raw_mask = ggml_new_tensor_4d(c_, GGML_TYPE_F16, s_.raw_n_kv, n, 1, 1);
+  g_.device_raw_mask = o_.device_draft_masks;
+  g_.raw_mask = g_.device_raw_mask
+                    ? CausalRingMask(c_, g_.positions, s_.raw_n_kv, 0, static_cast<std::int32_t>(n),
+                                     static_cast<std::int32_t>(s_.raw_cells),
+                                     static_cast<std::int32_t>(p_.window), INT32_MAX,
+                                     CausalMaskRows::kExact, GGML_TYPE_F16, MaskPolicy::kBlock)
+                    : ggml_new_tensor_4d(c_, GGML_TYPE_F16, s_.raw_n_kv, n, 1, 1);
   auto w1 = Leaf(c_, b.markov_w1, "markov_w1");
   auto w2 = Leaf(c_, b.markov_w2, "markov_w2");
   if (!w1 || !w2) {
@@ -1742,7 +1748,15 @@ std::expected<void, KernelFailure> Builder::DraftWaveInputs(DsparkWaveGraph& d,
   for (Segment& seg : segs_) {
     Dsv4Graph& sg = *seg.g;
     sg.raw_k_idxs = ggml_new_tensor_1d(c_, GGML_TYPE_I64, seg.s->rows);
-    sg.raw_mask = ggml_new_tensor_4d(c_, GGML_TYPE_F16, seg.s->raw_n_kv, seg.s->rows, 1, 1);
+    sg.device_raw_mask = o_.device_draft_masks;
+    sg.raw_mask = sg.device_raw_mask
+                      ? CausalRingMask(c_, g_.positions, seg.s->raw_n_kv,
+                                       static_cast<std::int32_t>(seg.first),
+                                       static_cast<std::int32_t>(seg.s->rows),
+                                       static_cast<std::int32_t>(seg.s->raw_cells),
+                                       static_cast<std::int32_t>(p_.window), INT32_MAX,
+                                       CausalMaskRows::kExact, GGML_TYPE_F16, MaskPolicy::kBlock)
+                      : ggml_new_tensor_4d(c_, GGML_TYPE_F16, seg.s->raw_n_kv, seg.s->rows, 1, 1);
   }
   auto w1 = Leaf(c_, b.markov_w1, "markov_w1");
   auto w2 = Leaf(c_, b.markov_w2, "markov_w2");
@@ -1893,13 +1907,16 @@ std::vector<ggml_tensor*> Dsv4Graph::inputs() const {
 }
 
 std::vector<ggml_tensor*> DsparkGraph::inputs() const {
-  return {core.embd, tokens, core.positions, core.raw_k_idxs, core.raw_mask};
+  std::vector<ggml_tensor*> all = {core.embd, tokens, core.positions, core.raw_k_idxs};
+  if (!core.device_raw_mask) all.push_back(core.raw_mask);
+  return all;
 }
 
 std::vector<ggml_tensor*> DsparkWaveGraph::inputs() const {
   std::vector<ggml_tensor*> all = {joined.embd, tokens, joined.positions};
   for (const Dsv4Graph& s : slots) {
-    all.insert(all.end(), {s.raw_k_idxs, s.raw_mask});
+    all.push_back(s.raw_k_idxs);
+    if (!s.device_raw_mask) all.push_back(s.raw_mask);
   }
   return all;
 }
@@ -2006,7 +2023,7 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
                                                        const model::Dsv4Binding& binding,
                                                        const Dsv4ChunkShape& shape,
                                                        const Dsv4GraphOptions& options) {
-  if (options.raw_mask_context > INT32_MAX ||
+  if (options.device_draft_masks || options.raw_mask_context > INT32_MAX ||
       (options.raw_mask_context != 0 &&
        (profile.window > INT32_MAX || shape.raw_cells > INT32_MAX || shape.rows > INT32_MAX - 31)))
     return Rejected("raw causal/ring mask parameters exceed int32");
@@ -2090,7 +2107,8 @@ std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& aren
                                                                const model::Dsv4Binding& binding,
                                                                const Dsv4WaveShape& shape,
                                                                const Dsv4GraphOptions& options) {
-  if (options.raw_mask_context > INT32_MAX || profile.window > INT32_MAX ||
+  if (options.device_draft_masks || options.raw_mask_context > INT32_MAX ||
+      profile.window > INT32_MAX ||
       std::ranges::any_of(shape.slots, [](const auto& slot) { return slot.raw_cells > INT32_MAX; }))
     return Rejected("raw causal/ring mask parameters exceed int32");
   const std::size_t count = shape.slots.size();
@@ -2192,7 +2210,10 @@ std::expected<DsparkGraph, KernelFailure> BuildDsparkGraph(TensorArena& arena,
       std::cmp_not_equal(ring, profile.ring) || ring % 256 != 0 ||
       binding.blocks.layers.size() != p.layers || p.hc != 4 || p.heads % p.o_groups != 0 ||
       !options.features.empty() || options.inject || options.row_invariant ||
-      options.raw_mask_context != 0) {
+      options.raw_mask_context != 0 || ring > INT32_MAX || p.window == 0 ||
+      std::uint64_t{p.window} + static_cast<std::uint64_t>(rows) >
+          static_cast<std::uint64_t>(ring) ||
+      static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(ring) > INT32_MAX / 2) {
     return Rejected("not a DSpark draft block this drafter runs");
   }
   if (auto room = arena.Reserve(DsparkGraphTensors(profile, rows)); !room) {
@@ -2223,7 +2244,10 @@ std::expected<DsparkWaveGraph, KernelFailure> BuildDsparkWaveGraph(
       std::cmp_not_equal(ring, profile.ring) || ring % 256 != 0 ||
       binding.blocks.layers.size() != p.layers || p.hc != 4 || p.heads % p.o_groups != 0 ||
       !options.features.empty() || options.inject || options.row_invariant ||
-      options.raw_mask_context != 0) {
+      options.raw_mask_context != 0 || ring > INT32_MAX || p.window == 0 ||
+      std::uint64_t{p.window} + static_cast<std::uint64_t>(rows) >
+          static_cast<std::uint64_t>(ring) ||
+      static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(ring) > INT32_MAX / 2) {
     return Rejected("not a DSpark draft block this drafter runs");
   }
   if (slots < 2 || slots > kDsv4WaveSlots || !options.fused ||

@@ -244,6 +244,8 @@ struct Dsv4GraphOptions {
   // actual state context. Compressed masks and DSpark's non-causal masks
   // keep their separate contracts.
   std::uint32_t raw_mask_context = 0;
+  // DSpark-only exact-row noncausal block mask, independent of target context.
+  bool device_draft_masks = false;
 };
 
 // The fast plan's graph-side prefill stage mechanisms (above), all on or off.
@@ -399,7 +401,7 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
 // draft is its biased logits' argmax (llama.cpp's draft sampler, top-k 10
 // then the most probable, is that argmax).
 struct DsparkGraph {
-  Dsv4Graph core;  // embd, positions, raw_k_idxs (the ring cells) and raw_mask are inputs
+  Dsv4Graph core;  // embd, positions, ring cells; raw_mask is a leaf or block producer
   ggml_tensor* tokens = nullptr;  // I32 [rows]: the block's tokens (the anchor first)
   ggml_tensor* markov_w1 = nullptr;
   ggml_tensor* markov_w2 = nullptr;

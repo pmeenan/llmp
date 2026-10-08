@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Shared causal/ring mask source contract for native GGML graph adapters.
+// Shared causal/ring and noncausal block mask source contract for native GGML graph adapters.
 #ifndef JITLLM_ENGINE_GRAPH_MASK_INPUTS_H_
 #define JITLLM_ENGINE_GRAPH_MASK_INPUTS_H_
 
@@ -24,10 +24,13 @@ inline std::expected<std::uint64_t, std::string> GraphMaskSourceBytes(
     std::span<ggml_tensor* const> inputs, bool device, std::uint32_t first_row, std::uint32_t rows,
     std::uint32_t cells, std::uint32_t capacity, std::uint32_t window, std::uint32_t context,
     kernels::ggml::CausalMaskRows row_layout = kernels::ggml::CausalMaskRows::kPad32,
-    ggml_type output_type = GGML_TYPE_F16) {
+    ggml_type output_type = GGML_TYPE_F16,
+    kernels::ggml::MaskPolicy policy = kernels::ggml::MaskPolicy::kCausal) {
   namespace kg = kernels::ggml;
   if (row_layout != kg::CausalMaskRows::kPad32 && row_layout != kg::CausalMaskRows::kExact)
     return support::Error("unknown causal/ring mask row layout");
+  if (policy != kg::MaskPolicy::kCausal && policy != kg::MaskPolicy::kBlock)
+    return support::Error("unknown causal/ring mask visibility policy");
   if (output_type != GGML_TYPE_F16 && output_type != GGML_TYPE_F32)
     return support::Error("unsupported causal/ring mask output type");
   const std::uint64_t element_bytes = output_type == GGML_TYPE_F16 ? 2 : 4;
@@ -59,7 +62,8 @@ inline std::expected<std::uint64_t, std::string> GraphMaskSourceBytes(
       kg::JitllmOpInt(mask, 3) != static_cast<std::int64_t>(window) ||
       kg::JitllmOpInt(mask, 4) != static_cast<std::int64_t>(context) ||
       kg::JitllmOpInt(mask, 5) != static_cast<std::int32_t>(row_layout) ||
-      kg::JitllmOpInt(mask, 6) != 0 || kg::JitllmOpInt(mask, 7) != 0)
+      kg::JitllmOpInt(mask, 6) != static_cast<std::int32_t>(policy) ||
+      kg::JitllmOpInt(mask, 7) != 0)
     return support::Error("device mask differs from its graph-owned position producer");
   return 0;
 }

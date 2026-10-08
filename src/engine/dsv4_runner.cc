@@ -516,7 +516,8 @@ Status Dsv4Runner::Setup() {
                                      .stride = std::move(dstride),
                                      .state = std::uint64_t{1} << 45U},
                           .target_resource = placeless,
-                          .exact = o_.exact};
+                          .exact = o_.exact,
+                          .device_masks = o_.device_draft_masks};
   }
   std::uint64_t most_activations = 0;
   std::uint64_t most_scratch = 0;
@@ -1455,6 +1456,9 @@ std::expected<Dsv4Runner::DraftPlans::Entry*, std::string> Dsv4Runner::PlannedDr
   if (auto r = BindPlanned(**planned, launch, resources_.registry(), "the draft"); !r) {
     return std::unexpected(r.error());
   }
+  bound_draft_masks_ += static_cast<std::uint64_t>(std::ranges::count_if(
+      (*planned)->plan.steps,
+      [](const auto& step) { return step.implementation == kg::kGemma4MaskName; }));
   const double seconds = Seconds(std::chrono::steady_clock::now() - start);
   plan_seconds_ += seconds;
   const std::uint64_t bytes = PlannedHostBytes(**planned);
@@ -1519,6 +1523,9 @@ std::expected<Dsv4Runner::DraftWavePlans::Entry*, std::string> Dsv4Runner::Plann
   if (auto r = BindPlanned(**planned, launch, resources_.registry(), "the joined draft"); !r) {
     return std::unexpected(r.error());
   }
+  bound_draft_masks_ += static_cast<std::uint64_t>(std::ranges::count_if(
+      (*planned)->plan.steps,
+      [](const auto& step) { return step.implementation == kg::kGemma4MaskName; }));
   const double seconds = Seconds(std::chrono::steady_clock::now() - start);
   plan_seconds_ += seconds;
   const std::uint64_t bytes = PlannedHostBytes(**planned);
@@ -1838,10 +1845,12 @@ Status Dsv4Runner::Draft(RequestState& request, std::uint32_t pos0, std::int32_t
   if (auto waiting = request.live.AwaitingAccept(); !waiting) {
     return waiting;
   }
-  auto in = md::DsparkBlock(dprofile_, dlayout_, pos0, anchor, o_.draft_rows);
+  auto in =
+      md::DsparkBlock(dprofile_, dlayout_, pos0, anchor, o_.draft_rows, !o_.device_draft_masks);
   if (!in) {
     return std::unexpected(in.error());
   }
+  draft_mask_host_bytes_ += in->mask.size() * sizeof(std::uint16_t);
   if (auto used = EnsureState(request, pos0); !used) {
     return used;
   }
@@ -1875,7 +1884,7 @@ Status Dsv4Runner::Draft(RequestState& request, std::uint32_t pos0, std::int32_t
       unknown = true;
       return sc::JobResult::kUnknown;
     }
-    if (auto r = BuildDsparkInputs(model, g, *in, table(), host); !r) {
+    if (auto r = BuildDsparkInputs(model, request.dmodel, g, *in, table(), host); !r) {
       ran = std::unexpected(r.error());
       return sc::JobResult::kFailed;
     }
@@ -1981,10 +1990,12 @@ Status Dsv4Runner::DraftVerify(RequestState& request, std::uint32_t pos, std::in
   }
   const Dsv4Model& model = request.model;
   // The draft.
-  auto block = md::DsparkBlock(dprofile_, dlayout_, pos, anchor, o_.draft_rows);
+  auto block =
+      md::DsparkBlock(dprofile_, dlayout_, pos, anchor, o_.draft_rows, !o_.device_draft_masks);
   if (!block) {
     return std::unexpected(block.error());
   }
+  draft_mask_host_bytes_ += block->mask.size() * sizeof(std::uint16_t);
   if (auto used = EnsureState(request, pos + rows); !used) {
     return used;
   }
@@ -2064,7 +2075,7 @@ Status Dsv4Runner::DraftVerify(RequestState& request, std::uint32_t pos, std::in
     }
     // Both stagings first: the host writes them before anything it queues
     // reads them.
-    if (auto r = BuildDsparkInputs(model, dg, *block, table(), dhost); !r) {
+    if (auto r = BuildDsparkInputs(model, request.dmodel, dg, *block, table(), dhost); !r) {
       return failed(r.error(), false);
     }
     auto dcopies = runs_.Stage(dhost.sources, draft_at);
@@ -2238,10 +2249,12 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
       key.shape.inject_rows.push_back(static_cast<std::int64_t>(f.inject.cells.size()));
     }
     if (spec) {
-      auto block = md::DsparkBlock(dprofile_, dlayout_, w.pos, w.anchor, o_.draft_rows);
+      auto block = md::DsparkBlock(dprofile_, dlayout_, w.pos, w.anchor, o_.draft_rows,
+                                   !o_.device_draft_masks);
       if (!block) {
         return std::unexpected(block.error());
       }
+      draft_mask_host_bytes_ += block->mask.size() * sizeof(std::uint16_t);
       f.block = std::move(*block);
     }
   }
@@ -2370,8 +2383,9 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
               RunCopy{Address(frames[i].request->drafts), Address(dp.graph.drafts[i]->data),
                       std::uint64_t{o_.draft_rows} * sizeof(std::int32_t)};
         }
-        if (auto r = BuildDsparkWaveInputs(frames[0].request->model, dp.graph,
-                                           std::span(blocks).first(count), table(), jhost);
+        if (auto r =
+                BuildDsparkWaveInputs(frames[0].request->model, frames[0].request->dmodel, dp.graph,
+                                      std::span(blocks).first(count), table(), jhost);
             !r) {
           return failed(r.error(), false);
         }
@@ -2397,7 +2411,8 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
         Frame& f = frames[i];
         if (!joined) {
           const DsparkPlanned& dp = *f.draft->planned;
-          if (auto r = BuildDsparkInputs(f.request->model, dp.graph, *f.block, table(), f.dhost);
+          if (auto r = BuildDsparkInputs(f.request->model, f.request->dmodel, dp.graph, *f.block,
+                                         table(), f.dhost);
               !r) {
             return failed(r.error(), false);
           }

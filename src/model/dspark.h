@@ -132,11 +132,15 @@ struct DsparkBlockInputs {
 };
 
 // Refused if `rows` is 0 or past the block size or the layout's bound, or
-// the anchor is outside the vocabulary.
+// the anchor is outside the vocabulary, the block ends past INT32_MAX, or
+// the ring cannot retain the window and block. With materialize_mask=false,
+// the same tokens, positions and cells are checked and built; only the
+// optional host mask matrix is omitted.
 std::expected<DsparkBlockInputs, std::string> DsparkBlock(const DsparkProfile& profile,
                                                           const DsparkStateLayout& state,
                                                           std::uint32_t pos0, std::int32_t anchor,
-                                                          std::uint32_t rows);
+                                                          std::uint32_t rows,
+                                                          bool materialize_mask = true);
 
 // The ring cells a target chunk of `rows` rows from `n_past` injects:
 // its last min(rows, ring) rows, whose positions have cells of their own.

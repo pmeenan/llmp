@@ -90,7 +90,8 @@ struct DsparkModel {
   const model::DsparkStateLayout* state = nullptr;
   Dsv4Places places;
   std::function<std::uint64_t(std::uint32_t resource)> target_resource;
-  bool exact = false;  // the reference mode, as Dsv4Model::exact
+  bool exact = false;         // the reference mode, as Dsv4Model::exact
+  bool device_masks = false;  // explicit draft-block factor, independent of target masks
 };
 
 // How a target chunk runs beside a drafter.
@@ -243,7 +244,7 @@ std::expected<void, std::string> Dsv4EmbeddingRows(const Dsv4Model& m,
 // A draft block's inputs: its tokens' embedding rows from the target's
 // table (`m`'s, on the host), and the block's positions, ring cells and
 // mask.
-std::expected<void, std::string> BuildDsparkInputs(const Dsv4Model& m,
+std::expected<void, std::string> BuildDsparkInputs(const Dsv4Model& m, const DsparkModel& d,
                                                    const kernels::ggml::DsparkGraph& g,
                                                    const model::DsparkBlockInputs& in,
                                                    std::span<const std::byte> table,
@@ -261,7 +262,7 @@ struct DsparkWaveHostInputs {
 // they hold must outlive `out`'s use): the joined rows' embedding rows from
 // the target's table, tokens and positions, and each slot's cells and mask.
 std::expected<void, std::string> BuildDsparkWaveInputs(
-    const Dsv4Model& m, const kernels::ggml::DsparkWaveGraph& g,
+    const Dsv4Model& m, const DsparkModel& d, const kernels::ggml::DsparkWaveGraph& g,
     std::span<const model::DsparkBlockInputs* const> blocks, std::span<const std::byte> table,
     DsparkWaveHostInputs& out);
 

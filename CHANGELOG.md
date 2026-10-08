@@ -13,6 +13,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Add a checked opt-in DSpark noncausal GPU block-mask producer through shared
+  F16/F32 source contracts. A short screen is neutral, so host masks stay default.
+
 - Accept an optional prepared Q4_1 Qwen3.8 selected draft head, with exact
   scalar/joined prefix arithmetic and restored state. Its payload is 68.75%
   smaller; bounded C1 improves while C2 regresses, so BF16 remains the default.

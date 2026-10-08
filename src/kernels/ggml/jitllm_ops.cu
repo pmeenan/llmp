@@ -31,7 +31,7 @@ namespace {
 template <typename Bits>
 __global__ void Gemma4MaskKernel(const std::int32_t* positions, Bits* mask, std::int64_t elements,
                                  int cells, int first, int rows, int capacity, int window,
-                                 int limit) {
+                                 int limit, int policy) {
   const std::int64_t index = std::int64_t{blockIdx.x} * blockDim.x + threadIdx.x;
   if (index >= elements) return;
   const int row = static_cast<int>(index / cells);
@@ -39,7 +39,14 @@ __global__ void Gemma4MaskKernel(const std::int32_t* positions, Bits* mask, std:
   bool visible = false;
   if (row < rows) {
     const int position = positions[first + row];
-    if (position >= 0 && position < limit) {
+    if (policy == static_cast<int>(MaskPolicy::kBlock)) {
+      const std::int64_t start = positions[first];
+      const std::int64_t end = start + rows;
+      if (start >= 0 && end <= limit && position == start + row && cell < end) {
+        const std::int64_t held = cell + ((end - 1 - cell) / capacity) * capacity;
+        visible = held > position || std::int64_t{position} - held < window;
+      }
+    } else if (position >= 0 && position < limit) {
       if (window == 0)
         visible = cell <= position && cell < limit;
       else {
@@ -998,7 +1005,7 @@ std::expected<void, KernelFailure> RunGemma4Mask(LaunchContext& launch, ggml_ten
                          context.stream()>>>(
           static_cast<const std::int32_t*>(node->src[0]->data), static_cast<Bits*>(node->data),
           elements, static_cast<int>(node->ne[0]), JitllmOpInt(node, 0), JitllmOpInt(node, 1),
-          JitllmOpInt(node, 2), JitllmOpInt(node, 3), JitllmOpInt(node, 4));
+          JitllmOpInt(node, 2), JitllmOpInt(node, 3), JitllmOpInt(node, 4), JitllmOpInt(node, 6));
     };
     if (node->type == GGML_TYPE_F16)
       queue.template operator()<std::uint16_t>();

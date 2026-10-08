@@ -226,6 +226,32 @@ TEST(DsparkTest, BindsTheDraftersTensorsAndItsTargetsTables) {
   }
 }
 
+TEST(DsparkTest, DeviceBlockInputsSkipOnlyTheMaterializedMask) {
+  const auto& profile = md::DsparkDeepSeekV4Flash();
+  auto state = md::DsparkState(profile, 5);
+  ASSERT_TRUE(state);
+  for (const std::uint32_t rows : {1U, 3U, 5U}) {
+    for (const std::uint32_t pos : {0U, 254U, 300U, static_cast<std::uint32_t>(INT32_MAX) - rows}) {
+      const auto host = md::DsparkBlock(profile, *state, pos, 17, rows);
+      const auto device = md::DsparkBlock(profile, *state, pos, 17, rows, false);
+      ASSERT_TRUE(host);
+      ASSERT_TRUE(device);
+      EXPECT_EQ(host->pos0, device->pos0);
+      EXPECT_EQ(host->rows, device->rows);
+      EXPECT_EQ(host->tokens, device->tokens);
+      EXPECT_EQ(host->positions, device->positions);
+      EXPECT_EQ(host->cells, device->cells);
+      EXPECT_EQ(host->mask.size(), rows * state->ring);
+      EXPECT_TRUE(device->mask.empty());
+    }
+    EXPECT_FALSE(md::DsparkBlock(profile, *state, static_cast<std::uint32_t>(INT32_MAX) - rows + 1,
+                                 17, rows, false));
+  }
+  auto malformed = *state;
+  malformed.ring = 128;
+  EXPECT_FALSE(md::DsparkBlock(profile, malformed, 0, 17, 3, false));
+}
+
 TEST(DsparkTest, ADraftBlockSeesItselfAndItsWindowNonCausally) {
   const md::DsparkProfile& d = md::DsparkDeepSeekV4Flash();
   auto s = md::DsparkState(d, 3);
@@ -627,6 +653,70 @@ TEST(DsparkTest, TheDraftBlocksGraphChainsTheMarkovHeadOnArgmax) {
 // vector products joined (as many as one block has, each weight read once
 // for every slot's rows), each slot's attention over its own ring, its
 // Markov head and its drafts its own, those on concurrent lanes.
+TEST(DsparkTest, DeviceBlockMasksUseEachActualPositionSegmentAndAreNotHostInputs) {
+  const auto target_profile = WindowOnlyTarget();
+  const auto resources = Target(target_profile);
+  auto target = md::BindDsv4(target_profile, "deepseek4", resources);
+  ASSERT_TRUE(target);
+  const auto& profile = md::DsparkDeepSeekV4Flash();
+  const auto draft_resources = Drafter();
+  auto binding = md::BindDspark(profile, "dflash", draft_resources, target_profile, *target);
+  ASSERT_TRUE(binding);
+  for (const bool device : {false, true}) {
+    const kg::Dsv4GraphOptions options{.fused = true, .device_draft_masks = device};
+    auto arena = kg::TensorArena::Create(kg::DsparkGraphTensors(profile, 3));
+    ASSERT_TRUE(arena);
+    auto scalar = kg::BuildDsparkGraph(*arena, profile, *binding, 3, 256, options);
+    ASSERT_TRUE(scalar) << Why(scalar);
+    auto joined_arena = kg::TensorArena::Create(kg::DsparkWaveGraphTensors(profile, 3, 2));
+    ASSERT_TRUE(joined_arena);
+    auto joined = kg::BuildDsparkWaveGraph(*joined_arena, profile, *binding, 3, 2, 256, options);
+    ASSERT_TRUE(joined) << Why(joined);
+    const auto check = [&](const ggml_tensor* mask, const ggml_tensor* positions,
+                           std::int64_t first, std::span<ggml_tensor* const> nodes,
+                           std::span<ggml_tensor* const> inputs) {
+      ASSERT_NE(mask, nullptr);
+      EXPECT_EQ(mask->type, GGML_TYPE_F16);
+      EXPECT_EQ(mask->ne[0], 256);
+      EXPECT_EQ(mask->ne[1], 3);
+      EXPECT_EQ(std::ranges::count(inputs, mask), device ? 0 : 1);
+      EXPECT_EQ(std::ranges::count(nodes, mask), device ? 1 : 0);
+      if (device) {
+        EXPECT_TRUE(kg::Gemma4MaskFits(mask));
+        EXPECT_EQ(mask->src[0], positions);
+        EXPECT_EQ(kg::JitllmOpInt(mask, 0), first);
+        EXPECT_EQ(kg::JitllmOpInt(mask, 1), 3);
+        EXPECT_EQ(kg::JitllmOpInt(mask, 2), 256);
+        EXPECT_EQ(kg::JitllmOpInt(mask, 3), profile.blocks.window);
+        EXPECT_EQ(kg::JitllmOpInt(mask, 4), INT32_MAX);
+        EXPECT_EQ(kg::JitllmOpInt(mask, 5), static_cast<int>(kg::CausalMaskRows::kExact));
+        EXPECT_EQ(kg::JitllmOpInt(mask, 6), static_cast<int>(kg::MaskPolicy::kBlock));
+        EXPECT_EQ(kg::JitllmOpInt(mask, 7), 0);
+      } else
+        EXPECT_EQ(mask->op, GGML_OP_NONE);
+    };
+    const auto scalar_inputs = scalar->inputs();
+    check(scalar->core.raw_mask, scalar->core.positions, 0, scalar->core.nodes, scalar_inputs);
+    const auto joined_inputs = joined->inputs();
+    for (std::size_t i = 0; i < joined->slots.size(); ++i)
+      check(joined->slots[i].raw_mask, joined->joined.positions, joined->first[i],
+            joined->joined.nodes, joined_inputs);
+    BindAll(*scalar, scalar->core.nodes);
+    BindAll(*joined, joined->joined.nodes);
+    auto scalar_plan = kg::PlanGraph(scalar->core.nodes, false, ModelDevice(false));
+    auto joined_plan = kg::PlanGraph(joined->joined.nodes, false, ModelDevice(false));
+    ASSERT_TRUE(scalar_plan) << Why(scalar_plan);
+    ASSERT_TRUE(joined_plan) << Why(joined_plan);
+    const auto count = [](const kg::GraphPlan& plan) {
+      return std::ranges::count_if(plan.steps, [](const kg::PlanStep& step) {
+        return step.implementation == kg::kGemma4MaskName;
+      });
+    };
+    EXPECT_EQ(count(*scalar_plan), device ? 1 : 0);
+    EXPECT_EQ(count(*joined_plan), device ? 2 : 0);
+  }
+}
+
 TEST(DsparkTest, AJoinedDraftJoinsTheProductsAndKeepsEachSlotsBlock) {
   const md::Dsv4Profile target_profile = WindowOnlyTarget();
   const std::vector<md::Dsv4Resource> target_resources = Target(target_profile);

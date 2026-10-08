@@ -357,6 +357,12 @@ family" guide, and its long-context scaling work.
       eligible port is M3.5 work, including families M3 closed out; none waits
       for M9. Screen one representative shape with focused correctness and
       matched paid A/B before broader qualification.
+- [x] **DSpark noncausal block GPU-mask transfer screen** ([evidence](experiments/dspark-device-masks/README.md)):
+      shared F16/F32 producer/source controls and actual C2 draft/verify
+      heads, histories and states are exact. The short joined-call factor is
+      neutral (−0.108%, overlapping ranges), whole diagnostic +0.224%; keep
+      host masks selected. This closes only the block sub-investigation as
+      not adopted; compressed visible-count masks keep composite T22/T69 open.
 - [ ] **Complete open optimization transfers from the audit.** IDs refer to
       the [inventory matrix](optimization-inventory.md#complete-cross-family-dispositions--2026-10-07).
       Preserve each recipient's original math, artifact, state, memory and
@@ -369,7 +375,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T22** Graph-owned GPU attention masks: target raw causal/ring
           masks adopted with exact C2 heads/state and a modest native prefill
           gain ([controls](experiments/deepseek-device-masks/README.md)); DSpark
-          noncausal block masks and optional compressed masks remain open.
+          noncausal block masks are checked but not adopted after a neutral short
+          screen; optional compressed masks remain open.
         - [ ] **T23** Single-request prefill lookahead/capture ahead.
         - [ ] **T27** Plain greedy token on GPU.
         - [ ] **T29** Operand joins by view.
@@ -385,8 +392,9 @@ family" guide, and its long-context scaling work.
         - [ ] **T67** Prepare next chunk state beside current work.
         - [ ] **T68** Evict only incoming closure deficit.
         - [ ] **T69** Shared GPU-mask construction contract: target raw exact-row
-          adapter adopted; DSpark block and compressed visible-count adapters
-          remain open. Target-only work does not close this composite item.
+          adapter adopted; DSpark block adapter checked but not selected after its
+          neutral screen. Compressed visible-count adapters remain open; the
+          composite item therefore stays open.
         - [ ] **T70** Shared lookahead/capture hook, including compatible
           fixed-capacity future groups under family descriptors.
         - [ ] **T78** BF16 multirow vector alternative.

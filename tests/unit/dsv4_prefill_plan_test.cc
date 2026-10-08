@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -209,6 +210,242 @@ TEST(Dsv4PrefillPlan, AuthenticatesActualPositionsBeforeEmbeddingOrSubmission) {
   EXPECT_EQ(partial.error(), type.error().detail);
   input.positions[5] += 1;
   refused();
+}
+
+TEST(DsparkMaskPlan, JoinedHostAndDeviceSourcesStageTheSameActualBlockRows) {
+  const char* configured =
+      std::getenv("JITLLM_TEST_ARTIFACT_CORPUS");  // NOLINT(concurrency-mt-unsafe)
+  const std::filesystem::path corpus = configured ? configured : "artifact-corpus";
+  const auto directory = corpus / "golden" / "tiny";
+  ASSERT_TRUE(std::filesystem::is_directory(directory));
+  auto artifact = artifact::Artifact::Open(std::filesystem::directory_iterator(directory)->path());
+  ASSERT_TRUE(artifact);
+  ASSERT_FALSE(artifact->resources().empty());
+  auto target_profile = md::Dsv4Flash();
+  target_profile.width = 8;
+  target_profile.vocab = 4;
+  md::Dsv4Binding binding;
+  binding.token_embd = {.index = 0, .type = "F16", .ne = {8, 4}};
+  Dsv4Model target;
+  target.profile = &target_profile;
+  target.binding = &binding;
+  target.artifact = &*artifact;
+  auto profile = md::DsparkDeepSeekV4Flash();
+  profile.mask_token = 3;
+  profile.blocks.width = target_profile.width;
+  profile.blocks.vocab = target_profile.vocab;
+  auto state = md::DsparkState(profile, 3);
+  ASSERT_TRUE(state);
+  const auto table_offset = artifact->resources()[0].offset.value();
+  std::vector<std::byte> table(table_offset + 8 * 4 * 2);
+  for (std::size_t i = 0; i < 32; ++i) {
+    const auto value = ggml_fp32_to_fp16(static_cast<float>(i) / 8);
+    std::memcpy(table.data() + table_offset + 2 * i, &value, sizeof(value));
+  }
+  std::vector<float> reference;
+  for (const bool device : {false, true}) {
+    DsparkModel draft;
+    draft.profile = &profile;
+    draft.state = &*state;
+    draft.device_masks = device;
+    auto arena = kg::TensorArena::Create(64);
+    ASSERT_TRUE(arena);
+    auto* c = arena->context();
+    kg::DsparkWaveGraph graph;
+    graph.first = {0, 3};
+    graph.slots.resize(2);
+    graph.joined.embd = ggml_new_tensor_2d(c, GGML_TYPE_F32, 8, 6);
+    graph.joined.positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, 6);
+    graph.tokens = ggml_new_tensor_1d(c, GGML_TYPE_I32, 6);
+    std::array<md::DsparkBlockInputs, 2> blocks;
+    for (std::size_t i = 0; i < 2; ++i) {
+      blocks[i] = *md::DsparkBlock(profile, *state, i ? 300 : 254, i ? 2 : 1, 3, !device);
+      auto& slot = graph.slots[i];
+      slot.device_raw_mask = device;
+      slot.raw_k_idxs = ggml_new_tensor_1d(c, GGML_TYPE_I64, 3);
+      slot.raw_mask = device ? kg::CausalRingMask(c, graph.joined.positions, 256,
+                                                  static_cast<std::int32_t>(graph.first[i]), 3, 256,
+                                                  128, INT32_MAX, kg::CausalMaskRows::kExact,
+                                                  GGML_TYPE_F16, kg::MaskPolicy::kBlock)
+                             : ggml_new_tensor_2d(c, GGML_TYPE_F16, 256, 3);
+      if (device) graph.joined.nodes.push_back(slot.raw_mask);
+    }
+    const std::array<const md::DsparkBlockInputs*, 2> blocks_in{&blocks[0], &blocks[1]};
+    DsparkWaveHostInputs out;
+    auto result = BuildDsparkWaveInputs(target, draft, graph, blocks_in, table, out);
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+    EXPECT_EQ(out.tokens, (std::vector<std::int32_t>{1, 3, 3, 2, 3, 3}));
+    EXPECT_EQ(out.positions, (std::vector<std::int32_t>{254, 255, 256, 300, 301, 302}));
+    std::vector<float> expected_embd;
+    for (const auto token : out.tokens)
+      for (std::uint32_t feature = 0; feature < target_profile.width; ++feature)
+        expected_embd.push_back(
+            static_cast<float>(static_cast<std::uint32_t>(token) * target_profile.width + feature) /
+            8);
+    EXPECT_EQ(out.embd, expected_embd);
+    if (!device)
+      reference = out.embd;
+    else
+      EXPECT_EQ(out.embd, reference);
+    ASSERT_EQ(out.sources.size(), device ? 5U : 7U);
+    EXPECT_EQ(out.sources[0],
+              (std::pair<ggml_tensor*, const void*>{graph.joined.embd, out.embd.data()}));
+    EXPECT_EQ(out.sources[1],
+              (std::pair<ggml_tensor*, const void*>{graph.tokens, out.tokens.data()}));
+    EXPECT_EQ(out.sources[2],
+              (std::pair<ggml_tensor*, const void*>{graph.joined.positions, out.positions.data()}));
+    std::size_t at = 3;
+    for (std::size_t i = 0; i < 2; ++i) {
+      EXPECT_EQ(out.sources[at++], (std::pair<ggml_tensor*, const void*>{graph.slots[i].raw_k_idxs,
+                                                                         blocks[i].cells.data()}));
+      if (!device)
+        EXPECT_EQ(out.sources[at++], (std::pair<ggml_tensor*, const void*>{graph.slots[i].raw_mask,
+                                                                           blocks[i].mask.data()}));
+    }
+  }
+}
+
+// Valid input producers reach the deliberately unsupported embedding type;
+// malformed sources must refuse before allocating embeddings or staging.
+TEST(DsparkMaskPlan, AuthenticatesScalarAndJoinedBlockSourcesBeforeAllocation) {
+  md::Dsv4Binding binding;
+  binding.token_embd.type = "unsupported-test-type";
+  Dsv4Model target;
+  target.profile = &md::Dsv4Flash();
+  target.binding = &binding;
+  const auto& profile = md::DsparkDeepSeekV4Flash();
+  auto state = md::DsparkState(profile, 3);
+  ASSERT_TRUE(state);
+  const auto type = kg::GgmlTypeOf(binding.token_embd.type);
+  ASSERT_FALSE(type);
+  for (const bool device : {false, true}) {
+    DsparkModel draft;
+    draft.profile = &profile;
+    draft.state = &*state;
+    draft.device_masks = device;
+    auto arena = kg::TensorArena::Create(128);
+    ASSERT_TRUE(arena);
+    auto* c = arena->context();
+    kg::DsparkWaveGraph graph;
+    graph.first = {0, 3};
+    graph.slots.resize(2);
+    graph.joined.positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, 6);
+    graph.tokens = ggml_new_tensor_1d(c, GGML_TYPE_I32, 6);
+    std::array<md::DsparkBlockInputs, 2> blocks;
+    for (std::size_t i = 0; i < 2; ++i) {
+      blocks[i] = *md::DsparkBlock(profile, *state, i ? 300 : 254, 0, 3, !device);
+      auto& slot = graph.slots[i];
+      slot.device_raw_mask = device;
+      slot.raw_k_idxs = ggml_new_tensor_1d(c, GGML_TYPE_I64, 3);
+      slot.raw_mask = device ? kg::CausalRingMask(c, graph.joined.positions, state->ring,
+                                                  static_cast<std::int32_t>(graph.first[i]), 3,
+                                                  static_cast<std::int32_t>(state->ring),
+                                                  static_cast<std::int32_t>(profile.blocks.window),
+                                                  INT32_MAX, kg::CausalMaskRows::kExact,
+                                                  GGML_TYPE_F16, kg::MaskPolicy::kBlock)
+                             : ggml_new_tensor_2d(c, GGML_TYPE_F16, state->ring, 3);
+      if (device) graph.joined.nodes.push_back(slot.raw_mask);
+    }
+    const std::array<const md::DsparkBlockInputs*, 2> inputs{&blocks[0], &blocks[1]};
+    DsparkWaveHostInputs out;
+    const auto checked = [&](bool valid) {
+      const auto result = BuildDsparkWaveInputs(target, draft, graph, inputs, {}, out);
+      ASSERT_FALSE(result);
+      if (valid)
+        EXPECT_EQ(result.error(), type.error().detail);
+      else
+        EXPECT_NE(result.error(), type.error().detail);
+      EXPECT_TRUE(out.embd.empty());
+      EXPECT_TRUE(out.tokens.empty());
+      EXPECT_TRUE(out.positions.empty());
+      EXPECT_TRUE(out.sources.empty());
+    };
+    // Valid source authentication ends before embedding allocation. The
+    // joined token/position assembly is allowed only after authentication.
+    auto result = BuildDsparkWaveInputs(target, draft, graph, inputs, {}, out);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), type.error().detail);
+    EXPECT_EQ(out.tokens.size(), 6U);
+    EXPECT_EQ(out.positions.size(), 6U);
+    out = {};
+    blocks[1].pos0 += 1;
+    checked(false);
+    blocks[1].pos0 -= 1;
+    blocks[1].positions[1] += 1;
+    checked(false);
+    blocks[1].positions[1] -= 1;
+    blocks[1].positions[0] = -1;
+    checked(false);
+    blocks[1].positions[0] = 300;
+    blocks[1].cells[2] += 1;
+    checked(false);
+    blocks[1].cells[2] -= 1;
+    graph.first[1] = 0;
+    checked(false);
+    graph.first[1] = 3;
+    graph.slots[1].raw_k_idxs->nb[0] = 4;
+    checked(false);
+    graph.slots[1].raw_k_idxs->nb[0] = 8;
+    graph.joined.positions->src[0] = graph.tokens;
+    checked(false);
+    graph.joined.positions->src[0] = nullptr;
+    if (device) {
+      auto* mask = graph.slots[1].raw_mask;
+      for (std::size_t param = 0; param < 8; ++param) {
+        std::array<std::byte, sizeof(mask->op_params)> saved{};
+        std::memcpy(saved.data(), mask->op_params, saved.size());
+        const std::int32_t value = kg::JitllmOpInt(mask, static_cast<int>(param)) ^ 1;
+        std::memcpy(reinterpret_cast<std::byte*>(mask->op_params) + 32 + param * 4, &value,
+                    sizeof(value));
+        checked(false);
+        std::memcpy(mask->op_params, saved.data(), saved.size());
+      }
+      mask->src[0] = graph.tokens;
+      checked(false);
+      mask->src[0] = graph.joined.positions;
+      graph.joined.nodes.push_back(mask);
+      checked(false);
+      graph.joined.nodes.pop_back();
+      graph.slots[1].device_raw_mask = false;
+      checked(false);
+      graph.slots[1].device_raw_mask = true;
+      blocks[1].mask.push_back(0);
+      checked(false);
+      blocks[1].mask.clear();
+    } else {
+      blocks[1].mask.pop_back();
+      checked(false);
+      blocks[1].mask.push_back(0);
+      graph.slots[1].raw_mask->src[0] = graph.joined.positions;
+      checked(false);
+      graph.slots[1].raw_mask->src[0] = nullptr;
+    }
+    // A scalar owns its own position descriptor, with first_row exactly 0.
+    kg::DsparkGraph scalar;
+    scalar.core.device_raw_mask = device;
+    scalar.core.positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, 3);
+    scalar.core.raw_k_idxs = ggml_new_tensor_1d(c, GGML_TYPE_I64, 3);
+    scalar.core.raw_mask =
+        device
+            ? kg::CausalRingMask(c, scalar.core.positions, state->ring, 0, 3,
+                                 static_cast<std::int32_t>(state->ring),
+                                 static_cast<std::int32_t>(profile.blocks.window), INT32_MAX,
+                                 kg::CausalMaskRows::kExact, GGML_TYPE_F16, kg::MaskPolicy::kBlock)
+            : ggml_new_tensor_2d(c, GGML_TYPE_F16, state->ring, 3);
+    if (device) scalar.core.nodes.push_back(scalar.core.raw_mask);
+    Dsv4HostInputs one;
+    auto valid = BuildDsparkInputs(target, draft, scalar, blocks[0], {}, one);
+    ASSERT_FALSE(valid);
+    EXPECT_EQ(valid.error(), type.error().detail);
+    EXPECT_TRUE(one.embd.empty());
+    EXPECT_TRUE(one.sources.empty());
+    blocks[0].cells[0] += 1;
+    auto bad = BuildDsparkInputs(target, draft, scalar, blocks[0], {}, one);
+    ASSERT_FALSE(bad);
+    EXPECT_NE(bad.error(), type.error().detail);
+    EXPECT_TRUE(one.embd.empty());
+    EXPECT_TRUE(one.sources.empty());
+  }
 }
 
 TEST(Dsv4RawMaskPlan, JoinedDeviceAndHostSourcesStageCompletelyWithIdenticalRowData) {

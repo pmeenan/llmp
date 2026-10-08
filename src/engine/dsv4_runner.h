@@ -161,6 +161,8 @@ struct Dsv4Options {
   // reference. Compressed masks and DSpark drafts keep their own contracts.
   // No public setting.
   bool device_raw_masks = true;
+  // Experimental noncausal DSpark block producer; independent host reference.
+  bool device_draft_masks = false;
   // Where each slot's spill file lives (LiveState::SpillPlace), asked once
   // at Register; unset, an unnamed file in `out`. The runtime names them
   // to keep conversations across a restart (D-105).
@@ -471,6 +473,10 @@ class Dsv4Runner final : public PagedModel {
   void set_graphs(bool on) { runs_.set_graphs(on); }
   const GraphStats& graph_stats() const { return graph_stats_; }
   std::uint64_t bound_raw_masks() const { return bound_raw_masks_; }
+  // Bound plan nodes (captures retain them), not executed kernel counts.
+  std::uint64_t bound_draft_masks() const { return bound_draft_masks_; }
+  // Bytes of constructed block matrices, including blocks later refused.
+  std::uint64_t draft_mask_host_bytes() const { return draft_mask_host_bytes_; }
   // Runs of the waves (their graphs are counted in graph_stats too).
   const GraphStats& wave_stats() const { return wave_stats_; }
   // The last chunk: how it ran, and the job's host time (the inputs built
@@ -913,6 +919,8 @@ class Dsv4Runner final : public PagedModel {
   const Dsv4Planned* last_planned_ = nullptr;  // the last chunk's plan (DumpLast)
   GraphStats graph_stats_;
   std::uint64_t bound_raw_masks_ = 0;
+  std::uint64_t bound_draft_masks_ = 0;
+  std::uint64_t draft_mask_host_bytes_ = 0;
   GraphStats draft_stats_;
   GraphStats wave_stats_;
   RunPath last_path_ = RunPath::kEager;
