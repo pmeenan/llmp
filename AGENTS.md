@@ -282,7 +282,8 @@ profile. Long retrieval, turn reuse and continuing-context swaps pass in
 
 The owner accepts the remaining Qwen/DeepSeek speed gaps for M3 and defers
 further tuning to **M9's full-engine optimization pass** (2026-10-04);
-ports of mechanisms proven on another family don't wait for it.
+optimizations found on any family, new kernels and fusions included, are
+ported to Qwen/DeepSeek as they are found (2026-10-07).
 The latest matched Qwen C4 rate is about 15% below fast Mia; the gap and
 long-context misses remain measurements, not parity passes. Quality,
 memory and exact-state requirements remain unchanged. The

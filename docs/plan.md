@@ -352,10 +352,9 @@ family" guide, and its long-context scaling work.
       DeepSeek V4, Qwen3.8 (native and GGUF), Qwen-Image, Gemma2, Gemma3
       and Gemma 4 26B/31B, including the families M3 closed out. Each open
       one becomes its own checkbox here, screened with focused correctness
-      and a matched comparison. Ports of mechanisms already proven on
-      another family are in scope now for every family; an item that needs
-      a new kernel for an M3 model is listed under M9's full-engine pass
-      instead. Known open items to start from:
+      and a matched comparison. Every port is in scope now for every
+      family, new kernels and fusions included; none waits for M9's pass.
+      Known open items to start from:
       - [ ] Gemma2: GPU-built masks, prefill lookahead (it ignores the
         hint) and capture ahead (a 2B model, so plausibly worth more than
         on Gemma31).
@@ -1803,9 +1802,11 @@ partial-retention benefit workload are pinned before acceptance runs
       the measured whole-engine benefit warrants them (owner, 2026-10-04).
       Re-pin profiles and comparators at entry; qualify correctness and
       paid end-to-end benefit before selecting a change. Frozen unmeasured
-      prototypes carry no adoption or speed claim. Ports of mechanisms
-      already proven on another family do not wait for this pass
-      ([workflow.md](workflow.md)'s transfer rule, M3.5's transfer audit).
+      prototypes carry no adoption or speed claim. Optimizations found on
+      any family, new kernels and fusions included, are ported to these
+      models as they are found, not held for this pass (owner, 2026-10-07;
+      [workflow.md](workflow.md)'s transfer rule, M3.5's transfer audit);
+      this pass takes what remains of the accepted M3 gaps.
 - [ ] **Larger-than-memory library:** DeepSeek V4 Flash with Qwen3.8 Flash
       Next on one node is the canonical pair (D-036). M3 runs both, with
       their compressed attention and indexers, Qwen3.8's sparse n-gram rows

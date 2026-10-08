@@ -11,7 +11,10 @@ with that exception; the [frozen record](m3-record.md) maps its exit evidence. I
 
 **Owner speed exception, 2026-10-04.** The owner explicitly accepts all
 remaining Qwen/DeepSeek speed gaps for M3 and defers further optimization to
-M9's full-engine pass. Experiments stopped at production main `3decb36`;
+M9's full-engine pass. *Owner, 2026-10-07:* optimizations found on any
+family, new kernels and fusions included, are ported to Qwen/DeepSeek as
+they are found ([workflow.md](workflow.md)'s transfer rule); M9 keeps the
+leads below. Experiments stopped at production main `3decb36`;
 selected defaults stay in place. No queued candidate has a proven large
 end-to-end gain. Known speed misses remain recorded; the exception does
 not turn them into parity passes. The separate numerical, state, client,

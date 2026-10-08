@@ -192,10 +192,11 @@ downgrade a heavy-path change to the light loop on their own.
   **adopted** (with its evidence), **not adopted** (measured, with its
   numbers), **not applicable** (the layout, math, state or executor
   contract that rules it out) or **open**. Every open one is an unchecked
-  [plan.md](plan.md) item added in the same commit, whether or not that
-  family's own milestone has closed: under the current milestone, or
-  under the later item the owner has deferred that work to (new kernels
-  for the M3 models go to M9's full-engine pass), never unlisted.
+  [plan.md](plan.md) item under the current milestone, added in the same
+  commit, whether or not that family's own milestone has closed, and is
+  worked as it is found, not held for a later optimization pass: new
+  kernels and fusions are ported to existing models too, including those
+  whose speed gaps an earlier milestone accepted (owner, 2026-10-07).
   "Ignores the hint", "audit", "no speed claim" and "unmeasured" are not
   dispositions. A mechanism that is not model-specific goes into the
   shared engine ([engine.md](engine.md)) rather than one runner, so later
