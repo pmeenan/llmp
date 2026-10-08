@@ -221,6 +221,145 @@ TEST(PrefillLookaheadTest, TransfersOnceToCacheWhileCurrentPlanAndCaptureStayPro
   EXPECT_EQ(ledger.charged, 0U);
 }
 
+using FutureGroup = en::PrefillLookaheadGroup<FuturePlan, 2>;
+
+TEST(PrefillLookaheadGroupTest, RangeAndSecondGrantRefusalLeaveTheFirstInstallable) {
+  Ledger ledger;
+  ledger.budget = 1024;
+  int destroyed = 0;
+  {
+    FutureGroup futures(
+        1024, [&](auto bytes, bool required) { return ledger.account.Charge(bytes, required); },
+        [&](auto bytes) { ledger.account.Uncharge(bytes); });
+    EXPECT_FALSE(futures.Fund(2));
+    EXPECT_EQ(futures.seconds(2), 0);
+    EXPECT_TRUE(ledger.asked.empty());
+    ASSERT_TRUE(futures.Fund(0));
+    EXPECT_FALSE(futures.Fund(1));
+    EXPECT_FALSE(futures.Fund(0));
+    const auto built = futures.BuildAll([&](std::size_t i) -> FutureResult {
+      EXPECT_EQ(i, 0U);
+      return std::make_unique<FuturePlan>(ledger, 1024, destroyed);
+    });
+    EXPECT_EQ(built, (std::array{true, false}));
+    const auto installed = futures.InstallAfterCompletion(
+        [&](std::size_t i, auto planned, double seconds, const auto&) {
+          EXPECT_EQ(i, 0U);
+          EXPECT_GE(seconds, 0);
+          EXPECT_NE(planned, nullptr);
+          return true;
+        });
+    EXPECT_EQ(installed, (std::array{true, false}));
+    EXPECT_EQ(destroyed, 1);
+    EXPECT_EQ(futures.InstallAfterCompletion([](auto, auto, double, const auto&) {
+      ADD_FAILURE() << "group installed twice";
+      return true;
+    }),
+              (std::array{false, false}));
+  }
+  EXPECT_EQ(ledger.charged, 0U);
+}
+
+TEST(PrefillLookaheadGroupTest, SecondBuildRefusalAndSecondInstallRefusalAreIndependent) {
+  for (const bool refuse_build : {true, false}) {
+    Ledger ledger;
+    int destroyed = 0;
+    {
+      FutureGroup futures(
+          1024, [&](auto bytes, bool required) { return ledger.account.Charge(bytes, required); },
+          [&](auto bytes) { ledger.account.Uncharge(bytes); });
+      ASSERT_TRUE(futures.Fund(0));
+      ASSERT_TRUE(futures.Fund(1));
+      std::vector<std::size_t> order;
+      const auto built = futures.BuildAll([&](std::size_t i) -> FutureResult {
+        order.push_back(i);
+        if (i == 1 && refuse_build) return std::unexpected("far builder refused");
+        return std::make_unique<FuturePlan>(ledger, 1024, destroyed);
+      });
+      EXPECT_EQ(order, (std::vector<std::size_t>{0, 1}));
+      EXPECT_EQ(built, (std::array{true, !refuse_build}));
+      order.clear();
+      const auto installed =
+          futures.InstallAfterCompletion([&](std::size_t i, auto planned, double, const auto&) {
+            order.push_back(i);
+            EXPECT_NE(planned, nullptr);
+            return i == 0;  // independent far binding/coverage refusal
+          });
+      EXPECT_EQ(installed, (std::array{true, false}));
+      EXPECT_EQ(order,
+                refuse_build ? (std::vector<std::size_t>{0}) : (std::vector<std::size_t>{0, 1}));
+    }
+    EXPECT_EQ(destroyed, refuse_build ? 1 : 2);
+    EXPECT_EQ(ledger.charged, 0U);
+  }
+}
+
+TEST(PrefillLookaheadGroupTest, FailedCurrentUnitDestroysBothPlansUnderTheirOwnGrants) {
+  for (const bool explicit_abandon : {false, true}) {
+    Ledger ledger;
+    int destroyed = 0;
+    {
+      FutureGroup futures(
+          1024, [&](auto bytes, bool required) { return ledger.account.Charge(bytes, required); },
+          [&](auto bytes) { ledger.account.Uncharge(bytes); });
+      ASSERT_TRUE(futures.Fund(0));
+      ASSERT_TRUE(futures.Fund(1));
+      EXPECT_EQ(futures.BuildAll([&](std::size_t) -> FutureResult {
+        return std::make_unique<FuturePlan>(ledger, 1024, destroyed);
+      }),
+                (std::array{true, true}));
+      if (explicit_abandon) {
+        futures.Abandon();
+        EXPECT_EQ(destroyed, 2);
+        EXPECT_EQ(ledger.charged, 0U);
+      }
+    }
+    EXPECT_EQ(destroyed, 2);
+    EXPECT_EQ(ledger.charged, 0U);
+  }
+}
+
+TEST(PrefillLookaheadGroupTest, OrderedCacheTransferProtectsTheFirstFromTheSecondCharge) {
+  Ledger ledger;
+  int destroyed = 0;
+  en::PlanCache<int, FuturePlan> cache(&ledger.account);
+  std::uint64_t first = 0;
+  ledger.account.Bind(
+      [&](auto bytes, bool required) {
+        // The second Add can reclaim, but the first newly installed plan is
+        // protected by this current PlanStep, without an extra Find.
+        if (required && first != 0) EXPECT_EQ(cache.Reclaim(ReclaimKind::kPlan, first), 0U);
+        ledger.charged += bytes;
+        return true;
+      },
+      [&](auto bytes) { ledger.charged -= bytes; });
+  {
+    const en::PlanStep step;
+    FutureGroup futures(
+        1024, [&](auto bytes, bool required) { return ledger.account.Charge(bytes, required); },
+        [&](auto bytes) { ledger.account.Uncharge(bytes); });
+    ASSERT_TRUE(futures.Fund(0));
+    ASSERT_TRUE(futures.Fund(1));
+    EXPECT_EQ(futures.BuildAll([&](std::size_t) -> FutureResult {
+      return std::make_unique<FuturePlan>(ledger, 512, destroyed);
+    }),
+              (std::array{true, true}));
+    EXPECT_EQ(futures.InstallAfterCompletion([&](std::size_t i, auto planned, double seconds,
+                                                 const auto& transfer) {
+      transfer();
+      auto& entry = cache.Add(static_cast<int>(i), std::move(planned), 512, 1, seconds);
+      if (i == 0) first = entry.serial;
+      return true;
+    }),
+              (std::array{true, true}));
+    EXPECT_EQ(cache.size(), 2U);
+    EXPECT_EQ(ledger.charged, 1024U);
+  }
+  cache.Clear();
+  EXPECT_EQ(destroyed, 2);
+  EXPECT_EQ(ledger.charged, 0U);
+}
+
 TEST(PlanCacheTest, KeepsEveryShapeAndChargesWhatEachHolds) {
   Ledger ledger;
   Cache cache(&ledger.account);

@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Build two distinct future prefill shapes with independent shared funding
+  for Gemma2/Gemma3, enabling cold changing-width graph capture without
+  advancing future state. Configured 256-row and ordinary 128-row controls remain exact.
+
 - Reduce shared completion wake/queue-lock work and qualify an internal
   partial-weight swap foundation with missing-only reads and exact recovery.
   Ordinary serving keeps full swaps because the cold-switch floor is unmet.

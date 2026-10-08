@@ -39,6 +39,9 @@ struct Gemma2Options {
   bool graphs = true, frontier_head = true;
   // Ordinary prefill lookahead and capture; false retains matched controls.
   bool prefill_lookahead = true, capture_ahead = true;
+  // Build at most two distinct missing future shapes. One retains the
+  // internal matched reference; no future state is initialized.
+  std::uint32_t prefill_lookahead_capacity = 2;
   bool owner_decode = false, packed_prefill = false;
   // Copy-free C2 prefill; false retains the packed control.
   bool owner_prefill = true;
@@ -158,7 +161,8 @@ class Gemma2Runner final : public PagedModel {
                      std::optional<bool> after_want_head = true);
   struct LookaheadStats {
     std::uint64_t attempted = 0, built = 0, cached = 0, refused = 0;
-    std::uint64_t captured_first = 0;  // shapes captured on their first run
+    std::uint64_t built_pairs = 0, cached_pairs = 0;  // two distinct futures in one unit
+    std::uint64_t captured_first = 0;                 // shapes captured on their first run
     std::uint64_t captured_ahead = 0;  // graphs captured before their plan's first run
     std::uint64_t dropped_ahead = 0;   // of those, dropped as their staging differed
     double build_seconds = 0;

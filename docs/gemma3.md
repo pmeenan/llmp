@@ -207,8 +207,12 @@ control checks 32 choices, exact initialized state and final heads, plus
 two-slot alias/mixed-publication refusals before state mutation. At that C1
 snapshot only one slot executes; the later C2 control executes both slots and
 checks both initialized states. Device masks and prefill lookahead with graphs captured ahead have since landed
-([report](experiments/gemma3-execution/README.md#prefill-lookahead-and-graphs-captured-ahead-2026-10-07));
-broader optimized batching remains later work.
+([report](experiments/gemma3-execution/README.md#prefill-lookahead-and-graphs-captured-ahead-2026-10-07)).
+The [shared two-future group](experiments/prefill-transfer/README.md#two-distinct-future-shapes-2026-10-08)
+now selects two independently funded missing next/after plans. The short cold 256-row
+screen is neutral; a longer compatible 4096-context C2 screen improves prefill
+0.257%, with exact heads/state and focused restart controls. Ordinary chunks
+stay 128; broader optimized batching remains later work.
 An explicit internal `depth` mode now checks context 8448 with an exact 8192-token
 prefix and 64-token continuation, including initialized-state hashes, graph
 retention through spill/restore, captured continuation replay and a fixed stock

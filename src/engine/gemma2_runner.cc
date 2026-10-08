@@ -44,6 +44,8 @@ kg::DeviceChoices Gemma2Runner::Choices(kg::LaunchContext& launch) const {
 Status Gemma2Runner::Setup() {
   if (setup_started_ || released_) return Error("Gemma2 setup is not repeatable");
   setup_started_ = true;
+  if (o_.prefill_lookahead_capacity < 1 || o_.prefill_lookahead_capacity > 2)
+    return Error("Gemma2 lookahead capacity must be one or two");
   if ((o_.slots != 1 && o_.slots != 2) || o_.slots > o_.max_rows || o_.max_rows >= o_.context)
     return Error("Gemma2 runner requires one or two bounded slots/chunk");
   const auto wave_rows = o_.max_wave_rows == 0 ? o_.max_rows : o_.max_wave_rows;
@@ -810,6 +812,28 @@ Status Gemma2Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
       known[k] = true;
     }
   }
+  // Protect all cached predictions before any optional capture/plan charge.
+  // Full shape equality includes cohort, output mode and padded cache widths;
+  // positions themselves remain runtime inputs. Deduplicate before funding.
+  std::array<Plans::Entry*, 2> ahead_cached{};
+  std::array<bool, 2> distinct{};
+  for (std::size_t k = 0; k < ahead.size(); ++k) {
+    if (!known[k]) continue;
+    if (ahead[k] == shape) {
+      ahead_cached[k] = &entry;
+      continue;
+    }
+    bool duplicate = false;
+    for (std::size_t prior = 0; prior < k; ++prior)
+      if (known[prior] && ahead[k] == ahead[prior]) {
+        ahead_cached[k] = ahead_cached[prior];
+        duplicate = true;
+        break;
+      }
+    if (duplicate) continue;
+    distinct[k] = true;
+    ahead_cached[k] = plans_.Find(ahead[k]);
+  }
   auto& runs = entry.runs[0];
   // A graph captured ahead holds the layout its plan's inputs predicted;
   // one that differs from what was staged is dropped (Settle returns its
@@ -837,7 +861,7 @@ Status Gemma2Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
   Copies upcoming_copies;
   std::array<RunCopy, 1> upcoming_output{};
   if (o_.capture_ahead && known[0] && !repeats && runs_.graphs()) {
-    upcoming = plans_.Find(ahead[0]);
+    upcoming = ahead_cached[0];
     const Gemma2Planned* u = upcoming == nullptr ? nullptr : upcoming->planned.get();
     auto layout =
         u == nullptr ? std::expected<Copies, std::string>{} : runs_.Layout(u->graph.inputs, 0);
@@ -851,33 +875,37 @@ Status Gemma2Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
                               std::uint64_t{ahead[0].outputs} * profile_.vocab * sizeof(float)};
     }
   }
-  // The first upcoming shape not yet planned: its descriptors built beside
-  // this chunk's device run (CPU only: BindPlanned's scratch queries call
-  // CUDA, so binding, coverage and caching wait for the job's completion),
-  // with the largest plan's host bytes funded before any of its allocations.
-  const kg::Gemma2ChunkShape* build = nullptr;
+  // Independent optional grants for distinct missing near/far shapes. All
+  // cached predictions above are protected throughout these callbacks.
+  std::array<const kg::Gemma2ChunkShape*, 2> build{};
+  std::size_t build_count = 0;
   if (o_.prefill_lookahead && node_.threaded())
-    for (std::size_t k = 0; k < ahead.size() && build == nullptr; ++k)
-      // Find examines capture state: before the job can change it.
-      if (known[k] && !(ahead[k] == shape) && plans_.Find(ahead[k]) == nullptr) build = &ahead[k];
-  PrefillLookahead<Gemma2Planned> future(node_, plan_floor_bytes_);
-  if (build != nullptr) {
+    for (std::size_t k = 0; k < ahead.size() && build_count < o_.prefill_lookahead_capacity; ++k)
+      if (distinct[k] && ahead_cached[k] == nullptr) build[build_count++] = &ahead[k];
+  PrefillLookaheadGroup<Gemma2Planned, 2> future(node_, plan_floor_bytes_);
+  bool funded = false;
+  for (std::size_t i = 0; i < build_count; ++i) {
     ++lookahead_.attempted;
-    if (!future.Fund()) {
+    if (!future.Fund(i)) {
       ++lookahead_.refused;
-      build = nullptr;
+      build[i] = nullptr;
+    } else {
+      funded = true;
     }
   }
-  const auto choices = build != nullptr ? Choices(resources_.launch()) : kg::DeviceChoices{};
-  const std::function<void()> meanwhile = build != nullptr ? std::function<void()>([&] {
-    if (future.Build([&] {
-          return PlanGemma2Chunk(model_, *build, choices, node_.activations().base,
-                                 node_.activations().bytes);
-        }))
-      ++lookahead_.built;
-    lookahead_.build_seconds += future.seconds();
+  const auto choices = funded ? Choices(resources_.launch()) : kg::DeviceChoices{};
+  const std::function<void()> meanwhile = funded ? std::function<void()>([&] {
+    const auto built = future.BuildAll([&](std::size_t i) {
+      return PlanGemma2Chunk(model_, *build[i], choices, node_.activations().base,
+                             node_.activations().bytes);
+    });
+    for (std::size_t i = 0; i < built.size(); ++i) {
+      lookahead_.built += built[i];
+      lookahead_.build_seconds += future.seconds(i);
+    }
+    lookahead_.built_pairs += built[0] && built[1];
   })
-                                                           : std::function<void()>{};
+                                                 : std::function<void()>{};
   std::array<RunCopy, 1> output{};
   if (greedy)
     output[0] = {Address(logits_), Address(p.graph.greedy->data),
@@ -929,10 +957,12 @@ Status Gemma2Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
     if (!queued) return queued;
     return !posted ? posted : Error("Gemma2 launch context faulted");
   }
-  if (future.InstallAfterCompletion([&](auto planned, double seconds, const auto& transfer) {
-        return CachePlanned(*build, std::move(planned), seconds, transfer);
-      }))
-    ++lookahead_.cached;
+  const auto installed = future.InstallAfterCompletion(
+      [&](std::size_t i, auto planned, double seconds, const auto& transfer) {
+        return CachePlanned(*build[i], std::move(planned), seconds, transfer);
+      });
+  for (const bool cached : installed) lookahead_.cached += cached;
+  lookahead_.cached_pairs += installed[0] && installed[1];
   lookahead_.captured_first += capture_first && path == RunPath::kCaptured;
   Count(graph_stats_, path);
   if (greedy)

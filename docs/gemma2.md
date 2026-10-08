@@ -236,7 +236,10 @@ that measured warm gap for this workload.
 ## Prefill lookahead and joined hints
 
 Ordinary serving now uses the shared funded lookahead lifecycle and captures
-future prefill graphs. The same checkpoint-aware hint calculator feeds scalar
+future prefill graphs. Its fixed shared group builds up to two distinct missing
+next/after shapes, with independent optional funding and completed-unit
+installation; [cold 256-row and warm 128-row controls](experiments/prefill-transfer/README.md#two-distinct-future-shapes-2026-10-08)
+retain exact heads/state and kept restart. The same checkpoint-aware hint calculator feeds scalar
 and compatible two-owner prompts; hints describe shapes without preparing
 future state. Mixed future head modes suppress only that stage, and completed
 owners leave later cohorts independently.

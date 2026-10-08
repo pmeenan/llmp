@@ -385,7 +385,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T69** Shared GPU-mask construction contract: target raw exact-row
           adapter adopted; DSpark block and compressed visible-count adapters
           remain open. Target-only work does not close this composite item.
-        - [ ] **T70** Shared lookahead/capture hook.
+        - [ ] **T70** Shared lookahead/capture hook, including compatible
+          fixed-capacity future groups under family descriptors.
         - [ ] **T78** BF16 multirow vector alternative.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.
         - [ ] **T88** Share compatible HC matrix products.
@@ -412,7 +413,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T68** Evict only incoming closure deficit.
         - [x] **T69** Shared dtype-authenticated exact-row producer/source/funding
           contract; selection metadata and RE-037 consumer limits preserved.
-        - [ ] **T70** Shared lookahead/capture hook.
+        - [ ] **T70** Shared lookahead/capture hook, including compatible
+          fixed-capacity future groups under family descriptors.
         - [ ] **T72** Expert worklist sharing across vector products.
       - **Qwen3.8 GGUF / target**
         - [ ] **T03** Sparse query-union KV reuse.
@@ -439,7 +441,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T68** Evict only incoming closure deficit.
         - [x] **T69** Shared dtype-authenticated exact-row producer/source/funding
           contract; selection metadata and RE-037 consumer limits preserved.
-        - [ ] **T70** Shared lookahead/capture hook.
+        - [ ] **T70** Shared lookahead/capture hook, including compatible
+          fixed-capacity future groups under family descriptors.
         - [ ] **T72** Expert worklist sharing across vector products.
         - [ ] **T80** Qwen lower cache-read alignment.
         - [ ] **T89** Independent-state recurrent cohort kernel.
@@ -474,8 +477,9 @@ family" guide, and its long-context scaling work.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
           producer validation and padded host staging shared across Gemma plans;
           [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
-        - [x] **T70** Shared funded CPU-only next-plan lifecycle; optional
-          refusal preserves the completed prefix and releases its allowance.
+        - [x] **T70** Shared funded CPU-only next-plan lifecycle; two independent
+          future slots now protect/deduplicate complete keys before optional
+          capture charges. Refusal preserves the completed prefix/other slot.
         - [ ] **T86** Grouped physical KV stores.
         - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
           exact heads/state and actual serving/restart controls pass.
@@ -484,7 +488,8 @@ family" guide, and its long-context scaling work.
           ordinary chunks stay 128. Extend compatible >256 rows, public
           larger-chunk admission, mixed-width roots and other cohorts
           with explicit bounds/funding, original geometry and recipient checks.
-          Extend cold changing-key capture with a shared two-future lifecycle.
+          Cold changing-key capture now uses two shared funded futures;
+          exact three-wave 256-row state/checkpoint/restart and warm 128-row controls pass.
       - **Gemma3 4B QAT**
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T11** Reuse decode Q8 quantization.
@@ -500,8 +505,9 @@ family" guide, and its long-context scaling work.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
           producer validation and padded host staging shared across Gemma plans;
           [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
-        - [x] **T70** Shared funded host-only next-plan lifecycle; family
-          prediction/capture policy unchanged. [Focused controls](experiments/prefill-transfer/README.md).
+        - [x] **T70** Shared funded host-only next-plan lifecycle; two independently
+          funded next/after shapes now enable cold changing-width capture.
+          [Focused controls](experiments/prefill-transfer/README.md).
         - [ ] **T86** Grouped physical KV stores.
         - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
           exact heads/state and actual serving/restart controls pass.
@@ -510,7 +516,8 @@ family" guide, and its long-context scaling work.
           ordinary chunks stay 128. Extend compatible >256 rows, public
           larger-chunk admission, mixed-width roots and other cohorts
           with explicit bounds/funding, original geometry and recipient checks.
-          Extend cold changing-key capture with a shared two-future lifecycle.
+          Cold changing-key capture now uses two shared funded futures;
+          exact three-wave 256-row state/checkpoint/restart and warm 128-row controls pass.
           The 64-row diagnostic host-mask/no-hint recipe remains +2.290%
           prefill / +1.813% paid. One matched timeline finds little active-work
           excess and distributed replay/capture gaps; no cause is established.
@@ -607,8 +614,9 @@ family" guide, and its long-context scaling work.
       Identical-input cross-owner differences also occur in packed controls;
       their baseline cause is unresolved, while each packed/root owner is exact.
       Public chunks stay 128. T93 tracks compatible >256 rows, mixed widths,
-      larger admission and the cold two-future capture pipeline; warm capture
-      already works at 256. T92 tracks DeepSeek reference bank joins.
+      larger admission; the cold two-future capture pipeline is now qualified
+      for G2/G3 with exact three-wave 256-row/restart and ordinary 128-row warm
+      controls. T92 tracks DeepSeek reference bank joins.
       Selector bounds do not close ports.
       Confirm every open matrix consumer has its own checked result before
       closing this parent. T68 now has the internal shared foundation and

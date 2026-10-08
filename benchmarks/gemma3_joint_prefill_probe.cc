@@ -89,7 +89,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }  // namespace
 int main(int argc, char** argv) {
   if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") ||
-      (argc < 6 || argc > 13))
+      (argc < 6 || argc > 14))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -104,7 +104,8 @@ int main(int argc, char** argv) {
     return status ? 0 : 1;
   }
   bool bounded = false, owner_prefill = false;
-  bool flexible = false, have_chunk = false, stock_ring = false;
+  bool flexible = false, have_chunk = false, stock_ring = false, have_capacity = false;
+  std::uint32_t lookahead_capacity = 1;
   bool device_masks = false, prefill_ahead = false;
   std::uint32_t chunk = 128;
   for (int i = 6; i < argc; ++i) {
@@ -121,7 +122,15 @@ int main(int argc, char** argv) {
       device_masks = true;
     else if (flag == "prefill-ahead" && !prefill_ahead)
       prefill_ahead = true;
-    else if (flag.starts_with("chunk=") && !have_chunk) {
+    else if (flag.starts_with("lookahead-capacity=") && !have_capacity) {
+      const auto number = flag.substr(19);
+      const auto parsed =
+          std::from_chars(number.data(), number.data() + number.size(), lookahead_capacity);
+      if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() ||
+          lookahead_capacity < 1 || lookahead_capacity > 2)
+        return 2;
+      have_capacity = true;
+    } else if (flag.starts_with("chunk=") && !have_chunk) {
       const auto number = flag.substr(6);
       const auto parsed = std::from_chars(number.data(), number.data() + number.size(), chunk);
       if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || chunk < 2 ||
@@ -132,11 +141,13 @@ int main(int argc, char** argv) {
       return 2;
   }
   if (flexible && !owner_prefill) return 2;
+  if (have_capacity && !prefill_ahead) return 2;
   if (stock_ring && chunk != 256) return 2;
   // Match stock's joined ubatch allowance for this explicit comparison only.
   const auto state_rows = stock_ring ? 2 * chunk : chunk;
   const std::string mode = argv[5];
-  const bool own = mode == "own", cycle = mode == "cycle";
+  const bool own = mode == "own", first_cycle = mode == "first-cycle";
+  const bool cycle = mode == "cycle" || first_cycle;
   if (!own && !cycle) return 2;
   std::array<std::vector<std::int32_t>, 2> ids;
   std::array<std::uint32_t, 2> prefix{};
@@ -163,27 +174,28 @@ int main(int argc, char** argv) {
   };
   auto life = std::make_unique<Lifetime>();
   auto& node = life->node;
-  life->runner =
-      std::make_unique<en::Gemma3Runner>(node,
-                                         en::Gemma3Options{.artifact = argv[1],
-                                                           .out = out,
-                                                           .max_rows = state_rows,
-                                                           .slots = 2,
-                                                           .max_wave_rows = 2 * chunk,
-                                                           .max_head_rows = 2,
-                                                           .owner_decode = true,
-                                                           .packed_prefill = true,
-                                                           .owner_prefill = owner_prefill,
-                                                           .flexible_owner_prefill = flexible,
-                                                           .bounded_roots = bounded,
-                                                           .device_masks = device_masks,
-                                                           .fuse_norms = true,
-                                                           .fuse_quant_glu = true,
-                                                           .fuse_norm_rope = true,
-                                                           .fuse_norm_add = true,
-                                                           .prefill_lookahead = prefill_ahead,
-                                                           .capture_ahead = prefill_ahead},
-                                         0, 0);
+  life->runner = std::make_unique<en::Gemma3Runner>(
+      node,
+      en::Gemma3Options{.artifact = argv[1],
+                        .out = out,
+                        .max_rows = state_rows,
+                        .slots = 2,
+                        .max_wave_rows = 2 * chunk,
+                        .max_head_rows = 2,
+                        .owner_decode = true,
+                        .packed_prefill = true,
+                        .owner_prefill = owner_prefill,
+                        .flexible_owner_prefill = flexible,
+                        .bounded_roots = bounded,
+                        .device_masks = device_masks,
+                        .fuse_norms = true,
+                        .fuse_quant_glu = true,
+                        .fuse_norm_rope = true,
+                        .fuse_norm_add = true,
+                        .prefill_lookahead = prefill_ahead,
+                        .capture_ahead = prefill_ahead,
+                        .prefill_lookahead_capacity = lookahead_capacity},
+      0, 0);
   auto& runner = *life->runner;
   std::array<std::vector<float>, 2> heads;
   for (auto& head : heads) head.reserve(kVocab);
@@ -324,12 +336,12 @@ int main(int argc, char** argv) {
     if (auto r = runner.Setup(); !r) return r;
     if (stock_ring && runner.layout().local_cells != 1536)
       return Error("stock ring diagnostic requires 1536 local cells");
-    if (own) {
-      std::vector<jitllm::catalog::ExtentId> extents;
-      auto allocation = node.Pinned(kCopy, 0, extents);
-      if (!allocation) return Error(allocation.error());
-      pinned = *allocation;
-    }
+    // Final initialized-state hashes are outside paid spans in every mode.
+    // Register their bounded copy buffer before computing the startup budget.
+    std::vector<jitllm::catalog::ExtentId> snapshot_extents;
+    auto allocation = node.Pinned(kCopy, 0, snapshot_extents);
+    if (!allocation) return Error(allocation.error());
+    pinned = *allocation;
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     node.SetHostFloor(runner.host_input_bytes() + runner.plan_floor_bytes() + (16ULL << 20U));
@@ -344,7 +356,7 @@ int main(int argc, char** argv) {
       if (!node.InRequest(0)) return Error("held direct request required");
       const std::array<std::uint32_t, 2> slots{0, 1};
       if (auto r = runner.SelectSlots(slots); !r) return r;
-      if (cycle) {
+      if (cycle && !first_cycle) {
         if (auto r = prompt(true); !r) return r;
         if (auto r = warm(true); !r) return r;
         for (std::uint32_t i = 0; i < 8; ++i) {
@@ -363,6 +375,18 @@ int main(int argc, char** argv) {
         std::cout << "warm_retained_state_extents=" << warm_state.size()
                   << " warm_retained_plan_bytes=" << warm_plans
                   << " warm_retained_graphs=" << warm_graphs << '\n';
+      } else if (first_cycle) {
+        // Load weights without traversing any paid prefill shape. Clear retains
+        // only short state backing; remaining growth, plans and captures are paid.
+        for (std::uint32_t s = 0; s < 2; ++s)
+          if (auto r = independent(s, std::span(ids[s]).first(std::min(3U, chunk)), true, true); !r)
+            return r;
+        if (auto r = clear(); !r) return r;
+        runner.DropPlans();
+        if (runner.plans_bytes() != 0 || runner.graph_count() != 0 || past != std::array{0U, 0U} ||
+            runner.greedy_tokens() != 2)
+          return Error("cold first traversal retained plans, captures or positions");
+        std::cout << "cold_seed_rows_per_slot=3 cold_plan_bytes=0 cold_graphs=0\n";
       }
       const auto graph_before = runner.graph_stats();
       const auto ahead_before = runner.lookahead_stats();
@@ -522,13 +546,17 @@ int main(int argc, char** argv) {
         if (auto r = Save<char>(out / "state.json", record); !r) return r;
         if (runner.greedy_tokens() != 78) return Error("C2 own GPU publication count differs");
       }
-      if (cycle && runner.greedy_tokens() != 88)
+      if (cycle && runner.greedy_tokens() != (first_cycle ? 72U : 88U))
         return Error("C2 cycle GPU publication count differs");
       if (auto r = Save<std::int32_t>(out / "chosen.i32", choices); !r) return r;
       std::vector<float> final;
       final.reserve(kVocab * 2);
       for (const auto& head : heads) final.insert(final.end(), head.begin(), head.end());
       if (auto r = Save<float>(out / "final.f32", final); !r) return r;
+      const auto final_state = snapshot();
+      if (!final_state) return Error(final_state.error());
+      for (std::size_t s = 0; s < final_state->size(); ++s)
+        std::cout << "final_state" << s << "=" << (*final_state)[s] << '\n';
       const auto& stats = runner.graph_stats();
       const auto& bound = runner.plan_selections();
       if (!prefill_groups ||
@@ -557,6 +585,8 @@ int main(int argc, char** argv) {
           << " paid_prefill_replayed=" << graph_prefill.replayed - graph_before.replayed
           << " paid_prefill_built=" << ahead_prefill.built - ahead_before.built
           << " paid_prefill_cached=" << ahead_prefill.cached - ahead_before.cached
+          << " paid_prefill_built_pairs=" << ahead_prefill.built_pairs - ahead_before.built_pairs
+          << " paid_prefill_cached_pairs=" << ahead_prefill.cached_pairs - ahead_before.cached_pairs
           << " paid_prefill_first=" << ahead_prefill.captured_first - ahead_before.captured_first
           << " paid_prefill_ahead=" << ahead_prefill.captured_ahead - ahead_before.captured_ahead
           << " eager=" << stats.eager << " captured=" << stats.captured
@@ -565,7 +595,9 @@ int main(int argc, char** argv) {
           << " owner_prefill=" << owner_prefill << " flexible_owner_prefill=" << flexible
           << " selected_owner_prefill=" << bound.owner_prefill_attention
           << " device_masks=" << device_masks << " selected_device_masks=" << bound.device_masks
-          << " prefill_ahead=" << prefill_ahead
+          << " prefill_ahead=" << prefill_ahead << " lookahead_capacity=" << lookahead_capacity
+          << " lookahead_refused=" << runner.lookahead_stats().refused
+          << " dropped_ahead=" << runner.lookahead_stats().dropped_ahead
           << " lookahead_built=" << runner.lookahead_stats().built
           << " lookahead_cached=" << runner.lookahead_stats().cached
           << " lookahead_captured_ahead=" << runner.lookahead_stats().captured_ahead

@@ -4,7 +4,9 @@
 #ifndef JITLLM_ENGINE_PREFILL_LOOKAHEAD_H_
 #define JITLLM_ENGINE_PREFILL_LOOKAHEAD_H_
 
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -92,6 +94,61 @@ class PrefillLookahead {
   bool funded_ = false;
   bool built_ = false;
   bool finished_ = false;
+};
+
+// A fixed number of independent optional plans, ordered nearest first. Each
+// slot keeps the single-plan funding/destruction contract. The family deduplicates
+// complete shapes and protects cached predictions before optional funding.
+// BuildAll runs sequentially in one host callback; a later refusal never prevents
+// an earlier ready plan from being installed after the current unit succeeds.
+template <typename Planned, std::size_t Capacity>
+class PrefillLookaheadGroup {
+ public:
+  static_assert(Capacity > 0);
+  PrefillLookaheadGroup(PagedNode& node, std::uint64_t allowance)
+      : PrefillLookaheadGroup(
+            allowance,
+            [&node](std::uint64_t bytes, bool required) {
+              return node.ChargeHost(bytes, required);
+            },
+            [&node](std::uint64_t bytes) { node.UnchargeHost(bytes); }) {}
+  PrefillLookaheadGroup(std::uint64_t allowance, const PlanAccount::ChargeFn& charge,
+                        const PlanAccount::ReleaseFn& release)
+      : PrefillLookaheadGroup(allowance, charge, release, std::make_index_sequence<Capacity>{}) {}
+
+  bool Fund(std::size_t index) { return index < Capacity && slots_[index].Fund(); }
+
+  template <typename BuildFn>
+  std::array<bool, Capacity> BuildAll(BuildFn&& build) {
+    std::array<bool, Capacity> built{};
+    for (std::size_t i = 0; i < Capacity; ++i) built[i] = slots_[i].Build([&] { return build(i); });
+    return built;
+  }
+
+  double seconds(std::size_t index) const { return index < Capacity ? slots_[index].seconds() : 0; }
+
+  template <typename InstallFn>
+  std::array<bool, Capacity> InstallAfterCompletion(InstallFn&& install) {
+    std::array<bool, Capacity> installed{};
+    for (std::size_t i = 0; i < Capacity; ++i)
+      installed[i] =
+          slots_[i].InstallAfterCompletion([&](auto planned, double seconds, const auto& transfer) {
+            return install(i, std::move(planned), seconds, transfer);
+          });
+    return installed;
+  }
+
+  void Abandon() {
+    for (auto& slot : slots_) slot.Abandon();
+  }
+
+ private:
+  template <std::size_t... Index>
+  PrefillLookaheadGroup(std::uint64_t allowance, const PlanAccount::ChargeFn& charge,
+                        const PlanAccount::ReleaseFn& release, std::index_sequence<Index...>)
+      : slots_{((void)Index, PrefillLookahead<Planned>(allowance, charge, release))...} {}
+
+  std::array<PrefillLookahead<Planned>, Capacity> slots_;
 };
 
 }  // namespace jitllm::engine

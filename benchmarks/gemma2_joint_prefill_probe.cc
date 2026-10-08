@@ -89,7 +89,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }  // namespace
 int main(int argc, char** argv) {
   if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") ||
-      (argc < 6 || argc > 13))
+      (argc < 6 || argc > 14))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -104,7 +104,8 @@ int main(int argc, char** argv) {
     return status ? 0 : 1;
   }
   bool bounded = false, device_masks = false, prefill_ahead = false, owner_prefill = false;
-  bool flexible = false, have_chunk = false, stock_ring = false;
+  bool flexible = false, have_chunk = false, stock_ring = false, have_capacity = false;
+  std::uint32_t lookahead_capacity = 1;
   std::uint32_t chunk = 128;
   for (int arg = 6; arg < argc; ++arg) {
     const std::string_view flag = argv[arg];
@@ -120,7 +121,15 @@ int main(int argc, char** argv) {
       flexible = true;
     else if (flag == "stock-ring" && !stock_ring)
       stock_ring = true;
-    else if (flag.starts_with("chunk=") && !have_chunk) {
+    else if (flag.starts_with("lookahead-capacity=") && !have_capacity) {
+      const auto number = flag.substr(19);
+      const auto parsed =
+          std::from_chars(number.data(), number.data() + number.size(), lookahead_capacity);
+      if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() ||
+          lookahead_capacity < 1 || lookahead_capacity > 2)
+        return 2;
+      have_capacity = true;
+    } else if (flag.starts_with("chunk=") && !have_chunk) {
       const auto number = flag.substr(6);
       const auto parsed = std::from_chars(number.data(), number.data() + number.size(), chunk);
       if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || chunk < 2 ||
@@ -131,6 +140,7 @@ int main(int argc, char** argv) {
       return 2;
   }
   if (flexible && !owner_prefill) return 2;
+  if (have_capacity && !prefill_ahead) return 2;
   if (stock_ring && chunk != 256) return 2;
   // Diagnostic capacity control: actual calls stay at chunk, while the
   // per-owner descriptor envelope reproduces stock's total-ubatch SWA ring.
@@ -164,28 +174,29 @@ int main(int argc, char** argv) {
   };
   auto life = std::make_unique<Lifetime>();
   auto& node = life->node;
-  life->runner =
-      std::make_unique<en::Gemma2Runner>(node,
-                                         en::Gemma2Options{.artifact = argv[1],
-                                                           .out = out,
-                                                           .context = 8192,
-                                                           .max_rows = state_rows,
-                                                           .slots = 2,
-                                                           .max_wave_rows = 2 * chunk,
-                                                           .max_head_rows = 2,
-                                                           .prefill_lookahead = prefill_ahead,
-                                                           .capture_ahead = prefill_ahead,
-                                                           .owner_decode = true,
-                                                           .packed_prefill = true,
-                                                           .owner_prefill = owner_prefill,
-                                                           .flexible_owner_prefill = flexible,
-                                                           .device_masks = device_masks,
-                                                           .bounded_roots = bounded,
-                                                           .fuse_norms = true,
-                                                           .fuse_quant_glu = true,
-                                                           .fuse_norm_rope = false,
-                                                           .fuse_norm_add = true},
-                                         0, 0);
+  life->runner = std::make_unique<en::Gemma2Runner>(
+      node,
+      en::Gemma2Options{.artifact = argv[1],
+                        .out = out,
+                        .context = 8192,
+                        .max_rows = state_rows,
+                        .slots = 2,
+                        .max_wave_rows = 2 * chunk,
+                        .max_head_rows = 2,
+                        .prefill_lookahead = prefill_ahead,
+                        .capture_ahead = prefill_ahead,
+                        .prefill_lookahead_capacity = lookahead_capacity,
+                        .owner_decode = true,
+                        .packed_prefill = true,
+                        .owner_prefill = owner_prefill,
+                        .flexible_owner_prefill = flexible,
+                        .device_masks = device_masks,
+                        .bounded_roots = bounded,
+                        .fuse_norms = true,
+                        .fuse_quant_glu = true,
+                        .fuse_norm_rope = false,
+                        .fuse_norm_add = true},
+      0, 0);
   auto& runner = *life->runner;
   std::array<std::vector<float>, 2> heads;
   for (auto& head : heads) head.reserve(kVocab);
@@ -326,12 +337,12 @@ int main(int argc, char** argv) {
     if (auto r = runner.Setup(); !r) return r;
     if (stock_ring && runner.layout().local_cells != 4608)
       return Error("matched stock ring capacity differs");
-    if (own) {
-      std::vector<jitllm::catalog::ExtentId> extents;
-      auto allocation = node.Pinned(kCopy, 0, extents);
-      if (!allocation) return Error(allocation.error());
-      pinned = *allocation;
-    }
+    // Final initialized-state hashes are outside paid spans in every mode.
+    // Register their bounded copy buffer before computing the startup budget.
+    std::vector<jitllm::catalog::ExtentId> snapshot_extents;
+    auto allocation = node.Pinned(kCopy, 0, snapshot_extents);
+    if (!allocation) return Error(allocation.error());
+    pinned = *allocation;
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     node.SetHostFloor(runner.host_input_bytes() + runner.plan_floor_bytes() + (16ULL << 20U));
@@ -550,6 +561,10 @@ int main(int argc, char** argv) {
       final.reserve(kVocab * 2);
       for (const auto& head : heads) final.insert(final.end(), head.begin(), head.end());
       if (auto r = Save<float>(out / "final.f32", final); !r) return r;
+      const auto final_state = snapshot();
+      if (!final_state) return Error(final_state.error());
+      for (std::size_t s = 0; s < final_state->size(); ++s)
+        std::cout << "final_state" << s << "=" << (*final_state)[s] << '\n';
       const auto& stats = runner.graph_stats();
       const auto& bound = runner.plan_selections();
       const auto& ahead = runner.lookahead_stats();
@@ -579,6 +594,8 @@ int main(int argc, char** argv) {
           << " paid_prefill_replayed=" << graph_prefill.replayed - graph_before.replayed
           << " paid_prefill_built=" << ahead_prefill.built - ahead_before.built
           << " paid_prefill_cached=" << ahead_prefill.cached - ahead_before.cached
+          << " paid_prefill_built_pairs=" << ahead_prefill.built_pairs - ahead_before.built_pairs
+          << " paid_prefill_cached_pairs=" << ahead_prefill.cached_pairs - ahead_before.cached_pairs
           << " paid_prefill_first=" << ahead_prefill.captured_first - ahead_before.captured_first
           << " paid_prefill_ahead=" << ahead_prefill.captured_ahead - ahead_before.captured_ahead
           << " eager=" << stats.eager << " captured=" << stats.captured
@@ -594,8 +611,9 @@ int main(int argc, char** argv) {
           << " selected_norm_rope=" << bound.norm_rope << " selected_norm_add=" << bound.norm_add
           << " joined_prefill_groups=" << prefill_groups << " joined_prefill_rows=" << prefill_rows
           << " gpu_tokens=" << runner.greedy_tokens() << " prefill_ahead=" << prefill_ahead
-          << " lookahead_built=" << ahead.built << " lookahead_cached=" << ahead.cached
-          << " lookahead_refused=" << ahead.refused << " captured_first=" << ahead.captured_first
+          << " lookahead_capacity=" << lookahead_capacity << " lookahead_built=" << ahead.built
+          << " lookahead_cached=" << ahead.cached << " lookahead_refused=" << ahead.refused
+          << " captured_first=" << ahead.captured_first
           << " captured_ahead=" << ahead.captured_ahead << " dropped_ahead=" << ahead.dropped_ahead
           << '\n';
       return {};

@@ -760,8 +760,8 @@ Raw samples remain external until milestone cleanup. Full regression remains
 deferred under the owner's override.
 
 T93 remains open for rows above 256, mixed-width roots, other compatible
-cohorts and public larger-chunk admission. Cold changing-key capture also
-remains open: warm capture already works, but the first traversal's
-one-missing-plan build cannot prime both distinct future shapes. A shared
-two-future funded lifecycle is the concrete next transfer, with installation
-only after current completion and no speculative state initialization.
+cohorts and public larger-chunk admission. Cold changing-key capture now uses the [shared two-future lifecycle](../prefill-transfer/README.md#two-distinct-future-shapes-2026-10-08):
+G2/G3 build both distinct eligible predictions, install only after current
+completion and never initialize speculative state. Configured 256-row cold
+prefill changes −0.545% for G2, is neutral on short G3 and improves 0.257%
+on longer compatible G3; the remaining T93 recipients above stay open.

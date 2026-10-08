@@ -182,3 +182,204 @@ At task entry, TensorFold native main was
 artifacts; the Python Gemma4 recipe is 26B/MLX. llama.cpp remains the applicable
 CUDA reference. The previous fresh Gemma2 reference pin is
 `d81235049384534c167caea52b85a694f6103d14`; no new reference run is claimed here.
+
+## Two distinct future shapes (2026-10-08)
+
+Gemma2 and Gemma3 now select capacity two, composing the existing optional
+lifecycle in a fixed `PrefillLookaheadGroup<Planned, 2>`. Their ordinary
+policy builds both eligible next and after-next missing shapes while the current device unit runs. This
+lets a cold 256-row traversal find the next graph ready to capture, instead
+of finding only its CPU plan. Gemma4 retains its existing single-future
+policy; no new Gemma26/31 performance result is claimed.
+
+Before any optional graph funding, each runner predicts complete shape keys,
+excludes the current shape and duplicate futures, and protects every cached
+future through the current `PlanStep`. Each missing prediction gets its own
+existing host allowance before allocation. CPU builds run sequentially in one
+meanwhile callback. Ready plans install near-to-far only after successful
+current completion; refusal of the second grant, build or insertion leaves
+an independently successful first plan installable. The first cache insertion
+stays protected during the second charge. Current failure installs neither
+plan and destroys both before their grants are released. Predictions never
+initialize future state or advance a cursor. No public context, batch or
+chunk admission limit changes.
+
+The representative factors use one process per arm in the fixed order
+capacity 1 / 2 / 2 / 1, with the same ELF, pinned SDK and actual first-resolved
+cuBLAS libraries. The `first-cycle` harness loads weights using three rows
+per owner, then completes Clear and drops all plans/graphs before paid
+prefill. Remaining state growth, CPU planning, binding, graph capture, device
+work and head publication remain paid. Decode is separate. Complete final
+initialized-state hashes, all 64 natural greedy choices and both finite full
+vocabulary heads match byte for byte across every arm of each factor.
+Snapshots use a common 8 MiB funded pinned buffer and run outside paid
+endpoints. Each process and installed supervisor positively retires; no new
+NVIDIA/kernel error appears.
+
+| Cold configured-256 C2 workload | Capacity 1 prefill seconds, bookends | Capacity 2 prefill seconds | Mean change | Capacity 1 bookend drift |
+| --- | --- | --- | --- | --- |
+| Gemma2, prefixes 4352/4864, context 8192 | 1.177670 / 1.174090 | 1.169700 / 1.169250 | −0.545% (6.405 ms) | −0.304% |
+| Gemma3, prefixes 1280/1536, context 4096 | 0.473840 / 0.468759 | 0.466613 / 0.469646 | −0.673% (3.170 ms) | −1.072% |
+| Gemma3, prefixes 3072/3584, same context 4096 | 1.060920 / 1.059260 | 1.058260 / 1.056470 | −0.257% (2.725 ms) | −0.156% |
+
+Gemma3's short comparison overlaps and is neutral at this sample size. The
+longer compatible context is measured directly; it does not require a wider
+public envelope. Gemma2 and longer Gemma3 have disjoint short ranges, but
+these remain modest n=2 effects, not sustained throughput or reference-parity
+claims. Prefill-plus-decode mean changes are −0.431%, −0.154% and −0.156%;
+separate decode changes of −0.202%, +0.354% and +0.060% are within noise.
+The factors are separate and are not pooled.
+
+Actual selection explains the narrow gain. Gemma2 builds/caches 16 future
+plans in either arm; capacity 2 installs one pair and captures/replays 15
+prefill graphs ahead, against one at capacity 1. Short Gemma3 builds/caches
+three futures and captures/replays two against zero. Longer Gemma3
+builds/caches eleven and captures/replays ten against one. Every capacity-2
+arm executes exactly one paired build/cache; capacity-1 arms execute none.
+No refused or dropped future is reported. The configured-256 screens use
+state max_rows 512 and the already checked stock-matched local capacities
+4608/1536, total wave rows 512; those are internal runner controls.
+
+The final focused qualification has **20 unique positive checks**, no errors,
+skips or disabled tests: nine shared lifecycle/group controls; two Gemma2
+refusal/departure controls; two Gemma3 wrong-hint/warm/departure controls;
+four real production-adapter and configured larger-root cases; and three
+unchanged Gemma26/31 policy/state controls. The larger-root cases execute
+three 256-row C2 waves, require a paired construction/cache and ahead
+capture/replay, compare complete packed/root heads and initialized states,
+then protect the peer through checkpoint restore and kept restart at 768
+positions with exact continuation at 769. Every intermediate cursor reflects
+only current completed work. Existing malformed/duplicate adoption refusals
+remain checked. No full regression suite runs for this slice.
+
+The candidate was merged onto `d468286ef2bfa0b9d3a04c8b293b64004d0e37d3`
+without changing the measured group/runner implementation. Current shared
+F16/F32 mask authentication retains the same Gemma F16 arithmetic and
+descriptors; the merged serving fixture preserves earlier direct-256 and
+optional-node state-read controls. The only production policy change after
+cold measurements is the default capacity of two; every factor explicitly
+sets capacity one or two. The final focused source manifest is
+`72ef05e0411468317948999f7e6983956fd1524ffdd36f0c3a34e602e368df0e`,
+checked aggregate
+`05e436b5fc28c443f673f6690759f0002234fcc86d8116238e8805fdcf6ac159`.
+The merged G2/G3 benchmark ELF identities are
+`c107fd86c51835046f7860821ce102eeac1f94495cc123e70e778a863fcc3f00`
+and `f71500abb583afc2f921b34d13000de387c4ebb7ad049fbdbf7537048d92b5e1`.
+
+The ordinary 128 retained-plan warm control uses the same approved short
+prefixes, context 8192/4096, state max_rows 128 and total-wave 256, with local
+capacities 4352/1280 and no stock-ring override. `cycle` executes a complete
+warm traversal and eight joined decode steps, then Clear retains nonempty
+backing/plans/graphs before the paid traversal. Capacity 1/2/2/1 uses one
+newly built ELF per family. No paid future build/cache/pair, optional
+first/ahead capture or eager path occurs; ordinary second-visit captures stay
+paid. All 64 choices, complete finite heads and initialized states remain exact.
+
+| Ordinary 128 retained-plan control | Capacity 1 prefill bookends | Capacity 2 prefill | Mean change | Old drift |
+| --- | --- | --- | --- | --- |
+| Gemma2 | 1.206860 / 1.209570 | 1.206250 / 1.203400 | −0.281% | +0.225% |
+| Gemma3 | 0.462252 / 0.461005 | 0.455457 / 0.460459 | −0.795% | −0.270% |
+
+Gemma2's paid prefill-plus-decode changes −0.177%; decode +0.039% is noise.
+Every arm performs three ordinary paid captures and 36 replays covering all 39
+prefill units, with 66 total warm+paid joined groups and 16896 joined rows.
+Gemma3's paid prefill-plus-decode changes −0.293%; its sub-millisecond mean
+decode difference is +0.198%, with no decode gain claim. Every arm performs
+three ordinary paid captures and ten replays covering all 13 prefill units,
+with 18 total warm+paid joined groups and 4608 joined rows.
+These short controls establish no meaningful warm regression, not a
+sustained warm speedup. The initial G2 attempt stopped after one successful,
+retired native arm because the controller incorrectly required zero ordinary
+paid captures. `PlanRuns::CaptureDue` deliberately captures on a retained
+plan's second eager visit; that normal behavior remains paid and recorded in
+the corrected control. The first attempt is preserved separately and is not
+pooled; there is no added warmup or production source change.
+
+Warm checked aggregates are
+`ba51484bdb28c9e4056da273b051e6211e8d49ce8f93efcd46a4012238939b70`
+and `2fc95dac3fe80fdab27ee0d79f3142e35f4a7163c132768ec7f3f77f66094d87`.
+To reproduce the warm control, use the same fixed
+capacity 1/2/2/1 order and approved short IDs, change mode to `cycle` and chunk
+to `chunk=128`, and omit `stock-ring`. Require actual retained state/plans/graphs,
+88 GPU-token publications, positive replay, complete logical-work accounting,
+exact outputs/state and positive retirement. Ordinary second-visit captures
+must be reported rather than falsely excluded from the paid interval.
+
+
+Separate decode samples remain part of the paid sum:
+
+| Workload | Capacity 1 decode seconds, bookends | Capacity 2 decode seconds | Decode mean change | Paid prefill + decode mean change |
+| --- | --- | --- | --- | --- |
+| G2 cold 256-row | 0.587177 / 0.584801 | 0.584217 / 0.585389 | -0.202% | -0.431% |
+| G3 short cold 256-row | 0.480195 / 0.480950 | 0.482409 / 0.482139 | +0.354% | -0.154% |
+| G3 long cold 256-row | 0.494101 / 0.492866 | 0.492826 / 0.494735 | +0.060% | -0.156% |
+| G2 warm 128-row | 0.580737 / 0.580422 | 0.580592 / 0.581019 | +0.039% | -0.177% |
+| G3 warm 128-row | 0.471463 / 0.471974 | 0.472784 / 0.472519 | +0.198% | -0.293% |
+
+Adding each decode sample to the corresponding prefill sample above
+reconstructs all four paid sums; no intermediate publication or snapshot
+moves across the stated endpoints.
+
+Reproduction uses the retained native benchmark rather than disposable
+controllers. Approved short IDs and their source-text/native-tokenizer
+preparation are described in [the configured-prefill report](../gemma-prefill-copies/README.md).
+For each family, use fresh output directories and invoke
+`jitllm_gemma{2,3}_joint_prefill_probe ARTIFACT IDS0 IDS1 OUT first-cycle
+bounded-roots device-masks prefill-ahead owner-prefill flexible-owner-prefill
+chunk=256 stock-ring lookahead-capacity=N`, in the fixed N=1/2/2/1 order.
+Check the actual summary, full output bytes, initialized-state hashes and
+retirement marker, not just the requested capacity. Final positions are
+4387/4899 for Gemma2 and 1315/1571 for short Gemma3, including three supplied
+untimed seed rows and 32 measured continuations per owner.
+
+For the longer Gemma3 input, retrieve `docs/engine.md` and
+`docs/async-model.md` from commit `46cfd5c7b7e9e8731a169001c9e112c3d261f767`.
+Take the first 20000 bytes of engine.md, removing only an incomplete trailing
+UTF-8 character; keep all async-model.md bytes. Their SHA-256 values are
+`5f420b26bc12eb5f77bb1ff599b2351935b6ef7f73374908f82aa19ba5e09c5a`
+and `cd7b0613fd963dd35d1f81a4abdfd867484d9747b8ae01c572507ab33bf6094b`.
+Use the existing Gemma3 benchmark `prepare METADATA TEXT 3111 INPUT0_DIR`
+and `prepare METADATA TEXT 3623 INPUT1_DIR` commands with the approved artifact's
+`meta/gemma-3-4b-it-qat-Q4_0.kv.gguf` (6514895 bytes, SHA-256
+`1b703d735f6f344c5910aa45f49b132db45b332bfbe675dcc0ef29d8db8f1266`).
+Each new input directory contains `ids.i32`. Actual ID hashes must be
+`e550a181088bc3d4924de3d45091067a38cd75c7c9ee676947e8880334a83c7c`
+and `c8e853512376e0148c7c5798974bd91e42849c918f8f23017fb3e22eef23cfee`.
+The same first-cycle invocation then pays prefixes 3072/3584 and finishes at
+3107/3619. Required replay inputs survive raw-sample cleanup or can be
+recreated from these frozen Git texts and the native tokenizer.
+
+The G2 factor source manifest is
+`379c04c4f1f7376a9cef66a4a6cec10cea10583f6d2523112cfbd084a1473d08`,
+ELF `029f63b30b285a91c86ab56ace713f830a141541d1664d060d4f3447a38d75ae`;
+its checked aggregate is
+`6f060982fc76c4c35fcdcd97fd0249071b7940ce831ce3a094c96923077d5d83`.
+The G3 factors' source manifest is
+`235bfbc5f2161af8a713476c8692ddae7d6bd02a0535d3a6db21c4bb363cc156`,
+ELF `4b78985c6a5e073d1e510c00fccd61022fadb85263005023c96639d85c53cb9a`;
+short/long checked aggregates are
+`c45852f24c3a3d8898615955d44dbb1b83ea9335733e688b43d0f0231f1a50a7`
+and `9ad65c116602c708938a0d3bbf3857d8ed959372ad1fd9da7b0f3474ece7881a`.
+G3's parser/cold-mode omissions were caught before inference, corrected and
+rebuilt: `first-cycle` explicitly seeds three rows, completes Clear/DropPlans
+and requires zero retained plans/graphs/cursors. No warmed run is mislabeled
+as cold. All factors use official `aarch64-c09daba6ac31edee`, first-resolved
+cuBLAS SHA `ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b`
+and cuBLASLt SHA
+`ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30`.
+
+The fresh task-entry TensorFold native/Python pins and applicability remain
+those recorded above: neither provides an applicable approved G2/G3 CUDA/GGUF
+recipe. The latest applicable recorded llama.cpp comparisons remain separate;
+this transfer makes no new stock-parity claim. Raw process logs, XML, kernel
+observations and four-arm payloads stay outside Git until milestone cleanup.
+
+Final docs were fast-forwarded to `61003ccf15a5089081551fca6be93d50bea2c57c`
+with all 32 qualified source-file bytes unchanged. G2/G3 select capacity two;
+G26 keeps one future until its open capture-ahead transfer is qualified, and
+G31 keeps its previously neutral capture-ahead disposition with no new claim.
+DeepSeek and native/GGUF Qwen remain open consumers of the compatible funded
+future-group protocol; image phases have no token-chunk prefill loop.
+Configured rows above 256, mixed-width roots, other cohorts and public
+larger-chunk admission remain T93, explicitly open. No full regression or
+workstation shipment tier was run under the owner's current deferral.

@@ -362,7 +362,9 @@ TEST_P(GemmaPrefillServingGpu, ActualOwnerPrefillPreservesHeadsStateAndRestart) 
 // Public Gemma chunk admission remains 128. Qualify the explicitly configured
 // larger runner and its kept-file layout without bypassing that API clamp.
 TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartContinuation) {
+  constexpr std::uint32_t kRows = 256, kChunks = 3, kPositions = kRows * kChunks;
   const auto exercise = [&]<class Runner, class Options>() -> en::Status {
+    EXPECT_EQ(Options{}.prefill_lookahead_capacity, 2U);
     struct DirectLife {
       en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
       std::unique_ptr<Runner> runner;
@@ -405,6 +407,7 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
       options.fuse_norm_add = true;
       options.prefill_lookahead = true;
       options.capture_ahead = true;
+      options.prefill_lookahead_capacity = 2;
       options.spill_place = [spill_dir, keep, owners](std::uint32_t slot) {
         return en::LiveState::SpillPlace{
             .directory = {},
@@ -442,15 +445,45 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
     std::string source_layout;
     std::uint64_t selected_owner_steps = 0;
     std::array<std::vector<float>, 2> packed_heads;
-    const auto prefill = [&](Runner& runner,
-                             std::array<std::vector<float>, 2>& heads) -> en::Status {
+    std::array<jitllm::base::Sha256Digest, 2> packed_states;
+    const auto prefill = [&](Runner& runner, std::array<std::vector<float>, 2>& heads,
+                             bool hinted) -> en::Status {
       constexpr std::array<std::int32_t, 6> seed{2, 818, 5279, 529, 7001, 563};
-      std::vector<std::int32_t> ids(256);
+      std::vector<std::int32_t> ids(kPositions);
       for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = seed[i % seed.size()];
-      std::array<typename Runner::Work, 2> work{{{0, 0, ids, &heads[0]}, {1, 0, ids, &heads[1]}}};
-      if (auto r = runner.WavePrefill(work, true); !r) return r;
+      const auto before = runner.lookahead_stats();
+      const auto replayed = runner.graph_stats().replayed;
+      for (std::uint32_t chunk = 0; chunk < kChunks; ++chunk) {
+        const auto tokens = std::span(ids).subspan(chunk * kRows, kRows);
+        std::array<typename Runner::Work, 2> work{
+            {{0, chunk * kRows, tokens, &heads[0]}, {1, chunk * kRows, tokens, &heads[1]}}};
+        const bool last = chunk + 1 == kChunks;
+        const std::array<typename Runner::PrefillNext, 2> next{
+            {{0, last ? 0U : kRows, chunk + 2 < kChunks ? kRows : 0U},
+             {1, last ? 0U : kRows, chunk + 2 < kChunks ? kRows : 0U}}};
+        if (auto r = runner.WavePrefill(work, last, std::span(next).first(hinted ? 2U : 0U),
+                                        chunk + 2 == kChunks, chunk + 3 == kChunks);
+            !r)
+          return r;
+        for (std::uint32_t owner = 0; owner < 2; ++owner)
+          if ((*runner.request_slot(owner))->completed_positions() != (chunk + 1) * kRows)
+            return std::unexpected("lookahead advanced a future state cursor");
+        if (!last && (!heads[0].empty() || !heads[1].empty()))
+          return std::unexpected("state-only larger chunk published a head");
+      }
       if (!valid(heads[0]) || !valid(heads[1]))
         return std::unexpected("larger independent owner heads incomplete");
+      const auto& after = runner.lookahead_stats();
+      if (hinted) {
+        if (after.built_pairs - before.built_pairs != 1 ||
+            after.cached_pairs - before.cached_pairs != 1 || after.built - before.built != 2 ||
+            after.cached - before.cached != 2 ||
+            after.captured_ahead - before.captured_ahead != 1 ||
+            runner.graph_stats().replayed - replayed != 1)
+          return std::unexpected("larger two-future construction/capture/replay not executed");
+      } else if (after.built != before.built || after.cached != before.cached) {
+        return std::unexpected("unhinted packed control built a future");
+      }
       return {};
     };
     const auto checked = [&]() -> en::Status {
@@ -458,7 +491,12 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
       auto control = packed->node.WithRequest(
           0, packed->runner->closure(), "larger identical-input packed control",
           [&]() -> en::Status {
-            if (auto r = prefill(*packed->runner, packed_heads); !r) return r;
+            if (auto r = prefill(*packed->runner, packed_heads, false); !r) return r;
+            for (std::uint32_t owner = 0; owner < 2; ++owner) {
+              const auto state = StateHash(*packed->runner, owner, &packed->node);
+              if (!state) return std::unexpected("larger packed state read: " + state.error());
+              packed_states[owner] = *state;
+            }
             const auto selection = packed->runner->plan_selections();
             if (selection.owner_prefill_attention || !selection.packed_prefill_attention ||
                 packed->runner->coverage().violations)
@@ -473,7 +511,7 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
       auto produced = primary->node.WithRequest(
           0, runner.closure(), "larger owner restart", [&]() -> en::Status {
             std::array<std::vector<float>, 2> heads;
-            if (auto r = prefill(runner, heads); !r) return r;
+            if (auto r = prefill(runner, heads, true); !r) return r;
             for (std::size_t owner = 0; owner < 2; ++owner)
               if (std::memcmp(heads[owner].data(), packed_heads[owner].data(),
                               vocab * sizeof(float)))
@@ -490,7 +528,8 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
               return std::distance(head.begin(), std::max_element(head.begin(), head.end()));
             };
             std::println(
-                "GEMMA_LARGER_IDENTICAL_INPUT family={} rows=256 packed_root_exact=1 "
+                "GEMMA_LARGER_IDENTICAL_INPUT family={} rows=256 chunks=3 initialized_rows=768 "
+                "packed_root_exact=1 "
                 "cross_owner_differing={} max_abs={} mean_abs={} argmax0={} argmax1={}",
                 GetParam(), differing, max_difference, total_difference / vocab, best(heads[0]),
                 best(heads[1]));
@@ -501,6 +540,8 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
             const auto peer = StateHash(runner, 1, &primary->node);
             if (!first) return std::unexpected("larger owner state read: " + first.error());
             if (!peer) return std::unexpected("larger peer state read: " + peer.error());
+            if (*first != packed_states[0] || *peer != packed_states[1])
+              return std::unexpected("larger independent root state differs from packed owner");
             expected_state = *first;
             footprint = (*runner.request_slot(0))->state().used_ranges();
             if (footprint.size() < 2) return std::unexpected("larger state footprint missing");
@@ -513,18 +554,18 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
                 });
             if (!checkpoint) return std::unexpected(checkpoint.error().detail);
             constexpr std::array<std::int32_t, 1> anchor{563};
-            const typename Runner::Work next{0, 256, anchor, &expected_next};
+            const typename Runner::Work next{0, kPositions, anchor, &expected_next};
             if (auto r = runner.Wave(std::span(&next, 1)); !r) return r;
             if (!valid(expected_next))
               return std::unexpected("larger live control head incomplete");
             const auto restored_checkpoint = checkpoint->Restore(
                 primary->node,
-                [&] { return runner.PrepareRestore(0, 256, footprint, source_layout); },
+                [&] { return runner.PrepareRestore(0, kPositions, footprint, source_layout); },
                 [&](void* host, std::span<const en::LiveState::Range> ranges) {
                   return runner.CopyState(0, host, ranges, false);
                 });
             if (!restored_checkpoint) return std::unexpected(restored_checkpoint.error().detail);
-            if (auto r = runner.CompleteRestore(0, 256); !r) return r;
+            if (auto r = runner.CompleteRestore(0, kPositions); !r) return r;
             const auto rewound = StateHash(runner, 0, &primary->node);
             const auto unchanged_peer = StateHash(runner, 1, &primary->node);
             if (!rewound)
@@ -532,7 +573,7 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
             if (!unchanged_peer)
               return std::unexpected("larger checkpoint peer read: " + unchanged_peer.error());
             if (*rewound != expected_state || *unchanged_peer != *peer ||
-                (*runner.request_slot(1))->completed_positions() != 256)
+                (*runner.request_slot(1))->completed_positions() != kPositions)
               return std::unexpected("larger checkpoint or peer state changed");
             if (auto r = runner.Spill(0); !r) return r;
             if (!(*runner.request_slot(0))->is_spilled())
@@ -547,11 +588,11 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
         return std::unexpected("larger restart layout changed");
       auto incomplete = footprint;
       incomplete.pop_back();
-      if (restored.Adopt(0, 256, footprint, "wrong-larger-layout") ||
-          restored.Adopt(0, 256, incomplete, source_layout))
+      if (restored.Adopt(0, kPositions, footprint, "wrong-larger-layout") ||
+          restored.Adopt(0, kPositions, incomplete, source_layout))
         return std::unexpected("larger malformed adoption accepted");
-      if (auto r = restored.Adopt(0, 256, footprint, source_layout); !r) return r;
-      if (restored.Adopt(0, 256, footprint, source_layout))
+      if (auto r = restored.Adopt(0, kPositions, footprint, source_layout); !r) return r;
+      if (restored.Adopt(0, kPositions, footprint, source_layout))
         return std::unexpected("larger duplicate adoption accepted");
       if (auto r = restored.Restore(0); !r) return r;
       return restarted->node.WithRequest(
@@ -562,13 +603,13 @@ TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartConti
               return std::unexpected("larger adopted state bytes changed");
             constexpr std::array<std::int32_t, 1> anchor{563};
             std::vector<float> head;
-            const typename Runner::Work next{0, 256, anchor, &head};
+            const typename Runner::Work next{0, kPositions, anchor, &head};
             if (auto r = restored.Wave(std::span(&next, 1)); !r) return r;
             if (!valid(head) ||
                 std::memcmp(head.data(), expected_next.data(), vocab * sizeof(float)))
               return std::unexpected(
                   "larger adopted continuation differs from uninterrupted owner");
-            if ((*restored.request_slot(0))->completed_positions() != 257 ||
+            if ((*restored.request_slot(0))->completed_positions() != kPositions + 1 ||
                 (*restored.request_slot(1))->completed_positions() != 0)
               return std::unexpected("larger adopted continuation changed a peer cursor");
             return {};
