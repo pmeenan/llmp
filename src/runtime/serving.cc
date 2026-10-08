@@ -1809,6 +1809,7 @@ class Gemma2 final : public Llm {
             .max_head_rows = settings.max_slots.value,
             .prefill_lookahead = serving.gemma2_prefill_lookahead,
             .capture_ahead = serving.gemma2_capture_ahead,
+            .prepare_state = serving.gemma2_prepare_state,
             .owner_decode = true,
             .packed_prefill = true,
             .shared_q8 = serving.gemma2_shared_q8,

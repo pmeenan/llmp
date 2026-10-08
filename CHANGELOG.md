@@ -13,7 +13,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
-- Prepare eligible fresh Gemma3 state backing beside current prefill work,
+- Prepare eligible fresh Gemma2 and Gemma3 state backing beside current prefill work,
   with completion-aware ownership, scoped page-in retirement and exact
   continuation state. Kept restart sources retain their original read path.
 

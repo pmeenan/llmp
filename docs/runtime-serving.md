@@ -131,6 +131,16 @@ Its first 256/768-prefix reference screen has 76/76 exact complete heads;
 short matched C2 latency remains 5.78% above stock (n=2). Broader context,
 mixed wrapped-ring/joint-prefill, memory/swap and sustained qualification remain open.
 
+Eligible fresh zero-backed next-chunk state is now prepared beside current
+execution through the shared owned no-victim ticket/scoped retirement protocol.
+Actual default PromptSession histories/full heads/state, current cursors and
+drained ownership match explicit off at 4352/4480 prompt tokens; a separate
+joined wrapped lifetime case preserves checkpoint/peer/spill/kept restart.
+The bounded ordinary 128-row C2 context-8192 own screen reduces prefill by
+4.126% and combined paid work by 2.905% at n=2, with overlapping decode ranges
+and no decode/parity claim. Kept and fresh sparse-file sources retain their
+current path. [Evidence and limits](experiments/gemma-state-prepare-ahead/README.md).
+
 A node names the models it serves in its configuration (D-073's document,
 `schema_version = 2`; the keys are new and compatible):
 

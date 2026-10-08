@@ -346,7 +346,7 @@ frontier feature per owner: the actual post-replay D2D copy remains outside
 the recorded plan. Verification, greedy and all-output/all-feature capture
 stay excluded; joined target and broader context/policy gates remain open.
 
-Gemma3 separately [prepares fresh zero backing](experiments/gemma-state-prepare-ahead/README.md)
+Gemma2 and Gemma3 separately [prepare fresh zero backing](experiments/gemma-state-prepare-ahead/README.md)
 for a known next chunk before the current Job. A LiveState-owned no-victim
 acquisition ticket is funded and authenticated before submission; the host-only
 meanwhile contract stays unchanged. Future backing does not enter used ranges,
@@ -355,7 +355,7 @@ scoped existing-page-in drain proves retirement before collecting unused zeros
 as reclaimable backing. Actual Use alone publishes initialized ranges. Clear,
 source changes and teardown drain first; unknown completion retains the complete
 owner, and the Runtime Server fails stop before member destruction if teardown
-cannot retire it. The Gemma3 default selects eligible fresh zero sources; kept
+cannot retire it. The Gemma2/Gemma3 defaults select eligible fresh zero sources; kept
 restart sources and fresh sparse-file reads retain their current path. Other
 growing adapters and larger-context qualification remain open.
 

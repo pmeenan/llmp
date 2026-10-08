@@ -304,3 +304,16 @@ whole paid movement remains inside bookend drift. Startup measures every
 configured small owner-row composition, with its observed cost and host-plan
 floor recorded in the [qualification report](experiments/gemma-shared-q8/README.md).
 Public contexts/slots/chunks are unchanged; broader compatible routes remain open.
+
+## Fresh state preparation beside prefill
+
+Ordinary serving now uses the shared no-victim next-chunk preparation ticket
+for eligible fresh zero-backed state. Future residency stays unpublished until
+actual Use; scoped page-in retirement and complete owner retention protect
+cancellation, Clear and teardown. The ordinary 128-row C2/context-8192 own
+screen reduces prefill 4.126% and combined paid work 2.905% at n=2, with exact
+complete heads/choices/initialized state. Decode ranges overlap; no decode or
+reference-parity gain is claimed. Actual default PromptSession and separate
+joined wrapped checkpoint/peer/spill/kept-restart controls pass. Kept restart,
+fresh sparse-file sources and broader context/profile qualification remain
+open. [Method, drift and ownership proof](experiments/gemma-state-prepare-ahead/README.md).

@@ -504,6 +504,14 @@ family" guide, and its long-context scaling work.
         - [ ] **T61** Wider/partial bounded owner-root variants.
         - [ ] **T63** Fast exact host causal-mask fill/check.
         - [ ] **T67** Prepare next chunk state beside current work.
+          Eligible fresh zero backing now uses the shared owned no-victim
+          ticket/scoped drain by default. Exact actual PromptSession and real
+          joined-wrap checkpoint/peer/spill/kept-restart controls pass. The
+          ordinary 128-row C2/context-8192 own screen improves prefill 4.126%
+          and combined paid 2.905% at n=2; no decode/parity claim. Kept restart,
+          fresh sparse-file initialization and broader profile/context
+          qualification remain open.
+          [Evidence and limits](experiments/gemma-state-prepare-ahead/README.md).
         - [ ] **T68** Evict only incoming closure deficit.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
           producer validation and padded host staging shared across Gemma plans;

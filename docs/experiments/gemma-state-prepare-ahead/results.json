@@ -5,7 +5,8 @@
     "Gemma3_fresh_zero": "adopted; final actual Runtime default control passed",
     "composite_T67": "OPEN: kept restart, fresh sparse file initialization, larger-context qualification and remaining LLM adapters",
     "public_policy_changes": false,
-    "reference_parity_claim": false
+    "reference_parity_claim": false,
+    "Gemma2_fresh_zero": "adopted; actual Runtime default control passed at 4352/4480 prompt tokens"
   },
   "tensorfold_task_entry": {
     "utc": "2026-10-08T12:10:16.005407+00:00",
@@ -463,6 +464,228 @@
       },
       "kernel_errors": 0,
       "owned_processes_returned_zero": 4
+    },
+    "gemma2_ordinary128_context8192": {
+      "source_manifest_sha256": "799a378f30fd54ba90e0d2e19746df6e1acb74facef566bfe4f7cccc09673861",
+      "method_sha256": "9f765443dfc65711bb77460d9b9619422cb8820b08bfdc7f6e06449ab3574b79",
+      "checked_sha256": "68c2c5cd768d32e6f0274abb372d00cfc1b52c1e37a6d35c21a9363363cf6d73",
+      "probe_sha256": "c8f2d85e12c08f10cc187b6c2ae4e0276a6d7bc61f97f1e644f101da4f4917e2",
+      "sdk_receipt_sha256": "0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd",
+      "artifact": {
+        "index.json": {
+          "bytes": 148984,
+          "sha256": "f1773c66b42084e0f497ed406716639800aaaccef0db49bd5992962f137add62"
+        },
+        "manifest.json": {
+          "bytes": 1009,
+          "sha256": "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870"
+        }
+      },
+      "inputs": [
+        {
+          "sha256": "102c7b555b1caed5aed3d9880a173aae153f8f8dc1534e6a4c58685c243b6c0c",
+          "rows": 4391,
+          "bytes": 17564
+        },
+        {
+          "sha256": "a930726bd964ae88ef0448f50a51d2e376ce2487313f26063ab84c1b0b41d77f",
+          "rows": 4903,
+          "bytes": 19612
+        }
+      ],
+      "common_actual_budget": {
+        "fixed": "123682816",
+        "weights": "2810183680",
+        "state_capacity": "1417674752",
+        "activations": "48234496",
+        "scratch": "10485760",
+        "host_input": "2097152",
+        "plan_floor": "1197936",
+        "joined_global_mask_bytes": "4194304",
+        "derived_minimum": "8604565504",
+        "total": "34359738368"
+      },
+      "equal_nonpreparation_work": {
+        "mode": "first-cycle",
+        "slots": "2",
+        "context_per_slot": "8192",
+        "chunk": "128",
+        "compatible_prefill": "1",
+        "max_wave_rows": "256",
+        "state_max_rows": "128",
+        "local_cache_cells": "4352",
+        "stock_ring": "0",
+        "prompt_rows0": "4352",
+        "prompt_rows1": "4864",
+        "untimed_rows_per_slot": "3",
+        "decode_steps": "32",
+        "departure_steps": "0",
+        "paid_generated_tokens": "64",
+        "past0": "4387",
+        "past1": "4899",
+        "paid_prefill_eager": "3",
+        "paid_prefill_captured": "1",
+        "paid_prefill_replayed": "35",
+        "paid_prefill_built": "18",
+        "paid_prefill_cached": "18",
+        "paid_prefill_built_pairs": "0",
+        "paid_prefill_cached_pairs": "0",
+        "paid_prefill_first": "1",
+        "paid_prefill_ahead": "18",
+        "eager": "9",
+        "captured": "4",
+        "replayed": "66",
+        "selected_owner": "477",
+        "selected_packed_prefill": "0",
+        "owner_prefill": "1",
+        "flexible_owner_prefill": "1",
+        "selected_owner_prefill": "425",
+        "largest_owner_prefill_rows": "128",
+        "largest_owner_prefill_kv_cells": "4352",
+        "device_masks": "1",
+        "selected_device_masks": "94",
+        "zero_state": "1",
+        "bounded_roots": "1",
+        "selected_bounded_owner": "26",
+        "shared_q8": "1",
+        "q8_preparations": "258",
+        "prepared_mmvq_products": "672",
+        "selected_norm_mul": "1444",
+        "selected_quant_geglu": "56",
+        "selected_norm_rope": "0",
+        "selected_norm_add": "1416",
+        "joined_prefill_groups": "33",
+        "joined_prefill_rows": "8448",
+        "gpu_tokens": "72",
+        "prefill_ahead": "1",
+        "lookahead_capacity": "2",
+        "lookahead_built": "18",
+        "lookahead_cached": "18",
+        "lookahead_refused": "0",
+        "captured_first": "1",
+        "captured_ahead": "18",
+        "dropped_ahead": "0"
+      },
+      "sample_size_per_mode": 2,
+      "arms": [
+        {
+          "name": "O1",
+          "prepare_state": false,
+          "prefill_seconds": 1.28645,
+          "decode_seconds": 0.581019,
+          "paid_prefill_decode_seconds": 1.867469,
+          "preparation": {
+            "attempted": 0,
+            "submitted": 0,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 0,
+            "adopted_extents": 0
+          }
+        },
+        {
+          "name": "A1",
+          "prepare_state": true,
+          "prefill_seconds": 1.24078,
+          "decode_seconds": 0.581126,
+          "paid_prefill_decode_seconds": 1.821906,
+          "preparation": {
+            "attempted": 67,
+            "submitted": 8,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 416,
+            "adopted_extents": 416
+          }
+        },
+        {
+          "name": "A2",
+          "prepare_state": true,
+          "prefill_seconds": 1.23682,
+          "decode_seconds": 0.57914,
+          "paid_prefill_decode_seconds": 1.81596,
+          "preparation": {
+            "attempted": 67,
+            "submitted": 8,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 416,
+            "adopted_extents": 416
+          }
+        },
+        {
+          "name": "O2",
+          "prepare_state": false,
+          "prefill_seconds": 1.29778,
+          "decode_seconds": 0.581472,
+          "paid_prefill_decode_seconds": 1.879252,
+          "preparation": {
+            "attempted": 0,
+            "submitted": 0,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 0,
+            "adopted_extents": 0
+          }
+        }
+      ],
+      "metrics": {
+        "prefill_seconds": {
+          "off_mean": 1.292115,
+          "on_mean": 1.2388,
+          "delta_percent": -4.126180719208428,
+          "off_range": [
+            1.28645,
+            1.29778
+          ],
+          "on_range": [
+            1.23682,
+            1.24078
+          ],
+          "off_bookend_percent": 0.880718255664803,
+          "on_pair_percent": -0.3191540804977522
+        },
+        "decode_seconds": {
+          "off_mean": 0.5812455,
+          "on_mean": 0.580133,
+          "delta_percent": -0.19139933126363085,
+          "off_range": [
+            0.581019,
+            0.581472
+          ],
+          "on_range": [
+            0.57914,
+            0.581126
+          ],
+          "off_bookend_percent": 0.07796646925488648,
+          "on_pair_percent": -0.3417503260910837
+        },
+        "paid_prefill_decode_seconds": {
+          "off_mean": 1.8733605,
+          "on_mean": 1.818933,
+          "delta_percent": -2.90534042967171,
+          "off_range": [
+            1.867469,
+            1.879252
+          ],
+          "on_range": [
+            1.81596,
+            1.821906
+          ],
+          "off_bookend_percent": 0.630960942323533,
+          "on_pair_percent": -0.3263615137114706
+        }
+      },
+      "exact_crossarm": {
+        "states": {
+          "0": "7e7bed84db708db64cdd044410cf874f2bb520103c041478d8a1fb50e6c5f694",
+          "1": "580bc5e8c4e5e2c882ee61727ea54bd4c010f4ddf64cf340520d9c96290a6c15"
+        },
+        "choices_sha256": "aafca2330550ca99f7c7198eceaf41fda2044eb21f3d7eebc623e635ec4d1bc5",
+        "final_fullhead_sha256": "c5197a3686336b1efe55780497ee57b178c2f6096cff027fdd461a8ec8ae52fc"
+      },
+      "kernel_errors": 0,
+      "owned_processes_returned_zero": 4
     }
   },
   "final_qualification": {
@@ -593,6 +816,84 @@
           "DefaultPreparationPublishesOnlyActualPromptProgress/1"
         ]
       ]
+    },
+    {
+      "checked_sha256": "15754ac6f413205ee0b09423c4c2148ef607a3d85d160c86b0efa7cd633df951",
+      "source_manifest_sha256": "799a378f30fd54ba90e0d2e19746df6e1acb74facef566bfe4f7cccc09673861",
+      "method_sha256": "03a1ab4fdc697f21ac746981b9d5a8bb232e7ff48451df772ff7a4d36a71d316",
+      "cases": [
+        [
+          "ApprovedFamilies/GemmaPrefillServingGpu",
+          "Prepared128RootsPreserveStateAndRestartContinuation/0"
+        ]
+      ]
+    },
+    {
+      "checked_sha256": "a530d06dd344fe7bbbae3a77816ad07581e86618744abbb028a3f03d71452549",
+      "source_manifest_sha256": "8c719c9f347a0f7e61892e1bc2e1e033cad0f883849e27268b5d02dee60474fc",
+      "method_sha256": "24b98825d90bc2fa8b8e7de8a2c24ceb551cf1827653b0d755b14cc7746d4bff",
+      "cases": [
+        [
+          "ApprovedFamilies/GemmaPrefillServingGpu",
+          "DefaultPreparationPublishesOnlyActualPromptProgress/0"
+        ]
+      ]
     }
-  ]
+  ],
+  "gemma2_task_entry": {
+    "utc": "2026-10-08T13:47:48.567337+00:00",
+    "refs": {
+      "main": {
+        "pin": "f8fe17d24629aedabf90bbf78279dd776e6d62e7",
+        "readme_sha256": "678c80141062556cb8db26a3e839a2b588ffcb7acdf729c3319899bf1519f2f4",
+        "bytes": 15807
+      },
+      "python-0.6": {
+        "pin": "ed78d6fc204d89d90b045bf033d6551e7714f3a1",
+        "readme_sha256": "ec9da14a5a0a9f98a0a14d11b5c265850194d06ed0dc05b85e3c26f5e19b27a4",
+        "bytes": 29475
+      }
+    },
+    "applicability": "Native Gemma4/DeepSeek and retained Python CUDA references checked; neither lists the approved Gemma2 2B GGUF serving recipe. The transferable seam is shared scheduler-owned next-chunk state preparation, first screened against the same native engine, with no competitive-reference claim."
+  },
+  "gemma2_qualification": {
+    "source_manifest_sha256": "8c719c9f347a0f7e61892e1bc2e1e033cad0f883849e27268b5d02dee60474fc",
+    "method_sha256": "24b98825d90bc2fa8b8e7de8a2c24ceb551cf1827653b0d755b14cc7746d4bff",
+    "checked_sha256": "a530d06dd344fe7bbbae3a77816ad07581e86618744abbb028a3f03d71452549",
+    "sdk_receipt_sha256": "0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd",
+    "final_ELFs": {
+      "benchmarks/jitllm_gemma2_joint_prefill_probe": "c8f2d85e12c08f10cc187b6c2ae4e0276a6d7bc61f97f1e644f101da4f4917e2",
+      "tests/unit/gemma_prefill_serving_gpu_test": "3b8007964abb7cc5d69daeb09c1f8b641f66856c0a612b6b298900453f87962c",
+      "src/runtime/jitllm-runtime": "0aefc8004e3bbf1c52c3907f27636a22bf0575c63f36a7b114363b266a95aaff"
+    },
+    "positive_executions": 2,
+    "unique_positive_cases": 2,
+    "actual_default_prompt": {
+      "owner_prompt_rows": [
+        4352,
+        4480
+      ],
+      "local_cache_cells": 4352,
+      "completed_extents": 416,
+      "adopted_extents": 416,
+      "joined_groups": 33,
+      "joined_rows": 8448,
+      "full_heads_state_history_exact": true,
+      "pending_owners": 0
+    },
+    "actual_joined_wrap_lifetime": {
+      "positions": 4608,
+      "local_cache_cells": 4352,
+      "completed_extents": 416,
+      "adopted_extents": 416,
+      "packed_root_state_heads_checkpoint_peer_spill_restart_exact": true
+    },
+    "no_failed_heavy_attempts": true,
+    "deferred": "Full suites, reference performance, sparse/kept source preparation, larger-context/profile qualification and remaining adapters."
+  },
+  "counter_semantics": {
+    "joined_prefill_groups_rows": "Actual processed logical prompt groups and rows.",
+    "capture_replay": "Actual recorded execution/capture path counters as reported by the runner.",
+    "q8_preparations_prepared_mmvq_products_and_selected_fields": "Bound-plan selection counts; do not interpret them as executed kernel counts."
+  }
 }

@@ -40,8 +40,11 @@ struct Gemma2Options {
   // Ordinary prefill lookahead and capture; false retains matched controls.
   bool prefill_lookahead = true, capture_ahead = true;
   // Build at most two distinct missing future shapes. One retains the
-  // internal matched reference; no future state is initialized.
+  // internal matched reference; the descriptor group does not publish future state.
   std::uint32_t prefill_lookahead_capacity = 2;
+  // Optional no-victim growth for the next hinted chunk. Only fresh zero
+  // sources; logical state/cursors are published by actual Use.
+  bool prepare_state = true;
   bool owner_decode = false, packed_prefill = false;
   // Exact ordinary-MMVQ preparation sharing; false retains the matched control.
   bool shared_q8 = true;
@@ -185,6 +188,7 @@ class Gemma2Runner final : public PagedModel {
   const PlanSelections& plan_selections() const { return plan_selections_; }
   const Coverage& coverage() const { return coverage_; }
   std::uint64_t greedy_tokens() const { return greedy_tokens_; }
+  LiveState::PreparationStats state_preparation_stats() const;
   void DropPlans();
   void ReclaimCandidates(std::uint32_t owner, bool running,
                          std::vector<memory::ReclaimCandidate>& out);

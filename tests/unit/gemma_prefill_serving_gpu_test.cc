@@ -219,7 +219,8 @@ TEST_P(GemmaPrefillServingGpu, PlainRuntimeTokensPreserveRowsStateAndRestoredCon
 }
 
 TEST_P(GemmaPrefillServingGpu, DefaultPreparationPublishesOnlyActualPromptProgress) {
-  if (GetParam() != 3) GTEST_SKIP() << "Gemma3 preparation adapter only";
+  EXPECT_TRUE(en::Gemma2Options{}.prepare_state);
+  EXPECT_TRUE(rt::ServingOptions{}.gemma2_prepare_state);
   EXPECT_TRUE(en::Gemma3Options{}.prepare_state);
   EXPECT_TRUE(rt::ServingOptions{}.gemma3_prepare_state);
   std::array<std::vector<float>, 2> expected;
@@ -227,63 +228,75 @@ TEST_P(GemmaPrefillServingGpu, DefaultPreparationPublishesOnlyActualPromptProgre
   std::array<std::int64_t, 2> expected_joined{};
   for (const bool ordinary : {false, true}) {
     life->options = rt::ServingOptions{};
-    if (!ordinary) life->options.gemma3_prepare_state = false;
-    ASSERT_TRUE(Start(true));
-    auto& runner = dynamic_cast<en::Gemma3Runner&>(model->paged());
-    ASSERT_EQ(runner.layout().local_cells, 1280U);
-    const auto before = runner.state_preparation_stats();
-    std::array<std::vector<float>, 2> heads;
-    std::array<jitllm::base::Sha256Digest, 2> states{};
-    double unused_seconds = 0;
-    const auto result = Prompt(runner, heads, states, unused_seconds);
-    ASSERT_TRUE(result) << (result ? "" : result.error());
-    const auto prepared = runner.state_preparation_stats();
-    if (ordinary) {
-      EXPECT_GT(prepared.submitted, before.submitted);
-      EXPECT_GT(prepared.completed_extents, before.completed_extents);
-      EXPECT_GT(prepared.adopted_extents, before.adopted_extents);
-    } else {
-      EXPECT_EQ(prepared.submitted, before.submitted);
-      EXPECT_EQ(prepared.completed_extents, before.completed_extents);
-      EXPECT_EQ(prepared.adopted_extents, before.adopted_extents);
-    }
-    EXPECT_EQ(prepared.failed, before.failed);
-    EXPECT_EQ(prepared.refused, before.refused);
-    EXPECT_TRUE(runner.cohort_usable());
-    EXPECT_FALSE(life->server->node().has_pending_state_preparation());
-    for (std::uint32_t owner = 0; owner < 2; ++owner) {
-      ASSERT_EQ(heads[owner].size(), 262208U);
-      EXPECT_TRUE(std::ranges::all_of(heads[owner], [](float v) { return std::isfinite(v); }));
-      EXPECT_TRUE((*runner.request_slot(owner))->state_usable());
-      EXPECT_EQ((*runner.request_slot(owner))->completed_positions(), owner == 0 ? 1280U : 1536U);
-    }
-    const auto extra = jitllm::base::json::Parse(model->extra());
-    ASSERT_TRUE(extra);
-    std::array<std::int64_t, 2> joined{};
-    for (std::size_t i = 0; i < joined.size(); ++i) {
-      const auto field =
-          extra->root().find(i == 0 ? "joined_prefill_groups" : "joined_prefill_rows");
-      ASSERT_TRUE(field);
-      joined[i] = field->int64().value_or(0);
-      EXPECT_GT(joined[i], 0);
-    }
     if (!ordinary) {
-      expected = heads;
-      expected_state = states;
-      expected_joined = joined;
-    } else {
-      for (std::size_t owner = 0; owner < heads.size(); ++owner)
-        EXPECT_EQ(std::memcmp(heads[owner].data(), expected[owner].data(),
-                              heads[owner].size() * sizeof(float)),
-                  0);
-      EXPECT_EQ(states, expected_state);
-      EXPECT_EQ(joined, expected_joined);
-      std::println(
-          "GEMMA_DEFAULT_PREPARATION_RUNTIME completed={} adopted={} state_exact=1 "
-          "head_exact=1 history_exact=1 joined_groups={} joined_rows={}",
-          prepared.completed_extents - before.completed_extents,
-          prepared.adopted_extents - before.adopted_extents, joined[0], joined[1]);
+      life->options.gemma2_prepare_state = false;
+      life->options.gemma3_prepare_state = false;
     }
+    ASSERT_TRUE(Start(true));
+    const auto exercise = [&](auto& runner) {
+      const bool gemma2 = GetParam() == 2;
+      ASSERT_EQ(runner.layout().local_cells, gemma2 ? 4352U : 1280U);
+      const auto before = runner.state_preparation_stats();
+      std::array<std::vector<float>, 2> heads;
+      std::array<jitllm::base::Sha256Digest, 2> states{};
+      double unused_seconds = 0;
+      const auto result = Prompt(runner, heads, states, unused_seconds, gemma2 ? 3072U : 0U);
+      ASSERT_TRUE(result) << (result ? "" : result.error());
+      const auto prepared = runner.state_preparation_stats();
+      if (ordinary) {
+        EXPECT_GT(prepared.submitted, before.submitted);
+        EXPECT_GT(prepared.completed_extents, before.completed_extents);
+        EXPECT_GT(prepared.adopted_extents, before.adopted_extents);
+      } else {
+        EXPECT_EQ(prepared.attempted, before.attempted);
+        EXPECT_EQ(prepared.submitted, before.submitted);
+        EXPECT_EQ(prepared.completed_extents, before.completed_extents);
+        EXPECT_EQ(prepared.adopted_extents, before.adopted_extents);
+      }
+      EXPECT_EQ(prepared.failed, before.failed);
+      EXPECT_EQ(prepared.refused, before.refused);
+      EXPECT_TRUE(runner.cohort_usable());
+      EXPECT_FALSE(life->server->node().has_pending_state_preparation());
+      for (std::uint32_t owner = 0; owner < 2; ++owner) {
+        ASSERT_EQ(heads[owner].size(), gemma2 ? 256000U : 262208U);
+        EXPECT_TRUE(std::ranges::all_of(heads[owner], [](float v) { return std::isfinite(v); }));
+        EXPECT_TRUE((*runner.request_slot(owner))->state_usable());
+        EXPECT_EQ((*runner.request_slot(owner))->completed_positions(),
+                  gemma2 ? (owner == 0 ? 4352U : 4480U) : (owner == 0 ? 1280U : 1536U));
+      }
+      const auto extra = jitllm::base::json::Parse(model->extra());
+      ASSERT_TRUE(extra);
+      std::array<std::int64_t, 2> joined{};
+      for (std::size_t i = 0; i < joined.size(); ++i) {
+        const auto field =
+            extra->root().find(i == 0 ? "joined_prefill_groups" : "joined_prefill_rows");
+        ASSERT_TRUE(field);
+        joined[i] = field->int64().value_or(0);
+        EXPECT_GT(joined[i], 0);
+      }
+      if (!ordinary) {
+        expected = heads;
+        expected_state = states;
+        expected_joined = joined;
+      } else {
+        for (std::size_t owner = 0; owner < heads.size(); ++owner)
+          EXPECT_EQ(std::memcmp(heads[owner].data(), expected[owner].data(),
+                                heads[owner].size() * sizeof(float)),
+                    0);
+        EXPECT_EQ(states, expected_state);
+        EXPECT_EQ(joined, expected_joined);
+        std::println(
+            "GEMMA_DEFAULT_PREPARATION_RUNTIME completed={} adopted={} state_exact=1 "
+            "head_exact=1 history_exact=1 joined_groups={} joined_rows={}",
+            prepared.completed_extents - before.completed_extents,
+            prepared.adopted_extents - before.adopted_extents, joined[0], joined[1]);
+      }
+    };
+    if (GetParam() == 2)
+      exercise(dynamic_cast<en::Gemma2Runner&>(model->paged()));
+    else
+      exercise(dynamic_cast<en::Gemma3Runner&>(model->paged()));
+    if (HasFatalFailure()) return;
     ASSERT_TRUE(Retire());
   }
 }
@@ -550,7 +563,7 @@ void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint
         preparation_before = runner.state_preparation_stats();
       const bool require_wrap = kRows == 512 || prepare_state;
       if (prepare_state &&
-          (GetParam() != 3 || kRows != 128 || runner.layout().local_cells != 1280 ||
+          (kRows != 128 || runner.layout().local_cells != (GetParam() == 2 ? 4352U : 1280U) ||
            kPositions <= runner.layout().local_cells))
         return std::unexpected("prepared 128-row ring wrap not exercised");
       if (kRows == 512 && (runner.layout().local_cells != (GetParam() == 2 ? 4608U : 1536U) ||
@@ -784,8 +797,10 @@ void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint
 }
 
 TEST_P(GemmaPrefillServingGpu, Prepared128RootsPreserveStateAndRestartContinuation) {
-  if (GetParam() != 3) GTEST_SKIP() << "Gemma3 preparation adapter only";
-  CheckConfiguredRoots(128, 12, true);
+  // Both actual profiles cross their own authenticated local ring under a
+  // real joined wave, independently of the unequal-prefix timing schedule.
+  if (GetParam() == 2) EXPECT_TRUE(en::Gemma2Options{}.prepare_state);
+  CheckConfiguredRoots(128, GetParam() == 2 ? 36 : 12, true);
 }
 
 TEST_P(GemmaPrefillServingGpu, UnprovenPreparationStopsServerBeforeOwnerDestruction) {

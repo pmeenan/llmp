@@ -89,7 +89,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }  // namespace
 int main(int argc, char** argv) {
   if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") ||
-      (argc < 6 || argc > 16))
+      (argc < 6 || argc > 17))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
     return status ? 0 : 1;
   }
   bool bounded = false, device_masks = false, prefill_ahead = false, owner_prefill = false;
-  bool shared_q8 = false;
+  bool shared_q8 = false, prepare_state = false;
   bool flexible = false, have_chunk = false, stock_ring = false, have_capacity = false;
   std::uint32_t lookahead_capacity = 1;
   std::optional<std::uint64_t> budget_override;
@@ -119,6 +119,8 @@ int main(int argc, char** argv) {
       device_masks = true;
     else if (flag == "prefill-ahead" && !prefill_ahead)
       prefill_ahead = true;
+    else if (flag == "prepare-state" && !prepare_state)
+      prepare_state = true;
     else if (flag == "owner-prefill" && !owner_prefill)
       owner_prefill = true;
     else if (flag == "flexible-owner-prefill" && !flexible)
@@ -153,6 +155,7 @@ int main(int argc, char** argv) {
   }
   if (flexible && !owner_prefill) return 2;
   if (have_capacity && !prefill_ahead) return 2;
+  if (prepare_state && !prefill_ahead) return 2;
   if (stock_ring && chunk != 256 && chunk != 512) return 2;
   // Diagnostic capacity control: actual calls stay at chunk, while the
   // per-owner descriptor envelope reproduces stock's total-ubatch SWA ring.
@@ -180,7 +183,7 @@ int main(int argc, char** argv) {
   const fs::path out = argv[4];
   if (!fs::create_directory(out)) return 2;
   struct Lifetime {
-    en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+    en::PagedNode node{{.zero_state = true, .slot_bytes = en::kSlabSlotBytes}};
     std::unique_ptr<en::Gemma2Runner> runner;
     std::vector<en::PagedModel*> entered;
   };
@@ -198,6 +201,7 @@ int main(int argc, char** argv) {
                         .prefill_lookahead = prefill_ahead,
                         .capture_ahead = prefill_ahead,
                         .prefill_lookahead_capacity = lookahead_capacity,
+                        .prepare_state = prepare_state,
                         .owner_decode = true,
                         .packed_prefill = true,
                         .shared_q8 = shared_q8,
@@ -415,14 +419,20 @@ int main(int argc, char** argv) {
             return r;
         if (auto r = clear(); !r) return r;
         runner.DropPlans();
+        if (runner.plans_bytes() != 0 || runner.graph_count() != 0 || past != std::array{0U, 0U} ||
+            runner.greedy_tokens() != 2)
+          return Error("cold first traversal retained plans, captures or positions");
+        std::cout << "cold_seed_rows_per_slot=3 cold_plan_bytes=0 cold_graphs=0\n";
       }
       const auto graph_before = runner.graph_stats();
       const auto ahead_before = runner.lookahead_stats();
+      const auto prepare_before = runner.state_preparation_stats();
       const auto begin = std::chrono::steady_clock::now();
       if (auto r = prompt(cycle); !r) return r;
       const auto prefill = en::support::Seconds(std::chrono::steady_clock::now() - begin);
       const auto graph_prefill = runner.graph_stats();
       const auto ahead_prefill = runner.lookahead_stats();
+      const auto prepare_prefill = runner.state_preparation_stats();
       if (own) {
         std::vector<float> frontier;
         frontier.reserve(kVocab * 2);
@@ -639,6 +649,15 @@ int main(int argc, char** argv) {
           << " largest_owner_prefill_rows=" << bound.largest_owner_prefill_rows
           << " largest_owner_prefill_kv_cells=" << bound.largest_owner_prefill_kv_cells
           << " device_masks=" << device_masks << " selected_device_masks=" << bound.device_masks
+          << " prepare_state=" << prepare_state << " zero_state=" << node.zero_state()
+          << " paid_prepare_attempted=" << prepare_prefill.attempted - prepare_before.attempted
+          << " paid_prepare_submitted=" << prepare_prefill.submitted - prepare_before.submitted
+          << " paid_prepare_refused=" << prepare_prefill.refused - prepare_before.refused
+          << " paid_prepare_failed=" << prepare_prefill.failed - prepare_before.failed
+          << " paid_prepare_completed_extents="
+          << prepare_prefill.completed_extents - prepare_before.completed_extents
+          << " paid_prepare_adopted_extents="
+          << prepare_prefill.adopted_extents - prepare_before.adopted_extents
           << " bounded_roots=" << bounded
           << " selected_bounded_owner=" << bound.bounded_owner_attention
           << " shared_q8=" << shared_q8 << " q8_preparations=" << bound.q8_preparations
