@@ -16,7 +16,9 @@
 
 #include "artifact/representation.h"
 #include "base/sha256.h"
+#include "engine/expert_slab.h"
 #include "engine/gemma4_assistant.h"
+#include "engine/live_state_launch.h"
 #include "engine/prefill_lookahead.h"
 #include "engine/support.h"
 #include "kernels/ggml/executor.h"
@@ -546,14 +548,15 @@ Status Gemma4Runner::Setup() {
       auto commit = resources_.Pinned(sizeof(kg::RangeCopy));
       if (!commit) return Error(commit.error());
       slot.feature_commit = static_cast<kg::RangeCopy*>(*commit);
-      slot.live.SetCommit([this, &slot](kg::LaunchContext& launch, std::uint32_t keep) {
-        *slot.feature_commit = {.from = verify_features_.base +
-                                        slot.index * verify_feature_slot_bytes_ +
-                                        std::uint64_t{keep - 1} * profile_.width * sizeof(float),
-                                .to = features_.base + slot.index * feature_slot_bytes_,
-                                .bytes = std::uint64_t{profile_.width} * sizeof(float)};
-        return kg::CopyRanges(launch, slot.feature_commit, 1);
-      });
+      SetCommitThrough(
+          slot.live, resources_, [this, &slot](kg::LaunchContext& launch, std::uint32_t keep) {
+            *slot.feature_commit = {
+                .from = verify_features_.base + slot.index * verify_feature_slot_bytes_ +
+                        std::uint64_t{keep - 1} * profile_.width * sizeof(float),
+                .to = features_.base + slot.index * feature_slot_bytes_,
+                .bytes = std::uint64_t{profile_.width} * sizeof(float)};
+            return kg::CopyRanges(launch, slot.feature_commit, 1);
+          });
     }
   }
   setup_ = true;
@@ -1215,8 +1218,8 @@ Status Gemma4Runner::AcceptVerify(std::uint32_t index, std::uint32_t keep) {
     return active;
   }
   if (auto r = slot.live.Accept(keep); !r) return r;
-  if (auto r = slot.live.Rollback(node_, execution_, stream_, resources_.launch(),
-                                  "Gemma4 accept restore and feature commit");
+  if (auto r = RollbackThrough(slot.live, node_, execution_, stream_, resources_.launch(),
+                               "Gemma4 accept restore and feature commit");
       !r) {
     auto states = States();
     cohort_.CheckFailedJob(node_, stream_, execution_, states);
@@ -1248,8 +1251,8 @@ Status Gemma4Runner::DiscardVerify(std::uint32_t index) {
     return active;
   }
   (void)slot.live.Settle(true, true, false);
-  if (auto r = slot.live.Rollback(node_, execution_, stream_, resources_.launch(),
-                                  "Gemma4 discard whole verify");
+  if (auto r = RollbackThrough(slot.live, node_, execution_, stream_, resources_.launch(),
+                               "Gemma4 discard whole verify");
       !r) {
     auto states = States();
     cohort_.CheckFailedJob(node_, stream_, execution_, states);
@@ -1586,7 +1589,7 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
       [&](providers::NativeStream native) {
         // Fresh copy descriptors are never captured with the target graph.
         if (verifying) {
-          if (auto saved = verifying->live.QueueSaves(resources_.launch()); !saved) {
+          if (auto saved = QueueSavesThrough(verifying->live, resources_.launch()); !saved) {
             queued = Error(saved.error().detail);
             unknown = true;
             return sc::JobResult::kUnknown;
@@ -1671,8 +1674,8 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
     if (verifying) {
       const bool uncertain = unknown || resources_.launch().faulted() || cohort_.faulted();
       if (verifying->live.Settle(saves_queued, wrote, uncertain)) {
-        if (auto undone = verifying->live.Rollback(node_, execution_, stream_, resources_.launch(),
-                                                   "Gemma4 failed verify restore");
+        if (auto undone = RollbackThrough(verifying->live, node_, execution_, stream_,
+                                          resources_.launch(), "Gemma4 failed verify restore");
             !undone) {
           cohort_.CheckFailedJob(node_, stream_, execution_, states);
           verifying->live.Quarantine();

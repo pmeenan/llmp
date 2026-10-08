@@ -15,6 +15,7 @@
 #include <cstring>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -24,8 +25,14 @@
 #include "base/bytes.h"
 #include "engine/checkpoint_file.h"
 #include "engine/paged_node.h"
+#include "engine/runner_memory.h"
 #include "engine/support.h"
 #include "expected_error.h"
+#ifdef LLMP_LIVE_STATE_LAUNCH_TEST
+#include "engine/live_state_launch.h"
+#include "engine/runner_resources.h"
+#include "kernels/ggml/launch.h"
+#endif
 #include "platform/direct_io.h"
 #include "providers/device_runtime.h"
 #include "runtime/intake_limits.h"
@@ -1204,6 +1211,199 @@ TEST_F(CheckpointCapacityStateTest, ReservedStagingServesCheckpointsWithNothingT
   EXPECT_EQ(Occupancy(), full);
   node_.UnchargeHost(2 * kExtent);
 }
+
+// A verify's snapshot on the job's stream (engine core: the paging kernels'
+// range copies, live_state.h): the saves taken before the verify wrote,
+// Accept(1) owes the later row's and the scratch rows' restore and the
+// commit of one kept row, Rollback queues them as a job of its own (restore
+// first, then the commit), and a failed verify (Settle) is undone whole.
+TEST_F(LiveStateTest, AVerifysSnapshotRestoresTheRejectedRowsThenCommitsTheKept) {
+  const std::array<en::LiveState::Range, 1> used = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = kExtent}};
+  ASSERT_TRUE(model_.live.Use(node_, used));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(Pattern(0x10));
+
+  en::RunnerMemory memory(node_, 0, 0);
+  constexpr std::uint64_t kSnapshot = 4096;
+  auto snapshot = memory.Pinned(kSnapshot);
+  ASSERT_TRUE(snapshot) << snapshot.error();
+  auto marker = memory.Pinned(256);
+  ASSERT_TRUE(marker) << marker.error();
+  auto* const kept = static_cast<std::uint8_t*>(*marker);
+  *kept = 0;
+  model_.live.SnapshotAt(reinterpret_cast<std::uint64_t>(*snapshot), kSnapshot);
+  ASSERT_TRUE(model_.live.AllocateSnapshot(memory, 4));
+  std::uint32_t commits = 0;
+  model_.live.SetCommit([&](pr::NativeStream native, std::uint32_t keep) -> en::LiveState::Queued {
+    ++commits;
+    // Queued after the restore, on the same stream: it runs after it.
+    if (!pr::FillAsync(native, kept, static_cast<std::uint8_t>(keep), 1).ok()) {
+      return std::unexpected(en::LiveState::QueueFailure{.unknown = true, .detail = "fill"});
+    }
+    return {};
+  });
+
+  const std::uint64_t base = model_.live.base(0);
+  const auto verify = [&](std::uint8_t value) {
+    model_.live.BeginSaves();
+    ASSERT_TRUE(model_.live.Save(base, 256, 0));
+    ASSERT_TRUE(model_.live.Save(base + 256, 256, 1));
+    ASSERT_TRUE(model_.live.Save(base + 512, 256, -1));
+    auto ran = node_.Job(
+        model_.fence_closure(),
+        [&](pr::NativeStream native) {
+          if (!model_.live.QueueSaves(native)) return llmp::scheduler::JobResult::kUnknown;
+          // The verify writes all three ranges after its saves.
+          return pr::FillAsync(native, en::support::Pointer(base), value, 768).ok()
+                     ? llmp::scheduler::JobResult::kQueued
+                     : llmp::scheduler::JobResult::kUnknown;
+        },
+        "test verify", 0);
+    ASSERT_TRUE(ran) << llmp::test_support::Failed(ran).value_or("");
+    model_.live.Verified(2);
+  };
+
+  verify(0x20);
+  EXPECT_FALSE(model_.live.AwaitingAccept());
+  ASSERT_TRUE(model_.live.Accept(1));
+  EXPECT_TRUE(model_.live.owed());
+  ASSERT_TRUE(model_.live.Rollback(node_, model_.fence_closure(), 0, "test rollback"));
+  EXPECT_FALSE(model_.live.owed());
+  EXPECT_EQ(commits, 1U);
+  EXPECT_EQ(*kept, 1U);
+  auto state = Read();
+  ASSERT_GE(state.size(), 1024U);
+  EXPECT_TRUE(std::all_of(state.begin(), state.begin() + 256,
+                          [](std::byte b) { return b == std::byte{0x20}; }));
+  EXPECT_TRUE(std::all_of(state.begin() + 256, state.begin() + 1024,
+                          [](std::byte b) { return b == std::byte{0x10}; }));
+
+  // A verify that failed after its saves were queued is undone whole, and
+  // nothing is committed.
+  verify(0x30);
+  EXPECT_TRUE(model_.live.Settle(true, true, false));
+  EXPECT_FALSE(model_.live.quarantined());
+  ASSERT_TRUE(model_.live.Rollback(node_, model_.fence_closure(), 0, "test undo"));
+  EXPECT_EQ(commits, 1U);
+  state = Read();
+  EXPECT_TRUE(std::all_of(state.begin(), state.begin() + 256,
+                          [](std::byte b) { return b == std::byte{0x20}; }));
+  EXPECT_TRUE(std::all_of(state.begin() + 256, state.begin() + 1024,
+                          [](std::byte b) { return b == std::byte{0x10}; }));
+
+  // A save the snapshot cannot hold is refused before anything is queued.
+  model_.live.BeginSaves();
+  EXPECT_FALSE(model_.live.Save(base, kSnapshot + 16, 0));
+}
+
+// A commit refused after the owed restore was queued: the job has queued
+// work, so the failure is never "nothing queued" (a job reporting
+// kNotStarted would let the restore run unfenced); the restore is no longer
+// owed, the commit still is, and Rollback's own refused commit quarantines.
+TEST_F(LiveStateTest, ACommitRefusedAfterTheRestoreQueuedFailsAsQueuedWork) {
+  const std::array<en::LiveState::Range, 1> used = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = kExtent}};
+  ASSERT_TRUE(model_.live.Use(node_, used));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(Pattern(0x10));
+
+  en::RunnerMemory memory(node_, 0, 0);
+  constexpr std::uint64_t kSnapshot = 4096;
+  auto snapshot = memory.Pinned(kSnapshot);
+  ASSERT_TRUE(snapshot) << snapshot.error();
+  model_.live.SnapshotAt(reinterpret_cast<std::uint64_t>(*snapshot), kSnapshot);
+  ASSERT_TRUE(model_.live.AllocateSnapshot(memory, 4));
+  std::uint32_t refusals = 0;
+  model_.live.SetCommit([&](pr::NativeStream, std::uint32_t) -> en::LiveState::Queued {
+    ++refusals;
+    return std::unexpected(en::LiveState::QueueFailure{.unknown = false, .detail = "refused"});
+  });
+
+  const std::uint64_t base = model_.live.base(0);
+  model_.live.BeginSaves();
+  ASSERT_TRUE(model_.live.Save(base, 256, 0));
+  ASSERT_TRUE(model_.live.Save(base + 256, 256, 1));
+  ASSERT_TRUE(node_.Job(
+      model_.fence_closure(),
+      [&](pr::NativeStream native) {
+        if (!model_.live.QueueSaves(native)) return llmp::scheduler::JobResult::kUnknown;
+        return pr::FillAsync(native, en::support::Pointer(base), 0x20, 512).ok()
+                   ? llmp::scheduler::JobResult::kQueued
+                   : llmp::scheduler::JobResult::kUnknown;
+      },
+      "test verify", 0));
+  model_.live.Verified(2);
+  ASSERT_TRUE(model_.live.Accept(1));
+
+  std::optional<en::LiveState::QueueFailure> failure;
+  auto ran = node_.Job(
+      model_.fence_closure(),
+      [&](pr::NativeStream native) {
+        if (auto r = model_.live.QueueOwed(native); !r) {
+          failure = r.error();
+          return r.error().unknown ? llmp::scheduler::JobResult::kFailed
+                                   : llmp::scheduler::JobResult::kNotStarted;
+        }
+        return llmp::scheduler::JobResult::kQueued;
+      },
+      "test owed", 0);
+  EXPECT_FALSE(ran);
+  ASSERT_TRUE(failure.has_value());
+  EXPECT_TRUE(failure->unknown) << failure->detail;
+  EXPECT_EQ(refusals, 1U);
+  // The restore ran under the job's fence; only the commit is owed.
+  EXPECT_TRUE(model_.live.owed());
+  auto state = Read();
+  ASSERT_GE(state.size(), 512U);
+  EXPECT_TRUE(std::all_of(state.begin(), state.begin() + 256,
+                          [](std::byte b) { return b == std::byte{0x20}; }));
+  EXPECT_TRUE(std::all_of(state.begin() + 256, state.begin() + 512,
+                          [](std::byte b) { return b == std::byte{0x10}; }));
+
+  EXPECT_FALSE(model_.live.Rollback(node_, model_.fence_closure(), 0, "test refused commit"));
+  EXPECT_EQ(refusals, 2U);
+  EXPECT_TRUE(model_.live.quarantined());
+  ASSERT_TRUE(model_.live.Clear(node_, model_.fence_closure(), 0, "clear quarantined state"));
+}
+
+#ifdef LLMP_LIVE_STATE_LAUNCH_TEST
+// The legacy runners' launch-context path (live_state_launch.h) and the
+// core's never mix: each QueueOwed refuses the other's commit before
+// queuing anything, and the commit stays owed.
+TEST_F(LiveStateTest, EachQueueOwedRefusesTheOtherPathsCommit) {
+  namespace kg = llmp::kernels::ggml;
+  en::RunnerResources resources(node_, 0, 0);
+  std::uint32_t launched = 0;
+  en::SetCommitThrough(
+      model_.live, resources,
+      [&](kg::LaunchContext&, std::uint32_t) -> std::expected<void, kg::KernelFailure> {
+        ++launched;
+        return {};
+      });
+  model_.live.Verified(2);
+  ASSERT_TRUE(model_.live.Accept(1));
+  auto core = model_.live.QueueOwed(pr::NativeStream{});
+  ASSERT_FALSE(core);
+  EXPECT_FALSE(core.error().unknown) << core.error().detail;
+  EXPECT_EQ(launched, 0U);
+  EXPECT_TRUE(model_.live.owed());
+
+  std::uint32_t queued = 0;
+  model_.live.SetCommit([&](pr::NativeStream, std::uint32_t) -> en::LiveState::Queued {
+    ++queued;
+    return {};
+  });
+  auto launch = resources.MeasuringContext();
+  ASSERT_TRUE(launch) << launch.error();
+  auto legacy = en::QueueOwedThrough(model_.live, **launch);
+  ASSERT_FALSE(legacy);
+  EXPECT_EQ(legacy.error().error, kg::KernelError::kRejected) << legacy.error().detail;
+  EXPECT_EQ(queued, 0U);
+  EXPECT_TRUE(model_.live.owed());
+  EXPECT_FALSE(model_.live.quarantined());
+}
+#endif  // LLMP_LIVE_STATE_LAUNCH_TEST
 
 TEST(LiveStateBufferTest, UnprovenCopyRefusesReuseAndKeepsItsDestinationUntilExit) {
   en::PagedNode node(en::NodeSettings{});

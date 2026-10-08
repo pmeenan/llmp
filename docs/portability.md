@@ -46,7 +46,11 @@ runtime plugin ABI):
    number and free memory. Plain functions the backend's provider module
    defines (`providers/cuda/cuda_device_runtime.cc` over the CUDA runtime
    API), one direct call around the backend's own: no virtual dispatch,
-   no table lookup, no allocation on success.
+   no table lookup, no allocation on success. The fake device runtime
+   (`providers/fake/fake_device_runtime.cc`) defines them over host memory
+   and the fake providers, for the engine core's tests in every profile:
+   queued work runs when a fence is queried, never because a call
+   returned.
 3. **Kernel modules** (`src/kernels/<source>/`), which unwrap the
    job's `NativeStream` handle themselves and register their
    implementations (D-053).
@@ -55,9 +59,15 @@ runtime plugin ABI):
 
 The engine (`src/engine/`) is above all four and holds no vendor code: it
 is built without CUDA's include path, so a CUDA header reaching it fails
-the build, and the boundary check fails a CUDA name. It stays a CUDA-build
-module only because it links the CUDA kernel modules and GGML graphs
-(D-096).
+the build, and the boundary check fails a CUDA name. Its core
+(`llmp_engine_core`: the node, weights, live state, runner memory, plan
+accounting, prefill lookahead, the cohort) names no kernel library either,
+reaching the device through the device runtime and the paging kernels
+(`kernels/paging/`, which have CUDA kernels and host loops for the fake
+runtime), and builds in every profile; a program links one backend's
+runtime and paging kernels. The GGML plans, runs and family runners
+(`llmp_engine`) stay CUDA builds only, because they link the CUDA kernel
+modules and GGML graphs (D-096 as amended 2026-10-08).
 
 ### What moved out of the engine (2026-09-29)
 
@@ -268,8 +278,8 @@ value the audit recommended:
 | Graph capture and replay (D-090) | `graph_runs.h`: `GraphRuns` (staging, input and output copies, capture, replay, the launch-by-launch fallback), `PlanRuns`, `GraphStats`, `RunPath` | two `QueueRuns`, `Stage`, graph eviction inline, path counting copied three times; `Dsv4Path` and `Dsv4GraphStats` (the harnesses keep those names as aliases) |
 | State spill and restore | `live_state.h`: `LiveState` regions, spill file, clear, read, places, quarantine | byte-identical `RegisterState`, `Clear`, `ReadState` in each |
 | Plans and shape caches | `planned.h`: `PlannedGraph`, one `PlaceAndPlan`, `BindPlanned`, `PlanCache`, `RoomForGraph`, `CheckCoverage` | four identical `Planned` structs, `PlaceAndPlan` and `PlanPlaced`, four planning bodies, three coverage checks |
-| Speculation mechanics | `LiveState`'s snapshot: saves, `Accept`, the owed restore and a commit hook (Qwen3.8's kernel), `Rollback`, `Settle` | the same semantics written twice |
-| Setup and teardown | `runner_resources.h`: own memory, staging, cuBLAS, the launch context and registry, their ordered release; `ReleaseMapped` for the node, the runners and the FP16 and EXL3 harness runners | copied per runner |
+| Speculation mechanics | `LiveState`'s snapshot: saves, `Accept`, the owed restore and a commit hook (Qwen3.8's kernel), `Rollback`, `Settle`; queued as the paging kernels' range copies on the job's stream, or through a GGML runner's launch context (`live_state_launch.h`) | the same semantics written twice |
+| Setup and teardown | `runner_memory.h` (own memory, staging) and `runner_resources.h` (cuBLAS, the launch context and registry), their ordered release; `ReleaseMapped` for the node, the runners and the FP16 and EXL3 harness runners | copied per runner |
 | Weight paging | `paged_weights.h` for every runner: host groups (DeepSeek's token table), `ExpertSlab`, per-extent groups, place checks; `LayOutSlab` moved here | DeepSeek's own `ReservePart`/`Register` |
 | The request's lease (D-093) | `PagedNode::WithRequest` | three copies of begin-body-end |
 

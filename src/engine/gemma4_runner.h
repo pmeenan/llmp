@@ -23,6 +23,7 @@
 #include "engine/paged_weights.h"
 #include "engine/request_cohort.h"
 #include "engine/runner_resources.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "model/gemma4_assistant.h"
 
 namespace llmp::engine {

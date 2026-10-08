@@ -253,16 +253,10 @@ if(LLMP_CUDA)
   llmp_gpu_gtest(cuda_graph_test
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-  # The engine's expert-slab pages (engine/paged_weights.h): a
-  # host-only check, in the CUDA build that has the engine.
-  add_executable(slab_layout_test slab_layout_test.cc)
-  target_include_directories(slab_layout_test SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(slab_layout_test PRIVATE llmp_engine)
-  llmp_gpu_gtest(slab_layout_test)
-
   add_executable(live_state_test live_state_test.cc)
   target_link_libraries(live_state_test PRIVATE llmp_runtime llmp_engine)
+  # Also the legacy runners' launch-context path (engine/live_state_launch.h).
+  target_compile_definitions(live_state_test PRIVATE LLMP_LIVE_STATE_LAUNCH_TEST)
   llmp_gpu_gtest(live_state_test
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
@@ -591,28 +585,42 @@ if(LLMP_CUDA)
   target_link_options(qwen38_wave_plan_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
   llmp_gtest(qwen38_wave_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-  # The request cohort's host-only rules (engine/request_cohort.h).
-  add_executable(request_cohort_test request_cohort_test.cc)
-  target_link_libraries(request_cohort_test PRIVATE llmp_engine)
-  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
-  target_link_options(request_cohort_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
-  llmp_gtest(request_cohort_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
   # A runner's plan and graph caps (engine/planned.h), host-only.
   add_executable(plan_cache_test plan_cache_test.cc)
   target_link_libraries(plan_cache_test PRIVATE llmp_engine)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
   target_link_options(plan_cache_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
   llmp_gtest(plan_cache_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-  # Releasing a partly created region (engine/paged_node.h ReleaseMapped)
-  # over fake device memory, host-only.
-  add_executable(release_mapped_test release_mapped_test.cc)
-  target_link_libraries(release_mapped_test PRIVATE llmp_engine llmp_fake_providers)
-  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
-  target_link_options(release_mapped_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
-  llmp_gtest(release_mapped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 endif()
+
+# The engine core (engine/CMakeLists.txt) on the fake device backend, in
+# every profile: the device runtime over host memory and the paging
+# kernels as host loops (providers/fake/fake_device_runtime.h,
+# kernels/paging/host_paging.cc), the core's live state on a paged node
+# over them (live_state_test.cc, as on a GB10 above), the request cohort's
+# host-only rules, releasing a partly created region (paged_node.h
+# ReleaseMapped) and the expert slab's pages (paged_weights.h LayOutSlab).
+add_executable(fake_device_runtime_test fake_device_runtime_test.cc)
+target_link_libraries(fake_device_runtime_test PRIVATE llmp_fake_device_backend)
+llmp_gtest(fake_device_runtime_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(live_state_fake_test live_state_test.cc)
+target_link_libraries(live_state_fake_test PRIVATE llmp_runtime llmp_engine_core
+                                                   llmp_fake_device_backend)
+llmp_gtest(live_state_fake_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+add_executable(request_cohort_test request_cohort_test.cc)
+target_link_libraries(request_cohort_test PRIVATE llmp_engine_core llmp_fake_device_backend)
+llmp_gtest(request_cohort_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(release_mapped_test release_mapped_test.cc)
+target_link_libraries(release_mapped_test PRIVATE llmp_engine_core llmp_fake_device_backend)
+llmp_gtest(release_mapped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(slab_layout_test slab_layout_test.cc)
+target_link_libraries(slab_layout_test PRIVATE llmp_engine_core llmp_fake_device_backend)
+llmp_gtest(slab_layout_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # DeepSeek V4's DSpark drafter and speculation's parts of the adapter and
 # graph (model/dspark.h; D-092).

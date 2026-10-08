@@ -12,7 +12,7 @@
 #include <utility>
 
 #include "engine/paged_node.h"
-#include "engine/planned.h"
+#include "engine/plan_account.h"
 
 namespace llmp::engine {
 
@@ -78,6 +78,9 @@ struct PrefillLookaheadStats {
 // with its PlanStep still protecting borrowed plans and captures. The installer
 // binds/checks coverage, then calls transfer immediately before the cache charge.
 // A refused future plan never changes the already completed prefix.
+// `Planned` is any plan type whose host bytes PlannedHostBytes(const
+// Planned&) gives, found by argument-dependent lookup where the lookahead is
+// used (planned.h's for GGML plans), so this header names no kernel library.
 template <typename Planned>
 class PrefillLookahead {
  public:

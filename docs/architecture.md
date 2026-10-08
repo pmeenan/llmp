@@ -294,15 +294,17 @@ substitute a fake at any provider boundary.
 | Providers | `providers`, `providers/fake`, `providers/cuda` | The [provider interfaces](#providers) and their implementations; with kernel units, the only place vendor headers appear (D-026) |
 | Resource core | `catalog`, `memory`, `retention`, `scheduler` | Resources, ledgers, victim selection, retention, tasks and admission |
 | Model | `tokenizer`, `chat`, `artifact`, `model`, `execution` | The tokenizer; the chat renderers and, later, output parsers; the artifact reader and verifier; architecture and state adapters; the operation contract, planner and dispatcher, and sampling |
-| Kernels | `kernels/<source>` | Build-time implementations of operations: `ggml` and `exl3` first (D-053); llmpalooza's own `image` kernels, and `paging`, the engine's fill and row-gather kernels |
-| Engine | `engine` | The paged node, which composes the providers, the resource core and its lanes on one GPU; the runner skeleton every model is built from: weights as extents, live state with its spill and a verify's snapshot, planned shapes and their cache, runs and decode graphs, the runner's own device resources; and each model family's runner, which adds its plans, state layout and steps (D-096, [engine.md](engine.md), [runtime-serving.md](runtime-serving.md)). It reaches the device only through the providers, the device runtime among them, and the kernels, and is built without CUDA's headers; CUDA builds only, because it links the kernel modules |
+| Kernels | `kernels/<source>` | Build-time implementations of operations: `ggml` and `exl3` first (D-053); llmpalooza's own `image` kernels, and `paging`, the engine's fill, row-gather, draft-id and range-copy kernels (CUDA, and host loops for the fake device runtime) |
+| Engine | `engine` | The paged node, which composes the providers, the resource core and its lanes on one GPU; the runner skeleton every model is built from: weights as extents, live state with its spill and a verify's snapshot, planned shapes and their cache, runs and decode graphs, the runner's own device resources; and each model family's runner, which adds its plans, state layout and steps (D-096, [engine.md](engine.md), [runtime-serving.md](runtime-serving.md)). It reaches the device only through the providers, the device runtime among them, and the kernels, and is built without CUDA's headers. Its core (`llmp_engine_core`: the node, weights, live state, runner memory, plan accounting, prefill lookahead, the cohort) names no kernel library and builds in every profile, where its tests run on the fake device runtime; the GGML plans, runs and runners (`llmp_engine`) are CUDA builds only, because they link the kernel modules |
 | Services | `config`, `api`, `cluster`, `management`, `jobs` | The node's configuration, storage roles and served models (D-073, D-096); protocol adapters, conductor and sessions, the management API, job processes |
 | Programs | `runtime`, job executables, `cli`, `tools` | Process wiring, startup and shutdown; the import, install and archive processes; the CLI; build and diagnostic tools |
 
 - The resource core and the model layer hold no vendor types. The CPU-only
   build compiles and tests every module except the CUDA provider, the CUDA
-  kernel units and the engine, with no CUDA SDK visible (D-026, D-061's
-  `check` tier); its runtime refuses the serving commands.
+  kernel units and the engine's GGML runners, with no CUDA SDK visible
+  (D-026, D-061's `check` tier); the engine core runs there on the fake
+  device runtime and the host paging kernels; its runtime refuses the
+  serving commands.
 - CUDA translation units stay narrow. They include kernel sources and
   provider code, never scheduler or catalog headers (AGENTS.md rule 6).
 - Vendor and OS code keeps to its modules: CUDA only in `providers/cuda`

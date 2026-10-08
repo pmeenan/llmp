@@ -103,15 +103,6 @@ struct SlabSpec {
   std::uint64_t alignment = 256;
 };
 
-// The slab of a layer whose expert arrays (each an index into the
-// artifact's expert arrays and its GGML type's name) share their groups:
-// its first group, and a stride of the stored bytes rounded up to 16 and to
-// every array's element size. Refused if the arrays' groups differ.
-std::expected<SlabSpec, std::string> ExpertSlab(
-    const artifact::Artifact& artifact,
-    std::span<const std::pair<std::uint32_t, std::string_view>> arrays, std::uint32_t count,
-    std::uint64_t alignment, std::uint32_t layer);
-
 // ------------------------------------------------------------------ weights
 
 // Where a group's chunks go.

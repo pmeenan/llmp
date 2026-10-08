@@ -20,6 +20,8 @@
 
 #include "artifact/layout.h"
 #include "engine/checkpoint_file.h"
+#include "engine/expert_slab.h"
+#include "engine/live_state_launch.h"
 #include "engine/support.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_graph.h"
@@ -82,7 +84,7 @@ void CountMasks(Qwen38MaskStats& stats, const kg::Qwen38MtpGraph& graph) {
   for (const auto& pass : graph.passes) CountMask(stats, pass.mask, true);
 }
 
-// The slab of a layer's expert arrays (paged_weights.h ExpertSlab).
+// The slab of a layer's expert arrays (expert_slab.h ExpertSlab).
 std::expected<SlabSpec, std::string> SlabOf(const artifact::Artifact& artifact,
                                             const md::Qwen38Layer& l, bool cutlass,
                                             std::uint32_t count, std::uint32_t il) {
@@ -1296,11 +1298,12 @@ Status Qwen38Runner::BindRequest(RequestState& request) {
     c.ple_width = static_cast<int>(profile_.hc_width());
     c.ple_taps = static_cast<int>(profile_.ple_history());
     // A verify's kept rows committed after the rejected rows' restore.
-    request.live.SetCommit([&request](kg::LaunchContext& launch, std::uint32_t keep) {
-      kg::Qwen38CommitArgs args = request.commit_args;
-      args.keep = static_cast<int>(keep);
-      return kg::Qwen38Commit(launch, args);
-    });
+    SetCommitThrough(request.live, resources_,
+                     [&request](kg::LaunchContext& launch, std::uint32_t keep) {
+                       kg::Qwen38CommitArgs args = request.commit_args;
+                       args.keep = static_cast<int>(keep);
+                       return kg::Qwen38Commit(launch, args);
+                     });
   }
   return {};
 }
@@ -2505,7 +2508,7 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
     for (const auto& w : work) {
       auto& f = *frames[w.slot->index()];
       committing = committing || f.request->live.owed();
-      if (auto owed = f.request->live.QueueOwed(launch); !owed) {
+      if (auto owed = QueueOwedThrough(f.request->live, launch); !owed) {
         ran = Error(owed.error().detail);
         unknown = true;
         return sc::JobResult::kUnknown;
@@ -2514,7 +2517,7 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
     if (verify) {
       for (const auto& w : work) {
         auto& f = *frames[w.slot->index()];
-        if (auto saved = f.request->live.QueueSaves(launch); !saved) {
+        if (auto saved = QueueSavesThrough(f.request->live, launch); !saved) {
           ran = Error(saved.error().detail);
           unknown = true;
           return sc::JobResult::kUnknown;
@@ -2715,7 +2718,7 @@ Status Qwen38Runner::DraftWave(std::span<const DraftWork> work, bool paired) {
   bool unknown = false;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
     for (const auto& w : work) {
-      if (auto owed = w.slot->request_.live.QueueOwed(launch); !owed) {
+      if (auto owed = QueueOwedThrough(w.slot->request_.live, launch); !owed) {
         ran = Error(owed.error().detail);
         unknown = true;
         return sc::JobResult::kUnknown;
@@ -2962,7 +2965,7 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
     // A pending commit or restore queued here is work this job must fence,
     // even if its own run is then refused before anything else.
     const bool committing = request.live.owed();
-    if (auto r = request.live.QueueOwed(launch); !r) {
+    if (auto r = QueueOwedThrough(request.live, launch); !r) {
       ran = Error(std::format("chunk at {}: {}", n_past, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
@@ -3148,7 +3151,7 @@ Status Qwen38Runner::CatchUp(RequestState& request, std::span<const std::int32_t
   Status ran;
   bool unknown = false;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
-    if (auto r = request.live.QueueOwed(launch); !r) {
+    if (auto r = QueueOwedThrough(request.live, launch); !r) {
       ran = Error(std::format("catch-up at {}: {}", first, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
@@ -3298,7 +3301,7 @@ Status Qwen38Runner::Draft(RequestState& request, std::span<const std::int32_t> 
   Status ran;
   bool unknown = false;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
-    if (auto r = request.live.QueueOwed(launch); !r) {
+    if (auto r = QueueOwedThrough(request.live, launch); !r) {
       ran = Error(std::format("draft at {}: {}", n, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
@@ -3553,12 +3556,12 @@ Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t>
   bool saved = false;
   bool unknown = false;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
-    if (auto r = request.live.QueueOwed(launch); !r) {
+    if (auto r = QueueOwedThrough(request.live, launch); !r) {
       ran = Error(std::format("verify at {}: {}", n_past, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
     }
-    if (auto r = request.live.QueueSaves(launch); !r) {
+    if (auto r = QueueSavesThrough(request.live, launch); !r) {
       ran = Error(std::format("verify at {}: {}", n_past, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
@@ -3661,8 +3664,8 @@ Status Qwen38Runner::Rollback(RequestState& request) {
   if (auto usable = Usable(request); !usable) {
     return usable;
   }
-  auto rolled = request.live.Rollback(node_, execution_, stream_, resources_.launch(),
-                                      "committing a verify's kept rows");
+  auto rolled = RollbackThrough(request.live, node_, execution_, stream_, resources_.launch(),
+                                "committing a verify's kept rows");
   if (!rolled) {
     CheckFailedJob();
   }

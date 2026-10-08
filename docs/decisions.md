@@ -1284,7 +1284,7 @@ independent of token counts; they do not guarantee every possible 1M-token
 input fits. Existing request shapes remain valid; API version stays 1
 (D-062), and no physical model-fit claim follows from intake acceptance.
 
-## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057; its engine's CUDA use moved behind the device runtime on 2026-09-29, noted below; engine structure amended by D-107 (one runner of shared components, one serving adapter per pipeline kind))
+## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057; its engine's CUDA use moved behind the device runtime on 2026-09-29, noted below; engine structure amended by D-107 (one runner of shared components, one serving adapter per pipeline kind); its engine core builds in every profile since 2026-10-08, amended below)
 
 **Decision.** M3's swap path leaves the harnesses for `llmp-runtime`
 ([runtime-serving.md](runtime-serving.md)):
@@ -1399,6 +1399,28 @@ above the kernels because it links them ([portability.md](portability.md)).
 Plain decode through `llmp-runtime chat --plain` was unchanged within
 noise (DeepSeek 22.10–22.16 against 22.13–22.21 tok/s, Qwen3.8
 27.64–27.72 against 27.60–27.67; `spark`, two alternating rounds).
+
+**Amended 2026-10-08** (M3.6, D-107; the owner's direction that the engine
+core become CPU-buildable with a fake device runtime). "CUDA builds only"
+now holds for part of the engine. The engine is two libraries:
+`llmp_engine_core`, which builds in every profile (CPU-only included),
+holds the paged node, the weights' paging, live state with its spill,
+checkpoints and a verify's snapshot, the runner's own memory, plan
+accounting, prefill lookahead, the request cohort and the n-gram rows, and
+names no kernel library; and `llmp_engine`, CUDA builds only, with the
+GGML plans and runs, cuBLAS and the launch context, and the family runners.
+The core reaches the device only through the providers, the device runtime
+and the paging kernels, and links no backend: a program links the CUDA
+runtime and kernels, or the fake device runtime
+(`providers/fake/fake_device_runtime.h`, host memory and fake streams whose
+queued work runs when a fence is queried) and the paging kernels' host
+loops. A verify's snapshot copies became a paging kernel
+(`kernels/paging/paging.h` `CopyRanges`) that the core queues on the job's
+stream; the legacy runners keep queueing the same descriptors through their
+launch context (`engine/live_state_launch.h`), unchanged, until each family
+moves to the component engine. Why: the M3.6 lifecycle, runner, wave and
+decoding-mode code lands in the core and is tested on the fake backend
+(engine-components.md, "Testing"), on any host. No public surface changes.
 
 ## D-095: No CPU latency hold: a PM QoS request cut the wake's round trip but not decode's time, so the runtime does not keep one  (2026-09-28, status: not adopted, by the owner, 2026-09-28; D-094's wake and its margins stay as they are)
 

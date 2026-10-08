@@ -56,3 +56,6 @@ target_include_directories(llmp_cuda_device_runtime SYSTEM PRIVATE
                            "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
 target_link_libraries(llmp_cuda_device_runtime PUBLIC llmp_cuda_device_memory
                       PRIVATE llmp_warnings)
+# The build's backend, never linked beside the fake one (../CMakeLists.txt).
+set_target_properties(llmp_cuda_device_runtime PROPERTIES INTERFACE_LLMP_DEVICE_BACKEND cuda
+                      COMPATIBLE_INTERFACE_STRING LLMP_DEVICE_BACKEND)

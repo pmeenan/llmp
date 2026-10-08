@@ -1,20 +1,26 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Llmpalooza's own small CUDA kernels that the engine's device jobs queue
-// around the paging of weights and rows (engine/paged_weights.h,
-// engine/ple_rows.h): filling device ranges, gathering Qwen3.8's n-gram
-// rows from their pinned landing, and bounding draft token ids before they
-// index a table. Data movement and guards, not operations of
-// a model's plan, so they are not registry-bound (D-053). A backend
-// without them fills and gathers with its own (docs/portability.md).
+// Llmpalooza's own small kernels that the engine's device jobs queue
+// around the paging of weights, rows and state (engine/paged_weights.h,
+// engine/ple_rows.h, engine/live_state.h): filling device ranges,
+// gathering Qwen3.8's n-gram rows from their pinned landing, bounding draft
+// token ids before they index a table, and copying a verify's snapshot
+// ranges. Data movement and guards, not operations of a model's plan, so
+// they are not registry-bound (D-053). A backend without them fills and
+// gathers with its own (docs/portability.md).
 //
-// `stream` is the job's NativeStream handle (providers/device_execution.h),
-// which only these kernels unwrap (a cudaStream_t). Launches only queue
-// work there; completion is the caller's. Each returns false if the launch
-// failed, reading (and so clearing) the thread's last CUDA error as llmpalooza's
-// other launchers do, so a failure is not left for a later check to report.
-// CUDA builds only.
+// Two implementations, one per device backend, chosen when a program links
+// (llmp_paging_kernels or llmp_host_paging_kernels): CUDA kernels
+// (`*.cu`), and host loops queued on the fake device runtime's streams
+// (host_paging.cc), which run when the fake runs that stream's work, as a
+// device would. `stream` is the job's NativeStream handle
+// (providers/device_execution.h), which only these implementations unwrap
+// (a cudaStream_t, or a fake stream's token). Launches only queue work
+// there; completion is the caller's. Each returns false if the launch
+// failed, reading (and so clearing) the thread's last device error as
+// llmpalooza's other launchers do, so a failure is not left for a later
+// check to report.
 
 #ifndef LLMP_KERNELS_PAGING_PAGING_H_
 #define LLMP_KERNELS_PAGING_PAGING_H_
@@ -42,6 +48,43 @@ bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
 // place: a drafter's argmax over non-finite logits gives -1, which would
 // index past a token table (engine/dsv4_runner.cc, the drafts' rows).
 bool ClampTokens(std::int32_t* tokens, std::uint32_t count, std::int32_t limit, void* stream);
+
+// Byte ranges copied device to device in one launch, not a graph node: a
+// speculative verify's snapshot of the state rows it will write, and the
+// restore of the rows a rejected draft wrote (D-068's truncation at a
+// snapshot; engine/live_state.h). Each range is 16-byte aligned at both
+// ends and a multiple of 16 bytes (RangeCopiesValid); no destination
+// overlaps another range. `ranges` is memory the device reads in place
+// (pinned host memory, or device memory), valid until the copy completes;
+// at most kMaxRangeCopies.
+struct RangeCopy {
+  std::uint64_t from = 0;
+  std::uint64_t to = 0;
+  std::uint64_t bytes = 0;
+};
+inline constexpr std::uint32_t kMaxRangeCopies = 65535;
+
+// Whether CopyRanges takes these: none at all, or at most kMaxRangeCopies,
+// each with nonzero addresses, both 16-byte aligned, and a multiple of 16
+// bytes. Read on the host before the launch.
+inline bool RangeCopiesValid(const RangeCopy* ranges, std::uint32_t count) {
+  if (count == 0) {
+    return true;
+  }
+  if (ranges == nullptr || count > kMaxRangeCopies) {
+    return false;
+  }
+  for (std::uint32_t i = 0; i < count; ++i) {
+    const RangeCopy& r = ranges[i];
+    if (r.from == 0 || r.to == 0 || r.from % 16 != 0 || r.to % 16 != 0 || r.bytes % 16 != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Queues the `count` copies (RangeCopiesValid's ranges; nothing for none).
+bool CopyRanges(const RangeCopy* ranges, std::uint32_t count, void* stream);
 
 }  // namespace llmp::kernels::paging
 

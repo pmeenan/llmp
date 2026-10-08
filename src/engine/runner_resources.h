@@ -1,13 +1,12 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// What a runner sets up for its life beside its weights and state
-// (docs/engine.md): device memory of its own (a cuBLAS workspace, a
-// verify's snapshot, working memory) mapped at setup with access and
-// pinned in the catalog; pinned host staging, cataloged; cuBLAS with
-// upstream's workspace for the device on the model's stream; and, for a
-// runner of GGML plans, the K-C launch context over the node's pool and
-// the registry its plans bind against (D-053).
+// What a GGML runner sets up for its life beside its weights and state
+// (docs/engine.md): the engine core's runner memory (runner_memory.h: its
+// own device memory, a cuBLAS workspace among it, and pinned staging);
+// cuBLAS with upstream's workspace for the device on the model's stream;
+// and the K-C launch context over the node's pool and the registry its
+// plans bind against (D-053). CUDA builds only (llmp_engine).
 //
 // Lifetimes are completion-aware (AGENTS.md rule 6): Release runs only
 // after the node's teardown fenced the model's stream and stopped the
@@ -25,44 +24,25 @@
 #include <string>
 #include <vector>
 
-#include "catalog/catalog.h"
 #include "engine/paged_node.h"
+#include "engine/runner_memory.h"
 #include "execution/registry.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/launch.h"
 
 namespace llmp::engine {
 
-class RunnerResources {
+class RunnerResources : public RunnerMemory {
  public:
   using Status = engine::Status;
 
   RunnerResources(PagedNode& node, int owner, std::uint32_t stream)
-      : node_(node), owner_(owner), stream_(stream) {}
+      : RunnerMemory(node, owner, stream) {}
   RunnerResources(const RunnerResources&) = delete;
   RunnerResources& operator=(const RunnerResources&) = delete;
   RunnerResources(RunnerResources&&) = delete;
   RunnerResources& operator=(RunnerResources&&) = delete;
   ~RunnerResources() = default;
-
-  PagedNode& node() const { return node_; }
-  int owner() const { return owner_; }
-  std::uint32_t stream() const { return stream_; }
-
-  // `bytes` of device VMM (rounded to extents) of `memory_class`, pinned,
-  // mapped into `mapped` for the runner's life. Before the node runs.
-  // `mapped` must remain alive at the same address through fenced Release,
-  // including when Map fails after making a partial allocation.
-  Status Map(Mapped& mapped, std::string name, std::uint64_t bytes,
-             catalog::MemoryClass memory_class);
-  // Pinned host memory, cataloged as the runner's staging. Before the
-  // node runs.
-  std::expected<void*, std::string> Pinned(std::uint64_t bytes);
-  // Successful setup allocations only, before the scheduler starts. Device
-  // mappings include extent alignment; pinned bytes include PagedNode's 256
-  // byte minimum. This excludes the shared workspace and growing live state.
-  std::uint64_t mapped_bytes() const;
-  std::uint64_t pinned_bytes() const { return pinned_bytes_; }
 
   // cuBLAS on the model's stream, with upstream's workspace for the
   // device mapped as `name` (runtime memory).
@@ -80,21 +60,12 @@ class RunnerResources {
   kernels::ggml::LaunchContext& launch() const { return *launch_; }
   const execution::Registry& registry() const { return *registry_; }
 
-  // Every extent mapped here and the staging's: a closure's share.
-  std::vector<catalog::ExtentId> extents() const;
-
   // The launch context and cuBLAS destroyed, then every mapping released
   // (the problems appended). Once, after the node's teardown fenced the
   // stream, and after the runner destroyed its plans and graphs.
   void Release(std::vector<std::string>& problems);
 
  private:
-  PagedNode& node_;
-  int owner_;
-  std::uint32_t stream_;
-  std::vector<Mapped*> mapped_;  // the runner's members, in mapping order
-  std::vector<catalog::ExtentId> staging_;
-  std::uint64_t pinned_bytes_ = 0;
   Mapped cublas_workspace_;
   std::uint64_t cublas_bytes_ = 0;
   std::unique_ptr<kernels::ggml::CublasHandle> cublas_;

@@ -22,12 +22,18 @@
 //   accepting its first rows owes the restore of the rest before the next
 //   job's own work, and a model's commit of the kept rows after it
 //   (Qwen3.8's recurrent state), so the state is what a verify of the kept
-//   rows alone would have left. A failed verify is undone whole.
+//   rows alone would have left. A failed verify is undone whole. The saves
+//   and restores are the paging kernels' range copies
+//   (kernels/paging/paging.h) on the job's stream; a GGML runner queues
+//   them through its launch context instead (live_state_launch.h).
 //
 // A growing region keeps its layout's virtual bytes; only initialized
 // extents have backing and spill contents. Turn-boundary
 // checkpoints of recurrent or indexer state are saved ranges kept across
 // jobs, the snapshot's mechanism with a longer life.
+//
+// Part of the engine core (every build profile): it reaches the device
+// through the node, the device runtime and the paging kernels only.
 
 #ifndef LLMP_ENGINE_LIVE_STATE_H_
 #define LLMP_ENGINE_LIVE_STATE_H_
@@ -49,22 +55,31 @@
 
 #include "catalog/catalog.h"
 #include "engine/paged_node.h"
-#include "kernels/ggml/launch.h"
-#include "kernels/ggml/llmp_ops.h"
+#include "kernels/paging/paging.h"
 #include "platform/kept_files.h"
+#include "providers/device_execution.h"
 #include "scheduler/scheduler.h"
 
 namespace llmp::engine {
 
-class RunnerResources;
+class RunnerMemory;
+struct LiveStateLaunch;
 
 class LiveState {
  public:
   using Status = engine::Status;
-  // A model's commit of a verify's first `keep` rows, queued after the
-  // rejected rows' restore (Qwen3.8's recurrent and convolution state).
-  using Commit = std::function<std::expected<void, kernels::ggml::KernelFailure>(
-      kernels::ggml::LaunchContext& launch, std::uint32_t keep)>;
+  // Why queueing device work failed: refused with nothing queued, or not
+  // (`unknown`: something was or may have been queued, so the job fences
+  // it and reports JobResult::kUnknown).
+  struct QueueFailure {
+    bool unknown = false;
+    std::string detail;
+  };
+  using Queued = std::expected<void, QueueFailure>;
+  // A model's commit of a verify's first `keep` rows, queued on `stream`
+  // after the rejected rows' restore (Qwen3.8's recurrent and convolution
+  // state).
+  using Commit = std::function<Queued(providers::NativeStream stream, std::uint32_t keep)>;
 
   // `model` names it in refusals ("DeepSeek", "Qwen3.8").
   explicit LiveState(std::string model);
@@ -246,21 +261,26 @@ class LiveState {
   // device memory (SnapshotAt), and `commit` if the model commits kept rows.
   // Optional saved-vector reserve is caller-funded before this call. Existing
   // callers retain lazy allocation unless they explicitly request it.
-  Status AllocateSnapshot(RunnerResources& resources, std::uint32_t capacity,
-                          bool reserve_saves = false);
+  Status AllocateSnapshot(RunnerMemory& memory, std::uint32_t capacity, bool reserve_saves = false);
   void SnapshotAt(std::uint64_t base, std::uint64_t bytes) {
     snapshot_base_ = base;
     snapshot_bytes_ = bytes;
   }
-  void SetCommit(Commit commit) { commit_ = std::move(commit); }
+  // A commit queued on the job's stream by QueueOwed (and Rollback); a
+  // legacy runner's goes through its launch context instead
+  // (SetCommitThrough), and each path refuses the other's.
+  void SetCommit(Commit commit) {
+    commit_ = std::move(commit);
+    launch_commit_ = false;
+  }
 
   // A verify's saves: Begin, then each range it writes (verify row `row`,
   // -1 its scratch rows), each at a 256-byte boundary of the snapshot.
   void BeginSaves();
   Status Save(std::uint64_t address, std::uint64_t bytes, std::int64_t row);
-  // Queues the saves (in the verify's job, before its run).
-  std::expected<void, kernels::ggml::KernelFailure> QueueSaves(
-      kernels::ggml::LaunchContext& launch) const;
+  // Queues the saves on the job's stream (in the verify's job, before its
+  // run).
+  Queued QueueSaves(providers::NativeStream stream) const;
   // The verify ran: `rows` await Accept.
   void Verified(std::uint32_t rows) { verify_rows_ = rows; }
   std::uint32_t verify_rows() const { return verify_rows_; }
@@ -278,11 +298,14 @@ class LiveState {
   Status Accept(std::uint32_t keep);
   // Restores and commits owed, queued at the start of the next job.
   bool owed() const { return restore_count_ != 0 || commit_keep_ != 0; }
-  // Queues what is owed; each part stays owed unless queued.
-  std::expected<void, kernels::ggml::KernelFailure> QueueOwed(kernels::ggml::LaunchContext& launch);
+  // Queues what is owed on the job's stream; each part stays owed unless
+  // queued. A commit refused after the restore was queued fails as
+  // `unknown`: the job has queued work. A SetCommitThrough commit owed is
+  // refused before anything is queued (QueueOwedThrough queues it).
+  Queued QueueOwed(providers::NativeStream stream);
   // What is owed, now, as a job of its own over `closure`.
   Status Rollback(PagedNode& node, const catalog::Closure& closure, std::uint32_t stream,
-                  kernels::ggml::LaunchContext& launch, std::string_view what);
+                  std::string_view what);
 
   // After a failed job, so the state is never left half-written: a verify
   // whose saves were queued (`saved`) is undone whole before the next job's
@@ -298,6 +321,8 @@ class LiveState {
 
  private:
   friend class PagedNode;
+  // The legacy GGML runners' queueing through their launch context.
+  friend struct LiveStateLaunch;
   struct Preparation;
   std::unique_ptr<Preparation> preparation_;
   LiveState* next_preparing_ = nullptr;
@@ -338,13 +363,16 @@ class LiveState {
   std::uint64_t snapshot_base_ = 0;
   std::uint64_t snapshot_bytes_ = 0;
   std::uint32_t capacity_ = 0;
-  kernels::ggml::RangeCopy* save_ = nullptr;
-  kernels::ggml::RangeCopy* restore_ = nullptr;
+  kernels::paging::RangeCopy* save_ = nullptr;
+  kernels::paging::RangeCopy* restore_ = nullptr;
   std::uint32_t save_count_ = 0;     // the next verify's
   std::uint64_t save_at_ = 0;        // in the snapshot
   std::uint32_t restore_count_ = 0;  // owed
   std::uint32_t commit_keep_ = 0;    // owed: rows to commit (0: none)
   Commit commit_;
+  // commit_ is SetCommitThrough's (live_state_launch.h): queued only
+  // through its launch context, never by QueueOwed.
+  bool launch_commit_ = false;
   std::vector<Saved> saved_;       // the last verify's
   std::uint32_t verify_rows_ = 0;  // its rows; 0 once accepted
 };

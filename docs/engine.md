@@ -17,6 +17,23 @@ builders described below give way to one engine of shared components over
 llmpalooza's own graph IR ([engine-components.md](engine-components.md)). This
 file describes the code as it is, and changes as each piece lands.
 
+**Two libraries** (D-096 as amended 2026-10-08). `llmp_engine_core` builds
+in every profile and names no kernel library: the node, the weights'
+paging, live state (with its spill, checkpoints and a verify's snapshot),
+the runner's own memory (`runner_memory.h`), what plans hold
+(`plan_account.h`: the charge, the step a reclaim spares, the reclaimer's
+view of a cache), prefill lookahead, the request cohort and the n-gram
+rows. It reaches the device through the providers, the device runtime and
+the paging kernels (`kernels/paging/paging.h`), and links no device
+backend: a program links the CUDA one, or the fake device runtime
+(`providers/fake/fake_device_runtime.h`: host memory, work queued on fake
+streams that runs when a fence is queried) with the paging kernels' host
+loops (`llmp_fake_device_backend`), which the core's tests use in every
+profile. `llmp_engine` (CUDA builds) adds the GGML plans and runs
+(`planned.h`, `graph_runs.h`), the runners' cuBLAS and launch context
+(`runner_resources.h`), `ExpertSlab` (`expert_slab.h`), the launch-context
+path of a verify's snapshot (`live_state_launch.h`) and each family's runner.
+
 ## The node
 
 `paged_node.h`: device 0 with its providers, a stream per model and the
@@ -40,12 +57,12 @@ them; nothing in them is virtual, and nothing runs per kernel.
 
 | Part | File | What it does | The runner supplies |
 | --- | --- | --- | --- |
-| Weights | `paged_weights.h` | Opens an artifact and its shards for direct reads; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`, `ExpertSlab`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
-| Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; successful source/pin checks reused under scheduler lifetime/epoch with mutation invalidation (not residency or leases); sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify | The state layout and each step's used ranges; which ranges a verify writes; a commit kernel if kept rows need one |
-| Planned shapes | `planned.h` | `PlannedGraph<Graph>`, `SizedArena` (a plan's arena holds what its graph uses), `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, no fixed number, each plan's host bytes and planning time kept: `PlannedHostBytes`), `PlanAccount` (what the plans and graphs hold, charged to the node: a plan as it is added, a graph before its capture, D-090 as amended), `PlanStep` (a step's plans spared by any reclaim while it runs), `CollectPlans` and `ReclaimPlan` (the plans and graphs as candidates for the node's reclaim order, and one's reclaim), `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
+| Weights | `paged_weights.h` | Opens an artifact and its shards for direct reads; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`; a GGML runner's `ExpertSlab`, `expert_slab.h`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
+| Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; successful source/pin checks reused under scheduler lifetime/epoch with mutation invalidation (not residency or leases); sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify, queued on the job's stream as the paging kernels' range copies (a GGML runner queues them through its launch context, `live_state_launch.h`) | The state layout and each step's used ranges; which ranges a verify writes; a commit if kept rows need one |
+| Planned shapes | `planned.h` (`plan_account.h`) | `PlannedGraph<Graph>`, `SizedArena` (a plan's arena holds what its graph uses), `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, no fixed number, each plan's host bytes and planning time kept: `PlannedHostBytes`); in the core, `PlanAccount` (what the plans and graphs hold, charged to the node: a plan as it is added, a graph before its capture, D-090 as amended), `PlanStep` (a step's plans spared by any reclaim while it runs), `PlanCacheBase`, `CollectPlans` and `ReclaimPlan` (the plans and graphs as candidates for the node's reclaim order, and one's reclaim); `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
 | Runs and graphs | `graph_runs.h` | `GraphRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the plan and the outputs; captures a shape on its second run (or when the runner asks), beside that run's launch-by-launch execution (so capture and instantiation overlap the device's work) unless work is queued between inputs and plan, replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; `CaptureAhead` records another planned shape's graph without running it, from the input layout `Layout` predicts; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts, hinted prefill) and what it copies out |
 | Prefill lookahead | `prefill_lookahead.h` | `PrefillLookahead` and fixed-capacity `PrefillLookaheadGroup`: independent optional host allowances before CPU-only future plans, sequential builds during current device work, ordered installation after successful completion, exact cache-charge transfer and destruction before unused-grant release | Shape prediction, graph construction, binding/coverage/cache installation and capture policy |
-| Resources | `runner_resources.h` | The runner's own device memory (pinned), pinned staging, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry, and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
+| Resources | `runner_memory.h`, `runner_resources.h` | The runner's own device memory (pinned) and pinned staging (`RunnerMemory`, the core's); for a GGML runner, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry (`RunnerResources`); and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
 
 Startup measurement can skip greedy activation placement when a checked
@@ -131,8 +148,9 @@ policy. [Bounds, native factors and startup cost](experiments/gemma-shared-q8/RE
    every capture of the job: a graph with no room even after a reclaim is
    not made), and
    materializes its used ranges (`LiveState::Use`) and renews the request
-   closure if new extents were initialized, then posts one job that queues what the live state owes (`QueueOwed`), a
-   verify's saves (`QueueSaves`), and the run (`GraphRuns::Queue`). A
+   closure if new extents were initialized, then posts one job that queues what the live state owes, a
+   verify's saves (through its launch context: `QueueOwedThrough`,
+   `QueueSavesThrough`), and the run (`GraphRuns::Queue`). A
    failure settles the state (`LiveState::Settle`: a verify undone, else a
    quarantine); success counts the path (`Count`).
 5. **Release** (after the node's teardown): the plans and graphs first

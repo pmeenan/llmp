@@ -17,6 +17,8 @@
 #include <utility>
 
 #include "engine/checkpoint_file.h"
+#include "engine/expert_slab.h"
+#include "engine/live_state_launch.h"
 #include "engine/support.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_outa.h"
@@ -1712,8 +1714,8 @@ Status Dsv4Runner::Rollback(RequestState& request) {
   if (auto active = CheckResident(request); !active) {
     return active;
   }
-  auto rolled = request.live.Rollback(node_, execution_, stream_, resources_.launch(),
-                                      "restoring a verify's rejected rows");
+  auto rolled = RollbackThrough(request.live, node_, execution_, stream_, resources_.launch(),
+                                "restoring a verify's rejected rows");
   if (!rolled && wave_slots_ > 1) {
     cohort_.CheckFailedJob(node_, stream_, execution_, States());
   }
@@ -1859,14 +1861,14 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
     const auto started = std::chrono::steady_clock::now();
     // A rejected draft's rows first, then this verify's snapshot.
     const bool restoring = live.owed();
-    if (auto r = live.QueueOwed(launch); !r) {
+    if (auto r = QueueOwedThrough(live, launch); !r) {
       ran = Error(std::format("chunk at {}: {}", n_past, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
     }
     bool before = restoring;  // work queued before a failure
     if (verify) {
-      if (auto r = live.QueueSaves(launch); !r) {
+      if (auto r = QueueSavesThrough(live, launch); !r) {
         ran = Error(std::format("chunk at {}: {}", n_past, r.error().detail));
         unknown = true;
         return sc::JobResult::kUnknown;
@@ -2042,7 +2044,7 @@ Status Dsv4Runner::Draft(RequestState& request, std::uint32_t pos0, std::int32_t
   const std::uint64_t staging_at = DraftStagingAt(request);
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
     const auto started = std::chrono::steady_clock::now();
-    if (auto r = live.QueueOwed(launch); !r) {
+    if (auto r = QueueOwedThrough(live, launch); !r) {
       ran = Error(std::format("draft at {}: {}", pos0, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
@@ -2233,7 +2235,7 @@ Status Dsv4Runner::DraftVerify(RequestState& request, std::uint32_t pos, std::in
       unknown_effect = unknown_effect || unknown;
       return unknown ? sc::JobResult::kUnknown : sc::JobResult::kFailed;
     };
-    if (auto r = live.QueueOwed(launch); !r) {
+    if (auto r = QueueOwedThrough(live, launch); !r) {
       return failed(r.error().detail, true);
     }
     // Both stagings first: the host writes them before anything it queues
@@ -2284,7 +2286,7 @@ Status Dsv4Runner::DraftVerify(RequestState& request, std::uint32_t pos, std::in
         return failed(r.error().detail, r.error().error == kg::KernelError::kUnknown);
       }
     }
-    if (auto r = live.QueueSaves(launch); !r) {
+    if (auto r = QueueSavesThrough(live, launch); !r) {
       return failed(r.error().detail, true);
     }
     saved = true;
@@ -2545,7 +2547,7 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
       return unknown ? sc::JobResult::kUnknown : sc::JobResult::kFailed;
     };
     for (std::size_t i = 0; i < count; ++i) {
-      if (auto r = frames[i].request->live.QueueOwed(launch); !r) {
+      if (auto r = QueueOwedThrough(frames[i].request->live, launch); !r) {
         return failed(r.error().detail, true);
       }
     }
@@ -2632,7 +2634,7 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
         }
       }
       for (std::size_t i = 0; i < count; ++i) {
-        if (auto r = frames[i].request->live.QueueSaves(launch); !r) {
+        if (auto r = QueueSavesThrough(frames[i].request->live, launch); !r) {
           return failed(r.error().detail, true);
         }
         frames[i].saved = true;

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "engine/live_state_launch.h"
 #include "engine/support.h"
 #include "providers/device_runtime.h"
 #include "scheduler/scheduler.h"
@@ -441,11 +442,12 @@ Proof::Status Proof::Bind() {
     slot.commit_args.ple_rows =
         static_cast<const float*>(Pointer(slot.commit.base + owner_.commit_layout_.ple()));
     Slot* const stable = &slot;
-    slot.state.SetCommit([stable](kg::LaunchContext& launch, std::uint32_t keep) {
-      auto args = stable->commit_args;
-      args.keep = static_cast<int>(keep);
-      return kg::Qwen38Commit(launch, args);
-    });
+    engine::SetCommitThrough(slot.state, owner_.resources_,
+                             [stable](kg::LaunchContext& launch, std::uint32_t keep) {
+                               auto args = stable->commit_args;
+                               args.keep = static_cast<int>(keep);
+                               return kg::Qwen38Commit(launch, args);
+                             });
   }
   runs_.SetLaunch(&owner_.resources_.launch());
   return Refresh();
@@ -648,7 +650,8 @@ Proof::Status Proof::Settle() {
       closure_,
       [&](providers::NativeStream) {
         for (auto& slot : std::span(slots_).first(requests_)) {
-          if (auto queued = slot.state.QueueOwed(owner_.resources_.launch()); !queued) {
+          if (auto queued = engine::QueueOwedThrough(slot.state, owner_.resources_.launch());
+              !queued) {
             return sc::JobResult::kUnknown;
           }
         }
@@ -746,7 +749,7 @@ Proof::Status Proof::Draft(const Requests<std::vector<std::int32_t>>& histories,
             continue;
           }
           auto& slot = slots_[s];
-          if (auto owed = slot.state.QueueOwed(owner_.resources_.launch()); !owed) {
+          if (auto owed = engine::QueueOwedThrough(slot.state, owner_.resources_.launch()); !owed) {
             queued = Error(owed.error().detail);
             return sc::JobResult::kUnknown;
           }
@@ -911,11 +914,12 @@ Proof::Status Proof::Verify(const Requests<std::vector<std::int32_t>>& histories
             continue;
           }
           auto& slot = slots_[s];
-          if (auto owed = slot.state.QueueOwed(owner_.resources_.launch()); !owed) {
+          if (auto owed = engine::QueueOwedThrough(slot.state, owner_.resources_.launch()); !owed) {
             queued = Error(owed.error().detail);
             return sc::JobResult::kUnknown;
           }
-          if (auto saved = slot.state.QueueSaves(owner_.resources_.launch()); !saved) {
+          if (auto saved = engine::QueueSavesThrough(slot.state, owner_.resources_.launch());
+              !saved) {
             queued = Error(saved.error().detail);
             return sc::JobResult::kUnknown;
           }

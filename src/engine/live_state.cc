@@ -11,8 +11,9 @@
 #include <system_error>
 #include <utility>
 
-#include "engine/runner_resources.h"
+#include "engine/runner_memory.h"
 #include "engine/support.h"
+#include "kernels/paging/paging.h"
 #include "platform/direct_io.h"
 #include "providers/device_runtime.h"
 #include "scheduler/commands.h"
@@ -21,7 +22,7 @@ namespace llmp::engine {
 
 namespace {
 
-namespace kg = llmp::kernels::ggml;
+namespace paging = llmp::kernels::paging;
 namespace sc = llmp::scheduler;
 using base::Bytes;
 using catalog::ExtentId;
@@ -1166,20 +1167,20 @@ LiveState::Status LiveState::Usable() const {
 
 // ------------------------------------------------------------------ speculation
 
-LiveState::Status LiveState::AllocateSnapshot(RunnerResources& resources, std::uint32_t capacity,
+LiveState::Status LiveState::AllocateSnapshot(RunnerMemory& memory, std::uint32_t capacity,
                                               bool reserve_saves) {
   if (reserve_saves) {
     saved_.reserve(capacity);
     if (saved_.capacity() > capacity) return Error("verify saved metadata exceeds funded capacity");
   }
-  auto save = resources.Pinned(capacity * sizeof(kg::RangeCopy));
-  auto restore = resources.Pinned(capacity * sizeof(kg::RangeCopy));
+  auto save = memory.Pinned(capacity * sizeof(paging::RangeCopy));
+  auto restore = memory.Pinned(capacity * sizeof(paging::RangeCopy));
   if (!save || !restore) {
     return Error(std::format("pinned staging for {}'s verify snapshot", model_));
   }
   capacity_ = capacity;
-  save_ = static_cast<kg::RangeCopy*>(*save);
-  restore_ = static_cast<kg::RangeCopy*>(*restore);
+  save_ = static_cast<paging::RangeCopy*>(*save);
+  restore_ = static_cast<paging::RangeCopy*>(*restore);
   return {};
 }
 
@@ -1200,8 +1201,28 @@ LiveState::Status LiveState::Save(std::uint64_t address, std::uint64_t bytes, st
   return {};
 }
 
-std::expected<void, kg::KernelFailure> LiveState::QueueSaves(kg::LaunchContext& launch) const {
-  return kg::CopyRanges(launch, save_, save_count_);
+namespace {
+
+// The range copies on `stream`: refused, with nothing queued, unless the
+// descriptors are valid; of unknown effect if the launch failed.
+LiveState::Queued CopyRanges(const paging::RangeCopy* ranges, std::uint32_t count,
+                             providers::NativeStream stream) {
+  if (!paging::RangeCopiesValid(ranges, count)) {
+    return std::unexpected(LiveState::QueueFailure{
+        .unknown = false,
+        .detail = "range copies: none given, or too many, or not 16-byte aligned multiples"});
+  }
+  if (!paging::CopyRanges(ranges, count, stream.handle)) {
+    return std::unexpected(
+        LiveState::QueueFailure{.unknown = true, .detail = "range copies: the launch failed"});
+  }
+  return {};
+}
+
+}  // namespace
+
+LiveState::Queued LiveState::QueueSaves(providers::NativeStream stream) const {
+  return CopyRanges(save_, save_count_, stream);
 }
 
 LiveState::Status LiveState::AwaitingAccept() const {
@@ -1230,17 +1251,29 @@ LiveState::Status LiveState::Accept(std::uint32_t keep) {
   return {};
 }
 
-std::expected<void, kg::KernelFailure> LiveState::QueueOwed(kg::LaunchContext& launch) {
+LiveState::Queued LiveState::QueueOwed(providers::NativeStream stream) {
+  if (commit_keep_ != 0 && launch_commit_) {
+    // The two paths never mix (live_state_launch.h): such a commit ignores
+    // `stream` and the launch context's fault.
+    return std::unexpected(QueueFailure{
+        .unknown = false,
+        .detail = std::format("{}'s commit queues through its launch context (QueueOwedThrough)",
+                              model_)});
+  }
   if (owed()) InvalidatePlaces();
+  bool restored = false;
   if (restore_count_ != 0) {
     // Still owed until the copy is queued.
-    if (auto r = kg::CopyRanges(launch, restore_, restore_count_); !r) {
+    if (auto r = CopyRanges(restore_, restore_count_, stream); !r) {
       return r;
     }
     restore_count_ = 0;
+    restored = true;
   }
   if (commit_keep_ != 0) {
-    if (auto r = commit_(launch, commit_keep_); !r) {
+    if (auto r = commit_(stream, commit_keep_); !r) {
+      // Never "nothing queued" once the restore is.
+      r.error().unknown = r.error().unknown || restored;
       return r;
     }
     commit_keep_ = 0;
@@ -1249,8 +1282,7 @@ std::expected<void, kg::KernelFailure> LiveState::QueueOwed(kg::LaunchContext& l
 }
 
 LiveState::Status LiveState::Rollback(PagedNode& node, const catalog::Closure& closure,
-                                      std::uint32_t stream, kg::LaunchContext& launch,
-                                      std::string_view what) {
+                                      std::uint32_t stream, std::string_view what) {
   if (auto usable = Usable(); !usable) {
     return usable;
   }
@@ -1260,8 +1292,9 @@ LiveState::Status LiveState::Rollback(PagedNode& node, const catalog::Closure& c
   std::string failed;
   auto posted = node.Job(
       closure,
-      [&](providers::NativeStream) {
-        if (auto r = QueueOwed(launch); !r) {
+      [&](providers::NativeStream native) {
+        if (auto r = QueueOwed(native); !r) {
+          // A refused commit may follow a queued restore: unknown either way.
           failed = r.error().detail;
           return sc::JobResult::kUnknown;
         }
@@ -1270,8 +1303,8 @@ LiveState::Status LiveState::Rollback(PagedNode& node, const catalog::Closure& c
       what, stream);
   if (!posted || !failed.empty()) {
     // What was not queued stays owed; what was has completed (the job
-    // retired); a launch of unknown effect quarantines.
-    Settle(false, false, !failed.empty() || launch.faulted());
+    // retired); a failed queueing quarantines.
+    Settle(false, false, !failed.empty());
     return Error(failed.empty() ? posted.error() : failed);
   }
   return {};

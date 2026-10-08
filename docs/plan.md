@@ -1364,26 +1364,55 @@ each is checked against the design as M3.6 proceeds.
       discrete `sm_86` target, product by product against CPU references
       (D-082; the whole model does not fit the 3080 Ti). The Qwen2
       EXL3 fixture proves the trellis encoding through the same layer.
+      Sub-tasks (owner, 2026-10-08: each lands as one reviewed commit):
+      - [ ] Encodings, layouts and the size rule; v0 representations
+            mapped at read time; CPU reference decoders; registry
+            capabilities and the ladder's ordering.
+      - [ ] CUDA block decoders under the vector, matrix, grouped and GLU
+            templates; the `sm_86` proof.
+      - [ ] The EXL3 trellis through the layer; state encodings.
 - [ ] **Shared slot lifecycle, one runner interface, one serving adapter
       per pipeline kind**, derived from state contracts; reconcile today's
       divergent copies (Gemma2's restore guards against Gemma3's).
       Decoding-mode orchestration takes any number of drafters and the
       planning and capture path is backend-neutral (M3.5's moved skeleton
       gaps), tested on the fake backend with two drafters.
+      Sub-tasks:
+      - [x] The engine core builds in every profile, with a fake device
+            runtime and host paging kernels (D-096 amended).
+      - [ ] State contracts and the shared slot lifecycle, with the
+            reconciled guards.
+      - [ ] One runner interface: step programs, wave composition,
+            prefill and decoding-mode orchestration with any number of
+            drafters (cascaded or alternative, chosen by policy).
+      - [ ] One serving adapter per pipeline kind.
 - [ ] **IR and planner** (D-107): the op set and tensor descriptors,
       construction from a spec, fusion patterns covering today's selected
       fused paths, implementation selection, activation placement, lowering
       to recorded work, plan keys; a CPU reference and fake-backend tests
       for every component.
+      Sub-tasks:
+      - [ ] The IR graph, its verifier and the reference executor; the
+            model spec and its v0 synthesis.
+      - [ ] The component framework and the planner; lowering to the
+            existing kernel sources with structural parity.
 - [ ] **Partitioning in the planner:** tensor, pipeline and expert
       parallelism with any split count and mixed, chosen by modelled
       traffic for a described topology; equivalence tests over four or more
       fake devices. Two-Spark execution is M4's.
 - [ ] **Migrate Gemma2 and Gemma3**, then delete their runners, plans,
       graph builders, bindings and serving classes.
+      - [ ] Components, patterns and the mapping.
+      - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Migrate Gemma4** 26B-A4B and 31B with their assistants.
+      - [ ] Components, patterns and the mapping.
+      - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Migrate Qwen3.8**: native NVFP4/MXFP8 with MTP, and GGUF.
+      - [ ] Components, patterns and the mapping.
+      - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.
+      - [ ] Components, patterns and the mapping.
+      - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Native importer** (D-109): container readers for GGUF,
       safetensors with `config.json`, diffusers pipelines (Qwen-Image's
       components, composed under D-089), MLX and EXL3; architecture mappings

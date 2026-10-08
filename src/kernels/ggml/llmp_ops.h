@@ -89,6 +89,7 @@
 
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
+#include "kernels/paging/paging.h"
 
 namespace llmp::kernels::ggml {
 
@@ -801,19 +802,14 @@ std::expected<void, KernelFailure> RunQsaPool(LaunchContext& launch, ggml_tensor
 std::expected<void, KernelFailure> RunQsaTopK(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunQsaAttn(LaunchContext& launch, ggml_tensor* node);
 
-// Byte ranges copied device to device in one kernel, not a graph node: a
-// speculative verify's snapshot of the state rows it will write, and the
-// restore of the rows a rejected draft wrote (D-068's truncation at a
-// snapshot; engine/live_state.h). Each range is 16-byte aligned at
-// both ends and a multiple of 16 bytes; no destination overlaps another
-// range. `ranges` is memory the device reads (pinned host memory, or
-// device memory), valid until the copy completes; at most kMaxRangeCopies.
-struct RangeCopy {
-  std::uint64_t from = 0;
-  std::uint64_t to = 0;
-  std::uint64_t bytes = 0;
-};
-inline constexpr std::uint32_t kMaxRangeCopies = 65535;
+// Byte ranges copied device to device in one kernel, not a graph node
+// (kernels/paging/paging.h's RangeCopy, whose rules apply), run through the
+// launch context: refused while it is faulted, and a failed launch faults
+// it. The legacy runners queue a verify's snapshot this way
+// (engine/live_state_launch.h) and their own commits' copies; the engine
+// core queues the same descriptors with paging::CopyRanges.
+using RangeCopy = kernels::paging::RangeCopy;
+inline constexpr std::uint32_t kMaxRangeCopies = kernels::paging::kMaxRangeCopies;
 std::expected<void, KernelFailure> CopyRanges(LaunchContext& launch, const RangeCopy* ranges,
                                               std::uint32_t count);
 
