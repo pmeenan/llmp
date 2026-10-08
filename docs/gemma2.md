@@ -104,7 +104,8 @@ replay. Stock comparison has zero strict choice differences, with 65/66 small
 and 66/66 ring full heads byte-identical. Its short n=2 paid C2 cycle is 1.49%
 slower than stock with exact natural histories/final heads; no parity claim.
 Those diagnostic owner defaults remain off. The later serving recipe explicitly
-selects checked common-width owner padding and packed prefill.
+selects checked common-width owner padding and compatible prefill; the later
+multirow transfer below removes K/V packing for 128-row joined chunks.
 The C1 control covers final logit softcap30 and width-2304 readable tails;
 the later serving slice adds representative compatible prefill and departures.
 Broader context/quality, sustained and switch qualification remain open.
@@ -227,10 +228,10 @@ separately from device activations.
 Wrapped C2 prefill falls 6.616% in a same-binary host/device/device/host screen;
 all heads, choices and initialized states remain exact. Five HTTP/restart cases
 and four checkpoint GPU cases pass through the adopted path. A fresh short
-llama.cpp comparison at these 4,352/4,864 prefixes still shows native prefill
-6.721% slower and the paid cycle 4.586% slower; decode is within noise.
-This remains the last matched warm-reference result, before the lookahead
-transfer below; it is not a parity claim.
+llama.cpp comparison at these 4,352/4,864 prefixes showed native prefill
+6.721% slower and the paid cycle 4.586% slower at that snapshot; decode is
+within noise. The subsequent multirow actual-root transfer below closes
+that measured warm gap for this workload.
 
 ## Prefill lookahead and joined hints
 
@@ -244,5 +245,19 @@ A weight-warm, plan-cold two-owner 4,352/4,864-prefix screen improves first
 traversal prefill 5.252%, with identical 64 generated choices and complete final
 heads. The corrected warm control is 0.604% slower at two samples per arm; no
 warm speed benefit is claimed. This native optimization comparison does not
-replace the earlier llama.cpp comparison or close the remaining warm gap.
+by itself replace the earlier llama.cpp comparison or close that warm gap.
 [Method, focused serving/state controls and limits](experiments/prefill-transfer/README.md#gemma2-capture-and-joined-gemma-hints-2026-10-07).
+
+## Multirow actual-root prefill
+
+Ordinary compatible two-owner 128-row chunks now read their real F16 K/V
+cache roots, preserving the selected packed MMA geometry and cap50 arithmetic.
+Masks still concatenate; other row counts keep the checked packed fallback
+pending a flexible row/tile extension. The [matched timeline and transfer](experiments/gemma-prefill-copies/README.md)
+found 3432 baseline D2D copies and lower native arithmetic active time.
+Removing K/V packing improves same-native wrapped prefill 8.662% (n=2).
+Fresh llama.cpp/native/native/llama.cpp bookends are level within observed
+movement: native prefill −0.293%, paid cycle −0.202%, with all 64 choices and
+both complete finite final heads byte-exact. Production adapter heads/state,
+kept restart/continuation and wrapped own-state controls pass. Public 8K/two
+admission is unchanged; broader shapes, corpus and sustained gates stay open.

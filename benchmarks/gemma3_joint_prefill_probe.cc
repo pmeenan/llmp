@@ -87,8 +87,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") ||
-      (argc != 6 && argc != 7))
+  if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") || (argc < 6 || argc > 8))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -102,8 +101,16 @@ int main(int argc, char** argv) {
     if (!status) std::cerr << status.error() << '\n';
     return status ? 0 : 1;
   }
-  const bool bounded = argc == 7;
-  if (bounded && std::string_view(argv[6]) != "bounded-roots") return 2;
+  bool bounded = false, owner_prefill = false;
+  for (int i = 6; i < argc; ++i) {
+    const std::string_view flag = argv[i];
+    if (flag == "bounded-roots" && !bounded)
+      bounded = true;
+    else if (flag == "owner-prefill" && !owner_prefill)
+      owner_prefill = true;
+    else
+      return 2;
+  }
   const std::string mode = argv[5];
   const bool own = mode == "own", cycle = mode == "cycle";
   if (!own && !cycle) return 2;
@@ -132,20 +139,22 @@ int main(int argc, char** argv) {
   };
   auto life = std::make_unique<Lifetime>();
   auto& node = life->node;
-  life->runner = std::make_unique<en::Gemma3Runner>(node,
-                                                    en::Gemma3Options{.artifact = argv[1],
-                                                                      .out = out,
-                                                                      .slots = 2,
-                                                                      .max_wave_rows = 256,
-                                                                      .max_head_rows = 2,
-                                                                      .owner_decode = true,
-                                                                      .packed_prefill = true,
-                                                                      .bounded_roots = bounded,
-                                                                      .fuse_norms = true,
-                                                                      .fuse_quant_glu = true,
-                                                                      .fuse_norm_rope = true,
-                                                                      .fuse_norm_add = true},
-                                                    0, 0);
+  life->runner =
+      std::make_unique<en::Gemma3Runner>(node,
+                                         en::Gemma3Options{.artifact = argv[1],
+                                                           .out = out,
+                                                           .slots = 2,
+                                                           .max_wave_rows = 256,
+                                                           .max_head_rows = 2,
+                                                           .owner_decode = true,
+                                                           .packed_prefill = true,
+                                                           .owner_prefill = owner_prefill,
+                                                           .bounded_roots = bounded,
+                                                           .fuse_norms = true,
+                                                           .fuse_quant_glu = true,
+                                                           .fuse_norm_rope = true,
+                                                           .fuse_norm_add = true},
+                                         0, 0);
   auto& runner = *life->runner;
   std::array<std::vector<float>, 2> heads;
   for (auto& head : heads) head.reserve(kVocab);
@@ -275,11 +284,25 @@ int main(int argc, char** argv) {
           for (std::uint32_t s = 0; s < 2; ++s) next[s] = i < 6 ? selected[s] : *Best(heads[s]);
           if (auto r = joined(next, i < 5); !r) return r;
         }
+        const auto warm_state = runner.state();
+        const auto warm_plans = runner.plans_bytes();
+        const auto warm_graphs = runner.graph_count();
         if (auto r = clear(); !r) return r;
+        if (warm_state.empty() || warm_plans == 0 || warm_graphs == 0 ||
+            runner.kept_state() != warm_state || runner.plans_bytes() != warm_plans ||
+            runner.graph_count() != warm_graphs)
+          return Error("warm cycle Clear changed retained backing, plans or graphs");
+        std::cout << "warm_retained_state_extents=" << warm_state.size()
+                  << " warm_retained_plan_bytes=" << warm_plans
+                  << " warm_retained_graphs=" << warm_graphs << '\n';
       }
+      const auto graph_before = runner.graph_stats();
+      const auto ahead_before = runner.lookahead_stats();
       const auto begin = std::chrono::steady_clock::now();
       if (auto r = prompt(cycle); !r) return r;
       const auto prefill = en::support::Seconds(std::chrono::steady_clock::now() - begin);
+      const auto graph_prefill = runner.graph_stats();
+      const auto ahead_prefill = runner.lookahead_stats();
       if (auto r = warm(cycle); !r) return r;
       std::ofstream rows;
       const auto write_rows = [&]() {
@@ -440,31 +463,39 @@ int main(int argc, char** argv) {
       if (auto r = Save<float>(out / "final.f32", final); !r) return r;
       const auto& stats = runner.graph_stats();
       const auto& bound = runner.plan_selections();
-      if (!prefill_groups || !bound.packed_prefill_attention || !bound.owner_attention ||
-          !stats.captured || !stats.replayed || !bound.norm_rope || !bound.norm_add ||
-          runner.coverage().violations)
+      if (!prefill_groups ||
+          (owner_prefill ? !bound.owner_prefill_attention : !bound.packed_prefill_attention) ||
+          !bound.owner_attention || !stats.captured || !stats.replayed || !bound.norm_rope ||
+          !bound.norm_add || runner.coverage().violations)
         return Error("C2 did not select/replay checked implementation families");
       if (bounded && prefix[0] != prefix[1] && !bound.bounded_owner_attention)
         return Error("bounded roots did not select actual unequal owner attention");
-      std::cout << "GEMMA3_JOINT_PREFILL mode=" << mode
-                << " slots=2 context_per_slot=4096 chunk=128"
-                << " compatible_prefill=1 max_wave_rows=256 prompt_rows0=" << prefix[0]
-                << " prompt_rows1=" << prefix[1] << " untimed_rows_per_slot=3"
-                << " decode_steps=32 departure_steps=" << (own ? kTail : 0U)
-                << " paid_generated_tokens=64 past0=" << past[0] << " past1=" << past[1]
-                << " prefill_seconds=" << prefill << " decode_seconds=" << decode
-                << " eager=" << stats.eager << " captured=" << stats.captured
-                << " replayed=" << stats.replayed << " selected_owner=" << bound.owner_attention
-                << " selected_packed_prefill=" << bound.packed_prefill_attention
-                << " bounded_roots=" << bounded
-                << " selected_bounded_owner=" << bound.bounded_owner_attention
-                << " selected_norm_mul=" << bound.norm_mul
-                << " selected_quant_geglu=" << bound.quant_geglu
-                << " selected_norm_rope=" << bound.norm_rope
-                << " selected_norm_add=" << bound.norm_add
-                << " joined_prefill_groups=" << prefill_groups
-                << " joined_prefill_rows=" << prefill_rows
-                << " gpu_tokens=" << runner.greedy_tokens() << '\n';
+      std::cout
+          << "GEMMA3_JOINT_PREFILL mode=" << mode << " slots=2 context_per_slot=4096 chunk=128"
+          << " compatible_prefill=1 max_wave_rows=256 prompt_rows0=" << prefix[0]
+          << " prompt_rows1=" << prefix[1] << " untimed_rows_per_slot=3"
+          << " decode_steps=32 departure_steps=" << (own ? kTail : 0U)
+          << " paid_generated_tokens=64 past0=" << past[0] << " past1=" << past[1]
+          << " prefill_seconds=" << prefill << " decode_seconds=" << decode
+          << " paid_prefill_eager=" << graph_prefill.eager - graph_before.eager
+          << " paid_prefill_captured=" << graph_prefill.captured - graph_before.captured
+          << " paid_prefill_replayed=" << graph_prefill.replayed - graph_before.replayed
+          << " paid_prefill_built=" << ahead_prefill.built - ahead_before.built
+          << " paid_prefill_cached=" << ahead_prefill.cached - ahead_before.cached
+          << " paid_prefill_first=" << ahead_prefill.captured_first - ahead_before.captured_first
+          << " paid_prefill_ahead=" << ahead_prefill.captured_ahead - ahead_before.captured_ahead
+          << " eager=" << stats.eager << " captured=" << stats.captured
+          << " replayed=" << stats.replayed << " selected_owner=" << bound.owner_attention
+          << " selected_packed_prefill=" << bound.packed_prefill_attention
+          << " owner_prefill=" << owner_prefill
+          << " selected_owner_prefill=" << bound.owner_prefill_attention
+          << " bounded_roots=" << bounded
+          << " selected_bounded_owner=" << bound.bounded_owner_attention
+          << " selected_norm_mul=" << bound.norm_mul
+          << " selected_quant_geglu=" << bound.quant_geglu
+          << " selected_norm_rope=" << bound.norm_rope << " selected_norm_add=" << bound.norm_add
+          << " joined_prefill_groups=" << prefill_groups << " joined_prefill_rows=" << prefill_rows
+          << " gpu_tokens=" << runner.greedy_tokens() << '\n';
       return {};
     });
   };

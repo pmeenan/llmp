@@ -325,3 +325,17 @@ reducing paid decode by 21.0667% and total latency by 8.26029%. The explicit
 stock gate waiver or continuous bounded qualification. Other wider/partial
 bounded carriers, cap50 wider batching, sustained/memory/full-corpus and ordinary
 wider adoption remain open.
+
+## Multirow actual-root prefill
+
+The [Gemma2 copy-removal transfer](experiments/gemma-prefill-copies/README.md)
+also applies to Gemma3's joined K/V packing. Ordinary two-owner 128-row chunks
+now retain their real F16 cache roots under the original cap0 MMA geometry.
+The same-native wrapped-prefix factor improves prefill 2.932% and paid cycle
+1.242% (n=2), with exact choices/final heads; this slice adds no fresh Gemma3
+stock cycle. Actual serving heads, state histories, restart adoption and
+continuations remain exact with positive selected-path counters. The primitive
+and graph qualify aligned cache widths through trained 131072, including
+last-cell eager and changed-input replay. Public 4096/two or scalar 8448
+admission is unchanged. Other compatible rows/tails remain an explicit
+extension task with a checked packed fallback.

@@ -197,6 +197,12 @@ downgrade a heavy-path change to the light loop on their own.
   worked as it is found, not held for a later optimization pass: new
   kernels and fusions are ported to existing models too, including those
   whose speed gaps an earlier milestone accepted (owner, 2026-10-07).
+  A historical selector's shape, context, quant or layout bound alone is
+  not "not applicable": investigate a compatible extension, qualify its
+  bounds, arithmetic, funding and performance, and leave an explicit open
+  current-milestone item if unfinished. Apply this retroactively too.
+  Concrete incompatible math or absence of the work being removed can
+  still establish non-applicability (owner, 2026-10-07).
   "Ignores the hint", "audit", "no speed claim" and "unmeasured" are not
   dispositions. A mechanism that is not model-specific goes into the
   shared engine ([engine.md](engine.md)) rather than one runner, so later

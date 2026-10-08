@@ -47,6 +47,8 @@ struct Gemma2GraphOptions {
   // Explicit equal-row/equal-read C2 prefill with real packed F16 K/V.
   // Original attention keeps the approved softcap50 specialization.
   bool packed_prefill = false;
+  // Experimental closed128-row C2 path: same MMA geometry, actual K/V roots.
+  bool owner_prefill = false;
   // Diagnostic C2 cap50 transfer; preserve actual roots at common logical width.
   bool device_masks = false;  // graph-owned causal/ring producer, host reference remains explicit
   bool bounded_roots = false;

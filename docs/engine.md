@@ -57,6 +57,13 @@ requires homogeneous head intent; a mixed next stage does not suppress a valid
 after stage. Gemma4 serving still admits one prompt chunk at a time; its joined
 prefill admission/funding remains separate work. [Focused lifecycle controls](experiments/prefill-transfer/README.md).
 
+Gemma2/Gemma3 compatible two-owner 128-row prefill reads the real F16 K/V
+roots through the existing MMA body, keeping the packed logical geometry and
+cap50/cap0 arithmetic while removing K/V concatenation. Mask concatenation
+remains. The cap0 primitive is qualified through 131072 cache cells; public
+contexts are unchanged. Other row/tile shapes retain their checked packed
+fallback and an explicit extension task. [Attribution and qualification](experiments/gemma-prefill-copies/README.md).
+
 ## A runner's life
 
 1. **Setup** (before the scheduler): open the artifacts
@@ -188,7 +195,12 @@ operations alone ([report](experiments/deepseek-batching/README.md)).
 Start from the [optimization inventory's transfer table](optimization-inventory.md#transfers-and-gaps):
 a new runner adopts each technique there whose contract it meets, or the
 table records why it cannot (workflow.md's transfer rule), before the
-family's speed is compared with its reference. Shared mechanisms (graph
+family's speed is compared with its reference. An existing kernel's narrow
+selector does not rule out a near-fit consumer: investigate a compatible
+extension with qualified arithmetic, bounds, funding and performance, or
+retain an explicit current-milestone open item. This applies to older
+families too; incompatible math or absent redundant work remains a concrete
+non-applicability reason. Shared mechanisms (graph
 capture policy, held direct steps, state reuse across Clear, the pager's
 lazy handoff and handle reserve) come with the skeleton; those still
 written per runner (GPU-built masks, the prefill lookahead hook, the

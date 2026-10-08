@@ -168,9 +168,11 @@ SDK/CUDA/cuBLAS pins remain those of the lifecycle extraction above. Raw logs,
 XML, binary/source bindings and comparison records stay outside Git under
 `~/.local/share/jitllm/` on B and the session coordination scratchpad. The full
 regression suite and workstation tiers remain deferred under the owner's
-override. The previous matched warm llama.cpp result remains a 6.721% prefill
-gap; this first-traversal transfer does not close it. A current matched native/
-reference prefill timeline is the next attribution step.
+override. This first-traversal transfer left the earlier 6.721% warm prefill
+gap unresolved. The subsequent [matched timeline and actual-root transfer](../gemma-prefill-copies/README.md)
+attributed it to joined K/V packing and removed those copies. Fresh final
+Gemma2 bookends are level within the short n=2 screen, with exact choices and
+final heads; broader shape/context and sustained qualification remain open.
 
 At task entry, TensorFold native main was
 [`f8fe17d24629aedabf90bbf78279dd776e6d62e7`](https://github.com/ashhart/TensorFold/blob/f8fe17d24629aedabf90bbf78279dd776e6d62e7/README.md)

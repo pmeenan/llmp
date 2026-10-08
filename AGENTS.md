@@ -306,8 +306,11 @@ Gemma3 4B QAT keeps its 4K default/two-slot route and admits explicit 8448
 context with one slot; checked 8K boundary and model-switch state gates
 complement its ring, checkpoint/restore and restart-adoption controls.
 [Gemma2 2B](docs/gemma2.md) has bounded 8K/two-slot serving with GPU masks, checked cap50
-compatible prefill, template refusal and restart replay.
-Broader reference, batching and sustained qualification remain open.
+compatible prefill, template refusal and restart replay. Gemma2/Gemma3 now
+read actual K/V roots for joined 128-row prefill, removing packing copies;
+[focused comparisons](docs/experiments/gemma-prefill-copies/README.md) improve
+prefill 8.7%/2.9%, with fresh Gemma2 stock bookends level and exact outputs.
+Other row shapes, broader reference, batching and sustained gates remain open.
 The retroactive optimization transfer audit now records every current
 family, including those M3 closed out; its open ports are first in M3.5
 (plan.md; workflow.md's transfer rule). Then come approved model checkpoints, legacy fixtures, Bonsai, formats with

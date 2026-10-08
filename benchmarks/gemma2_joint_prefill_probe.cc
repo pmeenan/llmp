@@ -88,7 +88,8 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") || (argc < 6 || argc > 9))
+  if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") ||
+      (argc < 6 || argc > 10))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -102,7 +103,7 @@ int main(int argc, char** argv) {
     if (!status) std::cerr << status.error() << '\n';
     return status ? 0 : 1;
   }
-  bool bounded = false, device_masks = false, prefill_ahead = false;
+  bool bounded = false, device_masks = false, prefill_ahead = false, owner_prefill = false;
   for (int arg = 6; arg < argc; ++arg) {
     const std::string_view flag = argv[arg];
     if (flag == "bounded-roots" && !bounded)
@@ -111,6 +112,8 @@ int main(int argc, char** argv) {
       device_masks = true;
     else if (flag == "prefill-ahead" && !prefill_ahead)
       prefill_ahead = true;
+    else if (flag == "owner-prefill" && !owner_prefill)
+      owner_prefill = true;
     else
       return 2;
   }
@@ -155,6 +158,7 @@ int main(int argc, char** argv) {
                                                            .capture_ahead = prefill_ahead,
                                                            .owner_decode = true,
                                                            .packed_prefill = true,
+                                                           .owner_prefill = owner_prefill,
                                                            .device_masks = device_masks,
                                                            .bounded_roots = bounded,
                                                            .fuse_norms = true,
@@ -328,7 +332,17 @@ int main(int argc, char** argv) {
           for (std::uint32_t s = 0; s < 2; ++s) next[s] = i < 6 ? selected[s] : *Best(heads[s]);
           if (auto r = joined(next, i < 5); !r) return r;
         }
+        const auto warm_state = runner.state();
+        const auto warm_plans = runner.plans_bytes();
+        const auto warm_graphs = runner.graph_count();
         if (auto r = clear(); !r) return r;
+        if (warm_state.empty() || warm_plans == 0 || warm_graphs == 0 ||
+            runner.kept_state() != warm_state || runner.plans_bytes() != warm_plans ||
+            runner.graph_count() != warm_graphs)
+          return Error("warm cycle Clear changed retained backing, plans or graphs");
+        std::cout << "warm_retained_state_extents=" << warm_state.size()
+                  << " warm_retained_plan_bytes=" << warm_plans
+                  << " warm_retained_graphs=" << warm_graphs << '\n';
       } else if (first_cycle) {
         // Load weights without traversing any paid prefill shape. Clear retains only
         // this short state backing; further growth, plans and captures remain paid.
@@ -518,10 +532,13 @@ int main(int argc, char** argv) {
       const auto& ahead = runner.lookahead_stats();
       if (prefill_ahead && (!ahead.built || ahead.built != ahead.cached || !ahead.captured_first))
         return Error("hinted prefill did not build/cache and capture first shapes");
-      if (!prefill_groups || !bound.packed_prefill_attention || !bound.owner_attention ||
+      if (!prefill_groups ||
+          (owner_prefill ? !bound.owner_prefill_attention : !bound.packed_prefill_attention) ||
+          !bound.owner_attention ||
           (device_masks ? !bound.device_masks : bound.device_masks != 0) || !stats.captured ||
-          !stats.replayed || bound.norm_rope != 0 || !bound.norm_mul || !bound.quant_geglu ||
-          !bound.norm_add || runner.coverage().violations)
+          !stats.replayed || (owner_prefill && !bound.owner_prefill_attention) ||
+          bound.norm_rope != 0 || !bound.norm_mul || !bound.quant_geglu || !bound.norm_add ||
+          runner.coverage().violations)
         return Error("C2 did not select/replay checked implementation families");
       std::cout
           << "GEMMA2_JOINT_PREFILL mode=" << mode << " slots=2 context_per_slot=8192 chunk=128"
@@ -540,6 +557,8 @@ int main(int argc, char** argv) {
           << " eager=" << stats.eager << " captured=" << stats.captured
           << " replayed=" << stats.replayed << " selected_owner=" << bound.owner_attention
           << " selected_packed_prefill=" << bound.packed_prefill_attention
+          << " owner_prefill=" << owner_prefill
+          << " selected_owner_prefill=" << bound.owner_prefill_attention
           << " device_masks=" << device_masks << " selected_device_masks=" << bound.device_masks
           << " bounded_roots=" << bounded
           << " selected_bounded_owner=" << bound.bounded_owner_attention

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Explicit independent cache roots for checked one-query Gemma owner cohorts.
+// Explicit independent cache roots for checked Gemma owner cohorts.
 // No selector uses this operation automatically. The caller holds every real
 // operand span, output and workspace through completion/captured graph lifetime.
 #ifndef JITLLM_KERNELS_GGML_FATTN_OWNER_H_
@@ -60,6 +60,12 @@ struct FlashAttnOwners {
 // including all padded query rows; Gemma3Sources and graph mask padding enforce
 // this for model execution. These lanes are skipped, never read from a root.
 // No sinks or sparse gather.
+// Additional closed prefill case: Gemma2/Gemma3 D256/H8/GQA2 cap50/0, two equal-width
+// roots, 128 query rows. Q [D,128,heads,2], mask [cells,128,1,2], output
+// [D,heads,128,2]. It uses the original Columns32 packed MMA geometry;
+// bounded_roots and partial/wider cohorts are refused for multirow inputs.
+// Cap0 accepts aligned widths through Gemma3's trained 131072-cell maximum;
+// cap50 and every one-query contract retain the previous 16384-cell limit.
 std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& inputs);
 
 // Graph adapter for the distinct ten-source custom node. These never reinterpret
@@ -86,11 +92,15 @@ struct OwnerPartition {
   std::uint32_t effective_cohort = 4;
 };
 // Host-only original grid arithmetic; max_blocks is actual occupancy times
-// actual SMs. Indivisible whole-cohort grids preserve the supported four-root path.
+// actual SMs. tiles_per_owner is KVheads for decode, or query tiles * KVheads
+// for the closed prefill case. multirow admits up to 4096 KV tiles only
+// for the closed C2/16-tiles-per-owner prefill grid; decode stays at 512. Indivisible whole-cohort
+// grids preserve the four-root path.
 std::expected<OwnerPartition, KernelFailure> PlanOwnerPartition(int max_blocks, int kv_tiles,
-                                                                int kv_heads,
+                                                                int tiles_per_owner,
                                                                 std::uint32_t logical_cohort,
-                                                                bool prefer_whole_tiles = false);
+                                                                bool prefer_whole_tiles = false,
+                                                                bool multirow = false);
 }  // namespace detail
 
 // Geometry comes from the original compiled packed MMA kernel. The owner's

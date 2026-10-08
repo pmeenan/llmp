@@ -63,7 +63,9 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     entry.overrides["max_slots"] = std::int64_t{2};
     life->config.models.push_back(entry);
   }
-  rt::Status Start(bool ahead) {
+  rt::Status Start(bool ahead, bool owner_prefill = true) {
+    life->options.gemma2_owner_prefill = owner_prefill;
+    life->options.gemma3_owner_prefill = owner_prefill;
     life->options.gemma2_prefill_lookahead = ahead;
     life->options.gemma2_capture_ahead = ahead;
     life->options.gemma3_prefill_lookahead = ahead;
@@ -238,6 +240,106 @@ TEST_P(GemmaPrefillServingGpu, ActualJoinedHintsPreserveHeadsAndState) {
     std::println("GEMMA_PREFILL_ADAPTER family={} ahead={} seconds={} extra={}", GetParam(), ahead,
                  seconds, model->extra());
     ASSERT_TRUE(Retire());
+  }
+}
+
+TEST_P(GemmaPrefillServingGpu, ActualOwnerPrefillPreservesHeadsStateAndRestart) {
+  life->options.keep_conversations = true;
+  std::array<std::vector<float>, 2> expected, expected_next;
+  std::array<jitllm::base::Sha256Digest, 2> expected_state{};
+  std::uint32_t pass = 0;
+  for (const bool owners : {false, true, true, false}) {
+    ASSERT_TRUE(Start(true, owners));
+    std::array<std::vector<float>, 2> heads;
+    std::array<jitllm::base::Sha256Digest, 2> states{};
+    double seconds = 0;
+    const auto exercise = [&](auto& runner) {
+      const auto r = Prompt(runner, heads, states, seconds);
+      EXPECT_TRUE(r) << (r ? "" : r.error());
+      const auto& selected = runner.plan_selections();
+      EXPECT_GT(owners ? selected.owner_prefill_attention : selected.packed_prefill_attention, 0U);
+      EXPECT_EQ(owners ? selected.packed_prefill_attention : selected.owner_prefill_attention, 0U);
+      EXPECT_GT(runner.lookahead_stats().captured_ahead, 0U);
+      EXPECT_EQ(runner.coverage().violations, 0U);
+    };
+    if (GetParam() == 2)
+      exercise(dynamic_cast<en::Gemma2Runner&>(model->paged()));
+    else
+      exercise(dynamic_cast<en::Gemma3Runner&>(model->paged()));
+    const auto parsed = jitllm::base::json::Parse(model->extra());
+    ASSERT_TRUE(parsed);
+    const auto selected = parsed->root().find("bound_owner_prefill_attention");
+    ASSERT_TRUE(selected);
+    EXPECT_EQ(selected->int64().value_or(0) > 0, owners);
+    for (const auto& head : heads) {
+      ASSERT_EQ(head.size(), GetParam() == 2 ? 256000U : 262208U);
+      ASSERT_TRUE(std::ranges::all_of(head, [](float value) { return std::isfinite(value); }));
+    }
+    if (pass == 0) {
+      expected = heads;
+      expected_state = states;
+    } else {
+      EXPECT_EQ(states, expected_state);
+      for (std::size_t id = 0; id < 2; ++id)
+        EXPECT_EQ(
+            std::memcmp(heads[id].data(), expected[id].data(), heads[id].size() * sizeof(float)),
+            0);
+    }
+    std::array<std::vector<std::int32_t>, 2> histories;
+    for (std::uint32_t id = 0; id < 2; ++id) histories[id] = (*model->branch(id))->history();
+    const auto retired = life->server->RetireRequestBranches(*model, true);
+    ASSERT_TRUE(retired.result);
+    ASSERT_TRUE(retired.references_retired);
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      ASSERT_TRUE(model->SpillIdle(**model->branch(id)));
+      EXPECT_TRUE((*model->branch(id))->spilled());
+    }
+    life->server->Persist(rt::Clock::now() + std::chrono::seconds(30), {});
+    ASSERT_TRUE(Retire());
+    ASSERT_TRUE(Start(true, owners));
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      auto* branch = *model->branch(id);
+      ASSERT_EQ(branch->history(), histories[id]);
+      auto restoring = branch->BeginPrompt(histories[id], 0, false, true);
+      ASSERT_TRUE(restoring);
+      rt::Status run;
+      while (!(*restoring)->done()) {
+        run = (*restoring)->Advance();
+        if (!run) break;
+      }
+      if (!run) (*restoring)->Cancel();
+      const auto finished = (*restoring)->Finish();
+      ASSERT_TRUE(run);
+      ASSERT_TRUE(finished);
+      EXPECT_EQ((*restoring)->reused(), histories[id].size());
+      EXPECT_TRUE((*restoring)->last().empty());
+      restoring->reset();
+      auto restored = GetParam() == 2
+                          ? StateHash(dynamic_cast<en::Gemma2Runner&>(model->paged()), id)
+                          : StateHash(dynamic_cast<en::Gemma3Runner&>(model->paged()), id);
+      ASSERT_TRUE(restored);
+      EXPECT_EQ(*restored, states[id]);
+      constexpr std::array<std::int32_t, 1> anchor{563};
+      std::vector<float> next;
+      ASSERT_TRUE(branch->Prefill(anchor, next));
+      ASSERT_EQ(next.size(), GetParam() == 2 ? 256000U : 262208U);
+      ASSERT_TRUE(std::ranges::all_of(next, [](float value) { return std::isfinite(value); }));
+      if (pass == 0)
+        expected_next[id] = next;
+      else
+        EXPECT_EQ(std::memcmp(next.data(), expected_next[id].data(), next.size() * sizeof(float)),
+                  0);
+    }
+    std::println("GEMMA_OWNER_PREFILL_ADAPTER family={} owners={} seconds={}", GetParam(), owners,
+                 seconds);
+    ASSERT_TRUE(Retire());
+    // The next factor arm starts with no kept metadata or spill backing.
+    for (const auto& path : {life->roles.spill, life->roles.state}) {
+      std::filesystem::remove_all(path);
+      ASSERT_TRUE(std::filesystem::create_directory(path));
+      ASSERT_EQ(chmod(path.c_str(), 0700), 0);
+    }
+    ++pass;
   }
 }
 

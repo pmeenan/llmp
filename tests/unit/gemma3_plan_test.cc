@@ -66,6 +66,79 @@ kg::DeviceChoices Choices() {
   return out;
 }
 
+TEST(Gemma3Plan, MultirowOwnersRetainActualRootsAndNarrowShapeFallback) {
+  for (const std::uint32_t rows : {128U, 64U}) {
+    Case c;
+    c.state = *md::Gemma3State(c.p, 4096, 128);
+    c.shape = {{{0, rows, 0, 256, 256}, {1, rows, 0, 256, 256}}, 2};
+    const kg::Gemma3GraphOptions options{
+        .max_total_rows = 256, .narrow_final = true, .packed_prefill = true, .owner_prefill = true};
+    auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
+    ASSERT_TRUE(arena);
+    auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+    ASSERT_TRUE(graph);
+    const auto model = Places(c, *graph);
+    auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
+    ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+    auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
+                                      (*measured)->placement.extent);
+    ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+    auto& g = (*placed)->graph;
+    if (rows != 128) {
+      EXPECT_EQ(g.Named("blk.0.owner_prefill_attention"), nullptr);
+      EXPECT_NE(g.Named("blk.0.packed_prefill_attention"), nullptr);
+      continue;
+    }
+    auto* attention = g.Named("blk.0.owner_prefill_attention");
+    ASSERT_NE(attention, nullptr);
+    EXPECT_EQ(kg::JitllmOpOf(attention), kg::JitllmOp::kFlashAttnOwners);
+    EXPECT_EQ(kg::JitllmOpInt(attention, 3), 0);
+    EXPECT_EQ(kg::JitllmOpInt(attention, 4), 0);
+    EXPECT_EQ(attention->src[0]->ne[1], 128);
+    EXPECT_EQ(attention->ne[2], 128);
+    EXPECT_EQ(attention->src[1]->ne[1], 128);
+    for (std::size_t owner = 0; owner < 2; ++owner) {
+      EXPECT_EQ(attention->src[2 + owner]->data, g.segments[owner].caches[0].first->data);
+      EXPECT_EQ(attention->src[6 + owner]->data, g.segments[owner].caches[0].second->data);
+      for (const auto* root : {attention->src[2 + owner], attention->src[6 + owner]}) {
+        EXPECT_EQ(root->ne[1], 256);
+        EXPECT_EQ(root->ne[3], 1);
+        for (const auto* view = root; view != nullptr; view = view->view_src)
+          EXPECT_NE(view->op, GGML_OP_CONCAT);
+      }
+    }
+    std::size_t owner_steps = 0;
+    for (const auto& step : (*placed)->plan.steps)
+      owner_steps += step.implementation == kg::kFlashAttnOwnersName;
+    EXPECT_EQ(owner_steps, 34U);
+  }
+}
+
+TEST(Gemma3Plan, MultirowOwnersRetainActualRootsThroughTheTrainedMaximum) {
+  for (const std::uint32_t width : {16640U, 32768U, 131072U}) {
+    Case c;
+    c.state = *md::Gemma3State(c.p, 131072, 128);
+    c.shape = {{{0, 128, width - 128, width, 1280}, {1, 128, width - 128, width, 1280}}, 2};
+    const kg::Gemma3GraphOptions options{
+        .max_total_rows = 256, .narrow_final = true, .packed_prefill = true, .owner_prefill = true};
+    auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
+    ASSERT_TRUE(arena);
+    auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+    ASSERT_TRUE(graph);
+    const auto model = Places(c, *graph);
+    auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
+    ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+    auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
+                                      (*measured)->placement.extent);
+    ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+    for (std::uint32_t layer = 0; layer < c.p.layers; ++layer) {
+      const auto prefix = "blk." + std::to_string(layer) + ".";
+      EXPECT_EQ((*placed)->graph.Named(prefix + "owner_prefill_attention") != nullptr, true);
+      EXPECT_EQ((*placed)->graph.Named(prefix + "packed_prefill_attention") != nullptr, false);
+    }
+  }
+}
+
 TEST(Gemma3Plan, ThreeAndFourOwnerHeadsAndSourcesUseTheFundedEnvelope) {
   Case c;
   c.state = *md::Gemma3State(c.p, 4096, 128);

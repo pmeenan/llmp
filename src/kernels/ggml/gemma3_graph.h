@@ -46,6 +46,8 @@ struct Gemma3GraphOptions {
   bool owner_decode = false;
   // Explicit equal-row/equal-read C2 prefill with real packed K/V backing.
   bool packed_prefill = false;
+  // Closed equal 128-row C2 prefill with original MMA geometry and actual K/V roots.
+  bool owner_prefill = false;
   // Explicit C2 transfer: actual cache roots at the common logical width.
   bool bounded_roots = false;
   // Internal whole-C12 factor; retain cohort-wide masks/grid with actual roots.

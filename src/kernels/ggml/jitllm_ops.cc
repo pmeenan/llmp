@@ -2333,7 +2333,7 @@ ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_ten
   // descriptors and traversal support all ten slots. Preserve its custom tag
   // parameters, then install the final real dependency in the remaining slot.
   auto* node =
-      Custom(context, GGML_TYPE_F32, {q->ne[0], q->ne[2], 1, owner_count},
+      Custom(context, GGML_TYPE_F32, {q->ne[0], q->ne[2], q->ne[1], owner_count},
              {q, mask, k[0], k[1], k[2], k[3], v[0], v[1], v[2]}, kTagFlashAttnOwners.data());
   node->src[9] = v[3];
   // Zero keeps the historical four-owner descriptor byte-identical.

@@ -13,6 +13,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Read actual K/V roots for compatible two-owner 128-row Gemma2/Gemma3
+  prefill, preserving MMA arithmetic and removing cache-packing copies.
+  Short native prefill screens improve 8.7%/2.9%; fresh Gemma2 llama.cpp
+  bookends are level with exact outputs. Gemma3's primitive is checked
+  through trained 131K cache width; public context limits are unchanged.
+
 - Build DeepSeek target causal/ring masks on the GPU through shared source
   checks, preserving exact sparse-query dimensions and unchanged outputs/state.
   A bounded two-owner prefill screen improves about 0.7%; DSpark block masks

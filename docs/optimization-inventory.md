@@ -566,6 +566,8 @@ adopt those assistant policies. M2 Qwen2/EXL3 fixtures remain excluded.
 | **T89** Independent-state recurrent cohort kernel | N-gdn | R | O | N-gdn | N-gdn | N-gdn | N-gdn | N-gdn |
 | **T90** IQ2 occupancy-two compact product | A | N-q | N-q | N-q | N-q | N-q | N-q | N-q |
 | **T91** Inverse-RoPE/output-A/layout producer fusion | A | N-mla | N-mla | N-mla | N-mla | N-mla | N-mla | N-mla |
+| **T92** Multirow actual-root K/V packing removal | O | N-copy | N-copy | N-copy | A | A | N-copy | N-copy |
+| **T93** Flexible multirow/query-tile and tail extension | N-specific | N-specific | N-specific | N-specific | O | O | N-specific | N-specific |
 
 The N contracts are deliberately current-artifact constraints, not permanent
 architecture exclusions:
@@ -588,7 +590,8 @@ architecture exclusions:
 | N-exec | Image uses bound imperative pipeline roles, not GGML graph traversal, structural matcher or BoundGraph wrapper binding. |
 | N-place / N-cohort | Image does not perform the LLM per-wave CheckPlaces/SelectSlots operation; component pin/lease checks remain required. |
 | N-round | Image BF16 materialization/gated LayerNorm/complex RoPE is not the F32 GGML norm/add or SET_ROWS contract. |
-| N-root | Dsv4 sparse/compressed or Qwen QSA/recurrence banks, and image fixed prefix, are not Gemma independent dense-owner F16 bank/store operands. |
+| N-root | Current selected Dsv4 sparse/Qwen QSA attention reads cache banks in place, and image attention reads a fixed prefix directly; no independent-owner K/V packing is removed. Dsv4 reference bank concatenation is separately open under T29/T92. |
+| N-copy | No joined-owner K/V packing copy in the current attention graph: Qwen uses direct cache views/QSA gathers, Gemma4 uses per-segment real cache views, and image T/D/V uses direct prefix/spatial operands. Source contracts are detailed under T92. |
 | N-prefix | Current text graphs lack the denoiser's fixed text-prefix/iterated image-row split and BF16 complex-RoPE consumer. |
 | N-conv | No VAE spatial3×3/KRSC convolution; Qwen causal1D history convolution has a different state/tap layout. |
 | N-specific | This measured factor's explicit model/configuration/phase is absent; use the separately named generic transfer rather than copying its constants. |
@@ -655,7 +658,7 @@ architecture exclusions:
 - **T57** Gemma4 rope_store has an explicit checked operator/control but remains unselected. Only Gemma26 synthetic complete layers had a paid screen (captured global solo 584.023 µs versus 568.210/572.063; C4 765.371 versus 761.589/762.538), with no decisive gain; Gemma31 has operand controls but no recipient model timing, so stays open. Dsv4/Qwen/Gemma2/Gemma3 stores are potential recipients under distinct tails/rotations/state layouts. Image BF16 transformed heads/prefix construction do not meet the F32 GGML SET_ROWS contract.
 - **T58** Gemma4 Q8 assistants at widths 1024/8192 and target shared-Q8/GeGLU pairs retain ordinary products; target norm policies do not qualify assistant rounding. Gemma26 merged routed gate/up needs its own writer (T09), rather than a false separate-product match. DSpark SwiGLU and native Qwen BF16 MTP use their distinct T04/T11 mechanisms; GGUF Qwen has no drafter.
 - **T59** Dsv4/Qwen joined wave machinery includes bounded whole requests and departed slots. Gemma3 internal C2..12 and Gemma4 C8/C12/partial proofs exist, but public wider/partial adoption and arbitrary slot maxima remain unqualified. Gemma2 cap50 C2 cannot simply widen. Image requests still serialize; compatible phase batching is T64.
-- **T60** Gemma C2 policies read actual roots under common logical masks, grids and stream-K partitions; missing physical partitions are neutral. Gemma3 internal whole-C12 default-off factor removes 408 CONCAT outputs (816 MiB derived writes) and cuts decode 21.0667%. Wider/partial variants remain T61. Dsv4 compressed/sparse banks, Qwen QSA/recurrence and image fixed prefixes do not meet the dense Gemma owner-root contract.
+- **T60** Gemma C2 policies read actual roots under common logical masks, grids and stream-K partitions; missing physical partitions are neutral. Gemma3 internal whole-C12 default-off factor removes 408 CONCAT outputs (816 MiB derived writes) and cuts decode 21.0667%. Wider/partial variants remain T61. Current selected Dsv4 sparse and Qwen QSA paths already read their banks in place; image fixed-prefix/spatial attention has no owner-bank packing. Dsv4 reference raw/compressed bank joins remain an explicit T29/T92 port, not a selector-bound exclusion. Multirow Gemma packing removal is T92, remaining compatible row/tile shapes T93.
 - **T61** Existing Gemma3 whole-C12 four-root/logical12 and Gemma4 whole/partial geometry are narrow controls. Screen Gemma2 cap50 wider cohorts, Gemma3 remaining partial/device-mask combinations, and Gemma26/31 bounded roots beyond the ordinary exactly-two-slot policy. Primitive availability does not increase public slots or context.
 - **T62** Gemma max_head_rows is set to configured slots by ordinary serving factories; pinned output storage no longer scales as maximum input rows times vocabulary. Dsv4/Qwen solo/output/verify envelopes were already bounded and retain required features/rows. Image continuous output is sized by grid/channels, with no vocabulary publication matrix.
 - **T63** Gemma3 host-reference construction uses fill_n for the visible causal prefix and validates exact F16 intervals by bit reductions; before GPU masks this reduced maximum prefill 10.68%. Gemma2/Gemma4 fallback still has per-cell loops. Dsv4 raw/compressed and Qwen dense/reference masks remain eligible under their different exact formulas. Ordinary Gemma3/4 GPU masks bypass this cost, so a fallback transfer earns no automatic ordinary-speed claim.
@@ -687,6 +690,38 @@ architecture exclusions:
 - **T89** Native Qwen F32 GDN cohort operator improves 26.51%, but integrated lane-enabled verify is neutral: 107.399 ms versus 107.228/107.018 ms. It stays unselected. GGUF uses the same recurrence family with plain-row shapes and different product envelopes, so an actual recipient comparison remains open. Other approved models have no Gated DeltaNet recurrence/state update to batch with this body.
 - **T90** DeepSeek GB10 IQ2_XXS compact gate/up selects a separately compiled occupancy-two J64 specialization: captured pair +28.05% speed and whole prefill +4.15%, all six heads exact. Other current expert formats lack this exact IQ2_XXS decoder/tile (Qwen GGUF uses IQ2_S/IQ4_NL) contract. This does not assert measured hardware occupancy or justify applying its launch bound to a different format.
 - **T91** DeepSeek selected output-A/HCA prefill inserts its fused inverse-RoPE/grouped projection/layout consumer under checked raw Q8 weights, YaRN and chunk eligibility. Operator latency falls 45.63%, community 8K throughput +4.08%; current default selection has its later quality gates. Qwen, Gemma and image have no MLA grouped output-A/inverse-RoPE chain; ordinary output products cannot consume this layout.
+
+- **T92** Gemma2/Gemma3 ordinary C2/128-row joined prefill now reads actual
+  F16 cache roots with unchanged packed Columns32 MMA body, GQA2 geometry,
+  mask semantics and cap50/cap0 reduction arithmetic. Mask concatenation
+  remains. Same-native wrapped prefill improves 8.662%/2.932% (n=2), exact
+  choices/heads/state; actual adapters, kept restart and continuation pass.
+  Fresh final Gemma2 stock bookends are level within their short movement
+  (native −0.293% prefill / −0.202% paid sum). Cap0 operands/graph qualify
+  aligned widths through 131072; cap50/one-query bounds are unchanged.
+  [Attribution and qualification](experiments/gemma-prefill-copies/README.md).
+  DeepSeek selected sparse attention already reads raw/compressed banks in
+  place, but reference CSA/HCA `dsv4_graph.cc` raw/compressed concatenation
+  remains OPEN: investigate actual multi-bank roots while preserving sink,
+  sparse selection, visibility and reduction geometry. Both Qwen artifacts
+  use direct cache views (`qwen38_graph.cc`, `Attention`) or QSA gathers;
+  their wave planner joins products/attention outputs, not owner K/V banks.
+  Both Gemma4 profiles use per-segment real K/V views (`gemma4_graph.cc`)
+  and concatenate attention outputs; ordinary prefill capacity remains one.
+  Their future joined admission is T55, without this missing packing copy.
+  Qwen-Image text encoder and denoiser read BF16 inputs/prefixes directly;
+  VAE spatial attention has no independent-owner F16 KV bank or packing.
+  These no-copy dispositions concern this eliminated work, not a permanent
+  exclusion from other shared attention kernels.
+- **T93** Gemma2/Gemma3 remaining compatible row counts, query-tile counts,
+  partial tails and cohorts stay OPEN. A 64-row chunk retains the checked
+  packed fallback today; that historical selector bound is not a reason
+  to reject the transfer. Extend flexible launch admission under the
+  original selected packed geometry, padded masks/tail semantics, exact
+  eager/replay operands, funding and recipient performance controls.
+  T61 separately owns wider/partial one-query policies; T55 owns Gemma4
+  joined-prefill admission, and T92 owns DeepSeek bank-root exploration.
+
 
 Source cross-checks at `3ab8d5c`:
 

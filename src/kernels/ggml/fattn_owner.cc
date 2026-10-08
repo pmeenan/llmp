@@ -37,7 +37,7 @@ std::optional<std::uint64_t> Span(const ggml_tensor* t, std::uint64_t limit = kM
     return std::nullopt;
   return bytes;
 }
-bool Current(const ggml_tensor* t) {
+bool Current(const ggml_tensor* t, std::uint64_t limit) {
   std::array<const ggml_tensor*, 64> seen{};
   std::size_t count = 0;
   while (t) {
@@ -45,7 +45,7 @@ bool Current(const ggml_tensor* t) {
         std::find(seen.begin(), seen.begin() + count, t) != seen.begin() + count)
       return false;
     seen[count++] = t;
-    const auto bytes = Span(t, count == 1 ? kMaxSpan : kMaxParentSpan);
+    const auto bytes = Span(t, count == 1 ? limit : kMaxParentSpan);
     if (!bytes || reinterpret_cast<std::uintptr_t>(t->data) % 16 != 0) return false;
     const auto* parent = t->view_src;
     if (!parent) return true;
@@ -61,26 +61,31 @@ bool Current(const ggml_tensor* t) {
   return false;
 }
 bool Shape(const ggml_tensor* t, ggml_type type, std::array<std::int64_t, 4> ne,
-           std::array<std::size_t, 4> nb) {
+           std::array<std::size_t, 4> nb, std::uint64_t limit = kMaxSpan) {
   return t && t->type == type && std::equal(ne.begin(), ne.end(), t->ne) &&
-         std::equal(nb.begin(), nb.end(), t->nb) && Current(t);
+         std::equal(nb.begin(), nb.end(), t->nb) && Current(t, limit);
 }
-bool Overlap(const ggml_tensor* a, const ggml_tensor* b) {
+bool Overlap(const ggml_tensor* a, const ggml_tensor* b, std::uint64_t limit) {
   const auto first = reinterpret_cast<std::uintptr_t>(a->data);
   const auto second = reinterpret_cast<std::uintptr_t>(b->data);
-  return first < second + *Span(b) && second < first + *Span(a);
+  const auto a_bytes = Span(a, limit), b_bytes = Span(b, limit);
+  if (!a_bytes || !b_bytes) return true;
+  return first < second + *b_bytes && second < first + *a_bytes;
 }
 }  // namespace
 
 std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
-    int max_blocks, int kv_tiles, int kv_heads, std::uint32_t logical_cohort,
-    bool prefer_whole_tiles) {
-  if (max_blocks <= 0 || kv_tiles <= 0 || kv_tiles > 512 || kv_heads <= 0 || kv_heads > 16 ||
+    int max_blocks, int kv_tiles, int tiles_per_owner, std::uint32_t logical_cohort,
+    bool prefer_whole_tiles, bool multirow) {
+  if (max_blocks <= 0 || kv_tiles <= 0 || kv_tiles > (multirow ? 4096 : 512) ||
+      tiles_per_owner <= 0 || tiles_per_owner > 16 ||
       (logical_cohort != 2 && logical_cohort != 3 && logical_cohort != 4 && logical_cohort != 8 &&
        logical_cohort != 12 && !PartialOwnerCohort(logical_cohort)))
     return Rejected("owner MMA partition inputs are outside the closed grid bounds");
+  if (multirow && (logical_cohort != 2 || tiles_per_owner != 16))
+    return Rejected("wide owner partition requires closed C2/four-query-tile GQA2 prefill");
   const auto grid = [&](std::uint32_t cohort) {
-    const auto tiles = static_cast<std::int64_t>(kv_heads) * cohort;
+    const auto tiles = static_cast<std::int64_t>(tiles_per_owner) * cohort;
     const auto waves = (tiles + max_blocks - 1) / max_blocks;
     if (prefer_whole_tiles && 100 * tiles / (max_blocks * waves) >= 75)
       return static_cast<int>(tiles);
@@ -137,18 +142,30 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
       bounded_shape && in.owner_count == 2 && in.logical_cohort == 2 && in.owner_offset == 0;
   if (in.bounded_roots && !bounded_c2 && !bounded_whole12)
     return Rejected("bounded owner roots require closed C2 or Gemma3 whole-C12 carriers");
-  if (in.mask->ne[0] < 256 || in.mask->ne[0] > 16384 || in.mask->ne[0] % 256 != 0)
+  const auto rows = in.q->ne[1];
+  if (rows != 1 && (rows != 128 || in.q->ne[0] != 256 || in.q->ne[2] != 8 || in.owner_count != 2 ||
+                    in.logical_cohort != 2 || in.owner_offset != 0 ||
+                    (in.logit_softcap != 0 && in.logit_softcap != 50) || in.bounded_roots))
+    return Rejected("multirow owner MMA requires closed Gemma2/Gemma3 cap0/50 C2/128-row inputs");
+  const bool wide_prefill = rows == 128 && in.logit_softcap == 0;
+  const auto maximum_cells = wide_prefill ? 131072 : 16384;
+  // Only the closed Gemma3 multirow contract needs 256 MiB per actual root.
+  // Q/output remain 2 MiB, and the largest joined mask is exactly 64 MiB.
+  const auto operand_limit = wide_prefill ? (256ULL << 20U) : kMaxSpan;
+  if (in.mask->ne[0] < 256 || in.mask->ne[0] > maximum_cells || in.mask->ne[0] % 256 != 0)
     return Rejected("owner MMA requires bounded actual padded cache widths");
   const auto cells = std::size_t(in.mask->ne[0]);
   const auto d = std::size_t(in.q->ne[0]), heads = std::size_t(in.q->ne[2]);
   const auto kvh = heads / (d == 256 ? 2 : 8);
   const auto qrow = d * heads * sizeof(float), kvrow = d * kvh * 2;
-  if (!Shape(in.q, GGML_TYPE_F32, {std::int64_t(d), 1, std::int64_t(heads), in.owner_count},
-             {4, qrow, d * 4, qrow}) ||
-      !Shape(in.mask, GGML_TYPE_F16, {std::int64_t(cells), 32, 1, in.owner_count},
-             {2, cells * 2, cells * 64, cells * 64}) ||
-      !Shape(in.output, GGML_TYPE_F32, {std::int64_t(d), std::int64_t(heads), 1, in.owner_count},
-             {4, d * 4, qrow, qrow}) ||
+  const auto mask_rows = std::size_t(rows == 1 ? 32 : rows);
+  if (!Shape(in.q, GGML_TYPE_F32, {std::int64_t(d), rows, std::int64_t(heads), in.owner_count},
+             {4, qrow, d * 4, qrow * std::size_t(rows)}) ||
+      !Shape(in.mask, GGML_TYPE_F16,
+             {std::int64_t(cells), std::int64_t(mask_rows), 1, in.owner_count},
+             {2, cells * 2, cells * mask_rows * 2, cells * mask_rows * 2}) ||
+      !Shape(in.output, GGML_TYPE_F32, {std::int64_t(d), std::int64_t(heads), rows, in.owner_count},
+             {4, d * 4, qrow, qrow * std::size_t(rows)}) ||
       in.output->view_src)
     return Rejected("owner MMA requires current packed Q/mask/output stream layouts");
   std::array<const ggml_tensor*, 10> reads{in.q, in.mask};
@@ -168,7 +185,7 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
     for (const auto* tensor : {key, value})
       if (!Shape(tensor, GGML_TYPE_F16,
                  {std::int64_t(d), std::int64_t(actual), std::int64_t(kvh), 1},
-                 {2, kvrow, d * 2, kvrow * actual}))
+                 {2, kvrow, d * 2, kvrow * actual}, operand_limit))
         return Rejected("owner MMA requires actual current cell-major F16 cache views");
     reads[2 + owner] = in.k[owner];
     reads[6 + owner] = in.v[owner];
@@ -176,7 +193,7 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
   if (in.bounded_roots && !bounded_whole12 && largest_actual != cells)
     return Rejected("bounded owner mask must match the largest actual width");
   for (const auto* input : reads)
-    if (input && Overlap(in.output, input))
+    if (input && Overlap(in.output, input, operand_limit))
       return Rejected("owner MMA output overlaps a real operand");
   // Independent owner storage: aliases within an owner are read-only, but one
   // owner's K/V must not be another owner's payload.
@@ -184,7 +201,8 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
     for (std::size_t b = a + 1; b < in.owner_count; ++b)
       for (const auto* first : {in.k[a], in.v[a]})
         for (const auto* second : {in.k[b], in.v[b]})
-          if (Overlap(first, second)) return Rejected("owner MMA cache owners overlap");
+          if (Overlap(first, second, operand_limit))
+            return Rejected("owner MMA cache owners overlap");
   return {};
 }
 std::expected<FlashAttnOwners, KernelFailure> FlashAttnOwnersFromNode(ggml_tensor* node) {

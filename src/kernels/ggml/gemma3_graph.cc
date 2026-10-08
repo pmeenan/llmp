@@ -349,10 +349,19 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
         return ggml_permute(c, ggml_concat(c, a, b, 3), 0, 2, 1, 3);
       };
       auto* mask = p.local(il) ? owner_local_mask : owner_global_mask;
-      auto* attention = ggml_flash_attn_ext(c, packed_q, pack_cache(owner_keys),
-                                            pack_cache(owner_values), mask, 1.0F, 0.0F, 0.0F);
-      ggml_prec_set_acc(attention, GGML_PREC_F32);
-      named(prefix + "packed_prefill_attention", attention);
+      ggml_tensor* attention = nullptr;
+      if (o.owner_prefill && chunk_rows == 128 && mask->ne[0] <= 131072) {
+        std::array<ggml_tensor*, 4> keys{}, values{};
+        std::copy_n(owner_keys.begin(), 2, keys.begin());
+        std::copy_n(owner_values.begin(), 2, values.begin());
+        attention = FlashAttnOwnersNode(c, packed_q, mask, keys, values, 2, 2);
+        named(prefix + "owner_prefill_attention", attention);
+      } else {
+        attention = ggml_flash_attn_ext(c, packed_q, pack_cache(owner_keys),
+                                        pack_cache(owner_values), mask, 1.0F, 0.0F, 0.0F);
+        ggml_prec_set_acc(attention, GGML_PREC_F32);
+        named(prefix + "packed_prefill_attention", attention);
+      }
       joined = ggml_reshape_2d(c, attention, std::int64_t{d} * p.heads, rows);
       expanded.push_back(joined);
     }

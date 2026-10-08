@@ -111,16 +111,18 @@ void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
   const int heads = static_cast<int>(in.q->ne[2]);
   const int kvheads = heads / Group;
   const int owners = static_cast<int>(in.owner_count);
-  constexpr int query_rows = 1;
+  const int query_rows = static_cast<int>(in.q->ne[1]);
+  const int query_tiles = (query_rows + Columns - 1) / Columns;
   const int cells = static_cast<int>(in.mask->ne[0]);
-  const int tiles = kvheads * owners;
+  const int tiles = query_tiles * kvheads * owners;
   const int batch = ggml_cuda_fattn_mma_get_nbatch_fa(D, D, Columns * Group,
                                                       ggml_cuda_info().devices[ctx.device].cc);
   const int kvtiles = (cells + batch - 1) / batch;
   const auto blocks = static_cast<unsigned>(plan.original.blocks);
-  maximum.alloc(static_cast<std::size_t>(owners));
-  const ggml_cuda_kernel_launch_params mask_launch(dim3(1, static_cast<unsigned>(owners), 1),
-                                                   dim3(FATTN_KQ_STRIDE / 2, 1, 1), 0, stream);
+  maximum.alloc(static_cast<std::size_t>(query_tiles * owners));
+  const ggml_cuda_kernel_launch_params mask_launch(
+      dim3(static_cast<unsigned>(query_tiles), static_cast<unsigned>(owners), 1),
+      dim3(FATTN_KQ_STRIDE / 2, 1, 1), 0, stream);
   ggml_cuda_kernel_launch(flash_attn_mask_to_KV_max<Columns>, mask_launch,
                           static_cast<const half2*>(in.mask->data), maximum.ptr,
                           cells / FATTN_KQ_STRIDE, in.mask->nb[1] / sizeof(half2),
@@ -147,11 +149,13 @@ void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
       static_cast<const char*>(nullptr), maximum.ptr, static_cast<float*>(in.output->data),
       metadata.ptr, Softcap ? 1.0f / static_cast<float>(in.logit_softcap) : 1.0f, 0.0f, 1.0f, 1.0f,
       static_cast<std::uint32_t>(heads), static_cast<float>(in.logit_softcap), D,
-      init_fastdiv_values(query_rows), heads, owners, static_cast<std::int32_t>(in.q->nb[1]),
-      static_cast<std::int32_t>(in.q->nb[2]), static_cast<std::int32_t>(in.q->nb[3]), D, cells,
-      kvheads, owners, static_cast<std::int32_t>(k->nb[1]), static_cast<std::int32_t>(k->nb[2]),
+      init_fastdiv_values(static_cast<std::uint64_t>(query_rows)), heads, owners,
+      static_cast<std::int32_t>(in.q->nb[1]), static_cast<std::int32_t>(in.q->nb[2]),
+      static_cast<std::int32_t>(in.q->nb[3]), D, cells, kvheads, owners,
+      static_cast<std::int32_t>(k->nb[1]), static_cast<std::int32_t>(k->nb[2]),
       static_cast<std::int64_t>(k->nb[3]), static_cast<std::int32_t>(v->nb[1]),
-      static_cast<std::int32_t>(v->nb[2]), static_cast<std::int64_t>(v->nb[3]), 32, 1, owners,
+      static_cast<std::int32_t>(v->nb[2]), static_cast<std::int64_t>(v->nb[3]),
+      static_cast<std::int32_t>(in.mask->ne[1]), 1, owners,
       static_cast<std::int32_t>(in.mask->nb[1]), static_cast<std::int32_t>(in.mask->nb[2]),
       static_cast<std::int64_t>(in.mask->nb[3]));
   CUDA_CHECK(cudaGetLastError());
@@ -161,18 +165,20 @@ void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
     ggml_cuda_kernel_launch(flash_attn_stream_k_fixup_uniform<D, Columns, Group>, fixup,
                             static_cast<float*>(in.output->data), metadata.ptr, query_rows, heads,
                             kvheads, plan.original.blocks, Group, plan.original.blocks / tiles,
-                            init_fastdiv_values(static_cast<std::uint64_t>(kvheads)),
-                            init_fastdiv_values(1), init_fastdiv_values(1));
+                            init_fastdiv_values(static_cast<std::uint64_t>(query_tiles * kvheads)),
+                            init_fastdiv_values(static_cast<std::uint64_t>(query_tiles)),
+                            init_fastdiv_values(static_cast<std::uint64_t>(query_tiles)));
   } else if (tiles % plan.original.blocks != 0) {
     const ggml_cuda_kernel_launch_params fixup(dim3(blocks, Columns, Group), dim3(D, 1, 1), 0,
                                                stream);
-    ggml_cuda_kernel_launch(flash_attn_stream_k_fixup_general<D, Columns, Group>, fixup,
-                            static_cast<float*>(in.output->data), metadata.ptr, query_rows, heads,
-                            Group, kvtiles * tiles,
-                            init_fastdiv_values(static_cast<std::uint64_t>(kvtiles * kvheads)),
-                            init_fastdiv_values(static_cast<std::uint64_t>(kvtiles)),
-                            init_fastdiv_values(static_cast<std::uint64_t>(kvtiles)),
-                            init_fastdiv_values(static_cast<std::uint64_t>(kvtiles)));
+    ggml_cuda_kernel_launch(
+        flash_attn_stream_k_fixup_general<D, Columns, Group>, fixup,
+        static_cast<float*>(in.output->data), metadata.ptr, query_rows, heads, Group,
+        kvtiles * tiles,
+        init_fastdiv_values(static_cast<std::uint64_t>(kvtiles * query_tiles * kvheads)),
+        init_fastdiv_values(static_cast<std::uint64_t>(kvtiles * query_tiles)),
+        init_fastdiv_values(static_cast<std::uint64_t>(kvtiles * query_tiles)),
+        init_fastdiv_values(static_cast<std::uint64_t>(kvtiles)));
   }
   CUDA_CHECK(cudaGetLastError());
 }
@@ -259,9 +265,12 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
   const auto& device = ggml_cuda_info().devices[launch.device()];
   if (device.cc != 1210 || device.nsm <= 0) return Rejected("owner MMA diagnostic is GB10 only");
   const int d = static_cast<int>(in.q->ne[0]);
-  auto original = d == 256
-                      ? detail::FlashAttnMmaShapeGqa2(4, launch.device(), in.logit_softcap != 0)
-                      : detail::FlashAttnMmaShape512(1, false, launch.device());
+  const bool prefill = in.q->ne[1] == 128;
+  const int columns = prefill ? 32 : (d == 256 ? 4 : 1);
+  const int query_tiles = (static_cast<int>(in.q->ne[1]) + columns - 1) / columns;
+  auto original =
+      d == 256 ? detail::FlashAttnMmaShapeGqa2(columns, launch.device(), in.logit_softcap != 0)
+               : detail::FlashAttnMmaShape512(1, false, launch.device());
   if (!original)
     return std::unexpected(
         KernelFailure{.error = KernelError::kUnknown, .detail = original.error()});
@@ -269,30 +278,32 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
   plan.original_blocks_per_sm = original->blocks_per_sm;
   auto& geometry = plan.original;
   geometry.head = d;
-  geometry.columns = d == 256 ? 4 : 1;
+  geometry.columns = columns;
   geometry.group = d == 256 ? 2 : 8;
   geometry.mask_prepass = true;
   const bool partial = detail::PartialOwnerCohort(in.logical_cohort);
-  const int tiles = static_cast<int>(in.k[0]->ne[2]) *
+  const int tiles = query_tiles * static_cast<int>(in.k[0]->ne[2]) *
                     static_cast<int>(partial ? in.logical_cohort : in.owner_count);
   const int cells = static_cast<int>(in.mask->ne[0]);
   const int kvtiles = (cells + original->kv_batch - 1) / original->kv_batch;
   if (device.nsm > INT_MAX / original->blocks_per_sm)
     return Rejected("owner MMA occupancy grid exceeds the launcher bounds");
-  auto partition = detail::PlanOwnerPartition(original->blocks_per_sm * device.nsm, kvtiles,
-                                              static_cast<int>(in.k[0]->ne[2]), in.logical_cohort,
-                                              original->async_kv_preload);
+  auto partition = detail::PlanOwnerPartition(
+      original->blocks_per_sm * device.nsm, kvtiles, query_tiles * static_cast<int>(in.k[0]->ne[2]),
+      in.logical_cohort, original->async_kv_preload, prefill && in.logit_softcap == 0);
   if (!partition) return std::unexpected(partition.error());
   plan.cohort_blocks = partition->cohort_blocks;
   plan.effective_cohort = partition->effective_cohort;
   geometry.blocks = partition->quad_blocks;
-  geometry.scratch = in.owner_count * sizeof(int);
+  geometry.scratch = static_cast<std::uint64_t>(query_tiles) * in.owner_count * sizeof(int);
   if (tiles % geometry.blocks != 0)
     geometry.scratch = 256 + std::uint64_t(geometry.blocks) * std::uint64_t(geometry.columns) *
                                  std::uint64_t(geometry.group) * std::uint64_t(2 + d / 2) *
                                  sizeof(float2);
   const auto checked =
-      in.bounded_roots
+      prefill ? (in.logit_softcap != 0 ? Resources<256, 32, 2, true>(launch.device(), plan)
+                                       : Resources<256, 32, 2, false>(launch.device(), plan))
+      : in.bounded_roots
           ? (in.logit_softcap != 0
                  ? Resources<256, 4, 2, true, true>(launch.device(), plan)
                  : (d == 256 ? Resources<256, 4, 2, false, true>(launch.device(), plan)
@@ -311,7 +322,12 @@ std::expected<void, KernelFailure> FlashAttnOwnerRoots(LaunchContext& launch,
   auto plan = PlanFlashAttnOwners(launch, in);
   if (!plan) return std::unexpected(plan.error());
   return launch.Run(base::Bytes(plan->original.scratch), [&](ggml_backend_cuda_context& context) {
-    if (detail::PartialOwnerCohort(in.logical_cohort)) {
+    if (in.q->ne[1] == 128) {
+      if (in.logit_softcap != 0)
+        Queue<256, 32, 2, true>(context, in, *plan);
+      else
+        Queue<256, 32, 2, false>(context, in, *plan);
+    } else if (detail::PartialOwnerCohort(in.logical_cohort)) {
       if (plan->original.head == 256)
         QueuePartial<256, 4, 2>(context, in, *plan);
       else

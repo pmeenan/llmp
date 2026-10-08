@@ -79,6 +79,7 @@ Status Gemma3Runner::Setup() {
   model_.options.narrow_final = o_.frontier_head;
   model_.options.owner_decode = o_.owner_decode;
   model_.options.packed_prefill = o_.packed_prefill;
+  model_.options.owner_prefill = o_.owner_prefill;
   model_.options.bounded_roots = o_.bounded_roots;
   model_.options.bounded_whole12 = o_.bounded_whole12;
   model_.options.device_masks = o_.device_masks;
@@ -621,6 +622,8 @@ std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::CachePlann
     for (const auto* node : selected.nodes) {
       plan_selections_.bounded_owner_attention +=
           kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners && kg::JitllmOpInt(node, 4) == 1;
+      plan_selections_.owner_prefill_attention +=
+          std::string_view(ggml_get_name(node)).ends_with("owner_prefill_attention");
       plan_selections_.packed_prefill_attention +=
           selected.implementation == kg::kFlashAttnMmaGqa2Name &&
           std::string_view(ggml_get_name(node)).ends_with("packed_prefill_attention");

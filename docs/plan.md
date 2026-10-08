@@ -384,6 +384,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T78** BF16 multirow vector alternative.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.
         - [ ] **T88** Share compatible HC matrix products.
+        - [ ] **T92** Remove reference CSA/HCA raw/compressed bank packing
+          through actual roots; preserve sinks, selection and reduction math.
       - **Qwen3.8 native / MTP**
         - [ ] **T10** HC-normalized expert sum in post.
         - [ ] **T20** Column-invariant grouped float products.
@@ -461,6 +463,10 @@ family" guide, and its long-context scaling work.
         - [x] **T70** Shared funded CPU-only next-plan lifecycle; optional
           refusal preserves the completed prefix and releases its allowance.
         - [ ] **T86** Grouped physical KV stores.
+        - [x] **T92** Actual-root C2/128-row prefill removes K/V packing;
+          exact heads/state and actual serving/restart controls pass.
+        - [ ] **T93** Extend flexible compatible rows/query tiles, including
+          64-row chunks and partial tails, preserving packed MMA geometry.
       - **Gemma3 4B QAT**
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T11** Reuse decode Q8 quantization.
@@ -479,6 +485,10 @@ family" guide, and its long-context scaling work.
         - [x] **T70** Shared funded host-only next-plan lifecycle; family
           prediction/capture policy unchanged. [Focused controls](experiments/prefill-transfer/README.md).
         - [ ] **T86** Grouped physical KV stores.
+        - [x] **T92** Actual-root C2/128-row prefill removes K/V packing;
+          exact heads/state and actual serving/restart controls pass.
+        - [ ] **T93** Extend flexible compatible rows/query tiles, including
+          64-row chunks and partial tails, preserving packed MMA geometry.
       - **Gemma4 26B-A4B / assistant**
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T07** Compact expert-major MMQ scheduling.
@@ -544,6 +554,15 @@ family" guide, and its long-context scaling work.
       per-owner chunk sizing, total-row envelope, and capture/state/failure
       controls. DeepSeek/Qwen adapters remain open. Hints never initialize
       speculative future state. T67 is separate state-growth work.
+      [Multirow actual-root prefill](experiments/gemma-prefill-copies/README.md)
+      removes Gemma2/Gemma3 joined K/V copies: same-native wrapped prefill
+      improves 8.662%/2.932%, and fresh final Gemma2 llama.cpp bookends are
+      level within n=2 movement with exact choices/full heads. Its cap0
+      primitive/graph is qualified through trained 131072 without increasing
+      public context. The 67 focused controls, wrapped own-state checks and
+      actual adapters/restart pass; full regression remains deferred.
+      Narrow selector bounds do not close compatible ports: T93 tracks
+      remaining rows/tiles/tails, T92 the DeepSeek reference bank joins.
       Confirm every open matrix consumer has its own checked result before
       closing this parent. T68 is the owner-approved partial-eviction direction
       and requires D-096's amendment, not another lazy-handoff timing change.

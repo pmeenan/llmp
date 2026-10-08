@@ -353,7 +353,7 @@ TEST_F(Gemma3ServingGpu, JointPrefillFundsTwoFullChunksAndReplaysFreshIndependen
       if (!hash) return en::support::Error(hash.error());
       EXPECT_EQ(*hash, before[id]);
     }
-    EXPECT_GT(runner->plan_selections().packed_prefill_attention, 0U);
+    EXPECT_GT(runner->plan_selections().owner_prefill_attention, 0U);
     EXPECT_GT(runner->graph_stats().replayed, 0U);
     return {};
   });

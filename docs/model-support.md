@@ -87,9 +87,14 @@ removes host mask construction/staging from ordinary runners and shares source
 validation with Gemma3/Gemma 4. At wrapped 4,352/4,864 prefixes, same-native
 prefill improves 6.616% with exact heads/state. Fresh stock teachers preserve
 zero strict choices; five HTTP/restart and four checkpoint GPU cases pass.
-The fresh n=2 wrapped C2 cycle remains 4.586% slower than stock, with decode
-within noise. This longer workload is separate from the earlier short-prefix
-comparison below; lookahead/capture and broader qualification remain open.
+At that snapshot the fresh n=2 wrapped C2 cycle was 4.586% slower than stock,
+with decode within noise. Shared lookahead/capture was subsequently selected;
+[128-row actual-root prefill](experiments/gemma-prefill-copies/README.md) then
+removed K/V packing. Same-native prefill improves 8.662%; fresh final stock
+bookends are level within this short screen (native −0.293% prefill / −0.202%
+paid cycle), with exact choices and full final heads. Ordinary adapter state,
+kept restart and continuation controls pass. Other row shapes and broader
+qualification remain open.
 
 The subsequent copy-free bounded cap50 owner policy is selected by this recipe.
 It preserves original logical attention geometry, 128 rows per owner and local
@@ -150,6 +155,13 @@ checks an 8192-token literal prefix and 64-token continuation plus one
 Gemma3/Qwen model-switch pair. The input repeats a short text; corpus/retrieval,
 wider cohorts, maximum-context memory/swap and sustained gates remain open,
 without universal parity.
+
+The later [multirow actual-root transfer](experiments/gemma-prefill-copies/README.md)
+removes K/V packing for ordinary two-owner 128-row chunks, preserving cap0
+MMA geometry. Wrapped same-native prefill improves 2.932% / paid cycle 1.242%
+(n=2), with exact choices/heads and actual serving/restart state controls.
+Primitive/graph bounds qualify trained 131072; public contexts remain unchanged.
+Other row/tile shapes remain open, and this slice adds no fresh stock cycle.
 
 The [internal trained-maximum scalar screen](experiments/gemma3-execution/README.md#internal-trained-maximum-c1-screen-2026-10-07)
 also initializes 131,072 positions without a whole-state snapshot, matching all
