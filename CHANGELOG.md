@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Plan upcoming DeepSeek/DSpark and native/GGUF Qwen scalar prompt chunks and
+  prepare eligible fresh backing beside current work, preserving exact heads,
+  histories and target/drafter state. Short DSpark/MTP prefill takes 0.562%/0.936%
+  less time; broader capture and joined-prefill qualification remain open.
+
 - Share exact interval fills for Gemma and DeepSeek host masks and Qwen QSA
   bias, with faster existing Gemma mask validation. GPU mask paths and model
   arithmetic stay unchanged.

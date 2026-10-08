@@ -791,6 +791,17 @@ Status Qwen38Runner::Setup() {
     const std::uint64_t target_wave = target_wave_host + (target_wave_host / 4);
     const std::uint64_t draft_wave = draft_wave_host + (draft_wave_host / 4);
     plan_floor_bytes_ = std::max(chunk_step, target_wave + draft_wave);
+    prefill_plan_allowance_ = chunk_kind.host;
+    prefill_mtp_allowance_ = speculative() ? mtp_kind.host : 0;
+    if (o_.prefill_lookahead) {
+      const auto limit = (std::numeric_limits<std::uint64_t>::max() - plan_floor_bytes_) / 2;
+      if (prefill_plan_allowance_ > limit ||
+          prefill_mtp_allowance_ > limit - prefill_plan_allowance_)
+        return Error("Qwen prefill plan allowances overflow");
+      // Near/far target AND headless MTP plans hold independent optional
+      // grants. Account their complete coexistence with the current step.
+      plan_floor_bytes_ += 2 * (prefill_plan_allowance_ + prefill_mtp_allowance_);
+    }
     const auto mib = [](std::uint64_t bytes) { return static_cast<double>(bytes) / (1U << 20U); };
     plan_report_ = std::format(
         "{:.1f} MiB a step at most: chunk plans of {:.1f} MiB ({} nodes), drafter plans of {:.1f} "
@@ -1690,6 +1701,7 @@ std::expected<std::vector<LiveState::Range>, std::string> Qwen38Runner::StateRan
     return std::unexpected(needed.error());
   }
   std::vector<LiveState::Range> ranges;
+  ranges.reserve(needed->size() + (speculative() ? 5U : 0U));
   for (const auto& range : *needed) {
     ranges.push_back({.region = kTarget, .offset = range.offset, .bytes = range.bytes});
   }
@@ -1710,6 +1722,22 @@ std::expected<std::vector<LiveState::Range>, std::string> Qwen38Runner::StateRan
                       .bytes = mtp_layout_.bytes - mtp_layout_.hidden});
   }
   return ranges;
+}
+
+LiveState::PreparationStats Qwen38Runner::state_preparation_stats() const {
+  LiveState::PreparationStats total;
+  for (const auto* request : Requests()) {
+    if (request == nullptr) continue;
+    const auto& s = request->live.preparation_stats();
+    total.attempted += s.attempted;
+    total.submitted += s.submitted;
+    total.refused += s.refused;
+    total.failed += s.failed;
+    total.completed_extents += s.completed_extents;
+    total.adopted_extents += s.adopted_extents;
+    total.cancel_requested += s.cancel_requested;
+  }
+  return total;
 }
 
 std::expected<std::uint64_t, std::string> Qwen38Runner::StateBytesThrough(
@@ -1756,21 +1784,25 @@ std::expected<Qwen38Runner::ChunkPlans::Entry*, std::string> Qwen38Runner::Plann
     return found;
   }
   const auto start = std::chrono::steady_clock::now();
-  kg::LaunchContext& launch = resources_.launch();
-  auto planned = PlanQwen38Chunk(request.model, key.shape, kg::DeviceChoicesOf(launch),
+  auto planned = PlanQwen38Chunk(request.model, key.shape, kg::DeviceChoicesOf(resources_.launch()),
                                  node_.activations().base, node_.activations().bytes, {}, key.kind);
-  if (!planned) {
-    return std::unexpected(planned.error());
-  }
-  if (auto r = BindPlanned(**planned, launch, resources_.registry(), "the plan"); !r) {
+  if (!planned) return std::unexpected(planned.error());
+  return CachePrefillPlan(request, key, std::move(*planned),
+                          Seconds(std::chrono::steady_clock::now() - start));
+}
+
+std::expected<Qwen38Runner::ChunkPlans::Entry*, std::string> Qwen38Runner::CachePrefillPlan(
+    RequestState& request, const ChunkKey& key, std::unique_ptr<Qwen38Planned> planned,
+    double seconds, const std::function<void()>& transfer) {
+  const auto binding = std::chrono::steady_clock::now();
+  if (auto r = BindPlanned(*planned, resources_.launch(), resources_.registry(), "the plan"); !r)
     return std::unexpected(r.error());
-  }
-  Check((*planned)->graph);
-  const double seconds = Seconds(std::chrono::steady_clock::now() - start);
+  Check(planned->graph);
+  seconds += Seconds(std::chrono::steady_clock::now() - binding);
+  const auto bytes = PlannedHostBytes(*planned), nodes = PlannedNodes(*planned);
+  if (transfer) transfer();
   plan_seconds_ += seconds;
-  const std::uint64_t bytes = PlannedHostBytes(**planned);
-  const std::uint64_t nodes = PlannedNodes(**planned);
-  return &request.plans.Add(key, std::move(*planned), bytes, nodes, seconds);
+  return &request.plans.Add(key, std::move(planned), bytes, nodes, seconds);
 }
 
 std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::PlannedMtp(
@@ -1784,21 +1816,26 @@ std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::Planned
     return found;
   }
   const auto start = std::chrono::steady_clock::now();
-  kg::LaunchContext& launch = resources_.launch();
-  auto planned = PlanQwen38Mtp(request.model, shape, kg::DeviceChoicesOf(launch),
+  auto planned = PlanQwen38Mtp(request.model, shape, kg::DeviceChoicesOf(resources_.launch()),
                                node_.activations().base, node_.activations().bytes);
-  if (!planned) {
-    return std::unexpected(planned.error());
-  }
-  if (auto r = BindPlanned(**planned, launch, resources_.registry(), "the drafter"); !r) {
+  if (!planned) return std::unexpected(planned.error());
+  return CachePrefillMtp(request, shape, std::move(*planned),
+                         Seconds(std::chrono::steady_clock::now() - start));
+}
+
+std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::CachePrefillMtp(
+    RequestState& request, const kg::Qwen38MtpShape& shape,
+    std::unique_ptr<Qwen38MtpPlanned> planned, double seconds,
+    const std::function<void()>& transfer) {
+  const auto binding = std::chrono::steady_clock::now();
+  if (auto r = BindPlanned(*planned, resources_.launch(), resources_.registry(), "the drafter"); !r)
     return std::unexpected(r.error());
-  }
-  CheckMtp((*planned)->graph);
-  const double seconds = Seconds(std::chrono::steady_clock::now() - start);
+  CheckMtp(planned->graph);
+  seconds += Seconds(std::chrono::steady_clock::now() - binding);
+  const auto bytes = PlannedHostBytes(*planned), nodes = PlannedNodes(*planned);
+  if (transfer) transfer();
   plan_seconds_ += seconds;
-  const std::uint64_t bytes = PlannedHostBytes(**planned);
-  const std::uint64_t nodes = PlannedNodes(**planned);
-  return &request.mplans.Add(shape, std::move(*planned), bytes, nodes, seconds);
+  return &request.mplans.Add(shape, std::move(planned), bytes, nodes, seconds);
 }
 
 // BP-A1's check (planned.h): the state is live state (the target's, the
@@ -1937,33 +1974,23 @@ Status Qwen38Runner::Usable(const RequestState& request) const {
   return request.live.Usable();
 }
 
-std::expected<std::pair<kg::Qwen38MtpShape, std::vector<md::Qwen38ChunkInputs>>, std::string>
-Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
-                        std::int64_t hidden_row, bool confidence, bool capture_head,
-                        std::uint32_t read_align) const {
+std::expected<kg::Qwen38MtpShape, std::string> Qwen38Runner::MtpShape(
+    std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
+    std::int64_t hidden_row, bool confidence, bool capture_head, std::uint32_t read_align) const {
   const std::uint64_t end = std::uint64_t{first} + rows + passes - 1;
-  if (rows == 0 || passes == 0 || end > mtp_layout_.context) {
-    return Error(std::format("a draft of {} passes after {} rows at {} passes the context", passes,
-                             rows, first));
-  }
+  if (rows == 0 || passes == 0 || end > mtp_layout_.context || read_align == 0)
+    return Error("the draft geometry passes its context");
   const auto n_kv = static_cast<std::uint32_t>(
       std::min<std::uint64_t>(Round(end, read_align), mtp_layout_.cells));
-  std::vector<md::Qwen38ChunkInputs> ins;
-  for (std::uint32_t p = 0; p < passes; ++p) {
-    auto in = md::Qwen38Rows(profile_, mtp_layout_.cells, p == 0 ? first : first + rows + p - 1,
-                             p == 0 ? rows : 1, n_kv, false, !o_.device_masks);
-    if (!in) {
-      return std::unexpected(in.error());
-    }
-    ins.push_back(std::move(*in));
-  }
-  const kg::Qwen38MtpShape shape{
+  auto geometry = md::Qwen38RowGeometry(profile_, mtp_layout_.cells, first, rows, n_kv);
+  if (!geometry) return std::unexpected(geometry.error());
+  return kg::Qwen38MtpShape{
       .rows = rows,
       .passes = passes,
       .n_kv = n_kv,
       .cells = mtp_layout_.cells,
-      .qsa_select = ins.front().qsa_select,
-      .qsa_blocks = ins.front().qsa_select ? ins.front().qsa.blocks : 0,
+      .qsa_select = geometry->qsa_select,
+      .qsa_blocks = geometry->qsa_select ? geometry->qsa.blocks : 0,
       .head = head,
       .head_rows = static_cast<std::int64_t>(
           dbinding_.selected_head()
@@ -1973,7 +2000,24 @@ Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t p
       .capture_head = capture_head,
       .hidden_row = hidden_row,
       .hidden_rows = mtp_layout_.hidden_rows};
-  return std::pair{shape, std::move(ins)};
+}
+
+std::expected<std::pair<kg::Qwen38MtpShape, std::vector<md::Qwen38ChunkInputs>>, std::string>
+Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
+                        std::int64_t hidden_row, bool confidence, bool capture_head,
+                        std::uint32_t read_align) const {
+  auto shape =
+      MtpShape(first, rows, passes, head, hidden_row, confidence, capture_head, read_align);
+  if (!shape) return std::unexpected(shape.error());
+  std::vector<md::Qwen38ChunkInputs> ins;
+  for (std::uint32_t p = 0; p < passes; ++p) {
+    auto in = md::Qwen38Rows(profile_, mtp_layout_.cells, p == 0 ? first : first + rows + p - 1,
+                             p == 0 ? rows : 1, static_cast<std::uint32_t>(shape->n_kv), false,
+                             !o_.device_masks);
+    if (!in) return std::unexpected(in.error());
+    ins.push_back(std::move(*in));
+  }
+  return std::pair{*shape, std::move(ins)};
 }
 
 std::uint32_t Qwen38Runner::draft_head_rows() const {
@@ -2707,7 +2751,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
 
 Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> history,
                            std::uint32_t n_past, std::vector<float>& logits, bool inject,
-                           std::int32_t* token) {
+                           std::int32_t* token, PrefillHint next) {
   const PlanStep step;  // the plans this step borrows stay until its job ends
   if (token != nullptr &&
       (inject || speculative() || model_.exact || history.size() != std::size_t{n_past} + 1))
@@ -2745,6 +2789,50 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
   if (!in) {
     return std::unexpected(in.error());
   }
+  const Qwen38ChunkKind kind{.verify = false, .export_streams = inject};
+  auto shape = kg::Qwen38ShapeOf(layout_, *in, 1);
+  shape.token = token != nullptr;
+  const ChunkKey key{.shape = shape, .kind = kind};
+  std::optional<kg::Qwen38MtpShape> current_mshape;
+  if (inject && injection.rows != 0) {
+    auto companion = MtpShape(injection.first, injection.rows, 1, false, injection.hidden_row);
+    if (!companion) return Error(companion.error());
+    current_mshape = *companion;
+    (void)request.mplans.Find(*current_mshape);
+  }
+  const bool predict =
+      token == nullptr && node_.threaded() && (o_.prefill_lookahead || o_.prepare_state);
+  const auto ahead =
+      PredictPrefill(n_past, rows, o_.context, o_.max_rows, predict ? next : PrefillHint{});
+  std::array<ChunkKey, 2> keys{};
+  std::array<kg::Qwen38MtpShape, 2> mkeys{};
+  std::array<bool, 2> build{}, mbuild{};
+  for (std::size_t i = 0; i < ahead.size(); ++i) {
+    if (ahead[i].rows == 0) continue;
+    const auto read = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(layout_.cells, Round(ahead[i].end(), kLoneReadAlign)));
+    auto geometry =
+        md::Qwen38RowGeometry(profile_, layout_.cells, ahead[i].first, ahead[i].rows, read);
+    if (!geometry) break;
+    keys[i] = {.shape = kg::Qwen38ShapeOf(layout_, *geometry, 1), .kind = kind};
+    const bool duplicate = keys[i] == key || (i != 0 && ahead[0].rows != 0 && keys[i] == keys[0]);
+    if (!duplicate) build[i] = request.plans.Find(keys[i]) == nullptr;
+    if (inject) {
+      // Successful current/future injected chunks leave exactly one pending
+      // row. Never predict from this call's pre-success pending_rows or read
+      // guessed tokens/PLE history. The real next call still builds inputs.
+      auto injection_next = md::Qwen38InjectionOf(mtp_layout_, ahead[i].first, ahead[i].rows, 1);
+      if (!injection_next) break;
+      auto mshape = MtpShape(injection_next->first, injection_next->rows, 1, false,
+                             injection_next->hidden_row);
+      if (!mshape) break;
+      mkeys[i] = *mshape;
+      const bool mduplicate =
+          (current_mshape && mkeys[i] == *current_mshape) || (i != 0 && mkeys[i] == mkeys[0]);
+      if (!mduplicate) mbuild[i] = request.mplans.Find(mkeys[i]) == nullptr;
+    }
+  }
+  (void)request.plans.Find(key);
   if (auto used = EnsureState(request, n_past + rows); !used) {
     return used;
   }
@@ -2760,10 +2848,7 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
   if (!slots) {
     return std::unexpected(slots.error());
   }
-  const Qwen38ChunkKind kind{.verify = false, .export_streams = inject};
-  auto shape = kg::Qwen38ShapeOf(layout_, *in, 1);
-  shape.token = token != nullptr;
-  auto planned = Planned(request, {.shape = shape, .kind = kind});
+  auto planned = Planned(request, key);
   if (!planned) {
     return std::unexpected(planned.error());
   }
@@ -2903,7 +2988,64 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
     }
     return sc::JobResult::kQueued;
   };
-  const Status posted = node_.Job(execution_, std::move(job), "a Qwen3.8 chunk", stream_);
+  // Every current/cached near/far target and MTP entry has been touched under
+  // this PlanStep before ANY optional grant can invoke cache reclamation.
+  PrefillLookaheadGroup<Qwen38Planned, 2> future(node_, prefill_plan_allowance_);
+  PrefillLookaheadGroup<Qwen38MtpPlanned, 2> mfuture(node_, prefill_mtp_allowance_);
+  bool funded = false;
+  for (std::size_t i = 0; i < build.size(); ++i) {
+    if (build[i] && o_.prefill_lookahead) {
+      ++prefill_stats_.attempted;
+      if (future.Fund(i))
+        funded = true;
+      else
+        ++prefill_stats_.refused;
+    }
+    if (mbuild[i] && o_.prefill_lookahead) {
+      ++prefill_stats_.attempted;
+      if (mfuture.Fund(i))
+        funded = true;
+      else
+        ++prefill_stats_.refused;
+    }
+  }
+  const auto choices = funded ? kg::DeviceChoicesOf(launch) : kg::DeviceChoices{};
+  const std::function<void()> cpu = funded ? std::function<void()>([&] {
+    const auto built = future.BuildAll([&](std::size_t i) {
+      return PlanQwen38Chunk(request.model, keys[i].shape, choices, node_.activations().base,
+                             node_.activations().bytes, {}, keys[i].kind);
+    });
+    const auto mbuilt = mfuture.BuildAll([&](std::size_t i) {
+      return PlanQwen38Mtp(request.model, mkeys[i], choices, node_.activations().base,
+                           node_.activations().bytes);
+    });
+    for (std::size_t i = 0; i < built.size(); ++i) {
+      prefill_stats_.built += static_cast<std::uint64_t>(built[i]) + mbuilt[i];
+      prefill_stats_.mtp_built += mbuilt[i];
+      prefill_stats_.build_seconds += future.seconds(i) + mfuture.seconds(i);
+    }
+  })
+                                           : std::function<void()>{};
+  if (o_.prepare_state && ahead[0].rows != 0 && layout_.tensors.size() <= 4096) {
+    // UsedState plus five MTP ranges fit the existing 1 MiB input descriptor
+    // slack. Prepare independently funds every acquisition/ticket allocation.
+    static_assert(4096 * (2 * sizeof(md::StateRange) + sizeof(LiveState::Range)) +
+                      5 * sizeof(LiveState::Range) <
+                  (1U << 20U));
+    auto ranges = StateRanges(ahead[0].end(), kLoneReadAlign);
+    if (!ranges) {
+      if (injection.catch_up_rows != 0) request.live.Quarantine();
+      return Error(ranges.error());
+    }
+    auto prepared = request.live.Prepare(node_, *ranges);
+    if (!prepared) {
+      if (injection.catch_up_rows != 0) request.live.Quarantine();
+      return Error(prepared.error());
+    }
+  }
+  const Status posted = node_.Job(execution_, std::move(job), "a Qwen3.8 chunk", stream_, cpu);
+  const auto prepared = request.live.FinishPreparation();
+
   if (!posted || !ran || launch.faulted()) {
     if (!posted) {
       CheckFailedJob();
@@ -2913,6 +3055,22 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
       return Error(std::format("chunk at {}: the launch context faulted", n_past));
     }
     return !ran ? ran : Error(std::format("chunk at {}: {}", n_past, posted.error()));
+  }
+  if (!prepared) {
+    if (wrote || unknown || injection.catch_up_rows != 0) request.live.Quarantine();
+    return Error(prepared.error());
+  }
+  const auto cached = future.InstallAfterCompletion(
+      [&](std::size_t i, auto built, double seconds, const auto& transfer) {
+        return CachePrefillPlan(request, keys[i], std::move(built), seconds, transfer).has_value();
+      });
+  const auto mcached = mfuture.InstallAfterCompletion(
+      [&](std::size_t i, auto built, double seconds, const auto& transfer) {
+        return CachePrefillMtp(request, mkeys[i], std::move(built), seconds, transfer).has_value();
+      });
+  for (std::size_t i = 0; i < cached.size(); ++i) {
+    prefill_stats_.cached += static_cast<std::uint64_t>(cached[i]) + mcached[i];
+    prefill_stats_.mtp_cached += mcached[i];
   }
   Count(graph_stats_, path);
   CountMasks(mask_stats_, g);

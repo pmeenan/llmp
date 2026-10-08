@@ -108,6 +108,7 @@
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
 #include "engine/planned.h"
+#include "engine/prefill_lookahead.h"
 #include "engine/request_cohort.h"
 #include "engine/runner_resources.h"
 #include "kernels/ggml/dsv4_graph.h"
@@ -169,6 +170,10 @@ struct Dsv4Options {
   bool device_tokens = true;
   // Startup-only same-binary control. Runtime plans always retain exact placement.
   bool startup_activation_threshold = true;
+  // Optional scalar prefill prediction; no future logical state is published.
+  // Selected for checked scalar consumers; private controls retain ordinary work.
+  bool prefill_lookahead = true;
+  bool prepare_state = true;
   // Where each slot's spill file lives (LiveState::SpillPlace), asked once
   // at Register; unset, an unnamed file in `out`. The runtime names them
   // to keep conversations across a restart (D-105).
@@ -342,6 +347,14 @@ class Dsv4Runner final : public PagedModel {
     return Chunk(default_request_, n_past, tokens, logits, meanwhile, kind);
   }
 
+  // Hints affect optional CPU planning/backing only. This batch preserves the
+  // ordinary frontier head and feature injection, including want_head=false.
+  Status PrefillChunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
+                      std::vector<float>& logits, PrefillHint next = {},
+                      Dsv4ChunkKind kind = Dsv4ChunkKind::kPlain) {
+    return Chunk(default_request_, n_past, tokens, logits, {}, kind, nullptr, next);
+  }
+
   // Speculation (Dsv4Options::drafter).
   bool speculative() const { return dweights_.opened(); }
   std::uint64_t device_token_outputs() const { return device_token_outputs_; }
@@ -456,6 +469,10 @@ class Dsv4Runner final : public PagedModel {
   // plan_floor_bytes); every plan and graph past it is charged inside the
   // budget (planned.h PlanAccount).
   std::uint64_t plan_floor_bytes() const { return plan_floor_bytes_; }
+  // Separately provisioned optional CPU plans; zero under ordinary policy.
+  std::uint64_t prefill_temporary_plan_bytes() const {
+    return o_.prefill_lookahead ? 2 * prefill_plan_allowance_ : 0;
+  }
   // How plan_floor_bytes() is made up, for the start's log.
   const std::string& plan_report() const { return plan_report_; }
   // Its plans and graphs as candidates for the node's reclaim order
@@ -477,6 +494,8 @@ class Dsv4Runner final : public PagedModel {
   std::uint64_t graph_measured_bytes() const;
   // Of the kept plans' arenas, the bytes their tensors use (or hold).
   std::uint64_t cached_arena_used(bool capacity = false) const;
+  const PrefillLookaheadStats& prefill_stats() const { return prefill_stats_; }
+  LiveState::PreparationStats state_preparation_stats() const;
   double plan_seconds() const { return plan_seconds_; }  // spent planning, in all
   // Decode graphs on or off for the next chunks; captured graphs are kept.
   void set_graphs(bool on) { runs_.set_graphs(on); }
@@ -609,6 +628,11 @@ class Dsv4Runner final : public PagedModel {
     Status Chunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                  std::vector<float>& logits, Dsv4ChunkKind kind = Dsv4ChunkKind::kPlain) {
       return owner_.Chunk(request_, n_past, tokens, logits, {}, kind);
+    }
+    Status PrefillChunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
+                        std::vector<float>& logits, PrefillHint next = {},
+                        Dsv4ChunkKind kind = Dsv4ChunkKind::kPlain) {
+      return owner_.Chunk(request_, n_past, tokens, logits, {}, kind, nullptr, next);
     }
     Status GreedyChunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                        std::int32_t& token) {
@@ -762,6 +786,12 @@ class Dsv4Runner final : public PagedModel {
   // before it runs (SetDsv4HcaFirstPosition).
   std::expected<ChunkPlans::Entry*, std::string> Planned(RequestState& request, const ChunkKey& key,
                                                          std::uint32_t first = 0);
+  std::expected<std::unique_ptr<Dsv4Planned>, std::string> BuildPrefillPlan(
+      RequestState& request, const ChunkKey& key, std::uint32_t first,
+      const kernels::ggml::DeviceChoices& choices);
+  std::expected<ChunkPlans::Entry*, std::string> CachePrefillPlan(
+      RequestState& request, const ChunkKey& key, std::unique_ptr<Dsv4Planned> planned,
+      double seconds, const std::function<void()>& transfer = {});
   std::expected<DraftPlans::Entry*, std::string> PlannedDraft(RequestState& request);
   std::expected<WavePlans::Entry*, std::string> PlannedWave(const WaveKey& key);
   std::expected<DraftWavePlans::Entry*, std::string> PlannedDraftWave(const DraftWaveKey& key);
@@ -843,10 +873,12 @@ class Dsv4Runner final : public PagedModel {
   // checkpoint's, and an incremental spill's record).
   std::expected<std::vector<LiveState::Range>, std::string> StateWrites(
       std::uint32_t positions) const;
+  std::expected<std::vector<LiveState::Range>, std::string> StateRanges(
+      std::uint32_t positions) const;
   Status EnsureState(RequestState& request, std::uint32_t positions);
   Status Chunk(RequestState& request, std::uint32_t n_past, std::span<const std::int32_t> tokens,
                std::vector<float>& logits, const std::function<Status()>& meanwhile,
-               Dsv4ChunkKind kind, std::int32_t* token = nullptr);
+               Dsv4ChunkKind kind, std::int32_t* token = nullptr, PrefillHint next = {});
   Status Accept(RequestState& request, std::uint32_t keep);
   Status DiscardVerify(RequestState& request);
   Status Rollback(RequestState& request);
@@ -907,8 +939,10 @@ class Dsv4Runner final : public PagedModel {
   std::uint64_t scratch_bytes_ = 0;
   std::uint64_t lane_scratch_ = 0;  // each wave lane's pool (ConfigureLanes)
   std::uint64_t host_input_bytes_ = 0;
-  std::uint64_t snapshot_bytes_ = 0;    // a slot's verify snapshot
-  std::uint64_t draft_staging_ = 0;     // a slot's draft inputs' staging stride
+  std::uint64_t snapshot_bytes_ = 0;  // a slot's verify snapshot
+  std::uint64_t draft_staging_ = 0;   // a slot's draft inputs' staging stride
+  PrefillLookaheadStats prefill_stats_;
+  std::uint64_t prefill_plan_allowance_ = 0;
   std::uint64_t plan_floor_bytes_ = 0;  // plan_floor_bytes()
   std::string plan_report_;
   // The request slots provisioned: Dsv4Options::wave_slots, or 1 when the

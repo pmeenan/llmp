@@ -95,6 +95,7 @@
 #include "engine/paged_weights.h"
 #include "engine/planned.h"
 #include "engine/ple_rows.h"
+#include "engine/prefill_lookahead.h"
 #include "engine/qwen38_plan.h"
 #include "engine/qwen38_wave_plan.h"
 #include "engine/request_cohort.h"
@@ -162,6 +163,10 @@ struct Qwen38Options {
   bool device_tokens = true;
   // Startup-only same-binary control. Runtime plans always retain exact placement.
   bool startup_activation_threshold = true;
+  // Optional scalar prefill prediction; no future logical state is published.
+  // Selected for checked scalar consumers; private controls retain ordinary work.
+  bool prefill_lookahead = true;
+  bool prepare_state = true;
 };
 
 // Completed graph executions only, including replay. Host bytes count the
@@ -295,6 +300,11 @@ class Qwen38Runner final : public PagedModel {
   // from position 0); the last row's logits in `logits`. With `inject`
   // (speculating), the drafter's streams and its pass over the chunk too,
   // after catching up the rows still pending (pending_rows()).
+  // Optional prediction preserves this batch's existing frontier/export policy.
+  Status PrefillChunk(std::span<const std::int32_t> history, std::uint32_t n_past,
+                      std::vector<float>& logits, bool inject = false, PrefillHint next = {}) {
+    return Chunk(default_request_, history, n_past, logits, inject, nullptr, next);
+  }
   Status Chunk(std::span<const std::int32_t> history, std::uint32_t n_past,
                std::vector<float>& logits, bool inject = false);
 
@@ -344,6 +354,10 @@ class Qwen38Runner final : public PagedModel {
   // plan_floor_bytes); every plan and graph past it is charged inside the
   // budget (planned.h PlanAccount).
   std::uint64_t plan_floor_bytes() const { return plan_floor_bytes_; }
+  // Separately provisioned optional CPU plans; zero under ordinary policy.
+  std::uint64_t prefill_temporary_plan_bytes() const {
+    return o_.prefill_lookahead ? 2 * (prefill_plan_allowance_ + prefill_mtp_allowance_) : 0;
+  }
   // How plan_floor_bytes() is made up, for the start's log.
   const std::string& plan_report() const { return plan_report_; }
   // What the kept plans hold now, as counted (PlannedHostBytes).
@@ -359,6 +373,8 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id);
   std::uint64_t reclaimed_plans() const;
   std::uint64_t reclaimed_graphs() const;
+  const PrefillLookaheadStats& prefill_stats() const { return prefill_stats_; }
+  LiveState::PreparationStats state_preparation_stats() const;
   double plan_seconds() const { return plan_seconds_; }
   const PleStats& ple() const { return ple_; }
   // Decode graphs on or off for the next chunks; captured graphs are kept.
@@ -539,6 +555,11 @@ class Qwen38Runner final : public PagedModel {
                  std::vector<float>& logits, bool inject = false) {
       request_.state_refused = false;
       return owner_.Chunk(request_, history, n_past, logits, inject);
+    }
+    Status PrefillChunk(std::span<const std::int32_t> history, std::uint32_t n_past,
+                        std::vector<float>& logits, bool inject = false, PrefillHint next = {}) {
+      request_.state_refused = false;
+      return owner_.Chunk(request_, history, n_past, logits, inject, nullptr, next);
     }
     Status GreedyChunk(std::span<const std::int32_t> history, std::uint32_t n_past,
                        std::int32_t& token) {
@@ -772,7 +793,8 @@ class Qwen38Runner final : public PagedModel {
   std::expected<std::vector<LiveState::Range>, std::string> StateRanges(
       std::uint32_t positions, std::uint32_t read_align) const;
   Status Chunk(RequestState& request, std::span<const std::int32_t> history, std::uint32_t n_past,
-               std::vector<float>& logits, bool inject, std::int32_t* token = nullptr);
+               std::vector<float>& logits, bool inject, std::int32_t* token = nullptr,
+               PrefillHint next = {});
   // An injected chunk's catch-up (model/qwen38.h Qwen38Injection): the
   // drafter's pass over `rows` pending rows from `first` (streams from
   // H[1], each with the token after it), its own job before the chunk's.
@@ -802,6 +824,13 @@ class Qwen38Runner final : public PagedModel {
   std::expected<ChunkPlans::Entry*, std::string> Planned(const ChunkKey& key);
   std::expected<ChunkPlans::Entry*, std::string> Planned(RequestState& request,
                                                          const ChunkKey& key);
+  std::expected<ChunkPlans::Entry*, std::string> CachePrefillPlan(
+      RequestState& request, const ChunkKey& key, std::unique_ptr<Qwen38Planned> planned,
+      double seconds, const std::function<void()>& transfer = {});
+  std::expected<MtpPlans::Entry*, std::string> CachePrefillMtp(
+      RequestState& request, const kernels::ggml::Qwen38MtpShape& shape,
+      std::unique_ptr<Qwen38MtpPlanned> planned, double seconds,
+      const std::function<void()>& transfer = {});
   std::expected<MtpPlans::Entry*, std::string> PlannedMtp(
       const kernels::ggml::Qwen38MtpShape& shape);
   std::expected<MtpPlans::Entry*, std::string> PlannedMtp(
@@ -826,6 +855,10 @@ class Qwen38Runner final : public PagedModel {
   Status EnsureState(std::uint32_t positions);
   // The drafter's shape and pass inputs for `rows` rows from `first` and
   // `passes` - 1 single rows after them.
+  std::expected<kernels::ggml::Qwen38MtpShape, std::string> MtpShape(
+      std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
+      std::int64_t hidden_row, bool confidence = false, bool capture_head = false,
+      std::uint32_t read_align = 256) const;
   std::expected<std::pair<kernels::ggml::Qwen38MtpShape, std::vector<model::Qwen38ChunkInputs>>,
                 std::string>
   MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
@@ -898,6 +931,9 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t scratch_bytes_ = 0;
   std::uint64_t lane_scratch_ = 0;  // each wave lane's pool (ConfigureLanes)
   std::uint64_t host_input_bytes_ = 0;
+  PrefillLookaheadStats prefill_stats_;
+  std::uint64_t prefill_plan_allowance_ = 0;
+  std::uint64_t prefill_mtp_allowance_ = 0;
   std::uint64_t plan_floor_bytes_ = 0;  // plan_floor_bytes()
   std::string plan_report_;
   StartupPlacementStats scalar_startup_placement_;

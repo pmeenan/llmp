@@ -36,6 +36,12 @@
 
 namespace jitllm::engine {
 
+// Allocation-free shape prediction; compressor dimensions share the actual
+// input builder's checked geometry. The caller supplies its actual head policy.
+std::expected<kernels::ggml::Dsv4ChunkShape, std::string> Dsv4PrefillShape(
+    const model::Dsv4StateLayout& state, std::uint32_t first, std::uint32_t rows,
+    std::int64_t outputs);
+
 // Where a DeepSeek model's weights and state live.
 struct Dsv4Places {
   // A resource's device address (the token table's group has none: it is

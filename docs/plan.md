@@ -390,7 +390,8 @@ family" guide, and its long-context scaling work.
           gain ([controls](experiments/deepseek-device-masks/README.md)); DSpark
           noncausal block masks are checked but not adopted after a neutral short
           screen; optional compressed masks remain open.
-        - [ ] **T23** Single-request prefill lookahead/capture ahead.
+        - [ ] **T23** Scalar CPU lookahead is adopted; prefill capture ahead remains
+          open ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
         - [x] **T27** Plain greedy decode token on GPU: target scalar/joined and
           adaptive-spec `PlainWave` publication adopted, preserving feature
           injection, drafter-ring state and actual verify continuations. The
@@ -402,19 +403,25 @@ family" guide, and its long-context scaling work.
         - [ ] **T41** Residual-add plus next normalization.
         - [ ] **T45** Selected learned head/adaptive draft depth.
         - [ ] **T54** State-only nonfinal prompt dependency cut.
-        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [ ] **T55** Production wide joined prefill admission/funding and hints:
+          DS decode waves are one-row. Current scalar per-slot hints do not
+          close this compatible extension.
         - [ ] **T56** Gemma checked norm/ADD arithmetic.
         - [ ] **T57** RoPE directly into KV cache stores.
         - [x] **T63** Fast exact host causal-mask fill/check
           ([shared exact controls](experiments/host-mask-intervals/README.md)).
-        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T67** Bounded scalar fresh-zero preparation adopted with exact state;
+          broader context/cohort/output and kept-source qualification stays open
+          ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
         - [ ] **T68** Evict only incoming closure deficit.
         - [ ] **T69** Shared GPU-mask construction contract: target raw exact-row
           adapter adopted; DSpark block adapter checked but not selected after its
           neutral screen. Compressed visible-count adapters remain open; the
           composite item therefore stays open.
-        - [ ] **T70** Shared lookahead/capture hook, including compatible
-          fixed-capacity future groups under family descriptors.
+        - [x] **T70** Shared two-stage funded CPU plan lifecycle adopted through actual
+          scalar PromptSession hints, with complete heads/state, companion plans,
+          departure and checkpoint/spill controls. Capture policy remains T23.
+          [Controls](experiments/ds-qwen-prefill-prediction/README.md).
         - [ ] **T78** BF16 multirow vector alternative.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.
         - [ ] **T88** Share compatible HC matrix products.
@@ -432,7 +439,8 @@ family" guide, and its long-context scaling work.
           joined spill/restore controls pass; F32 fallback uses checked planned
           graphs plus the executed F32 primitive, without a fallback-model
           speed claim.
-        - [ ] **T23** Single-request prefill lookahead/capture ahead.
+        - [ ] **T23** Scalar CPU lookahead is adopted; prefill capture ahead remains
+          open ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
         - [x] **T27** Plain greedy decode token on GPU: non-spec native target
           scalar/joined publication adopted with exact initialized states/heads.
           Speculative Draft/Verify already publishes lean IDs; there is no
@@ -440,17 +448,23 @@ family" guide, and its long-context scaling work.
         - [ ] **T29** Operand joins by view.
         - [ ] **T41** Residual-add plus next normalization.
         - [ ] **T54** State-only nonfinal prompt dependency cut.
-        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [ ] **T55** Production wide joined prefill admission/funding and hints:
+          Qwen target waves cap at four. Current scalar per-slot hints do not
+          close this compatible extension.
         - [ ] **T56** Gemma checked norm/ADD arithmetic.
         - [ ] **T57** RoPE directly into KV cache stores.
         - [x] **T63** Fast exact host causal-mask fill/check
           ([shared exact controls](experiments/host-mask-intervals/README.md)).
-        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T67** Bounded scalar fresh-zero preparation adopted with exact state;
+          broader context/cohort/output and kept-source qualification stays open
+          ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
         - [ ] **T68** Evict only incoming closure deficit.
         - [x] **T69** Shared dtype-authenticated exact-row producer/source/funding
           contract; selection metadata and RE-037 consumer limits preserved.
-        - [ ] **T70** Shared lookahead/capture hook, including compatible
-          fixed-capacity future groups under family descriptors.
+        - [x] **T70** Shared two-stage funded CPU plan lifecycle adopted through actual
+          scalar PromptSession hints, with complete heads/state, companion plans,
+          departure and checkpoint/spill controls. Capture policy remains T23.
+          [Controls](experiments/ds-qwen-prefill-prediction/README.md).
         - [ ] **T72** Expert worklist sharing across vector products.
       - **Qwen3.8 GGUF / target**
         - [x] **T96** Shared startup placement threshold selected for GGUF target
@@ -466,7 +480,8 @@ family" guide, and its long-context scaling work.
           heads/state remain exact; F32 fallback uses checked planned
           graphs plus the executed F32 primitive, without a fallback-model
           speed claim.
-        - [ ] **T23** Single-request prefill lookahead/capture ahead.
+        - [ ] **T23** Scalar CPU lookahead is adopted; prefill capture ahead remains
+          open ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
         - [x] **T27** Plain greedy target tokens on the GPU, scalar/joined GGUF
           with exact initialized states, histories and complete continuation heads.
           Sampling/scoring retain rows; GGUF has no MTP/speculation contract.
@@ -475,17 +490,23 @@ family" guide, and its long-context scaling work.
         - [ ] **T37** Shape-pinned library GEMM algorithms.
         - [ ] **T41** Residual-add plus next normalization.
         - [ ] **T54** State-only nonfinal prompt dependency cut.
-        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [ ] **T55** Production wide joined prefill admission/funding and hints:
+          Qwen target waves cap at four. Current scalar per-slot hints do not
+          close this compatible extension.
         - [ ] **T56** Gemma checked norm/ADD arithmetic.
         - [ ] **T57** RoPE directly into KV cache stores.
         - [x] **T63** Fast exact host causal-mask fill/check
           ([shared exact controls](experiments/host-mask-intervals/README.md)).
-        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T67** Bounded scalar fresh-zero preparation adopted with exact state;
+          broader context/cohort/output and kept-source qualification stays open
+          ([controls](experiments/ds-qwen-prefill-prediction/README.md)).
         - [ ] **T68** Evict only incoming closure deficit.
         - [x] **T69** Shared dtype-authenticated exact-row producer/source/funding
           contract; selection metadata and RE-037 consumer limits preserved.
-        - [ ] **T70** Shared lookahead/capture hook, including compatible
-          fixed-capacity future groups under family descriptors.
+        - [x] **T70** Shared two-stage funded CPU plan lifecycle adopted through actual
+          scalar PromptSession hints, with complete heads/state, companion plans,
+          departure and checkpoint/spill controls. Capture policy remains T23.
+          [Controls](experiments/ds-qwen-prefill-prediction/README.md).
         - [ ] **T72** Expert worklist sharing across vector products.
         - [ ] **T80** Qwen lower cache-read alignment.
         - [ ] **T89** Independent-state recurrent cohort kernel.
@@ -714,8 +735,10 @@ family" guide, and its long-context scaling work.
       calculator and PreparedPrefill forwarding for Gemma2/Gemma3, plus generic
       scalar fallback. Gemma26/31 still need funded joined-prefill admission:
       per-owner chunk sizing, total-row envelope, and capture/state/failure
-      controls. DeepSeek/Qwen adapters remain open. Hints never initialize
-      speculative future state. T67 is separate state-growth work.
+      controls. DeepSeek/Qwen scalar adapters now use the shared CPU lifecycle;
+      their production wide joined prefill and capture policy remain open.
+      Hints publish no speculative future logical state; T67 separately
+      prepares eligible fresh backing before current publication.
       [Multirow actual-root prefill](experiments/gemma-prefill-copies/README.md)
       removes Gemma2/Gemma3 joined K/V copies: same-native wrapped prefill
       improves 8.662%/2.932%, and fresh final Gemma2 llama.cpp bookends are

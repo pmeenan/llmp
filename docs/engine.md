@@ -53,7 +53,8 @@ placement. [Startup controls and scope](experiments/startup-placement-transfer/R
 `support.h` holds the small helpers (errors, addresses, rounding, seconds,
 joined problems).
 
-Gemma2, Gemma3 and both Gemma4 profiles use the shared prefill lookahead lifecycle.
+Gemma2, Gemma3, both Gemma4 profiles, DS/DSpark and native/MTP/GGUF Qwen use
+the shared prefill lookahead lifecycle.
 Their family adapters still choose future shapes, outputs and capture eligibility;
 `GraphRuns::CaptureAhead` records an eligible future graph without executing it.
 Gemma2/Gemma3 select two distinct missing futures. Both Gemma4 profiles now
@@ -64,9 +65,14 @@ replays six chunks without a meaningful paid gain. The separate
 measures −0.484% prefill and exact assistant consumption; ordinary and
 `SetupAssistant` capture policies still remain off/one. Cached current/next/after
 keys are protected before optional capture funding in eligible adapters. Each
-future has independent refusal and cleanup; no future
-state or cursor is prepared. DeepSeek and Qwen
-adapters remain open transfers. `PromptSession::NextPrefillHint` supplies the same
+future has independent refusal and cleanup; the CPU callback publishes no future
+logical state or cursor. DS/Qwen scalar adapters now select two-stage CPU planning
+and independently prepare eligible fresh backing before Job, draining it after
+completion and before current publication. Qwen funds two target plus two MTP
+plans; its companion prediction uses post-success pending state. DS preserves
+its external Status meanwhile contract.
+[Actual controls and factors](experiments/ds-qwen-prefill-prediction/README.md).
+`PromptSession::NextPrefillHint` supplies the same
 checkpoint/scoring-aware descriptors to scalar and joined Gemma2/Gemma3 prefill
 after current funding. Each future stage independently filters ended owners and
 requires homogeneous head intent; a mixed next stage does not suppress a valid

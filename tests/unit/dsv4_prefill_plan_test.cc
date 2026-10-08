@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,6 +27,58 @@ namespace jitllm::engine {
 namespace {
 namespace kg = kernels::ggml;
 namespace md = model;
+
+TEST(Dsv4PrefillPlan, FutureGeometryMatchesActualCompressorInputsAndHeadPolicies) {
+  EXPECT_TRUE(Dsv4Options{}.prefill_lookahead);
+  EXPECT_TRUE(Dsv4Options{}.prepare_state);
+  for (const auto window : {md::Dsv4Window::kRing, md::Dsv4Window::kFull}) {
+    auto state = md::Dsv4State(md::Dsv4Flash(), 8704, 4096, window);
+    ASSERT_TRUE(state);
+    for (const std::uint32_t first : {0U, 31U, 32U, 255U, 256U, 4095U, 8191U})
+      for (const std::uint32_t rows : {1U, 3U, 63U, 64U, 65U, 128U, 256U, 512U, 4096U}) {
+        if (rows > state->context - first) continue;
+        auto actual = md::Dsv4Chunk(md::Dsv4Flash(), *state, first, rows, false, false);
+        ASSERT_TRUE(actual);
+        for (const std::int64_t outputs : {0, 1}) {
+          auto predicted = Dsv4PrefillShape(*state, first, rows, outputs);
+          ASSERT_TRUE(predicted);
+          EXPECT_EQ(*predicted, kg::Dsv4ShapeOf(*state, *actual, outputs));
+        }
+      }
+    EXPECT_FALSE(Dsv4PrefillShape(*state, state->context, 1, 1));
+    EXPECT_FALSE(Dsv4PrefillShape(*state, 0, 4097, 1));
+    EXPECT_FALSE(Dsv4PrefillShape(*state, 0, 1, 2));
+  }
+  EXPECT_FALSE(md::Dsv4CompressorGeometry(0, false, 256, 256, 0, 1));
+  EXPECT_FALSE(md::Dsv4CompressorGeometry(32, true, 63, 256, 0, 1));
+  EXPECT_FALSE(md::Dsv4CompressorGeometry(32, true, 64, 256, 8192, 32));
+}
+
+TEST(Dsv4PrefillPlan, ShortRingPredictionCrossesARealFreshExtentAtAdmittedContext) {
+  const auto extents = [](const std::vector<md::StateRange>& ranges) {
+    std::set<std::uint64_t> out;
+    for (const auto& range : ranges)
+      for (auto i = range.offset / kPagedExtent;
+           i <= (range.offset + range.bytes - 1) / kPagedExtent; ++i)
+        out.insert(i);
+    return out;
+  };
+  for (const auto context : {8704U, 16384U}) {
+    auto state = md::Dsv4State(md::Dsv4Flash(), context, 4096, md::Dsv4Window::kRing);
+    ASSERT_TRUE(state);
+    ASSERT_EQ(state->raw_cells, 4352U);
+    auto before = md::Dsv4UsedState(*state, 4096);
+    auto after = md::Dsv4UsedState(*state, 4352);
+    ASSERT_TRUE(before);
+    ASSERT_TRUE(after);
+    auto fresh = extents(*after);
+    for (const auto i : extents(*before)) fresh.erase(i);
+    if (context == 8704)
+      EXPECT_TRUE(fresh.empty());
+    else
+      EXPECT_EQ(fresh, (std::set<std::uint64_t>{143}));
+  }
+}
 
 TEST(Dsv4PrefillPlan, StartupMeasurementRejectsRuntimeStorageBeforeModelAccess) {
   Dsv4Model target;

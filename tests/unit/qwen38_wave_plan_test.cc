@@ -28,6 +28,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -52,6 +53,81 @@ namespace kg = jitllm::kernels::ggml;
 
 constexpr std::uint64_t kTableRows = 320001536;
 constexpr std::uint64_t kExpertStride = 2768976;
+
+TEST(Qwen38PrefillPrediction, ScalarReadAlignmentLeavesRealFreshTargetBacking) {
+  const auto& profile = md::Qwen38Flash();
+  auto state = md::Qwen38State(profile, 2048, 512, false);
+  ASSERT_TRUE(state);
+  const auto extents = [](const std::vector<md::StateRange>& ranges) {
+    std::set<std::uint64_t> out;
+    for (const auto& range : ranges)
+      for (auto i = range.offset / engine::kPagedExtent;
+           i <= (range.offset + range.bytes - 1) / engine::kPagedExtent; ++i)
+        out.insert(i);
+    return out;
+  };
+  auto before = md::Qwen38UsedState(profile, *state, 512, 256);
+  auto after = md::Qwen38UsedState(profile, *state, 1024, 256);
+  auto coarse = md::Qwen38UsedState(profile, *state, 512, 2048);
+  ASSERT_TRUE(before);
+  ASSERT_TRUE(after);
+  ASSERT_TRUE(coarse);
+  auto fresh = extents(*after);
+  for (const auto i : extents(*before)) fresh.erase(i);
+  EXPECT_EQ(fresh, (std::set<std::uint64_t>{87}));
+  for (const auto i : extents(*coarse)) fresh.erase(i);
+  EXPECT_TRUE(fresh.empty());  // decode preparation is deliberately not this prefill route
+  auto mtp = md::Qwen38MtpStateOf(profile, *state);
+  ASSERT_TRUE(mtp);
+  const auto mtp_ranges = [&](std::uint64_t read) {
+    const auto kv = std::uint64_t{profile.head_dim} * profile.kv_heads * 2;
+    return std::vector<md::StateRange>{
+        {mtp->k, read * kv},
+        {mtp->v, read * kv},
+        {mtp->indexer, read * profile.indexer_head_dim * 4},
+        {mtp->blocks, read / profile.indexer_ratio * profile.indexer_head_dim * 2},
+        {mtp->hidden, mtp->bytes - mtp->hidden}};
+  };
+  auto mfresh = extents(mtp_ranges(1024));
+  for (const auto i : extents(mtp_ranges(512))) mfresh.erase(i);
+  EXPECT_TRUE(mfresh.empty());  // no claim of drafter page growth in this short recipe
+}
+
+TEST(Qwen38PrefillPrediction, GeometryMatchesActualRowsAcrossQsaBoundaryAndTail) {
+  EXPECT_TRUE(engine::Qwen38Options{}.prefill_lookahead);
+  EXPECT_TRUE(engine::Qwen38Options{}.prepare_state);
+  const auto& profile = md::Qwen38Flash();
+  auto state = md::Qwen38State(profile, 33792, 512, false);
+  ASSERT_TRUE(state);
+  for (const std::uint32_t first : {0U, 255U, 256U, 2047U, 2048U, 2049U, 32767U, 32768U, 33279U})
+    for (const std::uint32_t rows : {1U, 3U, 7U, 256U, 512U}) {
+      if (rows > state->context - first) continue;
+      const auto read = ((first + rows + 255) / 256) * 256;
+      auto geometry = md::Qwen38RowGeometry(profile, state->cells, first, rows, read);
+      auto actual = md::Qwen38Rows(profile, state->cells, first, rows, read, false, false);
+      ASSERT_TRUE(geometry);
+      ASSERT_TRUE(actual);
+      EXPECT_TRUE(geometry->positions.empty());
+      EXPECT_TRUE(geometry->cells.empty());
+      EXPECT_TRUE(geometry->mask.empty());
+      EXPECT_TRUE(geometry->mask_f32.empty());
+      EXPECT_EQ(kg::Qwen38ShapeOf(*state, *geometry, 1), kg::Qwen38ShapeOf(*state, *actual, 1));
+      ASSERT_EQ(actual->positions.size(), std::size_t{rows} * 4);
+      EXPECT_EQ(actual->positions.back(), static_cast<std::int32_t>(first + rows - 1));
+      // Future injected prefill follows a successful predecessor: pending1,
+      // including one-row tails. Initial pending0 is a distinct real route.
+      auto mtp = md::Qwen38MtpStateOf(profile, *state);
+      ASSERT_TRUE(mtp);
+      auto injection = md::Qwen38InjectionOf(*mtp, first, rows, first == 0 ? 0 : 1);
+      ASSERT_TRUE(injection);
+      EXPECT_EQ(injection->rows, first == 0 ? rows - 1 : rows);
+      EXPECT_EQ(injection->hidden_row, first == 0 ? 1 : 0);
+    }
+  EXPECT_FALSE(md::Qwen38RowGeometry(profile, state->cells, 0, 1, 0));
+  EXPECT_FALSE(md::Qwen38RowGeometry(profile, state->cells, state->cells, 1, state->cells));
+  EXPECT_FALSE(md::Qwen38RowGeometry(profile, state->cells, 0, 1, 257));
+  EXPECT_FALSE(md::Qwen38RowGeometry(profile, 0xffffff00U, 0x80000000U, 1, 0x80000100U));
+}
 
 TEST(Qwen38StartupMeasurement, RejectsRuntimeStorageBeforeModelOrWaveAccess) {
   engine::Qwen38Model model;

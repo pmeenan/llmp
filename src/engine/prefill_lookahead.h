@@ -16,6 +16,47 @@
 
 namespace jitllm::engine {
 
+// Optional future geometry, never a promise to execute work or publish state.
+// Output intent travels with the prediction; a family that still always emits
+// its frontier retains that policy until it explicitly supports state-only work.
+struct PrefillHint {
+  std::uint32_t rows = 0;
+  bool want_head = true;
+  std::uint32_t after_rows = 0;
+  bool after_want_head = true;
+};
+
+struct PrefillStage {
+  std::uint32_t first = 0, rows = 0;
+  bool want_head = true;
+  std::uint32_t end() const { return first + rows; }
+};
+
+// A malformed/vanished prediction suppresses that stage and every stage after
+// it. Subtraction checks precede addition, including the current chunk, so no
+// hint can overflow or extend the family's admitted context/row envelope.
+inline std::array<PrefillStage, 2> PredictPrefill(std::uint32_t first, std::uint32_t rows,
+                                                  std::uint32_t context, std::uint32_t max_rows,
+                                                  PrefillHint hint) {
+  std::array<PrefillStage, 2> out{};
+  if (rows == 0 || rows > max_rows || first > context || rows > context - first) return out;
+  std::uint32_t at = first + rows;
+  const std::array<std::uint32_t, 2> counts{hint.rows, hint.after_rows};
+  const std::array<bool, 2> heads{hint.want_head, hint.after_want_head};
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    if (counts[i] == 0 || counts[i] > max_rows || counts[i] > context - at) break;
+    out[i] = {.first = at, .rows = counts[i], .want_head = heads[i]};
+    at += counts[i];
+  }
+  return out;
+}
+
+struct PrefillLookaheadStats {
+  std::uint64_t attempted = 0, built = 0, cached = 0, refused = 0;
+  std::uint64_t mtp_built = 0, mtp_cached = 0;
+  double build_seconds = 0;
+};
+
 // One optional host-only plan built while the current device unit runs.
 // Shape prediction and graph construction stay with the family. Fund before
 // allocating its plan; Build must not bind implementations or query CUDA.

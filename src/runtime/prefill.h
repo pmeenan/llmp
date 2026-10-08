@@ -44,8 +44,9 @@ inline constexpr std::uint32_t kPrefillTiledFrom = 1024;
 std::uint32_t PrefillChunkRows(std::uint32_t context, std::optional<std::uint32_t> configured,
                                std::uint32_t preferred, std::uint32_t most);
 
-// Optional prediction for CPU planning and capture policy only; zero rows
-// means none. A wrong one costs an unused plan or graph, never work.
+// Optional prediction for planning, capture and fresh backing preparation;
+// zero rows means none. It publishes no future logical state and never evicts
+// useful cache for backing. A wrong hint costs only unused optional work.
 struct PrefillHint {
   std::uint32_t rows = 0;
   bool want_head = true;

@@ -259,7 +259,8 @@ std::string KeptBuild() {
 class Dsv4 final : public Llm {
  public:
   Dsv4(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-       const config::RuntimeRoles& roles, int index, std::optional<bool> plain_device_tokens)
+       const config::RuntimeRoles& roles, int index, std::optional<bool> plain_device_tokens,
+       const ServingOptions& serving)
       : entry_(entry),
         artifact_id_(entry.artifact.value_or("")),
         drafter_id_(entry.drafter.value_or("")),
@@ -289,6 +290,9 @@ class Dsv4 final : public Llm {
     options_.max_rows = max_rows_;
     options_.graphs = true;
     if (plain_device_tokens) options_.device_tokens = *plain_device_tokens;
+    options_.prefill_lookahead = serving.dsv4_prefill_lookahead;
+    options_.prepare_state = serving.dsv4_prepare_state;
+    prefill_hints_ = serving.predicted_prefill_hints;
     // Request slots share the weights and workspace, each with its own
     // conversation state: concurrent chat requests decode in waves
     // (engine/dsv4_runner.h), whose row-local products read each weight
@@ -488,6 +492,22 @@ class Dsv4 final : public Llm {
                      bool inject, std::vector<float>& logits) override {
     return NativeSlot(branch).Chunk(
         n_past, all.subspan(n_past), logits,
+        inject ? engine::Dsv4ChunkKind::kInject : engine::Dsv4ChunkKind::kPlain);
+  }
+  Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
+                            bool inject, bool want_head, std::vector<float>& logits,
+                            PrefillHint next) override {
+    // State-only output and capture policy are a later transfer. Preserve the
+    // current actual frontier head/features even when intent says no head.
+    (void)want_head;
+    if (!prefill_hints_) next = {};
+    if (past >= all.size()) return Error("an empty DeepSeek prefill chunk");
+    return NativeSlot(branch).PrefillChunk(
+        past, all.subspan(past), logits,
+        {.rows = next.rows,
+         .want_head = next.want_head,
+         .after_rows = next.after_rows,
+         .after_want_head = next.after_want_head},
         inject ? engine::Dsv4ChunkKind::kInject : engine::Dsv4ChunkKind::kPlain);
   }
   std::optional<Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
@@ -930,6 +950,7 @@ class Dsv4 final : public Llm {
   std::string drafter_id_;  // empty: none
   fs::path store_;
   std::string slots_report_;
+  bool prefill_hints_ = true;
   engine::Dsv4Options options_;  // before the runner, which keeps a reference
   engine::Dsv4Runner runner_;
   std::array<engine::Dsv4Runner::Slot*, engine::Dsv4Runner::kRequestSlots> native_slots_{};
@@ -2291,7 +2312,8 @@ class Gemma3 final : public Llm {
 class Qwen38 final : public Llm {
  public:
   Qwen38(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-         const config::RuntimeRoles& roles, int index, std::optional<bool> plain_device_tokens)
+         const config::RuntimeRoles& roles, int index, std::optional<bool> plain_device_tokens,
+         const ServingOptions& serving)
       : entry_(entry),
         artifact_id_(entry.artifact.value_or("")),
         drafter_id_(entry.drafter.value_or("")),
@@ -2315,6 +2337,9 @@ class Qwen38 final : public Llm {
     options_.max_rows = max_rows_;
     options_.graphs = true;
     if (plain_device_tokens) options_.device_tokens = *plain_device_tokens;
+    options_.prefill_lookahead = serving.qwen38_prefill_lookahead;
+    options_.prepare_state = serving.qwen38_prepare_state;
+    prefill_hints_ = serving.predicted_prefill_hints;
     // Request slots share weights and workspace while each branch retains
     // its own native state: the requests decode in one wave
     // (engine/qwen38_wave_plan.h), whose row-local products read each weight
@@ -2548,6 +2573,17 @@ class Qwen38 final : public Llm {
   Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t n_past,
                      bool inject, std::vector<float>& logits) override {
     return NativeSlot(branch).Chunk(all, n_past, logits, inject);
+  }
+  Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
+                            bool inject, bool want_head, std::vector<float>& logits,
+                            PrefillHint next) override {
+    (void)want_head;  // Frontier/export semantics stay unchanged in this batch.
+    if (!prefill_hints_) next = {};
+    return NativeSlot(branch).PrefillChunk(all, past, logits, inject,
+                                           {.rows = next.rows,
+                                            .want_head = next.want_head,
+                                            .after_rows = next.after_rows,
+                                            .after_want_head = next.after_want_head});
   }
   std::optional<Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
                                           std::uint32_t pos, std::int32_t& token) override {
@@ -2974,6 +3010,7 @@ class Qwen38 final : public Llm {
   // joined wave (its settings').
   std::uint32_t shared_wave_depth_ = kQwen38SharedWaveDepth;
   std::uint32_t draft_wave_max_ = kQwen38DraftWaveMax;
+  bool prefill_hints_ = true;
   engine::Qwen38Options options_;  // before the runner, which keeps a reference
   engine::Qwen38Runner runner_;
   std::array<engine::Qwen38Runner::Slot*, engine::Qwen38Runner::kRequestSlots> native_slots_{};
@@ -5677,7 +5714,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
   }
   if (settings.architecture == "deepseek4") {
     models_.push_back(std::make_unique<Dsv4>(node_, entry, settings, roles_, index,
-                                             options_.diagnostic_plain_device_tokens));
+                                             options_.diagnostic_plain_device_tokens, options_));
   } else if (settings.architecture == "gemma4") {
     auto artifact = OpenTrusted(roles_.installed, entry.artifact.value_or(""));
     if (!artifact) return Error(artifact.error());
@@ -5693,7 +5730,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
     models_.push_back(std::make_unique<Gemma3>(node_, entry, settings, roles_, index, options_));
   } else if (settings.architecture == "qwen4exp") {
     models_.push_back(std::make_unique<Qwen38>(node_, entry, settings, roles_, index,
-                                               options_.diagnostic_plain_device_tokens));
+                                               options_.diagnostic_plain_device_tokens, options_));
   } else {
     return Error(
         std::format("model {}: no runner for architecture {}", entry.name, settings.architecture));

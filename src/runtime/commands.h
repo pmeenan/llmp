@@ -126,6 +126,13 @@ struct ServingOptions {
   bool gemma3_prefill_lookahead = true, gemma3_capture_ahead = true;
   // Optional fresh-zero state growth; internal matched control only.
   bool gemma2_prepare_state = true, gemma3_prepare_state = true, gemma4_prepare_state = true;
+  // Selected scalar DS/Qwen prediction; no public setting or output-policy
+  // change. Both mechanisms have independent internal matched controls.
+  bool dsv4_prefill_lookahead = true, qwen38_prefill_lookahead = true;
+  bool dsv4_prepare_state = true, qwen38_prepare_state = true;
+  // Hint-delivery control for matched DS/Qwen tests with identical provisioning.
+  // It changes neither required work nor the existing Gemma policy.
+  bool predicted_prefill_hints = true;
 };
 
 struct ChatOptions {

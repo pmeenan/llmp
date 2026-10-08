@@ -15,6 +15,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <utility>
@@ -76,6 +77,36 @@ struct FuturePlan : en::PlannedBase {
 };
 using Future = en::PrefillLookahead<FuturePlan>;
 using FutureResult = std::expected<std::unique_ptr<FuturePlan>, std::string>;
+
+TEST(PrefillPredictionTest, BoundsCurrentNearFarAndPreservesIntentWithoutPublishingWork) {
+  const auto stages = en::PredictPrefill(
+      256, 128, 1024, 512,
+      {.rows = 256, .want_head = false, .after_rows = 3, .after_want_head = true});
+  EXPECT_EQ(stages[0].first, 384U);
+  EXPECT_EQ(stages[0].end(), 640U);
+  EXPECT_FALSE(stages[0].want_head);
+  EXPECT_EQ(stages[1].first, 640U);
+  EXPECT_EQ(stages[1].end(), 643U);
+  EXPECT_TRUE(stages[1].want_head);
+  const auto vanished = en::PredictPrefill(0, 128, 1024, 512, {.after_rows = 256});
+  EXPECT_EQ(vanished[0].rows, 0U);
+  EXPECT_EQ(vanished[1].rows, 0U);
+  for (const auto hint : {en::PrefillHint{.rows = 513, .after_rows = 1},
+                          en::PrefillHint{.rows = 512, .after_rows = 512}}) {
+    const auto bad = en::PredictPrefill(512, 256, 1024, 512, hint);
+    EXPECT_EQ(bad[0].rows, 0U);
+    EXPECT_EQ(bad[1].rows, 0U);
+  }
+  const auto tail = en::PredictPrefill(0, 256, 1024, 512, {.rows = 512, .after_rows = 257});
+  EXPECT_EQ(tail[0].rows, 512U);
+  EXPECT_EQ(tail[1].rows, 0U);
+  const auto limit = std::numeric_limits<std::uint32_t>::max();
+  const auto overflow = en::PredictPrefill(limit - 7, 8, limit, 512, {.rows = 1, .after_rows = 1});
+  EXPECT_EQ(overflow[0].rows, 0U);
+  const auto last = en::PredictPrefill(limit - 7, 1, limit, 512, {.rows = 6, .after_rows = 1});
+  EXPECT_EQ(last[0].end(), limit);
+  EXPECT_EQ(last[1].rows, 0U);
+}
 
 TEST(PrefillLookaheadTest, OptionalRefusalDoesNotBuildOrInstall) {
   Ledger ledger;

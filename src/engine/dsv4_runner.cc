@@ -10,6 +10,7 @@
 #include <expected>
 #include <format>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -709,6 +710,13 @@ Status Dsv4Runner::Setup() {
     const std::uint64_t wave_step =
         slots > 1 ? wave_host + std::max(slots * draft, draft_wave_host) : 0;
     plan_floor_bytes_ = std::max(chunk_step, wave_step);
+    prefill_plan_allowance_ = chunk_host;
+    if (o_.prefill_lookahead) {
+      if (prefill_plan_allowance_ >
+          (std::numeric_limits<std::uint64_t>::max() - plan_floor_bytes_) / 2)
+        return Error("DeepSeek prefill plan allowances overflow");
+      plan_floor_bytes_ += 2 * prefill_plan_allowance_;
+    }
     const auto mib = [](std::uint64_t bytes) { return static_cast<double>(bytes) / (1U << 20U); };
     plan_report_ = std::format(
         "{:.1f} MiB a step at most: chunk plans of {:.1f} MiB, wave plans of {:.1f} MiB, draft "
@@ -1331,24 +1339,41 @@ Status Dsv4Runner::ClearIdle(RequestState& request) {
   return cleared;
 }
 
+std::expected<std::vector<LiveState::Range>, std::string> Dsv4Runner::StateRanges(
+    std::uint32_t positions) const {
+  auto needed = md::Dsv4UsedState(layout_, positions);
+  if (!needed) return std::unexpected(needed.error());
+  std::vector<LiveState::Range> ranges;
+  ranges.reserve(needed->size() + (speculative() ? 1U : 0U));
+  for (const auto& range : *needed)
+    ranges.push_back({.region = kTarget, .offset = range.offset, .bytes = range.bytes});
+  if (speculative()) ranges.push_back({.region = kDrafter, .offset = 0, .bytes = dlayout_.bytes});
+  return ranges;
+}
+
+LiveState::PreparationStats Dsv4Runner::state_preparation_stats() const {
+  LiveState::PreparationStats total;
+  for (const auto* request : Requests()) {
+    if (request == nullptr) continue;
+    const auto& s = request->live.preparation_stats();
+    total.attempted += s.attempted;
+    total.submitted += s.submitted;
+    total.refused += s.refused;
+    total.failed += s.failed;
+    total.completed_extents += s.completed_extents;
+    total.adopted_extents += s.adopted_extents;
+    total.cancel_requested += s.cancel_requested;
+  }
+  return total;
+}
+
 Status Dsv4Runner::EnsureState(RequestState& request, std::uint32_t positions) {
   request.state_refused = false;
-  if (auto usable = Usable(request); !usable) {
-    return usable;
-  }
-  auto needed = md::Dsv4UsedState(layout_, positions);
-  if (!needed) {
-    return std::unexpected(needed.error());
-  }
-  std::vector<LiveState::Range> ranges;
-  for (const auto& range : *needed) {
-    ranges.push_back({.region = kTarget, .offset = range.offset, .bytes = range.bytes});
-  }
-  if (speculative()) {
-    ranges.push_back({.region = kDrafter, .offset = 0, .bytes = dlayout_.bytes});
-  }
+  if (auto usable = Usable(request); !usable) return usable;
+  auto ranges = StateRanges(positions);
+  if (!ranges) return std::unexpected(ranges.error());
   bool over_budget = false;
-  auto used = request.live.Use(node_, ranges, &execution_, &over_budget);
+  auto used = request.live.Use(node_, *ranges, &execution_, &over_budget);
   if (!used) {
     if (auto refreshed = RefreshClosures(); !refreshed) {
       request.live.Quarantine();
@@ -1365,18 +1390,9 @@ Status Dsv4Runner::EnsureState(RequestState& request, std::uint32_t positions) {
 std::expected<std::uint64_t, std::string> Dsv4Runner::StateBytesThrough(
     std::uint32_t positions) const {
   // EnsureState's ranges, as a slot's growth through `positions` takes them.
-  auto needed = md::Dsv4UsedState(layout_, std::min(positions, o_.context));
-  if (!needed) {
-    return std::unexpected(needed.error());
-  }
-  std::vector<LiveState::Range> ranges;
-  for (const auto& range : *needed) {
-    ranges.push_back({.region = kTarget, .offset = range.offset, .bytes = range.bytes});
-  }
-  if (speculative()) {
-    ranges.push_back({.region = kDrafter, .offset = 0, .bytes = dlayout_.bytes});
-  }
-  return live_.UsedBytesOf(ranges);
+  auto ranges = StateRanges(std::min(positions, o_.context));
+  if (!ranges) return std::unexpected(ranges.error());
+  return live_.UsedBytesOf(*ranges);
 }
 
 Status Dsv4Runner::CheckHashRouting() {
@@ -1436,31 +1452,41 @@ std::expected<Dsv4Runner::ChunkPlans::Entry*, std::string> Dsv4Runner::Planned(
     return found;
   }
   const auto start = std::chrono::steady_clock::now();
+  auto planned = BuildPrefillPlan(request, key, first, kg::DeviceChoicesOf(resources_.launch()));
+  if (!planned) return std::unexpected(planned.error());
+  return CachePrefillPlan(request, key, std::move(*planned),
+                          Seconds(std::chrono::steady_clock::now() - start));
+}
+
+std::expected<std::unique_ptr<Dsv4Planned>, std::string> Dsv4Runner::BuildPrefillPlan(
+    RequestState& request, const ChunkKey& key, std::uint32_t first,
+    const kg::DeviceChoices& choices) {
   Dsv4Speculation speculation;
-  if (key.kind != Dsv4ChunkKind::kPlain) {
+  if (key.kind != Dsv4ChunkKind::kPlain)
     speculation = {.verify = key.kind == Dsv4ChunkKind::kVerify,
                    .drafter = &request.dmodel,
                    .inject_rows = key.inject_rows};
-  }
-  kg::LaunchContext& launch = resources_.launch();
-  auto planned = PlanDsv4Chunk(request.model, key.shape, kg::DeviceChoicesOf(launch), dump_,
-                               node_.activations().base, node_.activations().bytes, speculation,
-                               key.hca ? std::optional<std::uint32_t>(first) : std::nullopt);
-  if (!planned) {
-    return std::unexpected(planned.error());
-  }
-  if (auto r = BindPlanned(**planned, launch, resources_.registry(), "the plan"); !r) {
+  return PlanDsv4Chunk(request.model, key.shape, choices, dump_, node_.activations().base,
+                       node_.activations().bytes, speculation,
+                       key.hca ? std::optional<std::uint32_t>(first) : std::nullopt);
+}
+
+std::expected<Dsv4Runner::ChunkPlans::Entry*, std::string> Dsv4Runner::CachePrefillPlan(
+    RequestState& request, const ChunkKey& key, std::unique_ptr<Dsv4Planned> planned,
+    double seconds, const std::function<void()>& transfer) {
+  const auto binding = std::chrono::steady_clock::now();
+  if (auto r = BindPlanned(*planned, resources_.launch(), resources_.registry(), "the plan"); !r)
     return std::unexpected(r.error());
-  }
-  bound_raw_masks_ += static_cast<std::uint64_t>(std::ranges::count_if(
-      (*planned)->plan.steps,
-      [](const auto& step) { return step.implementation == kg::kGemma4MaskName; }));
-  Check((*planned)->graph);
-  const double seconds = Seconds(std::chrono::steady_clock::now() - start);
+  bound_raw_masks_ +=
+      static_cast<std::uint64_t>(std::ranges::count_if(planned->plan.steps, [](const auto& step) {
+        return step.implementation == kg::kGemma4MaskName;
+      }));
+  Check(planned->graph);
+  seconds += Seconds(std::chrono::steady_clock::now() - binding);
+  const auto bytes = PlannedHostBytes(*planned), nodes = PlannedNodes(*planned);
+  if (transfer) transfer();
   plan_seconds_ += seconds;
-  const std::uint64_t bytes = PlannedHostBytes(**planned);
-  const std::uint64_t nodes = PlannedNodes(**planned);
-  return &request.plans.Add(key, std::move(*planned), bytes, nodes, seconds);
+  return &request.plans.Add(key, std::move(planned), bytes, nodes, seconds);
 }
 
 std::expected<Dsv4Runner::DraftPlans::Entry*, std::string> Dsv4Runner::PlannedDraft(
@@ -1686,7 +1712,7 @@ Status Dsv4Runner::Rollback(RequestState& request) {
 Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
                          std::span<const std::int32_t> tokens, std::vector<float>& logits,
                          const std::function<Status()>& meanwhile, Dsv4ChunkKind kind,
-                         std::int32_t* token) {
+                         std::int32_t* token, PrefillHint next) {
   const PlanStep step;  // the plan this step borrows stays until its job ends
   if (token != nullptr && (tokens.size() != 1 || kind != Dsv4ChunkKind::kPlain || speculative() ||
                            model_.exact || !dump_.empty()))
@@ -1708,22 +1734,10 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
   if (!in) {
     return std::unexpected(in.error());
   }
-  if (auto used = EnsureState(request, n_past + rows); !used) {
-    return used;
-  }
   const bool verify = kind == Dsv4ChunkKind::kVerify;
   md::DsparkInjection inject;
   if (kind != Dsv4ChunkKind::kPlain) {
     inject = md::DsparkInject(dlayout_, n_past, rows);
-  }
-  if (verify) {
-    if (rows > o_.max_verify || !md::Dsv4SameWidths(layout_, n_past, rows)) {
-      return Error(std::format("a verify of {} rows at {}: at most {}, at its steps' mask widths",
-                               rows, n_past, o_.max_verify));
-    }
-    if (auto r = PlanSnapshot(request, *in); !r) {
-      return r;
-    }
   }
   // Production prefill returns only its frontier head. Verify/reference
   // retain every requested row; one-row shapes keep their decode key.
@@ -1736,12 +1750,50 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
   // A plain or injected prefill chunk may take HCA; a verify never does
   // (PlanDsv4Chunk refuses it).
   const bool hca = !verify && Dsv4PrefillHca(model, shape);
-  auto planned = Planned(request,
-                         {.shape = shape,
-                          .kind = kind,
-                          .inject_rows = static_cast<std::int64_t>(inject.cells.size()),
-                          .hca = hca},
-                         n_past);
+  const ChunkKey key{.shape = shape,
+                     .kind = kind,
+                     .inject_rows = static_cast<std::int64_t>(inject.cells.size()),
+                     .hca = hca};
+  // External RE-029 callbacks may page weights in and retain their legacy
+  // Submit/Await semantics. Only the ordinary Job path overlaps pure CPU plans.
+  const bool predict = !meanwhile && token == nullptr && !verify && dump_.empty() &&
+                       node_.threaded() && (o_.prefill_lookahead || o_.prepare_state);
+  const auto ahead =
+      PredictPrefill(n_past, rows, o_.context, o_.max_rows, predict ? next : PrefillHint{});
+  std::array<ChunkKey, 2> keys{};
+  std::array<bool, 2> build{};
+  for (std::size_t i = 0; i < ahead.size(); ++i) {
+    if (ahead[i].rows == 0) continue;
+    const auto outputs =
+        o_.frontier_head && !model.exact && !o_.full_window && ahead[i].rows > 1 ? 1 : 0;
+    auto predicted = Dsv4PrefillShape(layout_, ahead[i].first, ahead[i].rows, outputs);
+    if (!predicted) continue;
+    keys[i] = {.shape = *predicted,
+               .kind = kind,
+               .inject_rows = kind == Dsv4ChunkKind::kPlain
+                                  ? 0
+                                  : std::min<std::int64_t>(ahead[i].rows, dlayout_.ring),
+               .hca = Dsv4PrefillHca(model, *predicted)};
+    // Find only: Planned would repatch HCA first-position parameters while the
+    // current graph is in flight. Protect every cached near/far plan BEFORE
+    // any current allocation or optional charge can invoke cache reclaim.
+    const bool duplicate = keys[i] == key || (i != 0 && ahead[0].rows != 0 && keys[i] == keys[0]);
+    if (!duplicate) build[i] = request.plans.Find(keys[i]) == nullptr;
+  }
+  (void)request.plans.Find(key);
+  if (auto used = EnsureState(request, n_past + rows); !used) {
+    return used;
+  }
+  if (verify) {
+    if (rows > o_.max_verify || !md::Dsv4SameWidths(layout_, n_past, rows)) {
+      return Error(std::format("a verify of {} rows at {}: at most {}, at its steps' mask widths",
+                               rows, n_past, o_.max_verify));
+    }
+    if (auto r = PlanSnapshot(request, *in); !r) {
+      return r;
+    }
+  }
+  auto planned = Planned(request, key, n_past);
   if (!planned) {
     return std::unexpected(planned.error());
   }
@@ -1826,6 +1878,38 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
     }
     return sc::JobResult::kQueued;
   };
+  PrefillLookaheadGroup<Dsv4Planned, 2> future(node_, prefill_plan_allowance_);
+  bool funded = false;
+  for (std::size_t i = 0; i < build.size(); ++i) {
+    if (!build[i] || !o_.prefill_lookahead) continue;
+    ++prefill_stats_.attempted;
+    if (!future.Fund(i)) {
+      ++prefill_stats_.refused;
+      continue;
+    }
+    funded = true;
+  }
+  const auto choices = funded ? kg::DeviceChoicesOf(launch) : kg::DeviceChoices{};
+  const std::function<void()> cpu = funded ? std::function<void()>([&] {
+    const auto built = future.BuildAll(
+        [&](std::size_t i) { return BuildPrefillPlan(request, keys[i], ahead[i].first, choices); });
+    for (std::size_t i = 0; i < built.size(); ++i) {
+      prefill_stats_.built += built[i];
+      prefill_stats_.build_seconds += future.seconds(i);
+    }
+  })
+                                           : std::function<void()>{};
+  if (o_.prepare_state && ahead[0].rows != 0) {
+    // At most two ranges/tensor: both temporary range vectors fit Setup's
+    // existing 1 MiB descriptor slack. Prepare funds its owned ticket itself.
+    static_assert(4096 * 2 * (2 * sizeof(md::StateRange) + sizeof(LiveState::Range)) < (1U << 20U));
+    if (layout_.tensors.size() <= 4096) {
+      auto ranges = StateRanges(ahead[0].end());
+      if (!ranges) return Error(ranges.error());
+      auto prepared = request.live.Prepare(node_, *ranges);
+      if (!prepared) return Error(prepared.error());
+    }
+  }
   Status posted;
   Status alongside;
   if (meanwhile) {
@@ -1837,8 +1921,9 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
     alongside = meanwhile();
     posted = node_.Await(done, "a DeepSeek chunk", submitted);
   } else {
-    posted = node_.Job(execution_, std::move(job), "a DeepSeek chunk", stream_);
+    posted = node_.Job(execution_, std::move(job), "a DeepSeek chunk", stream_, cpu);
   }
+  const auto prepared = request.live.FinishPreparation();
   if (!posted || !ran || !alongside || launch.faulted()) {
     if (!posted && wave_slots_ > 1) {
       cohort_.CheckFailedJob(node_, stream_, execution_, States());
@@ -1855,6 +1940,15 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
     return Error(
         std::format("chunk at {}: {}", n_past, !posted ? posted.error() : alongside.error()));
   }
+  if (!prepared) {
+    if (wrote || unknown) request.live.Quarantine();
+    return Error(prepared.error());
+  }
+  const auto cached = future.InstallAfterCompletion(
+      [&](std::size_t i, auto built, double seconds, const auto& transfer) {
+        return CachePrefillPlan(request, keys[i], std::move(built), seconds, transfer).has_value();
+      });
+  for (bool installed : cached) prefill_stats_.cached += installed;
   last_path_ = path;
   last_planned_ = p;
   Count(graph_stats_, path);

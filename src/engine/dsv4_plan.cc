@@ -85,6 +85,40 @@ std::expected<void, std::string> RawMaskInputs(const Dsv4Model& m, const kg::Dsv
 
 }  // namespace
 
+std::expected<kg::Dsv4ChunkShape, std::string> Dsv4PrefillShape(const md::Dsv4StateLayout& state,
+                                                                std::uint32_t first,
+                                                                std::uint32_t rows,
+                                                                std::int64_t outputs) {
+  if (rows == 0 || rows > state.max_rows || first > state.context || rows > state.context - first ||
+      (outputs != 0 && outputs != 1))
+    return Error("no DeepSeek prefill geometry within the configured envelope");
+  auto csa = md::Dsv4CompressorGeometry(md::kDsv4CsaRatio, true, state.csa_state_rows,
+                                        state.csa_cells, first, rows);
+  auto hca = md::Dsv4CompressorGeometry(md::kDsv4HcaRatio, false, state.hca_state_rows,
+                                        state.hca_cells, first, rows);
+  if (!csa || !hca) return Error(!csa ? csa.error() : hca.error());
+  const std::uint64_t end = std::uint64_t{first} + rows;
+  const auto raw =
+      state.window == md::Dsv4Window::kRing
+          ? state.raw_cells
+          : std::min<std::uint64_t>(state.raw_cells,
+                                    std::max<std::uint64_t>(256, ((end + 255) / 256) * 256));
+  return kg::Dsv4ChunkShape{.rows = rows,
+                            .outputs = outputs,
+                            .raw_n_kv = static_cast<std::int64_t>(raw),
+                            .raw_cells = state.raw_cells,
+                            .csa_n_kv = csa->n_kv,
+                            .hca_n_kv = hca->n_kv,
+                            .csa_cells = state.csa_cells,
+                            .hca_cells = state.hca_cells,
+                            .csa_blocks = csa->blocks,
+                            .hca_blocks = hca->blocks,
+                            .csa_persist = csa->persist,
+                            .hca_persist = hca->persist,
+                            .csa_state_rows = state.csa_state_rows,
+                            .hca_state_rows = state.hca_state_rows};
+}
+
 void BindDsv4Weights(const Dsv4Model& m, kg::Dsv4Graph& g) {
   const auto bind = [&](ggml_tensor* t, const md::Dsv4Tensor& r) {
     if (t != nullptr) {

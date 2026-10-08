@@ -476,6 +476,11 @@ endif()
   # M3's speculation harness for Qwen3.8 Flash Next with its MTP drafter on
   # the paged node (docs/experiments/qwen38-mtp/). A harness for now; it
   # links the native tokenizer and chat renderer.
+  # Actual scalar prompt prediction, initialized state and continuation controls.
+  add_executable(jitllm_prefill_prediction_probe prefill_prediction_probe.cc)
+  target_link_libraries(jitllm_prefill_prediction_probe PRIVATE jitllm_runtime_serving jitllm_base jitllm_warnings)
+  target_link_options(jitllm_prefill_prediction_probe PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # Same-binary descriptor/funding and startup-latency checks; never loads weights.
   add_executable(jitllm_startup_measurement_probe startup_measurement_probe.cc)
   target_link_libraries(jitllm_startup_measurement_probe PRIVATE jitllm_engine jitllm_warnings)
