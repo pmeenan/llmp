@@ -102,6 +102,14 @@ downgrade a heavy-path change to the light loop on their own.
   use focused correctness, lifetime and matched performance checks for reviewed
   optimization commits. Defer the full regression suite until the performance
   changes are settled; do not run it for each incremental optimization.
+  *Owner clarification, 2026-10-08:* batch related optimization transfers by
+  shared mechanism across applicable families. Implement the batch before one
+  combined focused check set and review, then commit the completed batch.
+  Reuse evidence for unchanged shared code; do not repeat builds, controls or
+  comparisons for each recipient when they cover the same behaviour. Keep
+  recipient-specific correctness and performance checks where execution paths
+  materially differ. Full regression checks remain deferred until the
+  optimization changes are settled.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name.
