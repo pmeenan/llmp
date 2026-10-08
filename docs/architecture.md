@@ -715,8 +715,12 @@ refused; the budget never drops below outstanding claims (D-050).
 ### Backing and addresses
 
 D-033 starts with independent 2 MiB physical extents. Compatible backing is
-handed directly to admitted loads that need it, with no standing cache of
-unused handles. Weights and state are backed by device-located VMM:
+handed directly to admitted loads that need it; the only standing cache of
+unused handles is the runtime's bounded handle reserve (32 device handles,
+created while the VMM lane is idle and charged in full as one pinned
+extent; D-033 as amended 2026-10-07). A state's fresh extents are zeroed on
+the device rather than read from its sparse spill file, unless that file
+was kept across a restart (D-105), whose adopted extents are read. Weights and state are backed by device-located VMM:
 the GB10's L2 does not cache host-located memory (RE-022). On validated
 Spark configurations direct file reads land in a bounded host-VMM zone of
 2 × depth 2 MiB extents, and the GPU copies each one into its device
@@ -775,7 +779,8 @@ wait for all consumers and registrations → write back only if preservation
 requires it → commit recoverable state / invalidate discarded entries → unmap
 and release or recycle → update occupancy and generation. The unmap and
 release run on the VMM lane while the extent is EVICTING (D-033: the
-backing is released, not pooled). An eviction asked for with a handoff
+backing is released, or refills a short handle reserve, never pooled
+beyond it). An eviction asked for with a handoff
 (M3's full swap) keeps the backing and parks, still EVICTING and charged;
 by default it stays mapped where it was (D-033's lazy handoff, 2026-10-07).
 A page-in in the same domain whose backing has the same class and size
@@ -1389,7 +1394,7 @@ signatures follow the M2 proof.
 | Provider | Operations | Notes |
 | --- | --- | --- |
 | Device memory | Report domains, granularity and allocation classes; reserve and free address ranges; create and release backing in a class; map, set access, unmap | CUDA VMM through the driver API (D-006, D-033); device-located backing, with a host-located landing zone for direct I/O on Spark (D-081) |
-| Device execution | Create streams and library handles; give implementations their stream, workspace and handles; enqueue copies between backing ranges (landing zone to device VMM and back, D-081; relocation); record a fence after a phase's last consumer; query fences without blocking | Completion is observed on its own lane; destroying an event is not retirement ([async-model.md](async-model.md#provider-checks-and-validation-gates)) |
+| Device execution | Create streams and library handles; give implementations their stream, workspace and handles; enqueue copies between backing ranges (landing zone to device VMM and back, D-081; relocation) and zeroing of a range (a state's fresh extents); record a fence after a phase's last consumer; query fences without blocking | Completion is observed on its own lane; destroying an event is not retirement ([async-model.md](async-model.md#provider-checks-and-validation-gates)) |
 | Device runtime | Open the device with its two providers; within a device job, copies and fills on the job's stream, timing marks, recorded work (captured and replayed graphs), the thread's error state; pinned host memory; the device's architecture and free memory | Plain functions the build's one device backend defines (`providers/device_runtime.h`; CUDA's in `providers/cuda`), one direct call around the backend's own: what the engine uses of the device besides the kernels ([portability.md](portability.md)) |
 | Storage I/O | Open beneath a role directory; vectored direct reads into, and writes from, protected backing ranges (the landing zone, D-081); reserve file space; cancel; harvest completions; probe direct-I/O support | io_uring (D-034), opened through `OpenStorage`; every request ends not started, accepted or unknown. Other systems' implementations: [portability.md](portability.md#storage-and-direct-io) |
 | Transport | Authenticated sessions with bounded messages and streams; register and deregister communication buffers; report send, receive and deregistration completions as observations; in M4, collectives over those stable buffers | TLS 1.3 mutual authentication (D-038); the M0 baseline ran NCCL over mapped host buffers ([environment.md](environment.md#direct-dac-cluster-follow-up-2026-09-21)) |

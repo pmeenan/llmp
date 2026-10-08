@@ -580,6 +580,40 @@ TEST_P(PageInTest, ALandedLoadIsPublishedOnlyAfterItsCopysFence) {
   EXPECT_EQ(execution_.fences(), 0U);
 }
 
+// A zero source (PageSource::zero, a state's spill file before anything
+// was saved) maps its backing and zeroes it on the device: no read, no
+// slot. A zeroing that fails unwinds as a failed copy does.
+TEST_P(PageInTest, AZeroSourceZeroesItsBackingWithoutAReadOrASlot) {
+  Build();
+  for (const std::size_t i : {std::size_t{0}, std::size_t{1}}) {
+    PageSource zero = Source(i, weights_);
+    zero.zero = true;
+    ASSERT_TRUE(scheduler_->SetSource(extents_[i], zero).has_value());
+  }
+  LoadProgram::Report report;
+  ASSERT_TRUE(scheduler_->Start(1, Load(report, Of({0}))).has_value());
+  Settle();
+  ASSERT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(storage_.submitted().empty());
+  const std::vector<std::byte> zeros(kSize);
+  EXPECT_EQ(std::memcmp(At(Place(weights_, 0)), zeros.data(), kSize), 0);
+  EXPECT_EQ(memory_.backings(), baseline_ + 1);
+
+  execution_.FailNextCopy(ProviderError::kFailed);
+  LoadProgram::Report failed;
+  ASSERT_TRUE(scheduler_->Start(2, Load(failed, Of({1}))).has_value());
+  Settle();
+  EXPECT_EQ(failed.outcome, TaskOutcome::kFailed);
+  EXPECT_EQ(View(extents_[1]).state, ExtentState::kNonresident);
+  EXPECT_EQ(memory_.backings(), baseline_ + 1);
+  EXPECT_TRUE(storage_.submitted().empty());
+  // Without a managed backing a zero source is refused.
+  PageSource unmanaged = Source(2, weights_);
+  unmanaged.zero = true;
+  unmanaged.backing.reset();
+  EXPECT_FALSE(scheduler_->SetSource(extents_[2], unmanaged).has_value());
+}
+
 // The zone bounds what is in flight: two slots, so at most two reads; the
 // window lets two more loads map backing ahead and wait for a slot, and
 // the rest wait unmapped. Slots are granted in the order loads asked.
@@ -2103,6 +2137,144 @@ TEST(VmmLaneTest, ALazilyKeptBackingThatCannotBeUnmappedIsSetAsideNotTaken) {
   EXPECT_EQ(lane.stashed(), 1U);
   lane.Close();
   lane.Run();
+}
+
+// The handle reserve (ReserveSettings): an idle lane creates backing up to
+// its count; a map of its class and size takes one instead of creating; a
+// plain unmap's backing, or a kept one released, refills a short reserve
+// instead of being released; other classes or sizes never touch it; and
+// ReleaseReserve releases what it holds.
+TEST(VmmLaneTest, TheHandleReserveFillsWhileIdleAndIsTakenBeforeCreating) {
+  using jitllm::scheduler::BackingWork;
+  using jitllm::scheduler::ReserveSettings;
+  FakeDeviceMemory memory{Bytes(kSize), Bytes(kSize * 8)};
+  const auto place = memory.Reserve(Bytes(kSize * 4)).value();
+  jitllm::base::WakeFlag wake;
+  CompletionBoard board{16, wake};
+  BackingService lane(&memory, board, QueueSettings{.capacity = 8, .reserved = 1, .batch = 8},
+                      ReserveSettings{.allocation_class = 0, .size = Bytes(kSize), .count = 2});
+  const auto run = [&](BackingWork::Kind kind, std::uint64_t at, bool retain, std::uint64_t size) {
+    const auto operation = board.Open();
+    EXPECT_EQ(lane.Submit(
+                  jitllm::scheduler::DeviceCommand{.operation = operation,
+                                                   .work = BackingWork{.kind = kind,
+                                                                       .reservation = place,
+                                                                       .offset = Bytes(at * kSize),
+                                                                       .size = Bytes(size),
+                                                                       .allocation_class = 0,
+                                                                       .retain = retain,
+                                                                       .reuse = false}}),
+              PushResult::kAccepted);
+    EXPECT_TRUE(lane.Turn());
+    const auto seen = board.Harvest(4);
+    const bool ok = seen.size() == 1 && seen[0].terminal.has_value() &&
+                    seen[0].terminal->outcome == jitllm::scheduler::Outcome::kSucceeded;
+    (void)board.Close(operation);
+    return ok;
+  };
+  // Idle turns fill it, one create each, up to its count.
+  EXPECT_TRUE(lane.Turn());
+  EXPECT_TRUE(lane.Turn());
+  EXPECT_FALSE(lane.Turn());
+  EXPECT_EQ(lane.reserved(), 2U);
+  EXPECT_EQ(memory.backings(), 2U);
+  // A map takes one (the same turn's idle refill is not needed: the
+  // command was the turn's progress).
+  ASSERT_TRUE(run(BackingWork::Kind::kMap, 0, false, kSize));
+  EXPECT_EQ(lane.reserved(), 1U);
+  EXPECT_EQ(memory.backings(), 2U);
+  // A plain unmap's backing refills it.
+  ASSERT_TRUE(run(BackingWork::Kind::kUnmap, 0, false, kSize));
+  EXPECT_EQ(lane.reserved(), 2U);
+  EXPECT_EQ(memory.backings(), 2U);
+  // Full: a map and unmap past it create and release as before.
+  ASSERT_TRUE(run(BackingWork::Kind::kMap, 0, false, kSize));
+  ASSERT_TRUE(run(BackingWork::Kind::kMap, 1, false, kSize));
+  ASSERT_TRUE(run(BackingWork::Kind::kMap, 2, false, kSize));
+  EXPECT_EQ(lane.reserved(), 0U);
+  EXPECT_EQ(memory.backings(), 3U);
+  ASSERT_TRUE(run(BackingWork::Kind::kUnmap, 2, false, kSize));
+  EXPECT_TRUE(lane.Turn());  // idle: refills the second
+  EXPECT_FALSE(lane.Turn());
+  EXPECT_EQ(lane.reserved(), 2U);
+  ASSERT_TRUE(run(BackingWork::Kind::kUnmap, 1, false, kSize));
+  EXPECT_EQ(lane.reserved(), 2U);
+  EXPECT_EQ(memory.backings(), 3U);  // released: the reserve was full
+  // A kept backing released refills a short one.
+  ASSERT_TRUE(run(BackingWork::Kind::kMap, 1, false, kSize));
+  ASSERT_TRUE(run(BackingWork::Kind::kUnmap, 1, true, kSize));
+  ASSERT_TRUE(run(BackingWork::Kind::kRelease, 1, false, kSize));
+  EXPECT_EQ(lane.reserved(), 2U);
+  // Another size never touches it.
+  ASSERT_TRUE(run(BackingWork::Kind::kMap, 2, false, 2 * kSize));
+  EXPECT_EQ(lane.reserved(), 2U);
+  EXPECT_EQ(memory.backings(), 4U);
+  ASSERT_TRUE(run(BackingWork::Kind::kUnmap, 2, false, 2 * kSize));
+  ASSERT_TRUE(run(BackingWork::Kind::kUnmap, 0, false, kSize));
+  EXPECT_EQ(memory.backings(), 2U);
+  lane.Close();
+  lane.Run();
+  EXPECT_TRUE(lane.ReleaseReserve());
+  EXPECT_EQ(lane.reserved(), 0U);
+  EXPECT_EQ(memory.backings(), 0U);
+  ASSERT_TRUE(memory.Free(place).has_value());
+}
+
+// A refill the provider refuses is tried again only after the lane's next
+// command; one whose outcome is unknown is never tried again, and the
+// backing that may exist counts against the reserve: an unmap's backing
+// is then released, not kept.
+TEST(VmmLaneTest, AFailedRefillWaitsForACommandAndAnUnknownOneShortensTheReserve) {
+  using jitllm::providers::fake::Operation;
+  using jitllm::scheduler::BackingWork;
+  using jitllm::scheduler::ReserveSettings;
+  FakeDeviceMemory memory{Bytes(kSize), Bytes(kSize * 8)};
+  const auto place = memory.Reserve(Bytes(kSize * 4)).value();
+  jitllm::base::WakeFlag wake;
+  CompletionBoard board{16, wake};
+  BackingService lane(&memory, board, QueueSettings{.capacity = 8, .reserved = 1, .batch = 8},
+                      ReserveSettings{.allocation_class = 0, .size = Bytes(kSize), .count = 2});
+  const auto run = [&](BackingWork::Kind kind) {
+    const auto operation = board.Open();
+    EXPECT_EQ(
+        lane.Submit(jitllm::scheduler::DeviceCommand{.operation = operation,
+                                                     .work = BackingWork{.kind = kind,
+                                                                         .reservation = place,
+                                                                         .offset = Bytes(0),
+                                                                         .size = Bytes(kSize),
+                                                                         .allocation_class = 0,
+                                                                         .retain = false,
+                                                                         .reuse = false}}),
+        PushResult::kAccepted);
+    EXPECT_TRUE(lane.Turn());
+    const auto seen = board.Harvest(4);
+    const bool ok = seen.size() == 1 && seen[0].terminal.has_value() &&
+                    seen[0].terminal->outcome == jitllm::scheduler::Outcome::kSucceeded;
+    (void)board.Close(operation);
+    return ok;
+  };
+  memory.FailNext(Operation::kCreate, ProviderError::kOutOfMemory);
+  EXPECT_FALSE(lane.Turn());  // refused: nothing kept
+  EXPECT_FALSE(lane.Turn());  // and not tried again while idle
+  EXPECT_EQ(lane.reserved(), 0U);
+  // A map creates its own; the next idle turn tries again.
+  ASSERT_TRUE(run(BackingWork::Kind::kMap));
+  EXPECT_EQ(memory.backings(), 1U);
+  EXPECT_TRUE(lane.Turn());
+  EXPECT_EQ(lane.reserved(), 1U);
+  memory.FailNext(Operation::kCreate, ProviderError::kUnknown, /*applied=*/true);
+  EXPECT_FALSE(lane.Turn());
+  EXPECT_EQ(lane.reserved(), 1U);
+  EXPECT_EQ(memory.backings(), 3U);  // mapped, kept, and one undetermined
+  ASSERT_TRUE(run(BackingWork::Kind::kUnmap));
+  EXPECT_FALSE(lane.Turn());
+  EXPECT_EQ(lane.reserved(), 1U);
+  EXPECT_EQ(memory.backings(), 2U);
+  lane.Close();
+  lane.Run();
+  EXPECT_TRUE(lane.ReleaseReserve());
+  EXPECT_EQ(memory.backings(), 1U);  // the undetermined one, never released
+  ASSERT_TRUE(memory.Free(place).has_value());
 }
 
 // A submission lane polling its queue (DeviceSettings::poll_window) still

@@ -492,6 +492,11 @@ class FailingCopies final : public jitllm::providers::DeviceExecution {
     }
     return inner_.Copy(stream, destination, source, size);
   }
+  std::expected<void, jitllm::providers::Failure> Zero(jitllm::providers::StreamId stream,
+                                                       std::uint64_t destination,
+                                                       jitllm::base::Bytes size) override {
+    return inner_.Zero(stream, destination, size);
+  }
   std::expected<jitllm::providers::NativeStream, jitllm::providers::Failure> Submission(
       jitllm::providers::StreamId stream) override {
     return inner_.Submission(stream);

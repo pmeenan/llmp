@@ -1,13 +1,14 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# VMM call costs, batching and the lazy handoff — 2026-10-07
+# VMM call costs, batching, the lazy handoff and the handle reserve — 2026-10-07
 
 Why do swaps and cold state growth pay for CUDA VMM calls, and which of
 them can be removed? [main.cc](main.cc) is a standalone probe of D-033's 2 MiB
 extents on a GB10; the swap measurements use the production runtime's
-`swap-table` through `benchmarks/swap_lazy.cc`, which only chooses
-`ServingOptions::lazy_handoff`.
+`swap-table` through `benchmarks/swap_pager.cc`, which only chooses the
+pager's serving options (`ServingOptions::lazy_handoff`, and since the
+reserve slice `zero_state` and `handle_reserve`).
 
 ## Probe
 
@@ -79,16 +80,75 @@ eviction). It measured no gain (7.92–7.94 / 9.61–9.68 s): each round queued
 its unmaps on the VMM lane ahead of the maps its loads requested as they
 entered the landing window, so reads stalled behind them. It was not kept.
 
+## Handle reserve and device zero-fill
+
+Cold state growth paid a cuMemCreate (55–80 µs) and a read of the sparse
+spill file's hole through the landing zone plus its copy for every fresh
+2 MiB of conversation state. Two changes take both off the growth path
+(D-033 amended again):
+
+- **Handle reserve.** The VMM lane keeps 32 device handles (64 MiB) created
+  while it has no command; a map of that class and size takes one before
+  creating. A plain unmap's backing, or kept backing released, refills a
+  short reserve instead of being released. The node charges all 32 as one
+  pinned runtime extent before anything pages, so the reserve never holds
+  backing the catalog does not count. The runtime keeps it; harnesses keep
+  none unless they ask (`NodeSettings::handle_reserve`).
+- **Device zero-fill.** A state's page source is marked `zero`: until
+  something is written back, its contents are zeros, so a load maps its
+  backing and zeroes it with one `cuMemsetD8Async` on the zone's copy stream
+  (`DeviceExecution::Zero`), with no read and no landing slot. A spill
+  file kept across a restart (D-105) is read as before: its adopted
+  extents hold what the process before wrote, though nothing is written
+  back yet.
+
+Gemma3 4B QAT trained maximum (131,072 positions, 128-row chunks, one slot),
+`spark`, one binary, fresh data directories; growth timed around every
+`ReserveStateThrough` call (1,088 a traversal) by a temporary timer that is
+not kept. Every arm's heads, choices and final head match the reference
+digests.
+
+| Arm | State growth, s | Prefill, s |
+| --- | ---: | ---: |
+| Neither (control) | 0.476 / 0.459 | 31.640 / 31.422 / 31.370 / 31.590 |
+| Zero-fill only | 0.411 | 31.530 / 31.427 |
+| Reserve only | 0.433 | 31.874 / 31.789 |
+| Both (default) | 0.286 / 0.294 | 31.350 / 31.480 / 31.387 / 31.348 |
+| Stock llama.cpp (bookends) | | 31.690 / 31.535 |
+
+Arms ran in the order default, control, zero-fill, reserve, control,
+default, twice (stock only around the first). Growth falls by 0.18 s (38%)
+with both, more than either alone; prefill means 31.39 s (default) against
+31.51 s (control) and 31.61 s (stock), the earlier +1.31% to stock having
+been measured while the host copied checkpoints to the NAS. The reserve-only
+arm's prefill was the slowest in both runs, in the same fourth place each
+time; it is not a shipped configuration and was not investigated further. The
+remaining 0.27 ms a growth call is mostly cuMemSetAccess (about 33 µs an
+extent) and the scheduler's round trips; it is serial with the device
+because growth runs before each chunk is dispatched.
+
+Swaps: the same DeepSeek ↔ Qwen3.8 configuration as above, `spark-b`, arms
+on / plain / plain / on twice (`plain` keeps lazy handoff but turns both
+changes off). Every row of every arm is exact with the same output digests.
+Swap times match within noise (DeepSeek → Qwen 6.07–6.29 s, Qwen → DeepSeek
+8.25–8.38 s in both arms): page-in stays disk-bound, and a swap drains the
+reserve in its first milliseconds. The first arm of the first run (an
+`on` arm) was slow throughout (page-in 8.6 s, evictions 8.9 s), with about
+790 driver out-of-memory messages in the kernel log during that run only and
+host planning three times slower; the repeat, with the log checked between
+arms, had none in any arm, and a later `plain` arm showed the same kind of
+page-in blip. It is recorded as host memory pressure outside the runtime.
+
 ## What follows
 
 The 2 MiB extent stays (D-033, amended): larger handles would cut only the
 per-handle part of access and unmap, which the lazy handoff already moves
 off the critical path, at the cost of coarser reclamation. Cold state growth
-still pays cuMemCreate on the critical path; a reserve of handles created off
-it, and filling new state on the device instead of reading a sparse file's
-hole, are the next pager items. A swap still evicts the outgoing model whole;
-evicting only what the incoming model needs would let a return skip
-re-reading what stayed.
+still runs before each chunk; growing the next chunk's state beside the
+current chunk's device run would hide the rest. A swap still evicts the
+outgoing model whole; evicting only what the incoming model needs would let
+a return skip re-reading what stayed.
 
-Raw outputs stay outside Git under `spark-b` `~/.local/share/jitllm/vmm-batching1`
-and `~/scratch/pager-overlap1`.
+Raw outputs stay outside Git under `spark-b` `~/.local/share/jitllm/vmm-batching1`,
+`~/scratch/pager-overlap1` and `~/scratch/pager-reserve1`, and `spark`
+`~/.local/share/jitllm/g3gap-pager1`.

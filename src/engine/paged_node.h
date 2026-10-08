@@ -128,6 +128,9 @@ struct StepTimes {
 inline constexpr std::uint64_t kPagedExtent = std::uint64_t{2} << 20U;  // D-033, D-056's chunk
 inline constexpr std::size_t kPagedDepth = 4;                           // D-034's bulk depth
 inline constexpr std::size_t kPagedSlots = 2 * kPagedDepth;             // D-081's zone
+// 2 MiB device handles created ahead of need (NodeSettings::handle_reserve):
+// 64 MiB, a few chunks' state growth (D-033 as amended 2026-10-07).
+inline constexpr std::size_t kHandleReserve = 32;
 inline constexpr int kShared = -1;  // the owner of the zone and the shared workspace
 
 // Pinned host memory (providers/device_runtime.h) of `bytes` at `pointer`,
@@ -195,6 +198,18 @@ struct NodeSettings {
   // Handoff evictions keep their backing mapped until a load takes it
   // (scheduler::SchedulerSettings::lazy_handoff).
   bool lazy_handoff = true;
+  // A conversation state's fresh extents are zeroed on the device rather
+  // than read from the sparse spill file's holes (scheduler::PageSource::
+  // zero), unless the file was kept across a restart (D-105: its adopted
+  // extents are read); off is an internal override for matched controls.
+  bool zero_state = true;
+  // 2 MiB device handles the VMM lane keeps created ahead, charged as one
+  // pinned runtime extent (scheduler::ReserveSettings; D-033 as amended
+  // 2026-10-07). None by default: a harness's budget counts only what it
+  // maps; the runtime keeps kHandleReserve. With one, the VMM lane calls
+  // the device-memory provider while idle, so once the lanes run nothing
+  // else may call it until they have joined (device_memory.h).
+  std::size_t handle_reserve = 0;
   // Each slot's bytes (and the reader's largest request): 2 MiB, or more
   // for reads longer than their extent (a DeepSeek expert slab's pages,
   // paged_weights.h kSlabSlotBytes). A multiple of 4 KiB.
@@ -388,6 +403,7 @@ class PagedNode {
   providers::DeviceExecution& execution() { return *execution_; }
   providers::StreamId stream(std::uint32_t index) const { return streams_.at(index); }
   std::size_t device_class() const { return device_class_; }
+  bool zero_state() const { return settings_.zero_state; }
   std::size_t host_class() const { return host_class_; }
   catalog::Catalog& catalog() { return catalog_; }
   const catalog::Catalog& catalog() const { return catalog_; }
@@ -696,6 +712,7 @@ class PagedNode {
   catalog::ExtentId token_extent_;
   std::uint64_t request_charged_ = 0;
   catalog::ExtentId request_extent_;
+  catalog::ExtentId reserve_extent_;  // the handle reserve's charge
   std::uint64_t host_floor_ = std::numeric_limits<std::uint64_t>::max();
   std::uint64_t host_total_ = 0;
   std::uint64_t host_charged_ = 0;  // the extent's size: whole extents past the floor

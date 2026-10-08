@@ -103,6 +103,10 @@ class FaultingExecution final : public DeviceExecution {
                                                        std::uint64_t source, Bytes size) override {
     return inner_.Copy(stream, destination, source, size);
   }
+  std::expected<void, jitllm::providers::Failure> Zero(StreamId stream, std::uint64_t destination,
+                                                       Bytes size) override {
+    return inner_.Zero(stream, destination, size);
+  }
   std::expected<jitllm::providers::NativeStream, jitllm::providers::Failure> Submission(
       StreamId stream) override {
     if (std::exchange(fault_next, false)) {

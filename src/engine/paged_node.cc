@@ -896,8 +896,26 @@ Status PagedNode::Start(Bytes budget) {
   // Managed backing's VMM work on a lane of its own, so the zone's copies
   // never wait behind it (docs/experiments/pagein-perf/); that lane alone
   // calls the device-memory provider (device_memory.h).
+  // Its handle reserve is charged in full before anything pages, as one
+  // pinned runtime extent, whatever it holds (services.h HandleReserve).
+  sc::ReserveSettings reserve{.allocation_class = device_class_,
+                              .size = Bytes(kPagedExtent),
+                              .count = memory_ != nullptr ? settings_.handle_reserve : 0};
+  if (reserve.count != 0) {
+    auto charged = catalog_.AddExtent({.domain = domain_,
+                                       .memory_class = MemoryClass::kRuntime,
+                                       .recovery = catalog::Recovery::kPinned,
+                                       .size = Bytes(reserve.count * kPagedExtent),
+                                       .content = {}},
+                                      true);
+    if (!charged) {
+      return Error("charging the handle reserve");
+    }
+    reserve_extent_ = *charged;
+  }
   backing_lane_ = std::make_unique<sc::BackingService>(
-      memory_.get(), *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32});
+      memory_.get(), *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32},
+      reserve);
   sc::LandingZone landing{
       .slots = {},
       .slot_bytes = Bytes(settings_.slot_bytes),
@@ -1705,6 +1723,10 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
       }
     }
     threads_.clear();
+    // The lanes are idle for good: the reserve's backing goes first.
+    if (!backing_lane_->ReleaseReserve()) {
+      problems.emplace_back("the handle reserve could not be released");
+    }
     if (!stopped_ || !stopped_->has_value()) {
       problems.emplace_back("the scheduler stopped with a fault: backing is left as it is");
       return Joined(problems);

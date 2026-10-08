@@ -774,9 +774,13 @@ both (Gemma3 0.44 s over 1,396 new extents; Gemma31 0.15–0.18 s over 960),
 mostly in acquiring each new 2 MiB extent (0.15–0.3 ms each; on Gemma31 the VMM
 create, map and access calls take about 150 µs of it, against about 90 µs in
 D-033's idle microbenchmark); closure descriptions, rebuilds and holds take about 0.04 s (Gemma31) to 0.12 s (Gemma3). A
-warm conversation reuses its cleared backing (Gemma31 state 0.03 s). Cutting
-cold growth further would need a standing handle pool, larger extents or
-batched driver operations, each a D-033 reopen condition. On Gemma31 cold 8K
+warm conversation reuses its cleared backing (Gemma31 state 0.03 s). The
+[handle reserve and device zero-fill](experiments/vmm-batching/README.md#handle-reserve-and-device-zero-fill)
+(D-033 amended; the node's, so every family's live state takes it) cut
+Gemma3's cold growth from 0.46–0.48 to 0.29 s; batching and larger extents
+were measured and not adopted. What remains runs before each chunk's
+dispatch; growing the next chunk's state beside the current chunk's device
+run is the untried lever. On Gemma31 cold 8K
 prefill, execution is 97.8% of wall time; its remaining prefill levers are on
 the device.
 

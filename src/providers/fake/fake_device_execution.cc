@@ -88,6 +88,29 @@ std::expected<void, Failure> FakeDeviceExecution::Copy(StreamId stream, std::uin
   return {};
 }
 
+std::expected<void, Failure> FakeDeviceExecution::Zero(StreamId stream, std::uint64_t destination,
+                                                       Bytes size) {
+  const std::scoped_lock lock(mutex_);
+  Stream* found = streams_.Find(stream);
+  if (found == nullptr) {
+    return Invalid("stale or unknown stream");
+  }
+  const auto fault = Take(copy_fault_, FenceId{});
+  if (fault && *fault != ProviderError::kUnknown) {
+    return std::unexpected(Failure{.error = *fault, .detail = "scripted zeroing refusal"});
+  }
+  found->unfenced = true;
+  found->steps.push_back(Queued{.kind = Queued::Kind::kZero,
+                                .destination = destination,
+                                .source = 0,
+                                .size = size,
+                                .fence = {}});
+  if (fault) {
+    return std::unexpected(Failure{.error = *fault, .detail = "scripted zeroing fault"});
+  }
+  return {};
+}
+
 std::expected<void, Failure> FakeDeviceExecution::Wait(StreamId stream, FenceId fence) {
   const std::scoped_lock lock(mutex_);
   Stream* found = streams_.Find(stream);
@@ -176,6 +199,9 @@ bool FakeDeviceExecution::StepLocked(StreamId stream) {
   switch (step.kind) {
     case Queued::Kind::kCopy:
       std::memmove(At(step.destination), At(step.source), step.size.value());
+      break;
+    case Queued::Kind::kZero:
+      std::memset(At(step.destination), 0, step.size.value());
       break;
     case Queued::Kind::kWait: {
       const Fence* awaited = fences_.Find(step.fence);

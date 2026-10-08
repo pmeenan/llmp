@@ -54,8 +54,8 @@ Outcome OutcomeOf(providers::ReadOutcome outcome) {
 // Carries out VMM work and publishes its acceptance and result at once
 // (DeviceService and BackingService alike), keeping handed-off backing in
 // the lane's `stash`.
-void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBoard& board,
-              OperationId operation, const BackingWork& work) {
+void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, HandleReserve* reserve,
+              CompletionBoard& board, OperationId operation, const BackingWork& work) {
   if (memory == nullptr) {
     (void)board.Accept(operation, Acceptance::kNotStarted);
     return;
@@ -102,6 +102,14 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBo
       }
     }
   };
+  // Backing no extent holds any more: kept by a short reserve, or released.
+  const auto release =
+      [&](providers::BackingId backing) -> std::expected<void, providers::Failure> {
+    if (reserve != nullptr && reserve->Keep(work.allocation_class, work.size, backing)) {
+      return {};
+    }
+    return memory->Release(backing);
+  };
   if (work.kind == BackingWork::Kind::kRelease) {
     // One handed-off backing of the class and size, released: no longer
     // charged once this succeeds.
@@ -110,7 +118,7 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBo
       not_started();  // none kept that could be: nothing changed
       return;
     }
-    if (const auto released = memory->Release(*kept); !released) {
+    if (const auto released = release(*kept); !released) {
       if (unknown(released.error())) {
         unproven(Acceptance::kUnknown);
       } else {
@@ -168,7 +176,10 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBo
         not_started();  // none kept that could be: nothing changed
         return;
       }
-    } else {
+    } else if (reserve != nullptr && reserve->Holds(work.allocation_class, work.size)) {
+      backing = reserve->Take(work.allocation_class, work.size);
+    }
+    if (!backing) {
       const auto created = memory->Create(work.allocation_class, work.size);
       if (!created) {
         unknown(created.error()) ? unproven(Acceptance::kUnknown) : not_started();
@@ -181,7 +192,7 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBo
         stash.Put(work.allocation_class, work.size, {.backing = *backing, .at = std::nullopt});
         return true;
       }
-      return memory->Release(*backing).has_value();
+      return release(*backing).has_value();
     };
     const auto mapped = memory->Map(work.reservation, work.offset, *backing);
     if (!mapped) {
@@ -250,7 +261,7 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBo
       // Kept for a handoff: the scheduler keeps it charged until a load
       // maps it or a kRelease releases it.
       stash.Put(work.allocation_class, work.size, {.backing = *backing, .at = std::nullopt});
-    } else if (const auto released = memory->Release(*backing); !released) {
+    } else if (const auto released = release(*backing); !released) {
       // Unmapped, but the backing still exists until it is released: a
       // refusal here leaves it charged.
       unproven(unknown(released.error()) ? Acceptance::kUnknown : Acceptance::kAccepted);
@@ -275,6 +286,23 @@ void HandoffStash::Put(std::size_t allocation_class, Bytes size, Kept kept, bool
   if (kept.at) {
     mapped_[*kept.at] = it;
   }
+}
+
+std::optional<providers::BackingId> HandleReserve::Take(std::size_t allocation_class, Bytes size) {
+  if (!Holds(allocation_class, size) || kept_.empty()) {
+    return std::nullopt;
+  }
+  const providers::BackingId backing = kept_.back();
+  kept_.pop_back();
+  return backing;
+}
+
+bool HandleReserve::Keep(std::size_t allocation_class, Bytes size, providers::BackingId backing) {
+  if (!Holds(allocation_class, size) || !short_of_count()) {
+    return false;
+  }
+  kept_.push_back(backing);
+  return true;
 }
 
 std::optional<HandoffStash::Kept> HandoffStash::Take(std::size_t allocation_class, Bytes size) {
@@ -435,7 +463,9 @@ void DeviceService::Copy(OperationId operation, const DeviceWork& work) {
   std::uint64_t bytes = 0;
   for (std::size_t i = 0; i < work.count; ++i) {
     const DeviceCopy& copy = work.copies.at(i);
-    const auto copied = execution_.Copy(stream, copy.destination, copy.source, copy.size);
+    const auto copied = copy.zero
+                            ? execution_.Zero(stream, copy.destination, copy.size)
+                            : execution_.Copy(stream, copy.destination, copy.source, copy.size);
     if (copied) {
       queued = true;
       bytes += copy.size.value();
@@ -507,7 +537,7 @@ void DeviceService::Fence(OperationId operation, std::uint32_t stream, bool queu
 }
 
 void DeviceService::Back(OperationId operation, const BackingWork& work) {
-  CarryOut(memory_, stash_, board_, operation, work);
+  CarryOut(memory_, stash_, nullptr, board_, operation, work);
 }
 
 void DeviceService::Hand(const Watch& watch) {
@@ -733,17 +763,55 @@ void DeviceService::AwaitCompletion(bool releasing) {
 }
 
 BackingService::BackingService(providers::DeviceMemory* memory, CompletionBoard& board,
-                               QueueSettings queue)
-    : memory_(memory), board_(board), queue_(queue.capacity, queue.reserved), batch_(queue.batch) {
+                               QueueSettings queue, ReserveSettings reserve)
+    : memory_(memory),
+      board_(board),
+      queue_(queue.capacity, queue.reserved),
+      batch_(queue.batch),
+      reserve_(reserve) {
   base::Check(batch_ > 0, "a lane turn takes at least one command");
 }
 
 void BackingService::Handle(DeviceCommand& command) {
+  refill_ok_ = true;
   if (const auto* work = std::get_if<BackingWork>(&command.work)) {
-    CarryOut(memory_, stash_, board_, command.operation, *work);
+    CarryOut(memory_, stash_, &reserve_, board_, command.operation, *work);
     return;
   }
   (void)board_.Accept(command.operation, Acceptance::kNotStarted);  // not VMM work
+}
+
+bool BackingService::Refill() {
+  // Closed and drained: the lane is stopping, and what it would create
+  // now would only be released.
+  if (memory_ == nullptr || !refill_ok_ || refill_lost_ || !reserve_.short_of_count() ||
+      queue_.drained()) {
+    return false;
+  }
+  const ReserveSettings& settings = reserve_.settings();
+  const auto created = memory_->Create(settings.allocation_class, settings.size);
+  if (!created) {
+    // Known: tried again after the next command. Unknown: the provider's
+    // state is not what the reserve's count says, so it is left short, the
+    // backing that may exist counted in its place.
+    refill_ok_ = false;
+    refill_lost_ = created.error().error == providers::ProviderError::kUnknown;
+    if (refill_lost_) {
+      reserve_.Lose();
+    }
+    return false;
+  }
+  (void)reserve_.Keep(settings.allocation_class, settings.size, *created);
+  return true;
+}
+
+bool BackingService::ReleaseReserve() {
+  bool released = true;
+  for (const providers::BackingId backing : reserve_.kept()) {
+    released = memory_->Release(backing).has_value() && released;
+  }
+  reserve_.kept().clear();
+  return released;
 }
 
 bool BackingService::Turn() {
@@ -756,12 +824,22 @@ bool BackingService::Turn() {
     Handle(*command);
     progress = true;
   }
-  return progress;
+  return progress || Refill();
 }
 
 void BackingService::Run() {
   const std::stop_token never;
-  while (std::optional<DeviceCommand> command = queue_.Pop(never)) {
+  while (true) {
+    std::optional<DeviceCommand> command = queue_.TryPop();
+    if (!command) {
+      if (Refill()) {
+        continue;  // one at a time, so a command waits for one create at most
+      }
+      command = queue_.Pop(never);
+      if (!command) {
+        return;
+      }
+    }
     Handle(*command);
   }
 }

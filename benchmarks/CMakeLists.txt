@@ -54,9 +54,9 @@ if(JITLLM_CUDA)
   target_link_options(jitllm_gemma3_max_context PRIVATE
                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
 
-  add_executable(jitllm_swap_lazy swap_lazy.cc)
-  target_link_libraries(jitllm_swap_lazy PRIVATE jitllm_runtime_serving jitllm_base jitllm_warnings)
-  target_link_options(jitllm_swap_lazy PRIVATE
+  add_executable(jitllm_swap_pager swap_pager.cc)
+  target_link_libraries(jitllm_swap_pager PRIVATE jitllm_runtime_serving jitllm_base jitllm_warnings)
+  target_link_options(jitllm_swap_pager PRIVATE
                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
 
   add_executable(jitllm_long_swap long_swap.cc)

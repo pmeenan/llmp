@@ -108,7 +108,9 @@ rt::Status Run(std::span<const std::string_view> args) {
   // Optional words after the input and output: device-masks; legacy (no
   // prefill lookahead or first-run capture) or lookahead-only; repeat (one
   // earlier timed traversal of the same prefix, then Clear: the measured
-  // pass runs on its plans and graphs).
+  // pass runs on its plans and graphs); no-zero (fresh state read from the
+  // spill file's holes) and no-reserve (no handle reserve), the pager's
+  // matched controls.
   bool repeat = false;
   options.gemma3_device_masks = false;
   for (const auto word : args.subspan(5)) {
@@ -120,6 +122,10 @@ rt::Status Run(std::span<const std::string_view> args) {
       options.gemma3_capture_ahead = false;
     } else if (word == "repeat") {
       repeat = true;
+    } else if (word == "no-zero") {
+      options.zero_state = false;
+    } else if (word == "no-reserve") {
+      options.handle_reserve = 0;
     } else {
       return Error("unknown run option");
     }
@@ -236,7 +242,7 @@ int main(int argc, char** argv) {
     if (!result) (void)std::fprintf(stderr, "%s\n", result.error().c_str());
     return result ? 0 : 1;
   }
-  if (argc < 7 || argc > 10 || std::string_view(argv[1]) != "run") return 2;
+  if (argc < 7 || argc > 12 || std::string_view(argv[1]) != "run") return 2;
   const auto result = Run(args);
   if (!result) (void)std::fprintf(stderr, "%s\n", result.error().c_str());
   return result ? 0 : 1;

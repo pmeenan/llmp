@@ -49,11 +49,13 @@ using StorageCommand = std::variant<ReadCommand, CancelRead>;
 
 // Device submission lane: copies queued in order on one of the lane's
 // streams, then a fence after them, which the device completion lane
-// watches.
+// watches. A `zero` copy zeroes `size` bytes at `destination` and reads
+// no source.
 struct DeviceCopy {
   std::uint64_t destination = 0;
   std::uint64_t source = 0;
   Bytes size;
+  bool zero = false;
 };
 inline constexpr std::size_t kMaxDeviceCopies = 4;
 struct DeviceWork {

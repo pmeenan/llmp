@@ -337,6 +337,11 @@ struct PageSource {
   // preserved. The caller owns the file: opened for direct I/O beneath the
   // spill role, never shared by two places.
   bool write_back = false;
+  // Unless written back, the contents are zero bytes (a state's sparse
+  // spill file before anything was saved, D-081): a load maps the backing
+  // and zeroes `read.length` bytes at `destination` on the zone's copy
+  // stream, with no read and no slot. Only landed, one range, managed.
+  bool zero = false;
 };
 
 // Whether two sources put an extent's contents at the same addresses: the

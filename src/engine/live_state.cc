@@ -378,6 +378,11 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node, const SpillPlace& pl
   if (::ftruncate(spill_fd_, static_cast<off_t>(file_bytes)) != 0) {
     return Error("sizing the sparse conversation spill file");
   }
+  // Fresh extents are zeroed on the device only when the file is holes
+  // beneath them: never for a kept file, whose adopted extents (D-105) grow
+  // from what the process before wrote there, though nothing is written
+  // back yet.
+  const bool zero = node.zero_state() && !place.keep;
   std::uint64_t slot = 0;
   for (Region& region : regions_) {
     Mapped& mapped = region.mapped;
@@ -391,7 +396,8 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node, const SpillPlace& pl
                                       .offset = Bytes(i * kExtent),
                                       .size = Bytes(kExtent),
                                       .allocation_class = node.device_class()},
-          .write_back = region.used[i] != 0};
+          .write_back = region.used[i] != 0,
+          .zero = zero};
       auto set = node.scheduler().SetSource(mapped.extents[i], source);
       if (!set) {
         return Error(std::format("the state's write-back place: {}", sc::ToString(set.error())));

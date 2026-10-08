@@ -69,6 +69,11 @@ class DeviceExecution {
   // with access), after everything queued on the stream before it.
   virtual std::expected<void, Failure> Copy(StreamId stream, std::uint64_t destination,
                                             std::uint64_t source, Bytes size) = 0;
+  // Queues zeroing `size` bytes at a device address (backing mapped with
+  // access), after everything queued on the stream before it; like Copy,
+  // it is work the stream must be fenced after.
+  virtual std::expected<void, Failure> Zero(StreamId stream, std::uint64_t destination,
+                                            Bytes size) = 0;
   // The stream's native handle, for a kernel implementation about to queue
   // work on it (D-053). Like Copy, it notes that work is being queued, so
   // the stream needs a fence recorded after that work, seen complete and

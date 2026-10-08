@@ -49,6 +49,45 @@ struct QueueSettings {
   std::size_t batch = 16;     // commands a turn takes
 };
 
+// A reserve of created, unmapped backing of one class and size (D-033 as
+// amended 2026-10-07), kept by the VMM lane: a map of that class and size
+// takes one instead of creating backing, and the lane creates more while
+// it has no command, up to `count`, off the critical path. A plain unmap's
+// backing, or a kept one released, refills a reserve that is short instead
+// of being released. The node charges all `count` in the catalog as one
+// pinned extent before the scheduler starts, so the reserve never holds
+// backing the catalog does not count; the lane releases what it holds at
+// teardown (ReleaseReserve).
+struct ReserveSettings {
+  std::size_t allocation_class = 0;
+  Bytes size;
+  std::size_t count = 0;  // 0: no reserve
+};
+class HandleReserve {
+ public:
+  explicit HandleReserve(ReserveSettings settings) : settings_(settings) {}
+  bool Holds(std::size_t allocation_class, Bytes size) const {
+    return settings_.count != 0 && allocation_class == settings_.allocation_class &&
+           size == settings_.size;
+  }
+  // One of that class and size, if any is kept.
+  std::optional<providers::BackingId> Take(std::size_t allocation_class, Bytes size);
+  // Keeps `backing` (of that class and size) if the reserve is short.
+  bool Keep(std::size_t allocation_class, Bytes size, providers::BackingId backing);
+  // A create whose outcome is unknown: its backing may exist, uncounted
+  // but beneath the reserve's charge, so the reserve keeps one fewer.
+  void Lose() { ++lost_; }
+  bool short_of_count() const { return kept_.size() + lost_ < settings_.count; }
+  const ReserveSettings& settings() const { return settings_; }
+  std::size_t size() const { return kept_.size(); }
+  std::vector<providers::BackingId>& kept() { return kept_; }
+
+ private:
+  ReserveSettings settings_;
+  std::vector<providers::BackingId> kept_;
+  std::size_t lost_ = 0;
+};
+
 // Backing kept for a handoff and not yet mapped again or released
 // (D-033; BackingWork's `retain`, `lazy`, `reuse` and kRelease): the lane
 // that calls the device-memory provider keeps it, on its own thread. Every
@@ -375,7 +414,8 @@ class DeviceService {
 // mistake is refused rather than raced.
 class BackingService {
  public:
-  BackingService(providers::DeviceMemory* memory, CompletionBoard& board, QueueSettings queue);
+  BackingService(providers::DeviceMemory* memory, CompletionBoard& board, QueueSettings queue,
+                 ReserveSettings reserve = {});
 
   // Any thread. Moves from `command` only if it is accepted.
   base::PushResult Submit(DeviceCommand&& command,
@@ -391,15 +431,24 @@ class BackingService {
   // Backing kept for a handoff: read only while the lane is idle (tests,
   // teardown).
   std::size_t stashed() const { return stash_.size(); }
+  // The reserve's backing: read, or released, only while the lane is idle
+  // and will run no more (teardown). False if any release failed.
+  std::size_t reserved() const { return reserve_.size(); }
+  bool ReleaseReserve();
 
  private:
   void Handle(DeviceCommand& command);
+  // Creates one reserve backing if the reserve is short: true if it did.
+  bool Refill();
 
   providers::DeviceMemory* memory_;
   CompletionBoard& board_;
   base::BoundedQueue<DeviceCommand> queue_;
   std::size_t batch_;
-  HandoffStash stash_;  // the lane's thread only
+  HandoffStash stash_;        // the lane's thread only
+  HandleReserve reserve_;     // the lane's thread only
+  bool refill_ok_ = true;     // a create failed: none until the next command
+  bool refill_lost_ = false;  // an unknown outcome: never again
 };
 
 // The CPU worker lane (a Lane of CpuCommand, at most four workers per

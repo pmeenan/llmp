@@ -102,6 +102,10 @@ struct ServingOptions {
   // (engine::NodeSettings::lazy_handoff); off is an internal override for
   // matched controls only.
   bool lazy_handoff = true;
+  // engine::NodeSettings::zero_state and handle_reserve; internal
+  // overrides for matched controls only.
+  bool zero_state = true;
+  std::optional<std::size_t> handle_reserve;  // unset: the node's default
   // Ordinary graph-owned masks; internal host-reference override only.
   bool gemma3_device_masks = true;
   // Ordinary prefill lookahead and first-run capture of a repeated shape;

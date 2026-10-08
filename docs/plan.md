@@ -338,10 +338,11 @@ family" guide, and its long-context scaling work.
       - [ ] Evict only what the incoming model needs (by the reclaim
         order), leaving the rest of the outgoing model resident at its
         places so a return re-reads only what went: a D-096 amendment.
-      - [ ] A reserve of 2 MiB handles created off the critical path
-        (D-033's reopen condition) for cold state growth and cold loads.
-      - [ ] Zero-fill new state on the device instead of reading a sparse
-        spill file's hole through the zone.
+      - [x] [Handle reserve and device zero-fill](experiments/vmm-batching/README.md#handle-reserve-and-device-zero-fill)
+        (D-033 amended): 32 device handles created while the VMM lane is
+        idle, charged as one pinned extent, and new state zeroed on the
+        GPU; Gemma3's 131K cold state growth falls 38% (0.47 to 0.29 s),
+        exact, now at or slightly ahead of stock; swaps unchanged.
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:

@@ -34,6 +34,8 @@ class FakeDeviceExecution final : public DeviceExecution {
   std::expected<void, Failure> DestroyStream(StreamId stream) override;
   std::expected<void, Failure> Copy(StreamId stream, std::uint64_t destination,
                                     std::uint64_t source, Bytes size) override;
+  std::expected<void, Failure> Zero(StreamId stream, std::uint64_t destination,
+                                    Bytes size) override;
   std::expected<NativeStream, Failure> Submission(StreamId stream) override;
   std::expected<void, Failure> Wait(StreamId stream, FenceId fence) override;
   std::expected<FenceId, Failure> Record(StreamId stream) override;
@@ -55,7 +57,7 @@ class FakeDeviceExecution final : public DeviceExecution {
     const std::scoped_lock lock(mutex_);
     fault_ = {.fence = FenceId{}, .error = error, .times = times};
   }
-  // The next `times` copies report this failure. A known one queues
+  // The next `times` copies (zeroing too) report this failure. A known one queues
   // nothing; kUnknown queues the copy anyway, as a fault whose effect is
   // unknown may have, and it runs when the stream is stepped. Zero stops.
   void FailNextCopy(ProviderError error, std::size_t times = 1) {
@@ -80,7 +82,7 @@ class FakeDeviceExecution final : public DeviceExecution {
 
  private:
   struct Queued {
-    enum class Kind : std::uint8_t { kCopy, kWait, kFence } kind = Kind::kCopy;
+    enum class Kind : std::uint8_t { kCopy, kZero, kWait, kFence } kind = Kind::kCopy;
     std::uint64_t destination = 0;
     std::uint64_t source = 0;
     Bytes size;

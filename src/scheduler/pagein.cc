@@ -32,6 +32,9 @@
 namespace jitllm::scheduler {
 namespace {
 
+// A load zeroes its backing on the device instead of reading (PageSource::zero).
+bool Zeroes(const PageSource& source) { return source.zero && !source.write_back; }
+
 void Remove(std::deque<catalog::ExtentId>& queue, catalog::ExtentId extent) {
   std::erase(queue, extent);
 }
@@ -88,7 +91,8 @@ std::expected<void, WorkError> Scheduler::SetSource(catalog::ExtentId extent,
       (source.landed && (slots_.empty() || (source.piece_count == 0 && source.destination == 0) ||
                          source.read.length > settings_.landing.slot_bytes.value())) ||
       (!source.landed && source.read.memory == nullptr) ||
-      (source.backing && source.backing->size == Bytes())) {
+      (source.backing && source.backing->size == Bytes()) ||
+      (source.zero && (!source.landed || source.piece_count != 0 || !source.backing))) {
     return std::unexpected(WorkError::kInvalid);
   }
   if (loads_.contains(extent) || evictions_.contains(extent)) {
@@ -451,10 +455,20 @@ bool Scheduler::OpenStage(catalog::ExtentId extent, Load& load) {
       break;
     }
     case Stage::kCopying: {
-      base::Check(load.slot.has_value(), "a copy without a slot");
-      const std::uint64_t slot = settings_.landing.slots.at(load.slot.value_or(0));
       DeviceWork work;
       work.stream = settings_.landing.stream;
+      if (Zeroes(source)) {
+        work.copies.at(0) = DeviceCopy{.destination = source.destination,
+                                       .source = 0,
+                                       .size = Bytes(source.read.length),
+                                       .zero = true};
+        work.count = 1;
+        operation.route = CopyRoute();
+        operation.device = DeviceCommand{.operation = operation.id, .work = work};
+        break;
+      }
+      base::Check(load.slot.has_value(), "a copy without a slot");
+      const std::uint64_t slot = settings_.landing.slots.at(load.slot.value_or(0));
       if (source.piece_count == 0) {
         work.copies.at(0) = DeviceCopy{
             .destination = source.destination, .source = slot, .size = Bytes(source.read.length)};
@@ -505,6 +519,13 @@ void Scheduler::OnStage(catalog::ExtentId extent, Outcome outcome, std::uint64_t
         Unwind(extent, load);
         return;
       }
+      if (Zeroes(load.source)) {
+        load.stage = Stage::kCopying;  // zeroed where it is: no read, no slot
+        if (!OpenStage(extent, load)) {
+          blocked_.push_back(extent);
+        }
+        return;
+      }
       if (load.source.landed) {
         load.stage = Stage::kSlot;
         Proceed(extent);
@@ -547,11 +568,15 @@ void Scheduler::OnStage(catalog::ExtentId extent, Outcome outcome, std::uint64_t
     }
     case Stage::kCopying: {
       // The copy's fence has completed (or it never started): the slot is
-      // free, and the extent holds the whole range only if it succeeded.
-      base::Check(load.slot.has_value(), "a landed load past its read without a slot");
-      const std::size_t slot = load.slot.value_or(0);
-      load.slot.reset();
-      FreeSlot(slot);
+      // free, and the extent holds the whole range only if it succeeded. A
+      // zeroing load never had one.
+      base::Check(load.slot.has_value() || Zeroes(load.source),
+                  "a landed load past its read without a slot");
+      if (load.slot) {
+        const std::size_t slot = *load.slot;
+        load.slot.reset();
+        FreeSlot(slot);
+      }
       if (succeeded) {
         EndLoad(extent, true);
         return;

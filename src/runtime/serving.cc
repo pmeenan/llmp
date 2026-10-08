@@ -5508,6 +5508,8 @@ Server::Server(const config::NodeConfig& config, const config::RuntimeRoles& rol
              .coalesce = false,
              .copy_lane = true,
              .lazy_handoff = options.lazy_handoff,
+             .zero_state = options.zero_state,
+             .handle_reserve = options.handle_reserve.value_or(engine::kHandleReserve),
              .slot_bytes = engine::kSlabSlotBytes,
              .observer = &times_,
              .poll_window = std::nullopt,

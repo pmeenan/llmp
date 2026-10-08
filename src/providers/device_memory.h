@@ -17,7 +17,10 @@
 // While the lanes run that is the one lane given the provider (a program
 // with a VMM lane gives its device lane none), and the program's own
 // thread calls it only when that lane has nothing in flight: at setup, at
-// teardown, or after the work it waited for. A call that changes the
+// teardown, or after the work it waited for. A VMM lane with a handle
+// reserve (scheduler::ReserveSettings) also calls it while it has no
+// command, so beside one the program's thread calls it only before the
+// lane runs or after it has stopped. A call that changes the
 // provider (Reserve, Free, Create, Release, Map, SetAccess, Unmap) while
 // another is under way is fatal; a read (RangeOf, MappedAt, Undetermined,
 // the counts) must not overlap one either, which nothing checks. The

@@ -143,6 +143,23 @@ class CudaDeviceExecution final : public DeviceExecution {
     return {};
   }
 
+  std::expected<void, Failure> Zero(StreamId stream, std::uint64_t destination,
+                                    Bytes size) override {
+    auto handle = Queue(stream);
+    if (!handle) {
+      return std::unexpected(handle.error());
+    }
+    if (auto current = Current(); !current) {
+      return current;
+    }
+    if (const CUresult result =
+            cuMemsetD8Async(static_cast<CUdeviceptr>(destination), 0, size.value(), *handle);
+        result != CUDA_SUCCESS) {
+      return Error(result, "cuMemsetD8Async");
+    }
+    return {};
+  }
+
   std::expected<NativeStream, Failure> Submission(StreamId stream) override {
     auto handle = Queue(stream);
     if (!handle) {

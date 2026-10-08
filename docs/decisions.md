@@ -6804,7 +6804,7 @@ raw-device comparison demonstrates a material end-to-end gain worth owning
 allocation, metadata, recovery, and tooling below the filesystem. No raw
 performance advantage or production tail bound is assumed from this spike.
 
-## D-033: Initial 2 MiB independent VMM extents; reuse backing on demand without a standing free pool  (2026-09-21, status: accepted; retained 2026-09-27 after the retained-backing replay, D-085; implements D-006; amended 2026-10-07: handed-off backing parks still mapped)
+## D-033: Initial 2 MiB independent VMM extents; reuse backing on demand without a standing free pool  (2026-09-21, status: accepted; retained 2026-09-27 after the retained-backing replay, D-085; implements D-006; amended 2026-10-07: handed-off backing parks still mapped, and a bounded handle reserve)
 
 **Decision.** Start the CUDA provider with one physical allocation handle per
 independently reclaimable extent, using the queried minimum granularity:
@@ -6875,6 +6875,22 @@ cuMemSetAccess/cuMemUnmap over adjacent 2 MiB mappings no cheaper per extent
 one large handle's access/unmap cheaper (12.5/14.7 µs a 2 MiB at 512 MiB): so
 the 2 MiB extent stays, batching is not adopted, and the remaining create cost
 is reachable only by reuse or by moving it off the critical path.
+
+*Amended again 2026-10-07 (owner-approved handle reserve):* the VMM lane
+keeps a **bounded reserve** of created, unmapped 2 MiB device handles (32,
+64 MiB, in the runtime; none in harnesses unless asked), created while the
+lane has no command and taken by a map of that class and size before
+cuMemCreate; a plain unmap's backing, or kept backing released, refills a
+short reserve instead of being released. The node charges the reserve's
+full size as one pinned runtime extent before anything pages, so it is never
+backing the catalog does not count, and it is released at teardown. This is
+the bounded unused-handle cache the reopen condition above names; its
+occupancy is fixed and charged rather than reclaimable. Beside it, a live
+state's fresh extents are zeroed on the device (`PageSource::zero`,
+`DeviceExecution::Zero`) instead of read from the sparse spill file's holes.
+Together they cut Gemma3's cold state growth over a 131K traversal from
+0.46–0.48 s to 0.29 s with exact output; swaps are unchanged
+([report](experiments/vmm-batching/README.md#handle-reserve-and-device-zero-fill)).
 
 ## D-032: Validated LLVM 22.1.8 / CUDA 13.4.2 toolchain with C++23 throughout  (2026-09-21, status: accepted; implements D-011/D-012 pins; libstdc++ development files amended by D-059, then replaced by D-060's statically linked GCC 16.2 runtime; the Spark sysroot snapshot replaced by D-070's package-built sysroot)
 

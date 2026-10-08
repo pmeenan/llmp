@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Keep a small reserve of device memory handles created ahead of need and
+  zero new conversation state on the GPU instead of reading it from disk:
+  growing state during long prefills costs about 38% less (Gemma3 at 131K
+  positions now at or slightly ahead of stock llama.cpp).
+
 - Keep a swapped-out model's backing mapped until the incoming model's
   loads take it, moving each unmap beside a page-in read: LLM swaps no
   longer wait 1.3–1.9 s for eviction (DeepSeek ↔ Qwen3.8 6.1–8.4 s from
