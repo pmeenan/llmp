@@ -209,19 +209,27 @@ written per runner (GPU-built masks, the prefill lookahead hook, the
 device greedy token) are ported until they move into the engine.
 
 Causal/ring mask source validation and host staging are shared in
-`engine/graph_mask_inputs.h`, used by Gemma2, Gemma3, both Gemma 4 profiles
-and DeepSeek target raw masks. The producer authenticates explicit padded
-Gemma rows or exact contiguous DeepSeek rows; sparse consumers retain their
+`engine/graph_mask_inputs.h`, used by Gemma2, Gemma3, both Gemma 4 profiles,
+DeepSeek target raw masks and Qwen native/GGUF targets with native MTP.
+The producer authenticates explicit padded
+Gemma rows or exact contiguous DeepSeek/Qwen rows; sparse consumers retain their
 real query count.
 `GraphMaskSourceBytes` authenticates the complete graph-owned producer, positions,
 per-segment row offset, capacity/window/context and unique node/input membership
-before excluding device-mask bytes from the host-input grant. Mask activations
+and the expected F16/F32 output dtype before excluding device-mask bytes
+from the host-input grant. Mask activations
 remain funded. `StageHostGraphMask` retains the explicit host-reference path and
 fills every padded F16 row with negative infinity when padding is required.
 DeepSeek omits its raw host matrix in ordinary serving; optional compressed
 visible-count inputs and DSpark noncausal block masks keep separate policies.
 The [target transfer](experiments/deepseek-device-masks/README.md) preserves
 complete heads/state in a joined ring screen and checks production verify/swaps.
+Qwen's exact-row adapter omits only mask matrices from host construction and
+staging: QSA block metadata remains independent, and existing device sparse
+selection keeps its own producer. Headed MTP passes use their own four-section
+position input; cache-write-only passes omit unused producers. The
+[Qwen transfer](experiments/qwen-device-masks/README.md) checks complete heads,
+joined execution and initialized-state spill/restore.
 A new compatible adapter uses
 these helpers with the existing mask kernel; sparse/select masks need their own
 visibility contract. The [Gemma2 transfer](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07)

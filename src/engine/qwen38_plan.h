@@ -83,6 +83,7 @@ struct Qwen38Model {
   const model::Qwen38MtpState* mtp_state = nullptr;
   std::uint64_t mtp_stride = 0;
   const model::Qwen38CommitLayout* commit = nullptr;
+  bool device_masks = false;
 };
 
 // What a target chunk computes beside its own rows' work.

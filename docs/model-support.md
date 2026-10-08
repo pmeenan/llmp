@@ -613,6 +613,19 @@ seeded-sampling evidence in this study.
 
 ## Qwen3.8 Flash Next
 
+Ordinary runners now build dense causal masks on the GPU, including each
+headed native MTP pass; existing device QSA selection remains separate.
+[Transfer controls](experiments/qwen-device-masks/README.md) preserve complete
+heads and initialized state, joined replay and spill/restore.
+The fresh bounded C1 reference comparison takes 7.067% less time than TensorFold
+for target-only generation and 3.237% more time for ordinary lean speculative
+generation (n=2, disclosed FP8/state/draft-head policies). Same-conditioned
+Teacher32 agrees 31/32; one reference margin 1.5625 exceeds the unchanged 1.0
+bound and remains an open M3.5 quality lead. Same-format GGUF generation takes
+5.719% less time than llama.cpp v0.6.0; its single common-history teacher agrees
+30/32 with both disagreements inside 1.0. These are short generated-history
+controls, not a held-out PPL, all-context or HTTP parity qualification.
+
 - **Architecture:** `qwen4exp` (`model/qwen38.h`): hyper-connections, the
   n-gram (PLE) layer, Gated DeltaNet, QSA attention with its indexer, 512
   routed experts top-10 plus a shared expert.
@@ -703,6 +716,11 @@ seeded-sampling evidence in this study.
     elsewhere this artifact's prefill is refused.
 
 ## Qwen3.8 Flash Next GGUF
+
+Ordinary runners use the shared F16/F32 causal GPU-mask contract. Target-only
+off/on execution preserves every complete head and initialized state; F32
+fallback uses checked planned source contracts plus the executed shared F32
+primitive ([controls](experiments/qwen-device-masks/README.md)).
 
 - **Architecture:** `qwen4exp` (`model/qwen38.h` `Qwen38Format::kGguf`),
   the same model as [above](#qwen38-flash-next) from a GGUF checkpoint.

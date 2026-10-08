@@ -2296,8 +2296,9 @@ class Qwen38 final : public Llm {
     options_.out = roles.spill;
     options_.context = context_;
     configured_rows_ = settings.prefill_chunk.value;
-    // (The runner's fast graph builds no mask of every cell by every row, so
-    // RE-037's bound does not cap its chunks.)
+    // Device QSA selection avoids the dense matrix; short causal matrices
+    // are graph-owned. RE-037's dense-consumer bound still applies wherever
+    // such a matrix is needed, independently of host materialization.
     max_rows_ = PrefillChunkRows(context_, std::nullopt, settings.prefill_chunk.value,
                                  model::Qwen38MostRows(context_, false));
     options_.max_rows = max_rows_;

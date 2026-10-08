@@ -57,6 +57,25 @@ constexpr std::size_t kArgmaxAt = 64;
 // And a draft's probabilities (F32 bits), after its drafts (at most 8).
 constexpr std::size_t kProbabilityAt = 32;
 
+void CountMask(Qwen38MaskStats& stats, const ggml_tensor* mask, bool draft) {
+  if (mask == nullptr) return;
+  if (mask->op == GGML_OP_NONE)
+    stats.host_bytes += ggml_nbytes(mask);
+  else if (draft)
+    ++stats.draft_device;
+  else
+    ++stats.target_device;
+}
+
+void CountMasks(Qwen38MaskStats& stats, const kg::Qwen38Graph& graph) {
+  CountMask(stats, graph.mask, false);
+  CountMask(stats, graph.mask_f32, false);
+}
+
+void CountMasks(Qwen38MaskStats& stats, const kg::Qwen38MtpGraph& graph) {
+  for (const auto& pass : graph.passes) CountMask(stats, pass.mask, true);
+}
+
 // The slab of a layer's expert arrays (paged_weights.h ExpertSlab).
 std::expected<SlabSpec, std::string> SlabOf(const artifact::Artifact& artifact,
                                             const md::Qwen38Layer& l, bool cutlass,
@@ -522,7 +541,8 @@ Status Qwen38Runner::Setup() {
                        .drafter = speculative() ? &dbinding_ : nullptr,
                        .mtp_state = speculative() ? &mtp_layout_ : nullptr,
                        .mtp_stride = mtp_stride,
-                       .commit = speculative() ? &commit_layout_ : nullptr};
+                       .commit = speculative() ? &commit_layout_ : nullptr,
+                       .device_masks = o_.device_masks};
   md::Qwen38PleHash stand_in;
   stand_in.multipliers.assign(profile_.ngram, 1);
   stand_in.offsets.assign(profile_.ple_heads(), 0);
@@ -602,8 +622,8 @@ Status Qwen38Runner::Setup() {
     };
     for (const Probe& probe : probes) {
       std::vector<std::int32_t> history(std::size_t{probe.n_past} + probe.rows, 1000);
-      auto in =
-          md::Qwen38Chunk(profile_, layout_, stand_in, history, probe.n_past, probe.rows, false);
+      auto in = md::Qwen38Chunk(profile_, layout_, stand_in, history, probe.n_past, probe.rows,
+                                false, 256, !o_.device_masks);
       if (!in) {
         return std::unexpected(in.error());
       }
@@ -690,7 +710,7 @@ Status Qwen38Runner::Setup() {
       const std::uint32_t rows = speculative() ? std::min(verify, 4U) : 1;
       std::vector<std::int32_t> history(o_.context, 1000);
       auto in = md::Qwen38Chunk(profile_, layout_, stand_in, history, o_.context - rows, rows,
-                                false, align);
+                                false, align, !o_.device_masks);
       if (!in) {
         return std::unexpected(in.error());
       }
@@ -1903,7 +1923,7 @@ Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t p
   std::vector<md::Qwen38ChunkInputs> ins;
   for (std::uint32_t p = 0; p < passes; ++p) {
     auto in = md::Qwen38Rows(profile_, mtp_layout_.cells, p == 0 ? first : first + rows + p - 1,
-                             p == 0 ? rows : 1, n_kv, false);
+                             p == 0 ? rows : 1, n_kv, false, !o_.device_masks);
     if (!in) {
       return std::unexpected(in.error());
     }
@@ -2195,7 +2215,7 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
     }
     auto in = md::Qwen38Chunk(profile_, layout_, hash_, w.history, w.n_past,
                               static_cast<std::uint32_t>(w.history.size() - w.n_past), false,
-                              WaveReadAlign(work.size()));
+                              WaveReadAlign(work.size()), !o_.device_masks);
     if (!in) {
       return std::unexpected(in.error());
     }
@@ -2290,9 +2310,9 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
     const auto s = w.slot->index();
     auto& f = *frames[s];
     const auto& g = *planned.target(s);
-    if (f.in.qsa_select && (g.mask != nullptr || g.mask_f32 != nullptr)) {
+    if (f.in.qsa_select && g.cell_block != nullptr) {
       auto masked = md::Qwen38Chunk(profile_, layout_, hash_, w.history, w.n_past, f.in.rows, true,
-                                    WaveReadAlign(work.size()));
+                                    WaveReadAlign(work.size()), !o_.device_masks);
       if (!masked) {
         return std::unexpected(masked.error());
       }
@@ -2427,6 +2447,7 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
     return !ran ? ran : Error(posted.error());
   }
   Count(graph_stats_, path);
+  for (const auto& w : work) CountMasks(mask_stats_, *planned.target(w.slot->index()));
   last_wave_ = planned.stats();
   for (const auto& w : work) {
     const auto s = w.slot->index();
@@ -2609,6 +2630,7 @@ Status Qwen38Runner::DraftWave(std::span<const DraftWork> work, bool paired) {
     return !ran ? ran : Error(posted.error());
   }
   Count(draft_stats_, path);
+  for (const auto& w : work) CountMasks(mask_stats_, *planned.draft(w.slot->index()));
   last_wave_ = planned.stats();
   for (const auto& w : work) {
     const auto s = w.slot->index();
@@ -2658,7 +2680,8 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
   }
   // Without the selection's host masks, which the fast graph makes on the
   // device; built below if the planned graph reads them.
-  auto in = md::Qwen38Chunk(profile_, layout_, hash_, history, n_past, rows, false);
+  auto in = md::Qwen38Chunk(profile_, layout_, hash_, history, n_past, rows, false, 256,
+                            !o_.device_masks);
   if (!in) {
     return std::unexpected(in.error());
   }
@@ -2686,9 +2709,10 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
   PlanRuns& runs = entry.runs[kWithLogits];
   Qwen38Planned* p = entry.planned.get();
   const kg::Qwen38Graph& g = p->graph;
-  if (in->qsa_select && (g.mask != nullptr || g.mask_f32 != nullptr)) {
+  if (in->qsa_select && g.cell_block != nullptr) {
     // This graph selects over the host's masks (GGML's top-k).
-    in = md::Qwen38Chunk(profile_, layout_, hash_, history, n_past, rows, true);
+    in = md::Qwen38Chunk(profile_, layout_, hash_, history, n_past, rows, true, 256,
+                         !o_.device_masks);
     if (!in) {
       return std::unexpected(in.error());
     }
@@ -2820,6 +2844,8 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
     return !ran ? ran : Error(std::format("chunk at {}: {}", n_past, posted.error()));
   }
   Count(graph_stats_, path);
+  CountMasks(mask_stats_, g);
+  if (mentry != nullptr) CountMasks(mask_stats_, mentry->planned->graph);
   // With the injection the chunk's last row is the pending one; without,
   // the streams rows no longer precede the anchor, so no draft may read
   // them until a chunk with the injection or an accepted verify.
@@ -2888,6 +2914,7 @@ Status Qwen38Runner::CatchUp(RequestState& request, std::span<const std::int32_t
     return !ran ? ran : Error(std::format("catch-up at {}: {}", first, posted.error()));
   }
   Count(draft_stats_, path);
+  CountMasks(mask_stats_, entry.planned->graph);
   return {};
 }
 
@@ -3037,6 +3064,7 @@ Status Qwen38Runner::Draft(RequestState& request, std::span<const std::int32_t> 
     return !ran ? ran : Error(std::format("draft at {}: {}", n, posted.error()));
   }
   Count(draft_stats_, path);
+  CountMasks(mask_stats_, g);
   const auto* values = static_cast<const std::int32_t*>(drafts_);
   drafts.assign(values, values + g.drafts.size());
   if (probabilities != nullptr) {
@@ -3098,7 +3126,8 @@ Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t>
     return Error(std::format("a verify of 1 to {} rows", o_.draft_rows + 1));
   }
   const auto rows = static_cast<std::uint32_t>(history.size() - n_past);
-  auto in = md::Qwen38Chunk(profile_, layout_, hash_, history, n_past, rows, false);
+  auto in = md::Qwen38Chunk(profile_, layout_, hash_, history, n_past, rows, false, 256,
+                            !o_.device_masks);
   if (!in) {
     return std::unexpected(in.error());
   }
@@ -3181,8 +3210,9 @@ Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t>
       }
     }
   }
-  if (in->qsa_select && (g.mask != nullptr || g.mask_f32 != nullptr)) {
-    in = md::Qwen38Chunk(profile_, layout_, hash_, history, n_past, rows, true);
+  if (in->qsa_select && g.cell_block != nullptr) {
+    in = md::Qwen38Chunk(profile_, layout_, hash_, history, n_past, rows, true, 256,
+                         !o_.device_masks);
     if (!in) {
       return std::unexpected(in.error());
     }
@@ -3295,6 +3325,7 @@ Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t>
     return !ran ? ran : Error(std::format("verify at {}: {}", n_past, posted.error()));
   }
   Count(graph_stats_, path);
+  CountMasks(mask_stats_, g);
   request.live.Verified(rows);
   request.verify_restores_streams = true;
   argmax.assign(argmax_host, argmax_host + rows);

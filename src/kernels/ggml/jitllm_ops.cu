@@ -28,9 +28,10 @@ namespace {
 
 // The entire padded output is initialized. Position data is fresh at replay;
 // invalid positions produce -inf rather than being cast to a large index.
-__global__ void Gemma4MaskKernel(const std::int32_t* positions, std::uint16_t* mask,
-                                 std::int64_t elements, int cells, int first, int rows,
-                                 int capacity, int window, int limit) {
+template <typename Bits>
+__global__ void Gemma4MaskKernel(const std::int32_t* positions, Bits* mask, std::int64_t elements,
+                                 int cells, int first, int rows, int capacity, int window,
+                                 int limit) {
   const std::int64_t index = std::int64_t{blockIdx.x} * blockDim.x + threadIdx.x;
   if (index >= elements) return;
   const int row = static_cast<int>(index / cells);
@@ -48,7 +49,8 @@ __global__ void Gemma4MaskKernel(const std::int32_t* positions, std::uint16_t* m
       }
     }
   }
-  mask[index] = visible ? 0 : 0xFC00;
+  constexpr Bits negative_infinity = sizeof(Bits) == 2 ? 0xFC00u : 0xFF800000u;
+  mask[index] = visible ? 0 : negative_infinity;
 }
 
 // An E8M0 scale: 2^(e - 127); e = 255 is NaN (OCP MX v1.0).
@@ -991,12 +993,17 @@ std::expected<void, KernelFailure> RunGemma4Mask(LaunchContext& launch, ggml_ten
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     const auto elements = ggml_nelements(node);
     constexpr int threads = 256;
-    Gemma4MaskKernel<<<static_cast<unsigned>((elements + threads - 1) / threads), threads, 0,
-                       context.stream()>>>(static_cast<const std::int32_t*>(node->src[0]->data),
-                                           static_cast<std::uint16_t*>(node->data), elements,
-                                           static_cast<int>(node->ne[0]), JitllmOpInt(node, 0),
-                                           JitllmOpInt(node, 1), JitllmOpInt(node, 2),
-                                           JitllmOpInt(node, 3), JitllmOpInt(node, 4));
+    const auto queue = [&]<typename Bits>() {
+      Gemma4MaskKernel<<<static_cast<unsigned>((elements + threads - 1) / threads), threads, 0,
+                         context.stream()>>>(
+          static_cast<const std::int32_t*>(node->src[0]->data), static_cast<Bits*>(node->data),
+          elements, static_cast<int>(node->ne[0]), JitllmOpInt(node, 0), JitllmOpInt(node, 1),
+          JitllmOpInt(node, 2), JitllmOpInt(node, 3), JitllmOpInt(node, 4));
+    };
+    if (node->type == GGML_TYPE_F16)
+      queue.template operator()<std::uint16_t>();
+    else
+      queue.template operator()<std::uint32_t>();
   });
 }
 

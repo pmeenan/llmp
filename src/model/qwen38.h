@@ -378,18 +378,19 @@ struct Qwen38ChunkInputs {
 // vocabulary. With `selection_masks` false, a chunk whose QSA selects gets
 // neither host-built masks nor block tables (only `qsa_select` and
 // `qsa.blocks`): the fast graph selects on the device from the cached block
-// keys and attends the kept cells alone (kernels/ggml/qwen38_graph.h). The
-// masks are [n_kv, rows] and the bias [n_kv / ratio, rows]: at a context of
-// 8,192 192 MiB a chunk, growing with the context. Attention reads the
-// cells through the chunk's end rounded up to `read_align` (a multiple of
-// 256): cells past a row's position are masked, or hidden from the
-// device's selection by position, so a coarser alignment changes no
-// result, only how often the shape (and a wave's graph) changes. Those
-// cells are still read: back them (Qwen38UsedState at the same alignment).
+// keys and attends the kept cells alone (kernels/ggml/qwen38_graph.h).
+// With materialize_masks=false only mask matrices are omitted; selection
+// metadata still follows selection_masks. State/MostRows consumer bounds
+// remain unchanged. The masks are [n_kv, rows] and the bias
+// [n_kv / ratio, rows]: at a context of 8,192, 192 MiB a chunk, growing with the context. Attention
+// reads the cells through the chunk's end rounded up to `read_align` (a multiple of 256): cells
+// past a row's position are masked, or hidden from the device's selection by position, so a coarser
+// alignment changes no result, only how often the shape (and a wave's graph) changes. Those cells
+// are still read: back them (Qwen38UsedState at the same alignment).
 std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
     const Qwen38Profile& profile, const Qwen38StateLayout& state, const Qwen38PleHash& hash,
     std::span<const std::int32_t> history, std::uint32_t n_past, std::uint32_t rows,
-    bool selection_masks = true, std::uint32_t read_align = 256);
+    bool selection_masks = true, std::uint32_t read_align = 256, bool materialize_masks = true);
 
 // The n-gram rows of the token at `position` (exposed for tests):
 // ple_heads rows, llm_graph_input_ple::set_input's hash.
@@ -406,7 +407,8 @@ std::vector<std::int32_t> Qwen38PleRows(const Qwen38Profile& profile, const Qwen
 std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& profile,
                                                          std::uint32_t cells, std::uint32_t n_past,
                                                          std::uint32_t rows, std::uint32_t read,
-                                                         bool selection_masks);
+                                                         bool selection_masks,
+                                                         bool materialize_masks = true);
 
 inline constexpr std::uint16_t kQwen38HalfZero = 0x0000;
 inline constexpr std::uint16_t kQwen38HalfNegInf = 0xFC00;

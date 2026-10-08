@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <functional>
@@ -36,6 +37,7 @@
 #include <utility>
 #include <vector>
 
+#include "engine/graph_mask_inputs.h"
 #include "expected_error.h"
 #include "ggml.h"
 #include "kernels/ggml/graph_plan.h"
@@ -535,6 +537,41 @@ TEST(Qwen38Test, AChunksMaskAndPositionsAreCausal) {
   EXPECT_FALSE(md::Qwen38Chunk(p, *s, h, long_history, 4096, 1).has_value());
   history[39] = static_cast<std::int32_t>(p.vocab);
   EXPECT_FALSE(md::Qwen38Chunk(p, *s, h, history, 37, 3).has_value());
+}
+
+TEST(Qwen38Test, MaskMatricesCanBeOmittedWithoutDroppingSelectionMetadata) {
+  const auto& p = md::Qwen38Flash();
+  for (const auto [past, rows, read] : {std::tuple{37U, 3U, 256U}, std::tuple{2299U, 3U, 2304U}}) {
+    for (const bool selection : {false, true}) {
+      auto host = md::Qwen38Rows(p, 4096, past, rows, read, selection);
+      auto device = md::Qwen38Rows(p, 4096, past, rows, read, selection, false);
+      ASSERT_TRUE(host.has_value() && device.has_value());
+      EXPECT_TRUE(device->mask.empty());
+      EXPECT_TRUE(device->mask_f32.empty());
+      EXPECT_EQ(device->positions, host->positions);
+      EXPECT_EQ(device->cells, host->cells);
+      EXPECT_EQ(device->qsa_select, host->qsa_select);
+      EXPECT_EQ(device->qsa.blocks, host->qsa.blocks);
+      EXPECT_EQ(device->qsa.cell_block, host->qsa.cell_block);
+      EXPECT_EQ(device->qsa.block_cells, host->qsa.block_cells);
+      EXPECT_EQ(device->qsa.block_pos, host->qsa.block_pos);
+      EXPECT_EQ(device->qsa.bias, host->qsa.bias);
+      if (selection && device->qsa_select) EXPECT_FALSE(device->qsa.cell_block.empty());
+    }
+  }
+  auto state = md::Qwen38State(p, 4096, 512);
+  ASSERT_TRUE(state.has_value());
+  std::vector<std::int32_t> history(40, 7);
+  auto host = md::Qwen38Chunk(p, *state, Hash(), history, 37, 3);
+  auto device = md::Qwen38Chunk(p, *state, Hash(), history, 37, 3, true, 256, false);
+  ASSERT_TRUE(host.has_value() && device.has_value());
+  EXPECT_EQ(device->tokens, host->tokens);
+  EXPECT_EQ(device->ple_rows, host->ple_rows);
+  EXPECT_TRUE(device->mask.empty());
+  EXPECT_TRUE(device->mask_f32.empty());
+  // Skipping materialization does not alter the layout's admission contract.
+  EXPECT_FALSE(md::Qwen38Chunk(p, *state, Hash(), history, 36, 3, true, 256, false));
+  EXPECT_FALSE(md::Qwen38Rows(p, 4096, 250, 10, 256, true, false));
 }
 
 TEST(Qwen38Test, PastTheBudgetQsaSelectsWholeBlocksAndTheTail) {
@@ -1249,6 +1286,53 @@ TEST(Qwen38Test, RowsReadingMoreCellsAreTheChunksRowsOverThem) {
   EXPECT_FALSE(md::Qwen38Rows(p, s->cells, 250, 10, 256, false).has_value());   // reads too few
   EXPECT_FALSE(md::Qwen38Rows(p, s->cells, 0, 1, 300, false).has_value());      // not whole 256s
   EXPECT_FALSE(md::Qwen38Rows(p, s->cells, 4095, 2, 4096, false).has_value());  // past the cache
+}
+
+TEST(Qwen38Test, MtpDeviceMasksFollowActualAttentionConsumers) {
+  const auto& p = md::Qwen38Flash();
+  auto target = md::BindQwen38(p, "qwen4exp", ArtifactLike(p, true));
+  auto drafter = md::BindQwen38Mtp(p, "qwen4exp-mtp", MtpLike());
+  ASSERT_TRUE(target.has_value() && drafter.has_value());
+  for (const bool device : {false, true}) {
+    for (const bool head : {false, true}) {
+      const kg::Qwen38MtpShape shape{.rows = 37,
+                                     .passes = head ? 3 : 1,
+                                     .n_kv = 256,
+                                     .cells = 4096,
+                                     .head = head,
+                                     .head_rows = head ? 32768 : 0,
+                                     .hidden_row = 1,
+                                     .hidden_rows = 513};
+      auto arena = kg::TensorArena::Create(kg::Qwen38MtpGraphTensors(p, shape.passes));
+      ASSERT_TRUE(arena.has_value());
+      auto graph = kg::BuildQwen38MtpGraph(*arena, p, *target, *drafter, shape, 2764800, device);
+      ASSERT_TRUE(graph.has_value()) << Why(graph);
+      const auto inputs = graph->inputs();
+      EXPECT_EQ(graph->passes.size(), static_cast<std::size_t>(shape.passes));
+      for (std::size_t pass = 0; pass < graph->passes.size(); ++pass) {
+        const auto& in = graph->passes[pass];
+        ASSERT_NE(in.positions, nullptr);
+        if (device && !head) {
+          EXPECT_EQ(in.mask, nullptr);
+          EXPECT_TRUE(std::ranges::none_of(graph->nodes, [](const auto* node) {
+            return kg::JitllmOpOf(node) == kg::JitllmOp::kGemma4Mask;
+          }));
+          continue;
+        }
+        ASSERT_NE(in.mask, nullptr);
+        if (device) {
+          EXPECT_TRUE(kg::Gemma4MaskFits(in.mask));
+          EXPECT_EQ(in.mask->src[0], in.positions);
+          EXPECT_EQ(in.mask->ne[1], pass == 0 ? 37 : 1);
+          EXPECT_EQ(std::ranges::count(graph->nodes, in.mask), 1);
+          EXPECT_FALSE(std::ranges::contains(inputs, in.mask));
+        } else {
+          EXPECT_EQ(in.mask->op, GGML_OP_NONE);
+          EXPECT_EQ(std::ranges::count(inputs, in.mask), 1);
+        }
+      }
+    }
+  }
 }
 
 TEST(Qwen38Test, RetainingDraftHeadOperandsPreservesTheOperationSequence) {
@@ -2149,6 +2233,111 @@ TEST(Qwen38Test, AGgufCheckpointsGraphTakesGgmlsProductsAndTheFormatFreeFusions)
       Why(kg::BuildQwen38Graph(*nvfp4_arena, p, *nvfp4_bound, shape, {.expert_stride = strides}))
           .find("token_embd"),
       std::string::npos);
+}
+
+TEST(Qwen38Test, DeviceMaskTargetGraphsAuthenticateDtypesAndPreserveFallbackMetadata) {
+  const auto& p = md::Qwen38Flash();
+  for (const bool gguf : {false, true}) {
+    auto binding = md::BindQwen38(p, "qwen4exp", gguf ? GgufLike(p) : ArtifactLike(p));
+    ASSERT_TRUE(binding.has_value()) << Why(binding);
+    const std::vector<std::uint64_t> strides(p.layers, gguf ? kGgufStride : kExpertStride);
+    for (const bool exact : {false, true}) {
+      for (const bool selecting : {false, true}) {
+        const kg::Qwen38ChunkShape shape{.rows = 3,
+                                         .n_kv = selecting ? 2304 : 256,
+                                         .cells = 4096,
+                                         .outputs = 1,
+                                         .qsa_select = selecting,
+                                         .qsa_blocks = selecting ? 576 : 0};
+        for (const bool device : {false, true}) {
+          SCOPED_TRACE(std::format("gguf {}, exact {}, selecting {}, device {}", gguf, exact,
+                                   selecting, device));
+          auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+          ASSERT_TRUE(arena.has_value());
+          auto graph = kg::BuildQwen38Graph(
+              *arena, p, *binding, shape,
+              {.expert_stride = strides, .exact = exact, .device_masks = device});
+          ASSERT_TRUE(graph.has_value()) << Why(graph);
+          auto inputs = graph->inputs();
+          std::uint64_t next = std::uint64_t{1} << 40U;
+          const auto bind = [&](ggml_tensor* t) {
+            if (t != nullptr && t->data == nullptr) {
+              kg::TensorArena::Bind(t, next);
+              next += ((ggml_nbytes(t) + 255) / 256 * 256) + 256;
+            }
+          };
+          for (auto* t : inputs) bind(t);
+          for (auto* node : graph->nodes)
+            for (auto* source : node->src)
+              if (source != nullptr && source->op == GGML_OP_NONE && source->view_src == nullptr)
+                bind(source);
+          kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
+          // Both formats' fast sparse selection already creates its own masks.
+          const bool sparse = selecting && !exact;
+          EXPECT_EQ(graph->mask == nullptr, sparse);
+          EXPECT_EQ(graph->mask_f32 != nullptr, selecting && exact);
+          EXPECT_EQ(graph->cell_block != nullptr, selecting && exact);
+          for (auto* metadata :
+               {graph->cell_block, graph->block_cells, graph->block_pos, graph->block_bias})
+            if (metadata != nullptr) EXPECT_EQ(std::ranges::count(inputs, metadata), 1);
+          for (auto* mask : {graph->mask, graph->mask_f32}) {
+            if (mask == nullptr) continue;
+            const auto dtype = mask == graph->mask ? GGML_TYPE_F16 : GGML_TYPE_F32;
+            ASSERT_EQ(mask->type, dtype);
+            auto charge = jitllm::engine::GraphMaskSourceBytes(
+                mask, graph->positions, graph->nodes, inputs, device, 0, 3,
+                static_cast<std::uint32_t>(shape.n_kv), 4096, 0, 4096, kg::CausalMaskRows::kExact,
+                dtype);
+            ASSERT_TRUE(charge.has_value()) << Why(charge);
+            EXPECT_EQ(*charge, device ? 0U : ggml_nbytes(mask));
+            if (!device) continue;
+            EXPECT_EQ(std::ranges::count(graph->nodes, mask), 1);
+            EXPECT_EQ(std::ranges::count(inputs, mask), 0);
+            EXPECT_EQ(mask->src[0], graph->positions);
+            const auto check = [&](const std::vector<ggml_tensor*>& source_inputs) {
+              return jitllm::engine::GraphMaskSourceBytes(
+                  mask, graph->positions, graph->nodes, source_inputs, true, 0, 3,
+                  static_cast<std::uint32_t>(shape.n_kv), 4096, 0, 4096, kg::CausalMaskRows::kExact,
+                  dtype);
+            };
+            auto duplicate = inputs;
+            duplicate.push_back(mask);
+            EXPECT_FALSE(check(duplicate));
+            for (const std::size_t reserved : {6U, 7U}) {
+              // The custom-op header occupies the first 32 bytes.
+              auto* parameter = reinterpret_cast<std::byte*>(mask->op_params) + 32 + reserved * 4;
+              const auto saved = kg::JitllmOpInt(mask, static_cast<int>(reserved));
+              const std::int32_t invalid = 1;
+              std::memcpy(parameter, &invalid, sizeof(invalid));
+              EXPECT_FALSE(check(inputs));
+              std::memcpy(parameter, &saved, sizeof(saved));
+            }
+            auto* source = mask->src[0];
+            mask->src[0] = graph->tokens;
+            EXPECT_FALSE(check(inputs));
+            mask->src[0] = source;
+            EXPECT_FALSE(jitllm::engine::GraphMaskSourceBytes(
+                mask, graph->positions, graph->nodes, inputs, true, 0, 3,
+                static_cast<std::uint32_t>(shape.n_kv), 4096, 0, 4096, kg::CausalMaskRows::kExact,
+                dtype == GGML_TYPE_F16 ? GGML_TYPE_F32 : GGML_TYPE_F16));
+          }
+          auto plan = kg::PlanGraph(graph->nodes, false, ModelDevice());
+          ASSERT_TRUE(plan.has_value()) << Why(plan);
+          auto placed = kg::PlaceActivations(graph->nodes, *plan, inputs, 256);
+          ASSERT_TRUE(placed.has_value()) << Why(placed);
+          // Producers contribute activations and a real launch, never staged input bytes.
+          EXPECT_GT(placed->extent, 0U);
+          EXPECT_EQ(std::ranges::count_if(plan->steps,
+                                          [](const auto& step) {
+                                            return step.implementation == kg::kGemma4MaskName;
+                                          }),
+                    device && !sparse ? (selecting ? 2 : 1) : 0);
+        }
+      }
+    }
+  }
+  // The reference plane's RE-037 consumer bound survives host-mask omission.
+  EXPECT_FALSE(md::Qwen38State(p, 131072, 8192, true));
 }
 
 }  // namespace

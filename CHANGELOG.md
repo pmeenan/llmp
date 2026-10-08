@@ -17,6 +17,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   partial-weight swap foundation with missing-only reads and exact recovery.
   Ordinary serving keeps full swaps because the cold-switch floor is unmet.
 
+- Build Qwen3.8 native/GGUF causal masks and native headed MTP masks on the GPU
+  through the shared F16/F32 producer. Exact outputs and restored state are
+  preserved; the tested native C2 and GGUF recipes each charge 8 MiB less.
+
 - Extend Gemma2/Gemma3 actual-root prefill to configured equal two-owner
   chunks through 256 rows with checked mask, cache and query-tile bounds.
   Native 256-row prefill improves about 5.1%/0.8%; matched-cache llama.cpp

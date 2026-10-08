@@ -154,6 +154,17 @@ struct Qwen38Options {
   // lanes (Qwen38WavePlacement::lanes): the same kernels, each slot's
   // results bit for bit as on one stream.
   bool wave_lanes = true;
+  // Graph-owned exact causal masks; the host route remains an explicit
+  // comparison control. Device QSA selection keeps its own sparse producer.
+  bool device_masks = true;
+};
+
+// Completed graph executions only, including replay. Host bytes count the
+// mask matrices actually staged; device counts name graph-owned producers.
+struct Qwen38MaskStats {
+  std::uint64_t host_bytes = 0;
+  std::uint64_t target_device = 0;
+  std::uint64_t draft_device = 0;
 };
 
 // Setup-only diagnostic arithmetic. Scalar values use the same measured plan
@@ -310,6 +321,7 @@ class Qwen38Runner final : public PagedModel {
   // pending commit runs first).
   Status ReadState(std::vector<std::byte>& target, std::vector<std::byte>& drafter);
   const GraphStats& draft_stats() const { return draft_stats_; }
+  const Qwen38MaskStats& mask_stats() const { return mask_stats_; }
   const model::Qwen38MtpState& mtp_state() const { return mtp_layout_; }
   std::uint64_t drafter_read_bytes() const { return dweights_.read_bytes(); }
   // Effective head metadata after Open, distinct from a requested cap.
@@ -868,6 +880,7 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t plan_floor_bytes_ = 0;  // plan_floor_bytes()
   std::string plan_report_;
   Qwen38SetupBudget setup_budget_;
+  Qwen38MaskStats mask_stats_;
   // Additional fixed pinned output slices, indexed by sealed slot rather
   // than compact wave order. A graph key fixes the full output copy pattern.
   float* wave_logits_ = nullptr;

@@ -429,6 +429,7 @@ class Harness {
                std::uint64_t seed, std::vector<ex::SamplingCandidate>& scratch, Generation& out);
   Status Fingerprints(const Step& step, std::vector<std::uint64_t>& out);
   Status Greedy();
+  Status Masks();
   Status Forced();
   Status DraftHead(bool routed_down = false);
   Status VocabAnchors();
@@ -1024,7 +1025,8 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
     }
     step.verify_seconds = Seconds(Clock::now() - verifying);
     out.verify_seconds += step.verify_seconds;
-    if (o_.prompt_token_ids && index == 0) {
+    if (o_.prompt_token_ids && o_.check != "masks" && o_.check != "masks-target" &&
+        o_.check != "masks-lean" && index == 0) {
       if (logits.size() != std::size_t{rows} * vocab ||
           !std::ranges::all_of(logits, [](float value) { return std::isfinite(value); })) {
         return Error("a literal-history first verify has malformed or nonfinite logits");
@@ -1081,6 +1083,123 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
 }
 
 // ------------------------------------------------------------------ checks
+
+// A bounded transfer screen: warm both paths, then pay for each generation
+// once. Full rows and initialized-state digests are captured after the timer.
+Status Harness::Masks() {
+  const auto found = std::ranges::find(decode_, o_.only, &Prompt::id);
+  if (found == decode_.end()) return Error("mask screen needs one named decode prompt");
+  const Prompt& prompt = *found;
+  const bool lean = o_.check == "masks-lean";
+  const auto& profile = md::Qwen38Flash();
+  if (std::uint64_t{prompt.ids.size()} + o_.tokens + o_.qwen.draft_rows > profile.indexer_budget)
+    return Error("mask screen must exercise short non-QSA target and MTP masks");
+  const auto generate = [&](bool speculative, Generation& result) -> Status {
+    if (!speculative) return Plain(prompt, o_.tokens, result);
+    std::vector<float> first;
+    if (auto run = Prefill(prompt, true, first); !run) return run;
+    return Speculate(prompt, o_.tokens, first, {.logits = !lean}, result);
+  };
+  for (const bool speculative : {false, true}) {
+    if ((lean && !speculative) || (speculative && !qwen_.speculative())) continue;
+    Generation warm;
+    if (auto run = InRequest("warming mask screen", [&] { return generate(speculative, warm); });
+        !run)
+      return run;
+  }
+  const auto warm_plans = qwen_.plans();
+  const auto warm_graphs = qwen_.graphs();
+  const auto warm_plan_bytes = qwen_.cached_plan_bytes();
+  if (warm_plans == 0 || warm_graphs == 0 || warm_plan_bytes == 0)
+    return Error("mask screen did not retain warmed plans and graphs");
+  for (const bool speculative : {false, true}) {
+    if ((lean && !speculative) || (speculative && !qwen_.speculative())) continue;
+    Generation generation;
+    const std::string mode = lean ? "spec-lean" : speculative ? "spec" : "plain";
+    const auto before = qwen_.mask_stats();
+    const auto graphs_before = qwen_.graph_stats();
+    const auto drafts_before = qwen_.draft_stats();
+    double seconds = 0;
+    std::vector<std::byte> target, drafter;
+    if (auto run = InRequest("paid mask screen",
+                             [&]() -> Status {
+                               const auto start = Clock::now();
+                               auto generated = generate(speculative, generation);
+                               seconds = Seconds(Clock::now() - start);
+                               if (!generated) return generated;
+                               return qwen_.ReadState(target, drafter);
+                             });
+        !run)
+      return run;
+    const auto after = qwen_.mask_stats();
+    const auto graphs_after = qwen_.graph_stats();
+    const auto drafts_after = qwen_.draft_stats();
+    const auto host_bytes = after.host_bytes - before.host_bytes;
+    const auto target_masks = after.target_device - before.target_device;
+    const auto draft_masks = after.draft_device - before.draft_device;
+    // The lean greedy endpoint publishes verdicts only. Observe the already
+    // settled state above, then score its emitted history outside the timer;
+    // these full heads are a separate teacher-forced quality observation.
+    if (lean) {
+      if (!generation.logits.empty()) return Error("lean mask screen copied verifier heads");
+      Generation teacher;
+      if (auto run = InRequest("observing lean mask history",
+                               [&] { return Teacher(prompt, generation.tokens, teacher); });
+          !run)
+        return run;
+      generation.logits = std::move(teacher.logits);
+    }
+    if (generation.tokens.size() != o_.tokens || generation.logits.size() != o_.tokens ||
+        target.empty() || (speculative && drafter.empty()) ||
+        (o_.qwen.device_masks
+             ? host_bytes != 0 || target_masks == 0 || (speculative && draft_masks == 0)
+             : host_bytes == 0 || target_masks != 0 || draft_masks != 0))
+      return Error("mask screen did not execute its selected output/state/mask policy");
+    std::ofstream payload(o_.out / (mode + "-heads.f32"), std::ios::binary);
+    for (std::size_t i = 0; i < generation.logits.size(); ++i) {
+      const auto& row = generation.logits[i];
+      if (row.size() != profile.vocab || generation.tokens[i] < 0 ||
+          std::cmp_greater_equal(generation.tokens[i], profile.vocab) ||
+          !std::ranges::all_of(row, [](float value) { return std::isfinite(value); }))
+        return Error("mask screen has an incomplete or nonfinite vocabulary row");
+      payload.write(reinterpret_cast<const char*>(row.data()),
+                    static_cast<std::streamsize>(row.size() * sizeof(float)));
+    }
+    payload.close();
+    if (!payload) return Error("writing complete mask-screen vocabulary rows");
+    const auto digest = [](std::span<const std::byte> bytes) {
+      jitllm::base::Sha256 hash;
+      hash.Update(bytes);
+      return jitllm::base::ToHex(hash.Finish());
+    };
+    std::string tokens, trace;
+    for (const auto token : generation.tokens)
+      tokens += std::format("{}{}", tokens.empty() ? "" : ",", token);
+    for (const auto& step : generation.steps)
+      trace += std::format("{}[{},{},{},{}]", trace.empty() ? "" : ",", step.pos, step.depth,
+                           step.rows, step.kept);
+    results_.push_back(std::format(
+        R"({{"check":"masks","mode":"{}","device_masks":{},"prompt_tokens":{},)"
+        R"("prompt_ids_sha256":"{}","generated":{},"warm_plans":{},"warm_graphs":{},"warm_plan_bytes":{},)"
+        R"("seconds":{:.9f},"decode_seconds":{:.9f},)"
+        R"("draft_seconds":{:.9f},"verify_seconds":{:.9f},"host_mask_bytes":{},)"
+        R"("target_device_masks":{},"draft_device_masks":{},)"
+        R"("target_paths":[{},{},{}],"draft_paths":[{},{},{}],"tokens":[{}],"step_trace":[{}],)"
+        R"("heads_teacher_forced":{},"heads_sha256":"{}","target_state_bytes":{},"target_state_sha256":"{}",)"
+        R"("draft_state_bytes":{},"draft_state_sha256":"{}"}})",
+        mode, o_.qwen.device_masks ? "true" : "false", prompt.ids.size(),
+        digest(std::as_bytes(std::span(prompt.ids))), generation.tokens.size(), warm_plans,
+        warm_graphs, warm_plan_bytes, seconds, generation.decode_seconds, generation.draft_seconds,
+        generation.verify_seconds, host_bytes, target_masks, draft_masks,
+        graphs_after.eager - graphs_before.eager, graphs_after.captured - graphs_before.captured,
+        graphs_after.replayed - graphs_before.replayed, drafts_after.eager - drafts_before.eager,
+        drafts_after.captured - drafts_before.captured,
+        drafts_after.replayed - drafts_before.replayed, tokens, trace, lean,
+        LogitsDigest(generation.logits), target.size(), digest(target), drafter.size(),
+        digest(drafter)));
+  }
+  return {};
+}
 
 Status Harness::Greedy() {
   const bool timing = o_.check == "timing";
@@ -2492,6 +2611,12 @@ Status Harness::Swap() {
 // return must replay a kept graph. Runs with and without the fixture must
 // report identical token, full-logit-row and final-state hashes.
 Status Harness::Wave() {
+  const bool masks = o_.check == "masks-wave";
+  const auto masks_before = qwen_.mask_stats();
+  const auto finite_head = [](std::span<const float> values, std::size_t rows) {
+    return rows != 0 && values.size() == rows * md::Qwen38Flash().vocab &&
+           std::ranges::all_of(values, [](float value) { return std::isfinite(value); });
+  };
   if (with_fp16() && !o_.qwen.graphs) {
     return Error("the wave swap check requires captured and replayed verify graphs");
   }
@@ -2525,11 +2650,23 @@ Status Harness::Wave() {
     std::vector<std::int32_t> all;  // the prompt and its tokens (the anchor last)
     std::uint32_t generated = 0;
     jitllm::base::Sha256 rows;
+    std::uint64_t head_rows = 0;
+    std::ofstream payload;
   };
   std::vector<Run> runs(n);
+  if (masks) {
+    for (std::uint32_t i = 0; i < n; ++i) {
+      if (prompts[i]->ids.size() + o_.tokens + kDepth > md::Qwen38Flash().indexer_budget)
+        return Error("mask wave must execute short non-QSA target and drafter masks");
+      runs[i].payload.open(o_.out / std::format("wave-{}-heads.f32", i), std::ios::binary);
+      if (!runs[i].payload) return Error("opening complete mask wave heads");
+    }
+  }
   std::vector<double> draft_ms;
   std::vector<double> verify_ms;
   std::uint64_t waves = 0;
+  std::uint64_t joined_draft_waves = 0;
+  std::uint64_t joined_verify_waves = 0;
   std::uint64_t verify_captured = 0;
   std::uint64_t verify_replayed = 0;
   std::uint64_t swapped_after_wave = 0;
@@ -2551,6 +2688,13 @@ Status Harness::Wave() {
         if (auto r = slots[i]->Chunk(std::span(p.ids).first(at + rows), at, last, true); !r) {
           return r;
         }
+      }
+      if (masks) {
+        if (!finite_head(last, 1)) return Error("mask wave has an incomplete prefill head");
+        runs[i].payload.write(reinterpret_cast<const char*>(last.data()),
+                              static_cast<std::streamsize>(last.size() * sizeof(float)));
+        runs[i].rows.Update(std::as_bytes(std::span(last)));
+        ++runs[i].head_rows;
       }
       runs[i].all = p.ids;
       runs[i].all.push_back(Argmax(last));
@@ -2602,6 +2746,8 @@ Status Harness::Wave() {
         if (auto r = qwen_.DraftWave(dwork); !r) {
           return r;
         }
+        if (masks && qwen_.last_wave().paired_slots == 3U && qwen_.last_wave().draft_head_pairs > 0)
+          ++joined_draft_waves;
       } else if (auto r = slots[active[0]]->Draft(runs[active[0]].all, drafts[0], nullptr, kDepth);
                  !r) {
         return r;
@@ -2633,6 +2779,8 @@ Status Harness::Wave() {
         if (auto r = qwen_.VerifyWave(vwork); !r) {
           return r;
         }
+        if (masks && qwen_.last_wave().paired_slots == 3U && qwen_.last_wave().full_head_pairs > 0)
+          ++joined_verify_waves;
       } else if (auto r = slots[active[0]]->Verify(vwork[0].history, vwork[0].n_past, argmax[0],
                                                    logits.data());
                  !r) {
@@ -2659,6 +2807,13 @@ Status Harness::Wave() {
       bool restores_owed = active.size() == n;
       for (std::size_t k = 0; k < active.size(); ++k) {
         Run& r = runs[active[k]];
+        if (masks) {
+          if (!finite_head(logits[k], argmax[k].size()))
+            return Error("mask wave has incomplete or nonfinite verify heads");
+          r.payload.write(reinterpret_cast<const char*>(logits[k].data()),
+                          static_cast<std::streamsize>(logits[k].size() * sizeof(float)));
+          r.head_rows += argmax[k].size();
+        }
         r.rows.Update(std::as_bytes(std::span(logits[k])));
         std::uint32_t m = 0;
         while (m < drafts[k].size() && argmax[k][m] == drafts[k][m]) {
@@ -2734,6 +2889,8 @@ Status Harness::Wave() {
     }
   }
   std::string states;
+  std::vector<std::string> state_digests;
+  std::vector<std::pair<std::size_t, std::size_t>> state_sizes;
   if (auto read = InRequest("wave final states",
                             [&]() -> Status {
                               if (auto selected = qwen_.SelectSlots(slots); !selected) {
@@ -2748,13 +2905,71 @@ Status Harness::Wave() {
                                 jitllm::base::Sha256 hash;
                                 hash.Update(target);
                                 hash.Update(drafter);
-                                states += std::format("{}\"{}\"", i == 0 ? "" : ",",
-                                                      jitllm::base::ToHex(hash.Finish()));
+                                const auto digest = jitllm::base::ToHex(hash.Finish());
+                                state_digests.push_back(digest);
+                                state_sizes.emplace_back(target.size(), drafter.size());
+                                states += std::format("{}\"{}\"", i == 0 ? "" : ",", digest);
                               }
                               return {};
                             });
       !read) {
     return read;
+  }
+  if (masks) {
+    if (state_digests.size() != n || joined_draft_waves == 0 || joined_verify_waves == 0)
+      return Error("mask wave lacks initialized owner states or actual joined headed graphs");
+    if (auto spilled = slots[0]->Spill(); !spilled) return spilled;
+    if (!slots[0]->spilled() || slots[0]->spilled_bytes() == 0)
+      return Error("mask wave did not spill initialized state");
+    if (auto restored = slots[0]->Restore(); !restored) return restored;
+    if (slots[0]->spilled()) return Error("mask wave state did not restore");
+    if (auto checked = InRequest(
+            "checking mask wave restored state",
+            [&]() -> Status {
+              if (auto selected = qwen_.SelectSlots(slots); !selected) return selected;
+              for (std::uint32_t i = 0; i < n; ++i) {
+                std::vector<std::byte> target, drafter;
+                if (auto read = slots[i]->ReadState(target, drafter); !read) return read;
+                jitllm::base::Sha256 hash;
+                hash.Update(target);
+                hash.Update(drafter);
+                if (std::pair{target.size(), drafter.size()} != state_sizes[i] || target.empty() ||
+                    drafter.empty() || jitllm::base::ToHex(hash.Finish()) != state_digests[i])
+                  return Error("mask wave spill/restore changed an owner or its protected peer");
+              }
+              return {};
+            });
+        !checked)
+      return checked;
+    const auto after = qwen_.mask_stats();
+    const auto host = after.host_bytes - masks_before.host_bytes;
+    const auto target = after.target_device - masks_before.target_device;
+    const auto draft = after.draft_device - masks_before.draft_device;
+    if (o_.qwen.device_masks ? host != 0 || target == 0 || draft == 0
+                             : host == 0 || target != 0 || draft != 0)
+      return Error("mask wave did not execute its selected producer policy");
+    std::string head_rows, output_tokens;
+    for (std::size_t i = 0; i < runs.size(); ++i) {
+      auto& run = runs[i];
+      run.payload.close();
+      if (!run.payload || run.head_rows < o_.tokens)
+        return Error("mask wave complete head persistence failed");
+      head_rows += std::format("{}{}", head_rows.empty() ? "" : ",", run.head_rows);
+      std::string ids;
+      for (const auto token : std::span(run.all).subspan(prompts[i]->ids.size())) {
+        if (token < 0 || std::cmp_greater_equal(token, md::Qwen38Flash().vocab))
+          return Error("mask wave generated a token outside the vocabulary");
+        ids += std::format("{}{}", ids.empty() ? "" : ",", token);
+      }
+      output_tokens += std::format("{}[{}]", output_tokens.empty() ? "" : ",", ids);
+    }
+    results_.push_back(
+        std::format(R"({{"check":"masks-wave","device_masks":{},"host_mask_bytes":{},)"
+                    R"("target_device_masks":{},"draft_device_masks":{},"full_head_rows":[{}],)"
+                    R"("joined_draft_waves":{},"joined_verify_waves":{},"tokens":[{}],)"
+                    R"("spill_restore_exact":true,"protected_peer_exact":true}})",
+                    o_.qwen.device_masks ? "true" : "false", host, target, draft, head_rows,
+                    joined_draft_waves, joined_verify_waves, output_tokens));
   }
   const auto median = [](std::vector<double> v) {
     if (v.empty()) {
@@ -2979,7 +3194,9 @@ Status Harness::Run() {
     return r;
   }
   Status checked;
-  if (o_.check == "greedy" || o_.check == "timing" || o_.check == "vocab-greedy") {
+  if (o_.check == "masks" || o_.check == "masks-target" || o_.check == "masks-lean") {
+    checked = Masks();
+  } else if (o_.check == "greedy" || o_.check == "timing" || o_.check == "vocab-greedy") {
     checked = Greedy();
   } else if (o_.check == "forced") {
     checked = Forced();
@@ -2995,7 +3212,7 @@ Status Harness::Run() {
     checked = Sampled(false);
   } else if (o_.check == "sampled-spec") {
     checked = Sampled(true);
-  } else if (o_.check == "wave") {
+  } else if (o_.check == "wave" || o_.check == "masks-wave") {
     checked = Wave();
   } else if (o_.check == "turn") {
     checked = Turn();
@@ -3014,6 +3231,39 @@ Status Harness::Run() {
 }
 
 Status Harness::Write() {
+  if (o_.check == "masks" || o_.check == "masks-target" || o_.check == "masks-lean" ||
+      o_.check == "masks-wave") {
+    const auto budget = qwen_.setup_budget();
+    std::string fields;
+    const auto field = [&](std::string_view name, std::uint64_t value) {
+      fields += std::format("{}\"{}\":{}", fields.empty() ? "" : ",", name, value);
+    };
+    field("scalar_activations", budget.scalar_activations);
+    field("scalar_scratch", budget.scalar_scratch);
+    field("scalar_staging_inputs", budget.scalar_staging_inputs);
+    field("scalar_host_inputs", budget.scalar_host_inputs);
+    field("scalar_ple_mapped", budget.scalar_ple_mapped);
+    field("scalar_pinned", budget.scalar_pinned);
+    field("scalar_snapshot_per_branch", budget.scalar_snapshot_per_branch);
+    field("activations", budget.activations);
+    field("scratch", budget.scratch);
+    field("staging_inputs", budget.staging_inputs);
+    field("host_inputs", budget.host_inputs);
+    field("ple_mapped", budget.ple_mapped);
+    field("pinned", budget.pinned);
+    field("wave_output_pinned", budget.wave_output_pinned);
+    field("snapshot_per_branch", budget.snapshot_per_branch);
+    field("runner_mapped", budget.runner_mapped);
+    field("target_per_branch", budget.target_per_branch);
+    field("drafter_per_branch", budget.drafter_per_branch);
+    field("virtual_per_branch", budget.virtual_per_branch);
+    field("initialized_logical", budget.initialized_logical);
+    field("initialized_extent_bytes", budget.initialized_extent_bytes);
+    std::ofstream file(o_.out / "setup-budget.json");
+    file << '{' << fields << "}\n";
+    file.close();
+    if (!file) return Error("writing mask setup budget");
+  }
   std::string all;
   for (const std::string& r : results_) {
     all += (all.empty() ? "" : ",") + r;
@@ -3099,6 +3349,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--graphs") {
       o.qwen.graphs = v == "on";
       ok = v == "on" || v == "off";
+    } else if (a == "--device-masks") {
+      o.qwen.device_masks = v == "on";
+      ok = v == "on" || v == "off";
     } else if (a == "--draft") {
       ok = number(o.qwen.draft_rows) && o.qwen.draft_rows >= 1;
     } else if (a == "--draft-vocab") {
@@ -3154,16 +3407,19 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   if (o.tokens < 2 && o.check != "vocab-anchors") {
     return Error("this check requires at least two tokens or steps");
   }
-  if ((!preparing && (o.qwen.artifact.empty() || o.qwen.drafter.empty())) || o.tokenizer.empty() ||
-      o.prompts.empty() || o.out.empty() || o.check.empty() ||
+  if ((!preparing &&
+       (o.qwen.artifact.empty() || (o.qwen.drafter.empty() && o.check != "masks-target"))) ||
+      o.tokenizer.empty() || o.prompts.empty() || o.out.empty() || o.check.empty() ||
       o.fp16.artifact.empty() != o.fp16.tokens.empty()) {
     return Error(
         "usage: jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE "
         "--prompts FILE --out DIR --check "
-        "greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head|routed-down|mxfp8-"
+        "greedy|timing|masks|masks-target|masks-lean|masks-wave|forced|swap|sampled-plain|sampled-"
+        "spec|draft-"
+        "head|routed-down|mxfp8-"
         "projection|wave|turn "
         "[--reference FILE] [--tokens N] [--context N] [--graphs on|off] [--draft N] "
-        "[--draft-vocab N] [--adaptive-depth on|off] "
+        "[--draft-vocab N] [--adaptive-depth on|off] [--device-masks on|off] "
         "[--runtime-prefill on|off] [--prompt-token-ids on|off] "
         "[--profile-decode on|off] "
         "[--repeats N] [--margin B] [--seeds N] "
@@ -3174,15 +3430,35 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "--fp16-expect "
         "SHA256]");
   }
-  if ((o.check == "wave") != (o.qwen.wave_slots > 1)) {
+  if ((o.check == "wave" || o.check == "masks-wave") != (o.qwen.wave_slots > 1)) {
     return Error("the wave check, and only it, takes --slots 2-4");
   }
-  if (o.prompt_token_ids && (o.check != "greedy" || o.repeats != 2 || o.adaptive_depth ||
-                             o.window != 0.0 || o.qwen.draft_rows != 3 || o.tokens < 5)) {
+  if (o.prompt_token_ids && o.check != "masks" && o.check != "masks-target" &&
+      o.check != "masks-wave" && o.check != "masks-lean" &&
+      (o.check != "greedy" || o.repeats != 2 || o.adaptive_depth || o.window != 0.0 ||
+       o.qwen.draft_rows != 3 || o.tokens < 5)) {
     return Error(
         "literal prompt IDs require greedy, two repeats, fixed depth three, no "
         "confidence window and at least five outputs");
   }
+  if ((o.check == "masks" || o.check == "masks-target" || o.check == "masks-lean") &&
+      (!o.prompt_token_ids || o.only.empty() || o.tokens < 5 || o.tokens > 64 ||
+       o.qwen.context > 2048 || o.qwen.max_rows > 512 || o.qwen.draft_rows > 3 ||
+       o.adaptive_depth || o.window != 0 || !o.qwen.graphs || !o.reference.empty() ||
+       !o.fp16.artifact.empty() || o.profile_decode))
+    return Error(
+        "masks requires one short literal decode prompt, 5..64 outputs, context<=2048, "
+        "chunk<=512, depth<=3, graphs and no adaptive/window/profile/reference/swap");
+  if (o.check == "masks-target" && !o.qwen.drafter.empty())
+    return Error("masks-target executes the target alone without a drafter");
+  if (o.check == "masks-wave" &&
+      (!o.prompt_token_ids || o.qwen.wave_slots != 2 || o.tokens < 8 || o.tokens > 32 ||
+       o.qwen.context > 2048 || o.qwen.max_rows > 512 || o.qwen.draft_rows != 3 ||
+       o.adaptive_depth || o.window != 0 || !o.qwen.graphs || !o.reference.empty() ||
+       !o.fp16.artifact.empty() || o.profile_decode))
+    return Error(
+        "masks-wave needs two short literal owners, 8..32 outputs, context<=2048, "
+        "chunk<=512, fixed depth3, graphs and no reference/swap/profile");
   if (preparing && (o.chat_template.empty() || o.stop_metadata.empty())) {
     return Error("vocab-prepare requires --template and --stop-metadata");
   }

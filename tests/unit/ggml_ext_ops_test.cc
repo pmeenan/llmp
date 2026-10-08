@@ -449,6 +449,117 @@ TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBou
   }
 }
 
+TEST_F(GgmlExtOpsTest, SharedCausalMasksMatchF16AndF32AndRefreshCapturedPositions) {
+  const auto stream = reinterpret_cast<cudaStream_t>(execution_->Submission(stream_)->handle);
+  constexpr std::int32_t cells = 512, rows = 3, first = 3, limit = 2048;
+  for (const auto type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
+    for (const auto layout : {kg::CausalMaskRows::kExact, kg::CausalMaskRows::kPad32}) {
+      for (const std::int32_t window : {0, 128}) {
+        SCOPED_TRACE(std::format("type={} layout={} window={}", static_cast<int>(type),
+                                 static_cast<int>(layout), window));
+        std::vector<std::int32_t> positions(12, 17);
+        positions[first] = 0;
+        positions[first + 1] = 511;
+        positions[first + 2] = 1023;
+        auto* input = Place(
+            ggml_new_tensor_1d(c(), GGML_TYPE_I32, static_cast<std::int64_t>(positions.size())),
+            positions);
+        auto* mask =
+            kg::CausalRingMask(c(), input, cells, first, rows, cells, window, limit, layout, type);
+        const auto bytes = ggml_nbytes(mask);
+        const auto address = Allocate(bytes + 512);
+        TensorArena::Bind(mask, address + 256);
+        auto poison = [&] {
+          return cudaMemsetAsync(reinterpret_cast<void*>(address), 0xa5, bytes + 512, stream);
+        };
+        auto check = [&] {
+          // Derive the latest retained absolute key independently of the
+          // kernel's modulo-distance predicate, then compare exact output bits.
+          std::vector<std::uint32_t> expected(static_cast<std::size_t>(mask->ne[0] * mask->ne[1]));
+          for (std::int64_t row = 0; row < mask->ne[1]; ++row) {
+            for (std::int64_t cell = 0; cell < cells; ++cell) {
+              bool visible = false;
+              if (row < rows) {
+                const auto position = positions[static_cast<std::size_t>(first + row)];
+                if (position >= 0 && position < limit && cell <= position) {
+                  if (window == 0) {
+                    visible = cell < limit;
+                  } else {
+                    const auto latest = cell + ((position - cell) / cells) * cells;
+                    visible = position - latest < window;
+                  }
+                }
+              }
+              expected[static_cast<std::size_t>(row * cells + cell)] =
+                  visible ? 0U : (type == GGML_TYPE_F16 ? 0xfc00U : 0xff800000U);
+            }
+          }
+          if (type == GGML_TYPE_F16) {
+            const auto got = Download<std::uint16_t>(mask);
+            EXPECT_EQ(std::vector<std::uint32_t>(got.begin(), got.end()), expected);
+          } else {
+            EXPECT_EQ(Download<std::uint32_t>(mask), expected);
+          }
+          std::array<std::uint8_t, 256> prefix{}, suffix{};
+          EXPECT_EQ(cudaMemcpy(prefix.data(), reinterpret_cast<void*>(address), prefix.size(),
+                               cudaMemcpyDeviceToHost),
+                    cudaSuccess);
+          EXPECT_EQ(cudaMemcpy(suffix.data(), reinterpret_cast<void*>(address + 256 + bytes),
+                               suffix.size(), cudaMemcpyDeviceToHost),
+                    cudaSuccess);
+          EXPECT_TRUE(std::ranges::all_of(prefix, [](auto value) { return value == 0xa5; }));
+          EXPECT_TRUE(std::ranges::all_of(suffix, [](auto value) { return value == 0xa5; }));
+          EXPECT_EQ(Download<std::int32_t>(input), positions);
+        };
+        ASSERT_EQ(poison(), cudaSuccess);
+        ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+        check();
+        auto graph =
+            launch().Capture([&](auto& context) { return kg::RunGemma4Mask(context, mask); });
+        ASSERT_TRUE(graph);
+        positions[first] = -1;
+        positions[first + 1] = 512;
+        positions[first + 2] = limit;
+        ASSERT_EQ(cudaMemcpyAsync(input->data, positions.data(), ggml_nbytes(input),
+                                  cudaMemcpyHostToDevice, stream),
+                  cudaSuccess);
+        ASSERT_EQ(poison(), cudaSuccess);
+        ASSERT_TRUE(launch().Launch(*graph));
+        check();
+
+        const auto before = Download<std::uint8_t>(mask);
+        for (const std::size_t reserved : {6U, 7U}) {
+          const std::int32_t invalid = 1, zero = 0;
+          auto* parameter = reinterpret_cast<std::byte*>(mask->op_params) + 32 + reserved * 4;
+          std::memcpy(parameter, &invalid, 4);
+          EXPECT_FALSE(kg::RunGemma4Mask(launch(), mask));
+          std::memcpy(parameter, &zero, 4);
+        }
+        auto rejected = *mask;
+        rejected.type = GGML_TYPE_I32;
+        EXPECT_FALSE(kg::RunGemma4Mask(launch(), &rejected));
+        rejected = *mask;
+        rejected.data = input->data;
+        EXPECT_FALSE(kg::RunGemma4Mask(launch(), &rejected));
+        if (type == GGML_TYPE_F32) {
+          rejected = *mask;
+          rejected.data = reinterpret_cast<void*>(address + 258);
+          EXPECT_FALSE(kg::RunGemma4Mask(launch(), &rejected));
+        }
+        rejected = *mask;
+        // Coherent cell/capacity endpoints that exceed the signed byte bound
+        // must refuse before descriptor byte arithmetic or a device launch.
+        rejected.ne[0] = type == GGML_TYPE_F16 ? (1LL << 30) : (1LL << 29);
+        const auto oversized_capacity = static_cast<std::int32_t>(rejected.ne[0]);
+        std::memcpy(reinterpret_cast<std::byte*>(rejected.op_params) + 32 + 2 * 4,
+                    &oversized_capacity, 4);
+        EXPECT_FALSE(kg::Gemma4MaskFits(&rejected));
+        EXPECT_EQ(Download<std::uint8_t>(mask), before);
+      }
+    }
+  }
+}
+
 TEST_F(GgmlExtOpsTest, DeepSeekRawDeviceMasksKeepExactRowsAndRefreshCapturedRingPositions) {
   namespace md = jitllm::model;
   const auto stream = reinterpret_cast<cudaStream_t>(execution_->Submission(stream_)->handle);

@@ -2346,14 +2346,14 @@ ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_ten
 ggml_tensor* CausalRingMask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
                             std::int32_t first_row, std::int32_t rows, std::int32_t capacity,
                             std::int32_t window, std::int32_t context_limit,
-                            CausalMaskRows row_layout) {
+                            CausalMaskRows row_layout, ggml_type output_type) {
   const auto output_rows = row_layout == CausalMaskRows::kExact
                                ? std::int64_t{rows}
                                : (std::int64_t{rows} + 31) / 32 * 32;
   return WithInts(
-      Custom(context, GGML_TYPE_F16, {cells, output_rows, 1, 1}, {positions},
-             kTagGemma4Mask.data()),
-      {first_row, rows, capacity, window, context_limit, static_cast<std::int32_t>(row_layout)});
+      Custom(context, output_type, {cells, output_rows, 1, 1}, {positions}, kTagGemma4Mask.data()),
+      {first_row, rows, capacity, window, context_limit, static_cast<std::int32_t>(row_layout), 0,
+       0});
 }
 
 ggml_tensor* Gemma4Mask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
@@ -2368,7 +2368,11 @@ bool Gemma4MaskFits(const ggml_tensor* node) {
       std::ranges::any_of(std::span(node->src).subspan(1),
                           [](const auto* parent) { return parent != nullptr; }))
     return false;
+  if ((node->type != GGML_TYPE_F16 && node->type != GGML_TYPE_F32) || JitllmOpInt(node, 6) != 0 ||
+      JitllmOpInt(node, 7) != 0)
+    return false;
   constexpr std::int64_t max = std::numeric_limits<std::int32_t>::max();
+  const std::int64_t element_bytes = node->type == GGML_TYPE_F16 ? 2 : 4;
   const auto* positions = node->src[0];
   const std::int64_t first = JitllmOpInt(node, 0), rows = JitllmOpInt(node, 1),
                      capacity = JitllmOpInt(node, 2), window = JitllmOpInt(node, 3),
@@ -2376,28 +2380,29 @@ bool Gemma4MaskFits(const ggml_tensor* node) {
   // Refuse public descriptor endpoints before padding, shape products,
   // GGML byte calculations or the kernel's integer narrowing.
   if ((layout != 0 && layout != 1) || first < 0 || rows < 1 || rows > max - 31 || capacity < 1 ||
-      capacity % 256 != 0 || limit < 1 || window < 0 || node->ne[0] < 1 || node->ne[0] > max / 2 ||
-      node->ne[0] % 256 != 0 || node->ne[0] > capacity || node->ne[1] < 1 ||
-      node->ne[1] > max / 2 || node->ne[2] != 1 || node->ne[3] != 1 || positions->ne[0] < 1 ||
-      positions->ne[0] > max / 4 || positions->ne[1] != 1 || positions->ne[2] != 1 ||
-      positions->ne[3] != 1 || first > positions->ne[0] || rows > positions->ne[0] - first ||
-      node->ne[0] > max / 2 / node->ne[1])
+      capacity % 256 != 0 || limit < 1 || window < 0 || node->ne[0] < 1 ||
+      node->ne[0] > max / element_bytes || node->ne[0] % 256 != 0 || node->ne[0] > capacity ||
+      node->ne[1] < 1 || node->ne[1] > max / element_bytes || node->ne[2] != 1 ||
+      node->ne[3] != 1 || positions->ne[0] < 1 || positions->ne[0] > max / 4 ||
+      positions->ne[1] != 1 || positions->ne[2] != 1 || positions->ne[3] != 1 ||
+      first > positions->ne[0] || rows > positions->ne[0] - first ||
+      node->ne[0] > max / element_bytes / node->ne[1])
     return false;
   const std::int64_t output_rows = layout == 1 ? rows : (rows + 31) / 32 * 32;
   const std::int64_t retained = std::min(limit, window + rows);
-  if ((window != 0 && capacity < retained) || node->type != GGML_TYPE_F16 ||
-      positions->type != GGML_TYPE_I32 || !Shaped(node, node->ne[0], output_rows, 1) ||
-      AnyEmpty({node, positions}) || !AllSane({node, positions}) || !Packed(positions) ||
-      !Packed(node))
+  if ((window != 0 && capacity < retained) || positions->type != GGML_TYPE_I32 ||
+      !Shaped(node, node->ne[0], output_rows, 1) || AnyEmpty({node, positions}) ||
+      !AllSane({node, positions}) || !Packed(positions) || !Packed(node))
     return false;
   return true;
 }
 
 std::expected<void, KernelFailure> CheckGemma4Mask(const ggml_tensor* node) {
   if (auto checked = CheckCustom(node, JitllmOp::kGemma4Mask, 1); !checked) return checked;
-  if (!Gemma4MaskFits(node) || !AllCurrent({node, node->src[0]}) || !Aligned(node, 2) ||
-      !Aligned(node->src[0], 4) || !Disjoint(node, node->src[0], false))
-    return Rejected("Gemma4 packed F16 causal/ring mask from current disjoint I32 positions");
+  if (!Gemma4MaskFits(node) || !AllCurrent({node, node->src[0]}) ||
+      !Aligned(node, node->type == GGML_TYPE_F16 ? 2 : 4) || !Aligned(node->src[0], 4) ||
+      !Disjoint(node, node->src[0], false))
+    return Rejected("packed F16/F32 causal/ring mask from current disjoint I32 positions");
   return {};
 }
 

@@ -161,7 +161,7 @@ ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_ten
                                  std::uint32_t owner_offset = 0, std::uint32_t logit_softcap = 0,
                                  bool bounded_roots = false);
 
-// F16 [cells, Pad(rows,32)] causal or local-ring mask. Positions is a
+// F16 or F32 [cells, rows or Pad(rows,32)] causal or local-ring mask. Positions is a
 // packed I32 vector; first_row selects the independent segment. window=0
 // means global causal, otherwise capacity must retain window+whole chunk
 // (or the entire context). Padded query/cell rows and invalid positions are
@@ -173,7 +173,7 @@ inline constexpr const char* kGemma4MaskName = "jitllm.gemma4.mask";
 ggml_tensor* CausalRingMask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
                             std::int32_t first_row, std::int32_t rows, std::int32_t capacity,
                             std::int32_t window, std::int32_t context_limit,
-                            CausalMaskRows row_layout);
+                            CausalMaskRows row_layout, ggml_type output_type = GGML_TYPE_F16);
 ggml_tensor* Gemma4Mask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
                         std::int32_t first_row, std::int32_t rows, std::int32_t capacity,
                         std::int32_t window, std::int32_t context_limit);

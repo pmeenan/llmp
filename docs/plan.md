@@ -394,7 +394,11 @@ family" guide, and its long-context scaling work.
       - **Qwen3.8 native / MTP**
         - [ ] **T10** HC-normalized expert sum in post.
         - [ ] **T20** Column-invariant grouped float products.
-        - [ ] **T22** Graph-owned GPU attention masks.
+        - [x] **T22** Graph-owned exact-row F16/F32 causal masks; native headed
+          MTP passes retain their own positions. Complete heads/state and
+          joined spill/restore controls pass; F32 fallback uses checked planned
+          graphs plus the executed F32 primitive, without a fallback-model
+          speed claim.
         - [ ] **T23** Single-request prefill lookahead/capture ahead.
         - [ ] **T27** Plain greedy token on GPU.
         - [ ] **T29** Operand joins by view.
@@ -406,7 +410,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T63** Fast exact host causal-mask fill/check.
         - [ ] **T67** Prepare next chunk state beside current work.
         - [ ] **T68** Evict only incoming closure deficit.
-        - [ ] **T69** Shared GPU-mask construction contract.
+        - [x] **T69** Shared dtype-authenticated exact-row producer/source/funding
+          contract; selection metadata and RE-037 consumer limits preserved.
         - [ ] **T70** Shared lookahead/capture hook.
         - [ ] **T72** Expert worklist sharing across vector products.
       - **Qwen3.8 GGUF / target**
@@ -416,7 +421,10 @@ family" guide, and its long-context scaling work.
         - [ ] **T10** HC-normalized expert sum in post.
         - [ ] **T12** Share expert reads across verify rows.
         - [ ] **T21** Clustered small reduction/prefetch.
-        - [ ] **T22** Graph-owned GPU attention masks.
+        - [x] **T22** Graph-owned exact-row F16/F32 causal masks. Target-only complete
+          heads/state remain exact; F32 fallback uses checked planned
+          graphs plus the executed F32 primitive, without a fallback-model
+          speed claim.
         - [ ] **T23** Single-request prefill lookahead/capture ahead.
         - [ ] **T27** Plain greedy token on GPU.
         - [ ] **T29** Operand joins by view.
@@ -429,7 +437,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T63** Fast exact host causal-mask fill/check.
         - [ ] **T67** Prepare next chunk state beside current work.
         - [ ] **T68** Evict only incoming closure deficit.
-        - [ ] **T69** Shared GPU-mask construction contract.
+        - [x] **T69** Shared dtype-authenticated exact-row producer/source/funding
+          contract; selection metadata and RE-037 consumer limits preserved.
         - [ ] **T70** Shared lookahead/capture hook.
         - [ ] **T72** Expert worklist sharing across vector products.
         - [ ] **T80** Qwen lower cache-read alignment.
@@ -606,6 +615,19 @@ family" guide, and its long-context scaling work.
       D-055/D-096 amendments, but its ordinary adoption remains open on the
       cold-switch floor. T94's shared wake/harvest removals are adopted without
       implying an intermittent-tail repair or an unmeasured family speedup.
+- [ ] **Current TensorFold quality lead:** the pinned FP8-prompt p3
+      Teacher32 comparison agrees 31/32; row 29 reference margin 1.5625
+      exceeds the unchanged 1.0 bound. Native host/device-mask heads are
+      exact. Isolate upstream BF16 versus FP8 prompt policy on the same
+      history before attributing arithmetic; no parity or PPL pass.
+- [ ] **Current TensorFold MTP performance lead:** bounded ordinary
+      lean generation remains 3.237% slower than public TensorFold, n=2.
+      Investigate compatible same-ID selected-head affine Q4 group 32
+      quantization (native 47172 BF16 rows versus public 79591 Q4 rows),
+      preserving acceptance/quality and actual funding. Native MTP
+      experts already use NVFP4 CUTLASS; no missing expert-quant port
+      is established. A matched quant-only factor is required before
+      attributing the gap. [Reference evidence](experiments/qwen-device-masks/README.md).
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:

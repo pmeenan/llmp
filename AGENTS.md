@@ -314,10 +314,13 @@ prefill 8.7%/2.9%, with fresh Gemma2 stock bookends level and exact outputs.
 The later 64-row transfer improves native prefill 10.5%/2.8%; fresh stock
 bookends leave Gemma2 level and Gemma3 1.8% slower on the paid cycle.
 Larger rows, mixed-width roots/cohorts and broader sustained gates remain open.
-The retroactive optimization transfer audit is recorded complete; remaining
-ports stay in M3.5 (plan.md; workflow.md's transfer rule). The internal partial
-weight foundation preserves exact recovery and reduces prepared swap reads,
-but its cold-switch gate remains open and ordinary serving keeps full swaps. Then come approved model checkpoints, legacy fixtures, Bonsai, formats with
+The retroactive optimization transfer audit is complete; explicit open ports
+remain in M3.5. The internal partial-weight foundation preserves exact recovery
+and reduces prepared swap reads, but its cold-switch gate remains open and
+ordinary serving keeps full swaps. Qwen native/GGUF causal masks and headed
+native MTP masks now share the GPU producer, with exact heads/state and joined
+spill/restore controls. Then come approved model checkpoints, legacy fixtures,
+Bonsai, formats with
 EXL3 in focus, the remaining batching/skeleton gaps, media file inputs,
 Clef/Clef-flash over the Jev API and media generation routes (D-101).
 That scope includes batching compatible decision and image requests/phases.

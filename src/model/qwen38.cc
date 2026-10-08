@@ -939,7 +939,7 @@ std::vector<std::int32_t> Qwen38PleRows(const Qwen38Profile& p, const Qwen38PleH
 std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
     const Qwen38Profile& p, const Qwen38StateLayout& state, const Qwen38PleHash& hash,
     std::span<const std::int32_t> history, std::uint32_t n_past, std::uint32_t rows,
-    bool selection_masks, std::uint32_t read_align) {
+    bool selection_masks, std::uint32_t read_align, bool materialize_masks) {
   const std::uint64_t end = std::uint64_t{n_past} + rows;
   if (rows == 0 || rows > state.max_rows || end > state.context || read_align == 0 ||
       read_align % 256 != 0) {
@@ -972,7 +972,7 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
   auto placed = Qwen38Rows(
       p, state.cells, n_past, rows,
       static_cast<std::uint32_t>(std::min<std::uint64_t>(Pad(end, read_align), state.cells)),
-      selection_masks);
+      selection_masks, materialize_masks);
   if (!placed) {
     return placed;
   }
@@ -989,7 +989,8 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
 std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& p,
                                                          std::uint32_t cells, std::uint32_t n_past,
                                                          std::uint32_t rows, std::uint32_t read,
-                                                         bool selection_masks) {
+                                                         bool selection_masks,
+                                                         bool materialize_masks) {
   const std::uint64_t end = std::uint64_t{n_past} + rows;
   if (rows == 0 || end > cells || read < Pad(end, 256) || read > cells || read % 256 != 0 ||
       p.indexer_ratio == 0) {
@@ -1016,14 +1017,14 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& p,
   const std::uint32_t ratio = p.indexer_ratio;
   const std::uint64_t width = std::uint64_t{p.indexer_budget} + ratio - 1;
   in.qsa_select = n_kv > width;
-  if (!in.qsa_select || selection_masks) {
+  if (materialize_masks && (!in.qsa_select || selection_masks)) {
     in.mask.assign(n_kv * rows, kQwen38HalfNegInf);
     for (std::uint32_t i = 0; i < rows; ++i) {
       std::fill_n(in.mask.begin() + static_cast<std::ptrdiff_t>(i * n_kv),
                   static_cast<std::ptrdiff_t>(std::uint64_t{n_past} + i + 1), kQwen38HalfZero);
     }
   }
-  if (selection_masks) {
+  if (materialize_masks && selection_masks) {
     in.mask_f32.assign(n_kv * rows, -std::numeric_limits<float>::infinity());
     for (std::uint32_t i = 0; i < rows; ++i) {
       std::fill_n(in.mask_f32.begin() + static_cast<std::ptrdiff_t>(i * n_kv),

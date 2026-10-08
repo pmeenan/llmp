@@ -235,6 +235,8 @@ struct Qwen38GraphOptions {
   // Diagnostic only: retain routed-layer operands at at most three
   // layers of a small verify. No arithmetic or new nodes are introduced.
   std::uint64_t capture_routed = 0;
+  // Exact causal masks from current positions, instead of host matrices.
+  bool device_masks = false;
 };
 
 inline bool Qwen38RoutedCaptureFits(std::uint64_t mask, std::uint32_t layers) {
@@ -408,7 +410,7 @@ std::size_t Qwen38MtpGraphTensors(const model::Qwen38Profile& profile, std::int6
 std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
     TensorArena& arena, const model::Qwen38Profile& profile, const model::Qwen38Binding& target,
     const model::Qwen38MtpBinding& drafter, const Qwen38MtpShape& shape,
-    std::uint64_t expert_stride);
+    std::uint64_t expert_stride, bool device_masks = false);
 
 }  // namespace jitllm::kernels::ggml
 

@@ -640,13 +640,24 @@ std::expected<void, KernelFailure> LayerLeaves(ggml_context* c, const model::Qwe
 
 std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& options) {
   const std::int64_t n = s_.rows;
+  // The fast graph's selection makes the attention's mask itself.
+  const bool fast_select = DeviceSelect();
+  if (options.device_masks && !fast_select) {
+    constexpr auto max = std::int64_t{std::numeric_limits<std::int32_t>::max()};
+    const auto bytes = s_.qsa_select ? 4 : 2;
+    if (n > max / 16 || s_.cells > max || s_.n_kv > max / bytes / n)
+      return Rejected(
+          "the device mask or its four-section positions exceed packed I32 byte bounds");
+  }
   g_.tokens = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
   g_.positions = ggml_new_tensor_1d(c_, GGML_TYPE_I32, 4 * n);
   g_.cells = ggml_new_tensor_1d(c_, GGML_TYPE_I64, n);
-  // The fast graph's selection makes the attention's mask itself.
-  const bool fast_select = DeviceSelect();
   if (!fast_select) {
-    g_.mask = ggml_new_tensor_4d(c_, GGML_TYPE_F16, s_.n_kv, n, 1, 1);
+    g_.mask = options.device_masks
+                  ? CausalRingMask(c_, g_.positions, s_.n_kv, 0, static_cast<std::int32_t>(n),
+                                   static_cast<std::int32_t>(s_.cells), 0,
+                                   static_cast<std::int32_t>(s_.cells), CausalMaskRows::kExact)
+                  : ggml_new_tensor_4d(c_, GGML_TYPE_F16, s_.n_kv, n, 1, 1);
   }
   g_.ple_rows = ggml_new_tensor_1d(c_, GGML_TYPE_I32, std::int64_t{p_.ple_heads()} * n);
   g_.state_row = ggml_new_tensor_1d(c_, GGML_TYPE_I64, 1);
@@ -654,7 +665,12 @@ std::expected<void, KernelFailure> Builder::Leaves(const Qwen38GraphOptions& opt
   g_.out_ids = ggml_new_tensor_1d(c_, GGML_TYPE_I32, s_.outputs);
   if (s_.qsa_select && !fast_select) {
     const std::int64_t blocks = s_.qsa_blocks;
-    g_.mask_f32 = ggml_new_tensor_2d(c_, GGML_TYPE_F32, s_.n_kv, n);
+    g_.mask_f32 = options.device_masks
+                      ? CausalRingMask(c_, g_.positions, s_.n_kv, 0, static_cast<std::int32_t>(n),
+                                       static_cast<std::int32_t>(s_.cells), 0,
+                                       static_cast<std::int32_t>(s_.cells), CausalMaskRows::kExact,
+                                       GGML_TYPE_F32)
+                      : ggml_new_tensor_2d(c_, GGML_TYPE_F32, s_.n_kv, n);
     g_.cell_block = ggml_new_tensor_1d(c_, GGML_TYPE_I32, s_.n_kv);
     g_.block_cells = ggml_new_tensor_1d(c_, GGML_TYPE_I32, std::int64_t{p_.indexer_ratio} * blocks);
     g_.block_pos = ggml_new_tensor_1d(c_, GGML_TYPE_I32, 4 * blocks);
@@ -1621,7 +1637,7 @@ std::vector<ggml_tensor*> Qwen38MtpGraph::inputs() const {
   std::vector<ggml_tensor*> all = {state_row, row_zero};
   for (const Qwen38MtpPass& p : passes) {
     for (ggml_tensor* t : {p.tokens, p.positions, p.cells, p.mask, p.out_ids}) {
-      if (t != nullptr) {
+      if (t != nullptr && (t != p.mask || t->op == GGML_OP_NONE)) {
         all.push_back(t);
       }
     }
@@ -1639,7 +1655,7 @@ std::size_t Qwen38MtpGraphTensors(const model::Qwen38Profile& profile, std::int6
 std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
     TensorArena& arena, const model::Qwen38Profile& profile, const model::Qwen38Binding& target,
     const model::Qwen38MtpBinding& drafter, const Qwen38MtpShape& shape,
-    std::uint64_t expert_stride) {
+    std::uint64_t expert_stride, bool device_masks) {
   const Qwen38MtpShape& s = shape;
   const std::int64_t ratio = profile.indexer_ratio;
   const auto head_rows = drafter.selected_head() ? drafter.draft_output.ne[1] : profile.vocab;
@@ -1715,6 +1731,11 @@ std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
     pg.state_row = m.state_row;
     pg.row_zero = m.row_zero;
     Builder b(c, profile, target, ps, pg, true, false, true);
+    if (device_masks && !b.SelectsOnDevice()) {
+      constexpr auto max = std::int64_t{std::numeric_limits<std::int32_t>::max()};
+      if (n > max / 16 || s.cells > max || s.n_kv > max / 2 / n)
+        return Rejected("the MTP device mask or positions exceed packed I32 byte bounds");
+    }
     Qwen38MtpPass& in = m.passes[static_cast<std::size_t>(p)];
     if (p == 0) {
       in.tokens = ggml_new_tensor_1d(c, GGML_TYPE_I32, n);
@@ -1722,8 +1743,14 @@ std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
     }
     in.positions = pg.positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4 * n);
     in.cells = pg.cells = ggml_new_tensor_1d(c, GGML_TYPE_I64, n);
-    if (!b.SelectsOnDevice()) {
-      in.mask = pg.mask = ggml_new_tensor_4d(c, GGML_TYPE_F16, s.n_kv, n, 1, 1);
+    // A headless catch-up retains cache writes only; its attention output
+    // (and mask) is dead. Keep the historical host control unchanged.
+    if (!b.SelectsOnDevice() && (!device_masks || s.head)) {
+      in.mask = pg.mask =
+          device_masks ? CausalRingMask(c, in.positions, s.n_kv, 0, static_cast<std::int32_t>(n),
+                                        static_cast<std::int32_t>(s.cells), 0,
+                                        static_cast<std::int32_t>(s.cells), CausalMaskRows::kExact)
+                       : ggml_new_tensor_4d(c, GGML_TYPE_F16, s.n_kv, n, 1, 1);
     }
     // The drafter selects on the device (from its cached block keys), at
     // any depth its selection's tiles hold.
@@ -1763,7 +1790,7 @@ Qwen38ChunkShape Qwen38ShapeOf(const model::Qwen38StateLayout& state,
 
 std::vector<ggml_tensor*> Qwen38Graph::inputs() const {
   std::vector<ggml_tensor*> all = {tokens, positions, cells};
-  if (mask != nullptr) {
+  if (mask != nullptr && mask->op == GGML_OP_NONE) {
     all.push_back(mask);
   }
   for (ggml_tensor* t : {ple_rows, state_row, row_zero, out_ids}) {
@@ -1771,7 +1798,7 @@ std::vector<ggml_tensor*> Qwen38Graph::inputs() const {
   }
   for (ggml_tensor* t :
        {mask_f32, cell_block, block_cells, block_pos, block_bias, row_ids, stream_rows}) {
-    if (t != nullptr) {
+    if (t != nullptr && (t != mask_f32 || t->op == GGML_OP_NONE)) {
       all.push_back(t);
     }
   }

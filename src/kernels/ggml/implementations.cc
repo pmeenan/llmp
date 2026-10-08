@@ -1017,7 +1017,7 @@ constexpr std::array<Kernel::Entry, 124> kKernels = {{
      }},
     {.name = kGemma4MaskName,
      .operation = execution::Operation::kFill,
-     .variant = "packed F16 global causal/local ring mask from fresh segment I32 positions",
+     .variant = "packed F16/F32 global causal/local ring mask from fresh segment I32 positions",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGemma4Mask(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGemma4Mask(launch, n[0]); }},

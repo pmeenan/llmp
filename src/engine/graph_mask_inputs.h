@@ -23,18 +23,23 @@ inline std::expected<std::uint64_t, std::string> GraphMaskSourceBytes(
     const ggml_tensor* mask, const ggml_tensor* positions, std::span<ggml_tensor* const> nodes,
     std::span<ggml_tensor* const> inputs, bool device, std::uint32_t first_row, std::uint32_t rows,
     std::uint32_t cells, std::uint32_t capacity, std::uint32_t window, std::uint32_t context,
-    kernels::ggml::CausalMaskRows row_layout = kernels::ggml::CausalMaskRows::kPad32) {
+    kernels::ggml::CausalMaskRows row_layout = kernels::ggml::CausalMaskRows::kPad32,
+    ggml_type output_type = GGML_TYPE_F16) {
   namespace kg = kernels::ggml;
   if (row_layout != kg::CausalMaskRows::kPad32 && row_layout != kg::CausalMaskRows::kExact)
     return support::Error("unknown causal/ring mask row layout");
+  if (output_type != GGML_TYPE_F16 && output_type != GGML_TYPE_F32)
+    return support::Error("unsupported causal/ring mask output type");
+  const std::uint64_t element_bytes = output_type == GGML_TYPE_F16 ? 2 : 4;
   const auto output_rows = row_layout == kg::CausalMaskRows::kExact
                                ? std::uint64_t{rows}
                                : (std::uint64_t{rows} + 31) / 32 * 32;
-  if (mask == nullptr || cells == 0 || cells > INT32_MAX / 2 || rows == 0 ||
-      rows > static_cast<std::uint32_t>(INT32_MAX - 31) || output_rows > INT32_MAX / 2 / cells ||
-      mask->type != GGML_TYPE_F16 || mask->view_src != nullptr || mask->ne[0] != cells ||
+  if (mask == nullptr || cells == 0 || cells > INT32_MAX / element_bytes || rows == 0 ||
+      rows > static_cast<std::uint32_t>(INT32_MAX - 31) ||
+      output_rows > INT32_MAX / element_bytes / cells || mask->type != output_type ||
+      mask->view_src != nullptr || mask->ne[0] != cells ||
       std::cmp_not_equal(mask->ne[1], output_rows) || mask->ne[2] != 1 || mask->ne[3] != 1 ||
-      mask->nb[0] != 2 || mask->nb[1] != std::uint64_t{cells} * 2 ||
+      mask->nb[0] != element_bytes || mask->nb[1] != std::uint64_t{cells} * element_bytes ||
       mask->nb[2] != mask->nb[1] * static_cast<std::uint64_t>(mask->ne[1]) ||
       mask->nb[3] != mask->nb[2])
     return support::Error("malformed causal/ring mask descriptor");
@@ -53,7 +58,8 @@ inline std::expected<std::uint64_t, std::string> GraphMaskSourceBytes(
       kg::JitllmOpInt(mask, 2) != static_cast<std::int64_t>(capacity) ||
       kg::JitllmOpInt(mask, 3) != static_cast<std::int64_t>(window) ||
       kg::JitllmOpInt(mask, 4) != static_cast<std::int64_t>(context) ||
-      kg::JitllmOpInt(mask, 5) != static_cast<std::int32_t>(row_layout))
+      kg::JitllmOpInt(mask, 5) != static_cast<std::int32_t>(row_layout) ||
+      kg::JitllmOpInt(mask, 6) != 0 || kg::JitllmOpInt(mask, 7) != 0)
     return support::Error("device mask differs from its graph-owned position producer");
   return 0;
 }

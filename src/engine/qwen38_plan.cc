@@ -10,6 +10,7 @@
 #include <string_view>
 #include <utility>
 
+#include "engine/graph_mask_inputs.h"
 #include "engine/support.h"
 
 namespace jitllm::engine {
@@ -232,7 +233,8 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
       .verify = kind.verify,
       .export_streams = kind.export_streams,
       .stream_rows = m.mtp_state != nullptr ? m.mtp_state->hidden_rows : 0,
-      .capture_routed = kind.capture_routed};
+      .capture_routed = kind.capture_routed,
+      .device_masks = m.device_masks};
   auto arena = SizedArena(kg::Qwen38GraphTensors(*m.profile), [&](kg::TensorArena& a) {
     return kg::BuildQwen38Graph(a, *m.profile, *m.binding, shape, options).has_value();
   });
@@ -248,6 +250,16 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
   out->graph = std::move(*graph);
   kg::Qwen38Graph& g = out->graph;
   BindQwen38Weights(m, g);
+  const auto inputs = g.inputs();
+  for (const auto* mask : {g.mask, g.mask_f32}) {
+    if (mask == nullptr) continue;
+    const auto checked = GraphMaskSourceBytes(
+        mask, g.positions, g.nodes, inputs, m.device_masks, 0,
+        static_cast<std::uint32_t>(shape.rows), static_cast<std::uint32_t>(shape.n_kv),
+        static_cast<std::uint32_t>(shape.cells), 0, static_cast<std::uint32_t>(shape.cells),
+        kg::CausalMaskRows::kExact, mask == g.mask ? GGML_TYPE_F16 : GGML_TYPE_F32);
+    if (!checked) return std::unexpected(checked.error());
+  }
   std::vector<ggml_tensor*> kept;
   for (const std::string& name : keep) {
     ggml_tensor* t = g.Named(name);
@@ -287,21 +299,33 @@ std::expected<std::unique_ptr<Qwen38MtpPlanned>, std::string> PlanQwen38Mtp(
   auto out = std::make_unique<Qwen38MtpPlanned>();
   auto arena =
       SizedArena(kg::Qwen38MtpGraphTensors(*m.profile, shape.passes), [&](kg::TensorArena& a) {
-        return kg::BuildQwen38MtpGraph(a, *m.profile, *m.binding, *m.drafter, shape, m.mtp_stride)
+        return kg::BuildQwen38MtpGraph(a, *m.profile, *m.binding, *m.drafter, shape, m.mtp_stride,
+                                       m.device_masks)
             .has_value();
       });
   if (!arena) {
     return std::unexpected(arena.error());
   }
   out->arena.emplace(std::move(*arena));
-  auto graph =
-      kg::BuildQwen38MtpGraph(*out->arena, *m.profile, *m.binding, *m.drafter, shape, m.mtp_stride);
+  auto graph = kg::BuildQwen38MtpGraph(*out->arena, *m.profile, *m.binding, *m.drafter, shape,
+                                       m.mtp_stride, m.device_masks);
   out->arena->Seal();
   if (!graph) {
     return Error(graph.error().detail);
   }
   out->graph = std::move(*graph);
   BindQwen38MtpWeights(m, out->graph);
+  const auto inputs = out->graph.inputs();
+  for (std::size_t p = 0; p < out->graph.passes.size(); ++p) {
+    const auto& pass = out->graph.passes[p];
+    if (pass.mask == nullptr) continue;
+    const auto checked = GraphMaskSourceBytes(
+        pass.mask, pass.positions, out->graph.nodes, inputs, m.device_masks, 0,
+        static_cast<std::uint32_t>(p == 0 ? shape.rows : 1), static_cast<std::uint32_t>(shape.n_kv),
+        static_cast<std::uint32_t>(shape.cells), 0, static_cast<std::uint32_t>(shape.cells),
+        kg::CausalMaskRows::kExact);
+    if (!checked) return std::unexpected(checked.error());
+  }
   // Every pass's draft and its probability stay live to the end: the host
   // copies them all out after the last pass.
   std::vector<ggml_tensor*> kept = out->graph.drafts;
@@ -329,7 +353,7 @@ void Qwen38MtpSources(const kg::Qwen38MtpGraph& g, std::span<const md::Qwen38Chu
     }
     out.sources.emplace_back(t.positions, in.positions.data());
     out.sources.emplace_back(t.cells, in.cells.data());
-    if (t.mask != nullptr) {
+    if (t.mask != nullptr && t.mask->op == GGML_OP_NONE) {
       out.sources.emplace_back(t.mask, in.mask.data());
     }
   }
@@ -349,7 +373,7 @@ void Qwen38Sources(const kg::Qwen38Graph& g, const md::Qwen38ChunkInputs& in, st
   out.sources = {
       {g.tokens, in.tokens.data()}, {g.positions, in.positions.data()}, {g.cells, in.cells.data()}};
   // The fast graph's QSA selection needs no masks or tables from the host.
-  if (g.mask != nullptr) {
+  if (g.mask != nullptr && g.mask->op == GGML_OP_NONE) {
     out.sources.emplace_back(g.mask, in.mask.data());
   }
   out.sources.emplace_back(g.ple_rows, ple_rows.empty() ? in.ple_rows.data() : ple_rows.data());
@@ -357,7 +381,7 @@ void Qwen38Sources(const kg::Qwen38Graph& g, const md::Qwen38ChunkInputs& in, st
   out.sources.emplace_back(g.row_zero, &out.zero_index);
   out.sources.emplace_back(g.out_ids, out.out_ids.data());
   if (in.qsa_select && g.cell_block != nullptr) {
-    out.sources.emplace_back(g.mask_f32, in.mask_f32.data());
+    if (g.mask_f32->op == GGML_OP_NONE) out.sources.emplace_back(g.mask_f32, in.mask_f32.data());
     out.sources.emplace_back(g.cell_block, in.qsa.cell_block.data());
     out.sources.emplace_back(g.block_cells, in.qsa.block_cells.data());
     out.sources.emplace_back(g.block_pos, in.qsa.block_pos.data());
