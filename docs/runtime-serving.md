@@ -78,6 +78,14 @@ quality, assistant admission or long-context qualification.
 The [two-profile route controls](experiments/gemma31-serving/README.md) retain
 owned continuation, kept restart and pending cross-profile switch evidence.
 [Gemma's contract](gemma4.md) lists the remaining gates.
+Both Gemma4 profiles now prepare eligible fresh zero backing beside current
+prefill through the shared owned no-victim ticket/scoped drain, without future
+cursor publication. Actual approved 8K/C4 off/default PromptSession controls
+match full heads/history/state through owner departure; prefill remains scalar.
+Bounded ordinary 8K/C1 prefill improves 1.162%/1.050% and combined paid work
+0.902%/0.847% at n=2, with no decode or parity claim. Kept/sparse sources and
+broader context/output/performance qualification stay open.
+[Measurements, drift and lifetime controls](experiments/gemma4-state-prepare/README.md).
 For context<=4096 with exactly two configured slots, both ordinary Gemma4
 factories now select the [bounded-root common-read recipe](experiments/gemma4-bounded-owner-roots/README.md).
 It preserves each actual initialized cache prefix while matching stock's common

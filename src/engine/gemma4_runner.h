@@ -62,6 +62,9 @@ struct Gemma4Options {
   // decode arithmetic); never in row-invariant plans.
   bool fuse_quant_glu = false;
   bool prefill_lookahead = true;
+  // Optional fresh-zero backing preparation beside the current prefill job.
+  // It neither advances future cursors nor enables CPU plan lookahead.
+  bool prepare_state = true;
   // Explicit frontier-prefill capture policy, including one retained feature
   // per owner. Verification/all-row paths stay excluded; both profiles default off.
   bool capture_ahead = false;
@@ -244,7 +247,8 @@ class Gemma4Runner final : public PagedModel {
   struct PrefillNext {
     std::uint32_t slot = 0, rows = 0, after = 0;
   };
-  // A bounded shape prediction only: no future tokens, state or work is posted.
+  // A bounded prediction: no future tokens or logical state are published.
+  // Optional preparation may initialize eligible backing beside current work.
   // Next slots must belong to this wave; their past is its completed end.
   Status WavePrefill(std::span<const Work> work, bool want_head = true,
                      std::span<const PrefillNext> next = {}, bool next_want_head = true,

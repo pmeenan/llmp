@@ -23,8 +23,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   Gemma startup activation placement only under a checked existing maximum;
   exact funding and row-invariant consumer policies remain unchanged.
 
-- Prepare eligible fresh Gemma2 and Gemma3 state backing beside current prefill work,
-  with completion-aware ownership, scoped page-in retirement and exact
+- Prepare eligible fresh state backing for Gemma2, Gemma3 and both Gemma4
+  profiles beside current prefill work, with completion-aware ownership, scoped page-in retirement and exact
   continuation state. Kept restart sources retain their original read path.
 
 - Share eligible Gemma2/Gemma3 Q8 input preparation while preserving original

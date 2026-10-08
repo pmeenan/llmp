@@ -3,7 +3,7 @@
 
 # Prepare fresh Gemma state beside the current prefill chunk
 
-Gemma2 and Gemma3 now prepare eligible fresh zero-backed state for the next known
+Gemma2, Gemma3 and both Gemma4 profiles now prepare eligible fresh zero-backed state for the next known
 chunk beside current model work, without evicting cache or publishing a future cursor.
 Gemma2 ordinary 128-row C2 at configured context 8192 reduces paid prefill by
 4.126% and combined prefill/decode by 2.905%; exact default serving and real
@@ -14,7 +14,11 @@ prefill/decode by 1.941%. A separate configured 256-row screen reduces them by
 initialized states, and identical planning/kernel work. These are bounded
 same-native measurements, not a reference-parity or larger-context speed claim.
 
-The shared mechanism and ordinary Gemma2/Gemma3 fresh-zero policies are adopted.
+The shared mechanism and ordinary Gemma2/Gemma3/Gemma4 fresh-zero policies are adopted.
+The [two-profile Gemma4 transfer](../gemma4-state-prepare/README.md) reduces
+ordinary 8K/C1 prefill 1.162%/1.050% and combined paid 0.902%/0.847%, n=2,
+with actual default 8K/C4 scalar-prefill and wrapped retained-feature lifetime
+controls. It makes no decode or reference-parity claim.
 T67 remains composite OPEN: preparation from kept restart files or fresh sparse
 file reads, broader context/performance qualification and other growing LLM adapters remain
 compatible work. Public chunk/context/cohort defaults are unchanged. There is
@@ -279,8 +283,8 @@ unique cases because the normal teardown case is intentionally rechecked after
 adding the registry assertions. Full suites, package/shipment checks, other
 family/context profiles and new reference measurements are deferred.
 
-DeepSeek, native/GGUF Qwen and both Gemma4 profiles can reuse the arbitrary
-range/source protocol but have no adapter or measured T67 gain in these slices.
+DeepSeek and native/GGUF Qwen can reuse the arbitrary range/source protocol
+but have no qualified T67 adapter or measured gain in these slices.
 Image has fixed generation buffers rather than increasing token-bound state.
 Gemma3 is not artificially blocked by a 4096 preparation selector; its already
 admitted 8448-context scalar path now passes the exact control above. Broader

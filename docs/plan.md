@@ -641,7 +641,13 @@ family" guide, and its long-context scaling work.
         - [ ] **T59** Whole-wave products and exact partial cohorts.
         - [ ] **T61** Wider/partial bounded owner-root variants.
         - [ ] **T63** Fast exact host causal-mask fill/check.
-        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T67** Eligible fresh-zero preparation is adopted through the
+          shared owned ticket/scoped drain. Ordinary 8K/C1 prefill improves
+          1.162% / combined paid 0.902% at n=2, without a decode claim.
+          Actual default 8K/C4 scalar-prefill, wrapped features/checkpoint/peer/
+          kept-restart and failure-quarantine controls pass. Preparation from
+          kept/sparse sources and broader context/output/cohort performance
+          remain open. [Evidence](experiments/gemma4-state-prepare/README.md).
         - [ ] **T68** Evict only incoming closure deficit.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
           producer validation and padded host staging shared across Gemma plans;
@@ -681,7 +687,13 @@ family" guide, and its long-context scaling work.
         - [ ] **T59** Whole-wave products and exact partial cohorts.
         - [ ] **T61** Wider/partial bounded owner-root variants.
         - [ ] **T63** Fast exact host causal-mask fill/check.
-        - [ ] **T67** Prepare next chunk state beside current work.
+        - [ ] **T67** Eligible fresh-zero preparation is adopted through the
+          shared owned ticket/scoped drain. Ordinary 8K/C1 prefill improves
+          1.050% / combined paid 0.847% at n=2, without a decode claim.
+          Actual default 8K/C4 scalar-prefill, wrapped features/checkpoint/peer/
+          kept-restart and failure-quarantine controls pass. Preparation from
+          kept/sparse sources and broader context/output/cohort performance
+          remain open. [Evidence](experiments/gemma4-state-prepare/README.md).
         - [ ] **T68** Evict only incoming closure deficit.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
           producer validation and padded host staging shared across Gemma plans;

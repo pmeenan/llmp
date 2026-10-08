@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// First paid 8K prefill and fixed-prefix decode screen. No quality claim.
-// ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31] [ordinary|both|all] [MAX_ROWS]
+// Configurable paid prefill and fixed-prefix decode screen. No quality claim.
+// ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31] [ordinary|both|all|serving] [MAX_ROWS]
 // [normmul-off|normmul-on] [full|state-only] [lookahead-on|lookahead-off]
 // [phases-off|phases-on] [state-chunked|state-upfront]
-// [capture-ahead-off|capture-ahead-on] [features-off|features-frontier].
+// [capture-ahead-off|capture-ahead-on] [features-off|features-frontier]
+// [prepare-off|prepare-on] [CONTEXT PREFILL_ROWS].
+// The serving policy mirrors the bounded C1 runtime recipe; legacy defaults
+// retain context 16384 and 8192 prefill rows from the fixed input fixture.
 // Row-cap experiments do not change production defaults.
 #include <algorithm>
 #include <array>
@@ -29,11 +32,12 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc < 4 || argc > 14) return 2;
+  if (argc < 4 || argc > 17 || argc == 16) return 2;
   const std::string_view variant = argc >= 5 ? argv[4] : "26";
   const std::string_view policy = argc >= 6 ? argv[5] : "ordinary";
   if (variant != "26" && variant != "31") return 2;
-  if (policy != "ordinary" && policy != "both" && policy != "all") return 2;
+  if (policy != "ordinary" && policy != "both" && policy != "all" && policy != "serving") return 2;
+  const bool serving = policy == "serving";
   const std::string_view normmul = argc >= 8 ? argv[7] : "normmul-off";
   if (normmul != "normmul-off" && normmul != "normmul-on") return 2;
   const std::string_view prefill_output = argc >= 9 ? argv[8] : "full";
@@ -51,6 +55,9 @@ int main(int argc, char** argv) {
   const std::string_view features = argc >= 14 ? argv[13] : "features-off";
   if (features != "features-off" && features != "features-frontier") return 2;
   const bool retain_features = features == "features-frontier";
+  const std::string_view preparation = argc >= 15 ? argv[14] : "prepare-off";
+  if (preparation != "prepare-off" && preparation != "prepare-on") return 2;
+  const bool prepare_state = preparation == "prepare-on";
   std::uint32_t max_rows = 128;
   if (argc >= 7) {
     const std::string_view number(argv[6]);
@@ -61,11 +68,29 @@ int main(int argc, char** argv) {
   // Fixed diagnostic shapes only; no serving cap or artifact-format change.
   if (max_rows != 128 && max_rows != 256 && max_rows != 512 && max_rows != 1024 && max_rows != 2048)
     return 2;
-  constexpr std::uint32_t kPrefill = 8192, kWarm = 3, kSteps = 32;
-  constexpr std::uint32_t kInput = kPrefill + kWarm + kSteps, kVocab = 262144;
+  constexpr std::uint32_t kWarm = 3, kSteps = 32, kInputCapacity = 8227, kVocab = 262144;
+  std::uint32_t context = 16384, kPrefill = 8192;
+  if (argc == 17) {
+    const auto parse = [](const char* arg, std::uint32_t& value) {
+      const std::string_view number(arg);
+      const auto [end, error] =
+          std::from_chars(number.data(), number.data() + number.size(), value);
+      return error == std::errc{} && end == number.data() + number.size();
+    };
+    if (!parse(argv[15], context) || !parse(argv[16], kPrefill)) return 2;
+  }
+  if (kPrefill == 0 || kPrefill > kInputCapacity - kWarm - kSteps || context < kWarm + kSteps ||
+      kPrefill > context - kWarm - kSteps || context > jitllm::model::kGemma4Context ||
+      max_rows > context)
+    return 2;
+  if (serving &&
+      (context > 8192 || normmul != "normmul-on" || max_rows > (variant == "31" ? 256U : 1024U)))
+    return 2;
+  const std::uint32_t kInput = kPrefill + kWarm + kSteps;
+  const std::uint32_t chunks = (kPrefill + max_rows - 1) / max_rows;
   std::error_code error;
-  if (std::filesystem::file_size(argv[2], error) != kInput * 4 || error) return 2;
-  std::array<std::int32_t, kInput> ids{};
+  if (std::filesystem::file_size(argv[2], error) != kInputCapacity * 4 || error) return 2;
+  std::array<std::int32_t, kInputCapacity> ids{};
   std::ifstream file(argv[2], std::ios::binary);
   file.read(reinterpret_cast<char*>(ids.data()), sizeof(ids));
   if (!file || ids.front() != 2 ||
@@ -74,7 +99,7 @@ int main(int argc, char** argv) {
   const std::filesystem::path out(argv[3]);
   if (!std::filesystem::create_directory(out, error) || error) return 2;
   struct Lifetime {
-    en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+    en::PagedNode node{{.zero_state = true, .slot_bytes = en::kSlabSlotBytes}};
     std::unique_ptr<en::Gemma4Runner> runner;
     std::vector<en::PagedModel*> entered;
   };
@@ -86,17 +111,22 @@ int main(int argc, char** argv) {
           .artifact = argv[1],
           .out = out,
           .variant = variant == "31" ? en::Gemma4Variant::k31B : en::Gemma4Variant::k26BA4B,
-          .context = 16384,
+          .context = context,
           .max_rows = max_rows,
+          .max_head_rows = serving ? 1U : 0U,
+          .frontier_head = !serving,
           .retain_features = retain_features,
           .fuse_norms = normmul == "normmul-on",
-          .fuse_norm_rope = policy == "both" || policy == "all",
-          .fuse_norm_add = policy == "both" || policy == "all",
-          .fuse_gemma_route = policy == "all",
-          .fuse_gemma_reduce = policy == "all",
+          .fuse_norm_rope = serving || policy == "both" || policy == "all",
+          .fuse_norm_add = serving || policy == "both" || policy == "all",
+          .fuse_gemma_route = policy == "all" || (serving && variant == "26"),
+          .fuse_gemma_reduce = policy == "all" || (serving && variant == "26"),
+          .fuse_quant_glu = serving && variant == "31",
           .prefill_lookahead = lookahead == "lookahead-on",
+          .prepare_state = prepare_state,
           .capture_ahead = ahead,
-          .prefill_lookahead_capacity = ahead ? 2U : 1U},
+          .prefill_lookahead_capacity = ahead ? 2U : 1U,
+          .owner_attention = serving},
       0, 0);
   auto& runner = *lifetime->runner;
   auto& entered = lifetime->entered;
@@ -116,7 +146,7 @@ int main(int argc, char** argv) {
     // floor/kPlanNodeHostBytes bounds its graph's catalog charge. This
     // derives a conservative retention budget from the exact call count,
     // rather than consuming state funding with accumulated plan charges.
-    const std::uint64_t calls = 1 + kPrefill / max_rows + kWarm + kSteps;
+    const std::uint64_t calls = 1 + chunks + kWarm + kSteps;
     constexpr auto kGraphRatio = en::kGraphNodeHostBytes / en::kPlanNodeHostBytes;
     const auto floor = runner.plan_floor_bytes();
     if (floor > std::numeric_limits<std::uint64_t>::max() / calls / (1 + kGraphRatio))
@@ -137,7 +167,7 @@ int main(int argc, char** argv) {
               << " weights=" << runner.weights().size() * en::kPagedExtent
               << " state_capacity=" << node.StateCapacity() << " publication=" << kOutputBytes
               << " feature_snapshot=" << feature_bytes
-              << " pinned_head_envelope=" << std::uint64_t{max_rows} * kVocab * 4
+              << " pinned_head_envelope=" << std::uint64_t{serving ? 1U : max_rows} * kVocab * 4
               << " max_rows=" << max_rows << " call_bound=" << calls << " plan_floor=" << floor
               << " planning_scratch=" << planning_scratch << " plan_graph_capacity=" << retention
               << " temporary_plans=" << temporary << " total=" << budget << '\n';
@@ -159,7 +189,17 @@ int main(int argc, char** argv) {
       // Page all weights before the paid fresh request, matching the already
       // loaded comparator. These six rows are discarded on both engines.
       if (auto r = runner.Chunk(0, std::span(ids).first(6), logits); !r) return r;
+      const auto warm_extents = (*runner.request_slot(0))->state().extents();
+      const auto warm_used = (*runner.request_slot(0))->used_state_bytes();
       if (auto r = runner.Clear(); !r) return r;
+      auto fresh_slot = runner.request_slot(0);
+      if (!fresh_slot || (*fresh_slot)->completed_positions() != 0 ||
+          (*fresh_slot)->used_state_bytes() != 0 || !(*fresh_slot)->state_usable() ||
+          (*fresh_slot)->state().kept_extents() != warm_extents ||
+          node.has_pending_state_preparation())
+        return Error("fresh paid request differs from the retained six-row zero remnant");
+      std::cout << "PREFILL_FRESH completed=0 used_bytes=0 warm_rows=6 warm_used_bytes="
+                << warm_used << " kept_zero_extents=" << warm_extents.size() << " zero_state=1\n";
       if (account_phases) {
         runner.EnablePhaseAccounting();
         (void)runner.TakePhaseAccounting();
@@ -167,6 +207,7 @@ int main(int argc, char** argv) {
       }
       const auto graph_before = runner.graph_stats();
       const auto lookahead_before = runner.lookahead_stats();
+      const auto preparation_before = (*runner.request_slot(0))->state().preparation_stats();
       const auto started = std::chrono::steady_clock::now();
       // Keep all preparation inside paid prefill. The existing budget funds
       // this same initialized footprint; completed positions stay unchanged.
@@ -174,21 +215,25 @@ int main(int argc, char** argv) {
       if (state_prepare == "state-upfront") {
         if (auto r = runner.ReserveStateThrough(0, kPrefill); !r) return r;
       }
-      for (std::uint32_t first = 0; first < kPrefill; first += max_rows) {
-        if (auto r =
-                runner.ChunkPrefill(first, std::span(ids).subspan(first, max_rows), logits,
-                                    prefill_output == "full" || first + max_rows == kPrefill,
-                                    first + max_rows < kPrefill ? max_rows : 0U,
-                                    prefill_output == "full" || first + 2 * max_rows == kPrefill,
-                                    first + 2 * max_rows < kPrefill ? max_rows : 0U,
-                                    prefill_output == "full" || first + 3 * max_rows == kPrefill);
+      for (std::uint32_t first = 0; first < kPrefill;) {
+        const auto rows = std::min(max_rows, kPrefill - first);
+        const auto next_first = first + rows;
+        const auto near = std::min(max_rows, kPrefill - next_first);
+        const auto far = std::min(max_rows, kPrefill - next_first - near);
+        if (auto r = runner.ChunkPrefill(
+                first, std::span(ids).subspan(first, rows), logits,
+                prefill_output == "full" || next_first == kPrefill, near,
+                prefill_output == "full" || next_first + near == kPrefill, far,
+                prefill_output == "full" || next_first + near + far == kPrefill);
             !r)
           return r;
+        first = next_first;
       }
       const auto prefill_policy = runner.last_built_policy();
       const auto prefill = en::support::Seconds(std::chrono::steady_clock::now() - started);
       const auto graph_prefill = runner.graph_stats();
       const auto lookahead_prefill = runner.lookahead_stats();
+      const auto preparation_prefill = (*runner.request_slot(0))->state().preparation_stats();
       if (account_phases) {
         // Completed prefill only: exclude anchors, decode, and snapshot writes.
         const auto phases = runner.TakePhaseAccounting();
@@ -303,12 +348,21 @@ int main(int argc, char** argv) {
       auto slot = runner.request_slot(0);
       if (!slot || (*slot)->completed_positions() != kInput)
         return Error("completed positions differ from paid work");
-      const auto& policy = runner.last_built_policy();
+      const auto& decode_policy = runner.last_built_policy();
       std::cout << "PREFILL_NATIVE prefill_seconds=" << prefill << " prefill_rows=" << kPrefill
-                << " prefill_chunks=" << kPrefill / max_rows << " intermediate_heads="
-                << ((prefill_output == "full" || retain_features) ? kPrefill / max_rows - 1 : 0)
+                << " prefill_chunks=" << chunks << " intermediate_heads="
+                << ((prefill_output == "full" || retain_features) ? chunks - 1 : 0)
                 << " prefill_output=" << prefill_output << " retained_features=" << retain_features
                 << " state_prepare=" << state_prepare << " lookahead=" << lookahead
+                << " prepare_state=" << prepare_state << " preparation_submitted="
+                << preparation_prefill.submitted - preparation_before.submitted
+                << " preparation_completed="
+                << preparation_prefill.completed_extents - preparation_before.completed_extents
+                << " preparation_adopted="
+                << preparation_prefill.adopted_extents - preparation_before.adopted_extents
+                << " preparation_refused="
+                << preparation_prefill.refused - preparation_before.refused
+                << " preparation_failed=" << preparation_prefill.failed - preparation_before.failed
                 << " capture_ahead=" << ahead << " lookahead_capacity=" << (ahead ? 2 : 1)
                 << " prefill_captures=" << graph_prefill.captured - graph_before.captured
                 << " prefill_replays=" << graph_prefill.replayed - graph_before.replayed
@@ -329,16 +383,23 @@ int main(int argc, char** argv) {
                 << " lookahead_build_seconds=" << runner.lookahead_stats().build_seconds
                 << " decode_seconds=" << decode << " decode_chunks=" << kSteps
                 << " timed_start=" << kPrefill + kWarm << " completed=" << kInput
-                << " context=16384 chunk=" << max_rows << " masks=device"
+                << " context=" << context << " chunk=" << max_rows << " policy=" << policy
+                << " masks=device"
                 << " normmul=" << normmul << " prefill_norm_fused=" << prefill_policy.norm_fused
                 << " prefill_norm_rope=" << prefill_policy.norm_rope
                 << " prefill_norm_add=" << prefill_policy.norm_add
                 << " prefill_gemma_route=" << prefill_policy.gemma_route
                 << " prefill_gemma_reduce=" << prefill_policy.gemma_reduce
-                << " gemma_route=" << policy.gemma_route << " gemma_reduce=" << policy.gemma_reduce
-                << " shared_vecq=" << policy.shared_vecq << " row_products=" << policy.row_products
-                << " norm_fused=" << policy.norm_fused << " rope_store=" << policy.rope_store
-                << " norm_rope=" << policy.norm_rope << " norm_add=" << policy.norm_add
+                << " prefill_owner_steps=" << prefill_policy.owner_attention_steps
+                << " gemma_route=" << decode_policy.gemma_route
+                << " gemma_reduce=" << decode_policy.gemma_reduce
+                << " owner_steps=" << decode_policy.owner_attention_steps
+                << " shared_vecq=" << decode_policy.shared_vecq
+                << " row_products=" << decode_policy.row_products
+                << " norm_fused=" << decode_policy.norm_fused
+                << " rope_store=" << decode_policy.rope_store
+                << " norm_rope=" << decode_policy.norm_rope
+                << " norm_add=" << decode_policy.norm_add
                 << " captures=" << runner.graph_stats().captured
                 << " replays=" << runner.graph_stats().replayed << '\n';
       for (std::uint32_t i = 0; i < kSteps; ++i)

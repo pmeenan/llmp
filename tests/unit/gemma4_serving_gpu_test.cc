@@ -8,11 +8,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <print>
 #include <tuple>
 #include <vector>
 
@@ -26,6 +29,7 @@ namespace en = jitllm::engine;
 namespace cfg = jitllm::config;
 class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
  protected:
+  virtual bool PreparationControl() const { return false; }
   void SetUp() override {
     std::string name = "/home/pmeenan/.cache/jitllm-gemma-serving-XXXXXX";
     ASSERT_NE(mkdtemp(name.data()), nullptr);
@@ -42,12 +46,13 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     entry.artifact = GetParam() == 26
                          ? "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
                          : "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08";
-    entry.overrides["context"] = std::int64_t{4096};
-    entry.overrides["prefill_chunk"] = std::int64_t{16};
-    entry.overrides["max_slots"] = std::int64_t{12};
+    entry.overrides["context"] = std::int64_t{PreparationControl() ? 8192 : 4096};
+    entry.overrides["prefill_chunk"] =
+        std::int64_t{PreparationControl() ? (GetParam() == 26 ? 1024 : 256) : 16};
+    entry.overrides["max_slots"] = std::int64_t{PreparationControl() ? 4 : 12};
     config.models.push_back(entry);
     options.keep_conversations = true;
-    ASSERT_TRUE(Start());
+    if (!PreparationControl()) ASSERT_TRUE(Start());
   }
   bool Start() {
     server = std::make_unique<rt::Server>(config, roles, options, stderr);
@@ -127,6 +132,190 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   rt::Llm* model = nullptr;
   const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
 };
+
+// Use the approved 8K/C4 adapter directly, without first loading the legacy
+// 4K fixture. Prefill remains scalar; four independently live owners exercise
+// selection and departure while the shared runner prepares their next ranges.
+class Gemma4PreparationServingGpu : public Gemma4ServingGpu {
+ protected:
+  bool PreparationControl() const override { return true; }
+  std::expected<jitllm::base::Sha256Digest, std::string> StateHash(en::Gemma4Runner& runner,
+                                                                   std::uint32_t id) {
+    auto slot = runner.request_slot(id);
+    if (!slot) return std::unexpected(slot.error());
+    auto ranges = runner.CheckpointRanges((*slot)->completed_positions());
+    if (!ranges) return std::unexpected(ranges.error());
+    auto& node = server->node();
+    std::vector<jitllm::catalog::ExtentId> staging;
+    auto buffer = node.Pinned(1U << 20U, 0, staging);
+    if (!buffer) return std::unexpected(buffer.error());
+    jitllm::base::Sha256 hash;
+    for (const auto& range : *ranges)
+      for (std::uint64_t at = 0; at < range.bytes; at += 1U << 20U) {
+        const en::LiveState::Range part{range.region, range.offset + at,
+                                        std::min<std::uint64_t>(1U << 20U, range.bytes - at)};
+        auto retired = en::LiveState::CopyRetirement::kUnproven;
+        auto copied = runner.CopyState(id, *buffer, std::span(&part, 1), true, &retired);
+        if (retired == en::LiveState::CopyRetirement::kUnproven) node.KeepPinned(*buffer);
+        if (!copied) {
+          if (retired == en::LiveState::CopyRetirement::kProven) (void)node.FreePinned(*buffer);
+          return std::unexpected(copied.error());
+        }
+        hash.Update(std::span(static_cast<const std::byte*>(*buffer), part.bytes));
+      }
+    if (auto r = node.FreePinned(*buffer); !r) return std::unexpected(r.error());
+    return hash.Finish();
+  }
+};
+
+TEST_P(Gemma4PreparationServingGpu, DefaultPreparationPreservesFourOwnerPromptProgress) {
+  EXPECT_TRUE(en::Gemma4Options{}.prepare_state);
+  EXPECT_TRUE(rt::ServingOptions{}.gemma4_prepare_state);
+  constexpr std::array<std::uint32_t, 4> lengths{4352, 4480, 4608, 4736};
+  std::array<std::vector<float>, 4> expected_heads;
+  std::array<jitllm::base::Sha256Digest, 4> expected_states{};
+  std::array<std::uint64_t, 4> expected_units{}, expected_rows{};
+  for (const bool ordinary : {false, true}) {
+    options = rt::ServingOptions{};
+    if (!ordinary) options.gemma4_prepare_state = false;
+    ASSERT_TRUE(Start());
+    {
+      auto& runner = dynamic_cast<en::Gemma4Runner&>(model->paged());
+      ASSERT_EQ(model->settings().context.value, 8192U);
+      ASSERT_EQ(model->settings().prefill_chunk.value, GetParam() == 26 ? 1024U : 256U);
+      ASSERT_EQ(model->settings().max_slots.value, 4U);
+      ASSERT_EQ(model->branches(), 4U);
+      ASSERT_EQ(model->generation_wave_capacity(), 4U);
+      ASSERT_EQ(model->prefill_wave_capacity(), 1U);
+      ASSERT_EQ(runner.layout().local_cells, GetParam() == 26 ? 2048U : 1280U);
+      // Eight retained full heads (off+default), bounded token/session metadata,
+      // and only state digests. The 1 MiB transfer is catalog-funded separately.
+      HostCopies copies(server->node(), 8ULL * 262144 * sizeof(float) + (512U << 10U));
+      ASSERT_TRUE(copies.funded);
+      std::array<std::vector<std::int32_t>, 4> tokens;
+      struct Sessions {
+        std::array<std::unique_ptr<rt::Llm::PromptSession>, 4> owned;
+        ~Sessions() {
+          for (auto& session : owned)
+            if (session) {
+              session->Cancel();
+              const auto r = session->Finish();
+              EXPECT_TRUE(r) << (r ? "" : r.error());
+            }
+        }
+      } sessions;
+      for (std::uint32_t id = 0; id < 4; ++id) {
+        tokens[id].resize(lengths[id]);
+        for (std::size_t i = 0; i < tokens[id].size(); ++i)
+          tokens[id][i] = prompt[(i + id * 3 + i / 7) % prompt.size()];
+      }
+      ASSERT_TRUE(Select(4));
+      for (std::uint32_t id = 0; id < 4; ++id) {
+        auto begun = Branch(id).BeginPrompt(tokens[id]);
+        ASSERT_TRUE(begun) << (begun ? "" : begun.error());
+        sessions.owned[id] = std::move(*begun);
+        const auto settled = sessions.owned[id]->Advance();
+        ASSERT_TRUE(settled) << (settled ? "" : settled.error());
+      }
+      std::array<std::vector<float>, 4> heads;
+      std::array<jitllm::base::Sha256Digest, 4> states{};
+      std::array<std::uint64_t, 4> units{}, rows{};
+      std::uint32_t remaining = 4;
+      bool continued_after_departure = false;
+      while (remaining != 0) {
+        for (std::uint32_t id = 0; id < 4; ++id) {
+          if (!sessions.owned[id]) continue;
+          std::array<rt::Llm::Branch*, 4> selected{};
+          std::size_t count = 0;
+          for (std::uint32_t peer = 0; peer < 4; ++peer)
+            if (sessions.owned[peer]) selected[count++] = &Branch(peer);
+          ASSERT_TRUE(server->SelectRequestBranches(*model, std::span(selected).first(count)));
+          auto unit = sessions.owned[id]->NextUnit();
+          ASSERT_TRUE(unit) << (unit ? "" : unit.error());
+          ASSERT_EQ(unit->phase, rt::Llm::PromptSession::Phase::kChunk);
+          rt::Llm::PromptSession* session = sessions.owned[id].get();
+          const std::array<rt::PrefillGoOn, 1> callbacks{};
+          const auto ran = model->RunPromptWave(std::span(&session, 1), callbacks);
+          ASSERT_TRUE(ran) << (ran ? "" : ran.error());
+          ASSERT_TRUE(session->last_unit_result());
+          ++units[id];
+          rows[id] += unit->rows;
+          continued_after_departure |= remaining < 4;
+          if (!session->done()) continue;
+          heads[id] = session->last();
+          ASSERT_EQ(heads[id].size(), 262144U);
+          ASSERT_TRUE(std::ranges::all_of(heads[id], [](float v) { return std::isfinite(v); }));
+          EXPECT_EQ(Branch(id).history(), tokens[id]);
+          auto hash = StateHash(runner, id);
+          ASSERT_TRUE(hash) << (hash ? "" : hash.error());
+          states[id] = *hash;
+          ASSERT_TRUE(session->Finish());
+          sessions.owned[id].reset();
+          --remaining;
+        }
+      }
+      EXPECT_TRUE(continued_after_departure);
+      // All model work has ended. State copies need active leases, including
+      // owners that correctly departed from the execution cohort above.
+      ASSERT_TRUE(Select(4));
+      std::uint64_t completed = 0, adopted = 0, submitted = 0, attempted = 0;
+      for (std::uint32_t id = 0; id < 4; ++id) {
+        auto slot = runner.request_slot(id);
+        ASSERT_TRUE(slot);
+        EXPECT_TRUE((*slot)->state_usable());
+        EXPECT_EQ((*slot)->completed_positions(), lengths[id]);
+        EXPECT_EQ(Branch(id).history(), tokens[id]);
+        EXPECT_EQ(rows[id], lengths[id]);
+        // A departed owner's complete initialized bytes survive peer progress.
+        auto hash = StateHash(runner, id);
+        ASSERT_TRUE(hash) << (hash ? "" : hash.error());
+        EXPECT_EQ(*hash, states[id]);
+        const auto& prep = (*slot)->state().preparation_stats();
+        EXPECT_EQ(prep.failed, 0U);
+        EXPECT_EQ(prep.refused, 0U);
+        attempted += prep.attempted;
+        submitted += prep.submitted;
+        completed += prep.completed_extents;
+        adopted += prep.adopted_extents;
+      }
+      EXPECT_TRUE(runner.cohort_usable());
+      EXPECT_FALSE(server->node().has_pending_state_preparation());
+      if (!ordinary) {
+        EXPECT_EQ(attempted, 0U);
+        EXPECT_EQ(submitted, 0U);
+        EXPECT_EQ(completed, 0U);
+        EXPECT_EQ(adopted, 0U);
+        expected_heads = std::move(heads);
+        expected_states = states;
+        expected_units = units;
+        expected_rows = rows;
+      } else {
+        EXPECT_GT(submitted, 0U);
+        EXPECT_GT(completed, 0U);
+        EXPECT_EQ(adopted, completed);
+        for (std::uint32_t id = 0; id < 4; ++id)
+          EXPECT_EQ(std::memcmp(heads[id].data(), expected_heads[id].data(),
+                                heads[id].size() * sizeof(float)),
+                    0);
+        EXPECT_EQ(states, expected_states);
+        EXPECT_EQ(units, expected_units);
+        EXPECT_EQ(rows, expected_rows);
+        std::println(
+            "GEMMA4_DEFAULT_PREPARATION profile={} context8192 slots4 prefill_capacity1 "
+            "completed={} adopted={} exact_heads_state_history owner_departure drained",
+            GetParam(), completed, adopted);
+      }
+    }
+    const auto retired = RetireServer();
+    ASSERT_TRUE(retired) << (retired ? "" : retired.error());
+    server.reset();
+    model = nullptr;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(ApprovedProfiles, Gemma4PreparationServingGpu, ::testing::Values(26U, 31U),
+                         [](const auto& info) { return "Gemma" + std::to_string(info.param); });
+
 TEST_P(Gemma4ServingGpu, PinnedPublicationCapacityMatchesServingSlotsNotInputChunkRows) {
   const auto row_bytes = std::uint64_t{262144} * sizeof(float);
   std::uint64_t staging = 0;

@@ -983,7 +983,8 @@ class Gemma final : public Llm {
         store_(roles.installed),
         profile_(variant == engine::Gemma4Variant::k26BA4B ? model::Gemma4_26BA4B()
                                                            : model::Gemma4_31B()),
-        options_(Options(entry, settings, roles, variant, serving.gemma_row_invariant)),
+        options_(Options(entry, settings, roles, variant, serving.gemma_row_invariant,
+                         serving.gemma4_prepare_state)),
         joined_(serving.gemma_joined ||
                 (variant == engine::Gemma4Variant::k31B && settings.gemma31_production) ||
                 (variant == engine::Gemma4Variant::k26BA4B && settings.gemma26_production)),
@@ -1350,7 +1351,8 @@ class Gemma final : public Llm {
   static engine::Gemma4Options Options(const config::ModelEntry& entry,
                                        const ModelSettings& settings,
                                        const config::RuntimeRoles& roles,
-                                       engine::Gemma4Variant variant, bool row_invariant) {
+                                       engine::Gemma4Variant variant, bool row_invariant,
+                                       bool prepare_state) {
     const bool candidate = variant == engine::Gemma4Variant::k31B && settings.gemma31_production;
     const bool candidate26 =
         variant == engine::Gemma4Variant::k26BA4B && settings.gemma26_production;
@@ -1372,6 +1374,7 @@ class Gemma final : public Llm {
             .fuse_gemma_route = candidate26,
             .fuse_gemma_reduce = candidate26,
             .fuse_quant_glu = candidate,
+            .prepare_state = prepare_state,
             .owner_attention = candidate || candidate26,
             .common_owner_reads = bounded,
             .bounded_owner_roots = bounded};

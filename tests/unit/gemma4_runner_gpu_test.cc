@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include <fcntl.h>
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -16,15 +18,38 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "base/sha256.h"
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
+#include "scheduler/scheduler.h"
 
 namespace en = jitllm::engine;
 class Gemma4RunnerGpu : public ::testing::Test {
  protected:
+  struct PreparationObserver final : jitllm::scheduler::PageInObserver {
+    jitllm::catalog::Catalog* catalog = nullptr;
+    jitllm::catalog::ExtentId target;
+    std::uint64_t generation = 0;
+    jitllm::catalog::RegistrationId registration;
+    bool held = false;
+    void Staged(jitllm::catalog::ExtentId extent, jitllm::scheduler::PageInEvent event) override {
+      if (held || extent != target || event != jitllm::scheduler::PageInEvent::kResident) return;
+      const auto view = catalog->Describe(extent);
+      if (view && view->content_generation == generation && !view->discarded &&
+          view->descriptor.memory_class == jitllm::catalog::MemoryClass::kLiveState) {
+        if (auto acquired = catalog->AddRegistration(extent); acquired) {
+          registration = *acquired;
+          held = true;
+        }
+      }
+    }
+  };
   virtual std::uint32_t Slots() const { return 4; }
   virtual std::uint32_t MaxRows() const { return 128; }
   virtual bool CaptureAhead() const { return false; }
+  virtual bool PrepareState() const { return false; }
+  virtual bool Lookahead() const { return true; }
+  virtual bool KeepSpill() const { return false; }
   virtual std::uint32_t HeadRows() const { return 0; }
   virtual bool Invariant() const { return false; }
   virtual bool DefaultNorms() const { return false; }
@@ -53,13 +78,33 @@ class Gemma4RunnerGpu : public ::testing::Test {
                               .fuse_norm_add = NormChains(),
                               .fuse_gemma_route = MoeChains(),
                               .fuse_gemma_reduce = MoeChains(),
+                              .prefill_lookahead = Lookahead(),
+                              .prepare_state = PrepareState(),
                               .capture_ahead = CaptureAhead(),
                               .prefill_lookahead_capacity = CaptureAhead() ? 2U : 1U};
+    if (KeepSpill()) {
+      spill_root = std::filesystem::path("/tmp") / (Variant() == en::Gemma4Variant::k31B
+                                                        ? "jitllm-g31-preparation-lifetime"
+                                                        : "jitllm-g26-preparation-lifetime");
+      std::error_code error;
+      std::filesystem::remove_all(spill_root, error);
+      ASSERT_TRUE(std::filesystem::create_directory(spill_root, error));
+      ASSERT_FALSE(error);
+      std::filesystem::permissions(spill_root, std::filesystem::perms::owner_all, error);
+      ASSERT_FALSE(error);
+      spill_dir = ::open(spill_root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+      ASSERT_GE(spill_dir, 0);
+      options.spill_place = [this](std::uint32_t slot) {
+        return en::LiveState::SpillPlace{
+            .directory = {}, .dir = spill_dir, .name = std::to_string(slot) + ".kv"};
+      };
+    }
     // Historical ordinary fixtures stay explicitly off; default fixtures use
     // the production default without overriding the option.
     if (!DefaultNorms()) options.fuse_norms = Invariant();
     runner = std::make_unique<en::Gemma4Runner>(node, std::move(options), 0, 0);
     ASSERT_TRUE(node.Open());
+    lifetime->observer.catalog = &node.catalog();
     entered.push_back(runner.get());
     auto setup = runner->Setup();
     ASSERT_TRUE(setup) << (setup ? "" : setup.error());
@@ -78,6 +123,10 @@ class Gemma4RunnerGpu : public ::testing::Test {
     EXPECT_TRUE(retired) << (retired ? "" : retired.error());
     // Retain all execution owners when completion cannot be proved.
     if (!retired) std::ignore = lifetime.release();
+    if (retired && spill_dir >= 0) {
+      ::close(spill_dir);
+      spill_dir = -1;
+    }
   }
   en::Status Single(std::uint32_t slot, std::uint32_t past, std::span<const std::int32_t> tokens,
                     std::vector<float>& logits) {
@@ -146,8 +195,12 @@ class Gemma4RunnerGpu : public ::testing::Test {
   void HeldSelectionControl();
   void StateOnlyControl();
   void HeadCapacityControl();
+  void PreparedStateControl();
   struct Lifetime {
-    en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+    Lifetime()
+        : node({.zero_state = true, .slot_bytes = en::kSlabSlotBytes, .observer = &observer}) {}
+    PreparationObserver observer;
+    en::PagedNode node;
     std::unique_ptr<en::Gemma4Runner> runner;
     std::vector<en::PagedModel*> entered;
   };
@@ -155,6 +208,8 @@ class Gemma4RunnerGpu : public ::testing::Test {
   en::PagedNode& node = lifetime->node;
   std::unique_ptr<en::Gemma4Runner>& runner = lifetime->runner;
   std::vector<en::PagedModel*>& entered = lifetime->entered;
+  std::filesystem::path spill_root;
+  int spill_dir = -1;
   const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
 };
 class Gemma26MoeRunnerGpu : public Gemma4RunnerGpu {
@@ -272,6 +327,7 @@ class Gemma31DefaultNormRunnerGpu : public Gemma31RunnerGpu {
 TEST(Gemma4RunnerDefaults, CheckedPlainNormsDoNotEnableOtherExperiments) {
   const en::Gemma4Options options;
   EXPECT_TRUE(options.fuse_norms);
+  EXPECT_TRUE(options.prepare_state);
   EXPECT_FALSE(options.shared_q8 || options.row_invariant || options.rope_store ||
                options.fuse_norm_rope || options.fuse_norm_add || options.fuse_gemma_route ||
                options.fuse_gemma_reduce || options.owner_attention);
@@ -1373,6 +1429,364 @@ TEST_F(Gemma4FeatureCaptureGpu, CapturedFrontierMatchesOrdinaryAndFreshRestoreCo
     return {};
   });
   ASSERT_TRUE(ran) << (ran ? "" : ran.error());
+}
+class Gemma4PreparedGpu : public Gemma4FeatureGpu {
+ protected:
+  std::uint32_t Slots() const override { return 2; }
+  std::uint32_t MaxRows() const override { return 256; }
+  std::uint32_t HeadRows() const override { return 2; }
+  bool PrepareState() const override { return true; }
+  bool Lookahead() const override { return false; }
+  bool KeepSpill() const override { return true; }
+  bool DefaultNorms() const override { return true; }
+};
+class Gemma31PreparedGpu : public Gemma4PreparedGpu {
+ protected:
+  en::Gemma4Variant Variant() const override { return en::Gemma4Variant::k31B; }
+};
+void Gemma4RunnerGpu::PreparedStateControl() {
+  constexpr std::uint32_t kRows = 128, kChunks = 14, kPositions = kRows * kChunks;
+  ASSERT_EQ(runner->layout().local_cells, 1280U);
+  ASSERT_GT(kPositions, runner->layout().local_cells);
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
+  auto footprint = runner->CheckpointRanges(kPositions);
+  ASSERT_TRUE(footprint);
+  std::uint64_t state_bytes = 0;
+  for (const auto& range : *footprint) state_bytes += range.bytes;
+  auto maximum_copy = runner->CheckpointRanges(kPositions + 1);
+  ASSERT_TRUE(maximum_copy);
+  std::uint64_t copy_bytes = 0;
+  for (const auto& range : *maximum_copy) copy_bytes += range.bytes;
+  const auto feature_bytes = std::uint64_t{runner->profile().width} * sizeof(float);
+  // State witnesses retain digests, so only one temporary CPU byte vector is
+  // live. Transfer storage and the checkpoint are separately catalog-charged;
+  // bounded range descriptors use the existing fixture startup allowance.
+  const auto host_bytes =
+      copy_bytes + 8ULL * runner->profile().vocab * sizeof(float) + 6 * feature_bytes;
+  ASSERT_TRUE(node.ChargeHost(host_bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, host_bytes};
+  std::array<std::array<std::int32_t, kRows>, 2> tokens{};
+  for (std::size_t slot = 0; slot < tokens.size(); ++slot)
+    for (std::size_t i = 0; i < kRows; ++i) tokens[slot][i] = prompt[(i + slot) % prompt.size()];
+  std::array<std::vector<float>, 2> expected_heads, expected_features, next_heads, next_features;
+  std::array<jitllm::base::Sha256Digest, 2> expected_state, next_state;
+  const auto finite = [&](const auto& head) {
+    return head.size() == runner->profile().vocab &&
+           std::ranges::all_of(head, [](float v) { return std::isfinite(v); });
+  };
+  const auto hash = [&](std::uint32_t slot, std::uint32_t positions,
+                        jitllm::base::Sha256Digest& digest) -> en::Status {
+    std::vector<std::byte> bytes;
+    if (auto r = StateBytes(slot, positions, bytes); !r) return r;
+    digest = jitllm::base::Sha256{}.Update(bytes).Finish();
+    return {};
+  };
+  const auto feature = [&](std::uint32_t slot, std::uint32_t first,
+                           std::vector<float>& values) -> en::Status {
+    std::vector<jitllm::catalog::ExtentId> staging;
+    auto pinned = node.Pinned(feature_bytes, 0, staging);
+    if (!pinned) return en::support::Error(pinned.error());
+    if (auto copied = runner->CopyFeatures(slot, first, 1, *pinned); !copied) return copied;
+    const auto* data = static_cast<const float*>(*pinned);
+    values.assign(data, data + runner->profile().width);
+    EXPECT_TRUE(std::ranges::all_of(values, [](float v) { return std::isfinite(v); }));
+    return node.FreePinned(*pinned);
+  };
+  for (const bool hinted : {false, true}) {
+    // ClearIdle evicts unused backing, so the hinted round proves fresh growth
+    // rather than merely adopting the preceding execution's retained zeros.
+    for (const auto slot : {0U, 1U}) ASSERT_TRUE(runner->ClearIdle(slot));
+    runner->DropPlans();
+    const auto ran = Held([&]() -> en::Status {
+      std::array<en::LiveState::PreparationStats, 2> before;
+      for (std::uint32_t slot = 0; slot < 2; ++slot)
+        before[slot] = (*runner->request_slot(slot))->state().preparation_stats();
+      const auto plans = runner->lookahead_stats();
+      std::array<std::vector<float>, 2> heads, features;
+      for (std::uint32_t chunk = 0; chunk < kChunks; ++chunk) {
+        const auto past = chunk * kRows;
+        const std::array<en::Gemma4Runner::Work, 2> work{
+            {{0, past, tokens[0], &heads[0]}, {1, past, tokens[1], &heads[1]}}};
+        const std::array<en::Gemma4Runner::PrefillNext, 2> next{
+            {{0, chunk + 1 < kChunks ? kRows : 0U}, {1, chunk + 1 < kChunks ? kRows : 0U}}};
+        if (auto r = runner->WavePrefill(work, true, std::span(next).first(hinted ? 2U : 0U), true);
+            !r)
+          return r;
+        for (std::uint32_t slot = 0; slot < 2; ++slot) {
+          EXPECT_EQ((*runner->request_slot(slot))->completed_positions(), past + kRows);
+          EXPECT_TRUE((*runner->request_slot(slot))->state_usable());
+          EXPECT_TRUE(finite(heads[slot]));
+        }
+        EXPECT_FALSE(node.has_pending_state_preparation());
+      }
+      // Preparation works with CPU lookahead disabled; it must not add plans.
+      EXPECT_EQ(runner->lookahead_stats().built, plans.built);
+      for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        const auto after = (*runner->request_slot(slot))->state().preparation_stats();
+        EXPECT_EQ(after.failed, before[slot].failed);
+        EXPECT_EQ(after.refused, before[slot].refused);
+        jitllm::base::Sha256Digest state;
+        if (auto r = hash(slot, kPositions, state); !r) return r;
+        if (auto r = feature(slot, kPositions - 1, features[slot]); !r) return r;
+        if (!hinted) {
+          EXPECT_EQ(after.submitted, before[slot].submitted);
+          expected_heads[slot] = heads[slot];
+          expected_features[slot] = features[slot];
+          expected_state[slot] = state;
+        } else {
+          EXPECT_GT(after.submitted, before[slot].submitted);
+          EXPECT_GT(after.completed_extents, before[slot].completed_extents);
+          EXPECT_EQ(after.completed_extents - before[slot].completed_extents,
+                    after.adopted_extents - before[slot].adopted_extents);
+          Exact(heads[slot], expected_heads[slot]);
+          Exact(features[slot], expected_features[slot]);
+          EXPECT_EQ(state, expected_state[slot]);
+        }
+      }
+      if (hinted) {
+        auto borrow = runner->BorrowFrozen(0, tokens[0].back());
+        if (!borrow) return en::support::Error(borrow.error());
+        EXPECT_FALSE(runner->Clear(0));
+        EXPECT_FALSE(runner->Spill(0));
+        if (auto r = Single(1, kPositions, std::span(tokens[1]).first(1), heads[1]); !r) return r;
+        if (auto r = runner->CheckBorrow(*borrow); !r) return r;
+        jitllm::base::Sha256Digest peer_state;
+        if (auto r = hash(0, kPositions, peer_state); !r) return r;
+        EXPECT_EQ(peer_state, expected_state[0]);
+        *borrow = en::Gemma4Runner::FrozenBorrow{};
+        std::vector<jitllm::catalog::ExtentId> staging;
+        auto checkpoint = node.Pinned(state_bytes, 0, staging);
+        if (!checkpoint) return en::support::Error(checkpoint.error());
+        if (auto r = runner->CopyState(0, *checkpoint, *footprint, true); !r) return r;
+        if (auto r = Single(0, kPositions, std::span(tokens[0]).first(1), heads[0]); !r) return r;
+        Exact(heads[0], next_heads[0]);
+        if (auto r = runner->Clear(0); !r) return r;
+        if (auto r = runner->RestoreCheckpoint(0, kPositions, *checkpoint, *footprint,
+                                               runner->CheckpointLayoutId());
+            !r)
+          return r;
+        if (auto r = node.FreePinned(*checkpoint); !r) return r;
+        EXPECT_FALSE(runner->BorrowFrozen(0, tokens[0].back()));
+        if (auto r = runner->Spill(0); !r) return r;
+        if (auto r = runner->Restore(0); !r) return r;
+        jitllm::base::Sha256Digest restored;
+        if (auto r = hash(0, kPositions, restored); !r) return r;
+        EXPECT_EQ(restored, expected_state[0]);
+        EXPECT_FALSE(runner->BorrowFrozen(0, tokens[0].back()));
+        Exact(heads[1], next_heads[1]);
+        if (auto r = hash(1, kPositions + 1, restored); !r) return r;
+        EXPECT_EQ(restored, next_state[1]);
+        if (auto r = feature(1, kPositions, features[1]); !r) return r;
+        Exact(features[1], next_features[1]);
+      } else {
+        for (std::uint32_t slot = 0; slot < 2; ++slot) {
+          if (auto r = Single(slot, kPositions, std::span(tokens[slot]).first(1), heads[slot]); !r)
+            return r;
+          next_heads[slot] = heads[slot];
+          if (auto r = feature(slot, kPositions, next_features[slot]); !r) return r;
+          if (auto r = hash(slot, kPositions + 1, next_state[slot]); !r) return r;
+        }
+      }
+      return {};
+    });
+    ASSERT_TRUE(ran) << (ran ? "" : ran.error());
+  }
+  const auto source_layout = runner->CheckpointLayoutId();
+  const auto kept_footprint = (*runner->request_slot(0))->state().used_ranges();
+  const auto artifact = std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts") /
+                        (Variant() == en::Gemma4Variant::k31B
+                             ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+                             : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
+  ASSERT_TRUE(node.TearDown(entered));
+  auto restart = std::make_unique<Lifetime>();
+  auto& fresh_node = restart->node;
+  restart->runner = std::make_unique<en::Gemma4Runner>(
+      fresh_node,
+      en::Gemma4Options{.artifact = artifact,
+                        .out = spill_root,
+                        .variant = Variant(),
+                        .max_rows = 256,
+                        .slots = 2,
+                        .max_head_rows = 2,
+                        .retain_features = true,
+                        .prefill_lookahead = false,
+                        .prepare_state = true,
+                        .spill_place =
+                            [this](std::uint32_t slot) {
+                              return en::LiveState::SpillPlace{.directory = {},
+                                                               .dir = spill_dir,
+                                                               .name = std::to_string(slot) + ".kv",
+                                                               .keep = true};
+                            }},
+      0, 0);
+  auto& fresh = *restart->runner;
+  const auto continued = [&]() -> en::Status {
+    if (auto r = fresh_node.Open(); !r) return r;
+    restart->entered.push_back(&fresh);
+    if (auto r = fresh.Setup(); !r) return r;
+    if (auto r = fresh_node.MapWorkspace(fresh.activations_needed(), fresh.pool_needed()); !r)
+      return r;
+    const auto fixed = fresh_node.catalog().OccupancyOf(fresh_node.domain()).Total().value();
+    fresh_node.SetHostFloor(fresh.host_input_bytes() + fresh.plan_floor_bytes());
+    if (auto r = fresh_node.Start(jitllm::base::Bytes(
+            fixed + fresh.weights().size() * en::kPagedExtent + 2 * fresh_node.StateCapacity()));
+        !r)
+      return r;
+    if (auto r = fresh.Register(); !r) return r;
+    if (auto r = fresh.Bind(); !r) return r;
+    fresh_node.Run();
+    if (!fresh_node.ChargeHost(host_bytes, false)) return en::support::Error("restart witnesses");
+    Grant fresh_grant{fresh_node, host_bytes};
+    if (auto r = fresh.Adopt(0, kPositions, kept_footprint, source_layout); !r) return r;
+    if (auto r = fresh.Restore(0); !r) return r;
+    if (auto r = fresh.SelectSlots(std::array<std::uint32_t, 1>{0}); !r) return r;
+    return fresh_node.WithRequest(0, fresh.closure(), "prepared Gemma4 kept restart", [&]() {
+      std::vector<float> head;
+      EXPECT_FALSE(fresh.BorrowFrozen(0, tokens[0].back()));
+      // The authoritative kept file must supply current state. The prediction
+      // crosses another global page, and is refused rather than zeroing it.
+      if (auto r =
+              fresh.ChunkPrefill(kPositions, std::span(tokens[0]).first(1), head, true, 256, true);
+          !r)
+        return r;
+      Exact(head, next_heads[0]);
+      const auto& stats = (*fresh.request_slot(0))->state().preparation_stats();
+      EXPECT_GT(stats.refused, 0U);
+      EXPECT_EQ(stats.completed_extents, 0U);
+      auto ranges = fresh.CheckpointRanges(kPositions + 1);
+      if (!ranges) return en::Status(en::support::Error(ranges.error()));
+      std::uint64_t count = 0;
+      for (const auto& range : *ranges) count += range.bytes;
+      std::vector<jitllm::catalog::ExtentId> staging;
+      auto pinned = fresh_node.Pinned(count, 0, staging);
+      if (!pinned) return en::Status(en::support::Error(pinned.error()));
+      if (auto r = fresh.CopyState(0, *pinned, *ranges, true); !r) return r;
+      EXPECT_EQ(jitllm::base::Sha256{}
+                    .Update(std::span(static_cast<const std::byte*>(*pinned), count))
+                    .Finish(),
+                next_state[0]);
+      if (auto r = fresh_node.FreePinned(*pinned); !r) return r;
+      auto feature_copy = fresh_node.Pinned(feature_bytes, 0, staging);
+      if (!feature_copy) return en::Status(en::support::Error(feature_copy.error()));
+      if (auto r = fresh.CopyFeatures(0, kPositions, 1, *feature_copy); !r) return r;
+      Exact(std::span(static_cast<const float*>(*feature_copy), fresh.profile().width),
+            next_features[0]);
+      if (auto r = fresh_node.FreePinned(*feature_copy); !r) return r;
+      EXPECT_TRUE(fresh.BorrowFrozen(0, tokens[0].front()));
+      EXPECT_EQ((*fresh.request_slot(0))->completed_positions(), kPositions + 1);
+      EXPECT_TRUE((*fresh.request_slot(0))->state_usable());
+      EXPECT_FALSE(fresh_node.has_pending_state_preparation());
+      return en::Status{};
+    });
+  }();
+  const auto retired = fresh_node.TearDown(restart->entered);
+  if (!retired) std::ignore = restart.release();
+  ASSERT_TRUE(retired) << (retired ? "" : retired.error());
+  ASSERT_TRUE(continued) << (continued ? "" : continued.error());
+  std::cout << "GEMMA4_PREPARED_LIFETIME variant="
+            << (Variant() == en::Gemma4Variant::k31B ? 31 : 26)
+            << " owners=2 positions=" << kPositions
+            << " local_cells=1280 heads_exact=1 features_exact=1 state_exact=1"
+               " checkpoint_peer_kept_restart=1 lookahead=0 registry_drained=1\n";
+}
+TEST_F(Gemma4PreparedGpu, WrappedPreparationPreservesFeaturesCheckpointPeerAndKeptRestart) {
+  PreparedStateControl();
+}
+TEST_F(Gemma31PreparedGpu, WrappedPreparationPreservesFeaturesCheckpointPeerAndKeptRestart) {
+  PreparedStateControl();
+}
+TEST_F(Gemma4PreparedGpu, SuccessfulWrappedWaveWithHeldFutureQuarantinesEveryOwnerAndFeature) {
+  constexpr std::uint32_t kRows = 128, kPast = 1920;
+  ASSERT_LT(runner->layout().local_cells, kPast);
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
+  const auto feature_bytes = std::uint64_t{runner->profile().width} * sizeof(float);
+  const auto host_bytes = 2ULL * runner->profile().vocab * sizeof(float);
+  ASSERT_TRUE(node.ChargeHost(host_bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, host_bytes};
+  auto& observer = lifetime->observer;
+  const auto result = Held([&]() -> en::Status {
+    std::array<std::array<std::int32_t, kRows>, 2> tokens{};
+    std::array<std::vector<float>, 2> heads;
+    for (std::uint32_t id = 0; id < 2; ++id)
+      for (std::size_t i = 0; i < kRows; ++i) tokens[id][i] = prompt[(i + id) % prompt.size()];
+    std::array<en::Gemma4Runner::Work, 2> work{
+        {{0, 0, tokens[0], &heads[0]}, {1, 0, tokens[1], &heads[1]}}};
+    for (std::uint32_t past = 0; past < kPast; past += kRows) {
+      for (auto& w : work) w.n_past = past;
+      if (auto r = runner->WavePrefill(work, true); !r) return r;
+    }
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      auto borrow = runner->BorrowFrozen(id, tokens[id].back());
+      if (!borrow) return en::support::Error(borrow.error());
+      if (auto checked = runner->CheckBorrow(*borrow); !checked) return checked;
+    }
+    const auto global = std::ranges::find_if(runner->layout().tensors,
+                                             [](const auto& tensor) { return !tensor.local; });
+    if (global == runner->layout().tensors.end()) return en::support::Error("test global cache");
+    const auto index = (global->offset + 2 * en::kPagedExtent) / en::kPagedExtent;
+    const auto future = (*runner->request_slot(0))->state().reserved_extents()[index];
+    if (auto armed = node.Call(
+            [&]() -> en::Status {
+              const auto view = node.catalog().Describe(future);
+              if (!view || view->state != jitllm::catalog::ExtentState::kNonresident)
+                return en::support::Error("test future must be unpublished");
+              observer.target = future;
+              observer.generation = view->content_generation;
+              return {};
+            },
+            "hold one completed Gemma4 future");
+        !armed)
+      return armed;
+    std::vector<jitllm::catalog::ExtentId> staging;
+    auto pinned = node.Pinned(feature_bytes, 0, staging);
+    if (!pinned) return en::support::Error(pinned.error());
+    (void)node.TakeTimes(0);
+    for (auto& w : work) w.n_past = kPast;
+    const std::array next = {en::Gemma4Runner::PrefillNext{0, kRows},
+                             en::Gemma4Runner::PrefillNext{1, kRows}};
+    EXPECT_FALSE(runner->WavePrefill(work, true, next, true));
+    EXPECT_EQ(node.TakeTimes(0).steps, 1U);
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      EXPECT_FALSE((*runner->request_slot(id))->state_usable());
+      EXPECT_EQ((*runner->request_slot(id))->completed_positions(), kPast);
+      EXPECT_FALSE(runner->BorrowFrozen(id, tokens[id].back()));
+      EXPECT_FALSE(runner->CopyFeatures(id, kPast - 1, 1, *pinned));
+    }
+    EXPECT_FALSE(node.has_pending_state_preparation());
+    if (auto checked = node.Call(
+            [&]() -> en::Status {
+              EXPECT_TRUE(observer.held);
+              const auto view = node.catalog().Describe(future);
+              if (!view) return en::support::Error("held future missing");
+              EXPECT_EQ(view->state, jitllm::catalog::ExtentState::kResident);
+              EXPECT_FALSE(view->discarded);
+              EXPECT_EQ(view->content_generation, observer.generation);
+              EXPECT_EQ(view->registrations, 1U);
+              observer.target = {};
+              if (!node.catalog().RetireRegistration(observer.registration))
+                return en::support::Error("test future registration release");
+              return {};
+            },
+            "release held Gemma4 future");
+        !checked)
+      return checked;
+    if (auto r = node.FreePinned(*pinned); !r) return r;
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      if (auto r = runner->Clear(id); !r) return r;
+      EXPECT_TRUE((*runner->request_slot(id))->state_usable());
+      EXPECT_EQ((*runner->request_slot(id))->completed_positions(), 0U);
+    }
+    return {};
+  });
+  ASSERT_TRUE(result) << (result ? "" : result.error());
 }
 class Gemma4FeatureHeadCapGpu : public Gemma4FeatureGpu {
  protected:

@@ -732,9 +732,11 @@ std::vector<ExtentId> Gemma4Runner::managed_extents() const {
 }
 std::expected<std::vector<LiveState::Range>, std::string> Gemma4Runner::CheckpointRanges(
     std::uint32_t positions) const {
+  if (layout_.tensors.size() > 120) return Error("Gemma4 state descriptor envelope");
   auto needed = md::Gemma4UsedState(profile_, layout_, positions);
   if (!needed) return Error(needed.error());
   std::vector<LiveState::Range> ranges;
+  ranges.reserve(needed->size());
   for (const auto& r : *needed) ranges.push_back({0, r.offset, r.bytes});
   return ranges;
 }
@@ -1385,7 +1387,7 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
     next_rows += hint.rows;
     if (far) after_rows += hint.after;
   }
-  if (valid_hints && (o_.prefill_lookahead || (plain && o_.capture_ahead))) {
+  if (valid_hints && (o_.prefill_lookahead || o_.prepare_state || (plain && o_.capture_ahead))) {
     for (std::size_t k = 0; k < (far ? ahead.size() : 1U); ++k) {
       bool valid = true;
       std::uint32_t predicted_rows = 0;
@@ -1537,6 +1539,28 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   bool wrote = false, unknown = false, saves_queued = false;
   Status queued;
   RunPath path = RunPath::kEager;
+  if (o_.prepare_state && !verify && known[0] && node_.threaded()) {
+    // Both approved profiles have <=120 K/V tensors. The bounded prediction
+    // vectors fit Setup's existing 1 MiB host descriptor slack; each LiveState
+    // separately funds its owned ticket before allocating acquisition scratch.
+    static_assert(kMaxRequestSlots * 120 * (sizeof(md::StateRange) + sizeof(LiveState::Range)) <
+                  (1U << 20U));
+    std::array<std::vector<LiveState::Range>, kMaxRequestSlots> prepared_ranges;
+    // Authenticate all range descriptors before submitting any optional work.
+    for (const auto& s : ahead[0].segments) {
+      auto ranges = CheckpointRanges(s.n_past + s.rows);
+      if (!ranges) return Error(ranges.error());
+      prepared_ranges[s.slot] = std::move(*ranges);
+    }
+    for (const auto& s : ahead[0].segments) {
+      auto prepared = slots_[s.slot]->live.Prepare(node_, prepared_ranges[s.slot]);
+      if (!prepared) {
+        for (auto& slot : slots_)
+          if (slot) (void)slot->live.FinishPreparation();
+        return Error(prepared.error());
+      }
+    }
+  }
   timer.reset();
   timer.emplace(phase(Phase::kExecution));
   const auto posted = node_.Job(
@@ -1610,6 +1634,19 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
         return sc::JobResult::kQueued;
       },
       "Gemma4 chunk/wave", stream_, meanwhile);
+  // Current work has retired. Settle every owned future acquisition before
+  // rollback, future bindings, or feature/cursor publication can change state.
+  Status preparation;
+  for (auto& slot : slots_)
+    if (slot) {
+      const auto finished = slot->live.FinishPreparation();
+      if (!finished && preparation) preparation = Error(finished.error());
+    }
+  if (!preparation && (wrote || unknown))
+    for (const auto& w : work) {
+      slots_[w.slot]->live.Quarantine();
+      InvalidateFeatures(*slots_[w.slot]);
+    }
   if (!posted || !queued || resources_.launch().faulted()) {
     auto states = States();
     cohort_.CheckFailedJob(node_, stream_, execution_, states);
@@ -1631,6 +1668,7 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
     if (!queued) return queued;
     return !posted ? posted : Error("Gemma4 launch context faulted");
   }
+  if (!preparation) return preparation;
   timer.reset();
   timer.emplace(phase(Phase::kPublication));
   const auto installed = future.InstallAfterCompletion(
