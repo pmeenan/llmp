@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -533,6 +534,92 @@ TEST(DsparkTest, AVerifysGraphIsRowInvariantAndInjectsTheDraftersRing) {
   EXPECT_FALSE(
       kg::BuildDsv4Graph(*third, target_profile, *target, shape, {.inject = options.inject})
           .has_value());
+}
+
+TEST(DsparkTest, PlainTokenWavesKeepEveryFeatureAndIndependentInjectionWrite) {
+  const auto p = WindowOnlyTarget();
+  auto target = md::BindDsv4(p, "deepseek4", Target(p));
+  ASSERT_TRUE(target) << Why(target);
+  const auto& d = md::DsparkDeepSeekV4Flash();
+  auto drafter = md::BindDspark(d, "dflash", Drafter(), p, *target);
+  ASSERT_TRUE(drafter) << Why(drafter);
+  auto state = md::Dsv4State(p, 4096, 512, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state);
+  auto chunk = md::Dsv4Chunk(p, *state, 300, 1, false);
+  ASSERT_TRUE(chunk);
+  kg::Dsv4WaveShape shape;
+  shape.slots.assign(2, kg::Dsv4ShapeOf(*state, *chunk));
+  shape.inject_rows = {1, 1};
+  const auto row_shape = shape;
+  shape.token = true;
+  EXPECT_NE(shape, row_shape);
+  const kg::Dsv4GraphOptions options{
+      .features = d.target_layers,
+      .inject = kg::Dsv4Injection{.profile = &d, .binding = &*drafter, .rows = 0, .ring = 256},
+      .fused = true};
+  std::vector<std::pair<ggml_op, std::array<std::int64_t, 4>>> row_nodes;
+  for (const bool token : {false, true}) {
+    auto arena = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, 2));
+    ASSERT_TRUE(arena);
+    auto graph = kg::BuildDsv4WaveGraph(*arena, p, *target, token ? shape : row_shape, options);
+    ASSERT_TRUE(graph) << Why(graph);
+    ASSERT_NE(graph->joined.features, nullptr);
+    EXPECT_EQ(graph->joined.features->ne[0], 3 * p.width);
+    EXPECT_EQ(graph->joined.features->ne[1], 2);
+    EXPECT_EQ(graph->joined.logits->ne[0], p.vocab);
+    EXPECT_EQ(graph->joined.logits->ne[1], 2);
+    if (token) {
+      ASSERT_NE(graph->joined.token, nullptr);
+      EXPECT_EQ(graph->joined.token->src[0], graph->joined.logits);
+      EXPECT_EQ(graph->joined.token->type, GGML_TYPE_I32);
+      EXPECT_EQ(graph->joined.token->ne[0], 2);
+      EXPECT_EQ(kg::JitllmOpInt(graph->joined.token, 1),
+                static_cast<std::int32_t>(kg::ArgmaxFlavor::kHostGreedy));
+    } else {
+      EXPECT_EQ(graph->joined.token, nullptr);
+    }
+    std::set<const ggml_tensor*> rings;
+    std::size_t writes = 0;
+    for (const auto& slot : graph->slots) {
+      ASSERT_TRUE(slot.inject);
+      EXPECT_EQ(slot.inject->cells->ne[0], 1);
+      EXPECT_EQ(slot.inject->ring.size(), d.blocks.layers);
+      for (const auto* ring : slot.inject->ring) EXPECT_TRUE(rings.insert(ring).second);
+    }
+    std::vector<std::pair<ggml_op, std::array<std::int64_t, 4>>> nodes;
+    for (const auto* node : graph->joined.nodes) {
+      if (node != graph->joined.token) nodes.emplace_back(node->op, std::to_array(node->ne));
+      if (node->op == GGML_OP_SET_ROWS && rings.contains(node->src[2])) {
+        ++writes;
+        EXPECT_EQ(node->src[0]->ne[1], 1);
+      }
+    }
+    EXPECT_EQ(writes, 2 * d.blocks.layers);
+    if (token)
+      EXPECT_EQ(nodes, row_nodes);  // Only argmax is added; injection suffix remains.
+    else
+      row_nodes = std::move(nodes);
+    BindAll(graph->joined, graph->joined.nodes);
+    auto device = ModelDevice(false);
+    device.fuse_norms = true;
+    device.vector_floats = true;
+    auto plan = kg::PlanGraph(graph->joined.nodes, false, device);
+    ASSERT_TRUE(plan) << Why(plan);
+    std::vector<ggml_tensor*> kept{graph->joined.logits};
+    if (token) kept.push_back(graph->joined.token);
+    EXPECT_TRUE(kg::PlaceActivations(graph->joined.nodes, *plan, graph->inputs(), 256, kept));
+  }
+  auto bad = shape;
+  bad.slots[0].rows = 2;
+  auto arena = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, 2));
+  ASSERT_TRUE(arena);
+  EXPECT_FALSE(kg::BuildDsv4WaveGraph(*arena, p, *target, bad, options));
+  bad = shape;
+  bad.inject_rows.pop_back();
+  EXPECT_FALSE(kg::BuildDsv4WaveGraph(*arena, p, *target, bad, options));
+  auto no_features = options;
+  no_features.features.clear();
+  EXPECT_FALSE(kg::BuildDsv4WaveGraph(*arena, p, *target, shape, no_features));
 }
 
 TEST(DsparkTest, AFrontierHeadRetainsEveryFeatureAndPartialInjectionRow) {

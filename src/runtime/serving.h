@@ -1019,9 +1019,10 @@ class Llm : public Served {
     // was published (DeviceGreedy).
     std::optional<std::int32_t> chosen;
   };
-  // Whether a prepared unit may take its token from the device's greedy
-  // choice instead of a published row: plain, greedy (no sampling), and
-  // no caller of its rows (on_logits, keep_logits).
+  // Greedy output with no caller of its rows. An adapter may use this for
+  // an injected plain wave whose session still applies speculative results.
+  static bool GreedyWithoutRows(const PreparedGeneration& unit);
+  // Ordinary plain dispatch additionally refuses speculative steps.
   static bool DeviceGreedy(const PreparedGeneration& unit);
   // Success means the native unit completed. Each independent judgement
   // supplies its own result. A shared error supplies no result to apply.

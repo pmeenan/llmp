@@ -6,6 +6,8 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <tuple>
@@ -36,7 +38,8 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     std::string name = "/home/pmeenan/.cache/jitllm-plain-tokens-XXXXXX";
     ASSERT_NE(mkdtemp(name.data()), nullptr);
     scratch = name;
-    const bool gguf = GetParam() == 1, deepseek = GetParam() == 2;
+    const bool gguf = GetParam() == 1, deepseek = GetParam() >= 2;
+    const bool adaptive = GetParam() == 3;
     life->roles.installed = gguf ? "/home/pmeenan/.local/share/jitllm/qgguf-artifacts"
                                  : "/home/pmeenan/.local/share/jitllm/m3-artifacts";
     life->roles.spill = scratch / "spill";
@@ -50,6 +53,10 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     entry.artifact = deepseek ? "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234"
                      : gguf   ? "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78"
                               : "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93";
+    if (adaptive) {
+      entry.drafter = "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5";
+      entry.overrides["wave_form"] = std::string("plain");
+    }
     if (!deepseek) {
       const std::filesystem::path checkpoint =
           "/home/pmeenan/.local/share/jitllm/models/Mia-AiLab/"
@@ -61,7 +68,7 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     entry.overrides["prefill_chunk"] = std::int64_t{deepseek ? 4096 : 512};
     entry.overrides["max_slots"] = std::int64_t{2};
     life->config.models.push_back(entry);
-    life->options.plain = true;
+    life->options.plain = !adaptive;
     ASSERT_FALSE(life->options.diagnostic_plain_device_tokens.has_value());
     life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, stderr);
     const auto started = life->server->Start(true);
@@ -120,11 +127,122 @@ TEST_P(PlainTokensServingGpu, ScalarJoinedMixedAndSpilledRowsMatchDeviceTokens) 
     return jitllm::test::CheckPlainServing(
         *life->server, *model, runner.vocab(),
         [&](std::uint32_t id) { return StateHash(runner, id); },
-        [&] { return runner.device_token_outputs(); });
+        [&] { return runner.device_token_outputs(); },
+        GetParam() == 3 ? std::array<std::uint64_t, 2>{0, 4} : std::array<std::uint64_t, 2>{3, 5});
   };
-  const auto r = GetParam() == 2 ? exercise(dynamic_cast<en::Dsv4Runner&>(model->paged()))
+  const auto r = GetParam() >= 2 ? exercise(dynamic_cast<en::Dsv4Runner&>(model->paged()))
                                  : exercise(dynamic_cast<en::Qwen38Runner&>(model->paged()));
   ASSERT_TRUE(r) << (r ? "" : r.error());
+  if (GetParam() == 3) {
+    // The ordinary scalar path still speculates after C2 -> C1 departure.
+    // Now consume features injected by token-only C2 through a real joined
+    // draft/verify, comparing complete state (including the wrapped ring).
+    auto& runner = dynamic_cast<en::Dsv4Runner&>(model->paged());
+    ASSERT_TRUE(runner.speculative());
+    ASSERT_GT(runner.drafter_state_bytes(), 0U);
+    ASSERT_TRUE(life->server->node().ChargeHost(64ULL << 20U, false));
+    struct Charge {
+      en::PagedNode& node;
+      ~Charge() { node.UnchargeHost(64ULL << 20U); }
+    } charge{life->server->node()};
+    std::array<en::Dsv4Runner::Slot*, 2> slots{};
+    std::array<rt::Llm::Branch*, 2> branches{};
+    for (std::uint32_t i = 0; i < 2; ++i) {
+      auto slot = runner.request_slot(i);
+      ASSERT_TRUE(slot);
+      slots[i] = *slot;
+      auto branch = model->branch(i);
+      ASSERT_TRUE(branch);
+      branches[i] = *branch;
+    }
+    ASSERT_TRUE(life->server->SelectRequestBranches(*model, branches));
+    std::array<std::vector<std::int32_t>, 2> expected_drafts;
+    std::array<std::vector<float>, 2> expected_heads;
+    std::array<jitllm::base::Sha256Digest, 2> expected_state{}, expected_settled{};
+    const auto finite = [&](const std::vector<float>& rows, std::uint32_t count) {
+      return rows.size() == std::size_t{count} * runner.vocab() &&
+             std::ranges::all_of(rows, [](float x) { return std::isfinite(x); });
+    };
+    for (const bool device : {false, true}) {
+      std::array<std::uint32_t, 2> past{257, 258};
+      std::array<std::int32_t, 2> anchors{};
+      std::array<std::vector<float>, 2> rows;
+      for (std::uint32_t i = 0; i < 2; ++i) {
+        ASSERT_TRUE(slots[i]->Clear());
+        std::vector<std::int32_t> seed(past[i]);
+        constexpr std::array<std::int32_t, 7> actual{2, 818, 5279, 529, 7001, 563, 42};
+        for (std::size_t j = 0; j < seed.size(); ++j) seed[j] = actual[(j + i) % actual.size()];
+        ASSERT_TRUE(slots[i]->Chunk(0, seed, rows[i], en::Dsv4ChunkKind::kInject));
+        ASSERT_TRUE(finite(rows[i], 1));
+        anchors[i] = static_cast<std::int32_t>(std::ranges::max_element(rows[i]) - rows[i].begin());
+      }
+      const auto before = runner.device_token_outputs();
+      const auto replayed = runner.wave_stats().replayed;
+      for (unsigned step = 0; step < 3; ++step) {
+        std::array<std::int32_t, 2> chosen{};
+        std::array<en::Dsv4Runner::WaveWork, 2> work;
+        for (std::uint32_t i = 0; i < 2; ++i)
+          work[i] = {.slot = slots[i],
+                     .pos = past[i],
+                     .anchor = anchors[i],
+                     .logits = device ? nullptr : &rows[i],
+                     .token = device ? &chosen[i] : nullptr};
+        ASSERT_TRUE(runner.DecodeWave(work));
+        for (std::uint32_t i = 0; i < 2; ++i) {
+          if (!device) {
+            ASSERT_TRUE(finite(rows[i], 1));
+            chosen[i] =
+                static_cast<std::int32_t>(std::ranges::max_element(rows[i]) - rows[i].begin());
+          }
+          anchors[i] = chosen[i];
+          ++past[i];
+        }
+      }
+      EXPECT_EQ(runner.device_token_outputs() - before, device ? 6U : 0U);
+      EXPECT_GT(runner.wave_stats().replayed, replayed);
+      std::array<std::vector<std::int32_t>, 2> drafts;
+      for (std::uint32_t i = 0; i < 2; ++i) {
+        auto state = StateHash(runner, i);
+        ASSERT_TRUE(state);
+        if (device)
+          EXPECT_EQ(*state, expected_state[i]);
+        else
+          expected_state[i] = *state;
+      }
+      const auto drafts_before = runner.draft_stats();
+      std::array<en::Dsv4Runner::WaveWork, 2> verify;
+      for (std::uint32_t i = 0; i < 2; ++i)
+        verify[i] = {.slot = slots[i],
+                     .pos = past[i],
+                     .anchor = anchors[i],
+                     .rows = 3,
+                     .drafts = &drafts[i],
+                     .logits = &rows[i]};
+      ASSERT_TRUE(runner.DraftVerifyWave(verify));
+      EXPECT_GT(runner.draft_stats().eager + runner.draft_stats().captured +
+                    runner.draft_stats().replayed,
+                drafts_before.eager + drafts_before.captured + drafts_before.replayed);
+      for (std::uint32_t i = 0; i < 2; ++i) {
+        ASSERT_EQ(drafts[i].size(), runner.draft_rows());
+        ASSERT_TRUE(finite(rows[i], 3));
+        if (device) {
+          EXPECT_EQ(drafts[i], expected_drafts[i]);
+          EXPECT_EQ(rows[i], expected_heads[i]);
+        } else {
+          expected_drafts[i] = drafts[i];
+          expected_heads[i] = rows[i];
+        }
+        ASSERT_TRUE(slots[i]->Accept(1));
+        ASSERT_TRUE(slots[i]->Rollback());
+        auto state = StateHash(runner, i);
+        ASSERT_TRUE(state);
+        if (device)
+          EXPECT_EQ(*state, expected_settled[i]);
+        else
+          expected_settled[i] = *state;
+      }
+    }
+  }
 }
 
-INSTANTIATE_TEST_SUITE_P(ApprovedTargets, PlainTokensServingGpu, ::testing::Values(0U, 1U, 2U));
+INSTANTIATE_TEST_SUITE_P(ApprovedTargets, PlainTokensServingGpu, ::testing::Values(0U, 1U, 2U, 3U));

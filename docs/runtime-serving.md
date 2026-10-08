@@ -565,9 +565,11 @@ Plain non-speculative greedy decode without requested logits selects its
 I32 token on the GPU for DeepSeek, native/GGUF Qwen and Gemma; only four bytes
 per owner return to the host. Complete head arithmetic is unchanged. The
 prepared scalar hook, scalar fallback and homogeneous joined routes share
-eligibility and validate completed token IDs before publication. Sampling,
-scoring and DeepSeek's adaptive speculative-model plain decode retain rows.
-Qwen speculative Draft/Verify keeps its existing lean ID contract. Prompt
+eligibility and validate completed token IDs before publication. Sampling and
+scoring retain rows. DeepSeek adaptive joined plain decode also publishes
+device IDs through the existing kept-token contract, preserving every target
+feature and drafter-ring write; scalar speculation and draft/verify are
+unchanged. Qwen speculative Draft/Verify keeps its existing lean ID contract. Prompt
 completion still publishes its first-token head to the host across families;
 that compatible device-publication extension remains open. Plain device
 argmax matches host ties and NaN placement, including a NaN at index zero.

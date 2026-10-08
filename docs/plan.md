@@ -384,9 +384,11 @@ family" guide, and its long-context scaling work.
           noncausal block masks are checked but not adopted after a neutral short
           screen; optional compressed masks remain open.
         - [ ] **T23** Single-request prefill lookahead/capture ahead.
-        - [ ] **T27** Plain greedy token on GPU: non-spec target scalar/joined
-          publication adopted with exact states/heads; compatible adaptive-spec
-          `PlainWave` remains open. [Controls](experiments/plain-gpu-tokens/README.md).
+        - [x] **T27** Plain greedy decode token on GPU: target scalar/joined and
+          adaptive-spec `PlainWave` publication adopted, preserving feature
+          injection, drafter-ring state and actual verify continuations. The
+          bounded injected C2 decode mean improves 0.37%; whole paid is neutral.
+          [Controls](experiments/plain-gpu-tokens/README.md).
         - [ ] **T29** Operand joins by view.
         - [ ] **T37** Shape-pinned library GEMM algorithms.
         - [ ] **T39** Device greedy verify verdicts.

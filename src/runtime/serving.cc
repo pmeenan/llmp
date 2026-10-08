@@ -705,6 +705,12 @@ class Dsv4 final : public Llm {
   // its token chosen as an ordinary step's (greedy: the argmax). A failed
   // choice keeps the processed anchor, as an ordinary plain step's does.
   Status PlainWave(std::span<PreparedGeneration> prepared) {
+    if (prepared.empty() || prepared.size() > engine::Dsv4Runner::kRequestSlots)
+      return Error("a DeepSeek plain wave exceeds its bounded owner outputs");
+    const bool greedy =
+        options_.device_tokens &&
+        std::ranges::all_of(prepared, [](const auto& unit) { return GreedyWithoutRows(unit); });
+    std::array<std::int32_t, engine::Dsv4Runner::kRequestSlots> tokens{};
     std::vector<engine::Dsv4Runner::WaveWork> work;
     std::vector<std::vector<float>> rows(prepared.size());
     work.reserve(prepared.size());
@@ -718,13 +724,20 @@ class Dsv4 final : public Llm {
                       .anchor = unit.step.all.back(),
                       .rows = 1,
                       .drafts = nullptr,
-                      .logits = &rows[i]});
+                      .logits = greedy ? nullptr : &rows[i],
+                      .token = greedy ? &tokens[i] : nullptr});
     }
     if (auto ran = runner_.DecodeWave(work); !ran) {
       return ran;
     }
+    // DecodeWave has completed and validated every ID before any owner sees
+    // one. These sessions still apply speculative results, with no draft kept.
     for (std::size_t i = 0; i < prepared.size(); ++i) {
       PreparedGeneration& unit = prepared[i];
+      if (greedy) {
+        unit.kept = {tokens[i]};
+        continue;
+      }
       auto chosen = Choose(*unit.branch, rows[i], std::uint64_t{unit.step.position} + 1);
       if (!chosen) {
         unit.result = std::unexpected(chosen.error());
@@ -5163,9 +5176,13 @@ Status Llm::GenerationSession::FailAfterAnchor(std::string error) {
   return ran_;
 }
 
+bool Llm::GreedyWithoutRows(const PreparedGeneration& unit) {
+  return unit.branch != nullptr && unit.session != nullptr && !unit.step.need_logits &&
+         !unit.branch->sampling_.has_value();
+}
+
 bool Llm::DeviceGreedy(const PreparedGeneration& unit) {
-  return unit.branch != nullptr && unit.session != nullptr && !unit.step.speculative &&
-         !unit.step.need_logits && !unit.branch->sampling_.has_value();
+  return !unit.step.speculative && GreedyWithoutRows(unit);
 }
 
 Status Llm::GenerationSession::ApplyChosen(std::int32_t token) {

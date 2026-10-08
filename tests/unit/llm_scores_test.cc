@@ -293,6 +293,15 @@ class PlainDeviceFake final : public FakeLlm {
   bool fail = false;
   unsigned device_calls = 0;
   std::optional<std::int32_t> observed_chosen;
+  std::pair<bool, bool> Eligibility(GenerationSession* session, bool speculative, bool rows,
+                                    bool has_branch = true) {
+    PreparedGeneration unit;
+    unit.session = session;
+    unit.branch = has_branch ? &default_branch() : nullptr;
+    unit.step.speculative = speculative;
+    unit.step.need_logits = rows;
+    return {GreedyWithoutRows(unit), DeviceGreedy(unit)};
+  }
 
  protected:
   std::optional<rt::Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
@@ -313,6 +322,32 @@ class PlainDeviceFake final : public FakeLlm {
     return ran;
   }
 };
+
+TEST(LlmScores, RowFreeGreedyEligibilityPreservesOrdinarySpeculationRefusal) {
+  for (const bool sampled : {false, true}) {
+    PlainDeviceFake model;
+    std::vector<float> last;
+    ASSERT_TRUE(model.Prefill(std::array<std::int32_t, 1>{0}, last));
+    rt::GenerateOptions options;
+    options.max_tokens = 2;
+    if (sampled)
+      options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 4};
+    rt::Generation out;
+    auto session = model.BeginGeneration(last, options, out);
+    ASSERT_TRUE(session);
+    for (const bool spec : {false, true}) {
+      for (const bool rows : {false, true}) {
+        const bool row_free = !sampled && !rows;
+        EXPECT_EQ(model.Eligibility(session->get(), spec, rows),
+                  (std::pair{row_free, row_free && !spec}));
+      }
+    }
+    EXPECT_EQ(model.Eligibility(nullptr, false, false), (std::pair{false, false}));
+    EXPECT_EQ(model.Eligibility(session->get(), false, false, false), (std::pair{false, false}));
+    (*session)->Cancel();
+    EXPECT_TRUE((*session)->Finish());
+  }
+}
 
 TEST(LlmScores, PreparedPlainAndScalarFallbackPublishOnlySuccessfulDeviceTokens) {
   for (const bool scalar : {false, true}) {

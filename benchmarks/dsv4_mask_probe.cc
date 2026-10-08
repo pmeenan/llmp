@@ -4,6 +4,7 @@
 // One production-width DeepSeek target mask factor: independent prefills,
 // joined C2 natural decode, full head bytes and initialized-state hashes.
 // Usage: ARTIFACT IDS0.i32 IDS1.i32 OUT host|device|tokens-host|tokens-device
+//        ARTIFACT IDS0.i32 IDS1.i32 OUT injected-host|injected-device DRAFTER
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -100,16 +101,19 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (argc != 6 || !jitllm::platform::InstallCrashPolicy("dsv4-mask-probe")) return 2;
+  if ((argc != 6 && argc != 7) || !jitllm::platform::InstallCrashPolicy("dsv4-mask-probe"))
+    return 2;
   if (std::string_view(argv[1]) == "prepare") {
+    if (argc != 6) return 2;
     auto result = Prepare(argv[2], argv[3], argv[4], argv[5]);
     if (!result) std::cerr << result.error() << '\n';
     return result ? 0 : 1;
   }
   const std::string_view mode = argv[5];
-  const bool token_factor = mode == "tokens-host" || mode == "tokens-device";
-  const bool token_device = mode == "tokens-device";
-  if (!token_factor && mode != "host" && mode != "device") return 2;
+  const bool injected = mode == "injected-host" || mode == "injected-device";
+  const bool token_factor = injected || mode == "tokens-host" || mode == "tokens-device";
+  const bool token_device = mode == "tokens-device" || mode == "injected-device";
+  if ((!token_factor && mode != "host" && mode != "device") || argc != (injected ? 7 : 6)) return 2;
   const bool device = mode == "device";
   const fs::path out = argv[4];
   if (!fs::create_directory(out)) return 2;
@@ -140,7 +144,7 @@ int main(int argc, char** argv) {
                           .out = out,
                           .context = 8704,
                           .max_rows = 4096,
-                          .drafter = {},
+                          .drafter = injected ? fs::path(argv[6]) : fs::path{},
                           .frontier_head = true,
                           .wave_slots = 2,
                           .device_raw_masks = token_factor || device,
@@ -157,13 +161,18 @@ int main(int argc, char** argv) {
   void* pinned = nullptr;
   std::array<std::string, 2> state_hashes;
   std::array<std::uint64_t, 2> state_bytes{};
-  const auto snapshot = [&]() -> en::Status {
-    std::ofstream ranges_file(out / "state-ranges.txt", std::ios::noreplace);
+  std::array<std::string, 2> settled_hashes;
+  std::array<std::uint64_t, 2> settled_bytes{};
+  const auto snapshot = [&](bool settled = false) -> en::Status {
+    auto& hashes = settled ? settled_hashes : state_hashes;
+    auto& bytes = settled ? settled_bytes : state_bytes;
+    std::ofstream ranges_file(out / (settled ? "settled-ranges.txt" : "state-ranges.txt"),
+                              std::ios::noreplace);
     for (std::uint32_t slot = 0; slot < 2; ++slot) {
       const auto ranges = slots[slot]->used_state_ranges();
       jitllm::base::Sha256 hash;
       for (const auto& range : ranges) {
-        state_bytes[slot] += range.bytes;
+        bytes[slot] += range.bytes;
         ranges_file << slot << ' ' << range.region << ' ' << range.offset << ' ' << range.bytes
                     << '\n';
         for (std::uint64_t at = 0; at < range.bytes;) {
@@ -179,7 +188,7 @@ int main(int argc, char** argv) {
           at += part.bytes;
         }
       }
-      state_hashes[slot] = jitllm::base::ToHex(hash.Finish());
+      hashes[slot] = jitllm::base::ToHex(hash.Finish());
     }
     ranges_file.flush();
     return ranges_file ? en::Status{} : Error("state range output failed");
@@ -189,8 +198,8 @@ int main(int argc, char** argv) {
     life->entered.push_back(&runner);
     if (auto r = runner.Setup(); !r) return r;
     if (runner.wave_capacity() != 2 || runner.state_layout().raw_cells != 4352 ||
-        runner.speculative())
-      return Error("production target C2/ring envelope differs");
+        runner.speculative() != injected || (injected && runner.drafter_state_bytes() == 0))
+      return Error("production target C2/ring/injection envelope differs");
     for (std::uint32_t slot = 0; slot < 2; ++slot) {
       auto found = runner.request_slot(slot);
       if (!found) return Error(found.error());
@@ -242,8 +251,9 @@ int main(int argc, char** argv) {
           past[i] = 0;
           while (past[i] < prefix[i]) {
             const auto rows = std::min(4096U, prefix[i] - past[i]);
-            if (auto r = slots[i]->Chunk(past[i], std::span(histories[i]).subspan(past[i], rows),
-                                         heads[i]);
+            if (auto r = slots[i]->Chunk(
+                    past[i], std::span(histories[i]).subspan(past[i], rows), heads[i],
+                    injected ? en::Dsv4ChunkKind::kInject : en::Dsv4ChunkKind::kPlain);
                 !r)
               return r;
             past[i] += rows;
@@ -311,11 +321,50 @@ int main(int argc, char** argv) {
                   !r)
                 return r;
               const std::array<std::int32_t, 1> anchor{histories[i].back()};
-              if (auto r = slots[i]->Chunk(past[i], anchor, heads[i]); !r) return r;
+              if (auto r = slots[i]->Chunk(
+                      past[i], anchor, heads[i],
+                      injected ? en::Dsv4ChunkKind::kInject : en::Dsv4ChunkKind::kPlain);
+                  !r)
+                return r;
               if (!Best(heads[i], runner.vocab()))
                 return Error("finite complete continuation head required");
               if (auto r = Save<float>(out / ("head" + std::to_string(i) + ".f32"), heads[i]); !r)
                 return r;
+              if (injected) {
+                // A real draft consumes the ring fed by every plain decode.
+                // Complete verify heads/proposals are observations outside paid work.
+                const auto next = Best(heads[i], runner.vocab());
+                if (!next) return Error(next.error());
+                std::vector<std::int32_t> drafts;
+                std::vector<float> verified;
+                if (auto r = slots[i]->DraftVerify(past[i] + 1, *next, 3, drafts, verified); !r)
+                  return r;
+                if (drafts.size() != runner.draft_rows() ||
+                    verified.size() != 3 * std::size_t{runner.vocab()} ||
+                    !std::ranges::all_of(verified, [](float v) { return std::isfinite(v); }) ||
+                    !std::ranges::all_of(drafts, [&](auto id) {
+                      return id >= 0 && std::cmp_less(id, runner.vocab());
+                    }))
+                  return Error("complete finite draft/verify continuation required");
+                if (auto r =
+                        Save<std::int32_t>(out / ("draft" + std::to_string(i) + ".i32"), drafts);
+                    !r)
+                  return r;
+                if (auto r = Save<float>(out / ("verify" + std::to_string(i) + ".f32"), verified);
+                    !r)
+                  return r;
+                if (auto r = slots[i]->Accept(1); !r) return r;
+                if (auto r = slots[i]->Rollback(); !r) return r;
+              }
+            }
+            if (injected) {
+              if (auto r = snapshot(true); !r) return r;
+              std::cout << "PLAIN_TOKEN_INJECTION drafter_state_bytes="
+                        << runner.drafter_state_bytes() << " continued_draft_verifies=2"
+                        << " settled0_bytes=" << settled_bytes[0]
+                        << " settled0=" << settled_hashes[0]
+                        << " settled1_bytes=" << settled_bytes[1]
+                        << " settled1=" << settled_hashes[1] << '\n';
             }
             std::cout
                 << std::setprecision(17)

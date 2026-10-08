@@ -630,6 +630,529 @@
         ],
         "state_ranges_sha256": "ecc5b4c977373a37c3df7a3908b07815d5ef93b1cae66bc22263392c6142b9b6"
       }
+    },
+    "deepseek-injected-c2": {
+      "host": "spark",
+      "checked_sha256": "d8ae39b5dcca6491fb2b5efbe407411ac3ea1cd393e353516d5fb88a7a92a10c",
+      "source_sha256": "76b3fdb1d0a9572f635a81a8dc32ab02aef4e3282b889b7868aba39cd0e57f25",
+      "method_sha256": "70297a00d696e825511463bcdf0ce59fd6dfe6eb3257aa7fc1685d3390b00d85",
+      "elf_sha256": "2acceec3f83596658eefcc4853c46127418979b67233dc8b545bff166e3b4ece",
+      "metrics": {
+        "prefill_seconds": {
+          "off": [
+            11.236262571,
+            11.311183506
+          ],
+          "on": [
+            11.265224638,
+            11.31063024
+          ],
+          "off_mean": 11.2737230385,
+          "on_mean": 11.287927439,
+          "delta_percent": 0.12599564892177284,
+          "old_bookend_percent": 0.6667780725716277,
+          "off_range": [
+            11.236262571,
+            11.311183506
+          ],
+          "on_range": [
+            11.265224638,
+            11.31063024
+          ]
+        },
+        "decode_seconds": {
+          "off": [
+            1.867578391,
+            1.878700714
+          ],
+          "on": [
+            1.865759472,
+            1.86676412
+          ],
+          "off_mean": 1.8731395525,
+          "on_mean": 1.8662617959999999,
+          "delta_percent": -0.36717800821731705,
+          "old_bookend_percent": 0.5955478524274804,
+          "off_range": [
+            1.867578391,
+            1.878700714
+          ],
+          "on_range": [
+            1.865759472,
+            1.86676412
+          ]
+        },
+        "paid_seconds": {
+          "off": [
+            13.103840962,
+            13.189884220000001
+          ],
+          "on": [
+            13.13098411,
+            13.177394360000001
+          ],
+          "off_mean": 13.146862591000001,
+          "on_mean": 13.154189235,
+          "delta_percent": 0.05572922017922366,
+          "old_bookend_percent": 0.656626238440472,
+          "off_range": [
+            13.103840962,
+            13.189884220000001
+          ],
+          "on_range": [
+            13.13098411,
+            13.177394360000001
+          ]
+        }
+      },
+      "records": [
+        {
+          "name": "O1",
+          "device_tokens": false,
+          "command": [
+            "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_dsv4_mask_probe",
+            "/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids0.i32",
+            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids1.i32",
+            "/home/pmeenan/scratch/m35-dspark-plain-tokens/screen1/O1/out",
+            "injected-host",
+            "/home/pmeenan/.local/share/jitllm/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
+          ],
+          "timeout_seconds": 145,
+          "returncode": 0,
+          "observed_exit_code": 0,
+          "elapsed_seconds": 42.43690206995234,
+          "summary": {
+            "mode": "off",
+            "context": "8704",
+            "chunk": "4096",
+            "slots": "2",
+            "format": "gguf",
+            "decode_units": "32",
+            "device_tokens": "0",
+            "prefill_seconds": "11.236262570999999",
+            "decode_seconds": "1.8675783909999999",
+            "paid_seconds": "13.103840962",
+            "warm_prefill_seconds": "11.418751034",
+            "warm_decode_seconds": "1.879669005",
+            "eager": "4",
+            "captured": "0",
+            "replayed": "32",
+            "wave_replayed": "32",
+            "selected_raw_masks": "10",
+            "state0_bytes": "271794176",
+            "state0": "7abe58600925a90b99ed0370f7df8824e5c6893b2276de0eefcef54a8a77b0fb",
+            "state1_bytes": "271794176",
+            "state1": "055a9b3b0a52d1fd10890e49b6b736066b5aca8cd8affc06536fd41e5150d45c"
+          },
+          "setup": {
+            "budget": "112582552064",
+            "fixed": "2530306560",
+            "activations": "2143289344",
+            "scratch": "163577856",
+            "host_inputs": "69206016"
+          }
+        },
+        {
+          "name": "A1",
+          "device_tokens": true,
+          "command": [
+            "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_dsv4_mask_probe",
+            "/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids0.i32",
+            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids1.i32",
+            "/home/pmeenan/scratch/m35-dspark-plain-tokens/screen1/A1/out",
+            "injected-device",
+            "/home/pmeenan/.local/share/jitllm/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
+          ],
+          "timeout_seconds": 145,
+          "returncode": 0,
+          "observed_exit_code": 0,
+          "elapsed_seconds": 42.3691819710657,
+          "summary": {
+            "mode": "on",
+            "context": "8704",
+            "chunk": "4096",
+            "slots": "2",
+            "format": "gguf",
+            "decode_units": "32",
+            "device_tokens": "64",
+            "prefill_seconds": "11.265224637999999",
+            "decode_seconds": "1.8657594719999999",
+            "paid_seconds": "13.13098411",
+            "warm_prefill_seconds": "11.424770078",
+            "warm_decode_seconds": "1.8827159149999999",
+            "eager": "4",
+            "captured": "0",
+            "replayed": "32",
+            "wave_replayed": "32",
+            "selected_raw_masks": "10",
+            "state0_bytes": "271794176",
+            "state0": "7abe58600925a90b99ed0370f7df8824e5c6893b2276de0eefcef54a8a77b0fb",
+            "state1_bytes": "271794176",
+            "state1": "055a9b3b0a52d1fd10890e49b6b736066b5aca8cd8affc06536fd41e5150d45c"
+          },
+          "setup": {
+            "budget": "112582552064",
+            "fixed": "2530306560",
+            "activations": "2143289344",
+            "scratch": "163577856",
+            "host_inputs": "69206016"
+          }
+        },
+        {
+          "name": "A2",
+          "device_tokens": true,
+          "command": [
+            "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_dsv4_mask_probe",
+            "/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids0.i32",
+            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids1.i32",
+            "/home/pmeenan/scratch/m35-dspark-plain-tokens/screen1/A2/out",
+            "injected-device",
+            "/home/pmeenan/.local/share/jitllm/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
+          ],
+          "timeout_seconds": 145,
+          "returncode": 0,
+          "observed_exit_code": 0,
+          "elapsed_seconds": 42.439537764992565,
+          "summary": {
+            "mode": "on",
+            "context": "8704",
+            "chunk": "4096",
+            "slots": "2",
+            "format": "gguf",
+            "decode_units": "32",
+            "device_tokens": "64",
+            "prefill_seconds": "11.31063024",
+            "decode_seconds": "1.86676412",
+            "paid_seconds": "13.177394360000001",
+            "warm_prefill_seconds": "11.471214539",
+            "warm_decode_seconds": "1.8829771609999999",
+            "eager": "4",
+            "captured": "0",
+            "replayed": "32",
+            "wave_replayed": "32",
+            "selected_raw_masks": "10",
+            "state0_bytes": "271794176",
+            "state0": "7abe58600925a90b99ed0370f7df8824e5c6893b2276de0eefcef54a8a77b0fb",
+            "state1_bytes": "271794176",
+            "state1": "055a9b3b0a52d1fd10890e49b6b736066b5aca8cd8affc06536fd41e5150d45c"
+          },
+          "setup": {
+            "budget": "112582552064",
+            "fixed": "2530306560",
+            "activations": "2143289344",
+            "scratch": "163577856",
+            "host_inputs": "69206016"
+          }
+        },
+        {
+          "name": "O2",
+          "device_tokens": false,
+          "command": [
+            "/home/pmeenan/src/jitLLM-wt/gemma-state-phase-attribution/build/spark-native/benchmarks/jitllm_dsv4_mask_probe",
+            "/home/pmeenan/.local/share/jitllm/m3-artifacts/8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
+            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids0.i32",
+            "/home/pmeenan/.local/share/jitllm/ds4-mask4/ids1.i32",
+            "/home/pmeenan/scratch/m35-dspark-plain-tokens/screen1/O2/out",
+            "injected-host",
+            "/home/pmeenan/.local/share/jitllm/m3-artifacts/dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
+          ],
+          "timeout_seconds": 145,
+          "returncode": 0,
+          "observed_exit_code": 0,
+          "elapsed_seconds": 42.5201005639974,
+          "summary": {
+            "mode": "off",
+            "context": "8704",
+            "chunk": "4096",
+            "slots": "2",
+            "format": "gguf",
+            "decode_units": "32",
+            "device_tokens": "0",
+            "prefill_seconds": "11.311183506000001",
+            "decode_seconds": "1.878700714",
+            "paid_seconds": "13.189884220000001",
+            "warm_prefill_seconds": "11.458991643999999",
+            "warm_decode_seconds": "1.8953104089999999",
+            "eager": "4",
+            "captured": "0",
+            "replayed": "32",
+            "wave_replayed": "32",
+            "selected_raw_masks": "10",
+            "state0_bytes": "271794176",
+            "state0": "7abe58600925a90b99ed0370f7df8824e5c6893b2276de0eefcef54a8a77b0fb",
+            "state1_bytes": "271794176",
+            "state1": "055a9b3b0a52d1fd10890e49b6b736066b5aca8cd8affc06536fd41e5150d45c"
+          },
+          "setup": {
+            "budget": "112582552064",
+            "fixed": "2530306560",
+            "activations": "2143289344",
+            "scratch": "163577856",
+            "host_inputs": "69206016"
+          }
+        }
+      ],
+      "exact_crossarm": [
+        {
+          "states": [
+            {
+              "bytes": 271794176,
+              "sha256": "7abe58600925a90b99ed0370f7df8824e5c6893b2276de0eefcef54a8a77b0fb"
+            },
+            {
+              "bytes": 271794176,
+              "sha256": "055a9b3b0a52d1fd10890e49b6b736066b5aca8cd8affc06536fd41e5150d45c"
+            }
+          ],
+          "histories": [
+            {
+              "bytes": 17540,
+              "sha256": "fc5201a9e43774b7096c5d79e2306c17a4baf89baca3a891f78e6ca8422e222c"
+            },
+            {
+              "bytes": 18564,
+              "sha256": "5c06f9ac89d9055c1a6deef6c7733b75e2181b4aa1918edeb7f7d1a5eb0eb21e"
+            }
+          ],
+          "heads": [
+            {
+              "bytes": 517120,
+              "sha256": "d3300a613d083dcc5cc29311a98b92585c4df383069e408eb431e687aaa4176b"
+            },
+            {
+              "bytes": 517120,
+              "sha256": "6d81b059b11639989f0592ba0c174d01972cd1e44b7942ec0f5c4d4913a35d3f"
+            }
+          ],
+          "drafts": [
+            {
+              "bytes": 12,
+              "sha256": "901a7c7ad86ca04aa5223d8e281f686e2c8921eca649554ef81dba55f8a8c71f"
+            },
+            {
+              "bytes": 12,
+              "sha256": "1e065871d96605f71a60ffeb5693427ff92c217990236869a64cefd76ffb3e12"
+            }
+          ],
+          "verified": [
+            {
+              "bytes": 1551360,
+              "sha256": "892747d848f062d733afe10bff5dd0f99af43d5906a8399f8c7d7d8f61555938"
+            },
+            {
+              "bytes": 1551360,
+              "sha256": "7ae778ed287ed36d575af025d7a1e4cbdd305c91072ddf10eea88c09bb093f94"
+            }
+          ],
+          "settled": [
+            {
+              "bytes": 271794176,
+              "sha256": "6e84d9eabf813209c33b5040924e97b08d64938026bfdf6d26c0577433f5b286"
+            },
+            {
+              "bytes": 271794176,
+              "sha256": "1f308bd292662343dfbb6deb08142660ca27e2cd3f33dcc8563b06251f449b66"
+            }
+          ],
+          "state_ranges_sha256": "71032bac43e547dcd459060a98a44f6c485cb422b3a4f0b26dda7418d52c8438",
+          "settled_ranges_sha256": "71032bac43e547dcd459060a98a44f6c485cb422b3a4f0b26dda7418d52c8438"
+        },
+        {
+          "states": [
+            {
+              "bytes": 271794176,
+              "sha256": "7abe58600925a90b99ed0370f7df8824e5c6893b2276de0eefcef54a8a77b0fb"
+            },
+            {
+              "bytes": 271794176,
+              "sha256": "055a9b3b0a52d1fd10890e49b6b736066b5aca8cd8affc06536fd41e5150d45c"
+            }
+          ],
+          "histories": [
+            {
+              "bytes": 17540,
+              "sha256": "fc5201a9e43774b7096c5d79e2306c17a4baf89baca3a891f78e6ca8422e222c"
+            },
+            {
+              "bytes": 18564,
+              "sha256": "5c06f9ac89d9055c1a6deef6c7733b75e2181b4aa1918edeb7f7d1a5eb0eb21e"
+            }
+          ],
+          "heads": [
+            {
+              "bytes": 517120,
+              "sha256": "d3300a613d083dcc5cc29311a98b92585c4df383069e408eb431e687aaa4176b"
+            },
+            {
+              "bytes": 517120,
+              "sha256": "6d81b059b11639989f0592ba0c174d01972cd1e44b7942ec0f5c4d4913a35d3f"
+            }
+          ],
+          "drafts": [
+            {
+              "bytes": 12,
+              "sha256": "901a7c7ad86ca04aa5223d8e281f686e2c8921eca649554ef81dba55f8a8c71f"
+            },
+            {
+              "bytes": 12,
+              "sha256": "1e065871d96605f71a60ffeb5693427ff92c217990236869a64cefd76ffb3e12"
+            }
+          ],
+          "verified": [
+            {
+              "bytes": 1551360,
+              "sha256": "892747d848f062d733afe10bff5dd0f99af43d5906a8399f8c7d7d8f61555938"
+            },
+            {
+              "bytes": 1551360,
+              "sha256": "7ae778ed287ed36d575af025d7a1e4cbdd305c91072ddf10eea88c09bb093f94"
+            }
+          ],
+          "settled": [
+            {
+              "bytes": 271794176,
+              "sha256": "6e84d9eabf813209c33b5040924e97b08d64938026bfdf6d26c0577433f5b286"
+            },
+            {
+              "bytes": 271794176,
+              "sha256": "1f308bd292662343dfbb6deb08142660ca27e2cd3f33dcc8563b06251f449b66"
+            }
+          ],
+          "state_ranges_sha256": "71032bac43e547dcd459060a98a44f6c485cb422b3a4f0b26dda7418d52c8438",
+          "settled_ranges_sha256": "71032bac43e547dcd459060a98a44f6c485cb422b3a4f0b26dda7418d52c8438"
+        },
+        {
+          "states": [
+            {
+              "bytes": 271794176,
+              "sha256": "7abe58600925a90b99ed0370f7df8824e5c6893b2276de0eefcef54a8a77b0fb"
+            },
+            {
+              "bytes": 271794176,
+              "sha256": "055a9b3b0a52d1fd10890e49b6b736066b5aca8cd8affc06536fd41e5150d45c"
+            }
+          ],
+          "histories": [
+            {
+              "bytes": 17540,
+              "sha256": "fc5201a9e43774b7096c5d79e2306c17a4baf89baca3a891f78e6ca8422e222c"
+            },
+            {
+              "bytes": 18564,
+              "sha256": "5c06f9ac89d9055c1a6deef6c7733b75e2181b4aa1918edeb7f7d1a5eb0eb21e"
+            }
+          ],
+          "heads": [
+            {
+              "bytes": 517120,
+              "sha256": "d3300a613d083dcc5cc29311a98b92585c4df383069e408eb431e687aaa4176b"
+            },
+            {
+              "bytes": 517120,
+              "sha256": "6d81b059b11639989f0592ba0c174d01972cd1e44b7942ec0f5c4d4913a35d3f"
+            }
+          ],
+          "drafts": [
+            {
+              "bytes": 12,
+              "sha256": "901a7c7ad86ca04aa5223d8e281f686e2c8921eca649554ef81dba55f8a8c71f"
+            },
+            {
+              "bytes": 12,
+              "sha256": "1e065871d96605f71a60ffeb5693427ff92c217990236869a64cefd76ffb3e12"
+            }
+          ],
+          "verified": [
+            {
+              "bytes": 1551360,
+              "sha256": "892747d848f062d733afe10bff5dd0f99af43d5906a8399f8c7d7d8f61555938"
+            },
+            {
+              "bytes": 1551360,
+              "sha256": "7ae778ed287ed36d575af025d7a1e4cbdd305c91072ddf10eea88c09bb093f94"
+            }
+          ],
+          "settled": [
+            {
+              "bytes": 271794176,
+              "sha256": "6e84d9eabf813209c33b5040924e97b08d64938026bfdf6d26c0577433f5b286"
+            },
+            {
+              "bytes": 271794176,
+              "sha256": "1f308bd292662343dfbb6deb08142660ca27e2cd3f33dcc8563b06251f449b66"
+            }
+          ],
+          "state_ranges_sha256": "71032bac43e547dcd459060a98a44f6c485cb422b3a4f0b26dda7418d52c8438",
+          "settled_ranges_sha256": "71032bac43e547dcd459060a98a44f6c485cb422b3a4f0b26dda7418d52c8438"
+        },
+        {
+          "states": [
+            {
+              "bytes": 271794176,
+              "sha256": "7abe58600925a90b99ed0370f7df8824e5c6893b2276de0eefcef54a8a77b0fb"
+            },
+            {
+              "bytes": 271794176,
+              "sha256": "055a9b3b0a52d1fd10890e49b6b736066b5aca8cd8affc06536fd41e5150d45c"
+            }
+          ],
+          "histories": [
+            {
+              "bytes": 17540,
+              "sha256": "fc5201a9e43774b7096c5d79e2306c17a4baf89baca3a891f78e6ca8422e222c"
+            },
+            {
+              "bytes": 18564,
+              "sha256": "5c06f9ac89d9055c1a6deef6c7733b75e2181b4aa1918edeb7f7d1a5eb0eb21e"
+            }
+          ],
+          "heads": [
+            {
+              "bytes": 517120,
+              "sha256": "d3300a613d083dcc5cc29311a98b92585c4df383069e408eb431e687aaa4176b"
+            },
+            {
+              "bytes": 517120,
+              "sha256": "6d81b059b11639989f0592ba0c174d01972cd1e44b7942ec0f5c4d4913a35d3f"
+            }
+          ],
+          "drafts": [
+            {
+              "bytes": 12,
+              "sha256": "901a7c7ad86ca04aa5223d8e281f686e2c8921eca649554ef81dba55f8a8c71f"
+            },
+            {
+              "bytes": 12,
+              "sha256": "1e065871d96605f71a60ffeb5693427ff92c217990236869a64cefd76ffb3e12"
+            }
+          ],
+          "verified": [
+            {
+              "bytes": 1551360,
+              "sha256": "892747d848f062d733afe10bff5dd0f99af43d5906a8399f8c7d7d8f61555938"
+            },
+            {
+              "bytes": 1551360,
+              "sha256": "7ae778ed287ed36d575af025d7a1e4cbdd305c91072ddf10eea88c09bb093f94"
+            }
+          ],
+          "settled": [
+            {
+              "bytes": 271794176,
+              "sha256": "6e84d9eabf813209c33b5040924e97b08d64938026bfdf6d26c0577433f5b286"
+            },
+            {
+              "bytes": 271794176,
+              "sha256": "1f308bd292662343dfbb6deb08142660ca27e2cd3f33dcc8563b06251f449b66"
+            }
+          ],
+          "state_ranges_sha256": "71032bac43e547dcd459060a98a44f6c485cb422b3a4f0b26dda7418d52c8438",
+          "settled_ranges_sha256": "71032bac43e547dcd459060a98a44f6c485cb422b3a4f0b26dda7418d52c8438"
+        }
+      ]
     }
   }
 }

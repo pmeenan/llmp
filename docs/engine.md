@@ -220,10 +220,12 @@ publication now shares `Llm::RunPlainGenerationUnit` and
 `engine/planned.h` output authentication: a successful optional scalar hook
 publishes one token, nullopt retains rows, and joined runners validate all
 completed IDs before publishing any owner. DeepSeek and native/GGUF Qwen
-non-spec target paths join Gemma on host-compatible device argmax; sampling,
-scoring and speculation keep their existing contracts. DeepSeek adaptive
-plain decode remains an open consumer; shared prompt-completion first-token
-publication is a separate compatible extension for every family.
+non-spec target paths join Gemma on host-compatible device argmax. Shared
+row-free eligibility also serves DeepSeek adaptive joined plain waves, which
+return `kept` IDs while preserving feature injection and drafter-ring writes;
+ordinary `DeviceGreedy` still refuses speculative units. Sampling/scoring and
+draft/verify retain their contracts. Shared prompt-completion first-token
+publication remains a separate compatible extension for every family.
 [Controls and open consumers](experiments/plain-gpu-tokens/README.md).
 
 Causal/ring mask source validation and host staging are shared in

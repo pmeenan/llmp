@@ -16,8 +16,10 @@ for DeepSeek V4 and native/GGUF Qwen3.8, as for Gemma. Short scalar/joined own
 comparisons preserve complete initialized state, endogenous history and full
 continuation heads; mixed scoring/sampling and spill/restore controls pass.
 This changes no approved model/context/quantization envelope or reference
-quality disposition. DeepSeek adaptive plain decode and shared
-prompt-completion first-token publication remain open compatible extensions.
+quality disposition. DeepSeek adaptive joined plain decode also publishes
+device IDs with exact injected drafter-ring state and actual draft/verify
+continuations; its bounded decode mean improves 0.37%, with neutral total paid
+time. Shared prompt-completion first-token publication remains open.
 [Scope and bounded decode results](experiments/plain-gpu-tokens/README.md).
 
 ## Status and level

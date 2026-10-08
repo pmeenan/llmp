@@ -2119,9 +2119,10 @@ std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& aren
       std::ranges::any_of(shape.slots, [](const auto& slot) { return slot.raw_cells > INT32_MAX; }))
     return Rejected("raw causal/ring mask parameters exceed int32");
   const std::size_t count = shape.slots.size();
-  if (shape.token && (options.inject || !options.features.empty() ||
-                      std::ranges::any_of(shape.slots, [](const auto& s) { return s.rows != 1; })))
-    return Rejected("token publication needs plain one-row target owners");
+  // A plain one-row wave may feed the drafter's ring too. Token publication
+  // changes only its output copy; all feature and injection nodes remain.
+  if (shape.token && std::ranges::any_of(shape.slots, [](const auto& s) { return s.rows != 1; }))
+    return Rejected("token publication needs one-row target owners");
   if (count == 0 || count > kDsv4WaveSlots ||
       (options.inject ? shape.inject_rows.size() != count
                       : std::ranges::any_of(shape.inject_rows, [](auto r) { return r != 0; }))) {

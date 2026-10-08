@@ -651,9 +651,10 @@ Status Dsv4Runner::Setup() {
               std::format("measuring a wave of {} slots: {}", wave_slots_, planned.error()));
         }
         if (auto r = account(**planned, wave_host); !r) return r;
-        if (rows == 1 && !speculative() && !model_.exact) {
+        if (rows == 1 && !model_.exact) {
           shape.token = true;
-          auto token_plan = PlanDsv4Wave(model_, states, shape, choices, 0, 0);
+          auto token_plan = PlanDsv4Wave(model_, states, shape, choices, 0, 0,
+                                         speculative() ? &dmodel_ : nullptr, states);
           if (!token_plan) return Error(token_plan.error());
           if (auto r = account(**token_plan, wave_host); !r) return r;
         }
@@ -2208,8 +2209,7 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
     return Error("a DeepSeek wave needs provisioned slots (and a drafter to verify)");
   }
   const bool tokens = work.front().token != nullptr;
-  if (tokens && (spec || speculative()))
-    return Error("plain device-token waves cannot run speculation");
+  if (tokens && spec) return Error("a verify wave cannot publish plain device tokens");
   for (const WaveWork& w : work) {
     if (w.slot != nullptr && &w.slot->owner_ == this) {
       w.slot->request_.track.Wrote(w.pos > 0 ? w.pos - 1 : 0);

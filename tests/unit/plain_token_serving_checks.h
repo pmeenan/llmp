@@ -20,7 +20,8 @@ namespace jitllm::test {
 // rather than the requested serving option. All host observations are funded.
 template <class StateHash, class TokenCount>
 runtime::Status CheckPlainServing(runtime::Server& server, runtime::Llm& model, std::uint32_t vocab,
-                                  StateHash state_hash, TokenCount token_count) {
+                                  StateHash state_hash, TokenCount token_count,
+                                  std::array<std::uint64_t, 2> expected_device_counts = {3, 5}) {
   namespace rt = runtime;
   struct HostCopies {
     engine::PagedNode& node;
@@ -116,7 +117,7 @@ runtime::Status CheckPlainServing(runtime::Server& server, runtime::Llm& model, 
                    branch(id).history() != expected_history[id] || *state != expected_state[id])
           return std::unexpected("row/token complete state or history differs");
       }
-      if (token_count() - before != (rows ? 0U : width == 1 ? 3U : 5U))
+      if (token_count() - before != (rows ? 0U : expected_device_counts[width - 1]))
         return std::unexpected("actual device-token selection count differs");
       if (width == 1) {
         const auto untouched = state_hash(1);

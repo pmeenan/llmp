@@ -163,8 +163,9 @@ struct Dsv4Options {
   bool device_raw_masks = true;
   // Experimental noncausal DSpark block producer; independent host reference.
   bool device_draft_masks = false;
-  // Plain target greedy decode publication; scoring, sampling and speculation
-  // keep their existing output contracts. False is the internal row reference.
+  // Plain greedy decode publication, including joined adaptive plain waves
+  // with feature injection. Scoring/sampling and draft/verify keep their
+  // existing contracts. False is the internal row reference.
   bool device_tokens = true;
   // Where each slot's spill file lives (LiveState::SpillPlace), asked once
   // at Register; unset, an unnamed file in `out`. The runtime names them
