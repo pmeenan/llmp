@@ -39,11 +39,19 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; successful source/pin checks reused under scheduler lifetime/epoch with mutation invalidation (not residency or leases); sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify | The state layout and each step's used ranges; which ranges a verify writes; a commit kernel if kept rows need one |
 | Planned shapes | `planned.h` | `PlannedGraph<Graph>`, `SizedArena` (a plan's arena holds what its graph uses), `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, no fixed number, each plan's host bytes and planning time kept: `PlannedHostBytes`), `PlanAccount` (what the plans and graphs hold, charged to the node: a plan as it is added, a graph before its capture, D-090 as amended), `PlanStep` (a step's plans spared by any reclaim while it runs), `CollectPlans` and `ReclaimPlan` (the plans and graphs as candidates for the node's reclaim order, and one's reclaim), `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
 | Runs and graphs | `graph_runs.h` | `GraphRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the plan and the outputs; captures a shape on its second run (or when the runner asks), beside that run's launch-by-launch execution (so capture and instantiation overlap the device's work) unless work is queued between inputs and plan, replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; `CaptureAhead` records another planned shape's graph without running it, from the input layout `Layout` predicts; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts, hinted prefill) and what it copies out |
+| Prefill lookahead | `prefill_lookahead.h` | `PrefillLookahead`: optional host allowance before CPU-only future plan allocation, one build during current device work, installation after successful completion, allowance transfer immediately before the cache charge, and plan destruction before unused allowance release | Shape prediction, graph construction, binding/coverage/cache installation and capture policy |
 | Resources | `runner_resources.h` | The runner's own device memory (pinned), pinned staging, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry, and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
 
 `support.h` holds the small helpers (errors, addresses, rounding, seconds,
 joined problems).
+
+Gemma3 and both Gemma4 profiles use the shared prefill lookahead lifecycle.
+Their family adapters still choose future shapes, outputs and capture eligibility;
+`GraphRuns::CaptureAhead` records an eligible future graph without executing it.
+The helper never allocates future state or advances a cursor. Gemma2, DeepSeek
+and Qwen adapters, and checkpoint/scoring-aware hints for joined prefill waves,
+remain separate transfer tasks. [Focused lifecycle controls](experiments/prefill-transfer/README.md).
 
 ## A runner's life
 

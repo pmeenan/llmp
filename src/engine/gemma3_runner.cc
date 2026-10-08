@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "base/sha256.h"
+#include "engine/prefill_lookahead.h"
 #include "engine/support.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/gemma_norm.h"
@@ -829,39 +830,27 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
   // this chunk's device run (CPU only: BindPlanned's scratch queries call
   // CUDA, so binding, coverage and caching wait for the job's completion),
   // with the largest plan's host bytes funded before any of its allocations.
-  struct HostGrant {
-    PagedNode& node;
-    std::uint64_t bytes;
-    ~HostGrant() { node.UnchargeHost(bytes); }
-  };
   const kg::Gemma3ChunkShape* build = nullptr;
   if (o_.prefill_lookahead && node_.threaded())
     for (std::size_t k = 0; k < ahead.size() && build == nullptr; ++k)
       // Find examines capture state: before the job can change it.
       if (known[k] && !(ahead[k] == shape) && plans_.Find(ahead[k]) == nullptr) build = &ahead[k];
-  std::optional<HostGrant> lookahead_grant;
-  std::unique_ptr<Gemma3Planned> built_ahead;
-  double ahead_seconds = 0;
+  PrefillLookahead<Gemma3Planned> future(node_, plan_floor_bytes_);
   if (build != nullptr) {
     ++lookahead_.attempted;
-    if (node_.ChargeHost(plan_floor_bytes_, false)) {
-      lookahead_grant.emplace(node_, plan_floor_bytes_);
-    } else {
+    if (!future.Fund()) {
       ++lookahead_.refused;
       build = nullptr;
     }
   }
   const auto choices = build != nullptr ? Choices(resources_.launch()) : kg::DeviceChoices{};
   const std::function<void()> meanwhile = build != nullptr ? std::function<void()>([&] {
-    const auto started = std::chrono::steady_clock::now();
-    auto planned = PlanGemma3Chunk(model_, *build, choices, node_.activations().base,
-                                   node_.activations().bytes);
-    ahead_seconds = Seconds(std::chrono::steady_clock::now() - started);
-    lookahead_.build_seconds += ahead_seconds;
-    if (planned && PlannedHostBytes(**planned) <= plan_floor_bytes_) {
-      built_ahead = std::move(*planned);
+    if (future.Build([&] {
+          return PlanGemma3Chunk(model_, *build, choices, node_.activations().base,
+                                 node_.activations().bytes);
+        }))
       ++lookahead_.built;
-    }
+    lookahead_.build_seconds += future.seconds();
   })
                                                            : std::function<void()>{};
   std::array<RunCopy, 1> output{};
@@ -915,14 +904,10 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
     if (!queued) return queued;
     return !posted ? posted : Error("Gemma3 launch context faulted");
   }
-  if (built_ahead) {
-    // The node has one driver and the job is gone. Transfer the temporary
-    // allowance immediately before the cache's own charge; a speculative
-    // failure does not undo the completed chunk.
-    if (CachePlanned(*build, std::move(built_ahead), ahead_seconds,
-                     [&] { lookahead_grant.reset(); }))
-      ++lookahead_.cached;
-  }
+  if (future.InstallAfterCompletion([&](auto planned, double seconds, const auto& transfer) {
+        return CachePlanned(*build, std::move(planned), seconds, transfer);
+      }))
+    ++lookahead_.cached;
   lookahead_.captured_first += capture_first && path == RunPath::kCaptured;
   Count(graph_stats_, path);
   if (greedy)

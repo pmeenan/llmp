@@ -397,7 +397,7 @@ family" guide, and its long-context scaling work.
         - [ ] **T69** Shared GPU-mask construction contract.
         - [ ] **T70** Shared lookahead/capture hook.
         - [ ] **T72** Expert worklist sharing across vector products.
-      - **Qwen3.8 GGUF / drafter**
+      - **Qwen3.8 GGUF / target**
         - [ ] **T03** Sparse query-union KV reuse.
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T07** Compact expert-major MMQ scheduling.
@@ -466,7 +466,8 @@ family" guide, and its long-context scaling work.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
           producer validation and padded host staging shared across Gemma plans;
           [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
-        - [ ] **T70** Shared lookahead/capture hook.
+        - [x] **T70** Shared funded host-only next-plan lifecycle; family
+          prediction/capture policy unchanged. [Focused controls](experiments/prefill-transfer/README.md).
         - [ ] **T86** Grouped physical KV stores.
       - **Gemma4 26B-A4B / assistant**
         - [ ] **T04** Share adjacent-product input preparation.
@@ -495,7 +496,8 @@ family" guide, and its long-context scaling work.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
           producer validation and padded host staging shared across Gemma plans;
           [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
-        - [ ] **T70** Shared lookahead/capture hook.
+        - [x] **T70** Shared funded host-only next-plan lifecycle; family
+          prediction/capture policy unchanged. [Focused controls](experiments/prefill-transfer/README.md).
         - [ ] **T71** Assistant-specific optimized execution.
         - [ ] **T72** Expert worklist sharing across vector products.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.
@@ -520,7 +522,8 @@ family" guide, and its long-context scaling work.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
           producer validation and padded host staging shared across Gemma plans;
           [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
-        - [ ] **T70** Shared lookahead/capture hook.
+        - [x] **T70** Shared funded host-only next-plan lifecycle; family
+          prediction/capture policy unchanged. [Focused controls](experiments/prefill-transfer/README.md).
         - [ ] **T71** Assistant-specific optimized execution.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.
       Shared T69/T70 ports own the funded host-only next-plan/mask lifecycle;

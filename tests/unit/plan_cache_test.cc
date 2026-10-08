@@ -22,6 +22,7 @@
 
 #include "engine/graph_runs.h"
 #include "engine/planned.h"
+#include "engine/prefill_lookahead.h"
 #include "ggml.h"
 #include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/tensors.h"
@@ -56,6 +57,169 @@ struct Ledger {
         [this](std::uint64_t bytes) { charged -= bytes; });
   }
 };
+
+// Records whether a future plan was destroyed while its host bytes were
+// still funded. Real plans own arenas/vectors whose teardown has the same order.
+struct FuturePlan : en::PlannedBase {
+  Ledger& ledger;
+  std::uint64_t minimum;
+  int& destroyed;
+  FuturePlan(Ledger& l, std::uint64_t m, int& d, std::size_t nodes = 1)
+      : ledger(l), minimum(m), destroyed(d) {
+    plan.steps.resize(1);
+    plan.steps.front().nodes.resize(nodes);
+  }
+  ~FuturePlan() {
+    EXPECT_GE(ledger.charged, minimum);
+    ++destroyed;
+  }
+};
+using Future = en::PrefillLookahead<FuturePlan>;
+using FutureResult = std::expected<std::unique_ptr<FuturePlan>, std::string>;
+
+TEST(PrefillLookaheadTest, OptionalRefusalDoesNotBuildOrInstall) {
+  Ledger ledger;
+  ledger.budget = 0;
+  Future future(
+      1024, [&](auto bytes, bool required) { return ledger.account.Charge(bytes, required); },
+      [&](auto bytes) { ledger.account.Uncharge(bytes); });
+  EXPECT_FALSE(future.Fund());
+  EXPECT_FALSE(future.Fund());
+  EXPECT_FALSE(future.Build([]() -> FutureResult {
+    ADD_FAILURE() << "refused lookahead built a plan";
+    return std::unexpected("not built");
+  }));
+  EXPECT_FALSE(future.InstallAfterCompletion([](auto, double, const auto&) {
+    ADD_FAILURE() << "refused lookahead installed a plan";
+    return true;
+  }));
+  ASSERT_EQ(ledger.asked.size(), 1U);
+  EXPECT_FALSE(ledger.asked.front().second);
+  EXPECT_EQ(ledger.charged, 0U);
+}
+
+TEST(PrefillLookaheadTest, FailedAndOversizedBuildsStayUnderTheirGrant) {
+  Ledger ledger;
+  int destroyed = 0;
+  {
+    Future future(
+        512, [&](auto bytes, bool required) { return ledger.account.Charge(bytes, required); },
+        [&](auto bytes) { ledger.account.Uncharge(bytes); });
+    ASSERT_TRUE(future.Fund());
+    EXPECT_FALSE(future.Build(
+        [&]() -> FutureResult { return std::make_unique<FuturePlan>(ledger, 512, destroyed, 2); }));
+    EXPECT_EQ(destroyed, 1);
+    EXPECT_EQ(ledger.charged, 512U);
+    EXPECT_FALSE(future.Build([]() -> FutureResult {
+      ADD_FAILURE() << "lookahead built twice";
+      return std::unexpected("not built");
+    }));
+  }
+  EXPECT_EQ(ledger.charged, 0U);
+  {
+    Future future(
+        512, [&](auto bytes, bool required) { return ledger.account.Charge(bytes, required); },
+        [&](auto bytes) { ledger.account.Uncharge(bytes); });
+    ASSERT_TRUE(future.Fund());
+    EXPECT_FALSE(future.Build([]() -> FutureResult { return std::unexpected("builder refused"); }));
+    EXPECT_EQ(ledger.charged, 512U);
+  }
+  EXPECT_EQ(ledger.charged, 0U);
+}
+
+TEST(PrefillLookaheadTest, AbandonedOrFailedCurrentUnitDestroysFutureBeforeReleasingGrant) {
+  Ledger ledger;
+  int destroyed = 0;
+  for (bool explicit_abandon : {false, true}) {
+    Future future(
+        1024, [&](auto bytes, bool required) { return ledger.account.Charge(bytes, required); },
+        [&](auto bytes) { ledger.account.Uncharge(bytes); });
+    ASSERT_TRUE(future.Fund());
+    ASSERT_TRUE(future.Build(
+        [&]() -> FutureResult { return std::make_unique<FuturePlan>(ledger, 1024, destroyed); }));
+    // A failed/cancelled current unit returns without calling the installer.
+    if (explicit_abandon) {
+      future.Abandon();
+      EXPECT_EQ(ledger.charged, 0U);
+      EXPECT_FALSE(future.Fund());
+      EXPECT_FALSE(future.InstallAfterCompletion([](auto, double, const auto&) {
+        ADD_FAILURE() << "abandoned lookahead installed a plan";
+        return true;
+      }));
+    }
+  }
+  EXPECT_EQ(destroyed, 2);
+  EXPECT_EQ(ledger.charged, 0U);
+}
+
+TEST(PrefillLookaheadTest, InstallationFailureDestroysPlanBeforeReleasingGrant) {
+  Ledger ledger;
+  int destroyed = 0;
+  {
+    Future future(
+        1024, [&](auto bytes, bool required) { return ledger.account.Charge(bytes, required); },
+        [&](auto bytes) { ledger.account.Uncharge(bytes); });
+    ASSERT_TRUE(future.Fund());
+    ASSERT_TRUE(future.Build(
+        [&]() -> FutureResult { return std::make_unique<FuturePlan>(ledger, 1024, destroyed); }));
+    EXPECT_FALSE(future.InstallAfterCompletion([&](auto planned, double seconds, const auto&) {
+      EXPECT_NE(planned, nullptr);
+      EXPECT_GE(seconds, 0.0);
+      EXPECT_EQ(ledger.charged, 1024U);
+      return false;  // binding/coverage refusal: no transfer or cache insertion
+    }));
+    EXPECT_EQ(destroyed, 1);
+    EXPECT_EQ(ledger.charged, 1024U);
+  }
+  EXPECT_EQ(ledger.charged, 0U);
+}
+
+TEST(PrefillLookaheadTest, TransfersOnceToCacheWhileCurrentPlanAndCaptureStayProtected) {
+  Ledger ledger;
+  int destroyed = 0;
+  Cache current(&ledger.account);
+  auto& entry = current.Add(1, Plan(1), 100, 1);
+  en::PlanCache<int, FuturePlan> next(&ledger.account);
+  {
+    const en::PlanStep step;
+    ASSERT_EQ(current.Find(1), &entry);
+    ASSERT_TRUE(current.ChargeGraph(entry));
+    const auto held_bytes = ledger.charged;
+    // Optional funding may invoke reclaim; neither the current plan nor its
+    // charged capture may be taken while the step borrows them.
+    Future future(
+        1024,
+        [&](auto bytes, bool required) {
+          EXPECT_FALSE(required);
+          EXPECT_EQ(current.Reclaim(ReclaimKind::kPlan, entry.serial), 0U);
+          EXPECT_EQ(current.Reclaim(ReclaimKind::kGraph, entry.serial), 0U);
+          return ledger.account.Charge(bytes, required);
+        },
+        [&](auto bytes) { ledger.account.Uncharge(bytes); });
+    ASSERT_TRUE(future.Fund());
+    ASSERT_TRUE(future.Build(
+        [&]() -> FutureResult { return std::make_unique<FuturePlan>(ledger, 512, destroyed); }));
+    EXPECT_TRUE(
+        future.InstallAfterCompletion([&](auto planned, double seconds, const auto& transfer) {
+          EXPECT_EQ(ledger.charged, held_bytes + 1024);
+          transfer();
+          EXPECT_EQ(ledger.charged, held_bytes);
+          next.Add(2, std::move(planned), 512, 1, seconds);
+          EXPECT_EQ(ledger.charged, held_bytes + 512);
+          return true;
+        }));
+    EXPECT_FALSE(future.InstallAfterCompletion([](auto, double, const auto&) {
+      ADD_FAILURE() << "lookahead installed twice";
+      return true;
+    }));
+    ASSERT_EQ(current.Find(1), &entry);
+    EXPECT_EQ(current.Reclaim(ReclaimKind::kPlan, entry.serial), 0U);
+  }
+  next.Clear();
+  current.Clear();
+  EXPECT_EQ(destroyed, 1);
+  EXPECT_EQ(ledger.charged, 0U);
+}
 
 TEST(PlanCacheTest, KeepsEveryShapeAndChargesWhatEachHolds) {
   Ledger ledger;

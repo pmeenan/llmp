@@ -17,6 +17,7 @@
 #include "artifact/representation.h"
 #include "base/sha256.h"
 #include "engine/gemma4_assistant.h"
+#include "engine/prefill_lookahead.h"
 #include "engine/support.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -1282,11 +1283,6 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   // Server's host inputs), and one model runs a chunk at a time, so a wave
   // charges nothing for them. (A charge past the host floor would go through
   // the scheduler's thread twice a wave.)
-  struct HostGrant {
-    PagedNode& node;
-    std::uint64_t bytes;
-    ~HostGrant() { node.UnchargeHost(bytes); }
-  };
   auto in = md::Gemma4Chunk(profile_, layout_, selected, o_.reference_masks);
   if (!in) return Error(in.error());
   kg::Gemma4ChunkShape shape;
@@ -1392,15 +1388,12 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
       std::ranges::equal(shape.segments, std::span(predicted).first(next.size())))
     predict = false;
   kg::Gemma4ChunkShape next_shape;
-  std::optional<HostGrant> lookahead_grant;
-  std::unique_ptr<Gemma4Planned> ahead;
-  double ahead_seconds = 0;
+  PrefillLookahead<Gemma4Planned> future(node_, plan_floor_bytes_);
   if (predict) {
     ++lookahead_.attempted;
     // Fund the maximum temporary plan before any of its heap allocations.
     // The shared sizing/index scratch already has its startup charge.
-    if (node_.ChargeHost(plan_floor_bytes_, false)) {
-      lookahead_grant.emplace(node_, plan_floor_bytes_);
+    if (future.Fund()) {
       next_shape.segments.assign(predicted.begin(), predicted.begin() + next.size());
       next_shape.output_mode = next_mode;
       next_shape.outputs = next_outputs;
@@ -1408,7 +1401,7 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
       // Find/Settle examines capture state: do this before the job can mutate it.
       if (plans_.Find(next_shape) != nullptr) {
         predict = false;
-        lookahead_grant.reset();
+        future.Abandon();
       }
     } else {
       ++lookahead_.refused;
@@ -1418,15 +1411,12 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   // CPU descriptors only. BindPlanned's MMA scratch queries call CUDA, so
   // binding, catalog coverage and cache insertion wait for proven completion.
   const std::function<void()> meanwhile = predict ? std::function<void()>([&] {
-    const auto started = std::chrono::steady_clock::now();
-    auto built = PlanGemma4Chunk(model_, next_shape, Choices(resources_.launch(), predicted_rows),
+    if (future.Build([&] {
+          return PlanGemma4Chunk(model_, next_shape, Choices(resources_.launch(), predicted_rows),
                                  node_.activations().base, node_.activations().bytes);
-    ahead_seconds = Seconds(std::chrono::steady_clock::now() - started);
-    lookahead_.build_seconds += ahead_seconds;
-    if (built && PlannedHostBytes(**built) <= plan_floor_bytes_) {
-      ahead = std::move(*built);
+        }))
       ++lookahead_.built;
-    }
+    lookahead_.build_seconds += future.seconds();
   })
                                                   : std::function<void()>{};
   Slot* verifying = verify ? slots_[work.front().slot].get() : nullptr;
@@ -1532,15 +1522,10 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   }
   timer.reset();
   timer.emplace(phase(Phase::kPublication));
-  if (ahead) {
-    // The node has one driver and the job is gone. Transfer the temporary
-    // allowance immediately before the normal required cache charge; no
-    // third physical plan or overlapping request is introduced by the handoff.
-    auto cached =
-        CachePlanned(next_shape, std::move(ahead), ahead_seconds, [&] { lookahead_grant.reset(); });
-    if (cached) ++lookahead_.cached;
-    // A speculative failure does not undo a successfully completed prefix.
-  }
+  if (future.InstallAfterCompletion([&](auto planned, double seconds, const auto& transfer) {
+        return CachePlanned(next_shape, std::move(planned), seconds, transfer);
+      }))
+    ++lookahead_.cached;
   Count(graph_stats_, path);
   std::size_t at = 0;
   for (std::size_t i = 0; i < work.size(); ++i) {
