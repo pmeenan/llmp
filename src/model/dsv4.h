@@ -333,6 +333,15 @@ std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile
                                                       bool masks = true, bool raw_mask = true);
 
 // One compressor's plan (exposed for tests).
+// Allocation-free dimensions shared by actual compressor inputs and prefill
+// prediction. No future tokens, state writes or read maps are constructed.
+struct Dsv4CompGeometry {
+  std::uint32_t n_kv = 0, blocks = 0, persist = 0;
+};
+std::expected<Dsv4CompGeometry, std::string> Dsv4CompressorGeometry(
+    std::uint32_t ratio, bool overlap, std::uint32_t state_rows, std::uint32_t cache_rows,
+    std::uint32_t n_past, std::uint32_t rows);
+
 std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio, bool overlap,
                                                             std::uint32_t state_rows,
                                                             std::uint32_t cache_rows,

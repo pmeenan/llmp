@@ -405,7 +405,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T55** Joined prefill lookahead/capture hints.
         - [ ] **T56** Gemma checked norm/ADD arithmetic.
         - [ ] **T57** RoPE directly into KV cache stores.
-        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [x] **T63** Fast exact host causal-mask fill/check
+          ([shared exact controls](experiments/host-mask-intervals/README.md)).
         - [ ] **T67** Prepare next chunk state beside current work.
         - [ ] **T68** Evict only incoming closure deficit.
         - [ ] **T69** Shared GPU-mask construction contract: target raw exact-row
@@ -442,7 +443,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T55** Joined prefill lookahead/capture hints.
         - [ ] **T56** Gemma checked norm/ADD arithmetic.
         - [ ] **T57** RoPE directly into KV cache stores.
-        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [x] **T63** Fast exact host causal-mask fill/check
+          ([shared exact controls](experiments/host-mask-intervals/README.md)).
         - [ ] **T67** Prepare next chunk state beside current work.
         - [ ] **T68** Evict only incoming closure deficit.
         - [x] **T69** Shared dtype-authenticated exact-row producer/source/funding
@@ -476,7 +478,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T55** Joined prefill lookahead/capture hints.
         - [ ] **T56** Gemma checked norm/ADD arithmetic.
         - [ ] **T57** RoPE directly into KV cache stores.
-        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [x] **T63** Fast exact host causal-mask fill/check
+          ([shared exact controls](experiments/host-mask-intervals/README.md)).
         - [ ] **T67** Prepare next chunk state beside current work.
         - [ ] **T68** Evict only incoming closure deficit.
         - [x] **T69** Shared dtype-authenticated exact-row producer/source/funding
@@ -518,7 +521,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T57** RoPE directly into KV cache stores.
         - [ ] **T59** Whole-wave products and exact partial cohorts.
         - [ ] **T61** Wider/partial bounded owner-root variants.
-        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [x] **T63** Fast exact host causal-mask fill/check
+          ([shared exact controls](experiments/host-mask-intervals/README.md)).
         - [ ] **T67** Prepare next chunk state beside current work.
           Eligible fresh zero backing now uses the shared owned no-victim
           ticket/scoped drain by default. Exact actual PromptSession and real
@@ -640,7 +644,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T58** Shared Q8 GeGLU assistant/target preparation.
         - [ ] **T59** Whole-wave products and exact partial cohorts.
         - [ ] **T61** Wider/partial bounded owner-root variants.
-        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [x] **T63** Fast exact host causal-mask fill/check
+          ([shared exact controls](experiments/host-mask-intervals/README.md)).
         - [ ] **T67** Eligible fresh-zero preparation is adopted through the
           shared owned ticket/scoped drain. Ordinary 8K/C1 prefill improves
           1.162% / combined paid 0.902% at n=2, without a decode claim.
@@ -686,7 +691,8 @@ family" guide, and its long-context scaling work.
         - [ ] **T58** Shared Q8 GeGLU assistant/target preparation.
         - [ ] **T59** Whole-wave products and exact partial cohorts.
         - [ ] **T61** Wider/partial bounded owner-root variants.
-        - [ ] **T63** Fast exact host causal-mask fill/check.
+        - [x] **T63** Fast exact host causal-mask fill/check
+          ([shared exact controls](experiments/host-mask-intervals/README.md)).
         - [ ] **T67** Eligible fresh-zero preparation is adopted through the
           shared owned ticket/scoped drain. Ordinary 8K/C1 prefill improves
           1.050% / combined paid 0.847% at n=2, without a decode claim.

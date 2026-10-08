@@ -19,6 +19,7 @@
 #include "engine/graph_mask_inputs.h"
 #include "engine/support.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "model/host_mask.h"
 
 namespace jitllm::engine {
 namespace {
@@ -418,27 +419,17 @@ std::expected<Gemma3HostInputs, std::string> Gemma3Sources(const kg::Gemma3Graph
       }
       if (g.options.device_masks) continue;
       const auto end = host.n_past + s.rows;
-      const auto* global = host.global_mask.data() + std::size_t{r} * s.global_n_kv;
-      const auto global_visible = std::min(position + 1, s.global_n_kv);
-      // Check every public mask value. Separate constant-value intervals let
-      // the compiler vectorize the reduction without an early-exit branch per cell.
-      std::uint32_t mismatch = 0;
-      for (std::uint32_t cell = 0; cell < global_visible; ++cell) mismatch |= global[cell];
-      for (std::uint32_t cell = global_visible; cell < s.global_n_kv; ++cell)
-        mismatch |= std::uint32_t{global[cell]} ^ 0xFC00U;
-      if (mismatch != 0)
+      const auto global = model::HostMaskPrefix(s.global_n_kv, std::uint64_t{position} + 1);
+      const auto local =
+          model::HostMaskRing(s.local_n_kv, position, end, g.local_capacity, g.profile.window);
+      if (!global || !model::MatchHostMask(std::span{host.global_mask}.subspan(
+                                               std::size_t{r} * s.global_n_kv, s.global_n_kv),
+                                           *global))
         return Error("Gemma3 global reference mask violates fresh causal visibility");
-      for (std::uint32_t cell = 0; cell < s.local_n_kv; ++cell) {
-        bool visible = false;
-        if (cell < end) {
-          const auto held = cell + ((end - 1 - cell) / g.local_capacity) * g.local_capacity;
-          visible = held <= position && position - held < g.profile.window;
-        }
-        const std::uint16_t expected = visible ? 0 : 0xFC00;
-        if (host.local_mask[std::size_t{r} * s.local_n_kv + cell] != expected) {
-          return Error("Gemma3 local reference mask violates fresh causal/window visibility");
-        }
-      }
+      if (!local || !model::MatchHostMask(std::span{host.local_mask}.subspan(
+                                              std::size_t{r} * s.local_n_kv, s.local_n_kv),
+                                          *local))
+        return Error("Gemma3 local reference mask violates fresh causal/window visibility");
     }
   }
   Gemma3HostInputs out;

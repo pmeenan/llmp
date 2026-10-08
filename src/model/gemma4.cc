@@ -23,6 +23,7 @@
 #include "artifact/layout.h"
 #include "artifact/representation.h"
 #include "base/check.h"
+#include "model/host_mask.h"
 
 namespace jitllm::model {
 namespace {
@@ -584,20 +585,15 @@ std::expected<Gemma4ChunkInputs, std::string> Gemma4Chunk(const Gemma4Profile& p
       x.global_cells[i] = pos;
       x.local_cells[i] = pos % s.local_cells;
       if (masks) {
-        for (std::uint32_t cell = 0; cell < x.global_n_kv; ++cell) {
-          if (cell <= pos) {
-            x.global_mask[std::size_t{i} * x.global_n_kv + cell] = kZero;
-          }
-        }
-        for (std::uint32_t cell = 0; cell < x.local_n_kv; ++cell) {
-          if (cell >= end) {
-            continue;
-          }
-          const auto held = cell + ((end - 1 - cell) / s.local_cells) * s.local_cells;
-          if (held <= pos && pos - held < p.window) {
-            x.local_mask[std::size_t{i} * x.local_n_kv + cell] = kZero;
-          }
-        }
+        const auto global = HostMaskPrefix(x.global_n_kv, std::uint64_t{pos} + 1);
+        const auto local = HostMaskRing(x.local_n_kv, pos, end, s.local_cells, p.window);
+        if (!global || !local) return Refused("invalid host causal-mask interval");
+        FillHostMaskVisible(
+            std::span{x.global_mask}.subspan(std::size_t{i} * x.global_n_kv, x.global_n_kv),
+            *global, kZero);
+        FillHostMaskVisible(
+            std::span{x.local_mask}.subspan(std::size_t{i} * x.local_n_kv, x.local_n_kv), *local,
+            kZero);
       }
     }
     in.segments.push_back(std::move(x));

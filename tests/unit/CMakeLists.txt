@@ -314,6 +314,11 @@ foreach(file IN LISTS tokenizer_data_files)
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/data/${file}" "${tokenizer_data}/${file}" COPYONLY)
 endforeach()
 
+# Shared exact host-mask interval construction and existing validation contract.
+add_executable(host_mask_test host_mask_test.cc)
+target_link_libraries(host_mask_test PRIVATE jitllm_model)
+jitllm_gtest(host_mask_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # Approved Gemma2 profile and actual padded-readable tensor binding only.
 add_executable(gemma2_test gemma2_test.cc)
 target_link_libraries(gemma2_test PRIVATE jitllm_model jitllm_artifact jitllm_json)

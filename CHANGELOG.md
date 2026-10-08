@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Share exact interval fills for Gemma and DeepSeek host masks and Qwen QSA
+  bias, with faster existing Gemma mask validation. GPU mask paths and model
+  arithmetic stay unchanged.
+
 - Skip redundant DeepSeek/DSpark and native/GGUF Qwen startup activation
   placement under a checked exact maximum, preserving funding and runtime
   plans. Native Qwen with MTP takes 2.441% less Setup time in the short screen.

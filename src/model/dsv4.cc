@@ -25,6 +25,7 @@
 
 #include "artifact/artifact.h"
 #include "artifact/representation.h"
+#include "model/host_mask.h"
 #include "model/state.h"
 
 namespace jitllm::model {
@@ -562,14 +563,34 @@ std::uint32_t Dsv4MostRows(const Dsv4Profile& p, std::uint32_t context) {
 
 // ---------------------------------------------------------------- chunk inputs
 
+std::expected<Dsv4CompGeometry, std::string> Dsv4CompressorGeometry(
+    std::uint32_t ratio, bool overlap, std::uint32_t state_rows, std::uint32_t cache_rows,
+    std::uint32_t n_past, std::uint32_t rows) {
+  const std::uint64_t end = std::uint64_t{n_past} + rows;
+  if (ratio == 0 || rows == 0 ||
+      std::uint64_t{state_rows} < std::uint64_t{ratio} * (overlap ? 2U : 1U) || cache_rows == 0 ||
+      end > std::numeric_limits<std::int32_t>::max())
+    return Refused("not a bounded compressor geometry");
+  const auto complete = end / ratio - n_past / ratio;
+  const auto visible = end / ratio;
+  const auto read = std::max<std::uint64_t>(Pad(visible, 256), 256);
+  if ((complete != 0 && visible > cache_rows) || read > cache_rows ||
+      (complete == 0 && ratio != kDsv4CsaRatio && visible >= cache_rows))
+    return Refused("compressor geometry exceeds its cache");
+  return Dsv4CompGeometry{.n_kv = static_cast<std::uint32_t>(read),
+                          .blocks = static_cast<std::uint32_t>(
+                              ratio == kDsv4CsaRatio ? (std::uint64_t{rows} + ratio - 1) / ratio
+                                                     : std::max<std::uint64_t>(complete, 1)),
+                          .persist = std::min(rows, state_rows)};
+}
+
 std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio, bool overlap,
                                                             std::uint32_t state_rows,
                                                             std::uint32_t cache_rows,
                                                             std::uint32_t n_past,
                                                             std::uint32_t rows) {
-  if (ratio == 0 || rows == 0 || state_rows < ratio * (overlap ? 2U : 1U) || cache_rows == 0) {
-    return Refused("not a compressor plan");
-  }
+  auto geometry = Dsv4CompressorGeometry(ratio, overlap, state_rows, cache_rows, n_past, rows);
+  if (!geometry) return Refused(geometry.error());
   const std::uint64_t end = std::uint64_t{n_past} + rows;
   if (end > std::numeric_limits<std::int32_t>::max()) {
     return Refused("positions beyond int32");
@@ -665,6 +686,9 @@ std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio,
     plan.persist_src.push_back(entry.first);
     plan.persist_dst.push_back(dst);
   }
+  if (plan.n_kv != geometry->n_kv || plan.blocks() != geometry->blocks ||
+      plan.persist_src.size() != geometry->persist)
+    return Refused("compressor inputs disagree with their geometry");
   return plan;
 }
 
@@ -693,16 +717,11 @@ std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile
     const std::uint64_t pos = n_past + i;
     in.positions[i] = static_cast<std::int32_t>(pos);
     in.raw_cells[i] = static_cast<std::int64_t>(pos % cells);
-    for (std::uint64_t c = 0; raw_mask && c < in.raw_n_kv; ++c) {
-      // The position cell c holds once the chunk is written: the latest
-      // one below `total` congruent to it.
-      if (c >= total) {
-        continue;
-      }
-      const std::uint64_t q = c + (((total - 1 - c) / cells) * cells);
-      if (q <= pos && pos - q < profile.window) {
-        in.raw_mask[(std::size_t{i} * in.raw_n_kv) + c] = kHalfZero;
-      }
+    if (raw_mask) {
+      const auto visible = HostMaskRing(in.raw_n_kv, pos, total, cells, profile.window);
+      if (!visible) return Refused("invalid raw causal-mask interval");
+      FillHostMaskVisible(std::span{in.raw_mask}.subspan(std::size_t{i} * in.raw_n_kv, in.raw_n_kv),
+                          *visible, kHalfZero);
     }
   }
   auto csa =
@@ -715,19 +734,30 @@ std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile
   in.csa = std::move(*csa);
   in.lid = in.csa;  // the indexer compresses with CSA's ratio, overlap and ring
   in.hca = std::move(*hca);
-  const auto mask = [&](const Dsv4CompPlan& plan) {
+  const auto mask =
+      [&](const Dsv4CompPlan& plan) -> std::expected<std::vector<std::uint16_t>, std::string> {
     std::vector<std::uint16_t> m(std::size_t{rows} * plan.n_kv, kHalfNegInf);
+    if (plan.n_visible.size() != rows) return Refused("invalid compressor mask rows");
     for (std::uint32_t i = 0; i < rows; ++i) {
-      for (std::int64_t j = 0; j < plan.n_visible[i]; ++j) {
-        m[(std::size_t{i} * plan.n_kv) + static_cast<std::size_t>(j)] = kHalfZero;
-      }
+      if (plan.n_visible[i] < 0) return Refused("negative compressor visibility");
+      const auto visible = HostMaskPrefix(plan.n_kv, static_cast<std::uint64_t>(plan.n_visible[i]));
+      if (!visible) return Refused("compressor visibility exceeds mask width");
+      FillHostMaskVisible(std::span{m}.subspan(std::size_t{i} * plan.n_kv, plan.n_kv), *visible,
+                          kHalfZero);
     }
     return m;
   };
   if (masks) {
-    in.csa_mask = mask(in.csa);
-    in.hca_mask = mask(in.hca);
-    in.lid_mask = mask(in.lid);
+    auto csa_mask = mask(in.csa);
+    auto hca_mask = mask(in.hca);
+    auto lid_mask = mask(in.lid);
+    if (!csa_mask || !hca_mask || !lid_mask)
+      return Refused(!csa_mask   ? csa_mask.error()
+                     : !hca_mask ? hca_mask.error()
+                                 : lid_mask.error());
+    in.csa_mask = std::move(*csa_mask);
+    in.hca_mask = std::move(*hca_mask);
+    in.lid_mask = std::move(*lid_mask);
   }
   return in;
 }

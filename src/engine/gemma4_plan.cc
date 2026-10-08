@@ -17,6 +17,7 @@
 #include "engine/graph_mask_inputs.h"
 #include "engine/support.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "model/host_mask.h"
 
 namespace jitllm::engine {
 namespace {
@@ -274,23 +275,17 @@ std::expected<Gemma4HostInputs, std::string> Gemma4Sources(
       }
       if (g.options.device_masks) continue;
       const auto end = host.n_past + s.rows;
-      for (std::uint32_t cell = 0; cell < s.global_n_kv; ++cell) {
-        const std::uint16_t expected = cell <= position ? 0 : 0xFC00;
-        if (host.global_mask[std::size_t{r} * s.global_n_kv + cell] != expected) {
-          return Error("Gemma4 global reference mask violates fresh causal visibility");
-        }
-      }
-      for (std::uint32_t cell = 0; cell < s.local_n_kv; ++cell) {
-        bool visible = false;
-        if (cell < end) {
-          const auto held = cell + ((end - 1 - cell) / g.local_capacity) * g.local_capacity;
-          visible = held <= position && position - held < g.profile.window;
-        }
-        const std::uint16_t expected = visible ? 0 : 0xFC00;
-        if (host.local_mask[std::size_t{r} * s.local_n_kv + cell] != expected) {
-          return Error("Gemma4 local reference mask violates fresh causal/window visibility");
-        }
-      }
+      const auto global = model::HostMaskPrefix(s.global_n_kv, std::uint64_t{position} + 1);
+      const auto local =
+          model::HostMaskRing(s.local_n_kv, position, end, g.local_capacity, g.profile.window);
+      if (!global || !model::MatchHostMask(std::span{host.global_mask}.subspan(
+                                               std::size_t{r} * s.global_n_kv, s.global_n_kv),
+                                           *global))
+        return Error("Gemma4 global reference mask violates fresh causal visibility");
+      if (!local || !model::MatchHostMask(std::span{host.local_mask}.subspan(
+                                              std::size_t{r} * s.local_n_kv, s.local_n_kv),
+                                          *local))
+        return Error("Gemma4 local reference mask violates fresh causal/window visibility");
     }
   }
   Gemma4HostInputs out;

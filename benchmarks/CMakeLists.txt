@@ -4,6 +4,10 @@
 # Measurement harnesses: built with the rest, never run by CTest. Each
 # prints aggregate tables that a report under docs/experiments/ records.
 
+# Shared exact host mask formulas; CPU-only, no model or device acquisition.
+add_executable(jitllm_host_mask_probe host_mask_probe.cc)
+target_link_libraries(jitllm_host_mask_probe PRIVATE jitllm_model jitllm_warnings)
+
 add_library(jitllm_draft_vocab_contract STATIC qwen38_vocab.cc)
 target_include_directories(jitllm_draft_vocab_contract PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(jitllm_draft_vocab_contract PRIVATE jitllm_json jitllm_chat

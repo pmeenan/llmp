@@ -404,6 +404,14 @@ std::vector<std::int32_t> Qwen38PleRows(const Qwen38Profile& profile, const Qwen
 // `cells`, a multiple of 256): Qwen38Chunk's, without tokens or n-gram rows
 // (the MTP drafter's passes, which share one n_kv). Refused if the rows do
 // not fit.
+// Allocation-free row geometry, shared with actual Qwen38Rows. Positions,
+// cells, masks and token/PLE history remain actual-call inputs.
+std::expected<Qwen38ChunkInputs, std::string> Qwen38RowGeometry(const Qwen38Profile& profile,
+                                                                std::uint32_t cells,
+                                                                std::uint32_t n_past,
+                                                                std::uint32_t rows,
+                                                                std::uint32_t read);
+
 std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& profile,
                                                          std::uint32_t cells, std::uint32_t n_past,
                                                          std::uint32_t rows, std::uint32_t read,

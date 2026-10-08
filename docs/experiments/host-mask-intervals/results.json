@@ -1,0 +1,321 @@
+{
+  "date": "2026-10-08",
+  "host": "Spark A / aarch64 GB10",
+  "scope": "CPU helper formulas only; no model or ordinary GPU speed claim",
+  "order": [
+    "O1",
+    "A1",
+    "A2",
+    "O2"
+  ],
+  "calls_per_arm": 16,
+  "checks": {
+    "cases": [
+      [
+        "HostMaskTest",
+        "RingIntervalsMatchOldFormulaAndAuthenticateEveryBit"
+      ],
+      [
+        "HostMaskTest",
+        "InvalidDescriptorsRefuseBeforeChangingOutput"
+      ],
+      [
+        "HostMaskTest",
+        "AllGemmaBuildersMatchCompleteOldGlobalAndWindowMasks"
+      ],
+      [
+        "HostMaskTest",
+        "DeepSeekRawAndAllCompressedMasksMatchCompleteOldFormula"
+      ],
+      [
+        "HostMaskTest",
+        "QwenDenseAndThreeValuedQsaBuffersMatchOldBits"
+      ],
+      [
+        "Gemma2Plan",
+        "FreshRaggedSourcesAreFundedPaddedAndRevalidatedForReuse"
+      ],
+      [
+        "Gemma3Plan",
+        "FreshRaggedSourcesAreFundedPaddedAndRevalidatedForReuse"
+      ],
+      [
+        "Gemma4Plan",
+        "ReferenceSourcesAreFundedPaddedAndIsolatedBeforeStaging"
+      ],
+      [
+        "Gemma4Plan",
+        "FreshPositionsReuseTheSameGraphAcrossARingWrap"
+      ]
+    ],
+    "unique_positive_cases": 9,
+    "first_attempt": "build failed on signed test alignment literal; no checks or timings ran; unpooled",
+    "final_supervisor": 2241421,
+    "final_state": "done",
+    "final_returncode": 0,
+    "kernel_errors": [],
+    "empty_GPU": true
+  },
+  "provenance": {
+    "base": "9c5be8808406fc004ae8b649c1904d0311857091",
+    "qualified_source_manifest_sha256": "e6827986dd39694b5f6e1baaa72f3c351bf578a1adcc1009828de82c10c32be4",
+    "qualified_sources": {
+      "benchmarks/CMakeLists.txt": "a6741e37805c0ba8ad9a92b77621a78ea5510437aed2e9142f06d2531606b730",
+      "benchmarks/host_mask_probe.cc": "703167e50d13705c05a2374f4fa713b73506cc466aafdd6bc3dc41ae445d2044",
+      "src/engine/gemma2_plan.cc": "08c3aec373e426d68a1418cd7513bfe370f963f1815d8809aaed12b217250c69",
+      "src/engine/gemma3_plan.cc": "ff771c2ab54ce3e52ba106ad75dd4586810686b902b1cdd70f6087a9df250e0f",
+      "src/engine/gemma4_plan.cc": "76563b2630a1dad5c12c34559c725aad303e42d899329bb164b25bcf3118eaca",
+      "src/model/dsv4.cc": "95e07d9a2423332beea8ff053b052ebf9268abb93f5772510f666486504986a7",
+      "src/model/dsv4.h": "79a9fc7db8e8d7ac31b0f508346275dfb8a58ef9ddb4bffd7efb4cad16a2fde6",
+      "src/model/gemma2.cc": "7cf0eadf2aca45b1782fc4420d62d45463bd434c7144114a90e54adf57f8561a",
+      "src/model/gemma3.cc": "833420867ea82348b52e97c9cea4aea9855429dd87523f3c8eb1d6c1bc568471",
+      "src/model/gemma4.cc": "b0775db55efc380eb6f5b02ef482066eb579d9f25e3816ba4396188ccd2fe7d9",
+      "src/model/host_mask.h": "02499f3c9472b96d2aa2eb2feb7ac3e0d9c940f549c66888fb6aa8ec1bb0764a",
+      "src/model/qwen38.cc": "546482148bf50e1c6b8a4558b0400f5001ed186419a6abb95bb9b60a5afc62d5",
+      "src/model/qwen38.h": "1f39ebe1af6e7b5f77f9e49d78027bae7d4409c6fb9e71e670ab50761db2c04a",
+      "tests/support/gemma2_fixture.h": "f8687141fd17f7b764aa83003159900039bbbf4be761a3132bd5baf80d70f1c7",
+      "tests/support/gemma3_fixture.h": "dfa3ee7ff617bf9545f4799fcb530cad7b8ca4ef63c80492a5f2e397f2da9761",
+      "tests/support/gemma4_fixture.h": "800713c830e1faad2bf467ebb2ccad80d6b847a51186c9ad690007d9ef579183",
+      "tests/unit/CMakeLists.txt": "cdd1e83382c9a3f5e0c23f6f19c6cfd9039f5dbdc32adaeec93eead1d2055e1a",
+      "tests/unit/data/gemma2/gemma2_2b_q8.json": "a352ce04822bc89e96d3a0eacf54a67302f47f222193342e09607aeb86a20dba",
+      "tests/unit/data/gemma3/gemma3_4b_qat.json": "cd676240b0c4acd5b5f06815fc624364dfc1d4501eab1d8f378cbf00f226e56b",
+      "tests/unit/data/gemma4/gemma4_26b.json": "234d5acffa9c25c416beebb9da7d7078f8fc73a34c907e9c716a7ebc66b25a83",
+      "tests/unit/data/gemma4/gemma4_31b.json": "138fe85f325ac6e5984839e202013da5ed0257926b688f128303384d49b8b6a1",
+      "tests/unit/gemma2_plan_test.cc": "9c7d3d70c2b9899f9ef9f528e6f52b3056d33e98daa2d9865050a29a0b9ffd85",
+      "tests/unit/gemma3_plan_test.cc": "1d3ee17c96d87dab7d68ef8b6e38b62af392abe840a616fac6c0b471ee1cd49b",
+      "tests/unit/gemma4_plan_test.cc": "d677cd7507794ccff78ac911f392dce8c8ec5236b0b37eb9b8b2311c5895cf26",
+      "tests/unit/host_mask_test.cc": "b1b01ffc605f62f08195c5850da4d797f0ef4e65f5d3a3a26b07841c2ef5ff05"
+    },
+    "B_geometry_patch_sha256": "2ce18c0318e6b3156c23590d2497196a436ce97ac24b317063e2864b90821709",
+    "receipt_sha256": "0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd",
+    "ELFs": {
+      "host_mask_test": "ff574c7603663ce8dc712c6bbff20170a3954c712fa20a7a6fc5ba566d5cc765",
+      "jitllm_host_mask_probe": "8b8686c6245f9475ad050f85dd12a2dad85eddddfecc71bf1c7e0482d6903833",
+      "gemma2_plan_test": "c082f2aa1c979c3201b98ac4a310a5f54e88e548e82eb22c3eb05711a621358d",
+      "gemma3_plan_test": "a7d12141de9b7ae5b2ab64943778422bb3cf5a5ff879dae2f382a09df8c8a78b",
+      "gemma4_plan_test": "e3df936a9b4b8648fcab707a776e7e87222822ff1b5c738d462692cb3651ca93"
+    },
+    "SDK": "aarch64-c09daba6ac31edee",
+    "official_receipt": true,
+    "checked_sha256": "a85e713d73a734b331e3a56fb78b5594fa5171f78f7299b7b036f34414fd8073",
+    "bookends_log_sha256": "9b5fe510392080717437e00b47433f589227d7cb02656dc582d9212163c3971b",
+    "xml_sha256": {
+      "oracle": "429d632d24c81cd08ab3be90d48f877549e0c4210aff7beabfb1828d8fb7c0a4",
+      "gemma2": "a82f634144559795578aba5d3d853502eca9bc41d90bcf1d05a3f5c9cbf610c4",
+      "gemma3": "8bc5d916cdaa2ee9a1b5aed316235449c63e3248fa6bb7f4eade25281f64c08d",
+      "gemma4": "70534f944183b884b853fda1479630cb6cdc94a773e8d2fdc27a3e52134cde2a"
+    },
+    "method_sha256": "7e170d41282b1f1821efe5505c0bb6bb9d735811b493962f8134600dffac3d56",
+    "TensorFold": {
+      "TensorFold_main": "f8fe17d24629aedabf90bbf78279dd776e6d62e7",
+      "TensorFold_python_0_6": "ed78d6fc204d89d90b045bf033d6551e7714f3a1",
+      "README_sha256": {
+        "TensorFold-main-README.md": "678c80141062556cb8db26a3e839a2b588ffcb7acdf729c3319899bf1519f2f4",
+        "TensorFold-python-README.md": "ec9da14a5a0a9f98a0a14d11b5c265850194d06ed0dc05b85e3c26f5e19b27a4"
+      },
+      "applicability": "CPU-only exact host formulas; no model/reference comparison or upstream speed claim"
+    },
+    "build_type": "RelWithDebInfo (-O2)"
+  },
+  "limitations": [
+    "n=2 bookended batches per implementation,16 calls/batch; helper-only reused buffers",
+    "QSA common allocation/initialization excluded; half-fill blocked initialization included",
+    "compressed prefix was already compiler-friendly; small absolute change",
+    "GPU mask producers, model arithmetic, public settings and admission unchanged"
+  ],
+  "batch_timings": [
+    {
+      "formula": "prefix-fill",
+      "arm": "O1",
+      "seconds": 0.020087946,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "prefix-fill",
+      "arm": "A1",
+      "seconds": 0.001747399,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "prefix-fill",
+      "arm": "A2",
+      "seconds": 0.001752983,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "prefix-fill",
+      "arm": "O2",
+      "seconds": 0.019980537,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "compressed-fill",
+      "arm": "O1",
+      "seconds": 0.001794791,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "compressed-fill",
+      "arm": "A1",
+      "seconds": 0.001736982,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "compressed-fill",
+      "arm": "A2",
+      "seconds": 0.001749862,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "compressed-fill",
+      "arm": "O2",
+      "seconds": 0.001792727,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "ring-fill",
+      "arm": "O1",
+      "seconds": 0.022556578,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "ring-fill",
+      "arm": "A1",
+      "seconds": 0.001492245,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "ring-fill",
+      "arm": "A2",
+      "seconds": 0.001507941,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "ring-fill",
+      "arm": "O2",
+      "seconds": 0.02240973,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "prefix-check",
+      "arm": "O1",
+      "seconds": 0.021772223,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "prefix-check",
+      "arm": "A1",
+      "seconds": 0.001359813,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "prefix-check",
+      "arm": "A2",
+      "seconds": 0.001353461,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "prefix-check",
+      "arm": "O2",
+      "seconds": 0.021711663,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "ring-check",
+      "arm": "O1",
+      "seconds": 0.034722046,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "ring-check",
+      "arm": "A1",
+      "seconds": 0.001467622,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "ring-check",
+      "arm": "A2",
+      "seconds": 0.001428997,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "ring-check",
+      "arm": "O2",
+      "seconds": 0.034808399,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "qsa-fill",
+      "arm": "O1",
+      "seconds": 0.006922233,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "qsa-fill",
+      "arm": "A1",
+      "seconds": 0.00169871,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "qsa-fill",
+      "arm": "A2",
+      "seconds": 0.001641253,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    },
+    {
+      "formula": "qsa-fill",
+      "arm": "O2",
+      "seconds": 0.006916441,
+      "calls": 16,
+      "rows": 512,
+      "width": 4608
+    }
+  ],
+  "timing_unit": "seconds per16-call batch; means/ranges normalize to ms/call"
+}

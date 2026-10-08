@@ -245,6 +245,13 @@ draft/verify retain their contracts. Shared prompt-completion first-token
 publication remains a separate compatible extension for every family.
 [Controls and open consumers](experiments/plain-gpu-tokens/README.md).
 
+Host reference construction shares checked prefix/ring intervals in
+`model/host_mask.h`; existing Gemma content checks reduce every F16 bit over
+constant intervals. DeepSeek shares construction only, and Qwen QSA keeps its
+three-valued bias and finite dead sentinel. Dense Qwen already uses prefix
+fills. These host helpers do not add validation to device-only paths.
+[Exact controls and CPU-only measurements](experiments/host-mask-intervals/README.md).
+
 Causal/ring mask source validation and host staging are shared in
 `engine/graph_mask_inputs.h`, used by Gemma2, Gemma3, both Gemma 4 profiles,
 DeepSeek target raw masks and Qwen native/GGUF targets with native MTP.

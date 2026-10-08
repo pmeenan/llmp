@@ -28,6 +28,7 @@
 #include "artifact/artifact.h"
 #include "artifact/gguf_metadata.h"
 #include "artifact/representation.h"
+#include "model/host_mask.h"
 #include "model/state.h"
 
 namespace jitllm::model {
@@ -989,21 +990,35 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
   return in;
 }
 
+std::expected<Qwen38ChunkInputs, std::string> Qwen38RowGeometry(const Qwen38Profile& p,
+                                                                std::uint32_t cells,
+                                                                std::uint32_t n_past,
+                                                                std::uint32_t rows,
+                                                                std::uint32_t read) {
+  const std::uint64_t end = std::uint64_t{n_past} + rows;
+  if (rows == 0 || end > cells || end > std::numeric_limits<std::int32_t>::max() ||
+      read < Pad(end, 256) || read > cells || read % 256 != 0 || p.indexer_ratio == 0)
+    return Refused("rows do not fit the Qwen cache geometry");
+  Qwen38ChunkInputs in;
+  in.n_past = n_past;
+  in.rows = rows;
+  in.n_kv = read;
+  in.qsa_select = std::uint64_t{read} > std::uint64_t{p.indexer_budget} + p.indexer_ratio - 1;
+  if (in.qsa_select)
+    in.qsa.blocks =
+        static_cast<std::uint32_t>((std::uint64_t{read} + p.indexer_ratio - 1) / p.indexer_ratio);
+  return in;
+}
+
 std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& p,
                                                          std::uint32_t cells, std::uint32_t n_past,
                                                          std::uint32_t rows, std::uint32_t read,
                                                          bool selection_masks,
                                                          bool materialize_masks) {
   const std::uint64_t end = std::uint64_t{n_past} + rows;
-  if (rows == 0 || end > cells || read < Pad(end, 256) || read > cells || read % 256 != 0 ||
-      p.indexer_ratio == 0) {
-    return Refused(std::format("{} rows at {} reading {} cells do not fit a cache of {}", rows,
-                               n_past, read, cells));
-  }
-  Qwen38ChunkInputs in;
-  in.n_past = n_past;
-  in.rows = rows;
-  in.n_kv = read;
+  auto geometry = Qwen38RowGeometry(p, cells, n_past, rows, read);
+  if (!geometry) return Refused(geometry.error());
+  Qwen38ChunkInputs in = std::move(*geometry);
   in.positions.resize(4 * std::size_t{rows});
   in.cells.resize(rows);
   for (std::uint32_t i = 0; i < rows; ++i) {
@@ -1018,8 +1033,6 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& p,
   // plus the tail); a chunk whose attention reads no more keeps every cell,
   // so the selection changes nothing and is not built.
   const std::uint32_t ratio = p.indexer_ratio;
-  const std::uint64_t width = std::uint64_t{p.indexer_budget} + ratio - 1;
-  in.qsa_select = n_kv > width;
   if (materialize_masks && (!in.qsa_select || selection_masks)) {
     in.mask.assign(n_kv * rows, kQwen38HalfNegInf);
     for (std::uint32_t i = 0; i < rows; ++i) {
@@ -1033,9 +1046,6 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& p,
       std::fill_n(in.mask_f32.begin() + static_cast<std::ptrdiff_t>(i * n_kv),
                   static_cast<std::ptrdiff_t>(std::uint64_t{n_past} + i + 1), 0.0f);
     }
-  }
-  if (in.qsa_select) {
-    in.qsa.blocks = static_cast<std::uint32_t>((n_kv + ratio - 1) / ratio);
   }
   // The fast graph selects from the cached block keys on the device: no
   // block tables.
@@ -1064,19 +1074,10 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& p,
     q.bias.assign(std::size_t{q.blocks} * rows, 0.0f);
     for (std::uint32_t i = 0; i < rows; ++i) {
       const std::uint64_t pos = std::uint64_t{n_past} + i;
-      // The incomplete tail is always visible.
-      const std::uint64_t tail_start = (pos + 1) / ratio * ratio;
-      float* bias = q.bias.data() + (std::size_t{i} * q.blocks);
-      for (std::uint32_t b = 0; b < q.blocks; ++b) {
-        if (b >= full) {
-          bias[b] = -std::numeric_limits<float>::infinity();
-          continue;
-        }
-        bias[b] = std::uint64_t{b} * ratio >= tail_start ? 1e9f : 0.0f;
-      }
-      if (have_dead) {
-        bias[dead] = 1e9f;
-      }
+      // Complete blocks before this query are visible; the incomplete
+      // tail and the first dead block keep their finite selection sentinel.
+      FillHostQsaBias(std::span{q.bias}.subspan(std::size_t{i} * q.blocks, q.blocks), full,
+                      (pos + 1) / ratio);
     }
   }
   return in;
