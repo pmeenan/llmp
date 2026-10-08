@@ -307,10 +307,13 @@ context with one slot; checked 8K boundary and model-switch state gates
 complement its ring, checkpoint/restore and restart-adoption controls.
 [Gemma2 2B](docs/gemma2.md) has bounded 8K/two-slot serving with GPU masks, checked cap50
 compatible prefill, template refusal and restart replay. Gemma2/Gemma3 now
-read actual K/V roots for joined 128-row prefill, removing packing copies;
+read actual K/V roots for compatible joined 2–128-row prefill and partial
+tails, removing packing copies;
 [focused comparisons](docs/experiments/gemma-prefill-copies/README.md) improve
 prefill 8.7%/2.9%, with fresh Gemma2 stock bookends level and exact outputs.
-Other row shapes, broader reference, batching and sustained gates remain open.
+The later 64-row transfer improves native prefill 10.5%/2.8%; fresh stock
+bookends leave Gemma2 level and Gemma3 1.8% slower on the paid cycle.
+Larger rows, mixed-width roots/cohorts and broader sustained gates remain open.
 The retroactive optimization transfer audit now records every current
 family, including those M3 closed out; its open ports are first in M3.5
 (plan.md; workflow.md's transfer rule). Then come approved model checkpoints, legacy fixtures, Bonsai, formats with

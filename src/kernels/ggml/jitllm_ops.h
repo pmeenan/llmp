@@ -151,7 +151,8 @@ class LaunchContext;
 // slots, four V slots; inactive slots are null. Cohort2/3 uses all active
 // roots; cohort4/8/12 retains four roots per call. Equal-width partial cohorts
 // use canonical offset groups of up to four roots on the whole original grid.
-// No default graph emits it.
+// Qualified Gemma2/Gemma3 runners select actual roots for compatible C2
+// prefill at 2..128 rows; other owner recipes require explicit selection.
 inline constexpr const char* kFlashAttnOwnersName = "jitllm.flash_attn.owner_roots";
 ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_tensor* mask,
                                  const std::array<ggml_tensor*, 4>& k,

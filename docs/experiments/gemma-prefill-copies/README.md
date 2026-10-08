@@ -82,14 +82,15 @@ copy duration becomes end-to-end gain. Gemma2's 64 choices and two complete
 256000-value heads also match the frozen stock-control payload byte for byte;
 Gemma3's 64 choices and two complete 262208-value heads match across all arms.
 
-## Closed implementation and bounds
+## Initial 128-row implementation and bounds
 
 The additional primitive accepts D256/H8/GQA2, two equal-width real F16 cache
 roots, 128 query rows, owner offset zero and cap50 (Gemma2) or cap0 (Gemma3).
 It preserves original Columns32 geometry, four query tiles, the mask prepass,
 stream-K partition and both reduction fixups. The existing MMA body is
 unchanged. The graph retains mask concatenation but removes K/V packing;
-64-row and other ineligible multirow chunks retain the prior packed path.
+At this initial slice, 64-row and other multirow chunks retain the packed
+path; the subsequent flexible transfer below expands that eligibility.
 
 Only cap0 multirow accepts aligned widths through Gemma3's trained 131072
 maximum. Its actual-root span is at most 256 MiB, Q/output 2 MiB and joined
@@ -162,14 +163,15 @@ n=2 workload is level within its observed movement. It closes the measured
 warm gap for this bounded workload; it establishes neither sustained HTTP
 parity nor all-context/all-shape parity. Gemma3 receives its own native factor,
 exact own-state/teacher controls and trained-maximum operand qualification;
-this slice adds no fresh Gemma3 stock cycle.
+the initial 128-row slice adds no fresh Gemma3 stock cycle.
 
-Ordinary Gemma2/Gemma3 select the 128-row actual-root path while retaining an
+The initial ordinary Gemma2/Gemma3 slice selects the 128-row actual-root
+path while retaining an
 explicit packed control. Their public contexts and slot capacities are
 unchanged: Gemma2 8192/two, Gemma3 4096/two or explicit scalar 8448. The
 131072 qualification is a primitive/graph bound, not public context admission.
-Remaining compatible row counts, query tiles and partial tails are current
-M3.5 transfers, not exclusions caused by today's closed selector.
+The flexible transfer below subsequently qualifies 2–128-row tiles/tails;
+larger compatible shapes remain current M3.5 transfers.
 
 The attribution uses baseline 763bcbd; candidate work starts from 6beb7ca,
 which adds DeepSeek masks without changing Gemma2 behavior. The baseline
@@ -246,7 +248,7 @@ payload/retirement controls disagree. Aggregate results and authenticated
 input identities remain durable even after raw telemetry is deleted at
 milestone close.
 
-The Spark build uses SDK `aarch64-c09daba6ac31edee`, CUDA13.4 and
+The initial 128-row slice builds with SDK `aarch64-c09daba6ac31edee`, CUDA13.4 and
 cuBLAS130800. The linked runtime SHA-256 is
 `58234cfd6352c2104856b066686c8c38c3e132e01a893079f297fea2f81f09b4`;
 G2/G3 probe hashes are respectively
@@ -270,3 +272,151 @@ Neither offers a Gemma2/Gemma3 CUDA recipe for the approved GGUF artifacts.
 llama.cpp d81235049384534c167caea52b85a694f6103d14 remains the applicable
 CUDA reference, through immutable image
 sha256:c604ea4f1c2e8d5c8b27d89fef727384d59e23c5b07e369cde5393820e0607db.
+
+## Flexible query tiles and partial tails
+
+The subsequent transfer extends the same actual-root body to equal C2 query
+chunks of 2–128 rows. It mirrors the original packed Columns4/8/16/32
+specializations (rows ≤4/8/16/otherwise), pads only mask rows to 32 and launches
+ceil(real rows / Columns) query tiles. Original query-tail guards, stream-K
+partition/fixups and compiled arithmetic remain; the additional 8/16-column
+instantiations use one shared dispatcher. Cap0 roots remain qualified through
+131072 cells, with old one-query/cap50 width limits unchanged. Ordinary chunks
+remain 128 rows per owner, with unchanged public contexts and slot capacities.
+Partial tails now use the same qualified path. Internal overrides retain both
+all-packed and 128-only controls.
+
+The new native off/on/on/off 64-row screen uses the standing prefixes above,
+warm retained plans/state/graphs, zero paid planning/eager work and the same
+cycle output contract. All 64 natural choices and both complete finite final
+heads match byte for byte across every arm within each family's 64-row shape.
+Values are n=2 means.
+
+| Family | Packed prefill | Actual-root prefill | Change | Paid prefill+decode change |
+| --- | ---: | ---: | ---: | ---: |
+| Gemma2 | 2.008650 s | 1.798255 s | −10.47445% | −8.07035% |
+| Gemma3 | 0.6030255 s | 0.586207 s | −2.78902% | −1.46882% |
+
+Prefill packed/on bookend drift is −0.72126% / −0.23606% for Gemma2 and
+−1.47603% / +0.83217% for Gemma3. Decode moves +0.25170% / +0.21064% with
+unchanged implementation; these short controls establish no decode speed
+change. Gemma2 executes 77 paid waves (67 joined / ten scalar), Gemma3 25;
+capture/replay remains 3/74 and 3/22 respectively in every arm. Selected
+owner-prefill counts are 425/165 with the factor on, zero off. This factor
+extends eligibility without changing the ordinary chunk size.
+
+Focused qualification passes 52 unique controls with no skips: 36 plan and
+operand cases, 12 checkpoint/lookahead/serving cases and four actual production
+adapter cases. The multirow operand control exercises 50 row/width/cap
+combinations, including selector boundaries
+2/3/4/5/7/8/9/15/16/17/31/32/33/63/64/65/127/128, retained full-row boundaries
+and wide partial 5/33-row cases at 32768/131072 cells. Complete finite outputs
+match original packed MMA byte for byte eagerly and in poisoned, changed-input
+captured replay, including an executed last cache cell. One-query/128-row
+controls, invalid cohorts/spans/scratch and >128-row packed fallback remain
+positive. Independent adversarial source review is clean.
+
+The first ordinary qualification found a fixture error before adoption: tails
+at 1285/1541 positions have different padded KV widths (1536/1792), so the
+adapter correctly runs them separately. Both new selection assertions failed;
+heads, initialized state, histories and restart continuations still matched.
+Those failure records remain preserved. The corrected tail control uses
+1285/1413 positions, a 128-row skew with the same 1536-cell read width. Only
+the two failed cases rerun; the 14 positive controls from the first run remain
+evidence for unchanged binaries/source. Both families now prove selected
+2–127-row owner nodes, exact complete finite heads and every used-state byte,
+kept spill/restart adoption, history restoration and a scalar anchor
+continuation. Aligned 128-row joined-hint controls remain unchanged.
+
+The corrected fresh-server tail adapter's all-packed/on/on/all-packed means
+are 0.389937619 / 0.3720590955 s (Gemma2, −4.58497%) and
+0.492719524 / 0.4726112255 s (Gemma3, −4.08108%). These n=2 measurements
+cover the combined 128-row-plus-tail owner policy and exclude the initial
+scalar advance; they do not isolate the five-row kernel's benefit.
+
+## Fresh 64-row references
+
+Each family separately runs llama.cpp/native/native/llama.cpp with identical
+64-row per-owner chunks, 128-row total batches, bounded C2/F16 KV, warmed
+prefix/state/plans and the same paid final-head output work. Both engines execute 25 Gemma3 paid waves: 19 joined and six scalar. Their
+shorter-remaining-owner-first, homogeneous-head schedule publishes the shorter
+owner's frontier separately; the extra wave over 24 is shared, not evidence
+for a native-only launch penalty. The public stock
+helpers accept optional `chunk=N` (2–128, default 128) and preserve ordinary
+stock graph/fusion/FlashAttention policies. Native proves zero paid optional
+planning/eager work and the expected 77/25 waves. Current source, binaries,
+SDK receipt, replay IDs/texts, source GGUF/artifact identities and actual
+resolved libraries are bound before and after acquisition. Every target
+positively retires; stock container absence is independently checked in a
+finally path. All four arms per family match 64 valid natural choices and
+both complete finite final vocabulary heads byte for byte. The 64-row runs
+supply their own reference oracle, without inheriting a 128-row allowance.
+
+| Family / arm, acquisition order | Prefill | Decode | Paid sum |
+| --- | ---: | ---: | ---: |
+| Gemma2 llama.cpp 1 | 1.797630 s | 0.584597 s | 2.382227 s |
+| Gemma2 native 1 | 1.798790 s | 0.580849 s | 2.379639 s |
+| Gemma2 native 2 | 1.798670 s | 0.581077 s | 2.379747 s |
+| Gemma2 llama.cpp 2 | 1.797720 s | 0.581240 s | 2.378960 s |
+| Gemma2 llama.cpp mean | 1.797675 s | 0.5829185 s | 2.3805935 s |
+| Gemma2 native mean | 1.798730 s | 0.5809630 s | 2.3796930 s |
+| Gemma3 llama.cpp 1 | 0.573535 s | 0.468713 s | 1.042248 s |
+| Gemma3 native 1 | 0.587203 s | 0.474750 s | 1.061953 s |
+| Gemma3 native 2 | 0.585101 s | 0.473940 s | 1.059041 s |
+| Gemma3 llama.cpp 2 | 0.572521 s | 0.468464 s | 1.040985 s |
+| Gemma3 llama.cpp mean | 0.573028 s | 0.4685885 s | 1.0416165 s |
+| Gemma3 native mean | 0.586152 s | 0.4743450 s | 1.0604970 s |
+
+Gemma2 is +0.05869% prefill and −0.03783% paid sum, level in this short n=2
+comparison. Its decode change −0.33547% is smaller than stock's 0.57424%
+bookend movement. Prefill stock/native drift is +0.00501% / −0.00667%.
+Gemma3 remains +2.29029% prefill, +1.22848% decode and +1.81262% paid sum;
+its prefill stock/native drift is −0.17680% / −0.35797%. That residual exceeds
+this short comparison's movement and remains open. No Gemma3 parity,
+sustained serving or all-context claim follows from the useful native factor.
+
+At this task's entry, TensorFold native HEAD is
+`f8fe17d24629aedabf90bbf78279dd776e6d62e7` (1.0.0), and Python 0.6 HEAD is
+`ed78d6fc204d89d90b045bf033d6551e7714f3a1` (0.6.6). Their pinned README
+recipes provide no qualified Gemma2/Gemma3 CUDA/GGUF comparator; llama.cpp
+v0.6.0 remains applicable. This is an entry-time pin, not a claim that upstream
+will retain it for later tasks.
+
+The remaining T93 transfer includes >128 compatible rows, mixed-width roots
+and other compatible cohorts/layouts. Source assessment finds no established
+arithmetic barrier to larger equal C2 chunks: the foundation's 8192 total rows
+could permit 4096 per owner, with 64 MiB Q/output, a 2 GiB mask at 131072 cells,
+128 query tiles per owner and a roughly four-million flattened tile index.
+These are derived bounds, not qualified support. Mask/parent-span validation,
+funding, launch bounds, memory behavior and recipient performance still need
+qualification. Mixed-width 1285/1541 tails currently use the correct scalar
+fallback. Historical selector/span limits do not close either extension.
+
+The experimental/final ordinary source manifests are
+`cc8a50ce574e11cdc52958b92f3240e5e31778942ef08483decb830f8ef8a277` /
+`5845d71f0654bb3a3b756b8ed3d1b4f77e09a8d4a8872b6bf8f78f4aabc7f07f`,
+at base `b4ee2b9`. Aggregate qualification receipt SHA-256 is
+`d96db2aefbf15fa81b6b6773ab1761e7ceeca2466bb8bd82345ca2b25ab56f0b`.
+The flexible runtime/probe SHA-256 identities are:
+
+| Payload | SHA-256 |
+| --- | --- |
+| Runtime | `decfa4c6b64b31f2b701d67a02bcc6840f4eb0774b8e9d286200f35c01936d01` |
+| Gemma2 native probe | `552881e34618f423647e0b2b157e1a85299c5bd1e6935e5ff50c2f8ffdaa297e` |
+| Gemma3 native probe | `ef94d0c68a25104b107781323ef8c2896e2babf03f0d9733a26a3a5cf8f5a1a7` |
+| SDK build receipt | `874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89` |
+| Gemma2 stock helper | `5782476b282c5e2e84d00f7830d894b902464b970ad06c241a314bb06b26c4ca` |
+| Gemma3 stock helper | `498b33a980aa52da1fd75cd3556ab0be6db0302b7511783806adbb91e5540365` |
+
+Raw XML, payloads, library/retirement bindings and failures remain external
+under Spark B's `scratch/m35-gemma-flexible-prefill/` and the session
+coordination scratch. Replay inputs remain in the standing reference store
+above. Full regression/workstation tiers remain deferred.
+
+To replay the new factor, append `chunk=64` to both native cycle commands
+above and add `flexible-owner-prefill` only to the actual-root arm (together
+with `owner-prefill`); omit both owner flags for the packed control. Compile
+the checked-in [Gemma2 stock helper](../gemma2-serving/llama_joint_prefill_probe.cc)
+or [Gemma3 stock helper](../gemma3-execution/llama_joint_prefill_probe.cc)
+against the pinned original-image headers/libraries and append `chunk=64`
+to `MODEL IDS0 TEXT0 IDS1 TEXT1 NEW_OUT cycle` inside that immutable image.

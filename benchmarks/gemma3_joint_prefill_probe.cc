@@ -87,7 +87,8 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") || (argc < 6 || argc > 8))
+  if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") ||
+      (argc < 6 || argc > 10))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -102,15 +103,27 @@ int main(int argc, char** argv) {
     return status ? 0 : 1;
   }
   bool bounded = false, owner_prefill = false;
+  bool flexible = false, have_chunk = false;
+  std::uint32_t chunk = 128;
   for (int i = 6; i < argc; ++i) {
     const std::string_view flag = argv[i];
     if (flag == "bounded-roots" && !bounded)
       bounded = true;
     else if (flag == "owner-prefill" && !owner_prefill)
       owner_prefill = true;
-    else
+    else if (flag == "flexible-owner-prefill" && !flexible)
+      flexible = true;
+    else if (flag.starts_with("chunk=") && !have_chunk) {
+      const auto number = flag.substr(6);
+      const auto parsed = std::from_chars(number.data(), number.data() + number.size(), chunk);
+      if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || chunk < 2 ||
+          chunk > 128)
+        return 2;
+      have_chunk = true;
+    } else
       return 2;
   }
+  if (flexible && !owner_prefill) return 2;
   const std::string mode = argv[5];
   const bool own = mode == "own", cycle = mode == "cycle";
   if (!own && !cycle) return 2;
@@ -143,12 +156,14 @@ int main(int argc, char** argv) {
       std::make_unique<en::Gemma3Runner>(node,
                                          en::Gemma3Options{.artifact = argv[1],
                                                            .out = out,
+                                                           .max_rows = chunk,
                                                            .slots = 2,
-                                                           .max_wave_rows = 256,
+                                                           .max_wave_rows = 2 * chunk,
                                                            .max_head_rows = 2,
                                                            .owner_decode = true,
                                                            .packed_prefill = true,
                                                            .owner_prefill = owner_prefill,
+                                                           .flexible_owner_prefill = flexible,
                                                            .bounded_roots = bounded,
                                                            .fuse_norms = true,
                                                            .fuse_quant_glu = true,
@@ -200,14 +215,14 @@ int main(int argc, char** argv) {
                                   : past[1] == prefix[1]                       ? 0U
                                   : prefix[0] - past[0] <= prefix[1] - past[1] ? 0U
                                                                                : 1U;
-      const auto first_rows = std::min(128U, prefix[first] - past[first]);
+      const auto first_rows = std::min(chunk, prefix[first] - past[first]);
       const bool head = past[first] + first_rows == prefix[first];
       std::array<en::Gemma3Runner::Work, 2> work;
       std::size_t count = 0;
       std::uint32_t rows = 0;
       for (const std::uint32_t s : {first, 1U - first}) {
         if (past[s] == prefix[s]) continue;
-        const auto n = std::min(128U, prefix[s] - past[s]);
+        const auto n = std::min(chunk, prefix[s] - past[s]);
         if ((past[s] + n == prefix[s]) != head) continue;
         work[count++] = {s, past[s], std::span(ids[s]).subspan(past[s], n),
                          token && head ? nullptr : &heads[s],
@@ -420,7 +435,7 @@ int main(int argc, char** argv) {
         std::array<std::vector<float>, 2> continued;
         for (unsigned repeat = 0; repeat < 2; ++repeat) {
           for (std::uint32_t s = 0; s < 2; ++s) {
-            if (auto x = independent(s, std::span(ids[s]).first(128), true, false); !x) return x;
+            if (auto x = independent(s, std::span(ids[s]).first(chunk), true, false); !x) return x;
             if (repeat == 0)
               continued[s] = heads[s];
             else if (heads[s].size() != continued[s].size() ||
@@ -471,8 +486,9 @@ int main(int argc, char** argv) {
       if (bounded && prefix[0] != prefix[1] && !bound.bounded_owner_attention)
         return Error("bounded roots did not select actual unequal owner attention");
       std::cout
-          << "GEMMA3_JOINT_PREFILL mode=" << mode << " slots=2 context_per_slot=4096 chunk=128"
-          << " compatible_prefill=1 max_wave_rows=256 prompt_rows0=" << prefix[0]
+          << "GEMMA3_JOINT_PREFILL mode=" << mode
+          << " slots=2 context_per_slot=4096 chunk=" << chunk
+          << " compatible_prefill=1 max_wave_rows=" << 2 * chunk << " prompt_rows0=" << prefix[0]
           << " prompt_rows1=" << prefix[1] << " untimed_rows_per_slot=3"
           << " decode_steps=32 departure_steps=" << (own ? kTail : 0U)
           << " paid_generated_tokens=64 past0=" << past[0] << " past1=" << past[1]
@@ -487,7 +503,7 @@ int main(int argc, char** argv) {
           << " eager=" << stats.eager << " captured=" << stats.captured
           << " replayed=" << stats.replayed << " selected_owner=" << bound.owner_attention
           << " selected_packed_prefill=" << bound.packed_prefill_attention
-          << " owner_prefill=" << owner_prefill
+          << " owner_prefill=" << owner_prefill << " flexible_owner_prefill=" << flexible
           << " selected_owner_prefill=" << bound.owner_prefill_attention
           << " bounded_roots=" << bounded
           << " selected_bounded_owner=" << bound.bounded_owner_attention

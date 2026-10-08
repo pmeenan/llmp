@@ -93,8 +93,10 @@ with decode within noise. Shared lookahead/capture was subsequently selected;
 removed K/V packing. Same-native prefill improves 8.662%; fresh final stock
 bookends are level within this short screen (native −0.293% prefill / −0.202%
 paid cycle), with exact choices and full final heads. Ordinary adapter state,
-kept restart and continuation controls pass. Other row shapes and broader
-qualification remain open.
+kept restart and continuation controls pass. Flexible 2–128-row tiles/tails
+are subsequently adopted: same-native 64-row prefill improves 10.474% (n=2),
+and fresh 64-row stock bookends are level with exact choices/full heads.
+Larger rows, mixed-width roots/cohorts and broader qualification remain open.
 
 The subsequent copy-free bounded cap50 owner policy is selected by this recipe.
 It preserves original logical attention geometry, 128 rows per owner and local
@@ -157,11 +159,15 @@ wider cohorts, maximum-context memory/swap and sustained gates remain open,
 without universal parity.
 
 The later [multirow actual-root transfer](experiments/gemma-prefill-copies/README.md)
-removes K/V packing for ordinary two-owner 128-row chunks, preserving cap0
+removes K/V packing for ordinary two-owner 2–128-row chunks, preserving cap0
 MMA geometry. Wrapped same-native prefill improves 2.932% / paid cycle 1.242%
 (n=2), with exact choices/heads and actual serving/restart state controls.
 Primitive/graph bounds qualify trained 131072; public contexts remain unchanged.
-Other row/tile shapes remain open, and this slice adds no fresh stock cycle.
+The initial 128-row slice adds no fresh stock cycle. The subsequent flexible
+extension improves same-native 64-row prefill 2.789%, with exact five-row
+serving tails/state/restart. Fresh 64-row stock bookends retain +2.290%
+prefill / +1.813% paid cycle; larger compatible rows, mixed-width roots,
+cohorts and that residual remain open. Ordinary chunks stay 128 rows.
 
 The [internal trained-maximum scalar screen](experiments/gemma3-execution/README.md#internal-trained-maximum-c1-screen-2026-10-07)
 also initializes 131,072 positions without a whole-state snapshot, matching all

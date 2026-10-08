@@ -89,7 +89,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }  // namespace
 int main(int argc, char** argv) {
   if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") ||
-      (argc < 6 || argc > 10))
+      (argc < 6 || argc > 12))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -104,6 +104,8 @@ int main(int argc, char** argv) {
     return status ? 0 : 1;
   }
   bool bounded = false, device_masks = false, prefill_ahead = false, owner_prefill = false;
+  bool flexible = false, have_chunk = false;
+  std::uint32_t chunk = 128;
   for (int arg = 6; arg < argc; ++arg) {
     const std::string_view flag = argv[arg];
     if (flag == "bounded-roots" && !bounded)
@@ -114,9 +116,19 @@ int main(int argc, char** argv) {
       prefill_ahead = true;
     else if (flag == "owner-prefill" && !owner_prefill)
       owner_prefill = true;
-    else
+    else if (flag == "flexible-owner-prefill" && !flexible)
+      flexible = true;
+    else if (flag.starts_with("chunk=") && !have_chunk) {
+      const auto number = flag.substr(6);
+      const auto parsed = std::from_chars(number.data(), number.data() + number.size(), chunk);
+      if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || chunk < 2 ||
+          chunk > 128)
+        return 2;
+      have_chunk = true;
+    } else
       return 2;
   }
+  if (flexible && !owner_prefill) return 2;
   const std::string mode = argv[5];
   const bool own = mode == "own", first_cycle = mode == "first-cycle";
   const bool cycle = mode == "cycle" || first_cycle;
@@ -151,14 +163,16 @@ int main(int argc, char** argv) {
                                          en::Gemma2Options{.artifact = argv[1],
                                                            .out = out,
                                                            .context = 8192,
+                                                           .max_rows = chunk,
                                                            .slots = 2,
-                                                           .max_wave_rows = 256,
+                                                           .max_wave_rows = 2 * chunk,
                                                            .max_head_rows = 2,
                                                            .prefill_lookahead = prefill_ahead,
                                                            .capture_ahead = prefill_ahead,
                                                            .owner_decode = true,
                                                            .packed_prefill = true,
                                                            .owner_prefill = owner_prefill,
+                                                           .flexible_owner_prefill = flexible,
                                                            .device_masks = device_masks,
                                                            .bounded_roots = bounded,
                                                            .fuse_norms = true,
@@ -211,14 +225,14 @@ int main(int argc, char** argv) {
                                   : past[1] == prefix[1]                       ? 0U
                                   : prefix[0] - past[0] <= prefix[1] - past[1] ? 0U
                                                                                : 1U;
-      const auto first_rows = std::min(128U, prefix[first] - past[first]);
+      const auto first_rows = std::min(chunk, prefix[first] - past[first]);
       const bool head = past[first] + first_rows == prefix[first];
       std::array<en::Gemma2Runner::Work, 2> work;
       std::size_t count = 0;
       std::uint32_t rows = 0;
       for (const std::uint32_t s : {first, 1U - first}) {
         if (past[s] == prefix[s]) continue;
-        const auto n = std::min(128U, prefix[s] - past[s]);
+        const auto n = std::min(chunk, prefix[s] - past[s]);
         if ((past[s] + n == prefix[s]) != head) continue;
         work[count++] = {s, past[s], std::span(ids[s]).subspan(past[s], n),
                          token && head ? nullptr : &heads[s],
@@ -241,12 +255,12 @@ int main(int argc, char** argv) {
           const auto end = unit.n_past + static_cast<std::uint32_t>(unit.tokens.size());
           auto& hint = hints[i];
           hint.slot = unit.slot;
-          hint.rows = std::min(128U, prefix[unit.slot] - end);
+          hint.rows = std::min(chunk, prefix[unit.slot] - end);
           if (hint.rows != 0) {
             const bool next_final = end + hint.rows == prefix[unit.slot];
             mode(next_head, mixed_next, next_final);
             token_next |= token && next_final;
-            hint.after = std::min(128U, prefix[unit.slot] - end - hint.rows);
+            hint.after = std::min(chunk, prefix[unit.slot] - end - hint.rows);
             if (hint.after != 0) {
               const bool after_final = end + hint.rows + hint.after == prefix[unit.slot];
               mode(after_head, mixed_after, after_final);
@@ -347,7 +361,8 @@ int main(int argc, char** argv) {
         // Load weights without traversing any paid prefill shape. Clear retains only
         // this short state backing; further growth, plans and captures remain paid.
         for (std::uint32_t s = 0; s < 2; ++s)
-          if (auto r = independent(s, std::span(ids[s]).first(3), true, true); !r) return r;
+          if (auto r = independent(s, std::span(ids[s]).first(std::min(3U, chunk)), true, true); !r)
+            return r;
         if (auto r = clear(); !r) return r;
         runner.DropPlans();
       }
@@ -484,7 +499,7 @@ int main(int argc, char** argv) {
         std::array<std::vector<float>, 2> continued;
         for (unsigned repeat = 0; repeat < 2; ++repeat) {
           for (std::uint32_t s = 0; s < 2; ++s) {
-            if (auto x = independent(s, std::span(ids[s]).first(128), true, false); !x) return x;
+            if (auto x = independent(s, std::span(ids[s]).first(chunk), true, false); !x) return x;
             if (repeat == 0)
               continued[s] = heads[s];
             else if (heads[s].size() != continued[s].size() ||
@@ -541,8 +556,9 @@ int main(int argc, char** argv) {
           runner.coverage().violations)
         return Error("C2 did not select/replay checked implementation families");
       std::cout
-          << "GEMMA2_JOINT_PREFILL mode=" << mode << " slots=2 context_per_slot=8192 chunk=128"
-          << " compatible_prefill=1 max_wave_rows=256 prompt_rows0=" << prefix[0]
+          << "GEMMA2_JOINT_PREFILL mode=" << mode
+          << " slots=2 context_per_slot=8192 chunk=" << chunk
+          << " compatible_prefill=1 max_wave_rows=" << 2 * chunk << " prompt_rows0=" << prefix[0]
           << " prompt_rows1=" << prefix[1] << " untimed_rows_per_slot=3"
           << " decode_steps=32 departure_steps=" << (own ? kTail : 0U)
           << " paid_generated_tokens=64 past0=" << past[0] << " past1=" << past[1]
@@ -557,7 +573,7 @@ int main(int argc, char** argv) {
           << " eager=" << stats.eager << " captured=" << stats.captured
           << " replayed=" << stats.replayed << " selected_owner=" << bound.owner_attention
           << " selected_packed_prefill=" << bound.packed_prefill_attention
-          << " owner_prefill=" << owner_prefill
+          << " owner_prefill=" << owner_prefill << " flexible_owner_prefill=" << flexible
           << " selected_owner_prefill=" << bound.owner_prefill_attention
           << " device_masks=" << device_masks << " selected_device_masks=" << bound.device_masks
           << " bounded_roots=" << bounded

@@ -265,8 +265,12 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
   const auto& device = ggml_cuda_info().devices[launch.device()];
   if (device.cc != 1210 || device.nsm <= 0) return Rejected("owner MMA diagnostic is GB10 only");
   const int d = static_cast<int>(in.q->ne[0]);
-  const bool prefill = in.q->ne[1] == 128;
-  const int columns = prefill ? 32 : (d == 256 ? 4 : 1);
+  const bool prefill = in.q->ne[1] > 1;
+  const int columns = d == 512            ? 1
+                      : in.q->ne[1] <= 4  ? 4
+                      : in.q->ne[1] <= 8  ? 8
+                      : in.q->ne[1] <= 16 ? 16
+                                          : 32;
   const int query_tiles = (static_cast<int>(in.q->ne[1]) + columns - 1) / columns;
   auto original =
       d == 256 ? detail::FlashAttnMmaShapeGqa2(columns, launch.device(), in.logit_softcap != 0)
@@ -300,9 +304,15 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
     geometry.scratch = 256 + std::uint64_t(geometry.blocks) * std::uint64_t(geometry.columns) *
                                  std::uint64_t(geometry.group) * std::uint64_t(2 + d / 2) *
                                  sizeof(float2);
+  const auto prefill_resources = [&]<int Columns>() {
+    return in.logit_softcap != 0 ? Resources<256, Columns, 2, true>(launch.device(), plan)
+                                 : Resources<256, Columns, 2, false>(launch.device(), plan);
+  };
   const auto checked =
-      prefill ? (in.logit_softcap != 0 ? Resources<256, 32, 2, true>(launch.device(), plan)
-                                       : Resources<256, 32, 2, false>(launch.device(), plan))
+      prefill ? (columns == 4    ? prefill_resources.template operator()<4>()
+                 : columns == 8  ? prefill_resources.template operator()<8>()
+                 : columns == 16 ? prefill_resources.template operator()<16>()
+                                 : prefill_resources.template operator()<32>())
       : in.bounded_roots
           ? (in.logit_softcap != 0
                  ? Resources<256, 4, 2, true, true>(launch.device(), plan)
@@ -322,11 +332,21 @@ std::expected<void, KernelFailure> FlashAttnOwnerRoots(LaunchContext& launch,
   auto plan = PlanFlashAttnOwners(launch, in);
   if (!plan) return std::unexpected(plan.error());
   return launch.Run(base::Bytes(plan->original.scratch), [&](ggml_backend_cuda_context& context) {
-    if (in.q->ne[1] == 128) {
-      if (in.logit_softcap != 0)
-        Queue<256, 32, 2, true>(context, in, *plan);
+    if (in.q->ne[1] > 1) {
+      const auto queue = [&]<int Columns>() {
+        if (in.logit_softcap != 0)
+          Queue<256, Columns, 2, true>(context, in, *plan);
+        else
+          Queue<256, Columns, 2, false>(context, in, *plan);
+      };
+      if (plan->original.columns == 4)
+        queue.template operator()<4>();
+      else if (plan->original.columns == 8)
+        queue.template operator()<8>();
+      else if (plan->original.columns == 16)
+        queue.template operator()<16>();
       else
-        Queue<256, 32, 2, false>(context, in, *plan);
+        queue.template operator()<32>();
     } else if (detail::PartialOwnerCohort(in.logical_cohort)) {
       if (plan->original.head == 256)
         QueuePartial<256, 4, 2>(context, in, *plan);

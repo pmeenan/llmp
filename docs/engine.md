@@ -57,12 +57,14 @@ requires homogeneous head intent; a mixed next stage does not suppress a valid
 after stage. Gemma4 serving still admits one prompt chunk at a time; its joined
 prefill admission/funding remains separate work. [Focused lifecycle controls](experiments/prefill-transfer/README.md).
 
-Gemma2/Gemma3 compatible two-owner 128-row prefill reads the real F16 K/V
+Gemma2/Gemma3 compatible two-owner 2–128-row prefill reads the real F16 K/V
 roots through the existing MMA body, keeping the packed logical geometry and
 cap50/cap0 arithmetic while removing K/V concatenation. Mask concatenation
 remains. The cap0 primitive is qualified through 131072 cache cells; public
-contexts are unchanged. Other row/tile shapes retain their checked packed
-fallback and an explicit extension task. [Attribution and qualification](experiments/gemma-prefill-copies/README.md).
+contexts and the 128-row chunk default are unchanged. Original selected
+Columns4/8/16/32 geometry and padded-query tail semantics cover partial chunks.
+Larger compatible rows, mixed-width roots and cohorts retain checked fallback
+and explicit extension tasks. [Attribution and qualification](experiments/gemma-prefill-copies/README.md).
 
 ## A runner's life
 

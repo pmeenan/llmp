@@ -110,6 +110,7 @@ struct ServingOptions {
   bool gemma3_device_masks = true;
   // Closed actual-root multirow recipes; internal packed controls only.
   bool gemma2_owner_prefill = true, gemma3_owner_prefill = true;
+  bool gemma2_flexible_owner_prefill = true, gemma3_flexible_owner_prefill = true;
   // Ordinary prefill lookahead and first-run capture of a repeated shape;
   // internal overrides for matched controls only.
   bool gemma2_prefill_lookahead = true, gemma2_capture_ahead = true;

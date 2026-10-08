@@ -82,8 +82,8 @@ std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
       (logical_cohort != 2 && logical_cohort != 3 && logical_cohort != 4 && logical_cohort != 8 &&
        logical_cohort != 12 && !PartialOwnerCohort(logical_cohort)))
     return Rejected("owner MMA partition inputs are outside the closed grid bounds");
-  if (multirow && (logical_cohort != 2 || tiles_per_owner != 16))
-    return Rejected("wide owner partition requires closed C2/four-query-tile GQA2 prefill");
+  if (multirow && (logical_cohort != 2 || tiles_per_owner % 4 != 0))
+    return Rejected("wide owner partition requires C2 and one-to-four GQA2 query tiles");
   const auto grid = [&](std::uint32_t cohort) {
     const auto tiles = static_cast<std::int64_t>(tiles_per_owner) * cohort;
     const auto waves = (tiles + max_blocks - 1) / max_blocks;
@@ -143,11 +143,11 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
   if (in.bounded_roots && !bounded_c2 && !bounded_whole12)
     return Rejected("bounded owner roots require closed C2 or Gemma3 whole-C12 carriers");
   const auto rows = in.q->ne[1];
-  if (rows != 1 && (rows != 128 || in.q->ne[0] != 256 || in.q->ne[2] != 8 || in.owner_count != 2 ||
-                    in.logical_cohort != 2 || in.owner_offset != 0 ||
+  if (rows != 1 && (rows < 2 || rows > 128 || in.q->ne[0] != 256 || in.q->ne[2] != 8 ||
+                    in.owner_count != 2 || in.logical_cohort != 2 || in.owner_offset != 0 ||
                     (in.logit_softcap != 0 && in.logit_softcap != 50) || in.bounded_roots))
-    return Rejected("multirow owner MMA requires closed Gemma2/Gemma3 cap0/50 C2/128-row inputs");
-  const bool wide_prefill = rows == 128 && in.logit_softcap == 0;
+    return Rejected("multirow owner MMA requires Gemma2/Gemma3 cap0/50 C2/2-to-128-row inputs");
+  const bool wide_prefill = rows > 1 && in.logit_softcap == 0;
   const auto maximum_cells = wide_prefill ? 131072 : 16384;
   // Only the closed Gemma3 multirow contract needs 256 MiB per actual root.
   // Q/output remain 2 MiB, and the largest joined mask is exactly 64 MiB.
@@ -158,7 +158,7 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
   const auto d = std::size_t(in.q->ne[0]), heads = std::size_t(in.q->ne[2]);
   const auto kvh = heads / (d == 256 ? 2 : 8);
   const auto qrow = d * heads * sizeof(float), kvrow = d * kvh * 2;
-  const auto mask_rows = std::size_t(rows == 1 ? 32 : rows);
+  const auto mask_rows = std::size_t((rows + 31) / 32 * 32);
   if (!Shape(in.q, GGML_TYPE_F32, {std::int64_t(d), rows, std::int64_t(heads), in.owner_count},
              {4, qrow, d * 4, qrow * std::size_t(rows)}) ||
       !Shape(in.mask, GGML_TYPE_F16,

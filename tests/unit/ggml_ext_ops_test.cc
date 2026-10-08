@@ -2812,7 +2812,9 @@ TEST(FlashAttnOwnersPartitionTest, WideMultirowBoundDoesNotWidenDecodeOrOtherGri
   EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 513, 4, 2, true));
   EXPECT_TRUE(kg::detail::PlanOwnerPartition(96, 4096, 16, 2, true, true));
   EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 4097, 16, 2, true, true));
-  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 4096, 4, 2, true, true));
+  for (const int tiles : {4, 8, 12, 16})
+    EXPECT_TRUE(kg::detail::PlanOwnerPartition(96, 4096, tiles, 2, true, true));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 4096, 6, 2, true, true));
   EXPECT_FALSE(kg::detail::PlanOwnerPartition(96, 4096, 16, 3, true, true));
 }
 
@@ -4072,16 +4074,25 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
 
 TEST_F(GgmlExtOpsTest, GemmaMultirowOwnerRootsMatchPackedMmaEagerAndChangedReplay) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "Owner implementation is GB10 only";
-  constexpr std::int64_t d = 256, heads = 8, kvh = 4, rows = 128, owners = 2;
+  constexpr std::int64_t d = 256, heads = 8, kvh = 4, owners = 2;
   const auto n = [](std::int64_t value) { return static_cast<std::size_t>(value); };
   const auto submission = execution_->Submission(stream_);
   ASSERT_TRUE(submission);
   const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
+  std::vector<std::pair<std::int64_t, std::int64_t>> shapes;
+  for (const auto rows : {2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128})
+    shapes.emplace_back(rows, 512);
+  for (const auto cells : {256, 4352, 16384, 32768, 131072}) shapes.emplace_back(128, cells);
+  for (const auto cells : {4352, 16384}) shapes.emplace_back(64, cells);
+  shapes.emplace_back(5, 32768);
+  shapes.emplace_back(33, 131072);
   for (const int cap : {0, 50}) {
-    for (const std::int64_t cells : {256, 512, 4352, 16384, 32768, 131072}) {
+    for (const auto [rows, cells] : shapes) {
       if (cap == 50 && cells > 16384) continue;
       SCOPED_TRACE(cap);
       SCOPED_TRACE(cells);
+      SCOPED_TRACE(rows);
+      const auto padded_rows = (rows + 31) / 32 * 32;
       auto arena = TensorArena::Create(64).value();
       auto* ctx = arena.context();
       auto qdata = Normal(18301, n(d * heads * rows * owners), 8.0F);
@@ -4108,18 +4119,20 @@ TEST_F(GgmlExtOpsTest, GemmaMultirowOwnerRootsMatchPackedMmaEagerAndChangedRepla
             permute(Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, 1),
                           std::vector<ggml_fp16_t>(vdata.begin() + begin, vdata.begin() + end)));
       }
-      std::vector<ggml_fp16_t> masks(n(cells * rows * owners), 0xFC00);
+      std::vector<ggml_fp16_t> masks(n(cells * padded_rows * owners), 0xFC00);
       const auto fresh_masks = [&](std::int64_t shift) {
         std::fill(masks.begin(), masks.end(), ggml_fp16_t{0xFC00});
         for (std::int64_t owner = 0; owner < owners; ++owner)
           for (std::int64_t row = 0; row < rows; ++row) {
             const auto visible = cells - rows - owner * 32 - shift + row + 1;
-            std::fill_n(masks.begin() + static_cast<std::ptrdiff_t>((owner * rows + row) * cells),
-                        visible, ggml_fp16_t{0});
+            std::fill_n(
+                masks.begin() + static_cast<std::ptrdiff_t>((owner * padded_rows + row) * cells),
+                visible, ggml_fp16_t{0});
           }
       };
       fresh_masks(0);
-      auto* mask = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, cells, rows, 1, owners), masks);
+      auto* mask =
+          Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, cells, padded_rows, 1, owners), masks);
       auto* packed = Place(ggml_flash_attn_ext(ctx, q, permute(raw_k), permute(raw_v), mask, 1, 0,
                                                static_cast<float>(cap)));
       ggml_prec_set_acc(packed, GGML_PREC_F32);
@@ -4130,7 +4143,9 @@ TEST_F(GgmlExtOpsTest, GemmaMultirowOwnerRootsMatchPackedMmaEagerAndChangedRepla
       auto original = kg::PlanFlashAttnMmaGqa2(launch(), packed);
       auto actual = kg::PlanFlashAttnOwners(launch(), *inputs);
       ASSERT_TRUE(original && actual);
-      EXPECT_EQ(actual->original.columns, 32);
+      const int columns = rows <= 4 ? 4 : rows <= 8 ? 8 : rows <= 16 ? 16 : 32;
+      EXPECT_EQ(actual->original.columns, columns);
+      EXPECT_EQ(actual->original.columns, original->columns);
       EXPECT_EQ(actual->original.group, 2);
       EXPECT_EQ(actual->original.blocks, original->blocks);
       EXPECT_EQ(actual->original.scratch, original->scratch);
@@ -4201,7 +4216,7 @@ TEST_F(GgmlExtOpsTest, GemmaMultirowOwnerRootsMatchPackedMmaEagerAndChangedRepla
       bad.mask = &malformed;
       EXPECT_EQ(FailedCode(kg::CheckFlashAttnOwners(bad)), KernelError::kRejected);
       malformed = *q;
-      malformed.ne[1] = 64;
+      malformed.ne[1] = 129;
       bad = *inputs;
       bad.q = &malformed;
       EXPECT_EQ(FailedCode(kg::CheckFlashAttnOwners(bad)), KernelError::kRejected);
@@ -4215,7 +4230,7 @@ TEST_F(GgmlExtOpsTest, GemmaMultirowOwnerRootsMatchPackedMmaEagerAndChangedRepla
       bad = *inputs;
       bad.output = &malformed;
       EXPECT_EQ(FailedCode(kg::CheckFlashAttnOwners(bad)), KernelError::kRejected);
-      std::cout << "GEMMA_MULTIROW_OWNER cap=" << cap << " cells=" << cells
+      std::cout << "GEMMA_MULTIROW_OWNER cap=" << cap << " rows=" << rows << " cells=" << cells
                 << " columns=" << actual->original.columns << " blocks=" << actual->original.blocks
                 << " scratch=" << scratch << " exact_eager_and_changed_replay=1\n";
     }

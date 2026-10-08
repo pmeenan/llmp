@@ -66,6 +66,8 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   rt::Status Start(bool ahead, bool owner_prefill = true) {
     life->options.gemma2_owner_prefill = owner_prefill;
     life->options.gemma3_owner_prefill = owner_prefill;
+    life->options.gemma2_flexible_owner_prefill = owner_prefill;
+    life->options.gemma3_flexible_owner_prefill = owner_prefill;
     life->options.gemma2_prefill_lookahead = ahead;
     life->options.gemma2_capture_ahead = ahead;
     life->options.gemma3_prefill_lookahead = ahead;
@@ -127,11 +129,14 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   }
   template <class Runner>
   rt::Status Prompt(Runner& runner, std::array<std::vector<float>, 2>& heads,
-                    std::array<jitllm::base::Sha256Digest, 2>& states, double& seconds) {
+                    std::array<jitllm::base::Sha256Digest, 2>& states, double& seconds,
+                    std::uint32_t extra_rows = 0) {
     constexpr std::array<std::int32_t, 6> seed{2, 818, 5279, 529, 7001, 563};
     std::array<std::vector<std::int32_t>, 2> tokens;
     for (std::size_t id = 0; id < 2; ++id) {
-      tokens[id].resize(id == 0 ? 1280 : 1536);
+      // With five-row tails, retain a 128-row skew within the same padded
+      // KV width. A 256-row skew would correctly take the scalar fallback.
+      tokens[id].resize((id == 0 ? 1280 : (extra_rows == 0 ? 1536 : 1408)) + extra_rows);
       for (std::size_t i = 0; i < tokens[id].size(); ++i)
         tokens[id][i] = seed[(i + id * 3 + i / 7) % seed.size()];
       // A short completed warmup loads weights without paid prefill plans.
@@ -254,9 +259,10 @@ TEST_P(GemmaPrefillServingGpu, ActualOwnerPrefillPreservesHeadsStateAndRestart) 
     std::array<jitllm::base::Sha256Digest, 2> states{};
     double seconds = 0;
     const auto exercise = [&](auto& runner) {
-      const auto r = Prompt(runner, heads, states, seconds);
+      const auto r = Prompt(runner, heads, states, seconds, 5);
       EXPECT_TRUE(r) << (r ? "" : r.error());
       const auto& selected = runner.plan_selections();
+      EXPECT_EQ(selected.flexible_owner_prefill_attention > 0, owners);
       EXPECT_GT(owners ? selected.owner_prefill_attention : selected.packed_prefill_attention, 0U);
       EXPECT_EQ(owners ? selected.packed_prefill_attention : selected.owner_prefill_attention, 0U);
       EXPECT_GT(runner.lookahead_stats().captured_ahead, 0U);
@@ -271,6 +277,9 @@ TEST_P(GemmaPrefillServingGpu, ActualOwnerPrefillPreservesHeadsStateAndRestart) 
     const auto selected = parsed->root().find("bound_owner_prefill_attention");
     ASSERT_TRUE(selected);
     EXPECT_EQ(selected->int64().value_or(0) > 0, owners);
+    const auto flexible = parsed->root().find("bound_flexible_owner_prefill_attention");
+    ASSERT_TRUE(flexible);
+    EXPECT_EQ(flexible->int64().value_or(0) > 0, owners);
     for (const auto& head : heads) {
       ASSERT_EQ(head.size(), GetParam() == 2 ? 256000U : 262208U);
       ASSERT_TRUE(std::ranges::all_of(head, [](float value) { return std::isfinite(value); }));

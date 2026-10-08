@@ -1418,10 +1418,11 @@ class Gemma2 final : public Llm {
     const auto& selected = runner_.plan_selections();
     const auto& ahead = runner_.lookahead_stats();
     return std::format(
-        R"({{"architecture":"gemma2","recipe":"bounded-8192-two-owner","max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"owner_prefill":{},"bound_owner_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"attention_softcap":50,"bound_norm_mul":{},"bound_quant_geglu":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{},"prefill_lookahead":{},"capture_ahead":{},"lookahead_built":{},"lookahead_cached":{},"lookahead_refused":{},"captured_first":{},"captured_ahead":{},"dropped_ahead":{}}})",
+        R"({{"architecture":"gemma2","recipe":"bounded-8192-two-owner","max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"owner_prefill":{},"bound_owner_prefill_attention":{},"flexible_owner_prefill":{},"bound_flexible_owner_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"attention_softcap":50,"bound_norm_mul":{},"bound_quant_geglu":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{},"prefill_lookahead":{},"capture_ahead":{},"lookahead_built":{},"lookahead_cached":{},"lookahead_refused":{},"captured_first":{},"captured_ahead":{},"dropped_ahead":{}}})",
         options_.max_rows, options_.max_wave_rows, joined_prefill_groups_, joined_prefill_rows_,
         joined_groups_, joined_units_, selected.owner_attention, selected.packed_prefill_attention,
-        options_.owner_prefill, selected.owner_prefill_attention, selected.bounded_owner_attention,
+        options_.owner_prefill, selected.owner_prefill_attention, options_.flexible_owner_prefill,
+        selected.flexible_owner_prefill_attention, selected.bounded_owner_attention,
         options_.device_masks, selected.device_masks, selected.norm_mul, selected.quant_geglu,
         selected.norm_rope, selected.norm_add, runner_.greedy_tokens(), options_.prefill_lookahead,
         options_.capture_ahead, ahead.built, ahead.cached, ahead.refused, ahead.captured_first,
@@ -1769,6 +1770,7 @@ class Gemma2 final : public Llm {
             .owner_decode = true,
             .packed_prefill = true,
             .owner_prefill = serving.gemma2_owner_prefill,
+            .flexible_owner_prefill = serving.gemma2_flexible_owner_prefill,
             .bounded_roots = true,
             .fuse_norms = true,
             .fuse_quant_glu = true,
@@ -1867,14 +1869,16 @@ class Gemma3 final : public Llm {
     const auto& selected = runner_.plan_selections();
     const auto& ahead = runner_.lookahead_stats();
     return std::format(
-        R"({{"architecture":"gemma3","recipe":"bounded-serving","context":{},"configured_slots":{},"max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"owner_prefill":{},"bound_owner_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{},"prefill_lookahead":{},"capture_ahead":{},"lookahead_built":{},"lookahead_cached":{},"lookahead_refused":{},"captured_first":{},"captured_ahead":{},"dropped_ahead":{}}})",
+        R"({{"architecture":"gemma3","recipe":"bounded-serving","context":{},"configured_slots":{},"max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"owner_prefill":{},"bound_owner_prefill_attention":{},"flexible_owner_prefill":{},"bound_flexible_owner_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{},"prefill_lookahead":{},"capture_ahead":{},"lookahead_built":{},"lookahead_cached":{},"lookahead_refused":{},"captured_first":{},"captured_ahead":{},"dropped_ahead":{}}})",
         options_.context, options_.slots, options_.max_rows, options_.max_wave_rows,
         joined_prefill_groups_, joined_prefill_rows_, joined_groups_, joined_units_,
         selected.owner_attention, selected.packed_prefill_attention, options_.owner_prefill,
-        selected.owner_prefill_attention, selected.bounded_owner_attention, options_.device_masks,
-        selected.device_masks, selected.norm_rope, selected.norm_add, runner_.greedy_tokens(),
-        options_.prefill_lookahead, options_.capture_ahead, ahead.built, ahead.cached,
-        ahead.refused, ahead.captured_first, ahead.captured_ahead, ahead.dropped_ahead);
+        selected.owner_prefill_attention, options_.flexible_owner_prefill,
+        selected.flexible_owner_prefill_attention, selected.bounded_owner_attention,
+        options_.device_masks, selected.device_masks, selected.norm_rope, selected.norm_add,
+        runner_.greedy_tokens(), options_.prefill_lookahead, options_.capture_ahead, ahead.built,
+        ahead.cached, ahead.refused, ahead.captured_first, ahead.captured_ahead,
+        ahead.dropped_ahead);
   }
   std::string slots_report() const override { return SlotsReport(settings_); }
   std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }
@@ -2216,6 +2220,7 @@ class Gemma3 final : public Llm {
             .owner_decode = true,
             .packed_prefill = true,
             .owner_prefill = serving.gemma3_owner_prefill,
+            .flexible_owner_prefill = serving.gemma3_flexible_owner_prefill,
             .bounded_roots = true,
             .device_masks = serving.gemma3_device_masks,
             .fuse_norms = true,

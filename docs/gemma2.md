@@ -250,10 +250,15 @@ by itself replace the earlier llama.cpp comparison or close that warm gap.
 
 ## Multirow actual-root prefill
 
-Ordinary compatible two-owner 128-row chunks now read their real F16 K/V
+Ordinary compatible two-owner 2–128-row chunks now read their real F16 K/V
 cache roots, preserving the selected packed MMA geometry and cap50 arithmetic.
-Masks still concatenate; other row counts keep the checked packed fallback
-pending a flexible row/tile extension. The [matched timeline and transfer](experiments/gemma-prefill-copies/README.md)
+Masks still concatenate. Flexible query tiles and padded tails preserve the
+original Columns4/8/16/32 selection. A later 64-row native factor improves
+prefill 10.474% (n=2); fresh matched stock bookends are level (+0.059%
+prefill / −0.038% paid) with exact choices and full heads. Actual five-row
+joined tails, initialized state and kept restart/continuation pass.
+Compatible >128 rows, mixed-width roots and cohorts remain explicit ports;
+ordinary chunks remain 128. The [matched timeline and transfer](experiments/gemma-prefill-copies/README.md)
 found 3432 baseline D2D copies and lower native arithmetic active time.
 Removing K/V packing improves same-native wrapped prefill 8.662% (n=2).
 Fresh llama.cpp/native/native/llama.cpp bookends are level within observed

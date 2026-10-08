@@ -37,8 +37,10 @@ struct Gemma3Options {
   std::uint32_t max_head_rows = 0;
   bool graphs = true, frontier_head = true;
   bool owner_decode = false, packed_prefill = false;
-  // Copy-free closed 128-row C2 prefill; false retains the packed control.
+  // Copy-free C2 prefill; false retains the packed control.
   bool owner_prefill = true;
+  // Qualified 2..128-row tiles and tails; false retains the 128-row selector.
+  bool flexible_owner_prefill = true;
   // Opt-in copy-free C2 attention; state layout and publication are unchanged.
   bool bounded_roots = false;
   // Internal whole-C12 factor; retain cohort-wide masks/grid with actual roots.
@@ -96,7 +98,8 @@ class Gemma3Runner final : public PagedModel {
   struct PlanSelections {
     std::uint64_t plans = 0, steps = 0, norm_mul = 0, quant_geglu = 0, norm_rope = 0, norm_add = 0,
                   owner_attention = 0, packed_prefill_attention = 0, owner_prefill_attention = 0,
-                  bounded_owner_attention = 0, device_masks = 0;
+                  flexible_owner_prefill_attention = 0, bounded_owner_attention = 0,
+                  device_masks = 0;
   };
   Gemma3Runner(PagedNode& node, Gemma3Options options, int owner, std::uint32_t stream);
   ~Gemma3Runner() override;

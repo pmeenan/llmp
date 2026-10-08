@@ -463,10 +463,11 @@ family" guide, and its long-context scaling work.
         - [x] **T70** Shared funded CPU-only next-plan lifecycle; optional
           refusal preserves the completed prefix and releases its allowance.
         - [ ] **T86** Grouped physical KV stores.
-        - [x] **T92** Actual-root C2/128-row prefill removes K/V packing;
+        - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
           exact heads/state and actual serving/restart controls pass.
-        - [ ] **T93** Extend flexible compatible rows/query tiles, including
-          64-row chunks and partial tails, preserving packed MMA geometry.
+        - [ ] **T93** Equal-width C2 rows 2–128 and partial tails are adopted;
+          extend compatible >128 rows, mixed-width roots and other cohorts
+          with explicit bounds/funding, original geometry and recipient checks.
       - **Gemma3 4B QAT**
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T11** Reuse decode Q8 quantization.
@@ -485,10 +486,13 @@ family" guide, and its long-context scaling work.
         - [x] **T70** Shared funded host-only next-plan lifecycle; family
           prediction/capture policy unchanged. [Focused controls](experiments/prefill-transfer/README.md).
         - [ ] **T86** Grouped physical KV stores.
-        - [x] **T92** Actual-root C2/128-row prefill removes K/V packing;
+        - [x] **T92** Actual-root C2/2–128-row prefill removes K/V packing;
           exact heads/state and actual serving/restart controls pass.
-        - [ ] **T93** Extend flexible compatible rows/query tiles, including
-          64-row chunks and partial tails, preserving packed MMA geometry.
+        - [ ] **T93** Equal-width C2 rows 2–128 and partial tails are adopted;
+          extend compatible >128 rows, mixed-width roots and other cohorts
+          with explicit bounds/funding, original geometry and recipient checks.
+          Attribute/close the remaining 64-row stock gap (+2.290% prefill,
+          +1.813% paid); the same 25-wave schedule rules out an extra native wave.
       - **Gemma4 26B-A4B / assistant**
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T07** Compact expert-major MMQ scheduling.
@@ -559,10 +563,15 @@ family" guide, and its long-context scaling work.
       improves 8.662%/2.932%, and fresh final Gemma2 llama.cpp bookends are
       level within n=2 movement with exact choices/full heads. Its cap0
       primitive/graph is qualified through trained 131072 without increasing
-      public context. The 67 focused controls, wrapped own-state checks and
+      public context. The initial 67 focused controls, wrapped own-state checks and
       actual adapters/restart pass; full regression remains deferred.
-      Narrow selector bounds do not close compatible ports: T93 tracks
-      remaining rows/tiles/tails, T92 the DeepSeek reference bank joins.
+      The flexible 2–128-row transfer passes 52 focused controls, including
+      actual five-row joined tails/restart; 64-row prefill improves
+      10.474%/2.789% against native packed controls. Fresh 64-row stock
+      bookends leave Gemma2 level and Gemma3 +2.290% prefill / +1.813%
+      paid cycle, explicitly open. T93 still tracks compatible >128 rows,
+      mixed-width roots/cohorts and their bounded admission; T92 tracks
+      DeepSeek reference bank joins. Selector bounds do not close ports.
       Confirm every open matrix consumer has its own checked result before
       closing this parent. T68 is the owner-approved partial-eviction direction
       and requires D-096's amendment, not another lazy-handoff timing change.

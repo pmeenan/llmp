@@ -13,6 +13,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Extend Gemma2/Gemma3 actual-root prefill to flexible 2–128-row query tiles
+  and partial tails, preserving original MMA arithmetic. Short 64-row native
+  comparisons improve prefill 10.5%/2.8%; ordinary chunks and public contexts
+  remain unchanged. Serving tails/state/restart and fresh reference outputs
+  remain exact.
+
 - Read actual K/V roots for compatible two-owner 128-row Gemma2/Gemma3
   prefill, preserving MMA arithmetic and removing cache-packing copies.
   Short native prefill screens improve 8.7%/2.9%; fresh Gemma2 llama.cpp

@@ -78,6 +78,7 @@ Status Gemma2Runner::Setup() {
   model_.options.owner_decode = o_.owner_decode;
   model_.options.packed_prefill = o_.packed_prefill;
   model_.options.owner_prefill = o_.owner_prefill;
+  model_.options.flexible_owner_prefill = o_.flexible_owner_prefill;
   model_.options.bounded_roots = o_.bounded_roots;
   model_.options.device_masks = o_.device_masks;
   model_.options.max_total_rows = wave_rows;
@@ -623,9 +624,12 @@ std::expected<Gemma2Runner::Plans::Entry*, std::string> Gemma2Runner::CachePlann
       plan_selections_.packed_prefill_attention +=
           selected.implementation == kg::kFlashAttnMmaGqa2Name &&
           std::string_view(ggml_get_name(node)).ends_with("packed_prefill_attention");
-      plan_selections_.owner_prefill_attention +=
+      const bool owner_prefill =
           kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners &&
           std::string_view(ggml_get_name(node)).ends_with("owner_prefill_attention");
+      plan_selections_.owner_prefill_attention += owner_prefill;
+      plan_selections_.flexible_owner_prefill_attention +=
+          owner_prefill && node->src[0]->ne[1] > 1 && node->src[0]->ne[1] < 128;
     }
   }
   const auto bytes = PlannedHostBytes(*p), nodes = PlannedNodes(*p);

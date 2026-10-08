@@ -691,8 +691,8 @@ architecture exclusions:
 - **T90** DeepSeek GB10 IQ2_XXS compact gate/up selects a separately compiled occupancy-two J64 specialization: captured pair +28.05% speed and whole prefill +4.15%, all six heads exact. Other current expert formats lack this exact IQ2_XXS decoder/tile (Qwen GGUF uses IQ2_S/IQ4_NL) contract. This does not assert measured hardware occupancy or justify applying its launch bound to a different format.
 - **T91** DeepSeek selected output-A/HCA prefill inserts its fused inverse-RoPE/grouped projection/layout consumer under checked raw Q8 weights, YaRN and chunk eligibility. Operator latency falls 45.63%, community 8K throughput +4.08%; current default selection has its later quality gates. Qwen, Gemma and image have no MLA grouped output-A/inverse-RoPE chain; ordinary output products cannot consume this layout.
 
-- **T92** Gemma2/Gemma3 ordinary C2/128-row joined prefill now reads actual
-  F16 cache roots with unchanged packed Columns32 MMA body, GQA2 geometry,
+- **T92** Gemma2/Gemma3 ordinary C2/2–128-row joined prefill now reads actual
+  F16 cache roots with the original selected MMA body and GQA2 geometry,
   mask semantics and cap50/cap0 reduction arithmetic. Mask concatenation
   remains. Same-native wrapped prefill improves 8.662%/2.932% (n=2), exact
   choices/heads/state; actual adapters, kept restart and continuation pass.
@@ -713,14 +713,23 @@ architecture exclusions:
   VAE spatial attention has no independent-owner F16 KV bank or packing.
   These no-copy dispositions concern this eliminated work, not a permanent
   exclusion from other shared attention kernels.
-- **T93** Gemma2/Gemma3 remaining compatible row counts, query-tile counts,
-  partial tails and cohorts stay OPEN. A 64-row chunk retains the checked
-  packed fallback today; that historical selector bound is not a reason
-  to reject the transfer. Extend flexible launch admission under the
-  original selected packed geometry, padded masks/tail semantics, exact
-  eager/replay operands, funding and recipient performance controls.
-  T61 separately owns wider/partial one-query policies; T55 owns Gemma4
-  joined-prefill admission, and T92 owns DeepSeek bank-root exploration.
+- **T93** Gemma2/Gemma3 now select equal-width C2 query tiles/tails at
+  2–128 rows, mirroring original Columns4/8/16/32 selection and padded masks.
+  Same-native 64-row prefill improves 10.474%/2.789% (n=2); 52 focused
+  controls include exact eager/changed replay, actual five-row serving tails,
+  initialized state, kept restart and scalar continuation. Fresh 64-row
+  stock comparisons are level for Gemma2 (+0.059% prefill / −0.038% paid),
+  while Gemma3 retains +2.290% prefill / +1.813% paid; no universal parity.
+  Compatible >128 rows, mixed-width roots and other cohorts/layouts remain
+  OPEN, with checked fallback. The 8192-total-row foundation has a plausible
+  larger equal-C2 recipient, requiring explicit expanded mask/parent bounds,
+  funding, index/workspace and performance qualification. Production
+  1285/1541 tails currently run scalar because padded read widths differ;
+  that historical admission bound does not rule out a shared-max-width
+  extension. T61 separately owns wider/partial one-query policies, T55
+  Gemma4 joined-prefill admission, and T92 DeepSeek bank-root exploration.
+  [Flexible qualification and current references](experiments/gemma-prefill-copies/README.md#flexible-query-tiles-and-partial-tails).
+
 
 
 Source cross-checks at `3ab8d5c`:

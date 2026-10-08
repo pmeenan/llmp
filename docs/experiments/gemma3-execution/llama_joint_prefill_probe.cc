@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Original-image public API: compatible two-owner prefill and joined C2 decode.
-// MODEL IDS0 TEXT0 IDS1 TEXT1 NEW_OUT teacher|cycle
+// MODEL IDS0 TEXT0 IDS1 TEXT1 NEW_OUT teacher|cycle [chunk=N]
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -17,6 +18,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
@@ -50,6 +52,7 @@ struct Shapes {
   using Key = std::array<std::int64_t, 12>;
   std::map<Key, std::uint64_t> counts;
   bool joined = false, joined_prefill = false;
+  int chunk = 128;
   static bool Observe(ggml_tensor* node, bool ask, void* opaque) {
     if (!ask || node->op != GGML_OP_FLASH_ATTN_EXT) return false;
     auto& self = *static_cast<Shapes*>(opaque);
@@ -62,7 +65,7 @@ struct Shapes {
     ++self.counts[key];
     self.joined |= key[0] == 256 && key[1] == 1 && key[2] == 8 && key[3] == 2 && key[4] == 256 &&
                    key[5] >= 256 && key[6] == 4 && key[7] == 2 && key[8] == key[5] && key[11] == 2;
-    self.joined_prefill |= key[0] == 256 && key[1] == 128 && key[2] == 8 && key[3] == 2 &&
+    self.joined_prefill |= key[0] == 256 && key[1] == self.chunk && key[2] == 8 && key[3] == 2 &&
                            key[4] == 256 && key[6] == 4 && key[7] == 2;
     return false;  // Metadata only: never request operand download.
   }
@@ -71,7 +74,17 @@ double Seconds(Clock::duration value) { return std::chrono::duration<double>(val
 }  // namespace
 int main(int argc, char** argv) {
   try {
-    Require(argc == 8, "MODEL IDS0 TEXT0 IDS1 TEXT1 NEW_OUT teacher|cycle");
+    Require(argc == 8 || argc == 9, "MODEL IDS0 TEXT0 IDS1 TEXT1 NEW_OUT teacher|cycle [chunk=N]");
+    int chunk = 128;
+    if (argc == 9) {
+      const std::string_view option = argv[8];
+      Require(option.starts_with("chunk="), "unknown chunk option");
+      const auto value = option.substr(6);
+      const auto parsed = std::from_chars(value.data(), value.data() + value.size(), chunk);
+      Require(parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() && chunk >= 2 &&
+                  chunk <= 128,
+              "chunk must be in 2..128");
+    }
     const std::string mode = argv[7];
     const bool teacher = mode == "teacher";
     Require(teacher || mode == "cycle", "unknown mode");
@@ -133,10 +146,11 @@ int main(int argc, char** argv) {
         configs[s] = {s, samplers[s].get()};
       }
       Shapes shapes;
+      shapes.chunk = chunk;
       auto cp = llama_context_default_params();
       cp.n_ctx = 8192;
       cp.n_seq_max = 2;
-      cp.n_batch = cp.n_ubatch = 256;
+      cp.n_batch = cp.n_ubatch = static_cast<std::uint32_t>(2 * chunk);
       cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
       cp.type_k = cp.type_v = GGML_TYPE_F16;
       cp.swa_full = false;
@@ -154,9 +168,10 @@ int main(int argc, char** argv) {
       Require(ctx && llama_n_ctx_seq(ctx.get()) == 4096 && llama_n_seq_max(ctx.get()) == 2,
               "C2 context geometry differs");
       struct Batch {
-        llama_batch value = llama_batch_init(256, 0, 1);
+        llama_batch value;
+        explicit Batch(int rows) : value(llama_batch_init(rows, 0, 1)) {}
         ~Batch() { llama_batch_free(value); }
-      } batch;
+      } batch(2 * chunk);
       std::array<int, 2> past{};
       std::array<llama_token, 2> selected{-1, -1};
       std::array<std::vector<float>, 2> published;
@@ -218,14 +233,14 @@ int main(int argc, char** argv) {
                             : past[1] == prefix[1]                       ? 0
                             : prefix[0] - past[0] <= prefix[1] - past[1] ? 0
                                                                          : 1;
-          const int first_rows = std::min(128, prefix[first] - past[first]);
+          const int first_rows = std::min(chunk, prefix[first] - past[first]);
           const bool head = past[first] + first_rows == prefix[first];
           std::array<int, 2> sizes{}, last_rows{};
           int owners = 0;
           batch.value.n_tokens = 0;
           for (const int slot : {first, 1 - first}) {
             if (past[slot] == prefix[slot]) continue;
-            const int rows = std::min(128, prefix[slot] - past[slot]);
+            const int rows = std::min(chunk, prefix[slot] - past[slot]);
             if ((past[slot] + rows == prefix[slot]) != head) continue;
             ++owners;
             sizes[slot] = rows;
@@ -319,9 +334,10 @@ int main(int argc, char** argv) {
         }
       }
       std::cout << "GEMMA3_JOINT_PREFILL_STOCK mode=" << mode
-                << " slots=2 context_per_slot=4096 chunk=128"
-                << " compatible_prefill=1 max_wave_rows=256 prompt_rows0=" << prefix[0]
-                << " prompt_rows1=" << prefix[1] << " untimed_rows_per_slot=3"
+                << " slots=2 context_per_slot=4096 chunk=" << chunk
+                << " compatible_prefill=1 max_wave_rows=" << 2 * chunk
+                << " prompt_rows0=" << prefix[0] << " prompt_rows1=" << prefix[1]
+                << " untimed_rows_per_slot=3"
                 << " decode_steps=32 departure_steps=" << (teacher ? kTail : 0)
                 << " paid_generated_tokens=64 past0=" << past[0] << " past1=" << past[1]
                 << " prefill_seconds=" << prefill << " decode_seconds=" << decode

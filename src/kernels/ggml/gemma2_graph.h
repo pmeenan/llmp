@@ -49,6 +49,8 @@ struct Gemma2GraphOptions {
   bool packed_prefill = false;
   // Experimental closed128-row C2 path: same MMA geometry, actual K/V roots.
   bool owner_prefill = false;
+  // Experimental row/tile extension; the selected 128-row path is unchanged.
+  bool flexible_owner_prefill = false;
   // Diagnostic C2 cap50 transfer; preserve actual roots at common logical width.
   bool device_masks = false;  // graph-owned causal/ring producer, host reference remains explicit
   bool bounded_roots = false;
