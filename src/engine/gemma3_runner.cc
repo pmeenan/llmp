@@ -640,8 +640,9 @@ Status Gemma3Runner::Wave(std::span<const Work> work, bool all_outputs) {
   return WaveWithMode(work, all_outputs, kg::Gemma3OutputMode::kHead);
 }
 Status Gemma3Runner::WavePrefill(std::span<const Work> work, bool want_head,
-                                 std::span<const PrefillNext> next, bool next_want_head,
-                                 bool after_want_head) {
+                                 std::span<const PrefillNext> next,
+                                 std::optional<bool> next_want_head,
+                                 std::optional<bool> after_want_head) {
   if (o_.packed_prefill && work.size() > 1) {
     if (work.size() != 2 || work[0].tokens.size() < 2 ||
         work[0].tokens.size() != work[1].tokens.size())
@@ -662,7 +663,8 @@ Status Gemma3Runner::WavePrefill(std::span<const Work> work, bool want_head,
 }
 Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
                                   kg::Gemma3OutputMode mode, std::span<const PrefillNext> next,
-                                  bool next_want_head, bool after_want_head) {
+                                  std::optional<bool> next_want_head,
+                                  std::optional<bool> after_want_head) {
   const PlanStep step;
   if (!bound_ || released_ || work.empty() || work.size() > o_.slots)
     return Error("Gemma3 wave is unavailable or unbounded");
@@ -754,22 +756,30 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
   if (!next.empty() && next.size() <= work.size() && !greedy && !all_outputs &&
       (o_.prefill_lookahead || o_.capture_ahead)) {
     for (std::size_t k = 0; k < ahead.size(); ++k) {
+      const auto head = k == 0 ? next_want_head : after_want_head;
+      if (!head.has_value()) continue;
       bool valid = true;
       std::uint32_t predicted_rows = 0;
       for (std::size_t i = 0; valid && i < next.size(); ++i) {
         const auto& hint = next[i];
         const auto rows_k = k == 0 ? hint.rows : hint.after;
+        // A completed owner may disappear from either future cohort.
+        if (rows_k == 0) continue;
         const auto from = std::ranges::find(work, hint.slot, &Work::slot);
-        // The first prediction bounds hint.rows, so the second's past fits.
-        const auto past = from == work.end()
-                              ? 0U
-                              : from->n_past + static_cast<std::uint32_t>(from->tokens.size()) +
-                                    (k == 0 ? 0U : hint.rows);
-        valid = from != work.end() &&
-                std::ranges::none_of(ahead[k].segments,
-                                     [&](const auto& s) { return s.slot == hint.slot; }) &&
-                rows_k != 0 && rows_k <= o_.max_rows && rows_k <= wave_rows - predicted_rows &&
-                past <= layout_.context && rows_k <= layout_.context - past;
+        const auto current_end =
+            from == work.end() ? 0U
+                               : from->n_past + static_cast<std::uint32_t>(from->tokens.size());
+        // The next stage may be suppressed (mixed head modes), so bound its
+        // row descriptor independently before using it for the after position.
+        valid = from != work.end() && hint.rows != 0 && hint.rows <= o_.max_rows &&
+                current_end <= layout_.context && hint.rows <= layout_.context - current_end;
+        if (!valid) break;
+        const auto past = current_end + (k == 0 ? 0U : hint.rows);
+        valid =
+            std::ranges::none_of(ahead[k].segments,
+                                 [&](const auto& segment) { return segment.slot == hint.slot; }) &&
+            rows_k <= o_.max_rows && rows_k <= wave_rows - predicted_rows &&
+            past <= layout_.context && rows_k <= layout_.context - past;
         if (!valid) break;
         predicted_rows += rows_k;
         const auto cells = Round(std::uint64_t{past} + rows_k, 256);
@@ -778,10 +788,19 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
              static_cast<std::uint32_t>(std::min<std::uint64_t>(cells, layout_.global_cells)),
              static_cast<std::uint32_t>(std::min<std::uint64_t>(cells, layout_.local_cells))});
       }
-      if (!valid) break;
-      const bool head = k == 0 ? next_want_head : after_want_head;
-      ahead[k].output_mode = head ? kg::Gemma3OutputMode::kHead : kg::Gemma3OutputMode::kStateOnly;
-      ahead[k].outputs = head ? static_cast<std::uint32_t>(next.size()) : 0U;
+      if (!valid || ahead[k].segments.empty()) continue;
+      // Packed two-owner plans must satisfy the same geometry as an actual
+      // WavePrefill. A later stage may have a different owner count/width.
+      if (o_.packed_prefill && ahead[k].segments.size() > 1) {
+        if (ahead[k].segments.size() != 2) continue;
+        const auto& a = ahead[k].segments[0];
+        const auto& b = ahead[k].segments[1];
+        if (a.rows < 2 || a.rows != b.rows || a.global_n_kv != b.global_n_kv ||
+            a.local_n_kv != b.local_n_kv)
+          continue;
+      }
+      ahead[k].output_mode = *head ? kg::Gemma3OutputMode::kHead : kg::Gemma3OutputMode::kStateOnly;
+      ahead[k].outputs = *head ? static_cast<std::uint32_t>(ahead[k].segments.size()) : 0U;
       known[k] = true;
     }
   }

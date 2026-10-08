@@ -37,6 +37,8 @@ struct Gemma2Options {
   // Immutable head publication capacity. Zero retains the all-row envelope.
   std::uint32_t max_head_rows = 0;
   bool graphs = true, frontier_head = true;
+  // Ordinary prefill lookahead and capture; false retains matched controls.
+  bool prefill_lookahead = true, capture_ahead = true;
   bool owner_decode = false, packed_prefill = false;
   bool device_masks = true;    // explicit false retains the host-reference comparison
   bool bounded_roots = false;  // selected by the checked bounded cap50 C2 serving recipe
@@ -138,7 +140,24 @@ class Gemma2Runner final : public PagedModel {
   Status Chunk(std::uint32_t past, std::span<const std::int32_t> tokens, std::vector<float>& logits,
                bool all_outputs = false);
   Status Wave(std::span<const Work> work, bool all_outputs = false);
-  Status WavePrefill(std::span<const Work> work, bool want_head = true);
+  // A slot's next chunk's rows and, if known, the rows of the one after it.
+  struct PrefillNext {
+    std::uint32_t slot = 0, rows = 0, after = 0;
+  };
+  // A bounded shape prediction only: no future tokens, state or work is posted.
+  // Next slots must belong to this wave; their past is its completed end.
+  Status WavePrefill(std::span<const Work> work, bool want_head = true,
+                     std::span<const PrefillNext> next = {},
+                     std::optional<bool> next_want_head = true,
+                     std::optional<bool> after_want_head = true);
+  struct LookaheadStats {
+    std::uint64_t attempted = 0, built = 0, cached = 0, refused = 0;
+    std::uint64_t captured_first = 0;  // shapes captured on their first run
+    std::uint64_t captured_ahead = 0;  // graphs captured before their plan's first run
+    std::uint64_t dropped_ahead = 0;   // of those, dropped as their staging differed
+    double build_seconds = 0;
+  };
+  const LookaheadStats& lookahead_stats() const { return lookahead_; }
   std::uint64_t activations_needed() const { return activation_bytes_; }
   std::uint64_t pool_needed() const { return scratch_bytes_; }
   std::uint64_t host_input_bytes() const { return host_input_bytes_; }
@@ -160,13 +179,18 @@ class Gemma2Runner final : public PagedModel {
 
  private:
   Status WaveWithMode(std::span<const Work> work, bool all_outputs,
-                      kernels::ggml::Gemma2OutputMode mode);
+                      kernels::ggml::Gemma2OutputMode mode, std::span<const PrefillNext> next = {},
+                      std::optional<bool> next_want_head = true,
+                      std::optional<bool> after_want_head = true);
   Status RefreshClosures(SlotMask protect);
   Status RefreshClosures() { return RefreshClosures(cohort_.active()); }
   std::array<LiveState*, kMaxRequestSlots> States();
   Status CheckActive(const Slot& slot) const;
   kernels::ggml::DeviceChoices Choices(kernels::ggml::LaunchContext& launch) const;
   std::expected<Plans::Entry*, std::string> Planned(const kernels::ggml::Gemma2ChunkShape& shape);
+  std::expected<Plans::Entry*, std::string> CachePlanned(
+      const kernels::ggml::Gemma2ChunkShape& shape, std::unique_ptr<Gemma2Planned> p,
+      double seconds, const std::function<void()>& transfer_charge = {});
   PagedNode& node_;
   Gemma2Options o_;
   int owner_;
@@ -186,6 +210,7 @@ class Gemma2Runner final : public PagedModel {
   GraphRuns runs_;
   GraphStats graph_stats_;
   PlanSelections plan_selections_;
+  LookaheadStats lookahead_;
   Coverage coverage_;
   std::optional<std::uint64_t> places_clean_;
   void* logits_ = nullptr;

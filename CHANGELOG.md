@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Plan and capture upcoming Gemma2 prefill shapes during current work, and
+  forward checkpoint-aware joined prompt hints for Gemma2 and Gemma3. A short
+  Gemma2 first-traversal screen improves 5.3%; the short warm comparison is
+  0.6% slower, with no warm benefit claimed.
+
 - Build Gemma2 causal/ring masks on the GPU using shared mask-source checks
   across Gemma2, Gemma3 and Gemma 4. Wrapped two-owner prefill improves about
   6.6%, with exact heads/state and checked restart replay.

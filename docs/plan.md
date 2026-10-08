@@ -438,9 +438,12 @@ family" guide, and its long-context scaling work.
         - [x] **T22** Graph-owned GPU attention masks: same-native wrapped C2
           prefill −6.616%, exact heads/state and ordinary restart controls;
           native paid cycle remains 4.586% above fresh stock (n=2).
-        - [ ] **T23** Single-request prefill lookahead/capture ahead.
+        - [x] **T23** Shared funded lookahead/capture; first-traversal C2
+          prefill −5.252%, corrected warm +0.604% (n=2, no warm gain).
+          [Focused controls](experiments/prefill-transfer/README.md#gemma2-capture-and-joined-gemma-hints-2026-10-07).
         - [ ] **T41** Residual-add plus next normalization.
-        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [x] **T55** Checkpoint/scoring-aware joined prompt hints; actual
+          adapter construction/capture, exact full heads and state checked.
         - [ ] **T57** RoPE directly into KV cache stores.
         - [ ] **T59** Whole-wave products and exact partial cohorts.
         - [ ] **T61** Wider/partial bounded owner-root variants.
@@ -450,14 +453,16 @@ family" guide, and its long-context scaling work.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
           producer validation and padded host staging shared across Gemma plans;
           [focused controls](experiments/gemma2-serving/README.md#shared-gpu-masks-2026-10-07) pass.
-        - [ ] **T70** Shared lookahead/capture hook.
+        - [x] **T70** Shared funded CPU-only next-plan lifecycle; optional
+          refusal preserves the completed prefix and releases its allowance.
         - [ ] **T86** Grouped physical KV stores.
       - **Gemma3 4B QAT**
         - [ ] **T04** Share adjacent-product input preparation.
         - [ ] **T11** Reuse decode Q8 quantization.
         - [ ] **T15** Concurrent per-owner graph lanes.
         - [ ] **T41** Residual-add plus next normalization.
-        - [ ] **T55** Joined prefill lookahead/capture hints.
+        - [x] **T55** Checkpoint/scoring-aware joined prompt hints; actual
+          adapter construction/capture, exact full heads and state checked.
         - [ ] **T57** RoPE directly into KV cache stores.
         - [ ] **T59** Whole-wave products and exact partial cohorts.
         - [ ] **T61** Wider/partial bounded owner-root variants.
@@ -528,10 +533,12 @@ family" guide, and its long-context scaling work.
         - [ ] **T81** Paired-prefix/incremental adaptive stopping.
       Shared T69/T70 ports own the funded host-only next-plan/mask lifecycle;
       family adapters retain shape prediction, causal/selection semantics and
-      eligibility. For T55, extend PreparedPrefill with bounded next/after
-      hints computed by the same checkpoint-aware PromptSession rule; scoring
-      and checkpoint boundaries refuse inappropriate lookahead. Hints never
-      initialize speculative future state. T67 is separate state-growth work.
+      eligibility. T55 now uses one checkpoint/scoring-aware PromptSession hint
+      calculator and PreparedPrefill forwarding for Gemma2/Gemma3, plus generic
+      scalar fallback. Gemma26/31 still need funded joined-prefill admission:
+      per-owner chunk sizing, total-row envelope, and capture/state/failure
+      controls. DeepSeek/Qwen adapters remain open. Hints never initialize
+      speculative future state. T67 is separate state-growth work.
       Confirm every open matrix consumer has its own checked result before
       closing this parent. T68 is the owner-approved partial-eviction direction
       and requires D-096's amendment, not another lazy-handoff timing change.

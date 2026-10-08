@@ -229,4 +229,20 @@ all heads, choices and initialized states remain exact. Five HTTP/restart cases
 and four checkpoint GPU cases pass through the adopted path. A fresh short
 llama.cpp comparison at these 4,352/4,864 prefixes still shows native prefill
 6.721% slower and the paid cycle 4.586% slower; decode is within noise.
-This is a remaining lookahead/capture transfer opportunity, not a parity claim.
+This remains the last matched warm-reference result, before the lookahead
+transfer below; it is not a parity claim.
+
+## Prefill lookahead and joined hints
+
+Ordinary serving now uses the shared funded lookahead lifecycle and captures
+future prefill graphs. The same checkpoint-aware hint calculator feeds scalar
+and compatible two-owner prompts; hints describe shapes without preparing
+future state. Mixed future head modes suppress only that stage, and completed
+owners leave later cohorts independently.
+
+A weight-warm, plan-cold two-owner 4,352/4,864-prefix screen improves first
+traversal prefill 5.252%, with identical 64 generated choices and complete final
+heads. The corrected warm control is 0.604% slower at two samples per arm; no
+warm speed benefit is claimed. This native optimization comparison does not
+replace the earlier llama.cpp comparison or close the remaining warm gap.
+[Method, focused serving/state controls and limits](experiments/prefill-transfer/README.md#gemma2-capture-and-joined-gemma-hints-2026-10-07).

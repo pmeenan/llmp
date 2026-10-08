@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "base/sha256.h"
 #include "engine/gemma2_runner.h"
 #include "engine/support.h"
 #include "platform/kept_files.h"
@@ -34,6 +35,10 @@ class Gemma2CheckpointGpu : public ::testing::Test {
   std::filesystem::path scratch;
   int spill_directory = -1;
   bool retired_primary = false, retirement_failed = false;
+  virtual bool JoinedLookahead() const { return false; }
+  static std::uint64_t HostFloor(const en::Gemma2Runner& model) {
+    return model.host_input_bytes() + model.plan_floor_bytes() + (16ULL << 20U);
+  }
   en::Status Start(Lifetime& target, bool keep) {
     auto& n = target.node;
     auto& r = target.runner;
@@ -44,8 +49,11 @@ class Gemma2CheckpointGpu : public ::testing::Test {
                         "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870",
             .context = 8192,
             .slots = 2,
+            .max_wave_rows = JoinedLookahead() ? 256U : 0U,
             .max_head_rows = 2,
             .owner_decode = true,
+            .packed_prefill = JoinedLookahead(),
+            .bounded_roots = JoinedLookahead(),
             .fuse_norms = true,
             .fuse_quant_glu = true,
             .fuse_norm_rope = false,
@@ -63,7 +71,7 @@ class Gemma2CheckpointGpu : public ::testing::Test {
     if (auto x = r->Setup(); !x) return x;
     if (auto x = n.MapWorkspace(r->activations_needed(), r->pool_needed()); !x) return x;
     const auto fixed = n.catalog().OccupancyOf(n.domain()).Total().value();
-    n.SetHostFloor(r->host_input_bytes() + r->plan_floor_bytes() + (16ULL << 20U));
+    n.SetHostFloor(HostFloor(*r));
     if (auto x = n.Start(jitllm::base::Bytes(fixed + r->weights().size() * en::kPagedExtent +
                                              4 * n.StateCapacity()));
         !x)
@@ -110,6 +118,31 @@ class Gemma2CheckpointGpu : public ::testing::Test {
   }
   en::Status Held(const std::function<en::Status()>& body) {
     return node.WithRequest(0, runner->closure(), "Gemma2 serving lifecycle", body);
+  }
+  std::expected<jitllm::base::Sha256Digest, std::string> StateHash(std::uint32_t id) {
+    const auto slot = runner->request_slot(id);
+    if (!slot) return en::support::Error(slot.error());
+    std::vector<jitllm::catalog::ExtentId> staging;
+    auto buffer = node.Pinned(1U << 20U, 0, staging);
+    if (!buffer) return en::support::Error(buffer.error());
+    jitllm::base::Sha256 hash;
+    for (const auto& range : (*slot)->state().used_ranges()) {
+      for (std::uint64_t at = 0; at < range.bytes; at += 1U << 20U) {
+        const en::LiveState::Range part{range.region, range.offset + at,
+                                        std::min<std::uint64_t>(1U << 20U, range.bytes - at)};
+        en::LiveState::CopyRetirement retirement = en::LiveState::CopyRetirement::kUnproven;
+        const auto copied = runner->CopyState(id, *buffer, std::span(&part, 1), &retirement);
+        if (retirement == en::LiveState::CopyRetirement::kUnproven) node.KeepPinned(*buffer);
+        if (!copied) {
+          if (retirement == en::LiveState::CopyRetirement::kProven) (void)node.FreePinned(*buffer);
+          return en::support::Error(copied.error());
+        }
+        hash.Update(std::span(static_cast<const std::byte*>(*buffer), part.bytes));
+      }
+    }
+    if (auto released = node.FreePinned(*buffer); !released)
+      return en::support::Error(released.error());
+    return hash.Finish();
   }
   void Exact(std::span<const float> a, std::span<const float> b) {
     ASSERT_EQ(a.size(), b.size());
@@ -373,4 +406,140 @@ TEST_F(Gemma2CheckpointGpu, WrappedRingCheckpointAndKeptAdoptionReplayTheExactPe
     std::ignore = restarted.release();
   }
   ASSERT_TRUE(check) << (check ? "" : check.error());
+}
+
+class Gemma2LookaheadGpu : public Gemma2CheckpointGpu {
+ protected:
+  bool JoinedLookahead() const override { return true; }
+};
+
+TEST_F(Gemma2LookaheadGpu, SuppressedNextHeadsStillCaptureTheCorrectAfterOwnerPosition) {
+  constexpr std::uint32_t kRows = 128;
+  std::array<std::vector<std::int32_t>, 2> tokens;
+  for (std::size_t id = 0; id < 2; ++id) {
+    tokens[id].resize(id == 0 ? 256 : 384);
+    for (std::size_t i = 0; i < tokens[id].size(); ++i)
+      tokens[id][i] = prompt[(i + id * 3 + i / 7) % prompt.size()];
+  }
+  const auto status = Held([&]() -> en::Status {
+    std::array<std::vector<float>, 2> expected;
+    std::array<jitllm::base::Sha256Digest, 2> expected_state{};
+    for (const bool hinted : {false, true}) {
+      for (std::uint32_t id = 0; id < 2; ++id)
+        if (auto r = runner->Clear(id); !r) return r;
+      runner->DropPlans();
+      std::array<std::vector<float>, 2> heads;
+      const std::array<en::Gemma2Runner::Work, 2> initial{
+          {{0, 0, std::span(tokens[0]).first(kRows), &heads[0]},
+           {1, 0, std::span(tokens[1]).first(kRows), &heads[1]}}};
+      const std::array<en::Gemma2Runner::PrefillNext, 2> hints{{{0, kRows, 0}, {1, kRows, kRows}}};
+      const auto before = runner->lookahead_stats();
+      // Next heads disagree: owner0 finishes, owner1 does not. The after
+      // cohort contains only owner1, at256 rather than128, and wants a head.
+      if (auto r = runner->WavePrefill(initial, false, std::span(hints).first(hinted ? 2U : 0U),
+                                       std::nullopt, true);
+          !r)
+        return r;
+      EXPECT_TRUE(heads[0].empty());
+      EXPECT_TRUE(heads[1].empty());
+      if (hinted) EXPECT_EQ(runner->lookahead_stats().cached - before.cached, 1U);
+      const en::Gemma2Runner::Work finished{0, kRows, std::span(tokens[0]).last(kRows), &heads[0]};
+      if (auto r = runner->WavePrefill(std::span(&finished, 1), true); !r) return r;
+      const en::Gemma2Runner::Work middle{1, kRows, std::span(tokens[1]).subspan(kRows, kRows),
+                                          &heads[1]};
+      const en::Gemma2Runner::PrefillNext next{1, kRows, 0};
+      if (auto r = runner->WavePrefill(std::span(&middle, 1), false,
+                                       std::span(&next, hinted ? 1U : 0U), true);
+          !r)
+        return r;
+      if (hinted) EXPECT_EQ(runner->lookahead_stats().captured_ahead - before.captured_ahead, 1U);
+      const auto replayed = runner->graph_stats().replayed;
+      const en::Gemma2Runner::Work last{1, 2 * kRows, std::span(tokens[1]).last(kRows), &heads[1]};
+      if (auto r = runner->WavePrefill(std::span(&last, 1), true); !r) return r;
+      if (hinted) EXPECT_EQ(runner->graph_stats().replayed - replayed, 1U);
+      EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 256U);
+      EXPECT_EQ((*runner->request_slot(1))->completed_positions(), 384U);
+      for (std::uint32_t id = 0; id < 2; ++id) {
+        auto state = StateHash(id);
+        if (!state) return en::support::Error(state.error());
+        if (!hinted) {
+          expected[id] = heads[id];
+          expected_state[id] = *state;
+        } else {
+          Exact(heads[id], expected[id]);
+          EXPECT_EQ(*state, expected_state[id]);
+        }
+      }
+      EXPECT_EQ(runner->lookahead_stats().dropped_ahead, 0U);
+      EXPECT_EQ(runner->coverage().violations, 0U);
+    }
+    return {};
+  });
+  ASSERT_TRUE(status) << (status ? "" : status.error());
+}
+
+TEST_F(Gemma2LookaheadGpu, LookaheadRefusalAndAbandonedPredictionKeepTheCompletedPrefix) {
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 1>{0}));
+  struct Charge {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Charge() { node.UnchargeHost(bytes); }
+  };
+  const auto output_bytes = std::uint64_t{runner->profile().vocab} * sizeof(float);
+  ASSERT_TRUE(node.ChargeHost(output_bytes, false));
+  const Charge output_charge{node, output_bytes};
+  std::vector<float> row;
+  row.reserve(runner->profile().vocab);
+  auto ran = Held([&]() -> en::Status {
+    runner->DropPlans();
+    const auto baseline_host = node.host_counted();
+    const auto overcharges = node.host_overcharges();
+    const auto refused = runner->lookahead_stats().refused;
+    const auto cached = runner->lookahead_stats().cached;
+    const en::Gemma2Runner::PrefillNext hint{0, 2};
+    en::Gemma2Runner::Work work{0, 0, std::span(prompt).first(1), &row};
+    // Seed the required plan and padded state. Pressure affects only optional
+    // capture/lookahead, with no new state backing needed by the next row.
+    if (auto r = runner->WavePrefill(std::span(&work, 1), false); !r) return r;
+    // Consume the unused startup host floor as well as free device budget.
+    // Small Gemma2 plans may still fit inside that pre-funded host allowance.
+    auto free = node.FreeBytes();
+    if (!free || *free == 0)
+      return en::support::Error("lookahead control cannot fund input-only pressure");
+    const auto floor = HostFloor(*runner);
+    const auto unused_floor = floor > node.host_counted() ? floor - node.host_counted() : 0U;
+    const auto fill = *free + unused_floor;
+    if (!node.ChargeHost(fill, false))
+      return en::support::Error("lookahead control cannot take its pressure charge");
+    {
+      const Charge pressure{node, fill};
+      auto remaining = node.FreeBytes();
+      if (!remaining || *remaining != 0)
+        return en::support::Error("lookahead pressure did not exhaust the budget");
+      work.n_past = 1;
+      row.assign(1, 123.0F);
+      if (auto r = runner->WavePrefill(std::span(&work, 1), false, std::span(&hint, 1)); !r)
+        return r;
+      EXPECT_TRUE(row.empty());
+      EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 2U);
+      EXPECT_EQ(runner->lookahead_stats().refused, refused + 1);
+      EXPECT_EQ(runner->lookahead_stats().cached, cached);
+      EXPECT_EQ(node.host_overcharges(), overcharges);
+    }
+    work.n_past = 2;
+    if (auto r = runner->WavePrefill(std::span(&work, 1), false, std::span(&hint, 1)); !r) return r;
+    EXPECT_EQ(runner->lookahead_stats().cached, cached + 1);
+    EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 3U);
+    // Cancel before the predicted chunk: its plan is ordinary reclaimable
+    // cache, and dropping it advances no cursor and leaves no host allowance.
+    runner->DropPlans();
+    EXPECT_EQ(node.host_counted(), baseline_host);
+    EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 3U);
+    if (auto r = runner->Clear(0); !r) return r;
+    EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 0U);
+    EXPECT_EQ((*runner->request_slot(0))->used_state_bytes(), 0U);
+    EXPECT_EQ(node.host_counted(), baseline_host);
+    return {};
+  });
+  ASSERT_TRUE(ran) << (ran ? "" : ran.error());
 }

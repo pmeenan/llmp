@@ -152,8 +152,9 @@ class Gemma3Runner final : public PagedModel {
   // A bounded shape prediction only: no future tokens, state or work is posted.
   // Next slots must belong to this wave; their past is its completed end.
   Status WavePrefill(std::span<const Work> work, bool want_head = true,
-                     std::span<const PrefillNext> next = {}, bool next_want_head = true,
-                     bool after_want_head = true);
+                     std::span<const PrefillNext> next = {},
+                     std::optional<bool> next_want_head = true,
+                     std::optional<bool> after_want_head = true);
   struct LookaheadStats {
     std::uint64_t attempted = 0, built = 0, cached = 0, refused = 0;
     std::uint64_t captured_first = 0;  // shapes captured on their first run
@@ -184,7 +185,8 @@ class Gemma3Runner final : public PagedModel {
  private:
   Status WaveWithMode(std::span<const Work> work, bool all_outputs,
                       kernels::ggml::Gemma3OutputMode mode, std::span<const PrefillNext> next = {},
-                      bool next_want_head = true, bool after_want_head = true);
+                      std::optional<bool> next_want_head = true,
+                      std::optional<bool> after_want_head = true);
   Status RefreshClosures(SlotMask protect);
   Status RefreshClosures() { return RefreshClosures(cohort_.active()); }
   std::array<LiveState*, kMaxRequestSlots> States();

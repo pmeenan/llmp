@@ -774,6 +774,7 @@ class Llm : public Served {
                   bool resume, bool scoring,
                   std::function<bool(std::int32_t, std::span<const float>)> on_row);
     void NextPhase();
+    PrefillHint NextPrefillHint(std::uint32_t current_end) const;
     Status PrepareChunk(std::uint32_t rows, bool defer_capacity);
     Status CompleteChunk(std::uint32_t rows, double wall_seconds, double accounted_seconds,
                          Status result, bool defer_capacity);
@@ -1043,9 +1044,15 @@ class Llm : public Served {
     std::span<const std::int32_t> all;
     std::uint32_t past = 0, rows = 0;
     bool want_head = false;
+    PrefillHint next;
     std::vector<float>* logits = nullptr;
     Status result;
   };
+  struct PrefillHeadModes {
+    std::optional<bool> next, after;
+  };
+  // Independent future cohorts: mixed head modes suppress that stage only.
+  static PrefillHeadModes FuturePrefillHeads(std::span<const PreparedPrefill> prepared);
   // Fund state before shared dispatch; a clean refusal leaves its completed
   // prefix usable and does not publish another owner's prepared history.
   virtual Status PreparePrefillStateFor(Branch&, std::uint32_t, std::uint32_t) { return {}; }

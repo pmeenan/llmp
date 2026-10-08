@@ -1342,12 +1342,12 @@ class Gemma final : public Llm {
 class Gemma2 final : public Llm {
  public:
   Gemma2(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-         const config::RuntimeRoles& roles, int index)
+         const config::RuntimeRoles& roles, int index, const ServingOptions& serving)
       : entry_(entry),
         artifact_id_(entry.artifact.value_or("")),
         store_(roles.installed),
         profile_(model::Gemma2_2B()),
-        options_(Options(entry, settings, roles)),
+        options_(Options(entry, settings, roles, serving)),
         runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
     name_ = entry.name;
     settings_ = settings;
@@ -1413,13 +1413,16 @@ class Gemma2 final : public Llm {
   std::string violations() const override { return runner_.coverage().first_violation; }
   std::string extra() const override {
     const auto& selected = runner_.plan_selections();
+    const auto& ahead = runner_.lookahead_stats();
     return std::format(
-        R"({{"architecture":"gemma2","recipe":"bounded-8192-two-owner","max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"attention_softcap":50,"bound_norm_mul":{},"bound_quant_geglu":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{}}})",
+        R"({{"architecture":"gemma2","recipe":"bounded-8192-two-owner","max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"attention_softcap":50,"bound_norm_mul":{},"bound_quant_geglu":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{},"prefill_lookahead":{},"capture_ahead":{},"lookahead_built":{},"lookahead_cached":{},"lookahead_refused":{},"captured_first":{},"captured_ahead":{},"dropped_ahead":{}}})",
         options_.max_rows, options_.max_wave_rows, joined_prefill_groups_, joined_prefill_rows_,
         joined_groups_, joined_units_, selected.owner_attention, selected.packed_prefill_attention,
         selected.bounded_owner_attention, options_.device_masks, selected.device_masks,
         selected.norm_mul, selected.quant_geglu, selected.norm_rope, selected.norm_add,
-        runner_.greedy_tokens());
+        runner_.greedy_tokens(), options_.prefill_lookahead, options_.capture_ahead, ahead.built,
+        ahead.cached, ahead.refused, ahead.captured_first, ahead.captured_ahead,
+        ahead.dropped_ahead);
   }
   std::string slots_report() const override { return SlotsReport(settings_); }
   std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }
@@ -1550,8 +1553,10 @@ class Gemma2 final : public Llm {
                             PrefillHint next) override {
     if (inject || past >= all.size()) return Error("Gemma needs a plain nonempty prefill chunk");
     const engine::Gemma2Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
-    (void)next;
-    return runner_.WavePrefill(std::span(&work, 1), want_head);
+    const engine::Gemma2Runner::PrefillNext hint{work.slot, next.rows, next.after_rows};
+    return runner_.WavePrefill(std::span(&work, 1), want_head,
+                               std::span(&hint, next.rows == 0 ? 0U : 1U), next.want_head,
+                               next.after_want_head);
   }
   Status PreparePrefillStateFor(Branch& branch, std::uint32_t past, std::uint32_t rows) override {
     if (past != NativeSlot(branch).completed_positions() || rows == 0 || rows > options_.max_rows ||
@@ -1565,6 +1570,7 @@ class Gemma2 final : public Llm {
     if (prepared.size() == 1) return Llm::RunPreparedPrefillWave(prepared);
     const bool want_head = prepared.front().want_head;
     std::array<engine::Gemma2Runner::Work, engine::kMaxRequestSlots> work{};
+    std::array<engine::Gemma2Runner::PrefillNext, engine::kMaxRequestSlots> hints{};
     for (std::size_t i = 0; i < prepared.size(); ++i) {
       const auto& unit = prepared[i];
       if (!unit.branch || &unit.branch->model() != this || unit.want_head != want_head ||
@@ -1572,8 +1578,12 @@ class Gemma2 final : public Llm {
           !CompatiblePrefill(prepared.front().past, prepared.front().rows, unit.past, unit.rows))
         return Error("Gemma prefill needs compatible owned chunks");
       work[i] = {BranchIndex(*unit.branch), unit.past, unit.all.last(unit.rows), unit.logits};
+      hints[i] = {work[i].slot, unit.next.rows, unit.next.after_rows};
     }
-    auto ran = runner_.WavePrefill(std::span(work).first(prepared.size()), want_head);
+    const auto heads = FuturePrefillHeads(prepared);
+    auto ran =
+        runner_.WavePrefill(std::span(work).first(prepared.size()), want_head,
+                            std::span(hints).first(prepared.size()), heads.next, heads.after);
     if (ran && prepared.size() > 1) {
       ++joined_prefill_groups_;
       for (const auto& unit : prepared) joined_prefill_rows_ += unit.rows;
@@ -1742,7 +1752,8 @@ class Gemma2 final : public Llm {
  private:
   static engine::Gemma2Options Options(const config::ModelEntry& entry,
                                        const ModelSettings& settings,
-                                       const config::RuntimeRoles& roles) {
+                                       const config::RuntimeRoles& roles,
+                                       const ServingOptions& serving) {
     return {.artifact = roles.installed / entry.artifact.value_or(""),
             .out = roles.spill,
             .context = settings.context.value,
@@ -1750,6 +1761,8 @@ class Gemma2 final : public Llm {
             .slots = settings.max_slots.value,
             .max_wave_rows = settings.prefill_chunk.value * settings.max_slots.value,
             .max_head_rows = settings.max_slots.value,
+            .prefill_lookahead = serving.gemma2_prefill_lookahead,
+            .capture_ahead = serving.gemma2_capture_ahead,
             .owner_decode = true,
             .packed_prefill = true,
             .bounded_roots = true,
@@ -2005,6 +2018,7 @@ class Gemma3 final : public Llm {
     if (prepared.size() == 1) return Llm::RunPreparedPrefillWave(prepared);
     const bool want_head = prepared.front().want_head;
     std::array<engine::Gemma3Runner::Work, engine::kMaxRequestSlots> work{};
+    std::array<engine::Gemma3Runner::PrefillNext, engine::kMaxRequestSlots> hints{};
     for (std::size_t i = 0; i < prepared.size(); ++i) {
       const auto& unit = prepared[i];
       if (!unit.branch || &unit.branch->model() != this || unit.want_head != want_head ||
@@ -2012,8 +2026,12 @@ class Gemma3 final : public Llm {
           !CompatiblePrefill(prepared.front().past, prepared.front().rows, unit.past, unit.rows))
         return Error("Gemma prefill needs compatible owned chunks");
       work[i] = {BranchIndex(*unit.branch), unit.past, unit.all.last(unit.rows), unit.logits};
+      hints[i] = {work[i].slot, unit.next.rows, unit.next.after_rows};
     }
-    auto ran = runner_.WavePrefill(std::span(work).first(prepared.size()), want_head);
+    const auto heads = FuturePrefillHeads(prepared);
+    auto ran =
+        runner_.WavePrefill(std::span(work).first(prepared.size()), want_head,
+                            std::span(hints).first(prepared.size()), heads.next, heads.after);
     if (ran && prepared.size() > 1) {
       ++joined_prefill_groups_;
       for (const auto& unit : prepared) joined_prefill_rows_ += unit.rows;
@@ -4477,6 +4495,21 @@ std::optional<std::size_t> Llm::PromptSession::SelectForWave(
   return chosen;
 }
 
+PrefillHint Llm::PromptSession::NextPrefillHint(std::uint32_t current_end) const {
+  PrefillHint hint;
+  const auto boundary =
+      checkpoint_pending_ ? stable_boundary_ : static_cast<std::uint32_t>(tokens_.size());
+  if (current_end < boundary) {
+    hint.rows = scoring_ ? 1U : PrefillRows(boundary - current_end, model_.max_rows_);
+    hint.want_head = scoring_ || current_end + hint.rows == tokens_.size();
+    if (const auto after = current_end + hint.rows; after < boundary) {
+      hint.after_rows = scoring_ ? 1U : PrefillRows(boundary - after, model_.max_rows_);
+      hint.after_want_head = scoring_ || after + hint.after_rows == tokens_.size();
+    }
+  }
+  return hint;
+}
+
 Status Llm::PromptSession::PrepareChunk(std::uint32_t rows, bool defer_capacity) {
   const auto end = branch_.history_.size() + rows;
   if (!model_.ReserveTokens(branch_, branch_.history_, branch_.history_charge_, end)) {
@@ -4515,10 +4548,32 @@ Status Llm::PromptSession::CompleteChunk(std::uint32_t rows, double wall_seconds
   return {};
 }
 
+Llm::PrefillHeadModes Llm::FuturePrefillHeads(std::span<const PreparedPrefill> prepared) {
+  PrefillHeadModes heads;
+  bool mixed_next = false, mixed_after = false;
+  for (const auto& unit : prepared) {
+    if (unit.next.rows != 0) {
+      if (heads.next.has_value() && *heads.next != unit.next.want_head)
+        mixed_next = true;
+      else if (!heads.next.has_value())
+        heads.next = unit.next.want_head;
+    }
+    if (unit.next.after_rows != 0) {
+      if (heads.after.has_value() && *heads.after != unit.next.after_want_head)
+        mixed_after = true;
+      else if (!heads.after.has_value())
+        heads.after = unit.next.after_want_head;
+    }
+  }
+  if (mixed_next) heads.next.reset();
+  if (mixed_after) heads.after.reset();
+  return heads;
+}
+
 Status Llm::RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) {
   for (auto& unit : prepared) {
     unit.result = RunPrefillChunkFor(*unit.branch, unit.all, unit.past, speculate_, unit.want_head,
-                                     *unit.logits);
+                                     *unit.logits, unit.next);
     if (!unit.result && !GenerationCohortUsable()) return unit.result;
   }
   return {};
@@ -4597,6 +4652,7 @@ Status Llm::RunPromptWave(std::span<PromptSession* const> sessions,
                         .past = at,
                         .rows = next.rows,
                         .want_head = next.want_head,
+                        .next = session.NextPrefillHint(at + next.rows),
                         .logits = &session.last_,
                         .result = {}};
   }
@@ -4681,17 +4737,7 @@ Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity
     const auto at = static_cast<std::uint32_t>(branch_.history_.size());
     const auto end = at + next->rows;
     if (auto prepared = PrepareChunk(next->rows, defer_capacity); !prepared) return prepared;
-    PrefillHint hint;
-    const auto boundary =
-        checkpoint_pending_ ? stable_boundary_ : static_cast<std::uint32_t>(tokens_.size());
-    if (end < boundary) {
-      hint.rows = scoring_ ? 1U : PrefillRows(boundary - end, model_.max_rows_);
-      hint.want_head = scoring_ || end + hint.rows == tokens_.size();
-      if (const auto after = end + hint.rows; after < boundary) {
-        hint.after_rows = scoring_ ? 1U : PrefillRows(boundary - after, model_.max_rows_);
-        hint.after_want_head = scoring_ || after + hint.after_rows == tokens_.size();
-      }
-    }
+    const auto hint = NextPrefillHint(end);
     const auto started = Clock::now();
     const StateKeeper::Quiet quiet(model_.kept_.keeper);  // records' hashing waits
     auto chunk =
@@ -5559,7 +5605,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
     models_.push_back(
         std::make_unique<Gemma>(node_, entry, settings, roles_, index, variant, options_));
   } else if (settings.architecture == "gemma2") {
-    models_.push_back(std::make_unique<Gemma2>(node_, entry, settings, roles_, index));
+    models_.push_back(std::make_unique<Gemma2>(node_, entry, settings, roles_, index, options_));
   } else if (settings.architecture == "gemma3") {
     models_.push_back(std::make_unique<Gemma3>(node_, entry, settings, roles_, index, options_));
   } else if (settings.architecture == "qwen4exp") {

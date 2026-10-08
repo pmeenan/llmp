@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <tuple>
@@ -87,7 +88,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") || (argc < 6 || argc > 8))
+  if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") || (argc < 6 || argc > 9))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -101,18 +102,21 @@ int main(int argc, char** argv) {
     if (!status) std::cerr << status.error() << '\n';
     return status ? 0 : 1;
   }
-  bool bounded = false, device_masks = false;
+  bool bounded = false, device_masks = false, prefill_ahead = false;
   for (int arg = 6; arg < argc; ++arg) {
     const std::string_view flag = argv[arg];
     if (flag == "bounded-roots" && !bounded)
       bounded = true;
     else if (flag == "device-masks" && !device_masks)
       device_masks = true;
+    else if (flag == "prefill-ahead" && !prefill_ahead)
+      prefill_ahead = true;
     else
       return 2;
   }
   const std::string mode = argv[5];
-  const bool own = mode == "own", cycle = mode == "cycle";
+  const bool own = mode == "own", first_cycle = mode == "first-cycle";
+  const bool cycle = mode == "cycle" || first_cycle;
   if (!own && !cycle) return 2;
   std::array<std::vector<std::int32_t>, 2> ids;
   std::array<std::uint32_t, 2> prefix{};
@@ -139,22 +143,25 @@ int main(int argc, char** argv) {
   };
   auto life = std::make_unique<Lifetime>();
   auto& node = life->node;
-  life->runner = std::make_unique<en::Gemma2Runner>(node,
-                                                    en::Gemma2Options{.artifact = argv[1],
-                                                                      .out = out,
-                                                                      .context = 8192,
-                                                                      .slots = 2,
-                                                                      .max_wave_rows = 256,
-                                                                      .max_head_rows = 2,
-                                                                      .owner_decode = true,
-                                                                      .packed_prefill = true,
-                                                                      .device_masks = device_masks,
-                                                                      .bounded_roots = bounded,
-                                                                      .fuse_norms = true,
-                                                                      .fuse_quant_glu = true,
-                                                                      .fuse_norm_rope = false,
-                                                                      .fuse_norm_add = true},
-                                                    0, 0);
+  life->runner =
+      std::make_unique<en::Gemma2Runner>(node,
+                                         en::Gemma2Options{.artifact = argv[1],
+                                                           .out = out,
+                                                           .context = 8192,
+                                                           .slots = 2,
+                                                           .max_wave_rows = 256,
+                                                           .max_head_rows = 2,
+                                                           .prefill_lookahead = prefill_ahead,
+                                                           .capture_ahead = prefill_ahead,
+                                                           .owner_decode = true,
+                                                           .packed_prefill = true,
+                                                           .device_masks = device_masks,
+                                                           .bounded_roots = bounded,
+                                                           .fuse_norms = true,
+                                                           .fuse_quant_glu = true,
+                                                           .fuse_norm_rope = false,
+                                                           .fuse_norm_add = true},
+                                         0, 0);
   auto& runner = *life->runner;
   std::array<std::vector<float>, 2> heads;
   for (auto& head : heads) head.reserve(kVocab);
@@ -214,7 +221,44 @@ int main(int argc, char** argv) {
                          token && head ? &selected[s] : nullptr};
         rows += n;
       }
-      if (auto r = runner.WavePrefill(std::span(work).first(count), head); !r) return r;
+      std::array<en::Gemma2Runner::PrefillNext, 2> hints{};
+      std::optional<bool> next_head, after_head;
+      bool mixed_next = false, mixed_after = false;
+      bool token_next = false, token_after = false;
+      const auto mode = [](std::optional<bool>& out, bool& mixed, bool value) {
+        if (out.has_value() && *out != value)
+          mixed = true;
+        else if (!out.has_value())
+          out = value;
+      };
+      if (prefill_ahead)
+        for (std::size_t i = 0; i < count; ++i) {
+          const auto& unit = work[i];
+          const auto end = unit.n_past + static_cast<std::uint32_t>(unit.tokens.size());
+          auto& hint = hints[i];
+          hint.slot = unit.slot;
+          hint.rows = std::min(128U, prefix[unit.slot] - end);
+          if (hint.rows != 0) {
+            const bool next_final = end + hint.rows == prefix[unit.slot];
+            mode(next_head, mixed_next, next_final);
+            token_next |= token && next_final;
+            hint.after = std::min(128U, prefix[unit.slot] - end - hint.rows);
+            if (hint.after != 0) {
+              const bool after_final = end + hint.rows + hint.after == prefix[unit.slot];
+              mode(after_head, mixed_after, after_final);
+              token_after |= token && after_final;
+            }
+          }
+        }
+      // PrefillNext describes full heads or state-only work, not GPU-token heads.
+      // Keep row descriptors for later positions while suppressing unsupported stages.
+      if (mixed_next || token_next) next_head.reset();
+      if (mixed_after || token_after) after_head.reset();
+      if (auto r = runner.WavePrefill(std::span(work).first(count), head,
+                                      std::span(hints).first(prefill_ahead ? count : 0U), next_head,
+                                      after_head);
+          !r)
+        return r;
       for (const auto& unit : std::span(work).first(count)) {
         past[unit.slot] += static_cast<std::uint32_t>(unit.tokens.size());
         if (head && !token && !Best(heads[unit.slot])) return Error("bad joined prefill head");
@@ -276,7 +320,7 @@ int main(int argc, char** argv) {
       if (!node.InRequest(0)) return Error("held direct request required");
       const std::array<std::uint32_t, 2> slots{0, 1};
       if (auto r = runner.SelectSlots(slots); !r) return r;
-      if (cycle) {
+      if (cycle && !first_cycle) {
         if (auto r = prompt(true); !r) return r;
         if (auto r = warm(true); !r) return r;
         for (std::uint32_t i = 0; i < 8; ++i) {
@@ -285,10 +329,21 @@ int main(int argc, char** argv) {
           if (auto r = joined(next, i < 5); !r) return r;
         }
         if (auto r = clear(); !r) return r;
+      } else if (first_cycle) {
+        // Load weights without traversing any paid prefill shape. Clear retains only
+        // this short state backing; further growth, plans and captures remain paid.
+        for (std::uint32_t s = 0; s < 2; ++s)
+          if (auto r = independent(s, std::span(ids[s]).first(3), true, true); !r) return r;
+        if (auto r = clear(); !r) return r;
+        runner.DropPlans();
       }
+      const auto graph_before = runner.graph_stats();
+      const auto ahead_before = runner.lookahead_stats();
       const auto begin = std::chrono::steady_clock::now();
       if (auto r = prompt(cycle); !r) return r;
       const auto prefill = en::support::Seconds(std::chrono::steady_clock::now() - begin);
+      const auto graph_prefill = runner.graph_stats();
+      const auto ahead_prefill = runner.lookahead_stats();
       if (own) {
         std::vector<float> frontier;
         frontier.reserve(kVocab * 2);
@@ -451,7 +506,7 @@ int main(int argc, char** argv) {
       }
       if (bounded && prefix[0] != prefix[1] && !runner.plan_selections().bounded_owner_attention)
         return Error("bounded C2 roots were not selected");
-      if (cycle && runner.greedy_tokens() != 88)
+      if (cycle && runner.greedy_tokens() != (first_cycle ? 72U : 88U))
         return Error("C2 cycle GPU publication count differs");
       if (auto r = Save<std::int32_t>(out / "chosen.i32", choices); !r) return r;
       std::vector<float> final;
@@ -460,31 +515,43 @@ int main(int argc, char** argv) {
       if (auto r = Save<float>(out / "final.f32", final); !r) return r;
       const auto& stats = runner.graph_stats();
       const auto& bound = runner.plan_selections();
+      const auto& ahead = runner.lookahead_stats();
+      if (prefill_ahead && (!ahead.built || ahead.built != ahead.cached || !ahead.captured_first))
+        return Error("hinted prefill did not build/cache and capture first shapes");
       if (!prefill_groups || !bound.packed_prefill_attention || !bound.owner_attention ||
           (device_masks ? !bound.device_masks : bound.device_masks != 0) || !stats.captured ||
           !stats.replayed || bound.norm_rope != 0 || !bound.norm_mul || !bound.quant_geglu ||
           !bound.norm_add || runner.coverage().violations)
         return Error("C2 did not select/replay checked implementation families");
-      std::cout << "GEMMA2_JOINT_PREFILL mode=" << mode
-                << " slots=2 context_per_slot=8192 chunk=128"
-                << " compatible_prefill=1 max_wave_rows=256 prompt_rows0=" << prefix[0]
-                << " prompt_rows1=" << prefix[1] << " untimed_rows_per_slot=3"
-                << " decode_steps=32 departure_steps=" << (own ? kTail : 0U)
-                << " paid_generated_tokens=64 past0=" << past[0] << " past1=" << past[1]
-                << " prefill_seconds=" << prefill << " decode_seconds=" << decode
-                << " eager=" << stats.eager << " captured=" << stats.captured
-                << " replayed=" << stats.replayed << " selected_owner=" << bound.owner_attention
-                << " selected_packed_prefill=" << bound.packed_prefill_attention
-                << " device_masks=" << device_masks
-                << " selected_device_masks=" << bound.device_masks << " bounded_roots=" << bounded
-                << " selected_bounded_owner=" << bound.bounded_owner_attention
-                << " selected_norm_mul=" << bound.norm_mul
-                << " selected_quant_geglu=" << bound.quant_geglu
-                << " selected_norm_rope=" << bound.norm_rope
-                << " selected_norm_add=" << bound.norm_add
-                << " joined_prefill_groups=" << prefill_groups
-                << " joined_prefill_rows=" << prefill_rows
-                << " gpu_tokens=" << runner.greedy_tokens() << '\n';
+      std::cout
+          << "GEMMA2_JOINT_PREFILL mode=" << mode << " slots=2 context_per_slot=8192 chunk=128"
+          << " compatible_prefill=1 max_wave_rows=256 prompt_rows0=" << prefix[0]
+          << " prompt_rows1=" << prefix[1] << " untimed_rows_per_slot=3"
+          << " decode_steps=32 departure_steps=" << (own ? kTail : 0U)
+          << " paid_generated_tokens=64 past0=" << past[0] << " past1=" << past[1]
+          << " prefill_seconds=" << prefill << " decode_seconds=" << decode
+          << " paid_prefill_eager=" << graph_prefill.eager - graph_before.eager
+          << " paid_prefill_captured=" << graph_prefill.captured - graph_before.captured
+          << " paid_prefill_replayed=" << graph_prefill.replayed - graph_before.replayed
+          << " paid_prefill_built=" << ahead_prefill.built - ahead_before.built
+          << " paid_prefill_cached=" << ahead_prefill.cached - ahead_before.cached
+          << " paid_prefill_first=" << ahead_prefill.captured_first - ahead_before.captured_first
+          << " paid_prefill_ahead=" << ahead_prefill.captured_ahead - ahead_before.captured_ahead
+          << " eager=" << stats.eager << " captured=" << stats.captured
+          << " replayed=" << stats.replayed << " selected_owner=" << bound.owner_attention
+          << " selected_packed_prefill=" << bound.packed_prefill_attention
+          << " device_masks=" << device_masks << " selected_device_masks=" << bound.device_masks
+          << " bounded_roots=" << bounded
+          << " selected_bounded_owner=" << bound.bounded_owner_attention
+          << " selected_norm_mul=" << bound.norm_mul
+          << " selected_quant_geglu=" << bound.quant_geglu
+          << " selected_norm_rope=" << bound.norm_rope << " selected_norm_add=" << bound.norm_add
+          << " joined_prefill_groups=" << prefill_groups << " joined_prefill_rows=" << prefill_rows
+          << " gpu_tokens=" << runner.greedy_tokens() << " prefill_ahead=" << prefill_ahead
+          << " lookahead_built=" << ahead.built << " lookahead_cached=" << ahead.cached
+          << " lookahead_refused=" << ahead.refused << " captured_first=" << ahead.captured_first
+          << " captured_ahead=" << ahead.captured_ahead << " dropped_ahead=" << ahead.dropped_ahead
+          << '\n';
       return {};
     });
   };

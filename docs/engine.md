@@ -46,12 +46,16 @@ them; nothing in them is virtual, and nothing runs per kernel.
 `support.h` holds the small helpers (errors, addresses, rounding, seconds,
 joined problems).
 
-Gemma3 and both Gemma4 profiles use the shared prefill lookahead lifecycle.
+Gemma2, Gemma3 and both Gemma4 profiles use the shared prefill lookahead lifecycle.
 Their family adapters still choose future shapes, outputs and capture eligibility;
 `GraphRuns::CaptureAhead` records an eligible future graph without executing it.
-The helper never allocates future state or advances a cursor. Gemma2, DeepSeek
-and Qwen adapters, and checkpoint/scoring-aware hints for joined prefill waves,
-remain separate transfer tasks. [Focused lifecycle controls](experiments/prefill-transfer/README.md).
+The helper never allocates future state or advances a cursor. DeepSeek and Qwen
+adapters remain open transfers. `PromptSession::NextPrefillHint` supplies the same
+checkpoint/scoring-aware descriptors to scalar and joined Gemma2/Gemma3 prefill
+after current funding. Each future stage independently filters ended owners and
+requires homogeneous head intent; a mixed next stage does not suppress a valid
+after stage. Gemma4 serving still admits one prompt chunk at a time; its joined
+prefill admission/funding remains separate work. [Focused lifecycle controls](experiments/prefill-transfer/README.md).
 
 ## A runner's life
 
@@ -267,7 +271,7 @@ threaded node runs a host-only graph/placement callback after job submission
 and before its normal completion wait. That callback cannot access node or
 launch state, stage inputs or prepare future KV. Optional host funding covers
 the temporary plan through post-completion binding and cache transfer; a
-missing or refused prediction uses normal planning. Gemma3 takes the same
+missing or refused prediction uses normal planning. Gemma2 and Gemma3 take the same
 hints, extended to the chunk after next ([graphs captured ahead](experiments/gemma3-execution/README.md#prefill-lookahead-and-graphs-captured-ahead-2026-10-07)):
 it builds the first unplanned upcoming shape, captures a shape the next chunk
 repeats on its first run, and captures the next planned shape's graph beside

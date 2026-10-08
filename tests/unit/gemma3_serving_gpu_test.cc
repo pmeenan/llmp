@@ -419,3 +419,68 @@ TEST_F(Gemma3ServingGpu, PrefillHintsBuildAndCaptureAheadWithoutChangingStateOrH
   });
   ASSERT_TRUE(status) << (status ? "" : status.error());
 }
+
+TEST_F(Gemma3ServingGpu, SuppressedNextHeadsStillCaptureTheCorrectAfterOwnerPosition) {
+  constexpr std::uint32_t kRows = 128;
+  std::array<std::vector<std::int32_t>, 2> tokens;
+  for (std::size_t id = 0; id < 2; ++id) {
+    tokens[id].resize(id == 0 ? 256 : 384);
+    for (std::size_t i = 0; i < tokens[id].size(); ++i)
+      tokens[id][i] = prompt[(i + id * 3 + i / 7) % prompt.size()];
+  }
+  const auto status = Held([&]() -> en::Status {
+    std::array<std::vector<float>, 2> expected;
+    std::array<jitllm::base::Sha256Digest, 2> expected_state{};
+    for (const bool hinted : {false, true}) {
+      for (std::uint32_t id = 0; id < 2; ++id)
+        if (auto r = runner->Clear(id); !r) return r;
+      runner->DropPlans();
+      std::array<std::vector<float>, 2> heads;
+      const std::array<en::Gemma3Runner::Work, 2> initial{
+          {{0, 0, std::span(tokens[0]).first(kRows), &heads[0]},
+           {1, 0, std::span(tokens[1]).first(kRows), &heads[1]}}};
+      const std::array<en::Gemma3Runner::PrefillNext, 2> hints{{{0, kRows, 0}, {1, kRows, kRows}}};
+      const auto before = runner->lookahead_stats();
+      // Next heads disagree: owner0 finishes, owner1 does not. The after
+      // cohort contains only owner1, at256 rather than128, and wants a head.
+      if (auto r = runner->WavePrefill(initial, false, std::span(hints).first(hinted ? 2U : 0U),
+                                       std::nullopt, true);
+          !r)
+        return r;
+      EXPECT_TRUE(heads[0].empty());
+      EXPECT_TRUE(heads[1].empty());
+      if (hinted) EXPECT_EQ(runner->lookahead_stats().cached - before.cached, 1U);
+      const en::Gemma3Runner::Work finished{0, kRows, std::span(tokens[0]).last(kRows), &heads[0]};
+      if (auto r = runner->WavePrefill(std::span(&finished, 1), true); !r) return r;
+      const en::Gemma3Runner::Work middle{1, kRows, std::span(tokens[1]).subspan(kRows, kRows),
+                                          &heads[1]};
+      const en::Gemma3Runner::PrefillNext next{1, kRows, 0};
+      if (auto r = runner->WavePrefill(std::span(&middle, 1), false,
+                                       std::span(&next, hinted ? 1U : 0U), true);
+          !r)
+        return r;
+      if (hinted) EXPECT_EQ(runner->lookahead_stats().captured_ahead - before.captured_ahead, 1U);
+      const auto replayed = runner->graph_stats().replayed;
+      const en::Gemma3Runner::Work last{1, 2 * kRows, std::span(tokens[1]).last(kRows), &heads[1]};
+      if (auto r = runner->WavePrefill(std::span(&last, 1), true); !r) return r;
+      if (hinted) EXPECT_EQ(runner->graph_stats().replayed - replayed, 1U);
+      EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 256U);
+      EXPECT_EQ((*runner->request_slot(1))->completed_positions(), 384U);
+      for (std::uint32_t id = 0; id < 2; ++id) {
+        auto state = StateHash(id);
+        if (!state) return en::support::Error(state.error());
+        if (!hinted) {
+          expected[id] = heads[id];
+          expected_state[id] = *state;
+        } else {
+          Exact(heads[id], expected[id]);
+          EXPECT_EQ(*state, expected_state[id]);
+        }
+      }
+      EXPECT_EQ(runner->lookahead_stats().dropped_ahead, 0U);
+      EXPECT_EQ(runner->coverage().violations, 0U);
+    }
+    return {};
+  });
+  ASSERT_TRUE(status) << (status ? "" : status.error());
+}

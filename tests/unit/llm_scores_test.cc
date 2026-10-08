@@ -304,6 +304,8 @@ class NativeBranchesFake final : public FakeLlm {
   std::function<void()> prefill_funding_hook;
   std::array<std::uint32_t, kMaxBranches> prefill_funded{};
   std::vector<std::vector<std::uint32_t>> prefill_dispatches;
+  std::vector<std::pair<std::uint32_t, rt::PrefillHint>> delivered_prefill_hints;
+  std::vector<PrefillHeadModes> future_prefill_heads;
   std::optional<std::uint32_t> nonfinite_wave_row;
   std::optional<std::uint32_t> failed_wave_judgement;
   std::optional<std::uint32_t> failed_scalar_judgement;
@@ -370,7 +372,14 @@ class NativeBranchesFake final : public FakeLlm {
     if (prefill_funding_hook) prefill_funding_hook();
     return {};
   }
+  rt::Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
+                                std::uint32_t past, bool inject, bool want_head,
+                                std::vector<float>& row, rt::PrefillHint next) override {
+    delivered_prefill_hints.emplace_back(BranchIndex(branch), next);
+    return FakeLlm::RunPrefillChunkFor(branch, all, past, inject, want_head, row, next);
+  }
   rt::Status RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) override {
+    future_prefill_heads.push_back(FuturePrefillHeads(prepared));
     std::vector<std::uint32_t> owners;
     for (const auto& unit : prepared) {
       owners.push_back(BranchIndex(*unit.branch));
@@ -1873,6 +1882,77 @@ TEST(LlmScores, ResumablePromptCancelsAtACompletePrefixAndCanResume) {
   EXPECT_EQ(finished.chunks, 2U);
 }
 
+TEST(LlmScores, JoinedHintsPreserveOwnerOrderAndIndependentlySuppressMixedFutureHeads) {
+  NativeBranchesFake model;
+  model.prefill_waves = true;
+  auto a = model.branch(0), b = model.branch(1);
+  ASSERT_TRUE(a && b);
+  const std::vector<std::int32_t> short_prompt(16, 2), long_prompt(24, 3);
+  auto x = (*a)->BeginPrompt(short_prompt), y = (*b)->BeginPrompt(long_prompt);
+  ASSERT_TRUE(x && y);
+  ASSERT_TRUE((*x)->Advance());
+  ASSERT_TRUE((*y)->Advance());
+  // Reverse admission order: prepared ownership and its hint must sort together.
+  std::array<rt::Llm::PromptSession*, 2> sessions{y->get(), x->get()};
+  const std::array<rt::PrefillGoOn, 2> callbacks{};
+  ASSERT_TRUE(model.RunPromptWave(sessions, callbacks, true));
+  EXPECT_THAT(model.prefill_dispatches.back(), ElementsAre(0, 1));
+  ASSERT_EQ(model.delivered_prefill_hints.size(), 2U);
+  const auto& first = model.delivered_prefill_hints[0];
+  const auto& second = model.delivered_prefill_hints[1];
+  EXPECT_EQ(first.first, 0U);
+  EXPECT_EQ(first.second.rows, 8U);
+  EXPECT_TRUE(first.second.want_head);
+  EXPECT_EQ(first.second.after_rows, 0U);
+  EXPECT_EQ(second.first, 1U);
+  EXPECT_EQ(second.second.rows, 8U);
+  EXPECT_FALSE(second.second.want_head);
+  EXPECT_EQ(second.second.after_rows, 8U);
+  EXPECT_TRUE(second.second.after_want_head);
+  ASSERT_EQ(model.future_prefill_heads.size(), 1U);
+  EXPECT_FALSE(model.future_prefill_heads.back().next.has_value());
+  ASSERT_TRUE(model.future_prefill_heads.back().after.has_value());
+  EXPECT_TRUE(*model.future_prefill_heads.back().after);
+  // Only current backing/history was prepared; the hints are descriptors.
+  EXPECT_EQ(model.prefill_funded[0], 8U);
+  EXPECT_EQ(model.prefill_funded[1], 8U);
+  EXPECT_EQ((*a)->history().size(), 8U);
+  EXPECT_EQ((*b)->history().size(), 8U);
+  (*x)->Cancel();
+  (*y)->Cancel();
+  ASSERT_TRUE((*x)->Finish());
+  ASSERT_TRUE((*y)->Finish());
+}
+
+TEST(LlmScores, JoinedHintsStopAtEachOwnersCheckpointBoundary) {
+  NativeBranchesFake model;
+  model.prefill_waves = true;
+  auto a = model.branch(0), b = model.branch(1);
+  ASSERT_TRUE(a && b);
+  const std::vector<std::int32_t> prompt(24, 2);
+  auto x = (*a)->BeginPrompt(prompt, 8), y = (*b)->BeginPrompt(prompt, 16);
+  ASSERT_TRUE(x && y);
+  ASSERT_TRUE((*x)->Advance());
+  ASSERT_TRUE((*y)->Advance());
+  std::array<rt::Llm::PromptSession*, 2> sessions{x->get(), y->get()};
+  const std::array<rt::PrefillGoOn, 2> callbacks{};
+  ASSERT_TRUE(model.RunPromptWave(sessions, callbacks, true));
+  ASSERT_EQ(model.delivered_prefill_hints.size(), 2U);
+  EXPECT_EQ(model.delivered_prefill_hints[0].second.rows, 0U);
+  EXPECT_EQ(model.delivered_prefill_hints[0].second.after_rows, 0U);
+  EXPECT_EQ(model.delivered_prefill_hints[1].second.rows, 8U);
+  EXPECT_FALSE(model.delivered_prefill_hints[1].second.want_head);
+  EXPECT_EQ(model.delivered_prefill_hints[1].second.after_rows, 0U);
+  EXPECT_EQ((*x)->NextUnit()->phase, rt::Llm::PromptSession::Phase::kCheckpoint);
+  ASSERT_TRUE(model.future_prefill_heads.back().next.has_value());
+  EXPECT_FALSE(*model.future_prefill_heads.back().next);
+  EXPECT_FALSE(model.future_prefill_heads.back().after.has_value());
+  (*x)->Cancel();
+  (*y)->Cancel();
+  ASSERT_TRUE((*x)->Finish());
+  ASSERT_TRUE((*y)->Finish());
+}
+
 TEST(LlmScores, PromptWaveReadinessSettlesColdPeerWithoutReplacingDueDecode) {
   NativeBranchesFake model;
   model.prefill_waves = true;
@@ -2040,6 +2120,10 @@ TEST(LlmScores, PromptWaveOmitsCancelledAndCapacityRefusedPeersBeforeDispatch) {
         rt::PrefillGoOn{}, [cancelled](std::uint32_t) { return !cancelled; }};
     ASSERT_TRUE(model.RunPromptWave(sessions, callbacks, true));
     EXPECT_THAT(model.prefill_dispatches.back(), ElementsAre(0));
+    ASSERT_EQ(model.delivered_prefill_hints.size(), 1U);
+    EXPECT_EQ(model.delivered_prefill_hints.front().first, 0U);
+    EXPECT_EQ(model.delivered_prefill_hints.front().second.rows, 8U);
+    EXPECT_EQ(model.delivered_prefill_hints.front().second.after_rows, 3U);
     EXPECT_EQ(model.prefill_funded[0], 8U);
     EXPECT_EQ((*first)->history(), std::vector<std::int32_t>(8, 2));
     EXPECT_TRUE((*second)->history().empty());
