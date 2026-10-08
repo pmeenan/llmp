@@ -17,52 +17,6 @@ file ([M0](m0-record.md), [M1](m1-record.md), [M2](m2-record.md), [M3](m3-record
 
 **Status legend:** `pending` · `in progress` · `done` · `parked`
 
-The [bounded dense31 serving bridge](experiments/gemma31-serving-bridge/README.md)
-now selects the checked ordinary recipe only at resolved context<=8192/slots<=4,
-with current-pin C1/C4 quality, complete 1K corpus parity, HTTP controls and
-focused default-selection checks. The [bounded Gemma26 recipe](experiments/gemma26-production/README.md)
-reaches stock parity with stock's exact tokens under the same bounds; larger
-envelopes retain their prior recipe; sustained performance and broader
-qualification remain open.
-The historical SOURCE14 serving/default proposal was not adopted. Its original
-[Gemma31 C2 first screen](experiments/gemma31-production-c2/README.md) retains eight
-positive-margin strict differences; the [private local-MMA factor](experiments/gemma31-c2-local-mma/README.md)
-retains nine. The opt-in [actual two-owner factor](experiments/gemma-small-owner-attention/README.md)
-now passes strict zero-margin choices and separate 64-target conditional-loss
-bounds for both approved C2 profiles. All 64 paid 31B heads match retained stock;
-26B has 34/66 exact heads with zero choice differences. Whole2/3 primitive proof
-passes heads16/32. The 31B C3 short screen passes strict choices; the
-[equal-width partial adapter](experiments/gemma-partial-owner-attention/README.md)
-recovers the preserved C5 failure (eight strict differences and +3.8918% conditional
-loss) to zero differences, 160 paid exact heads and −0.20935% conditional loss.
-The [Gemma26 C5 transfer](experiments/gemma-partial-owner-transfer/README.md)
-retains two strict differences despite a passing 160-target loss gate; N7/N9
-operator controls pass. The [private prefix-only keep factor](experiments/gemma26-c5-prefix-keep/README.md)
-removes both paid differences and matches all160 paid full heads, but retains one
-strict frontier difference; conditional loss passes at +0.08119%. This is diagnostic
-evidence, without a production layer policy or observed stock992 routing selector.
-C3 transfer, other partial model counts and unequal widths outside the
-[bounded C2 common-root recipe](experiments/gemma4-bounded-owner-roots/README.md)
-remain unqualified. That recipe restores all 68 stock heads on both short and
-physically wrapped controls, preserves initialized states and removes temporary
-KV copies. Same-binary paid latency falls 6.01% / 5.24% (26B / 31B), within 0.1%
-of current stock on short n2 screens. Ordinary context<=4096/exactly-two-slot
-HTTP adoption passes; configured-four C2, wider/partial cohorts and compatible
-multirow prefill remain owed. Fresh
-31B timing is +1.47% with a stock spread larger than its mean gap; 26B is −1.064%
-in its short matched bookends. Core opt-in controls retain their historical scopes and do not adopt SOURCE14
-serving/default files. The separate current bridge above closes bounded dense31
-HTTP and corpus gates; broader depth/context/cohorts and sustained qualification
-remain open.
-
-The [C1 phase attribution](experiments/gemma-state-phase-attribution/README.md)
-measures paid Clear 57.45 ms, state growth 162.18 ms and required planning 0.286 ms
-with 160 plan hits/no misses, while complete outputs/state match the fixed own
-proof. It changes only optional runner diagnostics. The attribution result itself
-selects no serving policy; bounded dense31 adoption is established by the
-separate production bridge above; Gemma26 has its own bounded recipe since. Nested counters and stream wall do not establish a residual
-kernel cause or a new reference speed gate.
-
 ## M0 — Plan the plan  `done`
 
 Ran 2026-09-20 to 2026-09-23 and exited on the owner's approval of the plan.
@@ -235,6 +189,57 @@ Gemma steps choose their token on the GPU. The round trip falls from
 2.8%/0.6%/1.1% with identical tokens; Gemma31 and Gemma26 now run level with
 or ahead of stock's recorded cycles. Remaining milestone gates stay open.
 
+**Gemma bounded-recipe status (parked with M3.5).**
+The [bounded dense31 serving bridge](experiments/gemma31-serving-bridge/README.md)
+now selects the checked ordinary recipe only at resolved context<=8192/slots<=4,
+with current-pin C1/C4 quality, complete 1K corpus parity, HTTP controls and
+focused default-selection checks. The [bounded Gemma26 recipe](experiments/gemma26-production/README.md)
+reaches stock parity with stock's exact tokens under the same bounds; larger
+envelopes retain their prior recipe; sustained performance and broader
+qualification remain open.
+The historical SOURCE14 serving/default proposal (a 14-file runtime, settings
+and test change set whose receipt the
+[Gemma31 C2 first screen](experiments/gemma31-production-c2/results.json)
+records) was not adopted. Its original
+[Gemma31 C2 first screen](experiments/gemma31-production-c2/README.md) retains eight
+positive-margin strict differences; the [private local-MMA factor](experiments/gemma31-c2-local-mma/README.md)
+retains nine. The opt-in [actual two-owner factor](experiments/gemma-small-owner-attention/README.md)
+now passes strict zero-margin choices and separate 64-target conditional-loss
+bounds for both approved C2 profiles. All 64 paid 31B heads match retained stock;
+26B has 34/66 exact heads with zero choice differences. Whole2/3 primitive proof
+passes heads16/32. The 31B C3 short screen passes strict choices; the
+[equal-width partial adapter](experiments/gemma-partial-owner-attention/README.md)
+recovers the preserved C5 failure (eight strict differences and +3.8918% conditional
+loss) to zero differences, 160 paid exact heads and −0.20935% conditional loss.
+The [Gemma26 C5 transfer](experiments/gemma-partial-owner-transfer/README.md)
+retains two strict differences despite a passing 160-target loss gate; N7/N9
+operator controls pass. The [private prefix-only keep factor](experiments/gemma26-c5-prefix-keep/README.md)
+removes both paid differences and matches all 160 paid full heads, but retains one
+strict frontier difference; conditional loss passes at +0.08119%. This is diagnostic
+evidence, without a production layer policy or an observed routing selection over
+stock's 992-row prefix ([prefix-keep factor](experiments/gemma26-c5-prefix-keep/README.md)).
+C3 transfer, other partial model counts and unequal widths outside the
+[bounded C2 common-root recipe](experiments/gemma4-bounded-owner-roots/README.md)
+remain unqualified. That recipe restores all 68 stock heads on both short and
+physically wrapped controls, preserves initialized states and removes temporary
+KV copies. Same-binary paid latency falls 6.01% / 5.24% (26B / 31B), within 0.1%
+of current stock on short n=2 screens. Ordinary context<=4096/exactly-two-slot
+HTTP adoption passes; configured-four C2, wider/partial cohorts and compatible
+multirow prefill remain owed. Fresh
+31B timing is +1.47% with a stock spread larger than its mean gap; 26B is −1.064%
+in its short matched bookends. Core opt-in controls retain their historical scopes and do not adopt SOURCE14
+serving/default files. The separate current bridge above closes bounded dense31
+HTTP and corpus gates; broader depth/context/cohorts and sustained qualification
+remain open.
+
+The [C1 phase attribution](experiments/gemma-state-phase-attribution/README.md)
+measures paid Clear 57.45 ms, state growth 162.18 ms and required planning 0.286 ms
+with 160 plan hits/no misses, while complete outputs/state match the fixed own
+proof. It changes only optional runner diagnostics. The attribution result itself
+selects no serving policy; bounded dense31 adoption is established by the
+separate production bridge above; Gemma26 has its own bounded recipe since. Nested counters and stream wall do not establish a residual
+kernel cause or a new reference speed gate.
+
 Goal (the owner, 2026-09-29): build out the core engine across the major
 open model families, MoE and dense, before the system is built around it
 (M4 onward). Each family runs natively on one Spark from a prepared
@@ -394,7 +399,8 @@ family" guide, and its long-context scaling work.
 
 **Owner stop/handoff (2026-10-08):** complete only grouped physical KV stores
 (7520f12) and the T54 batch above, then STOP. The inventory is recorded, but
-128 family cells across 96 techniques remain OPEN. This transfer run stops here
+128 family cells across 47 techniques remained OPEN (retired to M3.6 by D-107,
+below). This transfer run stops here
 and starts no further batch, phase, general refactoring or duplication cleanup.
 A separate agent may refactor under its own assignment.
 Focused checks are recorded; full regression/shipment tiers remain deferred.

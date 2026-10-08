@@ -161,9 +161,12 @@ bool ValidDirectoryName(std::string_view id);
 std::string Encode(const Record& record);
 // A record read back: well-formed, every field present with its type and
 // nothing else, and its digest its text's. Not yet checked against the
-// adopting process (Check).
+// adopting process (Check). With `memory`, its token history is charged
+// to `token_charge`; `memory_refused` is set when that charge refused it
+// (the record may fit a later start).
 std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* memory = nullptr,
-                                          MemoryCharge* token_charge = nullptr);
+                                          MemoryCharge* token_charge = nullptr,
+                                          bool* memory_refused = nullptr);
 
 // Where an extent lies in its spill file.
 std::uint64_t ExtentOffset(std::span<const std::uint64_t> regions, const Extent& extent);

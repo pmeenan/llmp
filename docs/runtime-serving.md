@@ -748,7 +748,11 @@ kept as it is but for the extents its record does not list, which are
 emptied; its history, cursor, draft depth and last use restored, the
 slot marked spilled until a turn restores it), and everything else in
 the directory is removed: refused records and their files, other slots'
-files, other models' directories, temporary files. The start logs each
+files, other models' directories, temporary files. A record whose token
+history does not fit this start's memory but which otherwise checks (its
+identity, layout and retention) leaves its model's directory as it is for
+a later start; that run keeps none of the model's own conversations
+across a restart. The start logs each
 refusal with its reason and each adoption with its token count, never
 content (D-014), and extends the service manager's start timeout as it
 goes. **At a graceful stop** (SIGTERM) the resident model's idle
@@ -1154,7 +1158,10 @@ snapshot owns its separate history until explicit invalidation. Queued and
 worker-owned persistence records hold separately funded token copies through
 supersession, invalidation and worker retirement. At startup, kept-record
 tokens are funded before decoding against available memory after the startup
-reserve, then charged to the catalog before adoption. The startup allocation
+reserve (unbounded when availability is unknown, as the memory guard
+skips), then charged to the catalog before adoption, where each slot's
+history takes over that funded copy; histories that the budget cannot
+hold then (availability unknown) are not adopted. The startup allocation
 report includes `native_token_history_bytes`; ordinary chat and swap-table
 reports also expose it and `native_token_catalog_bytes`. The dedicated pool reports
 allocated token bytes, and its catalog occupancy rounds their aggregate to

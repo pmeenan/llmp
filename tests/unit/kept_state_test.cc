@@ -619,13 +619,22 @@ TEST(KeptRecord, DecodingFundsIndependentTokenCapacityBeforeAllocation) {
   const auto text = kept::Encode(Sample());
   rt::RequestMemory tiny(1);
   rt::MemoryCharge refusal;
-  EXPECT_FALSE(kept::Decode(text, &tiny, &refusal));
+  // A refusal for memory says so (a later start may adopt the record); a
+  // bad record's does not.
+  bool memory_refused = false;
+  EXPECT_FALSE(kept::Decode(text, &tiny, &refusal, &memory_refused));
+  EXPECT_TRUE(memory_refused);
   EXPECT_EQ(tiny.used(), 0U);
+  bool not_memory = false;
+  EXPECT_FALSE(kept::Decode(text.substr(0, text.size() - 1), &tiny, &refusal, &not_memory));
+  EXPECT_FALSE(not_memory);
   rt::RequestMemory roomy(4096);
   rt::MemoryCharge tokens;
   {
-    auto record = kept::Decode(text, &roomy, &tokens);
+    bool refused = false;
+    auto record = kept::Decode(text, &roomy, &tokens, &refused);
     ASSERT_TRUE(record);
+    EXPECT_FALSE(refused);
     EXPECT_EQ(tokens.bytes(), record->tokens.capacity() * sizeof(std::int32_t));
     EXPECT_EQ(roomy.used(), tokens.bytes());
   }

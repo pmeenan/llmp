@@ -5,12 +5,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <expected>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <tuple>
 #include <vector>
 
@@ -19,6 +21,7 @@
 #include "engine/gemma3_runner.h"
 #include "engine/support.h"
 #include "scheduler/scheduler.h"
+#include "tokenizer_fixtures.h"
 
 namespace en = jitllm::engine;
 class Gemma3ServingGpu : public ::testing::Test {
@@ -55,23 +58,31 @@ class Gemma3ServingGpu : public ::testing::Test {
   std::unique_ptr<en::Gemma3Runner>& runner = life->runner;
   const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
   void SetUp() override {
-    runner = std::make_unique<en::Gemma3Runner>(
-        node,
-        en::Gemma3Options{.artifact =
-                              "/home/pmeenan/.local/share/jitllm/gemma3-import-20261007/artifacts/"
-                              "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb",
-                          .out = "/tmp/jitllm-gemma3-serving-control",
-                          .slots = 2,
-                          .max_wave_rows = 256,
-                          .max_head_rows = 2,
-                          .owner_decode = true,
-                          .packed_prefill = true,
-                          .fuse_norms = true,
-                          .fuse_quant_glu = true,
-                          .fuse_norm_rope = true,
-                          .fuse_norm_add = true,
-                          .prepare_state = PrepareState()},
-        0, 0);
+    const std::filesystem::path artifact =
+        jitllm::test_support::ModelsDir() +
+        "/gemma3-import-20261007/artifacts/"
+        "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb";
+    if (std::error_code error; !std::filesystem::exists(artifact, error)) {
+      GTEST_SKIP() << "no Gemma3 artifact in " << artifact;
+    }
+    // Spill files need direct I/O: scratch in the build tree.
+    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const std::filesystem::path root = scratch != nullptr ? scratch : ::testing::TempDir();
+    runner =
+        std::make_unique<en::Gemma3Runner>(node,
+                                           en::Gemma3Options{.artifact = artifact,
+                                                             .out = root / "gemma3-serving-control",
+                                                             .slots = 2,
+                                                             .max_wave_rows = 256,
+                                                             .max_head_rows = 2,
+                                                             .owner_decode = true,
+                                                             .packed_prefill = true,
+                                                             .fuse_norms = true,
+                                                             .fuse_quant_glu = true,
+                                                             .fuse_norm_rope = true,
+                                                             .fuse_norm_add = true,
+                                                             .prepare_state = PrepareState()},
+                                           0, 0);
     ASSERT_TRUE(node.Open());
     observer.catalog = &node.catalog();
     life->entered.push_back(runner.get());

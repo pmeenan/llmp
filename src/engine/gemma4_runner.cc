@@ -1210,14 +1210,17 @@ Status Gemma4Runner::AcceptVerify(std::uint32_t index, std::uint32_t keep) {
   auto& slot = **request;
   if (!slot.verify_pending || !Held(index) || keep == 0 || keep > slot.verified_rows)
     return Error("Gemma4 accept needs pending verified rows and the held request");
-  if (auto active = CheckActive(slot); !active) return active;
+  if (auto active = CheckActive(slot); !active) {
+    if (slot.live.quarantined()) AbandonVerify(slot);
+    return active;
+  }
   if (auto r = slot.live.Accept(keep); !r) return r;
   if (auto r = slot.live.Rollback(node_, execution_, stream_, resources_.launch(),
                                   "Gemma4 accept restore and feature commit");
       !r) {
     auto states = States();
     cohort_.CheckFailedJob(node_, stream_, execution_, states);
-    slot.live.Quarantine();
+    AbandonVerify(slot);
     return r;
   }
   // No prefix or feature becomes visible until restore and commit retired.
@@ -1229,20 +1232,28 @@ Status Gemma4Runner::AcceptVerify(std::uint32_t index, std::uint32_t keep) {
   slot.verified_rows = 0;
   return {};
 }
+void Gemma4Runner::AbandonVerify(Slot& slot) {
+  slot.live.Quarantine();
+  slot.verify_pending = false;
+  slot.verified_rows = 0;
+}
 Status Gemma4Runner::DiscardVerify(std::uint32_t index) {
   auto request = request_slot(index);
   if (!request) return Error(request.error());
   auto& slot = **request;
   if (!slot.verify_pending || !Held(index))
     return Error("Gemma4 discard needs pending verified rows and the held request");
-  if (auto active = CheckActive(slot); !active) return active;
+  if (auto active = CheckActive(slot); !active) {
+    if (slot.live.quarantined()) AbandonVerify(slot);
+    return active;
+  }
   (void)slot.live.Settle(true, true, false);
   if (auto r = slot.live.Rollback(node_, execution_, stream_, resources_.launch(),
                                   "Gemma4 discard whole verify");
       !r) {
     auto states = States();
     cohort_.CheckFailedJob(node_, stream_, execution_, states);
-    slot.live.Quarantine();
+    AbandonVerify(slot);
     return r;
   }
   slot.verify_pending = false;

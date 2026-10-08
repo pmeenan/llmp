@@ -8,8 +8,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <string>
+#include <system_error>
 #include <tuple>
 #include <vector>
 
@@ -18,6 +21,7 @@
 #include "engine/qwen38_runner.h"
 #include "plain_token_serving_checks.h"
 #include "runtime/serving.h"
+#include "tokenizer_fixtures.h"
 
 namespace rt = jitllm::runtime;
 namespace en = jitllm::engine;
@@ -35,13 +39,30 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   rt::Llm* model = nullptr;
   std::filesystem::path scratch;
   void SetUp() override {
-    std::string name = "/home/pmeenan/.cache/jitllm-plain-tokens-XXXXXX";
-    ASSERT_NE(mkdtemp(name.data()), nullptr);
-    scratch = name;
     const bool gguf = GetParam() == 1, deepseek = GetParam() >= 2;
     const bool adaptive = GetParam() == 3;
-    life->roles.installed = gguf ? "/home/pmeenan/.local/share/jitllm/qgguf-artifacts"
-                                 : "/home/pmeenan/.local/share/jitllm/m3-artifacts";
+    const std::filesystem::path models = jitllm::test_support::ModelsDir();
+    const auto installed = models / (gguf ? "qgguf-artifacts" : "m3-artifacts");
+    const char* artifact =
+        deepseek ? "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234"
+        : gguf   ? "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78"
+                 : "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93";
+    const char* drafter = "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5";
+    const auto checkpoint = models / "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
+    std::error_code error;
+    if (!std::filesystem::exists(installed / artifact, error) ||
+        (adaptive && !std::filesystem::exists(installed / drafter, error)) ||
+        (!deepseek && !std::filesystem::exists(checkpoint / "tokenizer.json", error))) {
+      GTEST_SKIP() << "no artifact or tokenizer for case " << GetParam() << " in " << models;
+    }
+    // Spill files need direct I/O: scratch in the build tree.
+    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const std::filesystem::path root = base != nullptr ? base : ::testing::TempDir();
+    std::filesystem::create_directories(root, error);
+    std::string name = (root / "plain-tokens-XXXXXX").string();
+    ASSERT_NE(mkdtemp(name.data()), nullptr);
+    scratch = name;
+    life->roles.installed = installed;
     life->roles.spill = scratch / "spill";
     life->roles.state = scratch / "state";
     for (const auto& path : {life->roles.spill, life->roles.state}) {
@@ -50,17 +71,12 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     }
     cfg::ModelEntry entry;
     entry.name = "target";
-    entry.artifact = deepseek ? "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234"
-                     : gguf   ? "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78"
-                              : "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93";
+    entry.artifact = artifact;
     if (adaptive) {
-      entry.drafter = "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5";
+      entry.drafter = drafter;
       entry.overrides["wave_form"] = std::string("plain");
     }
     if (!deepseek) {
-      const std::filesystem::path checkpoint =
-          "/home/pmeenan/.local/share/jitllm/models/Mia-AiLab/"
-          "Qwen3.8-Flash-Next-NVFP4@925d7be6";
       entry.tokenizer = checkpoint / "tokenizer.json";
       entry.chat_template = checkpoint / "chat_template.jinja";
     }
@@ -89,7 +105,7 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
       }
       life->server.reset();
     }
-    std::filesystem::remove_all(scratch);
+    if (!scratch.empty()) std::filesystem::remove_all(scratch);
   }
   template <class Runner>
   std::expected<jitllm::base::Sha256Digest, std::string> StateHash(Runner& runner,

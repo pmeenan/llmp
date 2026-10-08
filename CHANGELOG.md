@@ -11,198 +11,6 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ## [Unreleased]
 
-### Changed
-
-- Omit unused nonfinal prompt dependencies for ordinary plain DeepSeek and
-  native/GGUF Qwen while preserving exact initialized state and scoring. Bounded
-  repeated prefill takes 1.928%/2.282% less time for DS/native Qwen; speculative
-  required-stream consumers remain explicit opt-ins.
-
-- Group independent Gemma3 KV stores under one checked launch, preserving
-  exact rounding, heads and initialized state. A bounded C2 screen reduces
-  combined paid prefill/decode time 0.45%; other measured recipients remain off.
-
-- Plan upcoming DeepSeek/DSpark and native/GGUF Qwen scalar prompt chunks and
-  prepare eligible fresh backing beside current work, preserving exact heads,
-  histories and target/drafter state. Short DSpark/MTP prefill takes 0.562%/0.936%
-  less time; broader capture and joined-prefill qualification remain open.
-
-- Share exact interval fills for Gemma and DeepSeek host masks and Qwen QSA
-  bias, with faster existing Gemma mask validation. GPU mask paths and model
-  arithmetic stay unchanged.
-
-- Skip redundant DeepSeek/DSpark and native/GGUF Qwen startup activation
-  placement under a checked exact maximum, preserving funding and runtime
-  plans. Native Qwen with MTP takes 2.441% less Setup time in the short screen.
-
-- Add optional Gemma4 original-MMVQ input sharing, preserving exact target
-  heads/state and existing fused/routed arithmetic. It stays off by default
-  after short native factors and startup-cost observations. Skip redundant
-  Gemma startup activation placement only under a checked existing maximum;
-  exact funding and row-invariant consumer policies remain unchanged.
-
-- Prepare eligible fresh state backing for Gemma2, Gemma3 and both Gemma4
-  profiles beside current prefill work, with completion-aware ownership, scoped page-in retirement and exact
-  continuation state. Kept restart sources retain their original read path.
-
-- Share eligible Gemma2/Gemma3 Q8 input preparation while preserving original
-  MMVQ arithmetic, exact outputs/state and fused one-column FFN behavior.
-  Device-specific selection and startup funding cover nine formats through
-  eight columns; other product routes retain ordinary execution.
-
-- Choose plain target greedy decode tokens on the GPU for DeepSeek and native/GGUF
-  Qwen, preserving complete states and continuation heads. Share scalar
-  dispatch/output validation and match host NaN/tie behavior across Gemma too;
-  sampling/scoring and draft/verify retain their existing contracts. DeepSeek
-  adaptive joined plain waves also publish device IDs while preserving target
-  features, drafter-ring writes and exact verify continuations.
-
-- Add a checked opt-in DSpark noncausal GPU block-mask producer through shared
-  F16/F32 source contracts. A short screen is neutral, so host masks stay default.
-
-- Accept an optional prepared Q4_1 Qwen3.8 selected draft head, with exact
-  scalar/joined prefix arithmetic and restored state. Its payload is 68.75%
-  smaller; bounded C1 improves while C2 regresses, so BF16 remains the default.
-  Authenticate joined confidence as the actual I32-packed probability view.
-
-- Extend explicitly configured Gemma2/Gemma3 two-owner prefill through 512
-  rows, preserving exact wrapped state, restart continuations and llama.cpp
-  outputs. Public chunks remain 128; measured reference gaps remain recorded.
-
-- Allow explicit experimental Gemma26 prefill capture with retained frontier
-  features, preserving exact feature/state and checked assistant proposals.
-  Ordinary and assistant-setup capture defaults remain off.
-
-- Build two distinct future prefill shapes with independent shared funding
-  for Gemma2/Gemma3, enabling cold changing-width graph capture without
-  advancing future state. Configured 256-row and ordinary 128-row controls remain exact.
-
-- Reduce shared completion wake/queue-lock work and qualify an internal
-  partial-weight swap foundation with missing-only reads and exact recovery.
-  Ordinary serving keeps full swaps because the cold-switch floor is unmet.
-
-- Build Qwen3.8 native/GGUF causal masks and native headed MTP masks on the GPU
-  through the shared F16/F32 producer. Exact outputs and restored state are
-  preserved; the tested native C2 and GGUF recipes each charge 8 MiB less.
-
-- Extend Gemma2/Gemma3 actual-root prefill to configured equal two-owner
-  chunks through 256 rows with checked mask, cache and query-tile bounds.
-  Native 256-row prefill improves about 5.1%/0.8%; matched-cache llama.cpp
-  outputs are exact, with measured speed residuals retained. Public chunks
-  remain 128 rows.
-
-- Extend Gemma2/Gemma3 actual-root prefill to flexible 2–128-row query tiles
-  and partial tails, preserving original MMA arithmetic. Short 64-row native
-  comparisons improve prefill 10.5%/2.8%; ordinary chunks and public contexts
-  remain unchanged. Serving tails/state/restart and fresh reference outputs
-  remain exact.
-
-- Read actual K/V roots for compatible two-owner 128-row Gemma2/Gemma3
-  prefill, preserving MMA arithmetic and removing cache-packing copies.
-  Short native prefill screens improve 8.7%/2.9%; fresh Gemma2 llama.cpp
-  bookends are level with exact outputs. Gemma3's primitive is checked
-  through trained 131K cache width; public context limits are unchanged.
-
-- Build DeepSeek target causal/ring masks on the GPU through shared source
-  checks, preserving exact sparse-query dimensions and unchanged outputs/state.
-  A bounded two-owner prefill screen improves about 0.7%; DSpark block masks
-  retain their separate visibility contract.
-
-- Plan and capture upcoming Gemma2 prefill shapes during current work, and
-  forward checkpoint-aware joined prompt hints for Gemma2 and Gemma3. A short
-  Gemma2 first-traversal screen improves 5.3%; the short warm comparison is
-  0.6% slower, with no warm benefit claimed.
-
-- Build Gemma2 causal/ring masks on the GPU using shared mask-source checks
-  across Gemma2, Gemma3 and Gemma 4. Wrapped two-owner prefill improves about
-  6.6%, with exact heads/state and checked restart replay.
-
-- Keep a small reserve of device memory handles created ahead of need and
-  zero new conversation state on the GPU instead of reading it from disk:
-  growing state during long prefills costs about 38% less (Gemma3 at 131K
-  positions now at or slightly ahead of stock llama.cpp).
-
-- Keep a swapped-out model's backing mapped until the incoming model's
-  loads take it, moving each unmap beside a page-in read: LLM swaps no
-  longer wait 1.3–1.9 s for eviction (DeepSeek ↔ Qwen3.8 6.1–8.4 s from
-  7.9–9.7 s).
-
-- Plan Gemma3's upcoming prefill shapes beside the current chunk's device run
-  and capture their graphs ahead of their first run, so long prompts replay
-  nearly every chunk; trained-maximum first-traversal prefill falls about 9%.
-
-- Build Gemma3 causal and ring masks on the GPU from checked positions,
-  avoiding host mask construction, scanning and staging in ordinary serving.
-
-- Reduce Gemma3 causal-mask construction and validation work on the host,
-  retaining exact checks of every supplied mask value.
-
-- Admit explicit Gemma3 context up to 8448 with one request slot, preserving
-  the 4096 default and two-slot bound at 4K. Checked 8K literal continuation
-  and model-switch state restore use the ordinary native runtime.
-
-- Avoid temporary KV prefix copies for unequal-length Gemma4 two-slot decode
-  at context<=4096, preserving checked common attention geometry, physical-ring
-  continuations and cached conversation restart on both approved profiles.
-
-- Avoid temporary full-prefix cache copies for unequal-length Gemma3 two-slot
-  decode, preserving checked attention geometry and checkpoint replay.
-
-- Avoid temporary full-prefix cache copies for unequal-length Gemma2 two-slot
-  decode, preserving checked attention geometry and checkpoint replay.
-
-- Add an experimental Gemma4 two-owner common-read option for unequal cache
-  prefixes. Real temporary K/V and mask padding preserve original cache bounds
-  and restore exact bounded stock heads; ordinary serving selection is unchanged.
-
-- Join compatible Gemma3 plain prefill chunks across two owners, with a funded
-  256-row wave and unchanged 128-row per-owner state. Packed prefill attention
-  and real temporary padding for unequal decode reads preserve bounded stock
-  quality, initialized-state restore and independent cache cursors.
-
-- Extend the experimental Gemma2 Q8_0 runner to opt-in two-slot softcap50
-  owner decode, with funded attention, wrapped-ring restore/replay and bounded
-  stock quality controls. Explicit diagnostic defaults retain ordinary attention.
-
-- Gemma4 serving reuses an unchanged cohort's execution closure within a held
-  request, avoiding a redundant scheduler call between completed units. Changed
-  selections and state growth, Clear and restore still refresh their closures.
-
-- Add an experimental bounded Gemma2 2B Q8_0 native runner with authenticated
-  import, checked state and graph replay. Its representative one-slot control
-  matches stock full heads exactly; broader model qualification remains open.
-
-- Less host time between decode steps, for every model. A request's steps
-  run on the driver thread, which waits on each step's fence itself, so no
-  other thread is on a step's path (D-106). The LLM runners no longer call
-  the scheduler before each step. Greedy Gemma steps without logprobs also
-  choose the token on the GPU and copy back only the token. A decode step's
-  host round trip falls from 85–188 µs to 6–11 µs on the Gemma controls;
-  Gemma26/Gemma31 C1 and
-  Gemma31 C4 decode are 2.8%/0.6%/1.1% faster, with identical tokens.
-
-- Select a bounded Gemma26 serving recipe at context<=8192 and at most four
-  slots: 1024-row prefill fallback, norm chains, MoE route/reduce and joined
-  owner attention. C1/C4 go from 57%/41% to within 0.6% of llama.cpp v0.6.0,
-  with its exact greedy tokens. Larger configurations keep the prior recipe.
-
-- Faster new conversations and repeated prompts on every LLM: clearing a
-  conversation zeroes its state in place and reuses the memory for the next
-  one, and a CUDA graph is now captured beside its shape's second run instead
-  of stalling the device. The bounded Gemma31 recipe also uses llama.cpp's
-  fused quantized gate/up/GeGLU product for decode. Gemma31 C1/C4 paid cycles
-  go from 3.15%/3.51% to 0.73%/1.36% behind llama.cpp v0.6.0.
-
-- Select the checked dense Gemma31 serving recipe at context<=8192 and at most
-  four slots: prefill fallback 256, existing norm chains and eligible owner
-  attention. Gemma26, larger configurations and explicit diagnostics retain
-  their prior policies and calibration identities.
-
-- Update the native GGML kernel dependency to llama.cpp v0.6.0 / GGML
-  0.26.0, preserving bounded native dispatch and carried compact/paired
-  optimizations. Historical comparisons retain their original pins; new
-  quality and performance qualification uses the new release separately.
-
 ### Added
 
 - Serve the approved Gemma2 2B Q8_0 artifact through bounded chat/literal
@@ -738,6 +546,196 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Omit unused nonfinal prompt dependencies for ordinary plain DeepSeek and
+  native/GGUF Qwen while preserving exact initialized state and scoring. Bounded
+  repeated prefill takes 1.928%/2.282% less time for DS/native Qwen; speculative
+  required-stream consumers remain explicit opt-ins.
+
+- Group independent Gemma3 KV stores under one checked launch, preserving
+  exact rounding, heads and initialized state. A bounded C2 screen reduces
+  combined paid prefill/decode time 0.45%; other measured recipients remain off.
+
+- Plan upcoming DeepSeek/DSpark and native/GGUF Qwen scalar prompt chunks and
+  prepare eligible fresh backing beside current work, preserving exact heads,
+  histories and target/drafter state. Short DSpark/MTP prefill takes 0.562%/0.936%
+  less time; broader capture and joined-prefill qualification remain open.
+
+- Share exact interval fills for Gemma and DeepSeek host masks and Qwen QSA
+  bias, with faster existing Gemma mask validation. GPU mask paths and model
+  arithmetic stay unchanged.
+
+- Skip redundant DeepSeek/DSpark and native/GGUF Qwen startup activation
+  placement under a checked exact maximum, preserving funding and runtime
+  plans. Native Qwen with MTP takes 2.441% less Setup time in the short screen.
+
+- Add optional Gemma4 original-MMVQ input sharing, preserving exact target
+  heads/state and existing fused/routed arithmetic. It stays off by default
+  after short native factors and startup-cost observations. Skip redundant
+  Gemma startup activation placement only under a checked existing maximum;
+  exact funding and row-invariant consumer policies remain unchanged.
+
+- Prepare eligible fresh state backing for Gemma2, Gemma3 and both Gemma4
+  profiles beside current prefill work, with completion-aware ownership, scoped page-in retirement and exact
+  continuation state. Kept restart sources retain their original read path.
+
+- Share eligible Gemma2/Gemma3 Q8 input preparation while preserving original
+  MMVQ arithmetic, exact outputs/state and fused one-column FFN behavior.
+  Device-specific selection and startup funding cover nine formats through
+  eight columns; other product routes retain ordinary execution.
+
+- Choose plain target greedy decode tokens on the GPU for DeepSeek and native/GGUF
+  Qwen, preserving complete states and continuation heads. Share scalar
+  dispatch/output validation and match host NaN/tie behavior across Gemma too;
+  sampling/scoring and draft/verify retain their existing contracts. DeepSeek
+  adaptive joined plain waves also publish device IDs while preserving target
+  features, drafter-ring writes and exact verify continuations.
+
+- Add a checked opt-in DSpark noncausal GPU block-mask producer through shared
+  F16/F32 source contracts. A short screen is neutral, so host masks stay default.
+
+- Accept an optional prepared Q4_1 Qwen3.8 selected draft head, with exact
+  scalar/joined prefix arithmetic and restored state. Its payload is 68.75%
+  smaller; bounded C1 improves while C2 regresses, so BF16 remains the default.
+  Authenticate joined confidence as the actual I32-packed probability view.
+
+- Extend explicitly configured Gemma2/Gemma3 two-owner prefill through 512
+  rows, preserving exact wrapped state, restart continuations and llama.cpp
+  outputs. Public chunks remain 128; measured reference gaps remain recorded.
+
+- Allow explicit experimental Gemma26 prefill capture with retained frontier
+  features, preserving exact feature/state and checked assistant proposals.
+  Ordinary and assistant-setup capture defaults remain off.
+
+- Build two distinct future prefill shapes with independent shared funding
+  for Gemma2/Gemma3, enabling cold changing-width graph capture without
+  advancing future state. Configured 256-row and ordinary 128-row controls remain exact.
+
+- Reduce shared completion wake/queue-lock work and qualify an internal
+  partial-weight swap foundation with missing-only reads and exact recovery.
+  Ordinary serving keeps full swaps because the cold-switch floor is unmet.
+
+- Build Qwen3.8 native/GGUF causal masks and native headed MTP masks on the GPU
+  through the shared F16/F32 producer. Exact outputs and restored state are
+  preserved; the tested native C2 and GGUF recipes each charge 8 MiB less.
+
+- Extend Gemma2/Gemma3 actual-root prefill to configured equal two-owner
+  chunks through 256 rows with checked mask, cache and query-tile bounds.
+  Native 256-row prefill improves about 5.1%/0.8%; matched-cache llama.cpp
+  outputs are exact, with measured speed residuals retained. Public chunks
+  remain 128 rows.
+
+- Extend Gemma2/Gemma3 actual-root prefill to flexible 2–128-row query tiles
+  and partial tails, preserving original MMA arithmetic. Short 64-row native
+  comparisons improve prefill 10.5%/2.8%; ordinary chunks and public contexts
+  remain unchanged. Serving tails/state/restart and fresh reference outputs
+  remain exact.
+
+- Read actual K/V roots for compatible two-owner 128-row Gemma2/Gemma3
+  prefill, preserving MMA arithmetic and removing cache-packing copies.
+  Short native prefill screens improve 8.7%/2.9%; fresh Gemma2 llama.cpp
+  bookends are level with exact outputs. Gemma3's primitive is checked
+  through trained 131K cache width; public context limits are unchanged.
+
+- Build DeepSeek target causal/ring masks on the GPU through shared source
+  checks, preserving exact sparse-query dimensions and unchanged outputs/state.
+  A bounded two-owner prefill screen improves about 0.7%; DSpark block masks
+  retain their separate visibility contract.
+
+- Plan and capture upcoming Gemma2 prefill shapes during current work, and
+  forward checkpoint-aware joined prompt hints for Gemma2 and Gemma3. A short
+  Gemma2 first-traversal screen improves 5.3%; the short warm comparison is
+  0.6% slower, with no warm benefit claimed.
+
+- Build Gemma2 causal/ring masks on the GPU using shared mask-source checks
+  across Gemma2, Gemma3 and Gemma 4. Wrapped two-owner prefill improves about
+  6.6%, with exact heads/state and checked restart replay.
+
+- Keep a small reserve of device memory handles created ahead of need and
+  zero new conversation state on the GPU instead of reading it from disk:
+  growing state during long prefills costs about 38% less (Gemma3 at 131K
+  positions now at or slightly ahead of stock llama.cpp).
+
+- Keep a swapped-out model's backing mapped until the incoming model's
+  loads take it, moving each unmap beside a page-in read: LLM swaps no
+  longer wait 1.3–1.9 s for eviction (DeepSeek ↔ Qwen3.8 6.1–8.4 s from
+  7.9–9.7 s).
+
+- Plan Gemma3's upcoming prefill shapes beside the current chunk's device run
+  and capture their graphs ahead of their first run, so long prompts replay
+  nearly every chunk; trained-maximum first-traversal prefill falls about 9%.
+
+- Build Gemma3 causal and ring masks on the GPU from checked positions,
+  avoiding host mask construction, scanning and staging in ordinary serving.
+
+- Reduce Gemma3 causal-mask construction and validation work on the host,
+  retaining exact checks of every supplied mask value.
+
+- Admit explicit Gemma3 context up to 8448 with one request slot, preserving
+  the 4096 default and two-slot bound at 4K. Checked 8K literal continuation
+  and model-switch state restore use the ordinary native runtime.
+
+- Avoid temporary KV prefix copies for unequal-length Gemma4 two-slot decode
+  at context<=4096, preserving checked common attention geometry, physical-ring
+  continuations and cached conversation restart on both approved profiles.
+
+- Avoid temporary full-prefix cache copies for unequal-length Gemma3 two-slot
+  decode, preserving checked attention geometry and checkpoint replay.
+
+- Avoid temporary full-prefix cache copies for unequal-length Gemma2 two-slot
+  decode, preserving checked attention geometry and checkpoint replay.
+
+- Add an experimental Gemma4 two-owner common-read option for unequal cache
+  prefixes. Real temporary K/V and mask padding preserve original cache bounds
+  and restore exact bounded stock heads; ordinary serving selection is unchanged.
+
+- Join compatible Gemma3 plain prefill chunks across two owners, with a funded
+  256-row wave and unchanged 128-row per-owner state. Packed prefill attention
+  and real temporary padding for unequal decode reads preserve bounded stock
+  quality, initialized-state restore and independent cache cursors.
+
+- Extend the experimental Gemma2 Q8_0 runner to opt-in two-slot softcap50
+  owner decode, with funded attention, wrapped-ring restore/replay and bounded
+  stock quality controls. Explicit diagnostic defaults retain ordinary attention.
+
+- Gemma4 serving reuses an unchanged cohort's execution closure within a held
+  request, avoiding a redundant scheduler call between completed units. Changed
+  selections and state growth, Clear and restore still refresh their closures.
+
+- Add an experimental bounded Gemma2 2B Q8_0 native runner with authenticated
+  import, checked state and graph replay. Its representative one-slot control
+  matches stock full heads exactly; broader model qualification remains open.
+
+- Less host time between decode steps, for every model. A request's steps
+  run on the driver thread, which waits on each step's fence itself, so no
+  other thread is on a step's path (D-106). The LLM runners no longer call
+  the scheduler before each step. Greedy Gemma steps without logprobs also
+  choose the token on the GPU and copy back only the token. A decode step's
+  host round trip falls from 85–188 µs to 6–11 µs on the Gemma controls;
+  Gemma26/Gemma31 C1 and
+  Gemma31 C4 decode are 2.8%/0.6%/1.1% faster, with identical tokens.
+
+- Select a bounded Gemma26 serving recipe at context<=8192 and at most four
+  slots: 1024-row prefill fallback, norm chains, MoE route/reduce and joined
+  owner attention. C1/C4 go from 57%/41% to within 0.6% of llama.cpp v0.6.0,
+  with its exact greedy tokens. Larger configurations keep the prior recipe.
+
+- Faster new conversations and repeated prompts on every LLM: clearing a
+  conversation zeroes its state in place and reuses the memory for the next
+  one, and a CUDA graph is now captured beside its shape's second run instead
+  of stalling the device. The bounded Gemma31 recipe also uses llama.cpp's
+  fused quantized gate/up/GeGLU product for decode. Gemma31 C1/C4 paid cycles
+  go from 3.15%/3.51% to 0.73%/1.36% behind llama.cpp v0.6.0.
+
+- Select the checked dense Gemma31 serving recipe at context<=8192 and at most
+  four slots: prefill fallback 256, existing norm chains and eligible owner
+  attention. Gemma26, larger configurations and explicit diagnostics retain
+  their prior policies and calibration identities.
+
+- Update the native GGML kernel dependency to llama.cpp v0.6.0 / GGML
+  0.26.0, preserving bounded native dispatch and carried compact/paired
+  optimizations. Historical comparisons retain their original pins; new
+  quality and performance qualification uses the new release separately.
+
 - Qwen3.8 GGUF concurrent decode now shares dense and routed quantized
   products and the full target head across requests, with byte-identical
   full logits and state against the original waves, including graph replay.
@@ -976,6 +974,28 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   ([report](docs/experiments/ds4-complete-plan/README.md)).
 
 ### Fixed
+
+- DeepSeek V4 with its DSpark drafter funds each step's history for its
+  whole verify (the anchor and every draft). A long generation whose
+  verify kept more tokens than the funded room could abort the runtime.
+
+- A start whose memory cannot fund a model's kept conversation histories
+  (or whose available memory is unknown) no longer deletes them: unknown
+  availability bounds nothing, and a model with a valid record that does
+  not fit leaves its records for a later start (that run keeps none of the
+  model's own conversations across a restart).
+
+- A Gemma4 slot whose verify rollback fails is quarantined without a
+  pending verify, so Clear recovers it instead of every later call
+  refusing it.
+
+- A request step whose end was never proven no longer stalls the next step
+  on its stream until the hang check: the idle task is cancelled, as the
+  request's end already did.
+
+- GPU and model-file tests resolve artifacts under `JITLLM_TEST_MODELS`
+  (else `~/.local/share/jitllm`) and scratch under `JITLLM_TEST_SCRATCH`,
+  and skip when the files are absent instead of failing.
 
 - Bounded Gemma26 and Gemma31 serving keeps the full final FFN before
   publishing a frontier head, matching llama.cpp v0.6.0's arithmetic.

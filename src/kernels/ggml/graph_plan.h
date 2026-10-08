@@ -65,7 +65,7 @@ struct DeviceChoices {
   std::function<std::expected<QuantMulMatPath, KernelFailure>(const ggml_tensor*)> quant;
   // Shape/type-only original dense MMVQ selection, used transiently while
   // constructing graph descriptors. Empty means preserve ordinary products.
-  std::function<bool(ggml_type, std::int64_t)> dense_mmvq_shape;
+  std::function<bool(ggml_type, std::int64_t)> dense_mmvq_shape = nullptr;
   // Measured device/shape eligibility for the default-off raw Q2_K D2R
   // product. A CPU planner may supply a model of this predicate.
   std::function<bool(const ggml_tensor*)> q2_d2r_fits = nullptr;

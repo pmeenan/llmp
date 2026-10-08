@@ -544,7 +544,23 @@
           "build/spark-native/src/runtime/jitllm-runtime": "9faaa32df8b91ebc61e5c82250b12c30b72cb15b7b63583a533cfbbfc6aa3585",
           "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
-        "ldd": "\tlinux-vdso.so.1 (0x0000ffd166e19000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000ffd15db70000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000ffd15dac0000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000ffd159600000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000ffd12c200000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ffd159440000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000ffd166dd0000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000ffd12c1d0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000ffd12c1a0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ffd12c170000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffd12c130000)\n",
+        "ldd": {
+          "resolved": {
+            "linux-vdso.so.1": "vdso",
+            "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
+            "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
+            "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
+            "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
+            "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
+            "librt.so.1": "/lib/aarch64-linux-gnu/librt.so.1",
+            "libpthread.so.0": "/lib/aarch64-linux-gnu/libpthread.so.0",
+            "libgcc_s.so.1": "/lib/aarch64-linux-gnu/libgcc_s.so.1"
+          },
+          "not_found": [],
+          "note": "ldd's resolved library set with load addresses dropped; the raw output stays external"
+        },
         "cuBLAS": {
           "libcublas.so.13": {
             "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
@@ -1072,7 +1088,23 @@
           "build/spark-native/tests/unit/gemma_measurement_gpu_test": "ef23bd4a254bc8360259c3a32b3e8f020612e20d587ade0d32c48df8d5820b7d",
           "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
-        "ldd": "\tlinux-vdso.so.1 (0x0000e6983cc9c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000e698339f0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e69833940000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000e6982f400000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000e69802000000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e6982f240000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e6983cc60000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e69833910000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e698338e0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e698338b0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e69801fc0000)\n",
+        "ldd": {
+          "resolved": {
+            "linux-vdso.so.1": "vdso",
+            "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
+            "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
+            "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
+            "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
+            "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
+            "librt.so.1": "/lib/aarch64-linux-gnu/librt.so.1",
+            "libpthread.so.0": "/lib/aarch64-linux-gnu/libpthread.so.0",
+            "libgcc_s.so.1": "/lib/aarch64-linux-gnu/libgcc_s.so.1"
+          },
+          "not_found": [],
+          "note": "ldd's resolved library set with load addresses dropped; the raw output stays external"
+        },
         "cuBLAS": {
           "libcublas.so.13": {
             "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
@@ -1255,7 +1287,23 @@
           "build/spark-native/src/runtime/jitllm-runtime": "9faaa32df8b91ebc61e5c82250b12c30b72cb15b7b63583a533cfbbfc6aa3585",
           "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
-        "native_ldd": "\tlinux-vdso.so.1 (0x0000fd493b837000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000fd4932590000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000fd49324e0000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000fd492e000000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000fd4900c00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000fd492de40000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fd493b7f0000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000fd49324b0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000fd4900bd0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000fd4900ba0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000fd4900b60000)\n",
+        "native_ldd": {
+          "resolved": {
+            "linux-vdso.so.1": "vdso",
+            "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
+            "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
+            "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
+            "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
+            "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
+            "librt.so.1": "/lib/aarch64-linux-gnu/librt.so.1",
+            "libpthread.so.0": "/lib/aarch64-linux-gnu/libpthread.so.0",
+            "libgcc_s.so.1": "/lib/aarch64-linux-gnu/libgcc_s.so.1"
+          },
+          "not_found": [],
+          "note": "ldd's resolved library set with load addresses dropped; the raw output stays external"
+        },
         "native_cuBLAS": {
           "libcublas.so.13": {
             "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
@@ -1304,7 +1352,23 @@
           "build/spark-native/tests/unit/gemma_measurement_gpu_test": "20574af5314596184520222f1e1ca9da6d95583f06b6b7710fec6144a1bb61bd",
           "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
-        "native_ldd": "\tlinux-vdso.so.1 (0x0000f32607e1c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000f325feb70000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f325feac0000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000f325fa600000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000f325cd200000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f325fa440000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f32607de0000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f325cd1d0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f325cd1a0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f325cd170000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f325cd130000)\n",
+        "native_ldd": {
+          "resolved": {
+            "linux-vdso.so.1": "vdso",
+            "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
+            "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
+            "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
+            "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
+            "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
+            "librt.so.1": "/lib/aarch64-linux-gnu/librt.so.1",
+            "libpthread.so.0": "/lib/aarch64-linux-gnu/libpthread.so.0",
+            "libgcc_s.so.1": "/lib/aarch64-linux-gnu/libgcc_s.so.1"
+          },
+          "not_found": [],
+          "note": "ldd's resolved library set with load addresses dropped; the raw output stays external"
+        },
         "native_cuBLAS": {
           "libcublas.so.13": {
             "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
@@ -1359,7 +1423,23 @@
           "build/spark-native/tests/unit/gemma_measurement_gpu_test": "ef23bd4a254bc8360259c3a32b3e8f020612e20d587ade0d32c48df8d5820b7d",
           "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
-        "native_ldd": "\tlinux-vdso.so.1 (0x0000f937d5b89000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000f937cc8e0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f937cc830000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000f937c8200000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000f9379ae00000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f937c8040000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f937d5b40000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f937cc800000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f937cc7d0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f937cc7a0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f937cc760000)\n",
+        "native_ldd": {
+          "resolved": {
+            "linux-vdso.so.1": "vdso",
+            "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
+            "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
+            "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+            "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+            "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
+            "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
+            "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
+            "librt.so.1": "/lib/aarch64-linux-gnu/librt.so.1",
+            "libpthread.so.0": "/lib/aarch64-linux-gnu/libpthread.so.0",
+            "libgcc_s.so.1": "/lib/aarch64-linux-gnu/libgcc_s.so.1"
+          },
+          "not_found": [],
+          "note": "ldd's resolved library set with load addresses dropped; the raw output stays external"
+        },
         "native_cuBLAS": {
           "libcublas.so.13": {
             "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
@@ -1430,7 +1510,23 @@
               "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
             }
           },
-          "ldd": "\tlinux-vdso.so.1 (0x0000fd653439c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000fd652b0f0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000fd652b040000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000fd6526a00000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000fd64f9600000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000fd6526840000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fd6534360000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000fd652b010000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000fd652afe0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000fd652afb0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000fd652af70000)\n"
+          "ldd": {
+            "resolved": {
+              "linux-vdso.so.1": "vdso",
+              "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
+              "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
+              "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+              "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+              "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
+              "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
+              "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
+              "librt.so.1": "/lib/aarch64-linux-gnu/librt.so.1",
+              "libpthread.so.0": "/lib/aarch64-linux-gnu/libpthread.so.0",
+              "libgcc_s.so.1": "/lib/aarch64-linux-gnu/libgcc_s.so.1"
+            },
+            "not_found": [],
+            "note": "ldd's resolved library set with load addresses dropped; the raw output stays external"
+          }
         },
         "tests": [
           "GemmaMeasurementGpu.AllConfiguredCompositionsPreserveExactFunding"
@@ -1597,7 +1693,23 @@
           "build/spark-native/jitllm-receipt.json": "874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89"
         },
         "native_libraries": {
-          "ldd": "\tlinux-vdso.so.1 (0x0000f9f20047c000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000f9f1f6d60000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f9f1f6cb0000)\n\tlibcublas.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13 (0x0000f9f1f2800000)\n\tlibcublasLt.so.13 => /home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13 (0x0000f9f1c5400000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f9f1f2640000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f9f200430000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f9f1c53d0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f9f1c53a0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f9f1c5370000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f9f1c5330000)\n",
+          "ldd": {
+            "resolved": {
+              "linux-vdso.so.1": "vdso",
+              "libcuda.so.1": "/lib/aarch64-linux-gnu/libcuda.so.1",
+              "libm.so.6": "/lib/aarch64-linux-gnu/libm.so.6",
+              "libcublas.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",
+              "libcublasLt.so.13": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublasLt.so.13",
+              "libc.so.6": "/lib/aarch64-linux-gnu/libc.so.6",
+              "/lib/ld-linux-aarch64.so.1": "/lib/ld-linux-aarch64.so.1",
+              "libdl.so.2": "/lib/aarch64-linux-gnu/libdl.so.2",
+              "librt.so.1": "/lib/aarch64-linux-gnu/librt.so.1",
+              "libpthread.so.0": "/lib/aarch64-linux-gnu/libpthread.so.0",
+              "libgcc_s.so.1": "/lib/aarch64-linux-gnu/libgcc_s.so.1"
+            },
+            "not_found": [],
+            "note": "ldd's resolved library set with load addresses dropped; the raw output stays external"
+          },
           "cuBLAS": {
             "libcublas.so.13": {
               "first_resolved_path": "/home/pmeenan/src/jitLLM-wt/m3clean-main/build/spark-native/lib/jitllm/libcublas.so.13",

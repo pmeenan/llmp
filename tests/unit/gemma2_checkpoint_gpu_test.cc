@@ -7,10 +7,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <format>
 #include <memory>
+#include <string>
+#include <system_error>
 #include <tuple>
 #include <vector>
 
@@ -19,6 +22,7 @@
 #include "engine/gemma2_runner.h"
 #include "engine/support.h"
 #include "platform/kept_files.h"
+#include "tokenizer_fixtures.h"
 
 namespace en = jitllm::engine;
 class Gemma2CheckpointGpu : public ::testing::Test {
@@ -36,6 +40,11 @@ class Gemma2CheckpointGpu : public ::testing::Test {
   int spill_directory = -1;
   bool retired_primary = false, retirement_failed = false;
   virtual bool JoinedLookahead() const { return false; }
+  static std::filesystem::path Artifact() {
+    return jitllm::test_support::ModelsDir() +
+           "/gemma2-import-20261007/artifacts/"
+           "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
+  }
   static std::uint64_t HostFloor(const en::Gemma2Runner& model) {
     return model.host_input_bytes() + model.plan_floor_bytes() + (16ULL << 20U);
   }
@@ -44,27 +53,26 @@ class Gemma2CheckpointGpu : public ::testing::Test {
     auto& r = target.runner;
     r = std::make_unique<en::Gemma2Runner>(
         n,
-        en::Gemma2Options{
-            .artifact = "/home/pmeenan/.local/share/jitllm/gemma2-import-20261007/artifacts/"
-                        "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870",
-            .context = 8192,
-            .slots = 2,
-            .max_wave_rows = JoinedLookahead() ? 256U : 0U,
-            .max_head_rows = 2,
-            .owner_decode = true,
-            .packed_prefill = JoinedLookahead(),
-            .bounded_roots = JoinedLookahead(),
-            .fuse_norms = true,
-            .fuse_quant_glu = true,
-            .fuse_norm_rope = false,
-            .fuse_norm_add = true,
-            .spill_place =
-                [fd = spill_directory, keep](std::uint32_t slot) {
-                  return en::LiveState::SpillPlace{.directory = {},
-                                                   .dir = fd,
-                                                   .name = std::format("slot{}.kv", slot),
-                                                   .keep = keep};
-                }},
+        en::Gemma2Options{.artifact = Artifact(),
+                          .context = 8192,
+                          .slots = 2,
+                          .max_wave_rows = JoinedLookahead() ? 256U : 0U,
+                          .max_head_rows = 2,
+                          .owner_decode = true,
+                          .packed_prefill = JoinedLookahead(),
+                          .bounded_roots = JoinedLookahead(),
+                          .fuse_norms = true,
+                          .fuse_quant_glu = true,
+                          .fuse_norm_rope = false,
+                          .fuse_norm_add = true,
+                          .spill_place =
+                              [fd = spill_directory, keep](std::uint32_t slot) {
+                                return en::LiveState::SpillPlace{
+                                    .directory = {},
+                                    .dir = fd,
+                                    .name = std::format("slot{}.kv", slot),
+                                    .keep = keep};
+                              }},
         0, 0);
     if (auto x = n.Open(); !x) return x;
     target.entered.push_back(r.get());
@@ -82,7 +90,15 @@ class Gemma2CheckpointGpu : public ::testing::Test {
     return r->SelectSlots(std::array<std::uint32_t, 2>{0, 1});
   }
   void SetUp() override {
-    std::string name = "/home/pmeenan/.cache/jitllm-gemma2-checkpoint-XXXXXX";
+    std::error_code error;
+    if (!std::filesystem::exists(Artifact(), error)) {
+      GTEST_SKIP() << "no Gemma2 artifact in " << Artifact();
+    }
+    // Spill files need direct I/O: scratch in the build tree.
+    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const std::filesystem::path root = base != nullptr ? base : ::testing::TempDir();
+    std::filesystem::create_directories(root, error);
+    std::string name = (root / "gemma2-checkpoint-XXXXXX").string();
     ASSERT_NE(mkdtemp(name.data()), nullptr);
     scratch = name;
     auto opened = jitllm::platform::OpenPrivateDirectory(-1, scratch.c_str());
@@ -99,6 +115,7 @@ class Gemma2CheckpointGpu : public ::testing::Test {
     return retired;
   }
   void TearDown() override {
+    if (scratch.empty()) return;  // skipped, or never set up
     if (!retired_primary) {
       const auto retired = RetirePrimary();
       EXPECT_TRUE(retired) << (retired ? "" : retired.error());

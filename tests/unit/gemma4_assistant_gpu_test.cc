@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <system_error>
 #include <tuple>
 #include <vector>
 
@@ -16,6 +18,7 @@
 #include "engine/gemma4_assistant.h"
 #include "engine/support.h"
 #include "tokenizer/gguf.h"
+#include "tokenizer_fixtures.h"
 
 namespace {
 namespace en = jitllm::engine;
@@ -79,14 +82,21 @@ class Gemma4AssistantGpu : public ::testing::Test {
   virtual std::uint32_t MaxRows() const { return 128; }
   virtual bool CaptureAhead() const { return false; }
   void SetUp() override {
-    const auto store = std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts");
+    const auto store = std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts";
     const auto target = store / "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
     const auto path = store / "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42";
+    if (std::error_code error;
+        !std::filesystem::exists(target, error) || !std::filesystem::exists(path, error)) {
+      GTEST_SKIP() << "no Gemma 4 26B target and assistant in " << store;
+    }
+    // Spill files need direct I/O: scratch in the build tree.
+    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const std::filesystem::path root = scratch != nullptr ? scratch : ::testing::TempDir();
     ASSERT_TRUE(node.Open());
     runner = std::make_unique<en::Gemma4Runner>(
         node,
         en::Gemma4Options{.artifact = target,
-                          .out = "/tmp/jitllm-gemma-assistant-control",
+                          .out = root / "gemma-assistant-control",
                           .max_rows = MaxRows(),
                           .slots = 2,
                           .retain_features = true,

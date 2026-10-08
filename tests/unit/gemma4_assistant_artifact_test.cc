@@ -11,11 +11,13 @@
 #include <iterator>
 #include <span>
 #include <string>
+#include <system_error>
 
 #include "artifact/artifact.h"
 #include "artifact/gguf_metadata.h"
 #include "model/gemma4_assistant.h"
 #include "tokenizer/gguf.h"
+#include "tokenizer_fixtures.h"
 
 namespace md = jitllm::model;
 namespace ar = jitllm::artifact;
@@ -30,8 +32,11 @@ constexpr std::array target_files{"gemma-4-26B-A4B-it-UD-Q4_K_M.kv.gguf",
 constexpr std::array assistant_files{"mtp-gemma-4-26B-A4B-it.kv.gguf",
                                      "mtp-gemma-4-31B-it.kv.gguf"};
 std::filesystem::path Store() {
-  const auto* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
-  return std::filesystem::path(home ? home : "") / ".local/share/jitllm/m3-artifacts";
+  return std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts";
+}
+bool Present(const std::filesystem::path& path) {
+  std::error_code error;
+  return std::filesystem::exists(path, error);
 }
 std::filesystem::path AssistantMetadata() {
   const auto* root = std::getenv("JITLLM_ASSISTANT_METADATA");  // NOLINT(concurrency-mt-unsafe)
@@ -76,6 +81,9 @@ class Gemma4AssistantArtifact : public ::testing::TestWithParam<unsigned> {};
 TEST_P(Gemma4AssistantArtifact, ActualNativeVocabularyAndKeptSemanticsMatchPairedTarget) {
   const auto i = GetParam();
   const auto& profile = i == 0 ? md::Gemma4Assistant26() : md::Gemma4Assistant31();
+  if (!Present(Store() / targets[i]) || !Present(AssistantMetadata() / assistants[i])) {
+    GTEST_SKIP() << "no Gemma 4 target and assistant in " << Store();
+  }
   const auto target = Read(Store() / targets[i] / "meta" / target_files[i]);
   const auto assistant = Read(AssistantMetadata() / assistants[i] / "meta" / assistant_files[i]);
   ASSERT_TRUE(target) << (target ? "" : target.error());
@@ -99,6 +107,9 @@ TEST_P(Gemma4AssistantArtifact, ActualNativeVocabularyAndKeptSemanticsMatchPaire
 TEST_P(Gemma4AssistantArtifact, ActualCompleteArtifactBindsOnlyToItsClosedTarget) {
   const auto i = GetParam();
   const auto& profile = i == 0 ? md::Gemma4Assistant26() : md::Gemma4Assistant31();
+  if (!Present(Store() / targets[i]) || !Present(Store() / assistants[i])) {
+    GTEST_SKIP() << "no Gemma 4 target and assistant in " << Store();
+  }
   const auto target = ar::Artifact::Open(Store() / targets[i]);
   const auto assistant = ar::Artifact::Open(Store() / assistants[i]);
   ASSERT_TRUE(target);

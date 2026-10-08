@@ -6,12 +6,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <span>
+#include <system_error>
 #include <tuple>
 #include <vector>
 
@@ -22,6 +24,7 @@
 #include "engine/support.h"
 #include "execution/sampling.h"
 #include "tokenizer/gguf.h"
+#include "tokenizer_fixtures.h"
 
 namespace en = jitllm::engine;
 namespace base = jitllm::base;
@@ -58,15 +61,32 @@ std::expected<Vocabulary, std::string> Decode(const ar::Artifact& artifact,
 
 class Gemma4GreedyGpu : public ::testing::TestWithParam<en::Gemma4Variant> {
  protected:
+  std::filesystem::path Artifact() const {
+    return std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts" /
+           (GetParam() == en::Gemma4Variant::k31B
+                ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+                : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
+  }
+  std::filesystem::path AssistantArtifact() const {
+    return Artifact().parent_path() /
+           (GetParam() == en::Gemma4Variant::k31B
+                ? "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120"
+                : "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42");
+  }
+  void SetUp() override {
+    if (std::error_code error; !std::filesystem::exists(Artifact(), error) ||
+                               !std::filesystem::exists(AssistantArtifact(), error)) {
+      GTEST_SKIP() << "no Gemma 4 target and assistant in " << Artifact().parent_path();
+    }
+  }
   void Start() {
-    const auto artifact =
-        std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts") /
-        (GetParam() == en::Gemma4Variant::k31B
-             ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
-             : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
+    const auto artifact = Artifact();
     ASSERT_TRUE(std::filesystem::exists(artifact));
+    // Spill files need direct I/O: scratch in the build tree.
+    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const std::filesystem::path root = scratch != nullptr ? scratch : ::testing::TempDir();
     en::Gemma4Options options{.artifact = artifact,
-                              .out = "/tmp/jitllm-gemma4-greedy-control",
+                              .out = root / "gemma4-greedy-control",
                               .variant = GetParam(),
                               .context = 1536,
                               .max_rows = 16,
@@ -81,11 +101,7 @@ class Gemma4GreedyGpu : public ::testing::TestWithParam<en::Gemma4Variant> {
     // before growth. State payload diagnostics use separately cataloged pinned
     // memory, not uncharged vector copies.
     ASSERT_TRUE(runner->Setup());
-    const auto assistant_path =
-        artifact.parent_path() /
-        (GetParam() == en::Gemma4Variant::k31B
-             ? "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120"
-             : "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42");
+    const auto assistant_path = AssistantArtifact();
     // Actual token/merge/score/type containers are funded before parsing and
     // destroyed before this admission grant is returned. No raw checkpoint.
     {

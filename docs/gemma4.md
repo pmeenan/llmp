@@ -8,9 +8,16 @@ fixed profiles, strict GGML artifact bindings, bounded state layouts,
 initialized read/write footprints and independent request-segment inputs.
 The segmented GGML graph, checked plan adapter and bounded native 26B-A4B/31B
 engine runner described below extend this foundation. Both approved profiles
-have bounded serving routes, with a checked dense31 optimized recipe at 8K/four slots; assistants remain unavailable. Both
-checkpoints remain unsupported
-in the [support matrix](model-support.md); the family task remains open.
+have bounded serving routes, with a checked dense31 optimized recipe at 8K/four slots; assistants remain unavailable. The
+[support matrix](model-support.md#gemma-4-26b-a4b-and-31b) lists both as
+served on bounded routes with no support level verified; the family task
+remains open.
+
+**Being replaced (M3.6, D-107).** The per-family profile, graph and runner
+described here give way to one engine of shared components over jitLLM's own
+graph IR ([engine-components.md](engine-components.md)); M3.5, and with it
+this family task, is parked until M3.6 exits. This file describes the code as
+it is, and changes as each piece lands.
 
 ## Verified contracts
 
@@ -561,19 +568,25 @@ quality or optimized batching support.
 
 ## Required execution and optimization qualification
 
-Every family/quant must adopt applicable selected Qwen/DeepSeek techniques
-and qualify optimized batching before supported status. The
-[optimization inventory](optimization-inventory.md) remains authoritative.
-For these actual GGUF files the next slices owe:
+**Retired transfers (M3.6, D-107).** The per-family transfer rule this
+section followed is withdrawn: each technique lands once in M3.6's shared
+engine ([engine-components.md](engine-components.md#retired-transfer-items)),
+and the Gemma 4 runner migrates to it under the matched 1% gate. The table
+records each technique's eligibility and the qualification it needs on these
+GGUF files, as it stood when M3.5 was parked; it is not a list of owed
+per-family slices. Supported status still needs optimized batching and the
+quality, state and memory qualifications below. The
+[optimization inventory](optimization-inventory.md) remains the catalog of
+techniques and measurements.
 
-| Transfer or contract | Eligibility and required qualification |
+| Technique or contract | Eligibility and required qualification |
 | --- | --- |
 | Primitive completeness | Split F32 GeGLU and packed F32 GELU-tanh fallbacks are checked. The graph integrates these primitives, preserving RMSNorm/scale, V norm, sandwich order, softcap/tanh and full-width proportional RoPE. Bounded dense31 now selects upstream's fused one-column quantized gate/up/GeGLU, with primitive fallback and no row-invariant selection; the floating MMVF and standalone quantized activation writers remain separate opt-ins. Actual-width primitive controls alone do not establish model quality or speed. |
 | Q5_1 expert down | [Legacy primitive controls](experiments/m35-legacy-quants/README.md) cover ordinary/routed products, row-preserving and joined columns at K704/N2816/top-eight routes. Synthetic overlap measurements retain ordinary MMVQ where faster; model routing, selected dispatch, prefill and the last-layer Q8_0 execution remain to be qualified. Do not select a Q2_K or IQ2 kernel by analogy. |
 | Shared input preparation | Reuse eligible Q8_1 preparation across ordinary Q8/K-quant products and fused gate/up reads, retaining maps/strides and Gemma's router and GeGLU arithmetic. DeepSeek's SwiGLU activation writer cannot transfer unchanged. |
 | Routed prefill scheduling | Check compact expert-major tiles and full-K arithmetic for Q4_K fused gate/up and Q5_1 down at actual shapes/chunk sizes; keep only qualified speed/memory winners. Raw expert groups must remain authoritative for later paging. |
 | Attention and device masks | The graph keeps checked local D256/GQA2 vector/MMA and global D512/GQA8 attention separate. Local primitives have ring-mask, shape-selection and scratch controls. Checked per-segment device mask production preserves fresh positions and independent caches. Bounded production recipes qualify their C1/C4 model dispatch; broader shapes and contexts remain open. Preserve independent caches and scale1.0; never invent sparse global attention. |
-| Join products across requests | Apply Qwen/DeepSeek joined dense/routed/head products when operand/quant contracts fit. Preserve per-segment outputs, original one-token sums, stable route pair order and separate attention/state. Qualify scalar versus joined logits/state and departed/cancelled slots. |
+| Join products across requests | Joined dense/routed/head products, as Qwen/DeepSeek use them, apply when operand/quant contracts fit. Preserve per-segment outputs, original one-token sums, stable route pair order and separate attention/state. Qualify scalar versus joined logits/state and departed/cancelled slots. |
 | Lanes, graphs and lifetimes | Reuse request cohorts, completion-aware leases, stable-address graphs, charged per-lane scratch and hazard ordering. Shape/read-alignment choices must back padded cells and preserve exact continuation across capture/replay, spill/restore and time-slicing. |
 | Bounded state and staging | Use initialized read/write footprints, growing extents, bounded host inputs, shared maximum workspace and separately owned slot state; measure peak memory for solo and batched envelopes at context boundaries. |
 | Assistant and draft policy | Checked Q-only bindings, native components, target verification and bounded greedy transactions exist, distinct from Qwen MTP or DSpark recurrence. Assistant serving, sampled acceptance, broader prefixes/owners and sustained qualification remain open. Qualify shared target-cache ownership, canonical head IDs and overwritten-ring rollback before transferring adaptive depth or selected-head optimizations. |

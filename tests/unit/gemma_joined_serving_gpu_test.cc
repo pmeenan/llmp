@@ -8,12 +8,15 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <string>
+#include <system_error>
 #include <tuple>
 #include <vector>
 
@@ -28,10 +31,23 @@ namespace cfg = jitllm::config;
 class GemmaJoinedGpu : public ::testing::TestWithParam<std::uint32_t> {
  protected:
   void SetUp() override {
-    std::string name = "/home/pmeenan/.cache/jitllm-gemma-serving-XXXXXX";
+    const auto installed =
+        std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts";
+    const char* artifact = GetParam() == 26
+                               ? "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
+                               : "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08";
+    if (std::error_code error; !std::filesystem::exists(installed / artifact, error)) {
+      GTEST_SKIP() << "no Gemma 4 artifact in " << installed;
+    }
+    // Spill files need direct I/O: scratch in the build tree.
+    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const std::filesystem::path root = base != nullptr ? base : ::testing::TempDir();
+    std::error_code error;
+    std::filesystem::create_directories(root, error);
+    std::string name = (root / "gemma-serving-XXXXXX").string();
     ASSERT_NE(mkdtemp(name.data()), nullptr);
     scratch = name;
-    roles.installed = "/home/pmeenan/.local/share/jitllm/m3-artifacts";
+    roles.installed = installed;
     roles.spill = scratch / "spill";
     roles.state = scratch / "state";
     std::filesystem::create_directory(roles.spill);
@@ -40,9 +56,7 @@ class GemmaJoinedGpu : public ::testing::TestWithParam<std::uint32_t> {
     ASSERT_EQ(chmod(roles.state.c_str(), 0700), 0);
     cfg::ModelEntry entry;
     entry.name = "gemma";
-    entry.artifact = GetParam() == 26
-                         ? "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
-                         : "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08";
+    entry.artifact = artifact;
     entry.overrides["context"] = std::int64_t{4096};
     entry.overrides["prefill_chunk"] = std::int64_t{16};
     entry.overrides["max_slots"] = std::int64_t{12};
@@ -92,7 +106,7 @@ class GemmaJoinedGpu : public ::testing::TestWithParam<std::uint32_t> {
         return;
       }
     }
-    std::filesystem::remove_all(scratch);
+    if (!scratch.empty()) std::filesystem::remove_all(scratch);
   }
   struct HostCopies {
     HostCopies(en::PagedNode& owner, std::uint64_t capacity)

@@ -76,8 +76,10 @@ sinks bound (RE-030).
 
 ## Standalone Gemma routing and scaled reduction
 
-- **Status:** native availability only; no upstream numerical change or new
-  Gemma graph selection.
+- **Status:** no upstream numerical change. The bounded Gemma26 serving
+  recipe selects both units: jitLLM's graph plan matches the routing and
+  reduction subgraphs and dispatches them to the unchanged
+  `ggml_cuda_op_topk_moe` and `ggml_cuda_op_moe_weighted_reduction`.
 - **jitLLM change:** build patch 0002 adds the pinned original `topk-moe.cu`
   and `moe-weighted-reduction.cu` to the existing CUDA target, preserving
   its fast-math flags and MIT notices. The source lock records their compiled

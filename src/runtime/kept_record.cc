@@ -497,7 +497,7 @@ std::string Encode(const Record& r) {
 }
 
 std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* memory,
-                                          MemoryCharge* token_charge) {
+                                          MemoryCharge* token_charge, bool* memory_refused) {
   if (text.size() > kMostRecordBytes) {
     return Bad("it is larger than any record");
   }
@@ -607,6 +607,9 @@ std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* 
   }
   if (memory != nullptr && token_charge != nullptr) {
     if (!ReserveTokenStorage(r.tokens, *token_charge, *memory, tokens.size())) {
+      if (memory_refused != nullptr) {
+        *memory_refused = true;
+      }
       return Bad("its token history exceeds available memory");
     }
   } else {

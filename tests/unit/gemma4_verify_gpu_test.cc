@@ -6,31 +6,44 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
 #include <numeric>
 #include <span>
+#include <system_error>
 #include <tuple>
 #include <vector>
 
 #include "base/sha256.h"
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
+#include "tokenizer_fixtures.h"
 
 namespace en = jitllm::engine;
 namespace base = jitllm::base;
 class Gemma4VerifyGpu : public ::testing::TestWithParam<en::Gemma4Variant> {
  protected:
+  std::filesystem::path Artifact() const {
+    return std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts" /
+           (GetParam() == en::Gemma4Variant::k31B
+                ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+                : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
+  }
+  void SetUp() override {
+    if (std::error_code error; !std::filesystem::exists(Artifact(), error)) {
+      GTEST_SKIP() << "no Gemma 4 artifact in " << Artifact().parent_path();
+    }
+  }
   void Start(bool invariant = false) {
-    const auto artifact =
-        std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts") /
-        (GetParam() == en::Gemma4Variant::k31B
-             ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
-             : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
+    const auto artifact = Artifact();
     ASSERT_TRUE(std::filesystem::exists(artifact));
+    // Spill files need direct I/O: scratch in the build tree.
+    const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const std::filesystem::path root = scratch != nullptr ? scratch : ::testing::TempDir();
     en::Gemma4Options options{.artifact = artifact,
-                              .out = "/tmp/jitllm-gemma4-verify-control",
+                              .out = root / "gemma4-verify-control",
                               .variant = GetParam(),
                               .context = 1536,
                               .max_rows = 16,

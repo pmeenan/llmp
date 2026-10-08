@@ -31,6 +31,10 @@ time. Shared prompt-completion first-token publication remains open.
   ([runtime-serving](runtime-serving.md)). The LLMs also serve native Chat
   Completions and literal Completions on loopback and the tailnet. M3 acceptance is
   recorded per profile in the [M3 record](m3-record.md).
+- **Served (M3.5, bounded):** registered and served the same way, but only
+  inside the bounded envelope its section states, which the runtime enforces
+  by refusing larger settings. These rows come from M3.5's family work, which
+  is parked; they are not in M3's swap table.
 - **Harness-only:** runs only in a benchmark harness under `benchmarks/`.
 - **Fixture:** a small M2 test model, harness-only, never served.
 
@@ -41,6 +45,11 @@ evidence reaches. Performance-validated means a milestone exit judged it;
 an accepted milestone speed exception does not establish measured parity.
 The [M3 record](m3-record.md) keeps the remaining Qwen/DeepSeek gaps and
 the owner's M9 deferral beside the qualification evidence.
+
+M3.6 (D-107) moves every model below onto one engine of shared components,
+each judged against its current implementation by the matched 1% gate
+([engine-components.md](engine-components.md#migration-and-its-gate)); a row
+changes only when its evidence does.
 
 The native GGML dependency now uses llama.cpp v0.6.0 (`d8123504`, GGML
 0.26.0); its [integration checks](experiments/ggml-release-refresh/README.md)
@@ -60,6 +69,9 @@ are recorded separately as they complete.
 | [Qwen3.8 MTP](#qwen38-mtp) | drafter | Served (M3), with its target | paged-correct |
 | [Qwen3.8 Flash Next GGUF](#qwen38-flash-next-gguf) UD-IQ3_XXS | target | Served (runtime registers it; not in the swap table) | resident-correct against llama.cpp on the same GGUF; paged through the runtime |
 | [Qwen-Image-2.1](#qwen-image-21) BF16 | composition of 3 components | Served (M3), one prompt a process | paged-correct |
+| [Gemma 2 2B](#gemma-2-2b) Q8_0 | target | Served (M3.5, bounded): context 8,192, one or two slots | not verified; bounded controls only (below) |
+| [Gemma 3 4B QAT](#gemma-3-4b-qat) Q4_0 | target | Served (M3.5, bounded): context 4,096 with one or two slots, or 8,448 with one | not verified; bounded controls only (below) |
+| [Gemma 4 26B-A4B](#gemma-4-26b-a4b-and-31b) UD-Q4_K_M and [31B](#gemma-4-26b-a4b-and-31b) UD-Q4_K_XL | target | Served (M3.5, bounded): optimized recipe at context 8,192 and four slots; scalar route beyond | not verified; bounded controls only (below) |
 | [Qwen2.5-0.5B-Instruct FP16](#m2-fixtures) | fixture | Fixture | paged-correct |
 | [Qwen2.5-0.5B-Instruct EXL3](#m2-fixtures) 4.0 and 4.5 bpw | fixtures | Fixture | paged-correct |
 
@@ -416,6 +428,9 @@ hashes the model files on a Spark).
 | DeepSeek V4 community IQ2_XXS | `872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27` | The community GGUF's `tokenizer.chat_template` ("chat-v2", 5,016 bytes), kept in artifact `cd39d504…`'s GGUF metadata | `deepseek-v4-flash-chat-v2`; `<｜end▁of▁sentence｜>` |
 | Qwen3.8 Flash Next | `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041` | `chat_template.jinja` of `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` (pinned in [pins.json](experiments/fast-swap/pins.json); the MLX baseline ships the same bytes) | `qwen3.8-flash-next`; `<\|im_end\|>`, `<\|endoftext\|>` |
 | Qwen3.8 Unsloth GGUFs (Flash Next, 27B) | none pinned; `12827f24…` today | The GGUFs' `tokenizer.chat_template`, Unsloth's variant | `qwen3.8-flash-next-unsloth` by probe equivalence; `<\|im_end\|>`, `<\|endoftext\|>` |
+| Gemma 2 2B Q8_0 | `ecd6ae513fe103f0eb62e8ab5bfa8d0fe45c1074fa398b089c93a7e70c15cfd6` (no renderer) | The approved GGUF's `tokenizer.chat_template` (591 bytes), kept in the artifact ([gemma2.md](gemma2.md#serving-admission-foundation)) | the Jinja-subset interpreter; end-of-turn 107 and EOS 1 |
+| Gemma 3 4B QAT | `7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4` | The approved GGUF's stored template ([HTTP controls](experiments/gemma3-execution/README.md#http-lifecycle-and-retained-conversations)); the same bytes as `unsloth/gemma-3-4b-it@bf46152c`'s ([tokenizer.md](tokenizer.md#chat-templates)) | `gemma-3`; `<end_of_turn>` |
+| Gemma 4 26B-A4B and 31B | `845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b` (no pinned renderer hash) | Both approved Unsloth GGUFs' `tokenizer.chat_template` (18,924 bytes), kept in the artifacts ([gemma31-serving](experiments/gemma31-serving/README.md#identities-and-memory)) | `gemma-4-unsloth` by probe equivalence; `<turn\|>`, `<\|tool_response>` |
 | Qwen-Image-2.1 | none: the prompt is diffusers `8b3c707e`'s fixed text-to-image string, not a chat template | — | `RenderQwenImagePrompt`; drops the 14 system-turn tokens |
 
 Templates with no native renderer, which render through the interpreter
@@ -848,6 +863,105 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 - **Known divergences:** jitLLM rounds differently from diffusers'
   BF16 (bounded, above). The operations run through a plan bound against
   the implementation registry (D-053, `kernels/image/pipeline.h`).
+
+## Gemma 2 2B
+
+- **Architecture:** Gemma 2 (`model/gemma2.h`), a closed profile with a
+  checked binding of all 288 actual tensors ([gemma2.md](gemma2.md)).
+- **Checkpoint:** `bartowski/gemma-2-2b-it-GGUF@855f67ca`,
+  `gemma-2-2b-it-Q8_0.gguf`, 2,784,495,456 bytes.
+- **Artifact:** v0 `eb18d30d…`, deep-verified
+  ([gemma2-execution](experiments/gemma2-execution/README.md)).
+- **Template:** `ecd6ae51…` (above), through the interpreter; it refuses a
+  system message.
+- **Tokenizer:** classic SentencePiece from the GGUF (256,000 tokens);
+  184 of 184 corpus encodings equal pinned llama.cpp's
+  ([tokenizer.md](tokenizer.md)).
+- **Decoding:** greedy (device greedy), plain; chat and literal completions
+  and target likelihoods. Drafters, speculation, generated tools and thinking
+  are refused. Seeded sampling: not verified for this model.
+- **Envelope:** context at most 8,192, prompt chunks of at most 128 rows per
+  owner, one or two slots (default 8,192/128/1), with a separately funded
+  256-row joined prefill wave
+  ([gemma2-serving](experiments/gemma2-serving/README.md)).
+- **Verified:** all 33 stock full heads byte for byte in a representative C1
+  control; 76/76 exact stock full heads on the first 256/768-prefix serving
+  screen; five HTTP cases (scoring and repeats, chat/SSE/stops, refusal
+  recovery, departed-peer progress, two kept conversations replayed exactly
+  after restart); a near-8K model-switch control (8,063 saved tokens, exact
+  initialized state and 64 continuation tokens after returns from Qwen3.8;
+  [near-8K swaps](experiments/gemma-near8k-swaps/README.md)). Broader context,
+  memory/swap and sustained qualification: not verified.
+- **Known divergences:** speed against stock llama.cpp is recorded per
+  screen in [gemma2.md](gemma2.md); no parity claim.
+
+## Gemma 3 4B QAT
+
+- **Architecture:** Gemma 3 (`model/gemma3.h`), a checked profile and strict
+  binding ([gemma3.md](gemma3.md)).
+- **Checkpoint:** `ggml-org/gemma-3-4b-it-qat-GGUF@bbcac0d0`,
+  `gemma-3-4b-it-qat-Q4_0.gguf`, 2,526,080,992 bytes.
+- **Artifact:** v0 `8c710341…`, deep-verified
+  ([gemma3-execution](experiments/gemma3-execution/README.md)).
+- **Template:** `7de1c58e…` (above), native.
+- **Tokenizer:** classic SentencePiece from the GGUF (262,208 tokens);
+  184 of 184 corpus encodings equal pinned llama.cpp's.
+- **Decoding:** greedy (device greedy), plain; chat and literal completions,
+  scoring. Speculation is refused. Seeded sampling: not verified for this
+  model.
+- **Envelope:** prompt chunks of at most 128 rows, one or two slots at
+  context at most 4,096 (default 4,096/128/1), or one slot at an explicit
+  context up to 8,448; larger contexts and more slots refuse
+  ([runtime-serving](runtime-serving.md)).
+- **Verified:** with checked norm chains, all 33 bounded stock heads exactly;
+  HTTP lifecycle, kept conversations across restart and a public scalar 8K
+  gate with one Gemma3/Qwen model-switch pair (8,192 saved tokens, 64
+  continuation tokens) pass
+  ([gemma3-execution](experiments/gemma3-execution/README.md#public-scalar-8k-and-one-model-switch-pair-2026-10-07)).
+  Corpus/retrieval quality, maximum context, broader cohorts and sustained
+  memory/swap: not verified.
+- **Known divergences:** a short matched C2 cycle 1.49% above stock
+  ([gemma3.md](gemma3.md)); no parity claim.
+
+## Gemma 4 26B-A4B and 31B
+
+- **Architecture:** Gemma 4 (`model/gemma4.h`): 26B-A4B mixture of experts
+  and 31B dense, checked profiles and strict bindings
+  ([gemma4.md](gemma4.md)).
+- **Checkpoints:** `unsloth/gemma-4-26B-A4B-it-GGUF@c099eb48`
+  `gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`; `unsloth/gemma-4-31B-it-GGUF@c1ac76e9`
+  `gemma-4-31B-it-UD-Q4_K_XL.gguf`.
+- **Artifacts:** v0 `4ddb360c…` (26B-A4B) and `32c92e07…` (31B)
+  ([gemma31-serving](experiments/gemma31-serving/README.md#identities-and-memory)).
+- **Template:** `845f1ee4…` (above), native by probe; plain chat disables
+  thinking.
+- **Tokenizer:** Gemma 4 raw UTF-8 BPE from the GGUF (262,144 tokens in
+  both profiles); on the 26B-A4B's metadata, 184 of 184 corpus encodings
+  equal pinned llama.cpp's.
+- **Decoding:** greedy (device greedy) and seeded sampling, plain; chat and
+  literal completions and target likelihoods. Generated thought and tool
+  calls, assistants and speculation are refused.
+- **Envelope:** at context at most 8,192 and at most four slots, each
+  profile selects its checked optimized recipe (joined serving, norm chains
+  and owner attention; 26B-A4B adds MoE route/reduce and 1,024-row prefill);
+  larger configurations keep the scalar route with 128-row chunks, up to
+  twelve independent owners
+  ([dense31 bridge](experiments/gemma31-serving-bridge/README.md),
+  [Gemma26 recipe](experiments/gemma26-production/README.md)).
+- **Verified:** seeded histories and own frontier rows agree across solo and
+  1–12 scalar owners, with rollback, spill, kept restart and cross-profile
+  switch controls ([gemma31-serving](experiments/gemma31-serving/README.md));
+  31B's C1/C4 8K continuations have zero predicted-ID differences and its
+  1,024-row corpus complete head parity; 26B-A4B reproduces stock's exact
+  tokens and byte-identical 1,024-row corpus heads; near-8K model-switch
+  controls pass for both
+  ([near-8K swaps](experiments/gemma-near8k-swaps/README.md)). Sustained
+  performance, broad semantic quality, assistants and long context: not
+  verified.
+- **Known divergences:** 31B's whole serving cycles 0.73%/1.36% (C1/C4) slower
+  than the reference after [gap closing](experiments/gemma-gap-closing/README.md);
+  26B-A4B's C1/C4 within 0.6% of stock. Earlier scalar screens' quality
+  failures stay recorded in [gemma4.md](gemma4.md).
 
 ## M2 fixtures
 

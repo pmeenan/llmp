@@ -273,80 +273,36 @@ inserted [M3.6](docs/plan.md): one engine of shared components over
 jitLLM's own graph IR, a format layer that keeps weights compressed, a
 native importer, and every current model migrated within 1% of its current
 speed ([design](docs/engine-components.md), D-107 to D-110). M3.5's
-remaining families, formats and pipelines resume on that engine; the
-status below is M3.5's at `cc70d69`.
-[Gemma31 gap closing](docs/experiments/gemma-gap-closing/README.md) narrowed the
-bounded serving gap to stock from 3.15%/3.51% (C1/C4) to 0.73%/1.36%. It did
-this with state reuse across Clear, graph capture beside eager execution and
-the fused decode FFN; the remaining gap is mostly C4's four-owner decode. A
-[bounded Gemma26 recipe](docs/experiments/gemma26-production/README.md) reaches
-stock parity (within 0.6%) with stock's exact tokens. The
-[decode hot path](docs/experiments/decode-hot-path/README.md) then runs request
-steps on the driver (D-106) with no scheduler call per step, and plain
-non-speculative greedy decode picks tokens on the GPU across LLM families:
-decode step round trips fall to 6–11 µs (Gemma controls; every model takes
-the path).
+remaining families, formats, batching gaps, media inputs, Clef/Jev and
+media generation routes (D-101) resume on that engine; its status at
+`cc70d69` is in [plan.md](docs/plan.md) and [model-support.md](docs/model-support.md).
+
 The runtime serves Chat Completions and literal Completions with target
 likelihoods on loopback and the tailnet. DeepSeek V4 Flash, Qwen3.8 Flash
 Next (native NVFP4/MXFP8 and checked GGUF) and Qwen-Image-2.1 execute with
-paging, initialized-state spill/restore and stable-address graphs. Both
-LLMs batch chat and literal completions; pending model switches time-slice
-at completed units and resume exact continuations. Active responses keep
-making progress while new same-model requests wait for slots.
+paging, initialized-state spill/restore and stable-address graphs; Gemma2
+2B, Gemma3 4B QAT and Gemma4 26B-A4B/31B serve on bounded routes. LLMs
+batch chat and literal completions; pending model switches time-slice at
+completed units and resume exact continuations. Request steps run on the
+driver (D-106), and plain greedy decode picks tokens on the GPU.
 
 The final 32-row/six-pair production swap table passes: worst prepared LLM
-swap 9.853 s against the 20 s bound, exact 8K states and continuations,
-retained/replayed graphs and exact images. The standard OpenAI client gate
-passes. Both LLMs execute to 262K; DeepSeek also completes the measured 1M
-profile. Long retrieval, turn reuse and continuing-context swaps pass in
-[final context](docs/experiments/m3-final-context/README.md).
+swap 9.853 s against the 20 s bound (8.53 s LLM-to-LLM since the
+[lazy handoff](docs/experiments/vmm-batching/README.md)), exact 8K states
+and continuations, retained/replayed graphs and exact images. The standard
+OpenAI client gate passes. Both M3 LLMs execute to 262K; DeepSeek also
+completes the measured 1M profile
+([final context](docs/experiments/m3-final-context/README.md)).
 
 The owner accepts the remaining Qwen/DeepSeek speed gaps for M3 and defers
-further tuning to **M9's full-engine optimization pass** (2026-10-04);
-optimizations found on any family, new kernels and fusions included, were
-ported to Qwen/DeepSeek as they were found (2026-10-07) until D-107 made
-each land once in the shared engine (2026-10-08).
-The latest matched Qwen C4 rate is about 15% below fast Mia; the gap and
-long-context misses remain measurements, not parity passes. Quality,
-memory and exact-state requirements remain unchanged. The
+further tuning to **M9's full-engine optimization pass** (2026-10-04).
+Bounded Gemma31 cycles are 0.73%/1.36% (C1/C4) slower than stock and
+Gemma26's within 0.6%. The
 [M3 record](docs/m3-record.md) retains the task history, qualified profiles,
 exceptions, checks and later work; [optimization status](docs/m3-optimization-status.md)
-retains the detailed comparisons and unadopted leads. The current Qwen
-four-slot numerical control, 1,567-test Spark suite, ARM cross/qemu suite
-and package install/purge fixture pass. Whole shipment tiers remain owed
-before publishing a package.
-
-M3.5 (parked). A [lazy handoff](docs/experiments/vmm-batching/README.md)
-(D-033 amended) moves swap unmaps beside page-in reads: the same 32-swap table
-now peaks at 8.53 s LLM-to-LLM, 3.7 s into the image; a bounded handle
-reserve and device zero-fill cut cold state growth 38%. Native token histories now have explicit capacity
-charges and idle reclaim; both M3 LLMs retain exact 8K continuations.
-Gemma 4 has checked profiles, bindings, bounded independent-slot state and
-bounded serving for both approved profiles. Both select their checked
-8K/four-slot joined recipes; larger envelopes retain the scalar route.
-Gemma3 4B QAT keeps its 4K default/two-slot route and admits explicit 8448
-context with one slot; checked 8K boundary and model-switch state gates
-complement its ring, checkpoint/restore and restart-adoption controls.
-[Gemma2 2B](docs/gemma2.md) has bounded 8K/two-slot serving with GPU masks, checked cap50
-compatible prefill, template refusal and restart replay. Gemma2/Gemma3 now
-read actual K/V roots for compatible joined 2–128-row prefill and partial
-tails, removing packing copies;
-[focused comparisons](docs/experiments/gemma-prefill-copies/README.md) improve
-prefill 8.7%/2.9%, with fresh Gemma2 stock bookends level and exact outputs.
-The later 64-row transfer improves native prefill 10.5%/2.8%; fresh stock
-bookends leave Gemma2 level and Gemma3 1.8% slower on the paid cycle.
-Larger rows, mixed-width roots/cohorts and broader sustained gates remain open.
-The retroactive optimization inventory audit is complete; its implementation
-backlog was retired to M3.6's shared engine (D-107). The internal partial-weight foundation preserves
-exact recovery
-and reduces prepared swap reads, but its cold-switch gate remains open and
-ordinary serving keeps full swaps. Qwen native/GGUF causal masks and headed
-native MTP masks now share the GPU producer, with exact heads/state and joined
-spill/restore controls. Then come approved model checkpoints, legacy fixtures,
-Bonsai, formats with
-EXL3 in focus, the remaining batching gaps (the skeleton gaps moved to
-M3.6), media file inputs,
-Clef/Clef-flash over the Jev API and media generation routes (D-101).
-That scope includes batching compatible decision and image requests/phases.
-[Plan](docs/plan.md), [family set](docs/m35-families.md). M4 follows on two
-Sparks; [reference engines](docs/m4-references.md) are re-pinned at entry.
+the detailed comparisons and unadopted leads; the experiment reports under
+`docs/experiments/` the evidence. M3's final checks (1,567-test Spark
+suite, ARM cross/qemu suite, package install/purge fixture) pass;
+whole shipment tiers remain owed before publishing a package. M4 follows
+on two Sparks; [reference engines](docs/m4-references.md) are re-pinned at
+entry.

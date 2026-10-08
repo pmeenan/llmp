@@ -854,100 +854,586 @@
   ],
   "scope": "Approved Gemma31 C1/C4 bounded8K fixed128-wave complete-serving cycles and independent current1024 scalar corpus; naturalHTTP continuation/stop/departed-client peer progress. No sustained/assistant/26/larger envelope qualification.",
   "producer_observations": {
-    "scope": "existing producer log facts only; last-built policy is construction witness, joined counters count successful runtime groups",
+    "scope": "existing producer log facts only; last-built policy is construction witness, joined counters count successful runtime groups; raw log lines stay external, and each log is summarized here by its parsed records (bytes and sha256 identify the external log)",
     "logs": {
       "native-c1-corpus.log": {
         "bytes": 4049,
         "sha256": "d758cae6323ba527a4372f2ecb16b67f61e2209a62f97129dd07b475286342fa",
-        "records": [
-          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":175113216,\"shared_activation_bytes\":104857600,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":12582912,\"plan_floor_bytes\":14265904,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124865646592,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":1719664640,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
-          "SERVING_STATE owner=0 positions=1024 bytes=922746880",
-          "SERVING_CORPUS phase=first owners=1 query_rows=1 rows=1024 targets=1023 cursor=1024 extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":26956,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
-          "SERVING_STATE owner=0 positions=1024 bytes=922746880",
-          "SERVING_CORPUS phase=repeat owners=1 query_rows=1 rows=1024 targets=1023 cursor=1024 extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":26956,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}"
-        ]
+        "summary": {
+          "record_count": 5,
+          "allocation_guard": {
+            "guard_passed": true,
+            "fixed_catalog_bytes": 175113216,
+            "registered_state_virtual_extent_bytes": 1719664640,
+            "request_memory_bytes": 268435456,
+            "host_input_bytes": 12582912,
+            "plan_floor_bytes": 14265904,
+            "uncounted_margin_bytes": 6442450944,
+            "available_after_fixed_bytes": 124865646592
+          },
+          "corpus": [
+            {
+              "phase": "first",
+              "owners": 1,
+              "rows": 1024,
+              "targets": 1023,
+              "cursor": 1024,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 26956,
+              "joined_groups": 0,
+              "joined_units": 0,
+              "last_built_rows": 1,
+              "last_built_segments": 1,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 0
+            },
+            {
+              "phase": "repeat",
+              "owners": 1,
+              "rows": 1024,
+              "targets": 1023,
+              "cursor": 1024,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 26956,
+              "joined_groups": 0,
+              "joined_units": 0,
+              "last_built_rows": 1,
+              "last_built_segments": 1,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 0
+            }
+          ],
+          "initialized_state": [
+            {
+              "records": 2,
+              "owners": 1,
+              "positions": 1024,
+              "bytes_per_owner": 922746880
+            }
+          ]
+        }
       },
       "native-c1-cycle-first.log": {
         "bytes": 4458,
         "sha256": "3154cf1d31a52e167af3f2340a08ab7e393a860524c6a39e53fd480dbd2e6ef3",
-        "records": [
-          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":175113216,\"shared_activation_bytes\":104857600,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":12582912,\"plan_floor_bytes\":14265904,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124911751168,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":1719664640,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
-          "SERVING_PREFILL phase=warm policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
-          "SERVING_CYCLE phase=warm owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=23.741738723 prefill_seconds=11.033171597 decode_seconds=12.708567126 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
-          "SERVING_CYCLE phase=paid owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=1 cycle_seconds=23.950582627 prefill_seconds=11.249079308 decode_seconds=12.701503319 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
-          "SERVING_STATE owner=0 positions=8191 bytes=1719664640"
-        ]
+        "summary": {
+          "record_count": 5,
+          "allocation_guard": {
+            "guard_passed": true,
+            "fixed_catalog_bytes": 175113216,
+            "registered_state_virtual_extent_bytes": 1719664640,
+            "request_memory_bytes": 268435456,
+            "host_input_bytes": 12582912,
+            "plan_floor_bytes": 14265904,
+            "uncounted_margin_bytes": 6442450944,
+            "available_after_fixed_bytes": 124911751168
+          },
+          "prefill_construction": [
+            {
+              "phase": "warm",
+              "rows": 127,
+              "segments": 1,
+              "norm_rope": 120,
+              "norm_add": 120,
+              "owner_attention": 0
+            }
+          ],
+          "cycles": [
+            {
+              "phase": "warm",
+              "owners": 1,
+              "emitted": 129,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 0,
+              "cycle_seconds": 23.741738723,
+              "prefill_seconds": 11.033171597,
+              "decode_seconds": 12.708567126,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 219535,
+              "joined_groups": 0,
+              "joined_units": 0,
+              "last_built_rows": 1,
+              "last_built_segments": 1,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 0
+            },
+            {
+              "phase": "paid",
+              "owners": 1,
+              "emitted": 129,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 1,
+              "cycle_seconds": 23.950582627,
+              "prefill_seconds": 11.249079308,
+              "decode_seconds": 12.701503319,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 219535,
+              "joined_groups": 0,
+              "joined_units": 0,
+              "last_built_rows": 1,
+              "last_built_segments": 1,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 0
+            }
+          ],
+          "initialized_state": [
+            {
+              "records": 1,
+              "owners": 1,
+              "positions": 8191,
+              "bytes_per_owner": 1719664640
+            }
+          ]
+        }
       },
       "native-c1-cycle-repeat.log": {
         "bytes": 4458,
         "sha256": "8e1fb1c2f9b60168ea0de21ce0144f01d21771db550962480a1c6b34aeb5465d",
-        "records": [
-          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":175113216,\"shared_activation_bytes\":104857600,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":12582912,\"plan_floor_bytes\":14265904,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124908949504,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":1719664640,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
-          "SERVING_PREFILL phase=warm policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
-          "SERVING_CYCLE phase=warm owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=23.728229892 prefill_seconds=11.012558524 decode_seconds=12.715671368 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
-          "SERVING_CYCLE phase=paid owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=1 cycle_seconds=23.905050357 prefill_seconds=11.188212839 decode_seconds=12.716837518 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
-          "SERVING_STATE owner=0 positions=8191 bytes=1719664640"
-        ]
+        "summary": {
+          "record_count": 5,
+          "allocation_guard": {
+            "guard_passed": true,
+            "fixed_catalog_bytes": 175113216,
+            "registered_state_virtual_extent_bytes": 1719664640,
+            "request_memory_bytes": 268435456,
+            "host_input_bytes": 12582912,
+            "plan_floor_bytes": 14265904,
+            "uncounted_margin_bytes": 6442450944,
+            "available_after_fixed_bytes": 124908949504
+          },
+          "prefill_construction": [
+            {
+              "phase": "warm",
+              "rows": 127,
+              "segments": 1,
+              "norm_rope": 120,
+              "norm_add": 120,
+              "owner_attention": 0
+            }
+          ],
+          "cycles": [
+            {
+              "phase": "warm",
+              "owners": 1,
+              "emitted": 129,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 0,
+              "cycle_seconds": 23.728229892,
+              "prefill_seconds": 11.012558524,
+              "decode_seconds": 12.715671368,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 219535,
+              "joined_groups": 0,
+              "joined_units": 0,
+              "last_built_rows": 1,
+              "last_built_segments": 1,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 0
+            },
+            {
+              "phase": "paid",
+              "owners": 1,
+              "emitted": 129,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 1,
+              "cycle_seconds": 23.905050357,
+              "prefill_seconds": 11.188212839,
+              "decode_seconds": 12.716837518,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 219535,
+              "joined_groups": 0,
+              "joined_units": 0,
+              "last_built_rows": 1,
+              "last_built_segments": 1,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 0
+            }
+          ],
+          "initialized_state": [
+            {
+              "records": 1,
+              "owners": 1,
+              "positions": 8191,
+              "bytes_per_owner": 1719664640
+            }
+          ]
+        }
       },
       "native-c1-quality.log": {
         "bytes": 5231,
         "sha256": "de24d061c392748a11a7d9f8e97857131fd5cb94cdd49c49d7dc289b9bb7270e",
-        "records": [
-          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":175113216,\"shared_activation_bytes\":104857600,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":12582912,\"plan_floor_bytes\":14265904,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124892680192,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":1719664640,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
-          "SERVING_PREFILL phase=first policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
-          "SERVING_CYCLE phase=first owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=23.774674498 prefill_seconds=11.065573032 decode_seconds=12.709101466 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
-          "SERVING_STATE owner=0 positions=8191 bytes=1719664640",
-          "SERVING_PREFILL phase=repeat policy_basis=last-built rows=1 segments=1 norm_rope=120 norm_add=120 owner=0",
-          "SERVING_CYCLE phase=repeat owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=24.028251654 prefill_seconds=11.347026629 decode_seconds=12.681225025 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
-          "SERVING_STATE owner=0 positions=8191 bytes=1719664640"
-        ]
+        "summary": {
+          "record_count": 7,
+          "allocation_guard": {
+            "guard_passed": true,
+            "fixed_catalog_bytes": 175113216,
+            "registered_state_virtual_extent_bytes": 1719664640,
+            "request_memory_bytes": 268435456,
+            "host_input_bytes": 12582912,
+            "plan_floor_bytes": 14265904,
+            "uncounted_margin_bytes": 6442450944,
+            "available_after_fixed_bytes": 124892680192
+          },
+          "prefill_construction": [
+            {
+              "phase": "first",
+              "rows": 127,
+              "segments": 1,
+              "norm_rope": 120,
+              "norm_add": 120,
+              "owner_attention": 0
+            },
+            {
+              "phase": "repeat",
+              "rows": 1,
+              "segments": 1,
+              "norm_rope": 120,
+              "norm_add": 120,
+              "owner_attention": 0
+            }
+          ],
+          "cycles": [
+            {
+              "phase": "first",
+              "owners": 1,
+              "emitted": 129,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 0,
+              "cycle_seconds": 23.774674498,
+              "prefill_seconds": 11.065573032,
+              "decode_seconds": 12.709101466,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 219535,
+              "joined_groups": 0,
+              "joined_units": 0,
+              "last_built_rows": 1,
+              "last_built_segments": 1,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 0
+            },
+            {
+              "phase": "repeat",
+              "owners": 1,
+              "emitted": 129,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 0,
+              "cycle_seconds": 24.028251654,
+              "prefill_seconds": 11.347026629,
+              "decode_seconds": 12.681225025,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 219535,
+              "joined_groups": 0,
+              "joined_units": 0,
+              "last_built_rows": 1,
+              "last_built_segments": 1,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 0
+            }
+          ],
+          "initialized_state": [
+            {
+              "records": 2,
+              "owners": 1,
+              "positions": 8191,
+              "bytes_per_owner": 1719664640
+            }
+          ]
+        }
       },
       "native-c4-cycle-first.log": {
         "bytes": 4639,
         "sha256": "f6ad86197d48102b656bf02d3f68debd62475b4fcbb2ed9c77a5938f11cf41d0",
-        "records": [
-          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":180356096,\"shared_activation_bytes\":106954752,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":44040192,\"plan_floor_bytes\":30875568,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124872749056,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":6878658560,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
-          "SERVING_PREFILL phase=warm policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
-          "SERVING_CYCLE phase=warm owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=60.590852663 prefill_seconds=44.131191187 decode_seconds=16.459661476 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":128,\"joined_units\":512,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
-          "SERVING_CYCLE phase=paid owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=1 cycle_seconds=61.248326149 prefill_seconds=44.843883823 decode_seconds=16.404442326 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":256,\"joined_units\":1024,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
-          "SERVING_STATE owner=0 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=1 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=2 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=3 positions=8191 bytes=1719664640"
-        ]
+        "summary": {
+          "record_count": 8,
+          "allocation_guard": {
+            "guard_passed": true,
+            "fixed_catalog_bytes": 180356096,
+            "registered_state_virtual_extent_bytes": 6878658560,
+            "request_memory_bytes": 268435456,
+            "host_input_bytes": 44040192,
+            "plan_floor_bytes": 30875568,
+            "uncounted_margin_bytes": 6442450944,
+            "available_after_fixed_bytes": 124872749056
+          },
+          "prefill_construction": [
+            {
+              "phase": "warm",
+              "rows": 127,
+              "segments": 1,
+              "norm_rope": 120,
+              "norm_add": 120,
+              "owner_attention": 0
+            }
+          ],
+          "cycles": [
+            {
+              "phase": "warm",
+              "owners": 4,
+              "emitted": 516,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 0,
+              "cycle_seconds": 60.590852663,
+              "prefill_seconds": 44.131191187,
+              "decode_seconds": 16.459661476,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 867115,
+              "joined_groups": 128,
+              "joined_units": 512,
+              "last_built_rows": 4,
+              "last_built_segments": 4,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 60
+            },
+            {
+              "phase": "paid",
+              "owners": 4,
+              "emitted": 516,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 1,
+              "cycle_seconds": 61.248326149,
+              "prefill_seconds": 44.843883823,
+              "decode_seconds": 16.404442326,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 867115,
+              "joined_groups": 256,
+              "joined_units": 1024,
+              "last_built_rows": 4,
+              "last_built_segments": 4,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 60
+            }
+          ],
+          "initialized_state": [
+            {
+              "records": 4,
+              "owners": 4,
+              "positions": 8191,
+              "bytes_per_owner": 1719664640
+            }
+          ]
+        }
       },
       "native-c4-cycle-repeat.log": {
         "bytes": 4639,
         "sha256": "e2b13e8f1581492f9fd52ff0f49915ef716b24dab11e3d5e52c5b70e43db3a64",
-        "records": [
-          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":180356096,\"shared_activation_bytes\":106954752,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":44040192,\"plan_floor_bytes\":30875568,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124886839296,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":6878658560,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
-          "SERVING_PREFILL phase=warm policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
-          "SERVING_CYCLE phase=warm owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=60.552932552 prefill_seconds=44.097822069 decode_seconds=16.455110483 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":128,\"joined_units\":512,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
-          "SERVING_CYCLE phase=paid owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=1 cycle_seconds=61.385118804 prefill_seconds=44.962768284 decode_seconds=16.422350520 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":256,\"joined_units\":1024,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
-          "SERVING_STATE owner=0 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=1 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=2 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=3 positions=8191 bytes=1719664640"
-        ]
+        "summary": {
+          "record_count": 8,
+          "allocation_guard": {
+            "guard_passed": true,
+            "fixed_catalog_bytes": 180356096,
+            "registered_state_virtual_extent_bytes": 6878658560,
+            "request_memory_bytes": 268435456,
+            "host_input_bytes": 44040192,
+            "plan_floor_bytes": 30875568,
+            "uncounted_margin_bytes": 6442450944,
+            "available_after_fixed_bytes": 124886839296
+          },
+          "prefill_construction": [
+            {
+              "phase": "warm",
+              "rows": 127,
+              "segments": 1,
+              "norm_rope": 120,
+              "norm_add": 120,
+              "owner_attention": 0
+            }
+          ],
+          "cycles": [
+            {
+              "phase": "warm",
+              "owners": 4,
+              "emitted": 516,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 0,
+              "cycle_seconds": 60.552932552,
+              "prefill_seconds": 44.097822069,
+              "decode_seconds": 16.455110483,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 867115,
+              "joined_groups": 128,
+              "joined_units": 512,
+              "last_built_rows": 4,
+              "last_built_segments": 4,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 60
+            },
+            {
+              "phase": "paid",
+              "owners": 4,
+              "emitted": 516,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 1,
+              "cycle_seconds": 61.385118804,
+              "prefill_seconds": 44.962768284,
+              "decode_seconds": 16.42235052,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 867115,
+              "joined_groups": 256,
+              "joined_units": 1024,
+              "last_built_rows": 4,
+              "last_built_segments": 4,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 60
+            }
+          ],
+          "initialized_state": [
+            {
+              "records": 4,
+              "owners": 4,
+              "positions": 8191,
+              "bytes_per_owner": 1719664640
+            }
+          ]
+        }
       },
       "native-c4-quality.log": {
         "bytes": 5575,
         "sha256": "f73f1e7690c887d28b1c33dd4991c8d6bcfe10033f93671f738f068dfbf95fb4",
-        "records": [
-          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":180356096,\"shared_activation_bytes\":106954752,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":44040192,\"plan_floor_bytes\":30875568,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124896792576,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":6878658560,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
-          "SERVING_PREFILL phase=first policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
-          "SERVING_CYCLE phase=first owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=60.957697318 prefill_seconds=44.364626461 decode_seconds=16.593070857 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":128,\"joined_units\":512,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
-          "SERVING_STATE owner=0 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=1 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=2 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=3 positions=8191 bytes=1719664640",
-          "SERVING_PREFILL phase=repeat policy_basis=last-built rows=4 segments=4 norm_rope=120 norm_add=120 owner=60",
-          "SERVING_CYCLE phase=repeat owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=61.775828502 prefill_seconds=45.039445677 decode_seconds=16.736382825 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":256,\"joined_units\":1024,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
-          "SERVING_STATE owner=0 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=1 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=2 positions=8191 bytes=1719664640",
-          "SERVING_STATE owner=3 positions=8191 bytes=1719664640"
-        ]
+        "summary": {
+          "record_count": 13,
+          "allocation_guard": {
+            "guard_passed": true,
+            "fixed_catalog_bytes": 180356096,
+            "registered_state_virtual_extent_bytes": 6878658560,
+            "request_memory_bytes": 268435456,
+            "host_input_bytes": 44040192,
+            "plan_floor_bytes": 30875568,
+            "uncounted_margin_bytes": 6442450944,
+            "available_after_fixed_bytes": 124896792576
+          },
+          "prefill_construction": [
+            {
+              "phase": "first",
+              "rows": 127,
+              "segments": 1,
+              "norm_rope": 120,
+              "norm_add": 120,
+              "owner_attention": 0
+            },
+            {
+              "phase": "repeat",
+              "rows": 4,
+              "segments": 4,
+              "norm_rope": 120,
+              "norm_add": 120,
+              "owner_attention": 60
+            }
+          ],
+          "cycles": [
+            {
+              "phase": "first",
+              "owners": 4,
+              "emitted": 516,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 0,
+              "cycle_seconds": 60.957697318,
+              "prefill_seconds": 44.364626461,
+              "decode_seconds": 16.593070857,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 867115,
+              "joined_groups": 128,
+              "joined_units": 512,
+              "last_built_rows": 4,
+              "last_built_segments": 4,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 60
+            },
+            {
+              "phase": "repeat",
+              "owners": 4,
+              "emitted": 516,
+              "waves": 128,
+              "cursor": 8191,
+              "timed": 0,
+              "cycle_seconds": 61.775828502,
+              "prefill_seconds": 45.039445677,
+              "decode_seconds": 16.736382825,
+              "dispatch": "joined-candidate",
+              "profile": "gemma-4-31B-it",
+              "gemma31_candidate": true,
+              "max_rows": 256,
+              "coverage_tensors": 867115,
+              "joined_groups": 256,
+              "joined_units": 1024,
+              "last_built_rows": 4,
+              "last_built_segments": 4,
+              "last_built_norm_rope": 120,
+              "last_built_norm_add": 120,
+              "last_built_owner_attention": 60
+            }
+          ],
+          "initialized_state": [
+            {
+              "records": 8,
+              "owners": 4,
+              "positions": 8191,
+              "bytes_per_owner": 1719664640
+            }
+          ]
+        }
       }
     }
   },

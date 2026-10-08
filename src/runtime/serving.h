@@ -651,7 +651,9 @@ class Llm : public Served {
   // A kept conversation adopted into `branch` (at start, after the node
   // runs): its slot spilled with the record's extents, its history,
   // cursor, decoding and last use, and the turn checkpoints that open.
-  Status Adopt(Branch& branch, kept::Record& record);
+  // The record's token history becomes the branch's with `token_charge`,
+  // the charge that funded it (no second copy to fund).
+  Status Adopt(Branch& branch, kept::Record& record, MemoryCharge& token_charge);
   // At the process's end: the named checkpoint files stay for the next.
   void PreserveKeptFiles();
   // D-102's rung 2: the conversations of the slots in `discarded` (a

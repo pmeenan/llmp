@@ -324,6 +324,9 @@ class Gemma4Runner final : public PagedModel {
                       kernels::ggml::Gemma4OutputMode mode, std::span<const PrefillNext> next = {},
                       bool next_want_head = true, bool verify = false, bool after_want_head = true);
   void InvalidateFeatures(Slot& slot);
+  // A verify whose rollback failed or whose state is lost: the slot is
+  // quarantined and awaits no Accept, so Clear (or Release) can run.
+  static void AbandonVerify(Slot& slot);
   std::expected<std::array<std::uint8_t, 32>, std::string> CacheGenerations(const Slot& slot) const;
   Status RefreshClosures(SlotMask protect);
   Status RefreshClosures() { return RefreshClosures(cohort_.active()); }

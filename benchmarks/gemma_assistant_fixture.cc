@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -35,6 +36,17 @@ using en::support::Error;
 using en::support::Pointer;
 using en::support::Round;
 constexpr auto kHostBytes = std::uint64_t{128} << 20U;
+// The prepared store: $JITLLM_TEST_MODELS/m3-artifacts, else under
+// ~/.local/share/jitllm, as the model tests find it.
+std::filesystem::path Store() {
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): the benchmark reads, never sets, the environment
+  const char* dir = std::getenv("JITLLM_TEST_MODELS");
+  const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
+  const std::filesystem::path models =
+      dir != nullptr ? std::filesystem::path(dir)
+                     : std::filesystem::path(home != nullptr ? home : "") / ".local/share/jitllm";
+  return models / "m3-artifacts";
+}
 constexpr std::array<std::string_view, 11> kFiles{
     "metadata.json",       "feature.f32",          "anchor.i32",          "local-k.f16",
     "local-v.f16",         "global-k.f16",         "global-v.f16",        "local-positions.i32",
@@ -187,7 +199,7 @@ class Replay final : public en::PagedModel {
             data_[membership][cell] != (cell < 64 ? std::byte{1} : std::byte{0}))
           return Error("fixture physical occupancy differs from frozen prefix");
       }
-    const auto store = std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts");
+    const auto store = Store();
     if (auto r = target_.Open(
             store / (profile31_
                          ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"

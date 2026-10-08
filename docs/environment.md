@@ -491,7 +491,7 @@ it starts.
 | --- | --- | --- |
 | `mac` | Apple M5 Max, 128 GB unified memory | The Apple silicon port, the first after M3.6 and the families |
 | `plex` | Intel Arc Pro B50 | The Intel port, after Apple |
-| `Pat-Desktop` | NVIDIA GPU on Windows; the owner's desktop, not reachable over SSH today | The Windows operating-system port |
+| The Windows NVIDIA host (no SSH name yet) | NVIDIA GPU on Windows; the owner's desktop, not reachable over SSH today | The Windows operating-system port |
 
 No AMD hardware is available yet.
 

@@ -8,12 +8,15 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <numeric>
 #include <span>
+#include <string>
+#include <system_error>
 #include <tuple>
 #include <vector>
 
@@ -22,8 +25,24 @@
 #include "engine/gemma4_runner.h"
 #include "engine/support.h"
 #include "scheduler/scheduler.h"
+#include "tokenizer_fixtures.h"
 
 namespace en = jitllm::engine;
+namespace {
+// The prepared Gemma 4 artifacts, and where spill files go: the build tree
+// (JITLLM_TEST_SCRATCH), on a filesystem with direct I/O.
+std::filesystem::path Gemma4Artifact(en::Gemma4Variant variant) {
+  return std::filesystem::path(jitllm::test_support::ModelsDir()) / "m3-artifacts" /
+         (variant == en::Gemma4Variant::k31B
+              ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+              : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
+}
+std::filesystem::path Scratch() {
+  const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  return scratch != nullptr ? std::filesystem::path(scratch)
+                            : std::filesystem::path(::testing::TempDir());
+}
+}  // namespace
 class Gemma4RunnerGpu : public ::testing::Test {
  protected:
   struct PreparationObserver final : jitllm::scheduler::PageInObserver {
@@ -59,14 +78,12 @@ class Gemma4RunnerGpu : public ::testing::Test {
   virtual en::Gemma4Variant Variant() const { return en::Gemma4Variant::k26BA4B; }
   void SetUp() override {
     // Explicit fixture path, matching other real-model engine controls.
-    const auto artifact =
-        std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts") /
-        (Variant() == en::Gemma4Variant::k31B
-             ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
-             : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
-    ASSERT_TRUE(std::filesystem::exists(artifact));
+    const auto artifact = Gemma4Artifact(Variant());
+    if (std::error_code error; !std::filesystem::exists(artifact, error)) {
+      GTEST_SKIP() << "no Gemma 4 artifact at " << artifact;
+    }
     en::Gemma4Options options{.artifact = artifact,
-                              .out = "/tmp/jitllm-gemma4-runner-control",
+                              .out = Scratch() / "gemma4-runner-control",
                               .variant = Variant(),
                               .max_rows = MaxRows(),
                               .slots = Slots(),
@@ -83,10 +100,10 @@ class Gemma4RunnerGpu : public ::testing::Test {
                               .capture_ahead = CaptureAhead(),
                               .prefill_lookahead_capacity = CaptureAhead() ? 2U : 1U};
     if (KeepSpill()) {
-      spill_root = std::filesystem::path("/tmp") / (Variant() == en::Gemma4Variant::k31B
-                                                        ? "jitllm-g31-preparation-lifetime"
-                                                        : "jitllm-g26-preparation-lifetime");
+      spill_root = Scratch() / (Variant() == en::Gemma4Variant::k31B ? "g31-preparation-lifetime"
+                                                                     : "g26-preparation-lifetime");
       std::error_code error;
+      std::filesystem::create_directories(Scratch(), error);
       std::filesystem::remove_all(spill_root, error);
       ASSERT_TRUE(std::filesystem::create_directory(spill_root, error));
       ASSERT_FALSE(error);
@@ -1230,11 +1247,13 @@ TEST(Gemma4HeadCapacityGpu, CatalogCountsBothLegacyAndCappedPinnedOutputAllocati
     std::array<std::unique_ptr<en::Gemma4Runner>, 2> runners;
     std::vector<en::PagedModel*> entered;
   };
+  const auto artifact = Gemma4Artifact(en::Gemma4Variant::k26BA4B);
+  if (std::error_code error; !std::filesystem::exists(artifact, error)) {
+    GTEST_SKIP() << "no Gemma 4 artifact at " << artifact;
+  }
   auto owner = std::make_unique<Lifetime>();
   auto& node = owner->node;
   ASSERT_TRUE(node.Open());
-  const auto artifact = std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts") /
-                        "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
   std::array<std::uint64_t, 2> charged{};
   const auto staging_class = static_cast<std::size_t>(jitllm::catalog::MemoryClass::kStaging);
   bool ready = true;
@@ -1597,10 +1616,7 @@ void Gemma4RunnerGpu::PreparedStateControl() {
   }
   const auto source_layout = runner->CheckpointLayoutId();
   const auto kept_footprint = (*runner->request_slot(0))->state().used_ranges();
-  const auto artifact = std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts") /
-                        (Variant() == en::Gemma4Variant::k31B
-                             ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
-                             : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
+  const auto artifact = Gemma4Artifact(Variant());
   ASSERT_TRUE(node.TearDown(entered));
   auto restart = std::make_unique<Lifetime>();
   auto& fresh_node = restart->node;

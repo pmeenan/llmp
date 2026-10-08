@@ -19,6 +19,7 @@
 #include <memory>
 #include <print>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -32,6 +33,7 @@
 #include "platform/crash_policy.h"
 #include "platform/kept_files.h"
 #include "runtime/serving.h"
+#include "tokenizer_fixtures.h"
 
 namespace rt = jitllm::runtime;
 namespace en = jitllm::engine;
@@ -52,13 +54,32 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   rt::SwapParts first_activation;
   std::filesystem::path scratch;
   bool retirement_failed = false;
+  // The approved Gemma2 and Gemma3 artifacts, in their import stores and
+  // in the M3 store with the other models.
+  static std::filesystem::path Models() { return jitllm::test_support::ModelsDir(); }
+  static constexpr const char* kGemma2 =
+      "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
+  static constexpr const char* kGemma3 =
+      "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb";
+  static bool Present(const std::filesystem::path& path) {
+    std::error_code error;
+    return std::filesystem::exists(path, error);
+  }
   void SetUp() override {
-    std::string name = "/home/pmeenan/.cache/jitllm-gemma-prefill-XXXXXX";
+    const auto installed = Models() / (GetParam() == 2 ? "gemma2-import-20261007/artifacts"
+                                                       : "gemma3-import-20261007/artifacts");
+    if (!Present(installed / (GetParam() == 2 ? kGemma2 : kGemma3))) {
+      GTEST_SKIP() << "no Gemma" << GetParam() << " artifact in " << installed;
+    }
+    // Spill files need direct I/O: scratch in the build tree.
+    const char* base = std::getenv("JITLLM_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const std::filesystem::path root = base != nullptr ? base : ::testing::TempDir();
+    std::error_code error;
+    std::filesystem::create_directories(root, error);
+    std::string name = (root / "gemma-prefill-XXXXXX").string();
     ASSERT_NE(mkdtemp(name.data()), nullptr);
     scratch = name;
-    life->roles.installed =
-        GetParam() == 2 ? "/home/pmeenan/.local/share/jitllm/gemma2-import-20261007/artifacts"
-                        : "/home/pmeenan/.local/share/jitllm/gemma3-import-20261007/artifacts";
+    life->roles.installed = installed;
     life->roles.spill = scratch / "spill";
     life->roles.state = scratch / "state";
     for (const auto& path : {life->roles.spill, life->roles.state}) {
@@ -67,9 +88,7 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     }
     cfg::ModelEntry entry;
     entry.name = "gemma";
-    entry.artifact = GetParam() == 2
-                         ? "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870"
-                         : "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb";
+    entry.artifact = GetParam() == 2 ? kGemma2 : kGemma3;
     entry.overrides["context"] = std::int64_t{GetParam() == 2 ? 8192 : 4096};
     entry.overrides["prefill_chunk"] = std::int64_t{128};
     entry.overrides["max_slots"] = std::int64_t{2};
@@ -118,7 +137,7 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
       std::ignore = life.release();
       return;
     }
-    std::filesystem::remove_all(scratch);
+    if (!scratch.empty()) std::filesystem::remove_all(scratch);
   }
   template <class Runner>
   std::expected<jitllm::base::Sha256Digest, std::string> StateHash(
@@ -312,9 +331,11 @@ TEST_P(GemmaPrefillServingGpu, Admitted8448ScalarPreparationPreservesPromptAndCo
   if (GetParam() != 3) GTEST_SKIP() << "Gemma3 admitted scalar context";
   EXPECT_TRUE(en::Gemma3Options{}.prepare_state);
   EXPECT_TRUE(rt::ServingOptions{}.gemma3_prepare_state);
-  const auto input =
-      std::filesystem::path("/home/pmeenan/.local/share/jitllm/references/gemma3-depth/ids.i32");
-  ASSERT_EQ(std::filesystem::file_size(input), 33024U);
+  const auto input = Models() / "references/gemma3-depth/ids.i32";
+  std::error_code error;
+  const auto bytes = std::filesystem::file_size(input, error);
+  if (error) GTEST_SKIP() << "no Gemma3 depth reference at " << input;
+  ASSERT_EQ(bytes, 33024U);
   std::vector<std::int32_t> ids(8256);
   std::ifstream stream(input, std::ios::binary);
   ASSERT_TRUE(stream.read(reinterpret_cast<char*>(ids.data()),
@@ -1087,12 +1108,13 @@ TEST_P(GemmaPrefillServingGpu, DiagnosticBudgetCapLeavesDefaultsAndChecksActualA
 // Small real adapters exercise Server's shared transaction, not a second
 // synthetic approximation of its request and restart-record behavior.
 TEST_P(GemmaPrefillServingGpu, PartialCachedSwitchReleasesRequestAndRetainsOtherWeights) {
-  life->roles.installed = "/home/pmeenan/.local/share/jitllm/m3-artifacts";
+  life->roles.installed = Models() / "m3-artifacts";
+  if (!Present(life->roles.installed / kGemma2) || !Present(life->roles.installed / kGemma3)) {
+    GTEST_SKIP() << "no Gemma2 and Gemma3 artifacts in " << life->roles.installed;
+  }
   auto other = life->config.models.front();
   other.name = "other";
-  other.artifact = GetParam() == 2
-                       ? "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
-                       : "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
+  other.artifact = GetParam() == 2 ? kGemma3 : kGemma2;
   other.overrides["context"] = std::int64_t{4096};
   life->config.models.push_back(other);
   life->options.partial_weight_eviction = true;
@@ -1179,17 +1201,21 @@ TEST_P(GemmaPrefillServingGpu, PartialCachedSwitchReleasesRequestAndRetainsOther
 }
 
 TEST_P(GemmaPrefillServingGpu, FailedPartialLoadPreservesCachesAndRecreatesSavedRecord) {
-  life->roles.installed = "/home/pmeenan/.local/share/jitllm/m3-artifacts";
+  life->roles.installed = Models() / "m3-artifacts";
+  if (!Present(life->roles.installed / kGemma2) || !Present(life->roles.installed / kGemma3)) {
+    GTEST_SKIP() << "no Gemma2 and Gemma3 artifacts in " << life->roles.installed;
+  }
   auto other = life->config.models.front();
   other.name = "other";
-  other.artifact = GetParam() == 2
-                       ? "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
-                       : "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
+  other.artifact = GetParam() == 2 ? kGemma3 : kGemma2;
   other.overrides["context"] = std::int64_t{4096};
   life->config.models.push_back(other);
   auto inactive_entry = other;
   inactive_entry.name = "inactive";
   inactive_entry.artifact = "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
+  if (!Present(life->roles.installed / *inactive_entry.artifact)) {
+    GTEST_SKIP() << "no Gemma 4 artifact in " << life->roles.installed;
+  }
   life->config.models.push_back(inactive_entry);
   life->options.partial_weight_eviction = true;
   life->options.keep_conversations = true;

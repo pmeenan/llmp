@@ -1441,6 +1441,11 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
 Status PagedNode::Ended(std::uint32_t stream, std::string_view what, std::string_view why) {
   const auto found = requests_.find(stream);
   OpenRequest& open = *found->second;
+  // As EndRequest: a task idle under an unproven step waits for a signal
+  // nothing sends, so it is cancelled (its lease stays held by the step).
+  if (open.unproven || open.cancelled) {
+    Cancel(open.request);
+  }
   auto ended = Await(open.done, open.what, open.request);
   requests_.erase(found);  // `open` is gone from here on
   return Error(std::format("{}: {}{}", what, why, ended ? "" : ": " + ended.error()));

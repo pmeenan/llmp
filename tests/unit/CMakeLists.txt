@@ -361,7 +361,8 @@ jitllm_gtest(gemma3_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
 if(JITLLM_CUDA)
   add_executable(gemma2_checkpoint_gpu_test gemma2_checkpoint_gpu_test.cc)
   target_link_libraries(gemma2_checkpoint_gpu_test PRIVATE jitllm_engine)
-  jitllm_gpu_gtest(gemma2_checkpoint_gpu_test MODELS)
+  jitllm_gpu_gtest(gemma2_checkpoint_gpu_test MODELS
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(gemma2_runner_test gemma2_runner_test.cc)
   target_link_libraries(gemma2_runner_test PRIVATE jitllm_engine)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
@@ -369,7 +370,8 @@ if(JITLLM_CUDA)
   jitllm_gtest(gemma2_runner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
   add_executable(gemma3_serving_gpu_test gemma3_serving_gpu_test.cc)
   target_link_libraries(gemma3_serving_gpu_test PRIVATE jitllm_engine)
-  jitllm_gpu_gtest(gemma3_serving_gpu_test MODELS)
+  jitllm_gpu_gtest(gemma3_serving_gpu_test MODELS
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(gemma3_runner_test gemma3_runner_test.cc)
   target_link_libraries(gemma3_runner_test PRIVATE jitllm_engine)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
@@ -406,29 +408,38 @@ if(JITLLM_CUDA)
   jitllm_gpu_gtest(gemma4_exec_test ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
   add_executable(gemma4_serving_gpu_test gemma4_serving_gpu_test.cc)
   target_link_libraries(gemma4_serving_gpu_test PRIVATE jitllm_runtime_serving)
-  jitllm_gpu_gtest(gemma4_serving_gpu_test MODELS ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+  jitllm_gpu_gtest(gemma4_serving_gpu_test MODELS
+                   ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}"
+                               "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(plain_tokens_serving_gpu_test plain_tokens_serving_gpu_test.cc)
   target_link_libraries(plain_tokens_serving_gpu_test PRIVATE jitllm_runtime_serving)
-  jitllm_gpu_gtest(plain_tokens_serving_gpu_test MODELS)
+  jitllm_gpu_gtest(plain_tokens_serving_gpu_test MODELS
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(gemma_prefill_serving_gpu_test gemma_prefill_serving_gpu_test.cc)
   target_link_libraries(gemma_prefill_serving_gpu_test PRIVATE jitllm_runtime_serving)
-  jitllm_gpu_gtest(gemma_prefill_serving_gpu_test MODELS)
+  jitllm_gpu_gtest(gemma_prefill_serving_gpu_test MODELS
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(gemma_joined_serving_gpu_test gemma_joined_serving_gpu_test.cc)
   target_link_libraries(gemma_joined_serving_gpu_test PRIVATE jitllm_runtime_serving)
   jitllm_gpu_gtest(gemma_joined_serving_gpu_test MODELS
-                   ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+                   ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}"
+                               "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(gemma4_assistant_gpu_test gemma4_assistant_gpu_test.cc)
   target_link_libraries(gemma4_assistant_gpu_test PRIVATE jitllm_engine)
-  jitllm_gpu_gtest(gemma4_assistant_gpu_test MODELS)
+  jitllm_gpu_gtest(gemma4_assistant_gpu_test MODELS
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(gemma4_greedy_gpu_test gemma4_greedy_gpu_test.cc)
   target_link_libraries(gemma4_greedy_gpu_test PRIVATE jitllm_engine)
-  jitllm_gpu_gtest(gemma4_greedy_gpu_test MODELS)
+  jitllm_gpu_gtest(gemma4_greedy_gpu_test MODELS
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(gemma4_verify_gpu_test gemma4_verify_gpu_test.cc)
   target_link_libraries(gemma4_verify_gpu_test PRIVATE jitllm_engine)
-  jitllm_gpu_gtest(gemma4_verify_gpu_test MODELS)
+  jitllm_gpu_gtest(gemma4_verify_gpu_test MODELS
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(gemma4_runner_gpu_test gemma4_runner_gpu_test.cc)
   target_link_libraries(gemma4_runner_gpu_test PRIVATE jitllm_engine)
-  jitllm_gpu_gtest(gemma4_runner_gpu_test MODELS)
+  jitllm_gpu_gtest(gemma4_runner_gpu_test MODELS
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(gemma4_runner_test gemma4_runner_test.cc)
   target_link_libraries(gemma4_runner_test PRIVATE jitllm_engine)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")

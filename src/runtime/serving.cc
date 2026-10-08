@@ -651,6 +651,11 @@ class Dsv4 final : public Llm {
   void RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) override {
     BranchDecoding(branch) = state;
   }
+  // A step keeps at most its verify's rows: the anchor and every DSpark
+  // draft, not the branch's adaptive depth (which DeepSeek leaves at 1).
+  std::uint32_t StepTokenBoundFor(const Branch& /*branch*/, std::uint32_t left) const override {
+    return std::min(left, runner_.max_verify());
+  }
 
   bool GenerationCohortUsable() const override { return runner_.cohort_usable(); }
 
@@ -3831,7 +3836,7 @@ void Llm::KeepBranch(Branch& branch) {
   kept_.keeper->Keep(kept_.model, std::move(r), std::move(token_charge));
 }
 
-Status Llm::Adopt(Branch& branch, kept::Record& record) {
+Status Llm::Adopt(Branch& branch, kept::Record& record, MemoryCharge& token_charge) {
   CheckIdleGeneration(branch);
   const HistoryFundingGuard funding(branch.funding_history_);
   const engine::LiveState* live = KeptLiveFor(branch);
@@ -3918,13 +3923,12 @@ Status Llm::Adopt(Branch& branch, kept::Record& record) {
       checkpoint_serial_ = std::max(checkpoint_serial_, named->serial + 1);
     }
   }
-  if (!ReserveTokens(branch, branch.history_, branch.history_charge_, record.tokens.size())) {
-    return refused("native adopted history exceeds the execution budget");
-  }
   if (auto adopted = AdoptPositionFor(branch, record.tokens, record.cursor, used); !adopted) {
     return refused(adopted.error());
   }
-  branch.history_ = record.tokens;
+  ReleaseTokens(branch.history_, branch.history_charge_);
+  branch.history_ = std::move(record.tokens);
+  branch.history_charge_ = std::move(token_charge);
   branch.needs_clear_ = false;
   branch.history_used_ = SteadyAt(record.used_unix_ms);
   SetCursorFor(branch, record.cursor);
@@ -5931,8 +5935,12 @@ Status Server::Start(bool snapshot) {
                                   .fixed = 0,
                                   .requests = RequestFloor(config_.client)};
   const auto startup_reserve = GuardReserve(startup_guard) + largest + activations + pool;
-  startup_token_capacity_ =
-      startup_available > startup_reserve ? startup_available - startup_reserve : 0;
+  // Unknown availability (0) bounds nothing here, as the guard skips it;
+  // the execution budget bounds what is adopted once it is set (Start).
+  startup_token_capacity_ = startup_available == 0 ? std::numeric_limits<std::uint64_t>::max()
+                            : startup_available > startup_reserve
+                                ? startup_available - startup_reserve
+                                : 0;
   token_memory_.SetDriver(
       std::this_thread::get_id(),
       [this](std::uint64_t incoming) { return SetTokenMemory(incoming); }, 0,
@@ -6090,7 +6098,19 @@ Status Server::Start(bool snapshot) {
   }
   token_catalog_ready_ = true;
   if (!SetTokenMemory(0)) {
-    return Error("kept token histories do not fit the execution budget");
+    // Only when availability was unknown at the start can what was decoded
+    // exceed the budget: those conversations are not adopted (their records
+    // removed, their files emptied), rather than every start failing.
+    Log("kept conversations' token histories do not fit the execution budget; none is adopted");
+    for (PendingAdoption& pending : adoptions_) {
+      if (auto branch = pending.model->branch(pending.record.slot); branch) {
+        std::ignore = (*branch)->ReleaseIdleState();
+      }
+    }
+    adoptions_.clear();
+    if (!SetTokenMemory(0)) {
+      return Error("kept token histories do not fit the execution budget");
+    }
   }
   AdoptKept();
   return {};
@@ -6179,6 +6199,8 @@ Status Server::PrepareKept() {
     // that does not validate is refused and its files emptied.
     std::vector<std::uint32_t> adopt;
     std::vector<std::string> keep_files;
+    std::vector<PendingAdoption> pending;
+    bool deferred = false;
     for (std::uint32_t slot = 0; slot < l.branches(); ++slot) {
       const std::string record_name = kept::RecordFileName(slot);
       auto text = platform::ReadPrivateFile(*dir, record_name.c_str(), kept::kMostRecordBytes);
@@ -6192,9 +6214,26 @@ Status Server::PrepareKept() {
       expected.slot = slot;
       std::vector<std::string> dropped;
       MemoryCharge token_charge;
-      auto record = kept::Decode(*text, &token_memory_, &token_charge);
+      bool memory_refused = false;
+      auto record = kept::Decode(*text, &token_memory_, &token_charge, &memory_refused);
       std::string why;
-      if (!record) {
+      if (memory_refused) {
+        // Memory this start lacks, not necessarily a bad record: checked
+        // uncharged (bounded as its text is), one this process would adopt
+        // keeps the model's records and files for a later start (below).
+        std::vector<std::string> unused;
+        auto plain = kept::Decode(*text);
+        if (!plain) {
+          why = plain.error();
+        } else if (auto checked = kept::Check(*plain, expected, &unused); !checked) {
+          why = checked.error();
+        } else {
+          Log(std::format("model {}: slot {}'s kept conversation does not fit this start: {}",
+                          l.name(), slot, record.error()));
+          deferred = true;
+          break;
+        }
+      } else if (!record) {
         why = record.error();
       } else if (auto checked = kept::Check(*record, expected, &dropped); !checked) {
         why = checked.error();
@@ -6266,11 +6305,24 @@ Status Server::PrepareKept() {
       for (const kept::Checkpoint& c : record->checkpoints) {
         keep_files.push_back(c.file);
       }
-      adopted_bytes += record->extents.size() * kExtent;
-      ++adopted_count;
-      adoptions_.push_back(
+      pending.push_back(
           {.model = &l, .token_charge = std::move(token_charge), .record = std::move(*record)});
       StartProgress();
+    }
+    if (deferred) {
+      // Nothing of this model's is adopted, removed or kept this run: its
+      // slots spill to unnamed files, so its directory stays as it was
+      // until a start with the memory adopts it or its retention ends.
+      Log(std::format(
+          "model {}: its kept conversations stay for a later start; this run keeps none of its "
+          "conversations across a restart",
+          l.name()));
+      continue;
+    }
+    for (PendingAdoption& p : pending) {
+      adopted_bytes += p.record.extents.size() * kExtent;
+      ++adopted_count;
+      adoptions_.push_back(std::move(p));
     }
     // Nothing else stays: unadopted slots' files, other records, stale
     // temporary files (D-014: what is kept is explicit).
@@ -6309,13 +6361,13 @@ void Server::AdoptKept() {
     Llm& l = *pending.model;
     const std::uint32_t slot = pending.record.slot;
     auto branch = l.branch(slot);
-    Status adopted =
-        branch ? l.Adopt(**branch, pending.record) : Status(std::unexpected(branch.error()));
+    Status adopted = branch ? l.Adopt(**branch, pending.record, pending.token_charge)
+                            : Status(std::unexpected(branch.error()));
     if (adopted) {
       Log(std::format(
           "model {}: slot {} adopted a kept conversation of {} tokens ({} turn "
           "checkpoints); its next turn restores it",
-          l.name(), slot, pending.record.tokens.size(), pending.record.checkpoints.size()));
+          l.name(), slot, (*branch)->history().size(), pending.record.checkpoints.size()));
       continue;
     }
     Log(std::format("model {}: slot {}'s kept conversation was not adopted: {}", l.name(), slot,

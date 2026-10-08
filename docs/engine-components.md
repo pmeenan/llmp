@@ -45,8 +45,8 @@ caches, graph capture, runner resources. Each family still writes its own
   that apply family-specific folds.
 
 The 2026-10-07 transfer rule made every optimization a per-family port; the
-open transfer item held 128 open cells, 114 of them 33 techniques repeated
-across two to eight recipients. The rule existed because duplicate
+open transfer item held 128 open cells across 47 techniques, and 114 of
+those cells belonged to 33 techniques each open for two to eight recipients. The rule existed because duplicate
 implementations kept missing work already done elsewhere. The fix is to
 have no duplicates: an optimization is written once, in the component,
 pattern or lifecycle it belongs to, and every model that uses that piece

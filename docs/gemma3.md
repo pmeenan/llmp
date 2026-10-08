@@ -23,6 +23,12 @@ latency 14.03% with exact generated IDs/usage. These bounded results establish
 no universal parity. Wider cohorts, broader context/memory/swap and sustained
 qualification remain open.
 
+**Being replaced (M3.6, D-107).** The per-family profile, graph and runner
+described here give way to one engine of shared components over jitLLM's own
+graph IR ([engine-components.md](engine-components.md)), and per-family
+optimization transfers are retired; M3.5 is parked until M3.6 exits. This file
+describes the code as it is, and changes as each piece lands.
+
 ## Actual checkpoint contract
 
 The approved source is

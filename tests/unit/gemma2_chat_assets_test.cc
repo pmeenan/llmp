@@ -6,8 +6,10 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -18,6 +20,7 @@
 #include "model/gemma2.h"
 #include "runtime/model_settings.h"
 #include "tokenizer/tokenizer.h"
+#include "tokenizer_fixtures.h"
 
 namespace {
 namespace chat = jitllm::chat;
@@ -26,10 +29,15 @@ namespace tok = jitllm::tokenizer;
 class Gemma2ChatAssets : public ::testing::Test {
  protected:
   void SetUp() override {
-    auto artifact = jitllm::artifact::Artifact::Open(
-        "/home/pmeenan/.local/share/jitllm/gemma2-import-20261007/artifacts/"
-        "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870",
-        {.expected_id = {}, .trusted_owner = ::geteuid()});
+    const std::filesystem::path path =
+        jitllm::test_support::ModelsDir() +
+        "/gemma2-import-20261007/artifacts/"
+        "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
+    if (std::error_code error; !std::filesystem::exists(path, error)) {
+      GTEST_SKIP() << "no Gemma2 artifact in " << path;
+    }
+    auto artifact =
+        jitllm::artifact::Artifact::Open(path, {.expected_id = {}, .trusted_owner = ::geteuid()});
     ASSERT_TRUE(artifact) << jitllm::test_support::Failed(artifact)->ToString();
     auto bound = jitllm::model::BindApprovedGemma2(*artifact);
     ASSERT_TRUE(bound) << *jitllm::test_support::Failed(bound);
