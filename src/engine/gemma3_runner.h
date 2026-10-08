@@ -58,8 +58,11 @@ struct Gemma3Options {
   // run (or, without that, on its first run when the next chunk repeats it).
   bool prefill_lookahead = true, capture_ahead = true;
   // Build at most two distinct missing future shapes. One retains the
-  // internal matched reference; no future state is initialized.
+  // internal matched reference; this descriptor group does not publish future state.
   std::uint32_t prefill_lookahead_capacity = 2;
+  // Optional no-victim growth for the next hinted chunk. Only
+  // fresh zero sources; logical state/cursors are published by actual Use.
+  bool prepare_state = true;
   std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
 };
 class Gemma3Runner final : public PagedModel {
@@ -161,7 +164,8 @@ class Gemma3Runner final : public PagedModel {
   struct PrefillNext {
     std::uint32_t slot = 0, rows = 0, after = 0;
   };
-  // A bounded shape prediction only: no future tokens, state or work is posted.
+  // A bounded shape prediction: no future tokens, logical state or model compute.
+  // Eligible fresh backing may be prepared separately when prepare_state is true.
   // Next slots must belong to this wave; their past is its completed end.
   Status WavePrefill(std::span<const Work> work, bool want_head = true,
                      std::span<const PrefillNext> next = {},
@@ -190,6 +194,7 @@ class Gemma3Runner final : public PagedModel {
   const PlanSelections& plan_selections() const { return plan_selections_; }
   const Coverage& coverage() const { return coverage_; }
   std::uint64_t greedy_tokens() const { return greedy_tokens_; }
+  LiveState::PreparationStats state_preparation_stats() const;
   void DropPlans();
   void ReclaimCandidates(std::uint32_t owner, bool running,
                          std::vector<memory::ReclaimCandidate>& out);

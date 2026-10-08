@@ -337,13 +337,27 @@ they build up to two distinct missing upcoming shapes under independent
 allowances,
 capture a shape the next chunk repeats on its first run, and capture the next
 planned shape beside current execution. The [two-future transfer](experiments/prefill-transfer/README.md#two-distinct-future-shapes-2026-10-08)
-checks cold changing-width replay and exact state; no speculative KV is prepared.
+checks cold changing-width replay and exact state; the CPU plan callback does
+not prepare future KV.
 Gemma4's explicit plain capture-ahead comparison uses the same group and
 next/after descriptors; the scalar adapter forwards both stages. Ordinary
 Gemma26/Gemma31 remain off/one-future. Explicit capture may now retain one
 frontier feature per owner: the actual post-replay D2D copy remains outside
 the recorded plan. Verification, greedy and all-output/all-feature capture
 stay excluded; joined target and broader context/policy gates remain open.
+
+Gemma3 separately [prepares fresh zero backing](experiments/gemma-state-prepare-ahead/README.md)
+for a known next chunk before the current Job. A LiveState-owned no-victim
+acquisition ticket is funded and authenticated before submission; the host-only
+meanwhile contract stays unchanged. Future backing does not enter used ranges,
+advance cursors or acquire write-back authority. After the current fence, a
+scoped existing-page-in drain proves retirement before collecting unused zeros
+as reclaimable backing. Actual Use alone publishes initialized ranges. Clear,
+source changes and teardown drain first; unknown completion retains the complete
+owner, and the Runtime Server fails stop before member destruction if teardown
+cannot retire it. The Gemma3 default selects eligible fresh zero sources; kept
+restart sources and fresh sparse-file reads retain their current path. Other
+growing adapters and larger-context qualification remain open.
 
 Gemma's [assistant component](gemma4-assistant.md#native-component-and-protected-target-operands)
 adds explicit post-finalnorm feature retention and scoped readonly cache

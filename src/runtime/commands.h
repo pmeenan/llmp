@@ -124,6 +124,8 @@ struct ServingOptions {
   // internal overrides for matched controls only.
   bool gemma2_prefill_lookahead = true, gemma2_capture_ahead = true;
   bool gemma3_prefill_lookahead = true, gemma3_capture_ahead = true;
+  // Optional fresh-zero state growth; internal matched control only.
+  bool gemma3_prepare_state = true;
 };
 
 struct ChatOptions {

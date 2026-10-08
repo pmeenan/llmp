@@ -31,12 +31,243 @@ using support::Round;
 
 constexpr std::uint64_t kExtent = kPagedExtent;
 
+bool SameZeroSource(const sc::PageSource* actual, const sc::PageSource& initial) {
+  return actual != nullptr && initial.zero && !initial.write_back && actual->zero &&
+         !actual->write_back && actual->landed && actual->piece_count == 0 && actual->backing &&
+         sc::SamePlace(*actual, initial) && actual->read.fd == initial.read.fd &&
+         actual->read.offset == initial.read.offset && actual->read.memory == initial.read.memory &&
+         actual->read.length == initial.read.length;
+}
+
 }  // namespace
+
+struct LiveState::Preparation {
+  PagedNode* node = nullptr;
+  sc::ProgramDone done, drain_done;
+  sc::AcquireReport report;
+  catalog::Closure closure;
+  std::vector<std::pair<std::size_t, std::size_t>> fresh;
+  std::vector<ExtentId> ids;
+  std::uint64_t request = 0, drain_request = 0, allowance = 0;
+  bool acquisition_counted = false, cancellation_requested = false;
+};
+
+LiveState::LiveState(std::string model) : model_(std::move(model)) {}
+
+LiveState::~LiveState() {
+  // A destructor is not a completion proof. The driver or node teardown must
+  // drain first, while the complete state/source owner still exists.
+  base::Check(!preparation_, "destroying live state with preparation in flight");
+}
+
+std::expected<bool, std::string> LiveState::Prepare(PagedNode& node,
+                                                    std::span<const Range> ranges) {
+  ++preparation_stats_.attempted;
+  if (preparation_ || node.job_active_ || node.torn_down_ || !node.threaded() || quarantined_)
+    return Error("state preparation requires an idle healthy driver and no pending ticket");
+  // Validate/count without allocating. Duplicate ranges may overestimate the
+  // descriptor allowance; this is optional headroom, never forced/reclaimed.
+  std::uint64_t count = 0;
+  for (const auto& range : ranges) {
+    if (range.region >= regions_.size()) return Error("a prepared range names no region");
+    const auto& r = regions_[range.region];
+    if (range.offset > r.bytes || range.bytes > r.bytes - range.offset)
+      return Error("a prepared range is outside its layout");
+    if (!r.growing) return Error("preparation requires growing regions");
+    if (range.bytes == 0) continue;
+    const auto first = static_cast<std::size_t>(range.offset / kExtent);
+    const auto last = static_cast<std::size_t>((range.offset + range.bytes - 1) / kExtent);
+    for (auto i = first; i <= last; ++i) {
+      if (r.used[i] || r.kept[i]) continue;
+      // An adopted restart file is authoritative even for currently unpublished
+      // ranges. Never turn it into a zero source or disposable prepared page.
+      if (i >= r.sources.size() || !r.sources[i].zero || r.sources[i].write_back) {
+        ++preparation_stats_.refused;
+        return false;
+      }
+      if (count == UINT64_MAX) return Error("state preparation descriptor count overflow");
+      ++count;
+    }
+  }
+  if (count == 0) return false;
+  // Covers the stable ticket/two Done records, fresh indices/IDs, both closure
+  // copies and the AcquireProgram/materialization planner's transient vectors.
+  // A drain borrows these IDs; its fixed program fits the 4096-byte envelope.
+  // No-victim planning allocates no global victim list. Actual page
+  // backing remains separately charged by the scheduler under B.
+  constexpr std::uint64_t kDescriptorBytes = 256;
+  constexpr std::uint64_t kTicketBytes = 4096;
+  if (count > SIZE_MAX || count > (UINT64_MAX - kTicketBytes) / kDescriptorBytes)
+    return Error("state preparation descriptor allowance overflow");
+  const auto allowance = kTicketBytes + count * kDescriptorBytes;
+  if (!node.TryChargeHost(allowance)) {
+    ++preparation_stats_.refused;
+    return false;
+  }
+  auto pending = std::make_unique<Preparation>();
+  pending->node = &node;
+  pending->allowance = allowance;
+  pending->fresh.reserve(static_cast<std::size_t>(count));
+  for (const auto& range : ranges) {
+    if (range.bytes == 0) continue;
+    const auto& r = regions_[range.region];
+    const auto first = static_cast<std::size_t>(range.offset / kExtent);
+    const auto last = static_cast<std::size_t>((range.offset + range.bytes - 1) / kExtent);
+    for (auto i = first; i <= last; ++i)
+      if (!r.used[i] && !r.kept[i]) pending->fresh.emplace_back(range.region, i);
+  }
+  std::ranges::sort(pending->fresh);
+  const auto duplicate = std::ranges::unique(pending->fresh);
+  pending->fresh.erase(duplicate.begin(), duplicate.end());
+  bool eligible = true;
+  auto checked = node.Call(
+      [&]() -> Status {
+        // Whole-source/identity validation precedes any optional page-in. Only
+        // nonresident fresh state is selected; another owner or in-flight use
+        // cannot become a preparation side effect.
+        auto& ids = pending->ids;
+        ids.reserve(pending->fresh.size());
+        for (const auto& [ri, i] : pending->fresh) {
+          const auto& r = regions_[ri];
+          const auto id = r.mapped.extents[i];
+          const auto view = node.catalog().Describe(id);
+          const auto* source = node.scheduler().SourceOf(id);
+          const auto& original = r.sources[i];
+          if (!view || view->descriptor.domain != node.domain() ||
+              view->descriptor.memory_class != catalog::MemoryClass::kLiveState ||
+              view->descriptor.recovery != catalog::Recovery::kPreserve ||
+              view->descriptor.size != Bytes(kExtent) || view->discarded || view->preserved ||
+              view->state != catalog::ExtentState::kNonresident || view->leases != 0 ||
+              view->registrations != 0 || !SameZeroSource(source, original)) {
+            eligible = false;
+            return {};
+          }
+          ids.push_back(id);
+        }
+        auto closure = node.catalog().ClosureOfExtents(ids);
+        if (!closure) return Error("forming the state preparation closure");
+        pending->closure = std::move(*closure);
+        const auto plan = memory::PlanMaterialization(node.catalog(), node.domain(), node.budget(),
+                                                      pending->closure, {}, false);
+        eligible = plan.feasible && plan.shortfall.value() == 0;
+        return {};
+      },
+      "checking optional state preparation");
+  if (!checked || !eligible) {
+    pending.reset();  // destroy all descriptors before returning their charge
+    node.UnchargeHost(allowance);
+    ++preparation_stats_.refused;
+    return checked ? std::expected<bool, std::string>{false} : Error(checked.error());
+  }
+  preparation_ = std::move(pending);
+  next_preparing_ = node.preparing_state_;
+  node.preparing_state_ = this;
+  preparation_->request = node.Submit(std::make_unique<sc::AcquireProgram>(
+      preparation_->done, preparation_->closure, node.domain(), node.budget(), preparation_->report,
+      std::vector<ExtentId>{}, false));
+  ++preparation_stats_.submitted;
+  return true;
+}
+
+LiveState::Status LiveState::FinishPreparation(bool cancel) {
+  if (!preparation_) return {};
+  auto& pending = *preparation_;
+  auto& node = *pending.node;
+  if (node.job_active_) return Error("state preparation settles only after the current Job");
+  if (cancel && !pending.cancellation_requested) {
+    if (!pending.done.gone.load()) node.Cancel(pending.request);
+    pending.cancellation_requested = true;
+    ++preparation_stats_.cancel_requested;
+  }
+  const auto acquired = node.Await(pending.done, "optional state preparation", pending.request);
+  if (!pending.acquisition_counted) {
+    if (!acquired) ++preparation_stats_.failed;
+    pending.acquisition_counted = true;
+  }
+  // Acquire gone proves destruction of that program, not retirement of the
+  // independent page-ins it withdrew from. A scoped waiter joins those loads
+  // without starting absent pages. Keep the complete owner/charge/link until
+  // the program is gone AND each scoped load has a positive no-access proof.
+  bool retired = false;
+  const auto check_retired = [&]() -> Status {
+    return node.Call(
+        [&]() -> Status {
+          const auto result = node.scheduler().PageInsRetired(pending.ids);
+          if (!result) return Error("prepared page-in retirement is unproven");
+          retired = *result;
+          return {};
+        },
+        "checking prepared page-in retirement");
+  };
+  auto proof = check_retired();
+  if (proof && !retired) {
+    if (pending.drain_request == 0 || pending.drain_done.gone.load()) {
+      pending.drain_done.outcome.store(-1);
+      pending.drain_done.retired.store(false);
+      pending.drain_done.error.store(-1);
+      pending.drain_done.gone.store(false);
+      pending.drain_request =
+          node.Submit(std::make_unique<sc::DrainPageInsProgram>(pending.drain_done, pending.ids));
+    }
+    const auto drained =
+        node.Await(pending.drain_done, "prepared page-in drain", pending.drain_request);
+    if (!drained) {
+      Quarantine();
+      return Error(drained.error());  // cancellation is not a retirement proof
+    }
+    proof = check_retired();
+  }
+  if (!proof || !retired) {
+    Quarantine();
+    return Error(proof ? "prepared page-ins have not retired" : proof.error());
+  }
+  for (const auto& [ri, i] : pending.fresh) regions_[ri].kept[i] = 2;
+  auto collected = node.Call(
+      [&]() -> Status {
+        bool invalid = false;
+        for (const auto& [ri, i] : pending.fresh) {
+          const auto& r = regions_[ri];
+          const auto id = r.mapped.extents[i];
+          const auto expected = std::ranges::lower_bound(pending.closure.extents, id, {},
+                                                         [](const auto& e) { return e.first; });
+          const auto view = node.catalog().Describe(id);
+          const auto* source = node.scheduler().SourceOf(id);
+          if (expected == pending.closure.extents.end() || expected->first != id || !view ||
+              view->content_generation != expected->second || view->discarded ||
+              !SameZeroSource(source, r.sources[i])) {
+            invalid = true;
+            continue;  // changed authority: retain, never discard its contents here
+          }
+          if (view->state == catalog::ExtentState::kNonresident) continue;
+          if (view->state != catalog::ExtentState::kResident ||
+              (!view->discarded && !node.catalog().InvalidateContents(id))) {
+            invalid = true;
+            continue;
+          }
+          ++preparation_stats_.completed_extents;
+        }
+        return invalid ? Error("state preparation completion is uncertain; state quarantined")
+                       : Status{};
+      },
+      "collecting unpublished prepared state");
+  if (!collected) Quarantine();
+  // Unlink only after all operations retired and partial backing is owned by
+  // kept_extents(), including any uncertain extent that must survive teardown.
+  auto** link = &node.preparing_state_;
+  while (*link != this) link = &(*link)->next_preparing_;
+  *link = next_preparing_;
+  next_preparing_ = nullptr;
+  const auto allowance = pending.allowance;
+  preparation_.reset();
+  node.UnchargeHost(allowance);
+  return collected;
+}
 
 // ------------------------------------------------------------------ regions
 
 LiveState::Status LiveState::Add(PagedNode& node, std::string name, std::uint64_t bytes,
                                  int owner) {
+  if (auto finished = FinishPreparation(); !finished) return finished;
   InvalidatePlaces();
   Region& region = regions_.emplace_back();
   region.bytes = bytes;
@@ -50,6 +281,7 @@ LiveState::Status LiveState::Add(PagedNode& node, std::string name, std::uint64_
 
 LiveState::Status LiveState::AddGrowing(PagedNode& node, std::string name, std::uint64_t bytes,
                                         int owner) {
+  if (auto finished = FinishPreparation(); !finished) return finished;
   InvalidatePlaces();
   Region& region = regions_.emplace_back();
   region.bytes = bytes;
@@ -185,6 +417,8 @@ std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const
   if (over_budget != nullptr) {
     *over_budget = false;
   }
+  if (auto finished = FinishPreparation(); !finished) return Error(finished.error());
+  if (quarantined_) return Error("state growth requires clearing quarantined state");
   // Validate the complete request before making any range resident.
   std::vector<std::pair<std::size_t, std::size_t>> fresh;
   for (const Range& range : ranges) {
@@ -228,6 +462,7 @@ std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const
             if (r.kept[i] == 0) {
               continue;
             }
+            const bool prepared = r.kept[i] == 2;
             r.kept[i] = 0;
             const ExtentId id = r.mapped.extents[i];
             const auto view = node.catalog().Describe(id);
@@ -241,6 +476,7 @@ std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const
               return Error(std::format("a state's initialized write-back place: {}",
                                        sc::ToString(set.error())));
             }
+            preparation_stats_.adopted_extents += prepared;
           }
           return {};
         },
@@ -342,6 +578,10 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node,
 }
 
 LiveState::Status LiveState::RegisterSpill(PagedNode& node, const SpillPlace& place) {
+  // A source is registered once. Refusal must not settle preparation or
+  // change backing that still belongs to the original spill file.
+  if (spill_fd_ >= 0) return Error("state spill source is already registered");
+  if (auto finished = FinishPreparation(); !finished) return finished;
   InvalidatePlaces();
   std::uint64_t file_bytes = 0;
   for (const Region& r : regions_) {
@@ -410,6 +650,7 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node, const SpillPlace& pl
 }
 
 LiveState::Status LiveState::Retain(PagedNode& node, std::span<const Range> ranges) {
+  if (auto finished = FinishPreparation(); !finished) return finished;
   InvalidatePlaces();
   zeroed_ = false;
   std::vector<std::vector<std::uint8_t>> wanted;
@@ -508,6 +749,8 @@ LiveState::Status LiveState::Retain(PagedNode& node, std::span<const Range> rang
 LiveState::Status LiveState::Copy(PagedNode& node, const catalog::Closure& fence,
                                   std::uint32_t stream, void* host, std::span<const Range> ranges,
                                   bool to_host, CopyRetirement* retirement) {
+  if (retirement != nullptr) *retirement = CopyRetirement::kProven;
+  if (auto finished = FinishPreparation(); !finished) return finished;
   if (!to_host) {
     InvalidatePlaces();
     zeroed_ = false;
@@ -593,6 +836,7 @@ bool LiveState::CheckPlacesImpl(const sc::Scheduler& scheduler, PlaceCheck& chec
 }
 
 LiveState::Status LiveState::DiscardGrowingState(PagedNode& node, bool keep_zeroed) {
+  if (auto finished = FinishPreparation(); !finished) return finished;
   InvalidatePlaces();
   if (regions_.empty() ||
       !std::ranges::all_of(regions_, [](const Region& r) { return r.growing; })) {
@@ -605,15 +849,14 @@ LiveState::Status LiveState::DiscardGrowingState(PagedNode& node, bool keep_zero
   zeroed_ = false;
   quarantined_ = true;
   const auto used = extents();
-  std::vector<ExtentId> release = used;
-  if (!keep) {
-    const auto kept = kept_extents();
-    release.insert(release.end(), kept.begin(), kept.end());
-  }
+  std::vector<ExtentId> all = used;
+  const auto kept = kept_extents();
+  all.insert(all.end(), kept.begin(), kept.end());
+  std::vector<ExtentId> release = keep ? used : all;
   std::vector<std::uint8_t> resident(used.size(), 0);
   auto discarded = node.Call(
       [&]() -> Status {
-        for (const ExtentId id : used) {
+        for (const ExtentId id : all) {
           auto view = node.catalog().Describe(id);
           if (!view || view->leases != 0 || view->registrations != 0 ||
               (view->state != catalog::ExtentState::kResident &&
@@ -621,10 +864,13 @@ LiveState::Status LiveState::DiscardGrowingState(PagedNode& node, bool keep_zero
             return Error("a state being cleared is held or has an operation in flight");
           }
         }
-        for (std::size_t k = 0; k < used.size(); ++k) {
-          if (node.catalog().Describe(used[k])->state == catalog::ExtentState::kResident) {
-            resident[k] = 1;
-            if (!node.catalog().InvalidateContents(used[k])) {
+        for (std::size_t k = 0; k < all.size(); ++k) {
+          const auto view = node.catalog().Describe(all[k]);
+          if (view->state == catalog::ExtentState::kResident) {
+            if (k < used.size()) resident[k] = 1;
+            // A refused preparation invalidation remains owned but unusable.
+            // After the hold is released, Clear can discard that unused page.
+            if (!view->discarded && !node.catalog().InvalidateContents(all[k])) {
               return Error("invalidating a conversation state");
             }
           }
@@ -696,6 +942,7 @@ LiveState::Status LiveState::DiscardGrowingState(PagedNode& node, bool keep_zero
 std::expected<bool, std::string> LiveState::ZeroForReuse(PagedNode& node,
                                                          const catalog::Closure& fence,
                                                          std::uint32_t stream) {
+  if (auto finished = FinishPreparation(); !finished) return Error(finished.error());
   InvalidatePlaces();
   zeroed_ = false;
   if (regions_.empty() ||
@@ -758,6 +1005,7 @@ std::expected<bool, std::string> LiveState::ZeroForReuse(PagedNode& node,
 
 LiveState::Status LiveState::Clear(PagedNode& node, const catalog::Closure& fence,
                                    std::uint32_t stream, std::string_view what) {
+  if (auto finished = FinishPreparation(); !finished) return finished;
   InvalidatePlaces();
   zeroed_ = false;
   if (!regions_.empty() &&
@@ -835,6 +1083,7 @@ LiveState::Status LiveState::Read(PagedNode& node, const catalog::Closure& fence
   if (retirement != nullptr) {
     *retirement = CopyRetirement::kProven;
   }
+  if (auto finished = FinishPreparation(); !finished) return finished;
   const std::vector<Range> ranges = used_ranges();
   auto* host = static_cast<std::byte*>(HostCopy(node, std::max<std::uint64_t>(used_bytes(), 256)));
   if (host == nullptr) {
@@ -1053,6 +1302,10 @@ bool LiveState::Settle(bool saved, bool wrote, bool unknown) {
 }
 
 void LiveState::Release(providers::VmmProvider& memory, std::vector<std::string>& problems) {
+  if (preparation_) {
+    problems.emplace_back("state preparation was not drained; complete owner retained");
+    return;
+  }
   InvalidatePlaces();
   for (Region& r : regions_) {
     if (!ReleaseMapped(memory, r.mapped)) {

@@ -610,6 +610,10 @@ class Scheduler {
                ? std::optional(found->second.operation)
                : std::nullopt;
   }
+  // Scheduler-owner proof for this exact set only. No materialization or
+  // restart: absent loads are safe only in Resident/Nonresident, never in
+  // Quarantined (which can mean an unproven provider still touches payload).
+  std::expected<bool, WorkError> PageInsRetired(std::span<const catalog::ExtentId> extents) const;
   // Page-ins in flight, in any stage.
   std::size_t loads() const { return loads_.size(); }
   // Evictions parked with their backing kept for a handoff.
@@ -779,6 +783,8 @@ class Scheduler {
 
   // TaskContext's work.
   std::expected<Readiness, WorkError> Materialize(TaskId task, const catalog::Closure& closure);
+  std::expected<Readiness, WorkError> AwaitPageIns(TaskId task,
+                                                   std::span<const catalog::ExtentId> extents);
   // Moves from `device` or `job`, whichever `kind` names, only if the
   // operation is created. Under `closure`'s own lease, or with a valid
   // `held`, under that request's lease.
@@ -963,6 +969,11 @@ class TaskContext {
 
   std::expected<Readiness, WorkError> Materialize(const catalog::Closure& closure) {
     return scheduler_.Materialize(task_, closure);
+  }
+  // Join existing scoped page-ins through their no-access retirement proof,
+  // including queued/slot/mailbox waits. Never starts a missing page-in.
+  std::expected<Readiness, WorkError> AwaitPageIns(std::span<const catalog::ExtentId> extents) {
+    return scheduler_.AwaitPageIns(task_, extents);
   }
   // The operation's result wakes the task; a failure shows in TakeFailure.
   std::expected<OperationId, WorkError> SubmitDevice(const catalog::Closure& closure,

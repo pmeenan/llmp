@@ -9,6 +9,8 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -17,6 +19,7 @@
 #include <memory>
 #include <print>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -26,6 +29,7 @@
 #include "engine/gemma2_runner.h"
 #include "engine/gemma3_runner.h"
 #include "plain_token_serving_checks.h"
+#include "platform/crash_policy.h"
 #include "platform/kept_files.h"
 #include "runtime/serving.h"
 
@@ -198,7 +202,7 @@ class GemmaPrefillServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     }
     return {};
   }
-  void CheckConfiguredRoots(std::uint32_t rows, std::uint32_t chunks);
+  void CheckConfiguredRoots(std::uint32_t rows, std::uint32_t chunks, bool prepare_state = false);
 };
 
 TEST_P(GemmaPrefillServingGpu, PlainRuntimeTokensPreserveRowsStateAndRestoredContinuations) {
@@ -212,6 +216,76 @@ TEST_P(GemmaPrefillServingGpu, PlainRuntimeTokensPreserveRowsStateAndRestoredCon
   const auto r = GetParam() == 2 ? exercise(dynamic_cast<en::Gemma2Runner&>(model->paged()))
                                  : exercise(dynamic_cast<en::Gemma3Runner&>(model->paged()));
   ASSERT_TRUE(r) << (r ? "" : r.error());
+}
+
+TEST_P(GemmaPrefillServingGpu, DefaultPreparationPublishesOnlyActualPromptProgress) {
+  if (GetParam() != 3) GTEST_SKIP() << "Gemma3 preparation adapter only";
+  EXPECT_TRUE(en::Gemma3Options{}.prepare_state);
+  EXPECT_TRUE(rt::ServingOptions{}.gemma3_prepare_state);
+  std::array<std::vector<float>, 2> expected;
+  std::array<jitllm::base::Sha256Digest, 2> expected_state{};
+  std::array<std::int64_t, 2> expected_joined{};
+  for (const bool ordinary : {false, true}) {
+    life->options = rt::ServingOptions{};
+    if (!ordinary) life->options.gemma3_prepare_state = false;
+    ASSERT_TRUE(Start(true));
+    auto& runner = dynamic_cast<en::Gemma3Runner&>(model->paged());
+    ASSERT_EQ(runner.layout().local_cells, 1280U);
+    const auto before = runner.state_preparation_stats();
+    std::array<std::vector<float>, 2> heads;
+    std::array<jitllm::base::Sha256Digest, 2> states{};
+    double unused_seconds = 0;
+    const auto result = Prompt(runner, heads, states, unused_seconds);
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+    const auto prepared = runner.state_preparation_stats();
+    if (ordinary) {
+      EXPECT_GT(prepared.submitted, before.submitted);
+      EXPECT_GT(prepared.completed_extents, before.completed_extents);
+      EXPECT_GT(prepared.adopted_extents, before.adopted_extents);
+    } else {
+      EXPECT_EQ(prepared.submitted, before.submitted);
+      EXPECT_EQ(prepared.completed_extents, before.completed_extents);
+      EXPECT_EQ(prepared.adopted_extents, before.adopted_extents);
+    }
+    EXPECT_EQ(prepared.failed, before.failed);
+    EXPECT_EQ(prepared.refused, before.refused);
+    EXPECT_TRUE(runner.cohort_usable());
+    EXPECT_FALSE(life->server->node().has_pending_state_preparation());
+    for (std::uint32_t owner = 0; owner < 2; ++owner) {
+      ASSERT_EQ(heads[owner].size(), 262208U);
+      EXPECT_TRUE(std::ranges::all_of(heads[owner], [](float v) { return std::isfinite(v); }));
+      EXPECT_TRUE((*runner.request_slot(owner))->state_usable());
+      EXPECT_EQ((*runner.request_slot(owner))->completed_positions(), owner == 0 ? 1280U : 1536U);
+    }
+    const auto extra = jitllm::base::json::Parse(model->extra());
+    ASSERT_TRUE(extra);
+    std::array<std::int64_t, 2> joined{};
+    for (std::size_t i = 0; i < joined.size(); ++i) {
+      const auto field =
+          extra->root().find(i == 0 ? "joined_prefill_groups" : "joined_prefill_rows");
+      ASSERT_TRUE(field);
+      joined[i] = field->int64().value_or(0);
+      EXPECT_GT(joined[i], 0);
+    }
+    if (!ordinary) {
+      expected = heads;
+      expected_state = states;
+      expected_joined = joined;
+    } else {
+      for (std::size_t owner = 0; owner < heads.size(); ++owner)
+        EXPECT_EQ(std::memcmp(heads[owner].data(), expected[owner].data(),
+                              heads[owner].size() * sizeof(float)),
+                  0);
+      EXPECT_EQ(states, expected_state);
+      EXPECT_EQ(joined, expected_joined);
+      std::println(
+          "GEMMA_DEFAULT_PREPARATION_RUNTIME completed={} adopted={} state_exact=1 "
+          "head_exact=1 history_exact=1 joined_groups={} joined_rows={}",
+          prepared.completed_extents - before.completed_extents,
+          prepared.adopted_extents - before.adopted_extents, joined[0], joined[1]);
+    }
+    ASSERT_TRUE(Retire());
+  }
 }
 
 TEST_P(GemmaPrefillServingGpu, ActualJoinedHintsPreserveHeadsAndState) {
@@ -376,7 +450,8 @@ TEST_P(GemmaPrefillServingGpu, ActualOwnerPrefillPreservesHeadsStateAndRestart) 
 
 // Public Gemma chunk admission remains 128. Qualify the explicitly configured
 // larger runner and its kept-file layout without bypassing that API clamp.
-void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint32_t kChunks) {
+void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint32_t kChunks,
+                                                  bool prepare_state) {
   const std::uint32_t kPositions = kRows * kChunks;
   const auto exercise = [&]<class Runner, class Options>() -> en::Status {
     EXPECT_EQ(Options{}.prefill_lookahead_capacity, 2U);
@@ -423,6 +498,8 @@ void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint
       options.prefill_lookahead = true;
       options.capture_ahead = true;
       options.prefill_lookahead_capacity = 2;
+      if constexpr (requires { options.prepare_state; })
+        options.prepare_state = prepare_state && owners;
       options.spill_place = [spill_dir, keep, owners](std::uint32_t slot) {
         return en::LiveState::SpillPlace{
             .directory = {},
@@ -468,6 +545,14 @@ void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint
       for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = seed[i % seed.size()];
       const auto before = runner.lookahead_stats();
       const auto replayed = runner.graph_stats().replayed;
+      en::LiveState::PreparationStats preparation_before;
+      if constexpr (requires { runner.state_preparation_stats(); })
+        preparation_before = runner.state_preparation_stats();
+      const bool require_wrap = kRows == 512 || prepare_state;
+      if (prepare_state &&
+          (GetParam() != 3 || kRows != 128 || runner.layout().local_cells != 1280 ||
+           kPositions <= runner.layout().local_cells))
+        return std::unexpected("prepared 128-row ring wrap not exercised");
       if (kRows == 512 && (runner.layout().local_cells != (GetParam() == 2 ? 4608U : 1536U) ||
                            kPositions <= runner.layout().local_cells))
         return std::unexpected("configured 512-row ring wrap not exercised");
@@ -485,11 +570,11 @@ void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint
                                         chunk + 2 == kChunks, chunk + 3 == kChunks);
             !r)
           return r;
-        if (hinted && kRows == 512 && (chunk + 1) * kRows > runner.layout().local_cells) {
+        if (hinted && require_wrap && (chunk + 1) * kRows > runner.layout().local_cells) {
           const auto& selected = runner.plan_selections();
           if (selected.owner_prefill_attention == 0 || selected.packed_prefill_attention != 0 ||
-              selected.largest_owner_prefill_rows != 512)
-            return std::unexpected("wrapped 512-row root-only plans not selected");
+              selected.largest_owner_prefill_rows != kRows)
+            return std::unexpected("wrapped root-only plans not selected");
           ++wrapped_root_waves;
           wrapped_replays += runner.graph_stats().replayed > replayed_before;
         }
@@ -510,17 +595,35 @@ void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint
               after.captured_ahead - before.captured_ahead != 1 ||
               runner.graph_stats().replayed - replayed != 1)
             return std::unexpected("larger two-future construction/capture/replay not executed");
-        } else if (after.built_pairs <= before.built_pairs ||
-                   after.cached_pairs <= before.cached_pairs || after.built - before.built < 2 ||
+        } else if ((!prepare_state && (after.built_pairs <= before.built_pairs ||
+                                       after.cached_pairs <= before.cached_pairs)) ||
+                   after.built - before.built < 2 ||
                    after.cached - before.cached != after.built - before.built ||
                    after.captured_ahead <= before.captured_ahead ||
                    runner.graph_stats().replayed <= replayed || after.refused != before.refused ||
                    after.dropped_ahead != before.dropped_ahead || wrapped_root_waves == 0 ||
                    wrapped_replays == 0) {
-          return std::unexpected("wrapped 512-row capture/replay/lifetime path not executed");
+          return std::unexpected("wrapped root capture/replay/lifetime path not executed");
         }
       } else if (after.built != before.built || after.cached != before.cached) {
         return std::unexpected("unhinted packed control built a future");
+      }
+      if constexpr (requires { runner.state_preparation_stats(); }) {
+        const auto prepared = runner.state_preparation_stats();
+        if (prepare_state && hinted) {
+          if (prepared.submitted <= preparation_before.submitted ||
+              prepared.completed_extents <= preparation_before.completed_extents ||
+              prepared.adopted_extents <= preparation_before.adopted_extents ||
+              prepared.failed != preparation_before.failed ||
+              prepared.refused != preparation_before.refused)
+            return std::unexpected("actual 128-row preparation/adoption not executed");
+          std::println("GEMMA_PREPARED_STATE_LIFETIME rows={} positions={} completed={} adopted={}",
+                       kRows, kPositions,
+                       prepared.completed_extents - preparation_before.completed_extents,
+                       prepared.adopted_extents - preparation_before.adopted_extents);
+        } else if (prepared.submitted != preparation_before.submitted) {
+          return std::unexpected("unhinted baseline prepared future state");
+        }
       }
       return {};
     };
@@ -550,6 +653,8 @@ void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint
           0, runner.closure(), "larger owner restart", [&]() -> en::Status {
             std::array<std::vector<float>, 2> heads;
             if (auto r = prefill(runner, heads, true); !r) return r;
+            if (primary->node.has_pending_state_preparation())
+              return std::unexpected("prepared state owner still linked before checkpoint");
             for (std::size_t owner = 0; owner < 2; ++owner)
               if (std::memcmp(heads[owner].data(), packed_heads[owner].data(),
                               vocab * sizeof(float)))
@@ -676,6 +781,96 @@ void GemmaPrefillServingGpu::CheckConfiguredRoots(std::uint32_t kRows, std::uint
                           ? exercise.template operator()<en::Gemma2Runner, en::Gemma2Options>()
                           : exercise.template operator()<en::Gemma3Runner, en::Gemma3Options>();
   ASSERT_TRUE(result) << (result ? "" : result.error());
+}
+
+TEST_P(GemmaPrefillServingGpu, Prepared128RootsPreserveStateAndRestartContinuation) {
+  if (GetParam() != 3) GTEST_SKIP() << "Gemma3 preparation adapter only";
+  CheckConfiguredRoots(128, 12, true);
+}
+
+TEST_P(GemmaPrefillServingGpu, UnprovenPreparationStopsServerBeforeOwnerDestruction) {
+  if (GetParam() != 3) GTEST_SKIP() << "Gemma3 preparation adapter only";
+  // This test is launched alone. Parent SetUp only creates paths/configuration;
+  // CUDA/node threads are first created inside the isolated child. No fork of
+  // an active provider and no production fault hook are involved.
+  EXPECT_EXIT(
+      ([&] {
+        if (!jitllm::platform::InstallCrashPolicy("prepared-owner-control")) std::_Exit(61);
+        if (!Start(false)) std::_Exit(62);
+        auto& node = life->server->node();
+        auto& runner = dynamic_cast<en::Gemma3Runner&>(model->paged());
+        // An independently owned state uses the actual node registry without
+        // exposing a runner's private state or adding a production fault hook.
+        // It and the Server remain alive until the guard terminates this child.
+        auto owned_state = std::make_unique<en::LiveState>("unknown-owner-control");
+        auto& state = *owned_state;
+        if (!node.Call(
+                [&]() -> en::Status {
+                  if (auto r = state.AddGrowing(node, "unknown owner", en::kPagedExtent, 0); !r)
+                    return r;
+                  return state.RegisterSpill(node, scratch);
+                },
+                "register independent preparation owner"))
+          std::_Exit(71);
+        const std::array ranges = {en::LiveState::Range{0, 0, 16}};
+        if (!state.Prepare(node, ranges).value_or(false) || !node.has_pending_state_preparation())
+          std::_Exit(63);
+        const auto charge = node.host_counted();
+        const auto id = state.reserved_extents()[0];
+        bool resident = false;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!resident && std::chrono::steady_clock::now() < deadline) {
+          if (!node.Call(
+                  [&]() -> en::Status {
+                    resident = node.catalog().Describe(id)->state ==
+                               jitllm::catalog::ExtentState::kResident;
+                    return {};
+                  },
+                  "waiting for prepared owner"))
+            std::_Exit(64);
+          if (!resident) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (!resident) std::_Exit(65);
+        // Synthetic unknown CATALOG outcome, with mapped backing retained.
+        // No provider/service eviction is issued or claimed to have retired.
+        if (!node.Call(
+                [&]() -> en::Status {
+                  if (!node.catalog().InvalidateContents(id)) return std::unexpected("invalidate");
+                  auto eviction = node.catalog().BeginEvict(id);
+                  if (!eviction || !node.catalog().QuarantineEviction(*eviction))
+                    return std::unexpected("unknown eviction");
+                  return {};
+                },
+                "retain synthetic unknown prepared backing"))
+          std::_Exit(66);
+        if (state.FinishPreparation() || !state.preparing() ||
+            !node.has_pending_state_preparation() || node.host_counted() != charge ||
+            !state.extents().empty())
+          std::_Exit(67);
+        const std::array<en::PagedModel*, 1> models = {&runner};
+        if (node.TearDown(models) || !state.preparing() || !node.has_pending_state_preparation() ||
+            node.host_counted() != charge || !node.threaded())
+          std::_Exit(68);
+        bool owned = false;
+        if (!node.Call(
+                [&]() -> en::Status {
+                  const auto view = node.catalog().Describe(id);
+                  owned = view && view->state == jitllm::catalog::ExtentState::kQuarantined &&
+                          node.memory()
+                              .MappedAt(node.scheduler().SourceOf(id)->backing->reservation,
+                                        node.scheduler().SourceOf(id)->backing->offset)
+                              .has_value();
+                  return {};
+                },
+                "prove unknown prepared backing remains owned") ||
+            !owned)
+          std::_Exit(69);
+        // Actual Server guard must stop before returning to any destructor.
+        (void)life->server->TearDown();
+        std::_Exit(70);
+      }()),
+      ::testing::ExitedWithCode(jitllm::platform::kFatalSignalExitBase + SIGABRT),
+      "unretired state preparation; aborting before owner destruction");
 }
 
 TEST_P(GemmaPrefillServingGpu, ConfiguredLargerRootsPreserveStateAndRestartContinuation) {

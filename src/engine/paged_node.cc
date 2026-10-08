@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "base/bounded_queue.h"
+#include "engine/live_state.h"
 #include "engine/support.h"
 #include "memory/materialize.h"
 #include "memory/reclaim.h"
@@ -701,6 +702,15 @@ bool PagedNode::ChargeHost(std::uint64_t bytes, bool required) {
   return true;
 }
 
+bool PagedNode::TryChargeHost(std::uint64_t bytes) {
+  if (job_active_ || torn_down_ || bytes > UINT64_MAX - host_total_ ||
+      host_total_ + bytes > UINT64_MAX - (kPagedExtent - 1))
+    return false;
+  if (!Recharge(host_total_ + bytes, false, nullptr)) return false;
+  host_total_ += bytes;
+  return true;
+}
+
 std::uint64_t PagedNode::AskReclaim(std::uint64_t needed, ReclaimFor what,
                                     std::span<const ExtentId> protect) {
   if (!reclaimer_ || reclaiming_ || needed == 0) {
@@ -1029,7 +1039,8 @@ Status PagedNode::Await(Done& done, std::string_view what, std::uint64_t request
     hang_cancelled_ = true;
     ++hang_cancels_;
     return Error(std::format(
-        "{} did not finish: nothing moved, so it was cancelled (a hang), and it drained", what));
+        "{} did not finish: nothing moved, so it was cancelled (a hang); its program retired",
+        what));
   }
   if (done.outcome.load() != static_cast<int>(sc::TaskOutcome::kSucceeded)) {
     const int error = done.error.load();
@@ -1739,8 +1750,18 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
   if (torn_down_) {
     return {};
   }
-  torn_down_ = true;
+  if (job_active_) return Error("node teardown cannot overlap a device job");
   std::vector<std::string> problems;
+  // A withdrawn acquisition can be gone before its page-ins retire. Keep
+  // the complete LiveState owner and node alive on an unproven scoped drain.
+  while (preparing_state_ != nullptr) {
+    auto* owner = preparing_state_;
+    if (auto ended = owner->FinishPreparation(true); !ended) {
+      if (preparing_state_ == owner) return Error(ended.error());
+      problems.push_back(ended.error());
+    }
+  }
+  torn_down_ = true;
   // Requests first: their leases would hold what the teardown evicts.
   std::vector<std::uint32_t> open;
   open.reserve(requests_.size());

@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Prepare eligible fresh Gemma3 state backing beside current prefill work,
+  with completion-aware ownership, scoped page-in retirement and exact
+  continuation state. Kept restart sources retain their original read path.
+
 - Share eligible Gemma2/Gemma3 Q8 input preparation while preserving original
   MMVQ arithmetic, exact outputs/state and fused one-column FFN behavior.
   Device-specific selection and startup funding cover nine formats through

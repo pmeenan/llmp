@@ -39,6 +39,7 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -66,14 +67,14 @@ class LiveState {
       kernels::ggml::LaunchContext& launch, std::uint32_t keep)>;
 
   // `model` names it in refusals ("DeepSeek", "Qwen3.8").
-  explicit LiveState(std::string model) : model_(std::move(model)) {}
+  explicit LiveState(std::string model);
   LiveState(const LiveState&) = delete;
   LiveState& operator=(const LiveState&) = delete;
   LiveState(LiveState&&) = delete;
   LiveState& operator=(LiveState&&) = delete;
   // Nothing is released here: Release does it, after the node's teardown
   // proved no read or write of the spill file or the regions is in flight.
-  ~LiveState() = default;
+  ~LiveState();
 
   // ---------------------------------------------------------------- regions
 
@@ -98,6 +99,24 @@ class LiveState {
   std::expected<bool, std::string> Use(PagedNode& node, std::span<const Range> ranges,
                                        const catalog::Closure* keep = nullptr,
                                        bool* over_budget = nullptr);
+  // Optional next-chunk growth, submitted BEFORE the current Job. Only fresh
+  // zero sources are eligible: kept restart files retain the ordinary read
+  // path. No victims or reclaimer, and no publication into used ranges,
+  // write-back state or the caller's cursor. The stable owned ticket remains
+  // alive through program destruction AND scoped page-in retirement, including
+  // partial failure/cancellation; a withdrawn acquisition's gone is insufficient.
+  std::expected<bool, std::string> Prepare(PagedNode& node, std::span<const Range> ranges);
+  // After the current fence, collect completed pages into reclaimable kept
+  // zero backing. All mutators drain before source/layout changes; node teardown
+  // drains before eviction. Unknown/cancelled drain keeps the whole ticket,
+  // charge and state owner alive; teardown refuses until retirement is proven.
+  Status FinishPreparation(bool cancel = false);
+  bool preparing() const { return preparation_ != nullptr; }
+  struct PreparationStats {
+    std::uint64_t attempted = 0, submitted = 0, refused = 0, failed = 0, completed_extents = 0,
+                  adopted_extents = 0, cancel_requested = 0;
+  };
+  const PreparationStats& preparation_stats() const { return preparation_stats_; }
   // What the last Use refused for capacity asked for: the fresh extents'
   // bytes (what the runtime reclaims for it before it runs again).
   std::uint64_t refused_bytes() const { return refused_bytes_; }
@@ -278,6 +297,11 @@ class LiveState {
   void Release(providers::VmmProvider& memory, std::vector<std::string>& problems);
 
  private:
+  friend class PagedNode;
+  struct Preparation;
+  std::unique_ptr<Preparation> preparation_;
+  LiveState* next_preparing_ = nullptr;
+  PreparationStats preparation_stats_;
   friend struct LiveStatePlacementTestAccess;
   bool CheckPlacesImpl(const scheduler::Scheduler& scheduler, PlaceCheck& check) const;
   // Sixteen inline bytes in the already constructed state object; no
@@ -292,8 +316,8 @@ class LiveState {
     std::uint64_t bytes = 0;                     // the layout's
     std::vector<scheduler::PageSource> sources;  // registered, by extent
     std::vector<std::uint8_t> used;
-    // Resident zeroed backing a clear kept, invalidated in the catalog and
-    // not part of the state (never also used).
+    // Zero backing outside logical state, invalidated and reclaimable:
+    // 1 from a clear, 2 from preparation (never also used).
     std::vector<std::uint8_t> kept;
   };
 

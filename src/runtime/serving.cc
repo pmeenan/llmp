@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -2262,7 +2263,8 @@ class Gemma3 final : public Llm {
             .fuse_norm_rope = true,
             .fuse_norm_add = true,
             .prefill_lookahead = serving.gemma3_prefill_lookahead,
-            .capture_ahead = serving.gemma3_capture_ahead};
+            .capture_ahead = serving.gemma3_capture_ahead,
+            .prepare_state = serving.gemma3_prepare_state};
   }
   engine::Gemma3Runner::Slot& NativeSlot(const Branch& branch) const {
     return *slots_[BranchIndex(branch)];
@@ -6498,6 +6500,13 @@ Status Server::TearDown() {
     }
   }
   const auto stopped = node_.TearDown(models);
+  if (!stopped && node_.has_pending_state_preparation()) {
+    // Server is stack-owned by its frontends. Returning would destroy a model
+    // whose independent page-ins have no proven no-access fence. Stop before
+    // any owner/resource destructor; a LiveState destructor is too late.
+    Log("unretired state preparation; aborting before owner destruction");
+    std::abort();
+  }
   if (options_.diagnostic_budget_cap_bytes) {
     const auto c = node_.backing_create_stats();
     const auto h = node_.retired_harvest_stats();

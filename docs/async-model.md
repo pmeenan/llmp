@@ -81,6 +81,16 @@ lists: cancelling one waiter removes only its interest. Other waiters and
 accepted DMA remain protected. Only the final uninterested waiter can request
 provider cancellation, and even then the underlying operation must drain.
 
+For an Acquire program, `ProgramDone.gone` proves task destruction, not retirement
+of withdrawn resource-service page-ins. The engine's optional state preparation
+uses a separate scoped join of existing loads for its exact typed extent IDs,
+including queued and mailbox-blocked stages; it neither restarts missing loads
+nor waits for unrelated work. A missing load-map entry must also have a known
+Resident/Nonresident catalog outcome. Quarantined or otherwise unknown backing
+is not a no-access proof. The complete ticket, source, host charge and live-state
+owner stay retained until this scoped retirement is proven; failed teardown
+refuses to destroy them. [State preparation](experiments/gemma-state-prepare-ahead/README.md).
+
 An in-flight operation record owns its leases, backing/content generations,
 destination ranges, provider identity, completion obligations and any
 registration references. Operation outcome and proof of no further access

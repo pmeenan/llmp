@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -106,7 +107,7 @@ class AcquireTest : public ::testing::Test {
   }
 
   // The scheduler with budget B (in extents), and every weight's source.
-  void Build(std::uint64_t budget_extents) {
+  void Build(std::uint64_t budget_extents, std::size_t device_batch = 16) {
     budget_ = Bytes(budget_extents * kSize);
     board_ = std::make_unique<sc::CompletionBoard>(32, wake_);
     storage_lane_ = std::make_unique<sc::StorageService>(
@@ -121,7 +122,8 @@ class AcquireTest : public ::testing::Test {
         *board_, sc::QueueSettings{.capacity = 16, .reserved = 4, .batch = 16});
     device_lane_ = std::make_unique<sc::DeviceService>(
         execution_, std::span<const StreamId>(&stream_, 1), *board_,
-        sc::DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = 16}, .handoff = 16},
+        sc::DeviceSettings{.queue = {.capacity = 16, .reserved = 4, .batch = device_batch},
+                           .handoff = 16},
         &memory_);
     sc::LandingZone landing{.slots = {}, .slot_bytes = Bytes(kSize), .stream = 0};
     const std::uint64_t zone_base = memory_.RangeOf(zone_).value().base;
@@ -239,6 +241,206 @@ class AcquireTest : public ::testing::Test {
   Bytes budget_;
   std::uint64_t request_ = 0;
 };
+
+TEST_F(AcquireTest, NoVictimAcquireRefusesPressureWithoutEvictingUsefulCache) {
+  Build(1 + kPerModel);
+  ts::Done first;
+  ts::AcquireReport loaded;
+  ASSERT_TRUE(
+      Run(std::make_unique<ts::AcquireProgram>(first, ModelClosure(0), domain_, budget_, loaded),
+          first));
+  ts::Done done;
+  ts::AcquireReport report;
+  EXPECT_FALSE(Run(std::make_unique<ts::AcquireProgram>(done, ModelClosure(1), domain_, budget_,
+                                                        report, std::vector<ExtentId>{}, false),
+                   done));
+  EXPECT_EQ(done.error.load(), static_cast<int>(sc::WorkError::kOverBudget));
+  EXPECT_TRUE(report.evicted.empty());
+  EXPECT_EQ(Resident(0), kPerModel);
+  EXPECT_TRUE(Loaded(0));
+  EXPECT_EQ(Resident(1), 0U);
+  EXPECT_EQ(scheduler_->loads(), 0U);
+}
+
+TEST_F(AcquireTest, FailedOptionalZeroAcquireRetiresPartialCompletions) {
+  Build(1 + kPerModel, 1);
+  for (const auto id : weights_[0]) {
+    auto source = *scheduler_->SourceOf(id);
+    source.zero = true;
+    ASSERT_TRUE(scheduler_->SetSource(id, source));
+  }
+  ts::Done done;
+  ts::AcquireReport report;
+  ASSERT_TRUE(scheduler_->Start(
+      ++request_,
+      std::make_unique<ts::AcquireProgram>(done, ModelClosure(0), domain_, budget_, report,
+                                           std::vector<ExtentId>{}, false),
+      1));
+  // Stop immediately after one resident publication, before processing the
+  // remaining device command. The next zero refuses with proven completion.
+  for (int i = 0; i < 10000 && Resident(0) == 0; ++i) Round();
+  ASSERT_GT(Resident(0), 0U);
+  ASSERT_LT(Resident(0), kPerModel);
+  execution_.FailNextCopy(jitllm::providers::ProviderError::kFailed);
+  for (int i = 0; i < 10000 && !done.gone.load(); ++i) Round();
+  ASSERT_TRUE(done.gone.load());
+  EXPECT_NE(done.outcome.load(), static_cast<int>(sc::TaskOutcome::kSucceeded));
+  EXPECT_GT(Resident(0), 0U);
+  EXPECT_LT(Resident(0), kPerModel);
+  EXPECT_EQ(scheduler_->loads(), 0U);
+  EXPECT_EQ(execution_.fences(), 0U);
+  ASSERT_TRUE(scheduler_->PageInsRetired(weights_[0]).value_or(false));
+  ts::Done drained;
+  ASSERT_TRUE(Run(std::make_unique<sc::DrainPageInsProgram>(drained, weights_[0]), drained));
+  EXPECT_TRUE(report.evicted.empty());
+  EXPECT_TRUE(storage_.submitted().empty());
+  for (std::size_t i = 0; i < kPerModel; ++i)
+    if (catalog_.Describe(weights_[0][i])->state == ExtentState::kResident)
+      EXPECT_TRUE(std::ranges::all_of(std::span(At(bases_[0] + i * kSize), kSize),
+                                      [](std::byte b) { return b == std::byte{0}; }));
+}
+
+TEST_F(AcquireTest, CancelledOptionalAcquireKeepsItsOwnerUntilDeviceFenceRetires) {
+  Build(1 + kPerModel, 1);
+  for (const auto id : weights_[0]) {
+    auto source = *scheduler_->SourceOf(id);
+    source.zero = true;
+    ASSERT_TRUE(scheduler_->SetSource(id, source));
+  }
+  ts::Done done;
+  ts::AcquireReport report;
+  ASSERT_TRUE(scheduler_->Start(
+      ++request_,
+      std::make_unique<ts::AcquireProgram>(done, ModelClosure(0), domain_, budget_, report,
+                                           std::vector<ExtentId>{}, false),
+      1));
+  for (int i = 0; i < 10000 && execution_.fences() == 0; ++i) {
+    storage_lane_->Turn(false);
+    device_lane_->SubmissionTurn();
+    device_lane_->CompletionTurn();
+    scheduler_->Turn();
+  }
+  ASSERT_GT(execution_.fences(), 0U);
+  scheduler_->Cancel(request_);
+  scheduler_->Turn();
+  // Withdrawal destroys Acquire before its independent page-ins retire.
+  ASSERT_TRUE(done.gone.load());
+  EXPECT_EQ(done.outcome.load(), static_cast<int>(sc::TaskOutcome::kCancelled));
+  ASSERT_FALSE(scheduler_->PageInsRetired(weights_[0]).value_or(true));
+  ts::Done cancelled_drain;
+  ASSERT_TRUE(scheduler_->Start(
+      ++request_, std::make_unique<sc::DrainPageInsProgram>(cancelled_drain, weights_[0]), 1));
+  scheduler_->Turn();
+  EXPECT_FALSE(cancelled_drain.gone.load());
+  scheduler_->Cancel(request_);
+  scheduler_->Turn();
+  ASSERT_TRUE(cancelled_drain.gone.load());
+  EXPECT_EQ(cancelled_drain.outcome.load(), static_cast<int>(sc::TaskOutcome::kCancelled));
+  // A cancelled drain's gone flag also cannot release the owner.
+  ASSERT_FALSE(scheduler_->PageInsRetired(weights_[0]).value_or(true));
+  ts::Done drained;
+  ASSERT_TRUE(scheduler_->Start(
+      ++request_, std::make_unique<sc::DrainPageInsProgram>(drained, weights_[0]), 1));
+  scheduler_->Turn();
+  ASSERT_FALSE(drained.gone.load());
+  for (int i = 0; i < 10000 && !drained.gone.load(); ++i) Round();
+  ASSERT_TRUE(drained.gone.load());
+  EXPECT_EQ(drained.outcome.load(), static_cast<int>(sc::TaskOutcome::kSucceeded));
+  ASSERT_TRUE(scheduler_->PageInsRetired(weights_[0]).value_or(false));
+  EXPECT_EQ(scheduler_->loads(), 0U);
+  EXPECT_EQ(execution_.fences(), 0U);
+  // An issued zero can complete successfully after cancellation. Its resident
+  // backing remains owned and authenticated, rather than assumed absent.
+  ASSERT_GT(Resident(0), 0U);
+  for (std::size_t i = 0; i < kPerModel; ++i)
+    if (catalog_.Describe(weights_[0][i])->state == ExtentState::kResident)
+      EXPECT_TRUE(std::ranges::all_of(std::span(At(bases_[0] + i * kSize), kSize),
+                                      [](std::byte b) { return b == std::byte{0}; }));
+  EXPECT_TRUE(storage_.submitted().empty());
+  EXPECT_TRUE(report.evicted.empty());
+}
+
+TEST_F(AcquireTest, ScopedDrainIncludesQueuedLoadsAndDoesNotWaitForUnrelatedLoads) {
+  Build(1 + 2 * kPerModel, 1);
+  std::array<ts::Done, 2> acquired;
+  std::array<ts::AcquireReport, 2> reports;
+  std::array<std::uint64_t, 2> requests{};
+  for (std::size_t m = 0; m < 2; ++m) {
+    requests[m] = ++request_;
+    ASSERT_TRUE(scheduler_->Start(
+        requests[m],
+        std::make_unique<ts::AcquireProgram>(acquired[m], ModelClosure(m), domain_, budget_,
+                                             reports[m], std::vector<ExtentId>{}, false),
+        1));
+    scheduler_->Turn();
+  }
+  ASSERT_EQ(scheduler_->loads(), 2 * kPerModel);
+  const std::array scoped = {weights_[1].back()};
+  ASSERT_EQ(catalog_.Describe(scoped[0])->state, ExtentState::kLoading);
+  ASSERT_FALSE(scheduler_->LoadOf(scoped[0]));  // queued: no active operation yet
+  ASSERT_FALSE(scheduler_->PageInsRetired(scoped).value_or(true));
+  ts::Done drained;
+  ASSERT_TRUE(
+      scheduler_->Start(++request_, std::make_unique<sc::DrainPageInsProgram>(drained, scoped), 1));
+  scheduler_->Turn();
+  ASSERT_FALSE(drained.gone.load());
+  // Cancel the waiter first: its gone flag does not certify the queued page.
+  scheduler_->Cancel(request_);
+  scheduler_->Turn();
+  ASSERT_TRUE(drained.gone.load());
+  ASSERT_FALSE(scheduler_->PageInsRetired(scoped).value_or(true));
+  // Withdrawing the original model1 interest retires its queued page without
+  // starting it. A new scoped proof must ignore model0's outstanding loads.
+  scheduler_->Cancel(requests[1]);
+  scheduler_->Turn();
+  ts::Done retired;
+  ASSERT_TRUE(
+      scheduler_->Start(++request_, std::make_unique<sc::DrainPageInsProgram>(retired, scoped), 1));
+  scheduler_->Turn();
+  ASSERT_TRUE(retired.gone.load());
+  EXPECT_EQ(retired.outcome.load(), static_cast<int>(sc::TaskOutcome::kSucceeded));
+  ASSERT_TRUE(scheduler_->PageInsRetired(scoped).value_or(false));
+  EXPECT_GT(scheduler_->loads(), 0U);
+  EXPECT_FALSE(acquired[0].gone.load());
+  EXPECT_TRUE(storage_.submitted().empty());
+  scheduler_->Cancel(requests[0]);
+  for (int i = 0; i < 10000 && scheduler_->loads() != 0; ++i) Round();
+  ASSERT_EQ(scheduler_->loads(), 0U);
+  for (int i = 0; i < 10000 && !acquired[1].gone.load(); ++i) Round();
+  EXPECT_TRUE(acquired[0].gone.load());
+  EXPECT_TRUE(acquired[1].gone.load());
+}
+
+TEST_F(AcquireTest, ScopedDrainNeverRestartsMissingPagesOrCertifiesUnknownCompletion) {
+  Build(1 + kPerModel);
+  ts::Done missing;
+  ASSERT_TRUE(Run(std::make_unique<sc::DrainPageInsProgram>(missing, weights_[0]), missing));
+  EXPECT_EQ(scheduler_->loads(), 0U);
+  EXPECT_EQ(Resident(0), 0U);
+  EXPECT_TRUE(storage_.submitted().empty());
+  // A quarantined catalog load has no loads_ entry, but no no-access proof.
+  // This isolated fake extent carries no provider work or mapped backing.
+  const auto unknown = catalog_
+                           .AddExtent({.domain = domain_,
+                                       .memory_class = jitllm::catalog::MemoryClass::kLiveState,
+                                       .recovery = jitllm::catalog::Recovery::kPreserve,
+                                       .size = Bytes(kSize),
+                                       .content = {}})
+                           .value();
+  const auto ticket = catalog_.BeginLoad(unknown, budget_).value();
+  ASSERT_TRUE(catalog_.FailLoad(ticket, false));
+  const std::array scoped = {unknown};
+  ASSERT_EQ(scheduler_->loads(), 0U);
+  EXPECT_FALSE(scheduler_->PageInsRetired(scoped));
+  ts::Done quarantined;
+  EXPECT_FALSE(Run(std::make_unique<sc::DrainPageInsProgram>(quarantined, scoped), quarantined));
+  EXPECT_EQ(quarantined.error.load(), static_cast<int>(sc::WorkError::kUnavailable));
+  EXPECT_EQ(catalog_.Describe(unknown)->state, ExtentState::kQuarantined);
+  EXPECT_EQ(scheduler_->loads(), 0U);
+  EXPECT_TRUE(storage_.submitted().empty());
+  const std::array invalid = {ExtentId{}};
+  EXPECT_FALSE(scheduler_->PageInsRetired(invalid));
+}
 
 // B holds the workspace and four weight extents: one model and a third of
 // the other.

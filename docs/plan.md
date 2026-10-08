@@ -540,6 +540,13 @@ family" guide, and its long-context scaling work.
         - [ ] **T59** Whole-wave products and exact partial cohorts.
         - [ ] **T61** Wider/partial bounded owner-root variants.
         - [ ] **T67** Prepare next chunk state beside current work.
+          Eligible fresh zero backing is adopted through the shared owned
+          no-victim ticket/scoped drain: exact default PromptSession and
+          wrapped checkpoint/peer/restart, cancellation/reclaim and failstop
+          ownership controls pass. Bounded 4K/128-row C2 prefill improves
+          2.617% / combined paid 1.941% at n=2. Kept restart, fresh sparse-file
+          initialization and larger-context qualification remain open.
+          [Evidence and limits](experiments/gemma-state-prepare-ahead/README.md).
         - [ ] **T68** Evict only incoming closure deficit.
         - [x] **T69** Shared GPU-mask source/funding contract: exact causal/ring
           producer validation and padded host staging shared across Gemma plans;

@@ -351,6 +351,7 @@ std::expected<std::vector<StateRange>, std::string> Gemma3UsedState(const Gemma3
     return Refused("Gemma3 initialized footprint is out of bounds");
   }
   std::vector<StateRange> out;
+  out.reserve(s.tensors.size());
   if (positions != 0) {
     for (const auto& t : s.tensors) {
       out.push_back({.offset = t.offset,

@@ -89,7 +89,7 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }  // namespace
 int main(int argc, char** argv) {
   if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") ||
-      (argc < 6 || argc > 16))
+      (argc < 6 || argc > 17))
     return 2;
   if (std::string_view(argv[1]) == "prepare") {
     if (argc != 6) return 2;
@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
   bool flexible = false, have_chunk = false, stock_ring = false, have_capacity = false;
   std::uint32_t lookahead_capacity = 1;
   std::optional<std::uint64_t> budget_override;
-  bool device_masks = false, prefill_ahead = false;
+  bool device_masks = false, prefill_ahead = false, prepare_state = false;
   std::uint32_t chunk = 128;
   for (int i = 6; i < argc; ++i) {
     const std::string_view flag = argv[i];
@@ -126,6 +126,8 @@ int main(int argc, char** argv) {
       device_masks = true;
     else if (flag == "prefill-ahead" && !prefill_ahead)
       prefill_ahead = true;
+    else if (flag == "prepare-state" && !prepare_state)
+      prepare_state = true;
     else if (flag.starts_with("budget-bytes=") && !budget_override) {
       const auto number = flag.substr(13);
       std::uint64_t bytes = 0;
@@ -154,6 +156,7 @@ int main(int argc, char** argv) {
   }
   if (flexible && !owner_prefill) return 2;
   if (have_capacity && !prefill_ahead) return 2;
+  if (prepare_state && !prefill_ahead) return 2;
   if (stock_ring && chunk != 256 && chunk != 512) return 2;
   // Match stock's joined ubatch allowance for this explicit comparison only.
   const auto state_rows = stock_ring ? 2 * chunk : chunk;
@@ -180,7 +183,7 @@ int main(int argc, char** argv) {
   const fs::path out = argv[4];
   if (!fs::create_directory(out)) return 2;
   struct Lifetime {
-    en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+    en::PagedNode node{{.zero_state = true, .slot_bytes = en::kSlabSlotBytes}};
     std::unique_ptr<en::Gemma3Runner> runner;
     std::vector<en::PagedModel*> entered;
   };
@@ -207,7 +210,8 @@ int main(int argc, char** argv) {
                         .fuse_norm_add = true,
                         .prefill_lookahead = prefill_ahead,
                         .capture_ahead = prefill_ahead,
-                        .prefill_lookahead_capacity = lookahead_capacity},
+                        .prefill_lookahead_capacity = lookahead_capacity,
+                        .prepare_state = prepare_state},
       0, 0);
   auto& runner = *life->runner;
   std::array<std::vector<float>, 2> heads;
@@ -421,11 +425,13 @@ int main(int argc, char** argv) {
       }
       const auto graph_before = runner.graph_stats();
       const auto ahead_before = runner.lookahead_stats();
+      const auto prepare_before = runner.state_preparation_stats();
       const auto begin = std::chrono::steady_clock::now();
       if (auto r = prompt(cycle); !r) return r;
       const auto prefill = en::support::Seconds(std::chrono::steady_clock::now() - begin);
       const auto graph_prefill = runner.graph_stats();
       const auto ahead_prefill = runner.lookahead_stats();
+      const auto prepare_prefill = runner.state_preparation_stats();
       if (auto r = warm(cycle); !r) return r;
       std::ofstream rows;
       const auto write_rows = [&]() {
@@ -636,6 +642,15 @@ int main(int argc, char** argv) {
           << " lookahead_built=" << runner.lookahead_stats().built
           << " lookahead_cached=" << runner.lookahead_stats().cached
           << " lookahead_captured_ahead=" << runner.lookahead_stats().captured_ahead
+          << " prepare_state=" << prepare_state << " zero_state=" << node.zero_state()
+          << " paid_prepare_attempted=" << prepare_prefill.attempted - prepare_before.attempted
+          << " paid_prepare_submitted=" << prepare_prefill.submitted - prepare_before.submitted
+          << " paid_prepare_refused=" << prepare_prefill.refused - prepare_before.refused
+          << " paid_prepare_failed=" << prepare_prefill.failed - prepare_before.failed
+          << " paid_prepare_completed_extents="
+          << prepare_prefill.completed_extents - prepare_before.completed_extents
+          << " paid_prepare_adopted_extents="
+          << prepare_prefill.adopted_extents - prepare_before.adopted_extents
           << " bounded_roots=" << bounded
           << " selected_bounded_owner=" << bound.bounded_owner_attention
           << " shared_q8=" << shared_q8 << " q8_preparations=" << bound.q8_preparations

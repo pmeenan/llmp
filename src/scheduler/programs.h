@@ -5,8 +5,10 @@
 // which the runtime and the paged harnesses drive; the fake backend's tests
 // check them). Each tells a ProgramDone what became of it; its destructor
 // is its last touch of that ProgramDone, so the thread that posted it may
-// end the ProgramDone's frame once `gone` is set: a driver never returns
-// while a program, or a job it queued, may still refer to its frame
+// end the ProgramDone's frame once `gone` is set. Scheduler-owned page-ins
+// can outlive a withdrawn AcquireProgram: their source/state owners also
+// require a scoped PageInsRetired proof. A driver never returns while a
+// program, or a job it queued, may still refer to its frame
 // (completion-aware lifetimes, D-048).
 //
 // AcquireProgram is BP-S3's (docs/backend-proof.md): it makes room for a
@@ -56,7 +58,8 @@ struct ProgramDone {
   // The program is destroyed: retired, or never admitted (a refused start
   // goes with its control). Its last touch of `done`: a job it submitted
   // retired first (its lease held until its fence), and one never
-  // submitted went with it.
+  // submitted went with it. Scheduler-owned materialization can outlive a
+  // withdrawn task; gone alone does not retire its source/state payloads.
   std::atomic<bool> gone{false};
 };
 
@@ -466,6 +469,34 @@ struct AcquireReport {
   std::vector<catalog::ExtentId> evicted;
   std::uint64_t loaded = 0;
   std::uint64_t plans = 0;  // materialization plans made
+};
+
+// Waits only for already existing page-ins of these typed extent IDs. A
+// cancelled AcquireProgram can be gone while its independent page-ins still
+// drain. This program never materializes, chooses victims or restarts a load.
+// Its gone flag alone is not a payload retirement proof if it was cancelled;
+// the owner must also recheck Scheduler::PageInsRetired before releasing its
+// source/state/host descriptors. Quarantined loads cannot satisfy that proof.
+class DrainPageInsProgram final : public ReportingProgram {
+ public:
+  DrainPageInsProgram(ProgramDone& done, std::span<const catalog::ExtentId> extents)
+      : ReportingProgram(done), extents_(extents) {}
+
+  scheduler::Step Advance(scheduler::TaskContext& context) override {
+    const auto ready = context.AwaitPageIns(extents_);
+    if (!ready) {
+      if (ready.error() == scheduler::WorkError::kBusy) return scheduler::Step::Yield();
+      return Fail(ready.error());
+    }
+    return *ready == scheduler::Readiness::kWaiting
+               ? scheduler::Step::Wait()
+               : scheduler::Step::Finish(scheduler::TaskOutcome::kSucceeded);
+  }
+
+ private:
+  // Stable storage belongs to the owner until this program is gone AND every
+  // scoped page-in has a positive retirement proof.
+  std::span<const catalog::ExtentId> extents_;
 };
 
 // Makes room for a closure under the budget B, then materializes it. Each

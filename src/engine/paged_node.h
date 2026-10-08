@@ -42,7 +42,9 @@
 // because Post (and Load, Evict, Job, Call, Acquire) returns only once its
 // program is gone, a job's only after its fence completed. A caller that
 // Submits without waiting runs no other model's job until that request is
-// gone.
+// gone. LiveState's optional preparation is the narrow exception: a no-victim
+// acquisition of disjoint unpublished zero pages may overlap the current
+// model's job; its owned ticket drains before source changes or teardown.
 //
 // Requests (M3's lease per request; scheduler.h): BeginRequest opens one
 // on a model's stream, whose task (RequestProgram) materializes the
@@ -105,6 +107,8 @@
 #include "scheduler/services.h"
 
 namespace jitllm::engine {
+
+class LiveState;
 
 using Status = std::expected<void, std::string>;
 
@@ -410,6 +414,10 @@ class PagedNode {
   void Run();
   // Every problem in one error. Once.
   Status TearDown(std::span<PagedModel* const> models);
+  // Driver-only: a linked owner must survive until scoped page-in retirement.
+  // If teardown refuses with this true, callers must retain the complete
+  // node/model/state lifetime or failstop before returning to destruction.
+  bool has_pending_state_preparation() const { return preparing_state_ != nullptr; }
 
   providers::VmmProvider& memory() { return *memory_; }
   providers::DeviceExecution& execution() { return *execution_; }
@@ -501,6 +509,9 @@ class PagedNode {
   // which is always taken: the excess then refuses later growth until a
   // reclaim gives it back.
   bool ChargeHost(std::uint64_t bytes, bool required);
+  // Optional state-preparation descriptors: headroom only, never AskReclaim
+  // or a forced charge. Called before submitting preparation, outside Job.
+  bool TryChargeHost(std::uint64_t bytes);
   void UnchargeHost(std::uint64_t bytes);
   // The chat route's request memory past the start's floor (runtime/
   // intake_limits.h, D-102), charged inside the budget as its own pinned
@@ -655,6 +666,10 @@ class PagedNode {
               void* host, std::uint64_t bytes, bool to_host, std::string_view what);
 
  private:
+  friend class LiveState;
+  // Driver-owned intrusive list. TearDown drains these tickets before model
+  // extents or sources can be released; each LiveState owns its stable ticket.
+  LiveState* preparing_state_ = nullptr;
   // A request open on a stream: its task's channel and ProgramDone, and a
   // sorted copy of its closure.
   Status MapRegion(Mapped& mapped, std::string name, std::uint64_t bytes,

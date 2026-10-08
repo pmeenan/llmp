@@ -4,9 +4,11 @@
 #include "engine/live_state.h"
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -51,7 +53,12 @@ class BareState final : public en::PagedModel {
 
   std::uint32_t stream() const override { return 0; }
   const jitllm::catalog::Closure& fence_closure() const override { return fence_; }
-  std::vector<jitllm::catalog::ExtentId> managed_extents() const override { return live.extents(); }
+  std::vector<jitllm::catalog::ExtentId> managed_extents() const override {
+    auto result = live.extents();
+    const auto kept = live.kept_extents();
+    result.insert(result.end(), kept.begin(), kept.end());
+    return result;
+  }
   en::Status Refresh() {
     return node_.Call(
         [&]() -> en::Status {
@@ -86,6 +93,9 @@ class LiveStateTest : public ::testing::Test {
   std::uint64_t fixed_ = 0;
   bool running_ = false;
   virtual std::uint64_t BudgetExtents() const { return 16; }
+  virtual en::Status RegisterState(const std::filesystem::path& scratch) {
+    return model_.live.RegisterSpill(node_, scratch);
+  }
 
   void SetUp() override {
     auto opened = node_.Open();
@@ -98,7 +108,7 @@ class LiveStateTest : public ::testing::Test {
     // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
     const char* scratch = std::getenv("JITLLM_TEST_SCRATCH");
     ASSERT_NE(scratch, nullptr);
-    auto registered = model_.live.RegisterSpill(node_, std::filesystem::path(scratch));
+    auto registered = RegisterState(std::filesystem::path(scratch));
     ASSERT_TRUE(registered) << jitllm::test_support::Failed(registered).value_or("");
     node_.Run();
     running_ = true;
@@ -191,7 +201,242 @@ class LiveStateTest : public ::testing::Test {
     EXPECT_TRUE(read) << jitllm::test_support::Failed(read).value_or("");
     return bytes;
   }
+
+  bool WaitResident(jitllm::catalog::ExtentId id) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+      if (Describe(id).state == jitllm::catalog::ExtentState::kResident) return true;
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    } while (std::chrono::steady_clock::now() < until);
+    return false;
+  }
 };
+
+TEST_F(LiveStateTest, PreparationIsUnpublishedReclaimableZeroBackingUntilUse) {
+  const std::array first = {en::LiveState::Range{0, 0, 16}};
+  ASSERT_TRUE(model_.live.Use(node_, first));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(Pattern(0x37));
+  const auto before = node_.host_counted();
+  const std::array next = {en::LiveState::Range{0, 4 * kExtent, kExtent + 16},
+                           en::LiveState::Range{0, 4 * kExtent + 8, 16}};
+  auto prepared = model_.live.Prepare(node_, next);
+  ASSERT_TRUE(prepared);
+  ASSERT_TRUE(*prepared);
+  EXPECT_TRUE(model_.live.preparing());
+  EXPECT_EQ(model_.live.used_bytes(), kExtent);
+  EXPECT_EQ(model_.live.extents().size(), 1U);
+  EXPECT_GT(node_.host_counted(), before);
+  // Current work remains legal and touches only its initialized closure.
+  ASSERT_TRUE(Pattern(0x59));
+  ASSERT_TRUE(model_.live.FinishPreparation());
+  EXPECT_FALSE(model_.live.preparing());
+  EXPECT_EQ(node_.host_counted(), before);
+  EXPECT_EQ(model_.live.used_bytes(), kExtent);
+  const auto kept = model_.live.kept_extents();
+  ASSERT_EQ(kept.size(), 2U);
+  for (const auto id : kept) {
+    const auto view = Describe(id);
+    EXPECT_TRUE(view.discarded);
+    EXPECT_TRUE(jitllm::catalog::Catalog::Evictable(view));
+  }
+  const auto occupancy = Occupancy();
+  ASSERT_TRUE(model_.live.Use(node_, next));
+  ASSERT_TRUE(model_.Refresh());
+  EXPECT_EQ(Occupancy(), occupancy);  // adoption does not allocate backing again
+  EXPECT_EQ(model_.live.used_bytes(), 3 * kExtent);
+  EXPECT_EQ(model_.live.preparation_stats().completed_extents, 2U);
+  EXPECT_EQ(model_.live.preparation_stats().adopted_extents, 2U);
+  EXPECT_EQ(Contents(0), std::byte{0x59});
+  EXPECT_EQ(Contents(4 * kExtent), std::byte{0});
+  EXPECT_EQ(Contents(5 * kExtent), std::byte{0});
+}
+
+TEST_F(LiveStateTest, ReclaimedPreparationRegrowsNormallyAndClearDrainsAnOutstandingTicket) {
+  const std::array next = {en::LiveState::Range{0, 4 * kExtent, 2 * kExtent}};
+  ASSERT_TRUE(model_.live.Prepare(node_, next).value_or(false));
+  ASSERT_TRUE(model_.live.FinishPreparation());
+  const auto kept = model_.live.kept_extents();
+  ASSERT_EQ(kept.size(), 2U);
+  ASSERT_TRUE(node_.Evict({kept.front()}));
+  ASSERT_TRUE(model_.live.Use(node_, next));
+  ASSERT_TRUE(model_.Refresh());
+  EXPECT_EQ(model_.live.preparation_stats().adopted_extents, 1U);
+  EXPECT_TRUE(AllZero());
+  const std::array later = {en::LiveState::Range{0, 7 * kExtent, 16}};
+  ASSERT_TRUE(model_.live.Prepare(node_, later).value_or(false));
+  ASSERT_TRUE(model_.live.Clear(node_, model_.fence_closure(), 0, "clear prepared state"));
+  EXPECT_FALSE(model_.live.preparing());
+  EXPECT_TRUE(model_.live.extents().empty());
+  EXPECT_TRUE(model_.live.kept_extents().empty());
+  EXPECT_TRUE(Released(model_.live.reserved_extents()));
+  ASSERT_TRUE(model_.live.Use(node_, later));
+  ASSERT_TRUE(model_.Refresh());
+  EXPECT_TRUE(AllZero());
+}
+
+TEST_F(LiveStateTest, RepeatedSpillRegistrationRefusesWithoutSettlingOrReplacingPreparedState) {
+  const std::array next = {en::LiveState::Range{0, 4 * kExtent, 16}};
+  ASSERT_TRUE(model_.live.Prepare(node_, next).value());
+  const auto id = model_.live.reserved_extents()[4];
+  ASSERT_TRUE(WaitResident(id));
+  const auto before = Describe(id);
+  jitllm::scheduler::PageSource original;
+  ASSERT_TRUE(node_.Call(
+      [&]() -> en::Status {
+        original = *node_.scheduler().SourceOf(id);
+        return {};
+      },
+      "original prepared source"));
+  const auto host = node_.host_counted();
+  EXPECT_FALSE(model_.live.RegisterSpill(
+      node_,
+      en::LiveState::SpillPlace{
+          .directory = "/this-path-must-not-be-opened", .dir = -1, .name = {}, .keep = true}));
+  EXPECT_TRUE(model_.live.preparing());
+  EXPECT_EQ(node_.host_counted(), host);
+  EXPECT_EQ(Describe(id).content_generation, before.content_generation);
+  EXPECT_FALSE(Describe(id).discarded);
+  ASSERT_TRUE(node_.Call(
+      [&]() -> en::Status {
+        const auto* source = node_.scheduler().SourceOf(id);
+        EXPECT_TRUE(jitllm::scheduler::SamePlace(*source, original));
+        EXPECT_EQ(source->read.fd, original.read.fd);
+        EXPECT_EQ(source->zero, original.zero);
+        return {};
+      },
+      "unchanged prepared source"));
+  ASSERT_TRUE(model_.live.FinishPreparation());
+  ASSERT_TRUE(model_.live.Use(node_, next));
+  ASSERT_TRUE(model_.Refresh());
+  EXPECT_EQ(Contents(4 * kExtent + 7), std::byte{0});
+}
+
+TEST_F(LiveStateTest, PreparationValidatesWholeRangeAndSourceBeforeSubmitting) {
+  const auto before = Occupancy();
+  const std::array invalid = {en::LiveState::Range{0, 4 * kExtent, 16},
+                              en::LiveState::Range{0, 8 * kExtent, 1}};
+  EXPECT_FALSE(model_.live.Prepare(node_, invalid));
+  const auto ids = model_.live.reserved_extents();
+  const std::array next = {en::LiveState::Range{0, 4 * kExtent, 2 * kExtent}};
+  jitllm::scheduler::PageSource original;
+  ASSERT_TRUE(node_.Call(
+      [&]() -> en::Status {
+        original = *node_.scheduler().SourceOf(ids[5]);
+        auto changed = original;
+        changed.zero = false;
+        return node_.scheduler().SetSource(ids[5], changed) ? en::Status{}
+                                                            : std::unexpected("test source");
+      },
+      "change one preparation source"));
+  const auto refused = model_.live.Prepare(node_, next);
+  ASSERT_TRUE(refused);
+  EXPECT_FALSE(*refused);
+  EXPECT_EQ(model_.live.preparation_stats().submitted, 0U);
+  EXPECT_EQ(Occupancy(), before);
+  EXPECT_TRUE(Released(ids));
+  ASSERT_TRUE(node_.Call(
+      [&]() -> en::Status {
+        return node_.scheduler().SetSource(ids[5], original) ? en::Status{}
+                                                             : std::unexpected("restore source");
+      },
+      "restore preparation source"));
+}
+
+TEST_F(LiveStateTest, ChangedPreparedGenerationIsRetainedQuarantinedAndClearRecovers) {
+  const std::array next = {en::LiveState::Range{0, 4 * kExtent, 16}};
+  ASSERT_TRUE(model_.live.Prepare(node_, next).value_or(false));
+  const auto id = model_.live.reserved_extents()[4];
+  ASSERT_TRUE(WaitResident(id));
+  jitllm::catalog::Closure changed;
+  ASSERT_TRUE(node_.Call(
+      [&]() -> en::Status {
+        if (!node_.catalog().InvalidateContents(id) || !node_.catalog().ReviveDiscarded(id))
+          return std::unexpected("test content generation change");
+        changed = node_.catalog().ClosureOfExtents(std::array{id}).value();
+        return {};
+      },
+      "replace prepared generation"));
+  ASSERT_TRUE(node_.Job(
+      changed,
+      [&](pr::NativeStream native) {
+        return pr::FillAsync(native, en::support::Pointer(model_.live.base(0) + 4 * kExtent), 0xD7,
+                             kExtent)
+                       .ok()
+                   ? jitllm::scheduler::JobResult::kQueued
+                   : jitllm::scheduler::JobResult::kUnknown;
+      },
+      "write changed authority", 0));
+  const auto generation = Describe(id).content_generation;
+  EXPECT_FALSE(model_.live.FinishPreparation());
+  EXPECT_TRUE(model_.live.quarantined());
+  EXPECT_EQ(Describe(id).content_generation, generation);
+  EXPECT_FALSE(Describe(id).discarded);  // collection must not erase changed authority
+  EXPECT_FALSE(model_.live.Use(node_, next));
+  std::vector<jitllm::catalog::ExtentId> staging;
+  auto buffer = node_.Pinned(256, 0, staging);
+  ASSERT_TRUE(buffer);
+  ASSERT_TRUE(node_.Job(
+      changed,
+      [&](pr::NativeStream native) {
+        return pr::CopyAsync(native, *buffer,
+                             en::support::Pointer(model_.live.base(0) + 4 * kExtent), 256,
+                             pr::CopyKind::kDeviceToHost)
+                       .ok()
+                   ? jitllm::scheduler::JobResult::kQueued
+                   : jitllm::scheduler::JobResult::kUnknown;
+      },
+      "read changed authority", 0));
+  EXPECT_EQ(static_cast<const std::byte*>(*buffer)[0], std::byte{0xD7});
+  ASSERT_TRUE(node_.FreePinned(*buffer));
+  ASSERT_TRUE(model_.live.Clear(node_, model_.fence_closure(), 0, "clear changed preparation"));
+  EXPECT_TRUE(model_.live.Usable());
+  EXPECT_TRUE(Released(model_.live.reserved_extents()));
+}
+
+TEST_F(LiveStateTest, PreparationInvalidationRefusalRetainsOwnerUntilHoldReleasedAndClear) {
+  const std::array next = {en::LiveState::Range{0, 4 * kExtent, 16}};
+  ASSERT_TRUE(model_.live.Prepare(node_, next).value_or(false));
+  const auto id = model_.live.reserved_extents()[4];
+  ASSERT_TRUE(WaitResident(id));
+  jitllm::catalog::RegistrationId held;
+  ASSERT_TRUE(node_.Call(
+      [&]() -> en::Status {
+        held = node_.catalog().AddRegistration(id).value();
+        return {};
+      },
+      "hold prepared backing"));
+  EXPECT_FALSE(model_.live.FinishPreparation());
+  EXPECT_TRUE(model_.live.quarantined());
+  EXPECT_FALSE(Describe(id).discarded);
+  EXPECT_EQ(model_.live.kept_extents(), std::vector{id});
+  EXPECT_FALSE(model_.live.Clear(node_, model_.fence_closure(), 0, "held clear refusal"));
+  ASSERT_TRUE(node_.Call(
+      [&]() -> en::Status {
+        return node_.catalog().RetireRegistration(held) ? en::Status{}
+                                                        : std::unexpected("test unregistration");
+      },
+      "release prepared hold"));
+  ASSERT_TRUE(model_.live.Clear(node_, model_.fence_closure(), 0, "clear after hold"));
+  EXPECT_TRUE(model_.live.Usable());
+  EXPECT_TRUE(Released(model_.live.reserved_extents()));
+}
+
+TEST_F(LiveStateTest, TeardownDrainsPreparationBeforeCollectingManagedExtents) {
+  const std::array next = {en::LiveState::Range{0, 0, 8 * kExtent}};
+  ASSERT_TRUE(model_.live.Prepare(node_, next).value_or(false));
+  EXPECT_TRUE(node_.has_pending_state_preparation());
+  const std::array<en::PagedModel*, 1> models = {&model_};
+  ASSERT_TRUE(node_.TearDown(models));
+  EXPECT_FALSE(node_.has_pending_state_preparation());
+  running_ = false;
+  EXPECT_FALSE(model_.live.preparing());
+  EXPECT_EQ(node_.host_counted(), 0U);
+  EXPECT_EQ(model_.live.preparation_stats().cancel_requested, 1U);
+  EXPECT_TRUE(model_.live.extents().empty());
+  for (const auto id : model_.live.reserved_extents())
+    EXPECT_EQ(node_.catalog().Describe(id)->state, jitllm::catalog::ExtentState::kNonresident);
+}
 
 TEST_F(LiveStateTest, PlacementMemoRechecksGrowthTrimClearAndRestoreWithoutCachingResidency) {
   // Runners pin registered source places during Setup. This does not make the
@@ -556,6 +801,71 @@ class LowCapacityStateTest : public LiveStateTest {
  protected:
   std::uint64_t BudgetExtents() const override { return 1; }
 };
+
+TEST_F(LowCapacityStateTest, OptionalPreparationRefusesHeadroomWithoutReclaimOrOverflow) {
+  const std::array first = {en::LiveState::Range{0, 0, 16}};
+  ASSERT_TRUE(model_.live.Use(node_, first));
+  ASSERT_TRUE(model_.Refresh());
+  std::uint64_t reclaims = 0;
+  node_.SetReclaimer(
+      [&](std::uint64_t, en::PagedNode::ReclaimFor, std::span<const jitllm::catalog::ExtentId>) {
+        ++reclaims;
+        return 0U;
+      });
+  const auto counted = node_.host_counted();
+  const std::array next = {en::LiveState::Range{0, kExtent, 16}};
+  auto prepared = model_.live.Prepare(node_, next);
+  ASSERT_TRUE(prepared);
+  EXPECT_FALSE(*prepared);
+  EXPECT_FALSE(node_.TryChargeHost(UINT64_MAX));
+  EXPECT_EQ(reclaims, 0U);
+  EXPECT_EQ(node_.host_counted(), counted);
+  EXPECT_EQ(Occupancy(), fixed_ + kExtent);
+  EXPECT_EQ(model_.live.preparation_stats().submitted, 0U);
+  node_.SetReclaimer({});
+}
+
+class KeptPreparationStateTest : public LiveStateTest {
+ protected:
+  std::filesystem::path directory_;
+  en::Status RegisterState(const std::filesystem::path& scratch) override {
+    directory_ = scratch / ("kept-prepare-" + std::to_string(::getpid()));
+    auto dir = jitllm::platform::OpenPrivateDirectory(-1, directory_.c_str());
+    if (!dir) return std::unexpected("test kept directory");
+    auto file = jitllm::platform::OpenPrivateFile(
+        *dir, "state", {.write = true, .create = true, .truncate = true});
+    if (!file) {
+      (void)::close(*dir);
+      return std::unexpected("test kept file");
+    }
+    const char value = 0x5A;
+    const bool wrote = ::ftruncate(file->fd, static_cast<off_t>(8 * kExtent)) == 0 &&
+                       ::pwrite(file->fd, &value, 1, static_cast<off_t>(4 * kExtent + 7)) == 1;
+    (void)::close(file->fd);
+    auto registered =
+        wrote ? model_.live.RegisterSpill(
+                    node_, {.directory = {}, .dir = *dir, .name = "state", .keep = true})
+              : en::Status{std::unexpected("test kept contents")};
+    (void)::close(*dir);
+    return registered;
+  }
+  void TearDown() override {
+    LiveStateTest::TearDown();
+    std::filesystem::remove_all(directory_);
+  }
+};
+
+TEST_F(KeptPreparationStateTest, PreparationSkipsRestartSourceAndOrdinaryUseReadsItsBytes) {
+  const std::array next = {en::LiveState::Range{0, 4 * kExtent, 16}};
+  auto prepared = model_.live.Prepare(node_, next);
+  ASSERT_TRUE(prepared);
+  EXPECT_FALSE(*prepared);
+  EXPECT_EQ(model_.live.preparation_stats().submitted, 0U);
+  EXPECT_TRUE(Released(model_.live.reserved_extents()));
+  ASSERT_TRUE(model_.live.Use(node_, next));
+  ASSERT_TRUE(model_.Refresh());
+  EXPECT_EQ(Contents(4 * kExtent + 7), std::byte{0x5A});
+}
 
 TEST_F(LowCapacityStateTest, CleanCapacityRefusalPreservesTheExistingPrefix) {
   const std::array<en::LiveState::Range, 1> first = {

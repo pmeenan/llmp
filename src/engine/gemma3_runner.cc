@@ -302,11 +302,27 @@ std::vector<ExtentId> Gemma3Runner::managed_extents() const {
     result.insert(result.end(), extents.begin(), extents.end());
   return result;
 }
+LiveState::PreparationStats Gemma3Runner::state_preparation_stats() const {
+  LiveState::PreparationStats result;
+  for (const auto& slot : slots_) {
+    if (!slot) continue;
+    const auto& stats = slot->live.preparation_stats();
+    result.attempted += stats.attempted;
+    result.submitted += stats.submitted;
+    result.refused += stats.refused;
+    result.failed += stats.failed;
+    result.completed_extents += stats.completed_extents;
+    result.adopted_extents += stats.adopted_extents;
+    result.cancel_requested += stats.cancel_requested;
+  }
+  return result;
+}
 std::expected<std::vector<LiveState::Range>, std::string> Gemma3Runner::CheckpointRanges(
     std::uint32_t positions) const {
   auto needed = md::Gemma3UsedState(profile_, layout_, positions);
   if (!needed) return Error(needed.error());
   std::vector<LiveState::Range> result;
+  result.reserve(needed->size());
   for (const auto& range : *needed) result.push_back({0, range.offset, range.bytes});
   return result;
 }
@@ -930,6 +946,24 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
   bool wrote = false, unknown = false;
   Status queued;
   RunPath path = RunPath::kEager;
+  if (o_.prepare_state && known[0] && node_.threaded()) {
+    for (const auto& s : ahead[0].segments) {
+      // The approved 34-layer profile has 68 K/V tensors. Both range vectors
+      // reserve exactly that count: at most 68*(16+24)=2720 payload bytes,
+      // within Setup's existing 1 MiB descriptor slack. Prepare separately
+      // funds acquisition/ticket scratch before allocating it, without reclaim.
+      static_assert(68 * (sizeof(md::StateRange) + sizeof(LiveState::Range)) < (1U << 20U));
+      if (layout_.tensors.size() > 68) return Error("Gemma3 preparation descriptor envelope");
+      auto ranges = CheckpointRanges(s.n_past + s.rows);
+      if (!ranges) return Error(ranges.error());
+      auto prepared = slots_[s.slot]->live.Prepare(node_, *ranges);
+      if (!prepared) {
+        for (auto& slot : slots_)
+          if (slot) (void)slot->live.FinishPreparation();
+        return Error(prepared.error());
+      }
+    }
+  }
   const auto posted = node_.Job(
       execution_,
       [&](providers::NativeStream native) {
@@ -962,6 +996,16 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
         return sc::JobResult::kQueued;
       },
       "Gemma3 chunk/wave", stream_, meanwhile);
+  // The current Job has retired. Drain every optional acquisition before
+  // future plans bind or any error path mutates/clears source state. Failures
+  // that may have touched the current prefix retain its existing quarantine
+  // contract; a clean optional refusal alone never fails that prefix.
+  Status preparation;
+  for (auto& slot : slots_)
+    if (slot) {
+      const auto finished = slot->live.FinishPreparation();
+      if (!finished && preparation) preparation = Error(finished.error());
+    }
   if (!posted || !queued || resources_.launch().faulted()) {
     auto states = States();
     cohort_.CheckFailedJob(node_, stream_, execution_, states);
@@ -970,6 +1014,13 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
     if (resources_.launch().faulted()) cohort_.Fault(states);
     if (!queued) return queued;
     return !posted ? posted : Error("Gemma3 launch context faulted");
+  }
+  if (!preparation) {
+    // Current writes completed but its cursors have not been published. Every
+    // owner must become unusable, including peers whose optional preparation
+    // succeeded; otherwise a wrapped cache could be exposed at an old cursor.
+    for (const auto& w : work) slots_[w.slot]->live.Quarantine();
+    return preparation;
   }
   const auto installed = future.InstallAfterCompletion(
       [&](std::size_t i, auto planned, double seconds, const auto& transfer) {

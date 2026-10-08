@@ -95,7 +95,13 @@ calibrated/overridden slot count is one; larger contexts, more owners and
 speculation refuse. It uses its own checked optimized recipe, classic SentencePiece tokenizer and recognized
 Gemma3 template. Chat/literal completions, scoring, device greedy, initialized
 checkpoint/restore and two kept conversations across restart pass focused
-controls. Two-owner decode can join.
+controls. Two-owner decode can join. Eligible fresh zero-backed state for a
+known next prompt chunk is now prepared beside current execution, with exact
+default PromptSession histories/heads/state and drained ownership checked.
+The bounded 4K/128-row C2 screen reduces prefill by 2.617% and combined paid
+work by 1.941% at n=2; it makes no decode or broader-context speed claim.
+Kept restart and fresh sparse-file initialization retain their current path.
+[Preparation and retirement](experiments/gemma-state-prepare-ahead/README.md).
 [Compatible plain prefill](experiments/gemma3-execution/README.md#compatible-joint-prefill-and-common-attention-reads)
 now joins equal 2–128-row chunks under a separately funded 256-row wave;
 per-owner state/checkpoint rows remain 128. Scoring, one-row or incompatible

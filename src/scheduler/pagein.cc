@@ -185,6 +185,44 @@ void Scheduler::UnpinPlaces(std::span<const catalog::ExtentId> extents) {
 
 // Materialization -------------------------------------------------------------------
 
+std::expected<bool, WorkError> Scheduler::PageInsRetired(
+    std::span<const catalog::ExtentId> extents) const {
+  bool retired = true;
+  for (const auto extent : extents) {
+    const auto view = catalog_.Describe(extent);
+    if (!view) return std::unexpected(WorkError::kUnavailable);
+    if (loads_.contains(extent)) {
+      retired = false;
+    } else if (view->state != catalog::ExtentState::kResident &&
+               view->state != catalog::ExtentState::kNonresident) {
+      return std::unexpected(WorkError::kUnavailable);
+    }
+  }
+  return retired;
+}
+
+std::expected<Readiness, WorkError> Scheduler::AwaitPageIns(
+    TaskId task, std::span<const catalog::ExtentId> extents) {
+  auto* record = Record(task);
+  const auto task_view = tasks_.Describe(task);
+  if (!record || record->finished || !task_view || task_view->cancelled)
+    return std::unexpected(WorkError::kClosed);
+  // Authenticate the entire set before adding any waiter. Extent IDs include
+  // their catalog generation; content/source authentication remains the owner
+  // collecting the completed pages' responsibility.
+  const auto retired = PageInsRetired(extents);
+  if (!retired) return std::unexpected(retired.error());
+  if (*retired) return Readiness::kReady;
+  for (const auto extent : extents) {
+    const auto load = loads_.find(extent);
+    if (load == loads_.end()) continue;
+    if (std::ranges::find(load->second.waiters, task) != load->second.waiters.end()) continue;
+    if (load->second.waiters.size() >= settings_.waiters) return std::unexpected(WorkError::kBusy);
+    Join(load->second, *record);
+  }
+  return Readiness::kWaiting;
+}
+
 std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
                                                            const catalog::Closure& closure) {
   TaskRecord* record = Record(task);

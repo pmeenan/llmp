@@ -1,0 +1,598 @@
+{
+  "task": "M3.5 T67 shared next-chunk state preparation",
+  "base": "bf24f830c5bef5bbd54e69ffe10dd8f4d7de3794",
+  "decision": {
+    "Gemma3_fresh_zero": "adopted; final actual Runtime default control passed",
+    "composite_T67": "OPEN: kept restart, fresh sparse file initialization, larger-context qualification and remaining LLM adapters",
+    "public_policy_changes": false,
+    "reference_parity_claim": false
+  },
+  "tensorfold_task_entry": {
+    "utc": "2026-10-08T12:10:16.005407+00:00",
+    "refs": {
+      "main": {
+        "pin": "f8fe17d24629aedabf90bbf78279dd776e6d62e7",
+        "readme_sha256": "678c80141062556cb8db26a3e839a2b588ffcb7acdf729c3319899bf1519f2f4",
+        "bytes": 15807
+      },
+      "python-0.6": {
+        "pin": "ed78d6fc204d89d90b045bf033d6551e7714f3a1",
+        "readme_sha256": "ec9da14a5a0a9f98a0a14d11b5c265850194d06ed0dc05b85e3c26f5e19b27a4",
+        "bytes": 29475
+      }
+    },
+    "applicability": "Native Gemma4 and DeepSeek qualification and retained Python CUDA support checked. Neither currently supplies a listed Gemma3 runner/reference recipe; this state-preparation optimization first compares same-native exact state, with no new competitive reference claim."
+  },
+  "factors": {
+    "configured256": {
+      "source_manifest_sha256": "ba7277e852613f6dfa420ffe18265f12da6820287a2bce3818b07b5d73b763da",
+      "method_sha256": "cb600c09190af40201054bec0cf5394c38b704901ed52bebd933f57ebd6d7c9f",
+      "checked_sha256": "ddb4fbdcc01c61c76d27311ef63bf72c224482c7f5a52bb45093f5e30d81566c",
+      "probe_sha256": "d0dd38d7c3796ec0426fda4f7927b47318eb29bb9f1b70e27a97eb687f977dbf",
+      "sdk_receipt_sha256": "0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd",
+      "artifact": {
+        "manifest.json": {
+          "bytes": 1017,
+          "sha256": "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
+        },
+        "index.json": {
+          "bytes": 172358,
+          "sha256": "4422d9c5a115e9a5091a471eba1db5a232f825956c5e8e77be2c77c815c093e6"
+        }
+      },
+      "inputs": [
+        {
+          "sha256": "e550a181088bc3d4924de3d45091067a38cd75c7c9ee676947e8880334a83c7c",
+          "rows": 3111,
+          "bytes": 12444
+        },
+        {
+          "sha256": "c8e853512376e0148c7c5798974bd91e42849c918f8f23017fb3e22eef23cfee",
+          "rows": 3623,
+          "bytes": 14492
+        }
+      ],
+      "common_actual_budget": {
+        "fixed": "171966976",
+        "weights": "2571108352",
+        "state_capacity": "654311424",
+        "activations": "94371840",
+        "scratch": "12582912",
+        "host_input": "2097152",
+        "plan_floor": "1663072",
+        "joined_global_mask_bytes": "4194304",
+        "derived_minimum": "5360321024",
+        "total": "34359738368"
+      },
+      "equal_nonpreparation_work": {
+        "mode": "first-cycle",
+        "slots": "2",
+        "context_per_slot": "4096",
+        "chunk": "256",
+        "compatible_prefill": "1",
+        "max_wave_rows": "512",
+        "state_max_rows": "512",
+        "local_cache_cells": "1536",
+        "stock_ring": "1",
+        "prompt_rows0": "3072",
+        "prompt_rows1": "3584",
+        "untimed_rows_per_slot": "3",
+        "decode_steps": "32",
+        "departure_steps": "0",
+        "paid_generated_tokens": "64",
+        "past0": "3107",
+        "past1": "3619",
+        "paid_prefill_eager": "5",
+        "paid_prefill_captured": "0",
+        "paid_prefill_replayed": "10",
+        "paid_prefill_built": "11",
+        "paid_prefill_cached": "11",
+        "paid_prefill_built_pairs": "1",
+        "paid_prefill_cached_pairs": "1",
+        "paid_prefill_first": "0",
+        "paid_prefill_ahead": "10",
+        "eager": "11",
+        "captured": "3",
+        "replayed": "41",
+        "selected_owner": "431",
+        "selected_packed_prefill": "0",
+        "owner_prefill": "1",
+        "flexible_owner_prefill": "1",
+        "selected_owner_prefill": "363",
+        "largest_owner_prefill_rows": "256",
+        "largest_owner_prefill_kv_cells": "2816",
+        "device_masks": "1",
+        "selected_device_masks": "68",
+        "prefill_ahead": "1",
+        "lookahead_capacity": "2",
+        "lookahead_refused": "0",
+        "dropped_ahead": "0",
+        "lookahead_built": "11",
+        "lookahead_cached": "11",
+        "lookahead_captured_ahead": "10",
+        "zero_state": "1",
+        "bounded_roots": "1",
+        "selected_bounded_owner": "10",
+        "shared_q8": "1",
+        "q8_preparations": "338",
+        "selected_norm_mul": "1423",
+        "selected_quant_geglu": "72",
+        "selected_norm_rope": "1415",
+        "selected_norm_add": "1402",
+        "joined_prefill_groups": "11",
+        "joined_prefill_rows": "5632",
+        "gpu_tokens": "72"
+      },
+      "sample_size_per_mode": 2,
+      "arms": [
+        {
+          "name": "O1",
+          "prepare_state": false,
+          "prefill_seconds": 1.05695,
+          "decode_seconds": 0.4919,
+          "paid_prefill_decode_seconds": 1.54885,
+          "preparation": {
+            "attempted": 0,
+            "submitted": 0,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 0,
+            "adopted_extents": 0
+          }
+        },
+        {
+          "name": "A1",
+          "prepare_state": true,
+          "prefill_seconds": 1.04337,
+          "decode_seconds": 0.492138,
+          "paid_prefill_decode_seconds": 1.5355079999999999,
+          "preparation": {
+            "attempted": 21,
+            "submitted": 5,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 166,
+            "adopted_extents": 166
+          }
+        },
+        {
+          "name": "A2",
+          "prepare_state": true,
+          "prefill_seconds": 1.03316,
+          "decode_seconds": 0.492159,
+          "paid_prefill_decode_seconds": 1.525319,
+          "preparation": {
+            "attempted": 21,
+            "submitted": 5,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 166,
+            "adopted_extents": 166
+          }
+        },
+        {
+          "name": "O2",
+          "prepare_state": false,
+          "prefill_seconds": 1.06372,
+          "decode_seconds": 0.491395,
+          "paid_prefill_decode_seconds": 1.555115,
+          "preparation": {
+            "attempted": 0,
+            "submitted": 0,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 0,
+            "adopted_extents": 0
+          }
+        }
+      ],
+      "metrics": {
+        "prefill_seconds": {
+          "off_mean": 1.060335,
+          "on_mean": 1.038265,
+          "delta_percent": -2.0814176651718586,
+          "off_range": [
+            1.05695,
+            1.06372
+          ],
+          "on_range": [
+            1.03316,
+            1.04337
+          ],
+          "off_bookend_percent": 0.6405222574388469,
+          "on_pair_percent": -0.9785598589186817
+        },
+        "decode_seconds": {
+          "off_mean": 0.4916475,
+          "on_mean": 0.4921485,
+          "delta_percent": 0.10190227754640624,
+          "off_range": [
+            0.491395,
+            0.4919
+          ],
+          "on_range": [
+            0.492138,
+            0.492159
+          ],
+          "off_bookend_percent": -0.10266314291522693,
+          "on_pair_percent": 0.004267095814580735
+        },
+        "paid_prefill_decode_seconds": {
+          "off_mean": 1.5519825,
+          "on_mean": 1.5304134999999999,
+          "delta_percent": -1.3897708253798102,
+          "off_range": [
+            1.54885,
+            1.555115
+          ],
+          "on_range": [
+            1.525319,
+            1.5355079999999999
+          ],
+          "off_bookend_percent": 0.4044936565839041,
+          "on_pair_percent": -0.663558900376926
+        }
+      },
+      "exact_crossarm": {
+        "states": {
+          "0": "42be76c1f3e72ac7fce11e76b0cac16492b4636e55c5ce5990cfaa86d66e6910",
+          "1": "7acc593bc5de3b8bba76b564388d07b0f54f751603e926cd913a7f39585f1dcd"
+        },
+        "choices_sha256": "6884583fd6a54140b3de2850575251370e14d66be167733d728b377ff3f12f2a",
+        "final_fullhead_sha256": "42d6c1a6fb1aa3a0a146de1ec43cd7d17dcf099d708af62818291aa84aeb6303"
+      },
+      "kernel_errors": 0,
+      "owned_processes_returned_zero": 4
+    },
+    "ordinary128": {
+      "source_manifest_sha256": "5c73b7122140e94d33bcd9611058acf284f1f5b5f73af4f6bae3a5731cc2a4d6",
+      "method_sha256": "c9c5c40ac74a27c4e1bc2e8bb3cd4d91e55d47a30abeda06c50d7454fe88afb8",
+      "checked_sha256": "fadb0f651d41d68e653631259a71e2fb34314391b04b2a277ec35e296024c000",
+      "probe_sha256": "1594165ebbb087acf30eb164576ca5462436464e35277cffd8c06b908f628e5a",
+      "sdk_receipt_sha256": "0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd",
+      "artifact": {
+        "manifest.json": {
+          "bytes": 1017,
+          "sha256": "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
+        },
+        "index.json": {
+          "bytes": 172358,
+          "sha256": "4422d9c5a115e9a5091a471eba1db5a232f825956c5e8e77be2c77c815c093e6"
+        }
+      },
+      "inputs": [
+        {
+          "sha256": "e550a181088bc3d4924de3d45091067a38cd75c7c9ee676947e8880334a83c7c",
+          "rows": 3111,
+          "bytes": 12444
+        },
+        {
+          "sha256": "c8e853512376e0148c7c5798974bd91e42849c918f8f23017fb3e22eef23cfee",
+          "rows": 3623,
+          "bytes": 14492
+        }
+      ],
+      "common_actual_budget": {
+        "fixed": "121635328",
+        "weights": "2571108352",
+        "state_capacity": "654311424",
+        "activations": "46137344",
+        "scratch": "10485760",
+        "host_input": "2097152",
+        "plan_floor": "1663072",
+        "joined_global_mask_bytes": "2097152",
+        "derived_minimum": "5309989376",
+        "total": "34359738368"
+      },
+      "equal_nonpreparation_work": {
+        "mode": "first-cycle",
+        "slots": "2",
+        "context_per_slot": "4096",
+        "chunk": "128",
+        "compatible_prefill": "1",
+        "max_wave_rows": "256",
+        "state_max_rows": "128",
+        "local_cache_cells": "1280",
+        "stock_ring": "0",
+        "prompt_rows0": "3072",
+        "prompt_rows1": "3584",
+        "untimed_rows_per_slot": "3",
+        "decode_steps": "32",
+        "departure_steps": "0",
+        "paid_generated_tokens": "64",
+        "past0": "3107",
+        "past1": "3619",
+        "paid_prefill_eager": "3",
+        "paid_prefill_captured": "1",
+        "paid_prefill_replayed": "25",
+        "paid_prefill_built": "13",
+        "paid_prefill_cached": "13",
+        "paid_prefill_built_pairs": "0",
+        "paid_prefill_cached_pairs": "0",
+        "paid_prefill_first": "1",
+        "paid_prefill_ahead": "13",
+        "eager": "9",
+        "captured": "4",
+        "replayed": "56",
+        "selected_owner": "464",
+        "selected_packed_prefill": "0",
+        "owner_prefill": "1",
+        "flexible_owner_prefill": "1",
+        "selected_owner_prefill": "396",
+        "largest_owner_prefill_rows": "128",
+        "largest_owner_prefill_kv_cells": "3072",
+        "device_masks": "1",
+        "selected_device_masks": "74",
+        "prefill_ahead": "1",
+        "lookahead_capacity": "2",
+        "lookahead_refused": "0",
+        "dropped_ahead": "0",
+        "lookahead_built": "13",
+        "lookahead_cached": "13",
+        "lookahead_captured_ahead": "13",
+        "zero_state": "1",
+        "bounded_roots": "1",
+        "selected_bounded_owner": "10",
+        "shared_q8": "1",
+        "q8_preparations": "338",
+        "selected_norm_mul": "1557",
+        "selected_quant_geglu": "72",
+        "selected_norm_rope": "1549",
+        "selected_norm_add": "1534",
+        "joined_prefill_groups": "23",
+        "joined_prefill_rows": "5888",
+        "gpu_tokens": "72"
+      },
+      "sample_size_per_mode": 2,
+      "arms": [
+        {
+          "name": "O1",
+          "prepare_state": false,
+          "prefill_seconds": 1.133,
+          "decode_seconds": 0.487855,
+          "paid_prefill_decode_seconds": 1.620855,
+          "preparation": {
+            "attempted": 0,
+            "submitted": 0,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 0,
+            "adopted_extents": 0
+          }
+        },
+        {
+          "name": "A1",
+          "prepare_state": true,
+          "prefill_seconds": 1.09304,
+          "decode_seconds": 0.484128,
+          "paid_prefill_decode_seconds": 1.577168,
+          "preparation": {
+            "attempted": 47,
+            "submitted": 5,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 166,
+            "adopted_extents": 166
+          }
+        },
+        {
+          "name": "A2",
+          "prepare_state": true,
+          "prefill_seconds": 1.10459,
+          "decode_seconds": 0.483558,
+          "paid_prefill_decode_seconds": 1.588148,
+          "preparation": {
+            "attempted": 47,
+            "submitted": 5,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 166,
+            "adopted_extents": 166
+          }
+        },
+        {
+          "name": "O2",
+          "prepare_state": false,
+          "prefill_seconds": 1.12368,
+          "decode_seconds": 0.483447,
+          "paid_prefill_decode_seconds": 1.607127,
+          "preparation": {
+            "attempted": 0,
+            "submitted": 0,
+            "refused": 0,
+            "failed": 0,
+            "completed_extents": 0,
+            "adopted_extents": 0
+          }
+        }
+      ],
+      "metrics": {
+        "prefill_seconds": {
+          "off_mean": 1.1283400000000001,
+          "on_mean": 1.098815,
+          "delta_percent": -2.616675824662784,
+          "off_range": [
+            1.12368,
+            1.133
+          ],
+          "on_range": [
+            1.09304,
+            1.10459
+          ],
+          "off_bookend_percent": -0.8225948808473049,
+          "on_pair_percent": 1.0566859401302642
+        },
+        "decode_seconds": {
+          "off_mean": 0.485651,
+          "on_mean": 0.483843,
+          "delta_percent": -0.3722838005069451,
+          "off_range": [
+            0.483447,
+            0.487855
+          ],
+          "on_range": [
+            0.483558,
+            0.484128
+          ],
+          "off_bookend_percent": -0.90354716052925,
+          "on_pair_percent": -0.11773745786238798
+        },
+        "paid_prefill_decode_seconds": {
+          "off_mean": 1.613991,
+          "on_mean": 1.582658,
+          "delta_percent": -1.941336723686815,
+          "off_range": [
+            1.607127,
+            1.620855
+          ],
+          "on_range": [
+            1.577168,
+            1.588148
+          ],
+          "off_bookend_percent": -0.8469604005293507,
+          "on_pair_percent": 0.6961845535795819
+        }
+      },
+      "exact_crossarm": {
+        "states": {
+          "0": "ba544d3a08f7c645350b70b9970343f77dd2780a61084f53e07a1486d09b77e1",
+          "1": "aabf8c83a61bcb3f325279b584cd0586d85b5a7a0e4ba69423e189ebedfe3b4c"
+        },
+        "choices_sha256": "5bac9e2d8e1e9877b861cff88f40344ede75ceb60c847599f3f23414aa843b3d",
+        "final_fullhead_sha256": "4a74b92e01fbffeaeea3fd19e07db837a45d9e2a30c6c52383edf1d26d0ac63e"
+      },
+      "kernel_errors": 0,
+      "owned_processes_returned_zero": 4
+    }
+  },
+  "final_qualification": {
+    "source_manifest_sha256": "b78ad0e89eea45ff3d14d532471dba6c5422a3f9f078cb685aff9df9d7efc5e7",
+    "method_sha256": "f7e5eafec106dde5b17a326bfb05899c7931f3d0ff94617000d32a8bbe32ea34",
+    "checked_sha256": "7f48d9ef6a29bc1dadd02bf628a83258c7c1f0b460b443bd4a99b9d85075318f",
+    "sdk_receipt_sha256": "0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd",
+    "final_ELFs": {
+      "benchmarks/jitllm_gemma3_joint_prefill_probe": "f0431a4f3807ee9a62a2c58698be7d03d65c583c3ef959f22e884cf51accb675",
+      "tests/unit/gemma_prefill_serving_gpu_test": "9ab9426b63bf0113066149dcce2d2a1b1b9edd8d68504bd628ec7b0fc88d605e",
+      "src/runtime/jitllm-runtime": "259f9315afb69ce84a33177abb8bb8bd471a933bf5f8c3c6c423c440bcb7dc35"
+    },
+    "cuBLAS_sha256": {
+      "libcublas.so.13": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b",
+      "libcublasLt.so.13": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+    },
+    "positive_executions": 19,
+    "unique_positive_cases": 18,
+    "actual_default_prompt": {
+      "completed_extents": 136,
+      "adopted_extents": 136,
+      "joined_groups": 9,
+      "joined_rows": 2304,
+      "full_heads_state_history_exact": true,
+      "pending_owners": 0
+    },
+    "failed_attempts_unpooled": [
+      "Launcher rc127: nonexistent Python path; no controller/build/tests ran.",
+      "Original cancellation control exposed Acquire task gone before withdrawn page-ins retired; scoped retirement repair subsequently passed all 15 controls.",
+      "Initial ownership-guard fixture failed to compile using private state access; no tests ran. Public-API isolated-owner repair passed all three controls."
+    ],
+    "deferred": "Full suites, shipment/package checks, other adapters/context profiles and reference measurements."
+  },
+  "qualification_receipts": [
+    {
+      "checked_sha256": "9d060e137d8915ac8a7e60367a9f9fedc9194b3ff09d4599d2e84dd226db1fe2",
+      "source_manifest_sha256": "ffd0b9ebcd757988ebe412352c279e3a73c99dd3a42122b91738fb3d57795eaf",
+      "method_sha256": "8e09463c299908cda0485364e67b2544e8fc8c7c4363e121686c66ca55af1937",
+      "cases": [
+        [
+          "LiveStateTest",
+          "PreparationIsUnpublishedReclaimableZeroBackingUntilUse"
+        ],
+        [
+          "LiveStateTest",
+          "ReclaimedPreparationRegrowsNormallyAndClearDrainsAnOutstandingTicket"
+        ],
+        [
+          "LiveStateTest",
+          "RepeatedSpillRegistrationRefusesWithoutSettlingOrReplacingPreparedState"
+        ],
+        [
+          "LiveStateTest",
+          "PreparationValidatesWholeRangeAndSourceBeforeSubmitting"
+        ],
+        [
+          "LiveStateTest",
+          "ChangedPreparedGenerationIsRetainedQuarantinedAndClearRecovers"
+        ],
+        [
+          "LiveStateTest",
+          "PreparationInvalidationRefusalRetainsOwnerUntilHoldReleasedAndClear"
+        ],
+        [
+          "LiveStateTest",
+          "TeardownDrainsPreparationBeforeCollectingManagedExtents"
+        ],
+        [
+          "LowCapacityStateTest",
+          "OptionalPreparationRefusesHeadroomWithoutReclaimOrOverflow"
+        ],
+        [
+          "KeptPreparationStateTest",
+          "PreparationSkipsRestartSourceAndOrdinaryUseReadsItsBytes"
+        ],
+        [
+          "AcquireTest",
+          "NoVictimAcquireRefusesPressureWithoutEvictingUsefulCache"
+        ],
+        [
+          "AcquireTest",
+          "FailedOptionalZeroAcquireRetiresPartialCompletions"
+        ],
+        [
+          "AcquireTest",
+          "CancelledOptionalAcquireKeepsItsOwnerUntilDeviceFenceRetires"
+        ],
+        [
+          "AcquireTest",
+          "ScopedDrainIncludesQueuedLoadsAndDoesNotWaitForUnrelatedLoads"
+        ],
+        [
+          "AcquireTest",
+          "ScopedDrainNeverRestartsMissingPagesOrCertifiesUnknownCompletion"
+        ],
+        [
+          "Gemma3PreparationGpu",
+          "SuccessfulWrappedWaveWithHeldFutureQuarantinesEveryCurrentOwner"
+        ]
+      ]
+    },
+    {
+      "checked_sha256": "a36153c211c3b86cdecd6c5e76fd555fbd6291f9401e00bb0b32dfa39170e183",
+      "source_manifest_sha256": "5c73b7122140e94d33bcd9611058acf284f1f5b5f73af4f6bae3a5731cc2a4d6",
+      "method_sha256": "e624bc8cf6833303cf1679f42fd9417444d42dd78d859a648a6e50f5683b73ae",
+      "cases": [
+        [
+          "LiveStateTest",
+          "TeardownDrainsPreparationBeforeCollectingManagedExtents"
+        ],
+        [
+          "ApprovedFamilies/GemmaPrefillServingGpu",
+          "UnprovenPreparationStopsServerBeforeOwnerDestruction/1"
+        ],
+        [
+          "ApprovedFamilies/GemmaPrefillServingGpu",
+          "Prepared128RootsPreserveStateAndRestartContinuation/1"
+        ]
+      ]
+    },
+    {
+      "checked_sha256": "7f48d9ef6a29bc1dadd02bf628a83258c7c1f0b460b443bd4a99b9d85075318f",
+      "source_manifest_sha256": "b78ad0e89eea45ff3d14d532471dba6c5422a3f9f078cb685aff9df9d7efc5e7",
+      "method_sha256": "f7e5eafec106dde5b17a326bfb05899c7931f3d0ff94617000d32a8bbe32ea34",
+      "cases": [
+        [
+          "ApprovedFamilies/GemmaPrefillServingGpu",
+          "DefaultPreparationPublishesOnlyActualPromptProgress/1"
+        ]
+      ]
+    }
+  ]
+}

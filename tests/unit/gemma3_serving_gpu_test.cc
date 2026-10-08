@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <expected>
@@ -17,16 +18,39 @@
 #include "base/sha256.h"
 #include "engine/gemma3_runner.h"
 #include "engine/support.h"
+#include "scheduler/scheduler.h"
 
 namespace en = jitllm::engine;
 class Gemma3ServingGpu : public ::testing::Test {
  protected:
+  struct PreparationObserver final : jitllm::scheduler::PageInObserver {
+    jitllm::catalog::Catalog* catalog = nullptr;
+    jitllm::catalog::ExtentId target;
+    std::uint64_t generation = 0;
+    jitllm::catalog::RegistrationId registration;
+    bool held = false;
+    void Staged(jitllm::catalog::ExtentId extent, jitllm::scheduler::PageInEvent event) override {
+      if (held || extent != target || event != jitllm::scheduler::PageInEvent::kResident) return;
+      const auto view = catalog->Describe(extent);
+      if (view && view->content_generation == generation && !view->discarded &&
+          view->descriptor.memory_class == jitllm::catalog::MemoryClass::kLiveState) {
+        if (auto acquired = catalog->AddRegistration(extent); acquired) {
+          registration = *acquired;
+          held = true;
+        }
+      }
+    }
+  };
+  virtual bool PrepareState() const { return false; }
   struct Lifetime {
-    en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+    Lifetime() : node({.slot_bytes = en::kSlabSlotBytes, .observer = &observer}) {}
+    PreparationObserver observer;
+    en::PagedNode node;
     std::unique_ptr<en::Gemma3Runner> runner;
     std::vector<en::PagedModel*> entered;
   };
   std::unique_ptr<Lifetime> life = std::make_unique<Lifetime>();
+  PreparationObserver& observer = life->observer;
   en::PagedNode& node = life->node;
   std::unique_ptr<en::Gemma3Runner>& runner = life->runner;
   const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
@@ -45,9 +69,11 @@ class Gemma3ServingGpu : public ::testing::Test {
                           .fuse_norms = true,
                           .fuse_quant_glu = true,
                           .fuse_norm_rope = true,
-                          .fuse_norm_add = true},
+                          .fuse_norm_add = true,
+                          .prepare_state = PrepareState()},
         0, 0);
     ASSERT_TRUE(node.Open());
+    observer.catalog = &node.catalog();
     life->entered.push_back(runner.get());
     ASSERT_TRUE(runner->Setup());
     ASSERT_TRUE(node.MapWorkspace(runner->activations_needed(), runner->pool_needed()));
@@ -483,4 +509,84 @@ TEST_F(Gemma3ServingGpu, SuppressedNextHeadsStillCaptureTheCorrectAfterOwnerPosi
     return {};
   });
   ASSERT_TRUE(status) << (status ? "" : status.error());
+}
+
+class Gemma3PreparationGpu : public Gemma3ServingGpu {
+ protected:
+  bool PrepareState() const override { return true; }
+};
+
+TEST_F(Gemma3PreparationGpu, SuccessfulWrappedWaveWithHeldFutureQuarantinesEveryCurrentOwner) {
+  constexpr std::uint32_t kRows = 128, kPast = 1920;
+  ASSERT_LT(runner->layout().local_cells, kPast);
+  const auto result = Held([&]() -> en::Status {
+    std::array<std::vector<std::int32_t>, 2> tokens;
+    std::array<std::vector<float>, 2> heads;
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      tokens[id].resize(kRows);
+      for (std::size_t i = 0; i < kRows; ++i) tokens[id][i] = prompt[(i + id) % prompt.size()];
+    }
+    std::array<en::Gemma3Runner::Work, 2> work{
+        {{0, 0, tokens[0], &heads[0]}, {1, 0, tokens[1], &heads[1]}}};
+    // Establish a real wrapped prefix without predictions. The tested unit
+    // writes the old ring while preparing a disjoint new global-cache page.
+    for (std::uint32_t past = 0; past < kPast; past += kRows) {
+      for (auto& w : work) w.n_past = past;
+      if (auto ran = runner->WavePrefill(work, false); !ran) return ran;
+    }
+    auto request = runner->request_slot(0);
+    if (!request) return en::support::Error(request.error());
+    const auto& tensors = runner->layout().tensors;
+    const auto global = std::ranges::find_if(tensors, [](const auto& t) { return !t.local; });
+    if (global == tensors.end()) return en::support::Error("test global cache");
+    const auto index = (global->offset + 2 * en::kPagedExtent) / en::kPagedExtent;
+    const auto future = (*request)->state().reserved_extents()[index];
+    if (auto armed = node.Call(
+            [&]() -> en::Status {
+              const auto view = node.catalog().Describe(future);
+              if (!view || view->state != jitllm::catalog::ExtentState::kNonresident)
+                return en::support::Error("test future must be unpublished");
+              observer.target = future;
+              observer.generation = view->content_generation;
+              return {};
+            },
+            "hold one completed future preparation");
+        !armed)
+      return armed;
+    (void)node.TakeTimes(0);
+    for (auto& w : work) w.n_past = kPast;
+    const std::array next = {en::Gemma3Runner::PrefillNext{0, kRows, 0},
+                             en::Gemma3Runner::PrefillNext{1, kRows, 0}};
+    const auto failed = runner->WavePrefill(work, false, next, false);
+    EXPECT_FALSE(failed);
+    EXPECT_EQ(node.TakeTimes(0).steps, 1U);  // current GPU Job really completed
+    EXPECT_GT(runner->state_preparation_stats().submitted, 0U);
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      EXPECT_FALSE((*runner->request_slot(id))->state_usable());
+      EXPECT_EQ((*runner->request_slot(id))->completed_positions(), kPast);
+    }
+    if (auto checked = node.Call(
+            [&]() -> en::Status {
+              EXPECT_TRUE(observer.held);
+              const auto view = node.catalog().Describe(future);
+              EXPECT_EQ(view->state, jitllm::catalog::ExtentState::kResident);
+              EXPECT_FALSE(view->discarded);
+              EXPECT_EQ(view->content_generation, observer.generation);
+              EXPECT_EQ(view->registrations, 1U);
+              observer.target = {};
+              if (!node.catalog().RetireRegistration(observer.registration))
+                return en::support::Error("test future registration release");
+              return {};
+            },
+            "release held future after failed collection");
+        !checked)
+      return checked;
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      if (auto cleared = runner->Clear(id); !cleared) return cleared;
+      EXPECT_TRUE((*runner->request_slot(id))->state_usable());
+      EXPECT_EQ((*runner->request_slot(id))->completed_positions(), 0U);
+    }
+    return {};
+  });
+  ASSERT_TRUE(result) << (result ? "" : result.error());
 }
