@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 jitLLM contributors
 # SPDX-License-Identifier: Apache-2.0
-"""One pinned TensorFold BF16-prompt Teacher32 diagnostic.
+"""Pinned TensorFold BF16 Teacher32 or fixed-prefix frontier diagnostic.
 
 Use the pinned source/package and isolated supervisor described in README.
 No timing endpoint or natural generation is measured. Teacher-forced heads
@@ -33,6 +33,8 @@ def main():
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--histories", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--fixed-prefix-rows", type=int, choices=[0, 29], default=0,
+                        help="append exactly29 retained history IDs and observe only its prefill frontier")
     args = parser.parse_args()
     args.out.mkdir(exist_ok=False)
     manifest = json.loads(Path("/reference/tf-source.json").read_text())
@@ -105,6 +107,11 @@ def main():
             raise RuntimeError("public serial teacher unexpectedly captured")
         allocation_before_teacher = torch.cuda.memory_allocated()
         history = histories["plain"]
+        actual_prompt = prompt + history[:args.fixed_prefix_rows]
+        expected_cuts = [[0, 512], [512, 512], [1024, 512]]
+        if args.fixed_prefix_rows:
+            expected_cuts.append([1536, 29])
+        suffix_forward_calls = 0
         heads = []
         original_sample = serial.sample
 
@@ -119,7 +126,7 @@ def main():
         decode.prefill_chunk = witnessed_chunk
         serial.sample = capture_frontier
         try:
-            decode.prefill(serial, prompt, None, mtp=False)
+            decode.prefill(serial, actual_prompt, None, mtp=False)
         finally:
             serial.sample = original_sample
             Mx8Linear.prefill = original_prefill
@@ -127,14 +134,16 @@ def main():
             decode.prefill_chunk = original_chunk
         if calls["fp8"] or calls["bf16_folded"] + calls["bf16_lane_fallback"] == 0:
             raise RuntimeError("actual BF16 prompt consumers absent")
-        if cuts != [[0, 512], [512, 512], [1024, 512]]:
+        if cuts != expected_cuts:
             raise RuntimeError("actual BF16 teacher chunk cuts differ")
-        for token in history[:-1]:
+        for token in ([] if args.fixed_prefix_rows else history[:-1]):
+            suffix_forward_calls += 1
             logits = serial.forward([token])
             heads.append(logits[:1].float().cpu().numpy().copy())
             decode.commit(serial.w, serial.st, serial.buf, 1, 1)
         data = np.concatenate(heads, axis=0)
-        if data.shape != (32, 248320) or not np.isfinite(data).all():
+        expected_rows = 1 if args.fixed_prefix_rows else 32
+        if data.shape != (expected_rows, 248320) or not np.isfinite(data).all():
             raise RuntimeError("incomplete/nonfinite diagnostic teacher heads")
         path = args.out / "bf16-heads.f32"
         data.astype("<f4").tofile(path)
@@ -156,8 +165,12 @@ def main():
                        draft_ids_sha256=hashlib.sha256(
                            engine.w.draft_ids.cpu().numpy().astype("<i4").tobytes()).hexdigest())
         (args.out / "diagnostic.json").write_text(json.dumps(dict(
-            scope="same-conditioned BF16-prompt Teacher32; no performance endpoint",
-            binding=binding, teacher_history=history, heads_sha256=sha(path)), indent=2) + "\n")
+            scope=("fixed-prefix29 BF16 prompt frontier; no suffix forward or performance endpoint"
+                   if args.fixed_prefix_rows else "same-conditioned BF16-prompt Teacher32; no performance endpoint"),
+            binding=binding, teacher_history=history, fixed_prefix_rows=args.fixed_prefix_rows,
+            prompt_rows=len(actual_prompt),
+            prompt_ids_sha256=hashlib.sha256(np.asarray(actual_prompt, dtype="<i4").tobytes()).hexdigest(),
+            suffix_forward_calls=suffix_forward_calls, heads_sha256=sha(path)), indent=2) + "\n")
     finally:
         Mx8Linear.prefill = original_prefill
         Mx8Linear.prefill8 = original_prefill8

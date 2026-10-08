@@ -657,11 +657,16 @@ family" guide, and its long-context scaling work.
       exceeds the unchanged 1.0 bound. Native host/device-mask heads are
       exact. The completed same-history BF16-prompt isolation moves row29's
       reference margin to 0.6875 without recovering native's argmax, and
-      introduces a strong posterior change at row5. Further frontier/arithmetic
+      introduces a strong posterior change at row5. The completed 1565-ID
+      all-prompt comparison also retains the argmax disagreement (native 17723,
+      TF BF16 47149; reference margin 1.3125). Further arithmetic
       qualification remains open; original FP8 quality finding unchanged,
       no parity or PPL pass. [Controlled diagnostic](experiments/qwen-device-masks/README.md#controlled-bf16-prompt-follow-up).
 - [x] Isolate pinned TensorFold FP8/BF16 prompt policy with one untimed,
       same-conditioned Teacher32 and actual-consumer/retirement proof.
+- [x] Isolate row 29 prompt/serial geometry with one same-conditioned 1565-ID
+      native/BF16 TensorFold frontier, complete finite heads and authenticated
+      consumers/retirement. Argmax remains different; the quality lead stays open.
 - [x] Implement and qualify an optional same-47,172-ID Q4_1 selected MTP
       head, including odd-prefix scalar/joined OneToken capture/replay,
       proposals/confidence, initialized state and protected-peer restore.

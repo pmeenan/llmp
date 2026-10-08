@@ -264,6 +264,67 @@ Raw evidence remains outside Git at
 Spark B `~/scratch/m35-qwen-bf16-prompt/diagnostic2`; it may be deleted when
 M3.5 closes. The standing inputs and replay recipe below recreate the heads.
 
+### Controlled prompt/serial frontier follow-up
+
+A second untimed diagnostic puts the same row-29 conditioning entirely into
+both engines' prompt path: the original 1536 IDs followed by the first 29
+native history IDs, totaling 1565. Task-entry TensorFold native/Python refs
+remained the pins above. Native reuses the qualified target-only benchmark
+without a rebuild; TensorFold keeps BF16 prompt policy before construction.
+Both use logical context 2048 and chunk 512. TensorFold actually executes
+512/512/512/29 cuts, 768 folded BF16 calls, zero FP8/lane-fallback calls and
+**zero serial suffix forwards**. Its public serial twin is initialized for
+prefill, but the observed head comes only from the prompt frontier. Native
+publishes five complete finite heads; only its first is this frontier. The
+other four are excluded from this comparison. TensorFold publishes one
+complete finite head, also 248,320 values.
+
+| Same conditioning at row 29 | Native argmax / margin | TensorFold argmax / margin | Maximum absolute logit difference |
+| --- | ---: | ---: | ---: |
+| Both prompt paths, TF BF16 | 17723 / 2.602531433 | 47149 / 1.3125 | 4.430672884 |
+| Both serial paths, TF BF16 (retained) | 17723 / 0.828717232 | 47149 / 0.6875 | 2.314872384 |
+| Both serial paths, TF FP8 (original) | 17723 / 0.828717232 | 47149 / 1.5625 | 2.825488567 |
+
+Within native, prompt versus serial keeps argmax 17723 but changes all head
+values, with maximum absolute delta 2.757405281. Within TensorFold BF16,
+prompt versus serial keeps argmax 47149, with maximum delta 1.703125. Matching
+this prompt/serial geometry therefore **does not recover the cross-engine
+argmax**. In the all-prompt comparison, TensorFold's loss for native's choice
+is 3.3125, and native's loss for TensorFold's choice is 2.602531433. TensorFold's
+reference top-two margin 1.3125 exceeds the unchanged 1.0 bound. The
+[aggregate](frontier-results.json) retains full-vector identities, directional
+losses, union-top-five log-probability deltas and the supplied target's NLL.
+These are one-position observations, not PPL, correctness or speed claims.
+The original competitive FP8 finding remains open; this completes only the
+prompt/serial isolation step. No particular kernel, cache or state-precision
+cause is established.
+
+The acquisition authenticated actual package/JIT/runtime library consumers,
+immutable checkpoint receipt and input identities before/after. Both
+applications returned 0 with completion markers; native teardown, independent
+container removal and the empty GPU process list were proved. No failed
+attempt or retry occurred. Default `--fixed-prefix-rows 0` retains the
+existing Teacher32 route; new `--fixed-prefix-rows 29` suppresses its suffix
+loop and requires exactly one head. No production source changed, and no
+native build, regression suite or performance run was needed.
+
+Source inventory SHA
+`05504b89eff58a454d78f8dd59625f63dd7ad24b0ea5eae0cdfda6c2f712dfa2`,
+executed harness SHA
+`5df8a10794e66982a21a1167a21328a898bd1be569bc097058d49e9974a4ba51`,
+positive receipt SHA
+`e0268e11e6dfd6a1606b34b866ef99d0d19dc0716403b2d724be9d6e978f508a`.
+Derived prompt int32 SHA
+`b274b0359d6d37db002c0ae3f8f70e1bc1a9d65f4a5cd523411184c9aaf0ae10`.
+Native first head SHA
+`06b771d11c8af1aa2df5be2617cd760c5bde7faa4b120083ff50b84219b0d59a`;
+TensorFold prompt head SHA
+`9e0dbeacaccd6cc4f0d74e1a91956cad65bf2f469265eed31f928007ea8d21d1`.
+Raw evidence is external at
+`/tmp/jitllm-m35-coordination/qwen-frontier-quality-raw/frontier1` and
+Spark B `~/scratch/m35-qwen-frontier-quality/frontier1`; it may be deleted at
+M3.5 close. Standing authenticated inputs and the replay recipe below remain.
+
 ### Reference provenance and retained failures
 
 Native acquisition source inventory is
@@ -564,7 +625,7 @@ test -z "$(docker ps -aq --filter "name=^/$NAME$")"
 test -z "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)"
 ```
 
-Accept only return0 plus both completion markers, absent container, empty GPU
+Accept only return 0 plus both completion markers, absent container, empty GPU
 process list, unchanged bindings and all 32 complete finite heads. Inspect
 `teacher/diagnostic.json`: actual BF16 calls must be positive, FP8 calls zero,
 cuts exactly 512/512/512, context/cache 2048/2052, fresh serial initialized and
@@ -578,3 +639,46 @@ history key. In the second analysis, fields named `native_*` identify the first
 operand (FP8), not jitLLM. Keep the fixed 1.0 margin and both original reference
 and controlled-policy results; no new performance or PPL claim follows from
 this replay.
+
+### Replaying the prompt/serial frontier isolation
+
+Use the same standing `prompt.json` and `native-histories.json` as above.
+Append `histories["plain"][:29]` to the 1536-ID prompt in a private input copy;
+verify 1565 IDs and the aggregate's little-endian int32 SHA. No tokenization or
+new prompt is needed. The [BF16 replay runner](#replaying-the-bf16-policy-isolation)
+above accepts `--fixed-prefix-rows 29` after its other harness arguments; keep
+its original 1536-ID input because the harness appends the history itself.
+Require actual cuts 512/512/512/29, positive BF16 consumers, zero FP8 consumers,
+`fixed_prefix_rows=29`, `prompt_rows=1565`, `suffix_forward_calls=0`, one finite
+head, unchanged bindings and the same positive retirement proofs. Omit the
+flag to recreate the original BF16 Teacher32 payload.
+
+For native, use a freshly bound build of the existing `jitllm_qwen38_spec`
+benchmark with the authenticated target artifact/tokenizer, derived 1565-ID
+input, `--check masks-target --tokens 5 --context 2048 --prefill-chunk 512`
+and `--graphs on --device-masks on`, preserving the existing reference's other options.
+Use the [native invocation and supplied-output recipe](#replay-and-provenance) above for
+artifact, input and output flags. The first full head is the observed prompt
+frontier; require five finite complete heads, no draft state, actual input SHA,
+return 0 plus `DONE`, completed teardown and empty GPU process list. No timing
+from this diagnostic is interpreted. Bind current binary/source/SDK/library
+identities rather than depending on the old executable remaining available.
+
+To recreate the serial controls, use `reference_cycle.py` and the default
+BF16 Teacher32 route above on the original 1536-ID prompt and same 32-ID
+history, then extract row 29 (zero-based, 993,280 bytes per row) from each
+full-head file. Use [frontier_compare.py](frontier_compare.py) for each pair:
+
+```sh
+hostlock shared --label "jitLLM: compare one Qwen frontier" -- \
+  python3 docs/experiments/qwen-device-masks/frontier_compare.py \
+  --left native-frontier.f32 --right bf16-frontier.f32 --target 17723 \
+  --out comparison.json
+```
+
+Compare both engines prompt versus serial and the cross-engine prompt pair;
+keep the original fast-FP8 result separately. The comparator requires all
+248,320 finite F32 values and retains the original 1.0 reference-margin rule.
+Standing inputs, pinned checkpoint/package preparation and their authentication
+receipt survive raw-result cleanup; these recipes recreate the observed heads
+without requiring a deleted job directory.
