@@ -2340,34 +2340,18 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
                     .kind = {.verify = verify, .export_streams = verify}};
     key.slots[s].shape.token = tokens;
     if (verify) {
-      using K = md::Qwen38StateTensor::Kind;
+      // As the scalar verify's (model/qwen38.h Qwen38VerifySaves).
       const auto base = f->request->live.base(kTarget);
-      for (std::uint32_t i = 0; i < rows; ++i) {
-        const auto cell = std::uint64_t{w.n_past} + i;
-        for (const auto& t : layout_.tensors) {
-          if (t.kind == K::kK || t.kind == K::kV || t.kind == K::kIndexerK) {
-            const auto bytes = t.ne0 * (t.f16 ? 2U : 4U);
-            f->saves.push_back({base + t.offset + (cell * bytes), bytes, i});
-          }
-        }
-      }
-      const auto ratio = profile_.indexer_ratio;
-      for (std::uint64_t b = w.n_past / ratio; b < (std::uint64_t{w.n_past} + rows) / ratio; ++b) {
-        const auto row = static_cast<std::int64_t>(((b + 1) * ratio) - 1 - w.n_past);
-        for (const auto& t : layout_.tensors) {
-          if (t.kind == K::kIndexerBlocks) {
-            const auto bytes = t.ne0 * 2;
-            f->saves.push_back({base + t.offset + (b * bytes), bytes, row});
-          }
-        }
+      const auto drafter = f->request->live.base(kDrafter);
+      for (const md::Qwen38VerifySave& save :
+           md::Qwen38VerifySaves(profile_, layout_, mtp_layout_, w.n_past, rows)) {
+        f->saves.push_back({(save.drafter ? drafter : base) + save.offset, save.bytes,
+                            static_cast<std::int64_t>(save.row)});
       }
       const auto offset = Round(commit_layout_.bytes, 256);
       const auto& commit = f->request->commit;
       const std::uint64_t stream_row = std::uint64_t{profile_.hc_width()} * 4;
-      const auto stream_base = f->request->live.base(kDrafter) + mtp_layout_.hidden;
-      for (std::uint32_t i = 0; i < rows; ++i) {
-        f->saves.push_back({stream_base + (std::uint64_t{i + 1} * stream_row), stream_row, i});
-      }
+      const auto stream_base = drafter + mtp_layout_.hidden;
       if (commit.bytes < offset || f->saves.size() > kRangeCapacity) {
         return Error("the Qwen3.8 wave exceeds a slot's snapshot geometry");
       }
@@ -3491,46 +3475,19 @@ Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t>
   if (!copies) {
     return std::unexpected(copies.error());
   }
-  // The cells it writes (each QSA layer's K, V and indexer rows), saved.
-  using K = md::Qwen38StateTensor::Kind;
+  // The cells it writes (each QSA layer's K, V and indexer rows), each
+  // block key a row completes, and the streams rows it exports (rows 1 ..),
+  // which hold the pending rows before it: a verify discarded whole
+  // (DiscardVerify) puts them back, so its pending rows stay the next
+  // draft's, as a wave's do (model/qwen38.h Qwen38VerifySaves).
   const std::uint64_t state = request.live.base(kTarget);
+  const std::uint64_t drafter = request.live.base(kDrafter);
   request.live.BeginSaves();
   request.verify_restores_streams = false;
-  for (std::uint32_t i = 0; i < rows; ++i) {
-    const std::uint64_t cell = std::uint64_t{n_past} + i;
-    for (const md::Qwen38StateTensor& t : layout_.tensors) {
-      if (t.kind != K::kK && t.kind != K::kV && t.kind != K::kIndexerK) {
-        continue;
-      }
-      const std::uint64_t bytes = t.ne0 * (t.f16 ? 2 : 4);
-      if (auto added = request.live.Save(state + t.offset + (cell * bytes), bytes, i); !added) {
-        return added;
-      }
-    }
-  }
-  // And each block key it writes: the row that completes the block writes
-  // it, so a rejected row's block is restored with its cells.
-  const std::uint32_t ratio = profile_.indexer_ratio;
-  for (std::uint64_t b = n_past / ratio; b < (std::uint64_t{n_past} + rows) / ratio; ++b) {
-    const auto row = static_cast<std::uint32_t>(((b + 1) * ratio) - 1 - n_past);
-    for (const md::Qwen38StateTensor& t : layout_.tensors) {
-      if (t.kind != K::kIndexerBlocks) {
-        continue;
-      }
-      const std::uint64_t bytes = t.ne0 * 2;
-      if (auto added = request.live.Save(state + t.offset + (b * bytes), bytes, row); !added) {
-        return added;
-      }
-    }
-  }
-  // And the streams rows it exports (rows 1 ..), which hold the pending
-  // rows before it: a verify discarded whole (DiscardVerify) puts them
-  // back, so its pending rows stay the next draft's, as a wave's do.
-  const std::uint64_t stream_row = std::uint64_t{profile_.hc_width()} * sizeof(float);
-  const std::uint64_t streams = request.live.base(kDrafter) + mtp_layout_.hidden;
-  for (std::uint32_t i = 0; i < rows; ++i) {
+  for (const md::Qwen38VerifySave& save :
+       md::Qwen38VerifySaves(profile_, layout_, mtp_layout_, n_past, rows)) {
     if (auto added =
-            request.live.Save(streams + (std::uint64_t{i + 1} * stream_row), stream_row, i);
+            request.live.Save((save.drafter ? drafter : state) + save.offset, save.bytes, save.row);
         !added) {
       return added;
     }

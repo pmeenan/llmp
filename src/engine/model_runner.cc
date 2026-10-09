@@ -11,6 +11,7 @@
 
 #include "engine/prefill_lookahead.h"
 #include "engine/support.h"
+#include "model/state_contract.h"
 #include "scheduler/scheduler.h"
 
 namespace llmp::engine {
@@ -115,6 +116,19 @@ std::expected<void, std::string> ModelRunner::CheckShape(const pl::StepShape& sh
     return Error("a step's read alignment is not a multiple of 256");
   }
   const std::uint32_t context = slots_.layout(shape.stage).context;
+  // A chunk's per-row cells (a stream, a tap) hold one chunk bound of rows:
+  // a segment wider than the bound of a stage the step writes them in
+  // would write past them (its own stage, and on the target each drafter's
+  // taps).
+  std::uint32_t row_bound = ~std::uint32_t{0};
+  for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
+    const model::StateLayoutDerived& layout = slots_.layout(stage);
+    const bool per_row = std::ranges::any_of(layout.items, [&](const auto& item) {
+      return item.contract.cells == model::CellRule::kPerRow &&
+             (stage == shape.stage || (shape.stage == 0 && item.contract.target_writes));
+    });
+    if (per_row) row_bound = std::min(row_bound, layout.max_rows);
+  }
   for (std::size_t i = 0; i < shape.segments.size(); ++i) {
     const pl::Segment& s = shape.segments[i];
     if (s.slot >= slots_.slots()) return Error(std::format("a step names slot {}", s.slot));
@@ -124,14 +138,36 @@ std::expected<void, std::string> ModelRunner::CheckShape(const pl::StepShape& sh
     if (s.rows == 0 || s.past > context || s.rows > context - s.past) {
       return Error(std::format("slot {}'s rows are outside its context", s.slot));
     }
+    if (s.rows > row_bound) {
+      return Error(std::format("slot {}'s {} rows pass the {} its per-row state holds", s.slot,
+                               s.rows, row_bound));
+    }
     if (s.read_cells < s.past + s.rows || s.read_cells > context) {
       return Error(std::format("slot {}'s reads do not cover its rows", s.slot));
     }
     if (s.outputs > s.rows || (!s.want_head && s.outputs != 0)) {
       return Error(std::format("slot {}'s outputs exceed its rows", s.slot));
     }
+    // D-092: a row-invariant step (an exact verify) reads what each owner
+    // reads alone, never its peers' alignment or cells.
+    if (shape.row_invariant && (shape.read_align != slots_.read_align(shape.stage) ||
+                                s.read_cells != LoneRead(shape.stage, s.past, s.rows))) {
+      return Error(std::format("slot {}'s row-invariant reads follow its peers", s.slot));
+    }
   }
   return {};
+}
+
+std::uint32_t ModelRunner::LoneRead(std::size_t stage, std::uint32_t past,
+                                    std::uint32_t rows) const {
+  return static_cast<std::uint32_t>(std::min<std::uint64_t>(
+      Round(std::uint64_t{past} + rows, slots_.read_align(stage)), slots_.context(stage)));
+}
+
+bool ModelRunner::Verifies(std::uint32_t slot, std::size_t stage) const {
+  if (stage == 0 || commits_.at((std::size_t{slot} * slots_.stages()) + stage)) return true;
+  return std::ranges::any_of(slots_.layout(stage).items,
+                             [](const auto& item) { return item.contract.target_writes; });
 }
 
 pl::PlanKey ModelRunner::KeyOf(const pl::StepShape& shape) const {
@@ -149,13 +185,28 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
                  ? config_.weight_address
                  : std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)>(
                        [](const ir::WeightRef&, format::PartRole) { return std::uint64_t{0}; });
-  a.state = [this, owners = std::move(owners)](const ir::StateRef& ref) -> std::uint64_t {
+  // Only the state the step's stage may write (Admit's rule, which a
+  // verify's saves and a failed step's quarantine follow): a target's step
+  // binds the target's state and the drafters' tensors it writes
+  // (target_writes); a drafter's binds its own stage's (its view of the
+  // target's through it). Any other binds nothing: the build is refused.
+  a.state = [this, stage = shape.stage,
+             owners = std::move(owners)](const ir::StateRef& ref) -> std::uint64_t {
     if (ref.segment >= owners.size() || ref.stage >= slots_.stages()) return 0;
+    if (ref.stage != stage && stage != 0) return 0;
     const model::StateLayoutDerived& layout = slots_.layout(ref.stage);
     for (const auto& item : layout.items) {
       if (item.layer == ref.layer && item.tensor == ref.tensor) {
+        if (ref.stage != stage && !item.contract.target_writes) return 0;
         return slots_.live(owners[ref.segment], ref.stage).base(0) + item.offset;
       }
+    }
+    if (ref.stage != stage) return 0;
+    // A drafter's view of the target's tensor: the owner's target state.
+    for (const auto& borrowed : layout.borrowed) {
+      if (borrowed.layer != ref.layer || borrowed.tensor != ref.tensor) continue;
+      const auto* item = model::BorrowedItem(slots_.layout(0), borrowed);
+      return item == nullptr ? 0 : slots_.live(owners[ref.segment], 0).base(0) + item->offset;
     }
     return 0;
   };
@@ -172,6 +223,7 @@ Status ModelRunner::Setup() {
   for (StageWeights& w : config_.weights) {
     if (auto reserved = w.weights->Reserve(node_, w.places, w.slabs); !reserved) return reserved;
   }
+  if (auto snapshots = SetupSnapshots(); !snapshots) return snapshots;
   std::uint64_t activations = 0, pool = 0, inputs = 0, outputs = 0;
   for (const pl::StepShape& shape : config_.setup_shapes) {
     if (auto checked = CheckShape(shape); !checked) {
@@ -204,6 +256,60 @@ Status ModelRunner::Setup() {
   outputs_staging_ = static_cast<std::byte*>(*out);
   runs_.SetStaging(inputs_staging_, inputs_staging_bytes_);
   setup_ = true;
+  return {};
+}
+
+Status ModelRunner::SetupSnapshots() {
+  const std::size_t stages = slots_.stages();
+  commits_.assign(std::size_t{slots_.slots()} * stages, false);
+  if (config_.max_verify_rows == 0) return {};
+  // Each slot's stages a verify saves in or commits: its saves at most
+  // (model::VerifySaveBound), at 256-byte places of one mapping.
+  struct Place {
+    std::uint32_t slot = 0;
+    std::size_t stage = 0;
+    std::uint64_t offset = 0, bytes = 0;
+    std::uint32_t ranges = 0;
+    LiveState::Commit commit;
+  };
+  std::vector<Place> places;
+  std::uint64_t total = 0;
+  for (std::uint32_t slot = 0; slot < slots_.slots(); ++slot) {
+    for (std::size_t stage = 0; stage < stages; ++stage) {
+      LiveState::Commit commit = config_.commit ? config_.commit(slot, stage) : LiveState::Commit{};
+      commits_[(std::size_t{slot} * stages) + stage] = static_cast<bool>(commit);
+      if (!Verifies(slot, stage)) continue;
+      auto bound =
+          model::VerifySaveBound(slots_.layout(stage), config_.max_verify_rows,
+                                 {.commits = static_cast<bool>(commit), .drafter = stage != 0});
+      if (!bound) {
+        return Error(std::format("a verify of {} rows: stage {}: {}", config_.max_verify_rows,
+                                 stage, bound.error()));
+      }
+      places.push_back({.slot = slot,
+                        .stage = stage,
+                        .offset = total,
+                        .bytes = bound->bytes,
+                        .ranges = bound->ranges,
+                        .commit = std::move(commit)});
+      total += Round(std::max<std::uint64_t>(bound->bytes, 256), 256);
+    }
+  }
+  if (total == 0) return {};
+  if (auto mapped = memory_.Map(snapshots_, "the model's verify snapshots", total,
+                                catalog::MemoryClass::kRuntime);
+      !mapped) {
+    return mapped;
+  }
+  for (Place& place : places) {
+    LiveState& live = slots_.live(place.slot, place.stage);
+    live.SnapshotAt(snapshots_.base + place.offset, place.bytes);
+    if (auto allocated = live.AllocateSnapshot(memory_, std::max<std::uint32_t>(place.ranges, 1));
+        !allocated) {
+      return allocated;
+    }
+    if (place.commit) live.SetCommit(std::move(place.commit));
+  }
   return {};
 }
 
@@ -347,16 +453,41 @@ std::expected<Copies, std::string> ModelRunner::OutputCopies(const kn::StepProgr
 
 // --------------------------------------------------------------------- steps
 
-std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment,
+std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment, std::uint16_t stage,
                                                     std::uint32_t read_align, bool advance) {
   if (!bound_ || released_) return Refused("the model runner is not bound");
   const std::uint32_t slot = segment.slot;
   if (slot >= slots_.slots()) return Refused(std::format("no slot {}", slot));
+  if (stage >= slots_.stages()) return Refused(std::format("no stage {}", stage));
   if (auto active = slots_.CheckActive(slot); !active) return Refused(active.error(), true, slot);
-  if (advance && segment.past != slots_.positions(slot)) {
-    return Refused(std::format("slot {} holds {} positions, not {}", slot, slots_.positions(slot),
-                               segment.past),
-                   true, slot);
+  const std::uint32_t positions = slots_.positions(slot);
+  if (stage == 0) {
+    // The target's rows start at the committed positions, a verify's (at
+    // its anchor, advancing nothing) as a decode's.
+    if (segment.past != positions) {
+      return Refused(
+          std::format("slot {} holds {} positions, not {}", slot, positions, segment.past), true,
+          slot);
+    }
+  } else {
+    // A drafter's: never committed, and within one chunk bound of its
+    // stage past the committed positions (a draft's proposals); from
+    // wherever its catch-up starts.
+    if (advance) return Refused("a drafter's step never commits positions", true, slot);
+    if (std::uint64_t{segment.past} + segment.rows >
+        std::uint64_t{positions} + slots_.layout(stage).max_rows) {
+      return Refused(std::format("slot {}'s draft rows end past {} positions and its stage's {} "
+                                 "rows",
+                                 slot, positions, slots_.layout(stage).max_rows),
+                     true, slot);
+    }
+    // Its view of the target's state is read only while that is frozen.
+    if (!slots_.layout(stage).borrowed.empty() && !slots_.borrowed(slot, 0)) {
+      return Refused(std::format("slot {}'s drafter reads the target's state, which is not "
+                                 "borrowed",
+                                 slot),
+                     true, slot);
+    }
   }
   // Backed through every cell the step reads, not only its own rows' (a
   // common read reaches the widest owner's cells): reading absent backing
@@ -364,7 +495,7 @@ std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment,
   // flag would mislabel a refusal for a borrow, a verify or a restore.
   slots_.ForgetRefusal(slot);
   if (auto reserved = slots_.ReserveStateThrough(
-          slot, std::max(segment.past + segment.rows, segment.read_cells), read_align);
+          slot, std::max(segment.past + segment.rows, segment.read_cells), read_align, stage);
       !reserved) {
     // A clean capacity refusal leaves the slot usable and retryable, as
     // does a refusal before any growth (borrowed, a verify pending); a
@@ -382,6 +513,19 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   if (request.work.size() != shape.segments.size()) {
     return Refused("a step's work does not match its segments");
   }
+  const bool verify = shape.phase == pl::Phase::kVerify;
+  if (verify && (shape.stage != 0 || request.advance)) {
+    return Refused("a verify runs on the target and leaves its rows to their Accept");
+  }
+  if (verify && (config_.max_verify_rows == 0 ||
+                 std::ranges::any_of(shape.segments, [&](const pl::Segment& s) {
+                   return s.rows > config_.max_verify_rows;
+                 }))) {
+    return Refused(std::format("the runner verifies at most {} rows", config_.max_verify_rows));
+  }
+  if (shape.stage != 0 && request.advance) {
+    return Refused("a drafter's step never commits positions");
+  }
   if (slots_.faulted()) return Refused("the cohort is faulted", false);
   const PlanStep step;
   // Every owner's own cells (what it reads alone: its rows at its state's
@@ -395,17 +539,15 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   // leased growth they read once their positions reach it): bounded by the
   // join's reads, not released (docs/engine.md).
   if (shape.segments.size() > 1) {
-    const std::uint32_t context = slots_.layout(shape.stage).context;
     for (pl::Segment own : shape.segments) {
-      own.read_cells = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-          Round(std::uint64_t{own.past} + own.rows, slots_.read_align()), context));
-      if (auto admitted = Admit(own, 0, request.advance); !admitted) {
+      own.read_cells = LoneRead(shape.stage, own.past, own.rows);
+      if (auto admitted = Admit(own, shape.stage, 0, request.advance); !admitted) {
         return std::unexpected(std::move(admitted.error()));
       }
     }
   }
   for (const pl::Segment& s : shape.segments) {
-    if (auto admitted = Admit(s, shape.read_align, request.advance); !admitted) {
+    if (auto admitted = Admit(s, shape.stage, shape.read_align, request.advance); !admitted) {
       admitted.error().widening = shape.segments.size() > 1;
       return std::unexpected(std::move(admitted.error()));
     }
@@ -574,7 +716,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     for (const pl::Segment& s : ahead.shapes[0]->segments) {
       // Through what that step will back (Admit): its reads, common or not.
       auto prepared = slots_.PrepareThrough(s.slot, std::max(s.past + s.rows, s.read_cells),
-                                            ahead.shapes[0]->read_align);
+                                            ahead.shapes[0]->read_align, ahead.shapes[0]->stage);
       if (!prepared) {
         // A drain that cannot prove its page-ins retired quarantined a
         // state: then the refusal is not clean.
@@ -586,6 +728,57 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     lookahead_.prepared += report.prepared_ahead;
   }
 
+  // A verify's saves (D-068): what it writes in each stage, by row, into
+  // that stage's snapshot, queued in its job before its run.
+  struct Saving {
+    LiveState* live = nullptr;
+    std::uint32_t rows = 0;
+    bool any = false;     // ranges to queue (a committing or truncating stage may have none)
+    bool queued = false;  // its saves were queued (or it had none): a failure undoes it whole
+  };
+  std::vector<Saving> saving;
+  if (verify) {
+    for (const pl::Segment& s : shape.segments) {
+      for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
+        if (!Verifies(s.slot, stage)) continue;
+        const bool commits = commits_.at((std::size_t{s.slot} * slots_.stages()) + stage);
+        auto writes = model::WritesFor(slots_.layout(stage), s.past, s.rows,
+                                       {.commits = commits, .drafter = stage != 0});
+        if (!writes) {
+          const bool drained = slots_.FinishPreparations().has_value();
+          return Refused(std::format("a verify's saves: {}", writes.error()), drained);
+        }
+        LiveState& live = slots_.live(s.slot, stage);
+        live.BeginSaves();
+        const std::uint64_t base = live.base(0);
+        Status saved;
+        bool any = false;
+        for (std::uint32_t r = 0; r < s.rows && saved; ++r) {
+          for (const model::StateRange& range : writes->rows[r]) {
+            saved = live.Save(base + range.offset, range.bytes, r);
+            if (!saved) break;
+            any = true;
+          }
+        }
+        for (const model::StateRange& range : writes->scratch) {
+          if (!saved) break;
+          saved = live.Save(base + range.offset, range.bytes, -1);
+          any = true;
+        }
+        if (!saved) {
+          live.BeginSaves();
+          if (!slots_.FinishPreparations()) return Refused(saved.error(), false);
+          return Refused(saved.error(), true, s.slot);
+        }
+        // Every stage it writes or commits, even one that saves nothing
+        // (every tensor it writes there truncates): its rows await their
+        // Accept, and a failure undoes it whole (by nothing), never
+        // quarantines it.
+        saving.push_back({.live = &live, .rows = s.rows, .any = any});
+      }
+    }
+  }
+
   // What the step writes, recorded before the job (incremental spill).
   for (const pl::Segment& s : shape.segments) {
     if (auto recorded = slots_.RecordWrite(s.slot, s.past); !recorded) {
@@ -594,6 +787,9 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
   }
   bool wrote = false, unknown = false;
+  // A verify's saves queued: work on the stream (the job never "not
+  // started"), though they write no state.
+  bool saves_queued = false;
   std::string failure;
   const auto posted = node_.Job(
       slots_.execution(),
@@ -614,6 +810,21 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
             wrote = true;
           }
         }
+        for (Saving& sv : saving) {
+          // Nothing to save (what it writes truncates, or a commit rebuilds
+          // it): undone whole by nothing.
+          if (sv.any) {
+            if (auto saved = sv.live->QueueSaves(native); !saved) {
+              failure = saved.error().detail;
+              unknown = saved.error().unknown;
+              return unknown                 ? sc::JobResult::kUnknown
+                     : wrote || saves_queued ? sc::JobResult::kFailed
+                                             : sc::JobResult::kNotStarted;
+            }
+            saves_queued = true;
+          }
+          sv.queued = true;
+        }
         const StepQueued q =
             runs_.Queue(runs, *copies, {}, program, *outputs, capture, graph_stats_, native);
         wrote = wrote || q.before || q.result.has_value();
@@ -621,9 +832,9 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
         if (!q.result) {
           failure = q.result.error().detail;
           unknown = q.result.error().error == kn::StepError::kUnknown;
-          return unknown ? sc::JobResult::kUnknown
-                 : wrote ? sc::JobResult::kFailed
-                         : sc::JobResult::kNotStarted;
+          return unknown                 ? sc::JobResult::kUnknown
+                 : wrote || saves_queued ? sc::JobResult::kFailed
+                                         : sc::JobResult::kNotStarted;
         }
         if (upcoming != nullptr) {
           auto captured =
@@ -645,9 +856,22 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   const Status preparation = slots_.FinishPreparations();
   if (!posted || !failure.empty() || launch_->faulted()) {
     slots_.CheckFailedJob();
+    // What the step's own work may write: its stage, and on the target the
+    // drafters' taps (Admit's rule). Another stage changed only by what it
+    // owed, which ran whole or stays owed (a partial queueing is unknown).
+    const auto written = [&](std::size_t stage) {
+      return stage == shape.stage ||
+             (shape.stage == 0 &&
+              std::ranges::any_of(slots_.layout(stage).items,
+                                  [](const auto& item) { return item.contract.target_writes; }));
+    };
     for (const pl::Segment& s : shape.segments) {
       for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
-        (void)slots_.live(s.slot, stage).Settle(false, wrote, unknown);
+        LiveState& live = slots_.live(s.slot, stage);
+        // A verify whose saves were queued is undone whole; anything else
+        // the step may have written quarantines.
+        const auto sv = std::ranges::find(saving, &live, &Saving::live);
+        (void)live.Settle(sv != saving.end() && sv->queued, wrote && written(stage), unknown);
       }
     }
     if (launch_->faulted()) slots_.Fault();
@@ -660,6 +884,9 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
                                     : "the launch faulted",
                    !wrote && !unknown && !slots_.faulted() && preparation.has_value());
   }
+  // The verify ran: its rows await their Accept in every stage it writes or
+  // that commits.
+  for (const Saving& sv : saving) sv.live->Verified(sv.rows);
   if (!preparation) {
     // This step's writes completed but no position is published: every
     // owner becomes unusable rather than expose state at an old cursor.

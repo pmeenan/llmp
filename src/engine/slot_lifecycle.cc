@@ -81,8 +81,20 @@ Status SlotLifecycle::Setup() {
       options_.read_align == 0 || options_.read_align % 256 != 0) {
     return Refuse("slots need 1 to 16 slots, a target stage and a read alignment of 256s");
   }
-  for (const StageState& stage : options_.stages) {
+  for (std::size_t s = 0; s < options_.stages.size(); ++s) {
+    const StageState& stage = options_.stages[s];
     if (stage.layout.bytes == 0) return Refuse(std::format("stage {} holds no state", stage.name));
+    if (stage.read_align % 256 != 0) {
+      return Refuse(std::format("stage {}'s read alignment is not of 256s", stage.name));
+    }
+    // A borrowed tensor is a drafter's view of the target's, which must
+    // hold it.
+    for (const auto& borrowed : stage.layout.borrowed) {
+      if (s == 0 || model::BorrowedItem(options_.stages.front().layout, borrowed) == nullptr) {
+        return Refuse(std::format("stage {} borrows {}, which the target does not hold", stage.name,
+                                  borrowed.contract.name));
+      }
+    }
   }
   std::vector<model::StateLayoutDerived> layouts;
   for (const StageState& stage : options_.stages) layouts.push_back(stage.layout);
@@ -241,10 +253,28 @@ bool SlotLifecycle::adopted(std::uint32_t slot) const {
 bool SlotLifecycle::restoring(std::uint32_t slot) const {
   return slots_.at(slot).restoring.has_value();
 }
-bool SlotLifecycle::borrowed(std::uint32_t slot) const { return slots_.at(slot).borrows != 0; }
+bool SlotLifecycle::Borrowed(const Slot& slot) const {
+  return std::ranges::any_of(slot.stages, [](const Stage& s) { return s.borrows != 0; });
+}
+bool SlotLifecycle::borrowed(std::uint32_t slot) const { return Borrowed(slots_.at(slot)); }
+bool SlotLifecycle::borrowed(std::uint32_t slot, std::size_t stage) const {
+  return slots_.at(slot).stages.at(stage).borrows != 0;
+}
 bool SlotLifecycle::verify_pending(std::uint32_t slot) const {
   return std::ranges::any_of(slots_.at(slot).stages,
                              [](const Stage& s) { return s.live->verify_rows() != 0; });
+}
+std::uint32_t SlotLifecycle::verify_rows(std::uint32_t slot) const {
+  std::uint32_t rows = 0;
+  for (const Stage& s : slots_.at(slot).stages) rows = std::max(rows, s.live->verify_rows());
+  return rows;
+}
+std::vector<std::size_t> SlotLifecycle::GrownBy(std::size_t stage) const {
+  std::vector<std::size_t> out;
+  for (std::size_t s = 0; s < options_.stages.size(); ++s) {
+    if (stage == 0 || s == stage) out.push_back(s);
+  }
+  return out;
 }
 bool SlotLifecycle::owed(std::uint32_t slot) const {
   return std::ranges::any_of(slots_.at(slot).stages, [](const Stage& s) { return s.live->owed(); });
@@ -421,7 +451,7 @@ Status SlotLifecycle::SelectSlots(std::span<const std::uint32_t> slots) {
   if (!mask) return std::unexpected(mask.error());
   for (const Slot& slot : slots_) {
     if ((*mask & (SlotMask{1} << slot.index)) != 0) continue;
-    if (slot.restoring || slot.borrows != 0 || verify_pending(slot.index)) {
+    if (slot.restoring || Borrowed(slot) || verify_pending(slot.index)) {
       return Refuse(std::format(
           "selection cannot drop slot {}: a restore, borrow or verify still needs it", slot.index));
     }
@@ -437,7 +467,7 @@ Status SlotLifecycle::Clear(std::uint32_t index) {
   auto found = Find(index);
   if (!found) return std::unexpected(found.error());
   Slot& slot = **found;
-  if (slot.borrows != 0 || verify_pending(index)) {
+  if (Borrowed(slot) || verify_pending(index)) {
     return Refuse("state cannot clear while borrowed or while a verify awaits its Accept");
   }
   if (!bound_ || cohort_.faulted()) return Refuse("cohort requires retirement");
@@ -481,7 +511,7 @@ Status SlotLifecycle::ClearIdle(std::uint32_t index) {
   if (!bound_ || cohort_.faulted()) return Refuse("cohort requires retirement");
   // Leased by the request open on the stream: cleared within it (Clear).
   if (held(index)) return Refuse("active slot is cleared within its own request");
-  if (slot.borrows != 0 || verify_pending(index)) {
+  if (Borrowed(slot) || verify_pending(index)) {
     return Refuse("state cannot clear while borrowed or while a verify awaits its Accept");
   }
   slot.state_refused = false;
@@ -534,7 +564,7 @@ Status SlotLifecycle::Spill(std::uint32_t index) {
   Slot& slot = **found;
   if (!bound_ || cohort_.faulted()) return Refuse("cohort requires retirement");
   if (slot.restoring) return Refuse("restore must complete before spill");
-  if (slot.borrows != 0) return Refuse("borrowed state cannot spill");
+  if (Borrowed(slot)) return Refuse("borrowed state cannot spill");
   if (slot.spilled) return {};
   for (const Stage& stage : slot.stages) {
     if (auto usable = stage.live->Usable(); !usable) return usable;
@@ -638,27 +668,35 @@ Status SlotLifecycle::Restore(std::uint32_t index) {
 }
 
 Status SlotLifecycle::ReserveStateThrough(std::uint32_t index, std::uint32_t positions,
-                                          std::uint32_t read_align) {
+                                          std::uint32_t read_align, std::size_t stage) {
   auto found = Find(index);
   if (!found) return std::unexpected(found.error());
   Slot& slot = **found;
+  if (stage >= options_.stages.size()) return Refuse(std::format("no stage {}", stage));
   if (slot.restoring) return Refuse("restore must complete before state growth");
-  if (slot.borrows != 0 || verify_pending(index)) {
+  const std::vector<std::size_t> grown = GrownBy(stage);
+  if (verify_pending(index) ||
+      std::ranges::any_of(grown, [&](std::size_t s) { return slot.stages[s].borrows != 0; })) {
     return Refuse("state cannot grow while borrowed or while a verify awaits its Accept");
   }
   slot.state_refused = false;
   if (auto active = CheckActive(index); !active) return active;
-  const std::uint32_t align = read_align == 0 ? options_.read_align : read_align;
-  std::vector<std::vector<Range>> ranges;
-  for (const StageState& stage : options_.stages) {
-    auto used = model::UsedThrough(stage.layout, positions, align);
+  // The step's stage at its reads' alignment; any other stage it writes at
+  // its own, through its own context at most.
+  std::vector<std::vector<Range>> ranges(slot.stages.size());
+  for (const std::size_t s : grown) {
+    const std::uint32_t align = s == stage && read_align != 0 ? read_align : this->read_align(s);
+    const model::StateLayoutDerived& layout = options_.stages[s].layout;
+    auto used = model::UsedThrough(
+        layout, s == stage ? positions : std::min(positions, layout.context), align);
     if (!used) return std::unexpected(used.error());
-    ranges.push_back(AsRanges(*used));
+    ranges[s] = AsRanges(*used);
   }
   bool grew = false;
   bool over_budget = false;
   Status failed;
-  for (std::size_t s = 0; s < slot.stages.size() && failed; ++s) {
+  for (const std::size_t s : grown) {
+    if (!failed) break;
     // A later stage grows beside an earlier one's fresh extents, which the
     // execution closure does not hold yet.
     catalog::Closure keep;
@@ -696,20 +734,25 @@ Status SlotLifecycle::ReserveStateThrough(std::uint32_t index, std::uint32_t pos
 
 std::expected<bool, std::string> SlotLifecycle::PrepareThrough(std::uint32_t index,
                                                                std::uint32_t positions,
-                                                               std::uint32_t read_align) {
+                                                               std::uint32_t read_align,
+                                                               std::size_t stage) {
   auto found = Find(index);
   if (!found) return std::unexpected(found.error());
   const Slot& slot = **found;
+  if (stage >= options_.stages.size()) return Refuse(std::format("no stage {}", stage));
+  const std::vector<std::size_t> grown = GrownBy(stage);
   // Preparation overlaps the current job only on a threaded node.
-  if (!node_.threaded() || slot.restoring || slot.borrows != 0 || verify_pending(index) ||
-      !Usable(slot)) {
+  if (!node_.threaded() || slot.restoring || verify_pending(index) || !Usable(slot) ||
+      std::ranges::any_of(grown, [&](std::size_t s) { return slot.stages[s].borrows != 0; })) {
     return false;
   }
   if (auto active = CheckActive(index); !active) return false;
-  const std::uint32_t align = read_align == 0 ? options_.read_align : read_align;
   bool submitted = false;
-  for (std::size_t s = 0; s < slot.stages.size(); ++s) {
-    auto used = model::UsedThrough(options_.stages[s].layout, positions, align);
+  for (const std::size_t s : grown) {
+    const std::uint32_t align = s == stage && read_align != 0 ? read_align : this->read_align(s);
+    const model::StateLayoutDerived& layout = options_.stages[s].layout;
+    auto used = model::UsedThrough(
+        layout, s == stage ? positions : std::min(positions, layout.context), align);
     if (!used) return std::unexpected(used.error());
     const auto ranges = AsRanges(*used);
     auto prepared = slot.stages[s].live->Prepare(node_, ranges);
@@ -804,7 +847,7 @@ Status SlotLifecycle::PrepareRestore(std::uint32_t index, std::uint32_t position
   Slot& slot = **found;
   // A restore or commit a verify still owes would run after the restore,
   // over the checkpoint's bytes (or into its dropped tail): settled first.
-  if (slot.borrows != 0 || verify_pending(index) || owed(index)) {
+  if (Borrowed(slot) || verify_pending(index) || owed(index)) {
     return Refuse(
         "state cannot restore while borrowed or while a verify awaits its Accept or owes a "
         "restore or commit");
@@ -902,7 +945,7 @@ Status SlotLifecycle::CopyState(std::uint32_t index, void* pinned, std::span<con
   if (verify_pending(index) || owed(index)) {
     return Refuse("a verify awaits its Accept or owes a restore or commit");
   }
-  if (!to_host && slot.borrows != 0) return Refuse("borrowed state cannot be overwritten");
+  if (!to_host && Borrowed(slot)) return Refuse("borrowed state cannot be overwritten");
   if (auto active = Ready(index, /*within_restore=*/!to_host); !active) return active;
   for (const Range& r : ranges) {
     if (r.region >= slot.stages.size()) return Refuse("a copied range names no stage");
@@ -963,8 +1006,7 @@ Status SlotLifecycle::Adopt(std::uint32_t index, std::uint32_t positions,
   if (!found) return std::unexpected(found.error());
   Slot& slot = **found;
   if (!bound_ || !Usable(slot) || positions == 0 || footprint.empty() || slot.positions != 0 ||
-      slot.spilled || used_bytes(index) != 0 || slot.restoring || slot.borrows != 0 ||
-      held(index)) {
+      slot.spilled || used_bytes(index) != 0 || slot.restoring || Borrowed(slot) || held(index)) {
     return Refuse("adopts kept state only into an empty, idle, healthy slot");
   }
   // Zeroed backing a clear kept would be taken back by the restore's
@@ -1027,10 +1069,12 @@ std::expected<SlotMask, std::string> SlotLifecycle::RecoverInPlace(
   const bool faulted = cohort_.faulted();
   cohort_.Recover();
   SlotMask discarded = 0;
+  // The stream fenced and no request open: no reader still holds a borrow,
+  // whose Return the failure may have skipped; one returned later returns
+  // nothing (its epoch is gone).
+  ++borrow_epoch_;
   for (Slot& slot : slots_) {
-    // The stream fenced and no request open: no reader still holds a
-    // borrow, whose Return the failure may have skipped.
-    slot.borrows = 0;
+    for (Stage& stage : slot.stages) stage.borrows = 0;
     // Likewise a verify's Accept or a checkpoint restore's last copies:
     // the slot goes whole (kept, outside the default selection, it would
     // refuse every selection that drops it).
@@ -1110,9 +1154,11 @@ Status SlotLifecycle::SetPositions(std::uint32_t index, std::uint32_t positions)
   return {};
 }
 
-Status SlotLifecycle::Borrow(std::uint32_t index) {
-  if (auto active = CheckActive(index); !active) return active;
+std::expected<StateBorrow, std::string> SlotLifecycle::Borrow(std::uint32_t index,
+                                                              std::size_t stage) {
+  if (auto active = CheckActive(index); !active) return std::unexpected(active.error());
   Slot& slot = slots_[index];
+  if (stage >= slot.stages.size()) return Refuse(std::format("no stage {} to borrow", stage));
   if (slot.restoring) return Refuse("restore must complete before a borrow");
   // Until a verify is accepted and what it owes has run, the state holds
   // rows that may be rejected (a ring's overwritten cells, a recurrent
@@ -1123,13 +1169,109 @@ Status SlotLifecycle::Borrow(std::uint32_t index) {
         "state cannot be borrowed while a verify awaits its Accept or owes a restore "
         "or commit");
   }
-  ++slot.borrows;
+  ++slot.stages[stage].borrows;
+  StateBorrow borrow;
+  borrow.owner_ = this;
+  borrow.slot_ = index;
+  borrow.stage_ = stage;
+  borrow.epoch_ = borrow_epoch_;
+  return borrow;
+}
+
+void SlotLifecycle::Return(std::uint32_t index, std::size_t stage, std::uint64_t epoch) {
+  // One from before a recovery: its borrow was dropped there, and the
+  // count may be a new reader's now.
+  if (epoch != borrow_epoch_ || index >= slots_.size() || stage >= slots_[index].stages.size()) {
+    return;
+  }
+  std::uint32_t& borrows = slots_[index].stages[stage].borrows;
+  if (borrows != 0) --borrows;
+}
+
+StateBorrow& StateBorrow::operator=(StateBorrow&& other) noexcept {
+  if (this != &other) {
+    Return();
+    owner_ = other.owner_;
+    slot_ = other.slot_;
+    stage_ = other.stage_;
+    epoch_ = other.epoch_;
+    other.owner_ = nullptr;
+  }
+  return *this;
+}
+
+void StateBorrow::Return() {
+  if (owner_ == nullptr) return;
+  owner_->Return(slot_, stage_, epoch_);
+  owner_ = nullptr;
+}
+
+// ------------------------------------------------------------------ a verify
+
+Status SlotLifecycle::Accept(std::uint32_t index, std::uint32_t keep) {
+  auto found = Find(index);
+  if (!found) return std::unexpected(found.error());
+  Slot& slot = **found;
+  const std::uint32_t rows = verify_rows(index);
+  if (rows == 0) return Refuse(std::format("slot {} has no verify awaiting its Accept", index));
+  if (keep == 0 || keep > rows) {
+    return Refuse(std::format("accepting {} rows of a verify of {}", keep, rows));
+  }
+  // Every verifying stage first: none accepts unless all can.
+  for (const Stage& stage : slot.stages) {
+    if (auto usable = stage.live->Usable(); !usable) return usable;
+    if (stage.live->verify_rows() != 0 && stage.live->verify_rows() != rows) {
+      return Refuse(std::format("slot {}'s stages verified different rows", index));
+    }
+  }
+  if (slot.spilled || slot.restoring || !Usable(slot)) {
+    return Refuse(std::format("slot {} cannot accept now", index));
+  }
+  if (std::uint64_t{slot.positions} + keep > options_.stages.front().layout.context) {
+    return Refuse("accepted positions pass the context");
+  }
+  for (Stage& stage : slot.stages) {
+    if (stage.live->verify_rows() == 0) continue;
+    if (auto accepted = stage.live->Accept(keep); !accepted) {
+      // Checked above; a stage that took its Accept and one that did not
+      // would leave the slot's stages at different rows.
+      Quarantine(slot);
+      return accepted;
+    }
+  }
+  slot.positions += keep;
   return {};
 }
 
-void SlotLifecycle::Return(std::uint32_t index) {
-  Slot& slot = slots_.at(index);
-  if (slot.borrows != 0) --slot.borrows;
+Status SlotLifecycle::DiscardVerify(std::uint32_t index) {
+  if (auto active = CheckActive(index); !active) return active;
+  if (!verify_pending(index)) {
+    return Refuse(std::format("slot {} has no verify awaiting its Accept", index));
+  }
+  for (Stage& stage : slots_[index].stages) {
+    // Every saved range owed back, nothing committed.
+    if (stage.live->verify_rows() != 0) (void)stage.live->Settle(true, false, false);
+  }
+  return Settle(index);
+}
+
+Status SlotLifecycle::Settle(std::uint32_t index) {
+  if (auto active = CheckActive(index); !active) return active;
+  Slot& slot = slots_[index];
+  // The target's first: a stage's commit is the model's code and may read
+  // another stage's restored bytes.
+  for (Stage& stage : slot.stages) {
+    if (!stage.live->owed()) continue;
+    if (auto rolled = stage.live->Rollback(node_, execution_, stream_, "settling a verify");
+        !rolled) {
+      CheckFailedJob();
+      // A queueing failure of unknown effect quarantined the stage: the
+      // shared stream's work is unproven for every slot.
+      if (stage.live->quarantined()) Fault();
+      return rolled;
+    }
+  }
+  return {};
 }
 
 }  // namespace llmp::engine

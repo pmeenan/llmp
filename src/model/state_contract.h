@@ -13,7 +13,8 @@
 // - UsedThrough: the ranges a state holding `positions` positions reads and
 //   must have backed (padded reads, rings, fixed state, a scratch row);
 // - ChunkWrites and WritesFor: the ranges a chunk of `rows` rows after
-//   `past` writes, flat or by verify row (a verify's saves, D-068);
+//   `past` writes, flat or by verify row (a verify's saves, D-068), and
+//   SaveBound, what the saves of any verify of `rows` rows take at most;
 // - CheckpointWrites: the ranges later positions may overwrite (a turn
 //   checkpoint's mutable pages, an incremental spill's changed extents);
 // - Representations: the D-068 representations the state declares;
@@ -27,7 +28,8 @@
 // read as written), Qwen3.8 (per-position caches, indexer block keys over
 // the read cells, fixed recurrent and convolution state) and DeepSeek V4
 // (full or ring windows, compressed caches with their dummy row, compressor
-// rings). Nothing here names a family.
+// rings) and its DSpark drafter's ring; a verify's saves reproduce Qwen3.8's,
+// DeepSeek V4's and DSpark's. Nothing here names a family.
 
 #ifndef LLMP_MODEL_STATE_CONTRACT_H_
 #define LLMP_MODEL_STATE_CONTRACT_H_
@@ -68,12 +70,22 @@ std::string_view KindName(StateKind kind);
 
 // How a speculative verify's rejected rows are undone.
 enum class Rollback : std::uint8_t {
-  kNone,      // it cannot be: no verify may write it
-  kTruncate,  // rows past the kept prefix are never read again (a cell per position)
+  kNone,  // it cannot be: no verify may write it
+  // Rows past the kept prefix are never read again: a cell per position,
+  // a ring (its cells hold every window beside a chunk), a completed block;
+  // never fixed state or partial blocks, which a verify writes for the kept
+  // rows too (refused). A position ring or per-row cells truncate only if
+  // the model never reads a rejected row's cell (DSpark's ring holds its
+  // window beside a block): the contract cannot say which cells it reads.
+  kTruncate,
   // The verify saves what it overwrites; the rejected rows' are restored,
   // and state rewritten whole is restored and rebuilt for the kept rows by
   // the model's commit (LiveState's snapshot).
   kSnapshot,
+  // A verify reads it but never writes it (its plan's verify form saves
+  // each row's inputs instead), and the model's commit advances it through
+  // the kept rows (Qwen3.8's recurrent and convolution state): nothing saved.
+  kCommit,
 };
 
 // How many cells a tensor holds and which a state of `n` positions uses.
@@ -90,8 +102,14 @@ enum class CellRule : std::uint8_t {
   kPerBlock,
   // `window_or_ratio` cells whatever the context, every one used.
   kFixed,
-  // max_rows + `window_or_ratio` cells (a chunk's streams), every one used.
+  // max_rows + `window_or_ratio` cells (a chunk's streams), every one used:
+  // the first `window_or_ratio` carry the rows before the chunk, and its
+  // row i is cell window_or_ratio + i.
   kPerRow,
+  // `window_or_ratio` cells whatever the context, position p in cell
+  // p mod cells, every one used (a compressor's ring of recent positions,
+  // a block drafter's ring).
+  kPositionRing,
 };
 
 // Which positions a kPerBlock tensor's cells cover.
@@ -114,14 +132,27 @@ struct StateTensorContract {
   std::uint32_t cell_pad = 256;
   bool ring_reads_whole = false;  // kRing: attention reads every cell
   BlockBasis basis = BlockBasis::kPositions;
-  // kPerBlock: the last cell is every chunk's scratch row (always used, a
-  // checkpoint's and a verify's scratch write).
+  // kPerBlock: the last cell is the scratch row of a chunk that completes
+  // fewer blocks than ceil(rows / ratio) (always used, a checkpoint's
+  // write; a verify's scratch save when the verify writes it).
   bool dummy_last = false;
+  // kPerBlock: a chunk writes a block's cell before the block completes
+  // (pooled keys updated by every row), so a verify saves it by the chunk's
+  // last row in it, and restored it holds none of the kept rows' part: only
+  // a commit rebuilds that (a verify without one is refused, as for fixed
+  // state); otherwise only the row completing a block writes it.
+  bool partial_blocks = false;
   Rollback rollback = Rollback::kTruncate;
+  // A drafter's tensor that the target's steps write too (a feature tap:
+  // an injection, exported streams): a target verify saves it in the
+  // drafter's stage, by the verify row that writes it.
+  bool target_writes = false;
   // A drafter's read-only view of the target's tensor (the assistant reads
-  // the target's KV): no bytes of its own; while its stage reads it, the
+  // the target's KV): no bytes of its own; it names the target's tensor of
+  // the same name in layer `target_layer`, and while its stage steps, the
   // target's state is borrowed (SlotLifecycle::Borrow).
   bool borrowed_from_target = false;
+  std::uint32_t target_layer = 0;
   bool operator==(const StateTensorContract&) const = default;
 };
 
@@ -157,9 +188,20 @@ struct StateLayoutDerived {
   };
   std::vector<Item> items;
   // Tensors read from the target (borrowed_from_target): no bytes here.
-  std::vector<std::pair<std::uint32_t, std::uint32_t>> borrowed;  // layer, tensor
+  struct Borrowed {
+    std::uint32_t layer = 0;
+    std::uint32_t tensor = 0;  // index in its layer's contract
+    StateTensorContract contract;
+  };
+  std::vector<Borrowed> borrowed;
   std::uint64_t bytes = 0;  // the region: the last tensor padded to tensor_align
 };
+
+// The target's item a drafter's borrowed tensor reads: the tensor of its
+// name in its target layer, of equal cell bytes; none if the target has no
+// such tensor.
+const StateLayoutDerived::Item* BorrowedItem(const StateLayoutDerived& target,
+                                             const StateLayoutDerived::Borrowed& borrowed);
 
 // The region for `per_layer` contracts (layer index, contract) at a
 // context and chunk bound. Refused for a zero or inconsistent bound, a
@@ -186,23 +228,51 @@ std::expected<std::vector<StateRange>, std::string> ChunkWrites(const StateLayou
                                                                 std::uint32_t rows);
 
 // The writes a verify must save, of its kSnapshot tensors (a kTruncate
-// tensor's rows past the kept prefix are never read, so it saves none):
-// `rows[i]` what row i writes that its rejection restores (its cell; a
-// block, by the last of the chunk's rows in it), `scratch` what is
-// restored whatever is kept (dummy rows, and fixed or per-row state, which
-// a step rewrites whole, for the model's commit to rebuild). Refused if
-// the chunk writes a tensor whose rollback is kNone.
+// tensor's rows past the kept prefix are never read, and a kCommit tensor
+// is not written, so they save none): `rows[i]` what row i writes that its
+// rejection restores (its cell, a ring's cell, its per-row cell, the block
+// it completes, or with partial_blocks the block by the last of the
+// chunk's rows in it), `scratch` what is restored whatever is kept (the
+// dummy row when the chunk writes it, and fixed state, which a step
+// rewrites whole, for the model's commit to rebuild).
+//
+// The scope says whose verify: the stage's own (every tensor), or the
+// target's verify over a drafter's stage (`drafter`: only the tensors the
+// target writes, target_writes). `commits`: the stage has a commit
+// (LiveState::SetCommit). Refused if the verify writes a tensor whose
+// rollback is kNone, writes fixed or partial-block state that truncates
+// (the kept rows' part is written too), writes fixed or partial-block
+// snapshot state or keeps kCommit state without a commit (nothing would
+// rebuild it for the kept rows), writes
+// one ring cell from two rows (a chunk wider than a ring: the snapshot
+// holds only the cell's state before the chunk), or would save cells that
+// are not 16-byte multiples (the snapshot's range copies').
+struct VerifyScope {
+  bool commits = false;
+  bool drafter = false;
+};
 struct StateWrites {
   std::vector<std::vector<StateRange>> rows;
   std::vector<StateRange> scratch;
 };
 std::expected<StateWrites, std::string> WritesFor(const StateLayoutDerived& layout,
-                                                  std::uint32_t past, std::uint32_t rows);
+                                                  std::uint32_t past, std::uint32_t rows,
+                                                  VerifyScope scope = {});
+
+// What WritesFor's saves of any verify of `rows` rows (any past) take at
+// most: the ranges (a snapshot's descriptors) and their bytes, each range
+// at a 256-byte boundary (LiveState::Save). Refused as WritesFor is.
+struct SaveBound {
+  std::uint32_t ranges = 0;
+  std::uint64_t bytes = 0;
+};
+std::expected<SaveBound, std::string> VerifySaveBound(const StateLayoutDerived& layout,
+                                                      std::uint32_t rows, VerifyScope scope = {});
 
 // The ranges positions after `positions` may overwrite: a per-position
 // tensor's cells from `positions` on, a block tensor's from the block
-// `positions` falls in (and its dummy row, first), a ring, fixed or
-// per-row tensor whole.
+// `positions` falls in (and its dummy row, first), a ring, fixed,
+// per-row or position-ring tensor whole.
 std::expected<std::vector<StateRange>, std::string> CheckpointWrites(
     const StateLayoutDerived& layout, std::uint32_t positions);
 

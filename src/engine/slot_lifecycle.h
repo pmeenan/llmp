@@ -13,8 +13,17 @@
 // own spill file. At this interface a LiveState::Range's `region` names the
 // stage. The slot also keeps its completed positions, whether it is
 // spilled, adopted from a kept record (D-105) or mid-restore, a clean
-// capacity refusal, a borrow (a reader holding its state frozen), and per
-// stage what its spill file holds (SpillTrack, an incremental spill).
+// capacity refusal, and per stage its borrows (a reader holding that
+// stage's state frozen: a drafter reading the target's KV) and what its
+// spill file holds (SpillTrack, an incremental spill).
+//
+// Positions are the slot's committed positions: the target's, by which
+// every stage's state is indexed. A step on the target (prefill, decode,
+// score, a verify) starts at them; a drafter's step (a draft, which never
+// commits) writes only its own stage, from wherever its catch-up starts,
+// and never past one chunk bound of its stage beyond them (model_runner.h
+// Admit). A verify's rows await Accept, which commits the kept ones;
+// DiscardVerify undoes it whole; Settle runs what an accepted one owes.
 // Closures come from the request cohort (request_cohort.h) over every
 // stage's extents; a spilled slot is in none.
 //
@@ -32,6 +41,7 @@
 #define LLMP_ENGINE_SLOT_LIFECYCLE_H_
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -41,6 +51,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/sha256.h"
@@ -58,6 +69,9 @@ class PagedWeights;
 struct StageState {
   std::string name;  // "target", "mtp", "dspark", "assistant"
   model::StateLayoutDerived layout;
+  // Its steps' own read alignment (0: the options'); its context is its
+  // layout's.
+  std::uint32_t read_align = 0;
 };
 
 struct SlotLifecycleOptions {
@@ -77,6 +91,33 @@ struct SlotLifecycleOptions {
   std::function<void(std::uint32_t slot)> invalidate;
   // Every plan and graph is to be dropped: a place moved, a recovery.
   std::function<void()> drop_plans;
+};
+
+class SlotLifecycle;
+
+// A borrow of one slot's stage (SlotLifecycle::Borrow): move-only, returned
+// once (Return, or its destruction), and before its lifecycle is
+// destroyed. A borrow from before a recovery (RecoverInPlace drops every
+// borrow) returns nothing.
+class StateBorrow {
+ public:
+  StateBorrow() = default;
+  StateBorrow(const StateBorrow&) = delete;
+  StateBorrow& operator=(const StateBorrow&) = delete;
+  StateBorrow(StateBorrow&& other) noexcept { *this = std::move(other); }
+  StateBorrow& operator=(StateBorrow&& other) noexcept;
+  ~StateBorrow() { Return(); }
+  void Return();
+  bool held() const { return owner_ != nullptr; }
+  std::uint32_t slot() const { return slot_; }
+  std::size_t stage() const { return stage_; }
+
+ private:
+  friend class SlotLifecycle;
+  SlotLifecycle* owner_ = nullptr;
+  std::uint32_t slot_ = 0;
+  std::size_t stage_ = 0;
+  std::uint64_t epoch_ = 0;
 };
 
 class SlotLifecycle {
@@ -118,8 +159,14 @@ class SlotLifecycle {
   const model::StateLayoutDerived& layout(std::size_t stage) const {
     return options_.stages.at(stage).layout;
   }
-  // Every stage's own read alignment (ReserveStateThrough's default).
-  std::uint32_t read_align() const { return options_.read_align; }
+  // The target's own read alignment, and a stage's (ReserveStateThrough's
+  // default for a step on it).
+  std::uint32_t read_align() const { return read_align(0); }
+  std::uint32_t read_align(std::size_t stage) const {
+    const std::uint32_t own = options_.stages.at(stage).read_align;
+    return own != 0 ? own : options_.read_align;
+  }
+  std::uint32_t context(std::size_t stage) const { return layout(stage).context; }
   SlotMask active() const { return cohort_.active(); }
   bool faulted() const { return cohort_.faulted(); }
   // D-105: what a kept record's layout must be (model::KeptLayoutId).
@@ -139,9 +186,12 @@ class SlotLifecycle {
   bool spilled(std::uint32_t slot) const;
   bool adopted(std::uint32_t slot) const;
   bool restoring(std::uint32_t slot) const;
+  // Some stage is borrowed; the stage is.
   bool borrowed(std::uint32_t slot) const;
-  // A verify awaits its Accept in some stage.
+  bool borrowed(std::uint32_t slot, std::size_t stage) const;
+  // A verify awaits its Accept in some stage; its rows (0: none).
   bool verify_pending(std::uint32_t slot) const;
+  std::uint32_t verify_rows(std::uint32_t slot) const;
   // A verify's restore or commit is still owed in some stage.
   bool owed(std::uint32_t slot) const;
   // The last growth or restore was a clean capacity refusal: the state is
@@ -186,21 +236,26 @@ class SlotLifecycle {
   // an adopted one read from its kept files; a clean capacity refusal
   // leaves it spilled (state_refused). Refused while a restore is pending.
   Status Restore(std::uint32_t slot);
-  // Backs what `positions` positions read, at `read_align` (0: the
-  // options'). Refused while a restore is pending, a verify awaits its
-  // Accept or it is borrowed.
+  // Backs what a step on `stage` reads through `positions` positions: a
+  // target's step (stage 0), which may write every stage (a drafter's
+  // feature taps), backs every stage, the target at `read_align` (0: its
+  // own) and each drafter at its own, through its context at most; a
+  // drafter's step backs its own stage alone. Refused while a restore is
+  // pending, a verify awaits its Accept, or a stage it grows is borrowed.
   Status ReserveStateThrough(std::uint32_t slot, std::uint32_t positions,
-                             std::uint32_t read_align = 0);
+                             std::uint32_t read_align = 0, std::size_t stage = 0);
   // Optional growth for a known next chunk (LiveState::Prepare), submitted
-  // before the current job: each stage's fresh zero extents a state of
-  // `positions` positions reads at `read_align` (0: the options'), never
-  // published as used (ReserveStateThrough's Use alone does), never
-  // recorded as written. True if any stage submitted some; false (nothing
-  // submitted) when the slot may not grow now or nothing is eligible.
-  // FinishPreparations drains it after the current job's fence, before
-  // anything else changes the state.
+  // before the current job: the fresh zero extents of the stages a step on
+  // `stage` grows (as ReserveStateThrough) through `positions` positions
+  // at `read_align` (0: the stage's own), never published as used
+  // (ReserveStateThrough's Use alone does), never recorded as written.
+  // True if any stage submitted some; false (nothing submitted) when the
+  // slot may not grow now or nothing is eligible. FinishPreparations
+  // drains it after the current job's fence, before anything else changes
+  // the state.
   std::expected<bool, std::string> PrepareThrough(std::uint32_t slot, std::uint32_t positions,
-                                                  std::uint32_t read_align = 0);
+                                                  std::uint32_t read_align = 0,
+                                                  std::size_t stage = 0);
   // After the current job's fence: every slot's every stage's preparation
   // drained (cancelled if `cancel`); the first problem. One that cannot
   // prove its retirement keeps its ticket (LiveState::FinishPreparation).
@@ -271,13 +326,35 @@ class SlotLifecycle {
   // After a step's completed positions retired. Refused mid-restore or
   // while spilled.
   Status SetPositions(std::uint32_t slot, std::uint32_t positions);
-  // A reader (an assistant drafting from the target's KV) holds the
-  // slot's state frozen until Return: no growth, clear, spill, restore or
-  // copy in, and no selection dropping it. Refused until a verify is
-  // accepted and what it owes has run (the state is not yet the kept
-  // rows').
-  Status Borrow(std::uint32_t slot);
-  void Return(std::uint32_t slot);
+  // A reader (an assistant drafting from the target's KV) holds a slot's
+  // stage frozen until the borrow returns: no growth of that stage, and no
+  // clear, spill, restore or copy in of the slot, nor a selection dropping
+  // it; its other stages may grow (the reader's own). Refused until a
+  // verify is accepted and what it owes has run (the state is not yet the
+  // kept rows').
+  std::expected<StateBorrow, std::string> Borrow(std::uint32_t slot, std::size_t stage = 0);
+
+  // ------------------------------------------------------------ a verify
+  //
+  // A verify's step (ModelRunner::RunStep, phase kVerify) saves what it
+  // writes in each stage (model::WritesFor) and leaves its rows awaiting
+  // Accept in every stage it writes (the target, a drafter's feature taps)
+  // or that commits, whether or not it saved anything there.
+
+  // Its first `keep` rows (1 to its rows) stay in every stage: the rest's
+  // saved bytes are owed back, then each stage's commit, queued before the
+  // next job's own work (or now, by Settle); the positions advance by
+  // `keep`. Refused, with nothing changed, unless every verifying stage is
+  // usable and awaits a verify of the same rows.
+  Status Accept(std::uint32_t slot, std::uint32_t keep);
+  // The verify undone whole in every stage (nothing kept, nothing
+  // committed), now, as a job of its own; the positions stay.
+  Status DiscardVerify(std::uint32_t slot);
+  // What an accepted verify owes (its restores, then its commits), now, as
+  // a job of its own over the execution closure. A failure checks the job
+  // (CheckFailedJob); a stage it quarantined faults the cohort (the shared
+  // stream's work is unproven).
+  Status Settle(std::uint32_t slot);
   // Every slot quarantined until RecoverInPlace.
   void Fault();
   // After a failed job: request_cohort.h's CheckFailedJob.
@@ -288,9 +365,11 @@ class SlotLifecycle {
   Status RefreshClosures() { return RefreshClosures(cohort_.active()); }
 
  private:
+  friend class StateBorrow;
   struct Stage {
     std::unique_ptr<LiveState> live;
     SpillTrack track;
+    std::uint32_t borrows = 0;
     // Kept from the process before (D-105): what its spill file holds,
     // until Restore reads it.
     std::vector<Range> adopted;
@@ -302,7 +381,6 @@ class SlotLifecycle {
     std::uint32_t positions = 0;
     bool spilled = false;
     bool state_refused = false;
-    std::uint32_t borrows = 0;
     std::uint64_t adopted_bytes = 0;
     std::optional<std::uint32_t> restoring;  // its positions
     std::vector<Range> restore_needed;       // region: the stage
@@ -320,6 +398,10 @@ class SlotLifecycle {
   void ResetSlot(Slot& slot);
   std::unexpected<std::string> Refuse(std::string_view what) const;
   bool Usable(const Slot& slot) const;
+  bool Borrowed(const Slot& slot) const;
+  // The stages a step on `stage` grows (every one for the target's).
+  std::vector<std::size_t> GrownBy(std::size_t stage) const;
+  void Return(std::uint32_t slot, std::size_t stage, std::uint64_t epoch);
   // No stage's verify awaits its Accept or owes a restore or commit.
   bool Settled(const Slot& slot) const;
   // CheckActive, or within a checkpoint restore (its copies in and its
@@ -337,6 +419,7 @@ class SlotLifecycle {
   catalog::Closure everything_, fence_, execution_;
   std::optional<std::uint64_t> places_clean_;
   std::string kept_layout_id_;
+  std::uint64_t borrow_epoch_ = 1;  // bumped by RecoverInPlace
   bool setup_ = false, registered_ = false, bound_ = false, released_ = false;
 };
 

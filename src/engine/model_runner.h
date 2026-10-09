@@ -22,7 +22,12 @@
 // coverage check, BP-A1), its inputs staged, a write recorded for every
 // owner, one device job queueing what the owners' states owe, the run and
 // the output copies, and after its completion each owner's positions and
-// its own outputs. Around it, what a caller predicts (StepAhead): up to two
+// its own outputs. A verify (D-068) first saves what it writes in every
+// stage, from the stages' state contracts (model::WritesFor), into each
+// stage's snapshot, queued in its job before its run; its rows then await
+// the slot's Accept (SlotLifecycle::Accept), and a failed one is undone
+// whole. The decoding modes that drive drafts and verifies are
+// decoding.h's. Around it, what a caller predicts (StepAhead): up to two
 // future shapes built while the device runs this one (the prefill
 // lookahead), the next one's recording captured beside this run, and the
 // next one's fresh state prepared before the job. Policy (which futures,
@@ -117,6 +122,14 @@ struct RunnerConfig {
   // A weight's address by role and part (the spec's binding to the
   // weights); unset: 0, for sources that bind none.
   std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight_address;
+  // Speculation: the most rows a verify takes (0: none; no snapshot is
+  // mapped and a verify is refused). Setup maps each slot's stages'
+  // snapshots, sized by model::VerifySaveBound, for the stages a target's
+  // verify writes (the target, a drafter's feature taps) or that commit.
+  std::uint32_t max_verify_rows = 0;
+  // A stage's commit of a verify's kept rows (LiveState::Commit: Qwen3.8's
+  // recurrent state), per slot; unset or empty: none.
+  std::function<LiveState::Commit(std::uint32_t slot, std::size_t stage)> commit;
 };
 
 // One segment's host data for a step, by the shape's segment order.
@@ -149,7 +162,8 @@ struct StepRequest {
   std::span<const SegmentWork> work{};      // one per segment
   std::span<const std::byte> step_bytes{};  // kStepBytes inputs
   // After success each owner's positions become past + rows (prefill,
-  // decode, score); a verify or a draft leaves them to its Accept.
+  // decode, score); a verify or a draft leaves them to its Accept (a
+  // verify or a drafter's step that would advance is refused).
   bool advance = true;
   StepAhead ahead;
 };
@@ -226,19 +240,29 @@ class ModelRunner final : public PagedModel {
 
   SlotLifecycle& slots() { return slots_; }
   const SlotLifecycle& slots() const { return slots_; }
+  // The most rows a verify takes (RunnerConfig::max_verify_rows).
+  std::uint32_t max_verify_rows() const { return config_.max_verify_rows; }
 
   // ------------------------------------------------------------- steps
 
   std::expected<StepReport, StepRefusal> RunStep(const StepRequest& request);
-  // A segment's owner admitted to a step: active, at its positions (when
-  // the step advances them) and its state backed through every cell the
+  // A segment's owner admitted to a step on `stage`: active, its rows where
+  // the stage's steps may run, and its state backed through every cell the
   // step reads (`past + rows`, or `read_cells` when wider: a common read)
-  // at `read_align` (0: its state's own). Refusal names the slot; peers are
-  // untouched. RunStep admits a joined step's owners through what each
-  // reads alone first (its rows at its state's alignment, `SlotLifecycle::read_align`,
-  // as a lone step's segment), then through the step's reads.
-  std::expected<void, StepRefusal> Admit(const planner::Segment& segment, std::uint32_t read_align,
-                                         bool advance);
+  // at `read_align` (0: the stage's own). Where rows may run:
+  // - on the target (stage 0), advancing or not (a verify), from the
+  //   slot's committed positions (`past` == SlotLifecycle::positions);
+  // - on a drafter, never advancing (drafts commit nothing): from anywhere
+  //   its catch-up starts, ending within one chunk bound of its stage
+  //   (its layout's max_rows) past the committed positions; a drafter
+  //   whose contract borrows the target's state only while the target's
+  //   stage is borrowed (SlotLifecycle::Borrow).
+  // Refusal names the slot; peers are untouched. RunStep admits a joined
+  // step's owners through what each reads alone first (its rows at its
+  // stage's alignment, SlotLifecycle::read_align(stage), as a lone step's
+  // segment), then through the step's reads.
+  std::expected<void, StepRefusal> Admit(const planner::Segment& segment, std::uint16_t stage,
+                                         std::uint32_t read_align, bool advance);
 
   // ------------------------------------------------- plans and reclaim
 
@@ -260,6 +284,8 @@ class ModelRunner final : public PagedModel {
   ModelRunner(PagedNode& node, RunnerConfig config, std::unique_ptr<StepSource> source, int owner,
               std::uint32_t stream);
   static SlotLifecycleOptions LifecycleOptions(ModelRunner* self, SlotLifecycleOptions options);
+  // Each slot's stages' verify snapshots and commits (max_verify_rows).
+  Status SetupSnapshots();
 
   planner::PlanKey KeyOf(const planner::StepShape& shape) const;
   kernels::Addresses AddressesFor(const planner::StepShape& shape, bool measuring) const;
@@ -274,6 +300,11 @@ class ModelRunner final : public PagedModel {
                                                     const std::function<void()>& transfer);
   std::expected<Copies, std::string> OutputCopies(const kernels::StepProgram& program) const;
   std::vector<catalog::ExtentId> weight_extents() const;
+  // Whether a target's verify saves in, or commits, a slot's stage.
+  bool Verifies(std::uint32_t slot, std::size_t stage) const;
+  // The cells an owner of `past` positions and `rows` rows reads alone on
+  // `stage`.
+  std::uint32_t LoneRead(std::size_t stage, std::uint32_t past, std::uint32_t rows) const;
 
   PagedNode& node_;
   RunnerConfig config_;
@@ -296,6 +327,8 @@ class ModelRunner final : public PagedModel {
   std::uint64_t inputs_staging_bytes_ = 0;
   std::byte* outputs_staging_ = nullptr;
   std::uint64_t outputs_staging_bytes_ = 0;
+  Mapped snapshots_;           // every slot's stages' verify snapshots
+  std::vector<bool> commits_;  // by slot, then stage: a commit is set
 
   GraphStats graph_stats_;
   Coverage coverage_;

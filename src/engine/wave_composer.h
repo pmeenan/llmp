@@ -13,8 +13,12 @@
 // widths allow; within a step, consecutive owners form joined groups while
 // their rows and number fit the group caps. A joined step reads at the
 // joined alignment (its key repeats as its owners grow), and with a common
-// read every owner reads the step's widest cells. Nothing here is a family
-// constant: every cap is the capability's.
+// read every owner reads the step's widest cells; a row-invariant step (an
+// exact verify, D-092) reads what each owner reads alone, its stage's own
+// alignment and no common read, so no row's arithmetic follows a peer's
+// reads. Each stage (the target, each drafter) has its own context and
+// read alignment. Nothing here is a family constant: every cap is the
+// capability's.
 //
 // Isolation (RunWave). One owner's refusal never fails its peers: an
 // owner that is not active, not at its positions, or whose state cannot
@@ -72,35 +76,56 @@ struct Composition {
   std::vector<std::pair<std::size_t, std::string>> refused;  // malformed work, by index
 };
 
+// One stage's reads: its state's positions and an owner's own read
+// alignment.
+struct StageReads {
+  std::uint32_t context = 0;
+  std::uint32_t read_align = 256;
+};
+
 class WaveComposer {
  public:
-  // `context` the state's positions, `read_align` an owner's own read
-  // alignment (its state's: RunWave refuses a runner whose
-  // SlotLifecycle::read_align differs).
+  // `stages` by stage (the target's first): each one's context and own
+  // read alignment (its state's: RunWave refuses a runner whose
+  // SlotLifecycle::read_align or context differs). The three-argument
+  // form composes the target alone.
+  static std::expected<WaveComposer, std::string> Make(model::Batching caps,
+                                                       std::vector<StageReads> stages);
   static std::expected<WaveComposer, std::string> Make(model::Batching caps, std::uint32_t context,
-                                                       std::uint32_t read_align);
+                                                       std::uint32_t read_align) {
+    return Make(caps, std::vector<StageReads>{{.context = context, .read_align = read_align}});
+  }
+  // Every stage of a runner's slots.
+  static std::expected<WaveComposer, std::string> For(model::Batching caps,
+                                                      const SlotLifecycle& slots);
 
   const model::Batching& caps() const { return caps_; }
-  std::uint32_t context() const { return context_; }
-  std::uint32_t read_align() const { return read_align_; }
-  // A step's read alignment by its owner count.
-  std::uint32_t AlignFor(std::size_t owners) const {
-    return owners > 1 && caps_.joined_read_align != 0 ? caps_.joined_read_align : read_align_;
+  std::size_t stages() const { return stages_.size(); }
+  std::uint32_t context(std::size_t stage = 0) const { return stages_.at(stage).context; }
+  std::uint32_t read_align(std::size_t stage = 0) const { return stages_.at(stage).read_align; }
+  // A step's read alignment by its owner count (a row-invariant step's is
+  // always its stage's own).
+  std::uint32_t AlignFor(std::size_t owners) const { return AlignFor(0, owners); }
+  std::uint32_t AlignFor(std::size_t stage, std::size_t owners, bool row_invariant = false) const {
+    return owners > 1 && caps_.joined_read_align != 0 && !row_invariant ? caps_.joined_read_align
+                                                                        : read_align(stage);
   }
   // The cells an owner of `past` positions and `rows` rows reads alone.
-  std::uint32_t LoneRead(std::uint32_t past, std::uint32_t rows) const;
+  std::uint32_t LoneRead(std::uint32_t past, std::uint32_t rows) const {
+    return LoneRead(0, past, rows);
+  }
+  std::uint32_t LoneRead(std::size_t stage, std::uint32_t past, std::uint32_t rows) const;
 
   Composition Compose(std::span<const PendingWork> pending) const;
 
  private:
-  WaveComposer(model::Batching caps, std::uint32_t context, std::uint32_t read_align)
-      : caps_(caps), context_(context), read_align_(read_align) {}
+  WaveComposer(model::Batching caps, std::vector<StageReads> stages)
+      : caps_(caps), stages_(std::move(stages)) {}
   // Fills in the shape's alignment, reads and groups from its segments.
   void Finish(planner::StepShape& shape) const;
 
   model::Batching caps_;
-  std::uint32_t context_ = 0;
-  std::uint32_t read_align_ = 256;
+  std::vector<StageReads> stages_;
 };
 
 // One pending work's outcome.
@@ -131,7 +156,7 @@ using AheadFor =
 
 // Runs `pending` (with `work`, its host data, by index) on `runner`,
 // composing, admitting and isolating as above; every step advances its
-// owners' positions (`advance`).
+// owners' positions (`advance`; a verify's and a draft's do not).
 WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
                    std::span<const PendingWork> pending, std::span<const SegmentWork> work,
                    bool advance = true, const AheadFor& ahead = {});

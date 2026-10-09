@@ -5,8 +5,9 @@
 // current family's state reproduce its layout and ranges byte for byte
 // (Gemma2's and Gemma3's used state and chunk writes, Qwen3.8's used state
 // and checkpoint writes, DeepSeek V4's in both window modes); a verify's
-// saves by row; the D-068 representations; the kept layout's identity; and
-// the refusals.
+// saves by row, byte for byte what Qwen3.8's, DeepSeek V4's and DSpark's
+// verifies save today; the D-068 representations; the kept layout's
+// identity; and the refusals.
 
 #include "model/state_contract.h"
 
@@ -22,6 +23,7 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "model/dspark.h"
 #include "model/dsv4.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
@@ -48,6 +50,18 @@ void ExpectSame(const std::vector<StateRange>& got, const std::vector<StateRange
     EXPECT_EQ(got[i].offset, want[i].offset) << what << " range " << i;
     EXPECT_EQ(got[i].bytes, want[i].bytes) << what << " range " << i;
   }
+}
+
+// The same bytes, in any order (a verify's saves: the order only places
+// them in the snapshot).
+void ExpectSameSet(std::vector<StateRange> got, std::vector<StateRange> want,
+                   const std::string& what) {
+  const auto order = [](const StateRange& a, const StateRange& b) {
+    return a.offset != b.offset ? a.offset < b.offset : a.bytes < b.bytes;
+  };
+  std::ranges::sort(got, order);
+  std::ranges::sort(want, order);
+  ExpectSame(got, want, what);
 }
 
 // ------------------------------------------------------------------ Gemma
@@ -154,7 +168,7 @@ Layers QwenContracts(const md::Qwen38Profile& p) {
                                .cell_bytes = bytes,
                                .cells = CellRule::kFixed,
                                .window_or_ratio = 1,
-                               .rollback = Rollback::kSnapshot};
+                               .rollback = Rollback::kCommit};
   };
   for (std::uint32_t il = 0; il < p.layers; ++il) {
     StateContract c;
@@ -169,24 +183,59 @@ Layers QwenContracts(const md::Qwen38Profile& p) {
                                   std::uint64_t{p.ple_history()} * p.hc_width() * 4));
       }
     } else {
+      // A verify saves each row's K, V and indexer cells and the block keys
+      // it completes (Qwen38VerifySaves); its commit rebuilds the linear
+      // layers' state, which a verify only reads.
       const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * 2;
-      c.tensors.push_back({.name = "k", .kind = StateKind::kKv, .cell_bytes = kv});
-      c.tensors.push_back({.name = "v", .kind = StateKind::kKv, .cell_bytes = kv});
+      c.tensors.push_back(
+          {.name = "k", .kind = StateKind::kKv, .cell_bytes = kv, .rollback = Rollback::kSnapshot});
+      c.tensors.push_back(
+          {.name = "v", .kind = StateKind::kKv, .cell_bytes = kv, .rollback = Rollback::kSnapshot});
       c.tensors.push_back({.name = "indexer_k",
                            .kind = StateKind::kIndex,
                            .encoding = Encoding::kF32,
-                           .cell_bytes = std::uint64_t{p.indexer_head_dim} * 4});
+                           .cell_bytes = std::uint64_t{p.indexer_head_dim} * 4,
+                           .rollback = Rollback::kSnapshot});
       c.tensors.push_back({.name = "indexer_blocks",
                            .kind = StateKind::kBlockKeys,
                            .encoding = Encoding::kBF16,
                            .cell_bytes = std::uint64_t{p.indexer_head_dim} * 2,
                            .cells = CellRule::kPerBlock,
                            .window_or_ratio = p.indexer_ratio,
-                           .basis = md::BlockBasis::kReadCells});
+                           .basis = md::BlockBasis::kReadCells,
+                           .rollback = Rollback::kSnapshot});
     }
     layers.push_back({il, std::move(c)});
   }
   return layers;
+}
+
+// The MTP drafter's stage: its own caches (rewritten by its catch-up, so
+// truncated) and the streams the target's chunks export into it.
+Layers QwenMtpContracts(const md::Qwen38Profile& p) {
+  const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * 2;
+  return {{0,
+           {.tensors = {{.name = "k", .kind = StateKind::kKv, .cell_bytes = kv},
+                        {.name = "v", .kind = StateKind::kKv, .cell_bytes = kv},
+                        {.name = "indexer_k",
+                         .kind = StateKind::kIndex,
+                         .encoding = Encoding::kF32,
+                         .cell_bytes = std::uint64_t{p.indexer_head_dim} * 4},
+                        {.name = "indexer_blocks",
+                         .kind = StateKind::kBlockKeys,
+                         .encoding = Encoding::kBF16,
+                         .cell_bytes = std::uint64_t{p.indexer_head_dim} * 2,
+                         .cells = CellRule::kPerBlock,
+                         .window_or_ratio = p.indexer_ratio,
+                         .basis = md::BlockBasis::kReadCells},
+                        {.name = "streams",
+                         .kind = StateKind::kFeatures,
+                         .encoding = Encoding::kF32,
+                         .cell_bytes = std::uint64_t{p.hc_width()} * 4,
+                         .cells = CellRule::kPerRow,
+                         .window_or_ratio = 1,
+                         .rollback = Rollback::kSnapshot,
+                         .target_writes = true}}}}};
 }
 
 TEST(StateContractTest, Qwen38ContractsReproduceItsLayoutUsedStateAndCheckpointWrites) {
@@ -230,27 +279,7 @@ TEST(StateContractTest, Qwen38MtpContractReproducesItsDrafterRegion) {
   auto want = md::Qwen38MtpStateOf(p, *target);
   ASSERT_TRUE(want.has_value());
   const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * 2;
-  const Layers mtp = {{0,
-                       {.tensors = {{.name = "k", .kind = StateKind::kKv, .cell_bytes = kv},
-                                    {.name = "v", .kind = StateKind::kKv, .cell_bytes = kv},
-                                    {.name = "indexer_k",
-                                     .kind = StateKind::kIndex,
-                                     .encoding = Encoding::kF32,
-                                     .cell_bytes = std::uint64_t{p.indexer_head_dim} * 4},
-                                    {.name = "indexer_blocks",
-                                     .kind = StateKind::kBlockKeys,
-                                     .encoding = Encoding::kBF16,
-                                     .cell_bytes = std::uint64_t{p.indexer_head_dim} * 2,
-                                     .cells = CellRule::kPerBlock,
-                                     .window_or_ratio = p.indexer_ratio,
-                                     .basis = md::BlockBasis::kReadCells},
-                                    {.name = "streams",
-                                     .kind = StateKind::kFeatures,
-                                     .encoding = Encoding::kF32,
-                                     .cell_bytes = std::uint64_t{p.hc_width()} * 4,
-                                     .cells = CellRule::kPerRow,
-                                     .window_or_ratio = 1,
-                                     .rollback = Rollback::kSnapshot}}}}};
+  const Layers mtp = QwenMtpContracts(p);
   auto got = md::Layout(mtp, 8192, 512);
   ASSERT_TRUE(got.has_value()) << got.error();
   ASSERT_EQ(got->items.size(), 5U);
@@ -297,12 +326,14 @@ Layers Dsv4Contracts(const md::Dsv4Profile& p, md::Dsv4Window window) {
                                .dummy_last = true,
                                .rollback = Rollback::kSnapshot};
   };
+  // Each compressor's ring of its recent positions' projections: position
+  // p in row p mod rows, saved by the verify row that persists it.
   const auto ring = [](std::string name, std::uint64_t cell, std::uint32_t rows) {
     return StateTensorContract{.name = std::move(name),
                                .kind = StateKind::kCompressor,
                                .encoding = Encoding::kF32,
                                .cell_bytes = cell,
-                               .cells = CellRule::kFixed,
+                               .cells = CellRule::kPositionRing,
                                .window_or_ratio = rows,
                                .rollback = Rollback::kSnapshot};
   };
@@ -396,6 +427,7 @@ md::StateLayoutDerived Mixed() {
                      .window_or_ratio = 4,
                      .cell_pad = 1,
                      .dummy_last = true,
+                     .partial_blocks = true,
                      .rollback = Rollback::kSnapshot},
                     {.name = "recurrent",
                      .kind = StateKind::kRecurrent,
@@ -414,9 +446,13 @@ TEST(StateContractTest, AVerifySavesEachRowsCellsAndBlocksAndRestoresScratchWhat
   ASSERT_EQ(layout.borrowed.size(), 1U);
   const auto& ring = layout.items[1];
   const auto& blocks = layout.items[2];
-  // Rows 78..81: the ring (80 cells) wraps after row 79; blocks 19 and 20
-  // (row 79 completes 19, row 81 is the chunk's last in 20).
-  auto writes = md::WritesFor(layout, 78, 4);
+  // The recurrent state is rewritten whole: only a commit rebuilds its kept
+  // rows, so a verify without one is refused.
+  EXPECT_FALSE(md::WritesFor(layout, 78, 4).has_value());
+  // Rows 78..81: the ring (80 cells) wraps after row 79; block 19 completes
+  // at row 1 (position 79), and block 20 is partly written by row 3
+  // (partial blocks: the chunk's last row in it).
+  auto writes = md::WritesFor(layout, 78, 4, {.commits = true, .drafter = false});
   ASSERT_TRUE(writes.has_value()) << writes.error();
   ASSERT_EQ(writes->rows.size(), 4U);
   ASSERT_EQ(ring.cells, 80U);
@@ -428,24 +464,50 @@ TEST(StateContractTest, AVerifySavesEachRowsCellsAndBlocksAndRestoresScratchWhat
   EXPECT_EQ(writes->rows[1][1].offset, blocks.offset + (19 * 256));
   ASSERT_EQ(writes->rows[3].size(), 2U);
   EXPECT_EQ(writes->rows[3][1].offset, blocks.offset + (20 * 256));
-  // The dummy row and the recurrent state are restored whatever is kept.
-  ASSERT_EQ(writes->scratch.size(), 2U);
-  EXPECT_EQ(writes->scratch[0].offset, blocks.offset + ((blocks.cells - 1) * 256));
-  EXPECT_EQ(writes->scratch[1].offset, layout.items[3].offset);
-  EXPECT_EQ(writes->scratch[1].bytes, 1024U);
+  // The chunk completes its one block: no dummy row. The recurrent state is
+  // restored whatever is kept, for the commit to rebuild.
+  ASSERT_EQ(writes->scratch.size(), 1U);
+  EXPECT_EQ(writes->scratch[0].offset, layout.items[3].offset);
+  EXPECT_EQ(writes->scratch[0].bytes, 1024U);
+  // Two rows completing no block write the dummy row.
+  auto short_chunk = md::WritesFor(layout, 80, 2, {.commits = true, .drafter = false});
+  ASSERT_TRUE(short_chunk.has_value());
+  ASSERT_EQ(short_chunk->scratch.size(), 2U);
+  EXPECT_EQ(short_chunk->scratch[0].offset, blocks.offset + ((blocks.cells - 1) * 256));
+  EXPECT_EQ(short_chunk->scratch[1].offset, layout.items[3].offset);
+  EXPECT_EQ(short_chunk->rows[1].back().offset, blocks.offset + (20 * 256));
   // Every saved byte is a chunk write.
-  auto chunk = md::ChunkWrites(layout, 78, 4);
-  ASSERT_TRUE(chunk.has_value());
-  const auto inside = [&](const StateRange& r) {
-    for (const auto& w : *chunk) {
-      if (r.offset >= w.offset && r.offset + r.bytes <= w.offset + w.bytes) return true;
+  for (const auto& [past, rows] : {std::pair{78U, 4U}, {80U, 2U}}) {
+    auto saved = md::WritesFor(layout, past, rows, {.commits = true, .drafter = false});
+    auto chunk = md::ChunkWrites(layout, past, rows);
+    ASSERT_TRUE(saved.has_value() && chunk.has_value());
+    const auto inside = [&](const StateRange& r) {
+      return std::ranges::any_of(*chunk, [&](const StateRange& w) {
+        return r.offset >= w.offset && r.offset + r.bytes <= w.offset + w.bytes;
+      });
+    };
+    for (const auto& row : saved->rows) {
+      for (const auto& r : row) EXPECT_TRUE(inside(r)) << r.offset;
     }
-    return false;
-  };
-  for (const auto& row : writes->rows) {
-    for (const auto& r : row) EXPECT_TRUE(inside(r)) << r.offset;
+    for (const auto& r : saved->scratch) EXPECT_TRUE(inside(r)) << r.offset;
   }
-  for (const auto& r : writes->scratch) EXPECT_TRUE(inside(r)) << r.offset;
+  // The bound holds every verify's saves, wherever it starts.
+  for (const std::uint32_t rows : {1U, 3U, 4U, 9U, 16U}) {
+    auto bound = md::VerifySaveBound(layout, rows, {.commits = true, .drafter = false});
+    ASSERT_TRUE(bound.has_value()) << bound.error();
+    for (std::uint32_t past = 0; past + rows <= 200; ++past) {
+      auto saved = md::WritesFor(layout, past, rows, {.commits = true, .drafter = false});
+      ASSERT_TRUE(saved.has_value());
+      std::uint64_t ranges = saved->scratch.size(), bytes = 0;
+      for (const auto& r : saved->scratch) bytes += (r.bytes + 255) / 256 * 256;
+      for (const auto& row : saved->rows) {
+        ranges += row.size();
+        for (const auto& r : row) bytes += (r.bytes + 255) / 256 * 256;
+      }
+      EXPECT_LE(ranges, bound->ranges) << past << "+" << rows;
+      EXPECT_LE(bytes, bound->bytes) << past << "+" << rows;
+    }
+  }
   // A state that cannot roll back refuses a verify.
   const Layers ring_only = {{0,
                              {.tensors = {{.name = "ring",
@@ -457,8 +519,251 @@ TEST(StateContractTest, AVerifySavesEachRowsCellsAndBlocksAndRestoresScratchWhat
   auto refusing = md::Layout(ring_only, 1024, 16);
   ASSERT_TRUE(refusing.has_value());
   EXPECT_FALSE(md::WritesFor(*refusing, 0, 1).has_value());
-  EXPECT_FALSE(md::WritesFor(layout, 1020, 5).has_value());  // past the context
-  EXPECT_FALSE(md::WritesFor(layout, 0, 17).has_value());    // past the chunk bound
+  EXPECT_FALSE(md::VerifySaveBound(*refusing, 1).has_value());
+  const md::VerifyScope commits{.commits = true, .drafter = false};
+  // Nor fixed state or partial blocks that truncate: a verify writes them
+  // for the kept rows too (fixed state whole; with blocks 4 positions wide,
+  // rows 78..81 update block 19 for kept position 78 as for rejected 79),
+  // commit or not, the target's own or a tap it writes. Snapshot partial
+  // blocks, restored, hold none of the kept rows' part: a commit rebuilds
+  // it, as it does fixed state.
+  for (const bool partial : {false, true}) {
+    for (const Rollback rollback : {Rollback::kTruncate, Rollback::kSnapshot}) {
+      md::StateTensorContract t{.name = "s",
+                                .kind = partial ? StateKind::kBlockKeys : StateKind::kRecurrent,
+                                .cell_bytes = 256,
+                                .cells = partial ? CellRule::kPerBlock : CellRule::kFixed,
+                                .window_or_ratio = partial ? 4U : 1U,
+                                .partial_blocks = partial,
+                                .rollback = rollback};
+      const Layers own = {{0, {.tensors = {t}}}};
+      t.target_writes = true;
+      const Layers tap = {{0, {.tensors = {t}}}};
+      for (const auto& [layers, scope] :
+           {std::pair{own, md::VerifyScope{}}, std::pair{tap, md::VerifyScope{.drafter = true}}}) {
+        auto one = md::Layout(layers, 1024, 16);
+        ASSERT_TRUE(one.has_value()) << one.error();
+        const auto what =
+            std::format("partial {} rollback {}", partial, static_cast<int>(rollback));
+        EXPECT_FALSE(md::WritesFor(*one, 78, 4, scope).has_value()) << what;
+        EXPECT_FALSE(md::VerifySaveBound(*one, 4, scope).has_value()) << what;
+        md::VerifyScope with = scope;
+        with.commits = true;
+        EXPECT_EQ(md::WritesFor(*one, 78, 4, with).has_value(), rollback == Rollback::kSnapshot)
+            << what;
+      }
+    }
+  }
+  EXPECT_FALSE(md::WritesFor(layout, 1020, 5, commits).has_value());  // past the context
+  EXPECT_FALSE(md::WritesFor(layout, 0, 17, commits).has_value());    // past the chunk bound
+}
+
+TEST(StateContractTest, VerifyScopesCommitsPositionRingsAndTheTargetsWritesIntoADrafter) {
+  const Layers layers = {{0,
+                          {.tensors = {{.name = "kv", .kind = StateKind::kKv, .cell_bytes = 256},
+                                       {.name = "recurrent",
+                                        .kind = StateKind::kRecurrent,
+                                        .encoding = Encoding::kF32,
+                                        .cell_bytes = 1024,
+                                        .cells = CellRule::kFixed,
+                                        .window_or_ratio = 1,
+                                        .rollback = Rollback::kCommit},
+                                       {.name = "compressor",
+                                        .kind = StateKind::kCompressor,
+                                        .encoding = Encoding::kF32,
+                                        .cell_bytes = 512,
+                                        .cells = CellRule::kPositionRing,
+                                        .window_or_ratio = 8,
+                                        .rollback = Rollback::kSnapshot},
+                                       {.name = "tap",
+                                        .kind = StateKind::kFeatures,
+                                        .cell_bytes = 256,
+                                        .cells = CellRule::kPerRow,
+                                        .window_or_ratio = 1,
+                                        .rollback = Rollback::kSnapshot,
+                                        .target_writes = true}}}}};
+  auto layout = md::Layout(layers, 4096, 16);
+  ASSERT_TRUE(layout.has_value()) << layout.error();
+  const auto& ring = layout->items[2];
+  const auto& tap = layout->items[3];
+  EXPECT_EQ(ring.cells, 8U);  // whatever the context
+  EXPECT_EQ(tap.cells, 17U);
+  // A position ring is read and checkpointed whole; a chunk writes its
+  // rows' cells, wrapped.
+  auto used = md::UsedThrough(*layout, 3);
+  ASSERT_TRUE(used.has_value());
+  EXPECT_EQ((*used)[2].offset, ring.offset);
+  EXPECT_EQ((*used)[2].bytes, ring.bytes);
+  auto chunk = md::ChunkWrites(*layout, 6, 4);
+  ASSERT_TRUE(chunk.has_value());
+  EXPECT_EQ((*chunk)[2].offset, ring.offset + (6 * 512));
+  EXPECT_EQ((*chunk)[2].bytes, 2U * 512);
+  EXPECT_EQ((*chunk)[3].offset, ring.offset);
+  EXPECT_EQ((*chunk)[3].bytes, 2U * 512);
+  // kCommit state: refused without a commit, never saved with one.
+  EXPECT_FALSE(md::WritesFor(*layout, 6, 4).has_value());
+  auto writes = md::WritesFor(*layout, 6, 4, {.commits = true, .drafter = false});
+  ASSERT_TRUE(writes.has_value()) << writes.error();
+  EXPECT_TRUE(writes->scratch.empty());
+  // Row i: its ring row (positions 6..9 in rows 6, 7, 0, 1) and its tap
+  // row (1 + i); the per-position cache truncates.
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    ASSERT_EQ(writes->rows[i].size(), 2U) << i;
+    EXPECT_EQ(writes->rows[i][0].offset, ring.offset + (((6 + i) % 8) * 512)) << i;
+    EXPECT_EQ(writes->rows[i][1].offset, tap.offset + ((1 + i) * 256)) << i;
+  }
+  // The ring cannot take a verify writing a cell twice.
+  EXPECT_FALSE(md::WritesFor(*layout, 0, 9, {.commits = true, .drafter = false}).has_value());
+  // Nor a snapshot save cells the range copies cannot move (Q8_0's 34
+  // bytes); truncated, they need no save.
+  Layers q8 = {{0,
+                {.tensors = {{.name = "kv",
+                              .kind = StateKind::kKv,
+                              .encoding = Encoding::kQ8_0,
+                              .cell_bytes = 34,
+                              .rollback = Rollback::kSnapshot}}}}};
+  auto blocks = md::Layout(q8, 4096, 16);
+  ASSERT_TRUE(blocks.has_value()) << blocks.error();
+  EXPECT_FALSE(md::WritesFor(*blocks, 0, 2).has_value());
+  q8[0].second.tensors[0].rollback = Rollback::kTruncate;
+  blocks = md::Layout(q8, 4096, 16);
+  ASSERT_TRUE(blocks.has_value());
+  EXPECT_TRUE(md::WritesFor(*blocks, 0, 2).has_value());
+  // Over a drafter's stage, the target's verify saves only what it writes
+  // there (the tap): not the drafter's own state, whatever its rollback.
+  auto drafter = md::WritesFor(*layout, 6, 4, {.commits = false, .drafter = true});
+  ASSERT_TRUE(drafter.has_value()) << drafter.error();
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    ASSERT_EQ(drafter->rows[i].size(), 1U);
+    EXPECT_EQ(drafter->rows[i][0].offset, tap.offset + ((1 + i) * 256));
+  }
+  // A borrowed tensor names its target's tensor of that name and layer.
+  const Layers assistant = {
+      {0, {.tensors = {{.name = "own", .kind = StateKind::kKv, .cell_bytes = 256}}}},
+      {1,
+       {.tensors = {{.name = "kv",
+                     .kind = StateKind::kKv,
+                     .cell_bytes = 256,
+                     .borrowed_from_target = true,
+                     .target_layer = 0}}}}};
+  auto view = md::Layout(assistant, 4096, 16);
+  ASSERT_TRUE(view.has_value()) << view.error();
+  ASSERT_EQ(view->borrowed.size(), 1U);
+  EXPECT_EQ(md::BorrowedItem(*layout, view->borrowed[0]), &layout->items[0]);
+  auto elsewhere = view->borrowed[0];
+  elsewhere.contract.target_layer = 3;
+  EXPECT_EQ(md::BorrowedItem(*layout, elsewhere), nullptr);
+}
+
+// Qwen3.8's verify (qwen38_runner.cc, through Qwen38VerifySaves): its
+// contracts' WritesFor, the target's with its commit and the MTP stage's
+// as the target's verify writes it, save exactly those bytes by row.
+TEST(StateContractTest, Qwen38VerifySavesAreItsContractsWritesByteForByte) {
+  const auto& p = md::Qwen38Flash();
+  for (const auto& [context, max_rows] : {std::pair{8192U, 512U}, {4000U, 300U}}) {
+    auto state = md::Qwen38State(p, context, max_rows, false);
+    ASSERT_TRUE(state.has_value()) << state.error();
+    auto mtp = md::Qwen38MtpStateOf(p, *state);
+    ASSERT_TRUE(mtp.has_value());
+    auto target = md::Layout(QwenContracts(p), context, max_rows);
+    auto drafter = md::Layout(QwenMtpContracts(p), context, max_rows);
+    ASSERT_TRUE(target.has_value() && drafter.has_value());
+    // Its linear layers' state needs the commit.
+    EXPECT_FALSE(md::WritesFor(*target, 0, 4).has_value());
+    for (const std::uint32_t past : {0U, 1U, 62U, 63U, 64U, 65U, 127U, 1000U, context - 8}) {
+      for (std::uint32_t rows = 1; rows <= 8; ++rows) {
+        const auto saves = md::Qwen38VerifySaves(p, *state, *mtp, past, rows);
+        std::vector<std::vector<StateRange>> want_target(rows), want_drafter(rows);
+        for (const auto& s : saves) {
+          ASSERT_LT(s.row, rows);
+          (s.drafter ? want_drafter : want_target)[s.row].push_back(
+              {.offset = s.offset, .bytes = s.bytes});
+        }
+        auto got = md::WritesFor(*target, past, rows, {.commits = true, .drafter = false});
+        auto streams = md::WritesFor(*drafter, past, rows, {.commits = false, .drafter = true});
+        ASSERT_TRUE(got.has_value()) << got.error();
+        ASSERT_TRUE(streams.has_value()) << streams.error();
+        EXPECT_TRUE(got->scratch.empty());
+        EXPECT_TRUE(streams->scratch.empty());
+        for (std::uint32_t i = 0; i < rows; ++i) {
+          const auto what = std::format("Qwen3.8 verify {}+{} row {}", past, rows, i);
+          ExpectSameSet(got->rows[i], want_target[i], what);
+          ExpectSameSet(streams->rows[i], want_drafter[i], what + " streams");
+        }
+      }
+    }
+  }
+}
+
+// DeepSeek V4's verify (Dsv4Runner::PlanSnapshot over Dsv4ChunkWrites):
+// each row's window cell, the compressor ring rows it persists and the
+// compressed rows it completes, and the dummy rows as scratch, in both
+// window modes.
+TEST(StateContractTest, DeepSeekVerifySavesAreItsContractsWritesByteForByte) {
+  const auto& p = md::Dsv4Flash();
+  for (const auto window : {md::Dsv4Window::kFull, md::Dsv4Window::kRing}) {
+    for (const auto& [context, max_rows] : {std::pair{4096U, 512U}, {65536U, 2048U}}) {
+      auto state = md::Dsv4State(p, context, max_rows, window);
+      ASSERT_TRUE(state.has_value()) << state.error();
+      auto layout = md::Layout(Dsv4Contracts(p, window), context, max_rows);
+      ASSERT_TRUE(layout.has_value()) << layout.error();
+      for (const std::uint32_t past : {0U, 1U, 2U, 3U, 4U, 5U, 7U, 8U, 126U, 127U, 128U, 129U, 250U,
+                                       255U, 256U, 1020U, context - 8}) {
+        for (std::uint32_t rows = 1; rows <= 8; ++rows) {
+          auto chunk = md::Dsv4Chunk(p, *state, past, rows, false, false);
+          ASSERT_TRUE(chunk.has_value()) << chunk.error() << " at " << past << "+" << rows;
+          const md::Dsv4Writes want = md::Dsv4ChunkWrites(p, *state, *chunk);
+          auto got = md::WritesFor(*layout, past, rows);
+          ASSERT_TRUE(got.has_value()) << got.error();
+          const auto what = std::format("DeepSeek verify {}+{}", past, rows);
+          ASSERT_EQ(want.rows.size(), rows);
+          for (std::uint32_t i = 0; i < rows; ++i) {
+            ExpectSameSet(got->rows[i], want.rows[i], std::format("{} row {}", what, i));
+          }
+          ExpectSameSet(got->scratch, want.scratch, what + " scratch");
+        }
+      }
+    }
+  }
+}
+
+// DSpark's ring, the drafter's stage, which the target's verify writes by
+// its injection (DsparkWrites).
+TEST(StateContractTest, DsparkVerifySavesAreItsContractsWritesByteForByte) {
+  const auto& dp = md::DsparkDeepSeekV4Flash();
+  auto state = md::DsparkState(dp, 16);
+  ASSERT_TRUE(state.has_value()) << state.error();
+  Layers layers;
+  for (std::uint32_t il = 0; il < dp.blocks.layers; ++il) {
+    layers.push_back({il,
+                      {.tensors = {{.name = "ring",
+                                    .kind = StateKind::kDrafterRing,
+                                    .cell_bytes = std::uint64_t{dp.blocks.head_dim} * 2,
+                                    .cells = CellRule::kPositionRing,
+                                    .window_or_ratio = dp.ring,
+                                    .rollback = Rollback::kSnapshot,
+                                    .target_writes = true}}}});
+  }
+  auto layout = md::Layout(layers, 65536, 16);
+  ASSERT_TRUE(layout.has_value()) << layout.error();
+  ASSERT_EQ(layout->items.size(), state->offsets.size());
+  for (std::size_t i = 0; i < layout->items.size(); ++i) {
+    EXPECT_EQ(layout->items[i].offset, state->offsets[i]) << i;
+  }
+  EXPECT_EQ(layout->bytes, state->bytes);
+  for (const std::uint32_t past : {0U, 1U, 250U, 254U, 255U, 256U, 1000U, 65520U}) {
+    for (std::uint32_t rows = 1; rows <= 16; ++rows) {
+      const auto want = md::DsparkWrites(dp, *state, past, rows);
+      auto got = md::WritesFor(*layout, past, rows, {.commits = false, .drafter = true});
+      ASSERT_TRUE(got.has_value()) << got.error();
+      EXPECT_TRUE(got->scratch.empty());
+      ASSERT_EQ(want.size(), rows);
+      for (std::uint32_t i = 0; i < rows; ++i) {
+        ExpectSameSet(got->rows[i], want[i],
+                      std::format("DSpark verify {}+{} row {}", past, rows, i));
+      }
+    }
+  }
 }
 
 TEST(StateContractTest, RepresentationsGroupKindsAndTruncateOnlyWhatCanRollBack) {

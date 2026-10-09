@@ -482,9 +482,10 @@ TEST_F(SlotLifecycleTest, AClearKeepsItsHeldPeersAndResetsTheSlot) {
   Fill(1, Used(1), 0xC3);
   const auto peer = Used(1);
   // Borrowed, or awaiting a verify's Accept: refused.
-  ASSERT_TRUE(slots().Borrow(0));
+  auto borrow = slots().Borrow(0);
+  ASSERT_TRUE(borrow);
   EXPECT_FALSE(slots().Clear(0));
-  slots().Return(0);
+  borrow->Return();
   slots().live(0, 0).Verified(2);
   EXPECT_FALSE(slots().Clear(0));
   EXPECT_FALSE(slots().ClearIdle(0));  // and held besides
@@ -511,11 +512,12 @@ TEST_F(SlotLifecycleTest, SelectionNeverDropsAPendingRestoreABorrowOrAVerify) {
   const auto footprint = Used(1);
   const std::vector<std::uint32_t> only_zero = {0};
   // A borrow.
-  ASSERT_TRUE(slots().Borrow(1));
+  auto borrow = slots().Borrow(1);
+  ASSERT_TRUE(borrow);
   EXPECT_FALSE(slots().SelectSlots(only_zero));
   EXPECT_FALSE(slots().ReserveStateThrough(1, 400));
   EXPECT_FALSE(slots().Spill(1));
-  slots().Return(1);
+  borrow->Return();
   // A verify awaiting its Accept, in a drafter's state.
   slots().live(1, 1).Verified(1);
   EXPECT_FALSE(slots().SelectSlots(only_zero));
@@ -710,9 +712,10 @@ TEST_F(SlotLifecycleTest, AVerifyUnsettledKeepsItsStateFromReadersAndCopies) {
   EXPECT_FALSE(slots().CopyState(0, host_, fixed, true));
   // Settled, both proceed and read what the commit left.
   ASSERT_TRUE(slots().live(0, 0).Rollback(node_, slots().slot_fence(0), 0, "test settle"));
-  ASSERT_TRUE(slots().Borrow(0));
+  auto borrow = slots().Borrow(0);
+  ASSERT_TRUE(borrow);
   EXPECT_TRUE(All(0, fixed, 0xEE));
-  slots().Return(0);
+  borrow->Return();
 }
 
 TEST_F(SlotLifecycleTest, ACheckpointRestoreTakesNoPageWhileAVerifyOwes) {
@@ -791,7 +794,8 @@ TEST_F(SlotLifecycleTest, ALocalFailureDiscardsOnlyItsSlotAndDropsStaleBorrows) 
   ASSERT_TRUE(slots().ReserveStateThrough(1, 300));
   Fill(1, Used(1), 0xC3);
   const auto peer = Used(1);
-  ASSERT_TRUE(slots().Borrow(1));   // a reader whose Return the failure skipped
+  auto stale = slots().Borrow(1);  // a reader whose Return the failure skipped
+  ASSERT_TRUE(stale);
   slots().live(0, 1).Quarantine();  // slot 0's drafter job failed after writing
   ASSERT_TRUE(node_.EndRequest(0));
   std::vector<std::uint32_t> told;
@@ -804,6 +808,15 @@ TEST_F(SlotLifecycleTest, ALocalFailureDiscardsOnlyItsSlotAndDropsStaleBorrows) 
   EXPECT_FALSE(slots().borrowed(1));
   Select({1});
   EXPECT_TRUE(All(1, peer, 0xC3));
+  // The stale reader's return, after a new reader's borrow, returns
+  // nothing: the new borrow holds.
+  auto fresh = slots().Borrow(1);
+  ASSERT_TRUE(fresh) << fresh.error();
+  stale->Return();
+  EXPECT_TRUE(slots().borrowed(1));
+  EXPECT_FALSE(slots().Spill(1));
+  fresh->Return();
+  EXPECT_FALSE(slots().borrowed(1));
   EXPECT_TRUE(slots().Spill(1));
 }
 
@@ -975,9 +988,10 @@ TEST_F(SlotLifecycleTest, ServingSequencesAroundAnAcceptStayOpen) {
   ASSERT_TRUE(node_.BeginRequest(0, slots().execution(), "test request"));
   StepRunsOwed(0, 0, 301);
   // Borrowed once settled.
-  ASSERT_TRUE(slots().Borrow(0));
+  auto borrow = slots().Borrow(0);
+  ASSERT_TRUE(borrow);
   EXPECT_TRUE(All(0, fixed, 0xEE));
-  slots().Return(0);
+  borrow->Return();
   ASSERT_TRUE(node_.EndRequest(0));
   ASSERT_TRUE(slots().Spill(0));
   ASSERT_TRUE(slots().Restore(0));

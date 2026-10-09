@@ -481,6 +481,25 @@ struct Qwen38MtpState {
 std::expected<Qwen38MtpState, std::string> Qwen38MtpStateOf(const Qwen38Profile& profile,
                                                             const Qwen38StateLayout& state);
 
+// What a verify of `rows` rows after `n_past` saves before it writes (D-068
+// truncation through a snapshot), in the order the runner saves it: each
+// row's cell of every QSA layer's K, V and indexer keys (row by row, in the
+// layout's order), then each block key a row completes (by that row), then
+// the drafter's streams rows the verify exports (row i's in H[i + 1]). The
+// recurrent and convolution state is not written by a verify (its commit
+// rebuilds it). `drafter`: an offset in the drafter's region, else the
+// target's.
+struct Qwen38VerifySave {
+  bool drafter = false;
+  std::uint64_t offset = 0;
+  std::uint64_t bytes = 0;
+  std::uint32_t row = 0;
+};
+std::vector<Qwen38VerifySave> Qwen38VerifySaves(const Qwen38Profile& profile,
+                                                const Qwen38StateLayout& state,
+                                                const Qwen38MtpState& mtp, std::uint32_t n_past,
+                                                std::uint32_t rows);
+
 // The drafter's work in a prefill chunk with the injection: the chunk's
 // `rows` rows from `n_past`, its export writing their streams to H[1 ..
 // rows], with `pending` rows' streams in H[1 .. pending] before it (the

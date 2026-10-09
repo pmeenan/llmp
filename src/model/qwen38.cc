@@ -1123,6 +1123,50 @@ std::expected<Qwen38MtpState, std::string> Qwen38MtpStateOf(const Qwen38Profile&
   return s;
 }
 
+std::vector<Qwen38VerifySave> Qwen38VerifySaves(const Qwen38Profile& profile,
+                                                const Qwen38StateLayout& state,
+                                                const Qwen38MtpState& mtp, std::uint32_t n_past,
+                                                std::uint32_t rows) {
+  using K = Qwen38StateTensor::Kind;
+  std::vector<Qwen38VerifySave> out;
+  // The cells it writes (each QSA layer's K, V and indexer rows).
+  for (std::uint32_t i = 0; i < rows; ++i) {
+    const std::uint64_t cell = std::uint64_t{n_past} + i;
+    for (const Qwen38StateTensor& t : state.tensors) {
+      if (t.kind != K::kK && t.kind != K::kV && t.kind != K::kIndexerK) {
+        continue;
+      }
+      const std::uint64_t bytes = t.ne0 * (t.f16 ? 2 : 4);
+      out.push_back(
+          {.drafter = false, .offset = t.offset + (cell * bytes), .bytes = bytes, .row = i});
+    }
+  }
+  // Each block key it writes: the row that completes the block writes it,
+  // so a rejected row's block is restored with its cells.
+  const std::uint32_t ratio = profile.indexer_ratio;
+  for (std::uint64_t b = n_past / ratio; b < (std::uint64_t{n_past} + rows) / ratio; ++b) {
+    const auto row = static_cast<std::uint32_t>(((b + 1) * ratio) - 1 - n_past);
+    for (const Qwen38StateTensor& t : state.tensors) {
+      if (t.kind != K::kIndexerBlocks) {
+        continue;
+      }
+      const std::uint64_t bytes = t.ne0 * 2;
+      out.push_back(
+          {.drafter = false, .offset = t.offset + (b * bytes), .bytes = bytes, .row = row});
+    }
+  }
+  // The streams rows it exports (rows 1 ..), which hold the pending rows
+  // before it.
+  const std::uint64_t stream_row = std::uint64_t{profile.hc_width()} * sizeof(float);
+  for (std::uint32_t i = 0; i < rows; ++i) {
+    out.push_back({.drafter = true,
+                   .offset = mtp.hidden + (std::uint64_t{i + 1} * stream_row),
+                   .bytes = stream_row,
+                   .row = i});
+  }
+  return out;
+}
+
 std::expected<Qwen38Injection, std::string> Qwen38InjectionOf(const Qwen38MtpState& state,
                                                               std::uint32_t n_past,
                                                               std::uint32_t rows,

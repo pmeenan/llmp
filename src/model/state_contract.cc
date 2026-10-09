@@ -69,6 +69,8 @@ std::optional<std::uint64_t> CellsOf(const StateTensorContract& t, std::uint32_t
       return t.window_or_ratio;
     case CellRule::kPerRow:
       return std::uint64_t{max_rows} + t.window_or_ratio;
+    case CellRule::kPositionRing:
+      return t.window_or_ratio;
   }
   return std::nullopt;
 }
@@ -90,9 +92,15 @@ std::optional<std::string> Invalid(const StateTensorContract& t) {
   }
   if (t.ring_reads_whole && t.cells != CellRule::kRing) return "only a ring reads whole";
   if (t.dummy_last && t.cells != CellRule::kPerBlock) return "only a block tensor has a dummy row";
+  if (t.partial_blocks && t.cells != CellRule::kPerBlock) {
+    return "only a block tensor writes partial blocks";
+  }
   switch (t.cells) {
     case CellRule::kRing:
       if (t.window_or_ratio == 0) return "a ring has no window";
+      return std::nullopt;
+    case CellRule::kPositionRing:
+      if (t.window_or_ratio == 0) return "a position ring has no cells";
       return std::nullopt;
     case CellRule::kPerBlock:
       if (t.window_or_ratio == 0) return "a block tensor has no ratio";
@@ -113,6 +121,8 @@ bool Valid(const StateLayoutDerived& layout) {
 }
 
 bool AlignValid(std::uint32_t align) { return align != 0 && align % 256 == 0; }
+
+std::uint64_t Round256(std::uint64_t bytes) { return (bytes + 255) / 256 * 256; }
 
 // Cells a state of `positions` reads of one tensor (dummy row aside).
 std::uint64_t UsedCells(const StateLayoutDerived& layout, const Item& item, std::uint32_t positions,
@@ -136,6 +146,7 @@ std::uint64_t UsedCells(const StateLayoutDerived& layout, const Item& item, std:
       }
     case CellRule::kFixed:
     case CellRule::kPerRow:
+    case CellRule::kPositionRing:
       return item.cells;
   }
   return item.cells;
@@ -226,7 +237,7 @@ std::expected<StateLayoutDerived, std::string> Layout(
         return Refused(std::format("layer {} state {}: {}", layer, t.name, *bad));
       }
       if (t.borrowed_from_target) {
-        s.borrowed.emplace_back(layer, i);
+        s.borrowed.push_back({.layer = layer, .tensor = i, .contract = t});
         continue;
       }
       const auto cells = CellsOf(t, context, max_rows);
@@ -246,6 +257,18 @@ std::expected<StateLayoutDerived, std::string> Layout(
     }
   }
   return s;
+}
+
+const StateLayoutDerived::Item* BorrowedItem(const StateLayoutDerived& target,
+                                             const StateLayoutDerived::Borrowed& borrowed) {
+  for (const Item& item : target.items) {
+    if (item.layer == borrowed.contract.target_layer &&
+        item.contract.name == borrowed.contract.name &&
+        item.contract.cell_bytes == borrowed.contract.cell_bytes) {
+      return &item;
+    }
+  }
+  return nullptr;
 }
 
 std::expected<std::vector<StateRange>, std::string> UsedThrough(const StateLayoutDerived& layout,
@@ -288,6 +311,17 @@ std::expected<std::vector<StateRange>, std::string> ChunkWrites(const StateLayou
         if (t.dummy_last) out.push_back(Dummy(item));
         break;
       }
+      case CellRule::kPositionRing: {
+        if (rows >= item.cells) {
+          out.push_back(Whole(item));
+          break;
+        }
+        const std::uint64_t first = past % item.cells;
+        const std::uint64_t count = std::min<std::uint64_t>(rows, item.cells - first);
+        out.push_back(Cells(item, first, count));
+        if (count < rows) out.push_back(Cells(item, 0, rows - count));
+        break;
+      }
       case CellRule::kFixed:
       case CellRule::kPerRow:
         out.push_back(Whole(item));
@@ -297,18 +331,79 @@ std::expected<std::vector<StateRange>, std::string> ChunkWrites(const StateLayou
   return out;
 }
 
+namespace {
+
+// Whether a verify in `scope` saves `item`'s writes; refused when it may
+// not run at all.
+std::expected<bool, std::string> Saves(const Item& item, VerifyScope scope) {
+  const StateTensorContract& t = item.contract;
+  if (scope.drafter && !t.target_writes) return false;  // the target's step never writes it
+  switch (t.rollback) {
+    case Rollback::kTruncate:
+      // Only cells past the kept prefix may keep what the verify wrote:
+      // never state it rewrites whole, nor a block the kept rows end in.
+      if (t.cells == CellRule::kFixed) {
+        return Refused(std::format("a verify rewrites layer {} state {} whole: it cannot truncate",
+                                   item.layer, t.name));
+      }
+      if (t.partial_blocks) {
+        return Refused(std::format(
+            "a verify writes layer {} state {}'s block before it completes: it cannot truncate",
+            item.layer, t.name));
+      }
+      return false;  // never read past the kept prefix
+    case Rollback::kCommit:
+      if (!scope.commits) {
+        return Refused(std::format("layer {} state {} needs a commit to keep a verify's rows",
+                                   item.layer, t.name));
+      }
+      return false;  // not written by a verify
+    case Rollback::kNone:
+      return Refused(std::format("a verify writes layer {} state {}, which cannot roll back",
+                                 item.layer, t.name));
+    case Rollback::kSnapshot:
+      // The snapshot's range copies move 16-byte multiples (a block
+      // encoding's 34-byte cells cannot be saved cell by cell).
+      if (t.cell_bytes % 16 != 0) {
+        return Refused(std::format("layer {} state {}'s {}-byte cells are not saved by a verify",
+                                   item.layer, t.name, t.cell_bytes));
+      }
+      if (t.cells == CellRule::kFixed && !scope.commits) {
+        return Refused(std::format(
+            "a verify rewrites layer {} state {} whole, and no commit rebuilds its kept rows",
+            item.layer, t.name));
+      }
+      // A partly written block restored holds none of the kept rows' part
+      // either: the block they end in is the commit's to rebuild.
+      if (t.partial_blocks && !scope.commits) {
+        return Refused(std::format(
+            "a verify writes layer {} state {}'s blocks before they complete, and no commit "
+            "rebuilds the kept rows' part",
+            item.layer, t.name));
+      }
+      return true;
+  }
+  return Refused("an unknown rollback");
+}
+
+}  // namespace
+
 std::expected<StateWrites, std::string> WritesFor(const StateLayoutDerived& layout,
-                                                  std::uint32_t past, std::uint32_t rows) {
+                                                  std::uint32_t past, std::uint32_t rows,
+                                                  VerifyScope scope) {
   if (auto bad = ChunkInvalid(layout, past, rows)) return Refused(*bad);
   StateWrites out;
   out.rows.resize(rows);
   for (const Item& item : layout.items) {
+    const auto saves = Saves(item, scope);
+    if (!saves) return std::unexpected(saves.error());
+    if (!*saves) continue;
     const StateTensorContract& t = item.contract;
-    if (t.rollback == Rollback::kTruncate) continue;  // never read past the kept prefix
-    if (t.rollback == Rollback::kNone) {
-      return Refused(std::format("a verify writes layer {} state {}, which cannot roll back",
-                                 item.layer, t.name));
+    if ((t.cells == CellRule::kRing || t.cells == CellRule::kPositionRing) && rows > item.cells) {
+      return Refused(std::format("a verify of {} rows writes layer {} state {}'s {} cells twice",
+                                 rows, item.layer, t.name, item.cells));
     }
+    std::uint64_t completed = 0;
     for (std::uint32_t i = 0; i < rows; ++i) {
       const std::uint64_t position = std::uint64_t{past} + i;
       switch (t.cells) {
@@ -316,25 +411,72 @@ std::expected<StateWrites, std::string> WritesFor(const StateLayoutDerived& layo
           out.rows[i].push_back(Cells(item, position, 1));
           break;
         case CellRule::kRing:
+        case CellRule::kPositionRing:
           out.rows[i].push_back(Cells(item, position % item.cells, 1));
           break;
+        case CellRule::kPerRow:
+          out.rows[i].push_back(Cells(item, std::uint64_t{t.window_or_ratio} + i, 1));
+          break;
         case CellRule::kPerBlock: {
-          // A block by the last of the chunk's rows in it: restored when
-          // that row is rejected, as its key may then be wrong.
           const std::uint64_t block = position / t.window_or_ratio;
-          const bool last = i + 1 == rows || (position + 1) / t.window_or_ratio != block;
-          if (last && block < item.cells) out.rows[i].push_back(Cells(item, block, 1));
+          const bool completes = (position + 1) % t.window_or_ratio == 0;
+          completed += completes ? 1 : 0;
+          // The row completing a block writes it; with partial blocks, the
+          // chunk's last row in each block too (its key is wrong once that
+          // row is rejected).
+          const bool writes =
+              completes ||
+              (t.partial_blocks && (i + 1 == rows || (position + 1) / t.window_or_ratio != block));
+          if (writes && block < item.cells) out.rows[i].push_back(Cells(item, block, 1));
           break;
         }
         case CellRule::kFixed:
-        case CellRule::kPerRow:
           break;
       }
     }
-    if (t.cells == CellRule::kFixed || t.cells == CellRule::kPerRow) {
-      out.scratch.push_back(Whole(item));
+    if (t.cells == CellRule::kFixed) out.scratch.push_back(Whole(item));
+    // The dummy row: written by a chunk that completes fewer blocks than
+    // ceil(rows / ratio), each missing block a dummy into its last row.
+    if (t.dummy_last && completed < CeilDiv(rows, t.window_or_ratio)) {
+      out.scratch.push_back(Dummy(item));
     }
-    if (t.dummy_last) out.scratch.push_back(Dummy(item));
+  }
+  return out;
+}
+
+std::expected<SaveBound, std::string> VerifySaveBound(const StateLayoutDerived& layout,
+                                                      std::uint32_t rows, VerifyScope scope) {
+  // Its refusals are WritesFor's (bounds, rollbacks, rings).
+  if (auto any = WritesFor(layout, 0, rows, scope); !any) return std::unexpected(any.error());
+  SaveBound out;
+  const auto add = [&](std::uint64_t ranges, std::uint64_t bytes) {
+    out.ranges += static_cast<std::uint32_t>(ranges);
+    out.bytes += ranges * Round256(bytes);
+  };
+  for (const Item& item : layout.items) {
+    const auto saves = Saves(item, scope);
+    if (!saves || !*saves) continue;
+    const StateTensorContract& t = item.contract;
+    switch (t.cells) {
+      case CellRule::kPerPosition:
+      case CellRule::kRing:
+      case CellRule::kPositionRing:
+      case CellRule::kPerRow:
+        add(rows, t.cell_bytes);
+        break;
+      case CellRule::kPerBlock:
+        // At most ceil(rows / ratio) blocks complete within `rows`
+        // positions, and with partial blocks the last one besides; then
+        // the dummy row.
+        add(std::min<std::uint64_t>(item.cells,
+                                    CeilDiv(rows, t.window_or_ratio) + (t.partial_blocks ? 1 : 0)),
+            t.cell_bytes);
+        if (t.dummy_last) add(1, t.cell_bytes);
+        break;
+      case CellRule::kFixed:
+        add(1, item.bytes);
+        break;
+    }
   }
   return out;
 }
@@ -382,7 +524,8 @@ std::vector<StateRepresentation> Representations(const StateLayoutDerived& layou
     at->bytes += end - item.offset;
     const Rollback r = item.contract.rollback;
     at->truncates =
-        at->truncates && (r == Rollback::kTruncate || (r == Rollback::kSnapshot && verify));
+        at->truncates && (r == Rollback::kTruncate ||
+                          ((r == Rollback::kSnapshot || r == Rollback::kCommit) && verify));
   }
   std::vector<StateRepresentation> out;
   out.reserve(groups.size());
@@ -410,14 +553,17 @@ std::string KeptLayoutId(const base::Sha256Digest& spec,
       const StateTensorContract& t = item.contract;
       // The name length-prefixed: no separator in it can collide.
       hash.Update(std::format(
-          "item {} {} {}:{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n", item.layer, item.tensor,
-          t.name.size(), t.name, KindName(t.kind), format::Info(t.encoding).name, t.cell_bytes,
-          static_cast<unsigned>(t.cells), t.window_or_ratio, t.cell_pad, t.ring_reads_whole ? 1 : 0,
-          static_cast<unsigned>(t.basis), t.dummy_last ? 1 : 0, static_cast<unsigned>(t.rollback),
+          "item {} {} {}:{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n", item.layer,
+          item.tensor, t.name.size(), t.name, KindName(t.kind), format::Info(t.encoding).name,
+          t.cell_bytes, static_cast<unsigned>(t.cells), t.window_or_ratio, t.cell_pad,
+          t.ring_reads_whole ? 1 : 0, static_cast<unsigned>(t.basis), t.dummy_last ? 1 : 0,
+          t.partial_blocks ? 1 : 0, static_cast<unsigned>(t.rollback), t.target_writes ? 1 : 0,
           item.cells, item.offset, item.bytes, t.borrowed_from_target ? 1 : 0));
     }
-    for (const auto& [layer, tensor] : s.borrowed) {
-      hash.Update(std::format("borrowed {} {}\n", layer, tensor));
+    for (const auto& b : s.borrowed) {
+      hash.Update(std::format("borrowed {} {} {}:{} {} {}\n", b.layer, b.tensor,
+                              b.contract.name.size(), b.contract.name, b.contract.target_layer,
+                              b.contract.cell_bytes));
     }
   }
   return "llmp-state-v2:" + base::ToHex(hash.Finish());

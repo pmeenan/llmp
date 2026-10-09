@@ -11,12 +11,12 @@ namespace pl = llmp::planner;
 
 std::uint32_t PrefillOrchestrator::ChunkRows(const PromptWork& prompt, std::uint32_t at) const {
   const auto size = static_cast<std::uint32_t>(prompt.tokens.size());
-  if (at >= size || options_.chunk_rows == 0) return 0;
+  if (at >= size || options_.chunk_rows == 0 || prompt.stage >= composer_.stages()) return 0;
   std::uint32_t rows = std::min(options_.chunk_rows, size - at);
   if (composer_.caps().max_segment_rows != 0) {
     rows = std::min(rows, composer_.caps().max_segment_rows);
   }
-  const std::uint32_t context = composer_.context();
+  const std::uint32_t context = composer_.context(prompt.stage);
   const std::uint64_t start = std::uint64_t{prompt.past} + at;
   if (start >= context) return 0;
   rows = static_cast<std::uint32_t>(std::min<std::uint64_t>(rows, context - start));
@@ -100,6 +100,10 @@ PrefillReport PrefillOrchestrator::Step(std::span<const PromptWork> prompts) {
     outcome.last =
         pending[j].past + pending[j].rows == prompts[of[j]].past + prompts[of[j]].tokens.size();
     outcome.outputs = ran.outputs;
+    outcome.joined = ran.joined;
+    outcome.segment = ran.segment;
+    outcome.first_row = ran.first_row;
+    outcome.first_output = ran.first_output;
     outcome.path = ran.path;
   }
   return report;

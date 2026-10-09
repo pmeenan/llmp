@@ -471,14 +471,15 @@ TEST_F(ModelRunnerTest, ARefusedBuildOrBindLeavesItsOwnerUsable) {
 TEST_F(ModelRunnerTest, ABorrowedOwnerIsRefusedCleanlyAndStaysUsable) {
   // Its state may not grow while borrowed: refused before anything ran,
   // clean and its own, not a capacity refusal.
-  ASSERT_TRUE(runner_->slots().Borrow(1));
+  auto borrow = runner_->slots().Borrow(1);
+  ASSERT_TRUE(borrow);
   auto ran = Run(Shape(pl::Phase::kDecode, {Seg(1, 0, 1, 1)}), {{3}});
   ASSERT_FALSE(ran.has_value());
   EXPECT_TRUE(ran.error().clean);
   EXPECT_EQ(ran.error().slot, 1U);
   EXPECT_FALSE(ran.error().state_refused);
   EXPECT_TRUE(runner_->slots().usable(1));
-  runner_->slots().Return(1);
+  borrow->Return();
   ASSERT_TRUE(Run(Shape(pl::Phase::kDecode, {Seg(1, 0, 1, 1)}), {{3}}).has_value());
 }
 
@@ -1003,9 +1004,10 @@ TEST_F(CapacityTest, ARefusalAfterACapacityRefusalIsNotOneUnlessItIs) {
   auto refused = Run(Shape(pl::Phase::kDecode, {Seg(1, 0, 1, 1)}), {{3}});
   ASSERT_FALSE(refused.has_value());
   ASSERT_TRUE(refused.error().state_refused);
-  ASSERT_TRUE(runner_->slots().Borrow(1));
+  auto borrow = runner_->slots().Borrow(1);
+  ASSERT_TRUE(borrow);
   auto borrowed = Run(Shape(pl::Phase::kDecode, {Seg(1, 0, 1, 1)}), {{3}});
-  runner_->slots().Return(1);
+  borrow->Return();
   ASSERT_FALSE(borrowed.has_value());
   EXPECT_TRUE(borrowed.error().clean);
   EXPECT_EQ(borrowed.error().slot, 1U);

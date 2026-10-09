@@ -664,6 +664,14 @@ target_link_libraries(model_runner_test PRIVATE llmp_engine_core llmp_fake_step_
 llmp_gtest(model_runner_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+# Decoding modes with two drafters (a cascade and alternatives), verify,
+# accept and rollback, over the same fake step source.
+add_executable(decoding_test decoding_test.cc)
+target_link_libraries(decoding_test PRIVATE llmp_engine_core llmp_fake_step_source
+                                            llmp_fake_device_backend llmp_platform)
+llmp_gtest(decoding_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 add_executable(request_cohort_test request_cohort_test.cc)
 target_link_libraries(request_cohort_test PRIVATE llmp_engine_core llmp_fake_device_backend)
 llmp_gtest(request_cohort_test TEST_PREFIX unit. PROPERTIES LABELS unit)

@@ -23,33 +23,49 @@ bool AlignValid(std::uint32_t align) { return align != 0 && align % 256 == 0; }
 }  // namespace
 
 std::expected<WaveComposer, std::string> WaveComposer::Make(model::Batching caps,
-                                                            std::uint32_t context,
-                                                            std::uint32_t read_align) {
-  if (context == 0) return Error("a wave composer needs a context");
-  if (!AlignValid(read_align)) return Error("a read alignment is a positive multiple of 256");
+                                                            std::vector<StageReads> stages) {
+  if (stages.empty()) return Error("a wave composer needs a stage");
+  for (const StageReads& stage : stages) {
+    if (stage.context == 0) return Error("a wave composer needs a context");
+    if (!AlignValid(stage.read_align)) {
+      return Error("a read alignment is a positive multiple of 256");
+    }
+  }
   if (caps.joined_read_align != 0 && !AlignValid(caps.joined_read_align)) {
     return Error("a joined read alignment is a positive multiple of 256");
   }
   if (caps.max_segments == 0 || caps.max_segments > kMaxRequestSlots) {
     return Error(std::format("a step joins 1 to {} owners", kMaxRequestSlots));
   }
-  return WaveComposer(caps, context, read_align);
+  return WaveComposer(caps, std::move(stages));
 }
 
-std::uint32_t WaveComposer::LoneRead(std::uint32_t past, std::uint32_t rows) const {
-  return static_cast<std::uint32_t>(
-      std::min<std::uint64_t>(Round(std::uint64_t{past} + rows, read_align_), context_));
+std::expected<WaveComposer, std::string> WaveComposer::For(model::Batching caps,
+                                                           const SlotLifecycle& slots) {
+  std::vector<StageReads> stages;
+  for (std::size_t s = 0; s < slots.stages(); ++s) {
+    stages.push_back({.context = slots.context(s), .read_align = slots.read_align(s)});
+  }
+  return Make(caps, std::move(stages));
+}
+
+std::uint32_t WaveComposer::LoneRead(std::size_t stage, std::uint32_t past,
+                                     std::uint32_t rows) const {
+  return static_cast<std::uint32_t>(std::min<std::uint64_t>(
+      Round(std::uint64_t{past} + rows, read_align(stage)), context(stage)));
 }
 
 void WaveComposer::Finish(pl::StepShape& shape) const {
-  shape.read_align = AlignFor(shape.segments.size());
+  // A row-invariant step reads each owner's own cells (D-092): its stage's
+  // alignment, no common read.
+  shape.read_align = AlignFor(shape.stage, shape.segments.size(), shape.row_invariant);
   std::uint32_t widest = 0;
   for (pl::Segment& s : shape.segments) {
-    s.read_cells = static_cast<std::uint32_t>(
-        std::min<std::uint64_t>(Round(std::uint64_t{s.past} + s.rows, shape.read_align), context_));
+    s.read_cells = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        Round(std::uint64_t{s.past} + s.rows, shape.read_align), context(shape.stage)));
     widest = std::max(widest, s.read_cells);
   }
-  if (caps_.common_read && shape.segments.size() > 1) {
+  if (caps_.common_read && shape.segments.size() > 1 && !shape.row_invariant) {
     for (pl::Segment& s : shape.segments) s.read_cells = widest;
   }
   const std::uint32_t group_segments = shape.row_invariant && caps_.invariant_group_segments != 0
@@ -77,7 +93,10 @@ Composition WaveComposer::Compose(std::span<const PendingWork> pending) const {
   for (std::size_t i = 0; i < pending.size(); ++i) {
     const PendingWork& p = pending[i];
     std::string why;
-    if (p.rows == 0 || p.past > context_ || p.rows > context_ - p.past) {
+    const std::uint32_t context = p.stage < stages_.size() ? stages_[p.stage].context : 0;
+    if (p.stage >= stages_.size()) {
+      why = "it names no stage";
+    } else if (p.rows == 0 || p.past > context || p.rows > context - p.past) {
       why = "its rows are outside the context";
     } else if (caps_.max_segment_rows != 0 && p.rows > caps_.max_segment_rows) {
       why = std::format("its {} rows exceed an owner's {}", p.rows, caps_.max_segment_rows);
@@ -107,7 +126,7 @@ Composition WaveComposer::Compose(std::span<const PendingWork> pending) const {
     return std::tuple_cat(kind(pending[a]), std::make_tuple(pending[a].alone, pending[a].slot)) <
            std::tuple_cat(kind(pending[b]), std::make_tuple(pending[b].alone, pending[b].slot));
   });
-  const auto lone_read = [&](const PendingWork& p) { return LoneRead(p.past, p.rows); };
+  const auto lone_read = [&](const PendingWork& p) { return LoneRead(p.stage, p.past, p.rows); };
   ComposedStep step;
   std::uint32_t step_rows = 0;
   const auto close = [&] {
@@ -163,11 +182,16 @@ WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
   // An owner's lone read is the composer's alignment; what the runner backs
   // first for each owner of a joined step is its state's. Equal, an owner
   // whose widening is refused steps alone with no growth.
+  const SlotLifecycle& slots = runner.slots();
+  bool differs = composer.stages() > slots.stages();
+  for (std::size_t s = 0; s < composer.stages() && !differs; ++s) {
+    differs =
+        composer.read_align(s) != slots.read_align(s) || composer.context(s) != slots.context(s);
+  }
   const char* mismatch = work.size() != pending.size()
                              ? "the wave's work does not match its pending work"
-                         : composer.read_align() != runner.slots().read_align()
-                             ? "the composer's read alignment is not the state's"
-                             : nullptr;
+                         : differs ? "the composer's read alignment or context is not the state's"
+                                   : nullptr;
   if (mismatch != nullptr) {
     for (std::size_t i = 0; i < pending.size(); ++i) settle(i, {.what = mismatch});
     return report;

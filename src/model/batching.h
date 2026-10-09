@@ -19,14 +19,11 @@
 
 namespace llmp::model {
 
-// TODO(L5c, D-092): a row-invariant step (a verify) still reads at the
-// joined alignment and, with `common_read`, through its widest peer's
-// cells, so its read cells follow its peers and its rows' arithmetic may
-// differ from the one-row decode at its position (attention's split over
-// the read cells). D-092 needs a verify wave's owners kept at their lone
-// reads (a joined row-invariant step reads at each owner's own alignment,
-// no common read) unless the plan's attention is proven invariant to the
-// read width.
+// A row-invariant step (an exact verify, D-092) never takes the joined
+// alignment or a common read: its owners read what each reads alone, so no
+// row's arithmetic follows a peer's reads (attention's split over the read
+// cells). The composer applies it; the runner refuses such a step whose
+// reads follow its peers.
 struct Batching {
   // Owners one step may join (1: every owner steps alone); at most
   // kMaxRequestSlots.

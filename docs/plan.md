@@ -1405,9 +1405,12 @@ each is checked against the design as M3.6 proceeds.
             runtime and host paging kernels (D-096 amended).
       - [x] State contracts and the shared slot lifecycle, with the
             reconciled guards (the legacy runners do not delegate yet).
-      - [ ] One runner interface: step programs, wave composition,
+      - [x] One runner interface: step programs, wave composition,
             prefill and decoding-mode orchestration with any number of
             drafters (cascaded or alternative, chosen by policy).
+            *2026-10-09:* `engine/model_runner.h`, `wave_composer.h`,
+            `prefill.h`, `decoding.h`, on the fake backend with two
+            drafters; no family uses them yet.
       - [ ] One serving adapter per pipeline kind.
 - [ ] **IR and planner** (D-107): the op set and tensor descriptors,
       construction from a spec, fusion patterns covering today's selected

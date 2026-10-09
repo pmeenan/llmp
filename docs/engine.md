@@ -66,7 +66,7 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | Prefill lookahead | `prefill_lookahead.h` | `PrefillLookahead` and fixed-capacity `PrefillLookaheadGroup`: independent optional host allowances before CPU-only future plans, sequential builds during current device work, ordered installation after successful completion, exact cache-charge transfer and destruction before unused-grant release | Shape prediction, graph construction, binding/coverage/cache installation and capture policy |
 | Resources | `runner_memory.h`, `runner_resources.h` | The runner's own device memory (pinned) and pinned staging (`RunnerMemory`, the core's); for a GGML runner, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry (`RunnerResources`); and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
-| Slot lifecycle | `slot_lifecycle.h` (`model/state_contract.h`) | Request slots of one LiveState per stage (target, then each drafter) and every verb that moves their state, derived from the stages' state contracts, with the reconciled guards ([below](#the-shared-slot-lifecycle)); not yet used by the family runners | The stages' contracts, the shared extents, the spec's digest, its invalidation and plan-dropping hooks, and a write record before every job that writes a slot |
+| Slot lifecycle | `slot_lifecycle.h` (`model/state_contract.h`) | Request slots of one LiveState per stage (target, then each drafter) and every verb that moves their state, a verify's Accept, discard and settle among them, derived from the stages' state contracts, with the reconciled guards ([below](#the-shared-slot-lifecycle)); not yet used by the family runners | The stages' contracts and read alignments, the shared extents, the spec's digest, its invalidation and plan-dropping hooks, and a write record before every job that writes a slot |
 
 Startup measurement can skip greedy activation placement when a checked
 disjoint root-storage bound fits the current exact maximum. Gemma2/3,
@@ -260,19 +260,22 @@ family's migration moves to it with the rest of its runner.
 **State contracts** (`model/state_contract.h`). Each state tensor declares
 its kind, encoding (`format::Encoding`), cell bytes, cell rule (a cell per
 position; a window ring; a cell per block of positions, over the positions
-or over the cells a per-position tensor reads, with an optional dummy row;
-fixed cells; a chunk's rows), its read alignment and its rollback
-(truncate, snapshot or none), or that it reads the target's tensor
+or over the cells a per-position tensor reads, with an optional dummy row,
+written on completion or by every row; fixed cells; a chunk's rows; a
+position ring of fixed cells), its read alignment and its rollback
+(truncate, snapshot, commit or none), whether the target's steps write it
+in a drafter's stage (a feature tap), or that it reads the target's tensor
 (borrowed). `Layout` derives a stage's region; from it come the ranges a
 state of n positions reads (`UsedThrough`), a chunk's writes (flat, or by
 verify row with the scratch every rejection restores: `ChunkWrites`,
-`WritesFor`), the ranges later positions may overwrite
+`WritesFor`, below), the ranges later positions may overwrite
 (`CheckpointWrites`), its D-068 representations and `KeptLayoutId`
 (`llmp-state-v2:` and the SHA-256 of the spec's digest and every stage's
 layout). Contracts equivalent to today's reproduce Gemma2's and Gemma3's
 layouts, used state and chunk writes, Qwen3.8's (and its MTP region's)
-layout, used state and checkpoint writes, and DeepSeek V4's in both window
-modes byte for byte (`state_contract_test`). The IDs are new: kept state
+layout, used state and checkpoint writes, DeepSeek V4's in both window
+modes and DSpark's ring byte for byte, and the saves of Qwen3.8's,
+DeepSeek V4's and DSpark's verifies (`state_contract_test`). The IDs are new: kept state
 written under a runner's own ID does not match and is refused, not
 migrated.
 
@@ -313,21 +316,38 @@ behaviour was chosen:
 | Kept layout | Gemma's fixed strings checked in the runner; Qwen/DeepSeek's region strings checked by serving | `KeptLayoutId` from the spec and every stage's layout, checked here |
 
 Positions are Gemma's ledger (set after a completed step, by a completed
-restore or an adoption). A slot's verify-pending state is its stages' own
-(`LiveState::verify_rows`), and a borrow is counted until returned; a
+restore, an adoption or a verify's Accept): the slot's committed
+positions, the target's, by which every stage's state is indexed. Each
+stage has its own context (its layout's) and read alignment
+(`StageState::read_align`, else the options'). A step on the target backs
+every stage (`ReserveStateThrough(slot, positions, align, stage)`: the
+target at the step's alignment, each drafter at its own through its
+context, since a target's step writes the drafters' feature taps); a
+drafter's step backs its own stage alone. A slot's verify-pending state
+is its stages' own (`LiveState::verify_rows`); `Accept(slot, keep)` takes
+every verifying stage's Accept together (refused, nothing changed, unless
+all can) and advances the positions, `DiscardVerify` undoes the verify
+whole in every stage, now, and `Settle` runs what an accepted verify owes
+now (a failure there checks the job and faults the cohort if a stage was
+quarantined), so callers never reach into a stage's LiveState for them.
+A borrow freezes one stage (`Borrow(slot, stage)`, a move-only
+`StateBorrow` returned once or by its destruction): that stage cannot
+grow, the slot cannot clear, spill, restore, be copied into or be dropped
+by a selection, while its other stages (the reader's own) may grow; a
 borrow is refused until a verify is accepted and what it owes has run
-(Gemma4's settled at its Accept). `PrepareThrough` and
-`FinishPreparations` give every family's prepare-ahead (`LiveState::Prepare`
-on each stage's fresh zero extents for a known next chunk, drained after
-the current job) through the slots.
+(Gemma4's settled at its Accept), and one taken before a recovery returns
+nothing (`RecoverInPlace` drops every borrow and moves the epoch on).
+`PrepareThrough` and `FinishPreparations` give every family's
+prepare-ahead (`LiveState::Prepare` on each stage's fresh zero extents
+for a known next chunk, drained after the current job) through the slots.
 
 ## The model runner
 
 M3.6's one runner (D-107; [engine-components.md](engine-components.md#execution)),
 in the core and tested on the fake backend (`model_runner_test`, over
-`tests/support/fake_step_source.h`). No family uses it yet: each family's
-migration moves onto it with its components; decoding modes with any
-number of drafters (L5c) and the serving adapter (L6) follow.
+`tests/support/fake_step_source.h`; `decoding_test` for the decoding
+modes). No family uses it yet: each family's migration moves onto it with
+its components; the serving adapter (L6) follows.
 
 **Step programs** (`kernels/common/step_program.h`, vendor-free). A
 kernel source's lowering makes a `StepProgram` from a planned step and
@@ -370,12 +390,18 @@ pool, staging and plan floor (a quarter's margin) and pins the staging;
 Register registers sources and pins places; Bind makes the launch, binds
 the account and builds the closures; Release drops plans and recordings,
 then the launch, then the memory they name. A step (`RunStep`):
-1. `PlanStep`; each owner admitted (`Admit`: active, at its positions when
-   the step advances them, state backed through every cell it reads,
+1. `PlanStep` (a segment wider than the chunk bound of a stage whose
+   per-row cells it writes, its own or on the target a drafter's tap,
+   refused); each owner admitted (`Admit`: active; on the target, at
+   its committed positions whether or not the step advances them (a
+   verify's rows start at its anchor); on a drafter, never advancing, its
+   rows ending within its stage's chunk bound past the committed
+   positions, and a drafter reading the target's state only while the
+   target's stage is borrowed; state backed through every cell it reads,
    `past + rows` or a common read's wider `read_cells`, at the step's
    alignment; a refusal names its slot and leaves its peers), a joined
    step's owners first through what each reads alone (its rows at its
-   state's alignment, as a lone step's segment), so no owner's widening for
+   stage's alignment, as a lone step's segment), so no owner's widening for
    the join takes what a later owner's own rows need and an owner refused
    only in the widening (`StepRefusal::widening`) steps alone with no
    growth; `CheckPlaces`. A widening refused for a later owner keeps the
@@ -384,7 +410,11 @@ then the launch, then the memory they name. A step (`RunStep`):
    may then lack until the runtime reclaims for it; an all-or-nothing
    widening (one acquisition for every owner's) is owed;
 2. the plan found, or built, bound, coverage-checked (`coverage.h`, refused
-   on a violation) and cached with its host bytes and planning time;
+   on a violation) and cached with its host bytes and planning time; a
+   build binds only the state its stage may write (a target's step the
+   target's and the drafters' `target_writes` tensors, a drafter's its own
+   stage's and its view of the target's), so a verify's saves and a failed
+   step's quarantine cover every stage its program can touch;
 3. inputs staged by slot (`StepRuns::Stage`), output copies laid out, a
    program that is not capturable positioned;
 4. the futures (`StepAhead`): deduplicated against the shape and each
@@ -395,13 +425,18 @@ then the launch, then the memory they name. A step (`RunStep`):
    captured beside this run when it differs and is planned; up to two
    missing futures funded (`PrefillLookaheadGroup`) and built in the job's
    meanwhile; the next shape's fresh state prepared;
-5. `RecordWrite` from each owner's first row, then one job: each owner's
-   owed restore and commit, the run (`StepRuns::Queue`), the capture
-   ahead;
+5. a verify's saves (below), `RecordWrite` from each owner's first row,
+   then one job: each owner's owed restore and commit, the verify's saves,
+   the run (`StepRuns::Queue`), the capture ahead;
 6. preparations drained; on failure `CheckFailedJob`, each owner's states
-   settled (quarantined if anything may have been written) and the cohort
-   faulted on a launch fault (a faulted cohort's refusal is never clean);
-   on a failed drain every owner quarantined;
+   settled (a verify's saving stages undone whole; any other stage the
+   step may have written, its own and on the target the drafters' taps,
+   quarantined if anything was queued; a stage changed only by what it
+   owed ran that whole or still owes it) and the cohort faulted on a
+   launch fault (a faulted cohort's refusal is never clean); on a failed
+   drain every owner quarantined; a verify that ran awaits its Accept in
+   every stage it writes (the target, the drafters' taps) or that
+   commits, whether or not it saved anything there;
 7. futures installed (bound, checked, the grant transferred to the
    cache's charge), the path counted, each owner's outputs copied to its
    own buffer, positions set.
@@ -431,10 +466,12 @@ at its own, after its kind's joined step); a joined step refused cleanly
 healthy) runs its owners alone; a step that may have written fails its
 owners together, and none of them runs it again. Each outcome says where
 its owner sat in its step (segment, the rows and outputs before it) to
-find its share of the joined outputs. A row-invariant step (a verify)
-still reads at the joined alignment or a common read, so its reads follow
-its peers; D-092 needs verify waves kept at each owner's lone reads, which
-the decoding-mode slice (L5c) owes.
+find its share of the joined outputs. Each stage composes at its own
+context and alignment (`WaveComposer::For` takes them from the slots). A
+row-invariant step (an exact verify, D-092) reads what each owner reads
+alone (its stage's alignment, no common read), so no row's arithmetic
+follows a peer's reads; the runner refuses one whose reads follow its
+peers.
 
 **The prefill orchestrator** (`prefill.h`). One completed unit at a time:
 each prompt's next chunk (the configured rows, bounded by the capability's
@@ -442,7 +479,97 @@ per-owner rows, the context and a checkpoint boundary; no time cap), cut
 state-only unless it is the prompt's last, joined by the composer, with
 its futures (the same owners' next and following chunks, composed;
 an owner whose prompt ends drops out) built ahead, captured ahead or
-captured first, and its fresh state prepared.
+captured first, and its fresh state prepared. Each outcome keeps its
+step's joined outputs and its place in the step (segment, rows and outputs
+before it).
+
+**Decoding modes** (`decoding.h`, D-068). `DecodingOrchestrator` runs one
+unit of generation for a set of slots on the runner:
+
+- plain, sampled and scored modes are one step: a decode row a slot (its
+  token chosen on the device when greedy), or a scored run of given
+  tokens with every row's outputs;
+- speculation drafts with any number of drafters, each a stage with its
+  own state (`DrafterSpec`): an autoregressive drafter proposes a token a
+  pass, a row a pass but its first; a block drafter proposes a block from
+  its anchor and a fill token in one pass. As a **cascade**, drafter i
+  extends drafter i − 1's proposal and one verify checks them all; as
+  **alternatives**, each slot's unit takes one, named by the alias policy
+  (`DecodingPolicy::choose`) or chosen by what each has committed a unit
+  for its cost (`DrafterChoice`: four units each, in order, then the best
+  past a 3% margin). Every draft pass and the verify run through
+  `RunWave`, so one slot's refusal never fails its peers; a drafter
+  refused for a slot leaves that slot's unit the proposals it has (none:
+  a verify of the anchor alone);
+- the verify (phase `kVerify`, on the target, never advancing; its plan
+  row-invariant in the exact mode) saves, in its job before its run, what
+  it writes in each stage (`model::WritesFor`) into that stage's snapshot
+  (`RunnerConfig::max_verify_rows` sizes every slot's at Setup, by
+  `model::VerifySaveBound`, in one mapping; `RunnerConfig::commit` gives a
+  stage its commit). The caller's judge (`DecodingPolicy::judge`: greedy
+  agreement, speculative sampling) says how many rows stay; the slot
+  accepts them, or the verify is discarded whole when the judge refuses.
+  A draft's own writes are never undone: what a drafter's step writes past
+  the committed positions must lie outside every cell later steps read
+  (DSpark's ring holds its window beside a block), and a verify's
+  snapshot of a tap the drafter writes too restores the draft's rows,
+  not what the cells held before the draft;
+- an autoregressive drafter with `catch_up` (its state for committed
+  positions is rewritten from the target's features: MTP) starts each
+  unit's first pass at its cursor, which a verify moves to its first row,
+  so the pass catches up the kept rows and the anchor (`Reset` puts the
+  cursor at the positions after a prefill, a clear or a restore); one
+  further behind than its chunk bound (an alternative not chosen for a
+  while) catches up its last chunk's rows, its older rows left stale;
+- a drafter with `borrows_target` borrows the target's stage for its
+  passes, after settling what the last verify owes; a stage whose
+  contract views the target's tensor (`borrowed_from_target`, resolved by
+  `model::BorrowedItem` to the owner's target state) steps only so;
+- depth adapts per slot and drafter (`execution::AdaptiveDepth`), taught
+  only by complete steps (not cut by the reply's end or the context, and
+  in a cascade only once every earlier proposal was accepted); the wave's
+  form (`DecodingPolicy::speculate`, `execution::AdaptiveWaveMode`'s
+  choice) may make a unit one plain decode row a slot, which still feeds
+  the drafters' taps;
+- block diffusion is a declared kind: a mode of it is refused.
+
+What bytes mean (a drafter's proposals, the verdict) is the caller's
+policy; the tests' is a fake truth.
+
+**A verify's writes** (`model::WritesFor`), by each tensor's rollback: a
+`kTruncate` tensor saves nothing (rows past the kept prefix are never
+read; refused for fixed state and partial blocks, which a verify writes
+for the kept rows too, and valid for a position ring or per-row cells only
+if the model never reads a rejected row's cell, which the contract cannot
+check); a `kSnapshot` one saves its cells by verify row (a cell per
+position, a ring's or position ring's cell, a per-row stream's row after
+its carried rows, the block a row completes, or with `partial_blocks` the
+block by the chunk's last row in it), its dummy row when the chunk writes
+it (fewer blocks completed than ceil(rows / ratio)), and fixed state
+whole; restored, fixed state and partial blocks hold none of the kept
+rows' part, so the commit rebuilds it (refused without one); a `kCommit` tensor is
+not written by a verify and needs the commit. Over a drafter's stage the
+target's verify saves only the tensors it writes there (`target_writes`:
+a feature tap, an injection). A verify writing one ring cell twice, or
+saving cells that are not 16-byte multiples (the range copies'), is
+refused. These reproduce byte for byte what today's verifies save
+(`state_contract_test`): Qwen3.8's (`Qwen38VerifySaves`, which its scalar
+and wave verifies now both call: each row's K, V and indexer cells, the
+block keys a row completes, the MTP streams rows), DeepSeek V4's
+(`Dsv4ChunkWrites`: each row's window cell, the compressor ring rows it
+persists, a position ring per compressor, the compressed rows it
+completes, the dummy rows as scratch, no commit) and DSpark's injection
+(`DsparkWrites`), compared as each row's set of ranges (the order only
+places them in the snapshot).
+
+What each family's speculation maps onto, and what its migration must
+still bring:
+
+| Family | Maps onto | Not yet |
+| --- | --- | --- |
+| Qwen3.8 MTP | An autoregressive drafter with `catch_up` over its own stage (K, V and indexer cells truncating; the streams a per-row tap the target writes, snapshot); the target's K, V, indexer and completed block keys snapshot by row, its linear layers' state `kCommit` with the model's commit | The catch-up and passes in one job, the selected draft head's rows, the injection's drafter pass inside the target's prefill (`Qwen38Injection`), the n-gram row gather |
+| DeepSeek V4 + DSpark | A block drafter (its fill the mask token) over its ring (a position ring the target's injection writes); the target's window cells, compressor rings and compressed rows snapshot by row, no commit; the exact mode a row-invariant verify | The draft and the verify chained in one job (drafts copied into the verify's staged tokens and embedded on the device), the Markov head, shortening a draft before a mask width (`Dsv4SameWidths`: policy) |
+| Gemma4 assistant | An autoregressive drafter with `borrows_target`, its contract viewing the target's KV (`borrowed_from_target`) | The retained final features as a tap, the feature epoch and generation guards of `FrozenBorrow`, the device's verify verdicts (`GreedyUnit`) |
 
 What the shared pieces reproduce of each family, and what a migration
 must still bring (as components' capabilities, planner patterns or
@@ -451,9 +578,9 @@ policy):
 | Family | Reproduced | Not yet |
 | --- | --- | --- |
 | Gemma2/3 | Joined prompt waves with equal rows and reads (`equal_prefill`); two futures, first-run capture of a repeating shape, capture ahead, prepare ahead; head-or-state-only shapes; second-run capture in every phase; independent outputs | Owner attention modes (`owner_decode`, packed and flexible owner prefill, bounded roots: graph forms the planner selects from the shape), padding to a common width, Gemma3's four-root carriers as op-level groups (`group_segments` groups whole owners only), the 2,048/256 head-capacity envelope (`max_head_rows`), the C12 bounded factor; the cohort's 2- or 12-owner limits become `max_segments` |
-| Gemma4 | Quads as `group_segments` 4, the 8/12 groups as `invariant_group_segments`/`group_segments`; one future without capture ahead is `lookahead` 1, `capture_ahead` false; per-group isolation (RunGemmaGroups) is RunWave's | Common owner reads limited to two owners, bounded owner roots, retained features and the assistant's frozen borrows (L5c), joined prompt admission (Gemma4 serving prefills alone) |
-| Qwen3.8 | Groups of consecutive owners while rows fit 16 (`group_rows`), 2,048-aligned joined reads (`joined_read_align`), state backed through that alignment before the step (an owner out of capacity there steps alone at 256 rather than being refused), two futures and prepare ahead, state-only cuts | Per-product joined limits (draft head 8, VecQ, MoE GEMV, MXFP8 columns, HC cuBLAS 16: planner patterns), BF16 head sharing by row count, the n-gram row gather between inputs and plan, the MTP lookahead group, rows ≤ 4 per slot, verify waves and draft waves (L5c); its prefill captures only one-row shapes (`capture_phases` without prefill) |
-| DeepSeek V4 | Total wave rows ≤ 16 (`max_step_rows`), joined row-local work with per-owner state, scalar prefill (`join_prefill` false), two futures and prepare ahead, state-only cuts | Float products over groups of whole owners fitting 8 columns and `SetVecQOneToken` for one-row waves (planner, from the shape), `Dsv4WaveSupport`'s fallback to one slot, the HCA plan's per-position patch (the lowering's `Position`; the runner never captures it), joined drafts and draft-verify waves (L5c) |
+| Gemma4 | Quads as `group_segments` 4, the 8/12 groups as `invariant_group_segments`/`group_segments`; one future without capture ahead is `lookahead` 1, `capture_ahead` false; per-group isolation (RunGemmaGroups) is RunWave's; the assistant's frozen borrows (decoding modes) | Common owner reads limited to two owners, bounded owner roots, retained features, joined prompt admission (Gemma4 serving prefills alone) |
+| Qwen3.8 | Groups of consecutive owners while rows fit 16 (`group_rows`), 2,048-aligned joined reads (`joined_read_align`), state backed through that alignment before the step (an owner out of capacity there steps alone at 256 rather than being refused), two futures and prepare ahead, state-only cuts; joined draft and verify waves (decoding modes) | Per-product joined limits (draft head 8, VecQ, MoE GEMV, MXFP8 columns, HC cuBLAS 16: planner patterns), BF16 head sharing by row count, the n-gram row gather between inputs and plan, the MTP lookahead group, rows ≤ 4 per slot; its prefill captures only one-row shapes (`capture_phases` without prefill) |
+| DeepSeek V4 | Total wave rows ≤ 16 (`max_step_rows`), joined row-local work with per-owner state, scalar prefill (`join_prefill` false), two futures and prepare ahead, state-only cuts; joined drafts and verifies (decoding modes) | Float products over groups of whole owners fitting 8 columns and `SetVecQOneToken` for one-row waves (planner, from the shape), `Dsv4WaveSupport`'s fallback to one slot, the HCA plan's per-position patch (the lowering's `Position`; the runner never captures it), a draft and its verify in one job |
 
 
 ## Adding a model family

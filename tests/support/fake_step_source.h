@@ -10,16 +10,25 @@
 // Each step program, for each segment (owner) of its shape:
 // - reads its tokens and positions from its inputs (per segment, or one
 //   joined input of every segment's rows);
-// - writes, for each row, the cell of the stage's per-position tensor
-//   (layer 0, tensor 0) at the row's position: a Cell {magic, slot,
-//   position, token};
-// - advances the stage's fixed state (layer 0, tensor 1, if any): a 64-bit
-//   hash folded over each row's token, so chunkings and replays of one
-//   prompt must agree;
+// - writes, for each row, the cell of the stage's tensor 0 (layer 0; a
+//   cell per position, or a ring's or position ring's cell) for the row's
+//   position: a Cell {magic, slot, position, token};
+// - advances the stage's fixed state (layer 0, tensor 1, if a kFixed one):
+//   a 64-bit hash folded over each row's token, so chunkings and replays
+//   of one prompt must agree; a verify leaves kCommit state unwritten (its
+//   commit rebuilds it);
+// - on the target (stage 0), writes each row's Cell into every drafter
+//   tensor the target writes (target_writes: a feature tap), at the cell
+//   its contract gives the row;
+// - on a drafter, reads for each output row the tap (its stage's first
+//   target_writes tensor) the target wrote for the position before the
+//   row's, and counts the valid cells of the target's tensor it borrows
+//   (its first borrowed one) before its first row;
 // - returns its last `outputs` rows, each a Row {slot, position, token,
-//   cells} where `cells` counts the cells in [0, read_cells) holding a
-//   valid Cell for their own position (all of past + rows when the state
-//   persisted), and the hash after the row;
+//   cells, hash, tap, borrowed} where `cells` counts the cells in [0,
+//   read_cells) holding a valid Cell for their own position (all of past +
+//   rows when the state persisted), `hash` is the fixed state's after the
+//   row, `tap` the tapped token (-1: none valid) and `borrowed` the count;
 // - for a shape with greedy segments, one joined output: each segment's
 //   last token + 1000, as I32.
 // Recording goes through the launch (RecordingLaunch), so a replay reads
@@ -39,6 +48,7 @@
 #include <vector>
 
 #include "engine/model_runner.h"
+#include "ir/graph.h"
 #include "kernels/common/step_program.h"
 #include "model/state_contract.h"
 #include "planner/step_shape.h"
@@ -59,8 +69,10 @@ struct FakeRow {
   std::int32_t token = 0;
   std::int32_t cells = 0;
   std::uint64_t hash = 0;
+  std::int32_t tap = -1;
+  std::int32_t borrowed = 0;
 };
-static_assert(sizeof(FakeRow) == 24);
+static_assert(sizeof(FakeRow) == 32);
 
 // The fixed state's hash after `token`, from `hash`.
 inline std::uint64_t FakeHash(std::uint64_t hash, std::int32_t token) {
@@ -82,6 +94,8 @@ struct FakeSourceOptions {
   // Run fails: refused with nothing queued (kRejected), or of unknown
   // effect after its work was queued (kUnknown).
   std::optional<kernels::StepError> fail_run;
+  // Only programs of this phase fail (none: every program).
+  std::optional<planner::Phase> fail_phase;
   // Called at the start of every Build (on the driver; a lookahead's in
   // the job's meanwhile).
   std::function<void(const planner::StepShape&, bool measuring)> on_build;
@@ -90,6 +104,9 @@ struct FakeSourceOptions {
   bool positioned = false;
   // A tensor use outside every cataloged span (the coverage check's case).
   bool stray_use = false;
+  // State a program binds besides its own (a tap no contract declares):
+  // Build refuses when one binds nothing.
+  std::function<std::vector<ir::StateRef>(const planner::StepShape&)> extra_state;
   // An output slot naming a segment past the shape's.
   bool stray_output = false;
   base::Sha256Digest spec{};

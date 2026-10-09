@@ -6,8 +6,10 @@
 #include <algorithm>
 #include <cstring>
 #include <format>
+#include <optional>
 #include <span>
 #include <utility>
+#include <vector>
 
 #include "providers/fake/fake_device_execution.h"
 
@@ -27,16 +29,75 @@ T* At(std::uint64_t address) {
 
 std::unexpected<std::string> Refuse(std::string what) { return std::unexpected(std::move(what)); }
 
+// A tensor of cells as the fake addresses it: where position p's cell is.
+struct CellTensor {
+  std::uint64_t address = 0, cells = 0, cell_bytes = 0;
+  enum class Rule : std::uint8_t { kPosition, kModulo, kRow } rule = Rule::kPosition;
+  std::uint64_t carry = 0;  // kRow: the cells before a chunk's rows
+  // The cell of `position` (chunk row `row`), or none.
+  std::optional<std::uint64_t> Cell(std::int64_t position, std::uint32_t row) const {
+    if (address == 0 || position < 0) return std::nullopt;
+    const auto p = static_cast<std::uint64_t>(position);
+    switch (rule) {
+      case Rule::kPosition:
+        return p < cells ? std::optional(p) : std::nullopt;
+      case Rule::kModulo:
+        return p % cells;
+      case Rule::kRow:
+        return carry + row < cells ? std::optional(carry + row) : std::nullopt;
+    }
+    return std::nullopt;
+  }
+  void* At(std::uint64_t cell) const;
+};
+
+CellTensor TensorOf(std::uint64_t address, const model::StateLayoutDerived::Item& item) {
+  CellTensor t{.address = address, .cells = item.cells, .cell_bytes = item.contract.cell_bytes};
+  switch (item.contract.cells) {
+    case model::CellRule::kRing:
+    case model::CellRule::kPositionRing:
+      t.rule = CellTensor::Rule::kModulo;
+      break;
+    case model::CellRule::kPerRow:
+      t.rule = CellTensor::Rule::kRow;
+      t.carry = item.contract.window_or_ratio;
+      break;
+    default:
+      break;
+  }
+  return t;
+}
+
 // What one segment's run needs, resolved at Build.
 struct SegmentPlan {
   std::int32_t slot = 0;
   std::uint32_t rows = 0, outputs = 0, read_cells = 0, first = 0;  // first: row in a joined input
   std::uint64_t tokens = 0, positions = 0, out = 0;                // device addresses
-  std::uint64_t cells = 0, cell_bytes = 0, cells_address = 0, fixed = 0;  // state
+  CellTensor own;                                                  // tensor 0
+  std::uint64_t fixed = 0;                                         // the fixed hash's
+  bool fixed_writes = true;
+  std::vector<CellTensor> taps;  // the drafters' tensors the target writes
+  CellTensor tap;                // a drafter's tap it reads
+  CellTensor borrowed;           // a drafter's view of the target's tensor
   bool greedy = false;
   std::int64_t past = -1;  // Position's, for a positioned program (-1: the input's)
-  std::uint64_t cells_base() const { return cells_address; }
 };
+
+void* CellTensor::At(std::uint64_t cell) const {
+  return reinterpret_cast<void*>(address +
+                                 (cell * cell_bytes));  // NOLINT(performance-no-int-to-ptr)
+}
+
+// A valid cell of `slot` for `position`.
+std::optional<FakeCell> Valid(const CellTensor& t, std::int32_t slot, std::int64_t position,
+                              std::uint32_t row) {
+  const auto cell = t.Cell(position, row);
+  if (!cell) return std::nullopt;
+  FakeCell c;
+  std::memcpy(&c, t.At(*cell), sizeof(c));
+  if (c.magic != kFakeMagic || c.slot != slot || c.position != position) return std::nullopt;
+  return c;
+}
 
 class FakeProgram final : public kn::StepProgram {
  public:
@@ -46,7 +107,7 @@ class FakeProgram final : public kn::StepProgram {
               const FakeSourceOptions* options, std::uint64_t greedy_out,
               std::shared_ptr<std::atomic<std::uint64_t>> queued,
               std::shared_ptr<std::atomic<std::uint64_t>> executed,
-              std::shared_ptr<std::atomic<std::uint64_t>> positioned)
+              std::shared_ptr<std::atomic<std::uint64_t>> positioned, pl::Phase phase)
       : segments_(std::move(segments)),
         inputs_(std::move(inputs)),
         outputs_(std::move(outputs)),
@@ -59,7 +120,8 @@ class FakeProgram final : public kn::StepProgram {
         greedy_out_(greedy_out),
         queued_(std::move(queued)),
         executed_(std::move(executed)),
-        positioned_(std::move(positioned)) {}
+        positioned_(std::move(positioned)),
+        phase_(phase) {}
 
   std::uint64_t scratch_bytes() const override { return scratch_; }
   std::uint64_t host_bytes() const override { return host_; }
@@ -98,7 +160,8 @@ class FakeProgram final : public kn::StepProgram {
       return std::unexpected(
           kn::StepFailure{.error = kn::StepError::kRejected, .detail = "an unbound program"});
     }
-    if (options_->fail_run == kn::StepError::kRejected) {
+    const bool fails = !options_->fail_phase || *options_->fail_phase == phase_;
+    if (fails && options_->fail_run == kn::StepError::kRejected) {
       return std::unexpected(
           kn::StepFailure{.error = kn::StepError::kRejected, .detail = "the fake refuses to run"});
     }
@@ -112,7 +175,7 @@ class FakeProgram final : public kn::StepProgram {
       return std::unexpected(
           kn::StepFailure{.error = kn::StepError::kUnknown, .detail = "the fake refused work"});
     }
-    if (options_->fail_run == kn::StepError::kUnknown) {
+    if (fails && options_->fail_run == kn::StepError::kUnknown) {
       return std::unexpected(
           kn::StepFailure{.error = kn::StepError::kUnknown, .detail = "the fake faulted"});
     }
@@ -136,36 +199,51 @@ class FakeProgram final : public kn::StepProgram {
     for (const SegmentPlan& s : segments) {
       const auto* tokens = At<const std::int32_t>(s.tokens) + s.first;
       const auto* positions = At<const std::int32_t>(s.positions) + s.first;
+      const auto position_of = [&](std::uint32_t r) {
+        return s.past >= 0 ? static_cast<std::int32_t>(s.past + r) : positions[r];
+      };
+      // What the drafter's view of the target holds before its first row.
+      std::int32_t borrowed = 0;
+      if (s.borrowed.address != 0) {
+        for (std::int32_t c = 0; c < position_of(0); ++c) {
+          borrowed += Valid(s.borrowed, s.slot, c, 0).has_value() ? 1 : 0;
+        }
+      }
       std::uint64_t hash = 0;
       if (s.fixed != 0) std::memcpy(&hash, At<const void>(s.fixed), sizeof(hash));
       std::vector<std::uint64_t> hashes(s.rows);
+      std::vector<std::int32_t> taps(s.rows, -1);
       for (std::uint32_t r = 0; r < s.rows; ++r) {
-        const std::int32_t at = s.past >= 0 ? static_cast<std::int32_t>(s.past + r) : positions[r];
-        const auto position = static_cast<std::uint64_t>(at);
-        if (position < s.cells) {
-          const FakeCell cell{
-              .magic = kFakeMagic, .slot = s.slot, .position = at, .token = tokens[r]};
-          std::memcpy(At<void>(s.cells_base() + (s.cell_bytes * position)), &cell, sizeof(cell));
+        const std::int32_t at = position_of(r);
+        // The tap the target wrote for the position before (a drafter
+        // reads the target's features there), before this row writes.
+        if (const auto tapped = Valid(s.tap, s.slot, at - 1, r)) taps[r] = tapped->token;
+        const FakeCell cell{
+            .magic = kFakeMagic, .slot = s.slot, .position = at, .token = tokens[r]};
+        if (const auto own = s.own.Cell(at, r)) std::memcpy(s.own.At(*own), &cell, sizeof(cell));
+        for (const CellTensor& t : s.taps) {
+          if (const auto c = t.Cell(at, r)) std::memcpy(t.At(*c), &cell, sizeof(cell));
         }
         hash = FakeHash(hash, tokens[r]);
         hashes[r] = hash;
       }
-      if (s.fixed != 0) std::memcpy(At<void>(s.fixed), &hash, sizeof(hash));
+      if (s.fixed != 0 && s.fixed_writes) std::memcpy(At<void>(s.fixed), &hash, sizeof(hash));
       std::int32_t valid = 0;
-      for (std::uint32_t c = 0; c < s.read_cells && c < s.cells; ++c) {
+      for (std::uint32_t c = 0; c < s.read_cells && c < s.own.cells; ++c) {
         FakeCell cell;
-        std::memcpy(&cell, At<const void>(s.cells_base() + (s.cell_bytes * c)), sizeof(cell));
-        valid += cell.magic == kFakeMagic && cell.position == static_cast<std::int32_t>(c) &&
-                 cell.slot == s.slot;
+        std::memcpy(&cell, s.own.At(c), sizeof(cell));
+        valid += cell.magic == kFakeMagic && cell.slot == s.slot && cell.position >= 0 &&
+                 s.own.Cell(cell.position, 0) == c;
       }
       for (std::uint32_t o = 0; o < s.outputs; ++o) {
         const std::uint32_t r = s.rows - s.outputs + o;
-        const FakeRow row{
-            .slot = s.slot,
-            .position = s.past >= 0 ? static_cast<std::int32_t>(s.past + r) : positions[r],
-            .token = tokens[r],
-            .cells = valid,
-            .hash = hashes[r]};
+        const FakeRow row{.slot = s.slot,
+                          .position = position_of(r),
+                          .token = tokens[r],
+                          .cells = valid,
+                          .hash = hashes[r],
+                          .tap = taps[r],
+                          .borrowed = borrowed};
         std::memcpy(At<void>(s.out + (o * sizeof(FakeRow))), &row, sizeof(row));
       }
       if (s.greedy && greedy_out != 0) {
@@ -186,6 +264,7 @@ class FakeProgram final : public kn::StepProgram {
   const FakeSourceOptions* options_;
   std::uint64_t greedy_out_ = 0;
   std::shared_ptr<std::atomic<std::uint64_t>> queued_, executed_, positioned_;
+  pl::Phase phase_;
 };
 
 }  // namespace
@@ -203,16 +282,26 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
   if (options_.on_build) options_.on_build(shape, addresses.measuring());
   if (options_.refuse_build && options_.refuse_build(shape)) return Refuse("the fake refuses");
   if (shape.stage >= options_.layouts.size()) return Refuse("no such stage");
+  if (options_.extra_state) {
+    for (const ir::StateRef& ref : options_.extra_state(shape)) {
+      if (addresses.state(ref) == 0) return Refuse("a stray state tensor has no address");
+    }
+  }
   const model::StateLayoutDerived& layout = options_.layouts[shape.stage];
   const model::StateLayoutDerived::Item* kv = nullptr;
   const model::StateLayoutDerived::Item* fixed = nullptr;
+  const model::StateLayoutDerived::Item* tap = nullptr;
   for (const auto& item : layout.items) {
     if (item.layer == 0 && item.tensor == 0) kv = &item;
-    if (item.layer == 0 && item.tensor == 1) fixed = &item;
+    if (item.layer == 0 && item.tensor == 1 && item.contract.cells == model::CellRule::kFixed) {
+      fixed = &item;
+    }
+    if (tap == nullptr && shape.stage != 0 && item.contract.target_writes) tap = &item;
   }
   if (kv == nullptr || kv->contract.cell_bytes < sizeof(FakeCell)) {
-    return Refuse("the stage has no per-position tensor 0 of a cell's bytes");
+    return Refuse("the stage has no tensor 0 of a cell's bytes");
   }
+  const bool verify = shape.phase == pl::Phase::kVerify;
   // The workspace: inputs, then outputs, at 256-byte boundaries.
   std::uint64_t at = addresses.activations;
   const auto place = [&](std::uint64_t bytes) {
@@ -274,17 +363,55 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
     const std::uint64_t base =
         addresses.state({.stage = shape.stage, .tensor = 0, .layer = 0, .segment = segment});
     if (base == 0) return Refuse("a state tensor has no address");
-    s.cells = kv->cells;
-    s.cell_bytes = kv->contract.cell_bytes;
-    s.cells_address = base;
-    uses.push_back({.address = base,
-                    .bytes = std::uint64_t{seg.read_cells} * kv->contract.cell_bytes,
-                    .role = ir::Role::kState});
+    s.own = TensorOf(base, *kv);
+    uses.push_back(
+        {.address = base,
+         .bytes = std::min<std::uint64_t>(seg.read_cells, kv->cells) * kv->contract.cell_bytes,
+         .role = ir::Role::kState});
     if (fixed != nullptr) {
       s.fixed =
           addresses.state({.stage = shape.stage, .tensor = 1, .layer = 0, .segment = segment});
       if (s.fixed == 0) return Refuse("the fixed state has no address");
+      // A verify only reads state its commit rebuilds.
+      s.fixed_writes = !(verify && fixed->contract.rollback == model::Rollback::kCommit);
       uses.push_back({.address = s.fixed, .bytes = fixed->bytes, .role = ir::Role::kState});
+    }
+    if (shape.stage == 0) {
+      // The target writes every drafter's taps.
+      for (std::size_t t = 1; t < options_.layouts.size(); ++t) {
+        for (const auto& item : options_.layouts[t].items) {
+          if (!item.contract.target_writes || item.contract.cell_bytes < sizeof(FakeCell)) continue;
+          const std::uint64_t where =
+              addresses.state({.stage = static_cast<std::uint16_t>(t),
+                               .tensor = static_cast<std::uint16_t>(item.tensor),
+                               .layer = item.layer,
+                               .segment = segment});
+          if (where == 0) return Refuse("a drafter's tap has no address");
+          s.taps.push_back(TensorOf(where, item));
+          uses.push_back({.address = where, .bytes = item.bytes, .role = ir::Role::kState});
+        }
+      }
+    } else {
+      if (tap != nullptr && tap->contract.cell_bytes >= sizeof(FakeCell)) {
+        const std::uint64_t where =
+            addresses.state({.stage = shape.stage,
+                             .tensor = static_cast<std::uint16_t>(tap->tensor),
+                             .layer = tap->layer,
+                             .segment = segment});
+        if (where == 0) return Refuse("the tap has no address");
+        s.tap = TensorOf(where, *tap);
+      }
+      if (!layout.borrowed.empty() && !options_.layouts.empty()) {
+        const auto& b = layout.borrowed.front();
+        const auto* target = model::BorrowedItem(options_.layouts.front(), b);
+        const std::uint64_t where = addresses.state({.stage = shape.stage,
+                                                     .tensor = static_cast<std::uint16_t>(b.tensor),
+                                                     .layer = b.layer,
+                                                     .segment = segment});
+        if (target == nullptr || where == 0) return Refuse("the borrowed tensor has no address");
+        s.borrowed = TensorOf(where, *target);
+        uses.push_back({.address = where, .bytes = target->bytes, .role = ir::Role::kState});
+      }
     }
     if (seg.outputs != 0) {
       s.out = place(std::uint64_t{seg.outputs} * sizeof(FakeRow));
@@ -323,7 +450,7 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
   return std::make_unique<FakeProgram>(std::move(segments), std::move(inputs), std::move(outputs),
                                        std::move(uses), scratch, options_.host_bytes,
                                        options_.launches, addresses.measuring(), &options_,
-                                       greedy_out, queued_, executed_, positioned_);
+                                       greedy_out, queued_, executed_, positioned_, shape.phase);
 }
 
 }  // namespace llmp::test_support

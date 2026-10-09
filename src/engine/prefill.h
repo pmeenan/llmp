@@ -54,6 +54,8 @@ struct PrefillOptions {
 // positions.
 struct PromptWork {
   std::uint32_t slot = 0;
+  // A prefill advances its slot's positions: the target's (a drafter's
+  // step never commits, ModelRunner::Admit, so another stage is refused).
   std::uint16_t stage = 0;
   std::span<const std::int32_t> tokens{};
   std::uint32_t past = 0;
@@ -68,6 +70,13 @@ struct PrefillOutcome {
   std::uint32_t rows = 0;  // prefilled by this unit
   bool last = false;       // the prompt's last chunk
   std::vector<std::byte> outputs{};
+  // Its step's joined outputs, and where it sat in that step (its
+  // segment, the rows and outputs of the segments before it): its share of
+  // them (WaveOutcome's).
+  std::vector<std::byte> joined{};
+  std::uint32_t segment = 0;
+  std::uint32_t first_row = 0;
+  std::uint32_t first_output = 0;
   RunPath path = RunPath::kEager;
 };
 
