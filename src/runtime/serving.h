@@ -3,7 +3,10 @@
 
 // Serving on the node (D-096; docs/runtime-serving.md): the configured
 // models registered on one paged node (engine/paged_node.h), the full swap
-// between them, and each model's turns. CUDA builds only; the commands
+// between them, and each model's turns. The server and the M3 families'
+// serving classes (serving.cc) are CUDA builds only; an LLM's conversation
+// code (Llm, llm.cc) and the serving adapters over the shared runner
+// (engine_llm.h, engine_image.h) build in every profile. The commands
 // (commands.h) drive it from the runtime's main thread, the node's one
 // driver.
 //
@@ -634,8 +637,14 @@ class Llm : public Served {
   // The identity a kept record of this model must match: its runner's
   // state layout (after Setup). Empty: this model keeps none.
   virtual std::string KeptLayout() const { return {}; }
+  // The record's format version this model writes and reads (kept_record.h):
+  // the M3 runners' one spill file a slot (1) until each family migrates,
+  // the shared runner's one a stage (2, EngineLlm). A record of the other
+  // version is refused and discarded.
+  virtual std::uint32_t KeptVersion() const { return kept::kOneFileVersion; }
   // What the runner keeps of a slot, for its record's checks at adoption:
-  // its regions' bytes in the file and their layouts' bytes.
+  // its regions' bytes in their files and their layouts' bytes (version 2:
+  // a region a stage).
   virtual std::vector<std::uint64_t> KeptRegions() const { return {}; }
   virtual std::vector<std::uint64_t> KeptLayouts() const { return {}; }
   // A slot's record written in the background (StateKeeper::Keep) once its
@@ -1172,6 +1181,13 @@ class Llm : public Served {
   // still owes a restore, its adoption of a kept conversation, and where
   // its slots' spill files live.
   virtual const engine::LiveState* KeptLiveFor(const Branch& /*branch*/) const { return nullptr; }
+  // Every live state whose spill file a record names, in file order:
+  // version 1's one (KeptLiveFor), version 2's one a stage.
+  virtual std::vector<const engine::LiveState*> KeptLivesFor(const Branch& branch) const {
+    const engine::LiveState* live = KeptLiveFor(branch);
+    return live == nullptr ? std::vector<const engine::LiveState*>{}
+                           : std::vector<const engine::LiveState*>{live};
+  }
   virtual bool KeptWholeFor(const Branch& /*branch*/) const { return false; }
   virtual bool OwedFor(const Branch& /*branch*/) const { return false; }
   virtual Status AdoptFor(Branch& /*branch*/, std::span<const engine::LiveState::Range> /*used*/) {
@@ -1179,6 +1195,17 @@ class Llm : public Served {
   }
   virtual void SetSpillPlaces(
       const std::function<engine::LiveState::SpillPlace(std::uint32_t)>& /*place*/) {}
+  // Where each slot's stage spills (version 2's files); by default stage
+  // 0's place, given to SetSpillPlaces. Empty: unnamed files.
+  using StageSpillPlace =
+      std::function<engine::LiveState::SpillPlace(std::uint32_t slot, std::uint32_t stage)>;
+  virtual void SetStageSpillPlaces(const StageSpillPlace& place) {
+    if (!place) {
+      SetSpillPlaces({});
+      return;
+    }
+    SetSpillPlaces([place](std::uint32_t slot) { return place(slot, 0); });
+  }
   virtual Status RestoreFor(Branch& /*branch*/) { return {}; }
   virtual bool SpilledFor(const Branch& /*branch*/) const { return false; }
   virtual std::uint64_t SpilledBytesFor(const Branch& /*branch*/) const { return 0; }

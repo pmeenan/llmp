@@ -1039,6 +1039,28 @@ as `gemma3-4b-f16-kv-device-v1`. Those IDs are bumped and old kept state
 discarded rather than migrated; per-model settings and calibration
 (D-103) are re-keyed from family to spec.
 
+**As built: the serving adapters** (2026-10-09). `runtime/engine_llm.h`
+and `runtime/engine_image.h` are the one adapter of the LLM and image
+pipeline kinds over the shared runner ([engine.md](engine.md#the-serving-adapter),
+[runtime-serving.md](runtime-serving.md#engine-backed-models)), every
+`Llm` unit of work mapped to the runner, the wave composer, prefill steps
+and the decoding orchestrators, every state verb to the slot lifecycle,
+settings from D-103's layers. `Server::Make` dispatches a family to them by
+its mapping's pipeline kind once a diagnostic set of architectures names
+it (none does yet); an LLM's parts are its synthesized spec, its
+components' layout and batching and a `ComponentStepSource` over a
+`GgmlBackend` on its own stream, built for Gemma 2 and Gemma 3 so far. The kept
+layout is `model::KeptLayoutId` of `spec::BoundDigest` and every stage's
+layout, and the kept record gains format version 2, a spill file per
+stage (D-112); a model refuses the other version, so the M3 runners' kept
+state is discarded at a family's switch. The image adapter is a shell
+until Qwen-Image moves: it registers and pages its runner, and its work
+refuses. `engine_llm_test` runs `Llm` sessions over it on the fake
+backend: prompts, joined prompt and generation waves, greedy device
+choice, speculation with two cascaded drafters, spill and restore, a turn
+checkpoint's restore, recovery, and a restart adopting a version 2 record
+while refusing a version 1 one.
+
 ## Other pipelines
 
 The same IR, components and runner serve encoders and generators. A

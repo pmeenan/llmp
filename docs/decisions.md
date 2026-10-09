@@ -39,6 +39,60 @@ one Spark and on two.
 
 ---
 
+## D-112: Kept conversations of the shared runner: a spill file per stage, record format version 2; the other version is refused, not migrated  (2026-10-09, status: proposed by M3.6's serving-adapter slice, for review with it; amends D-105's record (format version 2 beside version 1) and its file names (`slot-N.stage-S.state`); implements engine-components.md's "old kept state discarded rather than migrated" for the shared runner)
+
+**Decision.**
+
+- **A file a stage.** The shared runner's slot (engine/slot_lifecycle.h)
+  holds one live state per stage (the target, then each drafter), each a
+  region of its own with its own spill file. A conversation kept across a
+  restart (D-105) by an engine-backed model (runtime/engine_llm.h) names
+  them all: stage 0's file keeps D-105's name `slot-N.state`, stage S's
+  from 1 is `slot-N.stage-S.state`, in the model's directory beside the
+  slot's record and turn checkpoints, under the same owner-only rules.
+- **Record format version 2** (`runtime/kept_record.h`): version 1's
+  fields but the one file and its regions, which become `"stages"`, an
+  array of 1 to 16 objects of exactly `file`, `device`, `inode`,
+  `generation` and `file_bytes` (a stage's region's bytes are its file's).
+  An extent's and a checkpoint range's `region` is the stage; each extent
+  lies in its stage's file from offset 0. Every other field, the digest
+  and the strict reading are version 1's. The layout identity is
+  `model::KeptLayoutId`: the spec bound to its artifacts
+  (`spec::BoundDigest`) and every stage's layout.
+- **One version per model.** The reader takes both versions. A model
+  holds a record to the version it writes (`Llm::KeptVersion`): the M3
+  serving classes keep writing and reading version 1 until their family
+  migrates and they are deleted; the engine-backed adapter writes and reads
+  version 2. A record of the other version is refused at start like any
+  record that does not validate: logged, its files removed, the
+  conversation prefilled on its next turn. Nothing is migrated: a family's
+  migration changes its layout identity anyway (its state is then the
+  shared runner's), and another build adopts nothing already (D-105).
+- **The checks**, per file: the start hashes each stage's file at the
+  extents the record lists in it and refuses the record when any file is
+  not the one named (identity, size) or its digests differ; adoption
+  empties each file's unlisted extents; the keeper syncs and hashes every
+  file before it writes the record.
+
+**Context.** D-105's record named one spill file a slot because each M3
+runner kept a slot's regions (a target's and a drafter's) in one live
+state. The shared slot lifecycle (M3.6, D-107) gives each stage its own
+live state and spill file, and its layout identity already changed
+(`llmp-state-v2:`), so the record had to name several files. A durable
+on-disk format is a D-016 public surface (D-062): versioned, refused when
+not understood.
+
+**Consequences.** The kept format has two versions until the last M3
+serving class is deleted; then version 1's reader can go with a version
+note in the CHANGELOG. A conversation kept by an M3 serving class is not
+adopted by its family's engine-backed adapter (and the reverse) across the
+migration: one prefill each, as after any build change. The product stays
+in the 0.x line, a minor change (D-062).
+
+**Reopen if** an upgrade must keep conversations across a family's
+migration (then a reader that maps version 1's regions to stages for that
+family's layouts).
+
 ## D-111: The project is llmpalooza (`llmp`), formerly jitLLM  (2026-10-08, status: accepted by the owner, 2026-10-08; renames every name D-062, D-063 and D-074 fixed; keeps D-056's v0 format identifiers until D-109's format replaces them)
 
 **Decision.** The project is renamed from jitLLM to llmpalooza, a nod to
@@ -351,7 +405,7 @@ stream from another thread, the provider's calls stop being safe from two
 threads, or a measured case shows the prediction leaving the device idle
 for more than a few microseconds a step.
 
-## D-105: Conversations kept across a restart: named owner-only spill files, a hashed record per request slot, adopted only when everything validates  (2026-10-03, status: accepted at the owner's direction of 2026-10-03 (D-102, "a genuine hang should be recovered … minimizing data loss"); amends D-055's "spill files stay unnamed, private and deleted at startup" and its "no durable spill format"; a durable on-disk format, a D-016 public surface, so it is versioned and refuses what it does not read)
+## D-105: Conversations kept across a restart: named owner-only spill files, a hashed record per request slot, adopted only when everything validates  (2026-10-03, status: accepted at the owner's direction of 2026-10-03 (D-102, "a genuine hang should be recovered … minimizing data loss"); amends D-055's "spill files stay unnamed, private and deleted at startup" and its "no durable spill format"; a durable on-disk format, a D-016 public surface, so it is versioned and refuses what it does not read; record format version 2, a spill file per stage for the shared runner, added by D-112)
 
 **Decision.**
 

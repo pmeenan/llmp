@@ -314,8 +314,11 @@ with one engine of shared components over llmpalooza's own graph IR
 ([engine-components.md](engine-components.md), D-107). The image runner shares the weights, the
 resources and the pinned places; it holds no conversation state or GGML
 plans and records its one step through the device runtime, which the
-skeleton does not force on it. The serving adapters in `runtime/serving.cc`
-(the audit's seventh item) stay as they are. A port changes the skeleton
+skeleton does not force on it. The serving classes in `runtime/serving.cc`
+(the audit's seventh item) stay as they are until each family moves to
+M3.6's one adapter per pipeline kind (`runtime/engine_llm.h`,
+`engine_image.h`), which with `Llm`'s conversation code (`runtime/llm.cc`)
+builds in every profile. A port changes the skeleton
 once: a backend without recorded work is `GraphRuns`' fallback, and a
 platform's spill file is `LiveState`'s. Both LLMs now check their places
 after a swap, still registered where they were and pinned (Qwen3.8 did

@@ -1448,7 +1448,13 @@ each is checked against the design as M3.6 proceeds.
             *2026-10-09:* `engine/model_runner.h`, `wave_composer.h`,
             `prefill.h`, `decoding.h`, on the fake backend with two
             drafters; no family uses them yet.
-      - [ ] One serving adapter per pipeline kind.
+      - [x] One serving adapter per pipeline kind.
+            *2026-10-09:* `runtime/engine_llm.h` and `engine_image.h` (the
+            image one a shell until Qwen-Image moves), `Server::Make`'s
+            dispatch by pipeline kind behind a diagnostic set of
+            architectures (empty: each family's migration wires its parts),
+            kept conversations in a file a stage (record version 2, D-112);
+            `engine_llm_test` on the fake backend.
 - [ ] **IR and planner** (D-107): the op set and tensor descriptors,
       construction from a spec, fusion patterns covering today's selected
       fused paths, implementation selection, activation placement, lowering

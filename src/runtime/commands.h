@@ -139,6 +139,12 @@ struct ServingOptions {
   // Internal same-provisioning T54 control: false forces current/future heads.
   // Scoring remains headed and public settings never expose this override.
   bool prefill_output_intent = true;
+  // Architectures served by the component engine's adapter for their
+  // pipeline kind (engine_llm.h, engine_image.h; D-107) instead of their M3
+  // serving class, while each family's migration is checked: a diagnostic
+  // (owner, 2026-10-08), absent from configuration and the CLI, removed
+  // once the last family has moved. Empty: every family as before.
+  std::vector<std::string> component_engine;
 };
 
 struct ChatOptions {

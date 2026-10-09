@@ -672,6 +672,17 @@ target_link_libraries(decoding_test PRIVATE llmp_engine_core llmp_fake_step_sour
 llmp_gtest(decoding_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+# The LLM serving adapter over the shared runner (runtime/engine_llm.h):
+# Llm's conversations, waves, speculation with two drafters, spills, turn
+# checkpoints, recovery and kept conversations in a file a stage (D-105's
+# record version 2), over the same fake step source.
+add_executable(engine_llm_test engine_llm_test.cc)
+target_link_libraries(engine_llm_test PRIVATE llmp_runtime_llm llmp_engine_core
+                                              llmp_fake_step_source llmp_fake_device_backend
+                                              llmp_platform)
+llmp_gtest(engine_llm_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 add_executable(request_cohort_test request_cohort_test.cc)
 target_link_libraries(request_cohort_test PRIVATE llmp_engine_core llmp_fake_device_backend)
 llmp_gtest(request_cohort_test TEST_PREFIX unit. PROPERTIES LABELS unit)

@@ -80,7 +80,9 @@ struct SegmentPlan {
   CellTensor tap;                // a drafter's tap it reads
   CellTensor borrowed;           // a drafter's view of the target's tensor
   bool greedy = false;
-  std::int64_t past = -1;  // Position's, for a positioned program (-1: the input's)
+  std::int64_t past = -1;    // Position's, for a positioned program (-1: the input's)
+  std::uint32_t logits = 0;  // F32 logits a row (0: FakeRows)
+  bool target = true;        // the target's stage: its logits mark lost state
 };
 
 void* CellTensor::At(std::uint64_t cell) const {
@@ -235,8 +237,22 @@ class FakeProgram final : public kn::StepProgram {
         valid += cell.magic == kFakeMagic && cell.slot == s.slot && cell.position >= 0 &&
                  s.own.Cell(cell.position, 0) == c;
       }
+      // A head's choice for row r: lost state's mark on a target whose
+      // tensor 0 lacks a cell through the row's position.
+      const auto choice = [&](std::uint32_t r) {
+        const std::int32_t at = position_of(r);
+        if (s.target && valid < at + 1) return static_cast<std::int32_t>(s.logits - 1);
+        return FakeLogit(tokens[r], at, s.logits);
+      };
       for (std::uint32_t o = 0; o < s.outputs; ++o) {
         const std::uint32_t r = s.rows - s.outputs + o;
+        if (s.logits != 0) {
+          std::vector<float> row(s.logits, 0.0F);
+          row[static_cast<std::size_t>(choice(r))] = 1.0F;
+          std::memcpy(At<void>(s.out + (std::uint64_t{o} * s.logits * sizeof(float))), row.data(),
+                      row.size() * sizeof(float));
+          continue;
+        }
         const FakeRow row{.slot = s.slot,
                           .position = position_of(r),
                           .token = tokens[r],
@@ -247,7 +263,7 @@ class FakeProgram final : public kn::StepProgram {
         std::memcpy(At<void>(s.out + (o * sizeof(FakeRow))), &row, sizeof(row));
       }
       if (s.greedy && greedy_out != 0) {
-        const std::int32_t chosen = tokens[s.rows - 1] + 1000;
+        const std::int32_t chosen = s.logits != 0 ? choice(s.rows - 1) : tokens[s.rows - 1] + 1000;
         std::memcpy(At<void>(greedy_out + (greedy_index * sizeof(chosen))), &chosen,
                     sizeof(chosen));
       }
@@ -339,6 +355,8 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
     s.outputs = seg.outputs;
     s.read_cells = seg.read_cells;
     s.greedy = seg.greedy;
+    s.logits = options_.logits;
+    s.target = shape.stage == 0;
     const auto segment = static_cast<std::uint8_t>(i);
     if (options_.joined_inputs) {
       s.tokens = joined_tokens;
@@ -414,9 +432,11 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
       }
     }
     if (seg.outputs != 0) {
-      s.out = place(std::uint64_t{seg.outputs} * sizeof(FakeRow));
+      const std::uint64_t row_bytes =
+          options_.logits != 0 ? std::uint64_t{options_.logits} * sizeof(float) : sizeof(FakeRow);
+      s.out = place(std::uint64_t{seg.outputs} * row_bytes);
       outputs.push_back({.device_address = s.out,
-                         .bytes = std::uint64_t{seg.outputs} * sizeof(FakeRow),
+                         .bytes = std::uint64_t{seg.outputs} * row_bytes,
                          .tensor = {},
                          .segment = segment});
     }

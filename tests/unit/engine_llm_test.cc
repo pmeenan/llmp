@@ -1,0 +1,737 @@
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// The LLM serving adapter (runtime/engine_llm.h) on the fake device
+// backend: Llm's own conversation code (prompt sessions, generation
+// sessions, waves, spills, turn checkpoints, kept conversations) over the
+// shared runner, its step programs the fake step source's in its logits
+// mode (tests/support/fake_step_source.h). A head row there names a token
+// that follows from the row's token and position alone, but only while the
+// target's state holds every earlier position; so an uninterrupted chain
+// of choices is what every generation must reproduce exactly: plain,
+// greedy on the device, speculative with two drafters (an MTP-like one
+// that catches up and a DSpark-like block one, cascaded), joined in waves,
+// after a spill, a turn checkpoint's restore, a recovery, and a restart
+// that adopts the conversation from its kept record (D-105, version 2: a
+// spill file a stage), where an old record of version 1 is refused.
+
+#include "runtime/engine_llm.h"
+
+#include <gtest/gtest.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <expected>
+#include <filesystem>
+#include <format>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+#include "base/bytes.h"
+#include "base/sha256.h"
+#include "engine/paged_node.h"
+#include "expected_error.h"
+#include "fake_step_source.h"
+#include "kernels/common/recording_launch.h"
+#include "model/batching.h"
+#include "model/state_contract.h"
+#include "planner/step_shape.h"
+#include "platform/kept_files.h"
+#include "runtime/kept_record.h"
+#include "runtime/serving.h"
+#include "runtime/state_keeper.h"
+
+namespace {
+
+namespace en = llmp::engine;
+namespace kn = llmp::kernels;
+namespace md = llmp::model;
+namespace pl = llmp::planner;
+namespace rt = llmp::runtime;
+namespace ts = llmp::test_support;
+namespace fs = std::filesystem;
+namespace kept = llmp::runtime::kept;
+namespace pf = llmp::platform;
+using llmp::base::Bytes;
+using llmp::test_support::Failed;
+using C = md::StateTensorContract;
+using Layers = std::vector<std::pair<std::uint32_t, md::StateContract>>;
+constexpr std::uint64_t kExtent = en::kPagedExtent;
+constexpr std::uint32_t kContext = 1024;
+constexpr std::uint32_t kChunk = 64;
+constexpr std::uint32_t kSlots = 2;
+constexpr std::uint32_t kVerifyRows = 8;
+constexpr std::uint32_t kWidth = 61;  // the head's logits; tokens below it
+constexpr std::int32_t kFill = 59;
+constexpr std::uint16_t kMtp = 1, kBlock = 2;
+
+std::string Why(const rt::Status& s) { return Failed(s).value_or(""); }
+
+// The target: a cache truncated by a verify. The MTP-like drafter: its own
+// cache and a tap of the target's features (a position ring the target
+// writes). The DSpark-like drafter: a ring both it and the target write.
+std::vector<en::StageState> StageStates(bool drafters) {
+  const Layers target = {{0,
+                          {.tensors = {C{.name = "kv",
+                                         .kind = md::StateKind::kKv,
+                                         .cell_bytes = 256,
+                                         .rollback = md::Rollback::kTruncate}}}}};
+  const Layers mtp = {{0,
+                       {.tensors = {C{.name = "kv", .kind = md::StateKind::kKv, .cell_bytes = 256},
+                                    C{.name = "streams",
+                                      .kind = md::StateKind::kFeatures,
+                                      .encoding = md::Encoding::kF32,
+                                      .cell_bytes = 256,
+                                      .cells = md::CellRule::kPositionRing,
+                                      .window_or_ratio = 64,
+                                      .rollback = md::Rollback::kSnapshot,
+                                      .target_writes = true}}}}};
+  const Layers block = {{0,
+                         {.tensors = {C{.name = "ring",
+                                        .kind = md::StateKind::kDrafterRing,
+                                        .cell_bytes = 256,
+                                        .cells = md::CellRule::kPositionRing,
+                                        .window_or_ratio = 256,
+                                        .rollback = md::Rollback::kSnapshot,
+                                        .target_writes = true}}}}};
+  std::vector<en::StageState> stages = {
+      {.name = "target", .layout = md::Layout(target, kContext, kChunk).value(), .read_align = 0}};
+  if (drafters) {
+    stages.push_back(
+        {.name = "mtp", .layout = md::Layout(mtp, kContext, kChunk).value(), .read_align = 512});
+    stages.push_back(
+        {.name = "block", .layout = md::Layout(block, kContext, kChunk).value(), .read_align = 0});
+  }
+  return stages;
+}
+
+pl::StepShape Wide(std::uint16_t stage, pl::Phase phase, std::uint32_t rows, std::uint32_t align) {
+  pl::StepShape shape{
+      .stage = stage, .phase = phase, .segments = {}, .row_invariant = false, .read_align = align};
+  for (std::uint8_t s = 0; s < kSlots; ++s) {
+    shape.segments.push_back({.slot = s,
+                              .rows = rows,
+                              .past = kContext - rows,
+                              .read_cells = kContext,
+                              .outputs = rows,
+                              .group = 0,
+                              .want_head = true,
+                              .greedy = false});
+  }
+  return shape;
+}
+
+// The token a chain of greedy choices gives after `prompt`: each from the
+// one before it at its position (the fake's head).
+std::vector<std::int32_t> Chain(std::span<const std::int32_t> prompt, std::size_t n) {
+  std::vector<std::int32_t> out;
+  std::int32_t token = prompt.back();
+  auto position = static_cast<std::int32_t>(prompt.size() - 1);
+  for (std::size_t k = 0; k < n; ++k) {
+    token = ts::FakeLogit(token, position++, kWidth);
+    out.push_back(token);
+  }
+  return out;
+}
+
+std::vector<std::int32_t> Prompt(std::size_t n, std::int32_t seed) {
+  std::vector<std::int32_t> out;
+  for (std::size_t i = 0; i < n; ++i) {
+    out.push_back(
+        static_cast<std::int32_t>((static_cast<std::int64_t>(i) * 13 + seed) % (kWidth - 1)));
+  }
+  return out;
+}
+
+std::int32_t ArgmaxOf(std::span<const float> row) {
+  return static_cast<std::int32_t>(std::ranges::max_element(row) - row.begin());
+}
+
+class EngineLlmTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
+    ASSERT_NE(scratch, nullptr);
+    root_ = fs::path(scratch) / std::format("engine-llm-{}", ::getpid());
+    fs::remove_all(root_);
+    fs::create_directories(root_);
+    fs::permissions(root_, fs::perms::owner_all, fs::perm_options::replace);
+    roles_ = {.installed = root_ / "installed", .spill = root_, .state = root_ / "state"};
+    entry_.name = "fake";
+    spec_ = llmp::base::Sha256().Update(std::string_view("an engine-backed fake")).Finish();
+  }
+  void TearDown() override {
+    Stop();
+    fs::remove_all(root_);
+  }
+
+  rt::ModelSettings Settings(bool speculate) const {
+    rt::ModelSettings s;
+    s.name = "fake";
+    s.architecture = "fake";
+    s.context.value = kContext;
+    s.prefill_chunk.value = kChunk;
+    s.max_slots.value = kSlots;
+    s.speculation.value = speculate;
+    return s;
+  }
+
+  rt::EngineBuild Build(bool drafters) {
+    return [this, drafters](const rt::ModelSettings& settings)
+               -> std::expected<rt::EngineLlmParts, std::string> {
+      EXPECT_EQ(settings.context.value, kContext);
+      rt::EngineLlmParts parts;
+      const std::vector<en::StageState> stages = StageStates(drafters);
+      ts::FakeSourceOptions o;
+      for (const auto& s : stages) o.layouts.push_back(s.layout);
+      o.logits = kWidth;
+      o.spec = spec_;
+      auto source = std::make_unique<ts::FakeStepSource>(std::move(o));
+      source_ = source.get();
+      parts.config.slots = {.model = "ignored",
+                            .slots = 1,
+                            .stages = stages,
+                            .spec = spec_,
+                            .read_align = 256,
+                            .spill_place = {},
+                            .spill_directory = {},
+                            .invalidate = {},
+                            .drop_plans = {}};
+      parts.config.setup_shapes = {Wide(0, pl::Phase::kPrefill, kChunk, 256)};
+      if (drafters) {
+        parts.config.setup_shapes.push_back(Wide(0, pl::Phase::kVerify, kVerifyRows, 256));
+        parts.config.setup_shapes.push_back(Wide(kMtp, pl::Phase::kDraft, kChunk, 512));
+        parts.config.setup_shapes.push_back(Wide(kBlock, pl::Phase::kDraft, kVerifyRows, 256));
+      }
+      parts.config.launch = []() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+        return std::make_unique<kn::RecordingLaunch>();
+      };
+      parts.config.max_verify_rows = drafters ? kVerifyRows : 0;
+      parts.source = std::move(source);
+      parts.caps.max_segments = kSlots;
+      parts.caps.join_prefill = true;
+      if (drafters) {
+        parts.mode = {.kind = en::DecodingMode::Kind::kSpeculative,
+                      .drafters = {{.stage = kMtp,
+                                    .shape = en::DrafterSpec::Shape::kAutoregressive,
+                                    .max_depth = 2,
+                                    .catch_up = true},
+                                   {.stage = kBlock,
+                                    .shape = en::DrafterSpec::Shape::kBlock,
+                                    .max_depth = 2,
+                                    .fill = kFill}},
+                      .combine = en::DecodingMode::Drafters::kCascade,
+                      .row_invariant = false};
+      }
+      parts.logit_width = kWidth;
+      parts.device_greedy = true;
+      parts.prefill = {.chunk_rows = kChunk,
+                       .lookahead = 2,
+                       .capture_ahead = true,
+                       .prepare_ahead = true,
+                       .state_only = true};
+      parts.architecture = "fake";
+      return parts;
+    };
+  }
+
+  // A node and the model on it, as the server registers it: Setup, the
+  // workspace, the node's start, then `before_register` (the kept
+  // conversations' places, D-105), Register, the node runs, Bind.
+  void Start(bool drafters, bool speculate,
+             const std::function<void(rt::EngineLlm&)>& before_register = {}) {
+    node_ = std::make_unique<en::PagedNode>(en::NodeSettings{
+        .compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent});
+    ASSERT_TRUE(node_->Open());
+    const std::uint64_t fixed = node_->catalog().OccupancyOf(node_->domain()).Total().value();
+    llm_ = std::make_unique<rt::EngineLlm>(*node_, entry_, Settings(speculate), roles_, 0,
+                                           Build(drafters));
+    auto set = llm_->Setup();
+    ASSERT_TRUE(set) << Why(set);
+    ASSERT_TRUE(
+        node_->MapWorkspace(llm_->activations_needed(), std::max(llm_->pool_needed(), kExtent)));
+    auto started = node_->Start(Bytes(fixed + (128 * kExtent)));
+    ASSERT_TRUE(started) << Why(started);
+    if (before_register) before_register(*llm_);
+    auto registered = llm_->Register();
+    ASSERT_TRUE(registered) << Why(registered);
+    node_->Run();
+    auto bound = llm_->Bind();
+    ASSERT_TRUE(bound) << Why(bound);
+  }
+
+  void Stop() {
+    if (node_ == nullptr) return;
+    if (node_->InRequest(0)) EXPECT_TRUE(node_->EndRequest(0));
+    if (llm_ != nullptr) {
+      std::array<en::PagedModel*, 1> models = {&llm_->paged()};
+      auto closed = node_->TearDown(models);
+      EXPECT_TRUE(closed) << Why(closed);
+    }
+    llm_.reset();
+    node_.reset();
+  }
+
+  rt::Llm::Branch& BranchAt(std::size_t index) { return **llm_->branch(index); }
+
+  void Open(std::vector<rt::Llm::Branch*> branches) {
+    auto selected = llm_->SelectBranches(branches);
+    ASSERT_TRUE(selected) << Why(selected);
+    auto begun = node_->BeginRequest(0, llm_->request_closure(), "a test turn");
+    ASSERT_TRUE(begun) << Why(begun);
+  }
+  void Close() {
+    auto ended = node_->EndRequest(0);
+    EXPECT_TRUE(ended) << Why(ended);
+  }
+
+  struct Turned {
+    rt::Generation out;
+    std::uint32_t reused = 0;
+  };
+  // One turn on a branch, in a request of its own, as the chat route runs
+  // one: its prompt prepared (reuse, chunks, a checkpoint at `boundary`),
+  // then its reply generated.
+  Turned Turn(std::size_t index, const std::vector<std::int32_t>& prompt, std::uint32_t max_tokens,
+              bool keep_logits = false, std::uint32_t boundary = 0) {
+    Turned t;
+    rt::Llm::Branch& branch = BranchAt(index);
+    Open({&branch});
+    std::vector<float> last;
+    auto prepared = branch.PreparePrompt(prompt, boundary, last, t.reused);
+    EXPECT_TRUE(prepared) << Why(prepared);
+    rt::GenerateOptions options;
+    options.max_tokens = max_tokens;
+    options.keep_logits = keep_logits;
+    if (prepared) {
+      auto generated = branch.Generate(last, options, t.out);
+      EXPECT_TRUE(generated) << Why(generated);
+    }
+    Close();
+    return t;
+  }
+
+  // What follows a branch's history: its next prompt continues it.
+  std::vector<std::int32_t> Continue(std::size_t index, const rt::Generation& out,
+                                     const std::vector<std::int32_t>& more) {
+    std::vector<std::int32_t> prompt = BranchAt(index).history();
+    prompt.push_back(out.tokens.back());  // the last reply token, not yet in the state
+    prompt.insert(prompt.end(), more.begin(), more.end());
+    return prompt;
+  }
+
+  fs::path root_;
+  llmp::config::RuntimeRoles roles_;
+  llmp::config::ModelEntry entry_;
+  llmp::base::Sha256Digest spec_{};
+  std::unique_ptr<en::PagedNode> node_;
+  std::unique_ptr<rt::EngineLlm> llm_;
+  ts::FakeStepSource* source_ = nullptr;
+};
+
+// Prompts in chunks (state-only cuts, the last headed) and plain decoding,
+// its greedy tokens chosen on the device or, with logits kept, by the host
+// from each row; the next turn reuses the whole live history.
+TEST_F(EngineLlmTest, PromptUnitsAndPlainGenerationFollowTheChain) {
+  Start(/*drafters=*/false, /*speculate=*/false);
+  EXPECT_EQ(llm_->KeptVersion(), kept::kStageFilesVersion);
+  EXPECT_TRUE(llm_->KeptLayout().starts_with("llmp-state-v2:"));
+  EXPECT_FALSE(llm_->speculative());
+  const auto prompt = Prompt(150, 3);
+  const Turned first = Turn(0, prompt, 20);
+  EXPECT_EQ(first.reused, 0U);
+  EXPECT_EQ(first.out.tokens, Chain(prompt, 20));
+  EXPECT_GE(llm_->counts().greedy_tokens, 19U);
+  EXPECT_EQ(BranchAt(0).history().size(), prompt.size() + 19);
+
+  const auto next = Continue(0, first.out, Prompt(30, 7));
+  const std::size_t history = BranchAt(0).history().size();
+  const Turned second = Turn(0, next, 12, /*keep_logits=*/true);
+  EXPECT_EQ(second.reused, history);
+  EXPECT_EQ(second.out.tokens, Chain(next, 12));
+  ASSERT_EQ(second.out.logits.size(), second.out.tokens.size());
+  for (std::size_t i = 0; i < second.out.tokens.size(); ++i) {
+    EXPECT_EQ(ArgmaxOf(second.out.logits[i]), second.out.tokens[i]) << i;
+  }
+  // Prefill was planned and run as steps of the runner.
+  EXPECT_GT(llm_->runner().graph_stats().eager + llm_->runner().graph_stats().replayed, 0U);
+}
+
+// Two conversations joined: their prompts' chunks in joined prompt waves
+// (with the next chunks as futures), their decode rows in generation waves;
+// each follows its own chain.
+TEST_F(EngineLlmTest, PromptAndGenerationWavesJoinTheSlots) {
+  Start(false, false);
+  EXPECT_EQ(llm_->prefill_wave_capacity(), kSlots);
+  const std::array<std::vector<std::int32_t>, 2> prompts = {Prompt(128, 1), Prompt(128, 29)};
+  rt::Llm::Branch& a = BranchAt(0);
+  rt::Llm::Branch& b = BranchAt(1);
+  Open({&a, &b});
+  std::array<std::unique_ptr<rt::Llm::PromptSession>, 2> sessions;
+  for (std::size_t i = 0; i < 2; ++i) {
+    auto begun = BranchAt(i).BeginPrompt(prompts[i]);
+    ASSERT_TRUE(begun.has_value()) << begun.error();
+    sessions[i] = std::move(*begun);
+    // Each one's reuse first, alone.
+    while (!sessions[i]->done() && sessions[i]->NextUnit().has_value() &&
+           sessions[i]->NextUnit()->phase != rt::Llm::PromptSession::Phase::kChunk) {
+      auto advanced = sessions[i]->Advance();
+      ASSERT_TRUE(advanced) << Why(advanced);
+    }
+  }
+  const std::array<rt::PrefillGoOn, 2> go_on{};
+  while (!sessions[0]->done() && !sessions[1]->done()) {
+    const std::array<rt::Llm::PromptSession*, 2> both = {sessions[0].get(), sessions[1].get()};
+    auto ran = llm_->RunPromptWave(both, go_on);
+    ASSERT_TRUE(ran) << Why(ran);
+  }
+  EXPECT_TRUE(sessions[0]->done() && sessions[1]->done());
+  EXPECT_GE(llm_->counts().joined_prefill_steps, 1U);
+  std::array<std::vector<float>, 2> lasts = {sessions[0]->last(), sessions[1]->last()};
+  for (auto& session : sessions) {
+    auto finished = session->Finish();
+    ASSERT_TRUE(finished) << Why(finished);
+  }
+  rt::GenerateOptions options;
+  options.max_tokens = 16;
+  std::array<rt::Generation, 2> outs;
+  std::array<std::unique_ptr<rt::Llm::GenerationSession>, 2> generations;
+  for (std::size_t i = 0; i < 2; ++i) {
+    auto begun = BranchAt(i).BeginGeneration(lasts[i], options, outs[i]);
+    ASSERT_TRUE(begun.has_value()) << begun.error();
+    generations[i] = std::move(*begun);
+  }
+  for (int guard = 0; guard < 64; ++guard) {
+    std::vector<rt::Llm::GenerationSession*> active;
+    for (auto& g : generations) {
+      if (!g->done()) active.push_back(g.get());
+    }
+    if (active.empty()) break;
+    auto ran = llm_->RunGenerationWave(active);
+    ASSERT_TRUE(ran) << Why(ran);
+  }
+  for (std::size_t i = 0; i < 2; ++i) {
+    auto finished = generations[i]->Finish();
+    ASSERT_TRUE(finished) << Why(finished);
+    EXPECT_EQ(outs[i].tokens, Chain(prompts[i], 16)) << i;
+  }
+  Close();
+  EXPECT_GE(llm_->counts().joined_waves, 1U);
+}
+
+// Speculation with two drafters in a cascade: the MTP-like drafter's two
+// proposals and the block's first follow the chain, the block's second
+// does not, so a verify keeps four of its five rows; the tokens are the
+// plain chain's all the same, alone and in a joined wave, with their rows.
+TEST_F(EngineLlmTest, SpeculationWithTwoDraftersKeepsThePlainChain) {
+  Start(/*drafters=*/true, /*speculate=*/true);
+  EXPECT_TRUE(llm_->speculative());
+  const auto prompt = Prompt(200, 5);
+  const Turned first = Turn(0, prompt, 40);
+  EXPECT_EQ(first.out.tokens, Chain(prompt, 40));
+  EXPECT_GT(first.out.drafted, 0U);
+  EXPECT_GT(first.out.accepted, 0U);
+  EXPECT_LT(first.out.accepted, first.out.drafted);  // the block's fill rows miss
+  EXPECT_GT(llm_->counts().speculative_units, 0U);
+
+  const auto other = Prompt(90, 17);
+  const Turned rows = Turn(1, other, 25, /*keep_logits=*/true);
+  EXPECT_EQ(rows.out.tokens, Chain(other, 25));
+  ASSERT_EQ(rows.out.logits.size(), rows.out.tokens.size());
+  for (std::size_t i = 0; i < rows.out.tokens.size(); ++i) {
+    EXPECT_EQ(ArgmaxOf(rows.out.logits[i]), rows.out.tokens[i]) << i;
+  }
+
+  // Both continued in speculative waves.
+  const auto next0 = Continue(0, first.out, Prompt(10, 2));
+  const auto next1 = Continue(1, rows.out, Prompt(12, 4));
+  rt::Llm::Branch& a = BranchAt(0);
+  rt::Llm::Branch& b = BranchAt(1);
+  Open({&a, &b});
+  std::array<std::vector<float>, 2> lasts;
+  for (std::size_t i = 0; i < 2; ++i) {
+    std::uint32_t reused = 0;
+    auto prepared = BranchAt(i).PreparePrompt(i == 0 ? next0 : next1, 0, lasts[i], reused);
+    ASSERT_TRUE(prepared) << Why(prepared);
+    EXPECT_GT(reused, 0U);
+  }
+  rt::GenerateOptions options;
+  options.max_tokens = 20;
+  std::array<rt::Generation, 2> outs;
+  std::array<std::unique_ptr<rt::Llm::GenerationSession>, 2> generations;
+  for (std::size_t i = 0; i < 2; ++i) {
+    auto begun = BranchAt(i).BeginGeneration(lasts[i], options, outs[i]);
+    ASSERT_TRUE(begun.has_value()) << begun.error();
+    generations[i] = std::move(*begun);
+  }
+  const std::uint64_t waves = llm_->counts().joined_waves;
+  for (int guard = 0; guard < 64; ++guard) {
+    std::vector<rt::Llm::GenerationSession*> active;
+    for (auto& g : generations) {
+      if (!g->done()) active.push_back(g.get());
+    }
+    if (active.empty()) break;
+    auto ran = llm_->RunGenerationWave(active);
+    ASSERT_TRUE(ran) << Why(ran);
+  }
+  for (std::size_t i = 0; i < 2; ++i) {
+    auto finished = generations[i]->Finish();
+    ASSERT_TRUE(finished) << Why(finished);
+  }
+  Close();
+  EXPECT_EQ(outs[0].tokens, Chain(next0, 20));
+  EXPECT_EQ(outs[1].tokens, Chain(next1, 20));
+  EXPECT_GT(llm_->counts().joined_waves, waves);
+}
+
+// An idle conversation spilled (every stage's file) and restored by its
+// next turn's first unit: the turn reuses the whole history and continues
+// the chain.
+TEST_F(EngineLlmTest, ASpilledConversationComesBackExactly) {
+  Start(true, true);
+  const auto prompt = Prompt(180, 9);
+  const Turned first = Turn(0, prompt, 12);
+  EXPECT_EQ(first.out.tokens, Chain(prompt, 12));
+  rt::Llm::Branch& branch = BranchAt(0);
+  const std::size_t history = branch.history().size();
+  auto spilled = llm_->SpillIdle(branch);
+  ASSERT_TRUE(spilled) << Why(spilled);
+  EXPECT_TRUE(branch.spilled());
+  EXPECT_GT(llm_->SpilledStateBytes(branch), 0U);
+  EXPECT_EQ(llm_->ResidentStateBytes(branch), 0U);
+  const auto next = Continue(0, first.out, Prompt(20, 1));
+  const Turned second = Turn(0, next, 15);
+  EXPECT_EQ(second.reused, history);
+  EXPECT_EQ(second.out.tokens, Chain(next, 15));
+  EXPECT_FALSE(branch.spilled());
+  EXPECT_EQ(llm_->spill_stats().spills, 1U);
+  EXPECT_EQ(llm_->spill_stats().restores, 1U);
+}
+
+// A turn checkpoint at the renderer's boundary, restored when a later
+// prompt diverges after it: the lifecycle's three-step restore with its
+// positions and footprint, every stage's pages.
+TEST_F(EngineLlmTest, ATurnCheckpointRestoresItsPrefix) {
+  Start(true, true);
+  const auto prompt = Prompt(300, 4);
+  const Turned first = Turn(0, prompt, 8, false, /*boundary=*/200);
+  EXPECT_EQ(first.out.tokens, Chain(prompt, 8));
+  ASSERT_EQ(BranchAt(0).turn_checkpoints(), 1U);
+  std::vector<std::int32_t> diverged(prompt.begin(), prompt.begin() + 250);
+  const auto tail = Prompt(30, 11);
+  diverged.insert(diverged.end(), tail.begin(), tail.end());
+  const Turned second = Turn(0, diverged, 10);
+  EXPECT_EQ(second.reused, 200U);
+  EXPECT_EQ(second.out.tokens, Chain(diverged, 10));
+}
+
+// D-102's rung 2: a step that failed after it queued its work faults the
+// cohort; recovery discards what the failure may have touched (the resident
+// conversation, forgotten) and keeps the spilled one, which continues.
+TEST_F(EngineLlmTest, RecoveryKeepsTheSpilledConversationAndForgetsTheRest) {
+  Start(false, false);
+  const auto kept_prompt = Prompt(100, 2);
+  const Turned kept_turn = Turn(1, kept_prompt, 6);
+  rt::Llm::Branch& spilled = BranchAt(1);
+  ASSERT_TRUE(llm_->SpillIdle(spilled));
+  const std::size_t history = spilled.history().size();
+
+  rt::Llm::Branch& failing = BranchAt(0);
+  Open({&failing});
+  std::vector<float> last;
+  std::uint32_t reused = 0;
+  ASSERT_TRUE(failing.PreparePrompt(Prompt(70, 3), 0, last, reused));
+  source_->options().fail_run = kn::StepError::kUnknown;
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  rt::Generation out;
+  EXPECT_FALSE(failing.Generate(last, options, out));
+  source_->options().fail_run.reset();
+  std::ignore = node_->EndRequest(0);
+  // The stream fenced, as the server's recovery does first.
+  ASSERT_TRUE(node_->Job(
+      llmp::catalog::Closure{},
+      [](llmp::providers::NativeStream) { return llmp::scheduler::JobResult::kQueued; },
+      "fencing the test's stream", 0));
+  auto recovered = llm_->RecoverInPlace();
+  ASSERT_TRUE(recovered) << Why(recovered);
+  EXPECT_TRUE(failing.history().empty());
+  EXPECT_TRUE(spilled.spilled());
+  EXPECT_EQ(spilled.history().size(), history);
+
+  const auto next = Continue(1, kept_turn.out, Prompt(9, 8));
+  const Turned resumed = Turn(1, next, 7);
+  EXPECT_EQ(resumed.reused, history);
+  EXPECT_EQ(resumed.out.tokens, Chain(next, 7));
+  const auto fresh = Prompt(40, 21);
+  const Turned again = Turn(0, fresh, 5);
+  EXPECT_EQ(again.out.tokens, Chain(fresh, 5));
+}
+
+// Kept across a restart (D-105) with a spill file a stage (record version
+// 2): the first process spills a conversation with a turn checkpoint and
+// its record is written; the second checks the record and every stage's
+// file, adopts it, and its next turn restores the state from the files and
+// continues the chain. A record of version 1 for the other slot is refused
+// and removed.
+TEST_F(EngineLlmTest, AConversationIsKeptAcrossARestartInStageFiles) {
+  const fs::path directory = root_ / "conversations";
+  auto opened = pf::OpenPrivateDirectory(-1, directory.c_str());
+  ASSERT_TRUE(opened.has_value());
+  const int dir = *opened;
+  kept::Identity identity{
+      .build = "a test build", .artifact = "abcdef", .drafter = "", .layout = ""};
+  std::vector<std::int32_t> history;
+  rt::Generation reply;
+  std::string layout;
+  {
+    rt::StateKeeper keeper(1, {});
+    const std::size_t model = keeper.AddModel(::dup(dir));
+    Start(true, true, [&](rt::EngineLlm& llm) {
+      layout = llm.KeptLayout();
+      identity.layout = layout;
+      llm.set_kept(
+          {.keeper = &keeper, .model = model, .directory = dir, .identity = identity, .adopt = {}});
+    });
+    const auto prompt = Prompt(220, 6);
+    const Turned first = Turn(0, prompt, 10, false, /*boundary=*/150);
+    EXPECT_EQ(first.out.tokens, Chain(prompt, 10));
+    reply = first.out;
+    rt::Llm::Branch& branch = BranchAt(0);
+    ASSERT_TRUE(llm_->SpillIdle(branch));
+    history = branch.history();
+    ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+    EXPECT_TRUE(keeper.Kept(model, 0));
+    llm_->PreserveKeptFiles();
+    Stop();
+  }
+  for (const char* name :
+       {"slot-0.state", "slot-0.stage-1.state", "slot-0.stage-2.state", "slot-0.record"}) {
+    EXPECT_TRUE(fs::exists(directory / name)) << name;
+  }
+  auto text = pf::ReadPrivateFile(dir, "slot-0.record", kept::kMostRecordBytes);
+  ASSERT_TRUE(text.has_value());
+  auto record = kept::Decode(*text);
+  ASSERT_TRUE(record.has_value()) << record.error();
+  EXPECT_EQ(record->version, kept::kStageFilesVersion);
+  ASSERT_EQ(record->files.size(), 3U);
+  EXPECT_EQ(record->files[2].name, "slot-0.stage-2.state");
+  EXPECT_EQ(record->tokens, history);
+  EXPECT_EQ(record->checkpoints.size(), 1U);
+
+  // The next process: the record checked against what it would write, its
+  // files hashed, then adopted.
+  rt::StateKeeper keeper(1, {});
+  const std::size_t model = keeper.AddModel(::dup(dir));
+  kept::Record old;
+  Start(true, true, [&](rt::EngineLlm& llm) {
+    EXPECT_EQ(llm.KeptLayout(), layout);
+    kept::Expected expected{.version = llm.KeptVersion(),
+                            .identity = identity,
+                            .slot = 0,
+                            .regions = llm.KeptRegions(),
+                            .layouts = llm.KeptLayouts(),
+                            .context = llm.usable_context(),
+                            .vocabulary = kWidth,
+                            .now_unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                               std::chrono::system_clock::now().time_since_epoch())
+                                               .count(),
+                            .retention_ms = 24LL * 3600 * 1000};
+    auto checked = kept::Check(*record, expected);
+    ASSERT_TRUE(checked.has_value()) << checked.error();
+    EXPECT_EQ(rt::VerifyKeptState(dir, *record), "");
+    for (const kept::Checkpoint& c : record->checkpoints) {
+      EXPECT_EQ(
+          rt::VerifyKeptFile(dir, c.file, c.id, c.file_bytes, kept::CheckpointPlaces(c), c.digests),
+          "");
+    }
+    EXPECT_EQ(rt::EmptyUnlisted(dir, *record), "");
+    // The other slot's record of the old version: decoded, refused.
+    old = *record;
+    old.version = kept::kOneFileVersion;
+    old.slot = 1;
+    old.files = {{.name = kept::StateFileName(1), .id = record->files[0].id, .bytes = 0}};
+    old.checkpoints.clear();
+    for (const std::uint64_t bytes : old.regions) old.files[0].bytes += bytes;
+    expected.slot = 1;
+    auto refused = kept::Check(old, expected);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().find("format version 1"), std::string::npos) << refused.error();
+    llm.set_kept(
+        {.keeper = &keeper, .model = model, .directory = dir, .identity = identity, .adopt = {0}});
+  });
+  rt::MemoryCharge charge;
+  rt::Llm::Branch& branch = BranchAt(0);
+  auto adopted = llm_->Adopt(branch, *record, charge);
+  ASSERT_TRUE(adopted) << Why(adopted);
+  EXPECT_EQ(branch.history(), history);
+  EXPECT_TRUE(branch.spilled());
+  EXPECT_EQ(branch.turn_checkpoints(), 1U);
+  EXPECT_TRUE(keeper.Kept(model, 0));
+
+  // The old record, written where the other slot's would be: refused at
+  // adoption too, and removed.
+  ASSERT_TRUE(pf::ReplacePrivateFile(dir, kept::RecordFileName(1).c_str(), kept::Encode(old)));
+  auto old_text = pf::ReadPrivateFile(dir, kept::RecordFileName(1).c_str(), kept::kMostRecordBytes);
+  ASSERT_TRUE(old_text.has_value());
+  auto old_record = kept::Decode(*old_text);
+  ASSERT_TRUE(old_record.has_value()) << old_record.error();
+  rt::MemoryCharge old_charge;
+  auto old_adopted = llm_->Adopt(BranchAt(1), *old_record, old_charge);
+  ASSERT_FALSE(old_adopted);
+  EXPECT_NE(Why(old_adopted).find("format version"), std::string::npos) << Why(old_adopted);
+  EXPECT_FALSE(fs::exists(directory / kept::RecordFileName(1)));
+  EXPECT_TRUE(BranchAt(1).history().empty());
+  // Only that slot's record went: the adopted slot's record and stage files
+  // stay as they were.
+  for (const char* name :
+       {"slot-0.state", "slot-0.stage-1.state", "slot-0.stage-2.state", "slot-0.record"}) {
+    EXPECT_TRUE(fs::exists(directory / name)) << name;
+  }
+  EXPECT_TRUE(keeper.Kept(model, 0));
+
+  // Its next turn restores every stage from its files and continues.
+  std::vector<std::int32_t> next = history;
+  next.push_back(reply.tokens.back());
+  const auto more = Prompt(15, 2);
+  next.insert(next.end(), more.begin(), more.end());
+  const Turned resumed = Turn(0, next, 12);
+  EXPECT_EQ(resumed.reused, history.size());
+  EXPECT_EQ(resumed.out.tokens, Chain(next, 12));
+  EXPECT_FALSE(keeper.Kept(model, 0));  // live again: its record went
+  Stop();
+  (void)::close(dir);
+}
+
+// An adapter without its parts, or whose parts are refused, refuses Setup
+// with its reason; nothing else runs.
+TEST_F(EngineLlmTest, SetupRefusesWhatItCannotBuild) {
+  en::PagedNode node(
+      en::NodeSettings{.compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent});
+  ASSERT_TRUE(node.Open());
+  rt::EngineLlm unbuilt(node, entry_, Settings(false), roles_, 0, {});
+  EXPECT_FALSE(unbuilt.Setup());
+  rt::EngineLlm refused(
+      node, entry_, Settings(false), roles_, 0,
+      [](const rt::ModelSettings&) -> std::expected<rt::EngineLlmParts, std::string> {
+        return std::unexpected(std::string("no step source yet"));
+      });
+  auto set = refused.Setup();
+  ASSERT_FALSE(set);
+  EXPECT_NE(Why(set).find("no step source yet"), std::string::npos);
+  EXPECT_FALSE(refused.SelectBranches({}));
+}
+
+}  // namespace

@@ -335,7 +335,10 @@ bool Overflows(std::uint64_t a, std::uint64_t b) {
 
 }  // namespace
 
-std::string StateFileName(std::uint32_t slot) { return std::format("slot-{}.state", slot); }
+std::string StateFileName(std::uint32_t slot, std::uint32_t stage) {
+  return stage == 0 ? std::format("slot-{}.state", slot)
+                    : std::format("slot-{}.stage-{}.state", slot, stage);
+}
 std::string RecordFileName(std::uint32_t slot) { return std::format("slot-{}.record", slot); }
 std::string CheckpointFileName(std::uint32_t slot, std::uint64_t serial) {
   return std::format("slot-{}.turn-{}.state", slot, serial);
@@ -362,22 +365,30 @@ std::optional<NameOf> ParseFileName(std::string_view name) {
     out.kind = NameOf::Kind::kRecord;
     return out;
   }
-  constexpr std::string_view kTurn = ".turn-";
   constexpr std::string_view kState = ".state";
-  if (!name.starts_with(kTurn) || !name.ends_with(kState) ||
-      name.size() <= kTurn.size() + kState.size()) {
-    return std::nullopt;
+  // A decimal number between `prefix` and ".state", without leading zeros.
+  const auto number = [&](std::string_view prefix, auto& into) {
+    if (!name.starts_with(prefix) || !name.ends_with(kState) ||
+        name.size() <= prefix.size() + kState.size()) {
+      return false;
+    }
+    const std::string_view digits =
+        name.substr(prefix.size(), name.size() - prefix.size() - kState.size());
+    const auto [end_of, error_of] =
+        std::from_chars(digits.data(), digits.data() + digits.size(), into);
+    return error_of == std::errc{} && end_of == digits.data() + digits.size() &&
+           (digits.front() != '0' || digits.size() == 1);
+  };
+  if (number(std::string_view(".turn-"), out.serial)) {
+    out.kind = NameOf::Kind::kCheckpoint;
+    return out;
   }
-  const std::string_view serial =
-      name.substr(kTurn.size(), name.size() - kTurn.size() - kState.size());
-  const auto [send, serror] =
-      std::from_chars(serial.data(), serial.data() + serial.size(), out.serial);
-  if (serror != std::errc{} || send != serial.data() + serial.size() ||
-      (serial.front() == '0' && serial.size() > 1)) {
-    return std::nullopt;
+  // Stage 0's file is `slot-N.state` alone: `.stage-0` names nothing.
+  if (number(std::string_view(".stage-"), out.stage) && out.stage != 0) {
+    out.kind = NameOf::Kind::kState;
+    return out;
   }
-  out.kind = NameOf::Kind::kCheckpoint;
-  return out;
+  return std::nullopt;
 }
 
 bool ValidDirectoryName(std::string_view id) {
@@ -394,7 +405,7 @@ std::string Encode(const Record& r) {
   Quoted(kFormat, out);
   out += ',';
   Key("version", out);
-  Number(kVersion, out);
+  Number(r.version, out);
   out += ',';
   Key("build", out);
   Quoted(r.identity.build, out);
@@ -411,17 +422,30 @@ std::string Encode(const Record& r) {
   Key("slot", out);
   Number(r.slot, out);
   out += ',';
-  FileFields(r.file, r.id, r.file_bytes, out);
-  out += ',';
-  Key("regions", out);
-  out += '[';
-  for (std::size_t i = 0; i < r.regions.size(); ++i) {
-    if (i != 0) {
-      out += ',';
+  if (r.version == kOneFileVersion) {
+    const StateFile file = r.files.empty() ? StateFile{} : r.files.front();
+    FileFields(file.name, file.id, file.bytes, out);
+    out += ',';
+    Key("regions", out);
+    out += '[';
+    for (std::size_t i = 0; i < r.regions.size(); ++i) {
+      if (i != 0) {
+        out += ',';
+      }
+      Number(r.regions[i], out);
     }
-    Number(r.regions[i], out);
+    out += "],";
+  } else {
+    // A stage's region's bytes are its file's.
+    Key("stages", out);
+    out += '[';
+    for (std::size_t i = 0; i < r.files.size(); ++i) {
+      out += i == 0 ? "{" : ",{";
+      FileFields(r.files[i].name, r.files[i].id, r.files[i].bytes, out);
+      out += '}';
+    }
+    out += "],";
   }
-  out += "],";
   Key("extents", out);
   out += '[';
   for (std::size_t i = 0; i < r.extents.size(); ++i) {
@@ -523,39 +547,48 @@ std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* 
     return Bad(parsed.error().ToString());
   }
   const json::Value root = parsed->root();
-  if (auto exact = Exactly(
-          root,
-          {"format", "version", "build",    "artifact",     "drafter",     "layout",  "slot",
-           "file",   "device",  "inode",    "generation",   "file_bytes",  "regions", "extents",
-           "tokens", "cursor",  "decoding", "used_unix_ms", "checkpoints", "digest"},
-          "the record");
+  if (!root.is_object()) {
+    return Bad("the record is not an object");
+  }
+  // The version first: it says which fields the record holds.
+  const auto version = Get<std::uint32_t>(At(root, "version"), "its version");
+  if (!version || (*version != kOneFileVersion && *version != kStageFilesVersion)) {
+    return Bad(std::format("its version is not {} or {}, the ones this build reads",
+                           kOneFileVersion, kStageFilesVersion));
+  }
+  const bool one_file = *version == kOneFileVersion;
+  if (auto exact =
+          one_file
+              ? Exactly(root, {"format",     "version",    "build",        "artifact",    "drafter",
+                               "layout",     "slot",       "file",         "device",      "inode",
+                               "generation", "file_bytes", "regions",      "extents",     "tokens",
+                               "cursor",     "decoding",   "used_unix_ms", "checkpoints", "digest"},
+                        "the record")
+              : Exactly(root,
+                        {"format", "version", "build", "artifact", "drafter", "layout", "slot",
+                         "stages", "extents", "tokens", "cursor", "decoding", "used_unix_ms",
+                         "checkpoints", "digest"},
+                        "the record");
       !exact) {
     return std::unexpected(exact.error());
   }
   if (!At(root, "format").is_string() || At(root, "format").string() != kFormat) {
     return Bad("it is not a kept conversation's record");
   }
-  if (auto version = Get<std::uint32_t>(At(root, "version"), "its version");
-      !version || *version != kVersion) {
-    return Bad(std::format("its version is not {}, the only one this build reads", kVersion));
-  }
   Record r;
+  r.version = *version;
   auto build = GetString(At(root, "build"), "its build");
   auto artifact = GetString(At(root, "artifact"), "its artifact");
   auto drafter = GetString(At(root, "drafter"), "its drafter");
   auto layout = GetString(At(root, "layout"), "its layout");
   auto slot = Get<std::uint32_t>(At(root, "slot"), "its slot");
-  auto file = GetString(At(root, "file"), "its file");
-  auto id = GetFileId(root, "its file");
-  auto bytes = Get<std::uint64_t>(At(root, "file_bytes"), "its file_bytes");
   auto cursor = Get<std::uint32_t>(At(root, "cursor"), "its cursor");
   auto decoding = GetWords(At(root, "decoding"), "its decoding");
   auto used = GetSigned(At(root, "used_unix_ms"), "its used_unix_ms");
   for (const std::string* error :
        {build ? nullptr : &build.error(), artifact ? nullptr : &artifact.error(),
         drafter ? nullptr : &drafter.error(), layout ? nullptr : &layout.error(),
-        slot ? nullptr : &slot.error(), file ? nullptr : &file.error(), id ? nullptr : &id.error(),
-        bytes ? nullptr : &bytes.error(), cursor ? nullptr : &cursor.error(),
+        slot ? nullptr : &slot.error(), cursor ? nullptr : &cursor.error(),
         decoding ? nullptr : &decoding.error(), used ? nullptr : &used.error()}) {
     if (error != nullptr) {
       return std::unexpected(*error);
@@ -566,22 +599,57 @@ std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* 
                 .drafter = std::move(*drafter),
                 .layout = std::move(*layout)};
   r.slot = *slot;
-  r.file = std::move(*file);
-  r.id = *id;
-  r.file_bytes = *bytes;
   r.cursor = *cursor;
   r.decoding = std::move(*decoding);
   r.used_unix_ms = *used;
-  const json::Value regions = At(root, "regions");
-  if (!regions.is_array() || regions.size() == 0 || regions.size() > 64) {
-    return Bad("its regions are not an array of 1 to 64");
-  }
-  for (std::size_t i = 0; i < regions.size(); ++i) {
-    auto region = Get<std::uint64_t>(regions.at(i), "a region's bytes");
-    if (!region) {
-      return std::unexpected(region.error());
+  // Its spill file and the regions it holds one after another (version 1),
+  // or a file a stage, whose region's bytes are its file's (version 2).
+  const auto state_file = [](json::Value object,
+                             std::string_view what) -> std::expected<StateFile, std::string> {
+    auto name = GetString(At(object, "file"), what);
+    auto id = GetFileId(object, what);
+    auto bytes = Get<std::uint64_t>(At(object, "file_bytes"), what);
+    if (!name) return std::unexpected(name.error());
+    if (!id) return std::unexpected(id.error());
+    if (!bytes) return std::unexpected(bytes.error());
+    return StateFile{.name = std::move(*name), .id = *id, .bytes = *bytes};
+  };
+  if (one_file) {
+    auto file = state_file(root, "its file");
+    if (!file) {
+      return std::unexpected(file.error());
     }
-    r.regions.push_back(*region);
+    r.files.push_back(std::move(*file));
+    const json::Value regions = At(root, "regions");
+    if (!regions.is_array() || regions.size() == 0 || regions.size() > 64) {
+      return Bad("its regions are not an array of 1 to 64");
+    }
+    for (std::size_t i = 0; i < regions.size(); ++i) {
+      auto region = Get<std::uint64_t>(regions.at(i), "a region's bytes");
+      if (!region) {
+        return std::unexpected(region.error());
+      }
+      r.regions.push_back(*region);
+    }
+  } else {
+    const json::Value stages = At(root, "stages");
+    if (!stages.is_array() || stages.size() == 0 || stages.size() > kMostStages) {
+      return Bad(std::format("its stages are not an array of 1 to {}", kMostStages));
+    }
+    for (std::size_t i = 0; i < stages.size(); ++i) {
+      const json::Value stage = stages.at(i);
+      if (auto exact = Exactly(stage, {"file", "device", "inode", "generation", "file_bytes"},
+                               "a stage's file");
+          !exact) {
+        return std::unexpected(exact.error());
+      }
+      auto file = state_file(stage, "a stage's file");
+      if (!file) {
+        return std::unexpected(file.error());
+      }
+      r.regions.push_back(file->bytes);
+      r.files.push_back(std::move(*file));
+    }
   }
   const json::Value extents = At(root, "extents");
   if (!extents.is_array()) {
@@ -644,10 +712,24 @@ std::uint64_t ExtentOffset(std::span<const std::uint64_t> regions, const Extent&
   return base + (std::uint64_t{extent.index} * kExtentBytes);
 }
 
-std::vector<Place> UnlistedPlaces(const Record& record) {
+ExtentAt ExtentPlace(const Record& record, const Extent& extent) {
+  if (record.version == kOneFileVersion) {
+    return {.file = 0, .offset = ExtentOffset(record.regions, extent)};
+  }
+  return {.file = extent.region, .offset = std::uint64_t{extent.index} * kExtentBytes};
+}
+
+std::vector<Place> UnlistedPlaces(const Record& record, std::size_t file) {
   std::vector<Place> places;
+  if (record.version == kOneFileVersion && file != 0) {
+    return places;
+  }
   std::uint64_t base = 0;
   for (std::size_t region = 0; region < record.regions.size(); ++region) {
+    // Version 2: file `file` holds its region alone, from 0.
+    if (record.version != kOneFileVersion && region != file) {
+      continue;
+    }
     const std::uint64_t bytes = record.regions[region];
     const std::uint64_t count = (bytes + kExtentBytes - 1) / kExtentBytes;
     std::vector<bool> listed(static_cast<std::size_t>(count), false);
@@ -745,6 +827,11 @@ std::expected<void, std::string> CheckCheckpoint(const Checkpoint& c, const Reco
 
 std::expected<void, std::string> Check(Record& r, const Expected& e,
                                        std::vector<std::string>* dropped) {
+  // Another version's state is discarded, never migrated.
+  if (r.version != e.version) {
+    return Bad(std::format("it is of format version {}; this model keeps version {}", r.version,
+                           e.version));
+  }
   if (r.identity.build != e.identity.build) {
     return Bad("another build wrote it");
   }
@@ -754,7 +841,7 @@ std::expected<void, std::string> Check(Record& r, const Expected& e,
   if (r.identity.layout != e.identity.layout) {
     return Bad("its state layout is not this runner's");
   }
-  if (r.slot != e.slot || r.file != StateFileName(e.slot)) {
+  if (r.slot != e.slot) {
     return Bad("it names another request slot");
   }
   if (r.regions != e.regions || e.layouts.size() != e.regions.size()) {
@@ -767,8 +854,28 @@ std::expected<void, std::string> Check(Record& r, const Expected& e,
     }
     total += bytes;
   }
-  if (r.file_bytes != total) {
-    return Bad("its file is not the size of the regions");
+  // Its files: version 1's one, the size of every region; version 2's one a
+  // region, each the size of its own; each named as its slot's (and
+  // stage's) own.
+  if (r.version == kOneFileVersion) {
+    if (r.files.size() != 1 || r.files.front().name != StateFileName(e.slot)) {
+      return Bad("it names another request slot");
+    }
+    if (r.files.front().bytes != total) {
+      return Bad("its file is not the size of the regions");
+    }
+  } else {
+    if (r.files.size() != r.regions.size()) {
+      return Bad("its stages are not this runner's");
+    }
+    for (std::size_t s = 0; s < r.files.size(); ++s) {
+      if (r.files[s].name != StateFileName(e.slot, static_cast<std::uint32_t>(s))) {
+        return Bad("it names another request slot's or stage's file");
+      }
+      if (r.files[s].bytes != r.regions[s]) {
+        return Bad("a stage's file is not the size of its region");
+      }
+    }
   }
   if (r.extents.empty()) {
     return Bad("it keeps no state");

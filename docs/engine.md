@@ -348,7 +348,8 @@ in the core and tested on the fake backend (`model_runner_test`, over
 `tests/support/fake_step_source.h`; `decoding_test` for the decoding
 modes) and, over the component step source and GGML's lowering, on the
 Gemma artifacts. No family serves on it yet: each family's migration
-moves onto it with its components; the serving adapter (L6) follows.
+moves onto it with its components and is served through
+[the serving adapter](#the-serving-adapter).
 
 **Step programs** (`kernels/common/step_program.h`, vendor-free). A
 kernel source's lowering makes a `StepProgram` from a planned step and
@@ -600,6 +601,65 @@ policy):
 | Gemma4 | Quads as `group_segments` 4, the 8/12 groups as `invariant_group_segments`/`group_segments`; one future without capture ahead is `lookahead` 1, `capture_ahead` false; per-group isolation (RunGemmaGroups) is RunWave's; the assistant's frozen borrows (decoding modes) | Common owner reads limited to two owners, bounded owner roots, retained features, joined prompt admission (Gemma4 serving prefills alone) |
 | Qwen3.8 | Groups of consecutive owners while rows fit 16 (`group_rows`), 2,048-aligned joined reads (`joined_read_align`), state backed through that alignment before the step (an owner out of capacity there steps alone at 256 rather than being refused), two futures and prepare ahead, state-only cuts; joined draft and verify waves (decoding modes) | Per-product joined limits (draft head 8, VecQ, MoE GEMV, MXFP8 columns, HC cuBLAS 16: planner patterns), BF16 head sharing by row count, the n-gram row gather between inputs and plan, the MTP lookahead group, rows ≤ 4 per slot; its prefill captures only one-row shapes (`capture_phases` without prefill) |
 | DeepSeek V4 | Total wave rows ≤ 16 (`max_step_rows`), joined row-local work with per-owner state, scalar prefill (`join_prefill` false), two futures and prepare ahead, state-only cuts; joined drafts and verifies (decoding modes) | Float products over groups of whole owners fitting 8 columns and `SetVecQOneToken` for one-row waves (planner, from the shape), `Dsv4WaveSupport`'s fallback to one slot, the HCA plan's per-position patch (the lowering's `Position`; the runner never captures it), a draft and its verify in one job |
+
+## The serving adapter
+
+One adapter per pipeline kind (D-107; [runtime-serving.md](runtime-serving.md#engine-backed-models))
+replaces the M3 serving classes: `runtime/engine_llm.h` (`EngineLlm final :
+Llm`) and `runtime/engine_image.h` (`EngineImage final : Image`). Both
+are in the runtime's `llmp_runtime_llm` library with `Llm`'s conversation
+code (`runtime/llm.cc`, moved out of `serving.cc`), every build profile:
+they reach the engine through the core and name no kernel library, so
+`engine_llm_test` drives a whole `Llm` session over the fake backend.
+
+An adapter is made with its model's settings (D-103) and an `EngineBuild`
+that turns them into its parts (`EngineLlmParts`): the `RunnerConfig`
+(every stage's layout, from the settings' context and chunk; the bound
+spec's digest; the stages' weights, setup shapes, launch, verify rows and
+commits), the step source, the components' `model::Batching`, the
+`DecodingMode` with its drafters, the head's logit width, whether a greedy
+step returns its tokens chosen on the device, and the prefill futures'
+options, and what the source and launch borrow (`keep`: the spec, the
+artifact's tensors, the kernel source's backend), released after the
+runner. Serving's build (`serving.cc`) synthesizes the spec from the v0
+artifact, takes the stage's layout and batching from the components, and
+makes a `ComponentStepSource` over a `GgmlBackend` created on the model's
+own stream (one backend per runner, its launch made once at Bind); Gemma 2
+and Gemma 3 have it so far, their migration finalizing the policy, cuBLAS
+and device greedy choice. The tests' build is the fake's. At Setup the adapter makes
+the `ModelRunner` (owner and stream its registration index; its slots
+named after the model, `max_slots` of them, spilling to the spill role or
+the kept places the server sets before Register), a `WaveComposer` over
+the slots, a plain `DecodingOrchestrator` and, when the model has drafters
+and speculation is on, a speculative one with the adapter's policy, and
+prepares a branch per slot.
+
+How `Llm`'s units map:
+
+| `Llm` | The shared runner |
+| --- | --- |
+| A branch | The request slot of its index (`SelectBranches` → `SelectSlots`) |
+| `RunPrefillChunkFor`, `RunPreparedPrefillWave` | Prefill `PendingWork` a unit through `RunWave`, joined by the composer; the last row's head as F32 logits (none for a state-only cut); the sessions' `PrefillHint`s composed as the step's two futures, under the parts' lookahead, capture-ahead and prepare-ahead |
+| `RunChunkFor` | One row after the state: the plain mode's decode row (a scorer's, a generation's); more: prefill steps of the model's chunk |
+| `RunGreedyChunkFor`, a greedy plain wave | The plain mode's greedy rows: one I32 a segment in the step's joined output (only where the parts say the step returns it) |
+| `SpecStepFor`, a speculative wave | The speculative mode's unit: drafts from each drafter's rows (their argmax), one verify, the verdict by `Llm::Keep`/`Choose` (greedy agreement, or speculative sampling seeded by position); a refused or failed unit keeps its prefix when the state is usable (the verify was undone whole) |
+| `PrepareDecodeStateFor`, `PreparePrefillStateFor` | `ReserveStateThrough` through a verify's rows or the chunk, so a capacity refusal comes before dispatch (`StateRefusedFor`) |
+| `SettleFor`, clear, idle clear, spill, restore, copies | The slot lifecycle's verbs |
+| Checkpoint ranges, restores, adoption | `CheckpointRanges` at the committed positions; `ValidateFootprint`, `PrepareRestore` against `KeptLayoutId`, `CompleteRestore`; `Adopt` with the layout ID; the cursor is the committed positions |
+| `CheckPlaces`, `RecoverInPlace`, reclaim, graphs | The lifecycle's place check and recovery (records of discarded slots removed first, their conversations forgotten); the runner's plans |
+| Kept state (D-105) | Record version 2 (D-112): a spill file a stage, `KeptRegions`/`KeptLayouts` a stage each |
+
+After anything that changes a slot's state outside a unit (a prefill, a
+clear, a restore, an adoption, a recovery) the speculative mode's drafter
+cursors are reset to the slot's positions before its next unit. What the
+adapter does not carry yet, and each family's migration brings when it
+needs it: the drafters' adaptive depths in kept records and turn
+checkpoints (the record keeps `Llm`'s one depth; each drafter starts again
+at its own), a drafter's pass inside the target's prefill (Qwen3.8's
+injection: a catch-up drafter's own state for prompt positions is not
+computed, since its cursor is reset to the positions after a prefill, which
+costs acceptance only), and the adaptive wave form
+(`DecodingPolicy::speculate`).
 
 
 ## Adding a model family

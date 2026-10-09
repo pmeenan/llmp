@@ -240,6 +240,10 @@ class ModelRunner final : public PagedModel {
 
   SlotLifecycle& slots() { return slots_; }
   const SlotLifecycle& slots() const { return slots_; }
+  // Every stage's weight extents, and what one full load of them reads
+  // (a serving adapter's view of the weights, D-107).
+  std::vector<catalog::ExtentId> weights() const { return weight_extents(); }
+  std::uint64_t weight_read_bytes() const;
   // The most rows a verify takes (RunnerConfig::max_verify_rows).
   std::uint32_t max_verify_rows() const { return config_.max_verify_rows; }
 

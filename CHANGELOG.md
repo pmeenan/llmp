@@ -13,6 +13,16 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Kept conversations' record format version 2 (D-112): a conversation
+  kept across a restart by a model on the shared engine names one spill
+  file per pipeline stage (`slot-N.state`, then `slot-N.stage-S.state`),
+  each checked and hashed on its own; a minor change of the 0.x line. The
+  M3 serving classes keep writing version 1; a record of the version a
+  model does not write is refused and its conversation prefilled again,
+  never migrated. One serving adapter per pipeline kind (LLM, image) over
+  the shared runner backs a model once its family's migration enables it;
+  no family is served by it yet.
+
 - Serve the approved Gemma2 2B Q8_0 artifact through bounded chat/literal
   completions at context<=8192 and up to two owners. Compatible prefill and
   common-width decode preserve cap50 and independent state; actual system-role

@@ -27,11 +27,23 @@ target_link_libraries(llmp_runtime PUBLIC llmp_artifact llmp_config llmp_platfor
                       PRIVATE llmp_base llmp_build_info llmp_report llmp_device_probe llmp_model
                               llmp_json llmp_sampling llmp_warnings)
 
+# An LLM's conversations over the engine core (serving.h's Llm, llm.cc) and
+# the one serving adapter per pipeline kind over the shared runner
+# (engine_llm.h, engine_image.h; D-107), in every build profile: they name
+# no kernel library and link no device backend, so the tests run them on
+# the fake one.
+add_library(llmp_runtime_llm STATIC llm.cc engine_llm.cc engine_image.cc)
+target_include_directories(llmp_runtime_llm PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(llmp_runtime_llm PUBLIC llmp_runtime llmp_engine_core llmp_sampling
+                                                llmp_chat llmp_tokenizer llmp_spec
+                      PRIVATE llmp_base llmp_platform llmp_warnings)
+
 # The serving commands themselves (serving.h, D-096): the configured models
 # on the engine's paged node, in CUDA builds; elsewhere a refusal.
 if(LLMP_CUDA)
   add_library(llmp_runtime_serving STATIC serving.cc serve_commands.cc serve_api.cc)
-  target_link_libraries(llmp_runtime_serving PUBLIC llmp_runtime llmp_engine llmp_sampling
+  target_link_libraries(llmp_runtime_serving PUBLIC llmp_runtime llmp_runtime_llm llmp_engine
+                                                      llmp_sampling
                         PRIVATE llmp_base llmp_build_info llmp_platform llmp_warnings)
 else()
   add_library(llmp_runtime_serving STATIC serving_none.cc)

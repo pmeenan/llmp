@@ -104,10 +104,10 @@ kept::Record Sample() {
                 .drafter = "dd2d3f9c",
                 .layout = "deepseek4-state/1;context=8704;dspark=1;window=ring;regions=t:1:2"};
   r.slot = 2;
-  r.file = kept::StateFileName(2);
-  r.id = {.device = 66306, .inode = 1234567, .generation = 99};
+  r.files = {{.name = kept::StateFileName(2),
+              .id = {.device = 66306, .inode = 1234567, .generation = 99},
+              .bytes = 6 * kExtent}};
   r.regions = {4 * kExtent, 2 * kExtent};
-  r.file_bytes = 6 * kExtent;
   r.extents = {{.region = 0, .index = 0, .digest = {}},
                {.region = 0, .index = 1, .digest = {}},
                {.region = 1, .index = 0, .digest = {}}};
@@ -326,7 +326,7 @@ TEST(KeptRecord, AForeignOrExpiredRecordIsRefused) {
   // Edited times at the ends of their range overflow nothing.
   refused([](kept::Record& c, kept::Expected&) { c.used_unix_ms = kLeastMs; }, "retention");
   refused([](kept::Record& c, kept::Expected&) { c.used_unix_ms = kMostMs; }, "future");
-  refused([](kept::Record& c, kept::Expected&) { c.file_bytes += 4096; }, "size");
+  refused([](kept::Record& c, kept::Expected&) { c.files[0].bytes += 4096; }, "size");
   // A checkpoint past the conversation, expired or outside the layout goes alone.
   for (const auto& change : std::vector<void (*)(kept::Checkpoint&)>{
            [](kept::Checkpoint& c) { c.position = 7; },
@@ -404,10 +404,8 @@ TEST(StateKeeper, QuietKeepsOnlyTheLatestQueuedRecordPerSlot) {
   const StateKeeper::Quiet quiet(&keeper);
   kept::Record r = Sample();
   r.slot = 1;
-  r.file = kept::StateFileName(1);
-  r.id = Id(first);
+  r.files = {{.name = kept::StateFileName(1), .id = Id(first), .bytes = kExtent}};
   r.regions = {kExtent};
-  r.file_bytes = kExtent;
   r.extents = {{.region = 0, .index = 0, .digest = {}}};
   r.checkpoints.clear();
   for (int i = 0; i < 64; ++i) {
@@ -419,8 +417,7 @@ TEST(StateKeeper, QuietKeepsOnlyTheLatestQueuedRecordPerSlot) {
   }
   kept::Record other = r;
   other.slot = 2;
-  other.file = kept::StateFileName(2);
-  other.id = Id(second);
+  other.files = {{.name = kept::StateFileName(2), .id = Id(second), .bytes = kExtent}};
   keeper.Keep(index, other);
   EXPECT_LE(keeper.pending(), 3U);
   keeper.Invalidate(index, 1);
@@ -452,10 +449,8 @@ TEST(StateKeeper, ARecordDescribesItsFilesExactly) {
   const std::size_t index = keeper.AddModel(::dup(model.fd));
   kept::Record r = Sample();
   r.slot = 1;
-  r.file = kept::StateFileName(1);
-  r.id = Id(state);
+  r.files = {{.name = kept::StateFileName(1), .id = Id(state), .bytes = 3 * kExtent}};
   r.regions = {3 * kExtent};
-  r.file_bytes = 3 * kExtent;
   r.extents = {{.region = 0, .index = 0, .digest = {}}, {.region = 0, .index = 2, .digest = {}}};
   r.checkpoints[0].file = "slot-1.turn-4.state";
   r.checkpoints[0].id = Id(turn);
@@ -491,7 +486,7 @@ TEST(StateKeeper, ARecordDescribesItsFilesExactly) {
 
   // A record whose file is not the one it was made for is not written.
   kept::Record wrong = r;
-  wrong.id.inode += 1;
+  wrong.files[0].id.inode += 1;
   keeper.Keep(index, wrong);
   ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
   EXPECT_FALSE(fs::exists(root / "model" / "slot-1.record"));
@@ -537,10 +532,8 @@ TEST(StateKeeper, AdoptionEmptiesWhatTheRecordDoesNotList) {
   const pf::FileIdentity state = WriteExtents(model.fd, "slot-0.state", 4, 3);
   kept::Record r = Sample();
   r.slot = 0;
-  r.file = kept::StateFileName(0);
-  r.id = Id(state);
+  r.files = {{.name = kept::StateFileName(0), .id = Id(state), .bytes = 4 * kExtent}};
   r.regions = {3 * kExtent, kExtent};
-  r.file_bytes = 4 * kExtent;
   r.extents = {{.region = 0, .index = 0, .digest = {}}, {.region = 0, .index = 2, .digest = {}}};
   r.checkpoints.clear();
   const auto hash = [&](std::span<const kept::Place> places) {
@@ -557,7 +550,7 @@ TEST(StateKeeper, AdoptionEmptiesWhatTheRecordDoesNotList) {
   const auto before = hash(all);
   // Not the file the record names: refused, nothing emptied.
   kept::Record other = r;
-  other.id.inode += 1;
+  other.files[0].id.inode += 1;
   EXPECT_FALSE(llmp::runtime::EmptyUnlisted(model.fd, other).empty());
   EXPECT_EQ(hash(all), before);
   ASSERT_EQ(llmp::runtime::EmptyUnlisted(model.fd, r), "");
@@ -571,7 +564,7 @@ TEST(StateKeeper, AdoptionEmptiesWhatTheRecordDoesNotList) {
   // Its size and identity stay: the record still names it.
   auto file = pf::OpenPrivateFile(model.fd, "slot-0.state", {});
   ASSERT_TRUE(file.has_value());
-  EXPECT_EQ(Id(file->identity), r.id);
+  EXPECT_EQ(Id(file->identity), r.files[0].id);
   EXPECT_EQ(file->bytes, 4 * kExtent);
   (void)::close(file->fd);
   fs::remove_all(root);
@@ -598,10 +591,8 @@ TEST(StateKeeper, PendingTokenCopyKeepsItsChargeThroughInvalidationAndRetirement
       ASSERT_TRUE(rt::ReserveTokenStorage(r.tokens, tokens, memory, 64));
       r.tokens.assign(64, serial);
       r.slot = 1;
-      r.file = kept::StateFileName(1);
-      r.id = Id(file);
+      r.files = {{.name = kept::StateFileName(1), .id = Id(file), .bytes = kExtent}};
       r.regions = {kExtent};
-      r.file_bytes = kExtent;
       r.extents = {{.region = 0, .index = 0, .digest = {}}};
       r.checkpoints.clear();
       keeper.Keep(index, std::move(r), std::move(tokens));
@@ -640,4 +631,547 @@ TEST(KeptRecord, DecodingFundsIndependentTokenCapacityBeforeAllocation) {
   }
   tokens.Reset();
   EXPECT_EQ(roomy.used(), 0U);
+}
+
+// ------------------------------------------------- version 2: a file a stage
+//
+// The shared runner's record (D-112): one spill file per stage, each its
+// stage's one region; the reader takes both versions, a model holds a
+// record to the version it writes, and the other is refused, not migrated.
+
+namespace {
+
+kept::FileId FakeId(std::uint64_t inode) {
+  return {.device = 66306, .inode = inode, .generation = 7};
+}
+
+kept::Record SampleStages() {
+  kept::Record r = Sample();
+  r.version = kept::kStageFilesVersion;
+  r.identity.layout = "llmp-state-v2:0123456789abcdef";
+  r.files = {{.name = kept::StateFileName(2, 0), .id = FakeId(111), .bytes = 4 * kExtent},
+             {.name = kept::StateFileName(2, 1), .id = FakeId(112), .bytes = 2 * kExtent},
+             {.name = kept::StateFileName(2, 2), .id = FakeId(113), .bytes = kExtent}};
+  r.regions = {4 * kExtent, 2 * kExtent, kExtent};
+  r.extents = {{.region = 0, .index = 0, .digest = {}},
+               {.region = 0, .index = 1, .digest = {}},
+               {.region = 1, .index = 0, .digest = {}},
+               {.region = 2, .index = 0, .digest = {}}};
+  r.extents[3].digest[5] = 0x5c;
+  // A checkpoint's ranges name the stage as their region.
+  r.checkpoints[0].ranges = {{.region = 2, .offset = 0, .bytes = 5000}};
+  r.checkpoints[0].footprint = {{.region = 0, .offset = 0, .bytes = kExtent},
+                                {.region = 1, .offset = 0, .bytes = kExtent}};
+  return r;
+}
+
+kept::Expected ExpectStages(const kept::Record& r) {
+  kept::Expected e = Expect(r);
+  e.version = kept::kStageFilesVersion;
+  e.layouts = {(4 * kExtent) - 4096, 2 * kExtent, kExtent - 8192};
+  return e;
+}
+
+// A record's text without its digest, and that text sealed with a digest
+// that matches it (a forger's, so only the format's own checks refuse it).
+std::string Unsealed(const std::string& text) { return text.substr(0, text.size() - 77) + "}"; }
+std::string Sealed(std::string body) {
+  const std::string digest = llmp::base::ToHex(llmp::base::Sha256().Update(body).Finish());
+  body.pop_back();
+  return body + R"(,"digest":")" + digest + R"("})";
+}
+
+}  // namespace
+
+TEST(KeptRecordStages, AStageRecordReadsBackAsWritten) {
+  const kept::Record r = SampleStages();
+  const std::string text = kept::Encode(r);
+  EXPECT_NE(text.find(R"("version":2,)"), std::string::npos);
+  EXPECT_NE(text.find(R"("stages":[{"file":"slot-2.state",)"), std::string::npos);
+  EXPECT_NE(text.find(R"({"file":"slot-2.stage-2.state",)"), std::string::npos);
+  EXPECT_EQ(text.find(R"("regions")"), std::string::npos);
+  auto back = kept::Decode(text);
+  ASSERT_TRUE(back.has_value()) << back.error();
+  EXPECT_EQ(*back, r);
+  EXPECT_EQ(kept::Encode(*back), text);
+  auto checked = *back;
+  auto ok = kept::Check(checked, ExpectStages(r));
+  EXPECT_TRUE(ok.has_value()) << (ok ? std::string() : ok.error());
+  EXPECT_EQ(checked, r);
+  // Its text unsealed and sealed again: the same text.
+  EXPECT_EQ(Sealed(Unsealed(text)), text);
+}
+
+// A model keeps the version it writes: a record of the other version is
+// refused (and so discarded), whichever way round; a version neither
+// reads is refused by the reader.
+TEST(KeptRecordStages, EachVersionIsRefusedWhereTheOtherIsKept) {
+  kept::Record stages = SampleStages();
+  kept::Expected one_file = ExpectStages(stages);
+  one_file.version = kept::kOneFileVersion;
+  auto refused = kept::Check(stages, one_file);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_NE(refused.error().find("format version 2"), std::string::npos) << refused.error();
+  // An old record (one spill file a slot) where the shared runner keeps
+  // version 2: decoded, then refused.
+  const std::string old_text = kept::Encode(Sample());
+  auto old = kept::Decode(old_text);
+  ASSERT_TRUE(old.has_value()) << old.error();
+  EXPECT_EQ(old->version, kept::kOneFileVersion);
+  kept::Expected stage_files = Expect(Sample());
+  stage_files.version = kept::kStageFilesVersion;
+  auto old_refused = kept::Check(*old, stage_files);
+  ASSERT_FALSE(old_refused.has_value());
+  EXPECT_NE(old_refused.error().find("format version 1"), std::string::npos) << old_refused.error();
+  // A third version, sealed as a writer of it would: refused unread.
+  std::string body = Unsealed(kept::Encode(stages));
+  const auto at = body.find(R"("version":2)");
+  ASSERT_NE(at, std::string::npos);
+  body[at + 10] = '3';
+  auto third = kept::Decode(Sealed(body));
+  ASSERT_FALSE(third.has_value());
+  EXPECT_NE(third.error().find("version"), std::string::npos) << third.error();
+}
+
+// A stage record naming another slot's or stage's file, holding another
+// number of stages, a file not the size of its region or an extent past
+// its stages is refused whole.
+TEST(KeptRecordStages, AStageRecordNamingAnotherFileOrStageIsRefused) {
+  const kept::Record r = SampleStages();
+  const auto refused = [&](auto change, std::string_view why) {
+    kept::Record copy = r;
+    kept::Expected expected = ExpectStages(r);
+    change(copy, expected);
+    auto checked = kept::Check(copy, expected);
+    ASSERT_FALSE(checked.has_value()) << why;
+    EXPECT_NE(checked.error().find(why), std::string::npos) << checked.error();
+  };
+  refused([](kept::Record& c, kept::Expected&) { c.files[1].name = kept::StateFileName(2, 2); },
+          "stage's file");
+  refused([](kept::Record& c, kept::Expected&) { c.files[0].name = kept::StateFileName(3); },
+          "stage's file");
+  refused([](kept::Record& c, kept::Expected&) { std::swap(c.files[1], c.files[2]); },
+          "stage's file");
+  refused(
+      [](kept::Record& c, kept::Expected&) {
+        c.files.pop_back();
+        c.regions.pop_back();
+      },
+      "regions");
+  refused([](kept::Record& c, kept::Expected&) { c.files.pop_back(); }, "stages");
+  refused([](kept::Record& c, kept::Expected&) { c.files[1].bytes += kExtent; }, "its region");
+  refused([](kept::Record& c, kept::Expected&) { c.extents.push_back({3, 0, {}}); }, "outside");
+  refused([](kept::Record& c, kept::Expected&) { c.extents.push_back({2, 1, {}}); }, "outside");
+  refused([](kept::Record&, kept::Expected& e) { e.identity.layout += "x"; }, "layout");
+}
+
+// The reader holds a stage record to its own fields: none of version 1's,
+// 1 to 16 stages, each of exactly its five fields.
+TEST(KeptRecordStages, AStageRecordsShapeIsStrict) {
+  const kept::Record r = SampleStages();
+  const std::string body = Unsealed(kept::Encode(r));
+  const auto decodes = [](const std::string& text, std::string_view why) {
+    auto decoded = kept::Decode(text);
+    ASSERT_FALSE(decoded.has_value()) << why;
+    EXPECT_NE(decoded.error().find(why), std::string::npos) << decoded.error();
+  };
+  {
+    std::string forged = body;
+    const auto at = forged.find(R"("stages":)");
+    ASSERT_NE(at, std::string::npos);
+    forged.insert(at, R"("file":"slot-2.state",)");
+    decodes(Sealed(forged), "fields");
+  }
+  {
+    std::string forged = body;
+    const std::string first = R"("file_bytes":8388608})";
+    const auto at = forged.find(first);
+    ASSERT_NE(at, std::string::npos);
+    forged.replace(at, first.size(), R"("file_bytes":8388608,"x":1})");
+    decodes(Sealed(forged), "fields");
+  }
+  kept::Record none = r;
+  none.files.clear();
+  decodes(kept::Encode(none), "stages");
+  kept::Record many = r;
+  many.files.assign(kept::kMostStages + 1, r.files[2]);
+  decodes(kept::Encode(many), "stages");
+}
+
+TEST(KeptRecordStages, StageFilesAreNamedAndPlacedByStage) {
+  EXPECT_EQ(kept::StateFileName(3, 0), "slot-3.state");
+  EXPECT_EQ(kept::StateFileName(3, 2), "slot-3.stage-2.state");
+  const auto stage = kept::ParseFileName("slot-3.stage-2.state");
+  EXPECT_TRUE(stage.has_value() && stage->kind == kept::NameOf::Kind::kState && stage->slot == 3 &&
+              stage->stage == 2);
+  const auto target = kept::ParseFileName("slot-3.state");
+  EXPECT_TRUE(target.has_value() && target->kind == kept::NameOf::Kind::kState &&
+              target->stage == 0);
+  for (const std::string_view bad :
+       {"slot-3.stage-0.state", "slot-3.stage-02.state", "slot-3.stage-.state", "slot-3.stage-2",
+        "slot-3.stage-2x.state", "slot-3.stage-2.turn-1.state"}) {
+    EXPECT_FALSE(kept::ParseFileName(bad).has_value()) << bad;
+  }
+  // Each extent in its stage's file, from 0; what each file's listed
+  // extents leave, its own.
+  const kept::Record r = SampleStages();
+  const auto at = kept::ExtentPlace(r, {.region = 1, .index = 0, .digest = {}});
+  EXPECT_EQ(at.file, 1U);
+  EXPECT_EQ(at.offset, 0U);
+  const auto later = kept::ExtentPlace(r, {.region = 0, .index = 1, .digest = {}});
+  EXPECT_EQ(later.file, 0U);
+  EXPECT_EQ(later.offset, kExtent);
+  const auto places = [](const kept::Record& record, std::size_t file) {
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> out;
+    for (const kept::Place& p : kept::UnlistedPlaces(record, file)) {
+      out.emplace_back(p.offset, p.bytes);
+    }
+    return out;
+  };
+  using Runs = std::vector<std::pair<std::uint64_t, std::uint64_t>>;
+  EXPECT_EQ(places(r, 0), (Runs{{2 * kExtent, 2 * kExtent}}));
+  EXPECT_EQ(places(r, 1), (Runs{{kExtent, kExtent}}));
+  EXPECT_TRUE(places(r, 2).empty());
+  EXPECT_TRUE(places(r, 3).empty());
+  // Version 1: one file, the regions one after another.
+  const kept::Record one = Sample();
+  const auto old = kept::ExtentPlace(one, {.region = 1, .index = 0, .digest = {}});
+  EXPECT_EQ(old.file, 0U);
+  EXPECT_EQ(old.offset, 4 * kExtent);
+  EXPECT_TRUE(places(one, 1).empty());
+}
+
+// The keeper hashes each stage's file at its own extents; the start's
+// check reads each the same way and refuses a file that changed; adoption
+// empties what each file's record does not list.
+TEST(StateKeeperStages, AStageRecordDescribesEachFileExactly) {
+  const fs::path root = Scratch("stage-keeper");
+  fs::create_directories(root);
+  Dir model(root / "model");
+  ASSERT_GE(model.fd, 0);
+  const pf::FileIdentity target = WriteExtents(model.fd, "slot-1.state", 2, 5);
+  const pf::FileIdentity drafter = WriteExtents(model.fd, "slot-1.stage-1.state", 2, 9);
+  StateKeeper keeper(2, {});
+  const std::size_t index = keeper.AddModel(::dup(model.fd));
+  kept::Record r = SampleStages();
+  r.slot = 1;
+  r.files = {{.name = kept::StateFileName(1, 0), .id = Id(target), .bytes = 2 * kExtent},
+             {.name = kept::StateFileName(1, 1), .id = Id(drafter), .bytes = 2 * kExtent}};
+  r.regions = {2 * kExtent, 2 * kExtent};
+  r.extents = {{.region = 0, .index = 0, .digest = {}},
+               {.region = 0, .index = 1, .digest = {}},
+               {.region = 1, .index = 1, .digest = {}}};
+  r.checkpoints.clear();
+  keeper.Keep(index, r);
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  auto text = pf::ReadPrivateFile(model.fd, "slot-1.record", kept::kMostRecordBytes);
+  ASSERT_TRUE(text.has_value());
+  auto written = kept::Decode(*text);
+  ASSERT_TRUE(written.has_value()) << written.error();
+  EXPECT_EQ(written->version, kept::kStageFilesVersion);
+  const auto digests_of = [&](const char* name, std::span<const kept::Place> places) {
+    auto file = pf::OpenPrivateFile(model.fd, name, {.direct = true});
+    EXPECT_TRUE(file.has_value());
+    auto digests = HashPlaces(file->fd, places, 2);
+    (void)::close(file->fd);
+    return digests;
+  };
+  const std::array<kept::Place, 2> both = {
+      {{.offset = 0, .bytes = kExtent}, {.offset = kExtent, .bytes = kExtent}}};
+  const auto target_digests = digests_of("slot-1.state", both);
+  const auto drafter_digests = digests_of("slot-1.stage-1.state", both);
+  ASSERT_EQ(written->extents.size(), 3U);
+  EXPECT_EQ(std::optional(written->extents[0].digest), target_digests[0]);
+  EXPECT_EQ(std::optional(written->extents[1].digest), target_digests[1]);
+  EXPECT_EQ(std::optional(written->extents[2].digest), drafter_digests[1]);
+  EXPECT_NE(target_digests[1], drafter_digests[1]);
+  EXPECT_EQ(llmp::runtime::VerifyKeptState(model.fd, *written), "");
+
+  // A stage's file that is not the one named, or that changed since: refused.
+  kept::Record wrong = *written;
+  wrong.files[1].id.inode += 1;
+  EXPECT_FALSE(llmp::runtime::VerifyKeptState(model.fd, wrong).empty());
+  kept::Record changed = *written;
+  changed.extents[2].digest[0] = static_cast<std::uint8_t>(changed.extents[2].digest[0] ^ 1U);
+  EXPECT_NE(llmp::runtime::VerifyKeptState(model.fd, changed).find("digests differ"),
+            std::string::npos);
+
+  // Adoption empties each file's unlisted extents: the drafter's first.
+  ASSERT_EQ(llmp::runtime::EmptyUnlisted(model.fd, *written), "");
+  const std::vector<std::byte> zeros(kExtent);
+  const auto zero = llmp::base::Sha256().Update(std::span<const std::byte>(zeros)).Finish();
+  EXPECT_EQ(digests_of("slot-1.state", both), target_digests);
+  const auto after = digests_of("slot-1.stage-1.state", both);
+  EXPECT_EQ(after[0], std::optional(zero));
+  EXPECT_EQ(after[1], drafter_digests[1]);
+  EXPECT_EQ(llmp::runtime::VerifyKeptState(model.fd, *written), "");
+  fs::remove_all(root);
+}
+
+// ------------------------------------- review: the formats against crafts
+//
+// Version 1's bytes are M3's exactly (a record the M3 runtime wrote reads
+// back, and this build writes the same bytes for it); a version 2 record
+// a forger sealed is refused whenever it names a file the model's
+// directory does not hold for that slot and stage, holds extents outside
+// its files, or bends the shape the reader expects.
+
+namespace {
+
+// The M3 runtime's encoding of Sample() (format version 1), byte for byte.
+constexpr std::string_view kVersionOneSample =
+    R"({"format":"llmp-kept-conversation","version":1,)"
+    R"("build":"0.1.0;abc;sdk;aarch64;exe=1:2:3:4:5.000000006","artifact":"8a355bfb",)"
+    R"("drafter":"dd2d3f9c",)"
+    R"("layout":"deepseek4-state/1;context=8704;dspark=1;window=ring;regions=t:1:2","slot":2,)"
+    R"("file":"slot-2.state","device":66306,"inode":1234567,"generation":99,)"
+    R"("file_bytes":12582912,"regions":[8388608,4194304],)"
+    R"("extents":[[0,0,"0000000000000000000000000000000000000000000000000000000000000000"],)"
+    R"([0,1,"ab00000000000000000000000000000000000000000000000000000000000000"],)"
+    R"([1,0,"0000000000000000000000000000000000000000000000000000000000000000"]],)"
+    R"("tokens":[1,2,3,100,200,7],"cursor":1,)"
+    R"("decoding":["0000000000000003","0000000000000002","0000000000000003",)"
+    R"("3ff28f5c28f5c28f","0000000000000000","0000000000000000","0000000000000000",)"
+    R"("0000000000000005","4000000000000000","0000000000000009","0000000000000000"],)"
+    R"("used_unix_ms":1790000000000,)"
+    R"("checkpoints":[{"file":"slot-2.turn-7.state","device":66306,"inode":7654321,)"
+    R"("generation":null,"file_bytes":8192,"position":4,"created_unix_ms":1789999000000,)"
+    R"("ranges":[[0,4194304,5000]],"footprint":[[0,0,2097152]],"cursor":0,)"
+    R"("decoding":["0000000000000003","0000000000000002","0000000000000003",)"
+    R"("3ff28f5c28f5c28f","0000000000000000","0000000000000000","0000000000000000",)"
+    R"("0000000000000005","4000000000000000","0000000000000009","0000000000000000"],)"
+    R"("digests":["0000000000000000000000000000000000000000000000000000000000000000"]}],)"
+    R"("digest":"170901a370c09a1b9cb691ef8ed0b4cf339c2bda4f88579fa4aabd7246b87ba6"})";
+
+// `text` with its first `from` replaced by `to`, sealed again.
+std::string Forged(const std::string& text, std::string_view from, std::string_view to) {
+  std::string body = Unsealed(text);
+  const auto at = body.find(from);
+  EXPECT_NE(at, std::string::npos) << from;
+  if (at != std::string::npos) body.replace(at, from.size(), to);
+  return Sealed(body);
+}
+
+}  // namespace
+
+TEST(KeptRecord, VersionOneBytesAreTheM3Runtimes) {
+  const kept::Record r = Sample();
+  EXPECT_EQ(r.version, kept::kOneFileVersion);
+  EXPECT_EQ(kept::Encode(r), kVersionOneSample);
+  auto back = kept::Decode(kVersionOneSample);
+  ASSERT_TRUE(back.has_value()) << back.error();
+  EXPECT_EQ(*back, r);
+  // Version 1's spill file name, and its extents' places, as M3's.
+  EXPECT_EQ(kept::StateFileName(2), "slot-2.state");
+  EXPECT_EQ(kept::ExtentPlace(r, r.extents[2]).offset, 4 * kExtent);
+  // Version 1 holds no stages, and version 2's shape is not version 1's.
+  const std::string text(kVersionOneSample);
+  auto staged = kept::Decode(Forged(text, R"("regions":)", R"("stages":)"));
+  EXPECT_FALSE(staged.has_value());
+  auto relabelled = kept::Decode(Forged(text, R"("version":1,)", R"("version":2,)"));
+  EXPECT_FALSE(relabelled.has_value());
+}
+
+TEST(KeptRecordStages, ACraftedStageRecordIsRefused) {
+  const kept::Record r = SampleStages();
+  const std::string text = kept::Encode(r);
+  // The reader: the version a number it reads, the stages an array of
+  // exactly-shaped objects, no field of version 1's.
+  for (const auto& [from, to] : std::vector<std::pair<std::string_view, std::string_view>>{
+           {R"("version":2,)", R"("version":"2",)"},
+           {R"("version":2,)", R"("version":2.0,)"},
+           {R"("version":2,)", R"("version":-2,)"},
+           {R"("version":2,)", R"("version":0,)"},
+           {R"("version":2,)", R"("version":4294967298,)"},
+           {R"("stages":[)", R"("regions":[8388608],"stages":[)"},
+           {R"("stages":[)", R"("file":"slot-2.state","stages":[)"},
+           {R"({"file":"slot-2.state","device":66306,)",
+            R"({"device":66306,"file":"slot-2.state",)"},
+           {R"("generation":7,"file_bytes":8388608)", R"("generation":"7","file_bytes":8388608)"},
+           {R"("file_bytes":8388608})", R"("file_bytes":-8388608})"},
+           {R"("file_bytes":8388608})", R"("file_bytes":18446744073709551616})"},
+           {R"({"file":"slot-2.state",)", R"({"file":2,)"},
+           {R"("extents":[[0,0,)", R"("extents":[[0,4294967296,)"},
+           {R"("extents":[[0,0,)", R"("extents":[[-1,0,)"},
+       }) {
+    auto decoded = kept::Decode(Forged(text, from, to));
+    EXPECT_FALSE(decoded.has_value()) << to;
+  }
+  // The stages an object, not an array.
+  EXPECT_FALSE(kept::Decode(Forged(Forged(text, R"("stages":[)", R"("stages":{"a":[)"),
+                                   R"(],"extents":)", R"(]},"extents":)"))
+                   .has_value());
+  // Decoded, then held to the model: a file named anywhere but the slot's
+  // stage's own name in the model's directory (a path out of it, another
+  // slot's, a stage named twice), a size past its region, or an extent
+  // past its stage's file.
+  const auto refused = [&](const std::string& forged, std::string_view why) {
+    auto decoded = kept::Decode(forged);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error();
+    auto checked = kept::Check(*decoded, ExpectStages(r));
+    ASSERT_FALSE(checked.has_value()) << forged;
+    EXPECT_NE(checked.error().find(why), std::string::npos) << checked.error();
+  };
+  refused(Forged(text, R"({"file":"slot-2.state",)", R"({"file":"../slot-2.state",)"),
+          "stage's file");
+  refused(Forged(text, R"({"file":"slot-2.state",)", R"({"file":"/tmp/slot-2.state",)"),
+          "stage's file");
+  refused(Forged(text, R"({"file":"slot-2.state",)", R"({"file":"slot-2.state/..",)"),
+          "stage's file");
+  {
+    // A name with a NUL in it: refused by the reader or by the check, never
+    // opened as the shorter name.
+    auto decoded = kept::Decode(
+        Forged(text, R"({"file":"slot-2.state",)", R"({"file":"slot-2.state\u0000x",)"));
+    EXPECT_TRUE(!decoded.has_value() || !kept::Check(*decoded, ExpectStages(r)).has_value());
+  }
+  refused(Forged(text, R"({"file":"slot-2.stage-1.state",)", R"({"file":"slot-2.state",)"),
+          "stage's file");
+  refused(Forged(text, R"({"file":"slot-2.stage-1.state",)", R"({"file":"slot-1.stage-1.state",)"),
+          "stage's file");
+  refused(Forged(text, R"({"file":"slot-2.stage-1.state",)", R"({"file":"slot-2.turn-1.state",)"),
+          "stage's file");
+  refused(Forged(text, R"("slot":2,)", R"("slot":3,)"), "slot");
+  refused(Forged(text, R"("file_bytes":8388608})", R"("file_bytes":18446744073709551615})"),
+          "regions");
+  refused(Forged(text, R"("file_bytes":2097152})", R"("file_bytes":2101248})"), "regions");
+  // An extent past its stage's file, in a stage that is not one, or listed
+  // twice; a checkpoint page past its stage goes alone.
+  refused(Forged(text, R"([2,0,")", R"([2,1,")"), "outside");
+  refused(Forged(text, R"([2,0,")", R"([3,0,")"), "outside");
+  refused(Forged(text, R"([2,0,")", R"([4294967295,0,")"), "outside");
+  refused(Forged(text, R"([2,0,")", R"([2,4294967295,")"), "outside");
+  refused(Forged(text, R"([1,0,")", R"([0,1,")"), "order");
+  {
+    auto decoded =
+        kept::Decode(Forged(text, R"("ranges":[[2,0,5000]])", R"("ranges":[[3,0,5000]])"));
+    ASSERT_TRUE(decoded.has_value()) << decoded.error();
+    std::vector<std::string> dropped;
+    ASSERT_TRUE(kept::Check(*decoded, ExpectStages(r), &dropped).has_value());
+    EXPECT_TRUE(decoded->checkpoints.empty());
+    EXPECT_EQ(dropped.size(), 1U);
+  }
+  // Sixteen stages read (the model's count then refuses them); seventeen not.
+  kept::Record sixteen = r;
+  sixteen.files.clear();
+  sixteen.regions.clear();
+  for (std::uint32_t s = 0; s < kept::kMostStages; ++s) {
+    sixteen.files.push_back(
+        {.name = kept::StateFileName(2, s), .id = FakeId(200 + s), .bytes = kExtent});
+    sixteen.regions.push_back(kExtent);
+  }
+  auto read = kept::Decode(kept::Encode(sixteen));
+  ASSERT_TRUE(read.has_value()) << read.error();
+  EXPECT_EQ(*read, sixteen);
+  EXPECT_FALSE(kept::Check(*read, ExpectStages(r)).has_value());
+}
+
+// The files a version 2 record names, against what the directory holds: a
+// stage's file missing, another slot's or the version 1 file in its place,
+// or one that is not the size named, is refused by the start's check, by
+// the emptying of unlisted extents and by the keeper (no record written).
+TEST(StateKeeperStages, ARecordWhoseStageFilesAreNotThereIsNeverKeptOrAdopted) {
+  const fs::path root = Scratch("stage-files");
+  fs::create_directories(root);
+  Dir model(root / "model");
+  ASSERT_GE(model.fd, 0);
+  const pf::FileIdentity target = WriteExtents(model.fd, "slot-1.state", 2, 5);
+  const pf::FileIdentity drafter = WriteExtents(model.fd, "slot-1.stage-1.state", 2, 9);
+  const pf::FileIdentity other = WriteExtents(model.fd, "slot-0.stage-1.state", 2, 3);
+  kept::Record r = SampleStages();
+  r.slot = 1;
+  r.files = {{.name = kept::StateFileName(1, 0), .id = Id(target), .bytes = 2 * kExtent},
+             {.name = kept::StateFileName(1, 1), .id = Id(drafter), .bytes = 2 * kExtent}};
+  r.regions = {2 * kExtent, 2 * kExtent};
+  r.extents = {{.region = 0, .index = 0, .digest = {}}, {.region = 1, .index = 1, .digest = {}}};
+  r.checkpoints.clear();
+  StateKeeper keeper(1, {});
+  const std::size_t index = keeper.AddModel(::dup(model.fd));
+  const auto never_kept = [&](const kept::Record& bad) {
+    keeper.Keep(index, bad);
+    ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+    EXPECT_FALSE(fs::exists(root / "model" / "slot-1.record"));
+    EXPECT_FALSE(keeper.Kept(index, 1));
+  };
+  // Another slot's drafter file in the stage's place (its identity named).
+  kept::Record foreign = r;
+  foreign.files[1].id = Id(other);
+  never_kept(foreign);
+  // A stage's file of another size.
+  kept::Record larger = r;
+  larger.files[1].bytes += kExtent;
+  never_kept(larger);
+  // Written whole: the record, then the drafter's file removed. The start
+  // refuses it; adoption's emptying touches nothing.
+  keeper.Keep(index, r);
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  auto text = pf::ReadPrivateFile(model.fd, "slot-1.record", kept::kMostRecordBytes);
+  ASSERT_TRUE(text.has_value());
+  auto written = kept::Decode(*text);
+  ASSERT_TRUE(written.has_value()) << written.error();
+  EXPECT_EQ(llmp::runtime::VerifyKeptState(model.fd, *written), "");
+  ASSERT_TRUE(fs::remove(root / "model" / "slot-1.stage-1.state"));
+  EXPECT_NE(llmp::runtime::VerifyKeptState(model.fd, *written).find("slot-1.stage-1.state"),
+            std::string::npos);
+  // The version 1 layout in its place: one file of both regions under the
+  // drafter's name is not the file the record names.
+  (void)WriteExtents(model.fd, "slot-1.stage-1.state", 4, 9);
+  EXPECT_NE(llmp::runtime::VerifyKeptState(model.fd, *written), "");
+  // Refused for the drafter's file, the emptying leaves the target's whole
+  // too (its unlisted second extent still holds its pattern).
+  const auto second_extent = [&] {
+    auto file = pf::OpenPrivateFile(model.fd, "slot-1.state", {.direct = true});
+    EXPECT_TRUE(file.has_value());
+    const std::array<kept::Place, 1> at = {{{.offset = kExtent, .bytes = kExtent}}};
+    auto digests = HashPlaces(file->fd, at, 1);
+    (void)::close(file->fd);
+    return digests.front();
+  };
+  const auto before = second_extent();
+  EXPECT_NE(llmp::runtime::EmptyUnlisted(model.fd, *written), "");
+  EXPECT_EQ(second_extent(), before);
+  const std::vector<std::byte> zeros(kExtent);
+  EXPECT_NE(before,
+            std::optional(llmp::base::Sha256().Update(std::span<const std::byte>(zeros)).Finish()));
+  // An extent naming a stage past the record's files: refused before any
+  // file is read.
+  kept::Record past = *written;
+  past.extents.push_back({.region = 2, .index = 0, .digest = {}});
+  EXPECT_NE(llmp::runtime::VerifyKeptState(model.fd, past).find("no file"), std::string::npos);
+  fs::remove_all(root);
+}
+
+// A record invalidated while its files are hashed (a turn restoring the
+// slot: its files about to change) is never written, whichever stage's
+// file the keeper was reading; the next one is.
+TEST(StateKeeperStages, AnInvalidatedStageRecordIsNeverWritten) {
+  const fs::path root = Scratch("stage-invalidate");
+  fs::create_directories(root);
+  Dir model(root / "model");
+  ASSERT_GE(model.fd, 0);
+  const pf::FileIdentity target = WriteExtents(model.fd, "slot-1.state", 1, 5);
+  const pf::FileIdentity drafter = WriteExtents(model.fd, "slot-1.stage-1.state", 1, 9);
+  kept::Record r = SampleStages();
+  r.slot = 1;
+  r.files = {{.name = kept::StateFileName(1, 0), .id = Id(target), .bytes = kExtent},
+             {.name = kept::StateFileName(1, 1), .id = Id(drafter), .bytes = kExtent}};
+  r.regions = {kExtent, kExtent};
+  r.extents = {{.region = 0, .index = 0, .digest = {}}, {.region = 1, .index = 0, .digest = {}}};
+  r.checkpoints.clear();
+  StateKeeper keeper(1, {});
+  const std::size_t index = keeper.AddModel(::dup(model.fd));
+  {
+    const StateKeeper::Quiet quiet(&keeper);
+    keeper.Keep(index, r);
+    keeper.Invalidate(index, 1);
+  }
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  EXPECT_FALSE(fs::exists(root / "model" / "slot-1.record"));
+  EXPECT_FALSE(keeper.Kept(index, 1));
+  keeper.Keep(index, r);
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  EXPECT_TRUE(keeper.Kept(index, 1));
+  keeper.Invalidate(index, 1);
+  EXPECT_FALSE(fs::exists(root / "model" / "slot-1.record"));
+  fs::remove_all(root);
 }

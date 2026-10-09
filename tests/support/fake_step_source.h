@@ -31,6 +31,12 @@
 //   row, `tap` the tapped token (-1: none valid) and `borrowed` the count;
 // - for a shape with greedy segments, one joined output: each segment's
 //   last token + 1000, as I32.
+// With `logits` (a serving adapter's head, runtime/engine_llm.h), each
+// output row is instead that many F32 logits, every one 0 but a 1 at
+// FakeLogit(token, position): on the target only while its tensor 0 holds a
+// valid cell for every position through the row's (else at logits - 1, the
+// lost state's mark), on a drafter always; and a greedy segment's I32 is
+// its last row's.
 // Recording goes through the launch (RecordingLaunch), so a replay reads
 // the inputs staged for it and writes the same way.
 
@@ -74,6 +80,14 @@ struct FakeRow {
 };
 static_assert(sizeof(FakeRow) == 32);
 
+// The token a logits row names for `token` at `position` (below logits - 1).
+inline std::int32_t FakeLogit(std::int32_t token, std::int32_t position, std::uint32_t logits) {
+  const std::int64_t m = std::int64_t{logits} - 1;
+  if (m <= 0) return 0;
+  const std::int64_t v = (std::int64_t{token} * 7) + (std::int64_t{position} * 3) + 1;
+  return static_cast<std::int32_t>(((v % m) + m) % m);
+}
+
 // The fixed state's hash after `token`, from `hash`.
 inline std::uint64_t FakeHash(std::uint64_t hash, std::int32_t token) {
   return (hash * 1000003U) + static_cast<std::uint64_t>(token) + 1U;
@@ -109,6 +123,9 @@ struct FakeSourceOptions {
   std::function<std::vector<ir::StateRef>(const planner::StepShape&)> extra_state;
   // An output slot naming a segment past the shape's.
   bool stray_output = false;
+  // Output rows of this many F32 logits (above) instead of FakeRows; 0:
+  // FakeRows.
+  std::uint32_t logits = 0;
   base::Sha256Digest spec{};
 };
 

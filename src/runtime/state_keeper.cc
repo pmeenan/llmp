@@ -92,26 +92,88 @@ std::vector<std::optional<kept::Digest>> HashPlaces(int fd, std::span<const kept
 }
 
 std::string EmptyUnlisted(int dir, const kept::Record& record) {
-  auto file = platform::OpenPrivateFile(dir, record.file.c_str(),
-                                        {.write = true, .create = false, .truncate = false});
-  if (!file) {
-    return std::format("{}: {}", record.file, Errno(file.error()));
+  // Every file opened and found to be the one named before any is emptied:
+  // a record refused for one stage's file changes none of the others.
+  std::vector<int> fds;
+  const auto close_all = [&fds] {
+    for (const int fd : fds) (void)::close(fd);
+  };
+  for (const kept::StateFile& state : record.files) {
+    auto file = platform::OpenPrivateFile(dir, state.name.c_str(),
+                                          {.write = true, .create = false, .truncate = false});
+    if (!file) {
+      close_all();
+      return std::format("{}: {}", state.name, Errno(file.error()));
+    }
+    fds.push_back(file->fd);
+    if (IdOf(file->identity) != state.id || file->bytes != state.bytes) {
+      close_all();
+      return std::format("{} is not the file its record was made for", state.name);
+    }
   }
-  const int fd = file->fd;
-  std::string why;
-  if (IdOf(file->identity) != record.id || file->bytes != record.file_bytes) {
-    why = std::format("{} is not the file its record was made for", record.file);
-  } else {
-    for (const kept::Place& place : kept::UnlistedPlaces(record)) {
-      if (auto emptied = platform::DiscardFileRange(fd, place.offset, place.bytes); !emptied) {
-        why = std::format("{}: emptying what its record does not list: {}", record.file,
-                          Errno(emptied.error()));
-        break;
+  for (std::size_t f = 0; f < fds.size(); ++f) {
+    for (const kept::Place& place : kept::UnlistedPlaces(record, f)) {
+      if (auto emptied = platform::DiscardFileRange(fds[f], place.offset, place.bytes); !emptied) {
+        close_all();
+        return std::format("{}: emptying what its record does not list: {}", record.files[f].name,
+                           Errno(emptied.error()));
       }
     }
   }
+  close_all();
+  return {};
+}
+
+std::string VerifyKeptFile(int dir, const std::string& name, const kept::FileId& id,
+                           std::uint64_t bytes, std::span<const kept::Place> places,
+                           std::span<const kept::Digest> digests) {
+  if (places.size() != digests.size()) {
+    return std::format("{}: its record's places and digests differ in number", name);
+  }
+  auto file = platform::OpenPrivateFile(
+      dir, name.c_str(), {.write = false, .create = false, .truncate = false, .direct = true});
+  if (!file) {
+    return std::format("{}: {}", name, Errno(file.error()));
+  }
+  const int fd = file->fd;
+  const bool same = IdOf(file->identity) == id && file->bytes == bytes;
+  const auto hashed = same ? HashPlaces(fd, places, 8) : std::vector<std::optional<kept::Digest>>{};
   (void)::close(fd);
-  return why;
+  if (!same) {
+    return std::format("{} is not the file its record was made for", name);
+  }
+  for (std::size_t i = 0; i < hashed.size(); ++i) {
+    if (!hashed[i] || *hashed[i] != digests[i]) {
+      return std::format("{} does not hold what its record says (its digests differ)", name);
+    }
+  }
+  return {};
+}
+
+std::string VerifyKeptState(int dir, const kept::Record& record) {
+  for (const kept::Extent& extent : record.extents) {
+    if (kept::ExtentPlace(record, extent).file >= record.files.size()) {
+      return "an extent lies in no file its record names";
+    }
+  }
+  for (std::size_t f = 0; f < record.files.size(); ++f) {
+    std::vector<kept::Place> places;
+    std::vector<kept::Digest> digests;
+    for (const kept::Extent& extent : record.extents) {
+      const kept::ExtentAt at = kept::ExtentPlace(record, extent);
+      if (at.file != f) {
+        continue;
+      }
+      places.push_back({.offset = at.offset, .bytes = kept::kExtentBytes});
+      digests.push_back(extent.digest);
+    }
+    const kept::StateFile& file = record.files[f];
+    if (std::string why = VerifyKeptFile(dir, file.name, file.id, file.bytes, places, digests);
+        !why.empty()) {
+      return why;
+    }
+  }
+  return {};
 }
 
 StateKeeper::StateKeeper(std::size_t threads, Log log)
@@ -256,31 +318,38 @@ bool StateKeeper::Hash(Job& job, std::uint64_t seen, const std::stop_token& stop
   const auto started = Clock::now();
   const std::function<bool()> go_on = [&]() { return GoOn(job, seen, stop); };
   stale = false;
-  {
+  // Each spill file (version 2: one a stage), and the extents it holds.
+  for (std::size_t f = 0; f < r.files.size(); ++f) {
+    const kept::StateFile& state = r.files[f];
     auto file = platform::OpenPrivateFile(
-        dir, r.file.c_str(), {.write = false, .create = false, .truncate = false, .direct = true});
+        dir, state.name.c_str(),
+        {.write = false, .create = false, .truncate = false, .direct = true});
     if (!file) {
-      why = std::format("{}: {}", r.file, Errno(file.error()));
+      why = std::format("{}: {}", state.name, Errno(file.error()));
       return false;
     }
     const int fd = file->fd;
     const auto close = [fd] { (void)::close(fd); };
-    if (IdOf(file->identity) != r.id || file->bytes != r.file_bytes) {
+    if (IdOf(file->identity) != state.id || file->bytes != state.bytes) {
       close();
-      why = std::format("{} is not the file the record was made for", r.file);
+      why = std::format("{} is not the file the record was made for", state.name);
       return false;
     }
     // What the writes put there reaches the device before a record says so.
     if (auto synced = platform::SyncFileData(fd); !synced) {
       close();
-      why = std::format("{}: {}", r.file, Errno(synced.error()));
+      why = std::format("{}: {}", state.name, Errno(synced.error()));
       return false;
     }
     std::vector<kept::Place> places;
-    places.reserve(r.extents.size());
-    for (const kept::Extent& extent : r.extents) {
-      places.push_back(
-          {.offset = kept::ExtentOffset(r.regions, extent), .bytes = kept::kExtentBytes});
+    std::vector<std::size_t> of;  // each place's extent
+    for (std::size_t i = 0; i < r.extents.size(); ++i) {
+      const kept::ExtentAt at = kept::ExtentPlace(r, r.extents[i]);
+      if (at.file != f) {
+        continue;
+      }
+      places.push_back({.offset = at.offset, .bytes = kept::kExtentBytes});
+      of.push_back(i);
     }
     const auto digests = HashPlaces(fd, places, threads_, &hashed_, go_on, true);
     close();
@@ -291,10 +360,10 @@ bool StateKeeper::Hash(Job& job, std::uint64_t seen, const std::stop_token& stop
           stale = true;  // stopped: invalidated, or the keeper stops
           return false;
         }
-        why = std::format("{} could not be read whole", r.file);
+        why = std::format("{} could not be read whole", state.name);
         return false;
       }
-      r.extents[i].digest = *digest;
+      r.extents[of[i]].digest = *digest;
     }
   }
   // Each checkpoint once: its pages never change after its capture.

@@ -156,6 +156,12 @@ std::vector<catalog::ExtentId> ModelRunner::weight_extents() const {
   return out;
 }
 
+std::uint64_t ModelRunner::weight_read_bytes() const {
+  std::uint64_t bytes = 0;
+  for (const StageWeights& w : config_.weights) bytes += w.weights->read_bytes();
+  return bytes;
+}
+
 std::vector<catalog::ExtentId> ModelRunner::managed_extents() const {
   auto result = weight_extents();
   for (const auto& extents : {slots_.state(), slots_.kept_state()}) {

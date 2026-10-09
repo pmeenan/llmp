@@ -65,11 +65,20 @@ std::vector<std::optional<kept::Digest>> HashPlaces(int fd, std::span<const kept
                                                     const std::function<bool()>& go_on = {},
                                                     bool background = false);
 
-// Empties what of a kept spill file its record does not list (kept::
+// Empties what of a kept record's spill files it does not list (kept::
 // UnlistedPlaces), beneath the model's private directory `dir`: the very
-// file the record names (its identity and size), opened again. Those
+// files the record names (their identities and sizes), opened again. Those
 // extents then read as zeros, as a fresh slot's do. Why not, or empty.
 std::string EmptyUnlisted(int dir, const kept::Record& record);
+
+// A file a record names, beneath `dir`: the very one (its identity and
+// size), its `places` hashing to `digests`. Why not, or empty.
+std::string VerifyKeptFile(int dir, const std::string& name, const kept::FileId& id,
+                           std::uint64_t bytes, std::span<const kept::Place> places,
+                           std::span<const kept::Digest> digests);
+// Every spill file a checked record names (version 2: one a stage), with
+// the extents it lists in it (kept::ExtentPlace). Why not, or empty.
+std::string VerifyKeptState(int dir, const kept::Record& record);
 
 class StateKeeper {
  public:

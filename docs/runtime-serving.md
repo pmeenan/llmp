@@ -17,7 +17,7 @@ places) and D-094 (the runtime wake).
 | Resource core | `scheduler/programs.h` | The task programs a driver posts: run, call, evict, a full swap (`SwapProgram`), a request's lease (`RequestProgram`), BP-S3's acquisition. Vendor-free; the fake backend's tests check them |
 | Engine (new, above the kernels) | `engine/` | The paged node (`paged_node.h`: device 0's providers, streams, io_uring, one catalog domain, the landing zone, the scheduler and its lanes on their threads, the shared workspace, requests), weights as extents (`paged_weights.h`), Qwen3.8's n-gram rows (`ple_rows.h`), each M3 model's chunk planning (`dsv4_plan.h`, `qwen38_plan.h`) and runner (`dsv4_runner.h`, `qwen38_runner.h`, `qwen_image_runner.h`). CUDA builds only (it links the kernels); it reaches the device through the providers and the device runtime (`providers/device_runtime.h`), never the CUDA runtime itself ([portability.md](portability.md)) |
 | Services | `config` | The models a node serves: `[models.<name>]` (below) |
-| Programs | `runtime` | `commands.h` (the serving commands' arguments, vendor-free) and `serving.h` (the configured models on one node, the full swap, each model's turns, the commands; CUDA builds) |
+| Programs | `runtime` | `commands.h` (the serving commands' arguments, vendor-free) and `serving.h` (the configured models on one node, the full swap, each model's turns, the commands; CUDA builds, but an LLM's conversation code, `llm.cc`, and the serving adapters over the shared runner, `engine_llm.h` and `engine_image.h`, build in every profile: [engine-backed models](#engine-backed-models)) |
 
 The harnesses (`benchmarks/`) drive the same engine: `engine_names.h`
 gives the engine's runners their harness names, and `tests/support`'s
@@ -566,6 +566,49 @@ checks (DeepSeek's hash-routing tables, Qwen3.8's n-gram hash) and its
 places checked still pinned (D-090). The backing no load took is released
 after the first output, off the swap's path. Each part is timed.
 
+## Engine-backed models
+
+M3.6 replaces each family's serving class with one adapter per pipeline
+kind over the shared runner (D-107; [engine.md](engine.md#the-serving-adapter)):
+`EngineLlm` (`runtime/engine_llm.h`) for LLMs and `EngineImage`
+(`runtime/engine_image.h`) for image pipelines. `Server::Make` picks one
+for a family moved to the component engine, by the pipeline kind its
+architecture's mapping names (`spec/mapping.h`); every other family keeps
+its M3 class. Which families are moved is, while each one's migration is
+checked against its gate, a diagnostic (`ServingOptions::component_engine`,
+a set of architectures, absent from the configuration and the command
+line; owner, 2026-10-08), removed once the last family has moved. It is
+empty, so no family is engine-backed yet. The parts of an engine-backed
+model's runner are built at its Setup: its spec synthesized from its v0
+artifact by its architecture's mapping, its components' state layout and
+batching, and the component step source planned over GGML's registry and
+lowered onto its graphs, on the model's own stream. Gemma 2 and Gemma 3
+have that build (with the policy their lowering's parity test runs; no
+cuBLAS handle is lent yet, so a plan needing one is refused, and the greedy
+choice stays on the host); their migration finalizes it, and any other
+architecture is refused at Setup with that reason.
+
+`EngineLlm` is an `Llm` like the M3 classes: the conversation code
+(branches, prompt and generation sessions, turn checkpoints, spills, kept
+conversations; `runtime/llm.cc`, which builds in every profile) is
+shared, and only the units of work differ. A branch is the request slot of
+its index; prompt chunks and joined prompt waves run as prefill steps (a
+state-only cut unless the chunk is the prompt's last), with the session's
+next two chunks as the step's futures; plain decode rows run in the plain
+decoding mode (a greedy row's token chosen on the device when its caller
+takes no logits), speculative steps in the speculative mode with every
+drafter the model has (D-068: a cascade or alternatives, one verify, the
+verdict the model's greedy agreement or seeded speculative sampling); every
+state verb is the slot lifecycle's, checked there, so the M3 defaults a
+legacy class could leave in place (a checkpoint's metadata unchecked, a
+restore's completion doing nothing, recovery by dropping plans) do not
+apply. Its settings are the model's (D-103: context, prefill chunk,
+request slots, speculation), given to the build of its parts and capped by
+what they hold. The image adapter registers, pages and plans its runner
+like any model, but its work (encoder, denoiser steps, decoder) has no
+orchestration on the shared runner yet: its first output and finish refuse
+until Qwen-Image's migration.
+
 ## Turns
 
 An LLM holds one default conversation branch: the tokens its state has seen. A turn's
@@ -699,15 +742,28 @@ mode 0700; each file 0600, owned by the runtime's user, one link, never
 opened through a link): `slot-N.state` is slot N's spill file (each used
 2 MiB extent at its place, region by region), `slot-N.record` its record,
 `slot-N.turn-K.state` its turn checkpoints (whole state pages, each at a
-4 KiB-rounded place). A model's directory is named by its artifact's ID.
+4 KiB-rounded place). An [engine-backed model](#engine-backed-models)
+keeps a spill file per pipeline stage (D-112): `slot-N.state` for the
+target, `slot-N.stage-S.state` for drafter stage S. A model's directory is
+named by its artifact's ID.
 
-**The record** (`runtime/kept_record.h`, format version 1) is strict JSON,
+**The record** (`runtime/kept_record.h`, format version 1, or 2 for an
+engine-backed model) is strict JSON,
 written whole (a temporary file synced and renamed over it, only if it
-is still the file written, the directory synced) and ending with the SHA-256 of everything before it:
+is still the file written, the directory synced) and ending with the SHA-256 of everything before it.
+Version 2 (D-112) replaces version 1's file fields and `regions` with
+`stages`, one object a stage's file (`file`, `device`, `inode`,
+`generation`, `file_bytes`; the stage's region's bytes are its file's), and
+its extents' and checkpoint ranges' `region` is the stage; its layout is
+`model::KeptLayoutId` (the spec bound to its artifacts and every stage's
+layout). A model holds a record to the version it writes (the M3 serving
+classes version 1, the engine-backed adapter version 2) and refuses the
+other like any record that does not validate; nothing is migrated.
+Version 1's fields:
 
 | Field | What it holds | Refused when |
 | --- | --- | --- |
-| `format`, `version` | `llmp-kept-conversation`, 1 | another format or version |
+| `format`, `version` | `llmp-kept-conversation`, 1 (2: above) | another format, or a version the model does not write |
 | `build` | the version, commit, SDK, target and the executable file's device, inode, inode generation, size and modification time | not this build's (another build, or this one rebuilt or reinstalled) |
 | `artifact`, `drafter`, `layout` | the model's artifact and drafter IDs; the runner's state format version, context, drafter and each region's name and bytes | not this model's or layout's (a changed context is another layout) |
 | `slot`, `file`, `device`, `inode`, `generation`, `file_bytes`, `regions` | the slot, its spill file's name, identity and size, each region's bytes in it | another slot's, or not the file it names, or another size |
