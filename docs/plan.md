@@ -1377,7 +1377,7 @@ each is checked against the design as M3.6 proceeds.
       - [x] Encodings, layouts and the size rule; v0 representations
             mapped at read time; CPU reference decoders; registry
             capabilities and the ladder's ordering.
-      - [ ] CUDA block decoders under the vector, matrix, grouped and GLU
+      - [x] CUDA block decoders under the vector, matrix, grouped and GLU
             templates; the `sm_86` proof.
       - [ ] The EXL3 trellis through the layer; state encodings.
 - [ ] **Shared slot lifecycle, one runner interface, one serving adapter

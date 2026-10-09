@@ -110,7 +110,17 @@ fences, and MTLIndirectCommandBuffer or plain re-encoding for recorded
 work), kernel modules for its operations (GGML's HIP, SYCL and Metal
 backends are kernel sources to adapt under llmpalooza's dispatch, D-053,
 D-110), a block decoder per weight and state encoding (D-108), and a CMake
-profile that builds them instead of CUDA's. The device-memory design
+profile that builds them instead of CUDA's. CUDA's decoders and the
+product templates over them (`src/kernels/decode`: vector, GLU, matrix,
+grouped and rows; mma.sync from sm_80, and an F32 FMA matrix path that
+needs no matrix unit, though no build has SASS below sm_80 and the
+grouped template is mma.sync only) are the shape each backend's take: a
+decoder is a struct that decodes a 16-value segment of a row into
+registers, and the templates are shared, so a new encoding runs every
+product shape from its decoder alone. On the discrete `sm_86` target
+they already run every product shape of a Qwen3.8 layer, whose NVFP4 and
+MXFP8 that GPU has no matrix units for (the format layer's first proof,
+engine-components.md). The device-memory design
 assumes explicit virtual reservation and mapping (D-006); where a platform
 has no equivalent, the provider maps the rules D-033 needs onto what it has,
 which is that port's decision to make.
@@ -215,7 +225,9 @@ unfused path that exists:
   `dsv4_hc_post` and `lightning_indexer`. DSpark adds argmax.
 - **Qwen3.8 Flash Next (unfused, GGML expert layout):** NVFP4
   `mul_mat_id` and NVFP4-row `get_rows`; BF16 and F32 products; MXFP8
-  GEMV or dequant to BF16; `rms_norm`; multi-section RoPE (IMROPE);
+  GEMV or dequant to BF16 (or, for the NVFP4, MXFP8 and BF16 products
+  and the NVFP4 rows, `kernels/decode`'s on-chip decode templates);
+  `rms_norm`; multi-section RoPE (IMROPE);
   attention at D 256 and 512; add, mul, div, scale, sigmoid, SiLU,
   softplus, sqrt, ReLU, abs, sign, clamp, fill; repeat, concat, transpose,
   cont, `sum_rows`, `soft_max`; `get_rows`, `set_rows`; argsort top-k and

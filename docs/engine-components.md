@@ -280,6 +280,29 @@ checked product by product against CPU references: the whole model (peak
 memory about 100 GiB on the Spark) does not fit the 3080 Ti's 12 GiB, and the
 discrete target has no on-demand expert paging (D-082).
 
+**Where it stands (2026-10-08).** `src/format` names the encodings and
+layouts; `kernels/reference` decodes every format on the CPU;
+`kernels/decode` holds CUDA's block decoders (BF16, F16, Q8_0; NVFP4
+split, in CUTLASS's scale atoms, row-interleaved and in GGML's blocks;
+MXFP8 split and in scale atoms) under the vector (1 to 16 rows), GLU
+(a decoder per input, mixed pairs instantiated where used), matrix
+(mma.sync BF16/F16, or F32 FMA), grouped (an expert worklist) and rows
+templates, each declared to the registry at rung 2 (rung 1 for BF16 and
+F16) with no expansion. The first proof passes on the 3080 Ti: every
+product shape of Qwen3.8's layers 1 and 3, 30 of layer 1's routed experts
+in both imports' layouts (bit-identical to each other), the n-gram rows
+and the head, within bounds derived from an F64 product of the reference
+values, with no run keeping device memory beyond the compressed weights
+and its operands (`qwen38_decode_proof_test`); no product allocates or
+takes a workspace, each capturing into a graph as one kernel node
+(`decode_gpu_test`). The templates are not wired into a
+model; their speed against the tuned kernels is in
+[m36-decode-templates](experiments/m36-decode-templates/README.md).
+v0's CUTLASS import keeps gate's and up's per-expert tensor scales as two
+resources, while a stacked format has one tensor-scale part ordered
+[matrix][stacked]: a launch gathers them until the importer writes that
+part, which the v1 manifest should hold as such.
+
 ## The importer
 
 Native C++, part of the distribution; no Python (D-109).

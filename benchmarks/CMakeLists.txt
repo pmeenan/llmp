@@ -232,6 +232,17 @@ if(LLMP_CUDA)
   target_link_options(llmp_qwen38_gemm_tune PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # The decode module's templates (kernels/decode, D-108) against the tuned
+  # kernels they would someday replace, one Qwen3.8 shape each; the tuned
+  # kernels run on a GB10 only.
+  add_executable(llmp_decode_templates decode_templates.cc)
+  target_include_directories(llmp_decode_templates SYSTEM PRIVATE
+                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
+  target_link_libraries(llmp_decode_templates PRIVATE llmp_ggml_kernels llmp_decode_kernels
+                                                      llmp_warnings)
+  target_link_options(llmp_decode_templates PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # GB10-only scheduling sweep, run only by explicit benchmark invocation.
   add_executable(llmp_qwen38_mxfp8_tune qwen38_mxfp8_tune.cc qwen38_mxfp8_tune_kernels.cu)
   target_include_directories(llmp_qwen38_mxfp8_tune SYSTEM PRIVATE

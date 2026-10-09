@@ -536,6 +536,12 @@ target_link_libraries(reference_decode_test PRIVATE llmp_reference_kernels llmp_
                                                     llmp_ggml_base)
 llmp_gtest(reference_decode_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The device decoders' geometry (kernels/decode/operand.h) against the
+# format layer's, in every profile.
+add_executable(decode_test decode_test.cc)
+target_link_libraries(decode_test PRIVATE llmp_format)
+llmp_gtest(decode_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # D-068's shape contracts: state representations and composed contexts
 # (model_test), and request programs planned from them and driven through
 # admission, the ledgers and the catalog over the fake device-memory
@@ -780,6 +786,31 @@ if(LLMP_CUDA)
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(image_kernels_test PRIVATE llmp_image_kernels)
   llmp_gpu_gtest(image_kernels_test)
+
+  # The block decoders under the product templates (kernels/decode,
+  # D-108): every decoder under every template against the CPU reference
+  # decode and an F64 product, row invariance, refusals and the
+  # registry's declarations; on the GB10 and the discrete GPUs (D-082).
+  add_executable(decode_gpu_test decode_gpu_test.cc)
+  target_include_directories(decode_gpu_test SYSTEM PRIVATE
+                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
+  target_link_libraries(decode_gpu_test PRIVATE llmp_decode_kernels llmp_reference_kernels)
+  llmp_gpu_gtest(decode_gpu_test DISCRETE ALL)
+
+  # The format layer's first proof (D-108): Qwen3.8's native NVFP4 and
+  # MXFP8 tensors, one layer's worth of each product shape, through the
+  # decoders against the CPU reference, with device memory checked; meant
+  # for the discrete sm_86 target. The artifacts' roots come from
+  # LLMP_QWEN38_PROOF_ARTIFACT (and _GGML_ARTIFACT), by default the M3
+  # store; without them it skips.
+  add_executable(qwen38_decode_proof_test qwen38_decode_proof_test.cc)
+  target_include_directories(qwen38_decode_proof_test SYSTEM PRIVATE
+                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
+  target_link_libraries(qwen38_decode_proof_test PRIVATE llmp_decode_kernels
+                                                         llmp_reference_kernels llmp_artifact
+                                                         llmp_model)
+  llmp_gpu_gtest(qwen38_decode_proof_test MODELS DISCRETE ALL
+                   ENVIRONMENT "CUDA_MODULE_LOADING=EAGER")
 
   # Llmpalooza's fusions of Qwen3.8's hyper-connection and MoE-output nodes
   # (kernels/ggml/llmp_ops.h) against the GGML nodes they replace, bit for
