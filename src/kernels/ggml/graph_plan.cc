@@ -29,6 +29,7 @@
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_read_index.h"
+#include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
@@ -265,6 +266,15 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         add(Operation::kRopeSetRows, kRopeSetRowsFused, i, {f->rope, f->set_rows}, 3);
         continue;
       }
+      // Its quantized destination's form (kv_quant.h).
+      if (const auto f = RopeQuantStoreFusionAt(graph, i, reads ? &*reads : nullptr);
+          f && CheckRopeSetRowsQuant(f->rope, f->set_rows) &&
+          std::ranges::none_of(keep, [&](const auto* kept) {
+            return kept != nullptr && Storage(kept) == f->rope;
+          })) {
+        add(Operation::kRopeSetRows, kRopeSetRowsQuantName, i, {f->rope, f->set_rows}, 3);
+        continue;
+      }
     }
     if (fusion) {
       // ggml_cuda_try_fuse's order: the patterns llmpalooza lacks must not
@@ -493,6 +503,39 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         add(Operation::kRope, kRopeExtName, i, {node}, 1);
         break;
       case GGML_OP_SET_ROWS:
+        // A Q8_0 or Q4_0 destination (kv_quant.h): the quantizing store,
+        // consecutive ones grouped as the F16 stores below are.
+        if (KvQuantType(node->type)) {
+          if (device.group_set_rows) {
+            std::array<const ggml_tensor*, kSetRowsQuantGroupMax> checked{};
+            std::vector<ggml_tensor*> stores;
+            std::size_t end = i;
+            for (std::size_t j = i; j < graph.size() && stores.size() < kSetRowsQuantGroupMax;
+                 ++j) {
+              if (taken[j]) break;
+              const auto* candidate = graph[j];
+              if (LaunchesNothing(candidate)) continue;
+              if (candidate->op != GGML_OP_SET_ROWS || !KvQuantType(candidate->type) ||
+                  !CheckSetRowsQuant(candidate))
+                break;
+              if (std::ranges::any_of(keep, [candidate](const auto* kept) {
+                    return kept != nullptr && detail::Overlap(candidate, kept);
+                  }))
+                break;
+              checked[stores.size()] = candidate;
+              if (!stores.empty() && !CheckSetRowsQuantGroup({checked.data(), stores.size() + 1}))
+                break;
+              stores.push_back(graph[j]);
+              end = j + 1;
+            }
+            if (stores.size() > 1) {
+              add(Operation::kSetRows, kSetRowsQuantGroupName, i, std::move(stores), end - i);
+              break;
+            }
+          }
+          add(Operation::kSetRows, kSetRowsQuantName, i, {node}, 1);
+          break;
+        }
         if (device.group_set_rows) {
           std::array<const ggml_tensor*, kSetRowsGroupMax> checked{};
           std::vector<ggml_tensor*> stores;
@@ -798,6 +841,18 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         }
         break;
       case GGML_OP_FLASH_ATTN_EXT:
+        // Block-quantized K or V (kv_quant.h): the vector kernel named by
+        // K's type, at any rows; its check refuses everything else.
+        if (node->src[1] != nullptr && node->src[2] != nullptr &&
+            (KvQuantType(node->src[1]->type) || KvQuantType(node->src[2]->type))) {
+          const std::string_view quantized = FlashAttnVecQuantName(node->src[1]->type);
+          if (quantized.empty()) {
+            return Rejected(
+                std::format("{}: quantized V needs K of the same encoding", Where(graph, i)));
+          }
+          add(Operation::kFlashAttn, quantized, i, {node}, 1);
+          break;
+        }
         if (node->src[0] == nullptr || (node->src[0]->ne[0] != 256 && node->src[0]->ne[0] != 512)) {
           return Rejected(
               std::format("{}: flash attention is planned at head dimensions 256 and "
@@ -859,7 +914,10 @@ void AssignLanes(GraphPlan& plan, const LaneTags& tags,
     return found == tag.end() ? LaneTag{} : found->second;
   };
   const auto split_group = [&](const PlanStep& step) {
-    if (step.implementation != kSetRowsGroupedName || step.nodes.empty()) return false;
+    if ((step.implementation != kSetRowsGroupedName &&
+         step.implementation != kSetRowsQuantGroupName) ||
+        step.nodes.empty())
+      return false;
     const auto first = tag_of(step.nodes.front());
     return std::ranges::any_of(step.nodes, [&](const auto* node) {
       const auto next = tag_of(node);
@@ -871,6 +929,9 @@ void AssignLanes(GraphPlan& plan, const LaneTags& tags,
     separated.reserve(plan.steps.size());
     for (auto& step : plan.steps) {
       if (split_group(step)) {
+        const bool quantized = step.implementation == kSetRowsQuantGroupName;
+        const std::string_view grouped = quantized ? kSetRowsQuantGroupName : kSetRowsGroupedName;
+        const std::string_view single = quantized ? kSetRowsQuantName : kSetRowsName;
         for (std::size_t first = 0; first < step.nodes.size();) {
           const auto lane = tag_of(step.nodes[first]);
           auto end = first + 1;
@@ -879,12 +940,11 @@ void AssignLanes(GraphPlan& plan, const LaneTags& tags,
             if (next.lane != lane.lane || next.region != lane.region) break;
             ++end;
           }
-          separated.push_back(
-              {.operation = Operation::kSetRows,
-               .implementation = end - first > 1 ? kSetRowsGroupedName : kSetRowsName,
-               .nodes = {step.nodes.begin() + static_cast<std::ptrdiff_t>(first),
-                         step.nodes.begin() + static_cast<std::ptrdiff_t>(end)},
-               .lane = 0});
+          separated.push_back({.operation = Operation::kSetRows,
+                               .implementation = end - first > 1 ? grouped : single,
+                               .nodes = {step.nodes.begin() + static_cast<std::ptrdiff_t>(first),
+                                         step.nodes.begin() + static_cast<std::ptrdiff_t>(end)},
+                               .lane = 0});
           first = end;
         }
       } else {

@@ -18,6 +18,8 @@
 #include "base/bytes.h"
 #include "base/sha256.h"
 #include "format/encoding.h"
+#include "format/layout.h"
+#include "format/tensor_format.h"
 
 namespace llmp::model {
 namespace {
@@ -79,6 +81,12 @@ std::optional<std::string> Invalid(const StateTensorContract& t) {
   if (info.block_elements == 1 && info.element_bits % 8 == 0 && info.element_bits != 0 &&
       t.cell_bytes % (info.element_bits / 8) != 0) {
     return "a state tensor's cell holds a partial element";
+  }
+  // A block encoding stored as GGML's blocks (every block state encoding):
+  // a cell is whole blocks, so every range of cells starts at a block.
+  if (info.block_elements > 1 && info.parts.empty() && info.ggml &&
+      t.cell_bytes % info.ggml->block_bytes != 0) {
+    return "a state tensor's cell holds a partial block";
   }
   if (t.ring_reads_whole && t.cells != CellRule::kRing) return "only a ring reads whole";
   if (t.dummy_last && t.cells != CellRule::kPerBlock) return "only a block tensor has a dummy row";
@@ -177,6 +185,27 @@ std::string_view KindName(StateKind kind) {
       return "features";
   }
   return "unknown";
+}
+
+std::expected<std::uint64_t, std::string> CellBytes(Encoding encoding, std::uint64_t values) {
+  if (!format::IsStateEncoding(encoding)) {
+    return Refused(std::format("{} is not a state encoding", format::Info(encoding).name));
+  }
+  const auto shape = format::ShapeOf(std::span(&values, 1));
+  if (values == 0 || !shape) {
+    return Refused("a cell holds no values");
+  }
+  const format::TensorFormat cell{.encoding = encoding,
+                                  .layout = format::Info(encoding).quantized
+                                                ? format::Layout::kGgmlBlocks
+                                                : format::Layout::kDense,
+                                  .shape = *shape};
+  const auto bytes = format::RowBytes(cell, format::PartRole::kData);
+  if (!bytes) {
+    return Refused(std::format("{} values of {}: {}", values, format::Info(encoding).name,
+                               format::FormatErrorName(bytes.error())));
+  }
+  return *bytes;
 }
 
 std::expected<StateLayoutDerived, std::string> Layout(

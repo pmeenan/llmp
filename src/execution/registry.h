@@ -235,8 +235,10 @@ struct MeasuredRank {
 struct CapabilityQuery {
   ir::OpKey op{};
   std::span<const OperandFormat> operands{};
-  std::uint64_t rows = 1;  // a product's rows (tokens)
-  std::uint64_t k = 0;     // 0: not a product
+  std::uint64_t rows = 1;  // a product's rows (tokens); attention's query rows; rows stored
+  // A product's K and N (0: not a product); attention's Q and K head size
+  // and V's; a cache store's values a row.
+  std::uint64_t k = 0;
   std::uint64_t n = 0;
   std::uint32_t arch = 0;
   std::uint32_t features = 0;  // DeviceFeature bits

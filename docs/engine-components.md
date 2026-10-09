@@ -437,34 +437,91 @@ the CPU reference encodes and decodes: F32, F16, BF16 and the blocks
 GGML's attention reads at the pin, Q4_0, Q4_1, Q5_0, Q5_1 and Q8_0.
 Membership is not a device claim: a state may use an encoding only where
 its plan finds an attention that reads it and a cache store that writes
-it, which today means F16 or F32 (below). Whether one is
+it, which today means F16 or F32 everywhere and, on CUDA, Q8_0 or Q4_0 at
+head sizes 64 and 256 (below). Whether one is
 exact for a state is `format::Lossless(the contract's encoding, the stored
 one)`: an F16 KV cache stores exactly as F16 or F32 and lossily as BF16 or
 any block. The CPU reference encodes and decodes each (`EncodeRows`
 through GGML's reference quantizers, `DecodeRows`), so the reference
-executor's cache stores can write them. No CUDA path llmpalooza compiles
-reads a quantized K or V today, so no attention capability is declared for
-one: `src/kernels/ggml`'s vector attention is instantiated for F16 K and V
-at D 64 and 256 only (`fattn.cu`), and the tensor-core kernels (D 128, 256,
-512), the owner and QSA kernels and DeepSeek's take F16 K and V. What the
-format layer's remaining sub-task (lossy state encodings end to end,
-plan.md) needs:
-- attention that reads them: GGML's vector instances for the quantized
-  types (`template-instances/fattn-vec-instance-<K>-<V>.cu`, D 64, 128 and
-  256 at the pin) compiled and declared with their operand encodings;
-  beyond the vector kernel's one or two query rows GGML converts quantized
-  K and V to F16 in pool scratch first (`launch_fattn`), a transient
-  expansion that D-108 allows for prefill only where measured faster;
-  above D 256 there is no quantized path upstream, so D 512 needs a
-  decoder under a shared attention kernel;
-- a quantizing cache store: GGML's `set_rows` quantizes into Q4_0 to Q8_0
-  and IQ4_NL (`k_set_rows_quant`, `cpy-utils.cuh`, the same arithmetic as
-  the reference's `quantize_row_*_ref` but built with fast math, so their
-  bit agreement is to be checked), while llmpalooza's `ggml.set_rows`,
-  `set_rows.ext`, the fused RoPE store and the grouped stores write F16 or
-  F32 only;
-- the state contracts' sizes and spill ranges from the size rule, and the
-  kept-state layout ID (D-105) carrying each state's encoding.
+executor's cache stores can write them.
+
+**Lossy state encodings, the kernel half (2026-10-09).**
+`src/kernels/ggml/kv_quant.h` reads and writes block-quantized KV caches,
+declared with capabilities but selected by no model yet:
+- *Attention.* GGML's vector kernel at the pin, compiled for K and V both
+  Q8_0 or both Q4_0 at D 64 and 256 only (`fattn_vec_quant.cu`, four
+  `ggml_cuda_flash_attn_ext_vec_case` instances with GGML's device flags),
+  as `ggml.flash_attn_ext.vec_q8_0` and `_q4_0`: Q F32, K and V in GGML's
+  blocks, an F16 mask; GQA of any whole ratio, softcap at D 256, no sinks
+  or ALiBi. The kernel reads the blocks directly at every number of query
+  rows (one, or two to a CUDA block), quantizing Q to Q8_1 in shared
+  memory for the K product; so the capability takes any rows at rung 1
+  with no expansion. The earlier note here had the conversion wrong: it
+  belongs to GGML's tensor-core and tile kernels, which upstream's
+  selector takes beyond one or two rows on Ada and later, and at this pin
+  it converts K and V to F16 beside the output (the node's extra
+  allocation, `ggml_cuda_flash_attn_ext_get_alloc_size`), not in pool
+  scratch. That convert-then-tensor-core path is a transient expansion
+  (D-108: prefill only, where measured faster) and is not built; how much
+  slower the vector kernel prefills than the F16 tensor-core kernels is
+  not measured. D 64 serves Qwen2 and D 256 Gemma 2 and 3, Gemma 4's
+  local layers and Qwen3.8's head size; no current model's K or V has
+  D 128, and upstream has no quantized path above 256, so D 512 (Gemma
+  4's global layers, DeepSeek V4, DSpark) still needs a decoder under a
+  shared attention kernel. On spark-b the unit compiles in 19.0 s alone
+  (`fattn.cu`'s two F16 cases: 7.5 s) into a 1.77 MB object, and with the
+  stores below `llmp-runtime` grows from 226.3 to 228.3 MB (sm_121a SASS
+  only; the workstation's profile adds sm_86's).
+- *Quantizing stores.* `llmp.set_rows.quant` (ggml_set_rows's shapes, I32
+  or I64 indices), `llmp.set_rows.grouped_quant` (2 to 16 stores in one
+  launch) and `llmp.rope_set_rows.quant` (NEOX RoPE's rotated rows stored
+  so, `ggml.rope_set_rows.fused`'s contract) quantize each block of 32
+  with the reference quantizers' arithmetic written as IEEE intrinsics
+  (`kv_quant.cuh`), so the plain and grouped stores equal `EncodeRows`
+  byte for byte by construction and in the tests; the RoPE store's
+  rotation copies `rope_neox` under GGML's device flags and equals GGML's
+  RoPE followed by the plain store byte for byte. The exceptions are
+  blocks below F32's normal range: the reference's reciprocal scale can
+  overflow there (its integer conversion of the product is undefined in
+  C), and under `-ftz` the RoPE store flushes subnormal values and
+  scales; every block that differs so stores an F16 zero scale on both
+  sides and decodes to zeros.
+  Upstream's own quantizing store builds with `-use_fast_math`, so its
+  agreement is not guaranteed; on the test's corpus it agreed on all
+  132,864 blocks. The F16 and F32 stores are unchanged.
+- *Contracts.* `model::CellBytes` gives a cell's bytes by the size rule
+  (a Q8_0 cell of four heads of 256 is 1,088 bytes, Q4_0 576), and
+  `Layout` refuses a cell of partial blocks, so every used, chunk and
+  checkpoint range starts at a block; `KeptLayoutId` already hashes each
+  tensor's encoding, so kept state of another encoding is never adopted.
+- *Planning.* `PlanGraph` gives a quantized destination the quantizing
+  store (grouped, and fused with its RoPE, under the F16 forms' options)
+  and quantized K the vector attention named by its type.
+- *Evidence.* `kv_quant_gpu_test` on spark-b: the stores byte for byte
+  against `EncodeRows` (decode, prefill and broadcast shapes, both index
+  types, blocks at the quantizers' rounding boundaries), the RoPE store
+  with frequency factors and YaRN, blocks below F32's normal range (on
+  that corpus 14 of 56 Q8_0 and 13 of 56 Q4_0 RoPE-store blocks differ,
+  each with zero scales; no plain-store block), and the attention at 1, 2,
+  3, 17, 33, 1,024 and 1,025 rows (the mask pre-pass), without GQA and at
+  GQA 2, 7 and 8, with and without softcap, against the reference
+  executor over the same bytes: NMSE 2.3e-5 to 4.4e-5 for Q8_0 and
+  8.7e-5 to 2.4e-4 for Q4_0, within upstream's 5e-4 for flash attention
+  (the kernel's Q8_1 Q and F16 V accumulation). The builder's six tests
+  (before the below-normal-range test and the GQA-1 and 1,025-row cases
+  were added) pass on the workstation's RTX 3080 Ti (sm_86).
+
+What each model's opt-in still needs, besides the per-alias setting below
+and its long-context quality report: Qwen2 (D 64) its runner's cache
+stores and forced vector attention renamed to the quantized forms; Gemma
+2 and 3 (D 256) the same for decode, and for prefill and joined cohorts
+either the vector kernel (the owner and tensor-core kernels take F16 only)
+or the measured conversion path; Gemma 4 and its assistant (which reads
+the target's cache) the same for the local layers, and the global layers'
+D 512 kept F16 (a per-component encoding) until a quantized D 512 path
+exists; Qwen3.8 its QSA kernels (`llmp.qsa.attn`) and tensor-core
+attention reading blocks; DeepSeek V4 and DSpark a D 512 path and their
+compressed and indexer caches' readers.
 
 **The per-alias setting (not added yet).** A lossy state encoding is a
 model setting under `[models.NAME]` (D-096), one key per kind of state a

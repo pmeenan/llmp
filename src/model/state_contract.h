@@ -125,6 +125,16 @@ struct StateTensorContract {
   bool operator==(const StateTensorContract&) const = default;
 };
 
+// The bytes of one cell holding `values` values of a state encoding
+// (format::StateEncodings()), by the format layer's size rule: dense
+// elements, or a block encoding's whole blocks as GGML stores them
+// (format::Layout::kGgmlBlocks), with no over-read padding, since a cache's
+// attention reads only its rows' blocks. A K or V cell of h heads of d
+// values is h · d / 32 blocks: 34 bytes each in Q8_0, 18 in Q4_0 (1,088 and
+// 576 bytes for four heads of 256). Refused for another encoding, no
+// values, or values that are not whole blocks.
+std::expected<std::uint64_t, std::string> CellBytes(Encoding encoding, std::uint64_t values);
+
 // One layer's (one component instance's) state.
 struct StateContract {
   std::vector<StateTensorContract> tensors;
@@ -153,7 +163,8 @@ struct StateLayoutDerived {
 
 // The region for `per_layer` contracts (layer index, contract) at a
 // context and chunk bound. Refused for a zero or inconsistent bound, a
-// tensor with no cells or bytes, a ring with no window, a block with no
+// tensor with no cells or bytes, a cell of partial elements or (in a block
+// encoding) partial blocks, a ring with no window, a block with no
 // ratio, an alignment that is not a power of two of at least 256 bytes, or
 // any arithmetic that overflows.
 std::expected<StateLayoutDerived, std::string> Layout(

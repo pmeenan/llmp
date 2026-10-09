@@ -81,6 +81,10 @@ std::expected<void, KernelFailure> CheckRopeFrequencyFactors(const ggml_tensor* 
 // A forward ggml_rope_ext node in NEOX mode over F32, with optional checked
 // frequency factors and no rotation offset (rope.cu:536-694).
 std::expected<void, KernelFailure> CheckRope(const ggml_tensor* rope);
+// What such a RoPE takes of its operands, fused or not (its input, positions
+// and frequency factors); the node itself is the caller's to check, since a
+// fused store never writes it.
+std::expected<void, KernelFailure> CheckRopeOperands(const ggml_tensor* rope);
 // The same RoPE fused with the KV write, as GGML's fused launcher runs it
 // (ggml_cuda_op_rope_fused, rope.cu:704-706): `set_rows` stores a view of
 // `rope` that flattens its heads, and the kernel writes the rotated rows

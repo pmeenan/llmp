@@ -94,6 +94,12 @@
 //   llmp.mul_mat.mmvf_rows     {mul_mat}               ops_ext.h MulMatVecFRows
 // and DeepSeek's DSpark drafter chains its Markov head on
 //   llmp.argmax                {custom}                RunArgmax
+// Block-quantized KV caches (kv_quant.h; no model selects them yet), each
+// declaring its capability (D-108):
+//   ggml.flash_attn_ext.vec_q8_0, _q4_0 {flash_attn_ext}   FlashAttnVecQuant
+//   llmp.set_rows.quant          {set_rows}              SetRowsQuant
+//   llmp.set_rows.grouped_quant  {set_rows ...}          SetRowsQuantGroup
+//   llmp.rope_set_rows.quant     {rope, set_rows}        RopeSetRowsQuant
 // The quantized products' two implementations are GGML's kernel families,
 // which the plan names as upstream would route (ops_ext.h SelectMulMatQ);
 // ggml.unary and ggml.rope.ext compute the function the node names.

@@ -823,6 +823,17 @@ if(LLMP_CUDA)
   target_link_libraries(decode_gpu_test PRIVATE llmp_decode_kernels llmp_reference_kernels)
   llmp_gpu_gtest(decode_gpu_test DISCRETE ALL)
 
+  # Block-quantized KV caches (kernels/ggml/kv_quant.h): the quantizing
+  # stores byte for byte against the reference encoder, the quantized vector
+  # attention against the reference executor, their checks and capabilities;
+  # on a discrete GPU too (D-082).
+  add_executable(kv_quant_gpu_test kv_quant_gpu_test.cc)
+  target_include_directories(kv_quant_gpu_test SYSTEM PRIVATE
+                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
+  target_link_libraries(kv_quant_gpu_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory
+                                                  llmp_reference_kernels)
+  llmp_gpu_gtest(kv_quant_gpu_test DISCRETE ALL)
+
   # The format layer's first proof (D-108): Qwen3.8's native NVFP4 and
   # MXFP8 tensors, one layer's worth of each product shape, through the
   # decoders against the CPU reference, with device memory checked; meant

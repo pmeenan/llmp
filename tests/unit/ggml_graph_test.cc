@@ -37,7 +37,9 @@
 #include "ggml.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/qwen2_graph.h"
+#include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
 #include "model/qwen2.h"
 
@@ -697,6 +699,98 @@ TEST(Qwen2GraphTest, LanesOrderEveryReadAndWriteAcrossLanes) {
   EXPECT_EQ(order.Before(4, Ts{z}, Ts{}), Lanes{3});
   order.Reset();
   EXPECT_EQ(order.Before(4, Ts{x, y, z}, Ts{x, y, z}), Lanes{});
+}
+
+// Block-quantized KV caches (kv_quant.h): a Q8_0 or Q4_0 cache store, a
+// RoPE stored into one, and attention over them are planned by their
+// destination's and K's type, with the F16 forms' fusion and grouping
+// options; nothing changes for F16 caches.
+TEST(KvQuantPlanTest, QuantizedCachesTakeTheQuantizingStoresAndAttention) {
+  auto arena = kg::TensorArena::Create(64).value();
+  auto* c = arena.context();
+  constexpr std::int64_t kD = 256, kHeads = 8, kKv = 4, kRows = 3, kCells = 512;
+  std::uint64_t next = std::uint64_t{1} << 36U;
+  const auto leaf = [&](ggml_tensor* t) {
+    kg::TensorArena::Bind(t, next);
+    next += (ggml_nbytes(t) + 511) / 256 * 256;
+    return t;
+  };
+  for (const ggml_type type : {GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_F16}) {
+    SCOPED_TRACE(ggml_type_name(type));
+    auto* x = leaf(ggml_new_tensor_3d(c, GGML_TYPE_F32, kD, kKv, kRows));
+    auto* pos = leaf(ggml_new_tensor_1d(c, GGML_TYPE_I32, kRows));
+    auto* ids = leaf(ggml_new_tensor_1d(c, GGML_TYPE_I64, kRows));
+    auto* k_cache = leaf(ggml_new_tensor_2d(c, type, kD * kKv, kCells));
+    auto* v_cache = leaf(ggml_new_tensor_2d(c, type, kD * kKv, kCells));
+    auto* v_rows = leaf(ggml_new_tensor_2d(c, GGML_TYPE_F32, kD * kKv, kRows));
+    auto* w_cache = leaf(ggml_new_tensor_2d(c, type, kD * kKv, kCells));
+    auto* w_rows = leaf(ggml_new_tensor_2d(c, GGML_TYPE_F32, kD * kKv, kRows));
+    auto* q = leaf(ggml_new_tensor_3d(c, GGML_TYPE_F32, kD, kRows, kHeads));
+    auto* mask = leaf(ggml_new_tensor_2d(c, GGML_TYPE_F16, kCells, kRows));
+    auto* rope = ggml_rope_ext(c, x, pos, nullptr, kD, GGML_ROPE_TYPE_NEOX, 8192, 10000.0f, 1.0f,
+                               0.0f, 1.0f, 0.0f, 0.0f);
+    auto* flat = ggml_view_2d(c, rope, kD * kKv, kRows, rope->nb[2], 0);
+    auto* k_store = ggml_set_rows(c, k_cache, flat, ids);
+    auto* v_store = ggml_set_rows(c, v_cache, v_rows, ids);
+    auto* w_store = ggml_set_rows(c, w_cache, w_rows, ids);
+    const std::size_t row = ggml_row_size(type, kD);
+    auto* k = ggml_view_3d(c, k_store, kD, kCells, kKv, k_cache->nb[1], row, 0);
+    auto* v = ggml_view_3d(c, v_store, kD, kCells, kKv, v_cache->nb[1], row, 0);
+    auto* attention = ggml_flash_attn_ext(c, q, k, v, mask, 0.0625f, 0.0f, 0.0f);
+    ggml_prec_set_acc(attention, GGML_PREC_F32);
+    // V's and W's stores first, consecutive; then K's RoPE store and the
+    // attention.
+    std::array<ggml_tensor*, 3> outputs{v_store, w_store, attention};
+    auto nodes = kg::GraphOrder(outputs);
+    kg::BindDistinct(nodes, std::uint64_t{1} << 40U);
+    const auto names = [&](const kg::DeviceChoices& device) {
+      std::vector<std::string_view> out;
+      const auto plan = kg::PlanGraph(nodes, false, device);
+      EXPECT_TRUE(plan.has_value()) << (plan ? "" : plan.error().detail);
+      if (plan) {
+        for (const auto& step : plan->steps) out.push_back(step.implementation);
+      }
+      return out;
+    };
+    const auto has = [](const std::vector<std::string_view>& plan, std::string_view name) {
+      return std::ranges::count(plan, name);
+    };
+    const bool quantized = type != GGML_TYPE_F16;
+    const auto plain = names(ModelDevice());
+    auto device = ModelDevice();
+    device.fuse_rope_store = true;
+    device.group_set_rows = true;
+    const auto fused = names(device);
+    if (quantized) {
+      const std::string_view attend =
+          type == GGML_TYPE_Q8_0 ? kg::kFlashAttnVecQ8Name : kg::kFlashAttnVecQ4Name;
+      EXPECT_EQ(has(plain, attend), 1);
+      EXPECT_EQ(has(plain, kg::kSetRowsQuantName), 3);
+      EXPECT_EQ(has(plain, kg::kRopeName), 1);
+      EXPECT_EQ(has(fused, attend), 1);
+      EXPECT_EQ(has(fused, kg::kRopeSetRowsQuantName), 1);
+      EXPECT_EQ(has(fused, kg::kRopeName), 0);
+      EXPECT_EQ(has(fused, kg::kSetRowsQuantGroupName), 1);
+      EXPECT_EQ(has(fused, kg::kSetRowsQuantName), 0);
+      EXPECT_EQ(has(fused, kg::kSetRowsName) + has(fused, kg::kSetRowsGroupedName), 0);
+    } else {
+      EXPECT_EQ(has(plain, kg::kSetRowsQuantName) + has(plain, kg::kRopeSetRowsQuantName) +
+                    has(fused, kg::kSetRowsQuantName) + has(fused, kg::kSetRowsQuantGroupName) +
+                    has(fused, kg::kRopeSetRowsQuantName),
+                0);
+      EXPECT_EQ(has(fused, kg::kRopeSetRowsFused), 1);
+    }
+  }
+  // Quantized V needs K of its encoding: no plan names an attention for it.
+  auto* q = ggml_new_tensor_3d(c, GGML_TYPE_F32, 64, 1, 2);
+  auto* k = ggml_new_tensor_3d(c, GGML_TYPE_F16, 64, 256, 1);
+  auto* v = ggml_new_tensor_3d(c, GGML_TYPE_Q8_0, 64, 256, 1);
+  auto* mask = ggml_new_tensor_2d(c, GGML_TYPE_F16, 256, 1);
+  for (auto* t : {q, k, v, mask}) leaf(t);
+  std::array<ggml_tensor*, 1> outputs{ggml_flash_attn_ext(c, q, k, v, mask, 0.125f, 0.0f, 0.0f)};
+  auto nodes = kg::GraphOrder(outputs);
+  kg::BindDistinct(nodes, std::uint64_t{1} << 41U);
+  EXPECT_FALSE(kg::PlanGraph(nodes, false, ModelDevice()).has_value());
 }
 
 TEST(Qwen2GraphTest, AnUnchangedPlanIsTheSamePlan) {

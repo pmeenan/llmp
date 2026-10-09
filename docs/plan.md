@@ -1386,6 +1386,14 @@ each is checked against the design as M3.6 proceeds.
             quantizing cache stores, the state contracts' sizes and
             kept-state layout, and the per-alias setting
             (engine-components.md).
+            *2026-10-09:* the kernel half landed: GGML's vector attention
+            over Q8_0 and Q4_0 K and V at D 64 and 256, the quantizing
+            stores (plain, grouped, fused with RoPE) byte for byte with
+            the reference encoder, cell sizes by the size rule, with
+            capabilities and graph planning
+            ([engine-components.md](engine-components.md#weight-and-state-formats)).
+            Each model's wiring, D 512, the per-alias setting and its
+            quality report remain.
 - [ ] **Shared slot lifecycle, one runner interface, one serving adapter
       per pipeline kind**, derived from state contracts; reconcile today's
       divergent copies (Gemma2's restore guards against Gemma3's).

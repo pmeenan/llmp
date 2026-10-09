@@ -12,13 +12,11 @@
 // GGML's device flags (CMakeLists.txt), so that its SASS is the bridge's.
 //
 // PlanFlashAttnVec is a recorded copy of launch_fattn's host arithmetic
-// (fattn-common.cuh:1106-1197, stream-k off, not sparse), so the pool
-// scratch the launch draws is known and checked before it is queued. This
+// (fattn_vec_plan.h, stream-k off, not sparse), so the pool scratch the
+// launch draws is known and checked before it is queued. This
 // case never compacts the mask (use_sparse is false); the function
 // launch_fattn names for that is fattn_mma.cu's.
 
-#include <algorithm>
-#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <expected>
@@ -27,6 +25,7 @@
 
 #include "base/bytes.h"
 #include "fattn-vec.cuh"
+#include "kernels/ggml/fattn_vec_plan.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/validate.h"
 
@@ -41,11 +40,6 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
       KernelFailure{.error = KernelError::kRejected, .detail = std::move(detail)});
 }
 
-constexpr int kKqStride = 256;         // FATTN_KQ_STRIDE
-constexpr std::uint64_t kBlock = 256;  // the pool's block boundary (launch.h)
-
-std::uint64_t Round(std::uint64_t bytes) { return (bytes + kBlock - 1) / kBlock * kBlock; }
-
 }  // namespace
 
 template <int kHead>
@@ -55,7 +49,6 @@ static std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVecHead(const La
     return std::unexpected(checked.error());
   }
   const ggml_tensor* q = node->src[0];
-  const ggml_tensor* k = node->src[1];
   const auto& device = ggml_cuda_info().devices[launch.device()];
   FlashAttnPlan plan;
   plan.columns_per_block = q->ne[1] == 1 ? 1 : 2;
@@ -88,43 +81,8 @@ static std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVecHead(const La
                       .detail = std::string("the vector kernel's occupancy query failed: ") +
                                 cudaGetErrorString(occupancy)});
   }
-  // launch_fattn<D, ncols1 = columns per block, ncols2 = 1>.
-  const std::int64_t ntiles_x = (q->ne[1] + plan.columns_per_block - 1) / plan.columns_per_block;
-  const std::int64_t gqa = q->ne[2] / k->ne[2];
-  const std::int64_t ntiles_dst = ntiles_x * gqa * k->ne[2] * q->ne[3];
-  const std::int64_t ntiles_kv = (k->ne[1] + kHead - 1) / kHead;
-  // launch_fattn's vector grid uses x=query tiles, z=query heads and
-  // an int tail-efficiency product. Reject shapes before those narrowings.
-  if (ntiles_x > INT32_MAX || q->ne[2] > 65535 || ntiles_kv > (INT32_MAX / 100) / ntiles_dst) {
-    return Rejected("vector attention exceeds the pinned grid or 32-bit tile arithmetic");
-  }
-  std::int64_t parallel = std::min<std::int64_t>(per_sm, ntiles_kv);
-  const std::int64_t per_wave = static_cast<std::int64_t>(device.nsm) * per_sm;
-  std::int64_t best_waves = 0;
-  std::int64_t best_efficiency = 0;
-  for (std::int64_t test = parallel; test <= ntiles_kv; ++test) {
-    const std::int64_t total = ntiles_dst * test;
-    const std::int64_t waves = (total + per_wave - 1) / per_wave;
-    const std::int64_t efficiency = 100 * total / (waves * per_wave);
-    if (best_efficiency >= 95 && waves > best_waves) {
-      break;
-    }
-    if (efficiency > best_efficiency) {
-      best_waves = waves;
-      best_efficiency = efficiency;
-      parallel = test;
-    }
-  }
-  plan.parallel_blocks = static_cast<int>(parallel);
-  plan.mask_prepass = k->ne[1] % kKqStride == 0 && (q->ne[1] >= 1024 || q->ne[3] > 1);
-  if (plan.mask_prepass) {
-    plan.scratch += Round(static_cast<std::uint64_t>(ntiles_x * q->ne[3]) * sizeof(int));
-  }
-  if (plan.parallel_blocks > 1) {
-    plan.scratch += Round(static_cast<std::uint64_t>(parallel) *
-                          static_cast<std::uint64_t>(ggml_nelements(node)) * sizeof(float));
-    plan.scratch += Round(static_cast<std::uint64_t>(parallel) *
-                          static_cast<std::uint64_t>(ggml_nrows(node)) * sizeof(float2));
+  if (auto grid = detail::PlanVectorGrid(node, kHead, per_sm, device.nsm, plan); !grid) {
+    return std::unexpected(grid.error());
   }
   return plan;
 }

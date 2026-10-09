@@ -162,9 +162,9 @@ bool Lossless(Encoding from, Encoding to);
 // its tile and tensor-core kernels convert them to F16 first), each of
 // which GGML's set_rows also stores. Membership says nothing about a
 // device: whether a backend reads or stores one is its attention's and
-// cache store's capability, and no compiled CUDA path takes a block
-// encoding yet (docs/engine-components.md), so a state may use one only
-// where its plan finds both. Whether one is exact for a state is
+// cache store's capability (on CUDA, Q8_0 and Q4_0 at head sizes 64 and
+// 256: kernels/ggml/kv_quant.h; docs/engine-components.md), so a state
+// may use one only where its plan finds both. Whether one is exact for a state is
 // Lossless(the state's own encoding, the stored one); a lossy one is an
 // opt-in per alias, off by default.
 std::span<const Encoding> StateEncodings();

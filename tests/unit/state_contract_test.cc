@@ -506,6 +506,82 @@ TEST(StateContractTest, KeptLayoutIdsAreNewAndChangeWithTheSpecAndAnyByteMeaning
   EXPECT_FALSE(id.starts_with("deepseek4-state/1"));
 }
 
+// A block-encoded KV cache (Q8_0, Q4_0): its cell is a row of whole GGML
+// blocks, and every range the lifecycle derives starts at a block.
+TEST(StateContractTest, BlockEncodedCellsAreWholeBlocksAndRangesStartAtBlocks) {
+  // Four heads of 256 (Gemma's local layers), one head of 64 (Qwen2's).
+  EXPECT_EQ(md::CellBytes(Encoding::kQ8_0, 4 * 256).value_or(0), 1024U / 32 * 34);
+  EXPECT_EQ(md::CellBytes(Encoding::kQ4_0, 4 * 256).value_or(0), 1024U / 32 * 18);
+  EXPECT_EQ(md::CellBytes(Encoding::kQ8_0, 64).value_or(0), 68U);
+  EXPECT_EQ(md::CellBytes(Encoding::kQ4_0, 64).value_or(0), 36U);
+  EXPECT_EQ(md::CellBytes(Encoding::kQ5_1, 64).value_or(0), 48U);
+  EXPECT_EQ(md::CellBytes(Encoding::kF16, 4 * 256).value_or(0), 2048U);
+  EXPECT_EQ(md::CellBytes(Encoding::kBF16, 4 * 256).value_or(0), 2048U);
+  EXPECT_EQ(md::CellBytes(Encoding::kF32, 4 * 256).value_or(0), 4096U);
+  EXPECT_FALSE(md::CellBytes(Encoding::kQ8_0, 48).has_value());  // not whole blocks
+  EXPECT_FALSE(md::CellBytes(Encoding::kQ8_0, 0).has_value());
+  EXPECT_FALSE(md::CellBytes(Encoding::kQ4_K, 256).has_value());  // not a state encoding
+  EXPECT_FALSE(md::CellBytes(Encoding::kNvfp4, 256).has_value());
+
+  for (const Encoding encoding : {Encoding::kQ8_0, Encoding::kQ4_0}) {
+    const std::uint64_t block = encoding == Encoding::kQ8_0 ? 34 : 18;
+    const std::uint64_t cell = md::CellBytes(encoding, 4 * 256).value();
+    const auto kv = [&](std::string name, bool local) {
+      return StateTensorContract{.name = std::move(name),
+                                 .kind = local ? StateKind::kRing : StateKind::kKv,
+                                 .encoding = encoding,
+                                 .cell_bytes = cell,
+                                 .cells = local ? CellRule::kRing : CellRule::kPerPosition,
+                                 .window_or_ratio = local ? 1024U : 0U,
+                                 .rollback = local ? Rollback::kNone : Rollback::kTruncate};
+    };
+    const Layers layers = {{0, {.tensors = {kv("k", false), kv("v", false)}}},
+                           {1, {.tensors = {kv("k", true), kv("v", true)}}}};
+    const auto layout = md::Layout(layers, 4096, 512);
+    ASSERT_TRUE(layout.has_value()) << layout.error();
+    for (const auto& item : layout->items) {
+      EXPECT_EQ(item.bytes, item.cells * cell) << item.contract.name;
+      EXPECT_EQ(item.cells, item.contract.cells == CellRule::kRing ? 1536U : 4096U);
+    }
+    const auto starts_at_a_block = [&](const std::vector<StateRange>& ranges,
+                                       const std::string& what) {
+      for (const StateRange& r : ranges) {
+        const auto item = std::ranges::find_if(layout->items, [&](const auto& i) {
+          return r.offset >= i.offset && r.offset < i.offset + i.bytes;
+        });
+        ASSERT_NE(item, layout->items.end()) << what;
+        EXPECT_EQ((r.offset - item->offset) % block, 0U) << what;
+        EXPECT_EQ(r.bytes % block, 0U) << what;
+      }
+    };
+    for (const std::uint32_t positions : {1U, 255U, 256U, 1000U, 4096U}) {
+      const auto used = md::UsedThrough(*layout, positions);
+      ASSERT_TRUE(used.has_value());
+      starts_at_a_block(*used, std::format("used through {}", positions));
+      if (positions < 4096) {
+        const auto writes = md::ChunkWrites(*layout, positions, 3);
+        ASSERT_TRUE(writes.has_value());
+        starts_at_a_block(*writes, std::format("chunk at {}", positions));
+        const auto checkpoint = md::CheckpointWrites(*layout, positions);
+        ASSERT_TRUE(checkpoint.has_value());
+        starts_at_a_block(*checkpoint, std::format("checkpoint at {}", positions));
+      }
+    }
+    // Used through 1,000 positions: 1,024 cells (read alignment 256) of
+    // the global layer's K.
+    const auto used = md::UsedThrough(*layout, 1000).value();
+    EXPECT_EQ(used.front().offset, layout->items.front().offset);
+    EXPECT_EQ(used.front().bytes, 1024 * cell);
+
+    // A cell of partial blocks is refused.
+    Layers partial = layers;
+    partial[0].second.tensors[0].cell_bytes = cell - 1;
+    EXPECT_FALSE(md::Layout(partial, 4096, 512).has_value());
+    partial[0].second.tensors[0].cell_bytes = cell + (block / 2);
+    EXPECT_FALSE(md::Layout(partial, 4096, 512).has_value());
+  }
+}
+
 TEST(StateContractTest, LayoutsRefuseInconsistentBoundsAndEmptyTensors) {
   const Layers kv = {{0, {.tensors = {{.name = "k", .cell_bytes = 512}}}}};
   EXPECT_FALSE(md::Layout(kv, 0, 1).has_value());

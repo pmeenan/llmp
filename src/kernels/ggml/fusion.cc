@@ -16,6 +16,7 @@
 #include "ggml.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_read_index.h"
+#include "kernels/ggml/kv_quant.h"
 
 namespace llmp::kernels::ggml {
 namespace {
@@ -312,6 +313,25 @@ std::optional<RopeSetRowsNodes> RopeSetRowsFusionAt(GraphNodes graph, std::size_
   ggml_tensor* set_rows = graph[index + 2];
   if (!ShouldFuseRopeSetRows(rope, view, set_rows) ||
       !FusionMemoryClear(graph, index, 3, index + 2)) {
+    return std::nullopt;
+  }
+  return RopeSetRowsNodes{.rope = rope, .view = view, .set_rows = set_rows};
+}
+
+std::optional<RopeSetRowsNodes> RopeQuantStoreFusionAt(GraphNodes graph, std::size_t index,
+                                                       const detail::GraphReadIndex* reads) {
+  if (!CanFuseSubgraph(graph, index, {GGML_OP_ROPE, GGML_OP_VIEW, GGML_OP_SET_ROWS}, index + 2,
+                       reads)) {
+    return std::nullopt;
+  }
+  ggml_tensor* rope = graph[index];
+  ggml_tensor* view = graph[index + 1];
+  ggml_tensor* set_rows = graph[index + 2];
+  if (rope->op != GGML_OP_ROPE || view->op != GGML_OP_VIEW || set_rows->op != GGML_OP_SET_ROWS ||
+      rope->src[0] == nullptr || rope->src[0]->ne[3] != 1 || !KvQuantType(set_rows->type) ||
+      set_rows->src[1] == nullptr || set_rows->src[1]->type != GGML_TYPE_I64 ||
+      !ggml_is_contiguous(view) || view->ne[0] != rope->ne[0] * rope->ne[1] ||
+      rope->op_params[2] != GGML_ROPE_TYPE_NEOX || !FusionMemoryClear(graph, index, 3, index + 2)) {
     return std::nullopt;
   }
   return RopeSetRowsNodes{.rope = rope, .view = view, .set_rows = set_rows};

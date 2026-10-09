@@ -35,6 +35,7 @@ target_sources(llmp_ggml_tensors PRIVATE dsv4_hc_norm.cc)
 target_sources(llmp_ggml_tensors PRIVATE dsv4_outa.cc)
 target_sources(llmp_ggml_tensors PRIVATE gemma_norm.cc set_rows_group.cc)
 target_sources(llmp_ggml_tensors PRIVATE gemma4_assistant_graph.cc gemma4_attention.cc fattn_owner.cc)
+target_sources(llmp_ggml_tensors PRIVATE kv_quant.cc)
 target_link_libraries(llmp_ggml_tensors PUBLIC llmp_base llmp_ggml_base llmp_execution
                                                  llmp_model
                                           # cutlass/version.h only (llmp_ops.cc pins the
@@ -78,6 +79,9 @@ if(LLMP_CUDA)
   target_sources(llmp_ggml_kernels PRIVATE mul_mat_q_glu.cu)
   target_sources(llmp_ggml_kernels PRIVATE dsv4_outa.cu)
   target_sources(llmp_ggml_kernels PRIVATE gemma_norm.cu fattn_owner.cu set_rows_group.cu)
+  # Block-quantized KV caches (kv_quant.h): the quantized vector attention
+  # and the quantizing cache stores.
+  target_sources(llmp_ggml_kernels PRIVATE fattn_vec_quant.cu kv_quant_store.cu kv_quant_rope.cu)
   target_include_directories(llmp_ggml_kernels SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   # CUTLASS's NVFP4 grouped GEMM for the routed experts (moe_cutlass.h) and
@@ -156,6 +160,8 @@ if(LLMP_CUDA)
                    dsv4_outa.h dsv4_outa.cc dsv4_outa.cu
                    gemma_norm.h gemma_norm.cc gemma_norm.cu
                    set_rows_group.h set_rows_group.cc set_rows_group.cu
+                   kv_quant.h kv_quant.cc kv_quant.cuh kv_quant_store.cu kv_quant_rope.cu
+                   fattn_vec_plan.h fattn_vec_quant.cu
                    gemma4_assistant_graph.h gemma4_assistant_graph.cc
                    dsv4_ds4_attention.h dsv4_ds4_attention.cu
                    dsv4_ds4_attention_core.cuh dsv4_ds4_attention_core.json
@@ -206,6 +212,14 @@ if(LLMP_CUDA)
   # of GGML's flags for its files, as GGML's own instance unit
   # (template-instances/fattn-vec-instance-f16-f16.cu) builds in the bridge.
   set_source_files_properties(fattn.cu PROPERTIES COMPILE_OPTIONS
+                              "-use_fast_math;-extended-lambda")
+  # Its quantized cases likewise, as GGML's own instance units build
+  # (template-instances/fattn-vec-instance-q8_0-q8_0.cu and -q4_0-q4_0.cu);
+  # and the fused RoPE quantizing store, whose rotation must compute as
+  # rope.cu's does. The plain and grouped quantizing stores
+  # (kv_quant_store.cu) keep the project's flags: their quantization is the
+  # reference's, IEEE step by step (kv_quant.cuh).
+  set_source_files_properties(fattn_vec_quant.cu kv_quant_rope.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
   # The units holding original ds4 numerical code (the output-A core and the
   # F16-Q copy of the token-tile HCA core) keep the pinned original CUDA

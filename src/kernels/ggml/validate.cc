@@ -545,6 +545,10 @@ bool CopiesAsMemcpy2d(const ggml_tensor* src, const ggml_tensor* dst) {
 
 }  // namespace
 
+std::expected<void, KernelFailure> CheckRopeOperands(const ggml_tensor* rope) {
+  return CheckRopeInput(rope);
+}
+
 std::expected<void, KernelFailure> CheckGetRows(const ggml_tensor* node) {
   if (node == nullptr || node->op != GGML_OP_GET_ROWS || !Bound(node) || !Bound(node->src[0]) ||
       !Bound(node->src[1])) {

@@ -111,6 +111,12 @@ std::optional<MulMatAddNodes> MulMatAddFusionAt(GraphNodes graph, std::size_t in
 // at 2666-2698, with the memory ranges). Complete: it needs no device.
 std::optional<RopeSetRowsNodes> RopeSetRowsFusionAt(GraphNodes graph, std::size_t index,
                                                     const detail::GraphReadIndex* reads = nullptr);
+// The same subgraph and memory rules with a Q8_0 or Q4_0 destination and
+// forward NEOX RoPE, which upstream does not fuse (its gate takes F32 and
+// F16 destinations) and llmpalooza's quantizing store does (kv_quant.h
+// RopeSetRowsQuant).
+std::optional<RopeSetRowsNodes> RopeQuantStoreFusionAt(
+    GraphNodes graph, std::size_t index, const detail::GraphReadIndex* reads = nullptr);
 
 // An RMSNorm and the mul that scales it, which GGML's fused launcher writes
 // in one kernel (ops.h RmsNormMul).

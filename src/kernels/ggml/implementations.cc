@@ -3,10 +3,14 @@
 
 #include "kernels/ggml/implementations.h"
 
+#include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -14,7 +18,10 @@
 #include <vector>
 
 #include "execution/registry.h"
+#include "format/encoding.h"
+#include "format/layout.h"
 #include "ggml.h"
+#include "ir/op.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
@@ -23,6 +30,7 @@
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
@@ -59,6 +67,8 @@ struct Kernel::Entry {
   std::expected<void, KernelFailure> (*check)(std::span<const ggml_tensor* const> nodes);
   std::expected<void, KernelFailure> (*run)(LaunchContext& launch,
                                             std::span<ggml_tensor* const> nodes);
+  // What it computes (D-108), where the module declares it.
+  const execution::Capability* capability = nullptr;
 };
 
 namespace {
@@ -104,7 +114,154 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
   return std::unexpected(
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
-constexpr std::array<Kernel::Entry, 126> kKernels = {{
+// Whether this build has SASS that runs on a device of architecture
+// `arch` (CUDA's major · 10 + minor): an `sm_XY` cubin on X.Y up to the
+// next major, an arch-specific `sm_XYa` on X.Y only.
+bool CompiledFor(std::uint32_t arch) {
+  const std::string_view list = LLMP_GGML_CUDA_ARCHITECTURES;
+  std::size_t at = 0;
+  while (at < list.size()) {
+    const std::size_t comma = std::min(list.find(',', at), list.size());
+    const std::string_view entry = list.substr(at, comma - at);
+    std::uint32_t compiled = 0;
+    const auto [end, error] = std::from_chars(entry.data(), entry.data() + entry.size(), compiled);
+    if (error == std::errc{} && compiled != 0) {
+      const bool specific = end != entry.data() + entry.size() && *end == 'a';
+      if (specific ? arch == compiled : (arch / 10 == compiled / 10 && arch >= compiled)) {
+        return true;
+      }
+    }
+    at = comma + 1;
+  }
+  return false;
+}
+
+// The block-quantized KV caches' capabilities (kv_quant.h). For attention
+// a query's k is Q's and K's head size and n V's; for a cache store k is a
+// stored row's values (execution/registry.h).
+namespace kv_caps {
+using format::Encoding;
+using format::Layout;
+constexpr std::array kF32 = {Encoding::kF32};
+constexpr std::array kF16 = {Encoding::kF16};
+constexpr std::array kI32 = {Encoding::kI32};
+constexpr std::array kI64 = {Encoding::kI64};
+constexpr std::array kIds = {Encoding::kI32, Encoding::kI64};
+constexpr std::array kQ8 = {Encoding::kQ8_0};
+constexpr std::array kQ4 = {Encoding::kQ4_0};
+constexpr std::array kBlocks = {Encoding::kQ8_0, Encoding::kQ4_0};
+constexpr std::array kDense = {Layout::kDense};
+constexpr std::array kGgml = {Layout::kGgmlBlocks};
+
+// kAttention's sources: q, k, v, mask (required here), sinks (refused by
+// the predicate and the check).
+constexpr std::array<execution::OperandRule, 4> kAttentionQ8 = {{
+    {.operand = 0, .encodings = kF32, .layouts = kDense},
+    {.operand = 1, .encodings = kQ8, .layouts = kGgml},
+    {.operand = 2, .encodings = kQ8, .layouts = kGgml},
+    {.operand = 3, .encodings = kF16, .layouts = kDense},
+}};
+constexpr std::array<execution::OperandRule, 4> kAttentionQ4 = {{
+    {.operand = 0, .encodings = kF32, .layouts = kDense},
+    {.operand = 1, .encodings = kQ4, .layouts = kGgml},
+    {.operand = 2, .encodings = kQ4, .layouts = kGgml},
+    {.operand = 3, .encodings = kF16, .layouts = kDense},
+}};
+// kCacheStore's sources: cache, src, idx; kGroupedStores' the same for each
+// store (the first two's here, every one's in the predicate).
+constexpr std::array<execution::OperandRule, 3> kStore = {{
+    {.operand = 0, .encodings = kBlocks, .layouts = kGgml},
+    {.operand = 1, .encodings = kF32, .layouts = kDense},
+    {.operand = 2, .encodings = kIds, .layouts = kDense},
+}};
+constexpr std::array<execution::OperandRule, 6> kGroupedStores = {{
+    {.operand = 0, .encodings = kBlocks, .layouts = kGgml},
+    {.operand = 1, .encodings = kF32, .layouts = kDense},
+    {.operand = 2, .encodings = kIds, .layouts = kDense},
+    {.operand = 3, .encodings = kBlocks, .layouts = kGgml},
+    {.operand = 4, .encodings = kF32, .layouts = kDense},
+    {.operand = 5, .encodings = kIds, .layouts = kDense},
+}};
+// kRopeStore's sources: x, pos, cache, idx, freq (optional: the predicate).
+constexpr std::array<execution::OperandRule, 4> kRopeStore = {{
+    {.operand = 0, .encodings = kF32, .layouts = kDense},
+    {.operand = 1, .encodings = kI32, .layouts = kDense},
+    {.operand = 2, .encodings = kBlocks, .layouts = kGgml},
+    {.operand = 3, .encodings = kI64, .layouts = kDense},
+}};
+
+bool AcceptsAttention(const execution::CapabilityQuery& q) {
+  // Sinks (operand 4), which no rule can refuse by its absence.
+  const bool sinks = std::ranges::any_of(
+      q.operands, [](const execution::OperandFormat& o) { return o.operand == 4; });
+  return CompiledFor(q.arch) && (q.k == 64 || q.k == 256) && q.n == q.k && !sinks;
+}
+bool AcceptsStore(const execution::CapabilityQuery& q) { return CompiledFor(q.arch) && q.k >= 32; }
+// Every store of a group in the formats the first two's rules name, two to
+// sixteen of them.
+bool AcceptsGroupedStores(const execution::CapabilityQuery& q) {
+  std::uint32_t stores = 0;
+  for (const execution::OperandFormat& o : q.operands) {
+    const execution::OperandRule& rule = kGroupedStores[o.operand % 3U];
+    if (std::ranges::find(rule.encodings, o.encoding) == rule.encodings.end() ||
+        std::ranges::find(rule.layouts, o.layout) == rule.layouts.end()) {
+      return false;
+    }
+    stores = std::max<std::uint32_t>(stores, (o.operand / 3U) + 1U);
+  }
+  return AcceptsStore(q) && stores >= 2 && stores <= kSetRowsQuantGroupMax;
+}
+bool AcceptsRopeStore(const execution::CapabilityQuery& q) {
+  const auto freq = std::ranges::find_if(
+      q.operands, [](const execution::OperandFormat& o) { return o.operand == 4; });
+  return AcceptsStore(q) && (freq == q.operands.end() ||
+                             (freq->encoding == Encoding::kF32 && freq->layout == Layout::kDense));
+}
+
+// Rung 1, no expansion, capturable, and not lossy: each computes its
+// encoding's definition (whether a state's encoding is lossy is
+// format::Lossless's, and the alias's to opt into). The stores write each
+// row alone, so a verify's rows may take them; the attention's parallel
+// blocks follow the rows.
+constexpr execution::Capability Attention(std::span<const execution::OperandRule> rules) {
+  return {.op = ir::Primitive(ir::Op::kAttention),
+          .operands = rules,
+          .rung = execution::Rung::kNative,
+          .expansion = execution::Expansion::kNone,
+          .row_invariant = false,
+          .capturable = true,
+          .accepts = &AcceptsAttention};
+}
+constexpr execution::Capability Store(ir::OpKey op, std::span<const execution::OperandRule> rules,
+                                      bool (*accepts)(const execution::CapabilityQuery&)) {
+  return {.op = op,
+          .operands = rules,
+          .shape = {.k_multiple = 32},
+          .rung = execution::Rung::kNative,
+          .expansion = execution::Expansion::kNone,
+          .row_invariant = true,
+          .capturable = true,
+          .accepts = accepts};
+}
+constexpr execution::Capability kAttentionQ8Capability = Attention(kAttentionQ8);
+constexpr execution::Capability kAttentionQ4Capability = Attention(kAttentionQ4);
+constexpr execution::Capability kStoreCapability =
+    Store(ir::Primitive(ir::Op::kCacheStore), kStore, &AcceptsStore);
+constexpr execution::Capability kGroupedStoresCapability =
+    Store(ir::Fused(ir::FusedKind::kGroupedStores), kGroupedStores, &AcceptsGroupedStores);
+constexpr execution::Capability kRopeStoreCapability =
+    Store(ir::Fused(ir::FusedKind::kRopeStore), kRopeStore, &AcceptsRopeStore);
+
+// What the predicates check, which the variants name (an identity covers a
+// capability but not its predicate).
+constexpr std::string_view kAttentionAccepts =
+    "; selectable for the build's SASS architectures at head size 64 or 256 (K's and V's), "
+    "without sinks";
+constexpr std::string_view kStoreAccepts =
+    "; selectable for the build's SASS architectures, rows of whole 32-value blocks";
+}  // namespace kv_caps
+
+constexpr std::array<Kernel::Entry, 131> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -1044,10 +1201,63 @@ constexpr std::array<Kernel::Entry, 126> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4SparseMask(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4SparseMask(launch, n[0]); }},
+    // Block-quantized KV caches (kv_quant.h).
+    {.name = kFlashAttnVecQ8Name,
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "ggml_cuda_flash_attn_ext_vec_case<D, Q8_0, Q8_0> for D 64 and 256: "
+                "flash_attn_mask_to_KV_max<ncols> from 1,024 query rows, flash_attn_ext_vec<D, "
+                "1 or 2, Q8_0, Q8_0, softcap at D 256>, flash_attn_combine_results<D> over "
+                "parallel blocks; Q to Q8_1 in shared memory; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckFlashAttnVecQuant(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return FlashAttnVecQuant(launch, n[0]); },
+     .capability = &kv_caps::kAttentionQ8Capability},
+    {.name = kFlashAttnVecQ4Name,
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "ggml_cuda_flash_attn_ext_vec_case<D, Q4_0, Q4_0> for D 64 and 256: "
+                "flash_attn_mask_to_KV_max<ncols> from 1,024 query rows, flash_attn_ext_vec<D, "
+                "1 or 2, Q4_0, Q4_0, softcap at D 256>, flash_attn_combine_results<D> over "
+                "parallel blocks; Q to Q8_1 in shared memory; upstream launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckFlashAttnVecQuant(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return FlashAttnVecQuant(launch, n[0]); },
+     .capability = &kv_caps::kAttentionQ4Capability},
+    {.name = kSetRowsQuantName,
+     .operation = execution::Operation::kSetRows,
+     .variant = "QuantizedStores: a thread per 32-value block, k_set_rows_quant's indexing, F32 "
+                "rows at I32 or I64 indices into Q8_0 or Q4_0 by the reference quantizers' IEEE "
+                "steps; 256 threads a block, no scratch",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckSetRowsQuant(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return SetRowsQuant(launch, n[0]); },
+     .capability = &kv_caps::kStoreCapability},
+    {.name = kSetRowsQuantGroupName,
+     .operation = execution::Operation::kSetRows,
+     .variant = "QuantizedStores over two through sixteen independent stores, a grid row each; "
+                "descriptors in launch arguments; no scratch",
+     .arity = 0,
+     .check = &CheckSetRowsQuantGroup,
+     .run = &SetRowsQuantGroup,
+     .capability = &kv_caps::kGroupedStoresCapability},
+    {.name = kRopeSetRowsQuantName,
+     .operation = execution::Operation::kRopeSetRows,
+     .variant = "RopeQuantizedStore<has_ff>: a thread per 32-value block of a token's row, "
+                "rope_neox's rotation (GGML's device flags), then the reference quantizers' IEEE "
+                "steps into Q8_0 or Q4_0; 256 threads a block, no scratch",
+     .arity = 2,
+     .check = [](ConstNodes n) { return CheckRopeSetRowsQuant(n[0], n[1]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RopeSetRowsQuant(launch, n[0], n[1]); },
+     .capability = &kv_caps::kRopeStoreCapability},
 }};
 
+std::string_view AcceptsText(const execution::Capability& capability) {
+  return capability.op == ir::Primitive(ir::Op::kAttention) ? kv_caps::kAttentionAccepts
+                                                            : kv_caps::kStoreAccepts;
+}
+
 execution::Implementation Declare(std::string_view name, execution::Operation operation,
-                                  std::string_view variant) {
+                                  std::string_view variant,
+                                  const execution::Capability* capability = nullptr) {
   // The grouped GEMM and the MXFP8 product are CUTLASS's kernels: their
   // identities name that tree too.
   const bool cutlass = name == kMoeGemmName || name == kMxfp8GemmName;
@@ -1072,7 +1282,9 @@ execution::Implementation Declare(std::string_view name, execution::Operation op
           .build = std::format("sdk {}; target {}; cuda {}; build type {}; {}; {}; sanitizers {}",
                                LLMP_GGML_SDK, LLMP_GGML_TARGET, LLMP_GGML_CUDA_ARCHITECTURES,
                                LLMP_GGML_BUILD_TYPE, kAsserts, kLibraryAsserts, LLMP_GGML_SANITIZE),
-          .variant = std::string(variant)};
+          .variant = capability == nullptr ? std::string(variant)
+                                           : std::format("{}{}", variant, AcceptsText(*capability)),
+          .capability = capability == nullptr ? std::nullopt : std::optional(*capability)};
 }
 
 execution::Implementation Declare(const RmsNormMulKernel::Entry& entry) {
@@ -1080,7 +1292,7 @@ execution::Implementation Declare(const RmsNormMulKernel::Entry& entry) {
 }
 
 execution::Implementation Declare(const Kernel::Entry& entry) {
-  return Declare(entry.name, entry.operation, entry.variant);
+  return Declare(entry.name, entry.operation, entry.variant, entry.capability);
 }
 
 }  // namespace

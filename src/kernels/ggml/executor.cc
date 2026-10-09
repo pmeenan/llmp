@@ -20,6 +20,7 @@
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
+#include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
@@ -153,6 +154,11 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
       planned = attention->original.scratch;
     } else if (step.implementation == kFlashAttnVec256Name) {
       auto attention = PlanFlashAttnVec256(launch, step.nodes.front());
+      if (!attention) return std::unexpected(attention.error());
+      planned = attention->scratch;
+    } else if (step.implementation == kFlashAttnVecQ8Name ||
+               step.implementation == kFlashAttnVecQ4Name) {
+      auto attention = PlanFlashAttnVecQuant(launch, step.nodes.front());
       if (!attention) return std::unexpected(attention.error());
       planned = attention->scratch;
     } else if (step.implementation == kFlashAttnMmaGqa2Name) {
