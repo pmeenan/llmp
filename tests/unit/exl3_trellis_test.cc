@@ -11,7 +11,8 @@
 // - Candidates(): at decode rows (1 to 16) the GEMV (K = 4, up to 8 rows)
 //   and the packed GEMM, never a reconstruction, whatever is measured; at
 //   prefill rows the packed GEMM and, on the GB10, both reconstruction
-//   paths; nothing for a rate, codebook, input encoding, shape or device
+//   paths where the device's tuning data pins the shape's GEMMs (none
+//   otherwise); nothing for a rate, codebook, input encoding, shape or device
 //   without kernels; the multi-GEMM for two trellises of one rate.
 // - reconstruct_kernel's rotated weights equal the reference's bit for bit
 //   at K = 4, 5, 6 and 8 on random trellises, and reconstruct_had_kernel's
@@ -118,6 +119,26 @@ std::vector<std::string> Names(const ex::Registry& registry, const ex::Capabilit
 
 using Strings = std::vector<std::string>;
 
+constexpr std::array<std::string_view, 2> kReconstructions = {"exl3.linear.reconstruct",
+                                                              "exl3.linear.reconstruct_fused"};
+
+// Tuning data for both reconstruction paths at each (rows, k, n): what a
+// device whose pins cover those GEMMs reports (registry.h TunedShape).
+std::vector<ex::TunedShape> TunedFor(std::span<const std::array<std::uint64_t, 3>> shapes) {
+  std::vector<ex::TunedShape> out;
+  for (const auto& [rows, k, n] : shapes) {
+    for (const std::string_view name : kReconstructions) {
+      out.push_back({.implementation = name, .rows = rows, .k = k, .n = n});
+    }
+  }
+  return out;
+}
+
+ex::CapabilityQuery Tuned(ex::CapabilityQuery q, std::span<const ex::TunedShape> tuned) {
+  q.tuned = tuned;
+  return q;
+}
+
 TEST(Exl3TrellisSelectionTest, CandidatesFollowRowsRatesShapesAndDevices) {
   const auto registry = ex::Registry::Create(exl3::Implementations());
   ASSERT_TRUE(registry.has_value());
@@ -126,20 +147,32 @@ TEST(Exl3TrellisSelectionTest, CandidatesFollowRowsRatesShapesAndDevices) {
   const Strings packed = {"exl3.linear.gemv", "exl3.linear.gemm"};
   const Strings prefill = {"exl3.linear.gemm", "exl3.linear.reconstruct",
                            "exl3.linear.reconstruct_fused"};
+  constexpr std::array<std::array<std::uint64_t, 3>, 5> kTunedShapes = {
+      {{17, 896, 896}, {1024, 896, 896}, {65536, 896, 128}, {145, 896, 896}, {16, 896, 896}}};
+  const std::vector<ex::TunedShape> tuned = TunedFor(kTunedShapes);
   // Decode rows: the GEMV through 8 rows, the GEMM through 16, and never
-  // a reconstruction (D-108).
+  // a reconstruction (D-108), tuned or not.
   EXPECT_EQ(Names(r, Product(k4, 1)), packed);
   EXPECT_EQ(Names(r, Product(k4, 8)), packed);
   EXPECT_EQ(Names(r, Product(k4, 9)), Strings{"exl3.linear.gemm"});
-  EXPECT_EQ(Names(r, Product(k4, 16)), Strings{"exl3.linear.gemm"});
-  EXPECT_EQ(Names(r, Product(k4, 17)), prefill);
-  EXPECT_EQ(Names(r, Product(k4, 1024)), prefill);
-  EXPECT_EQ(Names(r, Product(k4, 65536, 896, 128)), prefill);
+  EXPECT_EQ(Names(r, Tuned(Product(k4, 16), tuned)), Strings{"exl3.linear.gemm"});
+  EXPECT_EQ(Names(r, Tuned(Product(k4, 17), tuned)), prefill);
+  EXPECT_EQ(Names(r, Tuned(Product(k4, 1024), tuned)), prefill);
+  EXPECT_EQ(Names(r, Tuned(Product(k4, 65536, 896, 128), tuned)), prefill);
+  // A reconstruction needs its GEMMs' pins for exactly the shape: none
+  // without tuning data, nor for a shape the data does not list.
+  EXPECT_EQ(Names(r, Product(k4, 1024)), Strings{"exl3.linear.gemm"});
+  EXPECT_EQ(Names(r, Tuned(Product(k4, 1023), tuned)), Strings{"exl3.linear.gemm"});
+  EXPECT_EQ(Names(r, Tuned(Product(k4, 1024, 896, 4864), tuned)), Strings{"exl3.linear.gemm"});
+  const std::array<ex::TunedShape, 1> plain_only = {
+      {{.implementation = "exl3.linear.reconstruct", .rows = 1024, .k = 896, .n = 896}}};
+  EXPECT_EQ(Names(r, Tuned(Product(k4, 1024), plain_only)),
+            (Strings{"exl3.linear.gemm", "exl3.linear.reconstruct"}));
   // A measurement may put a reconstruction first at prefill rows, never
   // in a decode-shaped product.
   const std::array<ex::MeasuredRank, 1> fused_first = {
       {{.implementation = "exl3.linear.reconstruct_fused", .rank = 0}}};
-  ex::CapabilityQuery measured = Product(k4, 1024);
+  ex::CapabilityQuery measured = Tuned(Product(k4, 1024), tuned);
   measured.measured = fused_first;
   EXPECT_EQ(Names(r, measured).front(), "exl3.linear.reconstruct_fused");
   measured.rows = 16;
@@ -148,7 +181,7 @@ TEST(Exl3TrellisSelectionTest, CandidatesFollowRowsRatesShapesAndDevices) {
   for (const int bits : {5, 6, 8}) {
     const std::array kb = {Trellis(0, static_cast<std::uint8_t>(bits)), Dense(1, Encoding::kF16)};
     EXPECT_EQ(Names(r, Product(kb, 1)), Strings{"exl3.linear.gemm"}) << bits;
-    EXPECT_EQ(Names(r, Product(kb, 145)), prefill) << bits;
+    EXPECT_EQ(Names(r, Tuned(Product(kb, 145), tuned)), prefill) << bits;
   }
   // Rates and codebooks without kernels, no rate at all, an F32 input.
   for (const int bits : {1, 2, 3, 7}) {
@@ -175,7 +208,7 @@ TEST(Exl3TrellisSelectionTest, CandidatesFollowRowsRatesShapesAndDevices) {
   // Devices: nothing below sm_80, a reconstruction only on the GB10 (the
   // packed kernels wherever the build has SASS for the device).
   EXPECT_TRUE(Names(r, Product(k4, 1024, 896, 896, 75)).empty());
-  for (const std::string& name : Names(r, Product(k4, 1024, 896, 896, 86))) {
+  for (const std::string& name : Names(r, Tuned(Product(k4, 1024, 896, 896, 86), tuned))) {
     EXPECT_EQ(name, "exl3.linear.gemm");
   }
   // The multi-GEMM: two trellises of one rate and codebook, one F16 input.
@@ -194,6 +227,8 @@ TEST(Exl3TrellisSelectionTest, CandidatesFollowRowsRatesShapesAndDevices) {
       EXPECT_EQ(impl.capability->rung, ex::Rung::kNative) << impl.name;
       EXPECT_EQ(impl.capability->expansion == ex::Expansion::kTransientWorkspace,
                 impl.name.starts_with("exl3.linear.reconstruct"))
+          << impl.name;
+      EXPECT_EQ(impl.capability->needs_tuning, impl.name.starts_with("exl3.linear.reconstruct"))
           << impl.name;
     }
   }
@@ -535,9 +570,20 @@ class Exl3TrellisTest : public ::testing::Test {
     const int n = l.n();
     const std::array operands = {Trellis(0, static_cast<std::uint8_t>(l.bits())),
                                  Dense(1, Encoding::kF16)};
-    const ex::CapabilityQuery q =
+    ex::CapabilityQuery q =
         Product(operands, static_cast<std::uint64_t>(rows), static_cast<std::uint64_t>(k),
                 static_cast<std::uint64_t>(n), arch_);
+    // The device's tuning data: the pinned GEMMs.
+    std::vector<ex::TunedShape> tuned;
+    for (const Pin& p : kPins) {
+      for (const std::string_view name : kReconstructions) {
+        tuned.push_back({.implementation = name,
+                         .rows = static_cast<std::uint64_t>(p.m),
+                         .k = static_cast<std::uint64_t>(p.k),
+                         .n = static_cast<std::uint64_t>(p.n)});
+      }
+    }
+    q.tuned = tuned;
     const std::vector<std::size_t> candidates = ex::Candidates(*registry_, q);
     ASSERT_FALSE(candidates.empty()) << l.name << " at " << rows << " rows";
     const auto xs = Halves(static_cast<std::size_t>(rows) * static_cast<std::size_t>(k),

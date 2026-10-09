@@ -202,6 +202,14 @@ struct Capability {
   // "ggml.mul_mat" (upstream's routing); empty when it stands alone.
   std::string_view group{};
   std::uint16_t priority = 0;  // higher first, until a measured rank decides
+  // It runs only with tuning data recorded for the exact shape it is asked
+  // for (EXL3's reconstruction runs cuBLASLt algorithms pinned per GEMM): a
+  // candidate only where the query's tuned shapes hold (its name, rows, k,
+  // n).
+  bool needs_tuning = false;
+  // The most consecutive nodes of its operation it runs as one launch (a
+  // planner's batch, planner/pattern.h: grouped KV stores); 0, one node.
+  std::uint16_t batch = 0;
   // An exact host predicate beyond the rules above (upstream's routing and
   // the like); the variant names what it checks.
   bool (*accepts)(const CapabilityQuery&) = nullptr;
@@ -232,6 +240,18 @@ struct MeasuredRank {
   std::uint32_t rank = 0;
 };
 
+// A shape an implementation has tuning data for on this device (a pinned
+// algorithm, a measured launch configuration): what a capability that
+// needs_tuning requires of the query. The name points into the tuning
+// record, which outlives the query.
+struct TunedShape {
+  std::string_view implementation{};
+  std::uint64_t rows = 0;
+  std::uint64_t k = 0;
+  std::uint64_t n = 0;
+  bool operator==(const TunedShape&) const = default;
+};
+
 struct CapabilityQuery {
   ir::OpKey op{};
   std::span<const OperandFormat> operands{};
@@ -246,6 +266,9 @@ struct CapabilityQuery {
   bool capturable = false;     // required
   SelectionPolicy policy{};
   std::span<const MeasuredRank> measured{};
+  // The device's tuning data (TunedShape); an implementation that
+  // needs_tuning is a candidate only for a shape listed for it here.
+  std::span<const TunedShape> tuned{};
 };
 
 // One compiled implementation of an operation, as its module declares it.
@@ -378,7 +401,8 @@ std::expected<BoundPlan, PlanRejection> Resolve(const Registry& registry, const 
 // node: declared capabilities only, filtered by operation, operand formats
 // (each operand a rule constrains must be in the query), device, shape and
 // the query's requirements; a transient expansion never for a
-// decode-shaped product, nothing lossy without the policy's opt-in.
+// decode-shaped product, nothing lossy without the policy's opt-in, and
+// nothing that needs tuning data the query's device lacks for the shape.
 // Ordered as D-053 selects, correctness then measured speed: by measured
 // rank (unranked last), so that a measurement may prefer any rung (D-108:
 // the crossover between on-chip decode and a transient expansion, a BF16

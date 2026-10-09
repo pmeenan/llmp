@@ -511,8 +511,11 @@ TEST(IrTest, ExpandLeavesOnlyPrimitives) {
 }
 
 TEST(IrTest, EveryFusedKindAndCompositeDecomposes) {
+  // Every fused kind but grouped_stores, a batch key that is never a node.
   for (std::uint16_t k = 1; k <= static_cast<std::uint16_t>(FusedKind::kDupUpAdd); ++k) {
-    EXPECT_TRUE(HasDecomposition(Fused(static_cast<FusedKind>(k)))) << k;
+    EXPECT_EQ(HasDecomposition(Fused(static_cast<FusedKind>(k))),
+              static_cast<FusedKind>(k) != FusedKind::kGroupedStores)
+        << k;
   }
   EXPECT_FALSE(HasDecomposition(Fused(FusedKind::kNone)));
   for (const Op op : {Op::kHcPre, Op::kHcPost, Op::kHcMix, Op::kIndexScore, Op::kPool, Op::kRoute,
@@ -521,7 +524,7 @@ TEST(IrTest, EveryFusedKindAndCompositeDecomposes) {
   }
   EXPECT_FALSE(HasDecomposition(Primitive(Op::kMatMul)));
   EXPECT_EQ(AliasedSource(Fused(FusedKind::kRopeStore), 0), 2U);
-  EXPECT_EQ(AliasedSource(Fused(FusedKind::kGroupedStores), 1), 3U);
+  EXPECT_FALSE(AliasedSource(Fused(FusedKind::kGroupedStores), 1).has_value());
   EXPECT_FALSE(AliasedSource(Fused(FusedKind::kRmsNormMul), 0).has_value());
 }
 
@@ -537,6 +540,18 @@ TEST(IrTest, FusedStoresAreViewsOfTheirCaches) {
   EXPECT_EQ(b.tensor(stored).view_of, cache);
   EXPECT_EQ(b.tensor(stored).role, Role::kState);
   EXPECT_TRUE(std::move(b).Finish().has_value());
+}
+
+// grouped_stores names a batch of store nodes (planner/pattern.h); no node
+// is one.
+TEST(IrTest, GroupedStoresIsNoNode) {
+  Builder b;
+  const TensorId cache = b.State(Dense(Encoding::kF16, ShapeOf({16, 10})), StateRef{.tensor = 4});
+  const TensorId other = b.State(Dense(Encoding::kF16, ShapeOf({16, 10})), StateRef{.tensor = 5});
+  const TensorId src = b.Input(F32({16, 3}));
+  const TensorId idx = b.Input(I32({3}));
+  b.Fused(FusedKind::kGroupedStores, std::array{cache, src, idx, other, src, idx});
+  EXPECT_EQ(ErrorOf(b), GraphError::kParams);
 }
 
 TEST(IrTest, NothingStoresIntoAWeightOrAConstant) {

@@ -346,9 +346,11 @@ and `Launch` replays it; `RecordingLaunch` does both over the device
 runtime's recorded work (the fake's in tests, any backend that records a
 stream), and a GGML wrapper of `LaunchContext` follows with the lowering.
 
-**Planner types** (`planner/step_shape.h`, header-only; the planner stream
-extends it). `StepShape` {stage, `Phase` (prefill, decode, verify, draft,
-score), segments by ascending slot, row invariance, read alignment};
+**Planner types** (`planner/step_shape.h`, header-only; the planner,
+`planner/plan.h`, plans a step's graph and makes its key,
+[engine-components.md](engine-components.md#the-graph-ir)). `StepShape`
+{stage, `Phase` (prefill, decode, verify, draft, score), segments by
+ascending slot, row invariance, read alignment};
 `Segment` {slot, rows, past, read cells, outputs, group, want_head,
 greedy}; `PlanKey` {spec digest, shape, pattern and policy digests,
 partition}. A segment's `past` is data, not the plan: equality ignores it,

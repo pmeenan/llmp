@@ -272,6 +272,9 @@ std::optional<execution::Capability> CapabilityOf(Path path) {
       c.device.min_arch = 121;
       c.device.max_arch = 121;
       c.expansion = execution::Expansion::kTransientWorkspace;
+      // Only for the shapes exl3-recon-pin.json pins (the GEMM refuses
+      // any other): the planner drops it elsewhere.
+      c.needs_tuning = true;
       c.priority = path == Path::kReconstruct ? 1 : 0;
       return c;
     case Path::kMultiGemm:

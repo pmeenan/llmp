@@ -31,8 +31,8 @@
 
 namespace llmp::ir {
 
-// Whether `key` has a decomposition: every fused kind, and the composite
-// ops above.
+// Whether `key` has a decomposition: every fused kind but the batch key
+// grouped_stores (op.h), and the composite ops above.
 bool HasDecomposition(OpKey key);
 
 // Emits the decomposition of a node of `key` with `params` over `sources`

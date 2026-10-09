@@ -1307,6 +1307,9 @@ Out InferFused(const Ctx& c) {
                                                static_cast<std::uint16_t>(FusedKind::kDupUpAdd)) {
     return Fail(GraphError::kParams, c, "an unknown fused kind");
   }
+  if (c.key().fused == FusedKind::kGroupedStores) {
+    return Fail(GraphError::kParams, c, "grouped_stores is a batch key, not a node");
+  }
   if (c.key().fused == FusedKind::kRopeStore) {
     LLMP_TRY(CheckRope(c, c.params<RopeParams>(), 0));
   }

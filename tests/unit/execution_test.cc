@@ -11,13 +11,15 @@
 //   nothing is substituted (BP-S4);
 // - capabilities (D-108): every legacy operation's key in the op set, and
 //   Candidates() by measured rank, then the ladder's order, refusing a
-//   transient expansion for decode-shaped products and anything lossy
-//   without the opt-in.
+//   transient expansion for decode-shaped products, anything lossy
+//   without the opt-in, and an implementation that needs tuning data for
+//   a shape the device's data does not list.
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <set>
 #include <string>
 #include <string_view>
@@ -407,6 +409,38 @@ TEST(CapabilityTest, CandidatesFollowTheLadder) {
   EXPECT_TRUE(ex::Candidates(registry, q).empty());
 }
 
+// An implementation that needs tuning data (EXL3's pinned reconstruction)
+// is a candidate only for a shape the query's tuning data lists for it.
+TEST(CapabilityTest, TuningDataGatesWhatNeedsIt) {
+  const ir::OpKey mm = ir::Primitive(ir::Op::kMatMul);
+  const auto registry =
+      Registry::Create({Capable("fake.mm.pinned", {.op = mm, .priority = 9, .needs_tuning = true}),
+                        Capable("fake.mm.plain", {.op = mm})})
+          .value();
+  ex::CapabilityQuery q{.op = mm, .rows = 145, .k = 896, .n = 896};
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q)),
+            std::vector<std::string>{"fake.mm.plain"});
+  const std::array tuned = {
+      ex::TunedShape{.implementation = "fake.mm.pinned", .rows = 145, .k = 896, .n = 896}};
+  q.tuned = tuned;
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q)),
+            (std::vector<std::string>{"fake.mm.pinned", "fake.mm.plain"}));
+  for (const auto& [rows, k, n] : std::array<std::array<std::uint64_t, 3>, 3>{
+           {{144, 896, 896}, {145, 4864, 896}, {145, 896, 4864}}}) {
+    q.rows = rows;
+    q.k = k;
+    q.n = n;
+    EXPECT_EQ(Names(registry, ex::Candidates(registry, q)),
+              std::vector<std::string>{"fake.mm.plain"});
+  }
+  // Another implementation's tuning data is not this one's.
+  const std::array other = {
+      ex::TunedShape{.implementation = "fake.mm.plain", .rows = 145, .k = 896, .n = 896}};
+  q = {.op = mm, .rows = 145, .k = 896, .n = 896, .tuned = other};
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q)),
+            std::vector<std::string>{"fake.mm.plain"});
+}
+
 TEST(CapabilityTest, ADeclaredCapabilityIsPartOfTheIdentity) {
   const Implementation plain = Fake("fake.mm", Operation::kMatMul);
   Implementation declared = plain;
@@ -417,6 +451,12 @@ TEST(CapabilityTest, ADeclaredCapabilityIsPartOfTheIdentity) {
   EXPECT_NE(ex::IdentityOf(other), ex::IdentityOf(declared));
   other = declared;
   other.capability->operands = kDecodedOperands;
+  EXPECT_NE(ex::IdentityOf(other), ex::IdentityOf(declared));
+  other = declared;
+  other.capability->needs_tuning = true;
+  EXPECT_NE(ex::IdentityOf(other), ex::IdentityOf(declared));
+  other = declared;
+  other.capability->batch = 16;
   EXPECT_NE(ex::IdentityOf(other), ex::IdentityOf(declared));
 }
 

@@ -1088,6 +1088,21 @@ target_link_libraries(components_order_test PRIVATE llmp_components llmp_ggml_te
 llmp_gtest(components_order_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
+# The planner (D-107): policies, patterns, selection, placement, lanes and
+# plan keys on small graphs and a fake registry.
+add_executable(planner_test planner_test.cc)
+target_link_libraries(planner_test PRIVATE llmp_planner llmp_ir)
+llmp_gtest(planner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# The planner on the Gemma 2 and Gemma 3 steps against today's PlanGraph
+# and PlaceActivations over the graph builders, under each family's
+# production recipe (every profile builds the descriptor-only builders).
+add_executable(planner_gemma_test planner_gemma_test.cc)
+target_link_libraries(planner_gemma_test PRIVATE llmp_planner llmp_components llmp_ggml_tensors
+                                                 llmp_spec llmp_model llmp_artifact llmp_json)
+llmp_gtest(planner_gemma_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+
 # The components' state contracts through the shared slot lifecycle on the
 # fake device backend.
 add_executable(components_state_test components_state_test.cc)

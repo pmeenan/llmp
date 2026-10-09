@@ -44,11 +44,12 @@
 // checks (validate.h) take; the two reconstruction paths as a transient
 // expansion into workspace, which Candidates() refuses for decode-shaped
 // products, and only on the GB10, where their cuBLASLt algorithms were
-// pinned. For those two a candidate is necessary, not sufficient: each
-// slice's GEMM runs only with an algorithm pinned for exactly its m, k, n
-// and ldc (ReconGemm refuses any other), and exl3-recon-pin.json pins only
-// the fixtures' shapes at 145, 1,023 and 1,024 rows, so a planner keeps a
-// reconstruction candidate only where its tuning data holds every pin.
+// pinned. Those two also need tuning: each slice's GEMM runs only with an
+// algorithm pinned for exactly its m, k, n and ldc (ReconGemm refuses any
+// other), and exl3-recon-pin.json pins only the fixtures' shapes at 145,
+// 1,023 and 1,024 rows, so Candidates() offers a reconstruction only for a
+// shape the device's tuned shapes list (execution/registry.h TunedShape:
+// those whose every slice is pinned).
 //
 // Each identity covers everything that decides what an implementation
 // computes and launches: the prepared ExLlamaV3 tree's digest (upstream's

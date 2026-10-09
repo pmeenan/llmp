@@ -313,13 +313,21 @@ enum class FusedKind : std::uint16_t {
   // mul_mat(w_gate, x) and mul_mat(w_up, x); the weights first, as kMatMulAdd's).
   kMatMulGlu,
   kMatMulAdd,  // (w, x, b): w · x + b
-  // (q [D, owners · R, H, 1], mask [C, >= owners · R], k0, ..., v0, ...):
+  // (q [D, R, H, owners], mask [C, >= R, 1, owners], k0, ..., v0, ...):
   // OwnerAttnParams: joined requests' rows, each owner's R rows attending to
-  // its own cache: owner o's queries and mask rows from o · R, its mask's
-  // first k_o.ne[1] cells; the outputs concatenated along rows.
+  // its own cache [D, C_o, Hk, 1] (C_o <= C): owner o's queries q[:, :, :,
+  // o] and its mask mask[:C_o, :R, 0, o] (the first C_o cells and R rows
+  // of its own matrix, so each owner keeps its mask's row padding);
+  // [Dv, H, R, owners], owner o's attention at o. One to four owners.
   kOwnerAttention,
-  // (cache, src, idx) for each of two or three stores: an output per store,
-  // a view of its cache.
+  // A batch key, never a node (the builder and verifier refuse one, and it
+  // has no decomposition): consecutive independent kCacheStore nodes that
+  // one implementation runs as one launch (planner/pattern.h
+  // grouped_stores). A capability of it describes one member store
+  // (cache, src, idx) and declares its batch bound (execution/registry.h
+  // Capability::batch). Its first form, a node of two or three stores,
+  // held none of GGML's groups (two to sixteen) and was dropped
+  // (2026-10-09).
   kGroupedStores,
   // (gate [n, U, T], up [n, U, T], ids [U, T], s_gate [E], s_up [E]):
   // GluParams: glu(gate · s_gate[ids], up · s_up[ids]).

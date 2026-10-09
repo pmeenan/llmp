@@ -167,20 +167,12 @@ constexpr std::array<execution::OperandRule, 4> kAttentionQ4 = {{
     {.operand = 2, .encodings = kQ4, .layouts = kGgml},
     {.operand = 3, .encodings = kF16, .layouts = kDense},
 }};
-// kCacheStore's sources: cache, src, idx; kGroupedStores' the same for each
-// store (the first two's here, every one's in the predicate).
+// kCacheStore's sources: cache, src, idx; the grouped_stores batch key's
+// the same, for each member store (ir/op.h).
 constexpr std::array<execution::OperandRule, 3> kStore = {{
     {.operand = 0, .encodings = kBlocks, .layouts = kGgml},
     {.operand = 1, .encodings = kF32, .layouts = kDense},
     {.operand = 2, .encodings = kIds, .layouts = kDense},
-}};
-constexpr std::array<execution::OperandRule, 6> kGroupedStores = {{
-    {.operand = 0, .encodings = kBlocks, .layouts = kGgml},
-    {.operand = 1, .encodings = kF32, .layouts = kDense},
-    {.operand = 2, .encodings = kIds, .layouts = kDense},
-    {.operand = 3, .encodings = kBlocks, .layouts = kGgml},
-    {.operand = 4, .encodings = kF32, .layouts = kDense},
-    {.operand = 5, .encodings = kIds, .layouts = kDense},
 }};
 // kRopeStore's sources: x, pos, cache, idx, freq (optional: the predicate).
 constexpr std::array<execution::OperandRule, 4> kRopeStore = {{
@@ -197,20 +189,6 @@ bool AcceptsAttention(const execution::CapabilityQuery& q) {
   return CompiledFor(q.arch) && (q.k == 64 || q.k == 256) && q.n == q.k && !sinks;
 }
 bool AcceptsStore(const execution::CapabilityQuery& q) { return CompiledFor(q.arch) && q.k >= 32; }
-// Every store of a group in the formats the first two's rules name, two to
-// sixteen of them.
-bool AcceptsGroupedStores(const execution::CapabilityQuery& q) {
-  std::uint32_t stores = 0;
-  for (const execution::OperandFormat& o : q.operands) {
-    const execution::OperandRule& rule = kGroupedStores[o.operand % 3U];
-    if (std::ranges::find(rule.encodings, o.encoding) == rule.encodings.end() ||
-        std::ranges::find(rule.layouts, o.layout) == rule.layouts.end()) {
-      return false;
-    }
-    stores = std::max<std::uint32_t>(stores, (o.operand / 3U) + 1U);
-  }
-  return AcceptsStore(q) && stores >= 2 && stores <= kSetRowsQuantGroupMax;
-}
 bool AcceptsRopeStore(const execution::CapabilityQuery& q) {
   const auto freq = std::ranges::find_if(
       q.operands, [](const execution::OperandFormat& o) { return o.operand == 4; });
@@ -233,7 +211,8 @@ constexpr execution::Capability Attention(std::span<const execution::OperandRule
           .accepts = &AcceptsAttention};
 }
 constexpr execution::Capability Store(ir::OpKey op, std::span<const execution::OperandRule> rules,
-                                      bool (*accepts)(const execution::CapabilityQuery&)) {
+                                      bool (*accepts)(const execution::CapabilityQuery&),
+                                      std::uint16_t batch = 0) {
   return {.op = op,
           .operands = rules,
           .shape = {.k_multiple = 32},
@@ -241,14 +220,19 @@ constexpr execution::Capability Store(ir::OpKey op, std::span<const execution::O
           .expansion = execution::Expansion::kNone,
           .row_invariant = true,
           .capturable = true,
+          .batch = batch,
           .accepts = accepts};
 }
 constexpr execution::Capability kAttentionQ8Capability = Attention(kAttentionQ8);
 constexpr execution::Capability kAttentionQ4Capability = Attention(kAttentionQ4);
 constexpr execution::Capability kStoreCapability =
     Store(ir::Primitive(ir::Op::kCacheStore), kStore, &AcceptsStore);
+// A batch of two to sixteen member stores, each as kStore's (the planner's
+// grouped_stores; CheckSetRowsQuantGroup still checks the whole group's
+// independence at lowering).
 constexpr execution::Capability kGroupedStoresCapability =
-    Store(ir::Fused(ir::FusedKind::kGroupedStores), kGroupedStores, &AcceptsGroupedStores);
+    Store(ir::Fused(ir::FusedKind::kGroupedStores), kStore, &AcceptsStore,
+          static_cast<std::uint16_t>(kSetRowsQuantGroupMax));
 constexpr execution::Capability kRopeStoreCapability =
     Store(ir::Fused(ir::FusedKind::kRopeStore), kRopeStore, &AcceptsRopeStore);
 

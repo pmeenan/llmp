@@ -141,13 +141,14 @@ semantics are written in `ir/op.h`: GGML's at the pin wherever GGML has
 the op (shapes, broadcasting, `nb` strides and views), and the cited model
 definitions for the composites. A node has up to ten sources and four
 outputs (routing's ids and weights, the gated delta rule's attention and
-state, grouped stores); a store's output is a view of its cache, and node
+state); a store's output is a view of its cache, and node
 order is execution order. Shape rules are one function the builder makes
 outputs from and the verifier checks recorded outputs against; the
 verifier also holds GGML's int32 extents and strides (RE-037). The digest
 names leaves by what they bind and excludes names, so declaration order and
-names do not change a plan key; node order does. Every fused kind and
-composite op has a primitive decomposition (`ir/decompose.h`, `Expand`),
+names do not change a plan key; node order does. Every fused kind (but
+`grouped_stores`, a batch key, below) and composite op has a primitive
+decomposition (`ir/decompose.h`, `Expand`),
 and the reference executor runs every op over host buffers in their
 formats, fused kinds through their decompositions, collectives over
 simulated devices. Where GGML's kernels differ from the definition (a
@@ -179,7 +180,104 @@ verifier admits: pooling over several matrices along dim 3, and the gated
 delta rule where each q and k sequence serves several value sequences;
 the latter stores each token's output at its own row of one buffer and
 gathers them back (copying linear in the tokens), so any permutation from
-its argsort serves as the rows.
+its argsort serves as the rows. `fused.owner_attention` (amended with the
+planner, 2026-10-09) lays its owners on dim 3: queries [D, R, H, owners],
+a mask matrix an owner [C, >= R, 1, owners] read through its first C_o
+cells and R rows, and the result [Dv, H, R, owners]. Its first form put
+the owners' rows one after another on dim 1, with mask rows at o · R;
+but each owner's mask (the framework's `kMaskBuild`, or GGML's producer)
+pads its rows to 32 on its own, which that layout cannot hold without a
+copy of every mask a layer, and GGML's owner carriers (`fattn_owner.h`:
+Q [D, 1, heads, N], masks [cells, 32, 1, N]) and the builders' joined
+masks (padded to a common width and concatenated on dim 3) are this
+layout already, so the lowering binds views and copies nothing.
+
+**The planner, as built** (`src/planner`, 2026-10-09). `Plan(primitive
+graph, registry, device facts, policy, options)` gives a `StepPlan`: the
+rewritten graph, its steps (`Selected`: an implementation over one node
+or a batch of consecutive ones, with the capability's group, which the
+lowering resolves inside its module), the lanes' regions, the activation
+placement, the rewrites applied and the maps from the primitive graph's
+nodes and tensors (the step's inputs, weights and state keep their
+primitive ids). It is deterministic. The steps:
+
+- **Patterns** (`pattern.h`): one fixed table whose order is priority,
+  each pattern applied over the whole graph before the next. A rewrite
+  matches by dataflow (any component's nodes; every intermediate read
+  once, by the match, and neither returned nor kept) and only where the
+  registry has a candidate for its result on the device under the policy,
+  and emits the replacement at the match's last node. The table:
+  `rms_norm_mul_rope`, `rms_norm_mul_add`, `mul_mat_glu`, `rope_store`,
+  `rms_norm_mul`, `prepared_inputs` (two or more products of one F32
+  input share one Q8_1 `kPrepare`, each product reading it: the builders'
+  shared Q8, kept as primitives in the builders' order rather than
+  `fused.prepared_products`, which would move the products to one place;
+  placement keeps the prepared input's source live with it, as GGML's
+  prepared product reads both) and the batch `grouped_stores`
+  (consecutive independent cache stores under one implementation of the
+  `fused.grouped_stores` key whose capability declares a `batch`, up to
+  16 as `set_rows_group.h` and `llmp.set_rows.grouped_quant` take; the
+  stores stay nodes). That key is now a batch key only (amended
+  2026-10-09): its first form, a fused node of two or three stores, held
+  none of GGML's groups and had no user, so it was dropped; the builder
+  and verifier refuse such a node, it has no decomposition, and a
+  capability of it describes one member store (GGML's quantizing group
+  declares `batch` 16). A rewrite is refused where emitting it at its
+  last node's place would move a read past a store into the same bytes
+  (a cache, or an activation a store targets).
+- **Policy** (`policy.h`): disabled patterns, the decode-row bound,
+  row-invariant plans (D-092), the lossy opt-in and measured ranks per
+  device class, as canonical text whose digest is a plan key's input. The
+  first migrations' selections are policies: Gemma 2 serves with
+  `disable grouped_stores`, `disable rms_norm_mul_rope` and `disable
+  rope_store`, Gemma 3 with `disable rope_store`. Each family's default
+  policy text will live in its architecture mapping (slice G1a), with
+  the spec it makes; an alias's settings may replace it.
+- **Selection** (`select.h`): each node's first candidate from
+  `Candidates()`, asked with the device's architecture, features, tuning
+  data (an implementation that `needs_tuning` is offered only for a shape
+  the device has data for: EXL3's pinned reconstruction) and measured
+  ranks for its class; a node without a candidate is replaced by its
+  decomposition where it has one (the primitive-fallback rule) and the
+  plan refused otherwise.
+- **Lanes** (`lanes.h`) and **placement** (`placement.h`): ports of
+  `AssignLanes` and `PlaceActivations` onto the IR's steps (largest first,
+  lowest free offset, step lifetimes, regions live for their spans). The
+  implementations that stay on the stream (a borrowed library handle) are
+  the caller's `on_stream`: unlike `AssignLanes`, which keeps cuBLAS and
+  the BF16 GEMM there by default, the planner knows no module's names, so
+  a lowering with such implementations must pass it.
+- **Keys**: `KeyOf` makes `PlanKey` from the spec's bound digest, the
+  shape, the enabled patterns' digest, the policy's and the partition.
+
+On the Gemma 2 and Gemma 3 specs (`planner_gemma_test`, CPU), at every
+shape the runners measure at setup with the serving defaults (Gemma 2 at
+8,192 with two owners, 322 shapes; Gemma 3 at 4,096 with two and 8,448
+with one, 378), with a fake registry declaring what the recipe selects and
+the same model of the GB10's product routing on both sides (upstream's
+`ggml_cuda_should_use_mmvq` at the DGX Spark's compute capability: MMVQ
+through 8 columns for Gemma's Q4_0 and Q8_0, and `MulMatVecQGluFusible`'s
+fused GeGLU at one), the planned steps' fusions (by kind and node set,
+each node paired with the builders' by operation, and each product's and
+weight multiply's by weight resource) and shared Q8 groups (by weight)
+equal `PlanGraph`'s for the recipe, and the activation extent is no more
+than `PlaceActivations`' over the builders' graphs (54% to 100% of it), with
+the owner-attention forms or without, with no two live tensors sharing
+bytes. The fake's fused capabilities check only the widths
+`CheckGemmaNormRope` and `CheckGemmaNormAdd` admit: the GGML module's real
+ones (G1b) must carry its kernels' full conditions, and those that depend
+on a node's parameters (the rotation's mode and dimensions, the owner
+kernel's softcap) need either the parameters in `CapabilityQuery`, which
+it does not carry yet, or the pattern's own check. What remains for slice
+G1b, with the lowering: the owner-attention patterns (owner decode, packed, owner and
+flexible owner prefill, bounded roots, Gemma 3's four-root carriers with
+their logical cohort and offset, which the fused kind's parameters do not
+carry yet) and the masks' padding and joining they need; device masks,
+which are the lowering's choice for `kMaskBuild` (its producer derives
+the cells' positions, so the step stages no `kCellPositions` input there)
+rather than a pattern; and the norm-add with a gathered residual
+(`GemmaNormAddGatherFusionAt`), which only the diagnostic `narrow_final`
+graph makes.
 
 ## Components
 
@@ -305,10 +403,11 @@ fragment does not express, for the lowering and the patterns:
   precede it in node order, as the builders' expanded list orders them.
 - **Weight over-read** (`MarkRowPaddingReadable`) is the format layer's
   readable rule, not a graph property.
-- **The builders' options** are patterns and selection (slice G1b), not
-  fragments: owner decode and owner, packed and flexible prefill with
-  bounded roots, shared Q8 preparation, grouped KV stores, the fused norm
-  forms and device masks; the diagnostic scopes (`first_layer`,
+- **The builders' options** are patterns and selection, not fragments:
+  shared Q8 preparation, grouped KV stores and the fused norm forms are
+  the planner's (above); owner decode and owner, packed and flexible
+  prefill with bounded roots, and device masks are slice G1b's; the
+  diagnostic scopes (`first_layer`,
   `layer_count`, `hidden_input`, `narrow_final`) are not ported. The
   owner-attention kernel's literal softcap 50 is an implementation's
   limit the pattern checks against the instance's `softcap`.
@@ -486,11 +585,12 @@ those agree within that arithmetic. The EXL3 module declares its paths'
 capabilities from their host checks: the GEMV (K = 4, up to 8 rows), the
 packed GEMM and the multi-GEMM at rung 1, and the two reconstruction paths
 as transient expansions, selectable only on the GB10 (where their cuBLASLt
-algorithms were pinned) and never for a decode-shaped product. For those
-two a candidate is necessary, not sufficient: each slice's GEMM runs only
-with an algorithm pinned for exactly its shape, and `exl3-recon-pin.json`
-pins only the fixtures' shapes at 145, 1,023 and 1,024 rows, so a planner
-drops a reconstruction candidate where its tuning data holds no pin. A
+algorithms were pinned) and never for a decode-shaped product. Those two
+also `needs_tuning`: each slice's GEMM runs only with an algorithm pinned
+for exactly its shape, and `exl3-recon-pin.json` pins only the fixtures'
+shapes at 145, 1,023 and 1,024 rows, so `Candidates()` offers a
+reconstruction only for a shape the query's tuning data
+(`TunedShape`, the device's, which the planner passes) lists for it. A
 capability query's operand formats now carry the encoding's parameters,
 which the EXL3 predicates read (mcg at K = 4, 5, 6 or 8 is what is
 compiled). On spark-b (`exl3_trellis_test`), `reconstruct_kernel` equals

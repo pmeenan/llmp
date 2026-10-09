@@ -2017,24 +2017,17 @@ TEST(ReferenceDecompositionTest, FusedStoresAndOwnerAttention) {
   const TensorId idx = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
   const TensorId cache_a = f16_state({8, 6}, 0);
   const TensorId cache_b = f16_state({8, 6}, 1);
-  const TensorId cache_c = f16_state({4, 6}, 2);
-  const TensorId cache_d = f16_state({8, 6}, 3);
   const ir::RopeParams rope{.mode = ir::RopeMode::kNeox, .dims = 4, .base = 100.0f};
   const TensorId fused =
       b.Fused(ir::FusedKind::kRopeStore, std::array{x, pos, cache_a, idx}, rope)[0];
   const TensorId hand =
       b.CacheStore(cache_b, b.Reshape(b.Rope(x, pos, {}, rope), ir::ShapeOf({8, 3})), idx);
-  const TensorId rows_c = f32({4, 3});
-  const TensorId rows_d = f32({8, 3});
-  const ir::Outputs grouped = b.Fused(ir::FusedKind::kGroupedStores,
-                                      std::array{cache_c, rows_c, idx, cache_d, rows_d, idx});
   b.Output(fused);
   b.Output(hand);
-  b.Output(grouped[0]);
-  b.Output(grouped[1]);
-  // Two owners of two rows each, caches of 5 and 3 cells.
-  const TensorId q = f32({4, 4, 2, 1});
-  const TensorId mask = f32({5, 4});
+  // Two owners of two rows each, caches of 5 and 3 cells, on dim 3: each
+  // owner's mask its own matrix of 3 rows (padded past its 2).
+  const TensorId q = f32({4, 2, 2, 2});
+  const TensorId mask = f32({5, 3, 1, 2});
   const TensorId k0 = f32({4, 5, 1, 1});
   const TensorId k1 = f32({4, 3, 1, 1});
   const TensorId v0 = f32({4, 5, 1, 1});
@@ -2049,16 +2042,15 @@ TEST(ReferenceDecompositionTest, FusedStoresAndOwnerAttention) {
   ASSERT_TRUE(e.has_value()) << e.error().detail;
   std::uint32_t seed = 400;
   std::map<std::uint32_t, std::vector<float>> values;
-  for (const TensorId t : {x, rows_c, rows_d, q, mask, k0, k1, v0, v1}) {
+  for (const TensorId t : {x, q, mask, k0, k1, v0, v1}) {
     values[t.v] = Normal(seed++, N(ir::Elements(g->tensor(t).shape())));
     ASSERT_TRUE(e->BindValues(t, values[t.v]).has_value());
   }
   ASSERT_TRUE(e->BindInts(pos, std::vector<std::int64_t>{1, 2, 3}).has_value());
   ASSERT_TRUE(e->BindInts(idx, std::vector<std::int64_t>{5, 0, 2}).has_value());
-  for (const TensorId c : {cache_a, cache_b, cache_d}) {
+  for (const TensorId c : {cache_a, cache_b}) {
     ASSERT_TRUE(e->BindValues(c, std::vector<float>(48, 1.0f)).has_value());
   }
-  ASSERT_TRUE(e->BindValues(cache_c, std::vector<float>(24, 2.0f)).has_value());
   const auto ran = e->Run();
   ASSERT_TRUE(ran.has_value()) << ran.error().detail;
   // The fused rope store wrote what the hand-built one did.
@@ -2066,26 +2058,9 @@ TEST(ReferenceDecompositionTest, FusedStoresAndOwnerAttention) {
   EXPECT_EQ(fa, *e->Values(hand));
   EXPECT_NE(fa, std::vector<float>(48, 1.0f));
   EXPECT_EQ(fa[8], 1.0f);  // cell 1 not stored
-  // Each grouped store wrote its rows (F16-rounded), the others kept.
-  const auto stored = [&](TensorId out, TensorId rows, std::uint64_t width, float fill) {
-    const std::vector<float> got = *e->Values(out);
-    const std::vector<float>& rv = values.at(rows.v);
-    const std::array<std::uint64_t, 3> cells = {5, 0, 2};
-    for (std::uint64_t c = 0; c < 6; ++c) {
-      for (std::uint64_t i = 0; i < width; ++i) {
-        float want = fill;
-        for (std::uint64_t r = 0; r < 3; ++r) {
-          if (cells.at(r) == c) {
-            want = F16ToF32(F32ToF16(rv[N((r * width) + i)]));
-          }
-        }
-        EXPECT_EQ(got[N((c * width) + i)], want) << c << " " << i;
-      }
-    }
-  };
-  stored(grouped[0], rows_c, 4, 2.0f);
-  stored(grouped[1], rows_d, 8, 1.0f);
-  // Owner o's rows attend to its own cache through its mask rows' first cells.
+  // Owner o's rows attend to its own cache through its own mask matrix's
+  // first cells and rows: [Dv, H, R, owners].
+  EXPECT_EQ(g->tensor(owners).shape(), ir::ShapeOf({4, 2, 2, 2}));
   const std::vector<float> got = *e->Values(owners);
   const std::vector<float>& qv = values.at(q.v);
   const std::vector<float>& mv = values.at(mask.v);
@@ -2096,13 +2071,13 @@ TEST(ReferenceDecompositionTest, FusedStoresAndOwnerAttention) {
     for (int h = 0; h < 2; ++h) {
       for (int r = 0; r < 2; ++r) {
         for (int d = 0; d < 4; ++d) {
-          qo.push_back(qv[N(static_cast<std::uint64_t>(d + (4 * ((2 * o) + r)) + (16 * h)))]);
+          qo.push_back(qv[N(static_cast<std::uint64_t>(d + (4 * r) + (8 * h) + (16 * o)))]);
         }
       }
     }
     for (int r = 0; r < 2; ++r) {
       for (int c = 0; c < cells; ++c) {
-        mo.push_back(mv[N(static_cast<std::uint64_t>(c + (5 * ((2 * o) + r))))]);
+        mo.push_back(mv[N(static_cast<std::uint64_t>(c + (5 * r) + (15 * o)))]);
       }
     }
     const std::vector<double> want =
@@ -2111,6 +2086,22 @@ TEST(ReferenceDecompositionTest, FusedStoresAndOwnerAttention) {
     for (std::size_t i = 0; i < want.size(); ++i) {
       EXPECT_NEAR(got[N(static_cast<std::uint64_t>(o) * 16) + i], want[i], 1e-5) << o << " " << i;
     }
+  }
+  // A mask narrower than an owner's cache, or of fewer rows than its
+  // queries, is refused (it would read another row's or owner's cells).
+  for (const auto& ne :
+       {std::array<std::uint64_t, 4>{4, 3, 1, 2}, std::array<std::uint64_t, 4>{5, 1, 1, 2}}) {
+    ir::Builder c;
+    const auto in = [&](std::initializer_list<std::uint64_t> shape) {
+      return c.Input(ir::Dense(Encoding::kF32, ir::ShapeOf(shape)));
+    };
+    const TensorId cq = in({4, 2, 2, 2});
+    const TensorId cm = in({ne[0], ne[1], ne[2], ne[3]});
+    c.Fused(
+        ir::FusedKind::kOwnerAttention,
+        std::array{cq, cm, in({4, 5, 1, 1}), in({4, 3, 1, 1}), in({4, 5, 1, 1}), in({4, 3, 1, 1})},
+        ir::OwnerAttnParams{.attn = ir::AttnParams{.scale = 0.5f}, .owners = 2});
+    EXPECT_FALSE(c.ok()) << ne[0] << " " << ne[1];
   }
 }
 

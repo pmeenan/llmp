@@ -90,6 +90,14 @@ std::string CapabilityText(const Capability& c) {
       c.device.min_arch, c.device.max_arch, c.device.needs, c.shape.min_rows, c.shape.max_rows,
       c.shape.k_multiple, c.shape.n_multiple, static_cast<int>(c.rung),
       static_cast<int>(c.expansion), c.lossy, c.row_invariant, c.capturable, c.group, c.priority);
+  // Added only when set, so that the identities of capabilities without
+  // them are unchanged.
+  if (c.needs_tuning) {
+    text += "; needs tuning";
+  }
+  if (c.batch != 0) {
+    text += std::format("; batch {}", c.batch);
+  }
   return text;
 }
 
@@ -172,6 +180,15 @@ bool Computes(const Capability& c, const CapabilityQuery& q) {
     return false;
   }
   return c.accepts == nullptr || c.accepts(q);
+}
+
+// Tuning data for exactly the queried shape, where the capability needs it.
+bool Tuned(const Implementation& implementation, const CapabilityQuery& q) {
+  return !implementation.capability->needs_tuning ||
+         std::ranges::any_of(q.tuned, [&](const TunedShape& t) {
+           return t.implementation == implementation.name && t.rows == q.rows && t.k == q.k &&
+                  t.n == q.n;
+         });
 }
 
 }  // namespace
@@ -575,7 +592,8 @@ std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQu
   std::vector<Ranked> ranked;
   for (std::size_t i = 0; i < registry.size(); ++i) {
     const Implementation& implementation = registry.at(i);
-    if (!implementation.capability || !Computes(*implementation.capability, query)) {
+    if (!implementation.capability || !Computes(*implementation.capability, query) ||
+        !Tuned(implementation, query)) {
       continue;
     }
     const auto rank = std::ranges::find_if(query.measured, [&](const MeasuredRank& m) {

@@ -554,38 +554,30 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
           !d.need(2 + (2 * n), 2 + (2 * n))) {
         return {};
       }
+      // Owners on dim 3 (op.h): each owner's queries and mask are its own
+      // matrix, the mask's rows padded as its producer padded them.
       const TensorDesc& q = d.t(d.s(0));
       const TensorDesc& mask = d.t(d.s(1));
-      if (!d.check(q.ne(1) % n == 0, GraphError::kShape, "the owners share the rows equally")) {
+      if (!d.check(q.ne(3) == n && mask.ne(3) == n && mask.ne(2) == 1, GraphError::kShape,
+                   "one query and mask matrix an owner, on dim 3")) {
         return {};
       }
-      const std::uint64_t r = q.ne(1) / n;
+      const std::uint64_t r = q.ne(1);
       TensorId out{};
       for (std::uint64_t o = 0; o < n && b.ok(); ++o) {
         const TensorId k = d.s(2 + o);
         const TensorId v = d.s(2 + n + o);
         const std::uint64_t cells = d.t(k).ne(1);
-        const TensorId qo = b.View(d.s(0), S(q.ne(0), r, q.ne(2), q.ne(3)), q.nb, o * r * q.nb[1]);
-        const TensorId mo =
-            b.View(d.s(1), S(cells, r, mask.ne(2), mask.ne(3)), mask.nb, o * r * mask.nb[1]);
-        const TensorId a = b.Attention(qo, k, v, mo, {}, p.attn);  // [Dv, H, R, B]
-        out = out.valid() ? b.Concat(out, a, 2) : a;
+        if (!d.check(cells <= mask.ne(0) && r <= mask.ne(1), GraphError::kShape,
+                     "each owner's mask covers its cells and rows")) {
+          return {};
+        }
+        const TensorId qo = b.View(d.s(0), S(q.ne(0), r, q.ne(2), 1), q.nb, o * q.nb[3]);
+        const TensorId mo = b.View(d.s(1), S(cells, r, 1, 1), mask.nb, o * mask.nb[3]);
+        const TensorId a = b.Attention(qo, k, v, mo, {}, p.attn);  // [Dv, H, R, 1]
+        out = out.valid() ? b.Concat(out, a, 3) : a;
       }
       return One(out);
-    }
-    case FusedKind::kGroupedStores: {
-      const std::size_t stores = d.count() / 3;
-      if (!d.check(d.count() % 3 == 0 && stores >= 2 && stores <= 3, GraphError::kArity,
-                   "two or three (cache, src, idx) stores") ||
-          !d.need(d.count(), d.count())) {
-        return {};
-      }
-      Outputs o;
-      for (std::size_t i = 0; i < stores; ++i) {
-        o.ids.at(i) = b.CacheStore(d.s(3 * i), d.s((3 * i) + 1), d.s((3 * i) + 2));
-      }
-      o.n = static_cast<std::uint8_t>(stores);
-      return o;
     }
     case FusedKind::kMoeGlu: {
       if (!d.need(5, 5)) {
@@ -698,6 +690,7 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
     }
     case FusedKind::kDupUpAdd:
       return DupUpAdd(d, Get<DupUpParams>(params));
+    case FusedKind::kGroupedStores:  // a batch key (op.h), never a node
     case FusedKind::kNone:
       break;
   }
@@ -786,8 +779,9 @@ std::expected<Graph, VerifyError> ExpandOnce(const Graph& graph, bool composites
 
 bool HasDecomposition(OpKey key) {
   if (key.op == Op::kFused) {
-    return key.fused != FusedKind::kNone && static_cast<std::uint16_t>(key.fused) <=
-                                                static_cast<std::uint16_t>(FusedKind::kDupUpAdd);
+    return key.fused != FusedKind::kNone && key.fused != FusedKind::kGroupedStores &&
+           static_cast<std::uint16_t>(key.fused) <=
+               static_cast<std::uint16_t>(FusedKind::kDupUpAdd);
   }
   return key.fused == FusedKind::kNone && Composite(key.op);
 }
@@ -798,9 +792,6 @@ std::optional<std::size_t> AliasedSource(OpKey key, std::size_t output) {
   }
   if (key.fused == FusedKind::kRopeStore && output == 0) {
     return 2;
-  }
-  if (key.fused == FusedKind::kGroupedStores && output < 3) {
-    return 3 * output;
   }
   return std::nullopt;
 }

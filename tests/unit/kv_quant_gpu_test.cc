@@ -892,15 +892,17 @@ TEST_F(KvQuantTest, TheRegistryDeclaresEachWithItsCapability) {
                    .k = 48,
                    .arch = arch}),
             Of{});
-  const std::array<ex::OperandFormat, 6> grouped = {
-      blocks(0, Encoding::kQ8_0), dense(1, Encoding::kF32), dense(2, Encoding::kI64),
-      blocks(3, Encoding::kQ4_0), dense(4, Encoding::kF32), dense(5, Encoding::kI64)};
+  // The grouped store is a batch: a member store's query under the
+  // grouped_stores key, two to sixteen of them (the planner's batch).
+  const std::array<ex::OperandFormat, 3> member = {
+      blocks(0, Encoding::kQ8_0), dense(1, Encoding::kF32), dense(2, Encoding::kI64)};
   EXPECT_EQ(names({.op = ir::Fused(ir::FusedKind::kGroupedStores),
-                   .operands = grouped,
+                   .operands = member,
                    .rows = 3,
                    .k = 1024,
                    .arch = arch}),
             Of{std::string(kg::kSetRowsQuantGroupName)});
+  EXPECT_EQ(registry.at(registry.Find(kg::kSetRowsQuantGroupName).value()).capability->batch, 16U);
   const std::array<ex::OperandFormat, 5> rope = {
       dense(0, Encoding::kF32), dense(1, Encoding::kI32), blocks(2, Encoding::kQ8_0),
       dense(3, Encoding::kI64), dense(4, Encoding::kF32)};
