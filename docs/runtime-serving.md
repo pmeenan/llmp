@@ -199,9 +199,10 @@ node names as many models as it likes: the
 library may exceed memory (D-102). The runner follows the artifact's architecture
 (`deepseek4`, `qwen4exp`, bounded `gemma4` or `gemma3`) or the composition's (Qwen-Image); another is
 refused at registration. Every
-artifact is opened under the store's trust rules (only root and the
-runtime's user may change it), and the tokenizer and template files the
-configuration names are read under the configuration's (D-073). A chat
+artifact is opened and checked as the artifact reader checks it, and the
+tokenizer and template files the configuration names are read as regular
+files; who may change them is the filesystem's business (D-073 as
+amended on 2026-10-09). A chat
 template renders natively when a native renderer has its hash or reproduces
 it on the probe corpus, and otherwise through the sandboxed Jinja-subset
 interpreter; a model is refused only when neither accepts its template,
@@ -378,8 +379,7 @@ stale: not used, and measured again. To measure again on purpose, delete
 the file (with the runtime stopped, or before its next start). One that is not this format, names another
 artifact, holds a key other than the calibrated ones (the five above,
 `prefill_chunk` and `max_slots`) or a value outside its key's range, or that
-users other than root and the runtime's could change, is refused, logged
-and replaced the same way. Prefill chunk rows and the request-slot knee
+is not a regular file, is refused, logged and replaced the same way. Prefill chunk rows and the request-slot knee
 need controlled runs; the record already takes them. The
 [controlled Qwen slot screen](experiments/qwen38-slot-knee/README.md) retains
 four for the measured selected-head/4,096-row profile and proves its
@@ -1031,7 +1031,7 @@ value, source and what it came from, as a table or one JSON object
 (`{"models":[{"name","architecture","settings":{KEY:{"value","source",
 "basis"}},"ignored":[...],"calibration":NOTE}]}`, the note whether a
 calibration record is in force). It reads the configuration, the installed
-artifacts and the calibration records only, under the same trust rules:
+artifacts and the calibration records only, as the service reads them:
 no process lock, no device memory or context of its own, so it runs in any
 build and beside the running service. Run it as the runtime's user. It exits 1 when a model's settings
 cannot be resolved (each reason logged), 78 for an invalid configuration.

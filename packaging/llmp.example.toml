@@ -4,8 +4,9 @@
 # An annotated llmpalooza node configuration (D-063, D-073). The package ships
 # no configuration: with none, the runtime is a standalone node with the
 # defaults shown commented out below. To change one, put the key in
-# /etc/llmp/llmp.toml or in a fragment /etc/llmp/llmp.d/NAME.toml,
-# owned by root and writable by nobody else, then restart the service. Each
+# /etc/llmp/llmp.toml or in a fragment /etc/llmp/llmp.d/NAME.toml (who
+# may change them is up to their modes: `llmp doctor` warns of one anyone
+# can write), then restart the service. Each
 # key may be set in one file only, and every file starts with
 # schema_version. Unknown keys are errors; `llmp doctor` reports every
 # problem with its file, line and column.
@@ -84,8 +85,7 @@ schema_version = 2
 # serving.md, "Request slots").
 # max_slots = 4
 # For an artifact whose metadata keeps no tokenizer or chat template: the
-# checkpoint's, owned by root or the runtime's user and writable by nobody
-# else.
+# checkpoint's (regular files, read through links).
 # tokenizer = "/path/to/tokenizer.json"
 # chat_template = "/path/to/chat_template.jinja"
 #

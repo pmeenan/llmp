@@ -3503,7 +3503,7 @@ apport or the kernel dumps a process that exits from a signal handler; a
 job must survive the runtime's unit restart; or DGX OS moves off cgroup v2
 or loses `DelegateSubgroup=` (systemd 254+).
 
-## D-073: Node configuration: toml++ admitted at a post-release commit, the v2 node-local keys fixed, one owning file per key, and fail-closed checks of the files and storage roles  (2026-09-24, status: accepted; implements D-063's configuration and storage-role rules and cluster-design.md's node-local schema; admits toml++ under D-017 and D-057; configuration and `llmp doctor`'s arguments are D-016 public surfaces; `[client]` fixed by D-097)
+## D-073: Node configuration: toml++ admitted at a post-release commit, the v2 node-local keys fixed, one owning file per key, and fail-closed checks of the files and storage roles  (2026-09-24, status: accepted; implements D-063's configuration and storage-role rules and cluster-design.md's node-local schema; admits toml++ under D-017 and D-057; configuration and `llmp doctor`'s arguments are D-016 public surfaces; `[client]` fixed by D-097; its ownership and permission checks (the trust walk) relaxed to warnings by the owner, 2026-10-09, below)
 
 **Decision.** How M1's Node configuration item reads and checks the node's
 configuration (`src/config/`, `src/platform/path_trust.*`,
@@ -3646,6 +3646,105 @@ measurements), the workstation's on Btrfs.
 (f2fs, bcachefs, ZFS), or on one whose direct-I/O alignment exceeds 4 KiB;
 TOML 1.1 or a toml++ release is adopted; or a user needs to share a
 configuration directory with a group.
+
+**Amended 2026-10-09** (the owner: "We have to trust the environment we
+are running on at some level and let the user handle filesystem-level
+access controls if it is something they are concerned about", then "Yes,
+relax D-073's trust walk"). The trust walk is removed
+(`src/platform/path_trust.*` gives way to `src/platform/paths.*`, which
+resolves a path's links and reports modes and default ACLs), from every
+caller: the configuration files and drop-in directory, the storage roles
+and the enrollment anchor, the process lock, installed artifacts and
+compositions (`artifact::OpenOptions::trusted_owner` and the reader's
+`untrusted` rule are gone), the tokenizer files the configuration names,
+the calibration records, and the native importer (D-109). No owner,
+mode, group, ACL, sticky-directory or FUSE check refuses anything any
+more; links are followed wherever they lead (a role may be one); a file
+needs no single hard link and is not compared with what a walk saw.
+D-063's runtime refusals of the configuration files and roles are
+relaxed with it; D-105's checks of the runtime's own kept files are not.
+
+- **Still refused** (function, not distrust): a configuration file that
+  is not a regular file, a drop-in path that is not a directory, more
+  than 256 fragments, the 1 MiB document limit; the normal-form path
+  checks; a path that cannot be resolved (links that loop, a file where a
+  directory is needed); two roles that are one directory (by path, or by
+  device and inode) or nest; a role equal to, containing or inside the
+  resolved enrollment anchor; the job-only paths overlapping a role; a
+  role that is not a directory or that the runtime's user cannot write
+  (`faccessat(W_OK|X_OK, AT_EACCESS)`, new, since ownership no longer
+  implies it); a role on a filesystem other than ext4, XFS or Btrfs, or
+  read-only; `installed` and `spill` failing D-034's direct-I/O probe; a
+  non-empty `spill` without its marker, or with a marker that is not a
+  regular file holding the version text (its owner is no longer
+  checked); a lock someone else holds.
+- **Still created private:** missing roles get parents 0755, `installed`
+  0755 and `spill` and `state` 0700 exactly, not through the umask; the
+  marker 0600; the process lock 0600 (an existing one is used whatever its
+  mode); D-105's kept files and the calibration records 0600 in 0700
+  directories, and D-105's own checks of those files are unchanged.
+- **Now warnings**, logged by the runtime at start (`warning: ...`) and
+  listed by `llmp doctor`: an existing role owned by another user than
+  the runtime's; `spill` or `state` with any group or other bits (others
+  may read conversation state); `installed` writable by others; a role
+  with a default ACL; and, in doctor only, a configuration file anyone
+  can write.
+- **The importer** (D-009 unchanged: its protection is content hardening,
+  bounds, caps, strict fuzzed parsers and never running checkpoint code)
+  opens checkpoint files as any program does, links followed, only
+  regular files (a device or FIFO is refused before it is opened; a link
+  to nothing is refused, not taken for an absent optional file, since it
+  marks a broken download that would otherwise be read without it). A
+  reader holds a file open only while it reads it; the checkpoint keeps
+  each file's path, device and inode, and a later read opens it again and
+  refuses one that is no longer the file read. The soft open-file limit is
+  no longer raised. One narrow rule remains, on what is copied rather than
+  parsed: a file kept verbatim in an artifact or composition (the
+  diffusers reader's kept files; the writer's tokenizer and configuration
+  copies when it lands) must resolve inside the checkpoint, a Hugging Face cache
+  snapshot's repository `blobs/` included, and one resolving elsewhere is
+  skipped with a diagnostic (`Checkpoint::skipped`), never refused. A
+  pipeline component's directory resolving outside the pipeline is still
+  refused, as an escape (`kEscape`, which replaces `kUntrusted`).
+- **The artifact reader** (D-056 as amended the same day) follows a link
+  at an artifact's or composition's root (an artifact kept on another
+  drive) and reads files with several hard links (a deduplicated store);
+  it still refuses a link inside the artifact, anything but a regular
+  file or the two directories, and a shard reopened for direct reads that
+  is not the file validated at open (device, inode, generation, size,
+  status-change time), since those are the format's rules and what keeps
+  a read correct, not distrust.
+- **Files the runtime opens never block or are read as data unless they
+  are regular files:** the configuration, its drop-ins, configured
+  tokenizer files, calibration records, artifact files and the spill
+  marker are opened non-blocking (a FIFO cannot hold the start) and
+  checked with `fstat` before anything is read; the process lock and
+  checkpoint files are checked with `stat` before they are opened at all,
+  since opening a device or a FIFO, for writing especially, can have
+  effects of its own. Through a link to nothing, the lock's open creates
+  the link's target, empty and 0600, and never writes to an existing
+  file. A link to nothing is never taken for an absent path: the main
+  configuration file (optional or not) and the drop-in directory are
+  refused by name, since the configuration they lead to would silently
+  be the defaults, and so is a storage role, before anything is created,
+  since what the runtime would create is not where the path says.
+- **Versions.** No surface version changes: `schema_version` stays 2
+  and the artifact and composition formats keep theirs, since every
+  document, file and artifact accepted before still is; the product
+  version is still the unreleased 0.1.0 (D-062), with a CHANGELOG line.
+- **Tests:** `unit.ResolvePath.*` replaces `unit.WalkTrusted.*`;
+  `unit.LoadNodeConfigTest.FollowsLinksAndRefusesOtherFiles` and
+  `.LoadsWhatOthersCouldChange`, `unit.Roles.FollowsLinksAndWarnsOfOpenRoles`,
+  `.RefusesWhatIsNotAWritableDirectory`, `.WarnsOfADefaultAcl`,
+  `.RefusesAMarkerItDidNotWrite`, `.RefusesALinkToNothing`,
+  `unit.LoadNodeConfigTest.NeverWaitsOnFifosOrSkipsLinksToNothing`,
+  `unit.Doctor.WarnsOfOpenFilesAndRoles`, `unit.LockFile.*`,
+  `unit.ArtifactFilesTest.LinksInsideAndSpecialFilesAreRefused`,
+  `unit.CompositionTest.RefusesEachBrokenRuleByName`, and the
+  importer's `KeptFilesResolveInsideTheCheckpoint`,
+  `SkipsKeptFilesThatResolveOutside` and
+  `ReadsMoreShardsThanTheUsualSoftLimit`.
+- The known limits above about private groups no longer apply.
 
 ## D-072: `llmp doctor` is the capability probe; CUDA builds link the NVIDIA driver and require a GB10 with host-backed VMM  (2026-09-24, status: accepted; implements D-026's probed capabilities and the features.md capability probe; applies D-060's dynamic driver libraries; its GB10-only judgment amended by D-082)
 
@@ -4739,7 +4838,7 @@ file or a Unix socket with group permissions), a browser-hosted dashboard
 must call the API directly, or an embedding customer needs a supported
 library.
 
-## D-063: Installed layout: a TOML node document with drop-ins in `/etc/llmp`, `/var/lib/llmp` data roles, a `llmp` system user and one systemd unit  (2026-09-23, status: accepted; implements D-027's layout consequences and D-054's role paths; configuration is a D-016 public surface; M7 packaging items moved to M8 in the 2026-09-23 milestone ladder, plan.md, and M8 is M10 under D-087)
+## D-063: Installed layout: a TOML node document with drop-ins in `/etc/llmp`, `/var/lib/llmp` data roles, a `llmp` system user and one systemd unit  (2026-09-23, status: accepted; implements D-027's layout consequences and D-054's role paths; configuration is a D-016 public surface; M7 packaging items moved to M8 in the 2026-09-23 milestone ladder, plan.md, and M8 is M10 under D-087; the runtime's owner, mode and link refusals of its configuration files and roles, and the jobs' link and hard-link rules for sources, relaxed by D-073's amendment of 2026-10-09)
 
 **Decision.** Owner's answers on 2026-09-23 chose TOML configuration and
 `/var/lib/llmp` as the default data directory. The packaged layout is
@@ -5455,7 +5554,7 @@ or a measured need for shared binary packages makes maintaining this explicit
 closure more work than a package manager. Preserve pinned inputs, cross-build
 separation and D-017's profile exclusion under any replacement.
 
-## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054; coalescing off by default after BP-P1's A/B under D-085; representation descriptors and manifest amended by D-108 and D-109 (encodings and layouts, the model spec; a new format version))
+## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054; coalescing off by default after BP-P1's A/B under D-085; representation descriptors and manifest amended by D-108 and D-109 (encodings and layouts, the model spec; a new format version); a linked root and hard-linked files allowed, 2026-10-09, below)
 
 **Decision.** Prepared artifacts use the [v0 format](artifact-format.md),
 experimental under D-018:
@@ -5557,6 +5656,17 @@ closures). Options include contiguous-run eviction, size classes and
 activity-sorted compaction, which needs a validated relocation/completion
 policy. Model-parallel partitioning is deferred until M6 entry, since it
 depends on M6's sharding design. Mutable spill stays separate (D-055).
+
+**Amended 2026-10-09** (with D-073's amendment: the owner, "trust the
+environment … let the user handle filesystem-level access controls").
+An artifact's or composition's root may be a link and its files may have
+several hard links (an artifact kept on another drive, a deduplicated
+store): the "singly linked" and "the root not a link" rules were the
+store's protection by permissions, not the format's. Still refused: a
+link inside the artifact, a file that is not regular, an unexpected
+directory, and a shard reopened for direct reads that is not the file
+validated at open. Every artifact accepted before still is, so the
+format version is unchanged.
 
 **Reopen if.** A backend requires a conflicting layout; native asynchronous
 I/O shows that 4 KiB offsets cost more than their padding savings; a

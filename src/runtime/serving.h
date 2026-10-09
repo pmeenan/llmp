@@ -11,8 +11,7 @@
 // driver.
 //
 // - Registration (Server::Start): every configured model's artifacts opened
-//   (under the store's trust rules first: the runtime's user and root
-//   alone), its runner set up on its own stream, its tokenizer and chat
+//   and checked, its runner set up on its own stream, its tokenizer and chat
 //   renderer found (D-067: a template runs only if a native renderer has
 //   its hash), the shared workspace mapped at the largest model's need, and
 //   the scheduler started with a physical cap from available memory,

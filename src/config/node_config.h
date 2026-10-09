@@ -6,17 +6,15 @@
 // cluster-design.md's node-local schema version 2 extended with [storage]
 // and the models the node serves ([models.<name>], D-096).
 //
-// Loading reads the files, refusing any that users other than root and the
-// runtime's user could replace (platform/path_trust.h), parses each on its
-// own, merges them so that every key has exactly one owning file, and
-// validates the result against the schema. Every problem found is
-// reported, not just the first: a file that does not parse contributes its
-// syntax error, and the rest are still checked.
+// Loading reads the files (opened as any file is, links followed: who may
+// change them is the filesystem's business, D-073 as amended on
+// 2026-10-09), parses each on its own, merges them so that every key has
+// exactly one owning file, and validates the result against the schema.
+// Every problem found is reported, not just the first: a file that does
+// not parse contributes its syntax error, and the rest are still checked.
 
 #ifndef LLMP_CONFIG_NODE_CONFIG_H_
 #define LLMP_CONFIG_NODE_CONFIG_H_
-
-#include <sys/types.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -193,7 +191,7 @@ struct ModelEntry {
   // With an artifact whose kept metadata has no tokenizer or chat template
   // (M3's Qwen3.8 import kept config.json only): the checkpoint's
   // tokenizer.json and chat template, absolute paths the runtime reads
-  // under the same trust rules as the configuration.
+  // as regular files, as it reads the configuration.
   std::optional<std::filesystem::path> tokenizer;
   std::optional<std::filesystem::path> chat_template;
   // Every setting its table sets, by key (ModelKeys' settings): the
@@ -386,13 +384,12 @@ struct LoadOptions {
   // nothing at all, then form the document; D-063): its reader says so.
   bool main_file_optional = false;
   std::filesystem::path anchor{kDefaultAnchor};
-  // Besides root, the user whose files are trusted: the runtime's.
-  uid_t trusted_uid = 0;
 };
 
-// Reads the main file and every regular "*.toml" file in the drop-in
-// directory, in bytewise order, skipping other names and not recursing,
-// then parses them as ParseNodeConfig does.
+// Reads the main file and every "*.toml" file in the drop-in directory,
+// in bytewise order, skipping other names and not recursing (each must be
+// a regular file, through links or not), then parses them as
+// ParseNodeConfig does.
 std::expected<NodeConfig, std::vector<Diagnostic>> LoadNodeConfig(const LoadOptions& options);
 
 }  // namespace llmp::config

@@ -898,11 +898,13 @@ Native C++, part of the distribution; no Python (D-109).
   supported combinations).
 
 **As built: the container readers** (`src/import`, 2026-10-09). A reader
-turns a checkpoint into a `Checkpoint`: its files, opened once through
-the path-trust walk (root and one trusted user; links resolved, then
-opened without following one and compared by device and inode; regular
-files nobody else can write, in directories nobody else can change) and
-kept open, so later reads use the files that were checked; every tensor
+turns a checkpoint into a `Checkpoint`: its files, opened as any file is
+(links followed; only regular files, a device or FIFO refused before it
+is opened and a link to nothing refused rather than taken for an absent
+file; who could change them is the filesystem's business, D-073 as
+amended on 2026-10-09), each open only while its reader reads it, with
+its path, device and inode kept so that a later read opens it again and
+refuses (`kIo`) one that is no longer the file read; every tensor
 as a `format::TensorFormat`, the part it holds and its byte extent; and
 the source metadata as typed key/values. `SourceOf` and `ValuesOf` give
 exactly the `spec::Source` and values `spec::Synthesize` reads. The
@@ -912,8 +914,15 @@ index, never the checkpoint's own text, and nothing is relaid out. A
 reader refuses only what it cannot describe correctly (ambiguous or
 inconsistent sizes and extents, overlaps, escapes from the checkpoint,
 unknown encodings) and what its security bounds exclude (sizes, counts,
-paths, trust); what is merely unusual for its container is read as it is
-(owner, 2026-10-09).
+paths); what is merely unusual for its container is read as it is
+(owner, 2026-10-09). D-009's protection is this content hardening. One
+narrow path rule guards what is copied rather than parsed: a file kept
+verbatim (the diffusers reader's kept files now, the writer's tokenizer
+and configuration copies when it lands) must resolve inside the
+checkpoint (`ResolvesInside`; for a Hugging Face cache snapshot, the
+repository's `blobs/` counts), and one resolving elsewhere, such as a
+link a cloned repository planted to one of the user's files, is left out
+and named in `Checkpoint::skipped`, never refused.
 
 - *GGUF* (`readers/gguf.h`) parses the header with `base/gguf.h`, which
   the artifact's kept-metadata reader and the tokenizer now share: every
@@ -1025,22 +1034,23 @@ paths, trust); what is merely unusual for its container is read as it is
   itself), one to 16 of them, each a checkpoint with its own files and
   metadata; another's regular files (a scheduler's, a processor's; at
   most 4,096 directory entries, subdirectories left out) are the
-  pipeline's own files, `<role>/<name>`, at most 256 (each stays open)
-  and within a composition's 64 MiB a file and 128 MiB in all, after
-  model_index.json. A component's directory, its links resolved, lies
-  beneath the pipeline's (a link out of it is refused as an escape; its
-  files may link anywhere trusted, as a Hugging Face cache's link to its
-  blobs), and an error from inside a component names it by its role's
-  index.
+  pipeline's own files, `<role>/<name>`, at most 256 and within a
+  composition's 64 MiB a file and 128 MiB in all, after model_index.json;
+  a kept file that resolves outside the pipeline is skipped and named
+  (above). A component's directory, its links resolved, lies beneath the
+  pipeline's (a link out of it is refused as an escape, `kEscape`; a
+  weight component's files may link anywhere, as a Hugging Face cache's
+  link to its blobs), and an error from inside a component names it by
+  its role's index.
 
 `ReadCheckpoint` asks the readers in order: GGUF for a `*.gguf` file,
 diffusers for a directory with model_index.json, EXL3 and MLX for a
-directory whose config.json (opened through the trust walk and parsed
+directory whose config.json (opened as the reader opens it and parsed
 within its caps) names their quantization, and safetensors for any other
-directory. Every file a checkpoint read stays open (16 components of
-4,096 shards at most, beside 256 kept files), so `ReadCheckpoint` first
-raises the soft open-file limit as far as the hard limit allows; past
-it, an open is refused as `kIo`.
+directory. A reader holds one file open at a time beyond the few it is
+choosing between, so a checkpoint of any number of files (16 components
+of 4,096 shards at most, beside 256 kept files) reads within the usual
+soft open-file limit.
 
 On spark-b (`import_models_test`), the Gemma 2 and Gemma 3 source GGUFs
 give, through their mappings and their own metadata, the spec the

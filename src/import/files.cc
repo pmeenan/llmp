@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -21,35 +22,26 @@
 
 #include "artifact/artifact.h"
 #include "import/error.h"
-#include "platform/path_trust.h"
 
 namespace llmp::import {
 namespace {
+
+namespace fs = std::filesystem;
 
 std::unexpected<Error> Fail(Rule rule, std::string_view reason, std::uint64_t file) {
   return std::unexpected(Error{.rule = rule, .reason = reason, .file = file});
 }
 
-std::expected<platform::TrustedPath, Error> Walk(const std::filesystem::path& path, uid_t trusted,
-                                                 std::uint64_t file) {
-  std::error_code error;
-  const std::filesystem::path absolute = std::filesystem::absolute(path, error);
-  if (error) {
-    return Fail(Rule::kIo, "cannot make a checkpoint path absolute", file);
-  }
-  auto walk = platform::WalkTrusted(absolute, trusted, /*final_link_ok=*/true);
-  if (!walk) {
-    return Fail(Rule::kUntrusted, "a checkpoint path others could change, or not a path to one",
-                file);
-  }
-  return std::move(*walk);
+// Whether `path` lies strictly beneath `root`, both resolved.
+bool Beneath(const fs::path& path, const fs::path& root) {
+  const auto [in_root, in_path] = std::ranges::mismatch(root, path);
+  return in_root == root.end() && in_path != path.end();
 }
 
 }  // namespace
 
-std::expected<OpenFile, Error> OpenTrustedFile(const std::filesystem::path& path, uid_t trusted,
-                                               std::uint64_t file) {
-  auto f = OpenTrustedFileIfPresent(path, trusted, file);
+std::expected<OpenFile, Error> OpenCheckpointFile(const fs::path& path, std::uint64_t file) {
+  auto f = OpenCheckpointFileIfPresent(path, file);
   if (!f) {
     return std::unexpected(f.error());
   }
@@ -59,26 +51,38 @@ std::expected<OpenFile, Error> OpenTrustedFile(const std::filesystem::path& path
   return std::move(**f);
 }
 
-std::expected<std::optional<OpenFile>, Error> OpenTrustedFileIfPresent(
-    const std::filesystem::path& path, uid_t trusted, std::uint64_t file) {
-  auto walk = Walk(path, trusted, file);
-  if (!walk) {
-    return std::unexpected(walk.error());
+std::expected<std::optional<OpenFile>, Error> OpenCheckpointFileIfPresent(const fs::path& path,
+                                                                          std::uint64_t file) {
+  std::error_code error;
+  const fs::path absolute = fs::absolute(path, error);
+  if (error) {
+    return Fail(Rule::kIo, "cannot make a checkpoint path absolute", file);
   }
-  if (!walk->exists) {
-    return std::optional<OpenFile>();
-  }
-  // Only what the walk saw as a regular file is opened: opening a device
+  // Only what is a regular file now is opened: opening a device or a FIFO
   // can have effects of its own.
-  if (!S_ISREG(walk->status.st_mode)) {
+  struct stat seen{};
+  if (::stat(absolute.c_str(), &seen) != 0) {
+    if (errno == ENOENT) {
+      // A link to nothing (a cache's blob not downloaded) is a broken
+      // checkpoint, not a file it lacks: reading on would silently leave
+      // the file out.
+      if (struct stat link{}; ::lstat(absolute.c_str(), &link) == 0 && S_ISLNK(link.st_mode)) {
+        return Fail(Rule::kFileType, "a checkpoint file is a link to nothing", file);
+      }
+      return std::optional<OpenFile>();
+    }
+    return Fail(Rule::kFileType, "a checkpoint path that cannot be examined", file);
+  }
+  if (!S_ISREG(seen.st_mode)) {
     return Fail(Rule::kFileType, "a checkpoint file is not a regular file", file);
   }
   OpenFile f;
+  f.path = absolute;
   f.fd = artifact::FileDescriptor(
-      ::open(walk->resolved.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY));
+      ::open(absolute.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY));
   if (!f.fd.valid()) {
-    const int error = errno;
-    if (error == EMFILE || error == ENFILE || error == ENOMEM) {
+    const int open_error = errno;
+    if (open_error == EMFILE || open_error == ENFILE || open_error == ENOMEM) {
       return Fail(Rule::kIo, "out of file descriptors opening a checkpoint file", file);
     }
     return Fail(Rule::kFileType, "a checkpoint file cannot be opened as a regular file", file);
@@ -90,32 +94,48 @@ std::expected<std::optional<OpenFile>, Error> OpenTrustedFileIfPresent(
   if (!S_ISREG(status.st_mode)) {
     return Fail(Rule::kFileType, "a checkpoint file is not a regular file", file);
   }
-  if (status.st_dev != walk->status.st_dev || status.st_ino != walk->status.st_ino) {
-    return Fail(Rule::kUntrusted, "a checkpoint file changed during the trust walk", file);
-  }
-  if ((status.st_uid != 0 && status.st_uid != trusted) ||
-      platform::OthersCanWrite(status, trusted, f.fd.get())) {
-    return Fail(Rule::kUntrusted, "a checkpoint file others could change", file);
-  }
   f.bytes = static_cast<std::uint64_t>(status.st_size);
   f.device = static_cast<std::uint64_t>(status.st_dev);
   f.inode = static_cast<std::uint64_t>(status.st_ino);
   return std::optional<OpenFile>(std::move(f));
 }
 
-std::expected<std::filesystem::path, Error> TrustedDirectory(const std::filesystem::path& path,
-                                                             uid_t trusted) {
-  auto walk = Walk(path, trusted, kNoItem);
-  if (!walk) {
-    return std::unexpected(walk.error());
+std::expected<fs::path, Error> CheckpointDirectory(const fs::path& path) {
+  std::error_code error;
+  fs::path resolved = fs::canonical(path, error);
+  if (error) {
+    return Fail(error == std::errc::no_such_file_or_directory ? Rule::kFileType : Rule::kIo,
+                "the checkpoint cannot be resolved", kNoItem);
   }
-  if (!walk->exists || !S_ISDIR(walk->status.st_mode)) {
+  if (!fs::is_directory(resolved, error) || error) {
     return Fail(Rule::kFileType, "the checkpoint is not a directory", kNoItem);
   }
-  if (auto ok = platform::CheckPrivateDirectory(walk->resolved, walk->status, trusted); !ok) {
-    return Fail(Rule::kUntrusted, "a checkpoint directory others could change", kNoItem);
+  return resolved;
+}
+
+bool ResolvesInside(const fs::path& root, const fs::path& path) {
+  std::error_code error;
+  const fs::path tree = fs::canonical(root, error);
+  if (error) {
+    return false;
   }
-  return std::move(walk->resolved);
+  const fs::path at = fs::canonical(path, error);
+  if (error) {
+    return false;
+  }
+  if (Beneath(at, tree)) {
+    return true;
+  }
+  // A Hugging Face cache: <repository>/snapshots/<revision>/... links into
+  // <repository>/blobs/ (itself not followed: a blobs/ that is a link
+  // elsewhere does not count).
+  for (fs::path at_or_above = tree; at_or_above.has_relative_path();
+       at_or_above = at_or_above.parent_path()) {
+    if (at_or_above.parent_path().filename() == "snapshots") {
+      return Beneath(at, at_or_above.parent_path().parent_path() / "blobs");
+    }
+  }
+  return false;
 }
 
 std::expected<void, Error> ReadExactly(int fd, std::uint64_t offset, std::span<std::byte> out,

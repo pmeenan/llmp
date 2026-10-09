@@ -159,18 +159,16 @@ struct ArtifactFacts {
 // tables it supports), or 0 for an architecture without a runner.
 std::uint32_t RunnerContextCeiling(std::string_view architecture);
 
-// An installed artifact, opened under the store's trust rules (only root
-// and the runtime's user may change it; D-056's integrity rests on them)
-// and its ID checked.
+// An installed artifact, opened and its ID checked (who may change the
+// store is the filesystem's business, D-073 as amended on 2026-10-09).
 std::expected<artifact::Artifact, std::string> OpenInstalled(const std::filesystem::path& store,
                                                              const std::string& id);
 
-// A file the configuration names, under its trust rules (D-073): every
-// directory on the way and the file itself root's or `trusted`'s and
-// writable by nobody else, opened without following links, at most `limit`
+// A file the configuration names, or a record the runtime wrote: opened
+// as any file is (links followed), a regular file of at most `limit`
 // bytes.
-std::expected<std::string, std::string> ReadTrustedFile(const std::filesystem::path& path,
-                                                        uid_t trusted, std::size_t limit);
+std::expected<std::string, std::string> ReadRegularFile(const std::filesystem::path& path,
+                                                        std::size_t limit);
 
 // The facts of a configured model's artifact and drafter: both opened as
 // OpenInstalled does, their kept metadata read as untrusted input.
@@ -202,8 +200,7 @@ struct ChatAssets {
   std::string from;                          // where they came from, for messages
 };
 std::expected<ChatAssets, std::string> ReadChatAssets(const artifact::Artifact& target,
-                                                      const config::ModelEntry& entry,
-                                                      uid_t trusted);
+                                                      const config::ModelEntry& entry);
 
 // ------------------------------------------------------------ calibration
 
@@ -320,9 +317,9 @@ std::expected<void, std::string> ResolveReasoning(ModelSettings& settings,
                                                   const FindToken& find);
 
 // `llmp-runtime settings`: every configured model's settings resolved
-// (its artifacts, tokenizer and calibration record read under their trust
-// rules), printed to `out` as a table, or with `json` one JSON object;
-// problems to `log`. It reads and never writes, takes no process lock (a
+// (its artifacts, tokenizer and calibration record read), printed to
+// `out` as a table, or with `json` one JSON object; problems to `log`.
+// It reads and never writes, takes no process lock (a
 // running service's settings can be listed beside it) and creates no
 // device context. Returns the process's exit status: 1 if any model's
 // could not be.

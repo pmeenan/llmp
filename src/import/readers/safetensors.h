@@ -66,8 +66,6 @@
 #ifndef LLMP_IMPORT_READERS_SAFETENSORS_H_
 #define LLMP_IMPORT_READERS_SAFETENSORS_H_
 
-#include <sys/types.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -90,13 +88,12 @@ inline constexpr std::size_t kMaxShards = 4096;
 inline constexpr std::size_t kMaxRank = 8;
 inline constexpr std::size_t kMaxConfigDepth = 32;
 
-std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& directory,
-                                                 uid_t trusted);
+std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& directory);
 
 // One shard's bytes with its config.json (and hf_quant_config.json, when
 // not empty), as ReadSafetensors reads a checkpoint of one shard: for
 // tests and fuzzing. The checkpoint's file is named "memory" and has no
-// descriptor.
+// path (its reads fail).
 std::expected<Checkpoint, Error> ParseSafetensors(std::span<const std::byte> shard,
                                                   std::string_view config,
                                                   std::string_view hf_quant_config = {});
@@ -114,8 +111,7 @@ struct HfDirectory {
   // MLX wrote the arrays (readers/mlx.h).
   bool mlx = false;
 };
-std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& directory,
-                                                  uid_t trusted);
+std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& directory);
 // The same of one shard's bytes (ParseSafetensors's file).
 std::expected<HfDirectory, Error> ParseHfShard(std::span<const std::byte> shard,
                                                std::string_view config,
@@ -124,8 +120,7 @@ std::expected<HfDirectory, Error> ParseHfShard(std::span<const std::byte> shard,
 // config.json beneath `directory`, opened and checked as Read opens it,
 // within its cap and parsed as an object: a reader's claim's look, none
 // for anything else (the reader that reads it reports why).
-std::optional<base::json::Document> PeekConfig(const std::filesystem::path& directory,
-                                               uid_t trusted);
+std::optional<base::json::Document> PeekConfig(const std::filesystem::path& directory);
 
 // A JSON object's members as metadata, as config.json's (sorted, keys
 // unique, within the caps); `skip` names root members left out.

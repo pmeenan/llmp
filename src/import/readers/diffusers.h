@@ -16,10 +16,10 @@
 // name, and must be [a-z][a-z0-9_]{0,63} (a path component, and a
 // composition's role). At most kMaxPipelineEntries components.
 //
-// A component's directory must exist, be trusted and, its links resolved,
-// lie beneath the pipeline's (a link out of the pipeline is an escape and
-// refused; files inside it may link anywhere trusted, as a Hugging Face
-// cache's snapshot files link to its blobs). An error from inside a
+// A component's directory must exist and, its links resolved, lie beneath
+// the pipeline's (a link out of the pipeline is an escape and refused,
+// Rule::kEscape; the files a weight component reads may link anywhere, as
+// a Hugging Face cache's snapshot files link to its blobs). An error from inside a
 // component carries its role's index (Error::component). With a config.json
 // it holds weights and is read by the reader that claims it (reader.h;
 // never as a pipeline itself): a transformers model's model.safetensors
@@ -31,16 +31,16 @@
 // from at most kMaxPipelineDirectoryEntries entries (subdirectories and
 // what is not a regular file are left out), are the pipeline's own files,
 // named "<role>/<file name>" (UTF-8 without control characters), at most
-// kMaxPipelineFiles of them (each stays open, as every reader's files
-// do), each at most kMaxPipelineFileBytes and all at most
-// kMaxPipelineFilesBytes (a composition's caps for the metadata it keeps
-// verbatim). The pipeline's files are model_index.json, then those, by
-// role and name.
+// kMaxPipelineFiles of them, each at most kMaxPipelineFileBytes and all at
+// most kMaxPipelineFilesBytes (a composition's caps for the metadata it
+// keeps verbatim). Since they are kept verbatim, each must resolve inside
+// the pipeline (files.h ResolvesInside: a Hugging Face cache's blobs
+// count); one that resolves elsewhere is left out and named in
+// Checkpoint::skipped, never refused. The pipeline's files are
+// model_index.json, then those, by role and name.
 
 #ifndef LLMP_IMPORT_READERS_DIFFUSERS_H_
 #define LLMP_IMPORT_READERS_DIFFUSERS_H_
-
-#include <sys/types.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -59,7 +59,7 @@ inline constexpr std::uint64_t kMaxModelIndexBytes = std::uint64_t{1} << 20U;
 inline constexpr std::size_t kMaxPipelineEntries = 64;
 inline constexpr std::size_t kMaxPipelineComponents = 16;
 inline constexpr std::size_t kMaxPipelineDirectoryEntries = 4096;
-inline constexpr std::size_t kMaxPipelineFiles = 256;  // kept files in all, each open
+inline constexpr std::size_t kMaxPipelineFiles = 256;  // kept files in all
 inline constexpr std::uint64_t kMaxPipelineFileBytes = std::uint64_t{64} << 20U;
 inline constexpr std::uint64_t kMaxPipelineFilesBytes = std::uint64_t{128} << 20U;
 
@@ -72,8 +72,7 @@ struct ModelIndex {
 };
 std::expected<ModelIndex, Error> ParseModelIndex(std::string_view text);
 
-std::expected<Checkpoint, Error> ReadDiffusers(const std::filesystem::path& directory,
-                                               uid_t trusted);
+std::expected<Checkpoint, Error> ReadDiffusers(const std::filesystem::path& directory);
 
 }  // namespace llmp::import
 

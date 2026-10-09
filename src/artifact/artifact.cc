@@ -43,7 +43,6 @@
 #include "base/sha256.h"
 #include "platform/direct_io.h"
 #include "platform/files.h"
-#include "platform/path_trust.h"
 
 namespace llmp::artifact {
 
@@ -98,8 +97,9 @@ std::unexpected<Error> Pass(const std::expected<T, Error>& failed) {
 }
 
 // Opens `name` beneath dir without following a link, and without blocking
-// on a FIFO swapped in; kFileType if it is not a regular, singly linked
-// file.
+// on a FIFO swapped in; kFileType if it is not a regular file. Hard links
+// are the filesystem's business (a deduplicated store, D-056 as amended on
+// 2026-10-09).
 std::expected<FileDescriptor, Error> OpenRegular(int dir, const char* name, struct stat& status,
                                                  Item item) {
   FileDescriptor fd(::openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY));
@@ -109,8 +109,8 @@ std::expected<FileDescriptor, Error> OpenRegular(int dir, const char* name, stru
   if (::fstat(fd.get(), &status) != 0) {
     return Fail(Rule::kIo, "fstat failed", item);
   }
-  if (!S_ISREG(status.st_mode) || status.st_nlink != 1) {
-    return Fail(Rule::kFileType, "not a regular, singly linked file", item);
+  if (!S_ISREG(status.st_mode)) {
+    return Fail(Rule::kFileType, "not a regular file", item);
   }
   return fd;
 }
@@ -263,57 +263,22 @@ class Opener {
       root = root.parent_path();  // "a/b/" names b
     }
     artifact_.id_ = options_.expected_id ? *options_.expected_id : root.filename().string();
-    if (options_.trusted_owner) {
-      std::error_code error;
-      const std::filesystem::path absolute = std::filesystem::absolute(root, error);
-      if (error) {
-        return Fail(Rule::kIo, "cannot make the artifact path absolute");
-      }
-      auto walk = platform::WalkTrusted(absolute, *options_.trusted_owner, false);
-      if (!walk) {
-        return Fail(Rule::kUntrusted, "the path to the artifact is not trusted");
-      }
-      if (!walk->exists) {
-        return Fail(Rule::kFileType, "the artifact root must be a real directory");
-      }
-      trusted_root_ = walk->status;
-    }
-    artifact_.root_ =
-        FileDescriptor(::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    // The root may be a link (an artifact kept on another drive, D-056 as
+    // amended on 2026-10-09); nothing inside it may be.
+    artifact_.root_ = FileDescriptor(::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (!artifact_.root_.valid()) {
-      return Fail(Rule::kFileType, "the artifact root must be a real directory");
+      return Fail(Rule::kFileType, "the artifact root must be a directory");
     }
     struct stat status{};
     if (::fstat(artifact_.root_.get(), &status) != 0) {
       return Fail(Rule::kIo, "fstat failed");
     }
-    if (options_.trusted_owner) {
-      if (status.st_dev != trusted_root_.st_dev || status.st_ino != trusted_root_.st_ino) {
-        return Fail(Rule::kUntrusted, "the artifact root changed during the trust walk");
-      }
-      if (auto ok = Trusted(status, root); !ok) {
-        return ok;
-      }
-    }
-    return {};
-  }
-
-  Step Trusted(const struct stat& status, const std::filesystem::path& path) const {
-    if (!options_.trusted_owner) {
-      return {};
-    }
-    const uid_t trusted = *options_.trusted_owner;
-    if ((status.st_uid != 0 && status.st_uid != trusted) ||
-        platform::OthersCanWrite(status, trusted, path)) {
-      return Fail(Rule::kUntrusted, "a file or directory others could change");
-    }
     return {};
   }
 
   // Every entry of one directory: links are refused, directories are
-  // returned, regular singly linked files are recorded as present.
-  std::expected<std::vector<std::string>, Error> Scan(int dir, std::string_view prefix,
-                                                      const std::filesystem::path& path) {
+  // returned, regular files are recorded as present.
+  std::expected<std::vector<std::string>, Error> Scan(int dir, std::string_view prefix) {
     auto names = ListNames(dir, budget_, kNoItem);
     if (!names) {
       return Pass(names);
@@ -331,11 +296,8 @@ class Opener {
         dirs.push_back(name);
         continue;
       }
-      if (!S_ISREG(status.st_mode) || status.st_nlink != 1) {
-        return Fail(Rule::kFileType, "not a regular, singly linked file");
-      }
-      if (auto ok = Trusted(status, path / name); !ok) {
-        return Pass(ok);
+      if (!S_ISREG(status.st_mode)) {
+        return Fail(Rule::kFileType, "not a regular file");
       }
       present_.push_back(std::string(prefix) + name);
     }
@@ -343,8 +305,7 @@ class Opener {
   }
 
   Step Walk() {
-    const std::filesystem::path root = root_path_;
-    auto dirs = Scan(artifact_.root_.get(), "", root);
+    auto dirs = Scan(artifact_.root_.get(), "");
     if (!dirs) {
       return Pass(dirs);
     }
@@ -359,14 +320,7 @@ class Opener {
       if (!fd.valid()) {
         return Fail(Rule::kFileType, "unreadable directory");
       }
-      struct stat status{};
-      if (::fstat(fd.get(), &status) != 0) {
-        return Fail(Rule::kIo, "fstat failed");
-      }
-      if (auto ok = Trusted(status, root / d); !ok) {
-        return ok;
-      }
-      auto nested = Scan(fd.get(), d + "/", root / d);
+      auto nested = Scan(fd.get(), d + "/");
       if (!nested) {
         return Pass(nested);
       }
@@ -1526,7 +1480,6 @@ class Opener {
   std::filesystem::path root_path_;
   OpenOptions options_;
   Artifact artifact_;
-  struct stat trusted_root_{};
   FileDescriptor data_;
   FileDescriptor meta_;
   std::size_t budget_ = kMaxDirectoryEntries;
@@ -1673,9 +1626,8 @@ std::expected<FileDescriptor, Error> Artifact::OpenShardForDirectRead(std::uint3
     return Fail(Rule::kIo, "fstat failed", shard);
   }
   const FileIdentity& want = shard_files_[shard];
-  if (!S_ISREG(status.st_mode) || status.st_nlink != 1 || status.st_dev != want.device ||
-      status.st_ino != want.inode || Generation(fd.get()) != want.generation ||
-      std::cmp_not_equal(status.st_size, want.size) ||
+  if (!S_ISREG(status.st_mode) || status.st_dev != want.device || status.st_ino != want.inode ||
+      Generation(fd.get()) != want.generation || std::cmp_not_equal(status.st_size, want.size) ||
       status.st_ctim.tv_sec != want.changed_seconds ||
       status.st_ctim.tv_nsec != want.changed_nanoseconds) {
     return Fail(Rule::kFileType, "the shard is not the file validated at open", shard);

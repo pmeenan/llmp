@@ -519,7 +519,7 @@ below apply to each component artifact.
 2. **Register (runtime).** At startup, or once a publishing job is reaped, CPU
    workers parse the manifest strictly and run the verifier's shallow checks:
    the directory name is the SHA-256 of the manifest bytes, the file set is
-   exact, files are regular and singly linked, and sizes match. Unknown format
+   exact, files are regular with no links inside the artifact, and sizes match. Unknown format
    or profile versions are rejected and need a re-import (D-056). The result
    is a compact **installed-model index** entry: identity, sizes, template
    hash, operation set, support status and D-046's discovery metadata (context
@@ -1019,9 +1019,11 @@ spill files and generation/retention rules; metadata need not use 2 MiB I/O.
 ### Storage service
 
 The storage service owns every direct-I/O submission and completion on the
-node (D-034, [async-model.md](async-model.md)). It opens files only beneath
-the installed and spill roles, without following links or crossing mounts
-(D-054, D-063). It allocates no payload buffers. Every read or write names
+node (D-034, [async-model.md](async-model.md)). It opens files only in
+the artifacts the runtime validated and beneath the spill role, never
+through a link inside an artifact (D-054, D-063; an artifact's own
+directory may be a link to another drive, D-056 as amended on
+2026-10-09). It allocates no payload buffers. Every read or write names
 admitted, protected backing ranges by backing identity and generation. The
 scheduler records those ranges and their addresses when it prepares the
 operation (async-model.md), and the service checks the backing generations
@@ -1462,7 +1464,8 @@ exit 75 (the host not ready yet), never giving up, but not after exit
    no configuration moves and `/run/llmp`'s removal at stop does not
    touch (D-074).
 4. Resolve and check the runtime's own roles (`installed`, `spill`,
-   `state`: ownership, modes, nesting), comparing the job-only paths by
+   `state`: nesting, writability; ownership and modes only warned of,
+   D-073 as amended on 2026-10-09), comparing the job-only paths by
    text alone so a hung mount cannot stall startup. Then check the anchor
    against the configuration and `state`'s records; a mismatch refuses
    startup. Without an anchor, a standalone configuration is still refused
@@ -1710,7 +1713,8 @@ change (D-065). Runtime policy changes, such as a budget reduction, go
 through the management API as scheduler requests. Membership and trust
 changes need cluster-design.md's coordinated restart. D-063 records the
 `[storage]` keys and D-073 the rest of M1's spellings, the one-owner merge,
-the trust checks on the files and roles, and the diagnostics; M5 adds the
+the checks of the files and roles (relaxed on 2026-10-09: ownership and
+modes are warnings, not refusals), and the diagnostics; M5 adds the
 front door's and TLS keys and M6 the switching policy's.
 
 ## Observability and privacy
@@ -1738,10 +1742,10 @@ front door's and TLS keys and M6 the switching policy's.
 | --- | --- | --- |
 | Client requests | Untrusted, even when authenticated | Bounded before any work; D-045's guards; strict parsing |
 | Checkpoints, the long-term store, archives, peer transfers | Untrusted | Read only by job processes, in a confined parse stage; lengths, paths, hashes and metadata validated; no checkpoint code runs in a llmpalooza process, and a chat template runs only in the runtime's bounded, sandboxed interpreter (D-009, D-054, D-067) |
-| Installed artifacts | Verified at install, then protected by the store's permissions | The runtime still parses manifests and indexes strictly and bounds-checks every range before use |
+| Installed artifacts | Verified at install, then protected by the filesystem's access control, which is the owner's (D-073 as amended on 2026-10-09) | The runtime still parses manifests and indexes strictly and bounds-checks every range before use |
 | Cluster messages | Authenticated peers | Mutual TLS with pinned identities, bounded framing, validated records; no raw addresses or unvalidated paths cross (D-038) |
 | Management requests | Local processes | Loopback plus browser guards; credentials and TLS when bound elsewhere (D-064) |
-| Configuration, credentials, certificates | Files only root or the runtime's user can replace | Strict parsing; path, owner and mode checks (D-063, D-065) |
+| Configuration, credentials, certificates | Files the node's owner controls through the filesystem's access control (D-073 as amended on 2026-10-09) | Strict parsing; regular files only; `llmp doctor` warns of a configuration file anyone can write (D-063, D-065) |
 | Spill files | Written by this process | Restores are checked against catalog digests; spill is deleted at startup (D-055) |
 
 The runtime and the jobs run as `llmp`, never as root. The security model
@@ -1955,11 +1959,13 @@ equal, contain or sit inside any of them. After canonical resolution (links
 followed, device and inode compared) no two role paths may be equal or
 nested; the runtime checks the job-only paths' text against its resolved
 roles, so a hung mount cannot stall it, and jobs repeat the full check. The
-runtime refuses its roles if users other than root and its own user
-(`llmp` when packaged) could write or replace them, and probes
-`installed` and `spill` with D-034's direct-I/O check at startup; those
-checks, not the text comparison, reject a network mount aliased into its
-roles.
+runtime creates a missing role with its mode (`installed` 0755, `spill`
+and `state` 0700); an existing one owned by another user or open to
+others is a warning, not a refusal, since filesystem access control is
+the owner's (D-073 as amended on 2026-10-09). It refuses a role its user
+cannot write and probes `installed` and `spill` with D-034's direct-I/O
+check at startup; those checks and the filesystem allowlist, not the
+text comparison, reject a network mount aliased into its roles.
 `llmp.toml` and its fragments form cluster-design.md's node-local document
 extended with `[storage]`; a standalone node omits its cluster keys, including
 `[credentials]`. Logs go to the journal. The package depends on glibc and

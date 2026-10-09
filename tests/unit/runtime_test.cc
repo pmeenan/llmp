@@ -291,7 +291,7 @@ TEST(RuntimeStart, OneRuntimePerNode) {
   const auto options = scratch.Options();
   fs::path lock_path = options.anchor;
   lock_path += ".lock";
-  auto held = llmp::platform::LockFile::Acquire(lock_path, ::geteuid());
+  auto held = llmp::platform::LockFile::Acquire(lock_path);
   ASSERT_TRUE(held.has_value()) << held.error();
   const Outcome outcome = StartWith(options);
   EXPECT_EQ(outcome.status, llmp::runtime::kExitRefused);
@@ -299,25 +299,57 @@ TEST(RuntimeStart, OneRuntimePerNode) {
   EXPECT_FALSE(fs::exists(scratch.path() / "data"));
 }
 
-TEST(LockFile, RefusesLinksAndOpenModes) {
+// Created 0600; an existing one is used whatever its mode, through a link
+// too (D-073 as amended on 2026-10-09); only a regular file.
+TEST(LockFile, CreatesPrivateAndTakesWhatExists) {
   const Scratch scratch;
+  {
+    auto created = llmp::platform::LockFile::Acquire(scratch.path() / "new.lock");
+    ASSERT_TRUE(created.has_value()) << created.error();
+    struct stat status{};
+    ASSERT_EQ(::stat((scratch.path() / "new.lock").c_str(), &status), 0);
+    EXPECT_EQ(status.st_mode & 07777U, 0600U);
+  }
   std::ofstream(scratch.path() / "open.lock") << "";
   ASSERT_EQ(::chmod((scratch.path() / "open.lock").c_str(), 0644), 0);
-  auto lock = llmp::platform::LockFile::Acquire(scratch.path() / "open.lock", ::geteuid());
+  auto lock = llmp::platform::LockFile::Acquire(scratch.path() / "open.lock");
+  EXPECT_TRUE(lock.has_value()) << lock.error();
+  fs::create_symlink(scratch.path() / "open.lock", scratch.path() / "link.lock");
+  auto through = llmp::platform::LockFile::Acquire(scratch.path() / "link.lock");
+  ASSERT_FALSE(through.has_value());  // the same file, whose lock is held
+  EXPECT_THAT(through.error(), HasSubstr("is locked"));
+  fs::create_directory(scratch.path() / "dir.lock");
+  lock = llmp::platform::LockFile::Acquire(scratch.path() / "dir.lock");
   ASSERT_FALSE(lock.has_value());
-  EXPECT_THAT(lock.error(), HasSubstr("with mode 0600, not uid"));
-  fs::create_symlink(scratch.path() / "elsewhere", scratch.path() / "link.lock");
-  lock = llmp::platform::LockFile::Acquire(scratch.path() / "link.lock", ::geteuid());
-  ASSERT_FALSE(lock.has_value());
-  EXPECT_THAT(lock.error(), HasSubstr("symbolic link"));
-  EXPECT_FALSE(fs::exists(scratch.path() / "elsewhere"));
+  // A FIFO, or a link to one, is refused without being opened (an open
+  // for writing would otherwise wait for a reader or have effects).
+  ASSERT_EQ(::mkfifo((scratch.path() / "fifo.lock").c_str(), 0600), 0);
+  fs::create_symlink(scratch.path() / "fifo.lock", scratch.path() / "to-fifo.lock");
+  for (const char* name : {"fifo.lock", "to-fifo.lock"}) {
+    lock = llmp::platform::LockFile::Acquire(scratch.path() / name);
+    ASSERT_FALSE(lock.has_value()) << name;
+    EXPECT_THAT(lock.error(), HasSubstr("is not a regular file"));
+  }
+  // Through a link to nothing, its target is created, empty and private;
+  // an existing file's bytes are left as they were.
+  fs::create_symlink(scratch.path() / "target.lock", scratch.path() / "dangling.lock");
+  {
+    auto created = llmp::platform::LockFile::Acquire(scratch.path() / "dangling.lock");
+    ASSERT_TRUE(created.has_value()) << created.error();
+    EXPECT_EQ(fs::file_size(scratch.path() / "target.lock"), 0U);
+  }
+  std::ofstream(scratch.path() / "kept.lock") << "precious";
+  {
+    auto kept = llmp::platform::LockFile::Acquire(scratch.path() / "kept.lock");
+    ASSERT_TRUE(kept.has_value()) << kept.error();
+  }
+  EXPECT_EQ(fs::file_size(scratch.path() / "kept.lock"), 8U);
   // Released with its last descriptor.
   {
-    auto first = llmp::platform::LockFile::Acquire(scratch.path() / "a.lock", ::geteuid());
+    auto first = llmp::platform::LockFile::Acquire(scratch.path() / "a.lock");
     ASSERT_TRUE(first.has_value()) << first.error();
   }
-  EXPECT_TRUE(
-      llmp::platform::LockFile::Acquire(scratch.path() / "a.lock", ::geteuid()).has_value());
+  EXPECT_TRUE(llmp::platform::LockFile::Acquire(scratch.path() / "a.lock").has_value());
 }
 
 // Runs body in a child with the crash policy installed; returns its wait

@@ -169,8 +169,8 @@ bool IsExl3Config(json::Value root) {
   return method && method->is_string() && method->string() == "exl3";
 }
 
-std::expected<Checkpoint, Error> ReadExl3(const std::filesystem::path& directory, uid_t trusted) {
-  auto dir = ReadHfDirectory(directory, trusted);
+std::expected<Checkpoint, Error> ReadExl3(const std::filesystem::path& directory) {
+  auto dir = ReadHfDirectory(directory);
   if (!dir) {
     return std::unexpected(dir.error());
   }

@@ -846,13 +846,26 @@ class ArtifactFilesTest : public ::testing::Test {
   fs::path root_;
 };
 
-TEST_F(ArtifactFilesTest, LinksAndSpecialFilesAreRefused) {
+TEST_F(ArtifactFilesTest, LinksInsideAndSpecialFilesAreRefused) {
   std::error_code error;
-  // The root through a link.
+  // The root through a link is the directory it leads to (an artifact
+  // kept on another drive; D-056 as amended on 2026-10-09), named by the
+  // link, and its shards reopen through it.
+  const fs::path store = scratch_ / "store";
+  fs::create_directory(store, error);
+  fs::create_directory_symlink(root_, store / root_.filename(), error);
+  ASSERT_FALSE(error) << error.message();
+  {
+    const auto linked = Artifact::Open(store / root_.filename());
+    ASSERT_TRUE(linked.has_value()) << linked.error().ToString();
+    EXPECT_TRUE(linked->OpenShardForDirectRead(0).has_value());
+  }
   fs::create_directory_symlink(root_, scratch_ / "link", error);
-  EXPECT_EQ(Open(scratch_ / "link",
-                 {.expected_id = root_.filename().string(), .trusted_owner = std::nullopt}),
-            "file-type");
+  EXPECT_EQ(Open(scratch_ / "link"), "identity");  // named by the link, as any root
+  EXPECT_EQ(Open(scratch_ / "link", {.expected_id = root_.filename().string()}), "ok");
+  // A link to a link to nothing is not a directory.
+  fs::create_directory_symlink(scratch_ / "absent", scratch_ / "dangling", error);
+  EXPECT_EQ(Open(scratch_ / "dangling", {.expected_id = root_.filename().string()}), "file-type");
   // A link in place of a listed file, a directory or the manifest.
   const fs::path index = root_ / "index.json";
   fs::rename(index, scratch_ / "index.json", error);
@@ -874,10 +887,16 @@ TEST_F(ArtifactFilesTest, LinksAndSpecialFilesAreRefused) {
   EXPECT_EQ(Open(root_), "file-type");  // missing
   fs::rename(scratch_ / "manifest.json", manifest, error);
   EXPECT_EQ(Open(root_), "ok");
-  // A hard-linked file.
+  // A hard-linked file is read as any file (a deduplicated store), and
+  // its shard reopens for direct reads.
   const fs::path shard = root_ / "data" / "00000.safetensors";
   fs::create_hard_link(shard, scratch_ / "second-name", error);
-  EXPECT_EQ(Open(root_), "file-type");
+  ASSERT_FALSE(error) << error.message();
+  {
+    const auto linked = Artifact::Open(root_);
+    ASSERT_TRUE(linked.has_value()) << linked.error().ToString();
+    EXPECT_TRUE(linked->OpenShardForDirectRead(0).has_value());
+  }
   fs::remove(scratch_ / "second-name", error);
   EXPECT_EQ(Open(root_), "ok");
   // A FIFO swapped in for a listed file never blocks the open.
@@ -888,8 +907,7 @@ TEST_F(ArtifactFilesTest, LinksAndSpecialFilesAreRefused) {
   fs::remove(kv, error);
   fs::rename(scratch_ / "kv", kv, error);
   // Not a directory, or nothing at all.
-  EXPECT_EQ(Open(shard, {.expected_id = root_.filename().string(), .trusted_owner = std::nullopt}),
-            "file-type");
+  EXPECT_EQ(Open(shard, {.expected_id = root_.filename().string()}), "file-type");
   EXPECT_EQ(Open(scratch_ / "absent"), "file-type");
   EXPECT_EQ(Open(root_), "ok");
   // A trailing slash names the same directory.
@@ -959,26 +977,16 @@ TEST_F(ArtifactFilesTest, TooManyDirectoryEntries) {
   EXPECT_EQ(Open(root_), "file-set");
 }
 
-TEST_F(ArtifactFilesTest, OwnerPolicy) {
-  const uid_t me = ::geteuid();
-  const std::string verdict = Open(root_, {.expected_id = std::nullopt, .trusted_owner = me});
-  if (verdict == "untrusted") {
-    GTEST_SKIP() << "the scratch path is not private to this user here";
-  }
-  EXPECT_EQ(verdict, "ok");
+// Who could change the store is the filesystem's business (D-073 as
+// amended on 2026-10-09): modes are not the reader's.
+TEST_F(ArtifactFilesTest, ModesAreNotTheReadersBusiness) {
   const fs::path shard = root_ / "data" / "00001.safetensors";
   std::error_code error;
   fs::permissions(shard, fs::perms::others_write, fs::perm_options::add, error);
-  EXPECT_EQ(Open(root_, {.expected_id = std::nullopt, .trusted_owner = me}), "untrusted");
-  EXPECT_EQ(Open(root_), "ok");  // without the policy, modes are not the format's business
-  fs::permissions(shard, fs::perms::others_write, fs::perm_options::remove, error);
   fs::permissions(root_ / "meta", fs::perms::others_write, fs::perm_options::add, error);
-  EXPECT_EQ(Open(root_, {.expected_id = std::nullopt, .trusted_owner = me}), "untrusted");
+  EXPECT_EQ(Open(root_), "ok");
+  fs::permissions(shard, fs::perms::others_write, fs::perm_options::remove, error);
   fs::permissions(root_ / "meta", fs::perms::others_write, fs::perm_options::remove, error);
-  if (me != 0) {
-    // Files owned by someone other than root or the trusted user.
-    EXPECT_EQ(Open(root_, {.expected_id = std::nullopt, .trusted_owner = me + 1}), "untrusted");
-  }
 }
 
 TEST_F(ArtifactFilesTest, LookupsAndRowBounds) {

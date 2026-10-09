@@ -522,8 +522,8 @@ std::optional<std::string_view> VariantOf(std::string_view name, std::string_vie
 
 // The files of `base` under `variant` (none: the default names), opened
 // when present.
-std::expected<Weights, Error> OpenWeights(const std::filesystem::path& root, uid_t trusted,
-                                          std::string_view base, std::string_view variant) {
+std::expected<Weights, Error> OpenWeights(const std::filesystem::path& root, std::string_view base,
+                                          std::string_view variant) {
   Weights w;
   if (variant.empty()) {
     w.index_name = std::string(base) + std::string(kIndexSuffix);
@@ -532,11 +532,11 @@ std::expected<Weights, Error> OpenWeights(const std::filesystem::path& root, uid
     w.index_name = std::format("{}.safetensors.index.{}.json", base, variant);
     w.single_name = std::format("{}.{}{}", base, variant, kShardSuffix);
   }
-  auto index = OpenTrustedFileIfPresent(root / w.index_name, trusted, kNoItem);
+  auto index = OpenCheckpointFileIfPresent(root / w.index_name, kNoItem);
   if (!index) {
     return std::unexpected(index.error());
   }
-  auto single = OpenTrustedFileIfPresent(root / w.single_name, trusted, 0);
+  auto single = OpenCheckpointFileIfPresent(root / w.single_name, 0);
   if (!single) {
     return std::unexpected(single.error());
   }
@@ -549,10 +549,10 @@ std::expected<Weights, Error> OpenWeights(const std::filesystem::path& root, uid
 // with none, under the one variant of one base it holds (as a library
 // loading it without a variant would, or could only, read). Weights under
 // both bases, or several variants and no default, are ambiguous.
-std::expected<Weights, Error> FindWeights(const std::filesystem::path& root, uid_t trusted) {
+std::expected<Weights, Error> FindWeights(const std::filesystem::path& root) {
   std::optional<Weights> found;
   for (const std::string_view base : kWeightBases) {
-    auto w = OpenWeights(root, trusted, base, {});
+    auto w = OpenWeights(root, base, {});
     if (!w) {
       return std::unexpected(w.error());
     }
@@ -595,7 +595,7 @@ std::expected<Weights, Error> FindWeights(const std::filesystem::path& root, uid
   if (variants.size() > 1) {
     return Fail(Rule::kShards, "weights under several variants and no default, or both bases");
   }
-  return OpenWeights(root, trusted, variants.begin()->first, variants.begin()->second);
+  return OpenWeights(root, variants.begin()->first, variants.begin()->second);
 }
 
 }  // namespace
@@ -631,8 +631,8 @@ std::expected<std::vector<MetaEntry>, Error> FlattenMetadata(
   return out;
 }
 
-std::optional<json::Document> PeekConfig(const std::filesystem::path& directory, uid_t trusted) {
-  auto f = OpenTrustedFileIfPresent(directory / kConfigName, trusted, kNoItem);
+std::optional<json::Document> PeekConfig(const std::filesystem::path& directory) {
+  auto f = OpenCheckpointFileIfPresent(directory / kConfigName, kNoItem);
   if (!f || !f->has_value()) {
     return std::nullopt;
   }
@@ -647,40 +647,38 @@ std::optional<json::Document> PeekConfig(const std::filesystem::path& directory,
   return std::move(*doc);
 }
 
-std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& directory,
-                                                  uid_t trusted) {
-  auto root = TrustedDirectory(directory, trusted);
+std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& directory) {
+  auto root = CheckpointDirectory(directory);
   if (!root) {
     return std::unexpected(root.error());
   }
   std::vector<SourceFile> sources;
-  std::vector<OpenFile> open;
   // A document beside the shards, when present; it follows them in the
-  // checkpoint's file order.
-  const auto keep = [&](std::string_view name, OpenFile opened,
+  // checkpoint's file order. Each file is open only while it is read.
+  const auto keep = [&](std::string_view name, const OpenFile& opened,
                         std::uint64_t limit) -> std::expected<std::string, Error> {
     auto text = ReadDocument(opened, limit, kNoItem);
     if (!text) {
       return std::unexpected(text.error());
     }
     sources.push_back({.name = std::string(name),
+                       .path = opened.path,
                        .bytes = opened.bytes,
                        .device = opened.device,
                        .inode = opened.inode});
-    open.push_back(std::move(opened));
     return std::move(*text);
   };
   const auto document =
       [&](std::string_view name,
           std::uint64_t limit) -> std::expected<std::optional<std::string>, Error> {
-    auto f = OpenTrustedFileIfPresent(*root / name, trusted, kNoItem);
+    auto f = OpenCheckpointFileIfPresent(*root / name, kNoItem);
     if (!f) {
       return std::unexpected(f.error());
     }
     if (!f->has_value()) {
       return std::optional<std::string>();
     }
-    auto text = keep(name, std::move(**f), limit);
+    auto text = keep(name, **f, limit);
     if (!text) {
       return std::unexpected(text.error());
     }
@@ -705,7 +703,7 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
   if (!config) {
     return std::unexpected(config.error());
   }
-  auto weights = FindWeights(*root, trusted);
+  auto weights = FindWeights(*root);
   if (!weights) {
     return std::unexpected(weights.error());
   }
@@ -713,7 +711,8 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
   std::optional<std::map<std::string, std::string, std::less<>>> index;
   std::vector<std::string> shards;
   if (weights->index) {
-    auto text = keep(weights->index_name, std::move(*weights->index), kMaxIndexBytes);
+    auto text = keep(weights->index_name, *weights->index, kMaxIndexBytes);
+    weights->index.reset();  // closed
     if (!text) {
       return std::unexpected(text.error());
     }
@@ -747,15 +746,14 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
   std::set<std::string_view> seen;
   bool mlx = false;
   bool other = false;
-  const std::size_t documents = open.size();
-  // The shards come first in the checkpoint's file order.
+  // The shards come first in the checkpoint's file order; each is open
+  // only while its header is read.
   std::vector<SourceFile> shard_files;
-  std::vector<OpenFile> shard_open;
   for (std::size_t s = 0; s < shards.size(); ++s) {
     const auto file = static_cast<std::uint32_t>(s);
     // The single file was opened above; an index's shards are opened here.
     std::expected<OpenFile, Error> f = single ? std::expected<OpenFile, Error>(std::move(*single))
-                                              : OpenTrustedFile(*root / shards[s], trusted, file);
+                                              : OpenCheckpointFile(*root / shards[s], file);
     if (!f) {
       return std::unexpected(f.error());
     }
@@ -783,9 +781,11 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
       }
     }
     std::ranges::move(*shard, std::back_inserter(tensors));
-    shard_files.push_back(
-        {.name = shards[s], .bytes = f->bytes, .device = f->device, .inode = f->inode});
-    shard_open.push_back(std::move(*f));
+    shard_files.push_back({.name = shards[s],
+                           .path = f->path,
+                           .bytes = f->bytes,
+                           .device = f->device,
+                           .inode = f->inode});
   }
   for (std::size_t t = 0; t < tensors.size(); ++t) {
     if (!seen.insert(tensors[t].name).second) {
@@ -805,11 +805,7 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
   c.tensors = std::move(tensors);
   // Shards, then the documents (their extents name only shards).
   c.files = std::move(shard_files);
-  c.open = std::move(shard_open);
-  for (std::size_t d = 0; d < documents; ++d) {
-    c.files.push_back(std::move(sources[d]));
-    c.open.push_back(std::move(open[d]));
-  }
+  std::ranges::move(sources, std::back_inserter(c.files));
   return out;
 }
 
@@ -874,9 +870,8 @@ std::expected<Checkpoint, Error> Quantized(HfDirectory dir) {
 
 }  // namespace
 
-std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& directory,
-                                                 uid_t trusted) {
-  auto dir = ReadHfDirectory(directory, trusted);
+std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& directory) {
+  auto dir = ReadHfDirectory(directory);
   if (!dir) {
     return std::unexpected(dir.error());
   }

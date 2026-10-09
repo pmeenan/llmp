@@ -113,10 +113,12 @@ groups start at 4 KiB, so no file space pays for 2 MiB padding (D-056).
   peer replication key on this ID; the ID travels over the authenticated
   session and the bytes are verified against it.
 - The directory holds exactly the files that `manifest.json` lists, and only
-  the `data/` and `meta/` subdirectories. Files are regular and singly
-  linked (a hard link could be modified through another path); there are no
-  symlinks (including the artifact root) and no other directories. Paths match
-  `index.json`, `data/NNNNN.safetensors` or `meta/<safe name>`.
+  the `data/` and `meta/` subdirectories. Files are regular; there are no
+  symlinks inside the artifact and no other directories. The root itself
+  may be reached through a link and files may have other hard links (an
+  artifact kept on another drive, a deduplicated store; D-056 as amended
+  on 2026-10-09: who may change the store is the filesystem's business).
+  Paths match `index.json`, `data/NNNNN.safetensors` or `meta/<safe name>`.
 
 ## Container: safetensors shards
 
@@ -387,7 +389,8 @@ every length against the bytes left.
 - **No hashing at page-in.** Integrity is established when a file enters
   the installed store: at import/publish, at install from an archive or a
   peer, and by explicit `verify` (D-054). After that it rests on the local
-  store's permissions. A chunk is usable when its read has completed with
+  filesystem's access control, which is the node owner's (D-073 as
+  amended on 2026-10-09). A chunk is usable when its read has completed with
   the full length and its destination generation is still current.
   Measured SHA-256 on Spark runs at 2.49 GB/s per Cortex-X925 core and
   2.12 GB/s per Cortex-A725 core, so hashing every read would take about 6
@@ -585,8 +588,8 @@ compositions share is one artifact, stored and verified once.
 | `files` | Every kept file, `meta/<name>` with role `source-metadata`; model_index.json is required |
 
 The rules are an artifact manifest's where they apply: strict canonical
-JSON, the directory named by the manifest digest, regular singly linked
-files, lists in canonical order, each kept file a verbatim recorded source
+JSON, the directory named by the manifest digest, regular files and no
+links inside it, lists in canonical order, each kept file a verbatim recorded source
 (and each source kept), the 64 MiB and 128 MiB metadata caps. A
 composition has no `index.json` and no `data/`. Its kept files are small,
 so opening one always checks their digests. Each component is opened as an
@@ -621,7 +624,7 @@ of:
   a BOM or non-UTF-8 text, non-ASCII or unpatterned strings, lists out of
   canonical order or duplicated;
 - an artifact name that isn't the manifest digest (`identity`);
-- a symlink (including the root), a hard-linked or non-regular file, an
+- a symlink inside the artifact, a non-regular file, an
   unexpected directory, or a file that is listed but missing or present but
   unlisted (`file-type`, `file-set`, `path`);
 - a size that differs from the manifest, checked before any read in both

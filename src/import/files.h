@@ -1,22 +1,28 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// How the importer opens a checkpoint's files (D-009, D-054): every path
-// through the platform's path-trust walk (platform/path_trust.h), trusting
-// root and one user, then opened without following a link and compared
-// with what the walk approved by device and inode. Links on the way are
-// followed as the walk resolves them, so a Hugging Face cache's snapshot
-// links into its blobs work. A file must be a regular file owned by root or
-// the trusted user that nobody else can write; a directory must be one
-// nobody else can add entries to. The descriptors stay open for the
-// checkpoint's life, so its bytes are read from the files that were
-// checked; a file that shrinks later fails its read rather than being
-// reopened.
+// How the importer opens a checkpoint's files (D-009, D-054): as any
+// program opens files, links followed, so a Hugging Face cache's snapshot
+// links into its blobs work. Who may change a checkpoint is the
+// filesystem's business (D-073 as amended on 2026-10-09); D-009's
+// protection is in what the readers do with the bytes (bounds, caps,
+// strict parsers, no checkpoint code run). Only a regular file is opened:
+// a device or a FIFO is refused before it is opened, since opening one can
+// have effects of its own. A reader holds a file open while it reads it
+// and then closes it; the checkpoint keeps each file's path and identity
+// (device and inode), and a later read opens the file again and refuses
+// one that is no longer the file the reader read (checkpoint.h).
+//
+// One narrow rule protects what is copied, not parsed: a file the importer
+// keeps verbatim (into an artifact or a composition, as the diffusers
+// reader's kept files and the writer's tokenizer and configuration copies
+// are) must resolve inside the checkpoint's tree (ResolvesInside). A file
+// resolving elsewhere, such as a link a cloned repository planted to one
+// of the user's own files, is skipped with a diagnostic
+// (Checkpoint::skipped), never refused.
 
 #ifndef LLMP_IMPORT_FILES_H_
 #define LLMP_IMPORT_FILES_H_
-
-#include <sys/types.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -31,26 +37,35 @@
 
 namespace llmp::import {
 
-// An open, checked file.
+// An open regular file, with what identifies it.
 struct OpenFile {
   artifact::FileDescriptor fd{};
+  std::filesystem::path path{};  // absolute, as opened (links not resolved)
   std::uint64_t bytes = 0;
   std::uint64_t device = 0;
   std::uint64_t inode = 0;
 };
 
-// The file at `path` (kFileType when it does not exist). `file` is its
-// index in the checkpoint's order, for errors.
-std::expected<OpenFile, Error> OpenTrustedFile(const std::filesystem::path& path, uid_t trusted,
-                                               std::uint64_t file);
-// The same, or none when the path does not exist.
-std::expected<std::optional<OpenFile>, Error> OpenTrustedFileIfPresent(
-    const std::filesystem::path& path, uid_t trusted, std::uint64_t file);
+// The file at `path` (kFileType when it does not exist or is not a regular
+// file). `file` is its index in the checkpoint's order, for errors.
+std::expected<OpenFile, Error> OpenCheckpointFile(const std::filesystem::path& path,
+                                                  std::uint64_t file);
+// The same, or none when the path does not exist (a link to nothing is
+// kFileType: a broken checkpoint, not an absent file).
+std::expected<std::optional<OpenFile>, Error> OpenCheckpointFileIfPresent(
+    const std::filesystem::path& path, std::uint64_t file);
 
-// The directory at `path`, its links resolved: the path files beneath it
-// are opened through.
-std::expected<std::filesystem::path, Error> TrustedDirectory(const std::filesystem::path& path,
-                                                             uid_t trusted);
+// The directory at `path`, absolute with its links resolved: the path
+// files beneath it are opened through (kFileType when it is not one).
+std::expected<std::filesystem::path, Error> CheckpointDirectory(const std::filesystem::path& path);
+
+// Whether `path`, its links resolved, lies inside the checkpoint tree
+// `root` (resolved too); or, when `root` is or lies inside a Hugging Face
+// cache snapshot (<repository>/snapshots/<revision>), inside that
+// repository's blobs/ directory, where the cache's snapshot files link.
+// False when either cannot be resolved. A file the importer keeps verbatim
+// is kept only if this holds.
+bool ResolvesInside(const std::filesystem::path& root, const std::filesystem::path& path);
 
 // Reads exactly out.size() bytes at offset (kIo when the file ends first).
 std::expected<void, Error> ReadExactly(int fd, std::uint64_t offset, std::span<std::byte> out,

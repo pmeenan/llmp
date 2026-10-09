@@ -21,7 +21,7 @@
 // names another artifact, or holds an unknown key or a value out of range
 // is refused (logged, not used), and replaced the same way. Records are
 // written atomically (a new file renamed over the old, both synced), 0600
-// in a 0700 directory, and read under the state role's trust rules.
+// in a 0700 directory, and read back as any regular file is.
 //
 // What is measured, passively, from a model's first uses
 // (CalibrationSamples): its prefill and decode speeds at short context
@@ -113,10 +113,9 @@ struct CalibrationRead {
 
 // A record's text, checked against `key` (stale) and its format (refused).
 CalibrationRead ParseCalibration(std::string_view text, const CalibrationKey& key);
-// The record of `key.artifact` under `state`, read under the trust rules
-// (root's or `trusted`'s, writable by nobody else).
-CalibrationRead ReadCalibration(const std::filesystem::path& state, const CalibrationKey& key,
-                                uid_t trusted);
+// The record of `key.artifact` under `state` (a regular file; its owner
+// and mode are the filesystem's business).
+CalibrationRead ReadCalibration(const std::filesystem::path& state, const CalibrationKey& key);
 // The record's text for `calibration`, measured for `key`.
 std::string FormatCalibration(const Calibration& calibration, const CalibrationKey& key);
 // Writes it atomically, creating `<state>/calibration` (0700) if absent.

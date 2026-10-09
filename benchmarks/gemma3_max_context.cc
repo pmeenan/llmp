@@ -94,10 +94,8 @@ rt::Status Run(std::span<const std::string_view> args) {
         return id < 0 || id >= static_cast<std::int32_t>(kVocab);
       }))
     return Error("invalid corpus IDs");
-  auto config = llmp::config::LoadNodeConfig({.main_file = fs::path(args[0]),
-                                              .main_file_optional = false,
-                                              .anchor = fs::path(args[1]),
-                                              .trusted_uid = getuid()});
+  auto config = llmp::config::LoadNodeConfig(
+      {.main_file = fs::path(args[0]), .main_file_optional = false, .anchor = fs::path(args[1])});
   if (!config) return Error("invalid private node configuration");
   if (config->models.size() != 1) return Error("one configured model required");
   auto roles = llmp::config::PrepareRuntimeRoles(config->storage, getuid(), fs::path(args[1]));

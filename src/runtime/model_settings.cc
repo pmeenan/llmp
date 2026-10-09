@@ -27,7 +27,6 @@
 #include "model/gemma3.h"
 #include "model/gemma4.h"
 #include "model/qwen38.h"
-#include "platform/path_trust.h"
 #include "runtime/calibration.h"
 #include "runtime/gemma_profile.h"
 #include "tokenizer/gguf.h"
@@ -266,7 +265,6 @@ std::expected<ja::Artifact, std::string> OpenInstalled(const fs::path& store,
                                                        const std::string& id) {
   ja::OpenOptions options;
   options.expected_id = id;
-  options.trusted_owner = ::geteuid();
   auto opened = ja::Artifact::Open(store / id, options);
   if (!opened) {
     return Error(std::format("artifact {}: {}", id, opened.error().ToString()));
@@ -274,17 +272,8 @@ std::expected<ja::Artifact, std::string> OpenInstalled(const fs::path& store,
   return std::move(*opened);
 }
 
-std::expected<std::string, std::string> ReadTrustedFile(const fs::path& path, uid_t trusted,
-                                                        std::size_t limit) {
-  auto walked = platform::WalkTrusted(path, trusted, false);
-  if (!walked) {
-    return Error(std::format("{}: {}", path.string(), walked.error()));
-  }
-  if (!walked->exists) {
-    return Error(std::format("{} does not exist", path.string()));
-  }
-  const int fd =
-      ::open(walked->resolved.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
+std::expected<std::string, std::string> ReadRegularFile(const fs::path& path, std::size_t limit) {
+  const int fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
   if (fd < 0) {
     return Error(std::format("{}: {}", path.string(), Errno(errno)));
   }
@@ -293,11 +282,8 @@ std::expected<std::string, std::string> ReadTrustedFile(const fs::path& path, ui
   std::string problem;
   if (::fstat(fd, &status) != 0) {
     problem = Errno(errno);
-  } else if (!S_ISREG(status.st_mode) || status.st_dev != walked->status.st_dev ||
-             status.st_ino != walked->status.st_ino) {
-    problem = "not the regular file the trust walk approved";
-  } else if (platform::OthersCanWrite(status, trusted, fd)) {
-    problem = "other users can write it";
+  } else if (!S_ISREG(status.st_mode)) {
+    problem = "not a regular file";
   } else if (std::cmp_greater(status.st_size, limit)) {
     problem = std::format("larger than {} bytes", limit);
   } else {
@@ -496,8 +482,7 @@ std::expected<ArtifactFacts, std::string> ReadArtifactFacts(const config::ModelE
 }
 
 std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target,
-                                                      const config::ModelEntry& entry,
-                                                      uid_t trusted) {
+                                                      const config::ModelEntry& entry) {
   ChatAssets assets;
   // A kept file, or the one the configuration names, or none.
   const auto source = [&](std::string_view kept, const std::optional<fs::path>& named)
@@ -510,7 +495,7 @@ std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target
       return std::optional(std::move(*meta));
     }
     if (named) {
-      auto read = ReadTrustedFile(*named, trusted, kMaxTokenizerBytes);
+      auto read = ReadRegularFile(*named, kMaxTokenizerBytes);
       if (!read) {
         return std::unexpected(read.error());
       }
@@ -975,7 +960,6 @@ int PrintSettings(const config::NodeConfig& config, bool json_output, std::FILE*
     (void)std::fwrite(line.data(), 1, line.size(), log);
   };
   const fs::path& store = config.storage.installed;
-  const uid_t self = ::geteuid();
   bool failed = false;
   std::string text = json_output ? R"({"models":[)" : "";
   bool first = true;
@@ -990,8 +974,7 @@ int PrintSettings(const config::NodeConfig& config, bool json_output, std::FILE*
     CalibrationRead calibration{.calibration = std::nullopt, .note = "none", .refused = false};
     if (!entry.composition) {
       if (auto uncalibrated = ResolveSettings(entry, *facts, nullptr, /*plain=*/false)) {
-        calibration =
-            ReadCalibration(config.storage.state, CalibrationKeyOf(entry, *uncalibrated), self);
+        calibration = ReadCalibration(config.storage.state, CalibrationKeyOf(entry, *uncalibrated));
       }
     }
     auto settings = ResolveSettings(entry, *facts,
@@ -1005,7 +988,7 @@ int PrintSettings(const config::NodeConfig& config, bool json_output, std::FILE*
     if (!entry.composition) {
       auto target = OpenInstalled(store, entry.artifact.value_or(""));
       auto assets = target
-                        ? ReadChatAssets(*target, entry, self)
+                        ? ReadChatAssets(*target, entry)
                         : std::expected<ChatAssets, std::string>(std::unexpected(target.error()));
       if (!assets) {
         say(std::format("model {}: {}", entry.name, assets.error()));

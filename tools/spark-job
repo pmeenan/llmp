@@ -482,8 +482,9 @@ def cmd_start(args: argparse.Namespace) -> int:
             admission.release_gate()
         job_dir.mkdir()
         log = job_dir / "log"
-        # Steps run with the caller's umask, never looser than 022: files a step creates must
-        # pass llmpalooza's path-trust checks (no group- or world-writable directories).
+        # Steps run with the caller's umask, never looser than 022, so that what a step creates
+        # is not group- or world-writable (no longer a requirement of llmpalooza's, D-073 as
+        # amended on 2026-10-09, but `llmp doctor` warns of world-writable roles).
         caller_umask = os.umask(0o022)
         os.umask(caller_umask)
         job = {"name": args.name, "host": socket.gethostname(), "cwd": cwd, "log": str(log),

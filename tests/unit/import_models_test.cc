@@ -105,7 +105,7 @@ TEST_P(ImportGemmaTest, SourceGgufGivesTheV0ArtifactsSpec) {
   if (!Exists(gguf) || !Exists(path)) {
     GTEST_SKIP() << "no " << gguf << " or " << path;
   }
-  const auto checkpoint = ReadCheckpoint(gguf, ::geteuid());
+  const auto checkpoint = ReadCheckpoint(gguf);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().ToString();
   EXPECT_EQ(checkpoint->container, "gguf");
   EXPECT_EQ(checkpoint->architecture, c.architecture);
@@ -113,7 +113,7 @@ TEST_P(ImportGemmaTest, SourceGgufGivesTheV0ArtifactsSpec) {
   ASSERT_EQ(checkpoint->files.size(), 1U);
   ExpectWellFormed(*checkpoint);
 
-  auto artifact = artifact::Artifact::Open(path, {.expected_id = {}, .trusted_owner = ::geteuid()});
+  auto artifact = artifact::Artifact::Open(path, {.expected_id = {}});
   ASSERT_TRUE(artifact.has_value()) << artifact.error().ToString();
   // The artifact was imported from this file.
   ASSERT_EQ(artifact->sources().size(), 1U);
@@ -186,10 +186,9 @@ TEST_P(ImportGgufTest, ReadsWhole) {
   if (!Exists(path)) {
     GTEST_SKIP() << "no " << path;
   }
-  const auto checkpoint = ReadGguf(path, ::geteuid());
+  const auto checkpoint = ReadGguf(path);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().ToString();
   EXPECT_EQ(checkpoint->files.size(), c.files);
-  EXPECT_EQ(checkpoint->open.size(), c.files);
   EXPECT_FALSE(checkpoint->architecture.empty());
   EXPECT_FALSE(checkpoint->tensors.empty());
   ExpectWellFormed(*checkpoint);
@@ -258,9 +257,9 @@ TEST_P(ImportV0FormatsTest, SourceFormatsAreTheArtifacts) {
   if (!Exists(gguf) || !Exists(path)) {
     GTEST_SKIP() << "no " << gguf << " or " << path;
   }
-  const auto checkpoint = ReadGguf(gguf, ::geteuid());
+  const auto checkpoint = ReadGguf(gguf);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().ToString();
-  auto artifact = artifact::Artifact::Open(path, {.expected_id = {}, .trusted_owner = ::geteuid()});
+  auto artifact = artifact::Artifact::Open(path, {.expected_id = {}});
   ASSERT_TRUE(artifact.has_value()) << artifact.error().ToString();
   ASSERT_EQ(artifact->sources().size(), checkpoint->files.size());
   for (std::size_t i = 0; i < checkpoint->files.size(); ++i) {
@@ -334,7 +333,7 @@ TEST(ImportSafetensorsModelsTest, Qwen38ModelOptPairsEveryWeight) {
   if (!Exists(path)) {
     GTEST_SKIP() << "no " << path;
   }
-  const auto checkpoint = ReadCheckpoint(path, ::geteuid());
+  const auto checkpoint = ReadCheckpoint(path);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().ToString();
   EXPECT_EQ(checkpoint->container, "safetensors");
   EXPECT_EQ(checkpoint->architecture, "qwen3_8_flash_next");
@@ -476,9 +475,9 @@ TEST(ImportSafetensorsModelsTest, Qwen38ModelOptMatchesTheV0Import) {
   if (!Exists(path) || !Exists(v0)) {
     GTEST_SKIP() << "no " << path << " or " << v0;
   }
-  const auto c = ReadCheckpoint(path, ::geteuid());
+  const auto c = ReadCheckpoint(path);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
-  auto a = artifact::Artifact::Open(v0, {.expected_id = {}, .trusted_owner = ::geteuid()});
+  auto a = artifact::Artifact::Open(v0, {.expected_id = {}});
   ASSERT_TRUE(a.has_value()) << a.error().ToString();
   const std::string l1 = "model.language_model.layers.1.";
   enum class Bytes : std::uint8_t { kSame, kSameRows, kFormatOnly };
@@ -568,7 +567,7 @@ TEST(ImportSafetensorsModelsTest, ReadsQwenImagesTextEncoder) {
   if (!Exists(path)) {
     GTEST_SKIP() << "no " << path;
   }
-  const auto checkpoint = ReadSafetensors(path, ::geteuid());
+  const auto checkpoint = ReadSafetensors(path);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().ToString();
   EXPECT_EQ(checkpoint->architecture, "qwen3_vl");
   EXPECT_TRUE(checkpoint->quantization.empty());
@@ -583,13 +582,13 @@ TEST(ImportSafetensorsModelsTest, LeavesOtherReadersCheckpointsToThem) {
   const std::filesystem::path transformer =
       Models() / "models/Qwen/Qwen-Image-2.1@790c9263/transformer";
   if (Exists(transformer)) {
-    const auto c = ReadSafetensors(transformer, ::geteuid());
+    const auto c = ReadSafetensors(transformer);
     ASSERT_TRUE(c.has_value()) << c.error().ToString();
     EXPECT_EQ(c->architecture, "QwenImage21Transformer2DModel");
   }
   const std::filesystem::path mlx = Models() / kMlx;
   if (Exists(mlx)) {
-    const auto c = ReadSafetensors(mlx, ::geteuid());
+    const auto c = ReadSafetensors(mlx);
     ASSERT_TRUE(c.has_value()) << c.error().ToString();
     EXPECT_EQ(c->container, "mlx");
     EXPECT_EQ(c->quantization, "mlx affine");
@@ -624,7 +623,9 @@ testing::AssertionResult SameResourceBytes(const std::filesystem::path& root,
     return testing::AssertionFailure() << "cannot open a v0 shard";
   }
   const std::uint64_t base = shard.data_offset.value() + g.offset.value() + p->offset.value();
-  const int source = c.open.at(t.extent.file).fd.get();
+  // The source file, for dropping what was read from the page cache.
+  const artifact::FileDescriptor source(
+      ::open(c.files.at(t.extent.file).path.c_str(), O_RDONLY | O_CLOEXEC));
   constexpr std::uint64_t kChunk = std::uint64_t{64} << 20U;
   std::vector<std::byte> want;
   std::vector<std::byte> got;
@@ -641,7 +642,7 @@ testing::AssertionResult SameResourceBytes(const std::filesystem::path& root,
     }
     ::posix_fadvise(v0.get(), static_cast<off_t>(base + at), static_cast<off_t>(n),
                     POSIX_FADV_DONTNEED);
-    ::posix_fadvise(source, static_cast<off_t>(t.extent.offset + at), static_cast<off_t>(n),
+    ::posix_fadvise(source.get(), static_cast<off_t>(t.extent.offset + at), static_cast<off_t>(n),
                     POSIX_FADV_DONTNEED);
     const auto [x, y] = std::ranges::mismatch(want, got);
     if (x != want.end()) {
@@ -685,7 +686,7 @@ TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV0Imports) {
   if (!Exists(path) || !Exists(composition)) {
     GTEST_SKIP() << "no " << path << " or " << composition;
   }
-  const auto c = ReadCheckpoint(path, ::geteuid());
+  const auto c = ReadCheckpoint(path);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->container, "diffusers");
   EXPECT_TRUE(c->tensors.empty());
@@ -713,7 +714,7 @@ TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV0Imports) {
     EXPECT_EQ(component.architecture, want.architecture);
     ExpectWellFormed(component);
     const std::filesystem::path root = store / want.artifact;
-    auto a = artifact::Artifact::Open(root, {.expected_id = {}, .trusted_owner = ::geteuid()});
+    auto a = artifact::Artifact::Open(root, {.expected_id = {}});
     ASSERT_TRUE(a.has_value()) << a.error().ToString();
     // Every shard the reader opened is a source v0 recorded, and every
     // file both have is of one size (v0 also kept files the reader does
@@ -761,12 +762,12 @@ TEST_P(ImportExl3ModelsTest, FixturesAreTheirV0Imports) {
   if (!Exists(path) || !Exists(root)) {
     GTEST_SKIP() << "no " << path << " or " << root;
   }
-  const auto c = ReadCheckpoint(path, ::geteuid());
+  const auto c = ReadCheckpoint(path);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->container, "exl3");
   EXPECT_EQ(c->architecture, "qwen2");
   ExpectWellFormed(*c);
-  auto a = artifact::Artifact::Open(root, {.expected_id = {}, .trusted_owner = ::geteuid()});
+  auto a = artifact::Artifact::Open(root, {.expected_id = {}});
   ASSERT_TRUE(a.has_value()) << a.error().ToString();
   for (const SourceFile& f : c->files) {
     const auto s = std::ranges::find(a->sources(), f.name, &artifact::Source::name);
@@ -833,7 +834,7 @@ TEST(ImportMlxModelsTest, Qwen38MlxPairsEveryWeight) {
   if (!Exists(path)) {
     GTEST_SKIP() << "no " << path;
   }
-  const auto c = ReadCheckpoint(path, ::geteuid());
+  const auto c = ReadCheckpoint(path);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->container, "mlx");
   EXPECT_EQ(c->architecture, "qwen4_exp");
@@ -940,9 +941,9 @@ TEST(ImportMlxModelsTest, DecodesLikeTheNativeCheckpoint) {
   if (!Exists(mlx_path) || !Exists(native_path)) {
     GTEST_SKIP() << "no " << mlx_path << " or " << native_path;
   }
-  const auto mlx = ReadCheckpoint(mlx_path, ::geteuid());
+  const auto mlx = ReadCheckpoint(mlx_path);
   ASSERT_TRUE(mlx.has_value()) << mlx.error().ToString();
-  const auto native = ReadCheckpoint(native_path, ::geteuid());
+  const auto native = ReadCheckpoint(native_path);
   ASSERT_TRUE(native.has_value()) << native.error().ToString();
   const std::string m = "language_model.";
   const std::string n = "model.language_model.";

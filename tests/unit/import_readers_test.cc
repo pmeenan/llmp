@@ -416,7 +416,7 @@ TEST_F(ImportDiffusersFilesTest, ReadsComponentsAndKeptFiles) {
   Write(p / "tokenizer" / "merges.txt", std::string_view("a b"));
   Write(p / "tokenizer" / "sub" / "x.json", std::string_view("{}"));
 
-  const auto c = ReadCheckpoint(p, ::geteuid());
+  const auto c = ReadCheckpoint(p);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->container, "diffusers");
   EXPECT_EQ(c->architecture, "P");
@@ -439,17 +439,17 @@ TEST_F(ImportDiffusersFilesTest, ReadsComponentsAndKeptFiles) {
   }
   EXPECT_EQ(files, (std::vector<std::string>{"model_index.json", "scheduler/scheduler_config.json",
                                              "tokenizer/merges.txt", "tokenizer/vocab.json"}));
-  EXPECT_EQ(c->open.size(), c->files.size());
+  EXPECT_TRUE(c->skipped.empty());
   EXPECT_EQ(c->files[2].bytes, 3U);
   // A component read alone is an ordinary safetensors checkpoint.
-  const auto vae = ReadCheckpoint(p / "vae", ::geteuid());
+  const auto vae = ReadCheckpoint(p / "vae");
   ASSERT_TRUE(vae.has_value()) << vae.error().ToString();
   EXPECT_EQ(vae->architecture, "V");
 }
 
 TEST_F(ImportDiffusersFilesTest, RefusesPipelinesItCannotDescribe) {
   const std::filesystem::path p = dir_ / "pipeline";
-  const auto rule = [&] { return RuleOf(ReadDiffusers(p, ::geteuid())); };
+  const auto rule = [&] { return RuleOf(ReadDiffusers(p)); };
   Write(p / "model_index.json", R"({"_class_name":"P","vae":["d","V"],"scheduler":["d","S"]})");
   Write(p / "vae" / "config.json", R"({"_class_name":"V"})");
   Write(p / "vae" / "diffusion_pytorch_model.safetensors", Shard({E("y", "F32", {3})}));
@@ -459,20 +459,28 @@ TEST_F(ImportDiffusersFilesTest, RefusesPipelinesItCannotDescribe) {
   Write(p / "vae" / "model.safetensors", Shard({E("y", "F32", {3})}));
   EXPECT_EQ(rule(), Rule::kShards);
   std::filesystem::remove(p / "vae" / "model.safetensors");
-  // A component's directory missing, or others could change it.
+  // A component's directory missing. One others could change is read
+  // (D-073 as amended on 2026-10-09).
   std::filesystem::rename(p / "scheduler", p / "s");
   EXPECT_EQ(rule(), Rule::kFileType);
   std::filesystem::rename(p / "s", p / "scheduler");
   ::chmod((p / "scheduler").c_str(), 0777);
-  EXPECT_EQ(rule(), Rule::kUntrusted);
-  ::chmod((p / "scheduler").c_str(), 0755);
   ::chmod((p / "scheduler" / "scheduler_config.json").c_str(), 0666);
-  EXPECT_EQ(rule(), Rule::kUntrusted);
+  EXPECT_EQ(rule(), std::nullopt);
+  ::chmod((p / "scheduler").c_str(), 0755);
   ::chmod((p / "scheduler" / "scheduler_config.json").c_str(), 0644);
   // A kept file whose name has a control character.
   Write(p / "scheduler" / "a\x01.json", std::string_view("{}"));
   EXPECT_EQ(rule(), Rule::kFileType);
   std::filesystem::remove(p / "scheduler" / "a\x01.json");
+  // A kept file linking to nothing (a blob a cache never fetched) is not
+  // silently left out; a FIFO is not a file to keep and is passed over.
+  std::filesystem::create_symlink("../blobs/never-fetched", p / "scheduler" / "extra.json");
+  EXPECT_EQ(rule(), Rule::kFileType);
+  std::filesystem::remove(p / "scheduler" / "extra.json");
+  ASSERT_EQ(::mkfifo((p / "scheduler" / "fifo.json").c_str(), 0600), 0);
+  EXPECT_EQ(rule(), std::nullopt);
+  std::filesystem::remove(p / "scheduler" / "fifo.json");
   // A component's own refusal is the pipeline's.
   Write(p / "vae" / "config.json", R"({"nothing":1})");
   EXPECT_EQ(rule(), Rule::kConfig);
@@ -486,7 +494,7 @@ TEST_F(ImportDiffusersFilesTest, RefusesPipelinesItCannotDescribe) {
   // pipeline.
   Write(p / "model_index.json", R"({"_class_name":"P","vae":["d","V"]})");
   Write(p / "vae" / "model_index.json", R"({"_class_name":"Q","vae":["d","V"]})");
-  const auto c = ReadDiffusers(p, ::geteuid());
+  const auto c = ReadDiffusers(p);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->components.at(0).container, "safetensors");
 }
@@ -496,24 +504,24 @@ TEST_F(ImportDiffusersFilesTest, BoundsTheDirectoriesItLists) {
   Write(p / "model_index.json", R"({"_class_name":"P","vae":["d","V"],"tokenizer":["t","T"]})");
   Write(p / "vae" / "config.json", R"({"_class_name":"V"})");
   Write(p / "vae" / "diffusion_pytorch_model.safetensors", Shard({E("y", "F32", {3})}));
-  // Kept files: at most kMaxPipelineFiles (each stays open).
+  // Kept files: at most kMaxPipelineFiles.
   for (std::size_t i = 0; i < kMaxPipelineFiles; ++i) {
     Write(p / "tokenizer" / std::format("f{}", i), std::string_view("{}"));
   }
-  const auto c = ReadDiffusers(p, ::geteuid());
+  const auto c = ReadDiffusers(p);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->files.size(), 1 + kMaxPipelineFiles);
   Write(p / "tokenizer" / "one_more", std::string_view("{}"));
-  EXPECT_EQ(RuleOf(ReadDiffusers(p, ::geteuid())), Rule::kBounds);
+  EXPECT_EQ(RuleOf(ReadDiffusers(p)), Rule::kBounds);
   std::filesystem::remove(p / "tokenizer" / "one_more");
   // Entries listed: at most kMaxPipelineDirectoryEntries, directories too.
   std::error_code error;
   for (std::size_t i = kMaxPipelineFiles; i < kMaxPipelineDirectoryEntries; ++i) {
     std::filesystem::create_directory(p / "tokenizer" / std::format("d{}", i), error);
   }
-  EXPECT_TRUE(ReadDiffusers(p, ::geteuid()).has_value());
+  EXPECT_TRUE(ReadDiffusers(p).has_value());
   std::filesystem::create_directory(p / "tokenizer" / "one_more", error);
-  EXPECT_EQ(RuleOf(ReadDiffusers(p, ::geteuid())), Rule::kBounds);
+  EXPECT_EQ(RuleOf(ReadDiffusers(p)), Rule::kBounds);
 }
 
 TEST_F(ImportDiffusersFilesTest, ComponentsStayInsideThePipelineAndNameThemselves) {
@@ -527,25 +535,25 @@ TEST_F(ImportDiffusersFilesTest, ComponentsStayInsideThePipelineAndNameThemselve
   // A component directory linked out of the pipeline: an escape.
   std::filesystem::create_directory_symlink("../elsewhere", p / "vae", error);
   ASSERT_FALSE(error) << error.message();
-  auto c = ReadDiffusers(p, ::geteuid());
+  auto c = ReadDiffusers(p);
   ASSERT_FALSE(c.has_value());
-  EXPECT_EQ(c.error().rule, Rule::kUntrusted);
+  EXPECT_EQ(c.error().rule, Rule::kEscape);
   EXPECT_EQ(c.error().component, 1U);  // vae: roles unet, vae
   EXPECT_TRUE(c.error().ToString().contains("(component 1)")) << c.error().ToString();
   // Linked to the pipeline itself: not beneath it either.
   std::filesystem::remove(p / "vae");
   std::filesystem::create_directory_symlink(".", p / "vae", error);
-  EXPECT_EQ(RuleOf(ReadDiffusers(p, ::geteuid())), Rule::kUntrusted);
+  EXPECT_EQ(RuleOf(ReadDiffusers(p)), Rule::kEscape);
   // Linked inside the pipeline: read.
   std::filesystem::remove(p / "vae");
   std::filesystem::rename(dir_ / "elsewhere", p / "vae_real");
   std::filesystem::create_directory_symlink("vae_real", p / "vae", error);
-  c = ReadDiffusers(p, ::geteuid());
+  c = ReadDiffusers(p);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->components.at(1).architecture, "V");
   // An error inside a component names it, beside its own file and item.
   Write(p / "vae_real" / "diffusion_pytorch_model.safetensors", RawShard("{", 0));
-  c = ReadDiffusers(p, ::geteuid());
+  c = ReadDiffusers(p);
   EXPECT_EQ(RuleOf(c), Rule::kContainer);
   EXPECT_EQ(Failed(c, &Error::component), 1U);
   EXPECT_EQ(Failed(c, &Error::file), 0U);
@@ -564,7 +572,7 @@ TEST_F(ImportDiffusersFilesTest, ReadsAVariantWhenItIsTheOnlyWeights) {
   Write(p / "text_encoder" / "model.safetensors.index.fp16.json",
         Index({{"a", "model.fp16-00001-of-00002.safetensors"},
                {"b", "model.fp16-00002-of-00002.safetensors"}}));
-  auto c = ReadDiffusers(p, ::geteuid());
+  auto c = ReadDiffusers(p);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->components.at(0).role, "text_encoder");
   EXPECT_EQ(c->components.at(0).tensors.size(), 2U);
@@ -572,12 +580,12 @@ TEST_F(ImportDiffusersFilesTest, ReadsAVariantWhenItIsTheOnlyWeights) {
   EXPECT_EQ(c->components.at(1).files.at(0).name, "diffusion_pytorch_model.fp16.safetensors");
   // Two variants and no default: ambiguous.
   Write(p / "vae" / "diffusion_pytorch_model.bf16.safetensors", Shard({E("y", "BF16", {3})}));
-  c = ReadDiffusers(p, ::geteuid());
+  c = ReadDiffusers(p);
   EXPECT_EQ(RuleOf(c), Rule::kShards);
   EXPECT_EQ(Failed(c, &Error::component), 1U);
   // With the default beside them, the default (as diffusers loads it).
   Write(p / "vae" / "diffusion_pytorch_model.safetensors", Shard({E("y", "F32", {3})}));
-  c = ReadDiffusers(p, ::geteuid());
+  c = ReadDiffusers(p);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->components.at(1).files.at(0).name, "diffusion_pytorch_model.safetensors");
   EXPECT_EQ(c->components.at(1).tensors.at(0).dtype, "F32");
@@ -585,12 +593,12 @@ TEST_F(ImportDiffusersFilesTest, ReadsAVariantWhenItIsTheOnlyWeights) {
   std::filesystem::remove(p / "vae" / "diffusion_pytorch_model.safetensors");
   std::filesystem::remove(p / "vae" / "diffusion_pytorch_model.bf16.safetensors");
   Write(p / "vae" / "model.fp16.safetensors", Shard({E("y", "F16", {3})}));
-  EXPECT_EQ(RuleOf(ReadDiffusers(p, ::geteuid())), Rule::kShards);
+  EXPECT_EQ(RuleOf(ReadDiffusers(p)), Rule::kShards);
   std::filesystem::remove(p / "vae" / "model.fp16.safetensors");
   std::filesystem::remove(p / "vae" / "diffusion_pytorch_model.fp16.safetensors");
   Write(p / "vae" / "diffusion_pytorch_model.fp-16.safetensors", Shard({E("y", "F16", {3})}));
   Write(p / "vae" / "diffusion_pytorch_model.bin", std::string_view("x"));
-  EXPECT_EQ(RuleOf(ReadDiffusers(p, ::geteuid())), Rule::kFileType);
+  EXPECT_EQ(RuleOf(ReadDiffusers(p)), Rule::kFileType);
 }
 
 TEST_F(ImportDiffusersFilesTest, BoundsTheBytesItKeeps) {
@@ -605,13 +613,13 @@ TEST_F(ImportDiffusersFilesTest, BoundsTheBytesItKeeps) {
   };
   sized("a", kMaxPipelineFileBytes);
   sized("b", kMaxPipelineFilesBytes - kMaxPipelineFileBytes);
-  ASSERT_TRUE(ReadDiffusers(p, ::geteuid()).has_value());
+  ASSERT_TRUE(ReadDiffusers(p).has_value());
   sized("c", 1);
-  EXPECT_EQ(RuleOf(ReadDiffusers(p, ::geteuid())), Rule::kBounds);
+  EXPECT_EQ(RuleOf(ReadDiffusers(p)), Rule::kBounds);
   std::filesystem::remove(p / "tokenizer" / "c");
   sized("a", kMaxPipelineFileBytes + 1);
   sized("b", 0);
-  EXPECT_EQ(RuleOf(ReadDiffusers(p, ::geteuid())), Rule::kBounds);
+  EXPECT_EQ(RuleOf(ReadDiffusers(p)), Rule::kBounds);
 }
 
 // ---------------------------------------------------------------- claims
@@ -620,14 +628,14 @@ using ImportClaimsTest = ScratchTest;
 
 TEST_F(ImportClaimsTest, EachDirectoryGoesToItsReader) {
   const auto container = [&](const std::filesystem::path& p) {
-    const auto c = ReadCheckpoint(p, ::geteuid());
+    const auto c = ReadCheckpoint(p);
     EXPECT_TRUE(c.has_value()) << p << ": " << c.error().ToString();
     return c ? c->container : std::string();
   };
   Write(dir_ / "mlx" / "config.json", std::string(kMlxConfig));
   Write(dir_ / "mlx" / "model.safetensors", Shard(AffineModule("w", {2}, 64, 4, 32)));
   EXPECT_EQ(container(dir_ / "mlx"), "mlx");
-  EXPECT_EQ(RuleOf(ReadSafetensors(dir_ / "mlx", ::geteuid())), Rule::kUnsupported);
+  EXPECT_EQ(RuleOf(ReadSafetensors(dir_ / "mlx")), Rule::kUnsupported);
   Write(dir_ / "exl3" / "config.json", std::string(kExl3Config));
   Write(dir_ / "exl3" / "model.safetensors", Shard(Linear("w", 32, 16, 4)));
   EXPECT_EQ(container(dir_ / "exl3"), "exl3");
@@ -636,11 +644,12 @@ TEST_F(ImportClaimsTest, EachDirectoryGoesToItsReader) {
   EXPECT_EQ(container(dir_ / "plain"), "safetensors");
   // An MLX or EXL3 config.json that cannot be read is the safetensors
   // reader's to refuse (no reader claims on what it could not check).
-  ::chmod((dir_ / "mlx" / "config.json").c_str(), 0666);
-  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_ / "mlx", ::geteuid())), Rule::kUntrusted);
+  std::filesystem::remove(dir_ / "mlx" / "config.json");
+  std::filesystem::create_directory(dir_ / "mlx" / "config.json");
+  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_ / "mlx")), Rule::kFileType);
   // A reader called directly on another's checkpoint.
-  EXPECT_EQ(RuleOf(ReadExl3(dir_ / "plain", ::geteuid())), Rule::kConfig);
-  const auto unquantized = ReadMlx(dir_ / "plain", ::geteuid());
+  EXPECT_EQ(RuleOf(ReadExl3(dir_ / "plain")), Rule::kConfig);
+  const auto unquantized = ReadMlx(dir_ / "plain");
   ASSERT_TRUE(unquantized.has_value()) << unquantized.error().ToString();
   EXPECT_EQ(unquantized->container, "mlx");
   EXPECT_TRUE(unquantized->quantization.empty());
@@ -655,19 +664,19 @@ TEST_F(ImportClaimsTest, ShardFormatsMakeADirectoryMlx) {
   Write(p / "model-2.safetensors", Shard({E("b", "BF16", {4})}, R"({"format":"mlx"})"));
   Write(p / "model.safetensors.index.json",
         Index({{"a", "model-1.safetensors"}, {"b", "model-2.safetensors"}}));
-  const auto c = ReadCheckpoint(p, ::geteuid());
+  const auto c = ReadCheckpoint(p);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->container, "mlx");
   Write(p / "model-2.safetensors", Shard({E("b", "BF16", {4})}, R"({"format":"pt"})"));
-  EXPECT_EQ(RuleOf(ReadCheckpoint(p, ::geteuid())), Rule::kShards);
+  EXPECT_EQ(RuleOf(ReadCheckpoint(p)), Rule::kShards);
   Write(p / "model-2.safetensors", Shard({E("b", "BF16", {4})}));
-  EXPECT_TRUE(ReadCheckpoint(p, ::geteuid()).has_value());
+  EXPECT_TRUE(ReadCheckpoint(p).has_value());
 }
 
-// A checkpoint keeps every shard open: more of them than the usual soft
-// open-file limit (1,024, systemd's for a service) still read, the soft
-// limit raised as far as the hard limit allows.
-TEST_F(ImportClaimsTest, KeepsMoreShardsOpenThanTheUsualSoftLimit) {
+// A reader holds each file open only while it reads it: more shards than
+// the usual soft open-file limit (1,024, systemd's for a service) read
+// without raising it, and their bytes read back.
+TEST_F(ImportClaimsTest, ReadsMoreShardsThanTheUsualSoftLimit) {
   rlimit limit{};
   ASSERT_EQ(::getrlimit(RLIMIT_NOFILE, &limit), 0);
   constexpr std::size_t kShardCount = 1100;
@@ -691,9 +700,42 @@ TEST_F(ImportClaimsTest, KeepsMoreShardsOpenThanTheUsualSoftLimit) {
     index.emplace(tensor, shard);
   }
   Write(p / "model.safetensors.index.json", Index(index));
-  const auto c = ReadCheckpoint(p, ::geteuid());
+  const auto c = ReadCheckpoint(p);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
-  EXPECT_EQ(c->open.size(), kShardCount + 2);
+  EXPECT_EQ(c->files.size(), kShardCount + 2);
+  rlimit after{};
+  ASSERT_EQ(::getrlimit(RLIMIT_NOFILE, &after), 0);
+  EXPECT_EQ(after.rlim_cur, 1024U);
+  std::vector<std::byte> one(1);
+  const Tensor* last = c->FindTensor(std::format("t{}", kShardCount - 1));
+  ASSERT_NE(last, nullptr);
+  EXPECT_TRUE(c->Read(last->extent, 0, one).has_value());
+}
+
+// A file a pipeline keeps verbatim must resolve inside it (files.h): one
+// a cloned repository links to a file elsewhere is left out and named, not
+// refused; a Hugging Face cache's snapshot links into its blobs are kept.
+TEST_F(ImportDiffusersFilesTest, SkipsKeptFilesThatResolveOutside) {
+  const std::filesystem::path cache = dir_ / "models--org--pipeline";
+  const std::filesystem::path p = cache / "snapshots" / "0123abcd";
+  Write(p / "model_index.json", R"({"_class_name":"P","vae":["d","V"],"tokenizer":["t","T"]})");
+  Write(p / "vae" / "config.json", R"({"_class_name":"V"})");
+  Write(p / "vae" / "diffusion_pytorch_model.safetensors", Shard({E("y", "F32", {3})}));
+  Write(cache / "blobs" / "f00d", std::string_view("{\"vocab\":1}"));
+  std::filesystem::create_directories(p / "tokenizer");
+  std::filesystem::create_symlink("../../../blobs/f00d", p / "tokenizer" / "vocab.json");
+  Write(dir_ / "secret", std::string_view("the user's own"));
+  std::filesystem::create_symlink(dir_ / "secret", p / "tokenizer" / "planted.txt");
+  const auto c = ReadDiffusers(p);
+  ASSERT_TRUE(c.has_value()) << c.error().ToString();
+  std::vector<std::string> files;
+  for (const SourceFile& f : c->files) {
+    files.push_back(f.name);
+  }
+  EXPECT_EQ(files, (std::vector<std::string>{"model_index.json", "tokenizer/vocab.json"}));
+  ASSERT_EQ(c->skipped.size(), 1U);
+  EXPECT_EQ(c->skipped[0].name, "tokenizer/planted.txt");
+  EXPECT_EQ(c->skipped[0].reason, "resolves outside the checkpoint");
 }
 
 }  // namespace

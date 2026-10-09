@@ -21,6 +21,7 @@
 #include "config/node_config.h"
 #include "config/storage_roles.h"
 #include "platform/host_probe.h"
+#include "platform/paths.h"
 #include "providers/device_probe.h"
 
 namespace llmp::cli {
@@ -62,7 +63,7 @@ void DescribeBuild(const base::BuildInfo& info, base::Report& report) {
 
 void DescribeConfiguration(const DoctorOptions& options, base::Report& report) {
   config::LoadOptions load;
-  uid_t trusted = ::geteuid();
+  uid_t runtime = ::geteuid();
   std::filesystem::path writable;
   load.main_file_optional = !options.config;
   if (options.config) {
@@ -70,12 +71,11 @@ void DescribeConfiguration(const DoctorOptions& options, base::Report& report) {
   } else if (const auto service = AccountUid("llmp")) {
     // Packaged: the unit's sandbox lets the runtime write only its
     // StateDirectory (packaging/llmp.service).
-    trusted = *service;
+    runtime = *service;
     writable = config::kDefaultDataDir;
   }
-  load.trusted_uid = trusted;
   base::ReportSection& section = report.AddSection("configuration");
-  section.Add("runtime's user", std::format("uid {}", trusted));
+  section.Add("runtime's user", std::format("uid {}", runtime));
   auto loaded = config::LoadNodeConfig(load);
   if (!loaded) {
     section.Add(
@@ -92,6 +92,13 @@ void DescribeConfiguration(const DoctorOptions& options, base::Report& report) {
   } else {
     for (const std::filesystem::path& file : loaded->files) {
       section.Add("file", file.string());
+      // Never refused (D-073 as amended on 2026-10-09), but worth knowing.
+      struct stat status{};
+      if (::stat(file.c_str(), &status) == 0 && (status.st_mode & S_IWOTH) != 0) {
+        report.warnings.push_back(
+            std::format("configuration: {} can be written by any user (mode {})", file.string(),
+                        platform::OctalMode(status.st_mode)));
+      }
     }
   }
   section.Add("node", loaded->membership
@@ -112,7 +119,7 @@ void DescribeConfiguration(const DoctorOptions& options, base::Report& report) {
   } else {
     section.Add("enrollment anchor", load.anchor.string() + " (absent)");
   }
-  config::DescribeStorage(loaded->storage, trusted, writable, report);
+  config::DescribeStorage(loaded->storage, runtime, writable, report);
 }
 
 bool Doctor(const std::filesystem::path& root, const DoctorOptions& options, base::Report& report,

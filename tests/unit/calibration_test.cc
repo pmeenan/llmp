@@ -3,7 +3,7 @@
 
 // A model's calibration on this machine (D-103, runtime/calibration.h): the
 // record's format, its key (stale records not used, foreign and corrupt
-// ones refused), its atomic write and trusted read, and the measurements
+// ones refused), its atomic write and its read, and the measurements
 // a model's first uses take.
 
 #include "runtime/calibration.h"
@@ -529,15 +529,15 @@ fs::path Scratch() {
 }
 
 // Written atomically under the state role, 0600 in a 0700 directory, and
-// read back under the trust rules; a record others could change is refused.
+// read back; a record others could change is still read (D-073 as amended
+// on 2026-10-09), but one that is not a regular file is refused.
 TEST(Calibration, WritesAndReadsItsRecord) {
   std::error_code error;
   fs::create_directories(Scratch(), error);
   std::string pattern = (Scratch() / "calibration-XXXXXX").string();
   ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
   const fs::path state = pattern;
-  const uid_t self = ::geteuid();
-  auto none = llmp::runtime::ReadCalibration(state, Key(), self);
+  auto none = llmp::runtime::ReadCalibration(state, Key());
   EXPECT_FALSE(none.calibration.has_value());
   EXPECT_FALSE(none.refused);
   EXPECT_EQ(none.note, "none recorded");
@@ -549,7 +549,7 @@ TEST(Calibration, WritesAndReadsItsRecord) {
   EXPECT_EQ(status.st_mode & 0777U, 0600U);
   ASSERT_EQ(::stat(file.parent_path().c_str(), &status), 0);
   EXPECT_EQ(status.st_mode & 0077U, 0U);
-  auto read = llmp::runtime::ReadCalibration(state, Key(), self);
+  auto read = llmp::runtime::ReadCalibration(state, Key());
   ASSERT_TRUE(read.calibration.has_value()) << read.note;
   EXPECT_EQ(read.calibration.value_or(Calibration{}).decode_floor_tok_s, 7U);
 
@@ -557,7 +557,7 @@ TEST(Calibration, WritesAndReadsItsRecord) {
   Calibration more = Measured();
   more.max_slots = 6;
   ASSERT_TRUE(llmp::runtime::WriteCalibration(state, Key(), more).has_value());
-  read = llmp::runtime::ReadCalibration(state, Key(), self);
+  read = llmp::runtime::ReadCalibration(state, Key());
   ASSERT_TRUE(read.calibration.has_value()) << read.note;
   EXPECT_EQ(read.calibration.value_or(Calibration{}).max_slots, 6U);
   std::size_t entries = 0;
@@ -568,10 +568,14 @@ TEST(Calibration, WritesAndReadsItsRecord) {
   EXPECT_EQ(entries, 1U);
 
   ASSERT_EQ(::chmod(file.c_str(), 0666), 0);
-  read = llmp::runtime::ReadCalibration(state, Key(), self);
+  read = llmp::runtime::ReadCalibration(state, Key());
+  EXPECT_TRUE(read.calibration.has_value()) << read.note;
+  fs::remove(file);
+  fs::create_directory(file);
+  read = llmp::runtime::ReadCalibration(state, Key());
   EXPECT_FALSE(read.calibration.has_value());
   EXPECT_TRUE(read.refused);
-  EXPECT_THAT(read.note, HasSubstr("other users can write it"));
+  EXPECT_THAT(read.note, HasSubstr("not a regular file"));
   fs::remove_all(state, error);
 }
 

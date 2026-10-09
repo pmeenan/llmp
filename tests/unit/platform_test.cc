@@ -37,7 +37,7 @@
 #include "platform/host_probe.h"
 #include "platform/interfaces.h"
 #include "platform/memory_pressure.h"
-#include "platform/path_trust.h"
+#include "platform/paths.h"
 #include "platform/sockets.h"
 
 namespace {
@@ -345,88 +345,67 @@ class Scratch {
   fs::path path_;
 };
 
-TEST(WalkTrusted, ResolvesLinksAndMissingTails) {
+TEST(ResolvePath, ResolvesLinksAndMissingTails) {
   const Scratch scratch;
   const fs::path& root = scratch.path();
   fs::create_directories(root / "real/sub");
   fs::create_directory_symlink("real", root / "rel");
   fs::create_directory_symlink(root / "real", root / "abs");
   std::ofstream(root / "real/sub/file") << "x";
-  const uid_t me = ::geteuid();
 
-  auto walked = llmp::platform::WalkTrusted(root / "rel/sub/file", me, false);
-  ASSERT_TRUE(walked.has_value()) << walked.error();
-  EXPECT_TRUE(walked->exists);
-  EXPECT_EQ(walked->resolved, fs::canonical(root / "real/sub/file"));
-  EXPECT_TRUE(S_ISREG(walked->status.st_mode));
+  auto resolved = llmp::platform::ResolvePath(root / "rel/sub/file");
+  ASSERT_TRUE(resolved.has_value()) << resolved.error();
+  EXPECT_TRUE(resolved->exists);
+  EXPECT_EQ(resolved->resolved, fs::canonical(root / "real/sub/file"));
+  EXPECT_TRUE(S_ISREG(resolved->status.st_mode));
 
-  walked = llmp::platform::WalkTrusted(root / "abs/sub/../missing/deeper", me, false);
-  ASSERT_TRUE(walked.has_value()) << walked.error();
-  EXPECT_FALSE(walked->exists);
-  EXPECT_EQ(walked->resolved, fs::canonical(root / "real") / "missing/deeper");
-  EXPECT_EQ(walked->existing, fs::canonical(root / "real"));
+  resolved = llmp::platform::ResolvePath(root / "abs/missing/deeper");
+  ASSERT_TRUE(resolved.has_value()) << resolved.error();
+  EXPECT_FALSE(resolved->exists);
+  EXPECT_EQ(resolved->resolved, fs::canonical(root / "real") / "missing/deeper");
+  EXPECT_EQ(resolved->existing, fs::canonical(root / "real"));
+  EXPECT_TRUE(S_ISDIR(resolved->status.st_mode));
 
-  // A link as the last component is refused unless allowed.
+  // A link as the last component is followed.
   fs::create_symlink("real/sub/file", root / "link");
-  walked = llmp::platform::WalkTrusted(root / "link", me, false);
-  ASSERT_FALSE(walked.has_value());
-  EXPECT_THAT(walked.error(), HasSubstr("is a symbolic link"));
-  walked = llmp::platform::WalkTrusted(root / "link", me, true);
-  ASSERT_TRUE(walked.has_value()) << walked.error();
-  EXPECT_EQ(walked->resolved, fs::canonical(root / "real/sub/file"));
+  resolved = llmp::platform::ResolvePath(root / "link");
+  ASSERT_TRUE(resolved.has_value()) << resolved.error();
+  EXPECT_EQ(resolved->resolved, fs::canonical(root / "real/sub/file"));
+
+  // Others' write is no concern of the resolution (D-073 as amended on
+  // 2026-10-09).
+  ASSERT_EQ(::chmod((root / "real").c_str(), 0777), 0);
+  EXPECT_TRUE(llmp::platform::ResolvePath(root / "rel/sub/file").has_value());
 }
 
-TEST(WalkTrusted, RefusesLoopsAndNonDirectories) {
+TEST(ResolvePath, RefusesLoopsAndNonDirectories) {
   const Scratch scratch;
   const fs::path& root = scratch.path();
   fs::create_symlink("b", root / "a");
   fs::create_symlink("a", root / "b");
-  auto walked = llmp::platform::WalkTrusted(root / "a/x", ::geteuid(), false);
-  ASSERT_FALSE(walked.has_value());
-  EXPECT_THAT(walked.error(), HasSubstr("too many symbolic links"));
+  auto resolved = llmp::platform::ResolvePath(root / "a/x");
+  ASSERT_FALSE(resolved.has_value());
+  EXPECT_THAT(resolved.error(), HasSubstr("levels of symbolic links"));
   std::ofstream(root / "file") << "x";
-  walked = llmp::platform::WalkTrusted(root / "file/x", ::geteuid(), false);
-  ASSERT_FALSE(walked.has_value());
-  EXPECT_THAT(walked.error(), HasSubstr("file is not a directory"));
-  // ".." after a missing component: the kernel stops at the missing one.
-  fs::create_symlink("missing/../../x", root / "dotdot");
-  walked = llmp::platform::WalkTrusted(root / "dotdot/y", ::geteuid(), false);
-  ASSERT_FALSE(walked.has_value());
-  EXPECT_THAT(walked.error(), HasSubstr("does not exist, and the path goes on to '..'"));
-  walked = llmp::platform::WalkTrusted("relative/path", ::geteuid(), false);
-  ASSERT_FALSE(walked.has_value());
-  EXPECT_THAT(walked.error(), HasSubstr("not an absolute path"));
+  resolved = llmp::platform::ResolvePath(root / "file/x");
+  ASSERT_FALSE(resolved.has_value());
+  EXPECT_THAT(resolved.error(), HasSubstr("Not a directory"));
+  resolved = llmp::platform::ResolvePath("relative/path");
+  ASSERT_FALSE(resolved.has_value());
+  EXPECT_THAT(resolved.error(), HasSubstr("not an absolute path"));
+  // A link to nothing, last or on the way, is not a missing tail: a role
+  // created through it would not be where the path says.
+  fs::create_symlink(root / "nowhere", root / "dangling");
+  for (const fs::path& path : {root / "dangling", root / "dangling/below"}) {
+    resolved = llmp::platform::ResolvePath(path);
+    ASSERT_FALSE(resolved.has_value()) << path;
+    EXPECT_THAT(resolved.error(), HasSubstr("is a link to a path that does not exist"));
+  }
 }
 
-TEST(WalkTrusted, RefusesWhatOthersCanChange) {
-  const Scratch scratch;
-  const fs::path& root = scratch.path();
-  fs::create_directories(root / "open/inner");
-  const uid_t me = ::geteuid();
-  ASSERT_EQ(::chmod((root / "open").c_str(), 0757), 0);
-  auto walked = llmp::platform::WalkTrusted(root / "open/inner", me, false);
-  ASSERT_FALSE(walked.has_value());
-  EXPECT_THAT(walked.error(), HasSubstr("open can be changed by users other than root and uid"));
-  // A sticky directory is passable: others cannot replace what it holds.
-  ASSERT_EQ(::chmod((root / "open").c_str(), 01777), 0);
-  walked = llmp::platform::WalkTrusted(root / "open/inner", me, false);
-  EXPECT_TRUE(walked.has_value()) << walked.error();
-  // But not as a directory to add files to.
-  struct stat status{};
-  ASSERT_EQ(::stat((root / "open").c_str(), &status), 0);
-  const auto private_dir = llmp::platform::CheckPrivateDirectory(root / "open", status, me);
-  ASSERT_FALSE(private_dir.has_value());
-  EXPECT_THAT(private_dir.error(), HasSubstr("can add files to"));
-  // Entries another user owns are untrusted: here, trusting root alone.
-  if (me != 0) {
-    walked = llmp::platform::WalkTrusted(root / "open/inner", 0, false);
-    ASSERT_FALSE(walked.has_value());
-    // Under qemu-user, "/" is the sysroot, which this user owns: the walk
-    // stops there instead.
-    EXPECT_THAT(walked.error(),
-                AnyOf(HasSubstr(std::format("is owned by uid {}, not root", me)),
-                      HasSubstr(std::format("/ is not owned by root and private (uid {}", me))));
-  }
+TEST(Paths, OctalMode) {
+  EXPECT_EQ(llmp::platform::OctalMode(S_IFDIR | 01777), "1777");
+  EXPECT_EQ(llmp::platform::OctalMode(0600), "0600");
 }
 
 TEST(DirectIo, DescribesFilesystems) {

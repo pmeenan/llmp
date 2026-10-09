@@ -36,8 +36,7 @@ class Gemma2ChatAssets : public ::testing::Test {
     if (std::error_code error; !std::filesystem::exists(path, error)) {
       GTEST_SKIP() << "no Gemma2 artifact in " << path;
     }
-    auto artifact =
-        llmp::artifact::Artifact::Open(path, {.expected_id = {}, .trusted_owner = ::geteuid()});
+    auto artifact = llmp::artifact::Artifact::Open(path, {.expected_id = {}});
     ASSERT_TRUE(artifact) << llmp::test_support::Failed(artifact)->ToString();
     auto bound = llmp::model::BindApprovedGemma2(*artifact);
     ASSERT_TRUE(bound) << *llmp::test_support::Failed(bound);
@@ -50,7 +49,7 @@ class Gemma2ChatAssets : public ::testing::Test {
     EXPECT_EQ(settings->context.value, 8192U);
     EXPECT_EQ(settings->prefill_chunk.value, 128U);
     EXPECT_EQ(settings->max_slots.value, 1U);
-    auto assets = rt::ReadChatAssets(*artifact, {}, ::geteuid());
+    auto assets = rt::ReadChatAssets(*artifact, {});
     ASSERT_TRUE(assets) << *llmp::test_support::Failed(assets);
     ASSERT_TRUE(assets->chat_template);
     ASSERT_EQ(assets->chat_template->size(), 591U);

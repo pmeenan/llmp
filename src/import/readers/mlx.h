@@ -54,8 +54,6 @@
 #ifndef LLMP_IMPORT_READERS_MLX_H_
 #define LLMP_IMPORT_READERS_MLX_H_
 
-#include <sys/types.h>
-
 #include <cstddef>
 #include <expected>
 #include <filesystem>
@@ -77,7 +75,7 @@ bool IsMlxConfig(base::json::Value root);
 // has one, expert arrays marked.
 std::expected<Checkpoint, Error> MlxCheckpoint(HfDirectory dir);
 
-std::expected<Checkpoint, Error> ReadMlx(const std::filesystem::path& directory, uid_t trusted);
+std::expected<Checkpoint, Error> ReadMlx(const std::filesystem::path& directory);
 
 // One shard's bytes with its config.json, as ReadMlx reads a checkpoint
 // of one shard: for tests and fuzzing (ParseSafetensors's file).

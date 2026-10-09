@@ -533,7 +533,7 @@ Status Llm::UseTemplate(std::string_view text) {
 }
 
 Status Llm::UseChatAssets(const ja::Artifact& artifact, const config::ModelEntry& entry) {
-  auto assets = ReadChatAssets(artifact, entry, ::geteuid());
+  auto assets = ReadChatAssets(artifact, entry);
   if (!assets) {
     return std::unexpected(assets.error());
   }

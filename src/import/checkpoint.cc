@@ -32,12 +32,27 @@ const MetaValue* Checkpoint::FindValue(std::string_view key) const {
 
 std::expected<void, Error> Checkpoint::Read(const Extent& extent, std::uint64_t offset,
                                             std::span<std::byte> out) const {
-  if (extent.file >= open.size() || offset > extent.bytes || out.size() > extent.bytes - offset) {
+  if (extent.file >= files.size() || offset > extent.bytes || out.size() > extent.bytes - offset) {
     return std::unexpected(Error{.rule = Rule::kBounds,
                                  .reason = "a read outside its tensor's extent",
                                  .file = extent.file});
   }
-  return ReadExactly(open[extent.file].fd.get(), extent.offset + offset, out, extent.file);
+  const SourceFile& source = files[extent.file];
+  if (source.path.empty()) {
+    return std::unexpected(Error{.rule = Rule::kIo,
+                                 .reason = "a checkpoint parsed from memory has no file to read",
+                                 .file = extent.file});
+  }
+  auto f = OpenCheckpointFile(source.path, extent.file);
+  if (!f) {
+    return std::unexpected(f.error());
+  }
+  if (f->device != source.device || f->inode != source.inode) {
+    return std::unexpected(Error{.rule = Rule::kIo,
+                                 .reason = "a checkpoint file was replaced after it was read",
+                                 .file = extent.file});
+  }
+  return ReadExactly(f->fd.get(), extent.offset + offset, out, extent.file);
 }
 
 bool NoControlCharacters(std::string_view text) {

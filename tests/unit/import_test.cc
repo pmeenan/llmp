@@ -46,6 +46,7 @@
 #include "format/tensor_format.h"
 #include "import/checkpoint.h"
 #include "import/error.h"
+#include "import/files.h"
 #include "import/reader.h"
 #include "import/readers/gguf.h"
 #include "import/readers/hf_quant.h"
@@ -703,17 +704,17 @@ TEST_F(ImportGgufFilesTest, ReadsSplitFilesAndTheirBytes) {
   for (int i = 0; i < 3; ++i) {
     Write(dir_ / SplitFile(i + 1, 3), splits[static_cast<std::size_t>(i)]);
   }
-  const auto c = ReadCheckpoint(dir_ / SplitFile(1, 3), ::geteuid());
+  const auto c = ReadCheckpoint(dir_ / SplitFile(1, 3));
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   ASSERT_EQ(c->files.size(), 3U);
-  ASSERT_EQ(c->open.size(), 3U);
   EXPECT_EQ(c->files[2].name, SplitFile(3, 3));
+  EXPECT_EQ(c->files[2].path, dir_ / SplitFile(3, 3));
   ASSERT_EQ(c->tensors.size(), 6U);
   EXPECT_EQ(c->tensors[4].name, "t2a");
   EXPECT_EQ(c->tensors[4].extent.file, 2U);
   EXPECT_EQ(*Get<std::int64_t>(*c, "split.no"), 0);
   EXPECT_EQ(*Get<std::int64_t>(*c, "test.block_count"), 1);
-  // The tensors' bytes, read through the checkpoint's own descriptors.
+  // The tensors' bytes, each read from its file opened again.
   for (const Tensor& t : c->tensors) {
     std::vector<std::byte> bytes(t.extent.bytes);
     ASSERT_TRUE(c->Read(t.extent, 0, bytes).has_value()) << t.name;
@@ -736,7 +737,7 @@ TEST_F(ImportGgufFilesTest, RefusesSplitSetsThatDisagree) {
     for (std::size_t i = 0; i < files.size(); ++i) {
       Write(dir_ / SplitFile(static_cast<int>(i) + 1, 3), files[i]);
     }
-    return ReadGguf(dir_ / SplitFile(1, 3), ::geteuid());
+    return ReadGguf(dir_ / SplitFile(1, 3));
   };
   auto files = Splits();
   // A missing split.
@@ -783,67 +784,133 @@ TEST_F(ImportGgufFilesTest, RefusesSplitSetsThatDisagree) {
   EXPECT_EQ(RuleOf(write(fewer)), Rule::kShards);
   // Read from a later split, or a first file not named as splits are.
   ASSERT_TRUE(write(files).has_value());
-  EXPECT_EQ(RuleOf(ReadGguf(dir_ / SplitFile(2, 3), ::geteuid())), Rule::kShards);
+  EXPECT_EQ(RuleOf(ReadGguf(dir_ / SplitFile(2, 3))), Rule::kShards);
   Write(dir_ / "renamed.gguf", files[0]);
-  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "renamed.gguf", ::geteuid())), Rule::kShards);
+  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "renamed.gguf")), Rule::kShards);
 }
 
-TEST_F(ImportGgufFilesTest, OpensOnlyTrustedRegularFiles) {
+// Files are opened as any file is, links followed (D-073 as amended on
+// 2026-10-09): who could change them is not the reader's business, but
+// only a regular file is opened.
+TEST_F(ImportGgufFilesTest, OpensRegularFiles) {
   const auto file = Gguf().Tensor("a", kF32, {2}).Build();
   Write(dir_ / "m.gguf", file);
-  ASSERT_TRUE(ReadGguf(dir_ / "m.gguf", ::geteuid()).has_value());
+  ASSERT_TRUE(ReadGguf(dir_ / "m.gguf").has_value());
   // Through a link, as a Hugging Face cache's snapshots link into blobs.
   std::filesystem::create_directories(dir_ / "blobs");
   Write(dir_ / "blobs" / "abc", file);
   std::filesystem::create_symlink("blobs/abc", dir_ / "linked.gguf");
-  EXPECT_TRUE(ReadCheckpoint(dir_ / "linked.gguf", ::geteuid()).has_value());
-  // A file others can write, a directory others can change.
+  EXPECT_TRUE(ReadCheckpoint(dir_ / "linked.gguf").has_value());
+  // A file others can write, in a directory others can change.
   ::chmod((dir_ / "m.gguf").c_str(), 0666);
-  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "m.gguf", ::geteuid())), Rule::kUntrusted);
-  ::chmod((dir_ / "m.gguf").c_str(), 0644);
+  EXPECT_TRUE(ReadGguf(dir_ / "m.gguf").has_value());
   std::filesystem::create_directories(dir_ / "open");
   Write(dir_ / "open" / "m.gguf", file);
   ::chmod((dir_ / "open").c_str(), 0777);
-  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "open" / "m.gguf", ::geteuid())), Rule::kUntrusted);
+  EXPECT_TRUE(ReadGguf(dir_ / "open" / "m.gguf").has_value());
   ::chmod((dir_ / "open").c_str(), 0755);
-  // Another owner than the trusted one.
-  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "m.gguf", ::geteuid() + 1)), Rule::kUntrusted);
   // Not a regular file; absent.
   std::filesystem::create_directories(dir_ / "dir.gguf");
-  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "dir.gguf", ::geteuid())), Rule::kFileType);
+  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "dir.gguf")), Rule::kFileType);
   ASSERT_EQ(::mkfifo((dir_ / "fifo.gguf").c_str(), 0600), 0);
-  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "fifo.gguf", ::geteuid())), Rule::kFileType);
-  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "absent.gguf", ::geteuid())), Rule::kFileType);
+  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "fifo.gguf")), Rule::kFileType);
+  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "absent.gguf")), Rule::kFileType);
+  std::filesystem::create_symlink("fifo.gguf", dir_ / "to-fifo.gguf");
+  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "to-fifo.gguf")), Rule::kFileType);
+  // Links that loop, and a link to nothing.
+  std::filesystem::create_symlink("loop-b.gguf", dir_ / "loop-a.gguf");
+  std::filesystem::create_symlink("loop-a.gguf", dir_ / "loop-b.gguf");
+  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "loop-a.gguf")), Rule::kFileType);
+  std::filesystem::create_symlink("blobs/missing", dir_ / "dangling.gguf");
+  const auto dangling = ReadGguf(dir_ / "dangling.gguf");
+  EXPECT_EQ(RuleOf(dangling), Rule::kFileType);
+  if (!dangling) {
+    EXPECT_EQ(dangling.error().reason, "a checkpoint file is a link to nothing");
+  }
   // A path no reader claims.
   Write(dir_ / "m.bin", file);
-  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_ / "m.bin", ::geteuid())), Rule::kFileType);
+  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_ / "m.bin")), Rule::kFileType);
 }
 
-TEST_F(ImportGgufFilesTest, ReadsTheFilesItChecked) {
+// A tensor's bytes come from the file its reader read: one renamed over
+// it or shrunk under it fails the read.
+TEST_F(ImportGgufFilesTest, ReadsOnlyTheFilesItRead) {
   const auto file = Gguf().Tensor("a", kF32, {64}).Build();
   Write(dir_ / "m.gguf", file);
-  const auto c = ReadGguf(dir_ / "m.gguf", ::geteuid());
+  const auto c = ReadGguf(dir_ / "m.gguf");
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   const Extent extent = c->tensors[0].extent;
   std::vector<std::byte> bytes(extent.bytes);
-  // A file renamed over the checked one: the checkpoint still reads the
-  // file it checked.
-  auto other = file;
-  std::ranges::fill(std::span(other).subspan(static_cast<std::size_t>(extent.offset)),
-                    std::byte{0x5A});
-  Write(dir_ / "new.gguf", other);
-  std::filesystem::rename(dir_ / "new.gguf", dir_ / "m.gguf");
   ASSERT_TRUE(c->Read(extent, 0, bytes).has_value());
   EXPECT_TRUE(std::equal(bytes.begin(), bytes.end(),
                          file.begin() + static_cast<std::ptrdiff_t>(extent.offset)));
-  // The checked file shrunk under the checkpoint: its reads fail.
-  const auto again = ReadGguf(dir_ / "m.gguf", ::geteuid());
+  // Another file renamed over the one read.
+  Write(dir_ / "new.gguf", file);
+  std::filesystem::rename(dir_ / "new.gguf", dir_ / "m.gguf");
+  EXPECT_EQ(Failed(c->Read(extent, 0, bytes), &Error::rule), Rule::kIo);
+  // The file read shrunk under the checkpoint.
+  const auto again = ReadGguf(dir_ / "m.gguf");
   ASSERT_TRUE(again.has_value()) << again.error().ToString();
   std::filesystem::resize_file(dir_ / "m.gguf", extent.offset + 8);
   EXPECT_EQ(Failed(again->Read(extent, 0, bytes), &Error::rule), Rule::kIo);
+  // Gone.
+  std::filesystem::remove(dir_ / "m.gguf");
+  EXPECT_EQ(Failed(again->Read(extent, 0, bytes), &Error::rule), Rule::kFileType);
+  // A checkpoint parsed from memory has no file to read.
+  const auto memory = ParseGguf(file);
+  ASSERT_TRUE(memory.has_value());
+  EXPECT_EQ(Failed(memory->Read(extent, 0, bytes), &Error::rule), Rule::kIo);
   // A link to a device is refused before it is opened.
   std::filesystem::create_symlink("/dev/zero", dir_ / "zero.gguf");
-  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "zero.gguf", ::geteuid())), Rule::kFileType);
+  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "zero.gguf")), Rule::kFileType);
+}
+
+// The kept-file rule (files.h): a file kept verbatim must resolve inside
+// the checkpoint, or inside a Hugging Face cache repository's blobs/
+// when the checkpoint is one of its snapshots; a link a repository
+// planted to a file elsewhere does not.
+TEST_F(ImportGgufFilesTest, KeptFilesResolveInsideTheCheckpoint) {
+  namespace fs = std::filesystem;
+  // A plain checkpoint directory.
+  const fs::path repo = dir_ / "repo";
+  Write(repo / "tokenizer.json", "{}");
+  Write(repo / "sub" / "scheduler_config.json", "{}");
+  fs::create_symlink("sub/scheduler_config.json", repo / "inner_link.json");
+  Write(dir_ / "secret", "the user's own");
+  fs::create_symlink(dir_ / "secret", repo / "planted.json");
+  fs::create_symlink("../secret", repo / "relative.json");
+  EXPECT_TRUE(ResolvesInside(repo, repo / "tokenizer.json"));
+  EXPECT_TRUE(ResolvesInside(repo, repo / "sub" / "scheduler_config.json"));
+  EXPECT_TRUE(ResolvesInside(repo, repo / "inner_link.json"));
+  EXPECT_FALSE(ResolvesInside(repo, repo / "planted.json"));
+  EXPECT_FALSE(ResolvesInside(repo, repo / "relative.json"));
+  EXPECT_FALSE(ResolvesInside(repo, repo / "absent.json"));
+  EXPECT_FALSE(ResolvesInside(repo, repo));  // the tree itself is not a file in it
+  // A Hugging Face cache: snapshot files link into the repository's blobs.
+  const fs::path cache = dir_ / "hub" / "models--org--name";
+  const fs::path snapshot = cache / "snapshots" / "0123abcd";
+  Write(cache / "blobs" / "f00d", "{}");
+  fs::create_directories(snapshot / "scheduler");
+  fs::create_symlink("../../blobs/f00d", snapshot / "tokenizer.json");
+  fs::create_symlink("../../../blobs/f00d", snapshot / "scheduler" / "scheduler_config.json");
+  fs::create_symlink(dir_ / "secret", snapshot / "planted.json");
+  Write(cache / "refs" / "main", "0123abcd");
+  fs::create_symlink("../../refs/main", snapshot / "outside_blobs.json");
+  EXPECT_TRUE(ResolvesInside(snapshot, snapshot / "tokenizer.json"));
+  EXPECT_TRUE(ResolvesInside(snapshot, snapshot / "scheduler" / "scheduler_config.json"));
+  // A component's directory as the tree: still the snapshot's repository.
+  EXPECT_TRUE(
+      ResolvesInside(snapshot / "scheduler", snapshot / "scheduler" / "scheduler_config.json"));
+  EXPECT_FALSE(ResolvesInside(snapshot, snapshot / "planted.json"));
+  EXPECT_FALSE(ResolvesInside(snapshot, snapshot / "outside_blobs.json"));
+  // A blobs/ that is itself a link elsewhere is not the repository's.
+  const fs::path linked = dir_ / "hub" / "models--org--other";
+  Write(dir_ / "elsewhere" / "f00d", "{}");
+  fs::create_directories(linked / "snapshots" / "rev");
+  fs::create_directory_symlink(dir_ / "elsewhere", linked / "blobs");
+  fs::create_symlink("../../blobs/f00d", linked / "snapshots" / "rev" / "tokenizer.json");
+  EXPECT_FALSE(ResolvesInside(linked / "snapshots" / "rev",
+                              linked / "snapshots" / "rev" / "tokenizer.json"));
 }
 
 TEST_F(ImportGgufFilesTest, ReadsLargeHeadersInGrowingPrefixes) {
@@ -856,12 +923,12 @@ TEST_F(ImportGgufFilesTest, ReadsLargeHeadersInGrowingPrefixes) {
   const auto file = Gguf().Strings("tokenizer.ggml.tokens", tokens).Tensor("a", kF32, {2}).Build();
   ASSERT_GT(file.size(), kGgufFirstRead * 4);
   Write(dir_ / "big.gguf", file);
-  const auto c = ReadGguf(dir_ / "big.gguf", ::geteuid());
+  const auto c = ReadGguf(dir_ / "big.gguf");
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(Get<std::vector<std::string>>(*c, "tokenizer.ggml.tokens")->size(), 300000U);
   // Truncated inside the header, after the first read.
   Write(dir_ / "cut.gguf", View(file).first(kGgufFirstRead + 100));
-  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "cut.gguf", ::geteuid())), Rule::kContainer);
+  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "cut.gguf")), Rule::kContainer);
 }
 
 // ---------------------------------------------------------------- safetensors
@@ -1392,7 +1459,7 @@ TEST_F(ImportSafetensorsFilesTest, ReadsShardedAndSingleCheckpoints) {
                                                       {"b", "model-00001.safetensors"},
                                                       {"c", "model-00002.safetensors"}}));
   Write(dir_ / "amax.safetensors", std::string_view("not read"));
-  const auto c = ReadCheckpoint(dir_, ::geteuid());
+  const auto c = ReadCheckpoint(dir_);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->architecture, "test");
   ASSERT_EQ(c->files.size(), 4U);  // two shards, config.json, the index
@@ -1411,28 +1478,28 @@ TEST_F(ImportSafetensorsFilesTest, ReadsShardedAndSingleCheckpoints) {
   // Both an index and model.safetensors, which the index does not name;
   // and an index that names it as a shard.
   Write(dir_ / "model.safetensors", a);
-  EXPECT_EQ(RuleOf(ReadSafetensors(dir_, ::geteuid())), Rule::kShards);
+  EXPECT_EQ(RuleOf(ReadSafetensors(dir_)), Rule::kShards);
   Write(dir_ / "model.safetensors.index.json", Index({{"a", "model.safetensors"},
                                                       {"b", "model.safetensors"},
                                                       {"c", "model-00002.safetensors"}}));
-  const auto named = ReadSafetensors(dir_, ::geteuid());
+  const auto named = ReadSafetensors(dir_);
   ASSERT_TRUE(named.has_value()) << named.error().ToString();
   ASSERT_EQ(named->files.size(), 4U);
   EXPECT_EQ(named->files[1].name, "model.safetensors");
   EXPECT_EQ(named->tensors.size(), 3U);
   // model.safetensors alone.
   std::filesystem::remove(dir_ / "model.safetensors.index.json");
-  const auto single = ReadSafetensors(dir_, ::geteuid());
+  const auto single = ReadSafetensors(dir_);
   ASSERT_TRUE(single.has_value()) << single.error().ToString();
   EXPECT_EQ(single->files[0].name, "model.safetensors");
   EXPECT_EQ(single->tensors.size(), 2U);
   // Neither.
   std::filesystem::remove(dir_ / "model.safetensors");
-  EXPECT_EQ(RuleOf(ReadSafetensors(dir_, ::geteuid())), Rule::kFileType);
+  EXPECT_EQ(RuleOf(ReadSafetensors(dir_)), Rule::kFileType);
   // No config.json.
   Write(dir_ / "model.safetensors", a);
   std::filesystem::remove(dir_ / "config.json");
-  EXPECT_EQ(RuleOf(ReadSafetensors(dir_, ::geteuid())), Rule::kConfig);
+  EXPECT_EQ(RuleOf(ReadSafetensors(dir_)), Rule::kConfig);
 }
 
 TEST_F(ImportSafetensorsFilesTest, RefusesIndexesThatDisagree) {
@@ -1441,7 +1508,7 @@ TEST_F(ImportSafetensorsFilesTest, RefusesIndexesThatDisagree) {
   Write(dir_ / "s2.safetensors", Shard({E("c", "BF16", {4})}));
   const auto with = [&](const std::string& index) {
     Write(dir_ / "model.safetensors.index.json", index);
-    return RuleOf(ReadSafetensors(dir_, ::geteuid()));
+    return RuleOf(ReadSafetensors(dir_));
   };
   EXPECT_EQ(
       with(Index({{"a", "s1.safetensors"}, {"b", "s1.safetensors"}, {"c", "s2.safetensors"}})),
@@ -1482,18 +1549,28 @@ TEST_F(ImportSafetensorsFilesTest, RefusesIndexesThatDisagree) {
   EXPECT_EQ(with(R"({"weight_map":[]})"), Rule::kConfig);
 }
 
-TEST_F(ImportSafetensorsFilesTest, OpensOnlyTrustedDirectories) {
+TEST_F(ImportSafetensorsFilesTest, OpensDirectoriesThroughLinks) {
   Write(dir_ / "ckpt" / "config.json", kConfig);
   Write(dir_ / "blobs" / "weights", Shard({E("a", "F32", {2})}));
   std::filesystem::create_symlink("../blobs/weights", dir_ / "ckpt" / "model.safetensors");
-  ASSERT_TRUE(ReadSafetensors(dir_ / "ckpt", ::geteuid()).has_value());
+  ASSERT_TRUE(ReadSafetensors(dir_ / "ckpt").has_value());
+  // Modes others could use are no concern of the reader's.
   ::chmod((dir_ / "ckpt").c_str(), 0777);
-  EXPECT_EQ(RuleOf(ReadSafetensors(dir_ / "ckpt", ::geteuid())), Rule::kUntrusted);
-  ::chmod((dir_ / "ckpt").c_str(), 0755);
   ::chmod((dir_ / "blobs" / "weights").c_str(), 0666);
-  EXPECT_EQ(RuleOf(ReadSafetensors(dir_ / "ckpt", ::geteuid())), Rule::kUntrusted);
+  ASSERT_TRUE(ReadSafetensors(dir_ / "ckpt").has_value());
+  ::chmod((dir_ / "ckpt").c_str(), 0755);
   ::chmod((dir_ / "blobs" / "weights").c_str(), 0644);
-  EXPECT_EQ(RuleOf(ReadSafetensors(dir_ / "ckpt" / "config.json", ::geteuid())), Rule::kFileType);
+  // The checkpoint itself through a link.
+  std::filesystem::create_directory_symlink(dir_ / "ckpt", dir_ / "alias");
+  const auto c = ReadSafetensors(dir_ / "alias");
+  ASSERT_TRUE(c.has_value()) << c.error().ToString();
+  EXPECT_EQ(c->files[0].path, std::filesystem::canonical(dir_ / "ckpt") / "model.safetensors");
+  EXPECT_EQ(RuleOf(ReadSafetensors(dir_ / "ckpt" / "config.json")), Rule::kFileType);
+  EXPECT_EQ(RuleOf(ReadSafetensors(dir_ / "absent")), Rule::kFileType);
+  // An optional document linking to nothing (a blob a cache never
+  // fetched) is a broken checkpoint, not one without that document.
+  std::filesystem::create_symlink("../blobs/never-fetched", dir_ / "ckpt" / "hf_quant_config.json");
+  EXPECT_EQ(RuleOf(ReadSafetensors(dir_ / "ckpt")), Rule::kFileType);
 }
 
 }  // namespace

@@ -1027,10 +1027,7 @@ class Tree {
   }
 
   LoadOptions Options(std::string_view main = "llmp.toml") const {
-    return {.main_file = path_ / main,
-            .main_file_optional = false,
-            .anchor = kAnchor,
-            .trusted_uid = ::geteuid()};
+    return {.main_file = path_ / main, .main_file_optional = false, .anchor = kAnchor};
   }
 
  private:
@@ -1084,54 +1081,81 @@ TEST(LoadNodeConfigTest, TheMainFileEndsInToml) {
   EXPECT_THAT(LoadFailures(tree.Options("llmp.conf")), ElementsAre(HasSubstr("must end in .toml")));
 }
 
-TEST(LoadNodeConfigTest, RefusesLinksAndOtherFiles) {
+// Files are opened as any file is, links followed (D-073 as amended on
+// 2026-10-09); what is not a regular file is refused.
+TEST(LoadNodeConfigTest, FollowsLinksAndRefusesOtherFiles) {
   const Tree tree;
-  tree.Write("real.toml", "schema_version = 2\n");
+  tree.Write("real.toml", "schema_version = 2\n[storage]\ndata_dir = \"/srv/j\"\n");
   fs::create_symlink(tree / "real.toml", tree / "llmp.toml");
-  EXPECT_THAT(LoadFailures(tree.Options()), ElementsAre(HasSubstr("is a symbolic link")));
+  tree.Write("elsewhere/b.toml", "schema_version = 2\n[storage]\nspill = \"s\"\n");
+  fs::create_symlink(tree / "elsewhere", tree / "llmp.d");
+  auto result = LoadNodeConfig(tree.Options());
+  ASSERT_TRUE(result.has_value()) << ::testing::PrintToString(Messages(result.error()));
+  EXPECT_THAT(result->files, ElementsAre(tree / "llmp.toml", tree / "llmp.d/b.toml"));
+  EXPECT_EQ(result->storage.spill, "/srv/j/s");
+  fs::remove(tree / "llmp.d");
   fs::remove(tree / "llmp.toml");
   fs::create_directory(tree / "llmp.toml");
   EXPECT_THAT(LoadFailures(tree.Options()), ElementsAre(HasSubstr("is not a regular file")));
   fs::remove(tree / "llmp.toml");
   tree.Write("llmp.toml", "schema_version = 2\n");
   fs::create_directories(tree / "llmp.d");
-  fs::create_symlink(tree / "real.toml", tree / "llmp.d/a.toml");
+  fs::create_symlink(tree / "missing.toml", tree / "llmp.d/a.toml");
   EXPECT_THAT(LoadFailures(tree.Options()),
-              ElementsAre(HasSubstr("llmp.d/a.toml: is a symbolic link")));
+              ElementsAre(HasSubstr("llmp.d/a.toml: cannot be opened")));
   fs::remove(tree / "llmp.d/a.toml");
   fs::create_directory(tree / "llmp.d/b.toml");
   EXPECT_THAT(LoadFailures(tree.Options()),
               ElementsAre(HasSubstr("llmp.d/b.toml: is not a regular file")));
+  fs::remove(tree / "llmp.d/b.toml");
+  fs::remove(tree / "llmp.d");
+  tree.Write("llmp.d", "not a directory");
+  EXPECT_THAT(LoadFailures(tree.Options()), Contains(HasSubstr("llmp.d: is not a directory")));
+  fs::remove(tree / "llmp.d");
 }
 
-TEST(LoadNodeConfigTest, RefusesWhatOthersCouldChange) {
+// What is not a regular file never blocks the load and is never read as
+// configuration; a link to nothing is not an absent file, even where the
+// main file is optional (its configuration would silently be the
+// defaults).
+TEST(LoadNodeConfigTest, NeverWaitsOnFifosOrSkipsLinksToNothing) {
   const Tree tree;
-  // Group write through a group others may share counts as theirs; the
-  // private-group case depends on this host's accounts, so only other
-  // write is tested here.
+  ASSERT_EQ(::mkfifo((tree / "llmp.toml").c_str(), 0600), 0);
+  EXPECT_THAT(LoadFailures(tree.Options()), ElementsAre(HasSubstr("is not a regular file")));
+  fs::remove(tree / "llmp.toml");
+  tree.Write("llmp.toml", "schema_version = 2\n");
+  fs::create_directories(tree / "llmp.d");
+  ASSERT_EQ(::mkfifo((tree / "fifo").c_str(), 0600), 0);
+  fs::create_symlink(tree / "fifo", tree / "llmp.d/a.toml");
+  EXPECT_THAT(LoadFailures(tree.Options()),
+              ElementsAre(HasSubstr("llmp.d/a.toml: is not a regular file")));
+  fs::remove(tree / "llmp.d/a.toml");
+  fs::remove(tree / "llmp.d");
+  fs::create_symlink(tree / "unmounted", tree / "llmp.d");
+  EXPECT_THAT(LoadFailures(tree.Options()),
+              ElementsAre(HasSubstr("llmp.d: is a link to a path that does not exist")));
+  fs::remove(tree / "llmp.d");
+  fs::remove(tree / "llmp.toml");
+  fs::create_symlink(tree / "unmounted.toml", tree / "llmp.toml");
+  LoadOptions optional = tree.Options();
+  optional.main_file_optional = true;
+  EXPECT_THAT(LoadFailures(optional),
+              ElementsAre(HasSubstr("llmp.toml: is a link to a path that does not exist")));
+}
+
+// Who could change the files is the filesystem's business (D-073 as
+// amended on 2026-10-09): open modes, hard links and another owner load.
+TEST(LoadNodeConfigTest, LoadsWhatOthersCouldChange) {
+  const Tree tree;
   tree.Write("llmp.toml", "schema_version = 2\n", 0646);
-  EXPECT_THAT(LoadFailures(tree.Options()),
-              ElementsAre(HasSubstr("can be written by users other than root and its owner")));
-  ASSERT_EQ(::chmod((tree / "llmp.toml").c_str(), 0644), 0);
-  tree.Write("llmp.d/a.toml", "schema_version = 2\n", 0646);
-  EXPECT_THAT(LoadFailures(tree.Options()),
-              ElementsAre(HasSubstr("llmp.d/a.toml: can be written")));
-  ASSERT_EQ(::chmod((tree / "llmp.d/a.toml").c_str(), 0644), 0);
+  tree.Write("llmp.d/a.toml", "schema_version = 2\n[storage]\nspill = \"s\"\n", 0666);
   ASSERT_EQ(::chmod((tree / "llmp.d").c_str(), 01777), 0);
-  EXPECT_THAT(LoadFailures(tree.Options()), ElementsAre(HasSubstr("can add files to")));
-  ASSERT_EQ(::chmod((tree / "llmp.d").c_str(), 0755), 0);
   ASSERT_EQ(::chmod((tree / "").c_str(), 0757), 0);
-  EXPECT_THAT(LoadFailures(tree.Options()),
-              Contains(HasSubstr("can be changed by users other than")));
+  fs::create_hard_link(tree / "llmp.toml", tree / "other");
+  auto result = LoadNodeConfig(tree.Options());
+  ASSERT_TRUE(result.has_value()) << ::testing::PrintToString(Messages(result.error()));
+  EXPECT_THAT(result->files, ElementsAre(tree / "llmp.toml", tree / "llmp.d/a.toml"));
   ASSERT_EQ(::chmod((tree / "").c_str(), 0700), 0);
-  // Owned by another user: trust only root.
-  LoadOptions options = tree.Options();
-  if (::geteuid() != 0) {
-    options.trusted_uid = 0;
-    // (Under qemu-user the walk stops at "/", the sysroot this user owns.)
-    EXPECT_THAT(LoadFailures(options),
-                Contains(AnyOf(HasSubstr("not root"), HasSubstr("is not owned by root"))));
-  }
 }
 
 TEST(LoadNodeConfigTest, TheNumberOfFragmentsIsBounded) {
@@ -1145,37 +1169,16 @@ TEST(LoadNodeConfigTest, TheNumberOfFragmentsIsBounded) {
                                     "takes at most 256")));
 }
 
-TEST(LoadNodeConfigTest, RefusesHardLinkedFiles) {
-  const Tree tree;
-  tree.Write("llmp.toml", "schema_version = 2\n");
-  fs::create_hard_link(tree / "llmp.toml", tree / "other");
-  EXPECT_THAT(LoadFailures(tree.Options()), ElementsAre(HasSubstr("has 2 hard links")));
-}
-
-// Group write through the owner's private group is the owner's own, but not
-// when an ACL grants it to someone else.
-TEST(LoadNodeConfigTest, RefusesAnAclGrantingWrite) {
-  const Tree tree;
-  tree.Write("llmp.toml", "schema_version = 2\n");
-  const std::string command =
-      std::format("setfacl -m u:nobody:rw '{}' 2>/dev/null", (tree / "llmp.toml").string());
-  // NOLINTNEXTLINE(concurrency-mt-unsafe,cert-env33-c,bugprone-command-processor): a fixed command
-  if (std::system(command.c_str()) != 0) {
-    GTEST_SKIP() << "setfacl is not available here";
-  }
-  EXPECT_THAT(LoadFailures(tree.Options()),
-              ElementsAre(HasSubstr("can be written by users other than root")));
-}
-
 TEST(LoadNodeConfigTest, FailuresInOneFileDoNotHideTheOthers) {
   const Tree tree;
   tree.Write("llmp.toml", "schema_version = 2\nbad = 1\n");
-  tree.Write("llmp.d/a.toml", "schema_version = 2\n", 0666);
+  fs::create_directories(tree / "llmp.d/a.toml");
   tree.Write("llmp.d/b.toml", "schema_version = 3\n");
-  // Files that cannot be trusted are not parsed at all.
+  // Files that cannot be read are not parsed at all.
   EXPECT_THAT(LoadFailures(tree.Options()),
-              ElementsAre(HasSubstr("llmp.d/a.toml: can be written")));
-  ASSERT_EQ(::chmod((tree / "llmp.d/a.toml").c_str(), 0644), 0);
+              ElementsAre(HasSubstr("llmp.d/a.toml: is not a regular file")));
+  fs::remove(tree / "llmp.d/a.toml");
+  tree.Write("llmp.d/a.toml", "schema_version = 2\n");
   EXPECT_THAT(LoadFailures(tree.Options()),
               ElementsAre(HasSubstr("llmp.toml:2:7: unknown key bad"),
                           HasSubstr("b.toml:1:18: schema_version 3")));
@@ -1222,7 +1225,8 @@ class Roles : public ::testing::Test {
 TEST_F(Roles, CreatesMissingRolesWithTheirModes) {
   auto roles = llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "enrollment");
   ASSERT_TRUE(roles.has_value()) << ::testing::PrintToString(roles.error());
-  EXPECT_EQ(roles->installed, tree_ / "data/models");
+  EXPECT_THAT(roles->warnings, IsEmpty());
+  EXPECT_EQ(roles->installed, fs::canonical(tree_ / "data/models"));
   EXPECT_EQ(Mode(tree_ / "data"), 0755U);
   EXPECT_EQ(Mode(tree_ / "data/models"), 0755U);
   EXPECT_EQ(Mode(tree_ / "data/spill"), 0700U);
@@ -1232,7 +1236,8 @@ TEST_F(Roles, CreatesMissingRolesWithTheirModes) {
   EXPECT_FALSE(fs::exists(tree_ / "data/checkpoints"));
   // A second start finds them as it left them.
   roles = llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "enrollment");
-  EXPECT_TRUE(roles.has_value()) << ::testing::PrintToString(roles.error());
+  ASSERT_TRUE(roles.has_value()) << ::testing::PrintToString(roles.error());
+  EXPECT_THAT(roles->warnings, IsEmpty());
 }
 
 TEST_F(Roles, RefusesASpillDirectoryItDidNotMake) {
@@ -1242,25 +1247,50 @@ TEST_F(Roles, RefusesASpillDirectoryItDidNotMake) {
   EXPECT_THAT(Problems(Storage()),
               ElementsAre(HasSubstr("is not empty and has no .llmp-spill marker")));
   EXPECT_TRUE(fs::exists(tree_ / "data/spill/photos.jpg"));
-  ASSERT_EQ(::chmod((tree_ / "data/spill").c_str(), 0750), 0);
-  EXPECT_THAT(Problems(Storage()),
-              ElementsAre(HasSubstr("storage.spill (" + (tree_ / "data/spill").string() +
-                                    ") has mode 0750, not 0700")));
 }
 
-TEST_F(Roles, RefusesLinksAndWritableRoles) {
+// An existing role's mode is never refused (D-073 as amended on
+// 2026-10-09): the runtime starts and says what it found; links are
+// followed.
+TEST_F(Roles, FollowsLinksAndWarnsOfOpenRoles) {
   fs::create_directories(tree_ / "elsewhere");
-  fs::create_directories(tree_ / "data");
+  ASSERT_EQ(::chmod((tree_ / "elsewhere").c_str(), 0700), 0);
+  fs::create_directories(tree_ / "data/spill");
+  ASSERT_EQ(::chmod((tree_ / "data/spill").c_str(), 0750), 0);
   fs::create_directory_symlink(tree_ / "elsewhere", tree_ / "data/state");
-  EXPECT_THAT(Problems(Storage()),
-              ElementsAre(HasSubstr("storage.state (" + (tree_ / "data/state").string() +
-                                    "): is a symbolic link")));
-  fs::remove(tree_ / "data/state");
   fs::create_directories(tree_ / "data/models");
   ASSERT_EQ(::chmod((tree_ / "data/models").c_str(), 0757), 0);
-  EXPECT_THAT(Problems(Storage()),
+  auto roles = llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "enrollment");
+  ASSERT_TRUE(roles.has_value()) << ::testing::PrintToString(roles.error());
+  EXPECT_EQ(roles->state, fs::canonical(tree_ / "elsewhere"));
+  EXPECT_THAT(roles->warnings,
               ElementsAre(HasSubstr("storage.installed (" + (tree_ / "data/models").string() +
-                                    ") can be written by users other than root")));
+                                    ") can be written by any user (mode 0757)"),
+                          HasSubstr("storage.spill (" + (tree_ / "data/spill").string() +
+                                    ") has mode 0750, not 0700")));
+  EXPECT_TRUE(fs::is_regular_file(tree_ / "data/spill/.llmp-spill"));
+  // Modes the runtime finds are left as they are.
+  EXPECT_EQ(Mode(tree_ / "data/spill"), 0750U);
+}
+
+// What the runtime cannot use is still refused: a role that is not a
+// directory, or one its user cannot write.
+TEST_F(Roles, RefusesWhatIsNotAWritableDirectory) {
+  tree_.Write("data/state", "a file");
+  EXPECT_THAT(Problems(Storage()),
+              ElementsAre(HasSubstr("storage.state (" + (tree_ / "data/state").string() +
+                                    ") is not a directory")));
+  fs::remove(tree_ / "data/state");
+  if (::geteuid() == 0) {
+    GTEST_SKIP() << "root writes whatever the mode";
+  }
+  fs::create_directories(tree_ / "data/state");
+  ASSERT_EQ(::chmod((tree_ / "data/state").c_str(), 0500), 0);
+  EXPECT_THAT(Problems(Storage()),
+              ElementsAre(HasSubstr("storage.state (" + (tree_ / "data/state").string() +
+                                    ") cannot be written by the runtime's "
+                                    "user")));
+  ASSERT_EQ(::chmod((tree_ / "data/state").c_str(), 0700), 0);
 }
 
 TEST_F(Roles, NoRoleResolvesOntoTheAnchor) {
@@ -1275,17 +1305,21 @@ TEST_F(Roles, NoRoleResolvesOntoTheAnchor) {
   EXPECT_FALSE(fs::exists(tree_ / "data"));  // nothing is created before every check passes
 }
 
-TEST_F(Roles, RefusesAnAnchorOthersCouldReplace) {
-  fs::create_directories(tree_ / "open");
-  ASSERT_EQ(::chmod((tree_ / "open").c_str(), 0777), 0);
+TEST_F(Roles, RefusesAnAnchorThatCannotBeResolved) {
+  fs::create_symlink("loop", tree_ / "loop");
   auto result =
-      llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "open/x/enrollment");
+      llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "loop/enrollment");
   ASSERT_FALSE(result.has_value());
   EXPECT_THAT(result.error(), ElementsAre(HasSubstr("the enrollment anchor")));
   EXPECT_FALSE(fs::exists(tree_ / "data"));
+  // One under a directory anyone can write is fine.
+  fs::create_directories(tree_ / "open");
+  ASSERT_EQ(::chmod((tree_ / "open").c_str(), 0777), 0);
+  EXPECT_TRUE(llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "open/x/enrollment")
+                  .has_value());
 }
 
-TEST_F(Roles, RefusesADefaultAcl) {
+TEST_F(Roles, WarnsOfADefaultAcl) {
   fs::create_directories(tree_ / "data/models");
   const std::string command =
       std::format("setfacl -d -m u:nobody:rwx '{}' 2>/dev/null", (tree_ / "data/models").string());
@@ -1293,7 +1327,9 @@ TEST_F(Roles, RefusesADefaultAcl) {
   if (std::system(command.c_str()) != 0) {
     GTEST_SKIP() << "setfacl is not available here";
   }
-  EXPECT_THAT(Problems(Storage()), ElementsAre(HasSubstr("has a default ACL")));
+  auto roles = llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "enrollment");
+  ASSERT_TRUE(roles.has_value()) << ::testing::PrintToString(roles.error());
+  EXPECT_THAT(roles->warnings, ElementsAre(HasSubstr("has a default ACL")));
 }
 
 TEST_F(Roles, RefusesAMarkerItDidNotWrite) {
@@ -1301,6 +1337,31 @@ TEST_F(Roles, RefusesAMarkerItDidNotWrite) {
   ASSERT_EQ(::chmod((tree_ / "data/spill").c_str(), 0700), 0);
   tree_.Write("data/spill/.llmp-spill", "someone else's\n", 0600);
   EXPECT_THAT(Problems(Storage()), ElementsAre(HasSubstr("is not the marker this runtime writes")));
+  // A FIFO in its place (or a link to one) never blocks the start and is
+  // not a marker.
+  fs::remove(tree_ / "data/spill/.llmp-spill");
+  ASSERT_EQ(::mkfifo((tree_ / "fifo").c_str(), 0600), 0);
+  fs::create_symlink(tree_ / "fifo", tree_ / "data/spill/.llmp-spill");
+  EXPECT_THAT(Problems(Storage()), ElementsAre(HasSubstr("is not the marker this runtime writes")));
+  // A link to a marker this runtime wrote is one (links are followed).
+  fs::remove(tree_ / "data/spill/.llmp-spill");
+  auto made = llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "enrollment");
+  ASSERT_TRUE(made.has_value()) << ::testing::PrintToString(made.error());
+  fs::rename(tree_ / "data/spill/.llmp-spill", tree_ / "marker");
+  fs::create_symlink(tree_ / "marker", tree_ / "data/spill/.llmp-spill");
+  made = llmp::config::PrepareRuntimeRoles(Storage(), ::geteuid(), tree_ / "enrollment");
+  EXPECT_TRUE(made.has_value()) << ::testing::PrintToString(made.error());
+}
+
+// A role through a link to nothing is refused by name, before anything is
+// created: what the runtime would create is not where the path says.
+TEST_F(Roles, RefusesALinkToNothing) {
+  fs::create_directories(tree_ / "data");
+  fs::create_directory_symlink(tree_ / "not-yet", tree_ / "data/state");
+  EXPECT_THAT(Problems(Storage()),
+              ElementsAre(HasSubstr("data/state is a link to a path that does not exist")));
+  EXPECT_FALSE(fs::exists(tree_ / "data/models"));
+  EXPECT_FALSE(fs::exists(tree_ / "not-yet"));
 }
 
 TEST_F(Roles, LinksCannotMakeTwoRolesOne) {

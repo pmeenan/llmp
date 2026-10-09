@@ -151,11 +151,20 @@ TEST_F(CompositionTest, RefusesEachBrokenRuleByName) {
                                               r / "meta" / "link.json");
                          })),
             "file-type");
+  // A hard-linked kept file is read as any file, and the root may be a
+  // link (D-056 as amended on 2026-10-09).
   EXPECT_EQ(RuleOf(Build({},
-                         [](const fs::path& r) {
-                           fs::create_hard_link(r / "meta" / "model_index.json", r / "hard.json");
+                         [this](const fs::path& r) {
+                           fs::create_hard_link(r / "meta" / "model_index.json",
+                                                base_ / "second-name");
                          })),
-            "file-type");
+            "ok");
+  {
+    const fs::path root = Build({});
+    fs::create_directory(base_ / "store");
+    fs::create_directory_symlink(root, base_ / "store" / root.filename());
+    EXPECT_EQ(RuleOf(base_ / "store" / root.filename()), "ok");
+  }
   // The manifest.
   Spec wrong_format;
   wrong_format.format = "jitllm-artifact";

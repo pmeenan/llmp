@@ -450,21 +450,25 @@ std::string SplitName(std::string_view prefix, std::uint64_t no, std::uint64_t c
 
 }  // namespace
 
-std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path, uid_t trusted) {
-  auto first = OpenTrustedFile(path, trusted, 0);
-  if (!first) {
-    return std::unexpected(first.error());
-  }
-  std::vector<OpenFile> open;
+std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path) {
   std::vector<SourceFile> sources;
-  open.push_back(std::move(*first));
-  sources.push_back({.name = path.filename().string(),
-                     .bytes = open[0].bytes,
-                     .device = open[0].device,
-                     .inode = open[0].inode});
-  std::vector<File> files;
   Budget budget;
-  auto head = ReadFile(open[0], 0, budget);
+  // One file's header, its file open only while it is read.
+  const auto read = [&](const std::filesystem::path& at, std::string name,
+                        std::uint32_t index) -> std::expected<File, Error> {
+    const auto f = OpenCheckpointFile(at, index);
+    if (!f) {
+      return std::unexpected(f.error());
+    }
+    sources.push_back({.name = std::move(name),
+                       .path = f->path,
+                       .bytes = f->bytes,
+                       .device = f->device,
+                       .inode = f->inode});
+    return ReadFile(*f, index, budget);
+  };
+  std::vector<File> files;
+  auto head = read(path, path.filename().string(), 0);
   if (!head) {
     return std::unexpected(head.error());
   }
@@ -485,16 +489,9 @@ std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path, uid
     const std::string prefix = name.substr(0, name.size() - suffix.size());
     for (std::uint64_t i = 1; i < split.count; ++i) {
       const auto index = static_cast<std::uint32_t>(i);
-      sources.push_back({.name = SplitName(prefix, i + 1, split.count)});
-      auto f = OpenTrustedFile(path.parent_path() / sources.back().name, trusted, i);
-      if (!f) {
-        return std::unexpected(f.error());
-      }
-      open.push_back(std::move(*f));
-      sources.back().bytes = open.back().bytes;
-      sources.back().device = open.back().device;
-      sources.back().inode = open.back().inode;
-      auto file = ReadFile(open.back(), index, budget);
+      std::string sibling = SplitName(prefix, i + 1, split.count);
+      const std::filesystem::path at = path.parent_path() / sibling;
+      auto file = read(at, std::move(sibling), index);
       if (!file) {
         return std::unexpected(file.error());
       }
@@ -518,7 +515,6 @@ std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path, uid
     return std::unexpected(c.error());
   }
   c->files = std::move(sources);
-  c->open = std::move(open);
   return c;
 }
 

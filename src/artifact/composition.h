@@ -14,8 +14,8 @@
 // the prototype's verify_composition checks
 // (docs/experiments/artifact-layout/import_m3.py), in its order:
 //
-//   - the directory: a real directory holding manifest.json and meta/ only,
-//     regular, singly linked files, no links;
+//   - the directory (itself possibly reached through a link): holding
+//     manifest.json and meta/ only, regular files, no links inside it;
 //   - manifest.json (at most 1 MiB): strict JSON, format
 //     "jitllm-composition" and format_version 0, canonical bytes, the
 //     directory named by their SHA-256, every key and value typed and

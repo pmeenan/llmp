@@ -39,7 +39,6 @@
 #include <vector>
 
 #include "base/report.h"
-#include "platform/path_trust.h"
 
 namespace llmp::config {
 namespace {
@@ -1665,18 +1664,13 @@ std::expected<NodeConfig, std::vector<Diagnostic>> ParseNodeConfig(
 
 namespace {
 
-// A configuration file after the walk approved its path: opened without
-// following a link, it must be the same regular file, owned by root or
-// the trusted user and writable by nobody else.
-std::expected<std::string, std::string> ReadTrusted(int dir, const std::string& name,
-                                                    const struct stat* expected, uid_t trusted,
-                                                    std::size_t limit) {
-  const int fd =
-      ::openat(dir, name.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NOCTTY | O_NONBLOCK);
+// A configuration file, opened as any file is (links followed); it must
+// be a regular file.
+std::expected<std::string, std::string> ReadConfigurationFile(int dir, const std::string& name,
+                                                              std::size_t limit) {
+  const int fd = ::openat(dir, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK);
   if (fd < 0) {
-    const int error = errno;
-    return std::unexpected(error == ELOOP ? "is a symbolic link"
-                                          : "cannot be opened: " + Errno(error));
+    return std::unexpected("cannot be opened: " + Errno(errno));
   }
   struct stat status{};
   std::string text;
@@ -1685,18 +1679,6 @@ std::expected<std::string, std::string> ReadTrusted(int dir, const std::string& 
     problem = "cannot be examined: " + Errno(errno);
   } else if (!S_ISREG(status.st_mode)) {
     problem = "is not a regular file";
-  } else if (expected != nullptr &&
-             (status.st_dev != expected->st_dev || status.st_ino != expected->st_ino)) {
-    problem = "changed while it was being checked";
-  } else if (status.st_nlink != 1) {
-    // Another name for it could sit in a directory someone else can write.
-    problem = std::format("has {} hard links; a configuration file must have one", status.st_nlink);
-  } else if (status.st_uid != 0 && status.st_uid != trusted) {
-    problem = std::format("is owned by uid {}, not root{}", status.st_uid,
-                          trusted == 0 ? std::string() : std::format(" or uid {}", trusted));
-  } else if (platform::OthersCanWrite(status, trusted, fd)) {
-    problem = std::format("can be written by users other than root and its owner (mode {})",
-                          platform::OctalMode(status.st_mode));
   } else {
     // Room for what fstat reports (never more than the limit allows) and
     // one byte to see past the limit; it grows only if the file does.
@@ -1752,11 +1734,10 @@ std::expected<NodeConfig, std::vector<Diagnostic>> LoadNodeConfig(const LoadOpti
 
   std::vector<SourceText> files;
   std::size_t total = 0;
-  const auto read = [&](int dir, const std::string& name, const fs::path& shown,
-                        const struct stat* status) {
+  const auto read = [&](int dir, const std::string& name, const fs::path& shown) {
     // Each file may use what the document's limit has left.
     const std::size_t budget = total < kDocumentLimit ? kDocumentLimit - total : 0;
-    auto text = ReadTrusted(dir, name, status, options.trusted_uid, budget);
+    auto text = ReadConfigurationFile(dir, name, budget);
     if (!text) {
       fail(shown, text.error());
       return;
@@ -1765,34 +1746,36 @@ std::expected<NodeConfig, std::vector<Diagnostic>> LoadNodeConfig(const LoadOpti
     files.push_back({.name = shown.string(), .text = std::move(*text)});
   };
 
-  auto walked = platform::WalkTrusted(main, options.trusted_uid, false);
-  if (!walked) {
-    fail(main, walked.error());
-  } else if (!walked->exists) {
-    if (!options.main_file_optional) {
+  // A link to nothing is not an absent file: the configuration it names
+  // (on a drive not mounted, say) would otherwise be silently replaced by
+  // the defaults.
+  const auto dangling = [](const fs::path& path) {
+    struct stat link{};
+    return ::lstat(path.c_str(), &link) == 0 && S_ISLNK(link.st_mode);
+  };
+  struct stat main_status{};
+  if (::stat(main.c_str(), &main_status) != 0) {
+    if (errno != ENOENT) {
+      fail(main, "cannot be examined: " + Errno(errno));
+    } else if (dangling(main)) {
+      fail(main, "is a link to a path that does not exist");
+    } else if (!options.main_file_optional) {
       fail(main, "does not exist");
     }
   } else {
-    read(AT_FDCWD, walked->resolved.string(), main, &walked->status);
+    read(AT_FDCWD, main.string(), main);
   }
 
-  auto dir_walk = platform::WalkTrusted(dropins, options.trusted_uid, false);
-  if (!dir_walk) {
-    fail(dropins, dir_walk.error());
-  } else if (dir_walk->exists) {
-    const int dir =
-        ::open(dir_walk->resolved.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    struct stat status{};
-    if (dir < 0 || ::fstat(dir, &status) != 0) {
-      fail(dropins, dir < 0 && errno == ENOTDIR ? "is not a directory"
-                                                : "cannot be opened: " + Errno(errno));
-    } else if (status.st_dev != dir_walk->status.st_dev ||
-               status.st_ino != dir_walk->status.st_ino) {
-      fail(dropins, "changed while it was being checked");
-    } else if (auto private_dir =
-                   platform::CheckPrivateDirectory(dropins, status, options.trusted_uid);
-               !private_dir) {
-      fail(dropins, private_dir.error());
+  struct stat dir_status{};
+  const bool has_dropins = ::stat(dropins.c_str(), &dir_status) == 0;
+  if (!has_dropins && errno != ENOENT) {
+    fail(dropins, "cannot be examined: " + Errno(errno));
+  } else if (!has_dropins && dangling(dropins)) {
+    fail(dropins, "is a link to a path that does not exist");
+  } else if (has_dropins) {
+    const int dir = ::open(dropins.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir < 0) {
+      fail(dropins, errno == ENOTDIR ? "is not a directory" : "cannot be opened: " + Errno(errno));
     } else {
       // Regular "*.toml" files, not dotfiles, in bytewise order; other
       // names (such as ".dpkg-old" leftovers) are skipped.
@@ -1828,7 +1811,7 @@ std::expected<NodeConfig, std::vector<Diagnostic>> LoadNodeConfig(const LoadOpti
         if (total > kDocumentLimit) {
           break;
         }
-        read(dir, name, dropins / name, nullptr);
+        read(dir, name, dropins / name);
       }
     }
     if (dir >= 0) {

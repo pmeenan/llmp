@@ -259,7 +259,7 @@ Component Lowered(const fs::path& root, const llmp::spec::ModelSpec& spec,
                   const llmp::spec::Mapping& mapping, std::uint32_t context,
                   std::span<const Planned> script, const fs::path& scratch) {
   Component out;
-  auto artifact = ar::Artifact::Open(root, {.expected_id = {}, .trusted_owner = ::geteuid()});
+  auto artifact = ar::Artifact::Open(root, {.expected_id = {}});
   EXPECT_TRUE(artifact.has_value());
   if (!artifact) return out;
   const auto source = llmp::spec::SourceOfV0(*artifact);
@@ -455,7 +455,7 @@ TEST_P(ComponentRunnerGpu, ServingRecipeStepsAreTodaysBitForBit) {
     values = *llmp::spec::mappings::Gemma3V0Values(llmp::model::Gemma3_4BQat());
   }
   ASSERT_EQ(production.size(), script.size());
-  auto artifact = ar::Artifact::Open(root, {.expected_id = {}, .trusted_owner = ::geteuid()});
+  auto artifact = ar::Artifact::Open(root, {.expected_id = {}});
   ASSERT_TRUE(artifact.has_value()) << artifact.error().ToString();
   const auto* mapping = llmp::spec::FindMapping(artifact->model().architecture);
   ASSERT_NE(mapping, nullptr);

@@ -8,6 +8,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstdio>
@@ -29,6 +30,8 @@
 
 namespace {
 
+using ::testing::AnyOf;
+using ::testing::Contains;
 using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::MatchesRegex;
@@ -300,6 +303,32 @@ TEST(Doctor, ReportsTheConfigurationAndStorage) {
                               ", not created yet"));
   EXPECT_THAT(text, HasSubstr("  checkpoints: " + (scratch.path() / "data/checkpoints").string() +
                               " (job processes only; not examined)"));
+}
+
+// What the runtime starts despite (D-073 as amended on 2026-10-09) is a
+// warning: a configuration file anyone can write, a spill directory others
+// may read, an installed one anyone can write.
+TEST(Doctor, WarnsOfOpenFilesAndRoles) {
+  const Scratch scratch;
+  const std::filesystem::path config = scratch.path() / "llmp.toml";
+  std::ofstream(config) << std::format("schema_version = 2\n[storage]\ndata_dir = \"{}\"\n",
+                                       (scratch.path() / "data").string());
+  ASSERT_EQ(::chmod(config.c_str(), 0646), 0);
+  std::filesystem::create_directories(scratch.path() / "data/models");
+  std::filesystem::create_directories(scratch.path() / "data/spill");
+  ASSERT_EQ(::chmod((scratch.path() / "data/models").c_str(), 0757), 0);
+  ASSERT_EQ(::chmod((scratch.path() / "data/spill").c_str(), 0750), 0);
+  llmp::base::Report report;
+  llmp::cli::DescribeConfiguration({.config = config}, report);
+  EXPECT_THAT(report.problems, Not(Contains(AnyOf(HasSubstr("configuration"), HasSubstr("mode")))));
+  EXPECT_THAT(report.warnings, Contains(HasSubstr("configuration: " + config.string() +
+                                                  " can be written by any user (mode 0646)")));
+  EXPECT_THAT(report.warnings,
+              Contains(HasSubstr("storage.installed (" + (scratch.path() / "data/models").string() +
+                                 ") can be written by any user (mode 0757)")));
+  EXPECT_THAT(report.warnings,
+              Contains(HasSubstr("storage.spill (" + (scratch.path() / "data/spill").string() +
+                                 ") has mode 0750, not 0700")));
 }
 
 TEST(Doctor, AnInvalidConfigurationIsAProblem) {

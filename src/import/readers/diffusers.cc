@@ -3,8 +3,6 @@
 
 #include "import/readers/diffusers.h"
 
-#include <sys/types.h>
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -75,6 +73,12 @@ std::expected<std::vector<std::string>, Error> FileNames(const std::filesystem::
     }
     std::error_code status_error;
     const std::filesystem::file_status status = it->status(status_error);  // links followed
+    if (status.type() == std::filesystem::file_type::not_found) {
+      // Listed but not there through its links: a link to nothing (a
+      // cache's blob not downloaded). Leaving the file out would make a
+      // pipeline without it. (status() reports ENOENT as an error too.)
+      return Fail(Rule::kFileType, "a pipeline file is a link to nothing");
+    }
     if (!status_error && std::filesystem::is_regular_file(status)) {
       std::string name = it->path().filename().string();
       if (name.empty() || name.size() > kMaxFileName || json::FirstInvalidUtf8(name) ||
@@ -141,13 +145,12 @@ std::expected<ModelIndex, Error> ParseModelIndex(std::string_view text) {
   return out;
 }
 
-std::expected<Checkpoint, Error> ReadDiffusers(const std::filesystem::path& directory,
-                                               uid_t trusted) {
-  auto root = TrustedDirectory(directory, trusted);
+std::expected<Checkpoint, Error> ReadDiffusers(const std::filesystem::path& directory) {
+  auto root = CheckpointDirectory(directory);
   if (!root) {
     return std::unexpected(root.error());
   }
-  auto index_file = OpenTrustedFile(*root / kModelIndexName, trusted, 0);
+  auto index_file = OpenCheckpointFile(*root / kModelIndexName, 0);
   if (!index_file) {
     return std::unexpected(index_file.error());
   }
@@ -162,10 +165,10 @@ std::expected<Checkpoint, Error> ReadDiffusers(const std::filesystem::path& dire
   Checkpoint c{.container = "diffusers", .architecture = std::move(index->architecture)};
   c.metadata = std::move(index->metadata);
   c.files.push_back({.name = std::string(kModelIndexName),
+                     .path = index_file->path,
                      .bytes = index_file->bytes,
                      .device = index_file->device,
                      .inode = index_file->inode});
-  c.open.push_back(std::move(*index_file));
   std::uint64_t kept = 0;
   for (std::size_t r = 0; r < index->roles.size(); ++r) {
     const std::string& role = index->roles[r];
@@ -174,7 +177,7 @@ std::expected<Checkpoint, Error> ReadDiffusers(const std::filesystem::path& dire
       e.component = r;
       return std::unexpected(e);
     };
-    auto dir = TrustedDirectory(*root / role, trusted);
+    auto dir = CheckpointDirectory(*root / role);
     if (!dir) {
       return in_component(dir.error());
     }
@@ -182,10 +185,10 @@ std::expected<Checkpoint, Error> ReadDiffusers(const std::filesystem::path& dire
     // pipeline's (and is not the pipeline's own): a link out of it is an
     // escape from the checkpoint.
     if (!Beneath(*dir, *root)) {
-      return in_component(Error{.rule = Rule::kUntrusted,
+      return in_component(Error{.rule = Rule::kEscape,
                                 .reason = "a pipeline component's directory outside the pipeline"});
     }
-    auto config = OpenTrustedFileIfPresent(*dir / kConfigName, trusted, kNoItem);
+    auto config = OpenCheckpointFileIfPresent(*dir / kConfigName, kNoItem);
     if (!config) {
       return in_component(config.error());
     }
@@ -195,7 +198,7 @@ std::expected<Checkpoint, Error> ReadDiffusers(const std::filesystem::path& dire
         return in_component(Error{.rule = Rule::kBounds,
                                   .reason = "more weight components than a composition holds"});
       }
-      auto component = ReadComponentCheckpoint(*dir, trusted);
+      auto component = ReadComponentCheckpoint(*dir);
       if (!component) {
         return in_component(component.error());
       }
@@ -215,7 +218,14 @@ std::expected<Checkpoint, Error> ReadDiffusers(const std::filesystem::path& dire
                                   .reason = "more pipeline files than a composition keeps",
                                   .file = file});
       }
-      auto f = OpenTrustedFile(*dir / name, trusted, file);
+      // Kept verbatim, so it must resolve inside the pipeline (files.h);
+      // one that resolves elsewhere is left out, and said so.
+      if (!ResolvesInside(*root, *dir / name)) {
+        c.skipped.push_back(
+            {.name = role + "/" + name, .reason = "resolves outside the checkpoint"});
+        continue;
+      }
+      auto f = OpenCheckpointFile(*dir / name, file);
       if (!f) {
         return in_component(f.error());
       }
@@ -225,9 +235,11 @@ std::expected<Checkpoint, Error> ReadDiffusers(const std::filesystem::path& dire
                                   .file = file});
       }
       kept += f->bytes;
-      c.files.push_back(
-          {.name = role + "/" + name, .bytes = f->bytes, .device = f->device, .inode = f->inode});
-      c.open.push_back(std::move(*f));
+      c.files.push_back({.name = role + "/" + name,
+                         .path = f->path,
+                         .bytes = f->bytes,
+                         .device = f->device,
+                         .inode = f->inode});
     }
   }
   if (c.components.empty()) {

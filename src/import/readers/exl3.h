@@ -35,8 +35,6 @@
 #ifndef LLMP_IMPORT_READERS_EXL3_H_
 #define LLMP_IMPORT_READERS_EXL3_H_
 
-#include <sys/types.h>
-
 #include <cstddef>
 #include <expected>
 #include <filesystem>
@@ -52,7 +50,7 @@ namespace llmp::import {
 // Whether config.json's root has quantization_config.quant_method "exl3".
 bool IsExl3Config(base::json::Value root);
 
-std::expected<Checkpoint, Error> ReadExl3(const std::filesystem::path& directory, uid_t trusted);
+std::expected<Checkpoint, Error> ReadExl3(const std::filesystem::path& directory);
 
 // One shard's bytes with its config.json, as ReadExl3 reads a checkpoint
 // of one shard: for tests and fuzzing (ParseSafetensors's file).

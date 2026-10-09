@@ -248,13 +248,13 @@ CalibrationRead ParseCalibration(std::string_view text, const CalibrationKey& ke
   return {.calibration = std::move(c), .note = "in force", .refused = false};
 }
 
-CalibrationRead ReadCalibration(const fs::path& state, const CalibrationKey& key, uid_t trusted) {
+CalibrationRead ReadCalibration(const fs::path& state, const CalibrationKey& key) {
   const fs::path path = CalibrationPath(state, key.artifact);
   std::error_code error;
   if (!fs::exists(fs::symlink_status(path, error))) {
     return {.calibration = std::nullopt, .note = "none recorded", .refused = false};
   }
-  auto text = ReadTrustedFile(path, trusted, kMaxCalibrationBytes);
+  auto text = ReadRegularFile(path, kMaxCalibrationBytes);
   if (!text) {
     return Refused(text.error());
   }

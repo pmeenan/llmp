@@ -273,7 +273,7 @@ TEST_P(ComponentsModelsGpu, StepsMatchTheProductionRunner) {
   for (std::uint32_t i = 0; i < kDecodes; ++i) {
     picked.push_back(static_cast<std::int32_t>(Top(production[i])));
   }
-  auto artifact = ar::Artifact::Open(root, {.expected_id = {}, .trusted_owner = ::geteuid()});
+  auto artifact = ar::Artifact::Open(root, {.expected_id = {}});
   ASSERT_TRUE(artifact.has_value()) << artifact.error().ToString();
   const auto* mapping = llmp::spec::FindMapping(artifact->model().architecture);
   ASSERT_NE(mapping, nullptr);

@@ -38,7 +38,6 @@ enum class Rule : std::uint8_t {
   kRepr,                // a representation unknown, unsupported or inconsistent
   kExpertArray,         // expert groups and arrays disagree
   kContainer,           // a shard header differs from the one the index implies
-  kUntrusted,           // the reader's owner policy, not a format rule
   kState,               // a read plan's caller named a chunk both missing and resident
 };
 

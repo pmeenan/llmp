@@ -12,9 +12,9 @@
 // Open checks what the prototype verifier checks when a loader opens an
 // artifact (layout.py's verify with deep=False), in its order:
 //
-//   - the directory: a real directory, holding only data/ and meta/ and
-//     regular, singly linked files, no links anywhere, exactly the files
-//     the manifest lists plus manifest.json;
+//   - the directory (itself possibly reached through a link): holding
+//     only data/ and meta/ and regular files, no links inside it, exactly
+//     the files the manifest lists plus manifest.json;
 //   - manifest.json (at most 1 MiB): strict JSON, format "jitllm-artifact",
 //     format_version 0 and the spark-v0 profile exactly, canonical bytes,
 //     the directory named by their SHA-256; every key and value typed and
@@ -155,11 +155,6 @@ struct Placement {
 struct OpenOptions {
   // The ID the manifest must hash to; by default the directory's name.
   std::optional<std::string> expected_id;
-  // When set, the path to the artifact (platform/path_trust.h) and every
-  // directory and file in it must be safe from users other than root and
-  // this one (Rule::kUntrusted), since integrity then rests on the store's
-  // permissions (D-056).
-  std::optional<uid_t> trusted_owner;
 };
 
 class Artifact {

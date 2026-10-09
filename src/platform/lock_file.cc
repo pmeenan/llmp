@@ -16,8 +16,6 @@
 #include <string>
 #include <utility>
 
-#include "platform/path_trust.h"
-
 namespace llmp::platform {
 namespace {
 
@@ -43,14 +41,18 @@ LockFile::~LockFile() {
   }
 }
 
-std::expected<LockFile, std::string> LockFile::Acquire(const std::filesystem::path& path,
-                                                       uid_t owner) {
-  const int fd =
-      ::open(path.c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NOCTTY | O_NONBLOCK, 0600);
+std::expected<LockFile, std::string> LockFile::Acquire(const std::filesystem::path& path) {
+  // Only a regular file (or nothing yet) is opened: opening a device or a
+  // FIFO for writing can have effects of its own. Through a link to
+  // nothing, the open creates the link's target, empty; nothing is ever
+  // written to the file, so an existing one is left as it was.
+  if (struct stat seen{}; ::stat(path.c_str(), &seen) == 0 && !S_ISREG(seen.st_mode)) {
+    return std::unexpected(std::format("the lock file {} is not a regular file", path.string()));
+  }
+  const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOCTTY | O_NONBLOCK, 0600);
   if (fd < 0) {
-    const int error = errno;
-    return std::unexpected(std::format("cannot open the lock file {}: {}", path.string(),
-                                       error == ELOOP ? "it is a symbolic link" : Errno(error)));
+    return std::unexpected(
+        std::format("cannot open the lock file {}: {}", path.string(), Errno(errno)));
   }
   LockFile lock(fd);
   struct stat status{};
@@ -58,11 +60,8 @@ std::expected<LockFile, std::string> LockFile::Acquire(const std::filesystem::pa
     return std::unexpected(
         std::format("cannot examine the lock file {}: {}", path.string(), Errno(errno)));
   }
-  if (!S_ISREG(status.st_mode) || status.st_uid != owner || (status.st_mode & 077U) != 0) {
-    return std::unexpected(
-        std::format("the lock file {} must be a regular file owned by uid {} with mode 0600, "
-                    "not uid {} and mode {}",
-                    path.string(), owner, status.st_uid, OctalMode(status.st_mode)));
+  if (!S_ISREG(status.st_mode)) {
+    return std::unexpected(std::format("the lock file {} is not a regular file", path.string()));
   }
   while (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
     const int error = errno;

@@ -168,7 +168,10 @@ class EngineLlmTest : public ::testing::Test {
     fs::remove_all(root_);
     fs::create_directories(root_);
     fs::permissions(root_, fs::perms::owner_all, fs::perm_options::replace);
-    roles_ = {.installed = root_ / "installed", .spill = root_, .state = root_ / "state"};
+    roles_ = {.installed = root_ / "installed",
+              .spill = root_,
+              .state = root_ / "state",
+              .warnings = {}};
     entry_.name = "fake";
     spec_ = llmp::base::Sha256().Update(std::string_view("an engine-backed fake")).Finish();
   }

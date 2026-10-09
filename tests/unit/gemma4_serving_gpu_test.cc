@@ -564,7 +564,7 @@ TEST_P(Gemma4ServingGpu, LiteralTeacherForcingAndChatRefusalsUseTheTargetRoute) 
 TEST_P(Gemma4ServingGpu, ActualPinnedTemplateNativeInterpreterAndRendererAgree) {
   auto artifact = llmp::artifact::Artifact::Open(roles.installed / *config.models[0].artifact);
   ASSERT_TRUE(artifact);
-  auto assets = rt::ReadChatAssets(*artifact, config.models[0], geteuid());
+  auto assets = rt::ReadChatAssets(*artifact, config.models[0]);
   ASSERT_TRUE(assets);
   ASSERT_TRUE(assets->chat_template);
   const auto& text = *assets->chat_template;

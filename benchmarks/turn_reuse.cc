@@ -67,8 +67,7 @@ Status Run(std::span<const std::string_view> args) {
   }
   auto config = cf::LoadNodeConfig({.main_file = std::filesystem::path(args[0]),
                                     .main_file_optional = false,
-                                    .anchor = std::filesystem::path(args[1]),
-                                    .trusted_uid = getuid()});
+                                    .anchor = std::filesystem::path(args[1])});
   if (!config) {
     std::string errors;
     for (const auto& error : config.error()) {

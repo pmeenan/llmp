@@ -180,9 +180,9 @@ Linux, and a port that does decides what the role check accepts.
 
 A Windows port gives the platform module a descriptor type of its own
 (it is `int` throughout today), replaces the POSIX calls that the rest of
-the tree makes directly (`open`/`openat` beneath a directory for the trust
-walk and the artifact reader, `poll` in the chat route's driver, BSD
-sockets), and the process services (`platform/job.*`, `confine.*`,
+the tree makes directly (`open`/`openat` beneath a directory for the
+artifact reader and the configuration's drop-ins, `poll` in the chat
+route's driver, BSD sockets), and the process services (`platform/job.*`, `confine.*`,
 `crash_policy.*`, `lock_file.*`, `sd_notify.*`), which are Linux's by
 design. A macOS port needs only the platform module and the storage
 provider: the rest is POSIX. Neither is started.

@@ -28,7 +28,6 @@
 #include "platform/host_probe.h"
 #include "platform/job.h"
 #include "platform/lock_file.h"
-#include "platform/path_trust.h"
 #include "platform/sd_notify.h"
 #include "providers/device_probe.h"
 #include "runtime/model_settings.h"
@@ -147,8 +146,7 @@ std::expected<Started, int> Start(const Options& options, std::FILE* log) {
   // 2. The configuration.
   config::LoadOptions load{.main_file = options.config,
                            .main_file_optional = !options.config_given,
-                           .anchor = options.anchor,
-                           .trusted_uid = self};
+                           .anchor = options.anchor};
   auto loaded = config::LoadNodeConfig(load);
   if (!loaded) {
     for (const config::Diagnostic& diagnostic : loaded.error()) {
@@ -170,15 +168,10 @@ std::expected<Started, int> Start(const Options& options, std::FILE* log) {
     return std::unexpected(kExitRefused);
   }
 
-  // 3. The per-node process lock, on a path nobody else could re-point.
+  // 3. The per-node process lock.
   fs::path lock_path = options.anchor;
   lock_path += ".lock";
-  if (auto walked = platform::WalkTrusted(lock_path, self, false); !walked) {
-    Log(log, std::format("refusing to start: the process lock {}: {}", lock_path.string(),
-                         walked.error()));
-    return std::unexpected(kExitRefused);
-  }
-  auto lock = platform::LockFile::Acquire(lock_path, self);
+  auto lock = platform::LockFile::Acquire(lock_path);
   if (!lock) {
     Log(log, "refusing to start: " + lock.error());
     return std::unexpected(kExitRefused);
@@ -192,6 +185,9 @@ std::expected<Started, int> Start(const Options& options, std::FILE* log) {
     }
     Log(log, "refusing to start: the storage roles are not usable");
     return std::unexpected(kExitRefused);
+  }
+  for (const std::string& warning : roles->warnings) {
+    Log(log, "warning: " + warning);
   }
   Log(log, std::format("storage: installed {}, spill {}, state {}", roles->installed.string(),
                        roles->spill.string(), roles->state.string()));
@@ -253,8 +249,7 @@ int Run(std::span<const std::string_view> args, std::FILE* log, ServeFunction se
     // model's artifacts (D-103). No lock, roles or device.
     config::LoadOptions load{.main_file = options->config,
                              .main_file_optional = !options->config_given,
-                             .anchor = options->anchor,
-                             .trusted_uid = ::geteuid()};
+                             .anchor = options->anchor};
     auto loaded = config::LoadNodeConfig(load);
     if (!loaded) {
       for (const config::Diagnostic& diagnostic : loaded.error()) {

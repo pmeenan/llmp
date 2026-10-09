@@ -49,8 +49,6 @@ std::string_view RuleName(Rule rule) {
       return "expert-array";
     case Rule::kContainer:
       return "container";
-    case Rule::kUntrusted:
-      return "untrusted";
     case Rule::kState:
       return "state";
   }

@@ -13,8 +13,8 @@ std::string_view RuleName(Rule rule) {
   switch (rule) {
     case Rule::kIo:
       return "io";
-    case Rule::kUntrusted:
-      return "untrusted";
+    case Rule::kEscape:
+      return "escape";
     case Rule::kFileType:
       return "file-type";
     case Rule::kContainer:

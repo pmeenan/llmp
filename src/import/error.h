@@ -22,7 +22,7 @@ namespace llmp::import {
 
 enum class Rule : std::uint8_t {
   kIo,            // a system call failed, or a file changed while it was read
-  kUntrusted,     // a path others could change (platform/path_trust.h)
+  kEscape,        // a path that leaves the checkpoint where it must stay inside it
   kFileType,      // not a regular file or directory, or absent
   kContainer,     // the container's structure: truncation, types, offsets, alignment, overlap
   kBounds,        // beyond one of the reader's caps

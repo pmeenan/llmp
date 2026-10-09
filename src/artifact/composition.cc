@@ -69,8 +69,9 @@ constexpr bool IsRole(std::string_view s) {
 }
 
 // The names in `dir` (a fresh descriptor of it, so `dir` keeps its
-// position), refusing links and anything but regular, singly linked files
-// and, where `dirs` is given, directories.
+// position), refusing links and anything but regular files (hard links
+// allowed, D-056 as amended on 2026-10-09) and, where `dirs` is given,
+// directories.
 std::expected<std::vector<std::string>, Error> Scan(int dir, std::vector<std::string>* dirs) {
   const int fresh = ::openat(dir, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (fresh < 0) {
@@ -114,10 +115,9 @@ std::expected<std::vector<std::string>, Error> Scan(int dir, std::vector<std::st
       dirs->push_back(name);
       continue;
     }
-    if (!S_ISREG(status.st_mode) || status.st_nlink != 1) {
+    if (!S_ISREG(status.st_mode)) {
       result = Fail(S_ISDIR(status.st_mode) ? Rule::kFileSet : Rule::kFileType,
-                    S_ISDIR(status.st_mode) ? "an unexpected directory"
-                                            : "not a regular, singly linked file");
+                    S_ISDIR(status.st_mode) ? "an unexpected directory" : "not a regular file");
       break;
     }
     files.push_back(name);
@@ -146,8 +146,8 @@ std::expected<std::string, Error> ReadFile(int dir, const char* name,
   if (::fstat(fd, &status) != 0) {
     return Fail(Rule::kIo, "fstat failed", item);
   }
-  if (!S_ISREG(status.st_mode) || status.st_nlink != 1) {
-    return Fail(Rule::kFileType, "not a regular, singly linked file", item);
+  if (!S_ISREG(status.st_mode)) {
+    return Fail(Rule::kFileType, "not a regular file", item);
   }
   if (size && std::cmp_not_equal(status.st_size, *size)) {
     return Fail(Rule::kFileSize, "size differs from the manifest", item);
@@ -198,9 +198,10 @@ class CompositionOpener {
       root = root.parent_path();  // "a/b/" names b
     }
     out_.id_ = expected_id_ ? *expected_id_ : root.filename().string();
-    root_ = FileDescriptor(::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    // The root may be a link; nothing inside it may be.
+    root_ = FileDescriptor(::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (!root_.valid()) {
-      return Fail(Rule::kFileType, "the composition root must be a real directory");
+      return Fail(Rule::kFileType, "the composition root must be a directory");
     }
     std::vector<std::string> dirs;
     auto files = Scan(root_.get(), &dirs);

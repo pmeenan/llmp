@@ -53,7 +53,7 @@ TEST_P(SpecModelsTest, SynthesizesTheSpecFromTheArtifact) {
   if (std::error_code error; !std::filesystem::exists(path, error)) {
     GTEST_SKIP() << "no artifact in " << path;
   }
-  auto artifact = artifact::Artifact::Open(path, {.expected_id = {}, .trusted_owner = ::geteuid()});
+  auto artifact = artifact::Artifact::Open(path, {.expected_id = {}});
   ASSERT_TRUE(artifact.has_value()) << artifact.error().ToString();
   const Mapping* mapping = FindMapping(artifact->model().architecture);
   ASSERT_NE(mapping, nullptr);

@@ -384,8 +384,8 @@ bool IsMlxConfig(json::Value root) {
   return q && q->is_object();
 }
 
-std::expected<Checkpoint, Error> ReadMlx(const std::filesystem::path& directory, uid_t trusted) {
-  auto dir = ReadHfDirectory(directory, trusted);
+std::expected<Checkpoint, Error> ReadMlx(const std::filesystem::path& directory) {
+  auto dir = ReadHfDirectory(directory);
   if (!dir) {
     return std::unexpected(dir.error());
   }

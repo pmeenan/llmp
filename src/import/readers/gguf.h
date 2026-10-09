@@ -46,8 +46,6 @@
 #ifndef LLMP_IMPORT_READERS_GGUF_H_
 #define LLMP_IMPORT_READERS_GGUF_H_
 
-#include <sys/types.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -73,11 +71,11 @@ inline constexpr std::uint64_t kMaxGgufArray = std::uint64_t{1} << 24U;
 inline constexpr std::int64_t kMaxGgufAlignment = std::int64_t{1} << 31U;
 
 // The GGUF at `path`, and its other splits beside it.
-std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path, uid_t trusted);
+std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path);
 
 // One whole GGUF file's bytes (no split of several files), as ReadGguf
 // reads a file: for tests and fuzzing. The checkpoint has one file, named
-// "memory", and no descriptor.
+// "memory", and no path (its reads fail).
 std::expected<Checkpoint, Error> ParseGguf(std::span<const std::byte> file);
 
 }  // namespace llmp::import

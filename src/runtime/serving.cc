@@ -55,7 +55,6 @@
 #include "platform/host_probe.h"
 #include "platform/kept_files.h"
 #include "platform/memory_pressure.h"
-#include "platform/path_trust.h"
 #include "runtime/engine_image.h"
 #include "runtime/engine_llm.h"
 #include "runtime/gemma_profile.h"
@@ -314,12 +313,6 @@ catalog::ExtentId WeightExtent(std::uint64_t handle) {
   return {static_cast<std::uint32_t>(handle), static_cast<std::uint32_t>(handle >> 32U)};
 }
 
-// An installed artifact, opened under the store's trust rules (D-056's
-// integrity rests on them) and its ID checked; the runner opens it again.
-std::expected<ja::Artifact, std::string> OpenTrusted(const fs::path& store, const std::string& id) {
-  return OpenInstalled(store, id);
-}
-
 std::string GraphJson(const GraphCounts& g) {
   return std::format(R"({{"eager":{},"captured":{},"replayed":{},"refused":{},"kept":{}}})",
                      g.eager, g.captured, g.replayed, g.refused, g.kept);
@@ -433,7 +426,7 @@ class Dsv4 final : public Llm {
   }
 
   Status OpenArtifacts() {
-    auto artifact = OpenTrusted(store_, artifact_id_);
+    auto artifact = OpenInstalled(store_, artifact_id_);
     if (!artifact) {
       return std::unexpected(artifact.error());
     }
@@ -447,7 +440,7 @@ class Dsv4 final : public Llm {
     }
     options_.frontier_head = Dsv4FrontierHeadForServing(*binding);
     if (speculate_) {
-      if (auto drafter = OpenTrusted(store_, drafter_id_); !drafter) {
+      if (auto drafter = OpenInstalled(store_, drafter_id_); !drafter) {
         return std::unexpected(drafter.error());
       }
     }
@@ -1130,7 +1123,7 @@ class Gemma final : public Llm {
   Status Setup() override {
     if (entry_.drafter || settings_.speculation.value)
       return Error("Gemma serving has no qualified assistant or speculative path");
-    auto artifact = OpenTrusted(store_, artifact_id_);
+    auto artifact = OpenInstalled(store_, artifact_id_);
     if (!artifact) return Error(artifact.error());
     auto binding = model::BindGemma4(profile_, *artifact);
     if (!binding) return Error(binding.error());
@@ -1548,7 +1541,7 @@ class Gemma2 final : public Llm {
   Status Setup() override {
     if (entry_.drafter || settings_.speculation.value)
       return Error("Gemma serving has no qualified assistant or speculative path");
-    auto artifact = OpenTrusted(store_, artifact_id_);
+    auto artifact = OpenInstalled(store_, artifact_id_);
     if (!artifact) return Error(artifact.error());
     auto binding = model::BindApprovedGemma2(*artifact);
     if (!binding) return Error(binding.error());
@@ -1993,7 +1986,7 @@ class Gemma3 final : public Llm {
   Status Setup() override {
     if (entry_.drafter || settings_.speculation.value)
       return Error("Gemma serving has no qualified assistant or speculative path");
-    auto artifact = OpenTrusted(store_, artifact_id_);
+    auto artifact = OpenInstalled(store_, artifact_id_);
     if (!artifact) return Error(artifact.error());
     auto binding = model::BindApprovedGemma3(*artifact);
     if (!binding) return Error(binding.error());
@@ -2509,7 +2502,7 @@ class Qwen38 final : public Llm {
   }
 
   Status Setup() override {
-    auto artifact = OpenTrusted(store_, artifact_id_);
+    auto artifact = OpenInstalled(store_, artifact_id_);
     if (!artifact) {
       return std::unexpected(artifact.error());
     }
@@ -2518,7 +2511,7 @@ class Qwen38 final : public Llm {
                                artifact_id_, artifact->model().architecture));
     }
     if (speculate_) {
-      if (auto drafter = OpenTrusted(store_, drafter_id_); !drafter) {
+      if (auto drafter = OpenInstalled(store_, drafter_id_); !drafter) {
         return std::unexpected(drafter.error());
       }
     }
@@ -3157,23 +3150,15 @@ class QwenImage final : public Image {
 
   engine::PagedModel& paged() override { return runner_; }
   Status Setup() override {
-    // Every component under the store's trust rules first.
+    // Every component opened and checked first.
     const fs::path root = store_ / composition_id_;
-    auto walked = platform::WalkTrusted(root, ::geteuid(), false);
-    if (!walked || !walked->exists || !S_ISDIR(walked->status.st_mode) ||
-        platform::OthersCanWrite(walked->status, ::geteuid(), root)) {
-      return Error(
-          std::format("composition {}: not a directory only root and this user can "
-                      "change{}",
-                      composition_id_, walked ? "" : ": " + walked.error()));
-    }
     auto composition = ja::OpenComposition(root, composition_id_);
     if (!composition) {
       return Error(
           std::format("composition {}: {}", composition_id_, composition.error().ToString()));
     }
     for (const ja::CompositionComponent& c : composition->components()) {
-      if (auto opened = OpenTrusted(store_, c.artifact); !opened) {
+      if (auto opened = OpenInstalled(store_, c.artifact); !opened) {
         return std::unexpected(opened.error());
       }
     }
@@ -3347,7 +3332,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
     models_.push_back(std::make_unique<Dsv4>(node_, entry, settings, roles_, index,
                                              options_.diagnostic_plain_device_tokens, options_));
   } else if (settings.architecture == "gemma4") {
-    auto artifact = OpenTrusted(roles_.installed, entry.artifact.value_or(""));
+    auto artifact = OpenInstalled(roles_.installed, entry.artifact.value_or(""));
     if (!artifact) return Error(artifact.error());
     auto profile = ApprovedGemmaProfile(*artifact);
     if (!profile) return Error(profile.error());
@@ -3463,7 +3448,7 @@ Status Server::Start(bool snapshot) {
         return Error(std::format("model {}: {}", entry.name, uncalibrated.error()));
       }
       record.key = CalibrationKeyOf(entry, *uncalibrated);
-      const CalibrationRead read = ReadCalibration(roles_.state, record.key, ::geteuid());
+      const CalibrationRead read = ReadCalibration(roles_.state, record.key);
       Log(std::format("model {}: calibration {}", entry.name, read.note));
       if (read.calibration) {
         record.known = *read.calibration;

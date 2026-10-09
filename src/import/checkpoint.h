@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // A checkpoint as a container reader normalizes it (D-108, D-109;
-// docs/engine-components.md#the-importer): its files, opened and checked
-// (files.h); every tensor as a tensor format (an encoding, its parameters,
+// docs/engine-components.md#the-importer): its files, with what identifies
+// each (files.h); every tensor as a tensor format (an encoding, its parameters,
 // a layout and a logical shape in GGML's order), the part of that format
 // it holds and the byte extent that holds it; and the source metadata as
 // typed key/values. Where a quantization pairs several container tensors
@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
@@ -62,12 +63,23 @@ struct MetaEntry {
 };
 
 // A file of the checkpoint: its name (relative to the checkpoint: a GGUF's
-// file name, a shard's), and its size and identity when opened.
+// file name, a shard's), and, as its reader opened it, its absolute path
+// (none for a checkpoint parsed from memory), size and identity.
 struct SourceFile {
   std::string name{};
+  std::filesystem::path path{};
   std::uint64_t bytes = 0;
   std::uint64_t device = 0;
   std::uint64_t inode = 0;
+};
+
+// A file a reader would have kept verbatim but left out because it
+// resolves outside the checkpoint (files.h ResolvesInside): its name
+// relative to the checkpoint, as the directory listed it (UTF-8 without
+// control characters), and a static reason. Reported, never a refusal.
+struct SkippedFile {
+  std::string name{};
+  std::string_view reason{};
 };
 
 struct Extent {
@@ -108,15 +120,18 @@ struct Checkpoint {
   // MIXED_PRECISION", "mlx affine", "exl3"), or empty.
   std::string quantization{};
   std::vector<SourceFile> files{};
-  std::vector<OpenFile> open{};  // files[i]'s descriptor
   std::vector<Tensor> tensors{};
   std::vector<MetaEntry> metadata{};     // sorted by key, keys unique
   std::vector<Checkpoint> components{};  // a pipeline's, sorted by role
+  std::vector<SkippedFile> skipped{};    // a pipeline's, its components' included
 
   const Tensor* FindTensor(std::string_view name) const;
   const MetaValue* FindValue(std::string_view key) const;
   // Reads `out.size()` bytes of an extent's file at `offset` within the
-  // extent (kBounds past it; kIo if the file shrank).
+  // extent (kBounds past it). The file is opened again for the read and
+  // closed after it: kIo if it is no longer the file its reader read (by
+  // device and inode), if it shrank, or for a checkpoint parsed from
+  // memory.
   std::expected<void, Error> Read(const Extent& extent, std::uint64_t offset,
                                   std::span<std::byte> out) const;
 };

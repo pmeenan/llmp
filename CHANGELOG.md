@@ -563,6 +563,28 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- The runtime, `llmp doctor` and the importer no longer refuse files and
+  directories for who owns them or who else could change them (D-073 as
+  amended on 2026-10-09): configuration files, the drop-in directory,
+  storage roles, installed artifacts, the process lock, configured
+  tokenizer files, calibration records and checkpoints are opened as any
+  file is, links followed, whatever their owner, mode, group, ACL, hard
+  links or filesystem (FUSE included); an installed artifact's directory
+  may be a link, though links inside an artifact are still refused. An
+  existing storage role owned by another user, a `spill` or `state`
+  directory others may read, an `installed` one anyone can write, a role
+  with a default ACL and a configuration file anyone can write are
+  warnings in `llmp doctor` and in the runtime's start log. What still
+  refuses: a path that cannot be resolved or is not a regular file or
+  directory, roles that are one directory or nest, the enrollment anchor,
+  a role the runtime's user cannot write, a role on a filesystem other
+  than ext4, XFS or Btrfs or failing the direct-I/O probe, a role through
+  a link to nothing, and a non-empty `spill` without its marker (whose
+  owner is no longer checked). Missing roles are still created 0755
+  (`installed`) and 0700 (`spill`, `state`), and the files the runtime
+  writes are still owner-only. The configuration's `schema_version` stays
+  2: everything accepted before still is.
+
 - Rename the project from jitLLM to llmpalooza (`llmp`, D-111): the `llmp`
   and `llmp-runtime` commands, the `llmp` package, service, user and group,
   `/etc/llmp/llmp.toml` and `/etc/llmp/llmp.d/`, `/var/lib/llmp`, the
