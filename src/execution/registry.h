@@ -269,6 +269,11 @@ struct CapabilityQuery {
   // The device's tuning data (TunedShape); an implementation that
   // needs_tuning is a candidate only for a shape listed for it here.
   std::span<const TunedShape> tuned{};
+  // The node's parameters as the op set lays them out (ir/op.h, the
+  // node's params; empty where the asker has none), for a predicate whose
+  // kernel takes only some of them: a rotation's mode and dimensions, an
+  // attention's softcap. The rules above never read them.
+  std::span<const std::byte> params{};
 };
 
 // One compiled implementation of an operation, as its module declares it.

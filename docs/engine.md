@@ -346,15 +346,18 @@ for a known next chunk, drained after the current job) through the slots.
 M3.6's one runner (D-107; [engine-components.md](engine-components.md#execution)),
 in the core and tested on the fake backend (`model_runner_test`, over
 `tests/support/fake_step_source.h`; `decoding_test` for the decoding
-modes). No family uses it yet: each family's migration moves onto it with
-its components; the serving adapter (L6) follows.
+modes) and, over the component step source and GGML's lowering, on the
+Gemma artifacts. No family serves on it yet: each family's migration
+moves onto it with its components; the serving adapter (L6) follows.
 
 **Step programs** (`kernels/common/step_program.h`, vendor-free). A
 kernel source's lowering makes a `StepProgram` from a planned step and
 the `Addresses` it binds (weights by role and part, state by `StateRef`,
 the activations; activations at 0 is a placeless measurement): what it
 needs (scratch, pool, host bytes, launches), its input slots (each a
-segment's tokens or positions, or caller bytes per segment or step), its
+segment's tokens or positions, caller bytes per segment or step, or what
+the runner computes from the shape by components/step.h's rules: the
+head's rows, a segment's store cells, a host-built mask), its
 output slots (a segment's own, or the step's joined), its tensor uses by
 role for the coverage check, `Bind` (once per plan, on the driver after the
 current job), `Run` (the one virtual call per step) and `Record`. A program
@@ -364,7 +367,23 @@ gives it each step's segment positions before its run.
 `StepLaunch` is the backend's launch: `Capture` records what a body queues
 and `Launch` replays it; `RecordingLaunch` does both over the device
 runtime's recorded work (the fake's in tests, any backend that records a
-stream), and a GGML wrapper of `LaunchContext` follows with the lowering.
+stream), and `GgmlStepLaunch` (`kernels/ggml/step_program.h`) over GGML's
+`LaunchContext`, whose captures are its CUDA graphs.
+
+**The component step source** (`component_source.h`). A `StepSource` for a
+model made of components: per shape, the stage's primitive step
+(`BuildStep`), planned (`planner::Plan`, every input staged but the cells'
+positions, which only masks read) over a kernel source's `StepBackend`
+(`kernels/common/lower.h`: registry, device facts, the implementations
+kept on the stream, what its implementations write beyond a tensor's
+bytes, and its lowering), then lowered into a program; its key base is
+the spec's bound digest with the policy's patterns and digest. GGML's
+backend (`kernels/ggml/step_program.h` `GgmlBackend`) gives the registry
+with its capabilities, the device's architecture, the lowering of
+[engine-components.md](engine-components.md#the-graph-ir) and the step
+launch the runner makes at Bind. Over it the runner runs Gemma 2 and Gemma
+3 steps bit for bit as today's runners (`component_runner_gpu_test`); the
+serving wiring is G1c's.
 
 **Planner types** (`planner/step_shape.h`, header-only; the planner,
 `planner/plan.h`, plans a step's graph and makes its key,

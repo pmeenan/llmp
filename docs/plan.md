@@ -1423,8 +1423,16 @@ each is checked against the design as M3.6 proceeds.
             *2026-10-09:* `src/ir`, `kernels/reference/exec.h`, `src/spec`
             with the Gemma 2 and Gemma 3 mappings
             ([as built](engine-components.md#the-model-spec)).
-      - [ ] The component framework and the planner; lowering to the
-            existing kernel sources with structural parity.
+      - [x] The component framework and the planner; lowering to the
+            GGML kernel source with structural parity (EXL3's and the
+            image kernels' lowerings land with their families'
+            migrations).
+            *2026-10-09:* `src/components`, `src/planner`, the GGML
+            module's capabilities and lowering and the component step
+            source ([as built](engine-components.md#the-graph-ir)), at
+            parity with Gemma 2's and Gemma 3's builders; their
+            owner-attention forms and narrowed final layer land with the
+            Gemma 2/3 migration.
 - [ ] **Partitioning in the planner:** tensor, pipeline and expert
       parallelism with any split count and mixed, chosen by modelled
       traffic for a described topology; equivalence tests over four or more

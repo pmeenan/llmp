@@ -263,21 +263,69 @@ weight multiply's by weight resource) and shared Q8 groups (by weight)
 equal `PlanGraph`'s for the recipe, and the activation extent is no more
 than `PlaceActivations`' over the builders' graphs (54% to 100% of it), with
 the owner-attention forms or without, with no two live tensors sharing
-bytes. The fake's fused capabilities check only the widths
-`CheckGemmaNormRope` and `CheckGemmaNormAdd` admit: the GGML module's real
-ones (G1b) must carry its kernels' full conditions, and those that depend
-on a node's parameters (the rotation's mode and dimensions, the owner
-kernel's softcap) need either the parameters in `CapabilityQuery`, which
-it does not carry yet, or the pattern's own check. What remains for slice
-G1b, with the lowering: the owner-attention patterns (owner decode, packed, owner and
+bytes. A capability query carries the node's parameters
+(`CapabilityQuery::params`), so a predicate can refuse what its kernel does
+not take (a rotation's mode and dimensions; the owner kernel's softcap,
+G1b), and a pattern asks with its match's parameters. What remains for
+slice G1b: the owner-attention patterns (owner decode, packed, owner and
 flexible owner prefill, bounded roots, Gemma 3's four-root carriers with
 their logical cohort and offset, which the fused kind's parameters do not
-carry yet) and the masks' padding and joining they need; device masks,
-which are the lowering's choice for `kMaskBuild` (its producer derives
-the cells' positions, so the step stages no `kCellPositions` input there)
-rather than a pattern; and the norm-add with a gathered residual
-(`GemmaNormAddGatherFusionAt`), which only the diagnostic `narrow_final`
-graph makes.
+carry yet) and the masks' padding and joining they need; and the narrowed
+final layer with its norm-add over a gathered residual
+(`GemmaNormAddGatherFusionAt`). That graph (`narrow_final`) is not a
+diagnostic: today's Gemma runners build it by default (`frontier_head`,
+which serving keeps on), gathering the output rows after the last layer's
+attention projection, so that layer's FFN and the head run at the output
+rows' width; the components' head gathers after the final norm, as
+`frontier_head = false` does.
+
+**The GGML lowering, as built** (`kernels/ggml/lower.h`,
+`capabilities.h`, `step_program.h`; 2026-10-09). The GGML module declares
+a capability for every implementation the Gemma 2 and Gemma 3 recipes
+select and the other one-node operations PlanGraph names
+(`capabilities.h`, a table every profile builds, so a CPU build plans for
+the module; `implementations.cc` attaches it to the declarations). Each
+carries its kernel's conditions: operand encodings and layouts, the build's
+SASS architectures, the fused norms' widths and full NEOX D 256/512
+rotation, the quantized GLU's one column past Pascal over gate and up
+weights of one type, a GLU's kind, and upstream's routing where the planner's choice depends on it (`MmvqRouted`,
+`ggml_cuda_should_use_mmvq` at the pin, for the shared Q8_1 preparation and
+the fused quantized GLU). The product and flash-attention families are
+groups (`ggml.mul_mat`, `ggml.flash_attn_ext`): the plan records the
+group, and the lowering resolves it by upstream's routing. The grouped KV
+store declares its batch (16). `LowerStep` makes the planned graph's
+tensors in a `TensorArena` in node order, expanding a fused node into the
+primitive nodes its rewrite replaced (GGML's fused implementations run
+over those, as PlanGraph groups them), makes each mask on the device
+(`llmp.gemma4.mask`) or, by option, as a host-built input, binds the
+activations at the IR placement and the intermediates a fused kernel
+never writes at its result's place (so it refuses a fused RoPE store,
+whose result is a view of the cache and leaves its rotation no place: the
+Gemma 2 and 3 recipes disable `rope_store`, and Gemma 4's migration owes
+it one), derives `DeviceChoices`' fusion flags
+from the selection, runs `PlanGraph` without upstream's fusion and refuses
+the step unless its steps are the selection's, in order (a group's member
+for a group). One placement input is the module's: MMVQ's prepared Q8_1
+input is written with each row padded to 512 values (`Q8Bytes`), more than
+the tensor's own bytes, so a kernel source gives the planner what its
+implementations write (`PlanOptions::written`, `WrittenBytes`) and the
+lowering refuses a tensor its place does not hold. `GgmlBackend` makes
+programs of lowered steps (binding as `BindPlanned` does, running the bound
+graph) and a `GgmlStepLaunch` over the launch context, whose captures are
+the context's CUDA graphs; the engine reaches it as a `StepBackend`
+(`kernels/common/lower.h`) through `engine/component_source.h`.
+
+Checked: at every Gemma 2 and Gemma 3 setup shape above, with device and
+with host masks (644 and 756 lowered steps), the lowered graph is
+`BuildGemma2Graph`'s or `BuildGemma3Graph`'s with their default options and
+the recipe's flags, node for node (operation, type, extents, strides, view
+offset, operation parameters, flags, every source), and PlanGraph's steps
+over it are the builders' (`ggml_lower_test`, CPU). On spark-b, the model
+runner over the component source runs a 6-token prompt and three decodes
+of the real Gemma 2 2B and Gemma 3 4B QAT artifacts with logits bit for bit
+those of today's runners configured to plan the same graph (per-owner
+attention, `frontier_head` off), the repeated decode shape captured and
+replayed (`component_runner_gpu_test`).
 
 ## Components
 
@@ -406,9 +454,11 @@ fragment does not express, for the lowering and the patterns:
 - **The builders' options** are patterns and selection, not fragments:
   shared Q8 preparation, grouped KV stores and the fused norm forms are
   the planner's (above); owner decode and owner, packed and flexible
-  prefill with bounded roots, and device masks are slice G1b's; the
-  diagnostic scopes (`first_layer`,
-  `layer_count`, `hidden_input`, `narrow_final`) are not ported. The
+  prefill with bounded roots are slice G1b's, as is the narrowed final
+  layer (`narrow_final`, which the runners' default `frontier_head`
+  builds; above); device masks are the lowering's (above); the
+  diagnostic scopes (`first_layer`, `layer_count`, `hidden_input`) are
+  not ported. The
   owner-attention kernel's literal softcap 50 is an implementation's
   limit the pattern checks against the instance's `softcap`.
 - **Batching.** The primitive graph joins any rows of up to 16 owners

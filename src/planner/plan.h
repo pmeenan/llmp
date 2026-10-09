@@ -77,6 +77,9 @@ struct PlanOptions {
   LaneTags lanes{};
   std::function<bool(std::string_view)> on_stream{};
   std::uint64_t alignment = 256;
+  // What the lowering's implementations write beyond a root's own bytes
+  // (placement.h RootBytesOf).
+  RootBytesOf written{};
 };
 
 struct StepPlan {

@@ -118,9 +118,10 @@ SelectionView::SelectionView(const execution::Registry& registry, const DeviceFa
       capturable_(capturable),
       ranks_(RanksFor(policy, device.device_class)) {}
 
-std::vector<std::size_t> SelectionView::Candidates(
-    ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
-    std::span<const ir::TensorDesc* const> outputs) const {
+std::vector<std::size_t> SelectionView::Candidates(ir::OpKey key,
+                                                   std::span<const ir::TensorDesc* const> sources,
+                                                   std::span<const ir::TensorDesc* const> outputs,
+                                                   std::span<const std::byte> params) const {
   std::vector<execution::OperandFormat> operands;
   operands.reserve(sources.size());
   for (std::size_t i = 0; i < sources.size(); ++i) {
@@ -146,7 +147,8 @@ std::vector<std::size_t> SelectionView::Candidates(
       .capturable = capturable_,
       .policy = {.max_decode_rows = policy_.max_decode_rows, .allow_lossy = policy_.allow_lossy},
       .measured = ranks_,
-      .tuned = device_.tuned};
+      .tuned = device_.tuned,
+      .params = params};
   return execution::Candidates(registry_, query);
 }
 
@@ -165,7 +167,7 @@ std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph, const
   for (const ir::TensorId o : node.outputs()) {
     outputs.push_back(&graph.tensor(o));
   }
-  return Candidates(key, sources, outputs);
+  return Candidates(key, sources, outputs, node.params);
 }
 
 }  // namespace llmp::planner

@@ -54,10 +54,40 @@ struct StepFailure {
 };
 
 // What an input slot holds each step, which the engine writes into its
-// staging: a segment's token IDs or positions (I32, one a row; a joined
-// slot, every segment's in order), or bytes the caller supplies per
-// segment or for the step.
-enum class InputKind : std::uint8_t { kTokens, kPositions, kSegmentBytes, kStepBytes };
+// staging from the step's shape and tokens (components/step.h's step
+// inputs, with the same rules):
+//   kTokens, kPositions  a segment's token IDs or positions (I32, one a
+//                        row; a joined slot, every segment's in order);
+//   kSegmentBytes, kStepBytes  bytes the caller supplies per segment or
+//                        for the step;
+//   kOutputRows          I32 [outputs]: the joined rows the head reads,
+//                        each segment's last `outputs` (a joined slot);
+//   kStoreCells          I64 [segment rows]: the cell of `cells` each of
+//                        the segment's rows is stored at (position, or
+//                        position mod capacity for a ring);
+//   kMask                F16 [read, mask_rows]: the segment's mask over the
+//                        first `read` cells of `cells` (ir/op.h kMaskBuild:
+//                        0 where a row's position sees the position the
+//                        cell holds once the step's rows are stored, causal
+//                        or within `window`, else -inf; rows past the
+//                        segment's -inf): a mask built on the host.
+enum class InputKind : std::uint8_t {
+  kTokens,
+  kPositions,
+  kSegmentBytes,
+  kStepBytes,
+  kOutputRows,
+  kStoreCells,
+  kMask,
+};
+
+// A state tensor's cells as an input indexes them (components/step.h
+// CellKey): its capacity, and whether position p is in cell p mod capacity.
+struct InputCells {
+  std::uint64_t capacity = 0;
+  bool ring = false;
+  bool operator==(const InputCells&) const = default;
+};
 
 struct InputSlot {
   std::uint64_t device_address = 0;
@@ -65,6 +95,13 @@ struct InputSlot {
   ir::TensorId tensor{};
   std::uint8_t segment = ir::kJoinedSegment;
   InputKind kind = InputKind::kTokens;
+  // kStoreCells' and kMask's.
+  InputCells cells{};
+  // kMask's: the cells it reads, its window (0: causal) and its rows
+  // (the segment's, padded).
+  std::uint64_t read = 0;
+  std::uint32_t window = 0;
+  std::uint32_t mask_rows = 0;
 };
 
 // An output the step returns: copied to the host after the run, each

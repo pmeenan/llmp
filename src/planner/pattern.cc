@@ -47,9 +47,9 @@ bool DefaultProduct(const ir::Node& n) {
 }
 
 // The candidates for a result of `key` over `sources` (absent ones
-// included as null), shaped as `outputs`.
+// included as null), shaped as `outputs`, with the match's parameters.
 bool Implemented(const MatchContext& c, ir::OpKey key, std::span<const TensorId> sources,
-                 std::span<const TensorId> outputs) {
+                 std::span<const TensorId> outputs, const ir::ParamBytes& params) {
   std::vector<const ir::TensorDesc*> s;
   for (const TensorId t : sources) {
     s.push_back(t.valid() ? &c.tensor(t) : nullptr);
@@ -58,7 +58,7 @@ bool Implemented(const MatchContext& c, ir::OpKey key, std::span<const TensorId>
   for (const TensorId t : outputs) {
     o.push_back(&c.tensor(t));
   }
-  return !c.view().Candidates(key, s, o).empty();
+  return !c.view().Candidates(key, s, o, params).empty();
 }
 
 // A fused kind's meaning is its decomposition, whose intermediates are
@@ -211,7 +211,7 @@ std::optional<Match> NormMulRopeMatch(const MatchContext& c, NodeId anchor) {
   }
   Match m = Fusion({nm->norm, nm->mul, *rope}, {nm->x, nm->w, r.src[1], r.source(2)},
                    ir::NormRopeParams{.eps = nm->eps, .rope = r.Params<ir::RopeParams>()});
-  if (!Implemented(c, ir::Fused(FusedKind::kRmsNormMulRope), m.sources, r.outputs())) {
+  if (!Implemented(c, ir::Fused(FusedKind::kRmsNormMulRope), m.sources, r.outputs(), m.params)) {
     return std::nullopt;
   }
   return m;
@@ -241,7 +241,7 @@ std::optional<Match> NormMulAddMatch(const MatchContext& c, NodeId anchor) {
   }
   Match m =
       Fusion({nm->norm, nm->mul, *add}, {nm->x, nm->w, residual}, ir::NormParams{.eps = nm->eps});
-  if (!Implemented(c, ir::Fused(FusedKind::kRmsNormMulAdd), m.sources, a.outputs())) {
+  if (!Implemented(c, ir::Fused(FusedKind::kRmsNormMulAdd), m.sources, a.outputs(), m.params)) {
     return std::nullopt;
   }
   return m;
@@ -253,7 +253,8 @@ std::optional<Match> NormMulMatch(const MatchContext& c, NodeId anchor) {
     return std::nullopt;
   }
   Match m = Fusion({nm->norm, nm->mul}, {nm->x, nm->w}, ir::NormParams{.eps = nm->eps});
-  if (!Implemented(c, ir::Fused(FusedKind::kRmsNormMul), m.sources, c.node(nm->mul).outputs())) {
+  if (!Implemented(c, ir::Fused(FusedKind::kRmsNormMul), m.sources, c.node(nm->mul).outputs(),
+                   m.params)) {
     return std::nullopt;
   }
   return m;
@@ -295,7 +296,7 @@ std::optional<Match> MulMatGluMatch(const MatchContext& c, NodeId anchor) {
   std::vector<NodeId> nodes = {gate, up, *glu};
   std::ranges::sort(nodes);
   Match m = Fusion(std::move(nodes), {gn.src[0], un.src[0], gn.src[1]}, g.Params<ir::GluParams>());
-  if (!Implemented(c, ir::Fused(FusedKind::kMatMulGlu), m.sources, g.outputs())) {
+  if (!Implemented(c, ir::Fused(FusedKind::kMatMulGlu), m.sources, g.outputs(), m.params)) {
     return std::nullopt;
   }
   return m;
@@ -347,7 +348,7 @@ std::optional<Match> RopeStoreMatch(const MatchContext& c, NodeId anchor) {
   nodes.push_back(*next);
   Match m = Fusion(std::move(nodes), {r.src[0], r.src[1], s.src[0], s.src[2], r.source(2)},
                    r.Params<ir::RopeParams>());
-  if (!Implemented(c, ir::Fused(FusedKind::kRopeStore), m.sources, s.outputs())) {
+  if (!Implemented(c, ir::Fused(FusedKind::kRopeStore), m.sources, s.outputs(), m.params)) {
     return std::nullopt;
   }
   return m;
@@ -400,7 +401,7 @@ std::optional<Match> PreparedInputsMatch(const MatchContext& c, NodeId anchor) {
     }
     const std::array<const ir::TensorDesc*, 2> s = {&c.tensor(q.src[0]), &pd};
     const std::array<const ir::TensorDesc*, 1> o = {&c.tensor(q.out[0])};
-    if (!c.view().Candidates(Prim(Op::kMatMul), s, o).empty()) {
+    if (!c.view().Candidates(Prim(Op::kMatMul), s, o, q.params).empty()) {
       products.push_back(r);
     }
   }

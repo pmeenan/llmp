@@ -168,6 +168,18 @@ void Format(Hasher& h, const format::TensorFormat& f) {
 
 }  // namespace
 
+Graph Graph::Clone() const {
+  Graph g;
+  g.nodes_ = nodes_;
+  g.tensors_ = tensors_;
+  g.producers_ = producers_;
+  g.inputs_ = inputs_;
+  g.outputs_ = outputs_;
+  g.keep_ = keep_;
+  g.names_ = names_;
+  return g;
+}
+
 base::Sha256Digest Graph::Digest() const {
   Hasher h;
   h.Bytes(std::as_bytes(std::span(std::string_view("llmp.ir.graph.v1"))));

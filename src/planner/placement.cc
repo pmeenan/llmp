@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <functional>
 #include <limits>
 #include <numeric>
 #include <span>
@@ -68,11 +69,9 @@ std::expected<std::uint64_t, std::string> RootBytes(const ir::TensorDesc& tensor
   return bytes;
 }
 
-std::expected<Placement, std::string> PlaceActivations(const ir::Graph& graph,
-                                                       std::span<const Selected> steps,
-                                                       std::span<const Region> regions,
-                                                       std::span<const ir::TensorId> staged,
-                                                       std::uint64_t alignment) {
+std::expected<Placement, std::string> PlaceActivations(
+    const ir::Graph& graph, std::span<const Selected> steps, std::span<const Region> regions,
+    std::span<const ir::TensorId> staged, std::uint64_t alignment, const RootBytesOf& written) {
   if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
     return Error("the alignment is not a power of two");
   }
@@ -90,9 +89,12 @@ std::expected<Placement, std::string> PlaceActivations(const ir::Graph& graph,
     if (index.at(t.v) != ~std::size_t{0}) {
       return {};
     }
-    const auto bytes = RootBytes(graph.tensor(t));
+    auto bytes = RootBytes(graph.tensor(t));
     if (!bytes) {
       return std::unexpected(bytes.error());
+    }
+    if (written) {
+      bytes = std::max(*bytes, written(graph, t));
     }
     if (*bytes > kMax - (alignment - 1)) {
       return Error("an activation's rounded size overflows");

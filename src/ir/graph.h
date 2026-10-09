@@ -210,6 +210,10 @@ class Graph {
   // The canonical digest (see the header comment).
   base::Sha256Digest Digest() const;
 
+  // A copy (graphs are move-only so that a copy is always explicit): a
+  // planner consumes one graph while its lowering reads the other.
+  Graph Clone() const;
+
  private:
   friend class ir::Builder;
   Graph() = default;

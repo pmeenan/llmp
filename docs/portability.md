@@ -110,7 +110,14 @@ fences, and MTLIndirectCommandBuffer or plain re-encoding for recorded
 work), kernel modules for its operations (GGML's HIP, SYCL and Metal
 backends are kernel sources to adapt under llmpalooza's dispatch, D-053,
 D-110), a block decoder per weight and state encoding (D-108), and a CMake
-profile that builds them instead of CUDA's. CUDA's decoders and the
+profile that builds them instead of CUDA's. A kernel source reaches the
+engine as a `StepBackend` (`kernels/common/lower.h`): its registry with
+each implementation's capability, its device's facts, the implementations
+that must stay on the stream, what its implementations write beyond a
+tensor's own bytes, and a lowering from a planned step to a
+`StepProgram` with its `StepLaunch` (GGML's: `kernels/ggml/step_program.h`
+over `lower.h`); the engine's component step source plans over it and
+names no kernel library. CUDA's decoders and the
 product templates over them (`src/kernels/decode`: vector, GLU, matrix,
 grouped and rows; mma.sync from sm_80, and an F32 FMA matrix path that
 needs no matrix unit, though no build has SASS below sm_80 and the

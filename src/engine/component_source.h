@@ -1,0 +1,65 @@
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// The step source of a model made of components (D-107;
+// docs/engine-components.md; engine/model_runner.h StepSource): for each
+// step shape, the stage's primitive step from its spec (components/step.h
+// BuildStep), planned over a kernel source's registry for its device under
+// the alias's policy (planner/plan.h), and lowered by that source into a
+// step program (kernels/common/lower.h). The kernel source is a table of
+// functions: the engine names no kernel library.
+//
+// Its plans' key is the spec's bound digest, the policy's patterns and the
+// policy (planner/plan.h KeyOf); the runner adds the shape.
+//
+// Part of the engine core: every build profile.
+
+#ifndef LLMP_ENGINE_COMPONENT_SOURCE_H_
+#define LLMP_ENGINE_COMPONENT_SOURCE_H_
+
+#include <cstdint>
+#include <expected>
+#include <memory>
+#include <string>
+
+#include "base/sha256.h"
+#include "components/step.h"
+#include "engine/model_runner.h"
+#include "kernels/common/lower.h"
+#include "planner/policy.h"
+#include "planner/step_shape.h"
+#include "spec/spec.h"
+
+namespace llmp::engine {
+
+struct ComponentSourceOptions {
+  // The model's spec and the stage this source plans; both outlive it, as
+  // do the bindings' tensors and layout.
+  const spec::ModelSpec* spec = nullptr;
+  std::uint16_t stage = 0;
+  components::Bindings bindings{};
+  // The spec bound to its artifacts (spec.h BoundDigest).
+  base::Sha256Digest bound_digest{};
+  planner::Policy policy{};
+  kernels::StepBackend backend{};
+};
+
+class ComponentStepSource final : public StepSource {
+ public:
+  // Refused for a missing spec, layout or backend, or a policy its own
+  // rules refuse.
+  static std::expected<std::unique_ptr<ComponentStepSource>, std::string> Create(
+      ComponentSourceOptions options);
+
+  planner::PlanKey KeyBase() const override;
+  std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
+      const planner::StepShape& shape, const kernels::Addresses& addresses) override;
+
+ private:
+  explicit ComponentStepSource(ComponentSourceOptions options) : o_(std::move(options)) {}
+  ComponentSourceOptions o_;
+};
+
+}  // namespace llmp::engine
+
+#endif  // LLMP_ENGINE_COMPONENT_SOURCE_H_

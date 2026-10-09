@@ -15,7 +15,10 @@
 #   rows (ple_rows.h), and the one model runner over step programs
 #   (model_runner.h: step_runs.h, plan_cache.h, coverage.h) with its wave
 #   composer (wave_composer.h), prefill orchestrator (prefill.h) and
-#   decoding modes with any number of drafters (decoding.h).
+#   decoding modes with any number of drafters (decoding.h), and the step
+#   source of a model made of components (component_source.h: a spec's
+#   steps planned over a kernel source's registry and lowered by it,
+#   kernels/common/lower.h).
 #   It reaches the device only through the providers, the device runtime
 #   (providers/device_runtime.h) and the paging kernels (kernels/paging/),
 #   and names no kernel library. It links no device backend: a program
@@ -34,11 +37,12 @@ target_link_libraries(llmp_gemma4_greedy PRIVATE llmp_sampling llmp_warnings)
 add_library(llmp_engine_core STATIC paged_node.cc paged_weights.cc live_state.cc checkpoint_file.cc
                                       request_cohort.cc slot_lifecycle.cc ple_rows.cc runner_memory.cc
                                       plan_account.cc coverage.cc step_runs.cc model_runner.cc
-                                      wave_composer.cc prefill.cc decoding.cc)
+                                      wave_composer.cc prefill.cc decoding.cc component_source.cc)
 target_include_directories(llmp_engine_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_engine_core PUBLIC llmp_scheduler llmp_memory llmp_storage
                                               llmp_device_memory llmp_artifact llmp_model
-                                              llmp_step_common
+                                              llmp_step_common llmp_components llmp_planner
+                                              llmp_spec
                                        PRIVATE llmp_base llmp_platform llmp_warnings)
 
 # The fake device backend for programs that run the engine core on the

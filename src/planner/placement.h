@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <span>
 #include <string>
 #include <utility>
@@ -45,12 +46,18 @@ struct Placement {
 // The bytes a root tensor spans (its strides' reach, or its parts').
 std::expected<std::uint64_t, std::string> RootBytes(const ir::TensorDesc& tensor);
 
+// The bytes a lowering's implementation writes for a root it computes,
+// where that is more than the tensor's own (GGML's MMVQ writes a prepared
+// Q8_1 input's rows padded to its row step), or 0: a root takes the larger.
+using RootBytesOf = std::function<std::uint64_t(const ir::Graph&, ir::TensorId)>;
+
 // `alignment` is a power of two.
 std::expected<Placement, std::string> PlaceActivations(const ir::Graph& graph,
                                                        std::span<const Selected> steps,
                                                        std::span<const Region> regions,
                                                        std::span<const ir::TensorId> staged,
-                                                       std::uint64_t alignment = 256);
+                                                       std::uint64_t alignment = 256,
+                                                       const RootBytesOf& written = {});
 
 }  // namespace llmp::planner
 

@@ -285,7 +285,8 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   } else {
     staged.assign(graph.inputs().begin(), graph.inputs().end());
   }
-  auto placement = PlaceActivations(graph, steps, regions, staged, options.alignment);
+  auto placement =
+      PlaceActivations(graph, steps, regions, staged, options.alignment, options.written);
   if (!placement) {
     return Failed(PlanError::kPlacement, placement.error());
   }

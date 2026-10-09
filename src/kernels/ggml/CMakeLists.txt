@@ -10,20 +10,34 @@
 #                        graph planning and activation placement
 #                        (graph_plan.h), the Qwen2 chunk graph
 #                        (qwen2_graph.h) and the DeepSeek V4 chunk graph
-#                        (dsv4_graph.h). Every profile.
+#                        (dsv4_graph.h), the module's capabilities
+#                        (capabilities.h) and the lowering of planned IR
+#                        steps (lower.h). Every profile.
 #   llmp_ggml_kernels  the K-C launch context (launch.h), llmpalooza's cuBLAS
 #                        handle (cublas.h), the operation implementations
 #                        (ops.h, mul_mat_cublas.cu, fattn.cu) and llmpalooza's definitions
 #                        of the ggml-cuda.cu symbols GGML's launchers use
 #                        (ggml_support.cu), and the module's declarations
 #                        in the implementation registry
-#                        (implementations.h), and the executor of planned
-#                        graphs (executor.h). CUDA builds only.
+#                        (implementations.h), the executor of planned
+#                        graphs (executor.h), and the module as a kernel
+#                        source of planned steps (step_program.h). CUDA
+#                        builds only.
 #                        The M3 models' operations add their checks
 #                        (validate_ext.h) here and their implementations
 #                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, mmvq_rows.cu,
 #                        fattn_mma*.cu)
 #                        to llmp_ggml_kernels.
+# The device architectures the module's kernels build for: sm_121a as
+# GGML's own units build (third_party/patches/ggml/0002) and the profile's
+# discrete GPUs (D-082); a CPU build plans for the native profile's GB10,
+# the device its planning tests model (capabilities.h CompiledFor).
+if(LLMP_CUDA)
+  set(architectures 121a-real ${LLMP_CUDA_DISCRETE_SASS})
+else()
+  set(architectures 121a-real)
+endif()
+list(JOIN architectures "," architecture_text)
 add_library(llmp_ggml_tensors STATIC dsv4_graph.cc gemma2_graph.cc gemma3_graph.cc gemma4_graph.cc fusion.cc graph_plan.cc llmp_ops.cc
                                        qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
                                        validate_ext.cc)
@@ -36,8 +50,14 @@ target_sources(llmp_ggml_tensors PRIVATE dsv4_outa.cc)
 target_sources(llmp_ggml_tensors PRIVATE gemma_norm.cc set_rows_group.cc)
 target_sources(llmp_ggml_tensors PRIVATE gemma4_assistant_graph.cc gemma4_attention.cc fattn_owner.cc)
 target_sources(llmp_ggml_tensors PRIVATE kv_quant.cc)
+# The module's capabilities (capabilities.h) and the lowering of planned IR
+# steps onto GGML graphs (lower.h).
+target_sources(llmp_ggml_tensors PRIVATE capabilities.cc lower.cc)
+set_source_files_properties(capabilities.cc PROPERTIES COMPILE_DEFINITIONS
+  "LLMP_GGML_CUDA_ARCHITECTURES=\"${architecture_text}\"")
 target_link_libraries(llmp_ggml_tensors PUBLIC llmp_base llmp_ggml_base llmp_execution
-                                                 llmp_model
+                                                 llmp_model llmp_planner llmp_components
+                                                 llmp_step_common
                                           # cutlass/version.h only (llmp_ops.cc pins the
                                           # version the CUTLASS expert layout was written
                                           # against), in every profile
@@ -70,7 +90,8 @@ if(LLMP_CUDA)
                                          fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
                                          llmp_ops.cu llmp_fused.cu llmp_moe.cu dsv4_fast.cu dsv4_sparse.cu
                                          qsa_sparse.cu
-                                         cublas.cc executor.cc implementations.cc)
+                                         cublas.cc executor.cc implementations.cc
+                                         step_program.cc)
   target_include_directories(llmp_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_sources(llmp_ggml_kernels PRIVATE dsv4_ds4_product_raw.cu dsv4_ds4_attention.cu)
   target_sources(llmp_ggml_kernels PRIVATE dsv4_weighted_reduce.cu gemma_moe.cu)
@@ -102,9 +123,6 @@ if(LLMP_CUDA)
                                llmp_cublas llmp_cublaslt llmp_execution llmp_ds4_d2r llmp_ds4_hca
                         # the NVIDIA driver, for ggml_support.cu's device queries
                         PRIVATE llmp_cuda_device_memory llmp_warnings llmp_ggml_cutlass)
-  # sm_121a as GGML's own units build (third_party/patches/ggml/0002), and
-  # the profile's discrete GPUs (D-082).
-  set(architectures 121a-real ${LLMP_CUDA_DISCRETE_SASS})
   set_target_properties(llmp_ggml_kernels PROPERTIES CUDA_ARCHITECTURES "${architectures}")
   # What each implementation's identity records of the build (D-053): the
   # prepared GGML tree the build used, as the source receipt records it
@@ -139,7 +157,6 @@ if(LLMP_CUDA)
     endif()
   endforeach()
   string(REPLACE ";" "+" sanitize "${LLMP_SANITIZE}")
-  list(JOIN architectures "," architecture_text)
   set_source_files_properties(implementations.cc PROPERTIES COMPILE_DEFINITIONS
     "LLMP_GGML_SOURCE_TREE=\"${ggml_tree}\";LLMP_CUTLASS_SOURCE_TREE=\"${cutlass_tree}\";LLMP_DS4_SOURCE_TREE=\"${ds4_tree}\";LLMP_GGML_SDK=\"${LLMP_SDK_IDENTITY}\";LLMP_GGML_TARGET=\"${LLMP_TARGET_TRIPLE}\";LLMP_GGML_CUDA_ARCHITECTURES=\"${architecture_text}\";LLMP_GGML_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";LLMP_GGML_SANITIZE=\"${sanitize}\"")
 
@@ -150,7 +167,8 @@ if(LLMP_CUDA)
   # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
-  set(module_files CMakeLists.txt cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
+  set(module_files CMakeLists.txt capabilities.cc capabilities.h lower.cc lower.h step_program.cc
+                   step_program.h cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
                    dsv4_weighted_reduce.h dsv4_weighted_reduce.cc dsv4_weighted_reduce.cu
                    gemma_moe.h gemma_moe.cc gemma_moe.cu
                    graph_read_index.h graph_read_index.cc gemma_moe_fusion.h gemma_moe_fusion.cc

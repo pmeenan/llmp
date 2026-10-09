@@ -72,11 +72,13 @@ class SelectionView {
   bool row_invariant() const { return row_invariant_; }
 
   // The candidates (registry indices, in Candidates()' order) for a node
-  // of `key` over `sources` with `outputs`.
+  // of `key` over `sources` with `outputs` and parameters `params` (its
+  // ParamBytes; empty: none given).
   std::vector<std::size_t> Candidates(ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
-                                      std::span<const ir::TensorDesc* const> outputs) const;
-  // The same for a node of `graph`, as it is or under another key (a
-  // batch's).
+                                      std::span<const ir::TensorDesc* const> outputs,
+                                      std::span<const std::byte> params = {}) const;
+  // The same for a node of `graph` (with its parameters), as it is or
+  // under another key (a batch's).
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node) const;
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node,
                                       ir::OpKey key) const;

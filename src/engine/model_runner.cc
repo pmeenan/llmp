@@ -9,6 +9,7 @@
 #include <format>
 #include <utility>
 
+#include "components/step.h"
 #include "engine/prefill_lookahead.h"
 #include "engine/support.h"
 #include "model/state_contract.h"
@@ -45,6 +46,62 @@ std::expected<void, std::string> WriteRows(std::span<std::byte> out,
   if (bytes != 0) std::memcpy(out.data(), values.data(), bytes);
   std::fill(out.begin() + static_cast<std::ptrdiff_t>(bytes), out.end(), std::byte{0});
   return {};
+}
+
+// The values of an input the step's shape decides (step_program.h
+// kOutputRows, kStoreCells, kMask), by components/step.h InputValues' rules.
+std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl::StepShape& shape,
+                                               std::span<std::byte> out) {
+  namespace co = llmp::components;
+  const co::CellKey cells{.capacity = in.cells.capacity, .ring = in.cells.ring};
+  co::StepInput input{.segment = in.segment, .cells = cells};
+  switch (in.kind) {
+    case kn::InputKind::kOutputRows: {
+      input.kind = co::InputKind::kOutputRows;
+      auto values = co::InputValues(input, shape, {});
+      if (!values) return Error(values.error());
+      std::vector<std::int32_t> rows(values->begin(), values->end());
+      return WriteRows(out, rows);
+    }
+    case kn::InputKind::kStoreCells: {
+      input.kind = co::InputKind::kStoreCells;
+      auto values = co::InputValues(input, shape, {});
+      if (!values) return Error(values.error());
+      const std::uint64_t bytes = values->size() * sizeof(std::int64_t);
+      if (bytes > out.size()) return Error("an input's cells exceed its slot");
+      if (bytes != 0) std::memcpy(out.data(), values->data(), bytes);
+      std::fill(out.begin() + static_cast<std::ptrdiff_t>(bytes), out.end(), std::byte{0});
+      return {};
+    }
+    case kn::InputKind::kMask: {
+      // The positions the read cells hold, then each row's view of them.
+      input.kind = co::InputKind::kCellPositions;
+      input.read = in.read;
+      auto held = co::InputValues(input, shape, {});
+      if (!held) return Error(held.error());
+      const pl::Segment& s = shape.segments.at(in.segment);
+      if (held->size() != in.read || in.mask_rows < s.rows ||
+          out.size() != in.read * in.mask_rows * sizeof(std::uint16_t)) {
+        return Error("a mask's slot does not hold its cells and rows");
+      }
+      constexpr std::uint16_t kSeen = 0x0000;    // F16 0
+      constexpr std::uint16_t kHidden = 0xFC00;  // F16 -inf
+      std::vector<std::uint16_t> mask(in.read * in.mask_rows, kHidden);
+      for (std::uint32_t r = 0; r < s.rows; ++r) {
+        const std::int64_t position = std::int64_t{s.past} + r;
+        for (std::uint64_t c = 0; c < in.read; ++c) {
+          const std::int64_t cell = (*held)[c];
+          const bool seen = cell >= 0 && cell <= position &&
+                            (in.window == 0 || position - cell < std::int64_t{in.window});
+          if (seen) mask[(std::uint64_t{r} * in.read) + c] = kSeen;
+        }
+      }
+      std::memcpy(out.data(), mask.data(), out.size());
+      return {};
+    }
+    default:
+      return Error("not a computed input");
+  }
 }
 
 }  // namespace
@@ -602,6 +659,12 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
         std::fill(out.begin() + static_cast<std::ptrdiff_t>(request.step_bytes.size()), out.end(),
                   std::byte{0});
         return {};
+      case kn::InputKind::kOutputRows:
+      case kn::InputKind::kStoreCells:
+      case kn::InputKind::kMask:
+        if (in.kind != kn::InputKind::kOutputRows && joined)
+          return Error("an input names no segment");
+        return WriteComputed(in, shape, out);
     }
     return Error("an unknown input kind");
   };
