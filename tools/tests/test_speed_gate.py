@@ -30,13 +30,26 @@ def record(family, block, position, metrics, error=None):
     spec = gate.FAMILIES.get(family)
     return {"family": family, "block": block, "position": position, "label": label,
             "metrics": metrics, "error": error, "problems": [],
+            "session": f"{family}-s1", "started_unix": 100.0 + 4 * block + position,
             "runtime_sha256": f"{label}-binary", "config_sha256": f"{label}-config",
             "family_spec": json.loads(json.dumps(dataclasses.asdict(spec))) if spec else None}
 
 
+def prime_record(family, metrics=None):
+    """The session's priming run: the old arm, before every measured run."""
+    return {"family": family, "label": gate.PRIME_ARM, "block": None, "position": None,
+            "prime": True, "session": f"{family}-s1", "started_unix": 1.0,
+            "runtime_sha256": f"{gate.PRIME_ARM}-binary",
+            "config_sha256": f"{gate.PRIME_ARM}-config",
+            "metrics": metrics or {}, "error": None, "problems": []}
+
+
 def write_blocks(out, family, blocks):
-    """blocks: a list of (old, new) metric dicts; each block runs old/new/new/old."""
+    """blocks: a list of (old, new) metric dicts; each block runs old/new/new/old, all in
+    one session after its priming run."""
     (out / "runs").mkdir(parents=True, exist_ok=True)
+    (out / "primes").mkdir(parents=True, exist_ok=True)
+    (out / "primes" / f"{family}-s1.json").write_text(json.dumps(prime_record(family)))
     for b, (old, new) in enumerate(blocks, start=1):
         for p, label in enumerate(gate.ORDER):
             r = record(family, b, p, old if label == "old" else new)
@@ -226,7 +239,7 @@ class Verdicts(unittest.TestCase):
             with contextlib.redirect_stdout(text):
                 gate.main(["plan", "--family", "gemma2", "--old", "/o", "--new", "/n",
                            "--out", tmp, "--blocks", "2", "--first", "5"])
-            lines = text.getvalue().splitlines()
+            prime, *lines = text.getvalue().splitlines()
             self.assertEqual(len(lines), 8)
             labels = [line.split("--label ")[1].split()[0] for line in lines]
             self.assertEqual(labels, list(gate.ORDER) * 2)
@@ -235,13 +248,121 @@ class Verdicts(unittest.TestCase):
             self.assertIn("--runtime /o", lines[0])
             self.assertIn("--runtime /n", lines[1])
             self.assertNotIn("--config-template", lines[0])
+            # The session starts with the old arm's priming run; every run is its session's.
+            self.assertEqual(gate.PRIME_ARM, "old")
+            self.assertIn("--runtime /o --label old", prime)
+            self.assertIn("--prime --session ", prime)
+            self.assertNotIn("--block", prime)
+            session = prime.split("--session ")[1].split()[0]
+            self.assertTrue(session.startswith("gemma2-b05p0-"))
+            for line in lines:
+                self.assertIn(f"--session {session}", line)
+
+    def test_plan_splits_jobs_into_sessions_each_primed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = pathlib.Path(tmp) / "deepseek"
+            text = io.StringIO()
+            with contextlib.redirect_stdout(text):
+                gate.main(["plan", "--family", "deepseek", "--old", "/o", "--new", "/n",
+                           "--out", tmp, "--blocks", "2", "--job-runs", "3",
+                           "--steps", str(prefix), "--new-config", "/n.toml"])
+            paths = text.getvalue().splitlines()
+            self.assertEqual(paths, [f"{prefix}-{n:02d}.steps" for n in (1, 2, 3)])
+            jobs = [pathlib.Path(p).read_text().splitlines() for p in paths]
+            self.assertEqual([len(j) for j in jobs], [4, 4, 3])  # 3 + 3 + 2 runs, each primed
+            sessions = set()
+            measured = []
+            for job in jobs:
+                session = job[0].split("--session ")[1].split()[0]
+                sessions.add(session)
+                self.assertIn("--prime", job[0])
+                self.assertIn("--runtime /o --label old", job[0])
+                self.assertNotIn("--config-template", job[0])  # the old arm's own
+                for line in job[1:]:
+                    self.assertNotIn("--prime", line)
+                    self.assertIn(f"--session {session}", line)
+                    measured.append(line.split("--block ")[1].split()[0] + "/"
+                                    + line.split("--position ")[1].split()[0])
+            self.assertEqual(len(sessions), 3)
+            self.assertEqual(measured, [f"{b}/{p}" for b in (1, 2) for p in range(4)])
+            with self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()):
+                gate.main(["plan", "--family", "deepseek", "--old", "/o", "--new", "/n",
+                           "--out", tmp, "--blocks", "2", "--job-runs", "3"])
+
+    def test_a_priming_run_needs_a_session_and_no_position(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = ["run", "--family", "gemma2", "--runtime", "/nonexistent", "--label", "old",
+                    "--out", tmp]
+            for extra in (["--prime"], ["--prime", "--session", "s", "--block", "1"],
+                          ["--block", "1"], ["--position", "0"]):
+                with self.subTest(extra), self.assertRaises(SystemExit):
+                    gate.main(base + extra)
+            self.assertFalse((pathlib.Path(tmp) / "runs").exists())
+            self.assertFalse((pathlib.Path(tmp) / "primes").exists())
+
+    def test_priming_runs_count_in_no_statistic_but_must_succeed_first(self):
+        n = gate.FAMILIES["gemma2"].min_blocks
+        # A priming run far slower than every measured run changes nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            write_blocks(out, "gemma2", [(self.SAME, self.SAME)] * n)
+            slow = {k: v * 3 for k, v in self.SAME.items()}
+            (out / "primes" / "gemma2-s1.json").write_text(
+                json.dumps(prime_record("gemma2", slow)))
+            report = gate.verdicts(out, "gemma2")["gemma2"]
+            self.assertEqual(report["verdict"], "PASS")
+            self.assertEqual(report["metrics"]["C1.prefill_s"]["runs"], {"old": 2 * n,
+                                                                          "new": 2 * n})
+            self.assertEqual(report["metrics"]["C1.prefill_s"]["old_mean"], 2.0)
+            self.assertEqual(gate.spread(out, "gemma2")["gemma2"]["C1.prefill_s"]["runs"], 4 * n)
+            self.assertEqual(gate.spread(out, "gemma2")["gemma2"]["C1.prefill_s"]["unprimed"], 0)
+            # spread still reads runs from before priming, and counts them.
+            (out / "primes" / "gemma2-s1.json").unlink()
+            report = gate.spread(out, "gemma2")["gemma2"]["C1.prefill_s"]
+            self.assertEqual((report["runs"], report["unprimed"]), (4 * n, 4 * n))
+
+        def prime(change):
+            def apply(out):
+                path = out / "primes" / "gemma2-s1.json"
+                r = json.loads(path.read_text())
+                change(r)
+                path.write_text(json.dumps(r))
+            return apply
+
+        def run(name, change):
+            return lambda out: self.rewrite(out, name, change)
+
+        cases = {
+            "failed": prime(lambda r: r.update(error="RuntimeError: boom")),
+            "problem": prime(lambda r: r.update(problems=["C1: 1 cached prompt tokens"])),
+            "missing": lambda out: (out / "primes" / "gemma2-s1.json").unlink(),
+            "another family's": prime(lambda r: r.update(family="gemma3")),
+            "late": prime(lambda r: r.update(started_unix=200.0)),
+            "the new arm's": prime(lambda r: r.update(label="new", runtime_sha256="new-binary",
+                                                      config_sha256="new-config")),
+            "another binary": prime(lambda r: r.update(runtime_sha256="other-binary")),
+            "another configuration": prime(lambda r: r.update(config_sha256="other-config")),
+            "no session": run("gemma2-b02-p1-new.json", lambda r: r.pop("session")),
+            "other session": run("gemma2-b02-p1-new.json",
+                                 lambda r: r.update(session="gemma2-s2")),
+        }
+        for name, change in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                out = pathlib.Path(tmp)
+                write_blocks(out, "gemma2", [(self.SAME, self.SAME)] * n)
+                change(out)
+                report = gate.verdicts(out, "gemma2")["gemma2"]
+                self.assertEqual(report["verdict"], "INVALID")
+                self.assertTrue(report["invalid"])
+                self.assertEqual(gate.verdict_status({"gemma2": report}), 1)
 
     def test_plan_gives_each_arm_its_configuration(self):
         text = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(text):
             gate.main(["plan", "--family", "deepseek", "--old", "/o", "--new", "/n",
                        "--out", tmp, "--blocks", "1", "--new-config", "/n.toml"])
-        lines = text.getvalue().splitlines()
+        prime, *lines = text.getvalue().splitlines()
+        self.assertNotIn("--config-template", prime)
         self.assertNotIn("--config-template", lines[0])
         self.assertIn("--config-template /n.toml", lines[1])
         self.assertIn("--config-template /n.toml", lines[2])

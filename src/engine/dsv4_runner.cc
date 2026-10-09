@@ -344,7 +344,7 @@ void Dsv4Runner::StateWrittenBack(bool whole) {
   for (RequestState* request : Requests()) {
     if (request->provisioned && !request->spilled) {
       if (whole) {
-        request->track.Saved();
+        request->track.FileHolds(request->live);
       } else {
         request->track.Lost();
       }
@@ -1215,7 +1215,8 @@ Status Dsv4Runner::Spill(RequestState& request) {
   // every initialized extent written back to its place in the slot's
   // spill file and its backing released (the swap's write-back path). A
   // restore owed by its last verify stays owed: the snapshot it restores
-  // from is the slot's own runtime memory, not spilled.
+  // from is the slot's own runtime memory, not spilled. The file then
+  // does not hold the state as it will be (SpillTrack::FileHolds).
   std::vector<ExtentId> written;
   std::vector<ExtentId> unchanged;
   SplitForSpill(request, written, unchanged);
@@ -1239,7 +1240,7 @@ Status Dsv4Runner::Spill(RequestState& request) {
       return evicted;
     }
   }
-  request.track.Saved();
+  request.track.FileHolds(request.live);
   return {};
 }
 
@@ -1293,7 +1294,7 @@ Status Dsv4Runner::Restore(RequestState& request) {
     request.adopted.clear();
     request.adopted_bytes = 0;
     request.spilled = false;
-    request.track.Saved();  // the file holds the state as it is now
+    request.track.FileHolds(request.live);  // the file holds the state as it is now
     return RefreshClosures();
   }
   catalog::Closure closure;

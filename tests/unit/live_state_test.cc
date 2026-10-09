@@ -1297,6 +1297,98 @@ TEST_F(LiveStateTest, AVerifysSnapshotRestoresTheRejectedRowsThenCommitsTheKept)
   EXPECT_FALSE(model_.live.Save(base, kSnapshot + 16, 0));
 }
 
+// An incremental spill (SpillTrack) of a state whose last verify owes its
+// restore and commit: the owed work runs later as a job of its own
+// (Rollback, as the runners' ReadState and DiscardVerify and serving's
+// SettleFor run it), which records no write. The spill that wrote the
+// verified bytes must not mark the file current, or the next spill
+// releases the rolled-back extent as unchanged and a restore brings the
+// rejected rows back. The runners' Spill and StateWrittenBack, here.
+TEST_F(LiveStateTest, AnOwedRollbackAfterASpillIsWrittenByTheNextSpill) {
+  const std::array<en::LiveState::Range, 1> used = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = kExtent}};
+  ASSERT_TRUE(model_.live.Use(node_, used));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(Pattern(0x10));
+
+  en::SpillTrack track;
+  // The runners' incremental spill: what the track records as written
+  // since the file held the state is written back, the rest released
+  // unchanged; then the file holds the state (unless owed).
+  const auto spill = [&]() {
+    std::vector<llmp::catalog::ExtentId> written;
+    std::vector<llmp::catalog::ExtentId> unchanged;
+    if (track.on_disk) {
+      model_.live.SplitExtents(track.written, written, unchanged);
+    } else {
+      written = model_.live.extents();
+    }
+    ASSERT_TRUE(written.empty() || node_.Evict(written));
+    ASSERT_TRUE(unchanged.empty() || node_.Evict(unchanged, {.unchanged = true}));
+    track.FileHolds(model_.live);
+    ASSERT_TRUE(model_.Refresh());
+  };
+  spill();
+  EXPECT_TRUE(track.on_disk);
+  ASSERT_EQ(Contents(0), std::byte{0x10});
+
+  en::RunnerMemory memory(node_, 0, 0);
+  constexpr std::uint64_t kSnapshot = 4096;
+  auto snapshot = memory.Pinned(kSnapshot);
+  ASSERT_TRUE(snapshot) << snapshot.error();
+  model_.live.SnapshotAt(reinterpret_cast<std::uint64_t>(*snapshot), kSnapshot);
+  ASSERT_TRUE(model_.live.AllocateSnapshot(memory, 4));
+  model_.live.SetCommit(
+      [](pr::NativeStream, std::uint32_t) -> en::LiveState::Queued { return {}; });
+
+  // A verify of two rows (and a scratch row) writes 0x20 over its saves.
+  const std::uint64_t base = model_.live.base(0);
+  model_.live.BeginSaves();
+  ASSERT_TRUE(model_.live.Save(base, 256, 0));
+  ASSERT_TRUE(model_.live.Save(base + 256, 256, 1));
+  ASSERT_TRUE(model_.live.Save(base + 512, 256, -1));
+  ASSERT_TRUE(node_.Job(
+      model_.fence_closure(),
+      [&](pr::NativeStream native) {
+        if (!model_.live.QueueSaves(native)) return llmp::scheduler::JobResult::kUnknown;
+        return pr::FillAsync(native, en::support::Pointer(base), 0x20, 768).ok()
+                   ? llmp::scheduler::JobResult::kQueued
+                   : llmp::scheduler::JobResult::kUnknown;
+      },
+      "test verify", 0));
+  model_.live.Verified(2);
+  const std::array<en::LiveState::Range, 1> verified = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 768}};
+  track.Wrote(verified);
+  {
+    // A swap's write-back while the verify awaits its Accept.
+    en::SpillTrack written_back = track;
+    written_back.FileHolds(model_.live);
+    EXPECT_FALSE(written_back.on_disk);
+  }
+
+  // Accept(1): the second row and the scratch row owe their restore. A
+  // spill now writes the verified bytes; the file does not hold the state
+  // as it will be once the owed restore ran.
+  ASSERT_TRUE(model_.live.Accept(1));
+  ASSERT_TRUE(model_.live.owed());
+  spill();
+  EXPECT_FALSE(track.on_disk);
+  ASSERT_TRUE(model_.live.Rollback(node_, model_.fence_closure(), 0, "test owed restore"));
+  ASSERT_FALSE(model_.live.owed());
+
+  // Nothing recorded the rollback's write: the next spill must still write
+  // the extent, and the restore reads the rolled-back rows.
+  spill();
+  EXPECT_TRUE(track.on_disk);
+  const auto state = Read();
+  ASSERT_GE(state.size(), 1024U);
+  EXPECT_TRUE(std::all_of(state.begin(), state.begin() + 256,
+                          [](std::byte b) { return b == std::byte{0x20}; }));
+  EXPECT_TRUE(std::all_of(state.begin() + 256, state.begin() + 1024,
+                          [](std::byte b) { return b == std::byte{0x10}; }));
+}
+
 // A commit refused after the owed restore was queued: the job has queued
 // work, so the failure is never "nothing queued" (a job reporting
 // kNotStarted would let the restore run unfenced); the restore is no longer

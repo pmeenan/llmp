@@ -406,6 +406,19 @@ struct SpillTrack {
     written_from = kUnwritten;
     written.clear();
   }
+  // A spill or a swap's write-back completed (or a restore read the file):
+  // the file holds `live` as it is. Not while a verify awaits its Accept
+  // or owes a restore or commit: what runs those later may be a job of its
+  // own (LiveState::Rollback, RollbackThrough) that records no write, so
+  // the next spill writes the state whole. Every place that marks a file
+  // current goes through here.
+  void FileHolds(const LiveState& live) {
+    if (live.owed() || live.verify_rows() != 0) {
+      Lost();
+    } else {
+      Saved();
+    }
+  }
   void Wrote(std::uint32_t from) { written_from = std::min(written_from, from); }
   void Wrote(std::span<const LiveState::Range> ranges) {
     written.insert(written.end(), ranges.begin(), ranges.end());

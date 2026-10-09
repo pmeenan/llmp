@@ -150,6 +150,16 @@ it is the absolute difference. ABBA cancels only linear drift: a curved
 drift or a position effect (the first run of a supervised job after an
 idle GPU, say) falls on the old positions and biases the estimate
 against the new binary. Split the steps into jobs at block boundaries.
+*Added 2026-10-08, after the same-binary runs below:* every job (a
+session: one `plan` output, or one of the step files `plan --job-runs K
+--steps PREFIX` writes) starts with a priming run of the old arm that no
+statistic reads but that must succeed before the session's runs, or the
+family is INVALID; the old arm, so that whatever one arm's run leaves
+cold for the other falls on the new arm's first run, never in its favour.
+A session is one job: split a schedule with `--job-runs`, never by hand
+(a hand-split file's later jobs would run unprimed, which the records
+cannot show). `spread` reads runs with or without a session, the
+same-binary records below among them, and counts the unprimed.
 
 **The statistic and stopping rule.** Non-inferiority at a 1% margin: the
 unit is the block, so over n blocks, with mean d and standard deviation
@@ -190,7 +200,8 @@ its records).
 T=tools/speed_gate.py; OLD=~/.local/share/llmp/m36-baseline/1facc957/src/runtime/llmp-runtime
 python3 -B $T plan --family F --old $OLD --new NEW --out DIR > F.steps   # min_blocks of ABBA runs
 #   [--new-config NEW.toml]: the new arm's own configuration template
-spark-job start --gpu --name F-ab1 --timeout 600 --steps F.steps       # jobs of <= 600 s, whole blocks
+#   [--job-runs K --steps F]: F-01.steps, F-02.steps ..., K runs a job, each primed
+spark-job start --gpu --name F-ab1 --timeout 600 --steps F.steps       # one job a steps file (<= 600 s)
 python3 -B $T verdict DIR --family F                                   # PASS / FAIL / CONTINUE ...
 python3 -B $T plan ... --blocks 1 --first N                            # one more block while CONTINUE
 python3 -B $T quality --family F --runtime NEW --label new --out DIR   # and --runtime $OLD --label old

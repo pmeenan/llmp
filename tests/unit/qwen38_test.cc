@@ -417,6 +417,47 @@ TEST(Qwen38Test, GrowingStateCoversPaddedAttentionAndFixedRecurrentState) {
   }
 }
 
+// An incremental spill (engine/live_state.h SpillTrack) writes back only
+// the ranges the checkpoint writes name from the first position a job
+// since the last spill wrote from; a verify at n_past records n_past - 1.
+// What the verify saves (engine/qwen38_runner.cc Verify: each row's K, V
+// and indexer cells, each block key a row completes), and so what its owed
+// restore writes later, and the recurrent and convolution state its owed
+// commit writes, lie inside them.
+TEST(Qwen38Test, AVerifysWritesLieInsideItsCheckpointWrites) {
+  const auto& p = md::Qwen38Flash();
+  auto state = md::Qwen38State(p, 4096, 512);
+  ASSERT_TRUE(state) << Why(state);
+  using K = md::Qwen38StateTensor::Kind;
+  const std::uint32_t ratio = p.indexer_ratio;
+  ASSERT_GT(ratio, 0U);
+  for (const auto& [n_past, rows] : std::array<std::pair<std::uint32_t, std::uint32_t>, 6>{
+           {{1, 4}, {ratio - 1, 2}, {ratio, 1}, {(3 * ratio) - 2, 8}, {1000, 5}, {4088, 8}}}) {
+    auto recorded = md::Qwen38CheckpointWrites(p, *state, n_past - 1);
+    ASSERT_TRUE(recorded) << Why(recorded);
+    const auto covered = [&](std::uint64_t offset, std::uint64_t bytes) {
+      return std::ranges::any_of(*recorded, [&](const md::StateRange& c) {
+        return offset >= c.offset && offset + bytes <= c.offset + c.bytes;
+      });
+    };
+    for (const md::Qwen38StateTensor& t : state->tensors) {
+      const std::uint64_t row = t.ne0 * (t.f16 ? 2 : 4);
+      if (t.kind == K::kK || t.kind == K::kV || t.kind == K::kIndexerK) {
+        for (std::uint32_t i = 0; i < rows; ++i) {
+          EXPECT_TRUE(covered(t.offset + ((std::uint64_t{n_past} + i) * row), row))
+              << n_past << "+" << i;
+        }
+      } else if (t.kind == K::kIndexerBlocks) {
+        for (std::uint64_t b = n_past / ratio; b < (std::uint64_t{n_past} + rows) / ratio; ++b) {
+          EXPECT_TRUE(covered(t.offset + (b * row), row)) << n_past << " block " << b;
+        }
+      } else {
+        EXPECT_TRUE(covered(t.offset, t.bytes)) << n_past;
+      }
+    }
+  }
+}
+
 TEST(Qwen38Test, TheStateIsBoundedAndSized) {
   const md::Qwen38Profile& p = md::Qwen38Flash();
   auto s = md::Qwen38State(p, 4000, 512);

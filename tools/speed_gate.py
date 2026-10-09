@@ -11,7 +11,9 @@ report, never between the runs of one comparison.
     speed_gate.py families
     speed_gate.py plan --family F --old RUNTIME --new RUNTIME --out DIR [--blocks N] [--first B]
                        [--old-config TEMPLATE] [--new-config TEMPLATE]
-    speed_gate.py run --family F --runtime RUNTIME --label old|new --out DIR --block B --position P
+                       [--job-runs K --steps PREFIX]
+    speed_gate.py run --family F --runtime RUNTIME --label old|new --out DIR
+                      (--block B --position P | --prime) [--session S]
                       [--config-template TEMPLATE]
     speed_gate.py quality --family F --runtime RUNTIME --label old|new --out DIR
                           [--config-template TEMPLATE]
@@ -58,11 +60,20 @@ expected to be at most RESOLUTION (0.5%). peak_gib is judged the same way
 at its own margin (MEMORY_MARGIN_GIB, absolute). Only the first
 max_blocks blocks count. A family passes when every metric passes and its
 runs are valid: none failed or recorded a problem (token counts, cached
-prompt tokens, pixels, another GPU process), and every old run used one
+prompt tokens, pixels, another GPU process), each ran in a session whose
+priming run succeeded before it, and every old run used one
 runtime and configuration, every new run one, and the protocol's current
 family constants; otherwise its verdict is INVALID (rerun the block: its
 records are replaced). `verdict` exits 0 only when every family judged
 passes, 2 while one needs more blocks, 1 otherwise.
+
+A *session* is one supervised job's steps (one `plan` output, or with
+`--job-runs` one of its step files). It starts with a priming run of the
+old arm (PRIME_ARM: why that arm is there): a whole run, which must
+succeed, whose record goes to primes/ and never to runs/, so no statistic
+reads it. Every measured run records its session; a run without one, or
+whose session's priming run is missing, failed, recorded a problem or did
+not start before it, makes its family INVALID.
 
 The node configuration both arms get is the family's (config_text) unless
 `run --config-template` gives an arm its own: the whole node configuration
@@ -73,7 +84,9 @@ passes each arm its template, and the records keep its text and digest.
 
 `spread` reads same-binary runs (old and new both the baseline) and reports
 each metric's run-to-run and block-to-block spread and the blocks its bound
-needs; min_blocks below come from it.
+needs; min_blocks below come from it. It reads runs with or without a
+primed session (the records min_blocks come from predate priming) and
+counts those without one.
 
 `quality` runs one process: two fixed greedy C1 replies (their digests;
 the reply text is never kept) and the mean negative log-likelihood of a
@@ -98,6 +111,7 @@ import math
 import os
 import pathlib
 import random
+import secrets
 import shutil
 import signal
 import socket
@@ -629,12 +643,25 @@ def cmd_run(args: argparse.Namespace) -> int:
     out = pathlib.Path(args.out).resolve()
     share = pathlib.Path(args.share).expanduser().resolve()
     runtime = pathlib.Path(args.runtime).resolve()
-    name = f"{family.name}-b{args.block:02d}-p{args.position}-{args.label}"
-    (out / "runs").mkdir(parents=True, exist_ok=True)
+    if args.prime:
+        # A session's priming run: a whole run, kept apart from the measured ones.
+        if not args.session or args.block is not None or args.position is not None:
+            raise SystemExit("run --prime takes --session and no --block or --position")
+        name = f"{family.name}-prime-{args.session}"
+        records = out / "primes"
+        path = records / f"{args.session}.json"
+    else:
+        if args.block is None or args.position is None:
+            raise SystemExit("run takes --block and --position (or --prime)")
+        name = f"{family.name}-b{args.block:02d}-p{args.position}-{args.label}"
+        records = out / "runs"
+        path = records / f"{name}.json"
+    records.mkdir(parents=True, exist_ok=True)
     run_dir = fresh_run_dir(out, name)
     template = arm_template(family, args.config_template)
     record = {"format": "llmp-speed-gate/1", "family": family.name, "label": args.label,
               "block": args.block, "position": args.position,
+              "prime": args.prime, "session": args.session, "started_unix": time.time(),
               "runtime": str(runtime), "runtime_sha256": sha256_file(runtime),
               "config_template": template,
               "config_sha256": hashlib.sha256(template.encode()).hexdigest(),
@@ -652,7 +679,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         record.setdefault("problems", []).append(
             f"GPU compute processes before the run: {record['facts']['gpu_compute_apps']}")
     record["elapsed_s"] = time.monotonic() - began
-    (out / "runs" / f"{name}.json").write_text(json.dumps(record, indent=1) + "\n")
+    path.write_text(json.dumps(record, indent=1) + "\n")
     if not args.keep_data:
         shutil.rmtree(run_dir / "data", ignore_errors=True)
     summary = {k: round(v, 4) for k, v in (record.get("metrics") or {}).items()}
@@ -721,24 +748,67 @@ def cmd_quality(args: argparse.Namespace) -> int:
 
 
 ORDER = ("old", "new", "new", "old")
+# The arm of every session's priming run. A first-run penalty (cold page
+# cache, GPU clocks, a fresh build and install) is mostly shared: either
+# arm's priming run pays it. What one arm's run leaves cold for the other
+# (its binary, an artifact of its own configuration) then falls on the
+# other arm's first run. Priming with the old arm puts that residue on the
+# new arm (position 1), against it, as a non-inferiority gate should err;
+# priming with the new arm would put it on position 0's old run, in the
+# new arm's favour; alternating by session leaves it to the sessions'
+# count and order.
+PRIME_ARM = "old"
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
     family = FAMILIES[args.family]
     me = pathlib.Path(__file__).resolve()
     blocks = args.blocks or family.min_blocks
-    for block in range(args.first, args.first + blocks):
-        for position, label in enumerate(ORDER):
-            runtime = args.old if label == "old" else args.new
-            template = args.old_config if label == "old" else args.new_config
-            print(f"python3 -B {me} run --family {family.name} --runtime {runtime} "
-                  f"--label {label} --out {args.out} --block {block} --position {position}"
-                  + (f" --corpus {args.corpus}" if family.kind == "llm" else "")
-                  + (f" --config-template {template}" if template else ""))
+    runs = [(block, position, label) for block in range(args.first, args.first + blocks)
+            for position, label in enumerate(ORDER)]
+    size = args.job_runs or len(runs)
+    if size < 1:
+        raise SystemExit("plan: --job-runs is at least 1")
+    sessions = [runs[i:i + size] for i in range(0, len(runs), size)]
+    if len(sessions) > 1 and not args.steps:
+        raise SystemExit("plan: more than one job's steps; write them with --steps PREFIX")
+
+    def command(label: str, which: str) -> str:
+        runtime = args.old if label == "old" else args.new
+        template = args.old_config if label == "old" else args.new_config
+        return (f"python3 -B {me} run --family {family.name} --runtime {runtime} "
+                f"--label {label} --out {args.out} {which}"
+                + (f" --corpus {args.corpus}" if family.kind == "llm" else "")
+                + (f" --config-template {template}" if template else ""))
+
+    texts = []
+    for mine in sessions:
+        block, position, _ = mine[0]
+        session = f"{family.name}-b{block:02d}p{position}-{secrets.token_hex(4)}"
+        lines = [command(PRIME_ARM, f"--prime --session {session}")]
+        lines += [command(label, f"--block {b} --position {p} --session {session}")
+                  for b, p, label in mine]
+        texts.append("".join(f"{line}\n" for line in lines))
+    if not args.steps:
+        sys.stdout.write(texts[0])
+        return 0
+    for n, text in enumerate(texts, start=1):
+        path = pathlib.Path(f"{args.steps}-{n:02d}.steps")
+        path.write_text(text)
+        print(path)
     return 0
 
 
 # ---------------------------------------------------------------- the verdict
+
+
+def load_primes(out: pathlib.Path) -> dict:
+    """Sessions' priming runs: {session: record}."""
+    primes = {}
+    for path in sorted((out / "primes").glob("*.json")):
+        r = json.loads(path.read_text())
+        primes[r.get("session") or path.stem] = r
+    return primes
 
 
 def load_runs(out: pathlib.Path, family: str | None) -> dict:
@@ -794,11 +864,13 @@ def run_spec(spec: dict) -> dict:
             if k not in ("min_blocks", "max_blocks")}
 
 
-def validity(family: Family, mine: list[dict]) -> list[str]:
+def validity(family: Family, mine: list[dict], primes: dict) -> list[str]:
     """Why a family's counted runs cannot be judged, if they cannot: a failed or
-    incomplete run, a recorded problem, or arms whose runs differ in binary,
-    configuration or protocol constants."""
+    incomplete run, a recorded problem, a run outside a session whose priming run
+    succeeded before it, or arms whose runs differ in binary, configuration or
+    protocol constants."""
     reasons = []
+    sessions: dict = {}
     # What a run does (the stopping rule's block counts are the verdict's own).
     spec = run_spec(dataclasses.asdict(family))
     for b in mine:
@@ -815,6 +887,32 @@ def validity(family: Family, mine: list[dict]) -> list[str]:
             reasons += [f"{where}: {problem}" for problem in r.get("problems") or []]
             if run_spec(r.get("family_spec") or {}) != spec:
                 reasons.append(f"{where}: other protocol constants than the current {family.name}")
+            if r.get("session"):
+                sessions.setdefault(r["session"], []).append((where, r))
+            else:
+                reasons.append(f"{where}: no session, so no priming run")
+    for session, members in sorted(sessions.items()):
+        prime = primes.get(session)
+        if prime is None:
+            reasons.append(f"session {session}: no priming run recorded")
+            continue
+        if prime.get("family") != family.name or not prime.get("prime"):
+            reasons.append(f"session {session}: its priming record is not {family.name}'s")
+        # PRIME_ARM's own binary and configuration, as its measured runs have.
+        arm = [r for b in mine for r in b.values() if r["label"] == PRIME_ARM]
+        if prime.get("label") != PRIME_ARM or any(
+                prime.get(key) != r.get(key)
+                for r in arm for key in ("runtime_sha256", "config_sha256")):
+            reasons.append(f"session {session}: its priming run is not the {PRIME_ARM} arm's "
+                           "binary and configuration")
+        if prime.get("error"):
+            reasons.append(f"session {session}: priming run: {prime['error']}")
+        reasons += [f"session {session}: priming run: {problem}"
+                    for problem in prime.get("problems") or []]
+        began = prime.get("started_unix")
+        for where, r in members:
+            if began is None or r.get("started_unix") is None or r["started_unix"] < began:
+                reasons.append(f"session {session}: {where} did not start after its priming run")
     for label in ("old", "new"):
         runs = [r for b in mine for r in b.values() if r["label"] == label]
         for key, what in (("runtime_sha256", "runtimes"), ("config_sha256", "configurations")):
@@ -827,6 +925,7 @@ def validity(family: Family, mine: list[dict]) -> list[str]:
 
 def verdicts(out: pathlib.Path, family_name: str | None) -> dict:
     blocks = load_runs(out, family_name)
+    primes = load_primes(out)
     report = {}
     for name in sorted({f for f, _ in blocks}):
         family = FAMILIES[name]
@@ -849,7 +948,7 @@ def verdicts(out: pathlib.Path, family_name: str | None) -> dict:
             row["runs"] = {k: len(v) for k, v in runs.items()}
             row["unit"] = "GiB" if memory else "slowdown"
             rows[metric] = row
-        invalid = validity(family, mine)
+        invalid = validity(family, mine, primes)
         states = {row["verdict"] for row in rows.values()}
         overall = ("INVALID" if invalid else "INCOMPLETE" if not rows
                    else "FAIL" if "FAIL" in states else "NOT PASSED" if "NOT PASSED" in states
@@ -883,11 +982,23 @@ def spread(out: pathlib.Path, family_name: str | None) -> dict:
     (pooled; drift inside a block counts against it). For ABBA blocks of
     independent runs a block's slowdown has the same standard deviation, so
     the expected sd of block slowdowns is max(run_sd, the observed one).
+
+    It reads runs with or without a primed session (the min_blocks records
+    predate priming); `unprimed` counts the runs outside a session whose
+    priming run succeeded, whose first-run effects the spread then includes.
     """
     blocks = load_runs(out, family_name)
+    primes = load_primes(out)
+
+    def primed(r: dict) -> bool:
+        prime = primes.get(r.get("session") or "")
+        return (prime is not None and not prime.get("error") and not prime.get("problems")
+                and prime.get("family") == r.get("family"))
+
     report: dict = {}
     for name in sorted({f for f, _ in blocks}):
         mine = [blocks[k] for k in sorted(blocks) if k[0] == name]
+        unprimed = sum(not primed(r) for b in mine for r in b.values())
         metrics = sorted({m for b in mine for r in b.values() for m in (r.get("metrics") or {})})
         rows = {}
         for metric in metrics:
@@ -916,6 +1027,7 @@ def spread(out: pathlib.Path, family_name: str | None) -> dict:
                          math.exp(statistics.fmean(values))) if values else math.nan,
                 "blocks_needed": None if memory or math.isnan(expected) else
                 blocks_needed(expected),
+                "unprimed": unprimed,
             }
         report[name] = rows
     return report
@@ -927,7 +1039,8 @@ def cmd_spread(args: argparse.Namespace) -> int:
         print(json.dumps(report, indent=1))
         return 0
     for name, rows in report.items():
-        print(name)
+        unprimed = next(iter(rows.values()))["unprimed"] if rows else 0
+        print(name + (f" ({unprimed} runs outside a primed session)" if unprimed else ""))
         for metric, row in rows.items():
             if metric == "peak_gib":
                 print(f"  {metric:18} runs {row['runs']:2}: mean {row['mean']:.3f} GiB, "
@@ -1050,8 +1163,11 @@ def main(argv: list[str] | None = None) -> int:
                        help="this arm's node configuration, with {share}, {data} and {port}")
         p.set_defaults(func=func)
         if command == "run":
-            p.add_argument("--block", type=int, required=True)
-            p.add_argument("--position", type=int, required=True, choices=range(4))
+            p.add_argument("--block", type=int)
+            p.add_argument("--position", type=int, choices=range(4))
+            p.add_argument("--prime", action="store_true",
+                           help="the session's priming run, kept out of every statistic")
+            p.add_argument("--session", help="the session (job) the run belongs to")
             p.add_argument("--keep-data", action="store_true")
     p = sub.add_parser("plan")
     p.add_argument("--family", required=True, choices=sorted(FAMILIES))
@@ -1062,6 +1178,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--old-config", help="the old arm's --config-template")
     p.add_argument("--new-config", help="the new arm's --config-template")
     p.add_argument("--first", type=int, default=1)
+    p.add_argument("--job-runs", type=int,
+                   help="measured runs a job (session) at most, each job after its priming run")
+    p.add_argument("--steps", help="write each job's steps to PREFIX-NN.steps")
     p.add_argument("--corpus", default="~/.local/share/llmp/m36-baselines/inputs/"
                    "corpus-1facc957.md")
     p.set_defaults(func=cmd_plan)

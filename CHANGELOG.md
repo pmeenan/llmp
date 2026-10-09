@@ -984,6 +984,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Qwen3.8 and DeepSeek V4 no longer bring back a speculative verify's
+  rejected rows after a restore. A spill or swap write-back taken while a
+  verify still owed its restore or commit (or awaited its Accept) marked
+  the spill file current; the owed work then ran as a job of its own, and
+  the next incremental spill kept the file's older bytes. Such a state's
+  next spill now writes it whole.
+
 - DeepSeek V4 with its DSpark drafter no longer stops on four-request
   speculative waves ("graph reader index exceeds the startup scratch
   allowance"): a wave of 9 to 15 rows plans more graph nodes than the

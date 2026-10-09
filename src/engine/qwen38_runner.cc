@@ -324,7 +324,7 @@ void Qwen38Runner::StateWrittenBack(bool whole) {
   for (RequestState* request : Requests()) {
     if (!request->spilled) {
       if (whole) {
-        request->track.Saved();
+        request->track.FileHolds(request->live);
       } else {
         request->track.Lost();
       }
@@ -1597,6 +1597,8 @@ Status Qwen38Runner::Spill(RequestState& request) {
   // to its place in the slot's spill file and its backing released (the
   // swap's write-back path). A commit or restore owed by its last verify
   // stays owed: it works from the slot's own runtime memory, not spilled.
+  // The file then does not hold the state as it will be
+  // (SpillTrack::FileHolds).
   std::vector<ExtentId> written;
   std::vector<ExtentId> unchanged;
   SplitForSpill(request, written, unchanged);
@@ -1616,7 +1618,7 @@ Status Qwen38Runner::Spill(RequestState& request) {
       return evicted;
     }
   }
-  request.track.Saved();
+  request.track.FileHolds(request.live);
   return {};
 }
 
@@ -1670,7 +1672,7 @@ Status Qwen38Runner::Restore(RequestState& request) {
     request.adopted.clear();
     request.adopted_bytes = 0;
     request.spilled = false;
-    request.track.Saved();  // the file holds the state as it is now
+    request.track.FileHolds(request.live);  // the file holds the state as it is now
     return RefreshClosures();
   }
   catalog::Closure closure;

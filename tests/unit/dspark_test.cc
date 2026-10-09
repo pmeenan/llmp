@@ -31,6 +31,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "expected_error.h"
@@ -384,6 +385,43 @@ TEST(DsparkTest, AVerifysWritesAreItsRowsAndItsScratch) {
   ASSERT_EQ(dw.size(), 4U);
   EXPECT_EQ(dw[3].size(), 3U);
   EXPECT_EQ(dw[3][1].offset, ring->offsets[1] + std::uint64_t{1024});  // 257 mod 256
+}
+
+// An incremental spill (engine/live_state.h SpillTrack) writes back only
+// the ranges StateWrites(position) names for the first position a job
+// since the last spill wrote from (a chunk or verify at n_past records
+// n_past; a wave pos - 1), so everything a verify writes, its rows and its
+// scratch rows, and therefore everything its owed restore writes later,
+// lies inside DeepSeek's checkpoint writes from its n_past. In both
+// window forms, across ring wraps and block boundaries.
+TEST(DsparkTest, AVerifysWritesLieInsideItsCheckpointWrites) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  for (const md::Dsv4Window window : {md::Dsv4Window::kFull, md::Dsv4Window::kRing}) {
+    auto s = md::Dsv4State(p, 4096, 512, window);
+    ASSERT_TRUE(s.has_value()) << Why(s);
+    for (const auto& [n_past, rows] : std::array<std::pair<std::uint32_t, std::uint32_t>, 7>{
+             {{0, 4}, {125, 4}, {127, 1}, {200, 3}, {1023, 2}, {3000, 8}, {4000, 8}}}) {
+      auto chunk = md::Dsv4Chunk(p, *s, n_past, rows);
+      ASSERT_TRUE(chunk.has_value()) << n_past << ": " << Why(chunk);
+      const md::Dsv4Writes w = md::Dsv4ChunkWrites(p, *s, *chunk);
+      auto recorded = md::Dsv4CheckpointWrites(*s, n_past);
+      ASSERT_TRUE(recorded.has_value()) << Why(recorded);
+      const auto covered = [&](const md::StateRange& r) {
+        return std::ranges::any_of(*recorded, [&](const md::StateRange& c) {
+          return r.offset >= c.offset && r.offset + r.bytes <= c.offset + c.bytes;
+        });
+      };
+      std::vector<md::StateRange> all = w.scratch;
+      for (const auto& row : w.rows) {
+        all.insert(all.end(), row.begin(), row.end());
+      }
+      ASSERT_FALSE(all.empty());
+      for (const md::StateRange& r : all) {
+        EXPECT_TRUE(covered(r)) << static_cast<int>(window) << " " << n_past << "+" << rows << ": ["
+                                << r.offset << ", +" << r.bytes << ")";
+      }
+    }
+  }
 }
 
 TEST(DsparkTest, AVerifyMayNotCrossAMaskWidth) {
