@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <functional>
 #include <iterator>
 #include <map>
@@ -20,6 +21,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -32,6 +34,7 @@
 #include "import/error.h"
 #include "import/files.h"
 #include "import/readers/hf_quant.h"
+#include "import/readers/mlx.h"
 
 namespace llmp::import {
 namespace {
@@ -41,10 +44,14 @@ using format::Encoding;
 
 constexpr std::string_view kConfigName = "config.json";
 constexpr std::string_view kHfQuantName = "hf_quant_config.json";
-constexpr std::string_view kIndexName = "model.safetensors.index.json";
-constexpr std::string_view kSingleName = "model.safetensors";
+// The weights' base names: a transformers model's, a diffusers component's.
+constexpr std::array<std::string_view, 2> kWeightBases = {"model", "diffusion_pytorch_model"};
 constexpr std::string_view kShardSuffix = ".safetensors";
+constexpr std::string_view kIndexSuffix = ".safetensors.index.json";
 constexpr std::size_t kMaxShardName = 255;
+constexpr std::size_t kMaxVariant = 64;
+// Entries listed looking for a variant's weights.
+constexpr std::size_t kMaxDirectoryEntries = 4 * kMaxShards;
 
 struct Dtype {
   std::string_view name;
@@ -89,20 +96,6 @@ bool PlainName(std::string_view name) {
 
 bool TensorName(std::string_view name) {
   return !name.empty() && name.size() <= kMaxNameBytes && NoControlCharacters(name);
-}
-
-bool ExpertsName(std::string_view name) {
-  std::size_t start = 0;
-  while (true) {
-    const std::size_t dot = name.find('.', start);
-    if (name.substr(start, dot == std::string_view::npos ? dot : dot - start) == "experts") {
-      return true;
-    }
-    if (dot == std::string_view::npos) {
-      return false;
-    }
-    start = dot + 1;
-  }
 }
 
 std::optional<std::uint64_t> NonNegative(json::Value v) {
@@ -171,11 +164,12 @@ MetaValue ListOf(json::Value list) {
 }
 
 std::expected<void, Error> Flatten(json::Value v, const std::string& key,
+                                   std::span<const std::string_view> skip,
                                    std::map<std::string, MetaValue, std::less<>>& out) {
   switch (v.kind()) {
     case json::Kind::kObject:
       for (std::size_t i = 0; i < v.size(); ++i) {
-        if (key.empty() && v.key(i) == "quantization_config") {
+        if (key.empty() && std::ranges::contains(skip, v.key(i))) {
           continue;
         }
         std::string member =
@@ -183,7 +177,7 @@ std::expected<void, Error> Flatten(json::Value v, const std::string& key,
         if (member.size() > kMaxKeyBytes) {
           return Fail(Rule::kBounds, "a config.json key longer than the reader's cap");
         }
-        if (auto ok = Flatten(v.member(i), member, out); !ok) {
+        if (auto ok = Flatten(v.member(i), member, skip, out); !ok) {
           return ok;
         }
       }
@@ -210,12 +204,6 @@ std::expected<void, Error> Flatten(json::Value v, const std::string& key,
   return {};
 }
 
-struct Config {
-  std::string architecture{};
-  std::vector<MetaEntry> metadata{};
-  std::optional<Quantization> quantization{};
-};
-
 json::Limits DocumentLimits(std::uint64_t bytes, std::size_t depth, std::size_t values) {
   return {.max_bytes = static_cast<std::size_t>(bytes),
           .max_depth = depth,
@@ -223,65 +211,91 @@ json::Limits DocumentLimits(std::uint64_t bytes, std::size_t depth, std::size_t 
           .max_string_bytes = static_cast<std::size_t>(bytes)};
 }
 
-std::expected<Config, Error> ParseConfig(std::string_view text,
-                                         std::optional<std::string_view> hf_text) {
+// A config document (config.json, hf_quant_config.json) within its cap.
+std::expected<json::Document, Error> ParseConfigDocument(std::string_view text,
+                                                         std::string_view large,
+                                                         std::string_view invalid) {
   if (text.size() > kMaxConfigBytes) {
-    return Fail(Rule::kBounds, "a config.json larger than its cap");
+    return Fail(Rule::kBounds, large);
   }
-  const auto doc =
+  auto doc =
       json::Parse(text, DocumentLimits(kMaxConfigBytes, kMaxConfigDepth, std::size_t{1} << 20U));
   if (!doc) {
-    return Fail(Rule::kConfig, "config.json is not valid JSON within the reader's limits", kNoItem,
-                ItemKind::kByte, doc.error().offset);
+    return Fail(Rule::kConfig, invalid, kNoItem, ItemKind::kByte, doc.error().offset);
   }
-  const json::Value root = doc->root();
+  return std::move(*doc);
+}
+
+bool ArchitectureName(json::Value v) {
+  return v.is_string() && !v.string().empty() && v.string().size() <= kMaxArchitecture &&
+         NoControlCharacters(v.string());
+}
+
+// The root members config.json's metadata leaves out: the quantization
+// the readers describe as tensor formats.
+constexpr std::array<std::string_view, 2> kQuantizationMembers = {"quantization_config",
+                                                                  "quantization"};
+
+// config.json and hf_quant_config.json parsed, and what config.json says
+// of every checkpoint: its architecture and metadata.
+struct Config {
+  json::Document document{};
+  std::optional<json::Document> hf{};
+  std::string architecture{};
+  std::vector<MetaEntry> metadata{};
+};
+
+std::expected<Config, Error> ParseConfig(std::string_view text,
+                                         std::optional<std::string_view> hf_text) {
+  auto doc = ParseConfigDocument(text, "a config.json larger than its cap",
+                                 "config.json is not valid JSON within the reader's limits");
+  if (!doc) {
+    return std::unexpected(doc.error());
+  }
+  Config c{.document = std::move(*doc)};
+  const json::Value root = c.document.root();
   if (!root.is_object()) {
     return Fail(Rule::kConfig, "config.json is not an object");
   }
+  // A transformers model's model_type, or a diffusers component's
+  // _class_name when it has none.
   const auto model_type = root.find("model_type");
-  if (!model_type || !model_type->is_string() || model_type->string().empty() ||
-      model_type->string().size() > kMaxArchitecture ||
-      !NoControlCharacters(model_type->string())) {
-    return Fail(Rule::kConfig, "config.json has no model_type string of 1 to 200 bytes");
+  const auto name = model_type ? model_type : root.find("_class_name");
+  if (!name || !ArchitectureName(*name)) {
+    return Fail(Rule::kConfig,
+                "config.json has no model_type (or _class_name) string of 1 to 200 bytes");
   }
-  Config c{.architecture = std::string(model_type->string())};
-  std::optional<json::Document> hf_doc;
+  c.architecture = std::string(name->string());
   if (hf_text) {
-    if (hf_text->size() > kMaxConfigBytes) {
-      return Fail(Rule::kBounds, "an hf_quant_config.json larger than its cap");
+    auto hf =
+        ParseConfigDocument(*hf_text, "an hf_quant_config.json larger than its cap",
+                            "hf_quant_config.json is not valid JSON within the reader's limits");
+    if (!hf) {
+      return std::unexpected(hf.error());
     }
-    auto parsed = json::Parse(
-        *hf_text, DocumentLimits(kMaxConfigBytes, kMaxConfigDepth, std::size_t{1} << 20U));
-    if (!parsed) {
-      return Fail(Rule::kConfig,
-                  "hf_quant_config.json is not valid JSON within the reader's limits", kNoItem,
-                  ItemKind::kByte, parsed.error().offset);
-    }
-    hf_doc = std::move(*parsed);
+    c.hf = std::move(*hf);
   }
-  const json::Value hf_root = hf_doc ? hf_doc->root() : root;
-  auto quantization = RecognizeQuantization(root, hf_doc ? &hf_root : nullptr);
-  if (!quantization) {
-    return std::unexpected(quantization.error());
+  auto metadata = FlattenMetadata(root, kQuantizationMembers);
+  if (!metadata) {
+    return std::unexpected(metadata.error());
   }
-  c.quantization = std::move(*quantization);
-  std::map<std::string, MetaValue, std::less<>> flat;
-  if (auto ok = Flatten(root, {}, flat); !ok) {
-    return std::unexpected(ok.error());
-  }
-  c.metadata.reserve(flat.size());
-  for (auto& [key, value] : flat) {
-    c.metadata.push_back({.key = key, .value = std::move(value)});
-  }
+  c.metadata = std::move(*metadata);
   return c;
 }
 
 // ------------------------------------------------------------- shards
 
+// What a shard's `__metadata__.format` says wrote it: nothing, MLX
+// ("mlx"), or another library ("pt", "tf", ...).
+enum class ShardFormat : std::uint8_t { kNone, kMlx, kOther };
+
 // The tensors of one shard's header (`header`, which follows its 8-byte
-// length), whose data section starts at `data` in a file of `size` bytes.
+// length), whose data section starts at `data` in a file of `size` bytes,
+// and the format its metadata names.
 std::expected<std::vector<Tensor>, Error> ParseHeader(std::string_view header, std::uint64_t data,
-                                                      std::uint64_t size, std::uint32_t file) {
+                                                      std::uint64_t size, std::uint32_t file,
+                                                      ShardFormat& format) {
+  format = ShardFormat::kNone;
   // Depth 4: an entry's members may hold one more level, which is ignored.
   const auto doc = json::Parse(header, DocumentLimits(header.size(), 4, std::size_t{1} << 23U));
   if (!doc) {
@@ -311,7 +325,13 @@ std::expected<std::vector<Tensor>, Error> ParseHeader(std::string_view header, s
       return Fail(rule, reason, file, ItemKind::kTensor, i);
     };
     if (name == "__metadata__") {
-      continue;  // free text the description does not use
+      // Free text, but for the writer's `format`: MLX's arrays keep their
+      // own axis order (readers/mlx.h).
+      const auto f = v.is_object() ? v.find("format") : std::nullopt;
+      if (f && f->is_string()) {
+        format = f->string() == "mlx" ? ShardFormat::kMlx : ShardFormat::kOther;
+      }
+      continue;
     }
     if (!TensorName(name)) {
       return refuse(Rule::kContainer, "a tensor name empty, too long or with control characters");
@@ -370,7 +390,7 @@ std::expected<std::vector<Tensor>, Error> ParseHeader(std::string_view header, s
     if (!parts || (*parts)[0].bytes != bytes) {
       return refuse(Rule::kContainer, "a tensor the size rule does not size as its dtype");
     }
-    t.experts = rank == 3 && ExpertsName(t.name);
+    t.experts = rank == 3 && HasComponent(t.name, "experts");
     entries.push_back({.begin = *begin, .end = *end, .member = tensors.size()});
     tensors.push_back(std::move(t));
   }
@@ -398,8 +418,17 @@ std::expected<std::vector<Tensor>, Error> ParseHeader(std::string_view header, s
   return ordered;
 }
 
-// One shard's tensors from its open file.
-std::expected<std::vector<Tensor>, Error> ReadShard(const OpenFile& f, std::uint32_t file) {
+std::uint64_t HeaderLength(std::span<const std::byte, 8> length) {
+  std::uint64_t n = 0;
+  for (std::size_t i = 0; i < length.size(); ++i) {
+    n |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(length[i])) << (8U * i);
+  }
+  return n;
+}
+
+// One shard's tensors from its open file, and its format.
+std::expected<std::vector<Tensor>, Error> ReadShard(const OpenFile& f, std::uint32_t file,
+                                                    ShardFormat& format) {
   std::array<std::byte, 8> length{};
   if (f.bytes < length.size()) {
     return Fail(Rule::kContainer, "a safetensors file shorter than its header length", file);
@@ -407,10 +436,7 @@ std::expected<std::vector<Tensor>, Error> ReadShard(const OpenFile& f, std::uint
   if (auto ok = ReadExactly(f.fd.get(), 0, length, file); !ok) {
     return std::unexpected(ok.error());
   }
-  std::uint64_t n = 0;
-  for (std::size_t i = 0; i < length.size(); ++i) {
-    n |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(length.at(i))) << (8U * i);
-  }
+  const std::uint64_t n = HeaderLength(length);
   if (n > kMaxHeaderBytes) {
     return Fail(Rule::kBounds, "a safetensors header beyond its cap", file);
   }
@@ -421,7 +447,7 @@ std::expected<std::vector<Tensor>, Error> ReadShard(const OpenFile& f, std::uint
   if (auto ok = ReadExactly(f.fd.get(), 8, std::as_writable_bytes(std::span(header)), file); !ok) {
     return std::unexpected(ok.error());
   }
-  return ParseHeader(header, 8 + n, f.bytes, file);
+  return ParseHeader(header, 8 + n, f.bytes, file, format);
 }
 
 // The index's weight map: tensor name to shard name.
@@ -454,27 +480,175 @@ std::expected<std::map<std::string, std::string, std::less<>>, Error> ParseIndex
   return out;
 }
 
-// The checkpoint of a config and its shards' tensors.
-std::expected<Checkpoint, Error> Assemble(Config config, std::vector<Tensor> tensors) {
-  if (tensors.size() > kMaxTensors) {
-    return Fail(Rule::kBounds, "more tensors than the reader's cap");
+// The weights' files beneath a directory under one base name and variant:
+// its index, its single file, either or both, by name.
+struct Weights {
+  std::string index_name{};
+  std::string single_name{};
+  std::optional<OpenFile> index{};
+  std::optional<OpenFile> single{};
+};
+
+// A variant's name (diffusers' and transformers' `variant`: "fp16", "bf16",
+// "non_ema"): letters, digits and '_', which a sharded file's
+// "-00001-of-00002" never is.
+bool VariantName(std::string_view v) {
+  return !v.empty() && v.size() <= kMaxVariant && std::ranges::all_of(v, [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+  });
+}
+
+// The variant `name` holds weights of under `base`: <base>.<v>.safetensors
+// or <base>.safetensors.index.<v>.json (both libraries' `_add_variant`,
+// the variant before the last extension), or none.
+std::optional<std::string_view> VariantOf(std::string_view name, std::string_view base) {
+  if (!name.starts_with(base) || !name.substr(base.size()).starts_with('.')) {
+    return std::nullopt;
   }
-  if (auto ok = ApplyQuantization(config.quantization, tensors); !ok) {
-    return std::unexpected(ok.error());
+  name.remove_prefix(base.size() + 1);
+  constexpr std::string_view kIndexStem = "safetensors.index.";
+  constexpr std::string_view kJson = ".json";
+  std::string_view v;
+  if (name.size() > kIndexStem.size() + kJson.size() && name.starts_with(kIndexStem) &&
+      name.ends_with(kJson)) {
+    v = name.substr(kIndexStem.size(), name.size() - kIndexStem.size() - kJson.size());
+  } else if (name.size() > kShardSuffix.size() && name.ends_with(kShardSuffix)) {
+    v = name.substr(0, name.size() - kShardSuffix.size());
+  } else {
+    return std::nullopt;
   }
-  Checkpoint c{.container = "safetensors", .architecture = std::move(config.architecture)};
-  if (config.quantization) {
-    c.quantization = config.quantization->method + " " + config.quantization->algorithm;
+  return VariantName(v) ? std::optional(v) : std::nullopt;
+}
+
+// The files of `base` under `variant` (none: the default names), opened
+// when present.
+std::expected<Weights, Error> OpenWeights(const std::filesystem::path& root, uid_t trusted,
+                                          std::string_view base, std::string_view variant) {
+  Weights w;
+  if (variant.empty()) {
+    w.index_name = std::string(base) + std::string(kIndexSuffix);
+    w.single_name = std::string(base) + std::string(kShardSuffix);
+  } else {
+    w.index_name = std::format("{}.safetensors.index.{}.json", base, variant);
+    w.single_name = std::format("{}.{}{}", base, variant, kShardSuffix);
   }
-  c.tensors = std::move(tensors);
-  c.metadata = std::move(config.metadata);
-  return c;
+  auto index = OpenTrustedFileIfPresent(root / w.index_name, trusted, kNoItem);
+  if (!index) {
+    return std::unexpected(index.error());
+  }
+  auto single = OpenTrustedFileIfPresent(root / w.single_name, trusted, 0);
+  if (!single) {
+    return std::unexpected(single.error());
+  }
+  w.index = std::move(*index);
+  w.single = std::move(*single);
+  return w;
+}
+
+// The weights a directory holds: under the default names of one base, or,
+// with none, under the one variant of one base it holds (as a library
+// loading it without a variant would, or could only, read). Weights under
+// both bases, or several variants and no default, are ambiguous.
+std::expected<Weights, Error> FindWeights(const std::filesystem::path& root, uid_t trusted) {
+  std::optional<Weights> found;
+  for (const std::string_view base : kWeightBases) {
+    auto w = OpenWeights(root, trusted, base, {});
+    if (!w) {
+      return std::unexpected(w.error());
+    }
+    if (!w->index && !w->single) {
+      continue;
+    }
+    if (found) {
+      return Fail(Rule::kShards, "weights under both model and diffusion_pytorch_model");
+    }
+    found = std::move(*w);
+  }
+  if (found) {
+    return std::move(*found);
+  }
+  std::error_code error;
+  std::filesystem::directory_iterator it(root, error);
+  if (error) {
+    return Fail(Rule::kIo, "cannot list a checkpoint's directory");
+  }
+  std::set<std::pair<std::string_view, std::string>> variants;  // base, variant
+  std::size_t entries = 0;
+  while (it != std::filesystem::directory_iterator()) {
+    if (++entries > kMaxDirectoryEntries) {
+      return Fail(Rule::kBounds, "a checkpoint directory of more entries than the reader's cap");
+    }
+    const std::string name = it->path().filename().string();
+    for (const std::string_view base : kWeightBases) {
+      if (const auto v = VariantOf(name, base)) {
+        variants.emplace(base, std::string(*v));
+      }
+    }
+    it.increment(error);
+    if (error) {
+      return Fail(Rule::kIo, "cannot list a checkpoint's directory");
+    }
+  }
+  if (variants.empty()) {
+    return Fail(Rule::kFileType, "no model.safetensors and no shard index");
+  }
+  if (variants.size() > 1) {
+    return Fail(Rule::kShards, "weights under several variants and no default, or both bases");
+  }
+  return OpenWeights(root, trusted, variants.begin()->first, variants.begin()->second);
 }
 
 }  // namespace
 
-std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& directory,
-                                                 uid_t trusted) {
+bool HasComponent(std::string_view name, std::string_view component) {
+  std::size_t start = 0;
+  while (true) {
+    const std::size_t dot = name.find('.', start);
+    if (name.substr(start, dot == std::string_view::npos ? dot : dot - start) == component) {
+      return true;
+    }
+    if (dot == std::string_view::npos) {
+      return false;
+    }
+    start = dot + 1;
+  }
+}
+
+std::expected<std::vector<MetaEntry>, Error> FlattenMetadata(
+    json::Value root, std::span<const std::string_view> skip) {
+  if (!root.is_object()) {
+    return Fail(Rule::kConfig, "a configuration document that is not an object");
+  }
+  std::map<std::string, MetaValue, std::less<>> flat;
+  if (auto ok = Flatten(root, {}, skip, flat); !ok) {
+    return std::unexpected(ok.error());
+  }
+  std::vector<MetaEntry> out;
+  out.reserve(flat.size());
+  for (auto& [key, value] : flat) {
+    out.push_back({.key = key, .value = std::move(value)});
+  }
+  return out;
+}
+
+std::optional<json::Document> PeekConfig(const std::filesystem::path& directory, uid_t trusted) {
+  auto f = OpenTrustedFileIfPresent(directory / kConfigName, trusted, kNoItem);
+  if (!f || !f->has_value()) {
+    return std::nullopt;
+  }
+  auto text = ReadDocument(**f, kMaxConfigBytes, kNoItem);
+  if (!text) {
+    return std::nullopt;
+  }
+  auto doc = ParseConfigDocument(*text, {}, {});
+  if (!doc || !doc->root().is_object()) {
+    return std::nullopt;
+  }
+  return std::move(*doc);
+}
+
+std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& directory,
+                                                  uid_t trusted) {
   auto root = TrustedDirectory(directory, trusted);
   if (!root) {
     return std::unexpected(root.error());
@@ -483,6 +657,19 @@ std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& di
   std::vector<OpenFile> open;
   // A document beside the shards, when present; it follows them in the
   // checkpoint's file order.
+  const auto keep = [&](std::string_view name, OpenFile opened,
+                        std::uint64_t limit) -> std::expected<std::string, Error> {
+    auto text = ReadDocument(opened, limit, kNoItem);
+    if (!text) {
+      return std::unexpected(text.error());
+    }
+    sources.push_back({.name = std::string(name),
+                       .bytes = opened.bytes,
+                       .device = opened.device,
+                       .inode = opened.inode});
+    open.push_back(std::move(opened));
+    return std::move(*text);
+  };
   const auto document =
       [&](std::string_view name,
           std::uint64_t limit) -> std::expected<std::optional<std::string>, Error> {
@@ -493,16 +680,10 @@ std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& di
     if (!f->has_value()) {
       return std::optional<std::string>();
     }
-    OpenFile& opened = **f;
-    auto text = ReadDocument(opened, limit, kNoItem);
+    auto text = keep(name, std::move(**f), limit);
     if (!text) {
       return std::unexpected(text.error());
     }
-    sources.push_back({.name = std::string(name),
-                       .bytes = opened.bytes,
-                       .device = opened.device,
-                       .inode = opened.inode});
-    open.push_back(std::move(opened));
     return std::optional<std::string>(std::move(*text));
   };
   auto config_text = document(kConfigName, kMaxConfigBytes);
@@ -524,14 +705,19 @@ std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& di
   if (!config) {
     return std::unexpected(config.error());
   }
-  auto index_text = document(kIndexName, kMaxIndexBytes);
-  if (!index_text) {
-    return std::unexpected(index_text.error());
+  auto weights = FindWeights(*root, trusted);
+  if (!weights) {
+    return std::unexpected(weights.error());
   }
+  const std::string& single_name = weights->single_name;
   std::optional<std::map<std::string, std::string, std::less<>>> index;
   std::vector<std::string> shards;
-  if (*index_text) {
-    auto parsed = ParseIndex(**index_text);
+  if (weights->index) {
+    auto text = keep(weights->index_name, std::move(*weights->index), kMaxIndexBytes);
+    if (!text) {
+      return std::unexpected(text.error());
+    }
+    auto parsed = ParseIndex(*text);
     if (!parsed) {
       return std::unexpected(parsed.error());
     }
@@ -545,42 +731,43 @@ std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& di
     }
     shards.assign(names.begin(), names.end());
   }
-  auto single = OpenTrustedFileIfPresent(*root / kSingleName, trusted, 0);
-  if (!single) {
-    return std::unexpected(single.error());
-  }
-  if (single->has_value() && index) {
-    // model.safetensors beside an index is one of its shards, or a stray
+  std::optional<OpenFile>& single = weights->single;
+  if (single && index) {
+    // The single file beside an index is one of its shards, or a stray
     // that makes the checkpoint ambiguous.
-    if (!std::ranges::binary_search(shards, kSingleName)) {
+    if (!std::ranges::binary_search(shards, single_name)) {
       return Fail(Rule::kShards, "both model.safetensors and a shard index that does not name it");
     }
-    single->reset();
+    single.reset();
   }
-  if (!single->has_value() && !index) {
-    return Fail(Rule::kFileType, "no model.safetensors and no shard index");
-  }
-  if (single->has_value()) {
-    shards.emplace_back(kSingleName);
+  if (single) {
+    shards.push_back(single_name);
   }
   std::vector<Tensor> tensors;
   std::set<std::string_view> seen;
+  bool mlx = false;
+  bool other = false;
   const std::size_t documents = open.size();
   // The shards come first in the checkpoint's file order.
   std::vector<SourceFile> shard_files;
   std::vector<OpenFile> shard_open;
   for (std::size_t s = 0; s < shards.size(); ++s) {
     const auto file = static_cast<std::uint32_t>(s);
-    // model.safetensors was opened above; an index's shards are opened here.
-    std::expected<OpenFile, Error> f = single->has_value()
-                                           ? std::expected<OpenFile, Error>(std::move(**single))
-                                           : OpenTrustedFile(*root / shards[s], trusted, file);
+    // The single file was opened above; an index's shards are opened here.
+    std::expected<OpenFile, Error> f = single ? std::expected<OpenFile, Error>(std::move(*single))
+                                              : OpenTrustedFile(*root / shards[s], trusted, file);
     if (!f) {
       return std::unexpected(f.error());
     }
-    auto shard = ReadShard(*f, file);
+    ShardFormat format = ShardFormat::kNone;
+    auto shard = ReadShard(*f, file, format);
     if (!shard) {
       return std::unexpected(shard.error());
+    }
+    mlx = mlx || format == ShardFormat::kMlx;
+    other = other || format == ShardFormat::kOther;
+    if (mlx && other) {
+      return Fail(Rule::kShards, "shards in MLX's format and in another's", file);
     }
     if (tensors.size() + shard->size() > kMaxTensors) {
       return Fail(Rule::kBounds, "more tensors than the reader's cap", file);
@@ -609,23 +796,26 @@ std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& di
   if (index && index->size() != tensors.size()) {
     return Fail(Rule::kShards, "the shard index names a tensor no shard holds");
   }
-  auto c = Assemble(std::move(*config), std::move(tensors));
-  if (!c) {
-    return std::unexpected(c.error());
-  }
+  HfDirectory out{
+      .config = std::move(config->document), .hf_quant = std::move(config->hf), .mlx = mlx};
+  Checkpoint& c = out.checkpoint;
+  c.container = "safetensors";
+  c.architecture = std::move(config->architecture);
+  c.metadata = std::move(config->metadata);
+  c.tensors = std::move(tensors);
   // Shards, then the documents (their extents name only shards).
-  c->files = std::move(shard_files);
-  c->open = std::move(shard_open);
+  c.files = std::move(shard_files);
+  c.open = std::move(shard_open);
   for (std::size_t d = 0; d < documents; ++d) {
-    c->files.push_back(std::move(sources[d]));
-    c->open.push_back(std::move(open[d]));
+    c.files.push_back(std::move(sources[d]));
+    c.open.push_back(std::move(open[d]));
   }
-  return c;
+  return out;
 }
 
-std::expected<Checkpoint, Error> ParseSafetensors(std::span<const std::byte> shard,
-                                                  std::string_view config,
-                                                  std::string_view hf_quant_config) {
+std::expected<HfDirectory, Error> ParseHfShard(std::span<const std::byte> shard,
+                                               std::string_view config,
+                                               std::string_view hf_quant_config) {
   auto parsed = ParseConfig(config, hf_quant_config.empty()
                                         ? std::nullopt
                                         : std::optional<std::string_view>(hf_quant_config));
@@ -635,10 +825,7 @@ std::expected<Checkpoint, Error> ParseSafetensors(std::span<const std::byte> sha
   if (shard.size() < 8) {
     return Fail(Rule::kContainer, "a safetensors file shorter than its header length", 0);
   }
-  std::uint64_t n = 0;
-  for (std::size_t i = 0; i < 8; ++i) {
-    n |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(shard[i])) << (8U * i);
-  }
+  const std::uint64_t n = HeaderLength(shard.first<8>());
   if (n > kMaxHeaderBytes) {
     return Fail(Rule::kBounds, "a safetensors header beyond its cap", 0);
   }
@@ -647,16 +834,69 @@ std::expected<Checkpoint, Error> ParseSafetensors(std::span<const std::byte> sha
   }
   const std::string_view header(reinterpret_cast<const char*>(shard.data() + 8),
                                 static_cast<std::size_t>(n));
-  auto tensors = ParseHeader(header, 8 + n, shard.size(), 0);
+  ShardFormat format = ShardFormat::kNone;
+  auto tensors = ParseHeader(header, 8 + n, shard.size(), 0, format);
   if (!tensors) {
     return std::unexpected(tensors.error());
   }
-  auto c = Assemble(std::move(*parsed), std::move(*tensors));
-  if (!c) {
-    return std::unexpected(c.error());
+  HfDirectory out{.config = std::move(parsed->document),
+                  .hf_quant = std::move(parsed->hf),
+                  .mlx = format == ShardFormat::kMlx};
+  Checkpoint& c = out.checkpoint;
+  c.container = "safetensors";
+  c.architecture = std::move(parsed->architecture);
+  c.metadata = std::move(parsed->metadata);
+  c.tensors = std::move(*tensors);
+  c.files.push_back({.name = "memory", .bytes = shard.size()});
+  return out;
+}
+
+namespace {
+
+// The checkpoint with the quantization config.json and
+// hf_quant_config.json describe applied (hf_quant.h).
+std::expected<Checkpoint, Error> Quantized(HfDirectory dir) {
+  const std::optional<json::Value> hf =
+      dir.hf_quant ? std::optional<json::Value>(dir.hf_quant->root()) : std::nullopt;
+  auto quantization = RecognizeQuantization(dir.config.root(), hf ? &*hf : nullptr);
+  if (!quantization) {
+    return std::unexpected(quantization.error());
   }
-  c->files.push_back({.name = "memory", .bytes = shard.size()});
-  return c;
+  Checkpoint& c = dir.checkpoint;
+  if (auto ok = ApplyQuantization(*quantization, c.tensors); !ok) {
+    return std::unexpected(ok.error());
+  }
+  if (*quantization) {
+    c.quantization = (*quantization)->method + " " + (*quantization)->algorithm;
+  }
+  return std::move(c);
+}
+
+}  // namespace
+
+std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& directory,
+                                                 uid_t trusted) {
+  auto dir = ReadHfDirectory(directory, trusted);
+  if (!dir) {
+    return std::unexpected(dir.error());
+  }
+  if (dir->mlx) {
+    return MlxCheckpoint(std::move(*dir));  // MLX's, though unquantized
+  }
+  return Quantized(std::move(*dir));
+}
+
+std::expected<Checkpoint, Error> ParseSafetensors(std::span<const std::byte> shard,
+                                                  std::string_view config,
+                                                  std::string_view hf_quant_config) {
+  auto dir = ParseHfShard(shard, config, hf_quant_config);
+  if (!dir) {
+    return std::unexpected(dir.error());
+  }
+  if (dir->mlx) {
+    return MlxCheckpoint(std::move(*dir));
+  }
+  return Quantized(std::move(*dir));
 }
 
 }  // namespace llmp::import

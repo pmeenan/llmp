@@ -10,7 +10,9 @@
 // check it; tensor scales; the EXL3 trellis's codebooks, tile layout and
 // transforms against values and products derived apart from the
 // reference (exl3_trellis_test checks it against ExLlamaV3's own kernels);
-// every state encoding's encode and decode; refusals; and, where the M3 store holds them (a
+// the affine encoding against hand-computed values, MLX's bit order and
+// its documented quantization; every state encoding's encode and decode;
+// refusals; and, where the M3 store holds them (a
 // Spark), the routed experts of both Qwen3.8 imports (GGML's blocks and the
 // CUTLASS layout) decoding to the same values.
 
@@ -27,6 +29,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <random>
 #include <span>
@@ -493,11 +496,15 @@ TEST(ReferenceDecodeTest, TensorScalesFollowTheStackedMatrices) {
 struct Trellis {
   TensorFormat format;
   std::vector<std::byte> codes, suh, svh, marker;
+  // A 3inst trellis has no marker (upstream's modules name mcg and mul1 by
+  // their marker tensors).
   std::vector<ref::PartView> parts() const {
-    return {{PartRole::kCodes, codes},
-            {PartRole::kInputSigns, suh},
-            {PartRole::kOutputSigns, svh},
-            {PartRole::kCodebookMarker, marker}};
+    std::vector<ref::PartView> out = {
+        {PartRole::kCodes, codes}, {PartRole::kInputSigns, suh}, {PartRole::kOutputSigns, svh}};
+    if (format.params.codebook != format::Exl3Codebook::k3Inst) {
+      out.push_back({PartRole::kCodebookMarker, marker});
+    }
+    return out;
   }
 };
 
@@ -720,6 +727,195 @@ TEST(ReferenceDecodeTest, Exl3RefusesWhatUpstreamDoesNotTake) {
 }
 
 // ---------------------------------------------------------------- state encodings
+
+// ---------------------------------------------------------------- affine
+
+TensorFormat Affine(std::uint64_t k, std::uint64_t n, std::uint8_t bits, std::uint32_t group,
+                    format::AffineScale scale, bool zeros = false, std::uint64_t matrices = 1) {
+  TensorFormat f = Matrix(Encoding::kAffine, Layout::kSplit, k, n, matrices);
+  f.params.bits = bits;
+  f.params.group = group;
+  f.params.scale = scale;
+  f.params.zero_point = zeros;
+  return f;
+}
+
+std::vector<std::byte> Bf16s(std::initializer_list<float> values) {
+  std::vector<std::byte> out;
+  for (const float v : values) {
+    const std::uint16_t b = ref::F32ToBf16(v);
+    out.push_back(static_cast<std::byte>(b & 0xFFU));
+    out.push_back(static_cast<std::byte>(b >> 8U));
+  }
+  return out;
+}
+
+// Codes as one little-endian bit stream, code i at bit i · bits.
+std::vector<std::byte> Pack(const std::vector<std::uint32_t>& codes, std::uint32_t bits) {
+  std::vector<std::byte> out(((codes.size() * bits) + 7) / 8);
+  for (std::size_t i = 0; i < codes.size(); ++i) {
+    for (std::uint32_t b = 0; b < bits; ++b) {
+      if (((codes[i] >> b) & 1U) != 0) {
+        const std::size_t bit = (i * bits) + b;
+        out[bit / 8] |= static_cast<std::byte>(1U << (bit % 8));
+      }
+    }
+  }
+  return out;
+}
+
+// A row's codes, a scale of 1 and a bias of 0 a group: the codes' values.
+std::vector<float> Codes(std::span<const std::byte> codes, std::uint64_t k, std::uint8_t bits,
+                         std::uint32_t group) {
+  std::vector<float> ones(k / group, 1.0f);
+  std::vector<float> zeros(k / group, 0.0f);
+  const std::vector<ref::PartView> parts = {
+      {PartRole::kCodes, codes},
+      {PartRole::kBlockScales, std::as_bytes(std::span(ones))},
+      {PartRole::kBiases, std::as_bytes(std::span(zeros))}};
+  return Decode(Affine(k, 1, bits, group, format::AffineScale::kF32), parts, 0, 0, 1);
+}
+
+// Hand-computed values: MLX's s · q + b with BF16 scales and biases, in
+// the bit order mx.quantize documents ("packed in an unsigned 32-bit
+// integer from the lower to upper bits"), at any row of any matrix; and
+// AWQ's and GPTQ's s · (q − z).
+TEST(ReferenceDecodeTest, AffineIsScaleTimesCodePlusBias) {
+  // Row 0: codes 0 to 15 (bytes 0x10, 0x32, ... 0xFE); row 1: all 15.
+  const TensorFormat f = Affine(16, 2, 4, 8, format::AffineScale::kBF16);
+  std::vector<std::byte> codes = {std::byte{0x10}, std::byte{0x32}, std::byte{0x54},
+                                  std::byte{0x76}, std::byte{0x98}, std::byte{0xBA},
+                                  std::byte{0xDC}, std::byte{0xFE}};
+  codes.resize(16, std::byte{0xFF});
+  const auto scales = Bf16s({0.5f, -2.0f, 1.0f, 1.0f});
+  const auto biases = Bf16s({1.0f, 0.25f, -7.5f, 0.0f});
+  const std::vector<ref::PartView> parts = {
+      {PartRole::kCodes, codes}, {PartRole::kBlockScales, scales}, {PartRole::kBiases, biases}};
+  const std::vector<float> rows = Decode(f, parts, 0, 0, 2);
+  for (std::uint64_t j = 0; j < 16; ++j) {
+    const auto q = static_cast<float>(j);
+    EXPECT_EQ(rows[j], j < 8 ? (0.5f * q) + 1.0f : (-2.0f * q) + 0.25f) << j;
+    EXPECT_EQ(rows[16 + j], j < 8 ? 7.5f : 15.0f) << j;
+  }
+  EXPECT_EQ(Decode(f, parts, 0, 1, 1)[3], 7.5f);
+  // One rounding: 3 · (1 + 2^-7) + 2^-9 is exact in F32 (BF16 scales keep
+  // the product exact), and 3 · (1 + 2^-7) + 2^-30 rounds once to the
+  // product.
+  const auto odd_scales = Bf16s({1.0f + 0x1p-7f, 1.0f, 1.0f, 1.0f});
+  const auto odd_biases = Bf16s({0x1p-9f, 0.0f, 0.0f, 0.0f});
+  const std::vector<ref::PartView> odd = {{PartRole::kCodes, codes},
+                                          {PartRole::kBlockScales, odd_scales},
+                                          {PartRole::kBiases, odd_biases}};
+  EXPECT_EQ(Decode(f, odd, 0, 0, 1)[3], 3.0f + (3.0f * 0x1p-7f) + 0x1p-9f);
+  const auto tiny_biases = Bf16s({0x1p-30f, 0.0f, 0.0f, 0.0f});
+  const std::vector<ref::PartView> tiny = {{PartRole::kCodes, codes},
+                                           {PartRole::kBlockScales, odd_scales},
+                                           {PartRole::kBiases, tiny_biases}};
+  EXPECT_EQ(Decode(f, tiny, 0, 0, 1)[3], 3.0f + (3.0f * 0x1p-7f));
+
+  // Zero points: F16 scales, z of 4 bits a group.
+  const TensorFormat z = Affine(16, 1, 4, 8, format::AffineScale::kF16, true);
+  const std::array<std::uint16_t, 2> half = {ref::F32ToF16(0.25f), ref::F32ToF16(-1.0f)};
+  const std::vector<std::byte> zeros = {std::byte{0x38}};  // z = 8, then 3
+  const std::vector<ref::PartView> zp = {{PartRole::kCodes, std::span(codes).first(8)},
+                                         {PartRole::kBlockScales, std::as_bytes(std::span(half))},
+                                         {PartRole::kZeros, zeros}};
+  const std::vector<float> zr = Decode(z, zp, 0, 0, 1);
+  for (std::uint64_t j = 0; j < 16; ++j) {
+    const auto q = static_cast<float>(j);
+    EXPECT_EQ(zr[j], j < 8 ? 0.25f * (q - 8.0f) : -1.0f * (q - 3.0f)) << j;
+  }
+
+  // The second matrix of an expert array.
+  const TensorFormat two = Affine(16, 1, 4, 8, format::AffineScale::kBF16, false, 2);
+  EXPECT_EQ(Decode(two, parts, 1, 0, 1)[0], 7.5f);
+  // A part missing, short, or biases where zero points belong.
+  std::vector<float> row(16);
+  EXPECT_EQ(ref::DecodeRows(f, std::span(parts).first(2), 0, 0, 1, row).error(),
+            ref::DecodeError::kParts);
+  const std::vector<ref::PartView> shorter = {{PartRole::kCodes, codes},
+                                              {PartRole::kBlockScales, scales},
+                                              {PartRole::kBiases, std::span(biases).first(6)}};
+  EXPECT_EQ(ref::DecodeRows(f, shorter, 0, 0, 1, row).error(), ref::DecodeError::kParts);
+  EXPECT_EQ(ref::DecodeRows(z, parts, 0, 0, 1, row).error(), ref::DecodeError::kParts);
+  // Not an encoding EncodeRows writes.
+  std::vector<std::byte> out(64);
+  EXPECT_EQ(ref::EncodeRows(f, 0, 0, row, out).error(), ref::DecodeError::kUnsupported);
+}
+
+// MLX's 3-, 5- and 6-bit packs (bytes, not words) are the same bit
+// stream: its CPU unpacking (mlx/backend/cpu/quantized.cpp extract_bits)
+// reads 3 bits' w[2] = ((w0 & 0xc0) >> 6) + ((w1 & 0x1) << 2), 5 bits'
+// w[4] = ((w2 & 0xf0) >> 4) + ((w3 & 0x1) << 4), and 6 bits' w[1] = ((w0
+// >> 6) & 0x03) + ((w1 & 0x0f) << 2). Codes 1, 2, ... 7, 0 at 3 bits are
+// the bytes 0xD1, 0x58, 0x1F.
+TEST(ReferenceDecodeTest, AffineCodesAreOneBitStreamAtEveryWidth) {
+  const std::vector<std::byte> three = {std::byte{0xD1}, std::byte{0x58}, std::byte{0x1F}};
+  EXPECT_EQ(Pack({1, 2, 3, 4, 5, 6, 7, 0}, 3), three);
+  EXPECT_EQ(Codes(three, 8, 3, 8), (std::vector<float>{1, 2, 3, 4, 5, 6, 7, 0}));
+  const auto w = RandomBytes(51, 6);
+  const auto u8 = [&](std::size_t i) { return std::to_integer<unsigned>(w[i]); };
+  EXPECT_EQ(Codes(std::span(w).first(3), 8, 3, 8)[2],
+            static_cast<float>(((u8(0) & 0xC0U) >> 6U) + ((u8(1) & 0x1U) << 2U)));
+  EXPECT_EQ(Codes(std::span(w).first(5), 8, 5, 8)[4],
+            static_cast<float>(((u8(2) & 0xF0U) >> 4U) + ((u8(3) & 0x1U) << 4U)));
+  EXPECT_EQ(Codes(w, 8, 6, 8)[1],
+            static_cast<float>(((u8(0) >> 6U) & 0x03U) + ((u8(1) & 0x0FU) << 2U)));
+  // Random codes at every width round-trip through the packing.
+  std::mt19937_64 random(52);
+  for (std::uint32_t bits = 1; bits <= 8; ++bits) {
+    std::vector<std::uint32_t> q(64);
+    for (std::uint32_t& c : q) {
+      c = static_cast<std::uint32_t>(random() & ((1U << bits) - 1U));
+    }
+    const std::vector<float> got = Codes(Pack(q, bits), 64, static_cast<std::uint8_t>(bits), 32);
+    for (std::size_t i = 0; i < q.size(); ++i) {
+      ASSERT_EQ(got[i], static_cast<float>(q[i])) << bits << " " << i;
+    }
+  }
+}
+
+// MLX's documented affine quantization (mx.quantize: per group, s = (α −
+// β) / (2^b − 1) with α and β its maximum and minimum, ŵ = round((w − β)
+// / s)), written here with F32 scales and biases: the reference's s · ŵ +
+// β is within s / 2 of every value (and an F32 rounding), at every width
+// MLX's affine mode takes (2, 3, 4, 5, 6, 8) and its group sizes 32, 64
+// and 128.
+TEST(ReferenceDecodeTest, AffineDecodesMlxsDocumentedQuantization) {
+  constexpr std::uint64_t kK = 256;
+  constexpr std::uint64_t kN = 3;
+  const std::vector<float> w = Normal(53, kK * kN);
+  for (const std::uint8_t bits : std::initializer_list<std::uint8_t>{2, 3, 4, 5, 6, 8}) {
+    for (const std::uint32_t group : {32U, 64U, 128U}) {
+      SCOPED_TRACE(std::format("bits {} group {}", bits, group));
+      const std::uint64_t groups = kK / group * kN;
+      std::vector<std::uint32_t> q(kK * kN);
+      std::vector<float> s(groups);
+      std::vector<float> b(groups);
+      for (std::uint64_t g = 0; g < groups; ++g) {
+        const auto first = w.begin() + static_cast<std::ptrdiff_t>(g * group);
+        const auto [lo, hi] = std::minmax_element(first, first + group);
+        s[g] = (*hi - *lo) / static_cast<float>((1U << bits) - 1U);
+        b[g] = *lo;
+        for (std::uint64_t j = g * group; j < (g + 1) * group; ++j) {
+          q[j] = static_cast<std::uint32_t>(std::lround((w[j] - b[g]) / s[g]));
+        }
+      }
+      const auto codes = Pack(q, bits);
+      const std::vector<ref::PartView> parts = {
+          {PartRole::kCodes, codes},
+          {PartRole::kBlockScales, std::as_bytes(std::span(s))},
+          {PartRole::kBiases, std::as_bytes(std::span(b))}};
+      const std::vector<float> got =
+          Decode(Affine(kK, kN, bits, group, format::AffineScale::kF32), parts, 0, 0, kN);
+      for (std::uint64_t i = 0; i < w.size(); ++i) {
+        const float step = s[i / group];
+        ASSERT_LE(std::abs(got[i] - w[i]), (step * 0.5f * (1.0f + 1e-5f)) + 1e-7f) << i;
+        ASSERT_EQ(got[i], std::fma(step, static_cast<float>(q[i]), b[i / group])) << i;
+      }
+    }
+  }
+}
 
 // Every state encoding encodes and decodes on the CPU (what a reference
 // cache store writes and a reference attention reads): F32 exactly, F16

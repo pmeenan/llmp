@@ -488,8 +488,7 @@ Status ValidateMapping(const Mapping& m) {
       return Refuse(at, "a fallback that is not a pattern of its slot's site");
     }
     if (!IsName(t.role) ||
-        static_cast<std::uint8_t>(t.part) >
-            static_cast<std::uint8_t>(format::PartRole::kCodebookMarker) ||
+        static_cast<std::uint8_t>(t.part) > static_cast<std::uint8_t>(format::PartRole::kZeros) ||
         !roles.emplace(t.slot, t.role, t.part).second) {
       return Refuse(at, "an invalid role or part, or one bound twice");
     }

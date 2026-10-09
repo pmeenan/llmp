@@ -35,8 +35,11 @@ std::string_view RuleName(Rule rule) {
 
 std::string Error::ToString() const {
   std::string where;
+  if (component != kNoItem) {
+    where = std::format("component {}", component);
+  }
   if (file != kNoItem) {
-    where = std::format("file {}", file);
+    where += std::format("{}file {}", where.empty() ? "" : ", ", file);
   }
   if (kind != ItemKind::kNone && item != kNoItem) {
     std::string_view noun = "byte";

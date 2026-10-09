@@ -73,7 +73,7 @@ TEST(FormatTest, TablesAreCompleteAndNamed) {
       EXPECT_EQ(info.ggml->block_elements, info.block_elements) << info.name;
     }
   }
-  EXPECT_EQ(format::Encodings().size(), static_cast<std::size_t>(Encoding::kExl3Trellis) + 1);
+  EXPECT_EQ(format::Encodings().size(), static_cast<std::size_t>(Encoding::kAffine) + 1);
   EXPECT_FALSE(format::EncodingByName("Q4_K"));  // names are lower-case
   EXPECT_EQ(format::EncodingByName("q4_k"), Encoding::kQ4_K);
   EXPECT_EQ(format::Info(Encoding::kNvfp4).ggml->block_elements, 64U);
@@ -179,6 +179,95 @@ TEST(FormatTest, TheTrellisHasItsCodesSignsAndMarker) {
   t.params.codebook = format::Exl3Codebook::kMcg;
   t.shape.ne[1] = 4865;
   EXPECT_EQ(Refusal(t), FormatError::kBlock);
+  // mul1 has its marker too; a 3inst trellis has none.
+  t.shape.ne[1] = 4864;
+  t.params.codebook = format::Exl3Codebook::kMul1;
+  EXPECT_EQ(Parts(t).size(), 4U);
+  t.params.codebook = format::Exl3Codebook::k3Inst;
+  const auto three = Parts(t);
+  ASSERT_EQ(three.size(), 3U);
+  EXPECT_EQ(three[2].role, PartRole::kOutputSigns);
+}
+
+// The affine encoding (MLX's affine mode, AWQ's and GPTQ's arithmetic):
+// codes K · bits / 8 bytes a row, K / group scales of the scale type, and
+// as many biases, or zero points of `bits` bits padded to a byte.
+TEST(FormatTest, AffineSizesAsItsBitsGroupsAndScales) {
+  const auto affine = [](std::uint64_t k, std::uint64_t n, std::uint8_t bits, std::uint32_t group,
+                         format::AffineScale scale, bool zeros = false,
+                         std::uint64_t matrices = 1) {
+    TensorFormat f = Matrix(Encoding::kAffine, Layout::kSplit, k, n, matrices);
+    f.params.bits = bits;
+    f.params.group = group;
+    f.params.scale = scale;
+    f.params.zero_point = zeros;
+    return f;
+  };
+  // MLX's 4-bit, group 32, BF16 (Qwen3.8's q_proj: [12288, 320] U32
+  // codes, [12288, 80] scales and biases).
+  const TensorFormat q = affine(2560, 12288, 4, 32, format::AffineScale::kBF16);
+  const auto parts = Parts(q);
+  ASSERT_EQ(parts.size(), 3U);
+  EXPECT_EQ(parts[0], (format::PartExtent{PartRole::kCodes, 12288U * 320 * 4, 12288U * 320 * 4}));
+  EXPECT_EQ(parts[1],
+            (format::PartExtent{PartRole::kBlockScales, 12288U * 80 * 2, 12288U * 80 * 2}));
+  EXPECT_EQ(parts[2], (format::PartExtent{PartRole::kBiases, 12288U * 80 * 2, 12288U * 80 * 2}));
+  EXPECT_EQ(format::RowBytes(q, PartRole::kCodes).value(), 1280U);
+  EXPECT_EQ(format::RowBytes(q, PartRole::kBlockScales).value(), 160U);
+  EXPECT_EQ(format::RowBytes(q, PartRole::kBiases).value(), 160U);
+  EXPECT_EQ(format::RowBytes(q, PartRole::kZeros).error(), FormatError::kParts);
+  // Every width packs a row's codes as one bit stream: 3, 5 and 6 bits too.
+  for (std::uint8_t bits = 1; bits <= 8; ++bits) {
+    EXPECT_EQ(Parts(affine(64, 3, bits, 64, format::AffineScale::kF16))[0].bytes, 3U * 8 * bits)
+        << static_cast<int>(bits);
+  }
+  // F32 scales; expert arrays; zero points padded to a byte a row.
+  EXPECT_EQ(Parts(affine(128, 2, 4, 64, format::AffineScale::kF32))[1].bytes, 2U * 2 * 4);
+  EXPECT_EQ(Parts(affine(2560, 640, 4, 32, format::AffineScale::kBF16, false, 512))[0].bytes,
+            512U * 640 * 1280);
+  const TensorFormat z = affine(384, 5, 3, 128, format::AffineScale::kF16, true);
+  const auto zp = Parts(z);
+  ASSERT_EQ(zp.size(), 3U);
+  EXPECT_EQ(zp[2], (format::PartExtent{PartRole::kZeros, 5U * 2, 5U * 2}));  // 9 bits: 2 bytes
+  EXPECT_EQ(format::RowBytes(z, PartRole::kZeros).value(), 2U);
+  // Refused: a row of partial groups, groups of partial bytes, widths and
+  // scale types outside the encoding, its parameters on another encoding,
+  // and layouts other than kSplit.
+  EXPECT_EQ(Refusal(affine(96, 2, 4, 64, format::AffineScale::kF16)), FormatError::kBlock);
+  EXPECT_EQ(Refusal(affine(96, 2, 4, 12, format::AffineScale::kF16)), FormatError::kParams);
+  EXPECT_EQ(Refusal(affine(96, 2, 4, 0, format::AffineScale::kF16)), FormatError::kParams);
+  EXPECT_EQ(Refusal(affine(96, 2, 0, 32, format::AffineScale::kF16)), FormatError::kParams);
+  EXPECT_EQ(Refusal(affine(96, 2, 9, 32, format::AffineScale::kF16)), FormatError::kParams);
+  EXPECT_EQ(Refusal(affine(96, 2, 4, 32, format::AffineScale::kNone)), FormatError::kParams);
+  EXPECT_EQ(Refusal(affine(96, 2, 4, 32, static_cast<format::AffineScale>(9))),
+            FormatError::kParams);
+  TensorFormat scaled = affine(96, 2, 4, 32, format::AffineScale::kF16);
+  scaled.params.tensor_scale = true;
+  EXPECT_EQ(Refusal(scaled), FormatError::kParams);
+  TensorFormat other = Matrix(Encoding::kMxfp8, Layout::kSplit, 64, 2);
+  other.params.group = 32;
+  EXPECT_EQ(Refusal(other), FormatError::kParams);
+  other = Matrix(Encoding::kF16, Layout::kDense, 64, 2);
+  other.params.scale = format::AffineScale::kF16;
+  EXPECT_EQ(Refusal(other), FormatError::kParams);
+  for (const Layout l : {Layout::kDense, Layout::kGgmlBlocks, Layout::kRowInterleaved,
+                         Layout::kCutlassScaleAtoms, Layout::kExl3Tiles}) {
+    TensorFormat f = affine(256, 128, 4, 32, format::AffineScale::kF16);
+    f.layout = l;
+    EXPECT_EQ(Refusal(f), FormatError::kLayout) << static_cast<int>(l);
+  }
+  // Past 64 bits.
+  EXPECT_EQ(Refusal(affine(std::uint64_t{1} << 40U, std::uint64_t{1} << 30U, 8, 64,
+                           format::AffineScale::kF32)),
+            FormatError::kOverflow);
+  // Quantized: exact only into itself.
+  EXPECT_TRUE(format::Lossless(Encoding::kAffine, Encoding::kAffine));
+  EXPECT_FALSE(format::Lossless(Encoding::kAffine, Encoding::kF32));
+  EXPECT_FALSE(format::Lossless(Encoding::kQ4_1, Encoding::kAffine));
+  EXPECT_FALSE(format::IsStateEncoding(Encoding::kAffine));
+  EXPECT_EQ(format::EncodingByName("affine"), Encoding::kAffine);
+  EXPECT_EQ(format::PartRoleName(PartRole::kBiases), "biases");
+  EXPECT_EQ(format::PartRoleName(PartRole::kZeros), "zeros");
 }
 
 TEST(FormatTest, RefusesWhatTheRuleDoesNotTake) {

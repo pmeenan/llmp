@@ -147,6 +147,17 @@ TEST(Json, ConvertsNumbers) {
   EXPECT_EQ(r.at(4).float64(), -INFINITY);
   EXPECT_EQ(r.at(5).float64(), 0.0);
   EXPECT_EQ(r.at(6).float64(), 0.12);
+  // Exponents at the ends of 64 bits, which parse, beside a mantissa's own
+  // magnitude (found by benchmarks/import_fuzz under UBSan: the sum
+  // overflowed).
+  const auto edges = json::Parse(
+      "[5449e9223372036854775807, -5449e9223372036854775807, 0.0001e-9223372036854775808, "
+      "5449e-9223372036854775808]");
+  ASSERT_TRUE(edges.has_value());
+  EXPECT_EQ(edges->root().at(0).float64(), INFINITY);
+  EXPECT_EQ(edges->root().at(1).float64(), -INFINITY);
+  EXPECT_EQ(edges->root().at(2).float64(), 0.0);
+  EXPECT_EQ(edges->root().at(3).float64(), 0.0);
 }
 
 // Corrupting a document anywhere gives an error or a document, never a

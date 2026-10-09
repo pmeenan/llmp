@@ -6,6 +6,40 @@
 Projects with a single finding each. None has been reported, and none of
 their current versions was checked.
 
+## MLX: mx.quantize's documented affine formula is not what it computes
+
+- **Status:** open (a documentation fix; nothing reported).
+- **Project:** [ml-explore/mlx](https://github.com/ml-explore/mlx), `main`
+  as fetched 2026-10-09 (commit not recorded); found reading Qwen3.8 Flash
+  Next's MLX 4-bit checkpoint (`Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP`
+  at `dadefa80`) on `spark-b` with llmpalooza's importer.
+- **Problem:** the `mlx.core.quantize` documentation gives affine mode as
+  α = max wᵢ, β = min wᵢ, s = (α − β) / (2^b − 1), ŵᵢ = round((wᵢ − β) / s),
+  which puts every dequantized value within s / 2 of the original. The CPU
+  kernel (`mlx/backend/cpu/quantized.cpp`, `quantize<T, U>`) keeps zero
+  exactly representable instead: it takes `edge` = the group's min (or
+  max, by sign), `q0 = rint(edge / scale)`, and when q0 ≠ 0 sets
+  `scale = edge / q0` and `bias = edge`; it then clamps each code to
+  [0, 2^b − 1]. The rescaled step can leave the group's far end up to one
+  step short, clamped there, so a value can be up to one step s (not
+  s / 2) from the original. Against Qwen3.8's native BF16 head and token
+  table, the MLX checkpoint's values were within one step everywhere
+  checked, at most 0.918 of that bound (`import_models_test`,
+  `ImportMlxModelsTest.DecodesLikeTheNativeCheckpoint`), which s / 2
+  would not hold.
+- **Llmpalooza's workaround:** none needed: the importer reads the stored
+  scales and biases, and its reference decodes s · q + b, MLX's
+  dequantization, whatever quantization produced them. Its tests bound
+  MLX's values against other quantizations by one step.
+- **Upstream current code:** as above (the kernel and the documentation
+  both checked 2026-10-09 on `main`); the Metal and CUDA kernels were not
+  checked.
+- **Proposed action:** a documentation change to `quantize`'s docstring
+  (`python/src/ops.cpp`): state the zero-preserving adjustment and that
+  the error is at most one step. Small.
+- **Links:** [engine-components.md](../engine-components.md) (the affine
+  encoding; the MLX reader as built).
+
 ## LLVM: CUDA lint parsing needs an unused cuRAND header (RE-042)
 
 - **Status:** open (SDK/parser compatibility to track).

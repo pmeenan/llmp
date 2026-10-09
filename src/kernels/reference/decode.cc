@@ -96,7 +96,7 @@ float BlockScale(Encoding e, std::uint8_t bits) {
 
 // Where one matrix's share of each part starts.
 struct Parts {
-  Bytes data, codes, scales, tensor_scale, input_signs, output_signs;
+  Bytes data, codes, scales, tensor_scale, input_signs, output_signs, biases, zeros;
 };
 
 std::expected<Parts, DecodeError> Bind(const TensorFormat& f, const format::PartList& extents,
@@ -142,6 +142,12 @@ std::expected<Parts, DecodeError> Bind(const TensorFormat& f, const format::Part
         break;
       case PartRole::kCodebookMarker:
         break;  // its value means nothing (artifact-format.md): the codebook is a parameter
+      case PartRole::kBiases:
+        parts.biases = mine;
+        break;
+      case PartRole::kZeros:
+        parts.zeros = mine;
+        break;
     }
   }
   return parts;
@@ -159,6 +165,56 @@ void Q8Row(Encoding e, Bytes row, std::uint64_t k, float* y) {
     const float d = q8_1 ? F16ToF32(Load<std::uint16_t>(x, 0)) : Load<float>(x, 0);
     for (std::uint64_t j = 0; j < block; ++j) {
       y[(b * block) + j] = d * static_cast<float>(Load<std::int8_t>(x, 4 + j));
+    }
+  }
+}
+
+// `bits` bits at bit `at` of a little-endian bit stream (layout.h kSplit).
+std::uint32_t Bits(Bytes stream, std::uint64_t at, std::uint32_t bits) {
+  std::uint32_t v = 0;
+  for (std::uint32_t i = 0; i < bits; ++i) {
+    const std::uint64_t bit = at + i;
+    v |= static_cast<std::uint32_t>((U8(stream, bit / 8) >> (bit % 8)) & 1U) << i;
+  }
+  return v;
+}
+
+float AffineScaleValue(format::AffineScale type, Bytes row, std::uint64_t g) {
+  switch (type) {
+    case format::AffineScale::kF16:
+      return F16ToF32(Load<std::uint16_t>(row, 2 * g));
+    case format::AffineScale::kBF16:
+      return Bf16ToF32(Load<std::uint16_t>(row, 2 * g));
+    case format::AffineScale::kF32:
+    case format::AffineScale::kNone:  // not a valid format: never reached
+      break;
+  }
+  return Load<float>(row, 4 * g);
+}
+
+// The affine encoding's row r: s · q + b rounded once (a fused
+// multiply-add), or s · (q − z), q − z exact.
+void AffineRow(const TensorFormat& f, const Parts& p, std::uint64_t r, float* y) {
+  const format::EncodingParams& a = f.params;
+  const std::uint64_t k = f.shape.ne[0];
+  const std::uint64_t groups = k / a.group;
+  const std::uint64_t code_row = k / 8 * a.bits;
+  const std::uint64_t scale_row =
+      groups * (format::Info(format::AffineScaleEncoding(a.scale)).element_bits / 8);
+  const std::uint64_t zero_row = ((groups * a.bits) + 7) / 8;
+  const Bytes codes = p.codes.subspan(r * code_row, code_row);
+  const Bytes scales = p.scales.subspan(r * scale_row, scale_row);
+  for (std::uint64_t g = 0; g < groups; ++g) {
+    const float s = AffineScaleValue(a.scale, scales, g);
+    const float b = a.zero_point
+                        ? 0.0f
+                        : AffineScaleValue(a.scale, p.biases.subspan(r * scale_row, scale_row), g);
+    const auto z = a.zero_point ? static_cast<std::int32_t>(Bits(
+                                      p.zeros.subspan(r * zero_row, zero_row), g * a.bits, a.bits))
+                                : 0;
+    for (std::uint64_t j = g * a.group; j < (g + 1) * a.group; ++j) {
+      const auto q = static_cast<std::int32_t>(Bits(codes, j * a.bits, a.bits));
+      y[j] = a.zero_point ? s * static_cast<float>(q - z) : std::fma(s, static_cast<float>(q), b);
     }
   }
 }
@@ -217,6 +273,10 @@ std::expected<void, DecodeError> DecodeRow(const TensorFormat& f, const Parts& p
     case Layout::kSplit:
     case Layout::kRowInterleaved:
     case Layout::kCutlassScaleAtoms: {
+      if (f.encoding == Encoding::kAffine) {
+        AffineRow(f, p, r, y);
+        return {};
+      }
       const std::uint64_t blocks = k / info.block_elements;
       const std::uint64_t code_bytes = k * info.element_bits / 8;
       Bytes codes;

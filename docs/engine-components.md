@@ -654,6 +654,44 @@ product of the reference's weights (6.1e-4 on the paths that keep the
 weights exact). The trellis has no
 block decoder in `kernels/decode`: on CUDA its rung-1 kernels are
 ExLlamaV3's, and another backend needs a trellis decoder of its own.
+A 3inst trellis has no codebook-marker part: upstream names mcg and mul1
+by a marker tensor beside the trellis and 3inst by its absence, so the
+size rule gives the marker only to those two (2026-10-09, with the EXL3
+reader below).
+
+**The affine encoding (2026-10-09).** `format::Encoding::kAffine` is
+integer quantization with an offset: unsigned codes q of 1 to 8 bits,
+a scale s per group of values along a row, and per group either a bias b
+(MLX's affine mode: s · q + b) or an integer zero point z (AWQ's and
+GPTQ's arithmetic: s · (q − z)). Its parameters are the bits, the group
+(a multiple of 8, so every group's codes are whole bytes; ne[0] a
+multiple of it), the scales' element type (F16, BF16 or F32; biases
+share it) and whether it has zero points. It is held only in `kSplit`:
+a row's codes as one little-endian bit stream, code i at bit i · bits
+(MLX's U32 words and its 3-, 5- and 6-bit byte packs are this stream),
+K · bits / 8 bytes; then K / group scales; then K / group biases, or the
+zero points as a bit stream of `bits`-bit codes padded to a byte a row.
+Quantized, it is `Lossless` only into itself, and it is no state
+encoding. The CPU reference decodes it as the definition: s · q + b
+rounded once to F32 (a fused multiply-add), or s · (q − z); MLX's own
+kernels compute in the activations' type, rounding there, so they agree
+within that type's rounding. `reference_decode_test` checks hand-computed
+values, MLX's CPU unpacking expressions for 3, 5 and 6 bits, every width
+from 1 to 8 through the packing, and MLX's documented quantization
+(mx.quantize: s = (max − min) / (2^b − 1), b = min) at 2 to 8 bits and
+groups of 32, 64 and 128, each value within s / 2. MLX itself was not run.
+There is no CUDA decoder yet. What one needs, under the block-decoder
+contract: an `AffineSplit` decoder whose Load reads `bits`-wide codes
+from the row's bit stream (whole bytes at 2, 4 and 8 bits; a 64-bit
+window for 3, 5 and 6) and the group's scale and bias or zero point once
+a group, instantiated per bits and scale type where used (MLX's BF16 at
+4 bits first) to bound compile time; and a `DotQ8` rung-2 path, since a
+group's Σ (s · q + b) · x is s · Σ q · x + b · Σ x, the INT8 product plus
+the activation block's sum, which Q8_1's 32-value blocks carry (as GGML's
+Q4_1 dot product), for groups that are multiples of 32. AWQ's and GPTQ's
+checkpoints pack codes across output columns (AWQ in its own nibble
+order) and need a layout of their own or a relayout at import before
+their reader can describe them.
 
 **State encodings (the format half).** `format::StateEncodings()` lists
 the encodings the format layer admits for a state tensor, each of which
@@ -834,9 +872,18 @@ paths, trust); what is merely unusual for its container is read as it is
   expert array.
 - *safetensors with config.json* (`readers/safetensors.h`) reads
   config.json (strict RFC 8259, 16 MiB, nesting 32, `model_type` the
-  architecture; objects flattened into dotted keys, typed) and either
+  architecture, or a diffusers component's `_class_name` without one;
+  objects flattened into dotted keys, typed) and either
   `model.safetensors` or the shards `model.safetensors.index.json` names
-  (plain file names, every tensor in exactly the shard the index gives).
+  (plain file names, every tensor in exactly the shard the index gives);
+  a diffusers component's `diffusion_pytorch_model` files likewise
+  (weights under both names: refused, ambiguous). With neither default
+  name, the one variant present (`<base>.fp16.safetensors`,
+  `<base>.safetensors.index.fp16.json`, as transformers and diffusers
+  name them) is read; several variants and no default are refused as
+  ambiguous. Shards whose `__metadata__.format` is "mlx" make the
+  checkpoint MLX's (below), unquantized ones included; shards of MLX's
+  format beside another writer's are refused.
   A shard is safetensors' own format, read as permissively as still
   describes it: the 8-byte length at most 100,000,000, the header an
   object of entries with dtype, shape and offsets (other members, the
@@ -862,9 +909,70 @@ paths, trust); what is merely unusual for its container is read as it is
   configured scheme, or whose part sizes disagree; and the schemes no
   encoding describes: compressed-tensors
   other than `dense` (its NVFP4 global scale is the reciprocal of the
-  tensor scale, which needs a fold), AWQ and GPTQ (affine with zero
-  points, no encoding yet), block FP8, other ModelOpt algorithms, MLX's
-  `quantization` (the MLX reader's) and unknown methods.
+  tensor scale, which needs a fold), AWQ and GPTQ (the affine encoding
+  with zero points, but packed across output columns: no layout yet),
+  block FP8, other ModelOpt algorithms, MLX's `quantization` and EXL3's
+  method (their readers') and unknown methods.
+- *MLX* (`readers/mlx.h`, container `mlx`, 2026-10-09) reads mlx-lm's
+  directories as the safetensors reader does, then pairs each module M
+  with both M.weight and M.scales (mlx-lm's own test for a quantized
+  module) under config.json's `quantization`: the default `group_size`,
+  `bits` and `mode`, and per module path an override object (bits and
+  group required: MLX's defaults for them differ between its versions),
+  `false` or `true`. Affine weights become {affine, bits, group, the
+  scales' type, `kSplit`} with M.weight the codes (any unsigned integer
+  dtype; MLX writes U32), M.scales and M.biases; mxfp4, nvfp4 and mxfp8
+  become the existing encodings in `kSplit` (their bits and group fixed,
+  E8M0 or E4M3 scale bytes, no biases; NVFP4 without a tensor scale). K is
+  the scales' columns times the group, which every part's bytes must
+  match; three-dimensional weights (mlx-lm's `switch_mlp`) are expert
+  arrays. Refused: a module with scales whose override says false, a
+  missing or incomplete scheme, a mode MLX does not have, a group the
+  encoding does not take, and parts of other dtypes, ranks or sizes.
+  `quantization_config` (mlx-lm writes a copy) is not read. An
+  unquantized MLX checkpoint has no `quantization` and is known by its
+  shards' format ("mlx"). MLX keeps its own axis orders, described as
+  stored: a convolution is channels-last (mlx.nn.Conv1d's [out, kernel,
+  in], a depthwise conv1d [channels, kernel, 1] where PyTorch's is
+  [channels, 1, kernel]), a mixture's experts stacked under `switch_mlp`;
+  the container tells a mapping which fold applies.
+- *EXL3* (`readers/exl3.h`, container `exl3`) reads ExLlamaV3's
+  directories (config.json's `quantization_config.quant_method` "exl3")
+  and pairs each linear M with M.trellis, as upstream's `LinearEXL3`
+  does: I16 [K / 16, N / 16, 16 · k] at a whole 1 to 8 bits (half-integer
+  rates refused: no format), F16 M.suh and M.svh of K and N values (the
+  packed M.su and M.sv alone are refused: they need an unpacking fold),
+  and the codebook by marker presence (M.mcg, M.mul1, neither for 3inst;
+  both refused), each part with the trellis's format and its role.
+  quantization_config.json is not read; biases, norms and embeddings are
+  dense. A config.json with MLX's `quantization` too is refused (which
+  describes the tensors is ambiguous).
+- *diffusers* (`readers/diffusers.h`, container `diffusers`) reads a
+  pipeline as a `Checkpoint` of components (D-089): model_index.json
+  (1 MiB, strict; `_class_name` the architecture, every member the
+  metadata) names a component by a [library, class] pair of strings,
+  whose name, a path component, must be a composition role
+  (`[a-z][a-z0-9_]{0,63}`, at most 64). A component directory with a
+  config.json is read by the reader that claims it (never as a pipeline
+  itself), one to 16 of them, each a checkpoint with its own files and
+  metadata; another's regular files (a scheduler's, a processor's; at
+  most 4,096 directory entries, subdirectories left out) are the
+  pipeline's own files, `<role>/<name>`, at most 256 (each stays open)
+  and within a composition's 64 MiB a file and 128 MiB in all, after
+  model_index.json. A component's directory, its links resolved, lies
+  beneath the pipeline's (a link out of it is refused as an escape; its
+  files may link anywhere trusted, as a Hugging Face cache's link to its
+  blobs), and an error from inside a component names it by its role's
+  index.
+
+`ReadCheckpoint` asks the readers in order: GGUF for a `*.gguf` file,
+diffusers for a directory with model_index.json, EXL3 and MLX for a
+directory whose config.json (opened through the trust walk and parsed
+within its caps) names their quantization, and safetensors for any other
+directory. Every file a checkpoint read stays open (16 components of
+4,096 shards at most, beside 256 kept files), so `ReadCheckpoint` first
+raises the soft open-file limit as far as the hard limit allows; past
+it, an open is refused as `kIo`.
 
 On spark-b (`import_models_test`), the Gemma 2 and Gemma 3 source GGUFs
 give, through their mappings and their own metadata, the spec the
@@ -879,11 +987,27 @@ agrees with the v0 import the Python importer made of the same files:
 layer 1's MXFP8 linears have the format v0's resources assemble to and
 the same bytes, every routed expert's tensor scale is v0's, and the
 n-gram shards' rows are v0's row-interleaved table under its one tensor
-scale (`Qwen38ModelOptMatchesTheV0Import`). The
-Qwen-Image transformer (a diffusers component without `model_type`) and
-the MLX checkpoint are refused, for the readers that will take them.
-Still to come: the diffusers, MLX and EXL3 readers, the fold catalog,
-the writer and its format version, the CLI and the admission gate.
+scale (`Qwen38ModelOptMatchesTheV0Import`).
+Qwen-Image-2.1's pipeline reads as the composition the Python importer
+made of it (`eca21baa…`): the same architecture, components and their
+architectures, the same eleven kept files by name and size, and in each
+component every tensor of its v0 artifact in v0's format, all 33.1 GB
+byte for byte. Both Qwen2.5 EXL3 fixtures' source checkpoints read as
+their v0 imports: 169 trellises each, every part in the format v0's
+resources assemble to, every other tensor v0's, and every resource's
+bytes (589 and 611 MB). Qwen3.8's MLX checkpoint (3,747 tensors in 22
+shards) pairs all 1,020 quantized modules (4 bits, group 32, BF16), the
+147 `switch_mlp` ones as expert arrays; decoded by the reference against
+the native checkpoint, the head and token table (BF16 there) are within
+one MLX step of the native values everywhere checked (at most 0.918 of
+the bound) at 0.090 and 0.084 relative RMS, and the shared expert's and a
+full-attention q_proj's MXFP8 and routed expert 7's NVFP4 agree at 0.095,
+0.089 and 0.124 relative RMS (`DecodesLikeTheNativeCheckpoint`; test
+bounds: one step, and 0.15).
+Still to come: AWQ's and GPTQ's layouts, the fold catalog (MLX's and
+EXL3's sources need theirs: MLX's stacked experts and moved convolution
+axes, EXL3's packed sign vectors), the writer and its format version, the
+CLI and the admission gate.
 
 ## Execution
 

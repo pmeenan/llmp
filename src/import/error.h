@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Why a checkpoint was refused (D-009, D-066): the rule it broke, a static
-// reason, and where: which of its files (in the checkpoint's file order)
-// and which item in it, a byte offset, a tensor, a metadata key or a shard,
-// by index. As with the artifact reader, nothing from the checkpoint's own
-// text (a name, a key, a value) is copied into an error, so a hostile name
-// cannot reach a log or a terminal through one.
+// reason, and where: in a pipeline, which component (its role's index in
+// model_index.json's sorted roles); which of its files (in the
+// checkpoint's, or that component's, file order) and which item in it, a
+// byte offset, a tensor, a metadata key or a shard, by index. As with the
+// artifact reader, nothing from the checkpoint's own text (a name, a key, a
+// value) is copied into an error, so a hostile name cannot reach a log or
+// a terminal through one.
 
 #ifndef LLMP_IMPORT_ERROR_H_
 #define LLMP_IMPORT_ERROR_H_
@@ -42,8 +44,10 @@ struct Error {
   std::uint64_t file = kNoItem;  // the file's index in the checkpoint's order
   ItemKind kind = ItemKind::kNone;
   std::uint64_t item = kNoItem;
+  std::uint64_t component = kNoItem;  // a pipeline's component, by role index
 
-  // "container: a tensor's data past the end of its file (file 1, tensor 17)".
+  // "container: a tensor's data past the end of its file (file 1, tensor 17)",
+  // in a pipeline "(component 2, file 1, tensor 17)".
   std::string ToString() const;
 };
 

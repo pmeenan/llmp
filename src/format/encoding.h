@@ -11,7 +11,9 @@
 // GGML's block encodings are defined by GGML's own dequantization at the
 // locked pin (ggml-quants.c); NVFP4, MXFP4 and MXFP8 by NVIDIA's and the
 // OCP Microscaling specification's element and scale formats; the EXL3
-// trellis by ExLlamaV3. Where GGML has a type for an encoding, its number
+// trellis by ExLlamaV3; the affine encoding by MLX's documented affine
+// quantization (mx.quantize: w = s · ŵ + β) and, with zero points, AWQ's
+// and GPTQ's s · (q − z). Where GGML has a type for an encoding, its number
 // and block struct are recorded as a lowering hint and as the geometry of
 // GGML's layouts, never as the encoding's meaning.
 
@@ -78,6 +80,12 @@ enum class Encoding : std::uint16_t {
   // ExLlamaV3's trellis: k_bits per weight, a codebook, and the input and
   // output sign vectors of its Hadamard rotations (EncodingParams).
   kExl3Trellis,
+  // Affine integer quantization (MLX's affine mode; AWQ's and GPTQ's
+  // arithmetic): unsigned codes q of `bits` bits with a scale s per group
+  // of `group` values along a row, and per group either a bias b of the
+  // scales' element type (MLX: s · q + b) or an unsigned zero point z of
+  // `bits` bits (AWQ, GPTQ: s · (q − z)). All of it is EncodingParams.
+  kAffine,
 };
 
 // The parts a multi-part encoding stores: codes and their block scales, a
@@ -91,12 +99,17 @@ enum class PartRole : std::uint8_t {
   kTensorScale,
   kInputSigns,      // EXL3's suh
   kOutputSigns,     // EXL3's svh
-  kCodebookMarker,  // EXL3's codebook marker
+  kCodebookMarker,  // EXL3's codebook marker (mcg and mul1 only)
+  kBiases,          // the affine encoding's bias per group (MLX's biases)
+  kZeros,           // the affine encoding's zero point per group (AWQ, GPTQ)
 };
 std::string_view PartRoleName(PartRole role);
 
 // A part of an encoding stored in parts: its role, the dense encoding of
-// its elements, and whether every tensor of the encoding has it.
+// its elements, and whether every tensor of the encoding has it. The
+// affine encoding's scales and biases are of the element type its
+// parameters name (EncodingParams::scale; listed as F16), and it has
+// either biases or zero points.
 struct PartSpec {
   PartRole role = PartRole::kData;
   Encoding element = Encoding::kU8;
@@ -105,12 +118,25 @@ struct PartSpec {
 
 enum class Exl3Codebook : std::uint8_t { kNone, kMcg, kMul1, k3Inst };
 
+// The element type of the affine encoding's scales and biases.
+enum class AffineScale : std::uint8_t { kNone, kF16, kBF16, kF32 };
+// Its dense encoding (F16, BF16 or F32; F32 for kNone, which no valid
+// format has).
+Encoding AffineScaleEncoding(AffineScale scale);
+
 // What an encoding leaves to the tensor. Zero (none) wherever the encoding
 // does not use a field.
 struct EncodingParams {
   std::uint8_t k_bits = 0;                      // EXL3: bits per weight, 1 to 8
   Exl3Codebook codebook = Exl3Codebook::kNone;  // EXL3
   bool tensor_scale = false;                    // NVFP4: an F32 scale per matrix
+  // Affine: bits a code (1 to 8), values a group (a multiple of 8, which
+  // ne[0] is a multiple of), the scales' (and biases') element type, and
+  // zero points (kZeros) rather than biases (kBiases).
+  std::uint8_t bits = 0;
+  std::uint32_t group = 0;
+  AffineScale scale = AffineScale::kNone;
+  bool zero_point = false;
   bool operator==(const EncodingParams&) const = default;
 };
 
@@ -128,10 +154,12 @@ struct EncodingInfo {
   std::string_view name{};
   // The values one block covers along ne[0], which ne[0] is a multiple of:
   // a scale's values (a GGML type's block, NVFP4's 16, Microscaling's 32),
-  // the trellis's 16-value tile edge; 1 for dense encodings.
+  // the trellis's 16-value tile edge; 1 for dense encodings; for the
+  // affine encoding 8, the least group (a tensor's group is a parameter).
   std::uint32_t block_elements = 1;
   // Bits per element of a dense encoding, or per code of MXFP4, MXFP8 and
-  // NVFP4; 0 where codes are not uniform (GGML's blocks, the trellis).
+  // NVFP4; 0 where codes are not uniform (GGML's blocks, the trellis) or
+  // a parameter (the affine encoding's).
   std::uint32_t element_bits = 0;
   bool quantized = false;
   bool floating = false;  // a dense floating-point encoding
@@ -150,7 +178,8 @@ std::optional<Encoding> EncodingByName(std::string_view name);
 // Whether every value of `from` is exactly a value of `to`, so that
 // converting state from one to the other loses nothing. False where the
 // conversion rounds, or where exactness is not established (a quantized
-// encoding into anything but itself).
+// encoding, the affine one among them, into anything but itself; within
+// one encoding, formats of other parameters are not compared here).
 bool Lossless(Encoding from, Encoding to);
 
 // The encodings the format layer admits for a state tensor (D-108; a KV

@@ -21,9 +21,16 @@
 //                       a 16-value sub-block holding values j (low nibble)
 //                       and j + 8 (high). GGML's over-read rule applies.
 //   kSplit              codes and block scales as separate row-major parts
-//                       (ModelOpt, Microscaling checkpoints): a row's codes
-//                       (4-bit codes two a byte, value 2i in the low
-//                       nibble), and in the other part its K / block scales.
+//                       (ModelOpt, Microscaling and MLX checkpoints): a
+//                       row's codes as a little-endian bit stream (code i
+//                       at bit i · bits from the row's first byte's least
+//                       significant bit: 4-bit codes two a byte, value 2i
+//                       in the low nibble; MLX's 3-, 5- and 6-bit packs
+//                       alike), and in the next part its K / block scales.
+//                       The affine encoding adds a third part, a row's
+//                       K / group biases (scale elements) or zero points
+//                       (a bit stream of `bits`-bit codes, padded to a
+//                       byte).
 //   kRowInterleaved     one part: each row's codes, then its scales
 //                       (Qwen3.8's n-gram table).
 //   kCutlassScaleAtoms  codes as kSplit; scales in the swizzled atoms

@@ -608,10 +608,14 @@ std::optional<double> Value::float64() const {
       digits.remove_prefix(1);
     }
     const auto [ep, eec] = std::from_chars(digits.data(), digits.data() + digits.size(), exponent);
+    // Past a quarter of 64 bits (out of range or not), the exponent alone
+    // decides, and the sum below cannot overflow.
+    constexpr std::int64_t kLow = std::numeric_limits<std::int64_t>::min() / 4;
+    constexpr std::int64_t kHigh = std::numeric_limits<std::int64_t>::max() / 4;
     if (eec == std::errc::result_out_of_range) {
-      exponent = digits.starts_with('-') ? std::numeric_limits<std::int64_t>::min() / 4
-                                         : std::numeric_limits<std::int64_t>::max() / 4;
+      exponent = digits.starts_with('-') ? kLow : kHigh;
     }
+    exponent = std::clamp(exponent, kLow, kHigh);
   }
   const std::size_t dot = std::min(mantissa.find('.'), mantissa.size());
   const std::size_t first = mantissa.find_first_of("123456789");

@@ -75,7 +75,8 @@ struct PartExtent {
 };
 
 // A format's parts, in a fixed order: kData, or kCodes then kBlockScales;
-// then kTensorScale; EXL3's kCodes, kInputSigns, kOutputSigns and
+// then kTensorScale, or the affine encoding's kBiases or kZeros; EXL3's
+// kCodes, kInputSigns, kOutputSigns and (mcg and mul1 only)
 // kCodebookMarker. Each holds the format's matrices one after the other,
 // so a matrix's share of a part is bytes / Matrices().
 class PartList {

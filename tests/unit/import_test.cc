@@ -50,6 +50,7 @@
 #include "import/readers/gguf.h"
 #include "import/readers/hf_quant.h"
 #include "import/readers/safetensors.h"
+#include "import_fixtures.h"
 #include "spec/mapping.h"
 #include "spec/spec.h"
 
@@ -61,6 +62,7 @@ using format::Encoding;
 using format::Layout;
 using format::PartRole;
 using test_support::Failed;
+using namespace fixtures;  // NOLINT(google-build-using-namespace): the tests' builders
 
 // GGML type numbers (ggml.h at the pin).
 constexpr std::uint32_t kF32 = 0;
@@ -69,24 +71,6 @@ constexpr std::uint32_t kQ8_0 = 8;
 constexpr std::uint32_t kQ4_K = 12;
 constexpr std::uint32_t kBF16 = 30;
 constexpr std::uint32_t kNvfp4 = 40;
-
-void Append(std::vector<std::byte>& out, std::uint64_t v, std::size_t size) {
-  for (std::size_t i = 0; i < size; ++i) {
-    out.push_back(static_cast<std::byte>((v >> (8U * i)) & 0xFFU));
-  }
-}
-
-void AppendText(std::vector<std::byte>& out, std::string_view s) {
-  for (const char c : s) {
-    out.push_back(static_cast<std::byte>(c));
-  }
-}
-
-std::vector<std::byte> Le(std::uint64_t v, std::size_t size) {
-  std::vector<std::byte> out;
-  Append(out, v, size);
-  return out;
-}
 
 std::vector<std::byte> StringBytes(std::string_view s) {
   std::vector<std::byte> out;
@@ -251,15 +235,9 @@ class Gguf {
   std::uint64_t alignment_ = 32;
 };
 
-std::optional<Rule> RuleOf(const std::expected<Checkpoint, Error>& r) {
-  return Failed(r, &Error::rule);
-}
-
 std::optional<gg::Fault> FaultOf(const std::expected<gg::Header, gg::Error>& r) {
   return Failed(r, &gg::Error::fault);
 }
-
-std::span<const std::byte> View(const std::vector<std::byte>& b) { return b; }
 
 // ---------------------------------------------------------------- base/gguf
 
@@ -605,56 +583,6 @@ TEST(ImportGgufTest, RefusesTypesShapesAndNames) {
             Rule::kBounds);
 }
 
-// What a reader accepts is consistent: every extent inside its file, the
-// size rule's for its format and part, and overlapping no other.
-void ExpectConsistent(const Checkpoint& c) {
-  std::vector<Extent> extents;
-  for (const Tensor& t : c.tensors) {
-    extents.push_back(t.extent);
-  }
-  std::ranges::sort(extents, {}, [](const Extent& e) { return std::pair(e.file, e.offset); });
-  for (std::size_t i = 1; i < extents.size(); ++i) {
-    if (extents[i].file == extents[i - 1].file) {
-      EXPECT_GE(extents[i].offset, extents[i - 1].offset + extents[i - 1].bytes);
-    }
-  }
-  for (const Tensor& t : c.tensors) {
-    ASSERT_LT(t.extent.file, c.files.size()) << t.name;
-    const std::uint64_t size = c.files[t.extent.file].bytes;
-    EXPECT_LE(t.extent.offset, size);
-    EXPECT_LE(t.extent.bytes, size - std::min(size, t.extent.offset));
-    const auto parts = format::PartsOf(t.format);
-    ASSERT_TRUE(parts.has_value()) << t.name;
-    const auto part = parts->Find(t.part);
-    ASSERT_TRUE(part.has_value()) << t.name;
-    EXPECT_EQ(part.value_or(format::PartExtent{}).bytes, t.extent.bytes) << t.name;
-  }
-}
-
-// Bytes changed at random, deterministically: refused or consistent,
-// never a crash, a read past the bytes or an assertion.
-template <typename Read>
-void Corrupt(const std::vector<std::byte>& valid, Read read) {
-  std::mt19937_64 rng(20261009);  // NOLINT(bugprone-random-generator-seed): reproducible
-  std::size_t accepted = 0;
-  for (int round = 0; round < 20000; ++round) {
-    std::vector<std::byte> bytes = valid;
-    const auto changes = 1 + (rng() % 4);
-    for (std::uint64_t i = 0; i < changes; ++i) {
-      bytes[rng() % bytes.size()] = static_cast<std::byte>(rng() & 0xFFU);
-    }
-    if (rng() % 8 == 0) {
-      bytes.resize(rng() % bytes.size());
-    }
-    const auto c = read(bytes);
-    if (c) {
-      ++accepted;
-      ExpectConsistent(*c);
-    }
-  }
-  testing::Test::RecordProperty("accepted", static_cast<int>(accepted));
-}
-
 TEST(ImportGgufTest, RandomCorruptionsNeverCrash) {
   std::vector<std::byte> u32s = Le(1, 4);
   Append(u32s, 2, 4);
@@ -744,47 +672,6 @@ TEST(ImportGgufTest, MakesTheSourceAMappingReads) {
 }
 
 // ---------------------------------------------------------------- files
-
-class ScratchTest : public testing::Test {
- protected:
-  void SetUp() override {
-    // NOLINTNEXTLINE(concurrency-mt-unsafe): tests read, never set, the environment
-    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
-    std::filesystem::path base = scratch != nullptr ? std::filesystem::path(scratch)
-                                                    : std::filesystem::temp_directory_path();
-    const auto* info = testing::UnitTest::GetInstance()->current_test_info();
-    dir_ = base / "import" / std::format("{}.{}", info->test_suite_name(), info->name());
-    std::error_code error;
-    std::filesystem::permissions(dir_,
-                                 std::filesystem::perms::owner_all |
-                                     std::filesystem::perms::group_read |
-                                     std::filesystem::perms::group_exec,
-                                 error);
-    std::filesystem::remove_all(dir_, error);
-    std::filesystem::create_directories(dir_, error);
-    ASSERT_FALSE(error) << error.message();
-    std::filesystem::permissions(dir_,
-                                 std::filesystem::perms::owner_all |
-                                     std::filesystem::perms::group_read |
-                                     std::filesystem::perms::group_exec,
-                                 error);
-  }
-
-  static void Write(const std::filesystem::path& path, std::span<const std::byte> bytes) {
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    out.write(reinterpret_cast<const char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
-    ASSERT_TRUE(out.good()) << path;
-    out.close();
-    ::chmod(path.c_str(), 0644);
-  }
-  static void Write(const std::filesystem::path& path, std::string_view text) {
-    Write(path, std::as_bytes(std::span(text.data(), text.size())));
-  }
-
-  std::filesystem::path dir_;
-};
 
 using ImportGgufFilesTest = ScratchTest;
 
@@ -978,79 +865,6 @@ TEST_F(ImportGgufFilesTest, ReadsLargeHeadersInGrowingPrefixes) {
 }
 
 // ---------------------------------------------------------------- safetensors
-
-struct Entry {
-  std::string name;
-  std::string dtype;
-  std::vector<std::uint64_t> shape;
-  std::uint64_t bytes = 0;  // the data's
-};
-
-std::uint64_t DtypeBytes(std::string_view dtype) {
-  if (dtype == "F64" || dtype == "I64" || dtype == "U64") {
-    return 8;
-  }
-  if (dtype == "F32" || dtype == "I32" || dtype == "U32") {
-    return 4;
-  }
-  if (dtype == "F16" || dtype == "BF16" || dtype == "I16" || dtype == "U16") {
-    return 2;
-  }
-  return 1;
-}
-
-Entry E(std::string name, std::string dtype, std::vector<std::uint64_t> shape) {
-  std::uint64_t n = DtypeBytes(dtype);
-  for (const std::uint64_t d : shape) {
-    n *= d;
-  }
-  return {
-      .name = std::move(name), .dtype = std::move(dtype), .shape = std::move(shape), .bytes = n};
-}
-
-std::string ShapeText(const std::vector<std::uint64_t>& shape) {
-  std::string s = "[";
-  for (std::size_t i = 0; i < shape.size(); ++i) {
-    s += std::format("{}{}", i == 0 ? "" : ",", shape[i]);
-  }
-  return s + "]";
-}
-
-// A shard: its header lists the entries in the given order with their data
-// back to back in that order (unless `offsets` overrides an entry's).
-std::vector<std::byte> Shard(const std::vector<Entry>& entries, std::string_view metadata = {},
-                             std::map<std::size_t, std::string> offsets = {},
-                             std::string_view padding = {}) {
-  std::string header = "{";
-  if (!metadata.empty()) {
-    header += std::format(R"("__metadata__":{},)", metadata);
-  }
-  std::uint64_t at = 0;
-  for (std::size_t i = 0; i < entries.size(); ++i) {
-    const Entry& e = entries[i];
-    const std::string range =
-        offsets.contains(i) ? offsets[i] : std::format("[{},{}]", at, at + e.bytes);
-    header += std::format(R"({}"{}":{{"dtype":"{}","shape":{},"data_offsets":{}}})",
-                          i == 0 ? "" : ",", e.name, e.dtype, ShapeText(e.shape), range);
-    at += e.bytes;
-  }
-  header += "}";
-  header += padding;
-  std::vector<std::byte> out = Le(header.size(), 8);
-  AppendText(out, header);
-  for (std::uint64_t b = 0; b < at; ++b) {
-    out.push_back(static_cast<std::byte>(b & 0xFFU));
-  }
-  return out;
-}
-
-// A shard with the header text given whole, and `data` bytes after it.
-std::vector<std::byte> RawShard(std::string_view header, std::uint64_t data) {
-  std::vector<std::byte> out = Le(header.size(), 8);
-  AppendText(out, header);
-  out.resize(out.size() + data);
-  return out;
-}
 
 constexpr std::string_view kConfig = R"({"model_type":"test","num_layers":2})";
 
@@ -1262,6 +1076,11 @@ TEST(ImportSafetensorsTest, RefusesConfigs) {
   EXPECT_EQ(rule("{}"), Rule::kConfig);
   EXPECT_EQ(rule(R"({"model_type":1})"), Rule::kConfig);
   EXPECT_EQ(rule(R"({"model_type":""})"), Rule::kConfig);
+  // A diffusers component's _class_name when there is no model_type.
+  EXPECT_EQ(rule(R"({"_class_name":"AutoencoderKL"})"), std::nullopt);
+  EXPECT_EQ(ParseSafetensors(shard, R"({"_class_name":"V","model_type":"m"})")->architecture, "m");
+  EXPECT_EQ(rule(R"({"_class_name":1})"), Rule::kConfig);
+  EXPECT_EQ(rule(R"({"model_type":1,"_class_name":"V"})"), Rule::kConfig);
   EXPECT_EQ(rule(R"({"model_type":"a\u0001"})"), Rule::kConfig);
   EXPECT_EQ(rule(std::format(R"({{"model_type":"{}"}})", std::string(201, 'a'))), Rule::kConfig);
   EXPECT_EQ(rule(R"({"model_type":"t","a":1,"a":2})"), Rule::kConfig);
@@ -1562,16 +1381,6 @@ TEST(ImportQuantizationTest, RecognizesAndRefusesMethods) {
 // ---------------------------------------------------------------- directories
 
 using ImportSafetensorsFilesTest = ScratchTest;
-
-std::string Index(const std::map<std::string, std::string>& map, std::string_view extra = {}) {
-  std::string text = R"({"metadata":{"total_size":0},"weight_map":{)";
-  bool first = true;
-  for (const auto& [tensor, shard] : map) {
-    text += std::format(R"({}"{}":"{}")", first ? "" : ",", tensor, shard);
-    first = false;
-  }
-  return text + "}" + std::string(extra) + "}";
-}
 
 TEST_F(ImportSafetensorsFilesTest, ReadsShardedAndSingleCheckpoints) {
   Write(dir_ / "config.json", kConfig);

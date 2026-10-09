@@ -31,11 +31,12 @@ target_link_libraries(llmp_lanes_bench PRIVATE llmp_scheduler llmp_warnings)
 add_executable(llmp_sampling_bench sampling_bench.cc)
 target_link_libraries(llmp_sampling_bench PRIVATE llmp_sampling llmp_warnings)
 
-# The importer's container readers as a fuzzing entry (import/; D-009): a
+# The importer's container readers, and the reference decoder of what they
+# describe, as a fuzzing entry (import/; D-009): a
 # driver over the files it is given, or, built with -DLLMP_LIBFUZZER and
 # -fsanitize=fuzzer, a libFuzzer target.
 add_executable(llmp_import_fuzz import_fuzz.cc)
-target_link_libraries(llmp_import_fuzz PRIVATE llmp_import llmp_warnings)
+target_link_libraries(llmp_import_fuzz PRIVATE llmp_import llmp_reference_kernels llmp_warnings)
 
 # The retained-backing comparison's deterministic replay of the swap trace
 # on the fake provider (docs/experiments/retained-backing/).

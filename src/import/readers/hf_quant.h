@@ -42,10 +42,12 @@
 //
 // Recognized and refused, naming why: compressed-tensors other than
 // `dense` (its NVFP4 global scale is the reciprocal of NVFP4's tensor
-// scale, so describing it needs a fold), AWQ and GPTQ (affine with zero
-// points: no encoding yet), block FP8 (`fp8`), ModelOpt algorithms other
-// than the three, MLX's `quantization` object (the MLX reader's), and any
-// other method. With no quantization config every tensor is dense.
+// scale, so describing it needs a fold), AWQ and GPTQ (the affine
+// encoding with zero points, but packed across output columns, AWQ's in
+// its own nibble order: no layout yet), block FP8 (`fp8`), ModelOpt
+// algorithms other than the three, MLX's `quantization` object (the MLX
+// reader's), EXL3 (the EXL3 reader's), and any other method. With no
+// quantization config every tensor is dense.
 
 #ifndef LLMP_IMPORT_READERS_HF_QUANT_H_
 #define LLMP_IMPORT_READERS_HF_QUANT_H_

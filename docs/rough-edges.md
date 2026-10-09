@@ -28,6 +28,37 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-052: The serving start's memory guard fails when the GB10's unified memory is full of other work's page cache  (2026-10-09, status: open)
+
+Environment: `spark-b` (GB10, 128 GB unified memory), a `spark-native`
+build, `plain_tokens_serving_gpu_test`'s
+`DeepSeekFourSlots/FourSlotDsparkGpu.SpeculativeWavesFitTheStartupAllowance`
+(DeepSeek V4 Flash with its DSpark drafter at four slots), run as a
+`--gpu` spark-job right after jobs that read tens of GB of checkpoints
+(the importer's model tests read Qwen-Image-2.1's 33.1 GB pipeline and
+Qwen3.8's MLX and native checkpoints) while other streams' jobs shared
+the host. Observed: the runtime refused to serve at its startup guard
+(`runtime/memory_guard.h`, `llmp-wave-startup-guard-v1`, `guard_passed:
+false`): `available_after_fixed_bytes` 113,685,413,888 (MemAvailable after
+the node's fixed mappings) against the largest weights' 107,854,430,208
+plus the 6 GiB uncounted margin, 69 MB of host inputs, 72 MB of plan
+floor, 189 MB of scratch and 268 MB of request memory, about 1.2 GB
+short. The same test,
+unchanged, passed alone 30 minutes later. Expected: a guard that the
+machine's own reclaimable cache does not trip. Likely cause (not
+isolated): the guard reads Linux's MemAvailable, the kernel's estimate of
+what it can reclaim without swapping, which counts page cache only in
+part (less the low watermarks, and not what is active or dirty); on the
+GB10 that page cache is the same 128 GB the GPU's memory comes from, so
+another process's reads lower the number the guard compares with, though
+the kernel would give most of it back on demand. Impact: DeepSeek V4 with
+DSpark is the largest configuration and has the least slack, so it is the first to fail; a GPU test run after heavy file reads
+on the same Spark can fail spuriously. Workaround: rerun once the other
+work ends (or drop clean caches first, which needs root). A fix would
+count reclaimable file pages the way the paged node's own reclaim sees
+them, or retry the guard after asking the kernel to reclaim; neither is
+built.
+
 ## RE-051: ASan dies at the exit of every thread that installed llmpalooza's signal stack  (2026-10-09, status: worked-around)
 
 Environment: `spark` (GB10, kernel 7.0.0-1019-nvidia), the SDK's Clang

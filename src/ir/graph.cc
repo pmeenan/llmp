@@ -158,6 +158,12 @@ void Format(Hasher& h, const format::TensorFormat& f) {
   h.U8(f.params.k_bits);
   h.U8(static_cast<std::uint8_t>(f.params.codebook));
   h.U8(f.params.tensor_scale ? 1 : 0);
+  if (f.encoding == format::Encoding::kAffine) {  // other formats hash as before
+    h.U8(f.params.bits);
+    h.U32(f.params.group);
+    h.U8(static_cast<std::uint8_t>(f.params.scale));
+    h.U8(f.params.zero_point ? 1 : 0);
+  }
   h.U16(static_cast<std::uint16_t>(f.layout));
   for (const std::uint64_t n : f.shape.ne) {
     h.U64(n);

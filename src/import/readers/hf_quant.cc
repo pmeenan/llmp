@@ -184,8 +184,12 @@ std::expected<std::optional<Quantization>, Error> Normalize(json::Value object) 
     }
     if (m == "awq" || m == "gptq") {
       return Refuse(Rule::kUnsupported,
-                    "an AWQ or GPTQ quantization: affine with zero points, which no encoding "
-                    "describes yet");
+                    "an AWQ or GPTQ quantization: the affine encoding with zero points, but "
+                    "packed across output columns (AWQ in its own nibble order), which no "
+                    "layout describes yet");
+    }
+    if (m == "exl3") {
+      return Refuse(Rule::kUnsupported, "an EXL3 quantization, which the EXL3 reader reads");
     }
     if (m == "fp8") {
       return Refuse(Rule::kUnsupported,

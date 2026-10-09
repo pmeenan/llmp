@@ -15,6 +15,14 @@
 //     NaN), E5M2 an F16's upper byte, E8M0 2^(x - 127) with 0xFF NaN;
 //   - a value is code · block scale (· tensor scale), rounded once per
 //     product in F32, so where the exact value is an F32 the result is it.
+// The affine encoding (MLX's affine mode; AWQ's and GPTQ's arithmetic) is
+// its definition: code q (layout.h's bit stream) of group g, scale s and
+// bias b of the scales' type, gives s · q + b rounded once to F32 (a fused
+// multiply-add), or with a zero point z, s · (q − z) (exact for F16 and
+// BF16 scales). MLX's own kernels compute s · q + b in the activations'
+// type, rounding the product and the sum there (bfloat16 for its BF16
+// checkpoints), so they agree within that type's rounding.
+//
 // GGML's own NVFP4 and MXFP4 dequantization agree for every scale a valid
 // checkpoint holds; they differ where GGML reads an E4M3 scale as unsigned
 // and 0x7F as zero (NaN here), and an E8M0 0xFF as 2^128 (NaN here).

@@ -75,7 +75,41 @@ std::expected<void, FormatError> CheckParams(const TensorFormat& f, const Encodi
   if (p.tensor_scale && !HasPart(info, PartRole::kTensorScale)) {
     return std::unexpected(FormatError::kParams);
   }
+  const bool affine = f.encoding == Encoding::kAffine;
+  if (!affine) {
+    if (p.bits != 0 || p.group != 0 || p.scale != AffineScale::kNone || p.zero_point) {
+      return std::unexpected(FormatError::kParams);
+    }
+    return {};
+  }
+  // Groups of whole bytes of codes at every width, and whole groups a row.
+  if (p.bits == 0 || p.bits > 8 || p.group == 0 || p.group % 8 != 0 ||
+      p.scale == AffineScale::kNone ||
+      static_cast<std::uint8_t>(p.scale) > static_cast<std::uint8_t>(AffineScale::kF32)) {
+    return std::unexpected(FormatError::kParams);
+  }
   return {};
+}
+
+// The affine encoding's parts of one row: K · bits / 8 code bytes, K /
+// group scales (and biases) of the scale type, and K / group zero points
+// of `bits` bits, padded to a whole byte.
+struct AffineRow {
+  std::uint64_t codes = 0;
+  std::uint64_t scales = 0;
+  std::uint64_t zeros = 0;
+};
+
+AffineRow AffineRowOf(const TensorFormat& f) {
+  const EncodingParams& p = f.params;
+  const std::uint64_t k = f.shape.ne[0];
+  const std::uint64_t groups = k / p.group;
+  const std::uint64_t scale_bytes = Info(AffineScaleEncoding(p.scale)).element_bits / 8;
+  // With bits at most 8 and groups of at least 8 (K a multiple of 8), each
+  // is at most K, which cannot wrap.
+  return {.codes = k / 8 * p.bits,
+          .scales = groups * scale_bytes,
+          .zeros = ((groups * p.bits) + 7) / 8};
 }
 
 // Whether the layout holds the encoding.
@@ -88,6 +122,7 @@ bool Holds(Layout layout, const EncodingInfo& info) {
     case Layout::kGgmlNvfp4Blocks:
       return info.id == Encoding::kNvfp4;
     case Layout::kSplit:
+      return BlockScaled(info) || info.id == Encoding::kAffine;
     case Layout::kRowInterleaved:
     case Layout::kCutlassScaleAtoms:
       return BlockScaled(info);
@@ -136,6 +171,21 @@ std::expected<PartList, FormatError> MatrixParts(const TensorFormat& f, const En
     case Layout::kSplit:
     case Layout::kRowInterleaved:
     case Layout::kCutlassScaleAtoms: {
+      if (f.encoding == Encoding::kAffine) {  // kSplit only (Holds)
+        if (k % f.params.group != 0) {
+          return std::unexpected(FormatError::kBlock);
+        }
+        const AffineRow row = AffineRowOf(f);
+        ok = add(PartRole::kCodes, Mul(row.codes, n));
+        if (ok) {
+          ok = add(PartRole::kBlockScales, Mul(row.scales, n));
+        }
+        if (ok) {
+          ok = f.params.zero_point ? add(PartRole::kZeros, Mul(row.zeros, n))
+                                   : add(PartRole::kBiases, Mul(row.scales, n));
+        }
+        break;
+      }
       if (k % info.block_elements != 0) {
         return std::unexpected(FormatError::kBlock);
       }
@@ -175,7 +225,8 @@ std::expected<PartList, FormatError> MatrixParts(const TensorFormat& f, const En
       if (ok) {
         ok = add(PartRole::kOutputSigns, Mul(n, 2));
       }
-      if (ok) {
+      // The marker that names mcg or mul1; a 3inst trellis has none.
+      if (ok && f.params.codebook != Exl3Codebook::k3Inst) {
         ok = add(PartRole::kCodebookMarker, Size(std::uint64_t{4}));
       }
       break;
@@ -312,6 +363,12 @@ std::expected<std::uint64_t, FormatError> RowBytes(const TensorFormat& format, P
     case Layout::kGgmlNvfp4Blocks:
       return k / info.ggml->block_elements * info.ggml->block_bytes;
     case Layout::kSplit:
+      if (format.encoding == Encoding::kAffine) {
+        const AffineRow row = AffineRowOf(format);
+        return role == PartRole::kCodes   ? row.codes
+               : role == PartRole::kZeros ? row.zeros
+                                          : row.scales;
+      }
       return role == PartRole::kCodes ? CodeRowBytes(k, info) : k / info.block_elements;
     case Layout::kRowInterleaved:
       return CodeRowBytes(k, info) + (k / info.block_elements);

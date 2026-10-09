@@ -7,17 +7,25 @@
 // today's profiles (spec/mapping.h SynthesizeV0), tensor for tensor in the
 // same formats; the split and single GGUFs of DeepSeek V4, Qwen3.8 and
 // Gemma 4 read whole; Qwen3.8's ModelOpt checkpoint pairs every NVFP4 and
-// MXFP8 weight; and the readers refuse what is another reader's (a
-// diffusers component, an MLX checkpoint). Needs the model files (label
-// `models`); each case is skipped without its files.
+// MXFP8 weight; Qwen-Image-2.1's pipeline is its v0 composition's
+// components tensor for tensor and byte for byte; the Qwen2.5 EXL3
+// fixtures are their v0 imports; Qwen3.8's MLX checkpoint pairs every
+// quantized module and decodes within its quantization of the native
+// checkpoint's weights; and the safetensors reader leaves an MLX
+// checkpoint to its reader. Needs the model files (label `models`); each
+// case is skipped without its files.
 
+#include <fcntl.h>
 #include <gtest/gtest.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -32,6 +40,7 @@
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "artifact/composition.h"
 #include "artifact/format_map.h"
 #include "artifact/layout.h"
 #include "format/encoding.h"
@@ -42,6 +51,7 @@
 #include "import/reader.h"
 #include "import/readers/gguf.h"
 #include "import/readers/safetensors.h"
+#include "kernels/reference/decode.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "spec/mapping.h"
@@ -317,6 +327,7 @@ INSTANTIATE_TEST_SUITE_P(
     [](const testing::TestParamInfo<V0Case>& info) { return std::string(info.param.name); });
 
 constexpr std::string_view kQwen38 = "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
+constexpr std::string_view kMlx = "models/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80";
 
 TEST(ImportSafetensorsModelsTest, Qwen38ModelOptPairsEveryWeight) {
   const std::filesystem::path path = Models() / kQwen38;
@@ -566,25 +577,446 @@ TEST(ImportSafetensorsModelsTest, ReadsQwenImagesTextEncoder) {
 }
 
 TEST(ImportSafetensorsModelsTest, LeavesOtherReadersCheckpointsToThem) {
-  // A diffusers component has no model_type; an MLX checkpoint's
-  // quantization is the MLX reader's.
+  // A diffusers component alone reads by its _class_name; an MLX
+  // checkpoint (its shards in MLX's format) is the MLX reader's, which
+  // the safetensors reader hands it to.
   const std::filesystem::path transformer =
       Models() / "models/Qwen/Qwen-Image-2.1@790c9263/transformer";
   if (Exists(transformer)) {
     const auto c = ReadSafetensors(transformer, ::geteuid());
-    ASSERT_FALSE(c.has_value());
-    EXPECT_EQ(c.error().rule, Rule::kConfig) << c.error().ToString();
+    ASSERT_TRUE(c.has_value()) << c.error().ToString();
+    EXPECT_EQ(c->architecture, "QwenImage21Transformer2DModel");
   }
-  const std::filesystem::path mlx =
-      Models() / "models/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80";
+  const std::filesystem::path mlx = Models() / kMlx;
   if (Exists(mlx)) {
     const auto c = ReadSafetensors(mlx, ::geteuid());
-    ASSERT_FALSE(c.has_value());
-    EXPECT_EQ(c.error().rule, Rule::kUnsupported) << c.error().ToString();
+    ASSERT_TRUE(c.has_value()) << c.error().ToString();
+    EXPECT_EQ(c->container, "mlx");
+    EXPECT_EQ(c->quantization, "mlx affine");
   }
   if (!Exists(transformer) && !Exists(mlx)) {
     GTEST_SKIP() << "no diffusers or MLX checkpoint";
   }
+}
+
+// ---------------------------------------------------------------- byte checks
+
+// A v0 resource's bytes and a checkpoint tensor's are equal, read in
+// chunks (never the bytes themselves in a failure). Each chunk read is
+// dropped from the page cache after it is compared: on the GB10 the cache
+// shares the GPU's memory, and tens of GB of it would starve the GPU
+// tests ctest runs beside this one (their startup guards count free
+// device memory).
+testing::AssertionResult SameResourceBytes(const std::filesystem::path& root,
+                                           const artifact::Artifact& a, std::uint32_t resource,
+                                           const Checkpoint& c, const Tensor& t) {
+  const auto p = a.ResourcePlacement(resource);
+  if (!p) {
+    return testing::AssertionFailure() << "no placement";
+  }
+  if (p->bytes.value() != t.extent.bytes) {
+    return testing::AssertionFailure() << "sizes " << p->bytes.value() << " and " << t.extent.bytes;
+  }
+  const artifact::Group& g = a.groups()[p->group];
+  const artifact::Shard& shard = a.shards()[g.shard];
+  const artifact::FileDescriptor v0(::open((root / shard.path).c_str(), O_RDONLY | O_CLOEXEC));
+  if (!v0.valid()) {
+    return testing::AssertionFailure() << "cannot open a v0 shard";
+  }
+  const std::uint64_t base = shard.data_offset.value() + g.offset.value() + p->offset.value();
+  const int source = c.open.at(t.extent.file).fd.get();
+  constexpr std::uint64_t kChunk = std::uint64_t{64} << 20U;
+  std::vector<std::byte> want;
+  std::vector<std::byte> got;
+  for (std::uint64_t at = 0; at < t.extent.bytes; at += kChunk) {
+    const std::uint64_t n = std::min(kChunk, t.extent.bytes - at);
+    want.resize(n);
+    got.resize(n);
+    if (::pread(v0.get(), want.data(), n, static_cast<off_t>(base + at)) !=
+        static_cast<ssize_t>(n)) {
+      return testing::AssertionFailure() << "short v0 read";
+    }
+    if (auto ok = c.Read(t.extent, at, got); !ok) {
+      return testing::AssertionFailure() << ok.error().ToString();
+    }
+    ::posix_fadvise(v0.get(), static_cast<off_t>(base + at), static_cast<off_t>(n),
+                    POSIX_FADV_DONTNEED);
+    ::posix_fadvise(source, static_cast<off_t>(t.extent.offset + at), static_cast<off_t>(n),
+                    POSIX_FADV_DONTNEED);
+    const auto [x, y] = std::ranges::mismatch(want, got);
+    if (x != want.end()) {
+      return testing::AssertionFailure()
+             << "first difference at byte " << (at + static_cast<std::uint64_t>(x - want.begin()));
+    }
+  }
+  return testing::AssertionSuccess();
+}
+
+// Every resource of a v0 artifact is the checkpoint tensor of each of its
+// roles, byte for byte; returns the bytes compared.
+std::uint64_t ExpectResourcesAreTheCheckpoints(const std::filesystem::path& root,
+                                               const artifact::Artifact& a, const Checkpoint& c) {
+  std::uint64_t bytes = 0;
+  for (std::uint32_t r = 0; r < a.resources().size(); ++r) {
+    for (const std::string& role : a.resources()[r].roles) {
+      const Tensor* t = c.FindTensor(role);
+      EXPECT_NE(t, nullptr) << role;
+      if (t != nullptr) {
+        EXPECT_TRUE(SameResourceBytes(root, a, r, c, *t)) << role;
+        bytes += t->extent.bytes;
+      }
+    }
+  }
+  return bytes;
+}
+
+// ---------------------------------------------------------------- diffusers
+
+// Qwen-Image-2.1's pipeline as the diffusers reader gives it against the
+// v0 composition the Python importer made of the same directory (D-089):
+// the same components and architectures, the kept files the composition
+// keeps, and in each component every tensor the v0 artifact holds, in
+// v0's format and with its bytes (all ~33 GB compared).
+TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV0Imports) {
+  const std::filesystem::path path = Models() / "models/Qwen/Qwen-Image-2.1@790c9263";
+  const std::filesystem::path store = Models() / "m3-artifacts";
+  const std::filesystem::path composition =
+      store / "eca21baad38229e471a44cb2479d392ffcf745fb812e8a41668f336139fa1acd";
+  if (!Exists(path) || !Exists(composition)) {
+    GTEST_SKIP() << "no " << path << " or " << composition;
+  }
+  const auto c = ReadCheckpoint(path, ::geteuid());
+  ASSERT_TRUE(c.has_value()) << c.error().ToString();
+  EXPECT_EQ(c->container, "diffusers");
+  EXPECT_TRUE(c->tensors.empty());
+  const auto v0 = artifact::OpenComposition(composition);
+  ASSERT_TRUE(v0.has_value()) << v0.error().ToString();
+  EXPECT_EQ(c->architecture, v0->architecture());
+  // The kept files: model_index.json, the scheduler's and the processor's,
+  // by name and size.
+  std::map<std::string, std::uint64_t> kept;
+  for (const SourceFile& f : c->files) {
+    kept.emplace(std::filesystem::path(f.name).filename().string(), f.bytes);
+  }
+  std::map<std::string, std::uint64_t> v0_kept;
+  for (const artifact::Source& s : v0->sources()) {
+    v0_kept.emplace(s.name, s.bytes.value());
+  }
+  EXPECT_EQ(kept, v0_kept);
+  ASSERT_EQ(c->components.size(), v0->components().size());
+  std::uint64_t compared = 0;
+  for (std::size_t i = 0; i < c->components.size(); ++i) {
+    const Checkpoint& component = c->components[i];
+    const artifact::CompositionComponent& want = v0->components()[i];
+    SCOPED_TRACE(component.role);
+    EXPECT_EQ(component.role, want.role);
+    EXPECT_EQ(component.architecture, want.architecture);
+    ExpectWellFormed(component);
+    const std::filesystem::path root = store / want.artifact;
+    auto a = artifact::Artifact::Open(root, {.expected_id = {}, .trusted_owner = ::geteuid()});
+    ASSERT_TRUE(a.has_value()) << a.error().ToString();
+    // Every shard the reader opened is a source v0 recorded, and every
+    // file both have is of one size (v0 also kept files the reader does
+    // not open, a generation config).
+    for (const SourceFile& f : component.files) {
+      const auto s = std::ranges::find(a->sources(), f.name, &artifact::Source::name);
+      if (s != a->sources().end()) {
+        EXPECT_EQ(f.bytes, s->bytes.value()) << f.name;
+      } else {
+        EXPECT_FALSE(f.name.ends_with(".safetensors")) << f.name;
+      }
+    }
+    const auto source = spec::SourceOfV0(*a);
+    ASSERT_TRUE(source.has_value()) << source.error();
+    EXPECT_EQ(source->tensors.size(), component.tensors.size());
+    for (const spec::SourceTensor& t : source->tensors) {
+      const Tensor* got = component.FindTensor(t.name);
+      ASSERT_NE(got, nullptr) << t.name;
+      EXPECT_EQ(got->format, t.format) << t.name;
+      EXPECT_EQ(got->part, t.part) << t.name;
+    }
+    compared += ExpectResourcesAreTheCheckpoints(root, *a, component);
+  }
+  RecordProperty("bytes_compared", std::to_string(compared));
+}
+
+// ---------------------------------------------------------------- EXL3
+
+struct Exl3Case {
+  std::string_view name;
+  std::string_view source;
+  std::string_view artifact;
+};
+
+class ImportExl3ModelsTest : public testing::TestWithParam<Exl3Case> {};
+
+// The Qwen2.5 EXL3 fixtures' source checkpoints as the EXL3 reader gives
+// them against their v0 imports: every linear (169) a trellis whose parts
+// have the format v0's resources assemble to, every other tensor v0's
+// format, and every resource's bytes.
+TEST_P(ImportExl3ModelsTest, FixturesAreTheirV0Imports) {
+  const Exl3Case& e = GetParam();
+  const std::filesystem::path path = Models() / e.source;
+  const std::filesystem::path root = Models() / e.artifact;
+  if (!Exists(path) || !Exists(root)) {
+    GTEST_SKIP() << "no " << path << " or " << root;
+  }
+  const auto c = ReadCheckpoint(path, ::geteuid());
+  ASSERT_TRUE(c.has_value()) << c.error().ToString();
+  EXPECT_EQ(c->container, "exl3");
+  EXPECT_EQ(c->architecture, "qwen2");
+  ExpectWellFormed(*c);
+  auto a = artifact::Artifact::Open(root, {.expected_id = {}, .trusted_owner = ::geteuid()});
+  ASSERT_TRUE(a.has_value()) << a.error().ToString();
+  for (const SourceFile& f : c->files) {
+    const auto s = std::ranges::find(a->sources(), f.name, &artifact::Source::name);
+    ASSERT_NE(s, a->sources().end()) << f.name;
+    EXPECT_EQ(s->bytes.value(), f.bytes) << f.name;
+  }
+  std::size_t trellises = 0;
+  for (const artifact::Resource& r : a->resources()) {
+    const Tensor* t = c->FindTensor(r.name);
+    ASSERT_NE(t, nullptr) << r.name;
+    EXPECT_EQ(t->part, artifact::V0PartRole(r.repr)) << r.name;
+    if (r.repr.family != artifact::Family::kExl3) {
+      EXPECT_EQ(t->format, artifact::FormatOf(r.repr).value()) << r.name;
+      continue;
+    }
+    if (r.repr.role != "trellis") {
+      continue;  // checked with its trellis
+    }
+    ++trellises;
+    const std::string module =
+        r.name.substr(0, r.name.size() - std::string_view(".trellis").size());
+    std::vector<artifact::V0Part> parts = {{format::PartRole::kCodes, &r.repr}};
+    for (const auto& [suffix, role] : {std::pair{".suh", format::PartRole::kInputSigns},
+                                       std::pair{".svh", format::PartRole::kOutputSigns},
+                                       std::pair{".mcg", format::PartRole::kCodebookMarker}}) {
+      const auto i = a->FindResource(module + suffix);
+      ASSERT_TRUE(i.has_value()) << module << suffix;
+      parts.push_back({role, &a->resources()[*i].repr});
+    }
+    const auto v0 =
+        artifact::Assemble(format::Encoding::kExl3Trellis, format::Layout::kExl3Tiles, parts);
+    ASSERT_TRUE(v0.has_value()) << module;
+    for (const std::string_view suffix : {".trellis", ".suh", ".svh", ".mcg"}) {
+      const Tensor* part = c->FindTensor(module + std::string(suffix));
+      ASSERT_NE(part, nullptr) << module << suffix;
+      EXPECT_EQ(part->format, *v0) << module << suffix;
+    }
+  }
+  EXPECT_EQ(trellises, 169U);
+  EXPECT_EQ(a->resources().size(), c->tensors.size());
+  RecordProperty("bytes_compared", std::to_string(ExpectResourcesAreTheCheckpoints(root, *a, *c)));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Fixtures, ImportExl3ModelsTest,
+    testing::Values(
+        Exl3Case{.name = "exl3_4_0bpw",
+                 .source = "exl3-reference-20260922/models/4.0bpw",
+                 .artifact = "artifact-layout-20260922/installed/"
+                             "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4"},
+        Exl3Case{.name = "exl3_4_5bpw",
+                 .source = "exl3-reference-20260922/models/4.5bpw",
+                 .artifact = "artifact-layout-20260922/installed/"
+                             "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a"}),
+    [](const testing::TestParamInfo<Exl3Case>& info) { return std::string(info.param.name); });
+
+// ---------------------------------------------------------------- MLX
+
+// Every MLX module with scales is paired: codes, scales and biases in
+// one affine format (4 bits, group 32, BF16 scales), the switch_mlp ones
+// as expert arrays.
+TEST(ImportMlxModelsTest, Qwen38MlxPairsEveryWeight) {
+  const std::filesystem::path path = Models() / kMlx;
+  if (!Exists(path)) {
+    GTEST_SKIP() << "no " << path;
+  }
+  const auto c = ReadCheckpoint(path, ::geteuid());
+  ASSERT_TRUE(c.has_value()) << c.error().ToString();
+  EXPECT_EQ(c->container, "mlx");
+  EXPECT_EQ(c->architecture, "qwen4_exp");
+  EXPECT_EQ(c->quantization, "mlx affine");
+  ExpectWellFormed(*c);
+  std::size_t scales = 0;
+  std::size_t experts = 0;
+  std::map<format::PartRole, std::size_t> parts;
+  for (const Tensor& t : c->tensors) {
+    if (t.name.ends_with(".scales") &&
+        c->FindTensor(t.name.substr(0, t.name.size() - 7) + ".weight") != nullptr) {
+      ++scales;
+    }
+    if (t.format.encoding != format::Encoding::kAffine) {
+      continue;
+    }
+    ++parts[t.part];
+    experts += t.experts && t.part == format::PartRole::kCodes ? 1 : 0;
+    EXPECT_EQ(t.format.params.bits, 4) << t.name;
+    EXPECT_EQ(t.format.params.group, 32U) << t.name;
+    EXPECT_EQ(t.format.params.scale, format::AffineScale::kBF16) << t.name;
+  }
+  EXPECT_EQ(parts[format::PartRole::kCodes], scales);
+  EXPECT_EQ(parts[format::PartRole::kBlockScales], scales);
+  EXPECT_EQ(parts[format::PartRole::kBiases], scales);
+  // gate, up and down of each of 48 layers and the MTP layer.
+  EXPECT_EQ(experts, 49U * 3U);
+  const Tensor* down =
+      c->FindTensor("language_model.model.layers.1.mlp.switch_mlp.down_proj.weight");
+  ASSERT_NE(down, nullptr);
+  EXPECT_EQ(down->format.shape, (format::Shape{.ne = {640, 2560, 512, 1}, .rank = 3}));
+  RecordProperty("tensors", static_cast<int>(c->tensors.size()));
+  RecordProperty("quantized", static_cast<int>(scales));
+}
+
+// Rows [first, first + count) of matrix `matrix` of the logical tensor
+// whose parts are `names`, decoded by the reference from just those rows'
+// bytes.
+std::vector<float> DecodeSlice(const Checkpoint& c, std::initializer_list<std::string> names,
+                               std::uint64_t matrix, std::uint64_t first, std::uint64_t count) {
+  const Tensor* any = c.FindTensor(*names.begin());
+  EXPECT_NE(any, nullptr) << *names.begin();
+  if (any == nullptr) {
+    return {};
+  }
+  const format::TensorFormat whole = any->format;
+  format::TensorFormat slice = whole;
+  slice.shape.ne[1] = count;
+  slice.shape.ne[2] = 1;
+  slice.shape.ne[3] = 1;
+  slice.shape.rank = 2;
+  std::vector<std::vector<std::byte>> bytes;
+  std::vector<kernels::reference::PartView> views;
+  bytes.reserve(names.size());
+  for (const std::string& name : names) {
+    const Tensor* t = c.FindTensor(name);
+    EXPECT_NE(t, nullptr) << name;
+    if (t == nullptr) {
+      return {};
+    }
+    EXPECT_EQ(t->format, whole) << name;
+    std::uint64_t offset = matrix * 4;
+    std::uint64_t n = 4;
+    if (t->part != format::PartRole::kTensorScale) {
+      const std::uint64_t row = format::RowBytes(whole, t->part).value();
+      offset = (matrix * (t->extent.bytes / format::Matrices(whole))) + (first * row);
+      n = count * row;
+    }
+    bytes.emplace_back(n);
+    const auto ok = c.Read(t->extent, offset, bytes.back());
+    EXPECT_TRUE(ok.has_value()) << name;
+    views.push_back({.role = t->part, .bytes = bytes.back()});
+  }
+  std::vector<float> out(count * whole.shape.ne[0]);
+  const auto ok = kernels::reference::DecodeRows(slice, views, 0, 0, count, out);
+  EXPECT_TRUE(ok.has_value()) << *names.begin();
+  return out;
+}
+
+double RelativeRms(const std::vector<float>& got, const std::vector<float>& want) {
+  double diff = 0;
+  double norm = 0;
+  for (std::size_t i = 0; i < got.size() && i < want.size(); ++i) {
+    diff += (static_cast<double>(got[i]) - want[i]) * (static_cast<double>(got[i]) - want[i]);
+    norm += static_cast<double>(want[i]) * want[i];
+  }
+  return norm > 0 ? std::sqrt(diff / norm) : 0.0;
+}
+
+// The MLX checkpoint's weights decoded by the reference against the same
+// weights of Qwen3.8's native checkpoint (both quantized from one set of
+// BF16 weights). Where the native one is BF16 (the head, the token
+// table), every MLX value is within one step s of it, plus the BF16
+// rounding of the stored scale and bias (15 · |s| · 2^-8 + |b| · 2^-8):
+// mx.quantize keeps zero exact (scale = edge / round(edge / scale),
+// mlx/backend/cpu/quantized.cpp), which can leave a group's far end up to
+// one step short and clamp it there, so its documented s / 2 is s. Where
+// the native one is MXFP8 or NVFP4 too, the two agree within 0.15
+// relative RMS, both quantizations' noise (MLX's own against BF16 is
+// about 0.09 here).
+TEST(ImportMlxModelsTest, DecodesLikeTheNativeCheckpoint) {
+  const std::filesystem::path mlx_path = Models() / kMlx;
+  const std::filesystem::path native_path = Models() / kQwen38;
+  if (!Exists(mlx_path) || !Exists(native_path)) {
+    GTEST_SKIP() << "no " << mlx_path << " or " << native_path;
+  }
+  const auto mlx = ReadCheckpoint(mlx_path, ::geteuid());
+  ASSERT_TRUE(mlx.has_value()) << mlx.error().ToString();
+  const auto native = ReadCheckpoint(native_path, ::geteuid());
+  ASSERT_TRUE(native.has_value()) << native.error().ToString();
+  const std::string m = "language_model.";
+  const std::string n = "model.language_model.";
+  // BF16 natives: the bound per element.
+  struct Dense {
+    std::string mlx, native;
+    std::uint64_t first, count;
+  };
+  for (const Dense& d : {Dense{m + "lm_head", "lm_head.weight", 0, 256},
+                         Dense{m + "lm_head", "lm_head.weight", 248320 - 64, 64},
+                         Dense{m + "model.embed_tokens", n + "embed_tokens.weight", 1000, 256}}) {
+    SCOPED_TRACE(d.mlx);
+    const std::vector<float> got = DecodeSlice(
+        *mlx, {d.mlx + ".weight", d.mlx + ".scales", d.mlx + ".biases"}, 0, d.first, d.count);
+    const std::vector<float> want = DecodeSlice(*native, {d.native}, 0, d.first, d.count);
+    // The stored scales and biases of these rows.
+    const Tensor* s = mlx->FindTensor(d.mlx + ".scales");
+    const Tensor* b = mlx->FindTensor(d.mlx + ".biases");
+    ASSERT_TRUE(s != nullptr && b != nullptr);
+    const std::uint64_t row = format::RowBytes(s->format, format::PartRole::kBlockScales).value();
+    std::vector<std::byte> sb(d.count * row);
+    std::vector<std::byte> bb(d.count * row);
+    ASSERT_TRUE(mlx->Read(s->extent, d.first * row, sb).has_value());
+    ASSERT_TRUE(mlx->Read(b->extent, d.first * row, bb).has_value());
+    const std::uint64_t k = s->format.shape.ne[0];
+    ASSERT_EQ(got.size(), want.size());
+    double worst = 0;
+    for (std::size_t i = 0; i < got.size(); ++i) {
+      const std::size_t g = (i / k * (k / 32)) + ((i % k) / 32);
+      std::uint16_t sv = 0;
+      std::uint16_t bv = 0;
+      std::memcpy(&sv, sb.data() + (2 * g), 2);
+      std::memcpy(&bv, bb.data() + (2 * g), 2);
+      const double scale = std::abs(kernels::reference::Bf16ToF32(sv));
+      const double bias = std::abs(kernels::reference::Bf16ToF32(bv));
+      const double bound = scale + (15 * scale / 256) + (bias / 256) + 1e-12;
+      worst = std::max(worst, std::abs(static_cast<double>(got[i]) - want[i]) / bound);
+    }
+    EXPECT_LE(worst, 1.0);
+    RecordProperty(std::format("{}_{}_worst_over_bound", d.mlx, d.first), std::to_string(worst));
+    RecordProperty(std::format("{}_{}_relative_rms", d.mlx, d.first),
+                   std::to_string(RelativeRms(got, want)));
+  }
+  // Quantized natives: MXFP8 (the shared expert, a full-attention q_proj)
+  // and NVFP4 with a tensor scale (routed expert 7).
+  const std::string se = "layers.1.mlp.shared_expert.gate_proj";
+  const std::vector<float> se_got = DecodeSlice(
+      *mlx,
+      {m + "model." + se + ".weight", m + "model." + se + ".scales", m + "model." + se + ".biases"},
+      0, 0, 640);
+  const std::vector<float> se_want =
+      DecodeSlice(*native, {n + se + ".weight", n + se + ".weight_scale"}, 0, 0, 640);
+  const std::string q = "layers.3.self_attn.q_proj";
+  const std::vector<float> q_got = DecodeSlice(
+      *mlx,
+      {m + "model." + q + ".weight", m + "model." + q + ".scales", m + "model." + q + ".biases"}, 0,
+      0, 512);
+  const std::vector<float> q_want =
+      DecodeSlice(*native, {n + q + ".weight", n + q + ".weight_scale"}, 0, 0, 512);
+  const std::string sw = m + "model.layers.1.mlp.switch_mlp.down_proj";
+  const std::string ex = n + "layers.1.mlp.experts.7.down_proj";
+  const std::vector<float> ex_got =
+      DecodeSlice(*mlx, {sw + ".weight", sw + ".scales", sw + ".biases"}, 7, 0, 256);
+  const std::vector<float> ex_want = DecodeSlice(
+      *native, {ex + ".weight", ex + ".weight_scale", ex + ".weight_scale_2"}, 0, 0, 256);
+  const double se_rms = RelativeRms(se_got, se_want);
+  const double q_rms = RelativeRms(q_got, q_want);
+  const double ex_rms = RelativeRms(ex_got, ex_want);
+  RecordProperty("shared_expert_relative_rms", std::to_string(se_rms));
+  RecordProperty("q_proj_relative_rms", std::to_string(q_rms));
+  RecordProperty("expert7_relative_rms", std::to_string(ex_rms));
+  EXPECT_LT(se_rms, 0.15);
+  EXPECT_LT(q_rms, 0.15);
+  EXPECT_LT(ex_rms, 0.15);
 }
 
 }  // namespace

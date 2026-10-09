@@ -3,33 +3,49 @@
 
 // The safetensors container reader (D-109): a Hugging Face checkpoint
 // directory, config.json with model.safetensors or the shards
-// model.safetensors.index.json names, as a checkpoint (checkpoint.h).
+// model.safetensors.index.json names, as a checkpoint (checkpoint.h). A
+// diffusers component's directory (readers/diffusers.h) is read alike,
+// its weights named diffusion_pytorch_model instead of model.
 //
 // config.json (at most kMaxConfigBytes, strict RFC 8259 JSON: well-formed
 // UTF-8, duplicate keys refused, nesting at most 32) is an object with a
 // `model_type` string of 1 to 200 bytes without control characters, the
-// architecture. Its members become the metadata, objects flattened into
+// architecture, or without one a diffusers `_class_name` of the same
+// rule. Its members become the metadata, objects flattened into
 // dotted keys ("text_config.num_hidden_layers"): numbers as integers
 // (written without fraction or exponent and within 64 bits) or finite
 // reals, strings, flags, lists of integers, of numbers or of strings, and
 // none for null and any other list. Two members flattening to one key are
 // refused.
-// `quantization_config` is not metadata: hf_quant.h reads it, and
-// hf_quant_config.json beside it.
+// `quantization_config` (and MLX's `quantization` object) is not
+// metadata: hf_quant.h reads it, and hf_quant_config.json beside it (the
+// MLX and EXL3 readers read theirs).
 //
 // The index (at most kMaxIndexBytes) holds `weight_map`, tensor names to
 // shard file names; its other members are not read. A shard name is a
 // plain file name ending in ".safetensors" (no '/', not "." or ".."), at
-// most kMaxShards of them, each opened beneath the checkpoint. Every
+// most kMaxShards of them, each opened beneath the checkpoint (and kept
+// open: ReadCheckpoint raises the soft open-file limit for them). Every
 // tensor a shard holds is the index's under that shard and every tensor
 // the index names is in its shard. With no index, model.safetensors is
 // the only shard; beside an index that does not name it, the checkpoint
-// is refused (which of the two is meant is ambiguous).
+// is refused (which of the two is meant is ambiguous), as is a directory
+// holding weights under both base names. With no weights under the
+// default names, a variant's (transformers' and diffusers' `variant`:
+// <base>.<v>.safetensors or <base>.safetensors.index.<v>.json, v of
+// letters, digits and '_') are read when they are the directory's only
+// weights, as the default's would be; several variants, or variants of
+// both bases, are refused as ambiguous (at most 4 · kMaxShards entries
+// are listed). Beside the default names a variant is not read, as a
+// library loading the directory without naming one does not.
 //
 // A shard is safetensors' format, read as permissively as still describes
 // it correctly: an 8-byte little-endian header length of at most
 // kMaxHeaderBytes, inside the file; the header a JSON object of tensors
-// and an optional `__metadata__`, which is not read. A tensor is an object
+// and an optional `__metadata__`, free text but for its `format`: shards
+// that MLX wrote ("mlx") make the checkpoint MLX's (readers/mlx.h's
+// MlxCheckpoint), and shards in MLX's format beside shards another
+// library wrote are refused. A tensor is an object
 // with `dtype`, `shape` and `data_offsets` (other members ignored): a
 // dtype of the table below, at most kMaxRank non-negative integer
 // dimensions whose product (no element count zero: the format layer has no
@@ -56,9 +72,12 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string_view>
+#include <vector>
 
+#include "base/json.h"
 #include "import/checkpoint.h"
 #include "import/error.h"
 
@@ -81,6 +100,40 @@ std::expected<Checkpoint, Error> ReadSafetensors(const std::filesystem::path& di
 std::expected<Checkpoint, Error> ParseSafetensors(std::span<const std::byte> shard,
                                                   std::string_view config,
                                                   std::string_view hf_quant_config = {});
+
+// ------------------------------------------------ what the other readers share
+
+// A directory read as above with every tensor dense, as its dtype, before
+// any quantization pairs parts: the MLX and EXL3 readers read theirs from
+// `config` and pair the tensors themselves.
+struct HfDirectory {
+  Checkpoint checkpoint{};  // container "safetensors"
+  base::json::Document config{};
+  std::optional<base::json::Document> hf_quant{};  // hf_quant_config.json, when present
+  // A shard's `__metadata__.format` is "mlx" (and none names another):
+  // MLX wrote the arrays (readers/mlx.h).
+  bool mlx = false;
+};
+std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& directory,
+                                                  uid_t trusted);
+// The same of one shard's bytes (ParseSafetensors's file).
+std::expected<HfDirectory, Error> ParseHfShard(std::span<const std::byte> shard,
+                                               std::string_view config,
+                                               std::string_view hf_quant_config = {});
+
+// config.json beneath `directory`, opened and checked as Read opens it,
+// within its cap and parsed as an object: a reader's claim's look, none
+// for anything else (the reader that reads it reports why).
+std::optional<base::json::Document> PeekConfig(const std::filesystem::path& directory,
+                                               uid_t trusted);
+
+// A JSON object's members as metadata, as config.json's (sorted, keys
+// unique, within the caps); `skip` names root members left out.
+std::expected<std::vector<MetaEntry>, Error> FlattenMetadata(
+    base::json::Value root, std::span<const std::string_view> skip = {});
+
+// Whether a dot-separated component of `name` is `component`.
+bool HasComponent(std::string_view name, std::string_view component);
 
 }  // namespace llmp::import
 

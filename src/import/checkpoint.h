@@ -90,16 +90,28 @@ struct Tensor {
   std::vector<std::uint64_t> dims{};
 };
 
+// A diffusers pipeline (container "diffusers"; readers/diffusers.h) is a
+// checkpoint of components, each a checkpoint of its own with its role
+// (D-089), and holds no tensors itself: its files are model_index.json
+// and the files of its components that hold no weights (a scheduler's, a
+// processor's), its metadata model_index.json's.
 struct Checkpoint {
-  std::string container{};     // "gguf" or "safetensors"
-  std::string architecture{};  // GGUF general.architecture, config.json model_type
-  // The recognized quantization ("modelopt NVFP4", "modelopt MIXED_PRECISION"),
-  // or empty.
+  // A pipeline component's role (model_index.json's name for it,
+  // [a-z][a-z0-9_]{0,63}, also its directory); empty for any other.
+  std::string role{};
+  // "gguf", "safetensors", "mlx", "exl3" or "diffusers".
+  std::string container{};
+  // GGUF general.architecture; config.json model_type, or a diffusers
+  // component's _class_name; a pipeline's model_index.json _class_name.
+  std::string architecture{};
+  // The recognized quantization ("modelopt NVFP4", "modelopt
+  // MIXED_PRECISION", "mlx affine", "exl3"), or empty.
   std::string quantization{};
   std::vector<SourceFile> files{};
   std::vector<OpenFile> open{};  // files[i]'s descriptor
   std::vector<Tensor> tensors{};
-  std::vector<MetaEntry> metadata{};  // sorted by key, keys unique
+  std::vector<MetaEntry> metadata{};     // sorted by key, keys unique
+  std::vector<Checkpoint> components{};  // a pipeline's, sorted by role
 
   const Tensor* FindTensor(std::string_view name) const;
   const MetaValue* FindValue(std::string_view key) const;

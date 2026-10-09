@@ -39,7 +39,13 @@ constexpr std::array kExl3Parts = {
     PartSpec{.role = PartRole::kCodes, .element = Encoding::kI16, .required = true},
     PartSpec{.role = PartRole::kInputSigns, .element = Encoding::kF16, .required = true},
     PartSpec{.role = PartRole::kOutputSigns, .element = Encoding::kF16, .required = true},
-    PartSpec{.role = PartRole::kCodebookMarker, .element = Encoding::kI32, .required = true},
+    PartSpec{.role = PartRole::kCodebookMarker, .element = Encoding::kI32, .required = false},
+};
+constexpr std::array kAffineParts = {
+    PartSpec{.role = PartRole::kCodes, .element = Encoding::kU8, .required = true},
+    PartSpec{.role = PartRole::kBlockScales, .element = Encoding::kF16, .required = true},
+    PartSpec{.role = PartRole::kBiases, .element = Encoding::kF16, .required = false},
+    PartSpec{.role = PartRole::kZeros, .element = Encoding::kU8, .required = false},
 };
 
 constexpr EncodingInfo Dense(Encoding id, std::string_view name, std::uint32_t bits, bool floating,
@@ -152,6 +158,14 @@ constexpr std::array kEncodings = {
                  .floating = false,
                  .parts = kExl3Parts,
                  .ggml = std::nullopt},
+    EncodingInfo{.id = Encoding::kAffine,
+                 .name = "affine",
+                 .block_elements = 8,
+                 .element_bits = 0,
+                 .quantized = true,
+                 .floating = false,
+                 .parts = kAffineParts,
+                 .ggml = std::nullopt},
 };
 
 constexpr bool InEnumOrder() {
@@ -160,7 +174,7 @@ constexpr bool InEnumOrder() {
       return false;
     }
   }
-  return kEncodings.back().id == Encoding::kExl3Trellis;
+  return kEncodings.back().id == Encoding::kAffine;
 }
 static_assert(InEnumOrder(), "the table lists every encoding in enum order");
 
@@ -265,8 +279,25 @@ std::string_view PartRoleName(PartRole role) {
       return "output_signs";
     case PartRole::kCodebookMarker:
       return "codebook_marker";
+    case PartRole::kBiases:
+      return "biases";
+    case PartRole::kZeros:
+      return "zeros";
   }
   return "unknown";
+}
+
+Encoding AffineScaleEncoding(AffineScale scale) {
+  switch (scale) {
+    case AffineScale::kF16:
+      return Encoding::kF16;
+    case AffineScale::kBF16:
+      return Encoding::kBF16;
+    case AffineScale::kNone:
+    case AffineScale::kF32:
+      break;
+  }
+  return Encoding::kF32;
 }
 
 std::span<const EncodingInfo> Encodings() { return kEncodings; }

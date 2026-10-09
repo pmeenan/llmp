@@ -57,10 +57,11 @@ constexpr std::array<std::string_view, 6> kRoles = {"target",       "drafter",  
                                                     "text_encoder", "denoiser", "vae"};
 constexpr std::array<std::string_view, 3> kTapPoints = {"layer_out", "streams", "post_final_norm"};
 constexpr std::array<std::string_view, 2> kReadKinds = {"tap", "state"};
-constexpr std::array kParts = {format::PartRole::kData,          format::PartRole::kCodes,
-                               format::PartRole::kBlockScales,   format::PartRole::kTensorScale,
-                               format::PartRole::kInputSigns,    format::PartRole::kOutputSigns,
-                               format::PartRole::kCodebookMarker};
+constexpr std::array kParts = {format::PartRole::kData,           format::PartRole::kCodes,
+                               format::PartRole::kBlockScales,    format::PartRole::kTensorScale,
+                               format::PartRole::kInputSigns,     format::PartRole::kOutputSigns,
+                               format::PartRole::kCodebookMarker, format::PartRole::kBiases,
+                               format::PartRole::kZeros};
 
 template <typename E, std::size_t N>
 std::optional<E> ByName(const std::array<std::string_view, N>& names, std::string_view name) {
