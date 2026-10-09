@@ -243,6 +243,80 @@ attention, the width whitelist of `ggml.rms_norm_mul_add.fused`, Gemma's
 route/reduce shape (128 experts, top-8, width 2816), the gated delta net's
 48 heads, DeepSeek's 4096×4 hyper-connection norm and the QSA dimensions.
 
+**As built** (`src/components`, 2026-10-09). `component.h` holds the
+compiled catalog (`Catalog`, `Find`): a `ComponentDef` per kind and
+version with its parameters (typed, ranged, defaulted; `Params`), weight
+roles with the encodings each accepts and, per instance, the roles in use
+and their shapes; a per-instance `model::StateContract`; its ops' batch
+classes and its own `model::Batching` limits; split options with the
+bytes a split sends per step; the pattern names it takes part in; the
+masks it reads; `emit`, its primitive IR fragment for a step; and
+`reference`, a scalar CPU implementation written from the op set's
+definitions, independent of `emit`. `step.h` makes a spec usable:
+`ValidateSpec` (the spec's own rules, then every component a known kind
+and version with parameters in range, every role it uses bound once to a
+tensor of the bound artifact in an accepted encoding and the implied
+shape, no binding of an unused role, the catalog's width and layer
+bounds, one stream, reads of state naming a state tensor);
+`StageLayout` (a layer's contract is its components' contracts in order),
+`StageBatching`, and `BuildStep`, which asks each component for its
+fragment for a `planner::StepShape` and returns the verified graph with
+its interface: the step's inputs (tokens, positions, the head's rows, each
+owner's store cells and its read cells' positions; `InputValues` computes
+them), weight leaves (one per bound tensor, so a tied head reads the
+embedding's leaf) and state leaves (stage, the layer's contract tensor,
+layer, owner). Masks are the framework's: per owner, before the
+embedding, causal first, `kMaskBuild` over a view of the positions and the
+positions the read cells hold once the step's rows are stored, with
+Pad(rows, 32) rows. A state-only step (no outputs) emits only the last
+layer's state writes. The catalog holds what Gemma 2 and Gemma 3 use:
+`embedding.token` (rows of a table, scaled), `norm.rms`,
+`attention.dense` (pre or sandwich norms, Q/K/V products, optional
+per-head Q and K norms, NEOX or normal rotation at the instance's base and
+frequency scale, queries scaled after the rotation and attention at scale
+1 with F32 accumulation, an optional logit softcap, a ring for a sliding
+window and a cell per position otherwise, F16 K and V), `ffn.glu` (pre or
+sandwich, GELU-tanh or SiLU) and `head.linear` (the output rows, the
+product, the stage's final softcap as scale, tanh, scale, and the
+host-greedy argmax on a greedy step).
+
+Each fragment records today's builders' nodes in their execution order
+(GGML's `GraphOrder` over their outputs: V's product before K's, the gate
+before the up product, each owner's K and V stores before its attention,
+the owners' outputs joined after the last one's attention), with the same
+types, extents, view strides and arithmetic parameters; a CPU test
+compares the Gemma 2 and Gemma 3 steps with `BuildGemma2Graph` and
+`BuildGemma3Graph` node for node, with host and device masks: every
+node's sources, the leaves among them by what they are (the weight
+resource, the layer's, owner's and tensor's cache, the step input), and
+each mask's window (and the device producer's rows, capacity and
+context). `BuildStep` refuses a ring that wraps with fewer than rows +
+window − 1 cells (its stores precede attention, so a smaller ring would
+overwrite positions its first rows still see). What a
+fragment does not express, for the lowering and the patterns:
+
+- **Masks.** `kMaskBuild` reads the cells' positions as an input; GGML's
+  producer (`llmp.gemma4.mask`) derives them from the ring's capacity,
+  the window and the context limit, which the lowering takes from the
+  step's input table (`StepInput::cells`) and the layout. A host-mask
+  build evaluates the producer and its positions view on the host. The
+  32-row mask padding is GGML's flash-attention tile (`GGML_KQ_MASK_PAD`).
+- **Attention reads its cache leaf**, not the store's output: the stores
+  precede it in node order, as the builders' expanded list orders them.
+- **Weight over-read** (`MarkRowPaddingReadable`) is the format layer's
+  readable rule, not a graph property.
+- **The builders' options** are patterns and selection (slice G1b), not
+  fragments: owner decode and owner, packed and flexible prefill with
+  bounded roots, shared Q8 preparation, grouped KV stores, the fused norm
+  forms and device masks; the diagnostic scopes (`first_layer`,
+  `layer_count`, `hidden_input`, `narrow_final`) are not ported. The
+  owner-attention kernel's literal softcap 50 is an implementation's
+  limit the pattern checks against the instance's `softcap`.
+- **Batching.** The primitive graph joins any rows of up to 16 owners
+  (attention per owner), so the components declare no limits of their
+  own; the owner-root carriers' group sizes and equal-row prefill come
+  with their patterns.
+
 ### The model spec
 
 A model is a spec in its artifact's manifest, written by the importer and

@@ -1069,3 +1069,40 @@ add_executable(spec_models_test spec_models_test.cc)
 target_link_libraries(spec_models_test PRIVATE llmp_spec llmp_model llmp_artifact llmp_json)
 llmp_gtest(spec_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models"
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+
+# The component catalog (components/): parameters, ValidateSpec on the
+# Gemma specs and its refusals, each fragment run by the reference executor
+# against its scalar reference, BuildStep, the stage layout against
+# today's Gemma layouts and the step's inputs against today's host masks.
+add_executable(components_test components_test.cc)
+target_link_libraries(components_test PRIVATE llmp_components llmp_reference_kernels llmp_spec
+                                              llmp_model llmp_artifact llmp_json)
+llmp_gtest(components_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+
+# The Gemma components' steps against today's Gemma2/Gemma3 graph builders,
+# node for node (every profile builds the descriptor-only builders).
+add_executable(components_order_test components_order_test.cc)
+target_link_libraries(components_order_test PRIVATE llmp_components llmp_ggml_tensors llmp_spec
+                                                    llmp_model llmp_artifact llmp_json)
+llmp_gtest(components_order_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+
+# The components' state contracts through the shared slot lifecycle on the
+# fake device backend.
+add_executable(components_state_test components_state_test.cc)
+target_link_libraries(components_state_test PRIVATE llmp_components llmp_engine_core
+                                                    llmp_fake_device_backend llmp_platform)
+llmp_gtest(components_state_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+# The Gemma 2 and Gemma 3 components end to end on the installed artifacts,
+# by the reference executor, against today's production runners.
+if(LLMP_CUDA)
+  add_executable(components_models_gpu_test components_models_gpu_test.cc)
+  target_link_libraries(components_models_gpu_test PRIVATE llmp_engine llmp_components
+                                                           llmp_reference_kernels llmp_spec
+                                                           llmp_artifact)
+  llmp_gpu_gtest(components_models_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+endif()
