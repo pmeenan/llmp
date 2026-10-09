@@ -145,10 +145,13 @@ llmp_gtest(scheduler_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The runtime wake (docs/experiments/runtime-wake/): the device lanes on
 # their own threads over the fake device, which completes fences when the
-# test chooses; lost wakeups, the backstop, the relay and shutdown.
+# test chooses; lost wakeups, the backstop, the relay and shutdown. Its
+# backstop and relay tests bound latencies in milliseconds, so the whole
+# executable carries the `timing` label too (its tests are listed when
+# CTest runs, so the label cannot pick single tests).
 add_executable(wake_test wake_test.cc)
 target_link_libraries(wake_test PRIVATE llmp_scheduler llmp_fake_providers)
-llmp_gtest(wake_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+llmp_gtest(wake_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;timing")
 
 # The D-081 page-in path, its evictions and kernel jobs' leases, over the
 # fake providers: deterministic turns and a threaded stress.
@@ -234,12 +237,14 @@ if(LLMP_CUDA)
 
   # BP-S3's paged node (tests/support/paged_node.h) on a GB10: two models
   # on their own streams alternating under one budget, through one zone and
-  # one shared workspace.
+  # one shared workspace. The sleeping-steps test bounds lags in
+  # milliseconds and CPU use in cores (label `timing`).
   add_executable(cuda_paged_node_test cuda_paged_node_test.cc)
   target_include_directories(cuda_paged_node_test SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(cuda_paged_node_test PRIVATE llmp_paged_node llmp_fake_providers)
   llmp_gpu_gtest(cuda_paged_node_test
+                   TIMING "*/CudaPagedNodeSleep.RequestStepsSleepBetweenAndLoseNoCompletion/*"
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   # Decode graphs (D-090) on a GB10: a small GGML plan captured through the

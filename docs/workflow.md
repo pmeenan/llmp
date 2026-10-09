@@ -115,7 +115,8 @@ downgrade a heavy-path change to the light loop on their own.
 - **Check cadence (D-084).** Work lands in slices, each checked once on
   its final state. The per-slice set runs on a Spark: `mise run test --
   spark-native --locked` on `spark-b` (full build and every test, GPU
-  included), plus locally the light steps the change touches (clang-format
+  included; run as a shared and an exclusive job, see
+  [Long runs on the Sparks](#long-runs-on-the-sparks)), plus locally the light steps the change touches (clang-format
   on changed files, the REUSE and header checks when files are added, the
   tools/ tests it affects). The workstation tiers (`check`, `check:full`,
   `check:spark`) take 30–60 minutes each, so under D-085 they run only
@@ -222,8 +223,9 @@ downgrade a heavy-path change to the light loop on their own.
 ## Long runs on the Sparks
 
 Every Spark build, test, lint or measurement job runs through the installed
-`~/.local/bin/spark-job start --gpu`, then is waited on with the same installed
-tool. Detached runs longer than a minute also use it. Use the installed
+`~/.local/bin/spark-job start` with `--gpu` (exclusive) or `--shared`,
+then is waited on with the same installed tool. Detached runs longer than
+a minute also use it. Use the installed
 supervisor, not a source tree's `tools/spark-job`. Its supervisor records
 how every job ended (exit code, signal, timeout, kill) and `status` reports
 a supervisor that died without a record as `lost`, so a crash ends a wait
@@ -234,35 +236,61 @@ never writes the marker.
     ssh spark-b 'cd ~/src/X && ~/.local/bin/spark-job start --gpu --name ctx-part1 --timeout 600 --steps rungs-part1.txt'
     ssh spark-b '~/.local/bin/spark-job wait ctx-part1'    # as a background task
 
-- **Start** with `--gpu` and a timeout of at most 600 seconds by default
+- **Pick the job's class.** Performance tests never overlap builds, but
+  functional tests may (owner, 2026-10-09):
+  - `--gpu` (exclusive): measurements and speed or gate runs, nsys and
+    other profiles, tests labelled `timing` (they bound wall-clock or CPU
+    time: lags in milliseconds, cores busy) or `models` (they load real
+    models into the 128 GB budget), and anything else whose result
+    depends on having the host to itself. An exclusive job runs alone.
+  - `--shared`: builds, lint, and every other test, GPU tests included:
+    `mise run build -- spark-native --locked`, or
+    `mise run test -- spark-native --locked -- -LE 'models|timing'`.
+    Up to `$LLMP_JOBS_SHARED` (default 2) shared jobs run at once on a
+    host, never beside an exclusive job.
+
+  The per-slice check set is therefore two jobs: the build and
+  `-LE 'models|timing'` as `--shared`, then
+  `mise run test -- spark-native --locked -- -L 'models|timing'` as
+  `--gpu` (its build step finds the tree built). A job given neither flag
+  takes no lock; use that only for work that loads neither the CPU nor
+  the GPU.
+- **Start** with a timeout of at most 600 seconds by default
   (the process group gets SIGTERM, then SIGKILL). Split longer batches into
   separately supervised and waited jobs. D-085's needed-now exception above
   still applies to a justified longer run; state its expected time and why
-  it is needed before starting it. `--gpu` jobs on a host are
-  mutually exclusive: a second one waits for the first to end (shown as
-  "waiting for the GPU" in `status` and `busy`, logging whom it waits for),
-  then starts by itself; its `--timeout` counts from when it gets the GPU,
-  and `--no-wait` refuses at once instead. Builds, tests and lint jobs use
-  the same `--gpu` lock even when they do no GPU work;
-  checking `busy` first is no longer enough on its own, since two agents
-  can both see the host free. A queue is a `--steps` file,
-  one command per line; a failed step is recorded and the queue moves on
-  (`--stop-on-fail` to stop, `--step-timeout` for a stalled rung).
-  The child inherits the GPU lock: a lost supervisor does not admit
-  overlapping work while that child survives. Admission also waits for a
-  lost job's surviving process group, even when a wrapper's descendants
-  close inherited descriptors. `busy` reports such orphaned work and waiting
-  jobs; `kill` retires a lost job's remaining process group.
+  it is needed before starting it. An exclusive job waits until no other
+  exclusive or shared job runs, and while it waits no new shared job
+  starts, so shared work cannot starve it; a shared job waits while an
+  exclusive job runs or waits, or while every shared slot is taken. A
+  waiting job shows as "waiting for the GPU" (exclusive) or "waiting for a
+  shared slot" in `status` and `busy`, logs what it waits for, then starts
+  by itself; its `--timeout` counts from its admission, and `--no-wait`
+  refuses at once instead. Checking `busy` first is not enough on its own,
+  since two agents can both see the host free. A queue is a `--steps`
+  file, one command per line; a failed step is recorded and the queue
+  moves on (`--stop-on-fail` to stop, `--step-timeout` for a stalled
+  rung). The child inherits its job's locks: a lost supervisor does not
+  admit overlapping work while that child survives. Admission also waits
+  for a lost job's surviving process group, even when a wrapper's
+  descendants close inherited descriptors: a lost exclusive job's group
+  keeps every job out, a lost shared job's group keeps its slot and keeps
+  exclusive jobs out. `busy` reports such orphaned work and waiting jobs;
+  `kill` retires a lost job's remaining process group.
 - **Wait** with `~/.local/bin/spark-job wait NAME` run as a background task;
   it exits 0 only for success and prints the failed steps and the log's
   tail otherwise. `status`, `tail` and `kill` cover the rest.
 - **Harnesses that loop over cases** (context rungs, prompts, model pairs)
   catch each case's error, record it with the case, and continue, so one
   bad case (an HTTP 400, an out-of-memory) costs one row, not the run.
-- **Hand a Spark over by checking `~/.local/bin/spark-job busy`** (exit 1
-  while a `--gpu` job or any GPU compute process runs; it also lists `--gpu` jobs waiting),
-  not by messages alone. The lock covers `spark-job` jobs only: GPU work
-  started outside it shows only in `busy`'s nvidia-smi listing.
+- **Hand a Spark over by checking `~/.local/bin/spark-job busy`**, not by
+  messages alone. It lists both classes' running, orphaned and waiting
+  jobs and exits 1 while an exclusive job runs, waits or survives its
+  supervisor, or a GPU compute process outside every shared job runs; 3
+  while only shared jobs run or wait (its last line says how many of the
+  slots are taken); 0 when the host is free. The locks cover `spark-job`
+  jobs only: GPU work started outside it shows only in `busy`'s
+  nvidia-smi listing.
 - **Profiler completion is separate from application completion.** A
   bounded Nsight CLI capture can end while its target survives in a
   separate process group (RE-039). Keep long validation directly

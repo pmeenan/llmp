@@ -155,9 +155,12 @@ endfunction()
 # it to list its tests: they are read from its sources (gtest_add_tests).
 # It finds the SDK's cuBLAS in build/<preset>/cublas through a RUNPATH
 # relative to itself, which a deployed copy of the build tree keeps.
-# ENVIRONMENT sets its tests' environment; MODELS marks model-file tests.
+# ENVIRONMENT sets its tests' environment; MODELS marks model-file tests;
+# TIMING names the tests (as DISCRETE does) that assert wall-clock or CPU
+# bounds, label `timing`: they run only in exclusive Spark jobs
+# (docs/workflow.md, "Long runs on the Sparks").
 function(llmp_gpu_gtest target)
-  cmake_parse_arguments(PARSE_ARGV 1 arg "MODELS" "" "DISCRETE;ENVIRONMENT")
+  cmake_parse_arguments(PARSE_ARGV 1 arg "MODELS" "" "DISCRETE;ENVIRONMENT;TIMING")
   if(arg_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "llmp_gpu_gtest(${target}): unexpected ${arg_UNPARSED_ARGUMENTS}")
   endif()
@@ -191,6 +194,12 @@ function(llmp_gpu_gtest target)
   if(discrete AND LLMP_CUDA_DISCRETE_SASS)
     set_tests_properties(${discrete} PROPERTIES LABELS "${labels};gpu-discrete")
   endif()
+  foreach(name IN LISTS arg_TIMING)
+    if(NOT "unit.${name}" IN_LIST tests)
+      message(FATAL_ERROR "llmp_gpu_gtest(${target}): no test ${name}")
+    endif()
+    set_property(TEST "unit.${name}" APPEND PROPERTY LABELS timing)
+  endforeach()
 endfunction()
 
 add_subdirectory(src)

@@ -3,14 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Runs long work detached on a Spark, under a supervisor that always records how it ended.
 
-    spark-job start --name N [--timeout S] [--gpu [--no-wait]] [-C DIR] -- CMD [ARGS...]
+    spark-job start --name N [--timeout S] [--gpu|--shared [--no-wait]] [-C DIR] -- CMD [ARGS...]
     spark-job start --name N --steps FILE [--step-timeout S] [--stop-on-fail] ...
     spark-job status [NAME] [--json]      running, done, failed, timed-out, killed or lost
     spark-job wait NAME [--timeout S]     blocks until a final state; 0 only for success
     spark-job tail NAME [-n N] [-f]
     spark-job kill NAME
     spark-job gc [--older-than HOURS]     removes old finished jobs
-    spark-job busy                        is a --gpu job running here? (exit 1 when busy)
+    spark-job busy                        what runs here: exit 0 free, 1 busy, 3 shared jobs only
 
 Run it on the Spark (over ssh from the workstation). `start` launches a
 supervisor in its own session, which runs CMD in a process group of its own
@@ -26,21 +26,33 @@ comments skipped), run in order by bash; each step's status is recorded and
 a failed step does not stop the rest unless --stop-on-fail. Job state lives
 in $LLMP_JOBS_DIR, else $XDG_DATA_HOME/llmp/jobs, else
 ~/.local/share/llmp/jobs, one directory per name: job.json (what was
-started, where, by which supervisor), child.json (the running step's process
-group), steps.json (queue progress), final.json (how it ended) and log.
+started, where, by which supervisor), gpu.json (its admission), child.json
+(the running step's process group), steps.json (queue progress), final.json
+(how it ended) and log.
 
---gpu jobs on one host are mutually exclusive: the supervisor and its child hold an
-exclusive lock (flock on .gpu.lock in the state directory) for the job's
-whole life, so a second --gpu job waits, logging whom it waits for once a
-minute, and starts by itself when the first ends, however it ends (the
-kernel drops the lock once both the supervisor and its child have exited).
-Admission also checks lost jobs' surviving process groups: a wrapper's descendants
-may close the inherited descriptor before the wrapper exits. A waiting job
-shows as "waiting for the GPU" in `status` and `busy`; its --timeout counts
-from when it gets the GPU, and `kill` ends the wait. With --no-wait,
-`start` takes the lock itself and refuses at once if another --gpu job holds
-it. The lock covers spark-job jobs only: GPU work started outside spark-job
-is still visible only through `busy`'s nvidia-smi listing.
+Two classes of job share a host. An exclusive job (--gpu: measurements,
+gate runs, timing-sensitive and model tests) runs alone: it waits until no
+other exclusive or shared job runs, and while it waits no new shared job
+starts, so a stream of shared jobs cannot starve it. Shared jobs (--shared:
+builds and other functional tests) run up to $LLMP_JOBS_SHARED at a time
+(default 2), never beside an exclusive job. A job given neither flag takes
+no lock and runs at once. The locks are flocks in the state directory:
+.gpu.lock (exclusive for --gpu, shared for --shared), .gate.lock (held by an
+exclusive job while it waits) and .shared.<i>.lock (one per shared slot).
+They hold only on a local file system, and only while nobody removes the
+files: a job that opens a recreated file locks a different one. The supervisor and its child hold their locks for the job's whole life, so
+the kernel drops them once both have exited, however the job ends: a lost
+supervisor does not admit other work while its child survives. Admission
+also checks lost jobs' surviving process groups, since a wrapper's
+descendants may close the inherited descriptors: a lost exclusive job's
+group keeps out every job, a lost shared job's group keeps its slot and
+keeps out exclusive jobs. A waiting job shows as "waiting for the GPU"
+(exclusive) or "waiting for a shared slot" in `status` and `busy`, logging
+what it waits for once a minute; its --timeout counts from its admission,
+and `kill` ends the wait. With --no-wait, `start` takes the locks itself and
+refuses at once if the job cannot be admitted now. The locks cover spark-job
+jobs only: GPU work started outside spark-job is still visible only through
+`busy`'s nvidia-smi listing.
 """
 
 import sys
@@ -65,8 +77,15 @@ FINAL_STATES = ("done", "failed", "timed-out", "killed")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 POLL = 0.2  # the supervisor's poll of its child, seconds
 WAIT_POLL = 1.0  # wait's poll of the job, seconds
-GPU_POLL = 1.0  # a waiting supervisor's retry of the GPU lock, seconds
-GPU_NOTE = 60.0  # how often a waiting supervisor logs whom it waits for, seconds
+GPU_POLL = 1.0  # a waiting supervisor's retry of its admission, seconds
+GPU_NOTE = 60.0  # how often a waiting supervisor logs what it waits for, seconds
+SHARED_DEFAULT = 2  # concurrent shared jobs per host unless $LLMP_JOBS_SHARED says otherwise
+# An exclusive job's tries of the gate per admission attempt, and the seconds
+# between them: a shared job holds it only while it takes the class lock.
+GATE_TRIES = 5
+GATE_RETRY = 0.01
+BUSY_EXIT = 1  # `busy`: an exclusive job runs, waits or survives, or unattributed GPU work runs
+SHARED_EXIT = 3  # `busy`: only shared jobs run or wait
 
 
 # ---------------------------------------------------------------- state files
@@ -78,33 +97,57 @@ def jobs_root() -> pathlib.Path:
     return pathlib.Path(data) / "llmp" / "jobs"
 
 
+def shared_slots() -> int:
+    """How many shared jobs may run at once on this host."""
+    value = os.environ.get("LLMP_JOBS_SHARED")
+    if not value:
+        return SHARED_DEFAULT
+    if not value.isdigit() or int(value) < 1:
+        sys.exit(f"spark-job: LLMP_JOBS_SHARED={value!r} is not a positive whole number")
+    return int(value)
+
+
 def gpu_lock_path(root: pathlib.Path) -> pathlib.Path:
     return root / ".gpu.lock"
 
 
-def gpu_orphan(root: pathlib.Path) -> dict | None:
-    """A local --gpu job whose supervisor is lost but process group survives."""
+def gate_lock_path(root: pathlib.Path) -> pathlib.Path:
+    return root / ".gate.lock"
+
+
+def slot_lock_path(root: pathlib.Path, slot: int) -> pathlib.Path:
+    return root / f".shared.{slot}.lock"
+
+
+def job_class(info: dict) -> str | None:
+    """exclusive, shared or None (no lock); a record from before --shared has only `gpu`."""
+    return info.get("class") or ("exclusive" if info.get("gpu") else None)
+
+
+def scan_jobs(root: pathlib.Path) -> list[dict]:
+    """Every job's state; an entry removed during the scan is skipped."""
+    if not root.is_dir():
+        return []
+    infos = []
     for directory in sorted(d for d in root.iterdir() if d.is_dir()):
         try:
-            info = job_state(directory)
+            infos.append(job_state(directory))
         except FileNotFoundError:
             # gc and completed-name reuse may remove an entry after the
             # scan. Both already refuse to remove surviving orphan groups.
             continue
-        if info["state"] == "lost" and info.get("gpu") and info.get("orphans"):
-            return info
-    return None
+    return infos
 
 
-def try_gpu_lock(fd: int, root: pathlib.Path) -> bool:
-    """Takes the host's GPU lock on fd without blocking; False if another job holds it."""
+def lock_orphans(root: pathlib.Path) -> list[dict]:
+    """Local --gpu and --shared jobs whose supervisor is lost but process group survives."""
+    return [i for i in scan_jobs(root) if i["state"] == "lost" and job_class(i) and i.get("orphans")]
+
+
+def try_flock(fd: int, mode: int) -> bool:
+    """Takes a flock without blocking; False if a conflicting one is held."""
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        # A wrapper may close descriptors in a subprocess before exiting.
-        # Its surviving group must still retire before another job starts.
-        if gpu_orphan(root) is not None:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            return False
+        fcntl.flock(fd, mode | fcntl.LOCK_NB)
         return True
     except OSError as e:
         if e.errno in (errno.EAGAIN, errno.EACCES):
@@ -112,20 +155,105 @@ def try_gpu_lock(fd: int, root: pathlib.Path) -> bool:
         raise
 
 
-def gpu_holder(root: pathlib.Path) -> str:
-    """Who holds the GPU lock, as far as the holder recorded it."""
-    if orphan := gpu_orphan(root):
-        return f"{orphan['name']} (its supervisor is lost; its process group still runs)"
-    holder = read_json(root / ".gpu.json") or {}
-    name = holder.get("name")
-    if not name or not (root / name).is_dir():
-        return "another --gpu job"
-    info = job_state(root / name)
-    if info["state"] == "lost" and info.get("orphans"):
-        return f"{name} (its supervisor is lost; its child still runs)"
-    if info["state"] != "running" or info.get("gpu_waiting"):
-        return "another --gpu job"
-    return f"{name} (running for {span(time.time() - holder.get('since', time.time()))})"
+class Admission:
+    """One job's locks: tries to admit it without blocking, and keeps what it took.
+
+    An exclusive job holds .gpu.lock exclusively. A shared job holds it shared,
+    plus one .shared.<i>.lock exclusively. An exclusive job holds .gate.lock
+    exclusively while it waits; a shared job takes it shared only while it
+    takes .gpu.lock, so no shared job is admitted while an exclusive one waits.
+    """
+
+    def __init__(self, root: pathlib.Path, cls: str, slots: int):
+        self.root, self.cls, self.slots = root, cls, slots
+        self.gpu_fd = os.open(gpu_lock_path(root), os.O_RDWR | os.O_CREAT, 0o644)
+        self.gate_fd = os.open(gate_lock_path(root), os.O_RDWR | os.O_CREAT, 0o644)
+        self.gate_held = False
+        self.slot_fd = None
+        self.slot = None
+
+    def fds(self) -> tuple[int, ...]:
+        """The descriptors the supervisor and its child inherit (never the gate)."""
+        return tuple(fd for fd in (self.gpu_fd, self.slot_fd) if fd is not None)
+
+    def try_admit(self) -> bool:
+        return self._exclusive() if self.cls == "exclusive" else self._shared()
+
+    def _exclusive(self) -> bool:
+        # The gate first, kept while waiting: it keeps new shared jobs out
+        # (writer preference). Another exclusive job may hold it as it waits.
+        for attempt in range(GATE_TRIES):
+            self.gate_held = self.gate_held or try_flock(self.gate_fd, fcntl.LOCK_EX)
+            if self.gate_held:
+                break
+            if attempt + 1 < GATE_TRIES:
+                time.sleep(GATE_RETRY)
+        if not self.gate_held or not try_flock(self.gpu_fd, fcntl.LOCK_EX):
+            return False
+        # A wrapper may close descriptors in a subprocess before exiting.
+        # Its surviving group must still retire before another job starts.
+        if lock_orphans(self.root):
+            fcntl.flock(self.gpu_fd, fcntl.LOCK_UN)
+            return False
+        self.release_gate()
+        return True
+
+    def _shared(self) -> bool:
+        # The gate only in passing: refused while an exclusive job waits.
+        if not try_flock(self.gate_fd, fcntl.LOCK_SH):
+            return False
+        try:
+            if not try_flock(self.gpu_fd, fcntl.LOCK_SH):
+                return False
+        finally:
+            fcntl.flock(self.gate_fd, fcntl.LOCK_UN)
+        lost = lock_orphans(self.root)
+        if not any(job_class(i) == "exclusive" for i in lost):
+            kept = {i.get("slot") for i in lost}  # a lost shared job's group keeps its slot
+            for slot in range(self.slots):
+                if slot in kept:
+                    continue
+                fd = os.open(slot_lock_path(self.root, slot), os.O_RDWR | os.O_CREAT, 0o644)
+                if try_flock(fd, fcntl.LOCK_EX):
+                    self.slot_fd, self.slot = fd, slot
+                    return True
+                os.close(fd)
+        # Never keep the class lock while waiting for a slot: it would keep
+        # a waiting exclusive job out.
+        fcntl.flock(self.gpu_fd, fcntl.LOCK_UN)
+        return False
+
+    def release_gate(self) -> None:
+        if self.gate_fd is not None:
+            os.close(self.gate_fd)  # drops the gate if it was held
+            self.gate_fd = None
+            self.gate_held = False
+
+    def close(self) -> None:
+        """Gives up every lock (a refused --no-wait start)."""
+        self.release_gate()
+        for fd in self.fds():
+            os.close(fd)
+        self.gpu_fd = self.slot_fd = None
+
+
+def blockers(root: pathlib.Path, me: str | None = None) -> str:
+    """What holds the host or waits for it, as far as the jobs recorded it."""
+    infos = [i for i in scan_jobs(root) if i["name"] != me]
+    parts = []
+    for info in infos:
+        cls = job_class(info)
+        if not cls:
+            continue
+        if info["state"] == "lost" and info.get("orphans"):
+            parts.append(f"{info['name']} ({cls}; its supervisor is lost; its process group still runs)")
+        elif info["state"] == "running" and info.get("admitted"):
+            parts.append(f"{info['name']} ({cls}, running for {span(time.time() - info['admitted'])})")
+    waiting = [i["name"] for i in infos if i["state"] == "running" and job_class(i) == "exclusive"
+               and not i.get("admitted")]
+    if waiting:
+        parts.append(f"exclusive job(s) waiting: {', '.join(waiting)}")
+    return "; ".join(parts) or "another job"
 
 
 def read_json(path: pathlib.Path) -> dict | None:
@@ -218,7 +346,12 @@ def stop_group(proc: subprocess.Popen | None, pgid: int, grace: float) -> None:
 # ---------------------------------------------------------------- job state
 
 def job_state(job_dir: pathlib.Path) -> dict:
-    """The job's files merged, with `state` one of starting, running, lost, remote or a final state."""
+    """The job's files merged, with `state` one of starting, running, lost, remote or a final state.
+
+    A --gpu or --shared job also has `class`, `admitted` (when it was
+    admitted), `gpu_waiting` (since when it waits, once it has failed a try)
+    and `slot` (a shared job's slot).
+    """
     job = read_json(job_dir / "job.json")
     if job is None or "supervisor" not in job:  # `start` is between its writes, or died in them
         info = {"name": job_dir.name, "state": "starting", "dir": str(job_dir), **(job or {})}
@@ -226,7 +359,14 @@ def job_state(job_dir: pathlib.Path) -> dict:
             info.update(state="lost", reason="`start` never recorded a supervisor")
         return info
     info = dict(job, dir=str(job_dir))
+    info["class"] = job_class(job)
     info["steps"] = (read_json(job_dir / "steps.json") or {}).get("steps")
+    if info["class"]:
+        gpu = read_json(job_dir / "gpu.json") or {}
+        if gpu.get("acquired"):
+            info["admitted"] = gpu["acquired"]
+        if gpu.get("slot") is not None:
+            info["slot"] = gpu["slot"]
     final = read_json(job_dir / "final.json")
     if final is None:
         if job.get("host") != socket.gethostname():
@@ -255,7 +395,8 @@ def describe(info: dict) -> str:
     if state in ("done", "failed") and info.get("rc") is not None:
         return f"{state} (rc {info['rc']})"
     if state == "running" and info.get("gpu_waiting"):
-        return f"waiting for the GPU ({span(time.time() - info['gpu_waiting'])})"
+        what = "a shared slot" if job_class(info) == "shared" else "the GPU"
+        return f"waiting for {what} ({span(time.time() - info['gpu_waiting'])})"
     if state == "running" and info.get("steps"):
         done = sum(1 for s in info["steps"] if s["state"] not in ("pending", "running"))
         return f"running (step {min(done + 1, len(info['steps']))}/{len(info['steps'])})"
@@ -303,8 +444,12 @@ def cmd_start(args: argparse.Namespace) -> int:
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if bool(command) == bool(args.steps):
         sys.exit("spark-job start: give either -- CMD... or --steps FILE")
-    if args.no_wait and not args.gpu:
-        sys.exit("spark-job start: --no-wait applies to --gpu jobs only")
+    if args.gpu and args.shared:
+        sys.exit("spark-job start: give --gpu (exclusive) or --shared, not both")
+    cls = "exclusive" if args.gpu else ("shared" if args.shared else None)
+    if args.no_wait and not cls:
+        sys.exit("spark-job start: --no-wait applies to --gpu and --shared jobs only")
+    slots = shared_slots() if cls == "shared" else None
     steps = None
     if args.steps:
         lines = pathlib.Path(args.steps).read_text().splitlines()
@@ -326,14 +471,15 @@ def cmd_start(args: argparse.Namespace) -> int:
                       file=sys.stderr)
                 return 1
             shutil.rmtree(job_dir)  # a finished or lost job of that name is replaced
-        gpu_fd = None
-        if args.no_wait:  # take the GPU here, so the refusal is immediate; the supervisor inherits it
-            gpu_fd = os.open(gpu_lock_path(root), os.O_RDWR | os.O_CREAT, 0o644)
-            if not try_gpu_lock(gpu_fd, root):
-                os.close(gpu_fd)
-                print(f"spark-job: the GPU is held by {gpu_holder(root)}; not started (--no-wait)",
-                      file=sys.stderr)
+        admission = None
+        if args.no_wait:  # admit here, so the refusal is immediate; the supervisor inherits the locks
+            admission = Admission(root, cls, slots)
+            if not admission.try_admit():
+                admission.close()
+                what = "the GPU is held by" if cls == "exclusive" else "no shared slot:"
+                print(f"spark-job: {what} {blockers(root)}; not started (--no-wait)", file=sys.stderr)
                 return 1
+            admission.release_gate()
         job_dir.mkdir()
         log = job_dir / "log"
         # Steps run with the caller's umask, never looser than 022: files a step creates must
@@ -342,25 +488,30 @@ def cmd_start(args: argparse.Namespace) -> int:
         os.umask(caller_umask)
         job = {"name": args.name, "host": socket.gethostname(), "cwd": cwd, "log": str(log),
                "command": command or None, "steps_file": os.path.abspath(args.steps) if steps else None,
-               "gpu": args.gpu, "timeout": args.timeout, "step_timeout": args.step_timeout,
+               "class": cls, "gpu": cls == "exclusive", "shared_slots": slots,
+               "timeout": args.timeout, "step_timeout": args.step_timeout,
                "grace": args.grace, "stop_on_fail": args.stop_on_fail, "start": now(),
-               "umask": caller_umask | 0o022, "gpu_fd": gpu_fd}
+               "umask": caller_umask | 0o022,
+               "lock_fds": list(admission.fds()) if admission else None,
+               "lock_slot": admission.slot if admission else None}
         if steps:
             write_json(job_dir / "steps.json", {"steps": [{"cmd": s, "state": "pending"} for s in steps]})
+        if admission:  # admitted already: so `status`, `busy` and refusals say so before the supervisor does
+            write_json(job_dir / "gpu.json", {"acquired": now(), "slot": admission.slot})
         write_json(job_dir / "job.json", job)
         with open(log, "ab") as out:
             sup = subprocess.Popen([sys.executable, "-B", os.path.abspath(__file__), "_supervise",
                                     str(job_dir)], cwd=cwd, stdin=subprocess.DEVNULL, stdout=out,
                                    stderr=out, start_new_session=True,
-                                   pass_fds=(gpu_fd,) if gpu_fd is not None else ())
-        # The supervisor shares the lock's open file description, so the lock stays held after
-        # this copy of the descriptor closes.
-        if gpu_fd is not None:
-            os.close(gpu_fd)
+                                   pass_fds=admission.fds() if admission else ())
+        # The supervisor shares the locks' open file descriptions, so the locks stay held after
+        # these copies of the descriptors close.
+        if admission:
+            admission.close()
         # The supervisor is still this process's child here (a zombie at worst), so its pid is its own.
         job["supervisor"] = {"pid": sup.pid, "start_ticks": proc_stat(sup.pid)[1]}
         write_json(job_dir / "job.json", job)
-    print(f"started {args.name} (supervisor pid {sup.pid}{', gpu' if args.gpu else ''}); log {log}")
+    print(f"started {args.name} (supervisor pid {sup.pid}{', ' + cls if cls else ''}); log {log}")
     print(f"wait with: {shlex.join([os.path.abspath(__file__), 'wait', args.name])}")
     return 0
 
@@ -373,37 +524,47 @@ class Supervisor:
         self.job = read_json(job_dir / "job.json")
         self.stop_reason = None
         self.log = open(job_dir / "log", "ab", buffering=0)
-        self.deadline = None  # set once the job may run (after the GPU lock for a --gpu job)
-        self.gpu_fd = None  # held, never closed, until this process ends
+        self.deadline = None  # set once the job may run (after admission for a --gpu or --shared job)
+        self.lock_fds = ()  # held, never closed, until this process ends
 
     def start_clock(self) -> None:
         self.deadline = time.monotonic() + self.job["timeout"] if self.job["timeout"] else None
 
-    def acquire_gpu(self) -> dict | None:
-        """Holds the host's GPU lock for a --gpu job, waiting for it; a final outcome if killed meanwhile."""
+    def admit(self) -> dict | None:
+        """Holds the job's locks, waiting for them; a final outcome if killed meanwhile."""
         root = self.dir.parent
-        if self.job.get("gpu_fd") is not None:  # `start --no-wait` took it and passed it on
-            self.gpu_fd = self.job["gpu_fd"]
+        cls = job_class(self.job)
+        what = "the GPU" if cls == "exclusive" else "a shared slot"
+        passed = self.job.get("lock_fds")
+        if passed is None and self.job.get("gpu_fd") is not None:
+            passed = [self.job["gpu_fd"]]  # from a `start` older than --shared, as this file is replaced
+        if passed:  # `start --no-wait` took them and passed them on
+            self.lock_fds = tuple(passed)
+            slot = self.job.get("lock_slot")
         else:
-            self.gpu_fd = os.open(gpu_lock_path(root), os.O_RDWR | os.O_CREAT, 0o644)
+            admission = Admission(root, cls, self.job.get("shared_slots") or SHARED_DEFAULT)
             began = time.monotonic()
             last_note = None
-            while not try_gpu_lock(self.gpu_fd, root):
+            while not admission.try_admit():
                 if self.stop_reason:
-                    return {"state": "killed", "reason": f"{self.stop_reason}, waiting for the GPU"}
+                    return {"state": "killed", "reason": f"{self.stop_reason}, waiting for {what}"}
                 if last_note is None:
                     write_json(self.dir / "gpu.json", {"waiting_since": now()})
                 if last_note is None or time.monotonic() - last_note >= GPU_NOTE:
-                    self.note(f"waiting for the GPU: held by {gpu_holder(root)}")
+                    self.note(f"waiting for {what}: held by {blockers(root, self.job['name'])}")
                     last_note = time.monotonic()
                 time.sleep(GPU_POLL)
-            if self.stop_reason:  # killed during the last sleep, as the GPU came free: never start
-                return {"state": "killed", "reason": f"{self.stop_reason}, waiting for the GPU"}
+            if self.stop_reason:  # killed during the last sleep, as the host came free: never start
+                return {"state": "killed", "reason": f"{self.stop_reason}, waiting for {what}"}
             if last_note is not None:
-                self.note(f"got the GPU after waiting {span(time.monotonic() - began)}")
-        write_json(self.dir / "gpu.json", {"acquired": now()})
-        write_json(root / ".gpu.json", {"name": self.job["name"], "supervisor_pid": os.getpid(),
-                                        "since": now()})
+                self.note(f"got {what} after waiting {span(time.monotonic() - began)}")
+            admission.release_gate()
+            self.lock_fds = admission.fds()
+            slot = admission.slot
+        write_json(self.dir / "gpu.json", {"acquired": now(), "slot": slot})
+        if cls == "exclusive":  # what older copies of this tool read
+            write_json(root / ".gpu.json", {"name": self.job["name"], "supervisor_pid": os.getpid(),
+                                            "since": now()})
         return None
 
     def note(self, text: str) -> None:
@@ -425,8 +586,7 @@ class Supervisor:
         started = time.monotonic()
         try:
             proc = subprocess.Popen(argv, cwd=self.job["cwd"], stdin=subprocess.DEVNULL, stdout=self.log,
-                                    stderr=self.log, start_new_session=True,
-                                    pass_fds=(self.gpu_fd,) if self.gpu_fd is not None else (),
+                                    stderr=self.log, start_new_session=True, pass_fds=self.lock_fds,
                                     umask=self.job.get("umask", 0o022))
         except OSError as e:
             self.note(f"cannot start {shlex.join(argv)}: {e}")
@@ -451,8 +611,8 @@ class Supervisor:
         return outcome
 
     def run(self) -> dict:
-        if self.job.get("gpu"):
-            killed = self.acquire_gpu()
+        if job_class(self.job):
+            killed = self.admit()
             if killed:
                 self.note(f"end: {describe(killed)}")
                 return killed
@@ -514,7 +674,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(json.dumps(info, indent=1))
             return 0
         what = shlex.join(info["command"]) if info.get("command") else f"steps from {info.get('steps_file')}"
-        print(f"{info['name']}: {describe(info)}{'  [gpu]' if info.get('gpu') else ''}")
+        cls = job_class(info)
+        print(f"{info['name']}: {describe(info)}{f'  [{cls}]' if cls else ''}")
         print(f"  host {info.get('host')}, started {stamp(info.get('start', 0))}"
               f" ({span(time.time() - info.get('start', 0))} ago)"
               + (f", ended {stamp(info['end'])}" if info.get("end") else ""))
@@ -524,7 +685,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print_steps(info)
         return 0
     root = jobs_root()
-    infos = [job_state(d) for d in sorted(root.iterdir()) if d.is_dir()] if root.is_dir() else []
+    infos = scan_jobs(root)
     if args.json:
         print(json.dumps(infos, indent=1))
         return 0
@@ -532,7 +693,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         age = span(time.time() - info.get("start", time.time()))
         stale = info.get("end") and time.time() - info["end"] > args.stale_hours * 3600
         what = shlex.join(info["command"]) if info.get("command") else f"steps {info.get('steps_file')}"
-        print(f"{info['name']:<24} {describe(info):<22} {age:>6}{' gpu' if info.get('gpu') else '    '}"
+        cls = {"exclusive": "excl", "shared": "shrd"}.get(job_class(info), "")
+        print(f"{info['name']:<24} {describe(info):<30} {age:>6} {cls:<4}"
               f"{' STALE' if stale else ''}  {what[:60]}")
     if not infos:
         print(f"no jobs in {root}")
@@ -635,27 +797,41 @@ def gpu_processes() -> list[str] | None:
 
 
 def cmd_busy(args: argparse.Namespace) -> int:
-    root = jobs_root()
-    infos = [job_state(d) for d in sorted(root.iterdir()) if d.is_dir()] if root.is_dir() else []
-    gpu_jobs = [i for i in infos if i["state"] == "running" and i.get("gpu") and not i.get("gpu_waiting")]
-    gpu_orphans = [i for i in infos if i["state"] == "lost" and i.get("gpu") and i.get("orphans")]
-    waiting = [i for i in infos if i["state"] == "running" and i.get("gpu_waiting")]
-    others = [i for i in infos if i["state"] == "running" and not i.get("gpu")]
-    for info in gpu_jobs:
-        print(f"gpu job {info['name']} running for {span(time.time() - info['start'])} (cwd {info['cwd']})")
-    for info in gpu_orphans:
-        print(f"gpu job {info['name']} has a lost supervisor and a running child (cwd {info['cwd']})")
-    for info in sorted(waiting, key=lambda i: i["gpu_waiting"]):
-        print(f"gpu job {info['name']} waiting for the GPU for {span(time.time() - info['gpu_waiting'])}"
+    infos = scan_jobs(jobs_root())
+    slots = shared_slots()
+
+    def of(cls: str) -> tuple[list[dict], list[dict], list[dict]]:
+        mine = [i for i in infos if job_class(i) == cls]
+        running = [i for i in mine if i["state"] == "running" and i.get("admitted")]
+        lost = [i for i in mine if i["state"] == "lost" and i.get("orphans")]
+        waiting = [i for i in mine if i["state"] == "running" and not i.get("admitted")]
+        return running, lost, waiting
+
+    exclusive, exclusive_lost, exclusive_waiting = of("exclusive")
+    shared, shared_lost, shared_waiting = of("shared")
+    others = [i for i in infos if i["state"] == "running" and not job_class(i)]
+    for info in exclusive + shared:
+        slot = f", slot {info['slot']}" if info.get("slot") is not None else ""
+        print(f"{job_class(info)} job {info['name']} running for {span(time.time() - info['admitted'])}"
+              f"{slot} (cwd {info['cwd']})")
+    for info in exclusive_lost + shared_lost:
+        print(f"{job_class(info)} job {info['name']} has a lost supervisor and a running child "
+              f"(cwd {info['cwd']})")
+    for info in sorted(exclusive_waiting + shared_waiting, key=lambda i: i.get("gpu_waiting", i["start"])):
+        what = "the GPU" if job_class(info) == "exclusive" else "a shared slot"
+        since = info.get("gpu_waiting", info["start"])
+        print(f"{job_class(info)} job {info['name']} waiting for {what} for {span(time.time() - since)}"
               f" (cwd {info['cwd']})")
     if others:
-        print(f"also running (not --gpu): {', '.join(i['name'] for i in others)}")
+        print(f"also running (no lock): {', '.join(i['name'] for i in others)}")
     procs = gpu_processes()
+    unattributed = 0
     if procs is None:
         print("nvidia-smi: not available")
     else:
-        groups = {(read_json(pathlib.Path(i["dir"]) / "child.json") or {}).get("pgid"): i["name"]
-                  for i in gpu_jobs + gpu_orphans + others}  # a waiting job has no child yet
+        # A waiting job has no child yet.
+        groups = {(read_json(pathlib.Path(i["dir"]) / "child.json") or {}).get("pgid"): i
+                  for i in exclusive + exclusive_lost + shared + shared_lost + others}
         print(f"nvidia-smi compute processes: {len(procs)}")
         for line in procs:
             pid = line.split(",")[0].strip()
@@ -664,12 +840,21 @@ def cmd_busy(args: argparse.Namespace) -> int:
                 pgid = int(stat.read_text().rsplit(")", 1)[1].split()[2])  # field 5, pgrp
             except (OSError, ValueError, IndexError):
                 pgid = None
-            owner = f"  [job {groups[pgid]}]" if pgid in groups else "  [not a spark-job job]"
-            print(f"  {line}{owner}")
-    busy = bool(gpu_jobs or gpu_orphans or waiting or procs)
-    print(f"{socket.gethostname()}: {'busy' if busy else 'free'} ({len(gpu_jobs)} --gpu job(s), "
-          f"{len(waiting)} waiting, {len(procs or [])} GPU compute process(es))")
-    return 1 if busy else 0
+            owner = groups.get(pgid)
+            if owner is None or job_class(owner) != "shared":
+                unattributed += 1  # only a shared job's GPU work leaves the host to shared jobs
+            print(f"  {line}  " + (f"[job {owner['name']}]" if owner else "[not a spark-job job]"))
+    held = len(shared) + len(shared_lost)
+    if exclusive or exclusive_lost or exclusive_waiting or unattributed:
+        verdict, code = "busy", BUSY_EXIT
+    elif held or shared_waiting:
+        verdict, code = "shared", SHARED_EXIT
+    else:
+        verdict, code = "free", 0
+    print(f"{socket.gethostname()}: {verdict} (exclusive: {len(exclusive) + len(exclusive_lost)} running, "
+          f"{len(exclusive_waiting)} waiting; shared: {held} of {slots} running, "
+          f"{len(shared_waiting)} waiting; {len(procs or [])} GPU compute process(es))")
+    return code
 
 
 # ---------------------------------------------------------------- main
@@ -680,11 +865,16 @@ def main() -> int:
                                 metavar="{start,status,wait,tail,kill,gc,busy}")
     p = sub.add_parser("start", help="run CMD (or a queue of steps) detached under a supervisor")
     p.add_argument("--name", required=True)
-    p.add_argument("--timeout", type=float, help="the whole job's limit, seconds")
+    p.add_argument("--timeout", type=float, help="the whole job's limit, seconds, counted from admission")
     p.add_argument("--gpu", action="store_true",
-                   help="the job uses the GPU: it waits for any other --gpu job here to end (see `busy`)")
+                   help="an exclusive job (measurements, gate runs, timing and model tests): it runs "
+                        "alone, waiting for every --gpu and --shared job here to end (see `busy`)")
+    p.add_argument("--shared", action="store_true",
+                   help="a shared job (builds, other functional tests): up to $LLMP_JOBS_SHARED "
+                        f"(default {SHARED_DEFAULT}) run at once, never beside or ahead of a --gpu job")
     p.add_argument("--no-wait", action="store_true",
-                   help="with --gpu: refuse at once if another --gpu job holds the GPU, instead of waiting")
+                   help="with --gpu or --shared: refuse at once if the job cannot start now, "
+                        "instead of waiting")
     p.add_argument("-C", "--cwd", help="run in this directory (default: the current one)")
     p.add_argument("--grace", type=float, default=10.0, help="seconds between SIGTERM and SIGKILL")
     p.add_argument("--steps", help="a file of shell commands, one per line, run in order")
@@ -717,8 +907,9 @@ def main() -> int:
     p.add_argument("--older-than", type=float, default=24.0, metavar="HOURS")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_gc)
-    p = sub.add_parser("busy", help="whether a --gpu job or a GPU compute process is running here, "
-                                    "and which --gpu jobs wait")
+    p = sub.add_parser("busy", help="which --gpu and --shared jobs run or wait here, and the GPU's compute "
+                                    "processes; exit 0 free, 1 busy (an exclusive job or unattributed GPU "
+                                    "work), 3 only shared jobs")
     p.set_defaults(func=cmd_busy)
     args = parser.parse_args()
     return args.func(args)

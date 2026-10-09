@@ -13,6 +13,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- `spark-job start --shared` runs builds and non-timing functional tests
+  up to `$LLMP_JOBS_SHARED` (default 2) at a time on a Spark, never beside
+  a `--gpu` job, which stays exclusive and, while it waits, admits no new
+  shared job. `busy` reports both classes and exits 0 free, 1 busy, 3
+  when only shared jobs run. The CTest label `timing` marks tests that
+  bound wall-clock or CPU time, which run only in exclusive jobs.
+
 - Kept conversations' record format version 2 (D-112): a conversation
   kept across a restart by a model on the shared engine names one spill
   file per pipeline stage (`slot-N.state`, then `slot-N.stage-S.state`),
