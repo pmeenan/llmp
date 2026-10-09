@@ -202,6 +202,20 @@ Status WriteReport(const std::filesystem::path& path, const std::string& json) {
 
 }  // namespace
 
+bool CompleteContinuationRows(std::span<const float> last, const Generation& reference,
+                              const Generation& continued, std::size_t steps, std::size_t width) {
+  const auto finite = [width](std::span<const float> row) {
+    return row.size() == width &&
+           std::ranges::all_of(row, [](float v) { return std::isfinite(v); });
+  };
+  const auto complete = [&](const Generation& generation) {
+    return generation.logits.size() == steps &&
+           std::ranges::all_of(generation.logits,
+                               [&](const std::vector<float>& row) { return finite(row); });
+  };
+  return width != 0 && finite(last) && complete(reference) && complete(continued);
+}
+
 // ---------------------------------------------------------------- chat
 
 Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& serving,
@@ -785,15 +799,8 @@ Status Table::Pair(Served& a, Served& b) {
       ba.output = Tokens(continued.tokens);
       // Diagnostics after the endpoint was recorded; hashing does not enter
       // swap setup, first-output timing or the restored-state digest interval.
-      const auto complete = [&](const Generation& generation) {
-        return generation.logits.size() == o_.continue_tokens &&
-               std::ranges::all_of(generation.logits, [&](const auto& row) {
-                 return row.size() == last.size() &&
-                        std::ranges::all_of(row, [](float v) { return std::isfinite(v); });
-               });
-      };
-      if (last.empty() || last.size() != l.tokenizer().size() || !complete(reference) ||
-          !complete(continued))
+      if (!CompleteContinuationRows(last, reference, continued, o_.continue_tokens,
+                                    l.logit_width()))
         return Error("the swap continuation needs complete finite target-vocabulary rows");
       ba.continuation_vocabulary = last.size();
       ba.reference_logits_sha256 = LogitsDigest(reference);

@@ -18,6 +18,7 @@
 #include <limits>
 #include <memory>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -636,5 +637,54 @@ TEST(PlanCacheTest, ReaderScratchIsMeasuredOnceAndRuntimeCannotGrowIt) {
   EXPECT_FALSE(en::PlaceAndPlan(refused, nodes, inputs, oversized_keep, choices, 1ULL << 42,
                                 measured.placement.extent));
   EXPECT_EQ(output->data, address);
+  EXPECT_EQ(en::ScratchArenaBytes(), envelope);
+}
+
+// A runtime graph may have more nodes than every shape the start measured
+// (a row-count-gated fusion, such as DeepSeek's four-slot verify waves of 9
+// to 15 rows): the allowance keeps a quarter's margin over the measurement,
+// and still refuses what is past it.
+TEST(PlanCacheTest, ReaderScratchAdmitsAMarginOverTheMeasuredShapes) {
+  namespace kg = llmp::kernels::ggml;
+  auto arena = kg::TensorArena::Create(4096);
+  ASSERT_TRUE(arena);
+  auto* input = ggml_new_tensor_1d(arena->context(), GGML_TYPE_F32, 4);
+  const auto chain = [&](std::size_t length) {
+    std::vector<ggml_tensor*> nodes;
+    ggml_tensor* at = input;
+    for (std::size_t i = 0; i < length; ++i)
+      nodes.push_back(at = ggml_scale(arena->context(), at, 2.0f));
+    return nodes;
+  };
+  kg::DeviceChoices choices;
+  choices.fuse_norms = true;
+  const std::array inputs{input};
+  // Larger than any other test's measurement in this process.
+  const auto measured_nodes = chain(800);
+  const std::array measured_keep{measured_nodes.back()};
+  en::PlannedBase measured;
+  ASSERT_TRUE(en::PlaceAndPlan(measured, measured_nodes, inputs, measured_keep, choices, 0, 0));
+  const auto measured_bytes =
+      kg::detail::GraphReadIndex::ScratchBytes(measured_nodes, measured_keep);
+  ASSERT_TRUE(measured_bytes);
+  EXPECT_EQ(en::GraphIndexAllowance(*measured_bytes), *measured_bytes + (*measured_bytes / 4));
+  EXPECT_GE(en::ScratchArenaBytes(), en::GraphIndexAllowance(*measured_bytes));
+  const auto envelope = en::ScratchArenaBytes();
+  // 10% more nodes than measured: planned, and the envelope does not move.
+  const auto wider = chain(880);
+  const std::array wider_keep{wider.back()};
+  en::PlannedBase placed;
+  const auto place =
+      en::PlaceAndPlan(placed, wider, inputs, wider_keep, choices, 1ULL << 40, 1ULL << 30);
+  ASSERT_TRUE(place) << (place ? "" : place.error());
+  EXPECT_EQ(en::ScratchArenaBytes(), envelope);
+  // Past the margin: refused before planning.
+  const auto past = chain(1100);
+  const std::array past_keep{past.back()};
+  en::PlannedBase refused;
+  const auto too_wide =
+      en::PlaceAndPlan(refused, past, inputs, past_keep, choices, 1ULL << 41, 1ULL << 30);
+  ASSERT_FALSE(too_wide);
+  EXPECT_NE(too_wide.error().find("exceeds the startup scratch allowance"), std::string::npos);
   EXPECT_EQ(en::ScratchArenaBytes(), envelope);
 }

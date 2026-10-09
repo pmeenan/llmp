@@ -19,6 +19,7 @@
 #include "base/sha256.h"
 #include "engine/dsv4_runner.h"
 #include "engine/qwen38_runner.h"
+#include "model/dsv4.h"
 #include "plain_token_serving_checks.h"
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
@@ -40,7 +41,9 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   std::filesystem::path scratch;
   void SetUp() override {
     const bool gguf = GetParam() == 1, deepseek = GetParam() >= 2;
-    const bool adaptive = GetParam() == 3;
+    // Case 4 (FourSlotDsparkGpu): DeepSeek with DSpark at four request slots
+    // and a context whose end is past HCA's 256 compressed cells.
+    const bool adaptive = GetParam() >= 3, four = GetParam() == 4;
     const std::filesystem::path models = llmp::test_support::ModelsDir();
     const auto installed = models / (gguf ? "qgguf-artifacts" : "m3-artifacts");
     const char* artifact =
@@ -80,9 +83,9 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
       entry.tokenizer = checkpoint / "tokenizer.json";
       entry.chat_template = checkpoint / "chat_template.jinja";
     }
-    entry.overrides["context"] = std::int64_t{deepseek ? 8704 : 2048};
+    entry.overrides["context"] = std::int64_t{four ? 65536 : deepseek ? 8704 : 2048};
     entry.overrides["prefill_chunk"] = std::int64_t{deepseek ? 4096 : 512};
-    entry.overrides["max_slots"] = std::int64_t{2};
+    entry.overrides["max_slots"] = std::int64_t{four ? 4 : 2};
     life->config.models.push_back(entry);
     life->options.plain = !adaptive;
     ASSERT_FALSE(life->options.diagnostic_plain_device_tokens.has_value());
@@ -260,4 +263,135 @@ TEST_P(PlainTokensServingGpu, ScalarJoinedMixedAndSpilledRowsMatchDeviceTokens) 
   }
 }
 
+// A logit row is the model's logit width (the swap table's continuation
+// check, rt::CompleteContinuationRows), which for Qwen3.8's tokenizer.json is
+// wider than the tokenizer.
+TEST_P(PlainTokensServingGpu, LogitRowsAreTheModelsWidthNotTheTokenizers) {
+  const std::uint32_t vocab = GetParam() >= 2
+                                  ? dynamic_cast<en::Dsv4Runner&>(model->paged()).vocab()
+                                  : dynamic_cast<en::Qwen38Runner&>(model->paged()).vocab();
+  ASSERT_EQ(model->logit_width(), vocab);
+  if (GetParam() == 0) {
+    EXPECT_EQ(vocab, 248320U);
+    EXPECT_LT(model->tokenizer().size(), vocab);
+  }
+  ASSERT_TRUE(life->server->node().ChargeHost(64ULL << 20U, false));
+  struct Charge {
+    en::PagedNode& node;
+    ~Charge() { node.UnchargeHost(64ULL << 20U); }
+  } charge{life->server->node()};
+  auto branch = model->branch(0);
+  ASSERT_TRUE(branch);
+  const std::array<rt::Llm::Branch*, 1> active{*branch};
+  ASSERT_TRUE(life->server->SelectRequestBranches(*model, active));
+  constexpr std::array<std::int32_t, 6> seed{2, 818, 5279, 529, 7001, 563};
+  std::vector<float> last;
+  std::array<rt::Generation, 2> generated;
+  rt::GenerateOptions options;
+  options.max_tokens = 3;
+  options.stop = false;
+  options.keep_logits = true;
+  for (auto& out : generated) {
+    ASSERT_TRUE((*branch)->Clear());
+    ASSERT_TRUE((*branch)->Prefill(seed, last));
+    const auto r = (*branch)->Generate(last, options, out);
+    ASSERT_TRUE(r) << (r ? "" : r.error());
+  }
+  EXPECT_TRUE(
+      rt::CompleteContinuationRows(last, generated[0], generated[1], 3, model->logit_width()));
+  if (GetParam() == 0) {
+    EXPECT_FALSE(rt::CompleteContinuationRows(last, generated[0], generated[1], 3,
+                                              model->tokenizer().size()));
+  }
+}
+
+// Case 4 alone: its server is DeepSeek with DSpark at four slots.
+class FourSlotDsparkGpu : public PlainTokensServingGpu {};
+
+// Four slots' DSpark verify waves (and their joined drafts) at every
+// alignment of their compressors' blocks and mixed rows a slot. A wave of
+// 9 to 15 rows plans more graph nodes than the start's widest waves (1 and
+// 4 rows a slot); each must fit the graph-reader allowance (planned.h
+// GraphIndexAllowance), as the chat route's four-request speculative waves
+// need.
+TEST_P(FourSlotDsparkGpu, SpeculativeWavesFitTheStartupAllowance) {
+  auto& runner = dynamic_cast<en::Dsv4Runner&>(model->paged());
+  ASSERT_TRUE(runner.speculative());
+  ASSERT_EQ(runner.wave_capacity(), 4U);
+  ASSERT_TRUE(life->server->node().ChargeHost(64ULL << 20U, false));
+  struct Charge {
+    en::PagedNode& node;
+    ~Charge() { node.UnchargeHost(64ULL << 20U); }
+  } charge{life->server->node()};
+  constexpr std::size_t kSlots = 4;
+  std::array<en::Dsv4Runner::Slot*, kSlots> slots{};
+  std::array<rt::Llm::Branch*, kSlots> branches{};
+  for (std::uint32_t i = 0; i < kSlots; ++i) {
+    auto slot = runner.request_slot(i);
+    ASSERT_TRUE(slot);
+    slots[i] = *slot;
+    auto branch = model->branch(i);
+    ASSERT_TRUE(branch);
+    branches[i] = *branch;
+  }
+  ASSERT_TRUE(life->server->SelectRequestBranches(*model, branches));
+  const auto finite = [&](const std::vector<float>& rows, std::uint32_t count) {
+    return rows.size() == std::size_t{count} * runner.vocab() &&
+           std::ranges::all_of(rows, [](float x) { return std::isfinite(x); });
+  };
+  const auto argmax = [&](const std::vector<float>& rows, std::uint32_t row) {
+    const auto first = rows.begin() + static_cast<std::ptrdiff_t>(row * runner.vocab());
+    return static_cast<std::int32_t>(
+        std::max_element(first, first + static_cast<std::ptrdiff_t>(runner.vocab())) - first);
+  };
+  // Whole-chunk prompts ending at each alignment of a CSA block, one at an
+  // HCA block's end.
+  std::array<std::uint32_t, kSlots> past{4093, 4094, 4095, 4096};
+  std::array<std::int32_t, kSlots> anchors{};
+  std::array<std::vector<float>, kSlots> rows;
+  for (std::uint32_t i = 0; i < kSlots; ++i) {
+    ASSERT_TRUE(slots[i]->Clear());
+    std::vector<std::int32_t> seed(past[i]);
+    constexpr std::array<std::int32_t, 7> actual{2, 818, 5279, 529, 7001, 563, 42};
+    for (std::size_t j = 0; j < seed.size(); ++j) seed[j] = actual[(j + i) % actual.size()];
+    const auto chunk = slots[i]->Chunk(0, seed, rows[i], en::Dsv4ChunkKind::kInject);
+    ASSERT_TRUE(chunk) << (chunk ? "" : chunk.error());
+    ASSERT_TRUE(finite(rows[i], 1));
+    anchors[i] = argmax(rows[i], 0);
+  }
+  constexpr std::array<std::array<std::uint32_t, kSlots>, 3> kRows{
+      {{4, 4, 4, 4}, {1, 2, 3, 4}, {3, 1, 4, 2}}};
+  const auto stats = runner.draft_stats();
+  for (std::uint32_t wave = 0; wave < 12; ++wave) {
+    std::array<std::vector<std::int32_t>, kSlots> drafts;
+    std::array<en::Dsv4Runner::WaveWork, kSlots> work;
+    for (std::uint32_t i = 0; i < kSlots; ++i) {
+      // As serving's VerifyRows: no verify across a step's mask widths.
+      std::uint32_t verify = kRows[wave % kRows.size()][i];
+      while (verify > 1 && !llmp::model::Dsv4SameWidths(runner.state_layout(), past[i], verify))
+        --verify;
+      work[i] = {.slot = slots[i],
+                 .pos = past[i],
+                 .anchor = anchors[i],
+                 .rows = verify,
+                 .drafts = &drafts[i],
+                 .logits = &rows[i]};
+    }
+    const auto verified = runner.DraftVerifyWave(work);
+    ASSERT_TRUE(verified) << "wave " << wave << ": " << (verified ? "" : verified.error());
+    for (std::uint32_t i = 0; i < kSlots; ++i) {
+      ASSERT_EQ(drafts[i].size(), runner.draft_rows());
+      ASSERT_TRUE(finite(rows[i], work[i].rows));
+      // The anchor's row decides the next token; the slot moves on by one.
+      ASSERT_TRUE(slots[i]->Accept(1));
+      anchors[i] = argmax(rows[i], 0);
+      ++past[i];
+    }
+  }
+  EXPECT_GT(
+      runner.draft_stats().eager + runner.draft_stats().captured + runner.draft_stats().replayed,
+      stats.eager + stats.captured + stats.replayed);
+}
+
 INSTANTIATE_TEST_SUITE_P(ApprovedTargets, PlainTokensServingGpu, ::testing::Values(0U, 1U, 2U, 3U));
+INSTANTIATE_TEST_SUITE_P(DeepSeekFourSlots, FourSlotDsparkGpu, ::testing::Values(4U));

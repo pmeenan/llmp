@@ -408,6 +408,7 @@ class Dsv4 final : public Llm {
     return runner_.StateBytesThrough(positions).value_or(0);
   }
   std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
+  std::uint32_t logit_width() const override { return runner_.vocab(); }
   Status AfterLoad() override { return runner_.CheckHashRouting(); }
   Status CheckPlaces() override { return runner_.CheckPlaces(); }
   void DropPlans() override { runner_.DropPlans(); }
@@ -1071,6 +1072,7 @@ class Gemma final : public Llm {
   const catalog::Closure& everything() const override { return runner_.everything(); }
   const catalog::Closure& request_closure() const override { return runner_.closure(); }
   std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
+  std::uint32_t logit_width() const override { return profile_.vocab; }
   bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
   Status CheckPlaces() override { return runner_.CheckPlaces(); }
   void DropPlans() override { runner_.DropPlans(); }
@@ -1484,6 +1486,7 @@ class Gemma2 final : public Llm {
   const catalog::Closure& everything() const override { return runner_.everything(); }
   const catalog::Closure& request_closure() const override { return runner_.closure(); }
   std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
+  std::uint32_t logit_width() const override { return profile_.vocab; }
   bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
   Status CheckPlaces() override { return runner_.CheckPlaces(); }
   void DropPlans() override { runner_.DropPlans(); }
@@ -1928,6 +1931,7 @@ class Gemma3 final : public Llm {
   const catalog::Closure& everything() const override { return runner_.everything(); }
   const catalog::Closure& request_closure() const override { return runner_.closure(); }
   std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
+  std::uint32_t logit_width() const override { return profile_.vocab; }
   bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
   Status CheckPlaces() override { return runner_.CheckPlaces(); }
   void DropPlans() override { runner_.DropPlans(); }
@@ -2483,6 +2487,7 @@ class Qwen38 final : public Llm {
     return runner_.SelectSlots(std::span(selected).first(active.size()));
   }
   std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
+  std::uint32_t logit_width() const override { return runner_.vocab(); }
   Status AfterLoad() override { return runner_.ReadPleHash(); }
   Status CheckPlaces() override { return runner_.CheckPlaces(); }
   void DropPlans() override { runner_.DropPlans(); }

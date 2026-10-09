@@ -1350,7 +1350,7 @@ each is checked against the design as M3.6 proceeds.
       D-107 (components, IR, execution, partitioning, migration gate),
       D-108 (formats), D-109 (importer), D-110 (platform order); M3.5's
       transfer item retired with its [mapping](engine-components.md#retired-transfer-items).
-- [ ] **Baselines and the 1% protocol.** Before any family moves, fix the
+- [x] **Baselines and the 1% protocol.** Before any family moves, fix the
       matched, bookended timing protocol that resolves 1% for each family's
       prefill and decode, solo and at its qualified cohorts, and record the
       current implementation's speed, quality controls, peak memory and
@@ -1358,9 +1358,12 @@ each is checked against the design as M3.6 proceeds.
       *2026-10-08:* protocol, frozen `1facc957` baseline, same-binary
       spread and baseline rows recorded in
       [m36-baselines](experiments/m36-baselines/README.md) (harness
-      `tools/speed_gate.py`). Open: two defects of the baseline build
-      leave DeepSeek's DSpark cohort waves and the swap table's 11
-      Qwen3.8-as-A rows without a baseline.
+      `tools/speed_gate.py`). Its two defects (DeepSeek's four-slot DSpark
+      waves, the swap table's Qwen3.8 continuation) are fixed; the
+      `1facc957-fixed` baseline (the frozen build plus exactly those
+      fixes) holds DeepSeek's DSpark cohort rows and the swap table's
+      Qwen3.8-as-A rows (its 32 rows all exact there, worst LLM-to-LLM
+      8.494 s).
 - [ ] **Format layer** (D-108): encodings named independently of kernel
       libraries and layouts recorded separately; a block decoder per
       encoding on CUDA under shared vector, matrix and grouped templates;

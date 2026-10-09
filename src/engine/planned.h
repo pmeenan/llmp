@@ -97,11 +97,18 @@ struct PlannedGraph : PlannedBase {
 // table retains the bounded estimate (docs/experiments/memory-pressure).
 std::expected<kernels::ggml::TensorArena, std::string> SizedArena(
     std::size_t estimate, const std::function<bool(kernels::ggml::TensorArena&)>& build);
-// That scratch arena plus the maximum measured graph reader-index allowance
-// (one transient index, shared by sequential planning passes): host memory
-// outside the catalog, which
-// the start's guard counts beside a step's plans once the models measured
-// their largest plans).
+// The graph reader-index allowance runtime plans get (PlaceAndPlan): the
+// largest index the start measured and a quarter more. A family's startup
+// probes are its widest shapes, but a graph's nodes need not grow with its
+// rows: a row-count-gated fusion (Dsv4QHead from 16 rows, the per-group
+// float products past 8) can give an intermediate shape more nodes than
+// either probe, as a four-slot DeepSeek verify wave of 15 rows has 43 more
+// than the 16-row one measured. Margin as the activations' and pool's.
+std::uint64_t GraphIndexAllowance(std::uint64_t measured);
+// That scratch arena plus the graph reader-index allowance (one transient
+// index, shared by sequential planning passes): host memory outside the
+// catalog, which the start's guard counts beside a step's plans once the
+// models measured their largest plans.
 std::uint64_t ScratchArenaBytes();
 
 // Places a graph's computed tensors: `inputs` bound at distinct placeless

@@ -28,6 +28,30 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-050: Qwen3.8's output head is wider than its tokenizer.json  (2026-10-08, status: open)
+
+Environment: Qwen3.8 Flash Next NVFP4/MXFP8 (`c4fb47a9…`, the
+`Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` checkpoint's
+`tokenizer.json`), any host. The head has 248,320 rows; `tokenizer.json`
+names 248,077 tokens (the GGUF's own tokenizer lists all 248,320, so
+`qwen3.8-gguf` does not differ). A check written against the tokenizer's
+size therefore refuses every Qwen3.8 logit row: `swap-table`'s
+continuation check did, and stopped the M3.6 baseline's 11 Qwen3.8-as-A
+rows ([m36-baselines](experiments/m36-baselines/README.md#defects-in-the-baseline)).
+Fixed there: logit rows are checked against `Llm::logit_width()`, the
+model's output vocabulary; token IDs stay checked against the tokenizer.
+
+Open: nothing masks rows 248,077–248,319. Greedy and sampled choice run
+over the whole row, so a padding row that won would produce an ID with no
+text: the chat route's stream decoder drops it silently, the completions
+route answers 500 `invalid_model_token`, `top_logprobs` name it
+`token_id:N` and its probability counts in every score, and a kept
+conversation holding it is refused at restart (its record checks token
+IDs against the tokenizer). Whether those rows ever win, or carry
+probability that matters, is not measured. Expected: rows past the
+tokenizer masked before choice and scoring, as M3.6's heads component
+should do for every family whose head outgrows its tokenizer.
+
 ## RE-049: Successful VMM creation can emit recovered memdesc out-of-memory diagnostics  (2026-10-07, status: open)
 
 Environment: `spark` (`spark-c4e2`), GB10, driver580.178.04,

@@ -26,6 +26,27 @@ paths resolve:
 Check a copy with `cd ~/.local/share/llmp/m36-baseline/1facc957 &&
 sha256sum -c IDENTITY.sha256`. It stays until M3.6 exits.
 
+**The fixed baseline, `1facc957-fixed`,** is `1facc957` with exactly the
+two fixes of its [defects](#defects-in-the-baseline) applied
+(`m36-fixes.patch`, in the install; its `src/` hunks are the fix as it
+lands, its `tests/` hunks an earlier revision of the tests, which no
+installed binary contains), built the same way on `spark` from a clean
+export of `1facc957` and installed read-only beside the first, with the
+same layout plus the patch, on `spark` and `spark-b`. It is the baseline
+of the rows the defects kept from the first:
+DeepSeek's DSpark cohort cells and the swap table's Qwen3.8-as-A rows
+(below). Every other row stays the first baseline's. The two builds are not
+bit-identical even without the patch (an unpatched rebuild in the other
+directory gave runtime `c696749c…`: the build paths differ), so the fixed
+build's own rows are measured on it.
+
+| File | Identity |
+| --- | --- |
+| `src/runtime/llmp-runtime` | SHA-256 `f5443363bc5a586bfeea450e5c51b9eefe720d392a312ed9732c665d06abe930` |
+| `IDENTITY.sha256` (every file of the install, as above, and `m36-fixes.patch`) | SHA-256 `519bb045b05b9d26c93a61295c66fbed744e768ccfac505fe56b3157370a7693` |
+| `m36-fixes.patch` | SHA-256 `954bed152b3b2a3dd6ea1342e66c43a561d421e06bdb3d8501940ebc2f55d0ff` |
+| `source-inventory.sha256` (the first's tracked paths, hashed in the patched tree) | SHA-256 `a4bd2f8ac198a1487210cf936ba4a51f89c5361c41cea4d3c9e15f96107467b3` |
+
 ## The protocol
 
 Fixed on 2026-10-08, before any migration run; the constants live in
@@ -104,7 +125,10 @@ Judgement calls in this table, not measured necessities: Gemma4's two
 profiles are judged at C1 and C4, the cells their M3 qualification
 measured, not C2; `gemma31`, `qwen38-gguf` and `deepseek` run one
 measured pass a run (2.5–3 minutes a run), so each run's C1 pays a single
-prompt; DeepSeek's cohorts are plain waves (defect 1 below).
+prompt; the `deepseek` family's cohorts are plain waves (defect 1 below),
+and its DSpark cohort waves are measured with the same family and a
+configuration template that sets `wave_form = "speculative"`, against
+the fixed baseline ([DSpark cohort waves](#dspark-cohort-waves-on-the-fixed-baseline)).
 
 **Each arm's configuration.** By default both arms get the family's
 configuration above. A migrated runtime that needs other keys (the
@@ -171,6 +195,11 @@ python3 -B $T verdict DIR --family F                                   # PASS / 
 python3 -B $T plan ... --blocks 1 --first N                            # one more block while CONTINUE
 python3 -B $T quality --family F --runtime NEW --label new --out DIR   # and --runtime $OLD --label old
 ```
+
+DeepSeek's DSpark cohort cells: `--family deepseek` with
+`OLD=~/.local/share/llmp/m36-baseline/1facc957-fixed/src/runtime/llmp-runtime`
+and `--old-config` the family's configuration with
+`wave_form = "speculative"` (the new arm's template likewise, or its own).
 
 `verdict` exits 0 only when every family it judges passes, 2 while one
 needs more blocks (CONTINUE or INCOMPLETE) and 1 otherwise (FAIL, NOT
@@ -255,6 +284,52 @@ replies have two variants in 13 and 4 of their 21 request positions:
 arrival-dependent joined prefill and decode, as their bounded routes
 record. A migrated family's quality is judged by its controls below, not
 by these digests.
+
+### DSpark cohort waves on the fixed baseline
+
+DeepSeek's C2 and C4 with DSpark waves: the `deepseek` family (its
+prompts, passes and constants) with `--old-config`/`--new-config` set to
+the family's configuration plus `wave_form = "speculative"` (template
+SHA-256 `d4ecc40b…` as the records keep it), the fixed runtime as both
+arms, three ABBA blocks (twelve runs) on `spark`, 2026-10-08, in jobs of
+two runs. All twelve runs completed with no problem recorded (every request
+128 tokens, no cached prompt tokens).
+
+| Cell | Prefill s (run sd) | Decode tok/s (run sd) | Wall tok/s (run sd) |
+| --- | ---: | ---: | ---: |
+| C1 (DSpark, as the family's) | 8.194 (0.14%) | 32.54 (0.57%) | 10.58 (0.14%) |
+| C2 (DSpark waves) | 17.78 (0.14%) | 45.02 (0.22%) | 11.04 (0.14%) |
+| C4 (DSpark waves) | 36.40 (0.18%) | 53.01 (1.47%) | 11.50 (0.62%) |
+
+Peak whole-node `MemAvailable` drop 110.005 GiB (run sd 0.121; range
+0.436). Blocks needed (`spread`): three for every prefill, C2 and wall
+metric except C4 wall (8) and C1 decode (7); **C4 decode** does not
+resolve 0.5% within twelve blocks at its measured sd. Its spread is one
+run: the first run of the first job (block 1's old, the fixed build's
+first run, ten minutes after its build and install) decoded 50.83 tok/s,
+the other eleven 52.92–53.81 tok/s (pooled run sd 0.45% without it, which
+`blocks_needed` puts at five blocks; computed from the same records); the
+same run has the lowest C1 decode (31.96). Its runtime log shows it slower
+before the measured pass too: page-in 9.04 s against 8.09–8.12 s in the
+other eleven, graph captures 2.15 s against 1.15–1.27 s; and it stayed
+slower through its own warm-up pass (about two minutes of GPU work), so a
+cold GPU alone does not explain it. One run cannot tell the idle GPU,
+the fresh build and install, or something else apart. With the
+cause not established the harness gets no extra warm-up step or discard
+rule (each run already has its warm-up pass). A comparison of these cells should
+split its jobs at block boundaries as the protocol says and read C4
+decode beside C4 prefill and wall, as Qwen3.8's C4 decode is read; the
+block counts are the main agent's call.
+
+Replies: every DSpark reply repeats byte for byte across the twelve runs,
+and C1's equal the plain-wave family's. The four-slot DSpark replies equal
+two-slot DSpark replies: one run of the same template at `max_slots = 2`
+on the *first* baseline (where two-slot DSpark waves worked) and one on the
+fixed baseline gave identical digests for all 14 prompts, and the same
+digests as the four-slot runs. DSpark's fast verify is not the plain wave's
+arithmetic: its C2 and C4 replies differ from the plain-wave family's in
+4 of 4 and 7 of 8 prompts (DSpark's bit-identity to plain is exact mode's,
+[dspark](../dspark/README.md)), the same in both builds.
 
 ## The Gemma4 31B assistant
 
@@ -371,8 +446,33 @@ did not run.
 
 Worst completed LLM-to-LLM row 8.428 s, worst prepared 8.365 s, all within
 the 20 s / 40 s bounds; the largest per-row tracked peak is 111.8 GiB.
-Until the defect is fixed, these 21 rows are the table's baseline, and the
-complete table at `9bc2270b` (8.532 s) is the last full evidence.
+
+**The complete table on the fixed baseline** (2026-10-08, `spark`): the
+same configuration, inputs and command with `--pairs` splitting it into
+two runs of at most ten minutes (the Qwen3.8-as-A pairs, then the other
+four). All 32 rows are exact (state, continuation, graphs, image
+controls). The 21 rows the first baseline completed are within 0.066 s of
+its endpoints; the 11 it could not run, and its last row again:
+
+| A / B | Row | Endpoint s | Evict s | Restore s | Page-in s | First output s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| qwen3.8 / deepseek | A→B, first use (8K) | 8.494 | 0.095 | 0.000 | 8.077 | 0.311 |
+| qwen3.8 / deepseek | B→A, first use (8K) | 5.972 | 0.048 | 0.080 | 5.734 | 0.097 |
+| qwen3.8 / deepseek | A→B, prepared (8K) | 8.390 | 0.099 | 0.000 | 8.072 | 0.207 |
+| qwen3.8 / deepseek | B→A, prepared (8K) | 5.968 | 0.050 | 0.078 | 5.734 | 0.092 |
+| qwen3.8 / deepseek | A→B, prepared (0) | 8.366 | 0.066 | 0.000 | 8.080 | 0.208 |
+| qwen3.8 / deepseek | B→A, prepared (0) | 6.041 | 0.072 | 0.000 | 5.770 | 0.186 |
+| qwen3.8 / image | A→B, first use (8K) | 3.753 | 0.096 | 0.000 | 2.301 | 1.353 |
+| qwen3.8 / image | B→A, first use (8K) | 5.933 | 0.018 | 0.073 | 5.735 | 0.095 |
+| qwen3.8 / image | A→B, prepared (8K) | 3.727 | 0.116 | 0.000 | 2.296 | 1.312 |
+| qwen3.8 / image | B→A, prepared (8K) | 5.934 | 0.023 | 0.073 | 5.739 | 0.088 |
+| qwen3.8 / image | A→B, prepared (0) | 3.709 | 0.057 | 0.000 | 2.307 | 1.341 |
+| qwen3.8 / image | B→A, prepared (0) | 5.929 | 0.025 | 0.000 | 5.753 | 0.141 |
+
+Worst LLM-to-LLM row 8.494 s (Qwen3.8 → DeepSeek, first use), worst
+prepared 8.390 s, within the 20 s / 40 s bounds; the largest per-row
+tracked peak 111.2 GiB. These 12 rows are the fixed baseline's; the 20
+other rows stay the first baseline's above.
 
 **Gemma near-8K switch controls**, rerun on the frozen binary on `spark`
 with the configurations, input (`4e41c6aa…`) and command of the
@@ -389,27 +489,31 @@ replaying graphs.
 | Gemma4 26B-A4B | 8,063 | 5.996112 | 5.898778 | 1 / 63 | 81,837,359,104 |
 | Gemma4 31B | 8,063 | 6.087986 | 5.998251 | 1 / 63 | 82,927,976,448 |
 
-## Pending rows
+## Rows on the fixed baseline
 
-Until the defects below are fixed and the fixed build is frozen again as
-the baseline, these rows have no baseline:
+The rows the defects below kept from the first baseline are now the
+fixed baseline's (`1facc957-fixed`):
 
-- DeepSeek with DSpark cohort waves: the `deepseek` family's C2 and C4
-  run plain waves (`wave_form = "plain"` applies to every width, so the
-  two-request DSpark waves that work are not baselined either); its C1
-  speculates with DSpark.
-- The swap table's 11 rows with Qwen3.8 as A: `qwen3.8 / deepseek` after
-  its first row (5) and `qwen3.8 / image` (6). The 21 completed rows above
-  stand.
+- DeepSeek with DSpark cohort waves, C2 and C4 (two- and four-request):
+  [above](#dspark-cohort-waves-on-the-fixed-baseline). The `deepseek`
+  family's plain-wave cohorts stay the first baseline's.
+- The swap table's 11 rows with Qwen3.8 as A, and its first row again:
+  [above](#swap-rows).
 
-A fix that touches a baselined path also reruns that family's rows here
-on the rebuilt baseline.
+The fixes change no plan or check that passed before: the graph-reader
+allowance only admits more, and the swap-table check now compares rows
+with the model's logit width. The start's memory guard counts the
+allowance, so the host memory it sets apart beside the plans grows by a
+quarter of the measured index (6.5 MiB at DeepSeek's four-slot 27.2 MB). Every other row stays the first baseline's;
+the fixed build's C1 DeepSeek replies, its two-slot DSpark replies and its
+20 other swap rows (exact, endpoints within 0.066 s) agree with the first
+build's. No row is pending.
 
 ## Defects in the baseline
 
 Two failures of the frozen build (`main` at `1facc957`), found here and
-not fixed here (a fix is its own change, and the rows it touches then
-need a rebuilt baseline):
+fixed in their own change, whose diff is the fixed baseline's patch
+(causes and fixes after the list):
 
 1. **DeepSeek DSpark waves of four 8K requests stop the runtime.** With
    `wave_form = "speculative"`, and with the default `"auto"` (whose
@@ -430,6 +534,39 @@ need a rebuilt baseline):
    (reproduced alone with `--pairs qwen3.8:image`). DeepSeek, Gemma and
    the image pass. The serving route does not use this check.
 
+- **1, the cause:** the start measures DeepSeek's widest waves, every
+  slot one row and every slot `share` rows (4 a slot at four slots), and
+  admitted no margin over the largest graph-reader index they need. A
+  wave's graph nodes do not grow with its rows: the fused query head
+  (`Dsv4QHead`, one node a layer) needs 16 rows, while past 8 rows the
+  float products split into slot groups. A four-slot verify wave of 9 to
+  15 rows (slots verify different row counts) has both, 43 nodes (one a
+  layer) more than the 16-row wave: 27,324,416 index bytes against the
+  27,236,352 measured. Two-slot waves stay within 8 rows at the default
+  three drafts. **The fix**
+  (`engine/planned.h` `GraphIndexAllowance`): runtime plans get the
+  largest measured index and a quarter more, as the activations and pool
+  do; a four-slot DSpark test at context 65,536 (`FourSlotDsparkGpu`)
+  failed before it and passes. The review counted the index of every
+  reachable DSpark wave (joined slots of 2 to the verify's rows, every
+  slot count to eight, three position patterns, verifies of 4 and 8 rows) and of prefill, injected
+  and verify chunks from 1 to 4,096 rows at 13 starts, built on the CPU
+  with a binding typed as the UD-Q2_K_XL GGUF, against the start's probes
+  (its four-slot measurement, 27,228,160 bytes, within 0.03% of the
+  runtime's): the worst wave is 0.32% over (four slots of 3, 2, 2, 2
+  rows: the case above; at two slots, a `draft_rows` of 7, past the
+  drafter's block of five that the settings allow, would reach 0.51%); the
+  worst chunk 3.51% over the chunk probes, a 9-row injected chunk, which
+  matters to a one-slot DeepSeek with DSpark (no waves measured), where
+  the frozen build would refuse it (counted, not run). The quarter covers
+  them about seven times over; the probes do not cover each row band, so
+  the margin, not the probes, is the bound.
+- **2, the fix:** `Llm::logit_width()` (each family's output vocabulary)
+  replaces the tokenizer's size in the continuation check
+  (`CompleteContinuationRows`). Nothing masks logit rows past the
+  tokenizer: greedy and sampling choose over the whole row, as before
+  ([RE-050](../../rough-edges.md#re-050-qwen38s-output-head-is-wider-than-its-tokenizerjson)).
+
 ## Provenance
 
 `spark` (`spark-c4e2`), NVIDIA GB10, driver 580.178.04 (CUDA 13.0 driver
@@ -443,6 +580,10 @@ prompt corpus is `docs/decisions.md`, `docs/architecture.md` and
 the harness), at `~/.local/share/llmp/m36-baselines/inputs/`. Raw run
 records (timings, token counts and reply digests; no prompt or reply
 text) stay outside Git under `~/.local/share/llmp/m36-baselines/` on
-`spark` (`aa/`, `quality-aa/`, `assistant31/`, `swaps/`) until M3.6 exits.
+`spark` (`aa/`, `quality-aa/`, `assistant31/`, `swaps/`; for the fixed
+baseline `aa-fixed-dspark/`, `dspark-2slot-frozen/`, `dspark-2slot-fixed/`
+and `swaps-fixed/`) until M3.6 exits. The fixed baseline's source tree,
+patch, DSpark template and swap script are under
+`~/scratch/m36-fixed-baseline/` on `spark`.
 Spark time for this record, build and pilots included: about three and a
 half hours, in supervised jobs of at most ten minutes.

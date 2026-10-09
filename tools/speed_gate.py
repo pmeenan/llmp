@@ -212,9 +212,11 @@ FAMILIES = {f.name: f for f in (
            min_blocks=3, max_blocks=6),
     Family("deepseek", "llm", "deepseek", "m3-artifacts",
            f'[models.deepseek]\nartifact = "{DSV4}"\ndrafter = "{DSPARK}"\nspeculation = true\n'
-           # Plain cohort waves: DSpark waves of four 8K requests stop this
-           # baseline's runtime (graph reader index past the startup scratch
-           # allowance); a lone request still speculates with DSpark.
+           # Plain cohort waves: DSpark waves of four 8K requests stop the
+           # first baseline's runtime (graph reader index past the startup
+           # scratch allowance); a lone request still speculates with DSpark.
+           # DSpark cohort waves run against 1facc957-fixed with a template
+           # (docs/experiments/m36-baselines/README.md).
            'wave_form = "plain"\ncontext = 262144\nprefill_chunk = 4096\nmax_slots = 4\n',
            prompt_chars=30000, cells=(1, 2, 4), repeats=1,
            min_blocks=3, max_blocks=6),

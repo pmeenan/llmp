@@ -143,6 +143,7 @@ class FakeLlm : public rt::Llm {
   std::vector<catalog::ExtentId> state() const override { return {}; }
   const catalog::Closure& everything() const override { return paged_.fence_closure(); }
   std::uint64_t weight_read_bytes() const override { return 0; }
+  std::uint32_t logit_width() const override { return 8; }
   void Defaults(llmp::chat::Conversation& /*conversation*/) const override {}
   void ConfigurePrefill(std::uint32_t context, std::uint32_t rows) {
     context_ = context;
@@ -3577,4 +3578,28 @@ TEST(LlmScores, PerRequestChatStopsDoNotChangeLiteralStops) {
   ASSERT_TRUE(model.Generate(last, literal, ordinary));
   EXPECT_FALSE(ordinary.stopped);
   EXPECT_THAT(ordinary.tokens, ElementsAre(1, 2, 3));
+}
+
+// The swap table's continuation rows are the model's logit width, which may
+// be wider than its tokenizer (Qwen3.8: 248,320 rows, 248,077 tokens).
+TEST(SwapContinuation, RowsAreTheModelsLogitWidthNotItsTokenizers) {
+  const FakeLlm model;
+  const std::size_t width = model.logit_width();
+  const std::vector<float> last = FakeLlm::Row(3);
+  rt::Generation reference;
+  reference.logits = {FakeLlm::Row(1), FakeLlm::Row(2)};
+  rt::Generation continued = reference;
+  EXPECT_TRUE(rt::CompleteContinuationRows(last, reference, continued, 2, width));
+  // A narrower tokenizer's size is not the rows' width.
+  EXPECT_FALSE(rt::CompleteContinuationRows(last, reference, continued, 2, width - 2));
+  EXPECT_FALSE(rt::CompleteContinuationRows(last, reference, continued, 2, 0));
+  EXPECT_FALSE(rt::CompleteContinuationRows(last, reference, continued, 3, width));
+  EXPECT_FALSE(rt::CompleteContinuationRows({}, reference, continued, 2, width));
+  continued.logits[1].pop_back();
+  EXPECT_FALSE(rt::CompleteContinuationRows(last, reference, continued, 2, width));
+  continued.logits[1] = FakeLlm::Row(2);
+  continued.logits[1][5] = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_FALSE(rt::CompleteContinuationRows(last, reference, continued, 2, width));
+  continued.logits[1][5] = std::numeric_limits<float>::infinity();
+  EXPECT_FALSE(rt::CompleteContinuationRows(last, reference, continued, 2, width));
 }

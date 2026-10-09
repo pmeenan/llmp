@@ -344,6 +344,13 @@ struct Generation {
   double decode_seconds = 0;     // the tokens after the first
 };
 
+// The swap table's continuation check: the prefill's `last` row and
+// `steps` rows of each generation, every one `width` finite logits, where
+// `width` is the model's logit width (Llm::logit_width), not its
+// tokenizer's size.
+bool CompleteContinuationRows(std::span<const float> last, const Generation& reference,
+                              const Generation& continued, std::size_t steps, std::size_t width);
+
 struct GenerateOptions {
   std::uint32_t max_tokens = 256;
   std::span<const std::int32_t> extra_stops = {};  // route-only controls; borrowed through Finish
@@ -715,6 +722,10 @@ class Llm : public Served {
   std::optional<std::int32_t> think_start() const { return think_start_; }
   std::optional<std::int32_t> think_end() const { return think_end_; }
   const tokenizer::Tokenizer& tokenizer() const { return *tokenizer_; }
+  // A logit row's width: the model's output vocabulary, which may be wider
+  // than its tokenizer (Qwen3.8's 248,320 rows over tokenizer.json's 248,077
+  // tokens).
+  virtual std::uint32_t logit_width() const = 0;
   virtual std::span<const std::int32_t> ChatStops() const { return {}; }
 
   // Tokens of plain text (no template; BOS first where the vocabulary has

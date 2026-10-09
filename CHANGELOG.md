@@ -984,6 +984,16 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- DeepSeek V4 with its DSpark drafter no longer stops on four-request
+  speculative waves ("graph reader index exceeds the startup scratch
+  allowance"): a wave of 9 to 15 rows plans more graph nodes than the
+  widest waves the start measures, so the graph-reader allowance now keeps
+  a quarter's margin over the measurement, as the activations do.
+
+- `swap-table` continues Qwen3.8 after a saved-state swap: its
+  continuation check compared the 248,320-wide logit rows with the
+  tokenizer's 248,077 tokens instead of the model's logit width.
+
 - Ending a residency lease while external work finishes no longer risks
   accessing a released lease record or leaving its holder waiting forever.
 
