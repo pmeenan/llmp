@@ -884,9 +884,9 @@ M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#
         branches;
       - admission within the memory budget.
 
-      This applies to every added model family, including Clef and
-      Clef-flash's prefill-only decisions and image generation (owner,
-      2026-10-03). Compatible work from independent requests batches in
+      This applies to every added model family, including Clef's,
+      Clef-flash's and Clef-Omni's prefill-only decisions and image
+      generation (owner, 2026-10-03). Compatible work from independent requests batches in
       the encoders, decision heads, denoising steps and image decoders.
       Each request keeps its own state, seed, guidance, step count,
       size, edit inputs and cancellation. Different input lengths or
@@ -1137,8 +1137,13 @@ M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#
         0731 is text-only, and the vision model is a separate,
         continued-trained checkpoint whose GGUF and encoder sit in antirez's pinned
         repository. Its row-pair "N-layout" fits CSA compression.
-      - **Audio:** no pinned checkpoint keeps an audio encoder, so Gemma
-        4 E4B-it joins as the audio carrier (owner, 2026-10-02): 16 kHz,
+      - **Qwen3-Omni encoders** (Clef-Omni, owner, 2026-10-09): the
+        Qwen3-Omni thinker's vision and audio encoders, images, audio and
+        video (2 fps, with its soundtrack when every video in the record
+        has one). The talker and code2wav weights it ships are unused.
+      - **Audio:** apart from Clef-Omni's, no pinned checkpoint keeps an
+        audio encoder, so Gemma 4 E4B-it joins as the audio carrier
+        (owner, 2026-10-02): 16 kHz,
         128 mels, 30 s per encoder window, sharing Gemma 4's tokenizer,
         template and vision. Longer audio is split into windows, not
         refused (D-102).
@@ -1156,7 +1161,10 @@ M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#
       Workers AI's Clef share.
       - **Test models:** `Cloudflare/clef` (Qwen3.8-27B backbone) and
         `Cloudflare/clef-flash` (Qwen3.5-9B backbone), each with a joint
-        schema head of about 125M parameters.
+        schema head of about 125M parameters, and `Cloudflare/clef-omni`
+        (owner, 2026-10-09: Qwen3-Omni-30B-A3B mixture-of-experts thinker
+        with vision and audio encoders, the same kind of joint schema
+        head; states may carry text, JSON, images, audio and video).
       - **Decision program:** one prefill with no retained state. The head
         reads every position's final-norm hidden state and the output-head
         rows of each option's tokens. It answers all of a request's
@@ -1297,10 +1305,10 @@ TensorFold comparisons report speed, memory and separate quality controls.
   them. Generated text alone is not evidence. Inputs past their bounds
   are refused before any decode, and the intake passes its adversarial
   challenge.
-- **Decision models:** Clef's and Clef-flash's per-option probabilities
-  match their pinned reference within declared bounds, text-only and with
-  images. The TypeSafe SDKs complete requests unmodified. Decision
-  requests to each model batch with each other, including requests with
+- **Decision models:** Clef's, Clef-flash's and Clef-Omni's per-option
+  probabilities match their pinned reference within declared bounds,
+  text-only and with images (and, for Clef-Omni, audio and video). The
+  TypeSafe SDKs complete requests unmodified. Decision requests to each model batch with each other, including requests with
   different prompt lengths and question sets; their probabilities meet
   the same bounds as solo requests. No state outlives a request.
 - **Speech:** with the same inputs, seed and sampling, Breeze's codebook

@@ -801,6 +801,14 @@ after an audit of about 70 limits):
   backbone, 128M-parameter joint schema head) and **Clef-flash**
   (`Cloudflare/clef-flash@17f0b0ad64efb65d273590632833508766b2aae6`,
   Qwen3.5-9B backbone, 122M head), both Apache-2.0.
+  *Added 2026-10-09 (owner):* **Clef-Omni**
+  (`Cloudflare/clef-omni@0db1cd2607d76a7bdb2a382f659e7b313079f84b`,
+  Apache-2.0), post-trained from Qwen3-Omni-30B-A3B-Instruct: the
+  mixture-of-experts thinker with its vision and audio encoders and a
+  joint schema head of the same kind (the talker and code2wav weights it
+  ships are unused). Its states may carry audio as well as images and
+  video; how audio travels on the Jev wire is settled at its bring-up,
+  with the same reference-oracle comparison as Clef's.
   - **Oracle:** their reference `joint_schema_model.py` on transformers
     5.10.2, in BF16, compared per-option probability.
   - **Same-format comparator:** ggml-org's Clef GGUFs on llama.cpp, text
