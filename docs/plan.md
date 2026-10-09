@@ -1218,8 +1218,8 @@ M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#
       - `/v1/videos` asynchronous jobs for MiniMax H3 text-to-video and
         image-to-video, on D-041's job machinery, with generated media kept
         only until fetched or expired.
-      - `/v1/audio/speech` on two text-to-speech testbeds (owner,
-        2026-10-02):
+      - `/v1/audio/speech` on three text-to-speech testbeds (owner,
+        2026-10-02; Qwen3-TTS added 2026-10-09):
         - **Breeze-TTS-2:** 3.47B in BF16. A T5Gemma2 text encoder (26
           layers), a Qwen3 backbone (28 layers, 2048 wide), a depth
           decoder over 16 codebooks and a Mimi-style codec at 24 kHz.
@@ -1233,6 +1233,35 @@ M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#
           step runs natively, with no interpreter in serving (D-010); its
           espeak-ng fallback is GPL and belongs in the optional copyleft
           tier (D-080).
+        - **Qwen3-TTS** (Apache-2.0, ungated; pinned at bring-up, the
+          commits current on 2026-10-09 recorded here): a talker LLM that
+          emits 12 Hz codec codes (about 83 ms of audio each) and a
+          lightweight code-to-wave decoder, `Qwen/Qwen3-TTS-12Hz-0.6B-Base`
+          (`5d839924`) and `-1.7B-Base` (`fd4b2543`) with voice cloning,
+          `-0.6B-CustomVoice` (`85e237c1`) and `-1.7B-CustomVoice`
+          (`0c0e3051`), `-1.7B-VoiceDesign` (`5ecdb673`), and the codec
+          `Qwen/Qwen3-TTS-Tokenizer-12Hz` (`7dd38ad4`). Qwen3-Omni (Clef-Omni)
+          ships the same kind of talker and code2wav, so the components
+          are shared. Realtime voice is a target, after
+          [Qwen TTS latency](https://www.storminthecastle.com/posts/qwen_tts_latency/?v=3)
+          (owner, 2026-10-09; vLLM-Omni on an RTX 5090: 47–64 ms to the
+          first audio chunk, 54–68 ms with a cached cloned voice):
+          - time to first audio (request to first audio chunk) is
+            measured and reported beside the real-time factor;
+          - the first chunk is one codec frame, decoded as soon as the
+            talker emits it with priority over steady-state work; later
+            chunks grow for throughput. Talker and decoder interleave in
+            the one runtime process (D-005), with no inter-process hop;
+          - every graph the first request needs is captured and warmed
+            before the model reports ready, so no request pays capture
+            or tuning (the article's warmup run took 781 ms);
+          - speaker embeddings (and reference codec frames for in-context
+            cloning) are computed once per voice and cached, and voices
+            can be added without a restart (per-request encoding of a 5 s
+            clip costs 50–80 ms, about doubling time to first audio);
+          - client playback buffering and resampling stay the client's
+            (the article's clicks and artifacts were playback, not
+            synthesis) and are documented for client authors.
       - Stable Diffusion WebUI's `/sdapi/v1/txt2img`, `/img2img`,
         `/sd-models` and `/options` over the same pipeline, for Open
         WebUI, SillyTavern and LibreChat.
