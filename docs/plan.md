@@ -1355,6 +1355,12 @@ each is checked against the design as M3.6 proceeds.
       prefill and decode, solo and at its qualified cohorts, and record the
       current implementation's speed, quality controls, peak memory and
       swap rows as each family's baseline.
+      *2026-10-08:* protocol, frozen `1facc957` baseline, same-binary
+      spread and baseline rows recorded in
+      [m36-baselines](experiments/m36-baselines/README.md) (harness
+      `tools/speed_gate.py`). Open: two defects of the baseline build
+      leave DeepSeek's DSpark cohort waves and the swap table's 11
+      Qwen3.8-as-A rows without a baseline.
 - [ ] **Format layer** (D-108): encodings named independently of kernel
       libraries and layouts recorded separately; a block decoder per
       encoding on CUDA under shared vector, matrix and grouped templates;

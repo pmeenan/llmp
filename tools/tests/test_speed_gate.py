@@ -1,0 +1,354 @@
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+"""tools/speed_gate.py's schedule, statistic and stopping rule on synthetic runs, no GPU needed."""
+
+import contextlib
+import dataclasses
+import importlib.util
+import io
+import json
+import math
+import pathlib
+import socket
+import sys
+import tempfile
+import threading
+import unittest
+
+sys.dont_write_bytecode = True
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location("speed_gate", ROOT / "tools/speed_gate.py")
+gate = importlib.util.module_from_spec(spec)
+sys.modules["speed_gate"] = gate
+spec.loader.exec_module(gate)
+
+MARGIN = math.log1p(gate.GATE)
+
+
+def record(family, block, position, metrics, error=None):
+    label = gate.ORDER[position]
+    spec = gate.FAMILIES.get(family)
+    return {"family": family, "block": block, "position": position, "label": label,
+            "metrics": metrics, "error": error, "problems": [],
+            "runtime_sha256": f"{label}-binary", "config_sha256": f"{label}-config",
+            "family_spec": json.loads(json.dumps(dataclasses.asdict(spec))) if spec else None}
+
+
+def write_blocks(out, family, blocks):
+    """blocks: a list of (old, new) metric dicts; each block runs old/new/new/old."""
+    (out / "runs").mkdir(parents=True, exist_ok=True)
+    for b, (old, new) in enumerate(blocks, start=1):
+        for p, label in enumerate(gate.ORDER):
+            r = record(family, b, p, old if label == "old" else new)
+            (out / "runs" / f"{family}-b{b:02d}-p{p}-{label}.json").write_text(json.dumps(r))
+
+
+class Judge(unittest.TestCase):
+    def test_identical_blocks_pass(self):
+        row = gate.judge([0.0, 0.0, 0.0], MARGIN, 3, 6)
+        self.assertEqual(row["verdict"], "PASS")
+        self.assertEqual(row["half_width"], 0.0)
+
+    def test_too_few_blocks_give_no_verdict(self):
+        self.assertEqual(gate.judge([0.0, 0.0], MARGIN, 3, 6)["verdict"], "INCOMPLETE")
+        self.assertEqual(gate.judge([0.0], MARGIN, 1, 6)["verdict"], "INCOMPLETE")
+
+    def test_a_clear_slowdown_fails(self):
+        values = [math.log(1.03), math.log(1.031), math.log(1.029)]
+        self.assertEqual(gate.judge(values, MARGIN, 3, 6)["verdict"], "FAIL")
+
+    def test_an_unresolved_estimate_continues_then_has_not_passed(self):
+        values = [0.004, 0.012, 0.008]
+        self.assertEqual(gate.judge(values, MARGIN, 3, 6)["verdict"], "CONTINUE")
+        self.assertEqual(gate.judge(values * 2, MARGIN, 3, 6)["verdict"], "NOT PASSED")
+
+    def test_bound_is_one_sided_t(self):
+        # Each look's bound: one-sided 97.5% t on n - 1 degrees of freedom.
+        values = [0.001, 0.003, 0.002]
+        row = gate.judge(values, MARGIN, 3, 6)
+        self.assertAlmostEqual(row["half_width"], 4.303 * 0.001 / math.sqrt(3))
+        self.assertAlmostEqual(row["upper"], 0.002 + row["half_width"])
+        self.assertAlmostEqual(row["lower"], 0.002 - row["half_width"])
+        self.assertEqual(gate.t_look(25), gate.T975[20])  # conservative past the table
+
+    def test_looking_after_every_block_keeps_a_true_one_percent_near_five_percent(self):
+        sd = 0.003
+        at_edge = gate.operating(3, 6, MARGIN, sd, trials=1000)
+        at_edge95 = gate.operating(3, 6, MARGIN, sd, gate.t95, trials=1000)
+        self.assertLess(at_edge.get("PASS", 0), 0.08)
+        self.assertGreater(at_edge95.get("PASS", 0), at_edge.get("PASS", 0))
+        self.assertGreater(gate.operating(3, 6, 0.0, sd, trials=300)["PASS"], 0.95)
+
+
+class Spread(unittest.TestCase):
+    def test_blocks_needed_follow_the_resolution(self):
+        self.assertEqual(gate.blocks_needed(0.0), 3)
+        # t(0.95, 2) * 0.2% / sqrt(3) = 0.34% fits three blocks; 0.4% needs four
+        # (2.920 * 0.4% / sqrt(3) = 0.67%, 2.353 * 0.4% / 2 = 0.47%).
+        self.assertEqual(gate.blocks_needed(0.002), 3)
+        self.assertEqual(gate.blocks_needed(0.004), 4)
+        self.assertIsNone(gate.blocks_needed(0.05))
+
+    def test_same_binary_runs_report_their_spread(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            (out / "runs").mkdir()
+            values = [[1.00, 1.01, 0.99, 1.00], [1.02, 1.01, 1.03, 1.02]]
+            for b, xs in enumerate(values, start=1):
+                for p, x in enumerate(xs):
+                    r = record("f", b, p, {"C1.prefill_s": x, "peak_gib": 10.0 + p})
+                    (out / "runs" / f"f-{b}-{p}.json").write_text(json.dumps(r))
+            gate.FAMILIES.setdefault("f", gate.Family("f", "llm", "f", "s", ""))
+            row = gate.spread(out, "f")["f"]["C1.prefill_s"]
+            self.assertEqual(row["runs"], 8)
+            self.assertEqual(row["blocks"], 2)
+            self.assertGreater(row["run_sd"], 0.005)
+            self.assertLess(row["run_sd"], 0.02)
+            self.assertAlmostEqual(gate.spread(out, "f")["f"]["peak_gib"]["range"], 3.0)
+
+
+class Blocks(unittest.TestCase):
+    def block(self, old, new):
+        return {p: record("f", 1, p, old if gate.ORDER[p] == "old" else new) for p in range(4)}
+
+    def test_times_and_rates_are_slowdowns_when_new_is_slower(self):
+        b = self.block({"C1.prefill_s": 1.0, "C1.decode_tok_s": 50.0},
+                       {"C1.prefill_s": 1.02, "C1.decode_tok_s": 49.0})
+        self.assertAlmostEqual(gate.block_slowdowns(b, "C1.prefill_s"), math.log(1.02))
+        self.assertAlmostEqual(gate.block_slowdowns(b, "C1.decode_tok_s"), math.log(50 / 49))
+
+    def test_peak_memory_is_an_absolute_difference(self):
+        b = self.block({"peak_gib": 10.0}, {"peak_gib": 10.25})
+        self.assertAlmostEqual(gate.block_slowdowns(b, "peak_gib"), 0.25)
+
+    def test_incomplete_failed_or_misordered_blocks_are_skipped(self):
+        b = self.block({"x.prefill_s": 1.0}, {"x.prefill_s": 1.0})
+        del b[3]
+        self.assertIsNone(gate.block_slowdowns(b, "x.prefill_s"))
+        b = self.block({"x.prefill_s": 1.0}, {"x.prefill_s": 1.0})
+        b[1]["error"] = "RuntimeError: boom"
+        self.assertIsNone(gate.block_slowdowns(b, "x.prefill_s"))
+        b = self.block({"x.prefill_s": 1.0}, {"x.prefill_s": 1.0})
+        b[0]["label"] = "new"
+        self.assertIsNone(gate.block_slowdowns(b, "x.prefill_s"))
+
+    def test_bookends_cancel_linear_drift(self):
+        # Each run 1% slower than the one before, the two binaries identical.
+        b = {p: record("f", 1, p, {"C1.prefill_s": 1.0 + 0.01 * p}) for p in range(4)}
+        self.assertAlmostEqual(gate.block_slowdowns(b, "C1.prefill_s"), 0.0)
+
+
+class Verdicts(unittest.TestCase):
+    SAME = {"C1.prefill_s": 2.0, "C1.decode_tok_s": 40.0, "peak_gib": 30.0}
+
+    def rewrite(self, out, name, change):
+        path = out / "runs" / name
+        r = json.loads(path.read_text())
+        change(r)
+        path.write_text(json.dumps(r))
+
+    def test_failed_runs_problems_or_mixed_binaries_make_a_family_invalid(self):
+        n = gate.FAMILIES["gemma2"].min_blocks
+        cases = {
+            "gemma2-b02-p1-new.json": lambda r: r.update(error="RuntimeError: boom"),
+            "gemma2-b03-p2-new.json": lambda r: r.update(problems=["C1: 1 cached prompt tokens"]),
+            "gemma2-b04-p2-new.json": lambda r: r.update(runtime_sha256="rebuilt"),
+            "gemma2-b01-p3-old.json": lambda r: r.update(config_sha256="other"),
+            "gemma2-b01-p0-old.json": lambda r: r["family_spec"].update(repeats=2),
+        }
+        with tempfile.TemporaryDirectory() as tmp:  # block counts are the verdict's own
+            out = pathlib.Path(tmp)
+            write_blocks(out, "gemma2", [(self.SAME, self.SAME)] * n)
+            self.rewrite(out, "gemma2-b01-p0-old.json", lambda r: r["family_spec"].update(
+                min_blocks=3, max_blocks=6))
+            self.assertEqual(gate.verdicts(out, "gemma2")["gemma2"]["verdict"], "PASS")
+        for name, change in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                out = pathlib.Path(tmp)
+                write_blocks(out, "gemma2", [(self.SAME, self.SAME)] * (n + 1))
+                self.rewrite(out, name, change)
+                report = gate.verdicts(out, "gemma2")["gemma2"]
+                self.assertEqual(report["verdict"], "INVALID")
+                self.assertTrue(report["invalid"])
+                self.assertEqual(gate.verdict_status({"gemma2": report}), 1)
+
+    def test_a_missing_run_makes_a_family_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            write_blocks(out, "gemma2", [(self.SAME, self.SAME)] * 6)
+            (out / "runs" / "gemma2-b03-p1-new.json").unlink()
+            report = gate.verdicts(out, "gemma2")["gemma2"]
+            self.assertEqual(report["verdict"], "INVALID")
+            self.assertIn("block 3: no record at positions [1]", report["invalid"])
+
+    def test_blocks_past_the_maximum_do_not_count(self):
+        family = gate.FAMILIES["deepseek"]
+        slow = dict(self.SAME, **{"C1.prefill_s": 2.0 * 1.006})
+        noisy = [(self.SAME, dict(slow, **{"C1.prefill_s": 2.0 * x}))
+                 for x in (1.000, 1.012, 1.004, 1.010, 1.002, 1.008)]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            write_blocks(out, "deepseek", noisy + [(self.SAME, self.SAME)] * 6)
+            report = gate.verdicts(out, "deepseek")["deepseek"]
+            self.assertEqual(report["ignored_blocks"], list(range(family.max_blocks + 1, 13)))
+            self.assertEqual(report["metrics"]["C1.prefill_s"]["blocks"], family.max_blocks)
+            self.assertEqual(report["metrics"]["C1.prefill_s"]["verdict"], "NOT PASSED")
+            self.assertEqual(report["verdict"], "NOT PASSED")
+
+    def test_the_exit_status_fails_anything_but_a_pass(self):
+        self.assertEqual(gate.verdict_status({}), 1)
+        self.assertEqual(gate.verdict_status({"a": {"verdict": "PASS"}}), 0)
+        self.assertEqual(gate.verdict_status({"a": {"verdict": "PASS"},
+                                              "b": {"verdict": "CONTINUE"}}), 2)
+        for bad in ("FAIL", "NOT PASSED", "INVALID"):
+            self.assertEqual(gate.verdict_status({"a": {"verdict": "CONTINUE"},
+                                                  "b": {"verdict": bad}}), 1)
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(gate.main(["verdict", tmp]), 1)
+
+    def test_a_family_passes_only_when_every_metric_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            same = {"C1.prefill_s": 2.0, "C1.decode_tok_s": 40.0, "peak_gib": 30.0}
+            slower = {"C1.prefill_s": 2.0, "C1.decode_tok_s": 38.0, "peak_gib": 30.0}
+            write_blocks(out, "gemma2", [(same, same)] * gate.FAMILIES["gemma2"].min_blocks)
+            write_blocks(out, "gemma3", [(same, slower)] * gate.FAMILIES["gemma3"].min_blocks)
+            report = gate.verdicts(out, None)
+            self.assertEqual(report["gemma2"]["verdict"], "PASS")
+            self.assertEqual(report["gemma3"]["verdict"], "FAIL")
+            self.assertEqual(report["gemma3"]["metrics"]["C1.prefill_s"]["verdict"], "PASS")
+            self.assertEqual(report["gemma3"]["metrics"]["C1.decode_tok_s"]["verdict"], "FAIL")
+            self.assertEqual(report["gemma2"]["metrics"]["peak_gib"]["unit"], "GiB")
+
+    def test_plan_schedules_abba_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = io.StringIO()
+            with contextlib.redirect_stdout(text):
+                gate.main(["plan", "--family", "gemma2", "--old", "/o", "--new", "/n",
+                           "--out", tmp, "--blocks", "2", "--first", "5"])
+            lines = text.getvalue().splitlines()
+            self.assertEqual(len(lines), 8)
+            labels = [line.split("--label ")[1].split()[0] for line in lines]
+            self.assertEqual(labels, list(gate.ORDER) * 2)
+            self.assertIn("--block 5 --position 0", lines[0])
+            self.assertIn("--block 6 --position 3", lines[7])
+            self.assertIn("--runtime /o", lines[0])
+            self.assertIn("--runtime /n", lines[1])
+            self.assertNotIn("--config-template", lines[0])
+
+    def test_plan_gives_each_arm_its_configuration(self):
+        text = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(text):
+            gate.main(["plan", "--family", "deepseek", "--old", "/o", "--new", "/n",
+                       "--out", tmp, "--blocks", "1", "--new-config", "/n.toml"])
+        lines = text.getvalue().splitlines()
+        self.assertNotIn("--config-template", lines[0])
+        self.assertIn("--config-template /n.toml", lines[1])
+        self.assertIn("--config-template /n.toml", lines[2])
+        self.assertNotIn("--config-template", lines[3])
+
+
+class Cells(unittest.TestCase):
+    def request(self, send, times, end, tokens):
+        return {"t_send": send, "t_first": times[0], "t_last": times[-1], "t_end": end,
+                "times": times, "usage": {"completion_tokens": tokens}}
+
+    def test_one_request_decodes_from_its_first_to_its_last_token(self):
+        r = self.request(0.0, [1.0, 1.5, 2.0, 3.0], 3.1, 7)  # three steps of two tokens
+        m = gate.cell_metrics([r])
+        self.assertAlmostEqual(m["prefill_s"], 1.0)
+        self.assertAlmostEqual(m["decode_tok_s"], 6 / 2.0)
+        self.assertAlmostEqual(m["wall_tok_s"], 7 / 3.1)
+
+    def test_a_cohort_decodes_only_while_every_request_does(self):
+        # The first request decodes alone while the second prefills; the window is [2, 4].
+        a = self.request(0.0, [1.0, 1.5, 2.5, 3.0, 3.5, 4.0], 4.1, 6)
+        b = self.request(0.0, [2.0, 2.5, 3.0, 3.5, 4.0, 4.5], 4.6, 6)
+        m = gate.cell_metrics([a, b])
+        self.assertAlmostEqual(m["prefill_s"], 2.0)
+        # Inside [2, 4]: a's chunks 2.5..4.0 (3 steps in 1.5 s), b's 2.0..4.0 (4 in 2 s).
+        self.assertAlmostEqual(m["decode_tok_s"], 3 / 1.5 + 4 / 2.0)
+
+    def test_a_chunk_at_the_window_edge_does_not_change_the_rate(self):
+        # Two requests in one wave, steps every 0.5 s; b's chunks land 1 ms after a's.
+        a = self.request(0.0, [1.0 + 0.5 * i for i in range(9)], 5.1, 9)
+        b = self.request(0.0, [1.001 + 0.5 * i for i in range(9)], 5.2, 9)
+        self.assertAlmostEqual(gate.cell_metrics([a, b])["decode_tok_s"], 4.0, places=2)
+
+    def test_no_shared_window_has_no_decode_rate(self):
+        a = self.request(0.0, [1.0, 1.5], 1.6, 2)
+        b = self.request(0.0, [2.0, 2.5], 2.6, 2)
+        self.assertNotIn("decode_tok_s", gate.cell_metrics([a, b]))
+
+
+class Inputs(unittest.TestCase):
+    def test_passages_are_deterministic_line_starts(self):
+        corpus = "".join(f"line {i}\n" for i in range(5000))
+        a = gate.passage(corpus, 3, 100)
+        self.assertEqual(a, gate.passage(corpus, 3, 100))
+        self.assertEqual(len(a), 100)
+        self.assertTrue(a.startswith("line "))
+        self.assertNotEqual(a, gate.passage(corpus, 4, 100))
+        self.assertTrue(gate.prompt(corpus, 3, 100).startswith("Request 3. "))
+
+    def test_a_template_fills_share_data_and_port(self):
+        family = gate.FAMILIES["deepseek"]
+        default = gate.arm_template(family, None)
+        self.assertEqual(gate.render_config(default, pathlib.Path("/s"), pathlib.Path("/d"), 7),
+                         gate.config_text(family, pathlib.Path("/s"), pathlib.Path("/d"), 7))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "new.toml"
+            path.write_text('[storage]\ndata_dir = "{data}"\n[client]\nport = {port}\n'
+                            '[models.deepseek]\nartifact = "{share}/x"\n')
+            text = gate.render_config(gate.arm_template(family, str(path)), pathlib.Path("/s"),
+                                      pathlib.Path("/d"), 7)
+            self.assertEqual(text, '[storage]\ndata_dir = "/d"\n[client]\nport = 7\n'
+                                   '[models.deepseek]\nartifact = "/s/x"\n')
+        with self.assertRaises(SystemExit):
+            gate.render_config('data_dir = "{data}"\n', pathlib.Path("/s"), pathlib.Path("/d"), 7)
+
+    def test_config_binds_loopback_and_names_the_share(self):
+        text = gate.config_text(gate.FAMILIES["qwen38"], pathlib.Path("/s"), pathlib.Path("/d"),
+                                18114)
+        self.assertIn('data_dir = "/d"', text)
+        self.assertIn('installed = "/s/m3-artifacts"', text)
+        self.assertIn('bind = ["loopback"]', text)
+        self.assertIn("port = 18114", text)
+        self.assertIn('tokenizer = "/s/models/', text)
+        self.assertNotIn("{share}", text)
+
+
+class Service(unittest.TestCase):
+    def test_a_runtime_already_on_the_port_is_refused(self):
+        with socket.socket() as listener, tempfile.TemporaryDirectory() as tmp:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            with self.assertRaisesRegex(RuntimeError, "already listens"):
+                gate.Service(pathlib.Path("/nonexistent"), pathlib.Path("/c"),
+                             pathlib.Path(tmp), port)
+
+    def test_a_request_that_cannot_connect_releases_its_cell(self):
+        with socket.socket() as listener, socket.socket() as closed:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            closed.bind(("127.0.0.1", 0))  # bound, never listening: connections are refused
+            barrier = threading.Barrier(2)
+            results = [None, None]
+
+            def one(i, port):
+                results[i] = gate.stream_chat(port, {}, barrier)
+
+            threads = [threading.Thread(target=one, args=(0, listener.getsockname()[1])),
+                       threading.Thread(target=one, args=(1, closed.getsockname()[1]))]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+            self.assertFalse(any(t.is_alive() for t in threads))
+            self.assertIn("BrokenBarrierError", results[0]["error"])
+            self.assertIn("ConnectionRefusedError", results[1]["error"])
+
+
+if __name__ == "__main__":
+    unittest.main()

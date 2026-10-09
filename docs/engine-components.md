@@ -402,6 +402,11 @@ baseline:
   investigated.
 - **Memory, swap and state**: the existing controls pass unchanged.
 
+The fixed protocol, the frozen baseline binary and every family's
+baseline speed, quality, memory and swap rows are in
+[m36-baselines](experiments/m36-baselines/README.md); its harness is
+`tools/speed_gate.py`.
+
 The old runner stays beside the new one until the family passes, then is
 deleted in the same task, with its serving class and graph builder.
 
@@ -559,7 +564,8 @@ new shape is a component, not an escape hatch.
 
 Open questions this design does not settle by argument:
 
-- The 1% protocol's repeat count and spread on each family's controls.
+- The 1% protocol's repeat count and spread on each family's controls:
+  measured ([m36-baselines](experiments/m36-baselines/README.md#same-binary-spread)).
 - Where on-chip tile decode matches transient expansion for prefill, per
   encoding and row count, on the GB10.
 - Whether a relayout during the device copy is free enough to avoid
