@@ -1431,7 +1431,7 @@ each is checked against the design as M3.6 proceeds.
             ([engine-components.md](engine-components.md#weight-and-state-formats)).
             Each model's wiring, D 512, the per-alias setting and its
             quality report remain.
-- [ ] **Shared slot lifecycle, one runner interface, one serving adapter
+- [x] **Shared slot lifecycle, one runner interface, one serving adapter
       per pipeline kind**, derived from state contracts; reconcile today's
       divergent copies (Gemma2's restore guards against Gemma3's).
       Decoding-mode orchestration takes any number of drafters and the
@@ -1455,7 +1455,7 @@ each is checked against the design as M3.6 proceeds.
             architectures (empty: each family's migration wires its parts),
             kept conversations in a file a stage (record version 2, D-112);
             `engine_llm_test` on the fake backend.
-- [ ] **IR and planner** (D-107): the op set and tensor descriptors,
+- [x] **IR and planner** (D-107): the op set and tensor descriptors,
       construction from a spec, fusion patterns covering today's selected
       fused paths, implementation selection, activation placement, lowering
       to recorded work, plan keys; a CPU reference and fake-backend tests
