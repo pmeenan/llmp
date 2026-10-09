@@ -1194,6 +1194,16 @@ LiveState::Status LiveState::Save(std::uint64_t address, std::uint64_t bytes, st
   if (save_count_ == capacity_ || save_at_ + bytes > snapshot_bytes_) {
     return Error("a verify writes more than its snapshot holds");
   }
+  // Only this state's own bytes: what a verify owes is this state's
+  // (owed(), its quarantine, its spill file's standing in SpillTrack), so a
+  // range of another state would be restored behind that state's back.
+  const bool own = std::ranges::any_of(regions_, [&](const Region& r) {
+    return r.mapped.base != 0 && address >= r.mapped.base && bytes <= r.bytes &&
+           address - r.mapped.base <= r.bytes - bytes;
+  });
+  if (!own) {
+    return Error(std::format("a {} verify saves bytes outside its own state", model_));
+  }
   const std::uint64_t saved = snapshot_base_ + save_at_;
   saved_.push_back({.address = address, .saved = saved, .bytes = bytes, .row = row});
   save_[save_count_++] = {.from = address, .to = saved, .bytes = bytes};

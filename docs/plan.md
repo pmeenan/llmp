@@ -1389,8 +1389,8 @@ each is checked against the design as M3.6 proceeds.
       Sub-tasks:
       - [x] The engine core builds in every profile, with a fake device
             runtime and host paging kernels (D-096 amended).
-      - [ ] State contracts and the shared slot lifecycle, with the
-            reconciled guards.
+      - [x] State contracts and the shared slot lifecycle, with the
+            reconciled guards (the legacy runners do not delegate yet).
       - [ ] One runner interface: step programs, wave composition,
             prefill and decoding-mode orchestration with any number of
             drafters (cascaded or alternative, chosen by policy).

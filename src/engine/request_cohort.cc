@@ -3,6 +3,7 @@
 
 #include "engine/request_cohort.h"
 
+#include <array>
 #include <bit>
 #include <format>
 #include <utility>
@@ -52,15 +53,29 @@ std::expected<SlotMask, std::string> RequestCohort::MaskOf(
 std::expected<RequestCohort::Closures, std::string> RequestCohort::Build(
     const catalog::Catalog& catalog, std::span<const ExtentId> shared,
     std::span<const LiveState* const> states, SlotMask protected_mask) const {
+  std::array<std::vector<ExtentId>, kSlots> extents;
+  std::array<const std::vector<ExtentId>*, kSlots> slots{};
+  for (std::size_t slot = 0; slot < states.size() && slot < kSlots; ++slot) {
+    if (states[slot] != nullptr) {
+      extents[slot] = states[slot]->extents();
+      slots[slot] = &extents[slot];
+    }
+  }
+  return Build(catalog, shared, slots, protected_mask);
+}
+
+std::expected<RequestCohort::Closures, std::string> RequestCohort::Build(
+    const catalog::Catalog& catalog, std::span<const ExtentId> shared,
+    std::span<const std::vector<ExtentId>* const> slots, SlotMask protected_mask) const {
   std::vector<ExtentId> all(shared.begin(), shared.end());
   std::vector<ExtentId> active(shared.begin(), shared.end());
   std::vector<ExtentId> state;
   Closures out;
-  for (std::size_t slot = 0; slot < states.size() && slot < kSlots; ++slot) {
-    if (states[slot] == nullptr) {
+  for (std::size_t slot = 0; slot < slots.size() && slot < kSlots; ++slot) {
+    if (slots[slot] == nullptr) {
       continue;
     }
-    const std::vector<ExtentId> live = states[slot]->extents();
+    const std::vector<ExtentId>& live = *slots[slot];
     all.insert(all.end(), live.begin(), live.end());
     state.insert(state.end(), live.begin(), live.end());
     if ((protected_mask & (SlotMask{1} << slot)) != 0) {

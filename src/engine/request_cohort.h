@@ -34,6 +34,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "catalog/catalog.h"
 #include "engine/live_state.h"
@@ -91,6 +92,12 @@ class RequestCohort {
                                              std::span<const catalog::ExtentId> shared,
                                              std::span<const LiveState* const> states,
                                              SlotMask protected_mask) const;
+  // The same over each slot's extents (`slots[i]` slot i's, null for a
+  // slot not provisioned): a slot whose state is several live states (a
+  // target's and its drafters', engine/slot_lifecycle.h).
+  std::expected<Closures, std::string> Build(
+      const catalog::Catalog& catalog, std::span<const catalog::ExtentId> shared,
+      std::span<const std::vector<catalog::ExtentId>* const> slots, SlotMask protected_mask) const;
   // The held request (if any) refreshed to `execution`; a refusal may have
   // ended the old lease, so it faults the cohort.
   Status Hold(PagedNode& node, std::uint32_t stream, const catalog::Closure& execution,

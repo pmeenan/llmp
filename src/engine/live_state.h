@@ -276,6 +276,9 @@ class LiveState {
 
   // A verify's saves: Begin, then each range it writes (verify row `row`,
   // -1 its scratch rows), each at a 256-byte boundary of the snapshot.
+  // Refused for a range outside one of this state's own regions (their
+  // layouts' bytes): what a verify owes is judged by its own state's spill
+  // file (SpillTrack).
   void BeginSaves();
   Status Save(std::uint64_t address, std::uint64_t bytes, std::int64_t row);
   // Queues the saves on the job's stream (in the verify's job, before its

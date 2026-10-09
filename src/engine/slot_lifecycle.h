@@ -1,0 +1,329 @@
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// The shared slot lifecycle (docs/engine.md, "The slot lifecycle";
+// docs/engine-components.md, "Execution"): a runner's request slots and
+// every verb that moves their state, written once, from the stages' state
+// contracts (model/state_contract.h), where each family's runner wrote its
+// own copy. Where those copies disagreed, the behaviour here is the
+// reconciled one, recorded in engine.md.
+//
+// A slot holds one LiveState per stage: the target's (stage 0) and each
+// drafter's, each a growing region of its stage's derived layout with its
+// own spill file. At this interface a LiveState::Range's `region` names the
+// stage. The slot also keeps its completed positions, whether it is
+// spilled, adopted from a kept record (D-105) or mid-restore, a clean
+// capacity refusal, a borrow (a reader holding its state frozen), and per
+// stage what its spill file holds (SpillTrack, an incremental spill).
+// Closures come from the request cohort (request_cohort.h) over every
+// stage's extents; a spilled slot is in none.
+//
+// What the runner (or the step orchestration) owes it:
+// - RecordWrite before posting any job that may write a slot's state (the
+//   first position it writes from, or the ranges a copy writes): an
+//   incremental spill writes back only what a record covers.
+// - SetPositions after a step that completed positions retired.
+// - CheckActive before a slot's work; Fault / CheckFailedJob after a job
+//   whose effect it cannot prove local (request_cohort.h's rules).
+//
+// Part of the engine core: no kernel library, every build profile.
+
+#ifndef LLMP_ENGINE_SLOT_LIFECYCLE_H_
+#define LLMP_ENGINE_SLOT_LIFECYCLE_H_
+
+#include <array>
+#include <cstdint>
+#include <expected>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "base/sha256.h"
+#include "catalog/catalog.h"
+#include "engine/live_state.h"
+#include "engine/paged_node.h"
+#include "engine/request_cohort.h"
+#include "model/state_contract.h"
+
+namespace llmp::engine {
+
+class PagedWeights;
+
+// One stage's state: the target's or a drafter's.
+struct StageState {
+  std::string name;  // "target", "mtp", "dspark", "assistant"
+  model::StateLayoutDerived layout;
+};
+
+struct SlotLifecycleOptions {
+  std::string model;               // names it in refusals ("Gemma2")
+  std::uint32_t slots = 1;         // 1 to kMaxRequestSlots
+  std::vector<StageState> stages;  // [0] the target, then each drafter
+  base::Sha256Digest spec{};       // the model spec's digest (kept_layout_id)
+  std::uint32_t read_align = 256;  // ReserveStateThrough's default
+  // Where each slot's stage spills: unnamed files in `spill_directory`
+  // unless given.
+  std::function<LiveState::SpillPlace(std::uint32_t slot, std::uint32_t stage)> spill_place;
+  std::filesystem::path spill_directory;
+  // A slot's state no longer matches what its runner derived from it
+  // (retained features, a speculation cursor, pending rows): cleared,
+  // spilled, restored from a checkpoint, adopted, overwritten by a copy or
+  // discarded by a recovery.
+  std::function<void(std::uint32_t slot)> invalidate;
+  // Every plan and graph is to be dropped: a place moved, a recovery.
+  std::function<void()> drop_plans;
+};
+
+class SlotLifecycle {
+ public:
+  using Range = LiveState::Range;  // `region`: the stage
+  using CopyRetirement = LiveState::CopyRetirement;
+
+  SlotLifecycle(PagedNode& node, SlotLifecycleOptions options, int owner, std::uint32_t stream);
+  SlotLifecycle(const SlotLifecycle&) = delete;
+  SlotLifecycle& operator=(const SlotLifecycle&) = delete;
+  SlotLifecycle(SlotLifecycle&&) = delete;
+  SlotLifecycle& operator=(SlotLifecycle&&) = delete;
+  // Nothing is released here: Release, after the node's teardown.
+  ~SlotLifecycle();
+
+  // ------------------------------------------------------- the runner's life
+
+  // Before the weights' places: every slot's every stage's region.
+  Status Setup();
+  // After the node's Start: each region's spill file. The caller pins
+  // reserved_extents() with its weights' (Scheduler::PinPlaces).
+  Status Register();
+  std::vector<catalog::ExtentId> reserved_extents() const;
+  // After the workspace: what every job leases beside the state (the
+  // weights, the workspace, the runner's own memory), and the weights
+  // CheckPlaces checks. Builds the closures.
+  Status Bind(std::vector<catalog::ExtentId> shared, std::vector<const PagedWeights*> weights);
+  // Every region released (problems appended). Once, after teardown.
+  void Release(providers::VmmProvider& memory, std::vector<std::string>& problems);
+
+  // ---------------------------------------------------------------- views
+
+  const catalog::Closure& everything() const { return everything_; }
+  const catalog::Closure& fence() const { return fence_; }
+  const catalog::Closure& execution() const { return execution_; }
+  const catalog::Closure& slot_fence(std::uint32_t slot) const;
+  std::uint32_t slots() const { return options_.slots; }
+  std::size_t stages() const { return options_.stages.size(); }
+  const model::StateLayoutDerived& layout(std::size_t stage) const {
+    return options_.stages.at(stage).layout;
+  }
+  SlotMask active() const { return cohort_.active(); }
+  bool faulted() const { return cohort_.faulted(); }
+  // D-105: what a kept record's layout must be (model::KeptLayoutId).
+  const std::string& kept_layout_id() const { return kept_layout_id_; }
+  // A slot's stage's live state, for its steps (Use is through
+  // ReserveStateThrough; a verify's snapshot is the stage's own).
+  LiveState& live(std::uint32_t slot, std::size_t stage);
+  const LiveState& live(std::uint32_t slot, std::size_t stage) const;
+  // Every slot's used extents, kept zeroed backing, and the extents of
+  // resident slots an incremental write-back may skip (unchanged since
+  // their spill file last held them).
+  std::vector<catalog::ExtentId> state() const;
+  std::vector<catalog::ExtentId> kept_state() const;
+  std::vector<catalog::ExtentId> unchanged_state() const;
+
+  std::uint32_t positions(std::uint32_t slot) const;
+  bool spilled(std::uint32_t slot) const;
+  bool adopted(std::uint32_t slot) const;
+  bool restoring(std::uint32_t slot) const;
+  bool borrowed(std::uint32_t slot) const;
+  // A verify awaits its Accept in some stage.
+  bool verify_pending(std::uint32_t slot) const;
+  // A verify's restore or commit is still owed in some stage.
+  bool owed(std::uint32_t slot) const;
+  // The last growth or restore was a clean capacity refusal: the state is
+  // as it was (with any fresh zero pages), and may be retried once room is
+  // made (Llm::StateRefusedFor).
+  bool state_refused(std::uint32_t slot) const;
+  void ForgetRefusal(std::uint32_t slot);
+  // No stage quarantined, the cohort healthy, no restore pending.
+  bool usable(std::uint32_t slot) const;
+  // The request open on the stream leases its state now.
+  bool held(std::uint32_t slot) const;
+  // D-105: its spill files hold all of its state, settled, as written last
+  // (nothing recorded since a spill, a write-back or an adopted restore).
+  bool kept_whole(std::uint32_t slot) const;
+  std::uint64_t used_bytes(std::uint32_t slot) const;
+  std::uint64_t refused_bytes(std::uint32_t slot) const;
+  // What its spill files hold while spilled (whole extents).
+  std::uint64_t spilled_bytes(std::uint32_t slot) const;
+  // What a Spill now would write (0 while spilled).
+  std::uint64_t spill_write_bytes(std::uint32_t slot) const;
+
+  // ---------------------------------------------------------------- verbs
+
+  // Between completed units. Refused if it drops a slot whose state has
+  // work in flight that needs its closure: a pending restore, a borrow, a
+  // verify awaiting its Accept. An unchanged selection inside an open
+  // request keeps its closure.
+  Status SelectSlots(std::span<const std::uint32_t> slots);
+  // Within its own request (several active slots: the held one): its
+  // state zeroed for reuse, its peers protected, then discarded; positions
+  // and every pending restore, adoption and refusal reset.
+  Status Clear(std::uint32_t slot);
+  // A slot not leased by the open request: its state discarded.
+  Status ClearIdle(std::uint32_t slot);
+  // Out of every closure, then what changed since its spill files last
+  // held it written back and its backing released. Refused while a
+  // restore is pending, a verify awaits its Accept or it is borrowed. A
+  // slot whose verify still owes a restore or commit (in any stage) is
+  // written whole by the next spill (what runs it may record no write).
+  Status Spill(std::uint32_t slot);
+  // A spilled slot's state back, at the generations it was written at, or
+  // an adopted one read from its kept files; a clean capacity refusal
+  // leaves it spilled (state_refused). Refused while a restore is pending.
+  Status Restore(std::uint32_t slot);
+  // Backs what `positions` positions read, at `read_align` (0: the
+  // options'). Refused while a restore is pending, a verify awaits its
+  // Accept or it is borrowed.
+  Status ReserveStateThrough(std::uint32_t slot, std::uint32_t positions,
+                             std::uint32_t read_align = 0);
+  // A turn checkpoint's pages: every used page later positions may write
+  // (CheckpointPages over each stage's CheckpointWrites). Refused unless
+  // the slot is active, usable and settled (no verify pending or owed).
+  std::expected<std::vector<Range>, std::string> CheckpointRanges(std::uint32_t slot,
+                                                                  std::uint32_t positions) const;
+  // A restored footprint: whole extents of the stages' layouts in
+  // (stage, offset) order, covering what `positions` positions read, empty
+  // at none.
+  Status ValidateFootprint(std::uint32_t positions, std::span<const Range> footprint) const;
+  // A checkpoint's restore, in three steps: Prepare (the layout ID and
+  // footprint checked; refused until a verify's owed restore or commit is
+  // settled, which would otherwise run over the checkpoint's bytes; the
+  // state made exactly the footprint, its peers protected; a clean capacity
+  // refusal leaves it as it was, invalidating nothing), Copy each page in
+  // (CopyState to the device), then Complete (refused until every page the
+  // checkpoint holds was copied in, in order).
+  Status PrepareRestore(std::uint32_t slot, std::uint32_t positions,
+                        std::span<const Range> footprint, std::string_view source_layout);
+  Status CompleteRestore(std::uint32_t slot, std::uint32_t positions);
+  // Packed copies between the slot's state and pinned host memory: to the
+  // host outside a restore, to the device only within one; refused while a
+  // verify awaits its Accept or owes a restore or commit. A failed copy
+  // to the device quarantines the slot; one of unproven completion faults
+  // the cohort (the caller keeps `pinned` then).
+  Status CopyState(std::uint32_t slot, void* pinned, std::span<const Range> ranges, bool to_host,
+                   CopyRetirement* retirement = nullptr);
+  // A kept conversation (D-105) into an empty, idle slot: its layout ID
+  // and footprint checked; spilled until Restore reads it.
+  Status Adopt(std::uint32_t slot, std::uint32_t positions, std::span<const Range> footprint,
+               std::string_view source_layout);
+  // Every weight and state extent still pinned at its registered place
+  // (D-090); refused, every plan dropped, if one moved.
+  Status CheckPlaces();
+  // A swap's write-back completed (`whole`: every resident slot's state is
+  // in its spill files), or did not. A slot mid-restore, unusable, or with
+  // a verify awaiting its Accept or owing a restore or commit in any stage
+  // is not counted as held by its files.
+  void StateWrittenBack(bool whole);
+  // D-102's hang recovery, rung 2, after the stream was fenced and the
+  // launch's retirement proven by the caller, with no request open: each
+  // spilled slot untouched since is kept, every slot the failure may have
+  // touched discarded (`before_discard` told first: its kept record goes),
+  // and so is every slot whose verify awaits its Accept or whose checkpoint
+  // restore is pending (the failure may have skipped them), the fault
+  // lifted, every borrow dropped, the default request selected, plans
+  // dropped. The slots discarded.
+  std::expected<SlotMask, std::string> RecoverInPlace(
+      const std::function<void(std::uint32_t slot)>& before_discard = {});
+  // An incremental spill's split of a stage's extents.
+  void SplitForSpill(std::uint32_t slot, std::size_t stage, std::vector<catalog::ExtentId>& written,
+                     std::vector<catalog::ExtentId>& unchanged) const;
+
+  // ------------------------------------------------- what steps tell it
+
+  // Before a slot's work: bound, provisioned, resident, active (several
+  // only under the held request), every stage usable, no checkpoint
+  // restore between its Prepare and Complete.
+  Status CheckActive(std::uint32_t slot) const;
+  // Before posting a job that may write the slot's state from `position`
+  // on (every stage), or a copy that writes `ranges`. Refused for a
+  // spilled (or adopted, unread) slot, which no job may write.
+  Status RecordWrite(std::uint32_t slot, std::uint32_t position);
+  Status RecordWrite(std::uint32_t slot, std::span<const Range> ranges);
+  // After a step's completed positions retired. Refused mid-restore or
+  // while spilled.
+  Status SetPositions(std::uint32_t slot, std::uint32_t positions);
+  // A reader (an assistant drafting from the target's KV) holds the
+  // slot's state frozen until Return: no growth, clear, spill, restore or
+  // copy in, and no selection dropping it. Refused until a verify is
+  // accepted and what it owes has run (the state is not yet the kept
+  // rows').
+  Status Borrow(std::uint32_t slot);
+  void Return(std::uint32_t slot);
+  // Every slot quarantined until RecoverInPlace.
+  void Fault();
+  // After a failed job: request_cohort.h's CheckFailedJob.
+  void CheckFailedJob();
+  // The closures rebuilt, the held request refreshed to the execution
+  // closure over `protect` (default: the active slots).
+  Status RefreshClosures(SlotMask protect);
+  Status RefreshClosures() { return RefreshClosures(cohort_.active()); }
+
+ private:
+  struct Stage {
+    std::unique_ptr<LiveState> live;
+    SpillTrack track;
+    // Kept from the process before (D-105): what its spill file holds,
+    // until Restore reads it.
+    std::vector<Range> adopted;
+  };
+  struct Slot {
+    std::uint32_t index = 0;
+    std::vector<Stage> stages;
+    catalog::Closure fence;
+    std::uint32_t positions = 0;
+    bool spilled = false;
+    bool state_refused = false;
+    std::uint32_t borrows = 0;
+    std::uint64_t adopted_bytes = 0;
+    std::optional<std::uint32_t> restoring;  // its positions
+    std::vector<Range> restore_needed;       // region: the stage
+    std::vector<std::uint64_t> restored_bytes;
+  };
+
+  std::expected<Slot*, std::string> Find(std::uint32_t slot);
+  std::expected<const Slot*, std::string> Find(std::uint32_t slot) const;
+  std::vector<LiveState*> AllStates();
+  std::vector<LiveState*> StatesOf(Slot& slot);
+  // The execution closure and every extent of `slot`'s stages, protected
+  // while one stage grows beside another's fresh extents.
+  Status KeepFor(const Slot& slot, catalog::Closure& keep);
+  void Quarantine(Slot& slot);
+  void ResetSlot(Slot& slot);
+  std::unexpected<std::string> Refuse(std::string_view what) const;
+  bool Usable(const Slot& slot) const;
+  // No stage's verify awaits its Accept or owes a restore or commit.
+  bool Settled(const Slot& slot) const;
+  // CheckActive, or within a checkpoint restore (its copies in and its
+  // completion).
+  Status Ready(std::uint32_t slot, bool within_restore) const;
+
+  PagedNode& node_;
+  SlotLifecycleOptions options_;
+  int owner_;
+  std::uint32_t stream_;
+  RequestCohort cohort_;
+  std::vector<Slot> slots_;
+  std::vector<catalog::ExtentId> shared_;
+  std::vector<const PagedWeights*> weights_;
+  catalog::Closure everything_, fence_, execution_;
+  std::optional<std::uint64_t> places_clean_;
+  std::string kept_layout_id_;
+  bool setup_ = false, registered_ = false, bound_ = false, released_ = false;
+};
+
+}  // namespace llmp::engine
+
+#endif  // LLMP_ENGINE_SLOT_LIFECYCLE_H_

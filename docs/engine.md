@@ -22,8 +22,8 @@ in every profile and names no kernel library: the node, the weights'
 paging, live state (with its spill, checkpoints and a verify's snapshot),
 the runner's own memory (`runner_memory.h`), what plans hold
 (`plan_account.h`: the charge, the step a reclaim spares, the reclaimer's
-view of a cache), prefill lookahead, the request cohort and the n-gram
-rows. It reaches the device through the providers, the device runtime and
+view of a cache), prefill lookahead, the request cohort, the shared slot
+lifecycle (`slot_lifecycle.h`, below) and the n-gram rows. It reaches the device through the providers, the device runtime and
 the paging kernels (`kernels/paging/paging.h`), and links no device
 backend: a program links the CUDA one, or the fake device runtime
 (`providers/fake/fake_device_runtime.h`: host memory, work queued on fake
@@ -64,6 +64,7 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | Prefill lookahead | `prefill_lookahead.h` | `PrefillLookahead` and fixed-capacity `PrefillLookaheadGroup`: independent optional host allowances before CPU-only future plans, sequential builds during current device work, ordered installation after successful completion, exact cache-charge transfer and destruction before unused-grant release | Shape prediction, graph construction, binding/coverage/cache installation and capture policy |
 | Resources | `runner_memory.h`, `runner_resources.h` | The runner's own device memory (pinned) and pinned staging (`RunnerMemory`, the core's); for a GGML runner, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry (`RunnerResources`); and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
+| Slot lifecycle | `slot_lifecycle.h` (`model/state_contract.h`) | Request slots of one LiveState per stage (target, then each drafter) and every verb that moves their state, derived from the stages' state contracts, with the reconciled guards ([below](#the-shared-slot-lifecycle)); not yet used by the family runners | The stages' contracts, the shared extents, the spec's digest, its invalidation and plan-dropping hooks, and a write record before every job that writes a slot |
 
 Startup measurement can skip greedy activation placement when a checked
 disjoint root-storage bound fits the current exact maximum. Gemma2/3,
@@ -246,6 +247,74 @@ beside a drafter); `DraftVerifyWave` each slot's draft block and one joined
 verify, whose rows await each slot's `Accept`. A family whose graph builder can
 take per-slot segments gets waves this way at the cost of its stateful
 operations alone ([report](experiments/deepseek-batching/README.md)).
+
+## The shared slot lifecycle
+
+M3.6's replacement for the lifecycle each family wrote (D-107;
+[engine-components.md](engine-components.md#execution)), in the core and
+tested on the fake backend. The family runners do not use it yet: each
+family's migration moves to it with the rest of its runner.
+
+**State contracts** (`model/state_contract.h`). Each state tensor declares
+its kind, encoding (`format::Encoding`), cell bytes, cell rule (a cell per
+position; a window ring; a cell per block of positions, over the positions
+or over the cells a per-position tensor reads, with an optional dummy row;
+fixed cells; a chunk's rows), its read alignment and its rollback
+(truncate, snapshot or none), or that it reads the target's tensor
+(borrowed). `Layout` derives a stage's region; from it come the ranges a
+state of n positions reads (`UsedThrough`), a chunk's writes (flat, or by
+verify row with the scratch every rejection restores: `ChunkWrites`,
+`WritesFor`), the ranges later positions may overwrite
+(`CheckpointWrites`), its D-068 representations and `KeptLayoutId`
+(`llmp-state-v2:` and the SHA-256 of the spec's digest and every stage's
+layout). Contracts equivalent to today's reproduce Gemma2's and Gemma3's
+layouts, used state and chunk writes, Qwen3.8's (and its MTP region's)
+layout, used state and checkpoint writes, and DeepSeek V4's in both window
+modes byte for byte (`state_contract_test`). The IDs are new: kept state
+written under a runner's own ID does not match and is refused, not
+migrated.
+
+**Slots** (`SlotLifecycle`). A slot holds one LiveState per stage (target,
+then each drafter), each with its own spill file and SpillTrack; at its
+interface a range's `region` names the stage. The closures come from the
+request cohort over every stage's extents. While one stage grows beside
+another's fresh extents, the execution closure and the slot's own extents
+are protected together. A runner calls `RecordWrite` before posting any job
+that writes a slot (the first position, or a copy's ranges): an incremental
+spill writes back only what a record covers. A record, like `SetPositions`,
+is refused for a spilled or adopted slot (no job may write it), and
+`CheckActive` refuses a slot between a checkpoint restore's Prepare and
+Complete (only the restore's own copies and completion run then). While a
+verify in any stage awaits its Accept or owes a restore or commit, no
+stage's file is marked current (a stage's commit is the model's code and
+may write another stage's state), and `LiveState::Save` refuses a range
+outside its own state's regions.
+
+**The reconciliation.** Where the five LLM runners' copies differed, one
+behaviour was chosen:
+
+| Verb | What the families did | What `SlotLifecycle` does, and why |
+| --- | --- | --- |
+| SelectSlots | Gemma2 refused dropping an active slot with a pending restore; Gemma4 refused dropping a borrowed or verify-pending slot, active or not; Gemma3 checked neither; Qwen/DeepSeek checked slot counts. All kept an unchanged selection's closure inside an open request | Refuses dropping any slot with a pending restore, a borrow or a verify awaiting its Accept, active or not (each needs its state protected); slot-count checks and the unchanged-selection shortcut kept |
+| Clear | Gemma reset positions and the refusal only on success; Qwen also reset speculation; Qwen/DeepSeek always marked the spill file stale; Gemma4 guarded verify and borrow and invalidated features | The union: verify and borrow refused; peers protected while the slot's own lease is dropped; every stage zeroed for reuse, and a failed zeroing quarantines the whole slot (an earlier stage may already be zeroed); spill files always stale; positions, restore, adoption and refusal reset only once every stage cleared; the runner's derived data through the invalidation hook |
+| ClearIdle | Only DeepSeek reset the refusal unconditionally and refused an unprovisioned slot | DeepSeek's, with Gemma4's verify and borrow guards |
+| Spill | Gemma2/3 refused while restoring; Qwen/DeepSeek refused an unaccepted verify and spilled incrementally; Gemma wrote every extent | Refused while restoring, borrowed, unusable or awaiting an Accept; incremental for every stage through SpillTrack; a stage with nothing used counts as saved; owed restores stay owed, and a slot owing one in any stage is written whole by the next spill (what runs it, a step or a settle of its own, may record no write, and may write any stage) |
+| Restore | Only Gemma2 refused a disk restore during a checkpoint restore and refreshed the closures after a failed adopted load; Qwen/DeepSeek returned before checking the cohort's fault; Gemma passed the execution closure to an adopted load, Qwen/DeepSeek none | The fault checked first; a pending restore refused; adopted stages loaded beside the execution closure and the slot's other stages, closures refreshed after a refusal; a clean capacity refusal (the budget's, state usable) is retryable; only the adopted path marks its files current |
+| PrepareRestore / CompleteRestore / ValidateFootprint | Gemma only: layout and footprint checks, a pending restore with per-range progress, a clean capacity refusal separate from quarantine. Qwen/DeepSeek prepared without them and quarantined on any failure | Gemma's three steps for every family, refused while a verify owes a restore or commit (it would run over the checkpoint; the runtime settles first). Every stage grows to the footprint before any drops its newer tail, so a capacity refusal leaves the state, and what the runner derived from it, as it was. The pages a completion waits for are the checkpoint's (below) |
+| CheckpointRanges | Gemma copied every used byte; Qwen/DeepSeek copied the used pages later positions may write | Qwen/DeepSeek's (`CheckpointPages` over `CheckpointWrites`): earlier pages never change, so they stay in the live state or its spill file |
+| CopyState | Gemma2/3 enforced the direction against a pending restore and tracked progress; Gemma4 did neither; Qwen/DeepSeek quarantined on any failed copy; an unproven copy faulted the cohort except DeepSeek's single-slot runner | Gemma2's direction and progress; refused while a verify awaits its Accept (Gemma4's) or owes a restore or commit (out, the bytes are not the kept rows' state; in, a settle that follows would overwrite the pages copied); a failed copy to the device quarantines the slot (one to the host changed nothing); an unproven completion faults the cohort always; copies in are recorded as writes |
+| Adopt | Gemma checked the layout and footprint in the runner; Qwen/DeepSeek left the identity to serving and counted whole extents | Layout ID and footprint checked here, into an empty, idle, usable, unborrowed slot with no restore pending or kept zeroed backing; whole extents; files current once Restore read them |
+| CheckPlaces | The same pattern each time, over each family's drafter or assistant weights too | One pass over every stage's weights and every slot's stages |
+| ReserveStateThrough / EnsureState | Gemma2/3 refused while restoring, Gemma4 not; Qwen kept the refusal flag; DeepSeek checked usability, Qwen not; Qwen/DeepSeek quarantined on a failed refresh | Refused while restoring, borrowed or awaiting an Accept; the refusal always reset; every stage usable; a failed refresh quarantines the slot |
+| StateWrittenBack / kept_whole | Gemma: on disk if whole and usable, cleared by every write; Qwen/DeepSeek: SpillTrack, kept whole while on disk | SpillTrack, saved only if whole, usable, not mid-restore and no verify in any stage awaiting its Accept or owing a restore or commit; kept whole only with nothing recorded since (Gemma's) |
+| RecoverInPlace / SplitForSpill | Qwen/DeepSeek only (Gemma fell back to dropping plans) | Qwen/DeepSeek's: an untouched spilled slot is kept (every stage preserved, or the slot goes whole), and so is one holding nothing; every other slot the failure may have touched is discarded and reported, and so is one whose verify awaits its Accept or whose checkpoint restore is pending (the failure may have skipped them; kept outside the default selection, it would refuse every selection dropping it); a failed discard faults the cohort; every borrow is dropped. The caller proves the launch retired first |
+| Kept layout | Gemma's fixed strings checked in the runner; Qwen/DeepSeek's region strings checked by serving | `KeptLayoutId` from the spec and every stage's layout, checked here |
+
+Positions are Gemma's ledger (set after a completed step, by a completed
+restore or an adoption). A slot's verify-pending state is its stages' own
+(`LiveState::verify_rows`), and a borrow is counted until returned; a
+borrow is refused until a verify is accepted and what it owes has run
+(Gemma4's settled at its Accept).
 
 ## Adding a model family
 

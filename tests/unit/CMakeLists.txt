@@ -562,6 +562,13 @@ add_executable(model_test model_test.cc)
 target_link_libraries(model_test PRIVATE llmp_model)
 llmp_gtest(model_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# State contracts (model/state_contract.h): each family's state reproduced
+# byte for byte from contracts, a verify's saves, representations and the
+# kept layout's identity.
+add_executable(state_contract_test state_contract_test.cc)
+target_link_libraries(state_contract_test PRIVATE llmp_model)
+llmp_gtest(state_contract_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(shapes_test shapes_test.cc)
 target_link_libraries(shapes_test PRIVATE llmp_execution llmp_scheduler llmp_fake_providers)
 llmp_gtest(shapes_test TEST_PREFIX unit. PROPERTIES LABELS unit)
@@ -640,6 +647,13 @@ add_executable(live_state_fake_test live_state_test.cc)
 target_link_libraries(live_state_fake_test PRIVATE llmp_runtime llmp_engine_core
                                                    llmp_fake_device_backend)
 llmp_gtest(live_state_fake_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+# The shared slot lifecycle with a target and two drafters' state.
+add_executable(slot_lifecycle_test slot_lifecycle_test.cc)
+target_link_libraries(slot_lifecycle_test PRIVATE llmp_engine_core llmp_fake_device_backend
+                                                  llmp_platform)
+llmp_gtest(slot_lifecycle_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 add_executable(request_cohort_test request_cohort_test.cc)
