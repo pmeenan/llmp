@@ -5,17 +5,181 @@
 // the operations a model's step is built from, the fused kinds patterns
 // rewrite subgraphs into, and the parameters a node carries. Changing the
 // op set is a reviewed change, like an artifact schema: it bumps
-// kOpSetVersion.
+// kOpSetVersion once the version has been released.
 //
 // An operation's semantics are its op, its parameters and its operands'
 // formats; an implementation (execution/registry.h) declares which of
-// those it computes. Every fused kind has a primitive decomposition, so a
-// graph without its pattern is still correct (portability.md's
-// primitive-fallback rule). Parameter structs are trivially copyable and
-// fit a node's parameter bytes.
+// those it computes. Every fused kind and every composite op has a
+// primitive decomposition (ir/decompose.h), so a graph without its pattern
+// is still correct (portability.md's primitive-fallback rule). Parameter
+// structs are trivially copyable, fit a node's parameter bytes and have no
+// implicit padding (their reserved bytes stay zero), so a node's parameter
+// bytes are canonical (ir/graph.h's digest hashes them as they are).
 //
-// So far this header is the vocabulary only; the IR's tensors, graph,
-// builder and verifier come with the IR itself.
+// Shapes are GGML's order, ne[0] innermost: a row of ne[0] values, ne[1]
+// rows, ne[2] · ne[3] matrices. Unless an op says otherwise, a source may
+// be any readable format (a quantized operand is read through its
+// decoder), a result is F32 and may be recorded in another dense float
+// encoding (the value rounded once), and arithmetic is defined in exact
+// real arithmetic rounded to the result (kernels/reference/exec.h computes
+// in F32 values with wider sums). Where GGML has the op, its semantics are
+// GGML's at the locked pin (ggml.c's shape rules, ggml-cuda's kernels);
+// llmpalooza's own definitions cite their source. "b broadcasts over a"
+// means a.ne[d] % b.ne[d] == 0 and a's index i reads b's i % b.ne[d].
+//
+// Sources are listed in position order; '?' marks an optional one (an
+// absent TensorId at its position). Integer sources (ids, positions,
+// indices) are I32 unless stated; an index outside its table is an error.
+//
+// Structure (no arithmetic):
+//   kInput, kWeight, kState  a leaf: no sources; the tensor is bound from
+//       outside (an input or constant each step, a weight, a state tensor).
+//   kView     (a): a view of a's bytes with its own shape, byte strides and
+//       offset (the output's TensorDesc): GGML's ggml_view_*.
+//   kReshape  (a): a contiguous a, viewed with another shape of the same
+//       element count.
+//   kPermute  (a): PermuteParams: a view, source axis i at output axis axes[i]
+//       (ggml_permute).
+//   kCont     (a): a's values in logical order, contiguous, in a's
+//       encoding and with any shape of the same element count (ggml_cont_4d).
+//   kConcat   (a, b): ConcatParams: along dim, other dims equal, one encoding.
+//   kRepeat   (a): a tiled to the output's shape, a multiple of a's.
+//   kConvert  (a): a dense tensor into another dense encoding (a cast).
+//   kGetRows  (a [n, R, A2, A3], ids [N, A2, A3]): [n, N, A2, A3], row
+//       ids[i, j, k] of matrix (j, k) (ggml_get_rows); I32 when a is I32.
+// Products:
+//   kMatMul   (a [K, N, A2, A3], b [K, M, B2, B3]): [N, M, B2, B3],
+//       out[n, m] = Σ_k a[k, n] · b[k, m]; a broadcasts over b in dims 2 and
+//       3 (B2 % A2 == 0: b's matrix i reads a's i / (B2 / A2), ggml_mul_mat).
+//   kMatMulId (as [K, N, E], b [K, B1, T], ids [U, T]): [N, U, T], out[:, u,
+//       t] = as[ids[u, t]] · b[:, u % B1, t] (ggml_mul_mat_id).
+//   kPrepare  (a): a in the output's encoding, quantized row by row (the
+//       encoder's rounding): a product's input form.
+//   kExpertSort (ids [U, T]): ExpertSortParams: outputs I32 [U · T], the
+//       (token, slot) pairs t · U + u in expert order, token order within an
+//       expert; and I32 [E + 1], each expert's first position, then U · T.
+// Attention and masks:
+//   kAttention (q [D, Nq, H, B], k [D, Nk, Hk, B], v [Dv, Nk, Hk, B],
+//       mask? [Nk, >= Nq, M2, M3], sinks? [H]): AttnParams: [Dv, H, Nq, B]
+//       (ggml_flash_attn_ext): head h reads KV head h / (H / Hk); a score is
+//       q · k · scale, with softcap c: c · tanh(score / c); plus slope · mask
+//       (slope 1, or ALiBi's for max_bias); softmax over cells, a sink's
+//       exp(sink[h]) joining the denominator. A row that sees no cell and
+//       has no sink is zero (GGML's kernels divide 0 by 0 there: a port's
+//       comparison skips such rows or the port guards them).
+//   kMaskBuild (q_pos [R], cell_pos [C]): MaskParams: F16 or F32 [C, >= R],
+//       0 where a query sees a cell, else -inf. A cell holding position c >=
+//       0 is seen by a query at p when c <= p (kCausal), and p - c < window
+//       (kWindow), or c < (p / block + 1) · block (kBlock: its own block's
+//       later positions too). Rows past R and cells below 0 are -inf.
+//   kCacheStore (cache [n, C, A2, A3], src [n, R, A2, A3], idx [R, I1, I2],
+//       I32 or I64): the output is a view of cache with src's rows stored
+//       at rows idx[r, j % I1, k % I2] of matrix (j, k), in cache's encoding
+//       (ggml_set_rows).
+//   kIndexScore (q [D, H, T, S], k [D, 1, C, S], w [H, T, 1, S], mask? [C,
+//       T, 1, M3]): [C, T, 1, S] = Σ_h w[h, t] · max(q_h · k_c, 0) + mask
+//       (ggml_lightning_indexer, DeepSeek V4's lightning indexer).
+//   kPool     (x [C, R · N, A2, A3], scores? like x): PoolParams: [C, N, A2,
+//       A3], each run of R = ratio rows pooled: kMean their sum / R
+//       (Qwen3.8's QSA block keys, llmp.qsa.pool), kSoftmax their sum
+//       weighted by softmax(scores) over the run per channel (DeepSeek V4's
+//       CSA/HCA compressor, deepseek4.cpp's build_*_compressed_kv; a run of
+//       -inf scores pools to 0).
+// Norms and rotations (NormParams; over each row of ne[0] unless stated):
+//   kRmsNorm   x / sqrt(mean(x²) + eps).
+//   kL2Norm    x / max(sqrt(Σ x²), eps).
+//   kLayerNorm (x - mean) / sqrt(mean((x - mean)²) + eps).
+//   kChannelNorm x / max(sqrt(Σ x²), eps) over ne[1] for each (i0, i2, i3):
+//       a pixel's channels (F.normalize; Qwen-Image's VAE).
+//   kRope (x [D, H, T, B], pos, freq? [>= dims / 2]): RopeParams: x's shape
+//       (ggml_rope_ext, _multi and _ext_back, with ggml_rope_set_offset):
+//       channels [offset, offset + dims) rotate, the others pass through.
+//       offset is even; freq has one factor a pair (dims for kVision).
+//       Angles here are exact; GGML forms pos · powf(theta_scale, i) in
+//       F32, whose rounding grows with the position (open: whether v1
+//       defines the F32 angle, or long-context comparisons widen).
+//       pos is I32 [T] (kMulti, kInterleavedMulti: [4 · T], a section's
+//       positions after another's), or with `table` F32 [2, dims / 2, T]
+//       (cos, sin per pair: a precomputed rotation).
+// Elementwise (b broadcasts over a; the result has a's shape):
+//   kAdd, kSub, kMul, kDiv (a, b).
+//   kScale (x): ScaleParams: x · scale + bias.
+//   kUnary (x): UnaryParams.       kClamp (x): ClampParams (NaN stays NaN;
+//       GGML's fminf/fmaxf give a bound, as kSwiGluClamp's do).
+//   kFill  (): FillParams: the output's shape, every value one value.
+//   kGlu   (gate, up?): GluParams: act(gate) · up; with no up, gate's rows
+//       hold gate then up as halves (up first when swapped). kSwiGluClamp:
+//       silu(min(gate, limit)) · clamp(up, -limit, limit) (ggml_swiglu_clamp).
+//   kSoftcap (x): SoftcapParams: cap · tanh(x / cap).
+// Reductions and selection (over each row; ties to the lower index; NaN
+// below every number):
+//   kSumRows  (x): [1, n1, n2, n3].
+//   kSoftMax  (x, mask?, sinks? [n2]): SoftMaxParams: softmax(x · scale +
+//       slope · mask) (ggml_soft_max_ext), mask broadcasting over x's
+//       matrices and reading its first n1 rows; a row of -inf is zero
+//       (GGML's soft_max gives NaN, as attention's).
+//   kArgmax   (x [n, R]): ArgmaxParams: I32 [R], the highest value's
+//       index. kIgnore: NaN ignored, a row of NaN gives 0 (llmp.argmax's
+//       native flavor, draft and verify heads); kFirstColumn: std::
+//       max_element's, a NaN in column 0 gives 0 and a later NaN never
+//       replaces a number (the host-greedy flavor every greedy head uses).
+//   kArgsort  (x): ArgsortParams: I32 of x's shape, a stable sort's order.
+//   kTopK     (x): TopKParams: I32 [k, n1, n2, n3], the k highest, highest
+//       first. GGML's top_k returns them in no particular order and its
+//       argsort is not stable: compare a port's selection by the multiset of
+//       selected values (ties at the k-th value, ReLU's zeros, padded -inf
+//       cells, a QSA block's shared score, pick either index).
+// Routing:
+//   kRoute (logits [E, T], bias? [E], table? [U, V], tokens? [T]):
+//       RouteParams: outputs ids I32 [U, T] and weights F32 [U, T].
+//       Probabilities p: softmax (kSoftmaxTopK), sigmoid (kSigmoidTopK),
+//       sqrt(softplus) (kSqrtSoftplusBias, kHash). The U highest p + bias
+//       (bias optional for kSigmoidTopK, required for kSqrtSoftplusBias),
+//       highest first; kHash's ids are table[:, tokens[t]]. Weights are
+//       p[ids], with normalize divided by max(Σ, 2^-14) (llama.cpp's
+//       build_moe_ffn), then times scale.
+//   kExpertReduce (x [n, U, T], w [U, T], ids? [U, T], scale? [E]): [n, T] =
+//       Σ_u (x[:, u, t] · scale[ids[u, t]]) · w[u, t], in slot order.
+// Recurrences and convolutions:
+//   kSsmConv (sx [K - 1 + T, C, S], c [K, C]): [C, T, S], out[ch, t, s] =
+//       Σ_j sx[t + j, ch, s] · c[j, ch] (ggml_ssm_conv).
+//   kGatedDeltaNet (q [Sk, Hk, T, Bq], k like q, v [Sv, H, T, B], g [1 or
+//       Sk, H, T, B], beta [1, H, T, B], state [Sk, Sv, H, B]): outputs the
+//       attention [Sv, H, T, B] and the final state [Sk, Sv, H, B]
+//       (ggml_gated_delta_net with one snapshot, gated_delta_net.cu). Head
+//       h reads q and k head h % Hk of sequence b / (B / Bq). Per token,
+//       with S[i][c] = state[i, c, h, b] and d = exp(g) (one value, or one
+//       per i): S ← d ⊙ S, then S[i][c] += k[i] · beta · (v[c] - Σ_i S[i][c]
+//       · k[i]), and the attention is Σ_i S[i][c] · q[i] / sqrt(Sk).
+//   kConv2d (kernel [KW, KH, IC, OC], x [W, H, IC, N], bias? [OC]):
+//       Conv2dParams: [W', H', OC, N] (ggml_conv_2d_direct, plus the bias).
+//   kUpsample (x [W, H, C, N]): UpsampleParams: nearest, [f · W, f · H, C, N].
+// Hyper-connections (HcParams; hc = streams):
+//   kHcPre (x [W, hc, T], w): [W, T]. kWeights: w [hc, T], Σ_h x[:, h] · w[h]
+//       (ggml_dsv4_hc_pre; scale stays 1); kGated: w [W, hc, T], scale ·
+//       Σ_h x[:, h] · sigmoid(w[:, h]) (ggml_dsv4_hc_pre_gated; Qwen3.8's
+//       fold, whose x is kHcNorm's output as [W, hc, T] and scale 1 / hc).
+//   kHcPost (y [W, T], x [W, hc, T], post [hc, T], comb? [hc, hc, T]): [W,
+//       hc, T], out[:, d] = y · post[d] + Σ_s x[:, s] · comb[d, s]
+//       (ggml_dsv4_hc_post); without comb, + x[:, d] (Qwen3.8's combine).
+//   kHcMix (mixes [(2 + hc) · hc, T], scale [>= 3], base [(2 + hc) · hc]):
+//       kSinkhorn: [hc, hc, T], mixes' last hc² (times scale[2], plus base)
+//       softmaxed over destinations, plus eps, then normalized over sources
+//       and destinations alternately, iterations times
+//       (ggml_dsv4_hc_comb); kSigmoid: [hc, 2, T], pre = sigmoid(m · scale[0]
+//       + base) + eps and post = 2 · sigmoid(m · scale[1] + base) of the
+//       first and second hc (deepseek4.cpp's build_hc_pre).
+// Sampling and collectives:
+//   kSample (logits [V, R], keys? I64 [3, R]): SampleParams: I32 [R],
+//       execution/sampling.h's Greedy, or Sample keyed by (seed, stream,
+//       position) per row.
+//   kAllReduce (x): the sum over the device group, in member order.
+//   kAllGather (x): the members' x concatenated along dim, in member order.
+//   kAllToAll (x): x split along dim into one part per member; member r
+//       gets part r of every member, concatenated in member order.
+//   kSend (x): no output; x to peer.  kRecv (): the output from peer.
+// Fused kinds: kFused with FusedKind, sources and parameters per kind
+// (ir/decompose.h lists each one's decomposition, which is its meaning).
 
 #ifndef LLMP_IR_OP_H_
 #define LLMP_IR_OP_H_
@@ -103,29 +267,58 @@ enum class Op : std::uint16_t {
   kFused,
 };
 
+// Each fused kind's sources (in order), outputs and parameters; its
+// decomposition (ir/decompose.h) is its meaning.
 enum class FusedKind : std::uint16_t {
   kNone,
-  kRmsNormMul,         // RMS norm, then a weight
-  kRmsNormMulRope,     // ... then a rotation
-  kRmsNormMulAdd,      // ... then a residual add
-  kRopeStore,          // a rotation, then its rows stored
-  kMatMulGlu,          // gate and up products of one input, then a GLU
-  kMatMulAdd,          // a product plus a bias or residual of its shape
-  kOwnerAttention,     // attention with its masks and stores, per owner
-  kGroupedStores,      // several cache stores as one
-  kRouteReduce,        // routing with its experts' reduction
-  kMoeGlu,             // the experts' scales, then a GLU
-  kMoeCombine,         // the experts' weighted sum plus a gated shared expert
-  kHcNorm,             // each stream's rows RMS-normed, times a weight
-  kHcNormPost,         // a stream norm with the spread that follows it
-  kQkPrep,             // per-head norm and rotation of queries and keys
-  kPreparedProducts,   // several products sharing one prepared input
-  kNormGate,           // RMS norm, a weight and a sigmoid gate
-  kLayerNormModulate,  // a layer norm scaled by a modulation row
-  kGatedResidual,      // x + tanh(gate) · y
-  kGatedResidualNorm,  // the gated residual, then the next modulated norm
-  kEulerStep,          // the flow-matching scheduler's step
-  kDupUpAdd,           // a shortcut's channels spread over 2x2 pixels, added
+  kRmsNormMul,      // (x, w): NormParams: rms_norm(x) · w
+  kRmsNormMulRope,  // (x, w, pos, freq?): NormRopeParams: ... then rope
+  kRmsNormMulAdd,   // (x, w, r): NormParams: rms_norm(x) · w + r
+  // (x [D, H, T], pos, cache [D · H, C], idx [T], freq?): RopeParams: the
+  // rotated rows stored; the output is a view of cache.
+  kRopeStore,
+  kMatMulGlu,  // (x, w_gate, w_up): GluParams: glu(w_gate · x, w_up · x)
+  kMatMulAdd,  // (w, x, b): w · x + b
+  // (q [D, owners · R, H, 1], mask [C, >= owners · R], k0, ..., v0, ...):
+  // OwnerAttnParams: joined requests' rows, each owner's R rows attending to
+  // its own cache: owner o's queries and mask rows from o · R, its mask's
+  // first k_o.ne[1] cells; the outputs concatenated along rows.
+  kOwnerAttention,
+  // (cache, src, idx) for each of two or three stores: an output per store,
+  // a view of its cache.
+  kGroupedStores,
+  // (gate [n, U, T], up [n, U, T], ids [U, T], s_gate [E], s_up [E]):
+  // GluParams: glu(gate · s_gate[ids], up · s_up[ids]).
+  kMoeGlu,
+  // (down [n, U, T], ids, weights [U, T], shared [n, T], shared_gate [1, T],
+  // s_down? [E]): expert_reduce(down, weights, ids, s_down) + shared ·
+  // sigmoid(shared_gate).
+  kMoeCombine,
+  // (x [W, hc, T], w [W · hc]): NormParams: each stream's rms_norm (over W,
+  // Qwen3.8's llmp.hc.norm), then as [W · hc, T], · w. DeepSeek V4's flat
+  // norm over all W · hc is kHcNormPost's second output, or rms_norm of the
+  // reshape.
+  kHcNorm,
+  // (y, x, post, comb?): HcNormPostParams: two outputs, hc_post's p and
+  // rms_norm(p as [W · hc, T]).
+  kHcNormPost,
+  // (q, wq, k, wk, pos, freq?): NormRopeParams: two outputs, each
+  // rope(rms_norm(·) · w).
+  kQkPrep,
+  // (x, w0, w1, ...): an output per product wi · x, up to four.
+  kPreparedProducts,
+  kNormGate,           // (x, w, z): NormParams: rms_norm(x) · w · sigmoid(z)
+  kLayerNormModulate,  // (x, s): NormParams: layer_norm(x) · (1 + s)
+  kGatedResidual,      // (x, gate, y): x + tanh(gate) · y
+  // (x, gate, y, s): NormParams: two outputs, x' = x + tanh(gate) · y and
+  // layer_norm(x') · (1 + s).
+  kGatedResidualNorm,
+  kEulerStep,  // (sample, noise, dt [1]): sample + dt · noise
+  // (x [2W, 2H, Co], shortcut [W, H, Ci]): DupUpParams: x plus Qwen-Image's
+  // DupUp3D of the shortcut at its last kept frame (kernels/image/ops.h
+  // AddDupUp): output channel o's sub-pixel (b, d) reads input channel
+  // (((o · ft + ft - 1) · 2 + b) · 2 + d) / (Co · ft · 4 / Ci).
+  kDupUpAdd,
 };
 
 struct OpKey {
@@ -150,11 +343,22 @@ struct NormParams {
   float eps = 0.0f;
 };
 
-enum class RopeMode : std::uint8_t { kNormal, kNeox, kMulti, kVision };
-// GGML's rope_ext's parameters.
+enum class RopeMode : std::uint8_t {
+  kNormal,            // pairs (2i, 2i + 1)
+  kNeox,              // pairs (i, i + dims / 2)
+  kMulti,             // GGML's MROPE: NEOX pairs, sections' positions in turn
+  kVision,            // GGML's VISION: pairs (i, i + dims), two sections
+  kInterleavedMulti,  // GGML's IMROPE: NEOX pairs, sections interleaved
+};
+// GGML's rope_ext's parameters, its offset (ggml_rope_set_offset) and its
+// inverse (ggml_rope_ext_back).
 struct RopeParams {
   RopeMode mode = RopeMode::kNormal;
-  std::uint32_t dims = 0;  // rotated values a head
+  bool inverse = false;  // rotate by -theta
+  bool table = false;    // pos is an F32 cos/sin table, not positions
+  std::uint8_t reserved = 0;
+  std::uint32_t dims = 0;    // rotated values a head
+  std::uint32_t offset = 0;  // the first rotated value (GGML's n_offs)
   std::uint32_t original_context = 0;
   float base = 10000.0f;
   float scale = 1.0f;
@@ -162,33 +366,40 @@ struct RopeParams {
   float attn_factor = 1.0f;
   float beta_fast = 32.0f;
   float beta_slow = 1.0f;
-  std::array<std::uint32_t, 4> sections{};  // kMulti's
+  std::array<std::uint32_t, 4> sections{};  // the multi-section modes'
 };
 
 enum class MaskKind : std::uint8_t { kCausal, kWindow, kBlock };
 struct MaskParams {
   MaskKind kind = MaskKind::kCausal;
+  std::array<std::uint8_t, 3> reserved{};
   std::uint32_t window = 0;  // kWindow: positions seen
   std::uint32_t block = 0;   // kBlock: positions a block
 };
 
 struct AttnParams {
   float scale = 1.0f;
-  float softcap = 0.0f;      // 0: none
-  float max_bias = 0.0f;     // ALiBi's; 0: none
-  std::uint32_t window = 0;  // 0: the whole cache
-  bool sinks = false;        // a learned sink per head
+  float softcap = 0.0f;   // 0: none
+  float max_bias = 0.0f;  // ALiBi's; 0: none
+  // The cells a row may see, which its mask already enforces (so a mask is
+  // required); an implementation may skip the cells the mask hides. 0:
+  // the whole cache.
+  std::uint32_t window = 0;
+  bool sinks = false;  // a learned sink per head (source 4)
+  std::array<std::uint8_t, 3> reserved{};
 };
 
 enum class UnaryFn : std::uint8_t {
   kSilu,
-  kGelu,
-  kGeluTanh,
+  // GGML's GELU is the tanh form; the erf form is its GELU_ERF. Named by
+  // form so a GGML name never maps to the other one.
+  kGeluErf,   // x · Φ(x) (GGML's GELU_ERF)
+  kGeluTanh,  // the tanh approximation (GGML's GELU, Gemma's, Qwen-Image's)
   kSigmoid,
   kTanh,
   kRelu,
   kExp,
-  kSoftplus,
+  kSoftplus,  // log(1 + exp(x))
   kSqrt,
   kSqr,
   kNeg,
@@ -199,11 +410,14 @@ struct UnaryParams {
   UnaryFn fn = UnaryFn::kSilu;
 };
 
-enum class GluKind : std::uint8_t { kSwiGlu, kGeGlu, kGeGluTanh, kSwiGluClamp };
+// kGeGluErf is GGML's GEGLU_ERF; kGeGluTanh is GGML's GEGLU (ggml_geglu_split,
+// every Gemma FFN) and execution::Operation::kGeGlu.
+enum class GluKind : std::uint8_t { kSwiGlu, kGeGluErf, kGeGluTanh, kSwiGluClamp };
 struct GluParams {
   GluKind kind = GluKind::kSwiGlu;
-  bool swapped = false;  // up, then gate
-  float limit = 0.0f;    // kSwiGluClamp's
+  bool swapped = false;  // a single source's halves: up, then gate
+  std::array<std::uint8_t, 2> reserved{};
+  float limit = 0.0f;  // kSwiGluClamp's
 };
 
 struct ScaleParams {
@@ -229,6 +443,11 @@ struct SoftMaxParams {
   float max_bias = 0.0f;
 };
 
+enum class ArgmaxNan : std::uint8_t { kIgnore, kFirstColumn };
+struct ArgmaxParams {
+  ArgmaxNan nan = ArgmaxNan::kIgnore;
+};
+
 struct ArgsortParams {
   bool descending = false;
 };
@@ -237,21 +456,30 @@ struct TopKParams {
   std::uint32_t k = 0;
 };
 
+struct ExpertSortParams {
+  std::uint32_t experts = 0;
+};
+
 enum class RouteKind : std::uint8_t { kSoftmaxTopK, kSigmoidTopK, kSqrtSoftplusBias, kHash };
 struct RouteParams {
   RouteKind kind = RouteKind::kSoftmaxTopK;
+  bool normalize = false;  // the selected weights scaled to sum to 1
+  std::array<std::uint8_t, 2> reserved{};
   std::uint32_t experts = 0;
   std::uint32_t used = 0;
-  bool normalize = false;  // the selected weights scaled to sum to 1
-  float scale = 1.0f;      // then multiplied by this
+  float scale = 1.0f;  // then multiplied by this
 };
 
 enum class HcMixKind : std::uint8_t { kSigmoid, kSinkhorn };
+enum class HcFold : std::uint8_t { kWeights, kGated };
 struct HcParams {
-  HcMixKind mix = HcMixKind::kSigmoid;
+  HcMixKind mix = HcMixKind::kSigmoid;  // kHcMix's
+  HcFold fold = HcFold::kWeights;       // kHcPre's
+  std::array<std::uint8_t, 2> reserved{};
   std::uint32_t streams = 0;
   std::uint32_t iterations = 0;  // kSinkhorn's
-  float eps = 0.0f;
+  float eps = 0.0f;              // kHcMix's
+  float scale = 1.0f;            // kHcPre kGated's
 };
 
 struct ConcatParams {
@@ -272,13 +500,17 @@ struct UpsampleParams {
   std::uint32_t factor = 2;
 };
 
+enum class PoolKind : std::uint8_t { kMean, kSoftmax };
 struct PoolParams {
   std::uint32_t ratio = 1;  // cache rows pooled into one
+  PoolKind kind = PoolKind::kMean;
+  std::array<std::uint8_t, 3> reserved{};
 };
 
 enum class SampleKind : std::uint8_t { kGreedy, kSeeded };
 struct SampleParams {
   SampleKind kind = SampleKind::kGreedy;
+  std::array<std::uint8_t, 3> reserved{};
   float temperature = 1.0f;
   std::uint32_t top_k = 0;
   float top_p = 1.0f;
@@ -288,6 +520,28 @@ struct SampleParams {
 struct CollectiveParams {
   std::uint32_t group = 0;  // the partition's device group
   std::uint32_t peer = 0;   // kSend's and kRecv's
+  std::uint8_t dim = 0;     // kAllGather's and kAllToAll's
+  std::array<std::uint8_t, 3> reserved{};
+};
+
+// The fused kinds' own parameters.
+struct NormRopeParams {
+  float eps = 0.0f;
+  RopeParams rope{};
+};
+
+struct OwnerAttnParams {
+  AttnParams attn{};
+  std::uint32_t owners = 0;
+};
+
+struct HcNormPostParams {
+  float eps = 0.0f;
+  std::uint32_t streams = 0;
+};
+
+struct DupUpParams {
+  std::uint32_t factor_t = 1;
 };
 
 template <typename P>
@@ -296,11 +550,26 @@ inline constexpr bool kIsParams = std::is_trivially_copyable_v<P> && sizeof(P) <
 static_assert(kIsParams<NormParams> && kIsParams<RopeParams> && kIsParams<MaskParams> &&
               kIsParams<AttnParams> && kIsParams<UnaryParams> && kIsParams<GluParams> &&
               kIsParams<ScaleParams> && kIsParams<ClampParams> && kIsParams<FillParams> &&
-              kIsParams<SoftcapParams> && kIsParams<SoftMaxParams> && kIsParams<ArgsortParams> &&
-              kIsParams<TopKParams> && kIsParams<RouteParams> && kIsParams<HcParams> &&
-              kIsParams<ConcatParams> && kIsParams<PermuteParams> && kIsParams<Conv2dParams> &&
-              kIsParams<UpsampleParams> && kIsParams<PoolParams> && kIsParams<SampleParams> &&
-              kIsParams<CollectiveParams>);
+              kIsParams<SoftcapParams> && kIsParams<SoftMaxParams> && kIsParams<ArgmaxParams> &&
+              kIsParams<ArgsortParams> && kIsParams<TopKParams> && kIsParams<ExpertSortParams> &&
+              kIsParams<RouteParams> && kIsParams<HcParams> && kIsParams<ConcatParams> &&
+              kIsParams<PermuteParams> && kIsParams<Conv2dParams> && kIsParams<UpsampleParams> &&
+              kIsParams<PoolParams> && kIsParams<SampleParams> && kIsParams<CollectiveParams> &&
+              kIsParams<NormRopeParams> && kIsParams<OwnerAttnParams> &&
+              kIsParams<HcNormPostParams> && kIsParams<DupUpParams>);
+
+// No implicit padding: each struct's size is the sum of its fields'.
+static_assert(sizeof(RopeParams) == 4 + (3 * 4) + (6 * 4) + 16);
+static_assert(sizeof(MaskParams) == 4 + 4 + 4);
+static_assert(sizeof(AttnParams) == (4 * 4) + 4);
+static_assert(sizeof(GluParams) == 4 + 4);
+static_assert(sizeof(RouteParams) == 4 + (3 * 4));
+static_assert(sizeof(HcParams) == 4 + (4 * 4));
+static_assert(sizeof(PoolParams) == 4 + 4);
+static_assert(sizeof(SampleParams) == 4 + (4 * 4));
+static_assert(sizeof(CollectiveParams) == (2 * 4) + 4);
+static_assert(sizeof(NormRopeParams) == 4 + sizeof(RopeParams));
+static_assert(sizeof(OwnerAttnParams) == sizeof(AttnParams) + 4);
 
 }  // namespace llmp::ir
 

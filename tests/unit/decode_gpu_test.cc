@@ -427,7 +427,7 @@ TEST_F(DecodeGpuTest, ProductsAreRowInvariant) {
 double GluOf(ir::GluKind kind, double g, double u, double limit) {
   const auto silu = [](double v) { return v / (1.0 + std::exp(-v)); };
   switch (kind) {
-    case ir::GluKind::kGeGlu:
+    case ir::GluKind::kGeGluErf:
       return 0.5 * g * (1.0 + std::erf(g / std::sqrt(2.0))) * u;
     case ir::GluKind::kGeGluTanh:
       return 0.5 * g *
@@ -487,7 +487,7 @@ TEST_F(DecodeGpuTest, GluOfEveryDecoderAndMixedPairs) {
     const std::uint64_t outputs = c.gate == c.up ? kN / 2 : 100;
     std::vector<ir::GluParams> glus = {{.kind = ir::GluKind::kSwiGlu}};
     if (c.gate == DecoderId::kNvfp4Atoms) {
-      glus.push_back({.kind = ir::GluKind::kGeGlu});
+      glus.push_back({.kind = ir::GluKind::kGeGluErf});
       glus.push_back({.kind = ir::GluKind::kGeGluTanh});
       glus.push_back({.kind = ir::GluKind::kSwiGluClamp, .limit = 7.0f});
     }

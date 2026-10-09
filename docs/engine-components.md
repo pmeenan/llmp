@@ -136,6 +136,24 @@ Which GGML pieces to adopt as the IR's starting point, and which ideas to
 take from MLX, vLLM/FlashInfer, SGLang, ExLlamaV3 and TensorRT-LLM, is
 [surveyed below](#survey-of-other-engines).
 
+**As built** (`src/ir`, `kernels/reference/exec.h`). Op set v1's
+semantics are written in `ir/op.h`: GGML's at the pin wherever GGML has
+the op (shapes, broadcasting, `nb` strides and views), and the cited model
+definitions for the composites. A node has up to ten sources and four
+outputs (routing's ids and weights, the gated delta rule's attention and
+state, grouped stores); a store's output is a view of its cache, and node
+order is execution order. Shape rules are one function the builder makes
+outputs from and the verifier checks recorded outputs against; the
+verifier also holds GGML's int32 extents and strides (RE-037). The digest
+names leaves by what they bind and excludes names, so declaration order and
+names do not change a plan key; node order does. Every fused kind and
+composite op has a primitive decomposition (`ir/decompose.h`, `Expand`),
+and the reference executor runs every op over host buffers in their
+formats, fused kinds through their decompositions, collectives over
+simulated devices. Where GGML's kernels differ from the definition (a
+fully masked row is 0, not NaN; top-k and argsort order among ties; RoPE
+angles in F32), `op.h` says so, and a port's comparison allows for it.
+
 ## Components
 
 A component is everything one building block needs, declared once:

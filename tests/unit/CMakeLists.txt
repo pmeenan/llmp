@@ -542,6 +542,18 @@ add_executable(decode_test decode_test.cc)
 target_link_libraries(decode_test PRIVATE llmp_format)
 llmp_gtest(decode_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The graph IR (D-107): the builder's shape rules, the verifier, the
+# canonical digest and the decompositions' structure.
+add_executable(ir_test ir_test.cc)
+target_link_libraries(ir_test PRIVATE llmp_ir)
+llmp_gtest(ir_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# The reference executor of op set v1 against hand values and independent
+# formulas, composite ops against their decompositions, simulated devices.
+add_executable(reference_exec_test reference_exec_test.cc)
+target_link_libraries(reference_exec_test PRIVATE llmp_reference_kernels llmp_ir llmp_sampling)
+llmp_gtest(reference_exec_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # D-068's shape contracts: state representations and composed contexts
 # (model_test), and request programs planned from them and driven through
 # admission, the ledgers and the catalog over the fake device-memory

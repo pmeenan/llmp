@@ -146,8 +146,6 @@ std::string_view FusedKindName(FusedKind kind) {
       return "owner_attention";
     case FusedKind::kGroupedStores:
       return "grouped_stores";
-    case FusedKind::kRouteReduce:
-      return "route_reduce";
     case FusedKind::kMoeGlu:
       return "moe_glu";
     case FusedKind::kMoeCombine:

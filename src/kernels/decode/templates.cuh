@@ -72,7 +72,7 @@ __device__ __forceinline__ float WarpSum(float v) {
 
 __device__ __forceinline__ float Silu(float g) { return g / (1.0f + expf(-g)); }
 
-// ir::GluKind: kSwiGlu 0, kGeGlu 1, kGeGluTanh 2, kSwiGluClamp 3.
+// ir::GluKind: kSwiGlu 0, kGeGluErf 1, kGeGluTanh 2, kSwiGluClamp 3.
 __device__ __forceinline__ float Glu(std::uint8_t kind, float g, float u, float limit) {
   switch (kind) {
     case 1:

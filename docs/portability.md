@@ -266,7 +266,10 @@ now on: an unfused composition for the model-specific operations
 (hyper-connection mixing and Sinkhorn, the lightning indexer, the gated
 delta net and its convolution, argmax, NVFP4 rows) expressed in GGML
 primitives, even slow, so a backend with GGML's primitives runs every
-model; a dense fallback for the Hadamard product; a builder switch that
+model; a dense fallback for the Hadamard product (the graph IR now carries
+the hyper-connection, indexer, gated-delta-rule and convolution
+compositions as primitive decompositions, `ir/decompose.h`, which the GGML
+lowering can emit); a builder switch that
 reaches the unfused Qwen3.8 graph from the served artifact (or an
 artifact-independent expert layout); and for the image family a
 primitive plan over GGML's operations or an equivalent set, with the
