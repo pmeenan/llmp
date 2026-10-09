@@ -21,6 +21,14 @@
 // operation that does not bind: an implementation this build lacks is
 // unsupported (BP-S4), one whose identity has changed is stale (BP-S2),
 // and neither is ever replaced by another implementation of the operation.
+//
+// An implementation may also declare its capability (D-108): the IR
+// operation it computes, the operand encodings and layouts, devices and
+// shapes it takes, and its rung on the format ladder. Candidates() lists
+// those that compute a node, measured speed first and the ladder's order
+// after, for a planner to choose from; the plan still names the one chosen. Operation stays as
+// the per-family runners' vocabulary until the last of them is deleted,
+// each an alias of its IR key (OpKeyOf).
 
 #ifndef LLMP_EXECUTION_REGISTRY_H_
 #define LLMP_EXECUTION_REGISTRY_H_
@@ -36,6 +44,9 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "format/encoding.h"
+#include "format/layout.h"
+#include "ir/op.h"
 
 namespace llmp::execution {
 
@@ -111,6 +122,127 @@ enum class Operation : std::uint8_t {
 
 std::string_view OperationName(Operation operation);
 
+// The operation's key in the IR's op set (ir/op.h). The operations stay
+// while the per-family runners do, each an alias of its key; several may
+// share one, their variants told apart by the node's parameters.
+ir::OpKey OpKeyOf(Operation operation);
+
+// ---------------------------------------------------------------- capabilities
+
+// What an implementation computes, for selection (D-053, D-108): its
+// operation, the operand encodings and layouts it takes, the devices and
+// shapes it runs on, and where it sits on the format ladder. A planner
+// asks Candidates() for the implementations that compute a node, measured
+// first, then in the ladder's order; a plan still names exactly one.
+//
+// The ladder's runtime rungs; rungs 3 and 4 (a lossless relayout, an
+// opt-in lossy transcode) are import's, and give a tensor another format
+// rather than an implementation another rung.
+enum class Rung : std::uint8_t {
+  kNative = 1,        // a kernel for the encoding on this device
+  kOnChipDecode = 2,  // decode in registers and shared memory to a supported matrix path
+  kBf16Decode = 5,    // decode on chip to BF16, slower
+  kPrimitive = 6,     // the fused kind's primitive decomposition
+};
+
+// Whether an implementation expands a weight into device memory while it
+// runs (D-052's bounded reconstruction into funded workspace, GGML's cuBLAS
+// path). Never for a decode-shaped product (D-108).
+enum class Expansion : std::uint8_t { kNone, kTransientWorkspace };
+
+// The formats one operand may have (an empty list: any).
+struct OperandRule {
+  std::uint8_t operand = 0;  // its position among the node's sources
+  std::span<const format::Encoding> encodings{};
+  std::span<const format::Layout> layouts{};
+};
+
+// Device facts an implementation needs, as the device's provider reports
+// them.
+enum DeviceFeature : std::uint32_t {
+  kBf16Mma = 1U << 0U,
+  kInt8Mma = 1U << 1U,
+  kFp8Mma = 1U << 2U,
+  kFp4Mma = 1U << 3U,
+  kBlockScaledMma = 1U << 4U,
+};
+
+// The device architectures (the provider's number: CUDA's major · 10 +
+// minor) and features an implementation runs on.
+struct DeviceRange {
+  std::uint32_t min_arch = 0;
+  std::uint32_t max_arch = 0xFFFFFFFFU;
+  std::uint32_t needs = 0;  // DeviceFeature bits, all required
+};
+
+// The product shapes it takes: rows (tokens) in range, K and N multiples.
+struct ShapeRule {
+  std::uint64_t min_rows = 1;
+  std::uint64_t max_rows = ~std::uint64_t{0};
+  std::uint64_t k_multiple = 1;
+  std::uint64_t n_multiple = 1;
+};
+
+struct CapabilityQuery;
+
+// Its text and lists point into the declaring module's static tables.
+struct Capability {
+  ir::OpKey op{};
+  std::span<const OperandRule> operands{};
+  DeviceRange device{};
+  ShapeRule shape{};
+  Rung rung = Rung::kNative;
+  Expansion expansion = Expansion::kNone;
+  // Its results differ from the encoding's definition beyond the
+  // operation's accepted arithmetic (an opt-in quality trade, per alias).
+  bool lossy = false;
+  bool row_invariant = false;  // usable in D-092 verify plans
+  bool capturable = true;      // recordable for replay
+  // The implementation group its module resolves inside, such as
+  // "ggml.mul_mat" (upstream's routing); empty when it stands alone.
+  std::string_view group{};
+  std::uint16_t priority = 0;  // higher first, until a measured rank decides
+  // An exact host predicate beyond the rules above (upstream's routing and
+  // the like); the variant names what it checks.
+  bool (*accepts)(const CapabilityQuery&) = nullptr;
+};
+
+// One operand's format, as a node has it.
+struct OperandFormat {
+  std::uint8_t operand = 0;
+  format::Encoding encoding = format::Encoding::kF32;
+  format::Layout layout = format::Layout::kDense;
+};
+
+struct SelectionPolicy {
+  // Products of at most this many rows are decode-shaped: never a
+  // transient expansion (D-108).
+  std::uint64_t max_decode_rows = 16;
+  // Lossy implementations are candidates only by the alias's opt-in.
+  bool allow_lossy = false;
+};
+
+// A measured order among implementations (lower first), where one exists;
+// it ranks across rungs, and what it ranks precedes what it does not.
+struct MeasuredRank {
+  std::string_view implementation{};
+  std::uint32_t rank = 0;
+};
+
+struct CapabilityQuery {
+  ir::OpKey op{};
+  std::span<const OperandFormat> operands{};
+  std::uint64_t rows = 1;  // a product's rows (tokens)
+  std::uint64_t k = 0;     // 0: not a product
+  std::uint64_t n = 0;
+  std::uint32_t arch = 0;
+  std::uint32_t features = 0;  // DeviceFeature bits
+  bool row_invariant = false;  // required
+  bool capturable = false;     // required
+  SelectionPolicy policy{};
+  std::span<const MeasuredRank> measured{};
+};
+
 // One compiled implementation of an operation, as its module declares it.
 // Its identity is every field (D-053: source, revision, build flags,
 // variant, launch configuration and tuning data).
@@ -127,6 +259,9 @@ struct Implementation {
   std::string build;
   // What it launches: kernels, fusion, launch configuration and tuning.
   std::string variant;
+  // What it computes, where its module declares it (part of its identity
+  // then, all but the predicate, which the variant names).
+  std::optional<Capability> capability{};
 };
 
 // SHA-256 over every field, each length-prefixed.
@@ -233,6 +368,18 @@ class BoundPlan {
 // Binds every step of `plan` to the implementation it names in `registry`,
 // with the identity it recorded, or rejects the plan.
 std::expected<BoundPlan, PlanRejection> Resolve(const Registry& registry, const Plan& plan);
+
+// The registry indices of the implementations that compute the queried
+// node: declared capabilities only, filtered by operation, operand formats
+// (each operand a rule constrains must be in the query), device, shape and
+// the query's requirements; a transient expansion never for a
+// decode-shaped product, nothing lossy without the policy's opt-in.
+// Ordered as D-053 selects, correctness then measured speed: by measured
+// rank (unranked last), so that a measurement may prefer any rung (D-108:
+// the crossover between on-chip decode and a transient expansion, a BF16
+// decode that measures faster); then by the ladder's rung, priority
+// (higher first) and name, the static order until something is measured.
+std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQuery& query);
 
 }  // namespace llmp::execution
 

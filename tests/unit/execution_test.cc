@@ -8,10 +8,15 @@
 // - a plan made for another identity is rejected before anything binds
 //   (BP-S2);
 // - a build lacking an implementation reports the plan unsupported, and
-//   nothing is substituted (BP-S4).
+//   nothing is substituted (BP-S4);
+// - capabilities (D-108): every legacy operation's key in the op set, and
+//   Candidates() by measured rank, then the ladder's order, refusing a
+//   transient expansion for decode-shaped products and anything lossy
+//   without the opt-in.
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <set>
 #include <string>
@@ -21,6 +26,9 @@
 
 #include "execution/registry.h"
 #include "expected_error.h"
+#include "format/encoding.h"
+#include "format/layout.h"
+#include "ir/op.h"
 
 namespace {
 
@@ -69,7 +77,7 @@ std::vector<Choice> Layer(std::string norm, std::string mul_mat = "fake.mul_mat.
 // no two operations share one.
 TEST(PlanRegistryTest, EveryOperationHasItsOwnName) {
   std::set<std::string_view> names;
-  for (int i = 0; i <= static_cast<int>(Operation::kDupUpAdd); ++i) {
+  for (int i = 0; i <= static_cast<int>(Operation::kGemmaScaledReduce); ++i) {
     const std::string_view name = OperationName(static_cast<Operation>(i));
     EXPECT_NE(name, "unknown") << i;
     EXPECT_TRUE(names.insert(name).second) << name;
@@ -219,6 +227,220 @@ TEST(PlanRegistryTest, RefusesMalformedRegistriesAndPlans) {
   EXPECT_EQ(FailedCode(Plan::Build(registry, too_many)), PlanError::kInvalid);
   const std::vector<Choice> junk = {{.operation = Operation::kAdd, .implementation = "fake.add\n"}};
   EXPECT_EQ(FailedCode(Plan::Build(registry, junk)), PlanError::kInvalid);
+}
+
+// ---------------------------------------------------------------- capabilities
+
+namespace ex = llmp::execution;
+namespace ir = llmp::ir;
+using llmp::format::Encoding;
+using llmp::format::Layout;
+
+TEST(CapabilityTest, EveryOperationHasAKeyInTheOpSet) {
+  std::set<std::string_view> ops;
+  for (int i = 0; i <= static_cast<int>(ir::Op::kFused); ++i) {
+    const std::string_view name = ir::OpName(static_cast<ir::Op>(i));
+    EXPECT_NE(name, "unknown") << i;
+    EXPECT_TRUE(ops.insert(name).second) << name;
+  }
+  std::set<std::string_view> fused;
+  for (int i = 0; i <= static_cast<int>(ir::FusedKind::kDupUpAdd); ++i) {
+    const std::string_view name = ir::FusedKindName(static_cast<ir::FusedKind>(i));
+    EXPECT_NE(name, "unknown") << i;
+    EXPECT_TRUE(fused.insert(name).second) << name;
+  }
+  for (int i = 0; i <= static_cast<int>(Operation::kGemmaScaledReduce); ++i) {
+    const auto operation = static_cast<Operation>(i);
+    const ir::OpKey key = ex::OpKeyOf(operation);
+    EXPECT_EQ(key.op == ir::Op::kFused, key.fused != ir::FusedKind::kNone)
+        << OperationName(operation);
+    EXPECT_NE(ir::OpKeyName(key), "unknown") << OperationName(operation);
+  }
+  EXPECT_EQ(ex::OpKeyOf(Operation::kRmsNormMul), ir::Fused(ir::FusedKind::kRmsNormMul));
+  EXPECT_EQ(ex::OpKeyOf(Operation::kMatMul), ir::Primitive(ir::Op::kMatMul));
+  EXPECT_EQ(ex::OpKeyOf(Operation::kQuantLinear), ir::Primitive(ir::Op::kMatMul));
+  EXPECT_EQ(ir::OpKeyName(ex::OpKeyOf(Operation::kRopeSetRows)), "fused.rope_store");
+}
+
+constexpr std::array kFp4 = {Encoding::kNvfp4};
+constexpr std::array kDecoded = {Encoding::kNvfp4, Encoding::kMxfp8};
+constexpr std::array kSplitOnly = {Layout::kSplit};
+constexpr std::array kNativeOperands = {
+    ex::OperandRule{.operand = 1, .encodings = kFp4, .layouts = kSplitOnly}};
+constexpr std::array kDecodedOperands = {
+    ex::OperandRule{.operand = 1, .encodings = kDecoded, .layouts = {}}};
+
+bool RefusesOddK(const ex::CapabilityQuery& q) { return q.k % 2 == 0; }
+
+Implementation Capable(std::string name, const ex::Capability& capability) {
+  Implementation implementation = Fake(std::move(name), Operation::kMatMul);
+  implementation.capability = capability;
+  return implementation;
+}
+
+std::vector<Implementation> Ladder() {
+  const ir::OpKey mm = ir::Primitive(ir::Op::kMatMul);
+  return {
+      Capable("fake.mm.native", {.op = mm,
+                                 .operands = kNativeOperands,
+                                 .device = {.min_arch = 120, .max_arch = 121, .needs = ex::kFp4Mma},
+                                 .rung = ex::Rung::kNative}),
+      Capable("fake.mm.decode_vector", {.op = mm,
+                                        .operands = kDecodedOperands,
+                                        .shape = {.min_rows = 1, .max_rows = 16},
+                                        .rung = ex::Rung::kOnChipDecode,
+                                        .row_invariant = true}),
+      Capable("fake.mm.decode_tile", {.op = mm,
+                                      .operands = kDecodedOperands,
+                                      .shape = {.k_multiple = 64},
+                                      .rung = ex::Rung::kOnChipDecode,
+                                      .priority = 1}),
+      Capable("fake.mm.expand", {.op = mm,
+                                 .operands = kDecodedOperands,
+                                 .rung = ex::Rung::kOnChipDecode,
+                                 .expansion = ex::Expansion::kTransientWorkspace,
+                                 .priority = 5}),
+      Capable("fake.mm.bf16", {.op = mm, .rung = ex::Rung::kBf16Decode, .accepts = RefusesOddK}),
+      Capable("fake.mm.lossy", {.op = mm, .rung = ex::Rung::kNative, .lossy = true}),
+      Capable("fake.mm.primitive", {.op = mm, .rung = ex::Rung::kPrimitive, .capturable = false}),
+      Capable("fake.add.any", {.op = ir::Primitive(ir::Op::kAdd)}),
+      Fake("fake.mm.undeclared", Operation::kMatMul),
+  };
+}
+
+std::vector<std::string> Names(const Registry& registry, const std::vector<std::size_t>& found) {
+  std::vector<std::string> names;
+  for (const std::size_t i : found) {
+    names.push_back(registry.at(i).name);
+  }
+  return names;
+}
+
+TEST(CapabilityTest, CandidatesFollowTheLadder) {
+  const auto registry = Registry::Create(Ladder()).value();
+  const std::array weights = {
+      ex::OperandFormat{.operand = 1, .encoding = Encoding::kNvfp4, .layout = Layout::kSplit}};
+  ex::CapabilityQuery q{.op = ir::Primitive(ir::Op::kMatMul),
+                        .operands = weights,
+                        .rows = 1,
+                        .k = 2560,
+                        .n = 512,
+                        .arch = 121,
+                        .features = ex::kFp4Mma | ex::kBf16Mma};
+  // Decode-shaped on a GB10: no expansion, nothing lossy.
+  EXPECT_EQ(
+      Names(registry, ex::Candidates(registry, q)),
+      (std::vector<std::string>{"fake.mm.native", "fake.mm.decode_tile", "fake.mm.decode_vector",
+                                "fake.mm.bf16", "fake.mm.primitive"}));
+  // At 16 rows still decode-shaped; at 17 the expansion is a candidate and
+  // the vector kernel is not.
+  q.rows = 16;
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q))[1], "fake.mm.decode_tile");
+  q.rows = 17;
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q)),
+            (std::vector<std::string>{"fake.mm.native", "fake.mm.expand", "fake.mm.decode_tile",
+                                      "fake.mm.bf16", "fake.mm.primitive"}));
+  // A measured rank orders before the static priority, and across rungs:
+  // what it ranks comes first, the rest in the ladder's order after.
+  const std::array measured = {ex::MeasuredRank{.implementation = "fake.mm.decode_tile", .rank = 0},
+                               ex::MeasuredRank{.implementation = "fake.mm.expand", .rank = 1}};
+  q.measured = measured;
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q)),
+            (std::vector<std::string>{"fake.mm.decode_tile", "fake.mm.expand", "fake.mm.native",
+                                      "fake.mm.bf16", "fake.mm.primitive"}));
+  const std::array bf16_fastest = {ex::MeasuredRank{.implementation = "fake.mm.bf16", .rank = 0},
+                                   ex::MeasuredRank{.implementation = "fake.mm.native", .rank = 1}};
+  q.measured = bf16_fastest;
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q)),
+            (std::vector<std::string>{"fake.mm.bf16", "fake.mm.native", "fake.mm.expand",
+                                      "fake.mm.decode_tile", "fake.mm.primitive"}));
+  q.measured = {};
+  // A policy with another decode bound.
+  q.rows = 8;
+  q.policy.max_decode_rows = 4;
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q))[1], "fake.mm.expand");
+  q.policy.max_decode_rows = 16;
+  // sm_86 has no FP4 matrix unit: the native kernel drops out.
+  q.rows = 1;
+  q.arch = 86;
+  q.features = ex::kBf16Mma | ex::kInt8Mma;
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q))[0], "fake.mm.decode_tile");
+  // The lossy kernel only by the alias's opt-in.
+  q.arch = 121;
+  q.features = ex::kFp4Mma;
+  q.policy.allow_lossy = true;
+  EXPECT_EQ(
+      Names(registry, ex::Candidates(registry, q)),
+      (std::vector<std::string>{"fake.mm.lossy", "fake.mm.native", "fake.mm.decode_tile",
+                                "fake.mm.decode_vector", "fake.mm.bf16", "fake.mm.primitive"}));
+  q.policy.allow_lossy = false;
+  // Requirements: row invariance, capture.
+  q.row_invariant = true;
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q)),
+            (std::vector<std::string>{"fake.mm.decode_vector"}));
+  q.row_invariant = false;
+  q.capturable = true;
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q)).back(), "fake.mm.bf16");
+  q.capturable = false;
+  // Operand formats the rules do not take; K the shape rule or the
+  // predicate refuses.
+  const std::array q4k = {
+      ex::OperandFormat{.operand = 1, .encoding = Encoding::kQ4_K, .layout = Layout::kGgmlBlocks}};
+  q.operands = q4k;
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q)),
+            (std::vector<std::string>{"fake.mm.bf16", "fake.mm.primitive"}));
+  // A query that leaves out an operand a rule constrains matches only the
+  // implementations that leave it unconstrained.
+  q.operands = {};
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q)),
+            (std::vector<std::string>{"fake.mm.bf16", "fake.mm.primitive"}));
+  q.operands = weights;
+  q.k = 2561;
+  EXPECT_EQ(
+      Names(registry, ex::Candidates(registry, q)),
+      (std::vector<std::string>{"fake.mm.native", "fake.mm.decode_vector", "fake.mm.primitive"}));
+  // Another operation.
+  q.op = ir::Primitive(ir::Op::kAdd);
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, q)),
+            (std::vector<std::string>{"fake.add.any"}));
+  q.op = ir::Fused(ir::FusedKind::kMatMulGlu);
+  EXPECT_TRUE(ex::Candidates(registry, q).empty());
+}
+
+TEST(CapabilityTest, ADeclaredCapabilityIsPartOfTheIdentity) {
+  const Implementation plain = Fake("fake.mm", Operation::kMatMul);
+  Implementation declared = plain;
+  declared.capability = ex::Capability{.op = ir::Primitive(ir::Op::kMatMul)};
+  EXPECT_NE(ex::IdentityOf(plain), ex::IdentityOf(declared));
+  Implementation other = declared;
+  other.capability->rung = ex::Rung::kOnChipDecode;
+  EXPECT_NE(ex::IdentityOf(other), ex::IdentityOf(declared));
+  other = declared;
+  other.capability->operands = kDecodedOperands;
+  EXPECT_NE(ex::IdentityOf(other), ex::IdentityOf(declared));
+}
+
+TEST(CapabilityTest, RefusesMalformedCapabilities) {
+  const ir::OpKey mm = ir::Primitive(ir::Op::kMatMul);
+  constexpr std::array kTwice = {ex::OperandRule{.operand = 1}, ex::OperandRule{.operand = 1}};
+  const std::vector<ex::Capability> bad = {
+      {.op = mm, .operands = kTwice},
+      {.op = mm, .shape = {.min_rows = 17, .max_rows = 16}},
+      {.op = mm, .shape = {.k_multiple = 0}},
+      {.op = mm, .device = {.min_arch = 121, .max_arch = 86}},
+      {.op = mm, .rung = static_cast<ex::Rung>(3)},
+      {.op = mm, .group = "Not A Name"},
+      {.op = ir::OpKey{.op = ir::Op::kFused, .fused = ir::FusedKind::kNone}},
+      {.op = ir::OpKey{.op = ir::Op::kMatMul, .fused = ir::FusedKind::kMatMulGlu}},
+      {.op = ir::OpKey{.op = static_cast<ir::Op>(999)}},
+  };
+  for (std::size_t i = 0; i < bad.size(); ++i) {
+    const auto refused = Registry::Create({Capable("fake.mm", bad[i])});
+    ASSERT_FALSE(refused.has_value()) << i;
+    EXPECT_EQ(refused.error().error, PlanError::kInvalid) << i;
+  }
+  EXPECT_TRUE(
+      Registry::Create({Capable("fake.mm", {.op = mm, .group = "ggml.mul_mat"})}).has_value());
 }
 
 }  // namespace

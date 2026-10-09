@@ -517,10 +517,24 @@ add_executable(sampling_test sampling_test.cc)
 target_link_libraries(sampling_test PRIVATE llmp_sampling)
 llmp_gtest(sampling_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-# The implementation registry and plans (D-053), on fake declarations.
+# The implementation registry and plans (D-053), on fake declarations, and
+# the capabilities selection reads (D-108).
 add_executable(execution_test execution_test.cc)
 target_link_libraries(execution_test PRIVATE llmp_execution)
 llmp_gtest(execution_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# Tensor formats (D-108): encodings, layouts and the size rule.
+add_executable(format_test format_test.cc)
+target_link_libraries(format_test PRIVATE llmp_format)
+llmp_gtest(format_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# The CPU reference decoders (D-108), against GGML's dequantization and
+# hand-computed values; the Qwen3.8 imports' experts where the M3 store
+# holds them (a Spark).
+add_executable(reference_decode_test reference_decode_test.cc)
+target_link_libraries(reference_decode_test PRIVATE llmp_reference_kernels llmp_artifact
+                                                    llmp_ggml_base)
+llmp_gtest(reference_decode_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # D-068's shape contracts: state representations and composed contexts
 # (model_test), and request programs planned from them and driven through
@@ -842,6 +856,14 @@ llmp_gtest(artifact_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BI
 add_executable(gguf_metadata_test gguf_metadata_test.cc)
 target_link_libraries(gguf_metadata_test PRIVATE llmp_artifact)
 llmp_gtest(gguf_metadata_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# v0's descriptors as tensor formats (format_map.h, D-108): size parity with
+# the v0 rule, pairings, the corpus and the installed real artifacts.
+add_executable(artifact_format_map_test artifact_format_map_test.cc)
+target_link_libraries(artifact_format_map_test PRIVATE llmp_artifact)
+add_dependencies(artifact_format_map_test artifact_corpus)
+llmp_gtest(artifact_format_map_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+             PROPERTIES LABELS unit)
 
 # The composition reader (D-089): each rule of the prototype's
 # verify_composition on compositions built here, and the installed

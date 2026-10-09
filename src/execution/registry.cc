@@ -18,6 +18,9 @@
 
 #include "base/check.h"
 #include "base/sha256.h"
+#include "format/encoding.h"
+#include "format/layout.h"
+#include "ir/op.h"
 
 namespace llmp::execution {
 namespace {
@@ -65,6 +68,110 @@ std::expected<std::size_t, PlanRejection> Lookup(const Registry& registry, Opera
                                 OperationName(implementation.operation), OperationName(operation)));
   }
   return *found;
+}
+
+// A capability's identity text: every field but the predicate.
+std::string CapabilityText(const Capability& c) {
+  std::string text = std::format("op {}; operands", ir::OpKeyName(c.op));
+  for (const OperandRule& rule : c.operands) {
+    text += std::format(" [{}:", rule.operand);
+    for (const format::Encoding e : rule.encodings) {
+      text += std::format(" {}", format::Info(e).name);
+    }
+    text += " /";
+    for (const format::Layout l : rule.layouts) {
+      text += std::format(" {}", format::Info(l).name);
+    }
+    text += "]";
+  }
+  text += std::format(
+      "; device {}-{} needs {}; rows {}-{} k%{} n%{}; rung {}; expansion {}; lossy {}; "
+      "row_invariant {}; capturable {}; group {}; priority {}",
+      c.device.min_arch, c.device.max_arch, c.device.needs, c.shape.min_rows, c.shape.max_rows,
+      c.shape.k_multiple, c.shape.n_multiple, static_cast<int>(c.rung),
+      static_cast<int>(c.expansion), c.lossy, c.row_invariant, c.capturable, c.group, c.priority);
+  return text;
+}
+
+// A primitive op, or kFused with the kind it names; both in the op set.
+bool ValidOpKey(ir::OpKey key) {
+  return ir::OpName(key.op) != "unknown" && ir::FusedKindName(key.fused) != "unknown" &&
+         (key.op == ir::Op::kFused) == (key.fused != ir::FusedKind::kNone);
+}
+
+bool ValidCapability(const Capability& c) {
+  if (!ValidOpKey(c.op)) {
+    return false;
+  }
+  const bool known_rung = c.rung == Rung::kNative || c.rung == Rung::kOnChipDecode ||
+                          c.rung == Rung::kBf16Decode || c.rung == Rung::kPrimitive;
+  if (!known_rung || static_cast<std::uint8_t>(c.expansion) > 1 ||
+      (!c.group.empty() && !ValidName(c.group)) || c.shape.min_rows > c.shape.max_rows ||
+      c.shape.k_multiple == 0 || c.shape.n_multiple == 0 || c.device.min_arch > c.device.max_arch) {
+    return false;
+  }
+  for (std::size_t i = 0; i < c.operands.size(); ++i) {
+    for (std::size_t j = i + 1; j < c.operands.size(); ++j) {
+      if (c.operands[i].operand == c.operands[j].operand) {
+        return false;
+      }
+    }
+    for (const format::Encoding e : c.operands[i].encodings) {
+      if (static_cast<std::size_t>(e) >= format::Encodings().size()) {
+        return false;
+      }
+    }
+    for (const format::Layout l : c.operands[i].layouts) {
+      if (static_cast<std::size_t>(l) >= format::Layouts().size()) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Every rule that constrains an operand finds it in the query, in a format
+// the rule takes: a query that leaves a constrained operand out does not
+// match (an operand no rule names is unconstrained).
+bool OperandsMatch(const Capability& c, std::span<const OperandFormat> operands) {
+  for (const OperandRule& rule : c.operands) {
+    if (rule.encodings.empty() && rule.layouts.empty()) {
+      continue;
+    }
+    const auto operand = std::ranges::find_if(
+        operands, [&](const OperandFormat& o) { return o.operand == rule.operand; });
+    if (operand == operands.end() ||
+        (!rule.encodings.empty() &&
+         std::ranges::find(rule.encodings, operand->encoding) == rule.encodings.end()) ||
+        (!rule.layouts.empty() &&
+         std::ranges::find(rule.layouts, operand->layout) == rule.layouts.end())) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool Computes(const Capability& c, const CapabilityQuery& q) {
+  if (c.op != q.op || !OperandsMatch(c, q.operands)) {
+    return false;
+  }
+  if (q.arch < c.device.min_arch || q.arch > c.device.max_arch ||
+      (q.features & c.device.needs) != c.device.needs) {
+    return false;
+  }
+  if (q.rows < c.shape.min_rows || q.rows > c.shape.max_rows || q.k % c.shape.k_multiple != 0 ||
+      q.n % c.shape.n_multiple != 0) {
+    return false;
+  }
+  // D-108: a decode-shaped product reads each weight once, compressed.
+  if (c.expansion == Expansion::kTransientWorkspace && q.rows <= q.policy.max_decode_rows) {
+    return false;
+  }
+  if ((c.lossy && !q.policy.allow_lossy) || (q.row_invariant && !c.row_invariant) ||
+      (q.capturable && !c.capturable)) {
+    return false;
+  }
+  return c.accepts == nullptr || c.accepts(q);
 }
 
 }  // namespace
@@ -197,6 +304,131 @@ std::string_view OperationName(Operation operation) {
   return "unknown";
 }
 
+ir::OpKey OpKeyOf(Operation operation) {
+  using ir::Fused;
+  using ir::FusedKind;
+  using ir::Op;
+  using ir::Primitive;
+  switch (operation) {
+    case Operation::kRmsNorm:
+      return Primitive(Op::kRmsNorm);
+    case Operation::kRmsNormMul:
+      return Fused(FusedKind::kRmsNormMul);
+    case Operation::kAdd:
+    case Operation::kBiasAdd:
+      return Primitive(Op::kAdd);
+    case Operation::kMul:
+      return Primitive(Op::kMul);
+    case Operation::kMatMul:
+    case Operation::kQuantLinear:
+      return Primitive(Op::kMatMul);
+    case Operation::kGetRows:
+      return Primitive(Op::kGetRows);
+    case Operation::kSetRows:
+      return Primitive(Op::kCacheStore);
+    case Operation::kRope:
+      return Primitive(Op::kRope);
+    case Operation::kRopeSetRows:
+      return Fused(FusedKind::kRopeStore);
+    case Operation::kSoftMax:
+      return Primitive(Op::kSoftMax);
+    case Operation::kCont:
+      return Primitive(Op::kCont);
+    case Operation::kSwiGlu:
+    case Operation::kSwiGluClamp:
+    case Operation::kGeGlu:
+      return Primitive(Op::kGlu);
+    case Operation::kMulMatAdd:
+      return Fused(FusedKind::kMatMulAdd);
+    case Operation::kMulMatGlu:
+    case Operation::kMulMatGeGlu:
+      return Fused(FusedKind::kMatMulGlu);
+    case Operation::kQuantMultiLinear:
+      return Fused(FusedKind::kPreparedProducts);
+    case Operation::kConvert:
+      return Primitive(Op::kConvert);
+    case Operation::kFlashAttn:
+      return Primitive(Op::kAttention);
+    case Operation::kMulMatId:
+      return Primitive(Op::kMatMulId);
+    case Operation::kSub:
+      return Primitive(Op::kSub);
+    case Operation::kDiv:
+      return Primitive(Op::kDiv);
+    case Operation::kScale:
+      return Primitive(Op::kScale);
+    case Operation::kUnary:
+      return Primitive(Op::kUnary);
+    case Operation::kClamp:
+      return Primitive(Op::kClamp);
+    case Operation::kFill:
+      return Primitive(Op::kFill);
+    case Operation::kRepeat:
+      return Primitive(Op::kRepeat);
+    case Operation::kConcat:
+      return Primitive(Op::kConcat);
+    case Operation::kSumRows:
+      return Primitive(Op::kSumRows);
+    case Operation::kArgsort:
+      return Primitive(Op::kArgsort);
+    case Operation::kTopK:
+      return Primitive(Op::kTopK);
+    case Operation::kSsmConv:
+      return Primitive(Op::kSsmConv);
+    case Operation::kGatedDeltaNet:
+      return Primitive(Op::kGatedDeltaNet);
+    case Operation::kLightningIndexer:
+      return Primitive(Op::kIndexScore);
+    case Operation::kHcComb:
+      return Primitive(Op::kHcMix);
+    case Operation::kHcPre:
+    case Operation::kHcMix:  // Qwen3.8's: gated streams folded into one
+      return Primitive(Op::kHcPre);
+    case Operation::kHcPost:
+    case Operation::kHcCombine:  // Qwen3.8's: an output added to each stream, gated
+      return Primitive(Op::kHcPost);
+    case Operation::kHcNorm:
+      return Fused(FusedKind::kHcNorm);
+    case Operation::kMoeGlu:
+      return Fused(FusedKind::kMoeGlu);
+    case Operation::kMoeCombine:
+      return Fused(FusedKind::kMoeCombine);
+    case Operation::kMoeRoute:
+      return Primitive(Op::kExpertSort);
+    case Operation::kQuantize:
+      return Primitive(Op::kPrepare);
+    case Operation::kNormGate:
+      return Fused(FusedKind::kNormGate);
+    case Operation::kHeadNormRope:
+      return Fused(FusedKind::kQkPrep);
+    case Operation::kLayerNormModulate:
+      return Fused(FusedKind::kLayerNormModulate);
+    case Operation::kGatedResidual:
+      return Fused(FusedKind::kGatedResidual);
+    case Operation::kGatedResidualNorm:
+      return Fused(FusedKind::kGatedResidualNorm);
+    case Operation::kEulerStep:
+      return Fused(FusedKind::kEulerStep);
+    case Operation::kConv2d:
+      return Primitive(Op::kConv2d);
+    case Operation::kChannelNorm:
+      return Primitive(Op::kChannelNorm);
+    case Operation::kUpsample:
+      return Primitive(Op::kUpsample);
+    case Operation::kDupUpAdd:
+      return Fused(FusedKind::kDupUpAdd);
+    case Operation::kRmsNormMulRope:
+      return Fused(FusedKind::kRmsNormMulRope);
+    case Operation::kRmsNormMulAdd:
+      return Fused(FusedKind::kRmsNormMulAdd);
+    case Operation::kGemmaRoute:
+      return Primitive(Op::kRoute);
+    case Operation::kGemmaScaledReduce:
+      return Primitive(Op::kExpertReduce);
+  }
+  base::Fatal("execution::OpKeyOf of an operation outside the enum");
+}
+
 base::Sha256Digest IdentityOf(const Implementation& implementation) {
   base::Sha256 hash;
   Field(hash, "llmp.implementation.v0");
@@ -206,6 +438,11 @@ base::Sha256Digest IdentityOf(const Implementation& implementation) {
   Field(hash, implementation.revision);
   Field(hash, implementation.build);
   Field(hash, implementation.variant);
+  // Only a declared capability adds a field, so the identities of
+  // implementations declared without one are unchanged.
+  if (implementation.capability) {
+    Field(hash, CapabilityText(*implementation.capability));
+  }
   return hash.Finish();
 }
 
@@ -230,6 +467,10 @@ std::expected<Registry, PlanRejection> Registry::Create(
       return Rejected(PlanError::kInvalid, 0,
                       "an implementation name that is empty, too long "
                       "or not lower-case letters, digits, '.' and '_'");
+    }
+    if (implementations[i].capability && !ValidCapability(*implementations[i].capability)) {
+      return Rejected(PlanError::kInvalid, 0,
+                      std::format("{} declares a malformed capability", implementations[i].name));
     }
     identities.push_back(IdentityOf(implementations[i]));
     by_name[i] = i;
@@ -321,6 +562,52 @@ std::expected<BoundPlan, PlanRejection> Resolve(const Registry& registry, const 
     bound.push_back(&implementation);
   }
   return BoundPlan(std::move(bound), plan.identity());
+}
+
+std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQuery& query) {
+  struct Ranked {
+    std::size_t index = 0;
+    std::uint8_t rung = 0;
+    std::uint64_t measured = 0;  // unranked last
+    std::uint16_t priority = 0;
+    std::string_view name;
+  };
+  std::vector<Ranked> ranked;
+  for (std::size_t i = 0; i < registry.size(); ++i) {
+    const Implementation& implementation = registry.at(i);
+    if (!implementation.capability || !Computes(*implementation.capability, query)) {
+      continue;
+    }
+    const auto rank = std::ranges::find_if(query.measured, [&](const MeasuredRank& m) {
+      return m.implementation == implementation.name;
+    });
+    ranked.push_back(
+        {.index = i,
+         .rung = static_cast<std::uint8_t>(implementation.capability->rung),
+         .measured = rank == query.measured.end() ? ~std::uint64_t{0} : std::uint64_t{rank->rank},
+         .priority = implementation.capability->priority,
+         .name = implementation.name});
+  }
+  // D-053: correctness (the filter above), then measured speed; the
+  // ladder's rung and the static priority order what is not measured.
+  std::ranges::sort(ranked, [](const Ranked& a, const Ranked& b) {
+    if (a.measured != b.measured) {
+      return a.measured < b.measured;
+    }
+    if (a.rung != b.rung) {
+      return a.rung < b.rung;
+    }
+    if (a.priority != b.priority) {
+      return a.priority > b.priority;
+    }
+    return a.name < b.name;
+  });
+  std::vector<std::size_t> out;
+  out.reserve(ranked.size());
+  for (const Ranked& r : ranked) {
+    out.push_back(r.index);
+  }
+  return out;
 }
 
 }  // namespace llmp::execution

@@ -1365,7 +1365,7 @@ each is checked against the design as M3.6 proceeds.
       (D-082; the whole model does not fit the 3080 Ti). The Qwen2
       EXL3 fixture proves the trellis encoding through the same layer.
       Sub-tasks (owner, 2026-10-08: each lands as one reviewed commit):
-      - [ ] Encodings, layouts and the size rule; v0 representations
+      - [x] Encodings, layouts and the size rule; v0 representations
             mapped at read time; CPU reference decoders; registry
             capabilities and the ladder's ordering.
       - [ ] CUDA block decoders under the vector, matrix, grouped and GLU
