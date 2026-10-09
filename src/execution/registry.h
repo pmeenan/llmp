@@ -207,11 +207,14 @@ struct Capability {
   bool (*accepts)(const CapabilityQuery&) = nullptr;
 };
 
-// One operand's format, as a node has it.
+// One operand's format, as a node has it. The encoding's parameters (an
+// EXL3 trellis's rate and codebook) are for a capability's predicate: the
+// rules match encodings and layouts only.
 struct OperandFormat {
   std::uint8_t operand = 0;
   format::Encoding encoding = format::Encoding::kF32;
   format::Layout layout = format::Layout::kDense;
+  format::EncodingParams params{};
 };
 
 struct SelectionPolicy {

@@ -259,7 +259,10 @@ unfused path that exists:
   primitive alternative; engine/provider interfaces carry no CUDA types.
 - **EXL3:** the FP16 set without `soft_max`, plus F16 and F32
   conversion, attention at D 64, the EXL3 dequant and GEMM, and a half
-  bias add.
+  bias add. A port's trellis decoder is checked against the CPU
+  reference's (`kernels/reference`, whose rotated weights match
+  ExLlamaV3's `reconstruct_kernel` bit for bit), as CUDA's block decoders
+  are.
 
 **What closing the gaps takes**, as the rule applies to new work from
 now on: an unfused composition for the model-specific operations

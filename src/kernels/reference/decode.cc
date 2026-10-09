@@ -19,6 +19,7 @@
 #include "format/layout.h"
 #include "format/tensor_format.h"
 #include "ggml.h"
+#include "kernels/reference/decode_exl3.h"
 
 namespace llmp::kernels::reference {
 namespace {
@@ -95,7 +96,7 @@ float BlockScale(Encoding e, std::uint8_t bits) {
 
 // Where one matrix's share of each part starts.
 struct Parts {
-  Bytes data, codes, scales, tensor_scale;
+  Bytes data, codes, scales, tensor_scale, input_signs, output_signs;
 };
 
 std::expected<Parts, DecodeError> Bind(const TensorFormat& f, const format::PartList& extents,
@@ -133,8 +134,14 @@ std::expected<Parts, DecodeError> Bind(const TensorFormat& f, const format::Part
       case PartRole::kTensorScale:
         parts.tensor_scale = mine;
         break;
-      default:
-        break;  // EXL3's: refused before binding
+      case PartRole::kInputSigns:
+        parts.input_signs = mine;
+        break;
+      case PartRole::kOutputSigns:
+        parts.output_signs = mine;
+        break;
+      case PartRole::kCodebookMarker:
+        break;  // its value means nothing (artifact-format.md): the codebook is a parameter
     }
   }
   return parts;
@@ -234,7 +241,7 @@ std::expected<void, DecodeError> DecodeRow(const TensorFormat& f, const Parts& p
       return {};
     }
     case Layout::kExl3Tiles:
-      break;
+      break;  // a block of rows at a time (DecodeRows)
   }
   return std::unexpected(DecodeError::kUnsupported);
 }
@@ -346,7 +353,7 @@ std::expected<void, DecodeError> DecodeRows(const format::TensorFormat& format,
   if (!extents) {
     return std::unexpected(DecodeError::kFormat);
   }
-  if (format.layout == Layout::kExl3Tiles) {
+  if (format.layout == Layout::kExl3Tiles && !exl3::Transformable(format)) {
     return std::unexpected(DecodeError::kUnsupported);
   }
   const std::uint64_t k = format.shape.ne[0];
@@ -361,6 +368,12 @@ std::expected<void, DecodeError> DecodeRows(const format::TensorFormat& format,
   if (!bound) {
     return std::unexpected(bound.error());
   }
+  if (format.layout == Layout::kExl3Tiles) {
+    exl3::Rows(format,
+               {.codes = bound->codes, .suh = bound->input_signs, .svh = bound->output_signs},
+               first, count, out);
+    return {};
+  }
   for (std::uint64_t r = first; r < end; ++r) {
     float* y = out.data() + ((r - first) * k);
     if (auto ok = DecodeRow(format, *bound, r, y); !ok) {
@@ -374,6 +387,36 @@ std::expected<void, DecodeError> DecodeRows(const format::TensorFormat& format,
       }
     }
   }
+  return {};
+}
+
+std::expected<void, DecodeError> DecodeExl3Rotated(const format::TensorFormat& format,
+                                                   std::span<const PartView> parts,
+                                                   std::uint64_t matrix, std::uint64_t first,
+                                                   std::uint64_t count,
+                                                   std::span<std::uint16_t> out) {
+  const auto extents = format::PartsOf(format);
+  if (!extents) {
+    return std::unexpected(DecodeError::kFormat);
+  }
+  if (format.layout != Layout::kExl3Tiles) {
+    return std::unexpected(DecodeError::kUnsupported);
+  }
+  const std::uint64_t k = format.shape.ne[0];
+  std::uint64_t end = 0;
+  std::uint64_t values = 0;
+  if (matrix >= format::Matrices(format) || first % 16 != 0 || count % 16 != 0 ||
+      __builtin_add_overflow(first, count, &end) || end > format.shape.ne[1] ||
+      __builtin_mul_overflow(count, k, &values) || values != out.size()) {
+    return std::unexpected(DecodeError::kRange);
+  }
+  const auto bound = Bind(format, *extents, parts, matrix);
+  if (!bound) {
+    return std::unexpected(bound.error());
+  }
+  exl3::Rotated(format,
+                {.codes = bound->codes, .suh = bound->input_signs, .svh = bound->output_signs},
+                first, count, out);
   return {};
 }
 

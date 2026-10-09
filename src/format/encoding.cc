@@ -18,6 +18,10 @@ namespace {
 
 constexpr std::uint32_t kQk = 256;  // QK_K
 
+constexpr std::array kStateEncodings = {Encoding::kF32,  Encoding::kF16,  Encoding::kBF16,
+                                        Encoding::kQ4_0, Encoding::kQ4_1, Encoding::kQ5_0,
+                                        Encoding::kQ5_1, Encoding::kQ8_0};
+
 constexpr std::array kNvfp4Parts = {
     PartSpec{.role = PartRole::kCodes, .element = Encoding::kU8, .required = true},
     PartSpec{.role = PartRole::kBlockScales, .element = Encoding::kF8E4M3, .required = true},
@@ -307,6 +311,12 @@ bool Lossless(Encoding from, Encoding to) {
     return false;
   }
   return a.min_exponent >= b.min_exponent;
+}
+
+std::span<const Encoding> StateEncodings() { return kStateEncodings; }
+
+bool IsStateEncoding(Encoding encoding) {
+  return std::ranges::find(kStateEncodings, encoding) != kStateEncodings.end();
 }
 
 }  // namespace llmp::format

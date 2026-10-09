@@ -997,6 +997,19 @@ if(LLMP_CUDA)
                             Exl3Qwen2Test.BindRefusesAMissingOrStaleImplementationAndShortMemory
                             Exl3Qwen2Test.TablesWhoseRewriteFailedPartwayRefuseTheMultiGemm)
 
+  # The EXL3 trellis through the format layer (D-108): the module's
+  # capabilities and Candidates(), ExLlamaV3's reconstruction kernels
+  # against the CPU reference, and, where the v0 fixtures are installed
+  # (spark, spark-b), every fixture linear's weights and layer 0's products
+  # through each candidate. On a discrete GPU too, all but the fixtures'
+  # test, which runs the GB10's pinned reconstruction GEMMs.
+  add_executable(exl3_trellis_test exl3_trellis_test.cc)
+  target_link_libraries(exl3_trellis_test PRIVATE llmp_exl3_kernels llmp_reference_kernels
+                                                  llmp_artifact llmp_model llmp_cuda_device_memory)
+  llmp_gpu_gtest(exl3_trellis_test MODELS
+                   DISCRETE Exl3TrellisSelectionTest.CandidatesFollowRowsRatesShapesAndDevices
+                            Exl3TrellisTest.ReconstructionIsTheReferenceDecode)
+
   # The module's implementation identities follow every one of its source
   # files (src/kernels/exl3/module_digest.cmake), checked as the GGML
   # module's are.

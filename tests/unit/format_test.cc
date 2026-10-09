@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -281,6 +282,34 @@ TEST(FormatTest, LosslessIsExactValueInclusion) {
   EXPECT_FALSE(format::Lossless(Encoding::kF16, Encoding::kQ8_0));
   EXPECT_FALSE(format::Lossless(Encoding::kQ8_0, Encoding::kF32));
   EXPECT_TRUE(format::Lossless(Encoding::kQ8_0, Encoding::kQ8_0));
+}
+
+// The state encodings: the dense floats and the blocks GGML's attention
+// reads at the pin, each storable through GGML's own quantization (a
+// single-part format of whole blocks); exact or lossy for a state by
+// Lossless from its own encoding: an F16 KV cache stores exactly as F16 or
+// F32, lossily as BF16 or any block; an F32 recurrent state only as F32.
+TEST(FormatTest, StateEncodingsAreGgmlsAttentionTypes) {
+  const std::vector<Encoding> want = {Encoding::kF32,  Encoding::kF16,  Encoding::kBF16,
+                                      Encoding::kQ4_0, Encoding::kQ4_1, Encoding::kQ5_0,
+                                      Encoding::kQ5_1, Encoding::kQ8_0};
+  const auto states = format::StateEncodings();
+  EXPECT_EQ(std::vector<Encoding>(states.begin(), states.end()), want);
+  for (const format::EncodingInfo& info : format::Encodings()) {
+    const bool state = std::ranges::find(want, info.id) != want.end();
+    EXPECT_EQ(format::IsStateEncoding(info.id), state) << info.name;
+    if (!state) {
+      continue;
+    }
+    // One part, and a GGML type to lower to.
+    EXPECT_TRUE(info.parts.empty()) << info.name;
+    EXPECT_TRUE(info.ggml.has_value()) << info.name;
+    const bool exact_for_f16 = info.id == Encoding::kF16 || info.id == Encoding::kF32;
+    EXPECT_EQ(format::Lossless(Encoding::kF16, info.id), exact_for_f16) << info.name;
+    EXPECT_EQ(format::Lossless(Encoding::kF32, info.id), info.id == Encoding::kF32) << info.name;
+  }
+  EXPECT_TRUE(format::Lossless(Encoding::kBF16, Encoding::kF32));
+  EXPECT_FALSE(format::Lossless(Encoding::kBF16, Encoding::kF16));
 }
 
 }  // namespace

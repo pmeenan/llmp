@@ -153,6 +153,23 @@ std::optional<Encoding> EncodingByName(std::string_view name);
 // encoding into anything but itself).
 bool Lossless(Encoding from, Encoding to);
 
+// The encodings the format layer admits for a state tensor (D-108; a KV
+// cache, a compressed or indexer cache, a recurrent or convolution
+// state), each of which the CPU reference encodes and decodes: F32, F16
+// and BF16, and the block encodings GGML's attention reads at the locked
+// pin, Q4_0, Q4_1, Q5_0, Q5_1 and Q8_0 (ggml-cuda/fattn.cu,
+// ggml_cuda_fattn_kv_type_supported: its vector kernel's K and V types;
+// its tile and tensor-core kernels convert them to F16 first), each of
+// which GGML's set_rows also stores. Membership says nothing about a
+// device: whether a backend reads or stores one is its attention's and
+// cache store's capability, and no compiled CUDA path takes a block
+// encoding yet (docs/engine-components.md), so a state may use one only
+// where its plan finds both. Whether one is exact for a state is
+// Lossless(the state's own encoding, the stored one); a lossy one is an
+// opt-in per alias, off by default.
+std::span<const Encoding> StateEncodings();
+bool IsStateEncoding(Encoding encoding);
+
 }  // namespace llmp::format
 
 #endif  // LLMP_FORMAT_ENCODING_H_

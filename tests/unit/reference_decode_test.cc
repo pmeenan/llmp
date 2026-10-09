@@ -7,7 +7,10 @@
 // reference quantization round trips; NVFP4 in its four layouts (one set
 // of values, permuted) and against GGML's dequantization of its blocks;
 // MXFP4 likewise; MXFP8 exactly, as qwen38_ops_test's device fixtures
-// check it; tensor scales; refusals; and, where the M3 store holds them (a
+// check it; tensor scales; the EXL3 trellis's codebooks, tile layout and
+// transforms against values and products derived apart from the
+// reference (exl3_trellis_test checks it against ExLlamaV3's own kernels);
+// every state encoding's encode and decode; refusals; and, where the M3 store holds them (a
 // Spark), the routed experts of both Qwen3.8 imports (GGML's blocks and the
 // CUTLASS layout) decoding to the same values.
 
@@ -22,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <random>
@@ -480,6 +484,285 @@ TEST(ReferenceDecodeTest, TensorScalesFollowTheStackedMatrices) {
     EXPECT_EQ(m1[r * kK], r < 4 ? 5.0f : 7.0f) << r;
   }
   EXPECT_EQ(Decode(f, parts, 0, 3, 2)[kK], 3.0f);
+}
+
+// ---------------------------------------------------------------- EXL3 trellis
+
+// An EXL3 trellis's format and random parts: words, and F16 side vectors
+// of mixed signs and magnitudes.
+struct Trellis {
+  TensorFormat format;
+  std::vector<std::byte> codes, suh, svh, marker;
+  std::vector<ref::PartView> parts() const {
+    return {{PartRole::kCodes, codes},
+            {PartRole::kInputSigns, suh},
+            {PartRole::kOutputSigns, svh},
+            {PartRole::kCodebookMarker, marker}};
+  }
+};
+
+std::vector<std::byte> HalfBytes(std::uint64_t seed, std::size_t n) {
+  std::mt19937_64 random(seed);
+  std::uniform_real_distribution<float> magnitude(0.25f, 2.0f);
+  std::vector<std::byte> out(2 * n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const float v = ((random() & 1U) != 0 ? -1.0f : 1.0f) * magnitude(random);
+    const std::uint16_t h = ref::F32ToF16(v);
+    std::memcpy(out.data() + (2 * i), &h, 2);
+  }
+  return out;
+}
+
+Trellis RandomTrellis(std::uint64_t seed, std::uint64_t k, std::uint64_t n, std::uint8_t bits,
+                      format::Exl3Codebook codebook, std::uint64_t matrices = 1) {
+  Trellis t;
+  t.format = Matrix(Encoding::kExl3Trellis, Layout::kExl3Tiles, k, n, matrices);
+  t.format.params.k_bits = bits;
+  t.format.params.codebook = codebook;
+  const auto parts = format::PartsOf(t.format);
+  EXPECT_TRUE(parts.has_value());
+  t.codes = RandomBytes(seed, (*parts)[0].bytes);
+  t.suh = HalfBytes(seed + 1, k * matrices);
+  t.svh = HalfBytes(seed + 2, n * matrices);
+  t.marker.resize(4 * matrices);
+  return t;
+}
+
+// The values codebook.cuh's decode_3inst gives, computed apart from the
+// reference: in Python, from each codebook's integer steps, the two F16
+// halves summed exactly (or mul1's h · 0x1EEE + 0xC931 exactly) and
+// rounded once to F16 with Python's half-even packing (struct 'e').
+TEST(ReferenceDecodeTest, Exl3CodebooksAreUpstreams) {
+  struct Case {
+    std::uint16_t state, three_inst, mcg, mul1;
+  };
+  constexpr std::array<Case, 6> kCases = {{{0x0000, 0x3A25, 0x3F60, 0xC2E8},
+                                           {0x0001, 0xBB5B, 0x304E, 0x3921},
+                                           {0x1234, 0xC066, 0x3E0F, 0xB89E},
+                                           {0x8000, 0xB7F8, 0xB915, 0xBAF2},
+                                           {0xBEEF, 0x424B, 0xC293, 0x3124},
+                                           {0xFFFF, 0xB110, 0x3ACD, 0xB936}}};
+  for (const Case& c : kCases) {
+    EXPECT_EQ(ref::Exl3CodebookValue(format::Exl3Codebook::k3Inst, c.state), c.three_inst)
+        << c.state;
+    EXPECT_EQ(ref::Exl3CodebookValue(format::Exl3Codebook::kMcg, c.state), c.mcg) << c.state;
+    EXPECT_EQ(ref::Exl3CodebookValue(format::Exl3Codebook::kMul1, c.state), c.mul1) << c.state;
+  }
+  EXPECT_EQ(ref::Exl3CodebookValue(format::Exl3Codebook::kNone, 0), 0x7E00);
+}
+
+// A tile's 256 states and where they land, derived apart from the
+// reference's simulation of the kernels: state t is the 16 bits of the
+// tile's circular bit stream (each uint32 most significant bit first)
+// ending at bit (t + 1) · K; position 8L + i (L a lane, i < 8) of a lane
+// without bit 2 lands at row (L % 4) · 2 + {0, 1, 8, 9}[i % 4] and column
+// 2 · (L / 8 + 4 · (i / 4)), and lane L + 4's same position one column
+// right. Every rate, tiles of two tile rows and columns, column ranges.
+TEST(ReferenceDecodeTest, Exl3TilesAreReconstructTilesLayout) {
+  constexpr std::uint64_t kK = 32;
+  constexpr std::uint64_t kN = 48;
+  for (std::uint8_t bits = 1; bits <= 8; ++bits) {
+    SCOPED_TRACE(static_cast<int>(bits));
+    const Trellis t = RandomTrellis(100 + bits, kK, kN, bits, format::Exl3Codebook::kMcg);
+    std::vector<std::uint16_t> want(kK * kN);
+    const std::uint64_t tile_bytes = std::uint64_t{32} * bits;
+    for (std::uint64_t kt = 0; kt < kK / 16; ++kt) {
+      for (std::uint64_t nt = 0; nt < kN / 16; ++nt) {
+        const std::span<const std::byte> tile =
+            std::span(t.codes).subspan(((kt * (kN / 16)) + nt) * tile_bytes, tile_bytes);
+        const std::uint64_t length = 256 * bits;
+        auto bit = [&](std::uint64_t j) {
+          std::uint32_t word = 0;
+          std::memcpy(&word, tile.data() + (4 * (j / 32)), 4);
+          return (word >> (31 - (j % 32))) & 1U;
+        };
+        for (std::uint64_t p = 0; p < 256; ++p) {
+          std::uint32_t state = 0;
+          const std::uint64_t end = (p + 1) * bits;
+          for (std::uint64_t i = 0; i < 16; ++i) {
+            state = (state << 1U) | bit((end + length - 16 + i) % length);
+          }
+          const std::uint64_t group = p / 8;
+          const bool partner = (group & 4) != 0;
+          const std::uint64_t lane = partner ? group - 4 : group;
+          const std::uint64_t i = p % 8;
+          constexpr std::array<std::uint64_t, 4> kRow = {0, 1, 8, 9};
+          const std::uint64_t row = ((lane % 4) * 2) + kRow.at(i % 4);
+          const std::uint64_t column = (2 * ((lane / 8) + (4 * (i / 4)))) + (partner ? 1 : 0);
+          want[(((kt * 16) + row) * kN) + (nt * 16) + column] =
+              ref::Exl3CodebookValue(format::Exl3Codebook::kMcg, static_cast<std::uint16_t>(state));
+        }
+      }
+    }
+    std::vector<std::uint16_t> got(kK * kN);
+    ASSERT_TRUE(ref::DecodeExl3Rotated(t.format, t.parts(), 0, 0, kN, got).has_value());
+    ASSERT_EQ(got, want);
+    // A column range: columns [16, 48) of every row.
+    std::vector<std::uint16_t> part(kK * 32);
+    ASSERT_TRUE(ref::DecodeExl3Rotated(t.format, t.parts(), 0, 16, 32, part).has_value());
+    for (std::uint64_t r = 0; r < kK; ++r) {
+      for (std::uint64_t c = 0; c < 32; ++c) {
+        ASSERT_EQ(part[(r * 32) + c], want[(r * kN) + 16 + c]) << r << " " << c;
+      }
+    }
+  }
+}
+
+// W = diag(suh) · H · Ŵ · H · diag(svh) / 128, computed here by explicit
+// products with the Hadamard matrices (not the reference's fast
+// transform), in F64 and rounded once to F32: equal for the 3inst and mcg
+// codebooks, whose sums are exact, and within F64 rounding for mul1; at
+// every rate, any row range, and the second of two matrices.
+TEST(ReferenceDecodeTest, Exl3RowsAreTheTransformedRotatedWeights) {
+  constexpr std::uint64_t kK = 256;
+  constexpr std::uint64_t kN = 384;
+  auto h = [](std::uint64_t i, std::uint64_t j) {
+    return std::popcount((i % 128) & (j % 128)) % 2 == 0 ? 1.0 : -1.0;
+  };
+  struct Case {
+    std::uint8_t bits;
+    format::Exl3Codebook codebook;
+  };
+  std::vector<Case> cases;
+  for (std::uint8_t bits = 1; bits <= 8; ++bits) {
+    cases.push_back({bits, format::Exl3Codebook::kMcg});
+  }
+  cases.push_back({3, format::Exl3Codebook::k3Inst});
+  cases.push_back({4, format::Exl3Codebook::kMul1});
+  for (const Case& c : cases) {
+    SCOPED_TRACE(std::format("K {} codebook {}", c.bits, static_cast<int>(c.codebook)));
+    const Trellis t = RandomTrellis(200 + c.bits, kK, kN, c.bits, c.codebook, 2);
+    std::vector<std::uint16_t> rotated(kK * kN);
+    ASSERT_TRUE(ref::DecodeExl3Rotated(t.format, t.parts(), 1, 0, kN, rotated).has_value());
+    // A = H · Ŵ, then W = A · H, block by block.
+    std::vector<double> a(kK * kN);
+    for (std::uint64_t k = 0; k < kK; ++k) {
+      for (std::uint64_t n = 0; n < kN; ++n) {
+        double sum = 0;
+        for (std::uint64_t j = k / 128 * 128; j < (k / 128 * 128) + 128; ++j) {
+          sum += h(k, j) * ref::F16ToF32(rotated[(j * kN) + n]);
+        }
+        a[(k * kN) + n] = sum;
+      }
+    }
+    std::vector<float> want(kN * kK);  // rows of W: output n, then input k
+    for (std::uint64_t k = 0; k < kK; ++k) {
+      std::uint16_t su = 0;
+      std::memcpy(&su, t.suh.data() + (2 * (kK + k)), 2);
+      for (std::uint64_t n = 0; n < kN; ++n) {
+        double sum = 0;
+        for (std::uint64_t j = n / 128 * 128; j < (n / 128 * 128) + 128; ++j) {
+          sum += a[(k * kN) + j] * h(j, n);
+        }
+        std::uint16_t sv = 0;
+        std::memcpy(&sv, t.svh.data() + (2 * (kN + n)), 2);
+        want[(n * kK) + k] =
+            static_cast<float>(sum * ref::F16ToF32(su) * ref::F16ToF32(sv) / 128.0);
+      }
+    }
+    const std::vector<float> got = Decode(t.format, t.parts(), 1, 0, kN);
+    const std::vector<float> some = Decode(t.format, t.parts(), 1, 100, 200);
+    for (std::size_t i = 0; i < got.size(); ++i) {
+      if (c.codebook == format::Exl3Codebook::kMul1) {
+        ASSERT_NEAR(got[i], want[i], 1e-6 * std::max(1.0f, std::abs(want[i]))) << i;
+      } else {
+        ASSERT_TRUE(SameBits(got[i], want[i])) << i << ": " << got[i] << " " << want[i];
+      }
+      if (i >= 100 * kK && i < 300 * kK) {
+        ASSERT_TRUE(SameBits(some[i - (100 * kK)], got[i])) << i;
+      }
+    }
+  }
+}
+
+TEST(ReferenceDecodeTest, Exl3RefusesWhatUpstreamDoesNotTake) {
+  const Trellis t = RandomTrellis(7, 128, 256, 4, format::Exl3Codebook::kMcg);
+  std::vector<float> row(128);
+  // Missing or short side vectors.
+  std::vector<ref::PartView> parts = t.parts();
+  parts.erase(parts.begin() + 1);
+  EXPECT_EQ(ref::DecodeRows(t.format, parts, 0, 0, 1, row).error(), ref::DecodeError::kParts);
+  parts = t.parts();
+  parts[2].bytes = parts[2].bytes.first(10);
+  EXPECT_EQ(ref::DecodeRows(t.format, parts, 0, 0, 1, row).error(), ref::DecodeError::kParts);
+  // K or N off the Hadamard's 128 (whole tiles, so a valid format).
+  const Trellis narrow = RandomTrellis(8, 128, 144, 4, format::Exl3Codebook::kMcg);
+  ASSERT_TRUE(format::Validate(narrow.format).has_value());
+  EXPECT_EQ(ref::DecodeRows(narrow.format, narrow.parts(), 0, 0, 1, row).error(),
+            ref::DecodeError::kUnsupported);
+  std::vector<std::uint16_t> rotated(128 * 144);
+  EXPECT_TRUE(
+      ref::DecodeExl3Rotated(narrow.format, narrow.parts(), 0, 0, 144, rotated).has_value());
+  // Rotated columns off the tiles, past the matrix, or the wrong size.
+  std::vector<std::uint16_t> some(128 * 16);
+  EXPECT_EQ(ref::DecodeExl3Rotated(t.format, t.parts(), 0, 8, 16, some).error(),
+            ref::DecodeError::kRange);
+  EXPECT_EQ(ref::DecodeExl3Rotated(t.format, t.parts(), 0, 256, 16, some).error(),
+            ref::DecodeError::kRange);
+  EXPECT_EQ(ref::DecodeExl3Rotated(t.format, t.parts(), 1, 0, 16, some).error(),
+            ref::DecodeError::kRange);
+  EXPECT_EQ(ref::DecodeExl3Rotated(t.format, t.parts(), 0, 0, 32, some).error(),
+            ref::DecodeError::kRange);
+  EXPECT_EQ(ref::DecodeExl3Rotated(Matrix(Encoding::kF16, Layout::kDense, 128, 16), t.parts(), 0, 0,
+                                   16, some)
+                .error(),
+            ref::DecodeError::kUnsupported);
+  // No codebook, or a rate past 8: not a format.
+  TensorFormat none = t.format;
+  none.params.codebook = format::Exl3Codebook::kNone;
+  EXPECT_EQ(ref::DecodeRows(none, t.parts(), 0, 0, 1, row).error(), ref::DecodeError::kFormat);
+  TensorFormat nine = t.format;
+  nine.params.k_bits = 9;
+  EXPECT_EQ(ref::DecodeRows(nine, t.parts(), 0, 0, 1, row).error(), ref::DecodeError::kFormat);
+  // Nothing encodes a trellis.
+  std::vector<std::byte> data(1 << 16);
+  EXPECT_EQ(ref::EncodeRows(t.format, 0, 0, row, data).error(), ref::DecodeError::kUnsupported);
+}
+
+// ---------------------------------------------------------------- state encodings
+
+// Every state encoding encodes and decodes on the CPU (what a reference
+// cache store writes and a reference attention reads): F32 exactly, F16
+// and BF16 rounded to nearest even, GGML's blocks within their step (Q8_0
+// within amax / 128 of each block, Q5_x amax / 16, Q4_x amax / 8, the F16
+// scale's rounding included); and a lossy one is never Lossless from F16.
+TEST(ReferenceDecodeTest, StateEncodingsEncodeAndDecode) {
+  constexpr std::uint64_t kK = 256;
+  constexpr std::uint64_t kRows = 6;
+  const std::vector<float> rows = Normal(31, kK * kRows);
+  for (const Encoding e : format::StateEncodings()) {
+    const format::EncodingInfo& info = format::Info(e);
+    SCOPED_TRACE(std::string(info.name));
+    const TensorFormat f =
+        Matrix(e, info.quantized ? Layout::kGgmlBlocks : Layout::kDense, kK, kRows);
+    std::vector<std::byte> data(format::PartsOf(f).value()[0].bytes);
+    ASSERT_TRUE(ref::EncodeRows(f, 0, 0, rows, data).has_value());
+    const ref::PartView view{.role = PartRole::kData, .bytes = data};
+    const std::vector<float> back = Decode(f, {&view, 1}, 0, 0, kRows);
+    if (!info.quantized) {
+      for (std::size_t i = 0; i < rows.size(); ++i) {
+        const float want = e == Encoding::kF32   ? rows[i]
+                           : e == Encoding::kF16 ? ref::F16ToF32(ref::F32ToF16(rows[i]))
+                                                 : ref::Bf16ToF32(ref::F32ToBf16(rows[i]));
+        ASSERT_TRUE(SameBits(back[i], want)) << i;
+      }
+      continue;
+    }
+    EXPECT_FALSE(format::Lossless(Encoding::kF16, e));
+    const double step = e == Encoding::kQ8_0                           ? 1.0 / 128
+                        : e == Encoding::kQ5_0 || e == Encoding::kQ5_1 ? 1.0 / 16
+                                                                       : 1.0 / 8;
+    const std::uint64_t block = info.block_elements;
+    for (std::size_t b = 0; b < rows.size() / block; ++b) {
+      double amax = 0;
+      for (std::size_t i = b * block; i < (b + 1) * block; ++i) {
+        amax = std::max(amax, std::abs(static_cast<double>(rows[i])));
+      }
+      for (std::size_t i = b * block; i < (b + 1) * block; ++i) {
+        ASSERT_LE(std::abs(static_cast<double>(back[i]) - rows[i]), 1.01 * step * amax) << i;
+      }
+    }
+  }
 }
 
 TEST(ReferenceDecodeTest, RefusesPartsAndRangesThatDoNotFit) {

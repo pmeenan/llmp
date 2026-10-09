@@ -1379,7 +1379,13 @@ each is checked against the design as M3.6 proceeds.
             capabilities and the ladder's ordering.
       - [x] CUDA block decoders under the vector, matrix, grouped and GLU
             templates; the `sm_86` proof.
-      - [ ] The EXL3 trellis through the layer; state encodings.
+      - [x] The EXL3 trellis through the layer; state encodings (the
+            format half: which encodings, exact or lossy, CPU encode and
+            decode).
+      - [ ] Lossy state encodings end to end: attention that reads them,
+            quantizing cache stores, the state contracts' sizes and
+            kept-state layout, and the per-alias setting
+            (engine-components.md).
 - [ ] **Shared slot lifecycle, one runner interface, one serving adapter
       per pipeline kind**, derived from state contracts; reconcile today's
       divergent copies (Gemma2's restore guards against Gemma3's).

@@ -38,6 +38,18 @@
 // pair of implementations of one operation at up to eight rows
 // (docs/backend-proof.md, "Coexistence and swapping"); a plan names one.
 //
+// Each path but the bias add also declares its capability (D-108): a
+// product of the EXL3 trellis in its tiles with F16 activations, at the
+// format ladder's rung 1, with the shapes, rates and devices its host
+// checks (validate.h) take; the two reconstruction paths as a transient
+// expansion into workspace, which Candidates() refuses for decode-shaped
+// products, and only on the GB10, where their cuBLASLt algorithms were
+// pinned. For those two a candidate is necessary, not sufficient: each
+// slice's GEMM runs only with an algorithm pinned for exactly its m, k, n
+// and ldc (ReconGemm refuses any other), and exl3-recon-pin.json pins only
+// the fixtures' shapes at 145, 1,023 and 1,024 rows, so a planner keeps a
+// reconstruction candidate only where its tuning data holds every pin.
+//
 // Each identity covers everything that decides what an implementation
 // computes and launches: the prepared ExLlamaV3 tree's digest (upstream's
 // bytes, llmpalooza's patches and the build of the kernels, D-057); a digest of

@@ -321,6 +321,86 @@ resources, while a stacked format has one tensor-scale part ordered
 [matrix][stacked]: a launch gathers them until the importer writes that
 part, which the v1 manifest should hold as such.
 
+**The EXL3 trellis (2026-10-09).** `kernels/reference` decodes the
+trellis as ExLlamaV3's pinned kernels define it: `exl3_dq.cuh`'s 16-bit
+states over each tile's circular bit stream, `codebook.cuh`'s 3inst, mcg
+and mul1 values, `reconstruct.cu`'s placement of a tile's positions, and
+the 128-point Hadamard transforms with the `suh`/`svh` vectors, at every
+integer rate from 1 to 8 (half-integer rates have no format yet). It gives
+the rotated weights exactly as `reconstruct_kernel` writes them, and the
+original-basis weights computed in F64 and rounded once to F32 (exact for
+3inst and mcg); upstream's own transforms round to F16 along the way, so
+those agree within that arithmetic. The EXL3 module declares its paths'
+capabilities from their host checks: the GEMV (K = 4, up to 8 rows), the
+packed GEMM and the multi-GEMM at rung 1, and the two reconstruction paths
+as transient expansions, selectable only on the GB10 (where their cuBLASLt
+algorithms were pinned) and never for a decode-shaped product. For those
+two a candidate is necessary, not sufficient: each slice's GEMM runs only
+with an algorithm pinned for exactly its shape, and `exl3-recon-pin.json`
+pins only the fixtures' shapes at 145, 1,023 and 1,024 rows, so a planner
+drops a reconstruction candidate where its tuning data holds no pin. A
+capability query's operand formats now carry the encoding's parameters,
+which the EXL3 predicates read (mcg at K = 4, 5, 6 or 8 is what is
+compiled). On spark-b (`exl3_trellis_test`), `reconstruct_kernel` equals
+the reference bit for bit on every linear of both Qwen2.5 EXL3 fixtures
+(169 each, the head's first and last 1,024 columns) and on random
+trellises at K = 4, 5, 6 and 8; `reconstruct_had_kernel` is within 1.0e-3
+relative L2 of the reference's F32 weights; and layer 0's q, gate and down
+products at 1, 8, 145 and 1,024 rows through every candidate, and gate
+with up through the multi-GEMM, are within 1.2e-3 relative RMS of an F64
+product of the reference's weights (6.1e-4 on the paths that keep the
+weights exact). The trellis has no
+block decoder in `kernels/decode`: on CUDA its rung-1 kernels are
+ExLlamaV3's, and another backend needs a trellis decoder of its own.
+
+**State encodings (the format half).** `format::StateEncodings()` lists
+the encodings the format layer admits for a state tensor, each of which
+the CPU reference encodes and decodes: F32, F16, BF16 and the blocks
+GGML's attention reads at the pin, Q4_0, Q4_1, Q5_0, Q5_1 and Q8_0.
+Membership is not a device claim: a state may use an encoding only where
+its plan finds an attention that reads it and a cache store that writes
+it, which today means F16 or F32 (below). Whether one is
+exact for a state is `format::Lossless(the contract's encoding, the stored
+one)`: an F16 KV cache stores exactly as F16 or F32 and lossily as BF16 or
+any block. The CPU reference encodes and decodes each (`EncodeRows`
+through GGML's reference quantizers, `DecodeRows`), so the reference
+executor's cache stores can write them. No CUDA path llmpalooza compiles
+reads a quantized K or V today, so no attention capability is declared for
+one: `src/kernels/ggml`'s vector attention is instantiated for F16 K and V
+at D 64 and 256 only (`fattn.cu`), and the tensor-core kernels (D 128, 256,
+512), the owner and QSA kernels and DeepSeek's take F16 K and V. What the
+format layer's remaining sub-task (lossy state encodings end to end,
+plan.md) needs:
+- attention that reads them: GGML's vector instances for the quantized
+  types (`template-instances/fattn-vec-instance-<K>-<V>.cu`, D 64, 128 and
+  256 at the pin) compiled and declared with their operand encodings;
+  beyond the vector kernel's one or two query rows GGML converts quantized
+  K and V to F16 in pool scratch first (`launch_fattn`), a transient
+  expansion that D-108 allows for prefill only where measured faster;
+  above D 256 there is no quantized path upstream, so D 512 needs a
+  decoder under a shared attention kernel;
+- a quantizing cache store: GGML's `set_rows` quantizes into Q4_0 to Q8_0
+  and IQ4_NL (`k_set_rows_quant`, `cpy-utils.cuh`, the same arithmetic as
+  the reference's `quantize_row_*_ref` but built with fast math, so their
+  bit agreement is to be checked), while llmpalooza's `ggml.set_rows`,
+  `set_rows.ext`, the fused RoPE store and the grouped stores write F16 or
+  F32 only;
+- the state contracts' sizes and spill ranges from the size rule, and the
+  kept-state layout ID (D-105) carrying each state's encoding.
+
+**The per-alias setting (not added yet).** A lossy state encoding is a
+model setting under `[models.NAME]` (D-096), one key per kind of state a
+component's contract names (the KV cache first), resolved through D-103's
+layers: the derived default is each contract's own exact encoding;
+calibration never picks a lossy one, since it trades quality rather than
+speed; an override or a preset may name any encoding the contract admits
+from `StateEncodings()` for which the backend declares an attention and a
+cache store, the schema refusing others, and the `settings`
+command reports it with its source and whether it is lossy. Off by
+default. It changes the kept-state layout ID, so kept state of another
+encoding is discarded rather than adopted. Adding the key is a public
+configuration change and takes a decisions entry with the item.
+
 ## The importer
 
 Native C++, part of the distribution; no Python (D-109).
