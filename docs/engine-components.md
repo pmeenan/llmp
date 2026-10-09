@@ -151,8 +151,35 @@ composite op has a primitive decomposition (`ir/decompose.h`, `Expand`),
 and the reference executor runs every op over host buffers in their
 formats, fused kinds through their decompositions, collectives over
 simulated devices. Where GGML's kernels differ from the definition (a
-fully masked row is 0, not NaN; top-k and argsort order among ties; RoPE
-angles in F32), `op.h` says so, and a port's comparison allows for it.
+fully masked row is 0, not NaN; top-k and argsort order among ties),
+`op.h` says so, and a port's comparison allows for it.
+
+Op-set changes after the first review (2026-10-09; still version 1, as
+nothing has been released): products (`kMatMul`, `kMatMulId`) carry
+`ProductParams`, the accumulation (`kDefault`, or `kF32`: GGML's
+`ggml_prec_set_acc`) and a hint (`kHadamard`: GGML's
+`GGML_HINT_SRC0_IS_HADAMARD`, a square matrix only); attention's
+parameters add the same accumulation, `n_kv_max` (a promise on the finite
+cells of every mask row, which needs the mask) and `sparse_any` (which
+needs `n_kv_max`). These are hashed, so a lowering reproduces production's
+graphs node for node, and the reference executor ignores them. A RoPE
+angle is defined as GGML's CUDA kernel forms it, each step rounded to F32
+(`theta_scale`, its power, the position times it, the frequency factor,
+the YaRN mix and magnitude); only the rotation by that angle is exact, and
+a port allows for the device's fast-math `powf`, `sinf`, `cosf` and FMA
+contraction (a test pins the F32 angles near position 2^20, where they are
+0.004 to 0.1 radians from the exact ones). `fused.mul_mat_glu` takes
+(gate weight, up weight, input), as GGML's `ggml_glu_split(gate, up)` over
+its two products and the decode declarations do, and
+`fused.prepared_products` takes its weights first too (w0, …, input). `fused.moe_combine`'s
+shared-expert gate is optional (DeepSeek V4's shared expert has none).
+A routing scale is the factor itself and above zero: a checkpoint's unset
+0 is written 1. Every composite op now decomposes for every shape the
+verifier admits: pooling over several matrices along dim 3, and the gated
+delta rule where each q and k sequence serves several value sequences;
+the latter stores each token's output at its own row of one buffer and
+gathers them back (copying linear in the tokens), so any permutation from
+its argsort serves as the rows.
 
 ## Components
 
@@ -237,6 +264,57 @@ validated by the runtime against the compiled catalog (D-109):
 
 Checkpoint approval is a list in data, not a profile in code
 ([admission](#admitting-a-checkpoint)).
+
+**As built** (`src/spec`, 2026-10-09). `spec.h` holds `ModelSpec`: spec
+version 1, the pipeline kind, the folds applied and the stages; a stage
+has its role (target, drafter, encoder, text encoder, denoiser, VAE), its
+artifact index in the bound list, its trained context, an embedding, the
+residual stream (stream count, width, and a mixing component exactly when
+there are several streams), side inputs with the layers that read them,
+layers of components in execution order, feature taps (a layer's output,
+its streams, or the final norm's output), heads (final norm, output,
+softcap, MTP heads) and reads of another stage's tap or borrowed state.
+A component reference is a kind and version, which only the catalog
+interprets, with typed parameters (integers, reals, flags, names and
+lists of integers or reals) and weight bindings (role, artifact tensor
+name, part, whether an expert array). Its JSON is the canonical subset of
+the v0 manifest's JSON, so parsing reuses the artifact reader and refuses
+anything non-canonical, unknown or duplicate keys, out-of-range numbers,
+unsorted lists, unknown folds and dangling taps and reads; reals are
+strings in their shortest round-trip form, finite and never -0 (which
+would be a second encoding of 0). Its digest is the SHA-256 of
+those bytes. Kept-state layout IDs and plan keys are to derive from
+`BoundDigest`: the spec digest with the length-prefixed IDs of the
+artifacts its stages bind (of a spec `Validate` accepts), since another
+checkpoint of the same spec shares the layout but not the state. The spec nests eight levels, the v0 JSON's limit: a v1
+manifest that holds it as a member raises that limit or keeps it as a
+document of its own.
+
+`mapping.h` makes specs from architecture mappings: compiled tables of
+slots (component kinds at the embedding, the layers of some types, the
+final norm and the output), tensor-name patterns with `{layer}` (and
+fallbacks: Gemma's tied output binds the embedding), parameter rules from
+source keys with a fixed set of transforms (reciprocal, square root,
+reciprocal square root) and constants, tried in order per layer type,
+requirements on source values, and folds from a fixed catalog
+(`norm.plus_one`, `ssm.a_neg_exp`, `gdn.value_heads_tiled`) asserted per
+source container. Mappings are validated like untrusted input.
+Synthesis binds every source tensor to exactly one rule and every
+required role to a tensor, and resolves every parameter. For a v0
+artifact the tensors are its resources' roles and expert arrays and the
+values come from today's compiled profiles under the GGUF keys a mapping
+reads (`mappings/gemma2.h`, `gemma3.h`), so no new file is parsed; the
+importer will apply the same mappings to checkpoints. Gemma 2 and
+Gemma 3 have mappings: `attention.dense` and `ffn.glu` (sandwich norms,
+GQA, softcap, sliding windows, NEOX rotation, GELU-tanh GLU),
+`embedding.token` scaled by sqrt(width), `norm.rms` and `head.linear`;
+their specs from the installed artifacts equal those from the tensor
+tables in `tests/unit/data`. They also read the optional keys llama.cpp
+reads (a sliding-window rotation base, Gemma 3's final softcap) and
+refuse a layer pattern other than theirs; neither can yet express the
+27B query scale (1 / sqrt(width / heads), which llama.cpp picks by layer
+count), so the importer must not apply them to a 27B checkpoint. The catalog that gives these kinds meaning
+is the component framework's.
 
 ## Weight and state formats
 

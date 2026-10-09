@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -238,6 +239,49 @@ TEST(IrTest, RefusesWhatOpSetV1DoesNotDefine) {
     EXPECT_EQ(ErrorOf(b), GraphError::kArity);
   }
   {
+    // A sparse bound without the mask, and the sparse gather without one.
+    Builder b;
+    const TensorId q = b.Input(F32({8, 2, 2}));
+    const TensorId k = b.Input(F32({8, 4, 1}));
+    b.Attention(q, k, k, {}, {}, AttnParams{.n_kv_max = 2});
+    EXPECT_EQ(ErrorOf(b), GraphError::kArity);
+    Builder c;
+    const TensorId q2 = c.Input(F32({8, 2, 2}));
+    const TensorId k2 = c.Input(F32({8, 4, 1}));
+    c.Attention(q2, k2, k2, c.Input(F32({4, 2})), {}, AttnParams{.sparse_any = true});
+    EXPECT_EQ(ErrorOf(c), GraphError::kParams);
+  }
+  {
+    // A Hadamard hint on a matrix that is not square, and an unknown
+    // accumulation.
+    Builder b;
+    b.MatMul(b.Input(F32({8, 4})), b.Input(F32({8, 3})),
+             ProductParams{.hint = ProductHint::kHadamard});
+    EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+    Builder c;
+    ParamBytes raw{};
+    raw[0] = std::byte{2};
+    c.Emit(Primitive(Op::kMatMul), raw, std::array{c.Input(F32({8, 4})), c.Input(F32({8, 3}))});
+    EXPECT_EQ(ErrorOf(c), GraphError::kParams);
+  }
+  {
+    // A routing scale of 0: an unset scale is written 1.
+    Builder b;
+    b.Route(b.Input(F32({8, 2})), {}, {}, {}, RouteParams{.experts = 8, .used = 2, .scale = 0.0f});
+    EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+  }
+  {
+    // The MoE combine's expert scales [E] where its optional shared gate
+    // [1, T] goes: E divides the width, so a product would broadcast.
+    Builder b;
+    const TensorId down = b.Input(F32({8, 2, 3}));
+    const TensorId ids = b.Input(I32({2, 3}));
+    const TensorId weights = b.Input(F32({2, 3}));
+    const TensorId shared = b.Input(F32({8, 3}));
+    b.Fused(FusedKind::kMoeCombine, std::array{down, ids, weights, shared, b.Input(F32({4}))});
+    EXPECT_EQ(ErrorOf(b), GraphError::kShape);
+  }
+  {
     // A source another builder made.
     Builder other;
     const TensorId foreign = other.Input(F32({4}));
@@ -395,6 +439,28 @@ TEST(IrTest, DigestIsCanonical) {
   EXPECT_NE(variant(2), base);
   EXPECT_NE(variant(4), base);
   EXPECT_NE(variant(5), base);
+}
+
+TEST(IrTest, DigestHashesAccumulationAndHints) {
+  // Production's per-node choices are part of the graph a lowering
+  // reproduces: two graphs that differ only in them digest apart.
+  const auto digest = [](const ProductParams& product, const AttnParams& attn) {
+    Builder b;
+    const TensorId x = b.Input(F32({8, 4}));
+    const TensorId w = b.Weight(Dense(Encoding::kF16, ShapeOf({8, 8})), WeightRef{.role = 1});
+    const TensorId y = b.MatMul(w, x, product);
+    const TensorId q = b.Reshape(y, ShapeOf({8, 4, 1}));
+    b.Output(b.Attention(q, q, q, b.Input(F32({4, 4})), {}, attn));
+    auto g = std::move(b).Finish();
+    EXPECT_TRUE(g.has_value()) << (g ? "" : g.error().detail);
+    return g ? base::ToHex(g->Digest()) : std::string();
+  };
+  const std::string plain = digest({}, {});
+  EXPECT_NE(digest({.accumulate = Accumulate::kF32}, {}), plain);
+  EXPECT_NE(digest({.hint = ProductHint::kHadamard}, {}), plain);
+  EXPECT_NE(digest({}, {.accumulate = Accumulate::kF32}), plain);
+  EXPECT_NE(digest({}, {.n_kv_max = 2}), plain);
+  EXPECT_NE(digest({}, {.sparse_any = true, .n_kv_max = 2}), digest({}, {.n_kv_max = 2}));
 }
 
 TEST(IrTest, DigestIsStableAcrossBuilds) {

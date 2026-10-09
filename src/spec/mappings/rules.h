@@ -1,0 +1,90 @@
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// Shorthand for writing mapping tables (spec/mapping.h) as constant data,
+// and for a v0 profile's source values. Internal to src/spec/mappings.
+
+#ifndef LLMP_SPEC_MAPPINGS_RULES_H_
+#define LLMP_SPEC_MAPPINGS_RULES_H_
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+
+#include "spec/mapping.h"
+#include "spec/spec.h"
+
+namespace llmp::spec::mappings {
+
+// A parameter from a source key; `optional`: left out when the key is
+// absent and no later rule gives it.
+constexpr ParamRule FromKey(std::string_view slot, std::string_view param, std::string_view key,
+                            ValueType type, Transform transform = Transform::kNone,
+                            std::string_view layer_types = {}, bool optional = false) {
+  return {.slot = slot,
+          .param = param,
+          .layer_types = layer_types,
+          .key = key,
+          .type = type,
+          .transform = transform,
+          .optional = optional};
+}
+
+// Constant parameters.
+constexpr ParamRule Int(std::string_view slot, std::string_view param, std::int64_t value,
+                        std::string_view layer_types = {}) {
+  return {.slot = slot,
+          .param = param,
+          .layer_types = layer_types,
+          .type = ValueType::kInt,
+          .value = {.integer = value}};
+}
+constexpr ParamRule Real(std::string_view slot, std::string_view param, double value,
+                         std::string_view layer_types = {}) {
+  return {.slot = slot,
+          .param = param,
+          .layer_types = layer_types,
+          .type = ValueType::kReal,
+          .value = {.real = value}};
+}
+constexpr ParamRule Flag(std::string_view slot, std::string_view param, bool value,
+                         std::string_view layer_types = {}) {
+  return {.slot = slot,
+          .param = param,
+          .layer_types = layer_types,
+          .type = ValueType::kBool,
+          .value = {.flag = value}};
+}
+constexpr ParamRule Name(std::string_view slot, std::string_view param, std::string_view value,
+                         std::string_view layer_types = {}) {
+  return {.slot = slot,
+          .param = param,
+          .layer_types = layer_types,
+          .type = ValueType::kString,
+          .value = {.text = value}};
+}
+
+// A requirement: the key's value is `value`, or (optional) the key is
+// absent.
+constexpr ParamRule Require(std::string_view key, std::string_view value, bool optional) {
+  return {.key = key, .type = ValueType::kString, .value = {.text = value}, .optional = optional};
+}
+constexpr ParamRule RequireInt(std::string_view key, std::int64_t value, bool optional) {
+  return {.key = key, .type = ValueType::kInt, .value = {.integer = value}, .optional = optional};
+}
+
+// A profile's value under a source key: integers as integers, floats as the
+// reals they are.
+inline SourceValue Value(std::string_view key, std::uint32_t v) {
+  return {.key = std::string(key), .value = ParamValue(static_cast<std::int64_t>(v))};
+}
+inline SourceValue Value(std::string_view key, float v) {
+  return {.key = std::string(key), .value = ParamValue(static_cast<double>(v))};
+}
+inline SourceValue Value(std::string_view key, std::string_view v) {
+  return {.key = std::string(key), .value = ParamValue(std::string(v))};
+}
+
+}  // namespace llmp::spec::mappings
+
+#endif  // LLMP_SPEC_MAPPINGS_RULES_H_

@@ -757,21 +757,36 @@ TEST_F(ExecTest, NormsMatchTheirDefinitions) {
   ExpectNear(Get(ch), want_ch, 1e-6, "channel");
 }
 
-// ggml's rotation of one pair (rope.cu:15-44), in FP64 (ggml_ext_ops_test's RopeAngle).
-std::pair<double, double> RopeAngle(double theta_extrap, int pair, double freq_scale,
-                                    const std::array<float, 2>& corr, double ext_factor,
-                                    double attn_factor, bool forward) {
-  const double theta_interp = freq_scale * theta_extrap;
-  double theta = theta_interp;
-  double mscale = attn_factor;
-  if (ext_factor != 0.0) {
-    const double y = (pair - static_cast<double>(corr[0])) /
-                     std::max(0.001, static_cast<double>(corr[1]) - corr[0]);
-    const double ramp = (1.0 - std::min(1.0, std::max(0.0, y))) * ext_factor;
-    theta = (theta_interp * (1 - ramp)) + (theta_extrap * ramp);
-    mscale *= 1.0 + (0.1 * std::log(1.0 / freq_scale));
+// ggml's rotation of one pair (rope.cu:15-44): op.h's angle, each step in
+// F32 (one statement each, so nothing contracts into a fused multiply-add),
+// then the exact cosine and sine of it.
+std::pair<double, double> RopeAngle(float theta_extrap, int pair, float freq_scale,
+                                    const std::array<float, 2>& corr, float ext_factor,
+                                    float attn_factor, bool forward) {
+  const float theta_interp = freq_scale * theta_extrap;
+  float theta = theta_interp;
+  float mscale = attn_factor;
+  if (ext_factor != 0.0f) {
+    const float y = (static_cast<float>(pair) - corr[0]) / std::max(0.001f, corr[1] - corr[0]);
+    const float ramp = (1.0f - std::min(1.0f, std::max(0.0f, y))) * ext_factor;
+    const float kept = theta_interp * (1.0f - ramp);
+    const float mixed = theta_extrap * ramp;
+    theta = kept + mixed;
+    const float magnitude = 0.1f * std::log(1.0f / freq_scale);
+    mscale *= 1.0f + magnitude;
   }
-  return {std::cos(theta) * mscale, std::sin(theta) * mscale * (forward ? 1.0 : -1.0)};
+  const double m = mscale;
+  const double t = theta;
+  return {std::cos(t) * m, std::sin(t) * m * (forward ? 1.0 : -1.0)};
+}
+
+// op.h's F32 base angle of a pair: (float) pos · (float) s^e, s = (float)
+// base^(-2 / dims).
+float RopeBase(std::int64_t pos, double exponent, float base, std::uint32_t dims) {
+  const auto s = static_cast<float>(
+      std::pow(static_cast<double>(base), static_cast<double>(-2.0f / static_cast<float>(dims))));
+  const auto f = static_cast<float>(std::pow(static_cast<double>(s), exponent));
+  return static_cast<float>(pos) * f;
 }
 
 std::array<float, 2> YarnCorr(int n_dims, int ctx, float base, float fast, float slow) {
@@ -866,7 +881,6 @@ TEST_F(ExecTest, RotationsMatchGgmlsDefinition) {
     const bool neox = c.mode != ir::RopeMode::kNormal;
     const std::array<float, 2> corr =
         YarnCorr(static_cast<int>(c.dims), kContext, c.base, 32.0f, 1.0f);
-    const double theta_scale = std::pow(static_cast<double>(c.base), -2.0 / c.dims);
     const int sect = 8;
     std::vector<double> want(xv[ci].begin(), xv[ci].end());
     for (std::uint64_t t = 0; t < kTokens; ++t) {
@@ -890,13 +904,13 @@ TEST_F(ExecTest, RotationsMatchGgmlsDefinition) {
               component = 3;
             }
           }
-          double extrap =
-              static_cast<double>(pv[ci][N(static_cast<std::uint64_t>(component) * kTokens + t)]) *
-              std::pow(theta_scale, pair);
+          float extrap = RopeBase(pv[ci][N(static_cast<std::uint64_t>(component) * kTokens + t)],
+                                  pair, c.base, c.dims);
           if (c.factors) {
             extrap /= fv[ci][N(static_cast<std::uint64_t>(pair))];
           }
-          const auto [cos_t, sin_t] = RopeAngle(extrap, pair, c.scale, corr, c.ext, 1.0, c.forward);
+          const auto [cos_t, sin_t] =
+              RopeAngle(extrap, pair, c.scale, corr, c.ext, 1.0f, c.forward);
           const std::size_t i0 =
               row + c.offset + N(static_cast<std::uint64_t>(neox ? pair : 2 * pair));
           const std::size_t i1 = neox ? i0 + (c.dims / 2) : i0 + 1;
@@ -908,6 +922,58 @@ TEST_F(ExecTest, RotationsMatchGgmlsDefinition) {
       }
     }
     ExpectNear(Get(outs[ci]), want, 2e-5, "rope case " + std::to_string(ci));
+  }
+}
+
+TEST_F(ExecTest, RotationAnglesAreFormedInF32NearAMillion) {
+  // op.h's F32 angle at positions near 2^20 (NEOX, 128 dims, base 10000),
+  // where its rounding is hundredths of a radian: pairs 1, 2 and 5 of one
+  // head rotate (1, 0), so the results are the cosine and sine of the angle
+  // formed. The angles are pinned: (float) pos · (float) s^e by hand.
+  constexpr std::uint64_t kDims = 128;
+  const TensorId x = F({kDims, 1, 2});
+  const TensorId pos = I({2});
+  const TensorId out =
+      b.Rope(x, pos, {}, ir::RopeParams{.mode = ir::RopeMode::kNeox, .dims = kDims});
+  b.Output(out);
+  ASSERT_TRUE(Finish());
+  const std::array<std::int64_t, 2> positions = {1048573, 999983};
+  const std::array<int, 3> pairs = {1, 2, 5};
+  // Python with struct-packed F32 roundings of each step.
+  const std::array<std::array<double, 3>, 2> angles = {{
+      {908026.8125, 786318.875, 510621.09375},
+      {865949.625, 749881.5, 486959.34375},
+  }};
+  std::vector<float> xv(N(kDims * 2), 0.0f);
+  for (std::size_t t = 0; t < 2; ++t) {
+    for (const int pair : pairs) {
+      xv[(t * kDims) + N(static_cast<std::uint64_t>(pair))] = 1.0f;
+    }
+  }
+  Set(x, xv);
+  SetInts(pos, {positions[0], positions[1]});
+  ASSERT_TRUE(Run());
+  const std::vector<float> got = Get(out);
+  for (std::size_t t = 0; t < 2; ++t) {
+    for (std::size_t i = 0; i < pairs.size(); ++i) {
+      const int pair = pairs.at(i);
+      const double theta = angles.at(t).at(i);
+      EXPECT_EQ(static_cast<double>(RopeBase(positions.at(t), pair, 10000.0f, kDims)), theta);
+      const std::size_t i0 = (t * kDims) + N(static_cast<std::uint64_t>(pair));
+      const std::size_t i1 = i0 + (kDims / 2);
+      EXPECT_NEAR(got[i0], std::cos(theta), 1e-6) << t << " pair " << pair;
+      EXPECT_NEAR(got[i1], std::sin(theta), 1e-6) << t << " pair " << pair;
+      // The exact angle is another rotation: by 0.004 to 0.1 radians here.
+      const double exact =
+          static_cast<double>(positions.at(t)) * std::pow(10000.0, -2.0 * pair / kDims);
+      EXPECT_GT(std::fabs(theta - exact), 3e-3) << t << " pair " << pair;
+      if (pair == 5) {
+        EXPECT_GT(
+            std::max(std::fabs(got[i0] - std::cos(exact)), std::fabs(got[i1] - std::sin(exact))),
+            1e-2)
+            << t;
+      }
+    }
   }
 }
 
@@ -1777,6 +1843,11 @@ TEST(ReferenceDecompositionTest, CompositeOpsEqualTheirDecompositions) {
   const TensorId px = in({3, 8, 2});
   b.Output(b.Pool(px, {}, ir::PoolParams{.ratio = 4}));
   b.Output(b.Pool(px, in({3, 8, 2}), ir::PoolParams{.ratio = 2, .kind = ir::PoolKind::kSoftmax}));
+  // Several matrices along dim 3 too.
+  const TensorId px4 = in({3, 8, 2, 3});
+  b.Output(b.Pool(px4, {}, ir::PoolParams{.ratio = 2}));
+  b.Output(
+      b.Pool(px4, in({3, 8, 2, 3}), ir::PoolParams{.ratio = 4, .kind = ir::PoolKind::kSoftmax}));
   const TensorId logits = in({6, 3});
   for (const ir::Outputs& r :
        {b.Route(logits, {}, {}, {},
@@ -1802,6 +1873,15 @@ TEST(ReferenceDecompositionTest, CompositeOpsEqualTheirDecompositions) {
                       in({1, 4, 3, 1}, 0.1f), in({1, 4, 3, 1}, 0.5f), in({4, 4, 4, 1}, 0.2f));
   b.Output(gdn[0]);
   b.Output(gdn[1]);
+  // Four sequences reading two q and k sequences (sequence s reads s / 2),
+  // and each its own.
+  for (const std::uint64_t bq : {2U, 4U}) {
+    const ir::Outputs many =
+        b.GatedDeltaNet(in({4, 2, 3, bq}, 0.4f), in({4, 2, 3, bq}, 0.4f), in({3, 4, 3, 4}),
+                        in({4, 4, 3, 4}, 0.1f), in({1, 4, 3, 4}, 0.5f), in({4, 3, 4, 4}, 0.2f));
+    b.Output(many[0]);
+    b.Output(many[1]);
+  }
   auto g = std::move(b).Finish();
   ASSERT_TRUE(g.has_value()) << g.error().detail;
   ExpectExpansionAgrees(*g, values, ints, 1e-5);
@@ -1851,12 +1931,17 @@ TEST(ReferenceDecompositionTest, FusedKindsRunAsThePrimitivesTheyName) {
   const TensorId wg = in({8, 5});
   const TensorId wu = in({8, 5});
   const ir::GluParams glu{.kind = ir::GluKind::kGeGluTanh};
-  pair(b.Fused(ir::FusedKind::kMatMulGlu, std::array{x, wg, wu}, glu)[0],
+  pair(b.Fused(ir::FusedKind::kMatMulGlu, std::array{wg, wu, x}, glu)[0],
        b.Glu(b.MatMul(wg, x), b.MatMul(wu, x), glu));
+  // A product's accumulation and hint leave its value.
+  const TensorId had = in({8, 8});
+  pair(b.MatMul(wg, x, ir::ProductParams{.accumulate = ir::Accumulate::kF32}), b.MatMul(wg, x));
+  pair(b.MatMul(had, x, ir::ProductParams{.hint = ir::ProductHint::kHadamard}), b.MatMul(had, x));
   const TensorId bias = in({5, 3});
   pair(b.Fused(ir::FusedKind::kMatMulAdd, std::array{wg, x, bias})[0],
        b.Add(b.MatMul(wg, x), bias));
-  const ir::Outputs prods = b.Fused(ir::FusedKind::kPreparedProducts, std::array{x, wg, wu});
+  const ir::Outputs prods = b.Fused(ir::FusedKind::kPreparedProducts, std::array{wg, wu, x});
+  pair(prods[0], b.MatMul(wg, x));
   pair(prods[1], b.MatMul(wu, x));
   const TensorId z = in({8, 3});
   pair(b.Fused(ir::FusedKind::kNormGate, std::array{x, w, z}, ir::NormParams{1e-5f})[0],
@@ -1886,6 +1971,9 @@ TEST(ReferenceDecompositionTest, FusedKindsRunAsThePrimitivesTheyName) {
                std::array{moe[0], ids, weights, shared, shared_gate, sg})[0],
        b.Add(b.ExpertReduce(moe[0], weights, ids, sg),
              b.Mul(shared, b.Unary(shared_gate, ir::UnaryFn::kSigmoid))));
+  // DeepSeek V4's shared expert has no gate.
+  pair(b.Fused(ir::FusedKind::kMoeCombine, std::array{moe[0], ids, weights, shared, TensorId{}})[0],
+       b.Add(b.ExpertReduce(moe[0], weights, ids, {}), shared));
   auto g = std::move(b).Finish();
   ASSERT_TRUE(g.has_value()) << g.error().detail;
   auto e = Executor::Create(*g);
@@ -2249,7 +2337,7 @@ SmallLayer BuildSmallLayer(bool fused) {
   x = b.Add(x, b.MatMul(wo, b.Reshape(b.Cont(attn), ir::ShapeOf({kHeads * kHead, kRows}))));
   const TensorId fn = norm_mul(x, ffn_norm);
   const ir::GluParams glu{.kind = ir::GluKind::kGeGluTanh};
-  const TensorId ff = fused ? b.Fused(ir::FusedKind::kMatMulGlu, std::array{fn, wg, wu}, glu)[0]
+  const TensorId ff = fused ? b.Fused(ir::FusedKind::kMatMulGlu, std::array{wg, wu, fn}, glu)[0]
                             : b.Glu(b.MatMul(wg, fn), b.MatMul(wu, fn), glu);
   x = b.Add(x, b.MatMul(wd, ff));
   l.logits = b.Softcap(b.MatMul(embed, x), 30.0f);

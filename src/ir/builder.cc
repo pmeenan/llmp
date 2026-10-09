@@ -228,12 +228,12 @@ TensorId Builder::GetRows(TensorId a, TensorId ids) {
   return One(Primitive(Op::kGetRows), ParamBytes{}, std::array{a, ids});
 }
 
-TensorId Builder::MatMul(TensorId a, TensorId b) {
-  return One(Primitive(Op::kMatMul), ParamBytes{}, std::array{a, b});
+TensorId Builder::MatMul(TensorId a, TensorId b, const ProductParams& params) {
+  return One(Primitive(Op::kMatMul), B(params), std::array{a, b});
 }
 
-TensorId Builder::MatMulId(TensorId as, TensorId b, TensorId ids) {
-  return One(Primitive(Op::kMatMulId), ParamBytes{}, std::array{as, b, ids});
+TensorId Builder::MatMulId(TensorId as, TensorId b, TensorId ids, const ProductParams& params) {
+  return One(Primitive(Op::kMatMulId), B(params), std::array{as, b, ids});
 }
 
 TensorId Builder::Prepare(TensorId a, format::Encoding encoding, format::Layout layout) {

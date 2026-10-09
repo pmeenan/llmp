@@ -314,6 +314,10 @@ std::vector<std::size_t> Order(std::span<const double> row, bool descending) {
   return idx;
 }
 
+// A value rounded to F32 (round to nearest even), a step of op.h's F32
+// rotation angle.
+float RoundF32(double v) { return static_cast<float>(v); }
+
 // GGML's YaRN correction dims (ggml.c ggml_rope_yarn_corr_dims), in float.
 std::array<float, 2> CorrDims(std::uint32_t dims, std::uint32_t ctx, float base, float fast,
                               float slow) {
@@ -1170,8 +1174,10 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
       const Ne& xn = ne(0);
       const std::uint64_t t_count = xn[2];
       Vec r = x;
-      const double theta_scale =
-          std::pow(static_cast<double>(p.base), -2.0 / static_cast<double>(p.dims));
+      // op.h's F32 angle: GGML's theta_scale = powf(base, -2.0f / dims),
+      // each later step rounded to F32 as rope.cu forms it.
+      const float theta_scale = RoundF32(std::pow(
+          static_cast<double>(p.base), static_cast<double>(-2.0f / static_cast<float>(p.dims))));
       const std::array<float, 2> corr =
           p.ext_factor != 0.0f
               ? CorrDims(p.dims, p.original_context, p.base, p.beta_fast, p.beta_slow)
@@ -1234,23 +1240,29 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
                   section = sector < sec[0] ? 0 : 1;
                   exponent = static_cast<double>(sector < sec[0] ? sector : sector - sec[0]);
                 }
-                const double position = pos[static_cast<std::size_t>((section * t_count) + t)];
-                double extrap = position * std::pow(theta_scale, exponent);
+                const auto position =
+                    static_cast<float>(pos[static_cast<std::size_t>((section * t_count) + t)]);
+                const float power = RoundF32(std::pow(static_cast<double>(theta_scale), exponent));
+                float extrap = position * power;
                 if (!freq.empty()) {
-                  extrap /= freq[static_cast<std::size_t>(pr)];
+                  extrap /= static_cast<float>(freq[static_cast<std::size_t>(pr)]);
                 }
-                const double interp = static_cast<double>(p.scale) * extrap;
-                double theta = interp;
-                double mscale = p.attn_factor;
+                const float interp = p.scale * extrap;
+                float theta = interp;
+                float mscale = p.attn_factor;
                 if (p.ext_factor != 0.0f) {
-                  const double y = (static_cast<double>(pr) - corr[0]) /
-                                   std::max(0.001, static_cast<double>(corr[1]) - corr[0]);
-                  const double ramp = (1.0 - std::clamp(y, 0.0, 1.0)) * p.ext_factor;
-                  theta = (interp * (1.0 - ramp)) + (extrap * ramp);
-                  mscale *= 1.0 + (0.1 * std::log(1.0 / static_cast<double>(p.scale)));
+                  const float y =
+                      (static_cast<float>(pr) - corr[0]) / std::max(0.001f, corr[1] - corr[0]);
+                  const float ramp = (1.0f - std::min(1.0f, std::max(0.0f, y))) * p.ext_factor;
+                  const float kept = interp * (1.0f - ramp);
+                  const float mixed = extrap * ramp;
+                  theta = kept + mixed;
+                  // Two statements: no contraction into a fused multiply-add.
+                  const float magnitude = 0.1f * std::log(1.0f / p.scale);
+                  mscale *= 1.0f + magnitude;
                 }
-                c = std::cos(theta) * mscale;
-                s = std::sin(theta) * mscale;
+                c = std::cos(static_cast<double>(theta)) * mscale;
+                s = std::sin(static_cast<double>(theta)) * mscale;
               }
               if (p.inverse) {
                 s = -s;

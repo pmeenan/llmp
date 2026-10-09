@@ -110,8 +110,8 @@ class Builder {
   TensorId GetRows(TensorId a, TensorId ids);
 
   // ---- products
-  TensorId MatMul(TensorId a, TensorId b);
-  TensorId MatMulId(TensorId as, TensorId b, TensorId ids);
+  TensorId MatMul(TensorId a, TensorId b, const ProductParams& params = {});
+  TensorId MatMulId(TensorId as, TensorId b, TensorId ids, const ProductParams& params = {});
   TensorId Prepare(TensorId a, format::Encoding encoding,
                    format::Layout layout = format::Layout::kGgmlBlocks);
   Outputs ExpertSort(TensorId ids, std::uint32_t experts);  // order, offsets

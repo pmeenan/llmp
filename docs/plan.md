@@ -1407,8 +1407,11 @@ each is checked against the design as M3.6 proceeds.
       to recorded work, plan keys; a CPU reference and fake-backend tests
       for every component.
       Sub-tasks:
-      - [ ] The IR graph, its verifier and the reference executor; the
+      - [x] The IR graph, its verifier and the reference executor; the
             model spec and its v0 synthesis.
+            *2026-10-09:* `src/ir`, `kernels/reference/exec.h`, `src/spec`
+            with the Gemma 2 and Gemma 3 mappings
+            ([as built](engine-components.md#the-model-spec)).
       - [ ] The component framework and the planner; lowering to the
             existing kernel sources with structural parity.
 - [ ] **Partitioning in the planner:** tensor, pipeline and expert

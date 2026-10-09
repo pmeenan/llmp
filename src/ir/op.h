@@ -47,12 +47,21 @@
 //   kConvert  (a): a dense tensor into another dense encoding (a cast).
 //   kGetRows  (a [n, R, A2, A3], ids [N, A2, A3]): [n, N, A2, A3], row
 //       ids[i, j, k] of matrix (j, k) (ggml_get_rows); I32 when a is I32.
-// Products:
+// Products (ProductParams):
 //   kMatMul   (a [K, N, A2, A3], b [K, M, B2, B3]): [N, M, B2, B3],
 //       out[n, m] = Σ_k a[k, n] · b[k, m]; a broadcasts over b in dims 2 and
 //       3 (B2 % A2 == 0: b's matrix i reads a's i / (B2 / A2), ggml_mul_mat).
 //   kMatMulId (as [K, N, E], b [K, B1, T], ids [U, T]): [N, U, T], out[:, u,
 //       t] = as[ids[u, t]] · b[:, u % B1, t] (ggml_mul_mat_id).
+//   A product's accumulation and hint (and attention's, AttnParams) do not
+//   change its definition: they are the choices production makes per node
+//   (GGML's ggml_prec_set_acc and ggml_mul_mat_set_hint), hashed so that a
+//   lowering reproduces them node for node. Accumulate::kF32 requires an
+//   implementation to sum in F32 or wider (GGML_PREC_F32); kDefault lets it
+//   choose (GGML's F16 tensor-core sums where it takes them). Hint
+//   kHadamard says a is a square Hadamard matrix (GGML_HINT_SRC0_IS_HADAMARD,
+//   llama.cpp's llama_mul_mat_hadamard), which a backend may apply as a
+//   fast transform. kernels/reference/exec.h ignores both.
 //   kPrepare  (a): a in the output's encoding, quantized row by row (the
 //       encoder's rounding): a product's input form.
 //   kExpertSort (ids [U, T]): ExpertSortParams: outputs I32 [U · T], the
@@ -66,7 +75,13 @@
 //       (slope 1, or ALiBi's for max_bias); softmax over cells, a sink's
 //       exp(sink[h]) joining the denominator. A row that sees no cell and
 //       has no sink is zero (GGML's kernels divide 0 by 0 there: a port's
-//       comparison skips such rows or the port guards them).
+//       comparison skips such rows or the port guards them). AttnParams'
+//       accumulate is a product's (above); n_kv_max promises that no mask
+//       row leaves more than that many cells finite, so an implementation
+//       may gather them sparsely (ggml_flash_attn_ext_set_n_kv_max; a row
+//       past the bound is undefined), and sparse_any lets it take that
+//       gather at any cache length (llmp_ops.h SetFlashAttnSparseAny). The
+//       reference executor ignores all three.
 //   kMaskBuild (q_pos [R], cell_pos [C]): MaskParams: F16 or F32 [C, >= R],
 //       0 where a query sees a cell, else -inf. A cell holding position c >=
 //       0 is seen by a query at p when c <= p (kCausal), and p - c < window
@@ -95,12 +110,25 @@
 //       (ggml_rope_ext, _multi and _ext_back, with ggml_rope_set_offset):
 //       channels [offset, offset + dims) rotate, the others pass through.
 //       offset is even; freq has one factor a pair (dims for kVision).
-//       Angles here are exact; GGML forms pos · powf(theta_scale, i) in
-//       F32, whose rounding grows with the position (open: whether v1
-//       defines the F32 angle, or long-context comparisons widen).
 //       pos is I32 [T] (kMulti, kInterleavedMulti: [4 · T], a section's
 //       positions after another's), or with `table` F32 [2, dims / 2, T]
 //       (cos, sin per pair: a precomputed rotation).
+//       The angle of pair i (its exponent e: i, or a vision section's own
+//       index) is formed in F32 as GGML's CUDA kernel forms it (rope.cu,
+//       rope_yarn), each step rounded to F32: s = (float) base^((float)
+//       (-2 / dims)) (the host's powf(base, -2.0f / dims)), f = (float)
+//       s^e, t = (float) p · f, then t / freq[i], then x = scale · t;
+//       with YaRN (ext_factor != 0) r = (1 - clamp((i - lo) / max(
+//       0.001, hi - lo), 0, 1)) · ext_factor over ggml_rope_yarn_corr_dims'
+//       float lo and hi, x = x · (1 - r) + t · r and the magnitude m =
+//       attn_factor · (1 + 0.1 · logf(1 / scale)), else m = attn_factor.
+//       The rotation is then exact: cos(x) · m and sin(x) · m (negated sin
+//       when inverse) over the F32 x. At long context the F32 angle is the
+//       definition: its rounding (about 0.03 radians at position 2^20) is
+//       production's, not an error. GGML's own units build with
+//       -use_fast_math, so the device's powf (s^e), its FMA contraction of
+//       the YaRN mix and its sinf/cosf are approximations of these steps; a
+//       port's comparison allows for those, not for another formation.
 // Elementwise (b broadcasts over a; the result has a's shape):
 //   kAdd, kSub, kMul, kDiv (a, b).
 //   kScale (x): ScaleParams: x · scale + bias.
@@ -137,7 +165,10 @@
 //       (bias optional for kSigmoidTopK, required for kSqrtSoftplusBias),
 //       highest first; kHash's ids are table[:, tokens[t]]. Weights are
 //       p[ids], with normalize divided by max(Σ, 2^-14) (llama.cpp's
-//       build_moe_ffn), then times scale.
+//       build_moe_ffn), then times scale. scale is the factor itself and
+//       above zero: a checkpoint's "unset" 0 (llama.cpp's
+//       expert_weights_scale, which DeepSeek V4's production graph reads as
+//       1) is written 1 here, and the verifier refuses 0.
 //   kExpertReduce (x [n, U, T], w [U, T], ids? [U, T], scale? [E]): [n, T] =
 //       Σ_u (x[:, u, t] · scale[ids[u, t]]) · w[u, t], in slot order.
 // Recurrences and convolutions:
@@ -277,7 +308,10 @@ enum class FusedKind : std::uint16_t {
   // (x [D, H, T], pos, cache [D · H, C], idx [T], freq?): RopeParams: the
   // rotated rows stored; the output is a view of cache.
   kRopeStore,
-  kMatMulGlu,  // (x, w_gate, w_up): GluParams: glu(w_gate · x, w_up · x)
+  // (w_gate, w_up, x): GluParams: glu(w_gate · x, w_up · x), the gate's
+  // product the GLU's gate (GGML's ggml_glu_split(gate, up) over its
+  // mul_mat(w_gate, x) and mul_mat(w_up, x); the weights first, as kMatMulAdd's).
+  kMatMulGlu,
   kMatMulAdd,  // (w, x, b): w · x + b
   // (q [D, owners · R, H, 1], mask [C, >= owners · R], k0, ..., v0, ...):
   // OwnerAttnParams: joined requests' rows, each owner's R rows attending to
@@ -290,9 +324,10 @@ enum class FusedKind : std::uint16_t {
   // (gate [n, U, T], up [n, U, T], ids [U, T], s_gate [E], s_up [E]):
   // GluParams: glu(gate · s_gate[ids], up · s_up[ids]).
   kMoeGlu,
-  // (down [n, U, T], ids, weights [U, T], shared [n, T], shared_gate [1, T],
+  // (down [n, U, T], ids, weights [U, T], shared [n, T], shared_gate? [1, T],
   // s_down? [E]): expert_reduce(down, weights, ids, s_down) + shared ·
-  // sigmoid(shared_gate).
+  // sigmoid(shared_gate), or + shared where the shared expert has no gate
+  // (DeepSeek V4's).
   kMoeCombine,
   // (x [W, hc, T], w [W · hc]): NormParams: each stream's rms_norm (over W,
   // Qwen3.8's llmp.hc.norm), then as [W · hc, T], · w. DeepSeek V4's flat
@@ -305,7 +340,8 @@ enum class FusedKind : std::uint16_t {
   // (q, wq, k, wk, pos, freq?): NormRopeParams: two outputs, each
   // rope(rms_norm(·) · w).
   kQkPrep,
-  // (x, w0, w1, ...): an output per product wi · x, up to four.
+  // (w0, w1, ..., x): an output per product wi · x, up to four; the
+  // weights first, as kMatMulGlu's and kMatMulAdd's.
   kPreparedProducts,
   kNormGate,           // (x, w, z): NormParams: rms_norm(x) · w · sigmoid(z)
   kLayerNormModulate,  // (x, s): NormParams: layer_norm(x) · (1 + s)
@@ -377,6 +413,21 @@ struct MaskParams {
   std::uint32_t block = 0;   // kBlock: positions a block
 };
 
+// A product's accumulation (see the op set's products above).
+enum class Accumulate : std::uint8_t {
+  kDefault,  // the implementation's choice (GGML_PREC_UNDEFINED)
+  kF32,      // F32 or wider (GGML_PREC_F32)
+};
+enum class ProductHint : std::uint8_t {
+  kNone,
+  kHadamard,  // a is a square Hadamard matrix (GGML_HINT_SRC0_IS_HADAMARD)
+};
+struct ProductParams {
+  Accumulate accumulate = Accumulate::kDefault;
+  ProductHint hint = ProductHint::kNone;
+  std::array<std::uint8_t, 2> reserved{};
+};
+
 struct AttnParams {
   float scale = 1.0f;
   float softcap = 0.0f;   // 0: none
@@ -386,7 +437,12 @@ struct AttnParams {
   // the whole cache.
   std::uint32_t window = 0;
   bool sinks = false;  // a learned sink per head (source 4)
-  std::array<std::uint8_t, 3> reserved{};
+  Accumulate accumulate = Accumulate::kDefault;
+  bool sparse_any = false;  // the sparse gather at any length (needs n_kv_max)
+  std::uint8_t reserved = 0;
+  // At most this many finite cells in any mask row (needs the mask); 0: no
+  // bound.
+  std::uint32_t n_kv_max = 0;
 };
 
 enum class UnaryFn : std::uint8_t {
@@ -548,20 +604,21 @@ template <typename P>
 inline constexpr bool kIsParams = std::is_trivially_copyable_v<P> && sizeof(P) <= kMaxParamBytes;
 
 static_assert(kIsParams<NormParams> && kIsParams<RopeParams> && kIsParams<MaskParams> &&
-              kIsParams<AttnParams> && kIsParams<UnaryParams> && kIsParams<GluParams> &&
-              kIsParams<ScaleParams> && kIsParams<ClampParams> && kIsParams<FillParams> &&
-              kIsParams<SoftcapParams> && kIsParams<SoftMaxParams> && kIsParams<ArgmaxParams> &&
-              kIsParams<ArgsortParams> && kIsParams<TopKParams> && kIsParams<ExpertSortParams> &&
-              kIsParams<RouteParams> && kIsParams<HcParams> && kIsParams<ConcatParams> &&
-              kIsParams<PermuteParams> && kIsParams<Conv2dParams> && kIsParams<UpsampleParams> &&
-              kIsParams<PoolParams> && kIsParams<SampleParams> && kIsParams<CollectiveParams> &&
-              kIsParams<NormRopeParams> && kIsParams<OwnerAttnParams> &&
-              kIsParams<HcNormPostParams> && kIsParams<DupUpParams>);
+              kIsParams<ProductParams> && kIsParams<AttnParams> && kIsParams<UnaryParams> &&
+              kIsParams<GluParams> && kIsParams<ScaleParams> && kIsParams<ClampParams> &&
+              kIsParams<FillParams> && kIsParams<SoftcapParams> && kIsParams<SoftMaxParams> &&
+              kIsParams<ArgmaxParams> && kIsParams<ArgsortParams> && kIsParams<TopKParams> &&
+              kIsParams<ExpertSortParams> && kIsParams<RouteParams> && kIsParams<HcParams> &&
+              kIsParams<ConcatParams> && kIsParams<PermuteParams> && kIsParams<Conv2dParams> &&
+              kIsParams<UpsampleParams> && kIsParams<PoolParams> && kIsParams<SampleParams> &&
+              kIsParams<CollectiveParams> && kIsParams<NormRopeParams> &&
+              kIsParams<OwnerAttnParams> && kIsParams<HcNormPostParams> && kIsParams<DupUpParams>);
 
 // No implicit padding: each struct's size is the sum of its fields'.
 static_assert(sizeof(RopeParams) == 4 + (3 * 4) + (6 * 4) + 16);
 static_assert(sizeof(MaskParams) == 4 + 4 + 4);
-static_assert(sizeof(AttnParams) == (4 * 4) + 4);
+static_assert(sizeof(ProductParams) == 4);
+static_assert(sizeof(AttnParams) == (4 * 4) + 4 + 4);
 static_assert(sizeof(GluParams) == 4 + 4);
 static_assert(sizeof(RouteParams) == 4 + (3 * 4));
 static_assert(sizeof(HcParams) == 4 + (4 * 4));

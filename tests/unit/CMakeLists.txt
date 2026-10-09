@@ -1036,3 +1036,17 @@ llmp_gtest(gemma4_assistant_test TEST_PREFIX unit. PROPERTIES LABELS unit
 add_executable(gemma4_assistant_artifact_test gemma4_assistant_artifact_test.cc)
 target_link_libraries(gemma4_assistant_artifact_test PRIVATE llmp_model llmp_artifact llmp_tokenizer)
 llmp_gtest(gemma4_assistant_artifact_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models")
+
+# The model spec's canonical JSON, refusals and bound digest; the
+# architecture mappings as data and applied to the Gemma 2 and Gemma 3
+# tensor tables with today's profiles (spec/).
+add_executable(spec_test spec_test.cc)
+target_link_libraries(spec_test PRIVATE llmp_spec llmp_model llmp_artifact llmp_json)
+llmp_gtest(spec_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+
+# The spec synthesized from the installed Gemma 2 and Gemma 3 v0 artifacts.
+add_executable(spec_models_test spec_models_test.cc)
+target_link_libraries(spec_models_test PRIVATE llmp_spec llmp_model llmp_artifact llmp_json)
+llmp_gtest(spec_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models"
+             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")

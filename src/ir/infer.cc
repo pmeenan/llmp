@@ -344,6 +344,9 @@ std::size_t ParamSize(OpKey key) {
     }
   }
   switch (key.op) {
+    case Op::kMatMul:
+    case Op::kMatMulId:
+      return sizeof(ProductParams);
     case Op::kPermute:
       return sizeof(PermuteParams);
     case Op::kConcat:
@@ -407,6 +410,22 @@ std::size_t ParamSize(OpKey key) {
 }
 
 bool Finite(float v) { return std::isfinite(v); }
+
+// A product's accumulation and hint (op.h): known values, reserved bytes
+// zero, and a Hadamard matrix square.
+std::expected<void, VerifyError> CheckProduct(const Ctx& c, const TensorDesc& a) {
+  const auto p = c.params<ProductParams>();
+  LLMP_TRY(Zero(c, 2, 2));
+  if (static_cast<std::uint8_t>(p.accumulate) > static_cast<std::uint8_t>(Accumulate::kF32) ||
+      static_cast<std::uint8_t>(p.hint) > static_cast<std::uint8_t>(ProductHint::kHadamard)) {
+    return Fail(GraphError::kParams, c, "an unknown accumulation or hint");
+  }
+  if (p.hint == ProductHint::kHadamard &&
+      (c.key().op != Op::kMatMul || a.ne(0) != a.ne(1) || a.ne(2) != 1 || a.ne(3) != 1)) {
+    return Fail(GraphError::kParams, c, "a Hadamard hint is a plain product's square a");
+  }
+  return {};
+}
 
 std::expected<void, VerifyError> NormEps(const Ctx& c, float eps) {
   if (!Finite(eps) || eps < 0.0f) {
@@ -663,6 +682,7 @@ Out InferPrimitive(const Ctx& c) {
       LLMP_TRY(FloatSrc(c, 1));
       const TensorDesc& a = *c.src(0);
       const TensorDesc& b = *c.src(1);
+      LLMP_TRY(CheckProduct(c, a));
       LLMP_TRY(Want(a.ne(0) == b.ne(0) && b.ne(2) % a.ne(2) == 0 && b.ne(3) % a.ne(3) == 0, c,
                     std::format("{} times {}", Text(a.shape()), Text(b.shape()))));
       return FloatResult(S(a.ne(1), b.ne(1), b.ne(2), b.ne(3)), Encoding::kF32);
@@ -675,6 +695,7 @@ Out InferPrimitive(const Ctx& c) {
       const TensorDesc& as = *c.src(0);
       const TensorDesc& b = *c.src(1);
       const TensorDesc& ids = *c.src(2);
+      LLMP_TRY(CheckProduct(c, as));
       LLMP_TRY(Want(as.ne(3) == 1 && b.ne(3) == 1 && ids.ne(2) == 1 && ids.ne(3) == 1 &&
                         ids.ne(1) == b.ne(2) && as.ne(0) == b.ne(0) && ids.ne(0) % b.ne(1) == 0,
                     c,
@@ -721,7 +742,11 @@ Out InferPrimitive(const Ctx& c) {
       LLMP_TRY(Arity(c, 3, 5));
       const auto p = c.params<AttnParams>();
       LLMP_TRY(Bool(c, 16));
-      LLMP_TRY(Zero(c, 17, 3));
+      LLMP_TRY(Bool(c, 18));
+      LLMP_TRY(Zero(c, 19, 1));
+      if (static_cast<std::uint8_t>(p.accumulate) > static_cast<std::uint8_t>(Accumulate::kF32)) {
+        return Fail(GraphError::kParams, c, "an unknown accumulation");
+      }
       for (std::size_t i = 0; i < 5; ++i) {
         LLMP_TRY(FloatSrc(c, i));
       }
@@ -734,8 +759,11 @@ Out InferPrimitive(const Ctx& c) {
           p.max_bias < 0.0f) {
         return Fail(GraphError::kParams, c, "scale, softcap or max_bias out of range");
       }
-      if ((p.max_bias > 0.0f || p.window > 0) && mask == nullptr) {
-        return Fail(GraphError::kArity, c, "ALiBi and a window need the mask");
+      if ((p.max_bias > 0.0f || p.window > 0 || p.n_kv_max > 0) && mask == nullptr) {
+        return Fail(GraphError::kArity, c, "ALiBi, a window and a sparse bound need the mask");
+      }
+      if (p.sparse_any && p.n_kv_max == 0) {
+        return Fail(GraphError::kParams, c, "sparse_any needs n_kv_max");
       }
       if (p.sinks != (sinks != nullptr)) {
         return Fail(GraphError::kArity, c, "sinks are source 4 exactly when the parameters say");
@@ -997,8 +1025,10 @@ Out InferPrimitive(const Ctx& c) {
       LLMP_TRY(Zero(c, 2, 2));
       const TensorDesc& logits = *c.src(0);
       if (static_cast<std::uint8_t>(p.kind) > static_cast<std::uint8_t>(RouteKind::kHash) ||
-          p.used == 0 || p.used > p.experts || !Finite(p.scale)) {
-        return Fail(GraphError::kParams, c, "a known kind, 1 <= used <= experts, a finite scale");
+          p.used == 0 || p.used > p.experts || !Finite(p.scale) || p.scale <= 0.0f) {
+        return Fail(GraphError::kParams, c,
+                    "a known kind, 1 <= used <= experts, a finite scale above zero (an unset "
+                    "scale is 1)");
       }
       LLMP_TRY(Want(logits.ne(0) == p.experts && logits.ne(2) == 1 && logits.ne(3) == 1, c,
                     std::format("logits {} for {} experts", Text(logits.shape()), p.experts)));
