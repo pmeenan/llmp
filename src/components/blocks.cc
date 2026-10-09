@@ -6,7 +6,8 @@
 // sqrt(width)). head.linear, version 1: the output rows' product with the
 // output matrix (tied or not), an optional final softcap applied as
 // today's builders do (scale by 1 / cap, tanh, scale by cap), and on a
-// greedy step each row's highest logit (the host-greedy flavor).
+// greedy step each row's highest logit (the host-greedy flavor); it splits
+// by the vocabulary.
 
 #include <array>
 #include <cmath>
@@ -105,6 +106,19 @@ std::expected<void, std::string> EmbeddingReference(RefIO& io) {
 constexpr std::array kHeadRoles{WeightRole{.name = "weight"}};
 constexpr std::array<std::string_view, 1> kHeadPatterns{"prepared_products"};
 
+// By the vocabulary: the output matrix by its rows, the logits gathered
+// (each output row's logits, F32) where something needs them whole.
+constexpr std::array kVocabRoles{RoleSplit{.role = 0, .dim = 1}};
+constexpr std::array kHeadSplits{
+    SplitOption{.kind = SplitKind::kColumns,
+                .collective = ir::Op::kAllGather,
+                .units = nullptr,
+                .bytes_per_step = [](const SplitStep& s) -> std::uint64_t {
+                  return s.weights.empty() ? 0 : s.weights[0].ne[1] * s.outputs * 4;
+                },
+                .weights = kVocabRoles,
+                .state = {}}};
+
 std::expected<std::vector<RoleShape>, std::string> HeadShapes(const Instance& in) {
   if (in.stage.softcap.has_value() && !(*in.stage.softcap > 0.0)) {
     return std::unexpected("a final softcap above zero");
@@ -201,6 +215,7 @@ const ComponentDef& HeadLinear() {
       .roles = kHeadRoles,
       .shapes = HeadShapes,
       .batch_classes = std::span(kJoined).subspan(2),
+      .splits = kHeadSplits,
       .patterns = kHeadPatterns,
       .emit = HeadEmit,
       .reference = HeadReference,

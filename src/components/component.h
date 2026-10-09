@@ -16,8 +16,9 @@
 //   - its batching capability as data: which of its ops join rows across
 //     requests and which stay one owner's (BatchClass), and the limits it
 //     places on a step (model::Batching);
-//   - how it splits across devices and what each split communicates per
-//     step (SplitOption), for the partitioner;
+//   - how it splits across devices, as data: the roles and state tensors
+//     each split divides and what it communicates per step (SplitOption),
+//     for the partitioner;
 //   - the fusion patterns it takes part in, by name (the planner's);
 //   - `emit`: the primitive IR fragment for a step's shape (a Fragment),
 //     which the planner's patterns later rewrite;
@@ -160,16 +161,44 @@ struct BatchClass {
 enum class SplitKind : std::uint8_t { kNone, kHeads, kColumns, kRows, kExperts, kWholeLayer };
 std::string_view SplitKindName(SplitKind kind);
 
-// A way to split an instance across `ways` devices: the most ways its
-// parameters allow and the bytes one device sends per step of `rows` rows
-// through `collective` (a partial sum's all-reduce, a column split's
-// gather).
+// A weight role or a state tensor (its index in the instance's contract)
+// split along logical dim `dim` into equal parts, part r on the group's
+// r-th device. A role or tensor a split does not list is whole on every
+// device of the group.
+struct RoleSplit {
+  std::uint16_t role = 0;
+  std::uint8_t dim = 0;
+};
+struct StateSplit {
+  std::uint16_t tensor = 0;
+  std::uint8_t dim = 0;
+};
+
+// What a split's traffic depends on: the instance, its roles' bound shapes
+// (by role; a role not in use has rank 0), and the step.
+struct SplitStep {
+  const Instance* instance = nullptr;
+  std::span<const format::Shape> weights{};
+  std::uint32_t rows = 0;     // the step's rows
+  std::uint32_t outputs = 0;  // the head's rows
+  std::uint32_t ways = 1;
+};
+
+// A way to split an instance across a group of `ways` devices, as data: the
+// roles and state tensors it splits and along which dims (the planner's
+// partitioner propagates the split through the fragment's ops and inserts
+// the collectives, planner/partition.h), the collective that joins the
+// parts (a partial sum's all-reduce, a column split's gather), the units
+// `ways` must divide (whole KV heads; null: only the split roles' shapes
+// and encodings bound it), and the bytes of the tensor that collective
+// joins per step (the planner models what each link carries from it).
 struct SplitOption {
   SplitKind kind = SplitKind::kNone;
   ir::Op collective = ir::Op::kAllReduce;
-  std::uint32_t (*max_ways)(const Instance& instance) = nullptr;
-  std::uint64_t (*bytes_per_step)(const Instance& instance, std::uint32_t rows,
-                                  std::uint32_t ways) = nullptr;
+  std::uint32_t (*units)(const Instance& instance) = nullptr;
+  std::uint64_t (*bytes_per_step)(const SplitStep& step) = nullptr;
+  std::span<const RoleSplit> weights{};
+  std::span<const StateSplit> state{};
 };
 
 // ---------------------------------------------------------------- fragments

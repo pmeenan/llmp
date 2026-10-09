@@ -168,14 +168,26 @@ constexpr std::array kBatchClasses{
     BatchClass{.op = ir::Op::kAttention, .batch = ir::Batch::kPerOwner},
 };
 
+// By heads: Q, K and V by their output rows (whole heads, a query head's
+// group with its KV head), the K and V caches by their cells' heads, the
+// output product by its input columns; its partial sums reduce before the
+// post norm.
+constexpr std::array kHeadRoles{RoleSplit{.role = kQ, .dim = 1}, RoleSplit{.role = kK, .dim = 1},
+                                RoleSplit{.role = kV, .dim = 1},
+                                RoleSplit{.role = kOutput, .dim = 0}};
+constexpr std::array kHeadState{StateSplit{.tensor = 0, .dim = 0},
+                                StateSplit{.tensor = 1, .dim = 0}};
 constexpr std::array kSplits{SplitOption{
     .kind = SplitKind::kHeads,
     .collective = ir::Op::kAllReduce,
-    // Whole KV heads per device; the output product's partial sums reduce.
-    .max_ways =
+    // Whole KV heads per device.
+    .units =
         [](const Instance& in) { return static_cast<std::uint32_t>(in.params.Int("kv_heads")); },
-    .bytes_per_step = [](const Instance& in, std::uint32_t rows,
-                         std::uint32_t) { return in.stage.width * rows * 4; }}};
+    .bytes_per_step = [](const SplitStep& s) -> std::uint64_t {
+      return s.instance->stage.width * s.rows * 4;
+    },
+    .weights = kHeadRoles,
+    .state = kHeadState}};
 
 constexpr std::array<std::string_view, 7> kPatterns{
     "rms_norm_mul",    "rms_norm_mul_rope", "rope_store",      "grouped_stores",

@@ -7,7 +7,6 @@
 // the residual add. Emitted in today's builders' order: the gate product
 // before the up product (the GLU's first operand is visited first).
 
-#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <expected>
@@ -63,17 +62,20 @@ constexpr std::array kBatchClasses{
     BatchClass{.op = ir::Op::kGlu, .batch = ir::Batch::kJoined},
 };
 
-constexpr std::array kSplits{SplitOption{
-    .kind = SplitKind::kColumns,
-    .collective = ir::Op::kAllReduce,
-    // The hidden columns in whole 256-value blocks; the down product's
-    // partial sums reduce.
-    .max_ways =
-        [](const Instance& in) {
-          return static_cast<std::uint32_t>(std::max<std::uint64_t>(1, Hidden(in) / 256));
-        },
-    .bytes_per_step = [](const Instance& in, std::uint32_t rows,
-                         std::uint32_t) { return in.stage.width * rows * 4; }}};
+// By the hidden columns: the gate and up products by their output rows, the
+// down product by its input columns (whole blocks of its encoding, which the
+// partitioner checks); the down product's partial sums reduce.
+constexpr std::array kColumnRoles{RoleSplit{.role = kGate, .dim = 1},
+                                  RoleSplit{.role = kUp, .dim = 1},
+                                  RoleSplit{.role = kDown, .dim = 0}};
+constexpr std::array kSplits{SplitOption{.kind = SplitKind::kColumns,
+                                         .collective = ir::Op::kAllReduce,
+                                         .units = nullptr,
+                                         .bytes_per_step = [](const SplitStep& s) -> std::uint64_t {
+                                           return s.instance->stage.width * s.rows * 4;
+                                         },
+                                         .weights = kColumnRoles,
+                                         .state = {}}};
 
 constexpr std::array<std::string_view, 4> kPatterns{"rms_norm_mul", "rms_norm_mul_add",
                                                     "mul_mat_glu", "prepared_products"};

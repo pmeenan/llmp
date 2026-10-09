@@ -1102,6 +1102,17 @@ add_executable(planner_test planner_test.cc)
 target_link_libraries(planner_test PRIVATE llmp_planner llmp_ir)
 llmp_gtest(planner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# Partitioning (D-107): a small Gemma-like spec and a test routed-expert
+# block partitioned by tensor, pipeline and expert parallelism over three
+# to eight simulated devices against the unpartitioned graph; Assign's
+# choices for described topologies and against a brute-force enumeration.
+add_executable(planner_partition_test planner_partition_test.cc)
+target_link_libraries(planner_partition_test PRIVATE llmp_planner llmp_components
+                                                     llmp_reference_kernels llmp_spec llmp_model
+                                                     llmp_artifact llmp_json)
+llmp_gtest(planner_partition_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+
 # The planner on the Gemma 2 and Gemma 3 steps against today's PlanGraph
 # and PlaceActivations over the graph builders, under each family's
 # production recipe (every profile builds the descriptor-only builders).

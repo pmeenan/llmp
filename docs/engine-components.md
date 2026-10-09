@@ -394,8 +394,9 @@ compiled catalog (`Catalog`, `Find`): a `ComponentDef` per kind and
 version with its parameters (typed, ranged, defaulted; `Params`), weight
 roles with the encodings each accepts and, per instance, the roles in use
 and their shapes; a per-instance `model::StateContract`; its ops' batch
-classes and its own `model::Batching` limits; split options with the
-bytes a split sends per step; the pattern names it takes part in; the
+classes and its own `model::Batching` limits; split options as data (the
+roles and state tensors each divides, its collective and the bytes it
+joins per step, [Partitioning](#partitioning)); the pattern names it takes part in; the
 masks it reads; `emit`, its primitive IR fragment for a step; and
 `reference`, a scalar CPU implementation written from the op set's
 definitions, independent of `emit`. `step.h` makes a spec usable:
@@ -1060,6 +1061,135 @@ and attention split by heads. Collectives are IR ops with their own
 implementations (NCCL over RDMA on the Sparks today). Only two Sparks exist
 for testing; the planner and its tests assume any count. M4's two-Spark
 swap is the first consumer.
+
+**As built** (`planner/partition.h`, 2026-10-09; CPU only, two-Spark
+execution is M4's). A component's split options are data
+(`components::SplitOption`): the weight roles and state tensors a split
+divides and along which dim, the collective that joins the parts, the
+units the ways must divide (attention's KV heads, so a query head's KV
+head is on its device under GQA; null where only the split roles' shapes
+and encodings bound it, which keeps every part whole blocks of its
+encoding), and the bytes of the tensor that collective joins per step.
+The catalog declares attention by heads (Q, K, V by their rows, the output
+product by its columns, both caches by their heads, an all-reduce),
+`ffn.glu` by its hidden columns (an all-reduce) and `head.linear` by the
+vocabulary (the logits gathered). A future component declares only that
+table; the test suite's routed-expert block (`moe.test`, from the op set's
+routing ops) declares experts placed whole, then columns inside each
+expert, and nothing else. The embedding has no split (a vocabulary split
+would need masked lookups and a reduction; nothing needs it while the
+table fits each stage's devices whole).
+
+- **Topology and workload.** A `Topology` is devices with the bytes they
+  give weights and state, and links with bandwidth and latency, any count
+  up to 16; a `Workload` is the prefill and decode rows, the share of
+  decode steps, and the context and slots the state is sized for. The
+  measured two-Spark link (environment.md: 22.35 GB/s NCCL SendRecv, about
+  1.4 µs one way) is the test suite's description of the Sparks; the
+  application has none built in (D-019).
+- **The traffic model.** A collective over a group runs as a ring in the
+  group's order: an all-reduce is 2(g − 1) steps and a gather g − 1, each
+  moving 1/g of the tensor over every ring link and as slow as the slowest
+  (bytes over bandwidth plus latency). A tensor leaving its group goes to
+  each device that needs it from the holder with the cheapest link,
+  receivers holding it too, so a stream crosses a slow link once and then
+  spreads over the fast one. The objective is the decode-share-weighted
+  modelled time of a prefill and a decode step; bytes are reported too.
+- **Memory.** Each device holds its components' weights (a tensor bound by
+  several components once, a split part at its own format's bytes) and
+  their state for the workload's slots at its context. Activations,
+  workspace and graphs are not counted: a device's described bytes must
+  leave room for them.
+- **The choice** (`Assign`). A pipeline cuts the layers into contiguous
+  ranges, each on a group of devices; the embedding runs with the first
+  range, the final norm and the head with the last. Within a stage of
+  several devices every layer component splits by its first option of
+  least modelled traffic that fits the group (a stage of several devices
+  exists only because its layers need splitting), and one without a fitting
+  option runs whole on each device; the embedding, final norm and head run
+  whole where that fits and split otherwise. The search is a dynamic
+  program over (next layer, previous group, devices used) with the stage's
+  group and end as choices, exact over every pipeline and grouping under
+  those per-component rules; devices that are twins in the topology (equal
+  memory, equal links to every other device) are taken lowest first, which
+  keeps two nodes of identical devices small, and a group's ring runs in
+  twin-class order so that pruning loses nothing (in plain device order a
+  twin swap changes the ring, and the pruning would miss cheaper groups).
+  Bounds on its candidate groups (4,096: thirteen devices without twins
+  are past it), states and work refuse a topology too irregular to search
+  quickly; `AssignPipeline` still evaluates a configured placement on it.
+  Ties go to fewer devices, then fewer stages. Compute is not modelled:
+  under a traffic objective one device wins whenever the model fits it,
+  pipeline cuts beat tensor splits (one stream transfer a boundary against
+  two collectives a layer), and tensor parallelism appears where a layer
+  does not fit a device, inside the fast-linked groups, with the pipeline
+  cut across the slow link (the survey's TP-inside, PP-across). A layer's
+  memory in the search is summed without cross-layer sharing (conservative);
+  `AssignPipeline` evaluates the chosen pipeline exactly, and evaluates a
+  configured one the same way. An `Assignment` names each component's
+  devices (rank order) and split option, each layer's stage, the weight
+  aliases (a tied head reads the embedding's leaf), each device's bytes and
+  the modelled traffic.
+- **The rewrite** (`Partition`). From the primitive graph (before
+  patterns) to one verified graph per device: each node runs on its
+  component's devices, and a split propagates from the leaves its option
+  divides through the ops that keep it (views and reshapes by their byte
+  layout, permutes, elementwise ops with broadcasting operands sliced
+  alike, norms over unsplit rows, rotations over heads, products by their
+  operands' splits, stores into split caches, attention by heads, the
+  softmax and row reductions, routed products). A row-parallel product's
+  partial sums stay partial through sums, scalings and the expert
+  reduction, and an all-reduce completes them where something else reads
+  them (before the post norm or the residual add); a split tensor read
+  whole is gathered; a tensor read on devices outside its group is sent
+  and received (a pipeline cut). Expert parallelism keeps routing whole on
+  every device: each device's routed products run its own experts for
+  every slot, ids mapped to its own by a constant table (other experts'
+  slots computing with its first expert), and the weighted sum masks the
+  other experts' slots by a constant 0/1 scale, so each sum is a partial
+  sum the all-reduce completes. Each device still runs every routed slot's
+  products (others' with its first expert, then masked): the split divides
+  the experts' memory and weight reads, not the routed compute, and a
+  masked slot's product must stay finite. Dispatch needs no all-to-all
+  while the routed tokens are whole on every device; an all-to-all
+  dispatch pays only once attention splits by rows (data-parallel
+  attention), which no component declares yet, and the op set's
+  fixed-size all-to-all would need worst-case capacity. An op a split
+  cannot pass gathers its sources and runs whole on each device of the
+  group (attention or a softmax under ALiBi, whose slopes follow the
+  global head, and a mask broadcast over heads that a part's heads would
+  read differently, among them); a store into a split cache or an
+  expert-local value that cannot pass is refused, as are fused nodes
+  and collectives in the input. Inputs, constants and what is made from
+  them alone (masks, positions' views) are made on every device that reads
+  them. Each device's leaves name the primitive graph's leaf and the slice
+  they bind (part r of n along a dim); a part of a weight the device holds
+  whole is a view of it.
+
+The tests (`planner_partition_test`, CPU) run a six-layer Gemma 2-like spec
+(GQA, sliding and global layers, sandwich and Q/K norms, softcaps, tied
+and untied heads) over a two-owner prefill and a greedy decode with its
+state carried, and the routed block, partitioned over the reference
+executor's simulated devices against the unpartitioned graph: four ways by
+heads and columns (with the head split by vocabulary), a four-stage
+pipeline (bit-identical), TP2×PP2, and on six devices TP6, TP3×PP2,
+TP2×PP3 and a six-stage pipeline; experts placed whole and columns inside
+experts over four and six. Logits, greedy tokens and every cache agree
+within the F16 caches' rounding where partial sums reorder, and each
+partition's collectives carry exactly the bytes and modelled time the
+model counts. Assign's choices match hand-derived optima: one device when
+the model fits; the fewest pipeline stages on uniform links; TP2 inside
+each of two fast-linked pairs with the pipeline cut across the slow link;
+experts placed whole; a split refused where its parts would break a Q8_0
+block; Gemma 2 2B on the measured two-Spark link on one Spark, or a
+two-stage pipeline when each holds 70% of it; refusals for memory no
+placement fits. A brute-force enumeration of every pipeline and grouping
+on random topologies with twins (a routed block on six devices, the tiny
+Gemma on four) agrees with the search's optimum; sixteen devices without
+twins are refused at once; attention under ALiBi or with a mask whose
+broadcast over heads a part cannot follow runs whole and still equals the
+unpartitioned graph; TP3 and TP8 (where twelve KV heads keep attention
+whole beside split feed-forward blocks) equal it too.
 
 ## Platforms
 

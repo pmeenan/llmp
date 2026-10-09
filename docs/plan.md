@@ -1441,10 +1441,14 @@ each is checked against the design as M3.6 proceeds.
             parity with Gemma 2's and Gemma 3's builders; their
             owner-attention forms and narrowed final layer land with the
             Gemma 2/3 migration.
-- [ ] **Partitioning in the planner:** tensor, pipeline and expert
+- [x] **Partitioning in the planner:** tensor, pipeline and expert
       parallelism with any split count and mixed, chosen by modelled
       traffic for a described topology; equivalence tests over four or more
       fake devices. Two-Spark execution is M4's.
+      *2026-10-09:* `planner/partition.h`, the components' splits as data;
+      TP, PP, EP, TP2×PP2 and six-device mixes equal the unpartitioned
+      graphs on the reference executor
+      ([as built](engine-components.md#partitioning)).
 - [ ] **Migrate Gemma2 and Gemma3**, then delete their runners, plans,
       graph builders, bindings and serving classes.
       - [ ] Components, patterns and the mapping.
