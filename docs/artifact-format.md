@@ -659,7 +659,7 @@ or unterminated strings stay linear; `manifest.json` may not exceed 1 MiB,
 artifact must satisfy all of them. Qwen3.8, the largest planned model, uses
 about 75,000 entries, 29,000 containers and 460,000 values in a 6.33 MB
 index. Kept metadata is checked before the index is parsed; for kept GGUF
-keys the type is checked before any value is read, and
+keys the type is checked before any value is used, and
 `general.architecture` may not exceed 200 bytes. All kept metadata together
 may not exceed 128 MiB. Files are opened
 non-blocking, so a FIFO swapped in mid-walk cannot stall verification. Raising a cap is a format-version change. Together these keep a small

@@ -26,3 +26,10 @@ target_link_libraries(llmp_report PRIVATE llmp_warnings)
 add_library(llmp_json STATIC json.cc)
 target_include_directories(llmp_json PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_json PRIVATE llmp_warnings)
+
+# General GGUF (gguf.h): a file's header, metadata and tensor infos, parsed
+# as untrusted input for the importer, the artifact's kept metadata and the
+# tokenizer.
+add_library(llmp_gguf STATIC gguf.cc)
+target_include_directories(llmp_gguf PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(llmp_gguf PRIVATE llmp_json llmp_warnings)

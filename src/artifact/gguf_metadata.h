@@ -6,16 +6,16 @@
 // set to 0), read natively as untrusted input. The file must be exactly a
 // complete zero-tensor GGUF header, as the prototype verifier's
 // _check_kv_gguf requires: the magic, version 3, no tensors, at most
-// kMaxGgufKeys keys, no byte after the last value; keys non-empty and
-// unique; every value of a known type, no array of arrays, an array's
-// element type valid even when it is empty; general.alignment a u32 power
-// of two, general.architecture a string of at most 200 bytes, and every
-// `*.expert_count` a u32 (the rules of pinned gguf.cpp). Every length and
-// count is checked against the bytes left before anything is read or
-// allocated.
+// kMaxGgufKeys keys, no byte after the last value; keys non-empty, UTF-8
+// and unique; every value of a known type (a bool 0 or 1), no array of
+// arrays, an array's element type valid even when it is empty;
+// general.alignment a u32 power of two, general.architecture a string of
+// at most 200 bytes, and every `*.expert_count` a u32 (the rules of pinned
+// gguf.cpp). The header is base/gguf.h's parse, which checks every length
+// and count against the bytes left before anything is read or allocated.
 //
 // Only the values of the keys the caller names are returned; every other
-// value is skipped unread (its bytes still bounded).
+// value is left unconverted (its bytes still bounded).
 
 #ifndef LLMP_ARTIFACT_GGUF_METADATA_H_
 #define LLMP_ARTIFACT_GGUF_METADATA_H_

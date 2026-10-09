@@ -174,10 +174,13 @@ BOS consumes that first position, as in the pinned reference. Streaming
 decode applies this option only to its first token.
 
 **Readers.** `ReadGgufTokenizer` parses a GGUF header's key-value section
-from a byte prefix of the file: counts and lengths are checked against the
-bytes left before anything is allocated, and the keys it uses against caps
-(2^16 keys, 16 MiB strings, 2^24 array elements); other keys are skipped
-unread; keys may not repeat, types must match. It accepts
+from a byte prefix of the file with the shared GGUF parser (`base/gguf.h`,
+which the importer and the artifact's kept metadata use too): counts and
+lengths are checked against caps (2^16 keys, 2^24 elements in any array,
+16 MiB keys and wanted strings) and the bytes left before anything is
+allocated; other keys' values are not converted; keys are non-empty
+UTF-8 and may not repeat, bools are 0 or 1, no array holds arrays (as
+pinned gguf.cpp refuses), types must match. It accepts
 `gpt2` vocabularies with the three pre-tokenizer modes above and token types
 normal, control, user-defined and unused, and the Gemma 4 raw UTF-8 BPE
 metadata and byte fallback described above. Classic SentencePiece also

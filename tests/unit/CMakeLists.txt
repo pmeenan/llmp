@@ -1106,3 +1106,18 @@ if(LLMP_CUDA)
   llmp_gpu_gtest(components_models_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()
+
+# The general GGUF header parser (base/gguf.h) and the importer's container
+# readers (import/): GGUF and safetensors with config.json on files built in
+# the test, every refusal, the quantizations, and the mapping sources.
+add_executable(import_test import_test.cc)
+target_link_libraries(import_test PRIVATE llmp_import llmp_gguf llmp_spec llmp_json)
+llmp_gtest(import_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+# The readers on the current models' checkpoints: the Gemma 2 and 3 source
+# GGUFs' specs equal to their v0 artifacts', the split GGUFs, Qwen3.8's
+# ModelOpt checkpoint.
+add_executable(import_models_test import_models_test.cc)
+target_link_libraries(import_models_test PRIVATE llmp_import llmp_spec llmp_model llmp_artifact)
+llmp_gtest(import_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")

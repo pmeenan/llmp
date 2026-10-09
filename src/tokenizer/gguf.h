@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // A GGUF file's tokenizer, read from the start of the file (its header and
-// key-value metadata), which is untrusted: every length and count is
-// checked against the bytes given before anything is allocated, the keys
-// the reader uses also against the caps below (other keys are skipped
-// unread), keys may not repeat, and the tokenizer keys must have their
-// documented types.
+// key-value metadata, base/gguf.h's ParseMetadata), which is untrusted:
+// every length and count is checked against the bytes given before
+// anything is allocated, the keys the reader uses also against the caps
+// below (other keys are left unconverted), keys are non-empty UTF-8 and
+// may not repeat, bools are 0 or 1, no array holds arrays (as in pinned
+// gguf.cpp), and the tokenizer keys must have their documented types.
 //
 // Supported: `tokenizer.ggml.model` "gpt2" (byte-level BPE) with the
 // pre-tokenizers `qwen2`, `qwen35`, `deepseek-v3` and `joyai-llm`, as

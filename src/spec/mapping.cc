@@ -423,6 +423,8 @@ std::expected<std::uint64_t, std::string> Count(const ParamValue* v, std::string
 
 }  // namespace
 
+bool IsSourceKey(std::string_view key) { return IsText(key); }
+
 std::span<const Mapping* const> Mappings() {
   static const std::array<const Mapping*, 2> all = {&mappings::Gemma2Mapping(),
                                                     &mappings::Gemma3Mapping()};

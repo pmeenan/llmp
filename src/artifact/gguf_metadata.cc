@@ -7,245 +7,95 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <expected>
 #include <limits>
-#include <set>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "artifact/error.h"
+#include "base/gguf.h"
 
 namespace llmp::artifact {
 namespace {
 
-// GGUF value types (gguf.h).
-enum : std::uint32_t {
-  kU8 = 0,
-  kI8 = 1,
-  kU16 = 2,
-  kI16 = 3,
-  kU32 = 4,
-  kI32 = 5,
-  kF32 = 6,
-  kBool = 7,
-  kString = 8,
-  kArray = 9,
-  kU64 = 10,
-  kI64 = 11,
-  kF64 = 12,
-};
-
-// The bytes of a scalar of `type`; 0 for a string, an array or an unknown
-// type.
-std::size_t ScalarBytes(std::uint32_t type) {
-  switch (type) {
-    case kU8:
-    case kI8:
-    case kBool:
-      return 1;
-    case kU16:
-    case kI16:
-      return 2;
-    case kU32:
-    case kI32:
-    case kF32:
-      return 4;
-    case kU64:
-    case kI64:
-    case kF64:
-      return 8;
-    default:
-      return 0;
-  }
-}
-
-bool IsInteger(std::uint32_t type) {
-  return type != kF32 && type != kF64 && ScalarBytes(type) != 0;
-}
-
-bool IsFloat(std::uint32_t type) { return type == kF32 || type == kF64; }
-
-bool KnownType(std::uint32_t type) { return type <= kF64; }
+namespace gg = base::gguf;
 
 std::unexpected<Error> Fail(Rule rule, std::string_view reason, std::uint64_t item = kNoItem) {
   return std::unexpected(Error{.rule = rule, .reason = reason, .item = item});
 }
 
-class Reader {
- public:
-  explicit Reader(std::span<const std::byte> bytes) : bytes_(bytes) {}
-
-  std::uint64_t offset() const { return pos_; }
-  std::uint64_t remaining() const { return bytes_.size() - pos_; }
-
-  // A little-endian unsigned integer of `size` bytes (at most 8).
-  std::expected<std::uint64_t, Error> Unsigned(std::size_t size) {
-    if (remaining() < size) {
-      return Fail(Rule::kFormat, "GGUF metadata truncated", pos_);
-    }
-    std::uint64_t value = 0;
-    for (std::size_t i = 0; i < size; ++i) {
-      value |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(bytes_[pos_ + i]))
-               << (8U * i);
-    }
-    pos_ += size;
-    return value;
+std::uint64_t LittleEndian(std::span<const std::byte> bytes) {
+  std::uint64_t value = 0;
+  for (std::size_t i = 0; i < bytes.size(); ++i) {
+    value |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(bytes[i])) << (8U * i);
   }
-
-  // A string's bytes, its length checked against the bytes left.
-  std::expected<std::string_view, Error> String() {
-    auto length = Unsigned(8);
-    if (!length) {
-      return std::unexpected(length.error());
-    }
-    if (*length > remaining()) {
-      return Fail(Rule::kFormat, "GGUF metadata truncated", pos_);
-    }
-    const std::string_view s(reinterpret_cast<const char*>(bytes_.data() + pos_),
-                             static_cast<std::size_t>(*length));
-    pos_ += *length;
-    return s;
-  }
-
-  std::expected<void, Error> Skip(std::uint64_t size) {
-    if (size > remaining()) {
-      return Fail(Rule::kFormat, "GGUF metadata truncated", pos_);
-    }
-    pos_ += size;
-    return {};
-  }
-
- private:
-  std::span<const std::byte> bytes_;
-  std::uint64_t pos_ = 0;
-};
-
-// A scalar's bits as a signed integer, or refused when an unsigned 64-bit
-// value does not fit.
-std::expected<std::int64_t, Error> AsInteger(std::uint32_t type, std::uint64_t bits,
-                                             std::uint64_t at) {
-  switch (type) {
-    case kI8:
-      return static_cast<std::int8_t>(static_cast<std::uint8_t>(bits));
-    case kI16:
-      return static_cast<std::int16_t>(static_cast<std::uint16_t>(bits));
-    case kI32:
-      return static_cast<std::int32_t>(static_cast<std::uint32_t>(bits));
-    case kI64:
-      return std::bit_cast<std::int64_t>(bits);
-    case kU64:
-      if (bits > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-        return Fail(Rule::kBounds, "a GGUF u64 value beyond int64", at);
-      }
-      return static_cast<std::int64_t>(bits);
-    default:  // u8, u16, u32, bool
-      return static_cast<std::int64_t>(bits);
-  }
+  return value;
 }
 
-double AsFloat(std::uint32_t type, std::uint64_t bits) {
-  if (type == kF32) {
-    return static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(bits)));
+// The parser's fault as this reader's rule: the container's structure is
+// kFormat, a key's emptiness or repetition kSchema, a cap kBounds.
+Error FromHeader(const gg::Error& e) {
+  Rule rule = Rule::kFormat;
+  if (e.fault == gg::Fault::kName || e.fault == gg::Fault::kDuplicate) {
+    rule = Rule::kSchema;
+  } else if (e.fault == gg::Fault::kBounds) {
+    rule = Rule::kBounds;
   }
-  return std::bit_cast<double>(bits);
+  return {.rule = rule, .reason = e.reason, .item = e.offset};
 }
 
-// One value of `type` (not an array's element: arrays are read by the
-// caller). With `keep`, its value into `out`.
-std::expected<void, Error> Value(Reader& r, std::uint32_t type, bool keep, GgufValue& out) {
-  out.type = type;
-  const std::uint64_t at = r.offset();
-  if (const std::size_t size = ScalarBytes(type); size != 0) {
-    auto bits = r.Unsigned(size);
-    if (!bits) {
-      return std::unexpected(bits.error());
+bool Numeric(gg::Type type) { return gg::IsInteger(type) || type == gg::Type::kBool; }
+
+// A wanted key's value.
+std::expected<GgufValue, Error> ValueOf(const gg::KeyValue& kv) {
+  GgufValue out;
+  out.type = static_cast<std::uint32_t>(kv.type);
+  if (kv.type == gg::Type::kString) {
+    if (kv.payload.size() > kMaxGgufWantedString) {
+      return Fail(Rule::kBounds, "a wanted GGUF string beyond the cap", kv.offset);
     }
-    if (!keep) {
-      return {};
-    }
-    if (IsFloat(type)) {
-      out.kind = GgufValue::Kind::kFloat;
-      out.real = AsFloat(type, *bits);
-      return {};
-    }
-    auto integer = AsInteger(type, *bits, at);
-    if (!integer) {
-      return std::unexpected(integer.error());
+    out.kind = GgufValue::Kind::kString;
+    out.text.assign(gg::String(kv));
+    return out;
+  }
+  if (gg::IsFloat(kv.type)) {
+    out.kind = GgufValue::Kind::kFloat;
+    out.real = gg::FloatValue(kv.type, gg::ScalarBits(kv));
+    return out;
+  }
+  if (kv.type != gg::Type::kArray) {
+    const auto v = gg::SignedValue(kv.type, gg::ScalarBits(kv));
+    if (!v) {
+      return Fail(Rule::kBounds, "a GGUF u64 value beyond int64", kv.offset);
     }
     out.kind = GgufValue::Kind::kInteger;
-    out.integer = *integer;
-    return {};
+    out.integer = *v;
+    return out;
   }
-  if (type == kString) {
-    auto s = r.String();
-    if (!s) {
-      return std::unexpected(s.error());
-    }
-    if (keep) {
-      if (s->size() > kMaxGgufWantedString) {
-        return Fail(Rule::kBounds, "a wanted GGUF string beyond the cap", at);
-      }
-      out.kind = GgufValue::Kind::kString;
-      out.text.assign(*s);
-    }
-    return {};
+  const bool floats = gg::IsFloat(kv.element);
+  if (!floats && !Numeric(kv.element)) {
+    return out;  // an array of strings: kOther
   }
-  if (type != kArray) {
-    return Fail(Rule::kFormat, "an unknown GGUF value type", at);
+  if (kv.count > kMaxGgufWantedArray) {
+    return Fail(Rule::kBounds, "a wanted GGUF array beyond the cap", kv.offset);
   }
-  auto element = r.Unsigned(4);
-  auto count = element ? r.Unsigned(8) : element;
-  if (!count) {
-    return std::unexpected(count.error());
-  }
-  const auto e = static_cast<std::uint32_t>(*element);
-  if (e == kArray || !KnownType(e)) {
-    return Fail(Rule::kFormat, "a GGUF array of arrays or of an unknown type", at);
-  }
-  // Every element takes at least a byte (a string its 8-byte length), so
-  // the bytes left bound the count before anything loops or allocates.
-  const std::size_t size = ScalarBytes(e);
-  const std::uint64_t least = size != 0 ? size : 8;
-  if (*count > r.remaining() / least) {
-    return Fail(Rule::kFormat, "GGUF metadata truncated", r.offset());
-  }
-  const bool numbers = keep && (IsInteger(e) || IsFloat(e));
-  if (numbers && *count > kMaxGgufWantedArray) {
-    return Fail(Rule::kBounds, "a wanted GGUF array beyond the cap", at);
-  }
-  if (!numbers) {
-    if (size != 0) {
-      return r.Skip(*count * size);
-    }
-    for (std::uint64_t i = 0; i < *count; ++i) {
-      auto s = r.String();
-      if (!s) {
-        return std::unexpected(s.error());
-      }
-    }
-    return {};
-  }
-  out.kind = IsFloat(e) ? GgufValue::Kind::kFloats : GgufValue::Kind::kIntegers;
-  for (std::uint64_t i = 0; i < *count; ++i) {
-    const std::uint64_t item = r.offset();
-    auto bits = r.Unsigned(size);
-    if (!bits) {
-      return std::unexpected(bits.error());
-    }
-    if (IsFloat(e)) {
-      out.reals.push_back(AsFloat(e, *bits));
+  out.kind = floats ? GgufValue::Kind::kFloats : GgufValue::Kind::kIntegers;
+  for (std::uint64_t i = 0; i < kv.count; ++i) {
+    const std::uint64_t bits = gg::ElementBits(kv, i);
+    if (floats) {
+      out.reals.push_back(gg::FloatValue(kv.element, bits));
       continue;
     }
-    auto integer = AsInteger(e, *bits, item);
-    if (!integer) {
-      return std::unexpected(integer.error());
+    const auto v = gg::SignedValue(kv.element, bits);
+    if (!v) {
+      return Fail(Rule::kBounds, "a GGUF u64 value beyond int64", kv.offset);
     }
-    out.integers.push_back(*integer);
+    out.integers.push_back(*v);
   }
-  return {};
+  return out;
 }
 
 constexpr std::uint64_t kMaxArchitecture = 200;  // layout.py MAX_ARCH
@@ -254,70 +104,59 @@ constexpr std::uint64_t kMaxArchitecture = 200;  // layout.py MAX_ARCH
 
 std::expected<GgufMetadata, Error> ReadGgufMetadata(std::span<const std::byte> bytes,
                                                     std::span<const std::string_view> wanted) {
-  Reader r(bytes);
-  auto magic = r.Unsigned(4);
-  if (!magic || *magic != 0x46554747U) {  // "GGUF", little endian
+  // The fixed header first, for this reader's own refusals: only a
+  // version 3 header with no tensors is kept metadata.
+  if (bytes.size() < 4 || LittleEndian(bytes.first(4)) != gg::kMagic) {
     return Fail(Rule::kFormat, "not GGUF metadata");
   }
-  auto version = r.Unsigned(4);
-  auto tensors = version ? r.Unsigned(8) : version;
-  auto keys = tensors ? r.Unsigned(8) : tensors;
-  if (!keys) {
-    return std::unexpected(keys.error());
+  if (bytes.size() < 24) {
+    return Fail(Rule::kFormat, "GGUF metadata truncated", bytes.size());
   }
-  if (*version != 3 || *tensors != 0) {
+  if (LittleEndian(bytes.subspan(4, 4)) != 3 || LittleEndian(bytes.subspan(8, 8)) != 0) {
     return Fail(Rule::kFormat, "not a version 3, zero-tensor GGUF header");
   }
-  if (*keys > kMaxGgufKeys) {
+  if (LittleEndian(bytes.subspan(16, 8)) > kMaxGgufKeys) {
     return Fail(Rule::kBounds, "more GGUF keys than the cap");
   }
-  GgufMetadata out;
-  std::set<std::string_view> seen;
-  for (std::uint64_t k = 0; k < *keys; ++k) {
-    const std::uint64_t at = r.offset();
-    auto key = r.String();
-    if (!key) {
-      return std::unexpected(key.error());
-    }
-    if (key->empty() || !seen.insert(*key).second) {
-      return Fail(Rule::kSchema, "an empty or repeated GGUF key", at);
-    }
-    auto type = r.Unsigned(4);
-    if (!type) {
-      return std::unexpected(type.error());
-    }
-    const auto t = static_cast<std::uint32_t>(*type);
-    if (!KnownType(t)) {
-      return Fail(Rule::kFormat, "an unknown GGUF value type", at);
-    }
-    // The key rules, by type before any value is read.
-    const bool alignment = *key == "general.alignment";
-    const bool architecture = *key == "general.architecture";
-    const bool expert_count = key->ends_with(".expert_count");
-    if ((alignment || expert_count) && t != kU32) {
-      return Fail(Rule::kSchema, "general.alignment and *.expert_count must be u32", at);
-    }
-    if (architecture && t != kString) {
-      return Fail(Rule::kSchema, "general.architecture must be a string", at);
-    }
-    const bool keep = std::ranges::find(wanted, *key) != wanted.end();
-    GgufValue value;
-    if (auto read = Value(r, t, keep || alignment || architecture, value); !read) {
-      return std::unexpected(read.error());
-    }
-    if (alignment &&
-        (value.integer <= 0 || !std::has_single_bit(static_cast<std::uint64_t>(value.integer)))) {
-      return Fail(Rule::kSchema, "general.alignment must be a power of two", at);
-    }
-    if (architecture && value.text.size() > kMaxArchitecture) {
-      return Fail(Rule::kBounds, "general.architecture is longer than 200 bytes", at);
-    }
-    if (keep) {
-      out.emplace(std::string(*key), std::move(value));
-    }
+  // Strings and arrays nothing reads need no cap beyond the bytes they
+  // span; the wanted ones are capped below.
+  constexpr auto kAny = std::numeric_limits<std::uint64_t>::max();
+  const auto header = gg::Parse(bytes, {.max_keys = kMaxGgufKeys,
+                                        .max_tensors = 0,
+                                        .max_key_bytes = kAny,
+                                        .max_string_bytes = kAny,
+                                        .max_array_elements = kAny});
+  if (!header) {
+    return std::unexpected(FromHeader(header.error()));
   }
-  if (r.remaining() != 0) {
-    return Fail(Rule::kFormat, "bytes after the GGUF metadata", r.offset());
+  if (header->end != bytes.size()) {
+    return Fail(Rule::kFormat, "bytes after the GGUF metadata", header->end);
+  }
+  GgufMetadata out;
+  for (const gg::KeyValue& kv : header->metadata) {
+    // The key rules (the prototype verifier's _check_kv_gguf).
+    const bool alignment = kv.key == "general.alignment";
+    const bool architecture = kv.key == "general.architecture";
+    if ((alignment || kv.key.ends_with(".expert_count")) && kv.type != gg::Type::kU32) {
+      return Fail(Rule::kSchema, "general.alignment and *.expert_count must be u32", kv.offset);
+    }
+    if (architecture && kv.type != gg::Type::kString) {
+      return Fail(Rule::kSchema, "general.architecture must be a string", kv.offset);
+    }
+    if (alignment && !std::has_single_bit(gg::ScalarBits(kv))) {
+      return Fail(Rule::kSchema, "general.alignment must be a power of two", kv.offset);
+    }
+    if (architecture && kv.payload.size() > kMaxArchitecture) {
+      return Fail(Rule::kBounds, "general.architecture is longer than 200 bytes", kv.offset);
+    }
+    if (std::ranges::find(wanted, kv.key) == wanted.end()) {
+      continue;
+    }
+    auto value = ValueOf(kv);
+    if (!value) {
+      return std::unexpected(value.error());
+    }
+    out.emplace(std::string(kv.key), std::move(*value));
   }
   return out;
 }

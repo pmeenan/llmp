@@ -11,14 +11,15 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <limits>
 #include <optional>
-#include <set>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "base/gguf.h"
 #include "tokenizer/error.h"
 #include "tokenizer/pretokenize.h"
 #include "tokenizer/tokenizer.h"
@@ -26,247 +27,71 @@
 namespace llmp::tokenizer {
 namespace {
 
-enum class Type : std::uint32_t {
-  kU8 = 0,
-  kI8 = 1,
-  kU16 = 2,
-  kI16 = 3,
-  kU32 = 4,
-  kI32 = 5,
-  kF32 = 6,
-  kBool = 7,
-  kString = 8,
-  kArray = 9,
-  kU64 = 10,
-  kI64 = 11,
-  kF64 = 12,
-};
-
-std::size_t ScalarSize(std::uint32_t type) {
-  switch (static_cast<Type>(type)) {
-    case Type::kU8:
-    case Type::kI8:
-    case Type::kBool:
-      return 1;
-    case Type::kU16:
-    case Type::kI16:
-      return 2;
-    case Type::kU32:
-    case Type::kI32:
-    case Type::kF32:
-      return 4;
-    case Type::kU64:
-    case Type::kI64:
-    case Type::kF64:
-      return 8;
-    case Type::kString:
-    case Type::kArray:
-      return 0;
-  }
-  return 0;
-}
+namespace gg = base::gguf;
+using Type = gg::Type;
 
 std::unexpected<Error> Fail(Rule rule, std::string_view reason, std::uint64_t item = kNoItem) {
   return std::unexpected(Error{rule, reason, item});
 }
 
-class Reader {
- public:
-  explicit Reader(std::span<const std::byte> bytes) : bytes_(bytes) {}
-
-  std::size_t offset() const { return pos_; }
-  std::size_t remaining() const { return bytes_.size() - pos_; }
-
-  std::expected<std::uint64_t, Error> Unsigned(std::size_t size) {
-    if (remaining() < size) {
-      return Fail(Rule::kFormat, "truncated", pos_);
-    }
-    std::uint64_t value = 0;
-    for (std::size_t i = 0; i < size; ++i) {  // little endian
-      value |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(bytes_[pos_ + i]))
-               << (8U * i);
-    }
-    pos_ += size;
-    return value;
+std::uint64_t LittleEndian(std::span<const std::byte> bytes) {
+  std::uint64_t value = 0;
+  for (std::size_t i = 0; i < bytes.size(); ++i) {
+    value |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(bytes[i])) << (8U * i);
   }
+  return value;
+}
 
-  std::expected<std::string_view, Error> String() {
-    auto length = Unsigned(8);
-    if (!length) {
-      return std::unexpected(length.error());
-    }
-    if (*length > kMaxGgufString) {
-      return Fail(Rule::kBounds, "string longer than the cap", pos_);
-    }
-    if (*length > remaining()) {
-      return Fail(Rule::kFormat, "truncated", pos_);
-    }
-    const std::string_view s(reinterpret_cast<const char*>(bytes_.data() + pos_), *length);
-    pos_ += *length;
-    return s;
-  }
-
-  std::expected<void, Error> Skip(std::size_t size) {
-    if (remaining() < size) {
-      return Fail(Rule::kFormat, "truncated", pos_);
-    }
-    pos_ += size;
-    return {};
-  }
-
- private:
-  std::span<const std::byte> bytes_;
-  std::size_t pos_ = 0;
-};
-
-// A value the tokenizer uses, or a skipped one.
+// A value the tokenizer uses: views into the bytes.
 struct Value {
   std::uint32_t type = 0;
   std::uint32_t element_type = 0;  // arrays
   std::uint64_t scalar = 0;        // integers and bools
-  std::string_view string;
-  std::vector<std::string_view> strings;  // arrays of strings
-  std::vector<float> floats;              // arrays of f32 scores
-  std::vector<std::int32_t> ints;         // arrays of i32
+  std::string_view string{};
+  std::vector<std::string_view> strings{};  // arrays of strings
+  std::vector<float> floats{};              // arrays of f32 scores
+  std::vector<std::int32_t> ints{};         // arrays of i32
 };
 
-std::expected<void, Error> SkipValue(Reader& r, std::uint32_t type, int depth) {
-  if (const std::size_t size = ScalarSize(type); size != 0) {
-    return r.Skip(size);
-  }
-  if (type == static_cast<std::uint32_t>(Type::kString)) {
-    // A string nothing reads needs no cap beyond the bytes it spans (some
-    // GGUFs embed large documents under other keys).
-    auto length = r.Unsigned(8);
-    if (!length) {
-      return std::unexpected(length.error());
-    }
-    if (*length > r.remaining()) {
-      return Fail(Rule::kFormat, "truncated", r.offset());
-    }
-    return r.Skip(static_cast<std::size_t>(*length));
-  }
-  if (type != static_cast<std::uint32_t>(Type::kArray)) {
-    return Fail(Rule::kFormat, "unknown value type", r.offset());
-  }
-  if (depth > 1) {
-    return Fail(Rule::kBounds, "arrays nested too deeply", r.offset());
-  }
-  auto element = r.Unsigned(4);
-  auto count = element ? r.Unsigned(8) : element;
-  if (!count) {
-    return std::unexpected(count.error());
-  }
-  // Every element takes at least a byte (a string its 8-byte length, an
-  // array 12), so the bytes left bound the count before any loop.
-  const auto e = static_cast<std::uint32_t>(*element);
-  const std::size_t size = ScalarSize(e);
-  std::size_t least = 12;
-  if (size != 0) {
-    least = size;
-  } else if (e == static_cast<std::uint32_t>(Type::kString)) {
-    least = 8;
-  }
-  if (*count > r.remaining() / least) {
-    return Fail(Rule::kFormat, "truncated", r.offset());
-  }
-  if (size != 0) {
-    return r.Skip(static_cast<std::size_t>(*count) * size);
-  }
-  for (std::uint64_t i = 0; i < *count; ++i) {
-    if (auto s = SkipValue(r, e, depth + 1); !s) {
-      return s;
-    }
-  }
-  return {};
-}
-
-std::expected<Value, Error> ReadValue(Reader& r, std::uint32_t type) {
-  Value v;
-  v.type = type;
-  if (const std::size_t size = ScalarSize(type); size != 0) {
-    auto x = r.Unsigned(size);
-    if (!x) {
-      return std::unexpected(x.error());
-    }
-    v.scalar = *x;
+// A wanted key's value, its strings and arrays within the caps.
+std::expected<Value, Error> ValueOf(const gg::KeyValue& kv) {
+  Value v{.type = static_cast<std::uint32_t>(kv.type)};
+  if (gg::ScalarBytes(kv.type) != 0) {
+    v.scalar = gg::ScalarBits(kv);
     return v;
   }
-  if (type == static_cast<std::uint32_t>(Type::kString)) {
-    auto s = r.String();
-    if (!s) {
-      return std::unexpected(s.error());
+  if (kv.type == Type::kString) {
+    if (kv.payload.size() > kMaxGgufString) {
+      return Fail(Rule::kBounds, "string longer than the cap", kv.offset);
     }
-    v.string = *s;
+    v.string = gg::String(kv);
     return v;
   }
-  if (type != static_cast<std::uint32_t>(Type::kArray)) {
-    return Fail(Rule::kFormat, "unknown value type", r.offset());
+  if (kv.count > kMaxGgufArray) {
+    return Fail(Rule::kBounds, "array longer than the cap", kv.offset);
   }
-  auto element = r.Unsigned(4);
-  auto count = element ? r.Unsigned(8) : element;
-  if (!count) {
-    return std::unexpected(count.error());
-  }
-  if (*count > kMaxGgufArray) {
-    return Fail(Rule::kBounds, "array longer than the cap", r.offset());
-  }
-  v.element_type = static_cast<std::uint32_t>(*element);
-  if (v.element_type == static_cast<std::uint32_t>(Type::kString)) {
-    // Each string takes at least its 8-byte length, so the count is bounded
-    // by the bytes left before anything is reserved.
-    if (*count > r.remaining() / 8) {
-      return Fail(Rule::kFormat, "truncated", r.offset());
+  v.element_type = static_cast<std::uint32_t>(kv.element);
+  const auto count = static_cast<std::size_t>(kv.count);
+  if (kv.element == Type::kString) {
+    v.strings.reserve(count);
+    bool long_string = false;
+    gg::ForEachString(kv, [&](std::string_view s) {
+      long_string = long_string || s.size() > kMaxGgufString;
+      v.strings.push_back(s);
+    });
+    if (long_string) {
+      return Fail(Rule::kBounds, "string longer than the cap", kv.offset);
     }
-    v.strings.reserve(static_cast<std::size_t>(*count));
-    for (std::uint64_t i = 0; i < *count; ++i) {
-      auto s = r.String();
-      if (!s) {
-        return std::unexpected(s.error());
-      }
-      v.strings.push_back(*s);
+  } else if (kv.element == Type::kF32) {
+    v.floats.reserve(count);
+    for (std::uint64_t i = 0; i < kv.count; ++i) {
+      v.floats.push_back(std::bit_cast<float>(static_cast<std::uint32_t>(gg::ElementBits(kv, i))));
     }
-    return v;
-  }
-  if (v.element_type == static_cast<std::uint32_t>(Type::kF32)) {
-    if (*count > r.remaining() / 4) {
-      return Fail(Rule::kFormat, "truncated", r.offset());
-    }
-    v.floats.reserve(static_cast<std::size_t>(*count));
-    for (std::uint64_t i = 0; i < *count; ++i) {
-      auto value = r.Unsigned(4);
-      if (!value) {
-        return std::unexpected(value.error());
-      }
-      v.floats.push_back(std::bit_cast<float>(static_cast<std::uint32_t>(*value)));
-    }
-    return v;
-  }
-  if (v.element_type == static_cast<std::uint32_t>(Type::kI32)) {
-    if (*count > r.remaining() / 4) {
-      return Fail(Rule::kFormat, "truncated", r.offset());
-    }
-    v.ints.reserve(static_cast<std::size_t>(*count));
-    for (std::uint64_t i = 0; i < *count; ++i) {
-      auto x = r.Unsigned(4);
-      if (!x) {
-        return std::unexpected(x.error());
-      }
-      v.ints.push_back(static_cast<std::int32_t>(static_cast<std::uint32_t>(*x)));
-    }
-    return v;
-  }
-  // Another array: skip its elements.
-  const std::uint32_t e = v.element_type;
-  if (const std::size_t size = ScalarSize(e); size != 0) {
-    if (auto s = r.Skip(static_cast<std::size_t>(*count) * size); !s) {
-      return std::unexpected(s.error());
-    }
-    return v;
-  }
-  for (std::uint64_t i = 0; i < *count; ++i) {
-    if (auto s = SkipValue(r, e, 1); !s) {
-      return std::unexpected(s.error());
+  } else if (kv.element == Type::kI32) {
+    v.ints.reserve(count);
+    for (std::uint64_t i = 0; i < kv.count; ++i) {
+      v.ints.push_back(
+          static_cast<std::int32_t>(static_cast<std::uint32_t>(gg::ElementBits(kv, i))));
     }
   }
   return v;
@@ -297,54 +122,61 @@ bool Wanted(std::string_view key) {
 }  // namespace
 
 std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte> bytes) {
-  Reader r(bytes);
-  auto magic = r.Unsigned(4);
-  if (!magic) {
-    return std::unexpected(magic.error());
+  // The fixed header first, for this reader's own refusals.
+  if (bytes.size() < 4) {
+    return Fail(Rule::kFormat, "truncated", 0);
   }
-  if (*magic != 0x46554747U) {  // "GGUF"
+  if (LittleEndian(bytes.first(4)) != gg::kMagic) {
     return Fail(Rule::kFormat, "not a GGUF file", 0);
   }
-  auto version = r.Unsigned(4);
-  if (!version) {
-    return std::unexpected(version.error());
+  if (bytes.size() < 8) {
+    return Fail(Rule::kFormat, "truncated", 4);
   }
-  if (*version != 2 && *version != 3) {
-    return Fail(Rule::kUnsupported, "GGUF version", *version);
+  const std::uint64_t version = LittleEndian(bytes.subspan(4, 4));
+  if (version != 2 && version != 3) {
+    return Fail(Rule::kUnsupported, "GGUF version", version);
   }
-  auto tensors = r.Unsigned(8);
-  auto keys = tensors ? r.Unsigned(8) : tensors;
-  if (!keys) {
-    return std::unexpected(keys.error());
+  if (bytes.size() < 24) {
+    return Fail(Rule::kFormat, "truncated", 8);
   }
-  if (*keys > kMaxGgufKeys) {
-    return Fail(Rule::kBounds, "more keys than the cap", *keys);
+  if (const std::uint64_t keys = LittleEndian(bytes.subspan(16, 8)); keys > kMaxGgufKeys) {
+    return Fail(Rule::kBounds, "more keys than the cap", keys);
   }
-
-  std::set<std::string_view> seen;
+  // The metadata only (the bytes may stop before the tensor infos). A
+  // string nothing reads needs no cap beyond the bytes it spans (some GGUFs
+  // embed large documents under other keys); any array is held to the
+  // array cap, before the bytes it would need are checked.
+  constexpr auto kAny = std::numeric_limits<std::uint64_t>::max();
+  const auto header = gg::ParseMetadata(bytes, {.max_keys = kMaxGgufKeys,
+                                                .max_tensors = kAny,
+                                                .max_key_bytes = kMaxGgufString,
+                                                .max_string_bytes = kAny,
+                                                .max_array_elements = kMaxGgufArray});
+  if (!header) {
+    const gg::Error& e = header.error();
+    switch (e.fault) {
+      case gg::Fault::kTruncated:
+        return Fail(Rule::kFormat, "truncated", e.offset);
+      case gg::Fault::kDuplicate:
+        return Fail(Rule::kFormat, "a key repeats", e.offset);
+      case gg::Fault::kBounds:
+        return Fail(Rule::kBounds, e.reason, e.offset);
+      case gg::Fault::kMalformed:
+      case gg::Fault::kName:
+        break;
+    }
+    return Fail(Rule::kFormat, e.reason, e.offset);
+  }
   std::vector<std::pair<std::string_view, Value>> values;
-  for (std::uint64_t i = 0; i < *keys; ++i) {
-    auto key = r.String();
-    if (!key) {
-      return std::unexpected(key.error());
+  for (const gg::KeyValue& kv : header->metadata) {
+    if (!Wanted(kv.key)) {
+      continue;
     }
-    if (!seen.insert(*key).second) {
-      return Fail(Rule::kFormat, "a key repeats", i);
+    auto v = ValueOf(kv);
+    if (!v) {
+      return std::unexpected(v.error());
     }
-    auto type = r.Unsigned(4);
-    if (!type) {
-      return std::unexpected(type.error());
-    }
-    const auto t = static_cast<std::uint32_t>(*type);
-    if (Wanted(*key)) {
-      auto v = ReadValue(r, t);
-      if (!v) {
-        return std::unexpected(v.error());
-      }
-      values.emplace_back(*key, std::move(*v));
-    } else if (auto s = SkipValue(r, t, 0); !s) {
-      return std::unexpected(s.error());
-    }
+    values.emplace_back(kv.key, std::move(*v));
   }
 
   auto find = [&](std::string_view key) -> const Value* {

@@ -140,6 +140,11 @@ struct SourceValue {
   ParamValue value{};
 };
 
+// Whether `key` can name a source value (and a mapping's tensor name):
+// 1 to kMaxText bytes of printable ASCII without space, quotes, backslash
+// or braces. Synthesize refuses values under any other key.
+bool IsSourceKey(std::string_view key);
+
 // A source's tensors as the mapping sees them.
 struct SourceTensor {
   std::string name{};

@@ -641,6 +641,100 @@ Native C++, part of the distribution; no Python (D-109).
   [model-support.md](model-support.md) (AGENTS.md: agents never invent
   supported combinations).
 
+**As built: the container readers** (`src/import`, 2026-10-09). A reader
+turns a checkpoint into a `Checkpoint`: its files, opened once through
+the path-trust walk (root and one trusted user; links resolved, then
+opened without following one and compared by device and inode; regular
+files nobody else can write, in directories nobody else can change) and
+kept open, so later reads use the files that were checked; every tensor
+as a `format::TensorFormat`, the part it holds and its byte extent; and
+the source metadata as typed key/values. `SourceOf` and `ValuesOf` give
+exactly the `spec::Source` and values `spec::Synthesize` reads. The
+output is deterministic (files in split or shard-name order, tensors by
+offset, metadata by key), errors name a rule, a static reason and an
+index, never the checkpoint's own text, and nothing is relaid out. A
+reader refuses only what it cannot describe correctly (ambiguous or
+inconsistent sizes and extents, overlaps, escapes from the checkpoint,
+unknown encodings) and what its security bounds exclude (sizes, counts,
+paths, trust); what is merely unusual for its container is read as it is
+(owner, 2026-10-09).
+
+- *GGUF* (`readers/gguf.h`) parses the header with `base/gguf.h`, which
+  the artifact's kept-metadata reader and the tokenizer now share: every
+  count and length checked against its cap and then the bytes left before
+  it drives a loop or an allocation, keys and tensor names UTF-8 and
+  unique, no array of arrays, at most four non-negative dimensions. It
+  reads each header in growing prefixes (1 MiB, then four times as much;
+  all of a checkpoint's headers 256 MiB, the metadata kept from them 512
+  MiB and their tensors 2^20 in all). general.alignment is a power of two
+  (of any integer type); every GGML type of the pin is named by the
+  format layer (removed and unknown types refused), rows are whole
+  blocks, no tensor is empty (the format layer has no empty shape); every
+  tensor's bytes lie inside the file and overlap no other's. Where
+  gguf.cpp is stricter without the description needing it (offsets packed
+  in info order at the alignment, names up to 63 bytes, u16 split keys)
+  the reader accepts the file, and it ignores bytes after the last
+  tensor as gguf.cpp does. The architecture and tensor names are UTF-8
+  without control characters (C1's included). A
+  split GGUF is read from its first file, `<prefix>-00001-of-<n>.gguf`,
+  each sibling's `split.no` its place, the counts agreeing, every name
+  once, the tensors `split.tensors.count` when the first file gives it
+  (llama.cpp does not need it), and a key a later file repeats equal to
+  the first's. A three-dimensional tensor named `*_exps` is an
+  expert array.
+- *safetensors with config.json* (`readers/safetensors.h`) reads
+  config.json (strict RFC 8259, 16 MiB, nesting 32, `model_type` the
+  architecture; objects flattened into dotted keys, typed) and either
+  `model.safetensors` or the shards `model.safetensors.index.json` names
+  (plain file names, every tensor in exactly the shard the index gives).
+  A shard is safetensors' own format, read as permissively as still
+  describes it: the 8-byte length at most 100,000,000, the header an
+  object of entries with dtype, shape and offsets (other members, the
+  index's other members and `__metadata__` not read), the dtypes of the
+  table (the 4- and 6-bit ones refused), and every tensor inside the data
+  section and overlapping no other (gaps and trailing bytes, which the
+  reference reader refuses, describe every tensor as well). Quantization
+  (`readers/hf_quant.h`) is read from `quantization_config` and ModelOpt's
+  hf_quant_config.json, which must agree: ModelOpt NVFP4 (`U8` codes,
+  `F8_E4M3` scales per 16, an F32 `weight_scale_2`) and MXFP8 (`F8_E4M3`
+  codes, E8M0 scales per 32) are paired into `kSplit` formats with their
+  parts, alone or per module (`MIXED_PRECISION`'s `quantized_layers`, the
+  longest covering module); a scaled weight no module names is described
+  when its dtypes and shapes match one of the two (Qwen3.8's n-gram
+  table), and an NVFP4 weight without its own `weight_scale_2` takes the
+  nearest ancestor module's lone one (the n-gram table's 128 row shards
+  share one, which is then the tensor-scale part of each); exclusion
+  patterns are matched within a fixed budget of steps, so hostile ones
+  cannot stall a read. A scaled weight of an excluded module is described
+  by its dtypes; a weight without block scales, even in a configured
+  module, and block scales without a weight are dense tensors. Refused,
+  naming why: a pair whose dtypes match neither scheme, or not its
+  configured scheme, or whose part sizes disagree; and the schemes no
+  encoding describes: compressed-tensors
+  other than `dense` (its NVFP4 global scale is the reciprocal of the
+  tensor scale, which needs a fold), AWQ and GPTQ (affine with zero
+  points, no encoding yet), block FP8, other ModelOpt algorithms, MLX's
+  `quantization` (the MLX reader's) and unknown methods.
+
+On spark-b (`import_models_test`), the Gemma 2 and Gemma 3 source GGUFs
+give, through their mappings and their own metadata, the spec the
+installed v0 artifacts give with today's profiles, and every tensor of
+the eight GGUF-sourced M3 artifacts (Gemma 4 26B, 31B and both
+assistants, DeepSeek V4 UD-Q2_K_XL in three splits and antirez's, the
+DSpark drafter, Qwen3.8 UD-IQ3_XXS in three splits) has the format the
+reader gives its source tensor; Qwen3.8's ModelOpt checkpoint (301,730
+tensors in 35 shards) reads with 75,419 NVFP4 and 467 MXFP8 weights
+paired, 128 of the NVFP4 ones (the n-gram shards) by their dtypes, and
+agrees with the v0 import the Python importer made of the same files:
+layer 1's MXFP8 linears have the format v0's resources assemble to and
+the same bytes, every routed expert's tensor scale is v0's, and the
+n-gram shards' rows are v0's row-interleaved table under its one tensor
+scale (`Qwen38ModelOptMatchesTheV0Import`). The
+Qwen-Image transformer (a diffusers component without `model_type`) and
+the MLX checkpoint are refused, for the readers that will take them.
+Still to come: the diffusers, MLX and EXL3 readers, the fold catalog,
+the writer and its format version, the CLI and the admission gate.
+
 ## Execution
 
 One runner, holding the skeleton as today (weights, live state, planned

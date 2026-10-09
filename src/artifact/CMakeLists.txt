@@ -10,4 +10,4 @@
 add_library(llmp_artifact STATIC artifact.cc composition.cc error.cc format_map.cc
                                    gguf_metadata.cc json.cc layout.cc representation.cc)
 target_include_directories(llmp_artifact PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(llmp_artifact PUBLIC llmp_base llmp_format PRIVATE llmp_platform llmp_warnings)
+target_link_libraries(llmp_artifact PUBLIC llmp_base llmp_format PRIVATE llmp_gguf llmp_platform llmp_warnings)
