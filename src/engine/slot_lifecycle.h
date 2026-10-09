@@ -118,6 +118,8 @@ class SlotLifecycle {
   const model::StateLayoutDerived& layout(std::size_t stage) const {
     return options_.stages.at(stage).layout;
   }
+  // Every stage's own read alignment (ReserveStateThrough's default).
+  std::uint32_t read_align() const { return options_.read_align; }
   SlotMask active() const { return cohort_.active(); }
   bool faulted() const { return cohort_.faulted(); }
   // D-105: what a kept record's layout must be (model::KeptLayoutId).
@@ -189,6 +191,20 @@ class SlotLifecycle {
   // Accept or it is borrowed.
   Status ReserveStateThrough(std::uint32_t slot, std::uint32_t positions,
                              std::uint32_t read_align = 0);
+  // Optional growth for a known next chunk (LiveState::Prepare), submitted
+  // before the current job: each stage's fresh zero extents a state of
+  // `positions` positions reads at `read_align` (0: the options'), never
+  // published as used (ReserveStateThrough's Use alone does), never
+  // recorded as written. True if any stage submitted some; false (nothing
+  // submitted) when the slot may not grow now or nothing is eligible.
+  // FinishPreparations drains it after the current job's fence, before
+  // anything else changes the state.
+  std::expected<bool, std::string> PrepareThrough(std::uint32_t slot, std::uint32_t positions,
+                                                  std::uint32_t read_align = 0);
+  // After the current job's fence: every slot's every stage's preparation
+  // drained (cancelled if `cancel`); the first problem. One that cannot
+  // prove its retirement keeps its ticket (LiveState::FinishPreparation).
+  Status FinishPreparations(bool cancel = false);
   // A turn checkpoint's pages: every used page later positions may write
   // (CheckpointPages over each stage's CheckpointWrites). Refused unless
   // the slot is active, usable and settled (no verify pending or owed).

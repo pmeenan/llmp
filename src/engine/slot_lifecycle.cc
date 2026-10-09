@@ -694,6 +694,43 @@ Status SlotLifecycle::ReserveStateThrough(std::uint32_t index, std::uint32_t pos
   return {};
 }
 
+std::expected<bool, std::string> SlotLifecycle::PrepareThrough(std::uint32_t index,
+                                                               std::uint32_t positions,
+                                                               std::uint32_t read_align) {
+  auto found = Find(index);
+  if (!found) return std::unexpected(found.error());
+  const Slot& slot = **found;
+  // Preparation overlaps the current job only on a threaded node.
+  if (!node_.threaded() || slot.restoring || slot.borrows != 0 || verify_pending(index) ||
+      !Usable(slot)) {
+    return false;
+  }
+  if (auto active = CheckActive(index); !active) return false;
+  const std::uint32_t align = read_align == 0 ? options_.read_align : read_align;
+  bool submitted = false;
+  for (std::size_t s = 0; s < slot.stages.size(); ++s) {
+    auto used = model::UsedThrough(options_.stages[s].layout, positions, align);
+    if (!used) return std::unexpected(used.error());
+    const auto ranges = AsRanges(*used);
+    auto prepared = slot.stages[s].live->Prepare(node_, ranges);
+    if (!prepared) return std::unexpected(prepared.error());
+    submitted = submitted || *prepared;
+  }
+  return submitted;
+}
+
+Status SlotLifecycle::FinishPreparations(bool cancel) {
+  Status first;
+  for (Slot& slot : slots_) {
+    for (Stage& stage : slot.stages) {
+      if (auto finished = stage.live->FinishPreparation(cancel); !finished && first) {
+        first = std::unexpected(finished.error());
+      }
+    }
+  }
+  return first;
+}
+
 std::expected<std::vector<Range>, std::string> SlotLifecycle::CheckpointRanges(
     std::uint32_t index, std::uint32_t positions) const {
   if (auto active = CheckActive(index); !active) return std::unexpected(active.error());

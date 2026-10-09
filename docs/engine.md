@@ -23,7 +23,9 @@ paging, live state (with its spill, checkpoints and a verify's snapshot),
 the runner's own memory (`runner_memory.h`), what plans hold
 (`plan_account.h`: the charge, the step a reclaim spares, the reclaimer's
 view of a cache), prefill lookahead, the request cohort, the shared slot
-lifecycle (`slot_lifecycle.h`, below) and the n-gram rows. It reaches the device through the providers, the device runtime and
+lifecycle (`slot_lifecycle.h`, below), the n-gram rows, and the one model runner
+over step programs with its wave composer and prefill orchestrator
+(`model_runner.h`, [below](#the-model-runner)). It reaches the device through the providers, the device runtime and
 the paging kernels (`kernels/paging/paging.h`), and links no device
 backend: a program links the CUDA one, or the fake device runtime
 (`providers/fake/fake_device_runtime.h`: host memory, work queued on fake
@@ -59,7 +61,7 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | --- | --- | --- | --- |
 | Weights | `paged_weights.h` | Opens an artifact and its shards for direct reads; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`; a GGML runner's `ExpertSlab`, `expert_slab.h`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
 | Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; successful source/pin checks reused under scheduler lifetime/epoch with mutation invalidation (not residency or leases); sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify, queued on the job's stream as the paging kernels' range copies (a GGML runner queues them through its launch context, `live_state_launch.h`) | The state layout and each step's used ranges; which ranges a verify writes; a commit if kept rows need one |
-| Planned shapes | `planned.h` (`plan_account.h`) | `PlannedGraph<Graph>`, `SizedArena` (a plan's arena holds what its graph uses), `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, no fixed number, each plan's host bytes and planning time kept: `PlannedHostBytes`); in the core, `PlanAccount` (what the plans and graphs hold, charged to the node: a plan as it is added, a graph before its capture, D-090 as amended), `PlanStep` (a step's plans spared by any reclaim while it runs), `PlanCacheBase`, `CollectPlans` and `ReclaimPlan` (the plans and graphs as candidates for the node's reclaim order, and one's reclaim); `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
+| Planned shapes | `planned.h` (`plan_account.h`, `plan_cache.h`, `coverage.h`) | `PlannedGraph<Graph>`, `SizedArena` (a plan's arena holds what its graph uses), `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, no fixed number, each plan's host bytes and planning time kept: `PlannedHostBytes`; the core's `BasicPlanCache` over GGML's `PlanRuns`); in the core, `PlanAccount` (what the plans and graphs hold, charged to the node: a plan as it is added, a graph before its capture, D-090 as amended), `PlanStep` (a step's plans spared by any reclaim while it runs), `PlanCacheBase`, `CollectPlans` and `ReclaimPlan` (the plans and graphs as candidates for the node's reclaim order, and one's reclaim); `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
 | Runs and graphs | `graph_runs.h` | `GraphRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the plan and the outputs; captures a shape on its second run (or when the runner asks), beside that run's launch-by-launch execution (so capture and instantiation overlap the device's work) unless work is queued between inputs and plan, replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; `CaptureAhead` records another planned shape's graph without running it, from the input layout `Layout` predicts; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts, hinted prefill) and what it copies out |
 | Prefill lookahead | `prefill_lookahead.h` | `PrefillLookahead` and fixed-capacity `PrefillLookaheadGroup`: independent optional host allowances before CPU-only future plans, sequential builds during current device work, ordered installation after successful completion, exact cache-charge transfer and destruction before unused-grant release | Shape prediction, graph construction, binding/coverage/cache installation and capture policy |
 | Resources | `runner_memory.h`, `runner_resources.h` | The runner's own device memory (pinned) and pinned staging (`RunnerMemory`, the core's); for a GGML runner, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry (`RunnerResources`); and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
@@ -314,7 +316,143 @@ Positions are Gemma's ledger (set after a completed step, by a completed
 restore or an adoption). A slot's verify-pending state is its stages' own
 (`LiveState::verify_rows`), and a borrow is counted until returned; a
 borrow is refused until a verify is accepted and what it owes has run
-(Gemma4's settled at its Accept).
+(Gemma4's settled at its Accept). `PrepareThrough` and
+`FinishPreparations` give every family's prepare-ahead (`LiveState::Prepare`
+on each stage's fresh zero extents for a known next chunk, drained after
+the current job) through the slots.
+
+## The model runner
+
+M3.6's one runner (D-107; [engine-components.md](engine-components.md#execution)),
+in the core and tested on the fake backend (`model_runner_test`, over
+`tests/support/fake_step_source.h`). No family uses it yet: each family's
+migration moves onto it with its components; decoding modes with any
+number of drafters (L5c) and the serving adapter (L6) follow.
+
+**Step programs** (`kernels/common/step_program.h`, vendor-free). A
+kernel source's lowering makes a `StepProgram` from a planned step and
+the `Addresses` it binds (weights by role and part, state by `StateRef`,
+the activations; activations at 0 is a placeless measurement): what it
+needs (scratch, pool, host bytes, launches), its input slots (each a
+segment's tokens or positions, or caller bytes per segment or step), its
+output slots (a segment's own, or the step's joined), its tensor uses by
+role for the coverage check, `Bind` (once per plan, on the driver after the
+current job), `Run` (the one virtual call per step) and `Record`. A program
+whose launch parameters take the step's positions (DeepSeek's HCA prefill
+plan) says it is not `capturable`: it is never recorded, and `Position`
+gives it each step's segment positions before its run.
+`StepLaunch` is the backend's launch: `Capture` records what a body queues
+and `Launch` replays it; `RecordingLaunch` does both over the device
+runtime's recorded work (the fake's in tests, any backend that records a
+stream), and a GGML wrapper of `LaunchContext` follows with the lowering.
+
+**Planner types** (`planner/step_shape.h`, header-only; the planner stream
+extends it). `StepShape` {stage, `Phase` (prefill, decode, verify, draft,
+score), segments by ascending slot, row invariance, read alignment};
+`Segment` {slot, rows, past, read cells, outputs, group, want_head,
+greedy}; `PlanKey` {spec digest, shape, pattern and policy digests,
+partition}. A segment's `past` is data, not the plan: equality ignores it,
+as every family's shape equality ignored `n_past`; `read_cells`, which
+follows it at the shape's alignment, is part of the plan. A step source's
+program therefore bakes nothing that follows `past`: positions reach it
+as input data, or through `Position` for a program that is never
+captured.
+
+**The runner** (`model_runner.h`). `ModelRunner final : PagedModel` holds
+a `SlotLifecycle`, the stages' `PagedWeights`, `RunnerMemory` (input and
+output staging), `StepRuns`, the launch, a `PlanAccount` and one plan
+cache, over a `StepSource` (`KeyBase` once at Bind; `Build`, host-only, per
+plan miss). Setup lays out the slots' state first, reserves the weights,
+builds every configured setup shape placeless to size the activations,
+pool, staging and plan floor (a quarter's margin) and pins the staging;
+Register registers sources and pins places; Bind makes the launch, binds
+the account and builds the closures; Release drops plans and recordings,
+then the launch, then the memory they name. A step (`RunStep`):
+1. `PlanStep`; each owner admitted (`Admit`: active, at its positions when
+   the step advances them, state backed through every cell it reads,
+   `past + rows` or a common read's wider `read_cells`, at the step's
+   alignment; a refusal names its slot and leaves its peers), a joined
+   step's owners first through what each reads alone (its rows at its
+   state's alignment, as a lone step's segment), so no owner's widening for
+   the join takes what a later owner's own rows need and an owner refused
+   only in the widening (`StepRefusal::widening`) steps alone with no
+   growth; `CheckPlaces`. A widening refused for a later owner keeps the
+   earlier owners' (clean growth, leased, read once their positions reach
+   it): at most the join's extra reads per owner, which a peer's own growth
+   may then lack until the runtime reclaims for it; an all-or-nothing
+   widening (one acquisition for every owner's) is owed;
+2. the plan found, or built, bound, coverage-checked (`coverage.h`, refused
+   on a violation) and cached with its host bytes and planning time;
+3. inputs staged by slot (`StepRuns::Stage`), output copies laid out, a
+   program that is not capturable positioned;
+4. the futures (`StepAhead`): deduplicated against the shape and each
+   other and protected by `Find` before any funding; a recording made
+   ahead whose staging differs is dropped; the capture decision (second
+   run in the phases `capture_phases` names, or the first run of a shape
+   the next one repeats) and `ChargeGraph`; the next shape's recording
+   captured beside this run when it differs and is planned; up to two
+   missing futures funded (`PrefillLookaheadGroup`) and built in the job's
+   meanwhile; the next shape's fresh state prepared;
+5. `RecordWrite` from each owner's first row, then one job: each owner's
+   owed restore and commit, the run (`StepRuns::Queue`), the capture
+   ahead;
+6. preparations drained; on failure `CheckFailedJob`, each owner's states
+   settled (quarantined if anything may have been written) and the cohort
+   faulted on a launch fault (a faulted cohort's refusal is never clean);
+   on a failed drain every owner quarantined;
+7. futures installed (bound, checked, the grant transferred to the
+   cache's charge), the path counted, each owner's outputs copied to its
+   own buffer, positions set.
+
+`PlanCache` is now `BasicPlanCache<Key, Planned, Variants, Runs>` in the
+core (`plan_cache.h`); `planned.h`'s `PlanCache` is the alias over GGML's
+`PlanRuns`, and `StepPlanRuns` is the step programs'. `RunPath`,
+`GraphStats` and the run copies moved to `run_stats.h`.
+
+**The wave composer** (`wave_composer.h`). Pending work per slot becomes
+step shapes by a `model::Batching` capability (`model/batching.h`, data
+the components will supply): work of one kind (stage, phase, row
+invariance, device choice, head intent unless mixing is allowed) joins in
+slot order up to `max_segments` owners and `max_step_rows` rows, prompt
+rows only with `join_prefill` (and equal rows and reads with
+`equal_prefill`); within a step, consecutive owners form groups while
+their rows fit `group_rows` and they number at most `group_segments`
+(`invariant_group_segments` for a row-invariant step); a joined step reads
+at `joined_read_align`, and with `common_read` every owner reads the
+widest. `RunWave` runs the composition (refused whole when the composer's
+alignment is not the state's): an owner's refusal (not active, at other
+positions, out of state capacity) settles it alone and the rest are
+composed again (an owner out of capacity only for the joined step's wider
+reads, at a joined alignment or through a common read, first steps alone
+at its own, after its kind's joined step); a joined step refused cleanly
+(nothing queued, no owner's state changed beyond clean growth, the cohort
+healthy) runs its owners alone; a step that may have written fails its
+owners together, and none of them runs it again. Each outcome says where
+its owner sat in its step (segment, the rows and outputs before it) to
+find its share of the joined outputs. A row-invariant step (a verify)
+still reads at the joined alignment or a common read, so its reads follow
+its peers; D-092 needs verify waves kept at each owner's lone reads, which
+the decoding-mode slice (L5c) owes.
+
+**The prefill orchestrator** (`prefill.h`). One completed unit at a time:
+each prompt's next chunk (the configured rows, bounded by the capability's
+per-owner rows, the context and a checkpoint boundary; no time cap), cut
+state-only unless it is the prompt's last, joined by the composer, with
+its futures (the same owners' next and following chunks, composed;
+an owner whose prompt ends drops out) built ahead, captured ahead or
+captured first, and its fresh state prepared.
+
+What the shared pieces reproduce of each family, and what a migration
+must still bring (as components' capabilities, planner patterns or
+policy):
+
+| Family | Reproduced | Not yet |
+| --- | --- | --- |
+| Gemma2/3 | Joined prompt waves with equal rows and reads (`equal_prefill`); two futures, first-run capture of a repeating shape, capture ahead, prepare ahead; head-or-state-only shapes; second-run capture in every phase; independent outputs | Owner attention modes (`owner_decode`, packed and flexible owner prefill, bounded roots: graph forms the planner selects from the shape), padding to a common width, Gemma3's four-root carriers as op-level groups (`group_segments` groups whole owners only), the 2,048/256 head-capacity envelope (`max_head_rows`), the C12 bounded factor; the cohort's 2- or 12-owner limits become `max_segments` |
+| Gemma4 | Quads as `group_segments` 4, the 8/12 groups as `invariant_group_segments`/`group_segments`; one future without capture ahead is `lookahead` 1, `capture_ahead` false; per-group isolation (RunGemmaGroups) is RunWave's | Common owner reads limited to two owners, bounded owner roots, retained features and the assistant's frozen borrows (L5c), joined prompt admission (Gemma4 serving prefills alone) |
+| Qwen3.8 | Groups of consecutive owners while rows fit 16 (`group_rows`), 2,048-aligned joined reads (`joined_read_align`), state backed through that alignment before the step (an owner out of capacity there steps alone at 256 rather than being refused), two futures and prepare ahead, state-only cuts | Per-product joined limits (draft head 8, VecQ, MoE GEMV, MXFP8 columns, HC cuBLAS 16: planner patterns), BF16 head sharing by row count, the n-gram row gather between inputs and plan, the MTP lookahead group, rows ≤ 4 per slot, verify waves and draft waves (L5c); its prefill captures only one-row shapes (`capture_phases` without prefill) |
+| DeepSeek V4 | Total wave rows ≤ 16 (`max_step_rows`), joined row-local work with per-owner state, scalar prefill (`join_prefill` false), two futures and prepare ahead, state-only cuts | Float products over groups of whole owners fitting 8 columns and `SetVecQOneToken` for one-row waves (planner, from the shape), `Dsv4WaveSupport`'s fallback to one slot, the HCA plan's per-position patch (the lowering's `Position`; the runner never captures it), joined drafts and draft-verify waves (L5c) |
+
 
 ## Adding a model family
 

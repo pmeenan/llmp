@@ -49,10 +49,13 @@ const char* DeviceStatus::text() const {
 }
 
 std::expected<Device, Failure> OpenDevice(int ordinal, DeviceSettings settings) {
-  if (cudaSetDevice(ordinal) != cudaSuccess || cudaFree(nullptr) != cudaSuccess) {
-    return std::unexpected(
-        Failure{.error = ProviderError::kFailed,
-                .detail = std::format("CUDA device {} has no context", ordinal)});
+  cudaError_t context = cudaSetDevice(ordinal);
+  if (context == cudaSuccess) context = cudaFree(nullptr);
+  if (context != cudaSuccess) {
+    // The error names why (out of memory beside other processes, no device).
+    return std::unexpected(Failure{.error = ProviderError::kFailed,
+                                   .detail = std::format("CUDA device {} has no context: {}",
+                                                         ordinal, cudaGetErrorName(context))});
   }
   auto memory = cuda::OpenDeviceMemory(ordinal);
   if (!memory) {

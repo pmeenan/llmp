@@ -27,20 +27,6 @@ kg::KernelFailure Unknown(std::string what) {
 
 }  // namespace
 
-void Count(GraphStats& stats, RunPath path) {
-  switch (path) {
-    case RunPath::kEager:
-      ++stats.eager;
-      break;
-    case RunPath::kCaptured:
-      ++stats.captured;
-      break;
-    case RunPath::kReplayed:
-      ++stats.replayed;
-      break;
-  }
-}
-
 std::expected<Copies, std::string> GraphRuns::Stage(
     std::span<const std::pair<ggml_tensor*, const void*>> sources, std::uint64_t base) const {
   Copies copies;

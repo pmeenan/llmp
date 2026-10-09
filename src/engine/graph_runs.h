@@ -35,42 +35,13 @@
 #include <utility>
 #include <vector>
 
+#include "engine/run_stats.h"
 #include "ggml.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/launch.h"
 #include "providers/device_execution.h"
 
 namespace llmp::engine {
-
-// How a run went (D-090).
-enum class RunPath : std::uint8_t {
-  kEager,     // launch by launch
-  kCaptured,  // captured: beside a launch-by-launch run, or then replayed once
-  kReplayed,  // one launch of a graph captured earlier
-};
-
-// A model's runs of one kind (its target's, or its drafter's), summed.
-struct GraphStats {
-  std::uint64_t eager = 0;
-  std::uint64_t captured = 0;
-  std::uint64_t replayed = 0;
-  std::uint64_t refused = 0;       // captures refused: those plans stay launch by launch
-  std::uint64_t dropped = 0;       // graphs destroyed to stay within the model's cap
-  double capture_seconds = 0;      // capturing
-  double instantiate_seconds = 0;  // instantiating and uploading
-  std::uint64_t nodes = 0;         // in every graph captured
-  std::int64_t memory_bytes = 0;   // the drop in the device's free memory across captures
-  std::string first_refusal;
-};
-
-// Counts a run that went `path`.
-void Count(GraphStats& stats, RunPath path);
-
-// Copies a run queues, three addresses or sizes each: an input's device
-// address, its bytes and its offset in the staging (Stage's); an output's
-// host address, device address and bytes.
-using RunCopy = std::array<std::uint64_t, 3>;
-using Copies = std::vector<RunCopy>;
 
 // One plan's runs: how often it ran launch by launch, and its graph once
 // captured with the input copies the graph holds.
@@ -93,6 +64,7 @@ struct PlanRuns {
   bool CaptureDue(bool graphs) const {
     return graphs && !graph.has_value() && !uncapturable && eager_runs > 0;
   }
+  bool has_graph() const { return graph.has_value(); }
   // Destroys the graph, only between jobs (nothing in flight replays it).
   void DropGraph() {
     graph.reset();

@@ -1,0 +1,329 @@
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
+// SPDX-License-Identifier: Apache-2.0
+
+#include "fake_step_source.h"
+
+#include <algorithm>
+#include <cstring>
+#include <format>
+#include <span>
+#include <utility>
+
+#include "providers/fake/fake_device_execution.h"
+
+namespace llmp::test_support {
+
+namespace {
+
+namespace kn = llmp::kernels;
+namespace pl = llmp::planner;
+
+std::uint64_t Round(std::uint64_t bytes) { return (bytes + 255) / 256 * 256; }
+
+template <typename T>
+T* At(std::uint64_t address) {
+  return reinterpret_cast<T*>(address);  // NOLINT(performance-no-int-to-ptr)
+}
+
+std::unexpected<std::string> Refuse(std::string what) { return std::unexpected(std::move(what)); }
+
+// What one segment's run needs, resolved at Build.
+struct SegmentPlan {
+  std::int32_t slot = 0;
+  std::uint32_t rows = 0, outputs = 0, read_cells = 0, first = 0;  // first: row in a joined input
+  std::uint64_t tokens = 0, positions = 0, out = 0;                // device addresses
+  std::uint64_t cells = 0, cell_bytes = 0, cells_address = 0, fixed = 0;  // state
+  bool greedy = false;
+  std::int64_t past = -1;  // Position's, for a positioned program (-1: the input's)
+  std::uint64_t cells_base() const { return cells_address; }
+};
+
+class FakeProgram final : public kn::StepProgram {
+ public:
+  FakeProgram(std::vector<SegmentPlan> segments, std::vector<kn::InputSlot> inputs,
+              std::vector<kn::OutputSlot> outputs, std::vector<kn::TensorUse> uses,
+              std::uint64_t scratch, std::uint64_t host, std::uint64_t launches, bool measuring,
+              const FakeSourceOptions* options, std::uint64_t greedy_out,
+              std::shared_ptr<std::atomic<std::uint64_t>> queued,
+              std::shared_ptr<std::atomic<std::uint64_t>> executed,
+              std::shared_ptr<std::atomic<std::uint64_t>> positioned)
+      : segments_(std::move(segments)),
+        inputs_(std::move(inputs)),
+        outputs_(std::move(outputs)),
+        uses_(std::move(uses)),
+        scratch_(scratch),
+        host_(host),
+        launches_(launches),
+        measuring_(measuring),
+        options_(options),
+        greedy_out_(greedy_out),
+        queued_(std::move(queued)),
+        executed_(std::move(executed)),
+        positioned_(std::move(positioned)) {}
+
+  std::uint64_t scratch_bytes() const override { return scratch_; }
+  std::uint64_t host_bytes() const override { return host_; }
+  std::uint64_t launches() const override { return launches_; }
+  std::span<const kn::InputSlot> inputs() const override { return inputs_; }
+  std::span<const kn::OutputSlot> outputs() const override { return outputs_; }
+  std::span<const kn::TensorUse> tensors() const override { return uses_; }
+  bool capturable() const override { return !options_->positioned; }
+
+  std::expected<void, kn::StepFailure> Bind(kn::StepLaunch& /*launch*/) override {
+    if (measuring_) {
+      return std::unexpected(
+          kn::StepFailure{.error = kn::StepError::kRejected, .detail = "a measurement binds not"});
+    }
+    if (options_->refuse_bind) {
+      return std::unexpected(
+          kn::StepFailure{.error = kn::StepError::kRejected, .detail = "the fake refuses to bind"});
+    }
+    bound_ = true;
+    return {};
+  }
+
+  std::expected<void, kn::StepFailure> Position(std::span<const std::uint32_t> past) override {
+    if (past.size() != segments_.size()) {
+      return std::unexpected(
+          kn::StepFailure{.error = kn::StepError::kRejected, .detail = "positions per segment"});
+    }
+    for (std::size_t i = 0; i < past.size(); ++i) segments_[i].past = past[i];
+    positioned_->fetch_add(1);
+    return {};
+  }
+
+  std::expected<void, kn::StepFailure> Run(kn::StepLaunch& /*launch*/,
+                                           providers::NativeStream stream) const override {
+    if (!bound_) {
+      return std::unexpected(
+          kn::StepFailure{.error = kn::StepError::kRejected, .detail = "an unbound program"});
+    }
+    if (options_->fail_run == kn::StepError::kRejected) {
+      return std::unexpected(
+          kn::StepFailure{.error = kn::StepError::kRejected, .detail = "the fake refuses to run"});
+    }
+    queued_->fetch_add(1);
+    auto launched = providers::fake::FakeDeviceExecution::Launch(
+        stream, [segments = segments_, greedy_out = greedy_out_, executed = executed_] {
+          Execute(segments, greedy_out);
+          executed->fetch_add(1);
+        });
+    if (!launched) {
+      return std::unexpected(
+          kn::StepFailure{.error = kn::StepError::kUnknown, .detail = "the fake refused work"});
+    }
+    if (options_->fail_run == kn::StepError::kUnknown) {
+      return std::unexpected(
+          kn::StepFailure{.error = kn::StepError::kUnknown, .detail = "the fake faulted"});
+    }
+    return {};
+  }
+
+  std::expected<std::unique_ptr<kn::Recorded>, kn::StepFailure> Record(
+      kn::StepLaunch& launch, providers::NativeStream stream,
+      const kn::StepLaunch::Body& body) const override {
+    if (options_->refuse_record) {
+      return std::unexpected(
+          kn::StepFailure{.error = kn::StepError::kRejected, .detail = "the fake refuses"});
+    }
+    return launch.Capture(stream, body);
+  }
+
+ private:
+  // The device's work: on the fake device's thread, at run time.
+  static void Execute(const std::vector<SegmentPlan>& segments, std::uint64_t greedy_out) {
+    std::size_t greedy_index = 0;
+    for (const SegmentPlan& s : segments) {
+      const auto* tokens = At<const std::int32_t>(s.tokens) + s.first;
+      const auto* positions = At<const std::int32_t>(s.positions) + s.first;
+      std::uint64_t hash = 0;
+      if (s.fixed != 0) std::memcpy(&hash, At<const void>(s.fixed), sizeof(hash));
+      std::vector<std::uint64_t> hashes(s.rows);
+      for (std::uint32_t r = 0; r < s.rows; ++r) {
+        const std::int32_t at = s.past >= 0 ? static_cast<std::int32_t>(s.past + r) : positions[r];
+        const auto position = static_cast<std::uint64_t>(at);
+        if (position < s.cells) {
+          const FakeCell cell{
+              .magic = kFakeMagic, .slot = s.slot, .position = at, .token = tokens[r]};
+          std::memcpy(At<void>(s.cells_base() + (s.cell_bytes * position)), &cell, sizeof(cell));
+        }
+        hash = FakeHash(hash, tokens[r]);
+        hashes[r] = hash;
+      }
+      if (s.fixed != 0) std::memcpy(At<void>(s.fixed), &hash, sizeof(hash));
+      std::int32_t valid = 0;
+      for (std::uint32_t c = 0; c < s.read_cells && c < s.cells; ++c) {
+        FakeCell cell;
+        std::memcpy(&cell, At<const void>(s.cells_base() + (s.cell_bytes * c)), sizeof(cell));
+        valid += cell.magic == kFakeMagic && cell.position == static_cast<std::int32_t>(c) &&
+                 cell.slot == s.slot;
+      }
+      for (std::uint32_t o = 0; o < s.outputs; ++o) {
+        const std::uint32_t r = s.rows - s.outputs + o;
+        const FakeRow row{
+            .slot = s.slot,
+            .position = s.past >= 0 ? static_cast<std::int32_t>(s.past + r) : positions[r],
+            .token = tokens[r],
+            .cells = valid,
+            .hash = hashes[r]};
+        std::memcpy(At<void>(s.out + (o * sizeof(FakeRow))), &row, sizeof(row));
+      }
+      if (s.greedy && greedy_out != 0) {
+        const std::int32_t chosen = tokens[s.rows - 1] + 1000;
+        std::memcpy(At<void>(greedy_out + (greedy_index * sizeof(chosen))), &chosen,
+                    sizeof(chosen));
+      }
+      greedy_index += s.greedy ? 1 : 0;
+    }
+  }
+
+  std::vector<SegmentPlan> segments_;
+  std::vector<kn::InputSlot> inputs_;
+  std::vector<kn::OutputSlot> outputs_;
+  std::vector<kn::TensorUse> uses_;
+  std::uint64_t scratch_ = 0, host_ = 0, launches_ = 0;
+  bool measuring_ = false, bound_ = false;
+  const FakeSourceOptions* options_;
+  std::uint64_t greedy_out_ = 0;
+  std::shared_ptr<std::atomic<std::uint64_t>> queued_, executed_, positioned_;
+};
+
+}  // namespace
+
+pl::PlanKey FakeStepSource::KeyBase() const {
+  pl::PlanKey key;
+  key.spec = options_.spec;
+  key.patterns[0] = 0xFA;
+  return key;
+}
+
+std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Build(
+    const pl::StepShape& shape, const kn::Addresses& addresses) {
+  built_.push_back({.shape = shape, .measuring = addresses.measuring()});
+  if (options_.on_build) options_.on_build(shape, addresses.measuring());
+  if (options_.refuse_build && options_.refuse_build(shape)) return Refuse("the fake refuses");
+  if (shape.stage >= options_.layouts.size()) return Refuse("no such stage");
+  const model::StateLayoutDerived& layout = options_.layouts[shape.stage];
+  const model::StateLayoutDerived::Item* kv = nullptr;
+  const model::StateLayoutDerived::Item* fixed = nullptr;
+  for (const auto& item : layout.items) {
+    if (item.layer == 0 && item.tensor == 0) kv = &item;
+    if (item.layer == 0 && item.tensor == 1) fixed = &item;
+  }
+  if (kv == nullptr || kv->contract.cell_bytes < sizeof(FakeCell)) {
+    return Refuse("the stage has no per-position tensor 0 of a cell's bytes");
+  }
+  // The workspace: inputs, then outputs, at 256-byte boundaries.
+  std::uint64_t at = addresses.activations;
+  const auto place = [&](std::uint64_t bytes) {
+    const std::uint64_t here = at;
+    at += Round(std::max<std::uint64_t>(bytes, 1));
+    return here;
+  };
+  std::vector<SegmentPlan> segments;
+  std::vector<kn::InputSlot> inputs;
+  std::vector<kn::OutputSlot> outputs;
+  std::vector<kn::TensorUse> uses;
+  const std::uint32_t total = shape.rows();
+  std::uint64_t joined_tokens = 0, joined_positions = 0;
+  if (options_.joined_inputs) {
+    joined_tokens = place(std::uint64_t{total} * 4);
+    joined_positions = place(std::uint64_t{total} * 4);
+    inputs.push_back({.device_address = joined_tokens,
+                      .bytes = std::uint64_t{total} * 4,
+                      .tensor = {},
+                      .segment = ir::kJoinedSegment,
+                      .kind = kn::InputKind::kTokens});
+    inputs.push_back({.device_address = joined_positions,
+                      .bytes = std::uint64_t{total} * 4,
+                      .tensor = {},
+                      .segment = ir::kJoinedSegment,
+                      .kind = kn::InputKind::kPositions});
+  }
+  std::uint32_t first = 0;
+  std::uint32_t greedy = 0;
+  for (std::size_t i = 0; i < shape.segments.size(); ++i) {
+    const pl::Segment& seg = shape.segments[i];
+    SegmentPlan s;
+    s.slot = seg.slot;
+    s.rows = seg.rows;
+    s.outputs = seg.outputs;
+    s.read_cells = seg.read_cells;
+    s.greedy = seg.greedy;
+    const auto segment = static_cast<std::uint8_t>(i);
+    if (options_.joined_inputs) {
+      s.tokens = joined_tokens;
+      s.positions = joined_positions;
+      s.first = first;
+    } else {
+      s.tokens = place(std::uint64_t{seg.rows} * 4);
+      s.positions = place(std::uint64_t{seg.rows} * 4);
+      inputs.push_back({.device_address = s.tokens,
+                        .bytes = std::uint64_t{seg.rows} * 4,
+                        .tensor = {},
+                        .segment = segment,
+                        .kind = kn::InputKind::kTokens});
+      inputs.push_back({.device_address = s.positions,
+                        .bytes = std::uint64_t{seg.rows} * 4,
+                        .tensor = {},
+                        .segment = segment,
+                        .kind = kn::InputKind::kPositions});
+    }
+    first += seg.rows;
+    greedy += seg.greedy ? 1 : 0;
+    const std::uint64_t base =
+        addresses.state({.stage = shape.stage, .tensor = 0, .layer = 0, .segment = segment});
+    if (base == 0) return Refuse("a state tensor has no address");
+    s.cells = kv->cells;
+    s.cell_bytes = kv->contract.cell_bytes;
+    s.cells_address = base;
+    uses.push_back({.address = base,
+                    .bytes = std::uint64_t{seg.read_cells} * kv->contract.cell_bytes,
+                    .role = ir::Role::kState});
+    if (fixed != nullptr) {
+      s.fixed =
+          addresses.state({.stage = shape.stage, .tensor = 1, .layer = 0, .segment = segment});
+      if (s.fixed == 0) return Refuse("the fixed state has no address");
+      uses.push_back({.address = s.fixed, .bytes = fixed->bytes, .role = ir::Role::kState});
+    }
+    if (seg.outputs != 0) {
+      s.out = place(std::uint64_t{seg.outputs} * sizeof(FakeRow));
+      outputs.push_back({.device_address = s.out,
+                         .bytes = std::uint64_t{seg.outputs} * sizeof(FakeRow),
+                         .tensor = {},
+                         .segment = segment});
+    }
+    segments.push_back(s);
+  }
+  std::uint64_t greedy_out = 0;
+  if (greedy != 0) {
+    greedy_out = place(std::uint64_t{greedy} * 4);
+    outputs.push_back({.device_address = greedy_out,
+                       .bytes = std::uint64_t{greedy} * 4,
+                       .tensor = {},
+                       .segment = ir::kJoinedSegment});
+  }
+  for (const kn::InputSlot& in : inputs) {
+    uses.push_back({.address = in.device_address, .bytes = in.bytes, .role = ir::Role::kInput});
+  }
+  for (const kn::OutputSlot& out : outputs) {
+    uses.push_back({.address = out.device_address, .bytes = out.bytes, .role = ir::Role::kOutput});
+  }
+  if (options_.stray_output && !outputs.empty()) {
+    outputs.front().segment = static_cast<std::uint8_t>(shape.segments.size());
+  }
+  if (options_.stray_use) {
+    uses.push_back({.address = 4096, .bytes = 64, .role = ir::Role::kWeight});
+  }
+  const std::uint64_t scratch = at - addresses.activations;
+  if (!addresses.measuring() && scratch > addresses.activation_bytes) {
+    return Refuse(std::format("{} bytes of activations exceed the workspace's {}", scratch,
+                              addresses.activation_bytes));
+  }
+  return std::make_unique<FakeProgram>(std::move(segments), std::move(inputs), std::move(outputs),
+                                       std::move(uses), scratch, options_.host_bytes,
+                                       options_.launches, addresses.measuring(), &options_,
+                                       greedy_out, queued_, executed_, positioned_);
+}
+
+}  // namespace llmp::test_support
