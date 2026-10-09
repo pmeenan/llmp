@@ -113,6 +113,11 @@ constexpr Mapping kMapping{
     .tensors = kTensors,
     .params = kParams,
     .folds = kFolds,
+    // The serving recipe (runtime/serving.cc's Gemma3): every pattern but
+    // the RoPE store (the fused norm-mul, norm-rope and norm-add, the
+    // quantized GeGLU, shared Q8 preparation, grouped KV stores, owner
+    // attention with bounded roots and the four-root carriers).
+    .policy = "max_decode_rows 16\ndisable rope_store\n",
 };
 
 }  // namespace

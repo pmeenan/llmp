@@ -32,6 +32,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "components/component.h"
 #include "components/defs.h"
 #include "components/step.h"
@@ -140,10 +141,14 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
 
 model::StateTensorContract Kv(std::string name, std::uint64_t width, std::uint32_t window) {
   const bool ring = window != 0;
+  // The format layer's cell size (model::CellBytes): a lossy encoding's
+  // whole blocks once an alias opts in (D-108); F16's elements today.
+  const auto cell = model::CellBytes(kKvEncoding, width);
+  base::Check(cell.has_value(), "an F16 cell of any width");
   return {.name = std::move(name),
           .kind = ring ? model::StateKind::kRing : model::StateKind::kKv,
           .encoding = kKvEncoding,
-          .cell_bytes = width * format::Info(kKvEncoding).element_bits / 8,
+          .cell_bytes = *cell,
           .cells = ring ? model::CellRule::kRing : model::CellRule::kPerPosition,
           .window_or_ratio = window,
           // A ring's rows are overwritten in place: no verify may write it.
@@ -279,9 +284,17 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = x};
   ir::TensorId joined = outputs.front();
   for (std::size_t s = 1; s < outputs.size(); ++s) joined = b.Concat(joined, outputs[s], 1);
-  const ir::TensorId projected = b.MatMul(w(kOutput), joined);
-  if (!d.sandwich) return FragmentOut{.stream = b.Add(projected, x)};
-  return FragmentOut{.stream = b.Add(b.Mul(b.RmsNorm(projected, d.eps), w(kPostNorm)), x)};
+  ir::TensorId projected = b.MatMul(w(kOutput), joined);
+  // Narrowed (the head's rows only follow): the projection's and the
+  // residual's output rows, gathered after the product (the builders'
+  // narrow_final: the last layer's FFN and the head at the outputs' width).
+  const auto narrowed = [&](ir::TensorId t) {
+    return f.narrow ? b.GetRows(t, f.step.OutputRows()) : t;
+  };
+  projected = narrowed(projected);
+  if (!d.sandwich) return FragmentOut{.stream = b.Add(projected, narrowed(x))};
+  const ir::TensorId normed = b.Mul(b.RmsNorm(projected, d.eps), w(kPostNorm));
+  return FragmentOut{.stream = b.Add(normed, narrowed(x))};
 }
 
 // ------------------------------------------------------------- reference
@@ -416,6 +429,7 @@ const ComponentDef& AttentionDense() {
   static const ComponentDef def{
       .kind = "attention.dense",
       .version = 1,
+      .narrows = true,
       .params = kParams,
       .roles = kRoles,
       .shapes = Shapes,

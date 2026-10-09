@@ -4,7 +4,8 @@
 // norm.rms, version 1: rms_norm(x) · w over the stream (a final norm).
 // embedding.token, version 1: rows of a token table, scaled (Gemma's
 // sqrt(width)). head.linear, version 1: the output rows' product with the
-// output matrix (tied or not), an optional final softcap applied as
+// output matrix (tied or not; the rows gathered here unless the stream
+// was narrowed to them), an optional final softcap applied as
 // today's builders do (scale by 1 / cap, tanh, scale by cap), and on a
 // greedy step each row's highest logit (the host-greedy flavor); it splits
 // by the vocabulary.
@@ -128,7 +129,8 @@ std::expected<std::vector<RoleShape>, std::string> HeadShapes(const Instance& in
 
 std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
   ir::Builder& b = f.b;
-  const ir::TensorId rows = b.GetRows(f.stream, f.step.OutputRows());
+  // Its rows, unless what came before narrowed the stream to them.
+  const ir::TensorId rows = f.narrowed ? f.stream : b.GetRows(f.stream, f.step.OutputRows());
   ir::TensorId logits = b.MatMul(f.Weight(0), rows);
   if (f.instance.stage.softcap.has_value()) {
     const float cap = F32(*f.instance.stage.softcap);
@@ -183,6 +185,7 @@ const ComponentDef& NormRms() {
   static const ComponentDef def{
       .kind = "norm.rms",
       .version = 1,
+      .row_local = true,
       .params = kNormParams,
       .roles = kNormRoles,
       .shapes = NormShapes,
@@ -198,6 +201,7 @@ const ComponentDef& EmbeddingToken() {
   static const ComponentDef def{
       .kind = "embedding.token",
       .version = 1,
+      .row_local = true,
       .params = kEmbeddingParams,
       .roles = kEmbeddingRoles,
       .shapes = EmbeddingShapes,
@@ -212,6 +216,7 @@ const ComponentDef& HeadLinear() {
   static const ComponentDef def{
       .kind = "head.linear",
       .version = 1,
+      .row_local = true,
       .roles = kHeadRoles,
       .shapes = HeadShapes,
       .batch_classes = std::span(kJoined).subspan(2),

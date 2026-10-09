@@ -453,6 +453,12 @@ Status ValidateMapping(const Mapping& m) {
   if (m.slots.size() + m.tensors.size() + m.params.size() + m.folds.size() > kMaxMappingRules) {
     return Refuse(where, std::format("more than {} rules", kMaxMappingRules));
   }
+  // The policy's own rules are the planner's; here, printable lines.
+  if (m.policy.size() > kMaxPolicyText || (!m.policy.empty() && !m.policy.ends_with('\n')) ||
+      !std::ranges::all_of(m.policy,
+                           [](char ch) { return ch == '\n' || (ch >= ' ' && ch <= '~'); })) {
+    return Refuse(where, "a policy text of other than printable lines");
+  }
   std::array<int, 4> sites{};
   std::set<std::string_view> slots;
   for (const SlotRule& s : m.slots) {

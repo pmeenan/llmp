@@ -220,6 +220,14 @@ struct Fragment {
   std::span<const ir::TensorId> state{};
   std::size_t state_tensors = 0;
   bool stream_needed = true;
+  // The step's head reads only its output rows (step.OutputRows()) of what
+  // follows: `narrow` asks the stage's last component that mixes rows (its
+  // ComponentDef::narrows) to return only those rows of its output stream,
+  // gathered after the last of its own ops that mixes rows; `narrowed`
+  // tells each component after it that its input stream holds only those
+  // rows (the head then gathers none).
+  bool narrow = false;
+  bool narrowed = false;
 
   ir::TensorId Weight(std::uint16_t role) const { return weight(role); }
   ir::TensorId State(std::size_t segment, std::size_t tensor) const {
@@ -276,6 +284,12 @@ struct RefIO {
 struct ComponentDef {
   std::string_view kind{};  // "attention.dense"
   std::uint16_t version = 1;
+  // Each output row from its own input row alone (no attention or
+  // recurrence) and no state: what follows a narrowing (Fragment::narrow)
+  // may run at the output rows.
+  bool row_local = false;
+  // It gathers its output stream's output rows when asked (Fragment::narrow).
+  bool narrows = false;
   std::span<const ParamSpec> params{};
   std::span<const WeightRole> roles{};
   // The roles an instance uses and their shapes, or why its parameters do

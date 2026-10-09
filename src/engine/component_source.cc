@@ -20,14 +20,30 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   if (options.backend.registry == nullptr || !options.backend.lower) {
     return std::unexpected("a component step source needs a kernel source");
   }
-  if (auto valid = planner::Validate(options.policy); !valid) {
+  planner::Policy policy;
+  if (options.policy) {
+    policy = *options.policy;
+  } else if (options.mapping != nullptr && options.mapping->policy.empty()) {
+    policy = planner::Policy{};  // a mapping without one: the planner's default
+  } else if (options.mapping != nullptr) {
+    auto parsed = planner::ParsePolicy(options.mapping->policy);
+    if (!parsed) {
+      return std::unexpected(std::format("mapping {}'s planning policy: {}",
+                                         options.mapping->architecture, parsed.error()));
+    }
+    policy = std::move(*parsed);
+  } else {
+    return std::unexpected("a component step source needs a planning policy or a mapping");
+  }
+  if (auto valid = planner::Validate(policy); !valid) {
     return std::unexpected(std::format("the planning policy: {}", valid.error()));
   }
-  return std::unique_ptr<ComponentStepSource>(new ComponentStepSource(std::move(options)));
+  return std::unique_ptr<ComponentStepSource>(
+      new ComponentStepSource(std::move(options), std::move(policy)));
 }
 
 planner::PlanKey ComponentStepSource::KeyBase() const {
-  return planner::KeyOf(o_.bound_digest, {}, o_.policy);
+  return planner::KeyOf(o_.bound_digest, {}, policy_);
 }
 
 std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepSource::Build(
@@ -44,12 +60,13 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
   for (const components::StepInput& input : step->inputs) {
     if (input.kind != components::InputKind::kCellPositions) staged.push_back(input.tensor);
   }
-  auto plan = planner::Plan(step->graph.Clone(), *o_.backend.registry, o_.backend.device, o_.policy,
+  auto plan = planner::Plan(step->graph.Clone(), *o_.backend.registry, o_.backend.device, policy_,
                             {.row_invariant = shape.row_invariant,
                              .capturable = true,
                              .staged = std::move(staged),
                              .on_stream = o_.backend.on_stream,
-                             .written = o_.backend.written});
+                             .written = o_.backend.written,
+                             .shape = &shape});
   if (!plan) {
     return std::unexpected(std::format("planning a step ({}): {}",
                                        planner::PlanErrorName(plan.error().error),

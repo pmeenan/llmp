@@ -28,6 +28,7 @@
 #include "ggml.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/kv_quant.h"
@@ -115,6 +116,12 @@ class Lowering {
   std::expected<void, KernelFailure> Index();
   std::expected<void, KernelFailure> MakeNode(NodeId id);
   std::expected<void, KernelFailure> MakeFused(NodeId id, const ir::Node& n);
+  std::expected<void, KernelFailure> MakeOwners(NodeId id, const ir::Node& n);
+  // The replaced primitive nodes of later fused nodes that come before
+  // primitive node `limit`, made now where their sources are (see Run).
+  std::expected<void, KernelFailure> Flush(NodeId limit);
+  std::expected<void, KernelFailure> MakeReplaced(std::size_t entry);
+  ggml_tensor* ResolveReplaced(TensorId primitive) const;
   std::expected<ggml_tensor*, KernelFailure> MakeLeaf(const ir::Node& n);
   // GGML's builder call for primitive node `n` of `graph` over its
   // resolved sources (null for what it makes no tensor of: a mask's view).
@@ -152,6 +159,17 @@ class Lowering {
   std::map<std::uint32_t, const co::StepWeight*> weights_;
   std::map<std::uint32_t, const co::StepState*> state_;
   std::map<std::uint32_t, std::size_t> applied_;  // planned fused node -> Applied
+  // Every fused node's replaced primitive nodes, in primitive order, and
+  // what each made (by primitive tensor).
+  struct Replaced {
+    NodeId primitive{};
+    NodeId fused{};  // the planned node
+    bool made = false;
+  };
+  std::vector<Replaced> replaced_;
+  std::size_t cursor_ = 0;
+  std::map<std::uint32_t, ggml_tensor*> replaced_out_;
+  std::map<std::uint32_t, std::vector<std::pair<ggml_tensor*, TensorId>>> fused_made_;
   // Leaves with their binding: weights and state by reference.
   std::vector<std::pair<ggml_tensor*, const co::StepWeight*>> weight_leaves_;
   std::vector<std::pair<ggml_tensor*, const co::StepState*>> state_leaves_;
@@ -194,6 +212,21 @@ std::expected<void, KernelFailure> Lowering::Index() {
   for (std::size_t a = 0; a < plan_.applied.size(); ++a) {
     for (const NodeId made : plan_.applied[a].made) applied_[made.v] = a;
   }
+  // The GGML nodes a fused node runs over, in the primitive graph's order
+  // (Run): a fused kind GGML implements over its primitive nodes, from a
+  // rewrite that made only it.
+  for (std::uint32_t i = 0; i < p_.nodes().size(); ++i) {
+    const ir::Node& n = p_.nodes()[i];
+    if (n.key.op != Op::kFused || n.key.fused == FusedKind::kOwnerAttention) continue;
+    const auto at = applied_.find(i);
+    if (at == applied_.end())
+      return Refused(std::format("{} no rewrite made", ir::OpKeyName(n.key)));
+    const planner::Applied& a = plan_.applied[at->second];
+    if (a.made.size() != 1) return Refused("a fused node of a rewrite that made several");
+    for (const NodeId r : a.replaced)
+      replaced_.push_back({.primitive = r, .fused = NodeId{i}, .made = false});
+  }
+  std::ranges::sort(replaced_, {}, &Replaced::primitive);
   return {};
 }
 
@@ -352,9 +385,14 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
   }
   const auto ne = [&](std::size_t d) { return static_cast<std::int64_t>(out.ne(d)); };
   switch (n.key.op) {
-    case Op::kView:
+    case Op::kView: {
+      // The IR's offset is from the root; GGML's from the viewed tensor.
+      const ir::TensorDesc& a = graph.tensor(n.src[0]);
+      const std::uint64_t base = a.is_view() ? a.view_offset : 0;
+      if (out.view_offset < base) return Refused("a view before its source's bytes");
       return ggml_view_4d(c_, s[0], ne(0), ne(1), ne(2), ne(3), out.nb.at(1), out.nb.at(2),
-                          out.nb.at(3), out.view_offset);
+                          out.nb.at(3), out.view_offset - base);
+    }
     case Op::kReshape:
       return ggml_reshape_4d(c_, s[0], ne(0), ne(1), ne(2), ne(3));
     case Op::kPermute: {
@@ -518,33 +556,55 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
   return Refused(std::format("no GGML lowering of {}", ir::OpKeyName(n.key)));
 }
 
-std::expected<void, KernelFailure> Lowering::MakeFused(NodeId id, const ir::Node& n) {
-  const auto at = applied_.find(id.v);
-  if (at == applied_.end()) return Refused(std::format("{} no rewrite made", ir::OpKeyName(n.key)));
-  const planner::Applied& a = plan_.applied[at->second];
-  if (a.made.size() != 1) return Refused("a fused node of a rewrite that made several");
-  // The primitive nodes it replaced, in their order: the GGML nodes its
-  // implementation runs over.
-  std::map<std::uint32_t, ggml_tensor*> local;  // primitive tensor -> made
-  const Resolve resolve = [&](TensorId t) -> ggml_tensor* {
-    if (const auto it = local.find(t.v); it != local.end()) return it->second;
-    const TensorId planned = t.v < plan_.tensors.size() ? plan_.tensors[t.v] : TensorId{};
-    return planned.valid() ? made_.at(planned.v) : nullptr;
-  };
-  std::vector<std::pair<ggml_tensor*, TensorId>> made;
-  for (const NodeId r : a.replaced) {
-    const ir::Node& prim = g_.node(r);
-    if (prim.nout != 1) return Refused("a replaced node of several outputs");
-    auto t = Make(g_, prim, resolve);
-    if (!t) return std::unexpected(t.error());
-    if (*t == nullptr) return Refused("a replaced node made nothing");
-    if (auto m = Matches(g_.tensor(prim.out[0]), *t, ir::OpKeyName(prim.key)); !m) {
-      return std::unexpected(m.error());
-    }
-    local[prim.out[0].v] = *t;
-    made.emplace_back(*t, prim.out[0]);
-    Node(*t, id);
+ggml_tensor* Lowering::ResolveReplaced(TensorId t) const {
+  if (const auto it = replaced_out_.find(t.v); it != replaced_out_.end()) return it->second;
+  const TensorId planned = t.v < plan_.tensors.size() ? plan_.tensors[t.v] : TensorId{};
+  return planned.valid() ? made_.at(planned.v) : nullptr;
+}
+
+std::expected<void, KernelFailure> Lowering::MakeReplaced(std::size_t entry) {
+  Replaced& e = replaced_.at(entry);
+  const ir::Node& prim = g_.node(e.primitive);
+  if (prim.nout != 1) return Refused("a replaced node of several outputs");
+  auto t = Make(g_, prim, [&](TensorId s) { return ResolveReplaced(s); });
+  if (!t) return std::unexpected(t.error());
+  if (*t == nullptr) return Refused("a replaced node made nothing");
+  if (auto m = Matches(g_.tensor(prim.out[0]), *t, ir::OpKeyName(prim.key)); !m) {
+    return std::unexpected(m.error());
   }
+  replaced_out_[prim.out[0].v] = *t;
+  fused_made_[e.fused.v].emplace_back(*t, prim.out[0]);
+  Node(*t, e.fused);
+  e.made = true;
+  return {};
+}
+
+std::expected<void, KernelFailure> Lowering::Flush(NodeId limit) {
+  while (cursor_ < replaced_.size() && replaced_[cursor_].primitive < limit) {
+    if (!replaced_[cursor_].made) {
+      const ir::Node& prim = g_.node(replaced_[cursor_].primitive);
+      const bool ready = std::ranges::all_of(
+          prim.sources(), [&](TensorId s) { return !s.valid() || ResolveReplaced(s) != nullptr; });
+      // Its fused node makes it, at its place, once its sources are made.
+      if (!ready) return {};
+      if (auto made = MakeReplaced(cursor_); !made) return made;
+    }
+    ++cursor_;
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> Lowering::MakeFused(NodeId id, const ir::Node& n) {
+  if (n.key.fused == FusedKind::kOwnerAttention) return MakeOwners(id, n);
+  // The primitive nodes it replaced not made yet (Flush), in their order:
+  // the GGML nodes its implementation runs over.
+  for (std::size_t e = 0; e < replaced_.size(); ++e) {
+    if (replaced_[e].fused == id && !replaced_[e].made) {
+      if (auto made = MakeReplaced(e); !made) return made;
+    }
+  }
+  const auto& made = fused_made_[id.v];
+  if (made.empty()) return Refused(std::format("{} replaced nothing", ir::OpKeyName(n.key)));
   // Its results are the replaced nodes' that the plan keeps; the others are
   // intermediates it never writes, at its first result's place.
   // A replaced node's output the planned graph keeps must be one of the
@@ -571,6 +631,45 @@ std::expected<void, KernelFailure> Lowering::MakeFused(NodeId id, const ir::Node
       elided_.emplace_back(t, result);
     }
   }
+  return {};
+}
+
+// fused.owner_attention as GGML's owner-root node (fattn_owner.h): its
+// queries, mask and each owner's K and V views as the node's sources, the
+// cohort's partition (an offset for a partial cohort's groups only, as
+// the builders give it), the softcap the kernel takes as an integer, and
+// bounded roots where a cache is narrower than the mask.
+std::expected<void, KernelFailure> Lowering::MakeOwners(NodeId id, const ir::Node& n) {
+  const auto p = n.Params<ir::OwnerAttnParams>();
+  const std::uint32_t owners = p.owners;
+  const std::uint32_t cohort = p.cohort == 0 ? owners : p.cohort;
+  if (owners < 1 || owners > 4 || n.nsrc != 2 + (2 * owners) || n.nout != 1) {
+    return Refused("an owner attention of other than one to four owners");
+  }
+  if (p.attn.scale != 1.0F || p.attn.max_bias != 0.0F || p.attn.sinks || p.attn.sparse_any ||
+      p.attn.n_kv_max != 0 || (p.attn.softcap != 0.0F && p.attn.softcap != 50.0F)) {
+    return Refused("an owner attention the owner-root kernel does not take");
+  }
+  const auto source = [&](std::size_t i) { return made_.at(n.src.at(i).v); };
+  ggml_tensor* q = source(0);
+  ggml_tensor* mask = source(1);
+  std::array<ggml_tensor*, 4> k{}, v{};
+  bool bounded = false;
+  for (std::uint32_t o = 0; o < owners; ++o) {
+    k.at(o) = source(2 + o);
+    v.at(o) = source(2 + owners + o);
+    if (k.at(o) == nullptr || v.at(o) == nullptr) return Refused("an owner's cache was not made");
+  }
+  if (q == nullptr || mask == nullptr) return Refused("an owner attention's sources were not made");
+  for (std::uint32_t o = 0; o < owners; ++o) bounded = bounded || k.at(o)->ne[1] != mask->ne[0];
+  ggml_tensor* t = FlashAttnOwnersNode(c_, q, mask, k, v, cohort, owners,
+                                       detail::PartialOwnerCohort(cohort) ? p.offset : 0U,
+                                       static_cast<std::uint32_t>(p.attn.softcap), bounded);
+  if (auto m = Matches(p_.tensor(n.out[0]), t, "owner attention"); !m) {
+    return std::unexpected(m.error());
+  }
+  made_.at(n.out[0].v) = t;
+  Node(t, id);
   return {};
 }
 
@@ -814,7 +913,14 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   out_.arena.emplace(std::move(*arena));
   if (auto room = out_.arena->Reserve(tensors); !room) return std::unexpected(room.error());
   c_ = out_.arena->context();
+  // Planned nodes in order; a fused node's replaced primitive nodes each
+  // at its own place in the primitive graph where its sources allow (the
+  // builders' order: the narrowed final layer's residual gather between
+  // the norm-add's norm and its add), else at the fused node's.
   for (std::uint32_t i = 0; i < p_.nodes().size(); ++i) {
+    if (i < plan_.from.size()) {
+      if (auto flushed = Flush(plan_.from[i]); !flushed) return std::unexpected(flushed.error());
+    }
     if (auto made = MakeNode(NodeId{i}); !made) return std::unexpected(made.error());
   }
   if (auto bound = Bind(); !bound) return std::unexpected(bound.error());

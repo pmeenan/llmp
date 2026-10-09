@@ -129,10 +129,12 @@ std::vector<std::size_t> SelectionView::Candidates(ir::OpKey key,
       continue;
     }
     const format::TensorFormat& f = sources[i]->format;
-    operands.push_back({.operand = static_cast<std::uint8_t>(i),
-                        .encoding = f.encoding,
-                        .layout = f.layout,
-                        .params = f.params});
+    operands.push_back(
+        {.operand = static_cast<std::uint8_t>(i),
+         .encoding = f.encoding,
+         .layout = f.layout,
+         .params = f.params,
+         .ne = {f.shape.ne.at(0), f.shape.ne.at(1), f.shape.ne.at(2), f.shape.ne.at(3)}});
   }
   const QueryShape shape = ShapeOfNode(key, sources, outputs);
   const execution::CapabilityQuery query{

@@ -39,6 +39,7 @@
 #include <span>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "components/component.h"
@@ -74,6 +75,14 @@ struct StageInstances {
 };
 std::expected<StageInstances, std::string> InstancesOf(const spec::ModelSpec& spec,
                                                        std::size_t stage);
+
+// Where a step with a head narrows (Fragment::narrow): the (layer,
+// component) of the stage's last component that mixes rows, when it can
+// narrow and the final norm and the head are row-local; every component
+// after it, the final norm and the head run at the step's output rows
+// rather than its rows. BuildStep and the planner's traffic model both
+// take it from here.
+std::optional<std::pair<std::size_t, std::size_t>> NarrowPoint(const StageInstances& instances);
 
 // The spec checked against the catalog and the tensors bound to each
 // stage (`tensors[stage artifact]`, a list per bound artifact): spec::

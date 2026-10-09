@@ -24,6 +24,7 @@
 #include "base/check.h"
 #include "components/component.h"
 #include "format/encoding.h"
+#include "format/layout.h"
 #include "format/tensor_format.h"
 #include "ir/builder.h"
 #include "ir/graph.h"
@@ -59,8 +60,19 @@ std::string Where(const spec::Stage& stage, Site site, std::uint32_t layer) {
   return std::format("stage {}", stage.name);
 }
 
-// The bytes of one value of a dense state encoding.
-std::uint64_t ElementBytes(format::Encoding e) { return format::Info(e).element_bits / 8; }
+// A state tensor of `cells` cells as its contract stores them: dense
+// values, or a block encoding's whole blocks in GGML's layout (the cell's
+// bytes model::CellBytes gave the contract).
+format::TensorFormat CellFormat(const model::StateTensorContract& c, std::uint64_t cells) {
+  const format::EncodingInfo& info = format::Info(c.encoding);
+  if (info.ggml.has_value() && info.quantized) {
+    const std::uint64_t values = c.cell_bytes / info.ggml->block_bytes * info.ggml->block_elements;
+    return {.encoding = c.encoding,
+            .layout = format::Layout::kGgmlBlocks,
+            .shape = ir::ShapeOf({values, cells})};
+  }
+  return ir::Dense(c.encoding, ir::ShapeOf({c.cell_bytes / (info.element_bits / 8), cells}));
+}
 
 // ------------------------------------------------------------ the builder
 
@@ -132,9 +144,8 @@ class StepBuilder {
                                .tensor = static_cast<std::uint16_t>(first + t),
                                .layer = in.layer,
                                .segment = static_cast<std::uint8_t>(s)};
-        const std::uint64_t values = c.cell_bytes / ElementBytes(c.encoding);
-        const ir::TensorId id = b_.State(ir::Dense(c.encoding, ir::ShapeOf({values, cells[t]})),
-                                         ref, std::format("blk.{}.{}.{}", in.layer, c.name, s));
+        const ir::TensorId id = b_.State(CellFormat(c, cells[t]), ref,
+                                         std::format("blk.{}.{}.{}", in.layer, c.name, s));
         out.push_back(id);
         state_.push_back({.tensor = id, .ref = ref, .item = items.empty() ? 0 : items[t]});
       }
@@ -648,6 +659,22 @@ CellKey KeyOf(const model::StateTensorContract& c, std::uint64_t cells) {
 
 }  // namespace
 
+std::optional<std::pair<std::size_t, std::size_t>> NarrowPoint(const StageInstances& instances) {
+  if (!instances.output || (instances.final_norm && !instances.final_norm->def->row_local) ||
+      !instances.output->def->row_local) {
+    return std::nullopt;
+  }
+  for (std::size_t l = instances.layers.size(); l-- > 0;) {
+    for (std::size_t c = instances.layers[l].size(); c-- > 0;) {
+      const ComponentDef& def = *instances.layers[l][c].def;
+      if (def.row_local) continue;
+      if (def.narrows) return std::pair{l, c};
+      return std::nullopt;  // the last component that mixes rows cannot narrow
+    }
+  }
+  return std::nullopt;
+}
+
 std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std::uint16_t stage,
                                                 const planner::StepShape& shape,
                                                 const Bindings& bindings) {
@@ -705,8 +732,9 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
   ctx.DeclareMasks(masks);
 
   const auto emit = [&](const Instance& in, ir::TensorId stream,
-                        std::span<const ir::TensorId> state, std::size_t tensors,
-                        bool needed) -> std::expected<FragmentOut, std::string> {
+                        std::span<const ir::TensorId> state, std::size_t tensors, bool needed,
+                        bool narrow = false,
+                        bool narrowed = false) -> std::expected<FragmentOut, std::string> {
     auto formats = RoleFormats(in, bindings.tensors);
     if (!formats) return std::unexpected(formats.error());
     const auto shapes = in.def->shapes(in);
@@ -733,7 +761,9 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
                },
                .state = state,
                .state_tensors = tensors,
-               .stream_needed = needed};
+               .stream_needed = needed,
+               .narrow = narrow,
+               .narrowed = narrowed};
     auto out = in.def->emit(f);
     if (!out) return std::unexpected(out.error());
     sb.b().SetJoined();
@@ -754,6 +784,12 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
       if (stateful[l][c]) need = true;  // its writes read its input
     }
   }
+  // The head reads only its output rows: the stage's last component that
+  // mixes rows narrows its output to them when it can (the Gemma builders'
+  // narrow_final), and what follows it, row-local, runs at their width.
+  const std::optional<std::pair<std::size_t, std::size_t>> narrow_at =
+      head ? NarrowPoint(*instances) : std::nullopt;
+  bool narrowed = false;
   for (std::size_t l = 0; l < instances->layers.size(); ++l) {
     for (std::size_t c = 0; c < instances->layers[l].size(); ++c) {
       const Instance& in = instances->layers[l][c];
@@ -761,22 +797,25 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
       if (!needed[l][c] && !st) continue;
       std::vector<ir::TensorId> state;
       if (st) state = sb.State(in, st->contract, st->first, st->cells, st->items);
-      auto out = emit(in, stream, state, st ? st->contract.tensors.size() : 0, needed[l][c]);
+      const bool narrow = narrow_at == std::pair{l, c};
+      auto out = emit(in, stream, state, st ? st->contract.tensors.size() : 0, needed[l][c], narrow,
+                      narrowed);
       if (!out) {
         return Refused(std::format("layer {} {}: {}", l, in.def->kind, out.error()));
       }
       stream = out->stream;
+      narrowed = narrowed || narrow;
     }
   }
   ir::TensorId logits{};
   ir::TensorId greedy{};
   if (head) {
     if (instances->final_norm) {
-      auto out = emit(*instances->final_norm, stream, {}, 0, true);
+      auto out = emit(*instances->final_norm, stream, {}, 0, true, false, narrowed);
       if (!out) return Refused(std::format("final norm: {}", out.error()));
       stream = out->stream;
     }
-    auto out = emit(*instances->output, stream, {}, 0, true);
+    auto out = emit(*instances->output, stream, {}, 0, true, false, narrowed);
     if (!out) return Refused(std::format("output: {}", out.error()));
     logits = out->logits;
     greedy = out->greedy;

@@ -138,6 +138,13 @@ constexpr std::array<Rule, 3> kNormMulRope = {
     {{.operand = 0, .encodings = kF32, .layouts = kDense},
      {.operand = 1, .encodings = kF32, .layouts = kDense},
      {.operand = 2, .encodings = kI32, .layouts = kDense}}};
+// fused.owner_attention's (q, mask, k0, v0 or k1, ...): the first four;
+// the predicate checks every root.
+constexpr std::array<Rule, 4> kOwnerAttention = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF16, .layouts = kDense},
+     {.operand = 2, .encodings = kF16, .layouts = kDense},
+     {.operand = 3, .encodings = kF16, .layouts = kDense}}};
 constexpr std::array<Rule, 1> kMaskPositions = {
     {{.operand = 0, .encodings = kI32, .layouts = kDense}}};
 
@@ -258,6 +265,77 @@ bool AcceptsAttention256(const ex::CapabilityQuery& q) {
 bool AcceptsMask(const ex::CapabilityQuery& q) {
   const auto m = ParamsOf<ir::MaskParams>(q);
   return Built(q) && m && (m->kind == ir::MaskKind::kCausal || m->kind == ir::MaskKind::kWindow);
+}
+
+// CheckFlashAttnOwners' contract (fattn_owner.h), over the node's extents:
+// q [D, R, H, n], mask [C, Pad(R, 32), 1, n], each owner's K and V [D,
+// C_o, H / (D 256: 2, 512: 8), 1] in F16. D 256 or 512 at 16 or 32 heads,
+// or D 256 at 8 heads in a cohort of 2 to 4, whole 8 or 12 (four roots a
+// node) or a partial 5 to 7 or 9 to 11 (its real groups, by offset);
+// scale 1, no bias, sinks or sparse bound, a softcap of 0 or 50 (50 only
+// for D 256, 8 heads, two owners alone). One query row: cells of 256 to
+// 16,384 in steps of 256; 2 to 512 rows: two owners alone at D 256 and 8
+// heads with every cache the mask's width, through 131,072 cells without
+// a softcap and 16,384 with it. Caches narrower than the mask (bounded
+// roots) only for two owners alone at one row, each a multiple of 256, the
+// widest the mask's (the kernel's whole-twelve bounded carriers are not
+// declared: no recipe selects them).
+bool AcceptsOwnerAttention(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::OwnerAttnParams>(q);
+  if (!Built(q) || !p || p->owners < 1 || p->owners > 4 ||
+      q.operands.size() != 2 + (2U * p->owners))
+    return false;
+  const ir::AttnParams& a = p->attn;
+  if (a.scale != 1.0F || a.max_bias != 0.0F || a.sinks || a.sparse_any || a.n_kv_max != 0 ||
+      (a.softcap != 0.0F && a.softcap != 50.0F))
+    return false;
+  const std::uint32_t n = p->owners;
+  const std::uint32_t cohort = p->cohort == 0 ? n : p->cohort;
+  const std::uint32_t offset = p->offset;
+  const ex::OperandFormat* qf = Operand(q, 0);
+  const ex::OperandFormat* mf = Operand(q, 1);
+  if (qf == nullptr || mf == nullptr) return false;
+  const std::uint64_t d = qf->ne[0], rows = qf->ne[1], heads = qf->ne[2], cells = mf->ne[0];
+  const bool partial =
+      cohort == 5 || cohort == 6 || cohort == 7 || cohort == 9 || cohort == 10 || cohort == 11;
+  if (partial) {
+    if (offset % 4 != 0 || offset >= cohort || n != std::min(4U, cohort - offset)) return false;
+  } else if (cohort == 8 || cohort == 12) {
+    if (n != 4 || offset % 4 != 0 || offset + n > cohort) return false;
+  } else if (cohort < 2 || cohort > 4 || n != cohort || offset != 0) {
+    return false;
+  }
+  if ((d != 256 && d != 512) || qf->ne[3] != n ||
+      !(heads == 16 || heads == 32 || (d == 256 && heads == 8)))
+    return false;
+  const bool cap50 = a.softcap == 50.0F;
+  if (cap50 && (d != 256 || heads != 8 || n != 2 || cohort != 2)) return false;
+  const std::uint64_t kv_heads = heads / (d == 256 ? 2 : 8);
+  const std::uint64_t mask_rows = (rows + 31) / 32 * 32;
+  if (mf->ne[1] != mask_rows || mf->ne[2] != 1 || mf->ne[3] != n || cells < 256 || cells % 256 != 0)
+    return false;
+  const bool lone_pair = n == 2 && cohort == 2;
+  if (rows == 1) {
+    if (cells > 16384) return false;
+  } else if (rows < 2 || rows > 512 || d != 256 || heads != 8 || !lone_pair ||
+             cells > (cap50 ? 16384U : 131072U)) {
+    return false;
+  }
+  bool bounded = false;
+  std::uint64_t widest = 0;
+  for (std::uint32_t o = 0; o < 2 * n; ++o) {
+    const ex::OperandFormat* kv = Operand(q, static_cast<std::uint8_t>(2 + o));
+    if (kv == nullptr || kv->encoding != Encoding::kF16 || kv->layout != Layout::kDense ||
+        kv->ne[0] != d || kv->ne[2] != kv_heads || kv->ne[3] != 1 || kv->ne[1] > cells ||
+        kv->ne[1] < 256 || kv->ne[1] % 256 != 0)
+      return false;
+    // K and V of one owner read as many cells.
+    if (o >= n && kv->ne[1] != Operand(q, static_cast<std::uint8_t>(2 + o - n))->ne[1])
+      return false;
+    bounded = bounded || kv->ne[1] != cells;
+    widest = std::max(widest, kv->ne[1]);
+  }
+  return !bounded || (rows == 1 && lone_pair && widest == cells);
 }
 
 bool AcceptsArgmax(const ex::CapabilityQuery& q) { return Built(q); }
@@ -425,6 +503,11 @@ const std::array kEntries = {
     Entry{"ggml.flash_attn_ext.mma", Operation::kFlashAttn,
           Cap(P(Op::kAttention), kF16Attention, &AcceptsAttention, false, kAttentionGroup),
           "; selectable for the build's SASS architectures at head size 256 or 512"},
+    Entry{kFlashAttnOwnersName, Operation::kFlashAttn,
+          Cap(F(FusedKind::kOwnerAttention), kOwnerAttention, &AcceptsOwnerAttention, false),
+          "; selectable for the build's SASS architectures: CheckFlashAttnOwners' Gemma "
+          "cohorts, head sizes, cells and rows over independent F16 caches, a softcap of 0 or "
+          "50, and bounded roots for two owners alone"},
     Entry{kGemma4MaskName, Operation::kFill,
           Cap(P(Op::kMaskBuild), kMaskPositions, &AcceptsMask, true),
           "; selectable for the build's SASS architectures: causal and window masks"},

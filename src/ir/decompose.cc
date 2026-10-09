@@ -549,8 +549,11 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
     case FusedKind::kOwnerAttention: {
       const auto p = Get<OwnerAttnParams>(params);
       const std::uint64_t n = p.owners;
+      const std::uint64_t cohort = p.cohort == 0 ? n : p.cohort;
       if (!d.check(n >= 1 && n <= 4 && !p.attn.sinks, GraphError::kParams,
                    "one to four owners, no sinks") ||
+          !d.check(cohort <= kMaxOwnerCohort && std::uint64_t{p.offset} + n <= cohort,
+                   GraphError::kParams, "a group within its cohort") ||
           !d.need(2 + (2 * n), 2 + (2 * n))) {
         return {};
       }

@@ -19,7 +19,11 @@
 //     implement);
 //   - its layer types, one letter a layer repeating from layer 0 (Gemma 2's
 //     local and global layers, "lg");
-//   - the folds (spec.h's catalog) a source container's converter applied.
+//   - the folds (spec.h's catalog) a source container's converter applied;
+//   - its default planning policy (planner/policy.h's canonical text): the
+//     patterns and bounds a model of the architecture is planned with, the
+//     first migrations' recipes as data (an alias's settings may replace
+//     it). The spec module does not read it; the step source parses it.
 //
 // Mappings are compiled in as data and validated like untrusted input
 // (ValidateMapping): a mapping runs no code. Synthesize applies one to a
@@ -127,7 +131,12 @@ struct Mapping {
   std::span<const TensorRule> tensors{};
   std::span<const ParamRule> params{};
   std::span<const FoldRule> folds{};
+  // The default planning policy's canonical text (see the header); at
+  // most kMaxPolicyText bytes, every line ending in '\n'. Empty: the
+  // planner's default policy (every pattern).
+  std::string_view policy{};
 };
+inline constexpr std::size_t kMaxPolicyText = 4096;
 
 // The compiled mappings, and the one for an architecture.
 std::span<const Mapping* const> Mappings();

@@ -3,7 +3,8 @@
 
 // The Gemma 2 and Gemma 3 components' primitive steps (components/step.h
 // BuildStep) against today's graph builders (kernels/ggml/gemma2_graph.h,
-// gemma3_graph.h) with their default options: node for node in GGML's
+// gemma3_graph.h) with their default options and the narrowed final layer
+// the runners build (narrow_final, frontier_head's): node for node in GGML's
 // execution order (GraphOrder), the same operation, result type, extents,
 // view strides, computed sources and the parameters that decide the
 // arithmetic (norm epsilons, scales, rotations, attention's scale, softcap
@@ -474,7 +475,7 @@ TEST(ComponentsOrderTest, Gemma2StepsAreTheBuildersGraphsNodeForNode) {
       ASSERT_TRUE(arena.has_value());
       auto legacy = kg::BuildGemma2Graph(*arena, p, *binding, *state,
                                          LegacyShape<kg::Gemma2ChunkShape>(legacy_case),
-                                         {.device_masks = device_masks});
+                                         {.narrow_final = true, .device_masks = device_masks});
       ASSERT_TRUE(legacy.has_value()) << legacy.error().detail;
       auto step =
           BuildStep(spec, 0, ShapeOf(legacy_case), {.tensors = source.tensors, .state = &*layout});
@@ -509,7 +510,7 @@ TEST(ComponentsOrderTest, Gemma3StepsAreTheBuildersGraphsNodeForNode) {
       ASSERT_TRUE(arena.has_value());
       auto legacy = kg::BuildGemma3Graph(*arena, p, *binding, *state,
                                          LegacyShape<kg::Gemma3ChunkShape>(legacy_case),
-                                         {.device_masks = device_masks});
+                                         {.narrow_final = true, .device_masks = device_masks});
       ASSERT_TRUE(legacy.has_value()) << legacy.error().detail;
       auto step =
           BuildStep(spec, 0, ShapeOf(legacy_case), {.tensors = source.tensors, .state = &*layout});

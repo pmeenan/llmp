@@ -6,19 +6,22 @@
 // builders, PlanGraph and the lowering). For every Gemma 2 and Gemma 3
 // shape the runners measure at setup at the serving defaults (Gemma 2 at
 // 8,192 with two owners; Gemma 3 at 4,096 with two and 8,448 with one),
-// with device masks and with host masks, the planned and lowered step is
-// BuildGemma2Graph's or BuildGemma3Graph's graph with their default options
-// and the recipe flags the planner reproduces (shared Q8 preparation; the
-// fused norm-mul, norm-add and quantized GeGLU, and for Gemma 3 the fused
-// norm-rope and grouped KV stores), node for node: the operation, type,
-// extents, strides, view offset, operation parameters and flags, every
-// source (a computed one by its position, a leaf by what it binds: the
-// same weight resource, layer's, owner's and tensor's cache, or step
-// input), and PlanGraph's steps over it are the builders' (the same
-// implementations over the same nodes). The planner selects over the GGML
-// module's own capabilities (capabilities.h), on a model of the GB10's
-// product routing that is upstream's (MmvqRouted) on both sides. The
-// owner-attention forms are slice G1b's.
+// and Gemma 3's joined decode of 2 to 12 owners with every count of long
+// owners (its runner's four-root carriers), with device masks and with host
+// masks, the step planned under the architecture mapping's policy and
+// lowered is BuildGemma2Graph's or BuildGemma3Graph's graph under the
+// serving recipe (runtime/serving.cc: owner decode with bounded roots,
+// owner and flexible owner prefill, the narrowed final layer of
+// frontier_head, shared Q8 preparation, the fused norm-mul, norm-add and
+// quantized GeGLU, and for Gemma 3 the fused norm-rope and grouped KV
+// stores), node for node: the operation, type, extents, strides, view
+// offset, operation parameters and flags, every source (a computed one by
+// its position, a leaf by what it binds: the same weight resource, layer's,
+// owner's and tensor's cache, or step input), and PlanGraph's steps over
+// it are the builders' (the same implementations over the same nodes). The
+// planner selects over the GGML module's own capabilities (capabilities.h),
+// on a model of the GB10's product routing that is upstream's
+// (MmvqRouted) on both sides.
 
 #include <gtest/gtest.h>
 
@@ -35,6 +38,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -130,11 +134,8 @@ kg::DeviceChoices Device() {
   return d;
 }
 
-// The recipes (runtime/serving.cc): as policies for the planner, as flags
-// for PlanGraph over the builders' graphs.
-constexpr std::string_view kGemma2Policy =
-    "max_decode_rows 16\ndisable grouped_stores\ndisable rms_norm_mul_rope\ndisable rope_store\n";
-constexpr std::string_view kGemma3Policy = "max_decode_rows 16\ndisable rope_store\n";
+// The recipes (runtime/serving.cc): as the mappings' policies for the
+// planner, as flags for PlanGraph over the builders' graphs.
 
 kg::DeviceChoices Recipe(bool gemma3) {
   kg::DeviceChoices d = Device();
@@ -150,7 +151,7 @@ struct Gemma2Family {
   using Shape = kg::Gemma2ChunkShape;
   using Options = kg::Gemma2GraphOptions;
   static constexpr bool kGemma3 = false;
-  static constexpr std::string_view kPolicy = kGemma2Policy;
+  static std::string_view Policy() { return llmp::spec::mappings::Gemma2Mapping().policy; }
   static const md::Gemma2Profile& P() { return md::Gemma2_2B(); }
   static auto Resources() { return llmp::test_support::gemma2::Resources(); }
   static auto Binding() { return md::BindGemma2(P(), "gemma2", Resources()).value(); }
@@ -173,13 +174,14 @@ struct Gemma2Family {
   static std::vector<std::pair<std::uint32_t, std::uint32_t>> Contexts() {
     return {{md::kGemma2Context, 2}};
   }
+  static std::vector<std::pair<std::uint32_t, std::uint32_t>> Cohorts() { return {}; }
 };
 
 struct Gemma3Family {
   using Shape = kg::Gemma3ChunkShape;
   using Options = kg::Gemma3GraphOptions;
   static constexpr bool kGemma3 = true;
-  static constexpr std::string_view kPolicy = kGemma3Policy;
+  static std::string_view Policy() { return llmp::spec::mappings::Gemma3Mapping().policy; }
   static const md::Gemma3Profile& P() { return md::Gemma3_4BQat(); }
   static auto Resources() { return llmp::test_support::gemma3::Resources(); }
   static auto Binding() { return md::BindGemma3(P(), "gemma3", Resources()).value(); }
@@ -202,6 +204,9 @@ struct Gemma3Family {
   static std::vector<std::pair<std::uint32_t, std::uint32_t>> Contexts() {
     return {{4096, 2}, {8448, 1}};
   }
+  // The runner's joined decode beyond the serving envelope (its four-root
+  // carriers): at 4,096 with twelve owners.
+  static std::vector<std::pair<std::uint32_t, std::uint32_t>> Cohorts() { return {{4096, 12}}; }
 };
 
 // A step: per owner (slot, rows, past), and its outputs.
@@ -247,6 +252,26 @@ std::vector<Case> SetupCases(std::uint32_t context, std::uint32_t slots) {
       }
     }
     if (head_rows == wave_rows) break;
+  }
+  return out;
+}
+
+// The joined one-row steps of 2 to `slots` owners a runner measures at
+// setup (gemma3_runner.cc: every count of long owners, the last ones near
+// the context's end), returning every owner's row, its token, or nothing.
+std::vector<Case> CohortCases(std::uint32_t context, std::uint32_t slots) {
+  std::vector<Case> out;
+  for (std::uint32_t count = 2; count <= slots; ++count) {
+    for (std::uint32_t long_count = 0; long_count < count; ++long_count) {
+      Case c;
+      for (std::uint32_t i = 0; i < count; ++i) {
+        c.segments.push_back({i, 1, i < count - long_count ? 0U : context - 1});
+      }
+      for (const Out o : {Out::kHead, Out::kGreedy, Out::kStateOnly}) {
+        c.out = o;
+        out.push_back(c);
+      }
+    }
   }
   return out;
 }
@@ -354,6 +379,13 @@ Legacy BuildLegacy(const Case& c, const State& state, bool device_masks) {
   options.device_masks = device_masks;
   options.shared_q8 = true;
   options.max_total_rows = 256;  // the runners' wave rows: two owners of 128
+  // The serving recipe's owner forms and frontier head.
+  options.narrow_final = true;
+  options.owner_decode = true;
+  options.packed_prefill = true;
+  options.owner_prefill = true;
+  options.flexible_owner_prefill = true;
+  options.bounded_roots = true;
   auto g = F::Build(*out.arena, F::P(), F::Binding(), state, LegacyShape<F>(c, state), options,
                     device.dense_mmvq_shape);
   EXPECT_TRUE(g.has_value()) << g.error().detail;
@@ -382,6 +414,7 @@ struct Ir {
 };
 
 struct Lowered {
+  std::size_t owners = 0;  // owner_attention applied
   std::optional<co::StepGraph> step;
   std::optional<pl::StepPlan> plan;
   std::optional<kg::LoweredStep> lowered;
@@ -449,10 +482,13 @@ Lowered Lower(Ir& ir_, const Case& c, const State& state, bool device_masks,
     if (in.kind != co::InputKind::kCellPositions) staged.push_back(in.tensor);
   }
   const pl::Policy policy = pl::ParsePolicy(policy_text).value();
-  auto plan = pl::Plan(step->graph.Clone(), ir_.registry, Gb10(), policy,
-                       {.capturable = true, .staged = staged, .written = &kg::WrittenBytes});
+  auto plan = pl::Plan(
+      step->graph.Clone(), ir_.registry, Gb10(), policy,
+      {.capturable = true, .staged = staged, .written = &kg::WrittenBytes, .shape = &shape});
   EXPECT_TRUE(plan.has_value()) << (plan ? "" : plan.error().detail);
   if (!plan) return out;
+  out.owners = static_cast<std::size_t>(
+      std::ranges::count(plan->applied, "owner_attention", &pl::Applied::pattern));
   out.step.emplace(std::move(*step));
   out.plan.emplace(std::move(*plan));
   const kn::Addresses addresses{};  // a measurement: placeholder addresses
@@ -559,20 +595,23 @@ void ExpectInputs(const Legacy& l, const Lowered& w, bool device_masks) {
 
 template <typename F>
 void ExpectFamilyLowers() {
-  std::size_t shapes = 0, nodes = 0, steps = 0;
+  std::size_t shapes = 0, nodes = 0, steps = 0, owner_forms = 0;
   std::uint64_t biggest = 0;
-  for (const auto& [context, slots] : F::Contexts()) {
+  std::vector<std::tuple<std::uint32_t, std::uint32_t, bool>> runs;
+  for (const auto& [context, slots] : F::Contexts()) runs.emplace_back(context, slots, false);
+  for (const auto& [context, slots] : F::Cohorts()) runs.emplace_back(context, slots, true);
+  for (const auto& [context, slots, cohorts] : runs) {
     const auto state = F::State(context, 128);
     Ir ir_{.spec = F::Spec(), .source = F::Source()};
     auto layout = co::StageLayout(ir_.spec, 0, context, 128, kExtent);
     ASSERT_TRUE(layout.has_value()) << layout.error();
     ir_.layout.emplace(std::move(*layout));
-    for (const Case& c : SetupCases(context, slots)) {
+    for (const Case& c : cohorts ? CohortCases(context, slots) : SetupCases(context, slots)) {
       for (const bool device_masks : {true, false}) {
         SCOPED_TRACE(
             std::format("context {} {}{}", context, c.Name(), device_masks ? "" : ", host masks"));
         const Legacy l = BuildLegacy<F>(c, state, device_masks);
-        const Lowered w = Lower<F>(ir_, c, state, device_masks, F::kPolicy);
+        const Lowered w = Lower<F>(ir_, c, state, device_masks, F::Policy());
         ASSERT_TRUE(w.lowered.has_value());
         ExpectSameGraph(l, w);
         if (::testing::Test::HasFatalFailure()) return;
@@ -587,15 +626,19 @@ void ExpectFamilyLowers() {
         }
         EXPECT_EQ(outputs, c.out == Out::kStateOnly ? 0U : c.segments.size());
         biggest = std::max(biggest, w.lowered->extent);
+        owner_forms += w.owners;
         nodes += w.lowered->nodes.size();
         steps += w.lowered->plan.steps.size();
         ++shapes;
       }
     }
   }
-  std::println("{} lowered steps, {} nodes, {} plan steps, the largest activation extent {} bytes",
-               shapes, nodes, steps, biggest);
+  std::println(
+      "{} lowered steps ({} with owner attention), {} nodes, {} plan steps, the largest "
+      "activation extent {} bytes",
+      shapes, owner_forms, nodes, steps, biggest);
   EXPECT_GT(shapes, 0U);
+  EXPECT_GT(owner_forms, 0U);
 }
 
 TEST(GgmlLowerTest, Gemma2LowersToTheBuildersGraphs) { ExpectFamilyLowers<Gemma2Family>(); }

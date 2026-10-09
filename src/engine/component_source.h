@@ -9,8 +9,11 @@
 // step program (kernels/common/lower.h). The kernel source is a table of
 // functions: the engine names no kernel library.
 //
-// Its plans' key is the spec's bound digest, the policy's patterns and the
-// policy (planner/plan.h KeyOf); the runner adds the shape.
+// Its policy is the architecture mapping's default (spec/mapping.h
+// Mapping::policy: the family's recipe as data), unless the caller gives
+// one (an alias's settings, later). Its plans' key is the spec's bound
+// digest, the policy's patterns and the policy (planner/plan.h KeyOf); the
+// runner adds the shape.
 //
 // Part of the engine core: every build profile.
 
@@ -20,7 +23,9 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 
 #include "base/sha256.h"
 #include "components/step.h"
@@ -28,6 +33,7 @@
 #include "kernels/common/lower.h"
 #include "planner/policy.h"
 #include "planner/step_shape.h"
+#include "spec/mapping.h"
 #include "spec/spec.h"
 
 namespace llmp::engine {
@@ -40,24 +46,30 @@ struct ComponentSourceOptions {
   components::Bindings bindings{};
   // The spec bound to its artifacts (spec.h BoundDigest).
   base::Sha256Digest bound_digest{};
-  planner::Policy policy{};
+  // The architecture's mapping, whose default policy plans the steps, and
+  // a policy that replaces it (an alias's); one of the two.
+  const spec::Mapping* mapping = nullptr;
+  std::optional<planner::Policy> policy{};
   kernels::StepBackend backend{};
 };
 
 class ComponentStepSource final : public StepSource {
  public:
-  // Refused for a missing spec, layout or backend, or a policy its own
-  // rules refuse.
+  // Refused for a missing spec, layout or backend, no policy (given or the
+  // mapping's), or one its own rules refuse.
   static std::expected<std::unique_ptr<ComponentStepSource>, std::string> Create(
       ComponentSourceOptions options);
 
   planner::PlanKey KeyBase() const override;
+  const planner::Policy& policy() const { return policy_; }
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
       const planner::StepShape& shape, const kernels::Addresses& addresses) override;
 
  private:
-  explicit ComponentStepSource(ComponentSourceOptions options) : o_(std::move(options)) {}
+  ComponentStepSource(ComponentSourceOptions options, planner::Policy policy)
+      : o_(std::move(options)), policy_(std::move(policy)) {}
   ComponentSourceOptions o_;
+  planner::Policy policy_;
 };
 
 }  // namespace llmp::engine

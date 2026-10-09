@@ -377,14 +377,18 @@ model made of components: per shape, the stage's primitive step
 positions, which only masks read) over a kernel source's `StepBackend`
 (`kernels/common/lower.h`: registry, device facts, the implementations
 kept on the stream, what its implementations write beyond a tensor's
-bytes, and its lowering), then lowered into a program; its key base is
+bytes, and its lowering), then lowered into a program, under the
+architecture mapping's default policy (`spec::Mapping::policy`: the
+family's recipe as data) unless it is given another; its key base is
 the spec's bound digest with the policy's patterns and digest. GGML's
 backend (`kernels/ggml/step_program.h` `GgmlBackend`) gives the registry
 with its capabilities, the device's architecture, the lowering of
 [engine-components.md](engine-components.md#the-graph-ir) and the step
 launch the runner makes at Bind. Over it the runner runs Gemma 2 and Gemma
-3 steps bit for bit as today's runners (`component_runner_gpu_test`); the
-serving wiring is G1c's.
+3 steps of two owners bit for bit as today's runners under the full
+serving recipe (`component_runner_gpu_test`: owner decode and prefill,
+bounded roots, the narrowed final layer, ring wrap, logits and greedy
+heads); the serving wiring is G1c's.
 
 **Planner types** (`planner/step_shape.h`, header-only; the planner,
 `planner/plan.h`, plans a step's graph and makes its key,
@@ -597,7 +601,7 @@ policy):
 
 | Family | Reproduced | Not yet |
 | --- | --- | --- |
-| Gemma2/3 | Joined prompt waves with equal rows and reads (`equal_prefill`); two futures, first-run capture of a repeating shape, capture ahead, prepare ahead; head-or-state-only shapes; second-run capture in every phase; independent outputs | Owner attention modes (`owner_decode`, packed and flexible owner prefill, bounded roots: graph forms the planner selects from the shape), padding to a common width, Gemma3's four-root carriers as op-level groups (`group_segments` groups whole owners only), the 2,048/256 head-capacity envelope (`max_head_rows`), the C12 bounded factor; the cohort's 2- or 12-owner limits become `max_segments` |
+| Gemma2/3 | Joined prompt waves with equal rows and reads (`equal_prefill`); two futures, first-run capture of a repeating shape, capture ahead, prepare ahead; head-or-state-only shapes; second-run capture in every phase; independent outputs; owner attention (owner decode, owner and flexible owner prefill, bounded roots, padding to a common width, Gemma3's four-root carriers: the planner's `owner_attention` from the step's shape) | The 2,048/256 head-capacity envelope (`max_head_rows`); the cohort's 2- or 12-owner limits become `max_segments`; the C12 bounded factor and the copying packed prefill are not ported |
 | Gemma4 | Quads as `group_segments` 4, the 8/12 groups as `invariant_group_segments`/`group_segments`; one future without capture ahead is `lookahead` 1, `capture_ahead` false; per-group isolation (RunGemmaGroups) is RunWave's; the assistant's frozen borrows (decoding modes) | Common owner reads limited to two owners, bounded owner roots, retained features, joined prompt admission (Gemma4 serving prefills alone) |
 | Qwen3.8 | Groups of consecutive owners while rows fit 16 (`group_rows`), 2,048-aligned joined reads (`joined_read_align`), state backed through that alignment before the step (an owner out of capacity there steps alone at 256 rather than being refused), two futures and prepare ahead, state-only cuts; joined draft and verify waves (decoding modes) | Per-product joined limits (draft head 8, VecQ, MoE GEMV, MXFP8 columns, HC cuBLAS 16: planner patterns), BF16 head sharing by row count, the n-gram row gather between inputs and plan, the MTP lookahead group, rows ≤ 4 per slot; its prefill captures only one-row shapes (`capture_phases` without prefill) |
 | DeepSeek V4 | Total wave rows ≤ 16 (`max_step_rows`), joined row-local work with per-owner state, scalar prefill (`join_prefill` false), two futures and prepare ahead, state-only cuts; joined drafts and verifies (decoding modes) | Float products over groups of whole owners fitting 8 columns and `SetVecQOneToken` for one-row waves (planner, from the shape), `Dsv4WaveSupport`'s fallback to one slot, the HCA plan's per-position patch (the lowering's `Position`; the runner never captures it), a draft and its verify in one job |

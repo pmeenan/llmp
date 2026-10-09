@@ -203,6 +203,9 @@ struct Info {
   std::vector<std::uint64_t> state{};   // per contract tensor, bytes per slot
   std::vector<std::uint64_t> values{};  // per contract tensor, values per cell
   std::uint16_t state_first = 0;        // in its layer's contract
+  // It runs after the step's narrowing (components::NarrowPoint), so with a
+  // head it works on the step's output rows, not its rows.
+  bool narrowed = false;
 };
 
 // With `state`, its state's bytes for the workload too.
@@ -352,7 +355,7 @@ Traffic OptionTraffic(const Net& net, const Info& info, const SplitOption& o,
   if (o.bytes_per_step == nullptr) return {};
   const components::SplitStep step{.instance = info.in,
                                    .weights = info.shapes,
-                                   .rows = rows,
+                                   .rows = info.narrowed && outputs > 0 ? outputs : rows,
                                    .outputs = outputs,
                                    .ways = static_cast<std::uint32_t>(group.size())};
   return Collective(net, o.collective, group, o.bytes_per_step(step));
@@ -431,6 +434,16 @@ std::expected<Infos, std::string> InfosOf(const StageModel& m, const Workload& w
     auto i = add(*s.output, 0);
     if (!i) return std::unexpected(i.error());
     out.output = *i;
+  }
+  // What follows the narrowing component runs at the output rows.
+  if (const auto at = components::NarrowPoint(s)) {
+    for (std::size_t l = at->first; l < out.layers.size(); ++l) {
+      for (std::size_t c = l == at->first ? at->second + 1 : 0; c < out.layers[l].size(); ++c) {
+        out.all[out.layers[l][c]].narrowed = true;
+      }
+    }
+    if (out.final_norm) out.all[*out.final_norm].narrowed = true;
+    if (out.output) out.all[*out.output].narrowed = true;
   }
   return out;
 }

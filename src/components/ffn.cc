@@ -124,6 +124,7 @@ const ComponentDef& FfnGlu() {
   static const ComponentDef def{
       .kind = "ffn.glu",
       .version = 1,
+      .row_local = true,
       .params = kParams,
       .roles = kRoles,
       .shapes = Shapes,

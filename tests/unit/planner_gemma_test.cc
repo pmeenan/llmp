@@ -180,10 +180,9 @@ const DeviceFacts& Gb10() {
   return facts;
 }
 
-// The recipes as policies (text, as an alias's settings would carry them).
-constexpr std::string_view kGemma2Policy =
-    "max_decode_rows 16\ndisable grouped_stores\ndisable rms_norm_mul_rope\ndisable rope_store\n";
-constexpr std::string_view kGemma3Policy = "max_decode_rows 16\ndisable rope_store\n";
+// The recipes as policies: the architecture mappings' text.
+const std::string_view kGemma2Policy = spec::mappings::Gemma2Mapping().policy;
+const std::string_view kGemma3Policy = spec::mappings::Gemma3Mapping().policy;
 
 Policy PolicyOf(std::string_view text, bool shared_q8) {
   Policy p = ParsePolicy(text).value();
@@ -398,6 +397,7 @@ Legacy PlanLegacy(const Case& c, const State& state, bool shared_q8, bool produc
   typename F::Options options;
   options.device_masks = true;
   options.shared_q8 = shared_q8;
+  options.narrow_final = true;   // the runners' frontier_head: the components narrow so
   options.max_total_rows = 256;  // the runners' wave rows: two owners of 128
   if (production) {
     options.owner_decode = true;
@@ -822,10 +822,15 @@ TEST(PlannerGemmaTest, Gemma3PlansAsTodaysRecipe) {
   ExpectFamilyMatches<Gemma3Family>(kGemma3Policy);
 }
 
-// The two recipes differ as data: one policy text each.
+// The two recipes differ as data: one policy text each, in its mapping,
+// canonical.
 TEST(PlannerGemmaTest, TheRecipesArePolicies) {
   const Policy g2 = ParsePolicy(kGemma2Policy).value();
   const Policy g3 = ParsePolicy(kGemma3Policy).value();
+  EXPECT_EQ(ToText(g2), kGemma2Policy);
+  EXPECT_EQ(ToText(g3), kGemma3Policy);
+  EXPECT_FALSE(Disabled(g2, "owner_attention"));
+  EXPECT_FALSE(Disabled(g3, "owner_attention"));
   EXPECT_TRUE(Disabled(g2, "rms_norm_mul_rope"));
   EXPECT_FALSE(Disabled(g3, "rms_norm_mul_rope"));
   EXPECT_TRUE(Disabled(g2, "grouped_stores"));

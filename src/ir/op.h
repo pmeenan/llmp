@@ -319,6 +319,12 @@ enum class FusedKind : std::uint16_t {
   // o] and its mask mask[:C_o, :R, 0, o] (the first C_o cells and R rows
   // of its own matrix, so each owner keeps its mask's row padding);
   // [Dv, H, R, owners], owner o's attention at o. One to four owners.
+  // Its cohort and offset (amended 2026-10-09) place the node among a
+  // step's joined owners when they run as several nodes of up to four
+  // (GGML's four-root carriers): the cohort is every joined owner, the
+  // offset the node's first one there. Like a product's accumulation, they
+  // are hashed choices that do not change the definition (an
+  // implementation partitions its grid by them); 0 and 0 is a lone node.
   kOwnerAttention,
   // A batch key, never a node (the builder and verifier refuse one, and it
   // has no decomposition): consecutive independent kCacheStore nodes that
@@ -594,9 +600,15 @@ struct NormRopeParams {
   RopeParams rope{};
 };
 
+// The most owners a step joins under kOwnerAttention's groups.
+inline constexpr std::uint32_t kMaxOwnerCohort = 64;
 struct OwnerAttnParams {
   AttnParams attn{};
   std::uint32_t owners = 0;
+  // The joined owners the node is a group of (0: its own owners) and its
+  // first owner's place among them; offset + owners <= cohort.
+  std::uint32_t cohort = 0;
+  std::uint32_t offset = 0;
 };
 
 struct HcNormPostParams {
@@ -634,7 +646,7 @@ static_assert(sizeof(PoolParams) == 4 + 4);
 static_assert(sizeof(SampleParams) == 4 + (4 * 4));
 static_assert(sizeof(CollectiveParams) == (2 * 4) + 4);
 static_assert(sizeof(NormRopeParams) == 4 + sizeof(RopeParams));
-static_assert(sizeof(OwnerAttnParams) == sizeof(AttnParams) + 4);
+static_assert(sizeof(OwnerAttnParams) == sizeof(AttnParams) + (3 * 4));
 
 }  // namespace llmp::ir
 

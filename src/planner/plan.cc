@@ -200,7 +200,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     return Failed(PlanError::kPolicy, valid.error());
   }
   const SelectionView view(registry, device, policy, options.row_invariant, options.capturable);
-  auto rewritten = ApplyPatterns(primitive, view);
+  auto rewritten = ApplyPatterns(primitive, view, options.shape);
   if (!rewritten) {
     return Failed(
         PlanError::kPattern,

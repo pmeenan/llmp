@@ -306,6 +306,13 @@ TEST(MappingTest, CompiledMappingsAreValid) {
 
 TEST(MappingTest, InvalidMappingsAreRefused) {
   const Mapping& good = mappings::Gemma2Mapping();
+  // Its policy text: printable lines (the planner's own rules are its).
+  for (const std::string_view policy :
+       {std::string_view("max_decode_rows 16"), std::string_view("disable x\n\t\n")}) {
+    Mapping m = good;
+    m.policy = policy;
+    EXPECT_FALSE(ValidateMapping(m).has_value()) << policy;
+  }
   const auto with_tensor = [&](TensorRule rule) {
     std::vector<TensorRule> rules(good.tensors.begin(), good.tensors.end());
     rules.push_back(rule);

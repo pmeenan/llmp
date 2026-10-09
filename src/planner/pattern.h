@@ -40,6 +40,12 @@
 //   rope_store         fused.rope_store: a rotation stored whole as cache
 //                      rows (fuse_rope_store)
 //   rms_norm_mul       fused.rms_norm_mul (fuse_norms)
+//   owner_attention    fused.owner_attention: every layer's per-owner
+//                      attention of a step's joined owners as owner-root
+//                      nodes over their own caches, with the owners'
+//                      masks joined once (the Gemma builders' owner
+//                      decode, owner and flexible owner prefill, bounded
+//                      roots and four-root carriers; fattn_owner.h)
 //   prepared_inputs    two or more products of one F32 input share one
 //                      Q8_1 preparation (kPrepare), each product reading it
 //                      (the Gemma builders' shared_q8, shared_q8.h)
@@ -54,6 +60,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -66,16 +73,20 @@
 #include "ir/verify.h"
 #include "planner/policy.h"
 #include "planner/select.h"
+#include "planner/step_shape.h"
 
 namespace llmp::planner {
 
 // A graph's readers, as patterns ask about them.
 class MatchContext {
  public:
-  MatchContext(const ir::Graph& graph, const SelectionView& view);
+  // `shape`: the step's, where the planner was given it (patterns whose
+  // forms follow the step's outputs need it; null: none).
+  MatchContext(const ir::Graph& graph, const SelectionView& view, const StepShape* shape = nullptr);
 
   const ir::Graph& graph() const { return graph_; }
   const SelectionView& view() const { return view_; }
+  const StepShape* shape() const { return shape_; }
   const ir::Node& node(ir::NodeId id) const { return graph_.node(id); }
   const ir::TensorDesc& tensor(ir::TensorId id) const { return graph_.tensor(id); }
   const ir::Node& producer(ir::TensorId id) const { return graph_.node(graph_.producer(id)); }
@@ -93,9 +104,22 @@ class MatchContext {
  private:
   const ir::Graph& graph_;
   const SelectionView& view_;
+  const StepShape* shape_ = nullptr;
   std::vector<std::vector<ir::NodeId>> readers_;  // by tensor
   std::vector<bool> external_;                    // by root tensor
   std::vector<bool> taken_;                       // by node
+};
+
+// What a pattern's match function found for its rewrite beyond a fused
+// node's sources and parameters (owner_attention's layers); each pattern
+// knows its own.
+struct MatchDetail {
+  MatchDetail() = default;
+  MatchDetail(const MatchDetail&) = default;
+  MatchDetail& operator=(const MatchDetail&) = default;
+  MatchDetail(MatchDetail&&) = default;
+  MatchDetail& operator=(MatchDetail&&) = default;
+  virtual ~MatchDetail() = default;
 };
 
 struct Match {
@@ -107,6 +131,7 @@ struct Match {
   std::vector<ir::TensorId> sources{};
   ir::ParamBytes params{};
   std::size_t implementation = 0;
+  std::shared_ptr<const MatchDetail> detail{};
 };
 
 // Rebuilding a graph with matches replaced: the original graph's tensors
@@ -124,14 +149,15 @@ class RewriteContext {
   void Set(ir::TensorId original, ir::TensorId made) { map_.at(original.v) = made; }
   // A node of the original graph made again over the mapped sources.
   ir::Outputs Copy(const ir::Node& node);
-  std::array<ir::TensorId, 4>& local() { return local_; }
-  void Reset() { local_ = {}; }
+  // A match's own tensors, kept across its nodes' rewrites.
+  std::vector<ir::TensorId>& local() { return local_; }
+  void Reset() { local_.clear(); }
 
  private:
   const ir::Graph& original_;
   ir::Builder& builder_;
   std::vector<ir::TensorId>& map_;
-  std::array<ir::TensorId, 4> local_{};
+  std::vector<ir::TensorId> local_{};
 };
 
 enum class PatternKind : std::uint8_t { kRewrite, kBatch };
@@ -145,6 +171,10 @@ struct Pattern {
   ir::OpKey result{};
   std::span<const ir::Op> anchors{};
   std::optional<Match> (*match)(const MatchContext& context, ir::NodeId anchor) = nullptr;
+  // Its match function checks what the table checks for a fused result
+  // (F32 intermediates, the order of reads and writes) itself: a rewrite
+  // that emits at several of its nodes' places (owner_attention).
+  bool own_checks = false;
   // A rewrite's: what replaces the match's node `index` (each of its nodes
   // in turn, in node order), mapping the original outputs it stands for.
   void (*rewrite)(RewriteContext& context, const Match& match, std::size_t index) = nullptr;
@@ -177,9 +207,11 @@ struct Rewritten {
   std::vector<ir::TensorId> tensors;
 };
 
-// The enabled rewrite patterns applied over `graph` (see the header).
+// The enabled rewrite patterns applied over `graph` (see the header), for
+// a step of `shape` where it is given.
 std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
-                                                        const SelectionView& view);
+                                                        const SelectionView& view,
+                                                        const StepShape* shape = nullptr);
 
 // The batch a batch pattern makes at `anchor` of `graph`, where it matches
 // and is enabled.

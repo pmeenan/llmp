@@ -104,6 +104,14 @@ constexpr Mapping kMapping{
     .tensors = kTensors,
     .params = kParams,
     .folds = kFolds,
+    // The serving recipe (runtime/serving.cc's Gemma2): the fused norm-mul,
+    // norm-add and quantized GeGLU, shared Q8 preparation, owner attention
+    // (owner decode with bounded roots, owner and flexible owner prefill);
+    // no fused norm-rope (Gemma 2 has no QK norm), grouped KV stores or
+    // RoPE store.
+    .policy =
+        "max_decode_rows 16\ndisable grouped_stores\ndisable rms_norm_mul_rope\n"
+        "disable rope_store\n",
 };
 
 }  // namespace

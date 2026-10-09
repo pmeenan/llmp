@@ -33,6 +33,7 @@
 #ifndef LLMP_EXECUTION_REGISTRY_H_
 #define LLMP_EXECUTION_REGISTRY_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -216,13 +217,17 @@ struct Capability {
 };
 
 // One operand's format, as a node has it. The encoding's parameters (an
-// EXL3 trellis's rate and codebook) are for a capability's predicate: the
-// rules match encodings and layouts only.
+// EXL3 trellis's rate and codebook) and the operand's logical extents
+// (ne[0] innermost; 0 where the asker gives none) are for a capability's
+// predicate, whose kernel takes only some (GGML's owner attention: its
+// heads, cells and each owner's cache): the rules match encodings and
+// layouts only.
 struct OperandFormat {
   std::uint8_t operand = 0;
   format::Encoding encoding = format::Encoding::kF32;
   format::Layout layout = format::Layout::kDense;
   format::EncodingParams params{};
+  std::array<std::uint64_t, 4> ne{};
 };
 
 struct SelectionPolicy {

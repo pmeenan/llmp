@@ -1486,7 +1486,7 @@ each is checked against the design as M3.6 proceeds.
       ([as built](engine-components.md#partitioning)).
 - [ ] **Migrate Gemma2 and Gemma3**, then delete their runners, plans,
       graph builders, bindings and serving classes.
-      - [ ] Components, patterns and the mapping.
+      - [x] Components, patterns and the mapping.
       - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Migrate Gemma4** 26B-A4B and 31B with their assistants.
       - [ ] Components, patterns and the mapping.

@@ -80,6 +80,10 @@ struct PlanOptions {
   // What the lowering's implementations write beyond a root's own bytes
   // (placement.h RootBytesOf).
   RootBytesOf written{};
+  // The step's shape, for the patterns whose forms follow its outputs
+  // (owner_attention's one-row form only for a step returning every
+  // owner's one row); outlives the call. Null: those forms are not taken.
+  const StepShape* shape = nullptr;
 };
 
 struct StepPlan {

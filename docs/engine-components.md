@@ -190,7 +190,13 @@ pads its rows to 32 on its own, which that layout cannot hold without a
 copy of every mask a layer, and GGML's owner carriers (`fattn_owner.h`:
 Q [D, 1, heads, N], masks [cells, 32, 1, N]) and the builders' joined
 masks (padded to a common width and concatenated on dim 3) are this
-layout already, so the lowering binds views and copies nothing.
+layout already, so the lowering binds views and copies nothing. Its
+parameters gained the node's cohort and offset (slice G1b, 2026-10-09; a
+reviewed op-set change, still version 1): a step joining more than four
+owners runs as several nodes of up to four (GGML's four-root carriers),
+each naming every joined owner (the cohort, up to 64) and its first
+owner's place among them, which an implementation partitions its grid by
+and the reference executor ignores; 0 and 0 is a lone node.
 
 **The planner, as built** (`src/planner`, 2026-10-09). `Plan(primitive
 graph, registry, device facts, policy, options)` gives a `StepPlan`: the
@@ -208,10 +214,11 @@ primitive ids). It is deterministic. The steps:
   registry has a candidate for its result on the device under the policy,
   and emits the replacement at the match's last node. The table:
   `rms_norm_mul_rope`, `rms_norm_mul_add`, `mul_mat_glu`, `rope_store`,
-  `rms_norm_mul`, `prepared_inputs` (two or more products of one F32
-  input share one Q8_1 `kPrepare`, each product reading it: the builders'
-  shared Q8, kept as primitives in the builders' order rather than
-  `fused.prepared_products`, which would move the products to one place;
+  `rms_norm_mul`, `owner_attention` (below), `prepared_inputs` (two or
+  more products of one F32 input share one Q8_1 `kPrepare`, each product
+  reading it: the builders' shared Q8, kept as primitives in the
+  builders' order rather than `fused.prepared_products`, which would
+  move the products to one place;
   placement keeps the prepared input's source live with it, as GGML's
   prepared product reads both) and the batch `grouped_stores`
   (consecutive independent cache stores under one implementation of the
@@ -231,8 +238,9 @@ primitive ids). It is deterministic. The steps:
   first migrations' selections are policies: Gemma 2 serves with
   `disable grouped_stores`, `disable rms_norm_mul_rope` and `disable
   rope_store`, Gemma 3 with `disable rope_store`. Each family's default
-  policy text will live in its architecture mapping (slice G1a), with
-  the spec it makes; an alias's settings may replace it.
+  policy text lives in its architecture mapping (`spec::Mapping::policy`,
+  slice G1a), which the component step source parses unless it is given
+  another (an alias's settings, later).
 - **Selection** (`select.h`): each node's first candidate from
   `Candidates()`, asked with the device's architecture, features, tuning
   data (an implementation that `needs_tuning` is offered only for a shape
@@ -266,18 +274,43 @@ the owner-attention forms or without, with no two live tensors sharing
 bytes. A capability query carries the node's parameters
 (`CapabilityQuery::params`), so a predicate can refuse what its kernel does
 not take (a rotation's mode and dimensions; the owner kernel's softcap,
-G1b), and a pattern asks with its match's parameters. What remains for
-slice G1b: the owner-attention patterns (owner decode, packed, owner and
-flexible owner prefill, bounded roots, Gemma 3's four-root carriers with
-their logical cohort and offset, which the fused kind's parameters do not
-carry yet) and the masks' padding and joining they need; and the narrowed
-final layer with its norm-add over a gathered residual
-(`GemmaNormAddGatherFusionAt`). That graph (`narrow_final`) is not a
-diagnostic: today's Gemma runners build it by default (`frontier_head`,
-which serving keeps on), gathering the output rows after the last layer's
-attention projection, so that layer's FFN and the head run at the output
-rows' width; the components' head gathers after the final norm, as
-`frontier_head = false` does.
+G1b), and a pattern asks with its match's parameters; an operand's
+extents ride along (`OperandFormat::ne`) for a kernel whose conditions
+are on them (the owner kernel's heads, cells and each owner's cache).
+A pattern also sees the step's shape where the planner is given it
+(`PlanOptions::shape`).
+
+**Owner attention** (`owner_attention`, slice G1b). One match covers a
+whole step: every layer's per-owner attention of all the step's owners
+(each owner's query view, cache views, attention and result rows, and
+their joins), in one of the forms GGML's owner kernel takes: one row an
+owner with every owner returning its row (the builders' owner decode, 2
+to 12 owners; a state-only step keeps per-owner attention, as they do), or
+two owners of equal rows and reads (owner prefill, 2 to 512 rows, the
+flexible tiles included). Every layer joins or none does, as the
+builders chose a step's form. The rewrite keeps the owners' masks and,
+after the last, joins each cell rule's masks once on dim 3 (each padded
+with -inf cells to the widest: the builders' `join_mask`), then at each
+layer's place emits the queries as [D, R, H, owners], a
+`fused.owner_attention` node per group of up to four owners (views of the
+queries and the joined mask on dim 3 for more than four, with the cohort
+and offset), each owner's cache views, and the groups' rows joined. Each
+owner's cache is read at its own width where an implementation takes
+that (bounded roots: GGML's for two owners alone), else padded to the
+mask's with zeros made once per owner and rule (the builders' zero tails,
+Gemma 3's three to twelve owners). The builders' copying packed prefill
+(two owners' caches concatenated for flash attention past 512 rows or
+131,072 cells) is not ported: no serving envelope plans it (chunks are at
+most 128 rows), and the IR keeps per-owner attention there; nor is the
+whole-twelve bounded carrier (`bounded_whole12`, a default-off factor),
+which the capability does not declare.
+
+**The narrowed final layer** is the components' (below): with a head,
+the stage's last component that mixes rows gathers its output rows
+(`narrow_final`, the runners' `frontier_head`, which serving keeps on),
+and the existing `rms_norm_mul_add` matches the norm-add over the
+gathered residual (`GemmaNormAddGatherFusionAt`'s nodes), the gather
+between its mul and its add.
 
 **The GGML lowering, as built** (`kernels/ggml/lower.h`,
 `capabilities.h`, `step_program.h`; 2026-10-09). The GGML module declares
@@ -315,17 +348,37 @@ graph) and a `GgmlStepLaunch` over the launch context, whose captures are
 the context's CUDA graphs; the engine reaches it as a `StepBackend`
 (`kernels/common/lower.h`) through `engine/component_source.h`.
 
-Checked: at every Gemma 2 and Gemma 3 setup shape above, with device and
-with host masks (644 and 756 lowered steps), the lowered graph is
-`BuildGemma2Graph`'s or `BuildGemma3Graph`'s with their default options and
-the recipe's flags, node for node (operation, type, extents, strides, view
-offset, operation parameters, flags, every source), and PlanGraph's steps
-over it are the builders' (`ggml_lower_test`, CPU). On spark-b, the model
-runner over the component source runs a 6-token prompt and three decodes
-of the real Gemma 2 2B and Gemma 3 4B QAT artifacts with logits bit for bit
-those of today's runners configured to plan the same graph (per-owner
-attention, `frontier_head` off), the repeated decode shape captured and
-replayed (`component_runner_gpu_test`).
+Slice G1b added: `fused.owner_attention` lowers to GGML's owner-root node
+(`FlashAttnOwnersNode`, `llmp.flash_attn.owner_roots`, whose capability
+carries `CheckFlashAttnOwners`' contract over the node's extents), with its
+cohort, its offset for a partial cohort's groups only (the builders give
+whole eight- and twelve-owner carriers offset 0), its softcap as the
+kernel's integer and bounded roots where an owner's cache is narrower
+than the mask. A fused node GGML runs over its primitive nodes makes each
+of them at its own place in the primitive graph where its sources are
+made, else at the fused node's: the builders' order, with the narrowed
+final layer's residual gather between the norm-add's mul and its add,
+where PlanGraph defers the fused norm-add. A view's offset, which the IR
+counts from the root, is passed to GGML from the viewed tensor.
+
+Checked: at every Gemma 2 and Gemma 3 setup shape above, and Gemma 3's
+joined one-row steps of 2 to 12 owners with every count of long owners
+(its runner's four-root carriers, beyond the serving envelope), with
+device and with host masks (644 and 1,218 lowered steps, 66 and 374 of
+them with owner attention), the step planned under its mapping's policy
+and lowered is `BuildGemma2Graph`'s or `BuildGemma3Graph`'s under the
+serving recipe (owner decode with bounded roots, owner and flexible owner
+prefill, `narrow_final`, and the fusions above), node for node
+(operation, type, extents, strides, view offset, operation parameters,
+flags, every source), and PlanGraph's steps over it are the builders'
+(`ggml_lower_test`, CPU). On spark-b, the model runner over the component
+source runs two owners of the real Gemma 2 2B and Gemma 3 4B QAT artifacts
+through one script of waves (joined prefill chunks of 128, 37 and 2 equal
+rows, ragged and single-owner chunks, state-only chunks, one owner past
+its ring until it wraps, joined one-row decodes returning logits and
+device-chosen tokens over unequal reads), each owner's outputs bit for bit
+those of today's runners under the full serving recipe, the repeated
+decode shapes captured and replayed (`component_runner_gpu_test`).
 
 ## Components
 
@@ -427,6 +480,18 @@ sandwich, GELU-tanh or SiLU) and `head.linear` (the output rows, the
 product, the stage's final softcap as scale, tanh, scale, and the
 host-greedy argmax on a greedy step).
 
+The head reads only the step's output rows, so `BuildStep` narrows (slice
+G1b): with a head, the stage's last component that mixes rows (a
+definition's `row_local` false; `attention.dense`, whose `narrows` says it
+can) gathers its output rows after the last of its own ops that mixes
+rows (the projection's and the residual's rows, after the output
+product), and every later component, row-local, runs at the outputs'
+width, the head gathering none (`Fragment::narrow` and `narrowed`): the
+builders' `narrow_final`, which the runners' `frontier_head` builds and
+serving keeps on. A state tensor's cell is the format layer's
+(`model::CellBytes`), its leaf a block encoding's whole blocks where an
+alias opts into a lossy cache (D-108; F16 today).
+
 Each fragment records today's builders' nodes in their execution order
 (GGML's `GraphOrder` over their outputs: V's product before K's, the gate
 before the up product, each owner's K and V stores before its attention,
@@ -453,19 +518,21 @@ fragment does not express, for the lowering and the patterns:
 - **Weight over-read** (`MarkRowPaddingReadable`) is the format layer's
   readable rule, not a graph property.
 - **The builders' options** are patterns and selection, not fragments:
-  shared Q8 preparation, grouped KV stores and the fused norm forms are
-  the planner's (above); owner decode and owner, packed and flexible
-  prefill with bounded roots are slice G1b's, as is the narrowed final
-  layer (`narrow_final`, which the runners' default `frontier_head`
-  builds; above); device masks are the lowering's (above); the
-  diagnostic scopes (`first_layer`, `layer_count`, `hidden_input`) are
-  not ported. The
-  owner-attention kernel's literal softcap 50 is an implementation's
-  limit the pattern checks against the instance's `softcap`.
+  shared Q8 preparation, grouped KV stores, the fused norm forms and owner
+  attention (owner decode and owner and flexible owner prefill, bounded
+  roots, Gemma 3's four-root carriers) are the planner's (above); the
+  narrowed final layer is the framework's (above); device masks are the
+  lowering's (above); the diagnostic scopes (`first_layer`,
+  `layer_count`, `hidden_input`), the matched controls (`frontier_head`,
+  `owner_prefill` or `flexible_owner_prefill` off, `bounded_whole12`) and
+  the copying packed prefill are not ported. The owner-attention kernel's
+  literal softcap 50 is an implementation's limit its capability checks
+  against the node's `softcap`.
 - **Batching.** The primitive graph joins any rows of up to 16 owners
   (attention per owner), so the components declare no limits of their
-  own; the owner-root carriers' group sizes and equal-row prefill come
-  with their patterns.
+  own; the owner-root forms (one-row decode of up to twelve owners in
+  groups of four, equal-row prefill of two) are the pattern's, which
+  leaves any other step's attention per owner.
 
 ### The model spec
 
@@ -1112,7 +1179,13 @@ table fits each stage's devices whole).
 - **The traffic model.** A collective over a group runs as a ring in the
   group's order: an all-reduce is 2(g − 1) steps and a gather g − 1, each
   moving 1/g of the tensor over every ring link and as slow as the slowest
-  (bytes over bandwidth plus latency). A tensor leaving its group goes to
+  (bytes over bandwidth plus latency). With a head, what follows the
+  narrowing (`components::NarrowPoint`, the point `BuildStep` narrows at:
+  the last layer's feed-forward block after a narrowing attention, the final
+  norm and the head) joins its output rows, not the step's rows; the
+  narrowing component's own all-reduce stays at the step's rows, since the
+  gather follows the output product and a partial sum is completed before a
+  row gather. A tensor leaving its group goes to
   each device that needs it from the holder with the cheapest link,
   receivers holding it too, so a stream crosses a slow link once and then
   spreads over the fast one. The objective is the decode-share-weighted
