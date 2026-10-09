@@ -1650,9 +1650,9 @@ class Server {
   // Conversations kept across a restart (D-105): at a graceful stop, the
   // resident model's idle conversations are settled and spilled (their
   // records follow), then the keeper writes every record queued, until
-  // `deadline`; `progress` is called at least every second meanwhile (the
-  // service manager's extension of its stop timeout). On the driver, after
-  // the last request.
+  // `deadline`; `progress`, unless empty, is called at least every second
+  // meanwhile (the service manager's extension of its stop timeout). On
+  // the driver, after the last request.
   void Persist(Clock::time_point deadline, const std::function<void()>& progress);
   // The keeper's records queued so far written, until `deadline` (the hang
   // recovery's last resort: any thread). True if none is left.

@@ -28,6 +28,30 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-051: ASan dies at the exit of every thread that installed llmpalooza's signal stack  (2026-10-09, status: worked-around)
+
+Environment: `spark` (GB10, kernel 7.0.0-1019-nvidia), the SDK's Clang
+22.1.8 with `-fsanitize=address,undefined` (a `spark-native` build of
+`gemma4_serving_gpu_test` with `LLMP_SANITIZE=address;undefined`); the
+same runtime is in every `*-asan` preset. ASan gives each new thread an
+alternate signal stack it mapped (`use_sigaltstack=1`, the default);
+`platform::InstallThreadSignalStack` (D-014's crash policy, called first
+by every thread llmpalooza starts: the node's lanes, the memory sampler,
+the chat route's threads) replaces it with a 16-byte-aligned
+`thread_local` array. At the thread's exit ASan unmaps whatever stack is
+installed: `munmap` of that array fails (EINVAL), and ASan ends the
+process ("AddressSanitizer failed to deallocate 0x10000 bytes ... (error
+code: 22)", `CHECK failed: sanitizer_common.cpp:81 "unable to unmmap"`) at
+the first server teardown, before any test assertion. Were the array
+page-aligned, ASan would unmap part of the thread's own stack and TLS
+instead. Workaround: `ASAN_OPTIONS=...:use_sigaltstack=0` (the GPU runs
+also used `protect_shadow_gap=0`). Expected fix: InstallThreadSignalStack
+keeps a stack already installed (only a sanitizer's can be: Linux gives a
+new thread none), or the sanitizer test presets set `use_sigaltstack=0`.
+Until then an ASan run of any test that ends such a thread fails this way
+(observed with the GPU serving tests; the `check:spark` and `check:full`
+ASan tiers were not run to see which of theirs do).
+
 ## RE-050: Qwen3.8's output head is wider than its tokenizer.json  (2026-10-08, status: open)
 
 Environment: Qwen3.8 Flash Next NVFP4/MXFP8 (`c4fb47a9…`, the

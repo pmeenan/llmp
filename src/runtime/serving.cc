@@ -6426,7 +6426,7 @@ void Server::Persist(Clock::time_point deadline, const std::function<void()>& pr
         ++spilled;
         bytes += held;
       }
-      if (Clock::now() - told >= std::chrono::seconds(1)) {
+      if (progress && Clock::now() - told >= std::chrono::seconds(1)) {
         progress();
         told = Clock::now();
       }
@@ -6452,7 +6452,9 @@ void Server::Persist(Clock::time_point deadline, const std::function<void()>& pr
     if (now >= deadline || now >= quiet_until) {
       break;
     }
-    progress();
+    if (progress) {
+      progress();
+    }
   }
   const StateKeeper::Stats stats = keeper_->stats();
   Log(

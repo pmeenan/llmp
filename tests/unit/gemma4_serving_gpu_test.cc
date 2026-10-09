@@ -16,6 +16,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <print>
 #include <string>
 #include <system_error>
@@ -68,6 +69,7 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     if (!PreparationControl()) ASSERT_TRUE(Start());
   }
   bool Start() {
+    ++starts;
     server = std::make_unique<rt::Server>(config, roles, options, stderr);
     auto r = server->Start(true);
     if (!r) {
@@ -109,14 +111,29 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     }
     if (!scratch.empty()) std::filesystem::remove_all(scratch);
   }
+  // The test's own host copies, charged to the current server's node. The
+  // charge ends before that server does: returned after a restart, it would
+  // write the destroyed node's memory, which the next server's allocations
+  // may hold by then. One that outlives its server fails the test instead.
   struct HostCopies {
-    HostCopies(en::PagedNode& owner, std::uint64_t capacity)
-        : node(owner), bytes(capacity), funded(owner.ChargeHost(capacity, false)) {}
+    HostCopies(Gemma4ServingGpu& fixture, std::uint64_t capacity)
+        : owner(fixture),
+          start(fixture.starts),
+          node(fixture.server->node()),
+          bytes(capacity),
+          funded(node.ChargeHost(capacity, false)) {}
     ~HostCopies() {
-      if (funded) node.UnchargeHost(bytes);
+      if (!funded) return;
+      if (owner.starts != start || !owner.server) {
+        ADD_FAILURE() << "a test host charge outlived the server it was charged to";
+        return;
+      }
+      node.UnchargeHost(bytes);
     }
     HostCopies(const HostCopies&) = delete;
     HostCopies& operator=(const HostCopies&) = delete;
+    Gemma4ServingGpu& owner;
+    std::uint64_t start;
     en::PagedNode& node;
     std::uint64_t bytes;
     bool funded;
@@ -142,6 +159,7 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   rt::ServingOptions& options = lifetime->options;
   std::unique_ptr<rt::Server>& server = lifetime->server;
   bool retirement_failed = false;
+  std::uint64_t starts = 0;  // servers started (HostCopies)
   rt::Llm* model = nullptr;
   const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
 };
@@ -203,7 +221,7 @@ TEST_P(Gemma4PreparationServingGpu, DefaultPreparationPreservesFourOwnerPromptPr
       ASSERT_EQ(runner.layout().local_cells, GetParam() == 26 ? 2048U : 1280U);
       // Eight retained full heads (off+default), bounded token/session metadata,
       // and only state digests. The 1 MiB transfer is catalog-funded separately.
-      HostCopies copies(server->node(), 8ULL * 262144 * sizeof(float) + (512U << 10U));
+      HostCopies copies(*this, 8ULL * 262144 * sizeof(float) + (512U << 10U));
       ASSERT_TRUE(copies.funded);
       std::array<std::vector<std::int32_t>, 4> tokens;
       struct Sessions {
@@ -354,7 +372,7 @@ TEST_P(Gemma4ServingGpu, IndependentScalarCohortsOneTwoFourEightTwelveReplaySeed
   EXPECT_EQ(model->branches(), 12U);
   EXPECT_GE(server->host_input_bytes(),
             12ULL * 262144 * (2 * sizeof(float) + 2 * sizeof(llmp::execution::SamplingCandidate)));
-  HostCopies copies(server->node(), 13ULL * 262144 * sizeof(float));
+  HostCopies copies(*this, 13ULL * 262144 * sizeof(float));
   ASSERT_TRUE(copies.funded);
   std::array<rt::GenerateOptions, 12> generate;
   for (std::uint32_t i = 0; i < 12; ++i) {
@@ -423,8 +441,9 @@ TEST_P(Gemma4ServingGpu, OwnedSnapshotTurnRollbackSpillAndRestartContinueExactly
   gen.stop = false;
   // With rows, the host chooses each greedy token; without (from here on),
   // the device does (Llm::DeviceGreedy), to the same tokens.
-  HostCopies copies(server->node(), 4ULL * 262144 * sizeof(float));
-  ASSERT_TRUE(copies.funded);
+  std::optional<HostCopies> copies;
+  copies.emplace(*this, 4ULL * 262144 * sizeof(float));
+  ASSERT_TRUE(copies->funded);
   auto rows = gen;
   rows.keep_logits = true;
   rt::Generation expected, restored;
@@ -465,6 +484,9 @@ TEST_P(Gemma4ServingGpu, OwnedSnapshotTurnRollbackSpillAndRestartContinueExactly
   EXPECT_TRUE(Branch(0).spilled());
   const auto history = Branch(0).history();
   server->Persist(rt::Clock::now() + std::chrono::seconds(30), {});
+  // The rows the copies' charge funds go with it, before its server does.
+  expected.logits = {};
+  copies.reset();
   ASSERT_TRUE(RetireServer());
   server.reset();
   const auto record_path =
@@ -765,7 +787,7 @@ TEST_P(Gemma4ServingGpu, LargeTopKSamplingCapacityIsFundedAndRetiresOnEveryClose
 
 TEST_P(Gemma4ServingGpu, CompleteLikelihoodRowsMatchOwnedOneTokenFrontiersAndStopAtPrefix) {
   ASSERT_TRUE(Select(2));
-  HostCopies copies(server->node(), 6ULL * 262144 * sizeof(float));
+  HostCopies copies(*this, 6ULL * 262144 * sizeof(float));
   ASSERT_TRUE(copies.funded);
   std::array<std::vector<float>, 6> rows;
   for (std::size_t i = 0; i < prompt.size(); ++i)
