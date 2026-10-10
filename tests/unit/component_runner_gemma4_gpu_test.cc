@@ -4,24 +4,21 @@
 // The one model runner (engine/model_runner.h) over the component step
 // source (engine/component_source.h) and the GGML module's lowering
 // (kernels/ggml/step_program.h), on the real Gemma 4 26B-A4B and 31B
-// artifacts and their assistants (label `models`), against today's runner
-// (engine/gemma4_runner.h, gemma4_assistant.h) under its serving recipe
-// (runtime/serving.cc's Gemma options; the component source plans under
-// the gemma4 mapping's policy for the same envelope): within the
-// qualified envelope at 4,096 and two owners (every row to the head, the
-// fused norm-mul, norm-rope and norm-add, the 26B-A4B's fused routing and
-// scaled reduce, the 31B's quantized GeGLU, owner attention with bounded
-// roots over unequal reads, device masks), at 8,192 and four owners (owner
-// attention over equal reads, its masks joined in pairs), and outside it
-// (the frontier head's narrowed final layer, the routing and reduce as
-// their primitives). The owners run one script of waves: joined prefill
-// chunks, ragged and single-owner chunks, state-only chunks, one owner
-// past its sliding layers' ring until it wraps, joined one-row decodes
-// returning logits and device-chosen tokens; each owner's outputs are bit
-// for bit today's. The verify cases run a speculative verify's waves
-// (four rows an owner, every row's outputs, then their Accept, alone,
-// joined and ragged) against today's Wave with all_outputs. The repeated decode shapes are captured
-// on their second run and replayed after (D-090), the replays compared too.
+// artifacts and their assistants (label `models`), under the gemma4
+// mapping's policy for each serving envelope (the component source plans
+// under it): within the qualified envelope at 4,096 and two owners (every
+// row to the head, the fused norm-mul, norm-rope and norm-add, the
+// 26B-A4B's fused routing and scaled reduce, the 31B's quantized GeGLU,
+// owner attention with bounded roots over unequal reads, device masks), at
+// 8,192 and four owners (owner attention over equal reads, its masks joined
+// in pairs), and outside it (the frontier head's narrowed final layer, the
+// routing and reduce as their primitives). The owners run one script of
+// waves: joined prefill chunks, ragged and single-owner chunks, state-only
+// chunks, one owner past its sliding layers' ring until it wraps, joined
+// one-row decodes returning logits and device-chosen tokens. The repeated
+// decode shapes are captured on their second run and replayed after
+// (D-090). The verify cases run a speculative verify's waves (four rows an
+// owner, every row's outputs, then their Accept), alone, joined and ragged.
 //
 // The assistant's draft passes (two, joined over the owners, at each
 // owner's committed endpoint after the prompt, reading the target's
@@ -32,9 +29,14 @@
 // write the assistant's feature tap (its output rows' final-norm rows);
 // the first pass reads the tap's feature of the endpoint (the runner's
 // device copy), the second its own first pass's next feature (the
-// runner's carry), and their tokens are today's anchor and proposal; each
-// pass's logits and next features are today's assistant's bit for bit, so
-// the tapped feature is the one today's runner retains.
+// runner's carry), and their tokens are the top tokens of the prompt's
+// frontier and of the first pass.
+//
+// Every output is finite, and a second runner over the same script gives
+// every output bit for bit (the replays included). (The script was once
+// compared output for output with the M3 runner's and assistant's under
+// their serving options, a verify's four-row outputs with its Wave, bit
+// for bit, retired with them after the migration's gate.)
 
 #include <gtest/gtest.h>
 #include <unistd.h>
@@ -61,13 +63,10 @@
 #include <vector>
 
 #include "artifact/artifact.h"
-#include "artifact/gguf_metadata.h"
 #include "base/bytes.h"
 #include "components/step.h"
 #include "engine/component_source.h"
 #include "engine/expert_slab.h"
-#include "engine/gemma4_assistant.h"
-#include "engine/gemma4_runner.h"
 #include "engine/model_runner.h"
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
@@ -79,7 +78,6 @@
 #include "planner/step_shape.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma4.h"
-#include "tokenizer/gguf.h"
 #include "tokenizer_fixtures.h"
 
 namespace {
@@ -91,7 +89,6 @@ namespace kg = llmp::kernels::ggml;
 namespace kn = llmp::kernels;
 namespace md = llmp::model;
 namespace pl = llmp::planner;
-namespace tk = llmp::tokenizer;
 namespace fs = std::filesystem;
 
 constexpr std::uint32_t kMaxRows = 128;
@@ -109,8 +106,7 @@ struct Case {
   // joined waves of at most kMaxRows rows.
   std::uint32_t prompt = 0;
   // A speculative verify's waves instead of the serving script's tail: four
-  // rows an owner, every row's outputs, committed by their Accept (the
-  // runner's verify against today's Wave with all_outputs).
+  // rows an owner, every row's outputs, committed by their Accept.
   bool verify = false;
 };
 
@@ -123,12 +119,6 @@ std::string_view TargetId(std::uint32_t size) {
 std::string_view AssistantId(std::uint32_t size) {
   return size == 26 ? "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42"
                     : "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120";
-}
-std::string_view TargetVocabulary(std::uint32_t size) {
-  return size == 26 ? "gemma-4-26B-A4B-it-UD-Q4_K_M.kv.gguf" : "gemma-4-31B-it-UD-Q4_K_XL.kv.gguf";
-}
-std::string_view AssistantVocabulary(std::uint32_t size) {
-  return size == 26 ? "mtp-gemma-4-26B-A4B-it.kv.gguf" : "mtp-gemma-4-31B-it.kv.gguf";
 }
 const md::Gemma4Profile& Profile(std::uint32_t size) {
   return size == 26 ? md::Gemma4_26BA4B() : md::Gemma4_31B();
@@ -265,8 +255,7 @@ pl::StepShape ShapeOf(const Planned& p, std::uint32_t context) {
   for (std::size_t i = 0; i < p.wave.units.size(); ++i) {
     const Unit& u = p.wave.units[i];
     if (u.rows > 1 && p.wave.head != Head::kAll) shape.phase = pl::Phase::kPrefill;
-    // A draft reads its target's committed positions (frozen), today's
-    // assistant's width.
+    // A draft reads its target's committed positions (frozen).
     const std::uint32_t end = p.past[i] + (draft ? 0 : u.rows);
     shape.segments.push_back({.slot = static_cast<std::uint8_t>(u.slot),
                               .rows = u.rows,
@@ -298,283 +287,12 @@ std::int32_t Top(std::span<const std::byte> logits) {
   return static_cast<std::int32_t>(std::ranges::max_element(row) - row.begin());
 }
 
-// ------------------------------------------------------------ today's runner
-
-struct Vocabulary {
-  tk::GgufTokenizer tokenizer;
-  ar::GgufMetadata raw;
-  md::Gemma4AssistantVocabulary view() const {
-    return {tokenizer.spec.tokens, tokenizer.spec.merges, raw.at("tokenizer.ggml.scores").reals,
-            raw.at("tokenizer.ggml.token_type").integers};
-  }
-};
-std::expected<Vocabulary, std::string> Decode(const ar::Artifact& artifact,
-                                              std::string_view filename) {
-  auto bytes = artifact.ReadMetadata(filename);
-  if (!bytes) return en::support::Error(bytes.error().ToString());
-  auto input = std::as_bytes(std::span(bytes->data(), bytes->size()));
-  auto tokenizer = tk::ReadGgufTokenizer(input);
-  constexpr std::array<std::string_view, 2> keys{"tokenizer.ggml.scores",
-                                                 "tokenizer.ggml.token_type"};
-  auto raw = ar::ReadGgufMetadata(input, keys);
-  if (!tokenizer || !raw || !raw->contains(keys[0]) || !raw->contains(keys[1]))
-    return en::support::Error("vocabulary parse failed");
-  return Vocabulary{std::move(*tokenizer), std::move(*raw)};
-}
-
-en::Gemma4Options Options(const Case& c, const fs::path& target, const fs::path& out) {
-  const bool bounded = c.candidate && c.context <= 4096 && c.owners == 2;
-  return {.artifact = target,
-          .out = out,
-          .variant = c.size == 26 ? en::Gemma4Variant::k26BA4B : en::Gemma4Variant::k31B,
-          .context = c.context,
-          .max_rows = kMaxRows,
-          .slots = c.owners,
-          .max_head_rows = c.verify ? c.owners * kVerifyRows : c.owners,
-          .frontier_head = !c.candidate,
-          .fuse_norm_rope = c.candidate,
-          .fuse_norm_add = c.candidate,
-          .fuse_gemma_route = c.candidate && c.size == 26,
-          .fuse_gemma_reduce = c.candidate && c.size == 26,
-          .fuse_quant_glu = c.candidate && c.size == 31,
-          .owner_attention = c.candidate,
-          .common_owner_reads = bounded,
-          .bounded_owner_roots = bounded};
-}
-
-// The production run of the target waves (drafts skipped).
-Outputs Production(const Case& c, const fs::path& target, const fs::path& out,
-                   std::span<const Planned> script) {
-  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
-  auto runner = std::make_unique<en::Gemma4Runner>(node, Options(c, target, out), 0, 0);
-  std::vector<en::PagedModel*> entered;
-  Outputs outputs;
-  const auto started = [&]() -> en::Status {
-    if (auto x = node.Open(); !x) return x;
-    entered.push_back(runner.get());
-    if (auto x = runner->Setup(); !x) return x;
-    if (auto x = node.MapWorkspace(runner->activations_needed(), runner->pool_needed()); !x)
-      return x;
-    const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-    node.SetHostFloor(runner->host_input_bytes() + runner->plan_floor_bytes() + (16ULL << 20U));
-    if (auto x = node.Start(llmp::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
-                                              4 * node.StateCapacity()));
-        !x)
-      return x;
-    if (auto x = runner->Register(); !x) return x;
-    if (auto x = runner->Bind(); !x) return x;
-    node.Run();
-    std::vector<std::uint32_t> slots;
-    for (std::uint32_t i = 0; i < c.owners; ++i) slots.push_back(i);
-    if (auto x = runner->SelectSlots(slots); !x) return x;
-    return node.WithRequest(0, runner->closure(), "serving recipe control", [&]() -> en::Status {
-      for (const Planned& p : script) {
-        auto& row = outputs.emplace_back();
-        if (p.wave.head == Head::kDraft) continue;
-        const std::size_t n = p.wave.units.size();
-        std::vector<std::vector<float>> logits(n);
-        std::vector<std::int32_t> tokens(n, -1);
-        std::vector<en::Gemma4Runner::Work> work;
-        for (std::size_t i = 0; i < n; ++i) {
-          const bool greedy = p.wave.head == Head::kGreedy;
-          work.push_back({p.wave.units[i].slot, p.past[i], p.tokens[i],
-                          greedy ? nullptr : &logits[i], greedy ? &tokens[i] : nullptr});
-        }
-        if (p.wave.head == Head::kNone) {
-          if (auto x = runner->WavePrefill(work, false); !x) return x;
-        } else if (auto x = runner->Wave(work, p.wave.head == Head::kAll); !x) {
-          return x;
-        }
-        for (std::size_t i = 0; i < n; ++i) {
-          if (p.wave.head == Head::kLogits || p.wave.head == Head::kAll) {
-            row.push_back(Bytes(std::span<const float>(logits[i])));
-          } else if (p.wave.head == Head::kGreedy) {
-            row.push_back(Bytes(std::span<const std::int32_t>(&tokens[i], 1)));
-          }
-        }
-      }
-      return {};
-    });
-  }();
-  EXPECT_TRUE(started) << (started ? "" : started.error());
-  const auto retired = node.TearDown(entered);
-  EXPECT_TRUE(retired) << (retired ? "" : retired.error());
-  if (!retired) std::ignore = runner.release();  // its memory may still be in use
-  return outputs;
-}
-
-// Today's assistant over the script's first wave: its outputs (by owner:
-// the logits, then the next feature, of each pass) and the target's
-// retained final feature at each owner's endpoint.
-struct Drafts {
-  std::vector<std::vector<std::byte>> first_features;  // by owner
-  std::vector<std::vector<std::int32_t>> tokens;       // by pass, by owner
-  std::vector<std::vector<std::vector<std::byte>>> passes;
-};
-
-Drafts ProductionDrafts(const Case& c, const fs::path& target, const fs::path& assistant,
-                        const fs::path& out, std::span<const Planned> prompt_waves) {
-  Drafts drafts;
-  const md::Gemma4Profile& p = Profile(c.size);
-  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
-  en::Gemma4Options options = Options(c, target, out);
-  options.retain_features = true;
-  auto runner = std::make_unique<en::Gemma4Runner>(node, options, 0, 0);
-  std::vector<en::PagedModel*> entered;
-  en::Gemma4Assistant* drafter = nullptr;
-  const auto started = [&]() -> en::Status {
-    if (auto x = node.Open(); !x) return x;
-    entered.push_back(runner.get());
-    if (auto x = runner->Setup(); !x) return x;
-    {
-      constexpr auto admission_bytes = 512ULL << 20U;
-      if (!node.ChargeHost(admission_bytes, false)) return en::support::Error("no host charge");
-      struct Grant {
-        en::PagedNode& node;
-        ~Grant() { node.UnchargeHost(admission_bytes); }
-      } grant{node};
-      const auto ta = ar::Artifact::Open(target);
-      const auto aa = ar::Artifact::Open(assistant);
-      if (!ta || !aa) return en::support::Error("artifacts do not open");
-      auto t = Decode(*ta, TargetVocabulary(c.size));
-      auto a = Decode(*aa, AssistantVocabulary(c.size));
-      if (!t || !a) return en::support::Error("vocabularies do not read");
-      auto created = runner->SetupAssistant(assistant, t->view(), a->view());
-      if (!created) return en::support::Error(created.error());
-      drafter = *created;
-    }
-    if (auto x = node.MapWorkspace(runner->activations_needed(), runner->pool_needed()); !x)
-      return x;
-    const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-    node.SetHostFloor(runner->host_input_bytes() + runner->plan_floor_bytes() + (16ULL << 20U));
-    if (auto x = node.Start(llmp::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
-                                              4 * node.StateCapacity()));
-        !x)
-      return x;
-    if (auto x = runner->Register(); !x) return x;
-    if (auto x = runner->Bind(); !x) return x;
-    node.Run();
-    const std::uint64_t host = std::uint64_t{c.owners} * 2 * (kVocab + p.width) * sizeof(float);
-    if (!node.ChargeHost(host, false)) return en::support::Error("no host charge");
-    struct Grant {
-      en::PagedNode& node;
-      std::uint64_t bytes;
-      ~Grant() { node.UnchargeHost(bytes); }
-    } grant{node, host};
-    std::vector<std::uint32_t> slots;
-    for (std::uint32_t i = 0; i < c.owners; ++i) slots.push_back(i);
-    if (auto x = runner->SelectSlots(slots); !x) return x;
-    return node.WithRequest(0, runner->closure(), "assistant control", [&]() -> en::Status {
-      const Planned& prompt = prompt_waves.back();
-      const std::size_t n = prompt.wave.units.size();
-      std::vector<std::vector<float>> logits(n);
-      for (const Planned& wave : prompt_waves) {
-        std::vector<en::Gemma4Runner::Work> work;
-        for (std::size_t i = 0; i < n; ++i) {
-          work.push_back({wave.wave.units[i].slot, wave.past[i], wave.tokens[i], &logits[i]});
-        }
-        if (auto x = runner->Wave(work); !x) return x;
-      }
-      std::vector<std::int32_t> anchors;
-      for (const auto& row : logits) {
-        anchors.push_back(Top(std::as_bytes(std::span<const float>(row))));
-      }
-      // The retained feature at each endpoint.
-      std::vector<llmp::catalog::ExtentId> staging;
-      auto pinned = node.Pinned(p.width * sizeof(float), 0, staging);
-      if (!pinned) return en::support::Error(pinned.error());
-      for (std::size_t i = 0; i < n; ++i) {
-        const std::uint32_t end = prompt.past[i] + prompt.wave.units[i].rows;
-        if (auto x = runner->CopyFeatures(prompt.wave.units[i].slot, end - 1, 1, *pinned); !x)
-          return x;
-        const auto* f = static_cast<const std::byte*>(*pinned);
-        drafts.first_features.emplace_back(f, f + (p.width * sizeof(float)));
-      }
-      if (auto freed = node.FreePinned(*pinned); !freed) return freed;
-      std::vector<en::Gemma4Runner::FrozenBorrow> borrows;
-      for (std::size_t i = 0; i < n; ++i) {
-        auto borrow = runner->BorrowFrozen(prompt.wave.units[i].slot, anchors[i]);
-        if (!borrow) return en::support::Error(borrow.error());
-        borrows.push_back(std::move(*borrow));
-      }
-      std::vector<const en::Gemma4Runner::FrozenBorrow*> owners;
-      for (const auto& b : borrows) owners.push_back(&b);
-      std::vector<std::vector<float>> heads(n), features(n);
-      std::vector<std::vector<float>*> head_out, feature_out;
-      for (std::size_t i = 0; i < n; ++i) {
-        heads[i].reserve(kVocab);
-        features[i].reserve(p.width);
-        head_out.push_back(&heads[i]);
-        feature_out.push_back(&features[i]);
-      }
-      std::vector<std::int32_t> tokens = anchors;
-      for (std::uint32_t pass = 0; pass < 2; ++pass) {
-        drafts.tokens.push_back(tokens);
-        if (auto x = drafter->Step(owners, tokens, pass == 0, head_out, feature_out); !x) return x;
-        auto& outputs = drafts.passes.emplace_back();
-        for (std::size_t i = 0; i < n; ++i) {
-          std::vector<std::byte> both = Bytes(std::span<const float>(heads[i]));
-          const auto f = Bytes(std::span<const float>(features[i]));
-          both.insert(both.end(), f.begin(), f.end());
-          outputs.push_back(std::move(both));
-          tokens[i] = Top(std::as_bytes(std::span<const float>(heads[i])));
-        }
-      }
-      return {};
-    });
-  }();
-  EXPECT_TRUE(started) << (started ? "" : started.error());
-  const auto retired = node.TearDown(entered);
-  EXPECT_TRUE(retired) << (retired ? "" : retired.error());
-  if (!retired) std::ignore = runner.release();
-  return drafts;
-}
-
 // ------------------------------------------------------------ the components
 
 struct Component {
   Outputs outputs;
   std::uint64_t replayed = 0;
 };
-
-// Gemma4Runner::ReserveWeights' slabs and pitches: each layer's expert
-// arrays in one slab whose pitch keeps 256-byte bases and whole blocks.
-struct Slabs {
-  std::vector<en::GroupPlace> places;
-  std::vector<en::SlabSpec> slabs;
-  std::map<std::uint32_t, std::uint64_t> pitch;  // by expert array
-};
-std::expected<Slabs, std::string> SlabsOf(const ar::Artifact& a, const md::Gemma4Profile& p) {
-  Slabs out;
-  out.places.assign(a.groups().size(), en::GroupPlace::kDevice);
-  std::vector<bool> covered(a.groups().size(), false);
-  const auto binding = md::BindGemma4(p, a);
-  if (!binding) return std::unexpected(binding.error());
-  for (std::uint32_t layer = 0; layer < p.layers; ++layer) {
-    const auto& l = binding->layers[layer];
-    std::vector<std::pair<std::uint32_t, std::string_view>> list;
-    for (const auto* t : {&l.gate_up_exps, &l.gate_exps, &l.up_exps, &l.down_exps}) {
-      if (*t) list.emplace_back((**t).index, (**t).type);
-    }
-    if (list.empty()) continue;
-    auto slab = en::ExpertSlab(a, list, p.experts, 256, layer);
-    if (!slab) return std::unexpected(slab.error());
-    std::vector<std::string_view> types;
-    for (const auto& [index, type] : list) types.push_back(type);
-    auto pitch = en::Gemma4ExpertPitch(slab->stride, types);
-    if (!pitch) return std::unexpected(pitch.error());
-    slab->stride = *pitch;
-    for (const auto& [index, type] : list) out.pitch[index] = *pitch;
-    for (std::uint32_t e = 0; e < slab->count; ++e) covered[slab->first_group + e] = true;
-    out.slabs.push_back(*slab);
-  }
-  for (std::size_t i = 0; i < out.places.size(); ++i) {
-    if (a.groups()[i].kind != ar::GroupKind::kExpert) continue;
-    if (!covered[i]) return std::unexpected("an expert group in no slab");
-    out.places[i] = en::GroupPlace::kNone;
-  }
-  return out;
-}
 
 // The kernel source's own memory beside the runner (its cuBLAS handle and
 // workspace, which the backend borrows): released by the node's teardown
@@ -605,11 +323,11 @@ std::uint32_t ArrayIndex(const ar::Artifact& a, std::string_view name) {
                                     arrays.begin());
 }
 
-// The model runner over the component sources for the same script; the
-// drafts' tokens from today's, their features the runner's (the tap the
-// target's steps wrote, then the carry).
+// The model runner over the component sources for the script; the drafts'
+// tokens the top tokens of the prompt's frontier and of the first pass, their
+// features the runner's (the tap the target's steps wrote, then the carry).
 Component Lowered(const Case& c, const fs::path& target, const fs::path& assistant,
-                  const fs::path& scratch, std::span<const Planned> script, const Drafts* drafts) {
+                  const fs::path& scratch, std::span<const Planned> script) {
   Component out;
   const md::Gemma4Profile& p = Profile(c.size);
   auto ta = ar::Artifact::Open(target, {.expected_id = {}});
@@ -688,7 +406,8 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
       }
     }
   }
-  auto slabs = SlabsOf(*ta, p);
+  // The slabs and pitches serving takes (a layer's experts in one slab).
+  auto slabs = en::ExpertSlabsOf(*ta, 256);
   EXPECT_TRUE(slabs.has_value()) << (slabs ? "" : slabs.error());
   if (!slabs) return out;
 
@@ -705,9 +424,10 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
         {.lower = {
              .expert_stride = [&place, pitch](const llmp::ir::WeightRef& ref) -> std::uint64_t {
                const auto at = place.find(ref);
-               if (at == place.end() || !at->second.first) return 0;
-               const auto p = pitch.find(at->second.second);
-               return p == pitch.end() ? 0 : p->second;
+               if (at == place.end() || !at->second.first || at->second.second >= pitch.size()) {
+                 return 0;
+               }
+               return pitch[at->second.second];
              }}});
     if (!made) return std::unexpected(made.error());
     source->backend = std::move(*made);
@@ -817,7 +537,9 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
     if (auto x = runner->slots().SelectSlots(slots); !x) return x;
     return node.WithRequest(0, runner->slots().execution(), "lowered steps", [&]() -> en::Status {
       std::size_t pass = 0;
-      for (const Planned& planned : script) {
+      std::vector<std::vector<std::byte>> last_draft;  // the first pass's rows
+      for (std::size_t w = 0; w < script.size(); ++w) {
+        const Planned& planned = script[w];
         auto& row = out.outputs.emplace_back();
         const pl::StepShape shape = ShapeOf(planned, c.context);
         std::vector<en::SegmentWork> work;
@@ -826,10 +548,14 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
         std::vector<en::StateBorrow> borrows;
         const bool draft = planned.wave.head == Head::kDraft;
         if (draft) {
-          if (drafts == nullptr || pass >= drafts->passes.size())
-            return en::support::Error("a draft without today's inputs");
+          // The first pass's anchor is the top token of the prompt's
+          // frontier (the last wave before the drafts), the second's the
+          // first pass's.
+          const auto& from = pass == 0 ? out.outputs[w - 1] : last_draft;
+          if (from.size() != planned.wave.units.size())
+            return en::support::Error("a draft without the inputs it follows");
           for (std::size_t i = 0; i < planned.wave.units.size(); ++i) {
-            tokens[i] = {drafts->tokens[pass][i]};
+            tokens[i] = {Top(from[i])};
             // The first pass reads the target's tapped feature of the
             // endpoint, a later one its own last pass's.
             features[i] = pass == 0 ? en::FeatureFrom{.kind = en::FeatureFrom::Kind::kTap,
@@ -857,6 +583,7 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
         pass += draft ? 1 : 0;
         if (planned.wave.head == Head::kNone) continue;
         for (const auto& bytes : ran->outputs) row.push_back(bytes);
+        if (draft && pass == 1) last_draft = row;
       }
       return {};
     });
@@ -885,7 +612,7 @@ std::optional<fs::path> Installed(std::string_view id) {
 
 class ComponentRunnerGemma4Gpu : public testing::TestWithParam<Case> {};
 
-TEST_P(ComponentRunnerGemma4Gpu, ServingRecipeStepsAreTodaysBitForBit) {
+TEST_P(ComponentRunnerGemma4Gpu, ServingRecipeStepsAreFiniteAndRepeatBitForBit) {
   const Case& c = GetParam();
   const auto target = Installed(TargetId(c.size));
   const auto assistant = Installed(AssistantId(c.size));
@@ -894,59 +621,55 @@ TEST_P(ComponentRunnerGemma4Gpu, ServingRecipeStepsAreTodaysBitForBit) {
   const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
   const fs::path out = fs::path(scratch != nullptr ? scratch : testing::TempDir()) / "lowered4";
   fs::create_directories(out);
-  const auto layout = md::Gemma4State(Profile(c.size), c.context, kMaxRows);
-  ASSERT_TRUE(layout.has_value());
-  const std::vector<Planned> script = Script(c, layout->local_cells);
-  const Outputs production = Production(c, *target, out, script);
-  ASSERT_EQ(production.size(), script.size());
-  std::optional<Drafts> drafts;
-  if (c.assistant) {
-    const auto first_draft = std::ranges::find_if(
-        script, [](const Planned& planned) { return planned.wave.head == Head::kDraft; });
-    drafts = ProductionDrafts(c, *target, *assistant, out, std::span(script.begin(), first_draft));
-    ASSERT_EQ(drafts->passes.size(), 2U);
-  }
-  const Component lowered =
-      Lowered(c, *target, assistant.value_or(fs::path{}), out, script, drafts ? &*drafts : nullptr);
-  ASSERT_EQ(lowered.outputs.size(), production.size());
+  // The sliding layers' ring: pad(min(context, window + rows), 256) cells.
+  const std::uint32_t local_cells =
+      (std::min(c.context, Profile(c.size).window + kMaxRows) + 255) / 256 * 256;
+  const std::vector<Planned> script = Script(c, local_cells);
+  const Component first = Lowered(c, *target, assistant.value_or(fs::path{}), out, script);
+  ASSERT_EQ(first.outputs.size(), script.size());
   // The repeated decode shapes replay (a verify's shapes alone, once).
-  EXPECT_GE(lowered.replayed, c.verify ? 1U : 2U);
+  EXPECT_GE(first.replayed, c.verify ? 1U : 2U);
+  // A second runner over the same script gives every output bit for bit
+  // (the replays included).
+  const Component second = Lowered(c, *target, assistant.value_or(fs::path{}), out, script);
+  ASSERT_EQ(second.outputs.size(), script.size());
+  EXPECT_EQ(second.replayed, first.replayed);
   std::size_t compared = 0;
-  std::size_t pass = 0;
+  std::size_t drafted = 0;
   for (std::size_t w = 0; w < script.size(); ++w) {
     const bool draft = script[w].wave.head == Head::kDraft;
-    const auto& want_row = draft ? drafts->passes.at(pass++) : production[w];
-    ASSERT_EQ(lowered.outputs[w].size(), want_row.size()) << "wave " << w;
-    for (std::size_t u = 0; u < want_row.size(); ++u) {
-      const auto& want = want_row[u];
-      const auto& got = lowered.outputs[w][u];
-      ASSERT_EQ(got.size(), want.size()) << "wave " << w << " owner " << u;
-      if (script[w].wave.head == Head::kGreedy) {
-        EXPECT_EQ(std::memcmp(got.data(), want.data(), want.size()), 0)
-            << "wave " << w << " owner " << u << ": another token";
-      } else {
-        std::size_t differ = 0;
-        double worst = 0.0;
-        for (std::size_t j = 0; j < want.size() / sizeof(float); ++j) {
-          float a = 0;
-          float b = 0;
-          std::memcpy(&a, want.data() + (j * sizeof(float)), sizeof(float));
-          std::memcpy(&b, got.data() + (j * sizeof(float)), sizeof(float));
-          differ += std::memcmp(&a, &b, sizeof(float)) != 0;
-          worst = std::max(worst, std::fabs(static_cast<double>(a) - b));
+    ASSERT_EQ(first.outputs[w].size(), second.outputs[w].size()) << "wave " << w;
+    ASSERT_EQ(first.outputs[w].size(),
+              script[w].wave.head == Head::kNone ? 0U : script[w].wave.units.size())
+        << "wave " << w;
+    for (std::size_t u = 0; u < first.outputs[w].size(); ++u) {
+      const auto& got = first.outputs[w][u];
+      const auto& again = second.outputs[w][u];
+      ASSERT_EQ(got.size(), again.size()) << "wave " << w << " owner " << u;
+      EXPECT_EQ(std::memcmp(got.data(), again.data(), got.size()), 0)
+          << "wave " << w << " owner " << u << ": another output";
+      if (script[w].wave.head != Head::kGreedy) {
+        // A verify's outputs are every row's logits, a draft's its logits
+        // and next feature.
+        const std::size_t rows =
+            script[w].wave.head == Head::kAll ? script[w].wave.units[u].rows : 1U;
+        const std::size_t want = draft ? kVocab + Profile(c.size).width : rows * kVocab;
+        ASSERT_EQ(got.size(), want * sizeof(float)) << "wave " << w << " owner " << u;
+        bool finite = true;
+        for (std::size_t j = 0; j < want && finite; ++j) {
+          float value = 0;
+          std::memcpy(&value, got.data() + (j * sizeof(float)), sizeof(float));
+          finite = std::isfinite(value);
         }
-        if (differ != 0) {
-          std::printf(
-              "%s wave %zu owner %zu: %zu values differ in their bits, the largest by %.6g\n",
-              c.name.c_str(), w, u, differ, worst);
-        }
-        EXPECT_EQ(differ, 0U) << "wave " << w << " owner " << u;
+        EXPECT_TRUE(finite) << "wave " << w << " owner " << u;
       }
+      drafted += draft ? 1 : 0;
       ++compared;
     }
   }
+  if (c.assistant) EXPECT_EQ(drafted, 2U * c.owners);
   std::printf("%s: %zu waves, %zu owner outputs compared, %llu replayed\n", c.name.c_str(),
-              script.size(), compared, static_cast<unsigned long long>(lowered.replayed));
+              script.size(), compared, static_cast<unsigned long long>(first.replayed));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -956,7 +679,8 @@ INSTANTIATE_TEST_SUITE_P(
         Case{.name = "gemma31_bounded", .size = 31, .assistant = true},
         // Drafts at a past of 256: their frozen reads end there.
         Case{.name = "gemma31_bounded_256", .size = 31, .assistant = true, .prompt = 256},
-        // A verify's four rows an owner, every row's outputs.
+        // A verify's four rows an owner, every row's outputs (the 26B-A4B's
+        // four-row routing and reduce, the 31B's).
         Case{.name = "gemma26_verify", .size = 26, .verify = true},
         Case{.name = "gemma31_verify", .size = 31, .verify = true},
         Case{.name = "gemma26_envelope", .size = 26, .context = 8192, .owners = 4},

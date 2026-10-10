@@ -51,24 +51,29 @@ sinks bound (RE-030).
 
 - **Status:** checked state/graph/plan foundation; 13 focused CPU/no-launch
   controls pass. Actual model execution/reference qualification remains pending.
-- **Port:** `src/kernels/ggml/gemma3_graph.cc` derives the text graph and GeGLU
+- **Port:** `src/kernels/ggml/gemma3_graph.cc` derived the text graph and GeGLU
   build-FFN arithmetic from exact v0.6.0/d81235049384534c167caea52b85a694f6103d14
   `src/models/gemma3.cpp` and `src/llama-graph.cpp`. MIT AND Apache-2.0 and GGML
-  authors' copyright are retained; independent slot/state/placement mechanics
-  are native. No upstream backend runtime, allocator, dispatcher or kernel
-  change is incorporated. [Contract and scope](../gemma3.md).
+  authors' copyright were retained; independent slot/state/placement mechanics
+  were native. No upstream backend runtime, allocator, dispatcher or kernel
+  change was incorporated. The file was deleted in M3.6 (slice G1d) with the
+  M3 Gemma runners: the shared components describe the graph as data.
+  [Contract and scope](../gemma3.md).
 
 ## Native Gemma assistant graph port
 
 - **Status:** native component foundation; no upstream kernel change or
   assistant serving/speculation qualification.
-- **Llmpalooza port:** `src/kernels/ggml/gemma4_assistant_graph.cc` ports the pinned
+- **Llmpalooza port:** `src/kernels/ggml/gemma4_assistant_graph.cc` ported the pinned
   `src/models/gemma4-assistant.cpp` pre/post-projection, Q-only blocks,
   sandwich normalization, GeGLU-tanh and readonly shared-cache attention into
-  native independent-slot descriptors. Its MIT AND Apache-2.0 header retains
-  the GGML authors' copyright; the source-lock scope and existing packaged MIT
-  attribution cover the port. No backend runtime, allocator or dispatcher is
-  copied. Prepared archive bytes, source pin and CUDA flags are unchanged.
+  native independent-slot descriptors. Its MIT AND Apache-2.0 header retained
+  the GGML authors' copyright. The file was deleted in M3.6 (slice G2d) with
+  the M3 Gemma 4 runner; the shared components (`attention.borrowed`,
+  `embedding.projected`) describe the graph as data, and the files that port
+  its arithmetic carry the same notice (docs/licensing.md). No backend
+  runtime, allocator or dispatcher was copied. Prepared archive bytes, source
+  pin and CUDA flags are unchanged.
 - **Evidence:** [bounded component controls](../experiments/gemma-assistant-execution/README.md)
   compare original-image C1 complete heads/projections at identical frozen
   stage-zero operands, with source/output own repeats frozen before oracle

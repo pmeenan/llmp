@@ -1505,7 +1505,7 @@ each is checked against the design as M3.6 proceeds.
             serving classes with their `ServingOptions` flags, tests and
             benchmarks; `model/gemma{2,3}.h` keep the approved profile and
             tensor binding the admission and the mappings use.
-- [ ] **Migrate Gemma4** 26B-A4B and 31B with their assistants.
+- [x] **Migrate Gemma4** 26B-A4B and 31B with their assistants.
       - [x] Components, patterns and the mapping.
             *2026-10-09:* the components and mappings landed (slice G2a:
             `ffn.moe`, `attention.borrowed`, `embedding.projected`,
@@ -1524,10 +1524,9 @@ each is checked against the design as M3.6 proceeds.
             every setup shape of today's three recipes to today's
             launches, and the 26B-A4B, 31B and both assistants' draft
             passes run bit for bit today's through the model runner.
-      - [ ] Wiring and the gate, then deletion of the old code.
-            *2026-10-10:* wired and gated (slice G2c); the deletion is
-            G2d's. Both profiles serve on the shared engine, and with a
-            `drafter` their assistants (an anchored drafter reading the
+      - [x] Wiring and the gate, then deletion of the old code.
+            *2026-10-10:* wired and gated (slice G2c). Both profiles serve
+            on the shared engine, and with a `drafter` their assistants (an anchored drafter reading the
             target's tapped features: `FeatureFrom`, the runner's carry,
             frozen reads, `StagedStepSource`; [as
             built](engine.md#the-model-runner)); the quality control's
@@ -1539,6 +1538,18 @@ each is checked against the design as M3.6 proceeds.
             4.41% faster with its transactions byte-exact
             ([the results](experiments/m36-baselines/README.md#gemma-4-26b-a4b-and-31b-on-the-shared-engine-slice-g2c));
             the 26B-A4B's assistant has no baseline to gate against.
+            *2026-10-10:* deleted (slice G2d): the M3 `Gemma` serving class,
+            `engine/gemma4_*`, the GGML graph builders and the owner
+            transform, the state and chunk builders (`model/gemma4.h` keeps
+            the approved profiles and the tensor binding), the
+            `ServingOptions` Gemma diagnostics and
+            `gemma26_production`/`gemma31_production` (the 256- and
+            1,024-row prompt chunks are the mapping's `prefill_chunk`),
+            their benchmarks and tests. Coverage is on the engine: the
+            run-to-run and reference checks of `component_runner_gemma4_gpu_test`
+            and `components_gemma4_models_gpu_test`, the served four-owner
+            8K check (`Gemma4EnvelopeServingGpu`), the cross-variant kept
+            tag and the served assistant (`Gemma4AssistantServingGpu`).
 - [ ] **Migrate Qwen3.8**: native NVFP4/MXFP8 with MTP, and GGUF.
       - [ ] Components, patterns and the mapping.
             *2026-10-10:* the components and mappings landed (slice G3a:

@@ -122,6 +122,18 @@ llmpalooza-authored Apache-2.0. The file was deleted in M3.6 (slice G1d,
 2026-10-10) with the Gemma 2 and Gemma 3 runners: the shared components
 (`src/components/`) now describe the same graph as data and
 `kernels/ggml/lower.cc` lowers it onto GGML's kernels.
+The Gemma 4 descriptor graphs (`src/kernels/ggml/gemma4_graph.cc` and
+`gemma4_assistant_graph.cc`) ported llama.cpp
+b10964/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4's `gemma4.cpp` text graph
+with `build_ffn`/`build_moe_ffn` arithmetic and `gemma4-assistant.cpp`'s
+Q-only pre/post-projection, sandwich-norm, GeGLU and shared-cache attention
+graph, retaining MIT AND Apache-2.0 and the GGML authors' copyright; their
+native state, binding, plan adapter, attention transform
+(`gemma4_attention.cc`) and runner were llmpalooza-authored Apache-2.0. The
+files were deleted in M3.6 (slice G2d, 2026-10-10) with the Gemma 4 runner:
+the shared components now describe the same graphs as data and
+`kernels/ggml/lower.cc` lowers them, the files that port the arithmetic
+carrying the notice (below).
 
 **Ports into llmpalooza's own classes** (the owner, 2026-10-10): "If we
 basically reformatted/ported their code to our classes then it should carry
@@ -191,7 +203,7 @@ them), `src/kernels/decode/` (block decoders written from the encodings'
 definitions), `src/format/`, `src/spec/mappings/` (tensor names and keys as
 data) and `src/import/readers/` (the GGUF reader is its own parser, more
 permissive than gguf.cpp). A header that only declares llmpalooza's
-interface stays Apache-2.0, as `gemma4_graph.h` does. This incorporates no
+interface stays Apache-2.0, as the retired `gemma4_graph.h` did. This incorporates no
 upstream backend runtime or new archive members.
 
 Llmpalooza's own kernels for Qwen3.8's formats (`src/kernels/ggml/llmp_ops.*`)

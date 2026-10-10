@@ -273,7 +273,8 @@ primitive ids). It is deterministic. The steps:
   values and the serving envelope (the layout's context and the runner's
   owners: a rule may hold only within a context and owner bound, slice
   G2b) unless it is given another policy (an alias's settings, later).
-  Gemma 4's rules are today's recipes (serving.cc): within 4,096 cells
+  Gemma 4's rules are the recipes its M3 class served (deleted in
+  G2d, the rules now the only record): within 4,096 cells
   and two owners, every row to the head (`narrow_final` off), the fused
   norm-mul, norm-rope and norm-add, `route_reduce` on 26B-A4B, the
   quantized GeGLU on 31B, owner attention with bounded roots and masks
@@ -281,7 +282,7 @@ primitive ids). It is deterministic. The steps:
   roots (owners of equal reads only); outside, the narrowed final layer
   and the fused norm-mul alone. The assistant's is plain primitives.
   Owner attention's Gemma 4 forms (16 or 32 heads, D 512) are selectable
-  on the GB10 alone, as today's runner keeps independent attention on
+  on the GB10 alone, as the M3 runner kept independent attention on
   other devices (`llmp.flash_attn.owner_roots`' capability).
 - **Selection** (`select.h`): each node's first candidate from
   `Candidates()`, asked with the device's architecture, features, tuning
@@ -359,7 +360,8 @@ with both off owner attention joins only owners whose reads are equal in
 every kind (Gemma 4's recipe within 8,192 cells and four owners); and
 `owner_chained_masks` (the masks joined one after another; off, in
 pairs, the pairs then joined, at most four owners: Gemma 4's owner
-transform, `gemma4_attention.cc`). Gemma 4's transform post-processes
+transform, once `gemma4_attention.cc` over the builder's graph, now the
+planner's pattern, `planner/pattern.cc`). Gemma 4's transform post-processes
 the per-owner graph and leaves the views it replaced in it, and orders
 the later owners' stores and the joined masks where its traversal
 reaches them; the rewrite emits the same launches over the same operands
@@ -483,8 +485,13 @@ the engine's staging honours; serving's backend sets
 each owner's output slot after its logits, marked `features` (the
 engine carries them to the slot's next pass).
 
-Checked (`ggml_lower_gemma4_test`, CPU): at every shape today's runner
-measures at setup under each Gemma 4 serving recipe (within 4,096 and two
+Checked (`ggml_lower_gemma4_test`, CPU; the node-for-node comparison with
+`BuildGemma4Graph` and `BuildGemma4AssistantGraph` was made before slice
+G2d deleted the builders, and the test now checks structure: every
+leaf binds a weight, a cache or a step input, the plan covers the nodes,
+and the policy's patterns apply):
+at every shape the M3 runner
+measured at setup under each Gemma 4 serving recipe (within 4,096 and two
 owners, within 8,192 and four, and outside the envelope, at the recipes'
 chunk bounds), with device and host masks (324 lowered steps of each of
 the 26B-A4B and 31B, 60 with owner attention), the step planned under the
@@ -500,11 +507,14 @@ the component sources runs the real 26B-A4B and 31B through one script
 of waves per recipe (joined prefill, ragged, single-owner and state-only
 chunks, one owner past its ring, joined one-row decodes of two or four
 owners returning logits and device-chosen tokens, captured and
-replayed), each owner's outputs bit for bit today's runner's; and, as
+replayed), each owner's outputs bit for bit the M3 runner's; and, as
 stage 1 of the same runner with the target's state borrowed, two joined
-draft passes of each assistant over its target's cache from today's
-first feature and anchors, each pass's logits and next features bit for
-bit today's assistant's (`component_runner_gemma4_gpu_test`).
+draft passes of each assistant over its target's cache from the M3
+assistant's first feature and anchors, each pass's logits and next
+features bit for bit its (`component_runner_gemma4_gpu_test`, which since
+the deletion checks the outputs finite and exact from one run to the
+next, including the verify and draft cases; the engine's served
+assistant has `Gemma4AssistantServingGpu`).
 
 ## Components
 
@@ -545,7 +555,7 @@ what exists more than once today and becomes one component.
 | Rotation | NEOX (Gemma, Q2, Img text encoder), NORM pairs with YaRN (DS), interleaved multi-section, partial (Q38), proportional frequencies (G4 global), 3-axis complex (Img DiT); base and scaling per layer type | wrappers in `qwen2_graph`, `exl3/qwen2.cc`, `dsv4_graph`; literal bases in `gemma3_graph` |
 | QK norm and rotation, fused | G3, G4, Asst, Q38, DS, Img | four kernels: `ggml.rms_norm_mul_rope.fused`, `llmp.qsa.prep`, `llmp.dsv4.qhead`, `image.head_norm_rope.*` |
 | Dense attention | GQA with softcap (G2), sliding ring and global layers (G2–G4), tied K=V and V-norm (G4 global), MQA with sinks and window (DS), query-only reading the target's cache (Asst), small causal (Img text encoder), bidirectional FA2 (Img) | Q2's GGML and EXL3 builders differ; image attention separate |
-| Owner-root attention (joined requests reading their own caches) | G2 (two owners), G3 (2–12), G4 (rewrite pass) | inline in two builders plus `gemma4_attention.cc` |
+| Owner-root attention (joined requests reading their own caches) | G2 (two owners), G3 (2–12), G4 (rewrite pass) | inline in two builders plus Gemma 4's rewrite pass (now `planner/pattern.cc`) |
 | Masks | causal/ring producer (G2–G4, Q38, DS), noncausal block (DSp), host-built (Asst, Q2) | adapter per `*_plan.cc`; hand-written ring in the assistant plan |
 | Sparse attention with an indexer | QSA top-k over pooled blocks (Q38), lightning indexer top-512 (DS) | top-k masks in both builders |
 | Compressed KV | QSA block-key pooling (Q38), CSA/HCA gated pooling (DS) | `llmp.qsa.pool`, `llmp.dsv4.compress` |
@@ -621,8 +631,8 @@ builder's `narrow_final` does); `attention.borrowed` narrows as
 (`head.linear` with `gather` false, `ComponentDef::gathers`) has nothing
 to narrow to, so a drafter's stage never narrows. A target's tap write
 (below) stores the narrowed stream's rows directly: after the narrowing
-they are the output rows, in segment order. Today's Gemma 4 runner turns
-`narrow_final` off when it retains features, because it keeps every
+they are the output rows, in segment order. The M3 Gemma 4 runner turned
+`narrow_final` off when it retained features, because it keeps every
 row's; the components' tap keeps only the output rows' and narrows. A
 state tensor's cell is the format layer's
 (`model::CellBytes`), its leaf a block encoding's whole blocks where an
@@ -727,11 +737,12 @@ refuses a store into a borrowed tensor or into another stage's tensor
 that is not a tap its target writes. The GGML lowering takes the new
 inputs and frozen masks (slice G2b, above).
 
-The structural comparison (`components_gemma4_order_test`) holds the
+The structural comparison (`components_gemma4_order_test`, deleted with
+the builders in slice G2d) held the
 26B-A4B and 31B steps to `BuildGemma4Graph` with its default options
 but `narrow_final` (the components narrow) and
 the assistant's draft steps to `BuildGemma4AssistantGraph`, node for
-node, with host and device masks. What differs: the router's selection
+node, with host and device masks. What differed: the router's selection
 and the experts' reduce are the composite ops their GGML runs decompose
 to (soft_max through the weights' reshape; the two products by each
 slot's gathered scale and weight, the slot views and the ordered adds),
@@ -1021,7 +1032,8 @@ the planner parses), each rule with how serving composes the recipe's
 steps (`prompts_alone`, `owners_alone`, the prompt futures planned and
 captured ahead: `DefaultRule`, slice G2c; Gemma 4's prefill alone with one
 future planned and none captured, and outside its envelope step one owner
-at a time, as its M3 serving did); and drafter mappings (role, stage name, reads,
+at a time, as its M3 serving did; the prompt chunk the recipe was
+qualified at, `prefill_chunk`: 1,024 rows for 26B-A4B and 256 for 31B); and drafter mappings (role, stage name, reads,
 rules binding the target's tensors) that `ComposeDrafter` applies with
 a target's spec, adding the taps the drafter reads and the target's
 facts its parameters read (`llmp.target.last_layer.<type>`). The spec's
@@ -1611,12 +1623,12 @@ pipeline kinds over the shared runner ([engine.md](engine.md#the-serving-adapter
 and the decoding orchestrators, every state verb to the slot lifecycle,
 settings from D-103's layers. `Server::Make` dispatches a family to them by
 its mapping's pipeline kind once a diagnostic set of architectures names
-it (Gemma 2's and Gemma 3's by default since their wiring); an LLM's parts
+it (Gemma 2's, Gemma 3's and Gemma 4's by default since their wiring); an LLM's parts
 are its synthesized spec, its components' layout and batching and a
 `ComponentStepSource` under the mapping's policy over a `GgmlBackend` on
 its own stream, with cuBLAS over a workspace the runner maps
 (`RunnerConfig::kernel_memory`) and device greedy tokens, built for
-Gemma 2 and Gemma 3 so far. The kept
+Gemma 2, Gemma 3 and Gemma 4 (with its assistant) so far. The kept
 layout is `model::KeptLayoutId` of `spec::BoundDigest` and every stage's
 layout, and the kept record gains format version 2, a spill file per
 stage (D-112); a model refuses the other version, so the M3 runners' kept

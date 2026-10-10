@@ -61,9 +61,10 @@ using en::support::Error;
 
 constexpr std::uint32_t kVocab = 262144, kPast = 64, kEmitted = 32;
 constexpr std::uint64_t kHost = 256ULL << 20U;
-// The M3 screen's arithmetic on the target (gemma_greedy_reference.cc's
-// Gemma4Options: the plain, norm-rope and norm-add chains, nothing else;
-// its retained features keep every row to the head).
+// The M3 screen's arithmetic on the target (the retired
+// gemma_greedy_reference.cc's Gemma4Options: the plain, norm-rope and
+// norm-add chains, nothing else; its retained features keep every row to
+// the head).
 constexpr std::string_view kScreenPolicy =
     "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\ndisable narrow_final\n"
     "disable owner_attention\ndisable prepared_inputs\ndisable rope_store\ndisable route_reduce\n";

@@ -3,8 +3,8 @@
 
 // Gemma 4's architecture mappings (spec/mapping.h), as llama.cpp's GGUF
 // writes the checkpoints (its gemma4.cpp and gemma4-assistant.cpp, read at
-// 8019dc56; today's runners port b29c606e), and the source values of v0
-// artifacts from today's compiled profiles (model/gemma4.h,
+// 8019dc56; the retired M3 runners ported b29c606e), and the source values
+// of v0 artifacts from the compiled profiles (model/gemma4.h,
 // gemma4_assistant.h).
 //
 // "gemma4" (26B-A4B and 31B): five sliding-window layers to a global one
@@ -36,16 +36,16 @@
 // token table (tied, every row an output, no softcap) and projects its
 // rows back to the target's width (its next feature).
 //
-// The default planner policies reproduce today's production recipe's
-// pattern selection within its qualified envelope (runtime/serving.cc
-// Gemma::Options, gemma26_production/gemma31_production): the fused norms,
-// norm-rope and norm-add on both; the quantized GLU on 31B only; no
+// The default planner policies are the production recipe's pattern
+// selection within its qualified envelope (the retired M3 class's
+// gemma26/gemma31 production options): the fused norms, norm-rope and
+// norm-add on both; the quantized GLU on 31B only; the Gemma route and
+// reduce fusions (26B); owner-root attention, common-width reads with
+// bounded roots (two one-row owners within 4,096 positions); no
 // rope-store, grouped stores or shared Q8 preparation; the assistant's
-// plain primitives. What the recipe also selects needs patterns slice G2b
-// adds: the Gemma route and reduce fusions (26B), owner-root attention,
-// common-width reads with bounded roots (two one-row owners within 4,096
-// positions), and outside the envelope the narrowed final layer
-// (frontier_head, G1b's port).
+// plain primitives; and outside the envelope the narrowed final layer.
+// A bounded rule also names the prompt chunk the recipe was qualified at
+// (spec/mapping.h PolicyRule::prefill_chunk).
 
 #ifndef LLMP_SPEC_MAPPINGS_GEMMA4_H_
 #define LLMP_SPEC_MAPPINGS_GEMMA4_H_

@@ -332,8 +332,7 @@ bool AcceptsOwnerAttention(const ex::CapabilityQuery& q) {
       !(heads == 16 || heads == 32 || (d == 256 && heads == 8)))
     return false;
   // Gemma 4's forms (16 or 32 heads, or D 512) are qualified on the GB10
-  // only: today's runner keeps independent attention elsewhere
-  // (gemma4_runner.cc Setup's attention mode).
+  // only: other devices keep independent attention.
   if (!(d == 256 && heads == 8) && q.arch != kOwnerGemma4Arch) return false;
   const bool cap50 = a.softcap == 50.0F;
   if (cap50 && (d != 256 || heads != 8 || n != 2 || cohort != 2)) return false;

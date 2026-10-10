@@ -38,7 +38,7 @@ else()
   set(architectures 121a-real)
 endif()
 list(JOIN architectures "," architecture_text)
-add_library(llmp_ggml_tensors STATIC dsv4_graph.cc gemma4_graph.cc fusion.cc graph_plan.cc llmp_ops.cc
+add_library(llmp_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc llmp_ops.cc
                                        qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
                                        validate_ext.cc)
 target_include_directories(llmp_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
@@ -48,7 +48,7 @@ target_sources(llmp_ggml_tensors PRIVATE dsv4_qhead.cc)
 target_sources(llmp_ggml_tensors PRIVATE dsv4_hc_norm.cc)
 target_sources(llmp_ggml_tensors PRIVATE dsv4_outa.cc)
 target_sources(llmp_ggml_tensors PRIVATE gemma_norm.cc set_rows_group.cc)
-target_sources(llmp_ggml_tensors PRIVATE gemma4_assistant_graph.cc gemma4_attention.cc fattn_owner.cc)
+target_sources(llmp_ggml_tensors PRIVATE fattn_owner.cc)
 target_sources(llmp_ggml_tensors PRIVATE kv_quant.cc)
 # The module's capabilities (capabilities.h) and the lowering of planned IR
 # steps onto GGML graphs (lower.h).
@@ -180,7 +180,6 @@ if(LLMP_CUDA)
                    set_rows_group.h set_rows_group.cc set_rows_group.cu
                    kv_quant.h kv_quant.cc kv_quant.cuh kv_quant_store.cu kv_quant_rope.cu
                    fattn_vec_plan.h fattn_vec_quant.cu
-                   gemma4_assistant_graph.h gemma4_assistant_graph.cc
                    dsv4_ds4_attention.h dsv4_ds4_attention.cu
                    dsv4_ds4_attention_core.cuh dsv4_ds4_attention_core.json
                    dsv4_ds4_attention_core.json.license
@@ -189,7 +188,7 @@ if(LLMP_CUDA)
                    dsv4_ds4_product_source.json dsv4_ds4_product_source.json.license
                    dsv4_graph.h dsv4_hca_tokentile.cu
                    executor.cc
-                   executor.h gemma4_graph.cc gemma4_graph.h gemma4_attention.cc fattn.cu fattn_mma.cu
+                   executor.h fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
                    fattn_mma_shape.cuh fattn_owner.h fattn_owner.cc fattn_owner.cu fattn_owner_kernel.cuh fattn_owner_partial_kernel.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc

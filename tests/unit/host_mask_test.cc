@@ -14,7 +14,6 @@
 #include <vector>
 
 #include "model/dsv4.h"
-#include "model/gemma4.h"
 #include "model/qwen38.h"
 
 namespace {
@@ -85,42 +84,6 @@ TEST(HostMaskTest, InvalidDescriptorsRefuseBeforeChangingOutput) {
   const auto saved = bias;
   EXPECT_FALSE(md::FillHostQsaBias(bias, 5, 0));
   EXPECT_EQ(bias, saved);
-}
-
-template <typename Segment, typename Profile, typename StateBuilder, typename ChunkBuilder>
-void GemmaOracle(const Profile& profile, StateBuilder state_builder, ChunkBuilder chunk_builder) {
-  auto state = state_builder(profile, 8192, 512);
-  ASSERT_TRUE(state);
-  for (const auto past : {0U, profile.window - 3, 5000U}) {
-    for (const auto rows : {1U, 17U, 511U}) {
-      std::vector<std::int32_t> tokens(rows, 1);
-      const std::array segments{Segment{.slot = 0, .n_past = past, .tokens = tokens}};
-      auto chunk = chunk_builder(profile, *state, segments, true, 256U, 0U);
-      ASSERT_TRUE(chunk);
-      const auto& in = chunk->segments[0];
-      for (std::uint32_t r = 0; r < rows; ++r) {
-        for (std::uint32_t c = 0; c < in.global_n_kv; ++c)
-          ASSERT_EQ(in.global_mask[std::size_t{r} * in.global_n_kv + c],
-                    c <= past + r ? 0 : 0xFC00);
-        for (std::uint32_t c = 0; c < in.local_n_kv; ++c)
-          ASSERT_EQ(in.local_mask[std::size_t{r} * in.local_n_kv + c],
-                    OldRing(c, past + r, past + rows, state->local_cells, profile.window));
-      }
-    }
-  }
-}
-
-TEST(HostMaskTest, AllGemmaBuildersMatchCompleteOldGlobalAndWindowMasks) {
-  GemmaOracle<md::Gemma4Segment>(
-      md::Gemma4_26BA4B(), md::Gemma4State,
-      [](const auto& p, const auto& state, auto segments, bool masks, auto align, auto) {
-        return md::Gemma4Chunk(p, state, segments, masks, align);
-      });
-  GemmaOracle<md::Gemma4Segment>(
-      md::Gemma4_31B(), md::Gemma4State,
-      [](const auto& p, const auto& state, auto segments, bool masks, auto align, auto) {
-        return md::Gemma4Chunk(p, state, segments, masks, align);
-      });
 }
 
 TEST(HostMaskTest, DeepSeekRawAndAllCompressedMasksMatchCompleteOldFormula) {

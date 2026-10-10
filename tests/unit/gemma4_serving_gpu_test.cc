@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <print>
+#include <span>
 #include <string>
 #include <system_error>
 #include <tuple>
@@ -38,6 +39,11 @@ namespace en = llmp::engine;
 namespace cfg = llmp::config;
 class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
  protected:
+  // The approved 8K/C4 envelope (context 8,192, four slots, the profile's
+  // prefill chunk) instead of the 4K fixture with twelve slots.
+  virtual bool Envelope() const { return false; }
+  // The profile's assistant, as the model's `drafter`.
+  virtual bool Assistant() const { return false; }
   void SetUp() override {
     const auto installed = std::filesystem::path(llmp::test_support::ModelsDir()) / "m3-artifacts";
     const char* artifact = GetParam() == 26
@@ -64,9 +70,19 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     cfg::ModelEntry entry;
     entry.name = "gemma";
     entry.artifact = artifact;
-    entry.overrides["context"] = std::int64_t{4096};
-    entry.overrides["prefill_chunk"] = std::int64_t{16};
-    entry.overrides["max_slots"] = std::int64_t{12};
+    if (Assistant()) {
+      const char* assistant =
+          GetParam() == 26 ? "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42"
+                           : "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120";
+      if (std::error_code missing; !std::filesystem::exists(installed / assistant, missing)) {
+        GTEST_SKIP() << "no Gemma 4 assistant in " << installed;
+      }
+      entry.drafter = assistant;
+    }
+    entry.overrides["context"] = std::int64_t{Envelope() ? 8192 : 4096};
+    entry.overrides["prefill_chunk"] =
+        std::int64_t{Envelope() ? (GetParam() == 26 ? 1024 : 256) : 16};
+    entry.overrides["max_slots"] = std::int64_t{Envelope() ? 4 : 12};
     config.models.push_back(entry);
     options.keep_conversations = true;
     ASSERT_TRUE(Start());
@@ -141,6 +157,49 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     std::uint64_t bytes;
     bool funded;
   };
+  // The kept layout identity a server of the other profile reports on these
+  // settings (its own scratch roles; started and retired here, with no
+  // server of this profile running).
+  std::string OtherProfileLayout() {
+    const char* artifact = GetParam() == 26
+                               ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+                               : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
+    auto bundle = std::make_unique<Lifetime>();
+    Lifetime& other = *bundle;
+    other.config = config;
+    other.config.models[0].artifact = artifact;
+    other.roles = roles;
+    other.roles.spill = scratch / "other-spill";
+    other.roles.state = scratch / "other-state";
+    std::filesystem::create_directory(other.roles.spill);
+    std::filesystem::create_directory(other.roles.state);
+    if (chmod(other.roles.spill.c_str(), 0700) != 0 ||
+        chmod(other.roles.state.c_str(), 0700) != 0) {
+      ADD_FAILURE() << "no scratch roles for the other profile";
+      return {};
+    }
+    other.options.keep_conversations = false;
+    other.server = std::make_unique<rt::Server>(other.config, other.roles, other.options, stderr);
+    std::string layout;
+    auto r = other.server->Start(true);
+    if (!r) {
+      ADD_FAILURE() << r.error();
+    } else if (auto* llm = dynamic_cast<rt::Llm*>(other.server->Find("gemma")); llm == nullptr) {
+      ADD_FAILURE() << "the other profile's model is missing";
+    } else {
+      rt::SwapParts parts;
+      if (auto activated = other.server->Activate(*llm, parts); !activated) {
+        ADD_FAILURE() << activated.error();
+      } else {
+        layout = llm->KeptLayout();
+      }
+    }
+    const auto retired = other.server->TearDown();
+    EXPECT_TRUE(retired) << (retired ? "" : retired.error());
+    // An unproven retirement keeps the bundle the server borrows.
+    if (!retired) std::ignore = bundle.release();
+    return layout;
+  }
   rt::Llm::Branch& Branch(std::uint32_t i) { return **model->branch(i); }
   rt::Status Select(std::uint32_t count) {
     std::array<rt::Llm::Branch*, 12> active{};
@@ -166,6 +225,225 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   rt::Llm* model = nullptr;
   const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
 };
+
+// Four owners at the approved 8K/C4 envelope, their prompts advanced a chunk
+// at a time in turn while the selection shrinks as each departs (prompt
+// waves are one owner's; the others stay live and idle).
+class Gemma4EnvelopeServingGpu : public Gemma4ServingGpu {
+ protected:
+  bool Envelope() const override { return true; }
+  struct Run {
+    std::array<std::vector<float>, 4> heads;
+    std::array<std::vector<std::int32_t>, 4> continuation;
+    std::array<std::uint64_t, 4> units{}, rows{};
+    bool continued_after_departure = false;
+  };
+  // Every prompt through its chunks: `interleaved` takes one chunk of each
+  // live owner in turn, otherwise each owner's whole prompt in turn. Then
+  // the four owners' joined generation from their heads.
+  void RunFourOwners(std::span<const std::vector<std::int32_t>, 4> tokens, bool interleaved,
+                     Run& run) {
+    struct Sessions {
+      std::array<std::unique_ptr<rt::Llm::PromptSession>, 4> owned;
+      ~Sessions() {
+        for (auto& session : owned)
+          if (session) {
+            session->Cancel();
+            const auto r = session->Finish();
+            EXPECT_TRUE(r) << (r ? "" : r.error());
+          }
+      }
+    } sessions;
+    ASSERT_TRUE(Select(4));
+    for (std::uint32_t id = 0; id < 4; ++id) ASSERT_TRUE(Branch(id).Clear());
+    for (std::uint32_t id = 0; id < 4; ++id) {
+      auto begun = Branch(id).BeginPrompt(tokens[id]);
+      ASSERT_TRUE(begun) << (begun ? "" : begun.error());
+      sessions.owned[id] = std::move(*begun);
+      const auto settled = sessions.owned[id]->Advance();
+      ASSERT_TRUE(settled) << (settled ? "" : settled.error());
+    }
+    std::uint32_t remaining = 4;
+    const auto step = [&](std::uint32_t id) {
+      std::array<rt::Llm::Branch*, 4> selected{};
+      std::size_t count = 0;
+      for (std::uint32_t peer = 0; peer < 4; ++peer)
+        if (sessions.owned[peer]) selected[count++] = &Branch(peer);
+      ASSERT_TRUE(server->SelectRequestBranches(*model, std::span(selected).first(count)));
+      auto unit = sessions.owned[id]->NextUnit();
+      ASSERT_TRUE(unit) << (unit ? "" : unit.error());
+      ASSERT_EQ(unit->phase, rt::Llm::PromptSession::Phase::kChunk);
+      EXPECT_LE(unit->rows, model->settings().prefill_chunk.value);
+      rt::Llm::PromptSession* session = sessions.owned[id].get();
+      const std::array<rt::PrefillGoOn, 1> callbacks{};
+      const auto ran = model->RunPromptWave(std::span(&session, 1), callbacks);
+      ASSERT_TRUE(ran) << (ran ? "" : ran.error());
+      ASSERT_TRUE(session->last_unit_result());
+      ++run.units[id];
+      run.rows[id] += unit->rows;
+      run.continued_after_departure |= remaining < 4;
+      if (!session->done()) return;
+      run.heads[id] = session->last();
+      ASSERT_EQ(run.heads[id].size(), 262144U);
+      ASSERT_TRUE(std::ranges::all_of(run.heads[id], [](float v) { return std::isfinite(v); }));
+      EXPECT_EQ(Branch(id).history(), tokens[id]);
+      ASSERT_TRUE(session->Finish());
+      sessions.owned[id].reset();
+      --remaining;
+    };
+    if (interleaved) {
+      while (remaining != 0) {
+        for (std::uint32_t id = 0; id < 4; ++id) {
+          if (!sessions.owned[id]) continue;
+          step(id);
+          if (::testing::Test::HasFatalFailure()) return;
+        }
+      }
+    } else {
+      for (std::uint32_t id = 0; id < 4; ++id) {
+        while (sessions.owned[id]) {
+          step(id);
+          if (::testing::Test::HasFatalFailure()) return;
+        }
+      }
+    }
+    // All prompt work has ended; the departed owners continue together.
+    ASSERT_TRUE(Select(4));
+    for (std::uint32_t id = 0; id < 4; ++id) {
+      EXPECT_EQ(Branch(id).history(), tokens[id]);
+      EXPECT_EQ(run.rows[id], tokens[id].size());
+    }
+    std::array<rt::GenerateOptions, 4> generate;
+    std::array<rt::Generation, 4> output;
+    std::array<std::unique_ptr<rt::Llm::GenerationSession>, 4> session;
+    std::array<rt::Llm::GenerationSession*, 4> work{};
+    const auto continued = [&]() -> rt::Status {
+      for (std::uint32_t id = 0; id < 4; ++id) {
+        generate[id].max_tokens = 5;
+        generate[id].stop = false;
+        auto began = Branch(id).BeginGeneration(run.heads[id], generate[id], output[id]);
+        if (!began) return std::unexpected(began.error());
+        session[id] = std::move(*began);
+        work[id] = session[id].get();
+      }
+      for (std::uint32_t step = 0; step < 4; ++step)
+        if (auto r = model->RunGenerationWave(work); !r) return r;
+      return {};
+    }();
+    for (std::uint32_t id = 0; id < 4; ++id) {
+      if (!session[id]) continue;
+      session[id]->Cancel();
+      EXPECT_TRUE(session[id]->Finish());
+      session[id].reset();
+      run.continuation[id] = output[id].tokens;
+    }
+    ASSERT_TRUE(continued) << (continued ? "" : continued.error());
+  }
+};
+
+TEST_P(Gemma4EnvelopeServingGpu,
+       FourOwnersInterleavedPromptsAndDeparturesKeepHeadsAndContinuations) {
+  ASSERT_EQ(model->settings().context.value, 8192U);
+  ASSERT_EQ(model->settings().prefill_chunk.value, GetParam() == 26 ? 1024U : 256U);
+  ASSERT_EQ(model->settings().max_slots.value, 4U);
+  ASSERT_EQ(model->branches(), 4U);
+  ASSERT_EQ(model->generation_wave_capacity(), 4U);
+  // Prompts of different lengths, so the owners depart in turn at either
+  // profile's chunk (the 26B-A4B's 1,024 rows: 2, 3, 5 and 7 chunks; the
+  // 31B's 256: 6, 12, 18 and 25), the longest past the sliding layers' ring.
+  constexpr std::array<std::uint32_t, 4> lengths{1300, 2900, 4600, 6300};
+  std::array<std::vector<std::int32_t>, 4> tokens;
+  for (std::uint32_t id = 0; id < 4; ++id) {
+    tokens[id].resize(lengths[id]);
+    for (std::size_t i = 0; i < tokens[id].size(); ++i)
+      tokens[id][i] = prompt[(i + id * 3 + i / 7) % prompt.size()];
+  }
+  // Eight retained full heads and bounded token metadata.
+  HostCopies copies(*this, 8ULL * 262144 * sizeof(float) + (512U << 10U));
+  ASSERT_TRUE(copies.funded);
+  Run turns;
+  RunFourOwners(tokens, true, turns);
+  if (HasFatalFailure()) return;
+  EXPECT_TRUE(turns.continued_after_departure);
+  Run alone;
+  RunFourOwners(tokens, false, alone);
+  if (HasFatalFailure()) return;
+  for (std::uint32_t id = 0; id < 4; ++id) {
+    // The same chunks, the same rows, whatever the peers did between them.
+    EXPECT_EQ(turns.units[id], alone.units[id]);
+    EXPECT_EQ(turns.units[id], (lengths[id] + model->settings().prefill_chunk.value - 1) /
+                                   model->settings().prefill_chunk.value);
+    EXPECT_EQ(turns.rows[id], lengths[id]);
+    EXPECT_EQ(alone.rows[id], lengths[id]);
+    ASSERT_EQ(turns.heads[id].size(), alone.heads[id].size());
+    EXPECT_EQ(std::memcmp(turns.heads[id].data(), alone.heads[id].data(),
+                          turns.heads[id].size() * sizeof(float)),
+              0)
+        << "owner " << id << ": another head";
+    EXPECT_EQ(turns.continuation[id].size(), 5U);
+    EXPECT_EQ(turns.continuation[id], alone.continuation[id]) << "owner " << id;
+  }
+  EXPECT_TRUE(model->violations().empty());
+  const auto retired = server->RetireRequestBranches(*model, true);
+  ASSERT_TRUE(retired.result);
+  ASSERT_TRUE(retired.references_retired);
+  std::println(
+      "GEMMA4_FOUR_OWNER_PROMPTS profile={} context8192 slots4 chunk={} units={},{},{},{} "
+      "exact_heads_continuations owner_departure",
+      GetParam(), model->settings().prefill_chunk.value, turns.units[0], turns.units[1],
+      turns.units[2], turns.units[3]);
+}
+
+INSTANTIATE_TEST_SUITE_P(ApprovedProfiles, Gemma4EnvelopeServingGpu, ::testing::Values(26U, 31U),
+                         [](const auto& info) { return "Gemma" + std::to_string(info.param); });
+
+// The profile's assistant served as the model's drafter at the envelope: it
+// drafts from the target's cache and final-norm features, the target
+// verifies, and the drafts it keeps agree with the target's own greedy choice,
+// so a wrong assistant (weights, features, borrowed cache or positions)
+// keeps none. The generation's tokens are the target's greedy choices; the
+// quality of every draft is the verify's.
+class Gemma4AssistantServingGpu : public Gemma4EnvelopeServingGpu {
+ protected:
+  bool Assistant() const override { return true; }
+};
+
+TEST_P(Gemma4AssistantServingGpu, DraftsFromTheTargetsStateAreVerifiedAndKept) {
+  ASSERT_TRUE(model->speculative());
+  ASSERT_TRUE(Select(1));
+  // A repeating prompt, whose greedy continuation the assistant can follow.
+  std::vector<std::int32_t> tokens;
+  for (int i = 0; i < 24; ++i) tokens.insert(tokens.end(), prompt.begin(), prompt.end());
+  std::vector<float> last;
+  ASSERT_TRUE(Branch(0).Prefill(tokens, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 48;
+  options.stop = false;
+  rt::Generation speculative;
+  ASSERT_TRUE(Branch(0).Generate(last, options, speculative));
+  ASSERT_EQ(speculative.tokens.size(), 48U);
+  EXPECT_GT(speculative.drafted, 0U);
+  EXPECT_GT(speculative.accepted, 0U);
+  EXPECT_LE(speculative.accepted, speculative.drafted);
+  EXPECT_LT(speculative.steps, 48U);  // verifies of several rows each
+  const auto& engine = dynamic_cast<const rt::EngineLlm&>(*model);
+  EXPECT_GT(engine.counts().speculative_units, 0U);
+  EXPECT_EQ(engine.counts().discarded, 0U);
+  EXPECT_TRUE(model->violations().empty());
+  // The same prompt again, from a clear slot: the same drafts and tokens.
+  ASSERT_TRUE(Branch(0).Clear());
+  ASSERT_TRUE(Branch(0).Prefill(tokens, last));
+  rt::Generation again;
+  ASSERT_TRUE(Branch(0).Generate(last, options, again));
+  EXPECT_EQ(again.tokens, speculative.tokens);
+  EXPECT_EQ(again.drafted, speculative.drafted);
+  EXPECT_EQ(again.accepted, speculative.accepted);
+  std::println("GEMMA4_ASSISTANT profile={} drafted={} accepted={} steps={} tokens=48", GetParam(),
+               speculative.drafted, speculative.accepted, speculative.steps);
+}
+
+INSTANTIATE_TEST_SUITE_P(ApprovedProfiles, Gemma4AssistantServingGpu, ::testing::Values(26U, 31U),
+                         [](const auto& info) { return "Gemma" + std::to_string(info.param); });
 
 TEST_P(Gemma4ServingGpu, PinnedPublicationCapacityMatchesServingSlotsNotInputChunkRows) {
   const auto row_bytes = std::uint64_t{262144} * sizeof(float);
@@ -726,8 +1004,12 @@ TEST_P(Gemma4ServingGpu, CrossVariantKeptTagIsRejectedBeforeAdoptionWhilePeerRes
   auto record = rt::kept::Decode(std::string{std::istreambuf_iterator<char>(input), {}});
   ASSERT_TRUE(record);
   ASSERT_EQ(record->identity.layout, layout);
-  // Another layout's identity (the other profile's, a previous build's).
-  record->identity.layout[0] = record->identity.layout[0] == '0' ? '1' : '0';
+  // The other profile's real kept identity, taken from a server of its own
+  // started on the same settings.
+  const auto other = OtherProfileLayout();
+  ASSERT_FALSE(other.empty());
+  ASSERT_NE(other, layout);
+  record->identity.layout = other;
   std::ofstream(path) << rt::kept::Encode(*record);
   ASSERT_TRUE(Start());
   EXPECT_TRUE(Branch(0).history().empty());

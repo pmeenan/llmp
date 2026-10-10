@@ -231,6 +231,9 @@ struct V0Assembly {
 // recordings are captured ahead of their runs (Gemma 4's recipe prefills
 // alone with one future planned and none captured, and outside its
 // envelope steps each owner alone, as its M3 serving did).
+// `prefill_chunk` is the rows of a prompt chunk the recipe was qualified
+// at, which serving takes where no setting overrides it (0: the family's
+// default): Gemma 4's recipes, by profile.
 struct PolicyRule {
   std::string_view gate{};
   bool gate_absent = false;
@@ -241,6 +244,7 @@ struct PolicyRule {
   bool owners_alone = false;
   std::uint8_t prefill_lookahead = 2;
   bool capture_ahead = true;
+  std::uint32_t prefill_chunk = 0;
 };
 
 // What a drafter's stage reads of its target (spec.h Read): its state by

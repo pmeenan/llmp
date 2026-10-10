@@ -161,16 +161,20 @@ constexpr std::array kParams = {
     RequireInt("gemma4.embedding_length_per_layer_input", 0, true),
 };
 
-// Today's serving recipes (runtime/serving.cc's Gemma options). Within the
-// qualified envelope (gemma26_production, gemma31_production: a context of
-// at most 8,192 and four owners): fused norms, norm-rope and norm-add, the
+// The serving recipes (the M3 class's, retired with it, are these rules'
+// origin). Within the qualified envelope (a context of at most 8,192 and
+// four owners): fused norms, norm-rope and norm-add, the
 // routing and reduce fused on 26B-A4B and the quantized GLU only on 31B;
 // owner attention over joined one-row owners of equal reads, its masks
 // joined in pairs, and at most 4,096 cells and two owners each owner's
 // cache at its own width (bounded roots, common reads); every row to the
 // head (no frontier_head); no rope-store, grouped stores or shared Q8
 // inputs. Outside it, the frontier head's narrowed final layer and the
-// fused norm-mul alone.
+// fused norm-mul alone. The bounded rules also name the prompt chunk the
+// recipes were qualified at (26B-A4B at stock's matched 1,024 rows, where
+// its MoE arithmetic reproduces stock's tokens, docs/experiments/
+// gemma26-production; 31B at 256), which serving takes unless a setting
+// overrides it.
 constexpr std::array kPolicies = {
     PolicyRule{.gate = kExperts,
                .max_context = 4096,
@@ -180,7 +184,8 @@ constexpr std::array kPolicies = {
                        "disable owner_padded_reads\ndisable prepared_inputs\ndisable rope_store\n",
                .prompts_alone = true,
                .prefill_lookahead = 1,
-               .capture_ahead = false},
+               .capture_ahead = false,
+               .prefill_chunk = 1024},
     PolicyRule{.gate = kExperts,
                .max_context = 8192,
                .max_slots = 4,
@@ -190,7 +195,8 @@ constexpr std::array kPolicies = {
                        "disable prepared_inputs\ndisable rope_store\n",
                .prompts_alone = true,
                .prefill_lookahead = 1,
-               .capture_ahead = false},
+               .capture_ahead = false,
+               .prefill_chunk = 1024},
     PolicyRule{.gate = kExperts,
                .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
                        "disable owner_attention\ndisable prepared_inputs\n"
@@ -209,7 +215,8 @@ constexpr std::array kPolicies = {
                        "disable prepared_inputs\ndisable rope_store\n",
                .prompts_alone = true,
                .prefill_lookahead = 1,
-               .capture_ahead = false},
+               .capture_ahead = false,
+               .prefill_chunk = 256},
     PolicyRule{.gate = kExperts,
                .gate_absent = true,
                .max_context = 8192,
@@ -219,7 +226,8 @@ constexpr std::array kPolicies = {
                        "disable owner_padded_reads\ndisable prepared_inputs\ndisable rope_store\n",
                .prompts_alone = true,
                .prefill_lookahead = 1,
-               .capture_ahead = false},
+               .capture_ahead = false,
+               .prefill_chunk = 256},
     PolicyRule{.gate = kExperts,
                .gate_absent = true,
                .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"

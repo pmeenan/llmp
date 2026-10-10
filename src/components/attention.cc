@@ -26,10 +26,9 @@
 // hold (a frozen read: the step's own rows are never stored, so its masks
 // see only the positions before its rows).
 //
-// The fragment emits what the Gemma 2 and Gemma 3 graph builders (retired
-// with their runners) and kernels/ggml/gemma4_graph.cc and
-// gemma4_assistant_graph.cc record, in their order (GraphOrder over their
-// outputs): the input norm; Q's product, reshape,
+// The fragment emits what the Gemma 2, Gemma 3 and Gemma 4 graph builders
+// (retired with their runners) recorded, in their order (GraphOrder over
+// their outputs): the input norm; Q's product, reshape,
 // norm, rotation and scale; V's product (K's when tied), reshape and norm;
 // K's product, reshape, norm and rotation; then per segment the K store
 // (the rows reshape first), the V store, and attention over views of the

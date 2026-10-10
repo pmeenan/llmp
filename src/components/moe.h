@@ -20,8 +20,8 @@
 //     slot's output times its scale, times its weight, summed in slot
 //     order).
 //
-// The fragments emit in today's builders' order (kernels/ggml/
-// gemma4_graph.cc's GraphOrder), with the router's selection and the
+// The fragments emit in the retired Gemma 4 builder's order (its
+// GraphOrder), with the router's selection and the
 // reduce as the op set's composite ops, whose decompositions are GGML's
 // node sequences (llama.cpp's build_moe_ffn): a plan runs them as those
 // primitives or, where its policy keeps the planner's route_reduce

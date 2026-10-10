@@ -92,13 +92,6 @@ struct ServingOptions {
   // cancelled when the lane cancels them. Otherwise, as a drive's, they
   // do not.
   bool hold_cancellable = false;
-  // Internal bounded Gemma diagnostics, absent from configuration/CLI.
-  // Matched solo controls can use row-invariant sums without joined dispatch.
-  bool gemma_joined = false;
-  bool gemma_row_invariant = false;
-  // Candidate ordinary Gemma31 serving recipe; internal qualification only.
-  // Production configuration and CLI leave this false.
-  bool gemma31_production = false;
   // Internal maximum-context qualification only; no config/CLI/HTTP route.
   bool gemma3_trained_max = false;
   // Swaps' handoff evictions keep backing mapped until a load takes it
@@ -114,8 +107,6 @@ struct ServingOptions {
   // overrides for matched controls only.
   bool zero_state = true;
   std::optional<std::size_t> handle_reserve;  // unset: the node's default
-  // Optional fresh-zero state growth; internal matched control only.
-  bool gemma4_prepare_state = true;
   // Selected scalar DS/Qwen prediction; no public setting or output-policy
   // change. Both mechanisms have independent internal matched controls.
   bool dsv4_prefill_lookahead = true, qwen38_prefill_lookahead = true;
@@ -124,7 +115,7 @@ struct ServingOptions {
   // drafter consumers remain explicit opt-ins.
   std::optional<bool> dsv4_state_only_prefill, qwen38_state_only_prefill;
   // Hint-delivery control for matched DS/Qwen tests with identical provisioning.
-  // It changes neither required work nor the existing Gemma policy.
+  // It changes no required work.
   bool predicted_prefill_hints = true;
   // Internal same-provisioning T54 control: false forces current/future heads.
   // Scoring remains headed and public settings never expose this override.

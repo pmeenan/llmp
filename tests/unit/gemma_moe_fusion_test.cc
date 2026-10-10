@@ -13,14 +13,11 @@
 #include <vector>
 
 #include "base/check.h"
-#include "gemma4_fixture.h"
-#include "kernels/ggml/gemma4_graph.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/graph_read_index.h"
 
 namespace {
 namespace kg = llmp::kernels::ggml;
-namespace md = llmp::model;
 class GemmaMoeFusion : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -246,98 +243,6 @@ TEST_F(GemmaMoeFusion, PlacementFundsEveryDescriptorAndTheCompleteRoutingRoot) {
     } else
       EXPECT_TRUE(kg::GemmaReductionFusionAt(n, 0));
   }
-}
-TEST(GemmaMoeActualGraph, AllActualRoutingAndReductionChainsMatchAcrossIndependentSegments) {
-  namespace fixture = llmp::test_support::gemma4;
-  for (const auto size : {26U, 31U})
-    for (const auto slots : {1U, 2U, 4U}) {
-      const auto& p = size == 26 ? md::Gemma4_26BA4B() : md::Gemma4_31B();
-      auto binding = md::BindGemma4(p, "gemma4", fixture::Resources(size));
-      ASSERT_TRUE(binding);
-      auto state = md::Gemma4State(p, 4096, 16);
-      ASSERT_TRUE(state);
-      kg::Gemma4ChunkShape shape;
-      for (std::uint32_t i = 0; i < slots; ++i)
-        shape.segments.push_back({i, 2, i * 1100, ((i * 1100 + 2 + 255) / 256) * 256, 1280});
-      shape.outputs = slots;
-      auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(p, slots));
-      ASSERT_TRUE(arena);
-      auto g = kg::BuildGemma4Graph(*arena, p, *binding, *state, shape);
-      ASSERT_TRUE(g);
-      std::uint64_t address = 1ULL << 36;
-      const auto bind = [&](ggml_tensor* t) {
-        kg::TensorArena::Bind(t, address);
-        address += ((ggml_nbytes(t) + 255) / 256 + 1) * 256;
-      };
-      for (auto* t : g->inputs) bind(t);
-      for (const auto& w : g->weights) bind(w.tensor);
-      for (const auto& segment : g->segments)
-        for (const auto [k, v] : segment.caches)
-          if (k) {
-            bind(k);
-            bind(v);
-          }
-      kg::BindDistinct(g->nodes, 1ULL << 48);
-      const kg::detail::GraphReadIndex reads(g->nodes, {});
-      std::size_t routing = 0, reduction = 0;
-      for (std::size_t i = 0; i < g->nodes.size(); ++i) {
-        const auto route = kg::GemmaRoutingFusionAt(g->nodes, i);
-        const auto reduce = kg::GemmaReductionFusionAt(g->nodes, i);
-        EXPECT_EQ(route.has_value(), kg::GemmaRoutingFusionAt(g->nodes, i, {}, &reads).has_value());
-        EXPECT_EQ(reduce.has_value(),
-                  kg::GemmaReductionFusionAt(g->nodes, i, {}, &reads).has_value());
-        routing += route.has_value();
-        reduction += reduce.has_value();
-      }
-      EXPECT_EQ(routing, size == 26 ? 30U : 0U) << size << "/" << slots;
-      EXPECT_EQ(reduction, size == 26 ? 30U : 0U) << size << "/" << slots;
-      kg::DeviceChoices choices;
-      choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
-      choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
-      choices.fuse_gemma_route = choices.fuse_gemma_reduce = true;
-      choices.fuse_norm_rope = choices.fuse_norm_add = true;
-      auto plan = kg::PlanGraph(g->nodes, false, choices);
-      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
-      EXPECT_EQ(std::ranges::count_if(plan->steps,
-                                      [](const auto& step) {
-                                        return step.implementation == kg::kGemmaRouteName &&
-                                               step.nodes.size() == 10;
-                                      }),
-                size == 26 ? 30 : 0);
-      EXPECT_EQ(std::ranges::count_if(plan->steps,
-                                      [](const auto& step) {
-                                        return step.implementation == kg::kGemmaReduceName &&
-                                               step.nodes.size() == 17;
-                                      }),
-                size == 26 ? 30 : 0);
-
-      // Also rebuild each exact chain from its dependency edges, retaining
-      // every original reader. This independently checks the structural
-      // contract rather than relying only on contiguous graph order.
-      std::size_t contiguous_reductions = 0;
-      for (std::size_t i = 0; i + 10 < g->nodes.size(); ++i) {
-        auto* scaled = g->nodes[i];
-        if (scaled->op != GGML_OP_MUL || scaled->ne[0] != 2816 || scaled->ne[1] != 8 ||
-            g->nodes[i + 1]->op != GGML_OP_MUL || g->nodes[i + 1]->src[0] != scaled)
-          continue;
-        std::vector<ggml_tensor*> probe(g->nodes.begin() + static_cast<std::ptrdiff_t>(i),
-                                        g->nodes.begin() + static_cast<std::ptrdiff_t>(i + 10));
-        auto* previous = probe[2];
-        for (std::size_t selected = 1; selected < 8; ++selected) {
-          const auto found = std::ranges::find_if(g->nodes, [&](const auto* t) {
-            return t->op == GGML_OP_ADD && t->src[0] == previous &&
-                   t->src[1] == probe[2 + selected];
-          });
-          ASSERT_NE(found, g->nodes.end());
-          previous = *found;
-          probe.push_back(previous);
-        }
-        for (auto* t : g->nodes)
-          if (std::ranges::find(probe, t) == probe.end()) probe.push_back(t);
-        contiguous_reductions += kg::GemmaReductionFusionAt(probe, 0).has_value();
-      }
-      EXPECT_EQ(contiguous_reductions, size == 26 ? 30U : 0U) << size << "/" << slots;
-    }
 }
 }  // namespace
 

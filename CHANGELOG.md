@@ -600,6 +600,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   refusing a verify, which changes the kept layout identity of Gemma 2
   and Gemma 3 conversations the previous build kept: refused once, then
   prefilled again.
+- A stored calibration of a Gemma 4 model is not found after this build:
+  its key no longer carries `gemma31_production=true` or
+  `gemma26_production=true` (the bounded recipes are now the mapping's
+  rules, not an option), so the runtime measures and records it again.
 - The runtime keeps a model's weight shards open only while the model is
   active: from its activation until another model replaces it, rather
   than every registered model's from startup. Each shard is reopened at
@@ -1091,6 +1095,22 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   of the VAE's convolutions (still within the bounds of diffusers' image).
 
 ### Removed
+
+- The internal Gemma 4 diagnostics of `ServingOptions` (`gemma_joined`,
+  `gemma_row_invariant`, `gemma31_production`, `gemma26_production` and
+  the prepared-state switch, with `RunService`'s matching parameters and
+  its "Gemma diagnostic" log lines) go with the M3 Gemma 4 class, runner,
+  assistant and graph builders they controlled, deleted now that Gemma 4
+  26B-A4B and 31B and their assistants serve on the shared engine (D-107);
+  absent from the configuration and the command line, they affect no
+  setting. The recipes they selected are the `gemma4` mapping's policy
+  rules, whose prompt chunk (1,024 rows for the 26B-A4B and 256 for the
+  31B within a context of at most 8,192 and four slots) serving takes
+  where no setting overrides it. The internal Gemma 4 benchmarks
+  (`llmp_gemma26_*`, `llmp_gemma31_production`, `llmp_gemma_owner_c4`,
+  `llmp_gemma_joined`, `llmp_gemma_prefill`, the attention, dense-FFN and
+  assistant-fixture captures and the rest built on those classes) are gone
+  with them.
 
 - The internal Gemma 2 and Gemma 3 diagnostics of `ServingOptions`
   (`gemma2_*`/`gemma3_*`: owner and flexible owner prefill, shared Q8,

@@ -1806,10 +1806,7 @@ Status RunSwapTable(Server& server, const SwapTableOptions& options, const Servi
 // them, serves the loopback chat route until SIGTERM or SIGINT (which the
 // caller has blocked in every thread), and tears the node down. Returns
 // the process's exit status (runtime.h).
-// Candidate booleans are internal only; production callers use the defaults.
-int RunService(const config::NodeConfig& config, const config::RuntimeRoles& roles, std::FILE* log,
-               bool gemma_joined = false, bool gemma_row_invariant = false,
-               bool gemma31_production = false);
+int RunService(const config::NodeConfig& config, const config::RuntimeRoles& roles, std::FILE* log);
 
 }  // namespace llmp::runtime
 

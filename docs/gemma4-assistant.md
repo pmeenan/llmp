@@ -3,6 +3,21 @@
 
 # Gemma 4 assistant contracts and native component
 
+> **Retired (M3.6, slice G2d).** The assistant serves as the `drafter` of
+> its target on the shared engine (D-107): the `gemma4-assistant` mapping
+> (`src/spec/mappings/gemma4.*`) composes it with its target as a drafter
+> stage (`attention.borrowed`, `embedding.projected`, the target's final-norm
+> tap), run by the model runner and the decoding mode's anchored drafter
+> ([engine.md](engine.md#the-model-runner)), its draft passes bit for bit
+> those of the runner this file records. `kernels/ggml/gemma4_assistant_graph.*`,
+> `engine/gemma4_assistant{,_plan}.*` and `engine/gemma4_greedy.*` (the
+> target-owned `Gemma4Assistant`, its plan and its C1 transaction) are
+> deleted; `model/gemma4_assistant.{h,cc}` keeps the closed profiles and
+> checked bindings the contracts below describe, which admission and the
+> mapping's values use. What follows is the record of the M3.5 component's
+> controls; the served assistant's check is `Gemma4AssistantServingGpu` in
+> `gemma4_serving_gpu_test`.
+
 `model/gemma4_assistant.{h,cc}` defines closed profiles and checked semantic
 bindings for the approved Q8_0 assistants paired with Gemma 4 26B-A4B and 31B.
 The native graph/component now executes bounded Q-only chains over protected

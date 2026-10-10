@@ -606,10 +606,12 @@ architecture's mapping names (`spec/mapping.h`); every other family keeps
 its M3 class. Gemma 2 and Gemma 3 are moved (since their migration, whose
 gate passed and whose M3 classes, runners, plans, graph builders and
 `ServingOptions` flags are deleted), and so are Gemma 4 26B-A4B and 31B
-with their assistants (since theirs; the M3 Gemma 4 class, runner and
-graph builder stay in the tree until their deletion, used by serving
-only under their internal joined, row-invariant and prepare-state
-diagnostics, which the engine does not port); the other LLM families and the image
+with their assistants (since theirs, whose M3 Gemma 4 class, runner,
+plans and graph builders, with their joined, row-invariant, prepare-state
+and `gemma26_production`/`gemma31_production` `ServingOptions`
+diagnostics, are deleted: the recipes are the mapping's policy rules, whose
+prompt chunk, 1,024 rows for 26B-A4B and 256 for 31B, serving takes where
+no setting overrides it); the other LLM families and the image
 pipeline keep their M3 classes until theirs. A Gemma 4 model with a
 `drafter` (its assistant) speculates on the engine: three drafts a unit,
 each pass at the committed positions reading the target's cache frozen
@@ -638,7 +640,7 @@ handle over a workspace the runner maps and charges as its own; a head
 row is the head's vocabulary of logits, and a greedy row's token is
 chosen on the device. Any other architecture is refused at Setup with
 that reason, and so is speculation on with no drafter in the parts. The
-Gemma 4 chat route serves the M3 class's slice: thinking off by default
+Gemma 4 chat route keeps the slice its retired M3 class served: thinking off by default
 and refused on, tool declarations refused, its channel and tool-call
 openers ending a reply. A conversation an M3 class kept across a restart
 (record version 1) is refused by the engine's start and its files

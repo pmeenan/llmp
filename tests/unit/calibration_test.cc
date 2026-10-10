@@ -84,26 +84,6 @@ TEST(Calibration, RoundTripsItsRecord) {
 
 // The settings a measurement depends on are part of the key: another
 // configuration of them is another key.
-TEST(Calibration, Gemma31CandidateHasDistinctCalibrationIdentity) {
-  llmp::runtime::ModelSettings settings;
-  settings.architecture = "gemma4";
-  const auto ordinary = llmp::runtime::MeasuredWith(settings);
-  settings.architecture.clear();
-  EXPECT_EQ(ordinary, llmp::runtime::MeasuredWith(settings));
-  settings.architecture = "gemma4";
-  settings.gemma31_production = true;
-  const auto candidate = llmp::runtime::MeasuredWith(settings);
-  EXPECT_NE(ordinary, candidate);
-  EXPECT_THAT(ordinary, Not(HasSubstr("gemma31_production=")));
-  EXPECT_THAT(candidate, HasSubstr("gemma31_production=true"));
-  settings.gemma31_production = false;
-  settings.gemma26_production = true;
-  const auto candidate26 = llmp::runtime::MeasuredWith(settings);
-  EXPECT_NE(ordinary, candidate26);
-  EXPECT_NE(candidate, candidate26);
-  EXPECT_THAT(candidate26, HasSubstr("gemma26_production=true"));
-}
-
 TEST(Calibration, KeysTheSettingsMeasuredWith) {
   llmp::runtime::ModelSettings s;
   s.speculation.value = true;

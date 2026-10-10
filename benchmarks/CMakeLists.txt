@@ -321,67 +321,13 @@ if(LLMP_CUDA)
                                                   llmp_chat llmp_warnings)
   target_link_options(llmp_swap_pairs PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
-  # M3's speculation harness: DeepSeek V4 Flash with its DSpark drafter on
-  # the paged node, greedy and sampled speculation, the forced-rejection
-  # checks and speed (docs/experiments/dspark/). A harness for now; it
-  # links the native tokenizer and chat renderer.
-  add_executable(llmp_gemma_retained_prefill gemma_retained_prefill.cc)
-  target_link_libraries(llmp_gemma_retained_prefill PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_retained_prefill PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  add_executable(llmp_gemma_prefill gemma_prefill.cc)
-  target_link_libraries(llmp_gemma_prefill PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_prefill PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # Manual closed 26B routing keep diagnostic; production planner stays intact.
-  add_executable(llmp_gemma_quality_keep28 gemma_quality_keep28.cc
-                   gemma_quality_keep28_wrap.cc)
-  target_link_libraries(llmp_gemma_quality_keep28 PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_quality_keep28 PRIVATE
-      "LINKER:--wrap=_ZN4llmp6engine15PlanGemma4ChunkERKNS0_11Gemma4ModelERKNS_7kernels4ggml16Gemma4ChunkShapeERKNS5_13DeviceChoicesEmmSt4spanIKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEELm18446744073709551615EE"
-      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # Manual fixed-capacity schedule qualification; never registered with CTest.
-  add_executable(llmp_gemma_quality_schedule gemma_quality_schedule.cc)
-  target_link_libraries(llmp_gemma_quality_schedule PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_quality_schedule PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  add_executable(llmp_gemma_quality gemma_quality.cc)
-  target_link_libraries(llmp_gemma_quality PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_quality PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  add_executable(llmp_gemma26_continuation
-                   ../docs/experiments/gemma26-production/native_continuation.cc)
-  target_link_libraries(llmp_gemma26_continuation PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma26_continuation PRIVATE
-                     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  add_executable(llmp_gemma_runner gemma_runner.cc)
-  # Manual native-origin first-local operand capture. Link wrapping adds no
-  # graph keep, planner policy or production observer.
-  add_executable(llmp_gemma_attention_capture gemma_attention_capture.cc
-                   gemma_attention_capture_wrap.cc)
-  target_include_directories(llmp_gemma_attention_capture SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_gemma_attention_capture PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_attention_capture PRIVATE
-      "LINKER:--wrap=_ZN4llmp7kernels4ggml15FlashAttnVec256ERNS1_13LaunchContextEP11ggml_tensor"
-      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
+  # Kernel-level replays of attention and dense-FFN operands captured from
+  # the retired M3 Gemma 4 runner (docs/experiments/gemma-attention-c4,
+  # gemma-dense-ffn); they name no runner.
   add_executable(llmp_gemma_attention_replay gemma_attention_replay.cc)
   target_link_libraries(llmp_gemma_attention_replay PRIVATE llmp_engine llmp_warnings)
   target_link_options(llmp_gemma_attention_replay PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # Separate first-global D512 carrier/replay; measured local helpers remain fixed.
-  add_executable(llmp_gemma_attention_global_capture gemma_attention_global_capture.cc
-                 gemma_attention_global_capture_wrap.cc)
-  target_include_directories(llmp_gemma_attention_global_capture SYSTEM PRIVATE
-      "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_gemma_attention_global_capture PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_attention_global_capture PRIVATE
-    "LINKER:--wrap=_ZN4llmp7kernels4ggml12FlashAttnMmaERNS1_13LaunchContextEP11ggml_tensorb"
-    "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
   add_executable(llmp_gemma_attention_global_owner_replay gemma_attention_global_owner_replay.cc)
   target_link_libraries(llmp_gemma_attention_global_owner_replay PRIVATE llmp_engine llmp_warnings)
   target_link_options(llmp_gemma_attention_global_owner_replay PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
@@ -390,101 +336,15 @@ if(LLMP_CUDA)
   target_link_libraries(llmp_gemma_attention_owner_replay PRIVATE llmp_engine llmp_warnings)
   target_link_options(llmp_gemma_attention_owner_replay PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # Explicit manual packed versus independent-owner C4 factor. No default emits the op.
-  foreach(_owner_target IN ITEMS llmp_gemma_owner_c4 llmp_gemma_owner_c4_metadata)
-    if(_owner_target STREQUAL "llmp_gemma_owner_c4")
-      set(_owner_source gemma_owner_c4.cc)
-    else()
-      set(_owner_source gemma_owner_c4_metadata.cc)
-    endif()
-    add_executable(${_owner_target} ${_owner_source} gemma_owner_c4_wrap.cc)
-    target_include_directories(${_owner_target} PRIVATE "${PROJECT_SOURCE_DIR}/tests/support")
-    target_link_libraries(${_owner_target} PRIVATE llmp_engine llmp_warnings)
-    target_link_options(${_owner_target} PRIVATE
-      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas"
-      "LINKER:--wrap=_ZN4llmp7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE"
-      "LINKER:--wrap=_ZN4llmp7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm"
-      "LINKER:--wrap=_ZN4llmp7kernels4ggml19PlanFlashAttnOwnersERKNS1_13LaunchContextERKNS1_15FlashAttnOwnersE")
-  endforeach()
-
-  add_executable(llmp_gemma_attention_packed
-    gemma_attention_packed.cc gemma_attention_packed_wrap.cc)
-  target_link_libraries(llmp_gemma_attention_packed PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_attention_packed PRIVATE
-    "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas"
-    "LINKER:--wrap=_ZN4llmp7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE"
-    "LINKER:--wrap=_ZN4llmp7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm")
-  add_executable(llmp_gemma_attention_packed_metadata
-    gemma_attention_packed_metadata.cc gemma_attention_packed_wrap.cc)
-  target_include_directories(llmp_gemma_attention_packed_metadata PRIVATE
-    "${PROJECT_SOURCE_DIR}/tests/support")
-  target_link_libraries(llmp_gemma_attention_packed_metadata PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_attention_packed_metadata PRIVATE
-    "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas"
-    "LINKER:--wrap=_ZN4llmp7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE"
-    "LINKER:--wrap=_ZN4llmp7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm")
-
-if(LLMP_CUDA)
-  # Manual scalar layer0 FFN acquisition/replay; no production dispatch change.
-  add_executable(llmp_gemma_dense_ffn_capture gemma_dense_ffn_capture.cc
-                 gemma_dense_ffn_capture_wrap.cc)
-  target_include_directories(llmp_gemma_dense_ffn_capture SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_gemma_dense_ffn_capture PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_dense_ffn_capture PRIVATE
-      "LINKER:--wrap=_ZN4llmp7kernels4ggml10MulMatVecQERNS1_13LaunchContextEP11ggml_tensor"
-      "LINKER:--wrap=_ZNK4llmp6engine12PagedWeights16resource_addressEj"
-      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
   add_executable(llmp_gemma_dense_ffn_replay gemma_dense_ffn_replay.cc)
   target_link_libraries(llmp_gemma_dense_ffn_replay PRIVATE llmp_engine llmp_warnings)
   target_link_options(llmp_gemma_dense_ffn_replay PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-endif()
-  add_executable(llmp_gemma26_attention_packed
-    gemma26_attention_packed.cc gemma26_attention_packed_wrap.cc)
-  target_link_libraries(llmp_gemma26_attention_packed PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma26_attention_packed PRIVATE
-    "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas"
-    "LINKER:--wrap=_ZN4llmp7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE"
-    "LINKER:--wrap=_ZN4llmp7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm")
-  add_executable(llmp_gemma26_attention_compound
-    gemma26_attention_compound.cc gemma26_attention_packed_wrap.cc)
-  target_link_libraries(llmp_gemma26_attention_compound PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma26_attention_compound PRIVATE
-    "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas"
-    "LINKER:--wrap=_ZN4llmp7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE"
-    "LINKER:--wrap=_ZN4llmp7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm")
-  # Manual common-input late-prefill MoE diagnostic; no CTest/model policy.
-  add_executable(llmp_gemma26_late_moe gemma26_late_moe.cc)
-  target_link_libraries(llmp_gemma26_late_moe PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma26_late_moe PRIVATE
-                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-  add_executable(llmp_gemma26_attention_packed_metadata
-    gemma26_attention_packed_metadata.cc gemma26_attention_packed_wrap.cc)
-  target_include_directories(llmp_gemma26_attention_packed_metadata PRIVATE
-    "${PROJECT_SOURCE_DIR}/tests/support")
-  target_link_libraries(llmp_gemma26_attention_packed_metadata PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma26_attention_packed_metadata PRIVATE
-    "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas"
-    "LINKER:--wrap=_ZN4llmp7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE"
-    "LINKER:--wrap=_ZN4llmp7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm")
-  # Private prefix-only routing diagnostic; original joined target stays intact.
-  add_executable(llmp_gemma_joined_prefix_keep gemma_joined.cc gemma_joined_prefix_keep.cc)
-  target_link_libraries(llmp_gemma_joined_prefix_keep PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_joined_prefix_keep PRIVATE
-      "LINKER:--wrap=_ZN4llmp6engine15PlanGemma4ChunkERKNS0_11Gemma4ModelERKNS_7kernels4ggml16Gemma4ChunkShapeERKNS5_13DeviceChoicesEmmSt4spanIKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEELm18446744073709551615EE"
-      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-  add_executable(llmp_gemma_prefix_keep_contract gemma_joined_prefix_keep_contract.cc
-                   gemma_joined_prefix_keep.cc)
-  target_link_libraries(llmp_gemma_prefix_keep_contract PRIVATE llmp_engine llmp_warnings)
-  add_executable(llmp_gemma_joined gemma_joined.cc)
-  target_link_libraries(llmp_gemma_joined PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_joined PRIVATE
-                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-  target_link_libraries(llmp_gemma_runner PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_runner PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # M3's speculation harness: DeepSeek V4 Flash with its DSpark drafter on
+  # the paged node, greedy and sampled speculation, the forced-rejection
+  # checks and speed (docs/experiments/dspark/). A harness for now; it
+  # links the native tokenizer and chat renderer.
   add_executable(llmp_spec_runner spec_runner.cc)
   target_link_libraries(llmp_spec_runner PRIVATE llmp_paged_runners llmp_launch_recorder
                                                    llmp_tokenizer llmp_chat llmp_sampling
@@ -583,103 +443,10 @@ endif()
 endif()
 
 if(LLMP_CUDA)
-# The existing HTTP route with internal Gemma diagnostic controls only.
-add_executable(llmp_gemma_joined_http gemma_joined_http.cc)
-target_link_libraries(llmp_gemma_joined_http PRIVATE llmp_runtime_serving llmp_platform llmp_warnings)
-target_link_options(llmp_gemma_joined_http PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
-endif()
-
-if(LLMP_CUDA)
-  # Explicit C1 draft/verify diagnostic; no serving policy or CTest registration.
-  add_executable(llmp_gemma_greedy_reference gemma_greedy_reference.cc)
-  target_link_libraries(llmp_gemma_greedy_reference PRIVATE llmp_engine llmp_json llmp_warnings)
-  target_link_options(llmp_gemma_greedy_reference PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
   # The same screen on the shared engine (M3.6's assistant gate); manual, never CTest.
   add_executable(llmp_gemma_engine_greedy gemma_engine_greedy.cc)
   target_link_libraries(llmp_gemma_engine_greedy PRIVATE llmp_runtime_serving llmp_warnings)
   target_link_options(llmp_gemma_engine_greedy PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
-  # Original stage-zero immutable inputs; manual diagnostic, never CTest.
-  add_executable(llmp_gemma_assistant_fixture gemma_assistant_fixture.cc)
-  target_link_libraries(llmp_gemma_assistant_fixture PRIVATE llmp_engine llmp_json llmp_warnings)
-  target_link_options(llmp_gemma_assistant_fixture PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
-endif()
-
-if(LLMP_CUDA)
-  # Two-owner original stage-zero inputs, manual diagnostic only.
-  add_executable(llmp_gemma_assistant_wave_fixture gemma_assistant_wave_fixture.cc)
-  target_link_libraries(llmp_gemma_assistant_wave_fixture PRIVATE llmp_engine llmp_json llmp_warnings)
-  target_link_options(llmp_gemma_assistant_wave_fixture PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
-endif()
-
-if(LLMP_CUDA)
-  # Closed dense31 scalar norm screen; manual only, never CTest.
-  add_executable(llmp_gemma_dense31_c1_norm gemma_dense31_c1_norm.cc)
-  target_link_libraries(llmp_gemma_dense31_c1_norm PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma_dense31_c1_norm PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
-endif()
-
-# Optional manual observer only: NVTX headers come from the recorded external
-# Nsight tool, never from a production dependency or a vendored source.
-set(LLMP_BENCHMARK_NVTX_INCLUDE_DIR "" CACHE PATH "External NVTX headers for manual profiling")
-if(LLMP_CUDA AND LLMP_BENCHMARK_NVTX_INCLUDE_DIR)
-  if(NOT EXISTS "${LLMP_BENCHMARK_NVTX_INCLUDE_DIR}/nvtx3/nvToolsExt.h")
-    message(FATAL_ERROR "Manual NVTX profiling requires the supplied public headers")
-  endif()
-  add_executable(llmp_gemma26_prefill_profile EXCLUDE_FROM_ALL gemma26_prefill_profile.cc)
-  target_include_directories(llmp_gemma26_prefill_profile SYSTEM PRIVATE
-                             "${LLMP_BENCHMARK_NVTX_INCLUDE_DIR}")
-  target_link_libraries(llmp_gemma26_prefill_profile PRIVATE
-                        llmp_engine llmp_warnings ${CMAKE_DL_LIBS})
-  target_link_options(llmp_gemma26_prefill_profile PRIVATE
-                     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-endif()
-
-# Diagnostic-only manual targets. The reversible three-unit measurement
-# overlay is deliberately absent from canonical production source/objects.
-option(LLMP_BENCHMARK_COARSE_PREFILL "Enable isolated coarse prefill diagnostics" OFF)
-if(LLMP_CUDA AND LLMP_BENCHMARK_COARSE_PREFILL)
-  if(NOT EXISTS "${LLMP_BENCHMARK_NVTX_INCLUDE_DIR}/nvtx3/nvToolsExt.h")
-    message(FATAL_ERROR "Coarse diagnostics require the authenticated external NVTX interface")
-  endif()
-  foreach(_coarse_source IN ITEMS gemma4_runner.cc planned.cc live_state.cc)
-    file(READ "${PROJECT_SOURCE_DIR}/src/engine/${_coarse_source}" _coarse_text)
-    string(FIND "${_coarse_text}" "llmp.prefill.coarse.patch.v1" _coarse_marker)
-    if(_coarse_marker EQUAL -1)
-      message(FATAL_ERROR "Apply the authenticated diagnostic overlay only in the measurement tree")
-    endif()
-  endforeach()
-  add_executable(llmp_gemma26_prefill_coarse EXCLUDE_FROM_ALL
-                 gemma26_prefill_coarse.cc gemma26_prefill_coarse_scopes.cc)
-  target_include_directories(llmp_gemma26_prefill_coarse SYSTEM PRIVATE
-                             "${LLMP_BENCHMARK_NVTX_INCLUDE_DIR}")
-  target_link_libraries(llmp_gemma26_prefill_coarse PRIVATE llmp_engine llmp_warnings ${CMAKE_DL_LIBS})
-  target_link_options(llmp_gemma26_prefill_coarse PRIVATE
-                     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-  add_executable(llmp_gemma26_clock_probe EXCLUDE_FROM_ALL
-                 gemma26_prefill_clock_probe.cc gemma26_prefill_coarse_scopes.cc)
-  target_include_directories(llmp_gemma26_clock_probe SYSTEM PRIVATE
-                             "${LLMP_BENCHMARK_NVTX_INCLUDE_DIR}")
-  target_link_libraries(llmp_gemma26_clock_probe PRIVATE llmp_warnings ${CMAKE_DL_LIBS})
-endif()
-
-if(LLMP_CUDA)
-  add_executable(llmp_gemma31_production gemma31_production.cc)
-  target_link_libraries(llmp_gemma31_production PRIVATE llmp_runtime_serving llmp_platform llmp_warnings)
-  target_link_options(llmp_gemma31_production PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
-
-  add_executable(llmp_gemma26_frontier_control gemma31_production.cc
-                   ../docs/experiments/gemma26-production/frontier_control_wrap.cc)
-  target_link_libraries(llmp_gemma26_frontier_control PRIVATE
-                        llmp_runtime_serving llmp_platform llmp_warnings)
-  target_link_options(llmp_gemma26_frontier_control PRIVATE
-      "LINKER:--wrap=_ZN4llmp6engine12Gemma4RunnerC1ERNS0_9PagedNodeENS0_13Gemma4OptionsEij"
-      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
-endif()
-
-if(LLMP_CUDA)
-  add_executable(llmp_gemma4_common_width_probe gemma4_common_width_probe.cc)
-  target_link_libraries(llmp_gemma4_common_width_probe PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_gemma4_common_width_probe PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 endif()
 
 if(LLMP_CUDA)

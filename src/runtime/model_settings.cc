@@ -30,6 +30,8 @@
 #include "model/v0_artifact.h"
 #include "runtime/calibration.h"
 #include "runtime/gemma_profile.h"
+#include "spec/mapping.h"
+#include "spec/mappings/gemma4.h"
 #include "tokenizer/gguf.h"
 #include "tokenizer/hf.h"
 
@@ -553,17 +555,12 @@ std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target
 std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEntry& entry,
                                                           const ArtifactFacts& facts,
                                                           const Calibration* calibration,
-                                                          bool plain, bool gemma31_production,
-                                                          bool gemma3_trained_max) {
+                                                          bool plain, bool gemma3_trained_max) {
   ModelSettings s;
   s.name = entry.name;
   s.architecture = facts.architecture;
   s.composition = facts.composition;
   s.drafter = entry.drafter.has_value();
-  s.gemma31_production = gemma31_production && facts.architecture == "gemma4" &&
-                         facts.gemma_profile == &model::Gemma4_31B();
-  s.gemma26_production = gemma31_production && facts.architecture == "gemma4" &&
-                         facts.gemma_profile == &model::Gemma4_26BA4B();
   const Calibration none;
   const Calibration& cal = calibration != nullptr ? *calibration : none;
   const auto basis = [&](std::string_view key) { return OverrideBasis(entry, key); };
@@ -661,30 +658,31 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
       gemma ? 1U : kDefaultSlots,
       gemma ? "bounded scalar-cohort route; uncalibrated" : "the knee measured on a GB10 (D-104)");
   if (gemma) {
-    // Each approved profile has a bounded production recipe and key; larger
-    // contexts/cohorts keep the previous recipe and key.
-    s.gemma31_production = s.gemma31_production && context <= 8192 && s.max_slots.value <= 4;
-    s.gemma26_production = s.gemma26_production && context <= 8192 && s.max_slots.value <= 4;
-    if (s.gemma31_production && s.prefill_chunk.source == SettingSource::kFallback) {
-      s.prefill_chunk.value = 256;
-      s.prefill_chunk.basis = "qualified bounded Gemma31 serving envelope";
+    // Gemma 4's bounded recipes (a context of at most 8,192 and four
+    // owners) were qualified at a prompt chunk, which its mapping's policy
+    // rule for the envelope names (spec/mapping.h PolicyRule::prefill_chunk);
+    // larger contexts and cohorts take the default.
+    std::uint32_t recipe_chunk = 0;
+    if (arch == "gemma4" && facts.gemma_profile != nullptr) {
+      const auto values = spec::mappings::Gemma4V0Values(*facts.gemma_profile);
+      if (!values) return Error(values.error());
+      const auto rule = spec::DefaultRule(spec::mappings::Gemma4Mapping(), *values,
+                                          {.context = context, .slots = s.max_slots.value});
+      if (!rule) return Error(rule.error());
+      if (*rule != nullptr) recipe_chunk = (*rule)->prefill_chunk;
     }
-    // Gemma26 at stock's matched 1024-row geometry: its MoE arithmetic then
-    // reproduces stock's tokens (docs/experiments/gemma26-production).
-    if (s.gemma26_production && s.prefill_chunk.source == SettingSource::kFallback) {
-      s.prefill_chunk.value = 1024;
-      s.prefill_chunk.basis = "qualified bounded Gemma26 serving envelope";
+    const std::string_view recipe =
+        facts.gemma_profile == &model::Gemma4_31B() ? "Gemma31" : "Gemma26";
+    if (recipe_chunk != 0 && s.prefill_chunk.source == SettingSource::kFallback) {
+      s.prefill_chunk.value = recipe_chunk;
+      s.prefill_chunk.basis = std::format("qualified bounded {} serving envelope", recipe);
     }
-    const auto cap = std::min(s.gemma31_production   ? 256U
-                              : s.gemma26_production ? 1024U
-                                                     : 128U,
-                              context - 1);
+    const auto cap = std::min(recipe_chunk != 0 ? recipe_chunk : 128U, context - 1);
     if (s.prefill_chunk.value > cap) {
       s.prefill_chunk.value = cap;
       s.prefill_chunk.basis +=
-          s.gemma31_production   ? ", capped by the candidate Gemma31 serving envelope"
-          : s.gemma26_production ? ", capped by the bounded Gemma26 serving envelope"
-                                 : ", capped by the bounded Gemma serving envelope";
+          recipe_chunk != 0 ? std::format(", capped by the bounded {} serving envelope", recipe)
+                            : std::string(", capped by the bounded Gemma serving envelope");
     }
     if (arch == "gemma2" && s.max_slots.value > 2)
       return Error("Gemma2 serving needs at most two conversation owners");

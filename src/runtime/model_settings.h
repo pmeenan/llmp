@@ -232,11 +232,6 @@ struct ModelSettings {
   std::string architecture;  // empty for a composition
   bool composition = false;
   bool drafter = false;
-  // Internal candidate recipe, keyed separately from ordinary calibration.
-  bool gemma31_production = false;
-  // The bounded Gemma26 production recipe (1024-row prefill, norm chains,
-  // MoE route/reduce, joined owner attention), keyed separately too.
-  bool gemma26_production = false;
 
   // Every LLM.
   Setting<std::uint32_t> context;
@@ -299,13 +294,13 @@ struct ModelSettings {
 // allows: a context beyond the checkpoint's ceiling, more drafts than the
 // drafter proposes. The reasoning markers stay unresolved (their fallback,
 // none) until ResolveReasoning.
-// The default enables the qualified ordinary Gemma31 recipe only within its
-// checked context/owner bounds; false preserves internal diagnostic controls.
 // gemma3_trained_max is an internal qualification hook: only the approved
 // Gemma3 profile may resolve its trained maximum, still with one owner.
-std::expected<ModelSettings, std::string> ResolveSettings(
-    const config::ModelEntry& entry, const ArtifactFacts& facts, const Calibration* calibration,
-    bool plain, bool gemma31_production = true, bool gemma3_trained_max = false);
+std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEntry& entry,
+                                                          const ArtifactFacts& facts,
+                                                          const Calibration* calibration,
+                                                          bool plain,
+                                                          bool gemma3_trained_max = false);
 
 // The reasoning markers once the vocabulary is known (`find`: a token's ID
 // by its exact text): each override, which must be a token of it (empty:

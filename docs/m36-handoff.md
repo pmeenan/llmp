@@ -1,7 +1,5 @@
-<!--
-SPDX-FileCopyrightText: 2026 llmpalooza contributors
-SPDX-License-Identifier: Apache-2.0
--->
+<!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # M3.6 handoff
 
@@ -57,32 +55,16 @@ In flight (uncommitted worktrees under `/home/pmeenan/src/llmp/.claude/worktrees
 `git worktree list` shows the current set, and this section is updated as
 each lands):
 
-- **G2c: Gemma 4 26B-A4B and 31B with their assistants on the shared engine**
-  landed on `main` (see `git log`). The 1% gate passed: 26B at 9 blocks,
-  31B at 7, and the 31B assistant screen 4.4% faster. Records are in
+- **G2c and G2d: Gemma 4 26B-A4B and 31B with their assistants on the shared
+  engine, and the deletion of the M3 Gemma 4 code** landed on `main` (see
+  `git log`). The 1% gate passed: 26B at 9 blocks, 31B at 7, and the 31B
+  assistant screen 4.4% faster. Records are in
   `spark:~/scratch/m36-gate/g2c-c9f7f2db*` and in the baselines README's
   G2c section, which includes the 4-row verify's bit identity with M3 for
-  both profiles.
-- **G2d: delete the Gemma 4 M3 code.** Mostly done: the work is on the
-  local branch `m36-g2d` (worktree `.claude/worktrees/m36-g2d`), a WIP
-  commit on top of `main` after G2c and the archive; not on `main`. Its builder's state:
-  - The code deletions and engine-only test conversions are done.
-  - L3 (served four owners at the 8K/C4 envelope) and L4 (cross-variant
-    kept tag with the real identities) passed before a last assertion fix.
-  - A new served-assistant acceptance test is included.
-  - The calibration key no longer carries `gemma31_production=true`, so
-    stored Gemma 4 calibrations re-key; that needs a CHANGELOG line.
-
-  Left to do:
-  - Docs: plan ticks, engine.md, runtime-serving.md, engine-components.md,
-    optimization-inventory.md, CHANGELOG Removed lines, the coverage map in
-    the commit message, AGENTS.md.
-  - clang-format, `tools/llmp_boundaries.py` and the header check.
-  - The full Spark set on the final state, then a review.
-
-  Open question: the assistant's draft-pass logits are no longer compared
-  with the reference executor, only run to run plus the served
-  acceptance test.
+  both profiles. Open from G2d: the assistant's draft-pass logits are no
+  longer compared with the reference executor, only run to run
+  (`component_runner_gemma4_gpu_test`) and by the served acceptance test
+  (`Gemma4AssistantServingGpu`).
 - **G3b: Qwen3.8 patterns, policy and GGML lowering**
   (`agent-a1d41dad140560dc5`, based on `88efa86c`; Spark copy
   `spark-b:~/src/m36-g3b`, helper `~/scratch/g3b/tgt.sh`). Stopped at a
@@ -139,7 +121,7 @@ each lands):
   `HF_TOKEN` in the ignored `/.env`. Native import from the archive and
   install into it go to the importer's N4 slice.
 
-Next, in order: G2c land; G2d; G3b review and land; G3c (Qwen3.8 wiring
+Next, in order: G3b review and land; G3c (Qwen3.8 wiring
 and the 1% gate for native, GGUF and MTP); G3d (deletion); G4a review and
 land; G4b–d; N3–N6 (the importer's fold catalog, writer, `llmp import`
 and install from the archive, re-import of every artifact, adversarial
@@ -154,7 +136,7 @@ spark-b during the weight-handle review.
 
 The slice plan as designed before work began. Where it differs from what was
 built, docs/engine-components.md's "as built" text and the commits win.
-Done so far: waves 0–2, P1, G1a–d, G2a–b, G3a, N1; G2c, G3b, G4a in flight.
+Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a, G4a, N1; G3b in flight.
 
 #### Wave 3: families, one at a time through the gate
 
@@ -182,7 +164,7 @@ Component authoring for the next family (its `a` slice) may run ahead in new fil
 **Gemma4 26B-A4B/31B + assistants (G2):**
 - **a.** Components: softmax top-8/128 router with expert scales; routed products + ordered reduce; parallel dense FFN; global K=V tie + V-norm; proportional frequencies. The assistant is a drafter stage that `reads` target KV (borrowed contract) and the post-final-norm tap.
 - **b.** Patterns: Gemma route/reduce (`gemma_moe_fusion.h`), owner-root rewrite (`gemma4_attention.cc`), common-width reads.
-- **c, d.** Wiring and gate, then deletion. G2c runs the assistant transaction controls.
+- **c, d.** Wiring and gate, then deletion: landed.
 
 **Qwen3.8 native + GGUF + MTP (G3):**
 - **a.** Components:
@@ -341,11 +323,10 @@ own slice when it names none.
 - AFTER the trust-walk slice (owner suggestion 2026-10-09, heavy path, pager/catalog): weight artifact file handles open only while the model is active (registered for serving and any extent may need page-in); close when the model leaves the active set with nothing resident; reopen on activation with a size check against the installed manifest (functional, not trust). First confirm the current open/close lifetime of artifact files. Socket fd limit raising (D-102) stays.
 - G1c wiring (from L6): ComponentLlmBuild lends no cuBLAS handle (plans needing cuBLAS refused) — needs a mapped, charged workspace; device_greedy false for GGML parts until the lowering returns greedy I32 per segment; setup shapes measured at past=context-rows, read_cells=context — confirm the lowering accepts them; policy strings duplicated in serving.cc ComponentLlmBuild (copied from component_runner_gpu_test) — must come from the architecture mapping (G1a/b owns). Kept record v2: per-drafter adaptive depths not persisted; drafter cursors reset to positions after prefill/restore/adopt (acceptance cost only); adaptive wave form not wired.
 - G1c (from L6 review): ComponentLlmBuild hard-codes policy strings and vocab (serving.cc:126+) — take policy from Mapping::policy (now on main via G1a/b) and logit width from the spec head; BoundDigest must include drafter artifact IDs once drafters exist; EngineLlm::AdoptPositionFor/PreparePositionRestoreFor pass the model's own KeptLayout (tautological; real check is kept::Check identity.layout) — thread the record's layout through; cuBLAS handle nullptr; device_greedy false.
-- G2b/G2c (from G2a): EP partition: kView of an expert-local value doesn't propagate (stacked gate_up); lowering of kRoute/kExpertReduce/kMatMulId to the legacy GGML sequences, kFeatures/kOutputCells inputs, frozen masks (host and device); engine: anchored draft passes (past = target committed positions), feature binding, CheckShape read_cells ≥ past+rows vs frozen reads at pad256(prefix), tap ring size vs verify rows; assistant's shared_kv_layers not required == block_count; mapping hardcodes stacked gate_up and kv_tie by layer type.
+- From G2a: EP partition: kView of an expert-local value doesn't propagate (stacked gate_up); assistant's shared_kv_layers not required == block_count; mapping hardcodes stacked gate_up and kv_tie by layer type.
 - From G2a review: CheckReads accepts only post-final-norm taps and only stage 0 as target — widen for MTP drafters reading pre-final-norm hidden state (Qwen3.8, DeepSeek) and drafter cascades (i reads i−1) before those migrations; CheckStateWrites checks only primitive kCacheStore (fine before patterns; extend when fused stores appear in drafter steps); attention.borrowed splits by heads unchecked against target's split; ffn.moe declares pattern gemma_route_reduce not yet a fused kind. 26B gap explained: production arithmetic error + frontier-row cancellation (prompt), routing near-ties ~half of decode gap.
 - G2c: Gemma4 runner turns narrow_final off when retaining features (keeps every row's feature); components' tap keeps only output rows so components still narrow — decide whether the assistant needs every row's feature; if so NarrowPoint must stay off when a stage has taps.
 - From G1c review: V0Values uses the compiled 2B/4B-QAT profile for any artifact of that architecture (M3 classes accepted only the approved artifact) — approval list as data comes with the importer's admission gate; engine path with speculation=true and no drafter silently serves plain (M3 refused) — decide at G2c/G3c; plan.md 2026-10-09 note should mention the gate-only checkpoint switch when G1 lands. AFTER G1: shared improvement — move turn-checkpoint capture off the first-token path (overlap with decode), for every family.
-- G2c (from G2b handback): WriteComputed must stage a store-cells slot with outputs!=0 as only the last `outputs` rows' cells (taps with outputs<rows refused today); frozen host masks need a frozen CellKey (lowering refuses unless LowerOptions::frozen_host_masks); serving must pick the policy rule (gemma*_production off → outside recipe even within envelope); cuBLAS for >16-row router product (ComponentLlmBuild lends none); expert slabs reserved like Gemma4Runner::ReserveWeights + GgmlBackendOptions.lower.expert_stride; multi-stage StepSource in the engine (test-local Stages takes KeyBase from stage 0); draft read widths at Pad256 prefixes (test uses prefix 37); TensorUse::routed_experts left false (slabs cataloged as weights).
 - From G2b review: launch-level CPU compare can't see read/store order inside owner-attention steps (multiset) nor addresses/placement — only the GPU bit-identity test covers them. EP with one expert per device (E == devices) refused at device-graph verification (partition.cc:185 Local keeps rank 3 with ne[2]=1) — fix before a 128-expert × 128-device placement; EP mask-by-zero turns a non-finite other-device product into NaN (pre-existing; use select/where instead of mul if it matters).
 - From G1c gate debug: building a plan for a new shape costs 5.6 ms on the engine vs 3.3 ms on M3 (BuildStep 1.8 + Plan 2.2 + lower 1.3 + bind 0.9); still on the critical path for the first decode step and the 3-row tail after the checkpoint boundary (NextPrefillHint stops at stable_boundary_). Follow-ups: planner/BuildStep speed; decode-first lookahead. Gate passes without them.
 - From N1 review: CheckImporter duplicated (artifact.cc/composition.cc); runtime doesn't read v1 yet (ComponentLlmBuild uses SynthesizeV0 — switch at N4/integration); N4 writer must reproduce test writer rules, options_sha256 canonical doc, tensor name mapping, drafter-pair compositions; no independent v1 oracle until M5's verifier; ASan run of the mutation test owed at a workstation tier.
@@ -354,4 +335,4 @@ own slice when it names none.
 - From G3a round 2: component code nests builder calls as arguments (qsa.cc b.Add(b.Reshape(..), b.View(..)), Attention(cache_view(K), cache_view(V))) → node order and graph digest depend on argument-evaluation order (compiler-dependent; order tests pin Clang). Sequence them into locals across components (Gemma too) before a second compiler matters. Pre-existing UBSan -fsanitize=function failure in cpu-asan preset: reference/decode.cc:257 and reference_decode_test.cc:368/421 call GGML to_float through ggml_to_float_t (GGML's own pattern) — cpu-asan preset fails 15 tests; decide: suppress for those calls or log RE.
 - License (after G3a merge): tag gdn.cc, qsa.cc, hc.cc, ple.cc MIT AND Apache-2.0 + "2023-2026 The ggml authors"; add them to docs/licensing.md and the GGML lock scope. Sweep remaining untagged src/kernels/ggml files (validate.cc, validate_ext.cc restate GGML asserts; gemma_moe_fusion.cc judged independent). ExLlamaV3 notice guard: decode_exl3.cc in llmp_reference_kernels (tests/fuzz only today) — add IN_TREE_UNITS/provenance entry so a shipped link carries Turboderp's notice. YaRN attribution comment in exec.cc/kv_quant_rope.cu (package notice already ships it).
 - DeepSeek budget cliff (fd review, spark-b): with ~1.1 GiB less MemAvailable at start (119.0 vs 120.4 GB), qwen3.8→deepseek took 16.1 s (vs 8.15) and deepseek→qwen3.8 19.7 s (evict 9.2 s) — near the 20 s bound; investigate. Optional: re-hash shard header region on reopen (same-path same-size replacement now read silently, D-056 amendment).
-- From G2c: G2d deletes M3 Gemma class, gemma4_runner/plan/assistant/assistant plan/greedy, gemma4 + assistant graph builders, model/gemma4 builders (keep profile/binding), ServingOptions gemma diagnostics and gemma26/31_production (move 256/1024 prefill-chunk fallback into data), Gemma benchmarks, legacy tests incl. gemma_joined_serving_gpu_test, Make routing; CHANGELOG lines. Perf leads: decode +0.2–0.4% (plan build ~11 vs 8.8 ms/shape; joined steps admit each owner twice). Assistant: depth fixed at 3 (no adaptive, draft_rows unused for gemma4, no device verdict); 26B assistant served speed has no baseline.
+- From G2c: perf leads: decode +0.2–0.4% (plan build ~11 vs 8.8 ms/shape; joined steps admit each owner twice). Assistant: depth fixed at 3 (no adaptive, draft_rows unused for gemma4, no device verdict); 26B assistant served speed has no baseline.

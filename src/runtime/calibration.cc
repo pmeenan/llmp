@@ -103,12 +103,6 @@ std::string MeasuredWith(const ModelSettings& s) {
         s.wave_read_align.value, s.depth_cost_ratio.value,
         s.depth_cost_ratio.source == SettingSource::kOverride);
   }
-  if (s.gemma31_production) {
-    measured += " gemma31_production=true";
-  }
-  if (s.gemma26_production) {
-    measured += " gemma26_production=true";
-  }
   return measured;
 }
 

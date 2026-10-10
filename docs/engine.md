@@ -66,7 +66,7 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | Prefill lookahead | `prefill_lookahead.h` | `PrefillLookahead` and fixed-capacity `PrefillLookaheadGroup`: independent optional host allowances before CPU-only future plans, sequential builds during current device work, ordered installation after successful completion, exact cache-charge transfer and destruction before unused-grant release | Shape prediction, graph construction, binding/coverage/cache installation and capture policy |
 | Resources | `runner_memory.h`, `runner_resources.h` | The runner's own device memory (pinned) and pinned staging (`RunnerMemory`, the core's); for a GGML runner, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry (`RunnerResources`); and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
-| Slot lifecycle | `slot_lifecycle.h` (`model/state_contract.h`) | Request slots of one LiveState per stage (target, then each drafter) and every verb that moves their state, a verify's Accept, discard and settle among them, derived from the stages' state contracts, with the reconciled guards ([below](#the-shared-slot-lifecycle)); the model runner's, so Gemma 2's and Gemma 3's (the other families' runners move to it as they migrate) | The stages' contracts and read alignments, the shared extents, the spec's digest, its invalidation and plan-dropping hooks, and a write record before every job that writes a slot |
+| Slot lifecycle | `slot_lifecycle.h` (`model/state_contract.h`) | Request slots of one LiveState per stage (target, then each drafter) and every verb that moves their state, a verify's Accept, discard and settle among them, derived from the stages' state contracts, with the reconciled guards ([below](#the-shared-slot-lifecycle)); the model runner's, so Gemma 2's, Gemma 3's and Gemma 4's (the other families' runners move to it as they migrate) | The stages' contracts and read alignments, the shared extents, the spec's digest, its invalidation and plan-dropping hooks, and a write record before every job that writes a slot |
 
 Startup measurement can skip greedy activation placement when a checked
 disjoint root-storage bound fits the current exact maximum. Gemma2/3,
@@ -398,9 +398,11 @@ component source, the one a shape's stage names, and one key base for all
 (the spec bound to every stage's artifacts, digests over every stage's
 patterns and policy). Over it the runner runs Gemma 4 26B-A4B's and 31B's
 recipes and their assistants' draft passes bit for bit the M3 runner's
-(`component_runner_gemma4_gpu_test`: the target's steps of the composed
+(they were; the M3 runner is deleted, and `component_runner_gemma4_gpu_test`
+now checks the outputs finite and identical from one run to the next,
+the verify and draft cases included: the target's steps of the composed
 spec write the assistant's feature tap, which its first pass reads); serving
-runs Gemma 4 and its assistant on it.
+runs Gemma 4 and its assistant on it (`Gemma4AssistantServingGpu`).
 
 **Planner types** (`planner/step_shape.h`, header-only; the planner,
 `planner/plan.h`, plans a step's graph and makes its key,
@@ -743,7 +745,10 @@ the importer, plus any component its shape still lacks
 ([engine-components.md](engine-components.md)); no family gets a runner of
 its own, and the guidance below describes the M3/M3.5 runners until they
 move. Gemma 2's and Gemma 3's are gone (slice G1d: `engine/gemma{2,3}_
-{runner,plan}.*`, `kernels/ggml/gemma{2,3}_graph.*`, the serving classes);
+{runner,plan}.*`, `kernels/ggml/gemma{2,3}_graph.*`, the serving classes),
+and Gemma 4's (slice G2d: `engine/gemma4_{runner,plan,assistant,
+assistant_plan,greedy,wave}.*`, `kernels/ggml/gemma4_graph.*`,
+`gemma4_assistant_graph.*`, `gemma4_attention.cc`, the serving class);
 their paragraphs below stay as the record of the techniques the shared
 engine carries for them, and name files that no longer exist.* Start from the [optimization inventory's catalog](optimization-inventory.md#transfers-and-gaps):
 a new runner adopts each technique there whose contract it meets before the

@@ -720,7 +720,8 @@ architecture exclusions:
   sparse selection, visibility and reduction geometry. Both Qwen artifacts
   use direct cache views (`qwen38_graph.cc`, `Attention`) or QSA gathers;
   their wave planner joins products/attention outputs, not owner K/V banks.
-  Both Gemma4 profiles use per-segment real K/V views (`gemma4_graph.cc`)
+  Both Gemma4 profiles use per-segment real K/V views (`gemma4_graph.cc` at
+  `cc70d69`, now the components')
   and concatenate attention outputs; ordinary prefill capacity remains one.
   Their future joined admission is T55, without this missing packing copy.
   Qwen-Image text encoder and denoiser read BF16 inputs/prefixes directly;
@@ -780,11 +781,11 @@ Source cross-checks at `3ab8d5c`:
   [wave composition](../src/engine/qwen38_wave_plan.cc), and
   [runner](../src/engine/qwen38_runner.cc) separate native packed products,
   ordinary GGUF VecQ, BF16 drafter/head groups and lane/argmax consumers.
-- Gemma2's and Gemma3's runners, graph/plan builders and serving classes
-  (at `cc70d69`: `src/engine/gemma{2,3}_runner.cc`) were retired in M3.6
-  (slice G1d): their techniques are the shared components', patterns' and
-  runner's, [Gemma4](../src/engine/gemma4_runner.cc) is read together with
-  its graph/plan builders and [ordinary serving factories](../src/runtime/serving.cc).
+- Gemma2's, Gemma3's and Gemma4's runners, graph/plan builders and serving
+  classes (at `cc70d69`: `src/engine/gemma{2,3,4}_runner.cc`,
+  `src/kernels/ggml/gemma4_graph.cc`) were retired in M3.6 (slices G1d and
+  G2d): their techniques are the shared components', patterns' and
+  runner's, and the recipes are the mappings' policy rules.
   Internal options alone never establish ordinary selection.
 - [Image runner](../src/engine/qwen_image_runner.cc) and
   [pipeline](../src/kernels/image/pipeline.cc) distinguish Encode, repeated

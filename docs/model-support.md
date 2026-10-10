@@ -89,13 +89,16 @@ listing is separate from the supported summary above.
 
 ## Architecture foundations
 
-*Gemma 2 and Gemma 3 since M3.6's migration (slice G1d): the bounded
-runners, plans, graph builders, state layouts and serving classes the next
-paragraphs and [gemma2.md](gemma2.md) and [gemma3.md](gemma3.md) record
-are deleted; both models serve on the shared engine, the 1% speed gate
-passed against the frozen M3 build
-([results](experiments/m36-baselines/README.md#gemma-2-and-gemma-3-on-the-shared-engine-slice-g1c)),
-and `model/gemma{2,3}.h` keep only the approved profile and tensor binding.
+*Gemma 2 and Gemma 3 since M3.6's migration (slice G1d), and Gemma 4 since
+slice G2d: the bounded runners, plans, graph builders, state layouts and
+serving classes the next paragraphs and [gemma2.md](gemma2.md),
+[gemma3.md](gemma3.md), [gemma4.md](gemma4.md) and
+[gemma4-assistant.md](gemma4-assistant.md) record are deleted; the models
+serve on the shared engine, the 1% speed gate passed against the frozen M3
+build
+([Gemma 2 and 3](experiments/m36-baselines/README.md#gemma-2-and-gemma-3-on-the-shared-engine-slice-g1c),
+[Gemma 4](experiments/m36-baselines/README.md#gemma-4-26b-a4b-and-31b-on-the-shared-engine-slice-g2c)),
+and `model/gemma{2,3,4}.h` keep only the approved profile and tensor binding.
 The controls and screens below were taken on the M3 runners; the shared
 engine's own are in [engine.md](engine.md#the-serving-adapter) and
 `gemma_engine_serving_gpu_test`.*
@@ -246,11 +249,12 @@ cursors and final heads. Short n=2 decode falls 21.0667% and total paid latency
 8.26029%. This internal option remains false by default; the original stock
 head-byte FAIL and all broader qualification gates remain open.
 
-Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
-bounded independent-slot state and segmented host-input descriptions in
-`model/gemma4.h`. The [foundation contract](gemma4.md) records actual pinned
+Gemma 4 26B-A4B and 31B have checked profiles and strict GGML tensor bindings
+in `model/gemma4.h` (the bounded independent-slot state and segmented
+host-input descriptions it once held are components now). The [foundation
+contract](gemma4.md) records actual pinned
 metadata, CPU/fake controls and required optimization/batching qualification.
-Both approved artifacts have checked import, segmented graphs, a shared native
+Both approved artifacts had checked import, segmented graphs, a shared native
 runner and a [bounded scalar serving route](experiments/gemma31-serving/README.md)
 for chat/literal completions, likelihoods and up to twelve independent owners.
 The route disables thinking and refuses generated tools; it refused assistants and
@@ -974,8 +978,9 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   its components and the mapping's recipe for the serving envelope over
   GGML's kernels, step for step bit-identical to the M3 runner and
   assistant ([engine.md](engine.md#the-serving-adapter)); kept
-  conversations in record version 2. The M3 runner and serving class stay
-  until their deletion (slice G2d), serving only under internal diagnostics.
+  conversations in record version 2. The M3 runner, plans, graph builders,
+  assistant and serving class, with their internal diagnostics, are
+  deleted (slice G2d).
 - **Envelope:** at context at most 8,192 and at most four slots, each
   profile selects its checked optimized recipe (joined serving, norm chains
   and owner attention; 26B-A4B adds MoE route/reduce and 1,024-row prefill);

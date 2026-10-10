@@ -20,9 +20,6 @@ llmp_gtest(cli_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 add_executable(base_test base_test.cc)
-add_executable(gemma_joined_groups_test gemma_joined_groups_test.cc)
-target_link_libraries(gemma_joined_groups_test PRIVATE llmp_base)
-llmp_gtest(gemma_joined_groups_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 target_link_libraries(base_test PRIVATE llmp_report llmp_base)
 llmp_gtest(base_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
@@ -330,8 +327,7 @@ target_link_libraries(gemma3_test PRIVATE llmp_model llmp_artifact llmp_json)
 llmp_gtest(gemma3_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
-# Approved Gemma4 profiles and actual tensor contracts, independent-slot
-# state and segment inputs. This foundation executes no model kernels.
+# Approved Gemma4 profiles and actual tensor contracts.
 add_executable(gemma4_test gemma4_test.cc)
 target_link_libraries(gemma4_test PRIVATE llmp_model llmp_artifact llmp_json)
 llmp_gtest(gemma4_test TEST_PREFIX unit. PROPERTIES LABELS unit
@@ -342,29 +338,12 @@ target_link_libraries(gemma_profile_test PRIVATE llmp_runtime llmp_model llmp_js
 llmp_gtest(gemma_profile_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
-add_executable(gemma4_graph_test gemma4_graph_test.cc)
-add_executable(gemma4_greedy_test gemma4_greedy_test.cc)
-target_link_libraries(gemma4_greedy_test PRIVATE llmp_gemma4_greedy)
-llmp_gtest(gemma4_greedy_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-add_executable(gemma4_assistant_graph_test gemma4_assistant_graph_test.cc)
-target_link_libraries(gemma4_assistant_graph_test PRIVATE llmp_ggml_tensors llmp_artifact llmp_json)
-llmp_gtest(gemma4_assistant_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-target_link_libraries(gemma4_graph_test PRIVATE llmp_ggml_tensors llmp_artifact llmp_json)
-llmp_gtest(gemma4_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 if(LLMP_CUDA)
-  add_executable(gemma4_exec_test gemma4_exec_test.cc)
   add_executable(gemma_norm_gpu_test gemma_norm_gpu_test.cc)
   target_include_directories(gemma_norm_gpu_test SYSTEM PRIVATE
       "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(gemma_norm_gpu_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory)
   llmp_gpu_gtest(gemma_norm_gpu_test)
-  target_link_libraries(gemma4_exec_test PRIVATE llmp_engine llmp_json llmp_cuda_device_memory)
-  target_include_directories(gemma4_exec_test SYSTEM PRIVATE
-      "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  llmp_gpu_gtest(gemma4_exec_test ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
   add_executable(gemma4_serving_gpu_test gemma4_serving_gpu_test.cc)
   target_link_libraries(gemma4_serving_gpu_test PRIVATE llmp_runtime_serving)
   llmp_gpu_gtest(gemma4_serving_gpu_test MODELS
@@ -386,44 +365,6 @@ if(LLMP_CUDA)
   target_link_libraries(weight_files_serving_gpu_test PRIVATE llmp_runtime_serving llmp_artifact)
   llmp_gpu_gtest(weight_files_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-  add_executable(gemma_joined_serving_gpu_test gemma_joined_serving_gpu_test.cc)
-  target_link_libraries(gemma_joined_serving_gpu_test PRIVATE llmp_runtime_serving)
-  llmp_gpu_gtest(gemma_joined_serving_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}"
-                               "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-  add_executable(gemma4_assistant_gpu_test gemma4_assistant_gpu_test.cc)
-  target_link_libraries(gemma4_assistant_gpu_test PRIVATE llmp_engine)
-  llmp_gpu_gtest(gemma4_assistant_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-  add_executable(gemma4_greedy_gpu_test gemma4_greedy_gpu_test.cc)
-  target_link_libraries(gemma4_greedy_gpu_test PRIVATE llmp_engine)
-  llmp_gpu_gtest(gemma4_greedy_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-  add_executable(gemma4_verify_gpu_test gemma4_verify_gpu_test.cc)
-  target_link_libraries(gemma4_verify_gpu_test PRIVATE llmp_engine)
-  llmp_gpu_gtest(gemma4_verify_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-  add_executable(gemma4_runner_gpu_test gemma4_runner_gpu_test.cc)
-  target_link_libraries(gemma4_runner_gpu_test PRIVATE llmp_engine)
-  llmp_gpu_gtest(gemma4_runner_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-  add_executable(gemma4_runner_test gemma4_runner_test.cc)
-  target_link_libraries(gemma4_runner_test PRIVATE llmp_engine)
-  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
-  target_link_options(gemma4_runner_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
-  llmp_gtest(gemma4_runner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-  add_executable(gemma4_assistant_plan_test gemma4_assistant_plan_test.cc)
-  target_link_libraries(gemma4_assistant_plan_test PRIVATE llmp_engine llmp_json)
-  llmp_gtest(gemma4_assistant_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit
-               ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-  add_executable(gemma_measurement_gpu_test gemma_measurement_gpu_test.cc)
-  target_link_libraries(gemma_measurement_gpu_test PRIVATE llmp_engine llmp_json)
-  llmp_gpu_gtest(gemma_measurement_gpu_test
-                   ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-  add_executable(gemma4_plan_test gemma4_plan_test.cc)
-  target_link_libraries(gemma4_plan_test PRIVATE llmp_engine llmp_json)
-  llmp_gtest(gemma4_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit
-               ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 endif()
 
 # The native tokenizer (M3) on synthetic vocabularies, in every profile.
@@ -1111,17 +1052,6 @@ target_link_libraries(components_test PRIVATE llmp_components llmp_reference_ker
 llmp_gtest(components_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
-# The Gemma 4 components' steps (26B-A4B, 31B and their assistants)
-# against today's Gemma4 graph builders, node for node, the router and
-# reduce as the composite ops their runs decompose to; the mappings'
-# default policies as the planner parses them.
-add_executable(components_gemma4_order_test components_gemma4_order_test.cc)
-target_link_libraries(components_gemma4_order_test PRIVATE llmp_components llmp_ggml_tensors
-                                                           llmp_planner llmp_spec llmp_model
-                                                           llmp_artifact llmp_json)
-llmp_gtest(components_gemma4_order_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-
 # The Qwen3.8 components (hyper-connections, Gated DeltaNet, QSA, the n-gram
 # embedding, the MoE's hyper-connection form, the MTP drafter's input)
 # against their references, verify saves and commits, the qwen4exp and
@@ -1203,8 +1133,8 @@ llmp_gtest(ggml_lower_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
 # The GGML lowering of Gemma 4's steps (26B-A4B, 31B and their assistants)
-# against today's builders under each serving recipe the runner plans,
-# launch for launch, at every setup shape.
+# under each serving recipe the gemma4 mapping's policy gives, structurally,
+# at every setup shape.
 add_executable(ggml_lower_gemma4_test ggml_lower_gemma4_test.cc)
 target_link_libraries(ggml_lower_gemma4_test PRIVATE llmp_ggml_tensors llmp_planner
                                                      llmp_components llmp_spec llmp_model
@@ -1231,11 +1161,11 @@ if(LLMP_CUDA)
   llmp_gpu_gtest(components_models_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-  # The Gemma 4 components end to end on the installed 26B-A4B (with its
-  # assistant's draft passes) and 31B, by the reference executor, against
-  # today's production runners.
+  # The Gemma 4 components end to end on the installed 26B-A4B and 31B, by
+  # the reference executor, against the served model.
   add_executable(components_gemma4_models_gpu_test components_gemma4_models_gpu_test.cc)
-  target_link_libraries(components_gemma4_models_gpu_test PRIVATE llmp_engine llmp_components
+  target_link_libraries(components_gemma4_models_gpu_test PRIVATE llmp_runtime_serving
+                                                                  llmp_components
                                                                   llmp_reference_kernels llmp_spec
                                                                   llmp_artifact)
   llmp_gpu_gtest(components_gemma4_models_gpu_test MODELS
@@ -1251,11 +1181,12 @@ if(LLMP_CUDA)
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   # The same on the Gemma 4 26B-A4B and 31B and their assistants' draft
-  # passes, under each serving recipe today's runner plans.
+  # passes, under each serving recipe the mapping's policy gives, and a
+  # speculative verify's waves.
   add_executable(component_runner_gemma4_gpu_test component_runner_gemma4_gpu_test.cc)
   target_link_libraries(component_runner_gemma4_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
                                                                  llmp_components llmp_spec
-                                                                 llmp_artifact llmp_tokenizer)
+                                                                 llmp_artifact)
   llmp_gpu_gtest(component_runner_gemma4_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()

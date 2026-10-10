@@ -7,29 +7,31 @@
 fixed profiles, strict GGML artifact bindings, bounded state layouts,
 initialized read/write footprints and independent request-segment inputs.
 The segmented GGML graph, checked plan adapter and bounded native 26B-A4B/31B
-engine runner described below extend this foundation. Both approved profiles
-have bounded serving routes, with a checked dense31 optimized recipe at 8K/four slots; assistants remain unavailable. The
+engine runner described below extended this foundation. Both approved profiles
+have bounded serving routes, with a checked dense31 optimized recipe at 8K/four slots, and their assistants speculate. The
 [support matrix](model-support.md#gemma-4-26b-a4b-and-31b) lists both as
 served on bounded routes with no support level verified; the family task
 remains open.
 
-**Being replaced (M3.6, D-107).** The per-family profile, graph and runner
-described here give way to one engine of shared components over llmpalooza's own
-graph IR ([engine-components.md](engine-components.md)); M3.5, and with it
-this family task, is parked until M3.6 exits. This file describes the code as
-it is, and changes as each piece lands.
-
-> **Served on the shared engine (M3.6, slice G2c).** Both profiles, and
-> with a `drafter` their assistants, serve through the shared runner
-> (D-107): the `gemma4` and `gemma4-assistant` mappings
-> (`src/spec/mappings/gemma4.*`), their components lowered onto GGML,
-> step for step bit-identical to the runner and assistant below
-> ([engine.md](engine.md#the-serving-adapter)). The serving class, runner,
-> plans, graph builders and assistant this file records stay in the tree
-> until their deletion (slice G2d), serving only under the class's internal
-> joined, row-invariant and prepare-state diagnostics, which the engine
-> does not port; what follows is the record of their controls and
-> measurements.
+> **Retired (M3.6, slice G2d).** Both profiles, and with a `drafter` their
+> assistants, serve on the shared engine (D-107): the `gemma4` and
+> `gemma4-assistant` mappings (`src/spec/mappings/gemma4.*`), their
+> components lowered onto GGML, step for step bit-identical to the runner and
+> assistant this file records ([engine.md](engine.md#the-serving-adapter);
+> the 1% gate in the [baselines report](experiments/m36-baselines/README.md#gemma-4-26b-a4b-and-31b-on-the-shared-engine-slice-g2c)).
+> The files it names are deleted: `model/gemma4.*`'s state and input
+> builders (`model/gemma4.h` keeps the approved profiles and the checked
+> tensor binding, with `model/gemma4_assistant.h`),
+> `kernels/ggml/gemma4_graph.*`, `gemma4_assistant_graph.*` and
+> `gemma4_attention.cc`, `engine/gemma4_{runner,plan,assistant,
+> assistant_plan,greedy,wave}.*`, the serving class and its internal joined,
+> row-invariant and prepare-state diagnostics, and `ServingOptions`'
+> `gemma26_production`/`gemma31_production` (the 256- and 1,024-row prompt
+> chunks of the bounded recipes are now the mapping's policy rules'
+> `prefill_chunk`). What follows is the record of the M3.5 runner's controls
+> and measurements; the 8K/four-owner check of interleaved prompts, their
+> departures and continuations is
+> `Gemma4EnvelopeServingGpu` in `gemma4_serving_gpu_test`.
 
 ## Verified contracts
 
