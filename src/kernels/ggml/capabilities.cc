@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -46,6 +47,7 @@ using Operation = ex::Operation;
 
 constexpr std::array kF32 = {Encoding::kF32};
 constexpr std::array kF16 = {Encoding::kF16};
+constexpr std::array kF32F16 = {Encoding::kF32, Encoding::kF16};
 constexpr std::array kI32 = {Encoding::kI32};
 constexpr std::array kI64 = {Encoding::kI64};
 constexpr std::array kIds = {Encoding::kI32, Encoding::kI64};
@@ -85,6 +87,14 @@ using Rule = ex::OperandRule;
 constexpr std::array<Rule, 1> kF32In = {{{.operand = 0, .encodings = kF32, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kF32Binary = {{{.operand = 0, .encodings = kF32, .layouts = kDense},
                                              {.operand = 1, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kAddRules = {
+    {{.operand = 0, .encodings = kF32F16, .layouts = kDense},
+     {.operand = 1, .encodings = kF32F16, .layouts = kDense}}};
+constexpr std::array<Rule, 4> kIndexScoreRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF16, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = 3, .encodings = kF16, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kF32Glu = kF32Binary;
 constexpr std::array<Rule, 1> kFloatTable = {
     {{.operand = 0, .encodings = kFloats, .layouts = kDense}}};
@@ -189,6 +199,9 @@ constexpr std::array<Rule, 3> kBf16Product = {
     {{.operand = 0, .encodings = kBf16, .layouts = kDense},
      {.operand = 1, .encodings = kBf16, .layouts = kDense},
      {.operand = kOut, .encodings = kF32Bf16, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kFloatConvert = {
+    {{.operand = 0, .encodings = kF32F16, .layouts = kDense},
+     {.operand = kOut, .encodings = kF32F16, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kToBf16 = {
     {{.operand = 0, .encodings = kF32, .layouts = kDense},
      {.operand = kOut, .encodings = kBf16, .layouts = kDense}}};
@@ -319,7 +332,7 @@ bool AcceptsRopeNeox(const ex::CapabilityQuery& q) {
 }
 bool AcceptsRopeExt(const ex::CapabilityQuery& q) {
   const auto r = ParamsOf<ir::RopeParams>(q);
-  return Built(q) && r && !r->table;
+  return Built(q) && r && PlainRope(*r);
 }
 
 // CheckGemmaNormRope's (gemma_norm.cc): a full NEOX rotation of D 256 or
@@ -399,7 +412,9 @@ bool AcceptsAttention256(const ex::CapabilityQuery& q) {
 // producer derives the cells' positions from the ring's capacity.
 bool AcceptsMask(const ex::CapabilityQuery& q) {
   const auto m = ParamsOf<ir::MaskParams>(q);
-  return Built(q) && m && (m->kind == ir::MaskKind::kCausal || m->kind == ir::MaskKind::kWindow);
+  return Built(q) && m &&
+         (m->kind == ir::MaskKind::kCausal || m->kind == ir::MaskKind::kWindow ||
+          m->kind == ir::MaskKind::kAhead);
 }
 
 // CheckFlashAttnOwners' contract (fattn_owner.h), over the node's extents:
@@ -506,7 +521,42 @@ bool AcceptsGemmaReduce(const ex::CapabilityQuery& q) {
          x->ne == Ne{2816, 8, rows, 1} && w->ne == Ne{8, rows, 1, 1} && s->ne == Ne{1, 8, rows, 1};
 }
 
+bool AcceptsAdd(const ex::CapabilityQuery& q) {
+  const auto* a = Operand(q, 0);
+  const auto* b = Operand(q, 1);
+  return Built(q) && a != nullptr && b != nullptr && a->encoding == b->encoding;
+}
+
+bool AcceptsConvert(const ex::CapabilityQuery& q) {
+  const auto* from = Operand(q, 0);
+  const auto* to = Operand(q, ex::kOutputOperand);
+  if (!Built(q) || from == nullptr || to == nullptr || from->encoding == to->encoding) return false;
+  std::uint64_t count = 1;
+  for (const auto n : from->ne) {
+    if (n == 0 || n > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) / count)
+      return false;
+    count *= n;
+  }
+  return true;
+}
+
+bool AcceptsIndexScore(const ex::CapabilityQuery& q) {
+  const auto* query = Operand(q, 0);
+  const auto* keys = Operand(q, 1);
+  return Built(q) && Has(q, 3) && query != nullptr && keys != nullptr && query->ne[0] == 128 &&
+         (query->ne[1] == 32 || query->ne[1] == 64) && query->ne[2] > 0 && query->ne[2] <= 65535 &&
+         query->ne[3] > 0 && query->ne[3] <= 65535 && keys->ne[2] > 0 &&
+         keys->ne[2] <= static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) - 64;
+}
+
 bool AcceptsArgmax(const ex::CapabilityQuery& q) { return Built(q); }
+bool AcceptsTopK(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::TopKParams>(q);
+  const auto* x = Operand(q, 0);
+  constexpr auto max = static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+  return Built(q) && p && x != nullptr && p->k > 0 && p->k <= x->ne[0] && x->ne[0] <= max &&
+         x->ne[1] != 0 && x->ne[2] != 0 && x->ne[3] != 0 && x->ne[1] <= max / x->ne[2] / x->ne[3];
+}
 
 // ------------------------------------------------- Qwen3.8's fast forms
 
@@ -779,7 +829,7 @@ const std::array kEntries = {
     Entry{"ggml.get_rows.ext", Operation::kGetRows, Cap(P(Op::kGetRows), {}, &AcceptsAny, true),
           kBuilt},
     Entry{"ggml.scale", Operation::kScale, Cap(P(Op::kScale), kF32In, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.add", Operation::kAdd, Cap(P(Op::kAdd), kF32Binary, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.add", Operation::kAdd, Cap(P(Op::kAdd), kAddRules, &AcceptsAdd, true), kBuilt},
     Entry{"ggml.mul", Operation::kMul, Cap(P(Op::kMul), kF32Binary, &AcceptsAny, true), kBuilt},
     Entry{"ggml.sub", Operation::kSub, Cap(P(Op::kSub), kF32Binary, &AcceptsAny, true), kBuilt},
     Entry{"ggml.div", Operation::kDiv, Cap(P(Op::kDiv), kF32Binary, &AcceptsAny, true), kBuilt},
@@ -795,6 +845,11 @@ const std::array kEntries = {
           kBuilt},
     Entry{"ggml.argsort.bitonic", Operation::kArgsort,
           Cap(P(Op::kArgsort), kF32In, &AcceptsAny, true), kBuilt},
+    Entry{kLightningIndexerName, Operation::kLightningIndexer,
+          Cap(P(Op::kIndexScore), kIndexScoreRules, &AcceptsIndexScore, true),
+          "; selectable for the build's SASS architectures: D 128, 32 or 64 indexer heads"},
+    Entry{kTopKName, Operation::kTopK, Cap(P(Op::kTopK), kF32In, &AcceptsTopK, true),
+          "; selectable for the build's SASS architectures: F32 rows within I32 counts"},
     Entry{"ggml.rms_norm", Operation::kRmsNorm, Cap(P(Op::kRmsNorm), kF32In, &AcceptsAny, true),
           kBuilt},
     Entry{"ggml.rms_norm_mul.fused", Operation::kRmsNormMul,
@@ -895,7 +950,7 @@ const std::array kEntries = {
           "sm_121 only"},
     Entry{kGemma4MaskName, Operation::kFill,
           Cap(P(Op::kMaskBuild), kMaskPositions, &AcceptsMask, true),
-          "; selectable for the build's SASS architectures: causal and window masks"},
+          "; selectable for the build's SASS architectures: causal, window and ahead masks"},
     Entry{"llmp.argmax", Operation::kTopK, Cap(P(Op::kArgmax), kF32In, &AcceptsArgmax, true),
           kBuilt},
     // Qwen3.8's fast forms (slice G3b; qwen38_graph.h): the MXFP8 and BF16
@@ -912,6 +967,9 @@ const std::array kEntries = {
           "; selectable on sm_121: rows of whole 128 values"},
     Entry{kGemmBf16Name, Operation::kMatMul,
           Cap(P(Op::kMatMul), kBf16Product, &AcceptsAny, false, {}, 4), kBuilt},
+    Entry{"ggml.convert", Operation::kConvert,
+          Cap(P(Op::kConvert), kFloatConvert, &AcceptsConvert, true),
+          "; selectable for the build's SASS architectures: F16/F32 casts within I32 counts"},
     Entry{kBf16Name, Operation::kConvert, Cap(P(Op::kConvert), kToBf16, &AcceptsAny, true), kBuilt},
     Entry{kNvfp4RowsName, Operation::kGetRows,
           Cap(P(Op::kGetRows), kNvfp4Table, &AcceptsNvfp4Rows, true, {}, 2), kBuilt},

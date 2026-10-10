@@ -445,7 +445,10 @@ class Emitter {
                    : CellKey{.capacity = cap, .ring = true};
       case kCompressed:
       case kIndex:
-        return {.capacity = cap, .block = d_.ratio, .positions = true};
+        return {.capacity = cap,
+                .block = d_.ratio,
+                .positions = true,
+                .cell_pad = State(f_.instance).tensors[tensor].cell_pad};
       default:
         return {.capacity = cap, .ring = true, .recent = true};
     }
@@ -1035,7 +1038,7 @@ std::expected<void, std::string> Reference(RefIO& io) {
     if (d.ratio != 0) {
       compressed_read = std::min<std::uint64_t>(
           io.state_cells.at(kCompressed),
-          std::max<std::uint64_t>(256, ((end / d.ratio) + 255) / 256 * 256));
+          CompressedReadCells(end, d.ratio, State(*io.instance).tensors[kCompressed].cell_pad));
     }
     for (std::uint64_t t = 0; t < seg.rows; ++t) {
       const std::uint64_t r = first + t;
@@ -1170,6 +1173,15 @@ void RotateNormal(std::span<double> row, std::uint64_t heads, std::uint64_t dim,
   }
 }
 
+void ShapeParameters(const Instance& in, std::uint32_t rows, std::uint32_t past,
+                     std::uint32_t /*read_align*/, std::vector<std::uint64_t>& out) {
+  const Dims d = DimsOf(in);
+  if (d.ratio == 0) return;
+  out.push_back(CompressorBlocks(rows, past, d.ratio, d.overlap));
+  out.push_back(CompressedReadCells(std::uint64_t{past} + rows, d.ratio,
+                                    State(in).tensors[kCompressed].cell_pad));
+}
+
 const ComponentDef& AttentionMqa() {
   static const ComponentDef def{
       .kind = "attention.mqa",
@@ -1184,6 +1196,7 @@ const ComponentDef& AttentionMqa() {
       .emit = Emit,
       .reference = Reference,
       .inject = Inject,
+      .shape_parameters = ShapeParameters,
   };
   return def;
 }
@@ -1199,6 +1212,13 @@ std::uint64_t CompressorBlocks(std::uint32_t rows, std::uint32_t past, std::uint
   const std::uint64_t complete = (end / ratio) - (std::uint64_t{past} / ratio);
   if (overlap) return (std::uint64_t{rows} + ratio - 1) / ratio;
   return std::max<std::uint64_t>(complete, 1);
+}
+
+std::uint64_t CompressedReadCells(std::uint64_t end, std::uint32_t ratio, std::uint32_t cell_pad) {
+  if (ratio == 0) return 0;
+  const std::uint64_t align = std::max<std::uint32_t>(cell_pad, 1);
+  const std::uint64_t blocks = end / ratio;
+  return std::max(align, ((blocks + align - 1) / align) * align);
 }
 
 // llama.cpp's dsv4_build_comp_plan.

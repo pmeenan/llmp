@@ -430,6 +430,11 @@ struct ComponentDef {
   // its name. Null: none.
   std::expected<FragmentOut, std::string> (*inject)(Fragment& fragment) = nullptr;
   std::vector<std::string> (*inject_reads)(const Instance& instance) = nullptr;
+  // Baked graph dimensions that depend on positions, appended to the
+  // step source's cache key for each segment. Null: positions affect only
+  // input data. Uses the same geometry helpers as the fragment.
+  void (*shape_parameters)(const Instance& instance, std::uint32_t rows, std::uint32_t past,
+                           std::uint32_t read_align, std::vector<std::uint64_t>& out) = nullptr;
   // The rows of each segment an injection writes: its last min(rows, this).
   std::uint32_t (*inject_rows)(const Instance& instance) = nullptr;
 };

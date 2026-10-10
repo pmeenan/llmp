@@ -124,7 +124,7 @@ void MarkAccess(StepGraph& step) {
 class StepBuilder {
  public:
   StepBuilder(std::uint16_t stage, const planner::StepShape& shape)
-      : stage_(stage), ctx_(b_, Segments(shape), Greedy(shape), shape.read_align) {
+      : stage_(stage), ctx_(b_, Segments(shape), Greedy(shape)) {
     ctx_.SetPhase(shape.phase);
   }
 
@@ -638,7 +638,7 @@ std::expected<void, std::string> CheckReads(const spec::ModelSpec& spec,
 std::vector<float> HadamardValues(std::uint64_t n) {
   std::vector<float> out(n * n, 0.0F);
   if (n == 0 || (n & (n - 1)) != 0) return out;
-  const auto value = static_cast<float>(1.0 / std::sqrt(static_cast<double>(n)));
+  const float value = 1.0F / std::sqrt(static_cast<float>(n));
   for (std::uint64_t i = 0; i < n; ++i) {
     for (std::uint64_t j = 0; j < n; ++j) {
       out[(i * n) + j] = std::popcount(i & j) % 2 == 0 ? value : -value;
@@ -898,9 +898,8 @@ std::expected<model::Batching, std::string> StageBatching(const spec::ModelSpec&
 
 // ------------------------------------------------------------ step context
 
-StepContext::StepContext(ir::Builder& b, std::vector<SegmentRows> segments, bool greedy,
-                         std::uint32_t read_align)
-    : b_(b), segments_(std::move(segments)), greedy_(greedy), read_align_(read_align) {
+StepContext::StepContext(ir::Builder& b, std::vector<SegmentRows> segments, bool greedy)
+    : b_(b), segments_(std::move(segments)), greedy_(greedy) {
   for (const SegmentRows& s : segments_) {
     rows_ += s.rows;
     outputs_ += s.outputs;
@@ -997,12 +996,10 @@ std::uint64_t StepContext::ReadCells(std::size_t segment, const CellKey& cells) 
   const SegmentRows& seg = segments_.at(segment);
   const std::uint64_t read = seg.read_cells;
   // A positions-basis block tensor's: the blocks its positions complete,
-  // at the read alignment.
+  // at the state contract's cell padding.
   if (cells.block != 0 && cells.positions) {
     const std::uint64_t end = std::uint64_t{seg.past} + (cells.frozen ? 0 : seg.rows);
-    const std::uint64_t align = std::max<std::uint32_t>(read_align_, 1);
-    return std::min<std::uint64_t>(cells.capacity,
-                                   std::max<std::uint64_t>(align, Pad(end / cells.block, align)));
+    return std::min(cells.capacity, CompressedReadCells(end, cells.block, cells.cell_pad));
   }
   // A block tensor's cells are blocks of the read cells.
   if (cells.block != 0)
@@ -1262,6 +1259,7 @@ CellKey KeyOf(const model::StateTensorContract& c, std::uint64_t cells) {
     case model::CellRule::kPerBlock:
       key.block = c.window_or_ratio;
       key.positions = c.basis == model::BlockBasis::kPositions;
+      key.cell_pad = c.cell_pad;
       break;
     case model::CellRule::kPerRow:
       key.per_row = true;

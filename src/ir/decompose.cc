@@ -266,7 +266,12 @@ Outputs IndexScore(D& d) {
   TensorId sum = b.SumRows(b.Cont(b.Permute(r, {1, 0, 2, 3})));  // [1, C, T, S]
   sum = b.Reshape(sum, S(c, q.ne(2), 1, q.ne(3)));
   if (d.s(3).valid()) {
-    sum = b.Add(sum, d.s(3));
+    // The score is F32. Widening a half mask is exact and makes the
+    // primitive add's types explicit for backends with homogeneous adds.
+    const TensorId mask = d.t(d.s(3)).format.encoding == format::Encoding::kF32
+                              ? d.s(3)
+                              : b.Convert(d.Packed(d.s(3)), format::Encoding::kF32);
+    sum = b.Add(sum, mask);
   }
   return One(sum);
 }

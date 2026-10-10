@@ -83,15 +83,18 @@ class StepSource {
   // the pattern set, the policy, the partition); the runner sets the shape.
   // Asked once, at Bind.
   virtual planner::PlanKey KeyBase() const = 0;
+  // Only baked graph dimensions that depend on positions; empty when
+  // positions affect input data alone. Pure, also called by lookahead.
+  virtual std::vector<std::uint64_t> ShapeParameters(const planner::StepShape&) const { return {}; }
   // A program for `shape` at `addresses`. Host-only: it may run on the
   // driver while the device runs the current step (a lookahead), so it
   // never calls the node, the launch or the device; the runner binds it
   // (StepProgram::Bind) after. A measuring build (addresses.measuring())
-  // only reports what it needs. The program serves every step of an equal
-  // shape, whatever its segments' `past` (not part of the key): positions
+  // only reports what it needs. The program serves every step with an equal
+  // shape and ShapeParameters, whatever its segments' `past`: positions
   // reach it as input data, or, for a program that is not capturable,
   // through StepProgram::Position before each run; nothing it bakes may
-  // follow `past`.
+  // follow `past` unless included in ShapeParameters.
   virtual std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
       const planner::StepShape& shape, const kernels::Addresses& addresses) = 0;
 };

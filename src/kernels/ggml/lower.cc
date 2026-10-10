@@ -372,6 +372,37 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
   for (std::uint32_t k = 0; k < p_.nodes().size(); ++k) {
     const NodeId id{k};
     const ir::Node& n = p_.node(id);
+    if (n.key == ir::Primitive(Op::kMaskBuild)) {
+      const auto mp = n.Params<ir::MaskParams>();
+      const co::StepInput* held = input(n.src[1]);
+      if (mp.kind == ir::MaskKind::kAhead || (held != nullptr && held->cells.positions)) {
+        const auto& out = p_.tensor(n.out[0]);
+        const bool block = held != nullptr && held->cells.positions;
+        if (held == nullptr || held->kind != co::InputKind::kCellPositions ||
+            n.src[1] != p_.root(n.src[1]) || held->read != out.ne(0) ||
+            held->read > held->cells.capacity || held->cells.capacity == 0 ||
+            held->cells.capacity >
+                static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) ||
+            held->cells.fixed || held->cells.per_row || held->cells.first_row != 0 ||
+            held->cells.frozen || ((held->cells.block == 0) == block) ||
+            (block && (held->cells.ring || held->cells.recent || mp.kind != ir::MaskKind::kCausal ||
+                       mp.window != 0)) ||
+            (!block && !held->cells.ring) || mp.block != 0 || mp.exact_rows ||
+            mp.window > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) ||
+            p_.tensor(n.src[1]).format.encoding != Encoding::kI32 ||
+            p_.tensor(n.src[1]).shape().ne != ir::ShapeOf({out.ne(0)}).ne ||
+            !plain_positions(n.src[0], held->segment) || overwritten.contains(p_.root(n.out[0])) ||
+            out.format.encoding != Encoding::kF16) {
+          return Refused("a compressed or ahead mask requires its typed owner positions and cells");
+        }
+        const auto& segment = in_.shape.segments[held->segment];
+        if (std::uint64_t{segment.past} + segment.rows >
+                static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) ||
+            out.shape().ne != ir::ShapeOf({held->read, Round(segment.rows, 32)}).ne) {
+          return Refused("a compressed or ahead mask exceeds its bounded rows");
+        }
+      }
+    }
     if (options_.device_masks && n.key == ir::Primitive(Op::kMaskBuild) &&
         n.Params<ir::MaskParams>().exact_rows) {
       const auto mp = n.Params<ir::MaskParams>();
@@ -668,7 +699,6 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
         break;
       case co::InputKind::kCellPositions:
         // Read only by masks, which derive (device) or fold in (host) them.
-        if (input.cells.block != 0) return Refused("a block tensor's positions");
         if (!MaskOnly(out)) return Refused("cells' positions read by more than a mask");
         return nullptr;
       case co::InputKind::kStream:
@@ -699,13 +729,101 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
       case co::InputKind::kKeptCells:
       case co::InputKind::kPoolReads:
       case co::InputKind::kBlockCells:
-      case co::InputKind::kBlockStarts:
+      case co::InputKind::kBlockStarts: {
+        // These are computed inputs, never caller-supplied byte buffers.
+        // Validate both their geometry and their complete value count before
+        // exposing a slot the runner will stage.
+        const bool phases = input.kind == co::InputKind::kPositionPhases;
+        const bool kept =
+            input.kind == co::InputKind::kKeptRows || input.kind == co::InputKind::kKeptCells;
+        const bool pool = input.kind == co::InputKind::kPoolReads;
+        const bool block_cells = input.kind == co::InputKind::kBlockCells;
+        const auto& cells = input.cells;
+        constexpr auto max = static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+        if (input.read != 0 || input.sections != 1 ||
+            (phases ? input.segment != ir::kJoinedSegment
+                    : input.segment >= in_.shape.segments.size()) ||
+            cells.capacity > max || input.ring != cells.capacity || cells.frozen || cells.fixed ||
+            cells.per_row || cells.first_row != 0 ||
+            (kept ? input.ratio != 0 || input.overlap : input.ratio == 0 || input.ratio > max) ||
+            (kept || pool
+                 ? !cells.ring || !cells.recent || cells.positions || cells.block != 0 ||
+                       cells.capacity == 0
+                 : cells.ring || cells.recent ||
+                       (block_cells
+                            ? !cells.positions || cells.block != input.ratio || cells.capacity == 0
+                            : cells.positions || cells.block != 0 || cells.capacity != 0)) ||
+            (phases && input.overlap)) {
+          return Refused("a compressor input has invalid typed metadata");
+        }
+        std::uint64_t count = in_.shape.rows();
+        if (!phases) {
+          const auto& segment = in_.shape.segments[input.segment];
+          if (std::uint64_t{segment.past} + segment.rows > max ||
+              (pool && cells.capacity + segment.rows > max))
+            return Refused("a compressor input exceeds I32 positions or rows");
+          count =
+              kept ? std::min<std::uint64_t>(segment.rows, cells.capacity)
+                   : co::CompressorBlocks(segment.rows, segment.past, input.ratio, input.overlap);
+          if (pool) count *= std::uint64_t{input.ratio} * (input.overlap ? 2 : 1);
+        }
+        // Check the count before computing values, so malformed metadata cannot
+        // request an allocation larger than the tensor the planner placed.
+        if (d.shape().ne != ir::ShapeOf({count}).ne)
+          return Refused("a compressor input disagrees with its typed geometry");
+        const auto values = co::InputValues(input, in_.shape, {});
+        const bool wide =
+            input.kind == co::InputKind::kKeptCells || input.kind == co::InputKind::kBlockCells;
+        if (!values || d.shape().ne != ir::ShapeOf({values ? values->size() : 0}).ne ||
+            d.format.encoding != (wide ? Encoding::kI64 : Encoding::kI32)) {
+          return Refused("a compressor input disagrees with its typed geometry");
+        }
+        switch (input.kind) {
+          case co::InputKind::kPositionPhases:
+            slot.kind = InputKind::kPositionPhases;
+            break;
+          case co::InputKind::kKeptRows:
+            slot.kind = InputKind::kKeptRows;
+            break;
+          case co::InputKind::kKeptCells:
+            slot.kind = InputKind::kKeptCells;
+            break;
+          case co::InputKind::kPoolReads:
+            slot.kind = InputKind::kPoolReads;
+            break;
+          case co::InputKind::kBlockCells:
+            slot.kind = InputKind::kBlockCells;
+            break;
+          case co::InputKind::kBlockStarts:
+            slot.kind = InputKind::kBlockStarts;
+            break;
+          default:
+            break;
+        }
+        slot.cells = {.capacity = input.cells.capacity,
+                      .ring = input.cells.ring,
+                      .frozen = input.cells.frozen,
+                      .fixed = input.cells.fixed,
+                      .block = input.cells.block,
+                      .per_row = input.cells.per_row,
+                      .first_row = input.cells.first_row,
+                      .positions = input.cells.positions,
+                      .recent = input.cells.recent};
+        slot.ratio = input.ratio;
+        slot.overlap = input.overlap;
+        slot.ring = input.ring;
+        break;
+      }
       case co::InputKind::kHadamard:
-        // DeepSeek V4's compressors' and indexer's inputs, lowered with its
-        // patterns (slice G4b).
-        return Refused(
-            "a compressor's phases, kept rows, pooled reads or blocks, or the indexer's "
-            "Hadamard matrix (slice G4b)");
+        if (input.read == 0 || (input.read & (input.read - 1)) != 0 ||
+            d.format.encoding != Encoding::kF32 ||
+            d.shape().ne != ir::ShapeOf({input.read, input.read}).ne ||
+            d.role != ir::Role::kConstant) {
+          return Refused("a Hadamard constant disagrees with its order");
+        }
+        slot.kind = InputKind::kHadamard;
+        slot.read = input.read;
+        break;
       case co::InputKind::kFeatures:
         // A drafter's rows' features: copied in on the device by the
         // engine, from where the step's work names them.
@@ -829,12 +947,9 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
 std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph, const ir::Node& n,
                                                           const Resolve& resolve) {
   const auto p = n.Params<ir::MaskParams>();
-  if (p.kind != ir::MaskKind::kCausal && p.kind != ir::MaskKind::kWindow) {
-    // A block drafter's mask (kAhead: DSpark's, GGML's MaskPolicy::kBlock
-    // producer) is slice G4b's.
-    return Refused(p.kind == ir::MaskKind::kAhead ? "a block drafter's mask (slice G4b)"
-                                                  : "a block mask");
-  }
+  if (p.kind != ir::MaskKind::kCausal && p.kind != ir::MaskKind::kWindow &&
+      p.kind != ir::MaskKind::kAhead)
+    return Refused("a block mask");
   const ir::TensorDesc& out = graph.tensor(n.out[0]);
   const ir::TensorDesc& rows = graph.tensor(n.src[0]);
   // The cells' positions input names the segment and its cells.
@@ -848,8 +963,9 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
   // drafter over its target's borrowed state): the producer's frozen
   // policy, or the host mask's slot says so.
   const bool frozen = cells.cells.frozen;
-  const std::uint32_t window = p.kind == ir::MaskKind::kWindow ? p.window : 0U;
-  if (!options_.device_masks) {
+  const bool ahead = p.kind == ir::MaskKind::kAhead;
+  const std::uint32_t window = p.kind == ir::MaskKind::kWindow || ahead ? p.window : 0U;
+  if (!options_.device_masks || cells.cells.block != 0) {
     if (out.format.encoding != Encoding::kF16) return Refused("a host mask not in F16");
     if (frozen && !options_.frozen_host_masks) {
       return Refused("a frozen read's host mask without a stager that builds it");
@@ -857,14 +973,19 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
     std::array<std::int64_t, 4> ne{static_cast<std::int64_t>(out.ne(0)),
                                    static_cast<std::int64_t>(out.ne(1)), 1, 1};
     ggml_tensor* t = ggml_new_tensor(c_, GGML_TYPE_F16, 2, ne.data());
-    const InputSlot slot{
-        .tensor = &graph == &p_ ? primitive_.at(n.out[0].v) : n.out[0],
-        .segment = cells.segment,
-        .kind = InputKind::kMask,
-        .cells = {.capacity = cells.cells.capacity, .ring = cells.cells.ring, .frozen = frozen},
-        .read = out.ne(0),
-        .window = window,
-        .mask_rows = static_cast<std::uint32_t>(out.ne(1))};
+    const InputSlot slot{.tensor = &graph == &p_ ? primitive_.at(n.out[0].v) : n.out[0],
+                         .segment = cells.segment,
+                         .kind = InputKind::kMask,
+                         .cells = {.capacity = cells.cells.capacity,
+                                   .ring = cells.cells.ring,
+                                   .frozen = frozen,
+                                   .block = cells.cells.block,
+                                   .positions = cells.cells.positions,
+                                   .recent = cells.cells.recent},
+                         .read = out.ne(0),
+                         .window = window,
+                         .mask_rows = static_cast<std::uint32_t>(out.ne(1)),
+                         .ahead = ahead};
     input_leaves_.emplace_back(t, slot);
     out_.leaves.push_back({.tensor = t, .primitive = slot.tensor});
     return t;
@@ -896,11 +1017,16 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
   }
   ggml_tensor* positions = resolve(rows.view_of);
   if (positions == nullptr) return Refused("a mask's positions were not made");
-  if (frozen) {
-    return CausalRingMask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
-                          to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
-                          to_int(cells.cells.capacity), to_int(window), to_int(in_.context),
-                          CausalMaskRows::kPad32, GGML_TYPE_F16, MaskPolicy::kFrozen);
+  if (frozen || ahead) {
+    if (frozen && ahead) return Refused("an ahead mask over frozen state");
+    ggml_tensor* mask = CausalRingMask(
+        c_, positions, static_cast<std::int64_t>(out.ne(0)),
+        to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
+        to_int(cells.cells.capacity), to_int(window), to_int(in_.context), CausalMaskRows::kPad32,
+        GGML_TYPE_F16, ahead ? MaskPolicy::kBlock : MaskPolicy::kFrozen);
+    if (ahead && !Gemma4MaskFits(mask))
+      return Refused("an ahead mask exceeds the device block mask's geometry");
+    return mask;
   }
   return Gemma4Mask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
                     to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
@@ -1052,14 +1178,15 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
     }
     case Op::kRope: {
       const auto p = n.Params<ir::RopeParams>();
-      if (p.table || p.inverse || p.offset != 0 ||
-          (p.mode != ir::RopeMode::kNeox && p.mode != ir::RopeMode::kNormal)) {
+      if (p.table || (p.mode != ir::RopeMode::kNeox && p.mode != ir::RopeMode::kNormal)) {
         return Refused("a rotation other than NORMAL or NEOX over positions");
       }
-      return ggml_rope_ext(c_, s[0], s[1], s[2], static_cast<int>(p.dims),
-                           p.mode == ir::RopeMode::kNeox ? GGML_ROPE_TYPE_NEOX : 0,
-                           static_cast<int>(p.original_context), p.base, p.scale, p.ext_factor,
-                           p.attn_factor, p.beta_fast, p.beta_slow);
+      const auto rope = p.inverse ? ggml_rope_ext_back : ggml_rope_ext;
+      return ggml_rope_set_offset(rope(c_, s[0], s[1], s[2], static_cast<int>(p.dims),
+                                       p.mode == ir::RopeMode::kNeox ? GGML_ROPE_TYPE_NEOX : 0,
+                                       static_cast<int>(p.original_context), p.base, p.scale,
+                                       p.ext_factor, p.attn_factor, p.beta_fast, p.beta_slow),
+                                  static_cast<int>(p.offset));
     }
     case Op::kCacheStore:
       // GGML lists the rows, the indices, then the cache.
@@ -1093,6 +1220,8 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       return ggml_argsort(
           c_, s[0],
           n.Params<ir::ArgsortParams>().descending ? GGML_SORT_ORDER_DESC : GGML_SORT_ORDER_ASC);
+    case Op::kIndexScore:
+      return ggml_lightning_indexer(c_, s[0], s[1], s[2], s[3]);
     case Op::kTopK:
       return ggml_top_k(c_, s[0], static_cast<int>(n.Params<ir::TopKParams>().k));
     default:
@@ -1538,7 +1667,10 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
       // step, which holds only where nothing computed before it (the masks
       // come first, BuildStep).
       const bool quiet = std::ranges::all_of(s.nodes, [&](NodeId id) { return quiet_.at(id.v); });
-      if (!quiet && j != 0) return Refused("a host-built mask after the step's computed nodes");
+      if (!quiet && std::ranges::any_of(std::span(gp.steps).first(j), [](const auto& prior) {
+            return prior.implementation != kGemma4MaskName;
+          }))
+        return Refused("a host-built mask after the step's computed nodes");
       continue;
     }
     const std::string_view name = registry_.at(s.implementation).name;
@@ -1934,6 +2066,22 @@ std::expected<void, KernelFailure> Lowering::MakeSpecial(NodeId id, const ir::No
       break;
     }
     case Op::kConvert:
+      if (impl == "ggml.convert") {
+        if (!ir::IsContiguous(p_.tensor(n.src[0])))
+          return Refused("a cast requires a packed source");
+        const auto& dims = out.shape().ne;
+        const auto cast_type =
+            out.format.encoding == Encoding::kF16 ? GGML_TYPE_F16 : GGML_TYPE_F32;
+        ggml_tensor* destination = ggml_new_tensor_4d(
+            c_, cast_type, static_cast<std::int64_t>(dims[0]), static_cast<std::int64_t>(dims[1]),
+            static_cast<std::int64_t>(dims[2]), static_cast<std::int64_t>(dims[3]));
+        ggml_tensor* t = ggml_cpy(c_, src(0), destination);
+        placed_root_[n.out[0].v] = destination;
+        made_.at(n.out[0].v) = t;
+        Node(destination, id);
+        Node(t, id);
+        return {};
+      }
       if (impl == kBf16Name) {
         ggml_tensor* t = ToBf16(c_, src(0));
         made_.at(n.out[0].v) = t;
@@ -2433,6 +2581,8 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   // weight's parts and a verify's saves.
   for (const ir::Node& n : p_.nodes()) {
     if (n.key == ir::Primitive(Op::kRoute)) tensors += 10;
+    // ggml.convert owns a destination root and returns its cpy view.
+    if (n.key == ir::Primitive(Op::kConvert)) ++tensors;
     if (n.key == ir::Primitive(Op::kExpertReduce) && n.nsrc >= 1) {
       tensors += 3 + (2 * p_.tensor(n.src[0]).ne(1));
     }

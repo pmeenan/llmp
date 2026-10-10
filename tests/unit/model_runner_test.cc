@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -648,6 +649,123 @@ TEST_F(ModelRunnerTest, AReclaimDuringAStepSparesWhatTheStepHolds) {
   ASSERT_TRUE(Run(decode(1, 4), {{9}}).has_value());
   ASSERT_TRUE(Run(decode(2, 1), {{9}}).has_value());
   EXPECT_EQ(source_->built().size(), builds);
+}
+
+TEST_F(ModelRunnerTest, LookaheadUsesDerivedDimensionsForBuildAndCaptureIdentity) {
+  source_->options().shape_parameters = [](const pl::StepShape& shape) {
+    return std::vector<std::uint64_t>{shape.segments.front().past / 2};
+  };
+  const auto shape = [](std::uint32_t past) {
+    return Shape(pl::Phase::kDecode, {Seg(0, past, 1, 1)});
+  };
+  ASSERT_EQ(shape(0), shape(2));
+  en::StepAhead ahead;
+  ahead.shapes = {shape(2), shape(3)};  // one future dimension, unlike the current one
+  ahead.build = 2;
+  ahead.capture_ahead = true;
+  auto first = Run(shape(0), {{4}}, ahead);
+  ASSERT_TRUE(first) << first.error().what;
+  EXPECT_EQ(runner_->lookahead_stats().built, 1U);
+  EXPECT_EQ(runner_->lookahead_stats().captured_first, 0U);
+  EXPECT_EQ(runner_->plans().size(), 2U);
+  const auto built = source_->built().size();
+  ASSERT_TRUE(Run(shape(1), {{5}}, ahead));
+  EXPECT_EQ(source_->built().size(), built);
+  auto next = Run(shape(2), {{6}});
+  ASSERT_TRUE(next) << next.error().what;
+  EXPECT_EQ(source_->built().size(), built);
+  EXPECT_EQ(runner_->plans().size(), 2U);
+  EXPECT_EQ(Rows(next->outputs.at(0))[0].position, 2);
+}
+
+class CompressorInputsTest : public ModelRunnerTest {
+ protected:
+  std::vector<pl::StepShape> SetupShapes() override {
+    return {Shape(pl::Phase::kPrefill, {Seg(0, 0, 2, 1)})};
+  }
+  ts::FakeSourceOptions SourceOptions() override {
+    auto o = ModelRunnerTest::SourceOptions();
+    o.extra_inputs = [](const pl::StepShape&) {
+      return std::vector<kn::InputSlot>{
+          {.bytes = 8, .kind = kn::InputKind::kPositionPhases, .ratio = 4},
+          {.bytes = 8,
+           .segment = 0,
+           .kind = kn::InputKind::kKeptRows,
+           .cells = {.capacity = 4, .ring = true, .recent = true}},
+          {.bytes = 16,
+           .segment = 0,
+           .kind = kn::InputKind::kKeptCells,
+           .cells = {.capacity = 4, .ring = true, .recent = true}},
+          {.bytes = 16,
+           .segment = 0,
+           .kind = kn::InputKind::kPoolReads,
+           .cells = {.capacity = 4, .ring = true, .recent = true},
+           .ratio = 4,
+           .ring = 4},
+          {.bytes = 8,
+           .segment = 0,
+           .kind = kn::InputKind::kBlockCells,
+           .cells = {.capacity = 16, .block = 4, .positions = true},
+           .ratio = 4},
+          {.bytes = 4, .segment = 0, .kind = kn::InputKind::kBlockStarts, .ratio = 4},
+          {.bytes = 16, .kind = kn::InputKind::kHadamard, .read = 2},
+          {.bytes = 4 * 32 * 2,
+           .segment = 0,
+           .kind = kn::InputKind::kMask,
+           .cells = {.capacity = 4, .ring = true, .recent = true},
+           .read = 4,
+           .window = 3,
+           .mask_rows = 32,
+           .ahead = true},
+          {.bytes = 16 * 32 * 2,
+           .segment = 0,
+           .kind = kn::InputKind::kMask,
+           .cells = {.capacity = 16, .block = 4, .positions = true},
+           .read = 16,
+           .mask_rows = 32}};
+    };
+    return o;
+  }
+};
+
+TEST_F(CompressorInputsTest, TypedCompressorInputsAndAheadMasksRefreshOnReusedPlans) {
+  const auto values = [&]<typename T>(std::size_t at) {
+    const auto& bytes = source_->options().seen_inputs->at(at);
+    std::vector<T> out(bytes.size() / sizeof(T));
+    std::memcpy(out.data(), bytes.data(), bytes.size());
+    return out;
+  };
+  ASSERT_TRUE(Run(Shape(pl::Phase::kPrefill, {Seg(0, 0, 2, 1)}), {{3, 4}}));
+  EXPECT_EQ(values.template operator()<std::int32_t>(0), (std::vector<std::int32_t>{0, 1}));
+  EXPECT_EQ(values.template operator()<std::int32_t>(1), (std::vector<std::int32_t>{0, 1}));
+  EXPECT_EQ(values.template operator()<std::int64_t>(2), (std::vector<std::int64_t>{0, 1}));
+  EXPECT_EQ(values.template operator()<std::int32_t>(3), (std::vector<std::int32_t>{4, 4, 4, 4}));
+  EXPECT_EQ(values.template operator()<std::int64_t>(4), (std::vector<std::int64_t>{15}));
+  EXPECT_EQ(values.template operator()<std::int32_t>(5), (std::vector<std::int32_t>{0}));
+  const float h = 1.0F / std::sqrt(2.0F);
+  EXPECT_EQ(values.template operator()<float>(6), (std::vector<float>{h, h, h, -h}));
+  auto mask = values.template operator()<std::uint16_t>(7);
+  EXPECT_EQ(mask[0], 0U);
+  EXPECT_EQ(mask[1], 0U);  // row 0 sees future row 1
+  EXPECT_EQ(mask[2], 0xFC00U);
+  EXPECT_EQ(mask[8], 0xFC00U);  // padded query rows stay hidden
+  auto compressed = values.template operator()<std::uint16_t>(8);
+  EXPECT_TRUE(std::ranges::all_of(compressed, [](auto x) { return x == 0xFC00U; }));
+  ASSERT_TRUE(Run(Shape(pl::Phase::kPrefill, {Seg(0, 2, 2, 1)}), {{5, 6}}));
+  EXPECT_EQ(values.template operator()<std::int32_t>(0), (std::vector<std::int32_t>{2, 3}));
+  EXPECT_EQ(values.template operator()<std::int64_t>(2), (std::vector<std::int64_t>{2, 3}));
+  EXPECT_EQ(values.template operator()<std::int32_t>(3), (std::vector<std::int32_t>{0, 1, 4, 5}));
+  EXPECT_EQ(values.template operator()<std::int64_t>(4), (std::vector<std::int64_t>{0}));
+  mask = values.template operator()<std::uint16_t>(7);
+  EXPECT_EQ(mask[3], 0U);       // row 2 sees future row 3
+  EXPECT_EQ(mask[4], 0xFC00U);  // row 3 cannot see position 0 outside its window
+  compressed = values.template operator()<std::uint16_t>(8);
+  EXPECT_EQ(compressed[0], 0xFC00U);  // row 2 cannot see the block completed by row 3
+  EXPECT_EQ(compressed[16], 0U);
+  EXPECT_EQ(compressed[17], 0xFC00U);  // no padded/unfinished compressed cell is visible
+  EXPECT_EQ(compressed[31], 0xFC00U);  // the last dummy cell is never visible
+  EXPECT_EQ(compressed[32], 0xFC00U);  // no padded query row is visible
+  EXPECT_EQ(runner_->plans().size(), 1U);
 }
 
 class PositionedTest : public ModelRunnerTest {

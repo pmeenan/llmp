@@ -47,12 +47,34 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   if (auto valid = planner::Validate(policy); !valid) {
     return std::unexpected(std::format("the planning policy: {}", valid.error()));
   }
-  return std::unique_ptr<ComponentStepSource>(
+  auto instances = components::InstancesOf(*options.spec, options.stage);
+  if (!instances) return std::unexpected(instances.error());
+  auto source = std::unique_ptr<ComponentStepSource>(
       new ComponentStepSource(std::move(options), std::move(policy)));
+  const auto add = [&](const components::Instance& in) {
+    if (in.def->shape_parameters != nullptr) source->shaped_.push_back(in);
+  };
+  if (instances->embedding) add(*instances->embedding);
+  for (const auto& in : instances->side) add(in);
+  if (instances->mixing) add(*instances->mixing);
+  for (const auto& layer : instances->layers)
+    for (const auto& in : layer) add(in);
+  if (instances->final_norm) add(*instances->final_norm);
+  if (instances->output) add(*instances->output);
+  return source;
 }
 
 planner::PlanKey ComponentStepSource::KeyBase() const {
   return planner::KeyOf(o_.bound_digest, {}, policy_);
+}
+
+std::vector<std::uint64_t> ComponentStepSource::ShapeParameters(
+    const planner::StepShape& shape) const {
+  std::vector<std::uint64_t> out;
+  for (const auto& in : shaped_)
+    for (const auto& segment : shape.segments)
+      in.def->shape_parameters(in, segment.rows, segment.past, shape.read_align, out);
+  return out;
 }
 
 std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepSource::Build(
@@ -112,6 +134,12 @@ std::expected<std::unique_ptr<StagedStepSource>, std::string> StagedStepSource::
   key.patterns = patterns.Finish();
   key.policy = policies.Finish();
   return std::unique_ptr<StagedStepSource>(new StagedStepSource(std::move(stages), key));
+}
+
+std::vector<std::uint64_t> StagedStepSource::ShapeParameters(
+    const planner::StepShape& shape) const {
+  return shape.stage < stages_.size() ? stages_[shape.stage]->ShapeParameters(shape)
+                                      : std::vector<std::uint64_t>{};
 }
 
 std::expected<std::unique_ptr<kernels::StepProgram>, std::string> StagedStepSource::Build(

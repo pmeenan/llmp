@@ -113,6 +113,7 @@ struct FakeSourceOptions {
   // program hooks are read when a program binds, records or runs, so a
   // test may change them between steps.
   std::function<bool(const planner::StepShape&)> refuse_build;
+  std::function<std::vector<std::uint64_t>(const planner::StepShape&)> shape_parameters;
   bool refuse_record = false;
   bool refuse_bind = false;
   // Run fails: refused with nothing queued (kRejected), or of unknown
@@ -151,6 +152,10 @@ class FakeStepSource final : public engine::StepSource {
  public:
   explicit FakeStepSource(FakeSourceOptions options) : options_(std::move(options)) {}
   planner::PlanKey KeyBase() const override;
+  std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override {
+    return options_.shape_parameters ? options_.shape_parameters(shape)
+                                     : std::vector<std::uint64_t>{};
+  }
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
       const planner::StepShape& shape, const kernels::Addresses& addresses) override;
 

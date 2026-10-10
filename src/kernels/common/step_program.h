@@ -79,7 +79,8 @@ struct StepFailure {
 //                        0 where a row's position sees the position the
 //                        cell holds once the step's rows are stored, causal
 //                        or within `window`, else -inf; rows past the
-//                        segment's -inf): a mask built on the host. A
+//                        segment's -inf): a mask built on the host.
+//                        `ahead` also sees the step's later rows. A
 //                        frozen read's cells (`cells.frozen`) hold the
 //                        positions before the segment's rows, which the
 //                        step never stores;
@@ -106,6 +107,15 @@ enum class InputKind : std::uint8_t {
   kFeatures,
   kSideRows,
   kBlockPositions,
+  // Typed compressor and constant inputs; components/step.h defines their
+  // values. Never opaque caller bytes: the shape and metadata determine them.
+  kPositionPhases,
+  kKeptRows,
+  kKeptCells,
+  kPoolReads,
+  kBlockCells,
+  kBlockStarts,
+  kHadamard,
 };
 
 // A state tensor's cells as an input indexes them (components/step.h
@@ -121,6 +131,8 @@ struct InputCells {
   std::uint32_t block = 0;
   bool per_row = false;
   std::uint32_t first_row = 0;
+  bool positions = false;
+  bool recent = false;
   bool operator==(const InputCells&) const = default;
 };
 
@@ -142,6 +154,12 @@ struct InputSlot {
   // kPositions' and kBlockPositions' copies; kSideRows' rows a step row.
   std::uint32_t sections = 1;
   std::uint64_t count = 0;
+  // Compressor inputs (components/step.h StepInput).
+  std::uint32_t ratio = 0;
+  bool overlap = false;
+  std::uint64_t ring = 0;
+  // A block drafter's mask also sees later rows of its current block.
+  bool ahead = false;
 };
 
 // An output the step returns: copied to the host after the run, each

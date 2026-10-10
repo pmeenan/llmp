@@ -1862,6 +1862,9 @@ TEST(ReferenceDecompositionTest, CompositeOpsEqualTheirDecompositions) {
   b.Output(b.HcPost(in({8, 3}), x, in({4, 3}), {}, ir::HcParams{.streams = 4}));
   // The indexer's scores, pooling, routing, the reduction.
   b.Output(b.IndexScore(in({8, 3, 2, 1}), in({8, 1, 5, 1}), in({3, 2, 1, 1}), in({5, 2})));
+  // Half masks widen exactly before the fallback adds them to F32 scores.
+  b.Output(b.IndexScore(in({8, 3, 2, 1}), b.Convert(in({8, 1, 5, 1}), Encoding::kF16),
+                        in({3, 2, 1, 1}), b.Convert(in({5, 2}), Encoding::kF16)));
   const TensorId px = in({3, 8, 2});
   b.Output(b.Pool(px, {}, ir::PoolParams{.ratio = 4}));
   b.Output(b.Pool(px, in({3, 8, 2}), ir::PoolParams{.ratio = 2, .kind = ir::PoolKind::kSoftmax}));

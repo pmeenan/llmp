@@ -487,6 +487,9 @@ TEST(ComponentsDsv4Test, CompressedSparseAttentionMatchesItsReference) {
   // kv, compressed, its ring kv and score, index, its ring kv and score.
   const std::array<std::uint64_t, 7> cells{16, 32, 8, 8, 32, 8, 8};
   Compare(*in, MqaFormats(Encoding::kF32, 2), cells, MqaSteps(16), kTolerance, kF16State);
+  auto wide_raw_alignment = MqaSteps(16);
+  for (auto& step : wide_raw_alignment) step.shape.read_align = 2048;
+  Compare(*in, MqaFormats(Encoding::kF32, 2), cells, wide_raw_alignment, kTolerance, kF16State);
   // Its contract: today's DeepSeek V4 tensors (state_contract_test's).
   const auto contract = in->def->state(*in);
   ASSERT_EQ(contract.tensors.size(), 7U);

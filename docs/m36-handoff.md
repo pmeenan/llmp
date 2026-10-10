@@ -87,24 +87,38 @@ update this section as each slice lands):
   catch-up and draft passes), and the matched 1% gate for native, GGUF and
   MTP. Its n-gram rows must be bound on demand: G3b's GPU proof keeps the
   table resident (+28.8 GB), near the Spark's ModelOpt memory limit.
+  The work is split into G3c1 (shared-runner execution and focused GPU
+  numerics) and G3c2 (serving, state/quality/swap controls and the three-path
+  1% gate), followed by G3d deletion. G3c1's chunk-feature staging has
+  fake-backend lifecycle controls; actual MTP catch-up/draft GPU numerics
+  and persisted-feature restoration are prerequisites in G3c2. The active checkout is
+  `.claude/worktrees/m36-g3c`; its assigned Spark copy is
+  `spark:~/src/m36-g3c`, with jobs in `~/scratch/m36-g3c`.
 - **G4a: DeepSeek V4 components, mappings and the DSpark stage** landed on
-  `main` (see `git log`). Owed by G4b, before the lowering accepts
-  DeepSeek's new inputs: the plan key ignores `past`, but an HCA layer's
-  block count and a compressed cache's read width depend on it. Either key
-  `CompressorBlocks(rows, past, ratio, overlap)` and the compressed width, or
-  make both independent of `past` by padding; `src/planner/step_shape.h`'s
-  header gives both options. The mqa reference's hard-coded 256-cell
-  compressed width must follow whichever is chosen. Owed by G4c:
+  `main` (see `git log`). G4b1 has landed: complete plan keys include
+  each owner's baked HCA block count and compressed read width; equivalent
+  dimensions reuse plans while actual positions refresh the typed inputs.
+  The fragment, reference and key share the state's compressed-cell padding,
+  independent of the raw read envelope. Primitive lowering and its descriptor
+  checks pass with the native indexer enabled or decomposed. Fast patterns,
+  default policies and whole-model GPU parity remain G4b2's. Owed by G4c:
   - binding the hash-routing side ids, checked against the expert count as
     `CheckDsv4HashRouting` does;
   - the compressor plan inputs;
   - the injection's features, with a drafter slot for every target slot.
 
+  G4b is split into G4b1 (past-safe plan-shape/key contract, matching MQA
+  reference width, focused primitive-lowering correctness) and G4b2 (fast
+  patterns/default policy, structural parity and GPU execution). G4c then
+  binds the hash-routing IDs, compressor inputs and injection features and
+  runs serving/state/quality/swap/1% controls; G4d deletes the M3 path. The
+  active checkout is `.claude/worktrees/m36-g4b`; its assigned Spark copy
+  is `spark-b:~/src/m36-g4b`, with jobs in `~/scratch/m36-g4b`.
+
   Smaller items from the review (in the deferred list below):
   - `route_scale` 0 should map to 1 in the importer's mapping;
   - `silu_clamp` refuses a single unset limit;
-  - `WritesFor` over-refuses verifies on recent rings;
-  - `HadamardValues` may differ by 1 ulp at n = 128.
+  - `WritesFor` over-refuses verifies on recent rings.
 - **Model archive design** landed on `main` (`340e65c4`). This is the
   owner's direction, not part of the M3.6 plan proper:
   - `docs/model-archive.md`, with layout, manifest, catalog (meta-index)
@@ -115,13 +129,17 @@ update this section as each slice lands):
 
   The owner's download agent (Gemini via Antigravity, which reads
   AGENTS.md) uses it from the workstation under `hostlock shared`, with
-  `HF_TOKEN` in the ignored `/.env`. Native import from the archive and
-  install into it go to the importer's N4 slice.
+  `HF_TOKEN` in the ignored `/.env`. N4's native `llmp import` reads a
+  verified archive or staged source and records an import event in the
+  archive catalog. Native `llmp install` remains M5 per D-114.
 
 Next, in order: G3c (Qwen3.8 wiring and the 1% gate for native, GGUF
-and MTP); G3d (deletion); G4b–d; N3–N6 (the importer's fold catalog,
-writer, `llmp import` and install from the archive, re-import of every
-artifact, adversarial challenge); Qwen-Image Q1–Q3; T-slices; K1; R1.
+and MTP, split G3c1/G3c2); G3d (deletion); G4b2, G4c and G4d;
+Qwen2 G5a–d. N3/N4 (fold catalog, writer and `llmp import` from verified
+archive/staged source) can proceed alongside Qwen-Image Q1–Q3; N5's
+all-artifact re-import and family gates follow both, then N6's adversarial
+challenge. T-slices, K1 and R1 follow their shared-engine prerequisites.
+Native `llmp install` is M5, not N4.
 
 Also worth a slice: a DeepSeek budget cliff. With about 1.1 GiB less
 MemAvailable at start, qwen3.8→deepseek took 16.1 s instead of 8.15 s and
@@ -198,9 +216,23 @@ Each `a` slice is about a day of CPU work. Each `b` slice is one to two slices p
 | N1 | v1 format: `llmp-artifact` manifest with spec, per-tensor `TensorFormat` + parts, folds, importer identity; reader accepts v0 and v1 | `artifact/` + `docs/artifact-format.md`; schema decision |
 | N2a–e | Readers: GGUF; safetensors + `config.json` (ModelOpt NVFP4/MXFP8, AWQ/GPTQ, compressed-tensors); diffusers → D-089 composition; MLX; EXL3 | `src/import/readers/*`; parallel, disjoint |
 | N3 | Fold catalog (`norm_plus_one`, `a_neg_exp`, `value_head_tiling`, `split_fused_qk`, ties, expert slicing, NVFP4 scale-atom relayout, …) + mapping application, reusing wave 3's tables | |
-| N4 | Writer (deterministic, one rename), `llmp import` CLI, admission-gate harness | Public CLI → decision |
-| N5 | Re-import every artifact; lossless-equivalence checks against v0 bytes; family gates; the owner-chosen MLX checkpoint | |
+| N4 | Writer (deterministic, one rename), `llmp import` CLI, admission-gate harness; import from verified archive or staged source and record catalog import event | Public CLI → decision; native `llmp install` is M5 (D-114) |
+| N5 | Re-import every artifact; lossless-equivalence checks against v0 bytes; family gates; the owner-chosen MLX checkpoint | After G3/G4/G5 and Q execution paths and N3/N4; Qwen2 fixture correctness gate follows the protocol exception below |
 | N6 | Adversarial challenge rounds | |
+
+**Qwen2 fixtures (G5, required by plan exit).** The Qwen2.5-0.5B FP16 and
+two EXL3 fixtures need shared-engine execution even though they are not served.
+G5a defines their components and mapping; G5b adds shared GGML/EXL3 lowering
+with the approved reconstruction tuning facts/shapes; G5c runs them through
+the shared runner and proves their existing correctness controls plus state,
+spill, restore and kept-state behavior; G5d removes the legacy execution path.
+The fixed M3.6 protocol explicitly gives these fixtures no speed baseline
+because they are not served; their gate is the FP16 bridge and EXL3 Tier C
+correctness controls ([protocol exception](experiments/m36-baselines/README.md#quality-controls),
+BP-F3 moves resident speed to M5). G5a/b can proceed alongside other component
+authoring; G5c depends on the lowering, and G5d follows its controls. N5's
+all-artifact re-import/gates and K1's every-migrated-LLM criterion include
+these fixtures where applicable.
 
 #### Waves 5 to 7
 
@@ -220,7 +252,9 @@ L2 ────────┴─ L3 ─┬─ L4 (opt)
                   └─ L5a ─ L5b ─ L5c ─ L6
 F5 ─ I1 ─┬─ I2 ─┐
          ├─ I3 ─┴─ I4 ─┐
-         └─ I5 ────────┴─ I6 ─ G1a..d ─ G2 ─ G3 ─ G4 ─ N1..N6 ─ Q ─ T, K1, R1
+         └─ I5 ────────┴─ I6 ─ G1a..d ─ G2 ─ G3 ─ G4 ─ G5 ─ Q ─┐
+                           N1 ─ N2 ─ N3 ─ N4 ───────────────────┴─ N5 ─ N6
+                           T, K1, R1 follow their shared-engine prerequisites
                     P1 (any time after I5)
 ```
 

@@ -271,6 +271,19 @@ unfused path that exists:
   ExLlamaV3's `reconstruct_kernel` bit for bit), as CUDA's block decoders
   are.
 
+The M3.6 G4b1 primitive lowering declares DeepSeek's existing top-k and
+indexer operations, inverse/offset RoPE and homogeneous F16 mask adds.
+The indexer also has a tested decomposition into products, ReLU,
+head-weight multiplication, reduction and an F32 mask add; a half mask
+widens exactly through the existing F16/F32 conversion kernel. Mixed
+F32/F16 binary adds remain unsupported and are not advertised. Native
+indexer selection is limited to D 128 and 32 or 64 heads; other valid
+shapes take the decomposition. Conversion currently requires packed
+F16/F32 operands and an I32-bounded element count. Device ahead masks
+require the existing block kernel's full ring and positive window; other
+valid ahead geometries can use the host mask. Fast-pattern and
+runtime migration checks remain G4b2/G4c work.
+
 **What closing the gaps takes**, as the rule applies to new work from
 now on: an unfused composition for the model-specific operations
 (hyper-connection mixing and Sinkhorn, the lightning indexer, the gated

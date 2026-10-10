@@ -179,8 +179,8 @@ std::expected<model::Batching, std::string> StageBatching(const spec::ModelSpec&
 //
 // A block tensor of `positions` (BlockBasis::kPositions: compressed rows,
 // a cell per block of the positions themselves) reads the blocks its
-// segment's positions complete, at the step's read alignment: max(align,
-// Pad(end / block, align)) cells (DeepSeek V4's compressed caches), not
+// segment's positions complete, at the contract's cell padding: max(pad,
+// Pad(end / block, pad)) cells (DeepSeek V4's compressed caches), not
 // the blocks of the read cells. A `recent` ring (kPositionRing: a
 // compressor's ring of recent positions, a block drafter's ring) holds
 // only a segment's last rows: its components store the rows it keeps
@@ -195,6 +195,8 @@ struct CellKey {
   std::uint32_t first_row = 0;
   bool positions = false;
   bool recent = false;
+  // Positions-basis block reads follow their contract's padding in cells.
+  std::uint32_t cell_pad = 256;
   auto operator<=>(const CellKey&) const = default;
 };
 
@@ -207,6 +209,11 @@ struct CellKey {
 // cell, which no mask shows.
 std::uint64_t CompressorBlocks(std::uint32_t rows, std::uint32_t past, std::uint32_t ratio,
                                bool overlap);
+
+// The read width of a positions-basis compressed cache before its capacity
+// cap: completed blocks, rounded to the state contract's cell padding, at least
+// one padding unit. Shared by fragments, scalar references and plan keys.
+std::uint64_t CompressedReadCells(std::uint64_t end, std::uint32_t ratio, std::uint32_t cell_pad);
 
 // A compressor's plan for one segment (dsv4_build_comp_plan, one
 // sequence): each block's pooled rows of [ring | rows | zero row], its
@@ -343,10 +350,7 @@ struct MaskDecl {
 
 class StepContext {
  public:
-  // `read_align`: the step's read alignment (planner::StepShape), at which
-  // positions-basis block tensors are read (CellKey::positions).
-  StepContext(ir::Builder& b, std::vector<SegmentRows> segments, bool greedy,
-              std::uint32_t read_align = 256);
+  StepContext(ir::Builder& b, std::vector<SegmentRows> segments, bool greedy);
 
   std::span<const SegmentRows> segments() const { return segments_; }
   std::uint32_t rows() const { return rows_; }
@@ -439,7 +443,6 @@ class StepContext {
   std::uint32_t rows_ = 0;
   std::uint32_t outputs_ = 0;
   bool greedy_ = false;
-  std::uint32_t read_align_ = 256;
   planner::Phase phase_ = planner::Phase::kPrefill;
   std::uint16_t component_ = 0;
   ir::TensorId tokens_{}, positions_{}, output_rows_{}, features_{}, state_row_{};

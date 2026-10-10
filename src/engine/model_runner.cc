@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -62,9 +63,65 @@ std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl
                           .fixed = in.cells.fixed,
                           .block = in.cells.block,
                           .per_row = in.cells.per_row,
-                          .first_row = in.cells.first_row};
-  co::StepInput input{.segment = in.segment, .cells = cells, .read = in.read};
+                          .first_row = in.cells.first_row,
+                          .positions = in.cells.positions,
+                          .recent = in.cells.recent};
+  co::StepInput input{.segment = in.segment,
+                      .cells = cells,
+                      .read = in.read,
+                      .ratio = in.ratio,
+                      .overlap = in.overlap,
+                      .ring = in.ring};
   switch (in.kind) {
+    case kn::InputKind::kHadamard: {
+      const auto values = co::HadamardValues(in.read);
+      if (values.size() * sizeof(float) != out.size()) return Error("a Hadamard input's size");
+      std::memcpy(out.data(), values.data(), out.size());
+      return {};
+    }
+    case kn::InputKind::kPositionPhases:
+    case kn::InputKind::kKeptRows:
+    case kn::InputKind::kKeptCells:
+    case kn::InputKind::kPoolReads:
+    case kn::InputKind::kBlockCells:
+    case kn::InputKind::kBlockStarts: {
+      switch (in.kind) {
+        case kn::InputKind::kPositionPhases:
+          input.kind = co::InputKind::kPositionPhases;
+          break;
+        case kn::InputKind::kKeptRows:
+          input.kind = co::InputKind::kKeptRows;
+          break;
+        case kn::InputKind::kKeptCells:
+          input.kind = co::InputKind::kKeptCells;
+          break;
+        case kn::InputKind::kPoolReads:
+          input.kind = co::InputKind::kPoolReads;
+          break;
+        case kn::InputKind::kBlockCells:
+          input.kind = co::InputKind::kBlockCells;
+          break;
+        case kn::InputKind::kBlockStarts:
+          input.kind = co::InputKind::kBlockStarts;
+          break;
+        default:
+          break;
+      }
+      auto values = co::InputValues(input, shape, {});
+      if (!values) return Error(values.error());
+      if (in.kind == kn::InputKind::kKeptCells || in.kind == kn::InputKind::kBlockCells) {
+        if (values->size() * sizeof(std::int64_t) != out.size())
+          return Error("a compressor's cell input size");
+        std::memcpy(out.data(), values->data(), out.size());
+        return {};
+      }
+      for (const auto value : *values)
+        if (value < std::numeric_limits<std::int32_t>::min() ||
+            value > std::numeric_limits<std::int32_t>::max())
+          return Error("a compressor's row index exceeds I32");
+      const std::vector<std::int32_t> rows(values->begin(), values->end());
+      return WriteRows(out, rows);
+    }
     case kn::InputKind::kOutputRows: {
       input.kind = co::InputKind::kOutputRows;
       auto values = co::InputValues(input, shape, {});
@@ -114,7 +171,7 @@ std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl
         const std::int64_t position = std::int64_t{s.past} + r;
         for (std::uint64_t c = 0; c < in.read; ++c) {
           const std::int64_t cell = (*held)[c];
-          const bool seen = cell >= 0 && cell <= position &&
+          const bool seen = cell >= 0 && (in.ahead || cell <= position) &&
                             (in.window == 0 || position - cell < std::int64_t{in.window});
           if (seen) mask[(std::uint64_t{r} * in.read) + c] = kSeen;
         }
@@ -284,6 +341,7 @@ bool ModelRunner::Verifies(std::uint32_t slot, std::size_t stage) const {
 pl::PlanKey ModelRunner::KeyOf(const pl::StepShape& shape) const {
   pl::PlanKey key = key_base_;
   key.shape = shape;
+  key.parameters = source_->ShapeParameters(shape);
   return key;
 }
 
@@ -864,9 +922,17 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
       case kn::InputKind::kStoreCells:
       case kn::InputKind::kMask:
       case kn::InputKind::kBlockPositions:
+      case kn::InputKind::kPositionPhases:
+      case kn::InputKind::kKeptRows:
+      case kn::InputKind::kKeptCells:
+      case kn::InputKind::kPoolReads:
+      case kn::InputKind::kBlockCells:
+      case kn::InputKind::kBlockStarts:
+      case kn::InputKind::kHadamard:
         // A fixed tensor's cell, and a verify's whole step's rows, are
         // every segment's.
-        if (in.kind != kn::InputKind::kOutputRows && joined && !in.cells.fixed && !in.cells.per_row)
+        if (in.kind != kn::InputKind::kOutputRows && in.kind != kn::InputKind::kPositionPhases &&
+            in.kind != kn::InputKind::kHadamard && joined && !in.cells.fixed && !in.cells.per_row)
           return Error("an input names no segment");
         return WriteComputed(in, shape, out);
       case kn::InputKind::kFeatures:
@@ -898,16 +964,18 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   // cached ones protected (found) before any optional funding.
   const StepAhead& ahead = request.ahead;
   std::array<Plans::Entry*, 2> ahead_cached{};
+  std::array<std::optional<pl::PlanKey>, 2> ahead_keys{};
   std::array<bool, 2> distinct{};
   for (std::size_t k = 0; k < ahead.shapes.size(); ++k) {
     if (!ahead.shapes[k] || !CheckShape(*ahead.shapes[k])) continue;
-    if (*ahead.shapes[k] == shape) {
+    ahead_keys[k] = KeyOf(*ahead.shapes[k]);
+    if (*ahead_keys[k] == entry.key) {
       ahead_cached[k] = &entry;
       continue;
     }
     bool duplicate = false;
     for (std::size_t prior = 0; prior < k; ++prior) {
-      if (ahead.shapes[prior] && *ahead.shapes[k] == *ahead.shapes[prior]) {
+      if (ahead_keys[prior] && *ahead_keys[k] == *ahead_keys[prior]) {
         ahead_cached[k] = ahead_cached[prior];
         duplicate = true;
         break;
@@ -915,7 +983,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
     if (duplicate) continue;
     distinct[k] = true;
-    ahead_cached[k] = plans_.Find(KeyOf(*ahead.shapes[k]));
+    ahead_cached[k] = plans_.Find(*ahead_keys[k]);
   }
   StepPlanRuns& runs = entry.runs[0];
   // A recording made ahead holds the layout its plan's inputs predicted;
@@ -924,7 +992,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     runs.DropGraph();
     ++lookahead_.dropped_ahead;
   }
-  const bool repeats = ahead.shapes[0].has_value() && *ahead.shapes[0] == shape;
+  const bool repeats = ahead_keys[0].has_value() && *ahead_keys[0] == entry.key;
   bool capture =
       (runs.CaptureDue(runs_.graphs()) && (config_.capture_phases & PhaseBit(shape.phase)) != 0) ||
       (ahead.capture_ahead && repeats && runs_.graphs() && !runs.has_graph() && !runs.uncapturable);

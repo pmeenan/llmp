@@ -1145,6 +1145,11 @@ llmp_gtest(ggml_lower_gemma4_test TEST_PREFIX unit. PROPERTIES LABELS unit
 # The GGML lowering of Qwen3.8's steps (each import's target, plain and with
 # the MTP drafter, and the drafter's passes) against today's builder's fast
 # form, launch for launch, at the runner's setup shapes.
+add_executable(ggml_lower_dsv4_test ggml_lower_dsv4_test.cc)
+target_link_libraries(ggml_lower_dsv4_test PRIVATE llmp_ggml_tensors llmp_planner
+                                                llmp_engine_core llmp_components llmp_spec
+                                                llmp_model llmp_artifact llmp_json)
+llmp_gtest(ggml_lower_dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 add_executable(ggml_lower_qwen38_test ggml_lower_qwen38_test.cc)
 target_link_libraries(ggml_lower_qwen38_test PRIVATE llmp_ggml_tensors llmp_planner
                                                      llmp_components llmp_spec llmp_model

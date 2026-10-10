@@ -15,20 +15,15 @@
 //
 // A segment's `past` is the step's data, not its plan: positions reach a
 // program as input data (a positions input, device masks built from it),
-// so two steps that differ only in `past` run one plan, as every family's
-// shape equality excluded n_past. Segment equality (and so StepShape's and
-// PlanKey's) ignores `past`; `read_cells`, which follows it at the shape's
-// read alignment, is part of the plan. A program whose launch parameters
-// do take positions is never captured and is given them before each run
-// (StepProgram::Position).
+// so steps with the same graph dimensions reuse one plan as positions
+// advance. Segment equality (and so StepShape's) ignores `past`; `read_cells`, which follows it at
+// the shape's read alignment, is part of the plan. A program whose launch parameters do take
+// positions is never captured and is given them before each run (StepProgram::Position).
 //
-// Not yet so for DeepSeek V4's compressors (components/mqa.cc, slice G4a):
-// a heavily compressed layer's blocks in a chunk (components::
-// CompressorBlocks) and a compressed cache's read width (StepContext::
-// ReadCells, CellKey::positions) follow `past`, not `read_cells`, so their
-// steps' graphs differ between shapes this equality calls equal. No
-// lowering takes their inputs yet (the GGML lowering refuses them); slice
-// G4b keys or pads those quantities before a plan of them is cached.
+// Components whose graph dimensions depend on positions add only those
+// derived dimensions to PlanKey::parameters through their step source.
+// Equal dimensions still reuse a plan as positions advance; positions
+// themselves remain runtime inputs.
 
 #ifndef LLMP_PLANNER_STEP_SHAPE_H_
 #define LLMP_PLANNER_STEP_SHAPE_H_
@@ -101,6 +96,8 @@ struct PlanKey {
   base::Sha256Digest patterns{};
   base::Sha256Digest policy{};
   std::uint32_t partition = 0;
+  // Position-dependent graph dimensions supplied by the step source.
+  std::vector<std::uint64_t> parameters{};
   bool operator==(const PlanKey&) const = default;
 };
 

@@ -1571,6 +1571,18 @@ each is checked against the design as M3.6 proceeds.
             selection beyond the QSA budget and captured replays. Verify,
             commit and MTP GPU numerics remain with the wiring in G3c.
       - [ ] Wiring and the gate, then deletion of the old code.
+            - [ ] **G3c1 — shared runner execution:** bind verify saves and
+                  commit execution; bind n-gram side tables on demand; stage
+                  drafter features with fake-backend lifecycle controls.
+                  Prove focused GPU numerical correctness for native target
+                  verify and commits of k of n rows across all three formats.
+            - [ ] **G3c2 — composed MTP, serving and gate:** prove actual
+                  MTP catch-up and draft-pass GPU numerics and checkpoint/
+                  kept-state feature restoration, then wire native, GGUF
+                  and MTP through serving; pass state, quality and swap
+                  controls and the matched 1% gate for all three paths.
+            - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
+                  graph builders, bindings and serving class after G3c2.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.
       - [ ] Components, patterns and the mapping.
             *2026-10-10:* the components and mappings landed (slice G4a:
@@ -1586,6 +1598,36 @@ each is checked against the design as M3.6 proceeds.
             the policy, the row-invariant verify and the lowering of the
             new inputs are slice G4b's.
       - [ ] Wiring and the gate, then deletion of the old code.
+            - [x] **G4b1 — shape contract and primitive lowering:** make the
+                  HCA block count and compressed read width safe for `past`
+                  (key both in the plan key or make both past-independent by
+                  padding), align the MQA reference width, then prove focused
+                  primitive lowering correctness for the new inputs.
+            - [ ] **G4b2 — fast forms:** add patterns and default policy,
+                  then prove structural parity and GPU execution for the
+                  fast forms and row-invariant verify.
+            - [ ] **G4c — serving and gate:** bind hash-routing IDs with
+                  expert-count checks, compressor inputs and injection
+                  features with one drafter slot per target slot; pass the
+                  family state, quality, swap and matched 1% controls.
+            - [ ] **G4d — deletion:** remove DeepSeek V4's M3 runner, plans,
+                  graph builders, bindings and serving class after G4c.
+- [ ] **Migrate Qwen2 FP16 and EXL3 fixtures** (required by the exit criteria).
+      The existing EXL3 trellis format proof is not a shared-engine execution
+      migration. The fixtures are not served and have no speed baseline; their
+      gate is the existing correctness controls in the
+      [fixed protocol](experiments/m36-baselines/README.md#quality-controls).
+      - [ ] **G5a — components and mapping:** describe the Qwen2 FP16 and
+            approved EXL3 fixtures as specs over the shared catalog.
+      - [ ] **G5b — lowering:** implement shared GGML and EXL3 operation
+            lowerings; supply and enforce approved EXL3 reconstruction tuning
+            facts and supported shapes.
+      - [ ] **G5c — execution controls:** run FP16 and both EXL3 fixtures
+            through the shared runner; pass the FP16 bridge / EXL3 Tier C
+            correctness controls and state, spill, restore and kept-state
+            controls. This fixture slice has no serving or timing claim.
+      - [ ] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
+            path after G5c.
 - [ ] **Native importer** (D-109): container readers for GGUF,
       safetensors with `config.json`, diffusers pipelines (Qwen-Image's
       components, composed under D-089), MLX and EXL3; architecture mappings
@@ -1602,6 +1644,10 @@ each is checked against the design as M3.6 proceeds.
       each needed byte once, and records an `import` event in its catalog;
       the interim archive tools landed. Native `llmp install` (fetching
       into the archive with libcurl) stays in M5's importer item.
+      N5's all-artifact re-import and family gates follow G3, G4, G5,
+      Qwen-Image and N3/N4;
+      K1's lossy-state work covers every migrated LLM, including Qwen2 once
+      G5 has supplied its shared execution path.
 - [ ] **Qwen-Image-2.1 onto the shared blocks**, with its rounding policy.
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where its

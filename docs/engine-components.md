@@ -1049,17 +1049,30 @@ row-invariant plan's (D-092), so several owners' waves, joined draft
 blocks and the verify are held to the components' references here and
 compared numerically by G4b's lowering against today's runner.
 
-Open for G4b and G4c: the fast plan's patterns, declared by name
+G4b1 adds the position-derived dimensions to the shared plan key through
+component callbacks: each owner's compressor block count and compressed
+read width. Positions remain input data; advancing them with unchanged
+dimensions reuses the plan, including lookahead and capture decisions.
+Fragments, scalar references and keys derive compressed reads from the
+state contract's cell padding (256 in production), independently of the
+outer raw read alignment. Contract-backed ranges cover those views even
+when joined raw reads align to 2,048 cells.
+
+The GGML primitive lowering now stages the typed compressor inputs and
+Hadamard constants, builds compressed masks on the host and ahead masks
+on either the host or device, and lowers offset/inverse rotations. Its
+registry declares the existing top-k, same-type half mask add, indexer
+and F16/F32 conversion operations. The indexer's decomposition explicitly
+widens a half mask before its F32 add; it also lowers with the native
+indexer disabled. Structural checks cover target and draft steps and
+validate the newly selected operations' launch constraints.
+
+Open for G4b2 and G4c: the fast plan's patterns, declared by name
 (`dsv4_qhead`, `dsv4_compress`, `dsv4_lid_topk`,
 `dsv4_sparse_attention`, `dsv4_out_a`, `dsv4_hc_pre`, `dsv4_hc_post`),
-the default policy and the row-invariant verify; the GGML lowering of
-the compressors' inputs, `kHadamard` and `kAhead` masks, which it refuses
-by name today; and the plan key, which ignores `past` (planner
-`step_shape.h`) while a compressed cache's read width and an HCA layer's
-block count follow it, so a plan must not be reused across them as it
-stands (G4b decides whether the key carries them or the fragment pads
-them to the read cells). The engine's binding of the hash rows, the
-compressor plan and the injection's features is G4c's. Expert
+the default policy, the row-invariant verify and real-artifact numerical
+parity. The engine's binding of the hash rows and injection's features,
+and its complete setup and state-lifecycle integration, are G4c's. Expert
 parallelism with as many experts as devices (`partition.cc`) is not
 reachable for DeepSeek on two Sparks (256 experts) and is left as it is.
 

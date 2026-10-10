@@ -582,6 +582,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       case GGML_OP_SOFT_MAX:
         add(Operation::kSoftMax, kSoftMaxName, i, {node}, 1);
         break;
+      case GGML_OP_CPY:
+        add(Operation::kConvert, "ggml.convert", i, {node}, 1);
+        break;
       case GGML_OP_CONT:
         add(Operation::kCont, kContName, i, {node}, 1);
         break;
