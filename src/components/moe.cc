@@ -1,5 +1,6 @@
+// SPDX-FileCopyrightText: 2023-2026 The ggml authors
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT AND Apache-2.0
 
 // The feed-forward pieces (moe.h), and ffn.moe, version 1: a routed-expert
 // feed-forward block with a dense GLU beside it (Gemma 4 26B-A4B's layer,

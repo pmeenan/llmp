@@ -120,12 +120,64 @@ GeGLU build-FFN graph arithmetic, retaining MIT AND Apache-2.0 and the GGML
 authors' copyright; its native state, binding and plan adapter were
 llmpalooza-authored Apache-2.0. The file was deleted in M3.6 (slice G1d,
 2026-10-10) with the Gemma 2 and Gemma 3 runners: the shared components
-(`src/components/`, Apache-2.0 only) now describe the same graph as data and
-`kernels/ggml/lower.cc` lowers it onto GGML's kernels, which keep GGML's
-notice. Whether the components, written to reproduce that graph's operations
-and order, carry the derivative's MIT notice is not decided here (owner
-question); the packaged MIT attribution of GGML and llama.cpp is unchanged.
-This incorporates no upstream backend runtime or new archive members.
+(`src/components/`) now describe the same graph as data and
+`kernels/ggml/lower.cc` lowers it onto GGML's kernels.
+
+**Ports into llmpalooza's own classes** (the owner, 2026-10-10): "If we
+basically reformatted/ported their code to our classes then it should carry
+the MIT license as well. If the code is completely different but matches
+the optimizations and outputs then it doesn't need to be copied." A file
+that translates upstream code into llmpalooza's abstractions (IR builder
+calls, components, lowering windows, CPU references), following it
+statement by statement or written from the upstream function to replicate
+it, carries `MIT AND Apache-2.0` and the upstream copyright line beside
+llmpalooza's, as the ports above do; a file written independently that only
+reproduces the same operation order or results stays Apache-2.0. Judged
+file by file on 2026-10-10 against the pinned sources (llama.cpp
+d81235049384534c167caea52b85a694f6103d14 and b29c606e2, ExLlamaV3 at its
+lock pin):
+
+- GGML and llama.cpp (`2023-2026 The ggml authors`):
+  `src/components/moe.cc` (Gemma 4's router input from gemma4.cpp, and
+  `build_moe_ffn`'s expert products, gate-up halves and
+  `build_lora_mm_id`'s per-expert scale gather), `src/components/attention.cc`
+  (the Q, K and V reshape, norm, rotation and scale sequence of llama.cpp's
+  Gemma graphs as the retired ports recorded it, and `build_attn_mha`'s and
+  the KV cache's store, view and permute steps), `src/components/blocks.cc`
+  (borderline, tagged: gemma4-assistant.cpp's projected input and head
+  projection, and the final softcap's scale, tanh and scale),
+  `src/ir/decompose.cc` (`kRoute` and `kExpertReduce` as `build_moe_ffn`'s
+  node sequence; the hyper-connection composites as deepseek4.cpp's
+  `build_hc_pre`, `build_hc_post` and `build_hc_sinkhorn`),
+  `src/kernels/ggml/lower.cc` (the routing and scaled-reduce windows, built
+  from `build_moe_ffn`'s GGML calls), `src/kernels/ggml/capabilities.cc`
+  (`MmvqRouted`, mmvq.cu's `ggml_cuda_should_use_mmvq` tables),
+  `src/kernels/ggml/fusion.cc` (the fusion gates of ggml-cuda.cu, ggml.c and
+  ggml-impl.h: `ggml_can_fuse_ext`, `ggml_can_fuse_subgraph_ext`,
+  `ggml_cuda_should_fuse_mul_mat`, `ggml_cuda_should_fuse_rope_set_rows`),
+  `src/kernels/reference/exec.cc` (rope.cu's YaRN rotation and
+  multi-section angles, ggml.c's YaRN correction dims, the ALiBi slope) and
+  `tests/unit/reference_exec_test.cc` (the same rotation as its expected
+  values). The packaged GGML MIT notice covers them.
+- ExLlamaV3 (`2025 Turboderp`): `src/kernels/reference/decode_exl3.cc`
+  (codebook.cuh's `decode_3inst`, exl3_dq.cuh's state extraction and
+  reconstruct.cu's tile placement, on the CPU). Its library
+  (`llmp_reference_kernels`) links only into tests and the import fuzz
+  harness, so no package carries ExLlamaV3's notice for it yet; a shipped
+  binary that links it must.
+
+Independent, Apache-2.0 only: the other component files (`ffn.cc`, whose
+gated block is the arithmetic in llmpalooza's own emission order, the gate's
+product first where `build_ffn` builds the up product first; `catalog.cc`,
+`params.cc`, `step.cc`, `component.h`, `defs.h`, `moe.h`, `step.h`),
+`src/planner/pattern.cc` (matchers over the IR's own match context), the
+CPU decoders' `decode.cc` (it calls GGML's type traits rather than copying
+them), `src/kernels/decode/` (block decoders written from the encodings'
+definitions), `src/format/`, `src/spec/mappings/` (tensor names and keys as
+data) and `src/import/readers/` (the GGUF reader is its own parser, more
+permissive than gguf.cpp). A header that only declares llmpalooza's
+interface stays Apache-2.0, as `gemma4_graph.h` does. This incorporates no
+upstream backend runtime or new archive members.
 
 Llmpalooza's own kernels for Qwen3.8's formats (`src/kernels/ggml/llmp_ops.*`)
 and its fusions of Qwen3.8's GGML nodes (`llmp_fused.cu`, which repeats

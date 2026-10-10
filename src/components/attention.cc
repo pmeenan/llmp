@@ -1,5 +1,6 @@
+// SPDX-FileCopyrightText: 2023-2026 The ggml authors
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT AND Apache-2.0
 
 // attention.dense, version 1: dense grouped-query attention over each
 // request's own cache, with its norms. Pre- or sandwich-normed (Gemma's

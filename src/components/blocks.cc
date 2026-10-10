@@ -1,5 +1,6 @@
+// SPDX-FileCopyrightText: 2023-2026 The ggml authors
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT AND Apache-2.0
 
 // norm.rms, version 1: rms_norm(x) · w over the stream (a final norm).
 // scale.learned, version 1: the stream times one learned value (Gemma 4's

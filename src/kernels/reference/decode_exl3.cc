@@ -1,5 +1,6 @@
+// SPDX-FileCopyrightText: 2025 Turboderp
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT AND Apache-2.0
 
 #include "kernels/reference/decode_exl3.h"
 
