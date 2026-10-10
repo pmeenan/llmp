@@ -19,13 +19,17 @@
 #include <format>
 #include <limits>
 #include <map>
+#include <memory>
+#include <optional>
 #include <print>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
@@ -48,6 +52,7 @@
 #include "model/dsv4.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
+#include "model/gemma4.h"
 #include "model/qwen38.h"
 #include "planner/step_shape.h"
 #include "platform/crash_policy.h"
@@ -56,6 +61,7 @@
 #include "platform/kept_files.h"
 #include "platform/memory_pressure.h"
 #include "providers/device_runtime.h"
+#include "runtime/component_build.h"
 #include "runtime/engine_image.h"
 #include "runtime/engine_llm.h"
 #include "runtime/gemma_profile.h"
@@ -104,229 +110,6 @@ std::string SlotsReport(const ModelSettings& s) {
                      SourceName(s.max_slots.source), s.max_slots.basis);
 }
 
-// The component engine's parts for a family moved to it (D-107): its spec
-// from its architecture's mapping (a v0 artifact's, with its compiled
-// profile's values, D-109's synthesis), its components' state layout and
-// batching, and the component step source planned under the mapping's
-// default policy for those values (its recipe as data, spec/mapping.h
-// DefaultPolicy) over GGML's registry and lowered onto its
-// graphs (engine/component_source.h, kernels/ggml/step_program.h). The
-// backend runs on the model's own stream (its runner's job stream), with a
-// cuBLAS handle over a workspace the runner maps and charges as its own
-// (RunnerConfig::kernel_memory, as RunnerResources does for the M3
-// runners). A head row is the head's vocabulary of logits; a greedy step
-// returns each owner's token chosen on the device. Gemma 2 and Gemma 3
-// (their compiled profiles' values); any other architecture, or a drafter,
-// is refused at Setup, naming why.
-struct ComponentHold {
-  spec::ModelSpec spec;
-  spec::Source source;
-  model::StateLayoutDerived layout;
-  std::map<ir::WeightRef, std::uint32_t> resource;
-  // Before the backend, whose launch borrows it (the runner's Release
-  // destroys that launch, then retires the handle).
-  std::unique_ptr<kernels::ggml::CublasHandle> cublas;
-  std::unique_ptr<kernels::ggml::GgmlBackend> backend;
-};
-
-// A v0 artifact's values for its architecture's mapping: its compiled
-// profile's (spec/mappings/*.h).
-std::expected<std::vector<spec::SourceValue>, std::string> V0Values(std::string_view architecture) {
-  if (architecture == "gemma2") return spec::mappings::Gemma2V0Values(model::Gemma2_2B());
-  if (architecture == "gemma3") return spec::mappings::Gemma3V0Values(model::Gemma3_4BQat());
-  return Error(
-      std::format("the component engine has no recipe for architecture {} yet", architecture));
-}
-
-// The architectures served by the component engine's adapter for their
-// pipeline kind (engine_llm.h, engine_image.h; D-107): Gemma 2 and Gemma 3
-// since their migration. A family joins when its migration passes its gate.
-bool OnComponentEngine(std::string_view architecture) {
-  return architecture == "gemma2" || architecture == "gemma3";
-}
-
-EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
-                              const config::ModelEntry& entry, int index) {
-  return [&node, store = std::move(store), id = entry.artifact.value_or(""),
-          drafter = entry.drafter.has_value(),
-          index](const ModelSettings& settings) -> std::expected<EngineLlmParts, std::string> {
-    if (drafter) {
-      return Error(std::format("the component engine has no drafter stage for architecture {} yet",
-                               settings.architecture));
-    }
-    auto values = V0Values(settings.architecture);
-    if (!values) return Error(values.error());
-    auto artifact = OpenInstalled(store, id);
-    if (!artifact) return Error(artifact.error());
-    const spec::Mapping* mapping = spec::FindMapping(artifact->model().architecture);
-    if (mapping == nullptr) return Error("the artifact's architecture has no mapping");
-    auto hold = std::make_shared<ComponentHold>();
-    auto synthesized = spec::SynthesizeV0(*artifact, *mapping, *values);
-    if (!synthesized) return Error(synthesized.error());
-    hold->spec = std::move(*synthesized);
-    auto source = spec::SourceOfV0(*artifact, mapping);
-    if (!source) return Error(source.error());
-    hold->source = std::move(*source);
-    if (auto valid = components::ValidateSpec(hold->spec, hold->source.tensors); !valid) {
-      return Error(valid.error());
-    }
-    // The spec bound to the artifacts its stages run from (each stage's
-    // index into them; D-105's layout identity and the plans' key): a v0
-    // artifact's one target stage, so its own ID.
-    const std::array<std::string_view, 1> artifacts{id};
-    auto bound = spec::BoundDigest(hold->spec, artifacts);
-    if (!bound) return Error(bound.error());
-    // Each state tensor starts on its own paged extent, as the M3 layouts
-    // did: packed tensors would straddle extents, so their growth would
-    // cross extent boundaries at staggered positions and a prompt would
-    // grow its state (each growth a fixed host cost between steps) every
-    // chunk or two instead of once every extent's worth of cells.
-    auto layout = components::StageLayout(hold->spec, 0, settings.context.value,
-                                          settings.prefill_chunk.value, kExtent);
-    if (!layout) return Error(layout.error());
-    hold->layout = std::move(*layout);
-    auto caps = components::StageBatching(hold->spec, 0);
-    if (!caps) return Error(caps.error());
-    const std::uint32_t slots = std::clamp<std::uint32_t>(
-        settings.max_slots.value, 1, static_cast<std::uint32_t>(Llm::kMaxBranches));
-    const std::uint32_t context = hold->layout.context;
-    const std::uint32_t chunk = std::max<std::uint32_t>(hold->layout.max_rows, 1);
-    // The widest steps (the setup measurement): every owner's rows at the
-    // end of its context, reading all of it.
-    const auto shape = [&](planner::Phase phase, std::uint32_t owners, std::uint32_t rows,
-                           bool greedy) {
-      planner::StepShape s{
-          .stage = 0, .phase = phase, .segments = {}, .row_invariant = false, .read_align = 256};
-      for (std::uint32_t o = 0; o < owners; ++o) {
-        s.segments.push_back({.slot = static_cast<std::uint8_t>(o),
-                              .rows = rows,
-                              .past = context - rows,
-                              .read_cells = context,
-                              .outputs = 1,
-                              .group = 0,
-                              .want_head = true,
-                              .greedy = greedy});
-      }
-      return s;
-    };
-    const std::uint32_t joined = std::min(slots, std::max(caps->max_segments, 1U));
-    // Each weight's resource, by what a step binds (the head's included),
-    // and a head row's width: its logits' (the head's vocabulary).
-    std::uint32_t logit_width = 0;
-    {
-      auto step =
-          components::BuildStep(hold->spec, 0, shape(planner::Phase::kPrefill, 1, chunk, false),
-                                {.tensors = hold->source.tensors, .state = &hold->layout});
-      if (!step) return Error(step.error());
-      for (const components::StepWeight& w : step->weights) {
-        const auto found = artifact->FindResource(w.parts.front().first);
-        if (!found) return Error(std::format("no resource holds {}", w.parts.front().first));
-        hold->resource[w.ref] = *found;
-      }
-      if (!step->logits.valid()) return Error("the spec's target stage has no head");
-      const std::uint64_t width = step->graph.tensor(step->logits).shape().ne[0];
-      if (width == 0 ||
-          width > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
-        return Error(std::format("the head's {} logits a row", width));
-      }
-      logit_width = static_cast<std::uint32_t>(width);
-    }
-    auto backend = kernels::ggml::GgmlBackend::Create(
-        0, node.execution(), node.stream(static_cast<std::uint32_t>(index)), nullptr,
-        {.lower = {.device_masks = true}});
-    if (!backend) return Error(backend.error());
-    hold->backend = std::move(*backend);
-    auto component = engine::ComponentStepSource::Create(
-        {.spec = &hold->spec,
-         .stage = 0,
-         .bindings = {.tensors = hold->source.tensors, .state = &hold->layout},
-         .bound_digest = *bound,
-         .mapping = mapping,
-         .values = *values,
-         .slots = slots,
-         .policy = std::nullopt,
-         .backend = hold->backend->Backend()});
-    if (!component) return Error(component.error());
-    auto weights = std::make_unique<engine::PagedWeights>();
-    if (auto opened = weights->Open(store / id); !opened) return Error(opened.error());
-    engine::PagedWeights* paged = weights.get();
-    EngineLlmParts parts;
-    parts.config.slots = {.model = settings.name,
-                          .slots = slots,
-                          .stages = {{.name = "target", .layout = hold->layout, .read_align = 0}},
-                          .spec = *bound,
-                          .read_align = 256,
-                          .spill_place = {},
-                          .spill_directory = {},
-                          .invalidate = {},
-                          .drop_plans = {}};
-    std::vector<engine::GroupPlace> places(paged->artifact().groups().size(),
-                                           engine::GroupPlace::kDevice);
-    parts.config.weights.push_back(
-        {.weights = std::move(weights), .places = std::move(places), .slabs = {}});
-    // A prompt chunk and a decode row, joined and alone, with logits and
-    // with device tokens: their plans differ (owner attention joins
-    // owners), so each is measured.
-    std::vector<planner::StepShape>& setup = parts.config.setup_shapes;
-    for (const std::uint32_t owners : {1U, joined}) {
-      planner::StepShape prompt = shape(planner::Phase::kPrefill, owners, chunk, false);
-      if ((owners == 1 || caps->join_prefill) && std::ranges::find(setup, prompt) == setup.end()) {
-        setup.push_back(std::move(prompt));
-      }
-      for (const bool greedy : {false, true}) {
-        planner::StepShape row = shape(planner::Phase::kDecode, owners, 1, greedy);
-        if (std::ranges::find(setup, row) == setup.end()) setup.push_back(std::move(row));
-      }
-    }
-    // cuBLAS on the model's stream over the runner's workspace (D-053: the
-    // engine's handle, never one GGML makes).
-    const providers::DeviceFacts facts =
-        providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
-    const std::uint64_t cublas_bytes =
-        kernels::ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture))
-            .value();
-    parts.config.kernel_memory.push_back(
-        {.name = std::format("{} cuBLAS workspace", settings.name), .bytes = cublas_bytes});
-    ComponentHold* held = hold.get();
-    parts.config.prepare =
-        [&node, held, index,
-         cublas_bytes](std::span<const std::uint64_t> bases) -> std::expected<void, std::string> {
-      if (bases.size() != 1) return Error("the cuBLAS workspace is not mapped");
-      auto cublas = kernels::ggml::CublasHandle::Create(
-          0, node.execution(), node.stream(static_cast<std::uint32_t>(index)),
-          {.base = bases.front(), .size = base::Bytes(cublas_bytes)});
-      if (!cublas) return Error(std::format("cuBLAS: {}", cublas.error().detail));
-      held->cublas = std::move(*cublas);
-      return held->backend->LendCublas(held->cublas.get());
-    };
-    parts.config.retire = [held] {
-      held->backend->LaunchReleased();
-      held->cublas.reset();
-    };
-    parts.config.launch =
-        [&node, held]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
-      return held->backend->Launch(
-          {.base = node.pool().base, .size = base::Bytes(node.pool().bytes)});
-    };
-    parts.config.weight_address = [held, paged](const ir::WeightRef& ref,
-                                                format::PartRole) -> std::uint64_t {
-      const auto at = held->resource.find(ref);
-      return at == held->resource.end() ? 0 : paged->resource_address(at->second);
-    };
-    parts.source = std::move(*component);
-    parts.caps = *caps;
-    parts.logit_width = logit_width;
-    parts.device_greedy = true;
-    parts.prefill = {.chunk_rows = chunk,
-                     .lookahead = 2,
-                     .capture_ahead = true,
-                     .prepare_ahead = true,
-                     .state_only = true};
-    parts.architecture = settings.architecture;
-    parts.keep = std::move(hold);
-    return parts;
-  };
-}
 EngineImageBuild ComponentImageBuild(std::string architecture) {
   return [architecture = std::move(architecture)](
              const ModelSettings&) -> std::expected<EngineImageParts, std::string> {
@@ -2470,7 +2253,13 @@ void Server::Log(std::string_view text) {
 Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settings, int index) {
   // A family on the component engine: the adapter of its spec's pipeline
   // kind, which its architecture's mapping names.
-  if (!entry.composition && OnComponentEngine(settings.architecture)) {
+  // The M3 Gemma 4 class's internal arithmetic diagnostics (joined,
+  // row-invariant, no state preparation) are not ported to the engine
+  // (D-107): until that class's deletion they still select it.
+  const bool gemma4_diagnostic =
+      settings.architecture == "gemma4" &&
+      (options_.gemma_joined || options_.gemma_row_invariant || !options_.gemma4_prepare_state);
+  if (!entry.composition && OnComponentEngine(settings.architecture) && !gemma4_diagnostic) {
     const spec::Mapping* mapping = spec::FindMapping(settings.architecture);
     if (mapping == nullptr) {
       return Error(std::format("model {}: the component engine has no mapping of architecture {}",

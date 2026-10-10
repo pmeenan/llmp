@@ -573,6 +573,25 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Gemma 4 26B-A4B and 31B are served by the shared engine (D-107): their
+  steps come from the `gemma4` mapping's components and recipes, lowered
+  onto the same GGML kernels in the same order, so their replies and
+  scores are unchanged. A model entry with a `drafter` (the profile's
+  assistant, which M3 refused) now speculates: three drafts a unit, each
+  pass reading the target's cache and its final-norm features, then one
+  verify. Its greedy replies keep the tokens the target's verify rows
+  choose, whose several-row arithmetic is not a one-row decode's, so a
+  reply can differ from the same model's plain one (the 26B-A4B's do); a
+  Gemma 4 entry's `speculation = true` without a `drafter`, refused
+  before, is now ignored and reported, as other families' is. Their
+  conversations are kept across a restart in record version 2 (D-112):
+  one the previous build kept (version 1) is refused once at the first
+  start and its next turn prefilled again; their turn checkpoints are now
+  saved past about 1K tokens, as Gemma 2's and Gemma 3's are below.
+  Sliding-window caches now truncate a rejected verify's rows instead of
+  refusing a verify, which changes the kept layout identity of Gemma 2
+  and Gemma 3 conversations the previous build kept: refused once, then
+  prefilled again.
 - The runtime keeps a model's weight shards open only while the model is
   active: from its activation until another model replaces it, rather
   than every registered model's from startup. Each shard is reopened at

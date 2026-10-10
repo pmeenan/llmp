@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "artifact/artifact.h"
 #include "engine/paged_weights.h"
@@ -29,6 +30,21 @@ std::expected<SlabSpec, std::string> ExpertSlab(
     const artifact::Artifact& artifact,
     std::span<const std::pair<std::uint32_t, std::string_view>> arrays, std::uint32_t count,
     std::uint64_t alignment, std::uint32_t layer);
+
+// Every layer's routed experts as one slab (ExpertSlab over the artifact's
+// expert arrays of that layer, ExpertArray::layer), its pitch rounded up to
+// `alignment` and to every array's GGML block bytes, so each expert's base
+// keeps both (Gemma 4's runner's rule: a shard change then falls on an
+// alignable page boundary); the expert groups placed by their slabs alone
+// (GroupPlace::kNone), every other group on the device. Refused if an
+// expert group is in no slab.
+struct LayerSlabs {
+  std::vector<GroupPlace> places;    // by group
+  std::vector<SlabSpec> slabs;       // by layer with experts, ascending
+  std::vector<std::uint64_t> pitch;  // by expert array: its slab's
+};
+std::expected<LayerSlabs, std::string> ExpertSlabsOf(const artifact::Artifact& artifact,
+                                                     std::uint64_t alignment);
 
 }  // namespace llmp::engine
 

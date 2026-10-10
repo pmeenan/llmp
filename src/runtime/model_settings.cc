@@ -635,7 +635,9 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     s.speculation = {true, SettingSource::kDerived,
                      std::format("the drafter ({})", facts.drafter_architecture)};
   }
-  if ((arch == "gemma4" || arch == "gemma3" || arch == "gemma2") &&
+  // Gemma 4 drafts with its assistant (the component engine's); Gemma 2
+  // and Gemma 3 have no drafter.
+  if ((arch == "gemma3" || arch == "gemma2") &&
       (entry.drafter || entry.Bool("speculation").value_or(false)))
     return Error("Gemma serving has no qualified assistant or speculative path");
   const bool speculative = s.speculation.value;

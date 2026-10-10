@@ -32,7 +32,11 @@
 // - A drafter that reads the target's state (`borrows_target`: Gemma4's
 //   assistant reading the target's KV) borrows the target's stage frozen
 //   for its passes (SlotLifecycle::Borrow), after what the last verify
-//   owes has run.
+//   owes has run. An anchored one (`anchored`: the assistant) runs every
+//   pass at the committed positions, its token the latest proposal; one
+//   with `features` reads, beside its tokens, the target's tapped features
+//   on a unit's first pass and its own last next features after (the
+//   runner copies both on the device).
 // - Depth adapts between units (execution::AdaptiveDepth, per slot and
 //   drafter), and only complete steps teach it (a verify cut by the
 //   reply's end or the context, or a cascade's earlier drafter rejected,
@@ -87,6 +91,16 @@ struct DrafterSpec {
   std::int32_t fill = 0;
   // Reads the target's state, borrowed frozen while it drafts.
   bool borrows_target = false;
+  // Autoregressive: every pass at the slot's committed positions (Gemma 4's
+  // assistant, whose stage reads the target's frozen state through them
+  // and stores none of its rows): a pass's one row is its latest
+  // proposal's token (the anchor's first), at the anchor's position.
+  bool anchored = false;
+  // Its rows read a feature beside their tokens (ModelRunner FeatureFrom):
+  // a unit's first pass its stage's tap at the positions before its rows
+  // (the target's features there), a later pass its own last pass's next
+  // feature (the runner's carry).
+  bool features = false;
   // Its depth adapts between units (execution::AdaptiveDepth over
   // max_depth and max_depth - 1, at that cost ratio); else max_depth.
   bool adaptive = false;

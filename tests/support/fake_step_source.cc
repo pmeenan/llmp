@@ -83,6 +83,9 @@ struct SegmentPlan {
   std::int64_t past = -1;    // Position's, for a positioned program (-1: the input's)
   std::uint32_t logits = 0;  // F32 logits a row (0: FakeRows)
   bool target = true;        // the target's stage: its logits mark lost state
+  // A drafter's features: its rows' (an input) and its next ones (an
+  // output), a cell's bytes each.
+  std::uint64_t features = 0, next = 0, feature_bytes = 0;
 };
 
 void* CellTensor::At(std::uint64_t cell) const {
@@ -122,6 +125,8 @@ class FakeProgram final : public kn::StepProgram {
         executed_(std::move(executed)),
         positioned_(std::move(positioned)),
         phase_(phase) {}
+  // The extra inputs' slots (their indices in inputs()), recorded each run.
+  void SetExtra(std::vector<std::size_t> extra) { extra_ = std::move(extra); }
 
   std::uint64_t scratch_bytes() const override { return scratch_; }
   std::uint64_t host_bytes() const override { return host_; }
@@ -166,9 +171,18 @@ class FakeProgram final : public kn::StepProgram {
           kn::StepFailure{.error = kn::StepError::kRejected, .detail = "the fake refuses to run"});
     }
     queued_->fetch_add(1);
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> extra;
+    for (const std::size_t i : extra_)
+      extra.emplace_back(inputs_[i].device_address, inputs_[i].bytes);
     auto launched = providers::fake::FakeDeviceExecution::Launch(
-        stream, [segments = segments_, executed = executed_] {
+        stream, [segments = segments_, executed = executed_, extra = std::move(extra),
+                 seen = options_->seen_inputs] {
           Execute(segments);
+          seen->clear();
+          for (const auto& [address, bytes] : extra) {
+            const auto* from = At<const std::byte>(address);
+            seen->emplace_back(from, from + bytes);
+          }
           executed->fetch_add(1);
         });
     if (!launched) {
@@ -215,8 +229,15 @@ class FakeProgram final : public kn::StepProgram {
       for (std::uint32_t r = 0; r < s.rows; ++r) {
         const std::int32_t at = position_of(r);
         // The tap the target wrote for the position before (a drafter
-        // reads the target's features there), before this row writes.
-        if (const auto tapped = Valid(s.tap, s.slot, at - 1, r)) taps[r] = tapped->token;
+        // reads the target's features there), before this row writes; or
+        // the feature the runner copied in for the row.
+        if (s.features != 0) {
+          FakeCell f;
+          std::memcpy(&f, At<const void>(s.features + (r * s.feature_bytes)), sizeof(f));
+          if (f.magic == kFakeMagic && f.slot == s.slot) taps[r] = f.token;
+        } else if (const auto tapped = Valid(s.tap, s.slot, at - 1, r)) {
+          taps[r] = tapped->token;
+        }
         const FakeCell cell{
             .magic = kFakeMagic, .slot = s.slot, .position = at, .token = tokens[r]};
         if (const auto own = s.own.Cell(at, r)) std::memcpy(s.own.At(*own), &cell, sizeof(cell));
@@ -247,6 +268,14 @@ class FakeProgram final : public kn::StepProgram {
         if (s.outputs != 0) std::memcpy(At<void>(s.out), &chosen, sizeof(chosen));
         continue;
       }
+      for (std::uint32_t o = 0; o < s.outputs && s.next != 0; ++o) {
+        const std::uint32_t r = s.rows - s.outputs + o;
+        const FakeCell next{.magic = kFakeMagic,
+                            .slot = s.slot,
+                            .position = position_of(r),
+                            .token = tokens[r] + kFakeFeatureStep};
+        std::memcpy(At<void>(s.next + (o * s.feature_bytes)), &next, sizeof(next));
+      }
       for (std::uint32_t o = 0; o < s.outputs; ++o) {
         const std::uint32_t r = s.rows - s.outputs + o;
         if (s.logits != 0) {
@@ -272,6 +301,7 @@ class FakeProgram final : public kn::StepProgram {
   std::vector<kn::InputSlot> inputs_;
   std::vector<kn::OutputSlot> outputs_;
   std::vector<kn::TensorUse> uses_;
+  std::vector<std::size_t> extra_;
   std::uint64_t scratch_ = 0, host_ = 0, launches_ = 0;
   bool measuring_ = false, bound_ = false;
   const FakeSourceOptions* options_;
@@ -310,7 +340,9 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
     }
     if (tap == nullptr && shape.stage != 0 && item.contract.target_writes) tap = &item;
   }
-  if (kv == nullptr || kv->contract.cell_bytes < sizeof(FakeCell)) {
+  // A stage that reads frozen stores no rows of its own (it may have none).
+  const bool frozen = shape.stage != 0 && model::ReadsFrozen(layout);
+  if ((kv == nullptr && !frozen) || (kv != nullptr && kv->contract.cell_bytes < sizeof(FakeCell))) {
     return Refuse("the stage has no tensor 0 of a cell's bytes");
   }
   const bool verify = shape.phase == pl::Phase::kVerify;
@@ -341,10 +373,26 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
                       .segment = ir::kJoinedSegment,
                       .kind = kn::InputKind::kPositions});
   }
+  // A drafter's features: one joined input of a cell a row.
+  const bool features = options_.features && shape.stage != 0 && tap != nullptr;
+  const std::uint64_t feature_bytes = features ? tap->contract.cell_bytes : 0;
+  std::uint64_t joined_features = 0;
+  if (features) {
+    joined_features = place(std::uint64_t{total} * feature_bytes);
+    inputs.push_back({.device_address = joined_features,
+                      .bytes = std::uint64_t{total} * feature_bytes,
+                      .tensor = {},
+                      .segment = ir::kJoinedSegment,
+                      .kind = kn::InputKind::kFeatures});
+  }
   std::uint32_t first = 0;
   for (std::size_t i = 0; i < shape.segments.size(); ++i) {
     const pl::Segment& seg = shape.segments[i];
     SegmentPlan s;
+    if (features) {
+      s.features = joined_features + (first * feature_bytes);
+      s.feature_bytes = feature_bytes;
+    }
     s.slot = seg.slot;
     s.rows = seg.rows;
     s.outputs = seg.outputs;
@@ -372,14 +420,16 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
                         .kind = kn::InputKind::kPositions});
     }
     first += seg.rows;
-    const std::uint64_t base =
-        addresses.state({.stage = shape.stage, .tensor = 0, .layer = 0, .segment = segment});
-    if (base == 0) return Refuse("a state tensor has no address");
-    s.own = TensorOf(base, *kv);
-    uses.push_back(
-        {.address = base,
-         .bytes = std::min<std::uint64_t>(seg.read_cells, kv->cells) * kv->contract.cell_bytes,
-         .role = ir::Role::kState});
+    if (kv != nullptr && !frozen) {
+      const std::uint64_t base =
+          addresses.state({.stage = shape.stage, .tensor = 0, .layer = 0, .segment = segment});
+      if (base == 0) return Refuse("a state tensor has no address");
+      s.own = TensorOf(base, *kv);
+      uses.push_back(
+          {.address = base,
+           .bytes = std::min<std::uint64_t>(seg.read_cells, kv->cells) * kv->contract.cell_bytes,
+           .role = ir::Role::kState});
+    }
     if (fixed != nullptr) {
       s.fixed =
           addresses.state({.stage = shape.stage, .tensor = 1, .layer = 0, .segment = segment});
@@ -438,6 +488,25 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
     }
     segments.push_back(s);
   }
+  // Each drafter segment's next features, after every segment's rows.
+  for (std::size_t i = 0; i < segments.size() && features; ++i) {
+    SegmentPlan& s = segments[i];
+    if (s.outputs == 0 || s.greedy) continue;
+    s.next = place(std::uint64_t{s.outputs} * feature_bytes);
+    outputs.push_back({.device_address = s.next,
+                       .bytes = std::uint64_t{s.outputs} * feature_bytes,
+                       .tensor = {},
+                       .segment = static_cast<std::uint8_t>(i),
+                       .features = true});
+  }
+  std::vector<std::size_t> extra;
+  if (options_.extra_inputs) {
+    for (kn::InputSlot in : options_.extra_inputs(shape)) {
+      in.device_address = place(in.bytes);
+      extra.push_back(inputs.size());
+      inputs.push_back(in);
+    }
+  }
   for (const kn::InputSlot& in : inputs) {
     uses.push_back({.address = in.device_address, .bytes = in.bytes, .role = ir::Role::kInput});
   }
@@ -455,10 +524,12 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
     return Refuse(std::format("{} bytes of activations exceed the workspace's {}", scratch,
                               addresses.activation_bytes));
   }
-  return std::make_unique<FakeProgram>(std::move(segments), std::move(inputs), std::move(outputs),
-                                       std::move(uses), scratch, options_.host_bytes,
-                                       options_.launches, addresses.measuring(), &options_, queued_,
-                                       executed_, positioned_, shape.phase);
+  auto program = std::make_unique<FakeProgram>(
+      std::move(segments), std::move(inputs), std::move(outputs), std::move(uses), scratch,
+      options_.host_bytes, options_.launches, addresses.measuring(), &options_, queued_, executed_,
+      positioned_, shape.phase);
+  program->SetExtra(std::move(extra));
+  return program;
 }
 
 }  // namespace llmp::test_support

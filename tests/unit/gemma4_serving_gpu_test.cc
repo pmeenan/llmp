@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The production adapter and driver over the approved native artifact.
+// The production adapter and driver over the approved native artifacts:
+// since M3.6 (slice G2c) Gemma 4 serves on the shared engine
+// (runtime/engine_llm.h), so these controls, taken on the M3 class, now hold
+// for it (the M3 class's own internals, its preparation diagnostic and its
+// kept tags' profile prefix, are gone from them).
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -24,7 +28,8 @@
 #include <vector>
 
 #include "base/sha256.h"
-#include "engine/gemma4_runner.h"
+#include "engine/paged_node.h"
+#include "runtime/engine_llm.h"
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
 
@@ -33,7 +38,6 @@ namespace en = llmp::engine;
 namespace cfg = llmp::config;
 class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
  protected:
-  virtual bool PreparationControl() const { return false; }
   void SetUp() override {
     const auto installed = std::filesystem::path(llmp::test_support::ModelsDir()) / "m3-artifacts";
     const char* artifact = GetParam() == 26
@@ -60,13 +64,12 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     cfg::ModelEntry entry;
     entry.name = "gemma";
     entry.artifact = artifact;
-    entry.overrides["context"] = std::int64_t{PreparationControl() ? 8192 : 4096};
-    entry.overrides["prefill_chunk"] =
-        std::int64_t{PreparationControl() ? (GetParam() == 26 ? 1024 : 256) : 16};
-    entry.overrides["max_slots"] = std::int64_t{PreparationControl() ? 4 : 12};
+    entry.overrides["context"] = std::int64_t{4096};
+    entry.overrides["prefill_chunk"] = std::int64_t{16};
+    entry.overrides["max_slots"] = std::int64_t{12};
     config.models.push_back(entry);
     options.keep_conversations = true;
-    if (!PreparationControl()) ASSERT_TRUE(Start());
+    ASSERT_TRUE(Start());
   }
   bool Start() {
     ++starts;
@@ -164,189 +167,6 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
 };
 
-// Use the approved 8K/C4 adapter directly, without first loading the legacy
-// 4K fixture. Prefill remains scalar; four independently live owners exercise
-// selection and departure while the shared runner prepares their next ranges.
-class Gemma4PreparationServingGpu : public Gemma4ServingGpu {
- protected:
-  bool PreparationControl() const override { return true; }
-  std::expected<llmp::base::Sha256Digest, std::string> StateHash(en::Gemma4Runner& runner,
-                                                                 std::uint32_t id) {
-    auto slot = runner.request_slot(id);
-    if (!slot) return std::unexpected(slot.error());
-    auto ranges = runner.CheckpointRanges((*slot)->completed_positions());
-    if (!ranges) return std::unexpected(ranges.error());
-    auto& node = server->node();
-    std::vector<llmp::catalog::ExtentId> staging;
-    auto buffer = node.Pinned(1U << 20U, 0, staging);
-    if (!buffer) return std::unexpected(buffer.error());
-    llmp::base::Sha256 hash;
-    for (const auto& range : *ranges)
-      for (std::uint64_t at = 0; at < range.bytes; at += 1U << 20U) {
-        const en::LiveState::Range part{range.region, range.offset + at,
-                                        std::min<std::uint64_t>(1U << 20U, range.bytes - at)};
-        auto retired = en::LiveState::CopyRetirement::kUnproven;
-        auto copied = runner.CopyState(id, *buffer, std::span(&part, 1), true, &retired);
-        if (retired == en::LiveState::CopyRetirement::kUnproven) node.KeepPinned(*buffer);
-        if (!copied) {
-          if (retired == en::LiveState::CopyRetirement::kProven) (void)node.FreePinned(*buffer);
-          return std::unexpected(copied.error());
-        }
-        hash.Update(std::span(static_cast<const std::byte*>(*buffer), part.bytes));
-      }
-    if (auto r = node.FreePinned(*buffer); !r) return std::unexpected(r.error());
-    return hash.Finish();
-  }
-};
-
-TEST_P(Gemma4PreparationServingGpu, DefaultPreparationPreservesFourOwnerPromptProgress) {
-  EXPECT_TRUE(en::Gemma4Options{}.prepare_state);
-  EXPECT_TRUE(rt::ServingOptions{}.gemma4_prepare_state);
-  constexpr std::array<std::uint32_t, 4> lengths{4352, 4480, 4608, 4736};
-  std::array<std::vector<float>, 4> expected_heads;
-  std::array<llmp::base::Sha256Digest, 4> expected_states{};
-  std::array<std::uint64_t, 4> expected_units{}, expected_rows{};
-  for (const bool ordinary : {false, true}) {
-    options = rt::ServingOptions{};
-    if (!ordinary) options.gemma4_prepare_state = false;
-    ASSERT_TRUE(Start());
-    {
-      auto& runner = dynamic_cast<en::Gemma4Runner&>(model->paged());
-      ASSERT_EQ(model->settings().context.value, 8192U);
-      ASSERT_EQ(model->settings().prefill_chunk.value, GetParam() == 26 ? 1024U : 256U);
-      ASSERT_EQ(model->settings().max_slots.value, 4U);
-      ASSERT_EQ(model->branches(), 4U);
-      ASSERT_EQ(model->generation_wave_capacity(), 4U);
-      ASSERT_EQ(model->prefill_wave_capacity(), 1U);
-      ASSERT_EQ(runner.layout().local_cells, GetParam() == 26 ? 2048U : 1280U);
-      // Eight retained full heads (off+default), bounded token/session metadata,
-      // and only state digests. The 1 MiB transfer is catalog-funded separately.
-      HostCopies copies(*this, 8ULL * 262144 * sizeof(float) + (512U << 10U));
-      ASSERT_TRUE(copies.funded);
-      std::array<std::vector<std::int32_t>, 4> tokens;
-      struct Sessions {
-        std::array<std::unique_ptr<rt::Llm::PromptSession>, 4> owned;
-        ~Sessions() {
-          for (auto& session : owned)
-            if (session) {
-              session->Cancel();
-              const auto r = session->Finish();
-              EXPECT_TRUE(r) << (r ? "" : r.error());
-            }
-        }
-      } sessions;
-      for (std::uint32_t id = 0; id < 4; ++id) {
-        tokens[id].resize(lengths[id]);
-        for (std::size_t i = 0; i < tokens[id].size(); ++i)
-          tokens[id][i] = prompt[(i + id * 3 + i / 7) % prompt.size()];
-      }
-      ASSERT_TRUE(Select(4));
-      for (std::uint32_t id = 0; id < 4; ++id) {
-        auto begun = Branch(id).BeginPrompt(tokens[id]);
-        ASSERT_TRUE(begun) << (begun ? "" : begun.error());
-        sessions.owned[id] = std::move(*begun);
-        const auto settled = sessions.owned[id]->Advance();
-        ASSERT_TRUE(settled) << (settled ? "" : settled.error());
-      }
-      std::array<std::vector<float>, 4> heads;
-      std::array<llmp::base::Sha256Digest, 4> states{};
-      std::array<std::uint64_t, 4> units{}, rows{};
-      std::uint32_t remaining = 4;
-      bool continued_after_departure = false;
-      while (remaining != 0) {
-        for (std::uint32_t id = 0; id < 4; ++id) {
-          if (!sessions.owned[id]) continue;
-          std::array<rt::Llm::Branch*, 4> selected{};
-          std::size_t count = 0;
-          for (std::uint32_t peer = 0; peer < 4; ++peer)
-            if (sessions.owned[peer]) selected[count++] = &Branch(peer);
-          ASSERT_TRUE(server->SelectRequestBranches(*model, std::span(selected).first(count)));
-          auto unit = sessions.owned[id]->NextUnit();
-          ASSERT_TRUE(unit) << (unit ? "" : unit.error());
-          ASSERT_EQ(unit->phase, rt::Llm::PromptSession::Phase::kChunk);
-          rt::Llm::PromptSession* session = sessions.owned[id].get();
-          const std::array<rt::PrefillGoOn, 1> callbacks{};
-          const auto ran = model->RunPromptWave(std::span(&session, 1), callbacks);
-          ASSERT_TRUE(ran) << (ran ? "" : ran.error());
-          ASSERT_TRUE(session->last_unit_result());
-          ++units[id];
-          rows[id] += unit->rows;
-          continued_after_departure |= remaining < 4;
-          if (!session->done()) continue;
-          heads[id] = session->last();
-          ASSERT_EQ(heads[id].size(), 262144U);
-          ASSERT_TRUE(std::ranges::all_of(heads[id], [](float v) { return std::isfinite(v); }));
-          EXPECT_EQ(Branch(id).history(), tokens[id]);
-          auto hash = StateHash(runner, id);
-          ASSERT_TRUE(hash) << (hash ? "" : hash.error());
-          states[id] = *hash;
-          ASSERT_TRUE(session->Finish());
-          sessions.owned[id].reset();
-          --remaining;
-        }
-      }
-      EXPECT_TRUE(continued_after_departure);
-      // All model work has ended. State copies need active leases, including
-      // owners that correctly departed from the execution cohort above.
-      ASSERT_TRUE(Select(4));
-      std::uint64_t completed = 0, adopted = 0, submitted = 0, attempted = 0;
-      for (std::uint32_t id = 0; id < 4; ++id) {
-        auto slot = runner.request_slot(id);
-        ASSERT_TRUE(slot);
-        EXPECT_TRUE((*slot)->state_usable());
-        EXPECT_EQ((*slot)->completed_positions(), lengths[id]);
-        EXPECT_EQ(Branch(id).history(), tokens[id]);
-        EXPECT_EQ(rows[id], lengths[id]);
-        // A departed owner's complete initialized bytes survive peer progress.
-        auto hash = StateHash(runner, id);
-        ASSERT_TRUE(hash) << (hash ? "" : hash.error());
-        EXPECT_EQ(*hash, states[id]);
-        const auto& prep = (*slot)->state().preparation_stats();
-        EXPECT_EQ(prep.failed, 0U);
-        EXPECT_EQ(prep.refused, 0U);
-        attempted += prep.attempted;
-        submitted += prep.submitted;
-        completed += prep.completed_extents;
-        adopted += prep.adopted_extents;
-      }
-      EXPECT_TRUE(runner.cohort_usable());
-      EXPECT_FALSE(server->node().has_pending_state_preparation());
-      if (!ordinary) {
-        EXPECT_EQ(attempted, 0U);
-        EXPECT_EQ(submitted, 0U);
-        EXPECT_EQ(completed, 0U);
-        EXPECT_EQ(adopted, 0U);
-        expected_heads = std::move(heads);
-        expected_states = states;
-        expected_units = units;
-        expected_rows = rows;
-      } else {
-        EXPECT_GT(submitted, 0U);
-        EXPECT_GT(completed, 0U);
-        EXPECT_EQ(adopted, completed);
-        for (std::uint32_t id = 0; id < 4; ++id)
-          EXPECT_EQ(std::memcmp(heads[id].data(), expected_heads[id].data(),
-                                heads[id].size() * sizeof(float)),
-                    0);
-        EXPECT_EQ(states, expected_states);
-        EXPECT_EQ(units, expected_units);
-        EXPECT_EQ(rows, expected_rows);
-        std::println(
-            "GEMMA4_DEFAULT_PREPARATION profile={} context8192 slots4 prefill_capacity1 "
-            "completed={} adopted={} exact_heads_state_history owner_departure drained",
-            GetParam(), completed, adopted);
-      }
-    }
-    const auto retired = RetireServer();
-    ASSERT_TRUE(retired) << (retired ? "" : retired.error());
-    server.reset();
-    model = nullptr;
-  }
-}
-
-INSTANTIATE_TEST_SUITE_P(ApprovedProfiles, Gemma4PreparationServingGpu, ::testing::Values(26U, 31U),
-                         [](const auto& info) { return "Gemma" + std::to_string(info.param); });
-
 TEST_P(Gemma4ServingGpu, PinnedPublicationCapacityMatchesServingSlotsNotInputChunkRows) {
   const auto row_bytes = std::uint64_t{262144} * sizeof(float);
   std::uint64_t staging = 0;
@@ -361,11 +181,12 @@ TEST_P(Gemma4ServingGpu, PinnedPublicationCapacityMatchesServingSlotsNotInputChu
     staging += view->descriptor.size.value();
     output |= view->descriptor.size.value() == 12 * row_bytes;
   }
-  EXPECT_TRUE(output);
-  EXPECT_GE(staging, 12 * row_bytes);
-  // This includes the runner's other pinned sources/factors and still uses
-  // less actual backing than the old sixteen-row publication buffer alone.
-  EXPECT_LT(staging, 16 * row_bytes);
+  // Outside the envelope (twelve slots) every step is one owner's: the
+  // runner's pinned output staging holds one row and the setup's margin,
+  // not a row a slot.
+  EXPECT_FALSE(output);
+  EXPECT_GE(staging, row_bytes);
+  EXPECT_LT(staging, 4 * row_bytes);
 }
 TEST_P(Gemma4ServingGpu, IndependentScalarCohortsOneTwoFourEightTwelveReplaySeededTokens) {
   EXPECT_EQ(model->generation_wave_capacity(), 12U);
@@ -454,11 +275,12 @@ TEST_P(Gemma4ServingGpu, OwnedSnapshotTurnRollbackSpillAndRestartContinueExactly
     EXPECT_EQ(expected.tokens[i], std::max_element(row.begin(), row.end()) - row.begin());
   }
   ASSERT_TRUE(server->RestoreSnapshot(*model));
-  const auto& runner = dynamic_cast<const en::Gemma4Runner&>(model->paged());
-  const std::uint64_t greedy_before = runner.greedy_tokens();
+  const auto& engine = dynamic_cast<const rt::EngineLlm&>(*model);
+  const std::uint64_t greedy_before = engine.counts().greedy_tokens;
   ASSERT_TRUE(Branch(0).Generate(first, gen, restored));
   EXPECT_EQ(expected.tokens, restored.tokens);
-  EXPECT_EQ(runner.greedy_tokens() - greedy_before, 3U);  // the first is the prompt row's
+  // The first is the prompt row's.
+  EXPECT_EQ(engine.counts().greedy_tokens - greedy_before, 3U);
   // Peer state survives destination rollback.
   rt::Generation peer_out;
   ASSERT_TRUE(Branch(1).Generate(peer, gen, peer_out));
@@ -889,7 +711,7 @@ TEST_P(Gemma4ServingGpu, CrossVariantKeptTagIsRejectedBeforeAdoptionWhilePeerRes
   ASSERT_TRUE(Branch(1).Prefill(prompt, peer));
   const auto peer_history = Branch(1).history();
   const auto layout = model->KeptLayout();
-  ASSERT_TRUE(layout.starts_with(GetParam() == 26 ? "gemma26-" : "gemma31-"));
+  ASSERT_FALSE(layout.empty());
   const auto retired = server->RetireRequestBranches(*model, true);
   ASSERT_TRUE(retired.result);
   ASSERT_TRUE(retired.references_retired);
@@ -904,7 +726,8 @@ TEST_P(Gemma4ServingGpu, CrossVariantKeptTagIsRejectedBeforeAdoptionWhilePeerRes
   auto record = rt::kept::Decode(std::string{std::istreambuf_iterator<char>(input), {}});
   ASSERT_TRUE(record);
   ASSERT_EQ(record->identity.layout, layout);
-  record->identity.layout.replace(0, 7, GetParam() == 26 ? "gemma31" : "gemma26");
+  // Another layout's identity (the other profile's, a previous build's).
+  record->identity.layout[0] = record->identity.layout[0] == '0' ? '1' : '0';
   std::ofstream(path) << rt::kept::Encode(*record);
   ASSERT_TRUE(Start());
   EXPECT_TRUE(Branch(0).history().empty());

@@ -271,6 +271,25 @@ const StateLayoutDerived::Item* BorrowedItem(const StateLayoutDerived& target,
   return nullptr;
 }
 
+bool ReadsFrozen(const StateLayoutDerived& layout) {
+  return !layout.borrowed.empty() && std::ranges::all_of(layout.items, [](const Item& item) {
+    return item.contract.target_writes;
+  });
+}
+
+const StateLayoutDerived::Item* FeatureTap(const StateLayoutDerived& layout) {
+  const Item* found = nullptr;
+  for (const Item& item : layout.items) {
+    if (item.contract.kind != StateKind::kFeatures || !item.contract.target_writes ||
+        item.contract.cells != CellRule::kPositionRing) {
+      continue;
+    }
+    if (found != nullptr) return nullptr;
+    found = &item;
+  }
+  return found;
+}
+
 std::expected<std::vector<StateRange>, std::string> UsedThrough(const StateLayoutDerived& layout,
                                                                 std::uint32_t positions,
                                                                 std::uint32_t read_align) {

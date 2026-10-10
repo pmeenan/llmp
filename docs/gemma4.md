@@ -19,6 +19,18 @@ graph IR ([engine-components.md](engine-components.md)); M3.5, and with it
 this family task, is parked until M3.6 exits. This file describes the code as
 it is, and changes as each piece lands.
 
+> **Served on the shared engine (M3.6, slice G2c).** Both profiles, and
+> with a `drafter` their assistants, serve through the shared runner
+> (D-107): the `gemma4` and `gemma4-assistant` mappings
+> (`src/spec/mappings/gemma4.*`), their components lowered onto GGML,
+> step for step bit-identical to the runner and assistant below
+> ([engine.md](engine.md#the-serving-adapter)). The serving class, runner,
+> plans, graph builders and assistant this file records stay in the tree
+> until their deletion (slice G2d), serving only under the class's internal
+> joined, row-invariant and prepare-state diagnostics, which the engine
+> does not port; what follows is the record of their controls and
+> measurements.
+
 ## Verified contracts
 
 The profiles and tensor roles follow llama.cpp

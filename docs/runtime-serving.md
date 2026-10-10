@@ -48,7 +48,10 @@ this same driver. Complete trusted-artifact binding selects the existing
 immutable engine profile before adapter construction and is rechecked at setup.
 It accepts chat and literal completions with target likelihoods. Context is capped
 at 262,144 and settings fallbacks are uncalibrated. Plain chat disables thinking;
-generated tools and assistants/speculation are refused.
+generated tools are refused; a `drafter` (the profile's assistant) speculates
+on the shared engine ([engine-backed models](#engine-backed-models)), where
+both profiles serve since M3.6's migration, their recipes below now the
+`gemma4` mapping's rules (the evidence recorded here is the M3 class's).
 The [bounded dense31 production bridge](experiments/gemma31-serving-bridge/README.md)
 selects ordinary joined serving, both norm chains and eligible owner attention for
 approved 31B artifacts with resolved context at most 8,192 and at most four slots.
@@ -602,25 +605,42 @@ for a family moved to the component engine, by the pipeline kind its
 architecture's mapping names (`spec/mapping.h`); every other family keeps
 its M3 class. Gemma 2 and Gemma 3 are moved (since their migration, whose
 gate passed and whose M3 classes, runners, plans, graph builders and
-`ServingOptions` flags are deleted; the other LLM families and the image
-pipeline keep their M3 classes until theirs). A gate-only diagnostic
+`ServingOptions` flags are deleted), and so are Gemma 4 26B-A4B and 31B
+with their assistants (since theirs; the M3 Gemma 4 class, runner and
+graph builder stay in the tree until their deletion, used by serving
+only under their internal joined, row-invariant and prepare-state
+diagnostics, which the engine does not port); the other LLM families and the image
+pipeline keep their M3 classes until theirs. A Gemma 4 model with a
+`drafter` (its assistant) speculates on the engine: three drafts a unit,
+each pass at the committed positions reading the target's cache frozen
+and its final-norm features, then one verify, greedy agreement or seeded
+speculative sampling deciding what stays; M3 refused a Gemma drafter. A
+gate-only diagnostic
 (`ServingOptions::diagnostic_skip_turn_checkpoints`, set by the service
 from `LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1`, never from configuration)
 makes an engine-backed model skip each turn checkpoint's save, so M3.6's
 speed gate compares equal work with a baseline whose M3 classes could not
 save one
 ([defect 3](experiments/m36-baselines/README.md#defects-in-the-baseline));
-the Gemma gate ran with it, and it stays for the later families' gates.
+the Gemma gates ran with it (the M3 Gemma 4 class's saves failed the same
+way), and it stays for the later families' gates.
 The parts of an
-engine-backed model's runner are built at its Setup: its spec synthesized
-from its v0 artifact by its architecture's mapping, its components' state
-layout and batching, and the component step source planned under the
-mapping's policy (the family's recipe as data) over GGML's registry and
-lowered onto its graphs, on the model's own stream, with a cuBLAS handle
-over a workspace the runner maps and charges as its own; a head row is the
-head's vocabulary of logits, and a greedy row's token is chosen on the
-device. Any other architecture, or a model with a drafter, is refused at
-Setup with that reason. A conversation an M3 class kept across a restart
+engine-backed model's runner are built at its Setup
+(`runtime/component_build.h`): its spec synthesized from its v0 artifact
+by its architecture's mapping (composed with its drafter's when it
+speculates), its components' state layouts and batching, and a component
+step source a stage planned under each mapping's policy for the serving
+envelope (the family's recipe as data: its context and request slots
+choose the rule, which also says whether prompt chunks and owners step
+alone and how many prompt chunks are planned ahead) over GGML's registry
+and lowered onto its graphs, on the model's own stream, with a cuBLAS
+handle over a workspace the runner maps and charges as its own; a head
+row is the head's vocabulary of logits, and a greedy row's token is
+chosen on the device. Any other architecture is refused at Setup with
+that reason, and so is speculation on with no drafter in the parts. The
+Gemma 4 chat route serves the M3 class's slice: thinking off by default
+and refused on, tool declarations refused, its channel and tool-call
+openers ending a reply. A conversation an M3 class kept across a restart
 (record version 1) is refused by the engine's start and its files
 discarded, once ([below](#conversations-kept-across-a-restart)).
 

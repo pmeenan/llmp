@@ -72,11 +72,39 @@ class ComponentStepSource final : public StepSource {
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
       const planner::StepShape& shape, const kernels::Addresses& addresses) override;
 
+  std::uint16_t stage() const { return o_.stage; }
+  const base::Sha256Digest& bound_digest() const { return o_.bound_digest; }
+
  private:
   ComponentStepSource(ComponentSourceOptions options, planner::Policy policy)
       : o_(std::move(options)), policy_(std::move(policy)) {}
   ComponentSourceOptions o_;
   planner::Policy policy_;
+};
+
+// The step source of a model of several stages (a target and its
+// drafters, D-068): each stage's component source, the one a shape's
+// stage names. Its plans share one key base: the spec bound to every
+// stage's artifacts (each source's, which must agree), and digests over
+// every stage's patterns and policy in stage order, so a plan of any stage
+// is keyed by all of them and its shape (which names its stage).
+class StagedStepSource final : public StepSource {
+ public:
+  // Refused for no source, a source of another stage than its index, or
+  // sources of different bound specs.
+  static std::expected<std::unique_ptr<StagedStepSource>, std::string> Create(
+      std::vector<std::unique_ptr<ComponentStepSource>> stages);
+
+  planner::PlanKey KeyBase() const override { return key_; }
+  std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
+      const planner::StepShape& shape, const kernels::Addresses& addresses) override;
+  const ComponentStepSource& stage(std::size_t index) const { return *stages_.at(index); }
+
+ private:
+  StagedStepSource(std::vector<std::unique_ptr<ComponentStepSource>> stages, planner::PlanKey key)
+      : stages_(std::move(stages)), key_(std::move(key)) {}
+  std::vector<std::unique_ptr<ComponentStepSource>> stages_;
+  planner::PlanKey key_;
 };
 
 }  // namespace llmp::engine

@@ -645,6 +645,15 @@ target_link_libraries(decoding_test PRIVATE llmp_engine_core llmp_fake_step_sour
 llmp_gtest(decoding_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+# An anchored drafter over its target's frozen state and tapped features
+# (Gemma 4's assistant's decoding), the features' sources and the computed
+# inputs the runner stages, over the same fake step source.
+add_executable(anchored_drafter_test anchored_drafter_test.cc)
+target_link_libraries(anchored_drafter_test PRIVATE llmp_engine_core llmp_fake_step_source
+                                                    llmp_fake_device_backend llmp_platform)
+llmp_gtest(anchored_drafter_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 # The LLM serving adapter over the shared runner (runtime/engine_llm.h):
 # Llm's conversations, waves, speculation with two drafters, spills, turn
 # checkpoints, recovery and kept conversations in a file a stage (D-105's

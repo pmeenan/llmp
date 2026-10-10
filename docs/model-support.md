@@ -71,7 +71,8 @@ are recorded separately as they complete.
 | [Qwen-Image-2.1](#qwen-image-21) BF16 | composition of 3 components | Served (M3), one prompt a process | paged-correct |
 | [Gemma 2 2B](#gemma-2-2b) Q8_0 | target | Served (M3.5, bounded; on the shared engine since M3.6): context 8,192, one or two slots | not verified; bounded controls only (below) |
 | [Gemma 3 4B QAT](#gemma-3-4b-qat) Q4_0 | target | Served (M3.5, bounded; on the shared engine since M3.6): context 4,096 with one or two slots, or 8,448 with one | not verified; bounded controls only (below) |
-| [Gemma 4 26B-A4B](#gemma-4-26b-a4b-and-31b) UD-Q4_K_M and [31B](#gemma-4-26b-a4b-and-31b) UD-Q4_K_XL | target | Served (M3.5, bounded): optimized recipe at context 8,192 and four slots; scalar route beyond | not verified; bounded controls only (below) |
+| [Gemma 4 26B-A4B](#gemma-4-26b-a4b-and-31b) UD-Q4_K_M and [31B](#gemma-4-26b-a4b-and-31b) UD-Q4_K_XL | target, with its assistant as drafter | Served (M3.5, bounded; on the shared engine since M3.6, with the assistant): optimized recipe at context 8,192 and four slots; scalar route beyond | not verified; bounded controls only (below) |
+| [Gemma 4 assistants](#gemma-4-26b-a4b-and-31b) for 26B-A4B and 31B (Q8_0) | drafter | Served (M3.6, on the shared engine), with its target | not verified; the 31B screen's transactions byte-exact (below) |
 | [Qwen2.5-0.5B-Instruct FP16](#m2-fixtures) | fixture | Fixture | paged-correct |
 | [Qwen2.5-0.5B-Instruct EXL3](#m2-fixtures) 4.0 and 4.5 bpw | fixtures | Fixture | paged-correct |
 
@@ -252,7 +253,8 @@ metadata, CPU/fake controls and required optimization/batching qualification.
 Both approved artifacts have checked import, segmented graphs, a shared native
 runner and a [bounded scalar serving route](experiments/gemma31-serving/README.md)
 for chat/literal completions, likelihoods and up to twelve independent owners.
-The route disables thinking and refuses generated tools and assistants/speculation.
+The route disables thinking and refuses generated tools; it refused assistants and
+speculation until M3.6's shared engine, which serves both profiles' assistants.
 The [bounded dense31 production bridge](experiments/gemma31-serving-bridge/README.md)
 selects ordinary joined serving, both norm chains and eligible owner attention for
 approved 31B artifacts with resolved context at most 8,192 and at most four slots.
@@ -960,9 +962,20 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 - **Tokenizer:** Gemma 4 raw UTF-8 BPE from the GGUF (262,144 tokens in
   both profiles); on the 26B-A4B's metadata, 184 of 184 corpus encodings
   equal pinned llama.cpp's.
-- **Decoding:** greedy (device greedy) and seeded sampling, plain; chat and
-  literal completions and target likelihoods. Generated thought and tool
-  calls, assistants and speculation are refused.
+- **Decoding:** greedy (device greedy) and seeded sampling, plain or, with
+  a `drafter` (the profile's assistant, `gemma4-assistant`: `1040a029…` for
+  26B-A4B, `447a5c20…` for 31B), speculative (three drafts a unit, each pass
+  reading the target's cache and final-norm features, one verify; greedy
+  agreement or seeded speculative sampling); chat and literal completions
+  and target likelihoods. Generated thought and tool calls are refused.
+- **Engine:** served by the shared engine (D-107) since M3.6's migration
+  (slice G2c): the spec the `gemma4` mapping makes of the artifact (composed
+  with the `gemma4-assistant` mapping's drafter stage when it speculates),
+  its components and the mapping's recipe for the serving envelope over
+  GGML's kernels, step for step bit-identical to the M3 runner and
+  assistant ([engine.md](engine.md#the-serving-adapter)); kept
+  conversations in record version 2. The M3 runner and serving class stay
+  until their deletion (slice G2d), serving only under internal diagnostics.
 - **Envelope:** at context at most 8,192 and at most four slots, each
   profile selects its checked optimized recipe (joined serving, norm chains
   and owner attention; 26B-A4B adds MoE route/reduce and 1,024-row prefill);
@@ -977,9 +990,14 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   1,024-row corpus complete head parity; 26B-A4B reproduces stock's exact
   tokens and byte-identical 1,024-row corpus heads; near-8K model-switch
   controls pass for both
-  ([near-8K swaps](experiments/gemma-near8k-swaps/README.md)). Sustained
-  performance, broad semantic quality, assistants and long context: not
-  verified.
+  ([near-8K swaps](experiments/gemma-near8k-swaps/README.md)). On the
+  shared engine: the quality control's scores and replies, the near-8K
+  switch rows and the served controls above unchanged, the 1% gate passed
+  against the M3 build, and the 31B assistant's greedy screen
+  byte-exact and 4.41% faster
+  ([results](experiments/m36-baselines/README.md#gemma-4-26b-a4b-and-31b-on-the-shared-engine-slice-g2c)).
+  Sustained performance, broad semantic quality, served assistant speed
+  and long context: not verified.
 - **Known divergences:** 31B's whole serving cycles 0.73%/1.36% (C1/C4) slower
   than the reference after [gap closing](experiments/gemma-gap-closing/README.md);
   26B-A4B's C1/C4 within 0.6% of stock. Earlier scalar screens' quality

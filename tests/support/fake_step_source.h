@@ -37,6 +37,15 @@
 // valid cell for every position through the row's (else at logits - 1, the
 // lost state's mark), on a drafter always; and a greedy segment's I32 is
 // its last row's choice.
+// With `features`, a drafter's rows read their feature from a kFeatures
+// input (which the runner copies in on the device: its stage's tap cell, or
+// its carry) instead of its tap's state, its row's `tap` that feature's
+// token (-1: no valid cell of its slot), and each output row's next feature
+// follows its rows as a features output: a FakeCell of its slot and position
+// with its token + kFakeFeatureStep.
+// `extra_inputs` adds input slots a test describes (computed ones: store
+// cells, masks), each placed after the program's own; every run records
+// their bytes as staged (`seen_inputs`, the last run's).
 // Recording goes through the launch (RecordingLaunch), so a replay reads
 // the inputs staged for it and writes the same way.
 
@@ -79,6 +88,7 @@ struct FakeRow {
   std::int32_t borrowed = 0;
 };
 static_assert(sizeof(FakeRow) == 32);
+inline constexpr std::int32_t kFakeFeatureStep = 100000;
 
 // The token a logits row names for `token` at `position` (below logits - 1).
 inline std::int32_t FakeLogit(std::int32_t token, std::int32_t position, std::uint32_t logits) {
@@ -126,6 +136,14 @@ struct FakeSourceOptions {
   // Output rows of this many F32 logits (above) instead of FakeRows; 0:
   // FakeRows.
   std::uint32_t logits = 0;
+  // A drafter's features as a kFeatures input and a features output.
+  bool features = false;
+  // Input slots added to every program (their address and bytes set by the
+  // fake: bytes from the slot's `bytes`), and what the last run staged in
+  // each.
+  std::function<std::vector<kernels::InputSlot>(const planner::StepShape&)> extra_inputs;
+  std::shared_ptr<std::vector<std::vector<std::byte>>> seen_inputs =
+      std::make_shared<std::vector<std::vector<std::byte>>>();
   base::Sha256Digest spec{};
 };
 

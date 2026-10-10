@@ -77,7 +77,13 @@ struct StepFailure {
 //                        segment's -inf): a mask built on the host. A
 //                        frozen read's cells (`cells.frozen`) hold the
 //                        positions before the segment's rows, which the
-//                        step never stores.
+//                        step never stores;
+//   kFeatures            F32 [width, rows], joined: each row's feature (a
+//                        drafter's, components/step.h kFeatures), which
+//                        the engine copies on the device before the run
+//                        from where the step's work names it (a stage's
+//                        tap cell, the slot's carried feature): never
+//                        staged from the host, so never in a recording.
 enum class InputKind : std::uint8_t {
   kTokens,
   kPositions,
@@ -86,6 +92,7 @@ enum class InputKind : std::uint8_t {
   kOutputRows,
   kStoreCells,
   kMask,
+  kFeatures,
 };
 
 // A state tensor's cells as an input indexes them (components/step.h
@@ -121,6 +128,9 @@ struct OutputSlot {
   std::uint64_t bytes = 0;
   ir::TensorId tensor{};
   std::uint8_t segment = ir::kJoinedSegment;
+  // A drafter head's next features (its segment's rows, F32 [width, rows],
+  // after its logits): what the engine carries to the slot's next pass.
+  bool features = false;
 };
 
 // A range the program reads or writes, by role: a weight, a request's

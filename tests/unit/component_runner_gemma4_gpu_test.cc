@@ -18,18 +18,23 @@
 // chunks, ragged and single-owner chunks, state-only chunks, one owner
 // past its sliding layers' ring until it wraps, joined one-row decodes
 // returning logits and device-chosen tokens; each owner's outputs are bit
-// for bit today's. The repeated decode shapes are captured on their second
-// run and replayed after (D-090), the replays compared too.
+// for bit today's. The verify cases run a speculative verify's waves
+// (four rows an owner, every row's outputs, then their Accept, alone,
+// joined and ragged) against today's Wave with all_outputs. The repeated decode shapes are captured
+// on their second run and replayed after (D-090), the replays compared too.
 //
 // The assistant's draft passes (two, joined over the owners, at each
-// owner's committed endpoint after the first prompt chunk, reading the
-// target's cache) run through the same runner as stage 1 (its own step
-// source over the composed spec) with the target's state borrowed, their
-// first feature the one today's runner retains for the endpoint and their
-// tokens today's anchor and proposal; each pass's logits and next
-// features are today's assistant's bit for bit. The target's own steps
-// here write no tap (the target-only spec: the engine stages no tap cells
-// of a frontier row yet, G2c).
+// owner's committed endpoint after the prompt, reading the target's
+// cache: one prompt ends at 37 rows, another at 256, where a frozen read
+// covers exactly the past) run through the same runner as stage 1, the
+// model's step source an engine::StagedStepSource over both stages of the
+// composed spec, with the target's state borrowed. The target's steps
+// write the assistant's feature tap (its output rows' final-norm rows);
+// the first pass reads the tap's feature of the endpoint (the runner's
+// device copy), the second its own first pass's next feature (the
+// runner's carry), and their tokens are today's anchor and proposal; each
+// pass's logits and next features are today's assistant's bit for bit, so
+// the tapped feature is the one today's runner retains.
 
 #include <gtest/gtest.h>
 #include <unistd.h>
@@ -100,7 +105,16 @@ struct Case {
   std::uint32_t owners = 2;
   bool candidate = true;  // within the envelope
   bool assistant = false;
+  // The prompt's rows before the drafts (0: 37, or 31 for more owners), in
+  // joined waves of at most kMaxRows rows.
+  std::uint32_t prompt = 0;
+  // A speculative verify's waves instead of the serving script's tail: four
+  // rows an owner, every row's outputs, committed by their Accept (the
+  // runner's verify against today's Wave with all_outputs).
+  bool verify = false;
 };
+
+constexpr std::uint32_t kVerifyRows = 4;
 
 std::string_view TargetId(std::uint32_t size) {
   return size == 26 ? "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
@@ -122,7 +136,7 @@ const md::Gemma4Profile& Profile(std::uint32_t size) {
 
 // ------------------------------------------------------------ the script
 
-enum class Head : std::uint8_t { kLogits, kGreedy, kNone, kDraft };
+enum class Head : std::uint8_t { kLogits, kGreedy, kNone, kDraft, kAll };
 struct Unit {
   std::uint32_t slot = 0;
   std::uint32_t rows = 0;
@@ -154,13 +168,43 @@ std::vector<Unit> All(std::uint32_t owners, std::uint32_t rows) {
 std::vector<Planned> Script(const Case& c, std::uint32_t local_cells) {
   const std::uint32_t n = c.owners;
   // A joined prefill of equal rows within the chunk bound.
-  std::vector<Wave> waves = {W(All(n, n <= 2 ? 37U : 31U))};
+  std::vector<Wave> waves;
+  const std::uint32_t prompt = c.prompt != 0 ? c.prompt : n <= 2 ? 37U : 31U;
+  // Today's joined waves hold kMaxRows rows in all.
+  for (std::uint32_t done = 0; done < prompt; done += kMaxRows / n) {
+    waves.push_back(W(All(n, std::min(kMaxRows / n, prompt - done))));
+  }
   if (c.assistant) {
     // Two draft passes over every owner's endpoint.
     waves.push_back(W(All(n, 1), Head::kDraft));
     waves.push_back(W(All(n, 1), Head::kDraft));
   }
   const auto more = [&](std::vector<Wave> w) { waves.insert(waves.end(), w.begin(), w.end()); };
+  if (c.verify) {
+    // One owner's verify three times (the shape's second and third runs),
+    // both owners' joined, a ragged pair, then a joined decode over the
+    // verified state.
+    more({W({{0, kVerifyRows}}, Head::kAll), W({{0, kVerifyRows}}, Head::kAll),
+          W({{0, kVerifyRows}}, Head::kAll), W(All(n, kVerifyRows), Head::kAll),
+          W(All(n, kVerifyRows), Head::kAll), W({{0, 2}, {1, kVerifyRows}}, Head::kAll),
+          W(All(n, 1))});
+    std::vector<Planned> out;
+    std::vector<std::uint32_t> at(n, 0);
+    for (const Wave& w : waves) {
+      Planned p;
+      p.wave = w;
+      for (const Unit& u : w.units) {
+        p.past.push_back(at.at(u.slot));
+        std::vector<std::int32_t> ids;
+        for (std::uint32_t i = 0; i < u.rows; ++i)
+          ids.push_back(TokenAt(u.slot, at.at(u.slot) + i));
+        at.at(u.slot) += u.rows;
+        p.tokens.push_back(std::move(ids));
+      }
+      out.push_back(std::move(p));
+    }
+    return out;
+  }
   more({W(All(n, 1)),                 // joined decode, equal reads
         W(All(n, 1), Head::kGreedy),  // its tokens chosen on the device
         W({{0, 100}, {1, 5}}),        // ragged: per owner
@@ -217,9 +261,10 @@ pl::StepShape ShapeOf(const Planned& p, std::uint32_t context) {
   shape.stage = draft ? 1 : 0;
   shape.phase = draft ? pl::Phase::kDraft : pl::Phase::kDecode;
   shape.read_align = 256;
+  if (p.wave.head == Head::kAll) shape.phase = pl::Phase::kVerify;
   for (std::size_t i = 0; i < p.wave.units.size(); ++i) {
     const Unit& u = p.wave.units[i];
-    if (u.rows > 1) shape.phase = pl::Phase::kPrefill;
+    if (u.rows > 1 && p.wave.head != Head::kAll) shape.phase = pl::Phase::kPrefill;
     // A draft reads its target's committed positions (frozen), today's
     // assistant's width.
     const std::uint32_t end = p.past[i] + (draft ? 0 : u.rows);
@@ -227,7 +272,9 @@ pl::StepShape ShapeOf(const Planned& p, std::uint32_t context) {
                               .rows = u.rows,
                               .past = p.past[i],
                               .read_cells = ReadOf(end, context),
-                              .outputs = p.wave.head == Head::kNone ? 0U : 1U,
+                              .outputs = p.wave.head == Head::kNone  ? 0U
+                                         : p.wave.head == Head::kAll ? u.rows
+                                                                     : 1U,
                               .group = 0,
                               .want_head = p.wave.head != Head::kNone,
                               .greedy = p.wave.head == Head::kGreedy});
@@ -283,7 +330,7 @@ en::Gemma4Options Options(const Case& c, const fs::path& target, const fs::path&
           .context = c.context,
           .max_rows = kMaxRows,
           .slots = c.owners,
-          .max_head_rows = c.owners,
+          .max_head_rows = c.verify ? c.owners * kVerifyRows : c.owners,
           .frontier_head = !c.candidate,
           .fuse_norm_rope = c.candidate,
           .fuse_norm_add = c.candidate,
@@ -335,11 +382,11 @@ Outputs Production(const Case& c, const fs::path& target, const fs::path& out,
         }
         if (p.wave.head == Head::kNone) {
           if (auto x = runner->WavePrefill(work, false); !x) return x;
-        } else if (auto x = runner->Wave(work); !x) {
+        } else if (auto x = runner->Wave(work, p.wave.head == Head::kAll); !x) {
           return x;
         }
         for (std::size_t i = 0; i < n; ++i) {
-          if (p.wave.head == Head::kLogits) {
+          if (p.wave.head == Head::kLogits || p.wave.head == Head::kAll) {
             row.push_back(Bytes(std::span<const float>(logits[i])));
           } else if (p.wave.head == Head::kGreedy) {
             row.push_back(Bytes(std::span<const std::int32_t>(&tokens[i], 1)));
@@ -366,7 +413,7 @@ struct Drafts {
 };
 
 Drafts ProductionDrafts(const Case& c, const fs::path& target, const fs::path& assistant,
-                        const fs::path& out, const Planned& prompt) {
+                        const fs::path& out, std::span<const Planned> prompt_waves) {
   Drafts drafts;
   const md::Gemma4Profile& p = Profile(c.size);
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
@@ -418,13 +465,16 @@ Drafts ProductionDrafts(const Case& c, const fs::path& target, const fs::path& a
     for (std::uint32_t i = 0; i < c.owners; ++i) slots.push_back(i);
     if (auto x = runner->SelectSlots(slots); !x) return x;
     return node.WithRequest(0, runner->closure(), "assistant control", [&]() -> en::Status {
+      const Planned& prompt = prompt_waves.back();
       const std::size_t n = prompt.wave.units.size();
       std::vector<std::vector<float>> logits(n);
-      std::vector<en::Gemma4Runner::Work> work;
-      for (std::size_t i = 0; i < n; ++i) {
-        work.push_back({prompt.wave.units[i].slot, prompt.past[i], prompt.tokens[i], &logits[i]});
+      for (const Planned& wave : prompt_waves) {
+        std::vector<en::Gemma4Runner::Work> work;
+        for (std::size_t i = 0; i < n; ++i) {
+          work.push_back({wave.wave.units[i].slot, wave.past[i], wave.tokens[i], &logits[i]});
+        }
+        if (auto x = runner->Wave(work); !x) return x;
       }
-      if (auto x = runner->Wave(work); !x) return x;
       std::vector<std::int32_t> anchors;
       for (const auto& row : logits) {
         anchors.push_back(Top(std::as_bytes(std::span<const float>(row))));
@@ -481,22 +531,6 @@ Drafts ProductionDrafts(const Case& c, const fs::path& target, const fs::path& a
 }
 
 // ------------------------------------------------------------ the components
-
-// Each stage's step source, by the shape's stage.
-class Stages final : public en::StepSource {
- public:
-  explicit Stages(std::vector<std::unique_ptr<en::ComponentStepSource>> sources)
-      : sources_(std::move(sources)) {}
-  pl::PlanKey KeyBase() const override { return sources_.front()->KeyBase(); }
-  std::expected<std::unique_ptr<kn::StepProgram>, std::string> Build(
-      const pl::StepShape& shape, const kn::Addresses& addresses) override {
-    if (shape.stage >= sources_.size()) return std::unexpected("no source of the stage");
-    return sources_[shape.stage]->Build(shape, addresses);
-  }
-
- private:
-  std::vector<std::unique_ptr<en::ComponentStepSource>> sources_;
-};
 
 struct Component {
   Outputs outputs;
@@ -572,7 +606,8 @@ std::uint32_t ArrayIndex(const ar::Artifact& a, std::string_view name) {
 }
 
 // The model runner over the component sources for the same script; the
-// drafts' inputs from today's (its tokens and the first feature).
+// drafts' tokens from today's, their features the runner's (the tap the
+// target's steps wrote, then the carry).
 Component Lowered(const Case& c, const fs::path& target, const fs::path& assistant,
                   const fs::path& scratch, std::span<const Planned> script, const Drafts* drafts) {
   Component out;
@@ -634,7 +669,7 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
   std::map<llmp::ir::WeightRef, std::pair<bool, std::uint32_t>> place;  // (array, index)
   for (const pl::StepShape& shape : shapes) {
     const bool draft = shape.stage == 1;
-    auto step = co::BuildStep(draft ? *composed : *target_spec, shape.stage, shape,
+    auto step = co::BuildStep(layout_spec, shape.stage, shape,
                               {.tensors = draft ? as->tensors : ts->tensors,
                                .state = &layouts.at(shape.stage),
                                .stages = stage_layouts,
@@ -681,16 +716,20 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
     en::PagedWeights* tw = target_weights.get();
     en::PagedWeights* aw = nullptr;
     std::vector<std::unique_ptr<en::ComponentStepSource>> sources;
-    auto stage0 =
-        en::ComponentStepSource::Create({.spec = &*target_spec,
-                                         .stage = 0,
-                                         .bindings = {.tensors = ts->tensors, .state = &layouts[0]},
-                                         .bound_digest = target_spec->Digest(),
-                                         .mapping = &mapping,
-                                         .values = values,
-                                         .slots = c.owners,
-                                         .policy = std::nullopt,
-                                         .backend = source->backend->Backend()});
+    // With the assistant, the target's steps are the composed spec's: they
+    // write its feature tap.
+    auto stage0 = en::ComponentStepSource::Create({.spec = &layout_spec,
+                                                   .stage = 0,
+                                                   .bindings = {.tensors = ts->tensors,
+                                                                .state = &layouts[0],
+                                                                .stages = stage_layouts,
+                                                                .artifacts = artifacts},
+                                                   .bound_digest = layout_spec.Digest(),
+                                                   .mapping = &mapping,
+                                                   .values = values,
+                                                   .slots = c.owners,
+                                                   .policy = std::nullopt,
+                                                   .backend = source->backend->Backend()});
     if (!stage0) return std::unexpected(stage0.error());
     sources.push_back(std::move(*stage0));
     en::RunnerConfig config;
@@ -729,6 +768,7 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
       config.weights.push_back(
           {.weights = std::move(weights), .places = std::move(places), .slabs = {}});
     }
+    if (c.verify) config.max_verify_rows = kVerifyRows;
     config.setup_shapes = shapes;
     config.launch = [&]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return source->backend->Launch(
@@ -742,8 +782,15 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
       if (ref.stage == 1) return aw == nullptr ? 0 : aw->resource_address(index);
       return array ? tw->array_address(index) : tw->resource_address(index);
     };
-    auto created = en::ModelRunner::Create(node, std::move(config),
-                                           std::make_unique<Stages>(std::move(sources)), 0, 0);
+    std::unique_ptr<en::StepSource> step_source;
+    if (sources.size() == 1) {
+      step_source = std::move(sources.front());
+    } else {
+      auto staged = en::StagedStepSource::Create(std::move(sources));
+      if (!staged) return std::unexpected(staged.error());
+      step_source = std::move(*staged);
+    }
+    auto created = en::ModelRunner::Create(node, std::move(config), std::move(step_source), 0, 0);
     if (!created) return std::unexpected(created.error());
     runner = std::move(*created);
     entered.push_back(runner.get());
@@ -775,7 +822,7 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
         const pl::StepShape shape = ShapeOf(planned, c.context);
         std::vector<en::SegmentWork> work;
         std::vector<std::vector<std::int32_t>> tokens(planned.tokens);
-        std::vector<std::byte> features;
+        std::vector<en::FeatureFrom> features(planned.wave.units.size());
         std::vector<en::StateBorrow> borrows;
         const bool draft = planned.wave.head == Head::kDraft;
         if (draft) {
@@ -783,22 +830,29 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
             return en::support::Error("a draft without today's inputs");
           for (std::size_t i = 0; i < planned.wave.units.size(); ++i) {
             tokens[i] = {drafts->tokens[pass][i]};
-            // The first pass reads the target's retained feature, a later
-            // one its own last (today's, equal where the pass was).
-            const auto& f =
-                pass == 0 ? drafts->first_features[i]
-                          : std::vector<std::byte>(drafts->passes[pass - 1][i].begin() + kVocab * 4,
-                                                   drafts->passes[pass - 1][i].end());
-            features.insert(features.end(), f.begin(), f.end());
+            // The first pass reads the target's tapped feature of the
+            // endpoint, a later one its own last pass's.
+            features[i] = pass == 0 ? en::FeatureFrom{.kind = en::FeatureFrom::Kind::kTap,
+                                                      .position = planned.past[i] - 1}
+                                    : en::FeatureFrom{.kind = en::FeatureFrom::Kind::kCarry};
             auto borrow = runner->slots().Borrow(planned.wave.units[i].slot, 0);
             if (!borrow) return en::support::Error(borrow.error());
             borrows.push_back(std::move(*borrow));
           }
         }
-        for (const auto& ids : tokens) work.push_back({.tokens = ids, .bytes = {}});
+        for (std::size_t i = 0; i < tokens.size(); ++i) {
+          work.push_back({.tokens = tokens[i], .bytes = {}, .feature = features[i]});
+        }
+        // A verify leaves its rows to their Accept (all kept here).
+        const bool verify = planned.wave.head == Head::kAll;
         auto ran = runner->RunStep(
-            {.shape = shape, .work = work, .step_bytes = features, .advance = !draft, .ahead = {}});
+            {.shape = shape, .work = work, .advance = !draft && !verify, .ahead = {}});
         if (!ran) return std::unexpected(ran.error().what);
+        if (verify) {
+          for (const Unit& u : planned.wave.units) {
+            if (auto x = runner->slots().Accept(u.slot, u.rows); !x) return x;
+          }
+        }
         if (ran->path == en::RunPath::kReplayed) ++out.replayed;
         pass += draft ? 1 : 0;
         if (planned.wave.head == Head::kNone) continue;
@@ -847,13 +901,16 @@ TEST_P(ComponentRunnerGemma4Gpu, ServingRecipeStepsAreTodaysBitForBit) {
   ASSERT_EQ(production.size(), script.size());
   std::optional<Drafts> drafts;
   if (c.assistant) {
-    drafts = ProductionDrafts(c, *target, *assistant, out, script.front());
+    const auto first_draft = std::ranges::find_if(
+        script, [](const Planned& planned) { return planned.wave.head == Head::kDraft; });
+    drafts = ProductionDrafts(c, *target, *assistant, out, std::span(script.begin(), first_draft));
     ASSERT_EQ(drafts->passes.size(), 2U);
   }
   const Component lowered =
       Lowered(c, *target, assistant.value_or(fs::path{}), out, script, drafts ? &*drafts : nullptr);
   ASSERT_EQ(lowered.outputs.size(), production.size());
-  EXPECT_GE(lowered.replayed, 2U);
+  // The repeated decode shapes replay (a verify's shapes alone, once).
+  EXPECT_GE(lowered.replayed, c.verify ? 1U : 2U);
   std::size_t compared = 0;
   std::size_t pass = 0;
   for (std::size_t w = 0; w < script.size(); ++w) {
@@ -894,19 +951,25 @@ TEST_P(ComponentRunnerGemma4Gpu, ServingRecipeStepsAreTodaysBitForBit) {
 
 INSTANTIATE_TEST_SUITE_P(
     Gemma4, ComponentRunnerGemma4Gpu,
-    testing::Values(Case{.name = "gemma26_bounded", .size = 26, .assistant = true},
-                    Case{.name = "gemma31_bounded", .size = 31, .assistant = true},
-                    Case{.name = "gemma26_envelope", .size = 26, .context = 8192, .owners = 4},
-                    Case{.name = "gemma31_outside",
-                         .size = 31,
-                         .context = 8448,
-                         .owners = 2,
-                         .candidate = false},
-                    Case{.name = "gemma26_outside",
-                         .size = 26,
-                         .context = 8448,
-                         .owners = 2,
-                         .candidate = false}),
+    testing::Values(
+        Case{.name = "gemma26_bounded", .size = 26, .assistant = true},
+        Case{.name = "gemma31_bounded", .size = 31, .assistant = true},
+        // Drafts at a past of 256: their frozen reads end there.
+        Case{.name = "gemma31_bounded_256", .size = 31, .assistant = true, .prompt = 256},
+        // A verify's four rows an owner, every row's outputs.
+        Case{.name = "gemma26_verify", .size = 26, .verify = true},
+        Case{.name = "gemma31_verify", .size = 31, .verify = true},
+        Case{.name = "gemma26_envelope", .size = 26, .context = 8192, .owners = 4},
+        Case{.name = "gemma31_outside",
+             .size = 31,
+             .context = 8448,
+             .owners = 2,
+             .candidate = false},
+        Case{.name = "gemma26_outside",
+             .size = 26,
+             .context = 8448,
+             .owners = 2,
+             .candidate = false}),
     [](const testing::TestParamInfo<Case>& info) { return info.param.name; });
 
 }  // namespace

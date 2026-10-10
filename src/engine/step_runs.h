@@ -105,7 +105,8 @@ class StepRuns {
   // Writes each input slot's bytes into the staging from `base`, each at a
   // 256-byte boundary (`fill` writes slot i's into its span, which is
   // exactly the slot's bytes): the input copies a run queues. On the host,
-  // before the job queues anything that reads the staging.
+  // before the job queues anything that reads the staging. A kFeatures slot
+  // is not staged (the runner copies it in on the device before the run).
   using Fill =
       std::function<std::expected<void, std::string>(std::size_t slot, std::span<std::byte> out)>;
   std::expected<Copies, std::string> Stage(std::span<const kernels::InputSlot> inputs,

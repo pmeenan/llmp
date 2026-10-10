@@ -98,6 +98,17 @@ struct EngineLlmParts {
   engine::PrefillOptions prefill;
   // Its family's name for the report ("gemma2").
   std::string architecture;
+  // What of its chat template the chat route serves (the model's qualified
+  // slice): thought-channel output off by default and refused on, tool
+  // declarations refused, and control tokens that end a chat reply beside
+  // the template's own stops (Gemma 4's channel and tool-call openers,
+  // which no parser here reads).
+  struct ChatSlice {
+    bool thinking = true;
+    bool tools = true;
+    std::vector<std::string> stops;
+  };
+  ChatSlice chat;
   // What the step source and the launch borrow (the spec, the artifact's
   // tensors, a kernel source's backend): kept until the runner is gone.
   std::shared_ptr<void> keep;
@@ -158,7 +169,8 @@ class EngineLlm final : public Llm {
 
   // ---------------------------------------------------------- Llm
   std::uint32_t logit_width() const override { return logit_width_; }
-  void Defaults(chat::Conversation& /*conversation*/) const override {}
+  void Defaults(chat::Conversation& conversation) const override;
+  std::span<const std::int32_t> ChatStops() const override { return chat_stops_; }
   Status SelectBranches(std::span<Branch* const> active) override;
   std::uint64_t StateBytesThrough(std::uint32_t positions) const override;
   bool supports_generation_waves() const override { return true; }
@@ -186,6 +198,7 @@ class EngineLlm final : public Llm {
   const Counts& counts() const { return counts_; }
 
  protected:
+  Status CheckConversation(const chat::Conversation& conversation) const override;
   // -------------------------------------------- the units of work
   Status RunChunk(std::span<const std::int32_t> all, std::uint32_t past, bool inject,
                   std::vector<float>& logits) override;
@@ -362,6 +375,8 @@ class EngineLlm final : public Llm {
   engine::PrefillOptions prefill_;
   std::uint32_t logit_width_ = 0;
   bool device_greedy_ = false;
+  EngineLlmParts::ChatSlice chat_;
+  std::vector<std::int32_t> chat_stops_;
   std::uint32_t slots_ = 1;
   std::uint32_t verify_rows_ = 1;
   // Per slot: its drafters' cursors to reset before its next speculative

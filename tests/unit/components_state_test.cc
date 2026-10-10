@@ -95,13 +95,18 @@ TEST(ComponentsStateTest, ContractsDeclareTheRingsLimitsAndTheLayoutIdentity) {
   EXPECT_EQ(layout->items[0].contract.cell_bytes, 512U);
   EXPECT_EQ(layout->items[2].cells, kContext);
   EXPECT_EQ(layout->items[2].contract.cells, md::CellRule::kPerPosition);
-  // A ring cannot roll back: no truncation, and no verify may write it.
+  // A ring truncates as the global cache does: it holds a chunk's rows
+  // beside its window, so a later query never reads a rejected row's cell
+  // (nor the older position it overwrote). A verify saves nothing in it.
   const auto reps = md::Representations(*layout, "target", true);
   ASSERT_EQ(reps.size(), 2U);
-  EXPECT_FALSE(reps[0].Can(md::StateCapability::kTruncate));
+  EXPECT_TRUE(reps[0].Can(md::StateCapability::kTruncate));
   EXPECT_TRUE(reps[1].Can(md::StateCapability::kTruncate));
-  EXPECT_FALSE(md::WritesFor(*layout, 10, 4).has_value());
-  // A global-only stage can verify.
+  const auto writes = md::WritesFor(*layout, 10, 4);
+  ASSERT_TRUE(writes.has_value()) << writes.error();
+  for (const auto& row : writes->rows) EXPECT_TRUE(row.empty());
+  EXPECT_TRUE(writes->scratch.empty());
+  // So does a global-only stage.
   const auto global = co::StageLayout(Spec(0), 0, kContext, kRows);
   ASSERT_TRUE(global.has_value());
   EXPECT_TRUE(md::WritesFor(*global, 10, 4).has_value());

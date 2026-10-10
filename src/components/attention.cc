@@ -209,8 +209,12 @@ model::StateTensorContract Kv(std::string name, std::uint64_t width, std::uint32
           .cell_bytes = *cell,
           .cells = ring ? model::CellRule::kRing : model::CellRule::kPerPosition,
           .window_or_ratio = window,
-          // A ring's rows are overwritten in place: no verify may write it.
-          .rollback = ring ? model::Rollback::kNone : model::Rollback::kTruncate};
+          // A verify's rejected rows are never read: past the kept prefix
+          // (a cell a position), or in a ring, which holds a chunk's rows
+          // beside its window (a verify's rows fit the chunk bound), so a
+          // later query's mask puts a rejected row's cell (and the older
+          // position it overwrote) outside its window.
+          .rollback = model::Rollback::kTruncate};
 }
 
 model::StateContract State(const Instance& in) {

@@ -81,6 +81,10 @@ struct Composition {
 struct StageReads {
   std::uint32_t context = 0;
   std::uint32_t read_align = 256;
+  // Its steps read only the cells before their rows (model::ReadsFrozen:
+  // a drafter over its target's frozen state), so an owner reads through
+  // its past positions, not past its rows.
+  bool frozen = false;
 };
 
 class WaveComposer {
@@ -103,6 +107,7 @@ class WaveComposer {
   std::size_t stages() const { return stages_.size(); }
   std::uint32_t context(std::size_t stage = 0) const { return stages_.at(stage).context; }
   std::uint32_t read_align(std::size_t stage = 0) const { return stages_.at(stage).read_align; }
+  bool frozen(std::size_t stage) const { return stages_.at(stage).frozen; }
   // A step's read alignment by its owner count (a row-invariant step's is
   // always its stage's own).
   std::uint32_t AlignFor(std::size_t owners) const { return AlignFor(0, owners); }
@@ -110,7 +115,8 @@ class WaveComposer {
     return owners > 1 && caps_.joined_read_align != 0 && !row_invariant ? caps_.joined_read_align
                                                                         : read_align(stage);
   }
-  // The cells an owner of `past` positions and `rows` rows reads alone.
+  // The cells an owner of `past` positions and `rows` rows reads alone (on
+  // a frozen stage, through `past`).
   std::uint32_t LoneRead(std::uint32_t past, std::uint32_t rows) const {
     return LoneRead(0, past, rows);
   }

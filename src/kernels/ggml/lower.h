@@ -40,9 +40,10 @@
 //      routing). Anything else is a lowering bug, and the step is refused;
 //   6. gives the input slots (tokens, positions, the head's rows, each
 //      owner's store cells, a target's tap cells and host masks, a
-//      drafter's features as the step's bytes), the output slots (each
-//      owner's logits rows, or its greedy token; a drafter's next features
-//      after them) and every tensor use for the coverage check.
+//      drafter's features, which the engine copies in on the device), the
+//      output slots (each owner's logits rows, or its greedy token; a
+//      drafter's next features after them, marked as features) and every
+//      tensor use for the coverage check.
 // Every profile builds it (no launch); kernels/ggml/step_program.h makes a
 // program of the result on CUDA builds.
 

@@ -15,6 +15,7 @@
 #include "engine/prefill_lookahead.h"
 #include "engine/support.h"
 #include "model/state_contract.h"
+#include "providers/device_runtime.h"
 #include "scheduler/scheduler.h"
 
 namespace llmp::engine {
@@ -55,7 +56,9 @@ std::expected<void, std::string> WriteRows(std::span<std::byte> out,
 std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl::StepShape& shape,
                                                std::span<std::byte> out) {
   namespace co = llmp::components;
-  const co::CellKey cells{.capacity = in.cells.capacity, .ring = in.cells.ring};
+  // A frozen read's cells hold the positions before the segment's rows.
+  const co::CellKey cells{
+      .capacity = in.cells.capacity, .ring = in.cells.ring, .frozen = in.cells.frozen};
   co::StepInput input{.segment = in.segment, .cells = cells};
   switch (in.kind) {
     case kn::InputKind::kOutputRows: {
@@ -66,7 +69,13 @@ std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl
       return WriteRows(out, rows);
     }
     case kn::InputKind::kStoreCells: {
-      input.kind = co::InputKind::kStoreCells;
+      // With `outputs`, the segment's last rows' cells only (a target's
+      // tap rows, components/step.h kOutputCells).
+      if (in.outputs != 0 && (in.segment >= shape.segments.size() ||
+                              in.outputs != shape.segments[in.segment].outputs)) {
+        return Error("a tap's cells name no segment's outputs");
+      }
+      input.kind = in.outputs != 0 ? co::InputKind::kOutputCells : co::InputKind::kStoreCells;
       auto values = co::InputValues(input, shape, {});
       if (!values) return Error(values.error());
       const std::uint64_t bytes = values->size() * sizeof(std::int64_t);
@@ -116,6 +125,12 @@ SlotLifecycleOptions ModelRunner::LifecycleOptions(ModelRunner* self,
     self->DropPlans();
     if (also) also();
   };
+  // A slot's state changed outside its steps: what a drafter step carried
+  // for it no longer follows.
+  options.invalidate = [self, also = std::move(options.invalidate)](std::uint32_t slot) {
+    self->ForgetCarry(slot);
+    if (also) also(slot);
+  };
   return options;
 }
 
@@ -128,7 +143,12 @@ ModelRunner::ModelRunner(PagedNode& node, RunnerConfig config, std::unique_ptr<S
       stream_(stream),
       slots_(node, LifecycleOptions(this, std::move(config_.slots)), owner, stream),
       memory_(node, owner, stream),
-      runs_(config_.graphs) {}
+      runs_(config_.graphs) {
+  for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
+    frozen_.push_back(stage != 0 && model::ReadsFrozen(slots_.layout(stage)));
+  }
+  carry_rows_.assign(std::size_t{slots_.slots()} * slots_.stages(), 0);
+}
 
 ModelRunner::~ModelRunner() = default;
 
@@ -207,8 +227,21 @@ std::expected<void, std::string> ModelRunner::CheckShape(const pl::StepShape& sh
       return Error(std::format("slot {}'s {} rows pass the {} its per-row state holds", s.slot,
                                s.rows, row_bound));
     }
-    if (s.read_cells < s.past + s.rows || s.read_cells > context) {
+    // A stage that reads frozen reads the cells before its rows only.
+    const std::uint64_t covers = Frozen(shape.stage) ? s.past : std::uint64_t{s.past} + s.rows;
+    if (s.read_cells < covers || s.read_cells > context) {
       return Error(std::format("slot {}'s reads do not cover its rows", s.slot));
+    }
+    // A target's output rows each write a drafter's tap cell: no more of
+    // them than the tap's ring holds (two rows would share a cell).
+    if (shape.stage == 0 && s.outputs != 0) {
+      for (std::size_t stage = 1; stage < slots_.stages(); ++stage) {
+        const auto* tap = model::FeatureTap(slots_.layout(stage));
+        if (tap != nullptr && s.outputs > tap->cells) {
+          return Error(std::format("slot {}'s {} outputs pass stage {}'s feature tap of {} cells",
+                                   s.slot, s.outputs, stage, tap->cells));
+        }
+      }
     }
     if (s.outputs > s.rows || (!s.want_head && s.outputs != 0)) {
       return Error(std::format("slot {}'s outputs exceed its rows", s.slot));
@@ -225,8 +258,9 @@ std::expected<void, std::string> ModelRunner::CheckShape(const pl::StepShape& sh
 
 std::uint32_t ModelRunner::LoneRead(std::size_t stage, std::uint32_t past,
                                     std::uint32_t rows) const {
-  return static_cast<std::uint32_t>(std::min<std::uint64_t>(
-      Round(std::uint64_t{past} + rows, slots_.read_align(stage)), slots_.context(stage)));
+  const std::uint64_t end = Frozen(stage) ? past : std::uint64_t{past} + rows;
+  return static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(Round(end, slots_.read_align(stage)), slots_.context(stage)));
 }
 
 bool ModelRunner::Verifies(std::uint32_t slot, std::size_t stage) const {
@@ -288,6 +322,14 @@ Status ModelRunner::Setup() {
   for (StageWeights& w : config_.weights) {
     if (auto reserved = w.weights->Reserve(node_, w.places, w.slabs); !reserved) return reserved;
   }
+  // Each verify row's feature has a tap cell of its own.
+  for (std::size_t stage = 1; stage < slots_.stages(); ++stage) {
+    const auto* tap = model::FeatureTap(slots_.layout(stage));
+    if (tap != nullptr && config_.max_verify_rows > tap->cells) {
+      return Error(std::format("a verify of {} rows passes stage {}'s feature tap of {} cells",
+                               config_.max_verify_rows, stage, tap->cells));
+    }
+  }
   if (auto snapshots = SetupSnapshots(); !snapshots) return snapshots;
   // The kernels' own memory, then what uses it, before any measurement.
   std::vector<std::uint64_t> bases;
@@ -304,6 +346,7 @@ Status ModelRunner::Setup() {
     if (auto prepared = config_.prepare(bases); !prepared) return Error(prepared.error());
   }
   std::uint64_t activations = 0, pool = 0, inputs = 0, outputs = 0;
+  std::vector<std::uint64_t> carry(slots_.stages(), 0);
   for (const pl::StepShape& shape : config_.setup_shapes) {
     if (auto checked = CheckShape(shape); !checked) {
       return Error(std::format("a setup shape: {}", checked.error()));
@@ -314,8 +357,16 @@ Status ModelRunner::Setup() {
     activations = std::max(activations, p.scratch_bytes());
     pool = std::max(pool, p.pool_bytes());
     std::uint64_t in = 0, out = 0;
-    for (const kn::InputSlot& slot : p.inputs()) in += Round(slot.bytes, 256);
-    for (const kn::OutputSlot& slot : p.outputs()) out += Round(slot.bytes, 256);
+    for (const kn::InputSlot& slot : p.inputs()) {
+      if (slot.kind != kn::InputKind::kFeatures) in += Round(slot.bytes, 256);
+    }
+    for (const kn::OutputSlot& slot : p.outputs()) {
+      out += Round(slot.bytes, 256);
+      // A drafter's next features: what one segment's carry holds at most.
+      if (slot.features && shape.stage != 0) {
+        carry[shape.stage] = std::max(carry[shape.stage], slot.bytes);
+      }
+    }
     inputs = std::max(inputs, in);
     outputs = std::max(outputs, out);
     plan_floor_bytes_ = std::max(plan_floor_bytes_, p.host_bytes());
@@ -334,8 +385,111 @@ Status ModelRunner::Setup() {
   inputs_staging_ = *in;
   outputs_staging_ = static_cast<std::byte*>(*out);
   runs_.SetStaging(inputs_staging_, inputs_staging_bytes_);
+  if (auto carried = SetupCarry(carry); !carried) return carried;
   setup_ = true;
   return {};
+}
+
+Status ModelRunner::SetupCarry(std::span<const std::uint64_t> carry_bytes) {
+  const std::size_t stages = slots_.stages();
+  carry_offset_.assign(stages, 0);
+  carry_bytes_.assign(stages, 0);
+  std::uint64_t stride = 0;
+  for (std::size_t stage = 0; stage < stages && stage < carry_bytes.size(); ++stage) {
+    if (carry_bytes[stage] == 0) continue;
+    carry_offset_[stage] = stride;
+    carry_bytes_[stage] = Round(carry_bytes[stage], 256);
+    stride += carry_bytes_[stage];
+  }
+  carry_stride_ = stride;
+  if (stride == 0) return {};
+  return memory_.Map(carry_, "the model's carried features", stride * slots_.slots(),
+                     catalog::MemoryClass::kRuntime);
+}
+
+std::uint64_t ModelRunner::CarryAddress(std::uint32_t slot, std::size_t stage) const {
+  return carry_.base + (std::uint64_t{slot} * carry_stride_) + carry_offset_.at(stage);
+}
+
+void ModelRunner::ForgetCarry(std::uint32_t slot) {
+  for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
+    const std::size_t at = (std::size_t{slot} * slots_.stages()) + stage;
+    if (at < carry_rows_.size()) carry_rows_[at] = 0;
+  }
+}
+
+std::expected<std::vector<RunCopy>, std::string> ModelRunner::FeatureCopies(
+    const kn::StepProgram& program, const StepRequest& request) const {
+  std::vector<RunCopy> copies;
+  const pl::StepShape& shape = request.shape;
+  for (const kn::InputSlot& in : program.inputs()) {
+    if (in.kind != kn::InputKind::kFeatures) continue;
+    std::uint64_t rows = 0;
+    for (const pl::Segment& seg : shape.segments) rows += seg.rows;
+    if (in.segment != ir::kJoinedSegment || rows == 0 || in.bytes % rows != 0) {
+      return Error("a step's features input is not its rows' joined features");
+    }
+    const std::uint64_t row_bytes = in.bytes / rows;
+    std::uint64_t first = 0;
+    for (std::size_t i = 0; i < shape.segments.size(); ++i) {
+      const pl::Segment& seg = shape.segments[i];
+      const FeatureFrom& from = request.work[i].feature;
+      const std::uint64_t to = in.device_address + (first * row_bytes);
+      first += seg.rows;
+      switch (from.kind) {
+        case FeatureFrom::Kind::kNone:
+          return Error(
+              std::format("slot {}'s rows read a feature its work does not name", seg.slot));
+        case FeatureFrom::Kind::kTap: {
+          const auto* tap = model::FeatureTap(slots_.layout(shape.stage));
+          if (tap == nullptr || tap->contract.cell_bytes != row_bytes) {
+            return Error(
+                std::format("stage {} has no feature tap of its rows' features", shape.stage));
+          }
+          // Positions the target has committed and its ring still holds.
+          const std::uint64_t committed = slots_.positions(seg.slot);
+          const std::uint64_t last = std::uint64_t{from.position} + seg.rows;
+          if (last > committed || committed - from.position > tap->cells) {
+            return Error(std::format("slot {}'s tap holds no feature of positions {} to {}",
+                                     seg.slot, from.position, last - 1));
+          }
+          const std::uint64_t base = slots_.live(seg.slot, shape.stage).base(0) + tap->offset;
+          for (std::uint32_t r = 0; r < seg.rows; ++r) {
+            const std::uint64_t cell = (std::uint64_t{from.position} + r) % tap->cells;
+            copies.push_back(
+                {to + (r * row_bytes), base + (cell * tap->contract.cell_bytes), row_bytes});
+          }
+          break;
+        }
+        case FeatureFrom::Kind::kCarry: {
+          const std::size_t at = (std::size_t{seg.slot} * slots_.stages()) + shape.stage;
+          if (carry_rows_.at(at) != seg.rows ||
+              seg.rows * row_bytes > carry_bytes_.at(shape.stage)) {
+            return Error(std::format("slot {} carries no features of its {} rows on stage {}",
+                                     seg.slot, seg.rows, shape.stage));
+          }
+          copies.push_back({to, CarryAddress(seg.slot, shape.stage), seg.rows * row_bytes});
+          break;
+        }
+      }
+    }
+  }
+  return copies;
+}
+
+std::expected<std::vector<RunCopy>, std::string> ModelRunner::CarryCopies(
+    const kn::StepProgram& program, const pl::StepShape& shape) const {
+  std::vector<RunCopy> copies;
+  for (const kn::OutputSlot& out : program.outputs()) {
+    if (!out.features) continue;
+    if (shape.stage == 0 || out.segment >= shape.segments.size() ||
+        out.bytes > carry_bytes_.at(shape.stage)) {
+      return Error("a step's next features pass their carry");
+    }
+    copies.push_back({CarryAddress(shape.segments[out.segment].slot, shape.stage),
+                      out.device_address, out.bytes});
+  }
+  return copies;
 }
 
 Status ModelRunner::SetupSnapshots() {
@@ -689,6 +843,8 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
         if (in.kind != kn::InputKind::kOutputRows && joined)
           return Error("an input names no segment");
         return WriteComputed(in, shape, out);
+      case kn::InputKind::kFeatures:
+        return Error("a step's features are copied on the device, never staged");
     }
     return Error("an unknown input kind");
   };
@@ -696,6 +852,12 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   if (!copies) return Refused(copies.error());
   auto outputs = OutputCopies(program);
   if (!outputs) return Refused(outputs.error());
+  // A drafter's features, copied in on the device before its run, and its
+  // next features carried to its slots' carries after it.
+  auto features = FeatureCopies(program, request);
+  if (!features) return Refused(features.error());
+  auto carries = CarryCopies(program, shape);
+  if (!carries) return Refused(carries.error());
   if (entry.planned->positioned) {
     // Between jobs: no run of this program is in flight.
     std::vector<std::uint32_t> past;
@@ -912,6 +1074,17 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
           }
           sv.queued = true;
         }
+        // Outside any recording: their sources move with the positions.
+        for (const auto& [to, from, bytes] : *features) {
+          if (const providers::DeviceStatus copied =
+                  providers::CopyAsync(native, support::Pointer(to), support::Pointer(from), bytes,
+                                       providers::CopyKind::kDeviceToDevice);
+              !copied.ok()) {
+            failure = std::format("a step's features: {}", copied.text());
+            unknown = true;
+            return sc::JobResult::kUnknown;
+          }
+        }
         const StepQueued q =
             runs_.Queue(runs, *copies, {}, program, *outputs, capture, graph_stats_, native);
         wrote = wrote || q.before || q.result.has_value();
@@ -922,6 +1095,16 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
           return unknown                 ? sc::JobResult::kUnknown
                  : wrote || saves_queued ? sc::JobResult::kFailed
                                          : sc::JobResult::kNotStarted;
+        }
+        for (const auto& [to, from, bytes] : *carries) {
+          if (const providers::DeviceStatus copied =
+                  providers::CopyAsync(native, support::Pointer(to), support::Pointer(from), bytes,
+                                       providers::CopyKind::kDeviceToDevice);
+              !copied.ok()) {
+            failure = std::format("a step's carried features: {}", copied.text());
+            unknown = true;
+            return sc::JobResult::kUnknown;
+          }
         }
         if (upcoming != nullptr) {
           auto captured =
@@ -941,6 +1124,10 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   // The job retired: every optional preparation drained before anything
   // else touches the state.
   const Status preparation = slots_.FinishPreparations();
+  // What a drafter step carried, by its slots: nothing until it ran.
+  for (const pl::Segment& seg : shape.segments) {
+    carry_rows_.at((std::size_t{seg.slot} * slots_.stages()) + shape.stage) = 0;
+  }
   if (!posted || !failure.empty() || launch_->faulted()) {
     slots_.CheckFailedJob();
     // What the step's own work may write: its stage, and on the target the
@@ -993,6 +1180,12 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   for (const bool cached : installed) {
     lookahead_.cached += cached;
     report.cached_ahead += cached;
+  }
+  for (const kn::OutputSlot& out : program.outputs()) {
+    if (out.features && out.segment < shape.segments.size()) {
+      const pl::Segment& seg = shape.segments[out.segment];
+      carry_rows_.at((std::size_t{seg.slot} * slots_.stages()) + shape.stage) = seg.outputs;
+    }
   }
   lookahead_.captured_ahead += report.captured_ahead;
   report.captured_first = capture_first && report.path == RunPath::kCaptured;

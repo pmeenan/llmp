@@ -203,6 +203,17 @@ struct StateLayoutDerived {
 const StateLayoutDerived::Item* BorrowedItem(const StateLayoutDerived& target,
                                              const StateLayoutDerived::Borrowed& borrowed);
 
+// A drafter stage that reads its target's state frozen and stores none of
+// its rows itself (Gemma 4's assistant: the target's K and V borrowed, its
+// only tensors taps the target writes): a step's rows read the cells before
+// their positions, so its reads cover `past`, not `past + rows`.
+bool ReadsFrozen(const StateLayoutDerived& layout);
+
+// The stage's feature tap: its one tensor of kind kFeatures that the target
+// writes, a position ring (a drafter's input feature by position); none if
+// it has none or several.
+const StateLayoutDerived::Item* FeatureTap(const StateLayoutDerived& layout);
+
 // The region for `per_layer` contracts (layer index, contract) at a
 // context and chunk bound. Refused for a zero or inconsistent bound, a
 // tensor with no cells or bytes, a cell of partial elements or (in a block

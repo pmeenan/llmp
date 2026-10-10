@@ -140,17 +140,42 @@ struct RunnerConfig {
   // Speculation: the most rows a verify takes (0: none; no snapshot is
   // mapped and a verify is refused). Setup maps each slot's stages'
   // snapshots, sized by model::VerifySaveBound, for the stages a target's
-  // verify writes (the target, a drafter's feature taps) or that commit.
+  // verify writes (the target, a drafter's feature taps) or that commit,
+  // and refuses a feature tap ring of fewer cells than a verify's rows
+  // (each verify row's feature has a cell of its own).
   std::uint32_t max_verify_rows = 0;
   // A stage's commit of a verify's kept rows (LiveState::Commit: Qwen3.8's
   // recurrent state), per slot; unset or empty: none.
   std::function<LiveState::Commit(std::uint32_t slot, std::size_t stage)> commit;
 };
 
+// Where a segment's rows read their feature (a drafter's rows: the step
+// program's kFeatures input, components/step.h kFeatures), copied on the
+// device before the step's run, outside any recording (it moves with the
+// positions).
+struct FeatureFrom {
+  enum class Kind : std::uint8_t {
+    kNone,
+    // The step's stage's feature tap (model::FeatureTap: the target's
+    // features by position, which its steps with outputs write): row r
+    // reads position `position + r`'s cell, which the target's committed
+    // positions must hold (below them, within the ring).
+    kTap,
+    // The slot's carry on the step's stage: the next features the last
+    // drafter step with features of that slot on that stage returned (its
+    // segment's rows, one a row; RunStep carries them after every such
+    // step and forgets them when the slot's state changes otherwise).
+    kCarry,
+  };
+  Kind kind = Kind::kNone;
+  std::uint32_t position = 0;
+};
+
 // One segment's host data for a step, by the shape's segment order.
 struct SegmentWork {
   std::span<const std::int32_t> tokens{};  // kTokens inputs: one a row
   std::span<const std::byte> bytes{};      // kSegmentBytes inputs
+  FeatureFrom feature{};                   // kFeatures inputs (a drafter's rows)
 };
 
 // What the caller predicts beyond the step: never work, and a wrong
@@ -305,6 +330,19 @@ class ModelRunner final : public PagedModel {
   static SlotLifecycleOptions LifecycleOptions(ModelRunner* self, SlotLifecycleOptions options);
   // Each slot's stages' verify snapshots and commits (max_verify_rows).
   Status SetupSnapshots();
+  // Each slot's carried features on each stage whose steps return them
+  // (`carry_bytes` by stage, from the setup shapes' programs).
+  Status SetupCarry(std::span<const std::uint64_t> carry_bytes);
+  // The device copies filling a step's kFeatures input from where each
+  // segment's work names it.
+  std::expected<std::vector<RunCopy>, std::string> FeatureCopies(
+      const kernels::StepProgram& program, const StepRequest& request) const;
+  // The device copies carrying each segment's next features (a drafter
+  // head's) to its slot's carry on the step's stage.
+  std::expected<std::vector<RunCopy>, std::string> CarryCopies(
+      const kernels::StepProgram& program, const planner::StepShape& shape) const;
+  std::uint64_t CarryAddress(std::uint32_t slot, std::size_t stage) const;
+  void ForgetCarry(std::uint32_t slot);
 
   planner::PlanKey KeyOf(const planner::StepShape& shape) const;
   kernels::Addresses AddressesFor(const planner::StepShape& shape, bool measuring) const;
@@ -322,8 +360,10 @@ class ModelRunner final : public PagedModel {
   // Whether a target's verify saves in, or commits, a slot's stage.
   bool Verifies(std::uint32_t slot, std::size_t stage) const;
   // The cells an owner of `past` positions and `rows` rows reads alone on
-  // `stage`.
+  // `stage` (a stage that reads frozen, through `past` only).
   std::uint32_t LoneRead(std::size_t stage, std::uint32_t past, std::uint32_t rows) const;
+  // Its steps read only the cells before their rows (model::ReadsFrozen).
+  bool Frozen(std::size_t stage) const { return frozen_.at(stage); }
 
   PagedNode& node_;
   RunnerConfig config_;
@@ -347,6 +387,13 @@ class ModelRunner final : public PagedModel {
   std::byte* outputs_staging_ = nullptr;
   std::uint64_t outputs_staging_bytes_ = 0;
   Mapped snapshots_;  // every slot's stages' verify snapshots
+  // Every slot's carried features (by slot, then stage: carry_offset_ and
+  // carry_bytes_ by stage, carry_stride_ a slot) and the rows each holds.
+  Mapped carry_;
+  std::vector<std::uint64_t> carry_offset_, carry_bytes_;
+  std::uint64_t carry_stride_ = 0;
+  std::vector<std::uint32_t> carry_rows_;  // by slot, then stage
+  std::vector<bool> frozen_;               // by stage
   // RunnerConfig::kernel_memory's mappings (each at a stable address).
   std::vector<std::unique_ptr<Mapped>> kernel_mapped_;
   bool prepared_ = false;      // RunnerConfig::prepare was called

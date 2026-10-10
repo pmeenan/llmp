@@ -1,0 +1,472 @@
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// An anchored drafter that reads its target's state frozen and its tapped
+// features (engine/decoding.h DrafterSpec::anchored and features; Gemma
+// 4's assistant), over the fake step source (tests/support/
+// fake_step_source.h with `features`): every pass at the committed
+// positions, reading the cells before them (a read through a past that is
+// a multiple of 256 is the past itself), its first pass's feature the
+// target's tap of the position before, a later one's its own last next
+// feature (the runner's carry); the runner's refusals of features nothing
+// holds, of a tap ring narrower than a verify or a target's outputs; and
+// the computed inputs it stages (a tap's output-row cells, a frozen read's
+// mask).
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <expected>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "base/bytes.h"
+#include "engine/decoding.h"
+#include "engine/model_runner.h"
+#include "engine/paged_node.h"
+#include "engine/prefill.h"
+#include "engine/wave_composer.h"
+#include "expected_error.h"
+#include "fake_step_source.h"
+#include "ir/graph.h"
+#include "kernels/common/recording_launch.h"
+#include "model/batching.h"
+#include "model/state_contract.h"
+#include "planner/step_shape.h"
+
+namespace {
+
+namespace en = llmp::engine;
+namespace kn = llmp::kernels;
+namespace md = llmp::model;
+namespace pl = llmp::planner;
+namespace ts = llmp::test_support;
+using llmp::base::Bytes;
+using C = md::StateTensorContract;
+using Layers = std::vector<std::pair<std::uint32_t, md::StateContract>>;
+constexpr std::uint64_t kExtent = en::kPagedExtent;
+constexpr std::uint32_t kContext = 1024;
+constexpr std::uint32_t kSlots = 2;
+constexpr std::uint32_t kChunk = 64;
+constexpr std::uint32_t kTapCells = 16;
+constexpr std::uint32_t kDepth = 3;
+constexpr std::uint16_t kAssistant = 1;
+
+std::int32_t Truth(std::int64_t q) { return static_cast<std::int32_t>(500 + q); }
+
+std::vector<ts::FakeRow> Rows(std::span<const std::byte> bytes) {
+  std::vector<ts::FakeRow> rows(bytes.size() / sizeof(ts::FakeRow));
+  if (!rows.empty()) std::memcpy(rows.data(), bytes.data(), rows.size() * sizeof(ts::FakeRow));
+  return rows;
+}
+
+// The target: a cache that truncates (Gemma's). The assistant: a view of
+// the target's cache and the target's feature tap, a position ring.
+std::vector<en::StageState> Stages() {
+  const Layers target = {{0,
+                          {.tensors = {C{.name = "kv",
+                                         .kind = md::StateKind::kKv,
+                                         .cell_bytes = 256,
+                                         .rollback = md::Rollback::kTruncate}}}}};
+  const Layers assistant = {{0,
+                             {.tensors = {C{.name = "kv",
+                                            .kind = md::StateKind::kKv,
+                                            .cell_bytes = 256,
+                                            .borrowed_from_target = true,
+                                            .target_layer = 0},
+                                          C{.name = "features",
+                                            .kind = md::StateKind::kFeatures,
+                                            .encoding = md::Encoding::kF32,
+                                            .cell_bytes = 256,
+                                            .cells = md::CellRule::kPositionRing,
+                                            .window_or_ratio = kTapCells,
+                                            .rollback = md::Rollback::kTruncate,
+                                            .target_writes = true}}}}};
+  return {{.name = "target", .layout = md::Layout(target, kContext, kChunk).value()},
+          {.name = "assistant", .layout = md::Layout(assistant, kContext, kChunk).value()}};
+}
+
+pl::StepShape Wide(std::uint16_t stage, pl::Phase phase, std::uint32_t rows) {
+  pl::StepShape s{.stage = stage, .phase = phase, .segments = {}, .read_align = 256};
+  for (std::uint8_t slot = 0; slot < kSlots; ++slot) {
+    s.segments.push_back({.slot = slot,
+                          .rows = rows,
+                          .past = kContext - rows,
+                          .read_cells = kContext,
+                          .outputs = rows,
+                          .want_head = true});
+  }
+  return s;
+}
+
+// A slot's three rows after 40, the last two its outputs: the computed
+// inputs' step.
+pl::StepShape ComputedShape() {
+  return {
+      .stage = 0,
+      .phase = pl::Phase::kPrefill,
+      .segments =
+          {{.slot = 0, .rows = 3, .past = 40, .read_cells = 256, .outputs = 2, .want_head = true}},
+      .read_align = 256};
+}
+
+class AnchoredDrafterTest : public ::testing::Test {
+ protected:
+  en::PagedNode node_{
+      en::NodeSettings{.compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent}};
+  std::unique_ptr<en::ModelRunner> runner_;
+  ts::FakeStepSource* source_ = nullptr;
+  std::optional<en::WaveComposer> composer_;
+  std::array<std::vector<std::int32_t>, kSlots> history_{};
+  std::array<std::vector<ts::FakeRow>, kSlots> drafts_{};
+
+  // The verify rows the runner takes (Setup refuses past the tap's cells).
+  virtual std::uint32_t VerifyRows() const { return kDepth + 1; }
+
+  void SetUp() override {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
+    ASSERT_NE(scratch, nullptr);
+    std::filesystem::create_directories(scratch);
+    ASSERT_TRUE(node_.Open());
+    const std::uint64_t fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+    const auto stages = Stages();
+    ts::FakeSourceOptions o;
+    for (const auto& s : stages) o.layouts.push_back(s.layout);
+    o.features = true;
+    // A computed tap cells' and frozen mask's slots on one test's shape
+    // (measured at setup, so the staging holds them).
+    o.extra_inputs = [](const pl::StepShape& shape) {
+      std::vector<kn::InputSlot> extra;
+      if (shape.stage != 0 || shape != ComputedShape()) return extra;
+      extra.push_back({.bytes = 2 * sizeof(std::int64_t),
+                       .segment = 0,
+                       .kind = kn::InputKind::kStoreCells,
+                       .cells = {.capacity = kTapCells, .ring = true},
+                       .outputs = 2});
+      extra.push_back({.bytes = 256 * 32 * sizeof(std::uint16_t),
+                       .segment = 0,
+                       .kind = kn::InputKind::kMask,
+                       .cells = {.capacity = kContext, .ring = false, .frozen = true},
+                       .read = 256,
+                       .mask_rows = 32});
+      return extra;
+    };
+    auto source = std::make_unique<ts::FakeStepSource>(std::move(o));
+    source_ = source.get();
+    en::RunnerConfig config;
+    config.slots = {.model = "Fake",
+                    .slots = kSlots,
+                    .stages = stages,
+                    .spec = {},
+                    .read_align = 256,
+                    .spill_place = {},
+                    .spill_directory = scratch,
+                    .invalidate = {},
+                    .drop_plans = {}};
+    config.setup_shapes = {Wide(0, pl::Phase::kPrefill, kChunk),
+                           Wide(0, pl::Phase::kVerify, kDepth + 1),
+                           Wide(kAssistant, pl::Phase::kDraft, 1)};
+    // A target's prompt chunk returns its last row only.
+    for (pl::Segment& s : config.setup_shapes.front().segments) s.outputs = 1;
+    config.setup_shapes.push_back(ComputedShape());
+    config.launch = []() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+      return std::make_unique<kn::RecordingLaunch>();
+    };
+    config.max_verify_rows = VerifyRows();
+    auto runner = en::ModelRunner::Create(node_, std::move(config), std::move(source), 0, 0);
+    ASSERT_TRUE(runner.has_value()) << runner.error();
+    runner_ = std::move(*runner);
+    auto set = runner_->Setup();
+    if (VerifyRows() > kTapCells) {
+      ASSERT_FALSE(set);
+      setup_refusal_ = ts::Failed(set).value_or("");
+      EXPECT_TRUE(runner_->Release());
+      runner_.reset();
+      return;
+    }
+    ASSERT_TRUE(set) << ts::Failed(set).value_or("");
+    ASSERT_TRUE(node_.MapWorkspace(runner_->activations_needed(),
+                                   std::max(runner_->pool_needed(), kExtent)));
+    ASSERT_TRUE(node_.Start(Bytes(fixed + (32 * kExtent))));
+    ASSERT_TRUE(runner_->Register());
+    node_.Run();
+    ASSERT_TRUE(runner_->Bind());
+    ASSERT_TRUE(runner_->slots().SelectSlots(std::vector<std::uint32_t>{0, 1}));
+    ASSERT_TRUE(node_.BeginRequest(0, runner_->slots().execution(), "test request"));
+    md::Batching caps;
+    caps.max_segments = kSlots;
+    auto composer = en::WaveComposer::For(caps, runner_->slots());
+    ASSERT_TRUE(composer.has_value()) << composer.error();
+    composer_.emplace(std::move(*composer));
+  }
+  void TearDown() override {
+    if (runner_ == nullptr) return;
+    if (node_.InRequest(0)) EXPECT_TRUE(node_.EndRequest(0));
+    std::array<en::PagedModel*, 1> models = {runner_.get()};
+    auto closed = node_.TearDown(models);
+    EXPECT_TRUE(closed) << ts::Failed(closed).value_or("");
+  }
+
+  // Each slot's prompt of `lengths[slot]` truths, its anchor the next.
+  void Prefill(std::span<const std::uint32_t> lengths) {
+    en::PrefillOrchestrator prefill(*runner_, *composer_,
+                                    {.chunk_rows = kChunk,
+                                     .lookahead = 0,
+                                     .capture_ahead = false,
+                                     .prepare_ahead = false,
+                                     .state_only = true});
+    std::vector<en::PromptWork> prompts;
+    for (std::uint32_t slot = 0; slot < lengths.size(); ++slot) {
+      history_[slot].clear();
+      for (std::uint32_t q = 0; q < lengths[slot]; ++q) history_[slot].push_back(Truth(q));
+      prompts.push_back({.slot = slot, .stage = 0, .tokens = history_[slot], .want_head = true});
+    }
+    // A unit a chunk, until every prompt's last.
+    std::vector<bool> done(lengths.size(), false);
+    while (!std::ranges::all_of(done, [](bool d) { return d; })) {
+      std::vector<en::PromptWork> open;
+      std::vector<std::uint32_t> of;
+      for (std::uint32_t slot = 0; slot < lengths.size(); ++slot) {
+        if (done[slot]) continue;
+        en::PromptWork w = prompts[slot];
+        w.past = runner_->slots().positions(slot);
+        w.tokens = std::span<const std::int32_t>(history_[slot]).subspan(w.past);
+        open.push_back(w);
+        of.push_back(slot);
+      }
+      const en::PrefillReport report = prefill.Step(open);
+      for (std::size_t j = 0; j < of.size(); ++j) {
+        ASSERT_FALSE(report.outcomes[j].refusal.has_value()) << report.outcomes[j].refusal->what;
+        done[of[j]] = report.outcomes[j].last;
+      }
+    }
+    for (std::uint32_t slot = 0; slot < lengths.size(); ++slot) {
+      history_[slot].push_back(Truth(lengths[slot]));
+    }
+  }
+
+  en::DecodingOrchestrator Assistant() {
+    en::DecodingPolicy policy;
+    // Each pass proposes the truth after its row's token (anchored rows
+    // all sit at the anchor's position).
+    policy.propose =
+        [this](std::uint32_t slot, std::size_t, std::span<const std::byte> out,
+               std::uint32_t want) -> std::expected<std::vector<std::int32_t>, std::string> {
+      const auto rows = Rows(out.first(std::min<std::size_t>(out.size(), sizeof(ts::FakeRow))));
+      drafts_.at(slot).insert(drafts_.at(slot).end(), rows.begin(), rows.end());
+      std::vector<std::int32_t> proposed;
+      for (const auto& row : rows) proposed.push_back(row.token + 1);
+      if (proposed.size() > want) proposed.resize(want);
+      return proposed;
+    };
+    policy.judge = [](std::uint32_t, std::span<const std::int32_t> verified,
+                      std::span<const std::byte> out) -> std::expected<en::Verdict, std::string> {
+      const auto rows = Rows(out);
+      if (rows.size() != verified.size()) return std::unexpected(std::string("rows differ"));
+      const std::int64_t at = rows.front().position;
+      std::uint32_t accepted = 0;
+      while (accepted + 1 < verified.size() && verified[accepted + 1] == Truth(at + accepted + 1)) {
+        ++accepted;
+      }
+      en::Verdict v{.keep = accepted + 1, .tokens = {}};
+      v.tokens.assign(verified.begin() + 1, verified.begin() + 1 + accepted);
+      v.tokens.push_back(Truth(at + accepted + 1));
+      return v;
+    };
+    auto made = en::DecodingOrchestrator::Make(
+        *runner_, *composer_,
+        {.kind = en::DecodingMode::Kind::kSpeculative,
+         .drafters = {{.stage = kAssistant,
+                       .shape = en::DrafterSpec::Shape::kAutoregressive,
+                       .max_depth = kDepth,
+                       .borrows_target = true,
+                       .anchored = true,
+                       .features = true}}},
+        std::move(policy));
+    EXPECT_TRUE(made.has_value()) << made.error();
+    return std::move(*made);
+  }
+
+  en::DecodeReport Unit(en::DecodingOrchestrator& o) {
+    std::vector<en::DecodeWork> work;
+    for (std::uint32_t slot = 0; slot < kSlots; ++slot) {
+      work.push_back({.slot = slot, .history = history_[slot]});
+    }
+    en::DecodeReport report = o.Step(work);
+    for (std::uint32_t slot = 0; slot < kSlots; ++slot) {
+      const auto& out = report.outcomes[slot];
+      if (out.refusal || out.kept == 0) continue;
+      history_[slot].insert(history_[slot].end(), out.tokens.begin(), out.tokens.end());
+    }
+    return report;
+  }
+
+  std::string setup_refusal_;
+};
+
+TEST_F(AnchoredDrafterTest, PassesSitAtTheAnchorReadingTheTapThenTheirCarry) {
+  // One prompt ends at a multiple of 256: its drafts read exactly its past.
+  const std::array<std::uint32_t, kSlots> prompts = {40, 256};
+  Prefill(prompts);
+  auto o = Assistant();
+  for (int unit = 0; unit < 2; ++unit) {
+    const std::size_t built = source_->built().size();
+    std::array<std::uint32_t, kSlots> past{};
+    for (std::uint32_t slot = 0; slot < kSlots; ++slot) {
+      past[slot] = runner_->slots().positions(slot);
+      drafts_[slot].clear();
+    }
+    const en::DecodeReport report = Unit(o);
+    for (std::uint32_t slot = 0; slot < kSlots; ++slot) {
+      const en::DecodeOutcome& out = report.outcomes[slot];
+      ASSERT_FALSE(out.refusal.has_value()) << out.refusal->what;
+      ASSERT_EQ(out.drafts.size(), 1U);
+      EXPECT_EQ(out.drafts.front().proposed, kDepth);
+      // Every draft accepted: the anchor and three drafts kept.
+      EXPECT_EQ(out.kept, kDepth + 1);
+      EXPECT_EQ(runner_->slots().positions(slot), past[slot] + kDepth + 1);
+      const auto& rows = drafts_[slot];
+      ASSERT_EQ(rows.size(), kDepth);
+      for (std::uint32_t pass = 0; pass < kDepth; ++pass) {
+        // At the anchor's position, its token the anchor, then each proposal.
+        EXPECT_EQ(rows[pass].position, static_cast<std::int32_t>(past[slot])) << pass;
+        EXPECT_EQ(rows[pass].token, Truth(past[slot] + pass)) << pass;
+        // The target's feature of the position before, then its own last
+        // next feature.
+        EXPECT_EQ(rows[pass].tap, pass == 0 ? Truth(past[slot] - 1)
+                                            : Truth(past[slot] + pass - 1) + ts::kFakeFeatureStep)
+            << "slot " << slot << " pass " << pass;
+      }
+    }
+    // The drafts' shapes: one joined step a pass, each owner at its anchor,
+    // reading the target's cells before it.
+    std::size_t drafts = 0;
+    for (std::size_t i = built; i < source_->built().size(); ++i) {
+      const auto& b = source_->built()[i];
+      if (b.measuring || b.shape.stage != kAssistant) continue;
+      ++drafts;
+      ASSERT_EQ(b.shape.segments.size(), kSlots);
+      for (const pl::Segment& s : b.shape.segments) {
+        EXPECT_EQ(s.past, past[s.slot]);
+        EXPECT_EQ(s.rows, 1U);
+        EXPECT_EQ(s.read_cells, (past[s.slot] + 255) / 256 * 256);
+      }
+    }
+    // Built once a unit at most: its shape repeats in every pass.
+    EXPECT_LE(drafts, 1U) << unit;
+  }
+  // Slot 1's drafts read exactly its past of 256 (above); its history grew a unit's tokens twice.
+  EXPECT_EQ(history_[1].size(), 256U + (2 * (kDepth + 1)) + 1);
+}
+
+TEST_F(AnchoredDrafterTest, FeaturesNothingHoldsAreRefused) {
+  const std::array<std::uint32_t, kSlots> prompts = {40, 41};
+  Prefill(prompts);
+  const auto draft = [&](en::FeatureFrom from) -> std::string {
+    auto borrow = runner_->slots().Borrow(0, 0);
+    EXPECT_TRUE(borrow.has_value());
+    const std::uint32_t past = runner_->slots().positions(0);
+    const std::array<std::int32_t, 1> token = {history_[0].back()};
+    const std::array<en::SegmentWork, 1> work = {
+        en::SegmentWork{.tokens = token, .bytes = {}, .feature = from}};
+    const pl::StepShape shape{.stage = kAssistant,
+                              .phase = pl::Phase::kDraft,
+                              .segments = {{.slot = 0,
+                                            .rows = 1,
+                                            .past = past,
+                                            .read_cells = 256,
+                                            .outputs = 1,
+                                            .want_head = true}},
+                              .read_align = 256};
+    auto ran = runner_->RunStep(
+        {.shape = shape, .work = work, .step_bytes = {}, .advance = false, .ahead = {}});
+    return ran ? std::string() : ran.error().what;
+  };
+  EXPECT_NE(draft({}).find("does not name"), std::string::npos);
+  EXPECT_NE(draft({.kind = en::FeatureFrom::Kind::kCarry}).find("carries no features"),
+            std::string::npos);
+  // Not yet committed, and long since out of the ring.
+  EXPECT_NE(draft({.kind = en::FeatureFrom::Kind::kTap, .position = 40}).find("tap holds no"),
+            std::string::npos);
+  EXPECT_NE(draft({.kind = en::FeatureFrom::Kind::kTap, .position = 3}).find("tap holds no"),
+            std::string::npos);
+  // The tap of the last committed position, then the carry it leaves.
+  EXPECT_EQ(draft({.kind = en::FeatureFrom::Kind::kTap, .position = 39}), "");
+  EXPECT_EQ(draft({.kind = en::FeatureFrom::Kind::kCarry}), "");
+  // A slot whose state changed outside its steps carries nothing.
+  ASSERT_TRUE(runner_->slots().Clear(0));
+  EXPECT_NE(draft({.kind = en::FeatureFrom::Kind::kCarry}).find("carries no features"),
+            std::string::npos);
+}
+
+TEST_F(AnchoredDrafterTest, ATargetsOutputsFitItsDraftersTap) {
+  const std::array<std::int32_t, 20> tokens{};
+  const std::array<en::SegmentWork, 1> work = {en::SegmentWork{.tokens = tokens}};
+  pl::StepShape shape{
+      .stage = 0,
+      .phase = pl::Phase::kScore,
+      .segments =
+          {{.slot = 0, .rows = 20, .past = 0, .read_cells = 256, .outputs = 20, .want_head = true}},
+      .read_align = 256};
+  auto ran = runner_->RunStep(
+      {.shape = shape, .work = work, .step_bytes = {}, .advance = true, .ahead = {}});
+  ASSERT_FALSE(ran.has_value());
+  EXPECT_NE(ran.error().what.find("feature tap of 16 cells"), std::string::npos)
+      << ran.error().what;
+  shape.segments.front().outputs = kTapCells;
+  EXPECT_TRUE(
+      runner_
+          ->RunStep({.shape = shape, .work = work, .step_bytes = {}, .advance = true, .ahead = {}})
+          .has_value());
+}
+
+class WideVerifyTest : public AnchoredDrafterTest {
+ protected:
+  std::uint32_t VerifyRows() const override { return kTapCells + 1; }
+};
+
+TEST_F(WideVerifyTest, AVerifyWiderThanTheTapIsRefusedAtSetup) {
+  EXPECT_NE(setup_refusal_.find("feature tap of 16 cells"), std::string::npos) << setup_refusal_;
+}
+
+// The computed inputs a runner stages: a tap's store cells for the output
+// rows alone, and a frozen read's mask over the cells before its rows.
+TEST_F(AnchoredDrafterTest, ComputedInputsStageTapCellsAndFrozenMasks) {
+  const std::array<std::uint32_t, kSlots> prompts = {40, 41};
+  Prefill(prompts);
+  const std::array<std::int32_t, 3> tokens = {Truth(40), Truth(41), Truth(42)};
+  const std::array<en::SegmentWork, 1> work = {en::SegmentWork{.tokens = tokens}};
+  const pl::StepShape shape = ComputedShape();
+  auto ran = runner_->RunStep(
+      {.shape = shape, .work = work, .step_bytes = {}, .advance = true, .ahead = {}});
+  ASSERT_TRUE(ran.has_value()) << ran.error().what;
+  const auto& seen = *source_->options().seen_inputs;
+  ASSERT_EQ(seen.size(), 2U);
+  // The last two rows' positions (41, 42), in a ring of 16.
+  std::array<std::int64_t, 2> cells{};
+  ASSERT_EQ(seen[0].size(), sizeof(cells));
+  std::memcpy(cells.data(), seen[0].data(), sizeof(cells));
+  EXPECT_EQ(cells, (std::array<std::int64_t, 2>{41 % kTapCells, 42 % kTapCells}));
+  // Frozen: every row sees the cells before the segment's rows only.
+  std::vector<std::uint16_t> mask(256 * 32);
+  ASSERT_EQ(seen[1].size(), mask.size() * sizeof(std::uint16_t));
+  std::memcpy(mask.data(), seen[1].data(), seen[1].size());
+  for (std::uint32_t r = 0; r < 3; ++r) {
+    for (std::uint32_t c = 0; c < 256; ++c) {
+      EXPECT_EQ(mask[(r * 256) + c], c < 40 ? 0x0000 : 0xFC00) << "row " << r << " cell " << c;
+    }
+  }
+}
+
+}  // namespace

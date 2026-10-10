@@ -177,38 +177,58 @@ constexpr std::array kPolicies = {
                .max_slots = 2,
                .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
                        "disable narrow_final\ndisable owner_chained_masks\n"
-                       "disable owner_padded_reads\ndisable prepared_inputs\ndisable rope_store\n"},
+                       "disable owner_padded_reads\ndisable prepared_inputs\ndisable rope_store\n",
+               .prompts_alone = true,
+               .prefill_lookahead = 1,
+               .capture_ahead = false},
     PolicyRule{.gate = kExperts,
                .max_context = 8192,
                .max_slots = 4,
                .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
                        "disable narrow_final\ndisable owner_bounded_roots\n"
                        "disable owner_chained_masks\ndisable owner_padded_reads\n"
-                       "disable prepared_inputs\ndisable rope_store\n"},
+                       "disable prepared_inputs\ndisable rope_store\n",
+               .prompts_alone = true,
+               .prefill_lookahead = 1,
+               .capture_ahead = false},
     PolicyRule{.gate = kExperts,
                .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
                        "disable owner_attention\ndisable prepared_inputs\n"
                        "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n"
-                       "disable route_reduce\n"},
+                       "disable route_reduce\n",
+               .prompts_alone = true,
+               .owners_alone = true,
+               .prefill_lookahead = 1,
+               .capture_ahead = false},
     PolicyRule{.gate = kExperts,
                .gate_absent = true,
                .max_context = 4096,
                .max_slots = 2,
                .text = "max_decode_rows 16\ndisable grouped_stores\ndisable narrow_final\n"
                        "disable owner_chained_masks\ndisable owner_padded_reads\n"
-                       "disable prepared_inputs\ndisable rope_store\n"},
+                       "disable prepared_inputs\ndisable rope_store\n",
+               .prompts_alone = true,
+               .prefill_lookahead = 1,
+               .capture_ahead = false},
     PolicyRule{.gate = kExperts,
                .gate_absent = true,
                .max_context = 8192,
                .max_slots = 4,
                .text = "max_decode_rows 16\ndisable grouped_stores\ndisable narrow_final\n"
                        "disable owner_bounded_roots\ndisable owner_chained_masks\n"
-                       "disable owner_padded_reads\ndisable prepared_inputs\ndisable rope_store\n"},
+                       "disable owner_padded_reads\ndisable prepared_inputs\ndisable rope_store\n",
+               .prompts_alone = true,
+               .prefill_lookahead = 1,
+               .capture_ahead = false},
     PolicyRule{.gate = kExperts,
                .gate_absent = true,
                .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
                        "disable owner_attention\ndisable prepared_inputs\n"
-                       "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n"},
+                       "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n",
+               .prompts_alone = true,
+               .owners_alone = true,
+               .prefill_lookahead = 1,
+               .capture_ahead = false},
 };
 
 constexpr Mapping kMapping{

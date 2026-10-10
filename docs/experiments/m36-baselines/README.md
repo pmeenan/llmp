@@ -653,6 +653,143 @@ digests. Raw records stay outside Git on `spark`:
 (and `-quality`). The classes the baseline compares with were deleted with
 this gate's slice (G1d); the frozen binary keeps them.
 
+## Gemma 4 26B-A4B and 31B on the shared engine (slice G2c)
+
+The second family through the gate: the new arm is the component engine
+(Gemma 4 served by `EngineLlm`, its steps the `gemma4` mapping's recipe for
+the serving envelope), the old arm the fixed baseline's M3 class
+(`1facc957-fixed`). The M3 Gemma 4 class has defect 3 too (its turn
+checkpoints past about 1K tokens fail with "invalid checkpoint page range",
+seen in an old-arm run's log), so the new arm ran with
+`LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1`, as Gemma 2's and Gemma 3's did.
+The baseline build refuses Gemma speculation, so the families judge plain
+serving at the cohorts the baseline recorded (C1 and C4, context 8,192,
+four slots); the assistant is judged on the [31B screen](#the-gemma4-31b-assistant)
+the baseline recorded, and the 26B-A4B's assistant, which has no baseline
+(that screen runs the 31B alone), is served and controlled but not gated.
+
+**Candidate `g2c-c9f7f2db`** (worktree on `main` at `4a6710ce`, tree
+`c9f7f2db…`, built with `spark-native --locked` on `spark` and installed
+read-only as `g1c-cd4726d1` was: the runtime SHA-256 `198cbae4…`, the
+engine screen `llmp_gemma_engine_greedy` `1a1c59d2…`). Jobs of one block
+for `gemma26` (a priming run and four), of half a block for `gemma31` (a
+priming run and two: its runs take three minutes), each under ten minutes.
+
+Slowdown of the new arm against the old, with the upper bound of its
+interval (the limit is ln 1.01, +0.995%); a negative number is faster.
+
+Gemma 4 26B-A4B, PASS at 9 blocks (peak memory −0.204 GiB):
+
+| Metric | Slowdown | Upper bound |
+|---|---|---|
+| C1 decode | +0.22% | +0.48% |
+| C1 prefill | +0.02% | +0.21% |
+| C1 wall | +0.13% | +0.28% |
+| C4 decode | +0.41% | +0.70% |
+| C4 prefill | +0.11% | +0.42% |
+| C4 wall | +0.28% | +0.58% |
+
+Gemma 4 31B, PASS at 7 blocks (peak memory −0.083 GiB):
+
+| Metric | Slowdown | Upper bound |
+|---|---|---|
+| C1 decode | +0.05% | +0.12% |
+| C1 prefill | −0.18% | +0.14% |
+| C1 wall | −0.05% | +0.11% |
+| C4 decode | +0.26% | +0.38% |
+| C4 prefill | +0.07% | +0.22% |
+| C4 wall | +0.10% | +0.18% |
+
+The decode rates' small cost (C4's +0.26–0.41%) was not measured further;
+its likely sources are host time between steps: the engine plans a new
+shape (a decode crossing a 256-cell read boundary, a prompt's last chunk)
+in about 11 ms against the M3 runner's 8.8 (Gemma 26B-A4B's 86 plans in
+0.94 s against 0.76 s in one run), and admits a joined step's owners twice
+(alone, then for the join). The spark-job queue admitted the jobs out of
+order, so some blocks' halves (`gemma31`) ran apart in time; every block
+has its four runs and none recorded a problem.
+
+**The assistant screen.** `benchmarks/gemma_engine_greedy.cc`
+(`llmp_gemma_engine_greedy`) pays the M3 screen's work on the shared
+engine through serving's own build (`runtime/component_build.h`): the 31B
+target and its assistant, C1 at context 4,096 and 128-row chunks, the
+canonical P=64 inputs, the screen's arithmetic (its explicit norm-rope and
+norm-add chains: a policy given in place of the mapping's), and 32
+committed greedy tokens a round (units of min(3, remaining − 1) drafts
+and a verify, a plain decode for the last token), its output lines the M3
+screen's. Its trajectory is the screen's: 46 rows verified and 34 drafted
+in 12 units, the same keeps; its tokens, every verify's heads, each unit's
+last draft head and the final head are byte-identical to the frozen
+screen's. Eight ABBA blocks of processes against the frozen
+`llmp_gemma_greedy_reference`, each process's value the mean of its two
+timed rounds, the block slowdown ln(new/old) under the protocol's one-sided
+97.5% bound (a script outside the repository, as the screen is outside
+`speed_gate.py`):
+
+| Block | Old s | New s | Slowdown |
+|---|---:|---:|---:|
+| 1 | 1.37148 | 1.32143 | −3.72% |
+| 2 | 1.39158 | 1.32427 | −4.96% |
+| 3 | 1.39207 | 1.33598 | −4.11% |
+| 4 | 1.39543 | 1.33739 | −4.25% |
+| 5 | 1.39436 | 1.33242 | −4.54% |
+| 6 | 1.39498 | 1.33137 | −4.67% |
+| 7 | 1.39664 | 1.33581 | −4.45% |
+| 8 | 1.39877 | 1.33624 | −4.57% |
+
+PASS at 8 blocks: −4.41%, interval [−4.73%, −4.09%]: 32 committed tokens
+in 1.331 s against 1.391 s (24.0 against 23.0 tok/s).
+
+The engine's verify saves nothing: Gemma 4's caches truncate a rejected
+row (a ring holds a chunk's rows beside its window, so no later query reads
+it), where the M3 runner snapshot and restored every row it wrote.
+
+**Controls.** The quality control's scores and greedy replies are the
+baseline's for both profiles (26B-A4B NLL 9.7916674254, scores
+`3d69b78c…`; 31B NLL 9.5749963928, scores `12c22f37…`; the same reply
+digests). With the assistant served (four slots, context 8,192), the
+scores are the same, the 31B's greedy replies the same, and the 26B-A4B's
+differ (a verify's four-row arithmetic is not a one-row decode's; both are
+greedy agreement with the target's choice); no verify was discarded (96
+and 106 units). A check of that difference (four literal
+prompts, 128 greedy tokens each, every generated token scored again by the
+plain server's prompt log-probabilities): the served verify rows deviate
+from the scorer's no more than plain one-row decodes do (26B-A4B mean
+absolute log-probability difference 0.03–0.21 against 0.01–0.12, largest
+5.0 against 7.0; 31B 0.0005–0.16 against 0.0004–0.16; the 31B's
+literal replies differ too, on one prompt of the four), the first verify
+after a prompt already differs (no earlier verify's rows exist then), and
+at each first differing token the scorer ranks the two candidates in
+either order: arithmetic, not a stale or wrong context. The near-8K
+switch pairs with Qwen3.8 (the baseline's
+command and input) pass: every row exact (state, continuation, heads),
+prepared returns keeping one graph and replaying it 63 times; worst first
+use 6.928 s (26B-A4B; that row's Qwen3.8 page-in ran at 11.6 GB/s) and
+6.112 s (31B), worst prepared 6.002 s and 5.972 s, largest row
+`peak_bytes` 81,816,698,880 and 82,429,718,528. A conversation the frozen
+build kept (record version 1) is refused at the candidate's start ("it is
+of format version 1; this model keeps version 2"), its next turn served
+fresh. The served controls of `gemma4_serving_gpu_test` (spill, restore,
+kept restart, cross-variant refusal, capacity refusal, sampling, scoring,
+switches) pass on the engine, and `component_runner_gemma4_gpu_test` holds
+both profiles' and both assistants' steps bit for bit the M3 runner's
+(drafts at a past of 256 among them).
+
+**A verify's four rows.** `component_runner_gemma4_gpu_test` also holds the
+engine's speculative verify against the M3 runner's `Wave` with every row's
+outputs (cases `gemma26_verify` and `gemma31_verify`, context 4,096, two
+owners): a verify step of four rows with four outputs (phase `kVerify`,
+committed by `Accept`) alone three times (the shape's second and third
+runs), joined over both owners (2 x 4 rows, eight outputs, twice), ragged
+(2 and 4 rows), then a joined one-row decode over the verified state,
+after a joined 37-row prompt. Every output of both profiles is bit for bit
+the M3 runner's (13 owner outputs compared a case, none differing in a
+bit; spark, 2026-10-10).
+
+Raw records stay outside the repository on `spark`:
+`~/scratch/m36-gate/g2c-c9f7f2db` (with `assistant31/`) and
+`~/scratch/m36-gate/g2c-c9f7f2db-{quality,swaps,kept}`.
+
 ## Provenance
 
 `spark` (`spark-c4e2`), NVIDIA GB10, driver 580.178.04 (CUDA 13.0 driver

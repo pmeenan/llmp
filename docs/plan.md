@@ -1525,6 +1525,20 @@ each is checked against the design as M3.6 proceeds.
             launches, and the 26B-A4B, 31B and both assistants' draft
             passes run bit for bit today's through the model runner.
       - [ ] Wiring and the gate, then deletion of the old code.
+            *2026-10-10:* wired and gated (slice G2c); the deletion is
+            G2d's. Both profiles serve on the shared engine, and with a
+            `drafter` their assistants (an anchored drafter reading the
+            target's tapped features: `FeatureFrom`, the runner's carry,
+            frozen reads, `StagedStepSource`; [as
+            built](engine.md#the-model-runner)); the quality control's
+            scores and replies equal the frozen baseline's, the near-8K
+            switch rows are exact and the frozen build's kept records are
+            refused. The 1% gate passes (26B-A4B at 9 blocks, 31B at 7, the
+            new arm with `LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1`: the M3
+            class has defect 3 too), and the 31B assistant's screen runs
+            4.41% faster with its transactions byte-exact
+            ([the results](experiments/m36-baselines/README.md#gemma-4-26b-a4b-and-31b-on-the-shared-engine-slice-g2c));
+            the 26B-A4B's assistant has no baseline to gate against.
 - [ ] **Migrate Qwen3.8**: native NVFP4/MXFP8 with MTP, and GGUF.
       - [ ] Components, patterns and the mapping.
             *2026-10-10:* the components and mappings landed (slice G3a:

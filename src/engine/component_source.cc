@@ -92,4 +92,33 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
   return o_.backend.lower(input);
 }
 
+std::expected<std::unique_ptr<StagedStepSource>, std::string> StagedStepSource::Create(
+    std::vector<std::unique_ptr<ComponentStepSource>> stages) {
+  if (stages.empty()) return std::unexpected("a staged step source needs a stage");
+  base::Sha256 patterns, policies;
+  for (std::size_t i = 0; i < stages.size(); ++i) {
+    if (stages[i] == nullptr || stages[i]->stage() != i) {
+      return std::unexpected(std::format("stage {}'s step source is not its own", i));
+    }
+    if (stages[i]->bound_digest() != stages.front()->bound_digest()) {
+      return std::unexpected(std::format("stage {}'s step source plans another bound spec", i));
+    }
+    const planner::PlanKey key = stages[i]->KeyBase();
+    patterns.Update(std::as_bytes(std::span(key.patterns)));
+    policies.Update(std::as_bytes(std::span(key.policy)));
+  }
+  planner::PlanKey key = stages.front()->KeyBase();
+  key.patterns = patterns.Finish();
+  key.policy = policies.Finish();
+  return std::unique_ptr<StagedStepSource>(new StagedStepSource(std::move(stages), key));
+}
+
+std::expected<std::unique_ptr<kernels::StepProgram>, std::string> StagedStepSource::Build(
+    const planner::StepShape& shape, const kernels::Addresses& addresses) {
+  if (shape.stage >= stages_.size()) {
+    return std::unexpected(std::format("a step of stage {}, which the model lacks", shape.stage));
+  }
+  return stages_[shape.stage]->Build(shape, addresses);
+}
+
 }  // namespace llmp::engine

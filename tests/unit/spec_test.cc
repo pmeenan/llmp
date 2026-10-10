@@ -753,6 +753,18 @@ TEST(MappingTest, Gemma4SpecsFromTheirTablesAndProfiles) {
     EXPECT_TRUE(outside->contains("disable mul_mat_glu"));
     EXPECT_FALSE(outside->contains("disable narrow_final"));
     EXPECT_EQ(outside->contains("disable route_reduce"), p.experts != 0);
+    // How serving composes them (M3's Gemma 4 serving): prompts alone with
+    // one future planned and none captured; outside, every owner alone.
+    for (const Envelope e :
+         {Envelope{.context = 4096, .slots = 2}, Envelope{.context = 8192, .slots = 4},
+          Envelope{.context = 8448, .slots = 2}, Envelope{}}) {
+      const auto rule = DefaultRule(mappings::Gemma4Mapping(), *values, e);
+      ASSERT_TRUE(rule.has_value() && *rule != nullptr);
+      EXPECT_TRUE((*rule)->prompts_alone);
+      EXPECT_EQ((*rule)->owners_alone, e.context == 0 || e.context > 8192);
+      EXPECT_EQ((*rule)->prefill_lookahead, 1U);
+      EXPECT_FALSE((*rule)->capture_ahead);
+    }
   }
 }
 

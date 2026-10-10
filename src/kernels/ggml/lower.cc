@@ -336,8 +336,9 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
             "a compressor's phases, kept rows, pooled reads or blocks, or the indexer's "
             "Hadamard matrix (slice G4b)");
       case co::InputKind::kFeatures:
-        // A drafter's rows' features: the caller's bytes for the step.
-        slot.kind = InputKind::kStepBytes;
+        // A drafter's rows' features: copied in on the device by the
+        // engine, from where the step's work names them.
+        slot.kind = InputKind::kFeatures;
         break;
       case co::InputKind::kOutputCells: {
         // A target's tap rows' cells: its segment's last rows' store cells.
@@ -1121,7 +1122,8 @@ std::expected<void, KernelFailure> Lowering::Slots() {
                              (first * t->nb[1]),
            .bytes = n * t->nb[1],
            .tensor = in_.step.features,
-           .segment = static_cast<std::uint8_t>(i)});
+           .segment = static_cast<std::uint8_t>(i),
+           .features = true});
       first += n;
     }
   }

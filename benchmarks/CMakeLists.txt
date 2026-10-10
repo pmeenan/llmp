@@ -594,6 +594,10 @@ if(LLMP_CUDA)
   add_executable(llmp_gemma_greedy_reference gemma_greedy_reference.cc)
   target_link_libraries(llmp_gemma_greedy_reference PRIVATE llmp_engine llmp_json llmp_warnings)
   target_link_options(llmp_gemma_greedy_reference PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
+  # The same screen on the shared engine (M3.6's assistant gate); manual, never CTest.
+  add_executable(llmp_gemma_engine_greedy gemma_engine_greedy.cc)
+  target_link_libraries(llmp_gemma_engine_greedy PRIVATE llmp_runtime_serving llmp_warnings)
+  target_link_options(llmp_gemma_engine_greedy PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
   # Original stage-zero immutable inputs; manual diagnostic, never CTest.
   add_executable(llmp_gemma_assistant_fixture gemma_assistant_fixture.cc)
   target_link_libraries(llmp_gemma_assistant_fixture PRIVATE llmp_engine llmp_json llmp_warnings)

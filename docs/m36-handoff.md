@@ -58,38 +58,31 @@ In flight (uncommitted worktrees under `/home/pmeenan/src/llmp/.claude/worktrees
 each lands):
 
 - **G2c: Gemma 4 26B-A4B and 31B with their assistants on the shared engine**
-  (`agent-ae04b921e95339781`). Reviewed clean apart from lows. The 1% gate
-  passed (26B at 9 blocks, 31B at 7, the 31B assistant screen 4.4% faster).
-  Records are on spark in `~/scratch/m36-gate/g2c-c9f7f2db*`, and the
-  baselines README has a G2c section. Main has been merged in. Next:
-  verify the merged tree (the shared set plus the Gemma 4 area model
-  tests), then land it as "[M3.6] Serve Gemma 4 and its assistants on the
-  shared engine". The Spark copy is `spark:~/src/m36-g1c`.
-- **G2d: delete the Gemma 4 M3 code** (not started). First, while M3 still
-  exists, close three review gaps:
-  - L2: a bit-identity case in `component_runner_gemma4_gpu_test` for a
-    4-row, 4-output verify against M3's `Wave(work, all_outputs=true)`,
-    for 26B and 31B. Record the result, then delete it with M3.
-  - L3: port a served four-owner check, with interleaved prompt progress
-    and departures at the 8K/C4 envelope, onto the engine path in
-    `gemma4_serving_gpu_test`.
-  - L4: restore `CrossVariantKeptTagIsRejected` to use the other profile's
-    real identity.
+  landed on `main` (see `git log`). The 1% gate passed: 26B at 9 blocks,
+  31B at 7, and the 31B assistant screen 4.4% faster. Records are in
+  `spark:~/scratch/m36-gate/g2c-c9f7f2db*` and in the baselines README's
+  G2c section, which includes the 4-row verify's bit identity with M3 for
+  both profiles.
+- **G2d: delete the Gemma 4 M3 code.** Mostly done: the work is on the
+  local branch `m36-g2d-wip`, one WIP commit on top of the G2c commit,
+  uncommitted on `main`. Its builder's state:
+  - The code deletions and engine-only test conversions are done.
+  - L3 (served four owners at the 8K/C4 envelope) and L4 (cross-variant
+    kept tag with the real identities) passed before a last assertion fix.
+  - A new served-assistant acceptance test is included.
+  - The calibration key no longer carries `gemma31_production=true`, so
+    stored Gemma 4 calibrations re-key; that needs a CHANGELOG line.
 
-  Then delete:
-  - the M3 Gemma class and its routing in `Server::Make`;
-  - the `gemma4_runner`, plan, assistant, assistant plan and greedy code;
-  - the gemma4 and assistant graph builders;
-  - the `model/gemma4` builders, keeping the profile and binding;
-  - the `ServingOptions` Gemma diagnostics and
-    `gemma26_production`/`gemma31_production`, moving the 256/1024
-    prefill-chunk fallback into the mapping's data;
-  - the Gemma 4 benchmarks and legacy tests, including
-    `gemma_joined_serving_gpu_test`.
+  Left to do:
+  - Docs: plan ticks, engine.md, runtime-serving.md, engine-components.md,
+    optimization-inventory.md, CHANGELOG Removed lines, the coverage map in
+    the commit message, AGENTS.md.
+  - clang-format, `tools/llmp_boundaries.py` and the header check.
+  - The full Spark set on the final state, then a review.
 
-  Update the licensing and lock entries for the deleted ports, as G1d did,
-  and the plan ticks. Write a coverage map of every deleted test, as in
-  `4a6710ce`'s message.
+  Open question: the assistant's draft-pass logits are no longer compared
+  with the reference executor, only run to run plus the served
+  acceptance test.
 - **G3b: Qwen3.8 patterns, policy and GGML lowering**
   (`agent-a1d41dad140560dc5`, based on `88efa86c`; Spark copy
   `spark-b:~/src/m36-g3b`, helper `~/scratch/g3b/tgt.sh`). Stopped at a

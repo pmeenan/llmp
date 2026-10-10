@@ -78,7 +78,16 @@ Status EngineLlm::Setup() {
   prefill_ = parts->prefill;
   device_greedy_ = parts->device_greedy;
   architecture_ = parts->architecture;
+  chat_ = std::move(parts->chat);
   keep_ = std::move(parts->keep);
+  // Control tokens that end a chat reply (a channel the slice does not
+  // parse), where the tokenizer has them.
+  chat_stops_.clear();
+  if (tokenizer_ != nullptr) {
+    for (const std::string& text : chat_.stops) {
+      if (const auto token = tokenizer_->Find(text)) chat_stops_.push_back(*token);
+    }
+  }
   en::SlotLifecycleOptions& slots = parts->config.slots;
   slots.model = name_;
   slots.slots = slots_;
@@ -97,6 +106,11 @@ Status EngineLlm::Setup() {
   };
   const bool drafters =
       parts->mode.kind == en::DecodingMode::Kind::kSpeculative && !parts->mode.drafters.empty();
+  // Speculation on names a drafter (the settings', D-103): a model whose
+  // parts have none refuses rather than serving plain in its place.
+  if (settings_.speculation.value && !drafters) {
+    return Error(std::format("model {}: speculation is on but its parts have no drafter", name_));
+  }
   const bool speculate = drafters && settings_.speculation.value;
   verify_rows_ = speculate ? parts->mode.verify_rows() : 1;
   auto runner =
@@ -240,6 +254,20 @@ std::string EngineLlm::extra() const {
 
 // ------------------------------------------------------------------ the LLM
 
+void EngineLlm::Defaults(chat::Conversation& conversation) const {
+  if (!chat_.thinking && !conversation.enable_thinking) conversation.enable_thinking = false;
+}
+
+Status EngineLlm::CheckConversation(const chat::Conversation& conversation) const {
+  if (!chat_.thinking && conversation.enable_thinking.value_or(false)) {
+    return Error(std::format("{}'s thought-channel output is not served yet", name_));
+  }
+  if (!chat_.tools && !conversation.tools.empty()) {
+    return Error(std::format("{}'s generated tool calls are not served yet", name_));
+  }
+  return {};
+}
+
 Status EngineLlm::SelectBranches(std::span<Branch* const> active) {
   if (auto built = Built(); !built) return built;
   if (active.size() > slots_) return Error(std::format("too many {} conversation owners", name_));
@@ -374,16 +402,22 @@ std::expected<std::vector<float>, std::string> EngineLlm::LogitsRow(
 en::DecodingPolicy EngineLlm::Policy() {
   en::DecodingPolicy policy;
   // A drafter's proposal a row: its head's most likely token.
+  // (A drafter that returns its next features has them after its logits.)
   policy.propose =
       [this](std::uint32_t /*slot*/, std::size_t /*drafter*/, std::span<const std::byte> outputs,
              std::uint32_t want) -> std::expected<std::vector<std::int32_t>, std::string> {
-    auto rows = HeadRows(outputs);
-    if (!rows) return std::unexpected(rows.error());
+    const std::size_t row_bytes = std::size_t{logit_width_} * sizeof(float);
+    const std::size_t rows =
+        row_bytes == 0 ? 0 : std::min<std::size_t>(outputs.size() / row_bytes, want);
+    if (rows == 0) {
+      return Error(std::format("{}'s draft returned {} output bytes, no row of {} logits", name_,
+                               outputs.size(), logit_width_));
+    }
     std::vector<std::int32_t> proposed;
-    for (std::size_t i = 0; i < *rows && proposed.size() < want; ++i) {
-      auto row = LogitsRow(outputs, i);
-      if (!row) return std::unexpected(row.error());
-      proposed.push_back(Argmax(*row));
+    for (std::size_t i = 0; i < rows; ++i) {
+      const auto row =
+          std::span(reinterpret_cast<const float*>(outputs.data() + (i * row_bytes)), logit_width_);
+      proposed.push_back(Argmax(row));
     }
     return proposed;
   };

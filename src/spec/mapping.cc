@@ -857,6 +857,16 @@ bool IsSourceKey(std::string_view key) { return IsText(key); }
 std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mapping,
                                                            std::span<const SourceValue> values,
                                                            const Envelope& envelope) {
+  auto rule = DefaultRule(mapping, values, envelope);
+  if (!rule) {
+    return std::unexpected(rule.error());
+  }
+  return *rule == nullptr ? std::string_view{} : (*rule)->text;
+}
+
+std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping,
+                                                          std::span<const SourceValue> values,
+                                                          const Envelope& envelope) {
   if (auto ok = ValidateMapping(mapping); !ok) {
     return std::unexpected(ok.error());
   }
@@ -875,10 +885,10 @@ std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mappin
       return bound == 0 || (value != 0 && value <= bound);
     };
     if (*holds && within(p.max_context, envelope.context) && within(p.max_slots, envelope.slots)) {
-      return p.text;
+      return &p;
     }
   }
-  return std::string_view{};
+  return nullptr;
 }
 
 std::span<const Mapping* const> Mappings() {
@@ -952,6 +962,9 @@ Status ValidateMapping(const Mapping& m) {
     }
     if ((!p.gate.empty() && !IsText(p.gate)) || (p.gate.empty() && p.gate_absent)) {
       return Refuse(where, "a policy of an invalid gate");
+    }
+    if (p.prefill_lookahead > 2) {
+      return Refuse(where, "a policy planning more than two prompt chunks ahead");
     }
   }
   if (m.slots.size() + m.tensors.size() + m.params.size() + m.folds.size() + m.reads.size() +

@@ -1147,6 +1147,13 @@ TEST_F(EngineLlmTest, SetupRefusesWhatItCannotBuild) {
   ASSERT_FALSE(set);
   EXPECT_NE(Why(set).find("no step source yet"), std::string::npos);
   EXPECT_FALSE(refused.SelectBranches({}));
+  // Speculation on with parts that have no drafter: refused, never plain
+  // in its place (M3's classes refused it too).
+  rt::EngineLlm plain(node, entry_, Settings(true), roles_, 0, Build(false));
+  auto speculating = plain.Setup();
+  ASSERT_FALSE(speculating);
+  EXPECT_NE(Why(speculating).find("speculation is on but its parts have no drafter"),
+            std::string::npos);
   // No runner: a server stopping after this failed start leaves it out of
   // the node's teardown (Server::TearDown) instead of asking for it.
   EXPECT_FALSE(unbuilt.has_paged());

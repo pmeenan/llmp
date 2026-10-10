@@ -392,7 +392,15 @@ launch the runner makes at Bind. Over it the runner runs Gemma 2 and Gemma
 owner decode and prefill, bounded roots, the narrowed final layer, ring wrap,
 logits and greedy heads, finite and exact from one runner to the next; they
 were bit for bit the M3 runners', deleted after the gate); serving runs Gemma 2 and Gemma 3 on it
-([the serving adapter](#the-serving-adapter)).
+([the serving adapter](#the-serving-adapter)). A model of several stages
+(a target and its drafters) has one `StagedStepSource`: each stage's
+component source, the one a shape's stage names, and one key base for all
+(the spec bound to every stage's artifacts, digests over every stage's
+patterns and policy). Over it the runner runs Gemma 4 26B-A4B's and 31B's
+recipes and their assistants' draft passes bit for bit the M3 runner's
+(`component_runner_gemma4_gpu_test`: the target's steps of the composed
+spec write the assistant's feature tap, which its first pass reads); serving
+runs Gemma 4 and its assistant on it.
 
 **Planner types** (`planner/step_shape.h`, header-only; the planner,
 `planner/plan.h`, plans a step's graph and makes its key,
@@ -443,8 +451,18 @@ then the launch, then the memory they name. A step (`RunStep`):
    target's and the drafters' `target_writes` tensors, a drafter's its own
    stage's and its view of the target's), so a verify's saves and a failed
    step's quarantine cover every stage its program can touch;
-3. inputs staged by slot (`StepRuns::Stage`), output copies laid out, a
-   program that is not capturable positioned;
+3. inputs staged by slot (`StepRuns::Stage`: a computed input by the
+   shape, a tap's store cells for its segment's output rows alone, a
+   frozen read's mask over the cells before its rows), output copies laid
+   out, a program that is not capturable positioned; a drafter's features
+   (the program's `kFeatures` input, never staged) copied on the device
+   from where each segment's work names them (`FeatureFrom`: its stage's
+   feature tap, `model::FeatureTap`, at positions the target has committed
+   and its ring still holds, or the slot's carry), and its next features
+   (an output marked `features`) carried to its slots' carries after its
+   run, both in its job outside any recording (their sources move with the
+   positions); a carry is forgotten when the slot's state changes outside
+   its steps;
 4. the futures (`StepAhead`): deduplicated against the shape and each
    other and protected by `Find` before any funding; a recording made
    ahead whose staging differs is dropped; the capture decision (second
@@ -468,6 +486,16 @@ then the launch, then the memory they name. A step (`RunStep`):
 7. futures installed (bound, checked, the grant transferred to the
    cache's charge), the path counted, each owner's outputs copied to its
    own buffer, positions set.
+
+A drafter stage that reads its target's state frozen and stores none of
+its rows itself (`model::ReadsFrozen`: borrowed tensors and taps the
+target writes, Gemma 4's assistant) reads only the cells before its rows:
+its reads cover `past`, not `past + rows`, so a draft anchored at a past
+that is a multiple of 256 reads exactly that many cells (the runner's
+`CheckShape` and lone reads, the composer's `StageReads::frozen`). A
+target's output rows each write a drafter's tap cell: Setup refuses a tap
+ring narrower than a verify's rows, and a step refuses more output rows
+than the ring holds.
 
 `PlanCache` is now `BasicPlanCache<Key, Planned, Variants, Runs>` in the
 core (`plan_cache.h`); `planned.h`'s `PlanCache` is the alias over GGML's
@@ -553,6 +581,13 @@ unit of generation for a set of slots on the runner:
   passes, after settling what the last verify owes; a stage whose
   contract views the target's tensor (`borrowed_from_target`, resolved by
   `model::BorrowedItem` to the owner's target state) steps only so;
+- an `anchored` drafter (Gemma 4's assistant) runs every pass at the
+  committed positions, its one row the latest proposal's token (the
+  anchor's first); one with `features` reads beside its tokens, on a
+  unit's first pass, its stage's tap of the positions before its rows (the
+  target's features there, which its steps with outputs write) and on a
+  later pass its own last pass's next features (the runner's carry); none
+  drafts at position 0;
 - depth adapts per slot and drafter (`execution::AdaptiveDepth`), taught
   only by complete steps (not cut by the reply's end or the context, and
   in a cascade only once every earlier proposal was accepted); the wave's
@@ -597,7 +632,7 @@ still bring:
 | --- | --- | --- |
 | Qwen3.8 MTP | An autoregressive drafter with `catch_up` over its own stage (K, V and indexer cells truncating; the streams a per-row tap the target writes, snapshot); the target's K, V, indexer and completed block keys snapshot by row, its linear layers' state `kCommit` with the model's commit | The catch-up and passes in one job, the selected draft head's rows, the injection's drafter pass inside the target's prefill (`Qwen38Injection`), the n-gram row gather |
 | DeepSeek V4 + DSpark | A block drafter (its fill the mask token) over its ring (a position ring the target's injection writes); the target's window cells, compressor rings and compressed rows snapshot by row, no commit; the exact mode a row-invariant verify | The draft and the verify chained in one job (drafts copied into the verify's staged tokens and embedded on the device), the Markov head, shortening a draft before a mask width (`Dsv4SameWidths`: policy) |
-| Gemma4 assistant | An autoregressive drafter with `borrows_target`, its contract viewing the target's KV (`borrowed_from_target`) | The retained final features as a tap, the feature epoch and generation guards of `FrozenBorrow`, the device's verify verdicts (`GreedyUnit`) |
+| Gemma4 assistant | An anchored autoregressive drafter with `borrows_target` and `features`, its contract viewing the target's KV (`borrowed_from_target`) and its tap of the target's final-norm rows; the target's KV truncates (a ring holds a chunk's rows beside its window, so a rejected row is never read) | The device's verify verdicts (`GreedyUnit`'s device judge); its adaptive depth (three drafts a unit, M3's screen's) |
 
 What the shared pieces reproduce of each family, and what a migration
 must still bring (as components' capabilities, planner patterns or
@@ -606,7 +641,7 @@ policy):
 | Family | Reproduced | Not yet |
 | --- | --- | --- |
 | Gemma2/3 | Joined prompt waves with equal rows and reads (`equal_prefill`); two futures, first-run capture of a repeating shape, capture ahead, prepare ahead; head-or-state-only shapes; second-run capture in every phase; independent outputs; owner attention (owner decode, owner and flexible owner prefill, bounded roots, padding to a common width, Gemma3's four-root carriers: the planner's `owner_attention` from the step's shape) | The 2,048/256 head-capacity envelope (`max_head_rows`); the cohort's 2- or 12-owner limits become `max_segments`; the C12 bounded factor and the copying packed prefill are not ported |
-| Gemma4 | Quads as `group_segments` 4, the 8/12 groups as `invariant_group_segments`/`group_segments`; one future without capture ahead is `lookahead` 1, `capture_ahead` false; per-group isolation (RunGemmaGroups) is RunWave's; the assistant's frozen borrows (decoding modes) | Common owner reads limited to two owners, bounded owner roots, retained features, joined prompt admission (Gemma4 serving prefills alone) |
+| Gemma4 | Quads as `group_segments` 4, the 8/12 groups as `invariant_group_segments`/`group_segments`; one future without capture ahead is `lookahead` 1, `capture_ahead` false; per-group isolation (RunGemmaGroups) is RunWave's; the assistant's frozen borrows, tapped features and carry (decoding modes); prompts stepping alone and, outside the envelope, one owner a step (its mapping's rules, `prompts_alone`, `owners_alone`); bounded owner roots and common widths (the planner's owner-attention options) | Joined prompt admission (it would change the routed products' arithmetic; M3 prefilled alone) |
 | Qwen3.8 | Groups of consecutive owners while rows fit 16 (`group_rows`), 2,048-aligned joined reads (`joined_read_align`), state backed through that alignment before the step (an owner out of capacity there steps alone at 256 rather than being refused), two futures and prepare ahead, state-only cuts; joined draft and verify waves (decoding modes) | Per-product joined limits (draft head 8, VecQ, MoE GEMV, MXFP8 columns, HC cuBLAS 16: planner patterns), BF16 head sharing by row count, the n-gram row gather between inputs and plan, the MTP lookahead group, rows ≤ 4 per slot; its prefill captures only one-row shapes (`capture_phases` without prefill) |
 | DeepSeek V4 | Total wave rows ≤ 16 (`max_step_rows`), joined row-local work with per-owner state, scalar prefill (`join_prefill` false), two futures and prepare ahead, state-only cuts; joined drafts and verifies (decoding modes) | Float products over groups of whole owners fitting 8 columns and `SetVecQOneToken` for one-row waves (planner, from the shape), `Dsv4WaveSupport`'s fallback to one slot, the HCA plan's per-position patch (the lowering's `Position`; the runner never captures it), a draft and its verify in one job |
 
@@ -629,15 +664,24 @@ commits), the step source, the components' `model::Batching`, the
 step returns its tokens chosen on the device, and the prefill futures'
 options, and what the source and launch borrow (`keep`: the spec, the
 artifact's tensors, the kernel source's backend), released after the
-runner. Serving's build (`serving.cc`) synthesizes the spec from the v0
-artifact, takes the stage's layout (each state tensor on its own paged
-extents, as the M3 layouts: packed tensors straddle extents, so a prompt
-would grow its state at staggered positions every chunk or two, each
-growth a host cost between steps) and batching from the components, and
-makes a `ComponentStepSource` planned under the architecture mapping's
-policy over a `GgmlBackend` created on the model's own stream (the
-runner's job stream, which every launch checks; one backend per runner,
-its launch made once at Bind). The head's logit width is the spec head's
+runner. Serving's build (`runtime/component_build.h`, which the gate's
+harnesses share) synthesizes the spec from the v0 artifact and, when the
+model speculates, composes its drafter's (`spec::ComposeDrafterV0`: Gemma
+4's assistant, a stage of its own), takes each stage's layout (each state
+tensor on its own paged extents, as the M3 layouts: packed tensors
+straddle extents, so a prompt would grow its state at staggered positions
+every chunk or two, each growth a host cost between steps) and the
+target's batching from the components, and makes a `ComponentStepSource`
+a stage (a `StagedStepSource` over several) planned under each
+architecture mapping's policy for the serving envelope (its context and
+owners: `spec::DefaultRule`, whose rule also says how serving composes
+the recipe's steps: prompts alone, owners alone, the prompt futures
+planned and captured ahead) over a `GgmlBackend` created on the model's
+own stream (the runner's job stream, which every launch checks; one
+backend per runner, its launch made once at Bind). A layer's routed
+experts are one slab (`engine::ExpertSlabsOf`, the M3 runners' pitch:
+256 bytes and every array's block bytes), its pitch the lowering's expert
+stride. The head's logit width is the spec head's
 vocabulary (its logits' width); a greedy step returns each owner's token
 chosen on the device. cuBLAS gets the workspace the runner maps for it
 (`RunnerConfig::kernel_memory`: mapped and charged at Setup as the
@@ -646,10 +690,17 @@ handle made by `prepare` over it and lent to the backend's launch, and
 retired at Release after the launch, before the memory), as
 `RunnerResources` does for the M3 runners. Its setup shapes are a
 prompt chunk and a decode row, joined and alone, with logits and with
-device tokens, at the end of the context reading all of it. Gemma 2 and
-Gemma 3 have it and are served by it since their migration;
-any other architecture, or a drafter, is refused at Setup. The tests'
-build is the fake's. At Setup the adapter makes
+device tokens, at the end of the context reading all of it, and with a
+drafter a verify of its rows and a draft pass, joined and alone. Gemma 2
+and Gemma 3 have it and are served by it since their migration, Gemma 4
+26B-A4B and 31B and their assistants since theirs (the assistant an
+anchored drafter of three drafts a unit reading the target's tapped
+features; the M3 class's chat slice kept: thinking off and refused on,
+tools refused, the channel and tool-call openers ending a reply);
+any other architecture is refused at Setup. The tests'
+build is the fake's. Speculation on with parts that have no drafter is
+refused at Setup (the M3 classes refused it too), never served plain in
+its place. At Setup the adapter makes
 the `ModelRunner` (owner and stream its registration index; its slots
 named after the model, `max_slots` of them, spilling to the spill role or
 the kept places the server sets before Register), a `WaveComposer` over

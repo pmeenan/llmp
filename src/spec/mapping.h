@@ -223,12 +223,24 @@ struct V0Assembly {
 // A rule may hold only within a serving envelope (a family's qualified
 // recipe bounded by context and owners: Gemma 4's): a stage context of at
 // most `max_context` and at most `max_slots` owners (0: no bound).
+// With the policy, how serving composes the recipe's steps where it
+// differs from the engine's defaults (engine/wave_composer.h,
+// engine/prefill.h): prompt chunks each step alone (no joined prompt
+// rows), every step one owner (no joined rows at all), how many of a
+// prompt's next chunks are planned ahead (0 to 2) and whether their
+// recordings are captured ahead of their runs (Gemma 4's recipe prefills
+// alone with one future planned and none captured, and outside its
+// envelope steps each owner alone, as its M3 serving did).
 struct PolicyRule {
   std::string_view gate{};
   bool gate_absent = false;
   std::uint32_t max_context = 0;
   std::uint32_t max_slots = 0;
   std::string_view text{};
+  bool prompts_alone = false;
+  bool owners_alone = false;
+  std::uint8_t prefill_lookahead = 2;
+  bool capture_ahead = true;
 };
 
 // What a drafter's stage reads of its target (spec.h Read): its state by
@@ -365,8 +377,12 @@ struct Envelope {
   std::uint32_t slots = 0;
 };
 
-// The default policy text `mapping` gives a source with `values` (its
-// first policy rule whose gate and envelope hold; empty when none does).
+// The default policy rule `mapping` gives a source with `values` (its
+// first policy rule whose gate and envelope hold; null when none does),
+// and its text (empty when none does).
+std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping,
+                                                          std::span<const SourceValue> values,
+                                                          const Envelope& envelope = {});
 std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mapping,
                                                            std::span<const SourceValue> values,
                                                            const Envelope& envelope = {});

@@ -9,6 +9,7 @@
 
 #include "engine/request_cohort.h"
 #include "engine/support.h"
+#include "model/state_contract.h"
 
 namespace llmp::engine {
 
@@ -44,15 +45,18 @@ std::expected<WaveComposer, std::string> WaveComposer::For(model::Batching caps,
                                                            const SlotLifecycle& slots) {
   std::vector<StageReads> stages;
   for (std::size_t s = 0; s < slots.stages(); ++s) {
-    stages.push_back({.context = slots.context(s), .read_align = slots.read_align(s)});
+    stages.push_back({.context = slots.context(s),
+                      .read_align = slots.read_align(s),
+                      .frozen = s != 0 && model::ReadsFrozen(slots.layout(s))});
   }
   return Make(caps, std::move(stages));
 }
 
 std::uint32_t WaveComposer::LoneRead(std::size_t stage, std::uint32_t past,
                                      std::uint32_t rows) const {
-  return static_cast<std::uint32_t>(std::min<std::uint64_t>(
-      Round(std::uint64_t{past} + rows, read_align(stage)), context(stage)));
+  const std::uint64_t end = frozen(stage) ? past : std::uint64_t{past} + rows;
+  return static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(Round(end, read_align(stage)), context(stage)));
 }
 
 void WaveComposer::Finish(pl::StepShape& shape) const {
@@ -61,8 +65,9 @@ void WaveComposer::Finish(pl::StepShape& shape) const {
   shape.read_align = AlignFor(shape.stage, shape.segments.size(), shape.row_invariant);
   std::uint32_t widest = 0;
   for (pl::Segment& s : shape.segments) {
-    s.read_cells = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-        Round(std::uint64_t{s.past} + s.rows, shape.read_align), context(shape.stage)));
+    const std::uint64_t end = frozen(shape.stage) ? s.past : std::uint64_t{s.past} + s.rows;
+    s.read_cells = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(Round(end, shape.read_align), context(shape.stage)));
     widest = std::max(widest, s.read_cells);
   }
   if (caps_.common_read && shape.segments.size() > 1 && !shape.row_invariant) {
@@ -185,8 +190,9 @@ WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
   const SlotLifecycle& slots = runner.slots();
   bool differs = composer.stages() > slots.stages();
   for (std::size_t s = 0; s < composer.stages() && !differs; ++s) {
-    differs =
-        composer.read_align(s) != slots.read_align(s) || composer.context(s) != slots.context(s);
+    differs = composer.read_align(s) != slots.read_align(s) ||
+              composer.context(s) != slots.context(s) ||
+              composer.frozen(s) != (s != 0 && model::ReadsFrozen(slots.layout(s)));
   }
   const char* mismatch = work.size() != pending.size()
                              ? "the wave's work does not match its pending work"

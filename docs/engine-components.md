@@ -471,13 +471,17 @@ gather between, as PlanGraph fuses them (where Gemma 4's routed and dense
 sums meet, the later one). Unfused, PlanGraph runs an RMS norm and the
 mul after it as one step of both launchers, which the lowering takes
 as the IR's two steps (the assistant's plain plans). A drafter's features
-are a step-bytes input; a target's tap cells a store-cells slot of the
-segment's last `outputs` rows (`InputSlot::outputs`); a frozen read's
-mask the producer's frozen policy (`MaskPolicy::kFrozen`: the cells hold
-the positions before the segment's first row) or a host mask whose slot
-says so (`InputCells::frozen`, behind `LowerOptions::frozen_host_masks`
-until the engine's staging builds it, G2c). A drafter head's next
-features are each owner's output slot after its logits.
+are a features input (`InputKind::kFeatures`, never staged: the engine
+copies them in on the device from its stage's tap or its carry, slice
+G2c); a target's tap cells a store-cells slot of the segment's last
+`outputs` rows (`InputSlot::outputs`), which the engine stages as those
+rows' cells; a frozen read's mask the producer's frozen policy
+(`MaskPolicy::kFrozen`: the cells hold the positions before the segment's
+first row) or a host mask whose slot says so (`InputCells::frozen`, which
+the engine's staging honours; serving's backend sets
+`LowerOptions::frozen_host_masks`). A drafter head's next features are
+each owner's output slot after its logits, marked `features` (the
+engine carries them to the slot's next pass).
 
 Checked (`ggml_lower_gemma4_test`, CPU): at every shape today's runner
 measures at setup under each Gemma 4 serving recipe (within 4,096 and two
@@ -700,7 +704,11 @@ beside a feature (a step input, `InputKind::kFeatures`, which the engine
 binds: the target's tap for a unit's first pass, the drafter's last
 feature after), projected to its width; its state is the tap ring the
 target writes (`target_writes`, kPositionRing of `tap_cells` cells by
-position). `head.linear` gains `gather` (false: every row an output, a
+position, at least a verify's rows: the runner refuses a narrower one).
+A sliding-window cache truncates a verify's rejected rows (slice G2c;
+before, no verify could write it): its ring holds a chunk's rows beside
+its window, so a later query's mask puts a rejected row's cell, and the
+older position it overwrote, outside its window. `head.linear` gains `gather` (false: every row an output, a
 drafter's) and `features` (its rows projected to its target's width:
 `StepGraph::features`, the next pass's feature).
 
@@ -1009,7 +1017,11 @@ pattern); tensor rules limited to layer types (`attn_v` on local layers
 only) or naming a tensor every layer of their types shares (no
 `{layer}`: `rope_freqs.weight`); architectures with '-'; default
 planner policies per gated variant (`PolicyRule`, `DefaultPolicy`; text
-the planner parses); and drafter mappings (role, stage name, reads,
+the planner parses), each rule with how serving composes the recipe's
+steps (`prompts_alone`, `owners_alone`, the prompt futures planned and
+captured ahead: `DefaultRule`, slice G2c; Gemma 4's prefill alone with one
+future planned and none captured, and outside its envelope step one owner
+at a time, as its M3 serving did); and drafter mappings (role, stage name, reads,
 rules binding the target's tensors) that `ComposeDrafter` applies with
 a target's spec, adding the taps the drafter reads and the target's
 facts its parameters read (`llmp.target.last_layer.<type>`). The spec's

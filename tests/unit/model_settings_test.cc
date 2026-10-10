@@ -295,10 +295,18 @@ TEST(ModelSettings, GemmaDefaultsAreBoundedAndExplicitlyUncalibrated) {
   EXPECT_EQ(Resolved(entry, facts).prefill_chunk.value, 128U);
   entry.overrides["context"] = std::int64_t{262145};
   EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
-  EXPECT_FALSE(ResolveSettings(Model("gemma", true), facts, nullptr, false));
+  // Gemma 4 drafts with its assistant; without one, speculation is ignored.
+  const auto drafted = Resolved(Model("gemma", true), Facts("gemma4", "gemma4-assistant"));
+  EXPECT_TRUE(drafted.speculation.value);
+  EXPECT_THAT(drafted.speculation.basis, HasSubstr("gemma4-assistant"));
   entry = Model("gemma");
   entry.overrides["speculation"] = true;
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  EXPECT_FALSE(Resolved(entry, facts).speculation.value);
+  // Gemma 2 and Gemma 3 have no drafter.
+  for (const char* arch : {"gemma2", "gemma3"}) {
+    EXPECT_FALSE(ResolveSettings(Model("gemma", true), Facts(arch), nullptr, false)) << arch;
+    EXPECT_FALSE(ResolveSettings(entry, Facts(arch), nullptr, false)) << arch;
+  }
 }
 
 TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {

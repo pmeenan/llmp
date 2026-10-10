@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "engine/support.h"
+#include "model/state_contract.h"
 
 namespace llmp::engine {
 
@@ -132,6 +133,13 @@ std::expected<DecodingOrchestrator, std::string> DecodingOrchestrator::Make(
     }
     if (!layout.borrowed.empty() && !d.borrows_target) {
       return Error(std::format("stage {} reads the target's state without borrowing it", d.stage));
+    }
+    if (d.anchored && (d.shape != DrafterSpec::Shape::kAutoregressive || d.catch_up)) {
+      return Error(
+          std::format("stage {}'s anchored drafter is autoregressive, without catch-up", d.stage));
+    }
+    if (d.features && model::FeatureTap(layout) == nullptr) {
+      return Error(std::format("stage {} reads features but has no feature tap", d.stage));
     }
   }
   if (verify > runner.max_verify_rows() || verify > slots.layout(0).max_rows) {
@@ -289,6 +297,8 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     std::uint32_t proposals = 0;
     for (const std::size_t d : chosen) {
       const DrafterSpec& spec = mode_.drafters[d];
+      // A first pass reads the features before its rows: none at position 0.
+      if ((spec.anchored || spec.features) && u.positions == 0) continue;
       const std::uint32_t want =
           spec.adaptive ? adaptive_.at(At(w.slot, d)).Choose() : spec.max_depth;
       // Its rows end inside its stage's context.
@@ -338,6 +348,7 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     for (std::uint32_t pass = 0; pass < passes; ++pass) {
       std::vector<PendingWork> pending;
       std::vector<std::vector<std::int32_t>> tokens;
+      std::vector<FeatureFrom> features;
       std::vector<std::size_t> of;
       tokens.reserve(work.size());
       for (std::size_t i = 0; i < work.size(); ++i) {
@@ -349,7 +360,8 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
           return q <= u.positions ? w.history[q] : u.proposed[q - u.positions - 1];
         };
         const auto last = static_cast<std::uint32_t>(u.positions + u.proposed.size());
-        std::uint32_t past = last;
+        // An anchored pass stays at the committed positions.
+        std::uint32_t past = spec.anchored ? u.positions : last;
         std::uint32_t rows = block ? u.depth[d] : 1;
         if (!block && pass == 0 && spec.catch_up) {
           // Its catch-up: from where its state stops being the committed
@@ -365,8 +377,19 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
         if (block) {
           in.assign(rows, spec.fill);
           in.front() = token(last);
+        } else if (spec.anchored) {
+          in.push_back(token(last));
         } else {
           for (std::uint32_t q = past; q <= last; ++q) in.push_back(token(q));
+        }
+        // Its features: the target's before its rows on the unit's first
+        // pass, then its own last pass's.
+        if (spec.features) {
+          features.push_back(
+              pass == 0 ? FeatureFrom{.kind = FeatureFrom::Kind::kTap, .position = past - 1}
+                        : FeatureFrom{.kind = FeatureFrom::Kind::kCarry});
+        } else {
+          features.emplace_back();
         }
         tokens.push_back(std::move(in));
         pending.push_back({.slot = w.slot,
@@ -383,7 +406,9 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
       }
       if (pending.empty()) break;
       std::vector<SegmentWork> segments;
-      for (const auto& t : tokens) segments.push_back({.tokens = t, .bytes = {}});
+      for (std::size_t j = 0; j < tokens.size(); ++j) {
+        segments.push_back({.tokens = tokens[j], .bytes = {}, .feature = features[j]});
+      }
       WaveReport wave = RunWave(*runner_, *composer_, pending, segments, /*advance=*/false);
       report.steps += wave.steps;
       for (std::size_t j = 0; j < pending.size(); ++j) {

@@ -51,6 +51,8 @@ std::expected<Copies, std::string> StepRuns::Layout(std::span<const kn::InputSlo
   copies.reserve(inputs.size());
   std::uint64_t staged = base;
   for (const kn::InputSlot& input : inputs) {
+    // Copied in on the device by the runner, never from the staging.
+    if (input.kind == kn::InputKind::kFeatures) continue;
     if (staged > staging_bytes_ || input.bytes > staging_bytes_ - staged) {
       return Error("the inputs exceed their staging");
     }
@@ -64,8 +66,10 @@ std::expected<Copies, std::string> StepRuns::Stage(std::span<const kn::InputSlot
                                                    const Fill& fill, std::uint64_t base) const {
   auto copies = Layout(inputs, base);
   if (!copies) return copies;
+  std::size_t copy = 0;
   for (std::size_t i = 0; i < inputs.size(); ++i) {
-    const auto& [to, bytes, at] = (*copies)[i];
+    if (inputs[i].kind == kn::InputKind::kFeatures) continue;
+    const auto& [to, bytes, at] = (*copies)[copy++];
     if (auto filled = fill(i, std::span(staging_ + at, bytes)); !filled) {
       return std::unexpected(std::move(filled.error()));
     }
