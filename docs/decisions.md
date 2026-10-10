@@ -313,6 +313,19 @@ something D-107's backend seam cannot express.
   engine on a fixed corpus plus the state, spill and swap controls; the
   approved list is data, not a profile in code. The owner still approves
   which checkpoints model-support.md claims (AGENTS.md).
+- **Permissive, and it trusts the environment** (owner, 2026-10-09: "I'd
+  rather be permissive as long as the result is 'correct'", and "we have to
+  trust the environment we are running on at some level and let the user
+  handle filesystem-level access controls"). A reader accepts any input whose
+  tensors it can describe unambiguously (trailing bytes after a data
+  section, unscaled weights described by their dtype, per-tensor mixed
+  encodings such as dynamic GGUF quantizations) and refuses only what it
+  cannot describe correctly: inconsistent sizes or extents, overlaps,
+  unknown encodings, path escapes. D-009's protection is content hardening
+  (bounds, caps, fuzzing, never executing checkpoint code), not a walk of
+  ownership, permissions, FUSE or device and inode identity, which the
+  importer does not do (D-073 and D-105 relaxed the same way for the
+  runtime's files, which are still created 0600/0700).
 
 **Context.** M3 and M3.5 import through per-checkpoint Python scripts under
 `docs/experiments/` with family-specific folds, and each runner admits one

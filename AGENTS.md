@@ -236,7 +236,16 @@ the commit gate.
    map/unmap cost, I/O path behaviour, driver or toolkit support), get a real
    number on the actual target or check a current source — training knowledge
    is stale for this ecosystem. Never present an estimate as a measurement.
-   Everything else: ship it and see.
+   Everything else: ship it and see. Checks are coarse (D-085): is one engine
+   more than ~10% slower, is peak memory within ~1.1× of the reference, by
+   ordinary counters and a few repeats, with no calibration or holdout
+   protocol; the stricter exception is M3.6's matched 1% migration gate.
+   Thresholds, bounds and calibrations are your judgment, taken from measured
+   baselines and written down before the run they govern (D-079, D-085). Only
+   license and provenance permissions, commits, and changes to a load-bearing
+   constraint go to the owner. Use nsys only to chase a gap that ordinary
+   counters found. Refresh the TensorFold pin only at a milestone's entry and
+   exit, never per task.
 4. **Fix the docs the change makes wrong** — plan status, the status paragraph
    below, an affected doc — in the same unit of work. Nothing more is owed.
 5. **Commit only on the user's authorization** (D-075). The main agent
@@ -251,7 +260,13 @@ the commit gate.
    or rewrites history. Otherwise all changes stay in the working tree for
    human review. The main agent ends each plan task's final report with a
    suggested commit title in the log's style: `[M<n>] <what landed>`, one
-   line, under about 72 characters.
+   line, under about 72 characters. A task stays on its worktree through
+   build, review, challenge, fixes, checks and docs, then lands as one
+   squashed commit (M3.6: one per reviewed sub-task, and main always builds
+   and passes); only a protocol's pre-registration is committed apart
+   (workflow.md). Heavy-path changes repeat challenge and fix rounds until a
+   round is clean or finds only low-severity issues, which are fixed without
+   another round.
 6. **C++23 conventions.** Clang-first. Ordinary `.cc` files use the host
    compiler; CUDA-facing translation units stay narrow and don't leak heavy
    runtime containers through headers. Typed byte counts, spans/views,
@@ -267,7 +282,86 @@ the commit gate.
    the session scratchpad, not the repo. Delete throw-away diagnostics before
    concluding. Keep aggregate experiment results, analysis, and provenance in
    Git; raw samples, logs, traces, and telemetry stay outside the repository,
-   and are deleted on every host when their milestone closes (docs/workflow.md).
+   and are deleted on every host when their milestone closes (docs/workflow.md):
+   no archive; unused big checkpoints go to the NAS, and a worktree with
+   unmerged work is listed for the owner, never dropped.
+9. **Hosts: the workstation stays quiet.** It runs latency-sensitive
+   measurements, so locally run only light commands (edits, version control,
+   rsync/ssh, grep, short scripts, clang-format on a few files). Builds, test
+   suites, linters over many files and anything that keeps cores busy run on a
+   Spark through the installed `~/.local/bin/spark-job` (`--gpu` exclusive for
+   timing, `models` and measurement work; `--shared`, at most two at a time,
+   for builds and functional tests; never a build beside timing work), or, if
+   it needs the workstation, under `hostlock shared --label "llmp: <what>" --
+   <cmd>` (the owner's lock tool, where installed), waiting for its turn
+   rather than working around it. No `nohup`,
+   no log-marker or `pgrep` polling loops, jobs of at most 600 s, and never
+   copy a build directory between paths (CMake caches absolute paths; sync
+   sources with `rsync -rlpc --exclude=/build`). Job steps call
+   `~/.local/bin/mise`. Download a checkpoint once, on `spark`, then copy it
+   to `spark-b` over the direct link. Details: docs/workflow.md
+   ("Long runs on the Sparks"), docs/environment.md.
+10. **Checks run once per slice.** The full Spark set (build, shared
+    `-LE 'models|timing'`, exclusive `-L 'models|timing'`) runs once, on the
+    slice's final state, by whoever changes its code last; builders and
+    review or challenge rounds run targeted tests, the shared set and only
+    the model tests of the areas they touched (`-L models -R <area>`).
+    Never hand off broken, and read any `Skipped` result with `-V` before
+    believing it (RE-053). Say which checks ran where. docs/workflow.md
+    ("Check cadence").
+11. **Product behaviour agents must not undo.** Each is an owner direction;
+    detail is in the cited place.
+    - *Every quant of every supported model runs and is competitively fast;
+      there is no "served checkpoint".* A win on one format is generalized
+      across the formats and shapes the architecture uses and measured on
+      more than one checkpoint; coverage is reported by format (EXL3 and
+      NVFP4 matter as much as GGUF). docs/engine-components.md.
+    - *Every model batches concurrent requests;* a FIFO queue is not an
+      implementation. Build batching into the shared skeleton and measure
+      C1/C2/C4 against the comparator.
+    - *Memory pressure frees by measured restore cost per byte, cheapest
+      first.* Starting order: inactive read-only weights, then state that can
+      be persisted (spilled, not cleared), then what cannot be (graphs);
+      measured costs override the tiers. LRU within a kind; plan and graph
+      caches have no fixed count caps; spilled state is kept ~24 h
+      (configurable). docs/runtime-serving.md ("The reclaim order"), D-055.
+    - *Limits come from real resources only* (RAM, disk, descriptors,
+      context, format bounds): no time caps or abuse-motivated count caps;
+      keep long work cancellable and recover a genuine hang; defaults are
+      permissive (D-102).
+    - *Throughput beats cancel latency:* size prefill chunks and similar knobs
+      for the fastest measured option within memory bounds; cancellation only
+      has to land between chunks.
+    - *Speed over bit-exactness, at the same quality.* Default paths may
+      change bits (fusion, reduction order) but keep output quality; a
+      bit-exact reference path may exist where cheap. Anything that trades
+      quality for speed (quantized KV or attention, approximate sampling,
+      lossy transcodes, FP8 image linears) is a per-alias mode, off by
+      default (D-108, D-085).
+    - *The importer is permissive and trusts the environment.* Accept any
+      input whose tensors can be described correctly (trailing bytes, unscaled
+      weights described by dtype, per-tensor mixed encodings); refuse only
+      what is ambiguous, inconsistent (sizes, extents, overlaps), of unknown
+      encoding or unsafe (path escapes), and keep content bounds and fuzzing
+      (D-009, D-109). No ownership, permission, FUSE or inode trust walks:
+      filesystem access control is the user's job. Files the runtime creates
+      are private (0600/0700); another owner or looser modes are warned about,
+      not refused (D-073, D-105 as amended).
+12. **License tags follow provenance.** A file that reformats or ports
+    upstream code into our classes (for example llama.cpp's graph builders as
+    components) carries the upstream license tag beside Apache-2.0
+    (`MIT AND Apache-2.0`, plus the upstream copyright line). Code written
+    independently that only matches the same optimizations or outputs is
+    Apache-2.0 alone; judge each file (owner, 2026-10-10; docs/licensing.md).
+    A model's weight license is recorded for information and never blocks
+    import, execution or support (D-087).
+13. **Orchestrating other agents.** Use a smaller, cheaper model for
+    mechanical work (searches, inventories, log and test triage, harness
+    runs, doc-only edits, rerun recipes) and the strongest for design,
+    heavy-path review and challenge, and debugging. Give every builder and
+    reviewer these rules and the same host limits, and keep merges and merge
+    checks with the main agent. M3.6's specifics are in
+    docs/engine-components.md ("Migration and its gate").
 
 ## Current status
 

@@ -31,16 +31,17 @@ API alone is not proof of token-only host traffic. These short engine/serving
 driver screens leave sustained performance and actual HTTP per-unit overhead
 separate.
 
-## TensorFold check for each task
+## TensorFold check at milestone boundaries
 
 Use [TensorFold](https://github.com/ashhart/TensorFold) as a competitive
 performance target wherever it supports the model, execution backend and
-topology (owner, 2026-10-04). At each comparison or optimization task,
-resolve upstream's current default-branch HEAD and inspect that revision's
-recipes, formats and batching support. Record the full commit, package
-version and observation date with that task's comparisons. Milestone pins and
-coverage observations remain historical evidence, rather than substituting
-for this per-task current-source check.
+topology (owner, 2026-10-04). Resolve upstream's current default-branch HEAD
+and inspect that revision's recipes, formats and batching support at a
+milestone's entry and again before its exit gate (owner, 2026-10-06; it was
+once done at every comparison or optimization task, which changed nothing
+between tasks). Record the full commit, package version and observation date
+with the milestone's comparisons; tasks in between use that recorded pin and
+do not re-resolve HEAD. Pins from earlier checks remain historical evidence.
 
 Freeze that revision for matched runs. Do not mix versions in bookends or
 replace a historical result's provenance.

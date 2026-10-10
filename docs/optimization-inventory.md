@@ -1471,12 +1471,12 @@ batching (2026-10-04). Each bring-up records which techniques apply, where
 its plan selects them, any shape or format limits, and its solo and batched
 correctness, speed and memory evidence. A supported status includes that
 batching qualification; a serial bring-up is an intermediate control.
-Use TensorFold, checked at current upstream HEAD for each comparison or optimization task under
-[reference comparisons](reference-comparisons.md), wherever it supports a
+Use TensorFold, at the milestone's recorded upstream pin (refreshed at milestone entry and exit only; see
+[reference comparisons](reference-comparisons.md)), wherever it supports a
 family's single-Spark path in M3.5. M4's
 [Kindling and TensorFold references](m4-references.md) add multi-node
 techniques after their recipes and measured two-Spark behavior are
-re-pinned; TensorFold applicability is rechecked for each task. Their claimed
+re-pinned; TensorFold applicability is rechecked at milestone boundaries. Their claimed
 rankings are not local measurements.
 
 ### Finding a gap against the reference — method (2026-10-06)

@@ -1559,6 +1559,26 @@ baseline:
   investigated.
 - **Memory, swap and state**: the existing controls pass unchanged.
 
+Owner answers that shape the migration's work (2026-10-08, 2026-10-09):
+
+- First migrations reproduce each family's current pattern and fusion
+  selection (bit-identity is expected where op order is unchanged);
+  default-off diagnostic options and benchmark-only probes tied to deleted
+  runners are retired, not ported, unless the production recipe, a gate or the
+  swap table uses them.
+- "N drafters" means both a cascade (drafter *i* extends drafter *i*−1's
+  proposal, one verify) and a per-unit choice among alternatives, picked by
+  the alias's policy or adaptive logic (D-068); fake-backend tests cover both
+  with two drafters.
+- The per-family `ServingOptions` flags are diagnostics: they may be removed
+  or replaced freely, with a CHANGELOG line and no decision entry.
+- `ggml_cgraph` exists only as a private lowering target inside
+  `src/kernels/ggml`; the IR is the source of truth. The engine core builds
+  CPU-only with a fake device runtime (amends D-096).
+- Work lands as reviewed sub-task commits, main always building and passing
+  ([workflow](workflow.md#ground-rules)). The importer's admission gate uses
+  the MLX checkpoint `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80`.
+
 The fixed protocol, the frozen baseline binary and every family's
 baseline speed, quality, memory and swap rows are in
 [m36-baselines](experiments/m36-baselines/README.md); its harness is

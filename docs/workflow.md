@@ -80,7 +80,41 @@ downgrade a heavy-path change to the light loop on their own.
 - **One commit per completed task.** A plan task stays on its worktree
   through build, review, challenge, fixes, checks and docs, then lands as
   one commit. Separate commits are only for pre-registrations that a
-  protocol (D-079) needs fixed before the run it governs.
+  protocol (D-079) needs fixed before the run it governs. *Owner answer,
+  2026-10-08 (M3.6):* each big plan item is split into sub-tasks in
+  [plan.md](plan.md), and each reviewed sub-task lands as one squashed
+  commit; main always builds and passes.
+- **The workstation stays quiet.** It runs latency-sensitive measurements.
+  Locally run only light commands (file edits, version control, rsync/ssh,
+  grep, quick scripts, `rm`, clang-format on a handful of changed files).
+  Anything that keeps cores busy for more than a moment (builds, test suites,
+  linters or formatters over many files, long scripts) runs on a Spark
+  ([below](#long-runs-on-the-sparks)) or, when it needs the Linux host (the
+  `cpu` preset, the discrete GPU), under the owner's shared hold, where
+  `hostlock` is installed: `hostlock shared --label "llmp: <what>" --
+  <command>`. A command that waits for a measurement is expected; never run
+  it without the hold to avoid the wait, and say in the note that it ran
+  there.
+- **Judgment calls are the agent's.** Thresholds, bounds, calibrations and
+  comparison criteria are derived from measured baselines and fixed in the
+  docs before the run they govern, never adjusted after a failure (D-079,
+  D-085); they do not wait for the owner. The owner decides license and
+  provenance permissions, commits (D-075) and changes to a load-bearing
+  constraint. Perf checks stay coarse (D-085): an idle host, a few repeats,
+  "is one more than 10% slower", memory within ~1.1× of the reference by
+  ordinary counters. nsys passes run only to debug a gap that ordinary
+  counters found, never in a slice's checks. TensorFold's pin is refreshed
+  at a milestone's entry and exit only (owner, 2026-10-06; see
+  [reference comparisons](reference-comparisons.md)).
+- **Subagents and models.** An agent that orchestrates others gives each the
+  rules in `AGENTS.md` and this file, the host limits above, and a brief
+  that states the goal and what is ruled out. It uses a smaller, cheaper
+  model for mechanical work (searches and inventories, log and test triage,
+  running a measurement harness, recipe-driven reruns and bisects, doc-only
+  edits, light review of a small change outside the heavy path) and the
+  strongest model for new design, every heavy-path review and challenge, and
+  debugging a mismatch or regression. Merges and merge checks stay with the
+  orchestrating agent; builders get a worktree and a Spark copy of their own.
 - **Focused optimization checks.** During M3's kernel optimization run,
   use operand/model correctness and matched performance A/Bs. Do not rerun
   the full swap-performance table for arithmetic-only changes. Rerun the
@@ -113,7 +147,10 @@ downgrade a heavy-path change to the light loop on their own.
   focused correctness, state and swap controls.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
-  tests are called out by name.
+  tests are called out by name, and a CTest summary with `Skipped` lines is
+  read with `-V` or `--output-on-failure` before it is believed: a
+  parameterized test that skips one parameter and fails another is listed as
+  skipped (RE-053).
 - **Check cadence (D-084).** Work lands in slices, each checked once on
   its final state. The per-slice set runs on a Spark: `mise run test --
   spark-native --locked` on `spark-b` (full build and every test, GPU
@@ -180,7 +217,10 @@ downgrade a heavy-path change to the light loop on their own.
   and without timestamp preservation those files receive fresh modification
   times so the build sees the changes. Never use `-a` or `-t`: preserving an
   older source timestamp can leave a newer object from the previous tree
-  in place even though its contents differ.
+  in place even though its contents differ. Never copy a build directory to
+  another path either: CMake's cache records absolute paths, so the copy
+  builds, or worse half-builds, against the old tree. Warm a copy by
+  syncing sources into the tree that holds the build.
 - **Scratch files stay out of the tree.**
 - **Clean up when a milestone closes** (owner, 2026-10-07). Once a
   milestone's exit is accepted, delete its work files on every host that
@@ -248,6 +288,13 @@ never writes the marker.
 
     ssh spark-b 'cd ~/src/X && ~/.local/bin/spark-job start --gpu --name ctx-part1 --timeout 600 --steps rungs-part1.txt'
     ssh spark-b '~/.local/bin/spark-job wait ctx-part1'    # as a background task
+
+A job's shell has no login `PATH`, so its steps call `~/.local/bin/mise` by
+that path (`~/.local/bin/mise run test -- spark-native --locked -- -LE
+'models|timing'`). Download a checkpoint once, on `spark`, and copy it to
+`spark-b` over the direct QSFP link
+([environment.md](environment.md#jumbo-frames-on-the-direct-link-2026-09-28)),
+not a second time from the internet.
 
 - **Pick the job's class.** Performance tests never overlap builds, but
   functional tests may (owner, 2026-10-09):

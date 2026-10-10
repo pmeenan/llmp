@@ -1578,8 +1578,9 @@ each is checked against the design as M3.6 proceeds.
   claim).
 - **Import:** the native importer imports every migrated model from its
   source checkpoint into the new format version, and each passes the
-  admission gate and the gates above; an MLX checkpoint of a migrated
-  architecture, chosen with the owner, imports and passes the admission
+  admission gate and the gates above; the MLX checkpoint of a migrated
+  architecture, `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80` (chosen
+  with the owner, 2026-10-09), imports and passes the admission
   gate; the
   importer and the new artifact format pass their adversarial challenge
   (workflow.md's heavy path).
@@ -1641,7 +1642,7 @@ requantization from optimizations at unchanged quality.
       (AGPL or mixed, D-080); and whether Mia's ExLlamaV3 revisions'
       formats match our `6b84a21`.
 - [ ] **Baselines:** Mia's two-Spark configurations and TensorFold, run by
-      us, measured as in M3. Refresh TensorFold for each applicable task
+      us, measured as in M3. Refresh TensorFold at M4's entry and exit
       under [reference comparisons](reference-comparisons.md).
 - [ ] **Conductor, minimal** (pulled from M6a): one configured two-node
       topology that loads both shards at once and runs each phase on both
