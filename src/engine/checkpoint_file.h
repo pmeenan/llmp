@@ -75,9 +75,12 @@ class CheckpointFile {
                                                                   const Copy& copy,
                                                                   const Continue& go_on = {});
   // A kept checkpoint adopted from the process before (D-105): its named
-  // file beneath `dir`, which its record validated, holding `ranges`.
+  // file beneath `dir`, which its record validated, holding `ranges`. It
+  // must still be `expected` (the file the record names): another put in
+  // the name's place since is refused.
   static std::expected<CheckpointFile, std::string> Adopt(int dir, std::string name,
-                                                          std::vector<Range> ranges);
+                                                          std::vector<Range> ranges,
+                                                          const platform::FileIdentity& expected);
   // The named file's name and identity (none while unnamed), and its size.
   const std::string& name() const { return name_; }
   const std::optional<platform::FileIdentity>& identity() const { return identity_; }

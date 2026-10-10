@@ -563,6 +563,26 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- The directories and files the runtime keeps conversations and calibration
+  records in are no longer refused for their owner, modes or links (D-105
+  and D-103 as amended on 2026-10-09). What the runtime creates is still
+  0600 in 0700 directories (a 0700 directory exactly, not through the
+  umask); one found with another owner, looser modes, a second hard link
+  or as a symbolic link is used, links followed, and said once per
+  directory: a `warning:` line in the start log and in `llmp doctor`
+  (`storage.spill: kept conversations ...`, `storage.state: calibration
+  ...`); a model's directory the runtime cannot write keeps no
+  conversations that start and is left alone (one closed to writes after
+  the start looked keeps nothing either, and the model still starts). A
+  spill or checkpoint file
+  the runtime opens empty is a new file, so a link or another name never
+  loses its bytes; a file put under a kept name after the start checked it
+  is never adopted or written; a record is
+  replaced whole by rename as before. Still refused: what is not a
+  regular file (not used, and not opened unless swapped in meanwhile), a
+  link to nothing (by name, never created through), and every check of a
+  record's identity, digests, sizes and versions.
+
 - The runtime, `llmp doctor` and the importer no longer refuse files and
   directories for who owns them or who else could change them (D-073 as
   amended on 2026-10-09): configuration files, the drop-in directory,

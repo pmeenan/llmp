@@ -630,6 +630,10 @@ class Llm : public Served {
     int directory = -1;     // the model's private directory (the keeper's)
     kept::Identity identity;
     std::vector<std::uint32_t> adopt;  // slots whose files hold kept conversations
+    // adopt[i]'s files as its record names them (a stage each), which the
+    // start checked: each slot's reopen uses only those (a stage without
+    // one starts fresh, and Adopt then refuses the slot).
+    std::vector<std::vector<kept::FileId>> files{};
   };
   void set_kept(Kept kept);
   bool keeps() const { return kept_.keeper != nullptr; }
@@ -671,6 +675,9 @@ class Llm : public Served {
   Status Adopt(Branch& branch, kept::Record& record, MemoryCharge& token_charge);
   // At the process's end: the named checkpoint files stay for the next.
   void PreserveKeptFiles();
+  // After Register: why each slot whose spill file could not be named
+  // (LiveState::spill_note) keeps nothing across a restart, one a slot.
+  std::vector<std::string> UnkeptSlots() const;
   // D-102's rung 2: the conversations of the slots in `discarded` (a
   // runner's RecoverInPlace) forgotten: their state is gone.
   void ForgetDiscarded(std::uint32_t discarded);

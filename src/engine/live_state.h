@@ -170,15 +170,22 @@ class LiveState {
   std::expected<std::uint64_t, std::string> UsedBytesOf(std::span<const Range> ranges) const;
 
   // Where the spill file lives: an unnamed file in `directory`, gone with
-  // the process; or, with `dir` (an open private directory) and `name`,
-  // that named owner-only file, which survives a restart (D-105), emptied
-  // first unless `keep` (its contents adopted from the process before:
-  // then it must be exactly the regions' size).
+  // the process; or, with `dir` (an open kept directory) and `name`, that
+  // named file, which survives a restart (D-105): a new empty one in the
+  // name's place unless `keep` (its contents adopted from the process
+  // before). A kept one is used only if it is `expect` (the file its record
+  // names, which the start checked) and exactly the regions' size;
+  // otherwise the name gets a new empty file as without `keep`, and the
+  // adoption that follows refuses it (its identity is not the record's).
+  // A name that cannot be given a file leaves the state an unnamed one in
+  // `directory` (spill_identity() none, spill_note() saying why), or
+  // refuses without one.
   struct SpillPlace {
     std::filesystem::path directory;
     int dir = -1;
     std::string name;
     bool keep = false;
+    std::optional<platform::FileIdentity> expect{};
   };
   // After the node's Start: each extent's write-back place in the spill
   // file, region by region.
@@ -187,6 +194,9 @@ class LiveState {
   // A named spill file's identity (device, inode, generation); none while
   // it is unnamed.
   const std::optional<platform::FileIdentity>& spill_identity() const { return spill_identity_; }
+  // Why a named spill place was not used (empty when it was, or none was
+  // asked for).
+  const std::string& spill_note() const { return spill_note_; }
   // A region's bytes in the spill file (whole 2 MiB extents), and its name.
   std::uint64_t mapped_bytes(std::size_t region) const;
   std::string_view region_name(std::size_t region) const;
@@ -356,6 +366,7 @@ class LiveState {
   // the next DiscardGrowingState keeps their resident backing.
   bool zeroed_ = false;
   std::optional<platform::FileIdentity> spill_identity_;
+  std::string spill_note_;
   void* host_copy_ = nullptr;
   PagedNode* host_node_ = nullptr;
   std::uint64_t host_capacity_ = 0;

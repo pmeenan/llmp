@@ -30,6 +30,7 @@
 
 namespace {
 
+using ::testing::AllOf;
 using ::testing::AnyOf;
 using ::testing::Contains;
 using ::testing::ElementsAre;
@@ -329,6 +330,40 @@ TEST(Doctor, WarnsOfOpenFilesAndRoles) {
   EXPECT_THAT(report.warnings,
               Contains(HasSubstr("storage.spill (" + (scratch.path() / "data/spill").string() +
                                  ") has mode 0750, not 0700")));
+}
+
+// The kept conversations and calibration records already on disk with open
+// modes are used as found (D-105, D-103 as amended on 2026-10-09) and
+// reported.
+TEST(Doctor, WarnsOfOpenKeptState) {
+  const Scratch scratch;
+  const std::filesystem::path config = scratch.path() / "llmp.toml";
+  const std::filesystem::path data = scratch.path() / "data";
+  std::ofstream(config) << std::format("schema_version = 2\n[storage]\ndata_dir = \"{}\"\n",
+                                       data.string());
+  for (const char* made : {"models", "spill", "state"}) {
+    std::filesystem::create_directories(data / made);
+    ASSERT_EQ(::chmod((data / made).c_str(), made == std::string("models") ? 0755 : 0700), 0);
+  }
+  std::filesystem::create_directories(data / "spill/conversations/artifact");
+  std::filesystem::create_directories(data / "state/calibration");
+  ASSERT_EQ(::chmod((data / "spill/conversations").c_str(), 0700), 0);
+  ASSERT_EQ(::chmod((data / "spill/conversations/artifact").c_str(), 0755), 0);
+  ASSERT_EQ(::chmod((data / "state/calibration").c_str(), 0750), 0);
+  std::ofstream(data / "spill/conversations/artifact/slot-0.record") << "x";
+  ASSERT_EQ(::chmod((data / "spill/conversations/artifact/slot-0.record").c_str(), 0644), 0);
+  llmp::base::Report report;
+  llmp::cli::DescribeConfiguration({.config = config}, report);
+  EXPECT_THAT(report.problems, Not(Contains(HasSubstr("kept"))));
+  EXPECT_THAT(
+      report.warnings,
+      Contains(AllOf(HasSubstr("storage.spill: kept conversations " +
+                               (data / "spill/conversations/artifact").string()),
+                     HasSubstr("mode 0755, not 0700"), HasSubstr("1 file with another owner"))));
+  EXPECT_THAT(report.warnings, Contains(AllOf(HasSubstr("storage.state: calibration " +
+                                                        (data / "state/calibration").string()),
+                                              HasSubstr("mode 0750, not 0700"))));
+  EXPECT_THAT(report.warnings, Not(Contains(HasSubstr("spill/conversations:"))));
 }
 
 TEST(Doctor, AnInvalidConfigurationIsAProblem) {

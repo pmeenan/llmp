@@ -49,7 +49,8 @@ one Spark and on two.
   restart (D-105) by an engine-backed model (runtime/engine_llm.h) names
   them all: stage 0's file keeps D-105's name `slot-N.state`, stage S's
   from 1 is `slot-N.stage-S.state`, in the model's directory beside the
-  slot's record and turn checkpoints, under the same owner-only rules.
+  slot's record and turn checkpoints, under the same rules (D-105, as
+  amended on 2026-10-09).
 - **Record format version 2** (`runtime/kept_record.h`): version 1's
   fields but the one file and its regions, which become `"stages"`, an
   array of 1 to 16 objects of exactly `file`, `device`, `inode`,
@@ -419,10 +420,10 @@ for more than a few microseconds a step.
   instead of prefilling it again. State resident at a crash or a hang's
   exit is lost (its next turn prefills), and so is anything a record does
   not describe exactly.
-- **Where.** `conversations/<artifact ID>/` beneath the spill role (mode
-  0700), each file 0600, opened for direct I/O, never through a link, and
-  refused unless the runtime's user owns it with those modes and one
-  link: `slot-N.state` (the slot's spill file), `slot-N.record`,
+- **Where.** `conversations/<artifact ID>/` beneath the spill role (created
+  mode 0700), each file created 0600, opened for direct I/O (as amended
+  2026-10-09, below, an existing directory or file is used whoever owns it
+  and whatever its modes and links): `slot-N.state` (the slot's spill file), `slot-N.record`,
   `slot-N.turn-K.state` (its turn checkpoints, each a file of whole state
   pages). A model's directory is named by its artifact's ID.
 - **The record, format version 1** (`runtime/kept_record.h`;
@@ -510,6 +511,57 @@ the stream, are not kept. The digests detect a torn, truncated, mixed-up or
 corrupted file and any edit; they do not stop someone with the runtime
 user's access, who could rewrite the record too; that is D-014's
 permission check's job.
+
+**Amended 2026-10-09** (the owner, after D-073's relaxation: "Relax it -
+if the machine owner consciously changes permissions, that's on them").
+The runtime's own kept files are no longer refused for their owner,
+modes or links, here and for D-103's calibration records. What it
+**creates** stays private (D-014): `conversations/` and each model's
+directory 0700 exactly (not through the umask), every file 0600, the
+calling user's. What it **finds** is used: a directory or file of another
+user, with looser modes, with more than one hard link, or reached through
+a symbolic link (followed, as D-073's amendment follows links elsewhere);
+a model's directory the runtime cannot write keeps nothing that start
+(logged) and is left as it is.
+Each directory found departing from owner-only (`conversations/`, each
+model's directory counting the files in it, `<state>/calibration/`) is
+said once per start (`warning: ... used as found`) and listed by
+`llmp doctor` (`storage.spill: kept conversations ...`, `storage.state:
+calibration ...`). The writes stay non-destructive: a record or
+calibration file is replaced by a temporary file renamed over its name
+(a link there is replaced, never written through); a spill or
+checkpoint file the runtime opens empty is a new file, whatever its name
+was (a link or a file with other names is unlinked, never emptied: a
+name's link count cannot be read together with the name, so emptying in
+place could empty a file linked there meanwhile), while a file it holds
+open (one it made, or one adopted) is written and cleared in place, as
+any other name for it shows; a file is
+made with `O_EXCL`, so a link to nothing is never created through. A kept file is looked at
+before it is opened (a FIFO or device is refused unopened; one swapped in
+meanwhile is opened `O_NONBLOCK|O_NOCTTY` and refused), a name that
+changes between the look and the open is looked at again, and a link to
+nothing is refused by name (`ENOLINK`), as the configuration refuses one.
+An adopted spill file is written in place, through a link if its name is
+one: adoption first checks that the file reached is the one the record
+names (device, inode, generation, size), so a link leads only to the
+runtime's own file. The reopens that adopt it (a slot's spill files, its
+turn checkpoints) compare the file they reach with the record's identity
+again: a file put in a name's place after the start's check is never
+adopted, read or written (a spill file's name then gets a new empty file
+and the slot's adoption is refused; a checkpoint is left out), and a slot
+whose name cannot be given a file at all (the directory closed to writes
+since the start looked) spills to an unnamed file that run, said once. Once
+reopened, the runtime holds the file itself; what happens to the names
+after that is the machine owner's access control. **Unchanged:** every
+integrity check of a record (build and executable identity, artifact,
+layout, slot, retention, digests, each file's device, inode, generation
+and size, version) and the adoption rules, which never rested on the
+files' owner. One cost, accepted: a kept directory that is itself a
+link is removed as the link when conversations are no longer kept, and
+what it led to is left, since removal never follows a link. The
+permission check this replaces was the only defence D-105 relied on
+against someone with the runtime user's access (above); that is now the
+machine owner's filesystem access control.
 
 **Reopen if** adoption's hashing costs a start too much on large states
 (then keep per-extent digests incrementally), an upgrade must keep
@@ -3662,7 +3714,9 @@ mode, group, ACL, sticky-directory or FUSE check refuses anything any
 more; links are followed wherever they lead (a role may be one); a file
 needs no single hard link and is not compared with what a walk saw.
 D-063's runtime refusals of the configuration files and roles are
-relaxed with it; D-105's checks of the runtime's own kept files are not.
+relaxed with it, and, by the owner's further direction the same day,
+D-105's checks of the runtime's own kept files and D-103's calibration
+records (see D-105's amendment).
 
 - **Still refused** (function, not distrust): a configuration file that
   is not a regular file, a drop-in path that is not a directory, more
@@ -3682,7 +3736,8 @@ relaxed with it; D-105's checks of the runtime's own kept files are not.
   0755 and `spill` and `state` 0700 exactly, not through the umask; the
   marker 0600; the process lock 0600 (an existing one is used whatever its
   mode); D-105's kept files and the calibration records 0600 in 0700
-  directories, and D-105's own checks of those files are unchanged.
+  directories (D-105's own checks of those files were relaxed the same
+  day, below D-105's decision).
 - **Now warnings**, logged by the runtime at start (`warning: ...`) and
   listed by `llmp doctor`: an existing role owned by another user than
   the runtime's; `spill` or `state` with any group or other bits (others
@@ -8047,10 +8102,11 @@ binding. The rest of this entry (management local by default, no prompt
 or state logging, protected spill files) is unchanged.
 
 **Note (2026-10-03, D-105).** Spilled state may now outlive the process:
-conversations wholly on disk are kept across a restart in owner-only
-files whose records hold their tokens, so prompt text and KV state stay
-on disk while the service is stopped, until its next start enforces their
-retention (D-105 states the exposure). `[memory] keep_across_restart =
+conversations wholly on disk are kept across a restart in files created
+owner-only (found with other owners or modes they are used, D-105 as
+amended on 2026-10-09) whose records hold their tokens, so prompt text and
+KV state stay on disk while the service is stopped, until its next start
+enforces their retention (D-105 states the exposure). `[memory] keep_across_restart =
 false` restores the earlier lifetime (nothing outlives the process), and
 purging the package removes the default spill directory's kept files.
 Nothing is logged of them but counts.

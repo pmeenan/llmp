@@ -11,24 +11,30 @@
 // (LLMP_TEST_SCRATCH), on a filesystem with direct I/O.
 
 #include <fcntl.h>
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <expected>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -46,6 +52,7 @@ namespace kept = llmp::runtime::kept;
 namespace pf = llmp::platform;
 using llmp::runtime::HashPlaces;
 using llmp::runtime::StateKeeper;
+using ::testing::HasSubstr;
 
 constexpr std::uint64_t kExtent = kept::kExtentBytes;
 
@@ -142,37 +149,119 @@ kept::Expected Expect(const kept::Record& r) {
 
 // --------------------------------------------------------------- the files
 
-TEST(KeptFiles, PrivateDirectoriesAndFilesAreOwnerOnlyAndNeverLinks) {
+TEST(KeptFiles, WhatItMakesIsPrivateAndWhatItFindsIsUsedWithANote) {
   const fs::path root = Scratch("files");
   fs::create_directories(root);
   fs::permissions(root, fs::perms::owner_all, fs::perm_options::replace);
+  // Made exactly 0700 whatever the umask.
+  const mode_t old_umask = ::umask(0277);
   Dir dir(root / "conversations");
+  (void)::umask(old_umask);
   ASSERT_GE(dir.fd, 0);
   struct stat st{};
   ASSERT_EQ(::stat((root / "conversations").c_str(), &st), 0);
   EXPECT_EQ(st.st_mode & 07777, 0700U);
-  // A directory with other permissions, or a link, is refused.
+  EXPECT_EQ(pf::PrivacyNote(dir.fd), "");
+
+  // A directory found with other modes is used, with a note; a link to a
+  // directory is followed; a link to nothing, a file and a missing parent
+  // are refused by name.
   fs::create_directories(root / "open");
   fs::permissions(root / "open", fs::perms::all, fs::perm_options::replace);
-  EXPECT_EQ(pf::OpenPrivateDirectory(-1, (root / "open").c_str()).error_or(0), EPERM);
+  auto open = pf::OpenPrivateDirectory(-1, (root / "open").c_str());
+  ASSERT_TRUE(open.has_value());
+  EXPECT_THAT(pf::PrivacyNote(*open), HasSubstr("mode 0777, not 0700"));
+  (void)::close(*open);
+  ASSERT_EQ(::stat((root / "open").c_str(), &st), 0);
+  EXPECT_EQ(st.st_mode & 07777, 0777U);  // left as it was
   fs::create_directory_symlink(root / "conversations", root / "link");
-  EXPECT_FALSE(pf::OpenPrivateDirectory(-1, (root / "link").c_str()).has_value());
+  auto followed = pf::OpenPrivateDirectory(-1, (root / "link").c_str());
+  ASSERT_TRUE(followed.has_value());
+  EXPECT_EQ(pf::PrivacyNote(*followed), "");
+  (void)::close(*followed);
+  fs::create_directory_symlink(root / "nowhere", root / "dangling");
+  EXPECT_EQ(pf::OpenPrivateDirectory(-1, (root / "dangling").c_str()).error_or(0), ENOLINK);
+  EXPECT_FALSE(fs::exists(root / "nowhere"));
+  {
+    std::ofstream(root / "plain") << "x";
+  }
+  EXPECT_EQ(pf::OpenPrivateDirectory(-1, (root / "plain").c_str()).error_or(0), ENOTDIR);
+  if (::geteuid() == 0) {
+    // Another owner can only be made as root.
+    ASSERT_EQ(::chown((root / "open").c_str(), 65534, static_cast<gid_t>(-1)), 0);
+    auto foreign = pf::OpenPrivateDirectory(-1, (root / "open").c_str());
+    ASSERT_TRUE(foreign.has_value());
+    EXPECT_THAT(pf::PrivacyNote(*foreign), HasSubstr("owned by uid 65534"));
+    (void)::close(*foreign);
+  }
 
-  // A file: made 0600; refused through a link, with another mode or a
-  // second link.
+  // A file: made 0600 (whatever the umask); one found with another mode,
+  // another link or a symbolic link is used and noted; only a link to
+  // nothing or what is not a regular file is refused.
+  const mode_t before = ::umask(0277);
   auto made = pf::OpenPrivateFile(dir.fd, "a", {.write = true, .create = true});
+  (void)::umask(before);
   ASSERT_TRUE(made.has_value());
+  ASSERT_EQ(::write(made->fd, "abc", 3), 3);
   (void)::close(made->fd);
   ASSERT_EQ(::fstatat(dir.fd, "a", &st, 0), 0);
   EXPECT_EQ(st.st_mode & 07777, 0600U);
+  EXPECT_EQ(pf::PrivacyNote(dir.fd), "");
   ASSERT_EQ(::symlinkat("a", dir.fd, "b"), 0);
-  EXPECT_FALSE(pf::OpenPrivateFile(dir.fd, "b", {}).has_value());
+  auto through = pf::OpenPrivateFile(dir.fd, "b", {});
+  ASSERT_TRUE(through.has_value());
+  EXPECT_EQ(through->bytes, 3U);
+  (void)::close(through->fd);
+  EXPECT_EQ(pf::PrivacyNote(dir.fd), "1 symbolic link (followed)");
+  ASSERT_EQ(::unlinkat(dir.fd, "b", 0), 0);
   ASSERT_EQ(::linkat(dir.fd, "a", dir.fd, "c", 0), 0);
-  EXPECT_EQ(pf::OpenPrivateFile(dir.fd, "a", {}).error_or(0), EPERM);
+  auto linked = pf::OpenPrivateFile(dir.fd, "a", {});
+  ASSERT_TRUE(linked.has_value());
+  (void)::close(linked->fd);
+  EXPECT_THAT(pf::PrivacyNote(dir.fd), HasSubstr("2 files with another owner"));
+  // Emptying a file with other names makes this name a new file: the
+  // other name keeps what it had.
+  auto emptied = pf::OpenPrivateFile(dir.fd, "a", {.write = true, .truncate = true});
+  ASSERT_TRUE(emptied.has_value());
+  EXPECT_EQ(emptied->bytes, 0U);
+  EXPECT_NE(emptied->identity, linked->identity);
+  (void)::close(emptied->fd);
+  EXPECT_EQ(pf::ReadPrivateFile(dir.fd, "c", 16).value_or(""), "abc");
+  EXPECT_EQ(pf::PrivacyNote(dir.fd), "");  // "c" alone again
   ASSERT_EQ(::unlinkat(dir.fd, "c", 0), 0);
   ASSERT_EQ(::fchmodat(dir.fd, "a", 0644, 0), 0);
-  EXPECT_EQ(pf::OpenPrivateFile(dir.fd, "a", {}).error_or(0), EPERM);
+  auto loose = pf::OpenPrivateFile(dir.fd, "a", {.write = true});
+  ASSERT_TRUE(loose.has_value());
+  (void)::close(loose->fd);
+  EXPECT_THAT(pf::PrivacyNote(dir.fd), HasSubstr("1 file with another owner"));
   ASSERT_EQ(::fchmodat(dir.fd, "a", 0600, 0), 0);
+  // The same through a link: a name that is a link is replaced, not
+  // written through, when it is emptied; the file it named is untouched.
+  ASSERT_EQ(::symlinkat("a", dir.fd, "d"), 0);
+  auto replaced =
+      pf::OpenPrivateFile(dir.fd, "d", {.write = true, .create = true, .truncate = true});
+  ASSERT_TRUE(replaced.has_value());
+  ASSERT_EQ(::write(replaced->fd, "xy", 2), 2);
+  (void)::close(replaced->fd);
+  EXPECT_FALSE(fs::is_symlink(root / "conversations" / "d"));
+  EXPECT_EQ(pf::ReadPrivateFile(dir.fd, "d", 16).value_or(""), "xy");
+  EXPECT_EQ(pf::ReadPrivateFile(dir.fd, "a", 16).value_or(""), "");
+  ASSERT_EQ(::unlinkat(dir.fd, "d", 0), 0);
+  // A link to nothing is refused by name and never created through.
+  ASSERT_EQ(::symlinkat("nowhere", dir.fd, "e"), 0);
+  EXPECT_EQ(pf::OpenPrivateFile(dir.fd, "e", {}).error_or(0), ENOLINK);
+  EXPECT_EQ(pf::OpenPrivateFile(dir.fd, "e", {.write = true, .create = true}).error_or(0), ENOLINK);
+  EXPECT_FALSE(fs::exists(root / "conversations" / "nowhere"));
+  ASSERT_EQ(::unlinkat(dir.fd, "e", 0), 0);
+  // Not a regular file: refused, a FIFO without opening (it would block).
+  ASSERT_EQ(::mkfifoat(dir.fd, "fifo", 0600), 0);
+  EXPECT_EQ(pf::OpenPrivateFile(dir.fd, "fifo", {}).error_or(0), EPERM);
+  EXPECT_EQ(pf::OpenPrivateFile(dir.fd, "fifo", {.write = true}).error_or(0), EPERM);
+  ASSERT_EQ(::unlinkat(dir.fd, "fifo", 0), 0);
+  ASSERT_EQ(::mkdirat(dir.fd, "adir", 0700), 0);
+  EXPECT_EQ(pf::OpenPrivateFile(dir.fd, "adir", {}).error_or(0), EPERM);
+  ASSERT_EQ(::unlinkat(dir.fd, "adir", AT_REMOVEDIR), 0);
+  ASSERT_EQ(::symlinkat("a", dir.fd, "b"), 0);  // for the listing below
   EXPECT_TRUE(pf::OpenPrivateFile(dir.fd, "missing", {}).error_or(0) == ENOENT);
 
   // Replaced whole, read back; removed, a directory with all in it.
@@ -246,6 +335,175 @@ TEST(KeptFiles, PrivateDirectoriesAndFilesAreOwnerOnlyAndNeverLinks) {
   const auto stamp = pf::RunningExecutableStamp();
   ASSERT_TRUE(stamp.has_value());
   EXPECT_NE(stamp.value_or(pf::ExecutableStamp{}).inode, 0U);
+  fs::remove_all(root);
+}
+
+// The default case is what it was before D-105's amendment: the runtime's
+// own directory and files, opened again, are the same files with the same
+// modes and one link; emptying one gives its name a new private file (a
+// new identity, which a record takes from that open); a record replaced
+// over a name that is a link replaces the link, never writing what it
+// names. Made exactly 0700 and 0600 even under a
+// umask that would leave them closed to their owner.
+TEST(KeptFiles, TheRuntimesOwnFilesAreAsBeforeWhateverTheUmask) {
+  const fs::path root = Scratch("default");
+  fs::create_directories(root);
+  const mode_t old_umask = ::umask(0777);
+  const auto made_dir = pf::OpenPrivateDirectory(-1, (root / "conversations").c_str());
+  std::expected<pf::PrivateFile, int> made = std::unexpected(EBADF);
+  if (made_dir) {
+    made = pf::OpenPrivateFile(*made_dir, "slot-0.state",
+                               {.write = true, .create = true, .truncate = true});
+  }
+  (void)::umask(old_umask);
+  ASSERT_TRUE(made_dir.has_value()) << made_dir.error_or(0);
+  const int dir = *made_dir;
+  ASSERT_TRUE(made.has_value()) << made.error_or(0);
+  ASSERT_EQ(::pwrite(made->fd, "state", 5, 0), 5);
+  (void)::close(made->fd);
+  struct stat st{};
+  ASSERT_EQ(::stat((root / "conversations").c_str(), &st), 0);
+  EXPECT_EQ(st.st_mode & 07777, 0700U);
+  ASSERT_EQ(::fstatat(dir, "slot-0.state", &st, AT_SYMLINK_NOFOLLOW), 0);
+  EXPECT_TRUE(S_ISREG(st.st_mode));
+  EXPECT_EQ(st.st_mode & 07777, 0600U);
+  EXPECT_EQ(st.st_nlink, 1U);
+  EXPECT_EQ(st.st_uid, ::geteuid());
+  // Opened again (as an adopted spill file is): the same file, its bytes.
+  auto again = pf::OpenPrivateFile(dir, "slot-0.state", {.write = true, .create = true});
+  ASSERT_TRUE(again.has_value());
+  EXPECT_EQ(again->identity, made->identity);
+  EXPECT_EQ(again->bytes, 5U);
+  (void)::close(again->fd);
+  // Emptied (as a fresh slot's is): a new private file in its place.
+  auto emptied =
+      pf::OpenPrivateFile(dir, "slot-0.state", {.write = true, .create = true, .truncate = true});
+  ASSERT_TRUE(emptied.has_value());
+  EXPECT_NE(emptied->identity, made->identity);
+  EXPECT_EQ(emptied->bytes, 0U);
+  (void)::close(emptied->fd);
+  ASSERT_EQ(::fstatat(dir, "slot-0.state", &st, AT_SYMLINK_NOFOLLOW), 0);
+  EXPECT_EQ(st.st_mode & 07777, 0600U);
+  EXPECT_EQ(st.st_size, 0);
+  EXPECT_EQ(st.st_nlink, 1U);
+  // The directory opened again: the same one, unchanged.
+  auto reopened = pf::OpenPrivateDirectory(-1, (root / "conversations").c_str());
+  ASSERT_TRUE(reopened.has_value());
+  EXPECT_EQ(pf::PrivacyNote(*reopened), "");
+  (void)::close(*reopened);
+  // A record: 0600, one link; replaced over a link, the link goes and
+  // what it named is untouched.
+  ASSERT_TRUE(pf::ReplacePrivateFile(dir, "slot-0.record", "record"));
+  ASSERT_EQ(::fstatat(dir, "slot-0.record", &st, AT_SYMLINK_NOFOLLOW), 0);
+  EXPECT_EQ(st.st_mode & 07777, 0600U);
+  EXPECT_EQ(st.st_nlink, 1U);
+  EXPECT_EQ(pf::PrivacyNote(dir), "");
+  {
+    std::ofstream(root / "elsewhere") << "untouched";
+  }
+  ASSERT_EQ(::unlinkat(dir, "slot-0.record", 0), 0);
+  ASSERT_EQ(::symlinkat((root / "elsewhere").c_str(), dir, "slot-0.record"), 0);
+  ASSERT_TRUE(pf::ReplacePrivateFile(dir, "slot-0.record", "new record"));
+  EXPECT_FALSE(fs::is_symlink(root / "conversations" / "slot-0.record"));
+  EXPECT_EQ(pf::ReadPrivateFile(dir, "slot-0.record", 64).value_or(""), "new record");
+  std::ifstream elsewhere(root / "elsewhere");
+  EXPECT_EQ(
+      std::string((std::istreambuf_iterator<char>(elsewhere)), std::istreambuf_iterator<char>()),
+      "untouched");
+  (void)::close(dir);
+  fs::remove_all(root);
+}
+
+// A name changed by another writer between the look and the open (a
+// directory its owner opened up): an emptying open never empties a file
+// reached through a link or another name put there meanwhile, a creating
+// open never creates through a link to nothing put there meanwhile, and a
+// FIFO put there meanwhile never blocks an open nor is used. A thread swaps
+// the name while the opens run; what they reach is checked every time.
+TEST(KeptFiles, ANameChangedDuringTheOpenIsLookedAtAgain) {
+  const fs::path root = Scratch("racing");
+  fs::create_directories(root);
+  Dir dir(root / "d");
+  ASSERT_GE(dir.fd, 0);
+  const std::string victim_text = "another file's bytes";
+  {
+    std::ofstream(root / "d" / "victim") << victim_text;
+  }
+  const auto victim = [&] {
+    std::ifstream in(root / "d" / "victim");
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  };
+  constexpr int kOpens = 3000;
+  enum class Swap { kLinkOrHardLink, kDanglingLink, kFifo };
+  for (const Swap swap : {Swap::kLinkOrHardLink, Swap::kDanglingLink, Swap::kFifo}) {
+    std::atomic<bool> stop{false};
+    std::thread swapper([&] {
+      const int d = dir.fd;
+      for (std::uint64_t n = 0; !stop.load(std::memory_order_relaxed); ++n) {
+        switch (swap) {
+          case Swap::kLinkOrHardLink: {
+            // A regular file of one link, then the victim by a symbolic
+            // link or by another name, each renamed over the name at once.
+            const int fd = ::openat(d, "fresh", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+            if (fd >= 0) (void)::close(fd);
+            (void)::renameat(d, "fresh", d, "name");
+            if (n % 2 == 0) {
+              (void)::symlinkat("victim", d, "link");
+              (void)::renameat(d, "link", d, "name");
+            } else {
+              (void)::linkat(d, "victim", d, "hard", 0);
+              (void)::renameat(d, "hard", d, "name");
+            }
+            break;
+          }
+          case Swap::kDanglingLink:
+            (void)::symlinkat("made-through", d, "name");
+            (void)::unlinkat(d, "name", 0);
+            break;
+          case Swap::kFifo: {
+            const int fd = ::openat(d, "fresh", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+            if (fd >= 0) (void)::close(fd);
+            (void)::renameat(d, "fresh", d, "name");
+            (void)::mkfifoat(d, "fifo", 0600);
+            (void)::renameat(d, "fifo", d, "name");
+            break;
+          }
+        }
+      }
+    });
+    int opened = 0;
+    for (int i = 0; i < kOpens; ++i) {
+      std::expected<pf::PrivateFile, int> file;
+      if (swap == Swap::kLinkOrHardLink) {
+        file =
+            pf::OpenPrivateFile(dir.fd, "name", {.write = true, .create = true, .truncate = true});
+      } else if (swap == Swap::kDanglingLink) {
+        file = pf::OpenPrivateFile(dir.fd, "name", {.write = true, .create = true});
+        if (file) (void)::unlinkat(dir.fd, "name", 0);
+      } else {
+        file = pf::OpenPrivateFile(dir.fd, "name", {.write = i % 2 == 0});
+      }
+      if (file) {
+        ++opened;
+        struct stat st{};
+        EXPECT_EQ(::fstat(file->fd, &st), 0);
+        EXPECT_TRUE(S_ISREG(st.st_mode));
+        (void)::close(file->fd);
+      }
+    }
+    stop = true;
+    swapper.join();
+    EXPECT_EQ(victim(), victim_text);
+    EXPECT_FALSE(fs::exists(root / "d" / "made-through"));
+    // A FIFO's swap leaves the name a regular file only for an instant,
+    // which every open may miss; the other swaps leave one most of the time.
+    if (swap != Swap::kFifo) {
+      EXPECT_GT(opened, 0);
+    }
+    for (const char* name : {"name", "fresh", "link", "hard", "fifo", "made-through"}) {
+      (void)::unlinkat(dir.fd, name, 0);
+    }
+  }
   fs::remove_all(root);
 }
 
@@ -567,6 +825,45 @@ TEST(StateKeeper, AdoptionEmptiesWhatTheRecordDoesNotList) {
   EXPECT_EQ(Id(file->identity), r.files[0].id);
   EXPECT_EQ(file->bytes, 4 * kExtent);
   (void)::close(file->fd);
+  fs::remove_all(root);
+}
+
+// The files' owner, modes and links are the machine owner's (D-105 as
+// amended on 2026-10-09): a model's directory and files found opened up,
+// with another name or reached through a link, are kept, described and
+// emptied as any are, while the record's own checks hold: the file must be
+// the one the record names, even through a link that leads elsewhere.
+TEST(StateKeeper, FilesFoundOpenedUpAreUsedAndTheRecordsChecksHold) {
+  const fs::path root = Scratch("opened");
+  fs::create_directories(root);
+  Dir model(root / "model");
+  ASSERT_GE(model.fd, 0);
+  const pf::FileIdentity state = WriteExtents(model.fd, "slot-0.state", 4, 3);
+  ASSERT_EQ(::fchmodat(model.fd, "slot-0.state", 0666, 0), 0);
+  ASSERT_EQ(::linkat(model.fd, "slot-0.state", model.fd, "second-name", 0), 0);
+  ASSERT_EQ(::fchmod(model.fd, 0755), 0);
+  EXPECT_THAT(pf::PrivacyNote(model.fd), HasSubstr("mode 0755, not 0700"));
+  EXPECT_THAT(pf::PrivacyNote(model.fd), HasSubstr("2 files with another owner"));
+  kept::Record r = Sample();
+  r.slot = 0;
+  r.files = {{.name = kept::StateFileName(0), .id = Id(state), .bytes = 4 * kExtent}};
+  r.regions = {3 * kExtent, kExtent};
+  r.extents = {{.region = 0, .index = 0, .digest = {}}, {.region = 0, .index = 2, .digest = {}}};
+  r.checkpoints.clear();
+  ASSERT_EQ(llmp::runtime::EmptyUnlisted(model.fd, r), "");
+  StateKeeper keeper(1, {});
+  const std::size_t index = keeper.AddModel(::dup(model.fd));
+  keeper.Keep(index, r);
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  EXPECT_TRUE(keeper.Kept(index, 0));
+  EXPECT_TRUE(fs::exists(root / "model" / "slot-0.record"));
+  // A link in the file's place leading to another file is not the file the
+  // record names.
+  const pf::FileIdentity elsewhere = WriteExtents(model.fd, "elsewhere", 4, 4);
+  ASSERT_NE(Id(elsewhere), Id(state));
+  ASSERT_EQ(::unlinkat(model.fd, "slot-0.state", 0), 0);
+  ASSERT_EQ(::symlinkat("elsewhere", model.fd, "slot-0.state"), 0);
+  EXPECT_FALSE(llmp::runtime::EmptyUnlisted(model.fd, r).empty());
   fs::remove_all(root);
 }
 

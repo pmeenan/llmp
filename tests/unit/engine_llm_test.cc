@@ -29,11 +29,14 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <system_error>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -168,10 +171,8 @@ class EngineLlmTest : public ::testing::Test {
     fs::remove_all(root_);
     fs::create_directories(root_);
     fs::permissions(root_, fs::perms::owner_all, fs::perm_options::replace);
-    roles_ = {.installed = root_ / "installed",
-              .spill = root_,
-              .state = root_ / "state",
-              .warnings = {}};
+    roles_ = {
+        .installed = root_ / "installed", .spill = root_, .state = root_ / "state", .warnings = {}};
     entry_.name = "fake";
     spec_ = llmp::base::Sha256().Update(std::string_view("an engine-backed fake")).Finish();
   }
@@ -672,8 +673,14 @@ TEST_F(EngineLlmTest, AConversationIsKeptAcrossARestartInStageFiles) {
     auto refused = kept::Check(old, expected);
     ASSERT_FALSE(refused.has_value());
     EXPECT_NE(refused.error().find("format version 1"), std::string::npos) << refused.error();
-    llm.set_kept(
-        {.keeper = &keeper, .model = model, .directory = dir, .identity = identity, .adopt = {0}});
+    std::vector<kept::FileId> ids;
+    for (const kept::StateFile& file : record->files) ids.push_back(file.id);
+    llm.set_kept({.keeper = &keeper,
+                  .model = model,
+                  .directory = dir,
+                  .identity = identity,
+                  .adopt = {0},
+                  .files = {ids}});
   });
   rt::MemoryCharge charge;
   rt::Llm::Branch& branch = BranchAt(0);
@@ -714,6 +721,265 @@ TEST_F(EngineLlmTest, AConversationIsKeptAcrossARestartInStageFiles) {
   EXPECT_EQ(resumed.reused, history.size());
   EXPECT_EQ(resumed.out.tokens, Chain(next, 12));
   EXPECT_FALSE(keeper.Kept(model, 0));  // live again: its record went
+  Stop();
+  (void)::close(dir);
+}
+
+// A file put under a kept name after the start checked it (between
+// VerifyKeptState and the reopens that adopt it) is not the one its record
+// names: a stage's spill file found so refuses the slot's adoption and a
+// turn checkpoint found so is left out, and the file reached through the
+// name is never adopted, written nor emptied (D-105 as amended).
+TEST_F(EngineLlmTest, AFileSwappedInAfterTheChecksIsNeverAdoptedNorWritten) {
+  const fs::path directory = root_ / "conversations";
+  auto opened = pf::OpenPrivateDirectory(-1, directory.c_str());
+  ASSERT_TRUE(opened.has_value());
+  const int dir = *opened;
+  kept::Identity identity{
+      .build = "a test build", .artifact = "abcdef", .drafter = "", .layout = ""};
+  {
+    rt::StateKeeper keeper(1, {});
+    const std::size_t model = keeper.AddModel(::dup(dir));
+    Start(true, true, [&](rt::EngineLlm& llm) {
+      identity.layout = llm.KeptLayout();
+      llm.set_kept(
+          {.keeper = &keeper, .model = model, .directory = dir, .identity = identity, .adopt = {}});
+    });
+    for (const std::size_t slot : {std::size_t{0}, std::size_t{1}}) {
+      const auto prompt = Prompt(220, 6 + static_cast<std::int32_t>(slot));
+      (void)Turn(slot, prompt, 10, false, /*boundary=*/150);
+      ASSERT_TRUE(llm_->SpillIdle(BranchAt(slot)));
+    }
+    ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+    llm_->PreserveKeptFiles();
+    Stop();
+  }
+  std::vector<kept::Record> records;
+  for (const std::uint32_t slot : {0U, 1U}) {
+    auto text =
+        pf::ReadPrivateFile(dir, kept::RecordFileName(slot).c_str(), kept::kMostRecordBytes);
+    ASSERT_TRUE(text.has_value()) << slot;
+    auto record = kept::Decode(*text);
+    ASSERT_TRUE(record.has_value()) << record.error();
+    ASSERT_EQ(record->checkpoints.size(), 1U);
+    // The start's checks pass: the files are the ones named.
+    EXPECT_EQ(rt::VerifyKeptState(dir, *record), "");
+    records.push_back(std::move(*record));
+  }
+  // Then each of two names becomes a link to a copy: the same bytes and
+  // size, another file.
+  const auto contents = [](const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  };
+  const auto swap = [&](const std::string& name) {
+    const fs::path foreign = root_ / ("foreign-" + name);
+    fs::copy_file(directory / name, foreign);
+    fs::remove(directory / name);
+    fs::create_symlink(foreign, directory / name);
+    return foreign;
+  };
+  const fs::path stage = swap("slot-0.stage-1.state");
+  const fs::path checkpoint = swap(records[1].checkpoints[0].file);
+  const std::string stage_bytes = contents(stage);
+  const std::string checkpoint_bytes = contents(checkpoint);
+  ASSERT_FALSE(stage_bytes.empty());
+  ASSERT_FALSE(checkpoint_bytes.empty());
+
+  // The next process reopens the files the start checked (PrepareKept
+  // passes their identities).
+  std::vector<std::vector<kept::FileId>> files;
+  for (const kept::Record& record : records) {
+    files.emplace_back();
+    for (const kept::StateFile& file : record.files) files.back().push_back(file.id);
+  }
+  rt::StateKeeper keeper(1, {});
+  const std::size_t model = keeper.AddModel(::dup(dir));
+  Start(true, true, [&](rt::EngineLlm& llm) {
+    llm.set_kept({.keeper = &keeper,
+                  .model = model,
+                  .directory = dir,
+                  .identity = identity,
+                  .adopt = {0, 1},
+                  .files = files});
+  });
+  rt::MemoryCharge first_charge;
+  auto first = llm_->Adopt(BranchAt(0), records[0], first_charge);
+  EXPECT_FALSE(first);
+  if (!first) {
+    EXPECT_NE(Why(first).find("not the one its record names"), std::string::npos) << Why(first);
+    EXPECT_TRUE(BranchAt(0).ReleaseIdleState());  // as the server does with one refused
+  }
+  EXPECT_FALSE(fs::is_symlink(directory / "slot-0.stage-1.state"));
+  rt::MemoryCharge second_charge;
+  auto second = llm_->Adopt(BranchAt(1), records[1], second_charge);
+  ASSERT_TRUE(second) << Why(second);
+  EXPECT_EQ(BranchAt(1).turn_checkpoints(), 0U);
+  // Both slots used and spilled again: neither file reached through a
+  // swapped name changes.
+  for (const std::size_t slot : {std::size_t{0}, std::size_t{1}}) {
+    const auto prompt = Prompt(90, 30 + static_cast<std::int32_t>(slot));
+    const Turned turned = Turn(slot, prompt, 6);
+    EXPECT_EQ(turned.out.tokens, Chain(prompt, 6));
+    ASSERT_TRUE(llm_->SpillIdle(BranchAt(slot)));
+  }
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  EXPECT_TRUE(contents(stage) == stage_bytes);
+  EXPECT_TRUE(contents(checkpoint) == checkpoint_bytes);
+  Stop();
+  (void)::close(dir);
+}
+
+// A slot set to be adopted without its record's file identities keeps
+// none of its files: it gets new empty ones, so a file put under a name
+// since the process before (here a link to a copy of the same size) is
+// never used, nor emptied when the adoption is refused.
+TEST_F(EngineLlmTest, AKeptSlotWithoutItsFileIdentitiesStartsFresh) {
+  const fs::path directory = root_ / "conversations";
+  auto opened = pf::OpenPrivateDirectory(-1, directory.c_str());
+  ASSERT_TRUE(opened.has_value());
+  const int dir = *opened;
+  kept::Identity identity{
+      .build = "a test build", .artifact = "abcdef", .drafter = "", .layout = ""};
+  {
+    rt::StateKeeper keeper(1, {});
+    const std::size_t model = keeper.AddModel(::dup(dir));
+    Start(true, true, [&](rt::EngineLlm& llm) {
+      identity.layout = llm.KeptLayout();
+      llm.set_kept(
+          {.keeper = &keeper, .model = model, .directory = dir, .identity = identity, .adopt = {}});
+    });
+    (void)Turn(0, Prompt(220, 6), 10, false);
+    ASSERT_TRUE(llm_->SpillIdle(BranchAt(0)));
+    ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+    llm_->PreserveKeptFiles();
+    Stop();
+  }
+  auto text = pf::ReadPrivateFile(dir, kept::RecordFileName(0).c_str(), kept::kMostRecordBytes);
+  ASSERT_TRUE(text.has_value());
+  auto record = kept::Decode(*text);
+  ASSERT_TRUE(record.has_value()) << record.error();
+  const std::string name = kept::StateFileName(0, 0);
+  const fs::path foreign = root_ / "foreign";
+  fs::copy_file(directory / name, foreign);
+  fs::remove(directory / name);
+  fs::create_symlink(foreign, directory / name);
+  const auto contents = [](const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  };
+  const std::string bytes = contents(foreign);
+  ASSERT_FALSE(bytes.empty());
+  ASSERT_NE(bytes.find_first_not_of('\0'), std::string::npos);
+
+  rt::StateKeeper keeper(1, {});
+  const std::size_t model = keeper.AddModel(::dup(dir));
+  Start(true, true, [&](rt::EngineLlm& llm) {
+    llm.set_kept(
+        {.keeper = &keeper, .model = model, .directory = dir, .identity = identity, .adopt = {0}});
+  });
+  rt::MemoryCharge charge;
+  auto adopted = llm_->Adopt(BranchAt(0), *record, charge);
+  ASSERT_FALSE(adopted);
+  EXPECT_NE(Why(adopted).find("not the one its record names"), std::string::npos) << Why(adopted);
+  EXPECT_TRUE(BranchAt(0).ReleaseIdleState());  // as the server does with one refused
+  EXPECT_FALSE(fs::is_symlink(directory / name));
+  EXPECT_TRUE(contents(foreign) == bytes);
+  Stop();
+  (void)::close(dir);
+}
+
+// A model's kept directory made unwritable after the start's checks, and
+// an adopted slot's name made a link to nothing meanwhile: the model still
+// registers, each slot spilling to an unnamed file (said, and kept for
+// this run only), the adoption is refused and nothing in the directory is
+// touched; the slots serve as fresh ones.
+TEST_F(EngineLlmTest, ADirectoryUnwritableAfterTheChecksKeepsNothingAndStarts) {
+  const fs::path directory = root_ / "conversations";
+  auto opened = pf::OpenPrivateDirectory(-1, directory.c_str());
+  ASSERT_TRUE(opened.has_value());
+  const int dir = *opened;
+  kept::Identity identity{
+      .build = "a test build", .artifact = "abcdef", .drafter = "", .layout = ""};
+  {
+    rt::StateKeeper keeper(1, {});
+    const std::size_t model = keeper.AddModel(::dup(dir));
+    Start(true, true, [&](rt::EngineLlm& llm) {
+      identity.layout = llm.KeptLayout();
+      llm.set_kept(
+          {.keeper = &keeper, .model = model, .directory = dir, .identity = identity, .adopt = {}});
+    });
+    (void)Turn(0, Prompt(220, 6), 10, false);
+    ASSERT_TRUE(llm_->SpillIdle(BranchAt(0)));
+    ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+    llm_->PreserveKeptFiles();
+    Stop();
+  }
+  auto text = pf::ReadPrivateFile(dir, kept::RecordFileName(0).c_str(), kept::kMostRecordBytes);
+  ASSERT_TRUE(text.has_value());
+  auto record = kept::Decode(*text);
+  ASSERT_TRUE(record.has_value()) << record.error();
+  EXPECT_EQ(rt::VerifyKeptState(dir, *record), "");
+  std::vector<kept::FileId> ids;
+  for (const kept::StateFile& file : record->files) ids.push_back(file.id);
+  // After the checks: the stage-0 name a link to nothing, the directory
+  // closed to writes.
+  const std::string name = kept::StateFileName(0, 0);
+  fs::remove(directory / name);
+  fs::create_symlink(root_ / "nothing", directory / name);
+  const auto listing = [&] {
+    std::vector<std::string> names;
+    for (const auto& e : fs::directory_iterator(directory)) {
+      names.push_back(e.path().filename().string());
+    }
+    std::ranges::sort(names);
+    return names;
+  };
+  const std::vector<std::string> before = listing();
+
+  // Writable again however the test ends, so TearDown removes it.
+  struct Reopen {
+    fs::path path;
+    explicit Reopen(fs::path p) : path(std::move(p)) {}
+    Reopen(const Reopen&) = delete;
+    Reopen& operator=(const Reopen&) = delete;
+    Reopen(Reopen&&) = delete;
+    Reopen& operator=(Reopen&&) = delete;
+    ~Reopen() {
+      std::error_code ignored;
+      fs::permissions(path, fs::perms::owner_all, fs::perm_options::replace, ignored);
+    }
+  } const reopen(directory);
+  rt::StateKeeper keeper(1, {});
+  const std::size_t model = keeper.AddModel(::dup(dir));
+  Start(true, true, [&](rt::EngineLlm& llm) {
+    llm.set_kept({.keeper = &keeper,
+                  .model = model,
+                  .directory = dir,
+                  .identity = identity,
+                  .adopt = {0},
+                  .files = {ids}});
+    fs::permissions(directory, fs::perms::owner_read | fs::perms::owner_exec,
+                    fs::perm_options::replace);
+  });
+  const std::vector<std::string> unkept = llm_->UnkeptSlots();
+  ASSERT_EQ(unkept.size(), std::size_t{kSlots});
+  EXPECT_NE(unkept[0].find("slot 0: the spill file"), std::string::npos) << unkept[0];
+  rt::MemoryCharge charge;
+  auto adopted = llm_->Adopt(BranchAt(0), *record, charge);
+  ASSERT_FALSE(adopted);
+  EXPECT_NE(Why(adopted).find("not the one its record names"), std::string::npos) << Why(adopted);
+  EXPECT_TRUE(BranchAt(0).ReleaseIdleState());  // as the server does with one refused
+  for (const std::size_t slot : {std::size_t{0}, std::size_t{1}}) {
+    const auto prompt = Prompt(90, 30 + static_cast<std::int32_t>(slot));
+    const Turned turned = Turn(slot, prompt, 6);
+    EXPECT_EQ(turned.out.tokens, Chain(prompt, 6));
+    ASSERT_TRUE(llm_->SpillIdle(BranchAt(slot)));
+  }
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  fs::permissions(directory, fs::perms::owner_all, fs::perm_options::replace);
+  EXPECT_EQ(listing(), before);
+  EXPECT_TRUE(fs::is_symlink(directory / name));
   Stop();
   (void)::close(dir);
 }

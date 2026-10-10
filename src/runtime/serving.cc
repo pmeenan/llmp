@@ -3424,6 +3424,10 @@ Status Server::Start(bool snapshot) {
   std::vector<ModelSettings> settings;
   std::vector<Llm::CalibrationRecord> calibrations;
   settings.reserve(config_.models.size());
+  if (const std::string note = CalibrationDirectoryNote(roles_.state); !note.empty()) {
+    Log(std::format("warning: the calibration directory {}/{}: {}; used as found",
+                    roles_.state.string(), config::kCalibrationDirectory, note));
+  }
   for (const config::ModelEntry& entry : config_.models) {
     auto facts = ReadArtifactFacts(entry, roles_.installed);
     if (!facts) {
@@ -3749,6 +3753,12 @@ Status Server::PrepareKept() {
     return {};
   }
   const int root = *opened;
+  // Found with other owners or modes it is used as it is (D-105 as amended
+  // on 2026-10-09), said once.
+  if (const std::string note = platform::PrivacyNote(root); !note.empty()) {
+    Log(std::format("warning: the kept conversations directory {}/{}: {}; used as found",
+                    roles_.spill.string(), root_name, note));
+  }
   // Hashing a record's files: a few cores, off the driver's path.
   keeper_ = std::make_unique<StateKeeper>(4, [this](std::string_view line) { Log(line); });
   const std::string build = KeptBuild();
@@ -3779,7 +3789,23 @@ Status Server::PrepareKept() {
                       artifact, Errno(dir.error())));
       continue;
     }
+    if (const std::string note = platform::PrivacyNote(*dir); !note.empty()) {
+      Log(
+          std::format("warning: model {}: its kept conversations directory {}/{}/{}: {}; used as "
+                      "found",
+                      l.name(), roles_.spill.string(), root_name, artifact, note));
+    }
     kept_dirs.push_back(artifact);
+    // One found that the runtime cannot write (another user's, or its modes
+    // changed) keeps nothing and is left as it is: its slots' named spill
+    // files could not be made, and the model would not start.
+    if (::faccessat(*dir, ".", W_OK | X_OK, AT_EACCESS) != 0) {
+      const int error = errno;
+      Log(std::format("model {}: its conversations are not kept across a restart: {}/{}/{}: {}",
+                      l.name(), roles_.spill.string(), root_name, artifact, Errno(error)));
+      (void)::close(*dir);
+      continue;
+    }
     const std::size_t index = keeper_->AddModel(*dir);
     const kept::Identity identity{
         .build = build,
@@ -3798,6 +3824,7 @@ Status Server::PrepareKept() {
     // Each slot's record, checked whole and its files hashed; a record
     // that does not validate is refused and its files emptied.
     std::vector<std::uint32_t> adopt;
+    std::vector<std::vector<kept::FileId>> adopt_files;
     std::vector<std::string> keep_files;
     std::vector<PendingAdoption> pending;
     bool deferred = false;
@@ -3870,8 +3897,10 @@ Status Server::PrepareKept() {
                         slot, line));
       }
       adopt.push_back(slot);
+      adopt_files.emplace_back();
       for (const kept::StateFile& file : record->files) {
         keep_files.push_back(file.name);
+        adopt_files.back().push_back(file.id);
       }
       keep_files.push_back(record_name);
       for (const kept::Checkpoint& c : record->checkpoints) {
@@ -3909,7 +3938,8 @@ Status Server::PrepareKept() {
                 .model = index,
                 .directory = *dir,
                 .identity = identity,
-                .adopt = std::move(adopt)});
+                .adopt = std::move(adopt),
+                .files = std::move(adopt_files)});
   }
   // Models no longer configured keep nothing.
   if (auto entries = platform::ListPrivateDirectory(root); entries) {
@@ -3929,6 +3959,18 @@ Status Server::PrepareKept() {
 }
 
 void Server::AdoptKept() {
+  // Slots whose spill files could not be named after the start's checks
+  // (their directory no longer writable): unnamed, nothing of theirs
+  // outlives this run.
+  for (const auto& m : models_) {
+    if (m->llm()) {
+      const auto& l = static_cast<const Llm&>(*m);
+      for (const std::string& note : l.UnkeptSlots()) {
+        Log(std::format("model {}: {}; its conversations are not kept across a restart", l.name(),
+                        note));
+      }
+    }
+  }
   for (PendingAdoption& pending : adoptions_) {
     Llm& l = *pending.model;
     const std::uint32_t slot = pending.record.slot;

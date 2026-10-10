@@ -18,6 +18,7 @@
 
 #include "base/build_info.h"
 #include "base/json.h"
+#include "config/storage_roles.h"
 #include "platform/files.h"
 #include "platform/kept_files.h"
 #include "providers/device_probe.h"
@@ -135,7 +136,7 @@ CalibrationKey CalibrationKeyOf(const config::ModelEntry& entry,
 }
 
 fs::path CalibrationPath(const fs::path& state, std::string_view artifact) {
-  return state / "calibration" / std::format("{}.json", artifact);
+  return state / config::kCalibrationDirectory / std::format("{}.json", artifact);
 }
 
 CalibrationRead ParseCalibration(std::string_view text, const CalibrationKey& key) {
@@ -319,17 +320,25 @@ std::string FormatCalibration(const Calibration& c, const CalibrationKey& key) {
   return out + "}}";
 }
 
+std::string CalibrationDirectoryNote(const fs::path& state) {
+  const fs::path dir = state / config::kCalibrationDirectory;
+  const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) {
+    return {};
+  }
+  std::string note = platform::PrivacyNote(fd);
+  (void)::close(fd);
+  return note;
+}
+
 std::expected<void, std::string> WriteCalibration(const fs::path& state, const CalibrationKey& key,
                                                   const Calibration& calibration) {
-  // A directory of this user's that only it can enter, the record replaced
-  // whole and atomically (platform/kept_files.h, as D-105's records are).
-  const fs::path dir = state / "calibration";
+  // A directory made 0700 or found as it is, the record replaced whole and
+  // atomically (platform/kept_files.h, as D-105's records are).
+  const fs::path dir = state / config::kCalibrationDirectory;
   const auto dfd = platform::OpenPrivateDirectory(-1, dir.c_str());
   if (!dfd) {
-    return std::unexpected(std::format(
-        "{}: {}", dir.string(),
-        dfd.error() == EPERM ? std::string("not a directory of this user's that only it can enter")
-                             : Errno(dfd.error())));
+    return std::unexpected(std::format("{}: {}", dir.string(), Errno(dfd.error())));
   }
   const std::string name = std::format("{}.json", key.artifact);
   const auto written =

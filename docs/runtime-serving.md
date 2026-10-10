@@ -334,8 +334,10 @@ not); the exactness controls `wave_form = "speculative"` and `"plain"`
 never alternate.
 
 Once a value is measured it is written, between units and at teardown, to
-`<storage.state>/calibration/<artifact ID>.json` (0600 in a 0700
-directory, written to a new file, synced and renamed over the old):
+`<storage.state>/calibration/<artifact ID>.json` (created 0600 in a 0700
+directory, written to a new file, synced and renamed over the old; a
+directory or record found with another owner, modes or links is used and
+said once, D-105 as amended on 2026-10-09):
 
 ```json
 {"format":"llmp-model-calibration-v1","artifact":"8a355bfb…","drafter":"dd2d3f9c…",
@@ -738,8 +740,14 @@ or a hang's exit is not kept (its next turn prefills). The serving
 commands keep nothing and leave what the service kept alone.
 
 **The files** (beneath the spill role, `conversations/<artifact ID>/`,
-mode 0700; each file 0600, owned by the runtime's user, one link, never
-opened through a link): `slot-N.state` is slot N's spill file (each used
+created mode 0700; each file created 0600, owned by the runtime's user; a
+directory or file found with another owner, looser modes, more links or
+as a symbolic link is used as it is, links followed, and reported once per
+directory at start and by `llmp doctor`; one the runtime cannot write
+keeps nothing and is left as it is, and a slot whose file cannot be made
+there after the start looked (the directory closed to writes since)
+spills to an unnamed file that run, said at start; D-105 as amended on 2026-10-09,
+the checks of the record itself unchanged): `slot-N.state` is slot N's spill file (each used
 2 MiB extent at its place, region by region), `slot-N.record` its record,
 `slot-N.turn-K.state` its turn checkpoints (whole state pages, each at a
 4 KiB-rounded place). An [engine-backed model](#engine-backed-models)

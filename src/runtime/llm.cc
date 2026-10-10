@@ -693,13 +693,23 @@ void Llm::set_kept(Kept kept) {
   // (version 2: one a stage), kept as they are for the slots whose records
   // validated.
   SetStageSpillPlaces(
-      [dir = kept_.directory, adopt = kept_.adopt, spill = checkpoint_directory_,
+      [dir = kept_.directory, adopt = kept_.adopt, files = kept_.files,
+       spill = checkpoint_directory_,
        one_file = KeptVersion() == kept::kOneFileVersion](std::uint32_t slot, std::uint32_t stage) {
+        const auto at = std::ranges::find(adopt, slot);
+        const auto index = static_cast<std::size_t>(at - adopt.begin());
+        // A stage's file is kept only as the one its record names, which
+        // the start checked: without that identity it starts fresh.
+        std::optional<platform::FileIdentity> expect;
+        if (at != adopt.end() && index < files.size() && stage < files[index].size()) {
+          expect = serving_support::FileIdentityOf(files[index][stage]);
+        }
         return engine::LiveState::SpillPlace{
             .directory = spill,
             .dir = dir,
             .name = one_file ? kept::StateFileName(slot) : kept::StateFileName(slot, stage),
-            .keep = std::ranges::contains(adopt, slot)};
+            .keep = expect.has_value(),
+            .expect = expect};
       });
 }
 
@@ -843,6 +853,20 @@ Status Llm::Adopt(Branch& branch, kept::Record& record, MemoryCharge& token_char
   if (record.version != KeptVersion()) {
     return refused("its format version is not this model's");
   }
+  // The slot's spill files, reopened since the start checked them, are the
+  // very ones the record names (a stage each): one put in a name's place
+  // since was not used (LiveState::RegisterSpill), and is refused here.
+  const std::vector<const engine::LiveState*> lives = KeptLivesFor(branch);
+  if (lives.size() != record.files.size()) {
+    return refused("its spill files are not this model's");
+  }
+  for (std::size_t f = 0; f < lives.size(); ++f) {
+    if (lives[f] == nullptr || !lives[f]->spill_identity() ||
+        KeptId(*lives[f]->spill_identity()) != record.files[f].id) {
+      return refused(
+          std::format("its spill file {} is not the one its record names", record.files[f].name));
+    }
+  }
   // Its extents as the slot's used ranges (version 2: `region` the stage),
   // each bounded to its layout (kept::Check held each inside it).
   const std::vector<std::uint64_t> layouts = KeptLayouts();
@@ -875,7 +899,8 @@ Status Llm::Adopt(Branch& branch, kept::Record& record, MemoryCharge& token_char
                       checked.error()));
       continue;
     }
-    auto file = engine::CheckpointFile::Adopt(kept_.directory, c.file, LiveRanges(c.ranges));
+    auto file = engine::CheckpointFile::Adopt(kept_.directory, c.file, LiveRanges(c.ranges),
+                                              serving_support::FileIdentityOf(c.id));
     if (!file) {
       Say(std::format("{}: a kept turn checkpoint at {} tokens was left out: {}", name(),
                       c.position, file.error()));
@@ -920,6 +945,23 @@ void Llm::ForgetDiscarded(std::uint32_t discarded) {
       branch.needs_clear_ = false;  // its runner discarded it already
     }
   }
+}
+
+std::vector<std::string> Llm::UnkeptSlots() const {
+  std::vector<std::string> out;
+  if (kept_.keeper == nullptr) {
+    return out;
+  }
+  for (std::uint32_t slot = 0; slot < branch_count_; ++slot) {
+    const Branch& branch = slot == 0 ? default_branch_ : *extra_branches_[slot - 1];
+    for (const engine::LiveState* live : KeptLivesFor(branch)) {
+      if (live != nullptr && !live->spill_note().empty()) {
+        out.push_back(std::format("slot {}: {}", slot, live->spill_note()));
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 void Llm::PreserveKeptFiles() {

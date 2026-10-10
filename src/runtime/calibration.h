@@ -20,8 +20,10 @@
 // replaced when the model is measured again. One that is not this format,
 // names another artifact, or holds an unknown key or a value out of range
 // is refused (logged, not used), and replaced the same way. Records are
-// written atomically (a new file renamed over the old, both synced), 0600
-// in a 0700 directory, and read back as any regular file is.
+// written atomically (a new file renamed over the old, both synced),
+// created 0600 in a 0700 directory, and read back as any regular file is;
+// a directory or record found with other owners or modes is used
+// (CalibrationDirectoryNote says so).
 //
 // What is measured, passively, from a model's first uses
 // (CalibrationSamples): its prefill and decode speeds at short context
@@ -116,9 +118,13 @@ CalibrationRead ParseCalibration(std::string_view text, const CalibrationKey& ke
 // The record of `key.artifact` under `state` (a regular file; its owner
 // and mode are the filesystem's business).
 CalibrationRead ReadCalibration(const std::filesystem::path& state, const CalibrationKey& key);
+// How `<state>/calibration`, if it exists, departs from owner-only (empty
+// if not): a note for the log, once per start (platform::PrivacyNote).
+std::string CalibrationDirectoryNote(const std::filesystem::path& state);
 // The record's text for `calibration`, measured for `key`.
 std::string FormatCalibration(const Calibration& calibration, const CalibrationKey& key);
-// Writes it atomically, creating `<state>/calibration` (0700) if absent.
+// Writes it atomically, creating `<state>/calibration` (0700) if absent; an
+// existing directory is used as it is.
 std::expected<void, std::string> WriteCalibration(const std::filesystem::path& state,
                                                   const CalibrationKey& key,
                                                   const Calibration& calibration);

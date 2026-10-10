@@ -68,6 +68,9 @@ inline std::int64_t NowUnixMs() {
 inline kept::FileId KeptId(const platform::FileIdentity& id) {
   return {.device = id.device, .inode = id.inode, .generation = id.generation};
 }
+inline platform::FileIdentity FileIdentityOf(const kept::FileId& id) {
+  return {.device = id.device, .inode = id.inode, .generation = id.generation};
+}
 
 inline std::vector<kept::Range> KeptRanges(std::span<const engine::LiveState::Range> ranges) {
   std::vector<kept::Range> out;

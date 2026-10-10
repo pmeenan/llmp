@@ -41,6 +41,11 @@ struct RuntimeRoles {
   std::vector<std::string> warnings;
 };
 
+// Directories the runtime makes inside the spill and state roles (D-105,
+// D-103): the kept conversations and the calibration records.
+inline constexpr std::string_view kKeptConversationsDirectory = "conversations";
+inline constexpr std::string_view kCalibrationDirectory = "calibration";
+
 // Resolves the runtime's roles (links followed) and, before creating
 // anything, checks that no two resolve to the same directory or nest,
 // that none equals, contains or lies inside the enrollment anchor
@@ -60,7 +65,9 @@ std::expected<RuntimeRoles, std::vector<std::string>> PrepareRuntimeRoles(
 // owner, mode and filesystem, and the problems (a runtime role that
 // exists on a filesystem the runtime refuses, or read-only, or is not a
 // directory) and warnings (one that does not exist yet and would be
-// created on such a filesystem, and what PrepareRuntimeRoles warns of)
+// created on such a filesystem, and what PrepareRuntimeRoles warns of, and
+// how the kept conversations and calibration directories already there
+// depart from owner-only, D-105)
 // found without touching anything. `runtime` is the runtime's user.
 // writable_under, if not empty, is where the packaged unit's sandbox lets
 // the runtime write (D-063): a runtime role outside it is reported.

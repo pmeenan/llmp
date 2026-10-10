@@ -176,8 +176,8 @@ std::uint64_t CheckpointFile::file_bytes() const {
   return total;
 }
 
-std::expected<CheckpointFile, std::string> CheckpointFile::Adopt(int dir, std::string name,
-                                                                 std::vector<Range> ranges) {
+std::expected<CheckpointFile, std::string> CheckpointFile::Adopt(
+    int dir, std::string name, std::vector<Range> ranges, const platform::FileIdentity& expected) {
   if (auto valid = Validate(ranges); !valid) {
     return std::unexpected(valid.error());
   }
@@ -195,6 +195,12 @@ std::expected<CheckpointFile, std::string> CheckpointFile::Adopt(int dir, std::s
   checkpoint.ranges_ = std::move(ranges);
   for (const Range& range : checkpoint.ranges_) {
     checkpoint.bytes_ += range.bytes;
+  }
+  if (opened->identity != expected) {
+    // Refused, and its name removed with it (a link there goes, never what
+    // it leads to).
+    return std::unexpected(
+        std::format("the kept checkpoint {} is not the file its record names", checkpoint.name_));
   }
   if (opened->bytes != checkpoint.file_bytes()) {
     // Refused, and removed with it: a record naming it drops it next time.

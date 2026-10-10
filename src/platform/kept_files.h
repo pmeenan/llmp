@@ -4,11 +4,15 @@
 // Owner-only files kept across a restart (D-014, D-105): a private
 // directory beneath the spill role, the files in it opened for direct I/O
 // (a conversation's spill file and turn checkpoints) or replaced whole and
-// atomically (its record), never through a link, and checked to be what
-// the runtime made: a regular file of the calling user's, mode 0600, one
-// link; a directory of its, mode 0700. Linux here (O_DIRECT, the inode
-// generation); another system plugs in below the same calls as
-// direct_io.h's opens do (docs/portability.md).
+// atomically (its record). What the runtime creates is private: a
+// directory 0700, a file 0600, the calling user's. What it finds is used,
+// whoever owns it, whatever its modes and links (D-105 as amended on
+// 2026-10-09: a machine's owner who changes permissions chose to; a note
+// says so, PrivacyNote); links are followed. Only what the runtime could
+// not use correctly is refused: a file that is not a regular file, a link
+// to nothing. Linux here (O_DIRECT, the inode generation); another system
+// plugs in below the same calls as direct_io.h's opens do
+// (docs/portability.md).
 
 #ifndef LLMP_PLATFORM_KEPT_FILES_H_
 #define LLMP_PLATFORM_KEPT_FILES_H_
@@ -34,26 +38,35 @@ struct FileIdentity {
 };
 
 // A private directory `name` beneath the open directory `parent` (or the
-// directory at `path`, with `parent` -1): created 0700 if missing; refused
-// (EPERM) unless it is a directory, not a link, the calling user owns with
-// mode 0700. Its descriptor, the caller's to close. errno on failure.
+// directory at `path`, with `parent` -1): created 0700 (exactly, whatever
+// the umask) if missing; an existing one is used as it is, a link to a
+// directory followed. ENOLINK for a link to nothing, ENOTDIR for what is
+// not a directory. Its descriptor, the caller's to close. errno on
+// failure.
 std::expected<int, int> OpenPrivateDirectory(int parent, const char* name);
 
 // A private file beneath the open directory `dir`.
 struct PrivateFile {
   int fd = -1;  // the caller's to close
   FileIdentity identity;
-  std::uint64_t bytes = 0;  // its size when opened (after `truncate`)
+  std::uint64_t bytes = 0;  // its size when opened (0 with `truncate`)
 };
 struct PrivateOpen {
   bool write = false;     // read and write; otherwise read only
   bool create = false;    // made (0600) if missing; otherwise ENOENT
-  bool truncate = false;  // emptied
+  bool truncate = false;  // a new empty file in the name's place
   bool direct = false;    // direct I/O (O_DIRECT), as the spill role offers
 };
-// Opens `name` beneath `dir`, never following a final link; refused
-// (EPERM) unless a regular file the calling user owns with mode 0600 and
-// one link (a hard link elsewhere could outlive its deletion here).
+// Opens `name` beneath `dir`: an existing file as it is (any owner, mode
+// or number of links; a link followed), a new one made 0600 (O_EXCL,
+// never through a link). EPERM unless it is a regular file (looked at
+// before it is opened: a FIFO or device is not opened unless put there
+// meanwhile, and then not used); ENOLINK for a link to nothing, which is
+// never created through. `truncate` gives the name a new empty file (made
+// as above): what was there is unlinked, never emptied, so a link's target
+// or a file's other names keep their bytes (its identity is therefore a
+// new one). A name that changes between the look and the open is looked
+// at again; EAGAIN if it keeps changing.
 std::expected<PrivateFile, int> OpenPrivateFile(int dir, const char* name, PrivateOpen how);
 
 // Replaces `name` beneath `dir` with `bytes`, atomically: a temporary file
@@ -66,12 +79,12 @@ std::expected<void, int> ReplacePrivateFile(int dir, const char* name, std::stri
 // `dir` made here (O_EXCL, 0600, never through a link; one a crash left
 // is removed first), `bytes` written and synced; removed again on
 // failure. Returns its identity, which the other steps take.
-// CommitPrivateReplacement: that file, still the one written and still a
-// private one, renamed over `name` (atomic: on failure nothing moved).
-// Refused (EPERM) when it is not: one that is not a regular file, or the
-// one written but changed, is removed; another regular file put there
-// since is left to whoever made it (a later Write removes it). The file
-// written is removed when the rename fails. SyncDirectory: the rename (or
+// CommitPrivateReplacement: that file, still the one written, renamed over
+// `name` (atomic: on failure nothing moved; a link at `name` is replaced,
+// not written through). Refused (EPERM) when it is not: one that is not a
+// regular file is removed; another regular file put there since is left
+// to whoever made it (a later Write removes it). The file written is
+// removed when the rename fails. SyncDirectory: the rename (or
 // a removal) reaches the device. AbandonPrivateReplacement: the temporary
 // file removed, unrenamed, if it is still the one written.
 std::expected<FileIdentity, int> WritePrivateReplacement(int dir, const char* name,
@@ -81,9 +94,17 @@ std::expected<void, int> CommitPrivateReplacement(int dir, const char* name,
 void AbandonPrivateReplacement(int dir, const char* name, const FileIdentity& written);
 std::expected<void, int> SyncDirectory(int dir);
 
-// Reads a private file (as OpenPrivateFile checks it) of at most `limit`
+// Reads a private file (as OpenPrivateFile opens it) of at most `limit`
 // bytes whole: EFBIG past it.
 std::expected<std::string, int> ReadPrivateFile(int dir, const char* name, std::size_t limit);
+
+// How an existing kept directory departs from what the runtime makes, as
+// text for a log line or `llmp doctor`, empty if it does not: the open
+// directory `dir` owned by another user or with a mode other than 0700,
+// how many regular files in it are another user's, not mode 0600 or have
+// other names, and how many entries are symbolic links. Never a reason to
+// refuse; callers say "used as found" and report it once per directory.
+std::string PrivacyNote(int dir);
 
 // Removes the file `name` beneath `dir`; one that is not there is not an
 // error. A directory there is removed with everything in it (never

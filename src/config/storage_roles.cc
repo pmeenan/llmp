@@ -24,6 +24,7 @@
 #include "base/report.h"
 #include "config/node_config.h"
 #include "platform/direct_io.h"
+#include "platform/kept_files.h"
 #include "platform/paths.h"
 
 namespace llmp::config {
@@ -92,6 +93,32 @@ void NoteAccess(const RoleSpec& role, const std::string& label, const struct sta
         "it)",
         label));
   }
+}
+
+// An existing directory the runtime keeps state in beneath a role (the kept
+// conversations and each model's directory in them, the calibration
+// records: D-105, D-103) and how it departs from owner-only: a warning,
+// never a refusal.
+void NoteKept(const fs::path& dir, const std::string& label, bool descend,
+              std::vector<std::string>& warnings) {
+  const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) {
+    return;
+  }
+  if (const std::string note = platform::PrivacyNote(fd); !note.empty()) {
+    warnings.push_back(
+        std::format("{} {}: {}; the runtime uses it as found", label, dir.string(), note));
+  }
+  if (descend) {
+    if (const auto entries = platform::ListPrivateDirectory(fd)) {
+      for (const platform::DirectoryEntry& entry : *entries) {
+        if (!entry.regular) {  // a directory, or a link to one (followed)
+          NoteKept(dir / entry.name, label, false, warnings);
+        }
+      }
+    }
+  }
+  (void)::close(fd);
 }
 
 // Creates the missing directories from `existing` down to `path`, parents
@@ -406,6 +433,13 @@ void DescribeStorage(const Storage& storage, uid_t runtime, const fs::path& writ
         report.problems.push_back(std::format("{} is not a directory", label));
       } else {
         NoteAccess(role, label, resolved->status, runtime, resolved->resolved, report.warnings);
+        if (role.name == "spill") {
+          NoteKept(resolved->resolved / kKeptConversationsDirectory,
+                   "storage.spill: kept conversations", true, report.warnings);
+        } else if (role.name == "state") {
+          NoteKept(resolved->resolved / kCalibrationDirectory, "storage.state: calibration", false,
+                   report.warnings);
+        }
       }
     }
     if (!filesystem) {

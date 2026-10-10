@@ -20,7 +20,8 @@
 // One record a request slot, `slot-<N>.record` beside the slot's spill
 // files and its turn checkpoints' files (`slot-<N>.turn-<K>.state`), in
 // the model's private directory beneath the spill role
-// (`conversations/<artifact>/`, 0700; every file 0600, D-014). It is
+// (`conversations/<artifact>/`, created 0700; every file created 0600,
+// D-014; ones found are used, D-105 as amended). It is
 // strict JSON, written whole and atomically (a temporary file renamed over
 // it), and ends with the SHA-256 of everything before it, so a record cut
 // short or edited is refused:
@@ -82,6 +83,7 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "config/storage_roles.h"
 
 namespace llmp::runtime {
 class RequestMemory;
@@ -100,7 +102,7 @@ inline constexpr std::uint32_t kVersion = kStageFilesVersion;
 // The most stages (spill files) a version 2 record names.
 inline constexpr std::size_t kMostStages = 16;
 // Beneath the spill role.
-inline constexpr std::string_view kDirectory = "conversations";
+inline constexpr std::string_view kDirectory = config::kKeptConversationsDirectory;
 // The state's pages, as its spill file holds them.
 inline constexpr std::uint64_t kExtentBytes = std::uint64_t{2} << 20U;
 // A checkpoint page's place in its file is its bytes rounded up to this.

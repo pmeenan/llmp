@@ -1023,7 +1023,10 @@ node (D-034, [async-model.md](async-model.md)). It opens files only in
 the artifacts the runtime validated and beneath the spill role, never
 through a link inside an artifact (D-054, D-063; an artifact's own
 directory may be a link to another drive, D-056 as amended on
-2026-10-09). It allocates no payload buffers. Every read or write names
+2026-10-09). The kept conversation files beneath the spill role are
+created owner-only (0700 directories, 0600 files); ones found with
+another owner, modes or links are used, links followed, and noted once per
+directory (D-105 as amended on 2026-10-09). It allocates no payload buffers. Every read or write names
 admitted, protected backing ranges by backing identity and generation. The
 scheduler records those ranges and their addresses when it prepares the
 operation (async-model.md), and the service checks the backing generations
@@ -1945,8 +1948,8 @@ and D-062 versions the configuration schema; M10 adds the repository.
 | `/var/lib/llmp/enrollment` | `llmp` | Enrollment anchor (node and cluster IDs, `state` path, enrollment ID) at a fixed path independent of configuration; while present, startup refuses a configuration or `state` that does not match it. Moving `state` or leaving the cluster is a setup step that rewrites or removes it (D-063) |
 | `…/models/` | `llmp` 0755 | `storage.installed`, including D-056's `.staging/` (0700); artifact directories 0755, files 0644; readable by all, written only by the runtime's user |
 | `…/checkpoints/` | `llmp` 1777 | `storage.checkpoints` (node-local default, created by the package's tmpfiles entry); anyone may add sources, which jobs treat as untrusted |
-| `…/spill/` | `llmp` 0700 + marker | `storage.spill` (D-055) |
-| `…/state/` | `llmp` 0700 | `storage.state`: durable runtime records (conductor epochs and floors, job records and their locks, install generations) and the disposable compact-index cache, plus the local CA's key and leaves (D-065) |
+| `…/spill/` | `llmp` 0700 + marker | `storage.spill` (D-055); `conversations/<artifact ID>/` kept state created 0700/0600 (D-105; found with other owners or modes it is used and reported) |
+| `…/state/` | `llmp` 0700 | `storage.state`: durable runtime records (conductor epochs and floors, job records and their locks, install generations) and the disposable compact-index cache, plus the local CA's key and leaves (D-065) and `calibration/` records (D-103) |
 | `/var/lib/llmp/enrollment.lock` | `llmp` 0600 | The per-node process lock, held by the runtime (D-074) |
 | `/run/llmp/` | `llmp` | Runtime sockets |
 | `/usr/share/doc/llmp/` | root | `copyright`, `NOTICE`, changelog, SBOM (D-029) |

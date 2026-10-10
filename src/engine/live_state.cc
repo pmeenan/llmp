@@ -592,22 +592,48 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node, const SpillPlace& pl
     }
     file_bytes += r.mapped.bytes;
   }
-  if (place.dir >= 0) {
-    // A named file kept across a restart (D-105): owner-only, never through
-    // a link; its contents kept only when adopted, and then exactly whole.
+  bool keep = place.keep;
+  bool named = place.dir >= 0;
+  if (named) {
+    // A named file kept across a restart (D-105): created owner-only; one
+    // adopted is used as found (a link followed), any other replaced by a
+    // new empty file; its contents kept only when adopted, and then exactly
+    // whole. One adopted is the very file the start checked: one put in its
+    // name's place since (another file, another size, or one that cannot be
+    // opened) is not used, and the name gets a new file, which the adoption
+    // then refuses.
     auto opened = platform::OpenPrivateFile(
         place.dir, place.name.c_str(),
-        {.write = true, .create = true, .truncate = !place.keep, .direct = true});
-    if (!opened) {
-      return Error(std::format("the spill file {}: {}", place.name,
-                               std::generic_category().message(opened.error())));
+        {.write = true, .create = true, .truncate = !keep, .direct = true});
+    if (keep && (!opened || (place.expect && opened->identity != *place.expect) ||
+                 opened->bytes != file_bytes)) {
+      if (opened) {
+        (void)::close(opened->fd);
+      }
+      keep = false;
+      opened = platform::OpenPrivateFile(
+          place.dir, place.name.c_str(),
+          {.write = true, .create = true, .truncate = true, .direct = true});
     }
-    spill_fd_ = opened->fd;
-    spill_identity_ = opened->identity;
-    if (place.keep && opened->bytes != file_bytes) {
-      return Error(std::format("the kept spill file {} is not the state's size", place.name));
+    if (opened) {
+      spill_fd_ = opened->fd;
+      spill_identity_ = opened->identity;
+    } else {
+      std::string why = std::format("the spill file {}: {}", place.name,
+                                    std::generic_category().message(opened.error()));
+      if (place.directory.empty()) {
+        return Error(std::move(why));
+      }
+      // A name that cannot be given a file (its directory no longer
+      // writable since the start looked, or a name it may not replace):
+      // this slot spills to an unnamed file in `directory` and keeps nothing
+      // across a restart, as a model whose directory the start found
+      // unwritable.
+      named = false;
+      spill_note_ = std::move(why);
     }
-  } else {
+  }
+  if (!named) {
     std::filesystem::create_directories(place.directory);
     const auto opened = platform::OpenUnnamedDirectFile(place.directory);
     if (!opened) {
@@ -623,7 +649,7 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node, const SpillPlace& pl
   // beneath them: never for a kept file, whose adopted extents (D-105) grow
   // from what the process before wrote there, though nothing is written
   // back yet.
-  const bool zero = node.zero_state() && !place.keep;
+  const bool zero = node.zero_state() && !keep;
   std::uint64_t slot = 0;
   for (Region& region : regions_) {
     Mapped& mapped = region.mapped;

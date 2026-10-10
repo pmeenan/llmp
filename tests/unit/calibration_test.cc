@@ -579,6 +579,67 @@ TEST(Calibration, WritesAndReadsItsRecord) {
   fs::remove_all(state, error);
 }
 
+// A calibration directory or record found with open modes, a second link
+// or as a link is written and read as it is, noted for the log (D-103 and
+// D-105 as amended on 2026-10-09); what the runtime makes stays private.
+TEST(Calibration, UsesADirectoryAndRecordFoundOpen) {
+  std::error_code error;
+  fs::create_directories(Scratch(), error);
+  std::string pattern = (Scratch() / "calibration-open-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const fs::path state = pattern;
+  EXPECT_EQ(llmp::runtime::CalibrationDirectoryNote(state), "");  // none yet
+  const fs::path directory = state / "calibration";
+  fs::create_directories(directory);
+  ASSERT_EQ(::chmod(directory.c_str(), 0755), 0);
+  EXPECT_THAT(llmp::runtime::CalibrationDirectoryNote(state), HasSubstr("mode 0755, not 0700"));
+  ASSERT_TRUE(llmp::runtime::WriteCalibration(state, Key(), Measured()).has_value());
+  struct stat status{};
+  ASSERT_EQ(::stat(directory.c_str(), &status), 0);
+  EXPECT_EQ(status.st_mode & 07777U, 0755U);  // left as it was
+  const fs::path file = llmp::runtime::CalibrationPath(state, Key().artifact);
+  ASSERT_EQ(::stat(file.c_str(), &status), 0);
+  EXPECT_EQ(status.st_mode & 07777U, 0600U);  // what it makes is private
+  auto read = llmp::runtime::ReadCalibration(state, Key());
+  EXPECT_TRUE(read.calibration.has_value()) << read.note;
+
+  // A record with a second link is replaced, not written through: the
+  // other name keeps the old record.
+  const fs::path other = state / "other.json";
+  fs::create_hard_link(file, other);
+  fs::rename(other, directory / "other.json");
+  EXPECT_THAT(llmp::runtime::CalibrationDirectoryNote(state), HasSubstr("2 files with another"));
+  Calibration more = Measured();
+  more.max_slots = 6;
+  ASSERT_TRUE(llmp::runtime::WriteCalibration(state, Key(), more).has_value());
+  read = llmp::runtime::ReadCalibration(state, Key());
+  ASSERT_TRUE(read.calibration.has_value()) << read.note;
+  EXPECT_EQ(read.calibration.value_or(Calibration{}).max_slots, 6U);
+  std::ifstream old_record(directory / "other.json");
+  const std::string old_text((std::istreambuf_iterator<char>(old_record)),
+                             std::istreambuf_iterator<char>());
+  EXPECT_EQ(old_text, FormatCalibration(Measured(), Key()) + "\n");
+
+  // The directory as a link to another directory is followed.
+  const fs::path moved = state / "moved";
+  fs::rename(directory, moved);
+  fs::create_directory_symlink(moved, directory);
+  ASSERT_TRUE(llmp::runtime::WriteCalibration(state, Key(), Measured()).has_value());
+  read = llmp::runtime::ReadCalibration(state, Key());
+  ASSERT_TRUE(read.calibration.has_value()) << read.note;
+  EXPECT_EQ(read.calibration.value_or(Calibration{}).max_slots, Measured().max_slots);
+  EXPECT_TRUE(fs::exists(moved / (Key().artifact + ".json")));
+
+  // A link to nothing is refused by name, and nothing is created through it.
+  fs::remove(directory);
+  fs::create_directory_symlink(state / "nowhere", directory);
+  const auto refused = llmp::runtime::WriteCalibration(state, Key(), Measured());
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_THAT(refused.error(), HasSubstr("Link has been severed"));
+  EXPECT_FALSE(fs::exists(state / "nowhere"));
+  fs::remove_all(state, error);
+}
+
 // A model's first uses, measured: each value once enough samples agree,
 // short context only; a value known already is not measured again.
 TEST(Calibration, MeasuresFirstUses) {
