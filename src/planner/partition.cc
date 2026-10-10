@@ -1213,7 +1213,7 @@ class Partitioner {
   std::expected<TensorId, std::string> LocalIds(TensorId ids, std::size_t slot, std::uint32_t rank,
                                                 std::uint32_t parts, std::uint32_t experts,
                                                 std::uint16_t component);
-  std::expected<TensorId, std::string> ExpertMask(TensorId scale, std::size_t slot,
+  std::expected<TensorId, std::string> ExpertMask(TensorId scale, TensorId ids, std::size_t slot,
                                                   std::uint32_t rank, std::uint32_t parts,
                                                   std::uint32_t experts, std::uint16_t component);
 
@@ -1846,8 +1846,8 @@ std::expected<TensorId, std::string> Partitioner::LocalIds(TensorId ids, std::si
   return local;
 }
 
-std::expected<TensorId, std::string> Partitioner::ExpertMask(TensorId scale, std::size_t slot,
-                                                             std::uint32_t rank,
+std::expected<TensorId, std::string> Partitioner::ExpertMask(TensorId scale, TensorId ids,
+                                                             std::size_t slot, std::uint32_t rank,
                                                              std::uint32_t parts,
                                                              std::uint32_t experts,
                                                              std::uint16_t component) {
@@ -1867,7 +1867,23 @@ std::expected<TensorId, std::string> Partitioner::ExpertMask(TensorId scale, std
   if (!s) return s;
   b.SetComponent(component);
   b.SetJoined();
-  const TensorId out = b.Mul(*s, mask);
+  // A scale gathered per slot [1, U, T] (op.h kExpertReduce): the mask
+  // gathered by the slots' experts as the scale was, then their product.
+  const ir::TensorDesc& st = g_.tensor(scale);
+  const ir::TensorDesc* it = ids.valid() ? &g_.tensor(ids) : nullptr;
+  const bool gathered = it != nullptr && st.ne(0) == 1 && st.ne(1) == it->ne(0) &&
+                        st.ne(2) == it->ne(1) && st.ne(3) == 1;
+  TensorId factor = mask;
+  if (gathered) {
+    auto i = FullOn(ids, slot);
+    if (!i) return i;
+    b.SetComponent(component);
+    b.SetJoined();
+    const TensorId table = b.Repeat(b.Reshape(mask, ir::ShapeOf({1, experts, 1})),
+                                    ir::ShapeOf({1, experts, st.ne(2)}));
+    factor = b.GetRows(table, *i);
+  }
+  const TensorId out = b.Mul(*s, factor);
   if (!b.ok()) return Refused(std::format("expert mask: {}", b.error()->detail));
   return out;
 }
@@ -1938,7 +1954,7 @@ std::expected<void, std::string> Partitioner::Emit(const ir::Node& node, const P
       sources[2] = *ids;
     }
     if (experts_mask) {
-      auto mask = ExpertMask(node.nsrc > 3 ? node.src[3] : TensorId{}, slot, rank, g,
+      auto mask = ExpertMask(node.nsrc > 3 ? node.src[3] : TensorId{}, node.src[2], slot, rank, g,
                              cur[0].experts, node.component);
       if (!mask) return std::unexpected(mask.error());
       sources[3] = *mask;

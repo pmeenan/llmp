@@ -650,8 +650,10 @@ TEST(GgmlLowerTest, Gemma2LowersToTheBuildersGraphs) { ExpectFamilyLowers<Gemma2
 TEST(GgmlLowerTest, Gemma3LowersToTheBuildersGraphs) { ExpectFamilyLowers<Gemma3Family>(); }
 
 // A selection PlanGraph would not make is refused, never run otherwise:
-// without the norm-mul pattern, the IR selects the norm and its mul alone,
-// where PlanGraph runs the two as the unfused RMSNorm-mul.
+// without the norm-mul pattern the IR selects the norm and its mul alone
+// (which unfused PlanGraph runs as one step of both launchers, the IR's two
+// steps), but on a device whose own choices fuse norms PlanGraph runs the
+// two as the fused RMSNorm-mul.
 TEST(GgmlLowerTest, RefusesASelectionPlanGraphDoesNotMake) {
   Ir ir_{.spec = Gemma2Family::Spec(), .source = Gemma2Family::Source()};
   const auto state = Gemma2Family::State(md::kGemma2Context, 128);
@@ -677,7 +679,11 @@ TEST(GgmlLowerTest, RefusesASelectionPlanGraphDoesNotMake) {
   const kn::Addresses addresses{};
   const kn::LowerInput input{
       .plan = *plan, .step = *step, .shape = shape, .addresses = addresses, .context = 8192};
-  auto lowered = kg::LowerStep(input, ir_.registry, Device());
+  // Unfused, the two run as PlanGraph's one step of both launchers.
+  ASSERT_TRUE(kg::LowerStep(input, ir_.registry, Device()).has_value());
+  kg::DeviceChoices fusing = Device();
+  fusing.fuse_norms = true;
+  auto lowered = kg::LowerStep(input, ir_.registry, fusing);
   ASSERT_FALSE(lowered.has_value());
   EXPECT_NE(lowered.error().detail.find("PlanGraph's step"), std::string::npos)
       << lowered.error().detail;
@@ -728,6 +734,7 @@ TEST(GgmlLowerTest, CapabilitiesRouteAsUpstream) {
     EXPECT_EQ(kg::CapabilityOf(d.name), d.capability) << d.name;
     EXPECT_FALSE(kg::AcceptsTextOf(d.name).empty()) << d.name;
     EXPECT_TRUE(d.capability->group.empty() || d.capability->group == "ggml.mul_mat" ||
+                d.capability->group == "ggml.mul_mat_id" ||
                 d.capability->group == "ggml.flash_attn_ext")
         << d.name;
   }

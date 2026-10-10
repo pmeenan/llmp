@@ -169,8 +169,12 @@
 //       above zero: a checkpoint's "unset" 0 (llama.cpp's
 //       expert_weights_scale, which DeepSeek V4's production graph reads as
 //       1) is written 1 here, and the verifier refuses 0.
-//   kExpertReduce (x [n, U, T], w [U, T], ids? [U, T], scale? [E]): [n, T] =
-//       Σ_u (x[:, u, t] · scale[ids[u, t]]) · w[u, t], in slot order.
+//   kExpertReduce (x [n, U, T], w [U, T], ids? [U, T], scale? [E] or
+//       [1, U, T]): [n, T] = Σ_u (x[:, u, t] · s[u, t]) · w[u, t], in slot
+//       order, where s is scale[ids[u, t]] for a scale per expert (which
+//       needs the ids), scale[0, u, t] for one already gathered per slot
+//       (llama.cpp's get_rows of the experts' scales; the ids then only
+//       name each slot's expert, as expert parallelism reads them), else 1.
 // Recurrences and convolutions:
 //   kSsmConv (sx [K - 1 + T, C, S], c [K, C]): [C, T, S], out[ch, t, s] =
 //       Σ_j sx[t + j, ch, s] · c[j, ch] (ggml_ssm_conv).

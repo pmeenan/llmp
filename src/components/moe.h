@@ -15,14 +15,18 @@
 //     renormalized when `normalize`).
 //   - Routed experts: each selected expert's gate and up products of the
 //     routed input (a stacked gate-up array's halves, or two arrays), the
-//     GLU, the down product, and the ordered reduce (ir::kExpertReduce: each
-//     slot's output times its expert's learned scale, when there is one,
-//     times its weight, summed in slot order).
+//     GLU, the down product, each slot's learned expert scale gathered
+//     (when there is one), and the ordered reduce (ir::kExpertReduce: each
+//     slot's output times its scale, times its weight, summed in slot
+//     order).
 //
 // The fragments emit in today's builders' order (kernels/ggml/
 // gemma4_graph.cc's GraphOrder), with the router's selection and the
 // reduce as the op set's composite ops, whose decompositions are GGML's
-// node sequences (a lowering expands them; patterns fuse them).
+// node sequences (llama.cpp's build_moe_ffn): a plan runs them as those
+// primitives or, where its policy keeps the planner's route_reduce
+// pattern, as an implementation of each composite (GGML's fused Gemma
+// routing and scaled reduce).
 
 #ifndef LLMP_COMPONENTS_MOE_H_
 #define LLMP_COMPONENTS_MOE_H_

@@ -677,7 +677,8 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
 bool IsSourceKey(std::string_view key) { return IsText(key); }
 
 std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mapping,
-                                                           std::span<const SourceValue> values) {
+                                                           std::span<const SourceValue> values,
+                                                           const Envelope& envelope) {
   if (auto ok = ValidateMapping(mapping); !ok) {
     return std::unexpected(ok.error());
   }
@@ -692,7 +693,10 @@ std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mappin
     if (!holds) {
       return std::unexpected(holds.error());
     }
-    if (*holds) {
+    const auto within = [](std::uint32_t bound, std::uint32_t value) {
+      return bound == 0 || (value != 0 && value <= bound);
+    };
+    if (*holds && within(p.max_context, envelope.context) && within(p.max_slots, envelope.slots)) {
       return p.text;
     }
   }

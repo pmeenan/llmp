@@ -13,11 +13,13 @@
 //
 // What differs, by design, and how the comparison takes it: the router's
 // selection and the experts' reduce are the op set's composite ops
-// (ir::kRoute, ir::kExpertReduce, which patterns fuse and partitioning
-// splits); each stands for the run of GGML nodes its decomposition is
-// (soft_max through the weights' reshape; the expert scales' gather,
-// the two products by scale and weight, the slot views and the ordered
-// adds), compared by the run's position, its outside sources and the
+// (ir::kRoute, ir::kExpertReduce, which a plan runs as their decompositions
+// or as an implementation of their own, and partitioning splits); each
+// stands for the run of GGML nodes its decomposition is (soft_max through
+// the weights' reshape; the two products by each slot's scale, gathered
+// before it as the builders gather it, and weight, the slot views and the
+// ordered adds), compared by the run's position, its outside sources (the
+// reduce's ids, which only name its slots' experts, aside) and the
 // parameters it carries. Everything else is node for node.
 
 #include <gtest/gtest.h>
@@ -64,6 +66,8 @@ std::optional<ir::Op> OpOf(const ggml_tensor* t) {
   switch (t->op) {
     case GGML_OP_GET_ROWS:
       return ir::Op::kGetRows;
+    case GGML_OP_REPEAT:
+      return ir::Op::kRepeat;
     case GGML_OP_SCALE:
       return ir::Op::kScale;
     case GGML_OP_RMS_NORM:
@@ -155,8 +159,8 @@ struct Entry {
 };
 
 // The legacy nodes as entries: each Gemma router's run (soft_max through
-// the reshape named "expert_weights") and each reduce's run (the scales'
-// reshape through the last ordered add) collapsed.
+// the reshape named "expert_weights") and each reduce's run (the product
+// named "expert_scaled_down" through the last ordered add) collapsed.
 std::vector<Entry> Entries(const std::vector<ggml_tensor*>& nodes, std::uint32_t used) {
   std::vector<Entry> out;
   for (std::size_t i = 0; i < nodes.size(); ++i) {
@@ -179,14 +183,13 @@ std::vector<Entry> Entries(const std::vector<ggml_tensor*>& nodes, std::uint32_t
       i = weights;
       continue;
     }
-    if (nodes[i]->op == GGML_OP_RESHAPE && i + 3 < nodes.size() &&
-        std::string(ggml_get_name(nodes[i + 3])).ends_with("expert_scaled_down")) {
-      // reshape, repeat, get_rows (scales), mul (by scale), mul (by
-      // weight), a view a slot, an add a slot after the first.
-      const std::size_t last = i + 5 + used + (used - 1) - 1;
-      EXPECT_EQ(nodes.at(i + 1)->op, GGML_OP_REPEAT);
-      EXPECT_EQ(nodes.at(i + 2)->op, GGML_OP_GET_ROWS);
-      EXPECT_EQ(nodes.at(i + 4)->op, GGML_OP_MUL);
+    if (nodes[i]->op == GGML_OP_MUL && name.ends_with("expert_scaled_down")) {
+      // mul (by each slot's scale, gathered before it by the reshape,
+      // repeat and get_rows the components emit too), mul (by weight), a
+      // view a slot, an add a slot after the first.
+      const std::size_t last = i + (2 * used);
+      EXPECT_EQ(nodes.at(i + 1)->op, GGML_OP_MUL);
+      EXPECT_EQ(nodes.at(i + 2)->op, GGML_OP_VIEW);
       EXPECT_EQ(nodes.at(last)->op, GGML_OP_ADD);
       out.push_back(
           {.first = i, .last = last, .composite = ir::Op::kExpertReduce, .outputs = {last}});
@@ -259,8 +262,12 @@ void ExpectSameSteps(const std::vector<ggml_tensor*>& nodes,
     std::vector<std::string> got;
     auto sources = n.sources();
     if (n.key.op == ir::Op::kMaskBuild) sources = sources.first(1);
-    for (const ir::TensorId s : sources) {
+    for (std::size_t k = 0; k < sources.size(); ++k) {
+      const ir::TensorId s = sources[k];
       if (!s.valid()) continue;
+      // A reduce's ids name its slots' experts (expert parallelism); its
+      // run reads them only through the scales' gather before it.
+      if (n.key.op == ir::Op::kExpertReduce && k == 2) continue;
       if (const auto at = ir_name.find(s.v); at != ir_name.end()) {
         got.push_back(at->second);
       } else {

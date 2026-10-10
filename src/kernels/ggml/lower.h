@@ -15,12 +15,16 @@
 //      state, GGML's own builder call for each node, and for a fused node
 //      the GGML node sequence its implementation covers (the primitive
 //      nodes the rewrite replaced: GGML's fused implementations run over
-//      them, as PlanGraph groups them). Node order is the planned graph's,
+//      them, as PlanGraph groups them), and for a composite op an
+//      implementation of its own runs (planner/pattern.h route_reduce) the
+//      GGML node sequence that implementation's gate takes (Gemma's fused
+//      routing and scaled reduce). Node order is the planned graph's,
 //      which keeps the builders' (GraphOrder) order the components emit, so
 //      the graph is the one today's builders make for the same step;
 //   2. makes each mask (kMaskBuild) on the device (llmp.gemma4.mask, whose
-//      producer derives the cells' positions, so the step stages none) or,
-//      with device masks off, a host-built input (step_program.h kMask);
+//      producer derives the cells' positions, so the step stages none; a
+//      frozen read's under its frozen policy) or, with device masks off, a
+//      host-built input (step_program.h kMask);
 //   3. binds the planned activations at the IR placement (its extent is the
 //      step's), weights and state at the addresses given (distinct
 //      placeholder addresses where none is, as for a measurement), and the
@@ -35,9 +39,10 @@
 //      of the selected group (the group is resolved here, by upstream's
 //      routing). Anything else is a lowering bug, and the step is refused;
 //   6. gives the input slots (tokens, positions, the head's rows, each
-//      owner's store cells and host masks), the output slots (each owner's
-//      logits rows, or its greedy token) and every tensor use for the
-//      coverage check.
+//      owner's store cells, a target's tap cells and host masks, a
+//      drafter's features as the step's bytes), the output slots (each
+//      owner's logits rows, or its greedy token; a drafter's next features
+//      after them) and every tensor use for the coverage check.
 // Every profile builds it (no launch); kernels/ggml/step_program.h makes a
 // program of the result on CUDA builds.
 
@@ -46,6 +51,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <vector>
@@ -63,8 +69,15 @@ namespace llmp::kernels::ggml {
 struct LowerOptions {
   // kMaskBuild on the device (llmp.gemma4.mask), or built on the host.
   bool device_masks = true;
+  // A frozen read's host-built mask (a drafter over its target's borrowed
+  // state): its slot's cells say so (step_program.h InputCells::frozen),
+  // which a stager must honour; off, such a step is refused with host masks.
+  bool frozen_host_masks = false;
   // PlanGraph's graph reader index allowance (graph_plan.h).
   std::uint64_t index_scratch_limit = std::numeric_limits<std::uint64_t>::max();
+  // The bytes between an expert array's experts as the runner placed them
+  // (a slab's pitch, engine/paged_weights.h SlabSpec); 0 or none: packed.
+  std::function<std::uint64_t(const ir::WeightRef&)> expert_stride{};
 };
 
 // A leaf of the lowered graph and the primitive step's tensor it stands for

@@ -1584,11 +1584,16 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
         scale = s;
       }
       const Ne& xn = ne(0);
+      // A scale gathered per slot [1, U, T] (op.h), else one per expert.
+      const bool gathered =
+          has(3) && ne(3)[0] == 1 && ne(3)[1] == xn[1] && ne(3)[2] == xn[2] && ne(3)[3] == 1;
       Vec r(xn[0] * xn[2]);
       for (std::uint64_t t = 0; t < xn[2]; ++t) {
         for (std::uint64_t u = 0; u < xn[1]; ++u) {
           double factor = 1.0;
-          if (!scale.empty()) {
+          if (gathered) {
+            factor = scale[(t * xn[1]) + u];
+          } else if (!scale.empty()) {
             const double id = ids[(t * xn[1]) + u];
             if (!(id >= 0.0 && id < static_cast<double>(scale.size()))) {
               return Fail(ExecError::kIndex, std::format("expert {} of {}", id, scale.size()));

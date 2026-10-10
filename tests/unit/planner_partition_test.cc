@@ -172,7 +172,9 @@ planner::Segment Seg(std::uint8_t slot, std::uint32_t rows, std::uint32_t past,
 
 // moe.test, version 1 (tests only): a pre-normed routed feed-forward block
 // from the op set's routing ops: softmax top-`used` of `experts`, SwiGLU
-// experts as expert arrays, their weighted sum, the residual add. Splits:
+// experts as expert arrays, their weighted sum (with `scaled`, each slot's
+// learned expert scale gathered before it, as ffn.moe gathers Gemma 4's),
+// the residual add. Splits:
 // experts placed whole (expert parallelism) first, the hidden columns
 // inside every expert second.
 namespace moe {
@@ -186,13 +188,17 @@ constexpr std::array kParams{
         .name = "hidden", .type = components::ParamType::kInt, .least = 1, .most = 1 << 20},
     components::ParamSpec{
         .name = "used", .type = components::ParamType::kInt, .least = 1, .most = 64},
+    components::ParamSpec{
+        .name = "scaled", .type = components::ParamType::kBool, .required = false},
 };
-enum : std::uint16_t { kNorm, kRouter, kGate, kUp, kDown };
+enum : std::uint16_t { kNorm, kRouter, kGate, kUp, kDown, kScale };
 constexpr std::array<Encoding, 1> kF32Only{Encoding::kF32};
-constexpr std::array kRoles{
-    components::WeightRole{.name = "norm", .encodings = kF32Only},
-    components::WeightRole{.name = "router"}, components::WeightRole{.name = "gate"},
-    components::WeightRole{.name = "up"}, components::WeightRole{.name = "down"}};
+constexpr std::array kRoles{components::WeightRole{.name = "norm", .encodings = kF32Only},
+                            components::WeightRole{.name = "router"},
+                            components::WeightRole{.name = "gate"},
+                            components::WeightRole{.name = "up"},
+                            components::WeightRole{.name = "down"},
+                            components::WeightRole{.name = "scale", .encodings = kF32Only}};
 
 std::uint64_t E(const components::Instance& in) {
   return static_cast<std::uint64_t>(in.params.Int("experts"));
@@ -212,9 +218,11 @@ components::RoleShape Role(std::uint16_t role, std::initializer_list<std::uint64
 std::expected<std::vector<components::RoleShape>, std::string> Shapes(
     const components::Instance& in) {
   const std::uint64_t w = in.stage.width;
-  return std::vector<components::RoleShape>{
+  std::vector<components::RoleShape> out{
       Role(kNorm, {w}), Role(kRouter, {w, E(in)}), Role(kGate, {w, F(in), E(in)}),
       Role(kUp, {w, F(in), E(in)}), Role(kDown, {F(in), w, E(in)})};
+  if (in.params.Flag("scaled")) out.push_back(Role(kScale, {E(in)}));
+  return out;
 }
 
 std::uint64_t Stream(const components::SplitStep& s) {
@@ -261,7 +269,13 @@ std::expected<components::FragmentOut, std::string> Emit(components::Fragment& f
   const ir::TensorId up = b.MatMulId(f.Weight(kUp), hb, routed[0]);
   const ir::TensorId act = b.Glu(gate, up, {.kind = ir::GluKind::kSwiGlu});
   const ir::TensorId down = b.MatMulId(f.Weight(kDown), act, routed[0]);
-  const ir::TensorId sum = b.ExpertReduce(down, routed[1], routed[0], {});
+  ir::TensorId scale{};
+  if (in.params.Flag("scaled")) {
+    const ir::TensorId table = b.Repeat(b.Reshape(f.Weight(kScale), ir::ShapeOf({1, E(in), 1})),
+                                        ir::ShapeOf({1, E(in), rows}));
+    scale = b.GetRows(table, routed[0]);  // [1, used, rows]
+  }
+  const ir::TensorId sum = b.ExpertReduce(down, routed[1], routed[0], scale);
   return components::FragmentOut{.stream = b.Add(sum, x)};
 }
 
@@ -281,19 +295,24 @@ const components::ComponentDef& Def() {
 constexpr std::uint64_t kExperts = 12;
 constexpr std::uint64_t kExpertHidden = 48;
 
-const ComponentRef& Ref() {
+const ComponentRef& Ref(bool scaled = false) {
   static const ComponentRef r = C("moe.test",
                                   {P("eps", R(1e-6)), P("experts", I(kExperts)),
                                    P("hidden", I(kExpertHidden)), P("used", I(3))},
                                   {});
-  return r;
+  static const ComponentRef with_scale =
+      C("moe.test",
+        {P("eps", R(1e-6)), P("experts", I(kExperts)), P("hidden", I(kExpertHidden)),
+         P("used", I(3)), P("scaled", ParamValue(true))},
+        {});
+  return scaled ? with_scale : r;
 }
 
-components::Instance Instance() {
-  auto params = components::Params::Of(Def().params, Ref());
+components::Instance Instance(bool scaled = false) {
+  auto params = components::Params::Of(Def().params, Ref(scaled));
   EXPECT_TRUE(params.has_value()) << params.error();
   return {.def = &Def(),
-          .ref = &Ref(),
+          .ref = &Ref(scaled),
           .params = *params,
           .stage = {.width = kWidth},
           .site = components::Site::kLayer,
@@ -301,21 +320,25 @@ components::Instance Instance() {
           .index = 1};
 }
 
+// Every role's (the scale's used only `scaled`).
 std::vector<format::TensorFormat> Formats() {
-  return {Format(Encoding::kF32, {kWidth}), Format(Encoding::kF32, {kWidth, kExperts}),
+  return {Format(Encoding::kF32, {kWidth}),
+          Format(Encoding::kF32, {kWidth, kExperts}),
           Format(Encoding::kF32, {kWidth, kExpertHidden, kExperts}),
           Format(Encoding::kF32, {kWidth, kExpertHidden, kExperts}),
-          Format(Encoding::kF32, {kExpertHidden, kWidth, kExperts})};
+          Format(Encoding::kF32, {kExpertHidden, kWidth, kExperts}),
+          Format(Encoding::kF32, {kExperts})};
 }
 
 // One layer of the routed block, as a stage model.
-StageModel Model() {
+StageModel Model(bool scaled = false) {
   StageModel m;
-  m.instances.layers.push_back({Instance()});
+  m.instances.layers.push_back({Instance(scaled)});
   m.roles.resize(2);
-  const std::array<const char*, 5> names{"norm", "router", "gate", "up", "down"};
+  const std::array<const char*, 6> names{"norm", "router", "gate", "up", "down", "scale"};
   const auto formats = Formats();
-  for (std::size_t r = 0; r < names.size(); ++r) {
+  const std::size_t roles = scaled ? names.size() : std::size_t{kScale};
+  for (std::size_t r = 0; r < roles; ++r) {
     m.roles[1].push_back({.name = names.at(r), .format = formats[r]});
   }
   return m;
@@ -804,8 +827,8 @@ TEST(PartitionTest, AStreamCrossesTheSlowLinkOnce) {
 
 // ---------------------------------------------------------- expert parallel
 
-void MoeStep(const Assignment& a, double tolerance) {
-  const components::Instance in = moe::Instance();
+void MoeStep(const Assignment& a, double tolerance, bool scaled = false) {
+  const components::Instance in = moe::Instance(scaled);
   const StepShape shape{.segments = {Seg(0, 5, 0, 1), Seg(1, 3, 0, 1)}};
   auto graph = components::BuildComponent(in, shape, moe::Formats(), {});
   ASSERT_TRUE(graph.has_value()) << graph.error();
@@ -814,14 +837,17 @@ void MoeStep(const Assignment& a, double tolerance) {
   Leaves leaves;
   const auto formats = moe::Formats();
   for (std::size_t r = 0; r < formats.size(); ++r) {
+    if (!graph->weights[r].valid()) continue;
     std::vector<float> v(ir::Elements(formats[r].shape));
-    for (float& x : v) x = r == moe::kNorm ? 1.0F + (0.25F * u(rng)) : 0.3F * u(rng);
+    for (float& x : v) {
+      x = r == moe::kNorm || r == moe::kScale ? 1.0F + (0.25F * u(rng)) : 0.3F * u(rng);
+    }
     leaves.floats[graph->weights[r].v] = std::move(v);
   }
   std::vector<float> stream(kWidth * shape.rows());
   for (float& x : stream) x = 2.0F * u(rng);
   leaves.floats[graph->stream_in.v] = stream;
-  const StageModel model = moe::Model();
+  const StageModel model = moe::Model(scaled);
   Equivalent(
       graph->step.graph, leaves, a, model,
       {.results = {graph->stream_out}, .rows = shape.rows(), .outputs = 0, .tolerance = tolerance});
@@ -842,6 +868,26 @@ TEST(PartitionTest, ExpertParallelOverFourAndSixDevices) {
     a->per_layer[0][0].option = 1;
     a->per_layer[0][0].split = SplitKind::kColumns;
     MoeStep(*a, 1e-5);
+  }
+}
+
+// With each slot's learned scale gathered before the reduce (ffn.moe's
+// Gemma 4 form, op.h kExpertReduce's [1, U, T] scale): each device's
+// experts masked in the gathered scale.
+TEST(PartitionTest, ExpertParallelWithGatheredScales) {
+  const StageModel model = moe::Model(true);
+  for (const std::uint32_t n : {4U, 6U}) {
+    SCOPED_TRACE(std::format("{} devices", n));
+    std::vector<std::uint32_t> all;
+    for (std::uint32_t i = 0; i < n; ++i) all.push_back(i);
+    auto a =
+        AssignPipeline(model, Uniform(n, kAmple), Mix(), {.stages = {all}, .first_layer = {0}});
+    ASSERT_TRUE(a.has_value()) << a.error();
+    ASSERT_EQ(a->per_layer[0][0].split, SplitKind::kExperts);
+    MoeStep(*a, 1e-5, true);
+    a->per_layer[0][0].option = 1;
+    a->per_layer[0][0].split = SplitKind::kColumns;
+    MoeStep(*a, 1e-5, true);
   }
 }
 

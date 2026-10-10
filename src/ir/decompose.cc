@@ -318,6 +318,9 @@ Outputs Route(D& d, const RouteParams& p) {
       probs = b.Unary(b.Unary(logits, UnaryFn::kSoftplus), UnaryFn::kSqrt);
       break;
   }
+  // llama.cpp's build_moe_ffn order: the probabilities' rows, the
+  // selection, the selected rows.
+  const TensorId rows = b.Reshape(probs, S(1, e, t));
   TensorId ids{};
   if (p.kind == RouteKind::kHash) {
     ids = b.GetRows(d.s(2), d.s(3));  // [U, T]
@@ -327,7 +330,7 @@ Outputs Route(D& d, const RouteParams& p) {
     const TensorDesc& ot = d.t(order);
     ids = b.View(order, S(u, t), Nb{ot.nb[0], ot.nb[1], ot.nb[1] * t, ot.nb[1] * t}, 0);
   }
-  TensorId w = b.Reshape(b.GetRows(b.Reshape(probs, S(1, e, t)), ids), S(u, t));
+  TensorId w = b.Reshape(b.GetRows(rows, ids), S(u, t));
   if (p.normalize) {
     const TensorId sum = b.Clamp(b.SumRows(w), 0x1p-14f, std::numeric_limits<float>::infinity());
     w = b.Div(w, sum);
@@ -342,19 +345,30 @@ Outputs Route(D& d, const RouteParams& p) {
   return o;
 }
 
+// llama.cpp's build_moe_ffn reduce: x times each slot's scale (a per-expert
+// scale's rows gathered, or one gathered already), times its weight, then
+// the slots' views (all of them first) added in slot order onto the first.
 TensorId Reduce(D& d, TensorId x, TensorId w, TensorId ids, TensorId scale) {
   Builder& b = d.b();
+  const TensorDesc& xt = d.t(x);
   if (scale.valid()) {
-    x = b.Mul(x, ScaleRows(d, scale, ids));
+    const TensorDesc& st = d.t(scale);
+    const bool gathered =
+        st.ne(0) == 1 && st.ne(1) == xt.ne(1) && st.ne(2) == xt.ne(2) && st.ne(3) == 1;
+    x = b.Mul(x, gathered ? scale : ScaleRows(d, scale, ids));
   }
   const TensorDesc& wt = d.t(w);
   const TensorId w3 =
       b.View(w, S(1, wt.ne(0), wt.ne(1)), Nb{wt.nb[0], wt.nb[0], wt.nb[1], wt.nb[1] * wt.ne(1)}, 0);
   const TensorId xw = b.Mul(x, w3);  // [n, U, T]
   const std::uint64_t u = wt.ne(0);
-  TensorId acc = b.Cont(Slice(d, xw, 0));
+  std::vector<TensorId> slots;
+  for (std::uint64_t i = 0; i < u && b.ok(); ++i) slots.push_back(Slice(d, xw, i));
+  if (!b.ok()) return {};
+  // One slot: its view made a tensor of its own.
+  TensorId acc = u == 1 ? b.Cont(slots.front()) : slots.front();
   for (std::uint64_t i = 1; i < u && b.ok(); ++i) {
-    acc = b.Add(acc, Slice(d, xw, i));
+    acc = b.Add(acc, slots[i]);
   }
   return acc;
 }

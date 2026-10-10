@@ -174,6 +174,16 @@ contraction (a test pins the F32 angles near position 2^20, where they are
 its two products and the decode declarations do, and
 `fused.prepared_products` takes its weights first too (w0, …, input). `fused.moe_combine`'s
 shared-expert gate is optional (DeepSeek V4's shared expert has none).
+`kExpertReduce`'s scale may be one already gathered per slot [1, U, T]
+(slice G2b: llama.cpp gathers the experts' scales with get_rows before
+its products, and GGML's fused Gemma reduce reads them so), the ids then
+only naming each slot's expert for expert parallelism (which masks such a
+scale with its device's experts gathered by the ids); a scale per expert
+[E] still needs the ids. The decompositions of `kRoute` and
+`kExpertReduce` are llama.cpp's `build_moe_ffn` sequences in its order
+(the probabilities' rows before the sort; every slot's view before the
+ordered adds onto the first, without a copy), so a plan that runs them as
+primitives launches today's GGML nodes.
 A routing scale is the factor itself and above zero: a checkpoint's unset
 0 is written 1. Every composite op now decomposes for every shape the
 verifier admits: pooling over several matrices along dim 3, and the gated
@@ -231,7 +241,14 @@ primitive ids). It is deterministic. The steps:
   capability of it describes one member store (GGML's quantizing group
   declares `batch` 16). A rewrite is refused where emitting it at its
   last node's place would move a read past a store into the same bytes
-  (a cache, or an activation a store targets).
+  (a cache, or an activation a store targets). Slice G2b added a
+  composite kind and option entries, which a policy disables by name as
+  any pattern: `route_reduce` (the selection may take an implementation
+  of `kRoute` and `kExpertReduce` themselves, GGML's fused Gemma routing
+  and scaled reduce; disabled, they decompose into llama.cpp's
+  primitives); `owner_bounded_roots`, `owner_padded_reads` and
+  `owner_chained_masks` (owner_attention's forms, below); and
+  `narrow_final` (the step builder's narrowed final layer, below).
 - **Policy** (`policy.h`): disabled patterns, the decode-row bound,
   row-invariant plans (D-092), the lossy opt-in and measured ranks per
   device class, as canonical text whose digest is a plan key's input. The
@@ -243,7 +260,19 @@ primitive ids). It is deterministic. The steps:
   Gemma 3 one ungated rule each, Gemma 4's 26B-A4B, 31B and assistant
   their own), each rule's text printable lines; the component step
   source parses the rule `spec::DefaultPolicy` picks for the source's
-  values unless it is given another policy (an alias's settings, later).
+  values and the serving envelope (the layout's context and the runner's
+  owners: a rule may hold only within a context and owner bound, slice
+  G2b) unless it is given another policy (an alias's settings, later).
+  Gemma 4's rules are today's recipes (serving.cc): within 4,096 cells
+  and two owners, every row to the head (`narrow_final` off), the fused
+  norm-mul, norm-rope and norm-add, `route_reduce` on 26B-A4B, the
+  quantized GeGLU on 31B, owner attention with bounded roots and masks
+  joined in pairs; within 8,192 and four owners the same without bounded
+  roots (owners of equal reads only); outside, the narrowed final layer
+  and the fused norm-mul alone. The assistant's is plain primitives.
+  Owner attention's Gemma 4 forms (16 or 32 heads, D 512) are selectable
+  on the GB10 alone, as today's runner keeps independent attention on
+  other devices (`llmp.flash_attn.owner_roots`' capability).
 - **Selection** (`select.h`): each node's first candidate from
   `Candidates()`, asked with the device's architecture, features, tuning
   data (an implementation that `needs_tuning` is offered only for a shape
@@ -308,12 +337,31 @@ most 128 rows), and the IR keeps per-owner attention there; nor is the
 whole-twelve bounded carrier (`bounded_whole12`, a default-off factor),
 which the capability does not declare.
 
+Slice G2b extended it for Gemma 4: each layer its own head sizes and KV
+heads (the local layers' D 256, the global layers' D 512), and three
+options a policy may leave off: `owner_bounded_roots` (each owner's
+cache at its own width where an implementation takes that),
+`owner_padded_reads` (narrower caches padded with zeros to the widest);
+with both off owner attention joins only owners whose reads are equal in
+every kind (Gemma 4's recipe within 8,192 cells and four owners); and
+`owner_chained_masks` (the masks joined one after another; off, in
+pairs, the pairs then joined, at most four owners: Gemma 4's owner
+transform, `gemma4_attention.cc`). Gemma 4's transform post-processes
+the per-owner graph and leaves the views it replaced in it, and orders
+the later owners' stores and the joined masks where its traversal
+reaches them; the rewrite emits the same launches over the same operands
+in the IR's order (stores, then the joins after the masks, then each
+layer's owner node), which only the structural comparison sees.
+
 **The narrowed final layer** is the components' (below): with a head,
 the stage's last component that mixes rows gathers its output rows
 (`narrow_final`, the runners' `frontier_head`, which serving keeps on),
 and the existing `rms_norm_mul_add` matches the norm-add over the
 gathered residual (`GemmaNormAddGatherFusionAt`'s nodes), the gather
-between its mul and its add.
+between its mul and its add. A policy that disables `narrow_final`
+(Gemma 4 within its envelope, whose serving turns `frontier_head` off)
+has `BuildStep` keep every row to the final norm (`StepOptions::narrow`)
+and the head gather its rows there.
 
 **The GGML lowering, as built** (`kernels/ggml/lower.h`,
 `capabilities.h`, `step_program.h`; 2026-10-09). The GGML module declares
@@ -382,6 +430,59 @@ its ring until it wraps, joined one-row decodes returning logits and
 device-chosen tokens over unequal reads), each owner's outputs bit for bit
 those of today's runners under the full serving recipe, the repeated
 decode shapes captured and replayed (`component_runner_gpu_test`).
+
+Slice G2b added Gemma 4 (2026-10-09). The lowering makes `kMatMulId`
+GGML's `mul_mat_id` (capabilities `ggml.mul_mat_id.mmvq` and `.mmq`, the
+group `ggml.mul_mat_id` resolved by upstream's routing), an expert
+array's leaf (its `WeightRef::expert_array`, which `BuildStep` now sets
+from the binding) at the runner's slab pitch
+(`LowerOptions::expert_stride`),
+and the composites where the plan selected their own implementation
+(`route_reduce`): `kRoute` as the ten nodes GGML's fused Gemma routing
+takes (`ggml.gemma.route.fused`: a normalized softmax top 8 of 128,
+scale 1, at most 8,192 rows; its ids a view of the whole sort, which
+their place holds, `WrittenBytes`) and `kExpertReduce` with each slot's
+gathered scale as the seventeen the fused scaled reduce takes
+(`ggml.gemma.scaled_reduce.fused`: 8 slots of 2,816; its products and
+partial sums take its place); otherwise the planner decomposed them into
+llama.cpp's primitives. `fused.rms_norm_mul_rope`'s capability takes the
+rotation's frequency factors (upstream's fused launcher reads them:
+Gemma 4's global layers), and `rms_norm_mul_add` matches only a norm, its
+mul and its add one after another (leaves aside) or with the residual's
+gather between, as PlanGraph fuses them (where Gemma 4's routed and dense
+sums meet, the later one). Unfused, PlanGraph runs an RMS norm and the
+mul after it as one step of both launchers, which the lowering takes
+as the IR's two steps (the assistant's plain plans). A drafter's features
+are a step-bytes input; a target's tap cells a store-cells slot of the
+segment's last `outputs` rows (`InputSlot::outputs`); a frozen read's
+mask the producer's frozen policy (`MaskPolicy::kFrozen`: the cells hold
+the positions before the segment's first row) or a host mask whose slot
+says so (`InputCells::frozen`, behind `LowerOptions::frozen_host_masks`
+until the engine's staging builds it, G2c). A drafter head's next
+features are each owner's output slot after its logits.
+
+Checked (`ggml_lower_gemma4_test`, CPU): at every shape today's runner
+measures at setup under each Gemma 4 serving recipe (within 4,096 and two
+owners, within 8,192 and four, and outside the envelope, at the recipes'
+chunk bounds), with device and host masks (324 lowered steps of each of
+the 26B-A4B and 31B, 60 with owner attention), the step planned under the
+gemma4 mapping's policy for that envelope and lowered launches
+`BuildGemma4Graph`'s GGML nodes over the same operands (each view's
+extents, strides and offset of the same storage) with the same operation
+parameters and flags, and PlanGraph's steps over them are the builder's,
+in order (as multisets where the builder's owner transform reorders
+independent nodes); the assistant's draft steps lower to
+`BuildGemma4AssistantGraph`'s with its host masks (frozen), and with
+device masks to the frozen producer. On spark-b, the model runner over
+the component sources runs the real 26B-A4B and 31B through one script
+of waves per recipe (joined prefill, ragged, single-owner and state-only
+chunks, one owner past its ring, joined one-row decodes of two or four
+owners returning logits and device-chosen tokens, captured and
+replayed), each owner's outputs bit for bit today's runner's; and, as
+stage 1 of the same runner with the target's state borrowed, two joined
+draft passes of each assistant over its target's cache from today's
+first feature and anchors, each pass's logits and next features bit for
+bit today's assistant's (`component_runner_gemma4_gpu_test`).
 
 ## Components
 
@@ -567,8 +668,11 @@ route and reduce shapes parameters (`experts`, `used`, `expert_hidden`,
 `normalize`, `expert_scales`, `stacked` gate-up arrays); its fragment is
 built of three pieces with their own scalar references (`moe.h`: the
 router, emitting `ir::kRoute` after Gemma's scaled-norm router input; the
-routed experts' `kMatMulId` products, GLU and ordered `kExpertReduce`;
-the gated feed-forward product `ffn.glu` shares), and it splits by
+routed experts' `kMatMulId` products, GLU, each slot's expert scale
+gathered as the builders gather it (the scales' rows repeated a row each,
+then each row's selected ones: slice G2b) and the ordered
+`kExpertReduce`; the gated feed-forward product `ffn.glu` shares), and
+it splits by
 experts (EP; the partitioner does not yet pass a stacked array's halves,
 `kView` of an expert-local value). `embedding.projected` is the
 assistant's input: its target's token table's rows (a weight of another
@@ -593,8 +697,8 @@ stored per owner with outputs at their positions' cells of the
 drafter's tensor (`InputKind::kOutputCells`), which needs the drafter's
 layout (`Bindings::stages`). `CheckStateWrites`, run on every built step,
 refuses a store into a borrowed tensor or into another stage's tensor
-that is not a tap its target writes. The GGML lowering refuses the new
-inputs and frozen masks until slice G2c wires them.
+that is not a tap its target writes. The GGML lowering takes the new
+inputs and frozen masks (slice G2b, above).
 
 The structural comparison (`components_gemma4_order_test`) holds the
 26B-A4B and 31B steps to `BuildGemma4Graph` with its default options
@@ -602,12 +706,13 @@ but `narrow_final` (the components narrow) and
 the assistant's draft steps to `BuildGemma4AssistantGraph`, node for
 node, with host and device masks. What differs: the router's selection
 and the experts' reduce are the composite ops their GGML runs decompose
-to (soft_max through the weights' reshape; the scales' gather, the two
-products, the slot views and the ordered adds), compared by position,
-outside sources and parameters; patterns fuse them (G2b) and the
-lowering expands them. Not compared: the builders' options (the Gemma
-route and reduce fusions, owner-root attention and common-width reads,
-rope-store, shared Q8 inputs), which are patterns and selection.
+to (soft_max through the weights' reshape; the two products by each
+slot's gathered scale and weight, the slot views and the ordered adds),
+compared by position, outside sources (the reduce's ids aside) and
+parameters. Not compared: the builders' options (the Gemma route and
+reduce fusions, owner-root attention and common-width reads,
+rope-store, shared Q8 inputs), which are patterns and selection, held
+to the builders by the lowering's comparison (slice G2b, above).
 
 ### The model spec
 

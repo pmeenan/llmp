@@ -11,10 +11,11 @@
 // CPU build plans for the GGML module (the lowering's structural tests)
 // with the capabilities a CUDA build declares.
 //
-// Groups. GGML's matrix product and its flash attention are families that
-// upstream's routing picks among by device and shape (ggml_cuda_mul_mat,
-// the attention case selection; DeviceChoices). Their members declare the
-// group ("ggml.mul_mat", "ggml.flash_attn_ext"): the planner records the
+// Groups. GGML's matrix product, its expert product and its flash attention
+// are families that upstream's routing picks among by device and shape
+// (ggml_cuda_mul_mat, ggml_cuda_mul_mat_id, the attention case selection;
+// DeviceChoices). Their members declare the group ("ggml.mul_mat",
+// "ggml.mul_mat_id", "ggml.flash_attn_ext"): the planner records the
 // group, and the lowering (lower.h) resolves it with PlanGraph, which names
 // the member. A member's own predicate only says the family takes the
 // node; where the planner's choice depends on the routing itself (a

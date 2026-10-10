@@ -1489,7 +1489,7 @@ each is checked against the design as M3.6 proceeds.
       - [x] Components, patterns and the mapping.
       - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Migrate Gemma4** 26B-A4B and 31B with their assistants.
-      - [ ] Components, patterns and the mapping.
+      - [x] Components, patterns and the mapping.
             *2026-10-09:* the components and mappings landed (slice G2a:
             `ffn.moe`, `attention.borrowed`, `embedding.projected`,
             `scale.learned`, Gemma 4's attention and head forms; the
@@ -1497,9 +1497,16 @@ each is checked against the design as M3.6 proceeds.
             drafter stage composed with its target; [as
             built](engine-components.md#initial-catalog)), at parity with
             today's builders' graphs (the narrowed final layer included;
-            the assistant's head reads every row and does not narrow);
-            the patterns (Gemma route/reduce, owner roots, common-width
-            reads) are slice G2b's.
+            the assistant's head reads every row and does not narrow).
+            The patterns and lowering (slice G2b: the fused routing and
+            reduce as `route_reduce`, owner attention's Gemma 4 forms, the
+            narrowed final layer as a policy option, the gemma4 mapping's
+            policy per serving envelope, `kMatMulId`, the drafter's
+            features, tap cells and frozen masks; [as
+            built](engine-components.md#the-graph-ir)) plan and lower
+            every setup shape of today's three recipes to today's
+            launches, and the 26B-A4B, 31B and both assistants' draft
+            passes run bit for bit today's through the model runner.
       - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Migrate Qwen3.8**: native NVFP4/MXFP8 with MTP, and GGUF.
       - [ ] Components, patterns and the mapping.

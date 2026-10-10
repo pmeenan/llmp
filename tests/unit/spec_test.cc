@@ -666,12 +666,34 @@ TEST(MappingTest, Gemma4SpecsFromTheirTablesAndProfiles) {
     auto back = FromJson(ToJson(*spec));
     ASSERT_TRUE(back.has_value()) << back.error();
     EXPECT_EQ(*back, *spec);
-    // The default policy: today's recipe's selection (the quantized GLU on
-    // 31B only).
-    const auto policy = DefaultPolicy(mappings::Gemma4Mapping(), *values);
-    ASSERT_TRUE(policy.has_value());
-    EXPECT_EQ(policy->contains("disable mul_mat_glu"), p.experts != 0);
-    EXPECT_TRUE(policy->contains("disable rope_store"));
+    // The default policies: today's recipes' selections. Within the
+    // envelope (8,192 cells, four owners) the quantized GLU on 31B only,
+    // the fused routing and reduce on 26B-A4B, every row to the head and
+    // owner attention, bounded roots within 4,096 and two owners; outside
+    // it (or with the envelope unknown) the narrowed head and the fused
+    // norm-mul alone.
+    const auto bounded =
+        DefaultPolicy(mappings::Gemma4Mapping(), *values, {.context = 4096, .slots = 2});
+    const auto envelope =
+        DefaultPolicy(mappings::Gemma4Mapping(), *values, {.context = 8192, .slots = 4});
+    const auto outside =
+        DefaultPolicy(mappings::Gemma4Mapping(), *values, {.context = 8448, .slots = 2});
+    const auto unknown = DefaultPolicy(mappings::Gemma4Mapping(), *values);
+    ASSERT_TRUE(bounded && envelope && outside && unknown);
+    for (const auto& policy : {*bounded, *envelope}) {
+      EXPECT_EQ(policy.contains("disable mul_mat_glu"), p.experts != 0);
+      EXPECT_TRUE(policy.contains("disable rope_store"));
+      EXPECT_TRUE(policy.contains("disable narrow_final"));
+      EXPECT_FALSE(policy.contains("disable owner_attention"));
+      EXPECT_FALSE(policy.contains("disable route_reduce"));
+    }
+    EXPECT_FALSE(bounded->contains("disable owner_bounded_roots"));
+    EXPECT_TRUE(envelope->contains("disable owner_bounded_roots"));
+    EXPECT_EQ(*outside, *unknown);
+    EXPECT_TRUE(outside->contains("disable owner_attention"));
+    EXPECT_TRUE(outside->contains("disable mul_mat_glu"));
+    EXPECT_FALSE(outside->contains("disable narrow_final"));
+    EXPECT_EQ(outside->contains("disable route_reduce"), p.experts != 0);
   }
 }
 

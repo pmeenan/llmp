@@ -1265,19 +1265,26 @@ TEST_F(ExecTest, ExpertReductionScalesWeighsAndSumsSlots) {
   const TensorId w = F({2, 1});
   const TensorId ids = I({2, 1});
   const TensorId scale = F({3});
+  const TensorId slots = F({1, 2, 1});
   const TensorId plain = b.ExpertReduce(x, w, {}, {});
   const TensorId scaled = b.ExpertReduce(x, w, ids, scale);
+  // Each slot's scale gathered already (the ids then only name experts).
+  const TensorId gathered = b.ExpertReduce(x, w, {}, slots);
   b.Output(plain);
   b.Output(scaled);
+  b.Output(gathered);
   ASSERT_TRUE(Finish());
   Set(x, {1, 2, 10, 20});
   Set(w, {0.5f, 0.25f});
   SetInts(ids, {2, 0});
   Set(scale, {3, 5, 7});
+  Set(slots, {7, 3});
   ASSERT_TRUE(Run());
   ExpectNear(Get(plain), D({0.5 + 2.5, 1 + 5}), 1e-7, "plain");
   ExpectNear(Get(scaled), D({(1 * 7 * 0.5) + (10 * 3 * 0.25), (2 * 7 * 0.5) + (20 * 3 * 0.25)}),
              1e-7, "scaled");
+  ExpectNear(Get(gathered), D({(1 * 7 * 0.5) + (10 * 3 * 0.25), (2 * 7 * 0.5) + (20 * 3 * 0.25)}),
+             1e-7, "gathered");
 }
 
 // ---------------------------------------------------------------- recurrences
@@ -1866,6 +1873,9 @@ TEST(ReferenceDecompositionTest, CompositeOpsEqualTheirDecompositions) {
     b.Output(r[1]);
   }
   b.Output(b.ExpertReduce(in({5, 2, 3}), in({2, 3}), index({2, 3}, {1, 0, 2, 2, 0, 1}), in({3})));
+  // Each slot's scale gathered already.
+  b.Output(
+      b.ExpertReduce(in({5, 2, 3}), in({2, 3}), index({2, 3}, {1, 0, 2, 2, 0, 1}), in({1, 2, 3})));
   // The convolution and the recurrence.
   b.Output(b.SsmConv(in({3 + 4, 5, 1}), in({4, 5})));
   const ir::Outputs gdn =

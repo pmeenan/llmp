@@ -123,12 +123,12 @@ class StepBuilder {
   // another stage's artifact, is that stage's WeightRef of it.
   ir::TensorId Weight(const Instance& in, std::uint16_t role, const format::TensorFormat& format,
                       std::vector<std::pair<std::string, format::PartRole>> parts,
-                      std::optional<ir::WeightRef> owner = std::nullopt) {
+                      std::optional<ir::WeightRef> owner = std::nullopt, bool experts = false) {
     const ir::WeightRef ref = owner.value_or(ir::WeightRef{.stage = stage_,
                                                            .component = in.index,
                                                            .role = role,
                                                            .layer = in.layer,
-                                                           .expert_array = false});
+                                                           .expert_array = experts});
     const std::string name =
         parts.empty() ? std::string{} : std::format("{}/{}", ref.stage, parts.front().first);
     if (!name.empty()) {
@@ -276,7 +276,8 @@ struct TensorTables {
 struct RoleFormat {
   format::TensorFormat format;
   std::vector<std::pair<std::string, format::PartRole>> parts;
-  std::string stage;  // the binding's (empty: its own stage's)
+  std::string stage;     // the binding's (empty: its own stage's)
+  bool experts = false;  // an expert array's (its WeightRef's expert_array)
 };
 std::expected<std::vector<std::optional<RoleFormat>>, std::string> RoleFormats(
     const Instance& in, const TensorTables& tables) {
@@ -302,7 +303,7 @@ std::expected<std::vector<std::optional<RoleFormat>>, std::string> RoleFormats(
     }
     auto& slot = out[*role];
     if (!slot) {
-      slot = RoleFormat{.format = t->format, .parts = {}, .stage = w.stage};
+      slot = RoleFormat{.format = t->format, .parts = {}, .stage = w.stage, .experts = w.experts};
     } else if (slot->format != t->format || slot->stage != w.stage) {
       return Refused(
           std::format("{} role {}'s parts disagree on its format", in.def->kind, w.role));
@@ -955,7 +956,8 @@ std::optional<std::pair<std::size_t, std::size_t>> NarrowPoint(const StageInstan
 
 std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std::uint16_t stage,
                                                 const planner::StepShape& shape,
-                                                const Bindings& bindings) {
+                                                const Bindings& bindings,
+                                                const StepOptions& options) {
   if (shape.stage != stage) return Refused("a shape of another stage");
   if (auto checked = CheckShape(shape); !checked) return std::unexpected(checked.error());
   auto instances = InstancesOf(spec, stage);
@@ -1076,7 +1078,8 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
                  base::Check(role < used.size() && used[role], "a fragment uses its roles");
                  if (!leaves[role].valid()) {
                    const auto& rf = *(*formats)[role];
-                   leaves[role] = sb.Weight(in, role, rf.format, rf.parts, owners[role]);
+                   leaves[role] =
+                       sb.Weight(in, role, rf.format, rf.parts, owners[role], rf.experts);
                  }
                  return leaves[role];
                },
@@ -1107,9 +1110,10 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
   }
   // The head reads only its output rows: the stage's last component that
   // mixes rows narrows its output to them when it can (the Gemma builders'
-  // narrow_final), and what follows it, row-local, runs at their width.
+  // narrow_final), and what follows it, row-local, runs at their width;
+  // unless the options keep every row (a policy without narrow_final).
   const std::optional<std::pair<std::size_t, std::size_t>> narrow_at =
-      head ? NarrowPoint(*instances) : std::nullopt;
+      head && options.narrow ? NarrowPoint(*instances) : std::nullopt;
   bool narrowed = false;
   for (std::size_t l = 0; l < instances->layers.size(); ++l) {
     for (std::size_t c = 0; c < instances->layers[l].size(); ++c) {

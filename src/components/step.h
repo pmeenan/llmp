@@ -297,9 +297,17 @@ std::expected<void, std::string> CheckStateWrites(const StepGraph& step, std::ui
 // state. Greedy segments must be all of them, each with one output. A
 // target's step with outputs writes the taps its drafters read (each
 // segment's outputs within the tap's cells), which needs their layouts.
+// With `narrow` off (a policy without the planner's narrow_final option,
+// planner/pattern.h), a step with a head does not narrow: every row runs
+// to the final norm and the head gathers its rows there (today's Gemma 4
+// recipe without frontier_head).
+struct StepOptions {
+  bool narrow = true;
+};
 std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std::uint16_t stage,
                                                 const planner::StepShape& shape,
-                                                const Bindings& bindings);
+                                                const Bindings& bindings,
+                                                const StepOptions& options = {});
 
 // One instance's fragment as a step of its own, for its tests and ports:
 // its input stream an input (kStream; none for an embedding), its weights

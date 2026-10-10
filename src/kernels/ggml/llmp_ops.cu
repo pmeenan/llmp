@@ -46,6 +46,13 @@ __global__ void Gemma4MaskKernel(const std::int32_t* positions, Bits* mask, std:
         const std::int64_t held = cell + ((end - 1 - cell) / capacity) * capacity;
         visible = held > position || std::int64_t{position} - held < window;
       }
+    } else if (policy == static_cast<int>(MaskPolicy::kFrozen)) {
+      // The latest position before the segment's first the cell holds.
+      const std::int64_t start = positions[first];
+      if (start >= 0 && start <= limit && position >= start && position < limit && cell < start) {
+        const std::int64_t held = cell + ((start - 1 - cell) / capacity) * capacity;
+        visible = window == 0 || std::int64_t{position} - held < window;
+      }
     } else if (position >= 0 && position < limit) {
       if (window == 0)
         visible = cell <= position && cell < limit;

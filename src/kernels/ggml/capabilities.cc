@@ -19,6 +19,8 @@
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "ir/op.h"
+#include "kernels/ggml/gemma_moe.h"
+#include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/kv_quant.h"
@@ -147,6 +149,18 @@ constexpr std::array<Rule, 4> kOwnerAttention = {
      {.operand = 3, .encodings = kF16, .layouts = kDense}}};
 constexpr std::array<Rule, 1> kMaskPositions = {
     {{.operand = 0, .encodings = kI32, .layouts = kDense}}};
+// kMatMulId's (as, b, ids).
+constexpr std::array<Rule, 3> kQuantExperts = {
+    {{.operand = 0, .encodings = kQuantized, .layouts = kGgml},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kI32, .layouts = kDense}}};
+// kRoute's logits; kExpertReduce's (x, w, ids, scale).
+constexpr std::array<Rule, 1> kRouteLogits = kF32In;
+constexpr std::array<Rule, 4> kScaledReduce = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kI32, .layouts = kDense},
+     {.operand = 3, .encodings = kF32, .layouts = kDense}}};
 
 // ------------------------------------------------------------- predicates
 
@@ -173,6 +187,9 @@ const ex::OperandFormat* Operand(const ex::CapabilityQuery& q, std::uint8_t oper
 
 bool Built(const ex::CapabilityQuery& q) { return CompiledFor(q.arch); }
 
+// The GB10 (sm_121), the one device Gemma 4's owner attention runs on today.
+constexpr std::uint32_t kOwnerGemma4Arch = 121;
+
 // GGML's rope_ext over positions (not a table), not inverted (rope_back is
 // ggml.rope.ext's), in a mode the lowering builds.
 bool PlainRope(const ir::RopeParams& r) {
@@ -192,10 +209,14 @@ bool AcceptsRopeExt(const ex::CapabilityQuery& q) {
 }
 
 // CheckGemmaNormRope's (gemma_norm.cc): a full NEOX rotation of D 256 or
-// 512 without frequency factors, its parameters finite and positive.
+// 512, its parameters finite and positive, with F32 frequency factors or
+// none (upstream's fused launcher reads the rotation's; Gemma 4's global
+// layers).
 bool AcceptsNormRope(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::NormRopeParams>(q);
-  if (!Built(q) || !p || (q.k != 256 && q.k != 512) || Has(q, 3)) {
+  const ex::OperandFormat* freq = Operand(q, 3);
+  if (!Built(q) || !p || (q.k != 256 && q.k != 512) ||
+      (freq != nullptr && (freq->encoding != Encoding::kF32 || freq->layout != Layout::kDense))) {
     return false;
   }
   const ir::RopeParams& r = p->rope;
@@ -279,7 +300,8 @@ bool AcceptsMask(const ex::CapabilityQuery& q) {
 // a softcap and 16,384 with it. Caches narrower than the mask (bounded
 // roots) only for two owners alone at one row, each a multiple of 256, the
 // widest the mask's (the kernel's whole-twelve bounded carriers are not
-// declared: no recipe selects them).
+// declared: no recipe selects them). 16 or 32 heads or D 512 (Gemma 4's
+// forms) on the GB10 alone.
 bool AcceptsOwnerAttention(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::OwnerAttnParams>(q);
   if (!Built(q) || !p || p->owners < 1 || p->owners > 4 ||
@@ -308,6 +330,10 @@ bool AcceptsOwnerAttention(const ex::CapabilityQuery& q) {
   if ((d != 256 && d != 512) || qf->ne[3] != n ||
       !(heads == 16 || heads == 32 || (d == 256 && heads == 8)))
     return false;
+  // Gemma 4's forms (16 or 32 heads, or D 512) are qualified on the GB10
+  // only: today's runner keeps independent attention elsewhere
+  // (gemma4_runner.cc Setup's attention mode).
+  if (!(d == 256 && heads == 8) && q.arch != kOwnerGemma4Arch) return false;
   const bool cap50 = a.softcap == 50.0F;
   if (cap50 && (d != 256 || heads != 8 || n != 2 || cohort != 2)) return false;
   const std::uint64_t kv_heads = heads / (d == 256 ? 2 : 8);
@@ -336,6 +362,33 @@ bool AcceptsOwnerAttention(const ex::CapabilityQuery& q) {
     widest = std::max(widest, kv->ne[1]);
   }
   return !bounded || (rows == 1 && lone_pair && widest == cells);
+}
+
+// GemmaRoutingFusionAt's (gemma_moe_fusion.cc) over kRoute: F32 logits of
+// 128 experts and 1 to kGemmaMoeMaxRows rows, softmax, the top 8 renormalized
+// (the clamp 2^-14 is the op's), scale 1, no bias, table or tokens.
+bool AcceptsGemmaRoute(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::RouteParams>(q);
+  const ex::OperandFormat* logits = Operand(q, 0);
+  return Built(q) && p && logits != nullptr && p->kind == ir::RouteKind::kSoftmaxTopK &&
+         p->normalize && p->experts == 128 && p->used == 8 && p->scale == 1.0F && !Has(q, 1) &&
+         !Has(q, 2) && !Has(q, 3) && logits->ne[0] == 128 && logits->ne[1] >= 1 &&
+         logits->ne[1] <= static_cast<std::uint64_t>(kGemmaMoeMaxRows) && logits->ne[2] == 1 &&
+         logits->ne[3] == 1;
+}
+// GemmaReductionFusionAt's over kExpertReduce: the experts' F32 outputs
+// [2816, 8, rows] of 1 to kGemmaMoeMaxRows rows, the weights [8, rows] and
+// each slot's scale already gathered [1, 8, rows] (the ids only name the
+// slots' experts).
+bool AcceptsGemmaReduce(const ex::CapabilityQuery& q) {
+  const ex::OperandFormat* x = Operand(q, 0);
+  const ex::OperandFormat* w = Operand(q, 1);
+  const ex::OperandFormat* s = Operand(q, 3);
+  if (!Built(q) || x == nullptr || w == nullptr || s == nullptr) return false;
+  const std::uint64_t rows = x->ne[2];
+  using Ne = std::array<std::uint64_t, 4>;
+  return rows >= 1 && rows <= static_cast<std::uint64_t>(kGemmaMoeMaxRows) &&
+         x->ne == Ne{2816, 8, rows, 1} && w->ne == Ne{8, rows, 1, 1} && s->ne == Ne{1, 8, rows, 1};
 }
 
 bool AcceptsArgmax(const ex::CapabilityQuery& q) { return Built(q); }
@@ -397,6 +450,7 @@ constexpr ir::OpKey F(FusedKind kind) { return ir::Fused(kind); }
 
 constexpr std::string_view kMulMatGroup = "ggml.mul_mat";
 constexpr std::string_view kAttentionGroup = "ggml.flash_attn_ext";
+constexpr std::string_view kMulMatIdGroup = "ggml.mul_mat_id";
 constexpr std::string_view kBuilt = "; selectable for the build's SASS architectures";
 constexpr std::string_view kMmvqText =
     "; selectable where upstream's ggml_cuda_should_use_mmvq takes the product";
@@ -433,7 +487,7 @@ const std::array kEntries = {
     Entry{kGemmaNormRopeName, Operation::kRmsNormMulRope,
           Cap(F(FusedKind::kRmsNormMulRope), kNormMulRope, &AcceptsNormRope, true),
           "; selectable for the build's SASS architectures: a full NEOX rotation of D 256 or 512 "
-          "without frequency factors, its parameters finite"},
+          "with F32 frequency factors or none, its parameters finite"},
     Entry{kGemmaNormAddName, Operation::kRmsNormMulAdd,
           Cap(F(FusedKind::kRmsNormMulAdd), kNormMulAdd, &AcceptsNormAdd, true),
           "; selectable for the build's SASS architectures at widths 2304, 2560, 2816 and 5376"},
@@ -469,6 +523,21 @@ const std::array kEntries = {
     Entry{"ggml.mul_mat.fwht", Operation::kMatMul,
           Cap(P(Op::kMatMul), kFloatProduct, &AcceptsHadamard, false, {}, 3),
           "; selectable for the build's SASS architectures: a square Hadamard hint"},
+    // Routed experts: the expert products by upstream's routing (MMVQ or
+    // MMQ, ggml_cuda_mul_mat_id), and Gemma's fused routing and scaled
+    // reduce (gemma_moe_fusion.h).
+    Entry{kMulMatIdVecQ, Operation::kMulMatId,
+          Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup, 1), kBuilt},
+    Entry{kMulMatIdQ, Operation::kMulMatId,
+          Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup), kBuilt},
+    Entry{kGemmaRouteName, Operation::kGemmaRoute,
+          Cap(P(Op::kRoute), kRouteLogits, &AcceptsGemmaRoute, true),
+          "; selectable for the build's SASS architectures: a normalized softmax top 8 of 128 "
+          "experts, scale 1, of at most 8,192 rows"},
+    Entry{kGemmaReduceName, Operation::kGemmaScaledReduce,
+          Cap(P(Op::kExpertReduce), kScaledReduce, &AcceptsGemmaReduce, true),
+          "; selectable for the build's SASS architectures: 8 slots of 2,816 values, each slot's "
+          "scale gathered, of at most 8,192 rows"},
     Entry{"llmp.q8_1", Operation::kQuantize,
           Cap(P(Op::kPrepare), kF32In, &AcceptsAny, true, {}, 0, {.k_multiple = 32}),
           "; selectable for the build's SASS architectures: rows of whole Q8_1 blocks"},
@@ -507,7 +576,8 @@ const std::array kEntries = {
           Cap(F(FusedKind::kOwnerAttention), kOwnerAttention, &AcceptsOwnerAttention, false),
           "; selectable for the build's SASS architectures: CheckFlashAttnOwners' Gemma "
           "cohorts, head sizes, cells and rows over independent F16 caches, a softcap of 0 or "
-          "50, and bounded roots for two owners alone"},
+          "50, and bounded roots for two owners alone; 16 or 32 heads or D 512 (Gemma 4's) on "
+          "sm_121 only"},
     Entry{kGemma4MaskName, Operation::kFill,
           Cap(P(Op::kMaskBuild), kMaskPositions, &AcceptsMask, true),
           "; selectable for the build's SASS architectures: causal and window masks"},

@@ -26,7 +26,9 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   } else if (options.mapping != nullptr) {
     // The mapping's rule for this source's values; none: the planner's
     // default.
-    auto text = spec::DefaultPolicy(*options.mapping, options.values);
+    auto text =
+        spec::DefaultPolicy(*options.mapping, options.values,
+                            {.context = options.bindings.state->context, .slots = options.slots});
     if (!text) {
       return std::unexpected(std::format("mapping {}'s planning policy: {}",
                                          options.mapping->architecture, text.error()));
@@ -59,7 +61,10 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
     return std::unexpected(
         std::format("a step of stage {} from stage {}'s source", shape.stage, o_.stage));
   }
-  auto step = components::BuildStep(*o_.spec, o_.stage, shape, o_.bindings);
+  // The narrowed final layer is the policy's (planner/pattern.h
+  // narrow_final).
+  auto step = components::BuildStep(*o_.spec, o_.stage, shape, o_.bindings,
+                                    {.narrow = !planner::Disabled(policy_, "narrow_final")});
   if (!step) return std::unexpected(std::move(step.error()));
   // Every input is staged but the cells' positions, which only masks read:
   // a lowering builds them on the device or folds them into a host mask.

@@ -244,6 +244,27 @@ std::optional<Match> NormMulAddMatch(const MatchContext& c, NodeId anchor) {
       !SameShape(c.tensor(a.out[0]), c.tensor(product))) {
     return std::nullopt;
   }
+  // As today's plans take it (GGML's GemmaNormAddFusionAt and its gathered
+  // form): the norm, its mul and the add one after another, or the
+  // residual's gather between the mul and the add (the narrowed final
+  // layer). Where two normed sums meet in one add (Gemma 4's routed and
+  // dense branches), the later one's.
+  // (Leaves come between nodes in the IR but in no GGML graph.)
+  const auto leaves_between = [&](NodeId from, NodeId to, NodeId besides) {
+    for (std::uint32_t k = from.v + 1; k < to.v; ++k) {
+      const Op op = c.node(NodeId{k}).key.op;
+      if (NodeId{k} != besides && op != Op::kInput && op != Op::kWeight && op != Op::kState) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const NodeId gather = c.graph().producer(residual);
+  const bool gathered = c.node(gather).key == Prim(Op::kGetRows) && gather > nm->mul;
+  if (!leaves_between(nm->norm, nm->mul, NodeId{}) ||
+      !leaves_between(nm->mul, *add, gathered ? gather : NodeId{})) {
+    return std::nullopt;
+  }
   Match m =
       Fusion({nm->norm, nm->mul, *add}, {nm->x, nm->w, residual}, ir::NormParams{.eps = nm->eps});
   if (!Implemented(c, ir::Fused(FusedKind::kRmsNormMulAdd), m.sources, a.outputs(), m.params)) {
@@ -498,6 +519,9 @@ struct OwnerPlan final : MatchDetail {
     TensorId q{};    // the joined queries [D, H, rows]
     TensorId out{};  // the joined rows its readers read [Dv · H, rows]
     std::size_t kind = 0;
+    // Its head sizes and KV heads (layers differ: Gemma 4's local and
+    // global ones).
+    std::uint64_t kd = 0, vd = 0, kv_heads = 0;
     std::vector<TensorId> k, v;       // each owner's cache view [D, Hk, C_o]
     std::vector<int> k_tail, v_tail;  // into tails, or -1
     std::uint16_t component = 0;
@@ -514,8 +538,11 @@ struct OwnerPlan final : MatchDetail {
   std::vector<std::int32_t> at;
   std::uint32_t owners = 0;
   std::uint64_t rows = 0;  // each owner's
-  std::uint64_t kd = 0, vd = 0, heads = 0, kv_heads = 0;
+  std::uint64_t heads = 0;
   ir::AttnParams attn{};
+  // The masks joined one after another (owner_chained_masks), else in
+  // pairs (at most four owners).
+  bool chained = true;
 };
 
 constexpr std::uint32_t kOwnerGroup = 4;  // the owners of one node at most (op.h)
@@ -620,7 +647,7 @@ bool OwnerNodesImplemented(const MatchContext& c, const OwnerPlan& plan, bool bo
     for (std::uint32_t first = 0; first < n; first += kOwnerGroup) {
       const std::uint32_t active = std::min(kOwnerGroup, n - first);
       std::vector<ir::TensorDesc> descs;
-      descs.push_back(DescOf(format::Encoding::kF32, {plan.kd, plan.rows, plan.heads, active}));
+      descs.push_back(DescOf(format::Encoding::kF32, {layer.kd, plan.rows, plan.heads, active}));
       descs.push_back(DescOf(format::Encoding::kF16, {kind.cells, kind.rows, 1, active}));
       for (const auto* caches : {&layer.k, &layer.v}) {
         for (std::uint32_t o = first; o < first + active; ++o) {
@@ -630,7 +657,7 @@ bool OwnerNodesImplemented(const MatchContext& c, const OwnerPlan& plan, bool bo
         }
       }
       const ir::TensorDesc out =
-          DescOf(format::Encoding::kF32, {plan.vd, plan.heads, plan.rows, active});
+          DescOf(format::Encoding::kF32, {layer.vd, plan.heads, plan.rows, active});
       std::vector<const ir::TensorDesc*> sources;
       sources.reserve(descs.size());
       for (const ir::TensorDesc& d : descs) {
@@ -710,18 +737,15 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
       return std::nullopt;
     }
     // One form for every layer: the owners, their rows, the heads, the
-    // attention's parameters.
+    // attention's parameters (each layer its own head sizes).
     const ir::Node& a0 = c.node(first->attention);
     const auto attn = a0.Params<ir::AttnParams>();
     if (plan->owners == 0) {
       plan->owners = n;
       plan->rows = first->query_rows;
-      plan->kd = q.ne(0);
       plan->heads = q.ne(1);
-      plan->vd = c.tensor(first->v).ne(0);
-      plan->kv_heads = c.tensor(first->k).ne(1);
       plan->attn = attn;
-    } else if (plan->owners != n || plan->kd != q.ne(0) || plan->heads != q.ne(1) ||
+    } else if (plan->owners != n || plan->heads != q.ne(1) ||
                std::memcmp(&plan->attn, a0.params.data(), sizeof(attn)) != 0) {
       return std::nullopt;
     }
@@ -729,14 +753,17 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
     layer.q = first->q;
     layer.out = joined;
     layer.component = a0.component;
+    layer.kd = q.ne(0);
+    layer.vd = c.tensor(first->v).ne(0);
+    layer.kv_heads = c.tensor(first->k).ne(1);
     std::vector<TensorId> masks;
     std::vector<NodeId> group;
     for (const OwnerAttention& o : owners) {
       const ir::TensorDesc& k = c.tensor(o.k);
       const ir::TensorDesc& v = c.tensor(o.v);
       const ir::TensorDesc& mask = c.tensor(o.mask);
-      if (o.query_rows != plan->rows || k.ne(0) != plan->kd || v.ne(0) != plan->vd ||
-          k.ne(1) != plan->kv_heads || v.ne(1) != plan->kv_heads || k.ne(2) != mask.ne(0) ||
+      if (o.query_rows != plan->rows || k.ne(0) != layer.kd || v.ne(0) != layer.vd ||
+          k.ne(1) != layer.kv_heads || v.ne(1) != layer.kv_heads || k.ne(2) != mask.ne(0) ||
           v.ne(2) != mask.ne(0) ||
           std::memcmp(&plan->attn, c.node(o.attention).params.data(), sizeof(attn)) != 0) {
         return std::nullopt;
@@ -791,20 +818,36 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
   if (!decode && !prefill) {
     return std::nullopt;
   }
+  // The policy's forms (the option patterns).
+  const Policy& policy = c.view().policy();
+  plan->chained = !Disabled(policy, "owner_chained_masks");
+  if (!plan->chained && n > kOwnerGroup) {
+    return std::nullopt;  // masks in pairs: one node's owners
+  }
   plan->kind_order.resize(plan->kinds.size());
   for (std::size_t k = 0; k < plan->kinds.size(); ++k) {
     plan->kind_order[k] = k;
   }
   std::ranges::sort(plan->kind_order, {},
                     [&](std::size_t k) { return g.producer(plan->kinds[k].masks.front()); });
-  // Each cache at its own width, else every cache at its kind's: the
-  // zeros an owner's cache takes (K's, and V's where its head size
-  // differs), owner by owner, kinds in mask order.
-  const bool padded = !OwnerNodesImplemented(c, *plan, true);
-  if (padded && !OwnerNodesImplemented(c, *plan, false)) {
-    return std::nullopt;
+  // Owners of equal reads in every kind; otherwise each cache at its own
+  // width (bounded roots), else every cache at its kind's: the zeros an
+  // owner's cache takes (K's, and V's where its head size differs, for
+  // each head size and KV heads of the kind's layers), owner by owner,
+  // kinds in mask order.
+  bool padded = false;
+  if (std::ranges::all_of(plan->kinds, equal_reads)) {
+    if (!OwnerNodesImplemented(c, *plan, true)) {
+      return std::nullopt;
+    }
+  } else if (Disabled(policy, "owner_bounded_roots") || !OwnerNodesImplemented(c, *plan, true)) {
+    if (Disabled(policy, "owner_padded_reads") || !OwnerNodesImplemented(c, *plan, false)) {
+      return std::nullopt;
+    }
+    padded = true;
   }
-  std::vector<std::vector<std::pair<std::uint64_t, int>>> tails(plan->kinds.size() * n);
+  using Dims = std::pair<std::uint64_t, std::uint64_t>;  // head size, KV heads
+  std::vector<std::vector<std::pair<Dims, int>>> tails(plan->kinds.size() * n);
   if (padded) {
     for (std::uint32_t o = 0; o < n; ++o) {
       for (const std::size_t k : plan->kind_order) {
@@ -814,26 +857,31 @@ std::optional<Match> OwnerAttentionMatch(const MatchContext& c, NodeId anchor) {
           continue;
         }
         auto& list = tails[(k * n) + o];
-        for (const std::uint64_t d : {plan->kd, plan->vd}) {
-          if (std::ranges::contains(list, d, &std::pair<std::uint64_t, int>::first)) {
+        for (const OwnerPlan::Layer& layer : plan->layers) {
+          if (layer.kind != k) {
             continue;
           }
-          list.emplace_back(d, static_cast<int>(plan->tails.size()));
-          plan->tails.push_back(
-              {.owner = o, .kind = k, .ne = {d, plan->kv_heads, kind.cells - read}});
+          for (const Dims d : {Dims{layer.kd, layer.kv_heads}, Dims{layer.vd, layer.kv_heads}}) {
+            if (std::ranges::contains(list, d, &std::pair<Dims, int>::first)) {
+              continue;
+            }
+            list.emplace_back(d, static_cast<int>(plan->tails.size()));
+            plan->tails.push_back(
+                {.owner = o, .kind = k, .ne = {d.first, d.second, kind.cells - read}});
+          }
         }
       }
     }
   }
-  const auto tail = [&](std::size_t k, std::uint32_t o, std::uint64_t d) {
+  const auto tail = [&](std::size_t k, std::uint32_t o, Dims d) {
     const auto& list = tails[(k * n) + o];
-    const auto it = std::ranges::find(list, d, &std::pair<std::uint64_t, int>::first);
+    const auto it = std::ranges::find(list, d, &std::pair<Dims, int>::first);
     return it == list.end() ? -1 : it->second;
   };
   for (OwnerPlan::Layer& layer : plan->layers) {
     for (std::uint32_t o = 0; o < n; ++o) {
-      layer.k_tail.push_back(tail(layer.kind, o, plan->kd));
-      layer.v_tail.push_back(tail(layer.kind, o, plan->vd));
+      layer.k_tail.push_back(tail(layer.kind, o, {layer.kd, layer.kv_heads}));
+      layer.v_tail.push_back(tail(layer.kind, o, {layer.vd, layer.kv_heads}));
     }
   }
   // Each layer's intermediates the step neither returns nor keeps, and its
@@ -961,6 +1009,9 @@ void OwnerRewrite(RewriteContext& c, const Match& m, std::size_t index) {
       const OwnerPlan::Kind& kind = plan.kinds[k];
       b.SetComponent(kind.component);
       b.SetJoined();
+      // Each mask padded with -inf cells to the widest; chained, each joined
+      // as it is made.
+      std::vector<TensorId> masks;
       TensorId joined{};
       for (const TensorId original : kind.masks) {
         TensorId mask = c.Map(original);
@@ -970,8 +1021,17 @@ void OwnerRewrite(RewriteContext& c, const Match& m, std::size_t index) {
                                        -std::numeric_limits<float>::infinity(), f16);
           mask = b.Concat(mask, tail, 0);
         }
-        mask = b.Reshape(mask, ir::ShapeOf({kind.cells, kind.rows, 1, 1}));
-        joined = joined.valid() ? b.Concat(joined, mask, 3) : mask;
+        if (plan.chained) {
+          mask = b.Reshape(mask, ir::ShapeOf({kind.cells, kind.rows, 1, 1}));
+          joined = joined.valid() ? b.Concat(joined, mask, 3) : mask;
+        }
+        masks.push_back(mask);
+      }
+      if (!plan.chained) {
+        // In pairs, the pairs joined: (0 1) (2 3), or (0 1) 2.
+        joined = b.Concat(masks[0], masks[1], 3);
+        if (masks.size() == 3) joined = b.Concat(joined, masks[2], 3);
+        if (masks.size() == 4) joined = b.Concat(joined, b.Concat(masks[2], masks[3], 3), 3);
       }
       c.local()[k] = joined;
     }
@@ -990,7 +1050,7 @@ void OwnerRewrite(RewriteContext& c, const Match& m, std::size_t index) {
   b.SetComponent(layer.component);
   b.SetJoined();
   const TensorId packed = b.Permute(
-      b.Reshape(c.Map(layer.q), ir::ShapeOf({plan.kd, plan.heads, plan.rows, n})), {0, 2, 1, 3});
+      b.Reshape(c.Map(layer.q), ir::ShapeOf({layer.kd, plan.heads, plan.rows, n})), {0, 2, 1, 3});
   const TensorId mask = c.local().at(layer.kind);
   const bool groups = n > kOwnerGroup;
   TensorId joined{};
@@ -1000,7 +1060,7 @@ void OwnerRewrite(RewriteContext& c, const Match& m, std::size_t index) {
     TensorId masks = mask;
     if (groups) {
       const auto qn = b.tensor(packed).nb;
-      q = b.View(packed, ir::ShapeOf({plan.kd, plan.rows, plan.heads, active}), qn, first * qn[3]);
+      q = b.View(packed, ir::ShapeOf({layer.kd, plan.rows, plan.heads, active}), qn, first * qn[3]);
       const auto mn = b.tensor(mask).nb;
       masks = b.View(mask, ir::ShapeOf({kind.cells, kind.rows, 1, active}), mn, first * mn[3]);
     }
@@ -1022,7 +1082,7 @@ void OwnerRewrite(RewriteContext& c, const Match& m, std::size_t index) {
         FusedKind::kOwnerAttention, sources,
         ir::OwnerAttnParams{.attn = plan.attn, .owners = active, .cohort = n, .offset = first})[0];
     const TensorId rows =
-        b.Reshape(attention, ir::ShapeOf({plan.vd * plan.heads, active * plan.rows}));
+        b.Reshape(attention, ir::ShapeOf({layer.vd * plan.heads, active * plan.rows}));
     joined = joined.valid() ? b.Concat(joined, rows, 1) : rows;
   }
   c.Set(layer.out, joined);
@@ -1033,6 +1093,7 @@ constexpr std::array kAttentionAnchors = {Op::kAttention};
 constexpr std::array kProductAnchors = {Op::kMatMul};
 constexpr std::array kRopeAnchors = {Op::kRope};
 constexpr std::array kStoreAnchors = {Op::kCacheStore};
+constexpr std::array kRouteReduce = {ir::Primitive(Op::kRoute), ir::Primitive(Op::kExpertReduce)};
 
 // The table (see the header): its order is priority; where two patterns
 // meet at a node (the RMS norm), the order PlanGraph tries them today.
@@ -1078,6 +1139,14 @@ constexpr std::array kPatterns = {
             .result = ir::Fused(FusedKind::kGroupedStores),
             .anchors = kStoreAnchors,
             .match = &GroupedStoresMatch},
+    Pattern{.name = "route_reduce", .kind = PatternKind::kComposite, .composites = kRouteReduce},
+    Pattern{
+        .name = "owner_bounded_roots", .kind = PatternKind::kOption, .parent = "owner_attention"},
+    Pattern{
+        .name = "owner_padded_reads", .kind = PatternKind::kOption, .parent = "owner_attention"},
+    Pattern{
+        .name = "owner_chained_masks", .kind = PatternKind::kOption, .parent = "owner_attention"},
+    Pattern{.name = "narrow_final", .kind = PatternKind::kOption},
 };
 
 bool Anchored(const Pattern& p, Op op) { return std::ranges::contains(p.anchors, op); }
@@ -1155,6 +1224,13 @@ std::span<const Pattern> Patterns() { return kPatterns; }
 const Pattern* FindPattern(std::string_view name) {
   const auto at = std::ranges::find(kPatterns, name, &Pattern::name);
   return at == kPatterns.end() ? nullptr : &*at;
+}
+
+bool CompositeImplemented(const Policy& policy, ir::OpKey key) {
+  return std::ranges::none_of(kPatterns, [&](const Pattern& p) {
+    return p.kind == PatternKind::kComposite && std::ranges::contains(p.composites, key) &&
+           Disabled(policy, p.name);
+  });
 }
 
 base::Sha256Digest PatternsDigest(const Policy& policy) {

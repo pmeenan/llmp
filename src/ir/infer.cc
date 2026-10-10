@@ -1069,14 +1069,19 @@ Out InferPrimitive(const Ctx& c) {
       const TensorDesc* scale = c.src(3);
       LLMP_TRY(Want(x.ne(3) == 1 && w.shape().ne == S(x.ne(1), x.ne(2)).ne, c,
                     std::format("experts {} with weights {}", Text(x.shape()), Text(w.shape()))));
-      if ((scale != nullptr) && (ids == nullptr)) {
+      // A scale gathered per slot [1, U, T], or one per expert [E] (a
+      // single expert's [1] is either: the one slot's expert is 0).
+      const bool gathered = scale != nullptr && scale->ne(0) == 1 && scale->ne(1) == x.ne(1) &&
+                            scale->ne(2) == x.ne(2) && scale->ne(3) == 1;
+      if ((scale != nullptr) && !gathered && (ids == nullptr)) {
         return Fail(GraphError::kArity, c, "a scale per expert needs the ids");
       }
       if (ids != nullptr) {
         LLMP_TRY(Want(ids->shape().ne == w.shape().ne, c, "ids have the weights' shape"));
       }
-      if (scale != nullptr) {
-        LLMP_TRY(Want(Elements(scale->shape()) == scale->ne(0), c, "a scale vector"));
+      if (scale != nullptr && !gathered) {
+        LLMP_TRY(Want(Elements(scale->shape()) == scale->ne(0), c,
+                      "a scale vector, or a scale gathered per slot [1, used, rows]"));
       }
       return FloatResult(S(x.ne(0), x.ne(2)), Encoding::kF32);
     }

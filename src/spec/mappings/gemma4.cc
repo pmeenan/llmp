@@ -161,17 +161,54 @@ constexpr std::array kParams = {
     RequireInt("gemma4.embedding_length_per_layer_input", 0, true),
 };
 
-// Today's production recipe within its envelope (gemma26_production,
-// gemma31_production): fused norms, norm-rope and norm-add; the quantized
-// GLU only on 31B; no rope-store, grouped stores or shared Q8 inputs.
+// Today's serving recipes (runtime/serving.cc's Gemma options). Within the
+// qualified envelope (gemma26_production, gemma31_production: a context of
+// at most 8,192 and four owners): fused norms, norm-rope and norm-add, the
+// routing and reduce fused on 26B-A4B and the quantized GLU only on 31B;
+// owner attention over joined one-row owners of equal reads, its masks
+// joined in pairs, and at most 4,096 cells and two owners each owner's
+// cache at its own width (bounded roots, common reads); every row to the
+// head (no frontier_head); no rope-store, grouped stores or shared Q8
+// inputs. Outside it, the frontier head's narrowed final layer and the
+// fused norm-mul alone.
 constexpr std::array kPolicies = {
     PolicyRule{.gate = kExperts,
+               .max_context = 4096,
+               .max_slots = 2,
                .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
+                       "disable narrow_final\ndisable owner_chained_masks\n"
+                       "disable owner_padded_reads\ndisable prepared_inputs\ndisable rope_store\n"},
+    PolicyRule{.gate = kExperts,
+               .max_context = 8192,
+               .max_slots = 4,
+               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
+                       "disable narrow_final\ndisable owner_bounded_roots\n"
+                       "disable owner_chained_masks\ndisable owner_padded_reads\n"
+                       "disable prepared_inputs\ndisable rope_store\n"},
+    PolicyRule{.gate = kExperts,
+               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
+                       "disable owner_attention\ndisable prepared_inputs\n"
+                       "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n"
+                       "disable route_reduce\n"},
+    PolicyRule{.gate = kExperts,
+               .gate_absent = true,
+               .max_context = 4096,
+               .max_slots = 2,
+               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable narrow_final\n"
+                       "disable owner_chained_masks\ndisable owner_padded_reads\n"
                        "disable prepared_inputs\ndisable rope_store\n"},
     PolicyRule{.gate = kExperts,
                .gate_absent = true,
-               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable prepared_inputs\n"
-                       "disable rope_store\n"},
+               .max_context = 8192,
+               .max_slots = 4,
+               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable narrow_final\n"
+                       "disable owner_bounded_roots\ndisable owner_chained_masks\n"
+                       "disable owner_padded_reads\ndisable prepared_inputs\ndisable rope_store\n"},
+    PolicyRule{.gate = kExperts,
+               .gate_absent = true,
+               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
+                       "disable owner_attention\ndisable prepared_inputs\n"
+                       "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n"},
 };
 
 constexpr Mapping kMapping{
@@ -296,8 +333,8 @@ constexpr std::array kAssistantReads = {
 // gemma4_assistant.cc: no target fusion is inherited).
 constexpr std::array kAssistantPolicies = {
     PolicyRule{.text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
-                       "disable prepared_inputs\ndisable rms_norm_mul\ndisable rms_norm_mul_add\n"
-                       "disable rms_norm_mul_rope\ndisable rope_store\n"},
+                       "disable owner_attention\ndisable prepared_inputs\ndisable rms_norm_mul\n"
+                       "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n"},
 };
 
 constexpr Mapping kAssistantMapping{

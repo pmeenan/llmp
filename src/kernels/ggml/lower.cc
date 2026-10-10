@@ -11,6 +11,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -29,6 +30,7 @@
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "kernels/ggml/fattn_owner.h"
+#include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/kv_quant.h"
@@ -117,6 +119,11 @@ class Lowering {
   std::expected<void, KernelFailure> MakeNode(NodeId id);
   std::expected<void, KernelFailure> MakeFused(NodeId id, const ir::Node& n);
   std::expected<void, KernelFailure> MakeOwners(NodeId id, const ir::Node& n);
+  // The composite ops an implementation of their own runs (pattern.h
+  // route_reduce): GGML's Gemma routing and scaled reduce over the node
+  // sequences their fusion gates take (gemma_moe_fusion.h).
+  std::expected<void, KernelFailure> MakeRoute(NodeId id, const ir::Node& n);
+  std::expected<void, KernelFailure> MakeReduce(NodeId id, const ir::Node& n);
   // The replaced primitive nodes of later fused nodes that come before
   // primitive node `limit`, made now where their sources are (see Run).
   std::expected<void, KernelFailure> Flush(NodeId limit);
@@ -134,7 +141,10 @@ class Lowering {
   std::expected<void, KernelFailure> Bind();
   std::expected<void, KernelFailure> PlanAndCompare();
   std::expected<void, KernelFailure> Slots();
-  void Node(ggml_tensor* t, NodeId planned);
+  // `t` in the graph, standing for planned node `planned`; a computed node
+  // among those it launches, and with `step` any node (a fused window's
+  // views and reshapes, which PlanGraph's step lists too).
+  void Node(ggml_tensor* t, NodeId planned, bool step = false);
 
   // Whether every reader of planned tensor `t` is a mask the lowering makes
   // without it (the producer reads the whole positions input; a host mask
@@ -178,13 +188,16 @@ class Lowering {
   // A fused implementation's intermediates, which it never writes, and the
   // result whose place they take.
   std::vector<std::pair<ggml_tensor*, ggml_tensor*>> elided_;
+  // A planned tensor bound through another GGML tensor: a view's root (the
+  // fused routing's ids, a view of its whole sort).
+  std::map<std::uint32_t, ggml_tensor*> placed_root_;
   std::set<const ggml_tensor*> state_tensors_, weight_tensors_;
 };
 
-void Lowering::Node(ggml_tensor* t, NodeId planned) {
+void Lowering::Node(ggml_tensor* t, NodeId planned, bool step) {
   out_.nodes.push_back(t);
-  if (!(t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_PERMUTE ||
-        t->op == GGML_OP_TRANSPOSE || t->op == GGML_OP_NONE)) {
+  if (step || !(t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_PERMUTE ||
+                t->op == GGML_OP_TRANSPOSE || t->op == GGML_OP_NONE)) {
     launched_.at(planned.v).push_back(t);
   }
 }
@@ -295,9 +308,21 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
       case co::InputKind::kStream:
         return Refused("a lone component's stream input");
       case co::InputKind::kFeatures:
-      case co::InputKind::kOutputCells:
-        // A drafter's feature and a target's tap cells: not lowered yet.
-        return Refused("a drafter's feature or a tap's cells input");
+        // A drafter's rows' features: the caller's bytes for the step.
+        slot.kind = InputKind::kStepBytes;
+        break;
+      case co::InputKind::kOutputCells: {
+        // A target's tap rows' cells: its segment's last rows' store cells.
+        const auto outputs = static_cast<std::uint32_t>(d.ne(0));
+        if (input.segment >= in_.shape.segments.size() || outputs == 0 ||
+            outputs != in_.shape.segments[input.segment].outputs) {
+          return Refused("a tap's cells of no segment's outputs");
+        }
+        slot.kind = InputKind::kStoreCells;
+        slot.cells = {.capacity = input.cells.capacity, .ring = input.cells.ring};
+        slot.outputs = outputs;
+        break;
+      }
     }
     ggml_tensor* t = ggml_new_tensor(c_, *type, rank, ne.data());
     input_leaves_.emplace_back(t, slot);
@@ -315,6 +340,17 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
     if (blocks && format::Info(d.format.encoding).block_elements > 1 &&
         d.ne(0) % format::kGgmlRowPadding != 0) {
       MarkRowPaddingReadable(t);
+    }
+    if (at->second->ref.expert_array) {
+      // Its experts at the runner's pitch (a slab's), as the builders
+      // stride a prepared expert array.
+      const std::uint64_t stride =
+          options_.expert_stride ? options_.expert_stride(at->second->ref) : 0;
+      if (stride != 0) {
+        if (stride < t->nb[2]) return Refused("an expert array's pitch below an expert's bytes");
+        t->nb[2] = stride;
+        t->nb[3] = stride * static_cast<std::uint64_t>(t->ne[2]);
+      }
     }
     weight_leaves_.emplace_back(t, at->second);
     weight_tensors_.insert(t);
@@ -346,22 +382,26 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
   }
   const co::StepInput& cells = *held->second;
   // A frozen read's cells hold the positions before the segment's (a
-  // drafter over its target's borrowed state): neither the producer nor
-  // the host masks' slot says so yet.
-  if (cells.cells.frozen) return Refused("a mask over a frozen read's cells");
+  // drafter over its target's borrowed state): the producer's frozen
+  // policy, or the host mask's slot says so.
+  const bool frozen = cells.cells.frozen;
   const std::uint32_t window = p.kind == ir::MaskKind::kWindow ? p.window : 0U;
   if (!options_.device_masks) {
     if (out.format.encoding != Encoding::kF16) return Refused("a host mask not in F16");
+    if (frozen && !options_.frozen_host_masks) {
+      return Refused("a frozen read's host mask without a stager that builds it");
+    }
     std::array<std::int64_t, 4> ne{static_cast<std::int64_t>(out.ne(0)),
                                    static_cast<std::int64_t>(out.ne(1)), 1, 1};
     ggml_tensor* t = ggml_new_tensor(c_, GGML_TYPE_F16, 2, ne.data());
-    const InputSlot slot{.tensor = &graph == &p_ ? primitive_.at(n.out[0].v) : n.out[0],
-                         .segment = cells.segment,
-                         .kind = InputKind::kMask,
-                         .cells = {.capacity = cells.cells.capacity, .ring = cells.cells.ring},
-                         .read = out.ne(0),
-                         .window = window,
-                         .mask_rows = static_cast<std::uint32_t>(out.ne(1))};
+    const InputSlot slot{
+        .tensor = &graph == &p_ ? primitive_.at(n.out[0].v) : n.out[0],
+        .segment = cells.segment,
+        .kind = InputKind::kMask,
+        .cells = {.capacity = cells.cells.capacity, .ring = cells.cells.ring, .frozen = frozen},
+        .read = out.ne(0),
+        .window = window,
+        .mask_rows = static_cast<std::uint32_t>(out.ne(1))};
     input_leaves_.emplace_back(t, slot);
     out_.leaves.push_back({.tensor = t, .primitive = slot.tensor});
     return t;
@@ -374,6 +414,12 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
   ggml_tensor* positions = resolve(rows.view_of);
   if (positions == nullptr) return Refused("a mask's positions were not made");
   const auto to_int = [](std::uint64_t v) { return static_cast<std::int32_t>(v); };
+  if (frozen) {
+    return CausalRingMask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
+                          to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
+                          to_int(cells.cells.capacity), to_int(window), to_int(in_.context),
+                          CausalMaskRows::kPad32, GGML_TYPE_F16, MaskPolicy::kFrozen);
+  }
   return Gemma4Mask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
                     to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
                     to_int(cells.cells.capacity), to_int(window), to_int(in_.context));
@@ -435,6 +481,13 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       if (p.hint == ir::ProductHint::kHadamard)
         ggml_mul_mat_set_hint(t, GGML_HINT_SRC0_IS_HADAMARD);
       return t;
+    }
+    case Op::kMatMulId: {
+      const auto p = n.Params<ir::ProductParams>();
+      if (p.accumulate != ir::Accumulate::kDefault || p.hint != ir::ProductHint::kNone) {
+        return Refused("an expert product with an accumulation or hint");
+      }
+      return ggml_mul_mat_id(c_, s[0], s[1], s[2]);
     }
     case Op::kPrepare:
       if (out.format.encoding != Encoding::kQ8_1) return Refused("a preparation not into Q8_1");
@@ -681,6 +734,103 @@ std::expected<void, KernelFailure> Lowering::MakeOwners(NodeId id, const ir::Nod
   return {};
 }
 
+// kRoute as GGML's fused Gemma routing runs it: llama.cpp's build_moe_ffn
+// softmax top-k, normalized (soft_max, the probabilities' rows, the sort,
+// its first `used`, their rows, the sum, its clamp, the division and the
+// weights' rows [1, used, T]), the ten nodes GemmaRoutingFusionAt takes.
+// The kernel writes the ids (the first `used` of each row of the whole
+// sort, which it backs: WrittenBytes) and the weights; the probabilities,
+// the selected rows and the sums are never written and take the ids' and
+// the weights' places.
+std::expected<void, KernelFailure> Lowering::MakeRoute(NodeId id, const ir::Node& n) {
+  const auto p = n.Params<ir::RouteParams>();
+  if (p.kind != ir::RouteKind::kSoftmaxTopK || !p.normalize || p.scale != 1.0F || n.nsrc != 1 ||
+      n.nout != 2) {
+    return Refused("a routing other than a normalized softmax top-k");
+  }
+  ggml_tensor* logits = made_.at(n.src[0].v);
+  if (logits == nullptr) return Refused("a routing's logits were not made");
+  const auto e = static_cast<std::int64_t>(p.experts);
+  const auto u = static_cast<std::int64_t>(p.used);
+  const std::int64_t t = logits->ne[1];
+  ggml_tensor* probs = ggml_soft_max(c_, logits);
+  ggml_tensor* rows = ggml_reshape_3d(c_, probs, 1, e, t);
+  ggml_tensor* order = ggml_argsort(c_, probs, GGML_SORT_ORDER_DESC);
+  ggml_tensor* ids = ggml_view_4d(c_, order, u, order->ne[1], order->ne[2], order->ne[3],
+                                  order->nb[1], order->nb[2], order->nb[3], 0);
+  ggml_tensor* selected = ggml_get_rows(c_, rows, ids);
+  ggml_tensor* flat = ggml_reshape_2d(c_, selected, u, t);
+  ggml_tensor* sum = ggml_sum_rows(c_, flat);
+  ggml_tensor* clamped = ggml_clamp(c_, sum, 0x1p-14F, std::numeric_limits<float>::infinity());
+  ggml_tensor* weights = ggml_div(c_, flat, clamped);
+  ggml_tensor* joined = ggml_reshape_3d(c_, weights, 1, u, t);
+  for (ggml_tensor* node :
+       {probs, rows, order, ids, selected, flat, sum, clamped, weights, joined}) {
+    Node(node, id, true);
+  }
+  const ir::TensorDesc& want_ids = p_.tensor(n.out[0]);
+  if (ids->type != GGML_TYPE_I32 || static_cast<std::uint64_t>(ids->ne[0]) != want_ids.ne(0) ||
+      static_cast<std::uint64_t>(ids->ne[1]) != want_ids.ne(1)) {
+    return Refused("a routing's ids are not the IR's");
+  }
+  if (auto m = Matches(p_.tensor(n.out[1]), weights, "a routing's weights"); !m) {
+    return std::unexpected(m.error());
+  }
+  made_.at(n.out[0].v) = ids;
+  made_.at(n.out[1].v) = weights;
+  placed_root_[n.out[0].v] = order;
+  elided_.emplace_back(probs, order);
+  for (ggml_tensor* x : {selected, sum, clamped}) elided_.emplace_back(x, weights);
+  return {};
+}
+
+// kExpertReduce (with each slot's scale gathered) as GGML's fused Gemma
+// scaled reduce runs it: the experts' outputs times their scales, times
+// their weights ([1, used, T], the weights' rows), each slot's view, then
+// the slots added in order: the seventeen nodes GemmaReductionFusionAt
+// takes. It writes only the sum; the products and partial sums take its
+// place (WrittenBytes holds the products').
+std::expected<void, KernelFailure> Lowering::MakeReduce(NodeId id, const ir::Node& n) {
+  if (n.nsrc != 4 || n.nout != 1) return Refused("a reduce without its slots' scales");
+  ggml_tensor* x = made_.at(n.src[0].v);
+  ggml_tensor* w = made_.at(n.src[1].v);
+  ggml_tensor* scale = made_.at(n.src[3].v);
+  if (x == nullptr || w == nullptr || scale == nullptr) {
+    return Refused("a reduce's sources were not made");
+  }
+  const std::int64_t width = x->ne[0];
+  const std::int64_t u = x->ne[1];
+  const std::int64_t t = x->ne[2];
+  if (u < 2 || scale->ne[0] != 1 || scale->ne[1] != u || scale->ne[2] != t) {
+    return Refused("a reduce of one slot, or of a scale per expert");
+  }
+  ggml_tensor* weights = ggml_reshape_3d(c_, w, 1, u, t);
+  Node(weights, id);
+  ggml_tensor* scaled = ggml_mul(c_, x, scale);
+  ggml_tensor* weighted = ggml_mul(c_, scaled, weights);
+  Node(scaled, id, true);
+  Node(weighted, id, true);
+  std::vector<ggml_tensor*> slots;
+  for (std::int64_t i = 0; i < u; ++i) {
+    slots.push_back(ggml_view_2d(c_, weighted, width, t, weighted->nb[2],
+                                 static_cast<std::size_t>(i) * weighted->nb[1]));
+    Node(slots.back(), id, true);
+  }
+  ggml_tensor* sum = slots.front();
+  std::vector<ggml_tensor*> partial;
+  for (std::int64_t i = 1; i < u; ++i) {
+    sum = ggml_add(c_, sum, slots[static_cast<std::size_t>(i)]);
+    Node(sum, id, true);
+    partial.push_back(sum);
+  }
+  if (auto m = Matches(p_.tensor(n.out[0]), sum, "a reduce"); !m) return std::unexpected(m.error());
+  made_.at(n.out[0].v) = sum;
+  elided_.emplace_back(scaled, sum);
+  elided_.emplace_back(weighted, sum);
+  for (std::size_t i = 0; i + 1 < partial.size(); ++i) elided_.emplace_back(partial[i], sum);
+  return {};
+}
+
 std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
   const ir::Node& n = p_.node(id);
   switch (n.key.op) {
@@ -694,6 +844,10 @@ std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
     }
     case Op::kFused:
       return MakeFused(id, n);
+    case Op::kRoute:
+      return MakeRoute(id, n);
+    case Op::kExpertReduce:
+      return MakeReduce(id, n);
     case Op::kView:
       if (MaskOnly(n.out[0])) return {};  // the producer reads the positions themselves
       break;
@@ -725,7 +879,8 @@ std::expected<void, KernelFailure> Lowering::Bind() {
                                plan_.placement.extent, addresses.activation_bytes));
   }
   for (const auto& [t, offset] : plan_.placement.offsets) {
-    ggml_tensor* g = made_.at(t.v);
+    const auto root = placed_root_.find(t.v);
+    ggml_tensor* g = root != placed_root_.end() ? root->second : made_.at(t.v);
     if (g == nullptr) return Refused("a placed tensor the lowering did not make");
     if (g->view_src != nullptr) return Refused("a placed tensor is a view");
     // What the placement made room for: the tensor's own bytes, or what the
@@ -784,6 +939,8 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
         choices.group_set_rows || name == kSetRowsGroupedName || name == kSetRowsQuantGroupName;
     choices.fuse_rope_store =
         choices.fuse_rope_store || name == kRopeSetRowsFused || name == kRopeSetRowsQuantName;
+    choices.fuse_gemma_route = choices.fuse_gemma_route || name == kGemmaRouteName;
+    choices.fuse_gemma_reduce = choices.fuse_gemma_reduce || name == kGemmaReduceName;
   }
   for (const TensorId t : p_.outputs()) out_.keep.push_back(made_.at(t.v));
   for (const TensorId t : p_.keep()) out_.keep.push_back(made_.at(t.v));
@@ -792,11 +949,17 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
       PlanGraph(out_.nodes, /*fusion=*/false, choices, out_.keep, options_.index_scratch_limit);
   if (!planned) return std::unexpected(planned.error());
   GraphPlan& gp = *planned;
-  const auto describe = [](std::span<ggml_tensor* const> nodes) {
+  // Each node by its place in the graph (a refusal's message).
+  std::map<const ggml_tensor*, std::size_t> place;
+  for (std::size_t i = 0; i < out_.nodes.size(); ++i) place.emplace(out_.nodes[i], i);
+  const auto describe = [&place](std::span<ggml_tensor* const> nodes) {
     std::string text;
     for (const ggml_tensor* t : nodes) {
+      const auto at = place.find(t);
       text +=
-          std::format(" {}[{},{},{},{}]", ggml_op_desc(t), t->ne[0], t->ne[1], t->ne[2], t->ne[3]);
+          std::format(" #{}:{}[{},{},{},{}]",
+                      at == place.end() ? std::int64_t{-1} : static_cast<std::int64_t>(at->second),
+                      ggml_op_desc(t), t->ne[0], t->ne[1], t->ne[2], t->ne[3]);
     }
     return text;
   };
@@ -821,6 +984,24 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
           std::format("PlanGraph has no step for the IR's {} over{}", name, describe(want)));
     }
     PlanStep& got = gp.steps[j];
+    if (got.implementation == kRmsNormMulUnfused && name == "ggml.rms_norm" &&
+        i + 1 < plan_.steps.size() &&
+        registry_.at(plan_.steps[i + 1].implementation).name == "ggml.mul" &&
+        plan_.steps[i + 1].lane == s.lane) {
+      // Unfused, PlanGraph runs an RMS norm and the mul that follows it as
+      // one step: rms_norm's launcher, then mul's, the IR's two steps.
+      std::vector<ggml_tensor*> both = want;
+      for (const NodeId id : plan_.steps[i + 1].nodes) {
+        const auto& l = launched_.at(id.v);
+        both.insert(both.end(), l.begin(), l.end());
+      }
+      if (got.nodes == both) {
+        got.lane = s.lane;
+        ++i;
+        ++j;
+        continue;
+      }
+    }
     bool same = got.nodes == want && got.implementation == name;
     if (!same && got.nodes == want && !s.group.empty()) {
       // A member of the selected group, upstream's choice inside it.
@@ -848,7 +1029,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     gp.regions.push_back({.first = r.first, .last = r.last});
   }
   if (!gp.regions.empty() && j != plan_.steps.size()) {
-    return Refused("concurrent lanes with host-built masks");
+    return Refused("concurrent lanes with host-built masks or unfused norms");
   }
   out_.plan = std::move(gp);
   return {};
@@ -885,6 +1066,27 @@ std::expected<void, KernelFailure> Lowering::Slots() {
       first += n;
     }
   }
+  // A drafter head's next features, each owner's rows after its logits.
+  if (in_.step.features.valid() && shape.outputs() != 0) {
+    const TensorId planned = plan_.tensors.at(in_.step.features.v);
+    const ggml_tensor* t = planned.valid() ? made_.at(planned.v) : nullptr;
+    if (t == nullptr || t->data == nullptr || !ggml_is_contiguous(t) ||
+        static_cast<std::uint64_t>(t->ne[1]) != shape.outputs()) {
+      return Refused("the step's features were not made whole");
+    }
+    std::uint64_t first = 0;
+    for (std::size_t i = 0; i < shape.segments.size(); ++i) {
+      const std::uint32_t n = shape.segments[i].outputs;
+      if (n == 0) continue;
+      out_.outputs.push_back(
+          {.device_address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(t->data)) +
+                             (first * t->nb[1]),
+           .bytes = n * t->nb[1],
+           .tensor = in_.step.features,
+           .segment = static_cast<std::uint8_t>(i)});
+      first += n;
+    }
+  }
   // Every tensor the steps touch, by the role of its storage.
   std::set<std::tuple<std::uint64_t, std::uint64_t, ir::Role>> seen;
   const auto use = [&](const ggml_tensor* t) {
@@ -916,6 +1118,14 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   for (const planner::Applied& a : plan_.applied) {
     for (const NodeId r : a.replaced) tensors += g_.node(r).nout;
   }
+  // The composites' GGML sequences (MakeRoute's ten nodes, MakeReduce's
+  // two products, a view and an add a slot, and the weights' rows).
+  for (const ir::Node& n : p_.nodes()) {
+    if (n.key == ir::Primitive(Op::kRoute)) tensors += 10;
+    if (n.key == ir::Primitive(Op::kExpertReduce) && n.nsrc >= 1) {
+      tensors += 3 + (2 * p_.tensor(n.src[0]).ne(1));
+    }
+  }
   auto arena = TensorArena::Create(tensors);
   if (!arena) return std::unexpected(arena.error());
   out_.arena.emplace(std::move(*arena));
@@ -944,6 +1154,16 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
 std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
   const ir::TensorDesc& t = graph.tensor(root);
   const ir::Node& made = graph.node(graph.producer(root));
+  // The fused routing's ids are its whole sort's first slots (MakeRoute):
+  // the sort's bytes, a row of every expert.
+  if (made.key == ir::Primitive(Op::kRoute) && made.nout == 2 && made.out[0] == root) {
+    return made.Params<ir::RouteParams>().experts * t.ne(1) * sizeof(std::int32_t);
+  }
+  // The fused scaled reduce's products take its place (MakeReduce).
+  if (made.key == ir::Primitive(Op::kExpertReduce) && made.nsrc >= 1) {
+    const ir::TensorDesc& x = graph.tensor(made.src[0]);
+    return x.ne(0) * x.ne(1) * x.ne(2) * sizeof(float);
+  }
   if (made.key != ir::Primitive(Op::kPrepare) || t.format.encoding != Encoding::kQ8_1 ||
       t.ne(3) != 1) {
     return 0;

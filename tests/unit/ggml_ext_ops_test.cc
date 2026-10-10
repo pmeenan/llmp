@@ -448,6 +448,42 @@ TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBou
   }
 }
 
+// A frozen read (a drafter's rows over its target's cache, which they never
+// store): each row sees the positions before its segment's first, causal
+// and within its window, of a global cache (a cell a position) and a ring
+// (the latest position a cell held before the segment), whatever the rows'
+// own positions.
+TEST_F(GgmlExtOpsTest, FrozenMasksSeeOnlyThePositionsBeforeTheSegment) {
+  constexpr std::int32_t cells = 512, rows = 2, first = 1, limit = 8192;
+  for (const std::int32_t window : {0, 128}) {
+    for (const std::int32_t start : {0, 1, 300, 511, 512, 700, 1500}) {
+      SCOPED_TRACE(std::format("window={} start={}", window, start));
+      const std::int32_t capacity = window == 0 ? limit : cells;
+      std::vector<std::int32_t> positions{5, start, start + 1, 9};
+      auto* input =
+          Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, static_cast<std::int64_t>(positions.size())),
+                positions);
+      auto* mask =
+          kg::CausalRingMask(c(), input, cells, first, rows, capacity, window, limit,
+                             kg::CausalMaskRows::kPad32, GGML_TYPE_F16, kg::MaskPolicy::kFrozen);
+      TensorArena::Bind(mask, Allocate(ggml_nbytes(mask)));
+      ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+      std::vector<std::uint16_t> expected(static_cast<std::size_t>(mask->ne[0] * mask->ne[1]),
+                                          0xfc00);
+      for (std::int32_t row = 0; row < rows; ++row) {
+        const std::int32_t position = start + row;
+        for (std::int32_t cell = 0; cell < cells && cell < start; ++cell) {
+          const std::int32_t held = cell + (((start - 1 - cell) / capacity) * capacity);
+          if (window == 0 || position - held < window) {
+            expected[static_cast<std::size_t>((row * cells) + cell)] = 0;
+          }
+        }
+      }
+      EXPECT_EQ(Download<std::uint16_t>(mask), expected);
+    }
+  }
+}
+
 TEST_F(GgmlExtOpsTest, SharedCausalMasksMatchF16AndF32AndRefreshCapturedPositions) {
   const auto stream = reinterpret_cast<cudaStream_t>(execution_->Submission(stream_)->handle);
   constexpr std::int32_t cells = 512, rows = 3, first = 3, limit = 2048;
@@ -528,7 +564,8 @@ TEST_F(GgmlExtOpsTest, SharedCausalMasksMatchF16AndF32AndRefreshCapturedPosition
 
         const auto before = Download<std::uint8_t>(mask);
         for (const std::size_t reserved : {6U, 7U}) {
-          const std::int32_t invalid = reserved == 6 ? 2 : 1, zero = 0;
+          // No policy past the frozen one (2), nothing in the reserved word.
+          const std::int32_t invalid = reserved == 6 ? 3 : 1, zero = 0;
           auto* parameter = reinterpret_cast<std::byte*>(mask->op_params) + 32 + reserved * 4;
           std::memcpy(parameter, &invalid, 4);
           EXPECT_FALSE(kg::RunGemma4Mask(launch(), mask));
@@ -640,7 +677,7 @@ TEST_F(GgmlExtOpsTest, SharedBlockMasksMatchF16AndF32AndRefreshCapturedSegments)
         ASSERT_TRUE(launch().Launch(*graph));
         check();
         auto rejected = *mask;
-        const std::int32_t zero = 0, unknown = 2;
+        const std::int32_t zero = 0, unknown = 3;  // past kFrozen
         std::memcpy(reinterpret_cast<std::byte*>(rejected.op_params) + 32 + 3 * 4, &zero, 4);
         EXPECT_FALSE(kg::RunGemma4Mask(launch(), &rejected));
         rejected = *mask;

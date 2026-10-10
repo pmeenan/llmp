@@ -175,7 +175,11 @@ ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_ten
 enum class CausalMaskRows : std::int32_t { kPad32 = 0, kExact = 1 };
 // Block visibility includes later positions in the current contiguous block.
 // Its ring must retain window+rows, independently of the target context.
-enum class MaskPolicy : std::int32_t { kCausal = 0, kBlock = 1 };
+// Frozen: the cells hold only the positions before the segment's first
+// row (a drafter's query rows over its target's borrowed cache, which they
+// never store): a cell is seen where it holds such a position, causal and
+// within the window of the row's.
+enum class MaskPolicy : std::int32_t { kCausal = 0, kBlock = 1, kFrozen = 2 };
 inline constexpr const char* kGemma4MaskName = "llmp.gemma4.mask";
 ggml_tensor* CausalRingMask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
                             std::int32_t first_row, std::int32_t rows, std::int32_t capacity,

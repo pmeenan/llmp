@@ -52,6 +52,10 @@ struct ComponentSourceOptions {
   // steps, and a policy that replaces it (an alias's); one of the two.
   const spec::Mapping* mapping = nullptr;
   std::span<const spec::SourceValue> values{};
+  // The owners the runner serves: with the layout's context, the serving
+  // envelope the mapping's rule is chosen for (spec::Envelope; 0: unknown,
+  // so no envelope-bounded rule).
+  std::uint32_t slots = 0;
   std::optional<planner::Policy> policy{};
   kernels::StepBackend backend{};
 };

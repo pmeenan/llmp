@@ -2450,7 +2450,9 @@ bool Gemma4MaskFits(const ggml_tensor* node) {
                           [](const auto* parent) { return parent != nullptr; }))
     return false;
   if ((node->type != GGML_TYPE_F16 && node->type != GGML_TYPE_F32) ||
-      (LlmpOpInt(node, 6) != 0 && LlmpOpInt(node, 6) != 1) || LlmpOpInt(node, 7) != 0)
+      LlmpOpInt(node, 6) < static_cast<std::int32_t>(MaskPolicy::kCausal) ||
+      LlmpOpInt(node, 6) > static_cast<std::int32_t>(MaskPolicy::kFrozen) ||
+      LlmpOpInt(node, 7) != 0)
     return false;
   constexpr std::int64_t max = std::numeric_limits<std::int32_t>::max();
   const std::int64_t element_bytes = node->type == GGML_TYPE_F16 ? 2 : 4;

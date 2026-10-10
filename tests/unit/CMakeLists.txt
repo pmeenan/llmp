@@ -1158,6 +1158,16 @@ target_link_libraries(ggml_lower_test PRIVATE llmp_ggml_tensors llmp_planner llm
 llmp_gtest(ggml_lower_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
+# The GGML lowering of Gemma 4's steps (26B-A4B, 31B and their assistants)
+# against today's builders under each serving recipe the runner plans,
+# launch for launch, at every setup shape.
+add_executable(ggml_lower_gemma4_test ggml_lower_gemma4_test.cc)
+target_link_libraries(ggml_lower_gemma4_test PRIVATE llmp_ggml_tensors llmp_planner
+                                                     llmp_components llmp_spec llmp_model
+                                                     llmp_artifact llmp_json)
+llmp_gtest(ggml_lower_gemma4_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+
 # The components' state contracts through the shared slot lifecycle on the
 # fake device backend.
 add_executable(components_state_test components_state_test.cc)
@@ -1192,6 +1202,15 @@ if(LLMP_CUDA)
   target_link_libraries(component_runner_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
                                                           llmp_components llmp_spec llmp_artifact)
   llmp_gpu_gtest(component_runner_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+  # The same on the Gemma 4 26B-A4B and 31B and their assistants' draft
+  # passes, under each serving recipe today's runner plans.
+  add_executable(component_runner_gemma4_gpu_test component_runner_gemma4_gpu_test.cc)
+  target_link_libraries(component_runner_gemma4_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
+                                                                 llmp_components llmp_spec
+                                                                 llmp_artifact llmp_tokenizer)
+  llmp_gpu_gtest(component_runner_gemma4_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()
 

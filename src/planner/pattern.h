@@ -34,7 +34,9 @@
 //   rms_norm_mul_rope  fused.rms_norm_mul_rope: an RMS norm, its weight and
 //                      the rotation of the result (fuse_norm_rope; QK norms)
 //   rms_norm_mul_add   fused.rms_norm_mul_add: an RMS norm, its weight and a
-//                      residual add of its shape (fuse_norm_add)
+//                      residual add of its shape, one after another (or
+//                      the residual's gather between the mul and the add)
+//                      (fuse_norm_add)
 //   mul_mat_glu        fused.mul_mat_glu: gate and up products of one input
 //                      and the GLU over them (fuse_quant_glu)
 //   rope_store         fused.rope_store: a rotation stored whole as cache
@@ -52,6 +54,30 @@
 //   grouped_stores     batch: consecutive cache stores in one launch, a
 //                      capability of fused.grouped_stores with a batch
 //                      (group_set_rows, set_rows_group.h)
+//   route_reduce       composite: routing (kRoute) and the experts' reduce
+//                      (kExpertReduce) each run as an implementation of
+//                      the composite op where one takes it (GGML's fused
+//                      Gemma routing and scaled reduce: fuse_gemma_route,
+//                      fuse_gemma_reduce); disabled, as their
+//                      decompositions, llama.cpp's primitives
+//
+// and the options of owner_attention's forms and of the step's builder,
+// each on unless a policy disables it:
+//
+//   owner_bounded_roots  owners' caches read at their own widths where an
+//                        implementation takes that (bounded_roots)
+//   owner_padded_reads   narrower owners' caches padded with zeros to the
+//                        widest (the builders' common reads); with neither,
+//                        owner attention joins only owners of equal reads
+//   owner_chained_masks  the owners' masks joined one after another (the
+//                        Gemma 2 and 3 builders); disabled, in pairs, the
+//                        pairs then joined (Gemma 4's owner transform, at
+//                        most four owners)
+//   narrow_final         a step with a head narrows its last row-mixing
+//                        component to the output rows (components/step.h
+//                        BuildStep; the runners' frontier_head); disabled,
+//                        every row runs to the final norm and the head
+//                        gathers its rows there
 
 #ifndef LLMP_PLANNER_PATTERN_H_
 #define LLMP_PLANNER_PATTERN_H_
@@ -160,7 +186,11 @@ class RewriteContext {
   std::vector<ir::TensorId> local_{};
 };
 
-enum class PatternKind : std::uint8_t { kRewrite, kBatch };
+// kComposite: the selection may take an implementation of its composite
+// ops (`composites`) only while it is enabled; disabled, they decompose.
+// kOption: a switch another pattern (`parent`) or the step's builder
+// reads; it rewrites nothing itself.
+enum class PatternKind : std::uint8_t { kRewrite, kBatch, kComposite, kOption };
 
 struct Pattern {
   std::string_view name{};
@@ -169,6 +199,8 @@ struct Pattern {
   // A rewrite's result (the fused kind it makes, or the primitive it
   // adds); a batch's capability key.
   ir::OpKey result{};
+  std::span<const ir::OpKey> composites{};
+  std::string_view parent{};  // an option's: the pattern it shapes, or empty
   std::span<const ir::Op> anchors{};
   std::optional<Match> (*match)(const MatchContext& context, ir::NodeId anchor) = nullptr;
   // Its match function checks what the table checks for a fused result
@@ -183,6 +215,10 @@ struct Pattern {
 // The table, in its fixed order.
 std::span<const Pattern> Patterns();
 const Pattern* FindPattern(std::string_view name);
+
+// Whether the selection may take an implementation of composite op `key`
+// under `policy`: false where a disabled composite pattern names it.
+bool CompositeImplemented(const Policy& policy, ir::OpKey key);
 
 // The enabled patterns' names and versions in the table's order: a plan
 // key's pattern input (step_shape.h PlanKey::patterns).

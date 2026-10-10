@@ -11,6 +11,7 @@
 #include "execution/registry.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "planner/pattern.h"
 #include "planner/policy.h"
 
 namespace llmp::planner {
@@ -122,6 +123,11 @@ std::vector<std::size_t> SelectionView::Candidates(ir::OpKey key,
                                                    std::span<const ir::TensorDesc* const> sources,
                                                    std::span<const ir::TensorDesc* const> outputs,
                                                    std::span<const std::byte> params) const {
+  // A composite op whose own implementations the policy leaves off
+  // (pattern.h route_reduce) has none: it decomposes.
+  if (!CompositeImplemented(policy_, key)) {
+    return {};
+  }
   std::vector<execution::OperandFormat> operands;
   operands.reserve(sources.size());
   for (std::size_t i = 0; i < sources.size(); ++i) {

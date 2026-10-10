@@ -64,13 +64,20 @@ struct StepFailure {
 //                        each segment's last `outputs` (a joined slot);
 //   kStoreCells          I64 [segment rows]: the cell of `cells` each of
 //                        the segment's rows is stored at (position, or
-//                        position mod capacity for a ring);
+//                        position mod capacity for a ring); with `outputs`,
+//                        I64 [outputs]: its last `outputs` rows' only
+//                        (components/step.h kOutputCells: a target's tap
+//                        rows, stored at their positions' cells of a
+//                        drafter's tensor);
 //   kMask                F16 [read, mask_rows]: the segment's mask over the
 //                        first `read` cells of `cells` (ir/op.h kMaskBuild:
 //                        0 where a row's position sees the position the
 //                        cell holds once the step's rows are stored, causal
 //                        or within `window`, else -inf; rows past the
-//                        segment's -inf): a mask built on the host.
+//                        segment's -inf): a mask built on the host. A
+//                        frozen read's cells (`cells.frozen`) hold the
+//                        positions before the segment's rows, which the
+//                        step never stores.
 enum class InputKind : std::uint8_t {
   kTokens,
   kPositions,
@@ -86,6 +93,7 @@ enum class InputKind : std::uint8_t {
 struct InputCells {
   std::uint64_t capacity = 0;
   bool ring = false;
+  bool frozen = false;  // a frozen read's (components/step.h CellKey)
   bool operator==(const InputCells&) const = default;
 };
 
@@ -102,6 +110,8 @@ struct InputSlot {
   std::uint64_t read = 0;
   std::uint32_t window = 0;
   std::uint32_t mask_rows = 0;
+  // kStoreCells': 0, every row's cell; else the last `outputs` rows'.
+  std::uint32_t outputs = 0;
 };
 
 // An output the step returns: copied to the host after the run, each

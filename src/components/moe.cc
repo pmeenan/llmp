@@ -139,7 +139,14 @@ ir::TensorId EmitExperts(ir::Builder& b, ir::TensorId h, const Routed& routed, i
   }
   const ir::TensorId act = b.Glu(g, u, {.kind = p.kind});
   const ir::TensorId out = b.MatMulId(down, act, routed.ids);
-  return b.ExpertReduce(out, routed.weights, routed.ids, scale);
+  if (!scale.valid()) return b.ExpertReduce(out, routed.weights, routed.ids, {});
+  // Each slot's expert scale, gathered as the builders gather it (the
+  // scales repeated a row each, then each row's selected ones): [1, used,
+  // rows], which the reduce reads per slot.
+  const std::uint64_t experts = b.tensor(scale).ne(0);
+  const ir::TensorId table =
+      b.Repeat(b.Reshape(scale, defs::Shape({1, experts, 1})), defs::Shape({1, experts, rows}));
+  return b.ExpertReduce(out, routed.weights, routed.ids, b.GetRows(table, routed.ids));
 }
 
 std::vector<double> ExpertsReference(std::span<const double> h, const RoutedRef& routed,
@@ -327,7 +334,7 @@ constexpr std::array kSplits{SplitOption{
     .state = {}}};
 
 constexpr std::array<std::string_view, 5> kPatterns{
-    "rms_norm_mul", "rms_norm_mul_add", "mul_mat_glu", "prepared_products", "gemma_route_reduce"};
+    "rms_norm_mul", "rms_norm_mul_add", "mul_mat_glu", "prepared_products", "route_reduce"};
 
 std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};

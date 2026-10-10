@@ -160,9 +160,14 @@ struct FoldRule {
 // in its canonical text (planner/policy.h validates it; here, printable
 // lines), gated by a source key as a slot is (SlotRule::gate; empty: every
 // checkpoint).
+// A rule may hold only within a serving envelope (a family's qualified
+// recipe bounded by context and owners: Gemma 4's): a stage context of at
+// most `max_context` and at most `max_slots` owners (0: no bound).
 struct PolicyRule {
   std::string_view gate{};
   bool gate_absent = false;
+  std::uint32_t max_context = 0;
+  std::uint32_t max_slots = 0;
   std::string_view text{};
 };
 
@@ -241,10 +246,18 @@ struct Source {
 // count as ne[2]); the container "gguf" when every source file is a GGUF.
 std::expected<Source, std::string> SourceOfV0(const artifact::Artifact& artifact);
 
+// The serving envelope a policy is chosen for: the stage's context and the
+// owners it serves (0: unknown; an envelope-bounded rule then never holds).
+struct Envelope {
+  std::uint32_t context = 0;
+  std::uint32_t slots = 0;
+};
+
 // The default policy text `mapping` gives a source with `values` (its
-// first policy rule whose gate holds; empty when none does).
+// first policy rule whose gate and envelope hold; empty when none does).
 std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mapping,
-                                                           std::span<const SourceValue> values);
+                                                           std::span<const SourceValue> values,
+                                                           const Envelope& envelope = {});
 
 // The spec `mapping` makes of `source` with `values`: one target stage
 // bound to artifact 0, validated. A drafter's mapping is refused (it
