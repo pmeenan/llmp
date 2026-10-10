@@ -21,6 +21,10 @@ archive) in M5 ([plan](plan.md)). Not yet built anywhere: the per-host
 report (`report-host`, [below](#imports-installs-and-stages)) and recording
 imports from the native importer.
 
+The [initial model set](model-archive-initial-set.md) gathers the planned
+models, formats, quantizations and companions, with existing copies to
+migrate and unresolved selections identified before the first batch.
+
 ## Downloader quickstart
 
 For any agent that downloads models (Claude, Gemini, Codex). Run from the
