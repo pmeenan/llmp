@@ -1112,6 +1112,17 @@ target_link_libraries(components_order_test PRIVATE llmp_components llmp_ggml_te
 llmp_gtest(components_order_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
+# The Gemma 4 components' steps (26B-A4B, 31B and their assistants)
+# against today's Gemma4 graph builders, node for node, the router and
+# reduce as the composite ops their runs decompose to; the mappings'
+# default policies as the planner parses them.
+add_executable(components_gemma4_order_test components_gemma4_order_test.cc)
+target_link_libraries(components_gemma4_order_test PRIVATE llmp_components llmp_ggml_tensors
+                                                           llmp_planner llmp_spec llmp_model
+                                                           llmp_artifact llmp_json)
+llmp_gtest(components_gemma4_order_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+
 # The planner (D-107): policies, patterns, selection, placement, lanes and
 # plan keys on small graphs and a fake registry.
 add_executable(planner_test planner_test.cc)
@@ -1163,6 +1174,16 @@ if(LLMP_CUDA)
                                                            llmp_reference_kernels llmp_spec
                                                            llmp_artifact)
   llmp_gpu_gtest(components_models_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+  # The Gemma 4 components end to end on the installed 26B-A4B (with its
+  # assistant's draft passes) and 31B, by the reference executor, against
+  # today's production runners.
+  add_executable(components_gemma4_models_gpu_test components_gemma4_models_gpu_test.cc)
+  target_link_libraries(components_gemma4_models_gpu_test PRIVATE llmp_engine llmp_components
+                                                                  llmp_reference_kernels llmp_spec
+                                                                  llmp_artifact)
+  llmp_gpu_gtest(components_gemma4_models_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   # The one model runner over the component step source and the GGML

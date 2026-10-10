@@ -294,6 +294,10 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
         return nullptr;
       case co::InputKind::kStream:
         return Refused("a lone component's stream input");
+      case co::InputKind::kFeatures:
+      case co::InputKind::kOutputCells:
+        // A drafter's feature and a target's tap cells: not lowered yet.
+        return Refused("a drafter's feature or a tap's cells input");
     }
     ggml_tensor* t = ggml_new_tensor(c_, *type, rank, ne.data());
     input_leaves_.emplace_back(t, slot);
@@ -341,6 +345,10 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
     return Refused("a mask over no cells' positions input");
   }
   const co::StepInput& cells = *held->second;
+  // A frozen read's cells hold the positions before the segment's (a
+  // drafter over its target's borrowed state): neither the producer nor
+  // the host masks' slot says so yet.
+  if (cells.cells.frozen) return Refused("a mask over a frozen read's cells");
   const std::uint32_t window = p.kind == ir::MaskKind::kWindow ? p.window : 0U;
   if (!options_.device_masks) {
     if (out.format.encoding != Encoding::kF16) return Refused("a host mask not in F16");

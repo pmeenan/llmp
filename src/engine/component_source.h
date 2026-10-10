@@ -9,11 +9,11 @@
 // step program (kernels/common/lower.h). The kernel source is a table of
 // functions: the engine names no kernel library.
 //
-// Its policy is the architecture mapping's default (spec/mapping.h
-// Mapping::policy: the family's recipe as data), unless the caller gives
-// one (an alias's settings, later). Its plans' key is the spec's bound
-// digest, the policy's patterns and the policy (planner/plan.h KeyOf); the
-// runner adds the shape.
+// Its policy is the architecture mapping's default for the source
+// (spec/mapping.h DefaultPolicy: the family's recipe as data), unless the
+// caller gives one (an alias's settings, later). Its plans' key is the
+// spec's bound digest, the policy's patterns and the policy (planner/
+// plan.h KeyOf); the runner adds the shape.
 //
 // Part of the engine core: every build profile.
 
@@ -24,6 +24,7 @@
 #include <expected>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -46,9 +47,11 @@ struct ComponentSourceOptions {
   components::Bindings bindings{};
   // The spec bound to its artifacts (spec.h BoundDigest).
   base::Sha256Digest bound_digest{};
-  // The architecture's mapping, whose default policy plans the steps, and
-  // a policy that replaces it (an alias's); one of the two.
+  // The architecture's mapping, whose default policy for the source's
+  // `values` (spec/mapping.h DefaultPolicy; read only by Create) plans the
+  // steps, and a policy that replaces it (an alias's); one of the two.
   const spec::Mapping* mapping = nullptr;
+  std::span<const spec::SourceValue> values{};
   std::optional<planner::Policy> policy{};
   kernels::StepBackend backend{};
 };

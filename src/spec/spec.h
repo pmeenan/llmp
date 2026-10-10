@@ -105,12 +105,16 @@ struct Param {
 
 // A component's weight role bound to an artifact tensor: a v0 resource's
 // role (its name or a tied alias) or an expert array's name, and the part
-// of its format the tensor holds.
+// of its format the tensor holds. The tensor is of the artifact the
+// component's stage runs from, or with `stage`, of the artifact another
+// stage of the spec runs from: a weight the stages share, which that stage
+// owns (a drafter reading its target's token table).
 struct WeightBinding {
   std::string role{};
   std::string tensor{};
   format::PartRole part = format::PartRole::kData;
   bool experts = false;  // an expert array: every expert's matrix as one tensor
+  std::string stage{};   // another stage's artifact holds it; empty: its own stage's
   bool operator==(const WeightBinding&) const = default;
 };
 

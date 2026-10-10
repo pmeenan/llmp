@@ -28,9 +28,13 @@
 namespace llmp::components::defs {
 
 const ComponentDef& EmbeddingToken();
+const ComponentDef& EmbeddingProjected();
 const ComponentDef& NormRms();
+const ComponentDef& ScaleLearned();
 const ComponentDef& AttentionDense();
+const ComponentDef& AttentionBorrowed();
 const ComponentDef& FfnGlu();
+const ComponentDef& FfnMoe();
 const ComponentDef& HeadLinear();
 
 // The encodings a norm's weight takes: the converters keep norms F32.
@@ -143,14 +147,15 @@ inline double GeluTanh(double x) {
 inline double Silu(double x) { return x / (1.0 + std::exp(-x)); }
 
 // The rotation angle of pair `pair` at `position` as op.h defines it (each
-// step rounded to F32), for an unscaled-extrapolation rotation.
+// step rounded to F32), for an unscaled-extrapolation rotation, divided by
+// the pair's frequency factor `freq` (1: none).
 inline float RopeAngle(float base, std::uint32_t dims, float scale, std::uint64_t pair,
-                       std::int64_t position) {
+                       std::int64_t position, float freq = 1.0F) {
   const float theta_scale = static_cast<float>(
       std::pow(static_cast<double>(base), static_cast<double>(-2.0F / static_cast<float>(dims))));
   const float power =
       static_cast<float>(std::pow(static_cast<double>(theta_scale), static_cast<double>(pair)));
-  const float extrap = static_cast<float>(position) * power;
+  const float extrap = (static_cast<float>(position) * power) / freq;
   return scale * extrap;
 }
 

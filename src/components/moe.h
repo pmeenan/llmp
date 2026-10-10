@@ -1,0 +1,97 @@
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// Internal to src/components (and its tests): the pieces feed-forward
+// components are built of, each an IR fragment and a scalar reference
+// written independently of it, so each is tested alone and in the
+// components that use it (ffn.glu, ffn.moe).
+//
+//   - A gated feed-forward product: the gate and up products of one input
+//     (the gate's first), the GLU, the down product.
+//   - A router: its input (Gemma 4's: an unweighted RMS norm of the
+//     stream, scaled by 1 / sqrt(width) and a learned per-channel scale),
+//     its product with the router matrix, and the selection (ir::kRoute:
+//     softmax over the experts, the `used` highest, their weights
+//     renormalized when `normalize`).
+//   - Routed experts: each selected expert's gate and up products of the
+//     routed input (a stacked gate-up array's halves, or two arrays), the
+//     GLU, the down product, and the ordered reduce (ir::kExpertReduce: each
+//     slot's output times its expert's learned scale, when there is one,
+//     times its weight, summed in slot order).
+//
+// The fragments emit in today's builders' order (kernels/ggml/
+// gemma4_graph.cc's GraphOrder), with the router's selection and the
+// reduce as the op set's composite ops, whose decompositions are GGML's
+// node sequences (a lowering expands them; patterns fuse them).
+
+#ifndef LLMP_COMPONENTS_MOE_H_
+#define LLMP_COMPONENTS_MOE_H_
+
+#include <cstdint>
+#include <span>
+#include <vector>
+
+#include "ir/builder.h"
+#include "ir/graph.h"
+#include "ir/op.h"
+
+namespace llmp::components::moe {
+
+// ------------------------------------------------------ gated feed-forward
+
+// down · glu(gate · h, up · h): h [width, rows] to [width, rows].
+ir::TensorId EmitGlu(ir::Builder& b, ir::TensorId h, ir::TensorId gate, ir::TensorId up,
+                     ir::TensorId down, ir::GluKind kind);
+// The same over decoded weights ([width, hidden] gate and up, [hidden,
+// width] down, GGML order) and `rows` rows of h.
+std::vector<double> GluReference(std::span<const double> h, std::span<const float> gate,
+                                 std::span<const float> up, std::span<const float> down,
+                                 std::uint64_t width, std::uint64_t hidden, ir::GluKind kind);
+
+// ------------------------------------------------------------------ router
+
+struct RouterParams {
+  std::uint32_t experts = 0;
+  std::uint32_t used = 0;
+  bool normalize = false;
+  float eps = 0.0F;
+};
+struct Routed {
+  ir::TensorId ids{};      // I32 [used, rows]
+  ir::TensorId weights{};  // F32 [used, rows]
+};
+// x [width, rows], router [width, experts], scale [width].
+Routed EmitRouter(ir::Builder& b, ir::TensorId x, ir::TensorId router, ir::TensorId scale,
+                  const RouterParams& p);
+struct RoutedRef {
+  std::vector<std::uint32_t> ids;  // [rows][used]
+  std::vector<double> weights;     // [rows][used]
+};
+RoutedRef RouterReference(std::span<const double> x, std::uint64_t width,
+                          std::span<const float> router, std::span<const float> scale,
+                          const RouterParams& p);
+
+// ----------------------------------------------------------------- experts
+
+struct ExpertParams {
+  std::uint64_t width = 0;
+  std::uint64_t hidden = 0;  // an expert's
+  bool stacked = false;      // one gate-up array: gate's rows, then up's
+  ir::GluKind kind = ir::GluKind::kGeGluTanh;
+};
+// h [width, rows]; gate_up [width, 2 · hidden, experts] when stacked, else
+// gate and up [width, hidden, experts]; down [hidden, width, experts];
+// scale [experts] or none. The reduced output [width, rows].
+ir::TensorId EmitExperts(ir::Builder& b, ir::TensorId h, const Routed& routed, ir::TensorId gate,
+                         ir::TensorId up, ir::TensorId down, ir::TensorId scale,
+                         const ExpertParams& p);
+// The same over decoded expert arrays (each expert's matrix after the
+// last, GGML order; `up` unused when stacked) and the routing.
+std::vector<double> ExpertsReference(std::span<const double> h, const RoutedRef& routed,
+                                     std::span<const float> gate, std::span<const float> up,
+                                     std::span<const float> down, std::span<const float> scale,
+                                     const ExpertParams& p);
+
+}  // namespace llmp::components::moe
+
+#endif  // LLMP_COMPONENTS_MOE_H_

@@ -6,7 +6,8 @@
 # architecture mappings with the synthesis of a spec from a source or a v0
 # artifact (mapping.h, mappings/). Model layer, after format, artifact, ir
 # and model; no kernel, engine or vendor type.
-add_library(llmp_spec STATIC spec.cc mapping.cc mappings/gemma2.cc mappings/gemma3.cc)
+add_library(llmp_spec STATIC spec.cc mapping.cc mappings/gemma2.cc mappings/gemma3.cc
+                             mappings/gemma4.cc)
 target_include_directories(llmp_spec PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_spec PUBLIC llmp_format llmp_base PRIVATE llmp_artifact llmp_model
                                                                     llmp_warnings)

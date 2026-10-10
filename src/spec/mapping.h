@@ -18,12 +18,28 @@
 //     requirement on the source (a rotation scaling kind the components
 //     implement);
 //   - its layer types, one letter a layer repeating from layer 0 (Gemma 2's
-//     local and global layers, "lg");
+//     local and global layers, "lg"), and optionally the source key that
+//     lists them as a flag a layer (Gemma 4's sliding-window pattern),
+//     which must agree;
 //   - the folds (spec.h's catalog) a source container's converter applied;
-//   - its default planning policy (planner/policy.h's canonical text): the
-//     patterns and bounds a model of the architecture is planned with, the
-//     first migrations' recipes as data (an alias's settings may replace
-//     it). The spec module does not read it; the step source parses it.
+//   - its default planning policies (planner/policy.h's canonical text),
+//     each gated by a source key as a slot is: the patterns and bounds a
+//     model of the architecture is planned with, the first migrations'
+//     recipes as data (an alias's settings may replace it). The spec
+//     module does not parse them; the step source does;
+//   - for a drafter's architecture (an assistant), its stage's role and
+//     name and what it reads of its target (its KV state, a feature tap):
+//     ComposeDrafter makes a two-stage spec of the target's and the
+//     drafter's checkpoints, the drafter's tensor rules may bind its
+//     target's tensors (the target's token table), and its parameters may
+//     read the target's facts (kTargetLastLayer).
+//
+// Slots may be gated by a source key (a routed-expert block in a
+// checkpoint that has experts, a dense one in one that has none); a
+// parameter may read a key that lists one value a layer (per_layer:
+// Gemma 4's KV head counts); a tensor rule of a layer slot may name a
+// tensor without a layer, which every layer of its types binds (a shared
+// rotation-factor table), and may apply to some layer types only.
 //
 // Mappings are compiled in as data and validated like untrusted input
 // (ValidateMapping): a mapping runs no code. Synthesize applies one to a
@@ -76,10 +92,18 @@ struct SlotRule {
   std::string_view kind{};  // the component kind
   std::uint16_t version = 1;
   std::string_view layer_types{};  // kLayer: the layer types that have it; empty: every layer
+  // A slot some checkpoints of the architecture have: present when the
+  // source key `gate` holds an integer above zero, or (gate_absent) only
+  // when it is absent or zero. Empty: always present.
+  std::string_view gate{};
+  bool gate_absent = false;
 };
 
 struct TensorRule {
-  std::string_view pattern{};  // kLayerField exactly once in a kLayer slot's, never elsewhere
+  // kLayerField at most once, and only in a kLayer slot's: a kLayer slot's
+  // pattern without it names one tensor that every layer of the rule's
+  // types binds (a table the layers share).
+  std::string_view pattern{};
   std::string_view slot{};
   std::string_view role{};
   format::PartRole part = format::PartRole::kData;
@@ -88,6 +112,13 @@ struct TensorRule {
   // Bound instead when the pattern's tensor is absent (a pattern of its
   // own, with the layer where the rule's has one).
   std::string_view fallback{};
+  // kLayer slots: the layer types whose layers bind it (a layer of another
+  // type that has the tensor is refused); empty: every type the slot has.
+  std::string_view layer_types{};
+  // A drafter mapping's rule for a tensor of its target's checkpoint (bound
+  // with the target stage's name, spec.h WeightBinding::stage): never
+  // matched against the drafter's own source.
+  bool target = false;
 };
 
 enum class ValueType : std::uint8_t { kInt, kReal, kBool, kString };
@@ -114,11 +145,34 @@ struct ParamRule {
   // When no rule for the parameter resolves, it is left out (a
   // requirement: the key may be absent).
   bool optional = false;
+  // kLayer slots, kInt or kReal: the key's value is a list with an entry a
+  // layer, the layer's being the value, or one value for every layer
+  // (llama.cpp's get_key_or_arr).
+  bool per_layer = false;
 };
 
 struct FoldRule {
   std::string_view fold{};       // spec.h's catalog
   std::string_view container{};  // the source container whose converter applied it ("gguf")
+};
+
+// The planner's default policy for some checkpoints of the architecture,
+// in its canonical text (planner/policy.h validates it; here, printable
+// lines), gated by a source key as a slot is (SlotRule::gate; empty: every
+// checkpoint).
+struct PolicyRule {
+  std::string_view gate{};
+  bool gate_absent = false;
+  std::string_view text{};
+};
+
+// What a drafter's stage reads of its target (spec.h Read): its state by
+// its components' contract name, or a feature tap, which the composition
+// gives the target (at `point`, layer 0) unless it has one of the name.
+struct ReadRule {
+  ReadKind kind = ReadKind::kState;
+  std::string_view name{};
+  TapPoint point = TapPoint::kPostFinalNorm;
 };
 
 struct Mapping {
@@ -131,12 +185,27 @@ struct Mapping {
   std::span<const TensorRule> tensors{};
   std::span<const ParamRule> params{};
   std::span<const FoldRule> folds{};
-  // The default planning policy's canonical text (see the header); at
-  // most kMaxPolicyText bytes, every line ending in '\n'. Empty: the
-  // planner's default policy (every pattern).
-  std::string_view policy{};
+  // A source key listing a flag a layer (1 or true where the layer is of
+  // type `layer_flag_type`): when the source has it, it must agree with
+  // layer_types layer for layer.
+  std::string_view layer_flags_key{};
+  char layer_flag_type = 0;
+  // A drafter's architecture (role kDrafter): its stage's name and what it
+  // reads of its target; see ComposeDrafter.
+  StageRole role = StageRole::kTarget;
+  std::string_view stage{};
+  std::span<const ReadRule> reads{};
+  // The default planning policy: the first rule whose gate holds (each
+  // text at most kMaxPolicyText bytes of printable lines, each ending in
+  // '\n'); none: the planner's default policy (every pattern).
+  std::span<const PolicyRule> policies{};
 };
 inline constexpr std::size_t kMaxPolicyText = 4096;
+
+// The target's facts a drafter mapping's parameters may read, as source
+// keys ComposeDrafter adds: kTargetLastLayer followed by a layer-type
+// letter of the target's mapping is the target's last layer of that type.
+inline constexpr std::string_view kTargetLastLayer = "llmp.target.last_layer.";
 
 // The compiled mappings, and the one for an architecture.
 std::span<const Mapping* const> Mappings();
@@ -172,13 +241,35 @@ struct Source {
 // count as ne[2]); the container "gguf" when every source file is a GGUF.
 std::expected<Source, std::string> SourceOfV0(const artifact::Artifact& artifact);
 
+// The default policy text `mapping` gives a source with `values` (its
+// first policy rule whose gate holds; empty when none does).
+std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mapping,
+                                                           std::span<const SourceValue> values);
+
 // The spec `mapping` makes of `source` with `values`: one target stage
-// bound to artifact 0, validated.
+// bound to artifact 0, validated. A drafter's mapping is refused (it
+// composes with its target: ComposeDrafter).
 std::expected<ModelSpec, std::string> Synthesize(const Mapping& mapping, const Source& source,
                                                  std::span<const SourceValue> values);
 std::expected<ModelSpec, std::string> SynthesizeV0(const artifact::Artifact& artifact,
                                                    const Mapping& mapping,
                                                    std::span<const SourceValue> values);
+
+// `target` (a spec whose first stage is its target, made by
+// `target_mapping`) with a drafter stage the drafter's mapping makes of
+// its source and values, bound to the next artifact index: the drafter's
+// reads of the target, its target-tensor bindings (WeightBinding::stage),
+// and the target's taps it reads added to the target stage. The values
+// gain the target's facts (kTargetLastLayer). Validated.
+std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
+                                                     const Mapping& target_mapping,
+                                                     const Mapping& drafter, const Source& source,
+                                                     std::span<const SourceValue> values);
+std::expected<ModelSpec, std::string> ComposeDrafterV0(const ModelSpec& target,
+                                                       const Mapping& target_mapping,
+                                                       const artifact::Artifact& artifact,
+                                                       const Mapping& drafter,
+                                                       std::span<const SourceValue> values);
 
 }  // namespace llmp::spec
 

@@ -256,7 +256,8 @@ struct Component {
 // The model runner over the component source (the mapping's policy) and
 // the GGML lowering, for the same script.
 Component Lowered(const fs::path& root, const llmp::spec::ModelSpec& spec,
-                  const llmp::spec::Mapping& mapping, std::uint32_t context,
+                  const llmp::spec::Mapping& mapping,
+                  std::span<const llmp::spec::SourceValue> values, std::uint32_t context,
                   std::span<const Planned> script, const fs::path& scratch) {
   Component out;
   auto artifact = ar::Artifact::Open(root, {.expected_id = {}});
@@ -307,6 +308,7 @@ Component Lowered(const fs::path& root, const llmp::spec::ModelSpec& spec,
          .bindings = {.tensors = source->tensors, .state = &*layout},
          .bound_digest = spec.Digest(),
          .mapping = &mapping,
+         .values = values,
          .policy = std::nullopt,
          .backend = backend->Backend()});
     if (!component) return std::unexpected(component.error());
@@ -461,7 +463,7 @@ TEST_P(ComponentRunnerGpu, ServingRecipeStepsAreTodaysBitForBit) {
   ASSERT_NE(mapping, nullptr);
   const auto spec = llmp::spec::SynthesizeV0(*artifact, *mapping, values);
   ASSERT_TRUE(spec.has_value()) << spec.error();
-  const Component lowered = Lowered(root, *spec, *mapping, context, script, out);
+  const Component lowered = Lowered(root, *spec, *mapping, values, context, script, out);
   ASSERT_EQ(lowered.outputs.size(), production.size());
   // The repeated joined decodes: run once, captured beside the second
   // run, replayed on the third (each head's).

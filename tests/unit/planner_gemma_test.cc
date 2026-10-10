@@ -180,9 +180,10 @@ const DeviceFacts& Gb10() {
   return facts;
 }
 
-// The recipes as policies: the architecture mappings' text.
-const std::string_view kGemma2Policy = spec::mappings::Gemma2Mapping().policy;
-const std::string_view kGemma3Policy = spec::mappings::Gemma3Mapping().policy;
+// The recipes as policies: the architecture mappings' text (one ungated
+// rule each).
+const std::string_view kGemma2Policy = spec::mappings::Gemma2Mapping().policies.front().text;
+const std::string_view kGemma3Policy = spec::mappings::Gemma3Mapping().policies.front().text;
 
 Policy PolicyOf(std::string_view text, bool shared_q8) {
   Policy p = ParsePolicy(text).value();

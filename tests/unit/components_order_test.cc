@@ -196,6 +196,10 @@ std::map<std::uint32_t, std::string> StepLeaves(const StepGraph& step,
       case InputKind::kStream:
         out[in.tensor.v] = "stream";
         break;
+      case InputKind::kFeatures:
+      case InputKind::kOutputCells:
+        out[in.tensor.v] = "?";  // a drafter's (no Gemma 2 or 3 step has them)
+        break;
     }
   }
   for (const StepState& st : step.state) {

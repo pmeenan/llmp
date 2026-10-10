@@ -2,13 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // norm.rms, version 1: rms_norm(x) · w over the stream (a final norm).
+// scale.learned, version 1: the stream times one learned value (Gemma 4's
+// layer output scale), after the layer's residual add.
 // embedding.token, version 1: rows of a token table, scaled (Gemma's
-// sqrt(width)). head.linear, version 1: the output rows' product with the
-// output matrix (tied or not; the rows gathered here unless the stream
-// was narrowed to them), an optional final softcap applied as
-// today's builders do (scale by 1 / cap, tanh, scale by cap), and on a
-// greedy step each row's highest logit (the host-greedy flavor); it splits
-// by the vocabulary.
+// sqrt(width)).
+// embedding.projected, version 1: a drafter's input (Gemma 4's
+// assistant): rows of a token table (its target's, bound by stage),
+// scaled, beside a feature of the same width (the target's tap, or the
+// drafter's own last feature: a step input the engine binds), projected
+// to the stream. Its state is the tap the target's steps write for it
+// (target_writes): each output row's feature, a ring of `tap_cells` cells
+// by position, from which the engine binds a unit's first feature.
+// head.linear, version 1: the output rows' product with the output matrix
+// (tied or not; the rows gathered here unless the stream was narrowed to
+// them), an optional final softcap applied as today's builders do (scale
+// by 1 / cap, tanh, scale by cap), and on a greedy step each row's highest
+// logit (the host-greedy flavor); a drafter's head reads every row
+// (`gather` false: nothing to gather or narrow) and projects its rows back
+// to its target's width (`features`: its next feature); it splits by the
+// vocabulary.
 
 #include <array>
 #include <cmath>
@@ -21,8 +33,10 @@
 #include "components/component.h"
 #include "components/defs.h"
 #include "components/step.h"
+#include "format/encoding.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "model/state_contract.h"
 
 namespace llmp::components::defs {
 namespace {
@@ -63,6 +77,29 @@ std::expected<void, std::string> NormReference(RefIO& io) {
   return {};
 }
 
+// ------------------------------------------------------------- scale.learned
+
+constexpr std::array kScaleRoles{WeightRole{.name = "weight", .encodings = kF32Only}};
+
+std::expected<std::vector<RoleShape>, std::string> ScaleShapes(const Instance&) {
+  return std::vector<RoleShape>{Role(0, {1})};
+}
+
+std::expected<FragmentOut, std::string> ScaleEmit(Fragment& f) {
+  if (!f.stream_needed) return FragmentOut{.stream = f.stream};
+  return FragmentOut{.stream = f.b.Mul(f.stream, f.Weight(0))};
+}
+
+std::expected<void, std::string> ScaleReference(RefIO& io) {
+  const Instance& in = *io.instance;
+  if (io.stream.size() != in.stage.width * io.rows() || io.weights.at(0).size() != 1) {
+    return std::unexpected("scale reference: a stream or weight of another shape");
+  }
+  const auto w = static_cast<double>(io.weights[0][0]);
+  for (double& x : io.stream) x *= w;
+  return {};
+}
+
 // ----------------------------------------------------------- embedding.token
 
 constexpr std::array kEmbeddingParams{
@@ -84,32 +121,129 @@ std::expected<FragmentOut, std::string> EmbeddingEmit(Fragment& f) {
   return FragmentOut{.stream = f.b.Scale(rows, F32(f.instance.params.Real("scale")))};
 }
 
-std::expected<void, std::string> EmbeddingReference(RefIO& io) {
-  const Instance& in = *io.instance;
-  const std::uint64_t width = in.stage.width;
-  const std::span<const float> table = io.weights.at(0);
+// Each token's row of `table` (`width` values a row) times `scale`.
+std::expected<std::vector<double>, std::string> TableRows(std::span<const float> table,
+                                                          std::uint64_t width,
+                                                          std::span<const std::int32_t> tokens,
+                                                          double scale) {
   const std::uint64_t vocab = table.size() / width;
-  if (io.tokens.size() != io.rows()) return std::unexpected("embedding reference: tokens");
-  const double scale = F32(in.params.Real("scale"));
-  io.stream.assign(width * io.tokens.size(), 0.0);
-  for (std::size_t r = 0; r < io.tokens.size(); ++r) {
-    const auto t = static_cast<std::uint64_t>(io.tokens[r]);
-    if (io.tokens[r] < 0 || t >= vocab) return std::unexpected("embedding reference: a token");
+  std::vector<double> out(width * tokens.size(), 0.0);
+  for (std::size_t r = 0; r < tokens.size(); ++r) {
+    const auto t = static_cast<std::uint64_t>(tokens[r]);
+    if (tokens[r] < 0 || t >= vocab) return std::unexpected("embedding reference: a token");
     for (std::uint64_t i = 0; i < width; ++i) {
-      io.stream[(r * width) + i] = static_cast<double>(table[(t * width) + i]) * scale;
+      out[(r * width) + i] = static_cast<double>(table[(t * width) + i]) * scale;
     }
   }
+  return out;
+}
+
+std::expected<void, std::string> EmbeddingReference(RefIO& io) {
+  const Instance& in = *io.instance;
+  if (io.tokens.size() != io.rows()) return std::unexpected("embedding reference: tokens");
+  auto rows = TableRows(io.weights.at(0), in.stage.width, io.tokens, F32(in.params.Real("scale")));
+  if (!rows) return std::unexpected(rows.error());
+  io.stream = std::move(*rows);
+  return {};
+}
+
+// ------------------------------------------------------- embedding.projected
+
+constexpr std::array kProjectedParams{
+    ParamSpec{.name = "scale", .type = ParamType::kReal, .least = 1e-30, .most = 1e6},
+    // The feature's width: the token table's and the tap's (its target's).
+    ParamSpec{.name = "feature", .type = ParamType::kInt, .least = 1, .most = 1 << 16},
+    // The tap of its target it reads (a spec read of that name).
+    ParamSpec{.name = "tap", .type = ParamType::kName},
+    // The tap's cells: positions in a ring, enough for a verify's rows.
+    ParamSpec{.name = "tap_cells",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 1,
+              .most = 4096,
+              .fallback = 16},
+};
+enum : std::uint16_t { kTable, kProjection };
+constexpr std::array kProjectedRoles{WeightRole{.name = "table"}, WeightRole{.name = "projection"}};
+
+std::uint64_t FeatureWidth(const Instance& in) {
+  return static_cast<std::uint64_t>(in.params.Int("feature"));
+}
+
+std::expected<std::vector<RoleShape>, std::string> ProjectedShapes(const Instance& in) {
+  const std::uint64_t f = FeatureWidth(in);
+  return std::vector<RoleShape>{Role(kTable, {f, 0}), Role(kProjection, {2 * f, in.stage.width})};
+}
+
+model::StateContract ProjectedState(const Instance& in) {
+  const std::uint64_t f = FeatureWidth(in);
+  return {.tensors = {{.name = std::string(in.params.Name("tap")),
+                       .kind = model::StateKind::kFeatures,
+                       .encoding = format::Encoding::kF32,
+                       .cell_bytes = f * 4,
+                       .cells = model::CellRule::kPositionRing,
+                       .window_or_ratio = static_cast<std::uint32_t>(in.params.Int("tap_cells")),
+                       // A rejected row's cell is never read: a unit reads
+                       // only its committed last position's.
+                       .rollback = model::Rollback::kTruncate,
+                       .target_writes = true}}};
+}
+
+std::expected<FragmentOut, std::string> ProjectedEmit(Fragment& f) {
+  ir::Builder& b = f.b;
+  const ir::TensorId x =
+      b.Scale(b.GetRows(f.Weight(kTable), f.step.Tokens()), F32(f.instance.params.Real("scale")));
+  const ir::TensorId features = f.step.Features(FeatureWidth(f.instance));
+  return FragmentOut{.stream = b.MatMul(f.Weight(kProjection), b.Concat(x, features, 0))};
+}
+
+std::expected<void, std::string> ProjectedReference(RefIO& io) {
+  const Instance& in = *io.instance;
+  const std::uint64_t f = FeatureWidth(in);
+  const std::uint64_t rows = io.rows();
+  if (io.tokens.size() != rows || io.features.size() != f * rows) {
+    return std::unexpected("projected embedding reference: tokens or features");
+  }
+  auto x = TableRows(io.weights.at(kTable), f, io.tokens, F32(in.params.Real("scale")));
+  if (!x) return std::unexpected(x.error());
+  std::vector<double> joined(2 * f * rows);
+  for (std::uint64_t r = 0; r < rows; ++r) {
+    for (std::uint64_t i = 0; i < f; ++i) {
+      joined[(r * 2 * f) + i] = (*x)[(r * f) + i];
+      joined[(r * 2 * f) + f + i] = io.features[(r * f) + i];
+    }
+  }
+  io.stream = Product(io.weights.at(kProjection), 2 * f, in.stage.width, joined);
   return {};
 }
 
 // --------------------------------------------------------------- head.linear
 
-constexpr std::array kHeadRoles{WeightRole{.name = "weight"}};
+constexpr std::array kHeadParams{
+    // The output rows gathered (each segment's last `outputs`); false: every
+    // row is an output (a drafter's).
+    ParamSpec{.name = "gather",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 1.0},
+    // Its rows projected to this width as well (a drafter's next feature,
+    // role projection); 0: none.
+    ParamSpec{.name = "features",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 0,
+              .most = 1 << 16,
+              .fallback = 0},
+};
+enum : std::uint16_t { kHeadWeight, kHeadProjection };
+constexpr std::array kHeadRoles{WeightRole{.name = "weight"}, WeightRole{.name = "projection"}};
 constexpr std::array<std::string_view, 1> kHeadPatterns{"prepared_products"};
 
 // By the vocabulary: the output matrix by its rows, the logits gathered
 // (each output row's logits, F32) where something needs them whole.
-constexpr std::array kVocabRoles{RoleSplit{.role = 0, .dim = 1}};
+constexpr std::array kVocabRoles{RoleSplit{.role = kHeadWeight, .dim = 1}};
 constexpr std::array kHeadSplits{
     SplitOption{.kind = SplitKind::kColumns,
                 .collective = ir::Op::kAllGather,
@@ -120,18 +254,34 @@ constexpr std::array kHeadSplits{
                 .weights = kVocabRoles,
                 .state = {}}};
 
+std::uint64_t HeadFeatures(const Instance& in) {
+  return static_cast<std::uint64_t>(in.params.Int("features"));
+}
+
 std::expected<std::vector<RoleShape>, std::string> HeadShapes(const Instance& in) {
   if (in.stage.softcap.has_value() && !(*in.stage.softcap > 0.0)) {
     return std::unexpected("a final softcap above zero");
   }
-  return std::vector<RoleShape>{Role(0, {in.stage.width, 0})};
+  std::vector<RoleShape> out{Role(kHeadWeight, {in.stage.width, 0})};
+  if (HeadFeatures(in) != 0) {
+    out.push_back(Role(kHeadProjection, {in.stage.width, HeadFeatures(in)}));
+  }
+  return out;
 }
+
+bool HeadGathers(const Instance& in) { return in.params.Flag("gather"); }
 
 std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
   ir::Builder& b = f.b;
-  // Its rows, unless what came before narrowed the stream to them.
-  const ir::TensorId rows = f.narrowed ? f.stream : b.GetRows(f.stream, f.step.OutputRows());
-  ir::TensorId logits = b.MatMul(f.Weight(0), rows);
+  const bool gather = f.instance.params.Flag("gather");
+  if (!gather && f.step.outputs() != f.step.rows()) {
+    return std::unexpected("a head of every row in a step whose rows are not all outputs");
+  }
+  // Its rows, unless it reads every row or what came before narrowed the
+  // stream to them.
+  const ir::TensorId rows =
+      gather && !f.narrowed ? b.GetRows(f.stream, f.step.OutputRows()) : f.stream;
+  ir::TensorId logits = b.MatMul(f.Weight(kHeadWeight), rows);
   if (f.instance.stage.softcap.has_value()) {
     const float cap = F32(*f.instance.stage.softcap);
     logits = b.Scale(logits, 1.0F / cap);
@@ -139,6 +289,7 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
     logits = b.Scale(logits, cap);
   }
   FragmentOut out{.stream = f.stream, .logits = logits};
+  if (HeadFeatures(f.instance) != 0) out.features = b.MatMul(f.Weight(kHeadProjection), rows);
   if (f.step.greedy()) out.greedy = b.Argmax(logits, ir::ArgmaxNan::kFirstColumn);
   return out;
 }
@@ -146,15 +297,20 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
 std::expected<void, std::string> HeadReference(RefIO& io) {
   const Instance& in = *io.instance;
   const std::uint64_t width = in.stage.width;
-  const std::span<const float> w = io.weights.at(0);
+  const std::span<const float> w = io.weights.at(kHeadWeight);
   const std::uint64_t vocab = w.size() / width;
   if (io.stream.size() != width * io.rows()) {
     return std::unexpected("head reference: a stream of another shape");
   }
-  // Each segment's last `outputs` rows, in row order.
+  // Each segment's last `outputs` rows, in row order (every row when it
+  // does not gather).
+  const bool gather = in.params.Flag("gather");
   std::vector<double> selected;
   std::uint64_t first = 0;
   for (const RefSegment& s : io.segments) {
+    if (!gather && s.outputs != s.rows) {
+      return std::unexpected("head reference: rows that are not all outputs");
+    }
     for (std::uint64_t i = s.rows - s.outputs; i < s.rows; ++i) {
       const auto row = std::span(io.stream).subspan((first + i) * width, width);
       selected.insert(selected.end(), row.begin(), row.end());
@@ -165,6 +321,10 @@ std::expected<void, std::string> HeadReference(RefIO& io) {
   if (in.stage.softcap.has_value()) {
     const double cap = *in.stage.softcap;
     for (double& l : io.logits) l = cap * std::tanh(l / cap);
+  }
+  io.features_out.clear();
+  if (HeadFeatures(in) != 0) {
+    io.features_out = Product(io.weights.at(kHeadProjection), width, HeadFeatures(in), selected);
   }
   io.tokens_out.clear();
   if (io.greedy) {
@@ -197,6 +357,20 @@ const ComponentDef& NormRms() {
   return def;
 }
 
+const ComponentDef& ScaleLearned() {
+  static const ComponentDef def{
+      .kind = "scale.learned",
+      .version = 1,
+      .row_local = true,
+      .roles = kScaleRoles,
+      .shapes = ScaleShapes,
+      .batch_classes = std::span(kJoined).subspan(1, 1),
+      .emit = ScaleEmit,
+      .reference = ScaleReference,
+  };
+  return def;
+}
+
 const ComponentDef& EmbeddingToken() {
   static const ComponentDef def{
       .kind = "embedding.token",
@@ -212,16 +386,33 @@ const ComponentDef& EmbeddingToken() {
   return def;
 }
 
+const ComponentDef& EmbeddingProjected() {
+  static const ComponentDef def{
+      .kind = "embedding.projected",
+      .version = 1,
+      .params = kProjectedParams,
+      .roles = kProjectedRoles,
+      .shapes = ProjectedShapes,
+      .state = ProjectedState,
+      .batch_classes = std::span(kJoined).subspan(2, 3),
+      .emit = ProjectedEmit,
+      .reference = ProjectedReference,
+  };
+  return def;
+}
+
 const ComponentDef& HeadLinear() {
   static const ComponentDef def{
       .kind = "head.linear",
       .version = 1,
       .row_local = true,
+      .params = kHeadParams,
       .roles = kHeadRoles,
       .shapes = HeadShapes,
       .batch_classes = std::span(kJoined).subspan(2),
       .splits = kHeadSplits,
       .patterns = kHeadPatterns,
+      .gathers = HeadGathers,
       .emit = HeadEmit,
       .reference = HeadReference,
   };

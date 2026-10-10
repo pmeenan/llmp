@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "spec/mapping.h"
 #include "spec/spec.h"
@@ -28,6 +30,17 @@ constexpr ParamRule FromKey(std::string_view slot, std::string_view param, std::
           .type = type,
           .transform = transform,
           .optional = optional};
+}
+
+// A parameter from a key listing a value a layer (or one for all).
+constexpr ParamRule PerLayer(std::string_view slot, std::string_view param, std::string_view key,
+                             ValueType type, std::string_view layer_types = {}) {
+  return {.slot = slot,
+          .param = param,
+          .layer_types = layer_types,
+          .key = key,
+          .type = type,
+          .per_layer = true};
 }
 
 // Constant parameters.
@@ -83,6 +96,10 @@ inline SourceValue Value(std::string_view key, float v) {
 }
 inline SourceValue Value(std::string_view key, std::string_view v) {
   return {.key = std::string(key), .value = ParamValue(std::string(v))};
+}
+// A list of integers (GGUF's arrays of integers or flags).
+inline SourceValue Value(std::string_view key, std::vector<std::int64_t> v) {
+  return {.key = std::string(key), .value = ParamValue(std::move(v))};
 }
 
 }  // namespace llmp::spec::mappings

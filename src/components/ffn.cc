@@ -16,6 +16,7 @@
 
 #include "components/component.h"
 #include "components/defs.h"
+#include "components/moe.h"
 #include "components/step.h"
 #include "ir/graph.h"
 #include "ir/op.h"
@@ -91,9 +92,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   const auto w = [&](std::uint16_t role) { return f.Weight(role); };
   const ir::TensorId x = f.stream;
   const ir::TensorId h = b.Mul(b.RmsNorm(x, eps), w(kNorm));
-  const ir::TensorId gate = b.MatMul(w(kGate), h);
-  const ir::TensorId up = b.MatMul(w(kUp), h);
-  const ir::TensorId down = b.MatMul(w(kDown), b.Glu(gate, up, {.kind = Kind(f.instance)}));
+  const ir::TensorId down = moe::EmitGlu(b, h, w(kGate), w(kUp), w(kDown), Kind(f.instance));
   if (!Sandwich(f.instance)) return FragmentOut{.stream = b.Add(down, x)};
   return FragmentOut{.stream = b.Add(b.Mul(b.RmsNorm(down, eps), w(kPostNorm)), x)};
 }
@@ -108,11 +107,8 @@ std::expected<void, std::string> Reference(RefIO& io) {
   const double eps = F32(in.params.Real("eps"));
   std::vector<double> h = io.stream;
   RmsRows(h, width, eps, io.weights.at(kNorm));
-  const std::vector<double> gate = Product(io.weights.at(kGate), width, hidden, h);
-  std::vector<double> up = Product(io.weights.at(kUp), width, hidden, h);
-  const bool silu = Kind(in) == ir::GluKind::kSwiGlu;
-  for (std::size_t i = 0; i < up.size(); ++i) up[i] *= silu ? Silu(gate[i]) : GeluTanh(gate[i]);
-  std::vector<double> down = Product(io.weights.at(kDown), hidden, width, up);
+  std::vector<double> down = moe::GluReference(h, io.weights.at(kGate), io.weights.at(kUp),
+                                               io.weights.at(kDown), width, hidden, Kind(in));
   if (Sandwich(in)) RmsRows(down, width, eps, io.weights.at(kPostNorm));
   for (std::size_t i = 0; i < down.size(); ++i) io.stream[i] += down[i];
   return {};

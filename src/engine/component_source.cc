@@ -23,15 +23,22 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   planner::Policy policy;
   if (options.policy) {
     policy = *options.policy;
-  } else if (options.mapping != nullptr && options.mapping->policy.empty()) {
-    policy = planner::Policy{};  // a mapping without one: the planner's default
   } else if (options.mapping != nullptr) {
-    auto parsed = planner::ParsePolicy(options.mapping->policy);
-    if (!parsed) {
+    // The mapping's rule for this source's values; none: the planner's
+    // default.
+    auto text = spec::DefaultPolicy(*options.mapping, options.values);
+    if (!text) {
       return std::unexpected(std::format("mapping {}'s planning policy: {}",
-                                         options.mapping->architecture, parsed.error()));
+                                         options.mapping->architecture, text.error()));
     }
-    policy = std::move(*parsed);
+    if (!text->empty()) {
+      auto parsed = planner::ParsePolicy(*text);
+      if (!parsed) {
+        return std::unexpected(std::format("mapping {}'s planning policy: {}",
+                                           options.mapping->architecture, parsed.error()));
+      }
+      policy = std::move(*parsed);
+    }
   } else {
     return std::unexpected("a component step source needs a planning policy or a mapping");
   }

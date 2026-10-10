@@ -4,16 +4,31 @@
 // attention.dense, version 1: dense grouped-query attention over each
 // request's own cache, with its norms. Pre- or sandwich-normed (Gemma's
 // post-attention norm before the residual add); Q, K and V products; an
-// optional per-head RMS norm of Q and K (Gemma 3); NEOX or normal pair
-// rotation at the instance's base and frequency scale; queries scaled by
-// `scale` after the rotation and attention run at scale 1 (as today's
-// builders scale them); an optional logit softcap; a global layer's cache
-// holds a cell per position, a sliding layer's (window > 0) a ring.
-// K and V are F16 state; attention accumulates in F32 or wider.
+// optional per-head RMS norm of Q and K (Gemma 3, Gemma 4); NEOX or normal
+// pair rotation at the instance's base and frequency scale, optionally
+// divided by per-pair frequency factors (`rope_freqs`: Gemma 4's
+// proportional rotation of its global layers, a table the layers share);
+// queries scaled by `scale` after the rotation (no node when it is 1:
+// Gemma 4's) and attention run at scale 1 (as today's builders scale
+// them); an optional logit softcap; a global layer's cache holds a cell per
+// position, a sliding layer's (window > 0) a ring. Gemma 4's global layers
+// tie V to K (`kv_tie`: V is K's product, before K's norm and rotation; the
+// layer has no V weight) and normalize V by an unweighted RMS norm
+// (`v_norm`, every Gemma 4 layer). K and V are F16 state; attention
+// accumulates in F32 or wider.
 //
-// The fragment emits what kernels/ggml/gemma2_graph.cc and gemma3_graph.cc
-// record, in their order (GraphOrder over their outputs): the input norm;
-// Q's product, reshape, norm, rotation and scale; V's product and reshape;
+// attention.borrowed, version 1: the same attention for queries only, over
+// another stage's K and V (a drafter reading its target's cache: Gemma 4's
+// assistant). Its state contract names the target's tensors ("k" and "v"
+// of target layer `target_layer`, borrowed_from_target): it owns no bytes,
+// stores nothing, and reads the cells the target's committed positions
+// hold (a frozen read: the step's own rows are never stored, so its masks
+// see only the positions before its rows).
+//
+// The fragment emits what kernels/ggml/gemma2_graph.cc, gemma3_graph.cc,
+// gemma4_graph.cc and gemma4_assistant_graph.cc record, in their order
+// (GraphOrder over their outputs): the input norm; Q's product, reshape,
+// norm, rotation and scale; V's product (K's when tied), reshape and norm;
 // K's product, reshape, norm and rotation; then per segment the K store
 // (the rows reshape first), the V store, and attention over views of the
 // segment's caches; then the segments' outputs joined, the output
@@ -49,7 +64,19 @@ using format::Encoding;
 constexpr std::array<std::string_view, 2> kPlacements{"sandwich", "pre"};
 constexpr std::array<std::string_view, 2> kRotations{"neox", "normal"};
 
-constexpr std::array kParams{
+constexpr ParamSpec Flag(std::string_view name) {
+  return {.name = name,
+          .type = ParamType::kBool,
+          .required = false,
+          .least = 0,
+          .most = 1,
+          .fallback = 0.0};
+}
+
+// The parameters both kinds take, in order; the dense kind adds its V's
+// form, the borrowed one the target layer it reads.
+constexpr std::size_t kCommon = 15;
+constexpr std::array<ParamSpec, kCommon> kCommonParams{
     ParamSpec{.name = "placement", .type = ParamType::kName, .choices = kPlacements},
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     ParamSpec{.name = "heads", .type = ParamType::kInt, .least = 1, .most = 1024},
@@ -72,15 +99,32 @@ constexpr std::array kParams{
     ParamSpec{.name = "rope_base", .type = ParamType::kReal, .least = 1e-30, .most = 1e12},
     // The frequency scale (1 / a linear scaling's factor).
     ParamSpec{.name = "rope_scale", .type = ParamType::kReal, .least = 1e-30, .most = 1e6},
-    ParamSpec{.name = "qk_norm",
-              .type = ParamType::kBool,
-              .required = false,
-              .least = 0,
-              .most = 1,
-              .fallback = 0.0},
+    Flag("qk_norm"),
+    // Per-pair frequency factors divide the angles (role rope_freqs).
+    Flag("rope_freqs"),
 };
 
-enum : std::uint16_t { kNorm, kQ, kK, kV, kOutput, kPostNorm, kQNorm, kKNorm };
+template <std::size_t N>
+constexpr std::array<ParamSpec, kCommon + N> WithCommon(const std::array<ParamSpec, N>& more) {
+  std::array<ParamSpec, kCommon + N> out{};
+  for (std::size_t i = 0; i < kCommon; ++i) out.at(i) = kCommonParams.at(i);
+  for (std::size_t i = 0; i < N; ++i) out.at(kCommon + i) = more.at(i);
+  return out;
+}
+
+constexpr auto kParams = WithCommon(std::array{
+    // V is K's product (no V weight), before K's norm and rotation.
+    Flag("kv_tie"),
+    // V normalized by an unweighted RMS norm of each head.
+    Flag("v_norm"),
+});
+
+constexpr auto kBorrowedParams = WithCommon(std::array{
+    // The target layer whose K and V it reads.
+    ParamSpec{.name = "target_layer", .type = ParamType::kInt, .least = 0, .most = 4095},
+});
+
+enum : std::uint16_t { kNorm, kQ, kK, kV, kOutput, kPostNorm, kQNorm, kKNorm, kRopeFreqs };
 constexpr std::array kRoles{
     WeightRole{.name = "norm", .encodings = kF32Only},
     WeightRole{.name = "q"},
@@ -90,6 +134,7 @@ constexpr std::array kRoles{
     WeightRole{.name = "post_norm", .encodings = kF32Only},
     WeightRole{.name = "q_norm", .encodings = kF32Only},
     WeightRole{.name = "k_norm", .encodings = kF32Only},
+    WeightRole{.name = "rope_freqs", .encodings = kF32Only},
 };
 
 // The state's encoding (D-108: F16 by default; a lossy one is a later
@@ -99,11 +144,13 @@ constexpr Encoding kKvEncoding = Encoding::kF16;
 struct Dims {
   std::uint64_t width, heads, kv_heads, kd, vd, rope_dims;
   std::uint32_t window;
-  bool sandwich, qk_norm, neox;
+  bool sandwich, qk_norm, neox, freqs, kv_tie, v_norm, borrowed;
+  std::uint32_t target_layer;
   float eps, scale, softcap, base, freq_scale;
 };
 Dims DimsOf(const Instance& in) {
   const Params& p = in.params;
+  const bool borrowed = in.def->kind == "attention.borrowed";
   return {.width = in.stage.width,
           .heads = static_cast<std::uint64_t>(p.Int("heads")),
           .kv_heads = static_cast<std::uint64_t>(p.Int("kv_heads")),
@@ -114,6 +161,11 @@ Dims DimsOf(const Instance& in) {
           .sandwich = p.Name("placement") == "sandwich",
           .qk_norm = p.Flag("qk_norm"),
           .neox = p.Name("rotation") == "neox",
+          .freqs = p.Flag("rope_freqs"),
+          .kv_tie = !borrowed && p.Flag("kv_tie"),
+          .v_norm = !borrowed && p.Flag("v_norm"),
+          .borrowed = borrowed,
+          .target_layer = borrowed ? static_cast<std::uint32_t>(p.Int("target_layer")) : 0U,
           .eps = F32(p.Real("eps")),
           .scale = F32(p.Real("scale")),
           .softcap = F32(p.Real("softcap")),
@@ -127,15 +179,19 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   if (d.rope_dims > d.kd || d.rope_dims % 2 != 0) {
     return std::unexpected("rope_dims is odd or past key_dim");
   }
+  if (d.kv_tie && d.kd != d.vd) return std::unexpected("V tied to K of another width");
   std::vector<RoleShape> out{Role(kNorm, {d.width}), Role(kQ, {d.width, d.heads * d.kd}),
-                             Role(kK, {d.width, d.kv_heads * d.kd}),
-                             Role(kV, {d.width, d.kv_heads * d.vd}),
                              Role(kOutput, {d.heads * d.vd, d.width})};
+  if (!d.borrowed) {
+    out.push_back(Role(kK, {d.width, d.kv_heads * d.kd}));
+    if (!d.kv_tie) out.push_back(Role(kV, {d.width, d.kv_heads * d.vd}));
+  }
   if (d.sandwich) out.push_back(Role(kPostNorm, {d.width}));
   if (d.qk_norm) {
     out.push_back(Role(kQNorm, {d.kd}));
-    out.push_back(Role(kKNorm, {d.kd}));
+    if (!d.borrowed) out.push_back(Role(kKNorm, {d.kd}));
   }
+  if (d.freqs) out.push_back(Role(kRopeFreqs, {d.rope_dims / 2}));
   return out;
 }
 
@@ -157,7 +213,16 @@ model::StateTensorContract Kv(std::string name, std::uint64_t width, std::uint32
 
 model::StateContract State(const Instance& in) {
   const Dims d = DimsOf(in);
-  return {.tensors = {Kv("k", d.kv_heads * d.kd, d.window), Kv("v", d.kv_heads * d.vd, d.window)}};
+  model::StateContract c{
+      .tensors = {Kv("k", d.kv_heads * d.kd, d.window), Kv("v", d.kv_heads * d.vd, d.window)}};
+  if (d.borrowed) {
+    // The target's tensors of these names in its layer: read, never written.
+    for (auto& t : c.tensors) {
+      t.borrowed_from_target = true;
+      t.target_layer = d.target_layer;
+    }
+  }
+  return c;
 }
 
 std::vector<std::pair<std::uint16_t, std::uint32_t>> Masks(const Instance& in) {
@@ -169,34 +234,47 @@ constexpr std::array kBatchClasses{
     BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
     BatchClass{.op = ir::Op::kRope, .batch = ir::Batch::kJoined},
     BatchClass{.op = ir::Op::kMaskBuild, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kCacheStore, .batch = ir::Batch::kPerOwner},
     BatchClass{.op = ir::Op::kAttention, .batch = ir::Batch::kPerOwner},
+    BatchClass{.op = ir::Op::kCacheStore, .batch = ir::Batch::kPerOwner},
 };
 
 // By heads: Q, K and V by their output rows (whole heads, a query head's
 // group with its KV head), the K and V caches by their cells' heads, the
 // output product by its input columns; its partial sums reduce before the
-// post norm.
+// post norm. A tied layer has no V weight (its V is K's split).
 constexpr std::array kHeadRoles{RoleSplit{.role = kQ, .dim = 1}, RoleSplit{.role = kK, .dim = 1},
                                 RoleSplit{.role = kV, .dim = 1},
                                 RoleSplit{.role = kOutput, .dim = 0}};
 constexpr std::array kHeadState{StateSplit{.tensor = 0, .dim = 0},
                                 StateSplit{.tensor = 1, .dim = 0}};
-constexpr std::array kSplits{SplitOption{
-    .kind = SplitKind::kHeads,
-    .collective = ir::Op::kAllReduce,
-    // Whole KV heads per device.
-    .units =
-        [](const Instance& in) { return static_cast<std::uint32_t>(in.params.Int("kv_heads")); },
-    .bytes_per_step = [](const SplitStep& s) -> std::uint64_t {
-      return s.instance->stage.width * s.rows * 4;
-    },
-    .weights = kHeadRoles,
-    .state = kHeadState}};
+std::uint32_t KvHeadUnits(const Instance& in) {
+  return static_cast<std::uint32_t>(in.params.Int("kv_heads"));
+}
+std::uint64_t StreamBytes(const SplitStep& s) { return s.instance->stage.width * s.rows * 4; }
+constexpr std::array kSplits{SplitOption{.kind = SplitKind::kHeads,
+                                         .collective = ir::Op::kAllReduce,
+                                         // Whole KV heads per device.
+                                         .units = KvHeadUnits,
+                                         .bytes_per_step = StreamBytes,
+                                         .weights = kHeadRoles,
+                                         .state = kHeadState}};
+// Queries only: Q and the output product by heads, the borrowed caches by
+// their heads (the target's own split must agree; the partitioner places
+// both stages).
+constexpr std::array kBorrowedRoles{RoleSplit{.role = kQ, .dim = 1},
+                                    RoleSplit{.role = kOutput, .dim = 0}};
+constexpr std::array kBorrowedSplits{SplitOption{.kind = SplitKind::kHeads,
+                                                 .collective = ir::Op::kAllReduce,
+                                                 .units = KvHeadUnits,
+                                                 .bytes_per_step = StreamBytes,
+                                                 .weights = kBorrowedRoles,
+                                                 .state = kHeadState}};
 
 constexpr std::array<std::string_view, 7> kPatterns{
     "rms_norm_mul",    "rms_norm_mul_rope", "rope_store",      "grouped_stores",
     "owner_attention", "prepared_products", "rms_norm_mul_add"};
+constexpr std::array<std::string_view, 4> kBorrowedPatterns{"rms_norm_mul", "rms_norm_mul_rope",
+                                                            "owner_attention", "rms_norm_mul_add"};
 
 ir::RopeParams Rotation(const Instance& in, const Dims& d) {
   return {.mode = d.neox ? ir::RopeMode::kNeox : ir::RopeMode::kNormal,
@@ -212,7 +290,10 @@ ir::RopeParams Rotation(const Instance& in, const Dims& d) {
 
 // The cell rule of a state tensor of this instance.
 CellKey CellsOf(const Fragment& f, std::size_t tensor) {
-  return {.capacity = f.b.tensor(f.State(0, tensor)).ne(1), .ring = DimsOf(f.instance).window != 0};
+  const Dims d = DimsOf(f.instance);
+  return {.capacity = f.b.tensor(f.State(0, tensor)).ne(1),
+          .ring = d.window != 0,
+          .frozen = d.borrowed};
 }
 
 std::expected<FragmentOut, std::string> Emit(Fragment& f) {
@@ -221,21 +302,33 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   const auto w = [&](std::uint16_t role) { return f.Weight(role); };
   const std::uint64_t rows = f.step.rows();
   const ir::TensorId x = f.stream;
+  // A query-only fragment emits nothing for a state-only step.
+  if (d.borrowed && !f.stream_needed) return FragmentOut{.stream = x};
   ir::TensorId normalized = b.Mul(b.RmsNorm(x, d.eps), w(kNorm));
   const ir::RopeParams rope = Rotation(f.instance, d);
   const ir::TensorId positions = f.step.Positions();
+  const ir::TensorId freqs = d.freqs ? w(kRopeFreqs) : ir::TensorId{};
   const auto head_norm = [&](ir::TensorId t, std::uint16_t role) {
     return d.qk_norm ? b.Mul(b.RmsNorm(t, d.eps), w(role)) : t;
   };
   ir::TensorId q{};
   if (f.stream_needed) {
     q = b.Reshape(b.MatMul(w(kQ), normalized), Shape({d.kd, d.heads, rows}));
-    q = b.Rope(head_norm(q, kQNorm), positions, {}, rope);
-    q = b.Scale(q, d.scale);
+    q = b.Rope(head_norm(q, kQNorm), positions, freqs, rope);
+    if (d.scale != 1.0F) q = b.Scale(q, d.scale);
   }
-  const ir::TensorId v = b.Reshape(b.MatMul(w(kV), normalized), Shape({d.vd, d.kv_heads, rows}));
-  ir::TensorId k = b.Reshape(b.MatMul(w(kK), normalized), Shape({d.kd, d.kv_heads, rows}));
-  k = b.Rope(head_norm(k, kKNorm), positions, {}, rope);
+  ir::TensorId k{};
+  ir::TensorId v{};
+  if (!d.borrowed) {
+    // V before K, as the builders' graphs order them; a tied V is K's
+    // product, which K then reshapes again.
+    const ir::TensorId v_product = b.MatMul(w(d.kv_tie ? kK : kV), normalized);
+    v = b.Reshape(v_product, Shape({d.vd, d.kv_heads, rows}));
+    if (d.v_norm) v = b.RmsNorm(v, d.eps);
+    const ir::TensorId k_product = d.kv_tie ? v_product : b.MatMul(w(kK), normalized);
+    k = b.Reshape(k_product, Shape({d.kd, d.kv_heads, rows}));
+    k = b.Rope(head_norm(k, kKNorm), positions, freqs, rope);
+  }
 
   const std::uint64_t k_width = d.kd * d.kv_heads;
   const std::uint64_t v_width = d.vd * d.kv_heads;
@@ -252,11 +345,13 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
       return b.View(t, shape, ViewStrides(nb[0], nb[1], 0, shape),
                     std::uint64_t{seg.first_row} * nb[1]);
     };
-    const ir::TensorId store = f.step.StoreCells(s, cells);
-    if (!k_rows.valid()) k_rows = b.Reshape(k, Shape({k_width, rows}));
-    b.CacheStore(f.State(s, 0), slice(k_rows, k_width), store);
-    if (!v_rows.valid()) v_rows = b.Reshape(v, Shape({v_width, rows}));
-    b.CacheStore(f.State(s, 1), slice(v_rows, v_width), store);
+    if (!d.borrowed) {
+      const ir::TensorId store = f.step.StoreCells(s, cells);
+      if (!k_rows.valid()) k_rows = b.Reshape(k, Shape({k_width, rows}));
+      b.CacheStore(f.State(s, 0), slice(k_rows, k_width), store);
+      if (!v_rows.valid()) v_rows = b.Reshape(v, Shape({v_width, rows}));
+      b.CacheStore(f.State(s, 1), slice(v_rows, v_width), store);
+    }
     if (!f.stream_needed) continue;
     const std::uint64_t read = f.step.ReadCells(s, cells);
     auto mask = f.step.Mask(s, cells, d.window);
@@ -300,15 +395,16 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
 // ------------------------------------------------------------- reference
 
 // Rotates `heads` heads of `dim` values at `position` in place.
-void Rotate(std::span<double> row, std::uint64_t heads, const Dims& d, std::int64_t position) {
+void Rotate(std::span<double> row, std::uint64_t heads, const Dims& d, std::span<const float> freqs,
+            std::int64_t position) {
   const std::uint64_t pairs = d.rope_dims / 2;
   for (std::uint64_t h = 0; h < heads; ++h) {
     double* x = &row[h * d.kd];
     for (std::uint64_t i = 0; i < pairs; ++i) {
       const std::uint64_t a = d.neox ? i : 2 * i;
       const std::uint64_t c = d.neox ? i + pairs : (2 * i) + 1;
-      const double theta =
-          RopeAngle(d.base, static_cast<std::uint32_t>(d.rope_dims), d.freq_scale, i, position);
+      const double theta = RopeAngle(d.base, static_cast<std::uint32_t>(d.rope_dims), d.freq_scale,
+                                     i, position, freqs.empty() ? 1.0F : freqs[i]);
       const double x0 = x[a];
       const double x1 = x[c];
       x[a] = (x0 * std::cos(theta)) - (x1 * std::sin(theta));
@@ -329,14 +425,20 @@ std::expected<void, std::string> Reference(RefIO& io) {
   const auto weight = [&](std::uint16_t role) -> std::span<const float> {
     return io.weights.at(role);
   };
+  const std::span<const float> freqs = d.freqs ? weight(kRopeFreqs) : std::span<const float>{};
   std::vector<double> normalized = io.stream;
   RmsRows(normalized, width, d.eps, weight(kNorm));
   std::vector<double> q = Product(weight(kQ), width, d.heads * d.kd, normalized);
-  std::vector<double> k = Product(weight(kK), width, d.kv_heads * d.kd, normalized);
-  const std::vector<double> v = Product(weight(kV), width, d.kv_heads * d.vd, normalized);
+  std::vector<double> k;
+  std::vector<double> v;
+  if (!d.borrowed) {
+    k = Product(weight(kK), width, d.kv_heads * d.kd, normalized);
+    v = d.kv_tie ? k : Product(weight(kV), width, d.kv_heads * d.vd, normalized);
+    if (d.v_norm) RmsRows(v, d.vd, d.eps, {});
+  }
   if (d.qk_norm) {
     RmsRows(q, d.kd, d.eps, weight(kQNorm));
-    RmsRows(k, d.kd, d.eps, weight(kKNorm));
+    if (!d.borrowed) RmsRows(k, d.kd, d.eps, weight(kKNorm));
   }
   const std::uint64_t group = d.heads / d.kv_heads;
   std::vector<double> attended(rows * d.heads * d.vd, 0.0);
@@ -347,10 +449,13 @@ std::expected<void, std::string> Reference(RefIO& io) {
     auto& vc = io.state[s].at(1);
     const std::uint64_t capacity = io.state_cells[0];
     const bool ring = d.window != 0;
-    const std::uint64_t end = std::uint64_t{seg.past} + seg.rows;
+    // The positions the cells hold through: the step's rows stored, or
+    // (borrowed) the positions before them.
+    const std::uint64_t end = std::uint64_t{seg.past} + (d.borrowed ? 0 : seg.rows);
     // The model sees every position of a row's window; a ring that would
     // overwrite one before the row attends cannot hold the step.
-    if (ring && end > capacity && seg.rows + std::uint64_t{d.window} > capacity + 1) {
+    if (!d.borrowed && ring && end > capacity &&
+        seg.rows + std::uint64_t{d.window} > capacity + 1) {
       return std::unexpected("attention reference: a ring too small for the rows and window");
     }
     // Rotate, then store every row before any row attends (the step's
@@ -358,8 +463,10 @@ std::expected<void, std::string> Reference(RefIO& io) {
     for (std::uint64_t i = 0; i < seg.rows; ++i) {
       const std::uint64_t r = first + i;
       const auto pos = static_cast<std::int64_t>(seg.past + i);
-      Rotate(std::span(q).subspan(r * d.heads * d.kd, d.heads * d.kd), d.heads, d, pos);
-      Rotate(std::span(k).subspan(r * d.kv_heads * d.kd, d.kv_heads * d.kd), d.kv_heads, d, pos);
+      Rotate(std::span(q).subspan(r * d.heads * d.kd, d.heads * d.kd), d.heads, d, freqs, pos);
+      if (d.borrowed) continue;
+      Rotate(std::span(k).subspan(r * d.kv_heads * d.kd, d.kv_heads * d.kd), d.kv_heads, d, freqs,
+             pos);
       const std::uint64_t cell = ring ? (seg.past + i) % capacity : seg.past + i;
       if (cell >= capacity) return std::unexpected("attention reference: a row past the cache");
       for (std::uint64_t j = 0; j < d.kv_heads * d.kd; ++j) {
@@ -379,7 +486,7 @@ std::expected<void, std::string> Reference(RefIO& io) {
         const double* qh = &q[(r * d.heads * d.kd) + (h * d.kd)];
         double top = -std::numeric_limits<double>::infinity();
         for (std::uint64_t c = 0; c < read; ++c) {
-          // The position the cell holds once the step's rows are stored.
+          // The position the cell holds.
           std::int64_t held = -1;
           if (c < end) {
             held = ring ? static_cast<std::int64_t>(c + (((end - 1 - c) / capacity) * capacity))
@@ -438,6 +545,26 @@ const ComponentDef& AttentionDense() {
       .batching = nullptr,
       .splits = kSplits,
       .patterns = kPatterns,
+      .masks = Masks,
+      .emit = Emit,
+      .reference = Reference,
+  };
+  return def;
+}
+
+const ComponentDef& AttentionBorrowed() {
+  static const ComponentDef def{
+      .kind = "attention.borrowed",
+      .version = 1,
+      .narrows = true,
+      .params = kBorrowedParams,
+      .roles = kRoles,
+      .shapes = Shapes,
+      .state = State,
+      .batch_classes = std::span(kBatchClasses).first(5),  // no stores
+      .batching = nullptr,
+      .splits = kBorrowedSplits,
+      .patterns = kBorrowedPatterns,
       .masks = Masks,
       .emit = Emit,
       .reference = Reference,

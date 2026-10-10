@@ -1,28 +1,36 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The model spec synthesized from the installed Gemma 2 and Gemma 3 v0
-// artifacts (spec/mapping.h SynthesizeV0) with today's profiles: the same
-// spec their tensor tables give (spec_test), bound to each artifact's ID.
+// The model spec synthesized from the installed Gemma 2, Gemma 3 and
+// Gemma 4 v0 artifacts (spec/mapping.h SynthesizeV0, the Gemma 4
+// assistant composed with its target by ComposeDrafterV0) with today's
+// profiles: the same spec their tensor tables give (spec_test), bound to
+// each artifact's ID.
 // Needs the model files (label `models`); skipped without them.
 
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 
 #include "artifact/artifact.h"
 #include "base/sha256.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
+#include "model/gemma4.h"
+#include "model/gemma4_assistant.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
+#include "spec/mappings/gemma4.h"
 #include "spec/spec.h"
 #include "spec_fixtures.h"
 
@@ -123,6 +131,74 @@ INSTANTIATE_TEST_SUITE_P(
                          .tensors = 444,
                          .layers = 34}),
     [](const testing::TestParamInfo<Case>& info) { return std::string(info.param.architecture); });
+// The Gemma 4 26B-A4B and 31B targets from their installed artifacts, and
+// the 26B-A4B's assistant composed with its target: the specs their tensor
+// tables give (spec_test), every binding resolved in its stage's artifact.
+TEST(SpecModelsTest, Gemma4SpecsFromTheirArtifacts) {
+  const std::filesystem::path store = Models() / "m3-artifacts";
+  const auto open = [&](std::string_view id) -> std::optional<artifact::Artifact> {
+    const std::filesystem::path path = store / id;
+    if (std::error_code error; !std::filesystem::exists(path, error)) return std::nullopt;
+    auto a = artifact::Artifact::Open(path, {.expected_id = {}});
+    EXPECT_TRUE(a.has_value()) << a.error().ToString();
+    return a ? std::optional(std::move(*a)) : std::nullopt;
+  };
+  const auto target26 = open("4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
+  const auto target31 = open("32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08");
+  const auto assistant26 = open("1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42");
+  if (!target26 || !target31 || !assistant26) GTEST_SKIP() << "no Gemma 4 artifacts in " << store;
+  const auto resolves = [](const artifact::Artifact& a, const ComponentRef& c,
+                           std::string_view own) {
+    for (const WeightBinding& w : c.weights) {
+      if (w.stage.empty() != own.empty()) continue;
+      const bool found =
+          a.FindResource(w.tensor).has_value() ||
+          std::ranges::contains(a.expert_arrays(), w.tensor, &artifact::ExpertArray::name);
+      EXPECT_TRUE(found) << w.tensor;
+    }
+  };
+  std::optional<ModelSpec> spec26;
+  for (const auto& [a, size] : {std::pair{&*target26, 26U}, std::pair{&*target31, 31U}}) {
+    SCOPED_TRACE(size);
+    const Mapping* mapping = FindMapping(a->model().architecture);
+    ASSERT_EQ(mapping, &mappings::Gemma4Mapping());
+    const auto& p = size == 26 ? model::Gemma4_26BA4B() : model::Gemma4_31B();
+    const auto values = mappings::Gemma4V0Values(p);
+    ASSERT_TRUE(values.has_value());
+    const auto spec = SynthesizeV0(*a, *mapping, *values);
+    ASSERT_TRUE(spec.has_value()) << spec.error();
+    EXPECT_TRUE(spec->folds.empty());
+    const auto table = Synthesize(*mapping, test_support::Gemma4Source(size), *values);
+    ASSERT_TRUE(table.has_value()) << table.error();
+    EXPECT_EQ(*table, *spec);
+    const Stage& s = spec->stages[0];
+    resolves(*a, *s.embedding, {});
+    for (const Layer& l : s.layers) {
+      for (const ComponentRef& c : l.components) resolves(*a, c, {});
+    }
+    if (size == 26) spec26 = *spec;
+  }
+  const auto values =
+      mappings::Gemma4AssistantV0Values(model::Gemma4Assistant26(), model::Gemma4_26BA4B());
+  ASSERT_TRUE(values.has_value());
+  const auto composed = ComposeDrafterV0(*spec26, mappings::Gemma4Mapping(), *assistant26,
+                                         mappings::Gemma4AssistantMapping(), *values);
+  ASSERT_TRUE(composed.has_value()) << composed.error();
+  const auto table =
+      ComposeDrafter(*spec26, mappings::Gemma4Mapping(), mappings::Gemma4AssistantMapping(),
+                     test_support::Gemma4AssistantSource(26), *values);
+  ASSERT_TRUE(table.has_value()) << table.error();
+  EXPECT_EQ(*table, *composed);
+  const Stage& d = composed->stages.at(1);
+  resolves(*assistant26, *d.embedding, {});
+  resolves(*target26, *d.embedding, "target");
+  for (const Layer& l : d.layers) {
+    for (const ComponentRef& c : l.components) resolves(*assistant26, c, {});
+  }
+  resolves(*assistant26, *d.heads.output, {});
+  const std::array<std::string_view, 2> ids = {target26->id(), assistant26->id()};
+  EXPECT_TRUE(BoundDigest(*composed, ids).has_value());
+}
 
 }  // namespace
 }  // namespace llmp::spec

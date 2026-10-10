@@ -114,7 +114,10 @@ class Executor {
   std::expected<std::size_t, ExecFailure> Advance();
   std::expected<void, ExecFailure> Exec(const ir::Node& node);
 
-  std::expected<std::vector<double>, ExecFailure> Load(ir::TensorId id) const;
+  // A tensor's values, or with `matrix` only that matrix's (i2, of a
+  // tensor of one i3): an expert array's selected expert.
+  std::expected<std::vector<double>, ExecFailure> Load(
+      ir::TensorId id, std::optional<std::uint64_t> matrix = std::nullopt) const;
   // A dense tensor's values as integers, exactly (64-bit keys included).
   std::expected<std::vector<std::int64_t>, ExecFailure> LoadInts(ir::TensorId id) const;
   std::expected<void, ExecFailure> Store(ir::TensorId id, std::span<const double> values);

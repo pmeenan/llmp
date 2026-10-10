@@ -74,6 +74,13 @@ format::TensorFormat CellFormat(const model::StateTensorContract& c, std::uint64
   return ir::Dense(c.encoding, ir::ShapeOf({c.cell_bytes / (info.element_bits / 8), cells}));
 }
 
+// The stage of a spec by name.
+std::optional<std::uint16_t> StageIndex(const spec::ModelSpec& spec, std::string_view name) {
+  const auto at = std::ranges::find(spec.stages, name, &spec::Stage::name);
+  if (at == spec.stages.end()) return std::nullopt;
+  return static_cast<std::uint16_t>(at - spec.stages.begin());
+}
+
 // ------------------------------------------------------------ the builder
 
 // Joins a stage's fragments into one graph: the shared step context, the
@@ -104,30 +111,51 @@ class StepBuilder {
 
   ir::Builder& b() { return b_; }
   StepContext& ctx() { return ctx_; }
+  std::uint16_t stage() const { return stage_; }
   void Begin(const Instance& in) {
     b_.SetComponent(in.index);
     ctx_.SetComponent(in.index);
   }
 
   // A weight leaf of `format` for (instance, role), shared by every role
-  // bound to the same tensor (`key`: its first part's name; empty: never
-  // shared).
+  // bound to the same tensor of the same stage's artifact (`key`: its
+  // first part's name; empty: never shared). `owner`, for a tensor of
+  // another stage's artifact, is that stage's WeightRef of it.
   ir::TensorId Weight(const Instance& in, std::uint16_t role, const format::TensorFormat& format,
-                      std::vector<std::pair<std::string, format::PartRole>> parts) {
-    const std::string key = parts.empty() ? std::string{} : parts.front().first;
-    if (!key.empty()) {
-      if (const auto at = by_name_.find(key); at != by_name_.end()) return at->second;
-    }
-    const ir::WeightRef ref{.stage = stage_,
-                            .component = in.index,
-                            .role = role,
-                            .layer = in.layer,
-                            .expert_array = false};
+                      std::vector<std::pair<std::string, format::PartRole>> parts,
+                      std::optional<ir::WeightRef> owner = std::nullopt) {
+    const ir::WeightRef ref = owner.value_or(ir::WeightRef{.stage = stage_,
+                                                           .component = in.index,
+                                                           .role = role,
+                                                           .layer = in.layer,
+                                                           .expert_array = false});
     const std::string name =
-        key.empty() ? std::format("{}.{}", in.def->kind, in.def->roles[role].name) : key;
-    const ir::TensorId id = b_.Weight(format, ref, name);
-    if (!key.empty()) by_name_.emplace(key, id);
+        parts.empty() ? std::string{} : std::format("{}/{}", ref.stage, parts.front().first);
+    if (!name.empty()) {
+      if (const auto at = by_name_.find(name); at != by_name_.end()) return at->second;
+    }
+    const std::string label = parts.empty()
+                                  ? std::format("{}.{}", in.def->kind, in.def->roles[role].name)
+                                  : parts.front().first;
+    const ir::TensorId id = b_.Weight(format, ref, label);
+    if (!name.empty()) by_name_.emplace(name, id);
     weights_.push_back({.tensor = id, .ref = ref, .parts = std::move(parts)});
+    return id;
+  }
+
+  // A state leaf of `contract` tensor `t` (its index `index` in its layer's
+  // contract) of `stage`'s layer `layer`, for segment `s`.
+  ir::TensorId StateLeaf(std::uint16_t stage, std::uint32_t layer, std::uint16_t index,
+                         const model::StateTensorContract& c, std::size_t s, std::uint64_t cells,
+                         std::size_t item, bool tap) {
+    const ir::StateRef ref{
+        .stage = stage, .tensor = index, .layer = layer, .segment = static_cast<std::uint8_t>(s)};
+    const ir::TensorId id =
+        b_.State(CellFormat(c, cells), ref,
+                 stage == stage_ ? std::format("blk.{}.{}.{}", layer, c.name, s)
+                                 : std::format("stage{}.blk.{}.{}.{}", stage, layer, c.name, s));
+    state_.push_back(
+        {.tensor = id, .ref = ref, .item = item, .borrowed = c.borrowed_from_target, .tap = tap});
     return id;
   }
 
@@ -139,21 +167,16 @@ class StepBuilder {
     std::vector<ir::TensorId> out;
     for (std::size_t s = 0; s < ctx_.segments().size(); ++s) {
       for (std::size_t t = 0; t < contract.tensors.size(); ++t) {
-        const model::StateTensorContract& c = contract.tensors[t];
-        const ir::StateRef ref{.stage = stage_,
-                               .tensor = static_cast<std::uint16_t>(first + t),
-                               .layer = in.layer,
-                               .segment = static_cast<std::uint8_t>(s)};
-        const ir::TensorId id = b_.State(CellFormat(c, cells[t]), ref,
-                                         std::format("blk.{}.{}.{}", in.layer, c.name, s));
-        out.push_back(id);
-        state_.push_back({.tensor = id, .ref = ref, .item = items.empty() ? 0 : items[t]});
+        out.push_back(StateLeaf(stage_, in.layer, static_cast<std::uint16_t>(first + t),
+                                contract.tensors[t], s, cells[t], items.empty() ? 0 : items[t],
+                                false));
       }
     }
     return out;
   }
 
-  std::expected<StepGraph, std::string> Finish(ir::TensorId logits, ir::TensorId greedy) && {
+  std::expected<StepGraph, std::string> Finish(ir::TensorId logits, ir::TensorId greedy,
+                                               ir::TensorId features) && {
     auto inputs = ctx_.TakeInputs();
     auto graph = std::move(b_).Finish();
     if (!graph) {
@@ -161,12 +184,15 @@ class StepBuilder {
                                  graph.error().node, graph.error().detail,
                                  ir::GraphErrorName(graph.error().error)));
     }
-    return StepGraph{.graph = std::move(*graph),
-                     .inputs = std::move(inputs),
-                     .weights = std::move(weights_),
-                     .state = std::move(state_),
-                     .logits = logits,
-                     .greedy = greedy};
+    StepGraph step{.graph = std::move(*graph),
+                   .inputs = std::move(inputs),
+                   .weights = std::move(weights_),
+                   .state = std::move(state_),
+                   .logits = logits,
+                   .greedy = greedy,
+                   .features = features};
+    if (auto ok = CheckStateWrites(step, stage_); !ok) return std::unexpected(ok.error());
+    return step;
   }
 
  private:
@@ -203,20 +229,34 @@ std::expected<void, std::string> CheckShape(const planner::StepShape& shape) {
 // once all the step's rows are stored (rows + window - 1 cells: a step's
 // stores precede its attention, so a smaller ring would overwrite cells
 // its first rows still see); and each tensor reads through the rows' end
-// (or all of a ring).
+// (or all of a ring). A frozen read (another stage's tensor) holds the
+// positions before the segment's: it reads through them, and a ring of
+// it holds every row's window but the row's own position.
 std::expected<void, std::string> CheckCells(const SegmentRows& s, const CellKey& cells,
                                             std::uint32_t window) {
-  const std::uint64_t end = std::uint64_t{s.past} + s.rows;
-  if (!cells.ring && end > cells.capacity) {
-    return Refused(
-        std::format("positions through {} past a cache of {} cells", end, cells.capacity));
-  }
-  if (cells.ring && s.rows > cells.capacity) {
-    return Refused(std::format("{} rows in a ring of {} cells", s.rows, cells.capacity));
-  }
-  if (cells.ring && end > cells.capacity && std::uint64_t{s.rows} + window > cells.capacity + 1) {
-    return Refused(std::format("{} rows and a window of {} in a ring of {} cells", s.rows, window,
-                               cells.capacity));
+  const std::uint64_t end = std::uint64_t{s.past} + (cells.frozen ? 0 : s.rows);
+  if (cells.frozen) {
+    if (!cells.ring && end > cells.capacity) {
+      return Refused(
+          std::format("positions through {} past a cache of {} cells", end, cells.capacity));
+    }
+    // A ring that has wrapped holds its last `capacity` positions: every
+    // row's window but its own position must be among them.
+    if (cells.ring && end > cells.capacity && std::uint64_t{window} > cells.capacity + 1) {
+      return Refused(std::format("a window of {} in a ring of {} cells", window, cells.capacity));
+    }
+  } else {
+    if (!cells.ring && end > cells.capacity) {
+      return Refused(
+          std::format("positions through {} past a cache of {} cells", end, cells.capacity));
+    }
+    if (cells.ring && s.rows > cells.capacity) {
+      return Refused(std::format("{} rows in a ring of {} cells", s.rows, cells.capacity));
+    }
+    if (cells.ring && end > cells.capacity && std::uint64_t{s.rows} + window > cells.capacity + 1) {
+      return Refused(std::format("{} rows and a window of {} in a ring of {} cells", s.rows, window,
+                                 cells.capacity));
+    }
   }
   if (std::min<std::uint64_t>(cells.capacity, s.read_cells) < std::min(end, cells.capacity)) {
     return Refused(
@@ -225,17 +265,34 @@ std::expected<void, std::string> CheckCells(const SegmentRows& s, const CellKey&
   return {};
 }
 
+// Where a stage's bindings find a tensor: its own artifact's tensors, or
+// for a binding that names another stage, that stage's artifact's.
+struct TensorTables {
+  std::span<const BoundTensor> own{};
+  std::map<std::string, std::span<const BoundTensor>, std::less<>> stages{};
+};
+
 // The instance's role leaves from its bindings and the bound tensors.
 struct RoleFormat {
   format::TensorFormat format;
   std::vector<std::pair<std::string, format::PartRole>> parts;
+  std::string stage;  // the binding's (empty: its own stage's)
 };
 std::expected<std::vector<std::optional<RoleFormat>>, std::string> RoleFormats(
-    const Instance& in, std::span<const BoundTensor> tensors) {
+    const Instance& in, const TensorTables& tables) {
   std::vector<std::optional<RoleFormat>> out(in.def->roles.size());
   for (const spec::WeightBinding& w : in.ref->weights) {
     const auto role = RoleIndex(*in.def, w.role);
     if (!role) return Refused(std::format("{} has no weight role {}", in.def->kind, w.role));
+    std::span<const BoundTensor> tensors = tables.own;
+    if (!w.stage.empty()) {
+      const auto at = tables.stages.find(w.stage);
+      if (at == tables.stages.end()) {
+        return Refused(std::format("{} role {} binds {} of stage {}, whose tensors are not bound",
+                                   in.def->kind, w.role, w.tensor, w.stage));
+      }
+      tensors = at->second;
+    }
     const auto t = std::ranges::find_if(tensors, [&](const BoundTensor& b) {
       return b.name == w.tensor && b.part == w.part && b.experts == w.experts;
     });
@@ -245,8 +302,8 @@ std::expected<std::vector<std::optional<RoleFormat>>, std::string> RoleFormats(
     }
     auto& slot = out[*role];
     if (!slot) {
-      slot = RoleFormat{.format = t->format, .parts = {}};
-    } else if (slot->format != t->format) {
+      slot = RoleFormat{.format = t->format, .parts = {}, .stage = w.stage};
+    } else if (slot->format != t->format || slot->stage != w.stage) {
       return Refused(
           std::format("{} role {}'s parts disagree on its format", in.def->kind, w.role));
     }
@@ -321,6 +378,118 @@ std::vector<const Instance*> All(const StageInstances& s) {
   if (s.final_norm) out.push_back(&*s.final_norm);
   if (s.output) out.push_back(&*s.output);
   return out;
+}
+
+// A stage's contract tensors with where they sit: (layer, index in the
+// layer's contract, the tensor).
+struct ContractTensor {
+  std::uint32_t layer = 0;
+  std::uint16_t index = 0;
+  model::StateTensorContract contract;
+};
+std::vector<ContractTensor> ContractTensors(const StageInstances& s) {
+  std::vector<ContractTensor> out;
+  for (std::uint32_t l = 0; l < s.layers.size(); ++l) {
+    std::uint16_t index = 0;
+    const auto add = [&](const Instance& in) {
+      if (in.def->state == nullptr) return;
+      for (auto& t : in.def->state(in).tensors) {
+        out.push_back({.layer = l, .index = index++, .contract = std::move(t)});
+      }
+    };
+    if (l == 0 && s.embedding) add(*s.embedding);
+    for (const Instance& in : s.layers[l]) add(in);
+  }
+  return out;
+}
+
+// The tables of a spec's stages' bound tensors (`tensors[artifact]`).
+TensorTables TablesOf(const spec::ModelSpec& spec, std::size_t stage,
+                      std::span<const std::span<const BoundTensor>> tensors,
+                      std::span<const BoundTensor> own) {
+  TensorTables t{.own = own, .stages = {}};
+  for (std::size_t i = 0; i < spec.stages.size(); ++i) {
+    if (i == stage || spec.stages[i].artifact >= tensors.size()) continue;
+    t.stages.emplace(spec.stages[i].name, tensors[spec.stages[i].artifact]);
+  }
+  return t;
+}
+
+// The reads of a stage linked to its state contracts (ValidateSpec's rule).
+std::expected<void, std::string> CheckReads(const spec::ModelSpec& spec,
+                                            std::span<const StageInstances> stages,
+                                            std::size_t si) {
+  const spec::Stage& s = spec.stages[si];
+  const std::vector<ContractTensor> mine = ContractTensors(stages[si]);
+  const bool reads = std::ranges::any_of(mine, [](const ContractTensor& t) {
+    return t.contract.borrowed_from_target || t.contract.target_writes;
+  });
+  if ((reads || !s.reads.empty()) && s.role != spec::StageRole::kDrafter) {
+    return Refused(std::format("stage {} reads another stage, but is no drafter", s.name));
+  }
+  if (!reads && s.reads.empty()) return {};
+  // A drafter reads its target: the spec's first stage, of the target role.
+  const spec::Stage& target = spec.stages.front();
+  if (si == 0 || target.role != spec::StageRole::kTarget) {
+    return Refused(std::format("stage {} reads a target the spec does not begin with", s.name));
+  }
+  for (const spec::Read& r : s.reads) {
+    if (r.stage != target.name) {
+      return Refused(
+          std::format("stage {} reads stage {}, which is not its target", s.name, r.stage));
+    }
+  }
+  const auto read = [&](spec::ReadKind kind, std::string_view name) {
+    return std::ranges::any_of(
+        s.reads, [&](const spec::Read& r) { return r.kind == kind && r.name == name; });
+  };
+  const std::vector<ContractTensor> theirs = ContractTensors(stages.front());
+  for (const ContractTensor& t : mine) {
+    const model::StateTensorContract& c = t.contract;
+    const std::string at = std::format("stage {} layer {} state {}", s.name, t.layer, c.name);
+    if (c.borrowed_from_target) {
+      if (!read(spec::ReadKind::kState, c.name)) {
+        return Refused(at + ": borrows its target's state without reading it");
+      }
+      const auto found = std::ranges::find_if(theirs, [&](const ContractTensor& x) {
+        return x.layer == c.target_layer && x.contract.name == c.name;
+      });
+      if (found == theirs.end()) {
+        return Refused(
+            std::format("{}: its target has no {} in layer {}", at, c.name, c.target_layer));
+      }
+      const model::StateTensorContract& o = found->contract;
+      if (o.borrowed_from_target || o.kind != c.kind || o.encoding != c.encoding ||
+          o.cell_bytes != c.cell_bytes || o.cells != c.cells ||
+          o.window_or_ratio != c.window_or_ratio) {
+        return Refused(at + ": not its target's tensor of that name");
+      }
+    }
+    if (c.target_writes) {
+      if (!read(spec::ReadKind::kTap, c.name)) {
+        return Refused(at + ": its target writes it without a tap it reads");
+      }
+      const auto tap = std::ranges::find(target.taps, c.name, &spec::FeatureTap::name);
+      if (tap == target.taps.end() || tap->point != spec::TapPoint::kPostFinalNorm ||
+          c.encoding != format::Encoding::kF32 || c.cell_bytes != target.stream.width * 4) {
+        return Refused(at + ": not a tap of its target's final norm, its width in F32");
+      }
+    }
+  }
+  // Every read used: a state read by a borrowed tensor, a tap read by a
+  // tensor its target writes.
+  for (const spec::Read& r : s.reads) {
+    const bool used = std::ranges::any_of(mine, [&](const ContractTensor& t) {
+      return t.contract.name == r.name &&
+             (r.kind == spec::ReadKind::kState ? t.contract.borrowed_from_target
+                                               : t.contract.target_writes);
+    });
+    if (!used) {
+      return Refused(std::format("stage {} reads {} {} of stage {}, which nothing of it uses",
+                                 s.name, spec::ReadKindName(r.kind), r.name, r.stage));
+    }
+  }
+  return {};
 }
 
 }  // namespace
@@ -398,6 +567,13 @@ std::expected<StageInstances, std::string> InstancesOf(const spec::ModelSpec& sp
     if (!in) return std::unexpected(in.error());
     out.output = std::move(*in);
   }
+  // State lives on a layer's components and the embedding's (layer 0's).
+  for (const Instance* in : All(out)) {
+    if (in->def->state != nullptr && in->site != Site::kLayer &&
+        (in->site != Site::kEmbedding || out.layers.empty())) {
+      return Refused(std::format("{}: state off a layer", Where(s, in->site, in->layer)));
+    }
+  }
   return out;
 }
 
@@ -420,9 +596,10 @@ std::expected<void, std::string> ValidateSpec(
             std::format("stage {}: tap {} reads streams of a single stream", s.name, tap.name));
       }
     }
+    const TensorTables tables = TablesOf(spec, si, tensors, tensors[s.artifact]);
     for (const Instance* in : All(*instances)) {
       const std::string where = Where(s, in->site, in->layer);
-      auto formats = RoleFormats(*in, tensors[s.artifact]);
+      auto formats = RoleFormats(*in, tables);
       if (!formats) return Refused(std::format("{}: {}", where, formats.error()));
       const auto shapes = in->def->shapes(*in);
       std::vector<bool> used(in->def->roles.size(), false);
@@ -450,14 +627,11 @@ std::expected<void, std::string> ValidateSpec(
   for (const spec::Stage& s : spec.stages) {
     for (const spec::Read& read : s.reads) {
       if (read.kind != spec::ReadKind::kState) continue;
-      const auto source = std::ranges::find(spec.stages, read.stage, &spec::Stage::name);
+      const auto source = StageIndex(spec, read.stage);
       bool found = false;
-      if (source != spec.stages.end()) {
-        const auto at = static_cast<std::size_t>(source - spec.stages.begin());
-        for (const Instance* in : All(stages[at])) {
-          if (in->def->state == nullptr) continue;
-          const model::StateContract contract = in->def->state(*in);
-          for (const auto& t : contract.tensors) found = found || t.name == read.name;
+      if (source) {
+        for (const ContractTensor& t : ContractTensors(stages[*source])) {
+          found = found || t.contract.name == read.name;
         }
       }
       if (!found) {
@@ -465,6 +639,10 @@ std::expected<void, std::string> ValidateSpec(
                                    s.name, read.name, read.stage));
       }
     }
+  }
+  // Each stage's reads linked to its contracts.
+  for (std::size_t si = 0; si < spec.stages.size(); ++si) {
+    if (auto ok = CheckReads(spec, stages, si); !ok) return ok;
   }
   return {};
 }
@@ -484,11 +662,13 @@ StageContracts(const spec::ModelSpec& spec, std::size_t stage) {
   std::vector<std::pair<std::uint32_t, model::StateContract>> out;
   for (std::uint32_t l = 0; l < instances->layers.size(); ++l) {
     model::StateContract layer;
-    for (const Instance& in : instances->layers[l]) {
-      if (in.def->state == nullptr) continue;
+    const auto add = [&](const Instance& in) {
+      if (in.def->state == nullptr) return;
       model::StateContract contract = in.def->state(in);
       for (auto& t : contract.tensors) layer.tensors.push_back(std::move(t));
-    }
+    };
+    if (l == 0 && instances->embedding) add(*instances->embedding);
+    for (const Instance& in : instances->layers[l]) add(in);
     if (!layer.tensors.empty()) out.emplace_back(l, std::move(layer));
   }
   return out;
@@ -573,6 +753,15 @@ ir::TensorId StepContext::OutputRows() {
   return output_rows_;
 }
 
+ir::TensorId StepContext::Features(std::uint64_t width) {
+  if (!features_.valid()) {
+    features_ =
+        Input(InputKind::kFeatures, ir::kJoinedSegment,
+              ir::Dense(format::Encoding::kF32, ir::ShapeOf({width, rows_})), {}, 0, "features");
+  }
+  return features_;
+}
+
 ir::TensorId StepContext::StoreCells(std::size_t segment, const CellKey& cells) {
   const auto key = std::pair{segment, cells};
   if (const auto at = store_cells_.find(key); at != store_cells_.end()) return at->second;
@@ -581,6 +770,17 @@ ir::TensorId StepContext::StoreCells(std::size_t segment, const CellKey& cells) 
             ir::Dense(format::Encoding::kI64, ir::ShapeOf({segments_.at(segment).rows})), cells, 0,
             std::format("cells.{}.{}{}", segment, cells.capacity, cells.ring ? ".ring" : ""));
   store_cells_.emplace(key, id);
+  return id;
+}
+
+ir::TensorId StepContext::OutputCells(std::size_t segment, const CellKey& cells) {
+  const auto key = std::pair{segment, cells};
+  if (const auto at = output_cells_.find(key); at != output_cells_.end()) return at->second;
+  const ir::TensorId id =
+      Input(InputKind::kOutputCells, static_cast<std::uint8_t>(segment),
+            ir::Dense(format::Encoding::kI64, ir::ShapeOf({segments_.at(segment).outputs})), cells,
+            0, std::format("tap_cells.{}.{}", segment, cells.capacity));
+  output_cells_.emplace(key, id);
   return id;
 }
 
@@ -615,7 +815,8 @@ void StepContext::DeclareMasks(std::span<const std::pair<CellKey, std::uint32_t>
       } else {
         held = Input(InputKind::kCellPositions, static_cast<std::uint8_t>(s),
                      ir::Dense(format::Encoding::kI32, ir::ShapeOf({read})), cells, read,
-                     std::format("held.{}.{}{}", s, cells.capacity, cells.ring ? ".ring" : ""));
+                     std::format("held.{}.{}{}{}", s, cells.capacity, cells.ring ? ".ring" : "",
+                                 cells.frozen ? ".frozen" : ""));
         cell_positions_.emplace(key, held);
       }
       b_.SetComponent(kFrameworkComponent);
@@ -654,14 +855,91 @@ std::optional<std::size_t> ItemOf(const model::StateLayoutDerived& layout, std::
 }
 
 CellKey KeyOf(const model::StateTensorContract& c, std::uint64_t cells) {
-  return {.capacity = cells, .ring = c.cells == model::CellRule::kRing};
+  return {.capacity = cells,
+          .ring = c.cells == model::CellRule::kRing || c.cells == model::CellRule::kPositionRing,
+          .frozen = c.borrowed_from_target};
+}
+
+// The layout of stage `stage` from the bindings, if given.
+const model::StateLayoutDerived* LayoutOf(const Bindings& bindings, std::size_t stage) {
+  return stage < bindings.stages.size() ? bindings.stages[stage] : nullptr;
+}
+
+// Stage `owner`'s WeightRef of its tensor `name` (`part`): its first
+// component binding it of its own artifact.
+std::expected<ir::WeightRef, std::string> OwnerRef(const spec::ModelSpec& spec, std::uint16_t owner,
+                                                   std::string_view name, format::PartRole part) {
+  auto instances = InstancesOf(spec, owner);
+  if (!instances) return std::unexpected(instances.error());
+  for (const Instance* in : All(*instances)) {
+    for (const spec::WeightBinding& w : in->ref->weights) {
+      if (w.tensor == name && w.part == part && w.stage.empty()) {
+        const auto role = RoleIndex(*in->def, w.role);
+        if (!role) break;
+        return ir::WeightRef{.stage = owner,
+                             .component = in->index,
+                             .role = *role,
+                             .layer = in->layer,
+                             .expert_array = false};
+      }
+    }
+  }
+  return Refused(std::format("stage {} binds no {} of its own", spec.stages.at(owner).name, name));
+}
+
+// The taps of `stage` its drafters read: (drafter, its tensor).
+struct TapWrite {
+  std::uint16_t drafter = 0;
+  ContractTensor tensor;
+};
+std::expected<std::vector<TapWrite>, std::string> TapWrites(const spec::ModelSpec& spec,
+                                                            std::uint16_t stage) {
+  std::vector<TapWrite> out;
+  for (std::size_t d = 0; d < spec.stages.size(); ++d) {
+    const spec::Stage& s = spec.stages[d];
+    if (d == stage) continue;
+    const bool reads = std::ranges::any_of(s.reads, [&](const spec::Read& r) {
+      return r.kind == spec::ReadKind::kTap && r.stage == spec.stages[stage].name;
+    });
+    if (!reads) continue;
+    auto instances = InstancesOf(spec, d);
+    if (!instances) return std::unexpected(instances.error());
+    for (ContractTensor& t : ContractTensors(*instances)) {
+      if (t.contract.target_writes) {
+        out.push_back({.drafter = static_cast<std::uint16_t>(d), .tensor = std::move(t)});
+      }
+    }
+  }
+  return out;
 }
 
 }  // namespace
 
+std::expected<void, std::string> CheckStateWrites(const StepGraph& step, std::uint16_t stage) {
+  const ir::Graph& g = step.graph;
+  for (const ir::Node& n : g.nodes()) {
+    if (n.key != ir::Primitive(ir::Op::kCacheStore)) continue;
+    const ir::TensorId root = g.root(n.src[0]);
+    const auto st = std::ranges::find(step.state, root, &StepState::tensor);
+    if (st == step.state.end()) return Refused("a cache store into no state leaf");
+    if (st->borrowed) {
+      return Refused(std::format("a store into stage {}'s borrowed {} (layer {})", st->ref.stage,
+                                 st->ref.tensor, st->ref.layer));
+    }
+    if (st->ref.stage != stage && !st->tap) {
+      return Refused(
+          std::format("stage {}'s step stores into stage {}'s state, not a tap it writes", stage,
+                      st->ref.stage));
+    }
+  }
+  return {};
+}
+
 std::optional<std::pair<std::size_t, std::size_t>> NarrowPoint(const StageInstances& instances) {
   if (!instances.output || (instances.final_norm && !instances.final_norm->def->row_local) ||
-      !instances.output->def->row_local) {
+      !instances.output->def->row_local ||
+      (instances.output->def->gathers != nullptr &&
+       !instances.output->def->gathers(*instances.output))) {
     return std::nullopt;
   }
   for (std::size_t l = instances.layers.size(); l-- > 0;) {
@@ -687,9 +965,15 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
   StepContext& ctx = sb.ctx();
   const bool head = ctx.outputs() > 0;
   if (head && !instances->output) return Refused("outputs from a stage without an output head");
+  TensorTables tables{.own = bindings.tensors, .stages = {}};
+  for (std::size_t i = 0; i < spec.stages.size(); ++i) {
+    if (i != stage && spec.stages[i].artifact < bindings.artifacts.size()) {
+      tables.stages.emplace(spec.stages[i].name, bindings.artifacts[spec.stages[i].artifact]);
+    }
+  }
 
   // Each layer's stateful instances: their contracts, first tensor and
-  // layout items.
+  // layout items (a borrowed tensor's the target's).
   struct Stateful {
     model::StateContract contract;
     std::uint16_t first = 0;
@@ -699,24 +983,53 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
   std::vector<std::vector<std::optional<Stateful>>> stateful(instances->layers.size());
   std::vector<std::pair<CellKey, std::uint32_t>> masks;
   for (std::size_t l = 0; l < instances->layers.size(); ++l) {
+    // The embedding's state comes first in layer 0's contract (a tap its
+    // target writes; the stage's own steps neither read nor write it).
     std::uint16_t first = 0;
+    if (l == 0 && instances->embedding && instances->embedding->def->state != nullptr) {
+      first = static_cast<std::uint16_t>(
+          instances->embedding->def->state(*instances->embedding).tensors.size());
+    }
     for (const Instance& in : instances->layers[l]) {
       auto& slot = stateful[l].emplace_back();
       if (in.def->state == nullptr) continue;
       if (bindings.state == nullptr) return Refused("a stateful stage without its state layout");
       Stateful st{.contract = in.def->state(in), .first = first, .cells = {}, .items = {}};
       for (std::size_t t = 0; t < st.contract.tensors.size(); ++t) {
-        const auto item = ItemOf(*bindings.state, in.layer, static_cast<std::uint32_t>(first + t));
-        if (!item || bindings.state->items[*item].contract != st.contract.tensors[t]) {
-          return Refused(std::format("layer {}: the state layout is not this spec's", in.layer));
+        const model::StateTensorContract& c = st.contract.tensors[t];
+        const auto index = static_cast<std::uint32_t>(first + t);
+        if (c.borrowed_from_target) {
+          // The target's tensor it reads: its cells.
+          const auto borrowed = std::ranges::find_if(bindings.state->borrowed, [&](const auto& b) {
+            return b.layer == in.layer && b.tensor == index;
+          });
+          const model::StateLayoutDerived* target = LayoutOf(bindings, 0);
+          if (borrowed == bindings.state->borrowed.end() || borrowed->contract != c) {
+            return Refused(std::format("layer {}: the state layout is not this spec's", in.layer));
+          }
+          if (target == nullptr) {
+            return Refused(std::format("layer {} borrows its target's {} without its layout",
+                                       in.layer, c.name));
+          }
+          const auto* item = model::BorrowedItem(*target, *borrowed);
+          if (item == nullptr) {
+            return Refused(std::format("layer {}: the target's layout has no {} in layer {}",
+                                       in.layer, c.name, c.target_layer));
+          }
+          st.items.push_back(static_cast<std::size_t>(item - target->items.data()));
+          st.cells.push_back(item->cells);
+        } else {
+          const auto item = ItemOf(*bindings.state, in.layer, index);
+          if (!item || bindings.state->items[*item].contract != c) {
+            return Refused(std::format("layer {}: the state layout is not this spec's", in.layer));
+          }
+          st.items.push_back(*item);
+          st.cells.push_back(bindings.state->items[*item].cells);
         }
-        st.items.push_back(*item);
-        st.cells.push_back(bindings.state->items[*item].cells);
-        const CellKey key = KeyOf(st.contract.tensors[t], st.cells.back());
+        const CellKey key = KeyOf(c, st.cells.back());
         for (const SegmentRows& seg : ctx.segments()) {
-          if (auto c = CheckCells(seg, key, st.contract.tensors[t].window_or_ratio); !c) {
-            return Refused(std::format("layer {} state {}: {}", in.layer,
-                                       st.contract.tensors[t].name, c.error()));
+          if (auto ok = CheckCells(seg, key, c.window_or_ratio); !ok) {
+            return Refused(std::format("layer {} state {}: {}", in.layer, c.name, ok.error()));
           }
         }
       }
@@ -735,16 +1048,24 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
                         std::span<const ir::TensorId> state, std::size_t tensors, bool needed,
                         bool narrow = false,
                         bool narrowed = false) -> std::expected<FragmentOut, std::string> {
-    auto formats = RoleFormats(in, bindings.tensors);
+    auto formats = RoleFormats(in, tables);
     if (!formats) return std::unexpected(formats.error());
     const auto shapes = in.def->shapes(in);
     std::vector<ir::TensorId> leaves(in.def->roles.size());
     std::vector<bool> used(in.def->roles.size(), false);
+    std::vector<std::optional<ir::WeightRef>> owners(in.def->roles.size());
     for (const RoleShape& r : *shapes) {
       const auto& f = (*formats)[r.role];
       if (!f) return Refused(std::format("role {} is unbound", in.def->roles[r.role].name));
       if (auto checked = CheckRole(in, r, *f); !checked) return std::unexpected(checked.error());
       used[r.role] = true;
+      if (!f->stage.empty()) {
+        const auto owner = StageIndex(spec, f->stage);
+        if (!owner) return Refused(std::format("no stage {}", f->stage));
+        auto ref = OwnerRef(spec, *owner, f->parts.front().first, f->parts.front().second);
+        if (!ref) return std::unexpected(ref.error());
+        owners[r.role] = *ref;
+      }
     }
     sb.Begin(in);
     Fragment f{.b = sb.b(),
@@ -755,7 +1076,7 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
                  base::Check(role < used.size() && used[role], "a fragment uses its roles");
                  if (!leaves[role].valid()) {
                    const auto& rf = *(*formats)[role];
-                   leaves[role] = sb.Weight(in, role, rf.format, rf.parts);
+                   leaves[role] = sb.Weight(in, role, rf.format, rf.parts, owners[role]);
                  }
                  return leaves[role];
                },
@@ -809,6 +1130,7 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
   }
   ir::TensorId logits{};
   ir::TensorId greedy{};
+  ir::TensorId features{};
   if (head) {
     if (instances->final_norm) {
       auto out = emit(*instances->final_norm, stream, {}, 0, true, false, narrowed);
@@ -819,10 +1141,60 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
     if (!out) return Refused(std::format("output: {}", out.error()));
     logits = out->logits;
     greedy = out->greedy;
+    features = out->features;
     sb.b().Output(logits);
     if (greedy.valid()) sb.b().Output(greedy);
+    if (features.valid()) sb.b().Output(features);
+    // The taps its drafters read: the final norm's output rows, stored at
+    // their positions' cells of each drafter's tensor.
+    auto taps = TapWrites(spec, stage);
+    if (!taps) return std::unexpected(taps.error());
+    if (!taps->empty() && !instances->final_norm) {
+      return Refused("a final norm's tap of a stage without a final norm");
+    }
+    ir::TensorId rows{};
+    for (const TapWrite& tap : *taps) {
+      const model::StateTensorContract& c = tap.tensor.contract;
+      const model::StateLayoutDerived* layout = LayoutOf(bindings, tap.drafter);
+      if (layout == nullptr) {
+        return Refused(std::format("a tap stage {} reads without its layout", tap.drafter));
+      }
+      const auto item = ItemOf(*layout, tap.tensor.layer, tap.tensor.index);
+      if (!item || layout->items[*item].contract != c) {
+        return Refused(std::format("stage {}'s layout is not this spec's", tap.drafter));
+      }
+      const CellKey key = KeyOf(c, layout->items[*item].cells);
+      ir::Builder& b = sb.b();
+      b.SetComponent(kFrameworkComponent);
+      ctx.SetComponent(kFrameworkComponent);
+      // The output rows in segment order: the stream itself when the step
+      // narrowed it to them (its rows are no longer the step's rows).
+      if (!rows.valid()) rows = narrowed ? stream : b.GetRows(stream, ctx.OutputRows());
+      const auto nb = b.tensor(rows).nb;
+      std::uint64_t first_output = 0;
+      for (std::size_t s = 0; s < ctx.segments().size(); ++s) {
+        const SegmentRows& seg = ctx.segments()[s];
+        // A segment without outputs (a prefill chunk beside another
+        // owner's head rows) has no feature to tap.
+        if (seg.outputs == 0) continue;
+        if (seg.outputs > key.capacity) {
+          return Refused(std::format("{} outputs past the {} cells of tap {}", seg.outputs,
+                                     key.capacity, c.name));
+        }
+        const ir::TensorId leaf = sb.StateLeaf(tap.drafter, tap.tensor.layer, tap.tensor.index, c,
+                                               s, key.capacity, *item, true);
+        const format::Shape part = ir::ShapeOf({b.tensor(rows).ne(0), seg.outputs});
+        const ir::TensorId mine =
+            b.View(rows, part, {nb[0], nb[1], nb[1] * seg.outputs, nb[1] * seg.outputs},
+                   first_output * nb[1]);
+        b.SetOwner(static_cast<std::uint8_t>(s));
+        b.CacheStore(leaf, mine, ctx.OutputCells(s, key));
+        b.SetJoined();
+        first_output += seg.outputs;
+      }
+    }
   }
-  return std::move(sb).Finish(logits, greedy);
+  return std::move(sb).Finish(logits, greedy, features);
 }
 
 std::expected<ComponentGraph, std::string> BuildComponent(
@@ -836,7 +1208,8 @@ std::expected<ComponentGraph, std::string> BuildComponent(
   for (const RoleShape& r : *shapes) {
     const RoleFormat f{
         .format = formats[r.role],
-        .parts = {{std::format("{}", in.def->roles[r.role].name), format::PartRole::kData}}};
+        .parts = {{std::format("{}", in.def->roles[r.role].name), format::PartRole::kData}},
+        .stage = {}};
     if (auto checked = CheckRole(in, r, f); !checked) return std::unexpected(checked.error());
     used[r.role] = true;
   }
@@ -847,6 +1220,8 @@ std::expected<ComponentGraph, std::string> BuildComponent(
   if (cells.size() != contract.tensors.size()) return Refused("cells for every state tensor");
   std::vector<std::pair<CellKey, std::uint32_t>> masks;
   for (std::size_t t = 0; t < contract.tensors.size(); ++t) {
+    // A tap its target writes: the instance's own steps never touch it.
+    if (contract.tensors[t].target_writes) continue;
     for (const SegmentRows& seg : ctx.segments()) {
       if (auto c = CheckCells(seg, KeyOf(contract.tensors[t], cells[t]),
                               contract.tensors[t].window_or_ratio);
@@ -897,11 +1272,12 @@ std::expected<ComponentGraph, std::string> BuildComponent(
   if (emitted->logits.valid()) {
     sb.b().Output(emitted->logits);
     if (emitted->greedy.valid()) sb.b().Output(emitted->greedy);
+    if (emitted->features.valid()) sb.b().Output(emitted->features);
   } else if (f.stream_needed) {
     stream_out = emitted->stream;
     sb.b().Output(stream_out);
   }
-  auto step = std::move(sb).Finish(emitted->logits, emitted->greedy);
+  auto step = std::move(sb).Finish(emitted->logits, emitted->greedy, emitted->features);
   if (!step) return std::unexpected(step.error());
   if (stream_in.valid()) {
     step->inputs.insert(step->inputs.begin(),
@@ -921,6 +1297,8 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
   switch (input.kind) {
     case InputKind::kStream:
       return Refused("a stream's values are the caller's");
+    case InputKind::kFeatures:
+      return Refused("a feature's values are the caller's");
     case InputKind::kTokens:
       if (tokens.size() != rows) return Refused("a token per row");
       out.assign(tokens.begin(), tokens.end());
@@ -940,6 +1318,7 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
     }
     case InputKind::kStoreCells:
     case InputKind::kCellPositions:
+    case InputKind::kOutputCells:
       break;
   }
   if (input.segment >= shape.segments.size() || input.cells.capacity == 0) {
@@ -947,14 +1326,16 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
   }
   const planner::Segment& s = shape.segments[input.segment];
   const std::uint64_t cap = input.cells.capacity;
-  if (input.kind == InputKind::kStoreCells) {
-    for (std::uint32_t i = 0; i < s.rows; ++i) {
+  if (input.kind == InputKind::kStoreCells || input.kind == InputKind::kOutputCells) {
+    const std::uint32_t from = input.kind == InputKind::kStoreCells ? 0 : s.rows - s.outputs;
+    for (std::uint32_t i = from; i < s.rows; ++i) {
       const std::uint64_t p = std::uint64_t{s.past} + i;
       out.push_back(static_cast<std::int64_t>(input.cells.ring ? p % cap : p));
     }
     return out;
   }
-  const std::uint64_t end = std::uint64_t{s.past} + s.rows;
+  // A frozen read's cells hold the positions before the segment's.
+  const std::uint64_t end = std::uint64_t{s.past} + (input.cells.frozen ? 0 : s.rows);
   for (std::uint64_t c = 0; c < input.read; ++c) {
     if (c >= end) {
       out.push_back(-1);

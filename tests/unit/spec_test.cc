@@ -27,9 +27,12 @@
 #include "base/sha256.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
+#include "model/gemma4.h"
+#include "model/gemma4_assistant.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
+#include "spec/mappings/gemma4.h"
 #include "spec_fixtures.h"
 
 namespace llmp::spec {
@@ -299,18 +302,23 @@ TEST(MappingTest, CompiledMappingsAreValid) {
     EXPECT_TRUE(ok.has_value()) << m->architecture << ": " << (ok ? "" : ok.error());
     EXPECT_EQ(FindMapping(m->architecture), m);
   }
-  EXPECT_EQ(FindMapping("gemma4"), nullptr);
+  EXPECT_EQ(FindMapping("gemma9"), nullptr);
+  EXPECT_EQ(FindMapping("gemma4-assistant")->role, StageRole::kDrafter);
   EXPECT_EQ(FindFold("norm.plus_one")->name, "norm.plus_one");
   EXPECT_EQ(FindFold("norm.times_two"), nullptr);
 }
 
 TEST(MappingTest, InvalidMappingsAreRefused) {
   const Mapping& good = mappings::Gemma2Mapping();
-  // Its policy text: printable lines (the planner's own rules are its).
+  // Each policy rule's text: printable lines (the planner's own rules are
+  // its), not empty, at most kMaxPolicyText bytes.
+  const std::string long_text(kMaxPolicyText + 1, '\n');
   for (const std::string_view policy :
-       {std::string_view("max_decode_rows 16"), std::string_view("disable x\n\t\n")}) {
+       {std::string_view("max_decode_rows 16"), std::string_view("disable x\n\t\n"),
+        std::string_view(), std::string_view(long_text)}) {
     Mapping m = good;
-    m.policy = policy;
+    const std::array rules{PolicyRule{.text = "max_decode_rows 16\n"}, PolicyRule{.text = policy}};
+    m.policies = rules;
     EXPECT_FALSE(ValidateMapping(m).has_value()) << policy;
   }
   const auto with_tensor = [&](TensorRule rule) {
@@ -357,6 +365,55 @@ TEST(MappingTest, InvalidMappingsAreRefused) {
   Mapping pseudo = good;
   pseudo.slots = slots;
   EXPECT_FALSE(ValidateMapping(pseudo).has_value());
+  // Rules for one role and part split the layer types; none may bind a
+  // layer type twice (no types: every type).
+  const Mapping& g4 = mappings::Gemma4Mapping();
+  const auto with_g4_tensor = [&](TensorRule rule) {
+    std::vector<TensorRule> rules(g4.tensors.begin(), g4.tensors.end());
+    rules.push_back(rule);
+    Mapping m = g4;
+    m.tensors = rules;
+    return ValidateMapping(m).has_value();
+  };
+  EXPECT_TRUE(with_g4_tensor({.pattern = "blk.{layer}.attn_v_g.weight",
+                              .slot = "attention",
+                              .role = "v",
+                              .layer_types = "g"}));
+  EXPECT_FALSE(with_g4_tensor({.pattern = "blk.{layer}.attn_v_g.weight",
+                               .slot = "attention",
+                               .role = "v",
+                               .layer_types = "lg"}));
+  EXPECT_FALSE(
+      with_g4_tensor({.pattern = "blk.{layer}.attn_v_g.weight", .slot = "attention", .role = "v"}));
+  EXPECT_FALSE(with_tensor(
+      {.pattern = "blk.{layer}.ffn_up_l.weight", .slot = "ffn", .role = "up", .layer_types = "l"}));
+  // A second embedding, final norm or output only as the other gate's
+  // alternative of a gated one.
+  const auto with_slot = [&](const Mapping& base, std::vector<SlotRule> more) {
+    std::vector<SlotRule> all(base.slots.begin(), base.slots.end());
+    all.insert(all.end(), more.begin(), more.end());
+    Mapping m = base;
+    m.slots = all;
+    return ValidateMapping(m).has_value();
+  };
+  EXPECT_FALSE(with_slot(
+      good, {{.slot = "norm2", .site = Site::kFinalNorm, .kind = "norm.rms", .gate = "k"}}));
+  Mapping gated = good;
+  std::vector<SlotRule> gated_slots;
+  for (SlotRule s : good.slots) {
+    if (s.site == Site::kFinalNorm) s.gate = "k";
+    gated_slots.push_back(s);
+  }
+  gated.slots = gated_slots;
+  ASSERT_TRUE(ValidateMapping(gated).has_value());
+  EXPECT_TRUE(with_slot(gated, {{.slot = "norm2",
+                                 .site = Site::kFinalNorm,
+                                 .kind = "norm.rms",
+                                 .gate = "k",
+                                 .gate_absent = true}}));
+  EXPECT_FALSE(with_slot(
+      gated, {{.slot = "norm2", .site = Site::kFinalNorm, .kind = "norm.rms", .gate = "k"}}));
+  EXPECT_FALSE(with_slot(gated, {{.slot = "norm2", .site = Site::kFinalNorm, .kind = "norm.rms"}}));
 }
 
 const Param& P(const ComponentRef& c, std::string_view name) {
@@ -540,6 +597,206 @@ TEST(MappingTest, SynthesisRefusesWhatTheMappingDoesNotCover) {
         std::string("yarn");
     EXPECT_FALSE(
         Synthesize(mappings::Gemma3Mapping(), test_support::Gemma3Source(), v).has_value());
+  }
+}
+
+// ------------------------------------------------------------------ Gemma 4
+
+const model::Gemma4Profile& G4(std::uint32_t size) {
+  return size == 26 ? model::Gemma4_26BA4B() : model::Gemma4_31B();
+}
+
+// The spec from the v0 profile's values is the spec from the checkpoint's
+// own GGUF metadata (the fixture's), and holds what today's builder reads.
+TEST(MappingTest, Gemma4SpecsFromTheirTablesAndProfiles) {
+  for (const std::uint32_t size : {26U, 31U}) {
+    SCOPED_TRACE(size);
+    const auto& p = G4(size);
+    const auto values = mappings::Gemma4V0Values(p);
+    ASSERT_TRUE(values.has_value()) << values.error();
+    const Source source = test_support::Gemma4Source(size);
+    const auto spec = Synthesize(mappings::Gemma4Mapping(), source, *values);
+    ASSERT_TRUE(spec.has_value()) << spec.error();
+    const auto from_gguf =
+        Synthesize(mappings::Gemma4Mapping(), source, test_support::Gemma4FixtureValues(size));
+    ASSERT_TRUE(from_gguf.has_value()) << from_gguf.error();
+    EXPECT_EQ(*from_gguf, *spec);
+    // No norm fold: the converter keeps Gemma 4's norm weights as they are.
+    EXPECT_TRUE(spec->folds.empty());
+    const Stage& s = spec->stages[0];
+    EXPECT_EQ(s.context, p.context);
+    EXPECT_EQ(s.stream.width, p.width);
+    EXPECT_EQ(s.heads.softcap, 30.0);
+    EXPECT_EQ(Tensor(*s.heads.output, "weight"), "token_embd.weight");
+    ASSERT_EQ(s.layers.size(), p.layers);
+    for (std::uint32_t il = 0; il < p.layers; ++il) {
+      SCOPED_TRACE(il);
+      ASSERT_EQ(s.layers[il].components.size(), 3U);
+      const ComponentRef& a = s.layers[il].components[0];
+      const ComponentRef& f = s.layers[il].components[1];
+      const ComponentRef& o = s.layers[il].components[2];
+      const bool local = p.local(il);
+      EXPECT_EQ(a.kind, "attention.dense");
+      EXPECT_EQ(P(a, "kv_heads").value, ParamValue(std::int64_t{p.kv_heads(il)}));
+      EXPECT_EQ(P(a, "key_dim").value, ParamValue(std::int64_t{p.head_dim(il)}));
+      EXPECT_EQ(P(a, "rope_dims").value,
+                ParamValue(std::int64_t{local ? p.local_rope_dims : p.global_rope_dims}));
+      EXPECT_EQ(P(a, "rope_base").value,
+                ParamValue(static_cast<double>(local ? p.local_rope_base : p.global_rope_base)));
+      EXPECT_EQ(P(a, "window").value, ParamValue(std::int64_t{local ? p.window : 0}));
+      EXPECT_EQ(P(a, "kv_tie").value, ParamValue(!local));
+      EXPECT_EQ(P(a, "rope_freqs").value, ParamValue(!local));
+      EXPECT_EQ(P(a, "scale").value, ParamValue(1.0));
+      // A global layer: no V of its own, the shared rotation factors.
+      EXPECT_EQ(Tensor(a, "v").empty(), !local);
+      EXPECT_EQ(Tensor(a, "rope_freqs"), local ? "" : "rope_freqs.weight");
+      EXPECT_EQ(f.kind, p.experts != 0 ? "ffn.moe" : "ffn.glu");
+      EXPECT_EQ(P(f, "hidden").value, ParamValue(std::int64_t{p.ffn}));
+      if (p.experts != 0) {
+        EXPECT_EQ(P(f, "experts").value, ParamValue(std::int64_t{p.experts}));
+        EXPECT_EQ(P(f, "used").value, ParamValue(std::int64_t{p.experts_used}));
+        EXPECT_EQ(P(f, "expert_hidden").value, ParamValue(std::int64_t{p.expert_ffn}));
+        const auto array = std::ranges::find(f.weights, "gate_up_experts", &WeightBinding::role);
+        ASSERT_NE(array, f.weights.end());
+        EXPECT_TRUE(array->experts);
+      }
+      EXPECT_EQ(o.kind, "scale.learned");
+      EXPECT_EQ(Tensor(o, "weight"), std::format("blk.{}.layer_output_scale.weight", il));
+    }
+    auto back = FromJson(ToJson(*spec));
+    ASSERT_TRUE(back.has_value()) << back.error();
+    EXPECT_EQ(*back, *spec);
+    // The default policy: today's recipe's selection (the quantized GLU on
+    // 31B only).
+    const auto policy = DefaultPolicy(mappings::Gemma4Mapping(), *values);
+    ASSERT_TRUE(policy.has_value());
+    EXPECT_EQ(policy->contains("disable mul_mat_glu"), p.experts != 0);
+    EXPECT_TRUE(policy->contains("disable rope_store"));
+  }
+}
+
+TEST(MappingTest, Gemma4MappingRefusesWhatItDoesNotCover) {
+  const Mapping& m = mappings::Gemma4Mapping();
+  const auto values26 = *mappings::Gemma4V0Values(G4(26));
+  const auto values31 = *mappings::Gemma4V0Values(G4(31));
+  const auto value = [](std::vector<SourceValue>& v, std::string_view key) -> ParamValue& {
+    return std::ranges::find(v, key, &SourceValue::key)->value;
+  };
+  {
+    // A per-layer list of another length.
+    auto v = values26;
+    std::get<std::vector<std::int64_t>>(value(v, "gemma4.attention.head_count_kv")).pop_back();
+    EXPECT_FALSE(Synthesize(m, test_support::Gemma4Source(26), v));
+  }
+  {
+    // A sliding-window pattern other than the mapping's layer types.
+    auto v = values26;
+    std::get<std::vector<std::int64_t>>(value(v, "gemma4.attention.sliding_window_pattern"))[5] = 1;
+    EXPECT_FALSE(Synthesize(m, test_support::Gemma4Source(26), v));
+  }
+  {
+    // A V weight in a global layer (its V is K's).
+    Source s = test_support::Gemma4Source(31);
+    SourceTensor v = *std::ranges::find(s.tensors, "blk.0.attn_v.weight", &SourceTensor::name);
+    v.name = "blk.5.attn_v.weight";
+    s.tensors.push_back(v);
+    EXPECT_FALSE(Synthesize(m, s, values31));
+  }
+  {
+    // The routed tensors of a checkpoint without experts.
+    Source s = test_support::Gemma4Source(31);
+    const Source moe = test_support::Gemma4Source(26);
+    s.tensors.push_back(
+        *std::ranges::find(moe.tensors, "blk.0.ffn_gate_inp.weight", &SourceTensor::name));
+    EXPECT_FALSE(Synthesize(m, s, values31));
+    // The 26B's tensors with no expert count: its routed tensors match no slot.
+    auto v = values26;
+    std::erase_if(v, [](const SourceValue& x) { return x.key == "gemma4.expert_count"; });
+    EXPECT_FALSE(Synthesize(m, test_support::Gemma4Source(26), v));
+  }
+  {
+    // Shared KV layers, which the components do not implement.
+    auto v = values31;
+    v.push_back({.key = "gemma4.attention.shared_kv_layers", .value = std::int64_t{4}});
+    EXPECT_FALSE(Synthesize(m, test_support::Gemma4Source(31), v));
+  }
+  // A drafter's mapping does not synthesize alone.
+  const auto assistant = *mappings::Gemma4AssistantV0Values(model::Gemma4Assistant26(), G4(26));
+  EXPECT_FALSE(Synthesize(mappings::Gemma4AssistantMapping(),
+                          test_support::Gemma4AssistantSource(26), assistant));
+  // An assistant's profile of another target.
+  EXPECT_FALSE(mappings::Gemma4AssistantV0Values(model::Gemma4Assistant31(), G4(26)));
+}
+
+// The assistant composed with its target: its stage reads the target's K
+// and V and its final-norm tap, binds the target's token table, and each
+// layer reads its target's last layer of its type.
+TEST(MappingTest, Gemma4AssistantComposesWithItsTarget) {
+  for (const std::uint32_t size : {26U, 31U}) {
+    SCOPED_TRACE(size);
+    const auto& p = G4(size);
+    const auto& a = size == 26 ? model::Gemma4Assistant26() : model::Gemma4Assistant31();
+    const auto target = Synthesize(mappings::Gemma4Mapping(), test_support::Gemma4Source(size),
+                                   *mappings::Gemma4V0Values(p));
+    ASSERT_TRUE(target.has_value()) << target.error();
+    const auto values = mappings::Gemma4AssistantV0Values(a, p);
+    ASSERT_TRUE(values.has_value()) << values.error();
+    const Source source = test_support::Gemma4AssistantSource(size);
+    const auto spec = ComposeDrafter(*target, mappings::Gemma4Mapping(),
+                                     mappings::Gemma4AssistantMapping(), source, *values);
+    ASSERT_TRUE(spec.has_value()) << spec.error();
+    const auto from_gguf =
+        ComposeDrafter(*target, mappings::Gemma4Mapping(), mappings::Gemma4AssistantMapping(),
+                       source, test_support::Gemma4AssistantFixtureValues(size));
+    ASSERT_TRUE(from_gguf.has_value()) << from_gguf.error();
+    EXPECT_EQ(*from_gguf, *spec);
+    ASSERT_EQ(spec->stages.size(), 2U);
+    const Stage& t = spec->stages[0];
+    const Stage& d = spec->stages[1];
+    EXPECT_EQ(d.name, "assistant");
+    EXPECT_EQ(d.role, StageRole::kDrafter);
+    EXPECT_EQ(d.artifact, 1U);
+    EXPECT_EQ(d.stream.width, model::kGemma4AssistantWidth);
+    EXPECT_FALSE(d.heads.softcap.has_value());
+    ASSERT_EQ(t.taps.size(), 1U);
+    EXPECT_EQ(t.taps[0].name, "features");
+    ASSERT_EQ(d.reads.size(), 3U);
+    // Its input rows: the target's table, by stage.
+    const auto table = std::ranges::find(d.embedding->weights, "table", &WeightBinding::role);
+    ASSERT_NE(table, d.embedding->weights.end());
+    EXPECT_EQ(table->stage, "target");
+    EXPECT_EQ(table->tensor, "token_embd.weight");
+    EXPECT_EQ(P(*d.embedding, "scale").value, ParamValue(std::sqrt(static_cast<double>(p.width))));
+    ASSERT_EQ(d.layers.size(), model::kGemma4AssistantLayers);
+    for (std::uint32_t il = 0; il < d.layers.size(); ++il) {
+      const ComponentRef& at = d.layers[il].components[0];
+      EXPECT_EQ(at.kind, "attention.borrowed");
+      EXPECT_EQ(P(at, "target_layer").value,
+                ParamValue(std::int64_t{il == 3 ? a.global_target_layer : a.local_target_layer}));
+      EXPECT_EQ(P(at, "heads").value, ParamValue(std::int64_t{a.heads}));
+    }
+    EXPECT_EQ(Tensor(*d.heads.output, "projection"), "nextn.post_projection.weight");
+    // The drafter's bindings survive the canonical JSON.
+    auto back = FromJson(ToJson(*spec));
+    ASSERT_TRUE(back.has_value()) << back.error();
+    EXPECT_EQ(*back, *spec);
+    EXPECT_TRUE(ToJson(*spec).contains(R"("stage":"target")"));
+    const auto policy = DefaultPolicy(mappings::Gemma4AssistantMapping(), *values);
+    ASSERT_TRUE(policy.has_value());
+    EXPECT_TRUE(policy->contains("disable rms_norm_mul\n"));
+    // A second assistant of the same name is refused, and so is a weight
+    // of a stage the spec has not.
+    EXPECT_FALSE(ComposeDrafter(*spec, mappings::Gemma4Mapping(),
+                                mappings::Gemma4AssistantMapping(), source, *values));
+    ModelSpec bad = *spec;
+    for (WeightBinding& w : bad.stages[1].embedding->weights) {
+      if (!w.stage.empty()) w.stage = "nowhere";
+    }
+    EXPECT_FALSE(Validate(bad));
+    for (WeightBinding& w : bad.stages[1].embedding->weights) {
+      if (!w.stage.empty()) w.stage = "assistant";
+    }
+    EXPECT_FALSE(Validate(bad));
   }
 }
 

@@ -238,9 +238,12 @@ primitive ids). It is deterministic. The steps:
   first migrations' selections are policies: Gemma 2 serves with
   `disable grouped_stores`, `disable rms_norm_mul_rope` and `disable
   rope_store`, Gemma 3 with `disable rope_store`. Each family's default
-  policy text lives in its architecture mapping (`spec::Mapping::policy`,
-  slice G1a), which the component step source parses unless it is given
-  another (an alias's settings, later).
+  policy text lives in its architecture mapping (`spec::Mapping::policies`,
+  slice G1a; rules gated by a source key as slots are, G2a: Gemma 2 and
+  Gemma 3 one ungated rule each, Gemma 4's 26B-A4B, 31B and assistant
+  their own), each rule's text printable lines; the component step
+  source parses the rule `spec::DefaultPolicy` picks for the source's
+  values unless it is given another policy (an alias's settings, later).
 - **Selection** (`select.h`): each node's first candidate from
   `Candidates()`, asked with the device's architecture, features, tuning
   data (an implementation that `needs_tuning` is offered only for a shape
@@ -488,7 +491,17 @@ rows (the projection's and the residual's rows, after the output
 product), and every later component, row-local, runs at the outputs'
 width, the head gathering none (`Fragment::narrow` and `narrowed`): the
 builders' `narrow_final`, which the runners' `frontier_head` builds and
-serving keeps on. A state tensor's cell is the format layer's
+serving keeps on. Gemma 4's `ffn.moe` and `scale.learned` are row-local
+(the 26B-A4B and 31B narrow after the last layer's attention, as the
+builder's `narrow_final` does); `attention.borrowed` narrows as
+`attention.dense` does (its emit is the same), but a head of every row
+(`head.linear` with `gather` false, `ComponentDef::gathers`) has nothing
+to narrow to, so a drafter's stage never narrows. A target's tap write
+(below) stores the narrowed stream's rows directly: after the narrowing
+they are the output rows, in segment order. Today's Gemma 4 runner turns
+`narrow_final` off when it retains features, because it keeps every
+row's; the components' tap keeps only the output rows' and narrows. A
+state tensor's cell is the format layer's
 (`model::CellBytes`), its leaf a block encoding's whole blocks where an
 alias opts into a lossy cache (D-108; F16 today).
 
@@ -533,6 +546,68 @@ fragment does not express, for the lowering and the patterns:
   own; the owner-root forms (one-row decode of up to twelve owners in
   groups of four, equal-row prefill of two) are the pattern's, which
   leaves any other step's attention per owner.
+
+**Gemma 4** (slice G2a, 2026-10-09). `attention.dense` gains optional
+forms, each off by default: `kv_tie` (V is K's product before K's norm
+and rotation; the layer has no V weight: Gemma 4's global layers),
+`v_norm` (an unweighted RMS norm of V's heads) and `rope_freqs` (role
+`rope_freqs`: per-pair frequency factors dividing the angles, op.h's
+`t / freq[i]`: the global layers' proportional rotation, one table the
+layers share); a query scale of 1 emits no node. Head dims, KV heads,
+windows, rotation dims and bases are per-instance parameters, so the
+local (D 256) and global (D 512) layers differ only in data.
+`attention.borrowed` is the same attention for queries only over another
+stage's K and V: its contract names the target's tensors
+(`borrowed_from_target`, `target_layer`), it stores nothing, and its
+masks read the cells frozen (`CellKey::frozen`: the positions before the
+segment's, so a draft row sees only its target's committed positions).
+`scale.learned` is the layer output scale. `ffn.moe` is the routed block
+with a dense GLU beside it (placement `parallel`: Gemma 4 26B-A4B's), its
+route and reduce shapes parameters (`experts`, `used`, `expert_hidden`,
+`normalize`, `expert_scales`, `stacked` gate-up arrays); its fragment is
+built of three pieces with their own scalar references (`moe.h`: the
+router, emitting `ir::kRoute` after Gemma's scaled-norm router input; the
+routed experts' `kMatMulId` products, GLU and ordered `kExpertReduce`;
+the gated feed-forward product `ffn.glu` shares), and it splits by
+experts (EP; the partitioner does not yet pass a stacked array's halves,
+`kView` of an expert-local value). `embedding.projected` is the
+assistant's input: its target's token table's rows (a weight of another
+stage's artifact, `WeightBinding::stage`, with the target's `WeightRef`)
+beside a feature (a step input, `InputKind::kFeatures`, which the engine
+binds: the target's tap for a unit's first pass, the drafter's last
+feature after), projected to its width; its state is the tap ring the
+target writes (`target_writes`, kPositionRing of `tap_cells` cells by
+position). `head.linear` gains `gather` (false: every row an output, a
+drafter's) and `features` (its rows projected to its target's width:
+`StepGraph::features`, the next pass's feature).
+
+The spec's reads link to the contracts (`ValidateSpec`): a borrowed
+tensor needs a state read of its name and the target's tensor of that
+name in its target layer with the same kind, cells, window and cell
+bytes; a tensor the target writes needs a tap read of its name, a final
+norm's tap of the target's width in F32; every read must be used; only a
+drafter reads, and only its target (the spec's first stage). A target's
+step with outputs writes each tap a drafter reads: the final norm's
+output rows (the narrowed stream itself where the step narrowed),
+stored per owner with outputs at their positions' cells of the
+drafter's tensor (`InputKind::kOutputCells`), which needs the drafter's
+layout (`Bindings::stages`). `CheckStateWrites`, run on every built step,
+refuses a store into a borrowed tensor or into another stage's tensor
+that is not a tap its target writes. The GGML lowering refuses the new
+inputs and frozen masks until slice G2c wires them.
+
+The structural comparison (`components_gemma4_order_test`) holds the
+26B-A4B and 31B steps to `BuildGemma4Graph` with its default options
+but `narrow_final` (the components narrow) and
+the assistant's draft steps to `BuildGemma4AssistantGraph`, node for
+node, with host and device masks. What differs: the router's selection
+and the experts' reduce are the composite ops their GGML runs decompose
+to (soft_max through the weights' reshape; the scales' gather, the two
+products, the slot views and the ordered adds), compared by position,
+outside sources and parameters; patterns fuse them (G2b) and the
+lowering expands them. Not compared: the builders' options (the Gemma
+route and reduce fusions, owner-root attention and common-width reads,
+rope-store, shared Q8 inputs), which are patterns and selection.
 
 ### The model spec
 
@@ -606,6 +681,25 @@ refuse a layer pattern other than theirs; neither can yet express the
 27B query scale (1 / sqrt(width / heads), which llama.cpp picks by layer
 count), so the importer must not apply them to a 27B checkpoint. The catalog that gives these kinds meaning
 is the component framework's.
+
+Gemma 4 (slice G2a) extends the mapping language, all as data: slots
+gated by a source key (`ffn.moe` layers when `gemma4.expert_count` is
+above zero, `ffn.glu` otherwise; a pattern may repeat only across two
+such exclusive slots); parameters read per layer from a key's list
+(`per_layer`: the KV head counts, llama.cpp's get_key_or_arr); a
+layer-flag key that must agree with the layer types (the sliding-window
+pattern); tensor rules limited to layer types (`attn_v` on local layers
+only) or naming a tensor every layer of their types shares (no
+`{layer}`: `rope_freqs.weight`); architectures with '-'; default
+planner policies per gated variant (`PolicyRule`, `DefaultPolicy`; text
+the planner parses); and drafter mappings (role, stage name, reads,
+rules binding the target's tensors) that `ComposeDrafter` applies with
+a target's spec, adding the taps the drafter reads and the target's
+facts its parameters read (`llmp.target.last_layer.<type>`). The spec's
+weight bindings may name another stage's artifact (`stage`, written in
+the JSON only when set). The `gemma4` mapping asserts no fold: llama.cpp's
+converter keeps Gemma 4's norm weights as they are (its
+`Gemma4Model.norm_shift` is 0, read at 8019dc56).
 
 ## Weight and state formats
 

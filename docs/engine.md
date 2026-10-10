@@ -378,8 +378,9 @@ positions, which only masks read) over a kernel source's `StepBackend`
 (`kernels/common/lower.h`: registry, device facts, the implementations
 kept on the stream, what its implementations write beyond a tensor's
 bytes, and its lowering), then lowered into a program, under the
-architecture mapping's default policy (`spec::Mapping::policy`: the
-family's recipe as data) unless it is given another; its key base is
+architecture mapping's default policy for the source's values
+(`spec::DefaultPolicy` over `spec::Mapping::policies`: the family's recipe
+as data, a rule per gated variant) unless it is given another; its key base is
 the spec's bound digest with the policy's patterns and digest. GGML's
 backend (`kernels/ggml/step_program.h` `GgmlBackend`) gives the registry
 with its capabilities, the device's architecture, the lowering of

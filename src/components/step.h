@@ -13,9 +13,25 @@
 // every layer's components in order, the final norm and the output head.
 // A weight leaf is made once per bound tensor (a tied head reads the
 // embedding's leaf, as today's builders do), its WeightRef the first
-// component binding it. A state leaf is (stage, the layer's contract
-// tensor, layer, segment): a layer's contract is its components' contracts
-// concatenated in order.
+// component binding it; a weight of another stage's artifact (a drafter
+// reading its target's token table, spec.h WeightBinding::stage) has that
+// stage's WeightRef, so both stages' steps name one tensor. A state leaf
+// is (stage, the layer's contract tensor, layer, segment): a layer's
+// contract is its components' contracts concatenated in order, layer 0's
+// after the embedding's.
+//
+// Stages that read each other (a drafter, spec.h Read): a drafter's
+// borrowed tensors (its contract's borrowed_from_target: Gemma 4's
+// assistant reading its target's K and V) are leaves of its own stage's
+// StateRef that the engine binds to the target's tensor; the step reads
+// them frozen (its rows are never stored in them, so their cells hold the
+// positions before the segment's: reads are clamped to the target's
+// committed positions by the masks). A target's step with outputs writes
+// each feature tap a drafter reads into that drafter's tensor of the tap's
+// name (target_writes): the final norm's output rows, stored at their
+// positions' cells. A step never stores into a borrowed tensor nor, on
+// another stage's, into one its contract does not let the target write
+// (CheckStateWrites).
 //
 // The step's shared inputs (StepContext) are made by the framework: token
 // ids, positions, the head's output rows; per segment and state cell rule,
@@ -88,20 +104,28 @@ std::optional<std::pair<std::size_t, std::size_t>> NarrowPoint(const StageInstan
 // stage (`tensors[stage artifact]`, a list per bound artifact): spec::
 // Validate's rules; then every component a known kind and version, its
 // parameters in range, its instance valid; every role it uses bound once,
-// to a tensor of that name and part, in an encoding the role accepts and
-// of the shape the role implies, and no binding of a role it does not use;
-// a layer count and stream width within the catalog's bounds; one stream
-// (no mixing component is in the catalog yet); and every read of another
-// stage's state naming a state tensor of that stage. The first violation,
-// with where it is.
+// to a tensor of that name and part (of its stage's artifact, or of the
+// artifact of the stage the binding names), in an encoding the role
+// accepts and of the shape the role implies, and no binding of a role it
+// does not use; a layer count and stream width within the catalog's
+// bounds; one stream (no mixing component is in the catalog yet); state
+// only on a layer's or the embedding's components; and the reads linked
+// to the state contracts both ways: a drafter's borrowed tensor read of
+// its target's state of that name (and the target's tensor of that name
+// in its target layer one of equal kind, cells, window and cell bytes),
+// a tensor the target writes read of a target's tap of that name (a final
+// norm's, of the target's width in F32), and every read used by one; only
+// a drafter reads, and only its target. The first violation, with where
+// it is.
 std::expected<void, std::string> ValidateSpec(
     const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors);
 // A single-artifact spec.
 std::expected<void, std::string> ValidateSpec(const spec::ModelSpec& spec,
                                               std::span<const BoundTensor> tensors);
 
-// A stage's per-layer contracts (each layer's components' concatenated),
-// for model::Layout; layers without state are left out.
+// A stage's per-layer contracts (each layer's components' concatenated,
+// layer 0's after the embedding's), for model::Layout; layers without
+// state are left out.
 std::expected<std::vector<std::pair<std::uint32_t, model::StateContract>>, std::string>
 StageContracts(const spec::ModelSpec& spec, std::size_t stage);
 std::expected<model::StateLayoutDerived, std::string> StageLayout(const spec::ModelSpec& spec,
@@ -117,11 +141,14 @@ std::expected<model::Batching, std::string> StageBatching(const spec::ModelSpec&
 
 // ------------------------------------------------------------ step context
 
-// A state tensor's cells as a step indexes them: its capacity and whether
-// it is a ring (position p in cell p mod capacity).
+// A state tensor's cells as a step indexes them: its capacity, whether it
+// is a ring (position p in cell p mod capacity), and whether the step reads
+// it frozen (another stage's, borrowed: the step stores none of its rows,
+// so its cells hold the positions before the segment's).
 struct CellKey {
   std::uint64_t capacity = 0;
   bool ring = false;
+  bool frozen = false;
   auto operator<=>(const CellKey&) const = default;
 };
 
@@ -133,8 +160,15 @@ enum class InputKind : std::uint8_t {
   kOutputRows,  // I32 [outputs]: the head's rows (each segment's last `outputs`)
   kStoreCells,  // I64 [segment rows]: the cell each row is stored at
   // I32 [cells]: the position each read cell holds once the step's rows
-  // are stored (a ring's latest below the segment's end), -1 for none.
+  // are stored (a ring's latest below the segment's end; a frozen read's
+  // below its past), -1 for none.
   kCellPositions,
+  // F32 [width, rows]: the feature a drafter's rows read beside their
+  // tokens (its target's tap, or its own last feature): the caller's.
+  kFeatures,
+  // I64 [segment outputs]: the cell each output row's tap is stored at in
+  // a drafter's tensor (its position's).
+  kOutputCells,
 };
 struct StepInput {
   ir::TensorId tensor{};
@@ -167,8 +201,12 @@ class StepContext {
   ir::TensorId Tokens();
   ir::TensorId Positions();
   ir::TensorId OutputRows();
+  // The rows' feature, F32 [width, rows].
+  ir::TensorId Features(std::uint64_t width);
   // Segment s's store cells for tensors of `cells`.
   ir::TensorId StoreCells(std::size_t segment, const CellKey& cells);
+  // Segment s's output rows' cells in tensors of `cells`.
+  ir::TensorId OutputCells(std::size_t segment, const CellKey& cells);
   // Segment s's cells read of a tensor of `cells`: min(capacity, its
   // read_cells).
   std::uint64_t ReadCells(std::size_t segment, const CellKey& cells) const;
@@ -191,9 +229,10 @@ class StepContext {
   std::uint32_t outputs_ = 0;
   bool greedy_ = false;
   std::uint16_t component_ = 0;
-  ir::TensorId tokens_{}, positions_{}, output_rows_{};
+  ir::TensorId tokens_{}, positions_{}, output_rows_{}, features_{};
   std::vector<ir::TensorId> segment_positions_;
   std::map<std::pair<std::size_t, CellKey>, ir::TensorId> store_cells_;
+  std::map<std::pair<std::size_t, CellKey>, ir::TensorId> output_cells_;
   std::map<std::tuple<std::size_t, CellKey, std::uint64_t>, ir::TensorId> cell_positions_;
   std::map<std::tuple<std::size_t, CellKey, std::uint32_t>, ir::TensorId> masks_;
   std::vector<StepInput> inputs_;
@@ -206,18 +245,30 @@ struct Bindings {
   std::span<const BoundTensor> tensors{};
   // The stage's state layout (StageLayout's): each state leaf's cells.
   const model::StateLayoutDerived* state = nullptr;
+  // Every stage's layout by stage index (null where not given): a
+  // drafter's step reads its target's (its borrowed tensors' cells), a
+  // target's step with outputs writes each tap reader's.
+  std::span<const model::StateLayoutDerived* const> stages{};
+  // Every bound artifact's tensors by artifact index: the weights a
+  // binding names in another stage's artifact.
+  std::span<const std::span<const BoundTensor>> artifacts{};
 };
 
 struct StepWeight {
   ir::TensorId tensor{};
   ir::WeightRef ref{};
-  // The bound tensors holding its parts (one for a single-part format).
+  // The bound tensors holding its parts (one for a single-part format), of
+  // the artifact of stage ref.stage.
   std::vector<std::pair<std::string, format::PartRole>> parts;
 };
 struct StepState {
   ir::TensorId tensor{};
   ir::StateRef ref{};
-  std::size_t item = 0;  // its StateLayoutDerived item
+  // Its StateLayoutDerived item: of stage ref.stage's layout, or for a
+  // borrowed tensor of the target's (the tensor it reads).
+  std::size_t item = 0;
+  bool borrowed = false;  // a drafter's view of its target's tensor: read only
+  bool tap = false;       // a drafter's tensor this target step writes (target_writes)
 };
 
 struct StepGraph {
@@ -225,18 +276,27 @@ struct StepGraph {
   std::vector<StepInput> inputs;
   std::vector<StepWeight> weights;
   std::vector<StepState> state;
-  ir::TensorId logits{};  // F32 [vocab, outputs], when the step has outputs
-  ir::TensorId greedy{};  // I32 [outputs], when every segment is greedy
+  ir::TensorId logits{};    // F32 [vocab, outputs], when the step has outputs
+  ir::TensorId greedy{};    // I32 [outputs], when every segment is greedy
+  ir::TensorId features{};  // F32 [feature width, outputs]: a drafter head's next feature
 };
+
+// Refuses a step that stores into a borrowed tensor, or (`stage` writing
+// another stage's tensor) into one that is not a tap its target writes:
+// every cache store's cache is a state leaf the step may write.
+std::expected<void, std::string> CheckStateWrites(const StepGraph& step, std::uint16_t stage);
 
 // The stage's components' fragments for `shape`, joined and verified. Its
 // segments are in row order; each reads min(capacity, read_cells) cells of
 // a state tensor, which must cover its rows' positions (past + rows, or the
-// whole capacity), and a ring it wraps holds at least rows + window - 1
-// cells (every row's window survives the step's stores, which precede its
-// attention). A step with no outputs is state-only: its last layer
-// writes only its state. Greedy segments must be all of them, each with
-// one output.
+// whole capacity; a frozen read's past), and a ring it wraps holds at
+// least rows + window - 1 cells (every row's window survives the step's
+// stores, which precede its attention; a frozen ring that has wrapped at
+// least window - 1).
+// A step with no outputs is state-only: its last layer writes only its
+// state. Greedy segments must be all of them, each with one output. A
+// target's step with outputs writes the taps its drafters read (each
+// segment's outputs within the tap's cells), which needs their layouts.
 std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std::uint16_t stage,
                                                 const planner::StepShape& shape,
                                                 const Bindings& bindings);
@@ -263,7 +323,8 @@ std::expected<Instance, std::string> MakeInstance(const spec::ComponentRef& ref,
                                                   std::uint32_t layer, std::uint16_t index);
 
 // An input's values for `shape` (each segment's past) and the step's
-// `tokens` (kTokens'), in the input's logical order.
+// `tokens` (kTokens'), in the input's logical order; kStream's and
+// kFeatures' are the caller's.
 std::expected<std::vector<std::int64_t>, std::string> InputValues(
     const StepInput& input, const planner::StepShape& shape, std::span<const std::int32_t> tokens);
 

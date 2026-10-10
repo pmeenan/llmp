@@ -15,9 +15,10 @@ namespace llmp::components {
 
 std::span<const ComponentDef* const> Catalog() {
   // Sorted by (kind, version).
-  static const std::array<const ComponentDef*, 5> catalog{
-      &defs::AttentionDense(), &defs::EmbeddingToken(), &defs::FfnGlu(),
-      &defs::HeadLinear(),     &defs::NormRms(),
+  static const std::array<const ComponentDef*, 9> catalog{
+      &defs::AttentionBorrowed(), &defs::AttentionDense(), &defs::EmbeddingProjected(),
+      &defs::EmbeddingToken(),    &defs::FfnGlu(),         &defs::FfnMoe(),
+      &defs::HeadLinear(),        &defs::NormRms(),        &defs::ScaleLearned(),
   };
   return catalog;
 }

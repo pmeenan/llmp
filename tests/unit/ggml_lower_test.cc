@@ -151,7 +151,9 @@ struct Gemma2Family {
   using Shape = kg::Gemma2ChunkShape;
   using Options = kg::Gemma2GraphOptions;
   static constexpr bool kGemma3 = false;
-  static std::string_view Policy() { return llmp::spec::mappings::Gemma2Mapping().policy; }
+  static std::string_view Policy() {
+    return llmp::spec::mappings::Gemma2Mapping().policies.front().text;
+  }
   static const md::Gemma2Profile& P() { return md::Gemma2_2B(); }
   static auto Resources() { return llmp::test_support::gemma2::Resources(); }
   static auto Binding() { return md::BindGemma2(P(), "gemma2", Resources()).value(); }
@@ -181,7 +183,9 @@ struct Gemma3Family {
   using Shape = kg::Gemma3ChunkShape;
   using Options = kg::Gemma3GraphOptions;
   static constexpr bool kGemma3 = true;
-  static std::string_view Policy() { return llmp::spec::mappings::Gemma3Mapping().policy; }
+  static std::string_view Policy() {
+    return llmp::spec::mappings::Gemma3Mapping().policies.front().text;
+  }
   static const md::Gemma3Profile& P() { return md::Gemma3_4BQat(); }
   static auto Resources() { return llmp::test_support::gemma3::Resources(); }
   static auto Binding() { return md::BindGemma3(P(), "gemma3", Resources()).value(); }

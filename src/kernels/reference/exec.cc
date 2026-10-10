@@ -597,15 +597,22 @@ std::span<const std::byte> Executor::Bytes(TensorId id, format::PartRole role) c
 
 // ---------------------------------------------------------------- values
 
-std::expected<Vec, ExecFailure> Executor::Load(TensorId id) const {
+std::expected<Vec, ExecFailure> Executor::Load(TensorId id,
+                                               std::optional<std::uint64_t> matrix) const {
   const TensorDesc& t = graph().tensor(id);
   const Root& r = RootOf(id);
   if (r.parts.empty()) {
     return Fail(ExecError::kUnbound, std::format("tensor {} has no bytes", id.v));
   }
   const Ne& ne = t.shape().ne;
+  // One matrix (i2, of a tensor of one i3) or every one.
+  if (matrix && (ne[3] != 1 || *matrix >= ne[2])) {
+    return Fail(ExecError::kIndex, std::format("matrix {} of tensor {}", *matrix, id.v));
+  }
+  const std::uint64_t m0 = matrix.value_or(0);
+  const std::uint64_t m1 = matrix ? *matrix + 1 : ne[2];
   Vec out;
-  out.reserve(Count(ne));
+  out.reserve(matrix ? ne[0] * ne[1] : Count(ne));
   const std::uint64_t unit = ir::UnitBytes(t.format);
   if (unit == 0) {
     // A format in parts: a root, decoded whole.
@@ -619,7 +626,8 @@ std::expected<Vec, ExecFailure> Executor::Load(TensorId id) const {
     }
     const std::uint64_t rows = ne[1];
     std::vector<float> f(static_cast<std::size_t>(ne[0] * rows));
-    for (std::uint64_t m = 0; m < format::Matrices(t.format); ++m) {
+    const std::uint64_t end = matrix ? m0 + 1 : format::Matrices(t.format);
+    for (std::uint64_t m = m0; m < end; ++m) {
       if (auto d = DecodeRows(t.format, views, m, 0, rows, f); !d) {
         return Fail(ExecError::kUnsupported,
                     std::format("decoding {}: {}", format::Info(t.format.encoding).name,
@@ -633,7 +641,7 @@ std::expected<Vec, ExecFailure> Executor::Load(TensorId id) const {
   if (t.format.layout == format::Layout::kDense) {
     const Encoding e = t.format.encoding;
     for (std::uint64_t i3 = 0; i3 < ne[3]; ++i3) {
-      for (std::uint64_t i2 = 0; i2 < ne[2]; ++i2) {
+      for (std::uint64_t i2 = m0; i2 < m1; ++i2) {
         for (std::uint64_t i1 = 0; i1 < ne[1]; ++i1) {
           const std::uint64_t row =
               t.view_offset + (i1 * t.nb[1]) + (i2 * t.nb[2]) + (i3 * t.nb[3]);
@@ -652,7 +660,7 @@ std::expected<Vec, ExecFailure> Executor::Load(TensorId id) const {
   const std::uint64_t row_bytes = (ne[0] / ir::UnitElements(t.format)) * unit;
   std::vector<float> f(static_cast<std::size_t>(ne[0]));
   for (std::uint64_t i3 = 0; i3 < ne[3]; ++i3) {
-    for (std::uint64_t i2 = 0; i2 < ne[2]; ++i2) {
+    for (std::uint64_t i2 = m0; i2 < m1; ++i2) {
       for (std::uint64_t i1 = 0; i1 < ne[1]; ++i1) {
         const std::uint64_t at = t.view_offset + (i1 * t.nb[1]) + (i2 * t.nb[2]) + (i3 * t.nb[3]);
         const PartView part{.role = format::PartRole::kData,
@@ -877,13 +885,14 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
       return Store(out, r);
     }
     case Op::kMatMulId: {
-      LLMP_LOAD(as, node.src[0]);
       LLMP_LOAD(b, node.src[1]);
       LLMP_LOAD(ids, node.src[2]);
       const Ne& an = ne(0);
       const Ne& bn = ne(1);
       const Ne& in = ne(2);
       const Ne& on = out_ne();
+      // Only the selected matrices are decoded (an expert array's few).
+      std::map<std::uint64_t, Vec> matrices;
       Vec r(Count(on));
       for (std::uint64_t t = 0; t < in[1]; ++t) {
         for (std::uint64_t u = 0; u < in[0]; ++u) {
@@ -892,9 +901,16 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
             return Fail(ExecError::kIndex, std::format("expert {} of {}", id, an[2]));
           }
           const auto e = static_cast<std::uint64_t>(id);
+          auto held = matrices.find(e);
+          if (held == matrices.end()) {
+            auto one = Load(node.src[0], e);
+            if (!one) return std::unexpected(one.error());
+            held = matrices.emplace(e, std::move(*one)).first;
+          }
+          const Vec& as = held->second;
           const double* bx = &b[Ix(bn, 0, u % bn[1], t, 0)];
           for (std::uint64_t n = 0; n < an[1]; ++n) {
-            const double* ax = &as[Ix(an, 0, n, e, 0)];
+            const double* ax = &as[Ix(an, 0, n, 0, 0)];
             double s = 0.0;
             for (std::uint64_t k = 0; k < an[0]; ++k) {
               s += ax[k] * bx[k];

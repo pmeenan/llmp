@@ -55,7 +55,8 @@ std::expected<spec::ParamValue, std::string> Typed(const ParamSpec& s, const spe
     case ParamType::kName: {
       const auto* n = std::get_if<std::string>(&v);
       if (n == nullptr) break;
-      if (std::ranges::find(s.choices, std::string_view(*n)) == s.choices.end()) {
+      if (!s.choices.empty() &&
+          std::ranges::find(s.choices, std::string_view(*n)) == s.choices.end()) {
         return std::unexpected(std::format("parameter {} has no choice {}", s.name, *n));
       }
       return v;

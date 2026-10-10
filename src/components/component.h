@@ -73,7 +73,9 @@ struct ParamSpec {
   // Numbers (and every member of a list): within [least, most].
   double least = 0.0;
   double most = 0.0;
-  // kName: the names it takes; an absent optional name is choices[0].
+  // kName: the names it takes (none listed: any name, one the spec gives
+  // something else, such as a tap a read names); an absent optional name
+  // is choices[0].
   std::span<const std::string_view> choices{};
   // An absent optional number's or flag's value (a flag: nonzero is true).
   double fallback = 0.0;
@@ -237,9 +239,12 @@ struct Fragment {
 
 struct FragmentOut {
   ir::TensorId stream{};  // the output stream (the input when unchanged)
-  // An output head's results.
+  // An output head's results: its logits, each row's token when greedy, and
+  // a drafter's next feature (F32 [feature width, outputs], its rows
+  // projected back to its target's width).
   ir::TensorId logits{};
   ir::TensorId greedy{};
+  ir::TensorId features{};
 };
 
 // ---------------------------------------------------------------- reference
@@ -254,16 +259,19 @@ struct RefSegment {
 
 // A reference call's host buffers. Values are in logical order, ne[0]
 // innermost. `stream` is [width, rows] in and out (an embedding's out
-// only); an output head writes `logits` [vocab, outputs] and, when
-// `greedy`, `tokens_out`. Weights are decoded to F32 by role (empty where
-// not in use), with their shapes. State is per segment and contract
-// tensor: every cell's values, `state_cells[tensor]` cells, read and
-// written in the contract's encoding (each value stored rounded to it).
+// only); `features` [feature width, rows] the feature a drafter's
+// embedding reads; an output head writes `logits` [vocab, outputs], when
+// `greedy` `tokens_out`, and a drafter's head `features_out` [feature
+// width, outputs]. Weights are decoded to F32 by role (empty where not in
+// use), with their shapes. State is per segment and contract tensor: every
+// cell's values, `state_cells[tensor]` cells, read and written in the
+// contract's encoding (each value stored rounded to it).
 struct RefIO {
   const Instance* instance = nullptr;
   std::vector<RefSegment> segments{};
   std::vector<std::int32_t> tokens{};  // [rows], an embedding's
   std::vector<double> stream{};
+  std::vector<double> features{};
   std::vector<std::vector<float>> weights{};
   std::vector<format::Shape> weight_shapes{};
   std::vector<std::vector<std::vector<double>>> state{};  // [segment][tensor]
@@ -271,6 +279,7 @@ struct RefIO {
   bool greedy = false;
   std::vector<double> logits{};
   std::vector<std::int32_t> tokens_out{};
+  std::vector<double> features_out{};
 
   std::uint32_t rows() const {
     std::uint32_t n = 0;
@@ -305,6 +314,9 @@ struct ComponentDef {
   // Masks it reads, as (state tensor, window) pairs: made once per step
   // and segment before the first layer (StepContext::Mask).
   std::vector<std::pair<std::uint16_t, std::uint32_t>> (*masks)(const Instance& instance) = nullptr;
+  // An output head: whether an instance reads only the step's output rows;
+  // null: it does. A head of every row (a drafter's) has none to narrow to.
+  bool (*gathers)(const Instance& instance) = nullptr;
   std::expected<FragmentOut, std::string> (*emit)(Fragment& fragment) = nullptr;
   std::expected<void, std::string> (*reference)(RefIO& io) = nullptr;
 };

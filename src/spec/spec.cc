@@ -223,6 +223,10 @@ void WriteComponent(std::string& out, const ComponentRef& c) {
     Quoted(out, format::PartRoleName(w.part));
     Key(out, "role", w_first);
     Quoted(out, w.role);
+    if (!w.stage.empty()) {
+      Key(out, "stage", w_first);
+      Quoted(out, w.stage);
+    }
     Key(out, "tensor", w_first);
     Quoted(out, w.tensor);
     out += '}';
@@ -482,7 +486,7 @@ std::expected<ComponentRef, std::string> ReadComponent(json::Value v, const std:
   for (std::size_t i = 0; i < weights->size(); ++i) {
     const json::Value w = weights->at(i);
     const std::string at = std::format("{}.weights[{}]", where, i);
-    if (auto k = Keys(w, at, {"part", "role", "tensor"}, {"experts"}); !k) {
+    if (auto k = Keys(w, at, {"part", "role", "tensor"}, {"experts", "stage"}); !k) {
       return std::unexpected(k.error());
     }
     WeightBinding b;
@@ -503,6 +507,11 @@ std::expected<ComponentRef, std::string> ReadComponent(json::Value v, const std:
         return Refuse(at + ".experts", "present only as true");
       }
       b.experts = true;
+    }
+    if (const auto st = w.find("stage"); st) {
+      // Written only when not empty.
+      LLMP_SPEC_TRY(stage, Text(*st, at + ".stage", &IsName));
+      b.stage = std::move(*stage);
     }
     c.weights.push_back(std::move(b));
   }
@@ -722,8 +731,10 @@ Status CheckComponent(const ComponentRef& c, const std::string& where) {
   }
   for (std::size_t i = 0; i < c.weights.size(); ++i) {
     const WeightBinding& w = c.weights[i];
-    if (!IsName(w.role) || !IsTensor(w.tensor) || !std::ranges::contains(kParts, w.part)) {
-      return Refuse(std::format("{}.weights[{}]", where, i), "an invalid role, tensor or part");
+    if (!IsName(w.role) || !IsTensor(w.tensor) || !std::ranges::contains(kParts, w.part) ||
+        (!w.stage.empty() && !IsName(w.stage))) {
+      return Refuse(std::format("{}.weights[{}]", where, i),
+                    "an invalid role, tensor, part or stage");
     }
   }
   return {};
@@ -745,7 +756,18 @@ Status CheckStage(const ModelSpec& spec, const Stage& s, const std::string& wher
   std::size_t components = 0;
   const auto count = [&](const ComponentRef& c, const std::string& at) -> Status {
     ++components;
-    return CheckComponent(c, at);
+    if (auto ok = CheckComponent(c, at); !ok) {
+      return ok;
+    }
+    // A weight of another stage's artifact names another stage of the spec.
+    for (const WeightBinding& w : c.weights) {
+      if (!w.stage.empty() &&
+          (w.stage == s.name || !std::ranges::contains(spec.stages, w.stage, &Stage::name))) {
+        return Refuse(at, std::format("weight {} of stage {}, which is not another of the spec's",
+                                      w.tensor, w.stage));
+      }
+    }
+    return {};
   };
   if (s.embedding) {
     if (auto ok = count(*s.embedding, where + ".embedding"); !ok) {

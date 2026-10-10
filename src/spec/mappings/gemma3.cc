@@ -103,6 +103,14 @@ constexpr std::array kParams = {
 
 constexpr std::array kFolds = {FoldRule{.fold = "norm.plus_one", .container = "gguf"}};
 
+// The serving recipe (runtime/serving.cc's Gemma3): every pattern but the
+// RoPE store (the fused norm-mul, norm-rope and norm-add, the quantized
+// GeGLU, shared Q8 preparation, grouped KV stores, owner attention with
+// bounded roots and the four-root carriers). One rule: every checkpoint.
+constexpr std::array kPolicies = {
+    PolicyRule{.text = "max_decode_rows 16\ndisable rope_store\n"},
+};
+
 constexpr Mapping kMapping{
     .architecture = "gemma3",
     .version = 1,
@@ -113,11 +121,7 @@ constexpr Mapping kMapping{
     .tensors = kTensors,
     .params = kParams,
     .folds = kFolds,
-    // The serving recipe (runtime/serving.cc's Gemma3): every pattern but
-    // the RoPE store (the fused norm-mul, norm-rope and norm-add, the
-    // quantized GeGLU, shared Q8 preparation, grouped KV stores, owner
-    // attention with bounded roots and the four-root carriers).
-    .policy = "max_decode_rows 16\ndisable rope_store\n",
+    .policies = kPolicies,
 };
 
 }  // namespace
