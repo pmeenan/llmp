@@ -33,8 +33,10 @@ the main agent to).
    style or ceremony. Findings are
    file:line claims ranked by severity. The reviewer fixes what it finds (or
    hands back to the builder for anything larger), re-verifies with
-   targeted tests and the Spark check set (not the full tiers), and
-   reports a review note the same way. A clean review is a valid result and
+   targeted tests, the shared non-model set and the model tests of the
+   areas it touched (see check cadence), and runs the full Spark check
+   set only if it is the last to change the slice's code; it reports a
+   review note the same way. A clean review is a valid result and
    is stated as such.
 3. **Commit.** The human commits or authorizes the main agent to commit
    (D-075), with both notes and the diff available for review at whatever
@@ -123,8 +125,19 @@ downgrade a heavy-path change to the light loop on their own.
   before a package ships, to chase a finding, or for a change that needs
   the Linux host, and then only the needed target: x86-64 or CPU-only builds, qemu, the reference container,
   packaging, toolchain or source-lock changes, or sanitizer-only
-  behaviour. Review and challenge rounds iterate on the Spark set; a round
-  that finds only low-severity issues fixes them without another round.
+  behaviour. *Owner direction, 2026-10-09:* the full set (every model
+  test included) runs **once per slice, on its final state**, by whoever
+  changes the slice's code last. Builders iterate, and review and
+  challenge rounds re-verify, with targeted tests, the shared
+  `-LE 'models|timing'` set (minutes) and only the model tests of the
+  areas the round touched, selected with `-L models -R`:
+  tokenizer and chat (`ChatTokens|ChatCorpus|Vocabularies|Nfc|ChatAssets|Agreement`),
+  importer and formats (`Import|SpecModels|Exl3Trellis|DecodeProof`),
+  Gemma 2/3 engine and serving
+  (`Gemma2|Gemma3|GemmaPrefill|GemmaJoined|ComponentRunner|ComponentsModels|PlainTokens`),
+  Gemma 4 (`Gemma4|Gemma26|Gemma31`), Qwen3.8 and DeepSeek
+  (`Qwen38|Dspark|Dsv4|FourSlot`). A round that finds only low-severity
+  issues fixes them without another round.
   Never run two check tiers on one tree at once.
   *Owner override, 2026-09-29:* during the current M3 optimization run,
   keep per-slice checks on the Sparks and defer all x86 workstation checks
