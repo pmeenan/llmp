@@ -206,6 +206,8 @@ std::string_view FusedKindName(FusedKind kind) {
       return "dsv4_compress";
     case FusedKind::kDsv4HcPre:
       return "dsv4_hc_pre";
+    case FusedKind::kStateBankAttention:
+      return "state_bank_attention";
   }
   return "unknown";
 }

@@ -253,6 +253,167 @@ TEST(PlannerPolicyTest, RanksAreTheDeviceClasses) {
 
 // ------------------------------------------------------- rewrite patterns
 
+TEST(PlannerPatternTest, DirectBankFormulaDecomposesWithoutProofAndAllowsGeneralRecipes) {
+  std::vector<ex::Implementation> implementations = {
+      Fake("t.concat", Any(ir::Primitive(Op::kConcat))),
+      Fake("t.attention", Any(ir::Primitive(Op::kAttention))),
+      Fake("t.bank", {.op = ir::Fused(FusedKind::kStateBankAttention),
+                      .priority = 1,
+                      .needs_state_span = true})};
+  const auto registry = Registry(implementations);
+  implementations.push_back(Fake("t.general", Any(ir::Fused(FusedKind::kStateBankAttention))));
+  const auto general = Registry(implementations);
+  for (const bool state : {false, true}) {
+    ir::Builder b;
+    b.SetOwner(0);
+    const auto half = [](std::initializer_list<std::uint64_t> ne) {
+      return ir::Dense(Encoding::kF16, ir::ShapeOf(ne));
+    };
+    const auto q = b.Input(F32({4, 1, 8}));
+    const auto a = state ? b.State(half({4, 256}), {.tensor = 0}) : b.Input(half({4, 256}));
+    const auto z = state ? b.State(half({4, 512}), {.tensor = 1}) : b.Input(half({4, 512}));
+    const auto av = b.View(a, ir::ShapeOf({4, 1, 256}), {2, 8, 8, 2048}, 0);
+    const auto zv = b.View(z, ir::ShapeOf({4, 1, 256}), {2, 8, 8, 4096}, 0);
+    const auto mask = b.Input(half({512, 32}));
+    b.Output(
+        b.Fused(FusedKind::kStateBankAttention, std::array{q, av, zv, mask}, ir::AttnParams{})[0]);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    auto fallback = Plan(graph->Clone(), registry, kDevice, {});
+    ASSERT_TRUE(fallback) << (fallback ? "" : fallback.error().detail);
+    EXPECT_EQ(fallback->decomposed, std::vector<std::string>{"fused.state_bank_attention"});
+    const StateSpans malformed = [](std::span<const StateCellSlice>) {
+      return std::optional<StateSpanFact>{{.bank = {.range = {.offset = 0, .bytes = 1},
+                                                    .encoding = Encoding::kF16,
+                                                    .cell_bytes = 8},
+                                           .region_bytes = 6144}};
+    };
+    auto bad_fact = Plan(graph->Clone(), registry, kDevice, {}, {.state_spans = malformed});
+    ASSERT_TRUE(bad_fact);
+    EXPECT_EQ(bad_fact->decomposed, fallback->decomposed);
+    auto ordinary = Plan(graph->Clone(), general, kDevice, {});
+    ASSERT_TRUE(ordinary);
+    EXPECT_TRUE(ordinary->decomposed.empty());
+    ASSERT_EQ(ordinary->steps.size(), 1U);
+    EXPECT_EQ(general.at(ordinary->steps.front().implementation).name, "t.general");
+  }
+}
+
+TEST(PlannerPatternTest, StateBanksKeepAttentionParametersAndRefuseObservableCopies) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.concat", Any(ir::Primitive(Op::kConcat))));
+  implementations.push_back(Fake("t.attention", Any(ir::Primitive(Op::kAttention))));
+  implementations.push_back(
+      Fake("t.bank", {.op = ir::Fused(FusedKind::kStateBankAttention), .needs_state_span = true}));
+  const auto registry = Registry(std::move(implementations));
+  Policy on;
+  on.enabled = {"state_bank_attention"};
+  const SelectionView enabled(registry, kDevice, on, false, false);
+  const Policy default_policy{};
+  const SelectionView off(registry, kDevice, default_policy, false, false);
+  // 0: canonical; others change exactly one proof premise.
+  for (int mutation = 0; mutation < 14; ++mutation) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    b.SetOwner(0);
+    const auto half = [](std::initializer_list<std::uint64_t> ne) {
+      return ir::Dense(Encoding::kF16, ir::ShapeOf(ne));
+    };
+    ir::TensorId q;
+    if (mutation == 12) {
+      b.SetJoined();
+      const auto joined_q = b.Input(F32({4, 5, 2}));
+      b.SetOwner(0);
+      q = b.View(joined_q, ir::ShapeOf({4, 2, 2}), {4, 16, 80, 160}, 48);
+    } else {
+      if (mutation == 13) b.SetOwner(1);
+      q = b.Input(F32({4, 2, 2}));
+      b.SetOwner(0);
+    }
+    const auto raw = b.State(half({mutation == 2 ? 8U : 4U, 256}), {.tensor = 0});
+    const auto compressed = b.State(half({4, 256}), {.tensor = 1});
+    const std::uint64_t raw_cells = mutation == 1 || mutation == 3 ? 255 : 256;
+    const auto& rd = b.tensor(raw);
+    const auto a = b.View(raw, ir::ShapeOf({4, 1, raw_cells}), {2, rd.nb[1], rd.nb[1], rd.nb[2]},
+                          mutation == 3 ? 8 : 0);
+    const auto z = b.View(compressed, ir::ShapeOf({4, 1, 256}), {2, 8, 8, 2048}, 0);
+    const auto joined = b.Concat(a, z, 2);
+    if (mutation == 4) b.Keep(joined);
+    const auto keys = b.Permute(joined, {0, 2, 1, 3});
+    const auto values = b.Permute(mutation == 5 ? b.Concat(a, z, 2) : joined, {0, 2, 1, 3});
+    if (mutation == 6) b.Keep(values);
+    if (mutation == 7 || mutation == 8) {
+      // Mutate either state root through an alias between copy and Attention.
+      const auto target = mutation == 8 ? compressed : raw;
+      const auto alias = b.View(target, ir::ShapeOf({4, 256}), {2, 8, 2048, 2048}, 0);
+      const auto replacement = b.Input(F32({4, 1}));
+      const auto row = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({1})));
+      b.CacheStore(alias, replacement, row);
+    }
+    const auto mask = b.Input(half({raw_cells + 256, 32}));
+    const auto sinks = b.Input(F32({2}));
+    const ir::AttnParams params{.scale = 0.25F,
+                                .softcap = 2,
+                                .max_bias = 4,
+                                .window = 128,
+                                .sinks = true,
+                                .accumulate = ir::Accumulate::kF32,
+                                .sparse_any = true,
+                                .n_kv_max = 128};
+    ir::TensorDesc rounded;
+    rounded.format = half({4, 2, 2});
+    const auto output =
+        mutation == 9 ? b.Emit(ir::Primitive(Op::kAttention), ir::ToBytes(params),
+                               std::array{q, keys, values, mask, sinks}, std::array{rounded})[0]
+                      : b.Attention(q, keys, values, mask, sinks, params);
+    b.Output(output);
+    auto graph = std::move(b).Finish();
+    if (mutation == 13) {
+      ASSERT_FALSE(graph);  // the IR already rejects a foreign owner's query
+      EXPECT_NE(graph.error().detail.find("reads segment 1 for owner 0"), std::string::npos);
+      continue;
+    }
+    ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+    const StateSpans proof =
+        [=](std::span<const StateCellSlice> slices) -> std::optional<StateSpanFact> {
+      if (mutation == 10 || slices.size() != 2) return std::nullopt;
+      return StateSpanFact{.bank = {.range = {.offset = 4096, .bytes = 4096},
+                                    .encoding = Encoding::kF16,
+                                    .cell_bytes = mutation == 11 ? 10U : 8U},
+                           .region_bytes = 16384};
+    };
+    const MatchContext context(*graph, enabled, nullptr, proof);
+    EXPECT_EQ(fusions::StateBankAttentionMatch(context, graph->producer(output)).has_value(),
+              mutation == 0 || mutation == 12);
+    if (mutation != 0 && mutation != 12) continue;
+    auto changed = ApplyPatterns(*graph, enabled, nullptr, proof);
+    ASSERT_TRUE(changed);
+    ASSERT_EQ(changed->applied.size(), 1U);
+    const auto& result = changed->graph.node(changed->graph.producer(changed->graph.outputs()[0]));
+    EXPECT_EQ(result.key, ir::Fused(FusedKind::kStateBankAttention));
+    EXPECT_EQ(result.src[0], changed->tensors.at(q.v));  // exact joined owner view retained
+    EXPECT_EQ(result.params, ir::ToBytes(params));       // every field, including sparse flags
+    EXPECT_EQ(changed->applied[0].replaced.size(), 4U);  // concat, two views, attention
+    auto disabled = ApplyPatterns(*graph, off, nullptr, proof);
+    ASSERT_TRUE(disabled);
+    EXPECT_TRUE(disabled->applied.empty());
+    auto absent = ApplyPatterns(*graph, enabled);
+    ASSERT_TRUE(absent);
+    EXPECT_TRUE(absent->applied.empty());
+    auto no_bank = Everything();
+    no_bank.push_back(Fake("t.concat", Any(ir::Primitive(Op::kConcat))));
+    no_bank.push_back(Fake("t.attention", Any(ir::Primitive(Op::kAttention))));
+    const auto fallback_registry = Registry(std::move(no_bank));
+    auto fallback = Plan(changed->graph.Clone(), fallback_registry, kDevice, on);
+    ASSERT_TRUE(fallback) << (fallback ? "" : fallback.error().detail);
+    EXPECT_EQ(fallback->decomposed, std::vector<std::string>{"fused.state_bank_attention"});
+    const auto& old_attn =
+        fallback->graph.node(fallback->graph.producer(fallback->graph.outputs()[0]));
+    EXPECT_EQ(old_attn.key, ir::Primitive(Op::kAttention));
+    EXPECT_EQ(old_attn.params, ir::ToBytes(params));
+  }
+}
+
 TEST(PlannerPatternTest, Dsv4QHeadChecksTailOwnershipSideReadersAndInterveningWrites) {
   auto implementations = Everything();
   implementations.push_back(Fake("t.dsv4_qhead", Any(ir::Fused(FusedKind::kDsv4QHead))));

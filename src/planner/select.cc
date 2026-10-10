@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "execution/registry.h"
@@ -51,6 +52,12 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
         return Product(s0, At(sources, 1));
       case FusedKind::kPreparedProducts:
         return sources.empty() ? QueryShape{} : Product(s0, sources.back());
+      case FusedKind::kStateBankAttention: {
+        const ir::TensorDesc* raw = At(sources, 1);
+        return s0 == nullptr || raw == nullptr
+                   ? QueryShape{}
+                   : QueryShape{.rows = s0->ne(1) * s0->ne(3), .k = s0->ne(0), .n = raw->ne(0)};
+      }
       case FusedKind::kOwnerAttention: {
         const ir::TensorDesc* v = At(sources, 2 + ((sources.size() - 2) / 2));
         if (s0 == nullptr || v == nullptr) {
@@ -114,18 +121,21 @@ bool LaunchesNothing(ir::OpKey key) {
 }
 
 SelectionView::SelectionView(const execution::Registry& registry, const DeviceFacts& device,
-                             const Policy& policy, bool row_invariant, bool capturable)
+                             const Policy& policy, bool row_invariant, bool capturable,
+                             StateSpans state_spans)
     : registry_(registry),
       device_(device),
       policy_(policy),
       row_invariant_(row_invariant || policy.row_invariant),
       capturable_(capturable),
+      state_spans_(std::move(state_spans)),
       ranks_(RanksFor(policy, device.device_class)) {}
 
 std::vector<std::size_t> SelectionView::Candidates(ir::OpKey key,
                                                    std::span<const ir::TensorDesc* const> sources,
                                                    std::span<const ir::TensorDesc* const> outputs,
-                                                   std::span<const std::byte> params) const {
+                                                   std::span<const std::byte> params,
+                                                   bool state_span) const {
   // A composite op whose own implementations the policy leaves off
   // (pattern.h route_reduce) has none: it decomposes.
   if (!CompositeImplemented(policy_, key)) {
@@ -172,7 +182,8 @@ std::vector<std::size_t> SelectionView::Candidates(ir::OpKey key,
       .policy = {.max_decode_rows = policy_.max_decode_rows, .allow_lossy = policy_.allow_lossy},
       .measured = ranks_,
       .tuned = device_.tuned,
-      .params = params};
+      .params = params,
+      .state_span = state_span};
   return execution::Candidates(registry_, query);
 }
 
@@ -191,7 +202,20 @@ std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph, const
   for (const ir::TensorId o : node.outputs()) {
     outputs.push_back(&graph.tensor(o));
   }
-  return Candidates(key, sources, outputs, node.params);
+  bool state_span = false;
+  if (state_spans_ && key == ir::Fused(FusedKind::kStateBankAttention)) {
+    if (const auto slices = StateBankSlices(graph, node.source(1), node.source(2))) {
+      const auto fact = state_spans_(*slices);
+      const auto& raw = graph.tensor(node.src[1]);
+      const auto& compressed = graph.tensor(node.src[2]);
+      state_span = fact && fact->bank.encoding == format::Encoding::kF16 &&
+                   fact->bank.cell_bytes == raw.nb[2] &&
+                   fact->bank.range.bytes == (raw.ne(2) + compressed.ne(2)) * raw.nb[2] &&
+                   fact->bank.range.offset <= fact->region_bytes &&
+                   fact->bank.range.bytes <= fact->region_bytes - fact->bank.range.offset;
+    }
+  }
+  return Candidates(key, sources, outputs, node.params, state_span);
 }
 
 }  // namespace llmp::planner

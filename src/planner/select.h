@@ -30,6 +30,7 @@
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "planner/policy.h"
+#include "planner/state_span.h"
 
 namespace llmp::planner {
 
@@ -65,7 +66,8 @@ bool LaunchesNothing(ir::OpKey key);
 class SelectionView {
  public:
   SelectionView(const execution::Registry& registry, const DeviceFacts& device,
-                const Policy& policy, bool row_invariant, bool capturable);
+                const Policy& policy, bool row_invariant, bool capturable,
+                StateSpans state_spans = {});
 
   const execution::Registry& registry() const { return registry_; }
   const Policy& policy() const { return policy_; }
@@ -76,7 +78,8 @@ class SelectionView {
   // ParamBytes; empty: none given).
   std::vector<std::size_t> Candidates(ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
                                       std::span<const ir::TensorDesc* const> outputs,
-                                      std::span<const std::byte> params = {}) const;
+                                      std::span<const std::byte> params = {},
+                                      bool state_span = false) const;
   // The same for a node of `graph` (with its parameters), as it is or
   // under another key (a batch's).
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node) const;
@@ -89,6 +92,7 @@ class SelectionView {
   const Policy& policy_;
   bool row_invariant_ = false;
   bool capturable_ = false;
+  StateSpans state_spans_{};
   std::vector<execution::MeasuredRank> ranks_;
 };
 

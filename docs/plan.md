@@ -1622,10 +1622,17 @@ each is checked against the design as M3.6 proceeds.
                         execution without changing the default policy.
                   - [ ] **G4b2b — indexer and sparse banks:** prove their
                         ownership, backing and execution contracts.
-                        - [ ] **G4b2b1 — state banks:** derive and bind
+                        - [x] **G4b2b1 — state banks:** derive and bind
                               contiguous spans of owned state; prove sparse
                               attention and primitive fallback with existing
                               indexer/TopK/mask semantics retained.
+                              *2026-10-10:* opt-in bank lowering derives exact
+                              layout spans, checks bound addresses and whole
+                              state-use coverage, and preserves primitive
+                              fallback. D256/D512 operand execution matches
+                              the original copy bit for bit, including unequal
+                              owners and changed-input capture replay. Default
+                              policy and whole-artifact parity remain G4b2c.
                         - [ ] **G4b2b2 — indexer contract:** make query
                               rounding, visibility and nonfinite selection
                               explicit; prove the native recipe without

@@ -131,6 +131,14 @@ constexpr std::array<Rule, 4> kF16Attention = {
      {.operand = 1, .encodings = kF16, .layouts = kDense},
      {.operand = 2, .encodings = kF16, .layouts = kDense},
      {.operand = 3, .encodings = kF16, .layouts = kDense}}};
+// The zero-copy bank recipe computes the same F32 attention result. Rounded
+// fused outputs retain the ordinary Attention + Convert decomposition.
+constexpr std::array<Rule, 5> kStateBankAttention = {
+    {kF16Attention[0],
+     kF16Attention[1],
+     kF16Attention[2],
+     kF16Attention[3],
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
 constexpr std::array<Rule, 4> kQ8Attention = {
     {{.operand = 0, .encodings = kF32, .layouts = kDense},
      {.operand = 1, .encodings = kQ8, .layouts = kGgml},
@@ -433,6 +441,29 @@ bool AcceptsSwiGluClamp(const ex::CapabilityQuery& q) { return Glu(q, ir::GluKin
 // vector or tensor-core, by device) or 512, K's head size V's.
 bool AcceptsAttention(const ex::CapabilityQuery& q) {
   return Built(q) && (q.k == 256 || q.k == 512) && q.n == q.k;
+}
+bool AcceptsStateBankAttention(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::AttnParams>(q);
+  const auto* raw = Operand(q, 1);
+  const auto* compressed = Operand(q, 2);
+  const auto* query = Operand(q, 0);
+  const auto* mask = Operand(q, 3);
+  const auto* sinks = Operand(q, 4);
+  constexpr std::uint64_t limit = std::numeric_limits<std::int32_t>::max();
+  if (!AcceptsAttention(q) || !p || p->sparse_any || p->softcap != 0 || p->max_bias != 0 ||
+      p->n_kv_max > limit || !raw || !compressed || !query || !mask || query->ne[2] <= 4 ||
+      query->ne[2] > limit || query->ne[1] > limit / 4 / q.k / query->ne[2] ||
+      raw->ne[2] > limit / 2 || compressed->ne[2] > limit / 2 - raw->ne[2])
+    return false;
+  const auto cells = raw->ne[2] + compressed->ne[2];
+  if (sinks &&
+      (sinks->encoding != Encoding::kF32 || sinks->ne[0] != query->ne[2] || sinks->ne[1] != 1 ||
+       sinks->ne[2] != 1 || sinks->ne[3] != 1 || query->ne[2] % 8 != 0))
+    return false;
+  return raw->ne[0] == q.k && compressed->ne[0] == q.k && raw->ne[1] == 1 &&
+         compressed->ne[1] == 1 && raw->ne[3] == 1 && compressed->ne[3] == 1 && query->ne[3] == 1 &&
+         cells % 256 == 0 && mask->ne[0] == cells && mask->ne[1] >= query->ne[1] &&
+         mask->ne[2] == 1 && mask->ne[3] == 1;
 }
 bool AcceptsAttention256(const ex::CapabilityQuery& q) {
   return Built(q) && q.k == 256 && q.n == 256;
@@ -875,7 +906,8 @@ constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
                              bool (*accepts)(const ex::CapabilityQuery&), bool row_invariant,
                              std::string_view group = {}, std::uint16_t priority = 0,
                              ex::ShapeRule shape = {}, std::uint16_t batch = 0,
-                             std::span<const std::string_view> launches = {}) {
+                             std::span<const std::string_view> launches = {},
+                             bool needs_state_span = false) {
   return {.op = op,
           .operands = rules,
           .shape = shape,
@@ -888,7 +920,8 @@ constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
           .priority = priority,
           .batch = batch,
           .accepts = accepts,
-          .launches = launches};
+          .launches = launches,
+          .needs_state_span = needs_state_span};
 }
 
 constexpr ir::OpKey P(Op op) { return ir::Primitive(op); }
@@ -1039,6 +1072,10 @@ const std::array kEntries = {
           Cap(P(Op::kGlu), kF32Glu, &AcceptsSwiGluClamp, true),
           "; selectable for the build's SASS architectures: split clamped SwiGLU"},
     // Attention and its masks.
+    Entry{"ggml.state_bank_attention", Operation::kFlashAttn,
+          Cap(F(FusedKind::kStateBankAttention), kStateBankAttention, &AcceptsStateBankAttention,
+              false, kAttentionGroup, 0, {}, 0, {}, true),
+          "; the existing flash-attention group over a proven contiguous F16 state span"},
     Entry{"ggml.flash_attn_ext.vec_d256", Operation::kFlashAttn,
           Cap(P(Op::kAttention), kF16Attention, &AcceptsAttention256, false, kAttentionGroup, 2),
           "; selectable for the build's SASS architectures at head size 256"},

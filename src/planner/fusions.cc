@@ -103,8 +103,9 @@ ir::TensorDesc DenseDesc(Encoding e, std::initializer_list<std::uint64_t> ne) {
 
 // Whether the selection has a candidate for a node of `key`.
 bool Has(const MatchContext& c, ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
-         std::span<const ir::TensorDesc* const> outputs, const ir::ParamBytes& params) {
-  return !c.view().Candidates(key, sources, outputs, params).empty();
+         std::span<const ir::TensorDesc* const> outputs, const ir::ParamBytes& params,
+         bool state_span = false) {
+  return !c.view().Candidates(key, sources, outputs, params, state_span).empty();
 }
 
 // The sources' descriptions (absent ones null).
@@ -1353,6 +1354,60 @@ TensorId SegmentPositions(RewriteContext& r, const StepShape* shape, TensorId po
 }  // namespace
 
 // ------------------------------------------------ DeepSeek local fast forms
+
+// Keep the entire score/TopK/mask path as operands. Only the exact K/V
+// concatenation and its two permutations disappear, at Attention's place.
+std::optional<Match> StateBankAttentionMatch(const MatchContext& c, NodeId anchor) {
+  if (!Is(c, anchor, Op::kAttention) || c.taken(anchor) || !c.state_spans()) return std::nullopt;
+  const auto& attn = c.node(anchor);
+  if (attn.batch != ir::Batch::kPerOwner || c.tensor(attn.out[0]).format.encoding != Encoding::kF32)
+    return std::nullopt;
+  const auto pk = Made(c, attn.src[1]);
+  const auto pv = Made(c, attn.src[2]);
+  if (!Is(c, pk, Op::kPermute) || !Is(c, pv, Op::kPermute) ||
+      c.node(pk).Params<ir::PermuteParams>().axes != std::array<std::uint8_t, 4>{0, 2, 1, 3} ||
+      c.node(pv).Params<ir::PermuteParams>().axes != std::array<std::uint8_t, 4>{0, 2, 1, 3} ||
+      c.node(pk).src[0] != c.node(pv).src[0])
+    return std::nullopt;
+  const auto concat = Made(c, c.node(pk).src[0]);
+  if (!Is(c, concat, Op::kConcat) || c.node(concat).Params<ir::ConcatParams>().dim != 2)
+    return std::nullopt;
+  const auto& join = c.node(concat);
+  const auto slices = StateBankSlices(c.graph(), join.src[0], join.src[1]);
+  if (!slices || c.tensor(attn.out[0]).segment != (*slices)[0].ref.segment) return std::nullopt;
+  // A query sliced from joined products retains its root's joined segment
+  // (the IR's alias identity). Preserve that exact operand and its strides;
+  // only the same owner's K/V copy is removed.
+  const auto query_owner = c.tensor(attn.src[0]).segment;
+  if (query_owner != ir::kJoinedSegment && query_owner != (*slices)[0].ref.segment)
+    return std::nullopt;
+  const auto fact = c.state_spans()(*slices);
+  const auto bytes =
+      (c.tensor(join.src[0]).ne(2) + c.tensor(join.src[1]).ne(2)) * c.tensor(join.src[0]).nb[2];
+  if (!fact || fact->bank.encoding != Encoding::kF16 ||
+      fact->bank.cell_bytes != c.tensor(join.src[0]).nb[2] || fact->bank.range.bytes != bytes ||
+      fact->bank.range.offset > fact->region_bytes ||
+      bytes > fact->region_bytes - fact->bank.range.offset)
+    return std::nullopt;
+  Building b(c);
+  if (!b.Add({concat, pk, pv, anchor}) || !b.Closed(std::array{attn.out[0]})) return std::nullopt;
+  const std::array sources = {attn.src[0], join.src[0], join.src[1], attn.source(3),
+                              attn.source(4)};
+  const std::array outputs = {&c.tensor(attn.out[0])};
+  if (!Has(c, ir::Fused(FusedKind::kStateBankAttention), Descs(c, sources), outputs, attn.params,
+           true))
+    return std::nullopt;
+  const auto params = attn.Params<ir::AttnParams>();
+  return b.Finish(
+      {{anchor, 0}},
+      [=](RewriteContext& r, int) {
+        ContextOf(r, r.original().node(anchor));
+        std::array<TensorId, 5> mapped{};
+        for (std::size_t i = 0; i < sources.size(); ++i) mapped[i] = r.Map(sources[i]);
+        r.Set(attn.out[0], r.builder().Fused(FusedKind::kStateBankAttention, mapped, params)[0]);
+      },
+      std::vector<TensorId>(sources.begin(), sources.end()));
+}
 
 std::optional<Match> Dsv4QHeadMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kRope) || c.taken(anchor)) return std::nullopt;

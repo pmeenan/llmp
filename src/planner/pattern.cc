@@ -1112,6 +1112,13 @@ constexpr std::array kPatterns = {
     // The fast forms' fusions (fusions.h), opt-in: a model's policy enables
     // them. Before the norms', which they take precedence over where a
     // policy enables both.
+    Pattern{.name = "state_bank_attention",
+            .result = ir::Fused(FusedKind::kStateBankAttention),
+            .anchors = kAttentionAnchors,
+            .match = &fusions::StateBankAttentionMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
     Pattern{.name = "dsv4_qhead",
             .result = ir::Fused(FusedKind::kDsv4QHead),
             .anchors = kRopeAnchors,
@@ -1354,10 +1361,11 @@ bool Anchored(const Pattern& p, Op op) { return std::ranges::contains(p.anchors,
 // ------------------------------------------------------------ the context
 
 MatchContext::MatchContext(const ir::Graph& graph, const SelectionView& view,
-                           const StepShape* shape)
+                           const StepShape* shape, StateSpans state_spans)
     : graph_(graph),
       view_(view),
       shape_(shape),
+      state_spans_(std::move(state_spans)),
       readers_(graph.tensor_count()),
       external_(graph.tensor_count(), false),
       kept_(graph.tensor_count(), false),
@@ -1460,8 +1468,10 @@ namespace {
 // One round of the table's rewrite patterns over `graph`.
 std::expected<Rewritten, ir::VerifyError> ApplyRound(const ir::Graph& graph,
                                                      const SelectionView& view,
-                                                     const StepShape* shape, std::uint8_t round) {
-  MatchContext context(graph, view, shape);
+                                                     const StepShape* shape,
+                                                     const StateSpans& state_spans,
+                                                     std::uint8_t round) {
+  MatchContext context(graph, view, shape, state_spans);
   struct Found {
     const Pattern* pattern = nullptr;
     Match match;
@@ -1550,8 +1560,9 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(const ir::Graph& graph,
 
 std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
                                                         const SelectionView& view,
-                                                        const StepShape* shape) {
-  auto first = ApplyRound(graph, view, shape, 0);
+                                                        const StepShape* shape,
+                                                        StateSpans state_spans) {
+  auto first = ApplyRound(graph, view, shape, state_spans, 0);
   if (!first) {
     return first;
   }
@@ -1561,7 +1572,7 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
   if (!later) {
     return first;
   }
-  auto second = ApplyRound(first->graph, view, shape, 1);
+  auto second = ApplyRound(first->graph, view, shape, state_spans, 1);
   if (!second) {
     return second;
   }

@@ -606,6 +606,14 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const auto p = Get<NormRopeParams>(params);
       return One(b.Rope(b.Mul(b.RmsNorm(d.s(0), p.eps), d.s(1)), d.s(2), d.s(3), p.rope));
     }
+    case FusedKind::kStateBankAttention: {
+      if (!d.need(3, 5)) return {};
+      const auto p = Get<AttnParams>(params);
+      const TensorId joined = b.Concat(d.s(1), d.s(2), 2);
+      const TensorId keys = b.Permute(joined, {0, 2, 1, 3});
+      const TensorId values = b.Permute(joined, {0, 2, 1, 3});
+      return One(b.Attention(d.s(0), keys, values, d.s(3), d.s(4), p));
+    }
     case FusedKind::kDsv4QHead: {
       if (!d.need(2, 2)) return {};
       const auto p = Get<NormRopeParams>(params);

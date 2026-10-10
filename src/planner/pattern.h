@@ -99,6 +99,7 @@
 #include "ir/verify.h"
 #include "planner/policy.h"
 #include "planner/select.h"
+#include "planner/state_span.h"
 #include "planner/step_shape.h"
 
 namespace llmp::planner {
@@ -108,11 +109,13 @@ class MatchContext {
  public:
   // `shape`: the step's, where the planner was given it (patterns whose
   // forms follow the step's outputs need it; null: none).
-  MatchContext(const ir::Graph& graph, const SelectionView& view, const StepShape* shape = nullptr);
+  MatchContext(const ir::Graph& graph, const SelectionView& view, const StepShape* shape = nullptr,
+               StateSpans state_spans = {});
 
   const ir::Graph& graph() const { return graph_; }
   const SelectionView& view() const { return view_; }
   const StepShape* shape() const { return shape_; }
+  const StateSpans& state_spans() const { return state_spans_; }
   const ir::Node& node(ir::NodeId id) const { return graph_.node(id); }
   const ir::TensorDesc& tensor(ir::TensorId id) const { return graph_.tensor(id); }
   const ir::Node& producer(ir::TensorId id) const { return graph_.node(graph_.producer(id)); }
@@ -134,6 +137,7 @@ class MatchContext {
   const ir::Graph& graph_;
   const SelectionView& view_;
   const StepShape* shape_ = nullptr;
+  StateSpans state_spans_{};
   std::vector<std::vector<ir::NodeId>> readers_;  // by tensor
   std::vector<bool> external_;                    // by root tensor
   std::vector<bool> kept_;                        // by tensor: returned or kept itself
@@ -258,7 +262,8 @@ struct Rewritten {
 // a step of `shape` where it is given.
 std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
                                                         const SelectionView& view,
-                                                        const StepShape* shape = nullptr);
+                                                        const StepShape* shape = nullptr,
+                                                        StateSpans state_spans = {});
 
 // The batch a batch pattern makes at `anchor` of `graph`, where it matches
 // and is enabled.

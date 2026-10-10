@@ -84,6 +84,9 @@ class ComponentStepSource final : public StepSource {
   ComponentSourceOptions o_;
   planner::Policy policy_;
   std::vector<components::Instance> shaped_;
+  base::Sha256Digest layout_identity_{};
+  planner::StateSpans StateSpans(const planner::StepShape& shape,
+                                 const kernels::Addresses& addresses) const;
 };
 
 // The step source of a model of several stages (a target and its

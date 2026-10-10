@@ -477,9 +477,14 @@ enum class FusedKind : std::uint16_t {
   // Sinkhorn block mix. Outputs are the folded stream's weighted RMSNorm
   // [W, T], post [hc, T], and combination [hc, hc, T], all packed F32.
   kDsv4HcPre,
+  // (q [D, T, H], raw [D, 1, A], compressed [D, 1, B], mask?, sinks?):
+  // AttnParams, unchanged: Attention(q, permute(concat(raw, compressed, 2)),
+  // the same K as V, mask, sinks). The formula needs no layout fact;
+  // only zero-copy implementations require a proven contiguous state span.
+  kStateBankAttention,
 };
 // The op set's last fused kind (the kinds are 1 to it).
-inline constexpr FusedKind kLastFusedKind = FusedKind::kDsv4HcPre;
+inline constexpr FusedKind kLastFusedKind = FusedKind::kStateBankAttention;
 
 struct OpKey {
   Op op = Op::kInput;

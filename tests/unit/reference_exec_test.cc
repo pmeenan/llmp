@@ -502,6 +502,49 @@ std::vector<double> NaiveAttention(const std::vector<float>& q, const std::vecto
   return out;
 }
 
+TEST_F(ExecTest, StateBankFormulaKeepsMasksSinksAndAttentionArithmetic) {
+  const auto q = F({2, 2, 2});
+  const auto raw = In(Encoding::kF16, {2, 1, 3});
+  const auto compressed = In(Encoding::kF16, {2, 1, 2});
+  const auto mask = In(Encoding::kF16, {5, 2});
+  const auto sinks = F({2});
+  const ir::AttnParams p{.scale = 0.35F,
+                         .softcap = 2,
+                         .max_bias = 8,
+                         .window = 3,
+                         .sinks = true,
+                         .accumulate = ir::Accumulate::kF32,
+                         .sparse_any = true,
+                         .n_kv_max = 3};
+  const auto fused = b.Fused(ir::FusedKind::kStateBankAttention,
+                             std::array{q, raw, compressed, mask, sinks}, p)[0];
+  const auto joined = b.Concat(raw, compressed, 2);
+  const auto primitive = b.Attention(q, b.Permute(joined, {0, 2, 1, 3}),
+                                     b.Permute(joined, {0, 2, 1, 3}), mask, sinks, p);
+  b.Output(fused);
+  b.Output(primitive);
+  ASSERT_TRUE(Finish());
+  const std::vector<float> qv{1, -2, 2, 1, -1, 3, 2, -1};
+  const std::vector<float> rawv{1, 2, -3, 1, 0, 2};
+  const std::vector<float> compressedv{2, 1, -1, -2};
+  const float hidden = -std::numeric_limits<float>::infinity();
+  const std::vector<float> masks{0, hidden, -1, 0, hidden, hidden, hidden, hidden, hidden, hidden};
+  const std::vector<float> sv{0.25F, -0.25F};
+  Set(q, qv);
+  Set(raw, rawv);
+  Set(compressed, compressedv);
+  Set(mask, masks);
+  Set(sinks, sv);
+  ASSERT_TRUE(Run());
+  EXPECT_EQ(Get(fused), Get(primitive));
+  auto kv = rawv;
+  kv.insert(kv.end(), compressedv.begin(), compressedv.end());
+  ExpectNear(
+      Get(fused),
+      NaiveAttention(qv, kv, kv, masks, sv, 2, 2, 2, 1, 5, 2, p.scale, p.softcap, p.max_bias), 2e-6,
+      "unchanged bank attention formula");
+}
+
 TEST_F(ExecTest, AttentionMatchesItsDefinition) {
   constexpr int kD = 8;
   constexpr int kNq = 3;

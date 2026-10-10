@@ -36,6 +36,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -196,6 +197,28 @@ struct StateLayoutDerived {
   std::vector<Borrowed> borrowed;
   std::uint64_t bytes = 0;  // the region: the last tensor padded to tensor_align
 };
+
+// A requested cell interval of an owned tensor. A bank fact is derived
+// from a single stage/owner's actual layout; it never changes that layout.
+struct StateSlice {
+  std::uint32_t layer = 0;
+  std::uint32_t tensor = 0;
+  std::uint64_t first = 0;
+  std::uint64_t cells = 0;
+};
+struct StateBankSpan {
+  StateRange range{};
+  Encoding encoding = Encoding::kF16;
+  std::uint64_t cell_bytes = 0;
+};
+// The slices, in this order, form one byte span only when their owned
+// items exist uniquely in one layer, agree in encoding/cell width and
+// meet exactly with no gap or overlap. Empty/out-of-bounds/borrowed and
+// malformed layouts refuse. A result proves virtual offsets only: the
+// caller must bind the same stage/owner, validate actual addresses and
+// acquire the live backing of each touched range before execution.
+std::optional<StateBankSpan> ContiguousStateSpan(const StateLayoutDerived& layout,
+                                                 std::span<const StateSlice> slices);
 
 // The target's item a drafter's borrowed tensor reads: the tensor of its
 // name in its target layer, of equal cell bytes; none if the target has no

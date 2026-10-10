@@ -85,6 +85,7 @@ struct PlanOptions {
   // (owner_attention's one-row form only for a step returning every
   // owner's one row); outlives the call. Null: those forms are not taken.
   const StepShape* shape = nullptr;
+  StateSpans state_spans{};
 };
 
 struct StepPlan {

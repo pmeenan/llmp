@@ -15,8 +15,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <set>
 #include <span>
 #include <string>
@@ -473,6 +475,98 @@ TEST(StateContractTest, DeepSeekContractsReproduceBothWindowsUsedStateAndCheckpo
       }
     }
   }
+}
+
+TEST(StateContractTest, AdjacentBanksAreDerivedFromActualOffsetsWithoutChangingLayouts) {
+  const auto& profile = md::Dsv4Flash();
+  const auto contracts = Dsv4Contracts(profile, md::Dsv4Window::kRing);
+  const auto layer = static_cast<std::uint32_t>(std::ranges::find(profile.compress_ratios, 4U) -
+                                                profile.compress_ratios.begin());
+  ASSERT_LT(layer, profile.layers);
+  for (const auto alignment : std::array<std::uint64_t, 2>{256, kExtent}) {
+    auto layout = md::Layout(contracts, 65536, 512, alignment);
+    ASSERT_TRUE(layout);
+    const auto raw = std::ranges::find_if(
+        layout->items, [&](const auto& item) { return item.layer == layer && item.tensor == 0; });
+    ASSERT_NE(raw, layout->items.end());
+    const std::array slices{md::StateSlice{.layer = layer, .tensor = 0, .cells = raw->cells},
+                            md::StateSlice{.layer = layer, .tensor = 1, .cells = 256}};
+    const auto before = md::KeptLayoutId({}, std::span(&*layout, 1));
+    const auto bank = md::ContiguousStateSpan(*layout, slices);
+    EXPECT_EQ(md::KeptLayoutId({}, std::span(&*layout, 1)), before);
+    if (alignment == kExtent) {
+      EXPECT_FALSE(bank);  // raw's 768KiB is followed by an alignment gap
+      continue;
+    }
+    ASSERT_TRUE(bank);
+    EXPECT_EQ(bank->range.offset, raw->offset);
+    EXPECT_EQ(bank->range.bytes, (raw->cells + 256) * raw->contract.cell_bytes);
+    EXPECT_EQ(bank->encoding, Encoding::kF16);
+    auto used = md::UsedThrough(*layout, 512, 2048);
+    ASSERT_TRUE(used);
+    // The span's raw and compressed portions must both be paid for by
+    // the existing closure. Do not infer backing from adjacency alone.
+    std::uint64_t covered = bank->range.offset;
+    for (const auto& range : *used) {
+      if (range.offset <= covered && covered < range.offset + range.bytes)
+        covered = range.offset + range.bytes;
+      if (covered >= bank->range.offset + bank->range.bytes) break;
+    }
+    EXPECT_GE(covered, bank->range.offset + bank->range.bytes);
+  }
+}
+
+TEST(StateContractTest, BankFactsRejectGapsForeignOrRepeatedItemsAndMalformedRanges) {
+  const Layers contracts{
+      {3, {.tensors = {{.name = "a", .cell_bytes = 1024}, {.name = "b", .cell_bytes = 1024}}}}};
+  auto layout = md::Layout(contracts, 512, 128);
+  ASSERT_TRUE(layout);
+  const std::array slices{md::StateSlice{.layer = 3, .tensor = 0, .cells = 512},
+                          md::StateSlice{.layer = 3, .tensor = 1, .cells = 256}};
+  ASSERT_TRUE(md::ContiguousStateSpan(*layout, slices));
+  const auto refuse_slices = [&](const auto& change) {
+    auto bad = slices;
+    change(bad);
+    EXPECT_FALSE(md::ContiguousStateSpan(*layout, bad));
+  };
+  refuse_slices([](auto& s) { std::swap(s[0], s[1]); });
+  refuse_slices([](auto& s) { --s[0].cells; });
+  refuse_slices([](auto& s) { ++s[1].first; });
+  refuse_slices([](auto& s) { s[1].layer = 4; });
+  refuse_slices([](auto& s) { s[1].tensor = 0; });
+  refuse_slices([](auto& s) { s[1].tensor = 9; });
+  refuse_slices([](auto& s) { s[1].cells = 513; });
+  refuse_slices([](auto& s) { s[1].first = std::numeric_limits<std::uint64_t>::max(); });
+  refuse_slices([](auto& s) { s[0].cells = 0; });
+  const auto refuse_layout = [&](const auto& change) {
+    auto bad = *layout;
+    change(bad);
+    EXPECT_FALSE(md::ContiguousStateSpan(bad, slices));
+  };
+  refuse_layout([](auto& s) { ++s.items[1].offset; });
+  refuse_layout([](auto& s) { --s.items[1].offset; });
+  refuse_layout([](auto& s) { s.items[1].contract.encoding = Encoding::kF32; });
+  refuse_layout([](auto& s) { s.items[1].contract.borrowed_from_target = true; });
+  refuse_layout([](auto& s) { s.items.push_back(s.items[1]); });
+  refuse_layout([](auto& s) { --s.items[1].bytes; });
+  refuse_layout([](auto& s) { s.items[1].offset = std::numeric_limits<std::uint64_t>::max(); });
+  refuse_layout([](auto& s) { s.bytes = 1; });
+  refuse_layout([](auto& s) {
+    auto other = s.items[0];
+    other.tensor = 2;
+    s.items.push_back(other);
+  });
+  refuse_layout([](auto& s) {
+    s.borrowed.push_back({.layer = 3, .tensor = 0, .contract = s.items[0].contract});
+  });
+  // Slice adjacency cannot hide overlapping full allocations: these slices
+  // meet at 256KiB, but A's unseen tail aliases B's first half.
+  auto overlap = *layout;
+  overlap.items[1].offset = 256 * 1024;
+  auto short_first = slices;
+  short_first[0].cells = 256;
+  EXPECT_FALSE(md::ContiguousStateSpan(overlap, short_first));
+  EXPECT_FALSE(md::ContiguousStateSpan(*layout, {}));
 }
 
 // ------------------------------------------------------------ the general

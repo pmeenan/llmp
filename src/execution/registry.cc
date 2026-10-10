@@ -92,6 +92,7 @@ std::string CapabilityText(const Capability& c) {
       static_cast<int>(c.expansion), c.lossy, c.row_invariant, c.capturable, c.group, c.priority);
   // Added only when set, so that the identities of capabilities without
   // them are unchanged.
+  if (c.needs_state_span) text += "; needs contiguous state span";
   if (c.needs_tuning) {
     text += "; needs tuning";
   }
@@ -181,6 +182,7 @@ bool Computes(const Capability& c, const CapabilityQuery& q) {
   if (c.expansion == Expansion::kTransientWorkspace && q.rows <= q.policy.max_decode_rows) {
     return false;
   }
+  if (c.needs_state_span && !q.state_span) return false;
   if ((c.lossy && !q.policy.allow_lossy) || (q.row_invariant && !c.row_invariant) ||
       (q.capturable && !c.capturable)) {
     return false;

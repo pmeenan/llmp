@@ -115,9 +115,16 @@ update this section as each slice lands):
   ratio-four and ratio-128 block boundaries. The primitive dummy rows are
   literal constants; masked/nonfinite pooling agrees with the reference.
   The graph-order comparator authenticates only that exact dummy correction
-  and continues to check all other nodes and dataflow. Indexer/sparse-bank
-  forms remain G4b2b; default policies and
-  whole-artifact GPU parity remain G4b2c's. Owed by G4c:
+  and continues to check all other nodes and dataflow. The indexer
+  contract remains G4b2b2. G4b2b1 adds opt-in state-bank attention: exact
+  owned-layout adjacency, bound-address checks and whole-span state use
+  remove the primitive cache copy while preserving its indexer, TopK, masks
+  and Attention parameters. Unsupported views, missing proof, gaps, writes
+  and rounded output requirements retain primitive fallback. Operand GPU
+  comparisons at D256/D512 are bit-identical with unequal owners and changed
+  inputs replaying the same capture; state admission and resident backing
+  are checked independently. Default policies and whole-artifact GPU parity
+  remain G4b2c's. Owed by G4c:
   - binding the hash-routing side ids, checked against the expert count as
     `CheckDsv4HashRouting` does;
   - the compressor plan inputs;
@@ -126,8 +133,9 @@ update this section as each slice lands):
   G4b is split into G4b1 (past-safe plan-shape/key contract, matching MQA
   reference width, focused primitive-lowering correctness) and G4b2 (fast
   patterns/default policy, structural parity and GPU execution). Its local
-  forms are complete in G4b2a; indexer/sparse banks remain G4b2b, and
-  output-A/products, mixed encodings and full policy remain G4b2c. G4c then
+  forms are complete in G4b2a and state banks in G4b2b1; the indexer
+  contract remains G4b2b2, and output-A/products, mixed encodings and full
+  policy remain G4b2c. G4c then
   binds the hash-routing IDs, compressor inputs and injection features and
   runs serving/state/quality/swap/1% controls; G4d deletes the M3 path. The
   active checkout is `.claude/worktrees/m36-g4b`; its assigned Spark copy
@@ -168,7 +176,7 @@ spark-b during the weight-handle review.
 
 The slice plan as designed before work began. Where it differs from what was
 built, docs/engine-components.md's "as built" text and the commits win.
-Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a–b and G3c1, G4a, G4b1 and G4b2a, N1.
+Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a–b and G3c1, G4a, G4b1, G4b2a and G4b2b1, N1.
 
 #### Wave 3: families, one at a time through the gate
 

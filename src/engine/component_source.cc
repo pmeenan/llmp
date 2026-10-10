@@ -62,6 +62,9 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
     for (const auto& in : layer) add(in);
   if (instances->final_norm) add(*instances->final_norm);
   if (instances->output) add(*instances->output);
+  base::Sha256 layout_hash;
+  layout_hash.Update(model::KeptLayoutId({}, std::span(source->o_.bindings.state, 1)));
+  source->layout_identity_ = layout_hash.Finish();
   return source;
 }
 
@@ -72,10 +75,64 @@ planner::PlanKey ComponentStepSource::KeyBase() const {
 std::vector<std::uint64_t> ComponentStepSource::ShapeParameters(
     const planner::StepShape& shape) const {
   std::vector<std::uint64_t> out;
+  if (!planner::Disabled(policy_, "state_bank_attention")) {
+    out.push_back(0x737461746562616eULL);  // state-bank layout identity, fixed four words
+    for (std::size_t word = 0; word < 4; ++word) {
+      std::uint64_t value = 0;
+      for (std::size_t byte = 0; byte < 8; ++byte)
+        value |= std::uint64_t{layout_identity_[word * 8 + byte]} << (byte * 8);
+      out.push_back(value);
+    }
+  }
   for (const auto& in : shaped_)
     for (const auto& segment : shape.segments)
       in.def->shape_parameters(in, segment.rows, segment.past, shape.read_align, out);
   return out;
+}
+
+planner::StateSpans ComponentStepSource::StateSpans(const planner::StepShape& shape,
+                                                    const kernels::Addresses& addresses) const {
+  return [this, &shape, &addresses](std::span<const planner::StateCellSlice> slices)
+             -> std::optional<planner::StateSpanFact> {
+    if (slices.empty()) return std::nullopt;
+    const auto owner = slices.front().ref.segment;
+    if (owner >= shape.segments.size()) return std::nullopt;
+    std::vector<model::StateSlice> requested;
+    for (const auto& slice : slices) {
+      if (slice.ref.stage != o_.stage || slice.ref.segment != owner) return std::nullopt;
+      requested.push_back({.layer = slice.ref.layer,
+                           .tensor = slice.ref.tensor,
+                           .first = slice.first,
+                           .cells = slice.cells});
+    }
+    const auto& layout = *o_.bindings.state;
+    auto bank = model::ContiguousStateSpan(layout, requested);
+    if (!bank) return std::nullopt;
+    // Addresses are of whole items. Prove one stage/slot base, not merely
+    // adjacency of two unrelated allocations. Missing measurement addresses
+    // are replaced together from this same immutable region by the lowering.
+    std::optional<std::uint64_t> base;
+    bool missing = false;
+    for (const auto& slice : slices) {
+      const auto item = std::ranges::find_if(layout.items, [&](const auto& item) {
+        return item.layer == slice.ref.layer && item.tensor == slice.ref.tensor;
+      });
+      if (item == layout.items.end()) return std::nullopt;
+      const auto address = addresses.state ? addresses.state(slice.ref) : 0;
+      if (address == 0) {
+        missing = true;
+        continue;
+      }
+      if (address < item->offset) return std::nullopt;
+      const auto candidate = address - item->offset;
+      std::uint64_t end = 0;
+      if (__builtin_add_overflow(candidate, layout.bytes, &end) || (base && *base != candidate))
+        return std::nullopt;
+      base = candidate;
+    }
+    if (missing && (!addresses.measuring() || base)) return std::nullopt;
+    return planner::StateSpanFact{.bank = *bank, .region_bytes = layout.bytes};
+  };
 }
 
 std::expected<std::vector<CommitBuffer>, std::string> ComponentStepSource::CommitBuffers(
@@ -126,6 +183,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
   for (const components::StepInput& input : step->inputs) {
     if (input.kind != components::InputKind::kCellPositions) staged.push_back(input.tensor);
   }
+  const auto state_spans = StateSpans(shape, addresses);
   auto plan = planner::Plan(step->graph.Clone(), *o_.backend.registry, o_.backend.device, policy_,
                             {.row_invariant = shape.row_invariant,
                              .capturable = true,
@@ -133,7 +191,8 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                              .on_stream = o_.backend.on_stream,
                              .written = o_.backend.written,
                              .within = o_.backend.within,
-                             .shape = &shape});
+                             .shape = &shape,
+                             .state_spans = state_spans});
   if (!plan) {
     return std::unexpected(std::format("planning a step ({}): {}",
                                        planner::PlanErrorName(plan.error().error),
@@ -143,7 +202,8 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                                   .step = *step,
                                   .shape = shape,
                                   .addresses = addresses,
-                                  .context = o_.bindings.state->context};
+                                  .context = o_.bindings.state->context,
+                                  .state_spans = state_spans};
   return o_.backend.lower(input);
 }
 

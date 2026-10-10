@@ -157,6 +157,39 @@ TEST(GgmlLowerDsv4Test, PlanKeysFollowCompressorDimensionsAndPreserveReuse) {
   EXPECT_TRUE(f.source->ShapeParameters({.stage = 2, .segments = {}}).empty());
 }
 
+TEST(GgmlLowerDsv4Test, StateBankLayoutIdentityChangesOnlyOptedInSourceKeys) {
+  Fixture f;
+  ASSERT_TRUE(f.Init());
+  auto separated = co::StageLayout(f.spec, 0, 65536, 512, 2 * 1024 * 1024);
+  ASSERT_TRUE(separated);
+  const pl::StepShape shape{
+      .segments = {{.rows = 7, .past = 127, .read_cells = 768, .outputs = 1}}};
+  for (const bool enabled : {false, true}) {
+    const auto source = [&](const md::StateLayoutDerived& layout) {
+      pl::Policy policy;
+      if (enabled) policy.enabled = {"state_bank_attention"};
+      return en::ComponentStepSource::Create(
+          {.spec = &f.spec,
+           .bindings = {.state = &layout},
+           .policy = policy,
+           .backend = {.registry = &f.registry,
+                       .lower = [](const kn::LowerInput&)
+                           -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
+                         return std::unexpected("unused by key proof");
+                       }}});
+    };
+    auto contiguous = source(f.layouts[0]);
+    auto gapped = source(*separated);
+    ASSERT_TRUE(contiguous);
+    ASSERT_TRUE(gapped);
+    EXPECT_EQ((*contiguous)->KeyBase(), (*gapped)->KeyBase());
+    EXPECT_EQ((*contiguous)->ShapeParameters(shape) == (*gapped)->ShapeParameters(shape), !enabled);
+    auto next = shape;
+    next.segments[0].past = 128;  // same compressor blocks and read widths
+    EXPECT_EQ((*contiguous)->ShapeParameters(shape), (*contiguous)->ShapeParameters(next));
+  }
+}
+
 TEST(GgmlLowerDsv4Test, CompressedReadsUseTheContractsPaddingAndHadamardMatchesProduction) {
   EXPECT_EQ(co::CompressedReadCells(1027, 4, 256), 256);
   EXPECT_EQ(co::CompressedReadCells(1028, 4, 256), 512);
@@ -199,6 +232,354 @@ kg::DeviceChoices Device() {
     return std::unexpected(kg::KernelFailure{.detail = "no quantized encoding"});
   };
   return d;
+}
+
+TEST(GgmlLowerDsv4Test, DirectBankFormulaRequiresProofAndF32OutputForNativeSelection) {
+  using llmp::format::Encoding;
+  auto registry = Registry();
+  const pl::StepShape shape{.segments = {{.rows = 2, .read_cells = 512, .outputs = 2}}};
+  const std::vector<std::pair<std::uint32_t, md::StateContract>> contracts{
+      {0,
+       {.tensors = {{.name = "raw", .cell_bytes = 512},
+                    {.name = "compressed", .cell_bytes = 512}}}}};
+  const auto layout = md::Layout(contracts, 512, 128);
+  ASSERT_TRUE(layout);
+  const pl::StateSpans proof =
+      [&](std::span<const pl::StateCellSlice> slices) -> std::optional<pl::StateSpanFact> {
+    std::vector<md::StateSlice> requested;
+    for (const auto& slice : slices) {
+      if (slice.ref.stage != 0 || slice.ref.segment != 0) return std::nullopt;
+      requested.push_back({.layer = slice.ref.layer,
+                           .tensor = slice.ref.tensor,
+                           .first = slice.first,
+                           .cells = slice.cells});
+    }
+    auto bank = md::ContiguousStateSpan(*layout, requested);
+    return bank ? std::optional<pl::StateSpanFact>{{.bank = *bank, .region_bytes = layout->bytes}}
+                : std::nullopt;
+  };
+  for (const auto encoding : {Encoding::kF32, Encoding::kF16, Encoding::kBF16}) {
+    for (const bool has_proof : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(encoding));
+      SCOPED_TRACE(has_proof);
+      ir::Builder b;
+      b.SetOwner(0);
+      const auto q = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({256, 2, 8})));
+      const auto raw = b.State(ir::Dense(Encoding::kF16, ir::ShapeOf({256, 512})), {.tensor = 0});
+      const auto compressed =
+          b.State(ir::Dense(Encoding::kF16, ir::ShapeOf({256, 512})), {.tensor = 1});
+      const auto av = b.View(raw, ir::ShapeOf({256, 1, 512}), {2, 512, 512, 262144}, 0);
+      const auto zv = b.View(compressed, ir::ShapeOf({256, 1, 256}), {2, 512, 512, 262144}, 0);
+      const auto mask = b.Fill(ir::ShapeOf({768, 32}), 0, Encoding::kF16);
+      const auto attended = b.Fused(ir::FusedKind::kStateBankAttention, std::array{q, av, zv, mask},
+                                    ir::AttnParams{.scale = 0.1F}, std::array{encoding})[0];
+      const auto output = b.Reshape(attended, ir::ShapeOf({2048, 2}));
+      b.Output(output);
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+      co::StepGraph step{
+          .graph = std::move(*graph),
+          .inputs = {{.tensor = q, .kind = co::InputKind::kFeatures, .segment = 0}},
+          .weights = {},
+          .state = {{.tensor = raw, .ref = {.tensor = 0}, .item = 0, .read = true},
+                    {.tensor = compressed, .ref = {.tensor = 1}, .item = 1, .read = true}},
+          .logits = output};
+      const auto facts = has_proof ? proof : pl::StateSpans{};
+      auto plan =
+          pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
+                   {.staged = std::vector{q},
+                    .written = kg::WrittenBytes,
+                    .shape = &shape,
+                    .state_spans = facts});
+      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+      const bool native = has_proof && encoding == Encoding::kF32;
+      EXPECT_EQ(plan->decomposed.empty(), native);
+      if (!native)
+        EXPECT_EQ(plan->decomposed, std::vector<std::string>{"fused.state_bank_attention"});
+      EXPECT_EQ(plan->graph.tensor(plan->graph.outputs()[0]).format.encoding, encoding);
+      EXPECT_EQ(std::ranges::count_if(plan->steps,
+                                      [&](const auto& selected) {
+                                        return registry.at(selected.implementation).name ==
+                                               "ggml.state_bank_attention";
+                                      }),
+                native ? 1 : 0);
+      auto lowered = kg::LowerStep({.plan = *plan,
+                                    .step = step,
+                                    .shape = shape,
+                                    .addresses = {},
+                                    .context = 512,
+                                    .state_spans = facts},
+                                   registry, Device());
+      ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+      EXPECT_EQ(std::ranges::any_of(lowered->nodes,
+                                    [](const auto* node) { return node->op == GGML_OP_CONCAT; }),
+                !native);
+      EXPECT_EQ(std::ranges::any_of(
+                    plan->graph.nodes(),
+                    [](const auto& node) { return node.key == ir::Primitive(ir::Op::kConvert); }),
+                encoding != Encoding::kF32);
+    }
+  }
+}
+
+TEST(GgmlLowerDsv4Test, StateBanksBindLayoutSpansAndRefusePointerOrFactDrift) {
+  using llmp::format::Encoding;
+  ir::Builder b;
+  b.SetOwner(0);
+  const auto half = [](std::initializer_list<std::uint64_t> ne) {
+    return ir::Dense(Encoding::kF16, ir::ShapeOf(ne));
+  };
+  const auto q = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({512, 2, 8})));
+  const auto raw = b.State(half({512, 512}), {.tensor = 0});
+  const auto compressed = b.State(half({512, 512}), {.tensor = 1});
+  const auto av = b.View(raw, ir::ShapeOf({512, 1, 512}), {2, 1024, 1024, 524288}, 0);
+  const auto zv = b.View(compressed, ir::ShapeOf({512, 1, 256}), {2, 1024, 1024, 524288}, 0);
+  const auto joined = b.Concat(av, zv, 2);
+  const auto mask = b.Fill(ir::ShapeOf({768, 32}), 0, Encoding::kF16);
+  const auto attn = b.Attention(q, b.Permute(joined, {0, 2, 1, 3}), b.Permute(joined, {0, 2, 1, 3}),
+                                mask, {}, {.scale = 0.1F, .accumulate = ir::Accumulate::kF32});
+  const auto output = b.Reshape(attn, ir::ShapeOf({4096, 2}));
+  b.Output(output);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+  co::StepGraph step{
+      .graph = std::move(*graph),
+      .inputs = {{.tensor = q, .kind = co::InputKind::kFeatures, .segment = 0}},
+      .weights = {},
+      .state = {{.tensor = raw, .ref = {.tensor = 0}, .item = 0, .read = true},
+                {.tensor = compressed, .ref = {.tensor = 1}, .item = 1, .read = true}},
+      .logits = output};
+  const pl::StepShape shape{.segments = {{.rows = 2, .read_cells = 512, .outputs = 2}}};
+  const std::vector<std::pair<std::uint32_t, md::StateContract>> contracts{
+      {0,
+       {.tensors = {{.name = "raw", .cell_bytes = 1024},
+                    {.name = "compressed", .cell_bytes = 1024}}}}};
+  const auto layout = md::Layout(contracts, 512, 128);
+  ASSERT_TRUE(layout);
+  const pl::StateSpans proof =
+      [&](std::span<const pl::StateCellSlice> slices) -> std::optional<pl::StateSpanFact> {
+    std::vector<md::StateSlice> requested;
+    for (const auto& slice : slices) {
+      if (slice.ref.stage != 0 || slice.ref.segment != 0) return std::nullopt;
+      requested.push_back({.layer = slice.ref.layer,
+                           .tensor = slice.ref.tensor,
+                           .first = slice.first,
+                           .cells = slice.cells});
+    }
+    auto bank = md::ContiguousStateSpan(*layout, requested);
+    return bank ? std::optional<pl::StateSpanFact>{{.bank = *bank, .region_bytes = layout->bytes}}
+                : std::nullopt;
+  };
+  auto registry = Registry();
+  pl::Policy policy;
+  policy.enabled = {"state_bank_attention"};
+  const auto plan =
+      pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, policy,
+               {.staged = std::vector{q},
+                .written = kg::WrittenBytes,
+                .shape = &shape,
+                .state_spans = proof});
+  ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+  ASSERT_EQ(std::ranges::count_if(
+                plan->applied,
+                [](const auto& applied) { return applied.pattern == "state_bank_attention"; }),
+            1);
+  for (const int mode : {0, 1, 2, 3}) {
+    SCOPED_TRACE(mode);  // measurement, bound, bad pointer, changing fact
+    constexpr std::uint64_t base = std::uint64_t{1} << 40;
+    kn::Addresses addresses{};
+    if (mode != 0) {
+      addresses.state = [&](const ir::StateRef& ref) {
+        return base + layout->items[ref.tensor].offset + (mode == 2 && ref.tensor == 1 ? 16 : 0);
+      };
+      addresses.activations = std::uint64_t{1} << 41;
+      addresses.activation_bytes = plan->placement.extent;
+    }
+    std::uint32_t queries = 0;
+    const pl::StateSpans current = [&](std::span<const pl::StateCellSlice> slices) {
+      auto fact = proof(slices);
+      if (fact && mode == 3 && slices.size() == 2 && queries++ != 0) ++fact->bank.range.offset;
+      return fact;
+    };
+    auto lower = kg::LowerStep({.plan = *plan,
+                                .step = step,
+                                .shape = shape,
+                                .addresses = addresses,
+                                .context = 512,
+                                .state_spans = current},
+                               registry, Device());
+    if (mode >= 2) {
+      ASSERT_FALSE(lower);
+      EXPECT_NE(lower.error().detail.find(mode == 2 ? "pointers" : "changed"), std::string::npos);
+      continue;
+    }
+    ASSERT_TRUE(lower) << (lower ? "" : lower.error().detail);
+    const auto attention = std::ranges::find_if(
+        lower->nodes, [](const auto* node) { return node->op == GGML_OP_FLASH_ATTN_EXT; });
+    ASSERT_NE(attention, lower->nodes.end());
+    EXPECT_TRUE(kg::CheckFlashAttnMma(*attention));
+    const auto address =
+        static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>((*attention)->src[1]->data));
+    if (mode == 1) EXPECT_EQ(address, base);
+    EXPECT_TRUE(std::ranges::any_of(lower->tensors, [&](const auto& use) {
+      return use.role == ir::Role::kState && use.address == address && use.bytes == 768 * 1024;
+    }));
+    EXPECT_FALSE(std::ranges::any_of(lower->nodes,
+                                     [](const auto* node) { return node->op == GGML_OP_CONCAT; }));
+  }
+  auto primitive =
+      pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, policy,
+               {.staged = std::vector{q}, .written = kg::WrittenBytes, .shape = &shape});
+  ASSERT_TRUE(primitive);
+  EXPECT_TRUE(primitive->applied.empty());
+  auto fallback = kg::LowerStep(
+      {.plan = *primitive, .step = step, .shape = shape, .addresses = {}, .context = 512}, registry,
+      Device());
+  ASSERT_TRUE(fallback) << (fallback ? "" : fallback.error().detail);
+  EXPECT_TRUE(std::ranges::any_of(fallback->nodes,
+                                  [](const auto* node) { return node->op == GGML_OP_CONCAT; }));
+}
+
+TEST(GgmlLowerDsv4Test, ComponentSourcesForwardBankLayoutFactsAndRejectMissingBindings) {
+  Fixture f;
+  ASSERT_TRUE(f.Init());
+  auto spec = f.spec;
+  spec.stages.resize(1);
+  spec.stages[0].taps.clear();
+  const auto separated = co::StageLayout(spec, 0, 65536, 512, 2 * 1024 * 1024);
+  ASSERT_TRUE(separated);
+  const pl::StepShape shape{
+      .segments = {{.slot = 3, .rows = 2, .past = 1027, .read_cells = 2048, .outputs = 2},
+                   {.slot = 8, .rows = 3, .past = 127, .read_cells = 2048, .outputs = 3}},
+      .read_align = 2048};
+  pl::Policy policy;
+  for (const auto& pattern : pl::Patterns())
+    if (pattern.name != "state_bank_attention") policy.disabled.emplace_back(pattern.name);
+  policy.enabled = {"state_bank_attention"};
+  pl::Canonicalize(policy);
+  // Measurement, valid binding, one missing item, one displaced item,
+  // all runtime bindings missing, and a layout containing alignment gaps.
+  for (const int mode : {0, 1, 2, 3, 4, 5}) {
+    SCOPED_TRACE(mode);
+    const auto& layout = mode == 5 ? *separated : f.layouts[0];
+    kn::Addresses addresses{};
+    if (mode != 0 && mode != 5) addresses.activations = std::uint64_t{1} << 42;
+    if (mode >= 1 && mode <= 3) {
+      addresses.state = [&](const ir::StateRef& ref) -> std::uint64_t {
+        if (ref.stage != 0 || ref.segment >= shape.segments.size()) return 0;
+        const auto item = std::ranges::find_if(layout.items, [&](const auto& item) {
+          return item.layer == ref.layer && item.tensor == ref.tensor;
+        });
+        if (item == layout.items.end()) return 0;
+        if (mode == 2 && item->contract.kind == md::StateKind::kCompressed) return 0;
+        const auto base =
+            (std::uint64_t{1} << 40) + (std::uint64_t{shape.segments[ref.segment].slot} << 32);
+        return base + item->offset +
+               (mode == 3 && item->contract.kind == md::StateKind::kCompressed ? 16 : 0);
+      };
+    }
+    bool reached = false;
+    auto source = en::ComponentStepSource::Create(
+        {.spec = &spec,
+         .bindings = {.tensors = f.target_source.tensors, .state = &layout},
+         .policy = policy,
+         .backend = {
+             .registry = &f.registry,
+             .device = {.device_class = "sm_121", .arch = 121},
+             .written = kg::WrittenBytes,
+             .lower = [&](const kn::LowerInput& in)
+                 -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
+               reached = true;
+               if (!in.state_spans) return std::unexpected("missing state-span callback");
+               std::optional<kg::LoweredStep> measured;
+               if (mode == 0) {
+                 auto lowered = kg::LowerStep(in, f.registry, Device());
+                 EXPECT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+                 if (!lowered) return std::unexpected(lowered.error().detail);
+                 measured.emplace(std::move(*lowered));
+               }
+               std::array<bool, 2> owners{};
+               std::size_t pairs = 0;
+               for (const auto& node : in.step.graph.nodes()) {
+                 if (node.key != ir::Primitive(ir::Op::kConcat)) continue;
+                 const auto slices = pl::StateBankSlices(in.step.graph, node.src[0], node.src[1]);
+                 if (!slices) continue;
+                 ++pairs;
+                 owners.at(slices->front().ref.segment) = true;
+                 const auto fact = in.state_spans(*slices);
+                 EXPECT_EQ(fact.has_value(), mode <= 1);
+                 if (fact) {
+                   const auto& raw = in.step.graph.tensor(node.src[0]);
+                   const auto& compressed = in.step.graph.tensor(node.src[1]);
+                   EXPECT_EQ(fact->region_bytes, layout.bytes);
+                   EXPECT_EQ(fact->bank.range.bytes, (raw.ne(2) + compressed.ne(2)) * raw.nb[2]);
+                   const std::array requested{md::StateSlice{.layer = slices->front().ref.layer,
+                                                             .tensor = slices->front().ref.tensor,
+                                                             .cells = slices->front().cells},
+                                              md::StateSlice{.layer = slices->back().ref.layer,
+                                                             .tensor = slices->back().ref.tensor,
+                                                             .cells = slices->back().cells}};
+                   const auto independently = md::ContiguousStateSpan(layout, requested);
+                   EXPECT_TRUE(independently);
+                   if (independently) {
+                     EXPECT_EQ(fact->bank.range.offset, independently->range.offset);
+                     EXPECT_EQ(fact->bank.range.bytes, independently->range.bytes);
+                   }
+                   const auto owner = slices->front().ref.segment;
+                   const auto used =
+                       md::UsedThrough(layout, shape.segments[owner].read_cells, shape.read_align);
+                   EXPECT_TRUE(used);
+                   if (used) {
+                     std::uint64_t covered = fact->bank.range.offset;
+                     for (const auto& range : *used) {
+                       if (range.offset <= covered && covered < range.offset + range.bytes)
+                         covered = range.offset + range.bytes;
+                       if (covered >= fact->bank.range.offset + fact->bank.range.bytes) break;
+                     }
+                     EXPECT_GE(covered, fact->bank.range.offset + fact->bank.range.bytes);
+                   }
+                   if (measured) {
+                     const auto root = in.step.graph.root(node.src[0]);
+                     const auto leaf = std::ranges::find_if(
+                         measured->leaves,
+                         [&](const auto& leaf) { return leaf.primitive == root; });
+                     EXPECT_NE(leaf, measured->leaves.end());
+                     if (leaf != measured->leaves.end()) {
+                       const auto address = static_cast<std::uint64_t>(
+                           reinterpret_cast<std::uintptr_t>(leaf->tensor->data));
+                       EXPECT_TRUE(std::ranges::any_of(measured->tensors, [&](const auto& use) {
+                         return use.role == ir::Role::kState && use.address == address &&
+                                use.bytes == fact->bank.range.bytes;
+                       }));
+                     }
+                   }
+                 }
+                 auto bad = *slices;
+                 bad[1].ref.segment ^= 1;
+                 EXPECT_FALSE(in.state_spans(bad));
+                 bad = *slices;
+                 ++bad[1].ref.stage;
+                 EXPECT_FALSE(in.state_spans(bad));
+                 bad = *slices;
+                 bad[0].ref.segment = bad[1].ref.segment = 2;
+                 EXPECT_FALSE(in.state_spans(bad));
+               }
+               EXPECT_GT(pairs, 0U);
+               EXPECT_TRUE(owners[0]);
+               EXPECT_TRUE(owners[1]);
+               EXPECT_EQ(std::ranges::count_if(in.plan.applied,
+                                               [](const auto& applied) {
+                                                 return applied.pattern == "state_bank_attention";
+                                               }),
+                         mode <= 1 ? pairs : 0U);
+               return std::unexpected("state-span callback checked");
+             }}});
+    ASSERT_TRUE(source) << (source ? "" : source.error());
+    const auto built = (*source)->Build(shape, addresses);
+    ASSERT_FALSE(built);
+    EXPECT_TRUE(reached) << built.error();
+    EXPECT_EQ(built.error(), "state-span callback checked");
+  }
 }
 
 TEST(GgmlLowerDsv4Test, PrimitiveTargetAndDraftStepsLowerWithTypedInputs) {

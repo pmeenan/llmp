@@ -35,6 +35,8 @@
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/validate_ext.h"
+#include "planner/pattern.h"
 #include "planner/plan.h"
 #include "providers/cuda/cuda_device_execution.h"
 
@@ -199,6 +201,43 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
     lowered.push_back(std::make_unique<kg::LoweredStep>(std::move(*result)));
     return lowered.back().get();
   }
+  kg::LoweredStep* LowerStateBanks(const co::StepGraph& step, const pl::StepShape& shape,
+                                   kn::Addresses addresses, const pl::StateSpans& facts,
+                                   bool enabled) {
+    pl::Policy policy;
+    for (const auto& pattern : pl::Patterns())
+      if (pattern.name != "state_bank_attention") policy.disabled.emplace_back(pattern.name);
+    if (enabled) policy.enabled = {"state_bank_attention"};
+    pl::Canonicalize(policy);
+    std::vector<ir::TensorId> staged;
+    for (const auto& input : step.inputs) staged.push_back(input.tensor);
+    auto plan =
+        pl::Plan(step.graph.Clone(), *registry, {.device_class = "sm_121", .arch = 121}, policy,
+                 {.staged = staged,
+                  .written = kg::WrittenBytes,
+                  .within = kg::WithinRoot,
+                  .shape = &shape,
+                  .state_spans = facts});
+    EXPECT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    if (!plan) return nullptr;
+    EXPECT_EQ(std::ranges::count_if(
+                  plan->applied,
+                  [](const auto& applied) { return applied.pattern == "state_bank_attention"; }),
+              enabled ? shape.segments.size() : 0U);
+    addresses.activations = Allocate(plan->placement.extent);
+    addresses.activation_bytes = plan->placement.extent;
+    auto result = kg::LowerStep({.plan = *plan,
+                                 .step = step,
+                                 .shape = shape,
+                                 .addresses = addresses,
+                                 .context = 512,
+                                 .state_spans = facts},
+                                *registry, kg::DeviceChoicesOf(*launch));
+    EXPECT_TRUE(result) << (result ? "" : result.error().detail);
+    if (!result) return nullptr;
+    lowered.push_back(std::make_unique<kg::LoweredStep>(std::move(*result)));
+    return lowered.back().get();
+  }
   ggml_tensor* Leaf(kg::LoweredStep& step, ir::TensorId id) {
     const auto it =
         std::ranges::find_if(step.leaves, [&](const auto& leaf) { return leaf.primitive == id; });
@@ -247,6 +286,195 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
   std::vector<std::unique_ptr<kg::TensorArena>> arenas;
   std::vector<std::unique_ptr<kg::LoweredStep>> lowered;
 };
+
+TEST_F(GgmlLowerDsv4Gpu, StateBanksMatchPrimitiveCopiesAndReplayChangedJoinedOperands) {
+  namespace md = llmp::model;
+  // Keep dense D256/D512 controls and exercise the existing D512 sparse
+  // compacted path at its ordinary 4096-cell floor (sparse_any stays off).
+  for (const auto [head, compressed_read] :
+       {std::pair<std::uint64_t, std::uint64_t>{256, 256}, {512, 256}, {512, 3584}}) {
+    const std::uint64_t compressed_capacity = compressed_read + 256;
+    const std::uint64_t cells = 512 + compressed_read;
+    const bool sparse = cells >= 4096;
+    for (const bool joined : {false, true}) {
+      SCOPED_TRACE(head);
+      SCOPED_TRACE(cells);
+      SCOPED_TRACE(joined);
+      const std::vector<std::pair<std::uint32_t, md::StateContract>> contracts{
+          {0,
+           {.tensors = {{.name = "prefix", .cell_bytes = 4},
+                        {.name = "raw", .cell_bytes = head * 2},
+                        {.name = "compressed",
+                         .cell_bytes = head * 2,
+                         .cells = md::CellRule::kFixed,
+                         .window_or_ratio = static_cast<std::uint32_t>(compressed_capacity)}}}}};
+      const auto layout = md::Layout(contracts, 512, 128);
+      ASSERT_TRUE(layout);
+      ASSERT_EQ(layout->items[1].offset, 2048U);  // inside an extent, after unrelated state
+      pl::StepShape shape{.segments = {{.rows = 1, .outputs = 0, .want_head = false}},
+                          .read_align = 2048};
+      if (joined) {
+        shape.segments[0].rows = 2;
+        shape.segments.push_back({.slot = 4, .rows = 3, .outputs = 0, .want_head = false});
+      }
+      std::vector<std::uint64_t> state_bases;
+      for (std::size_t owner = 0; owner < shape.segments.size(); ++owner)
+        state_bases.push_back(Allocate(layout->bytes));
+      const pl::StateSpans facts =
+          [&](std::span<const pl::StateCellSlice> slices) -> std::optional<pl::StateSpanFact> {
+        if (slices.empty()) return std::nullopt;
+        const auto owner = slices.front().ref.segment;
+        if (owner >= shape.segments.size()) return std::nullopt;
+        std::vector<md::StateSlice> requested;
+        for (const auto& slice : slices) {
+          if (slice.ref.stage != 0 || slice.ref.segment != owner) return std::nullopt;
+          requested.push_back({.layer = slice.ref.layer,
+                               .tensor = slice.ref.tensor,
+                               .first = slice.first,
+                               .cells = slice.cells});
+        }
+        const auto bank = md::ContiguousStateSpan(*layout, requested);
+        return bank ? std::optional<pl::StateSpanFact>{{.bank = *bank,
+                                                        .region_bytes = layout->bytes}}
+                    : std::nullopt;
+      };
+      kn::Addresses addresses{};
+      addresses.state = [&](const ir::StateRef& ref) {
+        return state_bases.at(ref.segment) + layout->items.at(ref.tensor).offset;
+      };
+      ir::Builder b;
+      const auto queries = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({head, 8, shape.rows()})));
+      const auto sinks = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({8})));
+      std::vector<co::StepInput> inputs{{.tensor = queries, .kind = co::InputKind::kFeatures},
+                                        {.tensor = sinks, .kind = co::InputKind::kFeatures}};
+      std::vector<co::StepState> state;
+      std::vector<ir::TensorId> masks;
+      std::uint64_t first = 0;
+      for (std::size_t owner = 0; owner < shape.segments.size(); ++owner) {
+        const auto segment = static_cast<std::uint8_t>(owner);
+        b.SetOwner(segment);
+        const auto rows = shape.segments[owner].rows;
+        const auto q =
+            b.View(queries, ir::ShapeOf({head, 8, rows}),
+                   {4, head * 4, head * 8 * 4, head * 8 * shape.rows() * 4}, first * head * 8 * 4);
+        const ir::StateRef raw_ref{.tensor = 1, .segment = segment};
+        const ir::StateRef comp_ref{.tensor = 2, .segment = segment};
+        const auto raw = b.State(ir::Dense(Encoding::kF16, ir::ShapeOf({head, 512})), raw_ref);
+        const auto compressed =
+            b.State(ir::Dense(Encoding::kF16, ir::ShapeOf({head, compressed_capacity})), comp_ref);
+        state.push_back({.tensor = raw, .ref = raw_ref, .item = 1, .read = true});
+        state.push_back({.tensor = compressed, .ref = comp_ref, .item = 2, .read = true});
+        const auto a =
+            b.View(raw, ir::ShapeOf({head, 1, 512}), {2, head * 2, head * 2, head * 1024}, 0);
+        const auto z = b.View(compressed, ir::ShapeOf({head, 1, compressed_read}),
+                              {2, head * 2, head * 2, head * compressed_capacity * 2}, 0);
+        const auto copied = b.Concat(a, z, 2);
+        const auto mask = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({cells, 32})));
+        masks.push_back(mask);
+        inputs.push_back({.tensor = mask, .kind = co::InputKind::kFeatures, .segment = segment});
+        b.Output(b.Attention(b.Permute(q, {0, 2, 1, 3}), b.Permute(copied, {0, 2, 1, 3}),
+                             b.Permute(copied, {0, 2, 1, 3}), mask, sinks,
+                             {.scale = 1.0F / std::sqrt(static_cast<float>(head)),
+                              .sinks = true,
+                              .accumulate = ir::Accumulate::kF32,
+                              .n_kv_max = 384}));
+        first += rows;
+      }
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+      const co::StepGraph step{
+          .graph = std::move(*graph), .inputs = inputs, .weights = {}, .state = state};
+      auto* primitive = LowerStateBanks(step, shape, addresses, facts, false);
+      auto* bank = LowerStateBanks(step, shape, addresses, facts, true);
+      ASSERT_NE(primitive, nullptr);
+      ASSERT_NE(bank, nullptr);
+      ASSERT_EQ(primitive->keep.size(), shape.segments.size());
+      ASSERT_EQ(bank->keep.size(), shape.segments.size());
+      EXPECT_EQ(std::ranges::count_if(primitive->nodes,
+                                      [](const auto* node) { return node->op == GGML_OP_CONCAT; }),
+                shape.segments.size());
+      EXPECT_FALSE(std::ranges::any_of(
+          bank->nodes, [](const auto* node) { return node->op == GGML_OP_CONCAT; }));
+      for (const auto* program : {primitive, bank}) {
+        std::size_t attention_steps = 0;
+        for (const auto& selected : program->plan.steps) {
+          if (selected.operation != ex::Operation::kFlashAttn) continue;
+          ++attention_steps;
+          ASSERT_EQ(selected.implementation, kg::kFlashAttnMmaName);
+          ASSERT_EQ(selected.nodes.size(), 1U);
+          const auto* node = selected.nodes.front();
+          const auto valid = kg::CheckFlashAttnMma(node);
+          ASSERT_TRUE(valid) << (valid ? "" : valid.error().detail);
+          EXPECT_EQ(node->op_params[kg::kFlashAttnSparseParam], 0);
+          // This is the exact planner used by the selected implementation's
+          // launch, not an inference from tensor dimensions alone.
+          const auto recipe = kg::PlanFlashAttnMma(*launch, node, false);
+          ASSERT_TRUE(recipe) << (recipe ? "" : recipe.error().detail);
+          EXPECT_EQ(recipe->sparse, sparse);
+          if (sparse) {
+            EXPECT_EQ(recipe->columns, 1);
+            EXPECT_GT(recipe->scratch, 0U);
+          }
+        }
+        EXPECT_EQ(attention_steps, shape.segments.size());
+      }
+      std::vector<std::vector<float>> initial;
+      for (const int shift : {0, 1}) {
+        SCOPED_TRACE(shift);
+        for (auto* program : {primitive, bank}) {
+          Upload(Leaf(*program, queries),
+                 Values(head * 8 * shape.rows(), shift == 0 ? 1.0F : -0.5F));
+          Upload(Leaf(*program, sinks), Values(8, shift == 0 ? 0.25F : 0.75F));
+          for (const auto& leaf : state) {
+            const auto values = Values(head * step.graph.tensor(leaf.tensor).ne(1),
+                                       0.5F + static_cast<float>(shift + leaf.ref.segment));
+            std::vector<ggml_fp16_t> half(values.size());
+            ggml_fp32_to_fp16_row(values.data(), half.data(),
+                                  static_cast<std::int64_t>(half.size()));
+            Upload(Leaf(*program, leaf.tensor), half);
+          }
+          for (std::size_t owner = 0; owner < masks.size(); ++owner) {
+            std::vector<float> mask(cells * 32, -std::numeric_limits<float>::infinity());
+            for (std::size_t row = 0; row < shape.segments[owner].rows; ++row) {
+              std::size_t visible = 0;
+              for (std::size_t cell = 0; cell < cells; ++cell) {
+                // Sparse cases wrap the selected prefix across the far end
+                // of the compressed bank, including after capture restaging.
+                const auto offset = sparse ? row * 11 + static_cast<std::size_t>(shift) * 37 : 0;
+                if ((cell < 128 && (cell + row + static_cast<std::size_t>(shift)) % 3 != 0) ||
+                    (cell >= 512 && (cell - 512 + offset) % compressed_read <
+                                        32 * (row + 1 + owner + static_cast<std::size_t>(shift)))) {
+                  mask[row * cells + cell] = 0;
+                  ++visible;
+                }
+              }
+              ASSERT_LE(visible, 384U);  // the original n_kv_max promise
+            }
+            std::vector<ggml_fp16_t> half(mask.size());
+            ggml_fp32_to_fp16_row(mask.data(), half.data(), static_cast<std::int64_t>(half.size()));
+            Upload(Leaf(*program, masks[owner]), half);
+          }
+        }
+        RunAndReplay(*primitive);
+        RunAndReplay(*bank);
+        for (std::size_t owner = 0; owner < shape.segments.size(); ++owner) {
+          const auto expected = Read(primitive->keep[owner]);
+          const auto actual = Read(bank->keep[owner]);
+          ASSERT_EQ(actual.size(), expected.size());
+          for (std::size_t i = 0; i < actual.size(); ++i)
+            ASSERT_EQ(std::bit_cast<std::uint32_t>(actual[i]),
+                      std::bit_cast<std::uint32_t>(expected[i]));
+          if (shift == 0)
+            initial.push_back(actual);
+          else
+            EXPECT_NE(actual, initial[owner]);
+        }
+      }
+      EXPECT_EQ(captures.count(primitive), 1U);
+      EXPECT_EQ(captures.count(bank), 1U);
+    }
+  }
+}
 
 TEST_F(GgmlLowerDsv4Gpu, QHeadsMatchExistingHelperAndReplayWithNewPositions) {
   std::map<std::int32_t, std::vector<float>> one_chunk;

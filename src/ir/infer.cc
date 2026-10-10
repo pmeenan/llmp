@@ -336,6 +336,8 @@ std::size_t ParamSize(OpKey key) {
         return sizeof(NormRopeParams);
       case FusedKind::kDsv4Compress:
         return sizeof(CompressorParams);
+      case FusedKind::kStateBankAttention:
+        return sizeof(AttnParams);
       case FusedKind::kDsv4HcPre:
         return sizeof(SinkhornPreParams);
       case FusedKind::kRopeStore:
@@ -1378,6 +1380,11 @@ Out InferFused(const Ctx& c) {
   }
   if (c.key().fused == FusedKind::kQsaPool) {
     LLMP_TRY(CheckRope(c, c.params<QsaPoolParams>().rope, 8));
+  }
+  if (c.key().fused == FusedKind::kStateBankAttention) {
+    LLMP_TRY(Bool(c, 16));
+    LLMP_TRY(Bool(c, 18));
+    LLMP_TRY(Zero(c, 19, 1));
   }
   if (c.key().fused == FusedKind::kDsv4Compress) {
     LLMP_TRY(Bool(c, 4));

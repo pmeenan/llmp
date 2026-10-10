@@ -295,6 +295,17 @@ nonfinite-value probes cover the helper and primitive fallback. Default
 fast-policy, whole-model parity and runtime migration remain G4b2b/G4b2c
 and G4c work.
 
+G4b2b1's opt-in state-bank attention has an ordinary concatenation and
+Attention fallback. Only the native zero-copy recipe requires a layout
+span fact; a directly authored fused node without that proof decomposes.
+Its GGML recipe requires F32 output, packed F16 raw state and a compressed
+prefix in the same declared region, D256/D512, more than four query heads,
+a 256-cell multiple, no softcap or bias, and no sparse-any flag. Actual
+bound strides, addresses and launch limits are checked again. Requested
+F16/BF16 results use the fallback's explicit conversion. The source layout
+and state-backing rules do not change, and the indexer's existing
+arithmetic, TopK and masks remain in the graph.
+
 **What closing the gaps takes**, as the rule applies to new work from
 now on: an unfused composition for the model-specific operations
 (hyper-connection mixing and Sinkhorn, the lightning indexer, the gated

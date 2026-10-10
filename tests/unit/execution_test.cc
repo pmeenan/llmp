@@ -318,6 +318,20 @@ std::vector<std::string> Names(const Registry& registry, const std::vector<std::
   return names;
 }
 
+TEST(CapabilityTest, AStateSpanRequirementIsExplicitInSelectionAndIdentity) {
+  const auto key = ir::Fused(ir::FusedKind::kStateBankAttention);
+  auto implementation = Capable("fake.bank", {.op = key});
+  const auto before = ex::IdentityOf(implementation);
+  implementation.capability->needs_state_span = true;
+  EXPECT_NE(before, ex::IdentityOf(implementation));
+  auto made = Registry::Create({implementation});
+  ASSERT_TRUE(made);
+  ex::CapabilityQuery query{.op = key};
+  EXPECT_TRUE(ex::Candidates(*made, query).empty());
+  query.state_span = true;
+  EXPECT_EQ(Names(*made, ex::Candidates(*made, query)), std::vector<std::string>{"fake.bank"});
+}
+
 TEST(CapabilityTest, CandidatesFollowTheLadder) {
   const auto registry = Registry::Create(Ladder()).value();
   const std::array weights = {

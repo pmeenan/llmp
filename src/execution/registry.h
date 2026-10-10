@@ -219,6 +219,10 @@ struct Capability {
   // its module names otherwise): what its lowering compares its launches
   // against. Empty: its name's.
   std::span<const std::string_view> launches{};
+  // Its typed operation's state operands require a proven contiguous
+  // span. A shape-only query has no such fact. Other implementations of
+  // the same formula can omit this requirement and compute its copies.
+  bool needs_state_span = false;
 };
 
 // An output's format in a capability query: the operand at this index
@@ -289,6 +293,9 @@ struct CapabilityQuery {
   // kernel takes only some of them: a rotation's mode and dimensions, an
   // attention's softcap. The rules above never read them.
   std::span<const std::byte> params{};
+  // Derived from actual immutable state layout and binding identity by
+  // the planner. Never inferred from operand shapes or adjacent numbers.
+  bool state_span = false;
 };
 
 // One compiled implementation of an operation, as its module declares it.

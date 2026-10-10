@@ -226,6 +226,16 @@ class Lowering {
   // Leaves with their binding: weights and state by reference.
   std::vector<std::pair<ggml_tensor*, const co::StepWeight*>> weight_leaves_;
   std::vector<std::pair<ggml_tensor*, const co::StepState*>> state_leaves_;
+  struct StateBank {
+    ggml_tensor* tensor = nullptr;
+    std::array<ir::StateRef, 2> refs{};
+    std::array<ggml_tensor*, 2> roots{};
+    std::array<planner::StateCellSlice, 2> slices{};
+    planner::StateSpanFact fact{};
+    std::uint64_t raw_bytes = 0;
+  };
+  std::vector<StateBank> state_banks_;
+  std::set<const ggml_tensor*> bank_attentions_;
   // Host masks and staged inputs: the slot each takes.
   std::vector<std::pair<ggml_tensor*, InputSlot>> input_leaves_;
   // A fused implementation's intermediates, which it never writes, and the
@@ -1572,6 +1582,25 @@ std::expected<void, KernelFailure> Lowering::Bind() {
     leaf += Round(ggml_nbytes(t), 256) + 256;
     return at;
   };
+  // Span-bearing owners use their actual layout offsets even in the
+  // measurement pass. Independent per-leaf placeholders cannot prove a bank.
+  using Owner = std::pair<std::uint16_t, std::uint8_t>;
+  std::map<Owner, std::pair<std::uint64_t, std::uint64_t>> state_regions;
+  for (const auto& bank : state_banks_) {
+    const Owner owner{bank.refs[0].stage, bank.refs[0].segment};
+    const auto found = state_regions.find(owner);
+    if (found != state_regions.end()) {
+      if (found->second.second != bank.fact.region_bytes)
+        return Refused("state-bank facts disagree about their owner region");
+      continue;
+    }
+    std::uint64_t next = 0;
+    if (__builtin_add_overflow(leaf, bank.fact.region_bytes, &next) ||
+        __builtin_add_overflow(next, std::uint64_t{511}, &next) || next >= kDistinct)
+      return Refused("a state-bank measurement region overflows its placeholder range");
+    state_regions.emplace(owner, std::pair{leaf, bank.fact.region_bytes});
+    leaf = next / 256 * 256;
+  }
   // A measurement binds placeholders where it has no address; a program
   // that runs is refused one (a weight or state the caller does not bind).
   for (const auto& [t, w] : weight_leaves_) {
@@ -1583,7 +1612,43 @@ std::expected<void, KernelFailure> Lowering::Bind() {
   for (const auto& [t, s] : state_leaves_) {
     const std::uint64_t address = addresses.state ? addresses.state(s->ref) : 0;
     if (address == 0 && !addresses.measuring()) return Refused("a state tensor has no address");
-    TensorArena::Bind(t, address != 0 ? address : placeholder(t));
+    std::uint64_t bound = address;
+    if (bound == 0) {
+      const auto region = state_regions.find(Owner{s->ref.stage, s->ref.segment});
+      if (region != state_regions.end() && !s->borrowed && !s->tap) {
+        const std::array query{
+            planner::StateCellSlice{.ref = s->ref, .cells = static_cast<std::uint64_t>(t->ne[1])}};
+        const auto fact = in_.state_spans(query);
+        if (!fact || fact->region_bytes != region->second.second ||
+            fact->bank.range.bytes != ggml_nbytes(t) ||
+            fact->bank.range.offset > fact->region_bytes ||
+            fact->bank.range.bytes > fact->region_bytes - fact->bank.range.offset)
+          return Refused("a state leaf lacks its measurement layout interval");
+        bound = region->second.first + fact->bank.range.offset;
+      } else {
+        bound = placeholder(t);
+      }
+    }
+    TensorArena::Bind(t, bound);
+  }
+  for (const auto& bank : state_banks_) {
+    const auto again = in_.state_spans(bank.slices);
+    if (!again || again->region_bytes != bank.fact.region_bytes ||
+        again->bank.range.offset != bank.fact.bank.range.offset ||
+        again->bank.range.bytes != bank.fact.bank.range.bytes ||
+        again->bank.encoding != bank.fact.bank.encoding ||
+        again->bank.cell_bytes != bank.fact.bank.cell_bytes)
+      return Refused("a state-bank fact changed during binding");
+    const auto raw =
+        static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(bank.roots[0]->data));
+    const auto compressed =
+        static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(bank.roots[1]->data));
+    std::uint64_t expected = 0, end = 0;
+    if (raw == 0 || raw < bank.fact.bank.range.offset ||
+        __builtin_add_overflow(raw, bank.raw_bytes, &expected) || expected != compressed ||
+        __builtin_add_overflow(raw - bank.fact.bank.range.offset, bank.fact.region_bytes, &end))
+      return Refused("bound state-bank pointers do not share the declared base and offsets");
+    TensorArena::Bind(bank.tensor, raw);
   }
   for (const auto& [t, w, role] : part_leaves_) {
     const std::uint64_t address = addresses.weight ? addresses.weight(w->ref, role) : 0;
@@ -1911,6 +1976,7 @@ bool Lowering::Direct(NodeId id) const {
   const ir::Node& n = p_.node(id);
   if (n.key.op != Op::kFused) return false;
   switch (n.key.fused) {
+    case FusedKind::kStateBankAttention:
     case FusedKind::kDsv4QHead:
     case FusedKind::kDsv4Compress:
     case FusedKind::kDsv4HcPre:
@@ -2228,6 +2294,58 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
     }
   }
   switch (n.key.fused) {
+    case FusedKind::kStateBankAttention: {
+      const auto p = n.Params<ir::AttnParams>();
+      const auto slices = planner::StateBankSlices(p_, n.src[1], n.src[2]);
+      if (!slices || !in_.state_spans || p.sparse_any ||
+          p.n_kv_max > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
+        return Refused("a state-bank attention without a supported span proof");
+      const auto fact = in_.state_spans(*slices);
+      const std::uint64_t raw_bytes = desc(1).ne(2) * desc(1).nb[2];
+      const std::uint64_t bytes = raw_bytes + desc(2).ne(2) * desc(2).nb[2];
+      if (!fact || fact->bank.encoding != Encoding::kF16 ||
+          fact->bank.cell_bytes != desc(1).nb[2] || fact->bank.range.bytes != bytes ||
+          fact->bank.range.offset > fact->region_bytes ||
+          bytes > fact->region_bytes - fact->bank.range.offset)
+        return Refused("a state-bank span differs from its exact operands");
+      std::array<ggml_tensor*, 2> roots{};
+      for (std::size_t i = 0; i < 2; ++i) {
+        const auto root = p_.root(n.src[1 + i]);
+        const auto prim = primitive_.at(root.v);
+        const auto item = state_.find(prim.v);
+        if (!prim.valid() || item == state_.end() || item->second->borrowed || item->second->tap ||
+            item->second->ref != (*slices)[i].ref || (*slices)[i].ref.stage != in_.shape.stage ||
+            (*slices)[i].ref.segment >= in_.shape.segments.size())
+          return Refused("a state-bank operand is not this owner's owned StepState");
+        roots[i] = made_.at(root.v);
+      }
+      // Same descriptor and strides as Concat -> Permute, with the copy
+      // replaced by a bound state span. Neither the mask nor any Attention
+      // parameter or device choice changes.
+      ggml_tensor* bank =
+          ggml_new_tensor_4d(c_, GGML_TYPE_F16, src(1)->ne[0], 1, src(1)->ne[2] + src(2)->ne[2], 1);
+      state_tensors_.insert(bank);
+      state_banks_.push_back({.tensor = bank,
+                              .refs = {(*slices)[0].ref, (*slices)[1].ref},
+                              .roots = roots,
+                              .slices = *slices,
+                              .fact = *fact,
+                              .raw_bytes = raw_bytes});
+      ggml_tensor* keys = ggml_permute(c_, bank, 0, 2, 1, 3);
+      ggml_tensor* values = ggml_permute(c_, bank, 0, 2, 1, 3);
+      ggml_tensor* out =
+          ggml_flash_attn_ext(c_, src(0), keys, values, src(3), p.scale, p.max_bias, p.softcap);
+      if (p.accumulate == ir::Accumulate::kF32) ggml_prec_set_acc(out, GGML_PREC_F32);
+      if (src(4) != nullptr) ggml_flash_attn_ext_add_sinks(out, src(4));
+      if (p.n_kv_max != 0)
+        ggml_flash_attn_ext_set_n_kv_max(out, static_cast<std::int32_t>(p.n_kv_max));
+      if (auto match = Matches(p_.tensor(n.out[0]), out, "a state-bank attention"); !match)
+        return std::unexpected(match.error());
+      bank_attentions_.insert(out);
+      for (ggml_tensor* t : {bank, keys, values, out}) Node(t, id);
+      set(0, out);
+      return {};
+    }
     case FusedKind::kDsv4QHead: {
       const auto p = n.Params<ir::NormRopeParams>();
       const auto& r = p.rope;
@@ -2721,6 +2839,9 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   }
   if (auto saved = MakeSaves(); !saved) return std::unexpected(saved.error());
   if (auto bound = Bind(); !bound) return std::unexpected(bound.error());
+  for (const auto* node : bank_attentions_) {
+    if (auto valid = CheckFlashAttnMma(node); !valid) return std::unexpected(valid.error());
+  }
   if (auto compared = PlanAndCompare(); !compared) return std::unexpected(compared.error());
   // Capabilities describe shape/format metadata. The actual local fast
   // launches additionally prove their bound strides, addresses and aliasing.

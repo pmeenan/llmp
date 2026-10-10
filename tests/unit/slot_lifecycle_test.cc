@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "engine/coverage.h"
 #include "engine/paged_node.h"
 #include "engine/runner_memory.h"
 #include "engine/support.h"
@@ -1119,6 +1120,82 @@ TEST_F(GemmaFootprintTest, ARestoredFootprintIsOrderedWholeExtentsAtTheRingAndCo
     EXPECT_FALSE(slots().ValidateFootprint(kGemmaContext + 1, footprint));  // past the context
   }
   EXPECT_TRUE(slots().ValidateFootprint(0, {}));
+}
+
+// A raw/compressed bank begins inside an extent and crosses its boundary.
+// A fact proves its virtual layout; only admission proves live backing.
+class StateBankFootprintTest : public SlotLifecycleTest {
+ protected:
+  std::vector<en::StageState> MakeStages() const override {
+    const std::vector<std::pair<std::uint32_t, md::StateContract>> layers = {
+        {0,
+         {.tensors = {{.name = "prefix",
+                       .cell_bytes = 3 * kExtent / 4,
+                       .cells = md::CellRule::kFixed,
+                       .window_or_ratio = 1},
+                      {.name = "raw",
+                       .kind = md::StateKind::kRing,
+                       .cell_bytes = 1024,
+                       .cells = md::CellRule::kRing,
+                       .window_or_ratio = 128,
+                       .ring_reads_whole = true},
+                      {.name = "compressed",
+                       .kind = md::StateKind::kCompressed,
+                       .cell_bytes = 1024,
+                       .cells = md::CellRule::kPerBlock,
+                       .window_or_ratio = 4,
+                       .basis = md::BlockBasis::kPositions,
+                       .dummy_last = true}}}}};
+    return {{.name = "target", .layout = md::Layout(layers, 65536, 512).value()}};
+  }
+};
+
+TEST_F(StateBankFootprintTest, WholeSpanCoverageRequiresOnlyTheAdmittedExtents) {
+  namespace kn = llmp::kernels;
+  const auto layout = MakeStages().front().layout;
+  ASSERT_EQ(layout.items[1].offset, 3 * kExtent / 4);
+  const std::array slices{md::StateSlice{.tensor = 1, .cells = layout.items[1].cells},
+                          md::StateSlice{.tensor = 2, .cells = 512}};
+  const auto bank = md::ContiguousStateSpan(layout, slices);
+  ASSERT_TRUE(bank);
+  Select({0});
+  const auto base = slots().live(0, 0).base(0);
+  const std::array use{kn::TensorUse{.address = base + bank->range.offset,
+                                     .bytes = bank->range.bytes,
+                                     .role = llmp::ir::Role::kState}};
+  en::Coverage before;
+  en::CheckCoverage(node_, 0, use, "unbacked bank ", before);
+  EXPECT_EQ(before.violations, 0U);  // state coverage checks its virtual reservation
+  EXPECT_FALSE(node_.Covered(use[0].address, use[0].bytes, 0, true));
+  ASSERT_TRUE(slots().ReserveStateThrough(0, 2048, 2048));
+  ASSERT_TRUE(slots().SetPositions(0, 2048));
+  // The bank intersects extents 0 and 1; the last dummy is in extent 9.
+  // The rest of the virtual cache remains unbacked.
+  EXPECT_EQ(slots().live(0, 0).extents().size(), 3U);
+  en::Coverage admitted;
+  en::CheckCoverage(node_, 0, use, "admitted bank ", admitted);
+  EXPECT_EQ(admitted.violations, 0U) << admitted.first_violation;
+  EXPECT_EQ(node_.Covered(use[0].address, use[0].bytes, 0, true),
+            llmp::catalog::MemoryClass::kLiveState);
+  const std::array ranges{
+      Range{.region = 0, .offset = bank->range.offset, .bytes = bank->range.bytes}};
+  Fill(0, ranges, 0x7E);
+  EXPECT_TRUE(All(0, ranges, 0x7E));
+  // A wider prefix is physically contiguous but reaches absent extent 2.
+  // The resident-coverage audit rejects it despite a valid layout fact.
+  // The ordinary state coverage check still recognizes its reservation.
+  auto wider = slices;
+  wider[1].cells = 2048;
+  const auto outside = md::ContiguousStateSpan(layout, wider);
+  ASSERT_TRUE(outside);
+  const std::array absent{kn::TensorUse{.address = base + outside->range.offset,
+                                        .bytes = outside->range.bytes,
+                                        .role = llmp::ir::Role::kState}};
+  en::Coverage rejected;
+  en::CheckCoverage(node_, 0, absent, "unadmitted bank ", rejected);
+  EXPECT_EQ(rejected.violations, 0U);
+  EXPECT_FALSE(node_.Covered(absent[0].address, absent[0].bytes, 0, true));
+  EXPECT_EQ(slots().live(0, 0).extents().size(), 3U);
 }
 
 class LowCapacitySlotTest : public SlotLifecycleTest {

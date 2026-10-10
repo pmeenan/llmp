@@ -1089,11 +1089,54 @@ checks bound both the channel and block grids.
 
 These local forms have structural checks over target and draft fragments,
 scalar definitions, and GPU operand comparisons against their existing
-helpers, including capture replay and unequal owner carries. Default policy,
-whole-artifact numerical parity and performance remain open. G4b2b ports
-`dsv4_lid_topk` and `dsv4_sparse_attention`; G4b2c ports output-A and the
-product policies and establishes whole-artifact parity. The engine's binding of the hash rows and injection's features,
-and its complete setup and state-lifecycle integration, are G4c's. Expert
+helpers, including capture replay and unequal owner carries.
+
+G4b2b1 adds `state_bank_attention`, also disabled by default. It removes
+only a whole raw F16 cache plus compressed-prefix concatenation and its
+K/V permutations. The original query view, IndexScore, TopK, masks, sinks
+and every Attention parameter remain unchanged. A retained copy or view,
+an intervening write through either state root, a partial raw prefix or an
+alignment gap keeps the primitive copy. Query views of joined projections
+retain their exact offsets and strides; both banks belong to one owner,
+stage and layer.
+
+`model::ContiguousStateSpan` derives adjacency from the actual state layout
+and rejects overlapping allocations, borrowed items, gaps and overflow.
+`PlanOptions::state_spans` and the lowering receive the same immutable
+facts. With this opt-in enabled, the component source adds its exact
+layout identity to the plan key and checks supplied item addresses share
+the declared region base. Lowering independently checks the bound virtual
+addresses and reports the entire bank interval as state use. It changes
+neither layout alignment nor backing: those reads must fit the existing
+`UsedThrough` closure. A native recipe declares `needs_state_span` in its
+capability and identity; queries without proof cannot select it. The typed
+formula still has its ordinary Concat/Permute/Attention decomposition,
+including requested F16/BF16 output conversion; the native recipe returns
+F32 and retains the existing flash-attention recipe and parameters.
+Structural checks lower the target's CSA/HCA banks with unequal owners and
+2,048-cell raw alignment. GPU operand tests at D256/D512 compare the bound
+span bit for bit with the primitive copy, including nonzero layout offsets
+and persistent capture replay after query, mask and state changes.
+
+The Lid indexer transfer remains G4b2b2. Hiding TopK IDs behind the final
+mask does not establish equivalence of the selected cells. For example,
+with one visible cell, top-1 and masked scores `[NaN, -Inf]`, the scalar
+TopK definition selects the unseen `-Inf` cell and the causal mask leaves
+none selected; a helper searching only visible cells selects cell zero.
+The visible NaN can arise from two heads weighted +1 and -1 whose positive
+dot products are both infinite. Finite rounding also needs an explicit
+oracle: a scalar query `[1.0001f, 1.0f]` with keys `[0,1]` and `[1,0]`
+selects cell one, while rounding the query to F16 ties both at one and a
+lower-index tie rule selects cell zero. This latter witness compares
+scalar policies, not measured CUDA recipes: the existing native IndexScore
+also rounds queries to F16. No Lid capability or changed TopK semantics
+is introduced by the bank form.
+
+Default policy, whole-artifact numerical parity and performance remain
+open. G4b2c ports output-A and the product policies and establishes
+whole-artifact parity after G4b2b2. The engine's binding of the hash rows
+and injection's features, and its complete setup and state-lifecycle
+integration, are G4c's. Expert
 parallelism with as many experts as devices (`partition.cc`) is not
 reachable for DeepSeek on two Sparks (256 experts) and is left as it is.
 

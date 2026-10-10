@@ -259,6 +259,61 @@ std::expected<StateLayoutDerived, std::string> Layout(
   return s;
 }
 
+std::optional<StateBankSpan> ContiguousStateSpan(const StateLayoutDerived& layout,
+                                                 std::span<const StateSlice> slices) {
+  if (!Valid(layout) || slices.empty()) return std::nullopt;
+  StateBankSpan bank;
+  std::uint64_t end = 0;
+  for (std::size_t i = 0; i < slices.size(); ++i) {
+    const auto& slice = slices[i];
+    if (slice.cells == 0 || slice.layer != slices.front().layer) return std::nullopt;
+    for (std::size_t j = 0; j < i; ++j) {
+      if (slices[j].tensor == slice.tensor) return std::nullopt;
+    }
+    if (std::ranges::any_of(layout.borrowed, [&](const auto& other) {
+          return other.layer == slice.layer && other.tensor == slice.tensor;
+        }))
+      return std::nullopt;
+    const Item* item = nullptr;
+    for (const auto& candidate : layout.items) {
+      if (candidate.layer != slice.layer || candidate.tensor != slice.tensor) continue;
+      if (item != nullptr) return std::nullopt;
+      item = &candidate;
+    }
+    if (item == nullptr || item->contract.borrowed_from_target || Invalid(item->contract) ||
+        slice.first > item->cells || slice.cells > item->cells - slice.first) {
+      return std::nullopt;
+    }
+    const auto size = Mul(item->cells, item->contract.cell_bytes);
+    const auto item_end = Add(item->offset, item->bytes);
+    if (!size || *size != item->bytes || !item_end || *item_end > layout.bytes) return std::nullopt;
+    // A short slice must not conceal overlapping owned allocations. Distinct
+    // StateRefs are independent mutation roots only when their full items are.
+    for (const auto& other : layout.items) {
+      const auto other_end = Add(other.offset, other.bytes);
+      if (!other_end || *other_end > layout.bytes) return std::nullopt;
+      if (&other != item && other.offset < *item_end && item->offset < *other_end)
+        return std::nullopt;
+    }
+    const auto delta = Mul(slice.first, item->contract.cell_bytes);
+    const auto bytes = Mul(slice.cells, item->contract.cell_bytes);
+    const auto start = delta ? Add(item->offset, *delta) : std::nullopt;
+    const auto next = start && bytes ? Add(*start, *bytes) : std::nullopt;
+    if (!next || *next > *item_end) return std::nullopt;
+    if (i == 0) {
+      bank.range.offset = *start;
+      bank.encoding = item->contract.encoding;
+      bank.cell_bytes = item->contract.cell_bytes;
+    } else if (*start != end || item->contract.encoding != bank.encoding ||
+               item->contract.cell_bytes != bank.cell_bytes) {
+      return std::nullopt;
+    }
+    end = *next;
+  }
+  bank.range.bytes = end - bank.range.offset;
+  return bank;
+}
+
 const StateLayoutDerived::Item* BorrowedItem(const StateLayoutDerived& target,
                                              const StateLayoutDerived::Borrowed& borrowed) {
   for (const Item& item : target.items) {
@@ -367,9 +422,10 @@ std::expected<bool, std::string> Saves(const Item& item, VerifyScope scope) {
                                    item.layer, t.name));
       }
       if (t.partial_blocks) {
-        return Refused(std::format(
-            "a verify writes layer {} state {}'s block before it completes: it cannot truncate",
-            item.layer, t.name));
+        return Refused(
+            std::format("a verify writes layer {} state {}'s block "
+                        "before it completes: it cannot truncate",
+                        item.layer, t.name));
       }
       return false;  // never read past the kept prefix
     case Rollback::kCommit:
@@ -389,17 +445,19 @@ std::expected<bool, std::string> Saves(const Item& item, VerifyScope scope) {
                                    item.layer, t.name, t.cell_bytes));
       }
       if (t.cells == CellRule::kFixed && !scope.commits) {
-        return Refused(std::format(
-            "a verify rewrites layer {} state {} whole, and no commit rebuilds its kept rows",
-            item.layer, t.name));
+        return Refused(
+            std::format("a verify rewrites layer {} state {} whole, "
+                        "and no commit rebuilds its kept rows",
+                        item.layer, t.name));
       }
       // A partly written block restored holds none of the kept rows' part
       // either: the block they end in is the commit's to rebuild.
       if (t.partial_blocks && !scope.commits) {
-        return Refused(std::format(
-            "a verify writes layer {} state {}'s blocks before they complete, and no commit "
-            "rebuilds the kept rows' part",
-            item.layer, t.name));
+        return Refused(
+            std::format("a verify writes layer {} state {}'s blocks "
+                        "before they complete, and no commit "
+                        "rebuilds the kept rows' part",
+                        item.layer, t.name));
       }
       return true;
   }

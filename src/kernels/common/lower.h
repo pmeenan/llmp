@@ -39,6 +39,7 @@ struct LowerInput {
   const planner::StepShape& shape;
   const Addresses& addresses;
   std::uint32_t context = 0;
+  planner::StateSpans state_spans{};
 };
 
 using LowerFunction =
