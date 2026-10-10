@@ -64,8 +64,8 @@ each lands):
   G2c section, which includes the 4-row verify's bit identity with M3 for
   both profiles.
 - **G2d: delete the Gemma 4 M3 code.** Mostly done: the work is on the
-  local branch `m36-g2d-wip`, one WIP commit on top of the G2c commit,
-  uncommitted on `main`. Its builder's state:
+  local branch `m36-g2d` (worktree `.claude/worktrees/m36-g2d`), a WIP
+  commit on top of `main` after G2c and the archive; not on `main`. Its builder's state:
   - The code deletions and engine-only test conversions are done.
   - L3 (served four owners at the 8K/C4 envelope) and L4 (cross-variant
     kept tag with the real identities) passed before a last assertion fix.
