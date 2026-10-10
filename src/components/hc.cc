@@ -318,7 +318,18 @@ std::expected<FragmentOut, std::string> MixEmit(Fragment& f) {
   if (in.site == Site::kFinalNorm && !f.narrowed) {
     const std::uint64_t rows = Desc(b, x).ne(2);
     ir::TensorId flat = b.Reshape(x, Shape({w * hc, rows}));
-    flat = b.GetRows(flat, f.step.OutputRows());
+    const auto segments = f.step.segments();
+    if (f.step.phase() == planner::Phase::kDraft && segments.size() == 1) {
+      // A draft pass's output rows are its last: a view of them (as the
+      // drafter's fast form reads them), no gather.
+      const std::uint64_t outputs = f.step.outputs();
+      const format::Shape shape = Shape({w * hc, outputs});
+      const ir::TensorDesc fd = Desc(b, flat);
+      flat = b.View(flat, shape, ViewStrides(fd.nb[0], fd.nb[1], 0, shape),
+                    (rows - outputs) * fd.nb[1]);
+    } else {
+      flat = b.GetRows(flat, f.step.OutputRows());
+    }
     if (in.params.Flag("features")) out.features = flat;
     x = b.Reshape(flat, Shape({w, hc, f.step.outputs()}));
     out.narrowed = true;
@@ -327,7 +338,8 @@ std::expected<FragmentOut, std::string> MixEmit(Fragment& f) {
   }
   const std::uint64_t rows = Desc(b, x).ne(2);
   ir::TensorId xn = b.RmsNorm(x, eps);
-  xn = b.Mul(b.Reshape(xn, Shape({w * hc, rows})), f.Weight(kMixNorm));
+  xn = b.Reshape(xn, Shape({w * hc, rows}));
+  xn = b.Mul(xn, f.Weight(kMixNorm));
   ir::TensorId lo = b.MatMul(f.Weight(kMixDown), xn);
   lo = b.Unary(b.Scale(lo, inv), ir::UnaryFn::kSilu);
   const ir::TensorId gate = b.Unary(b.MatMul(f.Weight(kMixUp), lo), ir::UnaryFn::kSigmoid);

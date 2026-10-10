@@ -166,11 +166,12 @@ bool IsDequant(const ggml_tensor* t) {
 
 // The IR nodes a GGML graph has: computed nodes, less the masks of a
 // host-mask build and the views of the positions they read.
-std::vector<std::size_t> Comparable(const ir::Graph& g) {
+std::vector<std::size_t> Comparable(const ir::Graph& g, const std::set<std::size_t>& skip) {
   std::vector<std::size_t> out;
   for (std::size_t i = 0; i < g.nodes().size(); ++i) {
     const ir::Node& n = g.nodes()[i];
     const ir::Op op = n.key.op;
+    if (skip.contains(i)) continue;
     if (op == ir::Op::kInput || op == ir::Op::kWeight || op == ir::Op::kState) continue;
     if (op == ir::Op::kMaskBuild) continue;
     if (op == ir::Op::kView) {
@@ -182,6 +183,57 @@ std::vector<std::size_t> Comparable(const ir::Graph& g) {
       }
     }
     out.push_back(i);
+  }
+  return out;
+}
+
+// The nodes that keep the QSA layers' block keys (their pooled, normed,
+// rotated keys stored at each complete block's cell every step): the
+// unfused builder pools at a selecting step alone. Each store into an
+// indexer_blocks state and the nodes that feed only it, back to the raw
+// keys' store.
+std::set<std::size_t> BlockKeyNodes(const ir::Graph& g,
+                                    const std::map<std::uint32_t, std::string>& step_leaves) {
+  std::vector<std::size_t> uses(g.tensor_count(), 0);
+  for (const ir::Node& n : g.nodes()) {
+    for (const ir::TensorId s : n.sources()) {
+      if (s.valid()) ++uses[s.v];
+    }
+  }
+  std::set<std::size_t> out;
+  std::vector<std::size_t> todo;
+  for (std::size_t i = 0; i < g.nodes().size(); ++i) {
+    const ir::Node& n = g.nodes()[i];
+    if (n.key.op != ir::Op::kCacheStore) continue;
+    const auto at = step_leaves.find(n.src[0].v);
+    if (at != step_leaves.end() && at->second.starts_with("indexer_blocks.")) {
+      out.insert(i);
+      todo.push_back(i);
+    }
+  }
+  // A producer joins once every use of its outputs is a joined node's.
+  std::vector<std::size_t> used_by_set(g.tensor_count(), 0);
+  while (!todo.empty()) {
+    const ir::Node& n = g.nodes()[todo.back()];
+    todo.pop_back();
+    for (const ir::TensorId s : n.sources()) {
+      if (!s.valid()) continue;
+      ++used_by_set[s.v];
+      const std::size_t p = g.producer(s).v;
+      const ir::Op op = g.nodes()[p].key.op;
+      if (op == ir::Op::kInput || op == ir::Op::kWeight || op == ir::Op::kState ||
+          op == ir::Op::kCacheStore || out.contains(p)) {
+        continue;
+      }
+      bool all = true;
+      for (const ir::TensorId o : g.nodes()[p].outputs()) {
+        if (o.valid() && used_by_set[o.v] != uses[o.v]) all = false;
+      }
+      if (all) {
+        out.insert(p);
+        todo.push_back(p);
+      }
+    }
   }
   return out;
 }
@@ -375,7 +427,7 @@ std::vector<std::size_t> ExpectSameSteps(
     const std::map<const ggml_tensor*, std::string>& legacy_leaves, const StepGraph& step,
     const std::map<std::uint32_t, std::string>& step_leaves, std::uint32_t used, bool scaled) {
   const ir::Graph& g = step.graph;
-  const std::vector<std::size_t> ir_nodes = Comparable(g);
+  const std::vector<std::size_t> ir_nodes = Comparable(g, BlockKeyNodes(g, step_leaves));
   const Legacy legacy = Entries(nodes, used, scaled, legacy_leaves);
   const std::vector<Entry>& entries = legacy.entries;
   std::vector<std::size_t> reordered;

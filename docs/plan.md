@@ -1551,7 +1551,7 @@ each is checked against the design as M3.6 proceeds.
             8K check (`Gemma4EnvelopeServingGpu`), the cross-variant kept
             tag and the served assistant (`Gemma4AssistantServingGpu`).
 - [ ] **Migrate Qwen3.8**: native NVFP4/MXFP8 with MTP, and GGUF.
-      - [ ] Components, patterns and the mapping.
+      - [x] Components, patterns and the mapping.
             *2026-10-10:* the components and mappings landed (slice G3a:
             `residual.hc`, `hc.mix`, `hc.combine`, `attention.gdn`,
             `attention.qsa`, `side.ngram`, `residual.ple`, `embedding.mtp`,
@@ -1561,8 +1561,15 @@ each is checked against the design as M3.6 proceeds.
             `qwen4exp-mtp`, the MTP drafter a stage composed with its
             target; [as built](engine-components.md#initial-catalog)), at
             parity with the unfused builder's graphs but for the n-gram
-            layer's node order. The patterns, the policy and the lowering
-            of the new inputs (the fast form's kernels) are slice G3b's.
+            layer's node order. The fast form's patterns, the default
+            policies and the lowering (slice G3b: [as
+            built](engine-components.md#the-graph-ir)) plan and lower
+            every setup shape of the three imports, with the MTP drafter,
+            to today's fast-form launches; on the real artifacts the
+            model runner's 31 outputs and 242 state tensors are bit-identical
+            to today's fast form in each import, including joined owners,
+            selection beyond the QSA budget and captured replays. Verify,
+            commit and MTP GPU numerics remain with the wiring in G3c.
       - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.
       - [ ] Components, patterns and the mapping.

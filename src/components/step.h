@@ -299,6 +299,7 @@ struct StepInput {
   // another (a multi-section rotation's; 1: plain).
   std::uint8_t sections = 1;
   std::uint16_t component = 0;  // kSideRows' source, kCommitRows' saver
+  std::uint32_t layer = 0;      // kCommitRows' saver's layer
   std::string what{};           // kCommitRows' save
   // A compressor's inputs': its ratio, whether its blocks overlap, and
   // (kPoolReads, kBlockCells, kBlockStarts) the ring's cells it reads from.
@@ -326,6 +327,18 @@ struct CommitSave {
   std::string what;
   std::uint8_t segment = ir::kJoinedSegment;
   ir::TensorId tensor{};
+  // I64 [the segment's rows]: 0 to rows - 1, the rows of the buffer a
+  // lowering stores the save in (a kStoreCells input of a cell per row).
+  ir::TensorId rows{};
+};
+
+// A mask a component reads (ComponentDef::masks, exact_masks).
+struct MaskDecl {
+  CellKey cells{};
+  std::uint32_t window = 0;
+  bool ahead = false;
+  bool exact = false;
+  auto operator<=>(const MaskDecl&) const = default;
 };
 
 class StepContext {
@@ -375,6 +388,9 @@ class StepContext {
   ir::TensorId Features(std::uint64_t width);
   // Segment s's store cells for tensors of `cells`.
   ir::TensorId StoreCells(std::size_t segment, const CellKey& cells);
+  // The cells of a block tensor's (`cells.block`) first `blocks` blocks, I64
+  // [blocks]: 0 to blocks - 1 (each block's keys stored at its own cell).
+  ir::TensorId BlockCells(std::size_t segment, const CellKey& cells, std::uint64_t blocks);
   // Segment s's output rows' cells in tensors of `cells`.
   ir::TensorId OutputCells(std::size_t segment, const CellKey& cells);
   // Segment s's cells read of a tensor of `cells`: min(capacity, its
@@ -383,17 +399,13 @@ class StepContext {
   std::uint64_t ReadCells(std::size_t segment, const CellKey& cells) const;
   // Segment s's mask over a tensor of `cells` with `window` (0: causal;
   // `ahead`: ir::MaskKind::kAhead), F16 [read cells, Pad(rows,
-  // kMaskRowAlign)]; made by Declare.
+  // kMaskRowAlign)], or exactly rows with `exact`; made by Declare.
   std::expected<ir::TensorId, std::string> Mask(std::size_t segment, const CellKey& cells,
-                                                std::uint32_t window, bool ahead = false) const;
+                                                std::uint32_t window, bool ahead = false,
+                                                bool exact = false) const;
   // Makes every mask a stage's components declared (masks of one segment
   // together, causal first, then by window, a kind's after the plain).
-  struct MaskKey {
-    CellKey cells;
-    std::uint32_t window = 0;
-    bool ahead = false;
-    auto operator<=>(const MaskKey&) const = default;
-  };
+  using MaskKey = MaskDecl;
   void DeclareMasks(std::span<const MaskKey> masks);
   // A compressor's inputs (InputKind's comments): the rows' phases mod
   // `ratio`; segment s's rows a recent ring of `ring` keeps and their
@@ -443,6 +455,8 @@ class StepContext {
   std::map<std::tuple<InputKind, std::size_t, CellKey, std::uint32_t, bool>, ir::TensorId>
       compressor_;
   std::map<std::uint64_t, ir::TensorId> hadamard_;
+  std::map<std::tuple<std::size_t, CellKey, std::uint64_t>, ir::TensorId> block_cells_;
+  std::map<std::uint8_t, ir::TensorId> save_rows_;  // by segment
   std::vector<StepInput> inputs_;
   std::vector<CommitSave> saves_;
 };

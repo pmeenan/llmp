@@ -55,6 +55,11 @@ std::uint64_t UnitBytes(const format::TensorFormat& format) {
   }
 }
 
+bool PreparedRows(const format::TensorFormat& format) {
+  return format.encoding == format::Encoding::kMxfp8 &&
+         format.layout == format::Layout::kCutlassScaleAtoms;
+}
+
 std::uint64_t UnitElements(const format::TensorFormat& format) {
   const format::EncodingInfo& info = format::Info(format.encoding);
   if (format.params.tensor_scale) {

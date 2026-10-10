@@ -27,8 +27,9 @@
 // channels] and the recurrent state F32 [d · d · v_heads], one cell a
 // request, rewritten whole by every step. A speculative verify never
 // writes them (Rollback::kCommit): in a verify step its fragment reads the
-// state and saves each row's convolution input (the qkv rows), its
-// convolution output, gate and beta instead (StepContext::Save), from which
+// state and saves each row's convolution input (the qkv rows), the
+// recurrence's q, k and v (its convolution's output, q and k L2-normed),
+// gate and beta instead (StepContext::Save), from which
 // the commit of the kept rows (BuildCommit) advances both.
 //
 // The fragment emits what the unfused form records, in GGML's graph order:
@@ -206,8 +207,8 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
       const ir::TensorId tail =
           b.View(inputs[s], Shape({hist, ch, 1}), {it.nb[0], it.nb[1], it.nb[2], it.nb[2]},
                  (it.ne(0) - hist) * it.nb[0]);
-      b.CacheStore(f.State(s, 0), b.Reshape(b.Cont(tail), Shape({hist * ch, 1})),
-                   f.step.StateRow());
+      const ir::TensorId kept = b.Reshape(b.Cont(tail), Shape({hist * ch, 1}));
+      b.CacheStore(f.State(s, 0), kept, f.step.StateRow());
     }
     b.SetJoined();
   }
@@ -220,8 +221,6 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     b.SetOwner(static_cast<std::uint8_t>(s));
     const ir::TensorId conv = b.Unary(b.SsmConv(inputs[s], w(kConv)), ir::UnaryFn::kSilu);
     const std::uint64_t n = segments[s].rows;
-    if (verify)
-      f.step.Save(in, "conv", b.Reshape(conv, Shape({ch, n})), static_cast<std::uint8_t>(s));
     const std::uint64_t el = 4;
     const auto head = [&](std::uint64_t heads, std::uint64_t first) {
       const format::Shape shape = Shape({d.d, heads, n, 1});
@@ -234,6 +233,19 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     const ir::TensorId q = l2(head(d.hk, 0));
     const ir::TensorId k = l2(head(d.hk, d.hk * d.d));
     const ir::TensorId v = head(d.hv, 2 * d.hk * d.d);
+    if (verify) {
+      // The recurrence's inputs, q and k normed, as one row a token [ch, n]
+      // (the convolution's channels): what the commit replays.
+      const std::uint64_t qk = d.hk * d.d;
+      const ir::TensorId q_rows = b.Reshape(q, Shape({qk, n}));
+      const ir::TensorId k_rows = b.Reshape(k, Shape({qk, n}));
+      const ir::TensorId both = b.Concat(q_rows, k_rows, 0);
+      const format::Shape v_shape = Shape({d.hv * d.d, n});
+      const ir::TensorId v_view =
+          b.View(conv, v_shape, ViewStrides(el, ch * el, 0, v_shape), 2 * qk * el);
+      const ir::TensorId v_rows = b.Cont(v_view);
+      f.step.Save(in, "conv", b.Concat(both, v_rows, 0), static_cast<std::uint8_t>(s));
+    }
     b.SetJoined();
     if (!gate.valid()) {
       const ir::TensorId alpha = b.Reshape(b.MatMul(w(kAlpha), x), Shape({d.hv, rows, 1}));
@@ -254,8 +266,8 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     const ir::Outputs ran =
         b.GatedDeltaNet(q, k, v, rows_of(gate, s, 2), rows_of(beta, s, 2), state);
     if (!verify) {
-      b.CacheStore(f.State(s, 1), b.Reshape(ran[1], Shape({d.d * d.d * d.hv, 1})),
-                   f.step.StateRow());
+      const ir::TensorId recurrent = b.Reshape(ran[1], Shape({d.d * d.d * d.hv, 1}));
+      b.CacheStore(f.State(s, 1), recurrent, f.step.StateRow());
     }
     outputs.push_back(ran[0]);
     b.SetJoined();
@@ -272,7 +284,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
 
 // The commit of a verify's kept rows: from each owner's saves of them, its
 // convolution history (the old history, then the kept rows' qkv) and its
-// recurrence over the kept rows' saved convolution output, gate and beta.
+// recurrence over the kept rows' saved q, k and v, gate and beta.
 std::expected<void, std::string> Commit(Fragment& f) {
   ir::Builder& b = f.b;
   const Instance& in = f.instance;
@@ -290,23 +302,22 @@ std::expected<void, std::string> Commit(Fragment& f) {
     const ir::TensorId tail =
         b.View(input, Shape({hist, ch, 1}), {it.nb[0], it.nb[1], it.nb[2], it.nb[2]},
                (it.ne(0) - hist) * it.nb[0]);
-    b.CacheStore(f.State(s, 0), b.Reshape(b.Cont(tail), Shape({hist * ch, 1})), f.step.StateRow());
+    const ir::TensorId kept = b.Reshape(b.Cont(tail), Shape({hist * ch, 1}));
+    b.CacheStore(f.State(s, 0), kept, f.step.StateRow());
+    // The recurrence's inputs as the verify saved them (q and k normed).
     const ir::TensorId conv = f.step.Saved(in, "conv", s, ch);
     const auto head = [&](std::uint64_t heads, std::uint64_t first) {
       return b.View(conv, Shape({d.d, heads, n, 1}), {4, d.d * 4, ch * 4, ch * n * 4}, first * 4);
     };
-    const auto l2 = [&](ir::TensorId t) {
-      const auto dims = static_cast<float>(d.d);
-      return b.Scale(b.RmsNorm(b.Cont(t), d.eps / dims), 1.0F / std::sqrt(dims));
-    };
-    const ir::TensorId q = l2(head(d.hk, 0));
-    const ir::TensorId k = l2(head(d.hk, d.hk * d.d));
+    const ir::TensorId q = head(d.hk, 0);
+    const ir::TensorId k = head(d.hk, d.hk * d.d);
     const ir::TensorId v = head(d.hv, 2 * d.hk * d.d);
     const ir::TensorId gate = b.Reshape(f.step.Saved(in, "gate", s, d.hv), Shape({1, d.hv, n, 1}));
     const ir::TensorId beta = b.Reshape(f.step.Saved(in, "beta", s, d.hv), Shape({1, d.hv, n, 1}));
     const ir::TensorId state = b.Reshape(f.State(s, 1), Shape({d.d, d.d, d.hv, 1}));
     const ir::Outputs ran = b.GatedDeltaNet(q, k, v, gate, beta, state);
-    b.CacheStore(f.State(s, 1), b.Reshape(ran[1], Shape({d.d * d.d * d.hv, 1})), f.step.StateRow());
+    const ir::TensorId recurrent = b.Reshape(ran[1], Shape({d.d * d.d * d.hv, 1}));
+    b.CacheStore(f.State(s, 1), recurrent, f.step.StateRow());
     b.SetJoined();
   }
   return {};

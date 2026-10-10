@@ -98,6 +98,12 @@ std::string CapabilityText(const Capability& c) {
   if (c.batch != 0) {
     text += std::format("; batch {}", c.batch);
   }
+  if (!c.launches.empty()) {
+    text += "; launches";
+    for (const std::string_view l : c.launches) {
+      text += std::format(" {}", l);
+    }
+  }
   return text;
 }
 

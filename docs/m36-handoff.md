@@ -4,9 +4,9 @@
 # M3.6 handoff
 
 Working state of the M3.6 refactor ([plan](plan.md), "M3.6 — Engine components",
-[design](engine-components.md)) for whichever agent continues it. The
-orchestrating agent paused on 2026-10-10 for usage quota; other agents
-(Codex, Gemini via Antigravity) may continue meanwhile. **This file is
+[design](engine-components.md)) for whichever agent continues it. The original
+orchestrator paused on 2026-10-10 for usage quota; G3b has since been
+resumed, reviewed and checked on both Sparks. **This file is
 temporary**: update it when you land or start a slice, and delete it when
 M3.6 closes. AGENTS.md's rules govern all of it (rules 5, 9–13 especially:
 one reviewed squashed commit per sub-task, heavy-path review rounds, Spark
@@ -44,16 +44,16 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 On `main`: format layer, engine core, IR and planner, partitioning, spec and
 mappings; Gemma 2 and 3 served on the shared engine and their M3 code deleted
-(`4a6710ce`); Gemma 4 planned and lowered bit for bit (`6ff8a262`); Qwen3.8
-components and mappings (`88efa86c`); artifact format v1 and its reader
+(`4a6710ce`); Gemma 4 served with its assistants on the shared engine and
+its M3 code deleted (`04339dec`); Qwen3.8 components, mappings, patterns and GGML
+lowering (G3a and G3b; see `git log`); artifact format v1 and its reader
 (`5bce159d`, D-113); kept files and weight shards relaxed and opened only
 while active (`4b8b35a9`, `961fdefe`); license tags for ported code
 (`019dd77b`); AGENTS.md working rules (`db6cdff0`); `.env` through mise
 (`171717ef`).
 
-In flight (uncommitted worktrees under `/home/pmeenan/src/llmp/.claude/worktrees/`;
-`git worktree list` shows the current set, and this section is updated as
-each lands):
+Recent slices and handoffs (`git worktree list` shows current worktrees;
+update this section as each slice lands):
 
 - **G2c and G2d: Gemma 4 26B-A4B and 31B with their assistants on the shared
   engine, and the deletion of the M3 Gemma 4 code** landed on `main` (see
@@ -65,31 +65,28 @@ each lands):
   longer compared with the reference executor, only run to run
   (`component_runner_gemma4_gpu_test`) and by the served acceptance test
   (`Gemma4AssistantServingGpu`).
-- **G3b: Qwen3.8 patterns, policy and GGML lowering**
-  (`agent-a1d41dad140560dc5`, based on `88efa86c`; Spark copy
-  `spark-b:~/src/m36-g3b`, helper `~/scratch/g3b/tgt.sh`). Stopped at a
-  building checkpoint on 2026-10-10. Its `G3B-HANDOFF.md`, at the
-  worktree root, has the detail. Plain mode is bit-identical to today's
-  `Qwen38Runner` fast form on all three forms (ModelOpt CUTLASS, ModelOpt
-  GGML experts, GGUF): 31 outputs and 242 state tensors, two owners, 24
-  waves including captured replays and a step past the QSA budget
-  (`component_runner_qwen38_gpu_test`). All three forms and the MTP
-  drafter lower launch for launch on the CPU (`ggml_lower_qwen38_test`).
-  Brief items 1–3 and 5–9 are done. Item 4 is done for plain mode only:
-  speculation's GPU numerics (verify, commits of k of n rows, catch-up,
-  draft passes) wait on G3c's wiring, because ModelRunner can't yet bind
-  verify saves, run commit steps or stage drafter features. Left before
-  review:
-  - rerun the shared set, clang-format, `tools/llmp_boundaries.py` and the
-    header check on the final state;
-  - fill in the two `(STATUS)` placeholders in engine-components.md and
-    plan.md;
-  - merge main (it has moved since `88efa86c`);
-  - a heavy-path review;
-  - the full Spark set.
+- **G3b: Qwen3.8 patterns, policy and GGML lowering** landed on `main`
+  (see `git log`). Current main was integrated before
+  review. Plain mode is bit-identical to today's `Qwen38Runner` fast form on
+  all three forms (ModelOpt CUTLASS, ModelOpt GGML experts, GGUF): each
+  compares 31 outputs and 242 state tensors across two owners and 24 waves,
+  including two captured replays and a step past the QSA budget
+  (`component_runner_qwen38_gpu_test`, final run on `spark-b`, 2026-10-10).
+  All 96 setup/MTP shapes lower launch for launch on the CPU, with separate
+  checks for multiple owners and commits of one to three kept rows.
+  Review fixed save-index lifetime, reads across in-place writes, dropped
+  fusion parameters, incomplete side-row staging and scalar head NaN policy.
+  Specialized QSA lowering proves its typed staging and state/mask structure;
+  unsupported external staging semantics are refused before execution
+  (as-built limits in `engine-components.md`). Primitive exact masks prove
+  their own position source, held-cell metadata and integer bounds, and
+  refuse overwritten roots. The final independent challenge is clean.
 
-  Caveat: the GPU test keeps the n-gram table resident (+28.8 GB), which
-  puts the ModelOpt run near the Spark's memory limit.
+  G3c still owes verify-save binding, commit execution, drafter feature
+  staging, speculation's GPU numerics (verify, commits of k of n rows,
+  catch-up and draft passes), and the matched 1% gate for native, GGUF and
+  MTP. Its n-gram rows must be bound on demand: G3b's GPU proof keeps the
+  table resident (+28.8 GB), near the Spark's ModelOpt memory limit.
 - **G4a: DeepSeek V4 components, mappings and the DSpark stage** landed on
   `main` (see `git log`). Owed by G4b, before the lowering accepts
   DeepSeek's new inputs: the plan key ignores `past`, but an HCA layer's
@@ -108,8 +105,8 @@ each lands):
   - `silu_clamp` refuses a single unset limit;
   - `WritesFor` over-refuses verifies on recent rings;
   - `HadamardValues` may differ by 1 ulp at n = 128.
-- **Model archive design** (its own worktree). This is the owner's
-  direction, not part of the M3.6 plan proper:
+- **Model archive design** landed on `main` (`340e65c4`). This is the
+  owner's direction, not part of the M3.6 plan proper:
   - `docs/model-archive.md`, with layout, manifest, catalog (meta-index)
     and a downloader quickstart;
   - a decision entry, with libcurl accepted for a native `llmp install`;
@@ -121,11 +118,10 @@ each lands):
   `HF_TOKEN` in the ignored `/.env`. Native import from the archive and
   install into it go to the importer's N4 slice.
 
-Next, in order: G3b review and land; G3c (Qwen3.8 wiring
-and the 1% gate for native, GGUF and MTP); G3d (deletion); G4a review and
-land; G4b–d; N3–N6 (the importer's fold catalog, writer, `llmp import`
-and install from the archive, re-import of every artifact, adversarial
-challenge); Qwen-Image Q1–Q3; T-slices; K1; R1.
+Next, in order: G3c (Qwen3.8 wiring and the 1% gate for native, GGUF
+and MTP); G3d (deletion); G4b–d; N3–N6 (the importer's fold catalog,
+writer, `llmp import` and install from the archive, re-import of every
+artifact, adversarial challenge); Qwen-Image Q1–Q3; T-slices; K1; R1.
 
 Also worth a slice: a DeepSeek budget cliff. With about 1.1 GiB less
 MemAvailable at start, qwen3.8→deepseek took 16.1 s instead of 8.15 s and
@@ -136,7 +132,7 @@ spark-b during the weight-handle review.
 
 The slice plan as designed before work began. Where it differs from what was
 built, docs/engine-components.md's "as built" text and the commits win.
-Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a, G4a, N1; G3b in flight.
+Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a–b, G4a, N1.
 
 #### Wave 3: families, one at a time through the gate
 
@@ -331,7 +327,6 @@ own slice when it names none.
 - From G1c gate debug: building a plan for a new shape costs 5.6 ms on the engine vs 3.3 ms on M3 (BuildStep 1.8 + Plan 2.2 + lower 1.3 + bind 0.9); still on the critical path for the first decode step and the 3-row tail after the checkpoint boundary (NextPrefillHint stops at stable_boundary_). Follow-ups: planner/BuildStep speed; decode-first lookahead. Gate passes without them.
 - From N1 review: CheckImporter duplicated (artifact.cc/composition.cc); runtime doesn't read v1 yet (ComponentLlmBuild uses SynthesizeV0 — switch at N4/integration); N4 writer must reproduce test writer rules, options_sha256 canonical doc, tensor name mapping, drafter-pair compositions; no independent v1 oracle until M5's verifier; ASan run of the mutation test owed at a workstation tier.
 - From G1d review: engine_llm.cc ~682 RunPrefill future join check uses only CompatiblePrefill; Llm::PromptSession::CanJoin also needs equal want_head (wrong prediction = wasted ahead build only). Gemma 2/3 numerical oracle after deletion is ComponentsModelsGpu.StepsMatchTheServedModel (CPU ref vs served, 6-token prompt + 3 decodes) — consider a longer independent reference. Recovery ladder and mid-prefill cancellation tested on the fake backend only for Gemma 2/3. OWNER QUESTION pending: do src/components carry llama.cpp's MIT notice (docs/licensing.md).
-- spark-b lacks the Gemma 2/3 v0 artifacts in ~/.local/share/llmp/m3-artifacts (eb18d30d…, 8c710341…), so GemmaEngineServingGpu.FailedPartialLoad… skips there; copy them over so both hosts run the full Gemma set.
 - From G3a round 2: component code nests builder calls as arguments (qsa.cc b.Add(b.Reshape(..), b.View(..)), Attention(cache_view(K), cache_view(V))) → node order and graph digest depend on argument-evaluation order (compiler-dependent; order tests pin Clang). Sequence them into locals across components (Gemma too) before a second compiler matters. Pre-existing UBSan -fsanitize=function failure in cpu-asan preset: reference/decode.cc:257 and reference_decode_test.cc:368/421 call GGML to_float through ggml_to_float_t (GGML's own pattern) — cpu-asan preset fails 15 tests; decide: suppress for those calls or log RE.
 - License (after G3a merge): tag gdn.cc, qsa.cc, hc.cc, ple.cc MIT AND Apache-2.0 + "2023-2026 The ggml authors"; add them to docs/licensing.md and the GGML lock scope. Sweep remaining untagged src/kernels/ggml files (validate.cc, validate_ext.cc restate GGML asserts; gemma_moe_fusion.cc judged independent). ExLlamaV3 notice guard: decode_exl3.cc in llmp_reference_kernels (tests/fuzz only today) — add IN_TREE_UNITS/provenance entry so a shipped link carries Turboderp's notice. YaRN attribution comment in exec.cc/kv_quant_rope.cu (package notice already ships it).
 - DeepSeek budget cliff (fd review, spark-b): with ~1.1 GiB less MemAvailable at start (119.0 vs 120.4 GB), qwen3.8→deepseek took 16.1 s (vs 8.15) and deepseek→qwen3.8 19.7 s (evict 9.2 s) — near the 20 s bound; investigate. Optional: re-hash shard header region on reopen (same-path same-size replacement now read silently, D-056 amendment).

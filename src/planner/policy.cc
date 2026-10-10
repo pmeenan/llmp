@@ -66,10 +66,15 @@ std::vector<std::string_view> Words(std::string_view line) {
 }  // namespace
 
 bool Disabled(const Policy& policy, std::string_view pattern) {
-  return std::ranges::contains(policy.disabled, pattern);
+  if (std::ranges::contains(policy.disabled, pattern)) {
+    return true;
+  }
+  const Pattern* p = FindPattern(pattern);
+  return p != nullptr && p->opt_in && !std::ranges::contains(policy.enabled, pattern);
 }
 
 void Canonicalize(Policy& policy) {
+  std::ranges::sort(policy.enabled);
   std::ranges::sort(policy.disabled);
   std::ranges::sort(policy.ranks, [](const ClassRank& a, const ClassRank& b) {
     return RankOrder(a) < RankOrder(b);
@@ -81,8 +86,22 @@ std::expected<void, std::string> Validate(const Policy& policy) {
     return Error(std::format("max_decode_rows {} outside 1 to {}", policy.max_decode_rows,
                              kMaxDecodeRowsBound));
   }
-  if (policy.disabled.size() > kMaxDisabled || policy.ranks.size() > kMaxRanks) {
-    return Error("more disabled patterns or ranks than a policy holds");
+  if (policy.disabled.size() > kMaxDisabled || policy.enabled.size() > kMaxDisabled ||
+      policy.ranks.size() > kMaxRanks) {
+    return Error("more enabled or disabled patterns or ranks than a policy holds");
+  }
+  for (std::size_t i = 0; i < policy.enabled.size(); ++i) {
+    const std::string& name = policy.enabled[i];
+    const Pattern* p = FindPattern(name);
+    if (p == nullptr || !p->opt_in) {
+      return Error(std::format("no opt-in pattern {} to enable", name));
+    }
+    if (i > 0 && policy.enabled[i - 1] >= name) {
+      return Error("enabled patterns are not ascending and unique");
+    }
+    if (std::ranges::contains(policy.disabled, name)) {
+      return Error(std::format("{} both enabled and disabled", name));
+    }
   }
   for (std::size_t i = 0; i < policy.disabled.size(); ++i) {
     const std::string& name = policy.disabled[i];
@@ -120,6 +139,9 @@ std::string ToText(const Policy& policy) {
   if (policy.allow_lossy) {
     text += "allow_lossy\n";
   }
+  for (const std::string& name : policy.enabled) {
+    text += std::format("enable {}\n", name);
+  }
   for (const std::string& name : policy.disabled) {
     text += std::format("disable {}\n", name);
   }
@@ -155,6 +177,11 @@ std::expected<Policy, std::string> ParsePolicy(std::string_view text) {
       policy.row_invariant = true;
     } else if (w.size() == 1 && w[0] == "allow_lossy") {
       policy.allow_lossy = true;
+    } else if (w.size() == 2 && w[0] == "enable") {
+      if (policy.enabled.size() == kMaxDisabled) {
+        return Error("more enabled patterns than a policy holds");
+      }
+      policy.enabled.emplace_back(w[1]);
     } else if (w.size() == 2 && w[0] == "disable") {
       if (policy.disabled.size() == kMaxDisabled) {
         return Error("more disabled patterns than a policy holds");

@@ -28,6 +28,7 @@
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "ir/verify.h"
+#include "planner/fusions.h"
 #include "planner/policy.h"
 #include "planner/select.h"
 #include "planner/step_shape.h"
@@ -1089,6 +1090,15 @@ void OwnerRewrite(RewriteContext& c, const Match& m, std::size_t index) {
 }
 
 constexpr std::array kNormAnchors = {Op::kRmsNorm};
+constexpr std::array kAddAnchors = {Op::kAdd};
+constexpr std::array kSsmConvAnchors = {Op::kSsmConv};
+constexpr std::array kDeltaAnchors = {Op::kGatedDeltaNet};
+constexpr std::array kMulAnchors = {Op::kMul};
+constexpr std::array kGluAnchors = {Op::kGlu};
+constexpr std::array kRouteAnchors = {Op::kRoute};
+constexpr std::array kReduceAnchors = {Op::kExpertReduce};
+constexpr std::array kFoldReaderAnchors = {Op::kPrepare, Op::kConvert, Op::kMatMul};
+constexpr std::array kQuantProductAnchors = {Op::kMatMul, Op::kMatMulId, Op::kFused};
 constexpr std::array kAttentionAnchors = {Op::kAttention};
 constexpr std::array kProductAnchors = {Op::kMatMul};
 constexpr std::array kRopeAnchors = {Op::kRope};
@@ -1098,6 +1108,161 @@ constexpr std::array kRouteReduce = {ir::Primitive(Op::kRoute), ir::Primitive(Op
 // The table (see the header): its order is priority; where two patterns
 // meet at a node (the RMS norm), the order PlanGraph tries them today.
 constexpr std::array kPatterns = {
+    // The fast forms' fusions (fusions.h), opt-in: a model's policy enables
+    // them. Before the norms', which they take precedence over where a
+    // policy enables both.
+    Pattern{.name = "hc_prep",
+            .result = ir::Fused(FusedKind::kHcPrep),
+            .anchors = kNormAnchors,
+            .match = &fusions::HcPrepMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "hc_mix",
+            .result = ir::Fused(FusedKind::kHcMixNorm),
+            .anchors = kNormAnchors,
+            .match = &fusions::HcMixMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "hc_combine",
+            .result = ir::Fused(FusedKind::kHcCombine),
+            .anchors = kAddAnchors,
+            .match = &fusions::HcCombineMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "gdn_conv",
+            .result = ir::Fused(FusedKind::kGdnConv),
+            .anchors = kSsmConvAnchors,
+            .match = &fusions::GdnConvMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "gdn_gates",
+            .result = ir::Fused(FusedKind::kGdnGates),
+            .anchors = kAddAnchors,
+            .match = &fusions::GdnGatesMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "gdn_step",
+            .result = ir::Fused(FusedKind::kGdnStep),
+            .anchors = kDeltaAnchors,
+            .match = &fusions::GdnStepMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "gdn_norm_gate",
+            .result = ir::Fused(FusedKind::kNormGate),
+            .anchors = kNormAnchors,
+            .match = &fusions::GdnNormGateMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "qsa_prep",
+            .result = ir::Fused(FusedKind::kRmsNormMulRope),
+            .anchors = kRopeAnchors,
+            .match = &fusions::QsaPrepMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "qsa_pool",
+            .result = ir::Fused(FusedKind::kQsaPool),
+            .anchors = kStoreAnchors,
+            .match = &fusions::QsaPoolMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "qsa_select",
+            .result = ir::Fused(FusedKind::kQsaAttention),
+            .anchors = kAttentionAnchors,
+            .match = &fusions::QsaSelectMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "qsa_gate",
+            .result = ir::Fused(FusedKind::kHeadGate),
+            .anchors = kMulAnchors,
+            .match = &fusions::QsaGateMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "moe_router",
+            .result = ir::Fused(FusedKind::kMoeRouter),
+            .anchors = kRouteAnchors,
+            .match = &fusions::MoeRouterMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "moe_experts",
+            .result = ir::Fused(FusedKind::kMoeExperts),
+            .anchors = kReduceAnchors,
+            .match = &fusions::MoeExpertsMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "moe_glu",
+            .result = ir::Fused(FusedKind::kMoeGlu),
+            .anchors = kGluAnchors,
+            .match = &fusions::MoeGluMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "moe_combine",
+            .result = ir::Fused(FusedKind::kMoeCombine),
+            .anchors = kReduceAnchors,
+            .match = &fusions::MoeCombineMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "vecq_glu",
+            .result = ir::Fused(FusedKind::kMatMulGlu),
+            .anchors = kGluAnchors,
+            .match = &fusions::VecQGluMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "mxfp8_inputs",
+            .result = ir::Primitive(Op::kPrepare),
+            .anchors = kProductAnchors,
+            .match = &fusions::Mxfp8InputsMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    // Round 1: over round 0's fused nodes.
+    Pattern{.name = "hc_fold_inputs",
+            .result = ir::Fused(FusedKind::kHcFold),
+            .anchors = kFoldReaderAnchors,
+            .match = &fusions::HcFoldInputsMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true,
+            .round = 1},
+    Pattern{.name = "bf16_inputs",
+            .result = ir::Primitive(Op::kConvert),
+            .anchors = kProductAnchors,
+            .match = &fusions::Bf16InputsMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true,
+            .round = 1},
+    Pattern{.name = "bf16_rows",
+            .result = ir::Primitive(Op::kMatMul),
+            .anchors = kProductAnchors,
+            .match = &fusions::Bf16RowsMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true,
+            .round = 1},
+    Pattern{.name = "vecq_inputs",
+            .result = ir::Primitive(Op::kPrepare),
+            .anchors = kQuantProductAnchors,
+            .match = &fusions::VecQInputsMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true,
+            .round = 1},
     Pattern{.name = "rms_norm_mul_rope",
             .result = ir::Fused(FusedKind::kRmsNormMulRope),
             .anchors = kNormAnchors,
@@ -1147,6 +1312,10 @@ constexpr std::array kPatterns = {
     Pattern{
         .name = "owner_chained_masks", .kind = PatternKind::kOption, .parent = "owner_attention"},
     Pattern{.name = "narrow_final", .kind = PatternKind::kOption},
+    // A step of several owners runs its products row-invariant (each
+    // owner's rows what they are alone: today's Qwen3.8 waves;
+    // StepPlan::owner_row_invariant). Opt-in.
+    Pattern{.name = "owner_row_invariant", .kind = PatternKind::kOption, .opt_in = true},
 };
 
 bool Anchored(const Pattern& p, Op op) { return std::ranges::contains(p.anchors, op); }
@@ -1162,6 +1331,7 @@ MatchContext::MatchContext(const ir::Graph& graph, const SelectionView& view,
       shape_(shape),
       readers_(graph.tensor_count()),
       external_(graph.tensor_count(), false),
+      kept_(graph.tensor_count(), false),
       taken_(graph.nodes().size(), false) {
   for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
     for (const TensorId s : graph.nodes()[i].sources()) {
@@ -1174,6 +1344,7 @@ MatchContext::MatchContext(const ir::Graph& graph, const SelectionView& view,
     for (const TensorId t : list) {
       external_.at(t.v) = true;
       external_.at(graph.root(t).v) = true;
+      kept_.at(t.v) = true;
     }
   }
 }
@@ -1183,6 +1354,8 @@ std::span<const NodeId> MatchContext::readers(TensorId t) const { return readers
 bool MatchContext::external(TensorId t) const {
   return external_.at(t.v) || external_.at(graph_.root(t).v);
 }
+
+bool MatchContext::kept(TensorId t) const { return kept_.at(t.v); }
 
 void MatchContext::Take(std::span<const NodeId> nodes) {
   for (const NodeId n : nodes) {
@@ -1253,9 +1426,12 @@ std::optional<Match> BatchAt(const Pattern& pattern, const MatchContext& context
   return pattern.match(context, anchor);
 }
 
-std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
-                                                        const SelectionView& view,
-                                                        const StepShape* shape) {
+namespace {
+
+// One round of the table's rewrite patterns over `graph`.
+std::expected<Rewritten, ir::VerifyError> ApplyRound(const ir::Graph& graph,
+                                                     const SelectionView& view,
+                                                     const StepShape* shape, std::uint8_t round) {
   MatchContext context(graph, view, shape);
   struct Found {
     const Pattern* pattern = nullptr;
@@ -1265,13 +1441,16 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
   // The table's order is priority: each pattern over the whole graph, in
   // node order, before the next.
   for (const Pattern& p : kPatterns) {
-    if (p.kind != PatternKind::kRewrite || Disabled(view.policy(), p.name)) {
+    if (p.kind != PatternKind::kRewrite || p.round != round || Disabled(view.policy(), p.name)) {
       continue;
     }
     for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
       const NodeId id{i};
       const ir::Node& node = graph.node(id);
-      if (context.taken(id) || node.key.fused != FusedKind::kNone || !Anchored(p, node.key.op)) {
+      // Round 0 anchors at primitives; a later round at another's results
+      // too.
+      if (context.taken(id) || (round == 0 && node.key.fused != FusedKind::kNone) ||
+          !Anchored(p, node.key.op)) {
         continue;
       }
       auto m = p.match(context, id);
@@ -1336,6 +1515,60 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
                    .applied = std::move(applied),
                    .from = std::move(from),
                    .tensors = std::move(tensors)};
+}
+
+}  // namespace
+
+std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
+                                                        const SelectionView& view,
+                                                        const StepShape* shape) {
+  auto first = ApplyRound(graph, view, shape, 0);
+  if (!first) {
+    return first;
+  }
+  const bool later = std::ranges::any_of(kPatterns, [&](const Pattern& p) {
+    return p.kind == PatternKind::kRewrite && p.round == 1 && !Disabled(view.policy(), p.name);
+  });
+  if (!later) {
+    return first;
+  }
+  auto second = ApplyRound(first->graph, view, shape, 1);
+  if (!second) {
+    return second;
+  }
+  // The maps composed: the primitive graph's tensors and nodes through
+  // round 0's graph into round 1's; round 0's nodes it made, as round 1
+  // copied them.
+  Rewritten out{.graph = std::move(second->graph), .applied = {}, .from = {}, .tensors = {}};
+  out.tensors.assign(first->tensors.size(), TensorId{});
+  for (std::size_t t = 0; t < first->tensors.size(); ++t) {
+    const TensorId mid = first->tensors[t];
+    out.tensors[t] = mid.valid() ? second->tensors.at(mid.v) : TensorId{};
+  }
+  out.from.resize(second->from.size());
+  for (std::size_t i = 0; i < second->from.size(); ++i) {
+    out.from[i] = first->from.at(second->from[i].v);
+  }
+  // A round-0 node round 1 did not rewrite is one node of round 1's graph.
+  std::vector<bool> rewritten(first->graph.nodes().size(), false);
+  for (const Applied& a : second->applied) {
+    for (const NodeId r : a.replaced) rewritten.at(r.v) = true;
+  }
+  for (Applied& a : first->applied) {
+    std::vector<NodeId> made;
+    for (std::uint32_t j = 0; j < second->from.size(); ++j) {
+      const NodeId mid = second->from[j];
+      if (!rewritten.at(mid.v) && std::ranges::contains(a.made, mid)) made.push_back(NodeId{j});
+    }
+    a.made = std::move(made);
+    out.applied.push_back(std::move(a));
+  }
+  // Round 1's: its replaced nodes as the primitive nodes they stood for.
+  for (Applied& a : second->applied) {
+    for (NodeId& r : a.replaced) r = first->from.at(r.v);
+    out.applied.push_back(std::move(a));
+  }
+  return out;
 }
 
 }  // namespace llmp::planner

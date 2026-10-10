@@ -86,7 +86,13 @@ Outputs Builder::Emit(OpKey key, const ParamBytes& params, std::span<const Tenso
   for (std::size_t i = 0; i < inferred->nout; ++i) {
     TensorDesc t = inferred->out.at(i);
     const TensorDesc* r = i < requested.size() ? &requested[i] : nullptr;
-    if (r != nullptr && inferred->float_result.at(i) && r->format.encoding != t.format.encoding) {
+    if (r != nullptr && inferred->float_result.at(i) && key.op == Op::kFused &&
+        PreparedRows(r->format)) {
+      t.format.encoding = r->format.encoding;
+      t.format.layout = r->format.layout;
+      t.nb = NaturalStrides(t.format);
+    } else if (r != nullptr && inferred->float_result.at(i) &&
+               r->format.encoding != t.format.encoding) {
       if (!ResultEncoding(r->format.encoding) || r->format.layout != format::Layout::kDense) {
         Refuse(GraphError::kFormat,
                std::format("{}'s output {} is recorded as F32, F16 or BF16", OpKeyName(key), i));

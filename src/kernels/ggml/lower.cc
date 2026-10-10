@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -28,6 +29,7 @@
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "ggml.h"
+#include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "kernels/ggml/fattn_owner.h"
@@ -36,6 +38,8 @@
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/moe_layout.h"
+#include "kernels/ggml/mxfp8_cutlass.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
@@ -58,6 +62,9 @@ std::unexpected<KernelFailure> Refused(std::string detail) {
                                        .detail = "lowering onto GGML: " + std::move(detail)});
 }
 
+// A commit's input of a verify's save: its saver's layer.
+std::uint32_t SavedLayer(const co::StepInput& input) { return input.layer; }
+
 // Placeholder addresses, as PlaceAndPlan's first pass gives (planned.h):
 // activations of a measurement from kDistinct, leaves without an address
 // (a test's) from kLeaves, each its own range.
@@ -66,6 +73,13 @@ constexpr std::uint64_t kLeaves = kDistinct - (std::uint64_t{1} << 40U);
 
 std::uint64_t Round(std::uint64_t bytes, std::uint64_t alignment) {
   return (bytes + alignment - 1) / alignment * alignment;
+}
+
+// The columns a convolution's input is padded with (RE-032): past 32
+// tokens, to whole 32-token windows.
+std::int64_t SsmConvPad(const ir::Graph& graph, const ir::Node& n) {
+  const auto nt = static_cast<std::int64_t>(graph.tensor(n.out[0]).ne(1));
+  return nt > 32 && nt % 32 != 0 ? 32 - (nt % 32) : 0;
 }
 
 std::optional<ggml_type> TypeOf(Encoding e) {
@@ -131,6 +145,11 @@ class Lowering {
   std::expected<void, KernelFailure> MakeReplaced(std::size_t entry);
   ggml_tensor* ResolveReplaced(TensorId primitive) const;
   std::expected<ggml_tensor*, KernelFailure> MakeLeaf(const ir::Node& n);
+  // A weight of several parts (MXFP8's codes and scales, an NVFP4 table's
+  // rows and scale, the CUTLASS experts' slab): a GGML tensor a part, the
+  // first its stand-in.
+  std::expected<ggml_tensor*, KernelFailure> MakeParts(TensorId out, const ir::TensorDesc& d,
+                                                       const co::StepWeight& w);
   // GGML's builder call for primitive node `n` of `graph` over its
   // resolved sources (null for what it makes no tensor of: a mask's view).
   std::expected<ggml_tensor*, KernelFailure> Make(const ir::Graph& graph, const ir::Node& n,
@@ -151,6 +170,27 @@ class Lowering {
   // without it (the producer reads the whole positions input; a host mask
   // reads nothing on the device).
   bool MaskOnly(TensorId t) const;
+
+  // The fast forms (slice G3b): a fused node llmpalooza's kernels run over
+  // GGML tensors (one or several custom nodes, not the primitive nodes its
+  // rewrite replaced), the products, conversions and lookups of the
+  // fast forms' formats, a verify's saves, and the nodes made at all.
+  static constexpr std::size_t kNoImplementation = ~std::size_t{0};
+  std::string_view Selected(NodeId id) const;
+  bool Direct(NodeId id) const;
+  std::expected<void, KernelFailure> MakeDirect(NodeId id, const ir::Node& n);
+  std::expected<void, KernelFailure> MakeSpecial(NodeId id, const ir::Node& n, bool& made);
+  std::expected<void, KernelFailure> MakeSaves();
+  // The specialized QSA kernels derive position tables rather than
+  // reading every IR operand. Prove those values from the typed staging
+  // interface and graph structure before eliding their operands.
+  std::expected<void, KernelFailure> CheckQsaInputs();
+  void Needed();
+  ggml_tensor* Part(TensorId planned, format::PartRole role) const;
+  ggml_tensor* StoredInto(const ggml_tensor* leaf) const;
+  void Inside(ggml_tensor* t, TensorId root, std::uint64_t offset);
+  ggml_tensor* SegmentPositions(const ir::Node& n, std::size_t i, NodeId id);
+  void OwnersAlone(ggml_tensor* vecq) const;
 
   const LowerInput& in_;
   const planner::StepPlan& plan_;
@@ -193,7 +233,278 @@ class Lowering {
   // fused routing's ids, a view of its whole sort).
   std::map<std::uint32_t, ggml_tensor*> placed_root_;
   std::set<const ggml_tensor*> state_tensors_, weight_tensors_;
+
+  std::vector<std::size_t> impl_of_;  // by planned node: its step's implementation
+  std::vector<bool> needed_;          // by planned node: made
+  std::vector<bool> quiet_;           // by planned node: launches nothing of its own
+  // A multi-part weight's parts' tensors, by planned tensor.
+  std::map<std::uint32_t, std::map<format::PartRole, ggml_tensor*>> parts_;
+  std::vector<std::tuple<ggml_tensor*, const co::StepWeight*, format::PartRole>> part_leaves_;
+  std::map<const ggml_tensor*, ggml_tensor*> stores_;  // a cache leaf: its latest store
+  std::map<const ggml_tensor*, ggml_tensor*> pools_;   // block keys: llmp.qsa.pool's node
+  struct InsideRoot {
+    ggml_tensor* t = nullptr;
+    TensorId root{};
+    std::uint64_t offset = 0;
+  };
+  std::vector<InsideRoot> inside_;          // intermediates in a result's place
+  std::map<std::uint32_t, NodeId> folded_;  // a preparation: the node whose kernel writes it
+  std::set<const ggml_tensor*> extra_;      // the lowering's own nodes (a verify's saves)
+  std::vector<std::pair<ggml_tensor*, const co::CommitSave*>> save_leaves_;
+  std::vector<std::pair<ggml_tensor*, const co::StepInput*>> external_;  // a commit's saved rows
+  // CUTLASS expert slabs by (stage, layer): one GGML tensor for a layer's
+  // gate-and-up and down arrays.
+  std::map<std::pair<std::uint16_t, std::uint32_t>, ggml_tensor*> slabs_;
+  // Exact masks may reuse replicated positions only after proving that
+  // their first section equals the mask's original plain position input.
+  std::map<std::uint32_t, TensorId> exact_mask_positions_;
 };
+
+std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
+  // Inferred tables must retain their staged/MaskBuild values. A name or
+  // declaration is not a proof once another node overwrites its bytes.
+  std::set<TensorId> overwritten;
+  for (const ir::Node& n : p_.nodes()) {
+    if (n.key == ir::Primitive(Op::kCacheStore)) overwritten.insert(p_.root(n.src[0]));
+    for (std::size_t i = 0; i < n.nout; ++i) {
+      if (const auto alias = ir::AliasedSource(n.key, i); alias && n.src.at(*alias).valid())
+        overwritten.insert(p_.root(n.src.at(*alias)));
+    }
+  }
+  const auto input = [&](TensorId t) -> const co::StepInput* {
+    if (!t.valid()) return nullptr;
+    const TensorId root = p_.root(t);
+    if (p_.node(p_.producer(root)).key != ir::Primitive(Op::kInput) || overwritten.contains(root)) {
+      return nullptr;
+    }
+    const TensorId original = primitive_.at(root.v);
+    const auto at = inputs_.find(original.v);
+    return at == inputs_.end() ? nullptr : at->second;
+  };
+  const auto plain_cells = [](const co::CellKey& c, std::uint64_t capacity, std::uint32_t block) {
+    return c == co::CellKey{.capacity = capacity, .block = block};
+  };
+  // InputKind, not a tensor's name, is what ModelRunner stages using
+  // InputValues: four copies of every row's position, in section order.
+  const auto positions = [&](TensorId t, std::uint8_t segment, bool whole) {
+    const co::StepInput* in = input(t);
+    if (in == nullptr || in->kind != co::InputKind::kPositions || in->sections != 4 ||
+        in->segment != ir::kJoinedSegment)
+      return false;
+    const ir::TensorDesc& td = p_.tensor(t);
+    const ir::TensorDesc& root = p_.tensor(p_.root(t));
+    if (root.shape().ne != ir::ShapeOf({4ULL * in_.shape.rows()}).ne ||
+        root.format.encoding != Encoding::kI32 || !ir::IsContiguous(root) || td.nb[0] != 4) {
+      return false;
+    }
+    if (whole) return !td.is_view() && t == p_.root(t);
+    if (segment >= in_.shape.segments.size()) return false;
+    const std::uint64_t rows = in_.shape.segments[segment].rows;
+    std::uint64_t first = 0;
+    for (std::size_t s = 0; s < segment; ++s) first += in_.shape.segments[s].rows;
+    return td.view_offset == 4 * first && td.ne(0) == (td.is_view() ? rows : 4 * rows) &&
+           td.ne(1) == 1 && td.ne(2) == 1 && td.ne(3) == 1 &&
+           (td.is_view() || in_.shape.segments.size() == 1);
+  };
+  const auto plain_positions = [&](TensorId t, std::uint8_t segment) {
+    const co::StepInput* in = input(t);
+    if (in == nullptr || in->kind != co::InputKind::kPositions || in->sections != 1 ||
+        in->segment != ir::kJoinedSegment || segment >= in_.shape.segments.size())
+      return false;
+    const ir::TensorDesc& td = p_.tensor(t);
+    const ir::TensorDesc& root = p_.tensor(p_.root(t));
+    std::uint64_t first = 0;
+    for (std::size_t s = 0; s < segment; ++s) first += in_.shape.segments[s].rows;
+    return td.shape().ne == ir::ShapeOf({in_.shape.segments[segment].rows}).ne &&
+           root.shape().ne == ir::ShapeOf({in_.shape.rows()}).ne && td.view_offset == first * 4 &&
+           td.nb[0] == 4 && root.format.encoding == Encoding::kI32 && ir::IsContiguous(root);
+  };
+  // The latest write to a root, including writes through aliases. This
+  // prevents a different in-place operation from being mistaken for the
+  // store or pool whose values the custom kernel consumes.
+  const auto last_write = [&](TensorId root, NodeId before) -> const ir::Node* {
+    const ir::Node* found = nullptr;
+    for (std::uint32_t k = 0; k < before.v; ++k) {
+      const ir::Node& n = p_.node(NodeId{k});
+      if (n.key == ir::Primitive(Op::kCacheStore) && p_.root(n.src[0]) == root) found = &n;
+      for (std::size_t i = 0; i < n.nout; ++i) {
+        if (const auto alias = ir::AliasedSource(n.key, i);
+            alias && n.src.at(*alias).valid() && p_.root(n.src.at(*alias)) == root)
+          found = &n;
+      }
+    }
+    return found;
+  };
+  const auto stored = [&](TensorId t, std::uint8_t segment, NodeId before) {
+    const TensorId root = p_.root(t);
+    const ir::TensorDesc& rd = p_.tensor(root);
+    const TensorId original = primitive_.at(root.v);
+    const auto state = state_.find(original.v);
+    const ir::Node* write = last_write(root, before);
+    if (state == state_.end() || state->second->borrowed || state->second->ref.segment != segment ||
+        write == nullptr || write->key != ir::Primitive(Op::kCacheStore) || write->src[0] != root ||
+        rd.ne(2) != 1 || rd.ne(3) != 1)
+      return false;
+    const co::StepInput* cells = input(write->src[2]);
+    return cells != nullptr && cells->kind == co::InputKind::kStoreCells &&
+           cells->segment == segment && plain_cells(cells->cells, rd.ne(1), 0) &&
+           write->src[2] == p_.root(write->src[2]) &&
+           p_.tensor(write->src[2]).format.encoding == Encoding::kI64 &&
+           p_.tensor(write->src[2]).shape().ne ==
+               ir::ShapeOf({in_.shape.segments[segment].rows}).ne &&
+           p_.tensor(write->src[1]).ne(1) == in_.shape.segments[segment].rows;
+  };
+  const auto mask = [&](TensorId t, std::uint8_t segment, std::uint64_t count,
+                        std::uint64_t capacity, std::uint32_t block, Encoding encoding) {
+    const ir::Node& m = p_.node(p_.producer(t));
+    if (m.key != ir::Primitive(Op::kMaskBuild) || overwritten.contains(p_.root(t))) return false;
+    const auto mp = m.Params<ir::MaskParams>();
+    const co::StepInput* held = input(m.src[1]);
+    const ir::TensorDesc& td = p_.tensor(t);
+    return mp.kind == ir::MaskKind::kCausal && mp.window == 0 && mp.block == 0 && held != nullptr &&
+           held->kind == co::InputKind::kCellPositions && held->segment == segment &&
+           held->read == count && plain_cells(held->cells, capacity, block) &&
+           m.src[1] == p_.root(m.src[1]) &&
+           p_.tensor(m.src[1]).shape().ne == ir::ShapeOf({count}).ne &&
+           plain_positions(m.src[0], segment) && td.format.encoding == encoding &&
+           td.ne(0) == count && td.ne(1) >= in_.shape.segments[segment].rows;
+  };
+  for (std::uint32_t k = 0; k < p_.nodes().size(); ++k) {
+    const NodeId id{k};
+    const ir::Node& n = p_.node(id);
+    if (options_.device_masks && n.key == ir::Primitive(Op::kMaskBuild) &&
+        n.Params<ir::MaskParams>().exact_rows) {
+      const auto mp = n.Params<ir::MaskParams>();
+      const co::StepInput* held = input(n.src[1]);
+      const ir::TensorDesc& out = p_.tensor(n.out[0]);
+      if ((mp.kind != ir::MaskKind::kCausal && mp.kind != ir::MaskKind::kWindow) || mp.block != 0 ||
+          mp.window > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) ||
+          overwritten.contains(p_.root(n.out[0])) || held == nullptr ||
+          held->kind != co::InputKind::kCellPositions || n.src[1] != p_.root(n.src[1]) ||
+          held->read != out.ne(0) || held->cells.capacity == 0 ||
+          held->cells.capacity >
+              static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) ||
+          held->read > held->cells.capacity ||
+          held->cells !=
+              co::CellKey{.capacity = held->cells.capacity, .frozen = held->cells.frozen} ||
+          p_.tensor(n.src[1]).format.encoding != Encoding::kI32 ||
+          p_.tensor(n.src[1]).shape().ne != ir::ShapeOf({out.ne(0)}).ne ||
+          !ir::IsContiguous(p_.tensor(n.src[1])) || !plain_positions(n.src[0], held->segment) ||
+          std::uint64_t{in_.shape.segments[held->segment].past} +
+                  in_.shape.segments[held->segment].rows >
+              held->cells.capacity ||
+          out.shape().ne != ir::ShapeOf({out.ne(0), in_.shape.segments[held->segment].rows}).ne ||
+          out.format.encoding != Encoding::kF16) {
+        return Refused("an exact device mask requires typed joined positions for its owner");
+      }
+      // Keep the original root if the staging interface contains several
+      // multi-section inputs, or its sole one does not prove equivalent.
+      // Unrelated declarations must never select a mask's positions.
+      TensorId candidate{};
+      std::size_t multi = 0;
+      for (const co::StepInput& in : in_.step.inputs) {
+        if (in.kind != co::InputKind::kPositions || in.sections <= 1) continue;
+        ++multi;
+        const TensorId t = plan_.tensors.at(in.tensor.v);
+        if (t.valid() && positions(t, ir::kJoinedSegment, true)) candidate = t;
+      }
+      exact_mask_positions_[n.out[0].v] =
+          multi == 1 && candidate.valid() ? candidate : p_.root(n.src[0]);
+    }
+    if (n.key == ir::Fused(FusedKind::kRmsNormMulRope) && Selected(id) == kQsaPrepName) {
+      if (!positions(n.src[2], ir::kJoinedSegment, true) ||
+          p_.tensor(n.src[0]).ne(2) != in_.shape.rows()) {
+        return Refused("QSA prep requires typed replicated position sections for its rows");
+      }
+    }
+    if (n.key != ir::Fused(FusedKind::kQsaPool) && n.key != ir::Fused(FusedKind::kQsaAttention))
+      continue;
+    const std::uint8_t segment = p_.tensor(n.out[0]).segment;
+    if (segment >= in_.shape.segments.size()) return Refused("QSA requires one declared owner");
+    if (n.key == ir::Fused(FusedKind::kQsaPool)) {
+      const auto pp = n.Params<ir::QsaPoolParams>();
+      const ir::TensorDesc& raw = p_.tensor(n.src[0]);
+      const ir::TensorDesc& blocks = p_.tensor(n.src[1]);
+      const co::StepInput* starts = input(n.src[3]);
+      const co::StepInput* cells = input(n.src[4]);
+      const std::uint64_t count = p_.tensor(n.src[3]).ne(0) / 4;
+      const auto block_input = [&](const co::StepInput* in, co::InputKind kind) {
+        return in != nullptr && in->kind == kind && in->segment == segment && in->read == count &&
+               plain_cells(in->cells, blocks.ne(1), pp.ratio);
+      };
+      const TensorId block_root = p_.root(n.src[1]);
+      const auto block_state = state_.find(primitive_.at(block_root.v).v);
+      if (!positions(n.source(5), segment, false) ||
+          !block_input(starts, co::InputKind::kBlockPositions) || starts->sections != 4 ||
+          !block_input(cells, co::InputKind::kStoreCells) || n.src[3] != p_.root(n.src[3]) ||
+          n.src[4] != p_.root(n.src[4]) || p_.tensor(n.src[4]).format.encoding != Encoding::kI64 ||
+          block_state == state_.end() || block_state->second->borrowed ||
+          block_state->second->ref.segment != segment || n.src[1] != block_root ||
+          !stored(n.src[0], segment, id) || raw.view_offset != 0 || raw.ne(1) != count * pp.ratio ||
+          raw.nb[0] != 4 || raw.nb[1] != raw.ne(0) * 4 || raw.ne(2) != 1 || raw.ne(3) != 1) {
+        return Refused(
+            "QSA pool requires typed block positions/cells and canonical stored raw rows");
+      }
+      continue;
+    }
+    const auto ap = n.Params<ir::QsaAttnParams>();
+    const ir::TensorDesc& keys = p_.tensor(n.src[1]);
+    const ir::TensorDesc& values = p_.tensor(n.src[2]);
+    const ir::TensorDesc& blocks = p_.tensor(n.src[4]);
+    const std::uint64_t cells = keys.ne(1);
+    const TensorId block_root = p_.root(n.src[4]);
+    const ir::Node* pool = last_write(block_root, id);
+    const auto canonical_cache = [&](TensorId t) {
+      const ir::TensorDesc& td = p_.tensor(t);
+      const ir::TensorDesc& root = p_.tensor(p_.root(t));
+      return stored(t, segment, id) && td.view_offset == 0 && td.ne(3) == 1 &&
+             root.ne(0) == td.ne(0) * td.ne(2) && td.nb[0] == 2 && td.nb[1] == root.nb[1] &&
+             td.nb[2] == td.ne(0) * 2;
+    };
+    if (!positions(n.source(8), segment, false) || pool == nullptr ||
+        pool->key != ir::Fused(FusedKind::kQsaPool) ||
+        pool->Params<ir::QsaPoolParams>().ratio != ap.ratio ||
+        p_.tensor(pool->out[0]).segment != segment || p_.root(pool->src[5]) != p_.root(n.src[8]) ||
+        p_.tensor(pool->src[5]).view_offset != p_.tensor(n.src[8]).view_offset ||
+        p_.tensor(pool->src[5]).shape().ne != p_.tensor(n.src[8]).shape().ne ||
+        blocks.view_offset != 0 || blocks.nb[0] != 2 || blocks.nb[1] != blocks.ne(0) * 2 ||
+        blocks.ne(2) != 1 || blocks.ne(3) != 1 || cells != blocks.ne(1) * ap.ratio ||
+        p_.tensor(pool->src[3]).ne(0) != 4 * blocks.ne(1) || !canonical_cache(n.src[1]) ||
+        !canonical_cache(n.src[2]) ||
+        p_.tensor(p_.root(n.src[1])).ne(1) != p_.tensor(p_.root(n.src[2])).ne(1) ||
+        values.shape().ne != keys.shape().ne ||
+        !mask(n.src[5], segment, cells, p_.tensor(p_.root(n.src[1])).ne(1), 0, Encoding::kF32) ||
+        !mask(n.src[6], segment, blocks.ne(1), p_.tensor(block_root).ne(1), ap.ratio,
+              Encoding::kF32) ||
+        !mask(n.src[7], segment, cells, p_.tensor(p_.root(n.src[1])).ne(1), 0, Encoding::kF16)) {
+      return Refused(
+          "QSA selection requires its typed pool, stored caches and canonical causal masks");
+    }
+  }
+  return {};
+}
+
+// Several owners' rows joined in a llmp.vecq product (the plan's
+// owner_row_invariant): each token's reduction and weight reads as it is
+// alone (one a pass, never shared with another token's), as today's waves
+// keep each slot's results its lone step's (qwen38_wave_plan.cc).
+void Lowering::OwnersAlone(ggml_tensor* vecq) const {
+  if (plan_.owner_row_invariant) SetVecQOneToken(vecq);
+}
+
+// The positions a QSA kernel reads (I32 [4 · t], the first t read): the
+// step's whole positions, or of one owner of several (the IR's view of
+// its rows of the joined positions) the 4 · t from its first row.
+ggml_tensor* Lowering::SegmentPositions(const ir::Node& n, std::size_t i, NodeId id) {
+  const ir::TensorDesc& d = p_.tensor(n.src.at(i));
+  ggml_tensor* made = made_.at(n.src.at(i).v);
+  if (!d.is_view()) return made;
+  ggml_tensor* root = made_.at(p_.root(n.src.at(i)).v);
+  const auto rows = static_cast<std::int64_t>(d.ne(0));
+  ggml_tensor* t = ggml_view_1d(c_, root, 4 * rows, d.view_offset);
+  Node(t, id);
+  return t;
+}
 
 void Lowering::Node(ggml_tensor* t, NodeId planned, bool step) {
   out_.nodes.push_back(t);
@@ -220,7 +531,18 @@ std::expected<void, KernelFailure> Lowering::Index() {
     }
   }
   launched_.assign(p_.nodes().size(), {});
-  for (const co::StepInput& input : in_.step.inputs) inputs_[input.tensor.v] = &input;
+  quiet_.assign(p_.nodes().size(), false);
+  impl_of_.assign(p_.nodes().size(), kNoImplementation);
+  for (const planner::Selected& s : plan_.steps) {
+    for (const NodeId id : s.nodes) impl_of_.at(id.v) = s.implementation;
+  }
+  for (const co::StepInput& input : in_.step.inputs) {
+    if (!input.tensor.valid() || input.tensor.v >= g_.tensor_count() ||
+        g_.node(g_.producer(input.tensor)).key != ir::Primitive(Op::kInput) ||
+        g_.tensor(input.tensor).is_view() || !inputs_.emplace(input.tensor.v, &input).second) {
+      return Refused("the staging interface requires unique input leaves");
+    }
+  }
   for (const co::StepWeight& w : in_.step.weights) weights_[w.tensor.v] = &w;
   for (const co::StepState& s : in_.step.state) state_[s.tensor.v] = &s;
   for (std::size_t a = 0; a < plan_.applied.size(); ++a) {
@@ -231,7 +553,8 @@ std::expected<void, KernelFailure> Lowering::Index() {
   // rewrite that made only it.
   for (std::uint32_t i = 0; i < p_.nodes().size(); ++i) {
     const ir::Node& n = p_.nodes()[i];
-    if (n.key.op != Op::kFused || n.key.fused == FusedKind::kOwnerAttention) continue;
+    if (n.key.op != Op::kFused || n.key.fused == FusedKind::kOwnerAttention || Direct(NodeId{i}))
+      continue;
     const auto at = applied_.find(i);
     if (at == applied_.end())
       return Refused(std::format("{} no rewrite made", ir::OpKeyName(n.key)));
@@ -241,6 +564,28 @@ std::expected<void, KernelFailure> Lowering::Index() {
       replaced_.push_back({.primitive = r, .fused = NodeId{i}, .made = false});
   }
   std::ranges::sort(replaced_, {}, &Replaced::primitive);
+  // A preparation into MXFP8 rows of a gated norm's result (through its
+  // reshape): llmp.gdn.norm_gate writes the rows itself.
+  for (std::uint32_t i = 0; i < p_.nodes().size(); ++i) {
+    const ir::Node& n = p_.nodes()[i];
+    if (n.key != ir::Primitive(Op::kPrepare) || !ir::PreparedRows(p_.tensor(n.out[0]).format))
+      continue;
+    const auto alone_read = [&](TensorId t) {
+      return readers_.at(t.v).size() == 1 && !std::ranges::contains(p_.outputs(), t) &&
+             !std::ranges::contains(p_.keep(), t);
+    };
+    TensorId t = n.src[0];
+    bool alone = true;
+    while (alone && p_.node(p_.producer(t)).key == ir::Primitive(Op::kReshape)) {
+      alone = alone_read(t);
+      t = p_.node(p_.producer(t)).src[0];
+    }
+    const NodeId from = p_.producer(t);
+    if (alone && alone_read(t) && p_.node(from).key == ir::Fused(FusedKind::kNormGate) &&
+        Direct(from)) {
+      folded_[i] = from;
+    }
+  }
   return {};
 }
 
@@ -274,9 +619,21 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
   const TensorId out = n.out[0];
   const ir::TensorDesc& d = p_.tensor(out);
   const TensorId prim = primitive_.at(out.v);
+  if (n.key.op == Op::kWeight && prim.valid()) {
+    // A weight of several parts (or one in an encoding GGML has no type
+    // for): a leaf a part.
+    const auto at = weights_.find(prim.v);
+    if (at == weights_.end()) return Refused("a weight the step does not list");
+    if (at->second->parts.size() != 1 || d.format.encoding == Encoding::kMxfp8 ||
+        (d.format.encoding == Encoding::kNvfp4 &&
+         d.format.layout != format::Layout::kGgmlNvfp4Blocks)) {
+      return MakeParts(out, d, *at->second);
+    }
+  }
   const auto type = TypeOf(d.format.encoding);
   if (!prim.valid() || !type) return Refused("a leaf of no primitive tensor or GGML type");
-  const bool blocks = d.format.layout == format::Layout::kGgmlBlocks;
+  const bool blocks = d.format.layout == format::Layout::kGgmlBlocks ||
+                      d.format.layout == format::Layout::kGgmlNvfp4Blocks;
   if (d.format.layout != format::Layout::kDense && !blocks) {
     return Refused(std::format("a leaf in layout {}", format::Info(d.format.layout).name));
   }
@@ -293,20 +650,21 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
         slot.kind = InputKind::kTokens;
         break;
       case co::InputKind::kPositions:
-        if (input.sections > 1) return Refused("multi-section positions (slice G3b)");
         slot.kind = InputKind::kPositions;
+        slot.sections = std::max<std::uint32_t>(input.sections, 1);
         break;
       case co::InputKind::kOutputRows:
         slot.kind = InputKind::kOutputRows;
         break;
       case co::InputKind::kStoreCells:
-        // Fixed, per-row and block cells (Qwen3.8's state, its drafter's
-        // streams) are not lowered yet (slice G3b).
-        if (input.cells.fixed || input.cells.per_row || input.cells.block != 0) {
-          return Refused("store cells of fixed, per-row or block state");
-        }
         slot.kind = InputKind::kStoreCells;
-        slot.cells = {.capacity = input.cells.capacity, .ring = input.cells.ring};
+        slot.cells = {.capacity = input.cells.capacity,
+                      .ring = input.cells.ring,
+                      .fixed = input.cells.fixed,
+                      .block = input.cells.block,
+                      .per_row = input.cells.per_row,
+                      .first_row = input.cells.first_row};
+        slot.read = input.read;
         break;
       case co::InputKind::kCellPositions:
         // Read only by masks, which derive (device) or fold in (host) them.
@@ -319,10 +677,23 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
       case co::InputKind::kSide:
         return Refused("a lone component's input");
       case co::InputKind::kSideRows:
+        slot.kind = InputKind::kSideRows;
+        slot.count = input.read;
+        break;
       case co::InputKind::kBlockPositions:
-      case co::InputKind::kCommitRows:
-        // Qwen3.8's inputs, lowered with its patterns (slice G3b).
-        return Refused("a side table's rows, blocks' positions or a verify's saves");
+        slot.kind = InputKind::kBlockPositions;
+        slot.cells = {.capacity = input.cells.capacity, .block = input.cells.block};
+        slot.read = input.read;
+        slot.sections = std::max<std::uint32_t>(input.sections, 1);
+        break;
+      case co::InputKind::kCommitRows: {
+        // A verify's save, which the caller keeps: bound at its address,
+        // never staged.
+        ggml_tensor* t = ggml_new_tensor(c_, *type, rank, ne.data());
+        external_.emplace_back(t, &input);
+        out_.leaves.push_back({.tensor = t, .primitive = prim});
+        return t;
+      }
       case co::InputKind::kPositionPhases:
       case co::InputKind::kKeptRows:
       case co::InputKind::kKeptCells:
@@ -343,15 +714,18 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
       case co::InputKind::kOutputCells: {
         // A target's tap rows' cells: its segment's last rows' store cells.
         const auto outputs = static_cast<std::uint32_t>(d.ne(0));
-        if (input.cells.fixed || input.cells.per_row || input.cells.block != 0) {
-          return Refused("a tap's cells of fixed, per-row or block state (slice G3b)");
+        if (input.cells.fixed || input.cells.block != 0) {
+          return Refused("a tap's cells of fixed or block state");
         }
         if (input.segment >= in_.shape.segments.size() || outputs == 0 ||
             outputs != in_.shape.segments[input.segment].outputs) {
           return Refused("a tap's cells of no segment's outputs");
         }
         slot.kind = InputKind::kStoreCells;
-        slot.cells = {.capacity = input.cells.capacity, .ring = input.cells.ring};
+        slot.cells = {.capacity = input.cells.capacity,
+                      .ring = input.cells.ring,
+                      .per_row = input.cells.per_row,
+                      .first_row = input.cells.first_row};
         slot.outputs = outputs;
         break;
       }
@@ -364,8 +738,6 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
   ggml_tensor* t = ggml_new_tensor(c_, *type, rank, ne.data());
   if (n.key.op == Op::kWeight) {
     const auto at = weights_.find(prim.v);
-    if (at == weights_.end()) return Refused("a weight the step does not list");
-    if (at->second->parts.size() != 1) return Refused("a weight stored in several parts");
     // As the builders bind a block-quantized weight whose rows are not
     // whole padded steps: the artifact's readable range covers the read
     // past each row (artifact/representation.h kGgmlRowPadding).
@@ -396,6 +768,62 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
   }
   out_.leaves.push_back({.tensor = t, .primitive = prim});
   return t;
+}
+
+std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
+                                                               const ir::TensorDesc& d,
+                                                               const co::StepWeight& w) {
+  const auto bytes = [&](std::int64_t ne0, std::int64_t ne1, std::int64_t ne2) {
+    std::array<std::int64_t, 4> ne{ne0, ne1, ne2, 1};
+    return ggml_new_tensor(c_, GGML_TYPE_I8, ne2 > 1 ? 3 : 2, ne.data());
+  };
+  const auto k = static_cast<std::int64_t>(d.ne(0));
+  const auto rows = static_cast<std::int64_t>(d.ne(1));
+  const auto matrices = static_cast<std::int64_t>(d.ne(2));
+  auto& parts = parts_[out.v];
+  ggml_tensor* first = nullptr;
+  const auto part = [&](format::PartRole role, ggml_tensor* t) {
+    parts[role] = t;
+    part_leaves_.emplace_back(t, &w, role);
+    weight_tensors_.insert(t);
+    out_.leaves.push_back({.tensor = t, .primitive = primitive_.at(out.v), .part = role});
+    if (first == nullptr) first = t;
+  };
+  if (d.format.encoding == Encoding::kMxfp8 && d.format.layout == format::Layout::kSplit &&
+      matrices == 1) {
+    // E4M3 codes [k, n] and E8M0 scales [k / 32, n], each a byte.
+    part(format::PartRole::kCodes, bytes(k, rows, 1));
+    part(format::PartRole::kBlockScales, bytes(k / 32, rows, 1));
+  } else if (d.format.encoding == Encoding::kNvfp4 &&
+             d.format.layout == format::Layout::kRowInterleaved && matrices == 1) {
+    // Each row's codes then its scales, and the table's F32 scale.
+    part(format::PartRole::kData, bytes((k / 2) + (k / 16), rows, 1));
+    std::array<std::int64_t, 4> one{1, 1, 1, 1};
+    part(format::PartRole::kTensorScale, ggml_new_tensor(c_, GGML_TYPE_F32, 1, one.data()));
+  } else if (d.format.encoding == Encoding::kNvfp4 &&
+             d.format.layout == format::Layout::kCutlassScaleAtoms && w.ref.expert_array) {
+    // The CUTLASS layout's slab (moe_layout.h): a layer's gate-and-up and
+    // down arrays at their offsets in each expert's slot, one tensor
+    // [stride, experts] at the gate-and-up codes.
+    const std::uint64_t stride = options_.expert_stride ? options_.expert_stride(w.ref) : 0;
+    if (stride == 0) return Refused("a CUTLASS expert slab without its stride");
+    const auto key = std::pair{w.ref.stage, w.ref.layer};
+    auto [at, fresh] = slabs_.try_emplace(key, nullptr);
+    if (fresh) {
+      at->second = bytes(static_cast<std::int64_t>(stride), matrices, 1);
+      part_leaves_.emplace_back(at->second, &w, format::PartRole::kCodes);
+      weight_tensors_.insert(at->second);
+      out_.leaves.push_back({.tensor = at->second,
+                             .primitive = primitive_.at(out.v),
+                             .part = format::PartRole::kCodes});
+    }
+    parts[format::PartRole::kCodes] = at->second;
+    first = at->second;
+  } else {
+    return Refused(std::format("a weight of {} in {} parts", format::Info(d.format.encoding).name,
+                               w.parts.size()));
+  }
+  return first;
 }
 
 std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph, const ir::Node& n,
@@ -446,9 +874,28 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
   if (!rows.is_view() || rows.ne(1) != 1 || rows.view_offset % sizeof(std::int32_t) != 0) {
     return Refused("a mask's rows are not a view of the positions");
   }
+  const auto to_int = [](std::uint64_t v) { return static_cast<std::int32_t>(v); };
+  if (p.exact_rows && &graph == &p_) {
+    // The proved position root is either the original plain input or a
+    // replicated input's equivalent first section. The cells' capacity
+    // bounds this exact mask's context.
+    const auto proved = exact_mask_positions_.find(n.out[0].v);
+    if (proved == exact_mask_positions_.end()) return Refused("an unproved exact device mask");
+    const TensorId source = proved->second;
+    if (made_.at(source.v) == nullptr) {
+      if (auto made = MakeNode(p_.producer(source)); !made) {
+        return std::unexpected(made.error());
+      }
+    }
+    ggml_tensor* positions = made_.at(source.v);
+    return CausalRingMask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
+                          to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
+                          to_int(cells.cells.capacity), to_int(window),
+                          to_int(cells.cells.capacity), CausalMaskRows::kExact, GGML_TYPE_F16,
+                          frozen ? MaskPolicy::kFrozen : MaskPolicy::kCausal);
+  }
   ggml_tensor* positions = resolve(rows.view_of);
   if (positions == nullptr) return Refused("a mask's positions were not made");
-  const auto to_int = [](std::uint64_t v) { return static_cast<std::int32_t>(v); };
   if (frozen) {
     return CausalRingMask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
                           to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
@@ -492,6 +939,8 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       return ggml_cont_4d(c_, s[0], ne(0), ne(1), ne(2), ne(3));
     case Op::kConcat:
       return ggml_concat(c_, s[0], s[1], n.Params<ir::ConcatParams>().dim);
+    case Op::kSsmConv:
+      return ggml_ssm_conv(c_, s[0], s[1]);
     case Op::kRepeat:
       return ggml_repeat_4d(c_, s[0], ne(0), ne(1), ne(2), ne(3));
     case Op::kGetRows:
@@ -868,6 +1317,14 @@ std::expected<void, KernelFailure> Lowering::MakeReduce(NodeId id, const ir::Nod
 
 std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
   const ir::Node& n = p_.node(id);
+  // What nothing made reads (a fused selection's masks, a preparation
+  // another kernel writes) launches nothing; made already (a leaf a mask
+  // needed first), nothing more.
+  if (!needed_.at(id.v)) {
+    quiet_.at(id.v) = true;
+    return {};
+  }
+  if (n.nout > 0 && made_.at(n.out[0].v) != nullptr && !folded_.contains(id.v)) return {};
   switch (n.key.op) {
     case Op::kInput:
     case Op::kWeight:
@@ -878,7 +1335,19 @@ std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
       return {};
     }
     case Op::kFused:
+      if (Direct(id)) return MakeDirect(id, n);
       return MakeFused(id, n);
+    case Op::kMatMul:
+    case Op::kMatMulId:
+    case Op::kConvert:
+    case Op::kPrepare:
+    case Op::kGetRows:
+    case Op::kSsmConv:
+    case Op::kGatedDeltaNet: {
+      bool special = false;
+      if (auto made = MakeSpecial(id, n, special); !made || special) return made;
+      break;
+    }
     case Op::kRoute:
       return MakeRoute(id, n);
     case Op::kExpertReduce:
@@ -903,6 +1372,12 @@ std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
   }
   made_.at(n.out[0].v) = *t;
   if ((*t)->op != GGML_OP_NONE) Node(*t, id);
+  if (n.key == ir::Primitive(Op::kCacheStore)) {
+    // The cache's latest store, which a kernel reading the stored cache
+    // takes as its source (llmp.qsa.pool, llmp.qsa.attn).
+    ggml_tensor* cache = made_.at(p_.root(n.src[0]).v);
+    if (cache != nullptr) stores_[cache] = *t;
+  }
   return {};
 }
 
@@ -916,14 +1391,22 @@ std::expected<void, KernelFailure> Lowering::Bind() {
   for (const auto& [t, offset] : plan_.placement.offsets) {
     const auto root = placed_root_.find(t.v);
     ggml_tensor* g = root != placed_root_.end() ? root->second : made_.at(t.v);
-    if (g == nullptr) return Refused("a placed tensor the lowering did not make");
+    // What nothing made reads keeps its place unused (Needed).
+    if (g == nullptr && !needed_.at(p_.producer(t).v)) continue;
+    if (g == nullptr) {
+      return Refused(std::format("a placed tensor the lowering did not make ({}, {})", p_.name(t),
+                                 ir::OpKeyName(p_.node(p_.producer(t)).key)));
+    }
     if (g->view_src != nullptr) return Refused("a placed tensor is a view");
     // What the placement made room for: the tensor's own bytes, or what the
     // module writes (WrittenBytes), which the plan was made with.
     const auto own = planner::RootBytes(p_.tensor(t));
     if (!own || ggml_nbytes(g) > std::max(*own, WrittenBytes(p_, t))) {
-      return Refused(std::format("{} writes {} bytes, more than its place holds", ggml_op_desc(g),
-                                 ggml_nbytes(g)));
+      return Refused(std::format(
+          "{} ({}, {}) writes {} bytes, more than its place holds ({}: {} bytes, {} written)",
+          ggml_op_desc(g), g->op == GGML_OP_CUSTOM ? static_cast<int>(LlmpOpOf(g)) : -1,
+          ggml_type_name(g->type), ggml_nbytes(g), ir::OpKeyName(p_.node(p_.producer(t)).key),
+          own ? *own : 0, WrittenBytes(p_, t)));
     }
     TensorArena::Bind(g, base + offset);
   }
@@ -946,8 +1429,38 @@ std::expected<void, KernelFailure> Lowering::Bind() {
     if (address == 0 && !addresses.measuring()) return Refused("a state tensor has no address");
     TensorArena::Bind(t, address != 0 ? address : placeholder(t));
   }
+  for (const auto& [t, w, role] : part_leaves_) {
+    const std::uint64_t address = addresses.weight ? addresses.weight(w->ref, role) : 0;
+    if (address == 0 && !addresses.measuring()) return Refused("a weight's part has no address");
+    TensorArena::Bind(t, address != 0 ? address : placeholder(t));
+  }
+  // A verify's saves and a commit's rows of them: the caller's buffers.
+  const auto save_at = [&](std::uint32_t layer, std::uint16_t component, std::string_view what,
+                           std::uint8_t segment) -> std::uint64_t {
+    return addresses.save ? addresses.save(layer, component, what, segment) : 0;
+  };
+  for (const auto& [t, s] : save_leaves_) {
+    const std::uint64_t address = save_at(s->layer, s->component, s->what, s->segment);
+    if (address == 0 && !addresses.measuring()) return Refused("a verify's save has no buffer");
+    TensorArena::Bind(t, address != 0 ? address : placeholder(t));
+  }
+  for (const auto& [t, input] : external_) {
+    // The layer is the saver's: a commit's input names its component, whose
+    // instance's layer the input's name carries (components/step.h Saved).
+    const std::uint64_t address =
+        save_at(SavedLayer(*input), input->component, input->what, input->segment);
+    if (address == 0 && !addresses.measuring()) return Refused("a commit's saved rows' buffer");
+    TensorArena::Bind(t, address != 0 ? address : placeholder(t));
+  }
   for (const auto& [t, slot] : input_leaves_) {
     if (t->data == nullptr) return Refused("an input the plan did not place");
+  }
+  for (const InsideRoot& in : inside_) {
+    const auto root = placed_root_.find(in.root.v);
+    const ggml_tensor* r = root != placed_root_.end() ? root->second : made_.at(in.root.v);
+    if (r == nullptr || r->data == nullptr)
+      return Refused("an intermediate's result is not placed");
+    in.t->data = static_cast<char*>(r->data) + in.offset;
   }
   for (const auto& [t, result] : elided_) {
     const ggml_tensor* root = result;
@@ -959,7 +1472,12 @@ std::expected<void, KernelFailure> Lowering::Bind() {
   }
   BindViews(out_.nodes);
   for (const ggml_tensor* t : out_.nodes) {
-    if (t->data == nullptr) return Refused(std::format("{} is not bound", ggml_op_desc(t)));
+    if (t->data == nullptr) {
+      return Refused(std::format("{} {} ({}) [{}, {}, {}, {}] is not bound", ggml_op_desc(t),
+                                 ggml_get_name(t),
+                                 t->op == GGML_OP_CUSTOM ? static_cast<int>(LlmpOpOf(t)) : -1,
+                                 t->ne[0], t->ne[1], t->ne[2], t->ne[3]));
+    }
   }
   return {};
 }
@@ -967,6 +1485,10 @@ std::expected<void, KernelFailure> Lowering::Bind() {
 std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
   // The device's choices, with the policies the selection takes.
   DeviceChoices choices = device_;
+  // Several owners' rows each as alone (the plan's owner_row_invariant):
+  // float products of up to 8 columns on the vector kernel, as each
+  // owner's one row alone takes (today's waves keep them per slot).
+  choices.vector_floats = choices.vector_floats || plan_.owner_row_invariant;
   for (const planner::Selected& s : plan_.steps) {
     const std::string_view name = registry_.at(s.implementation).name;
     choices.fuse_norms = choices.fuse_norms || name == kRmsNormMulFused;
@@ -1011,13 +1533,38 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
       want.insert(want.end(), l.begin(), l.end());
     }
     if (want.empty()) {
-      // A host-built mask, staged before the run: placed as the IR placed
-      // its step, which holds only where nothing computed before it (the
-      // masks come first, BuildStep).
-      if (j != 0) return Refused("a host-built mask after the step's computed nodes");
+      // A node made by another's kernel or not at all (quiet), or a
+      // host-built mask, staged before the run: placed as the IR placed its
+      // step, which holds only where nothing computed before it (the masks
+      // come first, BuildStep).
+      const bool quiet = std::ranges::all_of(s.nodes, [&](NodeId id) { return quiet_.at(id.v); });
+      if (!quiet && j != 0) return Refused("a host-built mask after the step's computed nodes");
       continue;
     }
     const std::string_view name = registry_.at(s.implementation).name;
+    // An implementation whose node launches several of the module's steps,
+    // or one named otherwise (Capability::launches): PlanGraph's steps over
+    // its nodes, in order, each one of those.
+    const auto& cap = registry_.at(s.implementation).capability;
+    if (cap && !cap->launches.empty()) {
+      std::vector<ggml_tensor*> covered;
+      const std::size_t first = j;
+      while (j < gp.steps.size() && covered.size() < want.size() &&
+             std::ranges::contains(cap->launches, gp.steps[j].implementation) &&
+             std::ranges::equal(
+                 gp.steps[j].nodes,
+                 std::span(want).subspan(covered.size(), std::min(want.size() - covered.size(),
+                                                                  gp.steps[j].nodes.size())))) {
+        covered.insert(covered.end(), gp.steps[j].nodes.begin(), gp.steps[j].nodes.end());
+        gp.steps[j].lane = s.lane;
+        ++j;
+      }
+      if (covered != want) {
+        return Refused(std::format("PlanGraph's steps from {} are not {}'s launches over{}", first,
+                                   name, describe(want)));
+      }
+      continue;
+    }
     if (j >= gp.steps.size()) {
       return Refused(
           std::format("PlanGraph has no step for the IR's {} over{}", name, describe(want)));
@@ -1042,6 +1589,13 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
       }
     }
     bool same = got.nodes == want && got.implementation == name;
+    // The owners' row-invariant products (the plan's owner_row_invariant)
+    // stand for their group's.
+    same = same ||
+           (plan_.owner_row_invariant && got.nodes == want &&
+            (((got.implementation == kMulMatVecFRows || got.implementation == kMulMatVecQRows) &&
+              s.group == "ggml.mul_mat") ||
+             (got.implementation == kMulMatIdVecQRows && s.group == "ggml.mul_mat_id")));
     if (!same && got.nodes == want && !s.group.empty()) {
       // A member of the selected group, upstream's choice inside it.
       const auto member = registry_.Find(got.implementation);
@@ -1057,6 +1611,12 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     got.lane = s.lane;
     ++j;
   }
+  // The lowering's own steps (a verify's saves) after the IR's.
+  while (j < gp.steps.size() &&
+         std::ranges::all_of(
+             gp.steps[j].nodes, [&](const ggml_tensor* t) { return extra_.contains(t); })) {
+    ++j;
+  }
   if (j != gp.steps.size()) {
     return Refused(std::format("PlanGraph has {} steps beyond the IR's: {} over{}",
                                gp.steps.size() - j, gp.steps[j].implementation,
@@ -1068,7 +1628,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     gp.regions.push_back({.first = r.first, .last = r.last});
   }
   if (!gp.regions.empty() && j != plan_.steps.size()) {
-    return Refused("concurrent lanes with host-built masks or unfused norms");
+    return Refused("concurrent lanes with host-built masks, unfused norms or several launches");
   }
   out_.plan = std::move(gp);
   return {};
@@ -1150,8 +1710,717 @@ std::expected<void, KernelFailure> Lowering::Slots() {
   return {};
 }
 
+// ------------------------------------------------- the fast forms (G3b)
+
+// A packed `type` [ne0, ne1] view of a byte blob a llmpalooza operation
+// wrote (several outputs in one tensor), from `offset`: qwen38_graph.cc's
+// TypedView.
+ggml_tensor* TypedView(ggml_context* c, ggml_tensor* blob, ggml_type type, std::int64_t ne0,
+                       std::int64_t ne1, std::size_t offset) {
+  const std::size_t row = ggml_row_size(type, ne0);
+  ggml_tensor* v = ggml_view_1d(
+      c, blob,
+      static_cast<std::int64_t>(row * static_cast<std::size_t>(ne1) / ggml_type_size(blob->type)),
+      offset);
+  v->type = type;
+  v->ne[0] = ne0;
+  v->ne[1] = ne1;
+  v->nb[0] = ggml_type_size(type);
+  v->nb[1] = row;
+  v->nb[2] = row * static_cast<std::size_t>(ne1);
+  v->nb[3] = v->nb[2];
+  return v;
+}
+
+// GGML's row norms take packed input: qwen38_graph.cc's Packed.
+bool IsPacked(const ggml_tensor* x) {
+  bool packed = x->nb[0] == ggml_type_size(x->type);
+  for (int i = 1; i < GGML_MAX_DIMS; ++i) {
+    packed = packed && x->nb[i] == x->nb[i - 1] * static_cast<std::size_t>(x->ne[i - 1]);
+  }
+  return packed;
+}
+
+std::string_view Lowering::Selected(NodeId id) const {
+  const std::size_t impl = impl_of_.at(id.v);
+  return impl == kNoImplementation ? std::string_view{} : registry_.at(impl).name;
+}
+
+bool Lowering::Direct(NodeId id) const {
+  const ir::Node& n = p_.node(id);
+  if (n.key.op != Op::kFused) return false;
+  switch (n.key.fused) {
+    case FusedKind::kHcPrep:
+    case FusedKind::kScaledUnary:
+    case FusedKind::kHcFold:
+    case FusedKind::kHcCombine:
+    case FusedKind::kHcMixNorm:
+    case FusedKind::kHcNorm:
+    case FusedKind::kGdnConv:
+    case FusedKind::kGdnHistory:
+    case FusedKind::kGdnStep:
+    case FusedKind::kGdnGates:
+    case FusedKind::kNormGate:
+    case FusedKind::kHeadGate:
+    case FusedKind::kQsaPool:
+    case FusedKind::kQsaAttention:
+    case FusedKind::kMoeRouter:
+    case FusedKind::kMoeExperts:
+    case FusedKind::kMoeGlu:
+    case FusedKind::kMoeCombine:
+    case FusedKind::kMatMulIdGlu:
+      return true;
+    case FusedKind::kRmsNormMulRope:
+      return Selected(id) == kQsaPrepName;
+    case FusedKind::kMatMulGlu:
+      return Selected(id).starts_with("llmp.vecq");
+    default:
+      return false;
+  }
+}
+
+ggml_tensor* Lowering::Part(TensorId planned, format::PartRole role) const {
+  const auto at = parts_.find(planned.v);
+  if (at == parts_.end()) return nullptr;
+  const auto part = at->second.find(role);
+  return part == at->second.end() ? nullptr : part->second;
+}
+
+ggml_tensor* Lowering::StoredInto(const ggml_tensor* leaf) const {
+  const auto at = stores_.find(leaf);
+  return at == stores_.end() ? nullptr : at->second;
+}
+
+void Lowering::Inside(ggml_tensor* t, TensorId root, std::uint64_t offset) {
+  inside_.push_back({.t = t, .root = root, .offset = offset});
+}
+
+// The nodes the lowering makes: what the step returns, keeps or writes
+// (state, a verify's saves), and what those read, through each node's
+// sources but those its GGML form does not read (a fused selection's masks
+// and block keys' view, a block-key pool's positions and cells, a
+// preparation another kernel writes).
+void Lowering::Needed() {
+  needed_.assign(p_.nodes().size(), false);
+  std::vector<NodeId> work;
+  const auto need = [&](TensorId t) {
+    if (!t.valid()) return;
+    const NodeId id = p_.producer(t);
+    if (!needed_.at(id.v)) {
+      needed_.at(id.v) = true;
+      work.push_back(id);
+    }
+  };
+  for (const TensorId t : p_.outputs()) need(t);
+  for (const TensorId t : p_.keep()) need(t);
+  // A verify's saves and the rows they are stored at (MakeSaves).
+  for (const co::CommitSave& s : in_.step.saves) {
+    need(plan_.tensors.at(s.tensor.v));
+    if (s.rows.valid()) need(plan_.tensors.at(s.rows.v));
+  }
+  for (std::uint32_t i = 0; i < p_.nodes().size(); ++i) {
+    const ir::Node& n = p_.nodes()[i];
+    bool writes = false;
+    if (n.key == ir::Primitive(Op::kCacheStore)) {
+      writes = p_.tensor(p_.root(n.src[0])).role == ir::Role::kState;
+    }
+    for (std::size_t o = 0; o < n.nout; ++o) {
+      writes = writes || (n.key.op == Op::kFused && ir::AliasedSource(n.key, o).has_value());
+    }
+    if (writes && !needed_.at(i)) {
+      needed_.at(i) = true;
+      work.push_back(NodeId{i});
+    }
+  }
+  while (!work.empty()) {
+    const NodeId id = work.back();
+    work.pop_back();
+    const ir::Node& n = p_.node(id);
+    if (const auto f = folded_.find(id.v); f != folded_.end()) {
+      need(p_.node(f->second).out[0]);
+      continue;
+    }
+    for (std::size_t i = 0; i < n.nsrc; ++i) {
+      const TensorId s = n.src.at(i);
+      if (!s.valid()) continue;
+      if (n.key == ir::Fused(FusedKind::kQsaAttention) && i >= 4 && i <= 7) {
+        if (i == 4) need(p_.root(s));  // the block keys' leaf
+        continue;
+      }
+      if (n.key == ir::Fused(FusedKind::kQsaPool) && (i == 3 || i == 4)) continue;
+      // Stage the exact mask's proved equivalent positions, which may be
+      // the original plain root rather than a replicated input.
+      if (n.key == ir::Primitive(Op::kMaskBuild) && i == 0 &&
+          n.Params<ir::MaskParams>().exact_rows && options_.device_masks) {
+        need(exact_mask_positions_.at(n.out[0].v));
+        continue;
+      }
+      need(s);
+    }
+    // A view reads its root.
+    for (const TensorId o : n.outputs()) {
+      if (p_.tensor(o).is_view()) need(p_.root(o));
+    }
+  }
+}
+
+// The fast forms' primitive products, conversions, preparations, lookups
+// and the gated delta rule (`made` false: none of those, the generic path).
+std::expected<void, KernelFailure> Lowering::MakeSpecial(NodeId id, const ir::Node& n, bool& made) {
+  made = true;
+  const std::string_view impl = Selected(id);
+  const auto src = [&](std::size_t i) { return made_.at(n.src.at(i).v); };
+  const ir::TensorDesc& out = p_.tensor(n.out[0]);
+  const auto out_type = out.format.encoding == Encoding::kBF16 ? GGML_TYPE_BF16 : GGML_TYPE_F32;
+  switch (n.key.op) {
+    case Op::kMatMul: {
+      const ir::TensorDesc& w = p_.tensor(n.src[0]);
+      const ir::TensorDesc& x = p_.tensor(n.src[1]);
+      if (w.format.encoding == Encoding::kMxfp8) {
+        ggml_tensor* codes = Part(n.src[0], format::PartRole::kCodes);
+        ggml_tensor* scales = Part(n.src[0], format::PartRole::kBlockScales);
+        if (codes == nullptr || scales == nullptr) return Refused("an MXFP8 product's parts");
+        if (x.format.encoding == Encoding::kF32) {
+          ggml_tensor* t = Mxfp8MulMatVec(c_, codes, scales, src(1));
+          made_.at(n.out[0].v) = t;
+          Node(t, id);
+          return {};
+        }
+        if (!ir::PreparedRows(x.format)) return Refused("an MXFP8 product of an unprepared input");
+        ggml_tensor* swizzled = Mxfp8Swizzle(c_, scales);
+        ggml_tensor* t =
+            Mxfp8Gemm(c_, src(1), codes, swizzled, out_type, static_cast<std::int64_t>(x.ne(1)));
+        Node(swizzled, id);
+        Node(t, id);
+        made_.at(n.out[0].v) = t;
+        Inside(swizzled, n.out[0], Round(ggml_nbytes(t), 256));
+        return {};
+      }
+      if (w.format.encoding == Encoding::kBF16 && x.format.encoding == Encoding::kBF16) {
+        // The hyper-connections' products (their normed streams' and
+        // low-rank rows): GemvBf16, which takes its vector kernel at one
+        // column; any other GemmBf16.
+        const ir::Node& from = p_.node(p_.producer(p_.root(n.src[1])));
+        const bool hc = from.key == ir::Fused(FusedKind::kHcPrep) ||
+                        from.key == ir::Fused(FusedKind::kScaledUnary);
+        ggml_tensor* t =
+            hc ? GemvBf16(c_, src(0), src(1), out_type) : GemmBf16(c_, src(0), src(1), out_type);
+        if (hc && plan_.owner_row_invariant) SetGemvBf16Wide(t);
+        made_.at(n.out[0].v) = t;
+        Node(t, id);
+        return {};
+      }
+      if (x.format.encoding == Encoding::kQ8_1 && impl == "llmp.vecq.dense") {
+        ggml_tensor* t =
+            VecQ(c_, src(0), src(1), nullptr, static_cast<std::int64_t>(x.ne(1)), false);
+        OwnersAlone(t);
+        made_.at(n.out[0].v) = t;
+        Node(t, id);
+        return {};
+      }
+      break;
+    }
+    case Op::kMatMulId: {
+      const ir::TensorDesc& x = p_.tensor(n.src[1]);
+      if (x.format.encoding == Encoding::kQ8_1 && impl == "llmp.vecq.experts") {
+        const ir::TensorDesc& ids = p_.tensor(n.src[2]);
+        ggml_tensor* t =
+            VecQ(c_, src(0), src(1), src(2), static_cast<std::int64_t>(ids.ne(1)), true);
+        OwnersAlone(t);
+        made_.at(n.out[0].v) = t;
+        Node(t, id);
+        return {};
+      }
+      break;
+    }
+    case Op::kConvert:
+      if (impl == kBf16Name) {
+        ggml_tensor* t = ToBf16(c_, src(0));
+        made_.at(n.out[0].v) = t;
+        Node(t, id);
+        return {};
+      }
+      break;
+    case Op::kPrepare:
+      if (ir::PreparedRows(out.format)) {
+        if (folded_.contains(id.v)) {
+          // Written by the kernel of the node it is folded into.
+          if (made_.at(n.out[0].v) == nullptr) return Refused("a folded preparation was not made");
+          quiet_.at(id.v) = true;
+          return {};
+        }
+        ggml_tensor* t = Mxfp8Quantize(c_, src(0));
+        made_.at(n.out[0].v) = t;
+        Node(t, id);
+        return {};
+      }
+      break;
+    case Op::kGetRows: {
+      const ir::TensorDesc& table = p_.tensor(n.src[0]);
+      if (table.format.encoding == Encoding::kNvfp4 &&
+          table.format.layout == format::Layout::kRowInterleaved) {
+        ggml_tensor* rows = Part(n.src[0], format::PartRole::kData);
+        ggml_tensor* scale = Part(n.src[0], format::PartRole::kTensorScale);
+        if (rows == nullptr || scale == nullptr) return Refused("an NVFP4 table's parts");
+        ggml_tensor* t = Nvfp4Rows(c_, rows, src(1), scale, static_cast<std::int64_t>(table.ne(0)));
+        made_.at(n.out[0].v) = t;
+        Node(t, id);
+        return {};
+      }
+      if (impl == kQRowsName) {
+        ggml_tensor* t = QRows(c_, src(0), src(1));
+        made_.at(n.out[0].v) = t;
+        Node(t, id);
+        return {};
+      }
+      break;
+    }
+    case Op::kSsmConv: {
+      // Past 32 tokens upstream's convolution loads whole 32-token windows,
+      // which would read past the input when the tokens are not a multiple
+      // of 32 (RE-032; CheckSsmConv refuses that): the input padded to
+      // whole windows with a copy of its first columns, whose outputs are
+      // dropped, as Qwen3.8's builder pads it. The copy and the padded
+      // input sit in the result's place after it (KernelBytes).
+      ggml_tensor* x = src(0);
+      const std::int64_t pad = SsmConvPad(p_, n);
+      if (pad == 0) break;
+      const std::int64_t nt = static_cast<std::int64_t>(out.ne(1));
+      ggml_tensor* first = ggml_view_3d(c_, x, pad, x->ne[1], x->ne[2], x->nb[1], x->nb[2], 0);
+      ggml_tensor* copy = ggml_cont(c_, first);
+      ggml_tensor* wide = ggml_concat(c_, x, copy, 0);
+      ggml_tensor* conv = ggml_ssm_conv(c_, wide, src(1));
+      ggml_tensor* t = ggml_view_3d(c_, conv, conv->ne[0], nt, conv->ne[2], conv->nb[1],
+                                    conv->nb[1] * static_cast<std::size_t>(nt), 0);
+      for (ggml_tensor* g : {first, copy, wide, conv, t}) Node(g, id);
+      made_.at(n.out[0].v) = t;
+      placed_root_[n.out[0].v] = conv;
+      Inside(copy, n.out[0], Round(ggml_nbytes(conv), 256));
+      Inside(wide, n.out[0], Round(ggml_nbytes(conv), 256) + Round(ggml_nbytes(copy), 256));
+      return {};
+    }
+    case Op::kGatedDeltaNet: {
+      // GGML's one result: the attention, then the state; views of it.
+      ggml_tensor* result =
+          ggml_gated_delta_net(c_, src(0), src(1), src(2), src(3), src(4), src(5), 1);
+      Node(result, id);
+      const ir::TensorDesc& v = p_.tensor(n.src[2]);
+      const std::int64_t d = static_cast<std::int64_t>(v.ne(0));
+      const std::int64_t hv = static_cast<std::int64_t>(v.ne(1));
+      const std::int64_t nt = static_cast<std::int64_t>(v.ne(2));
+      const std::int64_t dk = static_cast<std::int64_t>(p_.tensor(n.src[0]).ne(0));
+      ggml_tensor* attn = ggml_view_4d(c_, result, d, hv, nt, 1, ggml_row_size(result->type, d),
+                                       ggml_row_size(result->type, d * hv),
+                                       ggml_row_size(result->type, d * hv * nt), 0);
+      ggml_tensor* state = ggml_view_4d(c_, result, dk, d, hv, 1, ggml_row_size(result->type, dk),
+                                        ggml_row_size(result->type, dk * d),
+                                        ggml_row_size(result->type, dk * d * hv),
+                                        ggml_row_size(result->type, d * hv * nt));
+      Node(attn, id);
+      Node(state, id);
+      made_.at(n.out[0].v) = attn;
+      made_.at(n.out[1].v) = state;
+      placed_root_[n.out[0].v] = result;
+      return {};
+    }
+    default:
+      break;
+  }
+  made = false;
+  return {};
+}
+
+// llmpalooza's fast-form kernels over GGML tensors, as qwen38_graph.cc's
+// builder makes them for the node's sources.
+std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Node& n) {
+  const auto src = [&](std::size_t i) -> ggml_tensor* {
+    return i < n.nsrc && n.src.at(i).valid() ? made_.at(n.src.at(i).v) : nullptr;
+  };
+  const auto desc = [&](std::size_t i) -> const ir::TensorDesc& { return p_.tensor(n.src.at(i)); };
+  const auto set = [&](std::size_t o, ggml_tensor* t) { made_.at(n.out.at(o).v) = t; };
+  for (std::size_t i = 0; i < n.nsrc; ++i) {
+    // (The sources its kernels do not read are made where needed.)
+    if (n.src.at(i).valid() && made_.at(n.src.at(i).v) == nullptr &&
+        !(n.key == ir::Fused(FusedKind::kQsaAttention) && i >= 4 && i <= 7) &&
+        !(n.key == ir::Fused(FusedKind::kQsaPool) && (i == 3 || i == 4))) {
+      return Refused(std::format("{}'s source {} was not made", ir::OpKeyName(n.key), i));
+    }
+  }
+  switch (n.key.fused) {
+    case FusedKind::kHcPrep: {
+      const auto p = n.Params<ir::HcNormPostParams>();
+      const ir::TensorDesc& xd = desc(0);
+      const auto width = static_cast<std::int64_t>(xd.ne(0));
+      const auto hc = static_cast<std::int64_t>(xd.ne(1));
+      const auto nt = static_cast<std::int64_t>(xd.ne(2));
+      ggml_tensor* out = src(3) != nullptr ? ggml_reshape_2d(c_, src(3), width, nt) : nullptr;
+      if (out != nullptr) Node(out, id);
+      ggml_tensor* blob = HcPrep(c_, src(0), src(1), src(2), out, src(4), p.eps);
+      Node(blob, id);
+      const HcPrepLayout layout{.width = width,
+                                .hc = hc,
+                                .t = nt,
+                                .combine = out != nullptr,
+                                .inject = src(2) != nullptr};
+      ggml_tensor* xn = TypedView(c_, blob, GGML_TYPE_BF16, width * hc, nt, layout.normed());
+      Node(xn, id);
+      set(0, xn);
+      placed_root_[n.out[0].v] = blob;
+      std::size_t k = 1;
+      if (src(2) != nullptr) {
+        ggml_tensor* logits = TypedView(c_, blob, GGML_TYPE_F32, hc, nt, layout.logits());
+        Node(logits, id);
+        set(k++, logits);
+      }
+      if (out != nullptr) {
+        ggml_tensor* streams =
+            TypedView(c_, blob, GGML_TYPE_F32, width * hc, nt, HcPrepLayout::streams());
+        ggml_tensor* res = ggml_reshape_3d(c_, streams, width, hc, nt);
+        Node(streams, id);
+        Node(res, id);
+        set(k++, res);
+      }
+      return {};
+    }
+    case FusedKind::kScaledUnary: {
+      const auto p = n.Params<ir::ScaledUnaryParams>();
+      const auto hc = static_cast<std::int64_t>(std::lround(1.0 / static_cast<double>(p.scale)));
+      ggml_tensor* t = HcLo(c_, src(0), hc);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kHcFold: {
+      const auto p = n.Params<ir::HcFoldParams>();
+      const auto hc = static_cast<std::int64_t>(p.streams);
+      const ir::TensorDesc& od = p_.tensor(n.out[0]);
+      const auto width = static_cast<std::int64_t>(od.ne(0));
+      const auto nt = static_cast<std::int64_t>(od.ne(1));
+      if (!p.prepared) {
+        ggml_tensor* t = HcMixBf16(c_, src(0), src(1), hc);
+        Node(t, id);
+        set(0, t);
+        return {};
+      }
+      ggml_tensor* both = HcMixBf16(c_, src(0), src(1), hc, true, p.rounded);
+      Node(both, id);
+      const HcMixLayout mix{.width = width, .t = nt, .bf16 = p.rounded};
+      ggml_tensor* mixed = TypedView(c_, both, GGML_TYPE_F32, width, nt, HcMixLayout::mixed());
+      ggml_tensor* rows =
+          TypedView(c_, both, GGML_TYPE_I8, static_cast<std::int64_t>(mix.quantized_bytes()), 1,
+                    mix.quantized());
+      Node(mixed, id);
+      Node(rows, id);
+      set(0, mixed);
+      set(1, rows);
+      placed_root_[n.out[0].v] = both;
+      if (p.rounded) {
+        ggml_tensor* rounded = TypedView(c_, both, GGML_TYPE_BF16, width, nt, mix.rounded());
+        Node(rounded, id);
+        set(2, rounded);
+      }
+      return {};
+    }
+    case FusedKind::kHcCombine: {
+      const ir::TensorDesc& xd = desc(0);
+      ggml_tensor* out = ggml_reshape_2d(c_, src(1), static_cast<std::int64_t>(xd.ne(0)),
+                                         static_cast<std::int64_t>(xd.ne(2)));
+      Node(out, id);
+      ggml_tensor* t = HcCombine(c_, src(0), out, src(2));
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kHcNorm: {
+      const auto p = n.Params<ir::NormParams>();
+      ggml_tensor* t = HcNorm(
+          c_, src(0), src(1), p.eps,
+          p_.tensor(n.out[0]).format.encoding == Encoding::kBF16 ? GGML_TYPE_BF16 : GGML_TYPE_F32);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kHcMixNorm: {
+      const auto p = n.Params<ir::HcNormPostParams>();
+      ggml_tensor* t = HcMix(c_, src(0), src(1), src(2), p.eps);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kGdnConv: {
+      const auto p = n.Params<ir::GdnConvParams>();
+      ggml_tensor* t = GdnConv(c_, src(0), src(1), src(2), p.qk_channels, p.head, p.eps, p.scale);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kGdnHistory: {
+      const auto p = n.Params<ir::GdnHistoryParams>();
+      ggml_tensor* t = GdnHistory(c_, src(0), p.taps, src(1));
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kGdnStep: {
+      const auto p = n.Params<ir::GdnStepParams>();
+      const ir::TensorDesc& q = desc(0);
+      const ir::TensorDesc& v = desc(2);
+      ggml_tensor* state = ggml_reshape_4d(c_, src(5), static_cast<std::int64_t>(q.ne(0)),
+                                           static_cast<std::int64_t>(v.ne(0)),
+                                           static_cast<std::int64_t>(v.ne(1)), 1);
+      Node(state, id);
+      ggml_tensor* t = GdnStep(c_, src(0), src(1), src(2), src(3), src(4), state, p.write);
+      Node(t, id);
+      set(0, t);
+      if (p.write) {
+        set(1, src(5));
+        stores_[src(5)] = t;
+      }
+      return {};
+    }
+    case FusedKind::kGdnGates: {
+      ggml_tensor* gates = GdnGates(c_, src(0), src(1), src(2), src(3));
+      Node(gates, id);
+      const ir::TensorDesc& a = desc(0);
+      const auto hv = static_cast<std::int64_t>(a.ne(0));
+      const auto nt = static_cast<std::int64_t>(a.ne(1));
+      const std::size_t row = ggml_row_size(GGML_TYPE_F32, hv);
+      const std::size_t plane = row * static_cast<std::size_t>(nt);
+      ggml_tensor* gate = ggml_view_4d(c_, gates, 1, hv, nt, 1, sizeof(float), row, plane, 0);
+      ggml_tensor* beta = ggml_view_4d(c_, gates, 1, hv, nt, 1, sizeof(float), row, plane, plane);
+      Node(gate, id);
+      Node(beta, id);
+      set(0, gate);
+      set(1, beta);
+      placed_root_[n.out[0].v] = gates;
+      return {};
+    }
+    case FusedKind::kNormGate: {
+      const auto p = n.Params<ir::NormParams>();
+      const ir::TensorDesc& o = desc(0);
+      const auto d = static_cast<std::int64_t>(o.ne(0));
+      const auto heads = static_cast<std::int64_t>(o.ne(1));
+      const auto nt = static_cast<std::int64_t>(o.ne(2));
+      ggml_tensor* z = ggml_reshape_2d(c_, src(2), d * heads, nt);
+      Node(z, id);
+      // Folded into the preparation that reads it: MXFP8 rows.
+      NodeId into{};
+      for (const auto& [prepare, producer] : folded_) {
+        if (producer == id) into = NodeId{prepare};
+      }
+      const ggml_type type = into.valid() ? GGML_TYPE_I8 : GGML_TYPE_F32;
+      ggml_tensor* t = GdnNormGate(c_, src(0), src(1), z, p.eps, type);
+      Node(t, id);
+      set(0, t);
+      if (into.valid()) made_.at(p_.node(into).out[0].v) = t;
+      return {};
+    }
+    case FusedKind::kHeadGate: {
+      const auto p = n.Params<ir::HeadGateParams>();
+      ggml_tensor* t = QsaGateQuantize(c_, src(0), src(1), p.head);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kRmsNormMulRope: {
+      // llmp.qsa.prep: the heads of x's root at x's stride.
+      const auto p = n.Params<ir::NormRopeParams>();
+      ggml_tensor* x = src(0);
+      ggml_tensor* root = x->view_src != nullptr ? x->view_src : x;
+      const ir::TensorDesc& xd = desc(0);
+      const auto d = static_cast<std::int64_t>(xd.ne(0));
+      const auto heads = static_cast<std::int64_t>(xd.ne(1));
+      const auto stride = static_cast<std::int64_t>(xd.nb.at(1) / sizeof(float));
+      if (xd.view_offset != 0) return Refused("a head prep of a view past its root's start");
+      const float theta = std::pow(p.rope.base, -2.0F / static_cast<float>(p.rope.dims));
+      ggml_tensor* t = QsaPrep(c_, root, src(1), src(2), d, heads, stride, p.eps, theta);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kQsaPool: {
+      const auto p = n.Params<ir::QsaPoolParams>();
+      ggml_tensor* blocks = src(1);
+      ggml_tensor* positions = SegmentPositions(n, 5, id);
+      ggml_tensor* raw_leaf = made_.at(p_.root(n.src[0]).v);
+      ggml_tensor* raw = StoredInto(raw_leaf);
+      if (raw == nullptr) return Refused("a block pool before its raw keys' store");
+      const float theta = std::pow(p.rope.base, -2.0F / static_cast<float>(p.rope.dims));
+      ggml_tensor* t = QsaPool(c_, raw, blocks, src(2), positions, p.ratio, p.eps, theta);
+      Node(t, id);
+      // Its I32 [1] result is an ordering token (llmp.qsa.topk reads it),
+      // never written, apart from every operand: past the positions' bytes
+      // in their place (WrittenBytes), which every later reader keeps.
+      const ir::TensorId held = p_.root(n.src[5]);
+      Inside(t, held, Round(planner::RootBytes(p_.tensor(held)).value_or(0), 256));
+      set(0, blocks);
+      pools_[blocks] = t;
+      return {};
+    }
+    case FusedKind::kQsaAttention: {
+      const auto p = n.Params<ir::QsaAttnParams>();
+      ggml_tensor* blocks = made_.at(p_.root(n.src[4]).v);
+      const auto pool = pools_.find(blocks);
+      ggml_tensor* k = StoredInto(made_.at(p_.root(n.src[1]).v));
+      ggml_tensor* v = StoredInto(made_.at(p_.root(n.src[2]).v));
+      if (pool == pools_.end() || k == nullptr || v == nullptr) {
+        return Refused("a selection before its block keys' pool or its caches' stores");
+      }
+      const auto n_blocks = static_cast<std::int64_t>(desc(4).ne(1));
+      // (Over the positions its pool read: the same tensor, as the kernel
+      // checks.)
+      ggml_tensor* top = QsaTopK(c_, src(3), blocks, pool->second->src[3], pool->second, n_blocks,
+                                 p.width, p.ratio);
+      ggml_tensor* t = QsaAttn(c_, src(0), k, v, top, p.attn.scale);
+      Node(top, id);
+      Node(t, id);
+      set(0, t);
+      Inside(top, n.out[0], Round(ggml_nbytes(t), 256));
+      return {};
+    }
+    case FusedKind::kMoeRouter: {
+      const auto p = n.Params<ir::RouteParams>();
+      const auto nt = static_cast<std::int64_t>(desc(0).ne(1));
+      const auto used = static_cast<std::int64_t>(p.used);
+      ggml_tensor* routed = MoeRouter(c_, src(0), src(1), src(2), used);
+      Node(routed, id);
+      const MoeRouterLayout layout{.used = used, .t = nt};
+      ggml_tensor* ids = TypedView(c_, routed, GGML_TYPE_I32, used, nt, MoeRouterLayout::ids());
+      ggml_tensor* w = TypedView(c_, routed, GGML_TYPE_F32, used, nt, layout.weights());
+      ggml_tensor* gate = TypedView(c_, routed, GGML_TYPE_F32, 1, nt, layout.gate());
+      for (ggml_tensor* t : {ids, w, gate}) Node(t, id);
+      set(0, ids);
+      set(1, w);
+      set(2, gate);
+      placed_root_[n.out[0].v] = routed;
+      return {};
+    }
+    case FusedKind::kMoeGlu: {
+      ggml_tensor* t = MoeGlu(c_, src(0), src(1), src(2), src(3), src(4));
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kMoeCombine: {
+      const ir::TensorDesc& w = desc(2);
+      ggml_tensor* weights = ggml_reshape_3d(c_, src(2), 1, static_cast<std::int64_t>(w.ne(0)),
+                                             static_cast<std::int64_t>(w.ne(1)));
+      Node(weights, id);
+      ggml_tensor* t = MoeCombine(c_, src(0), src(1), src(5), weights, src(3), src(4));
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kMoeExperts: {
+      const auto p = n.Params<ir::MoeExpertsParams>();
+      ggml_tensor* experts = src(0);
+      if (experts != src(1)) return Refused("the CUTLASS experts' arrays in two slabs");
+      const ir::TensorDesc& xd = desc(2);
+      const ir::TensorDesc& ids = desc(3);
+      const auto width = static_cast<std::int64_t>(xd.ne(0));
+      const auto nt = static_cast<std::int64_t>(xd.ne(1));
+      const auto used = static_cast<std::int64_t>(ids.ne(0));
+      const auto f = static_cast<std::int64_t>(p.hidden);
+      const auto e = static_cast<std::int64_t>(p_.tensor(n.src[7]).ne(0));
+      const moe::ExpertLayout layout{.ffn = static_cast<std::uint64_t>(f),
+                                     .width = static_cast<std::uint64_t>(width)};
+      ggml_tensor* weights = ggml_reshape_3d(c_, src(4), 1, used, nt);
+      Node(weights, id);
+      std::vector<ggml_tensor*> inner;
+      ggml_tensor* t = nullptr;
+      if (nt <= kMoeGemvTokens) {
+        ggml_tensor* x = ggml_reshape_3d(c_, src(2), width, 1, nt);
+        Node(x, id);
+        ggml_tensor* act =
+            MoeGemvSwiglu(c_, experts, x, src(3), f, src(7), src(8),
+                          moe::ExpertLayout::gate_up_codes(), layout.gate_up_scales());
+        ggml_tensor* down = MoeGemv(c_, experts, act, src(3), width, 0, width, layout.down_codes(),
+                                    layout.down_scales());
+        t = MoeCombine(c_, down, src(3), src(9), weights, src(5), src(6));
+        inner = {act, down};
+      } else {
+        ggml_tensor* route = MoeRoute(c_, src(3), e);
+        ggml_tensor* a1 = MoeQuantize(c_, src(2), route);
+        ggml_tensor* d1 = MoeGemm(c_, a1, route, experts, 2 * f, moe::ExpertLayout::gate_up_codes(),
+                                  layout.gate_up_scales());
+        ggml_tensor* a2 = MoeGluQuantize(c_, d1, a1, route, src(7), src(8));
+        ggml_tensor* d2 =
+            MoeGemm(c_, a2, route, experts, width, layout.down_codes(), layout.down_scales());
+        t = MoeCombineSorted(c_, d2, a2, route, src(9), weights, src(5), src(6));
+        inner = {route, a1, d1, a2, d2};
+      }
+      for (ggml_tensor* x : inner) Node(x, id);
+      Node(t, id);
+      set(0, t);
+      std::uint64_t at = Round(ggml_nbytes(t), 256);
+      for (ggml_tensor* x : inner) {
+        Inside(x, n.out[0], at);
+        at += Round(ggml_nbytes(x), 256);
+      }
+      return {};
+    }
+    case FusedKind::kMatMulGlu: {
+      // llmp.vecq's GLU form: up's product with gate's (weights, then gate).
+      const ir::TensorDesc& x = desc(2);
+      ggml_tensor* t = VecQ(c_, src(1), src(2), nullptr, static_cast<std::int64_t>(x.ne(1)), false,
+                            src(0), VecQGlu::kSwiglu);
+      OwnersAlone(t);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kMatMulIdGlu: {
+      const ir::TensorDesc& ids = desc(3);
+      ggml_tensor* t = VecQ(c_, src(1), src(2), src(3), static_cast<std::int64_t>(ids.ne(1)), false,
+                            src(0), VecQGlu::kSwiglu);
+      OwnersAlone(t);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    default:
+      break;
+  }
+  return Refused(std::format("no GGML lowering of {}", ir::OpKeyName(n.key)));
+}
+
+// A verify's saves (StepGraph::saves): each stored into its buffer at the
+// caller's address, at its rows (qwen38_graph.cc's Save).
+std::expected<void, KernelFailure> Lowering::MakeSaves() {
+  for (const co::CommitSave& s : in_.step.saves) {
+    const TensorId planned = plan_.tensors.at(s.tensor.v);
+    const TensorId rows_input = s.rows.valid() ? plan_.tensors.at(s.rows.v) : TensorId{};
+    ggml_tensor* src = planned.valid() ? made_.at(planned.v) : nullptr;
+    ggml_tensor* rows = rows_input.valid() ? made_.at(rows_input.v) : nullptr;
+    if (src == nullptr || rows == nullptr) return Refused("a save or its rows were not made");
+    const std::int64_t width = src->ne[0];
+    const std::int64_t n = ggml_nelements(src) / width;
+    ggml_tensor* buffer = ggml_new_tensor_2d(c_, GGML_TYPE_F32, width, n);
+    save_leaves_.emplace_back(buffer, &s);
+    out_.saves.push_back({.tensor = buffer,
+                          .layer = s.layer,
+                          .component = s.component,
+                          .what = s.what,
+                          .segment = s.segment});
+    ggml_tensor* packed = IsPacked(src) ? src : ggml_cont(c_, src);
+    if (packed != src) {
+      out_.nodes.push_back(packed);
+      extra_.insert(packed);
+    }
+    ggml_tensor* flat = ggml_reshape_2d(c_, packed, width, n);
+    ggml_tensor* store = ggml_set_rows(c_, buffer, flat, rows);
+    out_.nodes.push_back(flat);
+    out_.nodes.push_back(store);
+    extra_.insert(store);
+    out_.keep.push_back(store);
+  }
+  return {};
+}
+
 std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   if (auto indexed = Index(); !indexed) return std::unexpected(indexed.error());
+  if (auto checked = CheckQsaInputs(); !checked) return std::unexpected(checked.error());
+  Needed();
   // Room for every planned tensor and the GGML nodes a fused node stands
   // for besides its results.
   std::size_t tensors = p_.tensor_count() + 16;
@@ -1159,13 +2428,20 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     for (const NodeId r : a.replaced) tensors += g_.node(r).nout;
   }
   // The composites' GGML sequences (MakeRoute's ten nodes, MakeReduce's
-  // two products, a view and an add a slot, and the weights' rows).
+  // two products, a view and an add a slot, and the weights' rows); the
+  // fast forms' kernels' views and intermediates (at most 8 a node), a
+  // weight's parts and a verify's saves.
   for (const ir::Node& n : p_.nodes()) {
     if (n.key == ir::Primitive(Op::kRoute)) tensors += 10;
     if (n.key == ir::Primitive(Op::kExpertReduce) && n.nsrc >= 1) {
       tensors += 3 + (2 * p_.tensor(n.src[0]).ne(1));
     }
+    tensors += n.key.op == Op::kFused || n.key.op == Op::kMatMul || n.key.op == Op::kWeight ||
+                       n.key.op == Op::kGatedDeltaNet
+                   ? 8
+                   : 0;
   }
+  tensors += 4 * in_.step.saves.size();
   auto arena = TensorArena::Create(tensors);
   if (!arena) return std::unexpected(arena.error());
   out_.arena.emplace(std::move(*arena));
@@ -1181,6 +2457,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     }
     if (auto made = MakeNode(NodeId{i}); !made) return std::unexpected(made.error());
   }
+  if (auto saved = MakeSaves(); !saved) return std::unexpected(saved.error());
   if (auto bound = Bind(); !bound) return std::unexpected(bound.error());
   if (auto compared = PlanAndCompare(); !compared) return std::unexpected(compared.error());
   if (auto slots = Slots(); !slots) return std::unexpected(slots.error());
@@ -1191,9 +2468,179 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
 
 }  // namespace
 
+namespace {
+
+// The fast forms' kernels' result bytes and intermediates (laid in the
+// result's place after it, each 256-byte aligned), built over stand-ins of
+// the node's sources in a context that allocates nothing: what MakeDirect
+// and MakeSpecial make.
+std::uint64_t KernelBytes(const ir::Graph& graph, const ir::Node& n) {
+  if (n.key == ir::Primitive(Op::kSsmConv)) {
+    // The padded convolution's result, the copy and the padded input.
+    const std::int64_t pad = SsmConvPad(graph, n);
+    const ir::TensorDesc& x = graph.tensor(n.src[0]);
+    const ir::TensorDesc& o = graph.tensor(n.out[0]);
+    const std::uint64_t rows = x.ne(1) * x.ne(2) * sizeof(float);
+    return Round((o.ne(1) + static_cast<std::uint64_t>(pad)) * o.ne(0) * o.ne(2) * sizeof(float),
+                 256) +
+           Round(static_cast<std::uint64_t>(pad) * rows, 256) +
+           Round((x.ne(0) + static_cast<std::uint64_t>(pad)) * rows, 256);
+  }
+  const std::size_t room = ggml_tensor_overhead() * 32;
+  ggml_init_params params{.mem_size = room, .mem_buffer = nullptr, .no_alloc = true};
+  ggml_context* c = ggml_init(params);
+  if (c == nullptr) return 0;
+  const auto leaf = [&](ir::TensorId t, ggml_type type) {
+    const ir::TensorDesc& d = graph.tensor(t);
+    std::array<std::int64_t, 4> ne{};
+    for (std::size_t i = 0; i < 4; ++i) ne.at(i) = static_cast<std::int64_t>(d.ne(i));
+    return ggml_new_tensor(c, type, 4, ne.data());
+  };
+  std::uint64_t total = 0;
+  const auto add = [&](const ggml_tensor* t) { total += Round(ggml_nbytes(t), 256); };
+  if (n.key == ir::Fused(FusedKind::kMoeExperts)) {
+    const auto p = n.Params<ir::MoeExpertsParams>();
+    const ir::TensorDesc& xd = graph.tensor(n.src[2]);
+    const ir::TensorDesc& idd = graph.tensor(n.src[3]);
+    const auto width = static_cast<std::int64_t>(xd.ne(0));
+    const auto nt = static_cast<std::int64_t>(xd.ne(1));
+    const auto used = static_cast<std::int64_t>(idd.ne(0));
+    const auto f = static_cast<std::int64_t>(p.hidden);
+    const auto e = static_cast<std::int64_t>(graph.tensor(n.src[7]).ne(0));
+    const moe::ExpertLayout layout{.ffn = static_cast<std::uint64_t>(f),
+                                   .width = static_cast<std::uint64_t>(width)};
+    ggml_tensor* experts = ggml_new_tensor_2d(c, GGML_TYPE_I8, 16, e);
+    ggml_tensor* x = ggml_new_tensor_2d(c, GGML_TYPE_F32, width, nt);
+    ggml_tensor* ids = ggml_new_tensor_2d(c, GGML_TYPE_I32, used, nt);
+    ggml_tensor* scale = ggml_new_tensor_1d(c, GGML_TYPE_F32, e);
+    ggml_tensor* weights = ggml_new_tensor_3d(c, GGML_TYPE_F32, 1, used, nt);
+    ggml_tensor* shared = ggml_new_tensor_2d(c, GGML_TYPE_F32, width, nt);
+    ggml_tensor* gate = ggml_new_tensor_2d(c, GGML_TYPE_F32, 1, nt);
+    if (nt <= kMoeGemvTokens) {
+      ggml_tensor* x3 = ggml_reshape_3d(c, x, width, 1, nt);
+      ggml_tensor* act = MoeGemvSwiglu(c, experts, x3, ids, f, scale, scale,
+                                       moe::ExpertLayout::gate_up_codes(), layout.gate_up_scales());
+      ggml_tensor* down =
+          MoeGemv(c, experts, act, ids, width, 0, width, layout.down_codes(), layout.down_scales());
+      add(MoeCombine(c, down, ids, scale, weights, shared, gate));
+      add(act);
+      add(down);
+    } else {
+      ggml_tensor* route = MoeRoute(c, ids, e);
+      ggml_tensor* a1 = MoeQuantize(c, x, route);
+      ggml_tensor* d1 = MoeGemm(c, a1, route, experts, 2 * f, moe::ExpertLayout::gate_up_codes(),
+                                layout.gate_up_scales());
+      ggml_tensor* a2 = MoeGluQuantize(c, d1, a1, route, scale, scale);
+      ggml_tensor* d2 =
+          MoeGemm(c, a2, route, experts, width, layout.down_codes(), layout.down_scales());
+      add(MoeCombineSorted(c, d2, a2, route, scale, weights, shared, gate));
+      for (ggml_tensor* t : {route, a1, d1, a2, d2}) add(t);
+    }
+  } else if (n.key == ir::Fused(FusedKind::kQsaAttention)) {
+    const auto p = n.Params<ir::QsaAttnParams>();
+    const ir::TensorDesc& q = graph.tensor(n.src[0]);
+    add(leaf(n.out[0], GGML_TYPE_F32));
+    total += Round(static_cast<std::uint64_t>(QsaTopKRow(p.width)) * q.ne(2) * sizeof(std::int32_t),
+                   256);
+  } else if (n.key == ir::Primitive(Op::kMatMul)) {
+    const ir::TensorDesc& w = graph.tensor(n.src[0]);
+    total = Round(planner::RootBytes(graph.tensor(n.out[0])).value_or(0), 256) +
+            Round(mxfp8::SwizzledScaleBytes(w.ne(1), w.ne(0)), 256);
+  } else if (n.key == ir::Primitive(Op::kGatedDeltaNet)) {
+    ggml_tensor* r =
+        ggml_gated_delta_net(c, leaf(n.src[0], GGML_TYPE_F32), leaf(n.src[1], GGML_TYPE_F32),
+                             leaf(n.src[2], GGML_TYPE_F32), leaf(n.src[3], GGML_TYPE_F32),
+                             leaf(n.src[4], GGML_TYPE_F32), leaf(n.src[5], GGML_TYPE_F32), 1);
+    total = ggml_nbytes(r);
+  }
+  ggml_free(c);
+  return total;
+}
+
+}  // namespace
+
+ir::TensorId WithinRoot(const ir::Graph& graph, ir::TensorId root) {
+  const ir::Node& n = graph.node(graph.producer(root));
+  // A blob kernel's later outputs, in its first output's place.
+  const bool blob =
+      n.key == ir::Fused(FusedKind::kHcPrep) || n.key == ir::Fused(FusedKind::kHcFold) ||
+      n.key == ir::Fused(FusedKind::kMoeRouter) || n.key == ir::Fused(FusedKind::kGdnGates) ||
+      n.key == ir::Primitive(Op::kGatedDeltaNet);
+  if (blob && n.nout > 1 && root != n.out[0]) return n.out[0];
+  // A preparation into MXFP8 rows of a gated norm's result alone (through
+  // its reshape): llmp.gdn.norm_gate writes the rows in the norm's place.
+  if (n.key == ir::Primitive(Op::kPrepare) && ir::PreparedRows(graph.tensor(root).format)) {
+    const auto readers = [&](ir::TensorId t) {
+      std::size_t count = 0;
+      for (const ir::Node& r : graph.nodes()) {
+        for (const ir::TensorId s : r.sources()) count += s == t ? 1 : 0;
+      }
+      return count + (std::ranges::contains(graph.outputs(), t) ? 1 : 0) +
+             (std::ranges::contains(graph.keep(), t) ? 1 : 0);
+    };
+    ir::TensorId t = n.src[0];
+    while (graph.node(graph.producer(t)).key == ir::Primitive(Op::kReshape)) {
+      if (readers(t) != 1) return {};
+      t = graph.node(graph.producer(t)).src[0];
+    }
+    const ir::Node& from = graph.node(graph.producer(t));
+    if (from.key == ir::Fused(FusedKind::kNormGate) && readers(t) == 1) return from.out[0];
+  }
+  return {};
+}
+
 std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
   const ir::TensorDesc& t = graph.tensor(root);
   const ir::Node& made = graph.node(graph.producer(root));
+  // The fast forms' blobs and kernels with intermediates (lowered by
+  // MakeDirect and MakeSpecial), at their first output.
+  if (made.nout > 0 && made.out[0] == root) {
+    // The positions a block pool reads hold its marker after them
+    // (MakeDirect's llmp.qsa.pool).
+    if (made.key.op == Op::kInput) {
+      for (const ir::Node& r : graph.nodes()) {
+        if (r.key == ir::Fused(FusedKind::kQsaPool) && r.nsrc > 5 && graph.root(r.src[5]) == root) {
+          return Round(planner::RootBytes(t).value_or(0), 256) + 256;
+        }
+      }
+    }
+    const auto rows = [&](std::size_t i) { return graph.tensor(made.src.at(i)); };
+    if (made.key == ir::Fused(FusedKind::kHcPrep)) {
+      const ir::TensorDesc& x = rows(0);
+      return HcPrepLayout{.width = static_cast<std::int64_t>(x.ne(0)),
+                          .hc = static_cast<std::int64_t>(x.ne(1)),
+                          .t = static_cast<std::int64_t>(x.ne(2)),
+                          .combine = made.nsrc > 3 && made.src[3].valid(),
+                          .inject = made.nsrc > 2 && made.src[2].valid()}
+          .bytes();
+    }
+    if (made.key == ir::Fused(FusedKind::kHcFold)) {
+      const auto p = made.Params<ir::HcFoldParams>();
+      if (!p.prepared) return 0;
+      return HcMixLayout{.width = static_cast<std::int64_t>(t.ne(0)),
+                         .t = static_cast<std::int64_t>(t.ne(1)),
+                         .bf16 = p.rounded}
+          .bytes();
+    }
+    if (made.key == ir::Fused(FusedKind::kMoeRouter)) {
+      const auto p = made.Params<ir::RouteParams>();
+      return static_cast<std::uint64_t>(
+                 MoeRouterLayout{.used = p.used, .t = static_cast<std::int64_t>(t.ne(1))}.ints()) *
+             sizeof(std::int32_t);
+    }
+    if (made.key == ir::Fused(FusedKind::kGdnGates)) {
+      return rows(0).ne(0) * rows(0).ne(1) * 2 * sizeof(float);
+    }
+    if ((made.key == ir::Primitive(Op::kSsmConv) && SsmConvPad(graph, made) != 0) ||
+        made.key == ir::Fused(FusedKind::kMoeExperts) ||
+        made.key == ir::Fused(FusedKind::kQsaAttention) ||
+        made.key == ir::Primitive(Op::kGatedDeltaNet) ||
+        (made.key == ir::Primitive(Op::kMatMul) &&
+         graph.tensor(made.src[0]).format.encoding == Encoding::kMxfp8 &&
+         ir::PreparedRows(graph.tensor(made.src[1]).format))) {
+      return KernelBytes(graph, made);
+    }
+  }
   // The fused routing's ids are its whole sort's first slots (MakeRoute):
   // the sort's bytes, a row of every expert.
   if (made.key == ir::Primitive(Op::kRoute) && made.nout == 2 && made.out[0] == root) {
@@ -1203,6 +2650,11 @@ std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
   if (made.key == ir::Primitive(Op::kExpertReduce) && made.nsrc >= 1) {
     const ir::TensorDesc& x = graph.tensor(made.src[0]);
     return x.ne(0) * x.ne(1) * x.ne(2) * sizeof(float);
+  }
+  // MXFP8 rows as llmp.mxfp8.quantize (or a fusion ending in it) writes
+  // them: the scales at a 256-byte boundary past the codes.
+  if (ir::PreparedRows(t.format)) {
+    return mxfp8::RowsLayout{.k = t.ne(0), .rows = t.ne(1)}.bytes();
   }
   if (made.key != ir::Primitive(Op::kPrepare) || t.format.encoding != Encoding::kQ8_1 ||
       t.ne(3) != 1) {

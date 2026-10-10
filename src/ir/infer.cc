@@ -186,8 +186,13 @@ std::unexpected<VerifyError> Fail(GraphError e, const Ctx& c, const std::string&
 
 std::expected<void, VerifyError> Readable(const Ctx& c, std::size_t i) {
   const TensorDesc* t = c.src(i);
-  if (t != nullptr && !format::Validate(t->format)) {
-    return Fail(GraphError::kFormat, c, std::format("source {} has an invalid format", i));
+  if (t == nullptr) return {};
+  if (const auto valid = format::Validate(t->format); !valid) {
+    return Fail(GraphError::kFormat, c,
+                std::format("source {} has an invalid format ({} {} [{}, {}, {}, {}]: {})", i,
+                            format::Info(t->format.encoding).name,
+                            format::Info(t->format.layout).name, t->ne(0), t->ne(1), t->ne(2),
+                            t->ne(3), format::FormatErrorName(valid.error())));
   }
   return {};
 }
@@ -339,6 +344,32 @@ std::size_t ParamSize(OpKey key) {
         return sizeof(HcNormPostParams);
       case FusedKind::kDupUpAdd:
         return sizeof(DupUpParams);
+      case FusedKind::kHcPrep:
+      case FusedKind::kHcMixNorm:
+        return sizeof(HcNormPostParams);
+      case FusedKind::kScaledUnary:
+        return sizeof(ScaledUnaryParams);
+      case FusedKind::kHcFold:
+        return sizeof(HcFoldParams);
+      case FusedKind::kHcCombine:
+        return sizeof(HcParams);
+      case FusedKind::kGdnConv:
+        return sizeof(GdnConvParams);
+      case FusedKind::kGdnHistory:
+        return sizeof(GdnHistoryParams);
+      case FusedKind::kGdnStep:
+        return sizeof(GdnStepParams);
+      case FusedKind::kHeadGate:
+        return sizeof(HeadGateParams);
+      case FusedKind::kQsaPool:
+        return sizeof(QsaPoolParams);
+      case FusedKind::kQsaAttention:
+        return sizeof(QsaAttnParams);
+      case FusedKind::kMoeRouter:
+        return sizeof(RouteParams);
+      case FusedKind::kMoeExperts:
+      case FusedKind::kMatMulIdGlu:
+        return sizeof(MoeExpertsParams);
       default:
         return 0;
     }
@@ -715,9 +746,16 @@ Out InferPrimitive(const Ctx& c) {
       t.format = r->format;
       t.format.shape = c.src(0)->shape();
       t.format.stacked = 1;
-      if (!format::Validate(t.format) || UnitBytes(t.format) == 0 || Integer(t.format.encoding)) {
+      // A single-part value format, or the block-scaled MXFP8 rows a
+      // tensor-core product reads (codes, then the scales in CUTLASS's
+      // atoms, in one root: format/layout.h kCutlassScaleAtoms).
+      const bool rows = t.format.encoding == Encoding::kMxfp8 &&
+                        t.format.layout == format::Layout::kCutlassScaleAtoms &&
+                        t.format.shape.ne[2] == 1 && t.format.shape.ne[3] == 1;
+      if (!format::Validate(t.format) || (UnitBytes(t.format) == 0 && !rows) ||
+          Integer(t.format.encoding)) {
         return Fail(GraphError::kFormat, c,
-                    "prepares into a single-part value format of its shape");
+                    "prepares into a single-part value format of its shape, or MXFP8 rows");
       }
       t.nb = NaturalStrides(t.format);
       return One(t, false);
@@ -790,7 +828,8 @@ Out InferPrimitive(const Ctx& c) {
       LLMP_TRY(IndexSrc(c, 0));
       LLMP_TRY(IndexSrc(c, 1));
       const auto p = c.params<MaskParams>();
-      LLMP_TRY(Zero(c, 1, 3));
+      LLMP_TRY(Bool(c, 1));
+      LLMP_TRY(Zero(c, 2, 2));
       if (static_cast<std::uint8_t>(p.kind) > static_cast<std::uint8_t>(MaskKind::kAhead) ||
           (p.kind == MaskKind::kWindow && p.window == 0) ||
           ((p.kind == MaskKind::kCausal || p.kind == MaskKind::kBlock) && p.window != 0) ||
@@ -809,7 +848,9 @@ Out InferPrimitive(const Ctx& c) {
       const Encoding e = r->format.encoding;
       LLMP_TRY(Want(e == Encoding::kF16 || e == Encoding::kF32, c, "a mask is F16 or F32"));
       LLMP_TRY(Want(
-          r->ne(0) == cp.ne(0) && r->ne(1) >= qp.ne(0) && r->ne(2) == 1 && r->ne(3) == 1, c,
+          r->ne(0) == cp.ne(0) && r->ne(1) >= qp.ne(0) && (!p.exact_rows || r->ne(1) == qp.ne(0)) &&
+              r->ne(2) == 1 && r->ne(3) == 1,
+          c,
           std::format("a mask {} for {} cells and {} rows", Text(r->shape()), cp.ne(0), qp.ne(0))));
       return One(Fresh(S(cp.ne(0), r->ne(1)), e), false);
     }
@@ -1316,8 +1357,8 @@ Out InferPrimitive(const Ctx& c) {
 
 Out InferFused(const Ctx& c) {
   LLMP_TRY(Tail(c, ParamSize(c.key())));
-  if (c.key().fused == FusedKind::kNone || static_cast<std::uint16_t>(c.key().fused) >
-                                               static_cast<std::uint16_t>(FusedKind::kDupUpAdd)) {
+  if (c.key().fused == FusedKind::kNone ||
+      static_cast<std::uint16_t>(c.key().fused) > static_cast<std::uint16_t>(kLastFusedKind)) {
     return Fail(GraphError::kParams, c, "an unknown fused kind");
   }
   if (c.key().fused == FusedKind::kGroupedStores) {
@@ -1328,6 +1369,21 @@ Out InferFused(const Ctx& c) {
   }
   if (c.key().fused == FusedKind::kRmsNormMulRope || c.key().fused == FusedKind::kQkPrep) {
     LLMP_TRY(CheckRope(c, c.params<NormRopeParams>().rope, 4));
+  }
+  if (c.key().fused == FusedKind::kQsaPool) {
+    LLMP_TRY(CheckRope(c, c.params<QsaPoolParams>().rope, 8));
+  }
+  if (c.key().fused == FusedKind::kHcFold) {
+    LLMP_TRY(Bool(c, 4));
+    LLMP_TRY(Bool(c, 5));
+    LLMP_TRY(Zero(c, 6, 2));
+  }
+  if (c.key().fused == FusedKind::kGdnStep) {
+    LLMP_TRY(Bool(c, 0));
+    LLMP_TRY(Zero(c, 1, 3));
+  }
+  if (c.key().fused == FusedKind::kScaledUnary) {
+    LLMP_TRY(Zero(c, 5, 3));
   }
   // The decomposition over stand-ins of the sources: its outputs are the
   // node's.
@@ -1358,6 +1414,11 @@ Out InferFused(const Ctx& c) {
     }
     const TensorDesc t = b.tensor(outs[i]);
     r.out.at(i) = Fresh(t.shape(), t.format.encoding);
+    if (PreparedRows(t.format)) {
+      // Rows prepared for a tensor-core product (a fold's): their layout.
+      r.out.at(i).format.layout = t.format.layout;
+      r.out.at(i).nb = NaturalStrides(r.out.at(i).format);
+    }
     r.float_result.at(i) = ResultEncoding(t.format.encoding);
   }
   return r;

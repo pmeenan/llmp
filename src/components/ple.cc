@@ -255,7 +255,8 @@ std::expected<FragmentOut, std::string> PleEmit(Fragment& f) {
   // Each stream RMS-normed, then the streams as one row times the weight.
   const auto grouped = [&](ir::TensorId x, std::uint16_t role) {
     ir::TensorId t = b.RmsNorm(b.Reshape(x, Shape({d.width, d.hc, rows})), d.eps);
-    t = b.Mul(b.Reshape(t, Shape({hw, rows})), f.Weight(role));
+    t = b.Reshape(t, Shape({hw, rows}));
+    t = b.Mul(t, f.Weight(role));
     return b.Reshape(t, Shape({d.width, d.hc, rows}));
   };
   // The convolution's histories first (their stores read them first).
@@ -301,8 +302,8 @@ std::expected<FragmentOut, std::string> PleEmit(Fragment& f) {
       const ir::TensorId tail =
           b.View(padded, Shape({hist, hw, 1}), {pt.nb[0], pt.nb[1], pt.nb[2], pt.nb[2]},
                  (pt.ne(0) - hist) * pt.nb[0]);
-      b.CacheStore(f.State(si, 0), b.Reshape(b.Cont(tail), Shape({hist * hw, 1})),
-                   f.step.StateRow());
+      const ir::TensorId kept = b.Reshape(b.Cont(tail), Shape({hist * hw, 1}));
+      b.CacheStore(f.State(si, 0), kept, f.step.StateRow());
     }
     ir::TensorId sum{};
     const ir::TensorDesc cw = Desc(b, f.Weight(kConvW));
@@ -345,7 +346,8 @@ std::expected<void, std::string> PleCommit(Fragment& f) {
     const ir::TensorId tail =
         b.View(padded, Shape({hist, hw, 1}), {pt.nb[0], pt.nb[1], pt.nb[2], pt.nb[2]},
                (pt.ne(0) - hist) * pt.nb[0]);
-    b.CacheStore(f.State(s, 0), b.Reshape(b.Cont(tail), Shape({hist * hw, 1})), f.step.StateRow());
+    const ir::TensorId kept = b.Reshape(b.Cont(tail), Shape({hist * hw, 1}));
+    b.CacheStore(f.State(s, 0), kept, f.step.StateRow());
     b.SetJoined();
   }
   return {};
@@ -463,13 +465,22 @@ std::expected<FragmentOut, std::string> MtpEmit(Fragment& f) {
   const std::uint64_t hc = in.stage.streams;
   const std::uint64_t rows = f.step.rows();
   const float eps = F32(in.params.Real("eps"));
-  ir::TensorId e = b.GetRows(f.Weight(kTable), f.step.Tokens());
-  e = b.MatMul(f.Weight(kFcEmbd), b.Mul(b.RmsNorm(e, eps), f.Weight(kNormEmbd)));
+  const ir::TensorId table = f.Weight(kTable);
+  const ir::TensorId tokens = f.step.Tokens();
+  ir::TensorId e = b.GetRows(table, tokens);
+  const ir::TensorId fc_embd = f.Weight(kFcEmbd);
+  e = b.RmsNorm(e, eps);
+  e = b.Mul(e, f.Weight(kNormEmbd));
+  e = b.MatMul(fc_embd, e);
   const ir::TensorId hidden = f.step.Features(w * hc);
-  ir::TensorId h = b.Mul(b.RmsNorm(hidden, eps), f.Weight(kNormHidden));
-  h = b.MatMul(f.Weight(kFcHidden), b.Reshape(h, Shape({w, hc * rows})));
-  const ir::TensorId residual =
-      b.Add(b.Reshape(h, Shape({w, hc, rows})), b.Reshape(e, Shape({w, 1, rows})));
+  ir::TensorId h = b.RmsNorm(hidden, eps);
+  h = b.Mul(h, f.Weight(kNormHidden));
+  const ir::TensorId fc_hidden = f.Weight(kFcHidden);
+  h = b.Reshape(h, Shape({w, hc * rows}));
+  h = b.MatMul(fc_hidden, h);
+  h = b.Reshape(h, Shape({w, hc, rows}));
+  e = b.Reshape(e, Shape({w, 1, rows}));
+  const ir::TensorId residual = b.Add(h, e);
   return FragmentOut{.residual = residual};
 }
 

@@ -400,6 +400,10 @@ std::expected<void, std::string> CheckRole(const Instance& in, const RoleShape& 
     }
   }
   const format::Shape& s = f.format.shape;
+  if (in.def->kind == "head.linear" && role.name == "weight" &&
+      static_cast<std::uint64_t>(in.params.Int("rows")) > s.ne[1]) {
+    return Refused("head.linear rows exceed the weight's vocabulary");
+  }
   bool same = s.rank == r.rank;
   for (std::size_t d = 0; same && d < r.rank; ++d) {
     same = r.ne.at(d) == 0 || r.ne.at(d) == s.ne.at(d);
@@ -978,6 +982,17 @@ ir::TensorId StepContext::OutputCells(std::size_t segment, const CellKey& cells)
   return id;
 }
 
+ir::TensorId StepContext::BlockCells(std::size_t segment, const CellKey& cells,
+                                     std::uint64_t blocks) {
+  const auto key = std::tuple{segment, cells, blocks};
+  if (const auto at = block_cells_.find(key); at != block_cells_.end()) return at->second;
+  const ir::TensorId id = Input(InputKind::kStoreCells, static_cast<std::uint8_t>(segment),
+                                ir::Dense(format::Encoding::kI64, ir::ShapeOf({blocks})), cells,
+                                blocks, std::format("block_cells.{}.{}", segment, cells.block));
+  block_cells_.emplace(key, id);
+  return id;
+}
+
 std::uint64_t StepContext::ReadCells(std::size_t segment, const CellKey& cells) const {
   const SegmentRows& seg = segments_.at(segment);
   const std::uint64_t read = seg.read_cells;
@@ -997,8 +1012,10 @@ std::uint64_t StepContext::ReadCells(std::size_t segment, const CellKey& cells) 
 
 std::expected<ir::TensorId, std::string> StepContext::Mask(std::size_t segment,
                                                            const CellKey& cells,
-                                                           std::uint32_t window, bool ahead) const {
-  const auto at = masks_.find({segment, MaskKey{.cells = cells, .window = window, .ahead = ahead}});
+                                                           std::uint32_t window, bool ahead,
+                                                           bool exact) const {
+  const auto at = masks_.find(
+      {segment, MaskKey{.cells = cells, .window = window, .ahead = ahead, .exact = exact}});
   if (at == masks_.end()) return Refused("a mask its component did not declare");
   return at->second;
 }
@@ -1078,11 +1095,26 @@ ir::TensorId StepContext::SideRows(std::uint16_t component, std::uint64_t count)
 
 void StepContext::Save(const Instance& in, std::string_view what, ir::TensorId tensor,
                        std::uint8_t segment) {
+  // The rows of the save's buffer: the segment's (the step's, joined).
+  ir::TensorId rows = save_rows_[segment];
+  if (!rows.valid()) {
+    const std::uint32_t n = segment == ir::kJoinedSegment ? rows_ : segments_.at(segment).rows;
+    rows = Input(
+        InputKind::kStoreCells, segment, ir::Dense(format::Encoding::kI64, ir::ShapeOf({n})),
+        {.capacity = n, .per_row = true, .first_row = 0}, 0, std::format("save_rows.{}", segment));
+    save_rows_[segment] = rows;
+    // Lowerings store saves after the IR launches; the indices stay live
+    // through those stores even though no IR node reads them.
+    b_.Keep(rows);
+    // (Input leaves the builder joined: the saver's owner again.)
+    if (segment != ir::kJoinedSegment) b_.SetOwner(segment);
+  }
   saves_.push_back({.layer = in.layer,
                     .component = in.index,
                     .what = std::string(what),
                     .segment = segment,
-                    .tensor = tensor});
+                    .tensor = tensor,
+                    .rows = rows});
 }
 
 ir::TensorId StepContext::Saved(const Instance& in, std::string_view what, std::size_t segment,
@@ -1092,6 +1124,7 @@ ir::TensorId StepContext::Saved(const Instance& in, std::string_view what, std::
             ir::Dense(format::Encoding::kF32, ir::ShapeOf({width, segments_.at(segment).rows})), {},
             0, std::format("saved.{}.{}.{}", in.layer, what, segment));
   inputs_.back().component = in.index;
+  inputs_.back().layer = in.layer;
   inputs_.back().what = std::string(what);
   return id;
 }
@@ -1101,7 +1134,8 @@ void StepContext::DeclareMasks(std::span<const MaskKey> masks) {
   // cells within.
   std::vector<MaskKey> order(masks.begin(), masks.end());
   std::ranges::sort(order, [](const MaskKey& a, const MaskKey& b) {
-    return std::tie(a.window, a.ahead, a.cells) < std::tie(b.window, b.ahead, b.cells);
+    return std::tie(a.window, a.ahead, a.cells, a.exact) <
+           std::tie(b.window, b.ahead, b.cells, b.exact);
   });
   order.erase(std::ranges::unique(order).begin(), order.end());
   for (std::size_t s = 0; s < segments_.size(); ++s) {
@@ -1113,10 +1147,12 @@ void StepContext::DeclareMasks(std::span<const MaskKey> masks) {
       b_.SetComponent(kFrameworkComponent);
       b_.SetOwner(static_cast<std::uint8_t>(s));
       ir::MaskParams params{.kind = key.window == 0 ? ir::MaskKind::kCausal : ir::MaskKind::kWindow,
+                            .exact_rows = key.exact,
                             .window = key.window};
       if (key.ahead) params.kind = ir::MaskKind::kAhead;
-      const ir::TensorId mask = b_.MaskBuild(positions, held, Pad(seg.rows, kMaskRowAlign), params,
-                                             format::Encoding::kF16);
+      const ir::TensorId mask =
+          b_.MaskBuild(positions, held, key.exact ? seg.rows : Pad(seg.rows, kMaskRowAlign), params,
+                       format::Encoding::kF16);
       b_.SetJoined();
       b_.SetComponent(component_);
       masks_.emplace(std::pair{s, key}, mask);
@@ -1515,7 +1551,8 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
         for (const MaskUse& m : in.def->masks(in)) {
           masks.push_back({.cells = KeyOf(st.contract.tensors.at(m.tensor), st.cells.at(m.tensor)),
                            .window = m.window,
-                           .ahead = m.ahead});
+                           .ahead = m.ahead,
+                           .exact = in.def->exact_masks});
         }
       }
       first = static_cast<std::uint16_t>(first + st.contract.tensors.size());
@@ -2021,7 +2058,8 @@ std::expected<ComponentGraph, std::string> BuildComponent(
     for (const MaskUse& m : in.def->masks(in)) {
       masks.push_back({.cells = KeyOf(contract.tensors.at(m.tensor), cells[m.tensor]),
                        .window = m.window,
-                       .ahead = m.ahead});
+                       .ahead = m.ahead,
+                       .exact = in.def->exact_masks});
     }
   }
   ctx.DeclareMasks(masks);
@@ -2163,6 +2201,12 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
     case InputKind::kStoreCells:
       // A fixed tensor's one row.
       if (input.cells.fixed) return std::vector<std::int64_t>{0};
+      // A cell a row of the whole step (a verify's joined saves).
+      if (input.cells.per_row && input.segment == ir::kJoinedSegment) {
+        for (std::uint32_t i = 0; i < rows; ++i)
+          out.push_back(std::int64_t{input.cells.first_row} + i);
+        return out;
+      }
       break;
     case InputKind::kHadamard:
       return Refused("a Hadamard matrix's values are floats (HadamardValues)");
@@ -2228,6 +2272,12 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
                         ? static_cast<std::int64_t>(i)
                         : static_cast<std::int64_t>((std::uint64_t{s.past} + i) % cap));
     }
+    return out;
+  }
+  if (input.kind == InputKind::kStoreCells && input.cells.block != 0) {
+    // A block tensor's first `read` blocks, each at its own cell.
+    if (input.read > cap) return Refused("blocks past a block tensor's cells");
+    for (std::uint64_t b = 0; b < input.read; ++b) out.push_back(static_cast<std::int64_t>(b));
     return out;
   }
   if (input.kind == InputKind::kStoreCells || input.kind == InputKind::kOutputCells) {

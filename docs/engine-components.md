@@ -259,6 +259,38 @@ primitive ids). It is deterministic. The steps:
   primitives); `owner_bounded_roots`, `owner_padded_reads` and
   `owner_chained_masks` (owner_attention's forms, below); and
   `narrow_final` (the step builder's narrowed final layer, below).
+  Slice G3b added opt-in rewrites (`Pattern::opt_in`: a policy runs one
+  only where it enables it, `enable <name>`, since each changes rounding
+  as a fast form does) and a second round over the first round's fused
+  nodes (`Pattern::round`), in `fusions.cc`. A rewrite may emit at several
+  of its nodes' places (`Emissions`) and pull leaves made after its
+  first place. Round 0: `hc_prep` (a mix as `llmp.hc.prep`, the BF16
+  products, `llmp.hc.lo` and `llmp.hc.mix_bf16`, with the combine before
+  it and the next combine's logits), `hc_mix` and `hc_combine` (the
+  reference form's), `gdn_conv` (with the next history,
+  `llmp.gdn.history`, and a verify's save of its result), `gdn_gates` (a
+  verify's), `gdn_step` (up to 16 rows, the state written in place),
+  `gdn_norm_gate` (folding the output product's MXFP8 preparation),
+  `qsa_prep`, `qsa_pool` (each block's pooled key stored at its cell),
+  `qsa_select` (the selection and the attention over the kept cells,
+  reading the cached block keys), `qsa_gate` (the output gate with the
+  output product's preparation), `moe_router`, `moe_experts` (the
+  CUTLASS layout's whole routed block), `moe_glu` and `moe_combine`
+  (GGML's NVFP4 blocks), `vecq_glu` (a GGUF's decode GLUs, the shared
+  expert's only beside routed ones that take it), and `mxfp8_inputs`
+  (the MXFP8 tensor-core products' inputs prepared once). Round 1:
+  `hc_fold_inputs` (a fold's prepared and rounded rows stand for the
+  preparations and BF16 conversions of its result), `bf16_inputs`,
+  `bf16_rows` (a product whose rows only a convolution or a gated norm
+  reads records them in BF16; its owners' views made again over them)
+  and `vecq_inputs`. An opt-in option, `owner_row_invariant`, makes a
+  step of several owners compute each owner's rows as its lone step does
+  (`StepPlan::owner_row_invariant`: today's Qwen3.8 waves; the lowering's
+  forms below). Each new fused kind (`ir/op.h`: `kHcPrep` to
+  `kMatMulIdGlu`) is defined by its decomposition; a fused output may be
+  recorded prepared (`ir::PreparedRows`: MXFP8 rows in CUTLASS's scale
+  atoms), and capability queries see a node's outputs as operands from
+  `execution::kOutputOperand`.
 - **Policy** (`policy.h`): disabled patterns, the decode-row bound,
   row-invariant plans (D-092), the lossy opt-in and measured ranks per
   device class, as canonical text whose digest is a plan key's input. The
@@ -281,6 +313,14 @@ primitive ids). It is deterministic. The steps:
   joined in pairs; within 8,192 and four owners the same without bounded
   roots (owners of equal reads only); outside, the narrowed final layer
   and the fused norm-mul alone. The assistant's is plain primitives.
+  Qwen3.8's (slice G3b) are today's fast form in every envelope, gated
+  by the import's form (`experts_stacked`: the ModelOpt import with its
+  experts in the CUTLASS layout; `scaled`: in GGML's NVFP4 blocks; else
+  a GGUF quantization's), each enabling its form's fusions and disabling
+  the norms' and owners' patterns today's Qwen3.8 graphs do not take; the
+  MTP drafter's its BF16 inputs, its mixes', QSA's and the CUTLASS
+  experts' forms. A gate holds for a flag value too (a v0 binding's
+  fact).
   Owner attention's Gemma 4 forms (16 or 32 heads, D 512) are selectable
   on the GB10 alone, as the M3 runner kept independent attention on
   other devices (`llmp.flash_attn.owner_roots`' capability).
@@ -484,6 +524,90 @@ the engine's staging honours; serving's backend sets
 `LowerOptions::frozen_host_masks`). A drafter head's next features are
 each owner's output slot after its logits, marked `features` (the
 engine carries them to the slot's next pass).
+
+Slice G3b added Qwen3.8's fast form (2026-10-10). The fused kinds
+lower to `qwen38_graph.cc`'s kernels over the same operands
+(`MakeDirect`): `llmp.hc.prep` (its blob's later outputs within the
+first's place, `WithinRoot`, which placement honours), `llmp.hc.lo`,
+`llmp.hc.mix_bf16`, `llmp.gdn.conv`, `.history`, `.step` (written in
+place), `.gates` and `.norm_gate` (its I8 rows the output product's
+MXFP8 input), `llmp.qsa.prep`, `.pool` (its marker past the positions'
+bytes), `.topk` and `.attn` (the selection's two kernels for one
+`kQsaAttention`), `llmp.qsa.gate_quantize`, `llmp.moe.router`, the
+CUTLASS experts' gemv or grouped-GEMM chains for one `kMoeExperts`,
+`llmp.moe.glu` and `.combine`, and `llmp.vecq`. A weight of several
+parts (MXFP8 codes and scales, the NVFP4 table's rows and scale, the
+CUTLASS slab) is a leaf a part (`LoweredLeaf::part`); MXFP8 products
+are `llmp.mxfp8.mul_mat_vec` up to 8 columns, else the swizzle and the
+tensor-core GEMM over prepared rows (`RowsLayout`'s bytes,
+`WrittenBytes`); a capability whose node launches several or other
+steps says which (`Capability::launches`). Intermediates of a kernel
+chain sit in its result's place after it (`KernelBytes`). Nodes nothing
+needs are not made (a fused selection's masks and block-cell inputs).
+The new inputs lower: side rows (`kSideRows`, the caller's), block
+positions, fixed, per-block and per-row cells, positions in four
+sections, a verify's saves stored at `Addresses::save` by their rows and
+a commit's saved rows read from there (`kCommitRows`); masks with
+`MaskParams::exact_rows` the producer's exact rows over their proved
+position source: the replicated first section or original plain positions
+(`CausalMaskRows::kExact`, as today's). GGML's own convolution
+(`ggml.ssm_conv`, a policy without `gdn_conv`) pads its input past 32
+tokens to whole windows (RE-032), as the unfused builder does. The
+primitive form keeps each owner's block keys every step (its complete
+blocks' and, unread, its incomplete ones'); `llmp.qsa.pool` writes only
+the blocks a chunk completes, which is all a selection reads. Under
+`owner_row_invariant`, a step of several owners' rows (their products
+joined) keeps each owner's results its lone step's: `llmp.vecq` one token
+a pass (`SetVecQOneToken`, as today's waves), the hyper-connections' BF16
+products on their vector kernel at every width it takes
+(`SetGemvBf16Wide`), and GGML's float products of up to 8 columns on the
+row-invariant vector kernel (`DeviceChoices::vector_floats`).
+
+The specialized QSA lowerings require the component step's typed staging
+contract. Before creating a program or eliding operands, the lowerer
+checks `StepInput` declarations and graph producers: positions are four
+copies of each row's position, block positions and cells follow
+`InputValues`, stores target the owner's non-ring caches, and causal,
+block-seen and attention masks derive from those same positions and cells.
+Views must describe the full cache prefixes the kernels read, and inferred
+inputs and masks must not be overwritten. Input declarations must name
+unique leaves. Tensor names provide no proof. Generic IR with arbitrary
+external position tables, masks or indices remains defined and reference
+executable, but these GGML specializations refuse unsupported staging
+semantics during lowering; this refusal does not select a primitive fallback.
+Exact device masks that remain primitive also prove their plain owner
+positions. They reuse replicated positions only when one unchanged typed
+input proves the same first section; otherwise they stage the original
+plain input and produce the same exact row shape.
+
+Checked (`ggml_lower_qwen38_test`, CPU): for each import (CUTLASS
+experts, GGML's NVFP4 blocks, a GGUF quantization's) at the shapes
+today's runner measures at setup and the fast kernels' row limits
+(prompt chunks of 512 at 0 and at the context's end, the widest chunk
+that does not select, decodes at 0 and at the end, their token shapes,
+8, 9, 16, 17, 33 and 40 rows, each state-only), with the MTP drafter
+(each step's streams for it, verifies of three rows at 0, 40 and the
+end, the drafter's prefill and draft passes), the step planned under the
+mapping's policy and lowered launches `BuildQwen38Graph`'s and
+`BuildQwen38MtpGraph`'s fast-form nodes (96 steps), compared as
+multisets (the n-gram layer's and the routed experts' independent nodes
+are ordered otherwise), every operand by its root's description (so
+reshapes compare as what they describe), nodes nothing kept or written
+depends on aside (today's drafter prefill pass computes its queries),
+and a state-only step's last mix compared through its readers (today's
+also computes the next combine's unread logits); commits of 1 to 3
+kept rows of one and two owners lower (llmp.gdn.step written); several
+owners' decodes, chunks, verifies and drafter passes lower, each owner
+its own pool, convolution and recurrence. On spark-b
+(`component_runner_qwen38_gpu_test`), the model runner over the component
+source runs two owners of each installed import through one script
+(prompt chunks, short chunks at the row limits, a state-only chunk, one
+owner past the indexer's budget, joined decodes of logits and
+device-chosen tokens, captured and replayed) against today's runner's
+fast form: all 31 output rows or tokens and all 242 state tensors are
+bit-identical in each of the three imports, with two captured replays.
+GPU comparisons of verify saves, commits, drafter catch-up and draft
+passes remain in G3c; G3b covers their lowering structurally only.
 
 Checked (`ggml_lower_gemma4_test`, CPU; the node-for-node comparison with
 `BuildGemma4Graph` and `BuildGemma4AssistantGraph` was made before slice
@@ -847,9 +971,9 @@ multiply and sum) compare by alias; the builders' host masks and the
 convolution's padding past 32 rows are the lowering's. The fast form
 (`llmp.hc.*`, `llmp.gdn.*`, `llmp.qsa.pool`, `.topk`, `.attn`, the MXFP8
 tensor-core products), the default planning policy and the lowering of
-the new inputs and cell rules (the GGML lowering refuses them today) are
-slice G3b's; the engine's binding of side rows, commits and the MTP
-passes' features is G3c's.
+the supported new inputs and cell rules are
+slice G3b's (as built: [the graph IR](#the-graph-ir)); the runtime's
+on-demand n-gram binding, commit execution and MTP feature staging are G3c's.
 
 **DeepSeek V4 and DSpark** (slice G4a, 2026-10-10). Four new kinds and
 extensions of three, each with a CPU reference independent of its
@@ -1071,13 +1195,16 @@ last layer, its token rows from the target's table, one QSA layer
 (rollback `truncate`) and MoE, the head's mix returning its streams as
 the next feature, and its own selected head where the artifact has one.
 Both mappings' values come from today's profile, binding and hash
-(`Qwen38V0Values`, `Qwen38MtpV0Values`); no default policy is declared
-until G3b's patterns exist. On the installed artifacts
+(`Qwen38V0Values`, `Qwen38MtpV0Values`); their default policies (G3b)
+are today's fast form, by the import's form. The drafter's head reads
+its weight's first rows (`head.linear`'s `rows`: the draft vocabulary,
+65,536 or a selected head's), and the verify's and the drafter's tokens
+are GGML's argmax (`native_argmax`). On the installed artifacts
 (`components_qwen38_models_test`), the ModelOpt specs equal the unit
 fixture's, every import's layers are the same components, the layouts are
 today's state, and every step kind builds; the reference executor does
 not run them (it binds whole weights: 97 GB a ModelOpt artifact), so
-their numerical gate is G3b's lowering against today's runner.
+their numerical gate is the lowering against today's runner (G3b).
 
 DeepSeek V4 (slice G4a) extends the mappings again: slots whose count a
 key gives (`SlotRule::count_key`, `count_above`: the hash layers, then

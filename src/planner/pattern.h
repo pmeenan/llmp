@@ -120,6 +120,9 @@ class MatchContext {
   std::span<const ir::NodeId> readers(ir::TensorId t) const;
   // Whether the step returns or keeps `t` (or a view of it).
   bool external(ir::TensorId t) const;
+  // Whether the step returns or keeps `t` itself (not another view of its
+  // root): a view another one is kept beside may be elided.
+  bool kept(ir::TensorId t) const;
   // Whether a match already took the node.
   bool taken(ir::NodeId id) const { return taken_.at(id.v); }
   void Take(std::span<const ir::NodeId> nodes);
@@ -133,6 +136,7 @@ class MatchContext {
   const StepShape* shape_ = nullptr;
   std::vector<std::vector<ir::NodeId>> readers_;  // by tensor
   std::vector<bool> external_;                    // by root tensor
+  std::vector<bool> kept_;                        // by tensor: returned or kept itself
   std::vector<bool> taken_;                       // by node
 };
 
@@ -210,6 +214,13 @@ struct Pattern {
   // A rewrite's: what replaces the match's node `index` (each of its nodes
   // in turn, in node order), mapping the original outputs it stands for.
   void (*rewrite)(RewriteContext& context, const Match& match, std::size_t index) = nullptr;
+  // Off unless the policy enables it (policy.h `enable`): a pattern whose
+  // result rounds where the primitive graph does not (a fast form's BF16
+  // and MXFP8 activations), which a model's policy chooses.
+  bool opt_in = false;
+  // The rewrite's round: round 0 matches the step's primitive graph, round
+  // 1 round 0's result (a pattern over another's fused nodes).
+  std::uint8_t round = 0;
 };
 
 // The table, in its fixed order.

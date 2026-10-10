@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -512,7 +513,7 @@ TEST(IrTest, ExpandLeavesOnlyPrimitives) {
 
 TEST(IrTest, EveryFusedKindAndCompositeDecomposes) {
   // Every fused kind but grouped_stores, a batch key that is never a node.
-  for (std::uint16_t k = 1; k <= static_cast<std::uint16_t>(FusedKind::kDupUpAdd); ++k) {
+  for (std::uint16_t k = 1; k <= static_cast<std::uint16_t>(kLastFusedKind); ++k) {
     EXPECT_EQ(HasDecomposition(Fused(static_cast<FusedKind>(k))),
               static_cast<FusedKind>(k) != FusedKind::kGroupedStores)
         << k;
@@ -540,6 +541,76 @@ TEST(IrTest, FusedStoresAreViewsOfTheirCaches) {
   EXPECT_EQ(b.tensor(stored).view_of, cache);
   EXPECT_EQ(b.tensor(stored).role, Role::kState);
   EXPECT_TRUE(std::move(b).Finish().has_value());
+}
+
+TEST(IrTest, HyperConnectionFusionsRefuseInvalidStreamShapes) {
+  for (const std::uint32_t streams : {0U, 3U}) {
+    Builder b;
+    const TensorId xn = b.Input(F32({8, 2}));
+    const TensorId gate = b.Input(F32({8, 2}));
+    b.Fused(FusedKind::kHcFold, std::array{xn, gate}, HcFoldParams{.streams = streams});
+    EXPECT_EQ(ErrorOf(b), GraphError::kShape);
+  }
+  for (FusedKind kind : {FusedKind::kHcPrep, FusedKind::kHcMixNorm}) {
+    Builder b;
+    const TensorId x = b.Input(F32({4, 2, 3}));
+    const TensorId norm = b.Input(F32({8}));
+    const TensorId gate = b.Input(F32({8, 3}));
+    const std::vector<TensorId> src = kind == FusedKind::kHcPrep
+                                          ? std::vector<TensorId>{x, norm}
+                                          : std::vector<TensorId>{x, norm, gate};
+    b.Fused(kind, src, HcNormPostParams{.eps = 1e-6F, .streams = 1});
+    EXPECT_EQ(ErrorOf(b), GraphError::kShape);
+  }
+  Builder b;
+  const TensorId x = b.Input(F32({4, 2, 3}));
+  const TensorId out = b.Input(F32({4, 3}));
+  const TensorId logits = b.Input(F32({1, 3}));
+  b.Fused(FusedKind::kHcCombine, std::array{x, out, logits}, HcParams{.streams = 1});
+  EXPECT_EQ(ErrorOf(b), GraphError::kShape);
+}
+
+TEST(IrTest, NewHyperConnectionAndGdnFusionsExpandStridedSources) {
+  for (FusedKind kind :
+       {FusedKind::kHcFold, FusedKind::kHcCombine, FusedKind::kGdnGates, FusedKind::kGdnHistory}) {
+    Builder b;
+    Outputs out;
+    if (kind == FusedKind::kHcFold) {
+      const auto xn = b.Transpose(b.Input(F32({2, 8})));
+      const auto gate = b.Transpose(b.Input(F32({2, 8})));
+      out = b.Fused(kind, std::array{xn, gate}, HcFoldParams{.streams = 2});
+    } else if (kind == FusedKind::kHcCombine) {
+      const auto streams = b.Input(F32({4, 2, 3}));
+      const auto rows = b.Transpose(b.Input(F32({3, 4})));
+      const auto logits = b.Input(F32({2, 3}));
+      out = b.Fused(kind, std::array{streams, rows, logits}, HcParams{.streams = 2});
+    } else if (kind == FusedKind::kGdnHistory) {
+      const auto rows = b.Transpose(b.Input(F32({3, 4})));
+      out = b.Fused(kind, std::array{rows}, GdnHistoryParams{.taps = 2});
+    } else {
+      const auto alpha = b.Transpose(b.Input(F32({3, 2})));
+      const auto beta = b.Transpose(b.Input(F32({3, 2})));
+      const auto dt = b.Input(F32({2}));
+      const auto a = b.Input(F32({2}));
+      out = b.Fused(kind, std::array{alpha, beta, dt, a});
+    }
+    for (const auto id : out.span()) b.Output(id);
+    auto g = std::move(b).Finish();
+    ASSERT_TRUE(g.has_value()) << g.error().detail;
+    auto expanded = Expand(*g, false);
+    ASSERT_TRUE(expanded.has_value()) << expanded.error().detail;
+    EXPECT_TRUE(std::ranges::none_of(expanded->nodes(),
+                                     [](const Node& n) { return n.key.op == Op::kFused; }));
+  }
+  // A nested helper must leave an invalid parameter as a builder error,
+  // not try to describe the invalid tensor returned by the inner helper.
+  Builder b;
+  const auto streams = b.Input(F32({4, 2, 3}));
+  const auto norm = b.Input(F32({8}));
+  const auto gate = b.Input(F32({8, 3}));
+  b.Fused(FusedKind::kHcMixNorm, std::array{streams, norm, gate},
+          HcNormPostParams{.eps = -1.0F, .streams = 2});
+  EXPECT_FALSE(b.ok());
 }
 
 // grouped_stores names a batch of store nodes (planner/pattern.h); no node

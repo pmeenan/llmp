@@ -55,9 +55,11 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "execution/registry.h"
+#include "format/encoding.h"
 #include "ggml.h"
 #include "ir/graph.h"
 #include "kernels/common/lower.h"
@@ -86,6 +88,20 @@ struct LowerOptions {
 struct LoweredLeaf {
   ggml_tensor* tensor = nullptr;
   ir::TensorId primitive{};
+  // A weight of several parts (MXFP8's codes and scales, NVFP4 rows'
+  // data and tensor scale, a CUTLASS expert slab: its gate-and-up codes):
+  // the part this leaf is.
+  std::optional<format::PartRole> part{};
+};
+
+// A verify's save's buffer (components/step.h CommitSave): F32 [width,
+// rows], bound at Addresses::save's.
+struct SavedLeaf {
+  ggml_tensor* tensor = nullptr;
+  std::uint32_t layer = 0;
+  std::uint16_t component = 0;
+  std::string what;
+  std::uint8_t segment = 0;
 };
 
 struct LoweredStep {
@@ -93,6 +109,7 @@ struct LoweredStep {
   std::vector<ggml_tensor*> nodes;   // computed nodes and views, in execution order
   std::vector<ggml_tensor*> keep;    // the step's outputs and kept tensors
   std::vector<LoweredLeaf> leaves;
+  std::vector<SavedLeaf> saves;
   GraphPlan plan;  // PlanGraph's: the IR selection's steps, lanes and regions
   std::vector<InputSlot> inputs;
   std::vector<OutputSlot> outputs;
@@ -106,6 +123,12 @@ struct LoweredStep {
 // QuantizeQ8 writes with each row padded to MMVQ's row step (llmp_ops.h
 // Q8Bytes); 0 for any other.
 std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root);
+
+// The root the module writes a root inside (placement.h RootWithin): a
+// kernel's outputs laid out in one blob at its first output's place
+// (llmp.hc.prep, llmp.hc.mix_bf16's prepared and rounded rows,
+// llmp.moe.router, llmp.gdn.gates), or none.
+ir::TensorId WithinRoot(const ir::Graph& graph, ir::TensorId root);
 
 // Steps 1 to 6 above, with `device` the device's own choices (executor.h
 // DeviceChoicesOf on CUDA builds; a model of it in tests) and `registry` the

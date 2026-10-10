@@ -78,8 +78,9 @@ struct PlanOptions {
   std::function<bool(std::string_view)> on_stream{};
   std::uint64_t alignment = 256;
   // What the lowering's implementations write beyond a root's own bytes
-  // (placement.h RootBytesOf).
+  // (placement.h RootBytesOf), and the roots it writes inside another's.
   RootBytesOf written{};
+  RootWithin within{};
   // The step's shape, for the patterns whose forms follow its outputs
   // (owner_attention's one-row form only for a step returning every
   // owner's one row); outlives the call. Null: those forms are not taken.
@@ -100,6 +101,12 @@ struct StepPlan {
   // Primitive decompositions taken for want of an implementation (their
   // keys' names), in order.
   std::vector<std::string> decomposed;
+  // A step of several owners whose products are row-invariant (the
+  // policy's owner_row_invariant option): each owner's rows what they are
+  // alone, as a module's row-invariant products compute them where the
+  // step's rows allow (GGML's: up to 8), its float products on the vector
+  // kernel otherwise.
+  bool owner_row_invariant = false;
 };
 
 std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::Registry& registry,

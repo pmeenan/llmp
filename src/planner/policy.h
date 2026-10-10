@@ -17,6 +17,7 @@
 //   max_decode_rows <n>                 always (1 to 65,536)
 //   row_invariant                       when set
 //   allow_lossy                         when set
+//   enable <pattern>                    an opt-in pattern of the table, names ascending
 //   disable <pattern>                   a pattern of the table (pattern.h), names ascending
 //   rank <class> <implementation> <n>   ascending by class, then rank, then name
 // ParsePolicy takes only canonical text (ToText(ParsePolicy(t)) == t).
@@ -50,6 +51,9 @@ struct ClassRank {
 };
 
 struct Policy {
+  // Opt-in patterns it enables (pattern.h Pattern::opt_in), ascending, each
+  // once.
+  std::vector<std::string> enabled{};
   std::vector<std::string> disabled{};  // pattern names, ascending, each once
   std::uint32_t max_decode_rows = 16;
   bool row_invariant = false;
@@ -58,14 +62,17 @@ struct Policy {
   bool operator==(const Policy&) const = default;
 };
 
+// Whether `pattern` is off under the policy: disabled, or opt-in and not
+// enabled.
 bool Disabled(const Policy& policy, std::string_view pattern);
 
 // Sorts the lists ToText writes in order; it does not validate.
 void Canonicalize(Policy& policy);
 
 // The policy's own rules: names and classes of [a-z0-9_.] (classes
-// without '.'), patterns of the table, each once, an implementation ranked
-// once a class, the bounds above.
+// without '.'), patterns of the table, each once (an enabled one opt-in,
+// and not also disabled), an implementation ranked once a class, the
+// bounds above.
 std::expected<void, std::string> Validate(const Policy& policy);
 
 std::string ToText(const Policy& policy);

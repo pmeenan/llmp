@@ -50,8 +50,10 @@ struct StepBackend {
   planner::DeviceFacts device{};
   // The implementations that borrow the stream's library handle (lanes.h).
   std::function<bool(std::string_view)> on_stream{};
-  // What its implementations write beyond a root's own bytes (placement.h).
+  // What its implementations write beyond a root's own bytes, and the roots
+  // they write inside another's (placement.h).
   planner::RootBytesOf written{};
+  planner::RootWithin within{};
   LowerFunction lower{};
 };
 

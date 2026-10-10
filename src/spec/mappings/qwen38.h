@@ -56,6 +56,7 @@
 #ifndef LLMP_SPEC_MAPPINGS_QWEN38_H_
 #define LLMP_SPEC_MAPPINGS_QWEN38_H_
 
+#include <cstdint>
 #include <expected>
 #include <string>
 #include <vector>
@@ -70,6 +71,10 @@ struct Qwen38PleHash;
 }  // namespace llmp::model
 
 namespace llmp::spec::mappings {
+
+// The draft head's rows a pass reads by default (engine/qwen38_runner.h
+// Qwen38Options::draft_vocab's default).
+inline constexpr std::uint64_t kQwen38DraftVocab = 65536;
 
 const Mapping& Qwen38Mapping();
 const Mapping& Qwen38MtpMapping();

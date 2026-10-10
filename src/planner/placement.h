@@ -51,13 +51,17 @@ std::expected<std::uint64_t, std::string> RootBytes(const ir::TensorDesc& tensor
 // Q8_1 input's rows padded to its row step), or 0: a root takes the larger.
 using RootBytesOf = std::function<std::uint64_t(const ir::Graph&, ir::TensorId)>;
 
+// The root a lowering writes a root inside (one kernel's outputs laid in
+// one blob at the first output's place: RootBytesOf holds the blob), or
+// none: such a root is not placed itself, and the root it lies in lives
+// while it is read.
+using RootWithin = std::function<ir::TensorId(const ir::Graph&, ir::TensorId)>;
+
 // `alignment` is a power of two.
-std::expected<Placement, std::string> PlaceActivations(const ir::Graph& graph,
-                                                       std::span<const Selected> steps,
-                                                       std::span<const Region> regions,
-                                                       std::span<const ir::TensorId> staged,
-                                                       std::uint64_t alignment = 256,
-                                                       const RootBytesOf& written = {});
+std::expected<Placement, std::string> PlaceActivations(
+    const ir::Graph& graph, std::span<const Selected> steps, std::span<const Region> regions,
+    std::span<const ir::TensorId> staged, std::uint64_t alignment = 256,
+    const RootBytesOf& written = {}, const RootWithin& within = {});
 
 }  // namespace llmp::planner
 

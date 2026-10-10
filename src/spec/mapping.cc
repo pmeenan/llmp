@@ -377,11 +377,16 @@ std::expected<bool, std::string> Holds(std::string_view gate, bool absent, const
   }
   std::int64_t n = 0;
   if (const auto found = values.find(gate); found != values.end()) {
-    const auto* i = std::get_if<std::int64_t>(found->second);
-    if (i == nullptr || *i < 0) {
-      return Refuse(gate, "a gate that is not an integer of at least zero");
+    // A flag (a v0 binding's fact, FlagValue) holds when set.
+    if (const auto* flag = std::get_if<bool>(found->second); flag != nullptr) {
+      n = *flag ? 1 : 0;
+    } else {
+      const auto* i = std::get_if<std::int64_t>(found->second);
+      if (i == nullptr || *i < 0) {
+        return Refuse(gate, "a gate that is not a flag or an integer of at least zero");
+      }
+      n = *i;
     }
-    n = *i;
   }
   return absent ? n == 0 : n > 0;
 }

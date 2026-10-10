@@ -71,7 +71,8 @@ std::expected<std::uint64_t, std::string> RootBytes(const ir::TensorDesc& tensor
 
 std::expected<Placement, std::string> PlaceActivations(
     const ir::Graph& graph, std::span<const Selected> steps, std::span<const Region> regions,
-    std::span<const ir::TensorId> staged, std::uint64_t alignment, const RootBytesOf& written) {
+    std::span<const ir::TensorId> staged, std::uint64_t alignment, const RootBytesOf& written,
+    const RootWithin& within) {
   if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
     return Error("the alignment is not a power of two");
   }
@@ -85,9 +86,17 @@ std::expected<Placement, std::string> PlaceActivations(
   };
   std::vector<Life> lives;
   std::vector<std::size_t> index(graph.tensor_count(), ~std::size_t{0});
+  // A root inside another's place stands for it.
+  std::vector<ir::TensorId> inside(graph.tensor_count(), ir::TensorId{});
   const auto track = [&](ir::TensorId t, std::int64_t first) -> std::expected<void, std::string> {
     if (index.at(t.v) != ~std::size_t{0}) {
       return {};
+    }
+    if (within) {
+      if (const ir::TensorId owner = within(graph, t); owner.valid() && owner != t) {
+        inside.at(t.v) = owner;
+        return {};
+      }
     }
     auto bytes = RootBytes(graph.tensor(t));
     if (!bytes) {
@@ -134,8 +143,12 @@ std::expected<Placement, std::string> PlaceActivations(
       return Error(std::format("node {} ({}) is computed by no step", i, ir::OpKeyName(n.key)));
     }
   }
+  const auto holder = [&](ir::TensorId t) {
+    const ir::TensorId r = graph.root(t);
+    return inside.at(r.v).valid() ? inside.at(r.v) : r;
+  };
   const auto read = [&](ir::TensorId t, std::int64_t s) {
-    const std::size_t at = index.at(graph.root(t).v);
+    const std::size_t at = index.at(holder(t).v);
     if (at != ~std::size_t{0}) {
       lives[at].last = std::max(lives[at].last, s);
     }
@@ -160,7 +173,7 @@ std::expected<Placement, std::string> PlaceActivations(
     const auto first = static_cast<std::int64_t>(region.first);
     const auto last = static_cast<std::int64_t>(region.last);
     const auto widen = [&](ir::TensorId t) {
-      const std::size_t at = index.at(graph.root(t).v);
+      const std::size_t at = index.at(holder(t).v);
       if (at != ~std::size_t{0}) {
         Life& life = lives[at];
         life.first = life.first < 0 ? life.first : std::min(life.first, first);
@@ -183,7 +196,7 @@ std::expected<Placement, std::string> PlaceActivations(
   }
   const auto end = static_cast<std::int64_t>(steps.size());
   const auto to_end = [&](ir::TensorId t) {
-    const std::size_t at = index.at(graph.root(t).v);
+    const std::size_t at = index.at(holder(t).v);
     if (at != ~std::size_t{0}) {
       lives[at].last = end;
     }

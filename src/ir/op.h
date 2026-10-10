@@ -380,7 +380,88 @@ enum class FusedKind : std::uint16_t {
   // AddDupUp): output channel o's sub-pixel (b, d) reads input channel
   // (((o · ft + ft - 1) · 2 + b) · 2 + d) / (Co · ft · 4 / Ci).
   kDupUpAdd,
+  // Qwen3.8's fast form (slice G3b, 2026-10-10; still op set v1, nothing
+  // released): the hyper-connections, Gated DeltaNet, QSA and MoE pieces
+  // llmpalooza's kernels fuse (kernels/ggml/llmp_ops.h), each defined by its
+  // decomposition. Several round their outputs where the decomposition's are
+  // F32 (a result's recorded encoding, the builder's `encodings`): kHcPrep's
+  // normed streams and kScaledUnary's result in BF16 for BF16 products.
+  //
+  // (x [W, hc, T], norm [W · hc], inject? [W · hc, hc], out? [W, T],
+  // logits? [hc, T]): HcNormPostParams: the streams s = x, or with out and
+  // logits x combined with the last block's output first (kHcCombine); the
+  // normed streams xn = kHcNorm(s, norm), and with inject the next combine's
+  // logits inject · xn (from xn in F32). Outputs: xn, then the logits (with
+  // inject), then s (with out).
+  kHcPrep,
+  // (x): ScaledUnaryParams: fn(x · scale).
+  kScaledUnary,
+  // (xn [W · hc, T], gate [W · hc, T]): HcFoldParams: (1 / hc) Σ_k xn_k ·
+  // sigmoid(gate_k) over the streams in order (kHcPre's gated fold of xn
+  // as [W, hc, T]), [W, T]; with `prepared` also the result prepared into
+  // MXFP8 rows (kPrepare's), with `rounded` also rounded to BF16, in that
+  // order after it.
+  kHcFold,
+  // (x [W, hc, T], out [W, T], logits [hc, T]): HcParams: x + out ·
+  // 2 · sigmoid(logits / hc) on each stream (hc.combine's).
+  kHcCombine,
+  // (x [W, hc, T], norm [W · hc], gate [W · hc, T]): HcNormPostParams:
+  // kHcFold of kHcNorm(x, norm) and gate (the norm recomputed: GGML-form
+  // checkpoints' llmp.hc.mix).
+  kHcMixNorm,
+  // (rows [C, T], history [(K - 1) · C], w [K, C]): GdnConvParams: the
+  // causal depthwise convolution of the rows after the history (tap j of
+  // channel c at c · (K - 1) + j) and SiLU, [C, T]; its first qk_channels
+  // channels, heads of `head`, L2-normed as rms_norm(x, eps) · scale.
+  kGdnConv,
+  // (rows [C, T], history? [(K - 1) · C]): GdnHistoryParams: the
+  // convolution's next history, [taps · C, 1]: the last `taps` of the
+  // history (when given) followed by the rows, each channel's taps
+  // together.
+  kGdnHistory,
+  // (q, k, v, g, beta, state [S], idx? [1]): GdnStepParams: kGatedDeltaNet
+  // over state viewed as [Sk, Sv, H, 1]: its attention, and with `write`
+  // the new state stored over state at idx (an output that is a view of
+  // state).
+  kGdnStep,
+  // (alpha [H, T], beta [H, T], dt_bias [H], a [H]): two outputs, the
+  // decay's log softplus(alpha + dt_bias) · a and sigmoid(beta), each [1,
+  // H, T, 1].
+  kGdnGates,
+  // (attn [d · H, T], q [2 · d · H, T]): HeadGateParams: attn times
+  // sigmoid of each head's gate (q's second d of each head's 2 · d).
+  kHeadGate,
+  // (raw [D, C], blocks [D, N], w [D], block_pos [4 · B], cells [B],
+  // positions? [4 · T]): QsaPoolParams: the block keys of the first B
+  // blocks of `ratio` raw rows, each their mean, rms_norm · w, rotated at
+  // its block's position and rounded to BF16, stored in blocks at cells:
+  // a view of blocks. An implementation may write only the blocks the
+  // step's positions complete (the others hold what earlier steps stored):
+  // a block's key never changes once its rows are written.
+  kQsaPool,
+  // (q [d, H, T], k [d, C, Hk], v [d, C, Hk], qi [Di, Hi, T], blocks [Di,
+  // B], causal [C, T] F32, seen [B, T] F32, mask [C, >= T], positions? [4 ·
+  // T]): QsaAttnParams: QSA's selection and attention (components/qsa.cc):
+  // each block's score Σ_h relu(bf16(qi_h) · block), plus 1e9 where `seen`
+  // hides the block's last position, spread over its `ratio` cells, plus
+  // `causal`; the `width` best cells kept; attention of q over k and v
+  // under `mask` and -inf but at the kept cells. [d · H, T].
+  kQsaAttention,
+  // (logits [E, T], x [W, T], gate [W]): RouteParams: kRoute's ids and
+  // weights, and the shared expert's gate logit Σ x · gate [1, T].
+  kMoeRouter,
+  // (gate_up [W, 2F, E], down [F, W, E], x [W, T], ids [U, T], weights [U,
+  // T], shared [W, T], gate [1, T], s_gate [E], s_up [E], s_down [E]):
+  // MoeExpertsParams: the routed experts (gate_up's halves, each by its
+  // expert's scale, the GLU, down) reduced with s_down and the weights,
+  // plus shared · sigmoid(gate): kMoeCombine over them.
+  kMoeExperts,
+  // (gate [W, F, E], up [W, F, E], x [W, T], ids [U, T]): MoeExpertsParams:
+  // glu(gate[ids] · x, up[ids] · x), [F, U, T].
+  kMatMulIdGlu,
 };
+// The op set's last fused kind (the kinds are 1 to it).
+inline constexpr FusedKind kLastFusedKind = FusedKind::kMatMulIdGlu;
 
 struct OpKey {
   Op op = Op::kInput;
@@ -433,7 +514,11 @@ struct RopeParams {
 enum class MaskKind : std::uint8_t { kCausal, kWindow, kBlock, kAhead };
 struct MaskParams {
   MaskKind kind = MaskKind::kCausal;
-  std::array<std::uint8_t, 3> reserved{};
+  // The mask has exactly the segment's rows (an attention that reads masks
+  // of the query's rows, as llmp's QSA kernels and GGML's flash attention
+  // at the pin do); otherwise its producer may pad them (op.h kMaskBuild).
+  bool exact_rows = false;
+  std::array<std::uint8_t, 2> reserved{};
   std::uint32_t window = 0;  // kWindow, kAhead: positions seen (kAhead: 0 for every one)
   std::uint32_t block = 0;   // kBlock: positions a block
 };
@@ -631,6 +716,56 @@ struct DupUpParams {
   std::uint32_t factor_t = 1;
 };
 
+struct ScaledUnaryParams {
+  float scale = 1.0f;
+  UnaryFn fn = UnaryFn::kSilu;
+  std::array<std::uint8_t, 3> reserved{};
+};
+
+struct HcFoldParams {
+  std::uint32_t streams = 0;
+  bool prepared = false;  // an output in MXFP8 rows (format::kMxfp8 scale atoms)
+  bool rounded = false;   // an output in BF16
+  std::array<std::uint8_t, 2> reserved{};
+};
+
+struct GdnConvParams {
+  float eps = 0.0f;
+  float scale = 1.0f;
+  std::uint32_t qk_channels = 0;
+  std::uint32_t head = 0;
+};
+
+struct GdnHistoryParams {
+  std::uint32_t taps = 0;
+};
+
+struct GdnStepParams {
+  bool write = false;
+  std::array<std::uint8_t, 3> reserved{};
+};
+
+struct HeadGateParams {
+  std::uint32_t head = 0;
+};
+
+struct QsaPoolParams {
+  float eps = 0.0f;
+  std::uint32_t ratio = 0;
+  RopeParams rope{};
+};
+
+struct QsaAttnParams {
+  AttnParams attn{};
+  std::uint32_t width = 0;  // cells kept
+  std::uint32_t ratio = 0;  // cells a block
+};
+
+struct MoeExpertsParams {
+  GluParams glu{};
+  std::uint32_t hidden = 0;  // F
+};
+
 template <typename P>
 inline constexpr bool kIsParams = std::is_trivially_copyable_v<P> && sizeof(P) <= kMaxParamBytes;
 
@@ -643,7 +778,16 @@ static_assert(kIsParams<NormParams> && kIsParams<RopeParams> && kIsParams<MaskPa
               kIsParams<ConcatParams> && kIsParams<PermuteParams> && kIsParams<Conv2dParams> &&
               kIsParams<UpsampleParams> && kIsParams<PoolParams> && kIsParams<SampleParams> &&
               kIsParams<CollectiveParams> && kIsParams<NormRopeParams> &&
-              kIsParams<OwnerAttnParams> && kIsParams<HcNormPostParams> && kIsParams<DupUpParams>);
+              kIsParams<OwnerAttnParams> && kIsParams<HcNormPostParams> && kIsParams<DupUpParams> &&
+              kIsParams<ScaledUnaryParams> && kIsParams<HcFoldParams> && kIsParams<GdnConvParams> &&
+              kIsParams<GdnHistoryParams> && kIsParams<GdnStepParams> &&
+              kIsParams<HeadGateParams> && kIsParams<QsaPoolParams> && kIsParams<QsaAttnParams> &&
+              kIsParams<MoeExpertsParams>);
+static_assert(sizeof(ScaledUnaryParams) == 8 && sizeof(HcFoldParams) == 8 &&
+              sizeof(GdnConvParams) == 16 && sizeof(GdnStepParams) == 4 &&
+              sizeof(QsaPoolParams) == 8 + sizeof(RopeParams) &&
+              sizeof(QsaAttnParams) == sizeof(AttnParams) + 8 &&
+              sizeof(MoeExpertsParams) == sizeof(GluParams) + 4);
 
 // No implicit padding: each struct's size is the sum of its fields'.
 static_assert(sizeof(RopeParams) == 4 + (3 * 4) + (6 * 4) + 16);

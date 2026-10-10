@@ -201,6 +201,10 @@ struct StepRequest {
   planner::StepShape shape{};
   std::span<const SegmentWork> work{};      // one per segment
   std::span<const std::byte> step_bytes{};  // kStepBytes inputs
+  // kSideRows inputs: the rows of a side table each row reads (a source's
+  // lookup from the token history, components/component.h side_rows), the
+  // step's rows in order.
+  std::span<const std::int32_t> side_rows{};
   // After success each owner's positions become past + rows (prefill,
   // decode, score); a verify or a draft leaves them to its Accept (a
   // verify or a drafter's step that would advance is refused).

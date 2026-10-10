@@ -136,13 +136,22 @@ std::expected<void, VerifyError> Verify(const Graph& graph) {
       if (rec.format.shape.rank != MinRank(rec.format.shape)) {
         return Err(GraphError::kShape, n, which + " has a rank that is not canonical");
       }
-      if (!SameExceptEncoding(rec.format, inf.format)) {
+      // A fused output recorded prepared (graph.h PreparedRows).
+      const bool prepared = node.key.op == Op::kFused && inferred->float_result.at(i) &&
+                            PreparedRows(rec.format) && rec.format.shape.ne == inf.format.shape.ne;
+      if (prepared) {
+        if (rec.nb != NaturalStrides(rec.format) || rec.view_of.valid()) {
+          return Err(GraphError::kShape, n, which + "'s prepared rows are not a root of their own");
+        }
+      } else if (!SameExceptEncoding(rec.format, inf.format)) {
         return Err(GraphError::kShape, n,
                    std::format("{} is [{}, {}, {}, {}], where the op makes [{}, {}, {}, {}]", which,
                                rec.ne(0), rec.ne(1), rec.ne(2), rec.ne(3), inf.ne(0), inf.ne(1),
                                inf.ne(2), inf.ne(3)));
       }
-      if (rec.format.encoding != inf.format.encoding) {
+      if (prepared) {
+        // checked above
+      } else if (rec.format.encoding != inf.format.encoding) {
         if (!inferred->float_result.at(i) || !ResultEncoding(rec.format.encoding)) {
           return Err(GraphError::kFormat, n, which + " has another encoding than the op makes");
         }

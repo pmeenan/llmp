@@ -23,6 +23,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <span>
@@ -39,6 +40,7 @@
 #include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "planner/fusions.h"
 #include "planner/lanes.h"
 #include "planner/pattern.h"
 #include "planner/placement.h"
@@ -250,6 +252,253 @@ TEST(PlannerPolicyTest, RanksAreTheDeviceClasses) {
 }
 
 // ------------------------------------------------------- rewrite patterns
+
+TEST(PlannerPatternTest, HyperConnectionMixChecksItsStreamViewsAndFinalScale) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.hc_norm", Any(ir::Fused(FusedKind::kHcNorm))));
+  implementations.push_back(Fake("t.hc_mix_norm", Any(ir::Fused(FusedKind::kHcMixNorm))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  for (int mutation : {0, 1, 2, 3, 4}) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    const TensorId x =
+        mutation == 4 ? b.State(F32({4, 2, 3}), ir::StateRef{}) : b.Input(F32({4, 2, 3}));
+    const TensorId norm = b.Weight(F32({8}), W(0));
+    const TensorId down = b.Weight(F32({8, 2}), W(1));
+    const TensorId up = b.Weight(F32({2, 8}), W(2));
+    const TensorId rms = b.RmsNorm(x, 1e-6F);
+    const TensorId xn = b.Mul(b.Reshape(rms, ir::ShapeOf({8, 3})), norm);
+    if (mutation == 4) {
+      const TensorId replacement = b.Input(F32({4, 2, 3}));
+      const TensorId ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2})));
+      b.CacheStore(x, replacement, ids);
+    }
+    const TensorId low = b.Unary(b.Scale(b.MatMul(down, xn), 0.5F), ir::UnaryFn::kSilu);
+    const TensorId gate = b.Unary(b.MatMul(up, low), ir::UnaryFn::kSigmoid);
+    const TensorId gated = b.Reshape(b.Mul(xn, gate), ir::ShapeOf({4, 2, 3}));
+    const auto first = b.View(gated, ir::ShapeOf({4, 3}), {4, 32, 96, 96}, 0);
+    const TensorId packed = b.Cont(first);
+    const TensorId second =
+        b.View(gated, ir::ShapeOf({4, 3}), {4, 32, 96, 96}, mutation == 1 ? 0 : 16);
+    const TensorId mixed =
+        b.Scale(b.Add(packed, second), mutation == 2 ? 1.0F : 0.5F, mutation == 3 ? 1.0F : 0.0F);
+    b.Output(mixed);
+    const auto g = Finish(b);
+    const MatchContext c(g, selection, nullptr);
+    EXPECT_EQ(fusions::HcMixMatch(c, g.producer(rms)).has_value(), mutation == 0);
+  }
+}
+
+TEST(PlannerPatternTest, HyperConnectionCombineRejectsUnrepresentedScaleParameters) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.hc_combine", Any(ir::Fused(FusedKind::kHcCombine))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  for (int mutation : {0, 1, 2, 3}) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    const TensorId streams = b.Input(F32({4, 2, 3}));
+    const TensorId out = b.Input(F32({4, 3}));
+    const TensorId logits = b.Input(F32({2, 3}));
+    const TensorId repeated =
+        b.Repeat(b.Reshape(out, ir::ShapeOf({4, 1, 3})), ir::ShapeOf({4, 2, 3}));
+    const TensorId scaled =
+        b.Scale(logits, mutation == 3 ? 0.5000001F : 0.5F, mutation == 1 ? 1.0F : 0.0F);
+    const TensorId weights =
+        b.Scale(b.Unary(scaled, ir::UnaryFn::kSigmoid), 2.0F, mutation == 2 ? 1.0F : 0.0F);
+    const TensorId mixed =
+        b.Add(streams, b.Mul(repeated, b.Reshape(weights, ir::ShapeOf({1, 2, 3}))));
+    b.Output(mixed);
+    const auto g = Finish(b);
+    const MatchContext c(g, selection, nullptr);
+    EXPECT_EQ(fusions::HcCombineMatch(c, g.producer(mixed)).has_value(), mutation == 0);
+  }
+}
+
+TEST(PlannerPatternTest, HyperConnectionPrepRejectsLowRankScaleBias) {
+  auto implementations = Everything();
+  for (const FusedKind kind : {FusedKind::kHcPrep, FusedKind::kScaledUnary, FusedKind::kHcFold}) {
+    implementations.push_back(
+        Fake("t.hc_" + std::to_string(static_cast<int>(kind)), Any(ir::Fused(kind))));
+  }
+  implementations.push_back(Fake("t.any_product", Any(ir::Primitive(Op::kMatMul))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  for (bool bias : {false, true}) {
+    SCOPED_TRACE(bias);
+    ir::Builder b;
+    const TensorId x = b.Input(F32({4, 2, 3}));
+    const TensorId norm = b.Weight(F32({8}), W(0));
+    const TensorId down = b.Weight(F32({8, 2}), W(1));
+    const TensorId up = b.Weight(F32({2, 8}), W(2));
+    const TensorId rms = b.RmsNorm(x, 1e-6F);
+    const TensorId xn = b.Mul(b.Reshape(rms, ir::ShapeOf({8, 3})), norm);
+    const TensorId low =
+        b.Unary(b.Scale(b.MatMul(down, xn), 0.5F, bias ? 1.0F : 0.0F), ir::UnaryFn::kSilu);
+    const TensorId gated = b.Reshape(b.Mul(xn, b.Unary(b.MatMul(up, low), ir::UnaryFn::kSigmoid)),
+                                     ir::ShapeOf({4, 2, 3}));
+    const TensorId first = b.Cont(b.View(gated, ir::ShapeOf({4, 3}), {4, 32, 96, 96}, 0));
+    const TensorId second = b.View(gated, ir::ShapeOf({4, 3}), {4, 32, 96, 96}, 16);
+    b.Output(b.Scale(b.Add(first, second), 0.5F));
+    const auto g = Finish(b);
+    const MatchContext c(g, selection, nullptr);
+    EXPECT_EQ(fusions::HcPrepMatch(c, g.producer(rms)).has_value(), !bias);
+  }
+}
+
+TEST(PlannerPatternTest, GdnConvolutionChecksBothNormalizedSlicesAndHistoryTail) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.gdn_conv", Any(ir::Fused(FusedKind::kGdnConv))));
+  implementations.push_back(Fake("t.gdn_history", Any(ir::Fused(FusedKind::kGdnHistory))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  for (int mutation : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    const TensorId state = b.State(F32({18, 1}), ir::StateRef{});
+    const TensorId rows = b.Input(F32({6, 2, 1}));
+    const TensorId weights = b.Weight(F32({4, 6}), W(0));
+    const TensorId input =
+        b.Concat(b.Reshape(state, ir::ShapeOf({3, 6, 1})), b.Cont(b.Transpose(rows)), 0);
+    if (mutation < 6) {
+      const TensorId tail =
+          b.View(input, ir::ShapeOf({3, 6, 1}), {4, 20, 120, 120}, mutation == 5 ? 0 : 8);
+      const TensorId ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({1})));
+      b.CacheStore(state, b.Reshape(b.Cont(tail), ir::ShapeOf({18, 1})), ids);
+    }
+    const TensorId convolution = b.SsmConv(input, weights);
+    const TensorId conv = b.Unary(convolution, ir::UnaryFn::kSilu);
+    std::vector<TensorId> qk;
+    for (std::uint64_t i = 0; i < 2; ++i) {
+      const TensorId view = b.View(conv, ir::ShapeOf({2, 1, 2, 1}), {4, 8, 24, 48},
+                                   i == 0 && mutation == 4 ? 4 : i * 8);
+      const TensorId norm = b.RmsNorm(b.Cont(view), i == 1 && mutation == 1 ? 0.25F : 1e-6F);
+      qk.push_back(b.Scale(norm, i == 1 && mutation == 2 ? 2.0F : 0.5F,
+                           i == 1 && mutation == 3 ? 1.0F : 0.0F));
+      b.Output(qk.back());
+    }
+    b.Output(b.View(conv, ir::ShapeOf({2, 1, 2, 1}), {4, 8, 24, 48}, 16));
+    if (mutation >= 6) {
+      const TensorId q = b.Reshape(qk[0], ir::ShapeOf({2, 2}));
+      const TensorId k = b.Reshape(qk[1], ir::ShapeOf({2, 2}));
+      const std::uint8_t dim = mutation == 10 ? 1 : 0;
+      const TensorId both = mutation == 7 ? b.Concat(k, q, dim) : b.Concat(q, k, dim);
+      const TensorId v =
+          b.Cont(b.View(conv, ir::ShapeOf({2, 2}), {4, 24, 48, 48}, mutation == 8 ? 0 : 16));
+      b.Keep(mutation == 9 ? b.Concat(v, both, dim) : b.Concat(both, v, dim));
+    }
+    const auto g = Finish(b);
+    const MatchContext c(g, selection, nullptr);
+    EXPECT_EQ(fusions::GdnConvMatch(c, g.producer(convolution)).has_value(),
+              mutation == 0 || mutation == 6);
+  }
+}
+
+TEST(PlannerPatternTest, QsaSelectionChecksItsFixedWeightsMasksAndBias) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.qsa_attention", Any(ir::Fused(FusedKind::kQsaAttention))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  for (int mutation : {0, 1, 2, 3, 4, 5, 6}) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({4})), "positions.4");
+    const TensorId q = b.Input(F32({2, 2, 1}));
+    const TensorId k = b.Input(F32({2, 4, 1}));
+    const TensorId v = b.Input(F32({2, 4, 1}));
+    const TensorId queries = b.Convert(b.Input(F32({2, 2, 1})), Encoding::kBF16);
+    const TensorId keys = b.Input(F32({2, 1, 2}));
+    const TensorId seen = b.Input(F32({2, 1}));
+    const TensorId causal = b.Input(F32({4, 1}));
+    const TensorId mask = b.Input(F32({4, 1}));
+    const TensorId bias = b.Scale(b.Clamp(seen, mutation == 4 ? -1.0F : -1e9F, 0.0F),
+                                  mutation == 5 ? -2.0F : -1.0F, mutation == 6 ? 1.0F : 0.0F);
+    const TensorId ones = b.Fill(ir::ShapeOf({2, 1, 1, 1}), mutation == 1 ? 2.0F : 1.0F);
+    const TensorId score =
+        b.IndexScore(queries, keys, ones, b.Reshape(bias, ir::ShapeOf({2, 1, 1, 1})));
+    const TensorId spread =
+        b.Repeat(b.Reshape(score, ir::ShapeOf({1, 2, 1})), ir::ShapeOf({2, 2, 1}));
+    const TensorId top = b.TopK(b.Add(b.Reshape(spread, ir::ShapeOf({4, 1})), causal), 2);
+    const TensorId selected = b.Fill(
+        ir::ShapeOf({1, 4, 1, 1}), mutation == 2 ? 0.0F : -std::numeric_limits<float>::infinity());
+    const TensorId zeros = b.Fill(ir::ShapeOf({1, 2, 1, 1}), mutation == 3 ? 1.0F : 0.0F);
+    const TensorId stored = b.CacheStore(selected, zeros, top);
+    const TensorId viewed_mask = b.View(mask, ir::ShapeOf({4, 1}), {4, 16, 16, 16}, 0);
+    const TensorId attn = b.Attention(b.Permute(q, {0, 2, 1, 3}), k, v,
+                                      b.Add(b.Reshape(stored, ir::ShapeOf({4, 1})), viewed_mask),
+                                      {}, {.scale = 0.5F, .sparse_any = true, .n_kv_max = 2});
+    b.Output(b.Reshape(attn, ir::ShapeOf({4, 1})));
+    const auto g = Finish(b);
+    const MatchContext c(g, selection, nullptr);
+    EXPECT_EQ(fusions::QsaSelectMatch(c, g.producer(attn)).has_value(), mutation == 0);
+  }
+}
+
+TEST(PlannerPatternTest, QsaPoolingDoesNotDropRotationFrequencyFactors) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.qsa_pool", Any(ir::Fused(FusedKind::kQsaPool))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  for (bool frequencies : {false, true}) {
+    SCOPED_TRACE(frequencies);
+    ir::Builder b;
+    b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({4})), "positions.4");
+    const TensorId raw = b.Input(F32({2, 4}));
+    const TensorId blocks =
+        b.State(ir::Dense(Encoding::kBF16, ir::ShapeOf({2, 2})), ir::StateRef{});
+    const TensorId norm = b.Weight(F32({2}), W(0));
+    const TensorId positions = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2})));
+    const TensorId cells = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2})));
+    const TensorId freq = frequencies ? b.Input(F32({1})) : TensorId{};
+    const TensorId pooled = b.Pool(raw, {}, {.ratio = 2, .kind = ir::PoolKind::kMean});
+    const TensorId weighted = b.Mul(b.RmsNorm(pooled, 1e-6F), norm);
+    const TensorId rotated =
+        b.Rope(b.Reshape(weighted, ir::ShapeOf({2, 1, 2})), positions, freq, {.dims = 2});
+    const TensorId rounded = b.Convert(rotated, Encoding::kBF16);
+    const TensorId stored = b.CacheStore(blocks, b.Reshape(rounded, ir::ShapeOf({2, 2})), cells);
+    b.Keep(stored);
+    const auto g = Finish(b);
+    const MatchContext c(g, selection, nullptr);
+    EXPECT_EQ(fusions::QsaPoolMatch(c, g.producer(stored)).has_value(), !frequencies);
+  }
+}
+
+TEST(PlannerPatternTest, SharedInputPreparationStopsAtAnInPlaceWrite) {
+  for (bool bf16 : {false, true}) {
+    SCOPED_TRACE(bf16);
+    auto implementations = Everything();
+    implementations.push_back(Fake("t.any_product", Any(ir::Primitive(Op::kMatMul))));
+    implementations.push_back(Fake("t.convert", Any(ir::Primitive(Op::kConvert))));
+    const auto registry = Registry(std::move(implementations));
+    const Policy policy{};
+    const SelectionView selection(registry, kDevice, policy, false, false);
+    ir::Builder b;
+    const std::uint64_t rows = bf16 ? 17 : 2;
+    const TensorId x = b.State(F32({64, rows}), ir::StateRef{});
+    const TensorId w =
+        b.Weight(bf16 ? ir::Dense(Encoding::kBF16, ir::ShapeOf({64, 4})) : Q8(64, 4), W(0));
+    const TensorId first = b.MatMul(w, x);
+    const TensorId replacement = b.Input(F32({64, rows}));
+    const TensorId indices = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({rows})));
+    b.CacheStore(x, replacement, indices);
+    const TensorId second = b.MatMul(w, x);
+    b.Output(b.Scale(first, 1.0F));
+    b.Output(b.Scale(second, 1.0F));
+    const auto g = Finish(b);
+    const MatchContext c(g, selection, nullptr);
+    const auto match = bf16 ? fusions::Bf16InputsMatch(c, g.producer(first))
+                            : fusions::VecQInputsMatch(c, g.producer(first));
+    ASSERT_TRUE(match.has_value());
+    EXPECT_FALSE(std::ranges::contains(match->nodes, g.producer(second)));
+  }
+}
 
 TEST(PlannerPatternTest, NormAndItsWeightFuse) {
   NormGraph t;

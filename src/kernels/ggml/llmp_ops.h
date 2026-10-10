@@ -288,6 +288,12 @@ ggml_tensor* GemvBf16(ggml_context* context, ggml_tensor* weights, ggml_tensor* 
                       ggml_type type = GGML_TYPE_F32);
 // Whether a llmp.gemm.bf16 node was built by GemvBf16.
 bool IsGemvBf16(const ggml_tensor* node);
+// A GemvBf16 node that takes the vector kernel at every width it takes (up
+// to kGemvBf16Columns), each column as it is alone: several owners' rows,
+// each owner's one row as its lone step computes it (today's Qwen3.8
+// waves keep the product per slot).
+void SetGemvBf16Wide(ggml_tensor* node);
+bool GemvBf16Wide(const ggml_tensor* node);
 
 // The host checks: operands bound, typed and shaped as above, packed where
 // the kernels read them with vector loads (codes and x rows 16-byte

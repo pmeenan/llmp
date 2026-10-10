@@ -3,6 +3,7 @@
 
 #include "spec/mappings/qwen38.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <expected>
@@ -301,6 +302,8 @@ constexpr std::string_view kEps = "qwen4exp.attention.layer_norm_rms_epsilon";
 constexpr std::array kParams = {
     LLMP_QWEN38_BLOCK_PARAMS("qwen4exp."),
     Real("embedding", "scale", 1.0),
+    // A verify's tokens as GGML's argmax picks them (the fast form's).
+    Flag("output", "native_argmax", true),
     FromKey("ngram", "ngram", "qwen4exp.ple.ngram_size", kInt),
     FromKey("ngram", "heads_per_ngram", "qwen4exp.ple.heads_per_ngram", kInt),
     FromKey("ngram", "row", "qwen4exp.embedding_length_per_layer_input", kInt),
@@ -321,6 +324,98 @@ constexpr std::array kParams = {
     RequireInt("qwen4exp.full_attention_interval", 4, false),
 };
 
+// The default planning policies (planner/policy.h, slice G3b): today's
+// fast forms (kernels/ggml/qwen38_graph.h: the fused graph, not exact),
+// each a form's own fusions enabled and the norms' and owners' patterns
+// (which today's Qwen3.8 graphs do not take) off; the same in every
+// serving envelope. The ModelOpt import with its experts in the CUTLASS
+// layout (stacked), in GGML's NVFP4 blocks (scaled, not stacked), and a
+// GGUF quantization's (neither).
+constexpr std::array kPolicies = {
+    PolicyRule{.gate = kStacked,
+               .text = "max_decode_rows 16\n"
+                       "enable bf16_rows\n"
+                       "enable gdn_conv\n"
+                       "enable gdn_gates\n"
+                       "enable gdn_norm_gate\n"
+                       "enable gdn_step\n"
+                       "enable hc_combine\n"
+                       "enable hc_fold_inputs\n"
+                       "enable hc_prep\n"
+                       "enable moe_experts\n"
+                       "enable moe_router\n"
+                       "enable mxfp8_inputs\n"
+                       "enable owner_row_invariant\n"
+                       "enable qsa_gate\n"
+                       "enable qsa_pool\n"
+                       "enable qsa_prep\n"
+                       "enable qsa_select\n"
+                       "disable grouped_stores\n"
+                       "disable mul_mat_glu\n"
+                       "disable narrow_final\n"
+                       "disable owner_attention\n"
+                       "disable prepared_inputs\n"
+                       "disable rms_norm_mul\n"
+                       "disable rms_norm_mul_add\n"
+                       "disable rms_norm_mul_rope\n"
+                       "disable rope_store\n"
+                       "disable route_reduce\n"},
+    PolicyRule{.gate = kScaled,
+               .text = "max_decode_rows 16\n"
+                       "enable bf16_rows\n"
+                       "enable gdn_conv\n"
+                       "enable gdn_gates\n"
+                       "enable gdn_norm_gate\n"
+                       "enable gdn_step\n"
+                       "enable hc_combine\n"
+                       "enable hc_fold_inputs\n"
+                       "enable hc_prep\n"
+                       "enable moe_combine\n"
+                       "enable moe_glu\n"
+                       "enable moe_router\n"
+                       "enable mxfp8_inputs\n"
+                       "enable owner_row_invariant\n"
+                       "enable qsa_gate\n"
+                       "enable qsa_pool\n"
+                       "enable qsa_prep\n"
+                       "enable qsa_select\n"
+                       "disable grouped_stores\n"
+                       "disable mul_mat_glu\n"
+                       "disable narrow_final\n"
+                       "disable owner_attention\n"
+                       "disable prepared_inputs\n"
+                       "disable rms_norm_mul\n"
+                       "disable rms_norm_mul_add\n"
+                       "disable rms_norm_mul_rope\n"
+                       "disable rope_store\n"
+                       "disable route_reduce\n"},
+    PolicyRule{.text = "max_decode_rows 16\n"
+                       "enable bf16_inputs\n"
+                       "enable gdn_conv\n"
+                       "enable gdn_norm_gate\n"
+                       "enable gdn_step\n"
+                       "enable hc_combine\n"
+                       "enable hc_mix\n"
+                       "enable moe_combine\n"
+                       "enable moe_router\n"
+                       "enable owner_row_invariant\n"
+                       "enable qsa_pool\n"
+                       "enable qsa_prep\n"
+                       "enable qsa_select\n"
+                       "enable vecq_glu\n"
+                       "enable vecq_inputs\n"
+                       "disable grouped_stores\n"
+                       "disable mul_mat_glu\n"
+                       "disable narrow_final\n"
+                       "disable owner_attention\n"
+                       "disable prepared_inputs\n"
+                       "disable rms_norm_mul\n"
+                       "disable rms_norm_mul_add\n"
+                       "disable rms_norm_mul_rope\n"
+                       "disable rope_store\n"
+                       "disable route_reduce\n"},
+};
+
 constexpr Mapping kMapping{
     .architecture = "qwen4exp",
     .version = 1,
@@ -333,12 +428,16 @@ constexpr Mapping kMapping{
     .folds = kFolds,
     .layer_flags_key = "qwen4exp.attention.compress_ratios",
     .layer_flag_type = 'f',
+    .policies = kPolicies,
     .v0_assembly = kAssembly,
 };
 
 // ------------------------------------------------------------ qwen4exp-mtp
 
 constexpr std::string_view kDraftRows = "qwen4exp-mtp.draft_head_rows";
+// The rows of the draft head a pass reads (Qwen38Options::draft_vocab's
+// default: 65,536, or a selected head's rows when fewer).
+constexpr std::string_view kDraftVocab = "qwen4exp-mtp.draft_vocab";
 
 constexpr std::array kMtpSlots = {
     SlotRule{.slot = "embedding", .site = Site::kEmbedding, .kind = "embedding.mtp"},
@@ -427,6 +526,39 @@ constexpr std::array kMtpParams = {
     Name("attention", "rollback", "truncate"),
     Flag("output_mix", "features", true),
     Flag("selected", "selected", true),
+    // The draft head reads the first rows of its weight (the lowest token
+    // IDs, or a selected head's first): the draft vocabulary.
+    FromKey("selected", "rows", kDraftVocab, kInt, Transform::kNone, {}, true),
+    FromKey("output", "rows", kDraftVocab, kInt, Transform::kNone, {}, true),
+    // Its drafts as GGML's argmax picks them (the fast form's).
+    Flag("selected", "native_argmax", true),
+    Flag("output", "native_argmax", true),
+};
+
+// The drafter's: its BF16 linears' inputs rounded once past 16 rows, its
+// QSA layer's and MoE's fast forms (its experts in the CUTLASS layout).
+constexpr std::array kMtpPolicies = {
+    PolicyRule{.text = "max_decode_rows 16\n"
+                       "enable bf16_inputs\n"
+                       "enable hc_combine\n"
+                       "enable hc_fold_inputs\n"
+                       "enable hc_prep\n"
+                       "enable moe_experts\n"
+                       "enable moe_router\n"
+                       "enable owner_row_invariant\n"
+                       "enable qsa_pool\n"
+                       "enable qsa_prep\n"
+                       "enable qsa_select\n"
+                       "disable grouped_stores\n"
+                       "disable mul_mat_glu\n"
+                       "disable narrow_final\n"
+                       "disable owner_attention\n"
+                       "disable prepared_inputs\n"
+                       "disable rms_norm_mul\n"
+                       "disable rms_norm_mul_add\n"
+                       "disable rms_norm_mul_rope\n"
+                       "disable rope_store\n"
+                       "disable route_reduce\n"},
 };
 
 constexpr std::array kMtpReads = {
@@ -446,6 +578,7 @@ constexpr Mapping kMtpMapping{
     .role = StageRole::kDrafter,
     .stage = "mtp",
     .reads = kMtpReads,
+    .policies = kMtpPolicies,
     .v0_assembly = kAssembly,
 };
 
@@ -538,10 +671,14 @@ std::expected<std::vector<SourceValue>, std::string> Qwen38MtpV0Values(
   out.push_back(Value(kIndexer, "fused"));
   out.push_back(FlagValue(kStacked, true));
   out.push_back(FlagValue(kScaled, true));
+  std::uint64_t head_rows = p.vocab;
   if (binding.selected_head()) {
     if (binding.draft_output.ne.size() != 2) return std::unexpected("a selected head of no rows");
     out.push_back(Value(kDraftRows, static_cast<std::uint32_t>(binding.draft_output.ne[1])));
+    head_rows = binding.draft_output.ne[1];
   }
+  out.push_back(Value(kDraftVocab, static_cast<std::uint32_t>(
+                                       std::min<std::uint64_t>(kQwen38DraftVocab, head_rows))));
   return out;
 }
 

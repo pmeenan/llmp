@@ -554,7 +554,8 @@ TEST(GgmlLowerTest, CapabilitiesRouteAsUpstream) {
     EXPECT_FALSE(kg::AcceptsTextOf(d.name).empty()) << d.name;
     EXPECT_TRUE(d.capability->group.empty() || d.capability->group == "ggml.mul_mat" ||
                 d.capability->group == "ggml.mul_mat_id" ||
-                d.capability->group == "ggml.flash_attn_ext")
+                d.capability->group == "ggml.flash_attn_ext" ||
+                d.capability->group == "ggml.gated_delta_net")
         << d.name;
   }
 }

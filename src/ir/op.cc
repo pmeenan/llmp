@@ -170,6 +170,36 @@ std::string_view FusedKindName(FusedKind kind) {
       return "euler_step";
     case FusedKind::kDupUpAdd:
       return "dup_up_add";
+    case FusedKind::kHcPrep:
+      return "hc_prep";
+    case FusedKind::kScaledUnary:
+      return "scaled_unary";
+    case FusedKind::kHcFold:
+      return "hc_fold";
+    case FusedKind::kHcCombine:
+      return "hc_combine";
+    case FusedKind::kHcMixNorm:
+      return "hc_mix_norm";
+    case FusedKind::kGdnConv:
+      return "gdn_conv";
+    case FusedKind::kGdnHistory:
+      return "gdn_history";
+    case FusedKind::kGdnStep:
+      return "gdn_step";
+    case FusedKind::kGdnGates:
+      return "gdn_gates";
+    case FusedKind::kHeadGate:
+      return "head_gate";
+    case FusedKind::kQsaPool:
+      return "qsa_pool";
+    case FusedKind::kQsaAttention:
+      return "qsa_attention";
+    case FusedKind::kMoeRouter:
+      return "moe_router";
+    case FusedKind::kMoeExperts:
+      return "moe_experts";
+    case FusedKind::kMatMulIdGlu:
+      return "mul_mat_id_glu";
   }
   return "unknown";
 }

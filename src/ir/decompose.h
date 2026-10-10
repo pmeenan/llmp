@@ -11,8 +11,8 @@
 // fused nodes through these; its tests check each composite op's direct
 // form against its decomposition.
 //
-// A decomposition only views a source with the source's own strides (it
-// never reshapes one), so it holds for strided sources too.
+// Decompositions preserve source strides in views, and copy strided
+// values before a reshape requires packed storage.
 
 #ifndef LLMP_IR_DECOMPOSE_H_
 #define LLMP_IR_DECOMPOSE_H_

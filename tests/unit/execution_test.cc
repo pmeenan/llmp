@@ -246,7 +246,7 @@ TEST(CapabilityTest, EveryOperationHasAKeyInTheOpSet) {
     EXPECT_TRUE(ops.insert(name).second) << name;
   }
   std::set<std::string_view> fused;
-  for (int i = 0; i <= static_cast<int>(ir::FusedKind::kDupUpAdd); ++i) {
+  for (int i = 0; i <= static_cast<int>(ir::kLastFusedKind); ++i) {
     const std::string_view name = ir::FusedKindName(static_cast<ir::FusedKind>(i));
     EXPECT_NE(name, "unknown") << i;
     EXPECT_TRUE(fused.insert(name).second) << name;

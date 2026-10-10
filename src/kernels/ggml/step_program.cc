@@ -207,6 +207,7 @@ kernels::StepBackend GgmlBackend::Backend() {
                        (c != nullptr && c->group == CapabilityOf("ggml.mul_mat.cublas")->group);
               },
           .written = &WrittenBytes,
+          .within = &WithinRoot,
           .lower = [this](const kernels::LowerInput& input) { return Lower(input); }};
 }
 

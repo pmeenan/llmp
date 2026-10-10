@@ -214,7 +214,17 @@ struct Capability {
   // An exact host predicate beyond the rules above (upstream's routing and
   // the like); the variant names what it checks.
   bool (*accepts)(const CapabilityQuery&) = nullptr;
+  // The module's own steps a node it computes launches, where they are
+  // others' than its name (a sequence of kernels, or a member of a family
+  // its module names otherwise): what its lowering compares its launches
+  // against. Empty: its name's.
+  std::span<const std::string_view> launches{};
 };
+
+// An output's format in a capability query: the operand at this index
+// plus the output's (its rules and predicates may constrain the result's
+// encoding and layout; a source's index is below it).
+inline constexpr std::uint8_t kOutputOperand = 128;
 
 // One operand's format, as a node has it. The encoding's parameters (an
 // EXL3 trellis's rate and codebook) and the operand's logical extents

@@ -1142,6 +1142,15 @@ target_link_libraries(ggml_lower_gemma4_test PRIVATE llmp_ggml_tensors llmp_plan
 llmp_gtest(ggml_lower_gemma4_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
+# The GGML lowering of Qwen3.8's steps (each import's target, plain and with
+# the MTP drafter, and the drafter's passes) against today's builder's fast
+# form, launch for launch, at the runner's setup shapes.
+add_executable(ggml_lower_qwen38_test ggml_lower_qwen38_test.cc)
+target_link_libraries(ggml_lower_qwen38_test PRIVATE llmp_ggml_tensors llmp_planner
+                                                     llmp_components llmp_spec llmp_model
+                                                     llmp_artifact llmp_json)
+llmp_gtest(ggml_lower_qwen38_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The components' state contracts through the shared slot lifecycle on the
 # fake device backend.
 add_executable(components_state_test components_state_test.cc)
@@ -1188,6 +1197,14 @@ if(LLMP_CUDA)
                                                                  llmp_components llmp_spec
                                                                  llmp_artifact)
   llmp_gpu_gtest(component_runner_gemma4_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+  # The same on the Qwen3.8 imports (ModelOpt's two expert layouts, a
+  # GGUF quantization's) against today's runner's fast form, one at a time.
+  add_executable(component_runner_qwen38_gpu_test component_runner_qwen38_gpu_test.cc)
+  target_link_libraries(component_runner_qwen38_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
+                                                                 llmp_components llmp_spec
+                                                                 llmp_artifact)
+  llmp_gpu_gtest(component_runner_qwen38_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()
 

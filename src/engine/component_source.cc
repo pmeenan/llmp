@@ -78,6 +78,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                              .staged = std::move(staged),
                              .on_stream = o_.backend.on_stream,
                              .written = o_.backend.written,
+                             .within = o_.backend.within,
                              .shape = &shape});
   if (!plan) {
     return std::unexpected(std::format("planning a step ({}): {}",

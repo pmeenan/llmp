@@ -71,7 +71,9 @@ std::expected<std::vector<RoleShape>, std::string> NormShapes(const Instance& in
 std::expected<FragmentOut, std::string> NormEmit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
   const float eps = F32(f.instance.params.Real("eps"));
-  return FragmentOut{.stream = f.b.Mul(f.b.RmsNorm(f.stream, eps), f.Weight(0))};
+  const ir::TensorId normed = f.b.RmsNorm(f.stream, eps);
+  const ir::TensorId weight = f.Weight(0);
+  return FragmentOut{.stream = f.b.Mul(normed, weight)};
 }
 
 std::expected<void, std::string> NormReference(RefIO& io) {
@@ -123,7 +125,9 @@ std::expected<std::vector<RoleShape>, std::string> EmbeddingShapes(const Instanc
 }
 
 std::expected<FragmentOut, std::string> EmbeddingEmit(Fragment& f) {
-  const ir::TensorId rows = f.b.GetRows(f.Weight(0), f.step.Tokens());
+  const ir::TensorId table = f.Weight(0);
+  const ir::TensorId tokens = f.step.Tokens();
+  const ir::TensorId rows = f.b.GetRows(table, tokens);
   // A scale of 1 is no node (Qwen3.8's rows are the stream as they are).
   const float scale = F32(f.instance.params.Real("scale"));
   return FragmentOut{.stream = scale == 1.0F ? rows : f.b.Scale(rows, scale)};
@@ -199,10 +203,12 @@ model::StateContract ProjectedState(const Instance& in) {
 
 std::expected<FragmentOut, std::string> ProjectedEmit(Fragment& f) {
   ir::Builder& b = f.b;
-  const ir::TensorId x =
-      b.Scale(b.GetRows(f.Weight(kTable), f.step.Tokens()), F32(f.instance.params.Real("scale")));
+  const ir::TensorId table = f.Weight(kTable);
+  const ir::TensorId tokens = f.step.Tokens();
+  const ir::TensorId x = b.Scale(b.GetRows(table, tokens), F32(f.instance.params.Real("scale")));
   const ir::TensorId features = f.step.Features(FeatureWidth(f.instance));
-  return FragmentOut{.stream = b.MatMul(f.Weight(kProjection), b.Concat(x, features, 0))};
+  const ir::TensorId projection = f.Weight(kProjection);
+  return FragmentOut{.stream = b.MatMul(projection, b.Concat(x, features, 0))};
 }
 
 std::expected<void, std::string> ProjectedReference(RefIO& io) {
@@ -261,6 +267,23 @@ constexpr std::array kHeadParams{
               .least = 0,
               .most = 1,
               .fallback = 0.0},
+    // A verify's and a draft pass's tokens as GGML's argmax picks them (the
+    // lowest index of the maximum, NaNs ignored), not as a sampled row's
+    // host-greedy pick.
+    ParamSpec{.name = "native_argmax",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0.0},
+    // The weight's first rows alone (an MTP drafter's draft vocabulary: the
+    // lowest token IDs, or a selected head's first); 0: every row.
+    ParamSpec{.name = "rows",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 0,
+              .most = 1 << 24,
+              .fallback = 0.0},
 };
 enum : std::uint16_t { kHeadWeight, kHeadProjection, kHeadIds, kMarkovW1, kMarkovW2 };
 constexpr std::array<format::Encoding, 1> kI32Only{format::Encoding::kI32};
@@ -296,8 +319,10 @@ std::expected<std::vector<RoleShape>, std::string> HeadShapes(const Instance& in
   }
   if (in.params.Flag("selected")) out.push_back(Role(kHeadIds, {1, 0}));
   if (in.params.Flag("markov")) {
-    if (in.params.Flag("gather") || in.params.Flag("selected") || in.stage.softcap.has_value()) {
-      return std::unexpected("a Markov head reads every row, unselected and uncapped");
+    if (in.params.Flag("gather") || in.params.Flag("selected") || in.params.Int("rows") != 0 ||
+        in.stage.softcap.has_value()) {
+      return std::unexpected(
+          "a Markov head reads every row and its full vocabulary, unselected and uncapped");
     }
     out.push_back(Role(kMarkovW1, {0, 0}));
     out.push_back(Role(kMarkovW2, {0, 0}));
@@ -347,7 +372,16 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
   // stream to them.
   const ir::TensorId rows =
       gather && !f.narrowed ? b.GetRows(f.stream, f.step.OutputRows()) : f.stream;
-  ir::TensorId logits = b.MatMul(f.Weight(kHeadWeight), rows);
+  // A prefix of the weight's rows.
+  ir::TensorId weight = f.Weight(kHeadWeight);
+  const auto prefix = static_cast<std::uint64_t>(f.instance.params.Int("rows"));
+  const ir::TensorDesc wd = Desc(b, weight);
+  if (prefix > wd.ne(1)) return std::unexpected("head rows exceed the weight's vocabulary");
+  if (prefix != 0 && prefix < wd.ne(1)) {
+    const format::Shape shape = Shape({wd.ne(0), prefix});
+    weight = b.View(weight, shape, ViewStrides(wd.nb[0], wd.nb[1], 0, shape), 0);
+  }
+  ir::TensorId logits = b.MatMul(weight, rows);
   if (f.instance.stage.softcap.has_value()) {
     const float cap = F32(*f.instance.stage.softcap);
     logits = b.Scale(logits, 1.0F / cap);
@@ -363,7 +397,13 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
   FragmentOut out{.stream = f.stream, .logits = logits};
   if (HeadFeatures(f.instance) != 0) out.features = b.MatMul(f.Weight(kHeadProjection), rows);
   if (f.step.greedy()) {
-    out.greedy = b.Argmax(logits, ir::ArgmaxNan::kFirstColumn);
+    // A verify's or a draft's tokens as GGML's argmax computes them where
+    // the head says so (native_argmax); else as the host's greedy pick (a
+    // NaN row's first column).
+    const bool native =
+        f.instance.params.Flag("native_argmax") &&
+        (f.step.phase() == planner::Phase::kVerify || f.step.phase() == planner::Phase::kDraft);
+    out.greedy = b.Argmax(logits, native ? ir::ArgmaxNan::kIgnore : ir::ArgmaxNan::kFirstColumn);
     // A selected head's rows to their tokens.
     if (f.instance.params.Flag("selected")) {
       out.greedy =
@@ -376,8 +416,15 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
 std::expected<void, std::string> HeadReference(RefIO& io) {
   const Instance& in = *io.instance;
   const std::uint64_t width = in.stage.width;
-  const std::span<const float> w = io.weights.at(kHeadWeight);
-  const std::uint64_t vocab = w.size() / width;
+  std::span<const float> w = io.weights.at(kHeadWeight);
+  std::uint64_t vocab = w.size() / width;
+  // A prefix of the weight's rows.
+  const auto prefix = static_cast<std::uint64_t>(in.params.Int("rows"));
+  if (prefix > vocab) return std::unexpected("head rows exceed the weight's vocabulary");
+  if (prefix != 0 && prefix < vocab) {
+    vocab = prefix;
+    w = w.first(vocab * width);
+  }
   if (io.stream.size() != width * io.rows()) {
     return std::unexpected("head reference: a stream of another shape");
   }
@@ -401,6 +448,21 @@ std::expected<void, std::string> HeadReference(RefIO& io) {
     const double cap = *in.stage.softcap;
     for (double& l : io.logits) l = cap * std::tanh(l / cap);
   }
+  const auto pick = [](std::span<const double> row, ir::ArgmaxNan nan) {
+    std::size_t best = 0;
+    bool found = false;
+    for (std::size_t i = 0; i < row.size(); ++i) {
+      if (nan == ir::ArgmaxNan::kIgnore) {
+        if (!std::isnan(row[i]) && (!found || row[i] > row[best])) {
+          best = i;
+          found = true;
+        }
+      } else if (row[i] > row[best]) {
+        best = i;
+      }
+    }
+    return best;
+  };
   if (in.params.Flag("markov")) {
     // Each segment's chain: its first token, then each row's best.
     const std::span<const float> w1 = io.weights.at(kMarkovW1);
@@ -423,10 +485,7 @@ std::expected<void, std::string> HeadReference(RefIO& io) {
           }
           row[v] += bias;
         }
-        std::uint64_t best = 0;
-        for (std::uint64_t v = 1; v < vocab; ++v) {
-          if (row[v] > row[best]) best = v;
-        }
+        const std::size_t best = pick({row, vocab}, ir::ArgmaxNan::kIgnore);
         prev = static_cast<std::int64_t>(best);
         if (io.greedy) io.tokens_out.push_back(static_cast<std::int32_t>(best));
       }
@@ -442,10 +501,7 @@ std::expected<void, std::string> HeadReference(RefIO& io) {
   if (io.greedy) {
     const bool mapped = in.params.Flag("selected");
     for (std::size_t r = 0; r < io.logits.size() / vocab; ++r) {
-      std::size_t best = 0;
-      for (std::size_t j = 1; j < vocab; ++j) {
-        if (io.logits[(r * vocab) + j] > io.logits[(r * vocab) + best]) best = j;
-      }
+      const std::size_t best = pick(std::span(io.logits).subspan(r * vocab, vocab), io.greedy_nan);
       io.tokens_out.push_back(mapped ? static_cast<std::int32_t>(io.weights.at(kHeadIds).at(best))
                                      : static_cast<std::int32_t>(best));
     }

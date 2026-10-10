@@ -285,8 +285,8 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   } else {
     staged.assign(graph.inputs().begin(), graph.inputs().end());
   }
-  auto placement =
-      PlaceActivations(graph, steps, regions, staged, options.alignment, options.written);
+  auto placement = PlaceActivations(graph, steps, regions, staged, options.alignment,
+                                    options.written, options.within);
   if (!placement) {
     return Failed(PlanError::kPlacement, placement.error());
   }
@@ -297,7 +297,10 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
                   .applied = std::move(applied),
                   .from = std::move(from),
                   .tensors = std::move(tensors),
-                  .decomposed = std::move(decomposed)};
+                  .decomposed = std::move(decomposed),
+                  .owner_row_invariant = !Disabled(policy, "owner_row_invariant") &&
+                                         options.shape != nullptr &&
+                                         options.shape->segments.size() > 1};
 }
 
 PlanKey KeyOf(const base::Sha256Digest& spec, const StepShape& shape, const Policy& policy,

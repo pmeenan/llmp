@@ -56,13 +56,25 @@ std::expected<void, std::string> WriteRows(std::span<std::byte> out,
 std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl::StepShape& shape,
                                                std::span<std::byte> out) {
   namespace co = llmp::components;
-  // A frozen read's cells hold the positions before the segment's rows.
-  const co::CellKey cells{
-      .capacity = in.cells.capacity, .ring = in.cells.ring, .frozen = in.cells.frozen};
-  co::StepInput input{.segment = in.segment, .cells = cells};
+  const co::CellKey cells{.capacity = in.cells.capacity,
+                          .ring = in.cells.ring,
+                          .frozen = in.cells.frozen,
+                          .fixed = in.cells.fixed,
+                          .block = in.cells.block,
+                          .per_row = in.cells.per_row,
+                          .first_row = in.cells.first_row};
+  co::StepInput input{.segment = in.segment, .cells = cells, .read = in.read};
   switch (in.kind) {
     case kn::InputKind::kOutputRows: {
       input.kind = co::InputKind::kOutputRows;
+      auto values = co::InputValues(input, shape, {});
+      if (!values) return Error(values.error());
+      std::vector<std::int32_t> rows(values->begin(), values->end());
+      return WriteRows(out, rows);
+    }
+    case kn::InputKind::kBlockPositions: {
+      input.kind = co::InputKind::kBlockPositions;
+      input.sections = static_cast<std::uint8_t>(in.sections);
       auto values = co::InputValues(input, shape, {});
       if (!values) return Error(values.error());
       std::vector<std::int32_t> rows(values->begin(), values->end());
@@ -815,13 +827,24 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
         }
         return WriteRows(out, values);
       case kn::InputKind::kPositions:
-        for (std::size_t i = 0; i < shape.segments.size(); ++i) {
-          if (!joined && i != segment) continue;
-          for (std::uint32_t r = 0; r < shape.segments[i].rows; ++r) {
-            values.push_back(static_cast<std::int32_t>(shape.segments[i].past + r));
+        // In `sections` copies, one after another (a multi-section
+        // rotation's).
+        for (std::uint32_t sec = 0; sec < std::max<std::uint32_t>(in.sections, 1); ++sec) {
+          for (std::size_t i = 0; i < shape.segments.size(); ++i) {
+            if (!joined && i != segment) continue;
+            for (std::uint32_t r = 0; r < shape.segments[i].rows; ++r) {
+              values.push_back(static_cast<std::int32_t>(shape.segments[i].past + r));
+            }
           }
         }
         return WriteRows(out, values);
+      case kn::InputKind::kSideRows: {
+        // The caller's (a side table's rows from the token history).
+        if (request.side_rows.size_bytes() != out.size()) {
+          return Error("the side rows must fill their slot");
+        }
+        return WriteRows(out, request.side_rows);
+      }
       case kn::InputKind::kSegmentBytes: {
         if (joined) return Error("a segment's bytes name no segment");
         const auto bytes = request.work[in.segment].bytes;
@@ -840,7 +863,10 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
       case kn::InputKind::kOutputRows:
       case kn::InputKind::kStoreCells:
       case kn::InputKind::kMask:
-        if (in.kind != kn::InputKind::kOutputRows && joined)
+      case kn::InputKind::kBlockPositions:
+        // A fixed tensor's cell, and a verify's whole step's rows, are
+        // every segment's.
+        if (in.kind != kn::InputKind::kOutputRows && joined && !in.cells.fixed && !in.cells.per_row)
           return Error("an input names no segment");
         return WriteComputed(in, shape, out);
       case kn::InputKind::kFeatures:

@@ -44,6 +44,9 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
     switch (key.fused) {
       case FusedKind::kMatMulGlu:
         return Product(s0, At(sources, 2));
+      case FusedKind::kMatMulIdGlu:
+      case FusedKind::kMoeExperts:
+        return Product(s0, At(sources, 2));
       case FusedKind::kMatMulAdd:
         return Product(s0, At(sources, 1));
       case FusedKind::kPreparedProducts:
@@ -137,6 +140,19 @@ std::vector<std::size_t> SelectionView::Candidates(ir::OpKey key,
     const format::TensorFormat& f = sources[i]->format;
     operands.push_back(
         {.operand = static_cast<std::uint8_t>(i),
+         .encoding = f.encoding,
+         .layout = f.layout,
+         .params = f.params,
+         .ne = {f.shape.ne.at(0), f.shape.ne.at(1), f.shape.ne.at(2), f.shape.ne.at(3)}});
+  }
+  // The outputs' formats, for rules and predicates on the result.
+  for (std::size_t i = 0; i < outputs.size(); ++i) {
+    if (outputs[i] == nullptr) {
+      continue;
+    }
+    const format::TensorFormat& f = outputs[i]->format;
+    operands.push_back(
+        {.operand = static_cast<std::uint8_t>(execution::kOutputOperand + i),
          .encoding = f.encoding,
          .layout = f.layout,
          .params = f.params,

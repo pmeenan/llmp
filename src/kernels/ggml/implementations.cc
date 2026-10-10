@@ -1146,6 +1146,15 @@ std::vector<execution::Implementation> Implementations() {
   for (const Kernel::Entry& entry : kKernels) {
     declared.push_back(Declare(entry));
   }
+  // The planner's implementations that are no kernel of their own: a node
+  // whose lowering launches others' (capabilities.h, Capability::launches).
+  for (const CapabilityDeclaration& d : CapabilityDeclarations()) {
+    if (std::ranges::none_of(
+            declared, [&](const execution::Implementation& i) { return i.name == d.name; })) {
+      declared.push_back(
+          Declare(d.name, d.operation, "launches the module's steps its capability lists"));
+    }
+  }
   return declared;
 }
 

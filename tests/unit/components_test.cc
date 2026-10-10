@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <format>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <optional>
 #include <random>
@@ -494,6 +495,11 @@ void Compare(const Instance& in, std::span<const format::TensorFormat> formats,
     io.stream = stream;
     io.tokens = step.tokens;
     io.greedy = graph->step.greedy.valid();
+    io.greedy_nan = in.def->kind == "head.linear" && in.params.Flag("native_argmax") &&
+                            (step.shape.phase == planner::Phase::kVerify ||
+                             step.shape.phase == planner::Phase::kDraft)
+                        ? ir::ArgmaxNan::kIgnore
+                        : ir::ArgmaxNan::kFirstColumn;
     auto r = in.def->reference(io);
     ASSERT_TRUE(r.has_value()) << r.error();
     if (graph->step.logits.valid()) {
@@ -704,9 +710,131 @@ TEST(ComponentsTest, FeedForwardNormEmbeddingAndHeadMatchTheirReferences) {
 
 // ---------------------------------------------------------------- the step
 
+TEST(ComponentsTest, HeadReferencesHonorTheCallsGreedyNanPolicy) {
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const std::array<std::vector<float>, 3> values{std::vector<float>{nan, 1, 3, 3},
+                                                 std::vector<float>{nan, nan, nan, nan},
+                                                 std::vector<float>{1, 3, 3, 2}};
+  const std::array<std::int64_t, 4> ids{11, 21, 31, 41};
+  for (bool selected : {false, true}) {
+    for (bool native : {false, true}) {
+      auto in = MakeInstance(C("head.linear", {P("native_argmax", ParamValue(native)),
+                                               P("selected", ParamValue(selected))}),
+                             {.width = 1, .context = 8}, Site::kOutput, 0, 0);
+      ASSERT_TRUE(in.has_value());
+      std::vector<format::TensorFormat> formats(in->def->roles.size(), Vector(1));
+      formats[0] = Matrix(Encoding::kF32, 1, 4);
+      formats[2] = ir::Dense(Encoding::kI32, ir::ShapeOf({1, 4}));
+      for (planner::Phase phase :
+           {planner::Phase::kDecode, planner::Phase::kVerify, planner::Phase::kDraft}) {
+        const planner::StepShape shape{.phase = phase, .segments = {Seg(0, 1, 0, 1, 1, true)}};
+        const bool ignore = native && phase != planner::Phase::kDecode;
+        for (std::size_t fixture = 0; fixture < values.size(); ++fixture) {
+          SCOPED_TRACE(std::format("selected {} native {} phase {} fixture {}", selected, native,
+                                   static_cast<int>(phase), fixture));
+          auto graph = BuildComponent(*in, shape, formats, {});
+          ASSERT_TRUE(graph.has_value()) << graph.error();
+          auto exec = ref::Executor::Create(graph->step.graph);
+          ASSERT_TRUE(exec.has_value());
+          ASSERT_TRUE(exec->BindValues(graph->weights[0], values[fixture]));
+          if (selected) ASSERT_TRUE(exec->BindInts(graph->weights[2], ids));
+          for (const StepInput& input : graph->step.inputs) {
+            if (input.kind == InputKind::kStream) {
+              const std::array<float, 1> stream{1};
+              ASSERT_TRUE(exec->BindValues(input.tensor, stream));
+            } else {
+              const auto staged = InputValues(input, shape, {});
+              ASSERT_TRUE(staged.has_value());
+              ASSERT_TRUE(exec->BindInts(input.tensor, *staged));
+            }
+          }
+          ASSERT_TRUE(exec->Run());
+          RefIO io{.instance = &*in};
+          io.segments = {{.rows = 1, .outputs = 1}};
+          io.stream = {1};
+          io.weights.resize(in->def->roles.size());
+          io.weights[0] = values[fixture];
+          if (selected) io.weights[2].assign(ids.begin(), ids.end());
+          io.greedy = true;
+          io.greedy_nan = ignore ? ir::ArgmaxNan::kIgnore : ir::ArgmaxNan::kFirstColumn;
+          ASSERT_TRUE(in->def->reference(io));
+          const std::size_t best = fixture == 0 ? (ignore ? 2 : 0) : fixture == 1 ? 0 : 1;
+          const std::int64_t expected = selected ? ids[best] : static_cast<std::int64_t>(best);
+          ASSERT_EQ(io.tokens_out.size(), 1U);
+          EXPECT_EQ(io.tokens_out[0], expected);
+          const auto tokens = exec->Ints(graph->step.greedy);
+          ASSERT_TRUE(tokens.has_value());
+          EXPECT_EQ(*tokens, (std::vector<std::int64_t>{expected}));
+        }
+      }
+    }
+  }
+}
+
 std::size_t Count(const ir::Graph& g, ir::Op op) {
   return static_cast<std::size_t>(
       std::ranges::count_if(g.nodes(), [op](const ir::Node& n) { return n.key.op == op; }));
+}
+
+TEST(ComponentsTest, AheadAndExactMasksAreIndependentForFrozenAndOwnedCells) {
+  ir::Builder b;
+  StepContext ctx(b, {{.slot = 0, .rows = 3, .past = 7, .read_cells = 16}}, false);
+  std::vector<StepContext::MaskKey> declarations;
+  for (bool frozen : {false, true}) {
+    for (bool ahead : {false, true}) {
+      for (bool exact : {false, true}) {
+        declarations.push_back({.cells = {.capacity = 32, .frozen = frozen},
+                                .window = 4,
+                                .ahead = ahead,
+                                .exact = exact});
+      }
+    }
+  }
+  ctx.DeclareMasks(declarations);
+  std::vector<ir::TensorId> masks;
+  for (const auto& key : declarations) {
+    const auto mask = ctx.Mask(0, key.cells, key.window, key.ahead, key.exact);
+    ASSERT_TRUE(mask.has_value()) << mask.error();
+    EXPECT_EQ(b.tensor(*mask).ne(1), key.exact ? 3U : kMaskRowAlign);
+    masks.push_back(*mask);
+  }
+  auto g = std::move(b).Finish();
+  ASSERT_TRUE(g.has_value()) << g.error().detail;
+  std::ranges::sort(masks);
+  EXPECT_EQ(std::ranges::unique(masks).begin(), masks.end());
+  for (std::size_t i = 0; i < declarations.size(); ++i) {
+    const auto mask =
+        ctx.Mask(0, declarations[i].cells, 4, declarations[i].ahead, declarations[i].exact);
+    const auto params = g->node(g->producer(*mask)).Params<ir::MaskParams>();
+    EXPECT_EQ(params.kind, declarations[i].ahead ? ir::MaskKind::kAhead : ir::MaskKind::kWindow);
+    EXPECT_EQ(params.exact_rows, declarations[i].exact);
+  }
+}
+
+TEST(ComponentsTest, SaveIndicesStayLiveUntilTheLoweringsStores) {
+  ir::Builder b;
+  StepContext ctx(b, {{.slot = 0, .rows = 3}, {.slot = 1, .first_row = 3, .rows = 2}}, false);
+  const Instance saver{.params = {}, .stage = {}, .layer = 1, .index = 2};
+  const auto joined = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({8, 5})));
+  const auto own = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({8, 3})));
+  ctx.Save(saver, "joined", joined);
+  ctx.Save(saver, "own", own, 0);
+  const auto saves = ctx.TakeSaves();
+  auto g = std::move(b).Finish();
+  ASSERT_TRUE(g.has_value()) << g.error().detail;
+  ASSERT_EQ(saves.size(), 2U);
+  for (const auto& save : saves) EXPECT_TRUE(std::ranges::contains(g->keep(), save.rows));
+}
+
+TEST(ComponentsTest, HeadPrefixesRefuseRowsPastTheirWeightAndMarkovPrefixes) {
+  auto head = MakeInstance(C("head.linear", {P("rows", I(41))}), kFacts, Site::kOutput, 0, 4);
+  ASSERT_TRUE(head.has_value());
+  const std::vector<format::TensorFormat> formats{Matrix(Encoding::kF32, kWidth, 40), Vector(1),
+                                                  Vector(1), Vector(1), Vector(1)};
+  EXPECT_FALSE(BuildComponent(*head, {.segments = {Seg(0, 3, 0, 256, 1)}}, formats, {}));
+  EXPECT_FALSE(MakeInstance(C("head.linear", {P("gather", ParamValue(false)),
+                                              P("markov", ParamValue(true)), P("rows", I(20))}),
+                            kFacts, Site::kOutput, 0, 4));
 }
 
 TEST(ComponentsTest, BuildStepMakesTheGemmaStepsFromTheirSpecs) {

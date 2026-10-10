@@ -136,6 +136,12 @@ std::uint64_t UnitElements(const format::TensorFormat& format);
 std::array<std::uint64_t, format::kMaxDims> NaturalStrides(const format::TensorFormat& format);
 // Whether its strides are its shape's natural ones (a packed tensor).
 bool IsContiguous(const TensorDesc& tensor);
+
+// MXFP8 rows: activations prepared for a block-scaled MXFP8 product (the
+// codes, then the scales in CUTLASS's atoms, in one root; kPrepare's
+// format). A fused kind's computed output may be recorded in them (its
+// decomposition's result then prepared).
+bool PreparedRows(const format::TensorFormat& format);
 // The number of values.
 std::uint64_t Elements(const format::Shape& shape);
 // A dense format of `shape`.

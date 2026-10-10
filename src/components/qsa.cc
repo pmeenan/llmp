@@ -290,9 +290,40 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   } else {
     raw = b.MatMul(w(kIndexerK), x);
   }
+  // Each owner's raw keys stored, then the block keys of its read cells'
+  // blocks (the indexer_blocks cache): every block's raw keys pooled,
+  // normed, rotated at the block's position and rounded, stored at its
+  // cell. A block's key is a function of its rows alone, so the store
+  // rewrites what earlier steps stored for the blocks they completed, and
+  // an implementation may write only the blocks this step completes
+  // (llmp.qsa.pool). The selection reads the keys from the cache.
+  std::vector<ir::TensorId> block_keys(segments.size());
   for (std::size_t s = 0; s < segments.size(); ++s) {
     b.SetOwner(static_cast<std::uint8_t>(s));
-    b.CacheStore(f.State(s, kCacheIndex), rows_of(raw, s), f.step.StoreCells(s, index_cells));
+    const ir::TensorId mine = rows_of(raw, s);
+    const ir::TensorId cells = f.step.StoreCells(s, index_cells);
+    const ir::TensorId stored = b.CacheStore(f.State(s, kCacheIndex), mine, cells);
+    const ir::TensorId blocks_state = f.State(s, kCacheBlocks);
+    const CellKey block_cells{.capacity = Desc(b, blocks_state).ne(1),
+                              .block = static_cast<std::uint32_t>(d.ratio)};
+    const std::uint64_t blocks = f.step.ReadCells(s, block_cells);
+    if (blocks * d.ratio > index_cells.capacity) {
+      return std::unexpected("block keys of cells past the indexer's cache");
+    }
+    const format::Shape cells_shape = Shape({d.idim, blocks * d.ratio});
+    const ir::TensorId read =
+        b.View(stored, cells_shape, ViewStrides(4, d.idim * 4, 0, cells_shape), 0);
+    ir::TensorId keys = b.Pool(
+        read, {}, {.ratio = static_cast<std::uint32_t>(d.ratio), .kind = ir::PoolKind::kMean});
+    const ir::TensorId normed = b.RmsNorm(keys, d.eps);
+    keys = b.Mul(normed, w(kIndexerKNorm));
+    const ir::TensorId heads = b.Reshape(keys, Shape({d.idim, 1, blocks}));
+    const ir::TensorId block_positions = f.step.BlockPositions(s, block_cells, blocks, 4);
+    keys = b.Rope(heads, block_positions, {}, rope);
+    const ir::TensorId rounded = b.Convert(keys, Encoding::kBF16);
+    keys = b.Reshape(rounded, Shape({d.idim, blocks}));
+    const ir::TensorId block_cell = f.step.BlockCells(s, block_cells, blocks);
+    block_keys[s] = b.CacheStore(blocks_state, keys, block_cell);
     b.SetJoined();
   }
   // Q (each head's q, then its gate), V, K.
@@ -312,13 +343,15 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   const ir::TensorId k_rows = b.Reshape(k, Shape({kv, rows}));
   for (std::size_t s = 0; s < segments.size(); ++s) {
     b.SetOwner(static_cast<std::uint8_t>(s));
-    b.CacheStore(f.State(s, kCacheK), rows_of(k_rows, s), f.step.StoreCells(s, kv_cells));
+    const ir::TensorId seg_k = rows_of(k_rows, s);
+    b.CacheStore(f.State(s, kCacheK), seg_k, f.step.StoreCells(s, kv_cells));
     b.SetJoined();
   }
   const ir::TensorId v_rows = b.Reshape(v, Shape({kv, rows}));
   for (std::size_t s = 0; s < segments.size(); ++s) {
     b.SetOwner(static_cast<std::uint8_t>(s));
-    b.CacheStore(f.State(s, kCacheV), rows_of(v_rows, s), f.step.StoreCells(s, kv_cells));
+    const ir::TensorId seg_v = rows_of(v_rows, s);
+    b.CacheStore(f.State(s, kCacheV), seg_v, f.step.StoreCells(s, kv_cells));
     b.SetJoined();
   }
   if (!f.stream_needed) return FragmentOut{.stream = x};
@@ -345,7 +378,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   for (std::size_t s = 0; s < segments.size(); ++s) {
     const SegmentRows& seg = segments[s];
     const std::uint64_t read = f.step.ReadCells(s, kv_cells);
-    auto mask = f.step.Mask(s, kv_cells, 0);
+    auto mask = f.step.Mask(s, kv_cells, 0, false, true);
     if (!mask) return std::unexpected(mask.error());
     ir::AttnParams params{.scale = scale, .accumulate = ir::Accumulate::kF32};
     ir::TensorId attn_mask = *mask;
@@ -355,18 +388,15 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
       const std::uint64_t width = std::min<std::uint64_t>(read, d.budget + d.ratio - 1);
       const ir::TensorId queries = indexer_queries();
       b.SetOwner(static_cast<std::uint8_t>(s));
-      // Every block of the read cells: pooled, normed, rotated, rounded.
-      const ir::TensorId cache = f.State(s, kCacheIndex);
-      const format::Shape cells_shape = Shape({d.idim, read});
-      ir::TensorId keys =
-          b.Pool(b.View(cache, cells_shape, ViewStrides(4, d.idim * 4, 0, cells_shape), 0), {},
-                 {.ratio = static_cast<std::uint32_t>(d.ratio), .kind = ir::PoolKind::kMean});
-      keys = b.Mul(b.RmsNorm(keys, d.eps), w(kIndexerKNorm));
+      // Every block of the read cells' key, from the cache (stored above).
       const CellKey block_cells{.capacity = Desc(b, f.State(s, kCacheBlocks)).ne(1),
                                 .block = static_cast<std::uint32_t>(d.ratio)};
-      keys = b.Rope(b.Reshape(keys, Shape({d.idim, 1, blocks})),
-                    f.step.BlockPositions(s, block_cells, blocks, 4), {}, rope);
-      keys = b.Reshape(b.Convert(keys, Encoding::kBF16), Shape({d.idim, 1, blocks, 1}));
+      if (blocks != f.step.ReadCells(s, block_cells)) {
+        return std::unexpected("a selection over other blocks than the cache's");
+      }
+      const format::Shape keys_shape = Shape({d.idim, 1, blocks, 1});
+      const ir::TensorId keys =
+          b.View(block_keys[s], keys_shape, ViewStrides(2, d.idim * 2, d.idim * 2, keys_shape), 0);
       // Its rows' queries.
       const ir::TensorDesc qt = Desc(b, queries);
       const format::Shape q_shape = Shape({d.idim, d.ih, seg.rows, 1});
@@ -375,30 +405,33 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
               : b.View(queries, q_shape, {qt.nb[0], qt.nb[1], qt.nb[2], qt.nb[2] * seg.rows},
                        std::uint64_t{seg.first_row} * qt.nb[2]);
       // The bias: 0 where the block's last position is seen, else kKeep.
+      const ir::TensorId at = f.step.SegmentPositions(s);
+      const ir::TensorId held = f.step.HeldPositions(s, block_cells);
       const ir::TensorId seen =
-          b.MaskBuild(f.step.SegmentPositions(s), f.step.HeldPositions(s, block_cells), seg.rows,
-                      {.kind = ir::MaskKind::kCausal}, Encoding::kF32);
+          b.MaskBuild(at, held, seg.rows, {.kind = ir::MaskKind::kCausal}, Encoding::kF32);
       const ir::TensorId bias = b.Scale(b.Clamp(seen, -kKeep, 0.0F), -1.0F);
       const ir::TensorId ones = b.Fill(Shape({d.ih, seg.rows, 1, 1}), 1.0F);
-      ir::TensorId score =
-          b.IndexScore(mine, keys, ones, b.Reshape(bias, Shape({blocks, seg.rows, 1, 1})));
+      const ir::TensorId bias_rows = b.Reshape(bias, Shape({blocks, seg.rows, 1, 1}));
+      ir::TensorId score = b.IndexScore(mine, keys, ones, bias_rows);
       // Spread over the blocks' cells, the causal mask added; the best kept.
       score = b.Repeat(b.Reshape(score, Shape({1, blocks, seg.rows})),
                        Shape({d.ratio, blocks, seg.rows}));
+      const ir::TensorId cells_held = f.step.HeldPositions(s, kv_cells);
       const ir::TensorId causal =
-          b.MaskBuild(f.step.SegmentPositions(s), f.step.HeldPositions(s, kv_cells), seg.rows,
-                      {.kind = ir::MaskKind::kCausal}, Encoding::kF32);
+          b.MaskBuild(at, cells_held, seg.rows, {.kind = ir::MaskKind::kCausal}, Encoding::kF32);
       score = b.Add(b.Reshape(score, Shape({read, seg.rows})), causal);
       const ir::TensorId kept = b.TopK(score, static_cast<std::uint32_t>(width));
       // The attention's mask: -inf but at the kept cells, then causal.
       ir::TensorId selected =
           b.Fill(Shape({1, read, seg.rows, 1}), -std::numeric_limits<float>::infinity());
-      selected = b.CacheStore(selected, b.Fill(Shape({1, width, seg.rows, 1}), 0.0F), kept);
+      const ir::TensorId zeros = b.Fill(Shape({1, width, seg.rows, 1}), 0.0F);
+      selected = b.CacheStore(selected, zeros, kept);
       const ir::TensorDesc mt = Desc(b, *mask);
       const format::Shape rows_shape = Shape({read, seg.rows});
-      attn_mask =
-          b.Add(b.Reshape(selected, rows_shape),
-                b.View(*mask, rows_shape, ViewStrides(mt.nb[0], mt.nb[1], 0, rows_shape), 0));
+      selected = b.Reshape(selected, rows_shape);
+      const ir::TensorId causal_rows =
+          b.View(*mask, rows_shape, ViewStrides(mt.nb[0], mt.nb[1], 0, rows_shape), 0);
+      attn_mask = b.Add(selected, causal_rows);
       params.n_kv_max = static_cast<std::uint32_t>(width);
       params.sparse_any = true;
       b.SetJoined();
@@ -415,9 +448,10 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     const auto cache_view = [&](ir::TensorId cache) {
       return b.View(cache, Shape({d.d, read, d.kvh}), {el, kv * el, d.d * el, d.d * el * d.kvh}, 0);
     };
+    const ir::TensorId keys_view = cache_view(f.State(s, kCacheK));
+    const ir::TensorId values_view = cache_view(f.State(s, kCacheV));
     const ir::TensorId attention =
-        b.Attention(queries, cache_view(f.State(s, kCacheK)), cache_view(f.State(s, kCacheV)),
-                    attn_mask, {}, params);
+        b.Attention(queries, keys_view, values_view, attn_mask, {}, params);
     outputs.push_back(b.Reshape(attention, Shape({d.d * d.heads, seg.rows})));
     b.SetJoined();
   }
@@ -542,19 +576,21 @@ std::expected<void, std::string> Reference(RefIO& io) {
     }
     const std::uint64_t read = std::min<std::uint64_t>(capacity, seg.read_cells);
     const std::uint64_t end = seg.past + seg.rows;
-    // The selection, as set_input_qsa's tables and build_qsa_top_k give it.
-    const bool selects = Selects(d, read);
-    std::vector<std::vector<bool>> kept(seg.rows, std::vector<bool>(read, true));
-    if (selects) {
-      const std::uint64_t blocks = read / d.ratio;
-      const std::uint64_t width = std::min<std::uint64_t>(read, d.budget + d.ratio - 1);
-      std::vector<double> keys(blocks * d.idim, 0.0);
-      // Each step rounded to F32 as the graph's nodes round their results,
-      // so the BF16 keys are the graph's.
+    // The block keys of every block of the read cells, stored in the cache
+    // (each step rounded to F32 as the graph's nodes round their results,
+    // so the BF16 keys are the graph's).
+    auto& bc = io.state[si].at(kCacheBlocks);
+    const std::uint64_t pooled = std::min<std::uint64_t>(io.state_cells.at(kCacheBlocks),
+                                                         (seg.read_cells + d.ratio - 1) / d.ratio);
+    if (pooled * d.ratio > io.state_cells.at(kCacheIndex) || bc.size() < pooled * d.idim) {
+      return std::unexpected("qsa reference: blocks past the caches");
+    }
+    std::vector<double> keys(pooled * d.idim, 0.0);
+    {
       const auto f32 = [](std::vector<double>& v) {
         for (double& x : v) x = static_cast<double>(static_cast<float>(x));
       };
-      for (std::uint64_t bl = 0; bl < blocks; ++bl) {
+      for (std::uint64_t bl = 0; bl < pooled; ++bl) {
         double* key = &keys[bl * d.idim];
         for (std::uint64_t c = 0; c < d.ratio; ++c) {
           for (std::uint64_t j = 0; j < d.idim; ++j)
@@ -569,12 +605,23 @@ std::expected<void, std::string> Reference(RefIO& io) {
         keys[j] *= static_cast<double>(weight(kIndexerKNorm)[j % d.idim]);
       }
       f32(keys);
-      for (std::uint64_t bl = 0; bl < blocks; ++bl) {
+      for (std::uint64_t bl = 0; bl < pooled; ++bl) {
         Rotate(std::span(keys).subspan(bl * d.idim, d.idim), 1, d.idim, d,
                static_cast<std::int64_t>(bl * d.ratio));
       }
       f32(keys);
-      for (double& x : keys) x = Bf16(x);
+      for (std::size_t j = 0; j < keys.size(); ++j) {
+        keys[j] = Bf16(keys[j]);
+        bc[j] = keys[j];
+      }
+    }
+    // The selection, as set_input_qsa's tables and build_qsa_top_k give it.
+    const bool selects = Selects(d, read);
+    std::vector<std::vector<bool>> kept(seg.rows, std::vector<bool>(read, true));
+    if (selects) {
+      const std::uint64_t blocks = read / d.ratio;
+      const std::uint64_t width = std::min<std::uint64_t>(read, d.budget + d.ratio - 1);
+      if (blocks > pooled) return std::unexpected("qsa reference: a selection past the blocks");
       for (std::uint64_t t = 0; t < seg.rows; ++t) {
         const std::uint64_t r = first + t;
         const std::uint64_t pos = seg.past + t;
@@ -663,6 +710,7 @@ const ComponentDef& AttentionQsa() {
       .splits = kSplits,
       .patterns = kPatterns,
       .masks = Masks,
+      .exact_masks = true,
       .emit = Emit,
       .reference = Reference,
   };

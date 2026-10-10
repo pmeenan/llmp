@@ -440,7 +440,14 @@ ggml_tensor* GemvBf16(ggml_context* context, ggml_tensor* weights, ggml_tensor* 
 }
 
 bool IsGemvBf16(const ggml_tensor* node) {
-  return LlmpOpOf(node) == LlmpOp::kGemmBf16 && LlmpOpInt(node, 0) == 1;
+  return LlmpOpOf(node) == LlmpOp::kGemmBf16 &&
+         (LlmpOpInt(node, 0) == 1 || LlmpOpInt(node, 0) == 2);
+}
+
+void SetGemvBf16Wide(ggml_tensor* node) { WithInts(node, {2}); }
+
+bool GemvBf16Wide(const ggml_tensor* node) {
+  return LlmpOpOf(node) == LlmpOp::kGemmBf16 && LlmpOpInt(node, 0) == 2;
 }
 
 ggml_tensor* GdnConv(ggml_context* context, ggml_tensor* x, ggml_tensor* history,

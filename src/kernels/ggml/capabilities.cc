@@ -67,6 +67,19 @@ constexpr std::array kPreparedWeights = {Encoding::kQ4_0, Encoding::kQ4_K, Encod
                                          Encoding::kQ5_0, Encoding::kQ5_1, Encoding::kIQ4_NL};
 constexpr std::array kDense = {Layout::kDense};
 constexpr std::array kGgml = {Layout::kGgmlBlocks};
+// Qwen3.8's fast forms' (slice G3b): MXFP8 weights split, MXFP8 rows
+// prepared, BF16 activations, NVFP4 in its layouts.
+constexpr std::array kBf16 = {Encoding::kBF16};
+constexpr std::array kF32Bf16 = {Encoding::kF32, Encoding::kBF16};
+constexpr std::array kMxfp8 = {Encoding::kMxfp8};
+constexpr std::array kNvfp4 = {Encoding::kNvfp4};
+constexpr std::array kSplitLayout = {Layout::kSplit};
+constexpr std::array kAtoms = {Layout::kCutlassScaleAtoms};
+constexpr std::array kRowsLayout = {Layout::kRowInterleaved};
+constexpr std::array kNvfp4Ggml = {Layout::kGgmlNvfp4Blocks};
+// GGML's expert products over NVFP4 blocks (the ModelOpt import's GGML
+// layout).
+constexpr std::array kQuantizedNvfp4 = {Encoding::kNvfp4};
 
 using Rule = ex::OperandRule;
 constexpr std::array<Rule, 1> kF32In = {{{.operand = 0, .encodings = kF32, .layouts = kDense}}};
@@ -155,6 +168,106 @@ constexpr std::array<Rule, 3> kQuantExperts = {
     {{.operand = 0, .encodings = kQuantized, .layouts = kGgml},
      {.operand = 1, .encodings = kF32, .layouts = kDense},
      {.operand = 2, .encodings = kI32, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kNvfp4Experts = {
+    {{.operand = 0, .encodings = kQuantizedNvfp4, .layouts = kNvfp4Ggml},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kI32, .layouts = kDense}}};
+// The fast forms' products (w, x) and their results.
+constexpr std::uint8_t kOut = ex::kOutputOperand;
+constexpr std::array<Rule, 3> kMxfp8Vec = {
+    {{.operand = 0, .encodings = kMxfp8, .layouts = kSplitLayout},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = kOut, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kMxfp8Gemm = {
+    {{.operand = 0, .encodings = kMxfp8, .layouts = kSplitLayout},
+     {.operand = 1, .encodings = kMxfp8, .layouts = kAtoms},
+     {.operand = kOut, .encodings = kF32Bf16, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kMxfp8Prepare = {
+    {{.operand = 0, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = kOut, .encodings = kMxfp8, .layouts = kAtoms}}};
+constexpr std::array<Rule, 3> kBf16Product = {
+    {{.operand = 0, .encodings = kBf16, .layouts = kDense},
+     {.operand = 1, .encodings = kBf16, .layouts = kDense},
+     {.operand = kOut, .encodings = kF32Bf16, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kToBf16 = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = kOut, .encodings = kBf16, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kNvfp4Table = {
+    {{.operand = 0, .encodings = kNvfp4, .layouts = kRowsLayout},
+     {.operand = 1, .encodings = kI32, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kQRowsTable = {
+    {{.operand = 0, .encodings = {}, .layouts = kGgml},
+     {.operand = 1, .encodings = kI32, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kHcPrepRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = kOut, .encodings = kBf16, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kHcLoRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = kOut, .encodings = kBf16, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kHcFoldRules = {
+    {{.operand = 0, .encodings = kBf16, .layouts = kDense},
+     {.operand = 1, .encodings = kBf16, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kHcCombineRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kHcNormRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kGdnConvRules = {
+    {{.operand = 0, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kSsmConvRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 1> kRowsRules = {
+    {{.operand = 0, .encodings = kF32Bf16, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kNormGateRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kF32Bf16, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kHeadGateRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = kOut, .encodings = kMxfp8, .layouts = kAtoms}}};
+constexpr std::array<Rule, 2> kQsaPoolRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kBf16, .layouts = kDense}}};
+constexpr std::array<Rule, 5> kQsaAttnRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF16, .layouts = kDense},
+     {.operand = 2, .encodings = kF16, .layouts = kDense},
+     {.operand = 3, .encodings = kF32, .layouts = kDense},
+     {.operand = 4, .encodings = kBf16, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kMoeRouterRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kCutlassExperts = {
+    {{.operand = 0, .encodings = kNvfp4, .layouts = kAtoms},
+     {.operand = 1, .encodings = kNvfp4, .layouts = kAtoms},
+     {.operand = 2, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kVecQProduct = {
+    {{.operand = 0, .encodings = kQuantized, .layouts = kGgml},
+     {.operand = 1, .encodings = kQ8_1, .layouts = kGgml}}};
+constexpr std::array<Rule, 3> kVecQGlu = {
+    {{.operand = 0, .encodings = kQuantized, .layouts = kGgml},
+     {.operand = 1, .encodings = kQuantized, .layouts = kGgml},
+     {.operand = 2, .encodings = kQ8_1, .layouts = kGgml}}};
+constexpr std::array<Rule, 3> kVecQExperts = {
+    {{.operand = 0, .encodings = kQuantized, .layouts = kGgml},
+     {.operand = 1, .encodings = kQ8_1, .layouts = kGgml},
+     {.operand = 2, .encodings = kI32, .layouts = kDense}}};
+constexpr std::array<Rule, 4> kVecQExpertsGlu = {
+    {{.operand = 0, .encodings = kQuantized, .layouts = kGgml},
+     {.operand = 1, .encodings = kQuantized, .layouts = kGgml},
+     {.operand = 2, .encodings = kQ8_1, .layouts = kGgml},
+     {.operand = 3, .encodings = kI32, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kGatedDeltaRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 5, .encodings = kF32, .layouts = {}}}};
+
 // kRoute's logits; kExpertReduce's (x, w, ids, scale).
 constexpr std::array<Rule, 1> kRouteLogits = kF32In;
 constexpr std::array<Rule, 4> kScaledReduce = {
@@ -305,8 +418,10 @@ bool AcceptsMask(const ex::CapabilityQuery& q) {
 // forms) on the GB10 alone.
 bool AcceptsOwnerAttention(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::OwnerAttnParams>(q);
+  const auto sources = std::ranges::count_if(
+      q.operands, [](const ex::OperandFormat& o) { return o.operand < ex::kOutputOperand; });
   if (!Built(q) || !p || p->owners < 1 || p->owners > 4 ||
-      q.operands.size() != 2 + (2U * p->owners))
+      sources != 2 + (2 * static_cast<std::ptrdiff_t>(p->owners)))
     return false;
   const ir::AttnParams& a = p->attn;
   if (a.scale != 1.0F || a.max_bias != 0.0F || a.sinks || a.sparse_any || a.n_kv_max != 0 ||
@@ -392,6 +507,183 @@ bool AcceptsGemmaReduce(const ex::CapabilityQuery& q) {
 }
 
 bool AcceptsArgmax(const ex::CapabilityQuery& q) { return Built(q); }
+
+// ------------------------------------------------- Qwen3.8's fast forms
+
+// The architecture llmpalooza's CUTLASS tensor-core kernels (MXFP8 products,
+// NVFP4 grouped GEMMs) are built for: the GB10 alone.
+constexpr std::uint32_t kCutlassArch = 121;
+
+std::uint64_t Ne(const ex::CapabilityQuery& q, std::uint8_t operand, std::size_t d) {
+  const ex::OperandFormat* o = Operand(q, operand);
+  return o == nullptr ? 0 : o->ne.at(d);
+}
+
+// llmp.mxfp8.mul_mat_vec: up to kMxfp8VecColumns columns (a wave's to
+// kMxfp8VecWaveColumns).
+bool AcceptsMxfp8Vec(const ex::CapabilityQuery& q) {
+  return Built(q) && q.rows >= 1 && q.rows <= static_cast<std::uint64_t>(kMxfp8VecColumns) &&
+         q.k % 32 == 0;
+}
+// llmp.mxfp8.gemm.cutlass: past the vector product's columns, on the GB10.
+bool AcceptsMxfp8Gemm(const ex::CapabilityQuery& q) {
+  return Built(q) && q.arch == kCutlassArch &&
+         q.rows > static_cast<std::uint64_t>(kMxfp8VecColumns) && q.k % 128 == 0;
+}
+bool AcceptsMxfp8Quantize(const ex::CapabilityQuery& q) {
+  return Built(q) && q.arch == kCutlassArch && Ne(q, 0, 0) % 128 == 0 && Ne(q, 0, 2) <= 1 &&
+         Ne(q, 0, 3) <= 1;
+}
+// llmp.nvfp4.get_rows: rows of 16-value blocks.
+bool AcceptsNvfp4Rows(const ex::CapabilityQuery& q) { return Built(q) && Ne(q, 0, 0) % 16 == 0; }
+// llmp.qrows.get_rows: a table of 32-value blocks whose rows are not GGML's
+// whole 256-value steps (its get_rows takes those), at most 1,024 values.
+bool AcceptsQRows(const ex::CapabilityQuery& q) {
+  const ex::OperandFormat* t = Operand(q, 0);
+  if (!Built(q) || t == nullptr) return false;
+  const bool type = t->encoding == Encoding::kQ4_0 || t->encoding == Encoding::kQ4_1 ||
+                    t->encoding == Encoding::kQ5_0 || t->encoding == Encoding::kQ5_1 ||
+                    t->encoding == Encoding::kQ8_0 || t->encoding == Encoding::kIQ4_NL;
+  return type && t->ne[0] % 32 == 0 && t->ne[0] % 256 != 0 && t->ne[0] <= 1024;
+}
+// The hyper-connections' kernels: at most 8 streams, widths of 8.
+bool AcceptsHcPrep(const ex::CapabilityQuery& q) {
+  const ex::OperandFormat* inject = Operand(q, 2);
+  return Built(q) && Ne(q, 0, 1) >= 2 && Ne(q, 0, 1) <= 8 && Ne(q, 0, 0) % 8 == 0 &&
+         Ne(q, 0, 0) <= 4096 &&
+         (inject == nullptr ||
+          (inject->encoding == Encoding::kBF16 && inject->layout == Layout::kDense));
+}
+bool AcceptsHcLo(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::ScaledUnaryParams>(q);
+  if (!Built(q) || !p || p->fn != ir::UnaryFn::kSilu) return false;
+  // HcLo scales by the reciprocal of its integer stream count. Rounding
+  // an arbitrary scale to a count would silently change the operation.
+  for (std::uint32_t streams = 1; streams <= 8; ++streams) {
+    if (p->scale == 1.0F / static_cast<float>(streams)) return true;
+  }
+  return false;
+}
+bool AcceptsHcFold(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::HcFoldParams>(q);
+  if (!Built(q) || !p || p->streams < 2 || p->streams > 8) return false;
+  const std::uint64_t width = Ne(q, 0, 0) / p->streams;
+  const std::uint64_t rows = Ne(q, 0, 1);
+  // The prepared and rounded rows past the vector product's columns, of
+  // whole 128-value MXFP8 rows (HcMixLayout), rounded only beside prepared.
+  if (p->prepared && (rows <= static_cast<std::uint64_t>(kMxfp8VecColumns) || width % 128 != 0))
+    return false;
+  return !p->rounded || p->prepared;
+}
+bool AcceptsHcCombine(const ex::CapabilityQuery& q) {
+  return Built(q) && Ne(q, 0, 0) % 4 == 0 && Ne(q, 0, 1) >= 2;
+}
+bool AcceptsHcNorm(const ex::CapabilityQuery& q) {
+  return Built(q) && Ne(q, 0, 0) >= 1024 && Ne(q, 0, 1) >= 2;
+}
+// llmp.gdn.conv: 128-wide heads, a kernel of 4 (3 taps).
+// GGML's convolution of one sequence (past 32 tokens not whole windows, the
+// lowering pads its input, RE-032).
+bool AcceptsSsmConv(const ex::CapabilityQuery& q) { return Built(q) && Ne(q, 0, 2) <= 1; }
+bool AcceptsGdnConv(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::GdnConvParams>(q);
+  return Built(q) && p && p->head == 128 && Ne(q, 2, 0) == 4;
+}
+bool AcceptsGdnHistory(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::GdnHistoryParams>(q);
+  return Built(q) && p && p->taps >= 1 && p->taps <= 8;
+}
+// llmp.gdn.step: 128-wide heads, up to kGatedDeltaNetLanesTokens tokens.
+bool AcceptsGdnStep(const ex::CapabilityQuery& q) {
+  return Built(q) && Ne(q, 0, 0) == 128 && Ne(q, 2, 0) == 128 && Ne(q, 2, 2) >= 1 &&
+         Ne(q, 2, 2) <= static_cast<std::uint64_t>(kGatedDeltaNetLanesTokens) && Ne(q, 2, 3) == 1;
+}
+// llmp.gdn.gates: 48 value heads, 1 to 16 rows.
+bool AcceptsGdnGates(const ex::CapabilityQuery& q) {
+  return Built(q) && Ne(q, 0, 0) == 48 && Ne(q, 0, 1) >= 1 && Ne(q, 0, 1) <= 16;
+}
+bool AcceptsGdnNormGate(const ex::CapabilityQuery& q) {
+  return Built(q) && Ne(q, 0, 0) == 128 && Ne(q, 0, 3) <= 1;
+}
+// GGML's gated delta rule (upstream's or llmpalooza's column-blocked
+// kernels, which PlanGraph picks by shape): one sequence.
+bool AcceptsGatedDelta(const ex::CapabilityQuery& q) { return Built(q) && Ne(q, 2, 3) <= 1; }
+// llmp.qsa.prep: the interleaved multi-section rotation of 64 dimensions,
+// heads of whole warps from 64 to 512 values.
+bool QsaRope(const ir::RopeParams& r) {
+  // These kernels rotate at pos * base^(-2 / dims), without inverse,
+  // frequency scaling, a table, an offset or YaRN amplitude correction.
+  return r.mode == ir::RopeMode::kInterleavedMulti && r.dims == 64 && !r.inverse && !r.table &&
+         r.offset == 0 && r.scale == 1.0F && r.ext_factor == 0.0F && r.attn_factor == 1.0F;
+}
+
+bool AcceptsQsaPrep(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::NormRopeParams>(q);
+  const std::uint64_t d = Ne(q, 0, 0);
+  return Built(q) && p && QsaRope(p->rope) && !Has(q, 3) && d >= 64 && d <= 512 && d % 32 == 0;
+}
+bool AcceptsQsaPool(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::QsaPoolParams>(q);
+  const std::uint64_t d = Ne(q, 0, 0);
+  return Built(q) && p && p->ratio >= 1 && p->ratio <= 32 && QsaRope(p->rope) && d >= 64 &&
+         d <= 512 && d % 32 == 0 && Has(q, 5);
+}
+// llmp.qsa.topk and llmp.qsa.attn: 256-wide heads at most 16 to a KV head,
+// an indexer of 4 heads of 128, the selection within its tiles.
+bool AcceptsQsaAttention(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::QsaAttnParams>(q);
+  if (!Built(q) || !p || !Has(q, 8) || p->attn.softcap != 0.0F || p->attn.max_bias != 0.0F ||
+      p->attn.window != 0 || p->attn.sinks)
+    return false;
+  const std::uint64_t heads = Ne(q, 0, 1);
+  const std::uint64_t kv = Ne(q, 1, 2);
+  const QsaTopKLayout layout{.t = static_cast<std::int64_t>(Ne(q, 0, 2)),
+                             .n_blocks = static_cast<std::int64_t>(Ne(q, 4, 1)),
+                             .width = static_cast<std::int64_t>(p->width),
+                             .ratio = static_cast<std::int64_t>(p->ratio)};
+  return Ne(q, 0, 0) == static_cast<std::uint64_t>(kQsaAttnHead) && kv >= 1 && heads % kv == 0 &&
+         heads / kv <= 16 && Ne(q, 3, 0) == static_cast<std::uint64_t>(kQsaIndexDim) &&
+         Ne(q, 3, 1) == static_cast<std::uint64_t>(kQsaIndexHeads) && p->ratio >= 1 &&
+         p->ratio <= 32 && layout.tiles() <= kQsaTopKMaxTiles &&
+         layout.tiles() * layout.candidates() <= kQsaTopKCandidates;
+}
+bool AcceptsHeadGate(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::HeadGateParams>(q);
+  return Built(q) && q.arch == kCutlassArch && p && p->head % 32 == 0;
+}
+bool AcceptsMoeRouter(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::RouteParams>(q);
+  const ex::OperandFormat* gate = Operand(q, 2);
+  return Built(q) && p && p->kind == ir::RouteKind::kSoftmaxTopK && p->normalize &&
+         p->scale == 1.0F && p->experts % 32 == 0 && p->experts <= 1024 && p->used <= 32 &&
+         gate != nullptr && (gate->encoding == Encoding::kBF16 || gate->encoding == Encoding::kF32);
+}
+bool AcceptsMoeExperts(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::MoeExpertsParams>(q);
+  return Built(q) && q.arch == kCutlassArch && p && p->glu.kind == ir::GluKind::kSwiGlu &&
+         !p->glu.swapped && Has(q, 7) && Has(q, 8) && Has(q, 9);
+}
+bool AcceptsMoeGlu(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::GluParams>(q);
+  return Built(q) && p && p->kind == ir::GluKind::kSwiGlu && !p->swapped;
+}
+// llmp.vecq: decode's quantized products (up to kVecQTokens tokens), of a
+// type it has a kernel for.
+bool VecQ(const ex::CapabilityQuery& q) {
+  const ex::OperandFormat* w = Operand(q, 0);
+  if (w == nullptr) return false;
+  const format::EncodingInfo& info = format::Info(w->encoding);
+  return Built(q) && info.ggml.has_value() && VecQType(static_cast<ggml_type>(info.ggml->type)) &&
+         q.k % 32 == 0;
+}
+bool AcceptsVecQ(const ex::CapabilityQuery& q) {
+  return VecQ(q) && q.rows >= 1 && q.rows <= static_cast<std::uint64_t>(kVecQTokens);
+}
+// Routed: its (token, slot) pairs within the kernel's 64 (the fast form's).
+bool AcceptsVecQRouted(const ex::CapabilityQuery& q) {
+  const std::uint64_t used = Ne(q, q.op == ir::Fused(FusedKind::kMatMulIdGlu) ? 3 : 2, 0);
+  return VecQ(q) && q.rows >= 1 && used >= 1 && q.rows * used <= 64;
+}
 bool AcceptsAny(const ex::CapabilityQuery& q) { return Built(q); }
 bool AcceptsPrepared(const ex::CapabilityQuery& q) { return Built(q) && Routed(q); }
 
@@ -430,7 +722,8 @@ struct Entry {
 constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
                              bool (*accepts)(const ex::CapabilityQuery&), bool row_invariant,
                              std::string_view group = {}, std::uint16_t priority = 0,
-                             ex::ShapeRule shape = {}, std::uint16_t batch = 0) {
+                             ex::ShapeRule shape = {}, std::uint16_t batch = 0,
+                             std::span<const std::string_view> launches = {}) {
   return {.op = op,
           .operands = rules,
           .shape = shape,
@@ -442,13 +735,35 @@ constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
           .group = group,
           .priority = priority,
           .batch = batch,
-          .accepts = accepts};
+          .accepts = accepts,
+          .launches = launches};
 }
 
 constexpr ir::OpKey P(Op op) { return ir::Primitive(op); }
 constexpr ir::OpKey F(FusedKind kind) { return ir::Fused(kind); }
 
 constexpr std::string_view kMulMatGroup = "ggml.mul_mat";
+constexpr std::string_view kGatedDeltaGroup = "ggml.gated_delta_net";
+// The IR implementations whose nodes launch several of the module's steps,
+// or a step named otherwise (Capability::launches).
+constexpr std::string_view kQsaAttentionName = "llmp.qsa.topk_attn";
+constexpr std::string_view kMoeExpertsName = "llmp.moe.experts.cutlass";
+constexpr std::string_view kVecQDenseName = "llmp.vecq.dense";
+constexpr std::string_view kVecQGluName = "llmp.vecq.glu";
+constexpr std::string_view kVecQExpertsName = "llmp.vecq.experts";
+constexpr std::string_view kVecQExpertsGluName = "llmp.vecq.experts_glu";
+constexpr std::array<std::string_view, 2> kMxfp8GemmSteps = {kMxfp8SwizzleName, kMxfp8GemmName};
+constexpr std::array<std::string_view, 2> kQsaAttentionSteps = {kQsaTopKName, kQsaAttnName};
+// A padded window's copy and concatenation, then the convolution.
+constexpr std::array<std::string_view, 3> kSsmConvSteps = {kContName, kConcatName, kSsmConvName};
+constexpr std::array<std::string_view, 7> kMoeExpertsSteps = {
+    kMoeGemvName, kMoeCombineName,     kMoeRouteName,        kMoeQuantizeName,
+    kMoeGemmName, kMoeGluQuantizeName, kMoeCombineSortedName};
+constexpr std::array<std::string_view, 1> kVecQSteps = {kVecQName};
+// GGML's expert products over NVFP4 blocks: upstream's routing picks MMVQ
+// or MMQ (ggml_cuda_mul_mat_id).
+constexpr std::string_view kMulMatIdNvfp4Name = "ggml.mul_mat_id.nvfp4";
+constexpr std::array<std::string_view, 2> kMulMatIdSteps = {kMulMatIdVecQ, kMulMatIdQ};
 constexpr std::string_view kAttentionGroup = "ggml.flash_attn_ext";
 constexpr std::string_view kMulMatIdGroup = "ggml.mul_mat_id";
 constexpr std::string_view kBuilt = "; selectable for the build's SASS architectures";
@@ -582,6 +897,122 @@ const std::array kEntries = {
           Cap(P(Op::kMaskBuild), kMaskPositions, &AcceptsMask, true),
           "; selectable for the build's SASS architectures: causal and window masks"},
     Entry{"llmp.argmax", Operation::kTopK, Cap(P(Op::kArgmax), kF32In, &AcceptsArgmax, true),
+          kBuilt},
+    // Qwen3.8's fast forms (slice G3b; qwen38_graph.h): the MXFP8 and BF16
+    // products, the n-gram tables' rows, the hyper-connections, Gated
+    // DeltaNet, QSA and the routed experts.
+    Entry{kMxfp8MulMatVecName, Operation::kMatMul,
+          Cap(P(Op::kMatMul), kMxfp8Vec, &AcceptsMxfp8Vec, false, {}, 4),
+          "; selectable for the build's SASS architectures: up to 8 columns"},
+    Entry{kMxfp8GemmName, Operation::kMatMul,
+          Cap(P(Op::kMatMul), kMxfp8Gemm, &AcceptsMxfp8Gemm, false, {}, 4, {}, 0, kMxfp8GemmSteps),
+          "; selectable on sm_121 past 8 columns, K of whole 128-value rows"},
+    Entry{kMxfp8QuantizeName, Operation::kQuantize,
+          Cap(P(Op::kPrepare), kMxfp8Prepare, &AcceptsMxfp8Quantize, true),
+          "; selectable on sm_121: rows of whole 128 values"},
+    Entry{kGemmBf16Name, Operation::kMatMul,
+          Cap(P(Op::kMatMul), kBf16Product, &AcceptsAny, false, {}, 4), kBuilt},
+    Entry{kBf16Name, Operation::kConvert, Cap(P(Op::kConvert), kToBf16, &AcceptsAny, true), kBuilt},
+    Entry{kNvfp4RowsName, Operation::kGetRows,
+          Cap(P(Op::kGetRows), kNvfp4Table, &AcceptsNvfp4Rows, true, {}, 2), kBuilt},
+    Entry{kQRowsName, Operation::kGetRows,
+          Cap(P(Op::kGetRows), kQRowsTable, &AcceptsQRows, true, {}, 2),
+          "; selectable for the build's SASS architectures: 32-value blocks of rows GGML's "
+          "get_rows does not take"},
+    Entry{kHcPrepName, Operation::kHcNorm,
+          Cap(F(FusedKind::kHcPrep), kHcPrepRules, &AcceptsHcPrep, true),
+          "; selectable for the build's SASS architectures: 2 to 8 streams of widths of 8 to "
+          "4,096, a BF16 inject"},
+    Entry{kHcLoName, Operation::kUnary,
+          Cap(F(FusedKind::kScaledUnary), kHcLoRules, &AcceptsHcLo, true),
+          "; selectable for the build's SASS architectures: SiLU scaled by the reciprocal of "
+          "1 to 8 streams"},
+    Entry{kHcMixBf16Name, Operation::kHcMix,
+          Cap(F(FusedKind::kHcFold), kHcFoldRules, &AcceptsHcFold, true),
+          "; selectable for the build's SASS architectures: 2 to 8 streams; prepared past 8 "
+          "rows of whole 128-value rows"},
+    Entry{kHcCombineName, Operation::kHcCombine,
+          Cap(F(FusedKind::kHcCombine), kHcCombineRules, &AcceptsHcCombine, true), kBuilt},
+    Entry{kHcNormName, Operation::kHcNorm,
+          Cap(F(FusedKind::kHcNorm), kHcNormRules, &AcceptsHcNorm, true),
+          "; selectable for the build's SASS architectures: streams of at least 1,024"},
+    Entry{kHcMixName, Operation::kHcMix,
+          Cap(F(FusedKind::kHcMixNorm), kHcNormRules, &AcceptsHcNorm, true),
+          "; selectable for the build's SASS architectures: streams of at least 1,024"},
+    Entry{kSsmConvName, Operation::kSsmConv,
+          Cap(P(Op::kSsmConv), kSsmConvRules, &AcceptsSsmConv, true, {}, 0, {}, 0, kSsmConvSteps),
+          "; one sequence; past 32 tokens of a partial window, its input padded"},
+    Entry{kGdnConvName, Operation::kSsmConv,
+          Cap(F(FusedKind::kGdnConv), kGdnConvRules, &AcceptsGdnConv, true),
+          "; selectable for the build's SASS architectures: heads of 128, a kernel of 4"},
+    Entry{kGdnHistoryName, Operation::kCont,
+          Cap(F(FusedKind::kGdnHistory), kRowsRules, &AcceptsGdnHistory, true), kBuilt},
+    Entry{kGdnStepName, Operation::kGatedDeltaNet,
+          Cap(F(FusedKind::kGdnStep), kGatedDeltaRules, &AcceptsGdnStep, false),
+          "; selectable for the build's SASS architectures: heads of 128, up to 16 tokens"},
+    Entry{kGdnGatesName, Operation::kUnary,
+          Cap(F(FusedKind::kGdnGates), kHcNormRules, &AcceptsGdnGates, true),
+          "; selectable for the build's SASS architectures: 48 heads, up to 16 rows"},
+    Entry{kGdnNormGateName, Operation::kNormGate,
+          Cap(F(FusedKind::kNormGate), kNormGateRules, &AcceptsGdnNormGate, true),
+          "; selectable for the build's SASS architectures: heads of 128"},
+    Entry{kGatedDeltaNetName, Operation::kGatedDeltaNet,
+          Cap(P(Op::kGatedDeltaNet), kGatedDeltaRules, &AcceptsGatedDelta, false, kGatedDeltaGroup),
+          kBuilt},
+    Entry{kGatedDeltaNetColumnsName, Operation::kGatedDeltaNet,
+          Cap(P(Op::kGatedDeltaNet), kGatedDeltaRules, &AcceptsGatedDelta, false, kGatedDeltaGroup,
+              1),
+          kBuilt},
+    Entry{kGatedDeltaNetLanesName, Operation::kGatedDeltaNet,
+          Cap(P(Op::kGatedDeltaNet), kGatedDeltaRules, &AcceptsGatedDelta, false, kGatedDeltaGroup,
+              2),
+          kBuilt},
+    Entry{kQsaPrepName, Operation::kRope,
+          Cap(F(FusedKind::kRmsNormMulRope), kNormMulRope, &AcceptsQsaPrep, true, {}, 1),
+          "; selectable for the build's SASS architectures: the interleaved multi-section "
+          "rotation of 64 dimensions over heads of 64 to 512, without frequency or amplitude "
+          "scaling; lowering requires typed replicated position sections"},
+    Entry{kQsaPoolName, Operation::kRope,
+          Cap(F(FusedKind::kQsaPool), kQsaPoolRules, &AcceptsQsaPool, true),
+          "; selectable for the build's SASS architectures: blocks of 1 to 32 cells, with a "
+          "forward unscaled 64-dimension interleaved rotation; lowering requires canonical "
+          "typed block positions/cells and stored raw keys"},
+    Entry{kQsaAttentionName, Operation::kFlashAttn,
+          Cap(F(FusedKind::kQsaAttention), kQsaAttnRules, &AcceptsQsaAttention, false, {}, 0, {}, 0,
+              kQsaAttentionSteps),
+          "; selectable for the build's SASS architectures: heads of 256, at most 16 a KV head, "
+          "an indexer of 4 heads of 128, the selection within its tiles; lowering requires "
+          "canonical typed position tables, stores and causal masks"},
+    Entry{kQsaGateQuantizeName, Operation::kQuantize,
+          Cap(F(FusedKind::kHeadGate), kHeadGateRules, &AcceptsHeadGate, true),
+          "; selectable on sm_121: heads of whole 32 values into MXFP8 rows"},
+    Entry{kMoeRouterName, Operation::kArgsort,
+          Cap(F(FusedKind::kMoeRouter), kMoeRouterRules, &AcceptsMoeRouter, true),
+          "; selectable for the build's SASS architectures: a normalized softmax top-k of up to "
+          "32 of up to 1,024 experts"},
+    Entry{kMoeExpertsName, Operation::kMulMatId,
+          Cap(F(FusedKind::kMoeExperts), kCutlassExperts, &AcceptsMoeExperts, false, {}, 0, {}, 0,
+              kMoeExpertsSteps),
+          "; selectable on sm_121: the CUTLASS layout's experts with their scales, SwiGLU"},
+    Entry{kMoeGluName, Operation::kMoeGlu,
+          Cap(F(FusedKind::kMoeGlu), kF32Binary, &AcceptsMoeGlu, true), kBuilt},
+    Entry{kMoeCombineName, Operation::kMoeCombine,
+          Cap(F(FusedKind::kMoeCombine), kF32In, &AcceptsAny, true), kBuilt},
+    Entry{kVecQDenseName, Operation::kMatMul,
+          Cap(P(Op::kMatMul), kVecQProduct, &AcceptsVecQ, false, {}, 3, {}, 0, kVecQSteps),
+          "; selectable for the build's SASS architectures: up to 8 tokens"},
+    Entry{kVecQGluName, Operation::kMulMatGlu,
+          Cap(F(FusedKind::kMatMulGlu), kVecQGlu, &AcceptsVecQ, false, {}, 3, {}, 0, kVecQSteps),
+          "; selectable for the build's SASS architectures: up to 8 tokens"},
+    Entry{kVecQExpertsName, Operation::kMulMatId,
+          Cap(P(Op::kMatMulId), kVecQExperts, &AcceptsVecQRouted, false, {}, 3, {}, 0, kVecQSteps),
+          "; selectable for the build's SASS architectures: up to 64 (token, slot) pairs"},
+    Entry{kVecQExpertsGluName, Operation::kMulMatId,
+          Cap(F(FusedKind::kMatMulIdGlu), kVecQExpertsGlu, &AcceptsVecQRouted, false, {}, 3, {}, 0,
+              kVecQSteps),
+          "; selectable for the build's SASS architectures: up to 64 (token, slot) pairs"},
+    Entry{kMulMatIdNvfp4Name, Operation::kMulMatId,
+          Cap(P(Op::kMatMulId), kNvfp4Experts, &AcceptsAny, false, {}, 0, {}, 0, kMulMatIdSteps),
           kBuilt},
     // Block-quantized KV caches (kv_quant.h).
     Entry{kFlashAttnVecQ8Name, Operation::kFlashAttn,

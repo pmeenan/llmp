@@ -272,6 +272,11 @@ void Compare(const Instance& in, std::span<const format::TensorFormat> formats,
     ASSERT_TRUE(ran.has_value()) << ran.error().detail;
     io.tokens = step.tokens;
     io.greedy = graph->step.greedy.valid();
+    io.greedy_nan = in.def->kind == "head.linear" && in.params.Flag("native_argmax") &&
+                            (step.shape.phase == planner::Phase::kVerify ||
+                             step.shape.phase == planner::Phase::kDraft)
+                        ? ir::ArgmaxNan::kIgnore
+                        : ir::ArgmaxNan::kFirstColumn;
     auto r = in.def->reference(io);
     ASSERT_TRUE(r.has_value()) << r.error();
     const auto check = [&](ir::TensorId t, std::span<const double> want, std::string_view what) {
@@ -635,8 +640,9 @@ TEST(ComponentsQwen38Test, QsaAttentionMatchesItsReferenceWithAndWithoutSelectio
         {.shape = {.segments = {Seg(3, 2, 39, 64, 2)}}},
     };
     Compare(*in, QsaFormats(Encoding::kF32), cells, steps, kTolerance, kF16State);
-    // A selecting step's attention promises its kept cells; the block keys'
-    // cache is an implementation's (no primitive reads or writes it).
+    // A selecting step's attention promises its kept cells; every step
+    // keeps the block keys' cache (its complete blocks' pooled keys) and a
+    // selecting one reads it.
     auto g = BuildComponent(*in, steps[2].shape, QsaFormats(Encoding::kF32), cells);
     ASSERT_TRUE(g.has_value()) << g.error();
     std::size_t sparse = 0;
@@ -648,8 +654,8 @@ TEST(ComponentsQwen38Test, QsaAttentionMatchesItsReferenceWithAndWithoutSelectio
     EXPECT_EQ(sparse, 2U);
     EXPECT_EQ(Count(g->step.graph, ir::Op::kTopK), 2U);
     for (const StepState& st : g->step.state) {
-      if (st.ref.tensor == 3) EXPECT_FALSE(st.read || st.written);
-      if (st.ref.tensor != 3) EXPECT_TRUE(st.written);
+      EXPECT_TRUE(st.written);
+      if (st.ref.tensor == 3) EXPECT_TRUE(st.read);
     }
     // The selection's mask is built by a store into an activation: the
     // step's own, not state.
@@ -1198,11 +1204,12 @@ TEST(ComponentsQwen38Test, TheTargetWritesItsDraftersStreamsEveryRow) {
   for (const StepState& st : draft->state) {
     if (st.ref.tensor == 0) EXPECT_FALSE(st.written);
   }
-  // A drafter's state-only catch-up pass writes its caches only.
+  // A drafter's state-only catch-up pass writes its caches only: K, V,
+  // the indexer's keys and its blocks' pooled keys.
   auto catch_up =
       BuildStep(*spec, 1, {.stage = 1, .segments = {Seg(0, 2, 40, 256, 0)}}, drafter_bindings);
   ASSERT_TRUE(catch_up.has_value()) << catch_up.error();
-  EXPECT_EQ(Count(catch_up->graph, ir::Op::kCacheStore), 3U);
+  EXPECT_EQ(Count(catch_up->graph, ir::Op::kCacheStore), 4U);
 }
 
 // ---------------------------------------------------------------- reads

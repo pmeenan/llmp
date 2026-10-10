@@ -332,6 +332,10 @@ struct RefIO {
   std::vector<std::vector<std::vector<double>>> state{};  // [segment][tensor]
   std::vector<std::uint64_t> state_cells{};               // by tensor
   bool greedy = false;
+  // The caller's effective greedy-pick policy for this call. A native
+  // verify/draft head ignores NaNs; an ordinary host pick keeps column zero
+  // when it is NaN. This is arithmetic policy, independent of dispatch.
+  ir::ArgmaxNan greedy_nan = ir::ArgmaxNan::kFirstColumn;
   std::vector<double> logits{};
   std::vector<std::int32_t> tokens_out{};
   std::vector<double> features_out{};
@@ -388,6 +392,11 @@ struct ComponentDef {
   // Masks it reads: made once per step and segment before the first layer
   // (StepContext::Mask).
   std::vector<MaskUse> (*masks)(const Instance& instance) = nullptr;
+  // Its masks have exactly each segment's rows (ir::MaskParams::exact_rows)
+  // rather than rows padded to kMaskRowAlign: the attention reads masks of
+  // the query's rows, as GGML's flash attention at the pin and llmp's QSA
+  // kernels do (Qwen3.8's QSA, whose builder makes them so).
+  bool exact_masks = false;
   // An output head: whether an instance reads only the step's output rows;
   // null: it does. A head of every row (a drafter's) has none to narrow to.
   bool (*gathers)(const Instance& instance) = nullptr;

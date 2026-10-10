@@ -31,6 +31,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 
 #include "format/encoding.h"
 #include "ir/graph.h"
@@ -57,7 +58,9 @@ struct StepFailure {
 // staging from the step's shape and tokens (components/step.h's step
 // inputs, with the same rules):
 //   kTokens, kPositions  a segment's token IDs or positions (I32, one a
-//                        row; a joined slot, every segment's in order);
+//                        row; a joined slot, every segment's in order;
+//                        positions in `sections` copies, one after another:
+//                        a multi-section rotation's);
 //   kSegmentBytes, kStepBytes  bytes the caller supplies per segment or
 //                        for the step;
 //   kOutputRows          I32 [outputs]: the joined rows the head reads,
@@ -68,7 +71,9 @@ struct StepFailure {
 //                        I64 [outputs]: its last `outputs` rows' only
 //                        (components/step.h kOutputCells: a target's tap
 //                        rows, stored at their positions' cells of a
-//                        drafter's tensor);
+//                        drafter's tensor); the cells as `cells` names them
+//                        (components/step.h CellKey: a fixed tensor's one
+//                        cell, a chunk row's, a block's);
 //   kMask                F16 [read, mask_rows]: the segment's mask over the
 //                        first `read` cells of `cells` (ir/op.h kMaskBuild:
 //                        0 where a row's position sees the position the
@@ -84,6 +89,12 @@ struct StepFailure {
 //                        from where the step's work names it (a stage's
 //                        tap cell, the slot's carried feature): never
 //                        staged from the host, so never in a recording.
+//   kSideRows            I32 [count · rows]: the rows of a side table each
+//                        step row reads (components/step.h kSideRows: the
+//                        caller computes them from the token history);
+//   kBlockPositions      I32 [sections · read]: the first position of each
+//                        of the segment's first `read` blocks of
+//                        `cells.block` positions, in `sections` copies.
 enum class InputKind : std::uint8_t {
   kTokens,
   kPositions,
@@ -93,6 +104,8 @@ enum class InputKind : std::uint8_t {
   kStoreCells,
   kMask,
   kFeatures,
+  kSideRows,
+  kBlockPositions,
 };
 
 // A state tensor's cells as an input indexes them (components/step.h
@@ -101,6 +114,13 @@ struct InputCells {
   std::uint64_t capacity = 0;
   bool ring = false;
   bool frozen = false;  // a frozen read's (components/step.h CellKey)
+  // The other cell rules (components/step.h CellKey): a fixed tensor's one
+  // cell, a cell per block of `block` positions, a cell per chunk row from
+  // `first_row`.
+  bool fixed = false;
+  std::uint32_t block = 0;
+  bool per_row = false;
+  std::uint32_t first_row = 0;
   bool operator==(const InputCells&) const = default;
 };
 
@@ -119,6 +139,9 @@ struct InputSlot {
   std::uint32_t mask_rows = 0;
   // kStoreCells': 0, every row's cell; else the last `outputs` rows'.
   std::uint32_t outputs = 0;
+  // kPositions' and kBlockPositions' copies; kSideRows' rows a step row.
+  std::uint32_t sections = 1;
+  std::uint64_t count = 0;
 };
 
 // An output the step returns: copied to the host after the run, each
@@ -151,6 +174,12 @@ struct TensorUse {
 struct Addresses {
   std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight;
   std::function<std::uint64_t(const ir::StateRef&)> state;
+  // A verify's save of `what` (components/step.h CommitSave: F32 [width,
+  // the segment's rows]) where the caller keeps it, which the verify
+  // stores and its commit reads; 0: none (a placeholder while measuring).
+  std::function<std::uint64_t(std::uint32_t layer, std::uint16_t component, std::string_view what,
+                              std::uint8_t segment)>
+      save;
   std::uint64_t activations = 0;
   std::uint64_t activation_bytes = 0;
   bool measuring() const { return activations == 0; }
