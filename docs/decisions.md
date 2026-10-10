@@ -3890,7 +3890,8 @@ records (see D-105's amendment).
   file or the two directories, and a shard reopened for direct reads that
   is not the file validated at open (device, inode, generation, size,
   status-change time), since those are the format's rules and what keeps
-  a read correct, not distrust.
+  a read correct, not distrust. (Since D-056's amendment of 2026-10-10 a
+  reopened shard is checked by its type and size alone.)
 - **Files the runtime opens never block or are read as data unless they
   are regular files:** the configuration, its drop-ins, configured
   tokenizer files, calibration records, artifact files and the spill
@@ -5731,7 +5732,7 @@ or a measured need for shared binary packages makes maintaining this explicit
 closure more work than a package manager. Preserve pinned inputs, cross-build
 separation and D-017's profile exclusion under any replacement.
 
-## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054; coalescing off by default after BP-P1's A/B under D-085; representation descriptors and manifest amended by D-108 and D-109 (encodings and layouts, the model spec; a new format version, version 1 in D-113); a linked root and hard-linked files allowed, 2026-10-09, below)
+## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054; coalescing off by default after BP-P1's A/B under D-085; representation descriptors and manifest amended by D-108 and D-109 (encodings and layouts, the model spec; a new format version, version 1 in D-113); a linked root and hard-linked files allowed, 2026-10-09, and a reopened shard checked by its size, not its identity, 2026-10-10, below)
 
 **Decision.** Prepared artifacts use the [v0 format](artifact-format.md),
 experimental under D-018:
@@ -5844,6 +5845,29 @@ link inside the artifact, a file that is not regular, an unexpected
 directory, and a shard reopened for direct reads that is not the file
 validated at open. Every artifact accepted before still is, so the
 format version is unchanged.
+
+**Amended 2026-10-10** (the owner, 2026-10-09: "Do we need to keep the
+weights handles open after the weights have been paged in? Maybe just
+open them when they are paged out and the model is considered 'active'?",
+and the scope that followed: a model's shards open only while it is
+active and reopen on activation "with a size check against the installed
+manifest"). A shard is now reopened at each activation of its model,
+perhaps hours after the artifact was validated, rather than once at
+registration. On reopen the reader checks what the reads need: a regular
+file (`kFileType`) of the size the manifest lists (`kFileSize`). It no
+longer compares the file's identity (device, inode, inode generation,
+status-change time) with the one validated at open: over a server's
+lifetime that identity moves with changes that leave the contents alone
+(a mode change, a new hard link from a deduplicating store, a copy put
+back). The cost: a shard replaced at its path by another file of the
+same size between startup and an activation is now read as the shard,
+where the descriptor held from startup kept reading the file validated
+at open; page-in does not hash (above), so other contents of that size
+are served without notice. A shard rewritten in place was read without
+notice before too. Keeping the installed store's files as installed is
+the environment's part (D-073's amendment); a shard that is gone or of
+another size refuses the activation. Artifacts and the format are
+unchanged.
 
 **Reopen if.** A backend requires a conflicting layout; native asynchronous
 I/O shows that 4 KiB offsets cost more than their padding savings; a

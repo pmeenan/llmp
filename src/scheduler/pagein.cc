@@ -105,6 +105,9 @@ std::expected<void, WorkError> Scheduler::SetSource(catalog::ExtentId extent,
   if (source.write_back && view->descriptor.recovery != catalog::Recovery::kPreserve) {
     return std::unexpected(WorkError::kInvalid);  // only live mutable contents are written back
   }
+  if (source.file.valid() && (source.write_back || !files_.Known(source.file))) {
+    return std::unexpected(WorkError::kInvalid);  // a write-back place names its own descriptor
+  }
   const auto old = sources_.find(extent);
   if (pinned_.contains(extent) && (old == sources_.end() || !SamePlace(old->second, source))) {
     return std::unexpected(WorkError::kBusy);  // a captured graph names its place (D-090)
@@ -472,6 +475,18 @@ bool Scheduler::OpenStage(catalog::ExtentId extent, Load& load) {
     case Stage::kReading: {
       base::Check(!source.landed || load.slot.has_value(), "a landed read without a slot");
       providers::ReadSpec spec = source.read;
+      if (source.file.valid()) {
+        // The file's descriptor as the read starts, counted there until
+        // this operation concludes (files.h); -1 while the file is closed
+        // (its model not active), which the provider refuses: the read
+        // moves nothing and the load fails.
+        spec.fd = files_.BeginRead(source.file);
+        if (spec.fd >= 0) {
+          operation.file = source.file;
+        } else {
+          ++stats_.closed_file_reads;
+        }
+      }
       if (source.landed) {
         // The slot is host VMM the CPU maps (LandingZone).
         const std::uint64_t slot = settings_.landing.slots.at(load.slot.value_or(0));

@@ -543,7 +543,10 @@ below apply to each component artifact.
    steady cost at startup and in `F` then grows with this compact index, not
    with every artifact's full index. An artifact that fails is reported
    unavailable and skipped; it does not stop startup. Registration commits no
-   physical backing.
+   physical backing and leaves the artifact's shards closed: a model's
+   weight files are open only while it is active (from its activation
+   until another model replaces it, each reopened file checked against
+   its installed manifest's size; [runtime-serving.md](runtime-serving.md#registration-and-the-swap)).
 3. **Detail and plan on first use (CPU workers).** Support status is settled
    at registration: every operation must resolve to an eligible implementation
    in this build profile and pass the plan's layout checks, or the context is
@@ -1019,7 +1022,12 @@ spill files and generation/retention rules; metadata need not use 2 MiB I/O.
 ### Storage service
 
 The storage service owns every direct-I/O submission and completion on the
-node (D-034, [async-model.md](async-model.md)). It opens files only in
+node (D-034, [async-model.md](async-model.md)). A page source reads a
+weight shard by identity (`scheduler/files.h`): the scheduler takes the
+file's descriptor as each read starts, and the descriptor is opened and
+closed by the node's driver, never on the scheduler's thread, only while
+the shard's model is active, and never closed while a read that began on
+it is in flight. It opens files only in
 the artifacts the runtime validated and beneath the spill role, never
 through a link inside an artifact (D-054, D-063; an artifact's own
 directory may be a link to another drive, D-056 as amended on

@@ -3,6 +3,8 @@
 
 #include "engine/paged_node.h"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -11,8 +13,10 @@
 #include <cstdlib>
 #include <format>
 #include <limits>
+#include <optional>
 #include <print>
 #include <span>
+#include <string>
 #include <utility>
 
 #include "base/bounded_queue.h"
@@ -344,6 +348,7 @@ PagedNode::~PagedNode() {
     copy_lane_->Close();
   }
   threads_.clear();
+  (void)CloseWeightFiles(true);
 }
 
 bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped) {
@@ -1059,6 +1064,10 @@ Status PagedNode::Await(Done& done, std::string_view what, std::uint64_t request
 }
 
 std::uint64_t PagedNode::Submit(std::unique_ptr<sc::TaskProgram> program) {
+  // A page-in entry like the others (a runner's chunk submitted without
+  // waiting may be the first to need an active owner's files). A refusal
+  // has nothing to return here: its loads read nothing and fail.
+  (void)SyncWeightFiles();
   sc::Control start =
       sc::StartRequest{.request = ++request_, .priority = 1, .program = std::move(program)};
   // NOLINTNEXTLINE(bugprone-use-after-move): Post moves only what it takes
@@ -1088,6 +1097,9 @@ Status PagedNode::Post(std::unique_ptr<sc::TaskProgram> program, Done& done,
   if (scheduler_ == nullptr) {
     return Error(std::format("{}: the node has not started", what));
   }
+  if (auto files = SyncWeightFiles(); !files) {
+    return files;
+  }
   const std::uint64_t request = ++request_;
   if (!scheduler_->Start(request, std::move(program), 1)) {
     return Error(std::format("{} was not admitted", what));
@@ -1097,6 +1109,9 @@ Status PagedNode::Post(std::unique_ptr<sc::TaskProgram> program, Done& done,
 
 Status PagedNode::Load(std::vector<ExtentId> extents, std::string what,
                        std::vector<LoadStats>& log) {
+  if (auto files = SyncWeightFiles(); !files) {
+    return files;
+  }
   LoadStats stats{.what = std::move(what), .extents = 0, .seconds = 0, .requests = 0, .pieces = 0};
   for (const ExtentId extent : extents) {
     if (catalog_.Describe(extent).value().state != catalog::ExtentState::kResident) {
@@ -1136,6 +1151,9 @@ Status PagedNode::Evict(std::vector<ExtentId> extents, sc::EvictOptions options)
 Status PagedNode::Swap(std::vector<ExtentId> out, const catalog::Closure& in, bool handoff,
                        SwapReport& report, std::vector<ExtentId> release,
                        catalog::Closure weights) {
+  if (auto files = SyncWeightFiles(); !files) {
+    return files;
+  }
   // Asked for between a request's steps: the requests holding what goes
   // out end first, since the swap would wait for their leases.
   if (!weights.extents.empty()) {
@@ -1190,6 +1208,10 @@ Status PagedNode::Job(const catalog::Closure& closure, sc::DeviceJob job, std::s
   } active{job_active_};
   if (const auto open = requests_.find(stream); open != requests_.end()) {
     return Step(stream, *open->second, closure, std::move(job), what, meanwhile);
+  }
+  // A fence over nothing (TearDown's) pages nothing in.
+  if (auto files = closure.extents.empty() ? Status{} : SyncWeightFiles(); !files) {
+    return files;
   }
   Done done;
   Timing timing;
@@ -1279,6 +1301,9 @@ Status PagedNode::BeginRequest(std::uint32_t stream, const catalog::Closure& clo
                                std::string_view what) {
   if (requests_.contains(stream)) {
     return Error(std::format("{}: a request is open on stream {} already", what, stream));
+  }
+  if (auto files = SyncWeightFiles(); !files) {
+    return files;
   }
   auto open = std::make_unique<OpenRequest>();
   open->what = what;
@@ -1656,6 +1681,96 @@ std::expected<std::uint64_t, std::string> PagedNode::EndRequestsOver(
   return holding.size();
 }
 
+std::expected<sc::FileId, std::string> PagedNode::AddWeightFile(int owner, WeightFileOpener open) {
+  if (scheduler_ == nullptr) {
+    return Error("a weight file is registered after the node's Start");
+  }
+  const sc::FileId id = scheduler_->files().Add();
+  weight_files_.push_back({.owner = owner, .id = id, .open = std::move(open), .fd = -1});
+  // Closed until something may page in (its owner activated, or the next
+  // page-in entry while it is active).
+  files_unsettled_ = true;
+  return id;
+}
+
+Status PagedNode::OpenWeightFiles(int owner) {
+  for (WeightFile& file : weight_files_) {
+    if (file.owner != owner || file.fd >= 0) {
+      continue;
+    }
+    // On the driver, outside the scheduler: the open may wait on the drive.
+    auto opened = file.open();
+    if (!opened) {
+      // All or none: what this call opened closes again, each once no
+      // read uses it (one may have begun meanwhile, for a program the
+      // driver submitted without waiting).
+      inactive_.insert(owner);
+      files_unsettled_ = !CloseWeightFiles(false) || files_unsettled_;
+      return Error(opened.error());
+    }
+    base::Check(scheduler_->files().Install(file.id, *opened).has_value(),
+                "installing a weight file that is open already");
+    file.fd = *opened;
+  }
+  return {};
+}
+
+bool PagedNode::CloseWeightFiles(bool every) {
+  bool settled = true;
+  for (WeightFile& file : weight_files_) {
+    if (file.fd < 0 || (!every && active(file.owner))) {
+      continue;
+    }
+    // Taken back only once no read that began on it is in flight; it is
+    // then out of the table, so no read can take it before it closes.
+    if (!scheduler_->files().Take(file.id)) {
+      settled = false;
+      continue;
+    }
+    (void)::close(std::exchange(file.fd, -1));
+  }
+  return settled;
+}
+
+Status PagedNode::SetActive(int owner, bool on) {
+  if (!on) {
+    inactive_.insert(owner);
+    files_unsettled_ = !CloseWeightFiles(false) || files_unsettled_;
+    return {};
+  }
+  inactive_.erase(owner);
+  return OpenWeightFiles(owner);
+}
+
+Status PagedNode::SyncWeightFiles() {
+  if (!files_unsettled_) {
+    return {};
+  }
+  std::set<int> owners;
+  for (const WeightFile& file : weight_files_) {
+    if (file.fd < 0 && active(file.owner)) {
+      owners.insert(file.owner);
+    }
+  }
+  for (const int owner : owners) {
+    if (auto opened = OpenWeightFiles(owner); !opened) {
+      return opened;  // that owner inactive now; the rest settle at the next entry
+    }
+  }
+  files_unsettled_ = !CloseWeightFiles(false);
+  return {};
+}
+
+int PagedNode::WeightFileDescriptor(sc::FileId file) const {
+  return scheduler_ != nullptr ? scheduler_->files().Descriptor(file) : -1;
+}
+
+std::size_t PagedNode::open_weight_files(std::optional<int> owner) const {
+  return static_cast<std::size_t>(std::ranges::count_if(weight_files_, [&](const WeightFile& f) {
+    return f.fd >= 0 && (!owner || f.owner == *owner);
+  }));
+}
+
 Status PagedNode::Call(std::function<Status()> call, std::string_view what) {
   Done done;
   Status status;
@@ -1675,6 +1790,7 @@ Status PagedNode::Acquire(const catalog::Closure& closure, AcquireReport& report
                           std::string_view what, bool* over_budget) {
   if (over_budget != nullptr) *over_budget = false;
   if (job_active_) return Error("an acquisition cannot run while a device job is in flight");
+  if (auto files = SyncWeightFiles(); !files) return files;
   // The shared workspace is never a victim, whether or not the closure
   // names it: it is discardable, so it would be chosen first, and nothing
   // restores it.
@@ -1836,6 +1952,9 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
       }
     }
     threads_.clear();
+    // Every read has concluded but those whose completion is unproven,
+    // whose files stay open to the process's end.
+    (void)CloseWeightFiles(true);
     // The lanes are idle for good: the reserve's backing goes first.
     if (!backing_lane_->ReleaseReserve()) {
       problems.emplace_back("the handle reserve could not be released");

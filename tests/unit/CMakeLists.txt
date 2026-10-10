@@ -380,6 +380,12 @@ if(LLMP_CUDA)
   target_link_libraries(gemma_engine_serving_gpu_test PRIVATE llmp_runtime_serving)
   llmp_gpu_gtest(gemma_engine_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+  # Weight files across real switches between Gemma 2 and Gemma 3: only the
+  # resident model's shards open (engine/paged_node.h SetActive).
+  add_executable(weight_files_serving_gpu_test weight_files_serving_gpu_test.cc)
+  target_link_libraries(weight_files_serving_gpu_test PRIVATE llmp_runtime_serving llmp_artifact)
+  llmp_gpu_gtest(weight_files_serving_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(gemma_joined_serving_gpu_test gemma_joined_serving_gpu_test.cc)
   target_link_libraries(gemma_joined_serving_gpu_test PRIVATE llmp_runtime_serving)
   llmp_gpu_gtest(gemma_joined_serving_gpu_test MODELS
@@ -648,6 +654,17 @@ target_link_libraries(engine_llm_test PRIVATE llmp_runtime_llm llmp_engine_core
                                               llmp_fake_step_source llmp_fake_device_backend
                                               llmp_platform)
 llmp_gtest(engine_llm_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+# Weight files open only while their model is active (engine/paged_node.h
+# SetActive, scheduler/files.h): copies of the artifact corpus's tiny golden
+# paged on the fake device backend, the process's descriptors counted.
+add_executable(weight_files_test weight_files_test.cc)
+target_link_libraries(weight_files_test PRIVATE llmp_engine_core llmp_fake_device_backend
+                                                llmp_platform)
+add_dependencies(weight_files_test artifact_corpus)
+llmp_gtest(weight_files_test TEST_PREFIX unit.fake. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+             PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 add_executable(request_cohort_test request_cohort_test.cc)

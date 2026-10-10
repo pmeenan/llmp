@@ -573,6 +573,18 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- The runtime keeps a model's weight shards open only while the model is
+  active: from its activation until another model replaces it, rather
+  than every registered model's from startup. Each shard is reopened at
+  activation and checked against the size its installed manifest lists:
+  a shard gone or resized since startup refuses that activation, naming
+  the shard, and the other models still serve. The reopen no
+  longer compares the file's identity with the one validated at
+  registration, so a shard whose mode or hard links changed meanwhile
+  still opens, and one replaced by another file of the same size is read
+  as found (page-in does not hash; D-056 as amended on 2026-10-10). The
+  open-file limit is
+  still raised for the chat route's connections (D-102).
 - Gemma 2 and Gemma 3 are served by the shared engine (D-107): one model
   runner over their components' steps, planned under each architecture
   mapping's policy and lowered onto the same GGML kernels in the same

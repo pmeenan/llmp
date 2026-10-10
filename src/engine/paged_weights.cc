@@ -6,11 +6,15 @@
 #include <algorithm>
 #include <charconv>
 #include <cstddef>
+#include <expected>
 #include <format>
+#include <memory>
 #include <numeric>
 #include <optional>
+#include <string>
 #include <utility>
 
+#include "artifact/error.h"
 #include "artifact/layout.h"
 #include "engine/support.h"
 
@@ -143,15 +147,9 @@ PagedWeights::Status PagedWeights::Open(const std::filesystem::path& path,
     return Error(
         std::format("the artifact {} was refused: {}", path.string(), opened.error().ToString()));
   }
-  artifact_ = std::make_unique<artifact::Artifact>(std::move(*opened));
-  for (std::uint32_t s = 0; s < artifact_->shards().size(); ++s) {
-    auto fd = artifact_->OpenShardForDirectRead(s);
-    if (!fd) {
-      return Error(
-          std::format("shard {} of {} cannot be opened for direct reads", s, path.string()));
-    }
-    shards_.push_back(std::move(*fd));
-  }
+  artifact_ = std::make_shared<artifact::Artifact>(std::move(*opened));
+  path_ = path;
+  // Its shards open only while its model is active (Register).
   // The artifact's identity orders victim ties (catalog.h ContentKey).
   key_ = ArtifactKey(*artifact_);
   return {};
@@ -288,7 +286,7 @@ PagedWeights::Status PagedWeights::Reserve(PagedNode& node, std::span<const Grou
           return std::unexpected(extent.error());
         }
         const std::uint64_t offset = slab_region[s] + (std::uint64_t{p} * kExtent);
-        sc::PageSource source{.read = {.fd = shards_.at(page.shard).get(),
+        sc::PageSource source{.read = {.fd = -1,
                                        .offset = page.file_offset,
                                        .memory = nullptr,
                                        .length = page.length},
@@ -310,6 +308,7 @@ PagedWeights::Status PagedWeights::Reserve(PagedNode& node, std::span<const Grou
         extents_.push_back(*extent);
         sources_.push_back({.address = base + offset,
                             .group = slabs[s].first_group,
+                            .shard = page.shard,
                             .host = false,
                             .source = source});
       }
@@ -331,7 +330,7 @@ PagedWeights::Status PagedWeights::Reserve(PagedNode& node, std::span<const Grou
       const std::uint64_t offset = region[g] + (std::uint64_t{c} * kExtent);
       const std::uint64_t address = (host ? host_base : base) + offset;
       sc::PageSource source{
-          .read = {.fd = shards_.at(range->shard).get(),
+          .read = {.fd = -1,
                    .offset = range->file_offset.value(),
                    // A host group's chunk in place, into host VMM the CPU
                    // maps (D-034).
@@ -347,7 +346,8 @@ PagedWeights::Status PagedWeights::Reserve(PagedNode& node, std::span<const Grou
                                .allocation_class = host ? node.host_class() : node.device_class()}};
       read_bytes_ += range->length.value();
       extents_.push_back(*extent);
-      sources_.push_back({.address = address, .group = g, .host = host, .source = source});
+      sources_.push_back(
+          {.address = address, .group = g, .shard = range->shard, .host = host, .source = source});
     }
   }
   return {};
@@ -355,7 +355,36 @@ PagedWeights::Status PagedWeights::Reserve(PagedNode& node, std::span<const Grou
 
 PagedWeights::Status PagedWeights::Register(PagedNode& node, int owner) {
   checked_places_.reset();
+  // Each shard a weight file of the owner's, read by identity: open only
+  // while the model is active (paged_node.h), and checked each time it
+  // opens against the size its installed manifest lists. Weights with no
+  // artifact (an empty component) register nothing.
+  node_ = &node;
+  files_.clear();
+  const std::size_t shards = opened() ? artifact_->shards().size() : 0;
+  for (std::uint32_t s = 0; s < shards; ++s) {
+    auto file = node.AddWeightFile(
+        owner, [weights = artifact_, s, path = path_]() -> std::expected<int, std::string> {
+          auto fd = weights->OpenShardForDirectRead(s);
+          if (!fd) {
+            const auto& shard = weights->shards()[s];
+            return std::unexpected(std::format(
+                "shard {} ({}) of the artifact {} cannot be opened for direct reads: {}{}", s,
+                shard.path, path.string(), fd.error().ToString(),
+                fd.error().rule == artifact::Rule::kFileSize
+                    ? std::format(" (its installed manifest lists {} bytes)",
+                                  shard.data_offset.value() + shard.data_bytes.value())
+                    : std::string()));
+          }
+          return fd->release();
+        });
+    if (!file) {
+      return Error(file.error());
+    }
+    files_.push_back(*file);
+  }
   for (std::size_t i = 0; i < extents_.size(); ++i) {
+    sources_[i].source.file = files_.at(sources_[i].shard);
     auto set = node.scheduler().SetSource(extents_[i], sources_[i].source);
     if (!set) {
       return Error(std::format("a weight's source: {}", sc::ToString(set.error())));

@@ -48,7 +48,6 @@
 #include "format/layout.h"
 #include "format/tensor_format.h"
 #include "platform/direct_io.h"
-#include "platform/files.h"
 
 namespace llmp::artifact {
 
@@ -125,11 +124,6 @@ std::expected<FileDescriptor, Error> OpenRegular(int dir, const char* name, stru
   }
   return fd;
 }
-
-// The file's inode generation (platform::FileGeneration). Any failure is
-// "none"; availability that differs between open and reopen fails the
-// comparison, so it never skips it.
-std::optional<std::uint64_t> Generation(int fd) { return platform::FileGeneration(fd); }
 
 // Reads length bytes at offset; fewer only at the end of the file.
 std::expected<std::size_t, Error> ReadAt(int fd, std::uint64_t offset, std::span<char> out,
@@ -1828,12 +1822,7 @@ class Opener {
       if (hash.Finish() != s.header_sha256) {
         return Fail(Rule::kHash, "the shard header region differs from its digest", i);
       }
-      artifact_.shard_files_.push_back({.device = status.st_dev,
-                                        .inode = status.st_ino,
-                                        .generation = Generation(fd->get()),
-                                        .size = static_cast<std::uint64_t>(status.st_size),
-                                        .changed_seconds = status.st_ctim.tv_sec,
-                                        .changed_nanoseconds = status.st_ctim.tv_nsec});
+      artifact_.shard_bytes_.push_back(file->bytes.value());
     }
     return {};
   }
@@ -2026,12 +2015,11 @@ std::expected<FileDescriptor, Error> Artifact::OpenShardForDirectRead(std::uint3
   if (::fstat(fd.get(), &status) != 0) {
     return Fail(Rule::kIo, "fstat failed", shard);
   }
-  const FileIdentity& want = shard_files_[shard];
-  if (!S_ISREG(status.st_mode) || status.st_dev != want.device || status.st_ino != want.inode ||
-      Generation(fd.get()) != want.generation || std::cmp_not_equal(status.st_size, want.size) ||
-      status.st_ctim.tv_sec != want.changed_seconds ||
-      status.st_ctim.tv_nsec != want.changed_nanoseconds) {
-    return Fail(Rule::kFileType, "the shard is not the file validated at open", shard);
+  if (!S_ISREG(status.st_mode)) {
+    return Fail(Rule::kFileType, "the shard is not a regular file", shard);
+  }
+  if (std::cmp_not_equal(status.st_size, shard_bytes_[shard])) {
+    return Fail(Rule::kFileSize, "the shard's size differs from its installed manifest", shard);
   }
   const int flags = ::fcntl(fd.get(), F_GETFL);
   if (flags < 0 || ::fcntl(fd.get(), F_SETFL, flags & ~O_NONBLOCK) != 0) {

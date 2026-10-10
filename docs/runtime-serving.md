@@ -405,8 +405,9 @@ always wins over a calibration.
 The serving commands and the service with models run the runtime's
 startup steps (anchor, configuration, process lock, storage roles,
 platform), then register every configured
-model on one paged node: its artifacts opened, its runner set up on its own
-stream, its tokenizer and renderer found, the shared workspace mapped at the
+model on one paged node: its artifacts opened (validated, with their
+shards left closed until the model is activated, below), its runner set
+up on its own stream, its tokenizer and renderer found, the shared workspace mapped at the
 largest model's need. The scheduler's physical cap is the fixed allocations
 plus the post-setup available memory, less the largest host-built chunk
 inputs, every model's plan budget and a 6 GiB guard, rounded down to 2 MiB
@@ -572,6 +573,24 @@ paged in, its state restored if it had been spilled. Then the model's own
 checks (DeepSeek's hash-routing tables, Qwen3.8's n-gram hash) and its
 places checked still pinned (D-090). The backing no load took is released
 after the first output, off the swap's path. Each part is timed.
+
+**Weight files are open only while their model is active** (owner,
+2026-10-09; `engine/paged_node.h` `SetActive`, `scheduler/files.h`). A
+page source names its shard by identity, not by descriptor, and a model's
+shards open on the driver when its activation begins (the page-in need),
+each checked against the size its installed manifest lists: a shard
+missing or of another size refuses the activation with that reason before
+anything moves, and leaves none of the model's shards open. When the
+activation ends, every model but the resident one is inactive and its
+shards are closed, each once no read that began on it is still in flight
+(one whose read is in flight closes at the next activation or page-in; a
+read whose completion is never proven keeps its file open to the
+process's end). A recovered model (D-102's rung 2) is inactive too. So
+the runtime holds the resident model's shards (two models' during a
+swap), not the library's, plus one directory descriptor per registered
+artifact and component (each `artifact::Artifact`'s root). A page-in of
+an inactive model's weights reads nothing and fails. Raising the
+open-file limit (D-102) stays as it is, for the chat route's connections.
 
 ## Engine-backed models
 

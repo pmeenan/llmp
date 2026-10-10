@@ -5,8 +5,10 @@
 // every M3 runner (dsv4_runner.h, qwen38_runner.h, qwen_image_runner.h;
 // docs/engine.md, docs/experiments/fast-swap/):
 //
-// - The artifact opened, its shards open for direct reads, its identity
-//   the catalog's content key.
+// - The artifact opened, its identity the catalog's content key; its
+//   shards weight files of the model's (paged_node.h), open for direct
+//   reads only while the model is active, each checked as it opens against
+//   the size its installed manifest lists.
 // - Each dense group placed on the device gets a 2 MiB-aligned region of
 //   one device reservation; its chunk k is an extent at the region's base +
 //   k x 2 MiB, landed from its shard through the zone (D-081).
@@ -54,6 +56,7 @@
 #include "catalog/catalog.h"
 #include "engine/paged_node.h"
 #include "providers/device_memory.h"
+#include "scheduler/files.h"
 #include "scheduler/scheduler.h"
 
 namespace llmp::engine {
@@ -116,13 +119,22 @@ class PagedWeights {
  public:
   using Status = engine::Status;
 
-  // Opens the artifact (`options` its checks) and its shards for direct
-  // reads. Once, first.
+  PagedWeights() = default;
+  PagedWeights(const PagedWeights&) = delete;
+  PagedWeights& operator=(const PagedWeights&) = delete;
+  PagedWeights(PagedWeights&&) = default;
+  PagedWeights& operator=(PagedWeights&&) = default;
+  ~PagedWeights() = default;
+
+  // Opens the artifact (`options` its checks), not its shards. Once, first.
   Status Open(const std::filesystem::path& path, const artifact::OpenOptions& options = {});
   bool opened() const { return artifact_ != nullptr; }
   const artifact::Artifact& artifact() const { return *artifact_; }
-  // A shard's direct-read descriptor, open while this is.
-  int shard_fd(std::uint32_t shard) const { return shards_.at(shard).get(); }
+  // A shard's direct-read descriptor while its model is active, else -1
+  // (and before Register). For the model's own reads while it runs.
+  int shard_fd(std::uint32_t shard) const {
+    return node_ != nullptr ? node_->WeightFileDescriptor(files_.at(shard)) : -1;
+  }
 
   // Reserves and catalogs the places of the groups `place` names (one per
   // group) and of the slabs, in file order: one device reservation (dense
@@ -131,8 +143,10 @@ class PagedWeights {
   // uniform expert groups, or LayOutSlab refuses one.
   Status Reserve(PagedNode& node, std::span<const GroupPlace> place,
                  std::span<const SlabSpec> slabs);
-  // After the node's Start: every extent's source, and its span for the
-  // coverage check.
+  // After the node's Start: each shard a weight file of `owner`'s
+  // (PagedNode::AddWeightFile; closed until it is needed), every extent's
+  // source, reading its shard by identity, and its span for the coverage
+  // check.
   Status Register(PagedNode& node, int owner);
   // Adds every extent that is not where it was registered, or not pinned
   // there (D-090), to `check`. On the scheduler's thread. A successful
@@ -175,11 +189,15 @@ class PagedWeights {
   struct Source {
     std::uint64_t address = 0;
     std::uint32_t group = 0;
+    std::uint32_t shard = 0;
     bool host = false;
     scheduler::PageSource source;
   };
-  std::unique_ptr<artifact::Artifact> artifact_;
-  std::vector<artifact::FileDescriptor> shards_;
+  // Shared with the shards' openers, which the node keeps.
+  std::shared_ptr<const artifact::Artifact> artifact_;
+  std::filesystem::path path_;
+  PagedNode* node_ = nullptr;             // Register's
+  std::vector<scheduler::FileId> files_;  // by shard, from Register
   std::array<std::uint8_t, 32> key_{};
   providers::ReservationId reservation_;
   providers::ReservationId host_reservation_;

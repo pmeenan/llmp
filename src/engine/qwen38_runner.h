@@ -926,8 +926,11 @@ class Qwen38Runner final : public PagedModel {
   Qwen38Model& model_ = default_request_.model;
 
   // The n-gram rows: the table in its shard, the slots (device), the
-  // landing and the slots' sources (pinned), the runner's own ring.
+  // landing and the slots' sources (pinned), the runner's own ring. The
+  // shard's descriptor is taken at each read (PagedWeights::shard_fd): open
+  // while the model is active, the only time it runs.
   PleTable table_;
+  std::uint32_t table_shard_ = 0;
   std::uint64_t slots_ = 0;  // row slots: max_rows x ple_heads
   Mapped slot_memory_;
   std::byte* landing_ = nullptr;

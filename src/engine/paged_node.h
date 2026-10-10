@@ -72,6 +72,21 @@
 // Memory is registered as spans for BP-A1's in-process check: each has an
 // owner (a model's index, or kShared for the zone and the workspace), and
 // Covered accepts a model's own spans and the shared ones.
+//
+// Weight files (AddWeightFile; each shard of a model's artifacts,
+// paged_weights.h) are read by identity (scheduler/files.h), and a file's
+// descriptor is open only while its owner is active and may page in: an
+// owner is active until SetActive deactivates it (a harness never does;
+// the runtime keeps only the model it activates active,
+// docs/runtime-serving.md#registration-and-the-swap). A file opens
+// lazily, on the driver: when SetActive activates its owner, or at the
+// next page-in entry (Load, Swap, Job, BeginRequest, RefreshRequest,
+// Acquire, Post, Submit) after its registration. It closes when its owner is
+// deactivated, once no read that began on it is in flight (a read still
+// in flight keeps it open until a later SetActive or entry finds it
+// done; one whose completion is never proven keeps it to the process's
+// end). Neither the open nor the close runs on the scheduler's thread or
+// under any lock of the scheduler's.
 
 #ifndef LLMP_ENGINE_PAGED_NODE_H_
 #define LLMP_ENGINE_PAGED_NODE_H_
@@ -86,6 +101,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -102,6 +118,7 @@
 #include "providers/storage.h"
 #include "scheduler/commands.h"
 #include "scheduler/completions.h"
+#include "scheduler/files.h"
 #include "scheduler/programs.h"
 #include "scheduler/scheduler.h"
 #include "scheduler/services.h"
@@ -651,6 +668,29 @@ class PagedNode {
   const scheduler::DeviceService& device_lane() const { return *device_lane_; }
   // Runs `call` on the scheduler's thread.
   Status Call(std::function<Status()> call, std::string_view what);
+
+  // Weight files (the header's paragraph). `open` opens the file for
+  // direct reads and checks it, returning a descriptor the node then owns,
+  // or why not; it runs on the driver whenever the file opens. After
+  // Start. The file stays registered for the node's life.
+  using WeightFileOpener = std::function<std::expected<int, std::string>()>;
+  std::expected<scheduler::FileId, std::string> AddWeightFile(int owner, WeightFileOpener open);
+  // Activating opens each of the owner's files that is closed, all or none
+  // (the first refusal leaves the owner inactive with none open, and is
+  // returned); deactivating closes each one no read is using now, the rest
+  // at a later SetActive or page-in entry. Driver.
+  Status SetActive(int owner, bool on);
+  bool active(int owner) const { return !inactive_.contains(owner); }
+  // What SetActive left to do: active owners' closed files opened (the
+  // first refusal returned) and inactive owners' files closed once no read
+  // uses them. Each page-in entry calls it first; nothing to do costs a
+  // flag's test. Driver.
+  Status SyncWeightFiles();
+  // A file's descriptor now (-1: closed); a model's own direct reads
+  // (Qwen3.8's n-gram rows) take it while the model runs. Driver.
+  int WeightFileDescriptor(scheduler::FileId file) const;
+  // Weight files open now: all, or `owner`'s. Driver.
+  std::size_t open_weight_files(std::optional<int> owner = std::nullopt) const;
   // Makes room for `closure` under the budget and materializes it
   // (AcquireProgram), never evicting the shared workspace. `over_budget`,
   // if given, says whether a refusal was the budget's (WorkError::
@@ -667,6 +707,20 @@ class PagedNode {
 
  private:
   friend class LiveState;
+  struct WeightFile {
+    int owner = kShared;
+    scheduler::FileId id;
+    WeightFileOpener open;
+    int fd = -1;  // owned, and installed in the scheduler's table, while open
+  };
+  // Opens `owner`'s closed files, all or none.
+  Status OpenWeightFiles(int owner);
+  // Closes the files of inactive owners (all files with `every`, at the
+  // end) that no read uses; true if none is left open that should not be.
+  bool CloseWeightFiles(bool every);
+  std::vector<WeightFile> weight_files_;
+  std::set<int> inactive_;
+  bool files_unsettled_ = false;  // SyncWeightFiles has something to do
   // Driver-owned intrusive list. TearDown drains these tickets before model
   // extents or sources can be released; each LiveState owns its stable ticket.
   LiveState* preparing_state_ = nullptr;

@@ -58,6 +58,7 @@ class EngineImage final : public Image {
   ~EngineImage() override;
 
   engine::PagedModel& paged() override;
+  bool has_paged() const override { return runner_ != nullptr; }
   Status Setup() override;
   Status Register() override;
   Status Bind() override;

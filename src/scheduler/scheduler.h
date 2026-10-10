@@ -43,7 +43,10 @@
 //          the load was handed backing an eviction kept (below), maps that;
 //       2. a landed source (D-081) waits for a landing slot, in order;
 //       3. the storage lane reads the file range with direct I/O, into the
-//          slot, or for a direct source into the extent's own memory;
+//          slot, or for a direct source into the extent's own memory (a
+//          source that names a file of the table, files.h, reads through
+//          that file's descriptor as it is then, and fails with nothing
+//          read while the file is closed);
 //       4. for a landed source, the copy lane (Lanes::copy, or the device
 //          lane without one) copies the slot into the extent's device
 //          memory on the zone's stream, in up to kMaxDeviceCopies pieces,
@@ -209,6 +212,7 @@
 #include "providers/direct_reader.h"
 #include "scheduler/commands.h"
 #include "scheduler/completions.h"
+#include "scheduler/files.h"
 #include "scheduler/lane.h"
 #include "scheduler/services.h"
 #include "scheduler/tasks.h"
@@ -316,6 +320,12 @@ struct PageSource {
   // and the storage provider reach (host backing, D-034); a landed read
   // ignores it.
   providers::ReadSpec read;
+  // A file of the scheduler's table (files.h), when valid: the read takes
+  // that file's descriptor as it starts, and `read.fd` is ignored (a
+  // model's weight shard, open only while the model is active). A read
+  // that starts while the file is closed reads nothing and fails. Not for
+  // a write-back place.
+  FileId file = {};  // NOLINT(readability-redundant-member-init)
   // Landed (D-081): the read lands in a landing slot and the copy lane
   // copies it to `destination`, the extent's device address; or, with
   // pieces, each piece to its own destination (an extent whose contents
@@ -505,6 +515,9 @@ struct SchedulerStats {
   // Write-backs that wrote nothing (EvictOptions::unchanged), and their bytes.
   std::uint64_t unchanged_writebacks = 0;
   std::uint64_t unchanged_writeback_bytes = 0;
+  // Reads that started while their source's file (PageSource::file) was
+  // closed: each read nothing and failed its load.
+  std::uint64_t closed_file_reads = 0;
 };
 
 class Scheduler {
@@ -555,7 +568,8 @@ class Scheduler {
   // preserved, unless the new source names the same write-back range.
   // kInvalid for a landed source with no landing zone, a range that is
   // empty or exceeds a slot, no destination, a write instead of a read,
-  // or a write-back place for an extent that is not kPreserve.
+  // a write-back place for an extent that is not kPreserve, or a file
+  // (PageSource::file) the table does not know or on a write-back place.
   // Registering a new place for a nonresident extent relocates its next
   // load (BP-P5), unless its place is pinned: then a source whose place
   // differs is refused (kBusy) in every state.
@@ -627,6 +641,9 @@ class Scheduler {
   }
   // Evictions in flight, in any stage (parked, and releasing, included).
   std::size_t evictions() const { return evictions_.size(); }
+  // The files sources read by identity (files.h). Any thread.
+  FileTable& files() { return files_; }
+  const FileTable& files() const { return files_; }
   // Landing slots in use by a read or copy, and quarantined ones.
   std::size_t slots_busy() const;
   std::size_t slots_quarantined() const;
@@ -756,6 +773,9 @@ class Scheduler {
     TaskId task;
     catalog::LeaseId lease;
     catalog::LeaseId held;
+    // A page-in's read of a file of the table (PageSource::file): the
+    // read counted there (FileTable::BeginRead) until this concludes.
+    FileId file = {};  // NOLINT(readability-redundant-member-init)
     // The command, until a lane takes it.
     ReadCommand read;
     DeviceCommand device;
@@ -947,6 +967,7 @@ class Scheduler {
   bool stopping_ = false;
   std::uint64_t turn_ = 0;
   SchedulerStats stats_;
+  FileTable files_;
 };
 
 // What a task's step may do, on the scheduler thread.

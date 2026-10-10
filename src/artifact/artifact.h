@@ -64,8 +64,6 @@
 #ifndef LLMP_ARTIFACT_ARTIFACT_H_
 #define LLMP_ARTIFACT_ARTIFACT_H_
 
-#include <sys/types.h>
-
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -113,6 +111,8 @@ class FileDescriptor {
 
   int get() const { return fd_; }
   bool valid() const { return fd_ >= 0; }
+  // The descriptor, no longer owned (the caller closes it).
+  int release() { return std::exchange(fd_, -1); }
 
  private:
   int fd_ = -1;
@@ -272,18 +272,14 @@ class Artifact {
   }
 
   // Shard `shard` opened read-only for direct I/O, beneath the artifact
-  // and without following links; refused (kFileType) unless it is still
-  // the file validated at open: the same device, inode, inode generation
-  // (where the file system reports one), size and status-change time. A
-  // file replaced since is refused even where the inode number is reused
-  // (ext4 does): its generation differs, unless its owner set it back
-  // (FS_IOC_SETVERSION). Where there is no generation (overlayfs, tmpfs,
-  // NFS), such a replacement is refused only if its status-change time
-  // differs. A rewrite in place is refused
-  // where it moved the status-change time, which a file system with
-  // coarse timestamps (ext4 with 128-byte inodes: whole seconds) may not
-  // do within one tick; nor is a change after this call detected. Beyond
-  // that identity, page-in rests on the store's permissions (D-056).
+  // and without following links; refused unless it is a regular file
+  // (kFileType) of the size the installed manifest lists (kFileSize).
+  // Called whenever the shard's model becomes active again
+  // (engine/paged_weights.h), perhaps long after Open: the check is the
+  // read's functional one, not the file's identity (D-056 as amended on
+  // 2026-10-10), so a shard whose status changed (a mode, a new hard
+  // link) still opens, and one whose contents changed at the same size is
+  // the user's to answer for, as the store is (D-073 as amended).
   std::expected<FileDescriptor, Error> OpenShardForDirectRead(std::uint32_t shard) const;
 
   // A kept metadata file (`meta/<name>`, listed with the role
@@ -297,24 +293,6 @@ class Artifact {
   friend class Opener;
   Artifact() = default;
 
-  struct FileIdentity {
-    dev_t device = 0;
-    ino_t inode = 0;
-    // FS_IOC_GETVERSION (ext4, btrfs, xfs): a new file that reuses an inode
-    // number gets another; nothing where the file system has none
-    // (overlayfs, tmpfs, NFS), where identity rests on the rest.
-    std::optional<std::uint64_t> generation;
-    std::uint64_t size = 0;
-    // st_ctim, from the stat taken before the header was read: a write,
-    // truncation, link or mode change sets it to the current time, at the
-    // file system's granularity (fine-grained once it has been queried, on
-    // kernels and file systems with multigrain timestamps). Compared for
-    // equality only, so a clock stepped back matters only if it reproduces
-    // the recorded time exactly.
-    std::int64_t changed_seconds = 0;
-    std::int64_t changed_nanoseconds = 0;
-  };
-
   FileDescriptor root_;
   std::string id_;
   std::uint32_t format_version_ = 0;
@@ -323,7 +301,7 @@ class Artifact {
   std::vector<Source> sources_;
   std::vector<ListedFile> files_;
   Layout layout_;
-  std::vector<FileIdentity> shard_files_;
+  std::vector<std::uint64_t> shard_bytes_;  // each shard file's listed size
   std::vector<Resource> resources_;
   std::vector<ExpertArray> expert_arrays_;
   std::vector<Digest> chunk_sha256_;

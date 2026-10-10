@@ -1043,50 +1043,41 @@ TEST_F(ArtifactFilesTest, DirectReadsOpenTheValidatedShard) {
             0);
   std::free(buffer);  // NOLINT(cppcoreguidelines-no-malloc)
   EXPECT_FALSE(a.OpenShardForDirectRead(99).has_value());
-  // A shard rewritten in place after open (here with its own bytes) is not
-  // the one validated: its status-change time moved. On a kernel without
-  // multigrain timestamps, or a file system with coarse ones (ext4 with
-  // 128-byte inodes counts whole seconds), a rewrite within one tick may
-  // not move it, so that case is only judged when it did.
-  const fs::path second = root_ / "data" / "00001.safetensors";
-  struct stat before{};
-  ASSERT_EQ(::stat(second.c_str(), &before), 0);
-  const std::string content = ReadFile(second);
-  WriteFile(second, content);
-  struct stat after{};
-  ASSERT_EQ(::stat(second.c_str(), &after), 0);
-  ASSERT_EQ(after.st_ino, before.st_ino);
-  if (after.st_ctim.tv_sec != before.st_ctim.tv_sec ||
-      after.st_ctim.tv_nsec != before.st_ctim.tv_nsec) {
-    const auto rewritten = a.OpenShardForDirectRead(1);
-    ASSERT_FALSE(rewritten.has_value());
-    EXPECT_EQ(rewritten.error().rule, Rule::kFileType);
-  }
-  // A shard deleted and created again with the same size is not the one
-  // validated, even where the file system reuses its inode number (ext4
-  // does, on the Sparks) and its timestamps are too coarse to tell (the
-  // inode generation does: RE-023, checked on a 128-byte-inode ext4).
-  const fs::path third = root_ / "data" / "00002.safetensors";
-  struct stat old_third{};
-  ASSERT_EQ(::stat(third.c_str(), &old_third), 0);
-  std::string different = ReadFile(third);
-  different.back() = static_cast<char>(different.back() ^ 1);
-  ASSERT_EQ(::unlink(third.c_str()), 0);
-  WriteFile(third, different);
-  struct stat new_third{};
-  ASSERT_EQ(::stat(third.c_str(), &new_third), 0);
-  const auto recreated = a.OpenShardForDirectRead(2);
-  ASSERT_FALSE(recreated.has_value())
-      << "inode " << (new_third.st_ino == old_third.st_ino ? "reused" : "not reused");
-  EXPECT_EQ(recreated.error().rule, Rule::kFileType);
-  // A shard replaced after open is not the one validated.
+  // A shard is reopened whenever its model becomes active again, perhaps
+  // long after Open (engine/paged_weights.h), and checked for what the
+  // reads need, not its identity (D-056 as amended on 2026-10-10): one
+  // whose status changed (its mode) or that was replaced by a copy of the
+  // same size still opens.
+  const fs::path first = root_ / "data" / "00000.safetensors";
+  fs::permissions(first, fs::perms::owner_read | fs::perms::group_read, fs::perm_options::replace);
+  EXPECT_TRUE(a.OpenShardForDirectRead(0).has_value());
+  fs::permissions(first, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace);
   std::error_code error;
-  const fs::path shard = root_ / "data" / "00000.safetensors";
-  fs::copy_file(shard, scratch_ / "copy", error);
-  fs::rename(scratch_ / "copy", shard, error);
-  const auto replaced = a.OpenShardForDirectRead(0);
-  ASSERT_FALSE(replaced.has_value());
-  EXPECT_EQ(replaced.error().rule, Rule::kFileType);
+  fs::copy_file(first, scratch_ / "copy", error);
+  fs::rename(scratch_ / "copy", first, error);
+  ASSERT_FALSE(error) << error.message();
+  EXPECT_TRUE(a.OpenShardForDirectRead(0).has_value());
+  // One of another size than the installed manifest lists is refused,
+  // longer or shorter.
+  const fs::path second = root_ / "data" / "00001.safetensors";
+  const std::string content = ReadFile(second);
+  WriteFile(second, content + std::string(4096, '\0'));
+  const auto longer = a.OpenShardForDirectRead(1);
+  ASSERT_FALSE(longer.has_value());
+  EXPECT_EQ(longer.error().rule, Rule::kFileSize);
+  WriteFile(second, content.substr(0, content.size() - 1));
+  const auto shorter = a.OpenShardForDirectRead(1);
+  ASSERT_FALSE(shorter.has_value());
+  EXPECT_EQ(shorter.error().rule, Rule::kFileSize);
+  WriteFile(second, content);
+  EXPECT_TRUE(a.OpenShardForDirectRead(1).has_value());
+  // Gone: refused, as any file the open cannot find.
+  const fs::path third = root_ / "data" / "00002.safetensors";
+  fs::rename(third, scratch_ / "third", error);
+  ASSERT_FALSE(error) << error.message();
+  EXPECT_FALSE(a.OpenShardForDirectRead(2).has_value());
+  fs::rename(scratch_ / "third", third, error);
+  EXPECT_TRUE(a.OpenShardForDirectRead(2).has_value());
 }
 
 TEST_F(ArtifactFilesTest, KeptMetadataIsReadAsListed) {

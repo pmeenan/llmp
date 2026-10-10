@@ -236,6 +236,9 @@ class Served {
   const std::string& name() const { return name_; }
   virtual bool llm() const = 0;
   virtual engine::PagedModel& paged() = 0;
+  // Whether paged() exists: an engine-backed adapter has no runner until
+  // its Setup makes one (a start that failed before, or at, its Setup).
+  virtual bool has_paged() const { return true; }
   virtual Status Setup() = 0;
   virtual std::uint64_t activations_needed() const = 0;
   virtual std::uint64_t pool_needed() const = 0;
@@ -1607,6 +1610,14 @@ class Server {
   // Evicts a model's resident weights and conversation state (state
   // written back), never the shared workspace or its own pinned memory.
   Status EvictPaged(Served& m, bool weights = true);
+  // Weight files (engine/paged_node.h, SetActive): a model's are open only
+  // while it is active, which is while it is resident and, during its
+  // Activate, from the start. ActivateFiles opens `m`'s (each checked
+  // against its installed manifest's size; the first refusal returned,
+  // none left open); DeactivateIdleModels marks every model but the
+  // resident one inactive, closing its files once no read uses them.
+  Status ActivateFiles(const Served& m);
+  void DeactivateIdleModels();
   Status RecordWeightUse(Served& m);
   // Evicts resident kept zeroed state backing (Model::kept_state) until
   // `needed` bytes are freed, other models' before `last`'s: no contents,

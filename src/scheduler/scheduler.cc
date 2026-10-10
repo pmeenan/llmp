@@ -930,6 +930,9 @@ void Scheduler::Conclude(Operation& operation, Outcome outcome, std::uint64_t by
     TryRetire(task);
     return;
   }
+  if (operation.file.valid()) {
+    files_.EndRead(operation.file);  // its read touches the descriptor no more
+  }
   operations_[id.index()].reset();
   if (kind == Kind::kLoad) {
     OnStage(extent, outcome, bytes);

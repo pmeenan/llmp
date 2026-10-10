@@ -51,6 +51,7 @@
 #include "providers/storage.h"
 #include "scheduler/commands.h"
 #include "scheduler/completions.h"
+#include "scheduler/files.h"
 #include "scheduler/scheduler.h"
 #include "scheduler/services.h"
 #include "scheduler/tasks.h"
@@ -85,6 +86,9 @@ using llmp::scheduler::DeviceJob;
 using llmp::scheduler::DeviceService;
 using llmp::scheduler::DeviceSettings;
 using llmp::scheduler::Fault;
+using llmp::scheduler::FileId;
+using llmp::scheduler::FileRefusal;
+using llmp::scheduler::FileTable;
 using llmp::scheduler::JobResult;
 using llmp::scheduler::LandingZone;
 using llmp::scheduler::Lanes;
@@ -813,6 +817,81 @@ TEST_P(PageInTest, AFailedReadReleasesItsSlotAndItsBacking) {
   Settle();
   EXPECT_EQ(third.outcome, TaskOutcome::kSucceeded);
   EXPECT_TRUE(Loaded(0, weights_));
+}
+
+// A source that reads a file of the scheduler's table by identity
+// (PageSource::file, files.h): a load that starts while the file is
+// closed reads nothing and fails; once the file has a descriptor, a read
+// takes it as it starts and counts there until its completion is
+// harvested, so the file cannot be taken back (and closed) under it.
+TEST_P(PageInTest, AReadByFileIdentityHoldsItsDescriptorUntilItEnds) {
+  Build();
+  FileTable& files = scheduler_->files();
+  const FileId file = files.Add();
+  for (const std::size_t i : {std::size_t{0}, std::size_t{1}}) {
+    PageSource source = Source(i, weights_);
+    source.read.fd = -1;  // ignored: the file's descriptor is taken at the read
+    source.file = file;
+    ASSERT_TRUE(scheduler_->SetSource(extents_[i], source).has_value());
+  }
+  PageSource unknown = Source(2, weights_);
+  unknown.file = FileId(99, 1);
+  EXPECT_EQ(Failed(scheduler_->SetSource(extents_[2], unknown)), WorkError::kInvalid);
+
+  // Closed: the read gets no descriptor, moves nothing, and the load fails
+  // and unwinds as a failed read does.
+  LoadProgram::Report closed;
+  ASSERT_TRUE(scheduler_->Start(1, Load(closed, Of({0}))).has_value());
+  Settle();
+  EXPECT_EQ(closed.outcome, TaskOutcome::kFailed);
+  EXPECT_EQ(View(extents_[0]).state, ExtentState::kNonresident);
+  EXPECT_EQ(scheduler_->stats().closed_file_reads, 1U);
+  EXPECT_EQ(memory_.backings(), baseline_);
+  EXPECT_EQ(scheduler_->slots_busy(), 0U);
+  EXPECT_EQ(files.Reads(file), 0U);
+  EXPECT_FALSE(scheduler_->fault().has_value());
+
+  // Open: the held read uses the file's descriptor and keeps it.
+  ASSERT_TRUE(files.Install(file, fd_).has_value());
+  const std::size_t before = storage_.submitted().size();
+  HoldNext(4);
+  LoadProgram::Report held;
+  ASSERT_TRUE(scheduler_->Start(2, Load(held, Of({0}))).has_value());
+  Settle();
+  ASSERT_EQ(View(extents_[0]).state, ExtentState::kLoading);
+  ASSERT_GT(storage_.submitted().size(), before);
+  for (std::size_t r = before; r < storage_.submitted().size(); ++r) {
+    EXPECT_EQ(storage_.submitted()[r].fd, fd_);
+  }
+  EXPECT_EQ(files.Reads(file), 1U);
+  EXPECT_EQ(Failed(files.Take(file)), FileRefusal::kReading);
+  EXPECT_EQ(files.Descriptor(file), fd_);
+  ReleaseReads();
+  Settle();
+  EXPECT_EQ(held.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(Loaded(0, weights_));
+  EXPECT_EQ(files.Reads(file), 0U);
+  EXPECT_EQ(files.Take(file).value_or(-2), fd_);
+  EXPECT_EQ(scheduler_->stats().closed_file_reads, 1U);
+
+  // Cancelled mid-read: the request ends at once, but its read keeps the
+  // descriptor until the lane has drained it (a cancellation is not a
+  // proof that the drive stopped).
+  ASSERT_TRUE(files.Install(file, fd_).has_value());
+  HoldNext(4);
+  LoadProgram::Report cancelled;
+  ASSERT_TRUE(scheduler_->Start(3, Load(cancelled, Of({1}))).has_value());
+  Settle();
+  ASSERT_EQ(View(extents_[1]).state, ExtentState::kLoading);
+  ASSERT_TRUE(scheduler_->Cancel(3));
+  EXPECT_EQ(cancelled.outcome, TaskOutcome::kCancelled);
+  EXPECT_EQ(files.Reads(file), 1U);
+  EXPECT_EQ(Failed(files.Take(file)), FileRefusal::kReading);
+  Settle();
+  EXPECT_EQ(View(extents_[1]).state, ExtentState::kNonresident);
+  EXPECT_EQ(storage_.in_flight(), 0U);
+  EXPECT_EQ(files.Reads(file), 0U);
+  EXPECT_EQ(files.Take(file).value_or(-2), fd_);
 }
 
 TEST_P(PageInTest, CancellingDuringTheReadDrainsItThenUnwinds) {

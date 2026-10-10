@@ -487,7 +487,8 @@ Status Qwen38Runner::Setup() {
     }
     row_bytes = ggml_row_size(*type, static_cast<std::int64_t>(binding_.ple_table.ne[0]));
   }
-  table_ = PleTable{.fd = weights_.shard_fd(first->shard),
+  table_shard_ = first->shard;
+  table_ = PleTable{.fd = -1,  // the shard's, taken at each read (ReadRows)
                     .file_offset = first->file_offset.value() + table.offset.value(),
                     .rows = binding_.ple_table.ne[1],
                     .row_bytes = row_bytes,
@@ -1935,7 +1936,11 @@ Status Qwen38Runner::ReadRows(const PleRowPlan& planned, std::size_t lookups) {
       planned.sources.size() > std::numeric_limits<std::uint32_t>::max()) {
     return Error("the Qwen3.8 union row gather exceeds its provisioned slots");
   }
-  if (auto r = ReadPleRows(*ring_, table_.fd, planned, landing_); !r) {
+  const int fd = weights_.shard_fd(table_shard_);
+  if (fd < 0) {
+    return Error("the n-gram table's shard is not open: the model is not active");
+  }
+  if (auto r = ReadPleRows(*ring_, fd, planned, landing_); !r) {
     rows_stalled_ = ring_->in_flight() != 0;  // reads that may still land
     return std::unexpected(r.error());
   }

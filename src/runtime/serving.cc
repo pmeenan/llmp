@@ -2809,6 +2809,9 @@ Status Server::Start(bool snapshot) {
     return r;
   }
   StartProgress();
+  // No model is active until its activation: none of its weight files
+  // opens before.
+  DeactivateIdleModels();
   for (const auto& m : models_) {
     if (auto r = m->Register(); !r) {
       return Error(std::format("model {}: {}", m->name(), r.error()));
@@ -3334,10 +3337,10 @@ Status Server::TearDown() {
       Log(std::format(
           "write-backs released unchanged (nothing written): {} extents, {:.1f} MiB; reclaims "
           "that took nothing (too little to take): {}; that ended short (a victim gave back "
-          "less): {}",
+          "less): {}; weight reads refused with their file closed (an inactive model's): {}",
           stats->unchanged_writebacks,
           static_cast<double>(stats->unchanged_writeback_bytes) / (1U << 20U), reclaims_short_,
-          reclaims_cut_short_));
+          reclaims_cut_short_, stats->closed_file_reads));
     }
     // What each model's plans and graphs held at the end, and what bringing
     // them back would have cost (the reclaim order's measured inputs):
@@ -3391,7 +3394,11 @@ Status Server::TearDown() {
   std::vector<engine::PagedModel*> models;
   models.reserve(models_.size());
   for (const auto& m : models_) {
-    models.push_back(&m->paged());
+    // A start that failed before a model's Setup made its runner leaves
+    // nothing of it on the node.
+    if (m->has_paged()) {
+      models.push_back(&m->paged());
+    }
     // Kept checkpoints' files stay for the next start (D-105): those no
     // record names it removes.
     if (m->llm()) {
@@ -4329,6 +4336,7 @@ Status Server::RecoverModel(Served& m) {
   if (resident_ == &m) {
     resident_ = nullptr;
   }
+  DeactivateIdleModels();  // its weight files close: it pages in again only once activated
   if (m.llm() && m.HasRetainedState() && std::ranges::find(spilled_, &m) == spilled_.end()) {
     // As a swap's write-back: the conversations it kept are wholly on disk,
     // and their records follow (D-105).
@@ -4342,6 +4350,27 @@ Status Server::RecoverModel(Served& m) {
     }
   }
   return {};
+}
+
+Status Server::ActivateFiles(const Served& m) {
+  for (std::size_t i = 0; i < models_.size(); ++i) {
+    if (models_[i].get() == &m) {
+      if (auto opened = node_.SetActive(static_cast<int>(i), true); !opened) {
+        return Error(
+            std::format("model {}: its weights cannot be read: {}", m.name(), opened.error()));
+      }
+    }
+  }
+  return {};
+}
+
+void Server::DeactivateIdleModels() {
+  for (std::size_t i = 0; i < models_.size(); ++i) {
+    if (models_[i].get() != resident_) {
+      // Never refused: a file a read still uses closes at a later sync.
+      std::ignore = node_.SetActive(static_cast<int>(i), false);
+    }
+  }
 }
 
 Status Server::UndoSwap(Served& out, Served& in, std::span<const catalog::ExtentId> preexisting) {
@@ -4492,6 +4521,17 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     return {};
   }
   parts.requested = Clock::now();
+  // The activation is the incoming model's page-in need: its weight files
+  // open now (inside the swap's timing), and whichever model is not
+  // resident when this returns has its closed (the outgoing one's once its
+  // weights are out).
+  if (auto files = ActivateFiles(m); !files) {
+    return files;
+  }
+  struct IdleFiles {
+    Server& server;
+    ~IdleFiles() { server.DeactivateIdleModels(); }
+  } idle_files{*this};
   if (options_.diagnostic_budget_cap_bytes) {
     parts.diagnostic.enabled = true;
     parts.diagnostic.requested = swap_host_phases_;

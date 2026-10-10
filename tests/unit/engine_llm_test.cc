@@ -1147,6 +1147,10 @@ TEST_F(EngineLlmTest, SetupRefusesWhatItCannotBuild) {
   ASSERT_FALSE(set);
   EXPECT_NE(Why(set).find("no step source yet"), std::string::npos);
   EXPECT_FALSE(refused.SelectBranches({}));
+  // No runner: a server stopping after this failed start leaves it out of
+  // the node's teardown (Server::TearDown) instead of asking for it.
+  EXPECT_FALSE(unbuilt.has_paged());
+  EXPECT_FALSE(refused.has_paged());
 }
 
 }  // namespace

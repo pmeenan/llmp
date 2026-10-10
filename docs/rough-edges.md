@@ -927,7 +927,8 @@ inode it creates. Overlayfs and tmpfs answer the ioctl with `ENOTTY`.
 Expected: device, inode and status-change time to identify a file between
 two opens.
 
-Impact: the artifact reader's shard identity (`OpenShardForDirectRead`,
+Impact (until 2026-10-10, when D-056's amendment dropped the identity
+comparison on reopen for a size check): the artifact reader's shard identity (`OpenShardForDirectRead`,
 `src/artifact/artifact.h`) includes the generation where the file system
 reports one; the replacement test fails on the 128-byte-inode ext4 without
 it. Where there is none (overlayfs, tmpfs, NFS), a same-size replacement
