@@ -366,6 +366,8 @@ the commit gate.
 ## Current status
 
 **M0 through M3 are complete; M3.6 is in progress; M3.5 is parked.**
+Whoever continues M3.6 starts at [docs/m36-handoff.md](docs/m36-handoff.md)
+(state, in-flight worktrees, remaining slices, deferred review items).
 On 2026-10-08 the owner stopped per-family optimization transfers and
 inserted [M3.6](docs/plan.md): one engine of shared components over
 llmpalooza's own graph IR, a format layer that keeps weights compressed, a

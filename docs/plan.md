@@ -1370,6 +1370,8 @@ TensorFold comparisons report speed, memory and separate quality controls.
 
 ## M3.6 — Engine components  `in progress`
 
+Working state, in-flight slices and deferred review items: [m36-handoff.md](m36-handoff.md).
+
 Goal (the owner, 2026-10-08; D-107 to D-110): replace the per-family
 runners, plans, graph builders, bindings, serving classes and Python
 importers with one engine of shared components over llmpalooza's own graph IR,
