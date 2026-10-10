@@ -22,3 +22,6 @@
 # Python bytecode from tools/ and tests/ (the scripts themselves write none).
 /tools/**/__pycache__/
 /tests/**/__pycache__/
+
+# Owner secrets (HF_TOKEN), loaded by mise.toml; never committed.
+/.env

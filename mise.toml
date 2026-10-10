@@ -19,6 +19,12 @@ lockfile_platforms = ["linux-x64", "linux-arm64"]
 [tools]
 python = "3.14.7"
 
+# Owner secrets for the tools, from the ignored .env beside this file (absent
+# is fine): HF_TOKEN for gated Hugging Face downloads (docs/model-archive.md).
+# Redacted from mise's own output; never logged by the tools.
+[env]
+_.file = { path = ".env", redact = true }
+
 [tasks.setup]
 description = "Provision the pinned SDK for this host, then prepare the locked sources (idempotent; --dry-run previews)"
 run = "python3 tools/setup"
