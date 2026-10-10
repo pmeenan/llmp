@@ -832,13 +832,50 @@ TEST_F(GgmlOpsValidateTest, ContCopiesAsUpstreamChooses) {
   ggml_tensor* id_rows = Typed(GGML_TYPE_I32, 64, 2);
   Rejected(CheckCont(
       Bound(ggml_cont(context(), ggml_view_2d(context(), id_rows, 32, 2, id_rows->nb[1], 0)))));
-  // F16, and an output over its input.
-  Rejected(CheckCont(Bound(ggml_cont(context(), Typed(GGML_TYPE_F16, 64, 2)))));
+  // Unsupported BF16, and an output over its input.
+  Rejected(CheckCont(Bound(ggml_cont(context(), Typed(GGML_TYPE_BF16, 64, 2)))));
   ggml_tensor* heads = Typed(GGML_TYPE_F32, kHead, 4, kHeads);
   ggml_tensor* merged =
       ggml_cont_2d(context(), ggml_permute(context(), heads, 0, 2, 1, 3), kWidth, 4);
   TensorArena::Bind(merged, reinterpret_cast<std::uintptr_t>(heads->data) + 256);
   Rejected(CheckCont(merged));
+}
+
+TEST_F(GgmlOpsValidateTest, ContF16CopiesMatchDispatchAndRejectInvalidAliases) {
+  auto* root = Typed(GGML_TYPE_F16, 20, 3);
+  for (const auto pitch : {std::size_t{16}, std::size_t{40}}) {
+    auto* view = ggml_view_2d(context(), root, 8, 3, pitch, 2);
+    const auto copy = CheckCont(Bound(ggml_cont(context(), view)));
+    ASSERT_TRUE(copy) << copy.error().detail;
+    EXPECT_EQ(*copy, pitch == 16 ? ContCopy::kMemcpy : ContCopy::kMemcpy2d);
+  }
+  for (const auto first : {std::size_t{0}, std::size_t{4}})
+    for (const auto pitch : {std::size_t{0}, std::size_t{6}, std::size_t{40}}) {
+      auto* view = ggml_view_2d(context(), root, 8, 3, pitch, 2);
+      view->nb[0] = first;
+      const auto copy = CheckCont(Bound(ggml_cont(context(), view)));
+      ASSERT_TRUE(copy) << copy.error().detail;
+      EXPECT_EQ(*copy, ContCopy::kScalar);
+    }
+  auto* packed = ggml_view_2d(context(), root, 8, 3, 16, 2);
+  auto* transposed = ggml_transpose(context(), packed);
+  const auto copy = CheckCont(Bound(ggml_cont(context(), transposed)));
+  ASSERT_TRUE(copy) << copy.error().detail;
+  EXPECT_EQ(*copy, ContCopy::kTranspose);
+  // Upstream's tiled path ignores nb0: a narrowed pitched transpose is not valid.
+  auto* narrow = ggml_transpose(context(), ggml_view_3d(context(), root, 2, 3, 1, 16, 12, 2));
+  Rejected(CheckCont(Bound(ggml_cont(context(), narrow))));
+  auto* odd = ggml_view_2d(context(), root, 8, 3, 40, 2);
+  odd->nb[0] = 3;
+  Rejected(CheckCont(Bound(ggml_cont(context(), odd))));
+  auto* shifted = ggml_view_2d(context(), root, 8, 3, 40, 1);
+  Rejected(CheckCont(Bound(ggml_cont(context(), shifted))));
+  auto* overlap = Bound(ggml_cont(context(), packed));
+  TensorArena::Bind(overlap, reinterpret_cast<std::uintptr_t>(root->data) + 4);
+  Rejected(CheckCont(overlap));
+  // Same-root disjoint slices remain legal; root identity alone is not aliasing.
+  TensorArena::Bind(overlap, reinterpret_cast<std::uintptr_t>(root->data) + 64);
+  EXPECT_TRUE(CheckCont(overlap));
 }
 
 TEST_F(GgmlOpsValidateTest, SwiGluIsSplitAndMayRunInPlace) {

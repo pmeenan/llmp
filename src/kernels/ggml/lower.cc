@@ -1275,6 +1275,8 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       return ggml_lightning_indexer(c_, s[0], s[1], s[2], s[3]);
     case Op::kVisibleTopK:
       return VisibleTopK(c_, s[0], s[1], n.Params<ir::TopKParams>().k);
+    case Op::kPrefixOverwrite:
+      return PrefixOverwrite(c_, s[0], s[1], n.Params<ir::PrefixOverwriteParams>().fill_bits);
     case Op::kSelectedMask: {
       const auto p = n.Params<ir::SelectedMaskParams>();
       return SelectedMask(c_, s[0], s[1], p.raw_cells, p.cells);

@@ -748,6 +748,163 @@ TEST(GgmlLowerDsv4Test, OptInLocalFormsLowerActualTargetAndDraftFragments) {
   }
 }
 
+TEST(GgmlLowerDsv4Test, RoundedIndexScoreUsesFundedPrimitiveRoundTripWithoutNativeScore) {
+  using llmp::format::Encoding;
+  ir::Builder b;
+  const auto q = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({128, 64, 3})));
+  const auto k = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({128, 1, 4})));
+  const auto w = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({64, 3})));
+  const auto counts = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+  b.Output(b.RoundedIndexScore(q, k, w, counts));
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph) << graph.error().detail;
+  co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+  const std::vector<ir::TensorId> staged{q, k, w, counts};
+  for (const auto input : staged)
+    step.inputs.push_back({.tensor = input, .kind = co::InputKind::kFeatures});
+  const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 3}}};
+  auto registry = Registry(false);
+  pl::Policy policy;
+  for (const auto& pattern : pl::Patterns()) policy.disabled.emplace_back(pattern.name);
+  pl::Canonicalize(policy);
+  auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121},
+                       policy, {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+  ASSERT_TRUE(plan) << plan.error().detail;
+  EXPECT_EQ(plan->decomposed, std::vector<std::string>{"rounded_index_score"});
+  std::vector<ir::TensorId> cast_outputs;
+  std::vector<Encoding> cast_encodings;
+  int products = 0, reductions = 0, prefixes = 0;
+  for (const auto& node : plan->graph.nodes()) {
+    EXPECT_NE(node.key.op, ir::Op::kRoundedIndexScore);
+    EXPECT_NE(node.key.op, ir::Op::kIndexScore);
+    if (node.key.op == ir::Op::kConvert) {
+      cast_outputs.push_back(node.out[0]);
+      cast_encodings.push_back(plan->graph.tensor(node.out[0]).format.encoding);
+    }
+    products += node.key.op == ir::Op::kMatMul;
+    reductions += node.key.op == ir::Op::kSumRows;
+    prefixes += node.key.op == ir::Op::kPrefixOverwrite;
+  }
+  EXPECT_EQ(cast_encodings, (std::vector<Encoding>{Encoding::kF16, Encoding::kF32}));
+  EXPECT_EQ(products, 1);
+  EXPECT_EQ(reductions, 1);
+  EXPECT_EQ(prefixes, 1);
+  ASSERT_EQ(cast_outputs.size(), 2U);
+  std::array<std::uint64_t, 2> offsets{};
+  for (std::size_t i = 0; i < 2; ++i) {
+    const auto at = std::ranges::find_if(plan->placement.offsets, [&](const auto& placed) {
+      return placed.first == cast_outputs[i];
+    });
+    ASSERT_NE(at, plan->placement.offsets.end());
+    offsets[i] = at->second;
+    const auto bytes = pl::RootBytes(plan->graph.tensor(cast_outputs[i]));
+    ASSERT_TRUE(bytes);
+    EXPECT_LE(offsets[i] + *bytes, plan->placement.extent);
+  }
+  EXPECT_NE(offsets[0], offsets[1]) << "widening reads the half root while writing its F32 root";
+  auto lowered =
+      kg::LowerStep({.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 256},
+                    registry, Device());
+  ASSERT_TRUE(lowered) << lowered.error().detail;
+  int native_prefixes = 0, copies = 0;
+  for (const auto* node : lowered->nodes) {
+    if (kg::LlmpOpOf(node) == kg::LlmpOp::kPrefixOverwrite) {
+      ++native_prefixes;
+      EXPECT_TRUE(kg::CheckPrefixOverwrite(node));
+    }
+    if (node->op == GGML_OP_CPY) {
+      ++copies;
+      EXPECT_TRUE(kg::CheckConvert(node));
+    }
+  }
+  EXPECT_EQ(native_prefixes, 1);
+  EXPECT_EQ(copies, 2);
+}
+
+TEST(GgmlLowerDsv4Test, ContCapabilityMatchesElementTypesAndGridBound) {
+  using llmp::format::Encoding;
+  const auto* cap = kg::CapabilityOf(kg::kContName);
+  ASSERT_NE(cap, nullptr);
+  constexpr auto max = static_cast<std::uint64_t>(INT32_MAX) * 64 - 1;
+  for (const auto encoding : {Encoding::kF32, Encoding::kF16, Encoding::kI32, Encoding::kBF16})
+    for (const auto cells : {std::uint64_t{0}, std::uint64_t{1}, max, max + 1}) {
+      std::array<ex::OperandFormat, 2> operands{
+          {{.operand = 0, .encoding = encoding, .ne = {cells, 1, 1, 1}},
+           {.operand = ex::kOutputOperand, .encoding = encoding, .ne = {cells, 1, 1, 1}}}};
+      const ex::CapabilityQuery query{.op = cap->op, .operands = operands, .arch = 121};
+      const bool supported = encoding != Encoding::kBF16 && cells > 0 && cells <= max;
+      EXPECT_EQ(cap->accepts(query), supported);
+      auto arena = kg::TensorArena::Create(4);
+      ASSERT_TRUE(arena);
+      const auto type = encoding == Encoding::kF32   ? GGML_TYPE_F32
+                        : encoding == Encoding::kF16 ? GGML_TYPE_F16
+                        : encoding == Encoding::kI32 ? GGML_TYPE_I32
+                                                     : GGML_TYPE_BF16;
+      auto* input = ggml_new_tensor_1d(arena->context(), type, static_cast<std::int64_t>(cells));
+      kg::TensorArena::Bind(input, 1ULL << 40);
+      auto* output = ggml_cont(arena->context(), input);
+      kg::TensorArena::Bind(output, 1ULL << 43);
+      EXPECT_EQ(kg::CheckCont(output).has_value(), supported);
+      operands[1].encoding = encoding == Encoding::kF32 ? Encoding::kF16 : Encoding::kF32;
+      EXPECT_FALSE(cap->accepts(query));
+    }
+}
+
+TEST(GgmlLowerDsv4Test, PrefixOverwriteDescriptorPreservesEveryLiteralParameterBit) {
+  auto arena = kg::TensorArena::Create(16);
+  ASSERT_TRUE(arena);
+  auto* values = ggml_new_tensor_2d(arena->context(), GGML_TYPE_F32, 5, 3);
+  auto* counts = ggml_new_tensor_1d(arena->context(), GGML_TYPE_I32, 3);
+  for (const std::uint32_t fill : {0U, 0x80000000U, 0xff800000U, 0x7f800000U, 0x7fa00001U,
+                                   0xffa12345U, 0xffffffffU, 0x807fffffU}) {
+    const auto* output = kg::PrefixOverwrite(arena->context(), values, counts, fill);
+    EXPECT_EQ(kg::LlmpOpOf(output), kg::LlmpOp::kPrefixOverwrite);
+    EXPECT_EQ(static_cast<std::uint32_t>(kg::LlmpOpInt(output, 0)), fill);
+  }
+}
+
+TEST(GgmlLowerDsv4Test, PrefixOverwriteCapabilityAndLaunchAgreeOnBoundsAndAliasing) {
+  using llmp::format::Encoding;
+  for (const auto cells :
+       {std::uint64_t{1}, std::uint64_t{INT32_MAX / 2}, std::uint64_t{INT32_MAX / 2 + 1}}) {
+    auto arena = kg::TensorArena::Create(8);
+    ASSERT_TRUE(arena);
+    std::uint64_t address = 1ULL << 40;
+    const auto bind = [&](ggml_tensor* t) {
+      kg::TensorArena::Bind(t, address);
+      address += 1ULL << 36;
+      return t;
+    };
+    auto* values = bind(
+        ggml_new_tensor_2d(arena->context(), GGML_TYPE_F32, static_cast<std::int64_t>(cells), 2));
+    auto* counts = bind(ggml_new_tensor_1d(arena->context(), GGML_TYPE_I32, 2));
+    auto* output = bind(kg::PrefixOverwrite(arena->context(), values, counts, 0x7fa00001));
+    const auto* cap = kg::CapabilityOf(kg::kPrefixOverwriteName);
+    ASSERT_NE(cap, nullptr);
+    const auto params = ir::ToBytes(ir::PrefixOverwriteParams{.fill_bits = 0x7fa00001});
+    const std::array<ex::OperandFormat, 3> operands{
+        {{.operand = 0, .encoding = Encoding::kF32, .ne = {cells, 2, 1, 1}},
+         {.operand = 1, .encoding = Encoding::kI32, .ne = {2, 1, 1, 1}},
+         {.operand = ex::kOutputOperand, .encoding = Encoding::kF32, .ne = {cells, 2, 1, 1}}}};
+    const ex::CapabilityQuery query{
+        .op = cap->op, .operands = operands, .arch = 121, .params = params};
+    const bool supported = cells <= INT32_MAX / 2;
+    EXPECT_EQ(cap->accepts(query), supported);
+    EXPECT_EQ(kg::CheckPrefixOverwrite(output).has_value(), supported);
+    if (!supported) continue;
+    values->nb[0] = counts->nb[0] = 0;
+    EXPECT_TRUE(kg::CheckPrefixOverwrite(output));
+    values->nb[0] = 3;
+    EXPECT_FALSE(kg::CheckPrefixOverwrite(output));
+    values->nb[0] = 4;
+    counts->nb[0] = 3;
+    EXPECT_FALSE(kg::CheckPrefixOverwrite(output));
+    counts->nb[0] = 4;
+    output->data = values->data;
+    EXPECT_FALSE(kg::CheckPrefixOverwrite(output));
+  }
+}
+
 TEST(GgmlLowerDsv4Test, ConvertChainsBudgetEveryDestinationAndCopyView) {
   using llmp::format::Encoding;
   ir::Builder b;

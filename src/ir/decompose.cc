@@ -276,6 +276,34 @@ Outputs IndexScore(D& d) {
   return One(sum);
 }
 
+Outputs RoundedIndexScore(D& d, const RoundedIndexScoreParams& p) {
+  if (!d.need(4, 4) ||
+      !d.check(p.query == QueryRounding::kF16 && p.reserved == std::array<std::uint8_t, 3>{},
+               GraphError::kParams, "F16 query rounding with zero reserved bytes"))
+    return {};
+  Builder& b = d.b();
+  const TensorDesc q = d.t(d.s(0));
+  const TensorId key_values = d.Packed(d.s(1));
+  const TensorId head_weights = d.Packed(d.s(2));
+  const TensorDesc k = d.t(key_values);
+  const TensorDesc w = d.t(head_weights);
+  // The primitive float product takes F32 activations. Widening the rounded
+  // half query is exact; both conversion roots are ordinary funded values.
+  const TensorId half = b.Convert(d.Packed(d.s(0)), format::Encoding::kF16);
+  const TensorId query = b.Convert(half, format::Encoding::kF32);
+  const std::uint64_t cells = k.ne(2);
+  const TensorId keys =
+      b.View(key_values, S(k.ne(0), cells), Nb{k.nb[0], k.nb[2], k.nb[2] * cells, k.nb[3]}, 0);
+  TensorId dots = b.MatMul(keys, query, {.accumulate = Accumulate::kF32});
+  dots = b.Unary(dots, UnaryFn::kRelu);
+  const TensorId weights =
+      b.View(head_weights, S(1, w.ne(0), w.ne(1)), Nb{w.nb[0], w.nb[0], w.nb[1], w.nb[3]}, 0);
+  const TensorId weighted = b.Mul(dots, weights);
+  const TensorId sum = b.SumRows(b.Cont(b.Permute(weighted, {1, 0, 2, 3})));
+  return One(
+      b.PrefixOverwrite(b.Reshape(sum, S(cells, q.ne(2))), d.s(3), {.fill_bits = 0xff800000U}));
+}
+
 Outputs Pool(D& d, const PoolParams& p) {
   if (!d.need(1, 2)) {
     return {};
@@ -1202,6 +1230,7 @@ bool Composite(Op op) {
     case Op::kHcPost:
     case Op::kHcMix:
     case Op::kIndexScore:
+    case Op::kRoundedIndexScore:
     case Op::kPool:
     case Op::kRoute:
     case Op::kExpertReduce:
@@ -1318,6 +1347,9 @@ Outputs Decompose(Builder& b, OpKey key, const ParamBytes& params,
         break;
       case Op::kIndexScore:
         o = IndexScore(d);
+        break;
+      case Op::kRoundedIndexScore:
+        o = RoundedIndexScore(d, Get<RoundedIndexScoreParams>(params));
         break;
       case Op::kPool:
         o = Pool(d, Get<PoolParams>(params));

@@ -149,8 +149,14 @@ update this section as each slice lands):
   owner-authenticated completed-block count inputs. Scalar/native operand
   controls cover arbitrary score bits and ID views, unequal owners and
   changed-input captured replay. Existing score/TopK, MQA version1 and
-  default policies retain their semantics. Rounded-query score, portable
-  fallback and exact native fusion remain required in G4b2b2b; output-A/
+  default policies retain their semantics. G4b2b2b1 adds typed half-rounded
+  query scoring, an independent wider reference and literal prefix overwrite;
+  the portable score path funds an explicit F32-to-F16-to-F32 query conversion
+  and accepts pitched half keys through the checked shared copy. No specialized
+  native score or component consumer is introduced. G4b2b2b2 still requires
+  one actual native score producer with exact original-helper execution and
+  full-key backing proof; G4b2b2b3 requires the opt-in component/full-mask fusion
+  and separate execution compatibility for kept/adopt/restore paths. Output-A/
   products, mixed encodings and full policy remain G4b2c. G4c then
   binds the hash-routing IDs, compressor inputs and injection features and
   runs serving/state/quality/swap/1% controls; G4d deletes the M3 path. The
@@ -192,7 +198,7 @@ spark-b during the weight-handle review.
 
 The slice plan as designed before work began. Where it differs from what was
 built, docs/engine-components.md's "as built" text and the commits win.
-Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a–b, G3c1 and G3c2a, G4a, G4b1, G4b2a, G4b2b1 and G4b2b2a, N1.
+Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a–b, G3c1 and G3c2a, G4a, G4b1, G4b2a, G4b2b1, G4b2b2a and G4b2b2b1, N1.
 
 #### Wave 3: families, one at a time through the gate
 

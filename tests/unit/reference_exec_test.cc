@@ -245,6 +245,117 @@ TEST_F(ExecTest, SelectedMaskCopiesHalfBitsAndAcceptsArbitraryAliasedIds) {
                                         0xfc00, 0xfc00}));
 }
 
+TEST_F(ExecTest, PrefixOverwritePreservesEveryBitAcrossStridedAndRepeatedViews) {
+  const auto root = F({20, 3});
+  const auto count_root = I({7});
+  const auto counts =
+      b.Permute(b.View(count_root, ir::ShapeOf({1, 3}), {4, 8, 56, 56}, 4), {1, 0, 2, 3});
+  struct Case {
+    TensorId output;
+    std::uint64_t cell_stride, row_stride;
+    std::uint32_t fill;
+  };
+  std::vector<Case> cases;
+  for (const auto cell_stride : {0U, 8U})
+    for (const auto row_stride : {0U, 80U})
+      for (const auto fill : {0U, 0x80000000U, 0xff800000U, 0x7fa01234U}) {
+        const auto values =
+            b.Permute(b.View(root, ir::ShapeOf({1, 5, 3}), {4, cell_stride, row_stride, 240}, 4),
+                      {2, 0, 1, 3});
+        const auto output = b.PrefixOverwrite(values, counts, {.fill_bits = fill});
+        cases.push_back({output, cell_stride, row_stride, fill});
+        b.Output(output);
+      }
+  ASSERT_TRUE(Finish());
+  constexpr std::array<std::uint32_t, 10> corpus{0x7fa00001, 0xffa12345, 0x80000000, 0,
+                                                 1,          0x807fffff, 0x7f800000, 0xff800000,
+                                                 0x3f800000, 0xbf800000};
+  for (std::size_t revision = 0; revision < 3; ++revision) {
+    std::vector<std::uint32_t> source(60);
+    for (std::size_t i = 0; i < source.size(); ++i)
+      source[i] = corpus[(i + revision) % corpus.size()];
+    std::vector<std::byte> bytes(source.size() * 4);
+    std::memcpy(bytes.data(), source.data(), bytes.size());
+    SetBytes(root, bytes);
+    const std::array<std::int64_t, 3> visible = revision == 0
+                                                    ? std::array<std::int64_t, 3>{-1, 2, INT32_MAX}
+                                                    : std::array<std::int64_t, 3>{5, 0, 1};
+    SetInts(count_root, {99, visible[0], 99, visible[1], 99, visible[2], 99});
+    ASSERT_TRUE(Run());
+    for (const auto& test : cases) {
+      const auto raw = exec->Bytes(test.output);
+      std::vector<std::uint32_t> got(raw.size() / 4), expected;
+      std::memcpy(got.data(), raw.data(), raw.size());
+      for (std::uint64_t row = 0; row < 3; ++row)
+        for (std::uint64_t cell = 0; cell < 5; ++cell)
+          expected.push_back(
+              static_cast<std::int64_t>(cell) < visible[row]
+                  ? source[1 + row * test.row_stride / 4 + cell * test.cell_stride / 4]
+                  : test.fill);
+      EXPECT_EQ(got, expected);
+    }
+  }
+}
+
+TEST(ReferenceDecompositionTest, RoundedIndexScoreHasIndependentFormulaAndRealHalfRoundTrip) {
+  ir::Builder b;
+  const auto q_root = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({130, 64, 3})));
+  const auto k_root = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({130, 1, 4})));
+  const auto w_root = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({66, 3})));
+  const auto q = b.View(q_root, ir::ShapeOf({128, 64, 3}), {4, 520, 33280, 99840}, 4);
+  const auto k = b.View(k_root, ir::ShapeOf({128, 1, 4}), {2, 260, 260, 1040}, 2);
+  const auto w = b.View(w_root, ir::ShapeOf({64, 3}), {4, 264, 792, 792}, 4);
+  const auto counts = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+  const auto score = b.RoundedIndexScore(q, k, w, counts);
+  b.Output(score);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph) << graph.error().detail;
+  std::vector<TensorId> mapped;
+  auto primitive = ir::Expand(*graph, true, &mapped);
+  ASSERT_TRUE(primitive) << primitive.error().detail;
+  std::vector<Encoding> casts;
+  int products = 0, reductions = 0, overwrites = 0;
+  for (const auto& node : primitive->nodes()) {
+    EXPECT_FALSE(ir::HasDecomposition(node.key));
+    if (node.key.op == ir::Op::kConvert)
+      casts.push_back(primitive->tensor(node.out[0]).format.encoding);
+    products += node.key.op == ir::Op::kMatMul;
+    reductions += node.key.op == ir::Op::kSumRows;
+    overwrites += node.key.op == ir::Op::kPrefixOverwrite;
+  }
+  EXPECT_EQ(casts, (std::vector<Encoding>{Encoding::kF16, Encoding::kF32}));
+  EXPECT_EQ(products, 1);
+  EXPECT_EQ(reductions, 1);
+  EXPECT_EQ(overwrites, 1);
+  auto direct = Executor::Create(*graph);
+  auto split = Executor::Create(*primitive);
+  ASSERT_TRUE(direct);
+  ASSERT_TRUE(split);
+  std::vector<float> query(130 * 64 * 3, 0), keys(130 * 4, 0), weights(66 * 3, 0);
+  for (std::size_t row = 0; row < 3; ++row) {
+    query[1 + row * 130 * 64] = 1.0002F;  // rounds to half1, a visible semantic distinction
+    weights[1 + row * 66] = 2;
+  }
+  keys[1] = 1;
+  keys[131] = -1;
+  keys[261] = std::numeric_limits<float>::infinity();
+  keys[391] = std::numeric_limits<float>::quiet_NaN();
+  for (const auto& [id, values] :
+       std::array{std::pair{q_root, query}, std::pair{k_root, keys}, std::pair{w_root, weights}}) {
+    ASSERT_TRUE(direct->BindValues(id, values));
+    ASSERT_TRUE(split->BindValues(mapped[id.v], values));
+  }
+  const std::vector<std::int64_t> visible{1, INT32_MAX, -1};
+  ASSERT_TRUE(direct->BindInts(counts, visible));
+  ASSERT_TRUE(split->BindInts(mapped[counts.v], visible));
+  ASSERT_TRUE(direct->Run());
+  ASSERT_TRUE(split->Run());
+  const float inf = std::numeric_limits<float>::infinity();
+  const std::vector<float> expected{2, -inf, -inf, -inf, 2, 0, inf, 0, -inf, -inf, -inf, -inf};
+  EXPECT_EQ(*direct->Values(score), expected);
+  EXPECT_EQ(*split->Values(mapped[score.v]), expected);
+}
+
 // ---------------------------------------------------------------- structure
 
 TEST_F(ExecTest, ViewsPermutesCopiesJoinsAndTiles) {

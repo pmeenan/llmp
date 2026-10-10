@@ -125,6 +125,9 @@ class Builder {
                      const MaskParams& params, format::Encoding encoding = format::Encoding::kF16);
   TensorId CacheStore(TensorId cache, TensorId src, TensorId idx);
   TensorId IndexScore(TensorId q, TensorId k, TensorId w, TensorId mask);
+  TensorId RoundedIndexScore(TensorId q, TensorId k, TensorId w, TensorId counts,
+                             const RoundedIndexScoreParams& params = {});
+  TensorId PrefixOverwrite(TensorId values, TensorId counts, const PrefixOverwriteParams& params);
   TensorId Pool(TensorId x, TensorId scores, const PoolParams& params);
 
   // ---- norms and rotations
@@ -144,7 +147,8 @@ class Builder {
   TensorId Clamp(TensorId x, float min, float max);
   TensorId Fill(const format::Shape& shape, float value,
                 format::Encoding encoding = format::Encoding::kF32);
-  TensorId Glu(TensorId gate, TensorId up, const GluParams& params);  // up absent: halves
+  TensorId Glu(TensorId gate, TensorId up,
+               const GluParams& params);  // up absent: halves
   TensorId Softcap(TensorId x, float cap);
 
   // ---- reductions and selection

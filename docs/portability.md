@@ -333,6 +333,16 @@ primitive plan over GGML's operations or an equivalent set, with the
 BF16 rounding points the reference needs. None of this changes the
 GB10's plans, which keep their fastest implementations.
 
+The rounded-query score composite has a real primitive fallback: funded
+F32→F16→F32 conversion, ordinary product/ReLU/weighting/reduction, then a
+literal prefix overwrite. Nonpacked F16 keys use funded `Cont`; the native
+copy preserves half representations through its checked same-type copy paths. `PrefixOverwrite` is an exact F32 bit-copy/fill
+primitive with an independent CPU implementation and a basic strided-input
+native launch. A backend must provide that operation to run this optional
+composite; an additive mask is not an equivalent fallback for unseen NaN or
+infinite scores. No specialized native score or new component is registered
+by this foundation alone.
+
 ## The runners' shared skeleton
 
 The M3 runners grew one model at a time, and the audit of 2026-09-29

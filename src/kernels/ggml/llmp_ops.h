@@ -149,9 +149,17 @@ enum class LlmpOp : std::uint8_t {
   kFlashAttnOwners,
   kVisibleTopK,
   kSelectedMask,
+  kPrefixOverwrite,
 };
 
 class LaunchContext;
+
+// Exact bit-copy within a clamped row prefix, literal fill outside it.
+// Arbitrary whole-element input/count strides; fresh packed disjoint output.
+ggml_tensor* PrefixOverwrite(ggml_context* context, ggml_tensor* values, ggml_tensor* counts,
+                             std::uint32_t fill_bits);
+std::expected<void, KernelFailure> CheckPrefixOverwrite(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunPrefixOverwrite(LaunchContext& launch, ggml_tensor* node);
 
 // Exact standalone IR selection/mask primitives. Inputs may have arbitrary
 // whole-element strides, including repeated views. The mask launch is duplicate

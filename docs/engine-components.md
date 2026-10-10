@@ -168,6 +168,18 @@ the existing radix routine, and the native mask uses a duplicate-safe
 membership bitset with one writer per output half. The standalone forms
 do not establish a score recipe, a Lid fusion or a new component version.
 
+`RoundedIndexScore` is a separate mathematical composite: explicit half-query
+rounding, head-weighted ReLU dots (a NaN dot becomes zero), and literal -Inf
+outside an I32 visible prefix. Its independent scalar uses wider sums. The
+portable graph funds both F32→F16→F32 query conversions, ordinary products,
+head weighting/reduction and `PrefixOverwrite`. That exact primitive copies
+visible F32 representations and writes literal fill bits outside the prefix,
+including for NaN/Inf inputs. Per-node F32 intermediate rounding can differ
+from the direct wider formula; exact selection consumes whichever scores its
+numerical implementation produced. This slice registers no specialized score
+implementation, component recipe or whole-indexer fusion; the existing
+`IndexScore`, `TopK`, mqa@1 and mapping policies retain their definitions.
+
 `StepContext::VisibleCells` declares an ordinary staged I32 input for each
 owner's completed positions-basis blocks. Counts use the owner's past and
 local row, block ratio, scored width and explicit real-cell capacity;

@@ -380,6 +380,67 @@ TEST(IrTest, ExactSelectionAndMaskVerifyTheirSeparateTypedContracts) {
   }
 }
 
+TEST(IrTest, RoundedIndexScoreAndPrefixOverwriteHaveStrictTypedContracts) {
+  Builder b;
+  const auto q = b.Input(F32({128, 64, 3}));
+  const auto k = b.Input(Dense(Encoding::kF16, ShapeOf({128, 1, 5})));
+  const auto w = b.Input(F32({64, 3}));
+  const auto counts = b.Input(I32({3}));
+  const auto score = b.RoundedIndexScore(q, k, w, counts);
+  const auto copied = b.PrefixOverwrite(score, counts, {.fill_bits = 0x7fa01234});
+  EXPECT_EQ(b.tensor(score).shape().ne, ShapeOf({5, 3}).ne);
+  EXPECT_EQ(b.tensor(copied).format.encoding, Encoding::kF32);
+  b.Output(copied);
+  ASSERT_TRUE(std::move(b).Finish());
+  EXPECT_TRUE(HasDecomposition(Primitive(Op::kRoundedIndexScore)));
+  EXPECT_FALSE(HasDecomposition(Primitive(Op::kPrefixOverwrite)));
+  for (int bad = 0; bad < 10; ++bad) {
+    Builder x;
+    const auto query = x.Input(
+        Dense(bad == 0 ? Encoding::kF16 : Encoding::kF32,
+              ShapeOf({bad == 1 ? 127U : 128U, bad == 2 ? 63U : 64U, 3, bad == 7 ? 2U : 1U})));
+    const auto keys =
+        x.Input(Dense(bad == 3 ? Encoding::kF32 : Encoding::kF16, ShapeOf({128, 1, 5})));
+    const auto weights = x.Input(F32({bad == 4 ? 63U : 64U, 3}));
+    const auto n =
+        x.Input(Dense(bad == 5 ? Encoding::kI64 : Encoding::kI32, ShapeOf({bad == 6 ? 2U : 3U})));
+    RoundedIndexScoreParams params;
+    if (bad == 8) params.query = static_cast<QueryRounding>(1);
+    if (bad == 9) params.reserved[0] = 1;
+    x.RoundedIndexScore(query, keys, weights, n, params);
+    EXPECT_FALSE(std::move(x).Finish()) << bad;
+  }
+  for (int bad = 0; bad < 4; ++bad) {
+    Builder x;
+    const auto values = x.Input(
+        Dense(bad == 0 ? Encoding::kF16 : Encoding::kF32, ShapeOf({5, 3, bad == 3 ? 2U : 1U})));
+    const auto n =
+        x.Input(Dense(bad == 1 ? Encoding::kI64 : Encoding::kI32, ShapeOf({bad == 2 ? 2U : 3U})));
+    x.PrefixOverwrite(values, n, {.fill_bits = 0xff800000});
+    EXPECT_FALSE(std::move(x).Finish()) << bad;
+  }
+}
+
+TEST(IrTest, PrefixOverwriteLiteralBitsArePartOfItsDigest) {
+  const auto make = [](std::uint32_t fill) {
+    Builder b;
+    const auto values = b.Input(F32({5, 3}));
+    const auto counts = b.Input(I32({3}));
+    b.Output(b.PrefixOverwrite(values, counts, {.fill_bits = fill}));
+    return std::move(b).Finish();
+  };
+  const auto zero = make(0);
+  const auto negative_zero = make(0x80000000);
+  const auto nan1 = make(0x7fa00001);
+  const auto nan2 = make(0x7fa00002);
+  ASSERT_TRUE(zero);
+  ASSERT_TRUE(negative_zero);
+  ASSERT_TRUE(nan1);
+  ASSERT_TRUE(nan2);
+  EXPECT_NE(zero->Digest(), negative_zero->Digest());
+  EXPECT_NE(nan1->Digest(), nan2->Digest());
+}
+
 TEST(IrTest, VerifyHoldsGgmlsInt32Limits) {
   // RE-037: [n_kv, rows] F32 permuted puts its plane stride (2^31 bytes
   // here) in a dimension GGML takes as int.

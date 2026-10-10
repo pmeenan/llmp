@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The graph IR's op set, version 1 (D-107; docs/engine-components.md#the-graph-ir):
-// the operations a model's step is built from, the fused kinds patterns
-// rewrite subgraphs into, and the parameters a node carries. Changing the
-// op set is a reviewed change, like an artifact schema: it bumps
-// kOpSetVersion once the version has been released.
+// The graph IR's op set, version 1 (D-107;
+// docs/engine-components.md#the-graph-ir): the operations a model's step is
+// built from, the fused kinds patterns rewrite subgraphs into, and the
+// parameters a node carries. Changing the op set is a reviewed change, like an
+// artifact schema: it bumps kOpSetVersion once the version has been released.
 //
 // An operation's semantics are its op, its parameters and its operands'
 // formats; an implementation (execution/registry.h) declares which of
@@ -99,6 +99,20 @@
 //   kIndexScore (q [D, H, T, S], k [D, 1, C, S], w [H, T, 1, S], mask? [C,
 //       T, 1, M3]): [C, T, 1, S] = Σ_h w[h, t] · max(q_h · k_c, 0) + mask
 //       (ggml_lightning_indexer, DeepSeek V4's lightning indexer).
+//   kRoundedIndexScore (q F32 [128,64,T], k F16 [128,1,C], w F32 [64,T],
+//       counts I32 [T]): RoundedIndexScoreParams, exact F32 [C,T]. Round q
+//       to F16, then sum head weights times ReLU(dot(q_head,k_cell));
+//       ReLU maps a NaN dot to +0. Clamp count to [0,C]; cells outside its
+//       prefix are literal -Inf. Products/reductions follow the ordinary
+//       F32-or-wider numerical convention, not one universal native bit
+//       sequence. The independent scalar uses wider sums. The primitive
+//       fallback's F32->F16->F32 cast preserves query rounding, with F32
+//       intermediates; a differently selected numerical implementation can
+//       change scores and near-cutoff selected sets (D-053).
+//   kPrefixOverwrite (values F32 [C,T], counts I32 [T]): PrefixOverwriteParams,
+//       exact F32 [C,T]. Bit-copy cells below clamp(count,0,C); write the
+//       literal fill_bits representation elsewhere. No arithmetic; every
+//       F32 bit pattern, including signaling NaNs and signed zero, is valid.
 //   kPool     (x [C, R · N, A2, A3], scores? like x): PoolParams: [C, N, A2,
 //       A3], each run of R = ratio rows pooled: kMean their sum / R
 //       (Qwen3.8's QSA block keys, llmp.qsa.pool), kSoftmax their sum
@@ -319,6 +333,8 @@ enum class Op : std::uint16_t {
   // Exact visibility-bounded selection and its bit-preserving mask.
   kVisibleTopK,
   kSelectedMask,
+  kRoundedIndexScore,
+  kPrefixOverwrite,
 };
 
 // Each fused kind's sources (in order), outputs and parameters; its
@@ -333,7 +349,8 @@ enum class FusedKind : std::uint16_t {
   kRopeStore,
   // (w_gate, w_up, x): GluParams: glu(w_gate · x, w_up · x), the gate's
   // product the GLU's gate (GGML's ggml_glu_split(gate, up) over its
-  // mul_mat(w_gate, x) and mul_mat(w_up, x); the weights first, as kMatMulAdd's).
+  // mul_mat(w_gate, x) and mul_mat(w_up, x); the weights first, as
+  // kMatMulAdd's).
   kMatMulGlu,
   kMatMulAdd,  // (w, x, b): w · x + b
   // (q [D, R, H, owners], mask [C, >= R, 1, owners], k0, ..., v0, ...):
@@ -515,6 +532,17 @@ std::string OpKeyName(OpKey key);
 // ---------------------------------------------------------------- parameters
 
 inline constexpr std::size_t kMaxParamBytes = 64;
+
+enum class QueryRounding : std::uint8_t { kF16 };
+struct RoundedIndexScoreParams {
+  QueryRounding query = QueryRounding::kF16;
+  std::array<std::uint8_t, 3> reserved{};
+};
+struct PrefixOverwriteParams {
+  std::uint32_t fill_bits = 0;
+};
+static_assert(sizeof(RoundedIndexScoreParams) == 4);
+static_assert(sizeof(PrefixOverwriteParams) == 4);
 
 struct NormParams {
   float eps = 0.0f;
@@ -827,7 +855,8 @@ static_assert(kIsParams<NormParams> && kIsParams<RopeParams> && kIsParams<MaskPa
               kIsParams<GluParams> && kIsParams<ScaleParams> && kIsParams<ClampParams> &&
               kIsParams<FillParams> && kIsParams<SoftcapParams> && kIsParams<SoftMaxParams> &&
               kIsParams<ArgmaxParams> && kIsParams<ArgsortParams> && kIsParams<TopKParams> &&
-              kIsParams<SelectedMaskParams> && kIsParams<ExpertSortParams> &&
+              kIsParams<SelectedMaskParams> && kIsParams<RoundedIndexScoreParams> &&
+              kIsParams<PrefixOverwriteParams> && kIsParams<ExpertSortParams> &&
               kIsParams<RouteParams> && kIsParams<HcParams> && kIsParams<ConcatParams> &&
               kIsParams<PermuteParams> && kIsParams<Conv2dParams> && kIsParams<UpsampleParams> &&
               kIsParams<PoolParams> && kIsParams<SampleParams> && kIsParams<CollectiveParams> &&

@@ -829,6 +829,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case LlmpOp::kVisibleTopK:
             add(Operation::kTopK, kVisibleTopKName, i, {node}, 1);
             break;
+          case LlmpOp::kPrefixOverwrite:
+            add(Operation::kFill, kPrefixOverwriteName, i, {node}, 1);
+            break;
           case LlmpOp::kSelectedMask:
             add(Operation::kFill, kSelectedMaskName, i, {node}, 1);
             break;

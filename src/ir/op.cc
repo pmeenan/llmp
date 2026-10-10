@@ -94,6 +94,10 @@ std::string_view OpName(Op op) {
       return "visible_top_k";
     case Op::kSelectedMask:
       return "selected_mask";
+    case Op::kRoundedIndexScore:
+      return "rounded_index_score";
+    case Op::kPrefixOverwrite:
+      return "prefix_overwrite";
     case Op::kRoute:
       return "route";
     case Op::kExpertReduce:

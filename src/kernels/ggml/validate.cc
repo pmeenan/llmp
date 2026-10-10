@@ -816,18 +816,20 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node) {
     return Rejected("not a bound cont node");
   }
   const ggml_tensor* src = node->src[0];
-  // F32 into F32; or I32 into I32 (the indexer's top-k), which upstream
+  // F32/F16 into the same type; or I32 into I32 (the indexer's top-k), which upstream
   // copies with one cudaMemcpyAsync when both are contiguous (cpy.cu:465-475)
   // and which this implementation takes only then.
   const bool i32 = src->type == GGML_TYPE_I32 && node->type == GGML_TYPE_I32;
-  if ((!IsF32(src) || !IsF32(node)) && !i32) {
-    return Rejected("cont copies F32 into F32, or contiguous I32 into I32");
+  const bool f16 = src->type == GGML_TYPE_F16 && node->type == GGML_TYPE_F16;
+  if ((!IsF32(src) || !IsF32(node)) && !f16 && !i32) {
+    return Rejected("cont copies F32/F16 into the same type, or contiguous I32 into I32");
   }
+  const std::size_t element = ggml_type_size(src->type);
   if (AnyEmpty({node, src}) || !AllSane({node, src})) {
     return Rejected("cont on an empty or unmeasurable tensor");
   }
   if (ggml_nelements(node) != ggml_nelements(src) || !Packed(node) || !ElementStrides(src) ||
-      !Aligned(src, sizeof(float)) || !Aligned(node, sizeof(float))) {
+      !Aligned(src, element) || !Aligned(node, element)) {
     return Rejected("cont into a packed tensor of as many elements, from whole elements");
   }
   if (i32 && (!ggml_is_contiguous(src) || ggml_nbytes(src) != ggml_nbytes(node))) {
@@ -848,7 +850,7 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node) {
     return ContCopy::kMemcpy2d;
   }
   // A source whose rows are transposed columns: upstream's tiled transpose
-  // (cpy.cu:461-463, 480-482; ggml_cpy_scalar_cuda<float, float, true>),
+  // (cpy.cu:461-463, 480-482; ggml_cpy_scalar_cuda<T, T, true>),
   // which asserts that the source is its first three dimensions and writes
   // the packed output; its grid falls back to the scalar kernel past 65,535
   // tiles in y or z, which upstream decides alike. The tile kernel reads
@@ -856,12 +858,12 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node) {
   // whatever nb[0] says (cpy.cu:74-78): only a packed matrix's transpose,
   // nb[0] = ne1 elements, is addressed correctly. Upstream's condition does
   // not test nb[0], so any other source it would tile is refused.
-  if (src->nb[1] == sizeof(float) && src->ne[3] == 1 &&
-      src->nb[2] == static_cast<std::size_t>(src->ne[0] * src->ne[1]) * sizeof(float)) {
+  if (src->nb[1] == element && src->ne[3] == 1 &&
+      src->nb[2] == static_cast<std::size_t>(src->ne[0] * src->ne[1]) * element) {
     if (!ggml_is_contiguous(node) || ggml_nelements(src) != src->ne[0] * src->ne[1] * src->ne[2]) {
       return Rejected("a transposed cont into a non-contiguous tensor");
     }
-    if (src->ne[0] > 1 && src->nb[0] != static_cast<std::size_t>(src->ne[1]) * sizeof(float)) {
+    if (src->ne[0] > 1 && src->nb[0] != static_cast<std::size_t>(src->ne[1]) * element) {
       return Rejected("a transposed cont of anything but a packed matrix's transpose");
     }
     return ContCopy::kTranspose;

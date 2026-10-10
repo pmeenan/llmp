@@ -286,6 +286,16 @@ TensorId Builder::IndexScore(TensorId q, TensorId k, TensorId w, TensorId mask) 
   return One(Primitive(Op::kIndexScore), ParamBytes{}, std::array{q, k, w});
 }
 
+TensorId Builder::RoundedIndexScore(TensorId q, TensorId k, TensorId w, TensorId counts,
+                                    const RoundedIndexScoreParams& params) {
+  return One(Primitive(Op::kRoundedIndexScore), B(params), std::array{q, k, w, counts});
+}
+
+TensorId Builder::PrefixOverwrite(TensorId values, TensorId counts,
+                                  const PrefixOverwriteParams& params) {
+  return One(Primitive(Op::kPrefixOverwrite), B(params), std::array{values, counts});
+}
+
 TensorId Builder::Pool(TensorId x, TensorId scores, const PoolParams& params) {
   if (scores.valid()) {
     return One(Primitive(Op::kPool), B(params), std::array{x, scores});

@@ -1056,6 +1056,57 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
       }
       return {};
     }
+    case Op::kRoundedIndexScore: {
+      LLMP_LOAD(source_q, node.src[0]);
+      Vec q = source_q;
+      LLMP_LOAD(k, node.src[1]);
+      LLMP_LOAD(w, node.src[2]);
+      const auto counts = LoadInts(node.src[3]);
+      if (!counts) return std::unexpected(counts.error());
+      const Ne& qn = ne(0);
+      const Ne& kn = ne(1);
+      const Ne& wn = ne(2);
+      Vec result(Count(out_ne()), -std::numeric_limits<double>::infinity());
+      // Independent wider formula, not the graph decomposition or a model of
+      // one device's MMA schedule. Half rounding is an explicit input rule.
+      for (double& value : q) value = F16ToF32(F32ToF16(static_cast<float>(value)));
+      for (std::uint64_t row = 0; row < qn[2]; ++row) {
+        const auto visible = static_cast<std::uint64_t>(
+            std::clamp((*counts)[row], std::int64_t{0}, static_cast<std::int64_t>(kn[2])));
+        for (std::uint64_t cell = 0; cell < visible; ++cell) {
+          double score = 0;
+          for (std::uint64_t head = 0; head < qn[1]; ++head) {
+            double dot = 0;
+            for (std::uint64_t channel = 0; channel < qn[0]; ++channel)
+              dot += q[Ix(qn, channel, head, row, 0)] * k[Ix(kn, channel, 0, cell, 0)];
+            score += (dot > 0 ? dot : 0.0) * w[Ix(wn, head, row, 0, 0)];
+          }
+          result[row * kn[2] + cell] = score;
+        }
+      }
+      return Store(out, result);
+    }
+    case Op::kPrefixOverwrite: {
+      const auto counts = LoadInts(node.src[1]);
+      if (!counts) return std::unexpected(counts.error());
+      const auto p = node.Params<ir::PrefixOverwriteParams>();
+      const TensorDesc& values = graph().tensor(node.src[0]);
+      const TensorDesc& dest = graph().tensor(out);
+      const auto& source = RootOf(node.src[0]).parts[0];
+      auto& target = RootOf(out).parts[0];
+      for (std::uint64_t row = 0; row < values.ne(1); ++row) {
+        const auto visible = static_cast<std::uint64_t>(
+            std::clamp((*counts)[row], std::int64_t{0}, static_cast<std::int64_t>(values.ne(0))));
+        for (std::uint64_t cell = 0; cell < values.ne(0); ++cell) {
+          const auto bits = cell < visible
+                                ? Raw<std::uint32_t>(source.data() + values.view_offset +
+                                                     row * values.nb[1] + cell * values.nb[0])
+                                : p.fill_bits;
+          Put(target.data() + dest.view_offset + row * dest.nb[1] + cell * dest.nb[0], bits);
+        }
+      }
+      return {};
+    }
     case Op::kIndexScore: {
       LLMP_LOAD(q, node.src[0]);
       LLMP_LOAD(k, node.src[1]);

@@ -1668,6 +1668,27 @@ each is checked against the design as M3.6 proceeds.
                                     expose one native score producer and prove
                                     exact unfused/fused/legacy execution before
                                     opting in the component recipe.
+                                    - [x] **G4b2b2b1 — typed score and fallback:**
+                                          define half-rounded query scoring
+                                          with an independent wider reference;
+                                          overwrite invisible scores with a
+                                          literal value and fund both query
+                                          conversions in the portable path.
+                                          Native specialized score remains
+                                          absent; existing component/default
+                                          semantics are unchanged.
+                                    - [ ] **G4b2b2b2 — native score producer:**
+                                          share the actual Lid score kernel and
+                                          its launch grouping with standalone
+                                          scoring; fund defined tails, prove
+                                          launch/backing guards and exact
+                                          original-helper operand execution.
+                                    - [ ] **G4b2b2b3 — component and fusion:**
+                                          add the opt-in component recipe and
+                                          full-mask fusion with observer/owner
+                                          guards; enforce separate execution
+                                          compatibility on kept/adopt/restore
+                                          paths and prove exact native controls.
                   - [ ] **G4b2c — full policy:** output-A and product forms,
                         mixed encodings, default policy, whole-artifact GPU
                         parity and row-invariant verify.

@@ -370,6 +370,7 @@ inline constexpr std::string_view kDsv4HcPreName = "llmp.dsv4.hc_pre";
 inline constexpr std::string_view kDsv4CompressName = "llmp.dsv4.compress";
 inline constexpr std::string_view kVisibleTopKName = "llmp.visible_top_k";
 inline constexpr std::string_view kSelectedMaskName = "llmp.selected_mask";
+inline constexpr std::string_view kPrefixOverwriteName = "llmp.prefix_overwrite";
 inline constexpr std::string_view kDsv4LidTopKName = "llmp.dsv4.lid_topk";
 inline constexpr std::string_view kDsv4SparseMaskName = "llmp.dsv4.sparse_mask";
 // A speculative verify's row-invariant products (D-092; ops_ext.h).

@@ -28,6 +28,7 @@
 #include "components/step.h"
 #include "execution/registry.h"
 #include "ir/builder.h"
+#include "kernels/ggml/cublas.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/executor.h"
@@ -35,7 +36,9 @@
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
+#include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
 #include "planner/pattern.h"
 #include "planner/plan.h"
@@ -105,8 +108,11 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
     if (!Finish()) {
       std::ignore = new decltype(graphs)(std::move(graphs));
       std::ignore = new decltype(lowered)(std::move(lowered));
+      // Pending copies borrow these bytes just as launches borrow device roots.
+      std::ignore = new decltype(staged_values)(std::move(staged_values));
       std::ignore = new decltype(arenas)(std::move(arenas));
       std::ignore = launch.release();
+      std::ignore = cublas.release();
       std::ignore = execution.release();
       return;
     }
@@ -114,6 +120,7 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
     lowered.clear();
     arenas.clear();
     launch.reset();
+    cublas.reset();
     if (execution && stream_ready) EXPECT_TRUE(execution->DestroyStream(stream));
     for (void* p : allocations) EXPECT_EQ(cudaFree(p), cudaSuccess);
   }
@@ -134,25 +141,35 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
     kg::TensorArena::Bind(t, Allocate(ggml_nbytes(t)));
     return t;
   }
+  // Pageable H2D cudaMemcpy may return before DMA completes on the default
+  // stream. All fixture writes use the launch stream and explicit retirement;
+  // staged_values owns their host bytes even on an unknown-completion path.
+  void CopyToInput(ggml_tensor* t, const std::vector<std::byte>& bytes) {
+    auto native = execution->Submission(stream);
+    ASSERT_TRUE(native) << (native ? "" : native.error().detail);
+    const auto copied = cudaMemcpyAsync(t->data, bytes.data(), bytes.size(), cudaMemcpyHostToDevice,
+                                        static_cast<cudaStream_t>(native->handle));
+    if (copied != cudaSuccess) retirement_failed = true;
+    ASSERT_EQ(copied, cudaSuccess);
+  }
   template <class T>
   void Upload(ggml_tensor* t, const std::vector<T>& values) {
     ASSERT_EQ(ggml_nbytes(t), values.size() * sizeof(T));
-    const auto copied = cudaMemcpy(t->data, values.data(), ggml_nbytes(t), cudaMemcpyHostToDevice);
-    if (copied != cudaSuccess) retirement_failed = true;
-    ASSERT_EQ(copied, cudaSuccess);
+    ASSERT_TRUE(Finish());  // retire every previous borrower before changing its bytes
     auto& saved = staged_values[t];
     saved.resize(ggml_nbytes(t));
     std::memcpy(saved.data(), values.data(), saved.size());
+    CopyToInput(t, saved);
+    ASSERT_TRUE(Finish());
   }
   void Restage(const kg::LoweredStep& step) {
     for (const auto& leaf : step.leaves) {
       const auto at = staged_values.find(leaf.tensor);
       if (at == staged_values.end()) continue;
-      const auto copied = cudaMemcpy(leaf.tensor->data, at->second.data(), at->second.size(),
-                                     cudaMemcpyHostToDevice);
-      if (copied != cudaSuccess) retirement_failed = true;
-      ASSERT_EQ(copied, cudaSuccess);
+      CopyToInput(leaf.tensor, at->second);
+      if (::testing::Test::HasFatalFailure()) return;
     }
+    ASSERT_TRUE(Finish());
   }
   // Logical F32 values, including the legacy HC tails' per-token pitch.
   std::vector<float> Read(const ggml_tensor* t) {
@@ -287,6 +304,7 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
   std::unique_ptr<llmp::providers::DeviceExecution> execution;
   llmp::providers::StreamId stream{};
   bool stream_ready = false, retirement_failed = false;
+  std::unique_ptr<kg::CublasHandle> cublas;
   std::unique_ptr<kg::LaunchContext> launch;
   std::optional<ex::Registry> registry;
   std::vector<void*> allocations;
@@ -871,6 +889,236 @@ std::vector<std::int32_t> VisibleIds(const std::vector<float>& scores, std::int3
   std::ranges::sort(ids);
   ids.resize(top, -1);
   return ids;
+}
+
+TEST_F(GgmlLowerDsv4Gpu, ContF16PreservesBitsAcrossCopyPathsAndSameCapture) {
+  constexpr std::array<std::uint16_t, 10> bits{0x7d01, 0xfd35, 0x8000, 0,      1,
+                                               0x83ff, 0x7c00, 0xfc00, 0x3c00, 0xbc00};
+  struct Case {
+    std::size_t first, row;
+    bool transpose;
+    kg::ContCopy copy;
+  };
+  const std::array cases{
+      Case{2, 16, false, kg::ContCopy::kMemcpy}, Case{2, 40, false, kg::ContCopy::kMemcpy2d},
+      Case{0, 0, false, kg::ContCopy::kScalar},  Case{0, 40, false, kg::ContCopy::kScalar},
+      Case{4, 0, false, kg::ContCopy::kScalar},  Case{4, 6, false, kg::ContCopy::kScalar},
+      Case{4, 40, false, kg::ContCopy::kScalar}, Case{2, 16, true, kg::ContCopy::kTranspose}};
+  for (const auto& test : cases) {
+    auto* c = Context();
+    auto* root = Place(ggml_new_tensor_2d(c, GGML_TYPE_F16, 20, 3));
+    auto* values = ggml_view_2d(c, root, 8, 3, test.row, 2);
+    values->nb[0] = test.first;
+    if (test.transpose) values = ggml_transpose(c, values);
+    kg::TensorArena::Bind(values, reinterpret_cast<std::uintptr_t>(root->data) + 2);
+    auto* output = Place(ggml_cont(c, values));
+    const auto copy = kg::CheckCont(output);
+    ASSERT_TRUE(copy) << copy.error().detail;
+    EXPECT_EQ(*copy, test.copy);
+    std::optional<std::size_t> captured;
+    for (std::size_t revision = 0; revision < 3; ++revision) {
+      std::vector<std::uint16_t> source(60), expected;
+      for (std::size_t i = 0; i < source.size(); ++i)
+        source[i] = bits[(i + revision) % bits.size()];
+      for (std::int64_t row = 0; row < values->ne[1]; ++row)
+        for (std::int64_t cell = 0; cell < values->ne[0]; ++cell)
+          expected.push_back(source[1 + static_cast<std::size_t>(row) * values->nb[1] / 2 +
+                                    static_cast<std::size_t>(cell) * values->nb[0] / 2]);
+      Upload(root, source);
+      ASSERT_TRUE(kg::Cont(*launch, output));
+      EXPECT_EQ(ReadTyped<std::uint16_t>(output), expected);
+      if (!captured) {
+        auto graph = launch->Capture([&](kg::LaunchContext& l) { return kg::Cont(l, output); });
+        ASSERT_TRUE(graph);
+        graphs.push_back(std::move(*graph));
+        captured = graphs.size() - 1;
+      }
+      ASSERT_TRUE(launch->Launch(graphs[*captured]));
+      EXPECT_EQ(ReadTyped<std::uint16_t>(output), expected);
+    }
+  }
+}
+
+TEST_F(GgmlLowerDsv4Gpu, PrefixOverwriteCopiesBitsAcrossPitchedRepeatedViewsAndSameCapture) {
+  constexpr std::array<std::uint32_t, 10> bits{0x7fa00001, 0xffa12345, 0x80000000, 0,
+                                               1,          0x807fffff, 0x7f800000, 0xff800000,
+                                               0x3f800000, 0xbf800000};
+  constexpr std::int64_t cells = 17, rows = 3, pitch = 40;
+  for (const std::uint64_t cell_stride : {0U, 8U})
+    for (const std::uint64_t row_stride : std::array<std::uint64_t, 2>{0, pitch * 4})
+      for (const std::uint64_t count_stride : {0U, 8U})
+        for (const std::uint32_t fill : {0xff800000U, 0x80000000U, 0x7fa12345U}) {
+          SCOPED_TRACE(::testing::PrintToString(
+              std::make_tuple(cell_stride, row_stride, count_stride, fill)));
+          auto* c = Context();
+          auto* root = Place(ggml_new_tensor_2d(c, GGML_TYPE_F32, pitch, rows));
+          auto* values = ggml_view_2d(c, root, cells, rows, row_stride, 4);
+          values->nb[0] = cell_stride;
+          kg::TensorArena::Bind(values, reinterpret_cast<std::uintptr_t>(root->data) + 4);
+          auto* count_root = Place(ggml_new_tensor_1d(c, GGML_TYPE_I32, rows * 2 + 1));
+          auto* counts = ggml_view_1d(c, count_root, rows, 4);
+          counts->nb[0] = count_stride;
+          kg::TensorArena::Bind(counts, reinterpret_cast<std::uintptr_t>(count_root->data) + 4);
+          auto* output = Place(kg::PrefixOverwrite(c, values, counts, fill));
+          ASSERT_TRUE(kg::CheckPrefixOverwrite(output));
+          std::optional<std::size_t> captured;
+          for (std::size_t revision = 0; revision < 4; ++revision) {
+            SCOPED_TRACE(revision);
+            std::vector<std::uint32_t> source(pitch * rows);
+            for (std::size_t i = 0; i < source.size(); ++i)
+              source[i] = bits[(i + revision) % bits.size()];
+            const std::array<std::int32_t, 4> limits{INT32_MIN, 0, 8, INT32_MAX};
+            std::vector<std::int32_t> visible(rows * 2 + 1, -99);
+            for (std::size_t row = 0; row < rows; ++row)
+              visible[1 + 2 * row] = limits[(row + revision) % limits.size()];
+            std::vector<std::uint32_t> expected;
+            for (std::uint64_t row = 0; row < rows; ++row)
+              for (std::uint64_t cell = 0; cell < cells; ++cell)
+                expected.push_back(static_cast<std::int64_t>(cell) <
+                                           visible[1 + row * count_stride / 4]
+                                       ? source[1 + row * row_stride / 4 + cell * cell_stride / 4]
+                                       : fill);
+            Upload(root, source);
+            Upload(count_root, visible);
+            ASSERT_TRUE(kg::RunPrefixOverwrite(*launch, output));
+            EXPECT_EQ(ReadTyped<std::uint32_t>(output), expected);
+            if (!captured) {
+              auto graph = launch->Capture(
+                  [&](kg::LaunchContext& l) { return kg::RunPrefixOverwrite(l, output); });
+              ASSERT_TRUE(graph);
+              graphs.push_back(std::move(*graph));
+              captured = graphs.size() - 1;
+            }
+            ASSERT_TRUE(launch->Launch(graphs[*captured]));
+            EXPECT_EQ(ReadTyped<std::uint32_t>(output), expected);
+          }
+        }
+}
+
+TEST_F(GgmlLowerDsv4Gpu, RoundedIndexScoreExecutesPortableFallbackWithLiteralNonfiniteTails) {
+  // The primitive matrix product borrows an explicitly owned cuBLAS handle.
+  // It outlives this context and all graphs, and retires before the stream.
+  ASSERT_TRUE(Finish());
+  const auto workspace = launch->workspace();
+  int major = 0, minor = 0;
+  ASSERT_EQ(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0), cudaSuccess);
+  ASSERT_EQ(cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, 0), cudaSuccess);
+  const auto blas_bytes = kg::CublasHandle::UpstreamWorkspace(100 * major + 10 * minor);
+  auto handle = kg::CublasHandle::Create(
+      0, *execution, stream, {.base = Allocate(blas_bytes.value()), .size = blas_bytes});
+  ASSERT_TRUE(handle) << handle.error().detail;
+  cublas = std::move(*handle);
+  launch.reset();
+  auto context = kg::LaunchContext::Create(0, *execution, stream, workspace, cublas.get());
+  ASSERT_TRUE(context) << context.error().detail;
+  launch = std::move(*context);
+  for (const bool pitched : {false, true}) {
+    SCOPED_TRACE(pitched);
+    ir::Builder b;
+    const std::uint64_t query_pitch = pitched ? 130 : 128;
+    const std::uint64_t key_pitch = pitched ? 130 : 128;
+    const std::uint64_t weight_pitch = pitched ? 66 : 64;
+    const std::uint64_t offset = pitched ? 1 : 0;
+    const auto q_root = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({query_pitch, 64, 3})));
+    const auto k_root = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({key_pitch, 1, 4})));
+    const auto w_root = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({weight_pitch, 3})));
+    const auto q =
+        b.View(q_root, ir::ShapeOf({128, 64, 3}),
+               {4, query_pitch * 4, query_pitch * 64 * 4, query_pitch * 64 * 3 * 4}, offset * 4);
+    const auto k = b.View(k_root, ir::ShapeOf({128, 1, 4}),
+                          {2, key_pitch * 2, key_pitch * 2, key_pitch * 4 * 2}, offset * 2);
+    const auto w =
+        b.View(w_root, ir::ShapeOf({64, 3}),
+               {4, weight_pitch * 4, weight_pitch * 3 * 4, weight_pitch * 3 * 4}, offset * 4);
+    const auto counts = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+    const auto scores = b.RoundedIndexScore(q, k, w, counts);
+    const auto ids = b.VisibleTopK(scores, counts, 2);
+    const auto mask = b.SelectedMask(b.Fill(ir::ShapeOf({2, 3}), 0, Encoding::kF16), ids,
+                                     {.raw_cells = 3, .cells = 4});
+    for (const auto output : {scores, ids, mask}) b.Output(output);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
+    std::vector<co::StepInput> inputs;
+    for (const auto input : {q_root, k_root, w_root, counts})
+      inputs.push_back({.tensor = input, .kind = co::InputKind::kFeatures});
+    const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 3}}};
+    auto* step = Lower(std::move(*graph), std::move(inputs), shape);
+    ASSERT_NE(step, nullptr);
+    int prefixes = 0, conversions = 0;
+    for (const auto* node : step->nodes) {
+      EXPECT_NE(kg::LlmpOpOf(node), kg::LlmpOp::kDsv4LidTopK);
+      EXPECT_NE(node->op, GGML_OP_LIGHTNING_INDEXER);
+      prefixes += kg::LlmpOpOf(node) == kg::LlmpOp::kPrefixOverwrite;
+      conversions += node->op == GGML_OP_CPY;
+    }
+    EXPECT_EQ(prefixes, 1);
+    EXPECT_EQ(conversions, 2);
+    auto bound = kg::BoundGraph::Bind(*registry, step->plan);
+    ASSERT_TRUE(bound) << bound.error().detail;
+    std::optional<std::size_t> captured;
+    const float inf = std::numeric_limits<float>::infinity();
+    for (std::size_t revision = 0; revision < 3; ++revision) {
+      std::vector<float> query(query_pitch * 64 * 3, 0), weights(weight_pitch * 3, 0);
+      std::vector<std::uint16_t> keys(key_pitch * 4, 0);
+      keys[offset] = 0x3c00;
+      keys[offset + key_pitch] = 0xbc00;
+      keys[offset + key_pitch * 2] = 0x7c00;
+      keys[offset + key_pitch * 3] = 0x7e01;
+      for (std::size_t row = 0; row < 3; ++row) {
+        query[offset + row * query_pitch * 64] = revision == 0 ? 1.0002F : 2.0002F;
+        weights[offset + row * weight_pitch] =
+            revision == 2 ? std::numeric_limits<float>::quiet_NaN() : 2.0F;
+      }
+      const std::vector<std::int32_t> visible = revision == 0
+                                                    ? std::vector<std::int32_t>{1, INT32_MAX, -1}
+                                                    : std::vector<std::int32_t>{4, 2, 0};
+      Upload(Leaf(*step, q_root), query);
+      Upload(Leaf(*step, k_root), keys);
+      Upload(Leaf(*step, w_root), weights);
+      Upload(Leaf(*step, counts), visible);
+      std::vector<float> expected(12, -inf);
+      std::vector<std::int32_t> expected_ids;
+      std::vector<std::uint16_t> expected_mask(21, 0xfc00);
+      for (std::size_t row = 0; row < 3; ++row) {
+        const std::vector<float> logical =
+            revision == 2 ? std::vector<float>(4, std::numeric_limits<float>::quiet_NaN())
+                          : std::vector<float>{revision == 0 ? 2.0F : 4.0F, 0, inf, 0};
+        for (std::size_t cell = 0; cell < 4; ++cell)
+          if (static_cast<std::int64_t>(cell) < visible[row])
+            expected[row * 4 + cell] = logical[cell];
+        const auto selected = VisibleIds(logical, visible[row], 2);
+        expected_ids.insert(expected_ids.end(), selected.begin(), selected.end());
+        expected_mask[row * 7] = expected_mask[row * 7 + 1] = 0;
+        for (const auto id : selected)
+          if (id >= 0) expected_mask[row * 7 + 3 + static_cast<std::size_t>(id)] = 0;
+      }
+      const auto check = [&] {
+        const auto got = Read(step->keep[0]);
+        ASSERT_EQ(got.size(), expected.size());
+        for (std::size_t i = 0; i < got.size(); ++i) {
+          if (std::isnan(expected[i]))
+            EXPECT_TRUE(std::isnan(got[i])) << i;
+          else
+            EXPECT_EQ(got[i], expected[i]) << i;
+        }
+        EXPECT_EQ(ReadTyped<std::int32_t>(step->keep[1]), expected_ids);
+        EXPECT_EQ(ReadTyped<std::uint16_t>(step->keep[2]), expected_mask);
+      };
+      Restage(*step);
+      const auto ran = bound->Run(*launch);
+      ASSERT_TRUE(ran) << ran.error().detail;
+      check();
+      if (!captured) {
+        auto capture = launch->Capture([&](kg::LaunchContext& l) { return bound->Run(l); });
+        ASSERT_TRUE(capture) << capture.error().detail;
+        graphs.push_back(std::move(*capture));
+        captured = graphs.size() - 1;
+      }
+      Restage(*step);
+      ASSERT_TRUE(launch->Launch(graphs[*captured]));
+      check();
+    }
+  }
 }
 
 TEST_F(GgmlLowerDsv4Gpu, VisibleTopKAndSelectedMaskMatchArbitraryBitsAcrossPersistentReplay) {

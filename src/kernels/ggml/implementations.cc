@@ -110,7 +110,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
 
-constexpr std::array<Kernel::Entry, 133> kKernels = {{
+constexpr std::array<Kernel::Entry, 134> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -298,8 +298,8 @@ constexpr std::array<Kernel::Entry, 133> kKernels = {{
     {.name = "ggml.cont",
      .operation = execution::Operation::kCont,
      .variant = "ggml_cuda_dup: cudaMemcpyAsync if contiguous, cudaMemcpy2DAsync for a pitched "
-                "block, else cpy_scalar<cpy_1_scalar<float, float>>; no tiled transpose; upstream "
-                "launch configuration",
+                "block, else same-type F32/F16 scalar or guarded tiled transpose; contiguous I32 "
+                "only; upstream launch configuration",
      .arity = 1,
      .check = [](ConstNodes n) -> std::expected<void, KernelFailure> {
        if (auto checked = CheckCont(n[0]); !checked) {
@@ -1024,6 +1024,12 @@ constexpr std::array<Kernel::Entry, 133> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckVisibleTopK(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunVisibleTopK(launch, n[0]); }},
+    {.name = "llmp.prefix_overwrite",
+     .operation = execution::Operation::kFill,
+     .variant = "exact integer bit-copy within clamped row prefix and literal fill outside",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckPrefixOverwrite(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunPrefixOverwrite(launch, n[0]); }},
     {.name = "llmp.selected_mask",
      .operation = execution::Operation::kFill,
      .variant = "duplicate-safe shared bitset and one writer per output half",

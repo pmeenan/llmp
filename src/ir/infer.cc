@@ -427,6 +427,10 @@ std::size_t ParamSize(OpKey key) {
       return sizeof(TopKParams);
     case Op::kSelectedMask:
       return sizeof(SelectedMaskParams);
+    case Op::kRoundedIndexScore:
+      return sizeof(RoundedIndexScoreParams);
+    case Op::kPrefixOverwrite:
+      return sizeof(PrefixOverwriteParams);
     case Op::kRoute:
       return sizeof(RouteParams);
     case Op::kHcPre:
@@ -883,6 +887,34 @@ Out InferPrimitive(const Ctx& c) {
                     std::format("rows {} into {} at {}", Text(src.shape()), Text(cache.shape()),
                                 Text(idx.shape()))));
       return One(ViewOf(c, 0, cache.format, cache.nb, cache.view_offset), false);
+    }
+    case Op::kRoundedIndexScore: {
+      LLMP_TRY(Arity(c, 4, 4));
+      const auto p = c.params<RoundedIndexScoreParams>();
+      LLMP_TRY(Zero(c, 1, 3));
+      if (p.query != QueryRounding::kF16) return Fail(GraphError::kParams, c, "F16 query rounding");
+      const TensorDesc& q = *c.src(0);
+      const TensorDesc& k = *c.src(1);
+      const TensorDesc& w = *c.src(2);
+      const TensorDesc& counts = *c.src(3);
+      LLMP_TRY(Want(q.format.encoding == Encoding::kF32 && q.ne(0) == 128 && q.ne(1) == 64 &&
+                        q.ne(3) == 1 && k.format.encoding == Encoding::kF16 && k.ne(0) == 128 &&
+                        k.ne(1) == 1 && k.ne(2) <= INT32_MAX && k.ne(3) == 1 &&
+                        w.format.encoding == Encoding::kF32 && w.shape().ne == S(64, q.ne(2)).ne &&
+                        counts.format.encoding == Encoding::kI32 &&
+                        counts.shape().ne == S(q.ne(2)).ne,
+                    c, "Q F32 [128,64,T], K F16 [128,1,C], W F32 [64,T], counts I32 [T]"));
+      return One(Fresh(S(k.ne(2), q.ne(2)), Encoding::kF32), false);
+    }
+    case Op::kPrefixOverwrite: {
+      LLMP_TRY(Arity(c, 2, 2));
+      const TensorDesc& x = *c.src(0);
+      const TensorDesc& counts = *c.src(1);
+      LLMP_TRY(Want(x.format.encoding == Encoding::kF32 && x.ne(0) <= INT32_MAX && x.ne(2) == 1 &&
+                        x.ne(3) == 1 && counts.format.encoding == Encoding::kI32 &&
+                        counts.shape().ne == S(x.ne(1)).ne,
+                    c, "F32 [C,T] values and I32 [T] counts, C representable as I32"));
+      return One(Fresh(x.shape(), Encoding::kF32), false);
     }
     case Op::kIndexScore: {
       LLMP_TRY(Arity(c, 3, 4));

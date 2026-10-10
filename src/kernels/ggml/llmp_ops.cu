@@ -26,6 +26,22 @@
 namespace llmp::kernels::ggml {
 namespace {
 
+// Integer loads and stores preserve every F32 bit, including signaling NaNs.
+// Every output has one writer; repeated source views need no special case.
+__global__ void PrefixOverwriteKernel(const std::uint32_t* values, const std::int32_t* counts,
+                                      std::uint32_t* out, std::int64_t elements, int cells,
+                                      std::uint64_t cell_stride, std::uint64_t row_stride,
+                                      std::uint64_t count_stride, std::uint32_t fill_bits) {
+  const std::int64_t index = std::int64_t{blockIdx.x} * blockDim.x + threadIdx.x;
+  if (index >= elements) return;
+  const auto row = static_cast<std::uint64_t>(index / cells);
+  const int cell = static_cast<int>(index % cells);
+  const int visible = min(max(counts[row * count_stride], 0), cells);
+  out[index] = cell < visible
+                   ? values[row * row_stride + static_cast<std::uint64_t>(cell) * cell_stride]
+                   : fill_bits;
+}
+
 // The entire padded output is initialized. Position data is fresh at replay;
 // invalid positions produce -inf rather than being cast to a large index.
 template <typename Bits>
@@ -1005,6 +1021,22 @@ std::expected<void, KernelFailure> RunMxfp8Gemm(LaunchContext& launch, ggml_tens
         .detail = std::format("CUTLASS refused the MXFP8 product (status {})", status - 1)});
   }
   return {};
+}
+
+std::expected<void, KernelFailure> RunPrefixOverwrite(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckPrefixOverwrite(node); !checked) return checked;
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const auto elements = ggml_nelements(node);
+    constexpr int threads = 256;
+    const ggml_tensor* values = node->src[0];
+    const ggml_tensor* counts = node->src[1];
+    PrefixOverwriteKernel<<<static_cast<unsigned>((elements + threads - 1) / threads), threads, 0,
+                            context.stream()>>>(
+        static_cast<const std::uint32_t*>(values->data),
+        static_cast<const std::int32_t*>(counts->data), static_cast<std::uint32_t*>(node->data),
+        elements, static_cast<int>(node->ne[0]), values->nb[0] / 4, values->nb[1] / 4,
+        counts->nb[0] / 4, static_cast<std::uint32_t>(LlmpOpInt(node, 0)));
+  });
 }
 
 std::expected<void, KernelFailure> RunGemma4Mask(LaunchContext& launch, ggml_tensor* node) {

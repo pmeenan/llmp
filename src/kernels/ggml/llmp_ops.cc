@@ -111,6 +111,7 @@ constinit std::array kTagGdnStep = std::to_array("llmp.gdn.step");
 constinit std::array kTagGdnGates = std::to_array("llmp.gdn.gates");
 constinit std::array kTagVisibleTopK = std::to_array("llmp.visible_top_k");
 constinit std::array kTagSelectedMask = std::to_array("llmp.selected_mask");
+constinit std::array kTagPrefixOverwrite = std::to_array("llmp.prefix_overwrite");
 constinit std::array kTagDsv4LidTopK = std::to_array("llmp.dsv4.lid_topk");
 constinit std::array kTagGemma4Mask = std::to_array("llmp.gemma4.mask");
 constinit std::array kTagFlashAttnOwners = std::to_array("llmp.flash_attn.owner_roots");
@@ -203,7 +204,7 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return LlmpOp::kArgmax;
   }
-  const std::array<std::pair<const char*, LlmpOp>, 49> fused = {{
+  const std::array<std::pair<const char*, LlmpOp>, 50> fused = {{
       {kTagDsv4F16Copy.data(), LlmpOp::kDsv4F16Copy},
       {kTagDsv4HcNormF16.data(), LlmpOp::kDsv4HcNormF16},
       {kTagDsv4WeightedReduce.data(), LlmpOp::kDsv4WeightedReduce},
@@ -213,6 +214,7 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
       {kTagGdnGates.data(), LlmpOp::kGdnGates},
       {kTagVisibleTopK.data(), LlmpOp::kVisibleTopK},
       {kTagSelectedMask.data(), LlmpOp::kSelectedMask},
+      {kTagPrefixOverwrite.data(), LlmpOp::kPrefixOverwrite},
       {kTagDsv4LidTopK.data(), LlmpOp::kDsv4LidTopK},
       {kTagDsv4SparseMask.data(), LlmpOp::kDsv4SparseMask},
       {kTagGemma4Mask.data(), LlmpOp::kGemma4Mask},
@@ -2598,6 +2600,35 @@ std::expected<void, KernelFailure> CheckDsv4SparseMask(const ggml_tensor* node) 
       return Rejected("an output overlapping an operand");
     }
   }
+  return {};
+}
+
+ggml_tensor* PrefixOverwrite(ggml_context* context, ggml_tensor* values, ggml_tensor* counts,
+                             std::uint32_t fill_bits) {
+  ggml_tensor* node = Custom(context, GGML_TYPE_F32, {values->ne[0], values->ne[1], 1, 1},
+                             {values, counts}, kTagPrefixOverwrite.data());
+  // This slot is a raw F32 representation, not a nonnegative dimension.
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, &fill_bits, sizeof(fill_bits));
+  return node;
+}
+
+std::expected<void, KernelFailure> CheckPrefixOverwrite(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kPrefixOverwrite, 2); !checked) return checked;
+  const ggml_tensor* values = node->src[0];
+  const ggml_tensor* counts = node->src[1];
+  if (AnyEmpty({node, values, counts}) || !AllSane({node, values, counts}) ||
+      !AllCurrent({node, values, counts}))
+    return Rejected("empty, unmeasurable or stale prefix overwrite");
+  const auto cells = values->ne[0];
+  const auto rows = values->ne[1];
+  if (!IsF32(values) || !Shaped(values, cells, rows, 1) || counts->type != GGML_TYPE_I32 ||
+      !Shaped(counts, rows, 1, 1) || !IsF32(node) || !Packed(node) ||
+      !Shaped(node, cells, rows, 1) || cells > INT32_MAX ||
+      rows > std::int64_t{INT32_MAX} / cells || !Aligned(values, 4) || values->nb[0] % 4 ||
+      values->nb[1] % 4 || !Aligned(counts, 4) || counts->nb[0] % 4 || !Aligned(node, 4))
+    return Rejected("F32 [C,T], I32 [T] into packed F32 [C,T], bounded I32 elements");
+  if (!Disjoint(node, values, false) || !Disjoint(node, counts, false))
+    return Rejected("a prefix overwrite output overlapping an operand");
   return {};
 }
 

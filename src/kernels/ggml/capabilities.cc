@@ -101,6 +101,10 @@ constexpr std::array<Rule, 3> kVisibleTopKRules = {
     {{.operand = 0, .encodings = kF32, .layouts = kDense},
      {.operand = 1, .encodings = kI32, .layouts = kDense},
      {.operand = ex::kOutputOperand, .encodings = kI32, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kPrefixOverwriteRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kI32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
 constexpr std::array<Rule, 3> kSelectedMaskRules = {
     {{.operand = 0, .encodings = kF16, .layouts = kDense},
      {.operand = 1, .encodings = kI32, .layouts = kDense},
@@ -627,6 +631,39 @@ bool AcceptsTopK(const ex::CapabilityQuery& q) {
          x->ne[1] != 0 && x->ne[2] != 0 && x->ne[3] != 0 && x->ne[1] <= max / x->ne[2] / x->ne[3];
 }
 
+bool AcceptsCont(const ex::CapabilityQuery& q) {
+  const auto* input = Operand(q, 0);
+  const auto* output = Operand(q, ex::kOutputOperand);
+  if (!Built(q) || !input || !output || input->encoding != output->encoding ||
+      (input->encoding != Encoding::kF32 && input->encoding != Encoding::kF16 &&
+       input->encoding != Encoding::kI32) ||
+      input->layout != Layout::kDense || output->layout != Layout::kDense)
+    return false;
+  // CheckCont's upstream 64-thread scalar grid bound. Strides/addresses are
+  // validated at launch; operand format metadata contains neither.
+  constexpr auto max = static_cast<std::uint64_t>(INT32_MAX) * 64 - 1;
+  const auto elements = [](const ex::OperandFormat& value) {
+    std::uint64_t n = 1;
+    for (const auto dim : value.ne) {
+      if (!dim || dim > max / n) return std::uint64_t{0};
+      n *= dim;
+    }
+    return n;
+  };
+  const auto count = elements(*input);
+  return count != 0 && count == elements(*output);
+}
+
+bool AcceptsPrefixOverwrite(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::PrefixOverwriteParams>(q);
+  const auto* values = Operand(q, 0);
+  const auto* counts = Operand(q, 1);
+  constexpr auto max = static_cast<std::uint64_t>(INT32_MAX);
+  return Built(q) && p && values && counts && values->ne[0] > 0 && values->ne[0] <= max &&
+         values->ne[1] > 0 && values->ne[1] <= max / values->ne[0] && values->ne[2] == 1 &&
+         values->ne[3] == 1 && counts->ne == std::array<std::uint64_t, 4>{values->ne[1], 1, 1, 1};
+}
+
 bool AcceptsVisibleTopK(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::TopKParams>(q);
   const auto* scores = Operand(q, 0);
@@ -1008,7 +1045,7 @@ const std::array kEntries = {
     Entry{"ggml.fill", Operation::kFill, Cap(P(Op::kFill), {}, &AcceptsAny, true), kBuilt},
     Entry{"ggml.repeat", Operation::kRepeat, Cap(P(Op::kRepeat), {}, &AcceptsAny, true), kBuilt},
     Entry{"ggml.concat", Operation::kConcat, Cap(P(Op::kConcat), {}, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.cont", Operation::kCont, Cap(P(Op::kCont), {}, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.cont", Operation::kCont, Cap(P(Op::kCont), {}, &AcceptsCont, true), kBuilt},
     Entry{"ggml.sum_rows", Operation::kSumRows, Cap(P(Op::kSumRows), kF32In, &AcceptsAny, true),
           kBuilt},
     Entry{"ggml.soft_max", Operation::kSoftMax, Cap(P(Op::kSoftMax), {}, &AcceptsAny, true),
@@ -1020,6 +1057,9 @@ const std::array kEntries = {
           "; selectable for the build's SASS architectures: D 128, 32 or 64 indexer heads"},
     Entry{kVisibleTopKName, Operation::kTopK,
           Cap(P(Op::kVisibleTopK), kVisibleTopKRules, &AcceptsVisibleTopK, true), kBuilt},
+    Entry{kPrefixOverwriteName, Operation::kFill,
+          Cap(P(Op::kPrefixOverwrite), kPrefixOverwriteRules, &AcceptsPrefixOverwrite, true),
+          kBuilt},
     Entry{kSelectedMaskName, Operation::kFill,
           Cap(P(Op::kSelectedMask), kSelectedMaskRules, &AcceptsSelectedMask, true), kBuilt},
     Entry{kTopKName, Operation::kTopK, Cap(P(Op::kTopK), kF32In, &AcceptsTopK, true),

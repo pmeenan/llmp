@@ -103,7 +103,7 @@ std::expected<void, KernelFailure> CheckSoftMax(const ggml_tensor* node);
 // worth for the reductions.
 std::uint64_t SoftMaxSharedBytes(const ggml_tensor* node);
 
-// A ggml_cont node copying F32 into a packed F32 tensor, or contiguous I32
+// A ggml_cont node copying F32/F16 into a packed tensor of the same type, or contiguous I32
 // into I32 (ggml_cuda_dup, cpy.cu:429-617), and how upstream's launcher
 // copies it.
 enum class ContCopy : std::uint8_t {
