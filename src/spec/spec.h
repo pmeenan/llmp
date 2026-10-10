@@ -80,6 +80,7 @@ enum class TapPoint : std::uint8_t {
   kLayerOut,       // the residual stream after layer `layer`
   kStreams,        // the hyper-connection streams after layer `layer`
   kPostFinalNorm,  // the final norm's output (layer 0)
+  kStreamMean,     // the mean of the hyper-connection streams after layer `layer`
 };
 enum class ReadKind : std::uint8_t {
   kTap,    // another stage's feature tap

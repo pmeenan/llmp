@@ -1541,6 +1541,18 @@ each is checked against the design as M3.6 proceeds.
       - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.
       - [ ] Components, patterns and the mapping.
+            *2026-10-10:* the components and mappings landed (slice G4a:
+            the Sinkhorn mix of `residual.hc`, `hc.mix` and `hc.combine`,
+            `attention.mqa` with the CSA/HCA compressors and the lightning
+            indexer, `ffn.moe`'s √softplus, hash and clamped-SwiGLU forms,
+            `side.hash`, `embedding.inject` and the Markov head; the
+            `deepseek4` mapping and `dflash`, DSpark a stage composed with
+            its target, its injection run in the target's steps;
+            [as built](engine-components.md#initial-catalog)), at parity
+            with the reference-form builder's one-owner graphs but for the
+            mixes' carries and the hash lookups' node order. The patterns,
+            the policy, the row-invariant verify and the lowering of the
+            new inputs are slice G4b's.
       - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Native importer** (D-109): container readers for GGUF,
       safetensors with `config.json`, diffusers pipelines (Qwen-Image's

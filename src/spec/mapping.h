@@ -112,6 +112,16 @@ struct SlotRule {
   // or a list of integers: Qwen3.8's n-gram layer); kSide: the layers that
   // read the side input. Empty: every layer of its types (kLayer).
   std::string_view layers_key{};
+  // kLayer, kSide: present only at the layers below the count the source
+  // key holds (an integer; absent: 0), or (count_above) only at the others
+  // (DeepSeek V4's hash-routed first layers). At most one of layers_key
+  // and count_key.
+  std::string_view count_key{};
+  bool count_above = false;
+  // kSide: a side input a layer it is at, named "<slot>_<layer>", its
+  // tensor rules' {layer} that layer's, read by that layer alone (a table
+  // each layer has of its own: DeepSeek V4's token-hash routing).
+  bool per_layer = false;
 };
 
 struct TensorRule {
@@ -161,6 +171,8 @@ struct Literal {
 struct ParamRule {
   std::string_view slot{};  // a slot, a pseudo-slot, or empty: a requirement
   std::string_view param{};
+  // A layer slot's constant name may hold kLayerField once, which is the
+  // layer's number (the per-layer side input a layer reads: "hash_{layer}").
   // kLayer slots: the layer types the rule applies to; empty: every type.
   std::string_view layer_types{};
   std::string_view key{};  // the source key; empty: `value` is the parameter
@@ -228,6 +240,20 @@ struct ReadRule {
   ReadKind kind = ReadKind::kState;
   std::string_view name{};
   TapPoint point = TapPoint::kPostFinalNorm;
+  // A layer tap at a layer the drafter's source names (rather than its
+  // target's last layer): entry `index` of the list `layers_key` holds; with
+  // `entering`, the streams entering that layer (the tap after the layer
+  // before it; the target's layer count names those leaving its last:
+  // DSpark's dflash.target_layers).
+  std::string_view layers_key{};
+  std::uint32_t index = 0;
+  bool entering = false;
+};
+
+// A layer type by a source key's value (Mapping::layer_type_key).
+struct LayerTypeCode {
+  std::int64_t value = 0;
+  char type = 0;
 };
 
 struct Mapping {
@@ -236,6 +262,12 @@ struct Mapping {
   PipelineKind pipeline = PipelineKind::kLlm;
   std::string_view layer_count_key{};
   std::string_view layer_types{};  // one letter a layer, repeating
+  // Or each layer's type by a source key listing an integer a layer (its
+  // first `layers` entries; entries past them unread: a GGUF's MTP heads'),
+  // each value's letter in `layer_type_codes` (DeepSeek V4's compression
+  // ratios); `layer_types` then lists the letters. Required when set.
+  std::string_view layer_type_key{};
+  std::span<const LayerTypeCode> layer_type_codes{};
   std::span<const SlotRule> slots{};
   std::span<const TensorRule> tensors{};
   std::span<const ParamRule> params{};
@@ -261,7 +293,8 @@ inline constexpr std::size_t kMaxPolicyText = 4096;
 
 // The target's facts a drafter mapping's parameters may read, as source
 // keys ComposeDrafter adds: kTargetLastLayer followed by a layer-type
-// letter of the target's mapping is the target's last layer of that type.
+// letter of the target's mapping is the target's last layer of that type
+// (a target whose layer types a key gives, layer_type_key, gives none).
 inline constexpr std::string_view kTargetLastLayer = "llmp.target.last_layer.";
 
 // The compiled mappings, and the one for an architecture.

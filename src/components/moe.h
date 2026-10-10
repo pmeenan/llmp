@@ -43,14 +43,19 @@ namespace llmp::components::moe {
 
 // ------------------------------------------------------ gated feed-forward
 
-// down · glu(gate · h, up · h): h [width, rows] to [width, rows].
+// down · glu(gate · h, up · h): h [width, rows] to [width, rows]; a clamped
+// SwiGLU's `limit` (ir::GluKind::kSwiGluClamp: silu(min(gate, limit)) ·
+// clamp(up, -limit, limit)).
 ir::TensorId EmitGlu(ir::Builder& b, ir::TensorId h, ir::TensorId gate, ir::TensorId up,
-                     ir::TensorId down, ir::GluKind kind);
+                     ir::TensorId down, ir::GluKind kind, float limit = 0.0F);
 // The same over decoded weights ([width, hidden] gate and up, [hidden,
 // width] down, GGML order) and `rows` rows of h.
 std::vector<double> GluReference(std::span<const double> h, std::span<const float> gate,
                                  std::span<const float> up, std::span<const float> down,
-                                 std::uint64_t width, std::uint64_t hidden, ir::GluKind kind);
+                                 std::uint64_t width, std::uint64_t hidden, ir::GluKind kind,
+                                 float limit = 0.0F);
+// glu(gate, up) of one value pair.
+double GluOf(ir::GluKind kind, double gate, double up, float limit);
 
 // ------------------------------------------------------------------ router
 
@@ -62,22 +67,33 @@ struct RouterParams {
   // Its input Gemma 4's scaled norm of the stream (with `scale`); false:
   // the stream itself (Qwen3.8's).
   bool rms_input = true;
+  // The probabilities: softmax (kSoftmaxTopK), or sqrt(softplus) chosen by
+  // the highest plus a bias per expert (kSqrtSoftplusBias) or by each
+  // row's ids looked up already (kHash: a token-hash side input's), as
+  // DeepSeek V4 routes; the selected weights times `route_scale`; the
+  // router's product summed in F32 (`f32`).
+  ir::RouteKind kind = ir::RouteKind::kSoftmaxTopK;
+  float route_scale = 1.0F;
+  bool f32 = false;
 };
 struct Routed {
   ir::TensorId ids{};      // I32 [used, rows]
   ir::TensorId weights{};  // F32 [used, rows]
 };
 // x [width, rows], router [width, experts], scale [width] (none without
-// rms_input).
+// rms_input), bias [experts] (kSqrtSoftplusBias's), ids I32 [used, rows]
+// (kHash's).
 Routed EmitRouter(ir::Builder& b, ir::TensorId x, ir::TensorId router, ir::TensorId scale,
-                  const RouterParams& p);
+                  const RouterParams& p, ir::TensorId bias = {}, ir::TensorId ids = {});
 struct RoutedRef {
   std::vector<std::uint32_t> ids;  // [rows][used]
   std::vector<double> weights;     // [rows][used]
 };
+// `ids` [rows][used]: kHash's.
 RoutedRef RouterReference(std::span<const double> x, std::uint64_t width,
                           std::span<const float> router, std::span<const float> scale,
-                          const RouterParams& p);
+                          const RouterParams& p, std::span<const float> bias = {},
+                          std::span<const std::int64_t> ids = {});
 
 // ----------------------------------------------------------------- experts
 
@@ -86,6 +102,7 @@ struct ExpertParams {
   std::uint64_t hidden = 0;  // an expert's
   bool stacked = false;      // one gate-up array: gate's rows, then up's
   ir::GluKind kind = ir::GluKind::kGeGluTanh;
+  float limit = 0.0F;  // a clamped SwiGLU's
 };
 // h [width, rows]; gate_up [width, 2 · hidden, experts] when stacked, else
 // gate and up [width, hidden, experts]; down [hidden, width, experts];

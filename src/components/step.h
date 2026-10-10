@@ -176,6 +176,15 @@ std::expected<model::Batching, std::string> StageBatching(const spec::ModelSpec&
 // cells read as the last position of each block the stored positions
 // complete), and a tensor of a cell per chunk row (`per_row`: kPerRow, a
 // segment's row i at cell first_row + i: an MTP drafter's streams).
+//
+// A block tensor of `positions` (BlockBasis::kPositions: compressed rows,
+// a cell per block of the positions themselves) reads the blocks its
+// segment's positions complete, at the step's read alignment: max(align,
+// Pad(end / block, align)) cells (DeepSeek V4's compressed caches), not
+// the blocks of the read cells. A `recent` ring (kPositionRing: a
+// compressor's ring of recent positions, a block drafter's ring) holds
+// only a segment's last rows: its components store the rows it keeps
+// (StepContext::KeptRows, KeptCells), so a chunk may be wider than it.
 struct CellKey {
   std::uint64_t capacity = 0;
   bool ring = false;
@@ -184,8 +193,40 @@ struct CellKey {
   std::uint32_t block = 0;
   bool per_row = false;
   std::uint32_t first_row = 0;
+  bool positions = false;
+  bool recent = false;
   auto operator<=>(const CellKey&) const = default;
 };
+
+// A compressor's blocks in a segment of `rows` rows after `past` (DeepSeek
+// V4's compressors, llama.cpp's dsv4_build_comp_plan): each block of
+// `ratio` positions its rows complete, in order; then, with `overlap` (a
+// block pools the previous block's positions too), one more where they
+// complete fewer than ceil(rows / ratio), and without it one where they
+// complete none: a dummy block, written to the compressed cache's last
+// cell, which no mask shows.
+std::uint64_t CompressorBlocks(std::uint32_t rows, std::uint32_t past, std::uint32_t ratio,
+                               bool overlap);
+
+// A compressor's plan for one segment (dsv4_build_comp_plan, one
+// sequence): each block's pooled rows of [ring | rows | zero row], its
+// compressed cell and its first position; the reads of overlapping blocks
+// are every block's previous-block rows, then its own. Refused where a
+// block or the dummy's cell is past or within the cache's visible rows.
+// (Both in attention.mqa's file, a port of llama.cpp's.)
+struct CompressorPlan {
+  std::vector<std::int64_t> reads;
+  std::vector<std::int64_t> cells;
+  std::vector<std::int64_t> starts;
+};
+std::expected<CompressorPlan, std::string> PlanCompressor(std::uint32_t rows, std::uint32_t past,
+                                                          std::uint32_t ratio, bool overlap,
+                                                          std::uint64_t ring, std::uint64_t cache);
+
+// The Hadamard matrix of `n` (a power of two) values a row, normalized
+// (H[i][j] = (-1)^popcount(i & j) / sqrt(n)): the values of an
+// InputKind::kHadamard input, row-major ([n, n], ne[0] a row).
+std::vector<float> HadamardValues(std::uint64_t n);
 
 // The step's interface: an input leaf and what it holds.
 enum class InputKind : std::uint8_t {
@@ -222,6 +263,31 @@ enum class InputKind : std::uint8_t {
   // segment's kept rows, which a commit step reads (BuildCommit): the
   // caller's (`component` and `what` name the save).
   kCommitRows,
+  // A compressor's (CompressorBlocks; `ratio`, `overlap`):
+  //   kPositionPhases I32 [rows]: each row's position mod `ratio` (the row
+  //     of its learned position embedding), every segment's;
+  //   kKeptRows I32 [kept]: a segment's rows a `recent` ring keeps (its
+  //     last min(rows, capacity)), and kKeptCells I64 [kept] their cells
+  //     (p mod capacity), both in row order;
+  //   kPoolReads I32 [ratio · blocks, twice that with overlap]: for each
+  //     block, the rows it pools of [the ring (`cells`) | the segment's
+  //     rows | a zero row]: with overlap every block's previous block's
+  //     positions first, then every block's own; a position before 0 reads
+  //     the zero row, one of the segment's its row, an earlier one its
+  //     ring cell; a dummy block reads the segment's first row;
+  //   kBlockCells I64 [blocks]: the compressed cache's cell each block is
+  //     stored at (`cells`: the cache's; a dummy's the last);
+  //   kBlockStarts I32 [blocks]: each block's first position (a dummy's
+  //     0), its rotation's.
+  kPositionPhases,
+  kKeptRows,
+  kKeptCells,
+  kPoolReads,
+  kBlockCells,
+  kBlockStarts,
+  // A constant F32 [n, n] (`read` = n): the normalized Hadamard matrix
+  // (HadamardValues), which a product hinted kHadamard multiplies by.
+  kHadamard,
 };
 struct StepInput {
   ir::TensorId tensor{};
@@ -234,6 +300,11 @@ struct StepInput {
   std::uint8_t sections = 1;
   std::uint16_t component = 0;  // kSideRows' source, kCommitRows' saver
   std::string what{};           // kCommitRows' save
+  // A compressor's inputs': its ratio, whether its blocks overlap, and
+  // (kPoolReads, kBlockCells, kBlockStarts) the ring's cells it reads from.
+  std::uint32_t ratio = 0;
+  bool overlap = false;
+  std::uint64_t ring = 0;
 };
 
 struct SegmentRows {
@@ -259,7 +330,10 @@ struct CommitSave {
 
 class StepContext {
  public:
-  StepContext(ir::Builder& b, std::vector<SegmentRows> segments, bool greedy);
+  // `read_align`: the step's read alignment (planner::StepShape), at which
+  // positions-basis block tensors are read (CellKey::positions).
+  StepContext(ir::Builder& b, std::vector<SegmentRows> segments, bool greedy,
+              std::uint32_t read_align = 256);
 
   std::span<const SegmentRows> segments() const { return segments_; }
   std::uint32_t rows() const { return rows_; }
@@ -304,26 +378,56 @@ class StepContext {
   // Segment s's output rows' cells in tensors of `cells`.
   ir::TensorId OutputCells(std::size_t segment, const CellKey& cells);
   // Segment s's cells read of a tensor of `cells`: min(capacity, its
-  // read_cells).
+  // read_cells); a positions-basis block tensor's, the blocks its
+  // positions complete at the read alignment (CellKey::positions).
   std::uint64_t ReadCells(std::size_t segment, const CellKey& cells) const;
-  // Segment s's mask over a tensor of `cells` with `window` (0: causal),
-  // F16 [read cells, Pad(rows, kMaskRowAlign)]; made by Declare.
+  // Segment s's mask over a tensor of `cells` with `window` (0: causal;
+  // `ahead`: ir::MaskKind::kAhead), F16 [read cells, Pad(rows,
+  // kMaskRowAlign)]; made by Declare.
   std::expected<ir::TensorId, std::string> Mask(std::size_t segment, const CellKey& cells,
-                                                std::uint32_t window) const;
+                                                std::uint32_t window, bool ahead = false) const;
   // Makes every mask a stage's components declared (masks of one segment
-  // together, causal first, then by window).
-  void DeclareMasks(std::span<const std::pair<CellKey, std::uint32_t>> masks);
+  // together, causal first, then by window, a kind's after the plain).
+  struct MaskKey {
+    CellKey cells;
+    std::uint32_t window = 0;
+    bool ahead = false;
+    auto operator<=>(const MaskKey&) const = default;
+  };
+  void DeclareMasks(std::span<const MaskKey> masks);
+  // A compressor's inputs (InputKind's comments): the rows' phases mod
+  // `ratio`; segment s's rows a recent ring of `ring` keeps and their
+  // cells; its blocks' pooled rows (`ring` the compressor's ring), cells in
+  // its compressed cache (`cache`) and first positions.
+  ir::TensorId PositionPhases(std::uint32_t ratio);
+  ir::TensorId KeptRows(std::size_t segment, const CellKey& ring);
+  ir::TensorId KeptCells(std::size_t segment, const CellKey& ring);
+  ir::TensorId PoolReads(std::size_t segment, const CellKey& ring, std::uint32_t ratio,
+                         bool overlap);
+  ir::TensorId BlockCells(std::size_t segment, const CellKey& cache, std::uint32_t ratio,
+                          bool overlap);
+  ir::TensorId BlockStarts(std::size_t segment, std::uint32_t ratio, bool overlap);
+  // Segment s's compressor blocks (CompressorBlocks), and its rows a recent
+  // ring of `capacity` cells keeps.
+  std::uint64_t Blocks(std::size_t segment, std::uint32_t ratio, bool overlap) const;
+  std::uint64_t Kept(std::size_t segment, std::uint64_t capacity) const;
+  // The Hadamard matrix of `n`, F32 [n, n] (a constant).
+  ir::TensorId Hadamard(std::uint64_t n);
 
   std::vector<StepInput> TakeInputs() { return std::move(inputs_); }
 
  private:
   ir::TensorId Input(InputKind kind, std::uint8_t segment, const format::TensorFormat& format,
                      const CellKey& cells, std::uint64_t read, std::string_view name);
+  ir::TensorId Compressor(InputKind kind, std::size_t segment, const CellKey& cells,
+                          std::uint32_t ratio, bool overlap, std::uint64_t count,
+                          format::Encoding encoding, std::string_view name);
   ir::Builder& b_;
   std::vector<SegmentRows> segments_;
   std::uint32_t rows_ = 0;
   std::uint32_t outputs_ = 0;
   bool greedy_ = false;
+  std::uint32_t read_align_ = 256;
   planner::Phase phase_ = planner::Phase::kPrefill;
   std::uint16_t component_ = 0;
   ir::TensorId tokens_{}, positions_{}, output_rows_{}, features_{}, state_row_{};
@@ -334,7 +438,11 @@ class StepContext {
   std::map<std::pair<std::size_t, CellKey>, ir::TensorId> store_cells_;
   std::map<std::pair<std::size_t, CellKey>, ir::TensorId> output_cells_;
   std::map<std::tuple<std::size_t, CellKey, std::uint64_t>, ir::TensorId> cell_positions_;
-  std::map<std::tuple<std::size_t, CellKey, std::uint32_t>, ir::TensorId> masks_;
+  std::map<std::pair<std::size_t, MaskKey>, ir::TensorId> masks_;
+  // A compressor's inputs by (kind, segment, cells, ratio, overlap).
+  std::map<std::tuple<InputKind, std::size_t, CellKey, std::uint32_t, bool>, ir::TensorId>
+      compressor_;
+  std::map<std::uint64_t, ir::TensorId> hadamard_;
   std::vector<StepInput> inputs_;
   std::vector<CommitSave> saves_;
 };
@@ -412,9 +520,13 @@ std::expected<void, std::string> CheckStateWrites(const ir::Graph& graph,
 // stores, which precede its attention; a frozen ring that has wrapped at
 // least window - 1).
 // A step with no outputs is state-only: its last layer writes only its
-// state. Greedy segments must be all of them, each with one output. A
-// target's step with outputs writes the taps its drafters read (each
-// segment's outputs within the tap's cells), which needs their layouts.
+// state. Greedy segments must be all of them, each with an output (a
+// drafter's head of every row picks each row's). A target's step with
+// outputs writes the taps its drafters read (each segment's outputs within
+// the tap's cells), which needs their layouts; and every target step runs
+// the injection of each drafter that injects (ComponentDef::inject: a
+// block drafter's KV from the target's features) after its own work,
+// which needs that drafter's layout and its artifact's tensors.
 // A verify (shape.phase) that writes its stage's state of Rollback::kCommit
 // is refused: its commit writes that state (BuildCommit).
 // With `narrow` off (a policy without the planner's narrow_final option,
@@ -442,8 +554,9 @@ std::expected<StepGraph, std::string> BuildCommit(const spec::ModelSpec& spec, s
 
 // One instance's fragment as a step of its own, for its tests and ports:
 // its inputs (kStream, unless an embedding's or a side source's; and as
-// `inputs` asks, the streams, a carry and a side input), its weights in
-// `formats` (by role; those its shapes use), `cells` cells per state
+// `inputs` asks, the streams, carries and a side input), its weights in
+// `formats` (by role, through at least the last role its shapes use; the
+// others' entries unread), `cells` cells per state
 // tensor of its contract, its masks, then the fragment; its outputs (the
 // stream, the streams and the carry it returns, or a head's logits) are
 // the step's.
@@ -451,6 +564,12 @@ struct ComponentInputs {
   bool residual = false;    // kResidual: F32 [width, streams, rows]
   std::uint64_t carry = 0;  // kCarry: F32 [carry, rows]; 0: none
   std::uint64_t side = 0;   // kSide: F32 [side, rows]; 0: none
+  // A second carry (a Sinkhorn mix's combination), F32 [streams, streams,
+  // rows]; 0: none.
+  std::uint64_t carry2 = 0;
+  // The side input as integers (I32 [side, rows]: a token-hash side
+  // input's expert ids) rather than F32.
+  bool side_ids = false;
 };
 struct ComponentGraph {
   StepGraph step;
@@ -460,6 +579,8 @@ struct ComponentGraph {
   ir::TensorId residual_out{};
   ir::TensorId carry_in{};
   ir::TensorId carry_out{};
+  ir::TensorId carry2_in{};
+  ir::TensorId carry2_out{};
   ir::TensorId side_in{};
   std::vector<ir::TensorId> weights;  // by role; invalid where unused
 };

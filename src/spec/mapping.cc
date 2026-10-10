@@ -26,6 +26,7 @@
 #include "artifact/format_map.h"
 #include "format/encoding.h"
 #include "format/tensor_format.h"
+#include "spec/mappings/dsv4.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
@@ -228,7 +229,8 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(const ParamRule& 
       case ValueType::kBool:
         return ParamValue(r.value.flag);
       case ValueType::kString:
-        return ParamValue(std::string(r.value.text));
+        // A layer slot's constant may name its layer (kLayerField).
+        return ParamValue(Expand(r.value.text, layer.layer));
       case ValueType::kInts:
         return Refuse(where, "a list without its key");
     }
@@ -384,10 +386,11 @@ std::expected<bool, std::string> Holds(std::string_view gate, bool absent, const
   return absent ? n == 0 : n > 0;
 }
 
-// Two slots of which a checkpoint has at most one: gated by one key,
-// oppositely.
+// Two slots of which a checkpoint (or a layer) has at most one: gated by
+// one key oppositely, or at the layers on either side of one count.
 bool Exclusive(const SlotRule& a, const SlotRule& b) {
-  return !a.gate.empty() && a.gate == b.gate && a.gate_absent != b.gate_absent;
+  return (!a.gate.empty() && a.gate == b.gate && a.gate_absent != b.gate_absent) ||
+         (!a.count_key.empty() && a.count_key == b.count_key && a.count_above != b.count_above);
 }
 
 // The layers a source key names: an integer or a list of integers, each
@@ -415,14 +418,22 @@ std::expected<std::set<std::uint32_t>, std::string> LayersOf(std::string_view ke
   return out;
 }
 
+std::expected<std::uint64_t, std::string> Count(const ParamValue* v, std::string_view where,
+                                                std::uint64_t least, std::uint64_t most);
+
 class Synthesis {
  public:
   Synthesis(const Mapping& m, const Source& s, const Values& v, std::uint32_t layers,
-            std::string_view target_stage)
-      : m_(m), source_(s), values_(v), layers_(layers), target_stage_(target_stage) {}
+            std::string_view target_stage, std::string types)
+      : m_(m),
+        source_(s),
+        values_(v),
+        layers_(layers),
+        target_stage_(target_stage),
+        types_(std::move(types)) {}
 
   // The slots the source has, by their gates, and the layers a slot with a
-  // layers key is at.
+  // layers or count key is at.
   std::expected<void, std::string> Gate() {
     for (const SlotRule& slot : m_.slots) {
       auto present = Holds(slot.gate, slot.gate_absent, values_);
@@ -439,6 +450,19 @@ class Synthesis {
         }
         at_.emplace(slot.slot, std::move(*at));
       }
+      if (!slot.count_key.empty()) {
+        std::uint64_t n = 0;
+        if (const auto found = values_.find(slot.count_key); found != values_.end()) {
+          auto count = Count(found->second, slot.count_key, 0, layers_);
+          if (!count) return std::unexpected(count.error());
+          n = *count;
+        }
+        std::set<std::uint32_t> at;
+        for (std::uint32_t il = 0; il < layers_; ++il) {
+          if ((il < n) != slot.count_above) at.insert(il);
+        }
+        at_.emplace(slot.slot, std::move(at));
+      }
     }
     return {};
   }
@@ -449,7 +473,8 @@ class Synthesis {
       return false;
     }
     const auto found = at_.find(s.slot);
-    return s.layers_key.empty() || (found != at_.end() && found->second.contains(il));
+    return (s.layers_key.empty() && s.count_key.empty()) ||
+           (found != at_.end() && found->second.contains(il));
   }
   const std::set<std::uint32_t>& Layers(std::string_view slot) const {
     static const std::set<std::uint32_t> none;
@@ -472,6 +497,13 @@ class Synthesis {
         if (!layer) {
           continue;
         }
+        // A count's slot binds only at its own layers (its counterpart's
+        // rule takes the others').
+        const SlotRule& at = *FindSlot(m_, rule.slot);
+        if (!at.count_key.empty() && at.site == Site::kLayer && Layered(rule.pattern) &&
+            !At(at, *layer)) {
+          continue;
+        }
         if (match) {
           return Refuse(t.name, "matches two of the mapping's tensor rules");
         }
@@ -487,6 +519,12 @@ class Synthesis {
         return Refuse(t.name, std::format("layer {} of type '{}' has no {} {}", match->second,
                                           Type(match->second), rule.slot, rule.role));
       }
+      // A per-layer side input's table, at a layer it is at.
+      if (match->second != kShared && slot.site == Site::kSide &&
+          !Layers(slot.slot).contains(match->second)) {
+        return Refuse(t.name,
+                      std::format("layer {} has no side input {}", match->second, rule.slot));
+      }
       if ((!rule.any_part && t.part != rule.part) || t.experts != rule.experts) {
         return Refuse(t.name,
                       std::format("holds {}{}, not the rule's {}{}", format::PartRoleName(t.part),
@@ -500,7 +538,7 @@ class Synthesis {
     return {};
   }
 
-  char Type(std::uint32_t layer) const { return m_.layer_types.at(layer % m_.layer_types.size()); }
+  char Type(std::uint32_t layer) const { return types_.at(layer % types_.size()); }
 
   // The component of a slot at a layer (0 for the others).
   std::expected<ComponentRef, std::string> Component(const SlotRule& slot, std::uint32_t layer) {
@@ -585,6 +623,7 @@ class Synthesis {
   std::set<std::string_view> present_;
   std::map<std::string_view, std::set<std::uint32_t>> at_;
   std::map<std::pair<std::size_t, std::uint32_t>, std::string> bound_;  // (rule, layer)
+  std::string types_;  // a letter a layer, or the mapping's repeating pattern
 };
 
 std::expected<std::uint64_t, std::string> Count(const ParamValue* v, std::string_view where,
@@ -595,6 +634,30 @@ std::expected<std::uint64_t, std::string> Count(const ParamValue* v, std::string
     return Refuse(where, std::format("not an integer from {} to {}", least, most));
   }
   return static_cast<std::uint64_t>(*i);
+}
+
+// Each layer's type: by the layer type key's values (layer_type_key), or
+// the mapping's repeating pattern.
+std::expected<std::string, std::string> LayerTypes(const Mapping& m, const Values& values,
+                                                   std::uint64_t layers) {
+  if (m.layer_type_key.empty()) return std::string(m.layer_types);
+  const auto found = values.find(m.layer_type_key);
+  const auto* list =
+      found == values.end() ? nullptr : std::get_if<std::vector<std::int64_t>>(found->second);
+  if (list == nullptr || list->size() < layers) {
+    return Refuse(m.layer_type_key, std::format("not a value for each of {} layers", layers));
+  }
+  std::string types;
+  for (std::uint64_t il = 0; il < layers; ++il) {
+    const auto code = std::ranges::find(m.layer_type_codes, (*list)[il], &LayerTypeCode::value);
+    if (code == m.layer_type_codes.end()) {
+      return Refuse(m.layer_type_key, std::format("layer {}'s {} is none of the mapping's layer "
+                                                  "types",
+                                                  il, (*list)[il]));
+    }
+    types.push_back(code->type);
+  }
+  return types;
 }
 
 // A layer-flag list (layer_flags_key): one flag a layer, set exactly at
@@ -664,7 +727,10 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
   if (auto ok = CheckLayerFlags(mapping, by_key, *layers); !ok) {
     return std::unexpected(ok.error());
   }
-  Synthesis syn(mapping, source, by_key, static_cast<std::uint32_t>(*layers), target_stage);
+  auto types = LayerTypes(mapping, by_key, *layers);
+  if (!types) return std::unexpected(types.error());
+  Synthesis syn(mapping, source, by_key, static_cast<std::uint32_t>(*layers), target_stage,
+                std::move(*types));
   if (auto ok = syn.Gate(); !ok) {
     return std::unexpected(ok.error());
   }
@@ -722,11 +788,24 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
     if (s.site != Site::kSide || !syn.Present(s.slot)) {
       continue;
     }
+    const auto& at = syn.Layers(s.slot);
+    if (s.per_layer) {
+      // A side input a layer, of that layer's tensors.
+      for (const std::uint32_t il : at) {
+        auto c = syn.Component(s, il);
+        if (!c) {
+          return std::unexpected(
+              std::format("side input {} of layer {}: {}", s.slot, il, c.error()));
+        }
+        stage.side.push_back(
+            {.name = std::format("{}_{}", s.slot, il), .source = std::move(*c), .layers = {il}});
+      }
+      continue;
+    }
     auto c = syn.Component(s, 0);
     if (!c) {
       return std::unexpected(std::format("side input {}: {}", s.slot, c.error()));
     }
-    const auto& at = syn.Layers(s.slot);
     stage.side.push_back(
         {.name = std::string(s.slot), .source = std::move(*c), .layers = {at.begin(), at.end()}});
   }
@@ -803,10 +882,11 @@ std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mappin
 }
 
 std::span<const Mapping* const> Mappings() {
-  static const std::array<const Mapping*, 6> all = {
+  static const std::array<const Mapping*, 8> all = {
       &mappings::Gemma2Mapping(), &mappings::Gemma3Mapping(),
       &mappings::Gemma4Mapping(), &mappings::Gemma4AssistantMapping(),
-      &mappings::Qwen38Mapping(), &mappings::Qwen38MtpMapping()};
+      &mappings::Qwen38Mapping(), &mappings::Qwen38MtpMapping(),
+      &mappings::Dsv4Mapping(),   &mappings::DsparkMapping()};
   return all;
 }
 
@@ -829,6 +909,15 @@ Status ValidateMapping(const Mapping& m) {
       m.layer_types.size() > kMaxLayerTypes || !std::ranges::all_of(m.layer_types, Lower)) {
     return Refuse(where, "an invalid layer count key or layer types");
   }
+  if (m.layer_type_key.empty() != m.layer_type_codes.empty() ||
+      (!m.layer_type_key.empty() &&
+       (!IsText(m.layer_type_key) || !m.layer_flags_key.empty() ||
+        !std::ranges::all_of(m.layer_type_codes, [&](const LayerTypeCode& c) {
+          return m.layer_types.contains(c.type) &&
+                 std::ranges::count(m.layer_type_codes, c.value, &LayerTypeCode::value) == 1;
+        })))) {
+    return Refuse(where, "a layer type key without codes of the mapping's types (each value once)");
+  }
   if (!m.layer_flags_key.empty() &&
       (!IsText(m.layer_flags_key) || !m.layer_types.contains(m.layer_flag_type))) {
     return Refuse(where, "an invalid layer flag key, or a flag type of no layer");
@@ -842,8 +931,16 @@ Status ValidateMapping(const Mapping& m) {
   }
   for (const ReadRule& r : m.reads) {
     if (!IsName(r.name) || static_cast<std::uint8_t>(r.kind) > 1 ||
-        static_cast<std::uint8_t>(r.point) > static_cast<std::uint8_t>(TapPoint::kPostFinalNorm)) {
+        static_cast<std::uint8_t>(r.point) > static_cast<std::uint8_t>(TapPoint::kStreamMean)) {
       return Refuse(std::format("{} read {}", where, r.name), "an invalid name, kind or point");
+    }
+    if (!r.layers_key.empty() && (!IsText(r.layers_key) || r.kind != ReadKind::kTap ||
+                                  r.point == TapPoint::kPostFinalNorm)) {
+      return Refuse(std::format("{} read {}", where, r.name),
+                    "a layers key of a read other than a layer's tap");
+    }
+    if (r.layers_key.empty() && (r.index != 0 || r.entering)) {
+      return Refuse(std::format("{} read {}", where, r.name), "an entry of no layers key");
     }
   }
   // A policy's own rules are the planner's; here, printable lines.
@@ -872,10 +969,16 @@ Status ValidateMapping(const Mapping& m) {
         static_cast<std::uint8_t>(s.site) > static_cast<std::uint8_t>(Site::kMixing)) {
       return Refuse(at, "an invalid kind, version or site");
     }
-    if ((s.site == Site::kSide && s.layers_key.empty()) ||
+    if ((s.site == Site::kSide && s.layers_key.empty() && s.count_key.empty()) ||
+        (!s.layers_key.empty() && !s.count_key.empty()) ||
         (!s.layers_key.empty() &&
-         (!IsText(s.layers_key) || (s.site != Site::kLayer && s.site != Site::kSide)))) {
-      return Refuse(at, "a side input without its layers' key, or a layers key off a layer");
+         (!IsText(s.layers_key) || (s.site != Site::kLayer && s.site != Site::kSide))) ||
+        (!s.count_key.empty() &&
+         (!IsText(s.count_key) || (s.site != Site::kLayer && s.site != Site::kSide))) ||
+        (s.count_key.empty() && s.count_above) || (s.per_layer && s.site != Site::kSide)) {
+      return Refuse(at,
+                    "a side input without its layers' key, one key of its layers, or a layers "
+                    "or count key off a layer");
     }
     if (s.site != Site::kLayer ? !s.layer_types.empty()
                                : !TypesWithin(s.layer_types, m.layer_types)) {
@@ -908,9 +1011,11 @@ Status ValidateMapping(const Mapping& m) {
       return Refuse(at, "a slot the mapping does not have");
     }
     const bool layered = slot->site == Site::kLayer;
-    // A layer slot's pattern may name a shared tensor (no layer field).
-    const bool valid = layered ? IsPattern(t.pattern, true) || IsPattern(t.pattern, false)
-                               : IsPattern(t.pattern, false);
+    // A layer slot's pattern may name a shared tensor (no layer field); a
+    // per-layer side input's names its layer's.
+    const bool valid = layered           ? IsPattern(t.pattern, true) || IsPattern(t.pattern, false)
+                       : slot->per_layer ? IsPattern(t.pattern, true)
+                                         : IsPattern(t.pattern, false);
     // A pattern twice only in two slots of which a checkpoint has one; a
     // target's tensor names its target's checkpoint, not the source's.
     auto& names = t.target ? target_patterns : patterns;
@@ -958,8 +1063,12 @@ Status ValidateMapping(const Mapping& m) {
     if (!r.key.empty() && !IsText(r.key)) {
       return Refuse(at, "an invalid key");
     }
+    // A layer slot's constant may name its layer (kLayerField).
+    const SlotRule* named = r.slot.empty() ? nullptr : FindSlot(m, r.slot);
+    const bool layer_name = named != nullptr && named->site == Site::kLayer &&
+                            IsPattern(r.value.text, true) && IsName(Expand(r.value.text, 0));
     if ((r.key.empty() || r.slot.empty()) && r.type == ValueType::kString &&
-        !IsName(r.value.text)) {
+        !IsName(r.value.text) && !(r.key.empty() && layer_name)) {
       return Refuse(at, "a constant string that is not a name");
     }
     if ((r.key.empty() || r.slot.empty()) && r.type == ValueType::kReal &&
@@ -1189,10 +1298,13 @@ std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
     return Refuse(where, std::format("the target spec already has a stage {}", drafter.stage));
   }
   const Stage& head = target.stages.front();
-  // The target's facts: its last layer of each of its mapping's types.
+  // The target's facts: its last layer of each of its mapping's types (a
+  // repeating pattern's: types a key gives are the target's values', which
+  // the composition has not).
   std::vector<SourceValue> facts;
   const auto layers = static_cast<std::uint32_t>(head.layers.size());
-  for (const char t : target_mapping.layer_types) {
+  for (const char t :
+       target_mapping.layer_type_key.empty() ? target_mapping.layer_types : std::string_view{}) {
     const std::string key = std::format("{}{}", kTargetLastLayer, t);
     if (std::ranges::contains(facts, key, &SourceValue::key)) {
       continue;
@@ -1224,11 +1336,26 @@ std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
     if (r.kind != ReadKind::kTap) {
       continue;
     }
-    // A layer's tap is the target's last layer's.
-    const std::uint32_t tap_layer =
-        r.point == TapPoint::kPostFinalNorm || target_stage.layers.empty()
-            ? 0
-            : static_cast<std::uint32_t>(target_stage.layers.size() - 1);
+    // A layer's tap is the target's last layer's, or the one the drafter's
+    // source names (the streams entering it: after the layer before).
+    std::uint32_t tap_layer = r.point == TapPoint::kPostFinalNorm || target_stage.layers.empty()
+                                  ? 0
+                                  : static_cast<std::uint32_t>(target_stage.layers.size() - 1);
+    if (!r.layers_key.empty()) {
+      const auto found = std::ranges::find(values, r.layers_key, &SourceValue::key);
+      const auto* list =
+          found == values.end() ? nullptr : std::get_if<std::vector<std::int64_t>>(&found->value);
+      const auto count = static_cast<std::int64_t>(target_stage.layers.size());
+      const std::int64_t entry =
+          list != nullptr && r.index < list->size() ? (*list)[r.index] : std::int64_t{-1};
+      const std::int64_t layer = r.entering ? entry - 1 : entry;
+      if (layer < 0 || layer >= count) {
+        return Refuse(where,
+                      std::format("read {}: {} names no layer of the target's {} ({})", r.name,
+                                  r.layers_key, count, r.entering ? "entering" : "after"));
+      }
+      tap_layer = static_cast<std::uint32_t>(layer);
+    }
     const auto tap = std::ranges::find(target_stage.taps, r.name, &FeatureTap::name);
     if (tap == target_stage.taps.end()) {
       target_stage.taps.push_back(

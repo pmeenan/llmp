@@ -21,6 +21,14 @@
 // read alignment, is part of the plan. A program whose launch parameters
 // do take positions is never captured and is given them before each run
 // (StepProgram::Position).
+//
+// Not yet so for DeepSeek V4's compressors (components/mqa.cc, slice G4a):
+// a heavily compressed layer's blocks in a chunk (components::
+// CompressorBlocks) and a compressed cache's read width (StepContext::
+// ReadCells, CellKey::positions) follow `past`, not `read_cells`, so their
+// steps' graphs differ between shapes this equality calls equal. No
+// lowering takes their inputs yet (the GGML lowering refuses them); slice
+// G4b keys or pads those quantities before a plan of them is cached.
 
 #ifndef LLMP_PLANNER_STEP_SHAPE_H_
 #define LLMP_PLANNER_STEP_SHAPE_H_

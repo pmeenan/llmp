@@ -55,7 +55,8 @@ constexpr std::array<std::string_view, 5> kPipelines = {"llm", "image", "embeddi
                                                         "decision"};
 constexpr std::array<std::string_view, 6> kRoles = {"target",       "drafter",  "encoder",
                                                     "text_encoder", "denoiser", "vae"};
-constexpr std::array<std::string_view, 3> kTapPoints = {"layer_out", "streams", "post_final_norm"};
+constexpr std::array<std::string_view, 4> kTapPoints = {"layer_out", "streams", "post_final_norm",
+                                                        "stream_mean"};
 constexpr std::array<std::string_view, 2> kReadKinds = {"tap", "state"};
 constexpr std::array kParts = {format::PartRole::kData,           format::PartRole::kCodes,
                                format::PartRole::kBlockScales,    format::PartRole::kTensorScale,
@@ -865,7 +866,8 @@ Status CheckStage(const ModelSpec& spec, const Stage& s, const std::string& wher
                                             : t.layer >= s.layers.size()) {
       return Refuse(at, "a layer past the stage's, or a final norm's tap without one");
     }
-    if (t.point == TapPoint::kStreams && s.stream.streams < 2) {
+    if ((t.point == TapPoint::kStreams || t.point == TapPoint::kStreamMean) &&
+        s.stream.streams < 2) {
       return Refuse(at, "the streams of a stage with one");
     }
   }

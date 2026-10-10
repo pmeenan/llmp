@@ -15,13 +15,27 @@ namespace llmp::components {
 
 std::span<const ComponentDef* const> Catalog() {
   // Sorted by (kind, version).
-  static const std::array<const ComponentDef*, 17> catalog{
-      &defs::AttentionBorrowed(), &defs::AttentionDense(), &defs::AttentionGdn(),
-      &defs::AttentionQsa(),      &defs::EmbeddingMtp(),   &defs::EmbeddingProjected(),
-      &defs::EmbeddingToken(),    &defs::FfnGlu(),         &defs::FfnMoe(),
-      &defs::HcCombine(),         &defs::HcMix(),          &defs::HeadLinear(),
-      &defs::NormRms(),           &defs::ResidualHc(),     &defs::ResidualPle(),
-      &defs::ScaleLearned(),      &defs::SideNgram(),
+  static const std::array<const ComponentDef*, 20> catalog{
+      &defs::AttentionBorrowed(),
+      &defs::AttentionDense(),
+      &defs::AttentionGdn(),
+      &defs::AttentionMqa(),
+      &defs::AttentionQsa(),
+      &defs::EmbeddingInject(),
+      &defs::EmbeddingMtp(),
+      &defs::EmbeddingProjected(),
+      &defs::EmbeddingToken(),
+      &defs::FfnGlu(),
+      &defs::FfnMoe(),
+      &defs::HcCombine(),
+      &defs::HcMix(),
+      &defs::HeadLinear(),
+      &defs::NormRms(),
+      &defs::ResidualHc(),
+      &defs::ResidualPle(),
+      &defs::ScaleLearned(),
+      &defs::SideHash(),
+      &defs::SideNgram(),
   };
   return catalog;
 }

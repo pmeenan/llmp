@@ -86,7 +86,12 @@
 //       0 where a query sees a cell, else -inf. A cell holding position c >=
 //       0 is seen by a query at p when c <= p (kCausal), and p - c < window
 //       (kWindow), or c < (p / block + 1) · block (kBlock: its own block's
-//       later positions too). Rows past R and cells below 0 are -inf.
+//       later positions too). kAhead (amended 2026-10-10, slice G4a): c > p
+//       (a later row of the step's own: no cell holds a position past the
+//       step's last row) or, with a window, p - c < window (none: every
+//       earlier cell): a block drafter's rows, which see one another and
+//       the committed positions within their window (DSpark's, llama.cpp's
+//       non-causal is_masked_swa). Rows past R and cells below 0 are -inf.
 //   kCacheStore (cache [n, C, A2, A3], src [n, R, A2, A3], idx [R, I1, I2],
 //       I32 or I64): the output is a view of cache with src's rows stored
 //       at rows idx[r, j % I1, k % I2] of matrix (j, k), in cache's encoding
@@ -163,7 +168,9 @@
 //       Probabilities p: softmax (kSoftmaxTopK), sigmoid (kSigmoidTopK),
 //       sqrt(softplus) (kSqrtSoftplusBias, kHash). The U highest p + bias
 //       (bias optional for kSigmoidTopK, required for kSqrtSoftplusBias),
-//       highest first; kHash's ids are table[:, tokens[t]]. Weights are
+//       highest first; kHash's ids are table[:, tokens[t]], or without
+//       tokens the table itself, [U, T]: each row's ids looked up already
+//       (a token-hash side input's; amended 2026-10-10, slice G4a). Weights are
 //       p[ids], with normalize divided by max(Σ, 2^-14) (llama.cpp's
 //       build_moe_ffn), then times scale. scale is the factor itself and
 //       above zero: a checkpoint's "unset" 0 (llama.cpp's
@@ -423,11 +430,11 @@ struct RopeParams {
   std::array<std::uint32_t, 4> sections{};  // the multi-section modes'
 };
 
-enum class MaskKind : std::uint8_t { kCausal, kWindow, kBlock };
+enum class MaskKind : std::uint8_t { kCausal, kWindow, kBlock, kAhead };
 struct MaskParams {
   MaskKind kind = MaskKind::kCausal;
   std::array<std::uint8_t, 3> reserved{};
-  std::uint32_t window = 0;  // kWindow: positions seen
+  std::uint32_t window = 0;  // kWindow, kAhead: positions seen (kAhead: 0 for every one)
   std::uint32_t block = 0;   // kBlock: positions a block
 };
 

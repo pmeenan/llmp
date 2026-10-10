@@ -1135,6 +1135,30 @@ target_link_libraries(components_qwen38_models_test PRIVATE llmp_components llmp
                                                             llmp_artifact llmp_json)
 llmp_gtest(components_qwen38_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
 
+# The DeepSeek V4 components (the Sinkhorn hyper-connections, MQA with its
+# compressors and lightning indexer, the DeepSeek routers and clamped
+# SwiGLU, the token-hash side input, the DSpark drafter's injected input and
+# Markov head) against their references, the compressors' inputs against
+# today's plans, the deepseek4 and dflash mappings over the fixture's
+# tensors, the steps they make and the injection run; and the steps against
+# today's reference-form graph builder, node for node.
+add_executable(components_dsv4_test components_dsv4_test.cc)
+target_link_libraries(components_dsv4_test PRIVATE llmp_components llmp_reference_kernels
+                                                   llmp_spec llmp_model llmp_artifact llmp_json)
+llmp_gtest(components_dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+add_executable(components_dsv4_order_test components_dsv4_order_test.cc)
+target_link_libraries(components_dsv4_order_test PRIVATE llmp_components llmp_ggml_tensors
+                                                         llmp_spec llmp_model llmp_artifact
+                                                         llmp_json)
+llmp_gtest(components_dsv4_order_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+# The DeepSeek V4 mappings on the installed artifacts: each target's spec
+# and its DSpark drafter's, the fixture's equal to them, today's state
+# layouts, every step kind built.
+add_executable(components_dsv4_models_test components_dsv4_models_test.cc)
+target_link_libraries(components_dsv4_models_test PRIVATE llmp_components llmp_spec llmp_model
+                                                          llmp_artifact llmp_json)
+llmp_gtest(components_dsv4_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
+
 # The planner (D-107): policies, patterns, selection, placement, lanes and
 # plan keys on small graphs and a fake registry.
 add_executable(planner_test planner_test.cc)

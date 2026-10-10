@@ -568,7 +568,10 @@ TEST_F(ExecTest, MasksSeeWhatTheirKindAllows) {
       qp, cp, 2, ir::MaskParams{.kind = ir::MaskKind::kWindow, .window = 2}, Encoding::kF16);
   const TensorId block =
       b.MaskBuild(qp, cp, 2, ir::MaskParams{.kind = ir::MaskKind::kBlock, .block = 4});
-  for (const TensorId o : {causal, window, block}) {
+  const TensorId ahead =
+      b.MaskBuild(qp, cp, 2, ir::MaskParams{.kind = ir::MaskKind::kAhead, .window = 2});
+  const TensorId every = b.MaskBuild(qp, cp, 2, ir::MaskParams{.kind = ir::MaskKind::kAhead});
+  for (const TensorId o : {causal, window, block, ahead, every}) {
     b.Output(o);
   }
   ASSERT_TRUE(Finish());
@@ -580,6 +583,9 @@ TEST_F(ExecTest, MasksSeeWhatTheirKindAllows) {
   ExpectNear(Get(window), D({x, 0, 0, x, x, x, x, x, x, x, x, 0}), 0, "window");
   // Block 4: position 2 sees cells to 3; position 5 to 7.
   ExpectNear(Get(block), D({0, 0, 0, 0, x, x, 0, 0, 0, 0, x, 0}), 0, "block");
+  // Ahead (a block drafter's): every later cell, and the window's earlier.
+  ExpectNear(Get(ahead), D({x, 0, 0, 0, x, 0, x, x, x, x, x, 0}), 0, "ahead");
+  ExpectNear(Get(every), D({0, 0, 0, 0, x, 0, 0, 0, 0, 0, x, 0}), 0, "ahead, no window");
 }
 
 TEST_F(ExecTest, CacheStoresWriteOnlyTheirRows) {
@@ -1226,7 +1232,12 @@ TEST_F(ExecTest, RoutesSelectAndWeightExperts) {
   const ir::Outputs hash = b.Route(
       logits, {}, table, tokens,
       ir::RouteParams{.kind = ir::RouteKind::kHash, .normalize = true, .experts = 4, .used = 2});
-  for (const ir::Outputs& o : {soft, sig, ssp, hash}) {
+  // The rows' ids looked up already (a token-hash side input's).
+  const TensorId given = I({2, 2});
+  const ir::Outputs looked = b.Route(
+      logits, {}, given, {},
+      ir::RouteParams{.kind = ir::RouteKind::kHash, .normalize = true, .experts = 4, .used = 2});
+  for (const ir::Outputs& o : {soft, sig, ssp, hash, looked}) {
     b.Output(o[0]);
     b.Output(o[1]);
   }
@@ -1236,6 +1247,7 @@ TEST_F(ExecTest, RoutesSelectAndWeightExperts) {
   Set(bias, {0, 0, 5, 0});
   SetInts(table, {3, 0, 1, 2, 2, 1});
   SetInts(tokens, {2, 0});
+  SetInts(given, {2, 1, 3, 0});
   ASSERT_TRUE(Run());
   // Softmax: token 0's top two are experts 1 and 3 (equal; the lower
   // first), normalized to halves, times 2.
@@ -1259,6 +1271,8 @@ TEST_F(ExecTest, RoutesSelectAndWeightExperts) {
              D({ssq(2) / (ssq(2) + ssq(3)), ssq(3) / (ssq(2) + ssq(3)),
                 ssq(0.25) / (ssq(0.25) + ssq(0)), ssq(0) / (ssq(0.25) + ssq(0))}),
              1e-6, "table");
+  EXPECT_EQ(GetInts(looked[0]), GetInts(hash[0]));
+  EXPECT_EQ(Get(looked[1]), Get(hash[1]));
 }
 
 TEST_F(ExecTest, ExpertReductionScalesWeighsAndSumsSlots) {
@@ -1868,6 +1882,9 @@ TEST(ReferenceDecompositionTest, CompositeOpsEqualTheirDecompositions) {
                                 .experts = 6,
                                 .used = 2}),
         b.Route(logits, {}, index({2, 4}, {0, 5, 1, 2, 3, 3, 4, 0}), index({3}, {3, 0, 2}),
+                ir::RouteParams{
+                    .kind = ir::RouteKind::kHash, .normalize = true, .experts = 6, .used = 2}),
+        b.Route(logits, {}, index({2, 3}, {0, 5, 1, 2, 3, 4}), {},
                 ir::RouteParams{
                     .kind = ir::RouteKind::kHash, .normalize = true, .experts = 6, .used = 2})}) {
     b.Output(r[0]);

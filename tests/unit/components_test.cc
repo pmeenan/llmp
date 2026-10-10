@@ -94,11 +94,26 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
     EXPECT_EQ(Find(def->kind, def->version), def);
   }
   EXPECT_TRUE(std::ranges::is_sorted(kinds));
-  EXPECT_EQ(kinds, (std::vector<std::string_view>{
-                       "attention.borrowed", "attention.dense", "attention.gdn", "attention.qsa",
-                       "embedding.mtp", "embedding.projected", "embedding.token", "ffn.glu",
-                       "ffn.moe", "hc.combine", "hc.mix", "head.linear", "norm.rms", "residual.hc",
-                       "residual.ple", "scale.learned", "side.ngram"}));
+  EXPECT_EQ(kinds, (std::vector<std::string_view>{"attention.borrowed",
+                                                  "attention.dense",
+                                                  "attention.gdn",
+                                                  "attention.mqa",
+                                                  "attention.qsa",
+                                                  "embedding.inject",
+                                                  "embedding.mtp",
+                                                  "embedding.projected",
+                                                  "embedding.token",
+                                                  "ffn.glu",
+                                                  "ffn.moe",
+                                                  "hc.combine",
+                                                  "hc.mix",
+                                                  "head.linear",
+                                                  "norm.rms",
+                                                  "residual.hc",
+                                                  "residual.ple",
+                                                  "scale.learned",
+                                                  "side.hash",
+                                                  "side.ngram"}));
   EXPECT_EQ(Find("attention.dense", 2), nullptr);
   EXPECT_EQ(Find("attention.sparse", 1), nullptr);
   EXPECT_EQ(RoleIndex(*Find("ffn.glu", 1), "down"), 3);

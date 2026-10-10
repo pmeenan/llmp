@@ -21,7 +21,12 @@
 // logit (the host-greedy flavor); a drafter's head reads every row
 // (`gather` false: nothing to gather or narrow) and projects its rows back
 // to its target's width (`features`: its next feature); it splits by the
-// vocabulary.
+// vocabulary. A block drafter's head (`markov`: DSpark's, llama.cpp's
+// dflash.cpp build_dspark_markov_head) biases each of a segment's rows'
+// logits by markov_w2 · markov_w1[previous] (the previous row's highest
+// biased logit's token, the segment's first token for its first row), and
+// a greedy step's tokens are each row's highest biased logit (llmp.argmax's
+// flavor, which ignores NaN).
 
 #include <array>
 #include <cmath>
@@ -248,11 +253,20 @@ constexpr std::array kHeadParams{
               .least = 0,
               .most = 1,
               .fallback = 0.0},
+    // A block drafter's Markov head (roles markov_w1, markov_w2: [rank,
+    // vocabulary] each), over a head of every row.
+    ParamSpec{.name = "markov",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0.0},
 };
-enum : std::uint16_t { kHeadWeight, kHeadProjection, kHeadIds };
+enum : std::uint16_t { kHeadWeight, kHeadProjection, kHeadIds, kMarkovW1, kMarkovW2 };
 constexpr std::array<format::Encoding, 1> kI32Only{format::Encoding::kI32};
 constexpr std::array kHeadRoles{WeightRole{.name = "weight"}, WeightRole{.name = "projection"},
-                                WeightRole{.name = "ids", .encodings = kI32Only}};
+                                WeightRole{.name = "ids", .encodings = kI32Only},
+                                WeightRole{.name = "markov_w1"}, WeightRole{.name = "markov_w2"}};
 constexpr std::array<std::string_view, 1> kHeadPatterns{"prepared_products"};
 
 // By the vocabulary: the output matrix by its rows, the logits gathered
@@ -281,7 +295,44 @@ std::expected<std::vector<RoleShape>, std::string> HeadShapes(const Instance& in
     out.push_back(Role(kHeadProjection, {in.stage.width, HeadFeatures(in)}));
   }
   if (in.params.Flag("selected")) out.push_back(Role(kHeadIds, {1, 0}));
+  if (in.params.Flag("markov")) {
+    if (in.params.Flag("gather") || in.params.Flag("selected") || in.stage.softcap.has_value()) {
+      return std::unexpected("a Markov head reads every row, unselected and uncapped");
+    }
+    out.push_back(Role(kMarkovW1, {0, 0}));
+    out.push_back(Role(kMarkovW2, {0, 0}));
+  }
   return out;
+}
+
+// The Markov head's bias of each segment's rows (in their order): row i's
+// logits plus w2 · w1[prev], prev the segment's first token, then the
+// previous row's highest biased logit.
+ir::TensorId Markov(Fragment& f, ir::TensorId logits) {
+  ir::Builder& b = f.b;
+  const ir::TensorDesc ld = Desc(b, logits);
+  const format::Shape column = Shape({ld.ne(0), 1});
+  ir::TensorId joined{};
+  for (std::size_t s = 0; s < f.step.segments().size(); ++s) {
+    const SegmentRows& seg = f.step.segments()[s];
+    b.SetOwner(static_cast<std::uint8_t>(s));
+    ir::TensorId prev =
+        b.View(f.step.Tokens(), Shape({1}), {4, 4, 4, 4}, std::uint64_t{seg.first_row} * 4);
+    ir::TensorId col{};
+    ir::TensorId biased{};
+    for (std::uint32_t i = 0; i < seg.rows; ++i) {
+      const ir::TensorId base = b.View(logits, column, ViewStrides(ld.nb[0], ld.nb[1], 0, column),
+                                       (std::uint64_t{seg.first_row} + i) * ld.nb[1]);
+      if (i > 0) prev = b.Argmax(col);
+      const ir::TensorId row = b.GetRows(f.Weight(kMarkovW1), prev);
+      const ir::TensorId bias = b.MatMul(f.Weight(kMarkovW2), row);
+      col = b.Add(base, bias);
+      biased = biased.valid() ? b.Concat(biased, col, 1) : col;
+    }
+    b.SetJoined();
+    joined = joined.valid() ? b.Concat(joined, biased, 1) : biased;
+  }
+  return joined;
 }
 
 bool HeadGathers(const Instance& in) { return in.params.Flag("gather"); }
@@ -302,6 +353,12 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
     logits = b.Scale(logits, 1.0F / cap);
     logits = b.Unary(logits, ir::UnaryFn::kTanh);
     logits = b.Scale(logits, cap);
+  }
+  if (f.instance.params.Flag("markov")) {
+    const ir::TensorId biased = Markov(f, logits);
+    FragmentOut out{.stream = f.stream, .logits = biased};
+    if (f.step.greedy()) out.greedy = b.Argmax(biased, ir::ArgmaxNan::kIgnore);
+    return out;
   }
   FragmentOut out{.stream = f.stream, .logits = logits};
   if (HeadFeatures(f.instance) != 0) out.features = b.MatMul(f.Weight(kHeadProjection), rows);
@@ -343,6 +400,39 @@ std::expected<void, std::string> HeadReference(RefIO& io) {
   if (in.stage.softcap.has_value()) {
     const double cap = *in.stage.softcap;
     for (double& l : io.logits) l = cap * std::tanh(l / cap);
+  }
+  if (in.params.Flag("markov")) {
+    // Each segment's chain: its first token, then each row's best.
+    const std::span<const float> w1 = io.weights.at(kMarkovW1);
+    const std::span<const float> w2 = io.weights.at(kMarkovW2);
+    const std::uint64_t rank = w1.size() / vocab;
+    io.tokens_out.clear();
+    std::uint64_t r = 0;
+    for (const RefSegment& s : io.segments) {
+      std::int64_t prev = io.tokens.at(r);
+      for (std::uint32_t i = 0; i < s.rows; ++i, ++r) {
+        if (prev < 0 || static_cast<std::uint64_t>(prev) >= vocab) {
+          return std::unexpected("head reference: a Markov token past the vocabulary");
+        }
+        double* row = &io.logits[r * vocab];
+        for (std::uint64_t v = 0; v < vocab; ++v) {
+          double bias = 0.0;
+          for (std::uint64_t k = 0; k < rank; ++k) {
+            bias += static_cast<double>(w2[(v * rank) + k]) *
+                    static_cast<double>(w1[(static_cast<std::uint64_t>(prev) * rank) + k]);
+          }
+          row[v] += bias;
+        }
+        std::uint64_t best = 0;
+        for (std::uint64_t v = 1; v < vocab; ++v) {
+          if (row[v] > row[best]) best = v;
+        }
+        prev = static_cast<std::int64_t>(best);
+        if (io.greedy) io.tokens_out.push_back(static_cast<std::int32_t>(best));
+      }
+    }
+    io.features_out.clear();
+    return {};
   }
   io.features_out.clear();
   if (HeadFeatures(in) != 0) {

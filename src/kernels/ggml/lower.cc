@@ -323,6 +323,18 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
       case co::InputKind::kCommitRows:
         // Qwen3.8's inputs, lowered with its patterns (slice G3b).
         return Refused("a side table's rows, blocks' positions or a verify's saves");
+      case co::InputKind::kPositionPhases:
+      case co::InputKind::kKeptRows:
+      case co::InputKind::kKeptCells:
+      case co::InputKind::kPoolReads:
+      case co::InputKind::kBlockCells:
+      case co::InputKind::kBlockStarts:
+      case co::InputKind::kHadamard:
+        // DeepSeek V4's compressors' and indexer's inputs, lowered with its
+        // patterns (slice G4b).
+        return Refused(
+            "a compressor's phases, kept rows, pooled reads or blocks, or the indexer's "
+            "Hadamard matrix (slice G4b)");
       case co::InputKind::kFeatures:
         // A drafter's rows' features: the caller's bytes for the step.
         slot.kind = InputKind::kStepBytes;
@@ -389,7 +401,10 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
                                                           const Resolve& resolve) {
   const auto p = n.Params<ir::MaskParams>();
   if (p.kind != ir::MaskKind::kCausal && p.kind != ir::MaskKind::kWindow) {
-    return Refused("a block mask");
+    // A block drafter's mask (kAhead: DSpark's, GGML's MaskPolicy::kBlock
+    // producer) is slice G4b's.
+    return Refused(p.kind == ir::MaskKind::kAhead ? "a block drafter's mask (slice G4b)"
+                                                  : "a block mask");
   }
   const ir::TensorDesc& out = graph.tensor(n.out[0]);
   const ir::TensorDesc& rows = graph.tensor(n.src[0]);

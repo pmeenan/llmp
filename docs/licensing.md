@@ -164,7 +164,16 @@ lock pin):
   `build_attn_qsa`, `build_qsa_top_k` and its input's own-block bias),
   `src/components/hc.cc` (`build_hc_mix` and `build_hc_combine`) and
   `src/components/ple.cc` (`build_ple`, `llm_graph_input_ple`'s n-gram hash
-  and gate, and the MTP pass). The packaged GGML MIT notice covers them.
+  and gate, and the MTP pass), and DeepSeek V4's and DSpark's (slice G4a)
+  from llama.cpp's deepseek4 and dflash graphs: `src/components/mqa.cc`
+  (`build_attention_impl`, `build_csa_lid_attention`, the compressed-KV
+  builders, `build_lid_top_k` and `dsv4_build_comp_plan`, and rope.cu's
+  YaRN rotation for its references), `src/components/inject.cc`
+  (dflash.cpp's `graph_dsv4` feature extraction and injection), and in the
+  files above `hc.cc` (`build_hc_pre`, `build_hc_post`, `build_hc_head`),
+  `moe.cc` (the √softplus and token-hash routing, the clamped SwiGLU) and
+  `blocks.cc` (`build_dspark_markov_head`). The packaged GGML MIT notice
+  covers them.
 - ExLlamaV3 (`2025 Turboderp`): `src/kernels/reference/decode_exl3.cc`
   (codebook.cuh's `decode_3inst`, exl3_dq.cuh's state extraction and
   reconstruct.cu's tile placement, on the CPU). Its library

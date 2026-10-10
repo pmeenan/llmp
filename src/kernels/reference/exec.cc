@@ -1025,6 +1025,9 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
           } else if (p.kind == ir::MaskKind::kBlock) {
             const auto block = static_cast<std::int64_t>(p.block);
             seen = cell >= 0 && pos >= 0 && cell < ((pos / block) + 1) * block;
+          } else if (p.kind == ir::MaskKind::kAhead) {
+            seen = cell >= 0 && (cell > pos || p.window == 0 ||
+                                 pos - cell < static_cast<std::int64_t>(p.window));
           }
           r[Ix(on, c, row, 0, 0)] = seen ? 0.0 : -inf;
         }
@@ -1504,11 +1507,15 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
       Vec weights(u * t_count);
       Vec table;
       Vec tokens;
+      // Without tokens, a hash's table is each row's ids already.
+      const bool looked_up = p.kind == ir::RouteKind::kHash && !has(3);
       if (p.kind == ir::RouteKind::kHash) {
         LLMP_LOAD(tb, node.src[2]);
-        LLMP_LOAD(tk, node.src[3]);
         table = tb;
-        tokens = tk;
+        if (!looked_up) {
+          LLMP_LOAD(tk, node.src[3]);
+          tokens = tk;
+        }
       }
       std::vector<double> probs(static_cast<std::size_t>(e));
       for (std::uint64_t t = 0; t < t_count; ++t) {
@@ -1533,13 +1540,18 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
         }
         std::vector<std::size_t> chosen;
         if (p.kind == ir::RouteKind::kHash) {
-          const double token = tokens[t];
-          const std::uint64_t vocab = ne(2)[1];
-          if (!(token >= 0.0 && token < static_cast<double>(vocab))) {
-            return Fail(ExecError::kIndex, std::format("token {} of {}", token, vocab));
+          // The table's column for the row's token, or the row's own.
+          std::uint64_t column = t;
+          if (!looked_up) {
+            const double token = tokens[t];
+            const std::uint64_t vocab = ne(2)[1];
+            if (!(token >= 0.0 && token < static_cast<double>(vocab))) {
+              return Fail(ExecError::kIndex, std::format("token {} of {}", token, vocab));
+            }
+            column = static_cast<std::uint64_t>(token);
           }
           for (std::uint64_t i = 0; i < u; ++i) {
-            const double id = table[(static_cast<std::uint64_t>(token) * u) + i];
+            const double id = table[(column * u) + i];
             if (!(id >= 0.0 && id < static_cast<double>(e))) {
               return Fail(ExecError::kIndex, std::format("expert {} of {}", id, e));
             }

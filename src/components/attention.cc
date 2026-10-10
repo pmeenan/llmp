@@ -227,8 +227,8 @@ model::StateContract State(const Instance& in) {
   return c;
 }
 
-std::vector<std::pair<std::uint16_t, std::uint32_t>> Masks(const Instance& in) {
-  return {{0, DimsOf(in).window}};
+std::vector<MaskUse> Masks(const Instance& in) {
+  return {{.tensor = 0, .window = DimsOf(in).window}};
 }
 
 constexpr std::array kBatchClasses{

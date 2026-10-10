@@ -791,10 +791,12 @@ Out InferPrimitive(const Ctx& c) {
       LLMP_TRY(IndexSrc(c, 1));
       const auto p = c.params<MaskParams>();
       LLMP_TRY(Zero(c, 1, 3));
-      if (static_cast<std::uint8_t>(p.kind) > static_cast<std::uint8_t>(MaskKind::kBlock) ||
-          (p.kind == MaskKind::kWindow) != (p.window != 0) ||
+      if (static_cast<std::uint8_t>(p.kind) > static_cast<std::uint8_t>(MaskKind::kAhead) ||
+          (p.kind == MaskKind::kWindow && p.window == 0) ||
+          ((p.kind == MaskKind::kCausal || p.kind == MaskKind::kBlock) && p.window != 0) ||
           (p.kind == MaskKind::kBlock) != (p.block != 0)) {
-        return Fail(GraphError::kParams, c, "a window for kWindow, a block for kBlock, only");
+        return Fail(GraphError::kParams, c,
+                    "a window for kWindow (kAhead's optional), a block for kBlock, only");
       }
       const TensorDesc& qp = *c.src(0);
       const TensorDesc& cp = *c.src(1);
@@ -1039,16 +1041,22 @@ Out InferPrimitive(const Ctx& c) {
       const bool may_bias = wants_bias || p.kind == RouteKind::kSigmoidTopK;
       const bool hash = p.kind == RouteKind::kHash;
       if ((bias != nullptr && !may_bias) || (wants_bias && bias == nullptr) ||
-          hash != (table != nullptr) || hash != (tokens != nullptr)) {
-        return Fail(GraphError::kArity, c, "the kind's sources: a bias, or a table and tokens");
+          hash != (table != nullptr) || (!hash && tokens != nullptr)) {
+        return Fail(GraphError::kArity, c,
+                    "the kind's sources: a bias, or a table (and the tokens it is read by)");
       }
       if (bias != nullptr) {
         LLMP_TRY(Want(bias->shape().ne == S(p.experts).ne, c, "a bias per expert"));
       }
-      if (hash) {
+      if (hash && tokens != nullptr) {
         LLMP_TRY(Want(table->ne(0) == p.used && table->ne(2) == 1 && table->ne(3) == 1 &&
                           tokens->shape().ne == S(logits.ne(1)).ne,
                       c, "a table [used, vocabulary] and a token per row"));
+      } else if (hash) {
+        // The ids looked up already (a token-hash side input's).
+        LLMP_TRY(Want(table->shape().ne == S(p.used, logits.ne(1)).ne &&
+                          table->format.encoding == Encoding::kI32,
+                      c, "ids [used, rows] I32 without tokens"));
       }
       Inferred r;
       r.out[0] = Fresh(S(p.used, logits.ne(1)), Encoding::kI32);

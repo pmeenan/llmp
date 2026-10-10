@@ -207,6 +207,16 @@ owners runs as several nodes of up to four (GGML's four-root carriers),
 each naming every joined owner (the cohort, up to 64) and its first
 owner's place among them, which an implementation partitions its grid by
 and the reference executor ignores; 0 and 0 is a lone node.
+DeepSeek V4 (slice G4a, 2026-10-10; still version 1) adds a mask kind
+and lets a hash route take its ids already looked up: `MaskKind::kAhead`
+(cell c seen from position p where c > p or p − c < window, a window of
+0 every earlier cell: DSpark's block drafter, whose rows see their whole
+block and the window before it; GGML's `MaskPolicy::kBlock` producer),
+beside `kBlock`, which keeps its meaning; and `kRoute` `kHash` without
+tokens, its table then the rows' ids I32 [used, rows] (a token-hash side
+input's), which decomposes to no lookup. The builder's mask validation
+now requires a window for `kWindow`, a block for `kBlock`, and no
+window for `kCausal` or `kBlock`.
 
 **The planner, as built** (`src/planner`, 2026-10-09). `Plan(primitive
 graph, registry, device facts, policy, options)` gives a `StepPlan`: the
@@ -822,6 +832,94 @@ the new inputs and cell rules (the GGML lowering refuses them today) are
 slice G3b's; the engine's binding of side rows, commits and the MTP
 passes' features is G3c's.
 
+**DeepSeek V4 and DSpark** (slice G4a, 2026-10-10). Four new kinds and
+extensions of three, each with a CPU reference independent of its
+fragment (`components_dsv4_test`):
+
+- the Sinkhorn hyper-connections are `residual.hc`, `hc.mix` and
+  `hc.combine` with `mix` `sinkhorn` (G3a's sigmoid mix unchanged):
+  the streams normed as one row, their product with `fn` split into pre
+  weights (sigmoid plus `hc_eps`, summed by `kHcPre`, then the block's
+  own input norm, `post_norm`), post weights and the streams² Sinkhorn
+  combination (`kHcMix`, `iterations`); `hc.combine` is `kHcPost`. A mix
+  now returns two carries (`Fragment::carry2`: post weights and
+  combination), and a fragment learns whether a later component reads
+  its carry (`Fragment::carry_needed`): a state-only step's last layer
+  emits no combination;
+- `attention.mqa` is DeepSeek's attention in one kind, chosen by
+  parameters: the low-rank query with per-head norms, one K=V head, YaRN
+  NORM rotation of the tail (`defs::YarnRotation`, the angles as GGML's
+  kernel forms them) and the inverse rotation of the output, learned
+  sinks, grouped low-rank output; the window cache a ring, a cell per
+  position (`cache` `full`, today's `Dsv4Window::kFull`) or a drafter's
+  injected ring; with a `ratio`, the gated compressor (CSA, with
+  `overlap`, and HCA) pooling into the compressed cache through
+  `kPool`, and with the `indexer` the lightning indexer (its own
+  compressor, the Hadamard rotation, `kIndexScore` and the top 512
+  through `kTopK`, a −inf fill with zeros stored at the selected cells);
+- `ffn.moe` gains the `sqrt_softplus` router (with `router_bias`, F32
+  accumulation, `route_scale`), the `hash` router reading a per-layer
+  side input, and SwiGLU clamped at `limit` (`silu_clamp`; the shared
+  expert's `shared_limit`); `side.hash` is that side input, each row's
+  token's row of the host table (`ffn_gate_tid2eid`, rows on demand);
+- `embedding.inject` is DSpark's input: its target's token rows, scaled,
+  in its own steps, and in its target's its injection
+  (`ComponentDef::inject`, `inject_reads`, `inject_rows`): the taps it
+  reads (`TapPoint::kStreamMean`, the mean of the target's streams
+  entering each named layer) joined per row, each segment's last rows
+  projected by `fc` and normed; each `attention.mqa` with an injected
+  cache then writes its ring from that input. `BuildStep` runs every
+  injection after the target's head, as llama.cpp's graph does, and a
+  drafter's injected tensors are taps its target writes;
+- `head.linear` gains the Markov head (`markov`: each row's logits
+  biased by `markov_w2 · markov_w1[previous token]`, the chain run per
+  segment) for a drafter's head of every row.
+
+The compressors need inputs and cell rules of their own: rings of recent
+positions (`CellKey::recent`, read whole and kept as their last rows),
+compressed caches a cell per block of positions (`CellKey::positions`:
+their read width follows the segment's end, not its read cells), and the
+host-built inputs `kPositionPhases`, `kKeptRows`, `kKeptCells`,
+`kPoolReads`, `kBlockCells`, `kBlockStarts` (`PlanCompressor`, a port of
+llama.cpp's `dsv4_build_comp_plan`, equal to `Dsv4CompressorPlan`) and
+the constant `kHadamard`. A component's weight formats need cover only
+the roles it uses. The mapped layouts are today's `Dsv4State` (both
+window modes) and `DsparkState` byte for byte.
+
+The structural comparison (`components_dsv4_order_test`) holds the
+target's steps to `BuildDsv4Graph`'s reference form (`fused` false:
+llama.cpp's graph) node for node over one-owner prefill (7 rows; 64 after
+300 with two outputs; 130, an HCA block), decode, greedy decode,
+state-only and an injecting chunk, and DSpark's draft block to
+`BuildDsparkGraph`. The routing, the experts' reduce and the pooling are
+composite ops compared as the run of nodes each decomposes to. Out of
+order by design: each attention mix's carries (post weights and
+combination), made right after the mixing product where the reference
+form makes them just before their combine (its FFN mix already records
+them there), eight entries a layer, the hash layers' lookups, made as
+side inputs after the embedding, and views of leaves (weights', a
+compressor's ring), which compute nothing: 388 entries of a target step (380
+state-only), 24 of the draft block, each checked to be one of those. The
+reference form builds one owner only (`BuildDsv4WaveGraph` and
+`BuildDsparkWaveGraph` are the fast plan alone) and its verify is the
+row-invariant plan's (D-092), so several owners' waves, joined draft
+blocks and the verify are held to the components' references here and
+compared numerically by G4b's lowering against today's runner.
+
+Open for G4b and G4c: the fast plan's patterns, declared by name
+(`dsv4_qhead`, `dsv4_compress`, `dsv4_lid_topk`,
+`dsv4_sparse_attention`, `dsv4_out_a`, `dsv4_hc_pre`, `dsv4_hc_post`),
+the default policy and the row-invariant verify; the GGML lowering of
+the compressors' inputs, `kHadamard` and `kAhead` masks, which it refuses
+by name today; and the plan key, which ignores `past` (planner
+`step_shape.h`) while a compressed cache's read width and an HCA layer's
+block count follow it, so a plan must not be reused across them as it
+stands (G4b decides whether the key carries them or the fragment pads
+them to the read cells). The engine's binding of the hash rows, the
+compressor plan and the injection's features is G4c's. Expert
+parallelism with as many experts as devices (`partition.cc`) is not
+reachable for DeepSeek on two Sparks (256 experts) and is left as it is.
+
 ### The model spec
 
 A model is a spec in its artifact's manifest, written by the importer and
@@ -956,6 +1054,26 @@ fixture's, every import's layers are the same components, the layouts are
 today's state, and every step kind builds; the reference executor does
 not run them (it binds whole weights: 97 GB a ModelOpt artifact), so
 their numerical gate is G3b's lowering against today's runner.
+
+DeepSeek V4 (slice G4a) extends the mappings again: slots whose count a
+key gives (`SlotRule::count_key`, `count_above`: the hash layers, then
+the bias-routed ones), one slot instance a layer (`per_layer`: each hash
+layer's own `side.hash`, named `hash_<layer>`), string parameters naming
+their layer (`{layer}`), a layer type per layer from an integer-list key
+(`Mapping::layer_type_key`, `layer_type_codes`: compress ratios 0, 4,
+128 to `w`, `c`, `h`), and drafter reads over the layers a key lists
+(`ReadRule::layers_key`, `index`, `entering`: the stream means entering
+`dflash.target_layers`' layers). The `deepseek4` mapping makes the
+target (Sinkhorn mixing, `attention.mqa` per layer type, `ffn.moe` with
+hash or biased routing, the head's mix, the untied output) and `dflash`
+composes the DSpark stage `dspark` (three window layers over a 256-cell
+injected ring, `embedding.inject`, the head's mix of every row, its
+target's output and the Markov head; `conf_proj` unbound). Values come
+from today's profiles (`Dsv4V0Values`, `DsparkV0Values`). On the
+installed artifacts (`components_dsv4_models_test`: UD-Q2_K_XL
+`8a355bfb`, the community IQ2_XXS `cd39d504`, DSpark `dd2d3f9c`), the
+specs equal the unit fixture's, the layouts are today's, and every step
+kind builds, the injection writing every drafter layer's ring.
 
 ## Weight and state formats
 

@@ -90,31 +90,49 @@ each lands):
   Update the licensing and lock entries for the deleted ports, as G1d did,
   and the plan ticks. Write a coverage map of every deleted test, as in
   `4a6710ce`'s message.
-- **G3b: Qwen3.8 patterns, policy and GGML lowering, with the numeric match
-  against Qwen38Runner** (`agent-a1d41dad140560dc5`; Spark copy
-  `spark-b:~/src/m36-g3b`). Mid-build. Its `G3B-HANDOFF.md`, at that
-  worktree's root, says what's done and what's left. The brief's nine items
-  are:
-  1. the convolution padding past 32 rows;
-  2. mask padding in selecting steps;
-  3. node order at the n-gram layer;
-  4. numeric coverage of verify, draft, catch-up, multi-owner, QSA
-     selection, MTP and commits after partial acceptance;
-  5. the MTP head's `draft_vocab` prefix;
-  6. state compared by tensor, not offset;
-  7. the fused QSA pool;
-  8. sequencing builder calls into locals;
-  9. exact or tightly bounded comparisons.
+- **G3b: Qwen3.8 patterns, policy and GGML lowering**
+  (`agent-a1d41dad140560dc5`, based on `88efa86c`; Spark copy
+  `spark-b:~/src/m36-g3b`, helper `~/scratch/g3b/tgt.sh`). Stopped at a
+  building checkpoint on 2026-10-10. Its `G3B-HANDOFF.md`, at the
+  worktree root, has the detail. Plain mode is bit-identical to today's
+  `Qwen38Runner` fast form on all three forms (ModelOpt CUTLASS, ModelOpt
+  GGML experts, GGUF): 31 outputs and 242 state tensors, two owners, 24
+  waves including captured replays and a step past the QSA budget
+  (`component_runner_qwen38_gpu_test`). All three forms and the MTP
+  drafter lower launch for launch on the CPU (`ggml_lower_qwen38_test`).
+  Brief items 1–3 and 5–9 are done. Item 4 is done for plain mode only:
+  speculation's GPU numerics (verify, commits of k of n rows, catch-up,
+  draft passes) wait on G3c's wiring, because ModelRunner can't yet bind
+  verify saves, run commit steps or stage drafter features. Left before
+  review:
+  - rerun the shared set, clang-format, `tools/llmp_boundaries.py` and the
+    header check on the final state;
+  - fill in the two `(STATUS)` placeholders in engine-components.md and
+    plan.md;
+  - merge main (it has moved since `88efa86c`);
+  - a heavy-path review;
+  - the full Spark set.
 
-  The ModelOpt artifact is about 97 GB, so run one real model at a time.
-- **G4a: DeepSeek V4 components, mappings and the DSpark stage**
-  (`agent-a419bc127386d14ef`; Spark copy `spark-b:~/src/m36-g4a`). The
-  builder passed the full set, and review round 1 was finishing. Known
-  open issue: the plan key ignores `past`, but a compressed cache's read
-  width and an HCA layer's block count depend on it. Either add them to
-  `StepShape`/the plan key or pad them to the read cells, before any
-  cached DeepSeek plan can be reused. The round's findings decide whether
-  another round is needed.
+  Caveat: the GPU test keeps the n-gram table resident (+28.8 GB), which
+  puts the ModelOpt run near the Spark's memory limit.
+- **G4a: DeepSeek V4 components, mappings and the DSpark stage** landed on
+  `main` (see `git log`). Owed by G4b, before the lowering accepts
+  DeepSeek's new inputs: the plan key ignores `past`, but an HCA layer's
+  block count and a compressed cache's read width depend on it. Either key
+  `CompressorBlocks(rows, past, ratio, overlap)` and the compressed width, or
+  make both independent of `past` by padding; `src/planner/step_shape.h`'s
+  header gives both options. The mqa reference's hard-coded 256-cell
+  compressed width must follow whichever is chosen. Owed by G4c:
+  - binding the hash-routing side ids, checked against the expert count as
+    `CheckDsv4HashRouting` does;
+  - the compressor plan inputs;
+  - the injection's features, with a drafter slot for every target slot.
+
+  Smaller items from the review (in the deferred list below):
+  - `route_scale` 0 should map to 1 in the importer's mapping;
+  - `silu_clamp` refuses a single unset limit;
+  - `WritesFor` over-refuses verifies on recent rings;
+  - `HadamardValues` may differ by 1 ulp at n = 128.
 - **Model archive design** (its own worktree). This is the owner's
   direction, not part of the M3.6 plan proper:
   - `docs/model-archive.md`, with layout, manifest, catalog (meta-index)

@@ -324,7 +324,9 @@ Outputs Route(D& d, const RouteParams& p) {
   const TensorId rows = b.Reshape(probs, S(1, e, t));
   TensorId ids{};
   if (p.kind == RouteKind::kHash) {
-    ids = b.GetRows(d.s(2), d.s(3));  // [U, T]
+    // [U, T]: the table read by the tokens, or without them each row's ids
+    // looked up already (a token-hash side input's).
+    ids = d.s(3).valid() ? b.GetRows(d.s(2), d.s(3)) : d.s(2);
   } else {
     const TensorId selection = d.s(1).valid() ? b.Add(probs, d.s(1)) : probs;
     const TensorId order = b.Argsort(selection, true);

@@ -16,6 +16,22 @@
 // GLU of the stream behind its sigmoid gate (`shared_gate`: the stream's
 // product with the gate's row), added to them. The route and reduce shapes
 // are its parameters (experts, used, the expert width), not constants.
+// DeepSeek V4's layer (deepseek4.cpp's build_moe_ffn call): placement
+// "none", the router over the stream summed in F32 (`router_f32`),
+// sqrt(softplus) probabilities chosen by the highest plus a learned bias
+// per expert (router "sqrt_softplus"), or in its first layers by a
+// token-hash side input (router "hash", its side input `hash`), the
+// selected weights renormalized and scaled (`route_scale`); the routed
+// experts' and the ungated shared expert's clamped SwiGLU (activation
+// "silu_clamp", `limit` and `shared_limit`).
+//
+// side.hash, version 1: a token-hash side input (DeepSeek V4's
+// ffn_gate_tid2eid): each row's `used` experts, the row's token's row of a
+// table I32 [used, vocabulary] that the engine reads by rows on demand (a
+// host table: the engine checks every id it reads against `experts`
+// before the step, as model/dsv4.h CheckDsv4HashRouting does, since the
+// expert products index memory with them), as ids I32 [used, rows] that
+// its layer's hash router reads.
 //
 // It splits by experts (expert parallelism): each device holds its own
 // experts' matrices whole, the routing and the dense GLU whole on every
@@ -45,24 +61,32 @@ namespace llmp::components {
 namespace moe {
 
 ir::TensorId EmitGlu(ir::Builder& b, ir::TensorId h, ir::TensorId gate, ir::TensorId up,
-                     ir::TensorId down, ir::GluKind kind) {
+                     ir::TensorId down, ir::GluKind kind, float limit) {
   const ir::TensorId g = b.MatMul(gate, h);
   const ir::TensorId u = b.MatMul(up, h);
-  return b.MatMul(down, b.Glu(g, u, {.kind = kind}));
+  return b.MatMul(down, b.Glu(g, u, {.kind = kind, .limit = limit}));
 }
 
-namespace {
-double Act(ir::GluKind kind, double gate) {
-  return kind == ir::GluKind::kSwiGlu ? defs::Silu(gate) : defs::GeluTanh(gate);
+double GluOf(ir::GluKind kind, double gate, double up, float limit) {
+  switch (kind) {
+    case ir::GluKind::kSwiGlu:
+      return defs::Silu(gate) * up;
+    case ir::GluKind::kSwiGluClamp: {
+      const auto l = static_cast<double>(limit);
+      return defs::Silu(std::min(gate, l)) * std::clamp(up, -l, l);
+    }
+    default:
+      return defs::GeluTanh(gate) * up;
+  }
 }
-}  // namespace
 
 std::vector<double> GluReference(std::span<const double> h, std::span<const float> gate,
                                  std::span<const float> up, std::span<const float> down,
-                                 std::uint64_t width, std::uint64_t hidden, ir::GluKind kind) {
+                                 std::uint64_t width, std::uint64_t hidden, ir::GluKind kind,
+                                 float limit) {
   const std::vector<double> g = defs::Product(gate, width, hidden, h);
   std::vector<double> u = defs::Product(up, width, hidden, h);
-  for (std::size_t i = 0; i < u.size(); ++i) u[i] *= Act(kind, g[i]);
+  for (std::size_t i = 0; i < u.size(); ++i) u[i] = GluOf(kind, g[i], u[i], limit);
   return defs::Product(down, hidden, width, u);
 }
 
@@ -73,22 +97,25 @@ float InputScale(std::uint64_t width) { return 1.0F / std::sqrt(static_cast<floa
 }  // namespace
 
 Routed EmitRouter(ir::Builder& b, ir::TensorId x, ir::TensorId router, ir::TensorId scale,
-                  const RouterParams& p) {
+                  const RouterParams& p, ir::TensorId bias, ir::TensorId ids) {
   const std::uint64_t width = b.tensor(x).ne(0);
   const ir::TensorId in =
       p.rms_input ? b.Mul(b.Scale(b.RmsNorm(x, p.eps), InputScale(width)), scale) : x;
-  const ir::Outputs out = b.Route(b.MatMul(router, in), {}, {}, {},
-                                  {.kind = ir::RouteKind::kSoftmaxTopK,
+  const ir::TensorId logits =
+      b.MatMul(router, in, {.accumulate = p.f32 ? ir::Accumulate::kF32 : ir::Accumulate::kDefault});
+  const ir::Outputs out = b.Route(logits, bias, ids, {},
+                                  {.kind = p.kind,
                                    .normalize = p.normalize,
                                    .experts = p.experts,
                                    .used = p.used,
-                                   .scale = 1.0F});
+                                   .scale = p.route_scale});
   return {.ids = out[0], .weights = out[1]};
 }
 
 RoutedRef RouterReference(std::span<const double> x, std::uint64_t width,
                           std::span<const float> router, std::span<const float> scale,
-                          const RouterParams& p) {
+                          const RouterParams& p, std::span<const float> bias,
+                          std::span<const std::int64_t> ids) {
   std::vector<double> in(x.begin(), x.end());
   if (p.rms_input) {
     defs::RmsRows(in, width, p.eps, {});
@@ -102,26 +129,44 @@ RoutedRef RouterReference(std::span<const double> x, std::uint64_t width,
   const std::size_t rows = in.size() / width;
   std::vector<double> probs(p.experts);
   std::vector<std::uint32_t> order(p.experts);
+  std::vector<double> selection(p.experts);
   for (std::size_t t = 0; t < rows; ++t) {
     const auto row = std::span(logits).subspan(t * p.experts, p.experts);
-    const double top = *std::ranges::max_element(row);
-    double sum = 0.0;
-    for (std::uint32_t e = 0; e < p.experts; ++e) {
-      probs[e] = std::exp(row[e] - top);
-      sum += probs[e];
+    if (p.kind == ir::RouteKind::kSoftmaxTopK) {
+      const double top = *std::ranges::max_element(row);
+      double sum = 0.0;
+      for (std::uint32_t e = 0; e < p.experts; ++e) {
+        probs[e] = std::exp(row[e] - top);
+        sum += probs[e];
+      }
+      for (double& v : probs) v /= sum;
+    } else {
+      // sqrt(softplus(x)) (DeepSeek V4's).
+      for (std::uint32_t e = 0; e < p.experts; ++e) {
+        const double softplus = row[e] > 20.0 ? row[e] : std::log1p(std::exp(row[e]));
+        probs[e] = std::sqrt(softplus);
+      }
     }
-    for (double& v : probs) v /= sum;
+    for (std::uint32_t e = 0; e < p.experts; ++e) {
+      selection[e] = probs[e] + (bias.empty() ? 0.0 : static_cast<double>(bias[e]));
+    }
     std::iota(order.begin(), order.end(), 0U);
-    // The highest first; equals in index order.
-    std::ranges::stable_sort(order,
-                             [&](std::uint32_t a, std::uint32_t b) { return probs[a] > probs[b]; });
+    if (p.kind == ir::RouteKind::kHash) {
+      for (std::uint32_t u = 0; u < p.used; ++u) {
+        order[u] = static_cast<std::uint32_t>(ids[(t * p.used) + u]);
+      }
+    } else {
+      // The highest first; equals in index order.
+      std::ranges::stable_sort(
+          order, [&](std::uint32_t a, std::uint32_t b) { return selection[a] > selection[b]; });
+    }
     double chosen = 0.0;
     for (std::uint32_t u = 0; u < p.used; ++u) chosen += probs[order[u]];
     for (std::uint32_t u = 0; u < p.used; ++u) {
       out.ids.push_back(order[u]);
       double w = probs[order[u]];
       if (p.normalize) w /= std::max(chosen, 0x1p-14);
-      out.weights.push_back(w);
+      out.weights.push_back(w * static_cast<double>(p.route_scale));
     }
   }
   return out;
@@ -159,7 +204,7 @@ ir::TensorId EmitExperts(ir::Builder& b, ir::TensorId h, const Routed& routed, i
     g = scaled(b.MatMulId(gate, in, routed.ids), gate_scale);
     u = scaled(b.MatMulId(up, in, routed.ids), up_scale);
   }
-  const ir::TensorId act = b.Glu(g, u, {.kind = p.kind});
+  const ir::TensorId act = b.Glu(g, u, {.kind = p.kind, .limit = p.limit});
   const ir::TensorId out = b.MatMulId(down, act, routed.ids);
   if (!scale.valid()) return b.ExpertReduce(out, routed.weights, routed.ids, {});
   // The reduce reads each slot's scale.
@@ -196,7 +241,7 @@ std::vector<double> ExpertsReference(std::span<const double> h, const RoutedRef&
         if (!gate_scale.empty()) sg *= static_cast<double>(gate_scale[e]);
         if (!up_scale.empty()) su *= static_cast<double>(up_scale[e]);
         gv[j] = sg;
-        uv[j] = su * Act(p.kind, sg);
+        uv[j] = GluOf(p.kind, sg, su, p.limit);
       }
       const double factor = scale.empty() ? 1.0 : static_cast<double>(scale[e]);
       const double weight = routed.weights[(t * used) + s];
@@ -218,9 +263,24 @@ namespace defs {
 namespace {
 
 constexpr std::array<std::string_view, 2> kPlacements{"parallel", "none"};
-constexpr std::array<std::string_view, 2> kActivations{"gelu_tanh", "silu"};
-constexpr std::array<std::string_view, 1> kRouters{"softmax_topk"};
+// "silu_clamp": SwiGLU with the gate clamped above and up both ways
+// (DeepSeek V4's, at `limit` for the routed experts and `shared_limit` for
+// the dense GLU).
+constexpr std::array<std::string_view, 3> kActivations{"gelu_tanh", "silu", "silu_clamp"};
+// "sqrt_softplus": sqrt(softplus) probabilities, the highest plus a bias
+// per expert chosen (role router_bias); "hash": each row's experts a
+// token-hash side input names (`hash`); both DeepSeek V4's.
+constexpr std::array<std::string_view, 3> kRouters{"softmax_topk", "sqrt_softplus", "hash"};
 constexpr std::array<std::string_view, 2> kRouterInputs{"rms_scaled", "stream"};
+
+constexpr ParamSpec Real(std::string_view name, double fallback) {
+  return {.name = name,
+          .type = ParamType::kReal,
+          .required = false,
+          .least = 0.0,
+          .most = 1e6,
+          .fallback = fallback};
+}
 
 constexpr ParamSpec Flag(std::string_view name) {
   return {.name = name,
@@ -254,6 +314,15 @@ constexpr std::array kParams{
     Flag("projection_scales"),
     // The dense GLU (the shared expert) times sigmoid(x · shared_gate).
     Flag("shared_gate"),
+    // The selected weights' scale (DeepSeek V4's expert_weights_scale).
+    Real("route_scale", 1.0),
+    // The router's product summed in F32.
+    Flag("router_f32"),
+    // The clamped SwiGLU's limits: the routed experts', the dense GLU's.
+    Real("limit", 0.0),
+    Real("shared_limit", 0.0),
+    // A hash router's side input (spec.h SideInput: its ids).
+    ParamSpec{.name = "hash", .type = ParamType::kName, .required = false},
 };
 
 enum : std::uint16_t {
@@ -276,6 +345,7 @@ enum : std::uint16_t {
   kUpScale,
   kDownScale,
   kSharedGate,
+  kRouterBias,
 };
 constexpr std::array kRoles{
     WeightRole{.name = "norm", .encodings = kF32Only},
@@ -297,6 +367,7 @@ constexpr std::array kRoles{
     WeightRole{.name = "up_scale", .encodings = kF32Only},
     WeightRole{.name = "down_scale", .encodings = kF32Only},
     WeightRole{.name = "shared_gate"},
+    WeightRole{.name = "router_bias", .encodings = kF32Only},
 };
 
 struct Dims {
@@ -304,7 +375,20 @@ struct Dims {
   bool parallel, rms_router, normalize, expert_scales, stacked, projection_scales, shared_gate;
   ir::GluKind kind;
   float eps;
+  ir::RouteKind route;
+  float route_scale, limit, shared_limit;
+  bool router_f32;
 };
+ir::GluKind GluKindOf(std::string_view name) {
+  if (name == "silu") return ir::GluKind::kSwiGlu;
+  if (name == "silu_clamp") return ir::GluKind::kSwiGluClamp;
+  return ir::GluKind::kGeGluTanh;
+}
+ir::RouteKind RouteKindOf(std::string_view name) {
+  if (name == "sqrt_softplus") return ir::RouteKind::kSqrtSoftplusBias;
+  if (name == "hash") return ir::RouteKind::kHash;
+  return ir::RouteKind::kSoftmaxTopK;
+}
 Dims DimsOf(const Instance& in) {
   const Params& p = in.params;
   return {.width = in.stage.width,
@@ -319,8 +403,17 @@ Dims DimsOf(const Instance& in) {
           .stacked = p.Flag("stacked"),
           .projection_scales = p.Flag("projection_scales"),
           .shared_gate = p.Flag("shared_gate"),
-          .kind = p.Name("activation") == "silu" ? ir::GluKind::kSwiGlu : ir::GluKind::kGeGluTanh,
-          .eps = F32(p.Real("eps"))};
+          .kind = GluKindOf(p.Name("activation")),
+          .eps = F32(p.Real("eps")),
+          .route = RouteKindOf(p.Name("router")),
+          .route_scale = F32(p.Real("route_scale")),
+          .limit = F32(p.Real("limit")),
+          .shared_limit = F32(p.Real("shared_limit")),
+          .router_f32 = p.Flag("router_f32")};
+}
+
+std::string_view HashInput(const Instance& in) {
+  return in.params.Name("router") == "hash" ? in.params.Name("hash") : std::string_view{};
 }
 
 std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
@@ -329,6 +422,18 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   if (d.expert_scales && d.projection_scales) {
     return std::unexpected("a learned expert scale and the products' scales both");
   }
+  if ((d.kind == ir::GluKind::kSwiGluClamp) != (d.limit > 0.0F && d.shared_limit > 0.0F) ||
+      (d.kind != ir::GluKind::kSwiGluClamp &&
+       (in.params.Given("limit") || in.params.Given("shared_limit")))) {
+    return std::unexpected("a clamped SwiGLU's limits, both above zero, and only its");
+  }
+  if ((d.route == ir::RouteKind::kHash) != in.params.Given("hash")) {
+    return std::unexpected("a hash router's side input, and only its");
+  }
+  if (d.route != ir::RouteKind::kSoftmaxTopK && d.rms_router) {
+    return std::unexpected("a DeepSeek router reads the stream itself");
+  }
+  if (!(d.route_scale > 0.0F)) return std::unexpected("a route scale above zero");
   const std::uint64_t w = d.width;
   const std::uint64_t e = d.experts;
   const std::uint64_t f = d.expert_hidden;
@@ -353,6 +458,7 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
     for (const std::uint16_t r : {kGateScale, kUpScale, kDownScale}) out.push_back(Role(r, {e}));
   }
   if (d.shared_gate) out.push_back(Role(kSharedGate, {w}));
+  if (d.route == ir::RouteKind::kSqrtSoftplusBias) out.push_back(Role(kRouterBias, {e}));
   return out;
 }
 
@@ -400,27 +506,41 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   };
   // The builders' order: the routing, the routed experts and their reduce,
   // then the dense GLU, then the sums.
-  const moe::Routed routed =
-      moe::EmitRouter(b, x, w(kRouter), d.rms_router ? w(kRouterScale) : ir::TensorId{},
-                      {.experts = static_cast<std::uint32_t>(d.experts),
-                       .used = static_cast<std::uint32_t>(d.used),
-                       .normalize = d.normalize,
-                       .eps = d.eps,
-                       .rms_input = d.rms_router});
-  const ir::TensorId reduced = moe::EmitExperts(
-      b, d.parallel ? norm(x, kRoutedNorm) : x, routed,
-      w(d.stacked ? kGateUpExperts : kGateExperts), d.stacked ? ir::TensorId{} : w(kUpExperts),
-      w(kDownExperts),
-      d.expert_scales       ? w(kExpertScale)
-      : d.projection_scales ? w(kDownScale)
-                            : ir::TensorId{},
-      {.width = d.width, .hidden = d.expert_hidden, .stacked = d.stacked, .kind = d.kind},
-      d.projection_scales ? w(kGateScale) : ir::TensorId{},
-      d.projection_scales ? w(kUpScale) : ir::TensorId{});
+  ir::TensorId hashed{};
+  if (d.route == ir::RouteKind::kHash) {
+    hashed = f.Side(HashInput(f.instance));
+    if (!hashed.valid()) return std::unexpected("a hash router without its side input");
+  }
+  const moe::Routed routed = moe::EmitRouter(
+      b, x, w(kRouter), d.rms_router ? w(kRouterScale) : ir::TensorId{},
+      {.experts = static_cast<std::uint32_t>(d.experts),
+       .used = static_cast<std::uint32_t>(d.used),
+       .normalize = d.normalize,
+       .eps = d.eps,
+       .rms_input = d.rms_router,
+       .kind = d.route,
+       .route_scale = d.route_scale,
+       .f32 = d.router_f32},
+      d.route == ir::RouteKind::kSqrtSoftplusBias ? w(kRouterBias) : ir::TensorId{}, hashed);
+  const ir::TensorId reduced =
+      moe::EmitExperts(b, d.parallel ? norm(x, kRoutedNorm) : x, routed,
+                       w(d.stacked ? kGateUpExperts : kGateExperts),
+                       d.stacked ? ir::TensorId{} : w(kUpExperts), w(kDownExperts),
+                       d.expert_scales       ? w(kExpertScale)
+                       : d.projection_scales ? w(kDownScale)
+                                             : ir::TensorId{},
+                       {.width = d.width,
+                        .hidden = d.expert_hidden,
+                        .stacked = d.stacked,
+                        .kind = d.kind,
+                        .limit = d.limit},
+                       d.projection_scales ? w(kGateScale) : ir::TensorId{},
+                       d.projection_scales ? w(kUpScale) : ir::TensorId{});
   if (!d.parallel) {
-    // Inside hyper-connections (Qwen3.8's): the experts' sum and the shared
-    // expert, behind its gate; no norm or residual of its own.
-    ir::TensorId shared = moe::EmitGlu(b, x, w(kGate), w(kUp), w(kDown), d.kind);
+    // Inside hyper-connections (Qwen3.8's, DeepSeek V4's): the experts' sum
+    // and the shared expert, behind its gate where it has one; no norm or
+    // residual of its own.
+    ir::TensorId shared = moe::EmitGlu(b, x, w(kGate), w(kUp), w(kDown), d.kind, d.shared_limit);
     if (d.shared_gate) {
       const ir::TensorId logit = b.SumRows(b.Mul(x, w(kSharedGate)));
       shared = b.Mul(shared, b.Unary(logit, ir::UnaryFn::kSigmoid));
@@ -450,26 +570,42 @@ std::expected<void, std::string> Reference(RefIO& io) {
     RmsRows(out, d.width, d.eps, w(role));
     return out;
   };
+  if (d.route == ir::RouteKind::kHash && (io.side_ids.size() != d.used * io.rows() ||
+                                          !std::ranges::all_of(io.side_ids, [&](std::int64_t id) {
+                                            return id >= 0 &&
+                                                   static_cast<std::uint64_t>(id) < d.experts;
+                                          }))) {
+    return std::unexpected("moe reference: a hash router's ids, each below the experts");
+  }
   const moe::RoutedRef routed = moe::RouterReference(
       io.stream, d.width, w(kRouter), d.rms_router ? w(kRouterScale) : std::span<const float>{},
       {.experts = static_cast<std::uint32_t>(d.experts),
        .used = static_cast<std::uint32_t>(d.used),
        .normalize = d.normalize,
        .eps = d.eps,
-       .rms_input = d.rms_router});
-  std::vector<double> reduced = moe::ExpertsReference(
-      d.parallel ? normed(io.stream, kRoutedNorm) : io.stream, routed,
-      w(d.stacked ? kGateUpExperts : kGateExperts),
-      d.stacked ? std::span<const float>{} : w(kUpExperts), w(kDownExperts),
-      d.expert_scales       ? w(kExpertScale)
-      : d.projection_scales ? w(kDownScale)
-                            : std::span<const float>{},
-      {.width = d.width, .hidden = d.expert_hidden, .stacked = d.stacked, .kind = d.kind},
-      d.projection_scales ? w(kGateScale) : std::span<const float>{},
-      d.projection_scales ? w(kUpScale) : std::span<const float>{});
+       .rms_input = d.rms_router,
+       .kind = d.route,
+       .route_scale = d.route_scale,
+       .f32 = d.router_f32},
+      d.route == ir::RouteKind::kSqrtSoftplusBias ? w(kRouterBias) : std::span<const float>{},
+      io.side_ids);
+  std::vector<double> reduced =
+      moe::ExpertsReference(d.parallel ? normed(io.stream, kRoutedNorm) : io.stream, routed,
+                            w(d.stacked ? kGateUpExperts : kGateExperts),
+                            d.stacked ? std::span<const float>{} : w(kUpExperts), w(kDownExperts),
+                            d.expert_scales       ? w(kExpertScale)
+                            : d.projection_scales ? w(kDownScale)
+                                                  : std::span<const float>{},
+                            {.width = d.width,
+                             .hidden = d.expert_hidden,
+                             .stacked = d.stacked,
+                             .kind = d.kind,
+                             .limit = d.limit},
+                            d.projection_scales ? w(kGateScale) : std::span<const float>{},
+                            d.projection_scales ? w(kUpScale) : std::span<const float>{});
   const std::vector<double> x = d.parallel ? normed(io.stream, kNorm) : io.stream;
   std::vector<double> shared =
-      moe::GluReference(x, w(kGate), w(kUp), w(kDown), d.width, d.hidden, d.kind);
+      moe::GluReference(x, w(kGate), w(kUp), w(kDown), d.width, d.hidden, d.kind, d.shared_limit);
   if (d.parallel) shared = normed(shared, kDensePostNorm);
   if (d.shared_gate) {
     const std::span<const float> g = w(kSharedGate);
@@ -495,13 +631,88 @@ std::expected<void, std::string> Reference(RefIO& io) {
   return {};
 }
 
+// ---------------------------------------------------------------- side.hash
+
+constexpr std::array kHashParams{
+    ParamSpec{.name = "experts", .type = ParamType::kInt, .least = 1, .most = 4096},
+    ParamSpec{.name = "used", .type = ParamType::kInt, .least = 1, .most = 64},
+};
+constexpr std::array<format::Encoding, 1> kI32{format::Encoding::kI32};
+constexpr std::array kHashRoles{
+    WeightRole{.name = "table", .encodings = kI32, .rows_on_demand = true}};
+constexpr std::array kHashBatch{BatchClass{.op = ir::Op::kGetRows, .batch = ir::Batch::kJoined}};
+
+std::expected<std::vector<RoleShape>, std::string> HashShapes(const Instance& in) {
+  if (in.params.Int("used") > in.params.Int("experts")) {
+    return std::unexpected("more experts used than there are");
+  }
+  return std::vector<RoleShape>{Role(0, {static_cast<std::uint64_t>(in.params.Int("used")), 0})};
+}
+
+std::expected<FragmentOut, std::string> HashEmit(Fragment& f) {
+  // Each row's token's row of the table: its experts' ids.
+  return FragmentOut{.stream = f.b.GetRows(f.Weight(0), f.step.SideRows(f.instance.index, 1))};
+}
+
+// A row's lookup: its token.
+std::expected<void, std::string> HashRows(const Instance&, std::span<const std::int32_t> history,
+                                          std::uint32_t position, std::span<std::int32_t> out) {
+  if (position >= history.size() || out.size() != 1) {
+    return std::unexpected("a token-hash row past the history, or of another count");
+  }
+  out[0] = history[position];
+  return {};
+}
+
+std::uint64_t HashCount(const Instance&) { return 1; }
+
+std::expected<void, std::string> HashReference(RefIO& io) {
+  const Instance& in = *io.instance;
+  const auto used = static_cast<std::uint64_t>(in.params.Int("used"));
+  const auto experts = static_cast<std::int64_t>(in.params.Int("experts"));
+  const std::span<const float> table = io.weights.at(0);
+  if (io.side_rows.size() != io.rows()) return std::unexpected("hash reference: its rows");
+  io.side_ids.clear();
+  for (const std::int64_t token : io.side_rows) {
+    if (token < 0 || static_cast<std::uint64_t>(token + 1) * used > table.size()) {
+      return std::unexpected("hash reference: a token past the table");
+    }
+    for (std::uint64_t u = 0; u < used; ++u) {
+      const auto id =
+          static_cast<std::int64_t>(table[(static_cast<std::uint64_t>(token) * used) + u]);
+      if (id < 0 || id >= experts) return std::unexpected("hash reference: an id past the experts");
+      io.side_ids.push_back(id);
+    }
+  }
+  return {};
+}
+
 }  // namespace
+
+const ComponentDef& SideHash() {
+  static const ComponentDef def{
+      .kind = "side.hash",
+      .version = 1,
+      .row_local = true,
+      .side_source = true,
+      .params = kHashParams,
+      .roles = kHashRoles,
+      .shapes = HashShapes,
+      .batch_classes = kHashBatch,
+      .emit = HashEmit,
+      .reference = HashReference,
+      .side_rows = HashRows,
+      .side_count = HashCount,
+  };
+  return def;
+}
 
 const ComponentDef& FfnMoe() {
   static const ComponentDef def{
       .kind = "ffn.moe",
       .version = 1,
       .row_local = true,
+      .side_input = HashInput,
       .params = kParams,
       .roles = kRoles,
       .shapes = Shapes,

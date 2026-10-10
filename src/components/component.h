@@ -253,11 +253,16 @@ struct Fragment {
   ir::TensorId residual{};
   // The latest carry a component of its layer handed on (FragmentOut::
   // carry): a hyper-connection mix's normalized streams, which the
-  // combine after its block reads.
+  // combine after its block reads; a Sinkhorn mix's post weights, with its
+  // streams' combination as `carry2`.
   ir::TensorId carry{};
+  ir::TensorId carry2{};
   // The stage's side inputs by name (made after the embedding, in name
   // order); invalid for a name the stage has not.
   std::function<ir::TensorId(std::string_view name)> side{};
+  // Whether a later component of its layer runs (to read a carry it makes:
+  // a state-only step's last layer runs no combine after its block).
+  bool carry_needed = true;
 
   ir::TensorId Weight(std::uint16_t role) const { return weight(role); }
   ir::TensorId State(std::size_t segment, std::size_t tensor) const {
@@ -277,8 +282,9 @@ struct FragmentOut {
   ir::TensorId features{};
   // The streams it wrote (a stage of several streams; invalid: unchanged).
   ir::TensorId residual{};
-  // What the next component of its layer reads (Fragment::carry).
+  // What the next component of its layer reads (Fragment::carry, carry2).
   ir::TensorId carry{};
+  ir::TensorId carry2{};
   // It gathered the step's output rows itself (a final norm that mixes the
   // streams after gathering them): what follows reads only those rows.
   bool narrowed = false;
@@ -314,8 +320,12 @@ struct RefIO {
   // lookup's indices, as the step's input holds them).
   std::vector<double> residual{};
   std::vector<double> carry{};
+  std::vector<double> carry2{};
   std::vector<double> side{};
   std::vector<std::int64_t> side_rows{};
+  // A side input of integers (a token-hash side input's expert ids,
+  // [used, rows]), which a consumer reads instead of `side`.
+  std::vector<std::int64_t> side_ids{};
   std::vector<double> features{};
   std::vector<std::vector<float>> weights{};
   std::vector<format::Shape> weight_shapes{};
@@ -334,6 +344,16 @@ struct RefIO {
 };
 
 // --------------------------------------------------------------- definition
+
+// A mask a component reads (ComponentDef::masks): over the cells of its
+// state tensor `tensor`, causal within `window` (0: every earlier cell), or
+// `ahead`: every later row of the step's own seen too (ir::MaskKind::kAhead,
+// a block drafter's).
+struct MaskUse {
+  std::uint16_t tensor = 0;
+  std::uint32_t window = 0;
+  bool ahead = false;
+};
 
 struct ComponentDef {
   std::string_view kind{};  // "attention.dense"
@@ -365,9 +385,9 @@ struct ComponentDef {
   model::Batching (*batching)(const Instance& instance) = nullptr;
   std::span<const SplitOption> splits{};
   std::span<const std::string_view> patterns{};
-  // Masks it reads, as (state tensor, window) pairs: made once per step
-  // and segment before the first layer (StepContext::Mask).
-  std::vector<std::pair<std::uint16_t, std::uint32_t>> (*masks)(const Instance& instance) = nullptr;
+  // Masks it reads: made once per step and segment before the first layer
+  // (StepContext::Mask).
+  std::vector<MaskUse> (*masks)(const Instance& instance) = nullptr;
   // An output head: whether an instance reads only the step's output rows;
   // null: it does. A head of every row (a drafter's) has none to narrow to.
   bool (*gathers)(const Instance& instance) = nullptr;
@@ -388,6 +408,21 @@ struct ComponentDef {
   // rows (StepContext::Saved), writes the state the kept rows alone would
   // have left (BuildCommit). Null: none.
   std::expected<void, std::string> (*commit)(Fragment& fragment) = nullptr;
+  // A drafter's injection (a block drafter's, DSpark's): what its target's
+  // steps compute into its state, run in its target's step after the
+  // target's own (BuildStep's injection pass) over each segment's last rows
+  // (as many as its rings hold). The drafter's embedding's reads the taps
+  // `inject_reads` names (Fragment::side, each the tap's value for every
+  // row of the target's step: a layer's streams' mean, its output or its
+  // streams) and returns the injected rows' input (FragmentOut::stream, the
+  // segments' rows joined); each of its layers' components that has one
+  // reads that (Fragment::stream) and writes its state there, state its
+  // target writes (StateTensorContract::target_writes) that needs no tap of
+  // its name. Null: none.
+  std::expected<FragmentOut, std::string> (*inject)(Fragment& fragment) = nullptr;
+  std::vector<std::string> (*inject_reads)(const Instance& instance) = nullptr;
+  // The rows of each segment an injection writes: its last min(rows, this).
+  std::uint32_t (*inject_rows)(const Instance& instance) = nullptr;
 };
 
 // The compiled catalog, in kind order, and a lookup.
