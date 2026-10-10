@@ -27,9 +27,11 @@
 #ifndef LLMP_PROVIDERS_FAKE_FAKE_DEVICE_RUNTIME_H_
 #define LLMP_PROVIDERS_FAKE_FAKE_DEVICE_RUNTIME_H_
 
+#include <cstddef>
 #include <cstdint>
 
 #include "base/bytes.h"
+#include "providers/device_runtime.h"
 
 namespace llmp::providers::fake {
 
@@ -49,6 +51,13 @@ struct FakeDeviceSettings {
 };
 // The settings the next OpenDevice uses (before it; not thread-safe with it).
 void ConfigureFakeDevice(FakeDeviceSettings settings);
+// One matching runtime copy fails. With queue_first its actual copy is
+// queued before the failure, so callers must retain staging until proven
+// retirement. Used by state-control publication/hydration fault tests.
+// matches_before lets a test fail a later member of one publication batch.
+void FailNextCopy(CopyKind kind, std::size_t bytes, bool queue_first = false,
+                  std::size_t matches_before = 0);
+void ClearCopyFailure();
 
 }  // namespace llmp::providers::fake
 

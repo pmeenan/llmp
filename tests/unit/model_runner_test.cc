@@ -678,6 +678,112 @@ TEST_F(ModelRunnerTest, LookaheadUsesDerivedDimensionsForBuildAndCaptureIdentity
   EXPECT_EQ(Rows(next->outputs.at(0))[0].position, 2);
 }
 
+class SideHistoryTest : public ModelRunnerTest {
+ protected:
+  ts::FakeSourceOptions SourceOptions() override {
+    auto o = ModelRunnerTest::SourceOptions();
+    o.extra_inputs = [](const pl::StepShape& shape) {
+      std::uint64_t rows = 0;
+      for (const auto& segment : shape.segments) rows += segment.rows;
+      return std::vector<kn::InputSlot>{
+          {.bytes = rows * 8, .kind = kn::InputKind::kSideRows, .component = 17}};
+    };
+    o.side_rows = [](std::uint16_t stage, std::uint16_t component,
+                     std::span<const std::int32_t> history, std::uint32_t position,
+                     std::span<std::int32_t> out) -> en::Status {
+      if (stage != 0 || component != 17 || out.size() != 2 || position >= history.size())
+        return std::unexpected("wrong lookup coordinates");
+      out[0] = history[position];
+      out[1] = position == 0 ? 0 : history[position - 1];
+      return {};
+    };
+    return o;
+  }
+};
+
+TEST_F(SideHistoryTest, LookupsUseEachOwnersHistoryAndNeverReplacePartialExplicitRows) {
+  const auto shape = Shape(pl::Phase::kPrefill, {Seg(0, 0, 2, 1), Seg(1, 0, 2, 1)});
+  const std::array<std::int32_t, 3> a{31, 32, 33}, b{81, 82, 83};
+  const std::array work{en::SegmentWork{.tokens = std::span(a).first(2), .history = a},
+                        en::SegmentWork{.tokens = std::span(b).first(2), .history = b}};
+  const auto run = [&](std::span<const std::int32_t> explicit_rows) {
+    return runner_->RunStep(
+        {.shape = shape, .work = work, .side_rows = explicit_rows, .ahead = {}});
+  };
+  const std::array<std::int32_t, 1> incomplete{99};
+  const auto executed = source_->executed();
+  const auto initialized = runner_->slots().used_bytes(0);
+  auto refused = run(incomplete);
+  ASSERT_FALSE(refused);
+  EXPECT_TRUE(refused.error().clean);
+  EXPECT_EQ(source_->executed(), executed);
+  EXPECT_EQ(runner_->slots().used_bytes(0), initialized);
+  const std::array<std::int32_t, 8> invalid{1, 2, 3, 4, 5, 6, 7, -1};
+  EXPECT_FALSE(run(invalid));
+  EXPECT_EQ(runner_->slots().used_bytes(0), initialized);
+  const auto fresh = Shape(pl::Phase::kPrefill, {Seg(2, 0, 2, 1)});
+  const auto fresh_used = runner_->slots().used_bytes(2);
+  for (const auto history : {std::span<const std::int32_t>{}, std::span<const std::int32_t>(b)}) {
+    en::SegmentWork bad_history{.tokens = std::span(a).first(2), .history = history};
+    auto bad = runner_->RunStep({.shape = fresh, .work = std::span(&bad_history, 1), .ahead = {}});
+    ASSERT_FALSE(bad);
+    EXPECT_TRUE(bad.error().clean);
+    EXPECT_EQ(runner_->slots().used_bytes(2), fresh_used);
+    EXPECT_EQ(source_->executed(), executed);
+  }
+  ASSERT_TRUE(run({}));
+  auto bytes = source_->options().seen_inputs->at(0);
+  std::vector<std::int32_t> ids(bytes.size() / 4);
+  std::memcpy(ids.data(), bytes.data(), bytes.size());
+  EXPECT_EQ(ids, (std::vector<std::int32_t>{31, 0, 32, 31, 81, 0, 82, 81}));
+  const auto next = Shape(pl::Phase::kDecode, {Seg(0, 2, 1, 1)});
+  en::SegmentWork mismatch{.tokens = std::span(a).last(1), .history = b};
+  const auto after = source_->executed();
+  auto bad = runner_->RunStep({.shape = next, .work = std::span(&mismatch, 1), .ahead = {}});
+  ASSERT_FALSE(bad);
+  EXPECT_TRUE(bad.error().clean);
+  EXPECT_EQ(source_->executed(), after);
+  EXPECT_EQ(runner_->slots().positions(0), 2U);
+}
+
+TEST_F(SideHistoryTest, DuplicateComponentSlotsRefuseBeforeLookupOrStateAdmission) {
+  const auto joined = source_->options().extra_inputs;
+  source_->options().extra_inputs = [](const pl::StepShape& shape) {
+    std::vector<kn::InputSlot> inputs;
+    for (std::size_t i = 0; i < shape.segments.size(); ++i)
+      inputs.push_back({.bytes = std::uint64_t{shape.segments[i].rows} * 8,
+                        .segment = static_cast<std::uint8_t>(i),
+                        .kind = kn::InputKind::kSideRows,
+                        .component = 17});
+    return inputs;
+  };
+  const auto lookup = source_->options().side_rows;
+  std::uint32_t lookups = 0;
+  source_->options().side_rows = [&](auto stage, auto component, auto history, auto pos, auto ids) {
+    ++lookups;
+    return lookup(stage, component, history, pos, ids);
+  };
+  runner_->DropPlans();
+  const auto shape = Shape(pl::Phase::kPrefill, {Seg(0, 0, 1, 1), Seg(1, 0, 1, 1)});
+  const std::array<std::int32_t, 1> a{5}, b{9};
+  const std::array work{en::SegmentWork{.tokens = a, .history = a},
+                        en::SegmentWork{.tokens = b, .history = b}};
+  const auto before0 = runner_->slots().used_bytes(0), before1 = runner_->slots().used_bytes(1);
+  const auto ran = runner_->RunStep({.shape = shape, .work = work, .ahead = {}});
+  ASSERT_FALSE(ran);
+  EXPECT_TRUE(ran.error().clean);
+  EXPECT_EQ(ran.error().what, "side-table components require one joined row input");
+  EXPECT_EQ(lookups, 0U);
+  EXPECT_EQ(source_->queued(), 0U);
+  EXPECT_EQ(runner_->slots().used_bytes(0), before0);
+  EXPECT_EQ(runner_->slots().used_bytes(1), before1);
+  // The same component and owners succeed with one joined row slot.
+  source_->options().extra_inputs = joined;
+  runner_->DropPlans();
+  EXPECT_TRUE(runner_->RunStep({.shape = shape, .work = work, .ahead = {}}));
+  EXPECT_EQ(lookups, 2U);
+}
+
 class CompressorInputsTest : public ModelRunnerTest {
  protected:
   std::vector<pl::StepShape> SetupShapes() override {

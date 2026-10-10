@@ -606,8 +606,10 @@ owner past the indexer's budget, joined decodes of logits and
 device-chosen tokens, captured and replayed) against today's runner's
 fast form: all 31 output rows or tokens and all 242 state tensors are
 bit-identical in each of the three imports, with two captured replays.
-GPU comparisons of verify saves, commits, drafter catch-up and draft
-passes remain in G3c; G3b covers their lowering structurally only.
+G3b covers verify, commit and drafter lowering structurally. G3c1 adds
+native target verify parity and generated commits from actual verify saves
+in all three forms; G3c2a adds the durable drafter execution contract and
+scalar native MTP comparisons ([the model runner](engine.md#the-model-runner)).
 
 Checked (`ggml_lower_gemma4_test`, CPU; the node-for-node comparison with
 `BuildGemma4Graph` and `BuildGemma4AssistantGraph` was made before slice
@@ -973,7 +975,9 @@ convolution's padding past 32 rows are the lowering's. The fast form
 tensor-core products), the default planning policy and the lowering of
 the supported new inputs and cell rules are
 slice G3b's (as built: [the graph IR](#the-graph-ir)); the runtime's
-on-demand n-gram binding, commit execution and MTP feature staging are G3c's.
+on-demand n-gram binding, commit execution and chunk-feature staging landed
+in G3c1. G3c2a adds an opt-in durable pending interval and prompt companions;
+serving recipes and the migration gates remain G3c2's.
 
 **DeepSeek V4 and DSpark** (slice G4a, 2026-10-10). Four new kinds and
 extensions of three, each with a CPU reference independent of its
@@ -1813,6 +1817,23 @@ family re-implemented:
   target, at most one drafter" gap.
 - **One interface to serving**, per pipeline kind, with a virtual call per
   unit of work at most; nothing virtual per kernel.
+
+**As built: repeatable drafter progress** (G3c2a). Components may declare
+cache/token/feature coordinate relations and a repeat-pending policy.
+Its fixed 64-byte I64 control is ordinary cataloged state, with layout-bound
+validation and completion-owned publication and hydration. Accept, whole
+discard, prompt companions, checkpoint restore and fresh-runner adoption
+preserve the declared pending schedule. Private draft writes require exact
+owner/unit permits and checkpoints cover their bounded backward replay
+tail. Version 1 contracts coexist with the opt-in version 2 MTP embedding
+and replayable QSA contract; default mappings and serving remain unchanged.
+The shared runner derives side-row IDs from authenticated token history
+before admission, with explicit rows authoritative. Native component sources
+remain unqualified for multi-owner repeat-pending execution; the shared
+entry points refuse it before state mutation. Exact joined arithmetic is a
+required follow-on before serving recipes or migration gates. See
+[the model runner](engine.md#the-model-runner) for the state, completion and
+checked numerical scope.
 
 Kept state written by today's runners (D-105) is keyed by layout IDs such
 as `gemma3-4b-f16-kv-device-v1`. Those IDs are bumped and old kept state

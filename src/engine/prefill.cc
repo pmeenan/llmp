@@ -5,6 +5,8 @@
 
 #include <algorithm>
 
+#include "engine/draft_companions.h"
+
 namespace llmp::engine {
 
 namespace pl = llmp::planner;
@@ -45,8 +47,13 @@ PendingWork PrefillOrchestrator::ChunkAt(const PromptWork& prompt, std::uint32_t
 PrefillReport PrefillOrchestrator::Step(std::span<const PromptWork> prompts) {
   PrefillReport report;
   report.outcomes.resize(prompts.size());
+  if (auto qualified = runner_.CheckOwners(prompts.size()); !qualified) {
+    for (auto& out : report.outcomes) out.refusal = StepRefusal{.what = qualified.error()};
+    return report;
+  }
   std::vector<PendingWork> pending;
   std::vector<SegmentWork> work;
+  std::vector<std::span<const std::int32_t>> histories;
   std::vector<std::size_t> of;  // the prompt of each pending work
   for (std::size_t i = 0; i < prompts.size(); ++i) {
     const PendingWork chunk = ChunkAt(prompts[i], 0);
@@ -56,6 +63,8 @@ PrefillReport PrefillOrchestrator::Step(std::span<const PromptWork> prompts) {
     }
     pending.push_back(chunk);
     work.push_back({.tokens = prompts[i].tokens.first(chunk.rows), .bytes = {}});
+    histories.push_back(prompts[i].history.empty() && prompts[i].past == 0 ? prompts[i].tokens
+                                                                           : prompts[i].history);
     of.push_back(i);
   }
   // The same owners' next and following chunks, composed: a future is a
@@ -89,7 +98,7 @@ PrefillReport PrefillOrchestrator::Step(std::span<const PromptWork> prompts) {
     a.prepare = options_.prepare_ahead;
     return a;
   };
-  const WaveReport wave = RunWave(runner_, composer_, pending, work, /*advance=*/true, ahead);
+  const WaveReport wave = RunPromptWave(runner_, composer_, pending, work, histories, ahead);
   report.steps = wave.steps;
   for (std::size_t j = 0; j < pending.size(); ++j) {
     PrefillOutcome& outcome = report.outcomes[of[j]];

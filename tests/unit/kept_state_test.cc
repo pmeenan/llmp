@@ -1249,6 +1249,83 @@ std::string Forged(const std::string& text, std::string_view from, std::string_v
   return Sealed(body);
 }
 
+TEST(StateKeeperStages, ChangedProgressControlCannotReuseTheOldKeptRecord) {
+  const fs::path root = Scratch("stage-progress-control");
+  fs::create_directories(root);
+  Dir model(root / "model");
+  ASSERT_GE(model.fd, 0);
+  const pf::FileIdentity target = WriteExtents(model.fd, "slot-1.state", 1, 5);
+  const pf::FileIdentity drafter = WriteExtents(model.fd, "slot-1.stage-1.state", 1, 9);
+  const auto write_control = [&](const std::array<std::int64_t, 8>& words) {
+    auto file = pf::OpenPrivateFile(model.fd, "slot-1.stage-1.state", {.write = true});
+    if (!file) return false;
+    const bool ok = ::pwrite(file->fd, words.data(), sizeof(words), 4096) ==
+                        static_cast<ssize_t>(sizeof(words)) &&
+                    ::fsync(file->fd) == 0;
+    (void)::close(file->fd);
+    return ok;
+  };
+  // Repeat-pending relation 1: N=10, C=7, the three target features at 7..9.
+  const std::array<std::int64_t, 8> old_control{1, 10, 7, 7, 3, 1, 1, 0};
+  const std::array<std::int64_t, 8> next_control{1, 12, 10, 10, 2, 1, 1, 0};
+  ASSERT_TRUE(write_control(old_control));
+  kept::Record record = SampleStages();
+  record.slot = 1;
+  record.tokens.resize(10, 7);
+  record.files = {{.name = kept::StateFileName(1, 0), .id = Id(target), .bytes = kExtent},
+                  {.name = kept::StateFileName(1, 1), .id = Id(drafter), .bytes = kExtent}};
+  record.regions = {kExtent, kExtent};
+  record.extents = {{.region = 0, .index = 0, .digest = {}},
+                    {.region = 1, .index = 0, .digest = {}}};
+  record.checkpoints.clear();
+  StateKeeper keeper(1, {});
+  const std::size_t index = keeper.AddModel(::dup(model.fd));
+  keeper.Keep(index, record);
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  const auto serialized = pf::ReadPrivateFile(model.fd, "slot-1.record", kept::kMostRecordBytes);
+  ASSERT_TRUE(serialized);
+  const auto original = kept::Decode(*serialized);
+  ASSERT_TRUE(original);
+  ASSERT_EQ(llmp::runtime::VerifyKeptState(model.fd, *original), "");
+
+  // Accept may update numeric cache before its new control publishes. A
+  // crash in that interval leaves the old 64-byte N/C record beside changed
+  // numerical state. Startup must refuse the old kept record on the digest.
+  auto file = pf::OpenPrivateFile(model.fd, "slot-1.stage-1.state", {.write = true});
+  ASSERT_TRUE(file);
+  const std::array<std::byte, 32> changed_cache{};
+  ASSERT_EQ(::pwrite(file->fd, changed_cache.data(), changed_cache.size(), 8192),
+            static_cast<ssize_t>(changed_cache.size()));
+  ASSERT_EQ(::fsync(file->fd), 0);
+  std::array<std::int64_t, 8> unchanged_control{};
+  ASSERT_EQ(::pread(file->fd, unchanged_control.data(), sizeof(unchanged_control), 4096),
+            static_cast<ssize_t>(sizeof(unchanged_control)));
+  EXPECT_EQ(unchanged_control, old_control);
+  (void)::close(file->fd);
+  EXPECT_THAT(llmp::runtime::VerifyKeptState(model.fd, *original), HasSubstr("digests differ"));
+
+  // A later control change remains covered by the same ordinary extent hash.
+  ASSERT_TRUE(write_control(next_control));
+  EXPECT_THAT(llmp::runtime::VerifyKeptState(model.fd, *original), HasSubstr("digests differ"));
+
+  // The ordinary restore-before-reuse hook removes the record. A new record
+  // is available only after a subsequent completed spill is hashed again.
+  keeper.Invalidate(index, 1);
+  EXPECT_FALSE(fs::exists(root / "model" / "slot-1.record"));
+  EXPECT_FALSE(keeper.Kept(index, 1));
+  record.tokens.resize(12, 8);
+  keeper.Keep(index, record);
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  const auto updated_text = pf::ReadPrivateFile(model.fd, "slot-1.record", kept::kMostRecordBytes);
+  ASSERT_TRUE(updated_text);
+  const auto updated = kept::Decode(*updated_text);
+  ASSERT_TRUE(updated);
+  EXPECT_EQ(llmp::runtime::VerifyKeptState(model.fd, *updated), "");
+  EXPECT_NE(updated->extents[1].digest, original->extents[1].digest);
+  EXPECT_EQ(updated->version, original->version);
+  fs::remove_all(root);
+}
+
 }  // namespace
 
 TEST(KeptRecord, VersionOneBytesAreTheM3Runtimes) {

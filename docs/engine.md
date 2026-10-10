@@ -523,22 +523,86 @@ tap, the runner tracks its committed logical span and carries its previous
 tail into the leading cells. Verification snapshots those leading cells
 with its first row: acceptance retains them, while discarding the entire
 verify restores the previous chunk. Ordinary same-process spill and
-restore retain this logical metadata. **Checkpoint replacement and kept
-state adoption do not yet restore chunk-span metadata:** they clear it,
-and a drafter's chunk-tap lookup refuses until a target step publishes a
-fresh span. G3c2 must resolve that persistence contract before enabling
-Qwen MTP serving on this runner. Existing position-ring taps do not need
-this metadata.
+restore retain this logical metadata. Existing position-ring taps derive
+their cells from positions alone.
+
+**Repeatable drafter progress** (G3c2a). A component may declare
+`DraftProgressPolicy::kRepeatPending` and the relation between cache,
+token and feature positions. With `kTokenAfterCache`, cache row `q`
+consumes token `q+1` and feature `q`; with `kTokenAtCache`, it consumes
+token `q` and feature `q-1`. The stage owns one fixed 64-byte I64 control
+tensor containing its schema, committed positions, first pending cache
+row, chunk-tap span, preceding rows, relation and reserved zero. This is
+ordinary cataloged state, distinct from numeric KV encoding support.
+Layout validation binds the policy to the real tap, carry and context
+bounds and requires replayable private position/block caches; unsupported
+borrowed or recurrent private state refuses. Its contract contributes to
+the existing kept-layout digest. Version 1 component contracts coexist
+with the explicitly opted-in version 2 `embedding.mtp` and `attention.qsa`.
+Current architecture mappings keep version 1.
+
+Multi-owner submissions require immutable numerical qualification from
+**every** stage's step source when any stage declares repeat-pending
+progress. Native component sources are currently unqualified: decoding,
+prefill, prompt and raw-wave entry points refuse the entire multi-owner
+submission before settling owed work, opening units or admitting state.
+Direct steps and their supplied lookahead shapes have the same boundary;
+a scalar prompt's lookahead is checked before its pre companion. The fake
+backend explicitly qualifies its independent-owner arithmetic for lifecycle
+proofs. Scalar native MTP is supported by the execution proof below.
+Joined native MTP remains a required lowering slice before serving and
+migration gates; failed matched 256/2048 joined recipes are not enabled.
+
+A completed head-bearing catch-up leaves the durable pending interval
+unchanged. Whole discard therefore repeats its original K-row schedule,
+even after a changed anchor or restored checkpoint. Acceptance first
+retires numerical restore/commit work, then copies each stage's candidate
+control from its separate pinned buffer; only proven completion publishes
+all host mirrors. Terminal completions carry owner/transition identity.
+A late or unknown copy failure quarantines the owner and retains staging.
+Restore and new-runner adoption exclude use until actual device-to-host
+control reads complete and every stage's record validates. Clear resets
+the control only after old work retires. Checkpoints include the bounded
+private-cache tail starting at `max(0, positions - max_rows)`, rounded to
+blocks where needed, plus fixed state, taps and dummy cells. Every opted-in
+draft write requires an internal owner/unit permit for its exact cache,
+token and feature coordinates before admission; arbitrary historical
+writes cannot escape that checkpoint envelope.
+
+The shared prompt helper runs headless companions before and after target
+prefill, using authoritative full token history. Compound ownership starts
+before the first companion and retains the old pending record until the
+whole sequence and control publication complete. A proven pre-only
+completion followed by a clean target refusal retries the original K;
+leading-carry or target mutation with incomplete work quarantines. An
+unchosen repeat-pending consumer also consumes its old features before the
+target replaces them. Stages that use the original cursor policy keep their
+existing orchestration. Without the durable policy, checkpoint replacement
+and kept adoption still clear a chunk tap's transient span; lookup refuses
+until a target step publishes it again.
+
+Components may derive side-row IDs from authenticated full history through
+immutable source metadata. Staging uses the declared token coordinate,
+including a repeat-pending drafter's offset from its cache row. Explicit
+row inputs remain authoritative. Missing, malformed or partial inputs
+refuse before state admission for resident and on-demand tables alike;
+duplicate input slots for one table refuse before paging, while a joined
+input covers multiple owners.
 
 G3c1 checks Qwen's plain execution against the legacy runner in all three
 weight forms, native target verification against the legacy verifier,
 and generated commits against the legacy commit kernel using the actual
 saved verify inputs. The fast verifier is not row-invariant: its saved
 recurrence, not a shorter plain step, defines exact committed state.
-Chunk-feature staging is currently checked with the fake backend only.
-Actual MTP catch-up and draft-pass GPU parity, chunk-span persistence,
-runtime wiring, and the unchanged quality/state/speed gates belong to
-G3c2; G3c1 does not change serving defaults.
+G3c2a's fake checks cover publication and hydration failure, independent
+consumers, partial blocks and omitted checkpoint pages, and stale kept
+records whose control stayed unchanged while numeric bytes changed. Native
+MTP GPU checks compare exact scalar head logits, target logits, pending
+features and private caches across accepted prefixes, whole discard,
+changed anchors, the refused-prompt retry, checkpoint replacement and
+fresh-node adoption, with changed-input replay of the same multirow MTP
+graph. Runtime wiring and the unchanged quality/state/swap
+and matched 1% speed gates remain G3c2's; serving defaults are unchanged.
 
 `PlanCache` is now `BasicPlanCache<Key, Planned, Variants, Runs>` in the
 core (`plan_cache.h`); `planned.h`'s `PlanCache` is the alias over GGML's
@@ -675,7 +739,7 @@ still bring:
 
 | Family | Maps onto | Not yet |
 | --- | --- | --- |
-| Qwen3.8 MTP | An autoregressive drafter with `catch_up` over its own stage (K, V and indexer cells truncating; the streams a per-row tap the target writes, snapshot); the target's K, V, indexer and completed block keys snapshot by row, its linear layers' state `kCommit` with generated component commits; bounded on-demand n-gram rows and chunk-feature inputs | Runtime wiring and gates; chunk-span persistence across checkpoint/adopt; the catch-up and passes in one job, the selected draft head's rows, the injection's drafter pass inside the target's prefill (`Qwen38Injection`) |
+| Qwen3.8 MTP | An autoregressive drafter with `catch_up` over its own stage (K, V and indexer cells truncating; the streams a per-row tap the target writes, snapshot); the target's K, V, indexer and completed block keys snapshot by row, its linear layers' state `kCommit` with generated component commits; bounded on-demand n-gram rows and chunk-feature inputs | Runtime wiring and gates; the catch-up and passes in one job, the selected draft head's rows; the opt-in shared repeat-pending policy supplies durable chunk spans and prompt companions |
 | DeepSeek V4 + DSpark | A block drafter (its fill the mask token) over its ring (a position ring the target's injection writes); the target's window cells, compressor rings and compressed rows snapshot by row, no commit; the exact mode a row-invariant verify | The draft and the verify chained in one job (drafts copied into the verify's staged tokens and embedded on the device), the Markov head, shortening a draft before a mask width (`Dsv4SameWidths`: policy) |
 | Gemma4 assistant | An anchored autoregressive drafter with `borrows_target` and `features`, its contract viewing the target's KV (`borrowed_from_target`) and its tap of the target's final-norm rows; the target's KV truncates (a ring holds a chunk's rows beside its window, so a rejected row is never read) | The device's verify verdicts (`GreedyUnit`'s device judge); its adaptive depth (three drafts a unit, M3's screen's) |
 

@@ -45,6 +45,7 @@
 
 #include "base/sha256.h"
 #include "format/encoding.h"
+#include "model/draft_progress.h"
 #include "model/state.h"
 
 namespace llmp::model {
@@ -65,7 +66,8 @@ enum class StateKind : std::uint8_t {
   kCompressor,   // a compressor's ring of recent positions' projections
   kDrafterRing,  // a block drafter's ring
   kPrefixCache,
-  kFeatures,  // retained streams or features (a drafter's inputs)
+  kFeatures,         // retained streams or features (a drafter's inputs)
+  kDrafterProgress,  // fixed I64 control; not numeric KV content
 };
 std::string_view KindName(StateKind kind);
 
@@ -154,8 +156,21 @@ struct StateTensorContract {
   // target's state is borrowed (SlotLifecycle::Borrow).
   bool borrowed_from_target = false;
   std::uint32_t target_layer = 0;
+  // Only kDrafterProgress: the stage's declared coordinate/progress policy.
+  // Default tensors do not change the existing cursor-based orchestration.
+  DraftPolicy draft{};
+  // A position/block cache may recompute an already completed interval
+  // from the same inputs: every overwritten value is rebuilt before it
+  // can influence a read. This is a component guarantee, not inferred from
+  // kTruncate. Required for a repeatable drafter's private numeric state.
+  bool replayable = false;
   bool operator==(const StateTensorContract&) const = default;
 };
+
+// The single control tensor that opts a stage into repeatable progress.
+// Layout validates the exact role/format and its cache/tap prerequisites.
+// I64 remains excluded from numeric CellBytes/StateEncodings.
+StateTensorContract DraftProgressControl(std::string name, DraftRelation relation);
 
 // The bytes of one cell holding `values` values of a state encoding
 // (format::StateEncodings()), by the format layer's size rule: dense
@@ -237,6 +252,12 @@ bool ReadsFrozen(const StateLayoutDerived& layout);
 // none if it has none or several.
 const StateLayoutDerived::Item* FeatureTap(const StateLayoutDerived& layout);
 
+// Derive the opt-in policy's bounds from its one control and one per-row
+// target tap. None for an ordinary stage; refusal for ambiguous controls,
+// missing carry/snapshot semantics or unqualified private numeric state.
+std::expected<std::optional<DraftProgressBounds>, std::string> DraftBounds(
+    const StateLayoutDerived& layout);
+
 // The region for `per_layer` contracts (layer index, contract) at a
 // context and chunk bound. Refused for a zero or inconsistent bound, a
 // tensor with no cells or bytes, a cell of partial elements or (in a block
@@ -306,7 +327,10 @@ std::expected<SaveBound, std::string> VerifySaveBound(const StateLayoutDerived& 
 // The ranges positions after `positions` may overwrite: a per-position
 // tensor's cells from `positions` on, a block tensor's from the block
 // `positions` falls in (and its dummy row, first), a ring, fixed,
-// per-row or position-ring tensor whole.
+// per-row or position-ring tensor whole. An opted-in repeatable drafter
+// instead starts position/block tails at max(0, positions-max_rows), from
+// its trusted layout bound: capture and restore use the same envelope
+// before an unloaded progress record is available to validate.
 std::expected<std::vector<StateRange>, std::string> CheckpointWrites(
     const StateLayoutDerived& layout, std::uint32_t positions);
 

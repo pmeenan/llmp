@@ -54,6 +54,7 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
       new ComponentStepSource(std::move(options), std::move(policy)));
   const auto add = [&](const components::Instance& in) {
     if (in.def->shape_parameters != nullptr) source->shaped_.push_back(in);
+    if (in.def->side_rows != nullptr) source->side_.push_back(in);
   };
   if (instances->embedding) add(*instances->embedding);
   for (const auto& in : instances->side) add(in);
@@ -133,6 +134,19 @@ planner::StateSpans ComponentStepSource::StateSpans(const planner::StepShape& sh
     if (missing && (!addresses.measuring() || base)) return std::nullopt;
     return planner::StateSpanFact{.bank = *bank, .region_bytes = layout.bytes};
   };
+}
+
+bool ComponentStepSource::UsesSideRows(std::uint16_t stage) const {
+  return stage == o_.stage && !side_.empty();
+}
+
+Status ComponentStepSource::SideRows(std::uint16_t stage, std::uint16_t component,
+                                     std::span<const std::int32_t> history, std::uint32_t position,
+                                     std::span<std::int32_t> out) const {
+  if (stage != o_.stage) return std::unexpected("side rows name another stage");
+  const auto found = std::ranges::find(side_, component, &components::Instance::index);
+  if (found == side_.end()) return std::unexpected("side rows name no table component");
+  return found->def->side_rows(*found, history, position, out);
 }
 
 std::expected<std::vector<CommitBuffer>, std::string> ComponentStepSource::CommitBuffers(
@@ -240,6 +254,21 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> StagedStepSour
     return std::unexpected(std::format("a step of stage {}, which the model lacks", shape.stage));
   }
   return stages_[shape.stage]->Build(shape, addresses);
+}
+
+bool StagedStepSource::JoinedRepeatPending(std::uint16_t stage) const {
+  return stage < stages_.size() && stages_[stage]->JoinedRepeatPending(stage);
+}
+
+bool StagedStepSource::UsesSideRows(std::uint16_t stage) const {
+  return stage < stages_.size() && stages_[stage]->UsesSideRows(stage);
+}
+
+Status StagedStepSource::SideRows(std::uint16_t stage, std::uint16_t component,
+                                  std::span<const std::int32_t> history, std::uint32_t position,
+                                  std::span<std::int32_t> out) const {
+  if (stage >= stages_.size()) return std::unexpected("side rows name no stage");
+  return stages_[stage]->SideRows(stage, component, history, position, out);
 }
 
 std::expected<std::vector<CommitBuffer>, std::string> StagedStepSource::CommitBuffers(

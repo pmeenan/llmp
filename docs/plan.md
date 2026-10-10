@@ -1569,8 +1569,9 @@ each is checked against the design as M3.6 proceeds.
             model runner's 31 outputs and 242 state tensors are bit-identical
             to today's fast form in each import, including joined owners,
             selection beyond the QSA budget and captured replays. G3c1
-            proves native verify and all-three-format commits; actual MTP
-            GPU numerics remain with the composition in G3c2a.
+            proves native verify and all-three-format commits; G3c2a proves
+            native single-owner MTP and persistence. Joined MTP arithmetic
+            remains G3c2b1 before serving and the family gates.
       - [ ] Wiring and the gate, then deletion of the old code.
             - [x] **G3c1 — shared runner execution:** bind verify saves and
                   commit execution; bind n-gram side tables on demand; stage
@@ -1582,15 +1583,31 @@ each is checked against the design as M3.6 proceeds.
                   kept-state feature restoration, then wire native, GGUF
                   and MTP through serving; pass state, quality and swap
                   controls and the matched 1% gate for all three paths.
-                  - [ ] **G3c2a — MTP progress and persistence:** declare the
+                  - [x] **G3c2a — MTP progress and persistence:** declare the
                         cache/token/feature relation and pending replay
                         range as shared stage policy; preserve it with the
                         feature span through checkpoint, spill and adoption;
                         run the prefill companion and prove actual MTP GPU
                         and restoration behavior before serving.
-                  - [ ] **G3c2b — serving and gate:** compose the native,
-                        GGUF and MTP serving paths, pass their state, quality
-                        and swap controls, then the matched 1% gate.
+                        *2026-10-10:* opt-in replay progress, completion-owned
+                        control, prompt companions and layout-derived checkpoint
+                        tails pass native single-owner MTP/persistence proof.
+                        Unsupported joined operations and lookahead shapes refuse
+                        before mutation; joined arithmetic remains G3c2b1.
+                  - [ ] **G3c2b — joined lowering, serving and gate:**
+                        qualify joined MTP arithmetic before serving and the
+                        cohort gates.
+                        - [ ] **G3c2b1 — joined arithmetic:** preserve each
+                              owner's physical product widths and numerical
+                              selectors across joined MTP steps, including
+                              expanded streams and unequal pending ranges;
+                              prove exact heads, state and changed-input
+                              capture replay against the legacy joined recipe
+                              before qualifying joined repeat-pending work.
+                        - [ ] **G3c2b2 — serving and gate:** compose the
+                              native, GGUF and MTP serving paths, pass state,
+                              quality and swap controls, then the matched 1%
+                              gate at every qualified cohort.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
                   graph builders, bindings and serving class after G3c2.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.

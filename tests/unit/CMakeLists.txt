@@ -483,6 +483,14 @@ add_executable(state_contract_test state_contract_test.cc)
 target_link_libraries(state_contract_test PRIVATE llmp_model)
 llmp_gtest(state_contract_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(draft_progress_test draft_progress_test.cc)
+target_link_libraries(draft_progress_test PRIVATE llmp_model)
+llmp_gtest(draft_progress_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(draft_progress_ledger_test draft_progress_ledger_test.cc)
+target_link_libraries(draft_progress_ledger_test PRIVATE llmp_engine_core llmp_fake_device_backend)
+llmp_gtest(draft_progress_ledger_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(shapes_test shapes_test.cc)
 target_link_libraries(shapes_test PRIVATE llmp_execution llmp_scheduler llmp_fake_providers)
 llmp_gtest(shapes_test TEST_PREFIX unit. PROPERTIES LABELS unit)
@@ -589,6 +597,12 @@ llmp_gtest(decoding_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
 # An anchored drafter over its target's frozen state and tapped features
 # (Gemma 4's assistant's decoding), the features' sources and the computed
 # inputs the runner stages, over the same fake step source.
+add_executable(draft_companions_test draft_companions_test.cc)
+target_link_libraries(draft_companions_test PRIVATE llmp_engine_core llmp_fake_step_source
+                                                   llmp_fake_device_backend llmp_platform)
+llmp_gtest(draft_companions_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 add_executable(anchored_drafter_test anchored_drafter_test.cc)
 target_link_libraries(anchored_drafter_test PRIVATE llmp_engine_core llmp_fake_step_source
                                                     llmp_fake_device_backend llmp_platform)

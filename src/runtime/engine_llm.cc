@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "base/check.h"
+#include "engine/draft_companions.h"
 #include "model/state_contract.h"
 #include "runtime/model_settings.h"
 #include "runtime/serving_support.h"
@@ -754,8 +755,10 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
     return a;
   };
   if (!pending.empty()) {
+    std::vector<std::span<const std::int32_t>> histories;
+    for (const auto j : of) histories.push_back(prepared[j].all);
     const en::WaveReport wave =
-        en::RunWave(*runner_, *composer_, pending, work, /*advance=*/true, ahead);
+        en::RunPromptWave(*runner_, *composer_, pending, work, histories, ahead);
     for (std::size_t j = 0; j < pending.size(); ++j) {
       PreparedPrefill& unit = prepared[of[j]];
       const en::WaveOutcome& ran = wave.outcomes[j];

@@ -95,6 +95,21 @@ class StepSource {
   // Only baked graph dimensions that depend on positions; empty when
   // positions affect input data alone. Pure, also called by lookahead.
   virtual std::vector<std::uint64_t> ShapeParameters(const planner::StepShape&) const { return {}; }
+  // Immutable numerical qualification for this stage's contribution to a
+  // multi-owner repeat-pending submission (including target, companions,
+  // head-bearing replay and continuation). The runner requires every
+  // stage's source to qualify the entire shape domain it accepts. This is
+  // a backend proof, never a caller batching preference. Component sources
+  // remain unqualified until joined arithmetic has its exact GPU proof.
+  virtual bool JoinedRepeatPending(std::uint16_t /*stage*/) const { return false; }
+  // A side-table component's row IDs from the owner's complete token
+  // history. Pure host work before any state admission or device writes.
+  virtual bool UsesSideRows(std::uint16_t /*stage*/) const { return false; }
+  virtual Status SideRows(std::uint16_t /*stage*/, std::uint16_t /*component*/,
+                          std::span<const std::int32_t> /*history*/, std::uint32_t /*position*/,
+                          std::span<std::int32_t> /*out*/) const {
+    return std::unexpected("the step source cannot derive side rows");
+  }
   // The intermediates a stage's verify stores for its commit, per owner.
   // Empty for a source without commit-based state. Queried once at setup.
   virtual std::expected<std::vector<CommitBuffer>, std::string> CommitBuffers(
@@ -188,9 +203,9 @@ struct FeatureFrom {
     // features by position, which its steps write): row r reads position
     // `position + r`'s committed cell in the ring or currently held chunk.
     // A chunk tap retains its preceding tail through ordinary spill/restore;
-    // checkpoint replacement or adoption clears its logical span until a
-    // target step writes fresh features. Persisted chunk-span metadata is
-    // required before using it to resume a drafter across those operations.
+    // checkpoint replacement or adoption requires a validated durable
+    // repeat-pending control before lookup. Without that policy, replacement
+    // clears the transient span until a target step writes fresh features.
     kTap,
     // The slot's carry on the step's stage: the next features the last
     // drafter step with features of that slot on that stage returned (its
@@ -207,6 +222,11 @@ struct SegmentWork {
   std::span<const std::int32_t> tokens{};  // kTokens inputs: one a row
   std::span<const std::byte> bytes{};      // kSegmentBytes inputs
   FeatureFrom feature{};                   // kFeatures inputs (a drafter's rows)
+  // Optional full history for declarative side-row lookups. The rows at
+  // the declared token coordinate (cache past + relation offset) must equal
+  // tokens; an explicit StepRequest side_rows
+  // remains authoritative and is never partially replaced from history.
+  std::span<const std::int32_t> history{};
 };
 
 // What the caller predicts beyond the step: never work, and a wrong
@@ -324,6 +344,10 @@ class ModelRunner final : public PagedModel {
 
   // ------------------------------------------------------------- steps
 
+  // Pure preflight for an entire submitted operation, before settlement,
+  // unit ownership, side inputs or admission. An unqualified repeat-pending
+  // model accepts one owner per submission, including target-only work.
+  Status CheckOwners(std::size_t owners) const;
   std::expected<StepReport, StepRefusal> RunStep(const StepRequest& request);
   // A segment's owner admitted to a step on `stage`: active, its rows where
   // the stage's steps may run, and its state backed through every cell the
@@ -360,6 +384,28 @@ class ModelRunner final : public PagedModel {
   std::string report_json() const;
 
  private:
+  friend class PromptCompanions;
+  friend class DecodingOrchestrator;
+  struct AuthorizedDraft {
+    std::uint32_t slot = 0;
+    std::uint16_t stage = 0;
+    std::uint32_t past = 0, rows = 0;
+    FeatureFrom feature;
+    DraftProgressLedger::Unit unit;
+  };
+  std::vector<AuthorizedDraft> authorized_drafts_;
+  enum class CompanionPart : std::uint8_t { kPre, kTarget, kPost };
+  struct CompanionStep {
+    std::uint32_t slot = 0;
+    std::uint16_t stage = 0;
+    std::uint32_t past = 0, rows = 0;
+    CompanionPart part = CompanionPart::kTarget;
+    std::vector<std::pair<std::size_t, DraftProgressLedger::Unit>> units;
+  };
+  // Set only by the shared helper. Public steps cannot acquire a compound
+  // operation's state or overwrite an opted-in consumer's pending taps.
+  std::vector<CompanionStep> companion_steps_;
+  const CompanionStep* CompanionFor(std::uint32_t slot, std::uint16_t stage) const;
   ModelRunner(PagedNode& node, RunnerConfig config, std::unique_ptr<StepSource> source, int owner,
               std::uint32_t stream);
   static SlotLifecycleOptions LifecycleOptions(ModelRunner* self, SlotLifecycleOptions options);

@@ -16,6 +16,8 @@
 #include <cstring>
 #include <expected>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <utility>
 
 #include "base/bytes.h"
@@ -41,6 +43,24 @@ fake::FakeDeviceSettings& Settings() {
 
 // The calling thread's last failed call, as the CUDA runtime keeps it.
 thread_local int last_error = 0;
+struct CopyFailure {
+  CopyKind kind;
+  std::size_t bytes;
+  bool queue_first;
+  std::size_t matches_before;
+};
+std::mutex copy_failure_mutex;
+std::optional<CopyFailure> copy_failure;
+
+std::optional<CopyFailure> TakeCopyFailure(CopyKind kind, std::size_t bytes) {
+  const std::lock_guard lock(copy_failure_mutex);
+  if (!copy_failure || copy_failure->kind != kind || copy_failure->bytes != bytes) return {};
+  if (copy_failure->matches_before != 0) {
+    --copy_failure->matches_before;
+    return {};
+  }
+  return std::exchange(copy_failure, std::nullopt);
+}
 
 DeviceStatus Fail(RuntimeError error) {
   last_error = static_cast<int>(error);
@@ -116,11 +136,12 @@ DeviceStatus CopyAsync(NativeStream stream, void* to, const void* from, std::siz
   if (bytes != 0 && (to == nullptr || from == nullptr)) {
     return Fail(RuntimeError::kInvalidValue);
   }
-  return Queue(stream, [to, from, bytes] {
-    if (bytes != 0) {
-      std::memmove(to, from, bytes);
-    }
+  const auto failure = TakeCopyFailure(kind, bytes);
+  if (failure && !failure->queue_first) return Fail(RuntimeError::kInvalidValue);
+  const auto queued = Queue(stream, [to, from, bytes] {
+    if (bytes != 0) std::memmove(to, from, bytes);
   });
+  return queued.ok() && failure ? Fail(RuntimeError::kInvalidValue) : queued;
 }
 
 DeviceStatus FillAsync(NativeStream stream, void* to, std::uint8_t value, std::size_t bytes) {
@@ -225,6 +246,15 @@ void FreePinned(void* pointer) {
 }  // namespace llmp::providers
 
 namespace llmp::providers::fake {
+
+void FailNextCopy(CopyKind kind, std::size_t bytes, bool queue_first, std::size_t matches_before) {
+  const std::lock_guard lock(copy_failure_mutex);
+  copy_failure = CopyFailure{kind, bytes, queue_first, matches_before};
+}
+void ClearCopyFailure() {
+  const std::lock_guard lock(copy_failure_mutex);
+  copy_failure.reset();
+}
 
 void ConfigureFakeDevice(FakeDeviceSettings settings) { Settings() = settings; }
 

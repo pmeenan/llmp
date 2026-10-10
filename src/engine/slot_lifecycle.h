@@ -56,6 +56,7 @@
 
 #include "base/sha256.h"
 #include "catalog/catalog.h"
+#include "engine/draft_progress.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
 #include "engine/request_cohort.h"
@@ -178,6 +179,18 @@ class SlotLifecycle {
   // ReserveStateThrough; a verify's snapshot is the stage's own).
   LiveState& live(std::uint32_t slot, std::size_t stage);
   const LiveState& live(std::uint32_t slot, std::size_t stage) const;
+  // None for an ordinary stage. The lifecycle owns transport and readiness;
+  // orchestration reports the exact completed replay/compound operations.
+  DraftProgressLedger* progress(std::uint32_t slot, std::size_t stage);
+  const DraftProgressLedger* progress(std::uint32_t slot, std::size_t stage) const;
+  std::expected<DraftProgressLedger::Unit, std::string> BeginDraftUnit(std::uint32_t slot,
+                                                                       std::size_t stage);
+  // Check every owner before beginning any owner, after host preflight.
+  Status CheckProgressVerify(std::uint32_t slot, std::uint32_t rows) const;
+  Status BeginProgressVerify(std::uint32_t slot, std::uint32_t rows);
+  // A failed/discarded verify owes restoring the old tap before this
+  // logical transition can be forgotten. Unknown writes quarantine it.
+  void ProgressVerifyFailed(std::uint32_t slot);
   // Every slot's used extents, kept zeroed backing, and the extents of
   // resident slots an incremental write-back may skip (unchanged since
   // their spill file last held them).
@@ -358,6 +371,17 @@ class SlotLifecycle {
   // (CheckFailedJob); a stage it quarantined faults the cohort (the shared
   // stream's work is unproven).
   Status Settle(std::uint32_t slot);
+  // Common boundary for RunStep and standalone Settle. A PlanStep remains
+  // alive across prepare/queue/retirement; private control staging cannot
+  // be reused until CompleteOwed. All stages' numeric work precedes controls.
+  Status PrepareOwed(std::uint32_t slot);
+  struct OwedQueued {
+    LiveState::Queued result;
+    bool wrote = false;
+  };
+  OwedQueued QueueOwed(std::uint32_t slot, providers::NativeStream stream);
+  Status CompleteOwed(std::uint32_t slot, bool success,
+                      CopyRetirement retirement = CopyRetirement::kProven);
   // Every slot quarantined until RecoverInPlace.
   void Fault();
   // After a failed job: request_cohort.h's CheckFailedJob.
@@ -369,6 +393,7 @@ class SlotLifecycle {
 
  private:
   friend class StateBorrow;
+  friend class PromptCompanions;
   struct Stage {
     std::unique_ptr<LiveState> live;
     SpillTrack track;
@@ -376,6 +401,15 @@ class SlotLifecycle {
     // Kept from the process before (D-105): what its spill file holds,
     // until Restore reads it.
     std::vector<Range> adopted;
+    std::unique_ptr<DraftProgressLedger> progress;
+    std::uint64_t control_offset = 0;
+    model::DraftProgressWords* control_publish = nullptr;
+    model::DraftProgressWords* control_hydrate = nullptr;
+    std::optional<DraftProgressLedger::Transition> control_ticket;
+    std::optional<DraftProgressLedger::Transition> restore_ticket;
+    std::optional<DraftProgressLedger::Unit> progress_unit;
+    bool control_queued = false;
+    bool progress_discard = false;
   };
   struct Slot {
     std::uint32_t index = 0;
@@ -384,6 +418,8 @@ class SlotLifecycle {
     std::uint32_t positions = 0;
     bool spilled = false;
     bool state_refused = false;
+    // Set only around the shared compound helper's synchronous steps.
+    bool compound_access = false;
     std::uint64_t adopted_bytes = 0;
     std::optional<std::uint32_t> restoring;  // its positions
     std::vector<Range> restore_needed;       // region: the stage
@@ -398,7 +434,7 @@ class SlotLifecycle {
   // while one stage grows beside another's fresh extents.
   Status KeepFor(const Slot& slot, catalog::Closure& keep);
   void Quarantine(Slot& slot);
-  void ResetSlot(Slot& slot);
+  Status ResetSlot(Slot& slot);
   std::unexpected<std::string> Refuse(std::string_view what) const;
   bool Usable(const Slot& slot) const;
   bool Borrowed(const Slot& slot) const;
@@ -407,6 +443,9 @@ class SlotLifecycle {
   void Return(std::uint32_t slot, std::size_t stage, std::uint64_t epoch);
   // No stage's verify awaits its Accept or owes a restore or commit.
   bool Settled(const Slot& slot) const;
+  bool ProgressBusy(const Slot& slot) const;
+  Status BeginProgressReplacement(Slot& slot);
+  Status HydrateProgress(Slot& slot, std::uint32_t positions);
   // CheckActive, or within a checkpoint restore (its copies in and its
   // completion).
   Status Ready(std::uint32_t slot, bool within_restore) const;
@@ -419,6 +458,7 @@ class SlotLifecycle {
   std::vector<Slot> slots_;
   std::vector<catalog::ExtentId> shared_;
   std::vector<const PagedWeights*> weights_;
+  std::vector<catalog::ExtentId> progress_staging_;
   catalog::Closure everything_, fence_, execution_;
   std::optional<std::uint64_t> places_clean_;
   std::string kept_layout_id_;

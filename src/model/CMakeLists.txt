@@ -13,7 +13,7 @@
 # gemma2.h).
 # Model layer: no vendor or kernel-module types, and
 # the resource core never includes it.
-add_library(llmp_model STATIC context.cc dspark.cc dsv4.cc gemma2.cc gemma3.cc gemma4.cc gemma4_assistant.cc qwen2.cc qwen2_exl3.cc qwen38.cc
+add_library(llmp_model STATIC context.cc draft_progress.cc dspark.cc dsv4.cc gemma2.cc gemma3.cc gemma4.cc gemma4_assistant.cc qwen2.cc qwen2_exl3.cc qwen38.cc
                                 qwen_image.cc state.cc state_contract.cc)
 target_include_directories(llmp_model PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_model PUBLIC llmp_base llmp_catalog llmp_format PRIVATE llmp_artifact llmp_warnings)

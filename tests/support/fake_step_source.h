@@ -114,6 +114,9 @@ struct FakeSourceOptions {
   // test may change them between steps.
   std::function<bool(const planner::StepShape&)> refuse_build;
   std::function<std::vector<std::uint64_t>(const planner::StepShape&)> shape_parameters;
+  std::function<engine::Status(std::uint16_t, std::uint16_t, std::span<const std::int32_t>,
+                               std::uint32_t, std::span<std::int32_t>)>
+      side_rows;
   bool refuse_record = false;
   bool refuse_bind = false;
   // Run fails: refused with nothing queued (kRejected), or of unknown
@@ -152,11 +155,24 @@ struct FakeSourceOptions {
 
 class FakeStepSource final : public engine::StepSource {
  public:
-  explicit FakeStepSource(FakeSourceOptions options) : options_(std::move(options)) {}
+  // This backend evaluates each owner independently. A constructor-only
+  // switch exercises the production default's unqualified boundary.
+  explicit FakeStepSource(FakeSourceOptions options, bool joined_repeat_pending = true)
+      : options_(std::move(options)), joined_repeat_pending_(joined_repeat_pending) {}
+  bool JoinedRepeatPending(std::uint16_t /*stage*/) const override {
+    return joined_repeat_pending_;
+  }
   planner::PlanKey KeyBase() const override;
   std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override {
     return options_.shape_parameters ? options_.shape_parameters(shape)
                                      : std::vector<std::uint64_t>{};
+  }
+  bool UsesSideRows(std::uint16_t /*stage*/) const override { return bool(options_.side_rows); }
+  engine::Status SideRows(std::uint16_t stage, std::uint16_t component,
+                          std::span<const std::int32_t> history, std::uint32_t position,
+                          std::span<std::int32_t> out) const override {
+    if (!options_.side_rows) return std::unexpected("no fake side-row lookup");
+    return options_.side_rows(stage, component, history, position, out);
   }
   std::expected<std::vector<engine::CommitBuffer>, std::string> CommitBuffers(
       std::uint16_t stage, std::uint32_t rows) const override;
@@ -179,6 +195,7 @@ class FakeStepSource final : public engine::StepSource {
 
  private:
   FakeSourceOptions options_;
+  const bool joined_repeat_pending_;
   std::vector<Built> built_;
   // Shared with the programs; the device's host work counts on its thread.
   std::shared_ptr<std::atomic<std::uint64_t>> queued_ =

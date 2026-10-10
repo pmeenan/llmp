@@ -964,6 +964,42 @@ std::expected<spec::ModelSpec, std::string> WithMtp(const spec::ModelSpec& targe
                               spec::mappings::Qwen38MtpMapping(), Sources().mtp, *values);
 }
 
+TEST(ComponentsQwen38Test, RepeatableMtpContractsCoexistWithTheOriginalLayout) {
+  auto target = TargetSpec(Sources().modelopt_cutlass, fx::Form::kCutlass);
+  ASSERT_TRUE(target);
+  auto composed = WithMtp(*target);
+  ASSERT_TRUE(composed);
+  auto original = StageLayout(*composed, 1, 8192, 512);
+  ASSERT_TRUE(original);
+  auto old_bounds = model::DraftBounds(*original);
+  ASSERT_TRUE(old_bounds);
+  EXPECT_FALSE(old_bounds->has_value());
+  auto& drafter = composed->stages[1];
+  drafter.embedding->version = 2;
+  drafter.embedding->params.push_back(P("token_offset", I(1)));
+  std::ranges::sort(drafter.embedding->params, {}, &Param::name);
+  // Declaring only the input's policy cannot qualify an arbitrary cache.
+  EXPECT_FALSE(StageLayout(*composed, 1, 8192, 512));
+  for (auto& layer : drafter.layers)
+    for (auto& component : layer.components)
+      if (component.kind == "attention.qsa") component.version = 2;
+  auto replay = StageLayout(*composed, 1, 8192, 512);
+  ASSERT_TRUE(replay) << (replay ? "" : replay.error());
+  auto bounds = model::DraftBounds(*replay);
+  ASSERT_TRUE(bounds);
+  ASSERT_TRUE(bounds->has_value());
+  EXPECT_EQ((*bounds)->relation, model::DraftRelation::kTokenAfterCache);
+  EXPECT_EQ((*bounds)->max_rows, 512U);
+  EXPECT_EQ((*bounds)->carry, 1U);
+  EXPECT_NE(model::KeptLayoutId({}, std::span(&*original, 1)),
+            model::KeptLayoutId({}, std::span(&*replay, 1)));
+  ASSERT_NE(Find("embedding.mtp", 1), nullptr);
+  ASSERT_NE(Find("attention.qsa", 1), nullptr);
+  EXPECT_NE(Find("embedding.mtp", 2), nullptr);
+  EXPECT_NE(Find("attention.qsa", 2), nullptr);
+  EXPECT_EQ(replay->items.size(), original->items.size() + 1);
+}
+
 // Each layer's component kinds.
 std::vector<std::vector<std::string>> Kinds(const spec::Stage& s) {
   std::vector<std::vector<std::string>> out;

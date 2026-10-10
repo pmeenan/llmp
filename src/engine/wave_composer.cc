@@ -179,6 +179,10 @@ WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
                    bool advance, const AheadFor& ahead) {
   WaveReport report;
   report.outcomes.resize(pending.size());
+  if (auto qualified = runner.CheckOwners(pending.size()); !qualified) {
+    for (auto& out : report.outcomes) out.refusal = StepRefusal{.what = qualified.error()};
+    return report;
+  }
   std::vector<bool> settled(pending.size());
   const auto settle = [&](std::size_t i, StepRefusal refusal) {
     report.outcomes[i].refusal = std::move(refusal);

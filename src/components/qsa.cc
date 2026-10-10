@@ -717,4 +717,20 @@ const ComponentDef& AttentionQsa() {
   return def;
 }
 
+const ComponentDef& AttentionQsaReplay() {
+  static const ComponentDef def = [] {
+    ComponentDef value = AttentionQsa();
+    value.version = 2;
+    value.state = [](const Instance& in) {
+      auto state = State(in);
+      // K/V/index rows are replaced at their cache positions, and block
+      // keys are regenerated from those rows before selection reads them.
+      for (auto& tensor : state.tensors) tensor.replayable = true;
+      return state;
+    };
+    return value;
+  }();
+  return def;
+}
+
 }  // namespace llmp::components::defs

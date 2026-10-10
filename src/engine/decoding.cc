@@ -8,6 +8,7 @@
 #include <format>
 #include <utility>
 
+#include "engine/draft_companions.h"
 #include "engine/support.h"
 #include "model/state_contract.h"
 
@@ -119,6 +120,11 @@ std::expected<DecodingOrchestrator, std::string> DecodingOrchestrator::Make(
     if (d.stage == 0 || d.stage >= slots.stages() || seen[d.stage]) {
       return Error(std::format("a drafter's stage {} is not a drafter stage of its own", d.stage));
     }
+    if (slots.progress(0, d.stage) &&
+        (!d.catch_up || !d.features || d.anchored ||
+         d.shape != DrafterSpec::Shape::kAutoregressive ||
+         (mode.combine == DecodingMode::Drafters::kCascade && &d != &mode.drafters.front())))
+      return Error("repeat-pending stages need feature autoregression first in a cascade");
     seen[d.stage] = true;
     const model::StateLayoutDerived& layout = slots.layout(d.stage);
     if (d.max_depth == 0 || (d.adaptive && d.max_depth > 7)) {
@@ -142,6 +148,9 @@ std::expected<DecodingOrchestrator, std::string> DecodingOrchestrator::Make(
       return Error(std::format("stage {} reads features but has no feature tap", d.stage));
     }
   }
+  for (std::size_t s = 1; s < slots.stages(); ++s)
+    if (slots.progress(0, s) && !seen[s])
+      return Error("every repeat-pending consumer must be declared by speculation");
   if (verify > runner.max_verify_rows() || verify > slots.layout(0).max_rows) {
     return Error(std::format("a verify of {} rows passes the runner's {}", verify,
                              std::min(runner.max_verify_rows(), slots.layout(0).max_rows)));
@@ -155,6 +164,8 @@ void DecodingOrchestrator::Reset(std::uint32_t slot) {
 }
 
 std::uint32_t DecodingOrchestrator::cursor(std::uint32_t slot, std::size_t drafter) const {
+  if (const auto* progress = runner_->slots().progress(slot, mode_.drafters.at(drafter).stage))
+    return progress->after_owed().pending_first;
   return cursor_.at(At(slot, drafter));
 }
 
@@ -169,6 +180,12 @@ void DecodingOrchestrator::SetDepth(std::uint32_t slot, std::size_t drafter,
 }
 
 DecodeReport DecodingOrchestrator::Step(std::span<const DecodeWork> work) {
+  if (auto qualified = runner_->CheckOwners(work.size()); !qualified) {
+    DecodeReport report;
+    report.outcomes.resize(work.size());
+    for (auto& out : report.outcomes) out.refusal = Refusal(qualified.error());
+    return report;
+  }
   if (mode_.kind != Kind::kSpeculative) {
     return Single(work, mode_.kind == Kind::kScored, mode_.kind == Kind::kPlain);
   }
@@ -221,7 +238,21 @@ DecodeReport DecodingOrchestrator::Single(std::span<const DecodeWork> work, bool
     segments.push_back({.tokens = tokens, .bytes = {}});
     of.push_back(i);
   }
-  WaveReport wave = RunWave(*runner_, *composer_, pending, segments, /*advance=*/true);
+  std::vector<std::vector<std::int32_t>> full(pending.size());
+  std::vector<std::span<const std::int32_t>> histories;
+  for (std::size_t j = 0; j < pending.size(); ++j) {
+    const auto& w = work[of[j]];
+    if (!scored) {
+      histories.push_back(w.history);
+    } else if (w.history.size() >= pending[j].past) {
+      full[j].assign(w.history.begin(), w.history.begin() + pending[j].past);
+      full[j].insert(full[j].end(), w.score.begin(), w.score.end());
+      histories.push_back(full[j]);
+    } else {
+      histories.emplace_back();
+    }
+  }
+  WaveReport wave = RunPromptWave(*runner_, *composer_, pending, segments, histories);
   report.steps = wave.steps;
   for (std::size_t j = 0; j < pending.size(); ++j) {
     DecodeOutcome& out = report.outcomes[of[j]];
@@ -253,6 +284,8 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     std::vector<bool> caught_up;             // by drafter: its catch-up pass ran
     std::vector<std::size_t> run;            // by drafter: its DraftRun's index
     std::optional<std::size_t> alternative;  // the drafter chosen
+    std::vector<std::optional<DraftProgressLedger::Unit>> progress;
+    std::vector<model::DraftRows> replay;
   };
   std::vector<Unit> units(work.size());
   const std::uint32_t target_context = slots.context(0);
@@ -274,6 +307,34 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
       out.refusal = Refusal(
           std::format("slot {}'s work does not continue its {} positions", w.slot, u.positions),
           w.slot);
+      continue;
+    }
+    u.progress.resize(drafters);
+    u.replay.resize(drafters);
+    Status ready;
+    for (std::size_t d = 0; d < drafters; ++d) {
+      const auto stage = mode_.drafters[d].stage;
+      if (!slots.progress(w.slot, stage)) continue;
+      if (slots.owed(w.slot)) ready = slots.Settle(w.slot);
+      if (!ready) break;
+      auto unit = slots.BeginDraftUnit(w.slot, stage);
+      if (!unit) {
+        ready = Error(unit.error());
+        break;
+      }
+      u.progress[d] = *unit;
+      if (u.positions == 0) continue;
+      auto bounds = model::DraftBounds(slots.layout(stage));
+      auto rows = model::DraftFirstPass(slots.progress(w.slot, stage)->completed(), **bounds);
+      if (!rows) {
+        ready = Error(rows.error());
+        break;
+      }
+      u.replay[d] = *rows;
+    }
+    if (!ready) {
+      out.refusal = Refusal(ready.error(), w.slot);
+      out.refusal->clean = slots.usable(w.slot);
       continue;
     }
     u.live = true;
@@ -347,7 +408,7 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     }
     for (std::uint32_t pass = 0; pass < passes; ++pass) {
       std::vector<PendingWork> pending;
-      std::vector<std::vector<std::int32_t>> tokens;
+      std::vector<std::vector<std::int32_t>> tokens, histories;
       std::vector<FeatureFrom> features;
       std::vector<std::size_t> of;
       tokens.reserve(work.size());
@@ -363,7 +424,23 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
         // An anchored pass stays at the committed positions.
         std::uint32_t past = spec.anchored ? u.positions : last;
         std::uint32_t rows = block ? u.depth[d] : 1;
-        if (!block && pass == 0 && spec.catch_up) {
+        const auto* progress = slots.progress(w.slot, spec.stage);
+        std::uint32_t token_first = past;
+        std::uint32_t feature_first = past == 0 ? 0 : past - 1;
+        if (progress) {
+          if (pass == 0) {
+            past = u.replay[d].cache_first;
+            rows = u.replay[d].count;
+            token_first = u.replay[d].token_first;
+            feature_first = u.replay[d].feature_first;
+          } else {
+            const auto bounds = model::DraftBounds(slots.layout(spec.stage));
+            const std::uint32_t a =
+                (**bounds).relation == model::DraftRelation::kTokenAfterCache ? 1U : 0U;
+            past = last - a;
+            token_first = last;
+          }
+        } else if (!block && pass == 0 && spec.catch_up) {
           // Its catch-up: from where its state stops being the committed
           // tokens', through the last token known. One that fell further
           // behind than its chunk bound (an alternative not chosen for some
@@ -372,6 +449,8 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
           past = std::min(cursor_.at(At(w.slot, d)), last);
           if (last - past + 1 > chunk) past = last + 1 - chunk;
           rows = last - past + 1;
+          token_first = past;
+          feature_first = past == 0 ? 0 : past - 1;
         }
         std::vector<std::int32_t> in;
         if (block) {
@@ -380,17 +459,19 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
         } else if (spec.anchored) {
           in.push_back(token(last));
         } else {
-          for (std::uint32_t q = past; q <= last; ++q) in.push_back(token(q));
+          for (std::uint32_t r = 0; r < rows; ++r) in.push_back(token(token_first + r));
         }
         // Its features: the target's before its rows on the unit's first
         // pass, then its own last pass's.
         if (spec.features) {
           features.push_back(
-              pass == 0 ? FeatureFrom{.kind = FeatureFrom::Kind::kTap, .position = past - 1}
+              pass == 0 ? FeatureFrom{.kind = FeatureFrom::Kind::kTap, .position = feature_first}
                         : FeatureFrom{.kind = FeatureFrom::Kind::kCarry});
         } else {
           features.emplace_back();
         }
+        auto& history = histories.emplace_back(w.history.begin(), w.history.end());
+        history.insert(history.end(), u.proposed.begin(), u.proposed.end());
         tokens.push_back(std::move(in));
         pending.push_back({.slot = w.slot,
                            .stage = spec.stage,
@@ -407,9 +488,22 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
       if (pending.empty()) break;
       std::vector<SegmentWork> segments;
       for (std::size_t j = 0; j < tokens.size(); ++j) {
-        segments.push_back({.tokens = tokens[j], .bytes = {}, .feature = features[j]});
+        segments.push_back(
+            {.tokens = tokens[j], .bytes = {}, .feature = features[j], .history = histories[j]});
+      }
+      runner_->authorized_drafts_.clear();
+      for (std::size_t j = 0; j < pending.size(); ++j) {
+        const auto& owner = units[of[j]];
+        if (owner.progress[d])
+          runner_->authorized_drafts_.push_back({.slot = pending[j].slot,
+                                                 .stage = pending[j].stage,
+                                                 .past = pending[j].past,
+                                                 .rows = pending[j].rows,
+                                                 .feature = segments[j].feature,
+                                                 .unit = *owner.progress[d]});
       }
       WaveReport wave = RunWave(*runner_, *composer_, pending, segments, /*advance=*/false);
+      runner_->authorized_drafts_.clear();
       report.steps += wave.steps;
       for (std::size_t j = 0; j < pending.size(); ++j) {
         const std::size_t i = of[j];
@@ -422,7 +516,20 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
           continue;
         }
         ++run.steps;
-        if (pass == 0 && !block && spec.catch_up) u.caught_up[d] = true;
+        if (pass == 0 && !block && spec.catch_up) {
+          u.caught_up[d] = true;
+          if (u.progress[d]) {
+            auto witnessed = slots.progress(work[i].slot, spec.stage)
+                                 ->ReplayCompleted(*u.progress[d], u.replay[d]);
+            if (!witnessed) {
+              run.refusal = Refusal(witnessed.error(), work[i].slot);
+              drafting[i] = false;
+              u.live = false;
+              report.outcomes[i].refusal = run.refusal;
+              continue;
+            }
+          }
+        }
         const std::uint32_t want = block ? u.depth[d] : 1;
         auto proposed = policy_.propose(work[i].slot, d, ran.outputs, want);
         if (!proposed) {
@@ -438,9 +545,62 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     }
   }
 
+  // Every repeat-pending consumer must consume its old feature range,
+  // including alternatives not chosen and units with no proposal budget.
+  // A selected head-bearing first pass keeps its original K-row schedule.
+  for (std::size_t d = 0; d < drafters; ++d) {
+    const auto stage = mode_.drafters[d].stage;
+    std::vector<PendingWork> catchup;
+    std::vector<SegmentWork> inputs;
+    std::vector<std::size_t> owners;
+    for (std::size_t i = 0; i < work.size(); ++i) {
+      auto& u = units[i];
+      if (!u.live || !u.progress[d] || u.caught_up[d] || u.positions == 0) continue;
+      const auto& rows = u.replay[d];
+      catchup.push_back({.slot = work[i].slot,
+                         .stage = stage,
+                         .phase = pl::Phase::kDraft,
+                         .past = rows.cache_first,
+                         .rows = rows.count,
+                         .outputs = 0,
+                         .want_head = false});
+      inputs.push_back(
+          {.tokens = work[i].history.subspan(rows.token_first, rows.count),
+           .feature = {.kind = FeatureFrom::Kind::kTap, .position = rows.feature_first},
+           .history = work[i].history});
+      owners.push_back(i);
+    }
+    runner_->authorized_drafts_.clear();
+    for (std::size_t j = 0; j < catchup.size(); ++j)
+      runner_->authorized_drafts_.push_back({.slot = catchup[j].slot,
+                                             .stage = stage,
+                                             .past = catchup[j].past,
+                                             .rows = catchup[j].rows,
+                                             .feature = inputs[j].feature,
+                                             .unit = *units[owners[j]].progress[d]});
+    auto caught = RunWave(*runner_, *composer_, catchup, inputs, false);
+    runner_->authorized_drafts_.clear();
+    report.steps += caught.steps;
+    for (std::size_t j = 0; j < owners.size(); ++j) {
+      const auto i = owners[j];
+      auto& u = units[i];
+      if (!caught.outcomes[j].refusal) {
+        auto witness =
+            slots.progress(work[i].slot, stage)->ReplayCompleted(*u.progress[d], u.replay[d]);
+        if (!witness) caught.outcomes[j].refusal = Refusal(witness.error(), work[i].slot);
+      }
+      if (caught.outcomes[j].refusal) {
+        u.live = false;
+        report.outcomes[i].refusal = std::move(caught.outcomes[j].refusal);
+      } else {
+        u.caught_up[d] = true;
+      }
+    }
+  }
+
   // One verify of every slot's anchor and proposals.
   std::vector<PendingWork> pending;
-  std::vector<std::vector<std::int32_t>> verified;
+  std::vector<std::vector<std::int32_t>> verified, histories;
   std::vector<std::size_t> of;
   verified.reserve(work.size());
   for (std::size_t i = 0; i < work.size(); ++i) {
@@ -459,11 +619,14 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
                        .greedy = false,
                        .row_invariant = mode_.row_invariant,
                        .alone = false});
+    auto& history = histories.emplace_back(work[i].history.begin(), work[i].history.end());
+    history.insert(history.end(), u.proposed.begin(), u.proposed.end());
     verified.push_back(std::move(rows));
     of.push_back(i);
   }
   std::vector<SegmentWork> segments;
-  for (const auto& v : verified) segments.push_back({.tokens = v, .bytes = {}});
+  for (std::size_t i = 0; i < verified.size(); ++i)
+    segments.push_back({.tokens = verified[i], .bytes = {}, .history = histories[i]});
   WaveReport wave = RunWave(*runner_, *composer_, pending, segments, /*advance=*/false);
   report.steps += wave.steps;
   for (std::size_t j = 0; j < pending.size(); ++j) {

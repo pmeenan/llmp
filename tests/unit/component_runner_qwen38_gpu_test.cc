@@ -29,6 +29,7 @@
 // builder on the CPU (ggml_lower_qwen38_test).
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -56,6 +57,8 @@
 #include "base/bytes.h"
 #include "components/step.h"
 #include "engine/component_source.h"
+#include "engine/decoding.h"
+#include "engine/draft_companions.h"
 #include "engine/expert_slab.h"
 #include "engine/live_state.h"
 #include "engine/model_runner.h"
@@ -64,11 +67,13 @@
 #include "engine/qwen38_runner.h"
 #include "engine/runner_resources.h"
 #include "engine/support.h"
+#include "engine/wave_composer.h"
 #include "kernels/ggml/qwen38_commit.h"
 #include "kernels/ggml/step_program.h"
 #include "model/qwen38.h"
 #include "model/state_contract.h"
 #include "planner/step_shape.h"
+#include "platform/kept_files.h"
 #include "providers/device_runtime.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen38.h"
@@ -736,10 +741,10 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
         const Planned& planned = script[w];
         auto& row = out.outputs.emplace_back();
         const pl::StepShape shape = ShapeOf(planned);
-        std::vector<std::vector<std::int32_t>> tokens;
+        std::vector<std::vector<std::int32_t>> tokens, histories;
         for (std::size_t i = 0; i < planned.wave.units.size(); ++i) {
           const Unit& u = planned.wave.units[i];
-          const auto history = History(u.slot, planned.past[i] + u.rows);
+          const auto& history = histories.emplace_back(History(u.slot, planned.past[i] + u.rows));
           tokens.emplace_back(history.end() - u.rows, history.end());
           past.at(u.slot) = planned.past[i] + (u.keep == 0 ? u.rows : u.keep);
         }
@@ -756,7 +761,6 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
                                             .side_rows = std::span(side[w]).first(count),
                                             .ahead = {}});
             if (refused || !refused.error().clean ||
-                refused.error().what != "the side rows must fill their slot" ||
                 runner->slots().live(0, 0).used_bytes() != initialized ||
                 runner->slots().positions(0) != positions) {
               return en::support::Error(
@@ -773,10 +777,14 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
               runner->slots().positions(0) != positions)
             return en::support::Error("an invalid side row changed initialized state");
         }
+        for (std::size_t i = 0; i < work.size(); ++i) work[i].history = histories[i];
+        // Alternate caller-supplied indices with the component callback.
+        // Both must preserve the same exact outputs and state on every form.
         auto ran = runner->RunStep({.shape = shape,
                                     .work = work,
                                     .step_bytes = {},
-                                    .side_rows = side[w],
+                                    .side_rows = w % 2 == 0 ? std::span<const std::int32_t>(side[w])
+                                                            : std::span<const std::int32_t>{},
                                     .advance = shape.phase != pl::Phase::kVerify,
                                     .ahead = {}});
         if (!ran) return std::unexpected(std::format("wave {}: {}", w, ran.error().what));
@@ -1060,5 +1068,795 @@ INSTANTIATE_TEST_SUITE_P(
              .id = "qgguf-artifacts/"
                    "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78"}),
     [](const testing::TestParamInfo<Case>& info) { return info.param.name; });
+
+struct MtpAction {
+  enum Kind { kPrompt, kUnit, kRefusedPrompt, kSave, kRestore, kSpill } kind;
+  std::uint32_t slot = 0, rows = 0;
+  std::int32_t anchor_delta = 0;
+};
+std::vector<MtpAction> MtpActions() {
+  using A = MtpAction;
+  return {{A::kPrompt, 0, 7},   {A::kPrompt, 1, 5}, {A::kPrompt, 0, 4},        {A::kUnit, 0, 3},
+          {A::kUnit, 1, 3},     {A::kSave, 0},      {A::kRefusedPrompt, 0, 2}, {A::kUnit, 0, 0},
+          {A::kUnit, 0, 1, 29}, {A::kUnit, 1, 0},   {A::kPrompt, 0, 5},        {A::kUnit, 0, 2},
+          {A::kUnit, 1, 2},     {A::kRestore, 0},   {A::kUnit, 0, 0, 71},      {A::kSpill, 0},
+          {A::kUnit, 0, 2},     {A::kUnit, 1, 2},   {A::kUnit, 0, 2},          {A::kUnit, 1, 2},
+          {A::kUnit, 0, 2},     {A::kUnit, 1, 2},   {A::kUnit, 0, 2},          {A::kUnit, 1, 2}};
+}
+using MtpState = std::map<std::string, std::vector<std::byte>>;
+struct MtpRecord {
+  MtpAction action;
+  std::vector<std::int32_t> history, drafts;
+  std::vector<float> target_logits;
+  en::Qwen38DraftHeadCapture head;
+  std::uint32_t positions = 0, pending = 0;
+  MtpState state;
+};
+
+en::Status ReadMtpBytes(en::PagedNode& node, const llmp::catalog::Closure& closure,
+                        std::uint64_t base, std::uint64_t bytes, std::vector<std::byte>& out) {
+  if (bytes == 0) {
+    out.clear();
+    return {};
+  }
+  std::vector<llmp::catalog::ExtentId> staging;
+  auto host = node.Pinned(bytes, 0, staging);
+  if (!host) return std::unexpected(host.error());
+  auto copied = node.Copy(0, closure, base, *host, bytes, true, "MTP numerical state");
+  if (!copied) {
+    // Failed copies do not prove retirement of a possible DMA into this host.
+    node.KeepPinned(*host);
+    return copied;
+  }
+  const auto* begin = static_cast<const std::byte*>(*host);
+  out.assign(begin, begin + bytes);
+  return node.FreePinned(*host);
+}
+
+std::vector<MtpRecord> MtpToday(const Target& t, const fs::path& scratch) {
+  const auto actions = MtpActions();
+  std::vector<MtpRecord> records(actions.size());
+  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+  const en::Qwen38Options options{.artifact = t.root,
+                                  .out = scratch,
+                                  .context = 512,
+                                  .max_rows = 16,
+                                  .drafter = fs::path(llmp::test_support::ModelsDir()) / kMtp,
+                                  .draft_rows = 2,
+                                  .draft_vocab = 65536,
+                                  .draft_head_capture = true,
+                                  .wave_slots = 2,
+                                  .request_slots = 2,
+                                  .wave_read_align = 2048,
+                                  .spill_place = {}};
+  auto runner = std::make_unique<en::Qwen38Runner>(node, options, 0, 0);
+  std::vector<en::PagedModel*> entered;
+  const auto ran = [&]() -> en::Status {
+    if (auto x = node.Open(); !x) return x;
+    entered.push_back(runner.get());
+    if (auto x = runner->Setup(); !x) return x;
+    if (auto x = node.MapWorkspace(runner->activations_needed(), runner->pool_needed()); !x)
+      return x;
+    if (auto x = node.Start(llmp::base::Bytes(std::uint64_t{110} << 30U)); !x) return x;
+    if (auto x = runner->Register(); !x) return x;
+    if (auto x = runner->Bind(); !x) return x;
+    node.Run();
+    std::vector<en::LoadStats> loads;
+    if (auto x = node.Load(runner->weights(), "legacy MTP weights", loads); !x) return x;
+    if (auto x = runner->ReadPleHash(); !x) return x;
+    std::vector<en::Qwen38Runner::Slot*> slots;
+    for (std::uint32_t i = 0; i < 2; ++i) {
+      auto slot = runner->request_slot(i);
+      if (!slot) return std::unexpected(slot.error());
+      slots.push_back(*slot);
+    }
+    if (auto x = runner->SelectSlots(slots); !x) return x;
+    return node.WithRequest(
+        0, runner->execution_closure(), "legacy MTP script", [&]() -> en::Status {
+          std::array<std::vector<std::int32_t>, 2> histories;
+          std::vector<std::int32_t> saved_history;
+          std::vector<en::LiveState::Range> saved_ranges;
+          void* saved = nullptr;
+          std::uint32_t saved_pending = 0;
+          for (std::size_t index = 0; index < actions.size(); ++index) {
+            const auto action = actions[index];
+            auto& record = records[index];
+            record.action = action;
+            auto& history = histories[action.slot];
+            auto& slot = *slots[action.slot];
+            const auto past = static_cast<std::uint32_t>(history.size());
+            switch (action.kind) {
+              case MtpAction::kPrompt:
+                for (std::uint32_t i = 0; i < action.rows; ++i)
+                  history.push_back(TokenAt(action.slot, past + i));
+                record.history = history;
+                if (auto x = slot.PrefillChunk(history, past, record.target_logits, true); !x)
+                  return x;
+                break;
+              case MtpAction::kUnit: {
+                record.history = history;
+                record.history.push_back(TokenAt(action.slot, past) + action.anchor_delta);
+                if (auto x = slot.Draft(record.history, record.drafts, nullptr, 2, &record.head);
+                    !x)
+                  return x;
+                if (record.head.catch_up_rows != slot.pending_rows())
+                  return std::unexpected("legacy head did not execute its retained K-row schedule");
+                auto verify = record.history;
+                verify.insert(verify.end(), record.drafts.begin(), record.drafts.end());
+                std::vector<std::int32_t> picks;
+                if (auto x = slot.Verify(verify, past, picks, &record.target_logits); !x) return x;
+                if (action.rows == 0) {
+                  if (auto x = slot.DiscardVerify(); !x) return x;
+                } else {
+                  if (auto x = slot.Accept(action.rows); !x) return x;
+                  if (auto x = slot.Rollback(); !x) return x;
+                  history.assign(verify.begin(), verify.begin() + past + action.rows);
+                }
+                break;
+              }
+              case MtpAction::kRefusedPrompt:
+                record.history = history;
+                for (std::uint32_t i = 0; i < action.rows; ++i)
+                  record.history.push_back(TokenAt(action.slot, past + i));
+                break;  // The shared-only clean-refusal witness must leave this
+                        // logical schedule.
+              case MtpAction::kSave: {
+                saved_history = history;
+                saved_pending = slot.pending_rows();
+                saved_ranges = slot.used_state_ranges();
+                std::uint64_t bytes = 0;
+                for (const auto& r : saved_ranges) bytes += r.bytes;
+                std::vector<llmp::catalog::ExtentId> extents;
+                auto host = node.Pinned(bytes, 0, extents);
+                if (!host) return std::unexpected(host.error());
+                saved = *host;
+                if (auto x = slot.SaveUsedState(saved, saved_ranges); !x) return x;
+                break;
+              }
+              case MtpAction::kRestore:
+                if (auto x = slot.PrepareRestoreState(saved_ranges); !x) return x;
+                if (auto x = slot.RestoreUsedState(saved, saved_ranges); !x) return x;
+                slot.set_pending_rows(saved_pending);
+                history = saved_history;
+                break;
+              case MtpAction::kSpill:
+                if (auto x = slot.Spill(); !x) return x;
+                if (auto x = slot.Restore(); !x) return x;
+                break;
+            }
+            record.positions = static_cast<std::uint32_t>(history.size());
+            record.pending = slot.pending_rows();
+            const auto& p = md::Qwen38Flash();
+            const auto& layout = runner->mtp_state();
+            struct Part {
+              const char* name;
+              std::uint64_t offset, bytes;
+            };
+            const std::array parts{
+                Part{"k", layout.k, std::uint64_t{record.positions} * p.kv_heads * p.head_dim * 2},
+                Part{"v", layout.v, std::uint64_t{record.positions} * p.kv_heads * p.head_dim * 2},
+                Part{"indexer_k", layout.indexer,
+                     std::uint64_t{record.positions} * p.indexer_head_dim * 4},
+                Part{"indexer_blocks", layout.blocks,
+                     std::uint64_t{record.positions / p.indexer_ratio} * p.indexer_head_dim * 2},
+                Part{"streams", layout.hidden + std::uint64_t{p.hc_width()} * 4,
+                     std::uint64_t{record.pending} * p.hc_width() * 4}};
+            for (const auto& part : parts)
+              if (auto x = ReadMtpBytes(node, runner->execution_closure(),
+                                        slot.drafter_state_base() + part.offset, part.bytes,
+                                        record.state[part.name]);
+                  !x)
+                return x;
+          }
+          return {};
+        });
+  }();
+  EXPECT_TRUE(ran) << (ran ? "" : ran.error());
+  const auto retired = node.TearDown(entered);
+  EXPECT_TRUE(retired) << (retired ? "" : retired.error());
+  if (!retired) std::ignore = runner.release();
+  return records;
+}
+
+// Test-only delegation keeps the real GGML program and CUDA recording. It
+// identifies a draft-head graph when recorded, then counts later launches of
+// that same graph after the script supplied a different anchor and features.
+struct MtpReplayProbe {
+  std::array<std::int32_t, 2> anchors{-1, -1};
+  std::uint64_t head_captures = 0, changed_anchor_replays = 0, catch_up_replays = 0;
+};
+class MtpRecorded final : public kn::Recorded {
+ public:
+  MtpRecorded(const kn::StepLaunch* owner, std::unique_ptr<kn::Recorded> inner,
+              std::uint32_t owners, bool catch_up, std::array<std::int32_t, 2> anchors)
+      : Recorded(owner),
+        inner_(std::move(inner)),
+        owners_(owners),
+        catch_up_(catch_up),
+        anchors_(anchors) {}
+  std::size_t nodes() const override { return inner_->nodes(); }
+  double capture_seconds() const override { return inner_->capture_seconds(); }
+  double instantiate_seconds() const override { return inner_->instantiate_seconds(); }
+  std::unique_ptr<kn::Recorded> inner_;
+  std::uint32_t owners_;
+  bool catch_up_;
+  std::array<std::int32_t, 2> anchors_;
+};
+class MtpLaunch final : public kn::StepLaunch {
+ public:
+  MtpLaunch(std::unique_ptr<kn::StepLaunch> inner, MtpReplayProbe& probe)
+      : inner_(std::move(inner)), probe_(probe) {}
+  std::expected<std::unique_ptr<kn::Recorded>, kn::StepFailure> Capture(
+      llmp::providers::NativeStream stream, const Body& body) override {
+    auto made = inner_->Capture(stream, body);
+    if (!made) return std::unexpected(made.error());
+    return std::make_unique<MtpRecorded>(this, std::move(*made), 0, false, probe_.anchors);
+  }
+  std::expected<void, kn::StepFailure> Launch(llmp::providers::NativeStream stream,
+                                              const kn::Recorded& recorded) override {
+    const auto& graph = static_cast<const MtpRecorded&>(recorded);
+    auto queued = inner_->Launch(stream, *graph.inner_);
+    bool changed = false;
+    for (std::uint32_t slot = 0; slot < 2; ++slot)
+      changed |=
+          (graph.owners_ & (1U << slot)) != 0 && graph.anchors_[slot] != probe_.anchors[slot];
+    if (queued && changed) {
+      ++probe_.changed_anchor_replays;
+      if (graph.catch_up_) ++probe_.catch_up_replays;
+    }
+    return queued;
+  }
+  bool faulted() const override { return inner_->faulted(); }
+  kn::StepLaunch& inner() { return *inner_; }
+  MtpReplayProbe& probe() { return probe_; }
+
+ private:
+  std::unique_ptr<kn::StepLaunch> inner_;
+  MtpReplayProbe& probe_;
+};
+class MtpProgram final : public kn::StepProgram {
+ public:
+  MtpProgram(std::unique_ptr<kn::StepProgram> inner, std::uint32_t owners, bool catch_up)
+      : inner_(std::move(inner)), owners_(owners), catch_up_(catch_up) {}
+  std::uint64_t scratch_bytes() const override { return inner_->scratch_bytes(); }
+  std::uint64_t pool_bytes() const override { return inner_->pool_bytes(); }
+  std::uint64_t host_bytes() const override { return inner_->host_bytes() + sizeof(*this); }
+  std::uint64_t launches() const override { return inner_->launches(); }
+  std::span<const kn::InputSlot> inputs() const override { return inner_->inputs(); }
+  std::span<const kn::OutputSlot> outputs() const override { return inner_->outputs(); }
+  std::span<const kn::TensorUse> tensors() const override { return inner_->tensors(); }
+  const llmp::execution::BoundPlan* bound() const override { return inner_->bound(); }
+  bool capturable() const override { return inner_->capturable(); }
+  std::expected<void, kn::StepFailure> Bind(kn::StepLaunch& launch) override {
+    return inner_->Bind(static_cast<MtpLaunch&>(launch).inner());
+  }
+  std::expected<void, kn::StepFailure> Position(std::span<const std::uint32_t> past) override {
+    return inner_->Position(past);
+  }
+  std::expected<void, kn::StepFailure> Run(kn::StepLaunch& launch,
+                                           llmp::providers::NativeStream stream) const override {
+    return inner_->Run(static_cast<MtpLaunch&>(launch).inner(), stream);
+  }
+  std::expected<std::unique_ptr<kn::Recorded>, kn::StepFailure> Record(
+      kn::StepLaunch& launch, llmp::providers::NativeStream stream,
+      const kn::StepLaunch::Body& body) const override {
+    auto& outer = static_cast<MtpLaunch&>(launch);
+    auto made = inner_->Record(outer.inner(), stream, body);
+    if (!made) return std::unexpected(made.error());
+    if (owners_ != 0) ++outer.probe().head_captures;
+    return std::make_unique<MtpRecorded>(&launch, std::move(*made), owners_, catch_up_,
+                                         outer.probe().anchors);
+  }
+
+ private:
+  std::unique_ptr<kn::StepProgram> inner_;
+  std::uint32_t owners_;
+  bool catch_up_;
+};
+
+struct MtpKept {
+  int dir = -1;
+  std::array<std::array<llmp::platform::FileIdentity, 2>, 2> identities{};
+  std::array<std::vector<en::LiveState::Range>, 2> footprint{};
+  std::array<std::uint32_t, 2> positions{};
+  std::array<md::DraftProgress, 2> progress{};
+  std::string layout{};
+  std::uint64_t head_captures = 0, changed_head_replays = 0, catch_up_replays = 0;
+};
+
+void MtpLowered(const Target& t, const fs::path& scratch, std::span<const MtpRecord> records,
+                MtpKept& kept, bool resume) {
+  auto artifact =
+      ar::Artifact::Open(fs::path(llmp::test_support::ModelsDir()) / kMtp, {.expected_id = {}});
+  ASSERT_TRUE(artifact);
+  auto binding = md::BindQwen38Mtp(md::Qwen38Flash(), *artifact);
+  ASSERT_TRUE(binding);
+  const auto& mapping = sp::mappings::Qwen38MtpMapping();
+  auto values = sp::mappings::Qwen38MtpV0Values(md::Qwen38Flash(), *binding);
+  ASSERT_TRUE(values);
+  auto mtp_source = sp::SourceOf(*artifact, &mapping);
+  ASSERT_TRUE(mtp_source);
+  auto spec =
+      sp::ComposeDrafter(t.spec, sp::mappings::Qwen38Mapping(), mapping, *mtp_source, *values);
+  ASSERT_TRUE(spec) << (spec ? "" : spec.error());
+  spec->stages[1].embedding->version = 2;
+  spec->stages[1].embedding->params.push_back({.name = "token_offset", .value = std::int64_t{1}});
+  std::ranges::sort(spec->stages[1].embedding->params, {}, &sp::Param::name);
+  for (auto& layer : spec->stages[1].layers)
+    for (auto& component : layer.components)
+      if (component.kind == "attention.qsa") component.version = 2;
+  std::array<md::StateLayoutDerived, 2> layouts;
+  for (std::uint16_t stage = 0; stage < 2; ++stage) {
+    auto layout = co::StageLayout(*spec, stage, 512, 16);
+    ASSERT_TRUE(layout) << (layout ? "" : layout.error());
+    layouts[stage] = std::move(*layout);
+  }
+  const std::array<const md::StateLayoutDerived*, 2> layout_ptr{&layouts[0], &layouts[1]};
+  const std::array<std::span<const co::BoundTensor>, 2> tables{t.source.tensors,
+                                                               mtp_source->tensors};
+  const std::array<const ar::Artifact*, 2> artifacts{&t.artifact, &*artifact};
+  std::array<en::LayerSlabs, 2> placements;
+  for (std::uint16_t stage = 0; stage < 2; ++stage) {
+    auto placement = en::ExpertSlabsOf(*artifacts[stage], kSlabAlignment);
+    ASSERT_TRUE(placement) << (placement ? "" : placement.error());
+    placements[stage] = std::move(*placement);
+  }
+  placements[0].places[t.artifact.resources()[t.binding.ple_table.index].group] =
+      en::GroupPlace::kNone;
+  std::vector<pl::StepShape> shapes;
+  for (std::uint16_t stage = 0; stage < 2; ++stage)
+    for (const std::uint32_t rows : {1U, 3U, 16U})
+      for (const bool head : {false, true}) {
+        shapes.push_back({.stage = stage,
+                          .phase = stage == 0 ? pl::Phase::kPrefill : pl::Phase::kDraft,
+                          .segments = {{.rows = rows,
+                                        .past = 512 - rows,
+                                        .read_cells = 512,
+                                        .outputs = head ? 1U : 0U,
+                                        .want_head = head}}});
+      }
+  shapes.push_back({.phase = pl::Phase::kVerify,
+                    .segments = {{.rows = 3, .past = 509, .read_cells = 512, .outputs = 3}}});
+  struct Place {
+    std::uint16_t artifact;
+    bool array;
+    std::uint32_t index;
+  };
+  std::map<std::pair<llmp::ir::WeightRef, llmp::format::PartRole>, Place> places;
+  std::map<llmp::ir::WeightRef, std::uint64_t> pitch;
+  std::optional<en::RunnerConfig::RowTable> table;
+  for (const auto& shape : shapes) {
+    auto step = co::BuildStep(*spec, shape.stage, shape,
+                              {.tensors = tables[shape.stage],
+                               .state = &layouts[shape.stage],
+                               .stages = layout_ptr,
+                               .artifacts = tables});
+    ASSERT_TRUE(step) << (step ? "" : step.error());
+    for (const auto& weight : step->weights)
+      for (const auto& [name, role] : weight.parts) {
+        const auto& a = *artifacts[weight.ref.stage];
+        const auto found = weight.ref.expert_array ? a.FindExpertArray(name) : a.FindResource(name);
+        ASSERT_TRUE(found) << name;
+        places[{weight.ref, role}] = {weight.ref.stage, weight.ref.expert_array, *found};
+        if (weight.ref.expert_array) pitch[weight.ref] = placements[weight.ref.stage].pitch[*found];
+        if (weight.ref.stage == 0 && !weight.ref.expert_array &&
+            *found == t.binding.ple_table.index)
+          table = {.weight = weight.ref,
+                   .resource = *found,
+                   .format = step->graph.tensor(weight.tensor).format,
+                   .part = role,
+                   .rows_per_token = md::Qwen38Flash().ple_heads()};
+      }
+  }
+  ASSERT_TRUE(table);
+  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+  auto source = std::make_unique<KernelSource>(node);
+  std::unique_ptr<en::ModelRunner> runner;
+  std::vector<en::PagedModel*> entered;
+  bool refuse_target = false;
+  MtpReplayProbe replay;
+  const auto ran = [&]() -> en::Status {
+    if (auto x = node.Open(); !x) return x;
+    if (auto x = source->resources->OpenCublas("MTP comparison cuBLAS"); !x) return x;
+    auto backend =
+        kg::GgmlBackend::Create(0, node.execution(), node.stream(0), &source->resources->cublas(),
+                                {.lower = {.expert_stride = [&](const llmp::ir::WeightRef& ref) {
+                                   return pitch.contains(ref) ? pitch.at(ref) : 0;
+                                 }}});
+    if (!backend) return std::unexpected(backend.error());
+    source->backend = std::move(*backend);
+    std::vector<std::unique_ptr<en::ComponentStepSource>> sources;
+    for (std::uint16_t stage = 0; stage < 2; ++stage) {
+      auto own_backend = source->backend->Backend();
+      const auto lower = own_backend.lower;
+      own_backend.lower = [&, lower](const kn::LowerInput& input)
+          -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
+        if (refuse_target && input.shape.stage == 0 && input.shape.phase == pl::Phase::kPrefill)
+          return std::unexpected("injected clean target planning refusal");
+        auto program = lower(input);
+        if (!program) return std::unexpected(program.error());
+        const bool head = input.shape.stage == 1 && input.shape.phase == pl::Phase::kDraft &&
+                          std::ranges::any_of(input.shape.segments, [](const auto& segment) {
+                            return segment.want_head && segment.outputs != 0;
+                          });
+        std::uint32_t owners = 0;
+        bool catch_up = false;
+        if (head)
+          for (const auto& segment : input.shape.segments) {
+            owners |= 1U << segment.slot;
+            catch_up |= segment.rows > 1;
+          }
+        return std::make_unique<MtpProgram>(std::move(*program), owners, catch_up);
+      };
+      auto made = en::ComponentStepSource::Create(
+          {.spec = &*spec,
+           .stage = stage,
+           .bindings = {.tensors = tables[stage],
+                        .state = &layouts[stage],
+                        .stages = layout_ptr,
+                        .artifacts = tables},
+           .bound_digest = spec->Digest(),
+           .mapping = stage == 0 ? &sp::mappings::Qwen38Mapping() : &mapping,
+           .values = stage == 0 ? std::span<const sp::SourceValue>(t.values)
+                                : std::span<const sp::SourceValue>(*values),
+           .slots = 2,
+           .policy = std::nullopt,
+           .backend = std::move(own_backend)});
+      if (!made) return std::unexpected(made.error());
+      sources.push_back(std::move(*made));
+    }
+    auto staged = en::StagedStepSource::Create(std::move(sources));
+    if (!staged) return std::unexpected(staged.error());
+    en::RunnerConfig config;
+    config.slots = {
+        .model = "MTP comparison",
+        .slots = 2,
+        .stages = {{.name = "target", .layout = layouts[0]}, {.name = "mtp", .layout = layouts[1]}},
+        .spec = spec->Digest(),
+        .spill_place = {},
+        .spill_directory = scratch,
+        .invalidate = {},
+        .drop_plans = {}};
+    config.slots.spill_place = [&](std::uint32_t slot, std::uint32_t stage) {
+      return en::LiveState::SpillPlace{
+          .directory = scratch,
+          .dir = kept.dir,
+          .name = std::format("owner-{}.stage-{}.state", slot, stage),
+          .keep = resume,
+          .expect = resume ? std::optional(kept.identities[slot][stage]) : std::nullopt};
+    };
+    std::array<en::PagedWeights*, 2> paged{};
+    for (std::uint16_t stage = 0; stage < 2; ++stage) {
+      auto weights = std::make_unique<en::PagedWeights>();
+      if (auto x =
+              weights->Open(stage == 0 ? t.root : fs::path(llmp::test_support::ModelsDir()) / kMtp);
+          !x)
+        return x;
+      paged[stage] = weights.get();
+      config.weights.push_back({.weights = std::move(weights),
+                                .places = placements[stage].places,
+                                .slabs = placements[stage].slabs});
+    }
+    config.weight_address = [&](const auto& ref, auto role) -> std::uint64_t {
+      const auto at = places.find({ref, role});
+      if (at == places.end()) return 0;
+      const auto& p = at->second;
+      return p.array ? paged[p.artifact]->array_address(p.index)
+                     : paged[p.artifact]->resource_address(p.index);
+    };
+    config.setup_shapes = shapes;
+    config.max_verify_rows = 3;
+    config.row_tables.push_back(*table);
+    config.launch = [&]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+      auto launched = source->backend->Launch(
+          {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)});
+      if (!launched) return std::unexpected(launched.error());
+      return std::make_unique<MtpLaunch>(std::move(*launched), replay);
+    };
+    auto made = en::ModelRunner::Create(node, std::move(config), std::move(*staged), 0, 0);
+    if (!made) return std::unexpected(made.error());
+    runner = std::move(*made);
+    entered = {runner.get(), source.get()};
+    if (auto x = runner->Setup(); !x) return x;
+    if (auto x = node.MapWorkspace(runner->activations_needed(),
+                                   std::max(runner->pool_needed(), en::kPagedExtent));
+        !x)
+      return x;
+    if (auto x = node.Start(llmp::base::Bytes(std::uint64_t{110} << 30U)); !x) return x;
+    if (auto x = runner->Register(); !x) return x;
+    if (auto x = runner->Bind(); !x) return x;
+    node.Run();
+    std::vector<en::LoadStats> loads;
+    if (auto x = node.Load(runner->weights(), "shared MTP weights", loads); !x) return x;
+    if (resume) {
+      auto& slots = runner->slots();
+      for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        for (std::size_t stage = 0; stage < 2; ++stage)
+          if (slots.live(slot, stage).spill_identity() != kept.identities[slot][stage])
+            return std::unexpected("restarted MTP opened another spill file");
+        if (auto x = slots.Adopt(slot, kept.positions[slot], kept.footprint[slot], kept.layout); !x)
+          return x;
+        if (slots.usable(slot) || slots.kept_whole(slot) || slots.BeginDraftUnit(slot, 1))
+          return std::unexpected("adopted MTP became ready before control hydration");
+        if (auto x = slots.Restore(slot); !x) return x;
+        if (slots.progress(slot, 1)->completed() != kept.progress[slot])
+          return std::unexpected("restarted MTP changed its pending schedule");
+      }
+    }
+    if (auto x = runner->slots().SelectSlots(std::array{0U, 1U}); !x) return x;
+    auto caps = co::StageBatching(*spec, 0);
+    if (!caps) return std::unexpected(caps.error());
+    auto composer = en::WaveComposer::For(*caps, runner->slots());
+    if (!composer) return std::unexpected(composer.error());
+    std::array<const MtpRecord*, 2> current{};
+    std::array<std::uint32_t, 2> pass{}, judgements{};
+    en::DecodingPolicy policy;
+    policy.propose = [&](std::uint32_t slot, std::size_t, std::span<const std::byte> bytes,
+                         std::uint32_t) -> std::expected<std::vector<std::int32_t>, std::string> {
+      const auto& record = *current[slot];
+      const auto count = record.head.head_rows;
+      const auto logits =
+          std::span(record.head.logits).subspan(std::size_t{pass[slot]} * count, count);
+      const auto expected = std::as_bytes(logits);
+      if (bytes.size() < expected.size())
+        return std::unexpected("MTP head output is shorter than its legacy logits");
+      if (!std::ranges::equal(bytes.first(expected.size()), expected)) {
+        const auto mismatch = std::mismatch(expected.begin(), expected.end(), bytes.begin());
+        const auto word =
+            static_cast<std::size_t>(mismatch.first - expected.begin()) / sizeof(float);
+        float got = 0;
+        std::memcpy(&got, bytes.data() + word * sizeof(float), sizeof(float));
+        return std::unexpected(
+            std::format("MTP head logits differ for owner{} pass{} at {}: {} versus {}", slot,
+                        pass[slot], word, got, logits[word]));
+      }
+      const auto best = static_cast<std::size_t>(std::ranges::max_element(logits) - logits.begin());
+      if (record.head.token_ids.at(best) != record.drafts.at(pass[slot]))
+        return std::unexpected("MTP logits do not select the legacy draft token");
+      return std::vector<std::int32_t>{record.drafts.at(pass[slot]++)};
+    };
+    policy.judge =
+        [&](std::uint32_t slot, std::span<const std::int32_t>,
+            std::span<const std::byte> bytes) -> std::expected<en::Verdict, std::string> {
+      ++judgements[slot];
+      const auto& record = *current[slot];
+      if (!std::ranges::equal(bytes, std::as_bytes(std::span(record.target_logits))))
+        return std::unexpected("target verify logits differ after MTP");
+      if (record.action.rows == 0) return std::unexpected("whole discard witness");
+      return en::Verdict{.keep = record.action.rows};
+    };
+    auto decoder = en::DecodingOrchestrator::Make(
+        *runner, *composer,
+        {.kind = en::DecodingMode::Kind::kSpeculative,
+         .drafters = {{.stage = 1, .max_depth = 2, .catch_up = true, .features = true}}},
+        std::move(policy));
+    if (!decoder) return std::unexpected(decoder.error());
+    return node.WithRequest(
+        0, runner->slots().execution(), "shared MTP script", [&]() -> en::Status {
+          auto& slots = runner->slots();
+          void* saved = nullptr;
+          std::vector<en::LiveState::Range> pages, footprint;
+          std::uint32_t saved_positions = 0;
+          std::vector<bool> completed(records.size(), false);
+          for (std::size_t index = 0; index < records.size(); ++index) {
+            const auto& record = records[index];
+            const auto a = record.action;
+            const auto past = slots.positions(a.slot);
+            switch (a.kind) {
+              case MtpAction::kRefusedPrompt:
+                refuse_target = true;
+                runner->DropPlans();
+                [[fallthrough]];
+              case MtpAction::kPrompt: {
+                const en::PendingWork pending{.slot = a.slot,
+                                              .phase = pl::Phase::kPrefill,
+                                              .past = past,
+                                              .rows = a.rows,
+                                              .outputs = 1};
+                const en::SegmentWork work{.tokens =
+                                               std::span(record.history).subspan(past, a.rows)};
+                const std::array<std::span<const std::int32_t>, 1> histories{record.history};
+                auto report = en::RunPromptWave(*runner, *composer, std::span(&pending, 1),
+                                                std::span(&work, 1), histories);
+                if (refuse_target) {
+                  refuse_target = false;
+                  if (!report.outcomes[0].refusal || !report.outcomes[0].refusal->clean ||
+                      slots.positions(a.slot) != past)
+                    return std::unexpected(
+                        "pre-companion target refusal did not "
+                        "preserve the original schedule");
+                } else {
+                  if (report.outcomes[0].refusal)
+                    return std::unexpected(report.outcomes[0].refusal->what);
+                  if (!std::ranges::equal(report.outcomes[0].outputs,
+                                          std::as_bytes(std::span(record.target_logits))))
+                    return std::unexpected(
+                        std::format("MTP prompt logits differ at action {}", index));
+                }
+                break;
+              }
+              case MtpAction::kUnit: {
+                if (completed[index]) break;
+                constexpr std::size_t width = 1;
+                std::vector<en::DecodeWork> work;
+                for (std::size_t j = 0; j < width; ++j) {
+                  const auto& own = records[index + j];
+                  const auto slot = own.action.slot;
+                  current[slot] = &own;
+                  pass[slot] = judgements[slot] = 0;
+                  replay.anchors[slot] = own.history.back();
+                  work.push_back({.slot = slot, .history = own.history});
+                }
+                auto report = decoder->Step(work);
+                for (std::size_t j = 0; j < width; ++j) {
+                  const auto& own = records[index + j];
+                  const auto slot = own.action.slot;
+                  const auto& out = report.outcomes[j];
+                  const bool verdict_ok =
+                      own.action.rows == 0
+                          ? (out.discarded && out.refusal &&
+                             out.refusal->what == "whole discard witness")
+                          : (!out.discarded && !out.refusal && out.kept == own.action.rows);
+                  if (pass[slot] != 2 || judgements[slot] != 1 || !verdict_ok)
+                    return std::unexpected(
+                        std::format("MTP unit{} owner{}: {}; draft: {} ({} passes)", index + j,
+                                    slot, out.refusal ? out.refusal->what : "incomplete",
+                                    !out.drafts.empty() && out.drafts.back().refusal
+                                        ? out.drafts.back().refusal->what
+                                        : "none",
+                                    pass[slot]));
+                  if (auto x = slots.Settle(slot); !x) return x;
+                  completed[index + j] = true;
+                }
+                break;
+              }
+              case MtpAction::kSave: {
+                saved_positions = past;
+                footprint.clear();
+                for (std::size_t stage = 0; stage < slots.stages(); ++stage)
+                  for (auto r : slots.live(a.slot, stage).used_ranges()) {
+                    r.region = stage;
+                    footprint.push_back(r);
+                  }
+                auto ranges = slots.CheckpointRanges(a.slot, past);
+                if (!ranges) return std::unexpected(ranges.error());
+                pages = std::move(*ranges);
+                std::uint64_t bytes = 0;
+                for (const auto& p : pages) bytes += p.bytes;
+                std::vector<llmp::catalog::ExtentId> extents;
+                auto host = node.Pinned(bytes, 0, extents);
+                if (!host) return std::unexpected(host.error());
+                saved = *host;
+                if (auto x = slots.CopyState(a.slot, saved, pages, true); !x) return x;
+                break;
+              }
+              case MtpAction::kRestore:
+                if (auto x = slots.PrepareRestore(a.slot, saved_positions, footprint,
+                                                  slots.kept_layout_id());
+                    !x)
+                  return x;
+                if (auto x = slots.CopyState(a.slot, saved, pages, false); !x) return x;
+                if (auto x = slots.CompleteRestore(a.slot, saved_positions); !x) return x;
+                decoder->Reset(a.slot);
+                break;
+              case MtpAction::kSpill:
+                if (auto x = slots.Spill(a.slot); !x) return x;
+                if (auto x = slots.Restore(a.slot); !x) return x;
+                decoder->Reset(a.slot);
+                break;
+            }
+            const auto& progress = slots.progress(a.slot, 1)->completed();
+            if (progress.positions != record.positions ||
+                progress.positions - progress.pending_first != record.pending)
+              return std::unexpected(
+                  std::format("MTP pending schedule differs at action {}", index));
+            if (a.kind == MtpAction::kRefusedPrompt)
+              continue;  // physical pre-work is replayed by the following exact
+                         // K-row pass
+            for (const auto& [name, expected] : record.state) {
+              const auto item = std::ranges::find(layouts[1].items, name,
+                                                  [](const auto& i) { return i.contract.name; });
+              if (item == layouts[1].items.end()) return std::unexpected("MTP state item missing");
+              std::uint64_t offset = item->offset;
+              if (name == "streams")
+                offset +=
+                    (item->contract.window_or_ratio + progress.pending_first - progress.tap_first) *
+                    item->contract.cell_bytes;
+              std::vector<std::byte> got;
+              if (auto x =
+                      ReadMtpBytes(node, slots.execution(), slots.live(a.slot, 1).base(0) + offset,
+                                   expected.size(), got);
+                  !x)
+                return x;
+              if (got != expected)
+                return std::unexpected(
+                    std::format("MTP state {} differs at action {}", name, index));
+            }
+          }
+          if (!resume) {
+            kept.layout = slots.kept_layout_id();
+            for (std::uint32_t slot = 0; slot < 2; ++slot) {
+              if (auto x = slots.Settle(slot); !x) return x;
+              kept.positions[slot] = slots.positions(slot);
+              kept.progress[slot] = slots.progress(slot, 1)->completed();
+              for (std::size_t stage = 0; stage < 2; ++stage) {
+                for (auto range : slots.live(slot, stage).used_ranges()) {
+                  range.region = stage;
+                  kept.footprint[slot].push_back(range);
+                }
+              }
+              if (auto x = slots.Spill(slot); !x) return x;
+              if (!slots.kept_whole(slot)) return std::unexpected("MTP spill was not whole");
+              for (std::size_t stage = 0; stage < 2; ++stage) {
+                const auto& identity = slots.live(slot, stage).spill_identity();
+                if (!identity) return std::unexpected("MTP spill has no named identity");
+                kept.identities[slot][stage] = *identity;
+              }
+            }
+          }
+          return {};
+        });
+  }();
+  EXPECT_TRUE(ran) << (ran ? "" : ran.error());
+  if (runner) {
+    EXPECT_EQ(runner->coverage().violations, 0U) << runner->coverage().first_violation;
+    EXPECT_GT(runner->graph_stats().captured, 0U);
+    EXPECT_GT(runner->graph_stats().replayed, 0U);
+    kept.head_captures += replay.head_captures;
+    kept.changed_head_replays += replay.changed_anchor_replays;
+    kept.catch_up_replays += replay.catch_up_replays;
+    std::printf("MTP multirow catch-up graph changed-anchor replays=%llu\n",
+                static_cast<unsigned long long>(replay.catch_up_replays));
+    std::printf("MTP head graph captures=%llu changed-anchor replays=%llu\n",
+                static_cast<unsigned long long>(replay.head_captures),
+                static_cast<unsigned long long>(replay.changed_anchor_replays));
+    std::printf("MTP script: %zu actions, shared captured=%llu replayed=%llu\n", records.size(),
+                static_cast<unsigned long long>(runner->graph_stats().captured),
+                static_cast<unsigned long long>(runner->graph_stats().replayed));
+  }
+  const auto retired = node.TearDown(entered);
+  EXPECT_TRUE(retired) << (retired ? "" : retired.error());
+  if (!retired) {
+    std::ignore = runner.release();
+    std::ignore = source.release();
+  }
+}
+
+void CheckMtp() {
+  const auto root = Installed(
+      "m3-artifacts/"
+      "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93");
+  if (!root || !Installed(kMtp)) GTEST_SKIP() << "no native target and MTP fixtures installed";
+  const auto target = Open(*root);
+  ASSERT_TRUE(target);
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  ASSERT_NE(scratch, nullptr);
+  fs::create_directories(scratch);
+  const auto records = MtpToday(*target, scratch);
+  ASSERT_EQ(records.size(), MtpActions().size());
+  const auto kept_path = fs::path(scratch) / "shared-mtp-kept";
+  fs::remove_all(kept_path);
+  const auto directory = llmp::platform::OpenPrivateDirectory(-1, kept_path.c_str());
+  ASSERT_TRUE(directory);
+  MtpKept kept{.dir = *directory};
+  // The first runner covers checkpoint branching and the failed-prompt retry.
+  // The second has fresh host metadata, plan caches and device reservations.
+  const auto first_spill = std::ranges::find_if(
+      records, [](const auto& record) { return record.action.kind == MtpAction::kSpill; });
+  ASSERT_NE(first_spill, records.end());
+  const auto boundary = static_cast<std::size_t>(first_spill - records.begin()) + 1;
+  MtpLowered(*target, scratch, std::span(records).first(boundary), kept, false);
+  if (!testing::Test::HasFailure())
+    MtpLowered(*target, scratch, std::span(records).subspan(boundary), kept, true);
+  EXPECT_GT(kept.head_captures, 0U);
+  EXPECT_GT(kept.changed_head_replays, 0U);
+  EXPECT_GT(kept.catch_up_replays, 0U);
+  (void)::close(*directory);
+  fs::remove_all(kept_path);
+}
+
+TEST(ComponentRunnerQwen38MtpGpu, PendingSchedulesAndFeaturesMatchLegacyAcrossRestoreAndRetry) {
+  CheckMtp();
+}
 
 }  // namespace

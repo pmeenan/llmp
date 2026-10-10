@@ -69,6 +69,10 @@ class ComponentStepSource final : public StepSource {
 
   planner::PlanKey KeyBase() const override;
   std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override;
+  bool UsesSideRows(std::uint16_t stage) const override;
+  Status SideRows(std::uint16_t stage, std::uint16_t component,
+                  std::span<const std::int32_t> history, std::uint32_t position,
+                  std::span<std::int32_t> out) const override;
   std::expected<std::vector<CommitBuffer>, std::string> CommitBuffers(
       std::uint16_t stage, std::uint32_t rows) const override;
   const planner::Policy& policy() const { return policy_; }
@@ -83,7 +87,7 @@ class ComponentStepSource final : public StepSource {
       : o_(std::move(options)), policy_(std::move(policy)) {}
   ComponentSourceOptions o_;
   planner::Policy policy_;
-  std::vector<components::Instance> shaped_;
+  std::vector<components::Instance> shaped_, side_;
   base::Sha256Digest layout_identity_{};
   planner::StateSpans StateSpans(const planner::StepShape& shape,
                                  const kernels::Addresses& addresses) const;
@@ -104,6 +108,11 @@ class StagedStepSource final : public StepSource {
 
   planner::PlanKey KeyBase() const override { return key_; }
   std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override;
+  bool JoinedRepeatPending(std::uint16_t stage) const override;
+  bool UsesSideRows(std::uint16_t stage) const override;
+  Status SideRows(std::uint16_t stage, std::uint16_t component,
+                  std::span<const std::int32_t> history, std::uint32_t position,
+                  std::span<std::int32_t> out) const override;
   std::expected<std::vector<CommitBuffer>, std::string> CommitBuffers(
       std::uint16_t stage, std::uint32_t rows) const override;
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
