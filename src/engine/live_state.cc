@@ -11,6 +11,7 @@
 #include <system_error>
 #include <utility>
 
+#include "engine/plan_account.h"
 #include "engine/runner_memory.h"
 #include "engine/support.h"
 #include "kernels/paging/paging.h"
@@ -1325,6 +1326,8 @@ LiveState::Status LiveState::Rollback(PagedNode& node, const catalog::Closure& c
   if (!owed()) {
     return {};
   }
+  const PlanStep step;
+  if (auto prepared = PrepareOwed(); !prepared) return prepared;
   std::string failed;
   auto posted = node.Job(
       closure,

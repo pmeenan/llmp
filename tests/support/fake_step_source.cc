@@ -76,6 +76,8 @@ struct SegmentPlan {
   CellTensor own;                                                  // tensor 0
   std::uint64_t fixed = 0;                                         // the fixed hash's
   bool fixed_writes = true;
+  std::uint64_t save = 0, commit_indices = 0;
+  bool commit_only = false;
   std::vector<CellTensor> taps;  // the drafters' tensors the target writes
   CellTensor tap;                // a drafter's tap it reads
   CellTensor borrowed;           // a drafter's view of the target's tensor
@@ -210,6 +212,18 @@ class FakeProgram final : public kn::StepProgram {
   // The device's work: on the fake device's thread, at run time.
   static void Execute(const std::vector<SegmentPlan>& segments) {
     for (const SegmentPlan& s : segments) {
+      if (s.commit_only) {
+        std::int64_t row = -1;
+        std::memcpy(&row, At<const void>(s.commit_indices + (s.rows - 1) * sizeof(row)),
+                    sizeof(row));
+        std::uint64_t hash = UINT64_MAX;
+        if (row >= 0 && static_cast<std::uint64_t>(row) < s.rows)
+          std::memcpy(&hash,
+                      At<const void>(s.save + static_cast<std::uint64_t>(row) * sizeof(hash)),
+                      sizeof(hash));
+        std::memcpy(At<void>(s.fixed), &hash, sizeof(hash));
+        continue;
+      }
       const auto* tokens = At<const std::int32_t>(s.tokens) + s.first;
       const auto* positions = At<const std::int32_t>(s.positions) + s.first;
       const auto position_of = [&](std::uint32_t r) {
@@ -246,6 +260,7 @@ class FakeProgram final : public kn::StepProgram {
         }
         hash = FakeHash(hash, tokens[r]);
         hashes[r] = hash;
+        if (s.save != 0) std::memcpy(At<void>(s.save + r * sizeof(hash)), &hash, sizeof(hash));
       }
       if (s.fixed != 0 && s.fixed_writes) std::memcpy(At<void>(s.fixed), &hash, sizeof(hash));
       std::int32_t valid = 0;
@@ -316,6 +331,14 @@ pl::PlanKey FakeStepSource::KeyBase() const {
   key.spec = options_.spec;
   key.patterns[0] = 0xFA;
   return key;
+}
+
+std::expected<std::vector<engine::CommitBuffer>, std::string> FakeStepSource::CommitBuffers(
+    std::uint16_t stage, std::uint32_t /*rows*/) const {
+  if (!options_.commits || stage >= options_.layouts.size())
+    return std::vector<engine::CommitBuffer>{};
+  return std::vector<engine::CommitBuffer>{
+      {.layer = 0, .component = 0, .what = "hash", .row_bytes = 8}};
 }
 
 std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Build(
@@ -420,6 +443,11 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
                         .kind = kn::InputKind::kPositions});
     }
     first += seg.rows;
+    if (options_.commits && (verify || shape.phase == pl::Phase::kCommit)) {
+      s.save = addresses.save(0, 0, "hash", segment);
+      s.commit_only = shape.phase == pl::Phase::kCommit;
+      if (!addresses.measuring() && s.save == 0) return Refuse("the commit save has no address");
+    }
     if (kv != nullptr && !frozen) {
       const std::uint64_t base =
           addresses.state({.stage = shape.stage, .tensor = 0, .layer = 0, .segment = segment});
@@ -498,6 +526,18 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
                        .tensor = {},
                        .segment = static_cast<std::uint8_t>(i),
                        .features = true});
+  }
+  if (shape.phase == pl::Phase::kCommit) {
+    inputs.clear();
+    for (std::size_t i = 0; i < segments.size(); ++i) {
+      auto& segment = segments[i];
+      segment.commit_indices = place(segment.rows * sizeof(std::int64_t));
+      inputs.push_back({.device_address = segment.commit_indices,
+                        .bytes = segment.rows * sizeof(std::int64_t),
+                        .segment = static_cast<std::uint8_t>(i),
+                        .kind = kn::InputKind::kStoreCells,
+                        .cells = {.capacity = segment.rows, .per_row = true}});
+    }
   }
   std::vector<std::size_t> extra;
   if (options_.extra_inputs) {

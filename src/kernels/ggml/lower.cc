@@ -709,6 +709,7 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
       case co::InputKind::kSideRows:
         slot.kind = InputKind::kSideRows;
         slot.count = input.read;
+        slot.component = input.component;
         break;
       case co::InputKind::kBlockPositions:
         slot.kind = InputKind::kBlockPositions;
@@ -853,6 +854,16 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
     out_.leaves.push_back({.tensor = t, .primitive = prim});
     return t;
   }
+  if (n.key.op == Op::kWeight && in_.addresses.weight_rows) {
+    const auto at = weights_.find(prim.v);
+    const auto rows = in_.addresses.weight_rows(at->second->ref);
+    if (rows != 0) {
+      if (rank != 2 || rows > static_cast<std::uint64_t>(ne[1])) {
+        return Refused("a row-paged weight is not a bounded table");
+      }
+      ne[1] = static_cast<std::int64_t>(rows);
+    }
+  }
   ggml_tensor* t = ggml_new_tensor(c_, *type, rank, ne.data());
   if (n.key.op == Op::kWeight) {
     const auto at = weights_.find(prim.v);
@@ -896,7 +907,9 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
     return ggml_new_tensor(c_, GGML_TYPE_I8, ne2 > 1 ? 3 : 2, ne.data());
   };
   const auto k = static_cast<std::int64_t>(d.ne(0));
-  const auto rows = static_cast<std::int64_t>(d.ne(1));
+  const std::uint64_t slots = in_.addresses.weight_rows ? in_.addresses.weight_rows(w.ref) : 0;
+  if (slots > d.ne(1)) return Refused("a row-paged weight exceeds its table");
+  const auto rows = static_cast<std::int64_t>(slots != 0 ? slots : d.ne(1));
   const auto matrices = static_cast<std::int64_t>(d.ne(2));
   auto& parts = parts_[out.v];
   ggml_tensor* first = nullptr;
@@ -1569,11 +1582,13 @@ std::expected<void, KernelFailure> Lowering::Bind() {
     return addresses.save ? addresses.save(layer, component, what, segment) : 0;
   };
   for (const auto& [t, s] : save_leaves_) {
+    state_tensors_.insert(t);
     const std::uint64_t address = save_at(s->layer, s->component, s->what, s->segment);
     if (address == 0 && !addresses.measuring()) return Refused("a verify's save has no buffer");
     TensorArena::Bind(t, address != 0 ? address : placeholder(t));
   }
   for (const auto& [t, input] : external_) {
+    state_tensors_.insert(t);
     // The layer is the saver's: a commit's input names its component, whose
     // instance's layer the input's name carries (components/step.h Saved).
     const std::uint64_t address =
@@ -2543,7 +2558,17 @@ std::expected<void, KernelFailure> Lowering::MakeSaves() {
     if (src == nullptr || rows == nullptr) return Refused("a save or its rows were not made");
     const std::int64_t width = src->ne[0];
     const std::int64_t n = ggml_nelements(src) / width;
-    ggml_tensor* buffer = ggml_new_tensor_2d(c_, GGML_TYPE_F32, width, n);
+    const bool slotted = s.segment == ir::kJoinedSegment && in_.addresses.save_rows != 0;
+    if (slotted && in_.addresses.save_rows < static_cast<std::uint64_t>(n)) {
+      return Refused("a verify's joined save exceeds its buffer");
+    }
+    ggml_tensor* buffer = ggml_new_tensor_2d(
+        c_, GGML_TYPE_F32, width, slotted ? static_cast<std::int64_t>(in_.addresses.save_rows) : n);
+    if (slotted) {
+      for (auto& [tensor, input] : input_leaves_) {
+        if (tensor == rows) input.commit_save = true;
+      }
+    }
     save_leaves_.emplace_back(buffer, &s);
     out_.saves.push_back({.tensor = buffer,
                           .layer = s.layer,

@@ -43,6 +43,7 @@ enum class Phase : std::uint8_t {
   kVerify,   // a speculative verify: 1 + drafted rows per owner (D-092)
   kDraft,    // a drafter's pass
   kScore,    // literal completion likelihoods: every row's outputs
+  kCommit,   // commit the accepted rows of a verify's saved intermediates
 };
 
 // The rows of one owner (a request slot) in a step.

@@ -82,17 +82,24 @@ update this section as each slice lands):
   their own position source, held-cell metadata and integer bounds, and
   refuse overwritten roots. The final independent challenge is clean.
 
-  G3c still owes verify-save binding, commit execution, drafter feature
-  staging, speculation's GPU numerics (verify, commits of k of n rows,
-  catch-up and draft passes), and the matched 1% gate for native, GGUF and
-  MTP. Its n-gram rows must be bound on demand: G3b's GPU proof keeps the
-  table resident (+28.8 GB), near the Spark's ModelOpt memory limit.
-  The work is split into G3c1 (shared-runner execution and focused GPU
-  numerics) and G3c2 (serving, state/quality/swap controls and the three-path
-  1% gate), followed by G3d deletion. G3c1's chunk-feature staging has
-  fake-backend lifecycle controls; actual MTP catch-up/draft GPU numerics
-  and persisted-feature restoration are prerequisites in G3c2. The active checkout is
-  `.claude/worktrees/m36-g3c`; its assigned Spark copy is
+- **G3c1: Qwen3.8 shared-runner execution** landed on `main` (see
+  `git log`). Verify saves and accepted-prefix commits have stable per-owner
+  staging and remain pinned until GPU retirement. N-gram rows materialize on
+  demand into bounded device slots; the full source table need not be resident.
+  Focused GPU checks prove native verify and commits of one to three rows,
+  including joined owners and captured replay. All three formats' commits
+  match the legacy commit executor on cloned state. Plain-mode equality
+  remains covered across all three formats.
+
+  Chunk-feature staging has fake-backend lifecycle controls. Logical state
+  replacement and checkpoint restore clear that host feature span and safely
+  refuse its use until a new target chunk supplies features. This is not yet
+  actual MTP catch-up, draft execution or persisted-feature restoration.
+  G3c2a adds the declared cache/token/feature relation, pending replay progress,
+  prefill companion and persistence with actual MTP GPU proof. G3c2b then
+  composes serving and passes state, quality, swap and the matched 1% gate for
+  native, GGUF and MTP. G3d deletes the old path only after those gates.
+  The continuing checkout is `.claude/worktrees/m36-g3c`; its Spark copy is
   `spark:~/src/m36-g3c`, with jobs in `~/scratch/m36-g3c`.
 - **G4a: DeepSeek V4 components, mappings and the DSpark stage** landed on
   `main` (see `git log`). G4b1 has landed: complete plan keys include
@@ -133,8 +140,8 @@ update this section as each slice lands):
   verified archive or staged source and records an import event in the
   archive catalog. Native `llmp install` remains M5 per D-114.
 
-Next, in order: G3c (Qwen3.8 wiring and the 1% gate for native, GGUF
-and MTP, split G3c1/G3c2); G3d (deletion); G4b2, G4c and G4d;
+Next, in order: G3c2 (Qwen3.8 composed MTP, serving and the 1% gate for
+native, GGUF and MTP); G3d (deletion); G4b2, G4c and G4d;
 Qwen2 G5a–d. N3/N4 (fold catalog, writer and `llmp import` from verified
 archive/staged source) can proceed alongside Qwen-Image Q1–Q3; N5's
 all-artifact re-import and family gates follow both, then N6's adversarial
@@ -150,7 +157,7 @@ spark-b during the weight-handle review.
 
 The slice plan as designed before work began. Where it differs from what was
 built, docs/engine-components.md's "as built" text and the commits win.
-Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a–b, G4a, N1.
+Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a–b and G3c1, G4a and G4b1, N1.
 
 #### Wave 3: families, one at a time through the gate
 

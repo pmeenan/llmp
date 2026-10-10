@@ -69,6 +69,8 @@ class ComponentStepSource final : public StepSource {
 
   planner::PlanKey KeyBase() const override;
   std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override;
+  std::expected<std::vector<CommitBuffer>, std::string> CommitBuffers(
+      std::uint16_t stage, std::uint32_t rows) const override;
   const planner::Policy& policy() const { return policy_; }
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
       const planner::StepShape& shape, const kernels::Addresses& addresses) override;
@@ -99,6 +101,8 @@ class StagedStepSource final : public StepSource {
 
   planner::PlanKey KeyBase() const override { return key_; }
   std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override;
+  std::expected<std::vector<CommitBuffer>, std::string> CommitBuffers(
+      std::uint16_t stage, std::uint32_t rows) const override;
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
       const planner::StepShape& shape, const kernels::Addresses& addresses) override;
   const ComponentStepSource& stage(std::size_t index) const { return *stages_.at(index); }

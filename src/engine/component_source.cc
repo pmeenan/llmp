@@ -3,6 +3,7 @@
 
 #include "engine/component_source.h"
 
+#include <algorithm>
 #include <format>
 #include <utility>
 #include <vector>
@@ -77,6 +78,35 @@ std::vector<std::uint64_t> ComponentStepSource::ShapeParameters(
   return out;
 }
 
+std::expected<std::vector<CommitBuffer>, std::string> ComponentStepSource::CommitBuffers(
+    std::uint16_t stage, std::uint32_t rows) const {
+  if (stage != o_.stage || rows == 0 || rows > o_.bindings.state->context) {
+    return std::unexpected("a commit buffer's stage or rows");
+  }
+  const bool commits = std::ranges::any_of(o_.bindings.state->items, [](const auto& item) {
+    return item.contract.rollback == model::Rollback::kCommit;
+  });
+  if (!commits) return std::vector<CommitBuffer>{};
+  planner::StepShape shape{
+      .stage = stage,
+      .phase = planner::Phase::kVerify,
+      .segments = {{.rows = rows, .read_cells = o_.bindings.state->context, .outputs = rows}}};
+  auto step = components::BuildStep(*o_.spec, stage, shape, o_.bindings);
+  if (!step) return std::unexpected(step.error());
+  std::vector<CommitBuffer> buffers;
+  for (const components::CommitSave& save : step->saves) {
+    const auto& tensor = step->graph.tensor(save.tensor);
+    std::uint64_t bytes = sizeof(float);
+    for (const std::uint64_t extent : tensor.shape().ne) bytes *= extent;
+    if (bytes % rows != 0) return std::unexpected("a commit save is not row-shaped");
+    buffers.push_back({.layer = save.layer,
+                       .component = save.component,
+                       .what = save.what,
+                       .row_bytes = bytes / rows});
+  }
+  return buffers;
+}
+
 std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepSource::Build(
     const planner::StepShape& shape, const kernels::Addresses& addresses) {
   if (shape.stage != o_.stage) {
@@ -85,8 +115,10 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
   }
   // The narrowed final layer is the policy's (planner/pattern.h
   // narrow_final).
-  auto step = components::BuildStep(*o_.spec, o_.stage, shape, o_.bindings,
-                                    {.narrow = !planner::Disabled(policy_, "narrow_final")});
+  auto step = shape.phase == planner::Phase::kCommit
+                  ? components::BuildCommit(*o_.spec, o_.stage, shape, o_.bindings)
+                  : components::BuildStep(*o_.spec, o_.stage, shape, o_.bindings,
+                                          {.narrow = !planner::Disabled(policy_, "narrow_final")});
   if (!step) return std::unexpected(std::move(step.error()));
   // Every input is staged but the cells' positions, which only masks read:
   // a lowering builds them on the device or folds them into a host mask.
@@ -148,6 +180,12 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> StagedStepSour
     return std::unexpected(std::format("a step of stage {}, which the model lacks", shape.stage));
   }
   return stages_[shape.stage]->Build(shape, addresses);
+}
+
+std::expected<std::vector<CommitBuffer>, std::string> StagedStepSource::CommitBuffers(
+    std::uint16_t stage, std::uint32_t rows) const {
+  if (stage >= stages_.size()) return std::unexpected("a commit names no stage");
+  return stages_[stage]->CommitBuffers(stage, rows);
 }
 
 }  // namespace llmp::engine

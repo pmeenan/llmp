@@ -160,6 +160,10 @@ struct InputSlot {
   std::uint64_t ring = 0;
   // A block drafter's mask also sees later rows of its current block.
   bool ahead = false;
+  // Joined verify saves use stable slots, each max_verify_rows wide.
+  // Their row indices are supplied by the runner, independently of past.
+  bool commit_save = false;
+  std::uint16_t component = 0;  // kSideRows' source component
 };
 
 // An output the step returns: copied to the host after the run, each
@@ -191,6 +195,9 @@ struct TensorUse {
 // measurement: the program reports what it needs but never runs.
 struct Addresses {
   std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight;
+  // A row-paged weight's device slot capacity, replacing its on-disk row
+  // count. Zero keeps the full tensor; only row lookup tables use it.
+  std::function<std::uint64_t(const ir::WeightRef&)> weight_rows;
   std::function<std::uint64_t(const ir::StateRef&)> state;
   // A verify's save of `what` (components/step.h CommitSave: F32 [width,
   // the segment's rows]) where the caller keeps it, which the verify
@@ -198,6 +205,9 @@ struct Addresses {
   std::function<std::uint64_t(std::uint32_t layer, std::uint16_t component, std::string_view what,
                               std::uint8_t segment)>
       save;
+  // Capacity of a joined verify save (owners times max_verify_rows).
+  // Zero retains the step's packed rows, for standalone lowerings.
+  std::uint64_t save_rows = 0;
   std::uint64_t activations = 0;
   std::uint64_t activation_bytes = 0;
   bool measuring() const { return activations == 0; }

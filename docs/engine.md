@@ -499,6 +499,47 @@ target's output rows each write a drafter's tap cell: Setup refuses a tap
 ring narrower than a verify's rows, and a step refuses more output rows
 than the ring holds.
 
+The shared runner also stages bounded on-demand row tables (`RunnerConfig::row_tables`).
+Their full artifact groups stay unplaced; each table owns a direct-read ring,
+pinned landing and offsets, and pinned device weight slots sized from its
+setup shapes. Every side-row input must be supplied in full and pass the
+row-table planner before I/O starts. A completed read is gathered on the
+GPU before either an eager program or a graph replay. An unretired read
+prevents reuse; teardown retains its ring and landing until completion is
+proven.
+
+Components declare their verify intermediates through `StepSource::CommitBuffers`.
+The runner maps one field buffer with a fixed slice per owner and verify
+row. Joined saves stage owner-specific indices; a later owner cannot
+replace a peer's pending rows. `Accept` leaves an owed commit. Before the
+next job, each owed component commit is planned under the job's plan hold
+and stages its computed inputs into a separate pinned slice per owner and
+stage. The job runs those commits before new model work. The internal
+`kCommit` phase is refused by ordinary steps and lookahead. Caller-provided
+commit callbacks remain available for other step sources.
+
+Feature inputs can read position rings or per-row chunk taps. For a chunk
+tap, the runner tracks its committed logical span and carries its previous
+tail into the leading cells. Verification snapshots those leading cells
+with its first row: acceptance retains them, while discarding the entire
+verify restores the previous chunk. Ordinary same-process spill and
+restore retain this logical metadata. **Checkpoint replacement and kept
+state adoption do not yet restore chunk-span metadata:** they clear it,
+and a drafter's chunk-tap lookup refuses until a target step publishes a
+fresh span. G3c2 must resolve that persistence contract before enabling
+Qwen MTP serving on this runner. Existing position-ring taps do not need
+this metadata.
+
+G3c1 checks Qwen's plain execution against the legacy runner in all three
+weight forms, native target verification against the legacy verifier,
+and generated commits against the legacy commit kernel using the actual
+saved verify inputs. The fast verifier is not row-invariant: its saved
+recurrence, not a shorter plain step, defines exact committed state.
+Chunk-feature staging is currently checked with the fake backend only.
+Actual MTP catch-up and draft-pass GPU parity, chunk-span persistence,
+runtime wiring, and the unchanged quality/state/speed gates belong to
+G3c2; G3c1 does not change serving defaults.
+
 `PlanCache` is now `BasicPlanCache<Key, Planned, Variants, Runs>` in the
 core (`plan_cache.h`); `planned.h`'s `PlanCache` is the alias over GGML's
 `PlanRuns`, and `StepPlanRuns` is the step programs'. `RunPath`,
@@ -617,7 +658,9 @@ not written by a verify and needs the commit. Over a drafter's stage the
 target's verify saves only the tensors it writes there (`target_writes`:
 a feature tap, an injection). A verify writing one ring cell twice, or
 saving cells that are not 16-byte multiples (the range copies'), is
-refused. These reproduce byte for byte what today's verifies save
+refused. Per-row feature taps additionally save their leading carry cells
+with the first accepted row. The remaining ranges reproduce byte for byte
+what today's verifies save
 (`state_contract_test`): Qwen3.8's (`Qwen38VerifySaves`, which its scalar
 and wave verifies now both call: each row's K, V and indexer cells, the
 block keys a row completes, the MTP streams rows), DeepSeek V4's
@@ -632,7 +675,7 @@ still bring:
 
 | Family | Maps onto | Not yet |
 | --- | --- | --- |
-| Qwen3.8 MTP | An autoregressive drafter with `catch_up` over its own stage (K, V and indexer cells truncating; the streams a per-row tap the target writes, snapshot); the target's K, V, indexer and completed block keys snapshot by row, its linear layers' state `kCommit` with the model's commit | The catch-up and passes in one job, the selected draft head's rows, the injection's drafter pass inside the target's prefill (`Qwen38Injection`), the n-gram row gather |
+| Qwen3.8 MTP | An autoregressive drafter with `catch_up` over its own stage (K, V and indexer cells truncating; the streams a per-row tap the target writes, snapshot); the target's K, V, indexer and completed block keys snapshot by row, its linear layers' state `kCommit` with generated component commits; bounded on-demand n-gram rows and chunk-feature inputs | Runtime wiring and gates; chunk-span persistence across checkpoint/adopt; the catch-up and passes in one job, the selected draft head's rows, the injection's drafter pass inside the target's prefill (`Qwen38Injection`) |
 | DeepSeek V4 + DSpark | A block drafter (its fill the mask token) over its ring (a position ring the target's injection writes); the target's window cells, compressor rings and compressed rows snapshot by row, no commit; the exact mode a row-invariant verify | The draft and the verify chained in one job (drafts copied into the verify's staged tokens and embedded on the device), the Markov head, shortening a draft before a mask width (`Dsv4SameWidths`: policy) |
 | Gemma4 assistant | An anchored autoregressive drafter with `borrows_target` and `features`, its contract viewing the target's KV (`borrowed_from_target`) and its tap of the target's final-norm rows; the target's KV truncates (a ring holds a chunk's rows beside its window, so a rejected row is never read) | The device's verify verdicts (`GreedyUnit`'s device judge); its adaptive depth (three drafts a unit, M3's screen's) |
 

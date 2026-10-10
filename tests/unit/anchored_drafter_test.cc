@@ -72,26 +72,27 @@ std::vector<ts::FakeRow> Rows(std::span<const std::byte> bytes) {
 
 // The target: a cache that truncates (Gemma's). The assistant: a view of
 // the target's cache and the target's feature tap, a position ring.
-std::vector<en::StageState> Stages() {
+std::vector<en::StageState> Stages(bool chunk = false) {
   const Layers target = {{0,
                           {.tensors = {C{.name = "kv",
                                          .kind = md::StateKind::kKv,
                                          .cell_bytes = 256,
                                          .rollback = md::Rollback::kTruncate}}}}};
-  const Layers assistant = {{0,
-                             {.tensors = {C{.name = "kv",
-                                            .kind = md::StateKind::kKv,
-                                            .cell_bytes = 256,
-                                            .borrowed_from_target = true,
-                                            .target_layer = 0},
-                                          C{.name = "features",
-                                            .kind = md::StateKind::kFeatures,
-                                            .encoding = md::Encoding::kF32,
-                                            .cell_bytes = 256,
-                                            .cells = md::CellRule::kPositionRing,
-                                            .window_or_ratio = kTapCells,
-                                            .rollback = md::Rollback::kTruncate,
-                                            .target_writes = true}}}}};
+  const Layers assistant = {
+      {0,
+       {.tensors = {C{.name = "kv",
+                      .kind = md::StateKind::kKv,
+                      .cell_bytes = 256,
+                      .borrowed_from_target = true,
+                      .target_layer = 0},
+                    C{.name = "features",
+                      .kind = md::StateKind::kFeatures,
+                      .encoding = md::Encoding::kF32,
+                      .cell_bytes = 256,
+                      .cells = chunk ? md::CellRule::kPerRow : md::CellRule::kPositionRing,
+                      .window_or_ratio = chunk ? 1U : kTapCells,
+                      .rollback = chunk ? md::Rollback::kSnapshot : md::Rollback::kTruncate,
+                      .target_writes = true}}}}};
   return {{.name = "target", .layout = md::Layout(target, kContext, kChunk).value()},
           {.name = "assistant", .layout = md::Layout(assistant, kContext, kChunk).value()}};
 }
@@ -132,6 +133,7 @@ class AnchoredDrafterTest : public ::testing::Test {
 
   // The verify rows the runner takes (Setup refuses past the tap's cells).
   virtual std::uint32_t VerifyRows() const { return kDepth + 1; }
+  virtual bool ChunkTap() const { return false; }
 
   void SetUp() override {
     // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
@@ -140,7 +142,7 @@ class AnchoredDrafterTest : public ::testing::Test {
     std::filesystem::create_directories(scratch);
     ASSERT_TRUE(node_.Open());
     const std::uint64_t fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
-    const auto stages = Stages();
+    const auto stages = Stages(ChunkTap());
     ts::FakeSourceOptions o;
     for (const auto& s : stages) o.layouts.push_back(s.layout);
     o.features = true;
@@ -176,7 +178,7 @@ class AnchoredDrafterTest : public ::testing::Test {
                     .drop_plans = {}};
     config.setup_shapes = {Wide(0, pl::Phase::kPrefill, kChunk),
                            Wide(0, pl::Phase::kVerify, kDepth + 1),
-                           Wide(kAssistant, pl::Phase::kDraft, 1)};
+                           Wide(kAssistant, pl::Phase::kDraft, ChunkTap() ? kDepth + 1 : 1)};
     // A target's prompt chunk returns its last row only.
     for (pl::Segment& s : config.setup_shapes.front().segments) s.outputs = 1;
     config.setup_shapes.push_back(ComputedShape());
@@ -467,6 +469,118 @@ TEST_F(AnchoredDrafterTest, ComputedInputsStageTapCellsAndFrozenMasks) {
       EXPECT_EQ(mask[(r * 256) + c], c < 40 ? 0x0000 : 0xFC00) << "row " << r << " cell " << c;
     }
   }
+}
+
+class ChunkFeatureTest : public AnchoredDrafterTest {
+ protected:
+  bool ChunkTap() const override { return true; }
+  std::expected<en::StepReport, en::StepRefusal> Target(std::uint32_t slot, std::uint32_t rows,
+                                                        bool verify = false) {
+    const auto past = runner_->slots().positions(slot);
+    std::vector<std::int32_t> tokens;
+    for (std::uint32_t r = 0; r < rows; ++r)
+      tokens.push_back(Truth(past + r) + 1000 * static_cast<std::int32_t>(slot));
+    const std::array<en::SegmentWork, 1> work{{{.tokens = tokens}}};
+    return runner_->RunStep({.shape = {.stage = 0,
+                                       .phase = verify ? pl::Phase::kVerify : pl::Phase::kPrefill,
+                                       .segments = {{.slot = static_cast<std::uint8_t>(slot),
+                                                     .rows = rows,
+                                                     .past = past,
+                                                     .read_cells = 256,
+                                                     .outputs = rows,
+                                                     .want_head = true}},
+                                       .read_align = 256},
+                             .work = work,
+                             .advance = !verify,
+                             .ahead = {}});
+  }
+  std::expected<en::StepReport, en::StepRefusal> Draft(std::uint32_t slot, std::uint32_t first,
+                                                       std::uint32_t rows) {
+    EXPECT_TRUE(runner_->slots().Settle(slot));
+    auto borrow = runner_->slots().Borrow(slot, 0);
+    EXPECT_TRUE(borrow);
+    std::vector<std::int32_t> tokens(rows, 7);
+    const std::array<en::SegmentWork, 1> work{
+        {{.tokens = tokens, .feature = {.kind = en::FeatureFrom::Kind::kTap, .position = first}}}};
+    return runner_->RunStep({.shape = {.stage = kAssistant,
+                                       .phase = pl::Phase::kDraft,
+                                       .segments = {{.slot = static_cast<std::uint8_t>(slot),
+                                                     .rows = rows,
+                                                     .past = first + 1,
+                                                     .read_cells = 256,
+                                                     .outputs = rows,
+                                                     .want_head = true}},
+                                       .read_align = 256},
+                             .work = work,
+                             .advance = false,
+                             .ahead = {}});
+  }
+  void ExpectFeatures(std::uint32_t slot, std::uint32_t first, std::uint32_t rows) {
+    auto result = Draft(slot, first, rows);
+    ASSERT_TRUE(result) << result.error().what;
+    const auto values = Rows(std::span(result->outputs.front()).first(rows * sizeof(ts::FakeRow)));
+    ASSERT_EQ(values.size(), rows);
+    for (std::uint32_t r = 0; r < rows; ++r)
+      EXPECT_EQ(values[r].tap, Truth(first + r) + 1000 * static_cast<std::int32_t>(slot));
+  }
+};
+
+TEST_F(ChunkFeatureTest, CatchupReadsCommittedChunkRowsAndPreviousTailAcrossAcceptAndDiscard) {
+  ASSERT_TRUE(Target(0, 4));
+  ASSERT_TRUE(Target(1, 5));
+  ExpectFeatures(0, 0, 4);
+  ASSERT_TRUE(Target(0, 3, true));
+  ASSERT_TRUE(runner_->slots().Accept(0, 2));
+  // Persist and restore even while the accepted verify owes restoration.
+  ASSERT_TRUE(runner_->slots().Spill(0));
+  ASSERT_TRUE(runner_->slots().Restore(0));
+  // A different owner overwrites shared activations, never this tap.
+  ASSERT_TRUE(Target(1, 2));
+  ExpectFeatures(0, 3, 3);
+  ExpectFeatures(1, 4, 3);
+  auto rejected = Draft(0, 2, 1);
+  ASSERT_FALSE(rejected);
+  EXPECT_TRUE(rejected.error().clean);
+  ASSERT_TRUE(Target(0, 3, true));
+  ASSERT_TRUE(runner_->slots().DiscardVerify(0));
+  ExpectFeatures(0, 3, 3);
+  ASSERT_TRUE(Target(0, 2));
+  ExpectFeatures(0, 5, 3);
+}
+
+TEST_F(ChunkFeatureTest, CheckpointReplacementRefusesAnUnrestoredLogicalTapSpan) {
+  ASSERT_TRUE(Target(0, 4));
+  std::vector<en::LiveState::Range> footprint;
+  for (std::size_t stage = 0; stage < runner_->slots().stages(); ++stage) {
+    for (auto range : runner_->slots().live(0, stage).used_ranges()) {
+      range.region = stage;
+      footprint.push_back(range);
+    }
+  }
+  auto pages = runner_->slots().CheckpointRanges(0, 4);
+  ASSERT_TRUE(pages);
+  std::uint64_t bytes = 0;
+  for (const auto& page : *pages) bytes += page.bytes;
+  std::vector<llmp::catalog::ExtentId> staging;
+  auto host = node_.Pinned(bytes, 0, staging);
+  ASSERT_TRUE(host);
+  ASSERT_TRUE(runner_->slots().CopyState(0, *host, *pages, true));
+  ASSERT_TRUE(Target(0, 3));
+  ExpectFeatures(0, 6, 1);
+  ASSERT_TRUE(runner_->slots().PrepareRestore(0, 4, footprint, runner_->slots().kept_layout_id()));
+  ASSERT_TRUE(runner_->slots().CopyState(0, *host, *pages, false));
+  ASSERT_TRUE(runner_->slots().CompleteRestore(0, 4));
+  ASSERT_TRUE(node_.FreePinned(*host));
+  const auto queued = source_->queued();
+  const auto refused = Draft(0, 3, 1);
+  ASSERT_FALSE(refused);
+  EXPECT_TRUE(refused.error().clean);
+  EXPECT_EQ(refused.error().what, "a chunk tap does not hold the requested features");
+  EXPECT_EQ(source_->queued(), queued);
+  EXPECT_EQ(runner_->slots().positions(0), 4U);
+  // A new target chunk publishes a new valid span after replacement.
+  ASSERT_TRUE(Target(0, 2));
+  ExpectFeatures(0, 4, 2);
 }
 
 }  // namespace

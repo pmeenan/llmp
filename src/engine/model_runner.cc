@@ -15,8 +15,10 @@
 #include "components/step.h"
 #include "engine/prefill_lookahead.h"
 #include "engine/support.h"
+#include "kernels/paging/paging.h"
 #include "model/state_contract.h"
 #include "providers/device_runtime.h"
+#include "providers/storage.h"
 #include "scheduler/scheduler.h"
 
 namespace llmp::engine {
@@ -200,6 +202,13 @@ SlotLifecycleOptions ModelRunner::LifecycleOptions(ModelRunner* self,
     self->ForgetCarry(slot);
     if (also) also(slot);
   };
+  options.content_changed = [self, also = std::move(options.content_changed)](std::uint32_t slot) {
+    for (std::size_t stage = 0; stage < self->slots_.stages(); ++stage) {
+      const std::size_t at = (std::size_t{slot} * self->slots_.stages()) + stage;
+      self->tap_rows_[at] = self->previous_tap_rows_[at] = {};
+    }
+    if (also) also(slot);
+  };
   return options;
 }
 
@@ -217,6 +226,8 @@ ModelRunner::ModelRunner(PagedNode& node, RunnerConfig config, std::unique_ptr<S
     frozen_.push_back(stage != 0 && model::ReadsFrozen(slots_.layout(stage)));
   }
   carry_rows_.assign(std::size_t{slots_.slots()} * slots_.stages(), 0);
+  tap_rows_.resize(carry_rows_.size());
+  previous_tap_rows_.resize(carry_rows_.size());
 }
 
 ModelRunner::~ModelRunner() = default;
@@ -354,13 +365,27 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
                  ? config_.weight_address
                  : std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)>(
                        [](const ir::WeightRef&, format::PartRole) { return std::uint64_t{0}; });
+  if (!row_tables_.empty()) {
+    a.weight = [this, ordinary = std::move(a.weight)](const ir::WeightRef& ref,
+                                                      format::PartRole role) -> std::uint64_t {
+      for (const auto& table : row_tables_) {
+        if (table->config.weight == ref && table->config.part == role) return table->slots.base;
+      }
+      return ordinary(ref, role);
+    };
+    a.weight_rows = [this](const ir::WeightRef& ref) -> std::uint64_t {
+      for (const auto& table : row_tables_) {
+        if (table->config.weight == ref) return table->capacity;
+      }
+      return 0;
+    };
+  }
   // Only the state the step's stage may write (Admit's rule, which a
   // verify's saves and a failed step's quarantine follow): a target's step
   // binds the target's state and the drafters' tensors it writes
   // (target_writes); a drafter's binds its own stage's (its view of the
   // target's through it). Any other binds nothing: the build is refused.
-  a.state = [this, stage = shape.stage,
-             owners = std::move(owners)](const ir::StateRef& ref) -> std::uint64_t {
+  a.state = [this, stage = shape.stage, owners](const ir::StateRef& ref) -> std::uint64_t {
     if (ref.segment >= owners.size() || ref.stage >= slots_.stages()) return 0;
     if (ref.stage != stage && stage != 0) return 0;
     const model::StateLayoutDerived& layout = slots_.layout(ref.stage);
@@ -379,6 +404,22 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
     }
     return 0;
   };
+  a.save_rows = std::uint64_t{config_.max_verify_rows} * slots_.slots();
+  a.save = [this, stage = shape.stage, owners = std::move(owners)](
+               std::uint32_t layer, std::uint16_t component, std::string_view what,
+               std::uint8_t segment) -> std::uint64_t {
+    if (stage >= commit_places_.size()) return 0;
+    if (segment != ir::kJoinedSegment && segment >= owners.size()) return 0;
+    const std::uint32_t owner = segment == ir::kJoinedSegment ? 0 : owners[segment];
+    for (const CommitPlace& place : commit_places_[stage]) {
+      const CommitBuffer& buffer = place.buffer;
+      if (buffer.layer == layer && buffer.component == component && buffer.what == what) {
+        return commit_saves_.base + place.offset +
+               (std::uint64_t{owner} * config_.max_verify_rows * buffer.row_bytes);
+      }
+    }
+    return 0;
+  };
   if (!measuring) {
     a.activations = node_.activations().base;
     a.activation_bytes = node_.activations().bytes;
@@ -389,17 +430,24 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
 Status ModelRunner::Setup() {
   if (setup_ || released_) return Error("model runner setup is not repeatable");
   if (auto set = slots_.Setup(); !set) return set;
+  if (auto tables = SetupRowTables(); !tables) return tables;
   for (StageWeights& w : config_.weights) {
     if (auto reserved = w.weights->Reserve(node_, w.places, w.slabs); !reserved) return reserved;
   }
   // Each verify row's feature has a tap cell of its own.
   for (std::size_t stage = 1; stage < slots_.stages(); ++stage) {
     const auto* tap = model::FeatureTap(slots_.layout(stage));
+    if (tap != nullptr && config_.max_verify_rows != 0 &&
+        tap->contract.cells == model::CellRule::kPerRow &&
+        tap->contract.rollback != model::Rollback::kSnapshot) {
+      return Error("a chunk feature tap needs snapshot rollback for verification");
+    }
     if (tap != nullptr && config_.max_verify_rows > tap->cells) {
       return Error(std::format("a verify of {} rows passes stage {}'s feature tap of {} cells",
                                config_.max_verify_rows, stage, tap->cells));
     }
   }
+  if (auto commits = SetupCommits(); !commits) return commits;
   if (auto snapshots = SetupSnapshots(); !snapshots) return snapshots;
   // The kernels' own memory, then what uses it, before any measurement.
   std::vector<std::uint64_t> bases;
@@ -440,6 +488,30 @@ Status ModelRunner::Setup() {
     inputs = std::max(inputs, in);
     outputs = std::max(outputs, out);
     plan_floor_bytes_ = std::max(plan_floor_bytes_, p.host_bytes());
+  }
+  std::uint64_t commit_inputs = 0;
+  for (std::uint16_t stage = 0; stage < commit_places_.size(); ++stage) {
+    if (commit_places_[stage].empty()) continue;
+    for (std::uint32_t keep = 1; keep <= config_.max_verify_rows; ++keep) {
+      pl::StepShape shape{
+          .stage = stage,
+          .phase = pl::Phase::kCommit,
+          .segments = {{.rows = keep, .read_cells = slots_.context(stage), .want_head = false}}};
+      auto p = source_->Build(shape, AddressesFor(shape, true));
+      if (!p) return Error(std::format("measuring a commit: {}", p.error()));
+      activations = std::max(activations, (*p)->scratch_bytes());
+      pool = std::max(pool, (*p)->pool_bytes());
+      std::uint64_t bytes = 0;
+      for (const auto& in : (*p)->inputs()) bytes += Round(in.bytes, 256);
+      commit_inputs = std::max(commit_inputs, bytes);
+      plan_floor_bytes_ = std::max(plan_floor_bytes_, (*p)->host_bytes());
+    }
+  }
+  if (commit_inputs != 0) {
+    commit_staging_stride_ = Round(commit_inputs, 256);
+    auto staging = memory_.Pinned(commit_staging_stride_ * slots_.slots() * slots_.stages());
+    if (!staging) return Error(staging.error());
+    commit_staging_ = *staging;
   }
   // A quarter's margin over the widest measured, as every family's.
   activations_needed_ =
@@ -519,13 +591,23 @@ std::expected<std::vector<RunCopy>, std::string> ModelRunner::FeatureCopies(
           // Positions the target has committed and its ring still holds.
           const std::uint64_t committed = slots_.positions(seg.slot);
           const std::uint64_t last = std::uint64_t{from.position} + seg.rows;
-          if (last > committed || committed - from.position > tap->cells) {
+          if (last > committed || (tap->contract.cells == model::CellRule::kPositionRing &&
+                                   committed - from.position > tap->cells)) {
             return Error(std::format("slot {}'s tap holds no feature of positions {} to {}",
                                      seg.slot, from.position, last - 1));
           }
           const std::uint64_t base = slots_.live(seg.slot, shape.stage).base(0) + tap->offset;
+          const TapRows held = HeldTapRows(seg.slot, shape.stage);
+          if (tap->contract.cells == model::CellRule::kPerRow &&
+              (held.count == 0 || std::uint64_t{from.position} + held.preceding < held.first ||
+               last > std::uint64_t{held.first} + held.count)) {
+            return Error("a chunk tap does not hold the requested features");
+          }
           for (std::uint32_t r = 0; r < seg.rows; ++r) {
-            const std::uint64_t cell = (std::uint64_t{from.position} + r) % tap->cells;
+            const std::uint64_t cell =
+                tap->contract.cells == model::CellRule::kPerRow
+                    ? std::uint64_t{tap->contract.window_or_ratio} + from.position + r - held.first
+                    : (std::uint64_t{from.position} + r) % tap->cells;
             copies.push_back(
                 {to + (r * row_bytes), base + (cell * tap->contract.cell_bytes), row_bytes});
           }
@@ -542,6 +624,39 @@ std::expected<std::vector<RunCopy>, std::string> ModelRunner::FeatureCopies(
           break;
         }
       }
+    }
+  }
+  return copies;
+}
+
+ModelRunner::TapRows ModelRunner::HeldTapRows(std::uint32_t slot, std::size_t stage) const {
+  const std::size_t at = (std::size_t{slot} * slots_.stages()) + stage;
+  const std::uint32_t committed = slots_.positions(slot);
+  TapRows held = tap_rows_.at(at);
+  // A discarded verify restores the previous chunk's cells. Its positions
+  // never advanced; an accepted prefix keeps the new chunk's first rows.
+  if (held.count != 0 && committed <= held.first) held = previous_tap_rows_.at(at);
+  if (committed < held.first) return {};
+  held.count = std::min(held.count, committed - held.first);
+  return held;
+}
+
+std::expected<std::vector<RunCopy>, std::string> ModelRunner::TapCarries(
+    const pl::StepShape& shape) const {
+  std::vector<RunCopy> copies;
+  if (shape.stage != 0) return copies;
+  for (const pl::Segment& seg : shape.segments) {
+    for (std::size_t stage = 1; stage < slots_.stages(); ++stage) {
+      const auto* tap = model::FeatureTap(slots_.layout(stage));
+      if (tap == nullptr || tap->contract.cells != model::CellRule::kPerRow) continue;
+      const TapRows held = HeldTapRows(seg.slot, stage);
+      const std::uint32_t count = std::min(held.count, tap->contract.window_or_ratio);
+      if (count == 0 || std::uint64_t{held.first} + held.count != seg.past) continue;
+      const std::uint64_t bytes = tap->contract.cell_bytes;
+      const std::uint64_t base = slots_.live(seg.slot, stage).base(0) + tap->offset;
+      copies.push_back({base + ((tap->contract.window_or_ratio - count) * bytes),
+                        base + ((tap->contract.window_or_ratio + held.count - count) * bytes),
+                        count * bytes});
     }
   }
   return copies;
@@ -580,6 +695,12 @@ Status ModelRunner::SetupSnapshots() {
   for (std::uint32_t slot = 0; slot < slots_.slots(); ++slot) {
     for (std::size_t stage = 0; stage < stages; ++stage) {
       LiveState::Commit commit = config_.commit ? config_.commit(slot, stage) : LiveState::Commit{};
+      if (!commit_places_[stage].empty()) {
+        if (commit) return Error("a stage has both a component commit and a caller's commit");
+        commit = [this, slot, stage](providers::NativeStream stream, std::uint32_t) {
+          return QueueCommit(slot, static_cast<std::uint16_t>(stage), stream);
+        };
+      }
       commits_[(std::size_t{slot} * stages) + stage] = static_cast<bool>(commit);
       if (!Verifies(slot, stage)) continue;
       auto bound =
@@ -611,7 +732,178 @@ Status ModelRunner::SetupSnapshots() {
         !allocated) {
       return allocated;
     }
-    if (place.commit) live.SetCommit(std::move(place.commit));
+    if (place.commit) {
+      std::function<Status(std::uint32_t)> prepare;
+      if (!commit_places_[place.stage].empty()) {
+        prepare = [this, slot = place.slot, stage = place.stage](std::uint32_t keep) {
+          return PrepareCommit(slot, static_cast<std::uint16_t>(stage), keep);
+        };
+      }
+      live.SetCommit(std::move(place.commit), std::move(prepare));
+    }
+  }
+  return {};
+}
+
+Status ModelRunner::SetupCommits() {
+  commit_places_.resize(slots_.stages());
+  prepared_commits_.resize(std::size_t{slots_.slots()} * slots_.stages());
+  if (config_.max_verify_rows == 0) return {};
+  std::uint64_t bytes = 0;
+  for (std::uint16_t stage = 0; stage < slots_.stages(); ++stage) {
+    auto buffers = source_->CommitBuffers(stage, config_.max_verify_rows);
+    if (!buffers)
+      return Error(std::format("stage {}'s commit buffers: {}", stage, buffers.error()));
+    for (CommitBuffer& buffer : *buffers) {
+      if (buffer.row_bytes == 0 || buffer.what.empty()) {
+        return Error("a commit buffer has no rows or name");
+      }
+      const auto duplicate = std::ranges::any_of(commit_places_[stage], [&](const auto& place) {
+        return place.buffer.layer == buffer.layer && place.buffer.component == buffer.component &&
+               place.buffer.what == buffer.what;
+      });
+      if (duplicate) return Error("a commit buffer is repeated");
+      const std::uint64_t rows = std::uint64_t{config_.max_verify_rows} * slots_.slots();
+      if (buffer.row_bytes > (std::numeric_limits<std::uint64_t>::max() - bytes - 255) / rows) {
+        return Error("the commit buffers exceed their address space");
+      }
+      commit_places_[stage].push_back({.buffer = buffer, .offset = bytes});
+      bytes += Round(buffer.row_bytes * rows, 256);
+    }
+  }
+  if (bytes == 0) return {};
+  return memory_.Map(commit_saves_, "the model's commit intermediates", bytes,
+                     catalog::MemoryClass::kLiveState);
+}
+
+Status ModelRunner::SetupRowTables() {
+  for (const auto& config : config_.row_tables) {
+    if (config.weight.stage >= config_.weights.size() || config.weight.expert_array ||
+        config.rows_per_token == 0 || config.format.shape.rank != 2) {
+      return Error("a row table's weights, shape or lookups");
+    }
+    if (std::ranges::any_of(row_tables_,
+                            [&](const auto& t) { return t->config.weight == config.weight; })) {
+      return Error("a row table was declared twice");
+    }
+    auto& weights = config_.weights[config.weight.stage];
+    const auto& artifact = weights.weights->artifact();
+    if (config.resource >= artifact.resources().size()) return Error("a row table's resource");
+    const auto& resource = artifact.resources()[config.resource];
+    const auto& group = artifact.groups()[resource.group];
+    auto parts = format::PartsOf(config.format);
+    const auto part = parts ? parts->Find(config.part) : std::nullopt;
+    if (!part) return Error("a row table's format has no such part");
+    if (part->bytes != resource.bytes.value()) {
+      return Error("a row table's format does not cover exactly its resource");
+    }
+    auto row_bytes = format::RowBytes(config.format, config.part);
+    if (!row_bytes || *row_bytes > std::numeric_limits<std::uint32_t>::max()) {
+      return Error("a row table's row size");
+    }
+    if (resource.group >= weights.places.size() ||
+        weights.places[resource.group] != GroupPlace::kNone) {
+      return Error("a row-paged table's group must not be resident");
+    }
+    for (std::uint32_t i = 0; i < artifact.resources().size(); ++i) {
+      if (i != config.resource && artifact.resources()[i].group == resource.group) {
+        return Error("a row-paged table shares its group with another resource");
+      }
+    }
+    auto first = artifact::ChunkRangeOf(artifact.layout(), {.group = resource.group, .chunk = 0});
+    if (!first) return Error("a row table's file range");
+    auto table = std::make_unique<RowTableState>();
+    table->config = config;
+    table->shard = first->shard;
+    table->table = {.file_offset = first->file_offset.value() + resource.offset.value(),
+                    .rows = config.format.shape.ne[1],
+                    .row_bytes = *row_bytes,
+                    .chunk_file_offset = first->file_offset.value(),
+                    .file_bytes = first->file_offset.value() + group.stored.value()};
+    for (const auto& shape : config_.setup_shapes) {
+      if (shape.stage != config.weight.stage) continue;
+      table->capacity =
+          std::max(table->capacity, std::uint64_t{shape.rows()} * config.rows_per_token);
+    }
+    // Offsets and counts are U32 in the gather. A lookup can span at most
+    // two blocks; the same bound is checked again by PlanPleRows.
+    if (table->capacity == 0 ||
+        table->capacity > std::numeric_limits<std::uint32_t>::max() / (2 * kPleBlock)) {
+      return Error("a row table's bounded landing exceeds its gather offsets");
+    }
+    const auto valid =
+        PlanPleRows(table->table, {}, PleLandingBound(table->capacity), table->capacity);
+    if (!valid) return Error(valid.error());
+    auto ring = providers::OpenStorage(64);
+    if (!ring) return Error(std::format("row-table storage: {}", ring.error().message()));
+    table->storage = std::move(*ring);
+    row_tables_.push_back(std::move(table));
+    auto& held = *row_tables_.back();  // stable through partial setup and release
+    if (auto mapped = memory_.Map(held.slots, "row-table slots", held.capacity * *row_bytes,
+                                  catalog::MemoryClass::kWeights);
+        !mapped)
+      return mapped;
+    auto landing = memory_.Pinned(PleLandingBound(held.capacity));
+    if (!landing) return Error(landing.error());
+    held.landing = static_cast<std::byte*>(*landing);
+    if (Address(held.landing) % kPleBlock != 0)
+      return Error("a row table's landing is not aligned");
+    auto sources = memory_.Pinned((held.capacity + 1) * sizeof(std::uint32_t));
+    if (!sources) return Error(sources.error());
+    held.sources = static_cast<std::uint32_t*>(*sources);
+    held.count = held.sources + held.capacity;
+    *held.count = 0;
+  }
+  return {};
+}
+
+Status ModelRunner::PrepareCommit(std::uint32_t slot, std::uint16_t stage, std::uint32_t keep) {
+  if (keep == 0 || keep > config_.max_verify_rows) return Error("a commit's kept rows");
+  pl::StepShape shape{.stage = stage,
+                      .phase = pl::Phase::kCommit,
+                      .segments = {{.slot = static_cast<std::uint8_t>(slot),
+                                    .rows = keep,
+                                    .read_cells = slots_.context(stage),
+                                    .want_head = false}}};
+  auto entry = Planned(shape);
+  if (!entry) return Error(entry.error());
+  const std::size_t at = (std::size_t{slot} * slots_.stages()) + stage;
+  StepRuns staging(false);
+  staging.SetStaging(static_cast<std::byte*>(commit_staging_) + (at * commit_staging_stride_),
+                     commit_staging_stride_);
+  const auto& program = *(*entry)->planned->program;
+  auto copies = staging.Stage(
+      program.inputs(),
+      [&](std::size_t i, std::span<std::byte> out) {
+        return WriteComputed(program.inputs()[i], shape, out);
+      },
+      0);
+  if (!copies) return Error(copies.error());
+  const bool capture = (*entry)->runs[0].CaptureDue(runs_.graphs()) && plans_.ChargeGraph(**entry);
+  prepared_commits_[at] = {.plan = *entry, .copies = std::move(*copies), .capture = capture};
+  return {};
+}
+
+LiveState::Queued ModelRunner::QueueCommit(std::uint32_t slot, std::uint16_t stage,
+                                           providers::NativeStream stream) {
+  PreparedCommit& prepared = prepared_commits_.at((std::size_t{slot} * slots_.stages()) + stage);
+  if (prepared.plan == nullptr) {
+    return std::unexpected(LiveState::QueueFailure{.detail = "a commit was not prepared"});
+  }
+  Plans::Entry& entry = *prepared.plan;
+  auto& run = entry.runs[0];
+  StepRuns commits(runs_.graphs());
+  const std::size_t at = (std::size_t{slot} * slots_.stages()) + stage;
+  commits.SetStaging(static_cast<std::byte*>(commit_staging_) + (at * commit_staging_stride_),
+                     commit_staging_stride_);
+  commits.SetLaunch(launch_.get());
+  const StepQueued queued = commits.Queue(run, prepared.copies, {}, *entry.planned->program, {},
+                                          prepared.capture, graph_stats_, stream);
+  prepared.plan = nullptr;
+  if (!queued.result) {
+    return std::unexpected(LiveState::QueueFailure{
+        .unknown = queued.before || queued.result.error().error == kn::StepError::kUnknown,
+        .detail = queued.result.error().detail});
   }
   return {};
 }
@@ -667,6 +959,12 @@ Status ModelRunner::Release() {
   // What used the kernels' memory goes before it.
   if (prepared_ && config_.retire) config_.retire();
   std::vector<std::string> problems;
+  for (auto& table : row_tables_) {
+    const std::array<void*, 1> landings{table->landing};
+    if (node_.RetireRing(std::move(table->storage), landings)) {
+      problems.emplace_back("row-table reads remain in flight; their landing and ring are kept");
+    }
+  }
   memory_.ReleaseMappings(problems);
   slots_.Release(node_.memory(), problems);
   for (StageWeights& w : config_.weights) {
@@ -818,7 +1116,12 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   if (request.work.size() != shape.segments.size()) {
     return Refused("a step's work does not match its segments");
   }
+  for (const auto& future : request.ahead.shapes) {
+    if (future && future->phase == pl::Phase::kCommit)
+      return Refused("commits are internal and cannot be lookahead steps");
+  }
   const bool verify = shape.phase == pl::Phase::kVerify;
+  if (shape.phase == pl::Phase::kCommit) return Refused("commits run only after a verify's Accept");
   if (verify && (shape.stage != 0 || request.advance)) {
     return Refused("a verify runs on the target and leaves its rows to their Accept");
   }
@@ -833,6 +1136,45 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   }
   if (slots_.faulted()) return Refused("the cohort is faulted", false);
   const PlanStep step;
+  struct RowRead {
+    RowTableState* table = nullptr;
+    PleRowPlan plan;
+  };
+  const auto plan_rows =
+      [&](const kn::StepProgram& program) -> std::expected<std::vector<RowRead>, StepRefusal> {
+    std::vector<RowRead> row_reads;
+    for (const kn::InputSlot& input : program.inputs()) {
+      if (input.kind != kn::InputKind::kSideRows) continue;
+      if (input.bytes != request.side_rows.size_bytes()) {
+        return Refused("the side rows must fill their slot");
+      }
+      for (auto& table : row_tables_) {
+        if (table->config.weight.stage != shape.stage ||
+            table->config.weight.component != input.component)
+          continue;
+        if (table->stalled) return Refused("row-table reads have unproven completion", false);
+        auto plan = PlanPleRows(table->table, request.side_rows, PleLandingBound(table->capacity),
+                                table->capacity);
+        if (!plan) return Refused(plan.error());
+        row_reads.push_back({.table = table.get(), .plan = std::move(*plan)});
+      }
+    }
+
+    return row_reads;
+  };
+  // Row-table input validation precedes admission: even zeroing newly
+  // backed state is work a malformed set of side rows must not cause.
+  // Planning binds stable virtual addresses only; PlanStep pins the plan
+  // across admission and the eventual job.
+  std::expected<Plans::Entry*, std::string> entry_of = nullptr;
+  std::vector<RowRead> row_reads;
+  if (!row_tables_.empty()) {
+    entry_of = Planned(shape);
+    if (!entry_of) return Refused(entry_of.error());
+    auto reads = plan_rows(*(*entry_of)->planned->program);
+    if (!reads) return std::unexpected(reads.error());
+    row_reads = std::move(*reads);
+  }
   // Every owner's own cells (what it reads alone: its rows at its state's
   // alignment, exactly as a lone step's segment admits them) before any
   // owner's wider reads for the join (a joined alignment, a common read
@@ -858,8 +1200,13 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
   }
   if (auto places = slots_.CheckPlaces(); !places) return Refused(places.error());
-  auto entry_of = Planned(shape);
-  if (!entry_of) return Refused(entry_of.error());
+  if (*entry_of == nullptr) {
+    entry_of = Planned(shape);
+    if (!entry_of) return Refused(entry_of.error());
+    auto reads = plan_rows(*(*entry_of)->planned->program);
+    if (!reads) return std::unexpected(reads.error());
+    row_reads = std::move(*reads);
+  }
   Plans::Entry& entry = **entry_of;
   const kn::StepProgram& program = *entry.planned->program;
 
@@ -901,6 +1248,11 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
         if (request.side_rows.size_bytes() != out.size()) {
           return Error("the side rows must fill their slot");
         }
+        for (const RowRead& read : row_reads) {
+          if (read.table->config.weight.component == in.component) {
+            return WriteRows(out, read.plan.slots);
+          }
+        }
         return WriteRows(out, request.side_rows);
       }
       case kn::InputKind::kSegmentBytes: {
@@ -934,6 +1286,19 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
         if (in.kind != kn::InputKind::kOutputRows && in.kind != kn::InputKind::kPositionPhases &&
             in.kind != kn::InputKind::kHadamard && joined && !in.cells.fixed && !in.cells.per_row)
           return Error("an input names no segment");
+        if (in.commit_save) {
+          std::vector<std::int64_t> rows;
+          for (const pl::Segment& s : shape.segments) {
+            for (std::uint32_t r = 0; r < s.rows; ++r) {
+              rows.push_back(std::int64_t{s.slot} * config_.max_verify_rows + r);
+            }
+          }
+          if (rows.size() * sizeof(std::int64_t) != out.size()) {
+            return Error("a verify's joined save indices do not fill their slot");
+          }
+          std::memcpy(out.data(), rows.data(), out.size());
+          return {};
+        }
         return WriteComputed(in, shape, out);
       case kn::InputKind::kFeatures:
         return Error("a step's features are copied on the device, never staged");
@@ -950,6 +1315,8 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   if (!features) return Refused(features.error());
   auto carries = CarryCopies(program, shape);
   if (!carries) return Refused(carries.error());
+  auto taps = TapCarries(shape);
+  if (!taps) return Refused(taps.error());
   if (entry.planned->positioned) {
     // Between jobs: no run of this program is in flight.
     std::vector<std::uint32_t> past;
@@ -1133,6 +1500,26 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   // A verify's saves queued: work on the stream (the job never "not
   // started"), though they write no state.
   bool saves_queued = false;
+  for (const pl::Segment& s : shape.segments) {
+    for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
+      if (auto prepared = slots_.live(s.slot, stage).PrepareOwed(); !prepared) {
+        return Refused(prepared.error(), slots_.FinishPreparations().has_value());
+      }
+    }
+  }
+  for (RowRead& read : row_reads) {
+    RowTableState& table = *read.table;
+    const int fd = config_.weights[table.config.weight.stage].weights->shard_fd(table.shard);
+    if (fd < 0)
+      return Refused("a row table's shard is not open", slots_.FinishPreparations().has_value());
+    if (auto loaded = ReadPleRows(*table.storage, fd, read.plan, table.landing); !loaded) {
+      table.stalled = table.storage->in_flight() != 0;
+      const bool drained = slots_.FinishPreparations().has_value();
+      return Refused(loaded.error(), drained && !table.stalled);
+    }
+    std::ranges::copy(read.plan.sources, table.sources);
+    *table.count = static_cast<std::uint32_t>(read.plan.sources.size());
+  }
   std::string failure;
   const auto posted = node_.Job(
       slots_.execution(),
@@ -1169,6 +1556,16 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
           sv.queued = true;
         }
         // Outside any recording: their sources move with the positions.
+        for (const auto& [to, from, bytes] : *taps) {
+          const auto copied =
+              providers::CopyAsync(native, support::Pointer(to), support::Pointer(from), bytes,
+                                   providers::CopyKind::kDeviceToDevice);
+          if (!copied.ok()) {
+            failure = std::format("a chunk tap's carry: {}", copied.text());
+            unknown = true;
+            return sc::JobResult::kUnknown;
+          }
+        }
         for (const auto& [to, from, bytes] : *features) {
           if (const providers::DeviceStatus copied =
                   providers::CopyAsync(native, support::Pointer(to), support::Pointer(from), bytes,
@@ -1178,6 +1575,19 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
             unknown = true;
             return sc::JobResult::kUnknown;
           }
+        }
+        for (const RowRead& read : row_reads) {
+          const RowTableState& table = *read.table;
+          if (!kernels::paging::GatherPleRows(
+                  table.landing, table.sources, table.count,
+                  static_cast<std::uint32_t>(read.plan.slots.size()),
+                  static_cast<std::uint32_t>(table.table.row_bytes),
+                  static_cast<std::byte*>(support::Pointer(table.slots.base)), native.handle)) {
+            failure = "a row table's gather failed";
+            unknown = true;
+            return sc::JobResult::kUnknown;
+          }
+          saves_queued = true;
         }
         const StepQueued q =
             runs_.Queue(runs, *copies, {}, program, *outputs, capture, graph_stats_, native);
@@ -1282,6 +1692,22 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
   }
   lookahead_.captured_ahead += report.captured_ahead;
+  if (shape.stage == 0) {
+    for (const pl::Segment& seg : shape.segments) {
+      for (std::size_t stage = 1; stage < slots_.stages(); ++stage) {
+        const auto* tap = model::FeatureTap(slots_.layout(stage));
+        if (tap == nullptr || tap->contract.cells != model::CellRule::kPerRow) continue;
+        const std::size_t at = (std::size_t{seg.slot} * slots_.stages()) + stage;
+        const TapRows held = HeldTapRows(seg.slot, stage);
+        previous_tap_rows_[at] = verify ? held : TapRows{};
+        tap_rows_[at] = {.first = seg.past,
+                         .count = seg.rows,
+                         .preceding = std::uint64_t{held.first} + held.count == seg.past
+                                          ? std::min(held.count, tap->contract.window_or_ratio)
+                                          : 0};
+      }
+    }
+  }
   report.captured_first = capture_first && report.path == RunPath::kCaptured;
   lookahead_.captured_first += report.captured_first;
   Count(graph_stats_, report.path);

@@ -101,11 +101,10 @@ struct StepPlan {
   // Primitive decompositions taken for want of an implementation (their
   // keys' names), in order.
   std::vector<std::string> decomposed;
-  // A step of several owners whose products are row-invariant (the
-  // policy's owner_row_invariant option): each owner's rows what they are
-  // alone, as a module's row-invariant products compute them where the
-  // step's rows allow (GGML's: up to 8), its float products on the vector
-  // kernel otherwise.
+  // Several one-row owners retain each owner's scalar product arithmetic
+  // (the policy's owner_row_invariant option). Multirow owners retain the
+  // ordinary batched arithmetic; this is independent of an exact verify's
+  // explicit row_invariant requirement on implementation selection.
   bool owner_row_invariant = false;
 };
 

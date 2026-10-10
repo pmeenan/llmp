@@ -473,6 +473,7 @@ Status SlotLifecycle::Clear(std::uint32_t index) {
   if (!bound_ || cohort_.faulted()) return Refuse("cohort requires retirement");
   if (auto active = cohort_.Check(node_, stream_, index); !active) return active;
   if (options_.invalidate) options_.invalidate(index);
+  if (options_.content_changed) options_.content_changed(index);
   // Zeroed in place, the discard keeps the resident backing for the next
   // conversation's growth (LiveState::ZeroForReuse). From the first zeroing
   // on, whatever follows fails, no stage's file holds it.
@@ -516,6 +517,7 @@ Status SlotLifecycle::ClearIdle(std::uint32_t index) {
   }
   slot.state_refused = false;
   if (options_.invalidate) options_.invalidate(index);
+  if (options_.content_changed) options_.content_changed(index);
   // Outside the stream's lease, which keeps protecting every active state;
   // the catalog refuses the discard if anything still holds or operates on
   // this state's extents (LiveState::DiscardGrowingState).
@@ -587,7 +589,7 @@ Status SlotLifecycle::Spill(std::uint32_t index) {
     slot.spilled = false;
     return refreshed;
   }
-  // Spilled from here, written back whole or not.
+  // Spilled from here, written back whole or not. Its logical cells remain.
   if (options_.invalidate) options_.invalidate(index);
   for (std::size_t s = 0; s < slot.stages.size(); ++s) {
     // Only what changed since the spill file last held it is written; the
@@ -879,6 +881,7 @@ Status SlotLifecycle::PrepareRestore(std::uint32_t index, std::uint32_t position
     }
   }
   if (!slot.state_refused && options_.invalidate) options_.invalidate(index);
+  if (!slot.state_refused && options_.content_changed) options_.content_changed(index);
   if (prepared) {
     for (Stage& stage : slot.stages) stage.track.Lost();
     for (std::size_t s = 0; s < slot.stages.size() && prepared; ++s) {
@@ -928,6 +931,7 @@ Status SlotLifecycle::CompleteRestore(std::uint32_t index, std::uint32_t positio
   slot.restore_needed.clear();
   slot.restored_bytes.clear();
   if (options_.invalidate) options_.invalidate(index);
+  if (options_.content_changed) options_.content_changed(index);
   return {};
 }
 
@@ -953,6 +957,7 @@ Status SlotLifecycle::CopyState(std::uint32_t index, void* pinned, std::span<con
   if (!to_host) {
     if (auto recorded = RecordWrite(index, ranges); !recorded) return recorded;
     if (options_.invalidate) options_.invalidate(index);
+    if (options_.content_changed) options_.content_changed(index);
   }
   // Packed in their order: each run of one stage's ranges is one copy.
   auto* host = static_cast<std::byte*>(pinned);
@@ -1023,6 +1028,7 @@ Status SlotLifecycle::Adopt(std::uint32_t index, std::uint32_t positions,
   slot.spilled = true;
   slot.positions = positions;
   if (options_.invalidate) options_.invalidate(index);
+  if (options_.content_changed) options_.content_changed(index);
   return RefreshClosures();
 }
 
@@ -1094,6 +1100,7 @@ std::expected<SlotMask, std::string> SlotLifecycle::RecoverInPlace(
     if (!touched) continue;  // untouched by the failed work
     if (before_discard) before_discard(slot.index);
     if (options_.invalidate) options_.invalidate(slot.index);
+    if (options_.content_changed) options_.content_changed(slot.index);
     for (Stage& stage : slot.stages) {
       auto cleared = stage.live->DiscardGrowingState(node_);
       stage.track.Lost();

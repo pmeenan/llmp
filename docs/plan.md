@@ -1571,7 +1571,7 @@ each is checked against the design as M3.6 proceeds.
             selection beyond the QSA budget and captured replays. Verify,
             commit and MTP GPU numerics remain with the wiring in G3c.
       - [ ] Wiring and the gate, then deletion of the old code.
-            - [ ] **G3c1 — shared runner execution:** bind verify saves and
+            - [x] **G3c1 — shared runner execution:** bind verify saves and
                   commit execution; bind n-gram side tables on demand; stage
                   drafter features with fake-backend lifecycle controls.
                   Prove focused GPU numerical correctness for native target
@@ -1581,6 +1581,15 @@ each is checked against the design as M3.6 proceeds.
                   kept-state feature restoration, then wire native, GGUF
                   and MTP through serving; pass state, quality and swap
                   controls and the matched 1% gate for all three paths.
+                  - [ ] **G3c2a — MTP progress and persistence:** declare the
+                        cache/token/feature relation and pending replay
+                        range as shared stage policy; preserve it with the
+                        feature span through checkpoint, spill and adoption;
+                        run the prefill companion and prove actual MTP GPU
+                        and restoration behavior before serving.
+                  - [ ] **G3c2b — serving and gate:** compose the native,
+                        GGUF and MTP serving paths, pass their state, quality
+                        and swap controls, then the matched 1% gate.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
                   graph builders, bindings and serving class after G3c2.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.
@@ -1606,6 +1615,15 @@ each is checked against the design as M3.6 proceeds.
             - [ ] **G4b2 — fast forms:** add patterns and default policy,
                   then prove structural parity and GPU execution for the
                   fast forms and row-invariant verify.
+                  - [ ] **G4b2a — local opt-in forms:** Q-head, compressor
+                        pooling, full-carry HC pre and flat-norm HC post;
+                        prove guarded fallback and existing-kernel operand
+                        execution without changing the default policy.
+                  - [ ] **G4b2b — indexer and sparse banks:** prove their
+                        ownership, backing and execution contracts.
+                  - [ ] **G4b2c — full policy:** output-A and product forms,
+                        mixed encodings, default policy, whole-artifact GPU
+                        parity and row-invariant verify.
             - [ ] **G4c — serving and gate:** bind hash-routing IDs with
                   expert-count checks, compressor inputs and injection
                   features with one drafter slot per target slot; pass the

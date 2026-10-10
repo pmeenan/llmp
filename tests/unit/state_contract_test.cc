@@ -676,7 +676,7 @@ TEST(StateContractTest, VerifyScopesCommitsPositionRingsAndTheTargetsWritesIntoA
   // Row i: its ring row (positions 6..9 in rows 6, 7, 0, 1) and its tap
   // row (1 + i); the per-position cache truncates.
   for (std::uint32_t i = 0; i < 4; ++i) {
-    ASSERT_EQ(writes->rows[i].size(), 2U) << i;
+    ASSERT_EQ(writes->rows[i].size(), i == 0 ? 3U : 2U) << i;
     EXPECT_EQ(writes->rows[i][0].offset, ring.offset + (((6 + i) % 8) * 512)) << i;
     EXPECT_EQ(writes->rows[i][1].offset, tap.offset + ((1 + i) * 256)) << i;
   }
@@ -702,7 +702,7 @@ TEST(StateContractTest, VerifyScopesCommitsPositionRingsAndTheTargetsWritesIntoA
   auto drafter = md::WritesFor(*layout, 6, 4, {.commits = false, .drafter = true});
   ASSERT_TRUE(drafter.has_value()) << drafter.error();
   for (std::uint32_t i = 0; i < 4; ++i) {
-    ASSERT_EQ(drafter->rows[i].size(), 1U);
+    ASSERT_EQ(drafter->rows[i].size(), i == 0 ? 2U : 1U);
     EXPECT_EQ(drafter->rows[i][0].offset, tap.offset + ((1 + i) * 256));
   }
   // A borrowed tensor names its target's tensor of that name and layer.
@@ -725,7 +725,7 @@ TEST(StateContractTest, VerifyScopesCommitsPositionRingsAndTheTargetsWritesIntoA
 
 // Qwen3.8's verify (qwen38_runner.cc, through Qwen38VerifySaves): its
 // contracts' WritesFor, the target's with its commit and the MTP stage's
-// as the target's verify writes it, save exactly those bytes by row.
+// as the target's verify writes it, plus the shared runner's chunk-tail carry.
 TEST(StateContractTest, Qwen38VerifySavesAreItsContractsWritesByteForByte) {
   const auto& p = md::Qwen38Flash();
   for (const auto& [context, max_rows] : {std::pair{8192U, 512U}, {4000U, 300U}}) {
@@ -747,6 +747,12 @@ TEST(StateContractTest, Qwen38VerifySavesAreItsContractsWritesByteForByte) {
           (s.drafter ? want_drafter : want_target)[s.row].push_back(
               {.offset = s.offset, .bytes = s.bytes});
         }
+        // The shared runner also carries the preceding chunk's last
+        // feature into cell zero. It survives acceptance but is restored
+        // when the entire verify is discarded.
+        const auto* tap = md::FeatureTap(*drafter);
+        ASSERT_NE(tap, nullptr);
+        want_drafter[0].push_back({.offset = tap->offset, .bytes = tap->contract.cell_bytes});
         auto got = md::WritesFor(*target, past, rows, {.commits = true, .drafter = false});
         auto streams = md::WritesFor(*drafter, past, rows, {.commits = false, .drafter = true});
         ASSERT_TRUE(got.has_value()) << got.error();

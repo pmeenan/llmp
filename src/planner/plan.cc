@@ -290,17 +290,19 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   if (!placement) {
     return Failed(PlanError::kPlacement, placement.error());
   }
-  return StepPlan{.graph = std::move(graph),
-                  .steps = std::move(steps),
-                  .regions = std::move(regions),
-                  .placement = std::move(*placement),
-                  .applied = std::move(applied),
-                  .from = std::move(from),
-                  .tensors = std::move(tensors),
-                  .decomposed = std::move(decomposed),
-                  .owner_row_invariant = !Disabled(policy, "owner_row_invariant") &&
-                                         options.shape != nullptr &&
-                                         options.shape->segments.size() > 1};
+  return StepPlan{
+      .graph = std::move(graph),
+      .steps = std::move(steps),
+      .regions = std::move(regions),
+      .placement = std::move(*placement),
+      .applied = std::move(applied),
+      .from = std::move(from),
+      .tensors = std::move(tensors),
+      .decomposed = std::move(decomposed),
+      .owner_row_invariant =
+          !Disabled(policy, "owner_row_invariant") && options.shape != nullptr &&
+          options.shape->segments.size() > 1 &&
+          std::ranges::all_of(options.shape->segments, [](const auto& s) { return s.rows == 1; })};
 }
 
 PlanKey KeyOf(const base::Sha256Digest& spec, const StepShape& shape, const Policy& policy,

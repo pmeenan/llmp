@@ -210,8 +210,8 @@ const StateLayoutDerived::Item* BorrowedItem(const StateLayoutDerived& target,
 bool ReadsFrozen(const StateLayoutDerived& layout);
 
 // The stage's feature tap: its one tensor of kind kFeatures that the target
-// writes, a position ring (a drafter's input feature by position); none if
-// it has none or several.
+// writes, a position ring or chunk rows (a drafter's input features);
+// none if it has none or several.
 const StateLayoutDerived::Item* FeatureTap(const StateLayoutDerived& layout);
 
 // The region for `per_layer` contracts (layer index, contract) at a

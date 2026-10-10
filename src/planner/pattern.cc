@@ -1312,8 +1312,8 @@ constexpr std::array kPatterns = {
     Pattern{
         .name = "owner_chained_masks", .kind = PatternKind::kOption, .parent = "owner_attention"},
     Pattern{.name = "narrow_final", .kind = PatternKind::kOption},
-    // A step of several owners runs its products row-invariant (each
-    // owner's rows what they are alone: today's Qwen3.8 waves;
+    // A step of several one-row owners retains scalar product arithmetic
+    // (each owner's row what it is alone: today's Qwen3.8 waves;
     // StepPlan::owner_row_invariant). Opt-in.
     Pattern{.name = "owner_row_invariant", .kind = PatternKind::kOption, .opt_in = true},
 };

@@ -139,6 +139,8 @@ struct FakeSourceOptions {
   std::uint32_t logits = 0;
   // A drafter's features as a kFeatures input and a features output.
   bool features = false;
+  // Verify saves each row's fixed-state hash; a generated commit restores its kept last row.
+  bool commits = false;
   // Input slots added to every program (their address and bytes set by the
   // fake: bytes from the slot's `bytes`), and what the last run staged in
   // each.
@@ -156,6 +158,8 @@ class FakeStepSource final : public engine::StepSource {
     return options_.shape_parameters ? options_.shape_parameters(shape)
                                      : std::vector<std::uint64_t>{};
   }
+  std::expected<std::vector<engine::CommitBuffer>, std::string> CommitBuffers(
+      std::uint16_t stage, std::uint32_t rows) const override;
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
       const planner::StepShape& shape, const kernels::Addresses& addresses) override;
 

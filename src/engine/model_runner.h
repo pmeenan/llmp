@@ -56,11 +56,13 @@
 #include "engine/paged_weights.h"
 #include "engine/plan_account.h"
 #include "engine/plan_cache.h"
+#include "engine/ple_rows.h"
 #include "engine/run_stats.h"
 #include "engine/runner_memory.h"
 #include "engine/slot_lifecycle.h"
 #include "engine/step_runs.h"
 #include "format/encoding.h"
+#include "format/tensor_format.h"
 #include "ir/graph.h"
 #include "kernels/common/step_program.h"
 #include "memory/reclaim.h"
@@ -71,6 +73,13 @@ namespace llmp::engine {
 // What the runner asks for a step program: one virtual call per plan miss
 // (the planner and a lowering behind it: ComponentStepSource once the
 // components exist; FakeStepSource in the tests).
+struct CommitBuffer {
+  std::uint32_t layer = 0;
+  std::uint16_t component = 0;
+  std::string what;
+  std::uint64_t row_bytes = 0;
+};
+
 class StepSource {
  public:
   StepSource() = default;
@@ -86,6 +95,12 @@ class StepSource {
   // Only baked graph dimensions that depend on positions; empty when
   // positions affect input data alone. Pure, also called by lookahead.
   virtual std::vector<std::uint64_t> ShapeParameters(const planner::StepShape&) const { return {}; }
+  // The intermediates a stage's verify stores for its commit, per owner.
+  // Empty for a source without commit-based state. Queried once at setup.
+  virtual std::expected<std::vector<CommitBuffer>, std::string> CommitBuffers(
+      std::uint16_t /*stage*/, std::uint32_t /*rows*/) const {
+    return std::vector<CommitBuffer>{};
+  }
   // A program for `shape` at `addresses`. Host-only: it may run on the
   // driver while the device runs the current step (a lookahead), so it
   // never calls the node, the launch or the device; the runner binds it
@@ -140,6 +155,16 @@ struct RunnerConfig {
   // A weight's address by role and part (the spec's binding to the
   // weights); unset: 0, for sources that bind none.
   std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight_address;
+  // Tables whose rows are read into bounded device slots before a step.
+  // Their groups must contain only that resource and be placed kNone.
+  struct RowTable {
+    ir::WeightRef weight;
+    std::uint32_t resource = 0;
+    format::TensorFormat format;
+    format::PartRole part = format::PartRole::kData;
+    std::uint64_t rows_per_token = 0;
+  };
+  std::vector<RowTable> row_tables;
   // Speculation: the most rows a verify takes (0: none; no snapshot is
   // mapped and a verify is refused). Setup maps each slot's stages'
   // snapshots, sized by model::VerifySaveBound, for the stages a target's
@@ -160,9 +185,12 @@ struct FeatureFrom {
   enum class Kind : std::uint8_t {
     kNone,
     // The step's stage's feature tap (model::FeatureTap: the target's
-    // features by position, which its steps with outputs write): row r
-    // reads position `position + r`'s cell, which the target's committed
-    // positions must hold (below them, within the ring).
+    // features by position, which its steps write): row r reads position
+    // `position + r`'s committed cell in the ring or currently held chunk.
+    // A chunk tap retains its preceding tail through ordinary spill/restore;
+    // checkpoint replacement or adoption clears its logical span until a
+    // target step writes fresh features. Persisted chunk-span metadata is
+    // required before using it to resume a drafter across those operations.
     kTap,
     // The slot's carry on the step's stage: the next features the last
     // drafter step with features of that slot on that stage returned (its
@@ -337,6 +365,11 @@ class ModelRunner final : public PagedModel {
   static SlotLifecycleOptions LifecycleOptions(ModelRunner* self, SlotLifecycleOptions options);
   // Each slot's stages' verify snapshots and commits (max_verify_rows).
   Status SetupSnapshots();
+  Status SetupCommits();
+  Status SetupRowTables();
+  Status PrepareCommit(std::uint32_t slot, std::uint16_t stage, std::uint32_t keep);
+  LiveState::Queued QueueCommit(std::uint32_t slot, std::uint16_t stage,
+                                providers::NativeStream stream);
   // Each slot's carried features on each stage whose steps return them
   // (`carry_bytes` by stage, from the setup shapes' programs).
   Status SetupCarry(std::span<const std::uint64_t> carry_bytes);
@@ -350,6 +383,12 @@ class ModelRunner final : public PagedModel {
       const kernels::StepProgram& program, const planner::StepShape& shape) const;
   std::uint64_t CarryAddress(std::uint32_t slot, std::size_t stage) const;
   void ForgetCarry(std::uint32_t slot);
+  struct TapRows {
+    std::uint32_t first = 0, count = 0, preceding = 0;
+  };
+  TapRows HeldTapRows(std::uint32_t slot, std::size_t stage) const;
+  std::expected<std::vector<RunCopy>, std::string> TapCarries(
+      const planner::StepShape& shape) const;
 
   planner::PlanKey KeyOf(const planner::StepShape& shape) const;
   kernels::Addresses AddressesFor(const planner::StepShape& shape, bool measuring) const;
@@ -394,13 +433,41 @@ class ModelRunner final : public PagedModel {
   std::byte* outputs_staging_ = nullptr;
   std::uint64_t outputs_staging_bytes_ = 0;
   Mapped snapshots_;  // every slot's stages' verify snapshots
+  struct CommitPlace {
+    CommitBuffer buffer;
+    std::uint64_t offset = 0;
+  };
+  std::vector<std::vector<CommitPlace>> commit_places_;  // by stage
+  Mapped commit_saves_;
+  void* commit_staging_ = nullptr;
+  std::uint64_t commit_staging_stride_ = 0;
+  struct PreparedCommit {
+    Plans::Entry* plan = nullptr;  // protected by the job's PlanStep
+    Copies copies;
+    bool capture = false;
+  };
+  std::vector<PreparedCommit> prepared_commits_;  // by slot, then stage
+  struct RowTableState {
+    RunnerConfig::RowTable config;
+    PleTable table;
+    std::uint32_t shard = 0;
+    std::uint64_t capacity = 0;
+    Mapped slots;
+    std::byte* landing = nullptr;
+    std::uint32_t* sources = nullptr;
+    std::uint32_t* count = nullptr;
+    std::unique_ptr<providers::Storage> storage;
+    bool stalled = false;
+  };
+  std::vector<std::unique_ptr<RowTableState>> row_tables_;
   // Every slot's carried features (by slot, then stage: carry_offset_ and
   // carry_bytes_ by stage, carry_stride_ a slot) and the rows each holds.
   Mapped carry_;
   std::vector<std::uint64_t> carry_offset_, carry_bytes_;
   std::uint64_t carry_stride_ = 0;
-  std::vector<std::uint32_t> carry_rows_;  // by slot, then stage
-  std::vector<bool> frozen_;               // by stage
+  std::vector<std::uint32_t> carry_rows_;              // by slot, then stage
+  std::vector<TapRows> tap_rows_, previous_tap_rows_;  // per-row taps; by slot, then stage
+  std::vector<bool> frozen_;                           // by stage
   // RunnerConfig::kernel_memory's mappings (each at a stable address).
   std::vector<std::unique_ptr<Mapped>> kernel_mapped_;
   bool prepared_ = false;      // RunnerConfig::prepare was called

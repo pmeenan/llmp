@@ -279,9 +279,15 @@ class LiveState {
   // A commit queued on the job's stream by QueueOwed (and Rollback); a
   // legacy runner's goes through its launch context instead
   // (SetCommitThrough), and each path refuses the other's.
-  void SetCommit(Commit commit) {
+  void SetCommit(Commit commit, std::function<Status(std::uint32_t)> prepare = {}) {
     commit_ = std::move(commit);
+    prepare_commit_ = std::move(prepare);
     launch_commit_ = false;
+  }
+  // Host preparation before a job queues the owed commit (plan selection
+  // and input staging). The caller keeps a PlanStep alive through that job.
+  Status PrepareOwed() {
+    return commit_keep_ != 0 && prepare_commit_ ? prepare_commit_(commit_keep_) : Status{};
   }
 
   // A verify's saves: Begin, then each range it writes (verify row `row`,
@@ -384,6 +390,7 @@ class LiveState {
   std::uint32_t restore_count_ = 0;  // owed
   std::uint32_t commit_keep_ = 0;    // owed: rows to commit (0: none)
   Commit commit_;
+  std::function<Status(std::uint32_t)> prepare_commit_;
   // commit_ is SetCommitThrough's (live_state_launch.h): queued only
   // through its launch context, never by QueueOwed.
   bool launch_commit_ = false;

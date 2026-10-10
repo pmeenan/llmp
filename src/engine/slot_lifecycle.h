@@ -91,6 +91,9 @@ struct SlotLifecycleOptions {
   std::function<void(std::uint32_t slot)> invalidate;
   // Every plan and graph is to be dropped: a place moved, a recovery.
   std::function<void()> drop_plans;
+  // Logical state was replaced or cleared, rather than merely spilled.
+  // Position-to-cell metadata survives an ordinary spill/restore.
+  std::function<void(std::uint32_t slot)> content_changed = {};
 };
 
 class SlotLifecycle;

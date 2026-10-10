@@ -1508,4 +1508,141 @@ TEST_F(PrefillTest, AllRowsOutputsAndCheckpointBoundaries) {
   EXPECT_EQ(rows.back().hash, Hash(a));
 }
 
+// Generated component commits keep each owner's verified rows alive until
+// that owner next runs, even if a peer runs and cache pressure intervenes.
+class ComponentCommitTest : public ModelRunnerTest {
+ protected:
+  std::vector<en::StageState> StateStages() const override {
+    auto stages = Stages();
+    stages.front().layout.items[1].contract.rollback = md::Rollback::kCommit;
+    return stages;
+  }
+  ts::FakeSourceOptions SourceOptions() override {
+    auto options = ModelRunnerTest::SourceOptions();
+    options.commits = true;
+    return options;
+  }
+  void Configure(en::RunnerConfig& config) override { config.max_verify_rows = 3; }
+  std::expected<en::StepReport, en::StepRefusal> Verify() {
+    const std::array<std::int32_t, 3> a{11, 12, 13}, b{21, 22, 23};
+    const std::array<en::SegmentWork, 2> work{{{.tokens = a}, {.tokens = b}}};
+    return runner_->RunStep({.shape = Shape(pl::Phase::kVerify, {Seg(0, 0, 3, 3), Seg(1, 0, 3, 3)}),
+                             .work = work,
+                             .advance = false,
+                             .ahead = {}});
+  }
+};
+
+TEST_F(ComponentCommitTest, JoinedSavesSurviveAPeerStepAndLatePreparationFailure) {
+  auto verified = Verify();
+  ASSERT_TRUE(verified) << verified.error().what;
+  ASSERT_TRUE(runner_->slots().Accept(0, 1));
+  ASSERT_TRUE(runner_->slots().Accept(1, 2));
+  // An unrelated owner's work may reuse all transient activations.
+  ASSERT_TRUE(Run(Shape(pl::Phase::kDecode, {Seg(2, 0, 1, 1)}), {{99}}));
+  const auto next = Shape(pl::Phase::kDecode, {Seg(0, 1, 1, 1), Seg(1, 2, 1, 1)});
+  source_->options().refuse_build = [](const pl::StepShape& shape) {
+    return shape.phase == pl::Phase::kCommit && shape.segments.front().slot == 1;
+  };
+  const auto before = source_->executed();
+  en::StepAhead ahead;
+  ahead.prepare = true;
+  ahead.shapes[0] = Shape(pl::Phase::kPrefill, {Seg(0, 510, 4, 1)});
+  auto refused = Run(next, {{14}, {24}}, ahead);
+  ASSERT_FALSE(refused);
+  EXPECT_TRUE(refused.error().clean);
+  EXPECT_EQ(source_->executed(), before);
+  EXPECT_FALSE(runner_->slots().live(0, 0).preparing());
+  EXPECT_GT(runner_->slots().live(0, 0).preparation_stats().attempted, 0U);
+  EXPECT_TRUE(runner_->slots().live(0, 0).owed());
+  EXPECT_TRUE(runner_->slots().live(1, 0).owed());
+  EXPECT_EQ(runner_->slots().positions(0), 1U);
+  EXPECT_EQ(runner_->slots().positions(1), 2U);
+  source_->options().refuse_build = {};
+  // Reclaim every eligible plan while the later commit is built. The
+  // prepared earlier commit and current step must remain pinned.
+  source_->options().on_build = [&](const pl::StepShape&, bool measuring) {
+    if (measuring) return;
+    std::vector<llmp::memory::ReclaimCandidate> candidates;
+    runner_->ReclaimCandidates(0, true, candidates);
+    for (const auto& c : candidates) (void)runner_->Reclaim(c.kind, c.id);
+  };
+  auto retried = Run(next, {{14}, {24}});
+  ASSERT_TRUE(retried) << retried.error().what;
+  ASSERT_EQ(retried->outputs.size(), 2U);
+  EXPECT_EQ(Rows(retried->outputs[0]).front().hash, Hash(std::array<std::int32_t, 2>{11, 14}));
+  EXPECT_EQ(Rows(retried->outputs[1]).front().hash, Hash(std::array<std::int32_t, 3>{21, 22, 24}));
+  EXPECT_FALSE(runner_->slots().live(0, 0).owed());
+  EXPECT_FALSE(runner_->slots().live(1, 0).owed());
+}
+
+TEST_F(ComponentCommitTest, SettlingAnOwnerPreparesItsCommitUnderPlanPressure) {
+  ASSERT_TRUE(Verify());
+  ASSERT_TRUE(runner_->slots().Accept(0, 2));
+  ASSERT_TRUE(runner_->slots().DiscardVerify(1));
+  source_->options().on_build = [&](const pl::StepShape&, bool measuring) {
+    if (measuring) return;
+    std::vector<llmp::memory::ReclaimCandidate> candidates;
+    runner_->ReclaimCandidates(0, true, candidates);
+    for (const auto& c : candidates) (void)runner_->Reclaim(c.kind, c.id);
+  };
+  ASSERT_TRUE(runner_->slots().Settle(0));
+  auto ran = Run(Shape(pl::Phase::kDecode, {Seg(0, 2, 1, 1)}), {{14}});
+  ASSERT_TRUE(ran) << ran.error().what;
+  EXPECT_EQ(Rows(ran->outputs[0]).front().hash, Hash(std::array<std::int32_t, 3>{11, 12, 14}));
+}
+
+TEST_F(ComponentCommitTest, CommitInputsStayDistinctThroughCaptureAndReplay) {
+  std::array<std::uint64_t, 2> hashes{};
+  for (std::uint32_t round = 0; round < 4; ++round) {
+    const std::array<std::int32_t, 3> a{101 + static_cast<std::int32_t>(round), 202, 303};
+    const std::array<std::int32_t, 3> b{404 + static_cast<std::int32_t>(round), 505, 606};
+    const std::array<en::SegmentWork, 2> work{{{.tokens = a}, {.tokens = b}}};
+    const auto past0 = runner_->slots().positions(0), past1 = runner_->slots().positions(1);
+    auto verified = runner_->RunStep(
+        {.shape = Shape(pl::Phase::kVerify, {Seg(0, past0, 3, 3), Seg(1, past1, 3, 3)}),
+         .work = work,
+         .advance = false,
+         .ahead = {}});
+    ASSERT_TRUE(verified) << verified.error().what;
+    ASSERT_TRUE(runner_->slots().Accept(0, 1));
+    ASSERT_TRUE(runner_->slots().Accept(1, 2));
+    hashes[0] = ts::FakeHash(hashes[0], a[0]);
+    hashes[1] = ts::FakeHash(ts::FakeHash(hashes[1], b[0]), b[1]);
+    const auto ran =
+        Run(Shape(pl::Phase::kDecode, {Seg(0, past0 + 1, 1, 1), Seg(1, past1 + 2, 1, 1)}),
+            {{707}, {808}});
+    ASSERT_TRUE(ran) << ran.error().what;
+    hashes[0] = ts::FakeHash(hashes[0], 707);
+    hashes[1] = ts::FakeHash(hashes[1], 808);
+    EXPECT_EQ(Rows(ran->outputs[0]).front().hash, hashes[0]);
+    EXPECT_EQ(Rows(ran->outputs[1]).front().hash, hashes[1]);
+  }
+  // Two current-step shapes plus two distinct owner commits, all captured.
+  EXPECT_GE(runner_->plans().graphs(), 4U);
+}
+
+TEST_F(ComponentCommitTest, AnInternalCommitCannotBeCapturedAhead) {
+  en::StepAhead ahead;
+  ahead.shapes[0] = Shape(pl::Phase::kCommit, {Seg(0, 0, 1, 0)});
+  ahead.build = 1;
+  ahead.capture_ahead = true;
+  const auto before = source_->queued();
+  auto refused = Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{17}}, ahead);
+  ASSERT_FALSE(refused);
+  EXPECT_TRUE(refused.error().clean);
+  EXPECT_EQ(source_->queued(), before);
+  EXPECT_EQ(runner_->slots().positions(0), 0U);
+}
+
+TEST_F(ComponentCommitTest, AnInternalCommitCannotRunWithoutTheOwedFlow) {
+  const auto before = source_->queued();
+  const auto refused = Run(Shape(pl::Phase::kCommit, {Seg(0, 0, 1, 0)}), {{17}});
+  ASSERT_FALSE(refused);
+  EXPECT_TRUE(refused.error().clean);
+  EXPECT_EQ(source_->queued(), before);
+  EXPECT_EQ(runner_->slots().positions(0), 0U);
+  EXPECT_FALSE(runner_->slots().live(0, 0).owed());
+}
+
 }  // namespace

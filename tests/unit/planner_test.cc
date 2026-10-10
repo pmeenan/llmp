@@ -896,6 +896,21 @@ TEST(PlannerSelectionTest, RowInvariantPlansTakeRowInvariantImplementations) {
   // The policy may ask for it too.
   EXPECT_EQ(Names(PlanOf(GluGraph(1, false, false, false), r, Policy{.row_invariant = true}), r),
             Names(verify, r));
+  // The option preserving several one-row owners' scalar arithmetic must
+  // not turn ordinary multirow verifications into scalar products. Exact
+  // verifications still select row-invariant kernels independently.
+  const Policy owners{.enabled = {"owner_row_invariant"}};
+  for (const auto rows : {std::array{1U, 1U}, std::array{1U, 3U}, std::array{3U, 3U}}) {
+    StepShape shape{.phase = Phase::kVerify,
+                    .segments = {{.slot = 0, .rows = rows[0]}, {.slot = 1, .rows = rows[1]}}};
+    const auto ordinary =
+        PlanOf(GluGraph(rows[0] + rows[1], false, false, false), r, owners, {.shape = &shape});
+    EXPECT_EQ(ordinary.owner_row_invariant, rows[0] == 1 && rows[1] == 1);
+    const auto exact = PlanOf(GluGraph(rows[0] + rows[1], false, false, false), r, owners,
+                              {.row_invariant = true, .shape = &shape});
+    EXPECT_EQ(Names(exact, r), Names(verify, r));
+    EXPECT_EQ(exact.owner_row_invariant, ordinary.owner_row_invariant);
+  }
   // And capture: an implementation that cannot be recorded is left out.
   std::vector<ex::Implementation> w = Everything();
   for (auto& i : w) {

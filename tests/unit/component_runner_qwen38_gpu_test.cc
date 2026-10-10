@@ -22,9 +22,8 @@
 //
 // The n-gram rows each row reads (the step's side rows, components/
 // component.h side_rows) are the test's: the hash of the token history
-// (model/qwen38.h Qwen38PleRows) into the whole table, resident (today's
-// runner reads the rows it needs on demand into row slots; the engine's
-// binding of side rows is slice G3c's). Speculation (a verify's
+// (model/qwen38.h Qwen38PleRows), read on demand into bounded row slots.
+// Speculation (a verify's
 // saves and its commit, the MTP drafter's passes and their features) runs
 // through the engine in G3c; its steps' lowering is compared with today's
 // builder on the CPU (ggml_lower_qwen38_test).
@@ -65,10 +64,12 @@
 #include "engine/qwen38_runner.h"
 #include "engine/runner_resources.h"
 #include "engine/support.h"
+#include "kernels/ggml/qwen38_commit.h"
 #include "kernels/ggml/step_program.h"
 #include "model/qwen38.h"
 #include "model/state_contract.h"
 #include "planner/step_shape.h"
+#include "providers/device_runtime.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen38.h"
 #include "spec/spec.h"
@@ -92,6 +93,8 @@ constexpr std::uint32_t kMaxRows = 512;
 constexpr std::uint32_t kOwners = 2;
 // The slabs' offset in their first page (qwen38_runner.cc kSlabAlignment).
 constexpr std::uint64_t kSlabAlignment = 16;
+constexpr std::string_view kMtp =
+    "m3-artifacts/8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40";
 
 struct Case {
   std::string name;
@@ -104,6 +107,7 @@ enum class Head : std::uint8_t { kLogits, kGreedy, kNone };
 struct Unit {
   std::uint32_t slot = 0;
   std::uint32_t rows = 0;
+  std::uint32_t keep = 0;  // nonzero: verify, then accept only this prefix
 };
 struct Wave {
   std::vector<Unit> units;
@@ -125,7 +129,7 @@ std::vector<std::int32_t> History(std::uint32_t slot, std::uint32_t end) {
   return out;
 }
 
-std::vector<Planned> Script() {
+std::vector<Planned> Script(bool verify = false) {
   // Each owner's prompt, its short chunks and lone decodes first, then
   // joined decodes.
   std::vector<Wave> waves = {
@@ -159,13 +163,27 @@ std::vector<Planned> Script() {
     for (int i = 0; i < 3; ++i) waves.push_back({.units = {{0, 1}, {1, 1}}, .head = head});
   }
   waves.push_back({.units = {{1, 33}}});
+  if (verify) {
+    std::erase_if(waves, [](const Wave& w) { return w.head == Head::kGreedy; });
+    // One owner leaves a commit pending while another verifies. Joined
+    // saves must retain each owner's rows even when later waves regroup.
+    waves.push_back({.units = {{0, 3, 1}}});
+    waves.push_back({.units = {{1, 3, 2}}});
+    waves.push_back({.units = {{0, 1}, {1, 1}}});
+    for (std::uint32_t keep = 1; keep <= 3; ++keep) {
+      for (int repeat = 0; repeat < 3; ++repeat) {
+        waves.push_back({.units = {{0, 3, keep}, {1, 3, 4 - keep}}});
+      }
+    }
+    waves.push_back({.units = {{0, 1}, {1, 1}}});
+  }
   std::vector<Planned> out;
   std::array<std::uint32_t, kOwners> past{};
   for (const Wave& w : waves) {
     Planned p{.wave = w, .past = {}};
     for (const Unit& u : w.units) {
       p.past.push_back(past.at(u.slot));
-      past.at(u.slot) += u.rows;
+      past.at(u.slot) += u.keep == 0 ? u.rows : u.keep;
     }
     out.push_back(std::move(p));
   }
@@ -181,11 +199,14 @@ pl::StepShape ShapeOf(const Planned& p) {
   for (std::size_t i = 0; i < p.wave.units.size(); ++i) {
     const Unit& u = p.wave.units[i];
     if (u.rows > 1) shape.phase = pl::Phase::kPrefill;
+    if (u.keep != 0) shape.phase = pl::Phase::kVerify;
     shape.segments.push_back({.slot = static_cast<std::uint8_t>(u.slot),
                               .rows = u.rows,
                               .past = p.past[i],
                               .read_cells = ReadOf(p.past[i] + u.rows),
-                              .outputs = p.wave.head == Head::kNone ? 0U : 1U,
+                              .outputs = p.wave.head == Head::kNone ? 0U
+                                         : u.keep != 0              ? u.rows
+                                                                    : 1U,
                               .group = 0,
                               .want_head = p.wave.head != Head::kNone,
                               .greedy = p.wave.head == Head::kGreedy});
@@ -330,15 +351,18 @@ struct Production {
 Production Today(const Target& t, const fs::path& out, std::span<const Planned> script) {
   Production result;
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
-  const en::Qwen38Options options{.artifact = t.root,
-                                  .out = out,
-                                  .context = kContext,
-                                  .max_rows = kMaxRows,
-                                  .drafter = {},
-                                  .wave_slots = kOwners,
-                                  .request_slots = kOwners,
-                                  .wave_read_align = 256,
-                                  .spill_place = {}};
+  const bool verifying =
+      std::ranges::any_of(script, [](const Planned& p) { return p.wave.units.front().keep != 0; });
+  const en::Qwen38Options options{
+      .artifact = t.root,
+      .out = out,
+      .context = kContext,
+      .max_rows = kMaxRows,
+      .drafter = verifying ? fs::path(llmp::test_support::ModelsDir()) / kMtp : fs::path{},
+      .wave_slots = kOwners,
+      .request_slots = kOwners,
+      .wave_read_align = 256,
+      .spill_place = {}};
   auto runner = std::make_unique<en::Qwen38Runner>(node, options, 0, 0);
   std::vector<en::PagedModel*> entered;
   const auto started = [&]() -> en::Status {
@@ -374,7 +398,26 @@ Production Today(const Target& t, const fs::path& out, std::span<const Planned> 
         std::vector<std::vector<float>> logits(n);
         std::vector<std::int32_t> tokens(n, -1);
         const bool joined = n > 1;
-        if (joined) {
+        if (p.wave.units.front().keep != 0) {
+          std::vector<std::vector<std::int32_t>> picks(n);
+          if (joined) {
+            std::vector<en::Qwen38Runner::VerifyWork> work;
+            for (std::size_t i = 0; i < n; ++i) {
+              work.push_back({.slot = slots[p.wave.units[i].slot],
+                              .history = histories[i],
+                              .n_past = p.past[i],
+                              .argmax = &picks[i],
+                              .logits = &logits[i]});
+            }
+            if (auto x = runner->VerifyWave(work); !x) return x;
+          } else if (auto x = slots[p.wave.units[0].slot]->Verify(histories[0], p.past[0], picks[0],
+                                                                  &logits[0]);
+                     !x)
+            return x;
+          for (const Unit& u : p.wave.units) {
+            if (auto x = slots[u.slot]->Accept(u.keep); !x) return x;
+          }
+        } else if (joined) {
           std::vector<en::Qwen38Runner::ChunkWork> work;
           for (std::size_t i = 0; i < n; ++i) {
             const bool greedy = p.wave.head == Head::kGreedy;
@@ -396,7 +439,8 @@ Production Today(const Target& t, const fs::path& out, std::span<const Planned> 
           }
         }
         for (std::size_t i = 0; i < n; ++i) {
-          past.at(p.wave.units[i].slot) = p.past[i] + p.wave.units[i].rows;
+          const Unit& u = p.wave.units[i];
+          past.at(u.slot) = p.past[i] + (u.keep == 0 ? u.rows : u.keep);
           if (p.wave.head == Head::kLogits) {
             row.push_back(Bytes(std::span<const float>(logits[i])));
           } else if (p.wave.head == Head::kGreedy) {
@@ -455,7 +499,7 @@ class KernelSource final : public en::PagedModel {
 };
 
 // Today's places (Qwen38Runner::ReserveWeights): every dense group on the
-// device (and here the n-gram table's too), each layer's expert arrays in
+// device except the row-paged n-gram table, each layer's expert arrays in
 // one slab.
 struct Places {
   std::vector<en::GroupPlace> places;
@@ -470,6 +514,7 @@ std::expected<Places, std::string> PlacesOf(const Target& t) {
   for (std::size_t g = 0; g < a.groups().size(); ++g) {
     if (a.groups()[g].kind != ar::GroupKind::kExpert) out.places[g] = en::GroupPlace::kDevice;
   }
+  out.places[a.resources()[t.binding.ple_table.index].group] = en::GroupPlace::kNone;
   for (std::uint32_t il = 0; il < p.layers; ++il) {
     std::vector<std::pair<std::uint32_t, std::string_view>> arrays;
     for (const md::Qwen38Tensor* x : t.binding.layers[il].expert_arrays(t.binding.cutlass())) {
@@ -502,14 +547,37 @@ struct Component {
   Outputs outputs;
   States states;
   std::uint64_t replayed = 0;
+  std::uint64_t checked_commits = 0;
 };
 
-Component Lowered(const Target& t, const fs::path& scratch, std::span<const Planned> script) {
+Component Lowered(const Target& t, const fs::path& scratch, std::span<const Planned> script,
+                  bool check_commits = false) {
   Component out;
   const auto& mapping = sp::mappings::Qwen38Mapping();
   auto layout = co::StageLayout(t.spec, 0, kContext, kMaxRows);
   EXPECT_TRUE(layout.has_value()) << layout.error();
   if (!layout) return out;
+  // The independent legacy commit consumes the actual verify saves on a
+  // private copy of the unchanged fixed state. Its recurrence is separately
+  // proven bitexact to the verifier by Qwen38CommitTest. Plain target rows
+  // are not this oracle: Qwen3.8's fast verify is not row-invariant.
+  struct Fixed {
+    const md::StateLayoutDerived::Item* item;
+    std::uint64_t offset;
+  };
+  std::vector<Fixed> fixed;
+  std::vector<en::LiveState::Range> fixed_ranges;
+  std::uint64_t fixed_bytes = 0;
+  for (const auto& item : layout->items) {
+    if (item.contract.rollback != md::Rollback::kCommit) continue;
+    fixed.push_back({.item = &item, .offset = fixed_bytes});
+    fixed_ranges.push_back({.region = 0, .offset = item.offset, .bytes = item.bytes});
+    fixed_bytes += item.bytes;
+  }
+  std::map<std::tuple<std::uint32_t, std::string, std::uint32_t>, std::uint64_t> saves;
+  std::uint64_t oracle_base = 0;
+  std::byte* oracle_host = nullptr;
+  kg::GgmlStepLaunch* launch = nullptr;
   std::vector<pl::StepShape> shapes;
   for (const Planned& planned : script) {
     const pl::StepShape shape = ShapeOf(planned);
@@ -522,6 +590,7 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
   };
   std::map<std::pair<llmp::ir::WeightRef, llmp::format::PartRole>, Place> place;
   std::map<llmp::ir::WeightRef, std::uint64_t> pitch_of;
+  std::optional<en::RunnerConfig::RowTable> table;
   auto places = PlacesOf(t);
   EXPECT_TRUE(places.has_value()) << (places ? "" : places.error());
   if (!places) return out;
@@ -543,6 +612,13 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
         EXPECT_TRUE(found.has_value()) << name;
         if (!found) continue;
         place[{w.ref, role}] = {.array = false, .index = *found};
+        if (*found == t.binding.ple_table.index) {
+          table = {.weight = w.ref,
+                   .resource = *found,
+                   .format = step->graph.tensor(w.tensor).format,
+                   .part = role,
+                   .rows_per_token = md::Qwen38Flash().ple_heads()};
+        }
       }
     }
   }
@@ -568,6 +644,20 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
     if (auto x = weights->Open(t.root); !x) return x;
     en::PagedWeights* tw = weights.get();
     std::vector<std::unique_ptr<en::ComponentStepSource>> sources;
+    auto backend = source->backend->Backend();
+    const auto lower = backend.lower;
+    backend.lower = [&](const kn::LowerInput& input) {
+      if (!input.addresses.measuring() && input.shape.phase == pl::Phase::kVerify) {
+        for (const auto& save : input.step.saves) {
+          for (std::size_t segment = 0; segment < input.shape.segments.size(); ++segment) {
+            saves[{save.layer, save.what, input.shape.segments[segment].slot}] =
+                input.addresses.save(save.layer, save.component, save.what,
+                                     static_cast<std::uint8_t>(segment));
+          }
+        }
+      }
+      return lower(input);
+    };
     auto stage0 = en::ComponentStepSource::Create(
         {.spec = &t.spec,
          .stage = 0,
@@ -577,7 +667,7 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
          .values = t.values,
          .slots = kOwners,
          .policy = std::nullopt,
-         .backend = source->backend->Backend()});
+         .backend = std::move(backend)});
     if (!stage0) return std::unexpected(stage0.error());
     en::RunnerConfig config;
     config.slots = {.model = "lowered",
@@ -592,11 +682,26 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
     config.weights.push_back(
         {.weights = std::move(weights), .places = places->places, .slabs = places->slabs});
     config.setup_shapes = shapes;
+    config.max_verify_rows = 3;
+    if (!table) return en::support::Error("the n-gram table was not bound");
+    config.row_tables.push_back(*table);
     // Prompt chunks captured on their second run, as decodes (D-090).
     config.capture_phases = 0x1F;
+    if (check_commits) {
+      config.kernel_memory.push_back({.name = "commit oracle", .bytes = fixed_bytes});
+      config.prepare = [&](std::span<const std::uint64_t> bases) -> en::Status {
+        oracle_base = bases.front();
+        return {};
+      };
+      auto host = source->resources->Pinned(2 * fixed_bytes);
+      if (!host) return std::unexpected(host.error());
+      oracle_host = static_cast<std::byte*>(*host);
+    }
     config.launch = [&]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
-      return source->backend->Launch(
+      auto made_launch = source->backend->Launch(
           {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)});
+      if (made_launch) launch = static_cast<kg::GgmlStepLaunch*>(made_launch->get());
+      return made_launch;
     };
     config.weight_address = [&place, tw](const llmp::ir::WeightRef& ref,
                                          llmp::format::PartRole role) -> std::uint64_t {
@@ -636,30 +741,123 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
           const Unit& u = planned.wave.units[i];
           const auto history = History(u.slot, planned.past[i] + u.rows);
           tokens.emplace_back(history.end() - u.rows, history.end());
-          past.at(u.slot) = planned.past[i] + u.rows;
+          past.at(u.slot) = planned.past[i] + (u.keep == 0 ? u.rows : u.keep);
         }
         std::vector<en::SegmentWork> work;
         for (const auto& ids : tokens) work.push_back({.tokens = ids, .bytes = {}});
         if (w == 0) {
           // Missing or partial side-table indices must refuse before any
           // model work. Zero-filling them would silently read wrong rows.
+          const auto initialized = runner->slots().live(0, 0).used_bytes();
+          const auto positions = runner->slots().positions(0);
           for (const std::size_t count : {std::size_t{0}, side[w].size() - 1}) {
             auto refused = runner->RunStep({.shape = shape,
                                             .work = work,
                                             .side_rows = std::span(side[w]).first(count),
                                             .ahead = {}});
-            if (refused || refused.error().what != "the side rows must fill their slot") {
-              return en::support::Error("incomplete side rows were not cleanly refused");
+            if (refused || !refused.error().clean ||
+                refused.error().what != "the side rows must fill their slot" ||
+                runner->slots().live(0, 0).used_bytes() != initialized ||
+                runner->slots().positions(0) != positions) {
+              return en::support::Error(
+                  std::format("incomplete side rows were not cleanly refused: {}",
+                              refused ? "accepted" : refused.error().what));
             }
           }
+          auto invalid_rows = side[w];
+          invalid_rows.back() = -1;
+          const auto invalid = runner->RunStep(
+              {.shape = shape, .work = work, .side_rows = invalid_rows, .ahead = {}});
+          if (invalid || !invalid.error().clean ||
+              runner->slots().live(0, 0).used_bytes() != initialized ||
+              runner->slots().positions(0) != positions)
+            return en::support::Error("an invalid side row changed initialized state");
         }
         auto ran = runner->RunStep({.shape = shape,
                                     .work = work,
                                     .step_bytes = {},
                                     .side_rows = side[w],
-                                    .advance = true,
+                                    .advance = shape.phase != pl::Phase::kVerify,
                                     .ahead = {}});
         if (!ran) return std::unexpected(std::format("wave {}: {}", w, ran.error().what));
+        for (const Unit& u : planned.wave.units) {
+          if (u.keep != 0) {
+            if (check_commits) {
+              const auto ptr = [](std::uint64_t address) {
+                return static_cast<float*>(en::support::Pointer(address));
+              };
+              const auto state = [&](std::uint32_t layer, std::string_view name) {
+                for (const Fixed& f : fixed)
+                  if (f.item->layer == layer && f.item->contract.name == name)
+                    return ptr(oracle_base + f.offset);
+                return static_cast<float*>(nullptr);
+              };
+              const auto saved = [&](std::uint32_t layer, std::string_view name) {
+                const auto at = saves.find({layer, std::string(name), u.slot});
+                return at == saves.end() ? nullptr : ptr(at->second);
+              };
+              const auto& profile = md::Qwen38Flash();
+              kg::Qwen38CommitArgs args;
+              args.keep = static_cast<int>(u.keep);
+              args.channels = static_cast<int>(profile.conv_channels());
+              args.qk_heads = static_cast<int>(profile.lin_k_heads);
+              args.v_heads = static_cast<int>(profile.lin_v_heads);
+              args.taps = static_cast<int>(profile.conv - 1);
+              for (const Fixed& f : fixed) {
+                if (f.item->contract.name != "recurrent") continue;
+                const auto layer = f.item->layer;
+                args.layer[args.layers++] = {.state = state(layer, "recurrent"),
+                                             .history = state(layer, "conv"),
+                                             .conv = saved(layer, "conv"),
+                                             .qkv = saved(layer, "qkv"),
+                                             .gate = saved(layer, "gate"),
+                                             .beta = saved(layer, "beta")};
+              }
+              args.ple_history = state(profile.ple_layer, "ple_conv");
+              args.ple_rows = saved(profile.ple_layer, "ple");
+              args.ple_width = static_cast<int>(profile.hc_width());
+              args.ple_taps = static_cast<int>(profile.ple_history());
+              const auto oracle = node.Job(
+                  runner->slots().execution(),
+                  [&](llmp::providers::NativeStream native) {
+                    namespace pr = llmp::providers;
+                    namespace sc = llmp::scheduler;
+                    for (const Fixed& f : fixed) {
+                      const auto copied = pr::CopyAsync(
+                          native, ptr(oracle_base + f.offset),
+                          ptr(runner->slots().live(u.slot, 0).base(0) + f.item->offset),
+                          f.item->bytes, pr::CopyKind::kDeviceToDevice);
+                      if (!copied.ok()) return sc::JobResult::kUnknown;
+                    }
+                    const auto committed = kg::Qwen38Commit(launch->context(), args);
+                    if (!committed) return sc::JobResult::kUnknown;
+                    return sc::JobResult::kQueued;
+                  },
+                  "legacy commit oracle", 0);
+              if (!oracle) return oracle;
+            }
+            if (auto x = runner->slots().Accept(u.slot, u.keep); !x) return x;
+            if (check_commits) {
+              if (auto x = runner->slots().Settle(u.slot); !x) return x;
+              if (auto x = node.Copy(0, runner->slots().execution(), oracle_base, oracle_host,
+                                     fixed_bytes, true, "read commit oracle");
+                  !x)
+                return x;
+              if (auto x = runner->slots().CopyState(u.slot, oracle_host + fixed_bytes,
+                                                     fixed_ranges, true);
+                  !x)
+                return x;
+              for (const Fixed& f : fixed) {
+                EXPECT_EQ(std::memcmp(oracle_host + f.offset, oracle_host + fixed_bytes + f.offset,
+                                      f.item->bytes),
+                          0)
+                    << "wave " << w << " slot " << u.slot << " keep " << u.keep << " "
+                    << f.item->contract.name << "." << f.item->layer;
+              }
+              ++out.checked_commits;
+            }
+          }
+        }
         if (ran->path == en::RunPath::kReplayed) ++out.replayed;
         if (planned.wave.head == Head::kNone) continue;
         for (const auto& bytes : ran->outputs) row.push_back(bytes);
@@ -780,6 +978,75 @@ TEST_P(ComponentRunnerQwen38Gpu, FastFormStepsAreTodaysBitForBit) {
   std::printf("%s: %zu waves, %zu owner outputs and %zu state tensors compared, %llu replayed\n",
               c.name.c_str(), script.size(), compared, tensors,
               static_cast<unsigned long long>(lowered.replayed));
+}
+
+void CompareStates(const States& got, const States& want) {
+  ASSERT_EQ(got.size(), want.size());
+  for (std::size_t owner = 0; owner < want.size(); ++owner) {
+    ASSERT_EQ(got[owner].size(), want[owner].size());
+    for (const auto& [name, bytes] : want[owner]) {
+      const auto found = got[owner].find(name);
+      ASSERT_NE(found, got[owner].end());
+      ASSERT_EQ(found->second.size(), bytes.size());
+      const auto mismatch = std::memcmp(found->second.data(), bytes.data(), bytes.size());
+      EXPECT_EQ(mismatch, 0) << "owner " << owner << " state " << name;
+    }
+  }
+}
+void CompareLogits(std::span<const std::byte> got, std::span<const std::byte> want,
+                   std::size_t wave, std::size_t owner) {
+  ASSERT_EQ(got.size(), want.size());
+  std::size_t different = 0;
+  double worst = 0;
+  for (std::size_t at = 0; at < got.size(); at += sizeof(float)) {
+    float a = 0, b = 0;
+    std::memcpy(&a, got.data() + at, sizeof(a));
+    std::memcpy(&b, want.data() + at, sizeof(b));
+    different += std::memcmp(&a, &b, sizeof(a)) != 0;
+    worst = std::max(worst, std::abs(static_cast<double>(a) - b));
+  }
+  EXPECT_EQ(different, 0U) << "wave " << wave << " owner " << owner << " worst " << worst;
+}
+
+// Every format's saved inputs drive an independent legacy commit oracle.
+// This is exact against the verify's recurrence, without pretending the
+// fast verify has the arithmetic of a shorter plain target step.
+TEST_P(ComponentRunnerQwen38Gpu, VerifiedPrefixesMatchTheSavedRecurrence) {
+  const auto root = Installed(GetParam().id);
+  if (!root) GTEST_SKIP() << "no Qwen3.8 artifact installed";
+  const auto target = Open(*root);
+  ASSERT_TRUE(target);
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const fs::path out = fs::path(scratch != nullptr ? scratch : testing::TempDir()) / "verified38";
+  fs::create_directories(out);
+  const auto script = Script(true);
+  const auto lowered = Lowered(*target, out, script, true);
+  ASSERT_EQ(lowered.outputs.size(), script.size());
+  EXPECT_EQ(lowered.checked_commits, 20U);
+  EXPECT_GE(lowered.replayed, 2U);
+}
+
+TEST(ComponentRunnerQwen38VerifyGpu, NativeVerifyMatchesLegacySavedRowsAndCommits) {
+  const auto root =
+      Installed("m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93");
+  if (!root || !Installed(kMtp)) GTEST_SKIP() << "no native target and MTP fixtures installed";
+  const auto target = Open(*root);
+  ASSERT_TRUE(target);
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const fs::path out =
+      fs::path(scratch != nullptr ? scratch : testing::TempDir()) / "verify-native38";
+  fs::create_directories(out);
+  const auto script = Script(true);
+  const auto today = Today(*target, out, script);
+  ASSERT_EQ(today.outputs.size(), script.size());
+  const auto lowered = Lowered(*target, out, script);
+  ASSERT_EQ(lowered.outputs.size(), script.size());
+  for (std::size_t w = 0; w < script.size(); ++w) {
+    ASSERT_EQ(lowered.outputs[w].size(), today.outputs[w].size());
+    for (std::size_t u = 0; u < today.outputs[w].size(); ++u)
+      CompareLogits(lowered.outputs[w][u], today.outputs[w][u], w, u);
+  }
+  CompareStates(lowered.states, today.states);
 }
 
 INSTANTIATE_TEST_SUITE_P(

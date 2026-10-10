@@ -281,7 +281,8 @@ const StateLayoutDerived::Item* FeatureTap(const StateLayoutDerived& layout) {
   const Item* found = nullptr;
   for (const Item& item : layout.items) {
     if (item.contract.kind != StateKind::kFeatures || !item.contract.target_writes ||
-        item.contract.cells != CellRule::kPositionRing) {
+        (item.contract.cells != CellRule::kPositionRing &&
+         item.contract.cells != CellRule::kPerRow)) {
       continue;
     }
     if (found != nullptr) return nullptr;
@@ -454,6 +455,13 @@ std::expected<StateWrites, std::string> WritesFor(const StateLayoutDerived& layo
       }
     }
     if (t.cells == CellRule::kFixed) out.scratch.push_back(Whole(item));
+    // Chunk feature taps reserve leading cells for the previous chunk's
+    // tail. The runner carries those before the next target step, so a
+    // discarded verify must restore them beside its component writes.
+    if (t.cells == CellRule::kPerRow && t.target_writes && t.kind == StateKind::kFeatures &&
+        t.window_or_ratio != 0) {
+      out.rows[0].push_back(Cells(item, 0, t.window_or_ratio));
+    }
     // The dummy row: written by a chunk that completes fewer blocks than
     // ceil(rows / ratio), each missing block a dummy into its last row.
     if (t.dummy_last && completed < CeilDiv(rows, t.window_or_ratio)) {
@@ -482,6 +490,10 @@ std::expected<SaveBound, std::string> VerifySaveBound(const StateLayoutDerived& 
       case CellRule::kPositionRing:
       case CellRule::kPerRow:
         add(rows, t.cell_bytes);
+        if (t.cells == CellRule::kPerRow && t.target_writes && t.kind == StateKind::kFeatures &&
+            t.window_or_ratio != 0) {
+          add(1, t.window_or_ratio * t.cell_bytes);
+        }
         break;
       case CellRule::kPerBlock:
         // At most ceil(rows / ratio) blocks complete within `rows`
